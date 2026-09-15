@@ -721,10 +721,17 @@ def _clean(v: Any) -> str:
     return str(v).strip() if v is not None else ""
 
 
+#: Fechas «vacías» de FACTUSOL: no guarda NULL sino un centinela de 1900/1899
+#: (mismo criterio que `factusol_discover_invoice_payment._EMPTY_DATES`).
+_EMPTY_DATE_PREFIXES = ("1900-01-01", "1899-12-30")
+
+
 def _fmt_date(v: Any) -> str:
     iso = _factusol_date(v)
     if not iso:
         return _clean(v)
+    if iso.startswith(_EMPTY_DATE_PREFIXES):
+        return ""  # centinela «sin fecha»: nunca imprimir 01-01-1900
     y, m, d = iso.split("-")
     return f"{d}-{m}-{y}"
 
@@ -1009,7 +1016,11 @@ def generate_document_pdf(
         valued = False
     title = _title_for(doc_type, variant, lab, company, lang)
     doc_label = lab[f"doc_{doc_type}"]
-    if bank is None:
+    if doc_type == "albaranes":
+        # Bloque 5a: el albarán (normal, valorado o de devolución) NO lleva
+        # datos bancarios en ningún modelo ni idioma; el banco va en la factura.
+        bank = None
+    elif bank is None:
         bank = default_bank(company)
 
     # ¿Aplica el texto intracomunitario? Criterio de los modelos «SIN IVA»:
@@ -1186,14 +1197,9 @@ def _draw_header(
     cv.drawString(10 * mm, ry, _fit(cli["nif"] or "—", 9, 50))
     cv.drawString(64 * mm, ry, _fit(data["referencia"] or "—", 9, 66))
     cv.drawString(134 * mm, ry, _fit(data["forma_pago"] or "—", 9, 66))
-    if data["pedido_cliente"]:
-        pedido = f"{lab['su_pedido']}: {data['pedido_cliente']}"
-        if data["fecha_pedido_cliente"]:
-            pedido += (
-                f" · {lab['fecha_su_pedido']}: {data['fecha_pedido_cliente']}"
-            )
-        cv.setFont(FONT, 8)
-        cv.drawString(10 * mm, ry - 4.4 * mm, _fit(pedido, 8, 190))
+    # El renglón «Nº DE SU PEDIDO: X · FECHA DE SU PEDIDO: …» (PED*/FPE*) ya
+    # NO se imprime en ningún modelo ni idioma (Bloque 1b): salía con la fecha
+    # centinela 01-01-1900 de FACTUSOL y no aporta nada frente a «Su ref.».
 
     cv.setStrokeColor(RULE)
     cv.setLineWidth(0.4)
@@ -1781,8 +1787,11 @@ def find_order_for_invoice(
       - o es el ÚNICO pedido con ese número y nada lo contradice (ni la
         referencia ni el cliente, cuando ambos lados constan): la factura
         emitida desde BoHub sin referencia ni cliente enlazado.
-    Con más de un candidato fuerte (o débil sin fuerte, o varios homónimos
-    sin pruebas) no se elige ninguno."""
+    Varios candidatos con la MISMA serie (boprint y fluxlasers comparten la
+    5; un vínculo cruzado heredado del CODFAC desnudo) se desempatan por la
+    REFFAC y, si no, por el CLIFAC. Si sigue habiendo ambigüedad real (o
+    varios débiles sin fuerte, o varios homónimos sin pruebas) no se elige
+    ninguno."""
     from sqlalchemy import select  # noqa: PLC0415
 
     from app.erp.models import Order  # noqa: PLC0415
@@ -1810,12 +1819,12 @@ def find_order_for_invoice(
     strong, weak, neutral = [], [], []
     for order in candidates:
         o_serie = order_invoice_serie(order)
+        o_ref = order_composed_ref(session, order)
+        o_cli = order_customer_code(session, order) or ""
         if serie_int is not None and o_serie is not None:
             if o_serie == serie_int:
                 strong.append(order)
             continue  # otra serie: es la factura homónima de OTRO pedido
-        o_ref = order_composed_ref(session, order)
-        o_cli = order_customer_code(session, order) or ""
         if ref and o_ref == ref:
             strong.append(order)
         elif cli and o_cli == cli:
@@ -1825,13 +1834,33 @@ def find_order_for_invoice(
     if len(strong) == 1:
         return strong[0]
     if strong:
-        return None
+        # Varios con la MISMA serie (boprint y fluxlasers comparten la 5; un
+        # vínculo cruzado heredado del CODFAC desnudo): desempata la REFFAC y,
+        # si no, el CLIFAC. Si sigue empatado, no se adivina.
+        return _pick_by_ref_then_customer(session, strong, ref=ref, cli=cli)
     if len(weak) == 1:
         return weak[0]
     if weak:
         return None
     if len(candidates) == 1 and len(neutral) == 1:
         return neutral[0]
+    return None
+
+
+def _pick_by_ref_then_customer(session: Session, orders: list, *, ref: str, cli: str):
+    """Entre pedidos igual de plausibles, el ÚNICO cuya referencia común es la
+    REFFAC de la factura; si ninguno (o varios), el ÚNICO cuya empresa es el
+    CLIFAC. Si no hay un único ganador → None (ambigüedad real)."""
+    if ref:
+        by_ref = [o for o in orders if order_composed_ref(session, o) == ref]
+        if len(by_ref) == 1:
+            return by_ref[0]
+        if by_ref:
+            orders = by_ref
+    if cli:
+        by_cli = [o for o in orders if (order_customer_code(session, o) or "") == cli]
+        if len(by_cli) == 1:
+            return by_cli[0]
     return None
 
 

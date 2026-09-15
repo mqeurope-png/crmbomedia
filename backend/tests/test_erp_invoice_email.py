@@ -978,3 +978,102 @@ def test_diagnose_invoice_link_reports_old_vs_new(session_factory) -> None:
         assert "FLE-005784" in report and "escola@muntanyeta.cat" in report
         # Nada escrito en FACTUSOL: solo lecturas.
         assert all(t in ("F_FAC", "F_LFA") for t, _ in client.calls)
+
+
+def test_same_serie_homonyms_resolved_by_reffac_then_clifac(session_factory) -> None:
+    """Caso real (#427 remate): boprint y fluxlasers comparten la serie 5. La
+    factura 5-260090 (REFFAC FLE-005784, CLIFAC 4391 «Escola La Muntanyeta»)
+    debe resolver a FLUXLA-5784 y no al homónimo BOPRIN-99927 (ref BOP-,
+    cliente 3892) aunque ambos guarden nº 260090 y serie 5. Sin REFFAC ni
+    CLIFAC que desempaten → ambigüedad real → None."""
+    from app.erp.factusol_pdf import find_order_for_invoice
+
+    with session_factory() as s:
+        boprint = _seed_store(s, "boprint")
+        flux = _seed_store(s, "fluxlasers")
+        flux.metadata_json = '{"factusol_ref_prefix": "FLE"}'
+        neon_co = Company(name="NEON LED, S.L.", source="manual",
+                          factusol_company_id="3892", country="ES")
+        esc_co = Company(name="Escola La Muntanyeta", source="manual",
+                         factusol_company_id="4391", country="ES")
+        s.add_all([neon_co, esc_co])
+        s.flush()
+        neon = Order(external_source=OrderSource.WOOCOMMERCE, order_number="BOPRIN-99927",
+                     store_id=boprint.id, company_id=neon_co.id, total_amount=1,
+                     currency="EUR", factusol_invoice_number="260090",
+                     factusol_invoice_serie=5)
+        escola = Order(external_source=OrderSource.WOOCOMMERCE, order_number="FLUXLA-5784",
+                       store_id=flux.id, company_id=esc_co.id, total_amount=1,
+                       currency="EUR", factusol_invoice_number="260090",
+                       factusol_invoice_serie=5)
+        s.add_all([neon, escola])
+        s.commit()
+        # Por REFFAC.
+        found = find_order_for_invoice(
+            s, serie=5, codigo=260090, referencia="FLE-005784", cliente_codigo="4391",
+        )
+        assert found is not None and found.order_number == "FLUXLA-5784"
+        # Solo por CLIFAC (sin REFFAC en la factura).
+        found = find_order_for_invoice(
+            s, serie=5, codigo=260090, referencia="", cliente_codigo="3892",
+        )
+        assert found is not None and found.order_number == "BOPRIN-99927"
+        # REFFAC de otro y CLIFAC de Escola: la referencia no casa con nadie →
+        # decide el cliente.
+        found = find_order_for_invoice(
+            s, serie=5, codigo=260090, referencia="XXX-000001", cliente_codigo="4391",
+        )
+        assert found is not None and found.order_number == "FLUXLA-5784"
+        # Sin nada que desempate → no se adivina.
+        assert find_order_for_invoice(
+            s, serie=5, codigo=260090, referencia="", cliente_codigo="",
+        ) is None
+
+
+def test_scan_invoice_links_flags_crossed_and_ambiguous(session_factory) -> None:
+    """Bloque 1c · escaneo solo lectura: NEON (serie 5, nº 260090, cliente
+    3892) apunta a la factura 5-260090 de Escola (CLIFAC 4391) → «cruzado»;
+    Escola → «ok»; un pedido sin serie con el nº en dos series y sin
+    referencia/cliente que desempaten → «ambiguo». Nada se escribe."""
+    from app.erp.invoice_link_scan import format_report, scan_invoice_links, to_csv
+
+    with session_factory() as s:
+        boprint = _seed_store(s, "boprint")
+        flux = _seed_store(s, "fluxlasers")
+        flux.metadata_json = '{"factusol_ref_prefix": "FLE"}'
+        neon_co = Company(name="NEON LED, S.L.", source="manual",
+                          factusol_company_id="3892", country="ES")
+        esc_co = Company(name="Escola La Muntanyeta", source="manual",
+                         factusol_company_id="4391", country="ES")
+        s.add_all([neon_co, esc_co])
+        s.flush()
+        s.add_all([
+            Order(external_source=OrderSource.WOOCOMMERCE, order_number="BOPRIN-99927",
+                  store_id=boprint.id, company_id=neon_co.id, total_amount=1,
+                  currency="EUR", factusol_invoice_number="260090", factusol_invoice_serie=5),
+            Order(external_source=OrderSource.WOOCOMMERCE, order_number="FLUXLA-5784",
+                  store_id=flux.id, company_id=esc_co.id, total_amount=1,
+                  currency="EUR", factusol_invoice_number="260090", factusol_invoice_serie=5),
+            Order(external_source=OrderSource.MANUAL, order_number="MANUAL-000777",
+                  total_amount=1, currency="EUR", factusol_invoice_number="260050"),
+        ])
+        s.commit()
+        client = FakeClient({"F_FAC": [
+            _fac_row(TIPFAC="5", CODFAC=260090, CLIFAC=4391, CNOFAC="ESCOLA LA MUNTANYETA",
+                     REFFAC="FLE-005784"),
+            _fac_row(TIPFAC="2", CODFAC=260050, CLIFAC=10, CNOFAC="A", REFFAC=""),
+            _fac_row(TIPFAC="5", CODFAC=260050, CLIFAC=11, CNOFAC="B", REFFAC=""),
+        ]})
+        scan = scan_invoice_links(s, client, ejercicio="2026")
+        by_number = {r["order_number"]: r for r in scan["filas"]}
+        assert by_number["BOPRIN-99927"]["categoria"] == "cruzado"
+        assert by_number["BOPRIN-99927"]["cnofac"] == "ESCOLA LA MUNTANYETA"
+        assert by_number["FLUXLA-5784"]["categoria"] == "ok"
+        assert by_number["MANUAL-000777"]["categoria"] == "ambiguo"
+        assert by_number["MANUAL-000777"]["series_disponibles"] == "2,5"
+        assert scan["totales"] == {"cruzado": 1, "ok": 1, "ambiguo": 1}
+        report = format_report(scan)
+        assert "[CRUZADO ] BOPRIN-99927" in report and "FLUXLA-5784" not in report
+        assert "BOPRIN-99927" in to_csv(scan)
+        # Solo lecturas de F_FAC.
+        assert {t for t, _ in client.calls} == {"F_FAC"}

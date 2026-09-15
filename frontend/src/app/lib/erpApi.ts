@@ -127,6 +127,15 @@ export type OrderSummary = {
   completed_at?: string | null;
   completed_by_user_id?: string | null;
   completed_by_name?: string | null;
+  /** «Anular pedido» (solo manuales/FACTUSOL, reversible, distinto de
+   *  quitar): estado final; fuera de bandeja, colas y seguimiento. */
+  cancelled?: boolean;
+  cancelled_at?: string | null;
+  cancelled_reason?: string | null;
+  cancelled_by_user_id?: string | null;
+  cancelled_by_name?: string | null;
+  /** Nombre de envío (dropshipping) del pedido manual; null = la empresa. */
+  shipping_name?: string | null;
   /** Fase 2: nº del albarán FACTUSOL (`5-500008`) creado por BoHub al
    *  convertir la proforma / pedido de cliente. Los pedidos web no lo llevan. */
   factusol_albaran_number?: string | null;
@@ -302,8 +311,17 @@ export type OrderFilters = {
   show_external?: boolean;
   /** Control manual — ver SOLO los quitados a mano («Ver ocultados»). */
   show_excluded?: boolean;
+  /** «Ver anulados»: SOLO los pedidos anulados. */
+  show_cancelled?: boolean;
   /** «Completado»: true = solo completados, false = solo sin completar. */
   completed?: boolean;
+  /** Fase 6: facturado (true) / sin facturar (false); ausente = todos. */
+  invoiced?: boolean;
+  /** Fase 6: tienda por slug (artisjet / boprint / fluxlasers…). */
+  store_slug?: string;
+  /** Fase 6: rango de fecha del pedido (YYYY-MM-DD, inclusivo). */
+  placed_from?: string;
+  placed_to?: string;
   /** Cobro FACTUSOL (estado contable): cobrada / pendiente / sin_comprobar. */
   cobro?: "cobrada" | "pendiente" | "sin_comprobar";
   /** Rediseño de flujo: cola de trabajo (la organización primaria de la
@@ -328,12 +346,16 @@ const EMPTY_QUEUE_COUNTS = Object.fromEntries(
 ) as Record<WorkflowQueue, number>;
 
 export async function listOrders(filters: OrderFilters = {}): Promise<OrdersBandeja> {
-  const { show_external, show_excluded, completed, ...rest } = filters;
+  const {
+    show_external, show_excluded, show_cancelled, completed, invoiced, ...rest
+  } = filters;
   const query = qs({
     ...rest,
     show_external: show_external ? "true" : undefined,
     show_excluded: show_excluded ? "true" : undefined,
+    show_cancelled: show_cancelled ? "true" : undefined,
     completed: completed === undefined ? undefined : String(completed),
+    invoiced: invoiced === undefined ? undefined : String(invoiced),
   });
   const r = await apiFetch<Partial<OrdersBandeja>>(`/api/erp/orders${query}`);
   return {
@@ -345,6 +367,64 @@ export async function listOrders(filters: OrderFilters = {}): Promise<OrdersBand
 
 export async function getOrder(id: string): Promise<OrderDetail> {
   return apiFetch<OrderDetail>(`/api/erp/orders/${id}`);
+}
+
+// --- «Anular pedido» (manual / FACTUSOL; reversible; distinto de quitar) ----
+
+/** Documento FACTUSOL del pedido que se podría BORRAR al anular (albarán o
+ *  presupuesto). La factura nunca: se borra desde FACTUSOL. */
+export type CancelOrderDoc = {
+  doc_type: "albaranes" | "presupuestos";
+  serie: number;
+  codigo: number;
+  numero: string;
+  /** Estado en FACTUSOL (0 pendiente; albarán 1 = facturado; presupuesto 1 = aceptado). */
+  estado: number | null;
+  /** Se puede borrar sin romper nada (no facturado / sin hijos). */
+  deletable: boolean;
+  reason: string | null;
+};
+
+export type CancelOrderPreview = {
+  can_cancel: boolean;
+  /** Motivos por los que NO se puede anular (p. ej. ya tiene factura, es web). */
+  blockers: string[];
+  /** Avisos no bloqueantes. */
+  warnings: string[];
+  factusol_docs: CancelOrderDoc[];
+};
+
+export type CancelOrderPayload = {
+  /** OBLIGATORIO true: anular es una decisión, no un clic accidental. */
+  confirm: boolean;
+  reason?: string | null;
+  /** Borrar también en FACTUSOL los documentos marcados como borrables
+   *  (albarán / presupuesto). Se hace en cola (worker) y se informa. */
+  delete_factusol_docs?: boolean;
+};
+
+export type CancelOrderResult = OrderDetail & {
+  already_cancelled?: boolean;
+  /** Job de borrado en FACTUSOL (si se pidió); se consulta con
+   *  `getConvertJobStatus`/`convert-status`. */
+  factusol_delete_job_id?: string | null;
+  factusol_docs_to_delete?: CancelOrderDoc[];
+};
+
+export async function previewCancelOrder(orderId: string): Promise<CancelOrderPreview> {
+  return apiFetch(`/api/erp/orders/${orderId}/cancel-preview`, { method: "POST" });
+}
+
+export async function cancelOrder(
+  orderId: string, payload: CancelOrderPayload,
+): Promise<CancelOrderResult> {
+  return apiFetch(`/api/erp/orders/${orderId}/cancel`, {
+    method: "POST", body: JSON.stringify(payload),
+  });
+}
+
+export async function uncancelOrder(orderId: string): Promise<OrderDetail & { already_active?: boolean }> {
+  return apiFetch(`/api/erp/orders/${orderId}/uncancel`, { method: "POST" });
 }
 
 export async function listPendingApproval(): Promise<PendingOrder[]> {

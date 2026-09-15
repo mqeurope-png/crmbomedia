@@ -10,12 +10,12 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.errors import not_found
@@ -203,7 +203,10 @@ def customer_names(
     # COMPLETÓ el pedido (vista «Ver ocultados», badge «Completado»), en 1 query.
     user_ids = {
         uid for o in orders
-        for uid in (o.seguimiento_excluded_by_user_id, o.completed_by_user_id)
+        for uid in (
+            o.seguimiento_excluded_by_user_id, o.completed_by_user_id,
+            o.cancelled_by_user_id,
+        )
         if uid
     }
     user_names: dict[str, str] = {}
@@ -219,6 +222,7 @@ def customer_names(
             "company_name": companies.get(o.company_id) if o.company_id else None,
             "excluded_by_name": user_names.get(o.seguimiento_excluded_by_user_id or ""),
             "completed_by_name": user_names.get(o.completed_by_user_id or ""),
+            "cancelled_by_name": user_names.get(o.cancelled_by_user_id or ""),
         }
         for o in orders
     }
@@ -291,6 +295,14 @@ def _serialise_summary(
         "completed_at": o.completed_at.isoformat() if o.completed_at else None,
         "completed_by_user_id": o.completed_by_user_id,
         "completed_by_name": names.get("completed_by_name"),
+        # «Anular» (reversible, distinto de quitar): quién, cuándo y motivo.
+        "cancelled": o.cancelled_at is not None,
+        "cancelled_at": o.cancelled_at.isoformat() if o.cancelled_at else None,
+        "cancelled_reason": o.cancelled_reason,
+        "cancelled_by_user_id": o.cancelled_by_user_id,
+        "cancelled_by_name": names.get("cancelled_by_name"),
+        # Nombre de envío (dropshipping) del pedido manual; null = la empresa.
+        "shipping_name": o.shipping_name,
     }
 
 
@@ -464,13 +476,23 @@ def _warnings(session: Session, o: Order) -> list[dict[str, str]]:
     return []
 
 
+#: Estados de facturación que cuentan como «facturado» para el filtro de la
+#: bandeja (además de tener nº de factura FACTUSOL). Mismo criterio que
+#: `workflow.is_invoiced` / `_COMPLETION_INVOICED`.
+_INVOICED_FILTER = ("generated", "invoiced_by_erp", "already_invoiced_externally")
+
+
 def worklist_visible(stmt):  # noqa: ANN001, ANN201 — Select[Order]
     """Control manual (#388 + bandeja): los pedidos QUITADOS a mano
     (`seguimiento_excluded_at`) salen de TODAS las listas de trabajo — bandeja,
     Cola PEDIDOS, colas SAT y seguimiento/Drive — con un solo flag. «Quitar»
     significa «este pedido fuera de mis listas»; «Reincluir» lo devuelve a
-    todas. La ficha del pedido (`/{order_id}`) sigue accesible."""
-    return stmt.where(Order.seguimiento_excluded_at.is_(None))
+    todas. La ficha del pedido (`/{order_id}`) sigue accesible.
+    Los ANULADOS («Anular», estado final reversible) salen igual de todas las
+    listas de trabajo; se ven con «Ver anulados»."""
+    return stmt.where(
+        Order.seguimiento_excluded_at.is_(None), Order.cancelled_at.is_(None),
+    )
 
 
 # --- endpoints ---------------------------------------------------------------
@@ -669,6 +691,8 @@ def list_orders(
     # Control manual — «Ver ocultados»: SOLO los quitados a mano (para
     # revisarlos y reincluirlos). Por defecto la bandeja los esconde.
     show_excluded: bool = Query(default=False),
+    # «Ver anulados»: SOLO los pedidos anulados (estado final reversible).
+    show_cancelled: bool = Query(default=False),
     # «Completado»: true = solo completados, false = solo sin completar,
     # ausente = todos (el badge distingue).
     completed: bool | None = Query(default=None),
@@ -685,6 +709,12 @@ def list_orders(
     # Fase 3 (ficha de empresa): pedidos de UNA empresa, con su `workflow`,
     # para la «actividad reciente».
     company_id: str | None = Query(default=None, max_length=36),
+    # Fase 6 (bandeja): tienda por SLUG (artisjet / boprint / fluxlasers…),
+    # facturado sí/no y rango de fechas del pedido (placed_at, ISO date).
+    store_slug: str | None = Query(default=None, max_length=64),
+    invoiced: bool | None = Query(default=None),
+    placed_from: date | None = Query(default=None),
+    placed_to: date | None = Query(default=None),
     sort: str = Query(default="placed_desc"),
     limit: int = Query(default=100, ge=1, le=500),
     session: Session = Depends(get_session),
@@ -694,6 +724,30 @@ def list_orders(
     stmt = select(Order)
     if company_id:
         stmt = stmt.where(Order.company_id == company_id)
+    if store_slug:
+        from app.models.integration_settings import IntegrationAccount  # noqa: PLC0415
+
+        stmt = stmt.where(Order.store_id.in_(
+            select(IntegrationAccount.id).where(
+                func.lower(IntegrationAccount.account_id) == store_slug.strip().lower()
+            )
+        ))
+    if invoiced is True:
+        stmt = stmt.where(or_(
+            Order.factusol_invoice_number.isnot(None),
+            Order.invoice_status.in_(list(_INVOICED_FILTER)),
+        ))
+    elif invoiced is False:
+        stmt = stmt.where(
+            Order.factusol_invoice_number.is_(None),
+            Order.invoice_status.notin_(list(_INVOICED_FILTER)),
+        )
+    if placed_from:
+        stmt = stmt.where(Order.placed_at >= datetime.combine(placed_from, time.min, tzinfo=UTC))
+    if placed_to:
+        stmt = stmt.where(Order.placed_at < datetime.combine(
+            placed_to + timedelta(days=1), time.min, tzinfo=UTC,
+        ))
     if payment:
         stmt = stmt.where(Order.payment_status == payment)
     if cobro == "sin_comprobar":
@@ -715,7 +769,10 @@ def list_orders(
         stmt = stmt.where(Order.completed_at.isnot(None))
     elif completed is False:
         stmt = stmt.where(Order.completed_at.is_(None))
-    if show_excluded:
+    if show_cancelled:
+        # Vista de revisión: solo los anulados (con motivo y quién).
+        stmt = stmt.where(Order.cancelled_at.isnot(None))
+    elif show_excluded:
         # Vista de revisión: solo los quitados a mano (con motivo y quién).
         stmt = stmt.where(Order.seguimiento_excluded_at.isnot(None))
     else:

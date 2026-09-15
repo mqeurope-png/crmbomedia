@@ -151,9 +151,10 @@ def test_pdf_contains_all_required_fields_per_doc_type() -> None:
         "26-09-2026",                              # 1er vencimiento
         "ART-001", "Artículo de prueba 1", "40,00", "10", "87,12",
         "Albarán 5-500004", "21-08-2026", "BOP-099917",  # agrupación
-        "PED-777", "20-08-2026",                   # nº y fecha de su pedido
     ]:
         assert needle in text, f"factura sin {needle!r}"
+    # Bloque 1b: el nº/fecha de «su pedido» (PED*/FPE*) ya no se imprime.
+    assert "PED-777" not in text and "20-08-2026" not in text
 
     # PRESUPUESTO: mismas bandas + texto de validez de 30 días.
     pdf, _ = _pdf("presupuestos", _header("presupuestos"),
@@ -1078,3 +1079,51 @@ def test_taxable_amount_label_translated_five_languages() -> None:
     for lang, label in esperado.items():
         pdf, _ = _pdf("facturas", header, [_linea("facturas", 1)], lang=lang)
         assert label in _texto(pdf), f"{lang} sin {label!r}"
+
+
+# ---------------------------------------------------------------------------
+# Lote ERP · Bloque 1b — sin el renglón «Nº DE SU PEDIDO / FECHA DE SU PEDIDO»
+# (PED*/FPE*) en ningún modelo ni idioma; y las fechas centinela 1900 de
+# FACTUSOL nunca se imprimen. Bloque 5a — el albarán no lleva datos bancarios.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("doc_type", ["facturas", "albaranes", "presupuestos", "pedidos"])
+@pytest.mark.parametrize("lang", ["es", "en", "de", "fr", "nl"])
+def test_pdf_never_prints_customer_order_line(doc_type: str, lang: str) -> None:
+    header = _header(doc_type)
+    pdf, _ = _pdf(doc_type, header, [_linea(doc_type, 1)], lang=lang)
+    text = _texto(pdf)
+    lab = labels_for(lang)
+    assert lab["su_pedido"] not in text
+    assert lab["fecha_su_pedido"] not in text
+    assert "PED-777" not in text
+    assert "1900" not in text
+
+
+def test_pdf_factusol_empty_date_sentinel_is_blank() -> None:
+    """FACTUSOL guarda «sin fecha» como 1900-01-01 / 1899-12-30: ni el
+    vencimiento ni ninguna fecha sale como 01-01-1900."""
+    from app.erp.factusol_pdf import _fmt_date
+
+    assert _fmt_date("1900-01-01T00:00:00") == ""
+    assert _fmt_date("1899-12-30T00:00:00") == ""
+    assert _fmt_date("2026-08-26T00:00:00") == "26-08-2026"
+    header = _header("facturas", VENFAC="1900-01-01T00:00:00", FPEFAC="1900-01-01T00:00:00")
+    pdf, data = _pdf("facturas", header, [_linea("facturas", 1)])
+    assert data["vencimiento"] == ""
+    assert "01-01-1900" not in _texto(pdf)
+
+
+@pytest.mark.parametrize("lang", ["es", "en", "de", "fr", "nl"])
+@pytest.mark.parametrize("variant", [None, "valorado", "devolucion"])
+def test_albaran_pdf_has_no_bank_data(lang: str, variant: str | None) -> None:
+    """Bloque 5a: el albarán (normal, valorado o de devolución) no imprime
+    banco/IBAN/BIC en ningún idioma; la factura sí los conserva."""
+    header = _header("albaranes")
+    pdf, _ = _pdf("albaranes", header, [_linea("albaranes", 1)], lang=lang, variant=variant)
+    text = _texto(pdf)
+    assert "IBAN" not in text and "BIC" not in text
+    assert labels_for(lang)["cuenta"] not in text
+    fac, _ = _pdf("facturas", _header("facturas"), [_linea("facturas", 1)], lang=lang)
+    assert "IBAN: ES11 0081 0202 1700 0125 9030" in _texto(fac)

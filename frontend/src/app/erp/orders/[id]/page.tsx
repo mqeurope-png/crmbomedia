@@ -23,6 +23,7 @@ import { extractErrorMessage } from "../../../lib/errors";
 import {
   completeOrder,
   customerLabel,
+  downloadFactusolDocumentPdf,
   downloadOrderFactusolPedidoPdf,
   getErpSettings,
   getOrder,
@@ -87,6 +88,7 @@ export default function ErpOrderDetailPage() {
   // FACTUSOL del pedido (serie+número) y luego se abre el modal de preview.
   const [invoiceRef, setInvoiceRef] = useState<FactusolInvoiceRef | null>(null);
   const [emailBusy, setEmailBusy] = useState(false);
+  const [invoicePdfBusy, setInvoicePdfBusy] = useState(false);
   // ERP · envío del PEDIDO por email (SAT / taller): modal + petición de crear
   // el albarán cuando el aviso del modal lo ofrece.
   const [orderEmailOpen, setOrderEmailOpen] = useState(false);
@@ -412,6 +414,34 @@ export default function ErpOrderDetailPage() {
             >
               {pdfBusy ? "Generando…" : "PDF del pedido (FACTUSOL)"}
             </button>
+            {/* Bloque 2a: el PDF de la FACTURA desde la ficha (además del
+                pedido y del albarán). Se localiza la factura del pedido en
+                FACTUSOL y se descarga en el idioma elegido. */}
+            <button
+              type="button"
+              className="button small secondary"
+              disabled={!invoiced || invoicePdfBusy}
+              title={invoiced
+                ? "Descarga el PDF de la factura de este pedido (FACTUSOL)"
+                : "Emite la factura en FACTUSOL primero"}
+              onClick={async () => {
+                setInvoicePdfBusy(true);
+                setError(null);
+                try {
+                  const ref = await getOrderFactusolInvoiceRef(order.id);
+                  const blob = await downloadFactusolDocumentPdf(
+                    "facturas", ref.serie, ref.codigo, pdfLang,
+                  );
+                  saveBlob(blob, `Factura_${ref.numero}.pdf`);
+                } catch (e) {
+                  setError(extractErrorMessage(e, "No se pudo generar el PDF de la factura."));
+                } finally {
+                  setInvoicePdfBusy(false);
+                }
+              }}
+            >
+              {invoicePdfBusy ? "Generando…" : "PDF de la factura"}
+            </button>
             {canEmit ? (
               <>
                 {/* ERP · enviar el PEDIDO al SAT / taller (y a quien haga
@@ -578,9 +608,17 @@ export default function ErpOrderDetailPage() {
       {wf ? <NextActionBar workflow={wf}>{nextStepAction()}</NextActionBar> : null}
 
       {/* Las transiciones de estado que no son la principal (Reembolso,
-          Empezar preparación, Bloquear, Crear envío, Solicitar factura…), en
-          una fila compacta: ninguna se pierde. */}
-      <OrderStatusMachine order={order} onFire={onFire} busy={busy} omit={primaryTransition} />
+          Empezar preparación, Bloquear, Crear envío…), en una fila compacta:
+          ninguna se pierde. «Solicitar factura» (invoice → pending) NO se
+          pinta: era un alias de «Emitir factura FACTUSOL», que es el único
+          botón de factura (Bloque 2b). */}
+      <OrderStatusMachine
+        order={order}
+        onFire={onFire}
+        busy={busy}
+        omit={primaryTransition}
+        hide={[{ domain: "invoice", to_status: "pending" }]}
+      />
 
       <div className="erp-flow-grid2">
         <EconomicSummary order={order} />
