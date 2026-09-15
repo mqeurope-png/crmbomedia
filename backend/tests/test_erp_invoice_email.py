@@ -27,8 +27,10 @@ from app.models.crm import (
     Contact,
     EmailMessage,
     EmailThread,
+    ExternalSystem,
     UserEmailAliasPref,
 )
+from app.models.integration_settings import IntegrationAccount, IntegrationMode
 from tests._test_helpers import auth_headers, seed_test_users
 from tests.test_factusol_documents import FakeClient
 
@@ -192,7 +194,8 @@ def test_send_invoice_uses_resolved_language_for_pdf_and_body(http, session_fact
     assert pre.status_code == 200, pre.text
     body = pre.json()
     assert body["lang"] == "fr" and body["lang_source"] == "pedido"
-    assert body["subject"] == "Facture 5-260063"
+    # El nº de PEDIDO acompaña al de factura en el asunto ({pedido}).
+    assert body["subject"] == "Facture 5-260063 · commande ART-000123"
     assert body["to"] == "client@example.fr"
     assert body["attachment_filename"].endswith(".pdf")
 
@@ -486,10 +489,108 @@ def test_invoice_email_settings_roundtrip(http, session_factory) -> None:
     headers = auth_headers(http, "admin")
     r = http.get("/api/erp/settings", headers=headers)
     tpls = r.json()["factusol_invoice_email_templates"]
-    assert tpls["fr"]["subject"] == "Facture {numero}"
+    assert tpls["fr"]["subject"] == "Facture {numero}{pedido}"
     tpls["fr"]["subject"] = "Votre facture {numero}"
     r2 = http.patch("/api/erp/settings", json={
         "factusol_invoice_email_templates": tpls,
     }, headers=headers)
     assert (r2.json()["factusol_invoice_email_templates"]["fr"]["subject"]
             == "Votre facture {numero}")
+
+
+# ---------------------------------------------------------------------------
+# «Enviar factura al cliente» desde la ficha: remitente por TIENDA (manda sobre
+# la serie), nº de pedido en asunto/cuerpo, y ajustes por tienda.
+# ---------------------------------------------------------------------------
+
+
+def _seed_store(session: Session, slug: str = "boprint") -> IntegrationAccount:
+    store = IntegrationAccount(
+        system=ExternalSystem.WOOCOMMERCE, account_id=slug,
+        display_name=slug.title(), enabled=True, mode=IntegrationMode.LIVE,
+    )
+    session.add(store)
+    session.flush()
+    return store
+
+
+def _seed_store_order(session: Session, slug: str = "boprint") -> Order:
+    """Como `_seed_order`, pero el pedido es de la TIENDA `slug`."""
+    store = _seed_store(session, slug)
+    order = _seed_order(session, language="es", email="cliente@example.es", country="ES")
+    order.store_id = store.id
+    session.commit()
+    return order
+
+
+def test_store_email_from_config_defaults_override_and_clear() -> None:
+    from app.erp.invoice_email import store_email_from_config
+
+    base = store_email_from_config(None)
+    assert base["boprint"] == "pedidos@streamtec.es"
+    assert base["artisjet"] == "info@artisjet-printers.eu"
+    over = store_email_from_config({"boprint": "tienda@boprint.es", "Fluxlasers": ""})
+    assert over["boprint"] == "tienda@boprint.es"
+    assert "fluxlasers" not in over  # vacío borra el default (cae a la serie)
+
+
+def test_invoice_email_sender_by_store_beats_serie(http, session_factory) -> None:
+    """El remitente sale de la TIENDA del pedido (configurable); sin alias de
+    tienda cae al de la serie; la previsualización declara la fuente."""
+    with session_factory() as s:
+        _seed_store_order(s, "boprint")
+        _seed_alias(s)
+    admin = auth_headers(http, "admin")
+    # Tienda con alias propio → manda sobre la serie 5 (pedidos@streamtec.es).
+    http.patch("/api/erp/settings", json={
+        "factusol_store_email_from": {"boprint": "tienda@boprint.es"},
+    }, headers=admin)
+    with _patched_factusol():
+        pre = http.get(
+            "/api/erp/factusol/documents/facturas/5/260063/email-preview",
+            headers=auth_headers(http, "pedidos"),
+        ).json()
+    assert pre["from_alias"] == "tienda@boprint.es"
+    assert pre["from_alias_source"] == "tienda"
+    assert pre["store"] == "boprint"
+    # Sin alias de tienda (vacío) → cae al de la SERIE.
+    http.patch("/api/erp/settings", json={
+        "factusol_store_email_from": {"boprint": ""},
+    }, headers=admin)
+    with _patched_factusol():
+        pre2 = http.get(
+            "/api/erp/factusol/documents/facturas/5/260063/email-preview",
+            headers=auth_headers(http, "pedidos"),
+        ).json()
+    assert pre2["from_alias"] == "pedidos@streamtec.es"
+    assert pre2["from_alias_source"] == "serie"
+
+
+def test_invoice_email_pedido_in_subject_and_body(http, session_factory) -> None:
+    """El nº de pedido de BoHub va en el ASUNTO y en el CUERPO (placeholder
+    {pedido}), además del nº de factura, en el idioma del pedido."""
+    with session_factory() as s:
+        _seed_order(s, language="es")
+        _seed_alias(s)
+    with _patched_factusol():
+        pre = http.get(
+            "/api/erp/factusol/documents/facturas/5/260063/email-preview",
+            headers=auth_headers(http, "pedidos"),
+        ).json()
+    assert pre["order_number"] == "ART-000123"
+    assert pre["subject"] == "Factura 5-260063 · pedido ART-000123"
+    assert "5-260063" in pre["body_text"] and "ART-000123" in pre["body_text"]
+
+
+def test_store_email_from_settings_roundtrip(http, session_factory) -> None:
+    _ = session_factory
+    headers = auth_headers(http, "admin")
+    r = http.get("/api/erp/settings", headers=headers)
+    stores = r.json()["factusol_store_email_from"]
+    assert stores["boprint"] == "pedidos@streamtec.es"  # precargado
+    r2 = http.patch("/api/erp/settings", json={
+        "factusol_store_email_from": {"boprint": "tienda@boprint.es"},
+    }, headers=headers)
+    assert r2.json()["factusol_store_email_from"]["boprint"] == "tienda@boprint.es"
+    # Las demás tiendas conservan su precarga.
+    assert r2.json()["factusol_store_email_from"]["artisjet"] == "info@artisjet-printers.eu"

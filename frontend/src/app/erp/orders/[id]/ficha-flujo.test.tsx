@@ -190,15 +190,20 @@ describe("ERP · Ficha del pedido (rediseño de flujo)", () => {
     for (const titulo of ["Líneas", "Actividad", "Seguimiento", "FACTUSOL", "Resumen económico"]) {
       expect(screen.getByRole("heading", { name: titulo })).toBeInTheDocument();
     }
-    // Cabecera: idioma del PDF, PDF del pedido, email, completado y «⋯»
-    // (idioma del pedido, enviar factura por email).
+    // Cabecera: idioma del PDF, PDF del pedido, email, «Enviar factura al
+    // cliente» (deshabilitado sin factura emitida, nunca oculto), completado
+    // y «⋯» (idioma del pedido).
     expect(screen.getByRole("combobox", { name: "Idioma del PDF" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /PDF del pedido \(FACTUSOL\)/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Enviar por email" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Enviar factura al cliente" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Marcar completado" })).toBeInTheDocument();
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Más acciones del pedido" }));
     expect(screen.getByRole("combobox", { name: "Idioma del pedido" })).toBeInTheDocument();
+    // La antigua entrada «Enviar factura por email» del «⋯» ya no existe:
+    // es el botón de la cabecera.
+    expect(screen.queryByRole("button", { name: /Enviar factura por email/ })).toBeNull();
     // Las transiciones de estado siguen (fila compacta), no las 4 tarjetas.
     const estados = screen.getByRole("region", { name: "Otras acciones de estado" });
     expect(estados).toHaveTextContent("Preparación");
@@ -216,12 +221,46 @@ describe("ERP · Ficha del pedido (rediseño de flujo)", () => {
     expect(screen.queryByRole("button", { name: "Emitir factura FACTUSOL" })).toBeNull();
     expect(screen.getAllByRole("button", { name: "Marcar completado" })).toHaveLength(1);
     expect(screen.getAllByRole("button", { name: "Enviar por email" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Enviar factura al cliente" })).toHaveLength(1);
     expect(screen.getAllByRole("button", { name: /PDF del pedido/ })).toHaveLength(1);
     expect(screen.getAllByRole("button", { name: /Registrar cobro/ })).toHaveLength(1);
     // El nº de albarán aparece en el stepper y en el bloque FACTUSOL como
     // dato; el albarán como DOCUMENTO (PDF / crear) solo en Documentos de envío.
     expect(screen.queryByText("Albarán y pago FACTUSOL")).toBeNull();
     expect(screen.queryByText("Cobro FACTUSOL:")).toBeNull();
+  });
+
+  // --- «Enviar factura al cliente» (factura FACTUSOL en PDF, desde la ficha) ---
+
+  it("«Enviar factura al cliente»: con factura emitida localiza la factura del pedido y abre la previsualización (nunca envía sola)", async () => {
+    const { getOrderFactusolInvoiceRef } = jest.requireMock("../../../lib/erpApi");
+    (getOrderFactusolInvoiceRef as jest.Mock).mockResolvedValue({
+      order_id: "o-1", serie: 5, codigo: 260063, numero: "5-260063",
+    });
+    (getOrder as jest.Mock).mockResolvedValue(detail({
+      factusol_invoice_number: "260063", invoice_status: "invoiced_by_erp",
+    }));
+    const user = userEvent.setup();
+    render(<ErpOrderDetailPage />);
+    const btn = await screen.findByRole("button", { name: "Enviar factura al cliente" });
+    expect(btn).toBeEnabled();
+    // Está junto a «Enviar por email» (SAT), en la misma cabecera.
+    expect(screen.getByRole("button", { name: "Enviar por email" })).toBeInTheDocument();
+    await user.click(btn);
+    // Resuelve la factura del PEDIDO (no una cualquiera) y abre el modal de
+    // previsualización — que es quien pide confirmación antes de enviar.
+    await waitFor(() => expect(getOrderFactusolInvoiceRef).toHaveBeenCalledWith("o-1"));
+    expect(screen.getAllByRole("button", { name: "Enviar factura al cliente" })).toHaveLength(1);
+  });
+
+  it("«Enviar factura al cliente» sin factura emitida: deshabilitado y no consulta FACTUSOL", async () => {
+    const { getOrderFactusolInvoiceRef } = jest.requireMock("../../../lib/erpApi");
+    (getOrderFactusolInvoiceRef as jest.Mock).mockClear();
+    render(<ErpOrderDetailPage />);
+    const btn = await screen.findByRole("button", { name: "Enviar factura al cliente" });
+    expect(btn).toBeDisabled();
+    expect(btn).toHaveAttribute("title", "Emite la factura en FACTUSOL primero");
+    expect(getOrderFactusolInvoiceRef).not.toHaveBeenCalled();
   });
 
   it("con incidencia bloqueante la barra cambia de tono y lleva a resolverla", async () => {

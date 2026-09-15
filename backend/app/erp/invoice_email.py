@@ -13,7 +13,15 @@ el pedido; si no, correo nuevo.
 
 El cuerpo usa plantillas por idioma editables en `/erp/settings`
 (`factusol_series_json.invoice_email_templates`), con defaults sobrios en
-código. Placeholders: {cliente}, {numero}, {referencia}.
+código. Placeholders: {cliente}, {numero} (nº de factura), {pedido} (nº de
+pedido de BoHub, con separador localizado; vacío si la factura no tiene
+pedido) y {referencia} («su ref.», la referencia web del pedido).
+
+«Enviar factura al cliente» desde la ficha de pedido reutiliza TODO esto por
+pedido (resuelve la factura del pedido y llama a la misma previsualización y
+envío). El remitente se elige por TIENDA del pedido (alias por tienda,
+configurable) → si no, por SERIE (empresa emisora) → si no, el alias del
+usuario.
 """
 from __future__ import annotations
 
@@ -33,29 +41,29 @@ logger = logging.getLogger(__name__)
 #: {subject, body}. Placeholders: {cliente}, {numero}, {referencia}.
 INVOICE_EMAIL_DEFAULTS: dict[str, dict[str, str]] = {
     "es": {
-        "subject": "Factura {numero}",
+        "subject": "Factura {numero}{pedido}",
         "body": "Estimado/a {cliente}:\n\nAdjuntamos la factura {numero}"
-                "{referencia}.\n\nUn saludo.",
+                "{pedido}{referencia}.\n\nUn saludo.",
     },
     "en": {
-        "subject": "Invoice {numero}",
+        "subject": "Invoice {numero}{pedido}",
         "body": "Dear {cliente},\n\nPlease find attached invoice {numero}"
-                "{referencia}.\n\nKind regards.",
+                "{pedido}{referencia}.\n\nKind regards.",
     },
     "de": {
-        "subject": "Rechnung {numero}",
+        "subject": "Rechnung {numero}{pedido}",
         "body": "Sehr geehrte/r {cliente},\n\nanbei die Rechnung {numero}"
-                "{referencia}.\n\nMit freundlichen Grüßen.",
+                "{pedido}{referencia}.\n\nMit freundlichen Grüßen.",
     },
     "fr": {
-        "subject": "Facture {numero}",
+        "subject": "Facture {numero}{pedido}",
         "body": "Bonjour {cliente},\n\nVeuillez trouver ci-joint la facture "
-                "{numero}{referencia}.\n\nCordialement.",
+                "{numero}{pedido}{referencia}.\n\nCordialement.",
     },
     "nl": {
-        "subject": "Factuur {numero}",
+        "subject": "Factuur {numero}{pedido}",
         "body": "Beste {cliente},\n\nBijgevoegd vindt u factuur {numero}"
-                "{referencia}.\n\nMet vriendelijke groet.",
+                "{pedido}{referencia}.\n\nMet vriendelijke groet.",
     },
 }
 
@@ -66,6 +74,17 @@ _REF_SUFFIX: dict[str, str] = {
     "de": " (Ihre Ref. {ref})",
     "fr": " (votre réf. {ref})",
     "nl": " (uw ref. {ref})",
+}
+
+#: Cómo se lee «· pedido X» en cada idioma para el placeholder {pedido} (nº de
+#: pedido de BoHub). Va con separador para que quede bien pegado al nº de
+#: factura en el asunto y en el cuerpo; vacío si la factura no tiene pedido.
+_ORDER_SUFFIX: dict[str, str] = {
+    "es": " · pedido {n}",
+    "en": " · order {n}",
+    "de": " · Bestellung {n}",
+    "fr": " · commande {n}",
+    "nl": " · bestelling {n}",
 }
 
 
@@ -91,16 +110,23 @@ def invoice_email_templates(session: Session) -> dict[str, dict[str, str]]:
 
 def render_invoice_email(
     session: Session, *, lang: str, cliente: str, numero: str,
-    referencia: str,
+    referencia: str, pedido: str = "",
 ) -> tuple[str, str]:
     """`(asunto, cuerpo_texto)` de la plantilla del idioma, con los
-    placeholders sustituidos. Idioma no soportado → español."""
+    placeholders sustituidos. Idioma no soportado → español. `pedido` es el nº
+    de pedido de BoHub (vacío → el placeholder {pedido} desaparece)."""
     lang = lang if lang in SUPPORTED_LANGS else "es"
     tpl = invoice_email_templates(session)[lang]
     ref_txt = ""
     if referencia:
         ref_txt = _REF_SUFFIX.get(lang, _REF_SUFFIX["es"]).format(ref=referencia)
-    fields = {"cliente": cliente or "", "numero": numero, "referencia": ref_txt}
+    pedido_txt = ""
+    if pedido:
+        pedido_txt = _ORDER_SUFFIX.get(lang, _ORDER_SUFFIX["es"]).format(n=pedido)
+    fields = {
+        "cliente": cliente or "", "numero": numero,
+        "referencia": ref_txt, "pedido": pedido_txt,
+    }
 
     def _fill(text: str) -> str:
         for key, val in fields.items():
@@ -169,6 +195,58 @@ def series_from_alias(session: Session, serie: int | None) -> str | None:
 
     mapping = series_email_from_config(series_config(session).get("series_email_from"))
     return mapping.get(int(serie))
+
+
+#: Remitente por TIENDA (slug de la cuenta Woo: artisjet / boprint /
+#: fluxlasers…). Más fino que la serie: dos tiendas de la misma empresa
+#: emisora (boprint y flux, ambas serie 5) pueden enviar desde alias
+#: distintos. Precarga = el alias de su serie; CONFIGURABLE en /erp/settings
+#: (blob `factusol_series_json.store_email_from`, sin migración). Un valor
+#: vacío en la config BORRA el default de esa tienda (cae a la serie).
+DEFAULT_STORE_EMAIL_FROM: dict[str, str] = {
+    "artisjet": "info@artisjet-printers.eu",
+    "boprint": "pedidos@streamtec.es",
+    "fluxlasers": "pedidos@streamtec.es",
+}
+
+
+def store_email_from_config(raw: Any) -> dict[str, str]:
+    """`{tienda → alias remitente}` configurado, partiendo de los precargados.
+    Las claves se normalizan a minúsculas (slug de la cuenta Woo)."""
+    out = dict(DEFAULT_STORE_EMAIL_FROM)
+    if isinstance(raw, dict):
+        for key, value in raw.items():
+            slug = str(key or "").strip().lower()
+            if not slug:
+                continue
+            text = str(value or "").strip()
+            if text:
+                out[slug] = text
+            else:
+                out.pop(slug, None)  # vacío = sin remitente propio para esa tienda
+    return out
+
+
+def store_from_alias(session: Session, store_slug: str | None) -> str | None:
+    """Alias de envío de esa TIENDA (o None si no tiene remitente propio → el
+    caller cae a la serie / al usuario)."""
+    if not store_slug:
+        return None
+    from app.integrations.factusol.service import series_config  # noqa: PLC0415
+
+    mapping = store_email_from_config(series_config(session).get("store_email_from"))
+    return mapping.get(str(store_slug).strip().lower())
+
+
+def order_store_slug(session: Session, order: Any) -> str | None:
+    """Slug de la tienda Woo del pedido (`IntegrationAccount.account_id`), o
+    None si el pedido no es de tienda / no tiene cuenta."""
+    if order is None or not getattr(order, "store_id", None):
+        return None
+    from app.models.integration_settings import IntegrationAccount  # noqa: PLC0415
+
+    store = session.get(IntegrationAccount, order.store_id)
+    return store.account_id if store is not None else None
 
 
 def find_reply_target(session: Session, order: Any) -> str | None:
@@ -246,13 +324,20 @@ def build_invoice_email_preview(
     subject, body_text = render_invoice_email(
         session, lang=lang, cliente=data["cliente"]["nombre"],
         numero=data["numero"], referencia=data["referencia"],
+        pedido=order.order_number if order is not None else "",
     )
     reply_to = find_reply_target(session, order)
-    # Remitente: el alias de la EMPRESA EMISORA de esta serie si está
-    # configurado; si no, el alias por defecto del usuario (comportamiento
-    # anterior). El envío valida luego que sea un send-as del usuario.
-    serie_alias = series_from_alias(session, serie)
-    from_alias = serie_alias or default_from_alias(session, current_user)
+    # Remitente, por orden: el alias de la TIENDA del pedido (flux / artis /
+    # boprint…, configurable en /erp/settings); si no, el de la EMPRESA
+    # EMISORA de la serie; si no, el alias por defecto del usuario. El envío
+    # valida luego que sea un send-as del usuario.
+    store_slug = order_store_slug(session, order)
+    store_alias = store_from_alias(session, store_slug)
+    serie_alias = None if store_alias else series_from_alias(session, serie)
+    from_alias = store_alias or serie_alias or default_from_alias(session, current_user)
+    from_alias_source = (
+        "tienda" if store_alias else ("serie" if serie_alias else "usuario")
+    )
     return {
         "serie": serie, "codigo": codigo,
         "numero": data["numero"],
@@ -261,12 +346,15 @@ def build_invoice_email_preview(
         "subject": subject,
         "body_text": body_text,
         "from_alias": from_alias,
-        # De dónde sale el remitente: "serie" (empresa emisora) o "usuario".
-        "from_alias_source": "serie" if serie_alias else "usuario",
+        # De dónde sale el remitente: "tienda", "serie" (empresa emisora) o
+        # "usuario".
+        "from_alias_source": from_alias_source,
+        "store": store_slug,
         "attachment_filename": pdf_filename("facturas", data, lang),
         "reply_to_message_id": reply_to,
         "replies_to_thread": reply_to is not None,
         "order_id": order.id if order is not None else None,
+        "order_number": order.order_number if order is not None else None,
     }
 
 

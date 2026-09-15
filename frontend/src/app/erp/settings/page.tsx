@@ -12,6 +12,16 @@ import {
   type ErpSettings,
   type FactusolCompany,
 } from "../../lib/erpApi";
+import { getMyEmailAliases, type MyAlias } from "../../lib/emailsApi";
+
+/** Idiomas de las plantillas del email de factura (los del PDF, E4). */
+const INVOICE_EMAIL_LANGS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: "es", label: "Español" },
+  { value: "en", label: "English" },
+  { value: "de", label: "Deutsch" },
+  { value: "fr", label: "Français" },
+  { value: "nl", label: "Nederlands" },
+];
 
 /** ERP-F5 — tiendas con contrapartida PayPal propia (la clave es la que
  *  guarda el backend; `flux` de Woo se normaliza a `fluxlasers`). */
@@ -69,11 +79,15 @@ export default function ErpSettingsPage() {
   const [busy, setBusy] = useState(false);
   // ERP-F3 — se bumpea tras subir/quitar un logo para refrescar la miniatura.
   const [logoRefresh, setLogoRefresh] = useState(0);
+  // «Enviar factura al cliente» — los «enviar como» del usuario, como
+  // sugerencia (datalist) para el remitente por tienda. Best-effort.
+  const [aliases, setAliases] = useState<MyAlias[]>([]);
 
   useEffect(() => {
     getErpSettings()
       .then(setCfg)
       .catch((e) => setError(extractErrorMessage(e, "No se pudo cargar la configuración.")));
+    getMyEmailAliases().then(setAliases).catch(() => setAliases([]));
   }, []);
 
   async function save() {
@@ -454,6 +468,92 @@ export default function ErpSettingsPage() {
                 />
               </div>
             ))}
+        </fieldset>
+
+        {/* «Enviar factura al cliente» — remitente por TIENDA del pedido (manda
+            sobre el de la serie). Sugerencias: los «enviar como» del usuario. */}
+        <fieldset className="erp-series-fieldset">
+          <legend>Remitente del email de factura (por tienda)</legend>
+          <p className="muted small">
+            Desde qué dirección sale la factura al cliente según la TIENDA del
+            pedido (flux / artisJet / boprint…). Manda sobre el remitente de la
+            serie; vacío = usar el de la serie. Debe ser un «enviar como» válido
+            de la cuenta de Gmail que envía.
+          </p>
+          <datalist id="erp-email-aliases">
+            {aliases.map((a) => (
+              <option key={a.send_as_email} value={a.send_as_email} />
+            ))}
+          </datalist>
+          {(cfg.woocommerce_stores ?? []).map((store) => (
+            <div className="erp-bank-row" key={store.slug}>
+              <span style={{ flex: "0 0 140px" }}>{store.label}</span>
+              <input
+                type="email"
+                list="erp-email-aliases"
+                style={{ flex: 1 }}
+                placeholder="(remitente de la serie)"
+                aria-label={`Remitente tienda ${store.label}`}
+                value={cfg.factusol_store_email_from?.[store.slug] ?? ""}
+                onChange={(e) => setCfg({
+                  ...cfg,
+                  factusol_store_email_from: {
+                    ...(cfg.factusol_store_email_from ?? {}),
+                    [store.slug]: e.target.value,
+                  },
+                })}
+              />
+            </div>
+          ))}
+          {(cfg.woocommerce_stores ?? []).length === 0 ? (
+            <p className="muted small">No hay tiendas WooCommerce dadas de alta.</p>
+          ) : null}
+        </fieldset>
+
+        {/* Plantillas del email de factura por idioma (asunto + cuerpo). El
+            backend ya las guardaba; aquí se editan. */}
+        <fieldset className="erp-series-fieldset">
+          <legend>Plantillas del email de factura (por idioma)</legend>
+          <p className="muted small">
+            Asunto y cuerpo de «Enviar factura al cliente», por idioma del
+            pedido/cliente. Placeholders: <code>{"{cliente}"}</code>,{" "}
+            <code>{"{numero}"}</code> (nº de factura), <code>{"{pedido}"}</code>{" "}
+            (nº de pedido, con separador; vacío sin pedido) y{" "}
+            <code>{"{referencia}"}</code> («su ref.»). Vacío = el texto por
+            defecto de ese idioma.
+          </p>
+          {INVOICE_EMAIL_LANGS.map((l) => {
+            const tpl = cfg.factusol_invoice_email_templates?.[l.value]
+              ?? { subject: "", body: "" };
+            const setTpl = (patch: Partial<{ subject: string; body: string }>) => setCfg({
+              ...cfg,
+              factusol_invoice_email_templates: {
+                ...(cfg.factusol_invoice_email_templates ?? {}),
+                [l.value]: { ...tpl, ...patch },
+              },
+            });
+            return (
+              <div className="erp-bank-row" key={l.value} style={{ alignItems: "flex-start" }}>
+                <span style={{ flex: "0 0 90px" }}>{l.label}</span>
+                <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
+                  <input
+                    type="text"
+                    aria-label={`Asunto factura ${l.value}`}
+                    placeholder="Asunto"
+                    value={tpl.subject}
+                    onChange={(e) => setTpl({ subject: e.target.value })}
+                  />
+                  <textarea
+                    aria-label={`Cuerpo factura ${l.value}`}
+                    placeholder="Cuerpo"
+                    rows={3}
+                    value={tpl.body}
+                    onChange={(e) => setTpl({ body: e.target.value })}
+                  />
+                </div>
+              </div>
+            );
+          })}
         </fieldset>
 
         <fieldset className="erp-series-fieldset">

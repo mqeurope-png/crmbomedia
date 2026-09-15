@@ -144,6 +144,11 @@ class SettingsIn(BaseModel):
     #: emisora ({"2": "info@artisjet-printers.eu", "5": "pedidos@streamtec.es"}).
     #: Un valor vacío borra el default de esa serie.
     factusol_series_email_from: dict[str, str] | None = None
+    #: ERP · remitente del email de factura por TIENDA ({"boprint":
+    #: "pedidos@streamtec.es"}). Más fino que la serie (dos tiendas de la misma
+    #: empresa emisora pueden enviar desde alias distintos); vacío borra el
+    #: default de esa tienda y cae al remitente de la serie.
+    factusol_store_email_from: dict[str, str] | None = None
     #: ERP · email del SAT / taller: destinatario por defecto de «Enviar por
     #: email» desde un pedido. "" = sin destinatario precargado.
     sat_email: str | None = Field(default=None, max_length=255)
@@ -364,7 +369,10 @@ def _woocommerce_stores(session: Session) -> list[dict[str, str | None]]:
 
 
 def _serialise_settings(cfg: ErpSettings, session: Session) -> dict[str, Any]:
-    from app.erp.invoice_email import series_email_from_config  # noqa: PLC0415
+    from app.erp.invoice_email import (  # noqa: PLC0415
+        series_email_from_config,
+        store_email_from_config,
+    )
     from app.erp.order_email import sat_email_config  # noqa: PLC0415
 
     mode = getattr(cfg.default_invoice_mode, "value", cfg.default_invoice_mode)
@@ -434,6 +442,10 @@ def _serialise_settings(cfg: ErpSettings, session: Session) -> dict[str, Any]:
                 _series(cfg).get("series_email_from")
             ).items()
         },
+        # ERP · remitente del email de factura por TIENDA (más fino que la serie).
+        "factusol_store_email_from": store_email_from_config(
+            _series(cfg).get("store_email_from")
+        ),
         # ERP · destinatario por defecto de «Enviar pedido por email» (taller).
         "sat_email": sat_email_config(_series(cfg).get("sat_email")),
         "woocommerce_stores": _woocommerce_stores(session),
@@ -555,7 +567,8 @@ def update_settings(
             or payload.factusol_series_abbreviations is not None
             or payload.factusol_series_abbr_variants is not None
             or payload.sat_email is not None
-            or payload.factusol_series_email_from is not None):
+            or payload.factusol_series_email_from is not None
+            or payload.factusol_store_email_from is not None):
         series = _series(cfg)
         # ERP · email del SAT / taller (destinatario por defecto del envío del
         # pedido). "" lo borra: sin destinatario precargado.
@@ -595,6 +608,14 @@ def update_settings(
                 str(int(str(k).strip())): str(v or "").strip()
                 for k, v in payload.factusol_series_email_from.items()
                 if str(k).strip().lstrip("-").isdigit()
+            }
+        # ERP · remitente del email de factura por TIENDA ({"boprint": "…"}).
+        # Como por serie: se guarda el vacío para borrar el default precargado.
+        if payload.factusol_store_email_from is not None:
+            series["store_email_from"] = {
+                str(k).strip().lower(): str(v or "").strip()
+                for k, v in payload.factusol_store_email_from.items()
+                if str(k).strip()
             }
         # ERP-F5: contrapartidas de cobro (código numérico único + descripción)
         # y contrapartida PayPal por tienda. Se guardan explícitas.

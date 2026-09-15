@@ -257,9 +257,11 @@ export function InvoiceEmailModal({
             <p className="muted small">
               Se envía desde <strong>{preview.from_alias || "—"}</strong>
               {preview.from_alias
-                ? preview.from_alias_source === "serie"
-                  ? " (empresa emisora de la serie)"
-                  : " (alias por defecto del usuario)"
+                ? preview.from_alias_source === "tienda"
+                  ? ` (remitente de la tienda${preview.store ? ` ${preview.store}` : ""})`
+                  : preview.from_alias_source === "serie"
+                    ? " (empresa emisora de la serie)"
+                    : " (alias por defecto del usuario)"
                 : ""}.
               {preview.replies_to_thread
                 ? " Se responderá al hilo del pedido."
