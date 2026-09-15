@@ -27,7 +27,15 @@ jest.mock("../../../components/erp/EmbalarModal", () => ({ EmbalarModal: () => n
 jest.mock("../../../components/erp/FactusolDocumentDetailModal", () => ({
   PDF_LANGS: [{ value: "es", label: "Español" }],
 }));
-jest.mock("../../../components/erp/InvoiceEmailModal", () => ({ InvoiceEmailModal: () => null }));
+// El modal de la factura solo tiene que decir con qué pedido se abre (#426:
+// el destinatario/tienda son los de ESTE pedido, no los de un homónimo).
+jest.mock("../../../components/erp/InvoiceEmailModal", () => ({
+  InvoiceEmailModal: ({ orderId, numero }: { orderId?: string | null; numero?: string }) => (
+    <div role="dialog" aria-label="Enviar factura por email">
+      factura:{numero} pedido:{orderId ?? "—"}
+    </div>
+  ),
+}));
 jest.mock("../../../components/erp/OrderEmailModal", () => ({ OrderEmailModal: () => null }));
 // El botón de emisión sólo tiene que decir si la ficha le pidió abrirse.
 jest.mock("../../../components/erp/EmitFactusolButton", () => ({
@@ -248,8 +256,11 @@ describe("ERP · Ficha del pedido (rediseño de flujo)", () => {
     expect(screen.getByRole("button", { name: "Enviar por email" })).toBeInTheDocument();
     await user.click(btn);
     // Resuelve la factura del PEDIDO (no una cualquiera) y abre el modal de
-    // previsualización — que es quien pide confirmación antes de enviar.
+    // previsualización — que es quien pide confirmación antes de enviar —
+    // pasándole ESTE pedido (#426: nunca el contacto de un homónimo).
     await waitFor(() => expect(getOrderFactusolInvoiceRef).toHaveBeenCalledWith("o-1"));
+    const dialog = await screen.findByRole("dialog", { name: "Enviar factura por email" });
+    expect(dialog).toHaveTextContent("factura:5-260063 pedido:o-1");
     expect(screen.getAllByRole("button", { name: "Enviar factura al cliente" })).toHaveLength(1);
   });
 

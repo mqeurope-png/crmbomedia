@@ -1692,9 +1692,11 @@ def _find_order_for_document(
     )
 
     if doc_type == "facturas" and doc.get("codigo") is not None:
-        order = session.scalar(select(Order).where(
-            Order.factusol_invoice_number == str(doc["codigo"]),
-        ))
+        order = find_order_for_invoice(
+            session, serie=doc.get("serie"), codigo=doc["codigo"],
+            referencia=doc.get("referencia"),
+            cliente_codigo=(doc.get("cliente") or {}).get("codigo"),
+        )
         if order is not None:
             return order
     ref = str(doc.get("referencia") or "").strip()
@@ -1717,6 +1719,108 @@ def _find_order_for_document(
     return None
 
 
+def order_customer_code(session: Session, order: Any) -> str | None:
+    """CODCLI de FACTUSOL de la empresa cliente del pedido (por `company_id`
+    o, si no, por la empresa del contacto). None si no está enlazada."""
+    from app.models.crm import Company, Contact  # noqa: PLC0415
+
+    company = None
+    if getattr(order, "company_id", None):
+        company = session.get(Company, order.company_id)
+    if company is None and getattr(order, "contact_id", None):
+        contact = session.get(Contact, order.contact_id)
+        if contact is not None and contact.company_id:
+            company = session.get(Company, contact.company_id)
+    code = str(getattr(company, "factusol_company_id", "") or "").strip()
+    return code or None
+
+
+def order_invoice_serie(order: Any) -> int | None:
+    """Serie de la factura que el pedido tiene guardada: `factusol_invoice_serie`
+    o, si el número ya va como `serie-código`, la del número. None si no
+    consta (el pedido solo guarda el CODFAC desnudo)."""
+    from app.erp.factusol_cobro import parse_invoice_number  # noqa: PLC0415
+
+    if getattr(order, "factusol_invoice_serie", None) is not None:
+        return int(order.factusol_invoice_serie)
+    serie, _ = parse_invoice_number(getattr(order, "factusol_invoice_number", None))
+    return serie
+
+
+def order_composed_ref(session: Session, order: Any) -> str:
+    """Referencia común `PREFIJO-nnnnnn` del pedido (la que lleva REFFAC)."""
+    from app.integrations.factusol.service import (  # noqa: PLC0415
+        _compose_ref,
+        _store_ref_prefix,
+    )
+
+    try:
+        return _compose_ref(order.order_number, _store_ref_prefix(session, order)).upper()
+    except Exception:  # noqa: BLE001 — un pedido raro no rompe la resolución
+        return ""
+
+
+def find_order_for_invoice(
+    session: Session, *, serie: Any, codigo: Any, referencia: Any = None,
+    cliente_codigo: Any = None,
+):
+    """Pedido del CRM ligado a la factura (serie, código) — o None si no se
+    puede afirmar con seguridad. NUNCA adivina.
+
+    Bug real (#426, factura 5-260090 / FLE-005784): el pedido guarda el CODFAC
+    DESNUDO y el mismo número existe en varias series (TIPFAC 1/2/5), así que
+    buscar solo por número devolvía el PRIMER pedido homónimo (otro cliente,
+    otra tienda) → destinatario, tienda e idioma de otro cliente. Ahora un
+    candidato por número solo vale si además:
+      - su serie guardada es la de la factura (fuerte); una serie DISTINTA lo
+        descarta;
+      - o, sin serie guardada, su referencia común coincide con la REFFAC de
+        la factura (fuerte);
+      - o, sin serie guardada ni referencia, su empresa cliente es la de la
+        factura (CLIFAC ↔ `Company.factusol_company_id`; débil).
+    Con más de un candidato fuerte (o débil sin fuerte) no se elige ninguno."""
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from app.erp.models import Order  # noqa: PLC0415
+
+    try:
+        codigo_int = int(str(codigo).strip())
+    except (TypeError, ValueError):
+        return None
+    try:
+        serie_int: int | None = int(str(serie).strip()) if serie not in (None, "") else None
+    except (TypeError, ValueError):
+        serie_int = None
+    numbers = [str(codigo_int)]
+    if serie_int is not None:
+        numbers.append(f"{serie_int}-{codigo_int}")
+        numbers.append(f"{serie_int}-{codigo_int:06d}")
+    candidates = session.scalars(
+        select(Order).where(Order.factusol_invoice_number.in_(numbers))
+        .order_by(Order.created_at)
+    ).all()
+    if not candidates:
+        return None
+    ref = str(referencia or "").strip().upper()
+    cli = str(cliente_codigo or "").strip()
+    strong, weak = [], []
+    for order in candidates:
+        o_serie = order_invoice_serie(order)
+        if serie_int is not None and o_serie is not None:
+            if o_serie == serie_int:
+                strong.append(order)
+            continue  # otra serie: es la factura homónima de OTRO pedido
+        if ref and order_composed_ref(session, order) == ref:
+            strong.append(order)
+        elif cli and order_customer_code(session, order) == cli:
+            weak.append(order)
+    if len(strong) == 1:
+        return strong[0]
+    if not strong and len(weak) == 1:
+        return weak[0]
+    return None
+
+
 def _find_company_by_codcli(session: Session, codcli: Any):
     """Empresa del CRM vinculada al cliente FACTUSOL (CODCLI, enlace C-3)."""
     from sqlalchemy import select  # noqa: PLC0415
@@ -1732,7 +1836,7 @@ def _find_company_by_codcli(session: Session, codcli: Any):
 
 
 def suggest_pdf_language(
-    session: Session, doc_type: str, doc: dict[str, Any],
+    session: Session, doc_type: str, doc: dict[str, Any], *, order: Any = None,
 ) -> dict[str, str]:
     """`{lang, source}` para preseleccionar el selector de idioma de la
     descarga. `source` dice de dónde sale la propuesta para que el operador
@@ -1742,8 +1846,10 @@ def suggest_pdf_language(
       - `pais_documento` derivado del país del cliente EN EL DOCUMENTO (CPA*)
       - `pais_cliente`  derivado del PAÍS de la empresa cliente en el CRM
       - `empresa`       idioma por defecto de la empresa emisora (serie)
-      - `defecto`       español (último recurso)"""
-    order = _find_order_for_document(session, doc_type, doc)
+      - `defecto`       español (último recurso)
+    `order`: pedido ya verificado por el caller (si no, se localiza aquí)."""
+    if order is None:
+        order = _find_order_for_document(session, doc_type, doc)
     if order is not None and (order.language or "") in SUPPORTED_LANGS:
         return {"lang": order.language, "source": "pedido"}
     company = _find_company_by_codcli(session, doc.get("cliente_codigo"))

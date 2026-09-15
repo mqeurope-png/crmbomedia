@@ -12,7 +12,7 @@ import {
   type ErpSettings,
   type FactusolCompany,
 } from "../../lib/erpApi";
-import { getMyEmailAliases, type MyAlias } from "../../lib/emailsApi";
+import { getEmailAliases, getMyEmailAliases, type MyAlias } from "../../lib/emailsApi";
 
 /** Idiomas de las plantillas del email de factura (los del PDF, E4). */
 const INVOICE_EMAIL_LANGS: ReadonlyArray<{ value: string; label: string }> = [
@@ -87,7 +87,28 @@ export default function ErpSettingsPage() {
     getErpSettings()
       .then(setCfg)
       .catch((e) => setError(extractErrorMessage(e, "No se pudo cargar la configuración.")));
-    getMyEmailAliases().then(setAliases).catch(() => setAliases([]));
+    // Sugerencias de remitente: TODOS los «enviar como» verificados de la
+    // cuenta de Gmail (los de tienda, como pedidos@streamtec.es, no son de
+    // ningún usuario y no salen en «mis alias»), más los propios del usuario.
+    Promise.all([
+      getEmailAliases().catch(() => []),
+      getMyEmailAliases().catch(() => []),
+    ]).then(([all, mine]) => {
+      const seen = new Set<string>();
+      const merged: MyAlias[] = [];
+      for (const a of [...all, ...mine]) {
+        const key = a.send_as_email.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        merged.push({
+          send_as_email: a.send_as_email,
+          display_name: a.display_name,
+          is_default: a.is_default,
+          resolved_display_name: a.resolved_display_name,
+        });
+      }
+      setAliases(merged);
+    }).catch(() => setAliases([]));
   }, []);
 
   async function save() {

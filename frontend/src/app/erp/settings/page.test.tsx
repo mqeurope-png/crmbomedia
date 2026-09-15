@@ -9,9 +9,18 @@ jest.mock("../../lib/erpApi", () => ({
 }));
 // Sugerencias de remitente (datalist): los «enviar como» del usuario.
 jest.mock("../../lib/emailsApi", () => ({
-  getMyEmailAliases: jest.fn(() => Promise.resolve([
+  // Todos los «enviar como» de la cuenta (incluye los de tienda, que no son
+  // de ningún usuario) + los propios del usuario.
+  getEmailAliases: jest.fn(() => Promise.resolve([
     { send_as_email: "pedidos@streamtec.es", display_name: "Streamtec",
-      is_default: true, resolved_display_name: "Streamtec" },
+      is_primary: false, is_default: false, verification_status: "accepted",
+      user_pref_allowed: false, user_pref_default: false,
+      gmail_display_name: "Streamtec", display_name_override: null,
+      resolved_display_name: "Streamtec" },
+  ])),
+  getMyEmailAliases: jest.fn(() => Promise.resolve([
+    { send_as_email: "ventas@bomedia.net", display_name: "Ventas",
+      is_default: true, resolved_display_name: "Ventas" },
   ])),
 }));
 const mockGet = getErpSettings as jest.Mock;

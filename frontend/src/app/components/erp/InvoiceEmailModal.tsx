@@ -32,6 +32,18 @@ const LANG_SOURCE_LABELS: Record<InvoiceEmailLangSource, string> = {
   defecto: "por defecto",
 };
 
+/** Por qué el backend no dejará enviar desde el remitente propuesto (mismo
+ *  criterio que el envío: preferencia del usuario, o remitente de Ajustes ERP
+ *  verificado como «enviar como» en Gmail). Se avisa ANTES de pulsar enviar. */
+const ALIAS_PROBLEMS: Record<string, string> = {
+  alias_not_allowed:
+    "El remitente no está en tus preferencias (/account) ni es un remitente configurado en Ajustes ERP.",
+  not_in_gmail:
+    "El remitente no es un «enviar como» verificado de la cuenta de Gmail: añádelo en Gmail (Configuración → Cuentas → Enviar como) y vuelve a abrir.",
+  gmail_unavailable:
+    "No se pudo comprobar el remitente en Gmail (desconectado o sin permiso).",
+};
+
 /** Separa el campo de destinatarios (coma o punto y coma) en emails limpios. */
 function parseRecipients(raw: string): string[] {
   return raw
@@ -56,6 +68,7 @@ export function InvoiceEmailModal({
   serie,
   codigo,
   numero,
+  orderId,
   bank,
   variant,
   onClose,
@@ -65,6 +78,10 @@ export function InvoiceEmailModal({
   codigo: number;
   /** Número legible para el título («5-000063»); si no, se compone. */
   numero?: string;
+  /** Pedido desde cuya ficha se envía: el backend verifica que la factura
+   *  es suya y usa SU contacto / tienda / idioma / timeline (nunca los de un
+   *  pedido homónimo de otra serie). */
+  orderId?: string | null;
   /** Índice de cuenta bancaria elegido en la descarga (para que el PDF
    *  adjunto salga idéntico). */
   bank?: number | null;
@@ -97,7 +114,7 @@ export function InvoiceEmailModal({
     (langOverride?: FactusolPdfLang, keepRecipient = false) => {
       setLoadError(null);
       let alive = true;
-      getInvoiceEmailPreview(serie, codigo, langOverride)
+      getInvoiceEmailPreview(serie, codigo, langOverride, orderId)
         .then((p) => {
           if (!alive) return;
           setPreview(p);
@@ -116,7 +133,7 @@ export function InvoiceEmailModal({
         });
       return () => { alive = false; };
     },
-    [serie, codigo],
+    [serie, codigo, orderId],
   );
 
   useEffect(() => loadPreview(), [loadPreview]);
@@ -142,6 +159,7 @@ export function InvoiceEmailModal({
         reply_to_message_id: preview.reply_to_message_id,
         bank: bank ?? null,
         variant: variant ?? null,
+        order_id: orderId ?? null,
       });
       setSentTo(result.to);
       onSent?.({ to: result.to, lang: result.lang });
@@ -202,6 +220,14 @@ export function InvoiceEmailModal({
               <span className="muted small form-error">
                 Revisa la dirección de correo.
               </span>
+            ) : null}
+            {preview.customer_mismatch ? (
+              <p className="form-error" role="alert">
+                Ojo: el cliente de la factura en FACTUSOL
+                {preview.invoice_customer ? ` («${preview.invoice_customer}»)` : ""} no
+                coincide con la empresa del pedido. Revisa el destinatario antes
+                de enviar.
+              </p>
             ) : null}
 
             <label className="field">
@@ -270,6 +296,11 @@ export function InvoiceEmailModal({
             {!preview.from_alias ? (
               <p className="form-error">
                 No tienes un alias de envío configurado (en /account).
+              </p>
+            ) : preview.from_alias_ok === false ? (
+              <p className="form-error" role="alert">
+                {ALIAS_PROBLEMS[preview.from_alias_problem ?? ""]
+                  ?? "No se podrá enviar desde ese remitente."}
               </p>
             ) : null}
             {preview.order_id === null ? (

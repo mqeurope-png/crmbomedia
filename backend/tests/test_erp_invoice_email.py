@@ -594,3 +594,387 @@ def test_store_email_from_settings_roundtrip(http, session_factory) -> None:
     assert r2.json()["factusol_store_email_from"]["boprint"] == "tienda@boprint.es"
     # Las demás tiendas conservan su precarga.
     assert r2.json()["factusol_store_email_from"]["artisjet"] == "info@artisjet-printers.eu"
+
+
+# ---------------------------------------------------------------------------
+# Bugs #426 — destinatario / tienda de OTRO pedido homónimo, alias send-as
+# oculto. Caso real: factura 5-260090 (fluxlasers, ref FLE-005784, Escola La
+# Muntanyeta) proponía «Para» info@neonled.es (otro cliente) y «remitente de la
+# tienda boprint». El pedido guarda el CODFAC desnudo y el mismo número existe
+# en varias series: la búsqueda solo por número devolvía el primer homónimo.
+# ---------------------------------------------------------------------------
+
+
+def _fac_muntanyeta(**over: Any) -> dict[str, Any]:
+    row = _fac_row(
+        TIPFAC="5", CODFAC=260090, CLIFAC=3001, CNIFAC="G08000000",
+        CNOFAC="ESCOLA LA MUNTANYETA", CPAFAC="España", REFFAC="FLE-005784",
+    )
+    row.update(over)
+    return row
+
+
+def _fac_neonled(**over: Any) -> dict[str, Any]:
+    row = _fac_row(
+        TIPFAC="2", CODFAC=260090, CLIFAC=2999, CNIFAC="B08999999",
+        CNOFAC="NEON LED, S.L.", CPAFAC="España", REFFAC="BOP-099001",
+    )
+    row.update(over)
+    return row
+
+
+def _tables_homonimas() -> dict[str, list[dict[str, Any]]]:
+    return {"F_FAC": [_fac_neonled(), _fac_muntanyeta()],
+            "F_LFA": [], "F_ALB": [], "F_FOP": []}
+
+
+def _seed_homonyms(
+    session: Session, *, escola_serie: int | None = None, neon_serie: int | None = 2,
+    flux_prefix: str | None = "FLE", link_escola_company: bool = True,
+) -> tuple[Order, Order]:
+    """Dos pedidos con el MISMO nº de factura desnudo (260090): el de boprint
+    (NEON LED, otro cliente) creado ANTES — el que devolvía la búsqueda por
+    número — y el de fluxlasers (Escola La Muntanyeta)."""
+    boprint = _seed_store(session, "boprint")
+    flux = _seed_store(session, "fluxlasers")
+    if flux_prefix:
+        flux.metadata_json = f'{{"factusol_ref_prefix": "{flux_prefix}"}}'
+    neon_contact = Contact(first_name="Neon", last_name="Led", email="info@neonled.es")
+    esc_contact = Contact(first_name="Escola", last_name="Muntanyeta",
+                          email="escola@muntanyeta.cat")
+    session.add_all([neon_contact, esc_contact])
+    neon_co = Company(name="NEON LED, S.L.", source="manual",
+                      factusol_company_id="2999", country="ES", language="es")
+    esc_co = Company(name="Escola La Muntanyeta", source="manual",
+                     factusol_company_id="3001" if link_escola_company else None,
+                     country="ES", language="es")
+    session.add_all([neon_co, esc_co])
+    session.flush()
+    neon = Order(
+        external_source=OrderSource.WOOCOMMERCE, order_number="BOPRIN-99001",
+        store_id=boprint.id, contact_id=neon_contact.id, company_id=neon_co.id,
+        total_amount=100, currency="EUR", factusol_invoice_number="260090",
+        factusol_invoice_serie=neon_serie, language="es",
+    )
+    session.add(neon)
+    session.flush()
+    escola = Order(
+        external_source=OrderSource.WOOCOMMERCE, order_number="FLUXLA-5784",
+        store_id=flux.id, contact_id=esc_contact.id, company_id=esc_co.id,
+        total_amount=300, currency="EUR", factusol_invoice_number="260090",
+        factusol_invoice_serie=escola_serie, language="es",
+    )
+    session.add(escola)
+    session.commit()
+    return neon, escola
+
+
+def _gmail_aliases(*emails: str):
+    """Parchea la lista EN VIVO de send-as de Gmail (lo que devuelve la API)."""
+    return patch(
+        "app.integrations.gmail.service.list_aliases",
+        return_value=[
+            {"send_as_email": e, "display_name": e.split("@")[0].title(),
+             "is_primary": False, "is_default": False,
+             "verification_status": "accepted"}
+            for e in emails
+        ],
+    )
+
+
+def test_preview_recipient_and_store_are_of_this_invoice_not_homonym(
+    http, session_factory,
+) -> None:
+    """5-260090 es de Escola (fluxlasers): «Para», tienda, idioma y nº de
+    pedido son los suyos aunque un pedido de boprint (NEON LED) tenga el mismo
+    nº de factura desnudo en otra serie. Y 2-260090 sigue siendo de NEON."""
+    with session_factory() as s:
+        _seed_homonyms(s)
+        _seed_alias(s)
+    with _patched_factusol(_tables_homonimas()):
+        esc = http.get(
+            "/api/erp/factusol/documents/facturas/5/260090/email-preview",
+            headers=auth_headers(http, "pedidos"),
+        ).json()
+        neon = http.get(
+            "/api/erp/factusol/documents/facturas/2/260090/email-preview",
+            headers=auth_headers(http, "pedidos"),
+        ).json()
+    assert esc["to"] == "escola@muntanyeta.cat"
+    assert esc["order_number"] == "FLUXLA-5784"
+    assert esc["store"] == "fluxlasers"
+    assert esc["from_alias_source"] == "tienda"
+    assert esc["customer_mismatch"] is False
+    assert "FLUXLA-5784" in esc["subject"]
+    assert neon["to"] == "info@neonled.es"
+    assert neon["store"] == "boprint"
+    assert neon["order_number"] == "BOPRIN-99001"
+
+
+def test_find_order_for_invoice_never_guesses_between_homonyms(session_factory) -> None:
+    """Sin serie guardada, sin referencia que coincida y sin cliente enlazado,
+    un pedido homónimo NO se elige (antes se devolvía el primero)."""
+    from app.erp.factusol_pdf import find_order_for_invoice
+
+    with session_factory() as s:
+        # Ninguno de los dos guarda serie, la tienda flux no tiene prefijo FLE
+        # (su ref derivada es FLU-005784 ≠ FLE-005784) y Escola no está
+        # enlazada a FACTUSOL: no hay prueba de cuál es → None.
+        neon, escola = _seed_homonyms(s, neon_serie=None, flux_prefix=None,
+                                      link_escola_company=False)
+        assert find_order_for_invoice(
+            s, serie=5, codigo=260090, referencia="FLE-005784", cliente_codigo="3001",
+        ) is None
+        # Con la serie guardada en el de Escola, se elige sin dudar…
+        escola.factusol_invoice_serie = 5
+        s.flush()
+        found = find_order_for_invoice(
+            s, serie=5, codigo=260090, referencia="FLE-005784", cliente_codigo="3001",
+        )
+        assert found is not None and found.id == escola.id
+        # …y para la serie 2 ese pedido (serie 5) queda descartado; NEON, sin
+        # serie ni pruebas, tampoco se adivina.
+        assert find_order_for_invoice(
+            s, serie=2, codigo=260090, referencia="", cliente_codigo="",
+        ) is None
+        # Con su referencia (BOP-099001) sí es NEON.
+        found2 = find_order_for_invoice(
+            s, serie=2, codigo=260090, referencia="BOP-099001", cliente_codigo="",
+        )
+        assert found2 is not None and found2.id == neon.id
+
+
+def test_preview_by_customer_link_when_serie_unknown(http, session_factory) -> None:
+    """Sin serie guardada ni prefijo de tienda, la empresa del pedido enlazada
+    al CLIFAC de la factura basta para elegir el pedido de Escola (y solo él)."""
+    with session_factory() as s:
+        _seed_homonyms(s, neon_serie=None, flux_prefix=None)
+        _seed_alias(s)
+    with _patched_factusol(_tables_homonimas()):
+        esc = http.get(
+            "/api/erp/factusol/documents/facturas/5/260090/email-preview",
+            headers=auth_headers(http, "pedidos"),
+        ).json()
+    assert esc["to"] == "escola@muntanyeta.cat"
+    assert esc["store"] == "fluxlasers"
+
+
+def test_preview_with_order_id_uses_that_order_and_rejects_foreign(
+    http, session_factory,
+) -> None:
+    """Desde la ficha se pasa `order_id`: el destinatario, la tienda y el nº
+    de pedido son los de ESE pedido; y si la factura no es suya → 409."""
+    with session_factory() as s:
+        neon, escola = _seed_homonyms(s, flux_prefix=None)  # sin prefijo: por nº
+        neon_id, escola_id = neon.id, escola.id
+        _seed_alias(s)
+    with _patched_factusol(_tables_homonimas()):
+        ok = http.get(
+            f"/api/erp/factusol/documents/facturas/5/260090/email-preview?order_id={escola_id}",
+            headers=auth_headers(http, "pedidos"),
+        )
+        bad = http.get(
+            f"/api/erp/factusol/documents/facturas/5/260090/email-preview?order_id={neon_id}",
+            headers=auth_headers(http, "pedidos"),
+        )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["to"] == "escola@muntanyeta.cat"
+    assert ok.json()["order_id"] == escola_id
+    assert ok.json()["store"] == "fluxlasers"
+    assert bad.status_code == 409
+    assert bad.json()["detail"]["code"] == "order_invoice_mismatch"
+
+
+def test_send_with_order_id_records_timeline_on_that_order_only(
+    http, session_factory,
+) -> None:
+    with session_factory() as s:
+        neon, escola = _seed_homonyms(s)
+        neon_id, escola_id = neon.id, escola.id
+        _seed_alias(s)
+    send_patch, _ = _patch_send()
+    with _patched_factusol(_tables_homonimas()), send_patch as mock_send:
+        r = http.post(
+            "/api/erp/factusol/documents/facturas/5/260090/email",
+            json={"confirm": True, "to": ["escola@muntanyeta.cat"],
+                  "subject": "Factura 5-260090", "body_text": "Hola",
+                  "lang": "es", "from_alias": "ventas@bomedia.net",
+                  "order_id": escola_id},
+            headers=auth_headers(http, "pedidos"),
+        )
+        # La factura de NEON (2-260090) desde la ficha de Escola → 409, no envía.
+        bad = http.post(
+            "/api/erp/factusol/documents/facturas/2/260090/email",
+            json={"confirm": True, "to": ["escola@muntanyeta.cat"],
+                  "subject": "s", "body_text": "b", "lang": "es",
+                  "from_alias": "ventas@bomedia.net", "order_id": escola_id},
+            headers=auth_headers(http, "pedidos"),
+        )
+    assert r.status_code == 201, r.text
+    assert bad.status_code == 409
+    assert mock_send.call_count == 1
+    tl_esc = http.get(f"/api/erp/orders/{escola_id}/timeline",
+                      headers=auth_headers(http, "pedidos")).json()
+    tl_neon = http.get(f"/api/erp/orders/{neon_id}/timeline",
+                       headers=auth_headers(http, "pedidos")).json()
+    assert any(e.get("detail", {}).get("factura") == "5-260090" for e in tl_esc["items"])
+    assert not any(e.get("detail", {}).get("factura") for e in tl_neon["items"])
+
+
+def test_preview_flags_customer_mismatch(http, session_factory) -> None:
+    """Si el CLIFAC de la factura no es la empresa del pedido, el preview lo
+    dice (`customer_mismatch`) en vez de callar: el operador revisa el «Para»."""
+    with session_factory() as s:
+        _, escola = _seed_homonyms(s)
+        escola_id = escola.id
+    tables = {"F_FAC": [_fac_muntanyeta(CLIFAC=2999, CNOFAC="NEON LED, S.L.")],
+              "F_LFA": [], "F_ALB": [], "F_FOP": []}
+    with _patched_factusol(tables):
+        pre = http.get(
+            f"/api/erp/factusol/documents/facturas/5/260090/email-preview?order_id={escola_id}",
+            headers=auth_headers(http, "pedidos"),
+        ).json()
+    assert pre["customer_mismatch"] is True
+    assert pre["invoice_customer"] == "NEON LED, S.L."
+    assert pre["to"] == "escola@muntanyeta.cat"  # sigue siendo el del pedido
+
+
+# --- alias send-as: remitente configurado en Ajustes ERP verificado en Gmail ---
+
+
+def test_send_accepts_erp_sender_verified_in_gmail_even_if_hidden(
+    http, session_factory,
+) -> None:
+    """pedidos@streamtec.es no es el email del usuario → el sync lo deja
+    oculto (is_allowed=0). Como es un remitente configurado en Ajustes ERP y
+    Gmail lo tiene como send-as verificado, el ERP lo acepta (y refleja el
+    alias en el espejo local sin hacerlo visible en el compositor)."""
+    with session_factory() as s:
+        _seed_order(s)
+        _seed_alias(s, alias="ventas@bomedia.net")  # el propio; NO streamtec
+    with _patched_factusol(), _gmail_aliases("ventas@bomedia.net", "pedidos@streamtec.es"):
+        pre = http.get(
+            "/api/erp/factusol/documents/facturas/5/260063/email-preview",
+            headers=auth_headers(http, "pedidos"),
+        ).json()
+    assert pre["from_alias"] == "pedidos@streamtec.es"
+    assert pre["from_alias_ok"] is True
+    send_patch, _ = _patch_send()
+    with (_patched_factusol(), _gmail_aliases("pedidos@streamtec.es"),
+          send_patch as mock_send):
+        r = http.post(
+            "/api/erp/factusol/documents/facturas/5/260063/email",
+            json={"confirm": True, "to": ["client@example.fr"],
+                  "subject": "s", "body_text": "b", "lang": "fr",
+                  "from_alias": "pedidos@streamtec.es"},
+            headers=auth_headers(http, "pedidos"),
+        )
+    assert r.status_code == 201, r.text
+    assert mock_send.call_args.kwargs["from_alias"] == "pedidos@streamtec.es"
+    with session_factory() as s:
+        from app.models.crm import User
+        uid = s.query(User).filter_by(email="pedidos@example.com").one().id
+        row = s.query(UserEmailAliasPref).filter_by(
+            user_id=uid, alias_email="pedidos@streamtec.es").one()
+        assert row.is_allowed is False  # espejo, no visible en el compositor
+
+
+def test_send_rejects_erp_sender_not_verified_in_gmail(http, session_factory) -> None:
+    with session_factory() as s:
+        _seed_order(s)
+        _seed_alias(s, alias="ventas@bomedia.net")
+    with _patched_factusol(), _gmail_aliases("ventas@bomedia.net"):
+        pre = http.get(
+            "/api/erp/factusol/documents/facturas/5/260063/email-preview",
+            headers=auth_headers(http, "pedidos"),
+        ).json()
+    assert pre["from_alias_ok"] is False
+    assert pre["from_alias_problem"] == "not_in_gmail"
+    send_patch, _ = _patch_send()
+    with _patched_factusol(), _gmail_aliases("ventas@bomedia.net"), send_patch as mock_send:
+        r = http.post(
+            "/api/erp/factusol/documents/facturas/5/260063/email",
+            json={"confirm": True, "to": ["client@example.fr"],
+                  "subject": "s", "body_text": "b", "lang": "fr",
+                  "from_alias": "pedidos@streamtec.es"},
+            headers=auth_headers(http, "pedidos"),
+        )
+    assert r.status_code == 403
+    assert r.json()["detail"]["code"] == "alias_not_allowed"
+    assert r.json()["detail"]["reason"] == "not_in_gmail"
+    mock_send.assert_not_called()
+
+
+def test_send_rejects_unconfigured_alias_even_if_in_gmail(http, session_factory) -> None:
+    """Un alias que NO está en Ajustes ERP ni en las preferencias del usuario
+    no se acepta aunque Gmail lo tenga: nadie suplanta un alias ajeno."""
+    with session_factory() as s:
+        _seed_order(s)
+        _seed_alias(s, alias="ventas@bomedia.net")
+    send_patch, _ = _patch_send()
+    with (_patched_factusol(), _gmail_aliases("bart@bomedia.net") as gmail,
+          send_patch as mock_send):
+        r = http.post(
+            "/api/erp/factusol/documents/facturas/5/260063/email",
+            json={"confirm": True, "to": ["client@example.fr"],
+                  "subject": "s", "body_text": "b", "lang": "fr",
+                  "from_alias": "bart@bomedia.net"},
+            headers=auth_headers(http, "pedidos"),
+        )
+    assert r.status_code == 403
+    assert r.json()["detail"]["reason"] == "alias_not_allowed"
+    gmail.assert_not_called()
+    mock_send.assert_not_called()
+
+
+def test_hidden_mirror_row_allows_erp_sender_when_gmail_unavailable(
+    http, session_factory,
+) -> None:
+    """Si Gmail no responde, vale el espejo local del sync aunque el alias
+    esté oculto (is_allowed=0): lo puso ahí el propio sync desde Gmail."""
+    from app.integrations.gmail.service import GmailNotConnectedError
+    from app.models.crm import User
+
+    with session_factory() as s:
+        _seed_order(s)
+        uid = s.query(User).filter_by(email="pedidos@example.com").one().id
+        s.add(UserEmailAliasPref(user_id=uid, alias_email="pedidos@streamtec.es",
+                                 is_allowed=False))
+        s.commit()
+    down = patch("app.integrations.gmail.service.list_aliases",
+                 side_effect=GmailNotConnectedError("no"))
+    send_patch, _ = _patch_send()
+    with _patched_factusol(), down, send_patch as mock_send:
+        r = http.post(
+            "/api/erp/factusol/documents/facturas/5/260063/email",
+            json={"confirm": True, "to": ["client@example.fr"],
+                  "subject": "s", "body_text": "b", "lang": "fr",
+                  "from_alias": "pedidos@streamtec.es"},
+            headers=auth_headers(http, "pedidos"),
+        )
+    assert r.status_code == 201, r.text
+    mock_send.assert_called_once()
+
+
+# --- diagnóstico solo lectura ------------------------------------------------
+
+
+def test_diagnose_invoice_link_reports_old_vs_new(session_factory) -> None:
+    from app.erp.invoice_email_diag import diagnose_invoice_link, format_report
+
+    with session_factory() as s:
+        _seed_homonyms(s)
+        client = FakeClient(_tables_homonimas())
+        diag = diagnose_invoice_link(s, client, serie=5, codigo=260090, ejercicio="2026")
+        assert diag["factura"]["cliente_codigo"] == "3001"
+        assert diag["empresa_crm"]["nombre"] == "Escola La Muntanyeta"
+        assert {c["order_number"] for c in diag["candidatos"]} == {"BOPRIN-99001", "FLUXLA-5784"}
+        verdicts = {c["order_number"]: c["veredicto"] for c in diag["candidatos"]}
+        assert verdicts["BOPRIN-99001"].startswith("DESCARTADO")
+        assert diag["antiguo"] == "BOPRIN-99001"   # lo que devolvía la búsqueda por nº
+        assert diag["nuevo"] == "FLUXLA-5784"
+        assert diag["destinatario"] == "escola@muntanyeta.cat"
+        report = format_report(diag)
+        assert "FLE-005784" in report and "escola@muntanyeta.cat" in report
+        # Nada escrito en FACTUSOL: solo lecturas.
+        assert all(t in ("F_FAC", "F_LFA") for t, _ in client.calls)
