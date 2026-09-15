@@ -70,7 +70,6 @@ ACTION_LABELS: dict[str, str] = {
     "crear_envio": "Preparar envío",
     "enviar_sat": "Enviar a SAT",
     "marcar_completado": "Marcar completado",
-    "mapear_lineas": "Mapear líneas",
     "vincular_empresa": "Vincular empresa a FACTUSOL",
     "revisar_incidencia": "Revisar incidencia",
     "crear_albaran": "Crear albarán en FACTUSOL",
@@ -159,25 +158,13 @@ def order_alerts(
     `ctx` evita el N+1 de la bandeja (empresas y excepciones en dos queries)."""
     alerts: list[dict[str, Any]] = []
 
-    # 1) Líneas sin mapear a artículo de FACTUSOL: la factura saldría sin el
-    #    CODART interno. Solo cuenta en pedidos aún no facturados.
-    sin_mapear = [
-        line for line in order.lines
-        if not (line.product_codart or "").strip()
-        and not getattr(line, "is_shipping", False)
-        and (line.product_sku or "").strip()
-    ]
-    if sin_mapear and not is_invoiced(order):
-        n = len(sin_mapear)
-        alerts.append(_alert(
-            "lineas_sin_mapear",
-            f"{n} línea{'s' if n > 1 else ''} sin mapear a artículo de FACTUSOL.",
-            action="mapear_lineas", blocking=True,
-        ))
+    # El mapeo de líneas a artículo de FACTUSOL NO cuenta para el flujo: una
+    # línea sin CODART se emite como texto libre (ERP-E2-fix1), así que ni es
+    # incidencia, ni cola, ni acción, ni bloqueo.
 
     company = _company_of(session, order, ctx)
 
-    # 2) Empresa sin vincular a cliente de F_CLI: sin CODCLI no hay albarán ni
+    # 1) Empresa sin vincular a cliente de F_CLI: sin CODCLI no hay albarán ni
     #    factura posibles para ese cliente.
     if company is not None and not (company.factusol_company_id or ""):
         alerts.append(_alert(
@@ -186,7 +173,7 @@ def order_alerts(
             action="vincular_empresa", blocking=True,
         ))
 
-    # 3) Régimen de IVA del cliente: un intracomunitario / exportación factura
+    # 2) Régimen de IVA del cliente: un intracomunitario / exportación factura
     #    SIN IVA. Informativo, pero es lo que evita una factura mal emitida.
     #    Fase VIES: si VIES dice que el NIF-IVA NO es válido no se puede
     #    eximir → incidencia BLOQUEANTE (se facturaría mal el IVA); si aún no

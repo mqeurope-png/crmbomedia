@@ -264,6 +264,14 @@ def test_crear_albaran_manual_linea_texto_libre(http, session_factory, engine) -
     assert lineas[2]["TOTLAL"] == 40.0                          # 2 × 40 con 50 % dto.
     (cab,) = _written(fake, "F_ALB")
     assert cab["NET1ALB"] == 140.0 and cab["TOTALB"] == 169.4
+    # El mapeo no cuenta para el flujo: la línea de texto libre no convierte el
+    # pedido en incidencia ni pide «Mapear líneas»; su acción es la del estado.
+    from app.erp.workflow import order_workflow  # noqa: PLC0415
+
+    with session_factory() as s:
+        wf = order_workflow(s, s.get(Order, "o-2"))
+    assert "lineas_sin_mapear" not in [a["code"] for a in wf["alerts"]]
+    assert wf["next_action"] != "mapear_lineas" and wf["blocked"] is False
 
 
 def test_crear_albaran_idempotente(http, session_factory, engine) -> None:

@@ -102,11 +102,12 @@ const C = order({
   contact_name: "Eduard Riera", company_name: null, total_amount: 60.5,
   workflow: wf({
     queue: "incidencias", queue_label: "Incidencias", blocked: true,
-    next_action: "mapear_lineas", next_action_label: "Mapear líneas",
-    next_action_hint: "1 línea sin mapear a artículo de FACTUSOL.",
+    next_action: "vincular_empresa", next_action_label: "Vincular empresa a FACTUSOL",
+    next_action_hint: "«Riera SL» no está vinculada a un cliente de FACTUSOL.",
     alerts: [{
-      code: "lineas_sin_mapear", text: "1 línea sin mapear a artículo de FACTUSOL.",
-      action: "mapear_lineas", action_label: "Mapear líneas", blocking: true,
+      code: "empresa_sin_vincular",
+      text: "«Riera SL» no está vinculada a un cliente de FACTUSOL.",
+      action: "vincular_empresa", action_label: "Vincular empresa a FACTUSOL", blocking: true,
     }],
   }),
 });
@@ -180,9 +181,12 @@ describe("ERP · Bandeja de trabajo (rediseño de flujo)", () => {
     // Incidencia bloqueante: la tarjeta se marca y la acción es resolverla.
     const c = row("PRO-3");
     expect(c.className).toContain("is-alert");
-    expect(within(c).getByText(/1 línea sin mapear/)).toBeInTheDocument();
-    expect(within(c).getByRole("link", { name: "Mapear líneas PRO-3" })).toBeInTheDocument();
+    expect(within(c).getByText(/no está vinculada a un cliente de FACTUSOL/)).toBeInTheDocument();
+    expect(within(c).getByRole("link", { name: "Vincular empresa a FACTUSOL PRO-3" })).toBeInTheDocument();
     expect(within(c).getByText("manual")).toBeInTheDocument();
+    // El mapeo de líneas ya no existe en el flujo: ni aviso ni botón.
+    expect(screen.queryByText(/sin mapear/)).toBeNull();
+    expect(screen.queryByRole("link", { name: /Mapear líneas/ })).toBeNull();
   });
 
   it("la acción que la bandeja sabe hacer se dispara sin salir (registrar cobro) y no se repite en el menú", async () => {
