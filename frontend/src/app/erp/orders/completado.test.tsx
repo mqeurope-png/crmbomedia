@@ -27,6 +27,7 @@ jest.mock("../../lib/erpApi", () => ({
   excludeSeguimiento: jest.fn(),
   includeSeguimiento: jest.fn(),
   previewExcludeSeguimiento: jest.fn(),
+  getErpSettings: jest.fn(() => Promise.resolve({})),
 }));
 
 function order(over = {}) {
@@ -62,6 +63,8 @@ const DONE = order({
 });
 
 beforeEach(() => {
+  // La bandeja recuerda los últimos filtros: cada test parte de cero.
+  window.localStorage.clear();
   (listOrders as jest.Mock).mockReset();
   (listOrders as jest.Mock).mockResolvedValue(page([order()]));
   (completeOrder as jest.Mock).mockReset();
@@ -117,10 +120,11 @@ describe("ERP · Pedidos (bandeja) — marcar completado", () => {
     await user.click(screen.getByRole("button", { name: "Marcar completado BOPRIN-99930" }));
     expect(confirm).not.toHaveBeenCalled();
     await waitFor(() => expect(completeOrder).toHaveBeenCalledWith("o-1"));
-    // Tras recargar: badge «Completado» (con quién) y botón «Desmarcar».
-    expect(await screen.findByText("Completado")).toHaveAttribute(
+    // Tras recargar: la pastilla «Completado» en verde (con quién) y botón «Desmarcar».
+    expect(await screen.findByLabelText("Completado: sí")).toHaveAttribute(
       "title", expect.stringMatching(/por Bart/),
     );
+    expect(screen.getByLabelText("Completado: sí")).toHaveClass("is-on");
     await abrirMenu(user, "BOPRIN-99930");
     await user.click(screen.getByRole("button", { name: "Desmarcar completado BOPRIN-99930" }));
     await waitFor(() => expect(uncompleteOrder).toHaveBeenCalledWith("o-1"));

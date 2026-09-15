@@ -429,8 +429,19 @@ export async function uncancelOrder(orderId: string): Promise<OrderDetail & { al
   return apiFetch(`/api/erp/orders/${orderId}/uncancel`, { method: "POST" });
 }
 
-export async function listPendingApproval(): Promise<PendingOrder[]> {
-  const r = await apiFetch<{ items: PendingOrder[] }>("/api/erp/orders/pending-approval");
+/** Lote B8: filtros ligeros de la Cola PEDIDOS — tienda por slug y orden por
+ *  fecha (ascendente por defecto: lo más antiguo primero). */
+export type PendingApprovalFilters = {
+  store_slug?: string;
+  sort?: "placed_asc" | "placed_desc";
+};
+
+export async function listPendingApproval(
+  filters: PendingApprovalFilters = {},
+): Promise<PendingOrder[]> {
+  const r = await apiFetch<{ items: PendingOrder[] }>(
+    `/api/erp/orders/pending-approval${qs(filters)}`,
+  );
   return r.items;
 }
 

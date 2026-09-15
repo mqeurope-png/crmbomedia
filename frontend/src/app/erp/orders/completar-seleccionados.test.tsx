@@ -35,6 +35,7 @@ jest.mock("../../lib/erpApi", () => ({
   includeSeguimiento: jest.fn(),
   previewExcludeSeguimiento: jest.fn(),
   refreshOrdersFactusolCobro: jest.fn(),
+  getErpSettings: jest.fn(() => Promise.resolve({})),
 }));
 
 function order(over = {}) {
@@ -86,11 +87,18 @@ function row(number: string) {
 }
 
 beforeEach(() => {
+  // La bandeja recuerda los últimos filtros: cada test parte de cero.
+  window.localStorage.clear();
   (listOrders as jest.Mock).mockReset();
   (listOrders as jest.Mock).mockResolvedValue(page([A, B, C]));
   (completeOrdersBulk as jest.Mock).mockReset();
   jest.restoreAllMocks();
 });
+
+/** La pastilla «Completado» de la fila (verde = sí, gris = no). */
+function completado(number: string) {
+  return within(row(number)).getByLabelText(/^Completado: /);
+}
 
 describe("ERP · Bandeja — «Completar seleccionados (N)» junto a «Quitar de la bandeja»", () => {
   it("aparece con la selección, confirma con el recuento y los sin factura, marca en lote y repinta las filas sin recargar", async () => {
@@ -116,9 +124,10 @@ describe("ERP · Bandeja — «Completar seleccionados (N)» junto a «Quitar de
     expect(confirm).toHaveBeenCalledWith(expect.stringMatching(/1 aún sin facturar/));
     expect(confirm).toHaveBeenCalledWith(expect.stringMatching(/WooCommerce no cambia/));
     await waitFor(() => expect(completeOrdersBulk).toHaveBeenCalledWith(["o-1", "o-2"]));
-    // Las filas afectadas se repintan con el badge, sin recargar la bandeja.
-    await waitFor(() => expect(within(row("BOPRIN-99930")).getByText("Completado")).toBeInTheDocument());
-    expect(within(row("BOPRIN-99931")).getByText("Completado")).toBeInTheDocument();
+    // Las filas afectadas se repintan con la pastilla en verde, sin recargar la bandeja.
+    await waitFor(() => expect(completado("BOPRIN-99930")).toHaveAttribute("aria-label", "Completado: sí"));
+    expect(completado("BOPRIN-99931")).toHaveAttribute("aria-label", "Completado: sí");
+    expect(completado("BOPRIN-99931")).toHaveClass("is-on");
     expect((listOrders as jest.Mock).mock.calls.length).toBe(calls);
     const status = screen.getByRole("status");
     expect(status).toHaveTextContent("2 pedido(s) marcado(s) como completado(s)");
@@ -137,7 +146,7 @@ describe("ERP · Bandeja — «Completar seleccionados (N)» junto a «Quitar de
     await user.click(screen.getByLabelText("Seleccionar todo"));
     await user.click(screen.getByRole("button", { name: "Completar seleccionados (3)" }));
     expect(completeOrdersBulk).not.toHaveBeenCalled();
-    expect(within(row("BOPRIN-99930")).queryByText("Completado")).toBeNull();
+    expect(completado("BOPRIN-99930")).toHaveAttribute("aria-label", "Completado: no");
   });
 
   it("«seleccionar todo» con uno ya completado: idempotente, la confirmación lo dice y el resumen lo cuenta aparte", async () => {
@@ -172,8 +181,8 @@ describe("ERP · Bandeja — «Completar seleccionados (N)» junto a «Quitar de
     const status = await screen.findByRole("status");
     expect(status).toHaveTextContent("1 pedido(s) marcado(s) como completado(s)");
     expect(status).toHaveTextContent("No se pudo completar 1: BOPRIN-99931: fallo simulado al guardar");
-    expect(within(row("BOPRIN-99930")).getByText("Completado")).toBeInTheDocument();
-    expect(within(row("BOPRIN-99931")).queryByText("Completado")).toBeNull();
+    expect(completado("BOPRIN-99930")).toHaveAttribute("aria-label", "Completado: sí");
+    expect(completado("BOPRIN-99931")).toHaveAttribute("aria-label", "Completado: no");
     expect(document.querySelector(".form-error")).toBeNull();   // no es un error rojo
   });
 });

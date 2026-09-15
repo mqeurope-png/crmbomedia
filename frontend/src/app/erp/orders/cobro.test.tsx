@@ -53,6 +53,7 @@ jest.mock("../../lib/erpApi", () => ({
   includeSeguimiento: jest.fn(),
   previewExcludeSeguimiento: jest.fn(),
   refreshOrdersFactusolCobro: jest.fn(),
+  getErpSettings: jest.fn(() => Promise.resolve({})),
 }));
 
 function order(over = {}) {
@@ -109,6 +110,8 @@ function row(number: string) {
 }
 
 beforeEach(() => {
+  // La bandeja recuerda los últimos filtros: cada test parte de cero.
+  window.localStorage.clear();
   (listOrders as jest.Mock).mockReset();
   (listOrders as jest.Mock).mockResolvedValue(page(ROWS));
   (refreshOrdersFactusolCobro as jest.Mock).mockReset();
@@ -118,14 +121,23 @@ describe("ERP · Bandeja — cobro FACTUSOL por fila, filtro, botón y TOTAL con
   it("test_bandeja_indicador_cobro_factusol: la fila enseña el estado FACTUSOL (cobrado / pendiente / nada) separado del «Pagado» del CRM", async () => {
     render(<ErpOrdersPage />);
     await screen.findByText("BOPRIN-99930");
+    // A: cobrada en FACTUSOL (pastilla verde) aunque el CRM diga «Pendiente»
+    // (pastilla «Pagado» gris + el badge con el motivo).
     const a = row("BOPRIN-99930");
-    expect(within(a).getByText("Cobrado FACTUSOL")).toBeInTheDocument();
+    expect(within(a).getByLabelText("Cobro registrado: sí")).toHaveClass("is-on");
+    expect(within(a).getByLabelText("Pagado: no")).toHaveClass("is-off");
     expect(within(a).getByText("pending")).toBeInTheDocument();          // PAGO del CRM
+    // B: el CRM dice «Pagado», pero el cobro NO está en FACTUSOL: pastilla
+    // gris y el badge de detalle (pendiente de cobro).
     const b = row("BOPRIN-99931");
     expect(within(b).getByText("Pendiente de cobro FACTUSOL")).toBeInTheDocument();
-    expect(within(b).getByText("paid")).toBeInTheDocument();             // PAGO del CRM
+    expect(within(b).getByLabelText("Cobro registrado: no")).toHaveClass("is-off");
+    expect(within(b).getByLabelText("Pagado: sí")).toHaveClass("is-on");   // PAGO del CRM
+    expect(within(b).queryByText("paid")).toBeNull();   // ya lo dice la pastilla
+    // C: sin factura → nada de FACTUSOL.
     const c = row("BOPRIN-99932");
     expect(within(c).queryByText(/FACTUSOL/)).toBeNull();
+    expect(within(c).getByLabelText("Facturado: no")).toBeInTheDocument();
   });
 
   it("test_bandeja_total_con_iva: la columna TOTAL pinta el importe final que manda el backend (con IVA)", async () => {
@@ -171,7 +183,8 @@ describe("ERP · Bandeja — cobro FACTUSOL por fila, filtro, botón y TOTAL con
       .toHaveTextContent("MODAL COBRO o-2 BOPRIN-99931");
     const calls = (listOrders as jest.Mock).mock.calls.length;
     await user.click(screen.getByRole("button", { name: "done" }));
-    await waitFor(() => expect(within(row("BOPRIN-99931")).getByText("Cobrado FACTUSOL")).toBeInTheDocument());
+    await waitFor(() => expect(within(row("BOPRIN-99931")).getByLabelText("Cobro registrado: sí")).toBeInTheDocument());
+    expect(within(row("BOPRIN-99931")).queryByText("Pendiente de cobro FACTUSOL")).toBeNull();
     await abrirMenu(user, "BOPRIN-99931");
     expect(screen.getByRole("button", { name: "Registrar cobro BOPRIN-99931" })).toBeDisabled();
     expect((listOrders as jest.Mock).mock.calls.length).toBe(calls);   // sin recargar la bandeja
@@ -194,7 +207,7 @@ describe("ERP · Bandeja — cobro FACTUSOL por fila, filtro, botón y TOTAL con
     const calls = (listOrders as jest.Mock).mock.calls.length;
     await user.click(screen.getByRole("button", { name: "Actualizar cobros FACTUSOL" }));
     await waitFor(() => expect(refreshOrdersFactusolCobro).toHaveBeenCalledWith());
-    await waitFor(() => expect(within(row("BOPRIN-99931")).getByText("Cobrado FACTUSOL")).toBeInTheDocument());
+    await waitFor(() => expect(within(row("BOPRIN-99931")).getByLabelText("Cobro registrado: sí")).toBeInTheDocument());
     expect(screen.getByRole("status")).toHaveTextContent("comprobado en 2 pedido(s)");
     expect((listOrders as jest.Mock).mock.calls.length).toBe(calls);
   });

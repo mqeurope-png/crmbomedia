@@ -687,6 +687,21 @@ def _manual_packing_json(payload: OrderCreate) -> str | None:
     return json.dumps(data) if data else None
 
 
+def _where_store_slug(stmt, store_slug: str | None):  # noqa: ANN001, ANN201 — Select[Order]
+    """Tienda por SLUG (`account_id` de la cuenta Woo: artisjet / boprint /
+    fluxlasers…), sin distinguir mayúsculas. Lo usan la bandeja y la Cola
+    PEDIDOS."""
+    if not store_slug:
+        return stmt
+    from app.models.integration_settings import IntegrationAccount  # noqa: PLC0415
+
+    return stmt.where(Order.store_id.in_(
+        select(IntegrationAccount.id).where(
+            func.lower(IntegrationAccount.account_id) == store_slug.strip().lower()
+        )
+    ))
+
+
 @router.get("")
 def list_orders(
     payment: str | None = Query(default=None),
@@ -731,14 +746,7 @@ def list_orders(
     stmt = select(Order)
     if company_id:
         stmt = stmt.where(Order.company_id == company_id)
-    if store_slug:
-        from app.models.integration_settings import IntegrationAccount  # noqa: PLC0415
-
-        stmt = stmt.where(Order.store_id.in_(
-            select(IntegrationAccount.id).where(
-                func.lower(IntegrationAccount.account_id) == store_slug.strip().lower()
-            )
-        ))
+    stmt = _where_store_slug(stmt, store_slug)
     if invoiced is True:
         stmt = stmt.where(or_(
             Order.factusol_invoice_number.isnot(None),
@@ -794,38 +802,51 @@ def list_orders(
         "total_desc": Order.total_amount.desc(),
         "created_desc": Order.created_at.desc(),
     }.get(sort, Order.placed_at.desc())
+    # Lote B7: la cola se decide en Python (`workflow`), así que el `limit`
+    # se aplica DESPUÉS de elegir cola — antes se recortaban 100 filas y luego
+    # se filtraba, y una cola con muchos pedidos salía incompleta. Se cargan
+    # todas las filas filtradas, se calcula el workflow de todas (los
+    # contadores son de TODO lo filtrado, para que las pastillas de cola no
+    # cambien al elegir una), se filtra por cola y solo entonces se recorta.
     rows = list(session.scalars(
-        stmt.options(selectinload(Order.lines)).order_by(order_by).limit(limit)
+        stmt.options(selectinload(Order.lines)).order_by(order_by)
     ))
-    names = customer_names(session, rows)
     # Rediseño de flujo: el bloque `workflow` (cola + siguiente acción +
     # alertas) lo calcula el backend UNA vez y lo consumen igual la bandeja y
-    # la ficha. Los contadores son de TODO lo filtrado, para que las pastillas
-    # de cola no cambien al elegir una.
+    # la ficha.
     from app.erp.workflow import queue_counts, workflows_for  # noqa: PLC0415
 
     flows = workflows_for(session, rows)
     counts = queue_counts(flows)
+    if queue:
+        rows = [o for o in rows if flows[o.id]["queue"] == queue]
+    rows = rows[:limit]
+    names = customer_names(session, rows)
     items = [
         {**_serialise_summary(o, names.get(o.id)), "workflow": flows[o.id]}
         for o in rows
     ]
-    if queue:
-        items = [i for i in items if i["workflow"]["queue"] == queue]
     return {"items": items, "queue_counts": counts, "queue": queue}
 
 
 @router.get("/pending-approval")
 def pending_approval(
+    # Lote B8: filtros ligeros de la Cola PEDIDOS — tienda por slug y orden
+    # por fecha (ascendente por defecto: lo más antiguo primero, como siempre).
+    store_slug: str | None = Query(default=None, max_length=64),
+    sort: str = Query(default="placed_asc", pattern="^(placed_asc|placed_desc)$"),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_view),
 ) -> dict[str, Any]:
     """Cola PEDIDOS: pendientes de revisión con sus bloqueos calculados."""
     _ = current_user
+    stmt = _where_store_slug(
+        worklist_visible(select(Order).where(Order.preparation_status == "pending_review")),
+        store_slug,
+    )
     rows = list(session.scalars(
-        worklist_visible(select(Order).where(Order.preparation_status == "pending_review"))
-        .options(selectinload(Order.lines))
-        .order_by(Order.placed_at.asc())
+        stmt.options(selectinload(Order.lines))
+        .order_by(Order.placed_at.desc() if sort == "placed_desc" else Order.placed_at.asc())
     ))
     names = customer_names(session, rows)
     return {
