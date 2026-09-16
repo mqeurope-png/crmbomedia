@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { extractErrorMessage } from "../../lib/errors";
 import { updateSeguimientoFields, type SeguimientoFieldsPatch } from "../../lib/erpApi";
 
@@ -10,11 +10,14 @@ import { updateSeguimientoFields, type SeguimientoFieldsPatch } from "../../lib/
  *  - «Observaciones del comercial»: si hay nota, es lo primero que se lee.
  *    Va arriba y en ámbar; si no hay, el bloque no aparece.
  *  - Datos técnicos (nº de serie, licencia WhiteRIP): se teclean o se cotejan
- *    con el equipo físico, así que van grandes (`--fs-tech`), en monoespaciada
- *    y cada uno en su caja con botón de copiar de 36 px y confirmación
- *    visible («Copiado»). En la card la caja se pinta siempre (con «—» si no
- *    hay dato) para que el layout no baile; en la lista compacta se omite.
- *  - Origen del envío (OFI-TER-SAT) como pastilla.
+ *    con el equipo físico, así que van en monoespaciada con botón de copiar de
+ *    36 px y confirmación visible («Copiado»). Lote 5 · #1: en la card son
+ *    COMPACTOS y opcionales — vacío + editable enseña solo un chip «+ …» que
+ *    abre el campo; con valor, el valor en línea + «Editar». La lista compacta
+ *    omite lo que no tenga valor.
+ *  - Origen del envío (OFI-TER-SAT) como pastilla: Lote 5 · #2 solo se pinta si
+ *    el llamante pasa `origin` (lo hace el modo trabajo); las cards y la lista
+ *    de la Cola SAT ya no lo muestran.
  *
  *  Los usan las dos cards, la fila de la vista lista y el modo trabajo. */
 
@@ -146,27 +149,31 @@ export function SatObservaciones({ notes }: { notes: string | null | undefined }
 
 /** Lote 3 · Cola SAT — habilita la edición inline de los datos técnicos SIN
  *  salir de la cola. Se pasa a `SatTechData` como prop `edit`: si falta, la
- *  vista es de solo lectura (la de siempre). `orderId` para el PATCH,
- *  `origins` para el desplegable de origen (mismo catálogo que la ficha) y
- *  `onSaved` recibe los tres campos ya guardados (actualización optimista). */
+ *  vista es de solo lectura (la de siempre). `orderId` para el PATCH y
+ *  `onSaved` recibe los campos ya guardados (actualización optimista). */
 export type SatTechEdit = {
   orderId: string;
-  origins?: string[];
   onSaved?: (patch: SeguimientoFieldsPatch) => void;
 };
 
-/** Caja de dato técnico editable (nº de serie / licencia WhiteRIP): mismo
- *  aspecto que `SatTechField` con un botón «Editar»; al pulsarlo, campo de
- *  texto con «Guardar» / «Cancelar» (Enter guarda, Esc cancela). Conserva el
- *  botón «copiar». Guarda solo su campo con `updateSeguimientoFields`. */
+/** Dato técnico editable (nº de serie / licencia WhiteRIP), COMPACTO y
+ *  colapsable (Lote 5 · #1): ocupa poco en la card.
+ *   - vacío: solo un chip «+ Nº serie» / «+ WhiteRIP» que, al pulsarlo, abre
+ *     el campo (colapsado por defecto: no hay caja grande con «—»);
+ *   - con valor: valor en línea + «copiar» + un «Editar» pequeño;
+ *   - en edición: campo de texto con «Guardar» / «Cancelar» (Enter guarda, Esc
+ *     cancela).
+ *  Guarda solo su campo con `updateSeguimientoFields` y conserva el «copiar». */
 function SatTechEditBox({
   label,
+  shortLabel,
   value,
   what,
   field,
   edit,
 }: {
   label: string;
+  shortLabel: string;
   value: string | null | undefined;
   what: string;
   field: "serial_number" | "whiterip_license";
@@ -207,10 +214,10 @@ function SatTechEditBox({
     }
   }
 
-  return (
-    <div className="sat-tech-box">
-      <span className="sat-tech-label">{label}</span>
-      {editing ? (
+  if (editing) {
+    return (
+      <div className="sat-tech-item is-editing">
+        <span className="sat-tech-label">{label}</span>
         <div className="sat-tech-edit">
           <input
             className="sat-tech-input"
@@ -231,120 +238,56 @@ function SatTechEditBox({
             Cancelar
           </button>
         </div>
-      ) : (
-        <div className="sat-tech-row">
-          <span className="sat-tech-value">{v || "—"}</span>
-          <span className="sat-tech-actions">
-            {v ? <SatCopyButton value={v} what={what} /> : null}
-            <button
-              type="button"
-              className="sat-tech-edit-btn"
-              aria-label={`Editar ${what}`}
-              title={`Editar ${what}`}
-              onClick={start}
-            >
-              ✎
-            </button>
-          </span>
-        </div>
-      )}
-      {error ? <span className="form-error small" role="alert">{error}</span> : null}
-    </div>
-  );
-}
-
-/** Origen del envío editable: pastilla + «Editar»; al pulsarlo, combobox con
- *  el catálogo de orígenes (`<input list>` + `<datalist>`, igual que la
- *  ficha) para elegir uno o escribir otro. */
-function SatOriginEdit({ value, edit }: { value: string | null | undefined; edit: SatTechEdit }) {
-  const v = (value ?? "").trim();
-  const listId = useId();
-  const origins = edit.origins ?? [];
-  const [editing, setEditing] = useState(false);
-  // El borrador se siembra con el valor actual al entrar en edición (start).
-  const [draft, setDraft] = useState(v);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  function start() {
-    setDraft(v);
-    setError(null);
-    setEditing(true);
+        {error ? <span className="form-error small" role="alert">{error}</span> : null}
+      </div>
+    );
   }
-  function cancel() {
-    setEditing(false);
-    setError(null);
+  if (!v) {
+    // Vacío + editable: solo el chip para añadirlo (colapsado por defecto).
+    return (
+      <div className="sat-tech-item is-empty">
+        <button
+          type="button"
+          className="sat-tech-add"
+          aria-label={`Añadir ${what}`}
+          title={`Añadir ${what}`}
+          onClick={start}
+        >
+          + {shortLabel}
+        </button>
+      </div>
+    );
   }
-  async function save() {
-    const next = draft.trim();
-    if (next === v) {
-      setEditing(false);
-      return;
-    }
-    setSaving(true);
-    setError(null);
-    try {
-      const r = await updateSeguimientoFields(edit.orderId, { shipping_origin: next });
-      edit.onSaved?.(r);
-      setEditing(false);
-    } catch (e) {
-      setError(extractErrorMessage(e, "No se pudo guardar."));
-    } finally {
-      setSaving(false);
-    }
-  }
-
+  // Con valor: compacto (valor + copiar + «Editar»).
   return (
-    <span className="sat-origin">
-      <span className="sat-tech-label">Origen</span>
-      {editing ? (
-        <span className="sat-origin-edit">
-          <input
-            className="sat-tech-input"
-            aria-label="Editar origen del envío"
-            list={listId}
-            value={draft}
-            disabled={saving}
-            autoFocus
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") { e.preventDefault(); void save(); }
-              else if (e.key === "Escape") { e.preventDefault(); cancel(); }
-            }}
-          />
-          <datalist id={listId}>
-            {origins.map((o) => <option key={o} value={o} />)}
-          </datalist>
-          <button type="button" className="button small" disabled={saving} onClick={save}>
-            {saving ? "Guardando…" : "Guardar"}
-          </button>
-          <button type="button" className="button secondary small" disabled={saving} onClick={cancel}>
-            Cancelar
-          </button>
-          {error ? <span className="form-error small" role="alert">{error}</span> : null}
-        </span>
-      ) : (
-        <>
-          <span className="sat-origin-pill">{v || "—"}</span>
+    <div className="sat-tech-item">
+      <span className="sat-tech-label">{label}</span>
+      <div className="sat-tech-row">
+        <span className="sat-tech-value">{v}</span>
+        <span className="sat-tech-actions">
+          <SatCopyButton value={v} what={what} />
           <button
             type="button"
             className="sat-tech-edit-btn"
-            aria-label="Editar origen del envío"
-            title="Editar origen del envío"
+            aria-label={`Editar ${what}`}
+            title={`Editar ${what}`}
             onClick={start}
           >
             ✎
           </button>
-        </>
-      )}
-    </span>
+        </span>
+      </div>
+      {error ? <span className="form-error small" role="alert">{error}</span> : null}
+    </div>
   );
 }
 
 /** Datos técnicos del pedido (nº de serie · licencia WhiteRIP · origen).
  *  `compact` (fila de la lista): solo lo que tenga valor, en cuerpo.
  *  `edit` (Lote 3): habilita la edición inline en la cola (nunca en `compact`;
- *  la lista sigue siendo de consulta). Sin `edit`, todo es de solo lectura. */
+ *  la lista sigue siendo de consulta). Sin `edit`, todo es de solo lectura.
+ *  Lote 5 · #2: el origen SOLO se pinta si se pasa `origin` (lo hace el modo
+ *  trabajo); las cards y la lista de la Cola SAT ya no lo pasan → no se ve. */
 export function SatTechData({
   serial,
   license,
@@ -354,24 +297,27 @@ export function SatTechData({
 }: {
   serial: string | null | undefined;
   license: string | null | undefined;
-  origin: string | null | undefined;
+  origin?: string | null | undefined;
   compact?: boolean;
   edit?: SatTechEdit;
 }) {
   const s = (serial ?? "").trim();
   const l = (license ?? "").trim();
   const o = (origin ?? "").trim();
-  if (compact && !s && !l && !o) return null;
+  const showOrigin = origin !== undefined;
+  if (compact && !s && !l && !(showOrigin && o)) return null;
   const editable = Boolean(edit) && !compact;
   if (editable && edit) {
     return (
-      <div className="sat-tech">
-        <SatTechEditBox label="Nº de serie" value={s} what="nº de serie" field="serial_number" edit={edit} />
+      <div className="sat-tech sat-tech-edit-list">
         <SatTechEditBox
-          label="Licencia WhiteRIP" value={l} what="licencia WhiteRIP"
+          label="Nº de serie" shortLabel="Nº serie" value={s} what="nº de serie"
+          field="serial_number" edit={edit}
+        />
+        <SatTechEditBox
+          label="Licencia WhiteRIP" shortLabel="WhiteRIP" value={l} what="licencia WhiteRIP"
           field="whiterip_license" edit={edit}
         />
-        <SatOriginEdit value={o} edit={edit} />
       </div>
     );
   }
@@ -381,7 +327,7 @@ export function SatTechData({
       {!compact || l ? (
         <SatTechField label="Licencia WhiteRIP" value={l} what="licencia WhiteRIP" />
       ) : null}
-      <SatOriginPill value={o} compact={compact} />
+      {showOrigin ? <SatOriginPill value={o} compact={compact} /> : null}
     </div>
   );
 }

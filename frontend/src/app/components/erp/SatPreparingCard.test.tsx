@@ -45,7 +45,8 @@ function order(over: Partial<SatQueueItem> = {}): SatQueueItem {
     total_amount: 100, currency: "EUR", lines: [],
     has_albaran: false, albaran_source: null, has_albaran_file: false,
     albaran_file_source: null, is_web_order: false, woo_albaran_available: false,
-    woo_albaran_unavailable_reason: null, has_etiqueta: false, ...over,
+    woo_albaran_unavailable_reason: null, has_etiqueta: false,
+    placed_at: "2026-09-01T10:00:00+00:00", ...over,
   };
 }
 
@@ -115,28 +116,31 @@ describe("SatPreparingCard · Lote 2 PR-2", () => {
     await user.click(screen.getByRole("button", { name: "Copiar nº de serie" }));
     expect(writeText).toHaveBeenCalledWith("FLX-7741-2026");
     expect(await screen.findByText("Copiado")).toBeInTheDocument();
-    // La caja de licencia se pinta igual (layout estable) con «—» y sin botón.
+    // Solo lectura (sin canEdit): la licencia vacía sigue con su «—».
     expect(screen.getByText("Licencia WhiteRIP")).toBeInTheDocument();
     expect(screen.getByText("—")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Copiar licencia WhiteRIP" })).not.toBeInTheDocument();
-    expect(screen.getByText("SAT")).toHaveClass("sat-origin-pill");
+    // Lote 5 · #2: el origen ya NO se pinta en la card (aunque el pedido lo tenga).
+    expect(screen.queryByText("SAT")).not.toBeInTheDocument();
+    expect(screen.queryByText("Origen")).not.toBeInTheDocument();
     // Copiar no navega ni dispara el albarán.
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
-  // --- Lote 3: edición inline de los datos técnicos sin salir de la cola -----
+  // --- Lote 5 · #1: nº de serie / WhiteRIP compactos y colapsables -----------
 
-  it("edición inline del nº de serie: PATCH del campo y valor actualizado (canEdit)", async () => {
+  it("vacío + canEdit: solo el chip «+», que al pulsarlo abre el campo (colapsado por defecto)", async () => {
     const user = userEvent.setup();
     mockUpdateSeg.mockResolvedValue({
       serial_number: "FLX-NEW", whiterip_license: null, shipping_origin: null,
     });
-    render(
-      <SatPreparingCard
-        order={order({ serial_number: null })} onChanged={() => {}} canEdit origins={["OFI", "SAT"]}
-      />,
-    );
-    await user.click(screen.getByRole("button", { name: "Editar nº de serie" }));
+    render(<SatPreparingCard order={order({ serial_number: null })} onChanged={() => {}} canEdit />);
+    // Colapsado: no hay campo ni «—»; solo el chip para añadirlo.
+    expect(screen.queryByRole("textbox", { name: "Editar nº de serie" })).not.toBeInTheDocument();
+    const add = screen.getByRole("button", { name: "Añadir nº de serie" });
+    expect(add).toHaveClass("sat-tech-add");
+    await user.click(add);
+    // Ahora sí aparece el campo.
     await user.type(screen.getByRole("textbox", { name: "Editar nº de serie" }), "FLX-NEW");
     await user.click(screen.getByRole("button", { name: "Guardar" }));
     await waitFor(() =>
@@ -147,25 +151,11 @@ describe("SatPreparingCard · Lote 2 PR-2", () => {
     expect(screen.getByRole("button", { name: "Copiar nº de serie" })).toBeInTheDocument();
   });
 
-  it("edición inline del origen: combobox con el catálogo y PATCH shipping_origin", async () => {
-    const user = userEvent.setup();
-    mockUpdateSeg.mockResolvedValue({
-      serial_number: null, whiterip_license: null, shipping_origin: "SAT",
-    });
-    render(
-      <SatPreparingCard
-        order={order()} onChanged={() => {}} canEdit origins={["OFI", "TER", "SAT"]}
-      />,
-    );
-    await user.click(screen.getByRole("button", { name: "Editar origen del envío" }));
-    const input = screen.getByRole("combobox", { name: "Editar origen del envío" });
-    expect(input).toHaveAttribute("list"); // desplegable del catálogo de orígenes
-    await user.type(input, "SAT");
-    await user.click(screen.getByRole("button", { name: "Guardar" }));
-    await waitFor(() =>
-      expect(mockUpdateSeg).toHaveBeenCalledWith("o1", { shipping_origin: "SAT" }),
-    );
-    expect(await screen.findByText("SAT")).toHaveClass("sat-origin-pill");
+  it("con valor + canEdit: valor compacto + «Editar» (no un chip de añadir)", async () => {
+    render(<SatPreparingCard order={order({ serial_number: "FLX-1" })} onChanged={() => {}} canEdit />);
+    expect(screen.getByText("FLX-1")).toHaveClass("sat-tech-value");
+    expect(screen.getByRole("button", { name: "Editar nº de serie" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Añadir nº de serie" })).not.toBeInTheDocument();
   });
 
   it("«Cancelar» descarta el cambio sin llamar al PATCH", async () => {
@@ -213,9 +203,25 @@ describe("SatPreparingCard", () => {
         onChanged={() => {}}
       />,
     );
-    expect(screen.getByText("Ana Pi · Duplicoder SL")).toBeInTheDocument();
+    // Lote 5 · #5 — el cliente se lee con claridad en la cabecera.
+    const customer = screen.getByText("Ana Pi · Duplicoder SL");
+    expect(customer).toHaveClass("sat-card-customer");
     // El número sigue visible (es lo que escanea el operativo).
     expect(screen.getByText("BOP-1")).toBeInTheDocument();
+  });
+
+  it("Lote 5 · #4 — la fecha del pedido (dd/mm/aaaa) y el importe se ven en la cabecera", () => {
+    const { container } = render(
+      <SatPreparingCard
+        order={order({ placed_at: "2026-09-01T10:00:00+00:00", total_amount: 100 })}
+        onChanged={() => {}}
+      />,
+    );
+    const date = container.querySelector(".sat-card-date");
+    expect(date).not.toBeNull();
+    expect(date).toHaveTextContent(/\d{1,2}\/\d{1,2}\/\d{4}/);
+    // El importe se mantiene.
+    expect(container.querySelector(".sat-card-amount")).toHaveTextContent("100.00 EUR");
   });
 
   it("sin cliente no pinta la línea de cliente", () => {

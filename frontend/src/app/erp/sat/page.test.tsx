@@ -48,6 +48,8 @@ jest.mock("../../lib/erpApi", () => ({
   updateSeguimientoFields: jest.fn(),
   // Lote 4 · #5: subir la etiqueta desde la cola (mismo helper que la ficha).
   uploadShippingFile: jest.fn(),
+  // Lote 5 · #3: guardar el nº de seguimiento desde «Listos».
+  setOrderTracking: jest.fn(),
 }));
 
 const mockQueue = getSatQueue as jest.Mock;
@@ -316,7 +318,8 @@ describe("SatQueuePage (Lote B6)", () => {
     expect(within(rows[2]).getByRole("link", { name: "BOP-1" })).toBeInTheDocument();
     expect(within(rows[2]).getByText("FLX-7741-2026")).toHaveClass("sat-tech-value");
     expect(within(rows[2]).getByRole("button", { name: "Copiar nº de serie" })).toBeInTheDocument();
-    expect(within(rows[2]).getByText("SAT")).toHaveClass("sat-origin-pill");
+    // Lote 5 · #2: el origen ya no se pinta en la lista, aunque el pedido lo tenga.
+    expect(within(rows[2]).queryByText("SAT")).not.toBeInTheDocument();
     // En la lista compacta lo vacío no se pinta (la licencia no sale).
     expect(within(rows[2]).queryByText("Licencia WhiteRIP")).not.toBeInTheDocument();
     // Sin datos ni nota: «—» en la celda y ninguna fila de observaciones.
@@ -412,8 +415,9 @@ describe("SatQueuePage (Lote B6)", () => {
     });
     render(<SatQueuePage />);
     await loaded(1, 0);
-    // La card (rol pedidos → canEdit) ofrece editar el nº de serie sin salir.
-    await user.click(screen.getByRole("button", { name: "Editar nº de serie" }));
+    // La card (rol pedidos → canEdit) ofrece añadir el nº de serie sin salir
+    // (Lote 5 · #1: vacío → chip «+», que abre el campo colapsado).
+    await user.click(screen.getByRole("button", { name: "Añadir nº de serie" }));
     await user.type(screen.getByRole("textbox", { name: "Editar nº de serie" }), "FLX-9999");
     await user.click(screen.getByRole("button", { name: "Guardar" }));
     await waitFor(() =>

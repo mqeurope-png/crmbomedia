@@ -395,6 +395,9 @@ def sat_queue(
             "serial_number": _clean(o.serial_number),
             "whiterip_license": _clean(o.whiterip_license),
             "shipping_origin": _clean(o.shipping_origin),
+            # Lote 5 · #3 — nº de seguimiento guardado del pedido, para que la
+            # casilla de tracking de «Listos» aparezca precargada si ya existe.
+            "tracking_number": _clean(o.tracking_number),
             "notes": _clean(o.notes),
         }
 

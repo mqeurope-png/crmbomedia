@@ -8,6 +8,7 @@ import {
   listShippingFiles,
   markPickedUp,
   openShippingFile,
+  setOrderTracking,
   uploadShippingFile,
   type SatQueueItem,
   type SeguimientoFieldsPatch,
@@ -15,6 +16,7 @@ import {
 } from "../../lib/erpApi";
 import { FileUploadButton } from "./FileUploadButton";
 import { SatAlbaranChip, useSatAlbaranAction } from "./SatPreparingCard";
+import { satShortDate } from "./SatQueueTable";
 import { SatObservaciones, SatTechData, type SatTechEdit } from "./SatTechData";
 
 /** Acciones de un pedido «listo para envío», compartidas por la card y por la
@@ -191,6 +193,72 @@ export function SatReadyButtons({
   );
 }
 
+/** Lote 5 · #3 — Nº de SEGUIMIENTO (tracking) de un pedido «listo»: se rellena
+ *  y se GUARDA sin marcar el pedido recogido ni enviado (solo persiste el
+ *  tracking para más tarde). Se siembra del pedido (`tracking_number`), se
+ *  edita, se guarda con `setOrderTracking` (muestra «✓ Guardado») y al terminar
+ *  refresca la cola (`onChanged`). Va junto a los chips de albarán/etiqueta en
+ *  la card y en la fila de la vista lista. */
+export function SatTrackingField({
+  order,
+  onChanged,
+  compact = false,
+}: {
+  order: SatQueueItem;
+  onChanged: () => void;
+  compact?: boolean;
+}) {
+  const [value, setValue] = useState(order.tracking_number ?? "");
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save() {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await setOrderTracking(order.id, value.trim() || null);
+      setValue(r.tracking_number ?? "");
+      setSaved(true);
+      onChanged();
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudo guardar el nº de seguimiento."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className={`sat-tracking${compact ? " is-compact" : ""}`}>
+      <span className="sat-tech-label">Nº de seguimiento</span>
+      <div className="sat-tracking-row">
+        <input
+          type="text"
+          className="sat-tracking-input"
+          aria-label="Nº de seguimiento"
+          placeholder="Nº de seguimiento"
+          value={value}
+          maxLength={64}
+          disabled={busy}
+          onChange={(e) => { setValue(e.target.value); setSaved(false); }}
+          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void save(); } }}
+        />
+        <button
+          type="button"
+          className={`button small${saved ? " secondary" : ""}`}
+          aria-label="Guardar nº de seguimiento"
+          disabled={busy}
+          onClick={save}
+        >
+          {busy ? "Guardando…" : saved ? "✓ Guardado" : "Guardar"}
+        </button>
+      </div>
+      {error ? <span className="form-error small" role="alert">{error}</span> : null}
+    </div>
+  );
+}
+
 /** Card de «🚚 Listos para envío» (Lote 2 · PR-2, revisión de diseño §8):
  *  pedido embalado pendiente de imprimir albarán/etiqueta y marcar recogido.
  *  Mismo orden de lectura que «Por embalar» (observaciones del comercial en
@@ -202,30 +270,31 @@ export function SatReadyCard({
   order,
   onChanged,
   canEdit = false,
-  origins,
 }: {
   order: SatQueueItem;
   onChanged: () => void;
   /** Lote 3: habilita la edición inline de los datos técnicos (admin/pedidos). */
   canEdit?: boolean;
-  /** Catálogo de orígenes del envío para el desplegable (mismo que la ficha). */
-  origins?: string[];
 }) {
   const actions = useSatReadyActions(order, onChanged);
   // Lote 3: actualización optimista de los campos de seguimiento tras editar.
   const [seg, setSeg] = useState<SeguimientoFieldsPatch | null>(null);
   const serial = seg ? seg.serial_number : order.serial_number;
   const license = seg ? seg.whiterip_license : order.whiterip_license;
-  const origin = seg ? seg.shipping_origin : order.shipping_origin;
   const edit: SatTechEdit | undefined = canEdit
-    ? { orderId: order.id, origins, onSaved: setSeg }
+    ? { orderId: order.id, onSaved: setSeg }
     : undefined;
 
   return (
     <article className="sat-card sat-ready-card" aria-label={`Pedido ${order.order_number}`}>
       <div className="sat-card-top">
         <span className="sat-card-num">{order.order_number}</span>
-        <span className="muted small mono">
+        {/* Lote 5 · #4 — fecha del pedido bien visible en la cabecera. */}
+        <span className="sat-card-date mono">{satShortDate(order.placed_at)}</span>
+      </div>
+      {/* Lote 5 · #4 — importe (se mantiene). */}
+      <div className="sat-card-meta">
+        <span className="sat-card-amount mono">
           {order.total_amount.toFixed(2)} {order.currency}
         </span>
       </div>
@@ -233,7 +302,7 @@ export function SatReadyCard({
         <div className="sat-card-customer">{customerLabel(order)}</div>
       ) : null}
       <SatObservaciones notes={order.notes} />
-      <SatTechData serial={serial} license={license} origin={origin} edit={edit} />
+      <SatTechData serial={serial} license={license} edit={edit} />
 
       {actions.error ? <p className="form-error">{actions.error}</p> : null}
 
@@ -244,6 +313,8 @@ export function SatReadyCard({
         <div className="sat-card-actions-secondary">
           <SatReadyDocChips order={order} actions={actions} size="lg" />
         </div>
+        {/* Lote 5 · #3 — nº de seguimiento, junto a la etiqueta. */}
+        <SatTrackingField order={order} onChanged={onChanged} />
         <div className="sat-card-actions-tertiary">
           <SatReopenButton actions={actions} />
         </div>

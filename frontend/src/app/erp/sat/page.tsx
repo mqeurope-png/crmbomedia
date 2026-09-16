@@ -89,8 +89,6 @@ export default function SatQueuePage() {
   const [qInput, setQInput] = useState("");
   const [q, setQ] = useState("");
   const [stores, setStores] = useState<{ slug: string; label: string }[]>([]);
-  // Lote 3: catálogo de orígenes del envío para editar el campo inline en la cola.
-  const [origins, setOrigins] = useState<string[]>([]);
 
   // El buscador se aplica con un pequeño retardo para no pedir la cola en
   // cada tecla (la tablet del taller va por wifi).
@@ -140,14 +138,12 @@ export default function SatQueuePage() {
     getCurrentUser()
       .then((u) => setCanEdit(Boolean(u && (ERP_EDIT_ROLES as readonly string[]).includes(u.role))))
       .catch(() => setCanEdit(false));
-    // Tiendas (filtro) y orígenes (edición inline) son best-effort: sin ellos
-    // el filtro no sale y el origen se edita como texto libre.
+    // Tiendas (filtro) best-effort: sin ellas el filtro no sale.
     getErpSettings()
       .then((s) => {
         setStores((s.woocommerce_stores ?? []).map((w) => ({ slug: w.slug, label: w.label })));
-        setOrigins(s.shipping_origins ?? []);
       })
-      .catch(() => { setStores([]); setOrigins([]); });
+      .catch(() => { setStores([]); });
   }, []);
 
   // --- cola ------------------------------------------------------------------
@@ -352,7 +348,7 @@ export default function SatQueuePage() {
               <div className="sat-cards">
                 {preparing.map((o) => (
                   <SatPreparingCard key={o.id} order={o} onChanged={refreshAll}
-                                    canEdit={canEdit} origins={origins} />
+                                    canEdit={canEdit} />
                 ))}
               </div>
             )}
@@ -375,7 +371,7 @@ export default function SatQueuePage() {
               <div className="sat-cards">
                 {ready.map((o) => (
                   <SatReadyCard key={o.id} order={o} onChanged={refreshAll}
-                                canEdit={canEdit} origins={origins} />
+                                canEdit={canEdit} />
                 ))}
               </div>
             )}
@@ -407,7 +403,7 @@ export default function SatQueuePage() {
                   <div className="sat-cards sat-cards--single">
                     {preparing.map((o) => (
                       <SatPreparingCard key={o.id} order={o} onChanged={refreshAll}
-                                        canEdit={canEdit} origins={origins} />
+                                        canEdit={canEdit} />
                     ))}
                   </div>
                 )}
@@ -427,7 +423,7 @@ export default function SatQueuePage() {
                   <div className="sat-cards sat-cards--single">
                     {ready.map((o) => (
                       <SatReadyCard key={o.id} order={o} onChanged={refreshAll}
-                                    canEdit={canEdit} origins={origins} />
+                                    canEdit={canEdit} />
                     ))}
                   </div>
                 )}

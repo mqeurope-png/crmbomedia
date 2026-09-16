@@ -10,6 +10,7 @@ import {
   markPickedUp,
   openShippingFile,
   saveBlob,
+  setOrderTracking,
   uploadShippingFile,
 } from "../../lib/erpApi";
 
@@ -30,6 +31,7 @@ jest.mock("../../lib/erpApi", () => ({
   markPickedUp: jest.fn(),
   openShippingFile: jest.fn(),
   saveBlob: jest.fn(),
+  setOrderTracking: jest.fn(),
   uploadShippingFile: jest.fn(),
   STATUS_LABELS: {},
 }));
@@ -41,6 +43,7 @@ const mockOpen = openShippingFile as jest.Mock;
 const mockFactusolPdf = downloadOrderFactusolAlbaranPdf as jest.Mock;
 const mockSave = saveBlob as jest.Mock;
 const mockUpload = uploadShippingFile as jest.Mock;
+const mockSetTracking = setOrderTracking as jest.Mock;
 
 /** Pedido MANUAL embalado con albarán subido a mano y etiqueta. */
 function order(over: Partial<SatQueueItem> = {}): SatQueueItem {
@@ -52,7 +55,7 @@ function order(over: Partial<SatQueueItem> = {}): SatQueueItem {
     has_albaran: true, albaran_source: "file", has_albaran_file: true,
     albaran_file_source: "manual_upload", is_web_order: false,
     woo_albaran_available: false, woo_albaran_unavailable_reason: null,
-    has_etiqueta: true, ...over,
+    has_etiqueta: true, placed_at: "2026-09-01T10:00:00+00:00", ...over,
   };
 }
 
@@ -80,6 +83,7 @@ beforeEach(() => {
   mockFactusolPdf.mockReset();
   mockSave.mockReset();
   mockUpload.mockReset();
+  mockSetTracking.mockReset();
   mockList.mockResolvedValue([]);
 });
 
@@ -257,10 +261,56 @@ describe("SatReadyCard", () => {
     const reopen = screen.getByRole("button", { name: "Reabrir preparación" });
     expect(reopen).toHaveClass("button", "tertiary", "lg");
     expect(reopen.closest(".sat-card-actions-tertiary")).not.toBeNull();
-    // Sin nota, sin bloque; las cajas técnicas quedan con «—».
+    // Sin nota, sin bloque; las cajas técnicas (solo lectura) quedan con «—».
+    // Lote 5 · #2: ya no hay origen, así que solo dos «—» (nº serie y licencia).
     rerender(<SatReadyCard order={order()} onChanged={() => {}} />);
     expect(screen.queryByRole("note")).not.toBeInTheDocument();
-    expect(screen.getAllByText("—")).toHaveLength(3);
+    expect(screen.getAllByText("—")).toHaveLength(2);
     Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
+  });
+
+  // --- Lote 5 · #2/#4/#5: sin origen, fecha y cliente visibles ---------------
+
+  it("#2 · no pinta «Origen» en la card aunque el pedido lo tenga", () => {
+    render(<SatReadyCard order={order({ shipping_origin: "SAT" })} onChanged={() => {}} />);
+    expect(screen.queryByText("Origen")).not.toBeInTheDocument();
+    expect(screen.queryByText("SAT")).not.toBeInTheDocument();
+    expect(screen.queryByText(/sat-origin/)).not.toBeInTheDocument();
+  });
+
+  it("#4/#5 · la fecha (dd/mm/aaaa), el importe y el cliente se ven en la cabecera", () => {
+    const { container } = render(
+      <SatReadyCard
+        order={order({ contact_name: "Ana Pi", company_name: "Duplicoder SL",
+                       placed_at: "2026-09-01T10:00:00+00:00", total_amount: 100 })}
+        onChanged={() => {}}
+      />,
+    );
+    expect(container.querySelector(".sat-card-date")).toHaveTextContent(/\d{1,2}\/\d{1,2}\/\d{4}/);
+    expect(container.querySelector(".sat-card-amount")).toHaveTextContent("100.00 EUR");
+    expect(screen.getByText("Ana Pi · Duplicoder SL")).toHaveClass("sat-card-customer");
+  });
+
+  // --- Lote 5 · #3: nº de seguimiento en «Listos» ----------------------------
+
+  it("#3 · guarda el nº de seguimiento con setOrderTracking y refleja el valor guardado", async () => {
+    mockSetTracking.mockResolvedValue({ id: "o1", tracking_number: "TRACK-123" });
+    const onChanged = jest.fn();
+    const user = userEvent.setup();
+    render(<SatReadyCard order={order()} onChanged={onChanged} />);
+    const input = screen.getByLabelText("Nº de seguimiento");
+    await user.type(input, "TRACK-123");
+    await user.click(screen.getByRole("button", { name: "Guardar nº de seguimiento" }));
+    await waitFor(() => expect(mockSetTracking).toHaveBeenCalledWith("o1", "TRACK-123"));
+    // Refresca la cola y muestra el estado guardado.
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    expect(input).toHaveValue("TRACK-123");
+    expect(await screen.findByRole("button", { name: "Guardar nº de seguimiento" }))
+      .toHaveTextContent("Guardado");
+  });
+
+  it("#3 · prellena el nº de seguimiento que ya tenía el pedido", () => {
+    render(<SatReadyCard order={order({ tracking_number: "PREV-9" })} onChanged={() => {}} />);
+    expect(screen.getByLabelText("Nº de seguimiento")).toHaveValue("PREV-9");
   });
 });

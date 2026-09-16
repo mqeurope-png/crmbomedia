@@ -2142,6 +2142,31 @@ def update_seguimiento_fields(
     }
 
 
+class OrderTrackingIn(BaseModel):
+    """Lote 5 · Cola SAT — nº de seguimiento del transportista, editable desde
+    la card de «Listos». Vacío / solo espacios → se limpia (null)."""
+
+    tracking_number: str | None = Field(default=None, max_length=64)
+
+
+@router.patch("/{order_id}/tracking")
+def update_order_tracking(
+    order_id: str,
+    payload: OrderTrackingIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> dict[str, Any]:
+    """Lote 5 — guarda el nº de seguimiento del pedido sin marcarlo recogido ni
+    enviado: solo persiste el tracking para más tarde. Gate de VISTA (mismo que
+    «Marcar recogido»), para que el taller / SAT pueda rellenarlo. Recorta y,
+    vacío, lo deja en null."""
+    _ = current_user
+    order = _get_order(session, order_id)
+    order.tracking_number = (payload.tracking_number or "").strip() or None
+    session.commit()
+    return {"id": order.id, "tracking_number": order.tracking_number}
+
+
 @router.get("/{order_id}/factusol-invoice-ref")
 def order_factusol_invoice_ref(
     order_id: str,

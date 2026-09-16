@@ -1158,6 +1158,9 @@ export type SatQueueItem = {
   /** Lote B6: tienda (slug) y fecha del pedido, para la vista lista. */
   store_slug?: string | null;
   placed_at?: string | null;
+  /** Lote 5 · #3 — nº de seguimiento del transportista (se rellena y guarda
+   *  desde la card de «Listos» con `setOrderTracking`). */
+  tracking_number?: string | null;
   /** Lote 2 · PR-2: lo que el taller lee de pie. Campos de seguimiento de la
    *  ficha (ERP-F6), solo lectura en la cola; el backend ya los recorta y
    *  manda null si están vacíos. `notes` = observaciones del comercial (va
@@ -3750,5 +3753,18 @@ export async function completeOrderFactusolCustomer(
   return apiFetch(`/api/erp/orders/${encodeURIComponent(orderId)}/factusol-customer`, {
     method: "POST",
     body: JSON.stringify({ confirm: true, ...fields }),
+  });
+}
+
+/** Lote 5 · #3 — guarda el nº de seguimiento del pedido (Cola SAT «Listos»).
+ *  Solo persiste el tracking: NO marca el pedido recogido ni enviado. Gate de
+ *  VISTA (mismo que «Marcar recogido»), así que el taller/SAT puede rellenarlo.
+ *  Vacío → null. */
+export async function setOrderTracking(
+  orderId: string, tracking: string | null,
+): Promise<{ id: string; tracking_number: string | null }> {
+  return apiFetch(`/api/erp/orders/${orderId}/tracking`, {
+    method: "PATCH",
+    body: JSON.stringify({ tracking_number: tracking }),
   });
 }
