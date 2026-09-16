@@ -24,6 +24,7 @@ import {
   createFactusolCustomer,
   createFactusolCustomerAndLink,
   createOrder,
+  FACTUSOL_SERIES,
   getFactusolQuote,
   linkFactusolCustomer,
   listFactusolDocuments,
@@ -181,6 +182,10 @@ export default function NewManualOrderPage() {
   const [contactId, setContactId] = useState<string | null>(null);
   const [placedAt, setPlacedAt] = useState(today());
   const [taxId, setTaxId] = useState("");
+  // Lote 7 · P1: serie (empresa emisora) del pedido MANUAL. Por defecto 5
+  // (Streamtec, el default de `resolve_serie`). Solo se envía en el alta
+  // manual (con documento FACTUSOL de origen la serie la hereda el documento).
+  const [factusolSerie, setFactusolSerie] = useState<number>(5);
   const [notes, setNotes] = useState("");
   const [lines, setLines] = useState<DocumentLine[]>([emptyDocumentLine()]);
   // Portes del pedido: se mandan como su propia LÍNEA (`is_shipping`), igual
@@ -834,6 +839,10 @@ export default function NewManualOrderPage() {
           forma_pago: payment.forma_pago ?? facPreview.forma_pago,
           forma_pago_nombre: payment.forma_pago_nombre ?? facPreview.forma_pago_nombre,
         } : undefined,
+        // Lote 7 · P1: serie (empresa emisora) elegida a mano. Solo en el alta
+        // MANUAL: con documento FACTUSOL de origen la serie la hereda el
+        // documento (no se manda).
+        factusol_serie: facPreview ? undefined : factusolSerie,
         // Fase 2: paso de pago (opción B) + albarán en FACTUSOL, solo si el
         // pedido parte de un documento de FACTUSOL.
         payment: facPreview ? payment : undefined,
@@ -1068,6 +1077,26 @@ export default function NewManualOrderPage() {
                 <input type="text" value={taxId}
                        onChange={(e) => setTaxId(e.target.value)} />
               </label>
+              {/* Lote 7 · P1: serie (empresa emisora) con la que sale el
+                  albarán —y luego la proforma / factura— del pedido. Solo en el
+                  alta MANUAL: con un documento FACTUSOL de origen la serie la
+                  hereda el documento. */}
+              {!facPreview ? (
+                <label className="field">
+                  <span>Serie (empresa emisora)</span>
+                  <select
+                    aria-label="Serie del pedido"
+                    value={factusolSerie}
+                    onChange={(e) => setFactusolSerie(Number(e.target.value))}
+                  >
+                    {FACTUSOL_SERIES.map((s) => (
+                      <option key={s.value} value={s.value}>
+                        {s.value} · {s.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
             </div>
 
             {/* Fase 1 — crear el pedido desde un documento que ya existe en

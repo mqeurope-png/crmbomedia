@@ -143,6 +143,21 @@ export type OrderSummary = {
   workflow?: OrderWorkflow;
 };
 
+/** Lote 7 · P1 — series (empresas emisoras) que se eligen a mano en un pedido
+ *  manual: manda en `resolve_serie` (albarán y luego proforma / factura). */
+export const FACTUSOL_SERIES: readonly { value: number; label: string }[] = [
+  { value: 1, label: "Bomedia" },
+  { value: 2, label: "MQ Europe" },
+  { value: 4, label: "Lambert" },
+  { value: 5, label: "Streamtec" },
+] as const;
+
+/** Nombre de una serie (empresa emisora), o el número si no se reconoce. */
+export function factusolSerieLabel(serie: number | null | undefined): string {
+  if (serie == null) return "—";
+  return FACTUSOL_SERIES.find((s) => s.value === serie)?.label ?? String(serie);
+}
+
 export type Blocker = { code: string; detail: string };
 /** B-2-fix4: aviso NO bloqueante (misma forma que Blocker). */
 export type Warning = { code: string; detail: string };
@@ -217,6 +232,10 @@ export type OrderDetail = OrderSummary & {
    *  indicador «Factura enviada al cliente el DD/MM/AAAA» de la línea de vida. */
   invoice_emailed_at?: string | null;
   invoice_emailed_to?: string[];
+  /** Lote 7 · P1: serie (empresa emisora) elegida a mano para el pedido
+   *  (1 Bomedia / 2 MQ Europe / 4 Lambert / 5 Streamtec), o null. La ficha la
+   *  enseña y ofrece «Cambiar serie» en los pedidos manuales. */
+  factusol_manual_serie?: number | null;
 };
 
 export type FactusolOriginDocument = {
@@ -958,6 +977,10 @@ export type OrderCreatePayload = {
   shipping_name?: string | null;
   /** Fase 1: el alta parte de un presupuesto / pedido de cliente de FACTUSOL. */
   factusol_source?: FactusolSourceInput | null;
+  /** Lote 7 · P1: serie (empresa emisora) elegida a mano — solo en el alta
+   *  MANUAL (con `factusol_source` la serie la hereda el documento). 1 Bomedia
+   *  / 2 MQ Europe / 4 Lambert / 5 Streamtec. */
+  factusol_serie?: number | null;
   /** Fase 2 (solo con `factusol_source`): paso de pago y albarán en FACTUSOL. */
   payment?: PaymentIntentInput | null;
   create_albaran?: boolean;
@@ -3810,5 +3833,24 @@ export async function createOrderFromDocumentType(
       contact_id: opts.contact_id ?? undefined,
       create_albaran: false,
     }),
+  });
+}
+
+/** Lote 7 · P1 — cambia la SERIE (empresa emisora) de un pedido MANUAL. Manda
+ *  en `resolve_serie`, así que todo lo que BoHub emita desde el pedido sale en
+ *  esa empresa. Si el pedido YA tiene albarán, el backend encola en el worker
+ *  serial el borrado del albarán viejo y su re-creación en la serie nueva
+ *  (`factusol_serie_job_id`; se sigue con `getQuoteJobStatus`); sin albarán,
+ *  solo registra la serie. 409 si ya tiene FACTURA (se anula desde FACTUSOL) o
+ *  si es un pedido web. `confirm` obligatorio. */
+export async function changeOrderFactusolSerie(
+  orderId: string, serie: number,
+): Promise<OrderDetail & {
+  factusol_serie_job_id?: string | null;
+  requested_serie?: number;
+}> {
+  return apiFetch(`/api/erp/orders/${encodeURIComponent(orderId)}/factusol-serie`, {
+    method: "POST",
+    body: JSON.stringify({ serie, confirm: true }),
   });
 }

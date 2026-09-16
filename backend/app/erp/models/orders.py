@@ -207,6 +207,15 @@ class Order(TimestampMixin, Base):
         String(32), index=True,
     )
 
+    # Lote 7 · P1 — SERIE (empresa emisora) elegida a mano para un pedido
+    # MANUAL: 1 Bomedia / 2 MQ Europe / 4 Lambert / 5 Streamtec. Se fija al
+    # crear el pedido y se puede cambiar desde la ficha (borra y recrea el
+    # albarán en la serie nueva). Manda en `service.resolve_serie` por encima
+    # del `by_source`/default, así que TODO documento que BoHub emita desde el
+    # pedido (albarán, y luego proforma / factura) sale en esta serie. NULL =
+    # sin elección explícita (los web/F_PCL heredan su `TIPPCL`, nunca esto).
+    factusol_manual_serie: Mapped[int | None] = mapped_column(Integer)
+
     # Cobro manual (F-4-B desde la app). El pedido solo guarda el CODFAC de su
     # factura; la SERIE (TIPFAC, clave compuesta) se resuelve una vez y se
     # guarda aquí. El estado de cobro EN FACTUSOL («cobrada» = ESTFAC=2 /

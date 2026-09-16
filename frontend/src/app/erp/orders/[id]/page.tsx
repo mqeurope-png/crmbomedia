@@ -6,6 +6,7 @@ import {
   Suspense, useCallback, useEffect, useState, useSyncExternalStore, type ReactNode,
 } from "react";
 import { PageHeader } from "../../../components/PageHeader";
+import { ChangeSerieModal } from "./ChangeSerieModal";
 import { CancelOrderModal } from "../../../components/erp/CancelOrderModal";
 import { EmbalarModal } from "../../../components/erp/EmbalarModal";
 import { PDF_LANGS } from "../../../components/erp/FactusolDocumentDetailModal";
@@ -30,6 +31,7 @@ import { usePersistentState } from "../../../lib/usePersistentState";
 import {
   completeOrder,
   customerLabel,
+  factusolSerieLabel,
   downloadFactusolDocumentPdf,
   downloadOrderFactusolPedidoPdf,
   getErpSettings,
@@ -210,6 +212,8 @@ function ErpOrderDetailScreen() {
   // «Anular pedido» (manual / FACTUSOL): modal con aviso previo; «Restaurar».
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelBusy, setCancelBusy] = useState(false);
+  // Lote 7 · P1 — «Cambiar serie» (empresa emisora) de un pedido manual.
+  const [serieOpen, setSerieOpen] = useState(false);
   // ERP · envío del PEDIDO por email (SAT / taller): modal + petición de crear
   // el albarán cuando el aviso del modal lo ofrece.
   const [orderEmailOpen, setOrderEmailOpen] = useState(false);
@@ -474,6 +478,9 @@ function ErpOrderDetailScreen() {
 
   const wf = order.workflow ?? null;
   const isWeb = order.external_source === "woocommerce";
+  // Lote 7 · P1: la serie (empresa emisora) se elige a mano solo en los
+  // pedidos MANUALES (los web/F_PCL heredan su serie de FACTUSOL).
+  const isManual = order.external_source === "manual";
   const hasInvoice = !!order.factusol_invoice_number;
   const invoiced = hasInvoice
     || factusolStatus?.status === "invoiced"
@@ -989,6 +996,34 @@ function ErpOrderDetailScreen() {
               {order.factusol_albaran_number || (isWeb ? "lo crea WooCommerce" : "—")}
             </span>
           </div>
+          {/* Lote 7 · P1: serie (empresa emisora) del pedido manual y «Cambiar
+              serie» (borra y recrea el albarán en la serie nueva; con factura
+              emitida el backend lo rechaza). */}
+          {isManual ? (
+            <div className="erp-flow-kv">
+              <span className="k">Serie</span>
+              <div className="v erp-flow-kv-actions">
+                <span>
+                  {order.factusol_manual_serie
+                    ? `${order.factusol_manual_serie} · ${factusolSerieLabel(order.factusol_manual_serie)}`
+                    : "sin fijar"}
+                </span>
+                {canEmit ? (
+                  <button
+                    type="button"
+                    className="button small secondary"
+                    disabled={hasInvoice}
+                    title={hasInvoice
+                      ? "Con factura emitida la serie se cambia anulando la factura desde FACTUSOL"
+                      : "Cambia la empresa emisora del pedido (borra y recrea el albarán en la serie nueva)"}
+                    onClick={() => setSerieOpen(true)}
+                  >
+                    Cambiar serie
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
           <div className="erp-flow-kv">
             <span className="k">Factura</span>
             <div className="v erp-flow-kv-actions">
@@ -1112,6 +1147,16 @@ function ErpOrderDetailScreen() {
           orderId={order.id}
           orderNumber={order.order_number}
           onClose={() => setCancelOpen(false)}
+          onDone={() => { void load(); }}
+        />
+      ) : null}
+      {serieOpen ? (
+        <ChangeSerieModal
+          orderId={order.id}
+          orderNumber={order.order_number}
+          currentSerie={order.factusol_manual_serie ?? null}
+          albaranNumber={order.factusol_albaran_number ?? null}
+          onClose={() => setSerieOpen(false)}
           onDone={() => { void load(); }}
         />
       ) : null}

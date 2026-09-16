@@ -14,14 +14,14 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.errors import not_found
 from app.db.session import get_session
 from app.erp.api.deps import require_erp_approve, require_erp_edit, require_erp_view
-from app.erp.factusol_albaran import PaymentIn
+from app.erp.factusol_albaran import MANUAL_SERIES, PaymentIn
 from app.erp.models import (
     ErpException,
     ExceptionStatus,
@@ -118,11 +118,28 @@ class OrderCreate(BaseModel):
     shipping_name: str | None = Field(default=None, max_length=120)
     # Fase 1: origen FACTUSOL (presupuesto / pedido de cliente) del alta manual.
     factusol_source: FactusolSourceIn | None = None
+    # Lote 7 · P1 — SERIE (empresa emisora) elegida a mano para el pedido:
+    # 1 Bomedia / 2 MQ Europe / 4 Lambert / 5 Streamtec. Solo tiene sentido en
+    # el alta MANUAL (sin `factusol_source`): manda en `resolve_serie` para que
+    # su albarán —y luego proforma / factura— salgan en esa empresa. None = sin
+    # elección (cae al `by_source`/default como hasta ahora).
+    factusol_serie: int | None = None
     # Fase 2 (solo con `factusol_source`): paso de confirmación de pago
     # (opción B: se apunta; el cobro se registra a mano con «Registrar
     # cobro») y creación del albarán en FACTUSOL (encolada en `factusol:writes`).
     payment: PaymentIn | None = None
     create_albaran: bool = True
+
+    @field_validator("factusol_serie")
+    @classmethod
+    def _valid_serie(cls, v: int | None) -> int | None:
+        # Lote 7 · P1: la serie manual, si viene, es una empresa emisora real.
+        if v is not None and v not in MANUAL_SERIES:
+            raise ValueError(
+                f"Serie no válida: {v} (usa una de {MANUAL_SERIES}: "
+                "1 Bomedia / 2 MQ Europe / 4 Lambert / 5 Streamtec)."
+            )
+        return v
 
     @model_validator(mode="after")
     def _require_customer(self) -> OrderCreate:
@@ -321,6 +338,10 @@ def _serialise_detail(session: Session, o: Order, actor: User) -> dict[str, Any]
         # #8 — último envío de la factura por email al cliente (evento
         # `erp.invoice_emailed`): cuándo y a quién. Solo en el detalle.
         **_invoice_emailed(session, o),
+        # Lote 7 · P1: serie (empresa emisora) elegida a mano para el pedido
+        # (1 Bomedia / 2 MQ Europe / 4 Lambert / 5 Streamtec) o null. La ficha
+        # la enseña y ofrece «Cambiar serie» en los pedidos manuales.
+        "factusol_manual_serie": o.factusol_manual_serie,
         "notes": o.notes,
         "packing": json.loads(o.packing_json) if o.packing_json else None,
         # Rediseño de flujo: mismo bloque que la bandeja — la ficha pinta con
@@ -637,6 +658,9 @@ def create_order(
         packing_json=_manual_packing_json(payload),
         # Lote B3a: destinatario del envío si no es la empresa (dropshipping).
         shipping_name=(payload.shipping_name or "").strip() or None,
+        # Lote 7 · P1: serie (empresa emisora) elegida a mano. Solo en el alta
+        # MANUAL: con `factusol_source` la serie la hereda el documento origen.
+        factusol_manual_serie=(payload.factusol_serie if fs is None else None),
     )
     session.add(order)
     session.flush()
@@ -1731,6 +1755,25 @@ class CancelOrderIn(BaseModel):
     delete_factusol_docs: bool = False
 
 
+class FactusolSerieIn(BaseModel):
+    """Lote 7 · P1 — cambiar la serie (empresa emisora) del pedido. `confirm`
+    OBLIGATORIO: si hay albarán, cambiar la serie lo BORRA y lo RE-CREA en la
+    serie nueva en FACTUSOL, así que no es un clic accidental."""
+
+    serie: int
+    confirm: bool = False
+
+    @field_validator("serie")
+    @classmethod
+    def _valid_serie(cls, v: int) -> int:
+        if v not in MANUAL_SERIES:
+            raise ValueError(
+                f"Serie no válida: {v} (usa una de {MANUAL_SERIES}: "
+                "1 Bomedia / 2 MQ Europe / 4 Lambert / 5 Streamtec)."
+            )
+        return v
+
+
 def _factusol_docs_for_cancel_safe(
     session: Session, order: Order, warnings: list[str],
 ) -> tuple[list[dict[str, Any]], str | None]:
@@ -1866,6 +1909,83 @@ def uncancel_order(
         session.commit()
     order = _get_order(session, order_id)
     return {**_serialise_detail(session, order, current_user), "already_active": already}
+
+
+@router.post("/{order_id}/factusol-serie")
+def change_order_factusol_serie(
+    order_id: str,
+    payload: FactusolSerieIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """Lote 7 · P1 — cambia la SERIE (empresa emisora) de un pedido MANUAL:
+    1 Bomedia / 2 MQ Europe / 4 Lambert / 5 Streamtec. Manda en `resolve_serie`,
+    así que TODO lo que BoHub emita desde el pedido (albarán, y luego proforma /
+    factura) sale en esa empresa.
+
+    - Con FACTURA emitida (`factusol_invoice_number`): 409 — la serie no se
+      cambia con factura; se anula la factura desde FACTUSOL y se rehace. La
+      factura NUNCA se borra desde aquí.
+    - Con ALBARÁN: se encola (worker serial `factusol:writes`) el borrado del
+      albarán viejo y su re-creación en la serie nueva (`factusol_serie_job_id`;
+      estado con `getQuoteJobStatus`). `confirm` obligatorio.
+    - Sin albarán: solo se registra la serie (síncrono, sin tocar FACTUSOL).
+
+    Registra `erp.order_serie_changed` (serie/nº viejo → nuevo)."""
+    from app.erp.factusol_albaran import change_order_serie, is_web_order  # noqa: PLC0415
+
+    order = _get_order(session, order_id)
+    if not payload.confirm:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "confirmation_required",
+            "detail": "Cambiar la serie requiere confirmación explícita.",
+        })
+    if is_web_order(order):
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "web_order",
+            "detail": "Los pedidos web no cambian de serie desde BoHub: la serie "
+                      "la fija la tienda / FACTUSOL.",
+        })
+    # La FACTURA nunca se toca: con factura emitida, la serie se cambia anulando
+    # la factura EN FACTUSOL y rehaciéndola, no desde aquí.
+    if order.factusol_invoice_number:
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "invoice_present",
+            "detail": (
+                f"El pedido ya tiene factura en FACTUSOL ({order.factusol_invoice_number}): "
+                "la serie no se cambia con factura emitida; se anula la factura desde "
+                "FACTUSOL y se rehace."
+            ),
+            "factusol_invoice_number": order.factusol_invoice_number,
+        })
+    serie = payload.serie
+    if order.factusol_albaran_number:
+        # Borrar + recrear el albarán es una escritura MAX+1: al worker serial.
+        from app.integrations.factusol.jobs import (  # noqa: PLC0415
+            enqueue_change_order_serie,
+        )
+
+        job_id = enqueue_change_order_serie(order.id, serie, current_user.id)
+        order = _get_order(session, order_id)
+        return {
+            **_serialise_detail(session, order, current_user),
+            "factusol_serie_job_id": job_id,
+            "requested_serie": serie,
+        }
+    # Sin albarán: nada que borrar / recrear en FACTUSOL — se registra la serie.
+    from app.integrations.factusol.service import ejercicio_for  # noqa: PLC0415
+
+    result = change_order_serie(
+        session, order, serie, client=None, ejercicio=ejercicio_for(session),
+        actor=current_user,
+    )
+    order = _get_order(session, order_id)
+    return {
+        **_serialise_detail(session, order, current_user),
+        "factusol_serie_job_id": None,
+        "requested_serie": serie,
+        "serie_result": result,
+    }
 
 
 @router.post("/{order_id}/uncomplete")

@@ -552,6 +552,188 @@ def _create_albaran_from_lines(
     }
 
 
+# --- Lote 7 · P1: cambiar la SERIE (empresa emisora) de un pedido manual ------
+
+#: Series válidas para la elección MANUAL (empresas emisoras reales):
+#: 1 Bomedia · 2 MQ Europe · 4 Lambert · 5 Streamtec. Es un subconjunto de las
+#: `VALID_SERIES` de `service` (1-9): las que Bart usa a mano.
+MANUAL_SERIES: tuple[int, ...] = (1, 2, 4, 5)
+MANUAL_SERIE_NAMES: dict[int, str] = {
+    1: "Bomedia", 2: "MQ Europe", 4: "Lambert", 5: "Streamtec",
+}
+#: Evento de auditoría del cambio de serie (serie/nº viejo → nuevo).
+SERIE_CHANGED_EVENT = "erp.order_serie_changed"
+
+
+def change_order_serie(
+    session: Session, order: Order, new_serie: int, *,
+    client: FactusolClient | None, ejercicio: str, actor: Any = None,
+) -> dict[str, Any]:
+    """Fija la serie (empresa emisora) elegida a mano para un pedido y, si el
+    pedido ya tiene albarán en FACTUSOL, lo BORRA y lo RE-CREA en la serie
+    nueva. Es el orquestador ÚNICO del cambio de serie (lo llama el endpoint
+    para el caso sin albarán y el worker serial `factusol:writes` para el caso
+    con albarán — la re-creación es una escritura MAX+1 que hay que serializar).
+
+    - `factusol_manual_serie = new_serie` manda desde ya en `resolve_serie`, así
+      que el albarán recreado (y luego proforma / factura) sale en esa serie.
+    - Sin albarán: solo se registra la serie (nada que borrar / recrear).
+    - Con albarán: se borra el viejo (`order_cancel.delete_factusol_document`,
+      la misma primitiva de «anular pedido», por clave compuesta serie/código),
+      se desvincula en BoHub y se recrea con `create_albaran_for_order`
+      (idempotente; toma la serie nueva de `resolve_serie`).
+    - ROBUSTEZ: si el borrado sale pero la re-creación falla, el pedido queda
+      SIN albarán (estado conocido, ya persistido) y el fallo se anota — nunca
+      se deja a BoHub reclamando un albarán que no está en FACTUSOL.
+
+    Devuelve el resumen (serie/nº viejo y nuevo, borrado, recreado, error) que
+    el job publica y el frontend lee. La FACTURA nunca se toca aquí: un pedido
+    con factura no cambia de serie (el guard vive en el endpoint)."""
+    from app.erp.factusol_cobro import parse_invoice_number  # noqa: PLC0415
+    from app.erp.order_cancel import delete_factusol_document  # noqa: PLC0415
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+    from app.integrations.factusol.service import coerce_serie  # noqa: PLC0415
+
+    serie = coerce_serie(new_serie)
+    if serie is None or serie not in MANUAL_SERIES:
+        raise ValueError(f"Serie no válida: {new_serie!r} (usa una de {MANUAL_SERIES}).")
+    actor_user_id = getattr(actor, "id", None)
+    old_serie = coerce_serie(order.factusol_manual_serie)
+    old_albaran = order.factusol_albaran_number
+
+    # La serie elegida manda en `resolve_serie` desde ya (también para la
+    # re-creación de más abajo y para la futura proforma / factura).
+    order.factusol_manual_serie = serie
+
+    result: dict[str, Any] = {
+        "order_id": order.id, "order_number": order.order_number,
+        "new_serie": serie, "old_serie": old_serie,
+        "old_albaran_number": old_albaran, "albaran_number": None,
+        "deleted": False, "recreated": False, "error": None,
+    }
+
+    if not old_albaran:
+        # Nada en FACTUSOL: solo se registra la serie elegida.
+        _record_serie_changed(
+            session, order, result, actor=actor, actor_user_id=actor_user_id,
+            ejercicio=ejercicio,
+        )
+        session.commit()
+        return result
+
+    if client is None:  # defensivo: el caso con albarán SIEMPRE trae cliente.
+        raise FactusolError(
+            "Cambiar la serie con albarán necesita conexión con FACTUSOL "
+            "(borrar y recrear el albarán)."
+        )
+
+    serie_alb, codigo_alb = parse_invoice_number(old_albaran)
+    if serie_alb is None or codigo_alb is None:
+        raise FactusolError(
+            f"El nº de albarán del pedido no es válido: {old_albaran!r}"
+        )
+
+    # 1) Borra el albarán viejo en FACTUSOL (líneas → cabecera, por clave
+    #    compuesta serie/código). Si falla, propaga: no se ha tocado nada en
+    #    BoHub todavía (la serie sin persistir se descarta).
+    delete_factusol_document(
+        client, "albaranes", serie=serie_alb, codigo=codigo_alb, ejercicio=ejercicio,
+    )
+    result["deleted"] = True
+    # 2) Desvincula en BoHub y PERSISTE (serie nueva + sin albarán): estado
+    #    conocido aunque la re-creación falle.
+    order.factusol_albaran_number = None
+    packing = packing_of(order)
+    packing.pop(ALBARAN_KEY, None)
+    save_packing(order, packing)
+    session.commit()
+
+    # 3) Recrea el albarán en la serie nueva (resolve_serie ya devuelve `serie`).
+    try:
+        created = create_albaran_for_order(
+            session, client, order, ejercicio=ejercicio, actor_user_id=actor_user_id,
+        )
+    except (FactusolError, AlbaranNotApplicable) as exc:
+        # Borrado OK, re-creación KO: el pedido queda SIN albarán (ya
+        # persistido en el paso 2), en un estado conocido y reintentable.
+        session.rollback()
+        order = session.get(Order, order.id)
+        record_albaran_failure(session, order, str(exc), actor_user_id=actor_user_id)
+        result["error"] = str(exc)[:400]
+        _record_serie_changed(
+            session, order, result, actor=actor, actor_user_id=actor_user_id,
+            ejercicio=ejercicio,
+        )
+        session.commit()
+        logger.warning(
+            "lote7 serie: pedido %s borró el albarán %s pero no pudo recrearlo "
+            "en la serie %d: %s", order.order_number, old_albaran, serie, exc,
+        )
+        return result
+
+    result["recreated"] = True
+    result["albaran_number"] = created.get("numero") or order.factusol_albaran_number
+    _record_serie_changed(
+        session, order, result, actor=actor, actor_user_id=actor_user_id,
+        ejercicio=ejercicio,
+    )
+    session.commit()
+    logger.info(
+        "lote7 serie: pedido %s cambió a la serie %d (albarán %s → %s)",
+        order.order_number, serie, old_albaran, result["albaran_number"],
+    )
+    return result
+
+
+def _record_serie_changed(
+    session: Session, order: Order, result: dict[str, Any], *,
+    actor: Any, actor_user_id: str | None, ejercicio: str,
+) -> None:
+    """Evento de auditoría del cambio de serie + traza en el historial del
+    pedido (dominio preparación, sin mover el estado)."""
+    from app.core.audit import record_event  # noqa: PLC0415
+
+    old_serie, new_serie = result["old_serie"], result["new_serie"]
+    old_name = MANUAL_SERIE_NAMES.get(old_serie or -1)
+    new_name = MANUAL_SERIE_NAMES.get(new_serie, str(new_serie))
+    detail = (
+        f"Serie del pedido → {new_serie}"
+        + (f" ({new_name})" if new_name else "")
+        + (f", antes {old_serie}" + (f" ({old_name})" if old_name else "")
+           if old_serie is not None else "")
+    )
+    if result["old_albaran_number"] and result["error"] is None:
+        detail += (
+            f"; albarán recreado {result['old_albaran_number']} → "
+            f"{result['albaran_number']}"
+        )
+    elif result["old_albaran_number"] and result["error"] is not None:
+        detail += (
+            f"; albarán {result['old_albaran_number']} borrado pero NO recreado "
+            "(reintenta desde la ficha)"
+        )
+    record_event(
+        session, action=SERIE_CHANGED_EVENT, target_type="order",
+        target_id=order.id, actor=actor,
+        message=detail,
+        metadata={
+            "order_number": order.order_number,
+            "old_serie": old_serie, "new_serie": new_serie,
+            "old_albaran_number": result["old_albaran_number"],
+            "new_albaran_number": result["albaran_number"],
+            "deleted": result["deleted"], "recreated": result["recreated"],
+            "error": result["error"], "ejercicio": ejercicio,
+            "actor_user_id": actor_user_id,
+        },
+    )
+    prep = _status_value(order.preparation_status)
+    _history(
+        session, order, domain=StatusDomain.PREPARATION, from_status=prep,
+        to_status=prep, reason=detail[:255], actor_user_id=actor_user_id,
+        metadata={"event": "factusol_serie_changed", **result},
+    )
+
+
 def apply_conversion_extras(
     session: Session, client: FactusolClient, *, order_id: str,
     payment: dict[str, Any] | None, create_albaran: bool, ejercicio: str,
