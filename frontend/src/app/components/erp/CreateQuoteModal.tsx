@@ -110,6 +110,7 @@ export function CreateQuoteModal({
   companyName,
   factusolCodcli,
   editCodpre,
+  duplicateSource,
   onCreated,
   onCancel,
 }: {
@@ -119,11 +120,17 @@ export function CreateQuoteModal({
   factusolCodcli?: string | null;
   /** Si viene, el modal edita esa proforma en vez de crear una nueva. */
   editCodpre?: string | null;
+  /** Lote 3 · Proformas: si viene, el modal arranca en «Duplicar» con esta
+   *  proforma ya cargada en la vista previa (sus líneas reales de F_LPS con el
+   *  SKU comercial). Es el mismo modo que «Nueva proforma → Duplicar», pero sin
+   *  que haya que buscar la plantilla: la duplicación real sigue saliendo de
+   *  «Usar como plantilla» → «Crear proforma», nunca directa. */
+  duplicateSource?: FactusolQuote | null;
   onCreated: (jobId: string) => void;
   onCancel: () => void;
 }) {
   const editing = Boolean(editCodpre);
-  const [mode, setMode] = useState<Mode>("articles");
+  const [mode, setMode] = useState<Mode>(duplicateSource ? "duplicate" : "articles");
   const [lines, setLines] = useState<DocumentLine[]>([emptyDocumentLine()]);
   const [portes, setPortes] = useState("");
   const [fecha, setFecha] = useState(today());
@@ -243,6 +250,14 @@ export function CreateQuoteModal({
       setLoadingTemplate(null);
     }
   }, []);
+
+  // Duplicar desde una fila (Lote 3): precarga la proforma de origen en la
+  // vista previa nada más abrir, sin pasar por el buscador. Reutiliza el mismo
+  // `loadTemplate` que el flujo «Nueva proforma → Duplicar»: trae las líneas ya
+  // mapeadas (SKU comercial de F_LPS) y no vuelve a resolver los artículos.
+  useEffect(() => {
+    if (duplicateSource) void loadTemplate(duplicateSource);
+  }, [duplicateSource, loadTemplate]);
 
   /** Paso 2 de duplicar: vuelca la plantilla a la tabla y pasa a «Con
    *  artículos». Las líneas llegan ya mapeadas (SKU comercial), así que no
