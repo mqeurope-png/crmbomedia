@@ -13894,3 +13894,79 @@ table.erp-doc-lines { width: 100%; table-layout: fixed; }
 }
 .erp-flow-emailed.is-sent::before { content: "\2713\00a0"; }
 .erp-flow-emailed.is-unsent { color: var(--muted); }
+
+/* ===================================================================
+   Lote 4 · Cola SAT: scroll en las vistas, «Lista» compacta real y
+   subir etiqueta desde la cola
+   -------------------------------------------------------------------
+   #1 · FALTA SCROLL. El <body> es `overflow: hidden` (la AppShell posee
+   el viewport para fijar topbar/sidebar) y `.sat-shell` era `min-height:
+   100vh`, así que crecía sin límite: con muchos pedidos las tarjetas/filas
+   de abajo quedaban fuera de pantalla e inalcanzables en las cuatro vistas.
+   Acotamos la cola a la altura de la ventana y damos scroll vertical propio
+   al contenido de cada vista (`.sat-scroll`); en la vista global cada
+   columna scrollea por su cuenta. En móvil se scrollea la página entera
+   (una sola columna), para que filtros y pestañas no puedan recortarse en
+   pantallas bajas. Se acota solo la cola (`:has(.sat-queue-wrap)`), sin
+   tocar el modo trabajo (`/erp/sat/[id]`).
+   =================================================================== */
+.sat-shell:has(.sat-queue-wrap) { height: 100vh; height: 100dvh; }
+/* Móvil: la página (el <main>) scrollea como una sola columna. */
+.sat-main:has(.sat-queue-wrap) { min-height: 0; overflow-y: auto; }
+
+@media (min-width: 768px) {
+  /* Tablet/escritorio: cabecera, filtros, alta y pestañas quedan fijas y
+     solo scrollea el panel activo (o cada columna de la vista global), así
+     la barra de herramientas siempre está a mano. */
+  .sat-main:has(.sat-queue-wrap) {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .sat-queue-wrap {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+  }
+  .sat-queue-wrap > * { flex: none; }
+  .sat-queue-wrap > .sat-section {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .sat-scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: var(--sp-2);
+  }
+  /* Vista global: las dos columnas llenan el alto y scrollean por separado. */
+  .sat-global.sat-section { min-height: 0; }
+  .sat-global .sat-global-cols {
+    flex: 1 1 auto;
+    min-height: 0;
+    grid-template-rows: minmax(0, 1fr);
+    align-items: stretch;
+  }
+  .sat-global .sat-global-col {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .sat-global .sat-global-col > .sat-scroll { flex: 1 1 auto; min-height: 0; }
+}
+
+/* #2 · «LISTA» NO ES UNA LISTA. Causa raíz: la vista global pintaba siempre
+   las tarjetas (ignoraba el toggle Tarjetas/Lista); en «Por embalar»/«Listos»
+   la tabla ya salía. El toggle se aplica ahora también a la global (en el JSX).
+   Aquí acompañamos con una lista más compacta: la tabla del taller pasa de 8 a
+   6 columnas (nº · cliente · tienda · estado · nº serie/licencia · acciones),
+   así que se reduce su ancho mínimo para que quepa sin scroll horizontal en la
+   tablet; en las columnas estrechas de la global la tabla se ajusta al ancho
+   disponible. No colapsa a tarjetas salvo en móvil (< 768), que es lo previsto
+   por el sistema de diseño (`data-table--responsive` / `.sat-table`). */
+.sat-table { min-width: 620px; }
+.sat-global .sat-table { min-width: 0; }

@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useState } from "react";
 import { extractErrorMessage } from "../../lib/errors";
 import {
@@ -9,10 +8,12 @@ import {
   listShippingFiles,
   markPickedUp,
   openShippingFile,
+  uploadShippingFile,
   type SatQueueItem,
   type SeguimientoFieldsPatch,
   type ShipmentFileKind,
 } from "../../lib/erpApi";
+import { FileUploadButton } from "./FileUploadButton";
 import { SatAlbaranChip, useSatAlbaranAction } from "./SatPreparingCard";
 import { SatObservaciones, SatTechData, type SatTechEdit } from "./SatTechData";
 
@@ -65,12 +66,24 @@ export function useSatReadyActions(order: SatQueueItem, onChanged: () => void) {
     }
   }
 
+  /** Lote 4 · #5 — subir la etiqueta desde la propia Cola SAT (card y fila),
+   *  reutilizando el mismo helper que «Documentos de envío» de la ficha: el
+   *  backend guarda el fichero y, con el pedido ya embalado, aplica el arco
+   *  `not_shipped → label_created` (el antiguo «Crear envío»). Al terminar se
+   *  refresca la cola, así el chip deja de decir «Falta etiqueta» y pasa a
+   *  «Imprimir etiqueta» (has_etiqueta true). El error lo enseña el propio
+   *  `FileUploadButton`, por eso aquí no se captura. */
+  async function uploadEtiqueta(file: File) {
+    await uploadShippingFile(order.id, "etiqueta", file);
+    onChanged();
+  }
+
   return {
     busy, confirming, setConfirming,
     // Un solo aviso bajo la card: el de recogido/reabrir o el del albarán.
     error: error ?? albaran.error,
     factusolAlbaran: albaran.factusolAlbaran,
-    albaran, openDoc, recogido, reabrir,
+    albaran, openDoc, recogido, reabrir, uploadEtiqueta,
   };
 }
 
@@ -85,7 +98,7 @@ export function SatReadyDocChips({
   actions: ReturnType<typeof useSatReadyActions>;
   size?: "lg";
 }) {
-  const { albaran, openDoc } = actions;
+  const { albaran, openDoc, uploadEtiqueta } = actions;
   const lg = size === "lg" ? " lg" : "";
   return (
     <>
@@ -96,9 +109,14 @@ export function SatReadyDocChips({
           🏷️ Imprimir etiqueta
         </button>
       ) : (
-        <Link href={`/erp/orders/${order.id}`} className={`sat-chip-btn warn${lg}`}>
-          🏷️ Falta etiqueta
-        </Link>
+        /* Lote 4 · #5 — el pedido está embalado/listo pero falta la etiqueta:
+           se sube aquí mismo (mismo flujo que la ficha) en vez de mandar al
+           operario a la ficha del pedido. */
+        <FileUploadButton
+          label="🏷️ Subir etiqueta"
+          className={`sat-chip-btn warn${lg}`}
+          onFile={uploadEtiqueta}
+        />
       )}
     </>
   );

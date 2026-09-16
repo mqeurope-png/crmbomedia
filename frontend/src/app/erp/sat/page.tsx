@@ -339,19 +339,24 @@ export default function SatQueuePage() {
           className="sat-section" role="tabpanel" id="sat-panel-por_embalar"
           aria-label="Por embalar"
         >
-          {preparing.length === 0 ? (
-            <p className="sat-empty">{hasFilters ? "Nada por embalar con estos filtros." : "Nada por embalar."}</p>
-          ) : view === "list" ? (
-            <SatQueueTable items={preparing} variant="preparing" onChanged={refreshAll}
-                           ariaLabel="Pedidos por embalar" />
-          ) : (
-            <div className="sat-cards">
-              {preparing.map((o) => (
-                <SatPreparingCard key={o.id} order={o} onChanged={refreshAll}
-                                  canEdit={canEdit} origins={origins} />
-              ))}
-            </div>
-          )}
+          {/* Lote 4 · #1 — el contenido de la vista vive en un contenedor con
+              scroll vertical propio, así se alcanza el último pedido aunque la
+              cola sea larga (el body es overflow:hidden). */}
+          <div className="sat-scroll">
+            {preparing.length === 0 ? (
+              <p className="sat-empty">{hasFilters ? "Nada por embalar con estos filtros." : "Nada por embalar."}</p>
+            ) : view === "list" ? (
+              <SatQueueTable items={preparing} variant="preparing" onChanged={refreshAll}
+                             ariaLabel="Pedidos por embalar" />
+            ) : (
+              <div className="sat-cards">
+                {preparing.map((o) => (
+                  <SatPreparingCard key={o.id} order={o} onChanged={refreshAll}
+                                    canEdit={canEdit} origins={origins} />
+                ))}
+              </div>
+            )}
+          </div>
         </section>
       ) : null}
 
@@ -360,19 +365,21 @@ export default function SatQueuePage() {
           className="sat-section" role="tabpanel" id="sat-panel-listos"
           aria-label="Listos para envío"
         >
-          {ready.length === 0 ? (
-            <p className="sat-empty">{hasFilters ? "Nada listo para enviar con estos filtros." : "Nada listo para enviar."}</p>
-          ) : view === "list" ? (
-            <SatQueueTable items={ready} variant="ready" onChanged={refreshAll}
-                           ariaLabel="Pedidos listos para envío" />
-          ) : (
-            <div className="sat-cards">
-              {ready.map((o) => (
-                <SatReadyCard key={o.id} order={o} onChanged={refreshAll}
-                              canEdit={canEdit} origins={origins} />
-              ))}
-            </div>
-          )}
+          <div className="sat-scroll">
+            {ready.length === 0 ? (
+              <p className="sat-empty">{hasFilters ? "Nada listo para enviar con estos filtros." : "Nada listo para enviar."}</p>
+            ) : view === "list" ? (
+              <SatQueueTable items={ready} variant="ready" onChanged={refreshAll}
+                             ariaLabel="Pedidos listos para envío" />
+            ) : (
+              <div className="sat-cards">
+                {ready.map((o) => (
+                  <SatReadyCard key={o.id} order={o} onChanged={refreshAll}
+                                canEdit={canEdit} origins={origins} />
+                ))}
+              </div>
+            )}
+          </div>
         </section>
       ) : null}
 
@@ -381,36 +388,50 @@ export default function SatQueuePage() {
           className="sat-section sat-global" role="tabpanel" id="sat-panel-global"
           aria-label="Por embalar y listos"
         >
+          {/* Lote 4 · #2 — la vista global también respeta el toggle
+              Tarjetas/Lista: cada columna pinta su tabla compacta o sus
+              tarjetas. #1 — cada columna scrollea por su cuenta (o la página,
+              en móvil) para llegar a todos los pedidos de ambas colas. */}
           <div className="sat-global-cols">
             <div className="sat-global-col" aria-label="Por embalar">
               <h2 className="sat-global-title">
                 📦 Por embalar <span className="sat-tab-count">{preparing.length}</span>
               </h2>
-              {preparing.length === 0 ? (
-                <p className="sat-empty">{hasFilters ? "Nada por embalar con estos filtros." : "Nada por embalar."}</p>
-              ) : (
-                <div className="sat-cards sat-cards--single">
-                  {preparing.map((o) => (
-                    <SatPreparingCard key={o.id} order={o} onChanged={refreshAll}
-                                      canEdit={canEdit} origins={origins} />
-                  ))}
-                </div>
-              )}
+              <div className="sat-scroll">
+                {preparing.length === 0 ? (
+                  <p className="sat-empty">{hasFilters ? "Nada por embalar con estos filtros." : "Nada por embalar."}</p>
+                ) : view === "list" ? (
+                  <SatQueueTable items={preparing} variant="preparing" onChanged={refreshAll}
+                                 ariaLabel="Pedidos por embalar" />
+                ) : (
+                  <div className="sat-cards sat-cards--single">
+                    {preparing.map((o) => (
+                      <SatPreparingCard key={o.id} order={o} onChanged={refreshAll}
+                                        canEdit={canEdit} origins={origins} />
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
             <div className="sat-global-col" aria-label="Listos para envío">
               <h2 className="sat-global-title">
                 🚚 Listos <span className="sat-tab-count">{ready.length}</span>
               </h2>
-              {ready.length === 0 ? (
-                <p className="sat-empty">{hasFilters ? "Nada listo para enviar con estos filtros." : "Nada listo para enviar."}</p>
-              ) : (
-                <div className="sat-cards sat-cards--single">
-                  {ready.map((o) => (
-                    <SatReadyCard key={o.id} order={o} onChanged={refreshAll}
-                                  canEdit={canEdit} origins={origins} />
-                  ))}
-                </div>
-              )}
+              <div className="sat-scroll">
+                {ready.length === 0 ? (
+                  <p className="sat-empty">{hasFilters ? "Nada listo para enviar con estos filtros." : "Nada listo para enviar."}</p>
+                ) : view === "list" ? (
+                  <SatQueueTable items={ready} variant="ready" onChanged={refreshAll}
+                                 ariaLabel="Pedidos listos para envío" />
+                ) : (
+                  <div className="sat-cards sat-cards--single">
+                    {ready.map((o) => (
+                      <SatReadyCard key={o.id} order={o} onChanged={refreshAll}
+                                    canEdit={canEdit} origins={origins} />
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </section>
@@ -425,6 +446,7 @@ export default function SatQueuePage() {
             Cada envío al taller (email al SAT o aprobación), con su hora y quién lo hizo:
             así no se manda dos veces.
           </p>
+          <div className="sat-scroll">
           {historyError ? (
             <p className="form-error">{historyError}</p>
           ) : historyLoading && history.length === 0 ? (
@@ -477,6 +499,7 @@ export default function SatQueuePage() {
               </table>
             </div>
           )}
+          </div>
         </section>
       ) : null}
     </div>
