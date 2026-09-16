@@ -13970,3 +13970,99 @@ table.erp-doc-lines { width: 100%; table-layout: fixed; }
    por el sistema de diseño (`data-table--responsive` / `.sat-table`). */
 .sat-table { min-width: 620px; }
 .sat-global .sat-table { min-width: 0; }
+
+/* ===================================================================
+   Lote 5 · Cola SAT: serie/WhiteRIP colapsables, sin Origen, tracking
+   en «Listos», fecha y cliente visibles
+   -------------------------------------------------------------------
+   #1 — Nº de serie y licencia WhiteRIP COMPACTOS y opcionales en la card:
+   vacío + editable = solo un chip «+ …» que abre el campo (nada de cajas
+   grandes con «—»); con valor = valor en línea + «copiar» + «Editar».
+   #2 — El origen sale de las cards y de la lista (solo lo pinta el modo
+   trabajo, que pasa `origin`). No hay CSS que quitar aquí.
+   #3 — Nº de seguimiento (tracking) en «Listos»: campo + «Guardar».
+   #4 — Fecha del pedido bien visible en la cabecera (no gris ni diminuta).
+   #5 — Cliente con más peso en la cabecera.
+   Solo tokens del sistema (E1–E3): nada en px fuera de la escala, ni grises
+   sobre datos, ni `--faint`.
+   =================================================================== */
+
+/* #4/#5 · cabecera de la card: fecha (dato, en mono, legible), importe y
+   cliente con presencia. */
+.sat-card-date {
+  font-size: var(--fs-body);
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+}
+.sat-card-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--sp-2);
+}
+.sat-card-amount {
+  font-size: var(--fs-body);
+  font-weight: 600;
+  color: var(--ink);
+}
+/* #5 · el cliente se lee de un vistazo (más peso que el resto de la card). */
+.sat-card-customer { font-weight: 700; }
+
+/* #1 · datos técnicos editables compactos: una fila corta por dato, sin la
+   caja alta con borde que ocupaba media card. */
+.sat-tech.sat-tech-edit-list { gap: var(--sp-2); }
+.sat-tech-item { display: flex; flex-direction: column; gap: var(--sp-1); min-width: 0; }
+.sat-tech-item.is-empty { flex-direction: row; align-items: center; }
+.sat-tech-item .sat-tech-row {
+  justify-content: flex-start;
+  gap: var(--sp-2) var(--sp-3);
+  min-height: var(--control-h-sm);
+}
+/* En la card compacta el valor no necesita el tamaño «de pie» del modo
+   trabajo: baja a cuerpo para ocupar menos y seguir siendo mono. */
+.sat-tech-edit-list .sat-tech-value { font-size: var(--fs-subtitle); }
+/* Chip «+ Nº serie» / «+ WhiteRIP»: revela el campo al pulsarlo (colapsado por
+   defecto). Discreto pero accionable (marca = interacción). */
+.sat-tech-add {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-height: var(--control-h-sm);
+  padding: 0 var(--sp-3);
+  border: 1px dashed var(--line);
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--brand-ink);
+  font-size: var(--fs-label);
+  font-weight: 600;
+  cursor: pointer;
+}
+.sat-tech-add:hover { background: var(--primary-tint); border-style: solid; }
+
+/* #3 · Nº de seguimiento en «Listos»: campo + «Guardar» junto a la etiqueta. */
+.sat-tracking { display: flex; flex-direction: column; gap: var(--sp-1); }
+.sat-tracking-row { display: flex; align-items: center; gap: var(--sp-2); }
+.sat-tracking-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: var(--control-h);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: #fff;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--fs-body);
+}
+.sat-tracking .button.small { min-height: var(--control-h); flex: none; }
+/* En la fila de la vista lista el bloque va en línea y estrecho. */
+.sat-tracking.is-compact { flex-direction: row; align-items: center; flex-wrap: wrap; gap: var(--sp-1) var(--sp-2); }
+.sat-tracking.is-compact .sat-tech-label { flex: none; }
+.sat-tracking.is-compact .sat-tracking-input { flex: 1 1 140px; }
+
+@media (max-width: 767px) {
+  /* Objetivo táctil de 48 px para el chip de añadir en la tablet del taller. */
+  .sat-tech-add { min-height: var(--control-h-touch); }
+}

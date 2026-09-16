@@ -145,7 +145,7 @@ def test_sat_queue_item_lleva_observaciones_y_datos_tecnicos(client, session_fac
             Order(order_number="T-FULL", preparation_status="preparing", payment_status="paid",
                   notes="  Cliente pide embalaje reforzado y manual en alemán.  ",
                   serial_number="FLX-7741-2026", whiterip_license="WR-4C-88231",
-                  shipping_origin="SAT"),
+                  shipping_origin="SAT", tracking_number="1Z999-TRACK"),
             Order(order_number="T-EMPTY", preparation_status="packed", payment_status="paid",
                   notes="   ", serial_number=None, whiterip_license="", shipping_origin=None),
         ])
@@ -156,13 +156,17 @@ def test_sat_queue_item_lleva_observaciones_y_datos_tecnicos(client, session_fac
     assert full["serial_number"] == "FLX-7741-2026"
     assert full["whiterip_license"] == "WR-4C-88231"
     assert full["shipping_origin"] == "SAT"
+    # Lote 5 · #3 — nº de seguimiento en el item (precarga la casilla de tracking).
+    assert full["tracking_number"] == "1Z999-TRACK"
     empty = next(i for i in body["ready_for_pickup"] if i["order_number"] == "T-EMPTY")
     assert empty["notes"] is None
     assert empty["serial_number"] is None
     assert empty["whiterip_license"] is None
     assert empty["shipping_origin"] is None
+    assert empty["tracking_number"] is None
     # Las claves están siempre (contrato estable para la card).
-    for key in ("notes", "serial_number", "whiterip_license", "shipping_origin"):
+    for key in ("notes", "serial_number", "whiterip_license", "shipping_origin",
+                "tracking_number"):
         assert key in empty
 
 

@@ -3,7 +3,9 @@
 import Link from "next/link";
 import { customerLabel, STATUS_LABELS, type SatQueueItem } from "../../lib/erpApi";
 import { SatAlbaranChip, useSatAlbaranAction } from "./SatPreparingCard";
-import { SatReadyButtons, SatReadyDocChips, useSatReadyActions } from "./SatReadyCard";
+import {
+  SatReadyButtons, SatReadyDocChips, SatTrackingField, useSatReadyActions,
+} from "./SatReadyCard";
 import { SatObservaciones, SatTechData } from "./SatTechData";
 
 /** Fecha corta del pedido (dd/mm/aaaa) para tablas del taller. */
@@ -52,13 +54,12 @@ function NotesRow({ order }: { order: SatQueueItem }) {
 function hasTechData(order: SatQueueItem): boolean {
   return Boolean(
     (order.serial_number ?? "").trim()
-    || (order.whiterip_license ?? "").trim()
-    || (order.shipping_origin ?? "").trim(),
+    || (order.whiterip_license ?? "").trim(),
   );
 }
 
 /** Celda «Datos técnicos» de la lista (compacta: solo lo que tenga valor, con
- *  su botón de copiar; sin nada → «—»). */
+ *  su botón de copiar; sin nada → «—»). Lote 5 · #2: sin origen. */
 function TechCell({ order }: { order: SatQueueItem }) {
   return (
     <td className="sat-td-tech">
@@ -67,7 +68,6 @@ function TechCell({ order }: { order: SatQueueItem }) {
           compact
           serial={order.serial_number}
           license={order.whiterip_license}
-          origin={order.shipping_origin}
         />
       ) : "—"}
     </td>
@@ -135,6 +135,8 @@ function SatReadyRow({ order, onChanged }: { order: SatQueueItem; onChanged: () 
         <td>
           <div className="sat-td-actions">
             <SatReadyDocChips order={order} actions={actions} />
+            {/* Lote 5 · #3 — nº de seguimiento en la fila de «Listos». */}
+            <SatTrackingField order={order} onChanged={onChanged} compact />
             <SatReadyButtons actions={actions} compact />
           </div>
         </td>

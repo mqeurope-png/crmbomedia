@@ -14,6 +14,7 @@ import {
   type SatQueueItem,
   type SeguimientoFieldsPatch,
 } from "../../lib/erpApi";
+import { satShortDate } from "./SatQueueTable";
 import { SatObservaciones, SatTechData, type SatTechEdit } from "./SatTechData";
 
 /** Estado del chip de albarán de un pedido de la cola (Lote 2 A3), derivado
@@ -216,23 +217,19 @@ export function SatPreparingCard({
   order,
   onChanged,
   canEdit = false,
-  origins,
 }: {
   order: SatQueueItem;
   onChanged: () => void;
   /** Lote 3: habilita la edición inline de los datos técnicos (admin/pedidos). */
   canEdit?: boolean;
-  /** Catálogo de orígenes del envío para el desplegable (mismo que la ficha). */
-  origins?: string[];
 }) {
   const albaran = useSatAlbaranAction(order, onChanged);
   // Lote 3: actualización optimista de los campos de seguimiento tras editar.
   const [seg, setSeg] = useState<SeguimientoFieldsPatch | null>(null);
   const serial = seg ? seg.serial_number : order.serial_number;
   const license = seg ? seg.whiterip_license : order.whiterip_license;
-  const origin = seg ? seg.shipping_origin : order.shipping_origin;
   const edit: SatTechEdit | undefined = canEdit
-    ? { orderId: order.id, origins, onSaved: setSeg }
+    ? { orderId: order.id, onSaved: setSeg }
     : undefined;
 
   return (
@@ -240,6 +237,14 @@ export function SatPreparingCard({
       <article className="sat-card sat-preparing-card" aria-label={`Pedido ${order.order_number}`}>
         <div className="sat-card-top">
           <span className="sat-card-num">{order.order_number}</span>
+          {/* Lote 5 · #4 — fecha del pedido bien visible en la cabecera. */}
+          <span className="sat-card-date mono">{satShortDate(order.placed_at)}</span>
+        </div>
+        {/* Lote 5 · #4 — importe (se mantiene) + estado. */}
+        <div className="sat-card-meta">
+          <span className="sat-card-amount mono">
+            {order.total_amount.toFixed(2)} {order.currency}
+          </span>
           <span className={`badge ${STATUS_LABELS[order.preparation_status]?.tone ?? "muted"}`}>
             {STATUS_LABELS[order.preparation_status]?.label ?? order.preparation_status}
           </span>
@@ -251,7 +256,7 @@ export function SatPreparingCard({
           <div className="sat-card-warn">⚠ SIN COBRAR</div>
         ) : null}
         <SatObservaciones notes={order.notes} />
-        <SatTechData serial={serial} license={license} origin={origin} edit={edit} />
+        <SatTechData serial={serial} license={license} edit={edit} />
         <ul className="sat-card-lines">
           {order.lines.map((l, i) => (
             <li key={i}>{l.quantity}× {l.description}</li>
