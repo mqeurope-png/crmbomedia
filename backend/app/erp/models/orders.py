@@ -49,6 +49,11 @@ class OrderSource(StrEnum):
     # Fase 1: pedido creado desde un PEDIDO DE CLIENTE de FACTUSOL (F_PCL).
     # Enum no nativo (texto, length=40): sin migración.
     FACTUSOL_PEDIDO = "factusol_pedido"
+    # Lote 7 · P4: pedido creado desde un ALBARÁN (F_ALB) o una FACTURA (F_FAC)
+    # de FACTUSOL. Mismo criterio (enum de texto): sin migración. Solo lectura
+    # del documento; el pedido queda ligado a su albarán / factura de origen.
+    FACTUSOL_ALBARAN = "factusol_albaran"
+    FACTUSOL_FACTURA = "factusol_factura"
     MANUAL = "manual"
 
 

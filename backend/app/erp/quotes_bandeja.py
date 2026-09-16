@@ -111,15 +111,22 @@ def document_order_key(doc_type: str, doc: dict[str, Any]) -> str | None:
     codigo = doc.get("codigo")
     if not isinstance(codigo, int):
         return None
+    # Albaranes / facturas se cruzan SIEMPRE por su nº visible `serie-código`
+    # (lo que el pedido guarda en `factusol_albaran_number` / lo que componen
+    # `factusol_invoice_serie` + `factusol_invoice_number`) — tanto el pedido
+    # VINCULADO (Lote 2 · PR-2) como el CREADO desde el documento (Lote 7 · P4,
+    # que también apunta ese nº). Va antes que `SOURCE_BY_DOC_TYPE` porque, con
+    # el origen `factusol_albaran` / `factusol_factura`, esos tipos ya están en
+    # el mapa pero NO se cruzan por `external_id`.
+    if doc_type in ("albaranes", "facturas"):
+        if doc.get("serie") is None:
+            return None
+        return visible_number(doc["serie"], codigo)
     if doc_type in SOURCE_BY_DOC_TYPE:
         try:
             return external_id_for(doc_type, int(doc.get("serie") or 0), codigo)
         except (TypeError, ValueError):
             return None
-    if doc_type in ("albaranes", "facturas"):
-        if doc.get("serie") is None:
-            return None
-        return visible_number(doc["serie"], codigo)
     return None
 
 
@@ -143,6 +150,16 @@ def _orders_by_document(
     Sin escribir nada: es un cruce de lectura contra la BD de BoHub."""
     from app.erp.orders_from_factusol import SOURCE_BY_DOC_TYPE  # noqa: PLC0415
 
+    # Albaranes / facturas: por su nº en el pedido (`factusol_albaran_number` /
+    # `factusol_invoice_*`), lo que cubre TANTO el pedido creado desde el
+    # documento (Lote 7 · P4, que también apunta ese nº) como el vinculado a un
+    # pedido ya existente (Lote 2 · PR-2). Va antes que `SOURCE_BY_DOC_TYPE`:
+    # esos tipos ya están en el mapa (origen `factusol_albaran`/`_factura`) pero
+    # no se cruzan por `external_id`.
+    if doc_type == "albaranes":
+        return _orders_by_albaran(session, docs)
+    if doc_type == "facturas":
+        return _orders_by_invoice(session, docs)
     if doc_type in SOURCE_BY_DOC_TYPE:
         ext_ids = {k for k in (document_order_key(doc_type, d) for d in docs) if k}
         if not ext_ids:
@@ -154,10 +171,6 @@ def _orders_by_document(
             )
         ).all()
         return {str(o.external_id): o for o in rows if o.external_id}
-    if doc_type == "albaranes":
-        return _orders_by_albaran(session, docs)
-    if doc_type == "facturas":
-        return _orders_by_invoice(session, docs)
     return {}
 
 

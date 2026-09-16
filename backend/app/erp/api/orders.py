@@ -914,7 +914,10 @@ def pending_approval(
 
 
 class OrderFromFactusolIn(BaseModel):
-    doc_type: Literal["presupuestos", "pedidos"]
+    # Lote 7 · P4: además de presupuestos/pedidos, un albarán o una factura de
+    # FACTUSOL también valen de origen (solo lectura; el pedido queda ligado a
+    # ese documento).
+    doc_type: Literal["presupuestos", "pedidos", "albaranes", "facturas"]
     serie: int = Field(ge=1, le=9)
     codigo: int = Field(ge=1)
     #: Empresa/contacto explícitos (si el cliente FACTUSOL no está vinculado o
@@ -1052,7 +1055,7 @@ def _forma_pago_nombre(client, ejercicio: str, codigo: Any) -> str | None:  # no
 
 @router.get("/from-factusol/preview")
 def preview_order_from_factusol(
-    doc_type: str = Query(pattern="^(presupuestos|pedidos)$"),
+    doc_type: str = Query(pattern="^(presupuestos|pedidos|albaranes|facturas)$"),
     serie: int = Query(ge=1, le=9),
     codigo: int = Query(ge=1),
     session: Session = Depends(get_session),
@@ -1130,9 +1133,15 @@ def create_order_from_factusol(
             "code": "factusol_detail_failed", "detail": str(exc)[:200],
         }) from exc
     session.commit()
+    # Lote 7 · P4: un albarán / factura de origen ya EXISTE en FACTUSOL — el
+    # pedido queda ligado a él, pero nunca se le crea un albarán nuevo (solo
+    # lectura). El albarán solo tiene sentido desde un presupuesto / pedido.
+    create_albaran = payload.create_albaran and payload.doc_type in (
+        "presupuestos", "pedidos",
+    )
     extra = _fase2_after_create(
         session, order, resolved_payment=resolved_payment,
-        create_albaran=payload.create_albaran, actor=current_user,
+        create_albaran=create_albaran, actor=current_user,
     )
     session.commit()
     return {

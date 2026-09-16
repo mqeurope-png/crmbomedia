@@ -105,6 +105,40 @@ FPA = [{"CODFPA": "002", "DESFPA": "Transferencia"},
        {"CODFPA": "011", "DESFPA": "Recibo domiciliado"}]
 
 
+def _alb(codigo: int, *, serie="5", clialb="55555", total=121.0, ref="Albarán ref") -> dict:
+    return {
+        "CODALB": codigo, "TIPALB": serie, "CLIALB": clialb, "CNOALB": "Acme SL",
+        "FECALB": "2026-09-05T00:00:00", "ESTALB": 0, "REFALB": ref,
+        "TOTALB": total, "NET1ALB": 100.0, "PIVA1ALB": 21.0, "FOPALB": "002",
+    }
+
+
+def _lal(codigo: int, pos: int, *, serie="5", art="", desc="Línea", cant=1.0,
+         precio=10.0, dto=0.0) -> dict:
+    return {
+        "TIPLAL": serie, "CODLAL": codigo, "POSLAL": pos, "ARTLAL": art,
+        "DESLAL": desc, "CANLAL": cant, "DT1LAL": dto, "PRELAL": precio,
+        "TOTLAL": round(cant * precio * (1 - dto / 100), 2), "IVALAL": 0.0,
+    }
+
+
+def _fac(codigo: int, *, serie="5", clifac="55555", total=121.0, ref="Factura ref") -> dict:
+    return {
+        "CODFAC": codigo, "TIPFAC": serie, "CLIFAC": clifac, "CNOFAC": "Acme SL",
+        "FECFAC": "2026-09-10T00:00:00", "ESTFAC": 0, "REFFAC": ref,
+        "TOTFAC": total, "NET1FAC": 100.0, "PIVA1FAC": 21.0, "FOPFAC": "011",
+    }
+
+
+def _lfa(codigo: int, pos: int, *, serie="5", art="", desc="Línea", cant=1.0,
+         precio=10.0, dto=0.0) -> dict:
+    return {
+        "TIPLFA": serie, "CODLFA": codigo, "POSLFA": pos, "ARTLFA": art,
+        "DESLFA": desc, "CANLFA": cant, "DT1LFA": dto, "PRELFA": precio,
+        "TOTLFA": round(cant * precio * (1 - dto / 100), 2), "IVALFA": 0.0,
+    }
+
+
 def _tables() -> dict[str, list[dict[str, Any]]]:
     return {
         "F_PRE": [_pre(574), _pre(575, clipre="99999")],
@@ -118,6 +152,18 @@ def _tables() -> dict[str, list[dict[str, Any]]]:
             _lpc(123, 1, art="CDR80WPT", desc="CD TQ 700 MB", cant=100, precio=0.5),
             _lpc(123, 2, desc="Portes", precio=10.5),
             _lpc(123, 1, serie="1", desc="Del homónimo de la serie 1", precio=999),
+        ],
+        # Lote 7 · P4 — albarán (F_ALB/F_LAL) y factura (F_FAC/F_LFA) de origen.
+        # 8 → cliente vinculado (acme); 9 → CLIALB/CLIFAC sin vincular.
+        "F_ALB": [_alb(8), _alb(9, clialb="99999")],
+        "F_LAL": [
+            _lal(8, 1, art="MBO", desc="Cabezal MBO 250", cant=1, precio=250),
+            _lal(8, 2, art="SAT", desc="Hora SAT", cant=2, precio=60, dto=50),
+        ],
+        "F_FAC": [_fac(8), _fac(9, clifac="99999")],
+        "F_LFA": [
+            _lfa(8, 1, art="MBO", desc="Cabezal MBO 250", cant=1, precio=250),
+            _lfa(8, 2, art="SAT", desc="Hora SAT", cant=2, precio=60, dto=50),
         ],
         "F_FPA": FPA,
     }
@@ -180,6 +226,11 @@ def test_numeros_y_external_id() -> None:
     assert external_id_for("pedidos", 5, 123) == "5-000123"
     assert order_number_for("presupuestos", 1, 574) == "PRO-000574"
     assert order_number_for("pedidos", 5, 123) == "PCL-5-000123"
+    # Lote 7 · P4 — albaranes / facturas: `serie-código` como los pedidos.
+    assert external_id_for("albaranes", 5, 8) == "5-000008"
+    assert external_id_for("facturas", 5, 8) == "5-000008"
+    assert order_number_for("albaranes", 5, 8) == "ALB-5-000008"
+    assert order_number_for("facturas", 5, 8) == "FAC-5-000008"
 
 
 # --- 1) desde un presupuesto ---------------------------------------------------
@@ -274,6 +325,112 @@ def test_crear_pedido_desde_pedido_cliente_factusol(session_factory, http) -> No
     cola = http.get("/api/erp/orders/pending-approval",
                     headers=auth_headers(http, "user")).json()
     assert _numeros(cola["items"]) == {"PCL-5-000123"}
+
+
+# --- 2-bis) Lote 7 · P4: desde un albarán o una factura -------------------------
+
+
+def test_crear_pedido_desde_albaran_factusol(session_factory, http) -> None:
+    """Un albarán (F_ALB) vale de origen: el pedido queda con origen
+    `factusol_albaran`, ligado a su nº de albarán (`serie-código`), con las
+    líneas copiadas. FACTUSOL NO se toca (ni escritura ni albarán nuevo)."""
+    fake = FakeClient(_tables())
+    with _patched(fake):
+        r = _post_from_factusol(http, {"doc_type": "albaranes", "serie": 5, "codigo": 8})
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["external_source"] == "factusol_albaran"
+    assert body["order_number"] == "ALB-5-000008"
+    assert body["company_id"] == "acme"
+    assert body["factusol_albaran_number"] == "5-000008"
+    assert [ln["product_sku"] for ln in body["lines"]] == ["MBO", "SAT"]
+    assert body["lines"][1]["line_total"] == 60.0     # 2 × 60 con 50 % de dto
+    assert body["total_amount"] == 121.0              # TOTALB (con IVA)
+    src = body["packing"]["factusol_source"]
+    assert src["doc_type"] == "albaranes" and src["numero"] == "5-000008"
+    # El albarán YA existe: no se crea uno nuevo en FACTUSOL (solo lectura).
+    assert fake.writes == []
+    assert body.get("albaran_job_id") is None
+    with session_factory() as s:
+        o = s.get(Order, body["id"])
+        assert o.external_source == OrderSource.FACTUSOL_ALBARAN
+        assert o.external_id == "5-000008"
+        assert o.factusol_albaran_number == "5-000008"
+    # Idempotente: el mismo albarán no se importa dos veces.
+    with _patched(FakeClient(_tables())):
+        again = _post_from_factusol(http, {"doc_type": "albaranes", "serie": 5, "codigo": 8})
+    assert again.status_code == 409
+    assert again.json()["detail"]["code"] == "already_imported"
+    assert again.json()["detail"]["order_number"] == "ALB-5-000008"
+
+
+def test_crear_pedido_desde_factura_factusol(session_factory, http) -> None:
+    """Una factura (F_FAC) vale de origen: el pedido queda con origen
+    `factusol_factura`, con la factura apuntada (serie + nº) y en estado
+    FACTURADO. FACTUSOL NO se toca."""
+    fake = FakeClient(_tables())
+    with _patched(fake):
+        r = _post_from_factusol(http, {"doc_type": "facturas", "serie": 5, "codigo": 8})
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["external_source"] == "factusol_factura"
+    assert body["order_number"] == "FAC-5-000008"
+    assert body["company_id"] == "acme"
+    assert body["factusol_invoice_number"] == "8"
+    assert body["invoice_status"] == "invoiced_by_erp"
+    assert [ln["product_sku"] for ln in body["lines"]] == ["MBO", "SAT"]
+    assert body["total_amount"] == 121.0
+    assert fake.writes == []
+    with session_factory() as s:
+        o = s.get(Order, body["id"])
+        assert o.external_source == OrderSource.FACTUSOL_FACTURA
+        assert o.external_id == "5-000008"
+        assert o.factusol_invoice_number == "8"
+        assert o.factusol_invoice_serie == 5
+    # Idempotente.
+    with _patched(FakeClient(_tables())):
+        again = _post_from_factusol(http, {"doc_type": "facturas", "serie": 5, "codigo": 8})
+    assert again.status_code == 409
+    assert again.json()["detail"]["code"] == "already_imported"
+
+
+def test_albaran_factura_pura_e_idempotente(session_factory) -> None:
+    """La función pura crea el pedido desde un albarán y una factura, y a la
+    segunda vez avisa `AlreadyImported` (dedup por origen + nº de documento)."""
+    fake = FakeClient(_tables())
+    with session_factory() as s:
+        alb = create_order_from_factusol_document(
+            s, fake, doc_type="albaranes", serie=5, codigo=8, ejercicio="2026",
+        )
+        assert alb.external_source == OrderSource.FACTUSOL_ALBARAN
+        assert alb.factusol_albaran_number == "5-000008"
+        fac = create_order_from_factusol_document(
+            s, fake, doc_type="facturas", serie=5, codigo=8, ejercicio="2026",
+        )
+        assert fac.external_source == OrderSource.FACTUSOL_FACTURA
+        assert fac.factusol_invoice_number == "8" and fac.factusol_invoice_serie == 5
+        assert fac.invoice_status.value == "invoiced_by_erp"
+        s.commit()
+        for doc_type in ("albaranes", "facturas"):
+            with pytest.raises(AlreadyImported):
+                create_order_from_factusol_document(
+                    s, fake, doc_type=doc_type, serie=5, codigo=8, ejercicio="2026",
+                )
+        assert fake.writes == []
+
+
+def test_albaran_factura_cliente_sin_vincular(session_factory, http) -> None:
+    """Un albarán / factura cuyo CLIALB/CLIFAC no está vinculado avisa (409) y
+    NO auto-crea la empresa — mismo criterio que presupuestos/pedidos."""
+    fake = FakeClient(_tables())
+    with _patched(fake):
+        alb = _post_from_factusol(http, {"doc_type": "albaranes", "serie": 5, "codigo": 9})
+        assert alb.status_code == 409, alb.text
+        assert alb.json()["detail"]["code"] == "factusol_customer_unlinked"
+        assert alb.json()["detail"]["codcli"] == "99999"
+        fac = _post_from_factusol(http, {"doc_type": "facturas", "serie": 5, "codigo": 9})
+        assert fac.status_code == 409
+        assert fac.json()["detail"]["code"] == "factusol_customer_unlinked"
 
 
 # --- 3) el filtro «solo processing» de #387 no toca estos pedidos ----------------
@@ -418,7 +575,12 @@ def test_documento_inexistente_y_tipo_no_soportado(session_factory, http) -> Non
         r = _post_from_factusol(http, {"doc_type": "pedidos", "serie": 5, "codigo": 999})
         assert r.status_code == 404
         assert r.json()["detail"]["code"] == "factusol_document_not_found"
-        bad = _post_from_factusol(http, {"doc_type": "albaranes", "serie": 5, "codigo": 1})
+        # Lote 7 · P4: albaranes YA es un tipo válido; uno inexistente da 404.
+        no_alb = _post_from_factusol(http, {"doc_type": "albaranes", "serie": 5, "codigo": 1})
+        assert no_alb.status_code == 404
+        assert no_alb.json()["detail"]["code"] == "factusol_document_not_found"
+        # Un tipo fuera del Literal (p. ej. recibos) lo rechaza Pydantic (422).
+        bad = _post_from_factusol(http, {"doc_type": "recibos", "serie": 5, "codigo": 1})
         assert bad.status_code == 422
         forbidden = _post_from_factusol(
             http, {"doc_type": "pedidos", "serie": 5, "codigo": 123}, role="user",

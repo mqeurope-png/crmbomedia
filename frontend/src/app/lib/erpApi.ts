@@ -3788,3 +3788,27 @@ export async function setOrderTracking(
     body: JSON.stringify({ tracking_number: tracking }),
   });
 }
+
+/** Lote 7 · P4 — «Crear pedido» desde un ALBARÁN o una FACTURA de FACTUSOL
+ *  (Documentos). Reutiliza el alta de pedido desde documento, ampliada a estos
+ *  dos tipos: el cliente se resuelve por CLIALB/CLIFAC (o `company_id` explícito
+ *  del cruce CRM de la fila) y el pedido queda ligado a su albarán / factura.
+ *  Solo se LEE el documento: `create_albaran` va a false porque el albarán /
+ *  la factura ya EXISTEN en FACTUSOL (no se escribe nada allí). Devuelve el
+ *  pedido creado (id + nº) para reflejarlo en la fila, como «Vincular». */
+export async function createOrderFromDocumentType(
+  docType: "albaranes" | "facturas", serie: number, codigo: number,
+  opts: { company_id?: string | null; contact_id?: string | null } = {},
+): Promise<OrderDetail & AlbaranJobExtra> {
+  return apiFetch<OrderDetail & AlbaranJobExtra>("/api/erp/orders/from-factusol", {
+    method: "POST",
+    body: JSON.stringify({
+      doc_type: docType,
+      serie,
+      codigo,
+      company_id: opts.company_id ?? undefined,
+      contact_id: opts.contact_id ?? undefined,
+      create_albaran: false,
+    }),
+  });
+}
