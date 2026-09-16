@@ -1368,6 +1368,90 @@ def complete_order_factusol_customer(
     }
 
 
+class OrderFactusolCompanyLinkIn(BaseModel):
+    """Vincular la empresa del pedido al CODCLI exacto que resuelve su cliente
+    FACTUSOL. `confirm` obligatorio: escribe en el CRM."""
+
+    confirm: bool = False
+
+
+@router.post("/{order_id}/factusol-customer/link")
+def link_order_factusol_company(
+    order_id: str,
+    payload: OrderFactusolCompanyLinkIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """Vincula la EMPRESA CRM del pedido al cliente FACTUSOL EXACTO que resuelve
+    su CODCLI. Para un pedido web ese CODCLI es el `CLIPCL` del F_PCL que cargó
+    FesteWeb (autoritativo), de modo que la empresa queda enlazada al mismo
+    cliente que ya eligió la app externa. NUNCA crea un cliente en FACTUSOL
+    (sería un duplicado): solo escribe `Company.factusol_company_id` en el CRM.
+    Exige `confirm`; deja auditoría `erp.factusol_company_linked`."""
+    from app.core.audit import record_event  # noqa: PLC0415
+    from app.erp.api.factusol import _client_and_ejercicio  # noqa: PLC0415
+    from app.erp.order_factusol_customer import resolve_order_codcli  # noqa: PLC0415
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+    from app.integrations.factusol.customers import link_to_crm  # noqa: PLC0415
+
+    order = _get_order(session, order_id)
+    if not payload.confirm:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "confirmation_required",
+            "detail": "Confirma antes de vincular la empresa al cliente FACTUSOL.",
+        })
+    if not order.company_id:
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "no_company",
+            "detail": "El pedido no tiene empresa CRM a la que vincular el cliente.",
+        })
+    client, ejercicio = _client_and_ejercicio(session)
+    try:
+        codcli, source = resolve_order_codcli(
+            session, order, client=client, ejercicio=ejercicio,
+        )
+    except FactusolError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, {
+            "code": "factusol_customer_failed", "detail": str(exc)[:200],
+        }) from exc
+    if not codcli:
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "customer_unresolved",
+            "detail": (
+                "El pedido no tiene un cliente FACTUSOL resoluble "
+                "(ni F_PCL, ni empresa vinculada, ni factura, ni albarán)."
+            ),
+        })
+    try:
+        # Reutiliza el vinculador ÚNICO (mismo que `/factusol/customers/link`):
+        # fija `Company.factusol_company_id = codcli` y protege contra vincular
+        # un CODCLI que ya está en OTRA empresa (409 already_linked).
+        company = link_to_crm(
+            session, crm_type="company", crm_id=order.company_id, codcli=codcli,
+        )
+    except FactusolError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "already_linked", "detail": str(exc)[:300],
+        }) from exc
+    record_event(
+        session, action="erp.factusol_company_linked", target_type="company",
+        target_id=order.company_id, actor=current_user,
+        metadata={
+            "order_id": order.id, "order_number": order.order_number,
+            "codcli": codcli, "source": source,
+        },
+        message=(
+            f"Empresa «{company.name}» vinculada al cliente FACTUSOL nº {codcli} "
+            f"(pedido {order.order_number}, origen {source})"
+        ),
+    )
+    session.commit()
+    return {
+        "ok": True, "order_id": order.id, "company_id": order.company_id,
+        "codcli": codcli, "source": source, "linked": True,
+    }
+
+
 @router.post("/{order_id}/transitions")
 def fire_transition(
     order_id: str,

@@ -8,22 +8,29 @@ import {
   completeOrderFactusolCustomer,
   ERP_EDIT_ROLES,
   getOrderFactusolCustomer,
+  linkOrderFactusolCompany,
   type OrderFactusolCustomer,
   type OrderFactusolCustomerFields,
   type OrderFactusolCustomerSource,
 } from "../../lib/erpApi";
 import { CompanyFactusolPanel } from "./CompanyFactusolPanel";
 
-/** Lote 4 · ficha — el cliente FACTUSOL del pedido, también en los pedidos WEB.
+/** Lote 4 / Lote 6 · ficha — el cliente FACTUSOL del pedido WEB (este panel solo
+ *  se monta en pedidos web: la ficha lo envuelve en `isWeb`).
  *
- *  Dos caminos, sin regresar ninguno:
- *  - con EMPRESA CRM vinculada (`companyId`): se reutiliza tal cual el
- *    `CompanyFactusolPanel` de la ficha de empresa (nº F_CLI, «Traer datos»,
- *    régimen…), resuelto por `company_id`;
- *  - sin empresa (típico de un pedido web) el cliente EXISTE igual: el pedido
- *    sabe su CODCLI por el CLIFAC de la factura o el CLIALB del albarán. El
- *    backend lo resuelve y aquí se muestra la ficha F_CLI y se deja completar lo
- *    que falte (NIF) con confirmación. Nunca inventa datos del cliente. */
+ *  Para CUALQUIER pedido web el cliente FACTUSOL SIEMPRE existe: la app externa
+ *  (FesteWeb) lo crea/asocia y carga el pedido como F_PCL al entrar en
+ *  WooCommerce. Por eso este panel NUNCA ofrece «Crear en FACTUSOL» (sería un
+ *  duplicado). Dos caminos:
+ *  - con la EMPRESA CRM ya VINCULADA al cliente FACTUSOL: se reutiliza tal cual
+ *    el `CompanyFactusolPanel` de la ficha de empresa (nº F_CLI, «Traer datos»,
+ *    régimen…), resuelto por `company_id` (no ofrece crear porque ya está
+ *    vinculada);
+ *  - sin empresa, o con la empresa SIN vincular, el cliente se resuelve por el
+ *    CLIPCL del F_PCL (o, en su defecto, el CLIFAC de la factura / el CLIALB del
+ *    albarán); se muestra la ficha F_CLI, se ofrece «Vincular empresa a este
+ *    cliente» (al CODCLI exacto) y se deja completar lo que falte (NIF). Nunca
+ *    inventa datos del cliente. */
 export function OrderFactusolClientPanel({
   orderId,
   companyId,
@@ -35,16 +42,22 @@ export function OrderFactusolClientPanel({
   onChanged?: () => void;
 }) {
   if (companyId) {
-    return <OrderFactusolCompanyPanel companyId={companyId} onChanged={onChanged} />;
+    return (
+      <OrderFactusolCompanyPanel orderId={orderId} companyId={companyId} onChanged={onChanged} />
+    );
   }
   return <OrderFactusolCodePanel orderId={orderId} onChanged={onChanged} />;
 }
 
-/** Con empresa CRM vinculada: envoltorio del panel de la ficha de empresa. */
+/** Con empresa CRM: si YA está vinculada al cliente FACTUSOL se reutiliza el
+ *  panel de la ficha de empresa; si NO lo está (pedido web sin vincular), se
+ *  resuelve por el F_PCL y se ofrece vincular — jamás crear (lo duplicaría). */
 function OrderFactusolCompanyPanel({
+  orderId,
   companyId,
   onChanged,
 }: {
+  orderId: string;
   companyId: string;
   onChanged?: () => void;
 }) {
@@ -68,6 +81,18 @@ function OrderFactusolCompanyPanel({
     );
   }
 
+  // Empresa aún SIN vincular a FACTUSOL: en un pedido web nunca se crea el
+  // cliente (ya existe, cargado por FesteWeb) — se resuelve por el F_PCL y se
+  // ofrece vincular la empresa a ese CODCLI exacto.
+  if (!company.factusol_company_id) {
+    return (
+      <OrderFactusolCodePanel
+        orderId={orderId}
+        onChanged={() => { reload(); onChanged?.(); }}
+      />
+    );
+  }
+
   return (
     <CompanyFactusolPanel
       company={company}
@@ -78,6 +103,7 @@ function OrderFactusolCompanyPanel({
 }
 
 const SOURCE_LABEL: Record<OrderFactusolCustomerSource, string> = {
+  pedido_cliente: "Localizado por el pedido de cliente FACTUSOL (CLIPCL)",
   company: "Vinculado por la empresa del CRM",
   factura: "Localizado por el cliente de la factura (CLIFAC)",
   albaran: "Localizado por el cliente del albarán (CLIALB)",
@@ -103,6 +129,7 @@ function OrderFactusolCodePanel({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [linking, setLinking] = useState(false);
   const [form, setForm] = useState<OrderFactusolCustomerFields>({});
   const [completing, setCompleting] = useState(false);
 
@@ -147,6 +174,22 @@ function OrderFactusolCodePanel({
     }
   }
 
+  async function confirmarVincular() {
+    setLinking(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const r = await linkOrderFactusolCompany(orderId);
+      setNotice(`Empresa vinculada al cliente FACTUSOL nº ${r.codcli}.`);
+      reload();
+      onChanged?.();
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudo vincular la empresa al cliente FACTUSOL."));
+    } finally {
+      setLinking(false);
+    }
+  }
+
   if (!data) {
     return (
       <section className="erp-flow-panel" aria-label="Cliente FACTUSOL">
@@ -162,8 +205,9 @@ function OrderFactusolCodePanel({
         <h3>Cliente FACTUSOL</h3>
         {error ? <p className="form-error">{error}</p> : null}
         <p className="muted small">
-          Sin cliente FACTUSOL: este pedido no tiene empresa vinculada en el CRM,
-          ni factura ni albarán con los que localizarlo.
+          Sin cliente FACTUSOL: este pedido no tiene un pedido de cliente (F_PCL),
+          ni empresa vinculada en el CRM, ni factura ni albarán con los que
+          localizarlo.
         </p>
       </section>
     );
@@ -171,6 +215,10 @@ function OrderFactusolCodePanel({
 
   const c = data.cliente;
   const completable = data.missing.filter((f) => MISSING_LABELS[f]);
+  // «Vincular empresa a este cliente»: hay empresa en el pedido pero el CODCLI
+  // NO viene de su vínculo CRM (source ≠ company), así que aún no está enlazada
+  // a ESTE cliente FACTUSOL. Se vincula al CODCLI exacto (nunca se crea).
+  const canLink = canEdit && !!data.company_id && data.source !== "company";
 
   return (
     <section className="erp-flow-panel" aria-label="Cliente FACTUSOL">
@@ -181,6 +229,17 @@ function OrderFactusolCodePanel({
       <p><span className="badge ok">Cliente FACTUSOL nº {data.codcli}</span></p>
       {data.source ? (
         <p className="muted small">{SOURCE_LABEL[data.source]}.</p>
+      ) : null}
+
+      {canLink ? (
+        <p className="muted small">
+          La empresa del pedido aún no está vinculada a este cliente de FACTUSOL.{" "}
+          <button type="button" className="button small" disabled={linking}
+                  title="Vincula la empresa del CRM a este cliente FACTUSOL (CODCLI exacto). No crea nada en FACTUSOL."
+                  onClick={confirmarVincular}>
+            {linking ? "Vinculando…" : "Vincular empresa a este cliente"}
+          </button>
+        </p>
       ) : null}
 
       <table className="data-table">

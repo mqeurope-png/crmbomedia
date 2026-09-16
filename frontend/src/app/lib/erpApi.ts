@@ -3700,9 +3700,11 @@ export function resolveOrderCobroStatus(
 }
 
 /** Lote 4 · cliente FACTUSOL del pedido, resuelto por CODCLI — también los WEB.
- *  De dónde salió el CODCLI: la empresa CRM vinculada, el CLIFAC de la factura
- *  o el CLIALB del albarán. */
-export type OrderFactusolCustomerSource = "company" | "factura" | "albaran";
+ *  De dónde salió el CODCLI: el CLIPCL del pedido de cliente F_PCL que cargó la
+ *  app externa (Lote 6, PREFERENTE en los web), la empresa CRM vinculada, el
+ *  CLIFAC de la factura o el CLIALB del albarán. */
+export type OrderFactusolCustomerSource =
+  | "pedido_cliente" | "company" | "factura" | "albaran";
 
 export type OrderFactusolCustomer = {
   found: boolean;
@@ -3753,6 +3755,24 @@ export async function completeOrderFactusolCustomer(
   return apiFetch(`/api/erp/orders/${encodeURIComponent(orderId)}/factusol-customer`, {
     method: "POST",
     body: JSON.stringify({ confirm: true, ...fields }),
+  });
+}
+
+/** Lote 6 · vincula la EMPRESA del pedido al cliente FACTUSOL EXACTO que
+ *  resuelve su CODCLI (en un pedido web, el CLIPCL del F_PCL que cargó la app
+ *  externa — autoritativo). NUNCA crea un cliente en FACTUSOL (lo duplicaría):
+ *  solo escribe `Company.factusol_company_id` en el CRM. Deja auditoría. */
+export async function linkOrderFactusolCompany(orderId: string): Promise<{
+  ok: boolean;
+  order_id: string;
+  company_id: string;
+  codcli: string;
+  source: OrderFactusolCustomerSource | null;
+  linked: boolean;
+}> {
+  return apiFetch(`/api/erp/orders/${encodeURIComponent(orderId)}/factusol-customer/link`, {
+    method: "POST",
+    body: JSON.stringify({ confirm: true }),
   });
 }
 
