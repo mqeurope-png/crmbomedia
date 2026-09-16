@@ -5,6 +5,7 @@ anti-duplicados por NIF en el alta.
 """
 from __future__ import annotations
 
+import re
 from collections.abc import Generator
 from unittest.mock import patch
 
@@ -70,8 +71,20 @@ class _FakeFactusol:
         if self.broken:
             raise RuntimeError("DELSOL caído")
         self.filters.append(filtro)
-        nif = filtro.split("'")[1].upper() if "NIFCLI" in filtro else None
-        return [r for r in self._rows if nif and str(r.get("NIFCLI", "")).upper() == nif]
+        if "NIFCLI" not in filtro:
+            return list(self._rows)
+
+        def _norm(v):  # espejo del normalizado SQL de Bloque 2
+            return str(v or "").replace(" ", "").replace("-", "").upper()
+
+        # Lote 6 · Bloque 2 — la búsqueda por NIF es ahora una IN-list de formas
+        # normalizadas (desnuda / prefijada), no una igualdad exacta.
+        m = re.search(r"IN \((.*)\)", filtro)
+        if m:
+            wanted = {lit.upper() for lit in re.findall(r"'([^']*)'", m.group(1))}
+            return [r for r in self._rows if _norm(r.get("NIFCLI")) in wanted]
+        nif = filtro.split("'")[1].upper()
+        return [r for r in self._rows if str(r.get("NIFCLI", "")).upper() == nif]
 
 
 def _patched(fake: _FakeFactusol):

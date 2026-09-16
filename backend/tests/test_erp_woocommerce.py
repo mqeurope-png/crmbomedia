@@ -637,4 +637,222 @@ def test_backfill_reenqueues_stuck_received_events(session_factory):
 
     assert res["created"] == 0            # dedup: nada nuevo
     assert res["enqueued"] == 2           # pero re-encola los 2 atascados
+    assert res["re_enqueued"] == 2        # Bloque 3: alias explícito
     assert len(enqueued_ids) == 2
+
+
+# --- Lote 6 · Bloque 3: recuperación de imports atascados (FAILED/PROCESSING)
+
+
+def _inline_import(session_factory):
+    """side_effect de `_enqueue_import` que procesa INLINE (como hace el
+    propio `_enqueue_import` sin Redis: importa y traga la excepción). Usa el
+    `_session_factory` ya parcheado a la fixture in-memory."""
+    from app.integrations.woocommerce import jobs as woo_jobs
+
+    def _run(event_id: str) -> None:
+        try:
+            woo_jobs.import_order_from_event(event_id)
+        except Exception:  # noqa: BLE001 — mimetiza el swallow de _enqueue_import
+            pass
+
+    return _run
+
+
+def _seed_backfill_event(
+    s, slug: str, woo_id: int, *, status=IntegrationEventStatus.RECEIVED,
+    retry_count: int = 0, updated_at=None, email: str = "artis@ejemplo.com",
+) -> str:
+    payload = _woo(id=woo_id, number=str(woo_id))
+    payload["billing"] = {**payload["billing"], "email": email}
+    ev = IntegrationEvent(
+        system="woocommerce", account_id=slug,
+        external_event_id=f"backfill:{woo_id}", event_type="order.backfill",
+        payload_json=json.dumps(payload), status=status, retry_count=retry_count,
+    )
+    if updated_at is not None:
+        ev.updated_at = updated_at
+    s.add(ev)
+    s.commit()
+    return ev.id
+
+
+def test_backfill_recovers_failed_event_and_creates_order(session_factory):
+    """Bloque 3 (caso 9557): un event `backfill:{id}` que quedó FAILED en un
+    run previo (huérfano: el dedup impide recrearlo y antes nunca volvía a
+    `pending`) es RESETEADO y re-procesado → el Order se crea. Idempotente."""
+    from app.integrations.woocommerce import jobs as woo_jobs
+
+    with session_factory() as s:
+        slug = _mk_store(s).account_id
+        event_id = _seed_backfill_event(
+            s, slug, 9557, status=IntegrationEventStatus.FAILED, retry_count=5,
+        )
+        # Un fallo previo dejó su error_message.
+        s.get(IntegrationEvent, event_id).error_message = "boom anterior"
+        s.commit()
+
+    with patch.object(woo_jobs, "_session_factory", return_value=session_factory), \
+         patch.object(woo_jobs, "_enqueue_import", side_effect=_inline_import(session_factory)), \
+         patch.object(woo_jobs, "WooHTTPClient") as MockClient:
+        MockClient.return_value.list_orders.side_effect = [[], []]  # sin pedidos nuevos
+        res = woo_jobs.sync_orders_backfill(slug)
+
+    assert res["created"] == 0             # dedup: no crea events nuevos
+    assert res["re_enqueued"] == 1         # pero recupera el FAILED
+    assert res["still_failed"] == []       # se importó bien
+    with session_factory() as s:
+        ev = s.get(IntegrationEvent, event_id)
+        assert ev.status == IntegrationEventStatus.PROCESSED
+        assert ev.retry_count == 0         # reseteado
+        assert ev.next_retry_at is None
+        order = s.scalar(select(Order).where(Order.external_id == "9557"))
+        assert order is not None
+
+    # Idempotente: un segundo run no re-procesa el ya-PROCESSED ni duplica.
+    with patch.object(woo_jobs, "_session_factory", return_value=session_factory), \
+         patch.object(woo_jobs, "_enqueue_import", side_effect=_inline_import(session_factory)), \
+         patch.object(woo_jobs, "WooHTTPClient") as MockClient:
+        MockClient.return_value.list_orders.side_effect = [[], []]
+        res2 = woo_jobs.sync_orders_backfill(slug)
+    assert res2["re_enqueued"] == 0
+    with session_factory() as s:
+        assert s.scalar(select(func.count(Order.id)).where(
+            Order.external_id == "9557")) == 1
+
+
+def test_backfill_recovers_stale_processing_but_not_fresh(session_factory):
+    """Un event `processing` COLGADO (job muerto a medias) se recupera; uno
+    `processing` RECIENTE (import realmente en vuelo) se deja intacto."""
+    from app.integrations.woocommerce import jobs as woo_jobs
+
+    stale = datetime.now(UTC) - timedelta(hours=1)
+    with session_factory() as s:
+        slug = _mk_store(s).account_id
+        stale_id = _seed_backfill_event(
+            s, slug, 8001, status=IntegrationEventStatus.PROCESSING,
+            updated_at=stale, email="stale@ejemplo.com",
+        )
+        fresh_id = _seed_backfill_event(
+            s, slug, 8002, status=IntegrationEventStatus.PROCESSING,
+            updated_at=datetime.now(UTC), email="fresh@ejemplo.com",
+        )
+
+    with patch.object(woo_jobs, "_session_factory", return_value=session_factory), \
+         patch.object(woo_jobs, "_enqueue_import", side_effect=_inline_import(session_factory)), \
+         patch.object(woo_jobs, "WooHTTPClient") as MockClient:
+        MockClient.return_value.list_orders.side_effect = [[], []]
+        res = woo_jobs.sync_orders_backfill(slug)
+
+    assert res["re_enqueued"] == 1         # solo el colgado
+    with session_factory() as s:
+        assert s.get(IntegrationEvent, stale_id).status == IntegrationEventStatus.PROCESSED
+        assert s.scalar(select(Order).where(Order.external_id == "8001")) is not None
+        # El reciente se queda como estaba (no lo tocamos ni lo importamos).
+        assert s.get(IntegrationEvent, fresh_id).status == IntegrationEventStatus.PROCESSING
+        assert s.scalar(select(Order).where(Order.external_id == "8002")) is None
+
+
+def test_backfill_leaves_processed_event_untouched(session_factory):
+    """Un event ya PROCESSED no se re-encola ni se re-importa (idempotencia)."""
+    from app.integrations.woocommerce import jobs as woo_jobs
+
+    with session_factory() as s:
+        slug = _mk_store(s).account_id
+        processed_at = datetime.now(UTC) - timedelta(days=1)
+        ev = IntegrationEvent(
+            system="woocommerce", account_id=slug,
+            external_event_id="backfill:7000", event_type="order.backfill",
+            payload_json=json.dumps(_woo(id=7000, number="7000")),
+            status=IntegrationEventStatus.PROCESSED, processed_at=processed_at,
+        )
+        s.add(ev)
+        s.commit()
+        event_id = ev.id
+
+    with patch.object(woo_jobs, "_session_factory", return_value=session_factory), \
+         patch.object(woo_jobs, "_enqueue_import", side_effect=_inline_import(session_factory)), \
+         patch.object(woo_jobs, "WooHTTPClient") as MockClient:
+        MockClient.return_value.list_orders.side_effect = [[], []]
+        res = woo_jobs.sync_orders_backfill(slug)
+
+    assert res["re_enqueued"] == 0
+    with session_factory() as s:
+        ev = s.get(IntegrationEvent, event_id)
+        assert ev.status == IntegrationEventStatus.PROCESSED
+        # No se creó ningún Order (no se re-importó).
+        assert s.scalar(select(func.count(Order.id))) == 0
+
+
+def test_backfill_still_failed_surfaces_deterministic_error(session_factory):
+    """El diagnóstico expone `still_failed` con el error de un import que
+    falla de forma determinista (aquí: pedido sin email válido)."""
+    from app.integrations.woocommerce import jobs as woo_jobs
+
+    with session_factory() as s:
+        slug = _mk_store(s).account_id
+        # retry_count=4: el próximo (y único aquí) intento lo tira a FAILED.
+        event_id = _seed_backfill_event(
+            s, slug, 6006, status=IntegrationEventStatus.RECEIVED,
+            retry_count=4, email="",   # email inválido → ValueError determinista
+        )
+
+    with patch.object(woo_jobs, "_session_factory", return_value=session_factory), \
+         patch.object(woo_jobs, "_enqueue_import", side_effect=_inline_import(session_factory)), \
+         patch.object(woo_jobs, "WooHTTPClient") as MockClient:
+        MockClient.return_value.list_orders.side_effect = [[], []]
+        res = woo_jobs.sync_orders_backfill(slug)
+
+    assert res["re_enqueued"] == 1
+    assert len(res["still_failed"]) == 1
+    stuck = res["still_failed"][0]
+    assert stuck["event_id"] == event_id
+    assert stuck["order_number"] == "6006"
+    assert "email" in stuck["error_message"]
+    with session_factory() as s:
+        assert s.get(IntegrationEvent, event_id).status == IntegrationEventStatus.FAILED
+
+
+def test_reimport_order_fetches_via_client_and_imports(client, session_factory):
+    """`reimport-order` trae el pedido con el cliente Woo, upserta el event
+    `backfill:{id}` e importa inline el pedido único (sin backfill completo)."""
+    from app.integrations.woocommerce import jobs as woo_jobs
+
+    with session_factory() as s:
+        store = _mk_store(s)
+        sid = store.id
+
+    order = _woo(id=9557, number="9557")
+    order["billing"] = {**order["billing"], "email": "artis@ejemplo.com"}
+
+    with patch("app.erp.api.woocommerce_admin.WooHTTPClient") as MockClient, \
+         patch.object(woo_jobs, "_session_factory", return_value=session_factory):
+        MockClient.return_value.get_order.return_value = order
+        r = client.post(
+            f"/api/erp/integrations/woocommerce/stores/{sid}/reimport-order",
+            json={"woo_order_id": 9557},
+            headers=auth_headers(client, "admin"),
+        )
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True
+    assert body["outcome"]["created"] is True
+    MockClient.return_value.get_order.assert_called_once_with(9557)
+    with session_factory() as s:
+        order_row = s.scalar(select(Order).where(Order.external_id == "9557"))
+        assert order_row is not None
+        ev = s.scalar(select(IntegrationEvent).where(
+            IntegrationEvent.external_event_id == "backfill:9557"))
+        assert ev.status == IntegrationEventStatus.PROCESSED
+
+
+def test_reimport_order_requires_admin(client, session_factory):
+    with session_factory() as s:
+        sid = _mk_store(s).id
+    r = client.post(
+        f"/api/erp/integrations/woocommerce/stores/{sid}/reimport-order",
+        json={"woo_order_id": 9557},
+        headers=auth_headers(client, "pedidos"),
+    )
+    assert r.status_code == 403

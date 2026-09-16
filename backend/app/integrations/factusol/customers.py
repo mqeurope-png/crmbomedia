@@ -100,6 +100,40 @@ def _sql_escape(value: str) -> str:
     return (value or "").replace("'", "''")
 
 
+def _nif_candidates(query: str) -> list[str]:
+    """Formas normalizadas del NIF a probar contra `NIFCLI` (Lote 6 · Bloque 2).
+
+    FACTUSOL puede guardar el NIF como CIF DESNUDO (`B63609309`) mientras la
+    ficha del CRM busca con la forma NIF-IVA (`ESB63609309`) o al revés: una
+    igualdad exacta se los pierde. Se reutilizan los MISMOS normalizadores que
+    la limpieza de empresas (nada nuevo): `company_discovery.nif_key` da la
+    forma desnuda (sin el prefijo de país de la UE, p. ej. `B63609309`) y
+    `companies._nif_key` conserva el prefijo que traiga la consulta (p. ej.
+    `ESB63609309`, o un `PT…`). Se prueban la desnuda, la desnuda con `ES`
+    (España, el caso habitual) y la que traiga la consulta."""
+    from app.api.companies import _nif_key  # noqa: PLC0415
+    from app.erp.company_discovery import nif_key  # noqa: PLC0415
+
+    bare = nif_key(query)   # sin prefijo de país de la UE: B63609309
+    raw = _nif_key(query)   # con el prefijo que venga: ESB63609309 / PT…
+    out: list[str] = []
+    for cand in (bare, f"ES{bare}" if bare else None, raw):
+        if cand and cand not in out:
+            out.append(cand)
+    return out
+
+
+def _nif_filtro(query: str) -> str | None:
+    """Filtro WHERE tolerante para `NIFCLI`: normaliza en SQL (mayúsculas, sin
+    espacios ni guiones, como otros filtros de DELSOL) y compara contra la
+    IN-list de formas candidatas. None si no queda ninguna forma utilizable."""
+    candidates = _nif_candidates(query)
+    if not candidates:
+        return None
+    in_list = ", ".join(f"'{_sql_escape(c)}'" for c in candidates)
+    return f"UPPER(REPLACE(REPLACE(NIFCLI,' ',''),'-','')) IN ({in_list})"
+
+
 def _row_to_customer(row: dict[str, Any]) -> dict[str, Any]:
     out = {k.lower(): row.get(k) for k in CUSTOMER_FIELDS}
     out["codcli"] = str(out.get("codcli")) if out.get("codcli") is not None else None
@@ -124,16 +158,24 @@ def _row_to_customer(row: dict[str, Any]) -> dict[str, Any]:
 def search_customers(
     client: FactusolClient, query: str, *, by: str = "nif", ejercicio: str,
 ) -> list[dict[str, Any]]:
-    """Busca en F_CLI por NIF (exacto), email (exacto) o nombre (LIKE).
+    """Busca en F_CLI por NIF (normalizado y tolerante), email (exacto) o
+    nombre (LIKE).
 
     Devuelve la lista de clientes normalizados (claves en minúscula). La
-    búsqueda por nombre se recorta a `SEARCH_NAME_LIMIT` en Python."""
+    búsqueda por nombre se recorta a `SEARCH_NAME_LIMIT` en Python.
+
+    Lote 6 · Bloque 2 — el NIF ya NO se compara por igualdad exacta: se
+    normaliza la consulta (ver `_nif_candidates`) y se contrasta `NIFCLI` tanto
+    con la forma desnuda (`B63609309`) como con la prefijada (`ESB63609309`),
+    devolviendo TODAS las filas que casen (varios CODCLI para el mismo NIF,
+    p. ej. BOMEDIA 11 y 89), no solo la primera."""
     q = (query or "").strip()
     if not q:
         return []
     safe = _sql_escape(q)
     if by == "nif":
-        filtro = f"UPPER(NIFCLI)=UPPER('{safe}')"
+        # Igualdad exacta solo como último recurso (consulta sin forma útil).
+        filtro = _nif_filtro(q) or f"UPPER(NIFCLI)=UPPER('{safe}')"
     elif by == "email":
         filtro = f"UPPER(EMACLI)=UPPER('{safe}')"
     elif by == "name":

@@ -78,6 +78,12 @@ export function CompanyFactusolPanel({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // Bloque 2 — resultados de «Buscar en FACTUSOL»: `null` = aún sin buscar;
+  // `[]` = buscado y sin aciertos (solo entonces se ofrece crear); con
+  // aciertos se listan TODOS los CODCLI para que el operador elija.
+  const [hits, setHits] = useState<FactusolCustomer[] | null>(null);
+  const [searchedBy, setSearchedBy] = useState<"nif" | "name" | null>(null);
+  const hasHits = !!(hits && hits.length > 0);
   // «Traer datos»: previsualización pendiente de confirmar.
   const [pullPreview, setPullPreview] = useState<FactusolPullPreview | null>(null);
   // Tarea C: régimen de IVA / tipo de documento de la ficha F_CLI, pendiente
@@ -125,29 +131,59 @@ export function CompanyFactusolPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [regimeSignal]);
 
-  async function buscarEnFactusol() {
-    if (!company.tax_id) {
-      setError("La empresa no tiene NIF: búscala por nombre desde un pedido.");
+  /** Bloque 2 — busca el cliente en FACTUSOL y LISTA los aciertos (varios
+   *  CODCLI posibles) para que el operador elija; NUNCA autovincula ni dice
+   *  «no está» cuando hay coincidencias. Por NIF el backend normaliza (ES/CIF
+   *  toleradas); si no hay NIF, o si el NIF no encuentra nada, se puede buscar
+   *  por nombre. */
+  async function buscarEnFactusol(mode: "nif" | "name" = "nif") {
+    const query = (mode === "nif"
+      ? (company.tax_id || company.vat || "")
+      : (company.name || "")).trim();
+    if (!query) {
+      if (mode === "nif") {
+        void buscarEnFactusol("name");
+        return;
+      }
+      setError("La empresa no tiene ni NIF ni nombre para buscar en FACTUSOL.");
       return;
     }
     setBusy(true);
     setError(null);
     setNotice(null);
     try {
-      const hits = await searchFactusolCustomers(company.tax_id, "nif");
-      if (!hits.length || !hits[0].codcli) {
-        setNotice("No está en FACTUSOL. Puedes crearlo.");
-        return;
+      const found = await searchFactusolCustomers(query, mode);
+      setSearchedBy(mode);
+      setHits(found);
+      if (!found.length) {
+        setNotice(mode === "nif"
+          ? "No aparece en FACTUSOL por NIF. Prueba a buscar por nombre o créalo."
+          : "No aparece en FACTUSOL. Puedes crearlo.");
       }
-      await linkFactusolCustomer({
-        crm_type: "company", crm_id: company.id,
-        factusol_codcli: hits[0].codcli,
-      });
-      setCustomer(hits[0]);
-      setNotice(`Vinculado al cliente FACTUSOL nº ${hits[0].codcli}.`);
-      onLinked?.(hits[0].codcli);
     } catch (e) {
       setError(extractErrorMessage(e, "No se pudo buscar en FACTUSOL."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Vincula el CODCLI elegido a esta empresa (mismo mecanismo `onLinked`). */
+  async function vincularCodcli(codcli: string) {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await linkFactusolCustomer({
+        crm_type: "company", crm_id: company.id, factusol_codcli: codcli,
+      });
+      const hit = hits?.find((h) => h.codcli === codcli) ?? null;
+      setCustomer(hit);
+      setHits(null);
+      setSearchedBy(null);
+      setNotice(`Vinculado al cliente FACTUSOL nº ${codcli}.`);
+      onLinked?.(codcli);
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudo vincular el cliente de FACTUSOL."));
     } finally {
       setBusy(false);
     }
@@ -334,14 +370,68 @@ export function CompanyFactusolPanel({
           <p className="muted small">Esta empresa no está vinculada a FACTUSOL.</p>
           <div className="erp-exc-actions">
             <button type="button" className="button small secondary"
-                    disabled={busy} onClick={buscarEnFactusol}>
+                    disabled={busy} onClick={() => buscarEnFactusol("nif")}>
               Buscar en FACTUSOL
             </button>
-            <button type="button" className="button small"
-                    disabled={busy} onClick={crearEnFactusol}>
-              Crear en FACTUSOL
+            <button type="button" className="button small secondary"
+                    disabled={busy} onClick={() => buscarEnFactusol("name")}>
+              Buscar por nombre
             </button>
+            {/* Con coincidencias NO se ofrece crear (evita el duplicado); solo
+                cuando la búsqueda ha dado cero, o antes de buscar. */}
+            {!hasHits ? (
+              <button type="button" className="button small"
+                      disabled={busy} onClick={crearEnFactusol}>
+                Crear en FACTUSOL
+              </button>
+            ) : null}
           </div>
+          {hasHits ? (
+            <>
+              <p className="form-info" role="status">
+                {hits!.length === 1
+                  ? "Coincide 1 cliente de FACTUSOL. Elige para vincular:"
+                  : `Coinciden ${hits!.length} clientes de FACTUSOL`
+                    + (searchedBy === "nif" ? " con ese NIF" : "")
+                    + ". Elige cuál vincular:"}
+              </p>
+              <table className="data-table">
+                <thead>
+                  <tr><th>Nº</th><th>Nombre</th><th>NIF</th><th aria-label="Acción" /></tr>
+                </thead>
+                <tbody>
+                  {hits!.map((h, idx) => (
+                    <tr key={h.codcli ?? h.nif ?? `row-${idx}`}>
+                      <td>{h.codcli ?? "—"}</td>
+                      <td>
+                        {h.nombre || "—"}
+                        {h.crm_link ? (
+                          <> <span className="badge muted">
+                            Ya vinculado a {h.crm_link.name}
+                          </span></>
+                        ) : null}
+                      </td>
+                      <td>{h.nif || "—"}</td>
+                      <td>
+                        <button type="button" className="button small"
+                                disabled={busy || !h.codcli}
+                                onClick={() => h.codcli && vincularCodcli(h.codcli)}>
+                          Vincular
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="muted small">
+                ¿Ninguno es el correcto?{" "}
+                <button type="button" className="button small secondary"
+                        disabled={busy} onClick={() => buscarEnFactusol("name")}>
+                  Buscar por nombre
+                </button>
+              </p>
+            </>
+          ) : null}
         </>
       )}
 

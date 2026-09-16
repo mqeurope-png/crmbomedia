@@ -7,6 +7,7 @@ gestionados por la app externa Woo→FACTUSOL.
 """
 from __future__ import annotations
 
+import re
 from collections.abc import Generator
 from unittest.mock import patch
 
@@ -88,6 +89,31 @@ def _cli(codcli, nombre="LABORATORIOS PORTA S.L.", nif="B64113590", **over):
     return base
 
 
+def _sql_norm_nif(value) -> str:
+    """Mismo normalizado que el filtro SQL de Bloque 2 (mayúsculas, sin
+    espacios ni guiones): `UPPER(REPLACE(REPLACE(NIFCLI,' ',''),'-',''))`."""
+    return str(value or "").replace(" ", "").replace("-", "").upper()
+
+
+class FilteringFactusol(FakeFactusol):
+    """Aplica DE VERDAD el filtro de NIF (IN-list normalizada): si el `NIFCLI`
+    normalizado de la fila no está en la IN-list, la fila NO se devuelve. Así
+    la búsqueda tolerante se prueba de verdad (el `FakeFactusol` base devuelve
+    todas las filas y no distinguiría el bug)."""
+
+    def load_table(self, tabla, *, filtro="1=1", ejercicio=None):
+        if tabla != "F_CLI":
+            return []
+        self.filters.append(filtro)
+        if "ORDER BY CODCLI DESC" in filtro:
+            return [_cli(self._max)] if self._max is not None else []
+        m = re.search(r"NIFCLI.*IN \((.*)\)", filtro)
+        if not m:
+            return list(self._rows)
+        wanted = {lit.upper() for lit in re.findall(r"'([^']*)'", m.group(1))}
+        return [r for r in self._rows if _sql_norm_nif(r.get("NIFCLI")) in wanted]
+
+
 def _patch_client(fake):
     return patch(
         "app.integrations.factusol.client.FactusolClient.from_settings",
@@ -110,8 +136,11 @@ def test_factusol_customers_search_by_nif_found(client):
     assert items[0]["nombre"] == "LABORATORIOS PORTA S.L."
     assert items[0]["nif"] == "B64113590"
     assert items[0]["factusol_matches_crm_id"] is None
-    # Filtro exacto e insensible a mayúsculas.
-    assert "UPPER(NIFCLI)=UPPER('B64113590')" in fake.filters[0]
+    # Lote 6 · Bloque 2 — filtro tolerante: NIFCLI normalizado en SQL comparado
+    # contra la forma desnuda Y la prefijada con ES (no una igualdad exacta).
+    filtro = fake.filters[0]
+    assert "UPPER(REPLACE(REPLACE(NIFCLI,' ',''),'-','')) IN (" in filtro
+    assert "'B64113590'" in filtro and "'ESB64113590'" in filtro
 
 
 def test_factusol_customers_search_by_nif_not_found(client):
@@ -119,6 +148,59 @@ def test_factusol_customers_search_by_nif_not_found(client):
         r = client.get("/api/erp/factusol/customers/search?q=X0000000Z&by=nif",
                        headers=auth_headers(client, "pedidos"))
     assert r.json()["items"] == []
+
+
+def test_nif_candidates_covers_bare_and_es_forms():
+    """La consulta se normaliza como la limpieza de empresas y se prueba en las
+    dos formas (desnuda y con prefijo ES), venga como venga escrita."""
+    from app.integrations.factusol.customers import _nif_candidates
+
+    assert _nif_candidates("ESB63609309") == ["B63609309", "ESB63609309"]
+    assert _nif_candidates("B63609309") == ["B63609309", "ESB63609309"]
+    assert _nif_candidates("es-b63.609.309") == ["B63609309", "ESB63609309"]
+
+
+def test_search_by_nif_matches_es_prefix_and_separators(client):
+    """El bug de Bloque 2: la ficha busca con la forma NIF-IVA `ESB63609309`
+    (o con separadores) pero FACTUSOL guarda el CIF DESNUDO `B63609309`; una
+    igualdad exacta se lo perdía. La búsqueda tolerante lo encuentra igual."""
+    for query in ("ESB63609309", "es-b63609309", "ES B63609309"):
+        fake = FilteringFactusol([_cli(11, nif="B63609309")])
+        with _patch_client(fake):
+            r = client.get("/api/erp/factusol/customers/search",
+                           params={"q": query, "by": "nif"},
+                           headers=auth_headers(client, "pedidos"))
+        assert r.status_code == 200, r.text
+        items = r.json()["items"]
+        assert [i["codcli"] for i in items] == ["11"], query
+        assert items[0]["nif"] == "B63609309"
+
+
+def test_search_by_nif_finds_bare_query_against_prefixed_row(client):
+    """Y al revés: la ficha busca con el CIF desnudo pero FACTUSOL lo guarda
+    con el prefijo `ESB63609309`."""
+    fake = FilteringFactusol([_cli(11, nif="ESB63609309")])
+    with _patch_client(fake):
+        r = client.get("/api/erp/factusol/customers/search",
+                       params={"q": "B63609309", "by": "nif"},
+                       headers=auth_headers(client, "pedidos"))
+    assert r.status_code == 200, r.text
+    assert [i["codcli"] for i in r.json()["items"]] == ["11"]
+
+
+def test_search_by_nif_returns_all_codcli(client):
+    """El caso BOMEDIA: un mismo NIF con dos CODCLI (11 y 89). Se devuelven
+    AMBOS para que el operador elija, no solo el primero."""
+    fake = FilteringFactusol([
+        _cli(11, nif="B63609309", nombre="BOMEDIA SL"),
+        _cli(89, nif="ESB63609309", nombre="BOMEDIA SL (2)"),
+    ])
+    with _patch_client(fake):
+        r = client.get("/api/erp/factusol/customers/search",
+                       params={"q": "ESB63609309", "by": "nif"},
+                       headers=auth_headers(client, "pedidos"))
+    assert r.status_code == 200, r.text
+    assert sorted(i["codcli"] for i in r.json()["items"]) == ["11", "89"]
 
 
 def test_factusol_customers_search_by_name_limits_50(client):

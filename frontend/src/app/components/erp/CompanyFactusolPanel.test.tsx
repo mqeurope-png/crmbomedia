@@ -6,6 +6,7 @@ import {
   fixFactusolCustomerRegime,
   getFactusolPullPreview,
   getFactusolRegimePreview,
+  linkFactusolCustomer,
   pullFactusolIntoCompany,
   searchFactusolCustomers,
 } from "../../lib/erpApi";
@@ -86,6 +87,8 @@ beforeEach(() => {
     written: { IFICLI: 2, IVACLI: 2, TIVCLI: 4 },
   });
   (createFactusolCustomer as jest.Mock).mockReset();
+  (linkFactusolCustomer as jest.Mock).mockReset();
+  (linkFactusolCustomer as jest.Mock).mockResolvedValue({ linked: true });
 });
 
 describe("CompanyFactusolPanel — «Traer datos de FACTUSOL»", () => {
@@ -204,5 +207,71 @@ describe("CompanyFactusolPanel — «Régimen de IVA en FACTUSOL» (Tarea C)", (
     expect(await screen.findByText(
       /Creado en FACTUSOL con el nº 4600 \(régimen de IVA: Intracomunitario \(exento\)\)/,
     )).toBeInTheDocument();
+  });
+});
+
+describe("CompanyFactusolPanel — «Buscar en FACTUSOL»: listar y elegir CODCLI (Bloque 2)", () => {
+  const UNLINKED = { ...COMPANY, factusol_company_id: null };
+  const HIT_11 = {
+    ...CUSTOMER, codcli: "11", nombre: "BOMEDIA SL", nif: "B63609309",
+    nifcli: "B63609309", crm_link: null, factusol_matches_crm_id: null,
+  };
+  const HIT_89 = {
+    ...CUSTOMER, codcli: "89", nombre: "BOMEDIA SL (2)", nif: "B63609309",
+    nifcli: "B63609309", crm_link: null, factusol_matches_crm_id: null,
+  };
+
+  it("lista TODOS los CODCLI que coinciden y vincula SOLO el que elija el operador", async () => {
+    (searchFactusolCustomers as jest.Mock).mockResolvedValue([HIT_11, HIT_89]);
+    const onLinked = jest.fn();
+    const user = userEvent.setup();
+    render(<CompanyFactusolPanel company={UNLINKED} onLinked={onLinked} />);
+    await user.click(await screen.findByRole("button", { name: "Buscar en FACTUSOL" }));
+    // Ambos CODCLI del mismo NIF se listan (el caso BOMEDIA 11 y 89).
+    expect(await screen.findByText(/Coinciden 2 clientes de FACTUSOL con ese NIF/)).toBeInTheDocument();
+    const row89 = within(screen.getByText("89").closest("tr") as HTMLElement);
+    // Nada se ha vinculado todavía (no hay autovínculo).
+    expect(linkFactusolCustomer).not.toHaveBeenCalled();
+    await user.click(row89.getByRole("button", { name: "Vincular" }));
+    await waitFor(() => expect(linkFactusolCustomer).toHaveBeenCalledWith({
+      crm_type: "company", crm_id: "acme", factusol_codcli: "89",
+    }));
+    expect(linkFactusolCustomer).toHaveBeenCalledTimes(1);
+    expect(onLinked).toHaveBeenCalledWith("89");
+    expect(await screen.findByText(/Vinculado al cliente FACTUSOL nº 89/)).toBeInTheDocument();
+  });
+
+  it("con coincidencias NUNCA dice «no está» ni ofrece crear un duplicado", async () => {
+    (searchFactusolCustomers as jest.Mock).mockResolvedValue([HIT_11]);
+    const user = userEvent.setup();
+    render(<CompanyFactusolPanel company={UNLINKED} />);
+    await user.click(await screen.findByRole("button", { name: "Buscar en FACTUSOL" }));
+    expect(await screen.findByText("11")).toBeInTheDocument();
+    // Ni mensaje de «no aparece / puedes crearlo» ni botón de crear duplicado.
+    expect(screen.queryByText(/No aparece en FACTUSOL|Puedes crearlo/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Crear en FACTUSOL" })).not.toBeInTheDocument();
+  });
+
+  it("sin coincidencias sí ofrece crear (y solo entonces)", async () => {
+    (searchFactusolCustomers as jest.Mock).mockResolvedValue([]);
+    const user = userEvent.setup();
+    render(<CompanyFactusolPanel company={UNLINKED} />);
+    await user.click(await screen.findByRole("button", { name: "Buscar en FACTUSOL" }));
+    expect(await screen.findByText(/No aparece en FACTUSOL por NIF/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Crear en FACTUSOL" })).toBeInTheDocument();
+    expect(linkFactusolCustomer).not.toHaveBeenCalled();
+  });
+
+  it("permite buscar por nombre cuando el NIF no encuentra nada", async () => {
+    (searchFactusolCustomers as jest.Mock)
+      .mockResolvedValueOnce([])          // por NIF: nada
+      .mockResolvedValueOnce([HIT_11]);   // por nombre: aparece
+    const user = userEvent.setup();
+    render(<CompanyFactusolPanel company={UNLINKED} />);
+    await user.click(await screen.findByRole("button", { name: "Buscar en FACTUSOL" }));
+    await screen.findByText(/No aparece en FACTUSOL por NIF/);
+    await user.click(screen.getByRole("button", { name: "Buscar por nombre" }));
+    expect(await screen.findByText("11")).toBeInTheDocument();
+    expect(searchFactusolCustomers).toHaveBeenLastCalledWith(COMPANY.name, "name");
   });
 });

@@ -1766,8 +1766,10 @@ def search_customers_endpoint(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_view),
 ) -> dict[str, Any]:
-    """Busca clientes en F_CLI (por NIF/email exactos o nombre LIKE) y marca
-    cuáles ya están vinculados a una empresa/contacto del CRM."""
+    """Busca clientes en F_CLI (NIF normalizado y tolerante ES/CIF, email
+    exacto o nombre LIKE) y marca cuáles ya están vinculados a una
+    empresa/contacto del CRM. Devuelve TODOS los aciertos: un mismo NIF puede
+    tener varios CODCLI y la UI los lista para que el operador elija."""
     _ = current_user
     from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
     from app.integrations.factusol.customers import (  # noqa: PLC0415
