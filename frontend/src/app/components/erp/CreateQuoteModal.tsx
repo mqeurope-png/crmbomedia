@@ -111,6 +111,8 @@ export function CreateQuoteModal({
   factusolCodcli,
   editCodpre,
   duplicateSource,
+  prefillLines,
+  prefillReferencia,
   onCreated,
   onCancel,
 }: {
@@ -120,6 +122,11 @@ export function CreateQuoteModal({
   factusolCodcli?: string | null;
   /** Si viene, el modal edita esa proforma en vez de crear una nueva. */
   editCodpre?: string | null;
+  /** Lote 7 · P3 — líneas iniciales (p. ej. las de un pedido manual del que se
+   *  quiere sacar una proforma de cobro). Solo en modo alta (no edición ni
+   *  duplicar): siembran el formulario para revisarlo y crear la proforma. */
+  prefillLines?: DocumentLine[];
+  prefillReferencia?: string | null;
   /** Lote 3 · Proformas: si viene, el modal arranca en «Duplicar» con esta
    *  proforma ya cargada en la vista previa (sus líneas reales de F_LPS con el
    *  SKU comercial). Es el mismo modo que «Nueva proforma → Duplicar», pero sin
@@ -129,6 +136,9 @@ export function CreateQuoteModal({
   onCreated: (jobId: string) => void;
   onCancel: () => void;
 }) {
+  // Lote 7 · P3 — al abrir para una proforma de cobro de un pedido manual, las
+  // líneas del pedido siembran el formulario una sola vez (solo en alta).
+  const [prefilled, setPrefilled] = useState(false);
   const editing = Boolean(editCodpre);
   const [mode, setMode] = useState<Mode>(duplicateSource ? "duplicate" : "articles");
   const [lines, setLines] = useState<DocumentLine[]>([emptyDocumentLine()]);
@@ -222,6 +232,15 @@ export function CreateQuoteModal({
       });
     return () => { alive = false; };
   }, [editCodpre]);
+
+  // Lote 7 · P3 — siembra las líneas del pedido manual una sola vez (solo alta).
+  useEffect(() => {
+    if (prefilled || editCodpre || duplicateSource) return;
+    if (!prefillLines || prefillLines.length === 0) return;
+    setLines(prefillLines);
+    if (prefillReferencia) setReferencia(prefillReferencia);
+    setPrefilled(true);
+  }, [prefilled, editCodpre, duplicateSource, prefillLines, prefillReferencia]);
 
   const linesTotal = useMemo(
     () => lines.reduce((sum, l) => sum + documentLineTotal(l), 0),

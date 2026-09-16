@@ -7,6 +7,8 @@ import {
 } from "react";
 import { PageHeader } from "../../../components/PageHeader";
 import { ChangeSerieModal } from "./ChangeSerieModal";
+import { CreateQuoteModal } from "../../../components/erp/CreateQuoteModal";
+import { emptyDocumentLine, type DocumentLine } from "../../../components/erp/DocumentLinesTable";
 import { CancelOrderModal } from "../../../components/erp/CancelOrderModal";
 import { EmbalarModal } from "../../../components/erp/EmbalarModal";
 import { PDF_LANGS } from "../../../components/erp/FactusolDocumentDetailModal";
@@ -55,6 +57,7 @@ import {
   type FactusolPdfLang,
   type FactusolStatus,
   type OrderDetail,
+  type OrderLine,
   type StatusDomain,
   type TimelineEvent,
   type WorkflowAction,
@@ -172,6 +175,22 @@ function isInvoiced(o: { invoice_status: string; factusol_invoice_number: string
   return INVOICED_STATUSES.has(o.invoice_status) || !!o.factusol_invoice_number;
 }
 
+/** Lote 7 · P3 — líneas del pedido → líneas del alta de proforma (mismo formato
+ *  que `DocumentLinesTable`), para sembrar la proforma de cobro con lo que ya
+ *  tiene el pedido. Los portes del pedido van como una línea más (el total de
+ *  cobro cuadra); el operador revisa antes de crear. */
+function orderLinesToProformaLines(lines: OrderLine[]): DocumentLine[] {
+  const rows = lines.map((l) => emptyDocumentLine({
+    sku: l.product_codart ?? l.product_sku ?? "",
+    description: l.description ?? "",
+    quantity: String(l.quantity ?? 1),
+    unit_price: l.unit_price != null ? String(l.unit_price) : "",
+    discount_pct: "0",
+    iva_pct: String(l.tax_rate ?? 21),
+  }));
+  return rows.length > 0 ? rows : [emptyDocumentLine()];
+}
+
 /** `useSearchParams` exige Suspense en el app router (`?from=`). */
 export default function ErpOrderDetailPage() {
   return (
@@ -214,6 +233,8 @@ function ErpOrderDetailScreen() {
   const [cancelBusy, setCancelBusy] = useState(false);
   // Lote 7 · P1 — «Cambiar serie» (empresa emisora) de un pedido manual.
   const [serieOpen, setSerieOpen] = useState(false);
+  // Lote 7 · P3 — «Crear proforma de cobro» desde un pedido manual.
+  const [proformaOpen, setProformaOpen] = useState(false);
   // ERP · envío del PEDIDO por email (SAT / taller): modal + petición de crear
   // el albarán cuando el aviso del modal lo ofrece.
   const [orderEmailOpen, setOrderEmailOpen] = useState(false);
@@ -1021,6 +1042,20 @@ function ErpOrderDetailScreen() {
                     Cambiar serie
                   </button>
                 ) : null}
+                {/* Lote 7 · P3 — un pedido manual no tiene documento «pedido»
+                    en FACTUSOL, así que no hay PDF que enviar a cobrar; se
+                    genera una PROFORMA (F_PRE) de cobro reutilizando el alta de
+                    proformas, con las líneas del pedido ya cargadas. */}
+                {canEmit && order.company_id ? (
+                  <button
+                    type="button"
+                    className="button small secondary"
+                    title="Genera una proforma (presupuesto) de cobro con las líneas del pedido, para enviar el PDF al cliente"
+                    onClick={() => setProformaOpen(true)}
+                  >
+                    Crear proforma de cobro
+                  </button>
+                ) : null}
               </div>
             </div>
           ) : null}
@@ -1158,6 +1193,25 @@ function ErpOrderDetailScreen() {
           albaranNumber={order.factusol_albaran_number ?? null}
           onClose={() => setSerieOpen(false)}
           onDone={() => { void load(); }}
+        />
+      ) : null}
+      {/* Lote 7 · P3 — proforma de cobro del pedido manual: reutiliza el alta de
+          proformas con las líneas del pedido precargadas; al crearla va a la
+          bandeja de Proformas, donde se descarga o envía el PDF de cobro. */}
+      {proformaOpen && order.company_id ? (
+        <CreateQuoteModal
+          companyId={order.company_id}
+          companyName={order.company_name ?? "—"}
+          prefillLines={orderLinesToProformaLines(order.lines)}
+          prefillReferencia={order.order_number}
+          onCreated={() => {
+            setProformaOpen(false);
+            setNotice(
+              "Proforma de cobro en creación. La verás en Proformas para "
+              + "descargar o enviar su PDF al cliente.",
+            );
+          }}
+          onCancel={() => setProformaOpen(false)}
         />
       ) : null}
       {invoiceRef ? (

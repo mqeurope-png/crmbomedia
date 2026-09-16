@@ -854,3 +854,42 @@ describe("CreateQuoteModal", () => {
     expect(mockCreate.mock.calls[0][0].company_id).toBe("c2");
   });
 });
+
+// Lote 7 · P3 — la proforma de cobro de un pedido manual abre este modal con
+// las líneas del pedido ya sembradas (para revisar y crear).
+describe("CreateQuoteModal · prefillLines (P3)", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockAddresses.mockResolvedValue([]);
+  });
+
+  it("siembra las líneas iniciales y las envía al crear la proforma", async () => {
+    const user = userEvent.setup();
+    mockCreate.mockResolvedValue({ job_id: "job-1" });
+    mockWaitJob.mockResolvedValue({ status: "done", codpre: "900" });
+    render(
+      <CreateQuoteModal
+        companyId="co-1"
+        companyName="Duplicoder SL"
+        prefillLines={[
+          {
+            sku: "CDR80WPT", description: "Placa base", quantity: "2",
+            unit_price: "150", discount_pct: "0", iva_pct: "21",
+          },
+        ]}
+        prefillReferencia="MANUAL-000006"
+        onCreated={jest.fn()}
+        onCancel={jest.fn()}
+      />,
+    );
+    // La descripción del pedido aparece precargada en el formulario.
+    expect(await screen.findByDisplayValue("Placa base")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("MANUAL-000006")).toBeInTheDocument();
+    // Al crear, la línea sembrada viaja en el payload (sin volver a teclearla).
+    await user.click(screen.getByRole("button", { name: /crear proforma/i }));
+    await waitFor(() => expect(mockCreate).toHaveBeenCalled());
+    const payload = mockCreate.mock.calls[0][0];
+    expect(payload.referencia).toBe("MANUAL-000006");
+    expect(payload.lines.some((l: { description: string }) => l.description === "Placa base")).toBe(true);
+  });
+});
