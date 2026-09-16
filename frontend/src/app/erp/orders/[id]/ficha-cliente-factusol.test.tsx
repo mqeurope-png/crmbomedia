@@ -1,15 +1,16 @@
 import { render, screen } from "@testing-library/react";
 import ErpOrderDetailPage from "./page";
-import { getOrder } from "../../../lib/erpApi";
+import { getOrder, getOrderFactusolCustomer } from "../../../lib/erpApi";
 import { getCompany } from "../../../lib/companiesApi";
 
-/** ERP · Lote 3 · #6 — cliente FACTUSOL también en la ficha de los pedidos WEB.
+/** ERP · Lote 4 — cliente FACTUSOL también en la ficha de los pedidos WEB.
  *
- *  Los pedidos web (`external_source === "woocommerce"`) no tenían forma de ver
- *  ni completar su cliente FACTUSOL desde la ficha. Ahora se REUTILIZA el mismo
- *  `CompanyFactusolPanel` de la ficha de empresa, resuelto por `company_id`.
- *  Aquí se prueba de punta a punta: la ficha (envoltorio real) lee la empresa y
- *  pinta el panel real; sin empresa vinculada, un aviso discreto. */
+ *  Con EMPRESA CRM vinculada se REUTILIZA el `CompanyFactusolPanel` de la ficha
+ *  de empresa, resuelto por `company_id` (no se regresa ese flujo). Sin empresa,
+ *  el cliente EXISTE igual: el backend lo resuelve por el CLIFAC de la factura /
+ *  el CLIALB del albarán y la ficha lo pinta; si no hay nada por lo que
+ *  resolverlo (`found:false`), un aviso «sin cliente» discreto. Se prueba de
+ *  punta a punta con la ficha real (envoltorio + paneles reales). */
 
 jest.mock("next/link", () => ({
   __esModule: true,
@@ -75,6 +76,10 @@ jest.mock("../../../lib/erpApi", () => ({
       domcli: "C/ Mayor 1", pobcli: "Sabadell", cpocli: "08201", procli: "Barcelona",
     },
   ])),
+  // Sin empresa CRM: el panel resuelve el cliente por CODCLI/CLIFAC contra el
+  // backend (cada test fija su respuesta).
+  getOrderFactusolCustomer: jest.fn(),
+  completeOrderFactusolCustomer: jest.fn(),
 }));
 
 function detail(over = {}) {
@@ -118,10 +123,11 @@ function company(over = {}) {
 beforeEach(() => {
   (getOrder as jest.Mock).mockReset();
   (getCompany as jest.Mock).mockReset();
+  (getOrderFactusolCustomer as jest.Mock).mockReset();
   window.history.replaceState({}, "", "/erp/orders/o-1");
 });
 
-describe("ERP · Ficha del pedido — cliente FACTUSOL en pedidos WEB (#6)", () => {
+describe("ERP · Ficha del pedido — cliente FACTUSOL en pedidos WEB (Lote 4)", () => {
   it("un pedido web con company_id lee la empresa y pinta el panel del cliente FACTUSOL", async () => {
     (getOrder as jest.Mock).mockResolvedValue(detail());
     (getCompany as jest.Mock).mockResolvedValue(company());
@@ -129,16 +135,39 @@ describe("ERP · Ficha del pedido — cliente FACTUSOL en pedidos WEB (#6)", () 
     // El panel REAL de la ficha de empresa, reutilizado: enseña el nº F_CLI.
     expect(await screen.findByText("Cliente FACTUSOL nº 1043")).toBeInTheDocument();
     expect(getCompany).toHaveBeenCalledWith("c-1");
+    expect(getOrderFactusolCustomer).not.toHaveBeenCalled();
   });
 
-  it("un pedido web sin empresa vinculada muestra un aviso discreto (no revienta)", async () => {
+  it("un pedido web SIN empresa pero con factura resuelve y pinta el cliente por CLIFAC", async () => {
     (getOrder as jest.Mock).mockResolvedValue(detail({
       company_id: null,
       workflow: { ...detail().workflow, company: null },
     }));
+    (getOrderFactusolCustomer as jest.Mock).mockResolvedValue({
+      found: true, codcli: "260090", source: "factura", missing: [],
+      company_id: null,
+      cliente: {
+        codcli: "260090", nombre: "Escola La Muntanyeta", nofcli: "Escola La Muntanyeta",
+        nif: "G12345678", regime_label: "Nacional",
+      },
+    });
     render(<ErpOrderDetailPage />);
-    expect(await screen.findByRole("heading", { name: "Cliente FACTUSOL" })).toBeInTheDocument();
-    expect(screen.getByText(/no tiene empresa vinculada en el CRM/)).toBeInTheDocument();
+    expect(await screen.findByText("Cliente FACTUSOL nº 260090")).toBeInTheDocument();
+    expect(screen.getByText("Escola La Muntanyeta")).toBeInTheDocument();
+    expect(getOrderFactusolCustomer).toHaveBeenCalledWith("o-1");
+    expect(getCompany).not.toHaveBeenCalled();
+  });
+
+  it("un pedido web sin cliente resoluble (found:false) muestra el aviso «sin cliente»", async () => {
+    (getOrder as jest.Mock).mockResolvedValue(detail({
+      company_id: null,
+      workflow: { ...detail().workflow, company: null },
+    }));
+    (getOrderFactusolCustomer as jest.Mock).mockResolvedValue({
+      found: false, codcli: null, source: null, cliente: null, missing: [], company_id: null,
+    });
+    render(<ErpOrderDetailPage />);
+    expect(await screen.findByText(/Sin cliente FACTUSOL/)).toBeInTheDocument();
     expect(getCompany).not.toHaveBeenCalled();
     expect(document.querySelector(".form-error")).toBeNull();
   });
