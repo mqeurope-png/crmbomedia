@@ -430,3 +430,126 @@ def test_ko_retry_does_not_swallow_other_error_responses():
             pytest.raises(FactusolError, match="ejercicio sin base de datos"):
         c.load_table("F_CLI")
     assert state["data_calls"] == 1
+
+
+# --- Lote 7 · P2: timeout de transporte de DELSOL es transitorio -------------
+#
+# Crear el albarán reventaba de vez en cuando con `httpx.ReadTimeout` al leer
+# F_CLI (customer_for_albaran → get_customer → load_table → _request), y el
+# operario tenía que reintentar a mano. `_request` reintenta con backoff en
+# LECTURAS; las escrituras (EscribirRegistro) NO se reintentan (no idempotentes).
+
+
+def _ok_rows() -> httpx.Response:
+    return httpx.Response(200, json={
+        "resultado": [[{"columna": "CODCLI", "dato": 7}]], "respuesta": "OK",
+    })
+
+
+def test_read_retries_on_read_timeout_then_succeeds():
+    """Una lectura (load_table) que sufre un ReadTimeout se reintenta con
+    backoff y acaba devolviendo las filas — el albarán ya no falla por un hipo."""
+    state = {"data_calls": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/login/Autenticar":
+            return _login_response(_make_jwt())
+        state["data_calls"] += 1
+        # Los dos primeros intentos de lectura hacen timeout; el tercero va bien.
+        if state["data_calls"] <= 2:
+            raise httpx.ReadTimeout("DELSOL tardó", request=request)
+        return _ok_rows()
+
+    c = _client(handler)
+    with patch("app.integrations.factusol.client.time.sleep") as sleep:
+        rows = c.load_table("F_CLI")
+    assert rows == [{"CODCLI": 7}]
+    assert state["data_calls"] == 3
+    # Mismo backoff que el KO: 500ms, 2s (solo dos esperas, al tercer intento OK).
+    assert [call.args[0] for call in sleep.call_args_list] == [0.5, 2.0]
+
+
+def test_read_gives_up_after_exhausting_timeout_retries():
+    """Un timeout persistente (outage real) sigue surgiendo como FactusolError
+    tras agotar la escalera de reintentos — no insiste indefinidamente."""
+    state = {"data_calls": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/login/Autenticar":
+            return _login_response(_make_jwt())
+        state["data_calls"] += 1
+        raise httpx.ReadTimeout("DELSOL caído", request=request)
+
+    c = _client(handler)
+    with patch("app.integrations.factusol.client.time.sleep") as sleep, \
+            pytest.raises(FactusolError, match="timeout/corte de transporte"):
+        c.load_table("F_CLI")
+    # Original + 3 reintentos.
+    assert state["data_calls"] == 4
+    assert [call.args[0] for call in sleep.call_args_list] == [0.5, 2.0, 5.0]
+
+
+def test_write_is_not_retried_on_timeout():
+    """EscribirRegistro NO es idempotente: un timeout NO debe reintentarse (un
+    create podría duplicarse). Se propaga a la primera como FactusolError."""
+    state = {"data_calls": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/login/Autenticar":
+            return _login_response(_make_jwt())
+        state["data_calls"] += 1
+        raise httpx.ReadTimeout("timeout en la escritura", request=request)
+
+    c = _client(handler)
+    with patch("app.integrations.factusol.client.time.sleep") as sleep, \
+            pytest.raises(FactusolError, match="timeout/corte de transporte"):
+        c.write_record("F_CLI", {"CODCLI": "60000"})
+    assert state["data_calls"] == 1      # sin reintento en escrituras
+    sleep.assert_not_called()
+
+
+def test_read_retries_on_connect_error_and_remote_protocol_error():
+    """Además del ReadTimeout, otros hipos de transporte transitorios
+    (ConnectError, RemoteProtocolError) también se reintentan en lecturas."""
+    for exc_factory in (
+        lambda req: httpx.ConnectError("no conectó", request=req),
+        lambda req: httpx.RemoteProtocolError("cortó a medias", request=req),
+    ):
+        state = {"data_calls": 0}
+
+        def handler(
+            request: httpx.Request, _exc=exc_factory, _state=state,
+        ) -> httpx.Response:
+            if request.url.path == "/login/Autenticar":
+                return _login_response(_make_jwt())
+            _state["data_calls"] += 1
+            if _state["data_calls"] == 1:
+                raise _exc(request)
+            return _ok_rows()
+
+        c = _client(handler)
+        with patch("app.integrations.factusol.client.time.sleep"):
+            rows = c.load_table("F_CLI")
+        assert rows == [{"CODCLI": 7}]
+        assert state["data_calls"] == 2
+
+
+def test_read_timeout_longer_than_connect_timeout():
+    """El timeout de LECTURA es más largo que connect/write/pool (P2 belt +
+    suspenders), y sigue siendo sobreescribible por el constructor."""
+    c = FactusolClient(
+        base_url="https://api.sdelsol.test",
+        codigo_fabricante="1626", codigo_cliente="22870",
+        base_datos_cliente="3FS003", password="secret",
+        timeout=30.0, read_timeout=60.0,
+    )
+    assert c._read_timeout == 60.0
+    assert c._timeout == 30.0
+    # Un read_timeout más corto que el base se eleva al base (nunca por debajo).
+    c2 = FactusolClient(
+        base_url="https://api.sdelsol.test",
+        codigo_fabricante="1626", codigo_cliente="22870",
+        base_datos_cliente="3FS003", password="secret",
+        timeout=30.0, read_timeout=5.0,
+    )
+    assert c2._read_timeout == 30.0

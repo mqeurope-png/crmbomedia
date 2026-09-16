@@ -90,6 +90,27 @@ RESPUESTA_KO = "KO"
 #: `KO` no es un error de transporte y no debe gastarles el presupuesto.
 KO_BACKOFF_SECONDS = (0.5, 2.0, 5.0)
 
+#: Espera entre reintentos ante un **timeout / hipo de transporte** de DELSOL
+#: (Lote 7 · P2). Mismo tipo de problema transitorio que el `KO` —la nube de
+#: DELSOL tarda o corta la conexión un instante— y misma escalera (500ms, 2s,
+#: 5s). El síntoma que lo motiva: leer F_CLI para el albarán (`load_table` →
+#: `_request`) reventaba de vez en cuando con `httpx.ReadTimeout` y el operario
+#: tenía que reintentar a mano. Solo se aplica a LECTURAS (ver `_request`):
+#: reintentar una escritura no idempotente (`EscribirRegistro`) podría
+#: duplicar el registro.
+TIMEOUT_BACKOFF_SECONDS = KO_BACKOFF_SECONDS
+
+#: Errores de transporte de httpx que tratamos como transitorios. `TimeoutException`
+#: es la base de `ReadTimeout` / `ConnectTimeout` / `WriteTimeout` / `PoolTimeout`
+#: (el `ReadTimeout` de la lectura de F_CLI es el que dispara P2). Sumamos dos
+#: cortes de conexión típicos de un hipo de la nube: `ConnectError` (no llegó a
+#: conectar) y `RemoteProtocolError` (el servidor cortó la conexión a medias).
+TRANSIENT_TRANSPORT_ERRORS = (
+    httpx.TimeoutException,
+    httpx.ConnectError,
+    httpx.RemoteProtocolError,
+)
+
 
 class FactusolError(RuntimeError):
     """Error de la API DELSOL con contexto (status + body recortado)."""
@@ -160,6 +181,7 @@ class FactusolClient:
         password: str,
         default_ejercicio: str = "2026",
         timeout: float = 30.0,
+        read_timeout: float = 60.0,
         transport: httpx.BaseTransport | None = None,
         path_load_table: str = "",
         path_write_record: str = "",
@@ -173,6 +195,11 @@ class FactusolClient:
         self._password = password
         self.default_ejercicio = default_ejercicio
         self._timeout = timeout
+        # Timeout de LECTURA más largo (cinturón + tirantes de P2): DELSOL a
+        # veces tarda en devolver una tabla grande (F_CLI entera). connect /
+        # write / pool se quedan en `timeout` para fallar rápido si de verdad
+        # no hay servidor; solo alargamos la espera de la respuesta.
+        self._read_timeout = max(read_timeout, timeout)
         self._transport = transport
         # Rutas de datos configurables (ver constantes arriba): vacío → default.
         self.path_load_table = path_load_table or PATH_CARGA_TABLA
@@ -275,7 +302,7 @@ class FactusolClient:
             "ejercicio": ejercicio or self.default_ejercicio,
             "tabla": tabla,
             "filtro": filtro or FILTRO_TODOS,
-        })
+        }, retry_on_timeout=True)  # lectura: reintento seguro ante timeout (P2)
         return _rows_to_dicts(data.get("resultado"))
 
     def write_record(
@@ -314,12 +341,15 @@ class FactusolClient:
             f"{self.path_delete_records}/{quote(str(ejercicio), safe='')}"
             f"/{quote(tabla, safe='')}/{quote(filtro, safe='')}"
         )
-        return self._request("GET", path)
+        # Borrar por filtro es idempotente (borrarlo dos veces deja la tabla
+        # igual), así que ante un timeout se puede reintentar sin duplicar nada.
+        return self._request("GET", path, retry_on_timeout=True)
 
     # --- transporte ----------------------------------------------------------
 
     def _request(
         self, method: str, path: str, *, json: dict[str, Any] | None = None,
+        retry_on_timeout: bool = False,
     ) -> dict[str, Any]:
         """Petición autenticada con renovación de token + retry 5xx.
 
@@ -331,14 +361,49 @@ class FactusolClient:
         Lo mismo con `respuesta: "KO"`, que también llega con 200 y sin decir
         por qué: se reintenta con backoff (`KO_BACKOFF_SECONDS`) antes de darlo
         por perdido. Ver C-6-fix1.
+
+        `retry_on_timeout` (Lote 7 · P2): si la llamada revienta con un timeout
+        o corte de transporte (`TRANSIENT_TRANSPORT_ERRORS`) y el llamante lo
+        pide, se reintenta con backoff (`TIMEOUT_BACKOFF_SECONDS`) antes de
+        propagar el error. **Solo las LECTURAS lo activan** (`load_table`,
+        `delete_records`): `EscribirRegistro` / `ActualizarRegistro` NO son
+        idempotentes —un timeout tras haber creado el registro nos haría
+        duplicarlo al reintentar—, así que las escrituras dejan que el timeout
+        suba tal cual (default `retry_on_timeout=False`). Agotados los
+        reintentos, un timeout persistente (outage real) sigue surgiendo como
+        `FactusolError`.
         """
         self._ensure_token()
         reauthed = False
         attempt = 0
         ko_retries = 0
+        timeout_retries = 0
         while True:
             attempt += 1
-            resp = self._raw_request(method, path, json=json, authed=True)
+            try:
+                resp = self._raw_request(method, path, json=json, authed=True)
+            except TRANSIENT_TRANSPORT_ERRORS as exc:
+                # Escrituras: NO se reintenta (podría duplicar). Lecturas: se
+                # reintenta con backoff hasta agotar la escalera; luego se
+                # propaga como FactusolError para que un outage real se vea.
+                if not retry_on_timeout or timeout_retries >= len(TIMEOUT_BACKOFF_SECONDS):
+                    raise FactusolError(
+                        f"{method} {path} → timeout/corte de transporte DELSOL "
+                        f"({type(exc).__name__})"
+                        + (
+                            f" tras {len(TIMEOUT_BACKOFF_SECONDS)} reintentos"
+                            if retry_on_timeout else ""
+                        ),
+                    ) from exc
+                wait = TIMEOUT_BACKOFF_SECONDS[timeout_retries]
+                timeout_retries += 1
+                logger.warning(
+                    "factusol %s %s → %s (transitorio); reintento %d/%d en %.1fs",
+                    method, path, type(exc).__name__, timeout_retries,
+                    len(TIMEOUT_BACKOFF_SECONDS), wait,
+                )
+                time.sleep(wait)
+                continue
             if resp.status_code == 401 and not reauthed:
                 reauthed = True
                 self.authenticate()
@@ -404,7 +469,14 @@ class FactusolClient:
         if authed and self._token:
             headers["Authorization"] = f"Bearer {self._token}"
         url = f"{self.base_url}{path}"
-        with httpx.Client(timeout=self._timeout, transport=self._transport) as c:
+        # `read` más largo que el resto: DELSOL puede tardar en responder una
+        # tabla grande sin que sea un fallo (P2). connect/write/pool siguen en
+        # `self._timeout` para no tapar un servidor caído de verdad.
+        timeout = httpx.Timeout(
+            connect=self._timeout, read=self._read_timeout,
+            write=self._timeout, pool=self._timeout,
+        )
+        with httpx.Client(timeout=timeout, transport=self._transport) as c:
             return c.request(method, url, json=json, headers=headers)
 
     @staticmethod
