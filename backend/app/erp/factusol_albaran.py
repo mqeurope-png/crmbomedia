@@ -370,6 +370,15 @@ def record_payment_intent(
             actor_user_id=actor_user_id,
             metadata={"event": "factusol_payment_intent", **resolved},
         )
+        # Lote 4: confirmado el pago (alta manual con cobro o conversión de
+        # proforma / pedido de cliente), el pedido entra solo en la Cola SAT si
+        # sigue en pre-cola, sin aprobación. Idempotente vía el guard
+        # `pending_review`. Se atribuye al usuario que confirmó, si se conoce.
+        from app.erp.sat_autoenqueue import enqueue_paid_order  # noqa: PLC0415
+        from app.models.crm import User  # noqa: PLC0415
+
+        actor = session.get(User, actor_user_id) if actor_user_id else None
+        enqueue_paid_order(session, order, actor=actor)
     else:
         _history(
             session, order, domain=StatusDomain.PAYMENT, from_status=prev,

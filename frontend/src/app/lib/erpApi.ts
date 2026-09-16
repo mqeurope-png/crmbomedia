@@ -3695,3 +3695,60 @@ export function resolveOrderCobroStatus(
     : null;
   return live ?? order.factusol_cobro_status ?? null;
 }
+
+/** Lote 4 · cliente FACTUSOL del pedido, resuelto por CODCLI — también los WEB.
+ *  De dónde salió el CODCLI: la empresa CRM vinculada, el CLIFAC de la factura
+ *  o el CLIALB del albarán. */
+export type OrderFactusolCustomerSource = "company" | "factura" | "albaran";
+
+export type OrderFactusolCustomer = {
+  found: boolean;
+  codcli: string | null;
+  source: OrderFactusolCustomerSource | null;
+  /** Ficha F_CLI normalizada (nº, nombre, NIF, régimen…). */
+  cliente: FactusolCustomer | null;
+  /** Campos identificativos vacíos que se pueden completar (p. ej. `"nif"`). */
+  missing: string[];
+  company_id: string | null;
+};
+
+/** Cliente FACTUSOL (F_CLI) del pedido por su CODCLI. `found:false` = ni empresa
+ *  vinculada, ni factura, ni albarán con los que localizarlo. Solo lectura. */
+export async function getOrderFactusolCustomer(orderId: string): Promise<OrderFactusolCustomer> {
+  return apiFetch(`/api/erp/orders/${encodeURIComponent(orderId)}/factusol-customer`);
+}
+
+/** Campos completables del cliente F_CLI (solo texto). Se envía únicamente lo
+ *  que entra el operador; los vacíos no se tocan. */
+export type OrderFactusolCustomerFields = {
+  nombre?: string;
+  nif?: string;
+  direccion?: string;
+  ciudad?: string;
+  cp?: string;
+  provincia?: string;
+  email?: string;
+  telefono?: string;
+};
+
+/** Completa en FACTUSOL (F_CLI, ActualizarRegistro — SOLO las columnas que
+ *  cambian) los datos que faltan del cliente del pedido (p. ej. el NIF). NUNCA
+ *  inventa: solo escribe lo entrado. Deja auditoría. */
+export async function completeOrderFactusolCustomer(
+  orderId: string,
+  fields: OrderFactusolCustomerFields,
+): Promise<{
+  ok: boolean;
+  order_id: string;
+  codcli: string;
+  source: OrderFactusolCustomerSource | null;
+  changed: boolean;
+  written: Record<string, string>;
+  cliente: FactusolCustomer | null;
+  missing: string[];
+}> {
+  return apiFetch(`/api/erp/orders/${encodeURIComponent(orderId)}/factusol-customer`, {
+    method: "POST",
+    body: JSON.stringify({ confirm: true, ...fields }),
+  });
+}

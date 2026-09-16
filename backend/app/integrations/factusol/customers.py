@@ -484,6 +484,80 @@ def update_customer_regime(
     return {**preview, "changed": True, "written": written}
 
 
+#: Lote 4 — campos identificativos de F_CLI que el operador puede COMPLETAR
+#: desde la ficha del pedido (cliente resuelto por CODCLI/CLIFAC), mapeados a su
+#: columna real. Solo texto: el régimen de IVA tiene su propio flujo
+#: (`update_customer_regime`). No incluye NOCCLI a propósito — al completar solo
+#: se toca el nombre fiscal.
+WRITABLE_CUSTOMER_FIELDS = {
+    "nombre": "NOFCLI",
+    "nif": "NIFCLI",
+    "direccion": "DOMCLI",
+    "ciudad": "POBCLI",
+    "cp": "CPOCLI",
+    "provincia": "PROCLI",
+    "email": "EMACLI",
+    "telefono": "TELCLI",
+}
+
+
+def update_customer_fields(
+    client: FactusolClient, *, codcli: Any, ejercicio: str,
+    fields: dict[str, Any],
+) -> dict[str, Any]:
+    """Completa/corrige en F_CLI los datos identificativos que entra el operador
+    (NIF, nombre, dirección…), REUSANDO `ActualizarRegistro` como el arreglo de
+    régimen: lee la fila REAL, escribe SOLO la clave y las columnas que cambian.
+
+    NUNCA inventa nada — un campo que no viene (o viene vacío) NO se toca (no se
+    borra). Guard de esquema: cada columna a escribir existe en la fila real y es
+    de texto (o vacía); si no, `FactusolError` y no se escribe nada. Sin cambios
+    → `changed=False` sin escribir."""
+    row = customer_row(client, codcli, ejercicio=ejercicio)
+    if row is None:
+        raise FactusolError(
+            f"El cliente FACTUSOL nº {codcli} no existe (ejercicio {ejercicio})."
+        )
+    payload: dict[str, Any] = {"CODCLI": row["CODCLI"]}
+    problems: list[str] = []
+    for key, value in (fields or {}).items():
+        column = WRITABLE_CUSTOMER_FIELDS.get(key)
+        if column is None:
+            continue  # campo no completable desde aquí: se ignora
+        text = str(value or "").strip()
+        if not text:
+            continue  # sin valor entrado, no se toca (nunca borramos)
+        if text == str(row.get(column) or "").strip():
+            continue  # ya coincide
+        real = row.get(column)
+        if real is not None and (isinstance(real, bool) or not isinstance(real, str)):
+            problems.append(
+                f"F_CLI.{column}: valor de texto ({text!r}), fila real "
+                f"{type(real).__name__} ({real!r})"
+            )
+            continue
+        payload[column] = text
+    if problems:
+        detail = (
+            f"El esquema real de F_CLI no cuadra con la corrección del cliente "
+            f"{row.get('CODCLI')} ({', '.join(problems)})"
+        )
+        logger.error("factusol cliente: NO se escribe nada — %s", detail)
+        raise FactusolError(detail + ". No se ha escrito nada.")
+    written = {k: v for k, v in payload.items() if k != "CODCLI"}
+    if not written:
+        return {"changed": False, "written": {}, "codcli": str(row["CODCLI"])}
+    logger.info(
+        "factusol cliente %s: ActualizarRegistro F_CLI (completar datos) "
+        "ejercicio=%s registro=%s", row.get("CODCLI"), ejercicio,
+        {k: (v, type(v).__name__) for k, v in payload.items()},
+    )
+    client.update_record("F_CLI", payload, ejercicio=ejercicio)
+    logger.info("factusol cliente %s: datos completados (%s)",
+                row.get("CODCLI"), written)
+    return {"changed": True, "written": written, "codcli": str(row["CODCLI"])}
+
+
 #: Campos comparables CRM ↔ FACTUSOL para el detector de divergencias.
 DIFF_FIELDS = (
     # NOFCLI (fiscal) es lo canónico para comparar con el nombre del CRM.

@@ -10,6 +10,7 @@ import {
   markPickedUp,
   openShippingFile,
   saveBlob,
+  uploadShippingFile,
 } from "../../lib/erpApi";
 
 jest.mock("next/link", () => ({
@@ -29,6 +30,7 @@ jest.mock("../../lib/erpApi", () => ({
   markPickedUp: jest.fn(),
   openShippingFile: jest.fn(),
   saveBlob: jest.fn(),
+  uploadShippingFile: jest.fn(),
   STATUS_LABELS: {},
 }));
 const mockFetch = fetchAlbaranFromWoo as jest.Mock;
@@ -38,6 +40,7 @@ const mockPicked = markPickedUp as jest.Mock;
 const mockOpen = openShippingFile as jest.Mock;
 const mockFactusolPdf = downloadOrderFactusolAlbaranPdf as jest.Mock;
 const mockSave = saveBlob as jest.Mock;
+const mockUpload = uploadShippingFile as jest.Mock;
 
 /** Pedido MANUAL embalado con albarán subido a mano y etiqueta. */
 function order(over: Partial<SatQueueItem> = {}): SatQueueItem {
@@ -76,6 +79,7 @@ beforeEach(() => {
   mockOpen.mockReset();
   mockFactusolPdf.mockReset();
   mockSave.mockReset();
+  mockUpload.mockReset();
   mockList.mockResolvedValue([]);
 });
 
@@ -109,6 +113,33 @@ describe("SatReadyCard", () => {
     await user.click(screen.getByRole("button", { name: /Imprimir albarán/ }));
     await waitFor(() => expect(mockList).toHaveBeenCalledWith("o1", "albaran"));
     await waitFor(() => expect(mockOpen).toHaveBeenCalled());
+  });
+
+  // --- Lote 4 · #5: subir la etiqueta desde la propia Cola SAT ---------------
+
+  it("embalado sin etiqueta: la sube desde la cola (mismo flujo que la ficha) y deja de faltar", async () => {
+    // Reutiliza el helper `uploadShippingFile` (no reimplementa la subida): el
+    // backend guarda el fichero y aplica el arco `not_shipped → label_created`.
+    mockUpload.mockResolvedValue({
+      file: { ...FILE, kind: "etiqueta" }, transition_applied: true,
+      transport_status: "label_created", transition_reason: null,
+    });
+    const onChanged = jest.fn();
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <SatReadyCard order={order({ has_etiqueta: false })} onChanged={onChanged} />,
+    );
+    // Sin etiqueta ya NO se manda a la ficha: se sube aquí mismo.
+    expect(screen.queryByRole("link", { name: /etiqueta/i })).not.toBeInTheDocument();
+    const pdf = new File(["%PDF-"], "gls.pdf", { type: "application/pdf" });
+    await user.upload(screen.getByLabelText(/Subir etiqueta/), pdf);
+    await waitFor(() => expect(mockUpload).toHaveBeenCalledWith("o1", "etiqueta", pdf));
+    // Refresca la cola (has_etiqueta pasará a true en el backend).
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    // Con la etiqueta ya presente la card la imprime; no queda «Subir etiqueta».
+    rerender(<SatReadyCard order={order({ has_etiqueta: true })} onChanged={onChanged} />);
+    expect(screen.getByRole("button", { name: /Imprimir etiqueta/ })).toBeInTheDocument();
+    expect(screen.queryByLabelText(/Subir etiqueta/)).not.toBeInTheDocument();
   });
 
   it("pedido manual sin albarán muestra «Falta albarán» enlazando a la ficha", () => {

@@ -138,7 +138,9 @@ def test_import_creates_order_contact_and_lines(session_factory):
         assert order.store_id == store.id
         assert order.order_number == "BOPRIN-1001"
         assert order.payment_status == PaymentStatus.PAID  # date_paid seteado
-        assert order.preparation_status == PreparationStatus.PENDING_REVIEW
+        # Lote 4: un pedido web ya pagado entra SOLO en la Cola SAT (in_queue),
+        # sin pasar por la aprobación de la Cola PEDIDOS.
+        assert order.preparation_status == PreparationStatus.IN_QUEUE
         assert order.total_amount == pytest.approx(129.0)
         contact = s.scalar(select(Contact).where(
             func.lower(Contact.email) == "laura@ejemplo.com"))
@@ -289,7 +291,9 @@ def test_import_after_cutoff_enters_normal_queue(session_factory):
         s.commit()
         order = s.get(Order, out.order_id)
         assert order.externally_processed_at is None
-        assert order.preparation_status == PreparationStatus.PENDING_REVIEW
+        # Lote 4: al ser posterior al corte NO se externaliza y, al estar ya
+        # pagado (date_paid), entra directo en la Cola SAT (in_queue).
+        assert order.preparation_status == PreparationStatus.IN_QUEUE
 
 
 def test_admin_store_roundtrips_external_cutoff_date(client, session_factory):

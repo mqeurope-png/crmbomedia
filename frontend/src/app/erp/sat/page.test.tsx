@@ -10,6 +10,7 @@ import {
   markPickedUp,
   satEnqueueOrder,
   updateSeguimientoFields,
+  uploadShippingFile,
 } from "../../lib/erpApi";
 import { getCurrentUser } from "../../lib/api";
 
@@ -45,6 +46,8 @@ jest.mock("../../lib/erpApi", () => ({
   saveBlob: jest.fn(),
   // Lote 3: edición inline de los datos técnicos desde la cola.
   updateSeguimientoFields: jest.fn(),
+  // Lote 4 · #5: subir la etiqueta desde la cola (mismo helper que la ficha).
+  uploadShippingFile: jest.fn(),
 }));
 
 const mockQueue = getSatQueue as jest.Mock;
@@ -55,6 +58,7 @@ const mockEnqueue = satEnqueueOrder as jest.Mock;
 const mockUser = getCurrentUser as jest.Mock;
 const mockPicked = markPickedUp as jest.Mock;
 const mockUpdateSeg = updateSeguimientoFields as jest.Mock;
+const mockUpload = uploadShippingFile as jest.Mock;
 
 /** Pedido WEB en cola (Lote 2 A3): su albarán lo genera WooCommerce, aún sin
  *  descargar → el chip ofrece «Descargar albarán». */
@@ -431,5 +435,88 @@ describe("SatQueuePage (Lote B6)", () => {
     await loaded(1, 0);
     expect(screen.getByText("FLX-1")).toHaveClass("sat-tech-value");
     expect(screen.queryByRole("button", { name: /Editar/ })).not.toBeInTheDocument();
+  });
+
+  // --- Lote 4 -----------------------------------------------------------------
+
+  it("#1 · las cuatro vistas tienen contenedor de scroll y pintan todos los pedidos dentro", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem("bohub.sat.queue.view", "list");
+    // Muchos pedidos: sin scroll, los de abajo quedaban inalcanzables.
+    const many = Array.from({ length: 5 }, (_, i) => item({ id: `p${i}`, order_number: `BOP-${i}` }));
+    mockQueue.mockResolvedValue({
+      preparing: many,
+      ready_for_pickup: [item({ id: "r1", order_number: "BOP-R1", preparation_status: "packed" })],
+    });
+    render(<SatQueuePage />);
+    // «Por embalar»: el contenedor con scroll envuelve la tabla y TODOS los pedidos.
+    const prepTable = await screen.findByRole("table", { name: "Pedidos por embalar" });
+    const prepScroll = screen.getByRole("tabpanel", { name: "Por embalar" }).querySelector(".sat-scroll");
+    expect(prepScroll).not.toBeNull();
+    expect(prepScroll).toContainElement(prepTable);
+    many.forEach((o) =>
+      expect(within(prepScroll as HTMLElement).getByRole("link", { name: o.order_number })).toBeInTheDocument(),
+    );
+    // «Listos» tiene su propio contenedor con scroll.
+    await user.click(screen.getByRole("tab", { name: /Listos/ }));
+    expect(screen.getByRole("tabpanel", { name: "Listos para envío" }).querySelector(".sat-scroll")).not.toBeNull();
+    // «Global»: cada columna scrollea por su cuenta (dos contenedores).
+    await user.click(screen.getByRole("tab", { name: /Global/ }));
+    expect(screen.getByRole("tabpanel", { name: "Por embalar y listos" })
+      .querySelectorAll(".sat-scroll")).toHaveLength(2);
+    // «Enviados» (historial) también.
+    await user.click(screen.getByRole("tab", { name: /Enviados/ }));
+    expect(screen.getByRole("tabpanel", { name: "Enviados al taller" }).querySelector(".sat-scroll")).not.toBeNull();
+  });
+
+  it("#2 · «Lista» se aplica también a la global: cada columna es una tabla de filas, no tarjetas", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem("bohub.sat.queue.view", "list");
+    render(<SatQueuePage />);
+    await loaded();
+    await user.click(screen.getByRole("tab", { name: /Global/ }));
+    const panel = screen.getByRole("tabpanel", { name: "Por embalar y listos" });
+    // Las dos colas como tablas compactas (6 columnas), no como tarjetas.
+    const prep = within(panel).getByRole("table", { name: "Pedidos por embalar" });
+    const ready = within(panel).getByRole("table", { name: "Pedidos listos para envío" });
+    expect(within(prep).getAllByRole("columnheader").map((h) => h.textContent)).toEqual(
+      ["Nº", "Cliente", "Tienda", "Estado", "Datos técnicos", "Acciones"],
+    );
+    expect(within(prep).getByRole("link", { name: "BOP-1" })).toHaveAttribute("href", "/erp/sat/o1");
+    expect(within(ready).getByRole("link", { name: "BOP-2" })).toBeInTheDocument();
+    // No se pinta el componente card: nada de «Abrir modo trabajo».
+    expect(within(panel).queryByRole("link", { name: /Abrir modo trabajo/ })).not.toBeInTheDocument();
+  });
+
+  it("#5 · sube la etiqueta desde una fila de «Listos», recarga la cola y deja de faltar", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem("bohub.sat.queue.view", "list");
+    const base = item({
+      id: "o7", order_number: "BOP-7", preparation_status: "packed",
+      albaran_source: "file", has_albaran_file: true, albaran_file_source: "manual_upload",
+      is_web_order: false, has_etiqueta: false,
+    });
+    // La segunda carga (tras subir) ya trae la etiqueta presente.
+    mockQueue
+      .mockResolvedValueOnce({ preparing: [], ready_for_pickup: [base] })
+      .mockResolvedValue({ preparing: [], ready_for_pickup: [{ ...base, has_etiqueta: true }] });
+    mockUpload.mockResolvedValue({
+      file: {
+        id: "f", kind: "etiqueta", source: "manual_upload", filename: "e.pdf",
+        mime_type: "application/pdf", size_bytes: 1, uploaded_by_user_id: null,
+        uploaded_at: null, download_url: "/x",
+      },
+      transition_applied: true, transport_status: "label_created", transition_reason: null,
+    });
+    render(<SatQueuePage />);
+    await user.click(await screen.findByRole("tab", { name: /Listos/ }));
+    const readyTable = await screen.findByRole("table", { name: "Pedidos listos para envío" });
+    const pdf = new File(["%PDF-"], "e.pdf", { type: "application/pdf" });
+    await user.upload(within(readyTable).getByLabelText(/Subir etiqueta/), pdf);
+    // Reutiliza el flujo de subida existente (mismo helper que la ficha).
+    await waitFor(() => expect(mockUpload).toHaveBeenCalledWith("o7", "etiqueta", pdf));
+    // Tras recargar la cola, la fila ya no ofrece subirla: se imprime.
+    expect(await screen.findByRole("button", { name: /Imprimir etiqueta/ })).toBeInTheDocument();
+    expect(screen.queryByLabelText(/Subir etiqueta/)).not.toBeInTheDocument();
   });
 });

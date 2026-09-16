@@ -23,8 +23,12 @@ export function satDateTime(iso: string | null | undefined): string {
   });
 }
 
-/** Nº de columnas de la tabla (para las filas de aviso/observaciones). */
-const COLS = 8;
+/** Nº de columnas de la tabla (para las filas de aviso/observaciones).
+ *  Lote 4 · #2 — lista compacta real: nº · cliente · tienda · estado · nº de
+ *  serie / licencia · acciones. Se quitan «Fecha» y la columna de flags de
+ *  «Documentos» (su estado ya lo dan los chips de acción: albarán y etiqueta),
+ *  para que la fila quepa sin scroll horizontal y se distinga de las tarjetas. */
+const COLS = 6;
 
 function StatusBadge({ status }: { status: string }) {
   return (
@@ -86,18 +90,8 @@ function SatPreparingRow({ order, onChanged }: { order: SatQueueItem; onChanged:
         </td>
         <td className="sat-td-cliente">{customerLabel(order) || "—"}</td>
         <td>{order.store_slug ?? "—"}</td>
-        <td>{satShortDate(order.placed_at)}</td>
         <td><StatusBadge status={order.preparation_status} /></td>
         <TechCell order={order} />
-        <td>
-          <span className={`sat-doc-flag ${albaran.hasAlbaran ? "ok" : "warn"}`}
-                title={albaran.title}>
-            {albaran.hasAlbaran ? "📄 Albarán" : "📄 Falta"}
-          </span>
-          <span className={`sat-doc-flag ${order.has_etiqueta ? "ok" : ""}`}>
-            {order.has_etiqueta ? "🏷️ Etiqueta" : "🏷️ —"}
-          </span>
-        </td>
         <td>
           <div className="sat-td-actions">
             <Link href={`/erp/sat/${order.id}`} className="button small">Abrir →</Link>
@@ -124,7 +118,6 @@ function SatPreparingRow({ order, onChanged }: { order: SatQueueItem; onChanged:
  *  (con confirmación) y reabrir — los mismos handlers que la card. */
 function SatReadyRow({ order, onChanged }: { order: SatQueueItem; onChanged: () => void }) {
   const actions = useSatReadyActions(order, onChanged);
-  const { hasAlbaran } = actions.albaran;
   return (
     <>
       <NotesRow order={order} />
@@ -137,18 +130,8 @@ function SatReadyRow({ order, onChanged }: { order: SatQueueItem; onChanged: () 
         </td>
         <td className="sat-td-cliente">{customerLabel(order) || "—"}</td>
         <td>{order.store_slug ?? "—"}</td>
-        <td>{satShortDate(order.placed_at)}</td>
         <td><StatusBadge status={order.preparation_status} /></td>
         <TechCell order={order} />
-        <td>
-          <span className={`sat-doc-flag ${hasAlbaran ? "ok" : "warn"}`}
-                title={actions.albaran.title}>
-            {hasAlbaran ? "📄 Albarán" : "📄 Falta"}
-          </span>
-          <span className={`sat-doc-flag ${order.has_etiqueta ? "ok" : "warn"}`}>
-            {order.has_etiqueta ? "🏷️ Etiqueta" : "🏷️ Falta"}
-          </span>
-        </td>
         <td>
           <div className="sat-td-actions">
             <SatReadyDocChips order={order} actions={actions} />
@@ -188,10 +171,8 @@ export function SatQueueTable({
             <th>Nº</th>
             <th>Cliente</th>
             <th>Tienda</th>
-            <th>Fecha</th>
             <th>Estado</th>
             <th>Datos técnicos</th>
-            <th>Documentos</th>
             <th>Acciones</th>
           </tr>
         </thead>

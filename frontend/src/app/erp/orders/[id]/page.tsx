@@ -1055,7 +1055,11 @@ function ErpOrderDetailScreen() {
             completar el NIF que falte…) resuelto por `company_id`. Sin empresa
             vinculada (raro) avisa discreto; nunca inventa datos del cliente. */}
         {isWeb ? (
-          <OrderFactusolClientPanel companyId={order.company_id} onChanged={load} />
+          <OrderFactusolClientPanel
+            orderId={order.id}
+            companyId={order.company_id}
+            onChanged={load}
+          />
         ) : null}
 
         <FichaPanel

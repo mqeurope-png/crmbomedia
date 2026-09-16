@@ -1192,6 +1192,182 @@ def get_order(
     return _serialise_detail(session, _get_order(session, order_id), current_user)
 
 
+# --- Lote 4: cliente FACTUSOL del pedido (también los WEB) --------------------
+#
+# La ficha de empresa ya deja ver y completar el cliente F_CLI; en un pedido WEB
+# sin empresa vinculada en el CRM no había forma. Pero el cliente EXISTE: el
+# pedido sabe su CODCLI por la empresa (`factusol_company_id`) o, si está
+# facturado / con albarán, por el CLIFAC de la factura o el CLIALB del albarán.
+
+
+#: Campos identificativos del cliente F_CLI (claves normalizadas de
+#: `get_customer`) que el panel muestra y cuya ausencia marca como «a completar».
+_CUSTOMER_MISSING_FIELDS: dict[str, str] = {
+    "nombre": "nombre", "nif": "nif", "direccion": "domcli",
+    "ciudad": "pobcli", "cp": "cpocli", "provincia": "procli",
+}
+
+
+def _customer_missing(cliente: dict[str, Any]) -> list[str]:
+    """Campos identificativos vacíos en la ficha F_CLI (p. ej. `nif`)."""
+    return [
+        field for field, key in _CUSTOMER_MISSING_FIELDS.items()
+        if not str(cliente.get(key) or "").strip()
+    ]
+
+
+def _resolve_factusol_customer(session: Session, order: Order) -> dict[str, Any]:
+    """`{found, codcli, source, cliente, missing, company_id}` del cliente
+    FACTUSOL del pedido. Sin CODCLI resoluble (ni empresa, ni factura, ni
+    albarán) → `found:false` sin tocar FACTUSOL."""
+    from app.erp.api.factusol import _client_and_ejercicio  # noqa: PLC0415
+    from app.erp.order_factusol_customer import (  # noqa: PLC0415
+        order_has_resolvable_source,
+        resolve_order_codcli,
+    )
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+    from app.integrations.factusol.customers import get_customer  # noqa: PLC0415
+
+    empty = {
+        "found": False, "codcli": None, "source": None, "cliente": None,
+        "missing": [], "company_id": order.company_id,
+    }
+    if not order_has_resolvable_source(session, order):
+        return empty
+    client, ejercicio = _client_and_ejercicio(session)
+    try:
+        codcli, source = resolve_order_codcli(
+            session, order, client=client, ejercicio=ejercicio,
+        )
+        if not codcli:
+            return empty
+        cliente = get_customer(client, codcli, ejercicio=ejercicio)
+    except FactusolError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, {
+            "code": "factusol_customer_failed", "detail": str(exc)[:200],
+        }) from exc
+    return {
+        "found": cliente is not None,
+        "codcli": codcli,
+        "source": source,
+        "cliente": cliente,
+        "missing": _customer_missing(cliente) if cliente else [],
+        "company_id": order.company_id,
+    }
+
+
+@router.get("/{order_id}/factusol-customer")
+def order_factusol_customer(
+    order_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> dict[str, Any]:
+    """Cliente FACTUSOL (F_CLI) del pedido, resuelto por su CODCLI: la empresa
+    CRM vinculada, o el CLIFAC de su factura, o el CLIALB de su albarán (el
+    primero que resuelve). Para verlo y completarlo también en los pedidos WEB
+    sin empresa en el CRM. Solo LECTURA en FACTUSOL."""
+    _ = current_user
+    return _resolve_factusol_customer(session, _get_order(session, order_id))
+
+
+class OrderFactusolCustomerWriteIn(BaseModel):
+    """Completar datos del cliente F_CLI del pedido. Solo se escriben los campos
+    que entra el operador (nunca se inventan ni se borran); exige `confirm`."""
+
+    confirm: bool = False
+    nombre: str | None = Field(default=None, max_length=250)
+    nif: str | None = Field(default=None, max_length=64)
+    direccion: str | None = Field(default=None, max_length=250)
+    ciudad: str | None = Field(default=None, max_length=120)
+    cp: str | None = Field(default=None, max_length=20)
+    provincia: str | None = Field(default=None, max_length=120)
+    email: str | None = Field(default=None, max_length=180)
+    telefono: str | None = Field(default=None, max_length=40)
+
+    def entered_fields(self) -> dict[str, str]:
+        data = self.model_dump(exclude={"confirm"})
+        return {k: v.strip() for k, v in data.items() if (v or "").strip()}
+
+
+@router.post("/{order_id}/factusol-customer")
+def complete_order_factusol_customer(
+    order_id: str,
+    payload: OrderFactusolCustomerWriteIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """Completa en FACTUSOL (F_CLI, `ActualizarRegistro` — SOLO las columnas que
+    cambian) los datos que faltan del cliente del pedido (p. ej. el NIF),
+    resuelto por su CODCLI. NUNCA inventa: solo escribe lo que entra el operador.
+    Exige `confirm:true`; deja auditoría."""
+    from app.core.audit import record_event  # noqa: PLC0415
+    from app.erp.api.factusol import _client_and_ejercicio  # noqa: PLC0415
+    from app.erp.order_factusol_customer import resolve_order_codcli  # noqa: PLC0415
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+    from app.integrations.factusol.customers import (  # noqa: PLC0415
+        get_customer,
+        update_customer_fields,
+    )
+
+    order = _get_order(session, order_id)
+    if not payload.confirm:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "confirmation_required",
+            "detail": "Confirma antes de escribir en FACTUSOL (F_CLI).",
+        })
+    fields = payload.entered_fields()
+    if not fields:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "no_fields", "detail": "No hay ningún dato que completar.",
+        })
+    client, ejercicio = _client_and_ejercicio(session)
+    try:
+        codcli, source = resolve_order_codcli(
+            session, order, client=client, ejercicio=ejercicio,
+        )
+    except FactusolError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, {
+            "code": "factusol_customer_failed", "detail": str(exc)[:200],
+        }) from exc
+    if not codcli:
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "customer_unresolved",
+            "detail": (
+                "El pedido no tiene un cliente FACTUSOL resoluble "
+                "(ni empresa vinculada, ni factura, ni albarán)."
+            ),
+        })
+    try:
+        result = update_customer_fields(
+            client, codcli=codcli, ejercicio=ejercicio, fields=fields,
+        )
+        cliente = get_customer(client, codcli, ejercicio=ejercicio)
+    except FactusolError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, {
+            "code": "factusol_customer_update_failed", "detail": str(exc)[:300],
+        }) from exc
+    if result["changed"]:
+        record_event(
+            session, action="erp.factusol_customer_completed", target_type="order",
+            target_id=order.id, actor=current_user,
+            metadata={
+                "order_number": order.order_number, "codcli": codcli,
+                "source": source, "written": result["written"],
+            },
+            message=(
+                f"Pedido {order.order_number}: datos del cliente FACTUSOL nº "
+                f"{codcli} completados ({', '.join(result['written'])})"
+            ),
+        )
+        session.commit()
+    return {
+        "ok": True, "order_id": order.id, "codcli": codcli, "source": source,
+        "changed": result["changed"], "written": result["written"],
+        "cliente": cliente,
+        "missing": _customer_missing(cliente) if cliente else [],
+    }
+
+
 @router.post("/{order_id}/transitions")
 def fire_transition(
     order_id: str,
