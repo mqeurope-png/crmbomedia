@@ -13781,3 +13781,116 @@ table.erp-doc-lines { width: 100%; table-layout: fixed; }
   table.erp-doc-lines td.erp-doc-del { justify-content: flex-end; }
   table.erp-doc-lines .erp-article-ac-list { min-width: 0; }
 }
+
+/* ==========================================================================
+   ERP · Lote 3 · Cola SAT — edición inline de seguimiento (#2), márgenes de
+   las vistas (#3b), historial en modo lista (#3a) y vista global 50/50 (#3c).
+   Solo tokens del sistema de diseño. Añadido al final; no reescribe reglas.
+   ========================================================================== */
+
+/* #3b · Márgenes/gutter consistentes en las 4 vistas de la cola. El móvil
+   mantiene el gutter de 16 px de .sat-main (regla del sistema); desde tablet,
+   más aire lateral y algo de respiración vertical para que el contenido no
+   quede pegado a los bordes. */
+.sat-queue-wrap { padding-block: var(--sp-2); }
+@media (min-width: 768px) {
+  .sat-main:has(.sat-queue-wrap) { padding-inline: var(--sp-6); }
+}
+.sat-section { margin: 0; }
+
+/* #2 · Edición inline de los datos técnicos (nº de serie, licencia WhiteRIP,
+   origen) sin salir de la cola. El botón «Editar» (✎) comparte tamaño y estilo
+   con el de copiar; en edición, campo + Guardar/Cancelar. */
+.sat-tech-actions { display: inline-flex; align-items: center; gap: var(--sp-2); flex: none; }
+.sat-tech-edit-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--control-h-sm);
+  height: var(--control-h-sm);
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--card);
+  color: var(--brand-ink);
+  font-size: var(--fs-subtitle);
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+}
+.sat-tech-edit-btn:hover { background: var(--primary-tint); }
+.sat-tech-edit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--control-h-sm);
+}
+.sat-tech-input {
+  flex: 1 1 160px;
+  min-width: 0;
+  min-height: var(--control-h);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: #fff;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--fs-body);
+}
+.sat-tech-edit .button.small,
+.sat-origin-edit .button.small { min-height: var(--control-h); }
+.sat-origin-edit { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+.sat-origin-edit .form-error { flex: 1 1 100%; }
+
+/* #3a · Historial «Enviados» como lista de consulta responsive (data-table);
+   sin scroll horizontal raro: por debajo de 768 px cada fila pasa a pares
+   etiqueta/valor (regla compartida `data-table--responsive`). */
+.sat-history-wrap { margin-top: 0; }
+.sat-history-table .sat-td-cliente { min-width: 0; }
+.sat-history-table .sat-history-reason { white-space: normal; }
+
+/* #3c · Vista global: «Por embalar» (izquierda) y «Listos» (derecha) al 50/50
+   para verlas a la vez; en móvil se apilan. Reusa las cards existentes. */
+.sat-global-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--sp-4);
+  align-items: start;
+}
+.sat-global-title {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-3);
+  font-size: var(--fs-subtitle);
+}
+.sat-cards--single { grid-template-columns: 1fr; }
+.sat-global .sat-empty { font-size: var(--fs-subtitle); padding: var(--sp-6) 0; }
+@media (max-width: 767px) {
+  .sat-global-cols { grid-template-columns: 1fr; gap: var(--sp-6); }
+}
+/* ===================================================================
+   Lote 3 · ficha de pedido (frontend)
+   -------------------------------------------------------------------
+   #8 · «Factura enviada al cliente» en la línea de vida. Nota discreta
+   dentro del paso «Factura» (solo cuando la factura ya existe): verde de
+   estado cuando ya se ha enviado al cliente desde la app (informa, no se
+   pulsa), gris con el dato cuando aún no. Tamaño de la escala cerrada
+   (--fs-label) y colores por token.
+   #1 · el reequilibrio de columnas no necesita reglas propias: es puro
+   reparto de paneles en el JSX sobre la rejilla `.erp-ficha-cols` (que ya
+   apila por debajo de 1280 px); «Líneas» y «Envío y seguimiento» pasan a
+   la columna izquierda y el cliente FACTUSOL (#6) a la derecha.
+   =================================================================== */
+.erp-flow-emailed {
+  margin: var(--sp-2) 0 0;
+  font-size: var(--fs-label);
+  line-height: 1.35;
+}
+.erp-flow-emailed.is-sent {
+  color: var(--st-green-ink);
+  font-weight: 600;
+}
+.erp-flow-emailed.is-sent::before { content: "\2713\00a0"; }
+.erp-flow-emailed.is-unsent { color: var(--muted); }

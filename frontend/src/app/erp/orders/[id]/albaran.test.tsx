@@ -38,12 +38,22 @@ jest.mock("../../../components/erp/FactusolAlbaranPdfButton", () => ({
     <button type="button">PDF del albarán (FACTUSOL)<span hidden>{numero}</span></button>
   ),
 }));
+jest.mock("../../../components/erp/OrderFactusolClientPanel", () => ({
+  OrderFactusolClientPanel: () => null,
+}));
 jest.mock("../../../lib/api", () => ({
   getCurrentUser: jest.fn(() => Promise.resolve({ role: "admin" })),
 }));
 jest.mock("../../../lib/erpApi", () => ({
   ERP_EDIT_ROLES: ["admin", "pedidos"],
   customerLabel: () => "Duplicoder",
+  resolveOrderCobroStatus: (
+    o: { factusol_cobro_status?: string | null },
+    live: { status?: string | null } | null | undefined,
+  ) => {
+    const s = live?.status === "cobrada" || live?.status === "pendiente" ? live.status : null;
+    return s ?? o.factusol_cobro_status ?? null;
+  },
   getOrder: jest.fn(),
   getOrderTimeline: jest.fn(() => Promise.resolve({ total: 0, items: [] })),
   getFactusolStatus: jest.fn(() => Promise.resolve({ status: "pending" })),

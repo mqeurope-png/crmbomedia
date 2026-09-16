@@ -16,7 +16,6 @@ import {
   ERP_EDIT_ROLES,
   convertFactusolQuoteToOrder,
   downloadFactusolDocumentPdf,
-  duplicateFactusolQuote,
   listFactusolQuotes,
   saveBlob,
   type FactusolPdfLang,
@@ -185,6 +184,10 @@ export default function ProformasPage() {
   const [sortDir, setSortDir] = useState<SortDir | null>(null);
   const [converting, setConverting] = useState<FactusolQuote | null>(null);
   const [editing, setEditing] = useState<{ quote: FactusolQuote; company: Company } | null>(null);
+  // Duplicar con previsualización (Lote 3): la proforma de origen que se abre en
+  // el modal en modo «Duplicar». La copia se crea desde el propio modal tras la
+  // vista previa; ya no hay duplicado directo desde la fila.
+  const [duplicating, setDuplicating] = useState<FactusolQuote | null>(null);
   const [picking, setPicking] = useState(false);
   const [creatingFor, setCreatingFor] = useState<Company | null>(null);
   // «Ahora» para la antigüedad en palabras: el momento de la última carga (no
@@ -274,23 +277,6 @@ export default function ProformasPage() {
     }
   }
 
-  async function duplicate(q: FactusolQuote) {
-    const codpre = q.codpre ?? "";
-    setBusy(true);
-    setError(null);
-    setNotice(`Duplicando la proforma ${codpre} en FACTUSOL…`);
-    try {
-      const r = await duplicateFactusolQuote(codpre);
-      const result = await waitFor(r.job_id);
-      if (result) setNotice(`Proforma nº ${result.codpre} creada (duplicado de ${codpre}).`);
-      await load();
-    } catch (e) {
-      setError(extractErrorMessage(e, "No se pudo duplicar la proforma."));
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function pdf(q: FactusolQuote) {
     const codpre = q.codpre ?? "";
     setError(null);
@@ -324,6 +310,7 @@ export default function ProformasPage() {
   async function onQuoteJob(jobId: string, verb: string) {
     setCreatingFor(null);
     setEditing(null);
+    setDuplicating(null);
     setBusy(true);
     setError(null);
     setNotice(`${verb} la proforma en FACTUSOL…`);
@@ -551,7 +538,7 @@ export default function ProformasPage() {
                     ) : null}
                     {canEdit ? (
                       <button type="button" className="button small secondary" disabled={busy}
-                              onClick={() => void duplicate(q)}>
+                              onClick={() => setDuplicating(q)}>
                         Duplicar
                       </button>
                     ) : null}
@@ -602,6 +589,23 @@ export default function ProformasPage() {
           editCodpre={editing.quote.codpre}
           onCreated={(jobId) => void onQuoteJob(jobId, "Actualizando")}
           onCancel={() => setEditing(null)}
+        />
+      ) : null}
+
+      {/* Duplicar con previsualización (Lote 3): el mismo modal que «Nueva
+          proforma → Duplicar», abierto ya en modo «Duplicar» con la proforma de
+          la fila cargada en la vista previa (líneas reales de F_LPS y «Ver
+          PDF»). El cliente destino arranca en el de la propia proforma si está
+          vinculado a una empresa del CRM; si no, se elige con «Cambiar». La
+          copia se crea desde el modal, nunca directa. */}
+      {duplicating ? (
+        <CreateQuoteModal
+          companyId={companyOf(duplicating)?.id ?? ""}
+          companyName={companyOf(duplicating)?.name ?? duplicating.cliente_nombre ?? "—"}
+          factusolCodcli={companyOf(duplicating)?.codcli ?? null}
+          duplicateSource={duplicating}
+          onCreated={(jobId) => void onQuoteJob(jobId, "Creando")}
+          onCancel={() => setDuplicating(null)}
         />
       ) : null}
     </main>

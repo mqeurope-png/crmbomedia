@@ -142,19 +142,22 @@ def test_pdf_contains_all_required_fields_per_doc_type() -> None:
         "Segunda línea de observaciones",
         "1 de 1",                                 # paginación
     ]
-    # FACTURA: bandas + total + vencimiento + albarán por línea.
+    # FACTURA: bandas + total + albarán por línea (SIN línea de vencimiento).
     fac_lines = [_linea("facturas", 1, DOCLFA="A", DTPLFA="5", DCOLFA=500004)]
     pdf, _ = _pdf("facturas", _header("facturas"), fac_lines)
     text = _texto(pdf)
     for needle in esperado_comun + [
         "FACTURA", "186,34", "21", "39,13", "225,47",
-        "26-09-2026",                              # 1er vencimiento
         "ART-001", "Artículo de prueba 1", "40,00", "10", "87,12",
         "Albarán 5-500004", "21-08-2026", "BOP-099917",  # agrupación
     ]:
         assert needle in text, f"factura sin {needle!r}"
     # Bloque 1b: el nº/fecha de «su pedido» (PED*/FPE*) ya no se imprime.
     assert "PED-777" not in text and "20-08-2026" not in text
+    # La línea de vencimiento se retiró: ni la etiqueta ni la fecha (VEN =
+    # 2026-09-26 → «26-09-2026») deben aparecer en el PDF de factura.
+    assert "26-09-2026" not in text
+    assert "VENCIMIENTO" not in text.upper()
 
     # PRESUPUESTO: mismas bandas + texto de validez de 30 días.
     pdf, _ = _pdf("presupuestos", _header("presupuestos"),
@@ -184,6 +187,32 @@ def test_pdf_contains_all_required_fields_per_doc_type() -> None:
     text = _texto(pdf)
     for needle in esperado_comun + ["PEDIDO", "87,12", "225,47"]:
         assert needle in text, f"pedido sin {needle!r}"
+
+
+@pytest.mark.parametrize("lang", ["es", "en", "de", "fr", "nl"])
+def test_factura_pdf_never_renders_vencimiento_line(lang: str) -> None:
+    """Bloque 5 · La línea de vencimiento («1er VENCIMIENTO: …») se retiró
+    de la factura: aunque la cabecera FACTUSOL traiga VEN, ni la etiqueta
+    (en ningún idioma) ni la fecha ni el dato crudo salen en el PDF."""
+    # Cabecera con VEN explícito (2026-09-26) para forzar el caso.
+    header = _header("facturas", VENFAC="2026-09-26T00:00:00")
+    pdf, data = _pdf("facturas", header, [_linea("facturas", 1)], lang=lang)
+    text = _texto(pdf)
+    # El dato se sigue extrayendo (inofensivo), pero no debe renderizarse.
+    assert data["vencimiento"] == "26-09-2026"
+    # Ninguna etiqueta de vencimiento, en ningún idioma.
+    for label in ("VENCIMIENTO", "DUE DATE", "FÄLLIGKEIT",
+                  "ÉCHÉANCE", "VERVALDATUM"):
+        assert label not in text.upper(), f"{lang}: aparece {label!r}"
+    # Ni la fecha del vencimiento, ni el dato crudo (p. ej. «…;-000…»).
+    assert "26-09-2026" not in text
+    assert "vencimiento" not in text.lower()
+    # No se rompió el resto: total, banco y observaciones siguen ahí
+    # (la etiqueta de total y el importe se formatean según el idioma).
+    assert labels_for(lang)["total"] in text
+    assert "225" in text  # importe del total, sin depender del separador
+    assert "IBAN: ES11 0081 0202 1700 0125 9030" in text
+    assert "Primera línea de observaciones" in text
 
 
 def test_pdf_uses_company_identity_from_series() -> None:

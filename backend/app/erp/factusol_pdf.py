@@ -1525,7 +1525,7 @@ def _summary_flowables(
     data: dict[str, Any], lab: dict[str, str], lang: str, *, valued: bool,
     currency: str = "EUR",
 ) -> list[Any]:
-    """Observaciones + bandas de IVA (incl. exenta) + TOTAL + vencimiento."""
+    """Observaciones + bandas de IVA (incl. exenta) + TOTAL."""
     out: list[Any] = []
     style = _para_style(8.6)
 
@@ -1645,12 +1645,10 @@ def _summary_flowables(
             )),
             nota_style,
         ))
-    if data["vencimiento"]:
-        out.append(Paragraph(
-            f"<b>{lab['vencimiento']}</b> {data['vencimiento']}",
-            ParagraphStyle(name="ven", fontName=FONT, fontSize=8.6,
-                           leading=11, alignment=2),
-        ))
+    # La línea de vencimiento («1er VENCIMIENTO: …») NO se renderiza: se
+    # retiró a propósito de la factura en todos los modelos e idiomas.
+    # El dato `data["vencimiento"]` se sigue extrayendo (inofensivo), pero
+    # no debe aparecer nunca en el PDF.
     return out
 
 

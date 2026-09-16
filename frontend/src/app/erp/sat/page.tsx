@@ -24,10 +24,11 @@ import {
 
 type View = "cards" | "list";
 
-/** Lote 2 · PR-2: las tres pestañas de la cola. «Enviados» es el antiguo
- *  historial plegable (email al SAT o aprobación), ahora al mismo nivel que
- *  las otras dos para que se vea a qué hora se envió cada pedido y quién. */
-type Tab = "por_embalar" | "listos" | "enviados";
+/** Lote 2 · PR-2: las pestañas de la cola. «Enviados» es el antiguo historial
+ *  plegable (email al SAT o aprobación), ahora al mismo nivel que las otras
+ *  para que se vea a qué hora se envió cada pedido y quién.
+ *  Lote 3: «Global» muestra «Por embalar» y «Listos» a la vez (50/50). */
+type Tab = "por_embalar" | "listos" | "global" | "enviados";
 
 /** Preferencia de vista (tarjetas / lista) por dispositivo: la tablet del
  *  taller quiere tarjetas; el escritorio de oficina, lista. */
@@ -88,6 +89,8 @@ export default function SatQueuePage() {
   const [qInput, setQInput] = useState("");
   const [q, setQ] = useState("");
   const [stores, setStores] = useState<{ slug: string; label: string }[]>([]);
+  // Lote 3: catálogo de orígenes del envío para editar el campo inline en la cola.
+  const [origins, setOrigins] = useState<string[]>([]);
 
   // El buscador se aplica con un pequeño retardo para no pedir la cola en
   // cada tecla (la tablet del taller va por wifi).
@@ -137,10 +140,14 @@ export default function SatQueuePage() {
     getCurrentUser()
       .then((u) => setCanEdit(Boolean(u && (ERP_EDIT_ROLES as readonly string[]).includes(u.role))))
       .catch(() => setCanEdit(false));
-    // Las tiendas son best-effort: sin ellas el filtro simplemente no sale.
+    // Tiendas (filtro) y orígenes (edición inline) son best-effort: sin ellos
+    // el filtro no sale y el origen se edita como texto libre.
     getErpSettings()
-      .then((s) => setStores((s.woocommerce_stores ?? []).map((w) => ({ slug: w.slug, label: w.label }))))
-      .catch(() => setStores([]));
+      .then((s) => {
+        setStores((s.woocommerce_stores ?? []).map((w) => ({ slug: w.slug, label: w.label })));
+        setOrigins(s.shipping_origins ?? []);
+      })
+      .catch(() => { setStores([]); setOrigins([]); });
   }, []);
 
   // --- cola ------------------------------------------------------------------
@@ -219,6 +226,7 @@ export default function SatQueuePage() {
   const TABS: { key: Tab; label: string; count: number | null }[] = [
     { key: "por_embalar", label: "Por embalar", count: preparing.length },
     { key: "listos", label: "Listos", count: ready.length },
+    { key: "global", label: "Global", count: preparing.length + ready.length },
     { key: "enviados", label: "Enviados", count: historyLoaded ? history.length : null },
   ];
 
@@ -339,7 +347,8 @@ export default function SatQueuePage() {
           ) : (
             <div className="sat-cards">
               {preparing.map((o) => (
-                <SatPreparingCard key={o.id} order={o} onChanged={refreshAll} />
+                <SatPreparingCard key={o.id} order={o} onChanged={refreshAll}
+                                  canEdit={canEdit} origins={origins} />
               ))}
             </div>
           )}
@@ -359,10 +368,51 @@ export default function SatQueuePage() {
           ) : (
             <div className="sat-cards">
               {ready.map((o) => (
-                <SatReadyCard key={o.id} order={o} onChanged={refreshAll} />
+                <SatReadyCard key={o.id} order={o} onChanged={refreshAll}
+                              canEdit={canEdit} origins={origins} />
               ))}
             </div>
           )}
+        </section>
+      ) : null}
+
+      {tab === "global" ? (
+        <section
+          className="sat-section sat-global" role="tabpanel" id="sat-panel-global"
+          aria-label="Por embalar y listos"
+        >
+          <div className="sat-global-cols">
+            <div className="sat-global-col" aria-label="Por embalar">
+              <h2 className="sat-global-title">
+                📦 Por embalar <span className="sat-tab-count">{preparing.length}</span>
+              </h2>
+              {preparing.length === 0 ? (
+                <p className="sat-empty">{hasFilters ? "Nada por embalar con estos filtros." : "Nada por embalar."}</p>
+              ) : (
+                <div className="sat-cards sat-cards--single">
+                  {preparing.map((o) => (
+                    <SatPreparingCard key={o.id} order={o} onChanged={refreshAll}
+                                      canEdit={canEdit} origins={origins} />
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="sat-global-col" aria-label="Listos para envío">
+              <h2 className="sat-global-title">
+                🚚 Listos <span className="sat-tab-count">{ready.length}</span>
+              </h2>
+              {ready.length === 0 ? (
+                <p className="sat-empty">{hasFilters ? "Nada listo para enviar con estos filtros." : "Nada listo para enviar."}</p>
+              ) : (
+                <div className="sat-cards sat-cards--single">
+                  {ready.map((o) => (
+                    <SatReadyCard key={o.id} order={o} onChanged={refreshAll}
+                                  canEdit={canEdit} origins={origins} />
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
         </section>
       ) : null}
 
@@ -382,8 +432,9 @@ export default function SatQueuePage() {
           ) : history.length === 0 ? (
             <p className="muted">Sin envíos al taller{hasFilters ? " con estos filtros" : ""}.</p>
           ) : (
-            <div className="sat-table-wrap">
-              <table className="sat-table" aria-label="Enviados al taller">
+            <div className="table-wrapper sat-history-wrap">
+              <table className="data-table data-table--responsive sat-history-table"
+                     aria-label="Enviados al taller">
                 <thead>
                   <tr>
                     <th>Nº</th>
@@ -399,27 +450,27 @@ export default function SatQueuePage() {
                 <tbody>
                   {history.map((h, i) => (
                     <tr key={`${h.kind}-${h.order_id}-${h.at}-${i}`}>
-                      <td className="sat-td-num">
+                      <td data-label="Nº" className="mono">
                         <Link href={`/erp/orders/${h.order_id}`}>{h.order_number}</Link>
                       </td>
-                      <td className="sat-td-cliente">{customerLabel(h) || "—"}</td>
-                      <td className="mono">{satDateTime(h.at)}</td>
-                      <td>{h.actor_name ?? "—"}</td>
-                      <td title={h.reason ?? h.subject ?? undefined}>
+                      <td data-label="Cliente" className="sat-td-cliente">{customerLabel(h) || "—"}</td>
+                      <td data-label="Cuándo" className="mono">{satDateTime(h.at)}</td>
+                      <td data-label="Quién">{h.actor_name ?? "—"}</td>
+                      <td data-label="Tipo" title={h.reason ?? h.subject ?? undefined}>
                         <span className={`badge ${h.kind === "email_sat" ? "active" : "ok"}`}>
                           {KIND_LABEL[h.kind]}
                         </span>
                         {h.reason ? <span className="muted small sat-history-reason"> {h.reason}</span> : null}
                       </td>
-                      <td>{h.to.length > 0 ? h.to.join(", ") : "—"}</td>
-                      <td>
+                      <td data-label="Destinatario">{h.to.length > 0 ? h.to.join(", ") : "—"}</td>
+                      <td data-label="Estado actual">
                         <span className={`badge ${STATUS_LABELS[h.preparation_status]?.tone ?? "muted"}`}>
                           {STATUS_LABELS[h.preparation_status]?.label ?? h.preparation_status}
                         </span>
                         {h.cancelled ? <span className="badge bad"> Anulado</span> : null}
                         {h.excluded ? <span className="badge muted"> Quitado</span> : null}
                       </td>
-                      <td className="mono">{h.factusol_albaran_number ?? (h.has_albaran ? "Subido" : "—")}</td>
+                      <td data-label="Albarán" className="mono">{h.factusol_albaran_number ?? (h.has_albaran ? "Subido" : "—")}</td>
                     </tr>
                   ))}
                 </tbody>

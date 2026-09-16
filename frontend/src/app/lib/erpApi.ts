@@ -212,6 +212,11 @@ export type OrderDetail = OrderSummary & {
   /** Rediseño de flujo: el MISMO bloque que recibe la bandeja (stepper de la
    *  «línea de vida», siguiente paso y alertas). */
   workflow?: OrderWorkflow;
+  /** Último envío de la factura al cliente por email DESDE la app (ISO) y a
+   *  quién se envió. `null` / vacío = nunca se ha enviado. Alimenta el
+   *  indicador «Factura enviada al cliente el DD/MM/AAAA» de la línea de vida. */
+  invoice_emailed_at?: string | null;
+  invoice_emailed_to?: string[];
 };
 
 export type FactusolOriginDocument = {
@@ -3641,4 +3646,52 @@ export async function downloadBankExport(
   accountId: string, opts: { desde?: string; hasta?: string } = {},
 ): Promise<Blob> {
   return apiDownloadBlob(`/api/erp/bank/export${qs({ account_id: accountId, ...opts })}`);
+}
+
+// --- Lote 3 · Cola SAT — edición inline de seguimiento ----------------------
+
+/** Valores de seguimiento que edita la Cola SAT (ya recortados por el backend:
+ *  null si quedan vacíos). */
+export type SeguimientoFieldsPatch = {
+  serial_number: string | null;
+  whiterip_license: string | null;
+  shipping_origin: string | null;
+};
+
+/** Lote 3 · Cola SAT — guarda nº de serie, licencia WhiteRIP y origen del
+ *  envío desde la cola SIN salir de ella. Reusa el MISMO endpoint de la ficha
+ *  (`PATCH /api/erp/orders/{id}/seguimiento`, `updateOrderSeguimiento`) sin
+ *  duplicar la llamada; solo envía los tres campos de la cola (no toca
+ *  observaciones) y devuelve los valores ya normalizados por el backend. */
+export async function updateSeguimientoFields(
+  orderId: string,
+  payload: {
+    serial_number?: string;
+    whiterip_license?: string;
+    shipping_origin?: string;
+  },
+): Promise<SeguimientoFieldsPatch> {
+  const r = await updateOrderSeguimiento(orderId, payload);
+  return {
+    serial_number: r.serial_number,
+    whiterip_license: r.whiterip_license,
+    shipping_origin: r.shipping_origin,
+  };
+}
+
+/** Lote 3 · ficha — FUENTE ÚNICA del estado de cobro de la ficha. El estado
+ *  leído EN VIVO de FACTUSOL (`cobroLive`) manda sobre el persistido en el
+ *  pedido (`factusol_cobro_status`), que puede quedar en `null` justo después
+ *  de un re-vínculo. Todos los indicadores de cobro de la ficha (rejilla /
+ *  casilla «Cobro», bloque ámbar «pendiente de cobro», badge FACTUSOL y el
+ *  guard del botón «Registrar cobro») derivan de aquí, para que nunca
+ *  convivan «cobrado» y «no cobrado». */
+export function resolveOrderCobroStatus(
+  order: { factusol_cobro_status?: FactusolCobroStatus | null },
+  cobroLive: { status?: string | null } | null | undefined,
+): FactusolCobroStatus | null {
+  const live = cobroLive?.status === "cobrada" || cobroLive?.status === "pendiente"
+    ? cobroLive.status
+    : null;
+  return live ?? order.factusol_cobro_status ?? null;
 }

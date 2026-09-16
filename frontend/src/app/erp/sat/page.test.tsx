@@ -9,6 +9,7 @@ import {
   getSatQueue,
   markPickedUp,
   satEnqueueOrder,
+  updateSeguimientoFields,
 } from "../../lib/erpApi";
 import { getCurrentUser } from "../../lib/api";
 
@@ -42,6 +43,8 @@ jest.mock("../../lib/erpApi", () => ({
   markPickedUp: jest.fn(),
   openShippingFile: jest.fn(),
   saveBlob: jest.fn(),
+  // Lote 3: edición inline de los datos técnicos desde la cola.
+  updateSeguimientoFields: jest.fn(),
 }));
 
 const mockQueue = getSatQueue as jest.Mock;
@@ -51,6 +54,7 @@ const mockFind = findSatOrderByNumber as jest.Mock;
 const mockEnqueue = satEnqueueOrder as jest.Mock;
 const mockUser = getCurrentUser as jest.Mock;
 const mockPicked = markPickedUp as jest.Mock;
+const mockUpdateSeg = updateSeguimientoFields as jest.Mock;
 
 /** Pedido WEB en cola (Lote 2 A3): su albarán lo genera WooCommerce, aún sin
  *  descargar → el chip ofrece «Descargar albarán». */
@@ -237,9 +241,11 @@ describe("SatQueuePage (Lote B6)", () => {
     });
     render(<SatQueuePage />);
     await loaded();
-    // Tres pestañas; «Enviados» sin contador hasta que carga (perezoso).
+    // Cuatro pestañas; «Enviados» sin contador hasta que carga (perezoso).
     const tabs = screen.getAllByRole("tab");
-    expect(tabs.map((t) => t.textContent?.trim())).toEqual(["Por embalar 1", "Listos 1", "Enviados"]);
+    expect(tabs.map((t) => t.textContent?.trim())).toEqual(
+      ["Por embalar 1", "Listos 1", "Global 2", "Enviados"],
+    );
     expect(screen.getByRole("tab", { name: /Por embalar/ })).toHaveAttribute("aria-selected", "true");
     expect(mockHistory).not.toHaveBeenCalled();
 
@@ -355,5 +361,75 @@ describe("SatQueuePage (Lote B6)", () => {
     render(<SatQueuePage />);
     await loaded();
     expect(screen.queryByLabelText("Número de pedido a añadir")).not.toBeInTheDocument();
+  });
+
+  // --- Lote 3 -----------------------------------------------------------------
+
+  it("#3c · la vista global enseña «Por embalar» y «Listos» a la vez (dos columnas)", async () => {
+    const user = userEvent.setup();
+    render(<SatQueuePage />);
+    await loaded();
+    await user.click(screen.getByRole("tab", { name: /Global/ }));
+    const panel = screen.getByRole("tabpanel", { name: "Por embalar y listos" });
+    // Las dos columnas, con su título.
+    const titles = within(panel).getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
+    expect(titles.some((t) => t?.includes("Por embalar"))).toBe(true);
+    expect(titles.some((t) => t?.includes("Listos"))).toBe(true);
+    // Y las dos cards a la vez: por embalar (abrir modo trabajo) + listo (recogido).
+    expect(within(panel).getByRole("link", { name: /Abrir modo trabajo/ }))
+      .toHaveAttribute("href", "/erp/sat/o1");
+    expect(within(panel).getByRole("button", { name: /Marcar recogido/ })).toBeInTheDocument();
+    // Las otras secciones no se pintan a la vez.
+    expect(screen.queryByRole("table", { name: "Pedidos por embalar" })).not.toBeInTheDocument();
+  });
+
+  it("#3a · el historial «Enviados» se pinta como lista responsive, no como la tabla del taller", async () => {
+    const user = userEvent.setup();
+    mockHistory.mockResolvedValue({ items: [historyRow()], limit: 100 });
+    render(<SatQueuePage />);
+    await loaded();
+    await user.click(screen.getByRole("tab", { name: "Enviados" }));
+    const table = await screen.findByRole("table", { name: "Enviados al taller" });
+    expect(table).toHaveClass("data-table", "data-table--responsive");
+    expect(table).not.toHaveClass("sat-table");
+    // Cada celda con data-label para apilarse en móvil sin scroll raro.
+    const numCell = within(table).getByRole("link", { name: "BOP-1" }).closest("td");
+    expect(numCell).toHaveAttribute("data-label", "Nº");
+  });
+
+  it("#2 · edición inline: guardar el nº de serie llama al PATCH y muestra el nuevo valor", async () => {
+    const user = userEvent.setup();
+    mockUpdateSeg.mockResolvedValue({
+      serial_number: "FLX-9999", whiterip_license: null, shipping_origin: null,
+    });
+    mockQueue.mockResolvedValue({
+      preparing: [item({ serial_number: null })],
+      ready_for_pickup: [],
+    });
+    render(<SatQueuePage />);
+    await loaded(1, 0);
+    // La card (rol pedidos → canEdit) ofrece editar el nº de serie sin salir.
+    await user.click(screen.getByRole("button", { name: "Editar nº de serie" }));
+    await user.type(screen.getByRole("textbox", { name: "Editar nº de serie" }), "FLX-9999");
+    await user.click(screen.getByRole("button", { name: "Guardar" }));
+    await waitFor(() =>
+      expect(mockUpdateSeg).toHaveBeenCalledWith("o1", { serial_number: "FLX-9999" }),
+    );
+    // Actualización optimista: el valor mostrado cambia sin recargar la cola.
+    expect(await screen.findByText("FLX-9999")).toHaveClass("sat-tech-value");
+  });
+
+  it("#2 · rol sat (sin permiso) no ofrece editar los datos técnicos", async () => {
+    mockUser.mockResolvedValue({
+      id: "s", role: "sat", full_name: "Sat User", email: "s@x", is_active: true,
+    });
+    mockQueue.mockResolvedValue({
+      preparing: [item({ serial_number: "FLX-1" })],
+      ready_for_pickup: [],
+    });
+    render(<SatQueuePage />);
+    await loaded(1, 0);
+    expect(screen.getByText("FLX-1")).toHaveClass("sat-tech-value");
+    expect(screen.queryByRole("button", { name: /Editar/ })).not.toBeInTheDocument();
   });
 });

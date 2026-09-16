@@ -8,6 +8,7 @@ import {
   listShippingFiles,
   openShippingFile,
   saveBlob,
+  updateSeguimientoFields,
 } from "../../lib/erpApi";
 
 jest.mock("next/link", () => ({
@@ -25,9 +26,11 @@ jest.mock("../../lib/erpApi", () => ({
   listShippingFiles: jest.fn(),
   openShippingFile: jest.fn(),
   saveBlob: jest.fn(),
+  updateSeguimientoFields: jest.fn(),
   STATUS_LABELS: {},
 }));
 const mockFetch = fetchAlbaranFromWoo as jest.Mock;
+const mockUpdateSeg = updateSeguimientoFields as jest.Mock;
 const mockList = listShippingFiles as jest.Mock;
 const mockOpen = openShippingFile as jest.Mock;
 const mockFactusolPdf = downloadOrderFactusolAlbaranPdf as jest.Mock;
@@ -66,6 +69,7 @@ beforeEach(() => {
   mockOpen.mockReset();
   mockFactusolPdf.mockReset();
   mockSave.mockReset();
+  mockUpdateSeg.mockReset();
   mockList.mockResolvedValue([]);
 });
 
@@ -118,6 +122,70 @@ describe("SatPreparingCard · Lote 2 PR-2", () => {
     expect(screen.getByText("SAT")).toHaveClass("sat-origin-pill");
     // Copiar no navega ni dispara el albarán.
     expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  // --- Lote 3: edición inline de los datos técnicos sin salir de la cola -----
+
+  it("edición inline del nº de serie: PATCH del campo y valor actualizado (canEdit)", async () => {
+    const user = userEvent.setup();
+    mockUpdateSeg.mockResolvedValue({
+      serial_number: "FLX-NEW", whiterip_license: null, shipping_origin: null,
+    });
+    render(
+      <SatPreparingCard
+        order={order({ serial_number: null })} onChanged={() => {}} canEdit origins={["OFI", "SAT"]}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Editar nº de serie" }));
+    await user.type(screen.getByRole("textbox", { name: "Editar nº de serie" }), "FLX-NEW");
+    await user.click(screen.getByRole("button", { name: "Guardar" }));
+    await waitFor(() =>
+      expect(mockUpdateSeg).toHaveBeenCalledWith("o1", { serial_number: "FLX-NEW" }),
+    );
+    // Actualización optimista: el nuevo valor se ve sin recargar y ya se copia.
+    expect(await screen.findByText("FLX-NEW")).toHaveClass("sat-tech-value");
+    expect(screen.getByRole("button", { name: "Copiar nº de serie" })).toBeInTheDocument();
+  });
+
+  it("edición inline del origen: combobox con el catálogo y PATCH shipping_origin", async () => {
+    const user = userEvent.setup();
+    mockUpdateSeg.mockResolvedValue({
+      serial_number: null, whiterip_license: null, shipping_origin: "SAT",
+    });
+    render(
+      <SatPreparingCard
+        order={order()} onChanged={() => {}} canEdit origins={["OFI", "TER", "SAT"]}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Editar origen del envío" }));
+    const input = screen.getByRole("combobox", { name: "Editar origen del envío" });
+    expect(input).toHaveAttribute("list"); // desplegable del catálogo de orígenes
+    await user.type(input, "SAT");
+    await user.click(screen.getByRole("button", { name: "Guardar" }));
+    await waitFor(() =>
+      expect(mockUpdateSeg).toHaveBeenCalledWith("o1", { shipping_origin: "SAT" }),
+    );
+    expect(await screen.findByText("SAT")).toHaveClass("sat-origin-pill");
+  });
+
+  it("«Cancelar» descarta el cambio sin llamar al PATCH", async () => {
+    const user = userEvent.setup();
+    render(
+      <SatPreparingCard order={order({ serial_number: "FLX-1" })} onChanged={() => {}} canEdit />,
+    );
+    await user.click(screen.getByRole("button", { name: "Editar nº de serie" }));
+    const input = screen.getByRole("textbox", { name: "Editar nº de serie" });
+    await user.clear(input);
+    await user.type(input, "OTRO");
+    await user.click(screen.getByRole("button", { name: "Cancelar" }));
+    expect(mockUpdateSeg).not.toHaveBeenCalled();
+    expect(screen.getByText("FLX-1")).toHaveClass("sat-tech-value");
+  });
+
+  it("sin canEdit los datos técnicos siguen siendo de solo lectura", () => {
+    render(<SatPreparingCard order={order({ serial_number: "FLX-1" })} onChanged={() => {}} />);
+    expect(screen.getByText("FLX-1")).toHaveClass("sat-tech-value");
+    expect(screen.queryByRole("button", { name: /Editar/ })).not.toBeInTheDocument();
   });
 
   it("tres acciones de 48 px en dos filas: abrir (primario, ancho) y debajo albarán + ficha", () => {

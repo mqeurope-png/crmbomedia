@@ -482,6 +482,72 @@ describe("CreateQuoteModal", () => {
     expect(screen.getByText(/plantilla nº 2/)).toBeInTheDocument();
   });
 
+  // --- Lote 3: Duplicar desde una fila (arranca en «Duplicar» con la
+  //     proforma de origen ya en la vista previa) ---------------------------
+
+  it("Lote 3: con `duplicateSource` arranca en «Duplicar» y precarga la vista previa (líneas de origen con SKU comercial + «Ver PDF») sin buscar", async () => {
+    mockGetQuote.mockResolvedValue({
+      ...quote({ codpre: "39" }), tippre: "5", line_source: "F_LPS", portes: 19,
+      lines: [
+        { position: 1, codart: "00001", sku: "CDR80WPT",
+          description: "CD TQ 700 MB white Thermal WPT", quantity: 10,
+          unit_price: 0.79, discount_pct: 0, line_total: 7.9, iva_pct: 21 },
+        { position: 2, codart: null, sku: null, description: "Hora SAT",
+          quantity: 2, unit_price: 60, discount_pct: 0, line_total: 120,
+          iva_pct: 21 },
+      ],
+    });
+    render(<CreateQuoteModal {...base({ duplicateSource: quote({ codpre: "39" }) })} />);
+
+    // Carga la proforma de la fila (líneas reales de F_LPS) sin pasar por el
+    // buscador: es el mismo `getFactusolQuote` que usa «Cargar esta plantilla».
+    await waitFor(() => expect(mockGetQuote).toHaveBeenCalledWith("39"));
+    const preview = await screen.findByRole("region", { name: "Plantilla nº 39" });
+    // Líneas de origen visibles, ya mapeadas (SKU comercial, no el CODART).
+    expect(within(preview).getByText("CDR80WPT")).toBeInTheDocument();
+    expect(within(preview).getByText("CD TQ 700 MB white Thermal WPT")).toBeInTheDocument();
+    expect(within(preview).getByText("Hora SAT")).toBeInTheDocument();
+    // «Ver PDF» presente; la tabla editable aún no existe (falta «Usar como
+    // plantilla»): la duplicación real todavía no ha ocurrido.
+    expect(within(preview).getByRole("button", { name: "Ver PDF" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("SKU línea 1")).not.toBeInTheDocument();
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("Lote 3: la copia solo se crea tras la vista previa (Usar como plantilla → Crear proforma), con el cliente destino y sin remapear artículos", async () => {
+    mockArticles.mockResolvedValue([article()]);
+    mockGetQuote.mockResolvedValue({
+      ...quote({ codpre: "39" }), line_source: "F_LPS",
+      lines: [
+        { position: 1, codart: "00001", sku: "CDR80WPT",
+          description: "CD TQ 700 MB white Thermal WPT", quantity: 10,
+          unit_price: 0.79, discount_pct: 0, line_total: 7.9, iva_pct: 21 },
+        { position: 2, codart: null, sku: null, description: "Hora SAT",
+          quantity: 2, unit_price: 60, discount_pct: 0, line_total: 120,
+          iva_pct: 21 },
+      ],
+    });
+    const onCreated = jest.fn();
+    const user = userEvent.setup();
+    render(<CreateQuoteModal {...base({ duplicateSource: quote({ codpre: "39" }), onCreated })} />);
+
+    const preview = await screen.findByRole("region", { name: "Plantilla nº 39" });
+    expect(mockCreate).not.toHaveBeenCalled();               // solo abrir no crea nada
+    await user.click(within(preview).getByRole("button", { name: "Usar como plantilla" }));
+    expect(await screen.findByLabelText("SKU línea 1")).toHaveValue("CDR80WPT");
+    expect(screen.getByLabelText("Descripción línea 2")).toHaveValue("Hora SAT");
+    // Volcar la plantilla no dispara el autocomplete (no se remapea el artículo).
+    await afterDebounce();
+    expect(mockArticles).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Crear proforma" }));
+    await waitFor(() => expect(mockCreate).toHaveBeenCalled());
+    // Cliente DESTINO (el de la fila, pasado como companyId), y el SKU tal cual.
+    expect(mockCreate.mock.calls[0][0].company_id).toBe("c1");
+    expect(mockCreate.mock.calls[0][0].lines[0].codart).toBe("CDR80WPT");
+    expect(onCreated).toHaveBeenCalledWith("job-1");
+  });
+
   // --- C-4-fix6: referencia, descuento, direcciones y edición -------------
 
   it("renderiza el campo Referencia y lo envía en el payload", async () => {

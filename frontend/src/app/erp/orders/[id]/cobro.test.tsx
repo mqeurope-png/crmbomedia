@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import ErpOrderDetailPage from "./page";
 import { getOrder, getOrderFactusolCobro } from "../../../lib/erpApi";
@@ -53,12 +53,22 @@ jest.mock("../../../components/erp/RegistrarCobroModal", () => ({
     </div>
   ),
 }));
+jest.mock("../../../components/erp/OrderFactusolClientPanel", () => ({
+  OrderFactusolClientPanel: () => null,
+}));
 jest.mock("../../../lib/api", () => ({
   getCurrentUser: jest.fn(() => Promise.resolve({ role: "admin" })),
 }));
 jest.mock("../../../lib/erpApi", () => ({
   ERP_EDIT_ROLES: ["admin", "pedidos"],
   customerLabel: () => "Duplicoder",
+  resolveOrderCobroStatus: (
+    o: { factusol_cobro_status?: string | null },
+    live: { status?: string | null } | null | undefined,
+  ) => {
+    const s = live?.status === "cobrada" || live?.status === "pendiente" ? live.status : null;
+    return s ?? o.factusol_cobro_status ?? null;
+  },
   getOrder: jest.fn(),
   getOrderTimeline: jest.fn(() => Promise.resolve({ total: 0, items: [] })),
   getFactusolStatus: jest.fn(() => Promise.resolve({ status: "pending" })),
@@ -179,5 +189,35 @@ describe("ERP · Ficha del pedido — «Registrar cobro en FACTUSOL»", () => {
     render(<ErpOrderDetailPage />);
     expect(await screen.findByText("Cobrado FACTUSOL")).toBeInTheDocument();
     expect(getOrderFactusolCobro).toHaveBeenCalledWith("o-1");
+  });
+});
+
+describe("ERP · Ficha del pedido — cobro COHERENTE (fuente única) (#7)", () => {
+  it("live «cobrada» con cacheado null: TODO indica «cobrado», en ningún sitio «no cobrado»", async () => {
+    // El caso exacto tras un re-vínculo: `factusol_cobro_status` queda en null
+    // pero la lectura EN VIVO de FACTUSOL dice «cobrada».
+    (getOrder as jest.Mock).mockResolvedValue(detail({
+      factusol_cobro_status: null, factusol_cobro: null,
+    }));
+    (getOrderFactusolCobro as jest.Mock).mockResolvedValue({
+      order_id: "o-1", order_number: "BOPRIN-99930", status: "cobrada",
+      invoice: { serie: 1, codigo: 260729, numero: "1-260729" },
+      saldo_pendiente: 0, total_cobrado: 72.6,
+    });
+    render(<ErpOrderDetailPage />);
+    // 1) Badge del panel FACTUSOL: cobrado.
+    expect(await screen.findByText("Cobrado FACTUSOL")).toBeInTheDocument();
+    // 2) Bloque ámbar del resumen económico: verde (cobrado), jamás pendiente.
+    const eco = screen.getByRole("region", { name: "Resumen económico" });
+    const bloque = within(eco).getByRole("group", { name: "Pendiente de cobro" });
+    await waitFor(() => expect(bloque).toHaveClass("erp-flow-cobro", "is-done"));
+    expect(bloque).toHaveTextContent("factura cobrada en FACTUSOL");
+    expect(bloque).not.toHaveClass("is-pending");
+    // 3) El botón no ofrece un segundo cobro.
+    expect(screen.getByRole("button", { name: "Cobrado en FACTUSOL" })).toBeDisabled();
+    // 4) En ningún indicador consta «no cobrado» / pendiente.
+    expect(screen.queryByText("Pendiente de cobro FACTUSOL")).toBeNull();
+    expect(screen.queryByText("Cobro FACTUSOL sin comprobar")).toBeNull();
+    expect(document.querySelector(".form-error")).toBeNull();
   });
 });

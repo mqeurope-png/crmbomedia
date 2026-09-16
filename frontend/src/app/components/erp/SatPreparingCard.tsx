@@ -12,8 +12,9 @@ import {
   STATUS_LABELS,
   type SatAlbaranSource,
   type SatQueueItem,
+  type SeguimientoFieldsPatch,
 } from "../../lib/erpApi";
-import { SatObservaciones, SatTechData } from "./SatTechData";
+import { SatObservaciones, SatTechData, type SatTechEdit } from "./SatTechData";
 
 /** Estado del chip de albarán de un pedido de la cola (Lote 2 A3), derivado
  *  del contrato del backend (`albaran_source`, prioridad factusol › file › woo):
@@ -214,11 +215,25 @@ export function SatAlbaranChip({
 export function SatPreparingCard({
   order,
   onChanged,
+  canEdit = false,
+  origins,
 }: {
   order: SatQueueItem;
   onChanged: () => void;
+  /** Lote 3: habilita la edición inline de los datos técnicos (admin/pedidos). */
+  canEdit?: boolean;
+  /** Catálogo de orígenes del envío para el desplegable (mismo que la ficha). */
+  origins?: string[];
 }) {
   const albaran = useSatAlbaranAction(order, onChanged);
+  // Lote 3: actualización optimista de los campos de seguimiento tras editar.
+  const [seg, setSeg] = useState<SeguimientoFieldsPatch | null>(null);
+  const serial = seg ? seg.serial_number : order.serial_number;
+  const license = seg ? seg.whiterip_license : order.whiterip_license;
+  const origin = seg ? seg.shipping_origin : order.shipping_origin;
+  const edit: SatTechEdit | undefined = canEdit
+    ? { orderId: order.id, origins, onSaved: setSeg }
+    : undefined;
 
   return (
     <div className="sat-card-wrap">
@@ -236,11 +251,7 @@ export function SatPreparingCard({
           <div className="sat-card-warn">⚠ SIN COBRAR</div>
         ) : null}
         <SatObservaciones notes={order.notes} />
-        <SatTechData
-          serial={order.serial_number}
-          license={order.whiterip_license}
-          origin={order.shipping_origin}
-        />
+        <SatTechData serial={serial} license={license} origin={origin} edit={edit} />
         <ul className="sat-card-lines">
           {order.lines.map((l, i) => (
             <li key={i}>{l.quantity}× {l.description}</li>
