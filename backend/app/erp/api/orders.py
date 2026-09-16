@@ -318,6 +318,9 @@ def _serialise_detail(session: Session, o: Order, actor: User) -> dict[str, Any]
     ))
     return {
         **_serialise_summary(o, customer_names(session, [o]).get(o.id)),
+        # #8 — último envío de la factura por email al cliente (evento
+        # `erp.invoice_emailed`): cuándo y a quién. Solo en el detalle.
+        **_invoice_emailed(session, o),
         "notes": o.notes,
         "packing": json.loads(o.packing_json) if o.packing_json else None,
         # Rediseño de flujo: mismo bloque que la bandeja — la ficha pinta con
@@ -389,6 +392,48 @@ def _factusol_cobro(o: Order) -> dict[str, Any] | None:
     from app.erp.factusol_cobro import cobro_info  # noqa: PLC0415
 
     return cobro_info(o)
+
+
+#: #8 — evento que registra `invoice_email.send_invoice_email` cuando la factura
+#: del pedido se manda por email al cliente: `target_type="order"`,
+#: `target_id=order.id`, metadata `{"to": [<emails>], "factura", "lang", ...}` y
+#: `created_at` = hora de envío.
+INVOICE_EMAILED_EVENT = "erp.invoice_emailed"
+
+
+def _invoice_emailed(session: Session, o: Order) -> dict[str, Any]:
+    """Último envío de la factura del pedido por email al cliente: fecha ISO
+    (`invoice_emailed_at`, None si nunca) y destinatarios de ESE envío
+    (`invoice_emailed_to`, [] si ninguno). Una sola consulta (el AuditLog más
+    reciente `erp.invoice_emailed` del pedido). Solo en el detalle de la ficha,
+    no en la bandeja."""
+    from app.models.crm import AuditLog  # noqa: PLC0415
+
+    log = session.scalars(
+        select(AuditLog)
+        .where(
+            AuditLog.action == INVOICE_EMAILED_EVENT,
+            AuditLog.target_type == "order",
+            AuditLog.target_id == o.id,
+        )
+        .order_by(AuditLog.created_at.desc())
+        .limit(1)
+    ).first()
+    if log is None:
+        return {"invoice_emailed_at": None, "invoice_emailed_to": []}
+    to: list[str] = []
+    if log.metadata_json:
+        try:
+            meta = json.loads(log.metadata_json)
+        except (TypeError, ValueError):
+            meta = {}
+        raw = meta.get("to") if isinstance(meta, dict) else None
+        if isinstance(raw, list):
+            to = [str(x) for x in raw]
+    return {
+        "invoice_emailed_at": log.created_at.isoformat(),
+        "invoice_emailed_to": to,
+    }
 
 
 #: Etiqueta del documento de origen (para la UI y los mensajes).
