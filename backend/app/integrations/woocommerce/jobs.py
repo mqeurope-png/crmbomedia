@@ -52,6 +52,16 @@ ERP_INTERACTIVE_QUEUE = "erp:interactive"
 #: 1h → 4h. `len(interval)` intentos totales; tras el último → failed.
 WEBHOOK_RETRY_INTERVALS = [30, 120, 600, 3600, 14400]
 
+#: Lote 6 · Bloque 3 — un evento `processing` colgado más de esto (un job RQ
+#: que murió a medias, sin llegar a `processed` ni a `failed`) se considera
+#: ATASCADO y el backfill lo recupera. El umbral es holgado para no pisar un
+#: import realmente en vuelo (un import Woo tarda segundos, no minutos).
+PROCESSING_STALE_AFTER = timedelta(minutes=15)
+
+#: Tope de la lista `still_failed` del diagnóstico del backfill (evita
+#: devolver/loggear miles de filas si una tienda entera falla).
+STILL_FAILED_CAP = 50
+
 
 def _session_factory() -> sessionmaker:
     """Instancia una session-factory ligada al engine actual. Los jobs RQ
@@ -168,14 +178,24 @@ def sync_orders_backfill(
 ) -> dict[str, Any]:
     """Descarga hasta `max_pages * 50` pedidos desde `since_iso`, los
     escribe en `integration_events` (dedup por Woo id) Y ENCOLA el job de
-    import de cada evento pendiente (`received`) en `woocommerce:import`.
+    import de cada evento RECUPERABLE en `woocommerce:import`.
 
     Bug B-2-fix3: antes solo creaba los events y nunca encolaba el
-    procesamiento → se quedaban en `received` para siempre. Ahora, al
-    encolar TODOS los `received` de la tienda (no solo los nuevos), un
-    re-run también RECUPERA los que se quedaron atascados.
+    procesamiento → se quedaban en `received` para siempre.
 
-    Registra un `SyncLog` (running → success/partial_success/failed).
+    Bug Lote 6 · Bloque 3 (backfill incompleto): re-encolaba SOLO los
+    `received`. Un import que agota los reintentos queda `failed` (vía
+    `_mark_retry_or_failed`) y el dedup `_event_exists` impide recrear su
+    event en runs posteriores → el pedido queda HUÉRFANO: ni se re-crea ni
+    entra en la re-encola, nunca se reintenta (caso ARTISJ 9557). Ahora el
+    backfill recupera TAMBIÉN los `failed` y los `processing` colgados
+    (job muerto a medias): los RESETEA a `received` (retry_count=0,
+    next_retry_at=None; se conserva el último error_message para el
+    diagnóstico) y los re-encola. Idempotente: los `processed` no se tocan.
+
+    Devuelve/registra un diagnóstico (`fetched`, `created`, `skipped`,
+    `re_enqueued`, `still_failed`) y un `SyncLog`
+    (running → success/partial_success/failed).
     """
     from datetime import UTC, datetime  # noqa: PLC0415
 
@@ -198,6 +218,7 @@ def sync_orders_backfill(
         session.commit()
 
         client = WooHTTPClient(store)
+        fetched = 0
         created = 0
         skipped = 0
         page_failed = False
@@ -210,6 +231,7 @@ def sync_orders_backfill(
                 )
                 if not orders:
                     break
+                fetched += len(orders)
                 for woo in orders:
                     if _event_exists(session, store, woo):
                         skipped += 1
@@ -228,21 +250,37 @@ def sync_orders_backfill(
             error_summary = str(exc)[:2000]
             logger.warning("woo backfill: list_orders falló: %s", exc)
 
-        # Encola TODOS los eventos pendientes (received) de la tienda —
-        # los recién creados + los que se quedaron atascados en runs
-        # anteriores (el import es idempotente: salta los ya processed).
-        pending_ids = list(session.scalars(select(IntegrationEvent.id).where(
-            IntegrationEvent.system == "woocommerce",
-            IntegrationEvent.account_id == store.account_id,
-            IntegrationEvent.status == IntegrationEventStatus.RECEIVED,
-        )))
+        # RECUPERA y re-encola los eventos ATASCADOS de la tienda: los
+        # `received` (recién creados + pendientes de runs previos) MÁS los
+        # `failed` y los `processing` colgados. Estos dos últimos se RESETEAN
+        # a `received` (retry_count=0, next_retry_at=None) para que el import
+        # vuelva a intentarse; se conserva el último error_message como pista
+        # del diagnóstico. Los `processed` NO se tocan (y el import es
+        # idempotente: salta cualquier ya-procesado). Esto es lo que rescata
+        # a 9557 y a cualquier otro import huérfano-FAILED.
+        pending_ids = _recover_stuck_events(session, store.account_id)
         for event_id in pending_ids:
             _enqueue_import(event_id)
 
+        # Diagnóstico: tras procesar (inline, sin Redis) los que siguen
+        # `failed` son fallos DETERMINISTAS — su error_message dice POR QUÉ
+        # (revela el motivo de 9557). Con Redis el import es asíncrono y esta
+        # lista queda vacía aquí (se procesan después en el worker).
+        session.expire_all()
+        still_failed = _collect_still_failed(session, pending_ids)
+
         sync_log.records_processed = len(pending_ids)
         sync_log.records_skipped = skipped
-        sync_log.records_failed = 1 if page_failed else 0
+        sync_log.records_failed = len(still_failed) or (1 if page_failed else 0)
         sync_log.error_summary = error_summary
+        sync_log.message = (
+            f"backfill: fetched={fetched} created={created} skipped={skipped} "
+            f"re_enqueued={len(pending_ids)} still_failed={len(still_failed)}"
+        )
+        sync_log.metadata_json = json.dumps({
+            "fetched": fetched, "created": created, "skipped": skipped,
+            "re_enqueued": len(pending_ids), "still_failed": still_failed,
+        })
         sync_log.finished_at = datetime.now(UTC)
         if page_failed and pending_ids:
             sync_log.status = SyncStatus.PARTIAL_SUCCESS.value
@@ -254,11 +292,84 @@ def sync_orders_backfill(
 
         return {
             "ok": not page_failed,
+            "fetched": fetched,
             "created": created,
-            "enqueued": len(pending_ids),
             "skipped": skipped,
+            "re_enqueued": len(pending_ids),
+            # `enqueued` se mantiene por compatibilidad (== re_enqueued).
+            "enqueued": len(pending_ids),
+            "still_failed": still_failed,
             "sync_log_id": sync_log.id,
         }
+
+
+def _as_utc(dt: datetime | None) -> datetime | None:
+    """Normaliza a UTC-aware (SQLite devuelve naive en DateTime(tz=True))."""
+    if dt is None:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+
+
+def _recover_stuck_events(session, account_id: str) -> list[str]:
+    """Selecciona los eventos recuperables de la tienda (`received` +
+    `failed` + `processing` colgado) y devuelve sus ids tras RESETEAR los que
+    no estaban ya en `received`. Deja `processed` intacto. Commit incluido."""
+    stale_before = datetime.now(UTC) - PROCESSING_STALE_AFTER
+    events = session.scalars(select(IntegrationEvent).where(
+        IntegrationEvent.system == "woocommerce",
+        IntegrationEvent.account_id == account_id,
+        IntegrationEvent.status.in_((
+            IntegrationEventStatus.RECEIVED,
+            IntegrationEventStatus.FAILED,
+            IntegrationEventStatus.PROCESSING,
+        )),
+    )).all()
+    recovered: list[str] = []
+    for ev in events:
+        if ev.status == IntegrationEventStatus.PROCESSING and (
+            (_as_utc(ev.updated_at) or stale_before) > stale_before
+        ):
+            # `processing` reciente → import realmente en vuelo, no lo tocamos.
+            continue
+        if ev.status != IntegrationEventStatus.RECEIVED:
+            ev.status = IntegrationEventStatus.RECEIVED
+            ev.retry_count = 0
+            ev.next_retry_at = None
+            # error_message se conserva a propósito (pista para el diagnóstico).
+        recovered.append(ev.id)
+    session.commit()
+    return recovered
+
+
+def _collect_still_failed(session, event_ids: list[str]) -> list[dict[str, Any]]:
+    """Eventos que, tras procesarse, siguen `failed`: su error_message dice
+    por qué. Devuelve `[{event_id, order_number, error_message}]` (tope
+    `STILL_FAILED_CAP`)."""
+    if not event_ids:
+        return []
+    out: list[dict[str, Any]] = []
+    for ev in session.scalars(select(IntegrationEvent).where(
+        IntegrationEvent.id.in_(event_ids),
+        IntegrationEvent.status == IntegrationEventStatus.FAILED,
+    )):
+        out.append({
+            "event_id": ev.id,
+            "order_number": _event_order_ref(ev),
+            "error_message": (ev.error_message or "")[:500],
+        })
+        if len(out) >= STILL_FAILED_CAP:
+            break
+    return out
+
+
+def _event_order_ref(event: IntegrationEvent) -> str | None:
+    """Nº de pedido (o Woo id) del payload almacenado, para el diagnóstico."""
+    try:
+        woo = json.loads(event.payload_json) or {}
+    except (TypeError, ValueError):
+        return None
+    ref = woo.get("number") or woo.get("id")
+    return str(ref) if ref is not None else None
 
 
 def _event_exists(session, store: IntegrationAccount, woo: dict[str, Any]) -> bool:

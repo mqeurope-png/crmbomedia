@@ -81,6 +81,11 @@ class StoreRead(BaseModel):
     # Nunca devolvemos los secretos.
 
 
+class ReimportOrder(BaseModel):
+    #: Id del pedido en WooCommerce (no el order_number del ERP).
+    woo_order_id: int = Field(gt=0)
+
+
 def _metadata(a: IntegrationAccount) -> dict[str, Any]:
     if not a.metadata_json:
         return {}
@@ -343,3 +348,73 @@ def sync_backfill(
                 502, {"code": "woo_error", "detail": werr.body[:500]}
             ) from werr
         return {"ok": True, "queued": False, "outcome": outcome, "note": str(exc)[:120]}
+
+
+@router.post("/stores/{store_id}/reimport-order")
+def reimport_order(
+    store_id: str,
+    payload: ReimportOrder,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_admin),
+) -> dict[str, Any]:
+    """Fuerza el reimport de UN pedido Woo por su id, sin backfill completo
+    (Lote 6 · Bloque 3 — para desatascar 9557 y similares al instante).
+
+    Trae el pedido FRESCO de Woo (CK/CS Basic auth, `WooHTTPClient`), upserta
+    su `IntegrationEvent` `backfill:{id}` — reseteándolo a `received` si ya
+    existía (así un event `failed`/`processing`/`processed` se re-procesa) — e
+    importa INLINE con `import_order_from_event`. Devuelve el outcome
+    (created / updated / skipped_status / error)."""
+    _ = current_user
+    from app.integrations.woocommerce.jobs import (  # noqa: PLC0415
+        import_order_from_event,
+    )
+
+    account = _get_woo(session, store_id)
+    try:
+        order_data = WooHTTPClient(account).get_order(payload.woo_order_id)
+    except WooError as exc:
+        raise HTTPException(
+            502,
+            {"code": "woo_error", "status": exc.status, "detail": exc.body[:500]},
+        ) from exc
+
+    event_id = _upsert_backfill_event(session, account, payload.woo_order_id, order_data)
+    session.commit()
+
+    outcome = import_order_from_event(event_id)
+    return {
+        "ok": outcome.get("error") is None and not outcome.get("skipped"),
+        "woo_order_id": payload.woo_order_id,
+        "event_id": event_id,
+        "outcome": outcome,
+    }
+
+
+def _upsert_backfill_event(
+    session: Session, account: IntegrationAccount, woo_order_id: int,
+    order_data: dict[str, Any],
+) -> str:
+    """Crea (o resetea a `received`) el `IntegrationEvent` `backfill:{id}` de un
+    pedido y devuelve su id. Mismo convenio de dedup que el backfill."""
+    external_event_id = f"backfill:{woo_order_id}"
+    event = session.scalar(select(IntegrationEvent).where(
+        IntegrationEvent.system == "woocommerce",
+        IntegrationEvent.account_id == account.account_id,
+        IntegrationEvent.external_event_id == external_event_id,
+    ))
+    payload_json = json.dumps(order_data, default=str)
+    if event is None:
+        event = IntegrationEvent(
+            system="woocommerce", account_id=account.account_id,
+            external_event_id=external_event_id, event_type="order.backfill",
+            payload_json=payload_json,
+        )
+        session.add(event)
+        session.flush()
+    else:
+        event.payload_json = payload_json
+        event.status = IntegrationEventStatus.RECEIVED
+        event.retry_count = 0
+        event.next_retry_at = None
+    return event.id
