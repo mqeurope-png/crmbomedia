@@ -10,10 +10,11 @@ import {
   markPickedUp,
   openShippingFile,
   type SatQueueItem,
+  type SeguimientoFieldsPatch,
   type ShipmentFileKind,
 } from "../../lib/erpApi";
 import { SatAlbaranChip, useSatAlbaranAction } from "./SatPreparingCard";
-import { SatObservaciones, SatTechData } from "./SatTechData";
+import { SatObservaciones, SatTechData, type SatTechEdit } from "./SatTechData";
 
 /** Acciones de un pedido «listo para envío», compartidas por la card y por la
  *  fila de la vista lista (Lote B6): imprimir albarán (mismo chip que en «Por
@@ -182,11 +183,25 @@ export function SatReadyButtons({
 export function SatReadyCard({
   order,
   onChanged,
+  canEdit = false,
+  origins,
 }: {
   order: SatQueueItem;
   onChanged: () => void;
+  /** Lote 3: habilita la edición inline de los datos técnicos (admin/pedidos). */
+  canEdit?: boolean;
+  /** Catálogo de orígenes del envío para el desplegable (mismo que la ficha). */
+  origins?: string[];
 }) {
   const actions = useSatReadyActions(order, onChanged);
+  // Lote 3: actualización optimista de los campos de seguimiento tras editar.
+  const [seg, setSeg] = useState<SeguimientoFieldsPatch | null>(null);
+  const serial = seg ? seg.serial_number : order.serial_number;
+  const license = seg ? seg.whiterip_license : order.whiterip_license;
+  const origin = seg ? seg.shipping_origin : order.shipping_origin;
+  const edit: SatTechEdit | undefined = canEdit
+    ? { orderId: order.id, origins, onSaved: setSeg }
+    : undefined;
 
   return (
     <article className="sat-card sat-ready-card" aria-label={`Pedido ${order.order_number}`}>
@@ -200,11 +215,7 @@ export function SatReadyCard({
         <div className="sat-card-customer">{customerLabel(order)}</div>
       ) : null}
       <SatObservaciones notes={order.notes} />
-      <SatTechData
-        serial={order.serial_number}
-        license={order.whiterip_license}
-        origin={order.shipping_origin}
-      />
+      <SatTechData serial={serial} license={license} origin={origin} edit={edit} />
 
       {actions.error ? <p className="form-error">{actions.error}</p> : null}
 

@@ -3642,3 +3642,34 @@ export async function downloadBankExport(
 ): Promise<Blob> {
   return apiDownloadBlob(`/api/erp/bank/export${qs({ account_id: accountId, ...opts })}`);
 }
+
+// --- Lote 3 · Cola SAT — edición inline de seguimiento ----------------------
+
+/** Valores de seguimiento que edita la Cola SAT (ya recortados por el backend:
+ *  null si quedan vacíos). */
+export type SeguimientoFieldsPatch = {
+  serial_number: string | null;
+  whiterip_license: string | null;
+  shipping_origin: string | null;
+};
+
+/** Lote 3 · Cola SAT — guarda nº de serie, licencia WhiteRIP y origen del
+ *  envío desde la cola SIN salir de ella. Reusa el MISMO endpoint de la ficha
+ *  (`PATCH /api/erp/orders/{id}/seguimiento`, `updateOrderSeguimiento`) sin
+ *  duplicar la llamada; solo envía los tres campos de la cola (no toca
+ *  observaciones) y devuelve los valores ya normalizados por el backend. */
+export async function updateSeguimientoFields(
+  orderId: string,
+  payload: {
+    serial_number?: string;
+    whiterip_license?: string;
+    shipping_origin?: string;
+  },
+): Promise<SeguimientoFieldsPatch> {
+  const r = await updateOrderSeguimiento(orderId, payload);
+  return {
+    serial_number: r.serial_number,
+    whiterip_license: r.whiterip_license,
+    shipping_origin: r.shipping_origin,
+  };
+}
