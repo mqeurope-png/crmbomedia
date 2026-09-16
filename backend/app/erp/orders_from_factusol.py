@@ -9,11 +9,15 @@ cantidad, precio, descuento), importes y forma de pago (informativa, se guarda
 en `packing_json.factusol_source`; la captura de pago es Fase 2). NO se escribe
 albarán ni pedido en FACTUSOL (Fase 2).
 
-Origen del pedido: `factusol_proforma` (presupuestos) o `factusol_pedido`
-(pedidos de cliente), nunca `woocommerce` — así el filtro «solo processing» de
-#387, que vive en la ingesta Woo, ni lo ve. `external_id` es el nº del
-documento (CODPRE a secas para proformas, `serie-código` para pedidos) y sirve
-de dedup: el mismo documento no se importa dos veces.
+Origen del pedido: `factusol_proforma` (presupuestos), `factusol_pedido`
+(pedidos de cliente), `factusol_albaran` (albaranes) o `factusol_factura`
+(facturas), nunca `woocommerce` — así el filtro «solo processing» de #387, que
+vive en la ingesta Woo, ni lo ve. `external_id` es el nº del documento (CODPRE
+a secas para proformas, `serie-código` para pedidos/albaranes/facturas) y sirve
+de dedup: el mismo documento no se importa dos veces. Un pedido creado desde un
+albarán / factura queda ligado a él (`factusol_albaran_number` /
+`factusol_invoice_number`+`factusol_invoice_serie`, factura → facturado); el
+documento ya EXISTE en FACTUSOL, no se crea ninguno (solo lectura).
 
 Este módulo es también el que usa «Convertir en pedido» de las proformas
 (`quotes.convert_quote_to_order`), para que ambos caminos creen el mismo tipo
@@ -30,6 +34,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.erp.models import (
+    InvoiceStatus,
     Order,
     OrderLine,
     OrderSource,
@@ -47,11 +52,19 @@ logger = logging.getLogger(__name__)
 SOURCE_BY_DOC_TYPE: dict[str, OrderSource] = {
     "presupuestos": OrderSource.FACTUSOL_PROFORMA,
     "pedidos": OrderSource.FACTUSOL_PEDIDO,
+    # Lote 7 · P4: albarán (F_ALB) y factura (F_FAC) también valen de origen.
+    "albaranes": OrderSource.FACTUSOL_ALBARAN,
+    "facturas": OrderSource.FACTUSOL_FACTURA,
 }
 #: Prefijo del nº de pedido en BoHub. El nº desnudo (último grupo de dígitos)
 #: sigue siendo el del documento, que es lo que casa el seguimiento/Drive.
-PREFIX_BY_DOC_TYPE = {"presupuestos": "PRO", "pedidos": "PCL"}
-DOC_LABEL = {"presupuestos": "presupuesto", "pedidos": "pedido de cliente"}
+PREFIX_BY_DOC_TYPE = {
+    "presupuestos": "PRO", "pedidos": "PCL", "albaranes": "ALB", "facturas": "FAC",
+}
+DOC_LABEL = {
+    "presupuestos": "presupuesto", "pedidos": "pedido de cliente",
+    "albaranes": "albarán", "facturas": "factura",
+}
 #: IVA cuando la línea no trae uno (>0). En FACTUSOL `IVALPS`/`IVALPC` suele ir
 #: a 0 con el IVA en la cabecera (banda 1), así que 0 NO significa exento.
 DEFAULT_IVA_PCT = 21.0
@@ -108,7 +121,8 @@ def _f(value: Any, default: float = 0.0) -> float:
 
 def external_id_for(doc_type: str, serie: int, codigo: int) -> str:
     """Proformas: el CODPRE a secas (TIPPRE es siempre '1' y así lo enseña la
-    columna «Proforma» del seguimiento). Pedidos de cliente: `serie-código`."""
+    columna «Proforma» del seguimiento). Pedidos de cliente, albaranes y
+    facturas: `serie-código` (la clave compuesta que los identifica)."""
     if doc_type == "presupuestos":
         return str(int(codigo))
     return visible_number(serie, codigo)
@@ -225,7 +239,8 @@ def preview_factusol_document(
     resuelto contra el CRM, líneas, nº de pedido y si ya se importó."""
     if doc_type not in SOURCE_BY_DOC_TYPE:
         raise UnsupportedDocumentType(
-            f"Solo se importan presupuestos y pedidos de cliente (no {doc_type!r})."
+            "Solo se importan presupuestos, pedidos de cliente, albaranes y "
+            f"facturas (no {doc_type!r})."
         )
     doc = get_document(
         client, doc_type, serie=int(serie), codigo=int(codigo), ejercicio=ejercicio,
@@ -364,6 +379,16 @@ def create_order_from_factusol_document(
         history_reason=f"Pedido creado desde el {label} FACTUSOL {numero}",
         total_with_tax=preview["total"],
     )
+    # Lote 7 · P4 — ligar el pedido a su documento de origen para que los
+    # flujos de aguas abajo lo reconozcan (nada se escribe en FACTUSOL). El
+    # albarán ya EXISTE (no se crea uno nuevo): se apunta su nº. La factura ya
+    # está emitida: se apunta su serie+nº y el pedido queda facturado.
+    if doc_type == "albaranes":
+        order.factusol_albaran_number = visible_number(serie, codigo)
+    elif doc_type == "facturas":
+        order.factusol_invoice_number = str(int(codigo))
+        order.factusol_invoice_serie = int(serie)
+        order.invoice_status = InvoiceStatus.INVOICED_BY_ERP
     logger.info(
         "erp: pedido %s creado desde %s FACTUSOL %s (%d líneas, %.2f €)",
         order.order_number, label, numero, len(lines), float(order.total_amount),

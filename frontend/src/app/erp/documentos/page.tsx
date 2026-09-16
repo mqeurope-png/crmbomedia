@@ -17,6 +17,7 @@ import {
 import { RegistrarCobroModal } from "../../components/erp/RegistrarCobroModal";
 import { getCurrentUser } from "../../lib/api";
 import {
+  createOrderFromDocumentType,
   downloadFacturasPdfZip,
   downloadFactusolDocumentPdf,
   ERP_EDIT_ROLES,
@@ -148,6 +149,9 @@ export default function FactusolDocumentosPage() {
   const [cobrando, setCobrando] = useState<FactusolDocument | null>(null);
   // Lote 2 · PR-2 — «Vincular»: el albarán / la factura elegido para el modal.
   const [vinculando, setVinculando] = useState<FactusolDocument | null>(null);
+  // Lote 7 · P4 — «Crear pedido» desde un albarán / factura: la fila cuyo alta
+  // está en curso (clave `serie-código`), para desactivar su botón.
+  const [creando, setCreando] = useState<string | null>(null);
   // Descarga de PDF (solo facturas): selección múltiple → ZIP, y por fila.
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [downloading, setDownloading] = useState(false);
@@ -311,6 +315,34 @@ export default function FactusolDocumentosPage() {
     setNotice(`${texto.replace("{n}", d.numero)} al pedido ${order.order_number}.`);
   }
 
+  // --- Crear pedido desde un albarán / factura (Lote 7 · P4) ---------------
+  /** Crea el pedido de BoHub directamente desde el albarán / factura (solo se
+   *  LEE el documento; FACTUSOL no se toca). El cliente lo resuelve el backend
+   *  por CLIALB/CLIFAC — o la empresa del cruce CRM de la fila si la hay. Sin
+   *  vínculo, el backend avisa (409) y no auto-crea. Al crear, la fila refleja
+   *  el pedido sin releer FACTUSOL y el contador baja, igual que «Vincular». */
+  async function crearPedido(d: FactusolDocument) {
+    if (d.serie === null || d.codigo === null) return;
+    if (tab !== "albaranes" && tab !== "facturas") return;
+    setCreando(rowKey(d));
+    setError(null);
+    setNotice(null);
+    try {
+      const order = await createOrderFromDocumentType(
+        tab, d.serie, Number(d.codigo), { company_id: d.company?.id ?? undefined },
+      );
+      const linked: LinkedOrder = { id: order.id, order_number: order.order_number };
+      setItems((prev) => prev.map((row) => (row === d ? { ...row, order: linked } : row)));
+      setUnlinkedTotal((n) => (n === null ? null : Math.max(0, n - 1)));
+      const label = tab === "albaranes" ? "Albarán" : "Factura";
+      setNotice(`${label} ${d.numero}: pedido ${order.order_number} creado.`);
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudo crear el pedido."));
+    } finally {
+      setCreando(null);
+    }
+  }
+
   const month = currentMonthRange();
   const isCurrentMonth = fechaDesde === month.desde && fechaHasta === month.hasta;
   const hasFilters =
@@ -330,9 +362,10 @@ export default function FactusolDocumentosPage() {
     ? `Datos leídos de FACTUSOL al cargar; el índice del ciclo tiene ${cycleAge} s.`
     : "Datos leídos de FACTUSOL al cargar la lista.";
 
-  /** Columna «Pedido»: el pedido de BoHub ligado al documento o la acción
-   *  para conseguirlo (crear en presupuestos / pedidos; vincular en albaranes
-   *  / facturas). */
+  /** Columna «Pedido»: el pedido de BoHub ligado al documento o las acciones
+   *  para conseguirlo. Presupuestos / pedidos: «Crear pedido» (alta prefijada).
+   *  Albaranes / facturas: «Crear pedido» (Lote 7 · P4, alta directa desde el
+   *  documento) Y «Vincular» a un pedido ya existente (Lote 2 · PR-2). */
   function pedidoCell(d: FactusolDocument) {
     if (d.order) {
       return (
@@ -359,14 +392,25 @@ export default function FactusolDocumentosPage() {
         </Link>
       );
     }
+    // Albaranes / facturas: crear el pedido desde el documento o vincularlo a
+    // uno existente. Ambas acciones dejan la fila con su pedido (sin releer).
     return (
-      <button
-        type="button" className="button small secondary erp-doc-link-btn"
-        aria-label={`Vincular ${d.numero} a un pedido`}
-        onClick={(e) => { e.stopPropagation(); setVinculando(d); }}
-      >
-        Vincular
-      </button>
+      <div className="erp-doc-row-actions">
+        <button
+          type="button" className="button small secondary erp-doc-link-btn"
+          disabled={creando === rowKey(d)}
+          onClick={(e) => { e.stopPropagation(); void crearPedido(d); }}
+        >
+          {creando === rowKey(d) ? "Creando…" : "Crear pedido"}
+        </button>
+        <button
+          type="button" className="button small secondary erp-doc-link-btn"
+          aria-label={`Vincular ${d.numero} a un pedido`}
+          onClick={(e) => { e.stopPropagation(); setVinculando(d); }}
+        >
+          Vincular
+        </button>
+      </div>
     );
   }
 

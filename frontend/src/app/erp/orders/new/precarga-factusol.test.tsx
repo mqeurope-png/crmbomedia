@@ -29,6 +29,11 @@ jest.mock("../../../lib/companiesApi", () => ({
   getCompany: jest.fn(),
 }));
 jest.mock("../../../lib/erpApi", () => ({
+  // Lote 7 · P1: el alta manual usa FACTUSOL_SERIES para el selector de serie.
+  FACTUSOL_SERIES: [
+    { value: 1, label: "Bomedia" }, { value: 2, label: "MQ Europe" },
+    { value: 4, label: "Lambert" }, { value: 5, label: "Streamtec" },
+  ],
   createOrder: jest.fn(),
   createFactusolCustomer: jest.fn(),
   createFactusolCustomerAndLink: jest.fn(),

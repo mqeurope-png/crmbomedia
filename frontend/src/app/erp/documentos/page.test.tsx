@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import FactusolDocumentosPage from "./page";
 import { getCurrentUser } from "../../lib/api";
 import {
+  createOrderFromDocumentType,
   downloadFacturasPdfZip,
   downloadFactusolDocumentPdf,
   getFactusolSeries,
@@ -55,6 +56,7 @@ jest.mock("../../lib/erpApi", () => ({
   getFactusolSeries: jest.fn(),
   downloadFactusolDocumentPdf: jest.fn(),
   downloadFacturasPdfZip: jest.fn(),
+  createOrderFromDocumentType: jest.fn(),
   saveBlob: jest.fn(),
   ERP_EDIT_ROLES: ["admin", "pedidos"],
 }));
@@ -85,6 +87,7 @@ const mockList = listFactusolDocuments as jest.Mock;
 const mockSeries = getFactusolSeries as jest.Mock;
 const mockPdf = downloadFactusolDocumentPdf as jest.Mock;
 const mockZip = downloadFacturasPdfZip as jest.Mock;
+const mockCreate = createOrderFromDocumentType as jest.Mock;
 
 function factura(over = {}) {
   return {
@@ -125,6 +128,8 @@ beforeEach(() => {
   mockPdf.mockResolvedValue(new Blob());
   mockZip.mockReset();
   mockZip.mockResolvedValue(new Blob());
+  mockCreate.mockReset();
+  mockCreate.mockResolvedValue({ id: "o-new", order_number: "ALB-5-000091" });
   (saveBlob as jest.Mock).mockReset();
 });
 
@@ -372,7 +377,7 @@ describe("ERP · Documentos FACTUSOL (Lote 2 · PR-2)", () => {
     expect(mockList).not.toHaveBeenCalled();
   });
 
-  it("en albaranes también se ofrece «Vincular»; en presupuestos sigue siendo «Crear pedido»", async () => {
+  it("en albaranes se ofrece «Crear pedido» Y «Vincular»; en presupuestos solo «Crear pedido» (enlace)", async () => {
     const user = userEvent.setup();
     mockList.mockResolvedValue({
       items: [factura({ doc_type: "albaranes", codigo: 91, numero: "5-000091",
@@ -381,8 +386,11 @@ describe("ERP · Documentos FACTUSOL (Lote 2 · PR-2)", () => {
     });
     render(<FactusolDocumentosPage />);
     await user.click(await screen.findByRole("tab", { name: "Albaranes" }));
+    // Lote 7 · P4 — albaranes / facturas: alta directa desde el documento
+    // (botón) además de «Vincular».
     expect(await screen.findByRole("button", { name: "Vincular 5-000091 a un pedido" }))
       .toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Crear pedido" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Crear pedido" })).not.toBeInTheDocument();
     mockList.mockResolvedValue({
       items: [factura({ doc_type: "presupuestos", codigo: 28, numero: "5-000028",
@@ -390,8 +398,57 @@ describe("ERP · Documentos FACTUSOL (Lote 2 · PR-2)", () => {
       total: 1, unlinked_total: 1,
     });
     await user.click(screen.getByRole("tab", { name: "Presupuestos" }));
+    // Presupuestos: sigue siendo el ENLACE al alta prefijada, sin «Vincular».
     expect(await screen.findByRole("link", { name: "Crear pedido" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /a un pedido$/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Crear pedido" })).not.toBeInTheDocument();
+  });
+
+  it("«Crear pedido» en un albarán crea el pedido desde el documento y la fila lo refleja", async () => {
+    const user = userEvent.setup();
+    mockList.mockResolvedValue({
+      items: [factura({ doc_type: "albaranes", codigo: 91, numero: "5-000091",
+                        estado: "0", estado_label: "Pendiente", estado_tone: "muted",
+                        company: { id: "acme", name: "Acme SL", country: "ES", factusol_id: "55555" } })],
+      total: 1, unlinked_total: 1,
+    });
+    mockCreate.mockResolvedValue({ id: "o-alb91", order_number: "ALB-5-000091" });
+    render(<FactusolDocumentosPage />);
+    await user.click(await screen.findByRole("tab", { name: "Albaranes" }));
+    await screen.findByText("5-000091");
+    mockList.mockClear();
+    await user.click(screen.getByRole("button", { name: "Crear pedido" }));
+    // Llama al alta desde el documento con serie/código y la empresa del cruce.
+    await waitFor(() =>
+      expect(mockCreate).toHaveBeenCalledWith("albaranes", 5, 91, { company_id: "acme" }),
+    );
+    // La fila pasa a tener pedido (enlace) sin releer FACTUSOL, y el contador baja.
+    expect(await screen.findByRole("link", { name: "Abrir pedido ALB-5-000091" }))
+      .toHaveAttribute("href", "/erp/orders/o-alb91");
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Albarán 5-000091: pedido ALB-5-000091 creado.",
+    );
+    expect(screen.getByRole("button", { name: /Solo sin vincular/ }))
+      .toHaveTextContent("Solo sin vincular · 0");
+    expect(mockList).not.toHaveBeenCalled();
+  });
+
+  it("una factura también ofrece «Crear pedido» y avisa si el alta falla", async () => {
+    const user = userEvent.setup();
+    mockList.mockResolvedValue({
+      items: [factura({ order: null })],
+      total: 1, unlinked_total: 1,
+    });
+    mockCreate.mockRejectedValue(new Error("El cliente FACTUSOL no está vinculado."));
+    render(<FactusolDocumentosPage />);
+    await screen.findByText("5-260066");
+    await user.click(screen.getByRole("button", { name: "Crear pedido" }));
+    await waitFor(() =>
+      expect(mockCreate).toHaveBeenCalledWith("facturas", 5, 260066, { company_id: "es" }),
+    );
+    // El error del backend (cliente sin vincular) se muestra; la fila sigue sin pedido.
+    expect(await screen.findByRole("alert")).toHaveTextContent(/no está vinculado/i);
+    expect(screen.queryByRole("link", { name: /Abrir pedido/ })).not.toBeInTheDocument();
   });
 
   it("sin permiso de edición no hay «Vincular»: la fila dice «Sin vincular»", async () => {

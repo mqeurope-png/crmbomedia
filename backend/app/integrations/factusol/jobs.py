@@ -476,6 +476,50 @@ def enqueue_cancel_order_documents(
     )
 
 
+# --- Lote 7 · P1: cambiar la serie del pedido (borrar + recrear el albarán) ---
+
+
+def change_order_serie_job(
+    order_id: str, new_serie: int, actor_user_id: str | None = None,
+) -> dict[str, Any]:
+    """Cambia la SERIE (empresa emisora) de un pedido con albarán: borra el
+    albarán viejo en FACTUSOL y lo recrea en la serie nueva. Corre en
+    `factusol:writes` (serial: la re-creación es un contador MAX+1). Un fallo de
+    la re-creación NO se propaga como job failed — el orquestador lo deja en un
+    estado conocido (pedido sin albarán) y lo refleja en el resultado."""
+    from sqlalchemy.orm import Session  # noqa: PLC0415
+
+    from app.db.session import get_engine  # noqa: PLC0415
+    from app.erp.factusol_albaran import change_order_serie  # noqa: PLC0415
+    from app.erp.models import Order  # noqa: PLC0415
+    from app.integrations.factusol.service import ejercicio_for  # noqa: PLC0415
+    from app.models.crm import User  # noqa: PLC0415
+
+    with Session(get_engine()) as session:
+        order = session.get(Order, order_id)
+        if order is None:
+            raise FactusolError(f"Order {order_id!r} no existe")
+        actor = session.get(User, actor_user_id) if actor_user_id else None
+        client = FactusolClient.from_settings()
+        result = change_order_serie(
+            session, order, int(new_serie), client=client,
+            ejercicio=ejercicio_for(session), actor=actor,
+        )
+    logger.info("factusol: serie order=%s → %s (albarán %s)",
+                order_id, new_serie, result.get("albaran_number"))
+    return result
+
+
+def enqueue_change_order_serie(
+    order_id: str, new_serie: int, actor_user_id: str | None = None,
+) -> str:
+    """Encola `change_order_serie_job` en `factusol:writes`; devuelve el job_id."""
+    return _enqueue(
+        "app.integrations.factusol.jobs.change_order_serie_job",
+        order_id, new_serie, actor_user_id,
+    )
+
+
 # --- proformas (Fase C · C-4) ------------------------------------------------
 #
 # Las tres van a la MISMA cola serializada que la emisión de facturas. Crear y

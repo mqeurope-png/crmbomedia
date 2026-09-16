@@ -49,6 +49,11 @@ class OrderSource(StrEnum):
     # Fase 1: pedido creado desde un PEDIDO DE CLIENTE de FACTUSOL (F_PCL).
     # Enum no nativo (texto, length=40): sin migración.
     FACTUSOL_PEDIDO = "factusol_pedido"
+    # Lote 7 · P4: pedido creado desde un ALBARÁN (F_ALB) o una FACTURA (F_FAC)
+    # de FACTUSOL. Mismo criterio (enum de texto): sin migración. Solo lectura
+    # del documento; el pedido queda ligado a su albarán / factura de origen.
+    FACTUSOL_ALBARAN = "factusol_albaran"
+    FACTUSOL_FACTURA = "factusol_factura"
     MANUAL = "manual"
 
 
@@ -201,6 +206,15 @@ class Order(TimestampMixin, Base):
     factusol_albaran_number: Mapped[str | None] = mapped_column(
         String(32), index=True,
     )
+
+    # Lote 7 · P1 — SERIE (empresa emisora) elegida a mano para un pedido
+    # MANUAL: 1 Bomedia / 2 MQ Europe / 4 Lambert / 5 Streamtec. Se fija al
+    # crear el pedido y se puede cambiar desde la ficha (borra y recrea el
+    # albarán en la serie nueva). Manda en `service.resolve_serie` por encima
+    # del `by_source`/default, así que TODO documento que BoHub emita desde el
+    # pedido (albarán, y luego proforma / factura) sale en esta serie. NULL =
+    # sin elección explícita (los web/F_PCL heredan su `TIPPCL`, nunca esto).
+    factusol_manual_serie: Mapped[int | None] = mapped_column(Integer)
 
     # Cobro manual (F-4-B desde la app). El pedido solo guarda el CODFAC de su
     # factura; la SERIE (TIPFAC, clave compuesta) se resuelve una vez y se

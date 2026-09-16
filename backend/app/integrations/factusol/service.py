@@ -155,7 +155,8 @@ def resolve_serie(
     pcl_row: dict[str, Any] | None = None,
 ) -> int:
     """Serie (empresa emisora) con la que facturar este pedido:
-    elección explícita del modal → **serie del pedido en FACTUSOL (`TIPPCL`)**
+    elección explícita del modal → **serie MANUAL elegida en el pedido
+    (`factusol_manual_serie`)** → **serie del pedido en FACTUSOL (`TIPPCL`)**
     → `by_source[store_id]` → `by_source[origen]` → default de ajustes → 5.
 
     ERP-E2-fix1: la fuente primaria es el propio pedido. Cuando entra un
@@ -163,10 +164,19 @@ def resolve_serie(
     `BOP-099917` de MOVIATICOS es el `5-000005`), así que la factura tiene que
     salir en esa misma serie. La config de `/erp/settings` queda solo como
     fallback para pedidos manuales que no existen en FACTUSOL — usarla como
-    fuente primaria es lo que facturó un pedido de Streamtec como Bomedia."""
+    fuente primaria es lo que facturó un pedido de Streamtec como Bomedia.
+
+    Lote 7 · P1: un pedido MANUAL puede fijar su serie a mano
+    (`factusol_manual_serie`). Va DESPUÉS del `requested` explícito (el modal
+    de emisión sigue mandando) pero ANTES del `TIPPCL`/config, para que el
+    albarán y —más tarde— la proforma / factura del pedido salgan todos en la
+    empresa elegida. Los pedidos web/F_PCL nunca lo llevan (heredan `TIPPCL`)."""
     explicit = coerce_serie(requested)
     if explicit is not None:
         return explicit
+    manual = coerce_serie(order.factusol_manual_serie)
+    if manual is not None:
+        return manual
     if pcl_row is not None:
         inherited = serie_of_row(pcl_row, "TIPPCL")
         if inherited is not None:
