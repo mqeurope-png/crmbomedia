@@ -13870,3 +13870,27 @@ table.erp-doc-lines { width: 100%; table-layout: fixed; }
 @media (max-width: 767px) {
   .sat-global-cols { grid-template-columns: 1fr; gap: var(--sp-6); }
 }
+/* ===================================================================
+   Lote 3 · ficha de pedido (frontend)
+   -------------------------------------------------------------------
+   #8 · «Factura enviada al cliente» en la línea de vida. Nota discreta
+   dentro del paso «Factura» (solo cuando la factura ya existe): verde de
+   estado cuando ya se ha enviado al cliente desde la app (informa, no se
+   pulsa), gris con el dato cuando aún no. Tamaño de la escala cerrada
+   (--fs-label) y colores por token.
+   #1 · el reequilibrio de columnas no necesita reglas propias: es puro
+   reparto de paneles en el JSX sobre la rejilla `.erp-ficha-cols` (que ya
+   apila por debajo de 1280 px); «Líneas» y «Envío y seguimiento» pasan a
+   la columna izquierda y el cliente FACTUSOL (#6) a la derecha.
+   =================================================================== */
+.erp-flow-emailed {
+  margin: var(--sp-2) 0 0;
+  font-size: var(--fs-label);
+  line-height: 1.35;
+}
+.erp-flow-emailed.is-sent {
+  color: var(--st-green-ink);
+  font-weight: 600;
+}
+.erp-flow-emailed.is-sent::before { content: "\2713\00a0"; }
+.erp-flow-emailed.is-unsent { color: var(--muted); }

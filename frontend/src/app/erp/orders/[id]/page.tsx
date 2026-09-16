@@ -12,6 +12,7 @@ import { PDF_LANGS } from "../../../components/erp/FactusolDocumentDetailModal";
 import { InvoiceEmailModal } from "../../../components/erp/InvoiceEmailModal";
 import { OrderEmailModal } from "../../../components/erp/OrderEmailModal";
 import { CobroFactusolBadge } from "../../../components/erp/CobroFactusolBadge";
+import { OrderFactusolClientPanel } from "../../../components/erp/OrderFactusolClientPanel";
 import { EmitFactusolButton } from "../../../components/erp/EmitFactusolButton";
 import { PrimaryActionBar } from "../../../components/erp/PrimaryActionBar";
 import { RegistrarCobroModal } from "../../../components/erp/RegistrarCobroModal";
@@ -37,6 +38,7 @@ import {
   getOrderTimeline,
   getFactusolStatus,
   getOrderFactusolCobro,
+  resolveOrderCobroStatus,
   type OrderCobroInfo,
   fireTransition,
   saveBlob,
@@ -123,6 +125,13 @@ function hace(iso: string, now: number = Date.now()): string {
   const d = Math.round(h / 24);
   if (d < 30) return d === 1 ? "hace 1 día" : `hace ${d} días`;
   return `el ${new Date(iso).toLocaleDateString("es-ES")}`;
+}
+
+/** Fecha DD/MM/AAAA a partir de un ISO (se lee el tramo de fecha directamente,
+ *  sin zona horaria: el mismo día que muestra el backend). */
+function formatDMY(iso: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : "—";
 }
 
 /** Media query como estado (SSR: false). El molde de la ficha decide con
@@ -328,12 +337,11 @@ function ErpOrderDetailScreen() {
     }
   }
 
-  /** Estado de cobro FACTUSOL (contable) de la factura del pedido: el estado
-   *  en vivo manda sobre el persistido. */
+  /** Estado de cobro FACTUSOL (contable) de la factura del pedido: FUENTE
+   *  ÚNICA de la ficha (helper compartido). El estado en vivo manda sobre el
+   *  persistido; todo indicador de cobro de la ficha deriva de aquí. */
   function cobroStatusOf(o: OrderDetail): FactusolCobroStatus | null {
-    const live = cobroLive?.status === "cobrada" || cobroLive?.status === "pendiente"
-      ? cobroLive.status : null;
-    return live ?? o.factusol_cobro_status ?? null;
+    return resolveOrderCobroStatus(o, cobroLive);
   }
 
   /** Botón de la barra «Siguiente paso»: la acción que el backend dice que
@@ -823,9 +831,19 @@ function ErpOrderDetailScreen() {
           <WorkflowSteps
             steps={wf.steps}
             vertical
-            renderAction={(s) => (s.state === "now" ? (
-              <NextActionBar workflow={wf} embedded>{isMobile ? null : stepAction}</NextActionBar>
-            ) : null)}
+            renderAction={(s) => {
+              const nowBar = s.state === "now" ? (
+                <NextActionBar workflow={wf} embedded>{isMobile ? null : stepAction}</NextActionBar>
+              ) : null;
+              // Bloque 8 — en el paso «Factura», y solo cuando la factura ya
+              // existe (si no, el paso es EMITIR, no enviar), se ve de un
+              // vistazo si se ha enviado al cliente desde la app y cuándo.
+              const enviada = s.key === "factura" && hasInvoice ? (
+                <InvoiceEmailedNote order={order} />
+              ) : null;
+              if (!nowBar && !enviada) return null;
+              return <>{nowBar}{enviada}</>;
+            }}
           />
           {wf.steps.some((s) => s.state === "now") ? null : (
             <NextActionBar workflow={wf}>{isMobile ? null : stepAction}</NextActionBar>
@@ -865,6 +883,84 @@ function ErpOrderDetailScreen() {
           <Link href="/erp/exceptions" className="link-button small">Ver bandeja de excepciones</Link>
         </section>
       ) : null}
+
+      {/* Lote 3 · #1 — reequilibrio de columnas: «Líneas» y «Envío y
+          seguimiento» (los dos paneles más altos) bajan a la columna
+          izquierda, junto a la línea de vida; la derecha se queda con el
+          resumen económico, FACTUSOL, el cliente FACTUSOL (web) y el
+          historial. Así las dos columnas quedan parejas en escritorio; por
+          debajo de 1280 se apilan igual (todo el contenido se conserva). */}
+      <FichaPanel
+        id="lineas"
+        title="Líneas"
+        summary={[
+          `${order.lines.length} ${order.lines.length === 1 ? "artículo" : "artículos"}`,
+          sinMapear > 0 ? `${sinMapear} sin mapear` : null,
+          Math.abs(otrosCargos) >= 0.01 ? `portes ${eur(otrosCargos)}` : null,
+        ].filter(Boolean).join(" · ")}
+        defaultOpen={panelDefault("lineas")}
+      >
+        <div className="erp-flow-table">
+          <table className="data-table">
+            <thead>
+              <tr><th>SKU</th><th>Artículo</th><th>Cant.</th><th>Total</th><th>Mapping</th></tr>
+            </thead>
+            <tbody>
+              {order.lines.map((l) => (
+                <tr key={l.id}>
+                  <td><code>{l.product_sku}</code></td>
+                  <td>{l.description}</td>
+                  <td>{l.quantity}</td>
+                  <td>{l.line_total.toFixed(2)}</td>
+                  <td>{l.product_codart
+                    ? <span className="badge ok">{l.product_codart}</span>
+                    : <span className="badge bad">sin mapear</span>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </FichaPanel>
+
+      {/* Envío y seguimiento: el albarán vive AQUÍ y solo aquí (el de
+          FACTUSOL —nº, PDF, crearlo si falta— y el fichero subido a mano /
+          descargado de Woo), la etiqueta (cuya subida mueve el transporte:
+          al subirla, la ficha se recarga para que la línea de vida y el
+          «Siguiente paso» lo reflejen) y los campos del Excel de
+          seguimiento (ERP-F6). «Crear albarán» / «Subir etiqueta» desde el
+          paso actual abren el panel si estaba plegado. */}
+      <FichaPanel
+        id="envio"
+        title="Envío y seguimiento"
+        summary={[
+          TRANSPORT_TEXT[order.transport_status] ?? order.transport_status,
+          order.factusol_albaran_number
+            ? `albarán ${order.factusol_albaran_number}`
+            : isWeb ? null : "sin albarán",
+          order.tracking_number ? `seguimiento ${order.tracking_number}` : null,
+        ].filter(Boolean).join(" · ")}
+        defaultOpen={panelDefault("envio")}
+        openSignal={albaranSignal + etiquetaSignal}
+      >
+        <ShippingFilesSection
+          orderId={order.id}
+          isWooOrder={isWeb}
+          orderSource={order.external_source}
+          factusolAlbaranNumber={order.factusol_albaran_number ?? null}
+          pdfLang={pdfLang}
+          canCreateAlbaran={canEmit}
+          createSignal={albaranSignal}
+          onAlbaranCreated={({ error: err }) => { if (err) setError(err); load(); }}
+          openEtiquetaSignal={etiquetaSignal}
+          onUploaded={() => load()}
+        />
+        <SeguimientoFieldsCard
+          order={order}
+          canEdit={canEmit}
+          onSaved={(patch) => setOrder((o) => (o ? { ...o, ...patch } : o))}
+          onError={setError}
+        />
+      </FichaPanel>
       </div>
 
       <div className="erp-ficha-side">
@@ -954,81 +1050,13 @@ function ErpOrderDetailScreen() {
           </div>
         </section>
 
-        {/* Lote 2 · PR-2 — paneles plegables con resumen en la cabecera
-            («3 artículos · portes 45,00 €»): se pierde cero información y
-            cada uno recuerda si el usuario lo dejó abierto o cerrado. Por
-            defecto se abre el del paso actual (y todos desde 1280 px). */}
-        <FichaPanel
-          id="lineas"
-          title="Líneas"
-          summary={[
-            `${order.lines.length} ${order.lines.length === 1 ? "artículo" : "artículos"}`,
-            sinMapear > 0 ? `${sinMapear} sin mapear` : null,
-            Math.abs(otrosCargos) >= 0.01 ? `portes ${eur(otrosCargos)}` : null,
-          ].filter(Boolean).join(" · ")}
-          defaultOpen={panelDefault("lineas")}
-        >
-          <div className="erp-flow-table">
-            <table className="data-table">
-              <thead>
-                <tr><th>SKU</th><th>Artículo</th><th>Cant.</th><th>Total</th><th>Mapping</th></tr>
-              </thead>
-              <tbody>
-                {order.lines.map((l) => (
-                  <tr key={l.id}>
-                    <td><code>{l.product_sku}</code></td>
-                    <td>{l.description}</td>
-                    <td>{l.quantity}</td>
-                    <td>{l.line_total.toFixed(2)}</td>
-                    <td>{l.product_codart
-                      ? <span className="badge ok">{l.product_codart}</span>
-                      : <span className="badge bad">sin mapear</span>}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </FichaPanel>
-
-        {/* Envío y seguimiento: el albarán vive AQUÍ y solo aquí (el de
-            FACTUSOL —nº, PDF, crearlo si falta— y el fichero subido a mano /
-            descargado de Woo), la etiqueta (cuya subida mueve el transporte:
-            al subirla, la ficha se recarga para que la línea de vida y el
-            «Siguiente paso» lo reflejen) y los campos del Excel de
-            seguimiento (ERP-F6). «Crear albarán» / «Subir etiqueta» desde el
-            paso actual abren el panel si estaba plegado. */}
-        <FichaPanel
-          id="envio"
-          title="Envío y seguimiento"
-          summary={[
-            TRANSPORT_TEXT[order.transport_status] ?? order.transport_status,
-            order.factusol_albaran_number
-              ? `albarán ${order.factusol_albaran_number}`
-              : isWeb ? null : "sin albarán",
-            order.tracking_number ? `seguimiento ${order.tracking_number}` : null,
-          ].filter(Boolean).join(" · ")}
-          defaultOpen={panelDefault("envio")}
-          openSignal={albaranSignal + etiquetaSignal}
-        >
-          <ShippingFilesSection
-            orderId={order.id}
-            isWooOrder={isWeb}
-            orderSource={order.external_source}
-            factusolAlbaranNumber={order.factusol_albaran_number ?? null}
-            pdfLang={pdfLang}
-            canCreateAlbaran={canEmit}
-            createSignal={albaranSignal}
-            onAlbaranCreated={({ error: err }) => { if (err) setError(err); load(); }}
-            openEtiquetaSignal={etiquetaSignal}
-            onUploaded={() => load()}
-          />
-          <SeguimientoFieldsCard
-            order={order}
-            canEdit={canEmit}
-            onSaved={(patch) => setOrder((o) => (o ? { ...o, ...patch } : o))}
-            onError={setError}
-          />
-        </FichaPanel>
+        {/* Lote 3 · #6 — cliente FACTUSOL también en los pedidos WEB. El
+            mismo panel de la ficha de empresa (ver el nº F_CLI, «Traer datos»,
+            completar el NIF que falte…) resuelto por `company_id`. Sin empresa
+            vinculada (raro) avisa discreto; nunca inventa datos del cliente. */}
+        {isWeb ? (
+          <OrderFactusolClientPanel companyId={order.company_id} onChanged={load} />
+        ) : null}
 
         <FichaPanel
           id="historial"
@@ -1119,6 +1147,26 @@ const REGIME_TEXT: Record<string, string> = {
   intracomunitario: "intracomunitario",
   exportacion: "exportación",
 };
+
+/** Lote 3 · #8 — en el paso «Factura» de la línea de vida, de un vistazo (sin
+ *  abrir el historial): si la factura se ha enviado al cliente por email DESDE
+ *  la app y cuándo. Solo se pinta si la factura ya existe (el propio paso ya
+ *  filtra por eso). Los destinatarios van en el `title`. */
+function InvoiceEmailedNote({ order }: { order: OrderDetail }) {
+  const at = order.invoice_emailed_at ?? null;
+  const to = order.invoice_emailed_to ?? [];
+  if (at) {
+    return (
+      <p
+        className="erp-flow-emailed is-sent"
+        title={to.length ? `Enviada a ${to.join(", ")}` : undefined}
+      >
+        Factura enviada al cliente el {formatDMY(at)}
+      </p>
+    );
+  }
+  return <p className="erp-flow-emailed is-unsent">Sin enviar al cliente</p>;
+}
 
 /** Base imponible del pedido: la suma de sus líneas. */
 function lineasBase(order: OrderDetail): number {

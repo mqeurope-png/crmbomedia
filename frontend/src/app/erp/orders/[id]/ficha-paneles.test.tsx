@@ -46,6 +46,11 @@ jest.mock("../../../components/erp/OrderStatusMachine", () => ({
 jest.mock("../../../components/erp/ShippingFilesSection", () => ({
   ShippingFilesSection: () => <div>documentos de envío</div>,
 }));
+// #6 se prueba aparte (ficha-cliente-factusol): aquí solo importa que no
+// arrastre la lectura de la empresa ni el panel real de la ficha de empresa.
+jest.mock("../../../components/erp/OrderFactusolClientPanel", () => ({
+  OrderFactusolClientPanel: () => null,
+}));
 jest.mock("../../../lib/api", () => ({
   getCurrentUser: jest.fn(() => Promise.resolve({ role: "admin" })),
 }));
@@ -54,6 +59,13 @@ jest.mock("../../../lib/erpApi", () => ({
   DOMAIN_LABELS: {},
   STATUS_LABELS: {},
   customerLabel: () => "Rotulación Levante S.L.",
+  resolveOrderCobroStatus: (
+    o: { factusol_cobro_status?: string | null },
+    live: { status?: string | null } | null | undefined,
+  ) => {
+    const s = live?.status === "cobrada" || live?.status === "pendiente" ? live.status : null;
+    return s ?? o.factusol_cobro_status ?? null;
+  },
   getOrder: jest.fn(),
   getOrderTimeline: jest.fn(),
   getFactusolStatus: jest.fn(() => Promise.resolve({ status: "none" })),

@@ -212,6 +212,11 @@ export type OrderDetail = OrderSummary & {
   /** Rediseño de flujo: el MISMO bloque que recibe la bandeja (stepper de la
    *  «línea de vida», siguiente paso y alertas). */
   workflow?: OrderWorkflow;
+  /** Último envío de la factura al cliente por email DESDE la app (ISO) y a
+   *  quién se envió. `null` / vacío = nunca se ha enviado. Alimenta el
+   *  indicador «Factura enviada al cliente el DD/MM/AAAA» de la línea de vida. */
+  invoice_emailed_at?: string | null;
+  invoice_emailed_to?: string[];
 };
 
 export type FactusolOriginDocument = {
@@ -3672,4 +3677,21 @@ export async function updateSeguimientoFields(
     whiterip_license: r.whiterip_license,
     shipping_origin: r.shipping_origin,
   };
+}
+
+/** Lote 3 · ficha — FUENTE ÚNICA del estado de cobro de la ficha. El estado
+ *  leído EN VIVO de FACTUSOL (`cobroLive`) manda sobre el persistido en el
+ *  pedido (`factusol_cobro_status`), que puede quedar en `null` justo después
+ *  de un re-vínculo. Todos los indicadores de cobro de la ficha (rejilla /
+ *  casilla «Cobro», bloque ámbar «pendiente de cobro», badge FACTUSOL y el
+ *  guard del botón «Registrar cobro») derivan de aquí, para que nunca
+ *  convivan «cobrado» y «no cobrado». */
+export function resolveOrderCobroStatus(
+  order: { factusol_cobro_status?: FactusolCobroStatus | null },
+  cobroLive: { status?: string | null } | null | undefined,
+): FactusolCobroStatus | null {
+  const live = cobroLive?.status === "cobrada" || cobroLive?.status === "pendiente"
+    ? cobroLive.status
+    : null;
+  return live ?? order.factusol_cobro_status ?? null;
 }

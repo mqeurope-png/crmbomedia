@@ -78,6 +78,9 @@ jest.mock("../../../components/erp/ShippingFilesSection", () => ({
     </>
   ),
 }));
+jest.mock("../../../components/erp/OrderFactusolClientPanel", () => ({
+  OrderFactusolClientPanel: () => null,
+}));
 jest.mock("../../../lib/api", () => ({
   getCurrentUser: jest.fn(() => Promise.resolve({ role: "admin" })),
 }));
@@ -90,6 +93,13 @@ jest.mock("../../../lib/erpApi", () => ({
   },
   STATUS_LABELS: {},
   customerLabel: () => "Alexandre · La Maison de la Plaque",
+  resolveOrderCobroStatus: (
+    o: { factusol_cobro_status?: string | null },
+    live: { status?: string | null } | null | undefined,
+  ) => {
+    const s = live?.status === "cobrada" || live?.status === "pendiente" ? live.status : null;
+    return s ?? o.factusol_cobro_status ?? null;
+  },
   getOrder: jest.fn(),
   getOrderTimeline: jest.fn(() => Promise.resolve({ total: 0, items: [] })),
   getFactusolStatus: jest.fn(() => Promise.resolve({ status: "none" })),
@@ -516,5 +526,75 @@ describe("ERP · Ficha del pedido (rediseño de flujo)", () => {
     render(<ErpOrderDetailPage />);
     await screen.findByRole("region", { name: "Siguiente paso" });
     expect(screen.getAllByRole("link", { name: "Ver excepciones" })).toHaveLength(1);
+  });
+});
+
+describe("ERP · Ficha del pedido — reequilibrio de columnas (#1)", () => {
+  it("«Líneas» y «Envío y seguimiento» pasan a la izquierda; resumen económico, FACTUSOL e historial a la derecha; nada se pierde", async () => {
+    render(<ErpOrderDetailPage />);
+    await screen.findByRole("heading", { name: "Líneas" });
+    const main = document.querySelector(".erp-ficha-main") as HTMLElement;
+    const side = document.querySelector(".erp-ficha-side") as HTMLElement;
+    expect(document.querySelector(".erp-ficha-cols")).not.toBeNull();
+    expect(main).not.toBeNull();
+    expect(side).not.toBeNull();
+    // Izquierda: la línea de vida y los dos paneles más altos.
+    for (const name of ["Línea de vida del pedido", "Líneas", "Envío y seguimiento"]) {
+      expect(within(main).getByRole("heading", { name })).toBeInTheDocument();
+    }
+    // Derecha: resumen económico, FACTUSOL e historial.
+    for (const name of ["Resumen económico", "FACTUSOL", "Historial"]) {
+      expect(within(side).getByRole("heading", { name })).toBeInTheDocument();
+    }
+  });
+});
+
+describe("ERP · Ficha del pedido — factura enviada al cliente visible (#8)", () => {
+  const facturaDone = STEPS.map((s) => (s.key === "factura"
+    ? { ...s, state: "done", detail: "5-260063" }
+    : s.key === "cobro" ? { ...s, state: "now" } : s));
+
+  function facturado(over = {}) {
+    return detail({
+      invoice_status: "invoiced_by_erp", factusol_invoice_number: "260063",
+      workflow: {
+        ...detail().workflow, queue: "por_cobrar", queue_label: "Por cobrar",
+        next_action: "registrar_cobro", next_action_label: "Registrar cobro",
+        next_action_hint: "El pedido consta pagado: registra el cobro en FACTUSOL.",
+        steps: facturaDone,
+      },
+      ...over,
+    });
+  }
+
+  it("con invoice_emailed_at: el paso «Factura» dice «Factura enviada al cliente el DD/MM/AAAA» (destinatarios en el tooltip)", async () => {
+    (getOrder as jest.Mock).mockResolvedValue(facturado({
+      invoice_emailed_at: "2026-09-12T10:30:00Z",
+      invoice_emailed_to: ["cliente@example.com", "copia@example.com"],
+    }));
+    render(<ErpOrderDetailPage />);
+    const list = await screen.findByRole("list", { name: "Ciclo del pedido" });
+    const factura = within(list).getByText("Factura").closest("li") as HTMLElement;
+    expect(factura).toHaveTextContent("Factura enviada al cliente el 12/09/2026");
+    const nota = within(factura).getByText(/Factura enviada al cliente el/);
+    expect(nota).toHaveAttribute("title", expect.stringContaining("cliente@example.com"));
+  });
+
+  it("con factura pero sin enviar: el paso «Factura» dice «Sin enviar al cliente»", async () => {
+    (getOrder as jest.Mock).mockResolvedValue(facturado({ invoice_emailed_at: null }));
+    render(<ErpOrderDetailPage />);
+    const list = await screen.findByRole("list", { name: "Ciclo del pedido" });
+    const factura = within(list).getByText("Factura").closest("li") as HTMLElement;
+    expect(factura).toHaveTextContent("Sin enviar al cliente");
+    expect(within(factura).queryByText(/Factura enviada al cliente/)).toBeNull();
+  });
+
+  it("sin factura todavía NO se muestra el indicador (el paso va de emitir, no de enviar)", async () => {
+    // El pedido por defecto no tiene factura (beforeEach → detail()).
+    render(<ErpOrderDetailPage />);
+    const list = await screen.findByRole("list", { name: "Ciclo del pedido" });
+    const factura = within(list).getByText("Factura").closest("li") as HTMLElement;
+    expect(within(factura).queryByText(/Sin enviar al cliente/)).toBeNull();
+    expect(within(factura).queryByText(/Factura enviada al cliente/)).toBeNull();
   });
 });
