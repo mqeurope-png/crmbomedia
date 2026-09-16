@@ -42,6 +42,7 @@ from app.erp.models import (
     PreparationStatus,
     ProductSkuMapping,
 )
+from app.erp.sat_autoenqueue import enqueue_paid_order
 from app.models.crm import Company, Contact
 from app.models.integration_settings import IntegrationAccount
 
@@ -128,6 +129,11 @@ def import_woo_order(
     # B-2-fix4: pedidos anteriores a la fecha de corte de la tienda se
     # auto-marcan como procesados externamente (no entran a Cola PEDIDOS).
     _auto_mark_external_if_before_cutoff(session, order, store)
+    # Lote 4: un pedido web recién creado y YA pagado entra directo a la Cola
+    # SAT («Por embalar»), sin esperar aprobación. Se hace DESPUÉS del corte
+    # externo: un pedido auto-externalizado ya no está en `pending_review`, así
+    # que el guard de `enqueue_paid_order` lo deja fuera. Actor = None (sistema).
+    enqueue_paid_order(session, order, actor=None)
     return ImportOutcome(
         order_id=order.id, created=True,
         contact_created=contact_created, company_created=company_created,
@@ -343,6 +349,10 @@ def _refresh_existing(
     new_payment = _payment_status(woo)
     if order.payment_status == PaymentStatus.PENDING and new_payment == PaymentStatus.PAID:
         order.payment_status = PaymentStatus.PAID
+        # Lote 4: al confirmarse el pago (webhook `order.updated` con date_paid)
+        # el pedido entra solo en la Cola SAT si sigue en pre-cola. Idempotente
+        # (guard `pending_review`): no toca un pedido ya aprobado/embalado.
+        enqueue_paid_order(session, order, actor=None)
     # Si no había contact/company vinculado (rare), engancha ahora.
     if order.contact_id is None:
         order.contact_id = contact.id
