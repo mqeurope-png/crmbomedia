@@ -784,6 +784,7 @@ export default function CompanyDetailPage() {
           onLinked={(codcli) =>
             setCompany((prev) => (prev ? { ...prev, factusol_company_id: codcli } : prev))
           }
+          onMerged={(survivorId) => router.push(`/companies/${survivorId}`)}
         />
       </div>
 

@@ -1,7 +1,9 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { CompanyFactusolPanel } from "./CompanyFactusolPanel";
+import { mergeCompanies } from "../../lib/companiesApi";
 import {
+  alreadyLinkedHolder,
   createFactusolCustomer,
   fixFactusolCustomerRegime,
   getFactusolPullPreview,
@@ -14,8 +16,12 @@ import {
 jest.mock("../../lib/api", () => ({
   getCurrentUser: jest.fn(() => Promise.resolve({ role: "admin" })),
 }));
+jest.mock("../../lib/companiesApi", () => ({
+  mergeCompanies: jest.fn(),
+}));
 jest.mock("../../lib/erpApi", () => ({
   ERP_EDIT_ROLES: ["admin", "pedidos"],
+  alreadyLinkedHolder: jest.fn(() => null),
   createFactusolCustomer: jest.fn(),
   linkFactusolCustomer: jest.fn(),
   searchFactusolCustomers: jest.fn(),
@@ -89,6 +95,10 @@ beforeEach(() => {
   (createFactusolCustomer as jest.Mock).mockReset();
   (linkFactusolCustomer as jest.Mock).mockReset();
   (linkFactusolCustomer as jest.Mock).mockResolvedValue({ linked: true });
+  (alreadyLinkedHolder as jest.Mock).mockReset();
+  (alreadyLinkedHolder as jest.Mock).mockReturnValue(null);
+  (mergeCompanies as jest.Mock).mockReset();
+  (mergeCompanies as jest.Mock).mockResolvedValue({ id: "holder-1" });
 });
 
 describe("CompanyFactusolPanel — «Traer datos de FACTUSOL»", () => {
@@ -273,5 +283,58 @@ describe("CompanyFactusolPanel — «Buscar en FACTUSOL»: listar y elegir CODCL
     await user.click(screen.getByRole("button", { name: "Buscar por nombre" }));
     expect(await screen.findByText("11")).toBeInTheDocument();
     expect(searchFactusolCustomers).toHaveBeenLastCalledWith(COMPANY.name, "name");
+  });
+});
+
+describe("CompanyFactusolPanel — «Fusionar con esa empresa» (Lote 8 · B2)", () => {
+  const UNLINKED = { ...COMPANY, factusol_company_id: null };
+  const HIT = {
+    ...CUSTOMER, codcli: "11", nombre: "BOMEDIA SL", nif: "B63609309",
+    nifcli: "B63609309", crm_link: null, factusol_matches_crm_id: null,
+  };
+
+  it("ofrece fusionar cuando el CODCLI ya lo tiene otra empresa, y fusiona ESTA en aquélla", async () => {
+    (searchFactusolCustomers as jest.Mock).mockResolvedValue([HIT]);
+    // El vínculo se rechaza con «ya vinculado a otra empresa»; el extractor
+    // devuelve quién lo tiene (una empresa) para ofrecer fusionar.
+    (linkFactusolCustomer as jest.Mock).mockRejectedValue(new Error("ya vinculado"));
+    (alreadyLinkedHolder as jest.Mock).mockReturnValue({
+      type: "company", company_id: "holder-1", company_name: "Empresa Titular SL",
+    });
+    const onMerged = jest.fn();
+    const user = userEvent.setup();
+    render(<CompanyFactusolPanel company={UNLINKED} onMerged={onMerged} />);
+    await user.click(await screen.findByRole("button", { name: "Buscar en FACTUSOL" }));
+    const row = within(screen.getByText("11").closest("tr") as HTMLElement);
+    await user.click(row.getByRole("button", { name: "Vincular" }));
+    // No se ha fusionado todavía: primero se ofrece.
+    expect(mergeCompanies).not.toHaveBeenCalled();
+    const dialog = within(await screen.findByRole("dialog", {
+      name: "Fusionar con la empresa vinculada",
+    }));
+    expect(dialog.getAllByText(/Empresa Titular SL/).length).toBeGreaterThan(0);
+    await user.click(dialog.getByRole("button", { name: "Fusionar con esa empresa" }));
+    // ESTA empresa (origen) se fusiona EN la titular (superviviente).
+    await waitFor(() => expect(mergeCompanies).toHaveBeenCalledWith("acme", "holder-1"));
+    expect(onMerged).toHaveBeenCalledWith("holder-1");
+  });
+
+  it("cancelar la oferta no fusiona nada", async () => {
+    (searchFactusolCustomers as jest.Mock).mockResolvedValue([HIT]);
+    (linkFactusolCustomer as jest.Mock).mockRejectedValue(new Error("ya vinculado"));
+    (alreadyLinkedHolder as jest.Mock).mockReturnValue({
+      type: "company", company_id: "holder-1", company_name: "Empresa Titular SL",
+    });
+    const user = userEvent.setup();
+    render(<CompanyFactusolPanel company={UNLINKED} />);
+    await user.click(await screen.findByRole("button", { name: "Buscar en FACTUSOL" }));
+    const row = within(screen.getByText("11").closest("tr") as HTMLElement);
+    await user.click(row.getByRole("button", { name: "Vincular" }));
+    const dialog = within(await screen.findByRole("dialog", {
+      name: "Fusionar con la empresa vinculada",
+    }));
+    await user.click(dialog.getByRole("button", { name: "Cancelar" }));
+    expect(mergeCompanies).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 });

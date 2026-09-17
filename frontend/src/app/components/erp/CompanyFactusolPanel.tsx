@@ -2,9 +2,10 @@
 
 import { useEffect, useState } from "react";
 import { getCurrentUser, type User } from "../../lib/api";
-import type { Company } from "../../lib/companiesApi";
+import { mergeCompanies, type Company } from "../../lib/companiesApi";
 import { extractErrorMessage } from "../../lib/errors";
 import {
+  alreadyLinkedHolder,
   createFactusolCustomer,
   ERP_EDIT_ROLES,
   fixFactusolCustomerRegime,
@@ -13,6 +14,7 @@ import {
   linkFactusolCustomer,
   pullFactusolIntoCompany,
   searchFactusolCustomers,
+  type AlreadyLinkedHolder,
   type FactusolCustomer,
   type FactusolPullPreview,
   type FactusolRegimePreview,
@@ -52,6 +54,7 @@ export function CompanyFactusolPanel({
   company,
   onLinked,
   onPulled,
+  onMerged,
   onSync,
   pullSignal = 0,
   regimeSignal = 0,
@@ -61,6 +64,10 @@ export function CompanyFactusolPanel({
   onLinked?: (codcli: string) => void;
   /** Tras «Traer datos»: el padre recarga la empresa. */
   onPulled?: () => void;
+  /** Lote 8 · B2 — tras «Fusionar con esa empresa»: esta ficha se ha
+   *  fusionado EN la empresa `survivorId` (la que ya tenía el vínculo) y ha
+   *  quedado archivada; el padre navega a la superviviente. */
+  onMerged?: (survivorId: string) => void;
   /** Fase 3 (ficha de empresa): estado de sincronía CRM ↔ FACTUSOL para la
    *  cabecera y la barra de alerta de la ficha (`null` = aún sin leer). */
   onSync?: (sync: { customer: FactusolCustomer | null; diffs: Diff[] | null }) => void;
@@ -89,6 +96,12 @@ export function CompanyFactusolPanel({
   // Tarea C: régimen de IVA / tipo de documento de la ficha F_CLI, pendiente
   // de confirmar su corrección.
   const [regimePreview, setRegimePreview] = useState<FactusolRegimePreview | null>(null);
+  // Lote 8 · B2 — el CODCLI que se intentó vincular ya lo tiene OTRA empresa.
+  // En vez de bloquear, se ofrece fusionar ESTA ficha EN aquélla (superviviente
+  // = la que ya tiene el vínculo; una sola ficha se queda el CODCLI, sin
+  // duplicar). `mergeOffer` guarda quién lo tiene; `merging` = en curso.
+  const [mergeOffer, setMergeOffer] = useState<AlreadyLinkedHolder | null>(null);
+  const [merging, setMerging] = useState(false);
 
   const code = company.factusol_company_id;
   const canEdit = !!user && (ERP_EDIT_ROLES as readonly string[]).includes(user.role);
@@ -172,6 +185,7 @@ export function CompanyFactusolPanel({
     setBusy(true);
     setError(null);
     setNotice(null);
+    setMergeOffer(null);
     try {
       await linkFactusolCustomer({
         crm_type: "company", crm_id: company.id, factusol_codcli: codcli,
@@ -183,9 +197,37 @@ export function CompanyFactusolPanel({
       setNotice(`Vinculado al cliente FACTUSOL nº ${codcli}.`);
       onLinked?.(codcli);
     } catch (e) {
-      setError(extractErrorMessage(e, "No se pudo vincular el cliente de FACTUSOL."));
+      // Lote 8 · B2 — si el CODCLI ya lo tiene OTRA empresa CRM, no se bloquea:
+      // se ofrece «Fusionar con esa empresa» (esta ficha se fusiona en aquélla).
+      const holder = alreadyLinkedHolder(e);
+      if (holder && holder.company_id !== company.id) {
+        setMergeOffer(holder);
+      } else {
+        setError(extractErrorMessage(e, "No se pudo vincular el cliente de FACTUSOL."));
+      }
     } finally {
       setBusy(false);
+    }
+  }
+
+  /** Lote 8 · B2 — fusiona ESTA empresa (origen, se archiva) EN la que ya
+   *  tiene el vínculo (superviviente): reasigna pedidos/contactos/tareas/
+   *  actividad y conserva el CODCLI en una sola ficha, sin duplicar. Al
+   *  terminar, el padre navega a la superviviente. */
+  async function fusionarConTitular() {
+    if (!mergeOffer?.company_id) return;
+    setMerging(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await mergeCompanies(company.id, mergeOffer.company_id);
+      const survivor = mergeOffer.company_id;
+      setMergeOffer(null);
+      onMerged?.(survivor);
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudo fusionar con la empresa vinculada."));
+    } finally {
+      setMerging(false);
     }
   }
 
@@ -531,6 +573,38 @@ export function CompanyFactusolPanel({
                   {busy ? "Corrigiendo…" : `Corregir en FACTUSOL (${regimePreview.changes.length})`}
                 </button>
               ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {mergeOffer ? (
+        <div className="modal-overlay" role="dialog" aria-modal="true"
+             aria-label="Fusionar con la empresa vinculada">
+          <div className="modal-dialog">
+            <h2>Ese cliente FACTUSOL ya está vinculado</h2>
+            <p>
+              El cliente FACTUSOL ya está vinculado a la empresa{" "}
+              <strong>{mergeOffer.company_name ?? "otra empresa"}</strong>. Un
+              CODCLI solo puede estar en una ficha, así que no se puede vincular
+              por segunda vez.
+            </p>
+            <p className="form-error" role="alert">
+              Puedes <strong>fusionar «{company.name}» en «
+              {mergeOffer.company_name ?? "la empresa vinculada"}»</strong>: todo
+              lo de «{company.name}» (pedidos, contactos, tareas, actividad y
+              vínculo FACTUSOL) pasa a la otra ficha, «{company.name}» se archiva
+              (reversible: no se borra) y el CODCLI queda en una sola empresa.
+            </p>
+            <div className="modal-actions">
+              <button type="button" className="button secondary" disabled={merging}
+                      onClick={() => setMergeOffer(null)}>
+                Cancelar
+              </button>
+              <button type="button" className="button danger" disabled={merging}
+                      onClick={fusionarConTitular}>
+                {merging ? "Fusionando…" : "Fusionar con esa empresa"}
+              </button>
             </div>
           </div>
         </div>

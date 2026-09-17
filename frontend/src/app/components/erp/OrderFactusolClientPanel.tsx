@@ -2,13 +2,15 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { getCurrentUser, type User } from "../../lib/api";
-import { getCompany, type Company } from "../../lib/companiesApi";
+import { getCompany, mergeCompanies, type Company } from "../../lib/companiesApi";
 import { extractErrorMessage } from "../../lib/errors";
 import {
+  alreadyLinkedHolder,
   completeOrderFactusolCustomer,
   ERP_EDIT_ROLES,
   getOrderFactusolCustomer,
   linkOrderFactusolCompany,
+  type AlreadyLinkedHolder,
   type OrderFactusolCustomer,
   type OrderFactusolCustomerFields,
   type OrderFactusolCustomerSource,
@@ -132,6 +134,10 @@ function OrderFactusolCodePanel({
   const [linking, setLinking] = useState(false);
   const [form, setForm] = useState<OrderFactusolCustomerFields>({});
   const [completing, setCompleting] = useState(false);
+  // Lote 8 · B2 — al vincular, el CODCLI ya lo tiene OTRA empresa: se ofrece
+  // fusionar la empresa del pedido EN aquélla (sin duplicar).
+  const [mergeOffer, setMergeOffer] = useState<AlreadyLinkedHolder | null>(null);
+  const [merging, setMerging] = useState(false);
 
   const canEdit = !!user && (ERP_EDIT_ROLES as readonly string[]).includes(user.role);
 
@@ -178,15 +184,48 @@ function OrderFactusolCodePanel({
     setLinking(true);
     setError(null);
     setNotice(null);
+    setMergeOffer(null);
     try {
       const r = await linkOrderFactusolCompany(orderId);
       setNotice(`Empresa vinculada al cliente FACTUSOL nº ${r.codcli}.`);
       reload();
       onChanged?.();
     } catch (e) {
-      setError(extractErrorMessage(e, "No se pudo vincular la empresa al cliente FACTUSOL."));
+      // Lote 8 · B2 — si el CODCLI ya lo tiene OTRA empresa CRM, no se bloquea:
+      // se ofrece fusionar la empresa del pedido EN aquélla.
+      const holder = alreadyLinkedHolder(e);
+      if (holder && holder.company_id !== data?.company_id) {
+        setMergeOffer(holder);
+      } else {
+        setError(extractErrorMessage(e, "No se pudo vincular la empresa al cliente FACTUSOL."));
+      }
     } finally {
       setLinking(false);
+    }
+  }
+
+  /** Lote 8 · B2 — fusiona la empresa del pedido (origen, se archiva) EN la que
+   *  ya tiene el vínculo (superviviente): los pedidos —incluido éste— se
+   *  reasignan y el CODCLI queda en una sola ficha. Luego se recarga el pedido,
+   *  que pasa a estar vinculado. */
+  async function fusionarConTitular() {
+    if (!mergeOffer?.company_id || !data?.company_id) return;
+    setMerging(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await mergeCompanies(data.company_id, mergeOffer.company_id);
+      setMergeOffer(null);
+      setNotice(
+        `Empresa fusionada en «${mergeOffer.company_name ?? "la empresa vinculada"}» `
+        + "(el CODCLI queda en una sola ficha).",
+      );
+      reload();
+      onChanged?.();
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudo fusionar con la empresa vinculada."));
+    } finally {
+      setMerging(false);
     }
   }
 
@@ -296,6 +335,37 @@ function OrderFactusolCodePanel({
               <button type="button" className="button" disabled={busy}
                       onClick={confirmarCompletar}>
                 {busy ? "Guardando…" : "Guardar en FACTUSOL"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {mergeOffer ? (
+        <div className="modal-overlay" role="dialog" aria-modal="true"
+             aria-label="Fusionar con la empresa vinculada">
+          <div className="modal-dialog">
+            <h2>Ese cliente FACTUSOL ya está vinculado</h2>
+            <p>
+              El cliente FACTUSOL nº {data.codcli} ya está vinculado a la empresa{" "}
+              <strong>{mergeOffer.company_name ?? "otra empresa"}</strong>. Un
+              CODCLI solo puede estar en una ficha.
+            </p>
+            <p className="form-error" role="alert">
+              Puedes <strong>fusionar la empresa del pedido en «
+              {mergeOffer.company_name ?? "la empresa vinculada"}»</strong>: sus
+              pedidos (incluido éste), contactos, tareas y actividad pasan a la
+              otra ficha, la empresa del pedido se archiva (reversible: no se
+              borra) y el CODCLI queda en una sola empresa.
+            </p>
+            <div className="modal-actions">
+              <button type="button" className="button secondary" disabled={merging}
+                      onClick={() => setMergeOffer(null)}>
+                Cancelar
+              </button>
+              <button type="button" className="button danger" disabled={merging}
+                      onClick={fusionarConTitular}>
+                {merging ? "Fusionando…" : "Fusionar con esa empresa"}
               </button>
             </div>
           </div>

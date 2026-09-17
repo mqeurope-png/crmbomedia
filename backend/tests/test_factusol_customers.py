@@ -273,12 +273,39 @@ def test_factusol_customers_link_duplicate(client, session_factory):
         b = Company(name="Otra")
         s.add_all([a, b])
         s.commit()
-        b_id = b.id
+        a_id, b_id = a.id, b.id
     r = client.post("/api/erp/factusol/customers/link", json={
         "crm_type": "company", "crm_id": b_id, "factusol_codcli": "2458",
     }, headers=auth_headers(client, "pedidos"))
     assert r.status_code == 409
-    assert r.json()["detail"]["code"] == "already_linked"
+    detail = r.json()["detail"]
+    assert detail["code"] == "already_linked"
+    # Lote 8 · B2 — el 409 lleva QUIÉN tiene el CODCLI (la empresa `a`), para que
+    # la UI ofrezca «Fusionar con esa empresa» en vez de dejar bloqueado.
+    assert detail["holder_type"] == "company"
+    assert detail["holder_company_id"] == a_id
+    assert detail["holder_company_name"] == "Ya vinculada"
+
+
+def test_factusol_customers_link_duplicate_holder_contact_no_company(
+    client, session_factory,
+):
+    """Lote 8 · B2 — si el CODCLI lo tiene un CONTACTO (no una empresa), el 409
+    no ofrece fusionar: `holder_company_id` es null (fusionar es empresa↔empresa)."""
+    with session_factory() as s:
+        holder = Contact(first_name="Ana", last_name="Pi", factusol_contact_id="99")
+        comp = Company(name="Quiere el 99")
+        s.add_all([holder, comp])
+        s.commit()
+        comp_id = comp.id
+    r = client.post("/api/erp/factusol/customers/link", json={
+        "crm_type": "company", "crm_id": comp_id, "factusol_codcli": "99",
+    }, headers=auth_headers(client, "pedidos"))
+    assert r.status_code == 409
+    detail = r.json()["detail"]
+    assert detail["code"] == "already_linked"
+    assert detail["holder_type"] == "contact"
+    assert detail["holder_company_id"] is None
 
 
 def test_factusol_customers_link_forbidden_for_view_only(client, session_factory):

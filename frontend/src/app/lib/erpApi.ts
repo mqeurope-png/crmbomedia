@@ -1,4 +1,4 @@
-import { apiDownloadBlob, apiFetch, apiUpload } from "./api";
+import { ApiError, apiDownloadBlob, apiFetch, apiUpload } from "./api";
 
 /** BoHub ERP Fase A — cliente de la API de pedidos (PR 3 backend). */
 
@@ -2661,6 +2661,33 @@ export async function linkFactusolCustomer(body: {
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+/** Lote 8 · B2 — quién ya tiene el CODCLI que se intentaba vincular. Cuando el
+ *  registro que lo tiene es una EMPRESA, `company_id`/`company_name` permiten
+ *  ofrecer «Fusionar con esa empresa» (la actual se fusiona EN la que ya tiene
+ *  el vínculo, sin duplicar). */
+export type AlreadyLinkedHolder = {
+  type: string | null;
+  company_id: string | null;
+  company_name: string | null;
+};
+
+/** Si el error es el 409 `already_linked` de vincular un CODCLI ya tomado por
+ *  OTRA empresa CRM, devuelve su `holder`; si no, `null`. Solo se ofrece
+ *  fusionar cuando quien lo tiene es una empresa con id (no un contacto). */
+export function alreadyLinkedHolder(err: unknown): AlreadyLinkedHolder | null {
+  if (!(err instanceof ApiError) || err.code !== "already_linked") return null;
+  const detail = err.detail;
+  if (!detail || typeof detail !== "object" || Array.isArray(detail)) return null;
+  const d = detail as Record<string, unknown>;
+  const type = typeof d.holder_type === "string" ? d.holder_type : null;
+  const companyId =
+    typeof d.holder_company_id === "string" ? d.holder_company_id : null;
+  const companyName =
+    typeof d.holder_company_name === "string" ? d.holder_company_name : null;
+  if (type !== "company" || !companyId) return null;
+  return { type, company_id: companyId, company_name: companyName };
 }
 
 /** «Traer datos de FACTUSOL» (ficha de empresa): un campo que cambiaría. */
