@@ -125,14 +125,16 @@ services:
       - --with-scheduler
       - --url
       - redis://redis:6379/0
-      - agilecrm:sync_contacts
-      - agilecrm:purge_quota
-      # PR-Fix-Scheduler-Agile-Roto. El scheduler de Agile encola su
-      # heartbeat self-rescheduling en `agilecrm:periodic_read`
-      # (igual que Brevo en `brevo:periodic_read`). Sin la queue en
-      # esta lista los jobs se quedaban eternamente sin procesar y
-      # el polling automático llevaba 2 días caído.
-      - agilecrm:periodic_read
+      # PR-Fix-Web-Ingest-Starvation. AgileCRM (agilecrm:*) se mudó a
+      # `worker-agilecrm` y la ingesta web (woocommerce:*) a `worker-web`.
+      # Antes ambas vivían aquí: AgileCRM era la cola #1 y sus
+      # `sync_contacts` paginan miles de contactos por cada una de las ~9
+      # cuentas, así que copaban este worker durante horas. RQ procesa las
+      # colas EN ORDEN dentro de un worker, de modo que los webhooks de
+      # WooCommerce (cola #35) no se procesaban hasta que Agile lo
+      # liberaba → los pedidos web se atascaban. Aislando ambos en su
+      # propio worker, este `worker-sync` queda para Brevo/Gmail/Factusol/
+      # Freshdesk/backups/Genei sin que Agile ni la web se estorben.
       - brevo:sync_contacts
       - brevo:push_target
       - brevo:auto_sync_check
@@ -167,26 +169,13 @@ services:
       # Sprint Backup. Cola virtual para el job manual + scheduled
       # cada 72 h. `backups:create` cubre los dos caminos.
       - backups:create
-      # BoHub ERP Fase B (hotfix B-2-fix). Colas de las integraciones
-      # live del ERP. Sin ellas en esta lista los jobs se quedan
-      # eternamente en Redis sin procesar (mismo bug que
-      # agilecrm:periodic_read arriba):
-      #  - woocommerce:import    → procesa integration_events del
-      #                            backfill manual (PR B-2).
-      #  - woocommerce:backfill  → sync-backfill manual desde la UI
-      #                            admin de tiendas (PR B-2).
-      #  - woocommerce:webhooks  → procesa los webhooks entrantes de las
-      #                            tiendas (receiver del PR B-3), con
-      #                            retry RQ nativo (30s→4h, 5 intentos).
-      #  - genei:shipments       → operaciones async del adaptador
-      #                            Genei: descarga de etiqueta PDF +
-      #                            subida a HiDrive (PR B-4).
-      #  - genei:webhooks        → procesa integration_events del
-      #                            notificationUrl de Genei (tracking
-      #                            async, PR B-4).
-      - woocommerce:import
-      - woocommerce:backfill
-      - woocommerce:webhooks
+      # BoHub ERP Fase B/B-4. Genei (etiquetas + tracking async). Las
+      # colas de INGESTA WEB (woocommerce:*) se mudaron a `worker-web`
+      # (PR-Fix-Web-Ingest-Starvation) para que un pedido entre en
+      # segundos siempre; Genei no es ruta crítica de pedido y se queda
+      # aquí:
+      #  - genei:shipments → descarga de etiqueta PDF + subida a HiDrive.
+      #  - genei:webhooks  → integration_events del notificationUrl de Genei.
       - genei:shipments
       - genei:webhooks
     volumes:
@@ -206,6 +195,66 @@ services:
       # Sprint-Backfill-Gmail. Adjuntos descargados por el job. Mismo
       # volumen que api para que el download endpoint vea los ficheros.
       - crmbo_email_attachments:/var/lib/crmbo/attachments
+    depends_on:
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    logging: *default-logging
+
+  # PR-Fix-Web-Ingest-Starvation. Worker DEDICADO a la ingesta web. Solo ve
+  # las colas woocommerce:* — nunca lo bloquea AgileCRM ni ningún otro sync,
+  # así que un webhook de WooCommerce (pedido web) se procesa en segundos
+  # SIEMPRE. `woocommerce:webhooks` va PRIMERO (máxima prioridad dentro del
+  # worker); import/backfill son operaciones manuales de la UI admin.
+  # Comparte imagen con el api (mismo Python → serializer pickle OK).
+  worker-web:
+    image: crmbomedia-api:latest
+    restart: unless-stopped
+    env_file: .env.production
+    environment:
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@db:3306/${MYSQL_DATABASE}
+      REDIS_URL: redis://redis:6379/0
+    command:
+      - rq
+      - worker
+      - --url
+      - redis://redis:6379/0
+      - woocommerce:webhooks
+      - woocommerce:import
+      - woocommerce:backfill
+    depends_on:
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    logging: *default-logging
+
+  # PR-Fix-Web-Ingest-Starvation. Worker de BAJA PRIORIDAD, aislado, para
+  # AgileCRM (en retirada). Sus `sync_contacts` paginan miles de contactos por
+  # cuenta y tienen el worker ocupado mucho rato; aislados aquí ya no estorban
+  # a la ingesta web ni al resto de syncs. `--with-scheduler` alimenta el
+  # heartbeat self-rescheduling de `agilecrm:periodic_read`, que encola
+  # `sync_contacts` cada AGILECRM_SYNC_INTERVAL_HOURS (default 1) — la lista
+  # sube periodic_read primero para que el tick horario nunca se retrase
+  # detrás de un sync largo. El scheduler ya no re-encola una cuenta que
+  # tenga un sync pendiente/en curso (dedup en `periodic_read_check`).
+  worker-agilecrm:
+    image: crmbomedia-api:latest
+    restart: unless-stopped
+    env_file: .env.production
+    environment:
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@db:3306/${MYSQL_DATABASE}
+      REDIS_URL: redis://redis:6379/0
+    command:
+      - rq
+      - worker
+      - --with-scheduler
+      - --url
+      - redis://redis:6379/0
+      - agilecrm:periodic_read
+      - agilecrm:sync_contacts
+      - agilecrm:purge_quota
     depends_on:
       api:
         condition: service_healthy
