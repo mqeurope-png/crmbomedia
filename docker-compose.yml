@@ -72,10 +72,10 @@ services:
       - --with-scheduler
       - --url
       - redis://redis:6379/0
-      - agilecrm:sync_contacts
-      - agilecrm:purge_quota
-      # PR-Fix-Scheduler-Agile-Roto.
-      - agilecrm:periodic_read
+      # PR-Fix-Web-Ingest-Starvation. AgileCRM → `worker-agilecrm`, ingesta
+      # web (woocommerce:*) → `worker-web`. Antes ambas copaban este worker
+      # (Agile cola #1, jobs largos) y RQ procesa colas en orden, así que
+      # los webhooks Woo (cola #35) se atascaban. Ver docker-compose.prod.yml.
       - brevo:sync_contacts
       - brevo:push_target
       - brevo:auto_sync_check
@@ -100,17 +100,63 @@ services:
       - gmail:poll_fallback
       - emails:snooze_sweep
       - email_templates:import_gmail
-      # BoHub ERP Fase B (hotfix B-2-fix): colas de integraciones live
-      # del ERP — mismas que prod, ver docker-compose.prod.yml.
-      - woocommerce:import
-      - woocommerce:backfill
-      - woocommerce:webhooks
+      # Genei (etiquetas + tracking async). La ingesta web (woocommerce:*)
+      # se mudó a `worker-web` (PR-Fix-Web-Ingest-Starvation); Genei no es
+      # ruta crítica de pedido y se queda aquí.
       - genei:shipments
       - genei:webhooks
     volumes:
       # Sprint-Backfill-Gmail. El worker baja los adjuntos a este volume;
       # api los sirve via FileResponse desde el mismo volume.
       - crmbo_email_attachments:/var/lib/crmbo/attachments
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # PR-Fix-Web-Ingest-Starvation. Worker DEDICADO a la ingesta web (dev).
+  # Solo ve woocommerce:* — nunca lo bloquea AgileCRM. `woocommerce:webhooks`
+  # va primero. Ver docker-compose.prod.yml para la justificación.
+  worker-web:
+    build: ./backend
+    env_file: .env
+    environment:
+      DATABASE_URL: mysql+pymysql://crm:crm@db:3306/crm
+      REDIS_URL: redis://redis:6379/0
+    command:
+      - rq
+      - worker
+      - --url
+      - redis://redis:6379/0
+      - woocommerce:webhooks
+      - woocommerce:import
+      - woocommerce:backfill
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # PR-Fix-Web-Ingest-Starvation. Worker de baja prioridad, aislado, para
+  # AgileCRM (en retirada). --with-scheduler para el heartbeat
+  # `agilecrm:periodic_read` (encola sync_contacts cada
+  # AGILECRM_SYNC_INTERVAL_HOURS, default 1). Ver docker-compose.prod.yml.
+  worker-agilecrm:
+    build: ./backend
+    env_file: .env
+    environment:
+      DATABASE_URL: mysql+pymysql://crm:crm@db:3306/crm
+      REDIS_URL: redis://redis:6379/0
+    command:
+      - rq
+      - worker
+      - --with-scheduler
+      - --url
+      - redis://redis:6379/0
+      - agilecrm:periodic_read
+      - agilecrm:sync_contacts
+      - agilecrm:purge_quota
     depends_on:
       db:
         condition: service_healthy

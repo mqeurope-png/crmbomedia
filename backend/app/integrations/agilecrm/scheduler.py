@@ -30,12 +30,22 @@ from datetime import timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.crm import ExternalSystem, SyncLog
+from app.models.crm import ExternalSystem, SyncLog, SyncStatus
 from app.models.integration_settings import IntegrationAccount
 from app.workers.jobs import OPERATIONS, SyncOutcome, enqueue_sync_job
 from app.workers.queues import queue_name, redis_connection
 
 logger = logging.getLogger(__name__)
+
+#: Estados de un `sync_logs` que significan «aún sin terminar». Si una cuenta
+#: tiene un `sync_contacts` en uno de estos, el tick horario NO encola otro
+#: (evita el apilamiento que tenía a AgileCRM «en bucle»: sus syncs paginan
+#: miles de contactos y duran más que el intervalo, así que sin este guard cada
+#: hora sumaba 9 jobs más sobre los que aún corrían).
+_INFLIGHT_SYNC_STATUSES: tuple[str, ...] = (
+    SyncStatus.PENDING.value,
+    SyncStatus.RUNNING.value,
+)
 
 # PR-Revert-Webhooks-Agile. Bart escogió polling agresivo en lugar de
 # pagar el plan Enterprise de Agile. 1 h × 9 cuentas × 24 ticks/día =
@@ -98,17 +108,45 @@ def _enabled_agile_accounts(session: Session) -> list[IntegrationAccount]:
     )
 
 
+def _accounts_with_inflight_sync(session: Session) -> set[str]:
+    """`account_id`s de AgileCRM con un `sync_contacts` pendiente o en curso.
+    El heartbeat los salta para no apilar un segundo sync encima."""
+    rows = session.scalars(
+        select(SyncLog.account_id).where(
+            SyncLog.system == ExternalSystem.AGILECRM,
+            SyncLog.operation == "sync_contacts",
+            SyncLog.status.in_(_INFLIGHT_SYNC_STATUSES),
+            SyncLog.account_id.is_not(None),
+        )
+    )
+    return {str(account_id) for account_id in rows}
+
+
 def periodic_read_check(session: Session, sync_log: SyncLog) -> SyncOutcome:
     """Heartbeat: encola `sync_contacts` para cada cuenta Agile
     habilitada, luego re-arma el próximo tick."""
     _ = sync_log
     accounts = _enabled_agile_accounts(session)
+    inflight = _accounts_with_inflight_sync(session)
     logger.info(
-        "agilecrm.periodic_read heartbeat firing for %d enabled account(s)",
+        "agilecrm.periodic_read heartbeat firing for %d enabled account(s) "
+        "(%d skipped: sync ya en curso)",
         len(accounts),
+        sum(1 for a in accounts if a.account_id in inflight),
     )
     enqueued = 0
+    skipped = 0
     for account in accounts:
+        # Dedup: no apilar un segundo sync sobre uno que aún no terminó. Con
+        # syncs que duran más que el intervalo, sin esto AgileCRM nunca idle.
+        if account.account_id in inflight:
+            skipped += 1
+            logger.info(
+                "agilecrm.periodic_read skip account=%s: sync_contacts ya "
+                "pendiente/en curso",
+                account.account_id,
+            )
+            continue
         try:
             enqueue_sync_job(
                 session,
@@ -137,7 +175,7 @@ def periodic_read_check(session: Session, sync_log: SyncLog) -> SyncOutcome:
         )
     return SyncOutcome(
         records_processed=enqueued,
-        metadata={"checked": len(accounts)},
+        metadata={"checked": len(accounts), "skipped_inflight": skipped},
     )
 
 
