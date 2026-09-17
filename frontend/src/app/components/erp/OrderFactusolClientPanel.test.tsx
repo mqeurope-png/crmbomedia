@@ -1,11 +1,12 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { OrderFactusolClientPanel } from "./OrderFactusolClientPanel";
 import {
+  alreadyLinkedHolder,
   completeOrderFactusolCustomer,
   getOrderFactusolCustomer,
   linkOrderFactusolCompany,
 } from "../../lib/erpApi";
-import { getCompany } from "../../lib/companiesApi";
+import { getCompany, mergeCompanies } from "../../lib/companiesApi";
 
 /** ERP · Lote 4 / Lote 6 — panel del cliente FACTUSOL del pedido WEB.
  *
@@ -18,6 +19,7 @@ import { getCompany } from "../../lib/companiesApi";
 
 jest.mock("../../lib/erpApi", () => ({
   ERP_EDIT_ROLES: ["admin", "pedidos"],
+  alreadyLinkedHolder: jest.fn(() => null),
   getOrderFactusolCustomer: jest.fn(),
   completeOrderFactusolCustomer: jest.fn(),
   linkOrderFactusolCompany: jest.fn(),
@@ -25,7 +27,9 @@ jest.mock("../../lib/erpApi", () => ({
 jest.mock("../../lib/api", () => ({
   getCurrentUser: jest.fn(() => Promise.resolve({ role: "admin" })),
 }));
-jest.mock("../../lib/companiesApi", () => ({ getCompany: jest.fn() }));
+jest.mock("../../lib/companiesApi", () => ({
+  getCompany: jest.fn(), mergeCompanies: jest.fn(),
+}));
 // El camino «con empresa YA vinculada» delega en el panel de empresa. Si se
 // pintara «Crear en FACTUSOL» sería este mock, que aquí no debe montarse en los
 // pedidos web sin vincular.
@@ -38,6 +42,10 @@ beforeEach(() => {
   (completeOrderFactusolCustomer as jest.Mock).mockReset();
   (linkOrderFactusolCompany as jest.Mock).mockReset();
   (getCompany as jest.Mock).mockReset();
+  (alreadyLinkedHolder as jest.Mock).mockReset();
+  (alreadyLinkedHolder as jest.Mock).mockReturnValue(null);
+  (mergeCompanies as jest.Mock).mockReset();
+  (mergeCompanies as jest.Mock).mockResolvedValue({ id: "holder-1" });
 });
 
 describe("OrderFactusolClientPanel — cliente por CODCLI/CLIFAC (Lote 4)", () => {
@@ -131,6 +139,34 @@ describe("OrderFactusolClientPanel — cliente por CODCLI/CLIFAC (Lote 4)", () =
     const link = await screen.findByRole("button", { name: /Vincular empresa a este cliente/ });
     fireEvent.click(link);
     await waitFor(() => expect(linkOrderFactusolCompany).toHaveBeenCalledWith("o-9"));
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+  });
+
+  it("si el CODCLI ya lo tiene otra empresa, ofrece fusionar la del pedido en aquélla (Lote 8 · B2)", async () => {
+    (getCompany as jest.Mock).mockResolvedValue({ id: "c-2", name: "BOMEDIA SL", factusol_company_id: null });
+    (getOrderFactusolCustomer as jest.Mock).mockResolvedValue({
+      found: true, codcli: "11", source: "pedido_cliente", missing: [],
+      company_id: "c-2",
+      cliente: { codcli: "11", nombre: "BOMEDIA", nofcli: "BOMEDIA", nif: "B00000000" },
+    });
+    // Vincular falla: el CODCLI ya lo tiene la empresa «holder-1».
+    (linkOrderFactusolCompany as jest.Mock).mockRejectedValue(new Error("ya vinculado"));
+    (alreadyLinkedHolder as jest.Mock).mockReturnValue({
+      type: "company", company_id: "holder-1", company_name: "Empresa Titular SL",
+    });
+    const onChanged = jest.fn();
+    render(<OrderFactusolClientPanel orderId="o-9" companyId="c-2" onChanged={onChanged} />);
+
+    const link = await screen.findByRole("button", { name: /Vincular empresa a este cliente/ });
+    fireEvent.click(link);
+    // No fusiona sin ofrecer primero.
+    await waitFor(() => expect(linkOrderFactusolCompany).toHaveBeenCalledWith("o-9"));
+    expect(mergeCompanies).not.toHaveBeenCalled();
+    const dialog = await screen.findByRole("dialog", { name: "Fusionar con la empresa vinculada" });
+    expect(dialog).toHaveTextContent(/Empresa Titular SL/);
+    fireEvent.click(screen.getByRole("button", { name: "Fusionar con esa empresa" }));
+    // La empresa del pedido (origen c-2) se fusiona EN la titular (holder-1).
+    await waitFor(() => expect(mergeCompanies).toHaveBeenCalledWith("c-2", "holder-1"));
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
   });
 });

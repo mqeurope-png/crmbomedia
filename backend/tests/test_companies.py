@@ -272,7 +272,9 @@ def test_merge_companies_repoints_contacts_and_deletes_source(
     assert res.json()["id"] == target_id
 
     with db.factory() as session:
-        assert session.get(Company, source_id) is None
+        # No se borra: se archiva (reversible). Los contactos se reasignan.
+        source = session.get(Company, source_id)
+        assert source is not None and source.is_archived is True
         for c in session.scalars(select(Contact)):
             assert c.company_id == target_id
 

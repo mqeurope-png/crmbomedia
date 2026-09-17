@@ -2164,13 +2164,27 @@ def link_customer_endpoint(
     """Vincula un CODCLI de FACTUSOL a una empresa/contacto del CRM. 409 si ese
     código ya está vinculado a otro registro."""
     from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
-    from app.integrations.factusol.customers import link_to_crm  # noqa: PLC0415
+    from app.integrations.factusol.customers import (  # noqa: PLC0415
+        CodcliAlreadyLinkedError,
+        link_to_crm,
+    )
 
     try:
         row = link_to_crm(
             session, crm_type=payload.crm_type, crm_id=payload.crm_id,
             codcli=payload.factusol_codcli,
         )
+    except CodcliAlreadyLinkedError as exc:
+        # Lote 8 · B2 — no se bloquea: la UI ofrece «Fusionar con esa empresa».
+        holder = exc.holder
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "already_linked", "detail": str(exc)[:300],
+            "holder_type": holder.get("type"),
+            "holder_company_id": (
+                holder.get("id") if holder.get("type") == "company" else None
+            ),
+            "holder_company_name": holder.get("name"),
+        }) from exc
     except FactusolError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, {
             "code": "already_linked", "detail": str(exc)[:300],

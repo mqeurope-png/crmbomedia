@@ -510,6 +510,32 @@ export class DownloadError extends Error {
   }
 }
 
+/** Error de una llamada JSON (`apiFetch`). Conserva el `status` HTTP y el
+ *  cuerpo `detail` CRUDO del ERP (`HTTPException(status, {"code", ...})`)
+ *  además del `message` legible. Así la UI puede leer campos extra del 409
+ *  —por ejemplo el `holder_*` de «ya está vinculado» (Lote 8 · B2), para
+ *  ofrecer «Fusionar con esa empresa»— sin perder el mensaje de siempre.
+ *  Extiende `Error`, así que los `catch` existentes que hacen
+ *  `extractErrorMessage(e)` siguen funcionando igual. */
+export class ApiError extends Error {
+  status: number;
+  code: string | null;
+  detail: unknown;
+
+  constructor(message: string, status: number, detail: unknown) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.detail = detail;
+    this.code =
+      detail && typeof detail === "object" && !Array.isArray(detail)
+        ? (typeof (detail as { code?: unknown }).code === "string"
+            ? ((detail as { code: string }).code)
+            : null)
+        : null;
+  }
+}
+
 export async function apiDownloadBlob(
   path: string, init?: { method?: string; body?: string; headers?: Record<string, string> },
 ): Promise<Blob> {
@@ -553,11 +579,13 @@ async function parseApiResponse<T>(response: Response): Promise<T> {
     } catch {
       // body was empty or non-JSON; fall back to status-only message
     }
-    const message =
+    const detail =
       body && typeof body === "object" && "detail" in body
-        ? formatFastApiDetail((body as { detail?: unknown }).detail, fallback)
-        : fallback;
-    throw new Error(message);
+        ? (body as { detail?: unknown }).detail
+        : null;
+    const message =
+      detail != null ? formatFastApiDetail(detail, fallback) : fallback;
+    throw new ApiError(message, response.status, detail);
   }
 
   // 204 No Content (DELETE endpoints, the brevo lists delete in

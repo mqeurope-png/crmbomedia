@@ -54,6 +54,16 @@ from app.integrations.factusol.vat_regime import (
 
 logger = logging.getLogger(__name__)
 
+
+class CodcliAlreadyLinkedError(FactusolError):
+    """Lote 8 · B2 — el CODCLI ya está vinculado a OTRO registro del CRM. Lleva
+    el registro que lo tiene (`holder`: {type, id, name}) para que la UI pueda
+    ofrecer «Fusionar con esa empresa» en vez de dejar al usuario bloqueado."""
+
+    def __init__(self, message: str, holder: dict[str, str]):
+        super().__init__(message)
+        self.holder = holder
+
 #: Máximo de resultados devueltos en la búsqueda por nombre. La API DELSOL NO
 #: soporta LIMIT en el filtro, así que se recorta en Python.
 SEARCH_NAME_LIMIT = 50
@@ -687,9 +697,10 @@ def link_to_crm(
     codcli = str(codcli).strip()
     taken = crm_links_for(session, [codcli]).get(codcli)
     if taken and not (taken["type"] == crm_type and taken["id"] == crm_id):
-        raise FactusolError(
+        raise CodcliAlreadyLinkedError(
             f"El cliente FACTUSOL {codcli} ya está vinculado a "
-            f"{taken['type']} «{taken['name']}»."
+            f"{taken['type']} «{taken['name']}».",
+            holder=taken,
         )
     if crm_type == "company":
         row = session.get(Company, crm_id)

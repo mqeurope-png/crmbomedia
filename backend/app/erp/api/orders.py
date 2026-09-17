@@ -1425,7 +1425,10 @@ def link_order_factusol_company(
     from app.erp.api.factusol import _client_and_ejercicio  # noqa: PLC0415
     from app.erp.order_factusol_customer import resolve_order_codcli  # noqa: PLC0415
     from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
-    from app.integrations.factusol.customers import link_to_crm  # noqa: PLC0415
+    from app.integrations.factusol.customers import (  # noqa: PLC0415
+        CodcliAlreadyLinkedError,
+        link_to_crm,
+    )
 
     order = _get_order(session, order_id)
     if not payload.confirm:
@@ -1462,6 +1465,16 @@ def link_order_factusol_company(
         company = link_to_crm(
             session, crm_type="company", crm_id=order.company_id, codcli=codcli,
         )
+    except CodcliAlreadyLinkedError as exc:
+        # Lote 8 · B2 — no se bloquea: la UI ofrece «Fusionar con esa empresa».
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "already_linked", "detail": str(exc)[:300],
+            "holder_type": exc.holder.get("type"),
+            "holder_company_id": (
+                exc.holder.get("id") if exc.holder.get("type") == "company" else None
+            ),
+            "holder_company_name": exc.holder.get("name"),
+        }) from exc
     except FactusolError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, {
             "code": "already_linked", "detail": str(exc)[:300],

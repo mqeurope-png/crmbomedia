@@ -583,10 +583,13 @@ def merge_companies(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_admin),
 ) -> CompanyRead:
-    """Merge `company_id` (source) into `target_id` (kept). Every
-    contact pointing at the source flips to the target; the
-    source is then deleted. Admin-only because the operation is
-    not reversible without a backup."""
+    """Fusiona `company_id` (absorbida) en `target_id` (superviviente):
+    reasigna TODO lo que cuelga de la absorbida — contactos, pedidos, tareas,
+    actividad/timeline, vínculo FACTUSOL y notas — y luego ARCHIVA la absorbida
+    (`is_archived`, reversible; NUNCA se borra físicamente). Reutiliza el núcleo
+    de fusión (`merge_companies_into`) para no dejar nada huérfano. Solo admin."""
+    from app.services.company_dedupe import merge_companies_into  # noqa: PLC0415
+
     if company_id == target_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -596,23 +599,7 @@ def merge_companies(
     target = session.get(Company, target_id)
     if source is None or target is None:
         raise not_found("Company")
-    session.execute(
-        Contact.__table__.update()  # type: ignore[attr-defined]
-        .where(Contact.company_id == source.id)
-        .values(company_id=target.id)
-    )
-    record_event(
-        session,
-        action=Action.COMPANY_DELETED,
-        target_type="company",
-        target_id=source.id,
-        actor=current_user,
-        metadata={
-            "merged_into": target.id,
-            "source_name": source.name,
-        },
-    )
-    session.delete(source)
+    merge_companies_into(session, target, [source], actor=current_user)
     session.commit()
     session.refresh(target)
     return _to_read(session, target)
