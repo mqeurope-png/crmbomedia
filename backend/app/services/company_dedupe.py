@@ -25,6 +25,8 @@ ejecutarse** en vez de vaciarla calladamente.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
+from dataclasses import field as dc_field
 from typing import Any
 
 from sqlalchemy import func, select, update
@@ -348,3 +350,202 @@ def _merge_into(
                        ", ".join(discarded_codclis))
     return {**moved, "filled_fields": sorted(filled),
             "discarded_factusol_codclis": discarded_codclis}
+
+
+# --- fusión masiva por NIF normalizado (Lote 8 · B3) --------------------------
+#
+# El comando `python -m scripts.fusionar_empresas_duplicadas` agrupa las fichas
+# CRM NO archivadas por su NIF/VAT NORMALIZADO (`company_discovery.nif_key`, la
+# misma normalización que el discovery de limpieza: quita separadores y el
+# prefijo de país de la UE, de modo que `ESB123` y `B123` caen en el mismo
+# grupo). Elige superviviente y planifica la fusión, pero NUNCA fusiona a
+# ciegas: si el grupo es ambiguo va «a revisar».
+
+#: Por debajo de este parecido de nombre, la absorbida y la superviviente se
+#: parecen tan poco que el grupo va a revisión (no se fusiona solo por el NIF).
+NAME_SIMILARITY_LOW = 0.45
+
+
+@dataclass
+class MergeGroupAction:
+    """Un grupo que SÍ se fusiona: `keep` (superviviente, la vinculada a
+    FACTUSOL) absorbe a `merge_ids`."""
+    nif_key: str
+    keep_id: str
+    keep_name: str
+    keep_codcli: str | None
+    merge_ids: list[str]
+    merge_names: list[str]
+
+
+@dataclass
+class MergeGroupReview:
+    """Un grupo AMBIGUO: se enseña pero NO se fusiona (el operador decide)."""
+    nif_key: str
+    reason: str
+    company_ids: list[str]
+    names: list[str]
+    linked_codclis: list[str]
+
+
+@dataclass
+class MassMergePlan:
+    to_merge: list[MergeGroupAction] = dc_field(default_factory=list)
+    review: list[MergeGroupReview] = dc_field(default_factory=list)
+    #: Fichas NO archivadas examinadas (denominador del informe).
+    total_companies: int = 0
+
+    @property
+    def companies_to_archive(self) -> int:
+        return sum(len(a.merge_ids) for a in self.to_merge)
+
+
+def _norm_nif(company: Any) -> str | None:
+    """NIF normalizado de una ficha: `tax_id` y si no, el `vat` (VAT-IVA)."""
+    from app.erp.company_discovery import nif_key  # noqa: PLC0415
+
+    return nif_key(getattr(company, "tax_id", None)) or nif_key(getattr(company, "vat", None))
+
+
+def plan_duplicate_merges(
+    session: Session, *, name_threshold: float = NAME_SIMILARITY_LOW,
+    only_key: str | None = None,
+) -> MassMergePlan:
+    """Agrupa las empresas NO archivadas por NIF/VAT normalizado y decide, por
+    grupo, si se fusiona o va a revisión. **Solo lectura** (no escribe nada).
+
+    Superviviente = la ficha vinculada a FACTUSOL. Va «a revisar» (sin fusión
+    automática) si:
+    - NINGUNA ficha del grupo está vinculada a FACTUSOL, o
+    - VARIAS están vinculadas a CODCLI DISTINTOS (no se sabe cuál manda), o
+    - algún nombre del grupo es MUY DISPAR del de la superviviente (`name_threshold`).
+
+    Idempotente por diseño: tras `--apply`, las absorbidas quedan `is_archived`
+    y salen del universo, así que un grupo ya fusionado se reduce a la
+    superviviente sola y deja de ser duplicado."""
+    from app.erp.company_discovery import name_similarity, nif_looks_malformed  # noqa: PLC0415
+    from app.models.crm import Company  # noqa: PLC0415
+
+    companies = list(session.scalars(
+        select(Company).where(Company.is_archived.is_(False))
+    ))
+    groups: dict[str, list[Any]] = {}
+    for company in companies:
+        key = _norm_nif(company)
+        # Sin NIF fiable no hay evidencia de que sean la misma empresa: no se
+        # agrupa (igual que el discovery de limpieza).
+        if not key or nif_looks_malformed(key):
+            continue
+        if only_key and key != only_key:
+            continue
+        groups.setdefault(key, []).append(company)
+
+    plan = MassMergePlan(total_companies=len(companies))
+    # Grupos más gordos primero (los que más ensucian la base).
+    for key, members in sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+        if len(members) < 2:
+            continue
+        names = [m.name for m in members]
+        linked = [m for m in members if str(m.factusol_company_id or "").strip()]
+        distinct_codclis = sorted({
+            str(m.factusol_company_id).strip() for m in linked
+        })
+        if not distinct_codclis:
+            plan.review.append(MergeGroupReview(
+                nif_key=key,
+                reason="ninguna ficha está vinculada a FACTUSOL: elige la "
+                       "superviviente a mano",
+                company_ids=[m.id for m in members], names=names,
+                linked_codclis=[]))
+            continue
+        if len(distinct_codclis) > 1:
+            plan.review.append(MergeGroupReview(
+                nif_key=key,
+                reason="varias fichas vinculadas a CODCLI distintos "
+                       f"({', '.join(distinct_codclis)}): revisar a mano",
+                company_ids=[m.id for m in members], names=names,
+                linked_codclis=distinct_codclis))
+            continue
+
+        # Un único CODCLI en el grupo: la superviviente es la vinculada.
+        keep = linked[0]
+        others = [m for m in members if m.id != keep.id]
+        disparate = [
+            (o.name, sim) for o in others
+            if (sim := name_similarity(keep.name, o.name)) is not None
+            and sim < name_threshold
+        ]
+        if disparate:
+            detalle = ", ".join(f"«{n}» ({s})" for n, s in disparate)
+            plan.review.append(MergeGroupReview(
+                nif_key=key,
+                reason=f"nombres muy dispares de «{keep.name}»: {detalle}. "
+                       "Revisar a mano",
+                company_ids=[m.id for m in members], names=names,
+                linked_codclis=distinct_codclis))
+            continue
+
+        plan.to_merge.append(MergeGroupAction(
+            nif_key=key, keep_id=keep.id, keep_name=keep.name,
+            keep_codcli=str(keep.factusol_company_id).strip(),
+            merge_ids=[o.id for o in others],
+            merge_names=[o.name for o in others]))
+
+    logger.info("fusión masiva: %d a fusionar, %d a revisar (de %d fichas)",
+                len(plan.to_merge), len(plan.review), len(companies))
+    return plan
+
+
+def apply_duplicate_merges(
+    session: Session, plan: MassMergePlan, *, actor: Any = None,
+) -> dict[str, Any]:
+    """Ejecuta SOLO los grupos `to_merge` del plan (los «a revisar» se ignoran).
+    Una fusión por transacción: un fallo va a `errors` y el resto sigue. Reusa
+    `merge_companies_into` (reasigna todo + archiva). Idempotente: una absorbida
+    que ya esté archivada o desaparecida se salta sin error."""
+    from app.models.crm import Company  # noqa: PLC0415
+
+    results: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    for grp in plan.to_merge:
+        try:
+            _check_all_fks_are_handled()
+            keep = session.get(Company, grp.keep_id)
+            if keep is None:
+                raise ValueError(f"la superviviente {grp.keep_id} ya no existe")
+            keep_key = _norm_nif(keep)
+            merges = []
+            for merge_id in grp.merge_ids:
+                other = session.get(Company, merge_id)
+                # Idempotencia: ya fusionada/archivada en una corrida anterior.
+                if other is None or other.is_archived:
+                    continue
+                # Guard: no fusionar dos NIF que ya no casan (plan obsoleto).
+                if _norm_nif(other) != keep_key:
+                    raise ValueError(
+                        f"«{other.name}» ya no comparte NIF normalizado con "
+                        f"«{keep.name}»: se aborta el grupo")
+                merges.append(other)
+            if not merges:
+                continue  # nada que hacer (todo ya fusionado): idempotente
+            outcome = merge_companies_into(session, keep, merges, actor=actor)
+            session.commit()
+            results.append({
+                "nif_key": grp.nif_key, "keep_id": keep.id, "keep_name": keep.name,
+                "merged_ids": [m.id for m in merges], "result": "merged",
+                **outcome})
+        except Exception as exc:  # noqa: BLE001 — un fallo no tumba el lote
+            session.rollback()
+            logger.warning("fusión masiva: grupo %s KO: %s", grp.nif_key, exc)
+            errors.append({"nif_key": grp.nif_key, "keep_id": grp.keep_id,
+                           "error": str(exc)[:300]})
+
+    return {
+        "merged_groups": len(results),
+        "companies_archived": sum(len(r["merged_ids"]) for r in results),
+        "contacts_moved": sum(r["contacts_moved"] for r in results),
+        "orders_moved": sum(r["orders_moved"] for r in results),
+        "tasks_moved": sum(r["tasks_moved"] for r in results),
+        "results": results,
+        "errors": errors,
+    }
