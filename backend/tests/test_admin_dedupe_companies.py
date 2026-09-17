@@ -28,6 +28,7 @@ from app.services.company_dedupe import (
     MOVABLE_TABLES,
     _company_fk_tables,
     find_duplicates,
+    merge_companies_into,
     merge_groups,
 )
 
@@ -447,3 +448,75 @@ def test_merge_absorbs_several_companies_at_once(session):
     all_companies = list(session.scalars(select(Company)))
     assert len(all_companies) == 3
     assert [c.id for c in all_companies if not c.is_archived] == [keep.id]
+
+
+# --- colisión de dominio único (fix fusión Lote 8) --------------------------
+
+
+def test_merge_inherits_absorbed_domain_without_unique_collision(session):
+    """La superviviente sin dominio hereda el de la absorbida. Antes reventaba:
+    se copiaba el dominio mientras la absorbida (archivada) lo conservaba, y el
+    índice único `uq_companies_domain` rechazaba las dos filas con el mismo."""
+    keep = _company(session, "CREDAN", factusol_company_id="11")
+    absorbed = _company(session, "CREDAN SL", domain="credan.com")
+    _contact(session, absorbed, email="info@credan.com")
+
+    out = merge_companies_into(session, keep, [absorbed])
+    session.commit()
+
+    session.refresh(keep)
+    session.refresh(absorbed)
+    assert keep.domain == "credan.com"      # heredado
+    assert absorbed.is_archived is True
+    assert absorbed.domain is None          # liberado (no bloquea el índice)
+    assert out["contacts_moved"] == 1       # y se reasigna igual
+
+
+def test_merge_keeps_survivor_domain_and_releases_absorbed(session):
+    keep = _company(session, "KEEP", domain="keep.com")
+    absorbed = _company(session, "ABS", domain="abs.com")
+
+    merge_companies_into(session, keep, [absorbed])
+    session.commit()
+
+    session.refresh(keep)
+    session.refresh(absorbed)
+    assert keep.domain == "keep.com"        # no se pisa el de la superviviente
+    assert absorbed.domain is None          # liberado igualmente
+    assert absorbed.is_archived is True
+
+
+@pytest.mark.parametrize(
+    "garbage", ["ww", "instagram.com", "[www.x](https://www.x)", "n/a"]
+)
+def test_merge_ignores_garbage_domain_without_breaking(session, garbage):
+    keep = _company(session, "KEEP")                    # sin dominio
+    absorbed = _company(session, "ABS", domain=garbage)
+    _contact(session, absorbed, email="x@x.example")
+
+    out = merge_companies_into(session, keep, [absorbed])
+    session.commit()
+
+    session.refresh(keep)
+    session.refresh(absorbed)
+    assert keep.domain is None              # la basura NO se hereda
+    assert absorbed.is_archived is True     # pero la fusión NO se rompe
+    assert absorbed.domain is None
+    assert out["contacts_moved"] == 1
+
+
+def test_merge_inherits_website_full_url_but_skips_garbage(session):
+    keep = _company(session, "KEEP")
+    absorbed = _company(session, "ABS", website="https://credan.com/es")
+    garbage = _company(session, "GARBAGE", website="instagram.com/credan")
+
+    merge_companies_into(session, keep, [absorbed])
+    session.commit()
+    session.refresh(keep)
+    assert keep.website == "https://credan.com/es"   # web real, con ruta
+
+    keep2 = _company(session, "KEEP2")
+    merge_companies_into(session, keep2, [garbage])
+    session.commit()
+    session.refresh(keep2)
+    assert keep2.website is None                      # web basura ignorada

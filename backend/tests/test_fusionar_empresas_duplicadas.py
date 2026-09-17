@@ -208,3 +208,47 @@ def test_apply_only_key_filters_to_one_group(session):
     plan = plan_duplicate_merges(session, only_key="B63609309")
     assert len(plan.to_merge) == 1
     assert plan.to_merge[0].keep_id == keep_a.id
+
+
+def test_apply_completes_group_with_domain_collision(session):
+    """El caso que reventaba en la fusión masiva (CREDAN, LÚDIC 3, URV, Mario
+    Castillo): la absorbida tiene dominio y la superviviente no. Antes iba a
+    `errors` por el índice único; ahora se fusiona y re-correr la completa."""
+    keep = _company(session, "CREDAN", tax_id="B11111111",
+                    factusol_company_id="11")
+    absorbed = _company(session, "CREDAN SL", tax_id="B11111111",
+                        domain="credan.com")
+    session.add(Order(order_number="M-1", external_source="manual",
+                      company_id=absorbed.id, total_amount=100))
+    session.commit()
+
+    plan = plan_duplicate_merges(session)
+    summary = apply_duplicate_merges(session, plan)
+
+    assert summary["merged_groups"] == 1
+    assert summary["errors"] == []
+    assert summary["orders_moved"] == 1
+    session.expire_all()
+    keep_now = session.get(Company, keep.id)
+    absorbed_now = session.get(Company, absorbed.id)
+    assert keep_now.domain == "credan.com"       # heredado sin colisión
+    assert absorbed_now.is_archived is True
+    assert absorbed_now.domain is None           # liberado
+
+    # Re-correr no vuelve a tocar nada (idempotente).
+    plan2 = plan_duplicate_merges(session)
+    assert not plan2.to_merge
+    assert apply_duplicate_merges(session, plan2)["merged_groups"] == 0
+
+
+def test_apply_completes_group_with_garbage_domain(session):
+    keep = _company(session, "Ludic 3 SL", tax_id="Q9350003A",
+                    factusol_company_id="22")
+    _company(session, "Ludic 3 SL", tax_id="Q9350003A", domain="instagram.com")
+
+    summary = apply_duplicate_merges(session, plan_duplicate_merges(session))
+
+    assert summary["merged_groups"] == 1
+    assert summary["errors"] == []
+    session.expire_all()
+    assert session.get(Company, keep.id).domain is None  # basura no heredada

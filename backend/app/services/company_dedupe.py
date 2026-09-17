@@ -25,6 +25,7 @@ ejecutarse** en vez de vaciarla calladamente.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from dataclasses import field as dc_field
 from typing import Any
@@ -33,6 +34,62 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
+
+#: Columnas con índice ÚNICO que la fusión NO puede duplicar. Al copiarlas de la
+#: absorbida a la superviviente hay que respetar el índice (`domain` →
+#: `uq_companies_domain`); al archivar la absorbida se liberan (a NULL) para no
+#: dejar el valor colisionando con el que hereda la superviviente. `website` no
+#: es único, pero se trata igual (mismo filtro de basura, solo si vacío).
+UNIQUE_FILL_FIELDS: tuple[str, ...] = ("domain", "website")
+
+#: Hosts que NO son el dominio de una empresa: redes sociales, marketplaces y
+#: acortadores. No se heredan (aunque no romperían el índice, ensucian la
+#: ficha). Los free-mail salen de `company_extraction.PERSONAL_DOMAINS`.
+GARBAGE_DOMAINS: frozenset[str] = frozenset({
+    "instagram.com", "facebook.com", "m.facebook.com", "fb.com",
+    "linkedin.com", "twitter.com", "x.com", "youtube.com", "youtu.be",
+    "tiktok.com", "wa.me", "whatsapp.com", "t.me", "pinterest.com",
+    "wordpress.com", "blogspot.com", "wix.com", "sites.google.com",
+    "amazon.com", "amazon.es", "aliexpress.com", "ebay.com", "ebay.es",
+    "ww", "www", "n/a", "na", "-",
+})
+
+#: Un dominio «de verdad»: etiquetas alfanuméricas separadas por puntos y un
+#: TLD alfabético de ≥2 letras. Rechaza «ww» (sin punto), markdown
+#: `[www.x](https://www.x)` (lo descarta antes `normalise_domain`) y basura.
+_BARE_DOMAIN_RE = re.compile(
+    r"^(?=.{4,255}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$"
+)
+
+
+def _usable_domain(value: Any) -> str | None:
+    """Normaliza un dominio/URL y devuelve el host SOLO si es un dominio de
+    empresa aprovechable; None para vacío, basura (`ww`, `instagram.com`),
+    free-mail o markdown. Así un dominio basura de la absorbida no se hereda —
+    y nunca puede romper la fusión."""
+    from app.services.company_extraction import (  # noqa: PLC0415
+        PERSONAL_DOMAINS,
+        normalise_domain,
+    )
+
+    host = normalise_domain(value)
+    if not host or host in PERSONAL_DOMAINS or host in GARBAGE_DOMAINS:
+        return None
+    return host if _BARE_DOMAIN_RE.match(host) else None
+
+
+def _domain_in_use(session: Session, domain: str, *, exclude_id: str) -> bool:
+    """¿Hay ya OTRA empresa (archivada o no) con ese `domain`? El índice único
+    `uq_companies_domain` abarca todas las filas, así que asignarlo a la
+    superviviente reventaría si alguien más lo tiene."""
+    from app.models.crm import Company  # noqa: PLC0415
+
+    other_id = session.scalar(
+        select(Company.id)
+        .where(Company.domain == domain, Company.id != exclude_id)
+        .limit(1)
+    )
+    return other_id is not None
 
 #: Marca del backup en el AuditLog.
 COMPANY_MERGE_ACTION = "erp.company_merge"
@@ -266,6 +323,10 @@ def _merge_into(
     discarded_codclis: list[str] = []
     snapshots: list[dict[str, Any]] = []
     filled: dict[str, str] = {}
+    # Candidatos de campos únicos (domain/website) a heredar si la superviviente
+    # los tiene vacíos: {campo: (host_aprovechable, id_absorbida)}. Se asignan
+    # DESPUÉS de liberar los de las absorbidas, respetando el índice único.
+    inherit_unique: dict[str, tuple[str, str]] = {}
 
     for other in merges:
         snapshots.append(_snapshot(other))
@@ -291,14 +352,32 @@ def _merge_into(
         # Completar: solo lo que la principal tenga vacío. Si el operador la
         # eligió como buena, sus datos mandan.
         for field in FILLABLE_FIELDS:
-            if field == "notes":
-                continue  # las notas se ACUMULAN (abajo), no se rellenan solo si vacío.
+            # `notes` se ACUMULA (abajo); `domain`/`website` son campos únicos y
+            # se resuelven aparte tras liberar los de las absorbidas (más abajo).
+            if field == "notes" or field in UNIQUE_FILL_FIELDS:
+                continue
             if str(getattr(keep, field, None) or "").strip():
                 continue
             value = getattr(other, field, None)
             if str(value or "").strip():
                 setattr(keep, field, value)
                 filled[field] = other.id
+
+        # domain/website: se anota el primer valor APROVECHABLE de las absorbidas
+        # (ignora basura: `ww`, `instagram.com`, markdown). Solo se asigna a la
+        # superviviente si esta lo tiene vacío y nadie más lo usa; el valor real
+        # se fija abajo, tras liberar los de las absorbidas. Para `domain` se
+        # guarda el host normalizado (lo que va al índice); para `website`, el
+        # valor original (no es único y conserva ruta/esquema).
+        for field in UNIQUE_FILL_FIELDS:
+            if field in inherit_unique or str(getattr(keep, field, None) or "").strip():
+                continue
+            raw = getattr(other, field, None)
+            host = _usable_domain(raw)
+            if host is None:
+                continue
+            value = host if field == "domain" else str(raw).strip()
+            inherit_unique[field] = (value, other.id)
 
         # Notas: se acumulan en la principal (no se pierde ninguna al archivar).
         other_notes = str(getattr(other, "notes", None) or "").strip()
@@ -322,9 +401,25 @@ def _merge_into(
                 discarded_codclis.append(other.factusol_company_id)
 
     # Archivado reversible (NO borrado físico): la ficha absorbida deja de
-    # aparecer en las listas pero se puede reactivar (`is_archived=0`).
+    # aparecer en las listas pero se puede reactivar (`is_archived=0`). Se
+    # LIBERAN sus campos únicos (`domain`/`website` a NULL) para que no colisionen
+    # con el que herede la superviviente ni queden bloqueando el índice
+    # (`uq_companies_domain`). El valor original queda en el snapshot del audit.
     for other in merges:
         other.is_archived = True
+        for field in UNIQUE_FILL_FIELDS:
+            setattr(other, field, None)
+
+    # Se vuelca el NULL de las absorbidas ANTES de asignar el dominio heredado,
+    # para que el índice único no vea dos filas con el mismo valor a la vez.
+    session.flush()
+    for field, (value, source_id) in inherit_unique.items():
+        # Reconfirmado contra la base ya liberada: si OTRA ficha (no una de las
+        # absorbidas, que ya están a NULL) tiene ese dominio, no se hereda.
+        if field == "domain" and _domain_in_use(session, value, exclude_id=keep.id):
+            continue
+        setattr(keep, field, value)
+        filled[field] = source_id
 
     record_event(
         session,
