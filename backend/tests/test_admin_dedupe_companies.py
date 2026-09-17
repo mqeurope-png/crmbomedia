@@ -236,10 +236,13 @@ def test_merge_does_not_overwrite_non_empty_fields_in_keep(session):
     session.refresh(keep)
     assert keep.name == "NOMBRE BUENO"
     assert keep.city == "Aveiro"
-    assert keep.notes == "lo mío"
+    # Los datos de la principal mandan, PERO las notas se ACUMULAN (no se pierde
+    # ninguna al archivar la absorbida).
+    assert keep.notes.startswith("lo mío")
+    assert "lo suyo" in keep.notes
 
 
-def test_merge_deletes_merged_company_after_moving_all_records(session):
+def test_merge_archives_merged_company_after_moving_all_records(session):
     user = _user(session)
     keep = _company(session, "PRINCIPAL")
     other = _company(session, "ABSORBIDA")
@@ -251,7 +254,10 @@ def test_merge_deletes_merged_company_after_moving_all_records(session):
         {"keep_id": keep.id, "merge_ids": [other.id]},
     ])
 
-    assert session.get(Company, other.id) is None
+    # NO se borra físicamente: se archiva (reversible con `is_archived=0`).
+    absorbed = session.get(Company, other.id)
+    assert absorbed is not None
+    assert absorbed.is_archived is True
     # Y nada quedó huérfano: las tres FK son ON DELETE SET NULL, así que un
     # merge que se olvidase de una tabla la habría vaciado sin dar error.
     for row in (contact, order, task):
@@ -310,6 +316,28 @@ def test_merge_saves_snapshot_in_audit_log_for_rollback(session):
     assert snapshot["factusol_company_id"] == "2819"
     assert snapshot["source"] == "factusol_import"
     assert meta["moved"]["contacts_moved"] == 1
+
+
+def test_merge_repoints_timeline_of_absorbed_to_keep(session):
+    """La actividad/timeline de la absorbida (sus eventos de auditoría, cuyo
+    `target` es su ficha) pasa a la principal, para no perderla al archivar."""
+    from app.core.audit import record_event
+
+    keep = _company(session, "PRINCIPAL")
+    other = _company(session, "ABSORBIDA")
+    record_event(session, action="company.updated", target_type="company",
+                 target_id=other.id, actor=None, message="algo de la absorbida")
+    session.commit()
+
+    result = merge_groups(session, operations=[
+        {"keep_id": keep.id, "merge_ids": [other.id]},
+    ])
+    assert result["results"][0]["timeline_moved"] >= 1
+    # El evento previo de la absorbida ahora apunta a la principal.
+    moved = session.scalars(
+        select(AuditLog).where(AuditLog.action == "company.updated")
+    ).one()
+    assert moved.target_id == keep.id
 
 
 def test_merge_keeps_the_principal_codcli_and_records_the_discarded_one(session):
@@ -385,7 +413,8 @@ def test_merge_one_failure_does_not_block_the_batch(session):
 
     assert result["merged_groups"] == 1
     assert len(result["errors"]) == 1
-    assert session.get(Company, ok_other.id) is None
+    absorbed = session.get(Company, ok_other.id)
+    assert absorbed is not None and absorbed.is_archived is True
 
 
 def test_merge_rejects_keeping_and_merging_the_same_company(session):
@@ -413,4 +442,8 @@ def test_merge_absorbs_several_companies_at_once(session):
     session.refresh(keep)
     assert keep.city == "Aveiro"
     assert keep.website == "exatronic.pt"
-    assert len(list(session.scalars(select(Company)))) == 1
+    # No se borran: quedan las 3 fichas, con las 2 absorbidas archivadas y solo
+    # la principal activa.
+    all_companies = list(session.scalars(select(Company)))
+    assert len(all_companies) == 3
+    assert [c.id for c in all_companies if not c.is_archived] == [keep.id]

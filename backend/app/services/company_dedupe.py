@@ -238,15 +238,29 @@ def _norm_tax(value: Any) -> str:
     return "".join(c for c in str(value or "").upper() if c.isalnum())
 
 
+def merge_companies_into(
+    session: Session, keep: Any, merges: list[Any], *, actor: Any = None,
+) -> dict[str, Any]:
+    """Absorbe `merges` en `keep`: reasigna TODO lo que cuelga de las absorbidas
+    (contactos, pedidos, tareas — las tres FK a `companies.id`), re-apunta su
+    actividad/timeline (`audit_logs`), hereda el vínculo FACTUSOL y las notas, y
+    **ARCHIVA** las absorbidas (`is_archived=True`, reversible — NUNCA se borran
+    físicamente). Deja constancia en el timeline de `keep`. Sin commit (el caller
+    decide). Núcleo compartido por el endpoint de fusión, el vincular→fusionar y
+    el comando masivo."""
+    return _merge_into(session, keep, merges, actor)
+
+
 def _merge_into(
     session: Session, keep: Any, merges: list[Any], actor: Any,
 ) -> dict[str, Any]:
-    """Mueve todo lo que cuelga de `merges` a `keep` y las borra."""
+    """Mueve todo lo que cuelga de `merges` a `keep` y las ARCHIVA (reversible)."""
     from app.core.audit import record_event  # noqa: PLC0415
     from app.erp.models.orders import Order  # noqa: PLC0415
-    from app.models.crm import Contact, Task  # noqa: PLC0415
+    from app.models.crm import AuditLog, Contact, Task  # noqa: PLC0415
 
-    moved = {"contacts_moved": 0, "orders_moved": 0, "tasks_moved": 0}
+    moved = {"contacts_moved": 0, "orders_moved": 0, "tasks_moved": 0,
+             "timeline_moved": 0}
     discarded_codclis: list[str] = []
     snapshots: list[dict[str, Any]] = []
     filled: dict[str, str] = {}
@@ -262,15 +276,38 @@ def _merge_into(
             )
             moved[key] += int(result.rowcount or 0)
 
+        # Actividad / timeline: los eventos de auditoría de la absorbida (su
+        # ficha es `target`) pasan a la principal, para que su historial no se
+        # pierda al archivarla. El propio evento de fusión se registra después.
+        tl = session.execute(
+            update(AuditLog.__table__)
+            .where(AuditLog.target_type == "company", AuditLog.target_id == other.id)
+            .values(target_id=keep.id)
+        )
+        moved["timeline_moved"] += int(tl.rowcount or 0)
+
         # Completar: solo lo que la principal tenga vacío. Si el operador la
         # eligió como buena, sus datos mandan.
         for field in FILLABLE_FIELDS:
+            if field == "notes":
+                continue  # las notas se ACUMULAN (abajo), no se rellenan solo si vacío.
             if str(getattr(keep, field, None) or "").strip():
                 continue
             value = getattr(other, field, None)
             if str(value or "").strip():
                 setattr(keep, field, value)
                 filled[field] = other.id
+
+        # Notas: se acumulan en la principal (no se pierde ninguna al archivar).
+        other_notes = str(getattr(other, "notes", None) or "").strip()
+        if other_notes:
+            prefix = f"[Fusionada «{other.name}»] "
+            if prefix + other_notes not in (keep.notes or ""):
+                keep.notes = (
+                    f"{keep.notes}\n{prefix}{other_notes}" if (keep.notes or "").strip()
+                    else f"{prefix}{other_notes}"
+                )
+                filled["notes"] = other.id
 
         # El vínculo con FACTUSOL: se hereda si la principal no tenía. Si tenía
         # otro, se queda el suyo y el descartado va al audit — puede haber
@@ -282,8 +319,10 @@ def _merge_into(
             elif other.factusol_company_id != keep.factusol_company_id:
                 discarded_codclis.append(other.factusol_company_id)
 
+    # Archivado reversible (NO borrado físico): la ficha absorbida deja de
+    # aparecer en las listas pero se puede reactivar (`is_archived=0`).
     for other in merges:
-        session.delete(other)
+        other.is_archived = True
 
     record_event(
         session,
@@ -297,10 +336,11 @@ def _merge_into(
             "merged_data_snapshot": snapshots,
             "filled_fields": filled,
             "moved": moved,
+            "archived_ids": [s["id"] for s in snapshots],
             # Ojo al revisar: esos CODCLI se quedan sin empresa en el CRM.
             "discarded_factusol_codclis": discarded_codclis,
         },
-        message=f"Fusionadas {len(merges)} empresa(s) en «{keep.name}»",
+        message=f"Fusionadas y archivadas {len(merges)} empresa(s) en «{keep.name}»",
     )
     if discarded_codclis:
         logger.warning("dedupe empresas: %s conserva el codcli %s; se descartan "

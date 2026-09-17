@@ -823,7 +823,7 @@ function MergeDialog({
     }
     if (
       !confirm(
-        `Fusionar "${source.name}" en "${target.name}"? Los contactos de "${source.name}" pasarán a "${target.name}" y "${source.name}" se borrará.`,
+        `¿Fusionar "${source.name}" en "${target.name}"? Todo lo de "${source.name}" (pedidos, contactos, tareas, actividad y vínculo FACTUSOL) pasa a "${target.name}" y "${source.name}" se archiva (reversible: no se borra).`,
       )
     )
       return;
