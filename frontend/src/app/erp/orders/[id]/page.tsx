@@ -535,8 +535,10 @@ function ErpOrderDetailScreen() {
   const saldoPendiente = cobroLive?.saldo_pendiente ?? order.factusol_cobro?.saldo_pendiente ?? null;
   const totalCobrado = cobroLive?.total_cobrado ?? order.factusol_cobro?.total_cobrado ?? null;
   const eur = (n: number) => `${n.toFixed(2)} ${order.currency}`;
-  const sinMapear = order.lines.filter((l) => !l.product_codart).length;
-  const otrosCargos = order.total_amount - lineasBase(order) - lineasIva(order);
+  // Solo la MERCANCÍA sin CODART cuenta como «sin mapear»: el envío y las
+  // comisiones no son artículos y van sin CODART a propósito.
+  const sinMapear = order.lines.filter((l) => esMercancia(l) && !l.product_codart).length;
+  const otrosCargos = lineasEnvio(order) + lineasCargos(order);
   const ultimoEvento = timeline.reduce<string | null>(
     (max, e) => (max == null || e.at > max ? e.at : max), null,
   );
@@ -924,7 +926,7 @@ function ErpOrderDetailScreen() {
         summary={[
           `${order.lines.length} ${order.lines.length === 1 ? "artículo" : "artículos"}`,
           sinMapear > 0 ? `${sinMapear} sin mapear` : null,
-          Math.abs(otrosCargos) >= 0.01 ? `portes ${eur(otrosCargos)}` : null,
+          Math.abs(otrosCargos) >= 0.01 ? `envío/cargos ${eur(otrosCargos)}` : null,
         ].filter(Boolean).join(" · ")}
         defaultOpen={panelDefault("lineas")}
       >
@@ -940,9 +942,11 @@ function ErpOrderDetailScreen() {
                   <td>{l.description}</td>
                   <td>{l.quantity}</td>
                   <td>{l.line_total.toFixed(2)}</td>
-                  <td>{l.product_codart
-                    ? <span className="badge ok">{l.product_codart}</span>
-                    : <span className="badge bad">sin mapear</span>}</td>
+                  <td>{esMercancia(l)
+                    ? (l.product_codart
+                        ? <span className="badge ok">{l.product_codart}</span>
+                        : <span className="badge bad">sin mapear</span>)
+                    : <span className="badge muted">{esCargo(l) ? "cargo" : "envío"}</span>}</td>
                 </tr>
               ))}
             </tbody>
@@ -1271,13 +1275,41 @@ function InvoiceEmailedNote({ order }: { order: OrderDetail }) {
   return <p className="erp-flow-emailed is-unsent">Sin enviar al cliente</p>;
 }
 
-/** Base imponible del pedido: la suma de sus líneas. */
-function lineasBase(order: OrderDetail): number {
-  return order.lines.reduce((s, l) => s + (l.line_total ?? 0), 0);
+type Linea = OrderDetail["lines"][number];
+
+/** ¿Línea de ENVÍO (portes)? Los pedidos web la marcan con `line_kind`
+ *  'shipping'; los manuales, con `is_shipping`. */
+function esEnvio(l: Linea): boolean {
+  return l.line_kind === "shipping" || (!!l.is_shipping && l.line_kind !== "fee");
+}
+/** ¿Comisión / otro cargo (fee de WooCommerce, p. ej. «PayPal cost 4%»)? */
+function esCargo(l: Linea): boolean {
+  return l.line_kind === "fee";
+}
+/** ¿Mercancía (ni envío ni cargo)? */
+function esMercancia(l: Linea): boolean {
+  return !esEnvio(l) && !esCargo(l);
 }
 
-/** IVA de las líneas según el régimen del cliente: intracomunitario y
- *  exportación van exentos (0). */
+/** Base imponible del pedido: la suma de las líneas de MERCANCÍA (el envío y
+ *  las comisiones se cuentan aparte, no en la base). */
+function lineasBase(order: OrderDetail): number {
+  return order.lines.filter(esMercancia).reduce((s, l) => s + (l.line_total ?? 0), 0);
+}
+
+/** Importe de ENVÍO (portes) del pedido: suma de sus líneas de envío. */
+function lineasEnvio(order: OrderDetail): number {
+  return order.lines.filter(esEnvio).reduce((s, l) => s + (l.line_total ?? 0), 0);
+}
+
+/** Comisiones y otros cargos del pedido: suma de sus líneas `fee`. */
+function lineasCargos(order: OrderDetail): number {
+  return order.lines.filter(esCargo).reduce((s, l) => s + (l.line_total ?? 0), 0);
+}
+
+/** IVA REAL de las líneas (mercancía + envío + cargos) según el tipo de cada
+ *  una; intracomunitario y exportación van exentos (0). Ya no se fabrica
+ *  ningún 21 %: el tipo lo trae cada línea de la fuente. */
 function lineasIva(order: OrderDetail): number {
   const regime = order.workflow?.regime ?? null;
   if (regime === "intracomunitario" || regime === "exportacion") return 0;
@@ -1307,8 +1339,14 @@ function EconomicSummary({
   const regime = order.workflow?.regime ?? null;
   const exento = regime === "intracomunitario" || regime === "exportacion";
   const base = lineasBase(order);
+  const envio = lineasEnvio(order);
+  const cargos = lineasCargos(order);
   const iva = lineasIva(order);
-  const otros = order.total_amount - base - iva;
+  // El total es el del pedido (lo que pagó el cliente). Con las líneas reales
+  // (mercancía + envío + comisiones + IVA) debería cuadrar; si sobra algo
+  // (descuentos no desglosados, un pedido web viejo aún sin recalcular) se
+  // enseña como «Ajuste» en vez de esconderlo dentro de los portes.
+  const ajuste = order.total_amount - base - envio - cargos - (exento ? 0 : iva);
   const pago = order.factusol_payment ?? null;
   const eur = (n: number) => `${n.toFixed(2)} ${order.currency}`;
   const cobrada = cobroStatus === "cobrada";
@@ -1324,14 +1362,26 @@ function EconomicSummary({
         <span className="k">Base imponible</span>
         <span className="v">{eur(base)}</span>
       </p>
+      {Math.abs(envio) >= 0.01 ? (
+        <p className="erp-flow-kv">
+          <span className="k">Envío</span>
+          <span className="v">{eur(envio)}</span>
+        </p>
+      ) : null}
+      {Math.abs(cargos) >= 0.01 ? (
+        <p className="erp-flow-kv">
+          <span className="k">Comisiones y otros cargos</span>
+          <span className="v">{eur(cargos)}</span>
+        </p>
+      ) : null}
       <p className="erp-flow-kv">
         <span className="k">IVA{regime ? ` (${REGIME_TEXT[regime] ?? regime})` : ""}</span>
         <span className="v">{exento ? `${eur(0)} · exento` : eur(iva)}</span>
       </p>
-      {Math.abs(otros) >= 0.01 ? (
+      {Math.abs(ajuste) >= 0.01 ? (
         <p className="erp-flow-kv">
-          <span className="k">Portes y otros cargos</span>
-          <span className="v">{eur(otros)}</span>
+          <span className="k">Ajuste</span>
+          <span className="v">{eur(ajuste)}</span>
         </p>
       ) : null}
       <p className="erp-flow-kv">

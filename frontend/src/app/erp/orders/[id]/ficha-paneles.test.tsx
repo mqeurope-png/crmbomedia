@@ -120,7 +120,7 @@ function detail(over = {}) {
     id: "o-1", order_number: "BP-2479", contact_name: null,
     company_name: "Rotulación Levante S.L.", external_source: "manual",
     store_id: null, contact_id: null, company_id: "c-1",
-    // 3 líneas de 100 (base 300) + IVA 21 % (63) + portes 45 = 408.
+    // 3 líneas de 100 (base 300) + IVA 21 % (63) + portes 45 (línea propia) = 408.
     total_amount: 408, currency: "EUR", payment_status: "paid",
     preparation_status: "in_queue", transport_status: "not_shipped",
     invoice_status: "not_invoiced", tracking_number: null, factusol_invoice_number: null,
@@ -130,7 +130,12 @@ function detail(over = {}) {
     created_at: "2026-09-12T09:14:00", externally_processed_at: null,
     externally_processed_note: null, externally_processed_by_user_id: null,
     notes: null, packing: null,
-    lines: [line("1", "A1"), line("2", "A2"), line("3", null)],
+    lines: [
+      line("1", "A1"), line("2", "A2"), line("3", null),
+      { id: "portes", position: 3, product_sku: "portes", product_codart: null,
+        description: "Portes", quantity: 1, unit_price: 45, tax_rate: 0,
+        line_total: 45, notes: null, is_shipping: true, line_kind: "shipping" },
+    ],
     status_history: [], exceptions: [], blockers: [],
     available_transitions: { payment: [], invoice: [], preparation: [], transport: [] },
     warnings: [], completed: false, completed_at: null, completed_by_user_id: null,
@@ -199,11 +204,11 @@ beforeEach(() => {
 });
 
 describe("ERP · Ficha (Lote 2 · PR-2) — paneles plegables con resumen y memoria", () => {
-  it("cada panel resume lo esencial en su cabecera («3 artículos · 1 sin mapear · portes 45.00 EUR», «Sin expedición · albarán…», «2 eventos · último hace 2 h»)", async () => {
+  it("cada panel resume lo esencial en su cabecera («4 artículos · 1 sin mapear · envío/cargos 45.00 EUR», «Sin expedición · albarán…», «2 eventos · último hace 2 h»)", async () => {
     withOrder();
     render(<ErpOrderDetailPage />);
     await screen.findByRole("heading", { name: "Líneas" });
-    expect(panel("Líneas")).toHaveTextContent("3 artículos · 1 sin mapear · portes 45.00 EUR");
+    expect(panel("Líneas")).toHaveTextContent("4 artículos · 1 sin mapear · envío/cargos 45.00 EUR");
     expect(panel("Envío y seguimiento")).toHaveTextContent("Sin expedición · albarán 2-100418");
     await waitFor(() => expect(panel("Historial")).toHaveTextContent("2 eventos · último hace 2 h"));
     // Y nada se pierde: dentro siguen la tabla de líneas, los documentos de
