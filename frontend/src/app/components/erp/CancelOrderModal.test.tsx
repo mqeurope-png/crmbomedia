@@ -57,6 +57,29 @@ describe("CancelOrderModal", () => {
     })));
   });
 
+  it("web sin factura: el pedido de cliente F_PCL sale como borrable", async () => {
+    mockPreview.mockResolvedValue({
+      can_cancel: true, blockers: [], warnings: [],
+      factusol_docs: [{ doc_type: "pedidos", serie: 5, codigo: 7001,
+        numero: "5-007001", estado: 0, deletable: true, reason: null }],
+    });
+    render(<CancelOrderModal orderId="o-9" orderNumber="FLUXLA-1" onClose={jest.fn()} />);
+    const list = await screen.findByRole("list", { name: "Documentos FACTUSOL del pedido" });
+    expect(list).toHaveTextContent("Pedido de cliente 5-007001 — se puede borrar");
+  });
+
+  it("web con factura: avisa de anulación manual y no bloquea", async () => {
+    mockPreview.mockResolvedValue({
+      can_cancel: true, blockers: [],
+      warnings: ["Este pedido tiene factura en FACTUSOL (260090). BoHub no la "
+        + "toca: anúlala o abónala manualmente en FACTUSOL."],
+      factusol_docs: [],
+    });
+    render(<CancelOrderModal orderId="o-9" orderNumber="FLUXLA-2" onClose={jest.fn()} />);
+    expect(await screen.findByText(/anúlala o abónala manualmente en FACTUSOL/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Anular pedido" })).not.toBeDisabled();
+  });
+
   it("con bloqueos (factura / web) no deja anular", async () => {
     mockPreview.mockResolvedValue({
       can_cancel: false, blockers: ["Tiene factura en FACTUSOL (260090): la factura se anula desde FACTUSOL."],

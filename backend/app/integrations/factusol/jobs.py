@@ -465,6 +465,80 @@ def cancel_order_documents_job(
     return result
 
 
+def autocancel_order_documents_job(order_id: str) -> dict[str, Any]:
+    """Parte A (auto): borra en FACTUSOL el pedido de cliente F_PCL de un pedido
+    web AUTO-anulado por reembolso/cancelación Woo, si es borrable (sin factura).
+    Corre en `factusol:writes` (serial) y re-comprueba el estado EN VIVO: solo
+    actúa si el pedido sigue anulado y sin factura; nunca toca la factura."""
+    from sqlalchemy.orm import Session  # noqa: PLC0415
+
+    from app.db.session import get_engine  # noqa: PLC0415
+    from app.erp.models import Order  # noqa: PLC0415
+    from app.erp.order_cancel import (  # noqa: PLC0415
+        delete_cancelled_order_documents,
+        factusol_docs_for_cancel,
+        is_invoiced_order,
+    )
+    from app.integrations.factusol.service import ejercicio_for  # noqa: PLC0415
+
+    with Session(get_engine()) as session:
+        order = session.get(Order, order_id)
+        if order is None or order.cancelled_at is None or is_invoiced_order(order):
+            logger.info("factusol auto-cancel: order=%s ya no procede borrar", order_id)
+            return {"deleted": [], "skipped": True}
+        client = FactusolClient.from_settings()
+        ejercicio = ejercicio_for(session)
+        docs = factusol_docs_for_cancel(session, client, order, ejercicio=ejercicio)
+        deletable = [d for d in docs if d.get("deletable")]
+        if not deletable:
+            return {"deleted": [], "skipped": True}
+        result = delete_cancelled_order_documents(
+            session, client, order, deletable, ejercicio=ejercicio,
+            actor_user_id=None,
+        )
+    logger.info("factusol auto-cancel: order=%s borrados=%s", order_id,
+                result.get("deleted"))
+    return result
+
+
+def enqueue_autocancel_order_documents(order_id: str) -> str:
+    """Encola `autocancel_order_documents_job` en `factusol:writes`."""
+    return _enqueue(
+        "app.integrations.factusol.jobs.autocancel_order_documents_job", order_id,
+    )
+
+
+def close_order_pcl_job(order_id: str) -> dict[str, Any]:
+    """Parte B (retroactivo): cierra el F_PCL de un pedido web YA facturado que
+    se quedó abierto en FACTUSOL. Corre en `factusol:writes`. Idempotente."""
+    from sqlalchemy.orm import Session  # noqa: PLC0415
+
+    from app.db.session import get_engine  # noqa: PLC0415
+    from app.erp.models import Order  # noqa: PLC0415
+    from app.integrations.factusol.service import (  # noqa: PLC0415
+        close_order_pcl,
+        ejercicio_for,
+    )
+
+    with Session(get_engine()) as session:
+        order = session.get(Order, order_id)
+        if order is None:
+            raise FactusolError(f"Order {order_id!r} no existe")
+        client = FactusolClient.from_settings()
+        ejercicio = ejercicio_for(session)
+        closed, reason = close_order_pcl(session, client, order, ejercicio)
+        session.commit()
+    logger.info("factusol close-pcl: order=%s cerrado=%s (%s)", order_id, closed, reason)
+    return {"order_id": order_id, "closed": closed, "reason": reason}
+
+
+def enqueue_close_order_pcl(order_id: str) -> str:
+    """Encola `close_order_pcl_job` en `factusol:writes`."""
+    return _enqueue(
+        "app.integrations.factusol.jobs.close_order_pcl_job", order_id,
+    )
+
+
 def enqueue_cancel_order_documents(
     order_id: str, docs: list[dict[str, Any]], ejercicio: str,
     actor_user_id: str | None = None,

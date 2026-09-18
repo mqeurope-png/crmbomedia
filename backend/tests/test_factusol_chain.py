@@ -840,16 +840,17 @@ def test_empty_state_config_skips_marking(db) -> None:
 def test_origin_mark_value_defaults_and_overrides(db) -> None:
     from app.integrations.factusol.service import origin_mark_value
 
-    # Sin configurar: presupuesto/albarán usan el default confirmado ("1");
-    # pedidos mantienen el contrato E2 (sin configurar = no marcar).
+    # Sin configurar: todos usan su default confirmado — presupuesto/albarán
+    # "1"; pedidos "2" (ESTPCL «Enviado/facturado», E2). Antes pedidos iba sin
+    # default (los F_PCL web se quedaban abiertos); Bart activó el cierre.
     assert origin_mark_value(db, "presupuestos") == "1"
     assert origin_mark_value(db, "albaranes") == "1"
-    assert origin_mark_value(db, "pedidos") is None
+    assert origin_mark_value(db, "pedidos") == "2"
     _set_series_json(db, estpre_accepted="9", estalb_invoiced="",
-                     estpcl_invoiced="2")
+                     estpcl_invoiced="")
     assert origin_mark_value(db, "presupuestos") == "9"
     assert origin_mark_value(db, "albaranes") is None   # vacío explícito
-    assert origin_mark_value(db, "pedidos") == "2"
+    assert origin_mark_value(db, "pedidos") is None      # vacío explícito: opt-out
 
 
 # ---------------------------------------------------------------------------

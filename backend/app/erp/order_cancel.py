@@ -38,10 +38,21 @@ CANCELLED_EVENT = "erp.order_cancelled"
 UNCANCELLED_EVENT = "erp.order_uncancelled"
 DOCS_DELETED_EVENT = "erp.order_cancel_docs_deleted"
 
+#: Motivo con el que se sella la auto-anulación por reembolso/cancelación Woo.
+AUTO_CANCEL_REASON = (
+    "Anulado automáticamente: pedido reembolsado/cancelado en WooCommerce"
+)
+#: Estados Woo que disparan la auto-anulación (reembolso TOTAL / cancelado). Un
+#: reembolso PARCIAL deja el pedido en `processing` en Woo, así que no entra
+#: aquí: sigue siendo un pedido válido.
+WOO_AUTOCANCEL_STATUSES: frozenset[str] = frozenset({"refunded", "cancelled"})
+
 #: Estados de FACTUSOL a partir de los cuales el documento ya no se borra:
-#: ESTALB=1 «Facturado»; ESTPRE≠0 «Aceptado» (o cualquier otro valor).
+#: ESTALB=1 «Facturado»; ESTPRE≠0 «Aceptado» (o cualquier otro valor);
+#: ESTPCL=2 «Enviado/facturado» (E2) — solo pendiente (0) es borrable.
 ALBARAN_INVOICED_STATE = 1
 QUOTE_PENDING_STATE = 0
+PCL_PENDING_STATE = 0
 
 
 def _int(value: Any) -> int | None:
@@ -58,17 +69,32 @@ def is_invoiced_order(order: Order) -> bool:
 
 
 def cancel_blockers(order: Order) -> list[str]:
-    """Por qué NO se puede anular (lista vacía = se puede)."""
+    """Por qué NO se puede anular (lista vacía = se puede).
+
+    Los pedidos WEB SÍ se pueden anular desde BoHub (un pedido reembolsado se
+    quedaba atascado en «por facturar»). El bloqueo por factura se mantiene
+    SOLO para los manuales/FACTUSOL: un web con factura se anula igual pero sin
+    tocar FACTUSOL (ver `factusol_manual_invoice_warning`)."""
     out: list[str] = []
-    if is_web_order(order):
-        out.append("Es un pedido web: se anula en WooCommerce, no desde BoHub.")
-    if is_invoiced_order(order):
+    if not is_web_order(order) and is_invoiced_order(order):
         numero = order.factusol_invoice_number or "—"
         out.append(
             f"Tiene factura en FACTUSOL ({numero}): la factura se anula desde "
             "FACTUSOL; después se puede anular el pedido aquí."
         )
     return out
+
+
+def factusol_manual_invoice_warning(order: Order) -> str | None:
+    """Aviso cuando se anula un pedido (web) que YA tiene factura en FACTUSOL:
+    BoHub no la toca; hay que anularla/abonarla a mano. `None` si no aplica."""
+    if is_invoiced_order(order):
+        numero = order.factusol_invoice_number or "—"
+        return (
+            f"Este pedido tiene factura en FACTUSOL ({numero}). BoHub no la toca: "
+            "anúlala o abónala manualmente en FACTUSOL."
+        )
+    return None
 
 
 def albaran_key(order: Order) -> tuple[int, int] | None:
@@ -104,14 +130,66 @@ def _doc_entry(doc_type: str, serie: int, codigo: int, **over: Any) -> dict[str,
     return entry
 
 
+def _web_pcl_doc(
+    session: Session, client: Any, order: Order, *, ejercicio: str,
+) -> dict[str, Any] | None:
+    """Para un pedido WEB: su pedido de cliente F_PCL en FACTUSOL (el que creó
+    la app Woo→FACTUSOL) y si se puede BORRAR ahora. `None` si no es web o no
+    se encuentra el F_PCL (ya borrado a mano / nunca creado → no se toca nada).
+
+    Borrable SOLO si el pedido NO tiene factura (comprobado EN VIVO por REFFAC,
+    detección fiable) ni albarán, y el F_PCL sigue pendiente (ESTPCL≠2). Ante
+    cualquier duda se cae al lado seguro: no borrable."""
+    if not is_web_order(order):
+        return None
+    from app.integrations.factusol.service import (  # noqa: PLC0415
+        _store_ref_prefix,
+        check_factusol_status,
+        find_pcl_by_order,
+    )
+
+    ref_prefix = _store_ref_prefix(session, order)
+    pcl = find_pcl_by_order(client, order, ejercicio, ref_prefix=ref_prefix)
+    if pcl is None:
+        return None
+    from app.integrations.factusol.documents import coerce_serie  # noqa: PLC0415
+
+    serie = coerce_serie(pcl.get("TIPPCL"))
+    codigo = _int(pcl.get("CODPCL"))
+    estado = _int(pcl.get("ESTPCL"))
+    if serie is None or codigo is None:
+        return None
+    status = check_factusol_status(client, order, ejercicio, ref_prefix=ref_prefix)
+    if is_invoiced_order(order) or status.get("has_factura"):
+        return _doc_entry(
+            "pedidos", serie, codigo, estado=estado,
+            reason="Tiene factura en FACTUSOL: la factura se anula a mano.",
+        )
+    if status.get("has_albaran"):
+        return _doc_entry(
+            "pedidos", serie, codigo, estado=estado,
+            reason="Tiene albarán en FACTUSOL: bórralo antes desde FACTUSOL.",
+        )
+    if estado not in (None, PCL_PENDING_STATE):
+        return _doc_entry(
+            "pedidos", serie, codigo, estado=estado,
+            reason=f"Ya no está pendiente en FACTUSOL (ESTPCL={estado}).",
+        )
+    return _doc_entry("pedidos", serie, codigo, estado=estado, deletable=True)
+
+
 def factusol_docs_for_cancel(
-    client: Any, order: Order, *, ejercicio: str,
+    session: Session, client: Any, order: Order, *, ejercicio: str,
 ) -> list[dict[str, Any]]:
     """Documentos FACTUSOL del pedido y si cada uno se puede BORRAR ahora
-    (lectura en vivo): el albarán si no está facturado (ESTALB≠1) y no tiene
-    facturas hijas; el presupuesto si sigue pendiente (ESTPRE=0) y no tiene
-    más albaranes hijos que el del propio pedido."""
+    (lectura en vivo): para un pedido WEB, su pedido de cliente F_PCL (si no
+    tiene factura ni albarán); para uno manual/FACTUSOL, el albarán si no está
+    facturado (ESTALB≠1) y sin facturas hijas, y el presupuesto si sigue
+    pendiente (ESTPRE=0) y sin más albaranes hijos que el del propio pedido."""
     docs: list[dict[str, Any]] = []
+    pcl_doc = _web_pcl_doc(session, client, order, ejercicio=ejercicio)
+    if pcl_doc is not None:
+        docs.append(pcl_doc)
     alb = albaran_key(order)
     if alb is not None:
         serie, codigo = alb
@@ -181,6 +259,47 @@ def mark_cancelled(session: Session, order: Order, actor: Any, reason: str | Non
     return False
 
 
+def autocancel_web_order(session: Session, order: Order) -> bool:
+    """Auto-anula un pedido WEB reembolsado/cancelado en WooCommerce (Parte A).
+
+    Idempotente y conservador: NO toca un pedido ya anulado, ni uno YA
+    FACTURADO (estado terminal — solo lo registra en el log). Marca la
+    anulación en BoHub + timeline y encola (best-effort) el borrado del F_PCL
+    en `factusol:writes` (nunca inline; si Redis falla, la anulación queda igual
+    y el F_PCL se puede limpiar a mano). NO hace commit — lo hace el caller
+    (el job de ingesta Woo). Devuelve True si anuló ahora."""
+    from app.core.audit import record_event  # noqa: PLC0415
+
+    if order.cancelled_at is not None:
+        return False
+    if is_invoiced_order(order):
+        logger.info(
+            "woo auto-cancel: pedido %s ya facturado (%s) — no se auto-anula; "
+            "la factura se anula a mano en FACTUSOL",
+            order.order_number, order.woo_status,
+        )
+        return False
+    mark_cancelled(session, order, None, AUTO_CANCEL_REASON)
+    record_event(
+        session, action=CANCELLED_EVENT, target_type="order", target_id=order.id,
+        actor=None, message=AUTO_CANCEL_REASON,
+        metadata={"auto": True, "woo_status": order.woo_status,
+                  "order_number": order.order_number},
+    )
+    try:
+        from app.integrations.factusol.jobs import (  # noqa: PLC0415
+            enqueue_autocancel_order_documents,
+        )
+
+        enqueue_autocancel_order_documents(order.id)
+    except Exception as exc:  # noqa: BLE001 — Redis caído no debe romper la ingesta
+        logger.warning(
+            "woo auto-cancel: pedido %s anulado, pero no se encoló el borrado "
+            "FACTUSOL del F_PCL: %s", order.order_number, exc,
+        )
+    return True
+
+
 def unmark_cancelled(session: Session, order: Order) -> bool:
     """«Restaurar»: limpia la anulación. Devuelve si YA estaba activo."""
     _ = session
@@ -219,11 +338,13 @@ def delete_cancelled_order_documents(
 
     live = {
         (d["doc_type"], int(d["serie"]), int(d["codigo"])): d
-        for d in factusol_docs_for_cancel(client, order, ejercicio=ejercicio)
+        for d in factusol_docs_for_cancel(session, client, order, ejercicio=ejercicio)
     }
+    # Hijo antes que padre: albarán → pedido → presupuesto.
+    _del_order = {"albaranes": 0, "pedidos": 1, "presupuestos": 2}
     wanted = sorted(
         ((d["doc_type"], int(d["serie"]), int(d["codigo"])) for d in docs),
-        key=lambda k: 0 if k[0] == "albaranes" else 1,
+        key=lambda k: _del_order.get(k[0], 9),
     )
     deleted: list[str] = []
     skipped: list[dict[str, Any]] = []

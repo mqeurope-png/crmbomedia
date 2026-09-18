@@ -13,13 +13,14 @@ import { extractErrorMessage } from "../../lib/errors";
 const DOC_LABEL: Record<CancelOrderDoc["doc_type"], string> = {
   albaranes: "Albarán",
   presupuestos: "Presupuesto / proforma",
+  pedidos: "Pedido de cliente",
 };
 
-/** Lote ERP · «Anular pedido» (manual / FACTUSOL; nunca web). Distinto de
- *  «quitar»: es un estado FINAL del pedido (reversible con «Restaurar»). Antes
- *  de anular se AVISA: si no se puede (web / con factura) y qué documentos
- *  tiene en FACTUSOL; el operador decide si borrar allí el albarán y/o el
- *  presupuesto que sigan vivos. La factura nunca: se anula desde FACTUSOL. */
+/** «Anular pedido» (manual / FACTUSOL Y web). Distinto de «quitar»: es un
+ *  estado FINAL del pedido (reversible con «Restaurar»). Antes de anular se
+ *  AVISA de qué documentos tiene en FACTUSOL; el operador decide si borrar
+ *  allí el albarán / presupuesto / pedido de cliente que sigan vivos (sin
+ *  factura). La factura nunca: se anula/abona a mano en FACTUSOL (aviso). */
 export function CancelOrderModal({
   orderId,
   orderNumber,
@@ -147,7 +148,7 @@ export function CancelOrderModal({
                       </div>
                     ) : (
                       <p className="muted small">
-                        El pedido no tiene albarán ni presupuesto en FACTUSOL: no se borra nada allí.
+                        El pedido no tiene documentos borrables en FACTUSOL: no se borra nada allí.
                       </p>
                     )}
                     <label className="field">
