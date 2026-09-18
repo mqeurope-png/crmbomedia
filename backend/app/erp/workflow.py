@@ -341,24 +341,17 @@ def _next_step(order: Order) -> tuple[str, str, str]:
             if is_paid(order) else
             "Registra el cobro de la factura en FACTUSOL.",
         )
-    if not is_shipped(order):
-        if _v(order.preparation_status) not in _PREPARED:
-            return (
-                QUEUE_POR_ENVIAR, "enviar_sat",
-                "El taller tiene que preparar el pedido.",
-            )
-        # Lote 2 C: subir la etiqueta ES «Crear envío». Con ella ya subida
-        # (label_created) lo que falta es que el paquete salga.
-        texto = (
-            "Etiqueta subida: marca el pedido como recogido cuando salga."
-            if _v(order.transport_status) == TransportStatus.LABEL_CREATED.value
-            else "Sube la etiqueta de envío (o marca el pedido como recogido)."
-        )
-        return QUEUE_POR_ENVIAR, "crear_envio", texto
+    # Lo obligatorio ya está (facturado y cobrado, o facturado si el cobro no
+    # aplica). El envío al taller (SAT) es OPCIONAL y ya no bloquea: el pedido
+    # está listo para darse por completado. La cola «Por enviar» agrupa a los
+    # que aún no se han cerrado (donde se sube la etiqueta / marca recogido si
+    # procede, desde la sección «Envío y seguimiento» de la ficha), pero su
+    # ausencia no impide completar.
     if not order.completed_at:
         return (
             QUEUE_POR_ENVIAR, "marcar_completado",
-            "Todo hecho: márcalo como completado.",
+            "Facturado y cobrado: márcalo como completado. El envío al taller "
+            "es opcional (Envío y seguimiento).",
         )
     return QUEUE_LISTO, "ninguna", "Nada pendiente."
 
@@ -372,6 +365,12 @@ def order_workflow(
     consumen tal cual."""
     company = _company_of(session, order, ctx)
     alerts = order_alerts(session, order, ctx=ctx)
+    # Fecha del último envío de la factura por email (hito «Factura enviada»):
+    # del contexto en la bandeja (sin N+1), o una query en la ficha.
+    if ctx is not None:
+        invoice_emailed_at = ctx.invoice_emailed.get(order.id)
+    else:
+        invoice_emailed_at = latest_invoice_emailed_map(session, [order.id]).get(order.id)
     queue, action, explain = _next_step(order)
     blocking = [a for a in alerts if a["blocking"]]
     if getattr(order, "cancelled_at", None):
@@ -395,8 +394,9 @@ def order_workflow(
         "next_action_hint": explain,
         "alerts": alerts,
         "blocked": bool(blocking),
-        # Pasos del ciclo para el stepper de la ficha (7 de la maqueta).
-        "steps": order_steps(order),
+        # Pasos de la línea de vida: los obligatorios (hasta Cobro) + el hito
+        # opcional «Factura enviada». El SAT/«Enviado» ya no es un paso.
+        "steps": order_steps(order, invoice_emailed_at=invoice_emailed_at),
         "regime": company_regime(company),
         # Cliente del pedido: lo que la ficha enseña en cabecera (país +
         # régimen) y en el bloque FACTUSOL (nº de cliente o «sin vincular»).
@@ -430,15 +430,47 @@ def _company_block(company: Any) -> dict[str, Any] | None:
     }
 
 
+#: Evento de AuditLog que registra `invoice_email.send_invoice_email` al mandar
+#: la factura por email al cliente (mismo que `orders._invoice_emailed`).
+INVOICE_EMAILED_EVENT = "erp.invoice_emailed"
+
+
+def latest_invoice_emailed_map(
+    session: Session, order_ids: list[str],
+) -> dict[str, str]:
+    """`{order_id: fecha ISO}` del ÚLTIMO envío de la factura por email al
+    cliente (evento `erp.invoice_emailed`), por pedido, en UNA sola query. El
+    dato ya existe (no se inventa tracking): alimenta el hito «Factura enviada»
+    de la línea de vida y la pastilla/filtro de la bandeja."""
+    if not order_ids:
+        return {}
+    from sqlalchemy import func, select  # noqa: PLC0415
+
+    from app.models.crm import AuditLog  # noqa: PLC0415
+
+    rows = session.execute(
+        select(AuditLog.target_id, func.max(AuditLog.created_at))
+        .where(
+            AuditLog.action == INVOICE_EMAILED_EVENT,
+            AuditLog.target_type == "order",
+            AuditLog.target_id.in_(order_ids),
+        ).group_by(AuditLog.target_id)
+    )
+    return {tid: dt.isoformat() for tid, dt in rows if dt is not None}
+
+
 class WorkflowContext:
     """Datos precargados para calcular el `workflow` de MUCHOS pedidos sin
-    N+1: las empresas y el nº de excepciones abiertas, en dos queries."""
+    N+1: las empresas, el nº de excepciones abiertas y el último envío de la
+    factura por email, en pocas queries."""
 
     def __init__(
         self, companies: dict[str, Any], exception_counts: dict[str, int],
+        invoice_emailed: dict[str, str] | None = None,
     ) -> None:
         self.companies = companies
         self.exception_counts = exception_counts
+        self.invoice_emailed = invoice_emailed or {}
 
     @classmethod
     def for_orders(cls, session: Session, orders: list[Order]) -> WorkflowContext:
@@ -468,7 +500,8 @@ class WorkflowContext:
                 ).group_by(ErpException.order_id)
             )
             counts = {oid: int(n) for oid, n in rows}
-        return cls(companies, counts)
+        emailed = latest_invoice_emailed_map(session, order_ids)
+        return cls(companies, counts, emailed)
 
 
 def _company_of(
@@ -483,24 +516,38 @@ def _company_of(
     return session.get(Company, order.company_id)
 
 
-#: Los 7 pasos del ciclo, en orden (maqueta: «línea de vida» del pedido).
+#: Pasos OBLIGATORIOS del ciclo, en orden (la «línea de vida» del pedido). El
+#: SAT/«Enviado» YA NO es un paso obligatorio (es un hito opcional: hay pedidos
+#: que no pasan por el taller) — vive en la sección «Envío y seguimiento» de la
+#: ficha. El recuento «Paso N de N» y el «completado» solo cuentan estos.
 STEP_KEYS: tuple[str, ...] = (
-    "creado", "pagado", "aprobado", "albaran", "factura", "cobro", "enviado",
+    "creado", "pagado", "aprobado", "albaran", "factura", "cobro",
 )
+#: Hitos OPCIONALES: se enseñan en la línea de vida pero NO cuentan para el
+#: «Paso N de N» ni bloquean el «completado» (informativos). Hoy: el envío de la
+#: factura por email al cliente.
+OPTIONAL_STEP_KEYS: tuple[str, ...] = ("factura_enviada",)
 STEP_LABELS: dict[str, str] = {
     "creado": "Creado", "pagado": "Pagado", "aprobado": "Aprobado",
     "albaran": "Albarán", "factura": "Factura", "cobro": "Cobro",
-    "enviado": "Enviado",
+    "factura_enviada": "Factura enviada",
 }
 
 
-def order_steps(order: Order) -> list[dict[str, Any]]:
-    """Estado de cada paso del ciclo: `done` (hecho, con su detalle), `now`
-    (el primero pendiente), `pending` o `skipped`.
+def order_steps(
+    order: Order, *, invoice_emailed_at: str | None = None,
+) -> list[dict[str, Any]]:
+    """Estado de cada paso de la línea de vida: `done` (hecho, con su detalle),
+    `now` (el primero pendiente OBLIGATORIO), `pending` o `skipped`.
 
-    El albarán es el único opcional: en un pedido WEB lo crea WooCommerce, no
-    BoHub, así que si no hay número se marca `skipped` («no aplica») en vez de
-    dejarlo pendiente para siempre — y no puede ser nunca el paso actual."""
+    Pasos obligatorios: Creado → Pagado → Aprobado → Albarán → Factura → Cobro.
+    El albarán es opcional en un pedido WEB (lo crea WooCommerce, no BoHub): si
+    no hay número se marca `skipped` («no aplica») y nunca es el paso actual.
+
+    Tras ellos va el hito OPCIONAL «Factura enviada» (al cliente por email,
+    `invoice_emailed_at`): informativo, `optional=True`, nunca es `now` ni
+    cuenta para el «Paso N de N» ni bloquea el completado. El SAT/«Enviado» ya
+    no es un paso: vive en la sección «Envío y seguimiento»."""
     done: dict[str, tuple[bool, str]] = {
         "creado": (True, _fecha(order.placed_at or order.created_at)),
         "pagado": (is_paid(order), "" if not is_paid(order) else _importe(order)),
@@ -514,7 +561,6 @@ def order_steps(order: Order) -> list[dict[str, Any]]:
             str(order.factusol_invoice_number or "") if is_invoiced(order) else "",
         ),
         "cobro": (is_cobrada(order), "cobrada" if is_cobrada(order) else ""),
-        "enviado": (is_shipped(order), _v(order.transport_status) if is_shipped(order) else ""),
     }
     steps: list[dict[str, Any]] = []
     now_set = False
@@ -532,13 +578,27 @@ def order_steps(order: Order) -> list[dict[str, Any]]:
             state = "pending"
         steps.append({
             "key": key, "label": STEP_LABELS[key], "state": state,
-            "detail": detail or None,
+            "detail": detail or None, "optional": False,
         })
+    # Hito opcional «Factura enviada»: hecho (con la fecha) si ya se mandó por
+    # email; si no, pendiente (la ficha enseña el botón «Enviar factura al
+    # cliente» cuando ya hay factura). Nunca es `now` ni cuenta como obligatorio.
+    steps.append({
+        "key": "factura_enviada", "label": STEP_LABELS["factura_enviada"],
+        "state": "done" if invoice_emailed_at else "pending",
+        "detail": _fecha_iso(invoice_emailed_at) if invoice_emailed_at else None,
+        "optional": True,
+    })
     return steps
 
 
 def _fecha(value: Any) -> str:
     return value.date().isoformat() if value is not None else ""
+
+
+def _fecha_iso(value: str | None) -> str:
+    """Fecha (YYYY-MM-DD) de un timestamp ISO ya serializado; '' si vacío."""
+    return value[:10] if value else ""
 
 
 def _importe(order: Order) -> str:

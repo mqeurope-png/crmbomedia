@@ -79,6 +79,8 @@ type Filtros = {
   cobro: string;
   /** "" = todos, "yes" = facturados, "no" = sin facturar. */
   invoiced: string;
+  /** "" = todas, "enviada" / "no_enviada" (factura enviada al cliente). */
+  invoiceEmail: string;
   /** Slug de la tienda Woo (artisjet / boprint / fluxlasers…). */
   store: string;
   from: string;
@@ -91,7 +93,7 @@ type Filtros = {
  *  vuelve a esto. */
 const DEFAULT_FILTROS: Filtros = {
   prep: "", payment: "paid", completed: "no", cobro: "", invoiced: "",
-  store: "", from: "", to: "", sortDir: "desc",
+  invoiceEmail: "", store: "", from: "", to: "", sortDir: "desc",
 };
 /** «Limpiar filtros»: todo a «todos», sin ningún valor por defecto. */
 const EMPTY_FILTROS: Filtros = { ...DEFAULT_FILTROS, payment: "", completed: "" };
@@ -114,6 +116,9 @@ const COBRO_OPTIONS: [string, string][] = [
   ["sin_comprobar", "Con factura, sin comprobar"],
 ];
 const INVOICED_OPTIONS: [string, string][] = [["yes", "Facturado"], ["no", "Sin facturar"]];
+const INVOICE_EMAIL_OPTIONS: [string, string][] = [
+  ["enviada", "Enviada"], ["no_enviada", "No enviada"],
+];
 
 function optionLabel(options: [string, string][], value: string): string {
   return options.find(([v]) => v === value)?.[1] ?? value;
@@ -247,6 +252,7 @@ function ErpOrdersScreen() {
         placed_from: filtros.from || undefined,
         placed_to: filtros.to || undefined,
         cobro: (filtros.cobro || undefined) as "cobrada" | "pendiente" | "sin_comprobar" | undefined,
+        invoice_email: (filtros.invoiceEmail || undefined) as "enviada" | "no_enviada" | undefined,
         queue: queue ?? undefined,
         sort: filtros.sortDir === "asc" ? "placed_asc" : "placed_desc",
         limit: PAGE_LIMIT,
@@ -847,6 +853,11 @@ function ErpOrdersScreen() {
         <select value={filtros.invoiced} onChange={(e) => setFiltro("invoiced", e.target.value)} aria-label="Filtro facturado">
           <option value="">Facturado: todos</option>
           {INVOICED_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+        </select>
+        {/* «Factura enviada» al cliente por email (dato ya registrado). */}
+        <select value={filtros.invoiceEmail} onChange={(e) => setFiltro("invoiceEmail", e.target.value)} aria-label="Filtro factura enviada">
+          <option value="">Factura enviada: todas</option>
+          {INVOICE_EMAIL_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
         </select>
         <select value={filtros.store} onChange={(e) => setFiltro("store", e.target.value)} aria-label="Filtro tienda">
           <option value="">Tienda: todas</option>

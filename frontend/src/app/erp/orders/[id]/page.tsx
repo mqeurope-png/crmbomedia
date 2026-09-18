@@ -507,6 +507,21 @@ function ErpOrderDetailScreen() {
     || factusolStatus?.status === "invoiced"
     || order.invoice_status === "generated"
     || order.invoice_status === "invoiced_by_erp";
+  // «Enviar factura al cliente»: localiza la factura en FACTUSOL y abre el modal
+  // de envío por email. Reutilizado por el botón de la cabecera y por el hito
+  // «Factura enviada» de la línea de vida.
+  async function openInvoiceEmail() {
+    if (!order) return;
+    setEmailBusy(true);
+    setError(null);
+    try {
+      setInvoiceRef(await getOrderFactusolInvoiceRef(order.id));
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudo localizar la factura en FACTUSOL."));
+    } finally {
+      setEmailBusy(false);
+    }
+  }
   // Cobro FACTUSOL (contable, distinto del «Pagado» del CRM).
   const cobroStatus = cobroStatusOf(order);
   // Transición que ya es el botón principal (no repetirla en la fila de
@@ -660,20 +675,7 @@ function ErpOrderDetailScreen() {
                   title={invoiced
                     ? "Envía la factura al cliente por email (Gmail) con el PDF adjunto; verás remitente, destinatario y asunto antes de enviar"
                     : "Emite la factura en FACTUSOL primero"}
-                  onClick={async () => {
-                    setEmailBusy(true);
-                    setError(null);
-                    try {
-                      const ref = await getOrderFactusolInvoiceRef(order.id);
-                      setInvoiceRef(ref);
-                    } catch (e) {
-                      setError(extractErrorMessage(
-                        e, "No se pudo localizar la factura en FACTUSOL.",
-                      ));
-                    } finally {
-                      setEmailBusy(false);
-                    }
-                  }}
+                  onClick={() => void openInvoiceEmail()}
                 >
                   {emailBusy ? "Localizando…" : "Enviar factura al cliente"}
                 </button>
@@ -865,11 +867,14 @@ function ErpOrderDetailScreen() {
               const nowBar = s.state === "now" ? (
                 <NextActionBar workflow={wf} embedded>{isMobile ? null : stepAction}</NextActionBar>
               ) : null;
-              // Bloque 8 — en el paso «Factura», y solo cuando la factura ya
-              // existe (si no, el paso es EMITIR, no enviar), se ve de un
-              // vistazo si se ha enviado al cliente desde la app y cuándo.
-              const enviada = s.key === "factura" && hasInvoice ? (
-                <InvoiceEmailedNote order={order} />
+              // El hito OPCIONAL «Factura enviada»: enviada (con fecha) o
+              // pendiente, con el botón «Enviar factura al cliente» incrustado
+              // cuando ya hay factura. No bloquea el completado.
+              const enviada = s.key === "factura_enviada" ? (
+                <InvoiceEmailedHito
+                  order={order} hasInvoice={hasInvoice}
+                  emailBusy={emailBusy} onSend={openInvoiceEmail}
+                />
               ) : null;
               if (!nowBar && !enviada) return null;
               return <>{nowBar}{enviada}</>;
@@ -1255,11 +1260,19 @@ const REGIME_TEXT: Record<string, string> = {
   exportacion: "exportación",
 };
 
-/** Lote 3 · #8 — en el paso «Factura» de la línea de vida, de un vistazo (sin
- *  abrir el historial): si la factura se ha enviado al cliente por email DESDE
- *  la app y cuándo. Solo se pinta si la factura ya existe (el propio paso ya
- *  filtra por eso). Los destinatarios van en el `title`. */
-function InvoiceEmailedNote({ order }: { order: OrderDetail }) {
+/** El hito OPCIONAL «Factura enviada» de la línea de vida: de un vistazo (sin
+ *  abrir el historial) si la factura se ha enviado al cliente por email y
+ *  cuándo. Enviada → verde con la fecha (destinatarios en el `title`); con
+ *  factura pero sin enviar → aviso ámbar + botón «Enviar factura al cliente»;
+ *  sin factura todavía → nota gris (no aplica aún). No bloquea el completado. */
+function InvoiceEmailedHito({
+  order, hasInvoice, emailBusy, onSend,
+}: {
+  order: OrderDetail;
+  hasInvoice: boolean;
+  emailBusy: boolean;
+  onSend: () => void;
+}) {
   const at = order.invoice_emailed_at ?? null;
   const to = order.invoice_emailed_to ?? [];
   if (at) {
@@ -1272,7 +1285,26 @@ function InvoiceEmailedNote({ order }: { order: OrderDetail }) {
       </p>
     );
   }
-  return <p className="erp-flow-emailed is-unsent">Sin enviar al cliente</p>;
+  if (!hasInvoice) {
+    return (
+      <p className="erp-flow-emailed is-muted">
+        Cuando se emita la factura podrás enviarla al cliente por email.
+      </p>
+    );
+  }
+  return (
+    <div className="erp-flow-emailed is-unsent">
+      <span>Factura sin enviar al cliente</span>
+      <button
+        type="button"
+        className="button small secondary"
+        disabled={emailBusy}
+        onClick={() => void onSend()}
+      >
+        {emailBusy ? "Localizando…" : "Enviar factura al cliente"}
+      </button>
+    </div>
+  );
 }
 
 type Linea = OrderDetail["lines"][number];

@@ -44,6 +44,9 @@ export type WorkflowStep = {
   label: string;
   state: "done" | "now" | "pending" | "skipped";
   detail: string | null;
+  /** Hito OPCIONAL de la línea de vida (p. ej. «Factura enviada»): se enseña
+   *  pero NO cuenta para el «Paso N de N» ni bloquea el completado. */
+  optional?: boolean;
 };
 
 export type WorkflowCompany = {
@@ -139,6 +142,9 @@ export type OrderSummary = {
   /** Fase 2: nº del albarán FACTUSOL (`5-500008`) creado por BoHub al
    *  convertir la proforma / pedido de cliente. Los pedidos web no lo llevan. */
   factusol_albaran_number?: string | null;
+  /** Fecha (ISO) del último envío de la factura por email al cliente, o null si
+   *  nunca. Con factura + null = «Factura sin enviar»; sin factura = no aplica. */
+  invoice_emailed_at?: string | null;
   /** Rediseño de flujo: cola, siguiente acción y alertas (calculado). */
   workflow?: OrderWorkflow;
 };
@@ -352,6 +358,9 @@ export type OrderFilters = {
   placed_to?: string;
   /** Cobro FACTUSOL (estado contable): cobrada / pendiente / sin_comprobar. */
   cobro?: "cobrada" | "pendiente" | "sin_comprobar";
+  /** «Factura enviada» al cliente por email: enviada / no_enviada (con factura
+   *  pero sin enviar). Ausente = todas. */
+  invoice_email?: "enviada" | "no_enviada";
   /** Rediseño de flujo: cola de trabajo (la organización primaria de la
    *  bandeja). Los contadores llegan SIEMPRE completos, con filtro o sin él. */
   queue?: WorkflowQueue;
