@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import SatQueuePage from "./page";
 import type { SatHistoryRow, SatQueueItem } from "../../lib/erpApi";
 import {
+  bulkNoShipping,
   findSatOrderByNumber,
   getErpSettings,
   getSatHistory,
@@ -35,6 +36,7 @@ jest.mock("../../lib/erpApi", () => ({
   getErpSettings: jest.fn(),
   findSatOrderByNumber: jest.fn(),
   satEnqueueOrder: jest.fn(),
+  bulkNoShipping: jest.fn(),
   // Dependencias de las cards / filas (no se disparan en estos tests salvo
   // «Marcar recogido»).
   downloadOrderFactusolAlbaranPdf: jest.fn(),
@@ -61,6 +63,7 @@ const mockUser = getCurrentUser as jest.Mock;
 const mockPicked = markPickedUp as jest.Mock;
 const mockUpdateSeg = updateSeguimientoFields as jest.Mock;
 const mockUpload = uploadShippingFile as jest.Mock;
+const mockBulk = bulkNoShipping as jest.Mock;
 
 /** Pedido WEB en cola (Lote 2 A3): su albarán lo genera WooCommerce, aún sin
  *  descargar → el chip ofrece «Descargar albarán». */
@@ -123,6 +126,42 @@ beforeEach(() => {
                              albaran_file_source: "woo_pdf_plugin", has_etiqueta: true })],
   });
   mockHistory.mockResolvedValue({ items: [], limit: 100 });
+});
+
+describe("SatQueuePage · «No requiere envío» en lote", () => {
+  it("selecciona pedidos y los marca «No requiere envío» (con confirmación)", async () => {
+    mockBulk.mockResolvedValue({ ok: true, changed: 1, already: 0, value: true });
+    const user = userEvent.setup();
+    render(<SatQueuePage />);
+    await loaded();
+    // canEdit (pedidos) → casillas por card + barra de acción en lote.
+    await user.click(screen.getByRole("checkbox", { name: "Seleccionar BOP-1" }));
+    await user.click(screen.getByRole("button", { name: /Marcar «No requiere envío»/ }));
+    // Modal con el recuento.
+    const dialog = await screen.findByRole("dialog", { name: "Confirmar No requiere envío" });
+    expect(dialog).toHaveTextContent("1 pedido(s)");
+    await user.click(within(dialog).getByRole("button", { name: "Marcar" }));
+    await waitFor(() => expect(mockBulk).toHaveBeenCalledWith(["o1"], true));
+  });
+
+  it("la pestaña «No requieren envío» pide los marcados y permite desmarcar", async () => {
+    mockBulk.mockResolvedValue({ ok: true, changed: 1, already: 0, value: false });
+    const user = userEvent.setup();
+    render(<SatQueuePage />);
+    await loaded();
+    // Al abrir la pestaña, se piden SOLO los marcados (no_shipping=true).
+    mockQueue.mockResolvedValue({
+      preparing: [item({ id: "o9", order_number: "BOP-9" })], ready_for_pickup: [],
+    });
+    await user.click(screen.getByRole("tab", { name: /No requieren envío/ }));
+    await waitFor(() =>
+      expect(mockQueue).toHaveBeenLastCalledWith({ no_shipping: true }));
+    await user.click(await screen.findByRole("checkbox", { name: "Seleccionar BOP-9" }));
+    await user.click(screen.getByRole("button", { name: /Volver a requerir envío/ }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Devolver" }));
+    await waitFor(() => expect(mockBulk).toHaveBeenCalledWith(["o9"], false));
+  });
 });
 
 describe("SatQueuePage (Lote B6)", () => {
@@ -247,10 +286,11 @@ describe("SatQueuePage (Lote B6)", () => {
     });
     render(<SatQueuePage />);
     await loaded();
-    // Cuatro pestañas; «Enviados» sin contador hasta que carga (perezoso).
+    // Pestañas; «No requieren envío» y «Enviados» sin contador hasta que
+    // cargan (perezosos).
     const tabs = screen.getAllByRole("tab");
     expect(tabs.map((t) => t.textContent?.trim())).toEqual(
-      ["Por embalar 1", "Listos 1", "Global 2", "Enviados"],
+      ["Por embalar 1", "Listos 1", "Global 2", "No requieren envío", "Enviados"],
     );
     expect(screen.getByRole("tab", { name: /Por embalar/ })).toHaveAttribute("aria-selected", "true");
     expect(mockHistory).not.toHaveBeenCalled();

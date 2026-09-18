@@ -31,6 +31,7 @@ import { getCurrentUser, type User } from "../../../lib/api";
 import { extractErrorMessage } from "../../../lib/errors";
 import { usePersistentState } from "../../../lib/usePersistentState";
 import {
+  bulkNoShipping,
   completeOrder,
   customerLabel,
   factusolSerieLabel,
@@ -244,6 +245,8 @@ function ErpOrderDetailScreen() {
   const [etiquetaSignal, setEtiquetaSignal] = useState(0);
   // «Marcar completado» (solo BoHub, reversible).
   const [completeBusy, setCompleteBusy] = useState(false);
+  // «No requiere envío» (SAT opcional): marca/desmarca por pedido.
+  const [noShipBusy, setNoShipBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   // Cobro manual (F-4-B desde la app): estado de cobro EN VIVO de la factura
   // del pedido (best-effort al cargar; el persistido viene en `order`) y el
@@ -359,6 +362,25 @@ function ErpOrderDetailScreen() {
       setError(extractErrorMessage(e, "No se pudo cambiar el estado de completado."));
     } finally {
       setCompleteBusy(false);
+    }
+  }
+
+  async function onToggleNoShipping() {
+    if (!order) return;
+    const value = !order.shipping_not_required;
+    setNoShipBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await bulkNoShipping([order.id], value);
+      setOrder({ ...order, shipping_not_required: value });
+      setNotice(value
+        ? "Marcado «No requiere envío»: sale de la Cola SAT (no afecta a factura ni cobro)."
+        : "Vuelve a requerir envío (a la Cola SAT según su preparación).");
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudo cambiar «No requiere envío»."));
+    } finally {
+      setNoShipBusy(false);
     }
   }
 
@@ -725,6 +747,24 @@ function ErpOrderDetailScreen() {
                       ))}
                     </select>
                   </label>
+                  {/* «No requiere envío» (SAT opcional): saca el pedido de la
+                      Cola SAT y de «Por enviar»; no toca factura ni cobro.
+                      Reversible. */}
+                  <button
+                    type="button"
+                    className="button small secondary"
+                    disabled={noShipBusy}
+                    title={order.shipping_not_required
+                      ? "Este pedido volverá a la Cola SAT según su preparación"
+                      : "Sácalo de la Cola SAT (servicios, RMA, etc.); no afecta a factura ni cobro"}
+                    onClick={() => void onToggleNoShipping()}
+                  >
+                    {noShipBusy
+                      ? "Guardando…"
+                      : order.shipping_not_required
+                        ? "Requiere envío (volver a SAT)"
+                        : "No requiere envío"}
+                  </button>
                   {/* ERP-F1 «Enviar factura por email» vive ahora en la cabecera
                       como «Enviar factura al cliente» (una sola acción, sin
                       duplicarla aquí). */}
@@ -979,6 +1019,12 @@ function ErpOrderDetailScreen() {
         defaultOpen={panelDefault("envio")}
         openSignal={albaranSignal + etiquetaSignal}
       >
+        {order.shipping_not_required ? (
+          <p className="erp-flow-emailed is-muted">
+            Este pedido no requiere envío: fuera de la Cola SAT. El envío es
+            opcional (puedes revertirlo desde «⋯ → Requiere envío»).
+          </p>
+        ) : null}
         <ShippingFilesSection
           orderId={order.id}
           isWooOrder={isWeb}

@@ -348,6 +348,15 @@ def _next_step(order: Order) -> tuple[str, str, str]:
     # procede, desde la sección «Envío y seguimiento» de la ficha), pero su
     # ausencia no impide completar.
     if not order.completed_at:
+        # «No requiere envío»: no cuenta como pendiente de envío, así que sale
+        # de la cola «Por enviar» y queda como listo (con el completado opcional
+        # a mano). El SAT ya era opcional; esto solo lo formaliza.
+        if getattr(order, "shipping_not_required", False):
+            return (
+                QUEUE_LISTO, "marcar_completado",
+                "Facturado y cobrado; este pedido no requiere envío. Márcalo "
+                "como completado cuando quieras.",
+            )
         return (
             QUEUE_POR_ENVIAR, "marcar_completado",
             "Facturado y cobrado: márcalo como completado. El envío al taller "

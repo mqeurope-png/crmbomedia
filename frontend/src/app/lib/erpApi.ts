@@ -139,6 +139,9 @@ export type OrderSummary = {
   cancelled_by_name?: string | null;
   /** Nombre de envío (dropshipping) del pedido manual; null = la empresa. */
   shipping_name?: string | null;
+  /** «No requiere envío» (SAT opcional): fuera de la Cola SAT y de «Por
+   *  enviar»; la casilla/hito de Envío pasa a «No aplica». Reversible. */
+  shipping_not_required?: boolean;
   /** Fase 2: nº del albarán FACTUSOL (`5-500008`) creado por BoHub al
    *  convertir la proforma / pedido de cliente. Los pedidos web no lo llevan. */
   factusol_albaran_number?: string | null;
@@ -1226,10 +1229,28 @@ export type SatQueueFilters = {
   store_slug?: string;
   estado?: SatQueueEstado;
   q?: string;
+  /** `true` = enseñar SOLO los pedidos marcados «No requiere envío» (para
+   *  revisarlos / desmarcar); por defecto quedan fuera de la cola. */
+  no_shipping?: boolean;
 };
 
 export async function getSatQueue(filters: SatQueueFilters = {}): Promise<SatQueue> {
-  return apiFetch<SatQueue>(`/api/erp/sat/queue${qs(filters)}`);
+  const { no_shipping, ...rest } = filters;
+  return apiFetch<SatQueue>(
+    `/api/erp/sat/queue${qs({ ...rest, no_shipping: no_shipping ? "true" : undefined })}`,
+  );
+}
+
+/** Marcar/desmarcar «No requiere envío» en lote desde la Cola SAT. `value=true`
+ *  marca (los saca de la cola); `value=false` desmarca (vuelven). Reversible;
+ *  no toca factura, cobro ni completado. */
+export async function bulkNoShipping(
+  orderIds: string[], value: boolean,
+): Promise<{ ok: boolean; changed: number; already: number; value: boolean }> {
+  return apiFetch(`/api/erp/sat/bulk-no-shipping`, {
+    method: "POST",
+    body: JSON.stringify({ order_ids: orderIds, value }),
+  });
 }
 
 /** Fila del historial de «enviados al taller»: un email al SAT

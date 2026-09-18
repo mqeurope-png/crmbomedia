@@ -10769,6 +10769,21 @@ tr.is-inactive {
 .sat-queue-head h1 { font-size: var(--fs-title); margin: 0; }
 .sat-empty { font-size: var(--fs-title); text-align: center; padding: 32px 0; color: var(--st-green-ink); }
 .sat-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+/* «No requiere envío» en lote: barra de acción + casillas por card/fila. */
+.sat-bulk-bar {
+  display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-3);
+  margin: var(--sp-2) 0; padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line); border-radius: var(--r-panel);
+  background: var(--color-bg-light);
+}
+.sat-bulk-all { display: inline-flex; align-items: center; gap: var(--sp-2); cursor: pointer; }
+.sat-bulk-bar .button { margin-left: auto; }
+.sat-select-item { display: flex; align-items: flex-start; gap: var(--sp-2); }
+.sat-select-item > .sat-select-body { flex: 1 1 auto; min-width: 0; }
+.sat-select-check { display: flex; align-items: center; padding-top: var(--sp-3); }
+.sat-select-check input { width: 20px; height: 20px; }
+.sat-td-select { width: 32px; text-align: center; }
+.sat-td-select input { width: 18px; height: 18px; }
 .sat-card { display: block; border: 2px solid var(--line); border-radius: var(--r-panel); padding: 16px; background: #fff; text-decoration: none; color: inherit; }
 .sat-card:active { transform: scale(0.99); }
 .sat-card-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
@@ -13936,6 +13951,19 @@ table.erp-doc-lines { width: 100%; table-layout: fixed; }
 .sat-shell:has(.sat-queue-wrap) { height: 100vh; height: 100dvh; }
 /* Móvil: la página (el <main>) scrollea como una sola columna. */
 .sat-main:has(.sat-queue-wrap) { min-height: 0; overflow-y: auto; }
+
+/* Modo trabajo (`/erp/sat/[id]`): la ficha del taller puede ser larga (muchas
+   líneas + fotos/documentos). Esta ruta es full-bleed (sin el scroll de
+   `.app-shell-content`) y el body es overflow:hidden, así que se le da scroll
+   propio a su <main> para llegar hasta el final en escritorio y en la tablet. */
+.sat-shell:has(.sat-work) { height: 100vh; height: 100dvh; }
+.sat-main:has(.sat-work) {
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+/* Cabecera del taller: los botones de volver conviven en una fila. */
+.sat-topbar-actions { display: inline-flex; align-items: center; gap: var(--sp-3); }
 
 @media (min-width: 768px) {
   /* Tablet/escritorio: cabecera, filtros, alta y pestañas quedan fijas y
