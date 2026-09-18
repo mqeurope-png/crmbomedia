@@ -8,6 +8,7 @@ import { SatReadyCard } from "../../components/erp/SatReadyCard";
 import { getCurrentUser } from "../../lib/api";
 import { extractErrorMessage } from "../../lib/errors";
 import {
+  bulkNoShipping,
   customerLabel,
   ERP_EDIT_ROLES,
   findSatOrderByNumber,
@@ -20,6 +21,7 @@ import {
   type SatQueue,
   type SatQueueEstado,
   type SatQueueFilters,
+  type SatQueueItem,
 } from "../../lib/erpApi";
 
 type View = "cards" | "list";
@@ -28,7 +30,7 @@ type View = "cards" | "list";
  *  plegable (email al SAT o aprobación), ahora al mismo nivel que las otras
  *  para que se vea a qué hora se envió cada pedido y quién.
  *  Lote 3: «Global» muestra «Por embalar» y «Listos» a la vez (50/50). */
-type Tab = "por_embalar" | "listos" | "global" | "enviados";
+type Tab = "por_embalar" | "listos" | "global" | "no_shipping" | "enviados";
 
 /** Preferencia de vista (tarjetas / lista) por dispositivo: la tablet del
  *  taller quiere tarjetas; el escritorio de oficina, lista. */
@@ -183,6 +185,101 @@ export default function SatQueuePage() {
     if (historyOpen) loadHistory();
   }, [load, loadHistory, historyOpen]);
 
+  // --- «No requiere envío»: vista de marcados (carga perezosa) ---------------
+  const noShipOpen = tab === "no_shipping";
+  const [noShip, setNoShip] = useState<SatQueueItem[]>([]);
+  const [noShipLoaded, setNoShipLoaded] = useState(false);
+  const [noShipLoading, setNoShipLoading] = useState(false);
+
+  const loadNoShip = useCallback(() => {
+    setNoShipLoading(true);
+    getSatQueue({ ...filters, no_shipping: true })
+      .then((r) => { setNoShip([...r.preparing, ...r.ready_for_pickup]); setNoShipLoaded(true); })
+      .catch((e) => setError(extractErrorMessage(e, "No se pudieron cargar los marcados.")))
+      .finally(() => setNoShipLoading(false));
+  }, [filters]);
+
+  useEffect(() => { if (noShipOpen) loadNoShip(); }, [noShipOpen, loadNoShip]);
+
+  // --- selección múltiple (marcar/desmarcar «No requiere envío» en lote) -----
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  /** Pedidos visibles y seleccionables de la pestaña actual. */
+  const visibleItems = useMemo<SatQueueItem[]>(() => {
+    if (tab === "no_shipping") return noShip;
+    if (tab === "listos") return queue.ready_for_pickup;
+    if (tab === "global") return [...queue.preparing, ...queue.ready_for_pickup];
+    if (tab === "por_embalar") return queue.preparing;
+    return [];
+  }, [tab, noShip, queue]);
+
+  // Cambiar de pestaña limpia la selección.
+  useEffect(() => { setSelected(new Set()); }, [tab]);
+
+  function toggleSel(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+  function toggleAllSel() {
+    setSelected((prev) =>
+      prev.size === visibleItems.length && visibleItems.length > 0
+        ? new Set()
+        : new Set(visibleItems.map((o) => o.id)),
+    );
+  }
+
+  // En las pestañas normales el lote MARCA «No requiere envío»; en la pestaña
+  // «No requieren envío», DESMARCA (vuelven a la Cola SAT).
+  const bulkValue = tab !== "no_shipping";
+  // Selección solo en las colas de una sección (no en «Global» ni «Enviados»).
+  const selectable = canEdit && (
+    tab === "por_embalar" || tab === "listos" || tab === "no_shipping"
+  );
+
+  async function applyBulk() {
+    if (selected.size === 0 || bulkBusy) return;
+    setBulkBusy(true);
+    setError(null);
+    try {
+      const r = await bulkNoShipping([...selected], bulkValue);
+      setNotice(
+        bulkValue
+          ? `${r.changed} pedido(s) marcados «No requiere envío».`
+          : `${r.changed} pedido(s) vuelven a requerir envío.`,
+      );
+      setSelected(new Set());
+      setConfirmOpen(false);
+      refreshAll();
+      if (noShipLoaded || noShipOpen) loadNoShip();
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudo aplicar el cambio."));
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  /** Envuelve una card con su casilla de selección (solo si `selectable`). */
+  function withSelect(o: SatQueueItem, card: React.ReactNode): React.ReactNode {
+    if (!selectable) return card;
+    return (
+      <div key={o.id} className="sat-select-item">
+        <label className="sat-select-check">
+          <input
+            type="checkbox" aria-label={`Seleccionar ${o.order_number}`}
+            checked={selected.has(o.id)} onChange={() => toggleSel(o.id)}
+          />
+        </label>
+        <div className="sat-select-body">{card}</div>
+      </div>
+    );
+  }
+
   // --- añadir a mano ---------------------------------------------------------
   const [addNumber, setAddNumber] = useState("");
   const [addBusy, setAddBusy] = useState(false);
@@ -223,6 +320,8 @@ export default function SatQueuePage() {
     { key: "por_embalar", label: "Por embalar", count: preparing.length },
     { key: "listos", label: "Listos", count: ready.length },
     { key: "global", label: "Global", count: preparing.length + ready.length },
+    { key: "no_shipping", label: "No requieren envío",
+      count: noShipLoaded ? noShip.length : null },
     { key: "enviados", label: "Enviados", count: historyLoaded ? history.length : null },
   ];
 
@@ -330,6 +429,29 @@ export default function SatQueuePage() {
         ))}
       </div>
 
+      {/* Barra de acción en lote «No requiere envío» (marcar / desmarcar). */}
+      {selectable && visibleItems.length > 0 ? (
+        <div className="sat-bulk-bar" role="group" aria-label="Acciones en lote">
+          <label className="sat-bulk-all">
+            <input
+              type="checkbox" aria-label="Seleccionar todo"
+              checked={selected.size === visibleItems.length && visibleItems.length > 0}
+              onChange={toggleAllSel}
+            />
+            <span className="small">Seleccionar todo</span>
+          </label>
+          <span className="small muted">{selected.size} seleccionado(s)</span>
+          <button
+            type="button" className="button small"
+            disabled={selected.size === 0}
+            onClick={() => setConfirmOpen(true)}
+          >
+            {bulkValue ? "Marcar «No requiere envío»" : "Volver a requerir envío"}
+          </button>
+        </div>
+      ) : null}
+      {notice ? <p className="form-info small" role="status">{notice}</p> : null}
+
       {tab === "por_embalar" ? (
         <section
           className="sat-section" role="tabpanel" id="sat-panel-por_embalar"
@@ -343,12 +465,13 @@ export default function SatQueuePage() {
               <p className="sat-empty">{hasFilters ? "Nada por embalar con estos filtros." : "Nada por embalar."}</p>
             ) : view === "list" ? (
               <SatQueueTable items={preparing} variant="preparing" onChanged={refreshAll}
-                             ariaLabel="Pedidos por embalar" />
+                             ariaLabel="Pedidos por embalar"
+                             selectable={selectable} selected={selected} onToggle={toggleSel} />
             ) : (
               <div className="sat-cards">
-                {preparing.map((o) => (
+                {preparing.map((o) => withSelect(o,
                   <SatPreparingCard key={o.id} order={o} onChanged={refreshAll}
-                                    canEdit={canEdit} />
+                                    canEdit={canEdit} />,
                 ))}
               </div>
             )}
@@ -366,12 +489,13 @@ export default function SatQueuePage() {
               <p className="sat-empty">{hasFilters ? "Nada listo para enviar con estos filtros." : "Nada listo para enviar."}</p>
             ) : view === "list" ? (
               <SatQueueTable items={ready} variant="ready" onChanged={refreshAll}
-                             ariaLabel="Pedidos listos para envío" />
+                             ariaLabel="Pedidos listos para envío"
+                             selectable={selectable} selected={selected} onToggle={toggleSel} />
             ) : (
               <div className="sat-cards">
-                {ready.map((o) => (
+                {ready.map((o) => withSelect(o,
                   <SatReadyCard key={o.id} order={o} onChanged={refreshAll}
-                                canEdit={canEdit} />
+                                canEdit={canEdit} />,
                 ))}
               </div>
             )}
@@ -429,6 +553,39 @@ export default function SatQueuePage() {
                 )}
               </div>
             </div>
+          </div>
+        </section>
+      ) : null}
+
+      {tab === "no_shipping" ? (
+        <section
+          className="sat-section" role="tabpanel" id="sat-panel-no_shipping"
+          aria-label="No requieren envío"
+        >
+          <p className="muted small sat-history-hint">
+            Pedidos marcados «No requiere envío»: fuera de la Cola SAT y de «Por
+            enviar». Selecciónalos para devolverlos al taller. No afecta a la
+            factura ni al cobro.
+          </p>
+          <div className="sat-scroll">
+            {noShipLoading && noShip.length === 0 ? (
+              <p className="muted">Cargando…</p>
+            ) : noShip.length === 0 ? (
+              <p className="sat-empty">
+                {hasFilters ? "Ninguno con estos filtros." : "Ningún pedido marcado «No requiere envío»."}
+              </p>
+            ) : view === "list" ? (
+              <SatQueueTable items={noShip} variant="preparing" onChanged={refreshAll}
+                             ariaLabel="Pedidos que no requieren envío"
+                             selectable={selectable} selected={selected} onToggle={toggleSel} />
+            ) : (
+              <div className="sat-cards">
+                {noShip.map((o) => withSelect(o,
+                  <SatPreparingCard key={o.id} order={o} onChanged={refreshAll}
+                                    canEdit={canEdit} />,
+                ))}
+              </div>
+            )}
           </div>
         </section>
       ) : null}
@@ -497,6 +654,32 @@ export default function SatQueuePage() {
           )}
           </div>
         </section>
+      ) : null}
+
+      {confirmOpen ? (
+        <div className="modal-overlay" role="dialog" aria-modal="true"
+             aria-label="Confirmar No requiere envío">
+          <div className="modal-dialog erp-modal">
+            <h2>{bulkValue ? "Marcar «No requiere envío»" : "Volver a requerir envío"}</h2>
+            <p>
+              {bulkValue
+                ? `Vas a marcar ${selected.size} pedido(s) como «No requiere envío». `
+                  + "Saldrán de la Cola SAT. No afecta a la factura ni al cobro. Es reversible."
+                : `Vas a devolver ${selected.size} pedido(s) al taller: volverán a `
+                  + "requerir envío según su estado de preparación."}
+            </p>
+            <div className="modal-actions">
+              <button type="button" className="button secondary" disabled={bulkBusy}
+                      onClick={() => setConfirmOpen(false)}>
+                Cancelar
+              </button>
+              <button type="button" className="button" disabled={bulkBusy}
+                      onClick={() => void applyBulk()}>
+                {bulkBusy ? "Aplicando…" : bulkValue ? "Marcar" : "Devolver"}
+              </button>
+            </div>
+          </div>
+        </div>
       ) : null}
     </div>
   );

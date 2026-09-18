@@ -402,3 +402,20 @@ def test_bandeja_filtro_factura_enviada(session_factory, http) -> None:
     # Sin filtro: todos; C (sin factura) no sale en ninguno de los dos.
     todos = http.get("/api/erp/orders", headers=h).json()
     assert {"ARTISJ-A", "ARTISJ-B", "ARTISJ-C"} <= {i["order_number"] for i in todos["items"]}
+
+
+def test_workflow_no_requiere_envio_fuera_de_por_enviar(session_factory) -> None:
+    """Un pedido facturado + cobrado marcado «No requiere envío» NO cae en la
+    cola «Por enviar»: queda «Listo» (con el completado opcional a mano)."""
+    with session_factory() as s:
+        _order(s, oid="ns", number="ARTISJ-NS", payment_status="paid",
+               preparation_status="in_queue", approved_at=datetime.now(UTC),
+               invoice_status="invoiced_by_erp", factusol_invoice_number="260201",
+               factusol_cobro_status="cobrada")
+    # Sin marcar: cae en «Por enviar».
+    assert _wf(session_factory, "ns")["queue"] == "por_enviar"
+    with session_factory() as s:
+        s.get(Order, "ns").shipping_not_required = True
+        s.commit()
+    wf = _wf(session_factory, "ns")
+    assert wf["queue"] == "listo" and wf["next_action"] == "marcar_completado"

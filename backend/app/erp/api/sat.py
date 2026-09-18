@@ -290,6 +290,9 @@ def sat_queue(
     store_slug: str | None = Query(default=None, max_length=64),
     estado: str | None = Query(default=None, pattern=_ESTADO_PATTERN),
     q: str | None = Query(default=None, max_length=120),
+    # «No requiere envío»: por defecto (False) se EXCLUYEN del taller; con True
+    # se enseñan SOLO ellos (vista «No requieren envío» para revisar / desmarcar).
+    no_shipping: bool = Query(default=False),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_view),
 ) -> dict[str, Any]:
@@ -315,11 +318,16 @@ def sat_queue(
 
     # Control manual (#388 + bandeja): los quitados a mano tampoco entran en el
     # taller (mismo flag que la bandeja y el seguimiento).
+    # «No requiere envío»: por defecto FUERA del taller; con `no_shipping=True`,
+    # SOLO ellos (para revisarlos / desmarcar en lote).
+    ship_flag = Order.shipping_not_required.is_(no_shipping)
     prep_rows: list[Order] = []
     if prep_statuses:
         prep_rows = list(session.scalars(
             _apply_filters(worklist_visible(
-                select(Order).where(Order.preparation_status.in_(list(prep_statuses)))
+                select(Order).where(
+                    Order.preparation_status.in_(list(prep_statuses)), ship_flag,
+                )
             ), **filters).options(selectinload(Order.lines))
         ))
         prep_rows.sort(key=lambda o: (
@@ -332,6 +340,7 @@ def sat_queue(
             _apply_filters(worklist_visible(select(Order).where(
                 Order.preparation_status == PreparationStatus.PACKED.value,
                 Order.transport_status.notin_(_SHIPPED_TRANSPORT),
+                ship_flag,
             )), **filters).options(selectinload(Order.lines))
             .order_by(Order.placed_at.asc())
         ))
@@ -405,6 +414,55 @@ def sat_queue(
         "preparing": [_item(o) for o in prep_rows],
         "ready_for_pickup": [_item(o) for o in ready_rows],
     }
+
+
+# --- «No requiere envío» en lote ---------------------------------------------
+
+
+class BulkNoShippingIn(BaseModel):
+    """Marcar/desmarcar «No requiere envío» en lote. `value=True` marca (saca de
+    la Cola SAT), `value=False` desmarca (vuelve)."""
+
+    order_ids: list[str] = Field(min_length=1, max_length=500)
+    value: bool = True
+
+
+@router.post("/sat/bulk-no-shipping")
+def bulk_no_shipping(
+    payload: BulkNoShippingIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """Marca (o desmarca) «No requiere envío» en varios pedidos a la vez desde la
+    Cola SAT. Marcar los saca de la Cola SAT y de la cola «Por enviar»; NO toca
+    pago, factura, cobro ni el «completado». Idempotente y reversible. Deja
+    constancia en el audit log con los pedidos afectados."""
+    from app.core.audit import record_event  # noqa: PLC0415
+
+    changed: list[str] = []
+    already = 0
+    for order in session.scalars(
+        select(Order).where(Order.id.in_(payload.order_ids))
+    ):
+        if bool(order.shipping_not_required) == payload.value:
+            already += 1
+            continue
+        order.shipping_not_required = payload.value
+        changed.append(order.order_number)
+    if changed:
+        record_event(
+            session,
+            action="erp.sat_no_shipping" if payload.value else "erp.sat_requires_shipping",
+            target_type="order", target_id=None, actor=current_user,
+            metadata={"order_ids": payload.order_ids, "value": payload.value,
+                      "order_numbers": changed},
+            message=(
+                f"«No requiere envío» {'marcado' if payload.value else 'desmarcado'} "
+                f"en {len(changed)} pedido(s)"
+            ),
+        )
+    session.commit()
+    return {"ok": True, "changed": len(changed), "already": already, "value": payload.value}
 
 
 # --- historial de enviados al taller -----------------------------------------

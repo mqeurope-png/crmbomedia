@@ -40,13 +40,35 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
+/** Casilla de selección de una fila (solo cuando la cola es seleccionable,
+ *  para marcar «No requiere envío» en lote). */
+type SelectProps = {
+  selectable?: boolean;
+  selected?: boolean;
+  onToggle?: (id: string) => void;
+};
+
+function SelectCell({ order, selectable, selected, onToggle }: { order: SatQueueItem } & SelectProps) {
+  if (!selectable) return null;
+  return (
+    <td className="sat-td-select">
+      <input
+        type="checkbox"
+        aria-label={`Seleccionar ${order.order_number}`}
+        checked={!!selected}
+        onChange={() => onToggle?.(order.id)}
+      />
+    </td>
+  );
+}
+
 /** Lote 2 · PR-2: las observaciones del comercial van ENCIMA de la fila, en
  *  ámbar y a todo el ancho — solo si hay nota. */
-function NotesRow({ order }: { order: SatQueueItem }) {
+function NotesRow({ order, cols }: { order: SatQueueItem; cols: number }) {
   if (!(order.notes ?? "").trim()) return null;
   return (
     <tr className="sat-row-notes">
-      <td colSpan={COLS}><SatObservaciones notes={order.notes} /></td>
+      <td colSpan={cols}><SatObservaciones notes={order.notes} /></td>
     </tr>
   );
 }
@@ -76,12 +98,16 @@ function TechCell({ order }: { order: SatQueueItem }) {
 
 /** Fila de «Por embalar»: mismas acciones que la card (abrir modo trabajo +
  *  albarán sin salir de la lista). */
-function SatPreparingRow({ order, onChanged }: { order: SatQueueItem; onChanged: () => void }) {
+function SatPreparingRow(
+  { order, onChanged, cols, ...sel }:
+  { order: SatQueueItem; onChanged: () => void; cols: number } & SelectProps,
+) {
   const albaran = useSatAlbaranAction(order, onChanged);
   return (
     <>
-      <NotesRow order={order} />
+      <NotesRow order={order} cols={cols} />
       <tr>
+        <SelectCell order={order} {...sel} />
         <td className="sat-td-num">
           <Link href={`/erp/sat/${order.id}`}>{order.order_number}</Link>
           {order.payment_status !== "paid" ? (
@@ -102,7 +128,7 @@ function SatPreparingRow({ order, onChanged }: { order: SatQueueItem; onChanged:
       </tr>
       {albaran.error ? (
         <tr className="sat-row-error">
-          <td colSpan={COLS}>
+          <td colSpan={cols}>
             <p className="form-error small" role="status">
               {albaran.error}{" "}
               <Link href={`/erp/orders/${order.id}`}>Ir a la ficha</Link>
@@ -116,12 +142,16 @@ function SatPreparingRow({ order, onChanged }: { order: SatQueueItem; onChanged:
 
 /** Fila de «Listos para envío»: imprimir albarán/etiqueta, marcar recogido
  *  (con confirmación) y reabrir — los mismos handlers que la card. */
-function SatReadyRow({ order, onChanged }: { order: SatQueueItem; onChanged: () => void }) {
+function SatReadyRow(
+  { order, onChanged, cols, ...sel }:
+  { order: SatQueueItem; onChanged: () => void; cols: number } & SelectProps,
+) {
   const actions = useSatReadyActions(order, onChanged);
   return (
     <>
-      <NotesRow order={order} />
+      <NotesRow order={order} cols={cols} />
       <tr>
+        <SelectCell order={order} {...sel} />
         <td className="sat-td-num">
           <Link href={`/erp/orders/${order.id}`}>{order.order_number}</Link>
           <span className="muted small sat-row-total">
@@ -143,7 +173,7 @@ function SatReadyRow({ order, onChanged }: { order: SatQueueItem; onChanged: () 
       </tr>
       {actions.error ? (
         <tr className="sat-row-error">
-          <td colSpan={COLS}><p className="form-error small" role="status">{actions.error}</p></td>
+          <td colSpan={cols}><p className="form-error small" role="status">{actions.error}</p></td>
         </tr>
       ) : null}
     </>
@@ -159,17 +189,27 @@ export function SatQueueTable({
   variant,
   onChanged,
   ariaLabel,
+  selectable = false,
+  selected,
+  onToggle,
 }: {
   items: SatQueueItem[];
   variant: "preparing" | "ready";
   onChanged: () => void;
   ariaLabel: string;
+  /** Selección múltiple (para «No requiere envío» en lote). */
+  selectable?: boolean;
+  selected?: Set<string>;
+  onToggle?: (id: string) => void;
 }) {
+  const cols = selectable ? COLS + 1 : COLS;
+  const sel = { selectable, onToggle };
   return (
     <div className="sat-table-wrap">
       <table className="sat-table" aria-label={ariaLabel}>
         <thead>
           <tr>
+            {selectable ? <th className="sat-td-select" aria-label="Selección" /> : null}
             <th>Nº</th>
             <th>Cliente</th>
             <th>Tienda</th>
@@ -180,9 +220,11 @@ export function SatQueueTable({
         </thead>
         <tbody>
           {items.map((o) => variant === "preparing" ? (
-            <SatPreparingRow key={o.id} order={o} onChanged={onChanged} />
+            <SatPreparingRow key={o.id} order={o} onChanged={onChanged} cols={cols}
+                             selected={selected?.has(o.id)} {...sel} />
           ) : (
-            <SatReadyRow key={o.id} order={o} onChanged={onChanged} />
+            <SatReadyRow key={o.id} order={o} onChanged={onChanged} cols={cols}
+                         selected={selected?.has(o.id)} {...sel} />
           ))}
         </tbody>
       </table>

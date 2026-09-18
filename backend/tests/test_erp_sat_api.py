@@ -567,3 +567,67 @@ def test_local_storage_writes_file(tmp_path):
     assert doc.backend == "local"
     assert "evil_name.png" in doc.filename  # nombre saneado
     assert (tmp_path / doc.storage_key).read_bytes() == b"data"
+
+
+# --- «No requiere envío» en lote --------------------------------------------
+
+
+def test_bulk_no_shipping_saca_de_la_cola_y_es_reversible(client, session_factory):
+    with session_factory() as s:
+        a = _mk_order(s, number="NS-A", prep="in_queue")
+        b = _mk_order(s, number="NS-B", prep="packed")  # iría a «listos»
+    h = auth_headers(client, "pedidos")
+    # Marcar en lote → salen de la Cola SAT.
+    r = client.post("/api/erp/sat/bulk-no-shipping",
+                    json={"order_ids": [a, b], "value": True}, headers=h)
+    assert r.status_code == 200 and r.json()["changed"] == 2
+    body = client.get("/api/erp/sat/queue", headers=h).json()
+    nums = {o["order_number"] for o in body["preparing"] + body["ready_for_pickup"]}
+    assert "NS-A" not in nums and "NS-B" not in nums
+    # La vista «No requieren envío» (no_shipping=true) los enseña.
+    marked = client.get("/api/erp/sat/queue?no_shipping=true", headers=h).json()
+    mnums = {o["order_number"] for o in marked["preparing"] + marked["ready_for_pickup"]}
+    assert mnums == {"NS-A", "NS-B"}
+    # Auditoría: evento con los order_ids afectados.
+    with session_factory() as s:
+        logs = s.scalars(
+            select(AuditLog).where(AuditLog.action == "erp.sat_no_shipping")
+        ).all()
+        assert logs and json.loads(logs[0].metadata_json)["order_ids"] == [a, b]
+    # Desmarcar en lote → vuelven a la Cola SAT.
+    r = client.post("/api/erp/sat/bulk-no-shipping",
+                    json={"order_ids": [a, b], "value": False}, headers=h)
+    assert r.status_code == 200 and r.json()["changed"] == 2
+    body = client.get("/api/erp/sat/queue", headers=h).json()
+    nums = {o["order_number"] for o in body["preparing"] + body["ready_for_pickup"]}
+    assert "NS-A" in nums and "NS-B" in nums
+
+
+def test_bulk_no_shipping_requires_edit(client, session_factory):
+    with session_factory() as s:
+        a = _mk_order(s, number="NS-C")
+    # `viewer` es solo lectura: no puede marcar.
+    r = client.post("/api/erp/sat/bulk-no-shipping",
+                    json={"order_ids": [a], "value": True},
+                    headers=auth_headers(client, "viewer"))
+    assert r.status_code == 403
+
+
+def test_bulk_no_shipping_no_toca_factura_ni_completado(client, session_factory):
+    with session_factory() as s:
+        a = _mk_order(s, number="NS-D", prep="packed")
+        o = s.get(Order, a)
+        o.invoice_status = "invoiced_by_erp"
+        o.factusol_invoice_number = "260200"
+        o.factusol_cobro_status = "cobrada"
+        s.commit()
+    h = auth_headers(client, "pedidos")
+    client.post("/api/erp/sat/bulk-no-shipping",
+                json={"order_ids": [a], "value": True}, headers=h)
+    with session_factory() as s:
+        o = s.get(Order, a)
+        assert o.shipping_not_required is True
+        # Factura / cobro / completado intactos.
+        assert o.factusol_invoice_number == "260200"
+        assert o.factusol_cobro_status == "cobrada"
+        assert o.completed_at is None

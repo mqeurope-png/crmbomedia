@@ -369,11 +369,21 @@ es una ventana a FACTUSOL: aquí no se cambia nada salvo las acciones concretas
 lo que hay que preparar y enviar.
 
 **Vistas (pestañas):** **«Por embalar»**, **«Listos»**, **«Global»** (las dos
-juntas) y **«Enviados»** (historial de lo ya mandado al taller). Vista
-**«Tarjetas»** / **«Lista»**.
+juntas), **«No requieren envío»** (los marcados como que no se envían) y
+**«Enviados»** (historial de lo ya mandado al taller). Vista **«Tarjetas»** /
+**«Lista»**.
 **Filtros:** buscador (*«Nº de pedido o cliente…»*), **«Desde»**/**«Hasta»**,
 **«Tienda»** y **«Estado»** (*Todos / Por embalar / Bloqueados / En cola /
 Preparando / Listos*), con **«Limpiar filtros»**.
+
+**«No requiere envío» (en lote).** Hay pedidos que no se envían nunca
+(servicios, RMA, asistencias remotas, tintas ya entregadas…). En **«Por embalar»**
+o **«Listos»**, marca sus casillas (o **«Seleccionar todo»**) y pulsa **«Marcar
+“No requiere envío”»**; tras confirmar, **salen de la Cola SAT** (y de la cola
+«Por enviar» de la bandeja) y su casilla/hito de **Envío** pasa a **«No aplica»**.
+**No toca la factura ni el cobro** y es **reversible**: en la pestaña **«No
+requieren envío»** puedes seleccionarlos y **«Volver a requerir envío»** (vuelven
+al taller). También por pedido, desde el menú **«⋯»** de la ficha.
 
 En cada tarjeta:
 

@@ -275,6 +275,16 @@ class Order(TimestampMixin, Base):
     # (`shipping_address`); aquí solo el nombre. NULL = enviar a la empresa.
     shipping_name: Mapped[str | None] = mapped_column(String(120))
 
+    # «No requiere envío» (decisión de Bart): el SAT es OPCIONAL y hay pedidos
+    # que no se envían nunca (servicios, RMA, asistencias remotas, tintas ya
+    # entregadas…). Marcado (a mano o en lote desde la Cola SAT) saca el pedido
+    # de la Cola SAT y de la cola «Por enviar», y su casilla/hito de Envío pasa
+    # a «No aplica» (gris). NO toca pago, factura, cobro ni el «completado».
+    # Reversible (desmarcar → vuelve a la Cola SAT según su preparación).
+    shipping_not_required: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("0"),
+    )
+
     # E4-fix1: idioma del pedido (ISO 639-1: es/en/de/fr/nl), detectado en la
     # importación Woo (WPML/locale/país) o corregido a mano en la ficha.
     # NULL = desconocido — la cascada de idioma del PDF cae al cliente o a la

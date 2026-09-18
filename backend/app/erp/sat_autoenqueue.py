@@ -62,6 +62,7 @@ def enqueue_paid_order(
       - no anulado (`cancelled_at is None`);
       - no completado (`completed_at is None`);
       - no quitado a mano (`seguimiento_excluded_at is None`);
+      - no marcado «No requiere envío» (`shipping_not_required` False);
       - preparación == `pending_review` — SOLO se promueve desde la pre-cola;
         nunca toca in_queue / preparing / packed / blocked / externalizado, con
         lo que es idempotente y respeta las salidas ya existentes.
@@ -75,6 +76,9 @@ def enqueue_paid_order(
     if order.completed_at is not None:
         return False
     if order.seguimiento_excluded_at is not None:
+        return False
+    if getattr(order, "shipping_not_required", False):
+        # «No requiere envío»: nunca entra (ni vuelve a entrar) a la Cola SAT.
         return False
     if _value(order.preparation_status) != PreparationStatus.PENDING_REVIEW.value:
         return False

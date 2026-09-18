@@ -330,6 +330,9 @@ def _serialise_summary(
         "cancelled_by_name": names.get("cancelled_by_name"),
         # Nombre de envío (dropshipping) del pedido manual; null = la empresa.
         "shipping_name": o.shipping_name,
+        # «No requiere envío» (SAT opcional): fuera de la Cola SAT y de «Por
+        # enviar»; la casilla/hito de Envío pasa a «No aplica». Reversible.
+        "shipping_not_required": bool(o.shipping_not_required),
     }
 
 
