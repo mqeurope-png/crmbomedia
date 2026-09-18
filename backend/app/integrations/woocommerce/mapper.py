@@ -344,6 +344,18 @@ def _refresh_existing(
     new_woo_status = _woo_status(woo)
     if new_woo_status is not None:
         order.woo_status = new_woo_status
+    # Parte A: un pedido web que pasa a `refunded` (reembolso TOTAL) o
+    # `cancelled` en WooCommerce se AUTO-ANULA en BoHub (sale de «por facturar»
+    # y demás colas). Idempotente; no toca un pedido ya anulado ni ya facturado.
+    # El reembolso PARCIAL deja el estado en `processing`, así que no entra aquí.
+    from app.erp.order_cancel import (  # noqa: PLC0415
+        WOO_AUTOCANCEL_STATUSES,
+        autocancel_web_order,
+    )
+
+    if (new_woo_status or "") in WOO_AUTOCANCEL_STATUSES:
+        autocancel_web_order(session, order)
+        return   # anulado: no promociona pagos ni cola SAT
     # Detección de pago: si Woo ya tiene date_paid y el ERP seguía pending
     # → promociona a paid (el estado avanzará en la máquina en su momento).
     new_payment = _payment_status(woo)

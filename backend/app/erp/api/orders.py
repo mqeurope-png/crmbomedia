@@ -1799,7 +1799,7 @@ def _factusol_docs_for_cancel_safe(
     try:
         client = FactusolClient.from_settings()
         ejercicio = ejercicio_for(session)
-        return factusol_docs_for_cancel(client, order, ejercicio=ejercicio), ejercicio
+        return factusol_docs_for_cancel(session, client, order, ejercicio=ejercicio), ejercicio
     except Exception as exc:  # noqa: BLE001 — sin credenciales / caído
         warnings.append(
             f"No se pudo consultar FACTUSOL ({str(exc)[:120]}): no se borrará "
@@ -1817,7 +1817,10 @@ def cancel_order_preview(
     """Aviso previo a «Anular»: si se puede (pedido web o con factura → no),
     y qué documentos FACTUSOL tiene el pedido y cuáles se podrían borrar
     (albarán no facturado, presupuesto pendiente). No cambia nada."""
-    from app.erp.order_cancel import cancel_blockers  # noqa: PLC0415
+    from app.erp.order_cancel import (  # noqa: PLC0415
+        cancel_blockers,
+        factusol_manual_invoice_warning,
+    )
 
     _ = current_user
     order = _get_order(session, order_id)
@@ -1825,6 +1828,9 @@ def cancel_order_preview(
     warnings: list[str] = []
     if order.cancelled_at is not None:
         warnings.append("El pedido ya está anulado.")
+    invoice_warning = factusol_manual_invoice_warning(order)
+    if invoice_warning and not blockers:
+        warnings.append(invoice_warning)
     docs: list[dict[str, Any]] = []
     if not blockers:
         docs, _ejercicio = _factusol_docs_for_cancel_safe(session, order, warnings)
@@ -1852,6 +1858,8 @@ def cancel_order(
     from app.erp.order_cancel import (  # noqa: PLC0415
         CANCELLED_EVENT,
         cancel_blockers,
+        factusol_manual_invoice_warning,
+        is_invoiced_order,
         mark_cancelled,
     )
 
@@ -1876,9 +1884,15 @@ def cancel_order(
         )
         session.commit()
     warnings: list[str] = []
+    invoice_warning = factusol_manual_invoice_warning(order)
+    if invoice_warning:
+        warnings.append(invoice_warning)
     job_id: str | None = None
     to_delete: list[dict[str, Any]] = []
-    if payload.delete_factusol_docs:
+    # Un pedido con factura no borra nada en FACTUSOL (solo se avisa): la
+    # factura se anula/abona a mano. Los docs borrables ya salen vacíos porque
+    # el F_PCL con factura no es `deletable`, pero cortamos aquí por claridad.
+    if payload.delete_factusol_docs and not is_invoiced_order(order):
         docs, ejercicio = _factusol_docs_for_cancel_safe(session, order, warnings)
         to_delete = [d for d in docs if d.get("deletable")]
         if to_delete and ejercicio:

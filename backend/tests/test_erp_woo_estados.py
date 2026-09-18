@@ -355,3 +355,45 @@ def test_woo_status_is_separate_from_manual_exclusion(session_factory, http) -> 
         # Excluido a mano → fuera; y aparece en «excluidos», no en «ocultos».
         assert _numbers(_rows_for(s, ver_excluidos=True)) == {"BOPRIN-1401"}
         assert "BOPRIN-1401" not in _numbers(_rows_for(s, ver_ocultos_estado=True))
+
+
+# --- Parte A: auto-anular en la ingesta al reembolsar/cancelar ---------------
+
+
+def _woo_payload(store, *, woo_id: int, number: str, status: str) -> dict:
+    return {"id": woo_id, "number": number, "status": status, "total": "10",
+            "currency": "EUR", "date_created": "2026-09-01T00:00:00Z",
+            "billing": {"email": "a@b.com"}, "line_items": [], "meta_data": [],
+            "_store_slug": store.account_id}
+
+
+def test_import_refunded_autocancels_web_order(session_factory) -> None:
+    """Un pedido web que pasa a `refunded` en Woo se auto-anula en BoHub y sale
+    de las colas; el borrado del F_PCL se encola en factusol:writes."""
+    with patch(
+        "app.integrations.factusol.jobs.enqueue_autocancel_order_documents",
+        return_value="job-x",
+    ) as enq, session_factory() as s:
+        st = _store(s)
+        p = _woo_payload(st, woo_id=950, number="BOPRIN-950", status="processing")
+        import_woo_order(s, store=st, woo_order=p)
+        s.commit()
+        import_woo_order(s, store=st, woo_order={**p, "status": "refunded"})
+        s.commit()
+        o = s.scalar(select(Order).where(Order.external_id == "950"))
+        assert o.cancelled_at is not None
+        assert o.woo_status == "refunded"
+    enq.assert_called_once()
+
+
+def test_import_still_processing_does_not_autocancel(session_factory) -> None:
+    """Un reembolso PARCIAL deja el pedido en `processing`: NO se auto-anula."""
+    with session_factory() as s:
+        st = _store(s)
+        p = _woo_payload(st, woo_id=951, number="BOPRIN-951", status="processing")
+        import_woo_order(s, store=st, woo_order=p)
+        s.commit()
+        import_woo_order(s, store=st, woo_order={**p, "total": "8"})  # sigue processing
+        s.commit()
+        o = s.scalar(select(Order).where(Order.external_id == "951"))
+        assert o.cancelled_at is None

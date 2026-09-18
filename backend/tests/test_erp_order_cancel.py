@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -20,7 +20,7 @@ from app.db.base import Base
 from app.db.session import get_session
 from app.erp.models import Order, OrderSource
 from app.main import app
-from app.models.crm import Company
+from app.models.crm import AuditLog, Company
 from tests._test_helpers import auth_headers, seed_test_users
 from tests.test_factusol_documents import FakeClient
 
@@ -148,7 +148,10 @@ def test_cancel_preview_marks_invoiced_albaran_not_deletable(http, session_facto
     assert docs2["presupuestos"]["deletable"] is False
 
 
-def test_cancel_web_or_invoiced_is_blocked(http, session_factory) -> None:
+def test_cancel_web_now_allowed_manual_invoiced_still_blocked(http, session_factory) -> None:
+    """Parte A: un pedido WEB ya se puede anular desde BoHub (antes se
+    bloqueaba y se quedaba atascado en «por facturar»). Un pedido MANUAL con
+    factura sigue bloqueado (la factura se anula primero en FACTUSOL)."""
     with session_factory() as s:
         web = _seed_order(s, source=OrderSource.WOOCOMMERCE, with_docs=False)
         web.order_number = "FLUXLA-1"
@@ -159,9 +162,11 @@ def test_cancel_web_or_invoiced_is_blocked(http, session_factory) -> None:
         s.add(inv)
         s.commit()
         inv_id = inv.id
-    pre = http.post(f"/api/erp/orders/{web_id}/cancel-preview",
-                    headers=auth_headers(http, "pedidos")).json()
-    assert pre["can_cancel"] is False and any("web" in b for b in pre["blockers"])
+    with _patched({"F_PCL": [], "F_FAC": [], "F_ALB": []}):
+        pre = http.post(f"/api/erp/orders/{web_id}/cancel-preview",
+                        headers=auth_headers(http, "pedidos")).json()
+    assert pre["can_cancel"] is True
+    assert not any("web" in b.lower() for b in pre["blockers"])
     r = http.post(f"/api/erp/orders/{inv_id}/cancel", json={"confirm": True},
                   headers=auth_headers(http, "pedidos"))
     assert r.status_code == 409
@@ -279,3 +284,106 @@ def test_delete_cancelled_order_documents_skips_invoiced_albaran(session_factory
         assert client.deletes == []
         s.refresh(order)
         assert order.factusol_albaran_number == "5-500010"  # sigue vinculado
+
+
+# --- Parte A: anular pedidos web (F_PCL + auto por reembolso) ----------------
+
+
+def _pcl(*, ref: str = "FLU-000001", serie: str = "5", codigo: int = 7001,
+         estpcl: int = 0) -> dict[str, Any]:
+    return {"TIPPCL": serie, "CODPCL": codigo, "ESTPCL": estpcl, "REFPCL": ref,
+            "CLIPCL": 3001, "CNOPCL": "Escola"}
+
+
+def test_cancel_web_deletes_pcl_when_no_invoice(http, session_factory) -> None:
+    """Un pedido WEB sin factura: su pedido de cliente F_PCL es borrable y, al
+    anular con «borrar en FACTUSOL», se encola su borrado (no la factura)."""
+    with session_factory() as s:
+        web = _seed_order(s, source=OrderSource.WOOCOMMERCE, with_docs=False)
+        web.order_number = "FLUXLA-1"
+        s.commit()
+        oid = web.id
+    tables = {"F_PCL": [_pcl()], "F_FAC": [], "F_ALB": []}
+    with _patched(tables):
+        pre = http.post(f"/api/erp/orders/{oid}/cancel-preview",
+                        headers=auth_headers(http, "pedidos")).json()
+    docs = {d["doc_type"]: d for d in pre["factusol_docs"]}
+    assert pre["can_cancel"] is True
+    assert docs["pedidos"]["deletable"] is True
+    with _patched(tables), patch(
+        "app.integrations.factusol.jobs.enqueue_cancel_order_documents",
+        return_value="job-pcl",
+    ) as enq:
+        r = http.post(f"/api/erp/orders/{oid}/cancel",
+                      json={"confirm": True, "delete_factusol_docs": True},
+                      headers=auth_headers(http, "pedidos"))
+    body = r.json()
+    assert body["factusol_delete_job_id"] == "job-pcl"
+    assert [d["doc_type"] for d in body["factusol_docs_to_delete"]] == ["pedidos"]
+    enq.assert_called_once()
+
+
+def test_cancel_web_with_invoice_warns_and_skips_factusol(http, session_factory) -> None:
+    """Un pedido WEB con factura se anula igual, pero NO se toca FACTUSOL: se
+    avisa de que la factura se anula/abona a mano."""
+    with session_factory() as s:
+        web = _seed_order(s, source=OrderSource.WOOCOMMERCE, with_docs=False)
+        web.order_number = "FLUXLA-2"
+        web.factusol_invoice_number = "260090"
+        s.commit()
+        oid = web.id
+    with _patched({"F_PCL": [], "F_FAC": [], "F_ALB": []}), patch(
+        "app.integrations.factusol.jobs.enqueue_cancel_order_documents",
+    ) as enq:
+        r = http.post(f"/api/erp/orders/{oid}/cancel",
+                      json={"confirm": True, "delete_factusol_docs": True},
+                      headers=auth_headers(http, "pedidos"))
+    body = r.json()
+    assert body["cancelled"] is True
+    assert body["factusol_delete_job_id"] is None
+    assert any("factura" in w.lower() and "factusol" in w.lower()
+               for w in body["cancel_warnings"])
+    enq.assert_not_called()
+
+
+def test_autocancel_web_order_marks_and_enqueues(session_factory) -> None:
+    from app.erp.order_cancel import AUTO_CANCEL_REASON, autocancel_web_order
+
+    with session_factory() as s:
+        web = _seed_order(s, source=OrderSource.WOOCOMMERCE, with_docs=False)
+        oid = web.id
+        with patch(
+            "app.integrations.factusol.jobs.enqueue_autocancel_order_documents",
+            return_value="job-a",
+        ) as enq:
+            did = autocancel_web_order(s, web)
+        s.commit()
+    assert did is True
+    enq.assert_called_once_with(oid)
+    with session_factory() as s:
+        o = s.get(Order, oid)
+        assert o.cancelled_at is not None
+        assert o.cancelled_reason == AUTO_CANCEL_REASON
+        ev = list(s.scalars(
+            select(AuditLog).where(AuditLog.action == "erp.order_cancelled",
+                                   AuditLog.target_id == oid)
+        ))
+        assert ev and json.loads(ev[0].metadata_json).get("auto") is True
+
+
+def test_autocancel_skips_already_cancelled_and_invoiced(session_factory) -> None:
+    from app.erp.order_cancel import autocancel_web_order, mark_cancelled
+
+    with session_factory() as s:
+        invoiced = _seed_order(s, source=OrderSource.WOOCOMMERCE, with_docs=False)
+        invoiced.factusol_invoice_number = "260090"
+        s.commit()
+        # Facturado: no se auto-anula (terminal).
+        assert autocancel_web_order(s, invoiced) is False
+        assert invoiced.cancelled_at is None
+        # Ya anulado: idempotente.
+        plain = _seed_order(s, source=OrderSource.WOOCOMMERCE, with_docs=False)
+        plain.order_number = "FLUXLA-9"
+        mark_cancelled(s, plain, None, "ya")
+        s.commit()
+        assert autocancel_web_order(s, plain) is False

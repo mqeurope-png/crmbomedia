@@ -724,11 +724,11 @@ function ErpOrderDetailScreen() {
                   {/* ERP-F1 «Enviar factura por email» vive ahora en la cabecera
                       como «Enviar factura al cliente» (una sola acción, sin
                       duplicarla aquí). */}
-                  {/* Lote ERP · «Anular pedido» (solo manuales / FACTUSOL; los
-                      web se anulan en WooCommerce): estado final reversible,
-                      distinto de «quitar». Con aviso y modal; puede borrar el
-                      albarán / presupuesto en FACTUSOL. */}
-                  {!isWeb ? (
+                  {/* «Anular pedido» (manuales / FACTUSOL Y web): estado final
+                      reversible, distinto de «quitar». Con aviso y modal; borra
+                      en FACTUSOL el albarán / presupuesto / pedido de cliente
+                      SIN factura. Un web reembolsado también se auto-anula. */}
+                  {(
                     order.cancelled ? (
                       <button
                         type="button"
@@ -761,7 +761,7 @@ function ErpOrderDetailScreen() {
                         Anular pedido
                       </button>
                     )
-                  ) : null}
+                  )}
                 </ActionsMenu>
               </>
             ) : null}

@@ -533,9 +533,11 @@ def test_emit_invoice_end_to_end_success(session_factory):
     assert tablas.count("F_FAC") == 1 and tablas.count("F_LFA") == 2
     # Emitir nunca cobra (el cobro es siempre manual): el resultado no lleva
     # ningún bloque de cobro.
+    # Parte B: ESTPCL tiene default "2" (E2), así que el pedido de cliente se
+    # cierra en FACTUSOL al facturar sin necesidad de configurar nada.
     assert result == {"codfac": "526067", "codpcl": "2765",
                       "ejercicio": "2026", "lines": 2, "serie": 5,
-                      "pcl_marked": False}
+                      "pcl_marked": True}
     cabecera = next(rec for t, rec in client.writes if t == "F_FAC")
     assert cabecera["REFFAC"] == "BOP-099866" and cabecera["CODFAC"] == "526067"
     # Serie heredada del pedido + enlace factura→pedido (ERP-E2-fix1).
@@ -744,16 +746,25 @@ def test_emit_invoice_marks_pcl_as_invoiced(session_factory):
     ]
 
 
-def test_emit_invoice_skips_marking_when_estpcl_unknown(session_factory):
-    """Sin el valor configurado NO se inventa un código de estado: la factura
-    se emite igual y el pedido se queda como estaba, con aviso."""
+def test_emit_invoice_skips_marking_when_estpcl_disabled(session_factory):
+    """Opt-out explícito: con `estpcl_invoiced` VACÍO en /erp/settings NO se
+    marca el pedido (la factura se emite igual y el F_PCL se queda como estaba,
+    con aviso en el timeline)."""
+    from app.models.crm import AuditLog  # noqa: PLC0415
+
     with session_factory() as s:
+        _set_series(s, estpcl_invoiced="")   # vacío = desactivar el cierre
         oid = _order(s)
         client = FakeFactusol(pcl_row=_pcl_row(), lpc_rows=[], f_fac_last=4)
         result = emit_invoice(s, oid, client)
     assert result["pcl_marked"] is False
     assert client.updates == []
     assert any(t == "F_FAC" for t, _ in client.writes)   # la factura sí salió
+    with session_factory() as s:
+        avisos = list(s.scalars(
+            select(AuditLog).where(AuditLog.action == "erp.factusol_pcl_no_cerrado")
+        ))
+    assert len(avisos) == 1   # queda constancia en el timeline
 
 
 def test_emit_invoice_rejects_already_invoiced(session_factory):

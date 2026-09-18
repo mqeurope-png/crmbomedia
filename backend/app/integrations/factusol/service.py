@@ -235,15 +235,19 @@ def estpcl_invoiced_value(session: Session) -> str | None:
 # presupuesto pasa a «Aceptado», el albarán a «Facturado» en la columna
 # FACT.); BoHub debe hacer lo mismo. Los valores de ESTPRE/ESTALB están
 # CONFIRMADOS en la interfaz del escritorio de Bart (26-ago-2026); el de
-# ESTPCL se confirmó en E2. Configurables en `factusol_series_json` por si
-# otro ejercicio/versión usara códigos distintos; un valor VACÍO explícito
-# desactiva el marcado de ese tipo (criterio E2).
+# ESTPCL se confirmó en E2 (`ESTPCL=2` = «Enviado (facturado)», ver
+# `documents.py` DOC_ESTADO_LABELS). Configurables en `factusol_series_json`
+# por si otro ejercicio/versión usara códigos distintos; un valor VACÍO
+# explícito desactiva el marcado de ese tipo.
 #
 # Por tipo de origen: (tabla, col. tipo, col. código, col. estado, clave de
-# configuración, default). `estpcl_invoiced` mantiene el contrato de E2 —
-# sin default: no configurado = no marcar (comportamiento ya validado).
+# configuración, default). `estpcl_invoiced` YA tiene default («2», valor
+# E2-confirmado): antes iba sin default (no configurado = no marcar), y por eso
+# los pedidos de cliente web se quedaban ABIERTOS en FACTUSOL tras facturar
+# (caso FLUXLA-5784). Bart confirmó (2026-09-18) activar el cierre por defecto;
+# quien quiera desactivarlo pone `estpcl_invoiced` vacío en /erp/settings.
 ORIGIN_MARK_SPECS: dict[str, tuple[str, str, str, str, str, str | None]] = {
-    "pedidos": ("F_PCL", "TIPPCL", "CODPCL", "ESTPCL", "estpcl_invoiced", None),
+    "pedidos": ("F_PCL", "TIPPCL", "CODPCL", "ESTPCL", "estpcl_invoiced", "2"),
     "presupuestos": (
         "F_PRE", "TIPPRE", "CODPRE", "ESTPRE", "estpre_accepted", "1",
     ),
@@ -439,16 +443,16 @@ def mark_pcl_invoiced(
     codpcl: Any,
     serie: int,
     ejercicio: str,
-) -> bool:
+) -> tuple[bool, str | None]:
     """Marca el pedido de cliente como facturado en FACTUSOL (E2). Desde
     E3-B-fix3 es un wrapper de compatibilidad sobre el helper ÚNICO
     `mark_origin_converted` — la emisión desde pedido y las conversiones de
-    la cadena comparten implementación. Devuelve `True` si se escribió."""
-    marked, _motivo = mark_origin_converted(
+    la cadena comparten implementación. Devuelve `(marcado, motivo)`:
+    `(True, None)` si se escribió o ya estaba; `(False, motivo)` si no."""
+    return mark_origin_converted(
         client, session, source_type="pedidos", serie=serie, codigo=codpcl,
         ejercicio=ejercicio,
     )
-    return marked
 
 
 def next_codfac(
@@ -631,6 +635,27 @@ def find_pcl_by_order(
     ref = _compose_ref(order.order_number, ref_prefix)
     rows = client.load_table("F_PCL", filtro=f"REFPCL='{ref}'", ejercicio=ejercicio)
     return rows[0] if rows else None
+
+
+def close_order_pcl(
+    session: Session, client: FactusolClient, order: Order, ejercicio: str,
+    *, ref_prefix: str | None = None,
+) -> tuple[bool, str | None]:
+    """Parte B (retroactivo): cierra el pedido de cliente F_PCL de un pedido ya
+    facturado que se quedó abierto. Localiza el F_PCL por REFPCL y le marca el
+    ESTPCL de «facturado». Idempotente (`mark_origin_converted` se salta si ya
+    está). Devuelve `(cerrado, motivo)`."""
+    prefix = ref_prefix if ref_prefix is not None else _store_ref_prefix(session, order)
+    pcl = find_pcl_by_order(client, order, ejercicio, ref_prefix=prefix)
+    if pcl is None:
+        return False, "no se encontró el pedido de cliente en FACTUSOL"
+    serie = coerce_serie(pcl.get("TIPPCL"))
+    codpcl = pcl.get("CODPCL")
+    if serie is None or codpcl is None:
+        return False, "el F_PCL no tiene TIPPCL/CODPCL"
+    return mark_pcl_invoiced(
+        client, session, codpcl=codpcl, serie=serie, ejercicio=ejercicio,
+    )
 
 
 def probe_pcl_refs_by_number(
@@ -853,14 +878,33 @@ def emit_invoice(
     # aborta la emisión si falla — la factura ya está escrita y correcta; el
     # estado del pedido es recuperable a mano y no justifica revertirla.
     pcl_marked = False
+    pcl_reason: str | None = None
     try:
-        pcl_marked = mark_pcl_invoiced(
+        pcl_marked, pcl_reason = mark_pcl_invoiced(
             client, session, codpcl=codpcl, serie=serie, ejercicio=ejercicio,
         )
-    except FactusolError:
+    except FactusolError as exc:
+        pcl_reason = str(exc)[:200]
         logger.warning(
             "factusol: factura %s emitida pero el pedido %s no se pudo marcar "
             "como facturado", codfac, codpcl, exc_info=True,
+        )
+    if not pcl_marked:
+        # Parte B: que NO quede en silencio. El F_PCL sigue abierto en FACTUSOL
+        # (no se encontró, o el estado no está configurado): se avisa en el
+        # timeline del pedido para que se cierre a mano si hace falta. La
+        # factura ya está emitida y correcta: esto no la revierte.
+        from app.core.audit import record_event  # noqa: PLC0415
+
+        record_event(
+            session, action="erp.factusol_pcl_no_cerrado",
+            target_type="order", target_id=order.id, actor=actor,
+            message=(
+                f"Factura {codfac} emitida, pero el pedido de cliente FACTUSOL "
+                f"{codpcl} no se cerró (sigue abierto): "
+                + (pcl_reason or "no se encontró el pedido de cliente en FACTUSOL")
+            ),
+            metadata={"factusol_codpcl": str(codpcl), "reason": pcl_reason},
         )
 
     # ERP-F3 (Parte D): auto-marcar la factura como COBRADA al emitirla SI el

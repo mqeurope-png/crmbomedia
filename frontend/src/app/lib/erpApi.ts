@@ -398,7 +398,7 @@ export async function getOrder(id: string): Promise<OrderDetail> {
 /** Documento FACTUSOL del pedido que se podría BORRAR al anular (albarán o
  *  presupuesto). La factura nunca: se borra desde FACTUSOL. */
 export type CancelOrderDoc = {
-  doc_type: "albaranes" | "presupuestos";
+  doc_type: "albaranes" | "presupuestos" | "pedidos";
   serie: number;
   codigo: number;
   numero: string;
