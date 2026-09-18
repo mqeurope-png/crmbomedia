@@ -11887,6 +11887,10 @@ tr.is-inactive {
   --ink-on-color: var(--st-neutral-ink);
   background: var(--st-neutral-bg);
 }
+.erp-status-pill.is-warn {
+  --ink-on-color: var(--st-amber-ink);
+  background: var(--st-amber-bg);
+}
 .erp-status-pills.is-sm .erp-status-pill { padding: 0 var(--sp-2); gap: var(--sp-1); }
 .erp-status-pills.is-sm .erp-status-pill-dot { width: 6px; height: 6px; }
 
@@ -13893,7 +13897,26 @@ table.erp-doc-lines { width: 100%; table-layout: fixed; }
   font-weight: 600;
 }
 .erp-flow-emailed.is-sent::before { content: "\2713\00a0"; }
-.erp-flow-emailed.is-unsent { color: var(--muted); }
+.erp-flow-emailed.is-unsent {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--st-amber-ink);
+  font-weight: 600;
+}
+.erp-flow-emailed.is-muted { color: var(--muted); }
+/* Hito OPCIONAL de la línea de vida («Factura enviada»): se enseña pero no
+   cuenta como paso obligatorio; icono y etiqueta atenuados. */
+.erp-flow-steps.is-vertical .erp-flow-step.is-optional .erp-flow-step-ic {
+  background: var(--st-neutral-bg);
+  color: var(--muted);
+}
+.erp-flow-step-tag.is-optional {
+  background: var(--st-neutral-bg);
+  color: var(--muted);
+  font-weight: 600;
+}
 
 /* ===================================================================
    Lote 4 · Cola SAT: scroll en las vistas, «Lista» compacta real y

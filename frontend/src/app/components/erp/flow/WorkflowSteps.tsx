@@ -61,17 +61,21 @@ export function WorkflowSteps({
         return (
           <li
             key={s.key}
-            className={`erp-flow-step is-${s.state}`}
+            className={`erp-flow-step is-${s.state}${s.optional ? " is-optional" : ""}`}
             aria-current={s.state === "now" ? "step" : undefined}
           >
             <span className="erp-flow-step-ic" aria-hidden>
-              {s.state === "done" ? "✓" : s.state === "skipped" ? "—" : i + 1}
+              {s.optional
+                ? (s.state === "done" ? "✓" : "·")
+                : s.state === "done" ? "✓" : s.state === "skipped" ? "—" : i + 1}
             </span>
             <div className={`erp-flow-step-body${s.state === "now" ? " is-card" : ""}`}>
               <div className="erp-flow-step-row">
                 <span className="erp-flow-step-t">{s.label}</span>
                 {s.state === "now" ? (
                   <span className="erp-flow-step-tag">Paso actual</span>
+                ) : s.optional ? (
+                  <span className="erp-flow-step-tag is-optional">opcional</span>
                 ) : null}
                 <span className="erp-flow-step-d">{stepDetail(s)}</span>
               </div>
@@ -94,20 +98,23 @@ function stepDetail(s: WorkflowStep): string {
   return s.state === "done" ? "hecho" : "pendiente";
 }
 
-/** Lectura rápida de la línea de vida («Paso 6 de 7 · Cobro»): el índice del
- *  paso actual (1-based) o null si no hay ninguno (todos hechos u omitidos). */
+/** Lectura rápida de la línea de vida («Paso 5 de 6 · Cobro»): el índice del
+ *  paso actual (1-based) o null si no hay ninguno (todos hechos u omitidos).
+ *  Los hitos OPCIONALES (p. ej. «Factura enviada») NO cuentan para el total ni
+ *  para «N hechos»: son informativos y van SIEMPRE al final de la lista. */
 export function stepProgress(steps: WorkflowStep[]): {
   current: number | null;
   label: string | null;
   total: number;
   done: number;
 } {
+  const obligatorios = steps.filter((s) => !s.optional);
   const idx = steps.findIndex((s) => s.state === "now");
   return {
     current: idx >= 0 ? idx + 1 : null,
     label: idx >= 0 ? steps[idx].label : null,
-    total: steps.length,
-    done: steps.filter((s) => s.state === "done").length,
+    total: obligatorios.length,
+    done: obligatorios.filter((s) => s.state === "done").length,
   };
 }
 
@@ -124,7 +131,7 @@ export function WorkflowProgress({ steps }: { steps: WorkflowStep[] }) {
   return (
     <div className="erp-flow-progress">
       <div className="erp-flow-progress-bar" aria-hidden>
-        {steps.map((s) => (
+        {steps.filter((s) => !s.optional).map((s) => (
           <span key={s.key} className={`erp-flow-progress-seg is-${s.state}`} title={s.label} />
         ))}
       </div>

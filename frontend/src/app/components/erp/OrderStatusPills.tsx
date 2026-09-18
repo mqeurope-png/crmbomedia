@@ -17,6 +17,8 @@ export type OrderStatusPillsInput = OrderStatusGridInput & {
   completed?: boolean;
   completed_at?: string | null;
   completed_by_name?: string | null;
+  /** Fecha (ISO) del último envío de la factura por email, o null si nunca. */
+  invoice_emailed_at?: string | null;
 };
 
 function fecha(iso: string | null | undefined): string {
@@ -31,6 +33,14 @@ export function completadoTitle(o: OrderStatusPillsInput): string {
   return `Completado${o.completed_at ? ` el ${fecha(o.completed_at)}` : ""}${o.completed_by_name ? ` por ${o.completed_by_name}` : ""} (solo BoHub)`;
 }
 
+/** Detalle de la pastilla «Factura enviada» (envío por email al cliente). */
+export function facturaEnviadaTitle(o: OrderStatusPillsInput): string {
+  if (o.invoice_emailed_at) {
+    return `Factura enviada al cliente el ${fecha(o.invoice_emailed_at)}.`;
+  }
+  return "Factura emitida pero sin enviar al cliente por email.";
+}
+
 export function OrderStatusPills({
   order, size = "md", className,
 }: {
@@ -40,9 +50,25 @@ export function OrderStatusPills({
   className?: string;
 }) {
   const completado = !!order.completed;
+  // «Factura enviada» al cliente por email: solo tiene sentido si hay factura
+  // (verde = enviada, ámbar = emitida pero sin enviar); sin factura, nada.
+  const facturada = isInvoiced(order);
+  const facturaEnviada = !!order.invoice_emailed_at;
   return (
     <div className={`erp-status-pills${size === "sm" ? " is-sm" : ""}${className ? ` ${className}` : ""}`}>
       <OrderStatusGrid order={order} size={size} />
+      {facturada ? (
+        <span
+          className={`erp-status-pill${facturaEnviada ? " is-on" : " is-warn"}`}
+          data-pill="factura_enviada"
+          role="img"
+          aria-label={`Factura enviada: ${facturaEnviada ? "sí" : "no"}`}
+          title={facturaEnviadaTitle(order)}
+        >
+          <span className="erp-status-pill-dot" aria-hidden />
+          {facturaEnviada ? "Factura enviada" : "Factura sin enviar"}
+        </span>
+      ) : null}
       <span
         className={`erp-status-pill${completado ? " is-on" : " is-off"}`}
         data-pill="completado"

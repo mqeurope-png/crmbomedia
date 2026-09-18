@@ -11,8 +11,9 @@ import { getOrder } from "../../../lib/erpApi";
  *
  *  Lote 2 · PR-2: la línea de vida es VERTICAL (el paso actual es la única
  *  tarjeta azul y lleva «Siguiente paso» con su acción dentro), la cabecera
- *  tiene la barra de 7 segmentos («Paso 5 de 7 · Factura») y la miga vuelve a
- *  la cola de la bandeja de la que se llegó (`?from=`). */
+ *  tiene la barra de 6 segmentos obligatorios («Paso 5 de 6 · Factura») más el
+ *  hito opcional «Factura enviada», y la miga vuelve a la cola de la bandeja de
+ *  la que se llegó (`?from=`). */
 
 jest.mock("next/link", () => ({
   __esModule: true,
@@ -124,7 +125,9 @@ const STEPS = [
   { key: "albaran", label: "Albarán", state: "done", detail: "2-100418" },
   { key: "factura", label: "Factura", state: "now", detail: null },
   { key: "cobro", label: "Cobro", state: "pending", detail: null },
-  { key: "enviado", label: "Enviado", state: "pending", detail: null },
+  // El SAT/«Enviado» ya no es un paso obligatorio; en su lugar, el hito
+  // OPCIONAL «Factura enviada» (no cuenta para el «Paso N de N»).
+  { key: "factura_enviada", label: "Factura enviada", state: "pending", detail: null, optional: true },
 ];
 
 function detail(over = {}) {
@@ -199,7 +202,9 @@ describe("ERP · Ficha del pedido (rediseño de flujo)", () => {
     expect(steps.getByText("Creado").closest("li")).toHaveTextContent("✓");
     expect(steps.getByText("Pagado").closest("li")).toHaveTextContent("351.52 EUR");
     expect(steps.getByText("Albarán").closest("li")).toHaveTextContent("2-100418");
-    expect(steps.getByText("Enviado").closest("li")).toHaveTextContent("pendiente");
+    // El SAT/«Enviado» ya no está; el hito opcional «Factura enviada» sí, marcado.
+    expect(steps.queryByText("Enviado")).toBeNull();
+    expect(steps.getByText("Factura enviada").closest("li")).toHaveTextContent("opcional");
     // El actual: numerado, «Paso actual», y DENTRO la barra «Siguiente paso»
     // con el botón de la acción (la misma que ya usaba la ficha).
     const actual = items.find((li) => li.getAttribute("aria-current") === "step");
@@ -218,14 +223,15 @@ describe("ERP · Ficha del pedido (rediseño de flujo)", () => {
     expect(document.querySelector(".erp-flow-steps:not(.is-vertical)")).toBeNull();
   });
 
-  it("la cabecera lleva la barra de 7 segmentos con la lectura rápida «Paso 5 de 7 · Factura»", async () => {
+  it("la cabecera lleva la barra de 6 segmentos con la lectura rápida «Paso 5 de 6 · Factura» (el hito opcional no cuenta)", async () => {
     render(<ErpOrderDetailPage />);
-    const txt = await screen.findByText(/Paso 5 de 7/);
-    expect(txt).toHaveTextContent("Paso 5 de 7 · Factura");
+    const txt = await screen.findByText(/Paso 5 de 6/);
+    expect(txt).toHaveTextContent("Paso 5 de 6 · Factura");
+    // El hito opcional «Factura enviada» NO sale en la barra de obligatorios.
     const segs = document.querySelectorAll(".erp-flow-progress-seg");
-    expect(segs).toHaveLength(7);
+    expect(segs).toHaveLength(6);
     expect(Array.from(segs).map((s) => s.className.replace("erp-flow-progress-seg ", ""))).toEqual([
-      "is-done", "is-done", "is-done", "is-done", "is-now", "is-pending", "is-pending",
+      "is-done", "is-done", "is-done", "is-done", "is-now", "is-pending",
     ]);
   });
 
@@ -369,7 +375,10 @@ describe("ERP · Ficha del pedido (rediseño de flujo)", () => {
     }));
     const user = userEvent.setup();
     render(<ErpOrderDetailPage />);
-    const btn = await screen.findByRole("button", { name: "Enviar factura al cliente" });
+    // Hay dos «Enviar factura al cliente» (la cabecera y el hito «Factura
+    // enviada» de la línea de vida): el de la cabecera es el primero.
+    const btns = await screen.findAllByRole("button", { name: "Enviar factura al cliente" });
+    const btn = btns[0];
     expect(btn).toBeEnabled();
     // Está junto a «Enviar por email» (SAT), en la misma cabecera.
     expect(screen.getByRole("button", { name: "Enviar por email" })).toBeInTheDocument();
@@ -380,7 +389,9 @@ describe("ERP · Ficha del pedido (rediseño de flujo)", () => {
     await waitFor(() => expect(getOrderFactusolInvoiceRef).toHaveBeenCalledWith("o-1"));
     const dialog = await screen.findByRole("dialog", { name: "Enviar factura por email" });
     expect(dialog).toHaveTextContent("factura:5-260063 pedido:o-1");
-    expect(screen.getAllByRole("button", { name: "Enviar factura al cliente" })).toHaveLength(1);
+    // Dos accesos a la MISMA acción (misma previsualización): el de la cabecera
+    // y el incrustado en el hito «Factura enviada» de la línea de vida.
+    expect(screen.getAllByRole("button", { name: "Enviar factura al cliente" })).toHaveLength(2);
   });
 
   it("«Enviar factura al cliente» sin factura emitida: deshabilitado y no consulta FACTUSOL", async () => {
@@ -567,26 +578,27 @@ describe("ERP · Ficha del pedido — factura enviada al cliente visible (#8)", 
     });
   }
 
-  it("con invoice_emailed_at: el paso «Factura» dice «Factura enviada al cliente el DD/MM/AAAA» (destinatarios en el tooltip)", async () => {
+  it("con invoice_emailed_at: el hito «Factura enviada» dice «Factura enviada al cliente el DD/MM/AAAA» (destinatarios en el tooltip)", async () => {
     (getOrder as jest.Mock).mockResolvedValue(facturado({
       invoice_emailed_at: "2026-09-12T10:30:00Z",
       invoice_emailed_to: ["cliente@example.com", "copia@example.com"],
     }));
     render(<ErpOrderDetailPage />);
     const list = await screen.findByRole("list", { name: "Ciclo del pedido" });
-    const factura = within(list).getByText("Factura").closest("li") as HTMLElement;
-    expect(factura).toHaveTextContent("Factura enviada al cliente el 12/09/2026");
-    const nota = within(factura).getByText(/Factura enviada al cliente el/);
+    const hito = within(list).getByText("Factura enviada").closest("li") as HTMLElement;
+    expect(hito).toHaveTextContent("Factura enviada al cliente el 12/09/2026");
+    const nota = within(hito).getByText(/Factura enviada al cliente el/);
     expect(nota).toHaveAttribute("title", expect.stringContaining("cliente@example.com"));
   });
 
-  it("con factura pero sin enviar: el paso «Factura» dice «Sin enviar al cliente»", async () => {
+  it("con factura pero sin enviar: el hito «Factura enviada» dice «Factura sin enviar al cliente» y ofrece «Enviar factura al cliente»", async () => {
     (getOrder as jest.Mock).mockResolvedValue(facturado({ invoice_emailed_at: null }));
     render(<ErpOrderDetailPage />);
     const list = await screen.findByRole("list", { name: "Ciclo del pedido" });
-    const factura = within(list).getByText("Factura").closest("li") as HTMLElement;
-    expect(factura).toHaveTextContent("Sin enviar al cliente");
-    expect(within(factura).queryByText(/Factura enviada al cliente/)).toBeNull();
+    const hito = within(list).getByText("Factura enviada").closest("li") as HTMLElement;
+    expect(hito).toHaveTextContent("Factura sin enviar al cliente");
+    expect(within(hito).getByRole("button", { name: "Enviar factura al cliente" })).toBeInTheDocument();
+    expect(within(hito).queryByText(/Factura enviada al cliente/)).toBeNull();
   });
 
   it("sin factura todavía NO se muestra el indicador (el paso va de emitir, no de enviar)", async () => {

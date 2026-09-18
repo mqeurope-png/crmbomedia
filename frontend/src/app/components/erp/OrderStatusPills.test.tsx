@@ -81,6 +81,28 @@ describe("OrderStatusPills", () => {
     expect(screen.getByRole("group", { name: "Estado del pedido" })).toHaveClass("is-sm");
   });
 
+  it("«Factura enviada»: enviada (verde), sin enviar (ámbar) y nada sin factura", () => {
+    // Sin factura: no aplica → no hay pastilla de «Factura enviada».
+    const { rerender } = render(<OrderStatusPills order={order()} />);
+    expect(screen.queryByLabelText(/^Factura enviada:/)).toBeNull();
+    // Con factura pero sin enviar: ámbar.
+    rerender(<OrderStatusPills order={order({
+      invoice_status: "invoiced_by_erp", factusol_invoice_number: "5-1",
+    })} />);
+    const sinEnviar = screen.getByLabelText("Factura enviada: no");
+    expect(sinEnviar).toHaveClass("erp-status-pill", "is-warn");
+    expect(sinEnviar).toHaveTextContent("Factura sin enviar");
+    // Con factura enviada: verde, con la fecha en el tooltip.
+    rerender(<OrderStatusPills order={order({
+      invoice_status: "invoiced_by_erp", factusol_invoice_number: "5-1",
+      invoice_emailed_at: "2026-09-12T10:00:00",
+    })} />);
+    const enviada = screen.getByLabelText("Factura enviada: sí");
+    expect(enviada).toHaveClass("is-on");
+    expect(enviada).toHaveTextContent("Factura enviada");
+    expect(enviada).toHaveAttribute("title", expect.stringContaining("12/9/2026"));
+  });
+
   it("isInvoiced comparte el criterio con el backend", () => {
     expect(isInvoiced({ invoice_status: "not_invoiced", factusol_invoice_number: null })).toBe(false);
     expect(isInvoiced({ invoice_status: "generated", factusol_invoice_number: null })).toBe(true);

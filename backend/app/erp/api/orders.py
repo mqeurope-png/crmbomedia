@@ -252,11 +252,16 @@ def customer_names(
 
 def _serialise_summary(
     o: Order, names: dict[str, str | None] | None = None,
+    *, invoice_emailed_at: str | None = None,
 ) -> dict[str, Any]:
     names = names or {}
     return {
         "id": o.id,
         "order_number": o.order_number,
+        # #8 — fecha (ISO) del último envío de la factura por email al cliente,
+        # o None si nunca. En la bandeja alimenta la pastilla/columna «Factura
+        # enviada»; el detalle la sobrescribe con el dato completo (+ a quién).
+        "invoice_emailed_at": invoice_emailed_at,
         # D-2: nombre del cliente para no tener que abrir el pedido.
         "contact_name": names.get("contact_name"),
         "company_name": names.get("company_name"),
@@ -792,6 +797,10 @@ def list_orders(
     # «pendiente» (factura sin cobro completo) o «sin_comprobar» (con factura
     # pero aún sin consultar FACTUSOL).
     cobro: str | None = Query(default=None, pattern="^(cobrada|pendiente|sin_comprobar)$"),
+    # «Factura enviada» (al cliente por email, dato ya registrado): «enviada»
+    # (consta enviada) o «no_enviada» (hay factura emitida pero sin enviar).
+    # Sin factura no aplica (no entra en ninguno de los dos).
+    invoice_email: str | None = Query(default=None, pattern="^(enviada|no_enviada)$"),
     # Rediseño de flujo: cola de trabajo («lo que toca»), la organización
     # PRIMARIA de la bandeja. Los filtros de estado siguen como refinamiento.
     queue: str | None = Query(
@@ -842,6 +851,23 @@ def list_orders(
         )
     elif cobro:
         stmt = stmt.where(Order.factusol_cobro_status == cobro)
+    if invoice_email:
+        from app.models.crm import AuditLog  # noqa: PLC0415
+
+        emailed_ids = select(AuditLog.target_id).where(
+            AuditLog.action == INVOICE_EMAILED_EVENT,
+            AuditLog.target_type == "order",
+        )
+        if invoice_email == "enviada":
+            stmt = stmt.where(Order.id.in_(emailed_ids))
+        else:  # no_enviada: hay factura emitida pero NO se ha enviado
+            stmt = stmt.where(
+                or_(
+                    Order.factusol_invoice_number.isnot(None),
+                    Order.invoice_status.in_(list(_INVOICED_FILTER)),
+                ),
+                Order.id.notin_(emailed_ids),
+            )
     if preparation:
         stmt = stmt.where(Order.preparation_status == preparation)
     if transport:
@@ -888,7 +914,11 @@ def list_orders(
     # Rediseño de flujo: el bloque `workflow` (cola + siguiente acción +
     # alertas) lo calcula el backend UNA vez y lo consumen igual la bandeja y
     # la ficha.
-    from app.erp.workflow import queue_counts, workflows_for  # noqa: PLC0415
+    from app.erp.workflow import (  # noqa: PLC0415
+        latest_invoice_emailed_map,
+        queue_counts,
+        workflows_for,
+    )
 
     flows = workflows_for(session, rows)
     counts = queue_counts(flows)
@@ -896,8 +926,16 @@ def list_orders(
         rows = [o for o in rows if flows[o.id]["queue"] == queue]
     rows = rows[:limit]
     names = customer_names(session, rows)
+    # «Factura enviada» de la bandeja: fecha del último envío por email (dato ya
+    # registrado), en una query para todas las filas mostradas.
+    emailed = latest_invoice_emailed_map(session, [o.id for o in rows])
     items = [
-        {**_serialise_summary(o, names.get(o.id)), "workflow": flows[o.id]}
+        {
+            **_serialise_summary(
+                o, names.get(o.id), invoice_emailed_at=emailed.get(o.id),
+            ),
+            "workflow": flows[o.id],
+        }
         for o in rows
     ]
     return {"items": items, "queue_counts": counts, "queue": queue}

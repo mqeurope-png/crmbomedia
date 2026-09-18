@@ -14,7 +14,7 @@ dice qué se ve, qué se pulsa y qué pasa después.
 ## Índice
 
 - [Cómo está organizado el ERP](#cómo-está-organizado-el-erp)
-- [Conceptos clave: los 7 pasos del pedido](#conceptos-clave-los-7-pasos-del-pedido)
+- [Conceptos clave: los pasos del pedido](#conceptos-clave-los-pasos-del-pedido)
 - [El menú y las pantallas](#el-menú-y-las-pantallas)
 - [Parte 1: recorrido por el ERP](#parte-1-recorrido-por-el-erp)
   - [Bandeja de pedidos](#bandeja-de-pedidos)
@@ -56,18 +56,32 @@ consultarlo todo. En **Ajustes**, solo un administrador puede guardar cambios.
 
 ---
 
-## Conceptos clave: los 7 pasos del pedido
+## Conceptos clave: los pasos del pedido
 
-Todo pedido recorre una **línea de vida de 7 pasos**, siempre en este orden:
+Todo pedido recorre una **línea de vida** con **6 pasos obligatorios**, siempre
+en este orden:
 
-**1. Creado → 2. Pagado → 3. Aprobado → 4. Albarán → 5. Factura → 6. Cobro → 7. Enviado**
+**1. Creado → 2. Pagado → 3. Aprobado → 4. Albarán → 5. Factura → 6. Cobro**
 
 - Cada paso se marca **hecho** cuando se cumple, y el primero que queda por hacer
   es el **paso actual** (la ficha lo llama **«Siguiente paso»** y te ofrece ahí
-  mismo el botón que toca).
-- El paso **Albarán** es el único opcional: en un **pedido web** lo crea
-  WooCommerce, así que aparece como **«no aplica»** (*«lo crea WooCommerce»*) y
-  nunca es el paso actual.
+  mismo el botón que toca). Arriba, una barra resume **«Paso N de 6»**.
+- El paso **Albarán** es opcional: en un **pedido web** lo crea WooCommerce, así
+  que aparece como **«no aplica»** (*«lo crea WooCommerce»*) y nunca es el paso
+  actual.
+- Un pedido se da por **terminado** cuando llega hasta **Cobro** (o hasta
+  **Factura** si el cobro no aplica). Entonces ya puedes **«Marcar completado»**.
+
+Después de los obligatorios, la línea de vida enseña **hitos OPCIONALES** que
+**no bloquean** el completado y no cuentan en el «Paso N de 6»:
+
+- **Factura enviada** — si la factura se ha mandado al cliente por email (con la
+  fecha) o si está pendiente (con el botón **«Enviar factura al cliente»**).
+- **El envío al taller (SAT)** ya **no es un paso** de la línea de vida: hay
+  pedidos que no pasan por el taller. La preparación, la etiqueta, el tracking y
+  el «marcar recogido» viven en la sección **«Envío y seguimiento»** de la ficha
+  y son **opcionales**: un pedido puede completarse sin haber pasado por SAT ni
+  tener tracking.
 
 Además, por debajo, cada pedido tiene **cuatro estados independientes** que
 verás en pastillas por toda la app:
@@ -135,13 +149,14 @@ las colas»**) para quitar el filtro.
 | Por revisar | **«Aprobar»** | aprueba el pedido en el momento (pasa a la Cola SAT); no cambias de pantalla |
 | Por facturar | **«Emitir factura»** | abre la ficha para emitir la factura en FACTUSOL |
 | Por cobrar | **«Registrar cobro»** | abre ahí mismo la ventana para registrar el cobro |
-| Por enviar | **«Subir etiqueta»** / **«Marcar recogido»** / **«Marcar completado»** | te lleva a la ficha para el envío, o marca el pedido como terminado |
+| Por enviar | **«Marcar completado»** | facturado y cobrado: márcalo como terminado (el envío al taller es opcional, desde la ficha) |
 | Listo / sin acción | **«Abrir»** | abre la ficha |
 
 **Filtros (fila «Refinar»).** Son desplegables (el primer valor es «todos»):
 **«Preparación»**, **«Pago»**, **«Completado»** (*Solo completados* / *Sin
 completar*), **«Cobro FACTUSOL»** (*Cobrado en FACTUSOL* / *Pendiente de cobro* /
-*Con factura, sin comprobar*), **«Facturado»** (*Facturado* / *Sin facturar*) y
+*Con factura, sin comprobar*), **«Facturado»** (*Facturado* / *Sin facturar*),
+**«Factura enviada»** (*Enviada* / *No enviada* — al cliente por email) y
 **«Tienda»**. Además: fechas **«Desde»** y **«Hasta»**, y un botón de orden que
 alterna **«Fecha ↓»** (más nuevos primero) y **«Fecha ↑»**.
 Con **«Actualizar cobros FACTUSOL»** vuelves a leer de FACTUSOL el estado de
@@ -176,13 +191,18 @@ seleccionados»**, **«Quitar de la bandeja»**, etc.
 
 Es la pantalla de un pedido concreto. De arriba abajo:
 
-- **Línea de vida del pedido** — los 7 pasos en columna; el paso pendiente se
-  marca **«Paso actual»** y, si un pedido web no lleva albarán propio, ese paso
-  dice *«lo crea WooCommerce»*. Arriba, una barra resume *«Paso N de 7»*.
+- **Línea de vida del pedido** — los **6 pasos obligatorios** en columna (hasta
+  **Cobro**); el paso pendiente se marca **«Paso actual»** y, si un pedido web no
+  lleva albarán propio, ese paso dice *«lo crea WooCommerce»*. Arriba, una barra
+  resume *«Paso N de 6»*. Debajo, el **hito opcional «Factura enviada»**: si la
+  factura se mandó al cliente por email (con la fecha) o, si no, un aviso ámbar
+  con el botón **«Enviar factura al cliente»** incrustado. Los hitos opcionales
+  no cuentan en el «Paso N de 6» ni impiden completar. El **SAT/envío** ya no es
+  un paso de esta línea: vive en **«Envío y seguimiento»** y es opcional.
 - **«Siguiente paso»** — una frase que explica qué toca ahora y, al lado, **el
-  botón exacto** para hacerlo (Emitir factura, Registrar cobro, Subir etiqueta,
-  Crear albarán, Enviar por email…). Si el pedido está bloqueado, este bloque
-  cambia a **«Hay que resolver esto»**.
+  botón exacto** para hacerlo (Emitir factura, Registrar cobro, Crear albarán,
+  Marcar completado…). Si el pedido está bloqueado, este bloque cambia a **«Hay
+  que resolver esto»**.
 - **«Resumen económico»** — **Base imponible**, **IVA** (con el régimen entre
   paréntesis, o *«exento»*), **Portes y otros cargos**, **Forma de pago**,
   **Total**, **Cobrado** y **Pendiente de cobro**.
