@@ -126,15 +126,17 @@ describe("Ficha · Anular pedido", () => {
     expect(screen.queryByRole("button", { name: "Restaurar pedido" })).toBeNull();
   });
 
-  it("un pedido web NO ofrece «Anular pedido» (se anula en WooCommerce)", async () => {
+  it("un pedido web TAMBIÉN ofrece «Anular pedido» (Parte A: antes se bloqueaba)", async () => {
     (getOrder as jest.Mock).mockResolvedValue(detail({
-      external_source: "woocommerce", order_number: "FLUXLA-5784",
+      external_source: "woocommerce", order_number: "FLUXLA-5749",
     }));
     const user = userEvent.setup();
     render(<ErpOrderDetailPage />);
     await screen.findByText("documentos de envío");
     await user.click(screen.getByRole("button", { name: "Más acciones del pedido" }));
-    expect(screen.queryByRole("button", { name: "Anular pedido" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Anular pedido" }));
+    expect(await screen.findByRole("dialog", { name: "Anular pedido FLUXLA-5749" }))
+      .toBeInTheDocument();
   });
 
   it("el anulado enseña el banner con quién/motivo y «Restaurar pedido» revierte", async () => {
