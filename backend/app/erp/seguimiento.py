@@ -623,6 +623,204 @@ def woo_status_visibility(order: Order, estado: str) -> tuple[bool, str | None, 
     return visibility_for_status(order, estado, order.woo_status)
 
 
+# --- rediseño 2026: hoja simplificada, ordenada por Situación ------------------
+#
+# Una fila por pedido; el estado en una columna (Situación), NO en la posición.
+# La Situación reutiliza la clasificación de colas de la línea de vida
+# (`workflow.py`), la misma que la bandeja — no decide nada nuevo, solo la
+# presenta. Las incidencias van a una pestaña aparte del Excel, subconjunto
+# EXACTO de los pedidos con Situación = Incidencia.
+
+#: Etiqueta de la Situación en la hoja. Singular «Incidencia» (una fila por
+#: pedido), a diferencia de la cola «Incidencias» de la bandeja.
+SITUACION_LABELS: dict[str, str] = {
+    "incidencias": "Incidencia",
+    "por_revisar": "Por revisar",
+    "por_facturar": "Por facturar",
+    "por_cobrar": "Por cobrar",
+    "por_enviar": "Por enviar",
+    "listo": "Listo",
+}
+#: Prioridad de orden: lo urgente sube solo (Incidencia arriba, Listo abajo).
+SITUACION_ORDER: dict[str, int] = {
+    "incidencias": 0, "por_revisar": 1, "por_facturar": 2,
+    "por_cobrar": 3, "por_enviar": 4, "listo": 5,
+}
+#: Tono de color de la celda Situación (letras del sistema de diseño `--st-*`):
+#: rojo(r) · ámbar(a) · azul(b) · teal(t) · verde(g).
+SITUACION_TONE: dict[str, str] = {
+    "incidencias": "r", "por_revisar": "a", "por_facturar": "b",
+    "por_cobrar": "b", "por_enviar": "t", "listo": "g",
+}
+#: Relleno/tinta de la celda Situación en el Excel (hex del sistema de diseño,
+#: sin `#`).
+SITUACION_FILL: dict[str, tuple[str, str]] = {
+    "incidencias": ("FDEAEA", "B42318"),
+    "por_revisar": ("FDF1DD", "8A5C00"),
+    "por_facturar": ("E8F0FF", "2451C7"),
+    "por_cobrar": ("E8F0FF", "2451C7"),
+    "por_enviar": ("E6F5F3", "0F766E"),
+    "listo": ("E7F6EC", "1F7A45"),
+}
+#: Relleno neutro para una Situación desconocida.
+_SITUACION_FILL_FALLBACK = ("EEF0F4", "5B6472")
+
+#: Estado de preparación (SAT) → etiqueta corta para la columna Preparación.
+PREPARACION_LABELS: dict[str, str] = {
+    "pending_review": "Pendiente",
+    "in_queue": "En cola",
+    "preparing": "Preparando",
+    "packed": "Listo",
+    "blocked": "Bloqueado",
+    "already_completed_externally": "Hecho (externo)",
+}
+#: Estado de transporte → etiqueta corta para la columna Envío.
+ENVIO_LABELS: dict[str, str] = {
+    "not_shipped": "Sin enviar",
+    "label_created": "Etiqueta creada",
+    "in_transit": "En tránsito",
+    "delivered": "Entregado",
+    "incident": "Incidencia",
+    "returned": "Devuelto",
+    "already_shipped_externally": "Enviado (externo)",
+}
+#: Tipo de excepción → etiqueta legible (pestaña Incidencias).
+EXCEPTION_TYPE_LABELS: dict[str, str] = {
+    "stock_shortage": "Falta de stock",
+    "material_defective": "Material defectuoso",
+    "sat_issue": "Incidencia en SAT",
+    "size_exceeds_carrier": "Excede el tamaño del transportista",
+    "blocked_by_customer_request": "Bloqueado por el cliente",
+    "carrier_incident": "Incidencia de transporte",
+    "returned_by_transport": "Devuelto por transporte",
+    "factusol_write_failed": "Fallo al escribir en FACTUSOL",
+    "invoice_email_failed": "Fallo al enviar la factura",
+}
+#: Estado de la excepción → etiqueta (pestaña Incidencias).
+EXCEPTION_STATUS_LABELS: dict[str, str] = {
+    "open": "Abierta", "in_progress": "En curso",
+    "resolved": "Resuelta", "dismissed": "Descartada",
+}
+#: Estado de cobro para la columna Cobro (código → etiqueta).
+COBRO_LABELS: dict[str, str] = {
+    "cobrado": "Cobrado ✓", "pendiente": "Pendiente", "na": "—",
+}
+
+#: Texto de «no aplica» (Preparación/Envío de un pedido que no requiere envío).
+NO_APLICA = "No aplica"
+
+
+def _prep_label(order: Order) -> str:
+    """Etiqueta de la columna Preparación; «No aplica» si el pedido no requiere
+    envío (no pasa por el taller)."""
+    if getattr(order, "shipping_not_required", False):
+        return NO_APLICA
+    st = getattr(order.preparation_status, "value", order.preparation_status)
+    return PREPARACION_LABELS.get(str(st or ""), "—")
+
+
+def _envio_label(order: Order) -> str:
+    """Etiqueta de la columna Envío; «No aplica» si no requiere envío."""
+    if getattr(order, "shipping_not_required", False):
+        return NO_APLICA
+    st = getattr(order.transport_status, "value", order.transport_status)
+    return ENVIO_LABELS.get(str(st or ""), "—")
+
+
+def _cobro_state(order: Order) -> str:
+    """`cobrado` / `pendiente` / `na` (sin factura → no aplica). Lee el estado
+    CONTABLE ya persistido (`factusol_cobro_status`); NO toca FACTUSOL en vivo."""
+    if not order.factusol_invoice_number:
+        return "na"
+    return "cobrado" if (order.factusol_cobro_status or "") == "cobrada" else "pendiente"
+
+
+def _origen_label(order: Order) -> str:
+    """Origen del pedido: `WEB` para los de la tienda; para los demás, el canal
+    de origen (`shipping_origin`: SAT/OFI/TER…) o «Manual» si no consta. No hay
+    campo de comercial/agente en el pedido todavía."""
+    if order.external_source == OrderSource.WOOCOMMERCE:
+        return "WEB"
+    return (order.shipping_origin or "").strip() or "Manual"
+
+
+def _serie_whiterip(order: Order) -> str:
+    """Datos técnicos combinados «Nº serie · WhiteRIP» (solo máquinas/licencias);
+    se unen los no vacíos."""
+    parts = [str(order.serial_number or "").strip(), str(order.whiterip_license or "").strip()]
+    return " · ".join(p for p in parts if p)
+
+
+def _exception_motivo(exc: Any) -> str:
+    """Texto legible de una excepción: la descripción libre de `metadata_json`
+    (sat_issue), la ETA (stock eta_set) o la nota de resolución."""
+    raw = exc.metadata_json
+    if raw:
+        try:
+            meta = json.loads(raw)
+        except (TypeError, ValueError):
+            meta = None
+        if isinstance(meta, dict):
+            for key in ("description", "descripcion", "detalle", "motivo", "note", "text"):
+                if meta.get(key):
+                    return str(meta[key])
+            if meta.get("eta_date"):
+                prov = f" ({meta['provider']})" if meta.get("provider") else ""
+                return f"ETA {meta['eta_date']}{prov}"
+        elif isinstance(meta, str) and meta.strip():
+            return meta.strip()
+    return exc.resolution_note or ""
+
+
+def _incidencia_details(
+    session: Session, order_ids: list[str],
+) -> dict[str, dict[str, Any]]:
+    """`{order_id: {tipo, motivo, asignado, fecha, estado}}` de la excepción
+    ABIERTA (o en curso) más reciente de cada pedido, para la pestaña
+    Incidencias. Un pedido en Situación=Incidencia sin excepción registrada
+    (bloqueo por empresa sin vincular / VIES) se sintetiza en `build_rows`."""
+    if not order_ids:
+        return {}
+    from app.erp.models import ErpException, ExceptionStatus  # noqa: PLC0415
+    from app.models.crm import User  # noqa: PLC0415
+
+    excs = list(session.scalars(
+        select(ErpException).where(
+            ErpException.order_id.in_(order_ids),
+            ErpException.status.in_([ExceptionStatus.OPEN, ExceptionStatus.IN_PROGRESS]),
+        ).order_by(ErpException.created_at.desc())
+    ))
+    assignee_ids = {e.assigned_to_user_id for e in excs if e.assigned_to_user_id}
+    names: dict[str, str] = {}
+    if assignee_ids:
+        names = {
+            u.id: u.full_name
+            for u in session.scalars(select(User).where(User.id.in_(assignee_ids)))
+        }
+    out: dict[str, dict[str, Any]] = {}
+    for e in excs:
+        if e.order_id in out:
+            continue  # la más reciente por pedido (ya viene ordenado desc)
+        tipo_v = getattr(e.type, "value", e.type)
+        estado_v = getattr(e.status, "value", e.status)
+        out[e.order_id] = {
+            "tipo": EXCEPTION_TYPE_LABELS.get(str(tipo_v or ""), str(tipo_v or "")),
+            "motivo": _exception_motivo(e),
+            "asignado": names.get(e.assigned_to_user_id or "") or "",
+            "fecha": _iso_date(e.created_at),
+            "estado": EXCEPTION_STATUS_LABELS.get(str(estado_v or ""), str(estado_v or "")),
+        }
+    return out
+
+
+def _primary_blocking_alert(workflow_row: dict[str, Any]) -> dict[str, Any] | None:
+    """La primera alerta BLOQUEANTE del workflow (la que manda a Incidencias)."""
+    for alert in workflow_row.get("alerts", []):
+        if alert.get("blocking"):
+            return alert
+    return None
+
+
 def build_rows(
     session: Session,
     *,
@@ -681,6 +879,24 @@ def build_rows(
                 select(IntegrationAccount).where(IntegrationAccount.id.in_(store_ids))
             )
         }
+    # Rediseño 2026 — la Situación de cada pedido reutiliza la clasificación de
+    # colas de la línea de vida (workflow.py), la misma que la bandeja. Se
+    # calcula en lote (WorkflowContext, sin N+1); de ahí salen también las
+    # alertas bloqueantes (para la columna Nota / Incidencia) y el último envío
+    # de la factura por email.
+    from app.erp.workflow import (  # noqa: PLC0415
+        QUEUE_INCIDENCIAS,
+        latest_invoice_emailed_map,
+        workflows_for,
+    )
+
+    wf_map = workflows_for(session, orders)
+    emailed_map = latest_invoice_emailed_map(session, [o.id for o in orders])
+    incidencia_ids = [
+        oid for oid, wf in wf_map.items() if wf.get("queue") == QUEUE_INCIDENCIAS
+    ]
+    inc_details = _incidencia_details(session, incidencia_ids)
+
     rows: list[dict[str, Any]] = []
     for o in orders:
         names = customer_names.get(o.id) or {}
@@ -705,6 +921,29 @@ def build_rows(
             f"{float(line.quantity):g}× {line.description or line.product_sku}"
             for line in o.lines
         )
+        empresa_name = (
+            series_names.get(serie) or FALLBACK_SERIES_NAMES.get(serie)
+            or (f"Serie {serie}" if serie else None)
+        )
+        # Rediseño 2026 — Situación (cola de la línea de vida), incidencia y
+        # datos derivados de la nueva hoja.
+        wf = wf_map.get(o.id) or {}
+        situacion = wf.get("queue") or "listo"
+        blocking = _primary_blocking_alert(wf)
+        # Detalle de la incidencia: la excepción abierta si la hay; si no
+        # (bloqueo por empresa sin vincular / VIES), se sintetiza de la alerta
+        # bloqueante para que la pestaña Incidencias case SIEMPRE con la hoja.
+        incidencia = inc_details.get(o.id)
+        if situacion == QUEUE_INCIDENCIAS and incidencia is None:
+            incidencia = {
+                "tipo": "Bloqueo",
+                "motivo": (blocking or {}).get("text") or "",
+                "asignado": "",
+                "fecha": _iso_date(o.placed_at or o.created_at),
+                "estado": "Abierta",
+            }
+        emailed = (emailed_map.get(o.id) or "")[:10] or None
+        cobro = _cobro_state(o)
         rows.append({
             "id": o.id,
             "order_number": o.order_number,
@@ -713,10 +952,7 @@ def build_rows(
             # deducida de la tienda, para la resolución de Empresa del sync.
             "serie_invoice": serie_invoice,
             "serie_store": serie_store,
-            "empresa": (
-                series_names.get(serie) or FALLBACK_SERIES_NAMES.get(serie)
-                or (f"Serie {serie}" if serie else None)
-            ),
+            "empresa": empresa_name,
             # ERP-F6-fix3: la abreviatura que usa Bart en su hoja (BO/MQ/ST…).
             # Vacía si no hay serie o esa serie no tiene abreviatura configurada
             # — nunca un valor por defecto.
@@ -788,14 +1024,51 @@ def build_rows(
             "oculto_por_estado": oculto_estado,
             "estado_woo_motivo": estado_woo_motivo,
             "reembolsado": reembolsado,
+            # --- rediseño 2026: hoja simplificada, ordenada por Situación ---
+            #: Situación = cola de la línea de vida (reutiliza workflow.py).
+            "situacion": situacion,
+            "situacion_label": SITUACION_LABELS.get(situacion, situacion),
+            "situacion_tone": SITUACION_TONE.get(situacion, "n"),
+            #: Total del pedido (número + moneda) para la columna Importe.
+            "importe": float(o.total_amount or 0),
+            "moneda": o.currency or "EUR",
+            #: «N · Nombre» de la empresa emisora (serie), p. ej. «2 · MQ Europe».
+            "empresa_serie": (
+                f"{serie} · {empresa_name}" if serie and empresa_name
+                else (empresa_name or "")
+            ),
+            #: Fecha de la factura (emisión registrada en BoHub); reutiliza el
+            #: hecho real del evento de factura, sin leer FECFAC en vivo.
+            "fecha_factura": _iso_date(_real_event_date(
+                o, "invoice", {"generated", "invoiced_by_erp"},
+            )),
+            #: Fecha del envío de la factura por email al cliente
+            #: (`erp.invoice_emailed`), o None si no se envió.
+            "factura_enviada": emailed,
+            #: Estado de cobro FACTUSOL (contable, ya persistido).
+            "cobro": cobro,
+            "cobro_label": COBRO_LABELS.get(cobro, "—"),
+            #: Preparación (SAT) y Envío; «No aplica» si no requiere envío.
+            "preparacion": _prep_label(o),
+            "envio": _envio_label(o),
+            #: Origen: WEB o el canal/comercial.
+            "origen_label": _origen_label(o),
+            #: Datos técnicos combinados (máquinas/licencias).
+            "serie_whiterip": _serie_whiterip(o),
+            #: Motivo del bloqueo (columna Nota / Incidencia), si lo hay.
+            "nota_incidencia": (blocking or {}).get("text") or "",
+            #: Detalle de la incidencia (pestaña Incidencias) o None.
+            "incidencia": incidencia,
         })
     return rows
 
 
 #: Claves de fila por las que se puede ordenar (E3-A-fix1: misma idea).
+#: `situacion` (rediseño 2026) es la ordenación por DEFECTO: por prioridad de
+#: cola y, dentro, por fecha (más nuevo primero) — lo urgente sube solo.
 SORT_KEYS = {
-    "fecha", "cliente", "empresa", "vendedor", "transportista", "origen",
-    "estado", "factura", "albaran_pedido",
+    "situacion", "fecha", "cliente", "empresa", "vendedor", "transportista",
+    "origen", "estado", "factura", "albaran_pedido",
 }
 _SEARCH_FIELDS = (
     "cliente", "albaran_pedido", "proforma", "factura", "tracking", "num_serie",
@@ -817,7 +1090,7 @@ def filter_rows(
     ver_excluidos: bool = False,
     ver_ocultos_estado: bool = False,
     pendiente_escribir: bool | None = None,
-    sort: str = "fecha",
+    sort: str = "situacion",
     direction: str = "desc",
 ) -> list[dict[str, Any]]:
     """Filtros + búsqueda + orden de la vista, en Python (mismo patrón que el
@@ -875,9 +1148,27 @@ def filter_rows(
     return _sort_rows(out, sort, direction)
 
 
+def _neg_ordinal(iso: str | None) -> int:
+    """Ordinal NEGADO de una fecha ISO (para ordenar de más nueva a más vieja
+    en orden ascendente); 0 si no hay fecha."""
+    return -date.fromisoformat(iso).toordinal() if iso else 0
+
+
+def _situacion_sort_key(row: dict[str, Any]) -> tuple[int, bool, int]:
+    """Orden por Situación (prioridad de cola) y, dentro de cada grupo, por
+    fecha descendente (más nuevo primero), con los sin fecha al final."""
+    prio = SITUACION_ORDER.get(row.get("situacion") or "listo", 99)
+    iso = row.get("fecha")
+    return (prio, iso is None, _neg_ordinal(iso))
+
+
 def _sort_rows(
     out: list[dict[str, Any]], sort: str, direction: str,
 ) -> list[dict[str, Any]]:
+    # Rediseño 2026 — orden por Situación: prioridad de cola + fecha desc. No
+    # depende de `direction` (la prioridad manda; la fecha va siempre desc).
+    if sort == "situacion":
+        return sorted(out, key=_situacion_sort_key)
     key = sort if sort in SORT_KEYS else "fecha"
     reverse = direction != "asc"
     out = sorted(
@@ -926,19 +1217,124 @@ def row_to_sheet_values(row: dict[str, Any], *, include_orden: bool = False) -> 
     ]
 
 
+# --- rediseño 2026: hoja simplificada (pantalla + exportación) -----------------
+#
+# 17 columnas, una fila por pedido, el estado en la columna Situación (no en la
+# posición) y ordenadas por Situación. Es la forma de la pantalla y del Excel;
+# la hoja de Drive mantiene su formato histórico aparte (ver el PR).
+
+#: Columnas de la hoja «Pedidos» (rediseño 2026), en orden.
+SEGUIMIENTO_COLUMNS_V2: list[str] = [
+    "Situación", "Nº pedido", "Fecha", "Cliente", "Origen", "Productos",
+    "Importe", "Empresa (serie)", "Factura", "Fecha factura",
+    "Factura enviada", "Cobro", "Preparación", "Envío", "Tracking",
+    "Nº serie · WhiteRIP", "Nota / Incidencia",
+]
+#: Columnas de la pestaña «Incidencias» (subconjunto de Situación=Incidencia).
+INCIDENCIAS_COLUMNS: list[str] = [
+    "Nº pedido", "Cliente", "Tipo", "Motivo", "Asignado a", "Fecha", "Estado",
+]
+#: Ancho aproximado de cada columna de «Pedidos» (para que el Excel se lea).
+_PEDIDOS_WIDTHS = [13, 16, 11, 30, 10, 34, 12, 18, 14, 12, 13, 12, 13, 13, 16, 20, 30]
+_INCIDENCIAS_WIDTHS = [16, 30, 24, 40, 18, 11, 12]
+
+
+def row_to_pedidos_values(row: dict[str, Any]) -> list[Any]:
+    """Los 17 valores de una fila de «Pedidos», en orden. `Importe` va como
+    NÚMERO (float) para que el Excel lo formatee; el resto, texto."""
+    return [
+        row.get("situacion_label") or "",
+        row.get("order_number") or "",
+        _sheet_date(row.get("fecha")),
+        row.get("cliente") or "",
+        row.get("origen_label") or "",
+        (row.get("productos") or "")[:300],
+        float(row.get("importe") or 0),
+        row.get("empresa_serie") or "",
+        row.get("factura") or "",
+        _sheet_date(row.get("fecha_factura")),
+        _sheet_date(row.get("factura_enviada")),
+        row.get("cobro_label") or "",
+        row.get("preparacion") or "",
+        row.get("envio") or "",
+        row.get("tracking") or "",
+        row.get("serie_whiterip") or "",
+        row.get("nota_incidencia") or "",
+    ]
+
+
+def incidencia_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Subconjunto EXACTO de filas con Situación = Incidencia (para la pestaña
+    Incidencias); mismo conjunto que en la hoja Pedidos."""
+    return [r for r in rows if r.get("situacion") == "incidencias"]
+
+
+def incidencia_values(row: dict[str, Any]) -> list[Any]:
+    """Los 7 valores de una fila de la pestaña «Incidencias»."""
+    detail = row.get("incidencia") or {}
+    return [
+        row.get("order_number") or "",
+        row.get("cliente") or "",
+        detail.get("tipo") or "",
+        detail.get("motivo") or "",
+        detail.get("asignado") or "",
+        _sheet_date(detail.get("fecha")),
+        detail.get("estado") or "",
+    ]
+
+
 def export_xlsx(rows: list[dict[str, Any]]) -> bytes:
-    """Exportación local a .xlsx: mismas columnas y orden que el Excel de
-    Bart, respetando los filtros ya aplicados. Funciona sin Drive."""
+    """Exportación local a .xlsx (rediseño 2026): dos pestañas —«Pedidos»
+    (ordenada por Situación, celda Situación coloreada, cabecera fija,
+    autofiltro, Importe con formato €) e «Incidencias» (subconjunto de
+    Situación=Incidencia)—. Respeta los filtros ya aplicados. Funciona sin
+    Drive."""
     import io  # noqa: PLC0415
 
     from openpyxl import Workbook  # noqa: PLC0415
+    from openpyxl.styles import Alignment, Font, PatternFill  # noqa: PLC0415
+    from openpyxl.utils import get_column_letter  # noqa: PLC0415
+
+    header_font = Font(bold=True)
+    header_fill = PatternFill("solid", fgColor="F2F4F7")
+
+    def _style_header(ws: Any, widths: list[int]) -> None:
+        for cell in ws[1]:
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(vertical="center")
+        for i, width in enumerate(widths, start=1):
+            ws.column_dimensions[get_column_letter(i)].width = width
+        ws.freeze_panes = "A2"  # cabecera fija
 
     wb = Workbook()
     ws = wb.active
-    ws.title = "Seguimiento"
-    ws.append(SEGUIMIENTO_COLUMNS)
-    for row in rows:
-        ws.append(row_to_sheet_values(row, include_orden=True))
+    ws.title = "Pedidos"
+    ws.append(SEGUIMIENTO_COLUMNS_V2)
+    _style_header(ws, _PEDIDOS_WIDTHS)
+    for r_i, row in enumerate(rows, start=2):
+        ws.append(row_to_pedidos_values(row))
+        situ = row.get("situacion") or "listo"
+        bg, ink = SITUACION_FILL.get(situ, _SITUACION_FILL_FALLBACK)
+        situ_cell = ws.cell(row=r_i, column=1)
+        situ_cell.fill = PatternFill("solid", fgColor=bg)
+        situ_cell.font = Font(bold=True, color=ink)
+        ws.cell(row=r_i, column=7).number_format = "#,##0.00 €"  # Importe
+        if row.get("cobro") == "cobrado":  # «Cobrado ✓» en verde
+            ws.cell(row=r_i, column=12).font = Font(bold=True, color="1F7A45")
+    ws.auto_filter.ref = (
+        f"A1:{get_column_letter(len(SEGUIMIENTO_COLUMNS_V2))}{ws.max_row}"
+    )
+
+    inc = wb.create_sheet("Incidencias")
+    inc.append(INCIDENCIAS_COLUMNS)
+    _style_header(inc, _INCIDENCIAS_WIDTHS)
+    for row in incidencia_rows(rows):
+        inc.append(incidencia_values(row))
+    inc.auto_filter.ref = (
+        f"A1:{get_column_letter(len(INCIDENCIAS_COLUMNS))}{inc.max_row}"
+    )
+
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
