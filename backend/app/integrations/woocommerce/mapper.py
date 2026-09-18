@@ -50,6 +50,10 @@ logger = logging.getLogger(__name__)
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
+#: Valores de `OrderLine.line_kind` que rellena este mapper (NULL = mercancía).
+LINE_KIND_SHIPPING = "shipping"
+LINE_KIND_FEE = "fee"
+
 
 @dataclass
 class ImportOutcome:
@@ -376,28 +380,146 @@ def _refresh_existing(
         order.language = detect_order_language(woo)[0]
 
 
+def _woo_num(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _effective_tax_rate(base: Any, tax: Any) -> float:
+    """Tipo de IVA EFECTIVO (%) a partir del impuesto REAL cobrado, nunca de un
+    literal: `impuesto / base × 100`, redondeado. 0 si la línea no lleva
+    impuesto (base o impuesto = 0) — no se inventa ningún 21 %.
+
+    En la REST API de WooCommerce el `total` de una línea, del envío y de un
+    fee es SIEMPRE sin impuesto (el impuesto va aparte en `total_tax`), tenga
+    la tienda los precios con IVA incluido o no (`prices_include_tax` solo
+    cambia cómo se teclean/enseñan, no estos totales de la API). Así que la
+    base es `total` y el IVA es `total_tax`: no se suma nada encima. Un tipo
+    resultante negativo (datos raros con signos cruzados) se descarta a 0."""
+    base = _woo_num(base)
+    tax = _woo_num(tax)
+    if base == 0 or tax == 0:
+        return 0.0
+    rate = round(tax / base * 100, 2)
+    return rate if rate > 0 else 0.0
+
+
+def _shipping_line_specs(woo: dict[str, Any]) -> list[dict[str, Any]]:
+    """Líneas de ENVÍO (portes) del pedido web con su IVA real. Prefiere
+    `shipping_lines[]` (un método por línea, con su título e impuesto); si no
+    hay ninguna pero el pedido trae `shipping_total`, sintetiza una sola. Salta
+    el envío gratis (0 sin impuesto). Van sin CODART, marcadas `is_shipping=1`
+    (para que la emisión las lleve a la banda de portes de la cabecera) y
+    `line_kind='shipping'`."""
+    out: list[dict[str, Any]] = []
+    for j, sh in enumerate(woo.get("shipping_lines") or []):
+        total = _woo_num(sh.get("total"))
+        tax = _woo_num(sh.get("total_tax"))
+        if total == 0 and tax == 0:
+            continue
+        title = str(sh.get("method_title") or "").strip()
+        out.append({
+            "product_sku": f"woo-shipping-{sh.get('id') or j}",
+            "product_codart": None,
+            "description": (f"Envío: {title}" if title else "Envío")[:255],
+            "quantity": 1.0, "unit_price": total,
+            "tax_rate": _effective_tax_rate(total, tax),
+            "line_total": total, "is_shipping": True,
+            "line_kind": LINE_KIND_SHIPPING,
+        })
+    if not out:
+        total = _woo_num(woo.get("shipping_total"))
+        tax = _woo_num(woo.get("shipping_tax"))
+        if total != 0 or tax != 0:
+            out.append({
+                "product_sku": "woo-shipping", "product_codart": None,
+                "description": "Envío", "quantity": 1.0, "unit_price": total,
+                "tax_rate": _effective_tax_rate(total, tax),
+                "line_total": total, "is_shipping": True,
+                "line_kind": LINE_KIND_SHIPPING,
+            })
+    return out
+
+
+def _fee_line_specs(woo: dict[str, Any]) -> list[dict[str, Any]]:
+    """Líneas de COMISIONES / otros cargos (`fee_lines[]`, p. ej. «PayPal cost
+    4%») con su IVA real. Van sin CODART y con `line_kind='fee'` (NO
+    `is_shipping`: no son portes). Un fee puede ser negativo (un descuento
+    metido como fee): se respeta el signo del importe."""
+    out: list[dict[str, Any]] = []
+    for k, fee in enumerate(woo.get("fee_lines") or []):
+        total = _woo_num(fee.get("total"))
+        tax = _woo_num(fee.get("total_tax"))
+        if total == 0 and tax == 0:
+            continue
+        name = str(fee.get("name") or "").strip() or "Cargo"
+        out.append({
+            "product_sku": f"woo-fee-{fee.get('id') or k}",
+            "product_codart": None, "description": name[:255],
+            "quantity": 1.0, "unit_price": total,
+            "tax_rate": _effective_tax_rate(total, tax),
+            "line_total": total, "is_shipping": False,
+            "line_kind": LINE_KIND_FEE,
+        })
+    return out
+
+
 def _apply_lines(
     session: Session, order: Order, woo: dict[str, Any], store: IntegrationAccount,
 ) -> None:
-    """Crea las líneas del pedido. Si el SKU tiene un mapping CONFIRMADO se
-    rellena el CODART; si no, queda NULL y no se hace nada más — el ERP
-    confía en la fuente y no crea excepciones sintéticas (B-2-fix5)."""
-    for i, li in enumerate(woo.get("line_items") or []):
+    """Crea las líneas del pedido: mercancía (`line_items`), ENVÍO
+    (`shipping_lines`/`shipping_total`) y COMISIONES (`fee_lines`), cada una
+    con su IVA REAL leído de la fuente (`total_tax`) — nunca un 21 % fijo.
+
+    Si el SKU de una línea de mercancía tiene un mapping CONFIRMADO se rellena
+    el CODART; si no, queda NULL y no se hace nada más — el ERP confía en la
+    fuente y no crea excepciones sintéticas (B-2-fix5). El envío y los fees no
+    son artículos (CODART NULL) y no cuentan como «sin mapear».
+
+    El `total_amount` del pedido lo fija SIEMPRE la cabecera de Woo (lo que
+    pagó el cliente, con IVA); estas líneas solo reflejan el DESGLOSE real para
+    que el resumen económico sume los componentes en vez de derivar los portes
+    como resto."""
+    position = 0
+    for li in woo.get("line_items") or []:
         sku = str(li.get("sku") or "").strip()
         if not sku:
             sku = f"woo-pid-{li.get('product_id') or li.get('id')}"
-        qty = float(li.get("quantity") or 0)
-        line_total = float(li.get("total") or 0)
+        qty = _woo_num(li.get("quantity"))
+        line_total = _woo_num(li.get("total"))
         unit_price = round(line_total / qty, 4) if qty else 0.0
         codart = _resolve_codart(session, sku, store.id)
         session.add(OrderLine(
-            order_id=order.id, position=i, product_sku=sku,
+            order_id=order.id, position=position, product_sku=sku,
             product_codart=codart,
             description=(li.get("name") or sku)[:255],
             quantity=qty, unit_price=unit_price,
-            tax_rate=float(li.get("tax_class") == "reduced-rate" and 10 or 21),
+            tax_rate=_effective_tax_rate(line_total, li.get("total_tax")),
             line_total=line_total,
         ))
+        position += 1
+    for spec in _shipping_line_specs(woo) + _fee_line_specs(woo):
+        session.add(OrderLine(order_id=order.id, position=position, **spec))
+        position += 1
+
+
+def remap_web_order_lines(
+    session: Session, order: Order, woo: dict[str, Any], store: IntegrationAccount,
+) -> None:
+    """Recalcula el DESGLOSE económico de un pedido web YA importado: borra sus
+    líneas y las recrea desde el payload de Woo con la lógica nueva (IVA real +
+    envío + comisiones) y refresca `total_amount` con el total de la cabecera.
+
+    Para el recálculo de los pedidos web aún NO facturados tras el fix (los que
+    se importaron con el IVA fabricado y sin envío/comisiones). No hace commit:
+    lo hace el caller. No toca estados ni colas — solo las líneas y el total."""
+    order.lines.clear()
+    session.flush()
+    order.total_amount = _woo_num(woo.get("total"), float(order.total_amount or 0))
+    _apply_lines(session, order, woo, store)
+    session.flush()
 
 
 def _resolve_codart(
@@ -447,10 +569,14 @@ def _auto_mark_external_if_before_cutoff(
 
 
 def _unmapped_from(session: Session, order_id: str) -> list[str]:
+    # El envío y las comisiones no son artículos: no llevan CODART a propósito
+    # y NO cuentan como «sin mapear» (solo la mercancía sin CODART).
     lines = session.scalars(
         select(OrderLine).where(
             OrderLine.order_id == order_id,
             OrderLine.product_codart.is_(None),
+            OrderLine.is_shipping.is_(False),
+            OrderLine.line_kind.is_(None),
         )
     ).all()
     return [ln.product_sku for ln in lines]

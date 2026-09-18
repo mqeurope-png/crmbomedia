@@ -176,6 +176,10 @@ export type OrderLine = {
   /** Línea de PORTES (gastos de envío), no mercancía: al emitir va a los
    *  portes de la cabecera del documento FACTUSOL, como los pedidos web. */
   is_shipping?: boolean;
+  /** Tipo de línea de un pedido web: 'shipping' (envío/portes), 'fee'
+   *  (comisiones / otros cargos) o null/ausente (mercancía). Separa el
+   *  desglose del resumen económico sin derivar los portes como resto. */
+  line_kind?: string | null;
 };
 
 export type StatusHistoryRow = {

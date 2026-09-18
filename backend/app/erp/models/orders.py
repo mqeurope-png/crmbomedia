@@ -329,6 +329,13 @@ class OrderLine(Base):
     is_shipping: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("0"),
     )
+    #: TIPO de la línea, para separar en el «Resumen económico» la mercancía
+    #: de los cargos que trae un pedido web: NULL = mercancía (el valor de
+    #: siempre), 'shipping' = envío (portes; lleva `is_shipping=1`), 'fee' =
+    #: comisiones / otros cargos (p. ej. «PayPal cost 4%»). Solo lo rellena el
+    #: mapper de WooCommerce; los pedidos manuales lo dejan NULL y siguen
+    #: marcando los portes con `is_shipping`.
+    line_kind: Mapped[str | None] = mapped_column(String(16))
 
     order: Mapped[Order] = relationship(back_populates="lines")
 

@@ -365,6 +365,7 @@ def _serialise_detail(session: Session, o: Order, actor: User) -> dict[str, Any]
                 "line_total": float(line.line_total),
                 "notes": line.notes,
                 "is_shipping": bool(line.is_shipping),
+                "line_kind": line.line_kind,
             }
             for line in o.lines
         ],
