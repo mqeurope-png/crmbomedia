@@ -410,15 +410,42 @@ número (p. ej. *BOP-1234*).
 ### Seguimiento
 
 **Menú: «ERP · Seguimiento». Título: «Seguimiento de pedidos».** Es la tabla que
-sustituye el Excel manual de seguimiento: reúne, sin copiar nada a mano, las
-columnas de siempre (Empresa, Fecha, Cliente, Vendedor, Transporte, Preparado,
-Recogido, Factura, Tracking, Nº de serie, WhiteRIP, Estado…). Por defecto muestra
-los pedidos en curso.
+sustituye el Excel manual de seguimiento: la app la genera y la **ordena sola**,
+sin mover filas a mano. Una **fila por pedido**, con el estado en una **columna**
+(no en la posición). Por defecto muestra los pedidos en curso.
+
+**Columnas (en orden):** **Situación**, **Nº pedido**, **Fecha**, **Cliente**,
+**Origen** (WEB o el canal), **Productos**, **Importe**, **Empresa (serie)**
+(p. ej. «2 · MQ Europe»), **Factura**, **Fecha factura**, **Factura enviada**
+(cuándo se mandó la factura por email al cliente), **Cobro** (*Cobrado ✓* /
+*Pendiente* / *—*), **Preparación** y **Envío** (estado del taller y del
+transporte; **«No aplica»** si el pedido no requiere envío), **Tracking**,
+**Nº serie · WhiteRIP** y **Nota / Incidencia**.
+
+**Situación** es la cola de la línea de vida del pedido —la misma de la bandeja—
+y va **coloreada**: `Incidencia` (rojo), `Por revisar` (ámbar), `Por facturar` /
+`Por cobrar` (azul), `Por enviar` (teal) y `Listo` (verde). La tabla se **ordena
+por Situación** (lo urgente arriba: primero las incidencias, al final lo listo) y,
+dentro de cada grupo, por fecha (lo más nuevo primero); así lo importante sube
+solo. Puedes reordenar pulsando en las cabeceras y filtrar como siempre (buscar,
+empresa/serie, transportista, origen, estado, fechas).
 
 Botones útiles: **«Descargar Excel»**, **«Actualizar hoja de Drive…»** (vuelca
 los datos a la hoja de Google Drive, con vista previa antes de escribir),
 **«Poner al día estados Woo…»** y **«Vincular facturas de FACTUSOL…»**. Por fila,
 **«PDF»** (de la factura) y **«Quitar»**/**«Reincluir»**.
+
+El **Excel** que se descarga trae dos pestañas: **«Pedidos»** (las 17 columnas,
+ordenadas por Situación, con la celda Situación coloreada, la cabecera fija, el
+autofiltro y el importe con formato €) y **«Incidencias»** (los mismos pedidos
+que están en Situación=Incidencia, con más detalle: nº pedido, cliente, tipo,
+motivo, asignado, fecha y estado, tomado de la bandeja de Excepciones).
+
+> La hoja de **Drive** conserva por ahora su formato histórico (miles de filas
+> que el equipo edita a mano): «Actualizar hoja de Drive» sigue **añadiendo** sin
+> tocar ese histórico. El nuevo diseño se aplica a la pantalla y al Excel
+> descargable; llevar el formato nuevo a Drive (en una pestaña propia gestionada
+> por la app) queda pendiente de validarlo sobre la hoja real.
 
 ### Excepciones
 

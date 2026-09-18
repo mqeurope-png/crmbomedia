@@ -52,6 +52,13 @@ function row(over = {}) {
     excluido_por_nombre: null,
     escrito_drive: true, pendiente_escribir: false, woo_status: "refunded",
     oculto_por_estado: false, estado_woo_motivo: null, reembolsado: true,
+    // Rediseño 2026 — hoja simplificada, ordenada por Situación.
+    situacion: "listo", situacion_label: "Listo", situacion_tone: "g",
+    importe: 100, moneda: "EUR", empresa_serie: "5 · Streamtec",
+    fecha_factura: "2026-09-01", factura_enviada: null,
+    cobro: "cobrado", cobro_label: "Cobrado ✓",
+    preparacion: "Listo", envio: "Entregado", origen_label: "WEB",
+    serie_whiterip: "", nota_incidencia: "", incidencia: null,
     ...over,
   };
 }

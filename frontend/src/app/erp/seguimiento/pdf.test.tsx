@@ -50,6 +50,13 @@ function row(over = {}) {
     excluido_en: null, excluido_por: null, excluido_motivo: null,
     escrito_drive: false, pendiente_escribir: true, woo_status: null,
     oculto_por_estado: false, estado_woo_motivo: null, reembolsado: false,
+    // Rediseño 2026 — hoja simplificada, ordenada por Situación.
+    situacion: "por_facturar", situacion_label: "Por facturar",
+    situacion_tone: "b", importe: 113.36, moneda: "EUR",
+    empresa_serie: "5 · Streamtec", fecha_factura: "2026-08-26",
+    factura_enviada: null, cobro: "pendiente", cobro_label: "Pendiente",
+    preparacion: "En cola", envio: "Sin enviar", origen_label: "OFI",
+    serie_whiterip: "", nota_incidencia: "", incidencia: null,
     ...over,
   };
 }

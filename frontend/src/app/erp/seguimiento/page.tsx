@@ -33,38 +33,44 @@ import {
 } from "../../lib/erpApi";
 import { extractErrorMessage } from "../../lib/errors";
 
-const ESTADO_TONE: Record<string, string> = {
-  pendiente: "warn",
-  enviado: "info",
-  facturado: "ok",
-};
-
-/** Cabeceras de la tabla con su clave de orden (null = no ordenable). */
+/** Cabeceras de la tabla (rediseño 2026), en orden, con su clave de orden
+ *  (null = no ordenable). El estado va en la columna Situación, no en la
+ *  posición; la tabla se ordena por Situación por defecto. */
 const HEADERS: { label: string; sort: string | null }[] = [
-  { label: "Empresa", sort: "empresa" },
+  { label: "Situación", sort: "situacion" },
+  { label: "Nº pedido", sort: "albaran_pedido" },
   { label: "Fecha", sort: "fecha" },
   { label: "Cliente", sort: "cliente" },
-  { label: "Vendedor", sort: "vendedor" },
-  { label: "OFI-TER-SAT", sort: "origen" },
-  { label: "Transport", sort: "transportista" },
-  { label: "Preparado", sort: null },
-  { label: "Recogido", sort: null },
-  { label: "F Envío Factura", sort: null },
+  { label: "Origen", sort: null },
   { label: "Productos", sort: null },
-  { label: "Proforma", sort: null },
-  { label: "Albarán / Nº Pedido Web", sort: "albaran_pedido" },
-  { label: "Nº de Factura", sort: "factura" },
+  { label: "Importe", sort: null },
+  { label: "Empresa (serie)", sort: "empresa" },
+  { label: "Factura", sort: "factura" },
+  { label: "Fecha factura", sort: null },
+  { label: "Factura enviada", sort: null },
+  { label: "Cobro", sort: null },
+  { label: "Preparación", sort: null },
+  { label: "Envío", sort: null },
   { label: "Tracking", sort: null },
-  { label: "Nº de Serie", sort: null },
-  { label: "WhiteRIP", sort: null },
-  { label: "Drive", sort: null },
-  { label: "Estado", sort: "estado" },
+  { label: "Nº serie · WhiteRIP", sort: null },
+  { label: "Nota / Incidencia", sort: null },
 ];
 
 function d(iso: string | null): string {
   if (!iso) return "—";
   const [y, m, day] = iso.split("-");
   return `${Number(day)}/${Number(m)}/${y}`;
+}
+
+/** Importe con formato `#.##0,00 €` (es-ES). */
+function eur(n: number, moneda: string): string {
+  try {
+    return new Intl.NumberFormat("es-ES", {
+      style: "currency", currency: moneda || "EUR",
+    }).format(Number(n) || 0);
+  } catch {
+    return `${(Number(n) || 0).toFixed(2)} €`;
+  }
 }
 
 /** ERP-F6 — Seguimiento de pedidos: la vista que sustituye el Excel manual de
@@ -76,7 +82,8 @@ function d(iso: string | null): string {
 export default function SeguimientoPage() {
   const [user, setUser] = useState<User | null>(null);
   const [page, setPage] = useState<SeguimientoPage | null>(null);
-  const [filters, setFilters] = useState<SeguimientoFilters>({});
+  // Rediseño 2026 — por defecto, ordenado por Situación (lo urgente arriba).
+  const [filters, setFilters] = useState<SeguimientoFilters>({ sort: "situacion", dir: "desc" });
   const [q, setQ] = useState("");
   const [origins, setOrigins] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -846,49 +853,13 @@ export default function SeguimientoPage() {
                       />
                     </td>
                   ) : null}
-                  <td title={r.empresa ?? undefined}>{r.empresa_corta || "—"}</td>
-                  <td>{d(r.fecha)}</td>
-                  <td>{r.cliente ?? "—"}</td>
-                  <td>{r.vendedor || "—"}</td>
-                  <td>{r.origen ?? "—"}</td>
-                  <td>{r.transportista ?? "—"}</td>
-                  <td>{d(r.preparado)}</td>
-                  <td>{d(r.recogido)}</td>
-                  <td>{d(r.fecha_envio_factura)}</td>
-                  <td className="muted small" title={r.productos}>
-                    {r.productos.length > 60 ? `${r.productos.slice(0, 60)}…` : r.productos || "—"}
-                  </td>
-                  <td>{r.proforma ?? "—"}</td>
                   <td>
-                    {/* Cada fila enlaza a la ficha del pedido. */}
-                    <Link href={`/erp/orders/${r.id}`}>{r.albaran_pedido}</Link>
-                  </td>
-                  <td>
-                    {r.factura ? (
-                      <span className="erp-factura-cell">
-                        {r.factura}{" "}
-                        <button
-                          type="button"
-                          className="button small secondary"
-                          disabled={busy}
-                          title="Descargar el PDF de la factura"
-                          onClick={() => void onDownloadRowPdf(r)}
-                        >
-                          PDF
-                        </button>
-                      </span>
-                    ) : "—"}
-                  </td>
-                  <td className="muted small">{r.tracking ?? "—"}</td>
-                  <td className="muted small">{r.num_serie ?? "—"}</td>
-                  <td>
-                    <span className={`badge ${r.escrito_drive ? "ok" : "muted"}`}>
-                      {r.escrito_drive ? "escrito" : "pendiente"}
-                    </span>
-                  </td>
-                  <td>
-                    <span className={`badge ${ESTADO_TONE[r.estado] ?? "muted"}`}>
-                      {r.estado}
+                    {/* Situación = cola de la línea de vida, con color. */}
+                    <span
+                      className={`seg-situacion is-${r.situacion_tone}`}
+                      title={r.nota_incidencia || undefined}
+                    >
+                      {r.situacion_label}
                     </span>
                     {r.completado ? (
                       <span className="badge ok" title={`Completado${r.completado_en ? ` el ${d(r.completado_en)}` : ""}${r.completado_por_nombre ? ` por ${r.completado_por_nombre}` : ""} (solo BoHub)`}>
@@ -906,6 +877,48 @@ export default function SeguimientoPage() {
                       </span>
                     ) : null}
                   </td>
+                  <td>
+                    {/* Cada fila enlaza a la ficha del pedido. */}
+                    <Link href={`/erp/orders/${r.id}`}>{r.order_number}</Link>
+                  </td>
+                  <td>{d(r.fecha)}</td>
+                  <td>{r.cliente ?? "—"}</td>
+                  <td>{r.origen_label || "—"}</td>
+                  <td className="muted small" title={r.productos}>
+                    {r.productos.length > 60 ? `${r.productos.slice(0, 60)}…` : r.productos || "—"}
+                  </td>
+                  <td className="erp-num">{eur(r.importe, r.moneda)}</td>
+                  <td title={r.empresa ?? undefined}>{r.empresa_serie || "—"}</td>
+                  <td>
+                    {r.factura ? (
+                      <span className="erp-factura-cell">
+                        {r.factura}{" "}
+                        <button
+                          type="button"
+                          className="button small secondary"
+                          disabled={busy}
+                          title="Descargar el PDF de la factura"
+                          onClick={() => void onDownloadRowPdf(r)}
+                        >
+                          PDF
+                        </button>
+                      </span>
+                    ) : "—"}
+                  </td>
+                  <td>{d(r.fecha_factura)}</td>
+                  <td>{d(r.factura_enviada)}</td>
+                  <td>
+                    <span className={`seg-cobro is-${r.cobro}`}>{r.cobro_label}</span>
+                  </td>
+                  <td className={r.preparacion === "No aplica" ? "muted small" : "small"}>
+                    {r.preparacion}
+                  </td>
+                  <td className={r.envio === "No aplica" ? "muted small" : "small"}>
+                    {r.envio}
+                  </td>
+                  <td className="muted small">{r.tracking ?? "—"}</td>
+                  <td className="muted small">{r.serie_whiterip || "—"}</td>
+                  <td className="small">{r.nota_incidencia || "—"}</td>
                   {viewExcluded ? (
                     <td className="small">
                       {d(r.excluido_en)}{r.excluido_por_nombre ? ` · ${r.excluido_por_nombre}` : ""}

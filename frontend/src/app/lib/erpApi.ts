@@ -621,6 +621,41 @@ export type SeguimientoRow = {
   estado_woo_motivo: string | null;
   /** Reembolsado ya cumplido: se queda visible, marcado. */
   reembolsado: boolean;
+  /** --- rediseño 2026: hoja simplificada, ordenada por Situación --- */
+  /** Situación = cola de la línea de vida (reutiliza el workflow). */
+  situacion: "incidencias" | "por_revisar" | "por_facturar" | "por_cobrar" | "por_enviar" | "listo";
+  situacion_label: string;
+  /** Tono de color de la celda Situación (letras del sistema de diseño). */
+  situacion_tone: "r" | "a" | "b" | "t" | "g" | "n";
+  /** Total del pedido (número) y su moneda. */
+  importe: number;
+  moneda: string;
+  /** «N · Nombre» de la empresa emisora (serie). */
+  empresa_serie: string;
+  /** Fecha de la factura (emisión registrada en BoHub). */
+  fecha_factura: string | null;
+  /** Fecha del envío de la factura por email al cliente. */
+  factura_enviada: string | null;
+  /** Estado de cobro FACTUSOL (contable). */
+  cobro: "cobrado" | "pendiente" | "na";
+  cobro_label: string;
+  /** Preparación (SAT) y Envío; «No aplica» si no requiere envío. */
+  preparacion: string;
+  envio: string;
+  /** Origen: WEB o el canal/comercial. */
+  origen_label: string;
+  /** Datos técnicos combinados (Nº serie · WhiteRIP). */
+  serie_whiterip: string;
+  /** Motivo del bloqueo (columna Nota / Incidencia). */
+  nota_incidencia: string;
+  /** Detalle de la incidencia (pestaña Incidencias) o null. */
+  incidencia: {
+    tipo: string;
+    motivo: string;
+    asignado: string;
+    fecha: string | null;
+    estado: string;
+  } | null;
 };
 
 export type SeguimientoFilters = {
@@ -648,6 +683,8 @@ export type SeguimientoPage = {
   items: SeguimientoRow[];
   total: number;
   columns: string[];
+  /** Cabecera de la pestaña Incidencias (rediseño 2026). */
+  incidencias_columns?: string[];
   drive: {
     configured: boolean;
     service_account_email: string | null;

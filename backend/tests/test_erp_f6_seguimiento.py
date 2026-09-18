@@ -193,10 +193,12 @@ def test_seguimiento_list_filters_and_sorts(session_factory, http) -> None:
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["total"] == 3
-    assert body["columns"] == core.SEGUIMIENTO_COLUMNS
-    # Orden por defecto: fecha desc.
+    assert body["columns"] == core.SEGUIMIENTO_COLUMNS_V2
+    # Orden por defecto: por Situación y, dentro (aquí todas «Incidencia» porque
+    # la empresa de prueba no está vinculada a FACTUSOL), fecha desc.
     assert [i["order_number"] for i in body["items"]] == [
         "BOP-200001", "BOP-200002", "BOP-200003"]
+    assert {i["situacion"] for i in body["items"]} == {"incidencias"}
     # La fila lleva lo que pinta la tabla (y el enlace via id).
     top = body["items"][0]
     assert top["cliente"] == "Zeta SL"
@@ -439,26 +441,33 @@ def test_export_xlsx_respects_filters_and_column_order(session_factory, http) ->
                  headers=auth_headers(http, "user"))
     assert r.status_code == 200, r.text
     assert "seguimiento_pedidos_" in r.headers["content-disposition"]
-    ws = load_workbook(io.BytesIO(r.content), read_only=True).active
+    wb = load_workbook(io.BytesIO(r.content), read_only=True)
+    # Rediseño 2026 — dos pestañas: «Pedidos» + «Incidencias».
+    assert wb.sheetnames == ["Pedidos", "Incidencias"]
+    ws = wb["Pedidos"]
     grid = [list(row) for row in ws.iter_rows(values_only=True)]
-    # Cabecera EXACTA del Excel de Bart, en su orden.
-    assert list(grid[0]) == core.SEGUIMIENTO_COLUMNS
+    # Cabecera del rediseño, en su orden (17 columnas).
+    assert list(grid[0]) == core.SEGUIMIENTO_COLUMNS_V2
     # Solo la fila filtrada (transportista=UPS).
     assert len(grid) == 2
     row = grid[1]
-    assert row[0] == "ST"                              # Empresa (código corto)
-    assert row[1] == "4/9/2026"                        # fecha d/m/yyyy
-    assert row[2] == "Uno SL"
-    assert row[4] == "SAT"
-    assert row[5] == "UPS"
-    assert row[11] == "BOP-700001"
-    assert row[12] == "5-260050"
-    assert row[14] == "FBAP1"
-    assert row[15] == "4829"
-    assert row[16] == "nota del pedido"                # Orden = observaciones
+    # La empresa de prueba no está vinculada a FACTUSOL → Situación=Incidencia.
+    assert row[0] == "Incidencia"                      # Situación
+    assert row[1] == "BOP-700001"                      # Nº pedido (con prefijo)
+    assert row[2] == "4/9/2026"                        # Fecha d/m/yyyy
+    assert row[3] == "Uno SL"                          # Cliente
+    assert row[4] == "SAT"                             # Origen (manual → canal)
+    assert row[7] == "5 · Streamtec"                   # Empresa (serie)
+    assert row[8] == "5-260050"                        # Factura
+    assert row[15] == "FBAP1 · 4829"                   # Nº serie · WhiteRIP
+    # La pestaña Incidencias contiene ese pedido (subconjunto de Incidencia).
+    inc = wb["Incidencias"]
+    inc_grid = [list(r2) for r2 in inc.iter_rows(values_only=True)]
+    assert inc_grid[0] == core.INCIDENCIAS_COLUMNS
+    assert [r2[0] for r2 in inc_grid[1:]] == ["BOP-700001"]
     # Sin filtro salen las dos, con el orden de la vista.
     r = http.get("/api/erp/seguimiento/export", headers=auth_headers(http, "user"))
-    ws = load_workbook(io.BytesIO(r.content), read_only=True).active
+    ws = load_workbook(io.BytesIO(r.content), read_only=True)["Pedidos"]
     assert sum(1 for _ in ws.iter_rows()) == 3
 
 

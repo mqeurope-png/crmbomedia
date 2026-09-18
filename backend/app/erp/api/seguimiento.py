@@ -77,7 +77,7 @@ def list_seguimiento(
     # ERP-Woo — ver SOLO los ocultados por estado (cancelado/reembolsado/fallido).
     ver_ocultos_estado: bool = Query(default=False),
     pendiente_escribir: bool = Query(default=False),
-    sort: str = Query(default="fecha"),
+    sort: str = Query(default="situacion"),
     dir: str = Query(default="desc", pattern="^(asc|desc)$"),  # noqa: A002
     limit: int = Query(default=200, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
@@ -101,7 +101,8 @@ def list_seguimiento(
     return {
         "items": rows[offset:offset + limit],
         "total": len(rows),
-        "columns": core.SEGUIMIENTO_COLUMNS,
+        "columns": core.SEGUIMIENTO_COLUMNS_V2,
+        "incidencias_columns": core.INCIDENCIAS_COLUMNS,
         "drive": {
             "configured": bool(
                 cfg and cfg.drive_service_account_json_encrypted
@@ -124,7 +125,7 @@ def export_seguimiento(
     estado: str | None = Query(default=None, pattern="^(pendiente|enviado|facturado|completado)$"),
     q: str | None = Query(default=None, max_length=120),
     en_curso: bool = Query(default=True),
-    sort: str = Query(default="fecha"),
+    sort: str = Query(default="situacion"),
     dir: str = Query(default="desc", pattern="^(asc|desc)$"),  # noqa: A002
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_view),

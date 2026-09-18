@@ -12388,6 +12388,39 @@ input[type="radio"]:focus-visible {
   z-index: 2;
   background: var(--surface, #f9fafb);
 }
+
+/* ERP · Seguimiento (rediseño 2026) — celda Situación coloreada. El estado
+ * va en la columna, no en la posición; reutiliza los tokens del sistema de
+ * diseño (--st-*). */
+.seg-situacion {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: var(--r-pill, 999px);
+  font-size: 0.78rem;
+  font-weight: 600;
+  white-space: nowrap;
+  background: var(--st-neutral-bg);
+  color: var(--st-neutral-ink);
+}
+.seg-situacion.is-r { background: var(--st-red-bg);     color: var(--st-red-ink); }
+.seg-situacion.is-a { background: var(--st-amber-bg);   color: var(--st-amber-ink); }
+.seg-situacion.is-b { background: var(--st-blue-bg);    color: var(--st-blue-ink); }
+.seg-situacion.is-t { background: var(--st-teal-bg);    color: var(--st-teal-ink); }
+.seg-situacion.is-g { background: var(--st-green-bg);   color: var(--st-green-ink); }
+.seg-situacion.is-n { background: var(--st-neutral-bg); color: var(--st-neutral-ink); }
+
+/* Cobro: «Cobrado ✓» en verde, pendiente en ámbar, «—» neutro. */
+.seg-cobro { font-weight: 600; }
+.seg-cobro.is-cobrado { color: var(--st-green-ink); }
+.seg-cobro.is-pendiente { color: var(--st-amber-ink); }
+.seg-cobro.is-na { color: var(--st-neutral-ink); font-weight: 400; }
+
+/* Importe alineado a la derecha, cifras tabulares. */
+.erp-seguimiento-table td.erp-num {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
 @media (max-width: 767px) {
   table.data-table--responsive,
   table.sat-table { min-width: 0; }
