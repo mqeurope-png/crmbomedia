@@ -6,11 +6,11 @@ import { SatPreparingCard } from "../../components/erp/SatPreparingCard";
 import { satDateTime, SatQueueTable } from "../../components/erp/SatQueueTable";
 import { SatReadyCard } from "../../components/erp/SatReadyCard";
 import { getCurrentUser } from "../../lib/api";
+import { Cap, can } from "../../lib/capabilities";
 import { extractErrorMessage } from "../../lib/errors";
 import {
   bulkNoShipping,
   customerLabel,
-  ERP_EDIT_ROLES,
   findSatOrderByNumber,
   getErpSettings,
   getSatHistory,
@@ -135,11 +135,25 @@ export default function SatQueuePage() {
 
   // --- permisos: añadir a mano es de oficina (admin / pedidos) ---------------
   const [canEdit, setCanEdit] = useState(false);
+  // Roles y permisos: «Añadir a mano a la cola» es aprobar/meter en cola
+  // (capacidad `erp.orders.approve` — oficina), NO trabajo de taller: el SAT no
+  // lo ve. Va aparte de `canEdit` (trabajo de taller).
+  const [canEnqueue, setCanEnqueue] = useState(false);
 
   useEffect(() => {
     getCurrentUser()
-      .then((u) => setCanEdit(Boolean(u && (ERP_EDIT_ROLES as readonly string[]).includes(u.role))))
-      .catch(() => setCanEdit(false));
+      // Roles y permisos: el trabajo de taller (preparar/embalar/técnicos) exige
+      // la capacidad `erp.sat.prepare` (SAT/Pedidos/Admin). El Comercial solo ve
+      // la cola; sube la etiqueta desde la ficha del pedido (envío). El backend
+      // revalida cada acción (403 si falta la capacidad).
+      .then((u) => {
+        setCanEdit(can(u, Cap.SAT_PREPARE));
+        setCanEnqueue(can(u, Cap.ORDERS_APPROVE));
+      })
+      .catch(() => {
+        setCanEdit(false);
+        setCanEnqueue(false);
+      });
     // Tiendas (filtro) best-effort: sin ellas el filtro no sale.
     getErpSettings()
       .then((s) => {
@@ -391,7 +405,7 @@ export default function SatQueuePage() {
         ) : null}
       </div>
 
-      {canEdit ? (
+      {canEnqueue ? (
         <form className="sat-add-form" onSubmit={addByNumber} aria-label="Añadir pedido a la cola">
           <label className="field">
             <span>Añadir pedido a la cola</span>

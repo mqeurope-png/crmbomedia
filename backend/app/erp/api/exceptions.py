@@ -32,7 +32,7 @@ from app.core.errors import not_found
 from app.db.session import get_session
 from app.erp.api.deps import (
     ERP_ADMIN_ROLES,
-    require_erp_admin,
+    require_config,
     require_erp_edit,
     require_erp_view,
 )
@@ -69,7 +69,7 @@ router = APIRouter(prefix="/api/erp", tags=["erp-exceptions"])
 @router.get("/email-senders")
 def email_senders(
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_edit),
+    current_user: User = Depends(require_erp_view),
 ) -> dict[str, Any]:
     """Remitentes disponibles para los envíos del ERP: los «enviar como»
     VERIFICADOS de la cuenta de Gmail conectada del CRM (cualquiera, no solo los
@@ -568,7 +568,7 @@ def get_settings_endpoint(
 def update_settings(
     payload: SettingsIn,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_admin),
+    current_user: User = Depends(require_config),
 ) -> dict[str, Any]:
     cfg = _get_or_create_settings(session)
     if payload.default_invoice_mode is not None:
@@ -890,7 +890,7 @@ _SENDER_PROBLEMS: dict[str, str] = {
 def send_invoice_email_template_test(
     payload: TemplateTestIn,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_admin),
+    current_user: User = Depends(require_config),
 ) -> dict[str, Any]:
     """Envía por Gmail la plantilla rellena con los datos de muestra al
     propio usuario (o a `to`), desde el remitente configurado para la serie

@@ -217,14 +217,14 @@ def test_import_detects_account_by_iban(session_factory, http, account_id) -> No
         "/api/erp/bank/import",
         files={"file": ("openbank.xlsx", other, "application/octet-stream")},
         data={"run_match": "false"},
-        headers=auth_headers(http, "pedidos"),
+        headers=auth_headers(http, "admin"),
     )
     assert r.status_code == 409, r.text
     assert r.json()["detail"]["code"] == "unknown_account"
 
     # Las cuentas de F_BAN se SUGIEREN (sin las ya dadas de alta).
     with _patched(_fake()):
-        r = http.get("/api/erp/bank/accounts/suggested", headers=auth_headers(http, "user"))
+        r = http.get("/api/erp/bank/accounts/suggested", headers=auth_headers(http, "admin"))
     assert r.status_code == 200, r.text
     assert [s["iban"] for s in r.json()["items"]] == [OPENBANK_IBAN]
     assert r.json()["items"][0]["bank_name"] == "Open Bank"
@@ -233,7 +233,7 @@ def test_import_detects_account_by_iban(session_factory, http, account_id) -> No
     r = http.post("/api/erp/bank/accounts", json={"name": "x", "iban": OPENBANK_IBAN},
                   headers=auth_headers(http, "pedidos"))
     assert r.status_code == 403
-    r = http.get("/api/erp/bank/accounts", headers=auth_headers(http, "user"))
+    r = http.get("/api/erp/bank/accounts", headers=auth_headers(http, "admin"))
     acc = r.json()["items"][0]
     assert acc["column_mapping"]["importe"] == "IMPORTE"
     assert acc["has_statement_header"] is True
@@ -338,7 +338,7 @@ def test_import_fails_visibly_on_unparseable_row(session_factory, http, account_
     r = http.post(
         "/api/erp/bank/import",
         files={"file": ("extracto.xlsx", content, "application/octet-stream")},
-        headers=auth_headers(http, "pedidos"),
+        headers=auth_headers(http, "admin"),
     )
     assert r.status_code == 422, r.text
     assert r.json()["detail"]["code"] == "parse_error"
@@ -553,7 +553,7 @@ def test_nothing_is_auto_confirmed(session_factory, http) -> None:
         r = http.post(
             "/api/erp/bank/import",
             files={"file": ("extracto.xlsx", content, "application/octet-stream")},
-            headers=auth_headers(http, "pedidos"),
+            headers=auth_headers(http, "admin"),
         )
     assert r.status_code == 201, r.text
     body = r.json()
@@ -563,7 +563,7 @@ def test_nothing_is_auto_confirmed(session_factory, http) -> None:
     assert body["matching"]["no_proposal"] == 1
 
     # Tras importar + casar: TODO sigue pendiente, incluso lo de confianza alta.
-    r = http.get("/api/erp/bank/movements", headers=auth_headers(http, "user"))
+    r = http.get("/api/erp/bank/movements", headers=auth_headers(http, "admin"))
     page = r.json()
     assert page["total"] == 4
     assert all(i["status"] == "pending" for i in page["items"])
@@ -574,16 +574,16 @@ def test_nothing_is_auto_confirmed(session_factory, http) -> None:
         assert s.scalar(select(func.count(BankReconciliation.id))
                         .where(BankReconciliation.status == "confirmed")) == 0
     # Filtro por confianza (incluida «none» = sin propuesta).
-    r = http.get("/api/erp/bank/movements?confidence=alta", headers=auth_headers(http, "user"))
+    r = http.get("/api/erp/bank/movements?confidence=alta", headers=auth_headers(http, "admin"))
     assert {i["concepto"].split(" DE ")[1] for i in r.json()["items"]} == {
         "SOLITIUM SL", "MOVIATICOS SL"}
-    r = http.get("/api/erp/bank/movements?confidence=none", headers=auth_headers(http, "user"))
+    r = http.get("/api/erp/bank/movements?confidence=none", headers=auth_headers(http, "admin"))
     assert [i["importe"] for i in r.json()["items"]] == [77.77]
 
     # Confirmar un movimiento SIN propuesta → 409 (no se inventa).
     nadie = _by_concepto(page, "NADIE")
     r = http.post(f"/api/erp/bank/movements/{nadie['id']}/confirm",
-                  headers=auth_headers(http, "pedidos"))
+                  headers=auth_headers(http, "admin"))
     assert r.status_code == 409
     assert r.json()["detail"]["code"] == "no_proposal"
     # Ver no basta para decidir: rol «user» no confirma.
@@ -591,29 +591,29 @@ def test_nothing_is_auto_confirmed(session_factory, http) -> None:
     assert r.status_code == 403
 
     # «Confirmar todas las de confianza alta» es un CLIC EXPLÍCITO de Bart.
-    r = http.post("/api/erp/bank/movements/confirm-high", headers=auth_headers(http, "pedidos"))
+    r = http.post("/api/erp/bank/movements/confirm-high", headers=auth_headers(http, "admin"))
     assert r.status_code == 200
     assert r.json()["confirmed"] == 2
-    r = http.get("/api/erp/bank/movements", headers=auth_headers(http, "user"))
+    r = http.get("/api/erp/bank/movements", headers=auth_headers(http, "admin"))
     page = r.json()
     assert page["counters"]["reconciled"] == 2
     assert page["counters"]["pending"] == 2
     assert _by_concepto(page, "Hirsch")["status"] == "pending"       # media: sigue
     # «No es cobro» con motivo, y reabrir.
     r = http.post(f"/api/erp/bank/movements/{nadie['id']}/discard",
-                  json={"reason": "fianza devuelta"}, headers=auth_headers(http, "pedidos"))
+                  json={"reason": "fianza devuelta"}, headers=auth_headers(http, "admin"))
     assert r.status_code == 200
     assert r.json()["status"] == "discarded"
     assert r.json()["discard_reason"] == "fianza devuelta"
     r = http.post(f"/api/erp/bank/movements/{nadie['id']}/reopen",
-                  headers=auth_headers(http, "pedidos"))
+                  headers=auth_headers(http, "admin"))
     assert r.json()["status"] == "pending"
     # Recalcular propuestas NO toca lo ya confirmado.
     with _patched(_fake()):
-        r = http.post("/api/erp/bank/match", headers=auth_headers(http, "pedidos"))
+        r = http.post("/api/erp/bank/match", headers=auth_headers(http, "admin"))
     assert r.status_code == 200
     assert r.json()["candidates"] == 2
-    r = http.get("/api/erp/bank/movements?status=reconciled", headers=auth_headers(http, "user"))
+    r = http.get("/api/erp/bank/movements?status=reconciled", headers=auth_headers(http, "admin"))
     assert r.json()["total"] == 2
 
 
@@ -703,7 +703,7 @@ def test_export_preserves_original_format_and_fills_columns(
         service.confirm_movement(s, _by_concepto(page, "MOVIATICOS")["id"], user_id=None)
 
     r = http.get(f"/api/erp/bank/export?account_id={account_id}",
-                 headers=auth_headers(http, "user"))
+                 headers=auth_headers(http, "admin"))
     assert r.status_code == 200, r.text
     assert r.headers["content-disposition"].endswith('extracto_conciliado.xlsx"')
     ws = load_workbook(io.BytesIO(r.content), read_only=True).worksheets[0]
@@ -728,7 +728,7 @@ def test_export_preserves_original_format_and_fills_columns(
 
     # Rango de fechas.
     r = http.get(f"/api/erp/bank/export?account_id={account_id}&desde=2026-09-02"
-                 "&hasta=2026-09-02", headers=auth_headers(http, "user"))
+                 "&hasta=2026-09-02", headers=auth_headers(http, "admin"))
     assert r.headers["content-disposition"].endswith(
         'extracto_conciliado_2026-09-02_2026-09-02.xlsx"')
     ws = load_workbook(io.BytesIO(r.content), read_only=True).worksheets[0]

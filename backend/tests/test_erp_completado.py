@@ -119,7 +119,7 @@ def _bandeja(http, **params) -> list[dict]:
 
 
 def _seguimiento(http, **params) -> list[dict]:
-    r = http.get("/api/erp/seguimiento", params=params, headers=auth_headers(http, "user"))
+    r = http.get("/api/erp/seguimiento", params=params, headers=auth_headers(http, "pedidos"))
     assert r.status_code == 200, r.text
     return r.json()["items"]
 

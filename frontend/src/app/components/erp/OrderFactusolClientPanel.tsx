@@ -1,13 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { Cap, can } from "../../lib/capabilities";
 import { getCurrentUser, type User } from "../../lib/api";
 import { getCompany, mergeCompanies, type Company } from "../../lib/companiesApi";
 import { extractErrorMessage } from "../../lib/errors";
 import {
   alreadyLinkedHolder,
   completeOrderFactusolCustomer,
-  ERP_EDIT_ROLES,
+
   getOrderFactusolCustomer,
   linkOrderFactusolCompany,
   type AlreadyLinkedHolder,
@@ -139,7 +140,7 @@ function OrderFactusolCodePanel({
   const [mergeOffer, setMergeOffer] = useState<AlreadyLinkedHolder | null>(null);
   const [merging, setMerging] = useState(false);
 
-  const canEdit = !!user && (ERP_EDIT_ROLES as readonly string[]).includes(user.role);
+  const canEdit = can(user, Cap.COMPANIES);
 
   const reload = useCallback(() => {
     getOrderFactusolCustomer(orderId)
@@ -311,7 +312,7 @@ function OrderFactusolCodePanel({
       {completing ? (
         <div className="modal-overlay" role="dialog" aria-modal="true"
              aria-label="Completar datos del cliente FACTUSOL">
-          <div className="modal-dialog">
+          <div className="modal-dialog erp-modal">
             <h2>Completar datos en FACTUSOL</h2>
             <p className="form-error" role="alert">
               Esto escribirá en FACTUSOL (cliente nº {data.codcli}) SOLO los datos
@@ -344,7 +345,7 @@ function OrderFactusolCodePanel({
       {mergeOffer ? (
         <div className="modal-overlay" role="dialog" aria-modal="true"
              aria-label="Fusionar con la empresa vinculada">
-          <div className="modal-dialog">
+          <div className="modal-dialog erp-modal">
             <h2>Ese cliente FACTUSOL ya está vinculado</h2>
             <p>
               El cliente FACTUSOL nº {data.codcli} ya está vinculado a la empresa{" "}

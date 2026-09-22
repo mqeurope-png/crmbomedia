@@ -222,11 +222,11 @@ def test_empresa_resolution_end_to_end(session_factory, http) -> None:
     assert _empresa_of(rows, "MANUAL-000001") == ""     # vacío, no BO
 
     # Parte C: la vista devuelve lo mismo y el filtro por serie funciona.
-    r = http.get("/api/erp/seguimiento?en_curso=false", headers=auth_headers(http, "user"))
+    r = http.get("/api/erp/seguimiento?en_curso=false", headers=auth_headers(http, "pedidos"))
     by_num = {i["order_number"]: i for i in r.json()["items"]}
     assert by_num["ARTISJ-9540"]["empresa_corta"] == "MQ"
     r = http.get("/api/erp/seguimiento?en_curso=false&serie=2",
-                 headers=auth_headers(http, "user"))
+                 headers=auth_headers(http, "pedidos"))
     assert [i["order_number"] for i in r.json()["items"]] == ["ARTISJ-9540"]
 
     # Las tiendas Woo se exponen en ajustes para configurar su serie.

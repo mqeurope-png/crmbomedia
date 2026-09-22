@@ -24,6 +24,9 @@ ROLE_LEVELS = {
     # nivel aquí, require_role lanzaría KeyError (500) al primer login.
     UserRole.SAT: 0,
     UserRole.PEDIDOS: 1,
+    # COMERCIAL es operativo de solo-ERP (como pedidos): nivel bajo para no
+    # heredar endpoints de manager/admin del CRM.
+    UserRole.COMERCIAL: 1,
 }
 
 
@@ -130,7 +133,7 @@ require_manager = require_role(UserRole.MANAGER)
 # (`ROLE_LEVELS`) los coloca bajo (SAT=0, PEDIDOS=1), así que HOY pasarían los
 # guards `require_viewer`/`require_user` de los endpoints del CRM — de ahí la
 # necesidad de un guard de ÁMBITO explícito.
-ERP_ONLY_ROLES = frozenset({UserRole.PEDIDOS, UserRole.SAT})
+ERP_ONLY_ROLES = frozenset({UserRole.PEDIDOS, UserRole.SAT, UserRole.COMERCIAL})
 
 
 def is_erp_only_role(role: UserRole | str) -> bool:

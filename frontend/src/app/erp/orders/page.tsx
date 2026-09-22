@@ -19,6 +19,7 @@ import { WorkflowAlerts } from "../../components/erp/flow/WorkflowAlerts";
 import { regimeLabel } from "../../components/erp/flow/RegimePill";
 import { ActionsMenu } from "../../components/erp/flow/ActionsMenu";
 import { getCurrentUser, type User } from "../../lib/api";
+import { Cap, can } from "../../lib/capabilities";
 import { extractErrorMessage } from "../../lib/errors";
 import {
   approveOrder,
@@ -26,7 +27,6 @@ import {
   completeOrder,
   completeOrdersBulk,
   customerLabel,
-  ERP_EDIT_ROLES,
   excludeSeguimiento,
   type ExclusionReasonCode,
   getErpSettings,
@@ -233,7 +233,12 @@ function ErpOrdersScreen() {
   // Tiendas Woo dadas de alta (para el filtro «Tienda» y la pastilla de origen).
   const [stores, setStores] = useState<{ slug: string; label: string }[]>([]);
 
-  const canEdit = !!user && (ERP_EDIT_ROLES as readonly string[]).includes(user.role);
+  // Roles y permisos: `canEdit` = trabajo de oficina sobre pedidos (aprobar,
+  // completar, acciones de bloque) — admin/pedidos/comercial. El COBRO en
+  // FACTUSOL es aparte (el Comercial no cobra). Los pedidos WEB ni siquiera
+  // llegan al Comercial: el backend los filtra de la lista.
+  const canEdit = can(user, Cap.ORDERS_CREATE);
+  const canCobro = can(user, Cap.COBRO_REGISTER);
   // En «Ver anulados» no hay acciones de bloque (se reactivan desde la ficha).
   const selectable = canEdit && !showCancelled;
 
@@ -620,7 +625,7 @@ function ErpOrdersScreen() {
         </button>
       );
     }
-    if (canEdit && wf.next_action === "registrar_cobro" && o.factusol_invoice_number) {
+    if (canCobro && wf.next_action === "registrar_cobro" && o.factusol_invoice_number) {
       return (
         <button
           type="button" className="button small" disabled={busy}

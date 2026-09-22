@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { Cap, can } from "../lib/capabilities";
 import { getCurrentUser } from "../lib/api";
 import {
   createCompany,
@@ -10,7 +11,7 @@ import {
   type CompanyWrite,
   type FiscalCheck,
 } from "../lib/companiesApi";
-import { createFactusolCustomer, ERP_EDIT_ROLES } from "../lib/erpApi";
+import { createFactusolCustomer } from "../lib/erpApi";
 import { extractErrorMessage } from "../lib/errors";
 
 const CHECK_DEBOUNCE_MS = 400;
@@ -153,7 +154,7 @@ export function CompanyCreateForm({
 
   useEffect(() => {
     getCurrentUser()
-      .then((u) => setCanFactusol((ERP_EDIT_ROLES as readonly string[]).includes(u.role)))
+      .then((u) => setCanFactusol(can(u, Cap.COMPANIES)))
       .catch(() => setCanFactusol(false));
   }, []);
 

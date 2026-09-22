@@ -147,6 +147,12 @@ class UserRole(StrEnum):
     # táctil del taller. StrEnum con native_enum=False → sin migración.
     PEDIDOS = "pedidos"
     SAT = "sat"
+    # BoHub ERP · roles y permisos — COMERCIAL (ventas): trabaja pedidos NO
+    # web de punta a punta (crear/aprobar/albarán/factura/email/proformas/
+    # empresas) pero NO cobra en FACTUSOL ni ve pedidos web ni toca
+    # seguimiento/config/integraciones/conciliación. En la Cola SAT solo ve y
+    # sube etiqueta.
+    COMERCIAL = "comercial"
 
 
 class Company(TimestampMixin, Base):
@@ -1246,6 +1252,11 @@ class User(TimestampMixin, Base):
     )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     password_reset_token_hash: Mapped[str | None] = mapped_column(String(255))
+    # BoHub ERP · roles y permisos — roles OPERATIVOS adicionales del ERP
+    # (multi-rol). JSON con una lista de valores de UserRole del ámbito ERP
+    # (comercial/pedidos/sat); el permiso efectivo es la UNIÓN de `role` + estos.
+    # NULL/vacío = solo el rol principal. Columna aditiva (sin backfill).
+    erp_roles: Mapped[str | None] = mapped_column(Text)
     password_reset_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # TOTP 2FA. Secret is encrypted at rest with the Fernet key reused from
     # the integration-credentials work. backup_codes_hash holds a JSON array

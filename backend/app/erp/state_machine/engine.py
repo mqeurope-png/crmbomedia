@@ -144,6 +144,16 @@ def _actor_role(actor: User | None) -> str:
     return getattr(actor.role, "value", str(actor.role))
 
 
+def _actor_roles(actor: User | None) -> set[str]:
+    """Roles EFECTIVOS del actor (rol principal + `erp_roles`), para el chequeo
+    por arco. El actor `system` (automático) es solo {SYSTEM}."""
+    if actor is None:
+        return {SYSTEM}
+    from app.erp.capabilities import effective_roles  # noqa: PLC0415
+
+    return effective_roles(actor)
+
+
 def apply_transition(
     session: Session,
     *,
@@ -167,7 +177,7 @@ def apply_transition(
         )
 
     role = _actor_role(actor)
-    if role not in transition.allowed_roles:
+    if not (_actor_roles(actor) & transition.allowed_roles):
         raise TransitionError(
             "role_forbidden",
             f"rol {role!r} no puede «{transition.label}» "
@@ -217,10 +227,10 @@ def available_transitions(
     pinta exactamente esto como botones (sin duplicar la matriz)."""
     current = getattr(order, DOMAIN_COLUMN[domain])
     current_value = getattr(current, "value", current)
-    role = _actor_role(actor)
+    roles = _actor_roles(actor)
     return [
         t for t in transitions_from(domain, current_value)
-        if role in t.allowed_roles
+        if roles & t.allowed_roles
     ]
 
 

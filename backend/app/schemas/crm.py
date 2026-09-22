@@ -139,6 +139,30 @@ class UserUpdate(BaseModel):
     full_name: str | None = Field(default=None, min_length=1, max_length=255)
     role: UserRole | None = None
     is_active: bool | None = None
+    # ERP roles y permisos — roles operativos adicionales (multi-rol). Solo
+    # admin puede asignarlos (el endpoint es admin-only) y solo se aceptan los
+    # valores de `ASSIGNABLE_ERP_ROLES`; la lista se normaliza (dedup + orden
+    # estable) y se persiste como JSON en `User.erp_roles`. `None` = no tocar.
+    erp_roles: list[str] | None = None
+
+    @field_validator("erp_roles")
+    @classmethod
+    def _validate_erp_roles(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        from app.erp.capabilities import ASSIGNABLE_ERP_ROLES  # noqa: PLC0415
+
+        out: list[str] = []
+        for item in value:
+            role = str(item or "").strip()
+            if role not in ASSIGNABLE_ERP_ROLES:
+                raise ValueError(
+                    f"rol ERP no asignable: {item!r} "
+                    f"(válidos: {', '.join(ASSIGNABLE_ERP_ROLES)})"
+                )
+            if role not in out:
+                out.append(role)
+        return out
 
 class UserPasswordUpdate(BaseModel):
     new_password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH)
@@ -155,8 +179,21 @@ class UserRead(BaseModel):
     totp_enabled: bool = False
     created_at: datetime
     updated_at: datetime
+    # ERP roles y permisos — roles operativos adicionales (multi-rol). El
+    # atributo del modelo es JSON-texto; lo exponemos decodificado como lista
+    # para que el admin UI muestre/edite los roles sin `JSON.parse`.
+    erp_roles: list[str] = []
 
     model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("erp_roles", mode="before")
+    @classmethod
+    def _decode_erp_roles(cls, value: Any) -> list[str]:
+        if isinstance(value, list):
+            return value
+        from app.erp.capabilities import parse_erp_roles  # noqa: PLC0415
+
+        return parse_erp_roles(value)
 
 
 class CurrentUserRead(UserRead):
@@ -168,6 +205,10 @@ class CurrentUserRead(UserRead):
     # baja" toggle in the send modal. The frontend reads it once on
     # session start and uses it as the modal's initial state.
     email_include_unsubscribe_default: bool = False
+    # ERP roles y permisos — capacidades EFECTIVAS del usuario (unión de las de
+    # todos sus roles). El frontend pregunta por capacidad, no por rol, para
+    # mostrar/ocultar acciones (`lib/capabilities.ts`).
+    capabilities: list[str] = []
 
 
 class UserPreferencesRead(BaseModel):

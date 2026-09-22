@@ -31,7 +31,7 @@ export function ReportExceptionModal({
 
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Reportar problema">
-      <div className="modal-dialog">
+      <div className="modal-dialog erp-modal">
         <h2>Reportar problema</h2>
         <label className="field">
           <span>Tipo de incidencia</span>

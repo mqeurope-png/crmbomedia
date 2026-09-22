@@ -6,6 +6,7 @@ import { ErrorState } from "../../components/ErrorState";
 import { PageHeader } from "../../components/PageHeader";
 import { ResetPasswordModal } from "../../components/ResetPasswordModal";
 import { RoleSelect } from "../../components/RoleSelect";
+import { ErpRolesSelect } from "../../components/ErpRolesSelect";
 import { scopeChangeWarning } from "../../lib/roles";
 import {
   isPasswordCompliant,
@@ -36,6 +37,8 @@ export default function AdminUsersPage() {
   // ERP-F2-fix1 — rol elegido por fila de edición (controlado, para leer el
   // aviso de cambio de ámbito y decidir el rol al guardar).
   const [editRoles, setEditRoles] = useState<Record<string, Role>>({});
+  // Roles y permisos — roles operativos ADICIONALES (multi-rol) por fila.
+  const [editErpRoles, setEditErpRoles] = useState<Record<string, string[]>>({});
   const [editPasswords, setEditPasswords] = useState<Record<string, string>>({});
   const [resetUser, setResetUser] = useState<User | null>(null);
 
@@ -93,10 +96,16 @@ export default function AdminUsersPage() {
       return;
     }
     try {
+      // Roles y permisos — los roles operativos adicionales no pueden repetir
+      // el rol principal (el backend los normaliza igualmente).
+      const nextErpRoles = (editErpRoles[user.id] ?? user.erp_roles ?? []).filter(
+        (role) => role !== nextRole,
+      );
       await updateUser(user.id, {
         full_name: data.get("full_name"),
         role: nextRole,
         is_active: data.get("is_active") === "true",
+        erp_roles: nextErpRoles,
       });
       const password = String(data.get("new_password") ?? "");
       if (password) {
@@ -191,6 +200,13 @@ export default function AdminUsersPage() {
                         originalRole={user.role}
                         onChange={(role) =>
                           setEditRoles((prev) => ({ ...prev, [user.id]: role }))
+                        }
+                      />
+                      <ErpRolesSelect
+                        primaryRole={editRoles[user.id] ?? user.role}
+                        value={editErpRoles[user.id] ?? user.erp_roles ?? []}
+                        onChange={(roles) =>
+                          setEditErpRoles((prev) => ({ ...prev, [user.id]: roles }))
                         }
                       />
                       <select name="is_active" defaultValue={String(user.is_active)}><option value="true">Activo</option><option value="false">Inactivo</option></select>

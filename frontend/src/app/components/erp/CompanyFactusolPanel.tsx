@@ -1,13 +1,14 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Cap, can } from "../../lib/capabilities";
 import { getCurrentUser, type User } from "../../lib/api";
 import { mergeCompanies, type Company } from "../../lib/companiesApi";
 import { extractErrorMessage } from "../../lib/errors";
 import {
   alreadyLinkedHolder,
   createFactusolCustomer,
-  ERP_EDIT_ROLES,
+
   fixFactusolCustomerRegime,
   getFactusolPullPreview,
   getFactusolRegimePreview,
@@ -104,7 +105,7 @@ export function CompanyFactusolPanel({
   const [merging, setMerging] = useState(false);
 
   const code = company.factusol_company_id;
-  const canEdit = !!user && (ERP_EDIT_ROLES as readonly string[]).includes(user.role);
+  const canEdit = can(user, Cap.COMPANIES);
 
   useEffect(() => {
     getCurrentUser().then(setUser).catch(() => undefined);
@@ -480,7 +481,7 @@ export function CompanyFactusolPanel({
       {pullPreview ? (
         <div className="modal-overlay" role="dialog" aria-modal="true"
              aria-label="Traer datos de FACTUSOL">
-          <div className="modal-dialog">
+          <div className="modal-dialog erp-modal">
             <h2>Traer datos de FACTUSOL</h2>
             <p className="form-error" role="alert">
               Esto sobrescribirá los datos de la empresa con los de FACTUSOL
@@ -524,7 +525,7 @@ export function CompanyFactusolPanel({
       {regimePreview ? (
         <div className="modal-overlay" role="dialog" aria-modal="true"
              aria-label="Régimen de IVA en FACTUSOL">
-          <div className="modal-dialog">
+          <div className="modal-dialog erp-modal">
             <h2>Régimen de IVA en FACTUSOL</h2>
             <p>
               Por la empresa: <strong>{regimePreview.regime_label}</strong>{" "}
@@ -581,7 +582,7 @@ export function CompanyFactusolPanel({
       {mergeOffer ? (
         <div className="modal-overlay" role="dialog" aria-modal="true"
              aria-label="Fusionar con la empresa vinculada">
-          <div className="modal-dialog">
+          <div className="modal-dialog erp-modal">
             <h2>Ese cliente FACTUSOL ya está vinculado</h2>
             <p>
               El cliente FACTUSOL ya está vinculado a la empresa{" "}

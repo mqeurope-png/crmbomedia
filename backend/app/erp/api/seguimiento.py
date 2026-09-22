@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_session
 from app.erp import seguimiento as core
-from app.erp.api.deps import require_erp_edit, require_erp_view
+from app.erp.api.deps import require_seguimiento
 from app.erp.models import ERP_SETTINGS_SINGLETON_ID, ErpSettings, Order
 from app.models.crm import User
 
@@ -82,7 +82,7 @@ def list_seguimiento(
     limit: int = Query(default=200, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_seguimiento),
 ) -> dict[str, Any]:
     """Vista de seguimiento. Por defecto: pedidos EN CURSO (la parte de
     arriba del Excel, lo que Bart mira a diario). Los excluidos quedan fuera
@@ -128,7 +128,7 @@ def export_seguimiento(
     sort: str = Query(default="situacion"),
     dir: str = Query(default="desc", pattern="^(asc|desc)$"),  # noqa: A002
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_seguimiento),
 ) -> Response:
     """Descarga .xlsx con las MISMAS columnas del Excel de Bart, respetando
     los filtros aplicados. No necesita Drive."""
@@ -190,7 +190,7 @@ def _factusol_invoice_serie_resolver(session: Session):
 def drive_sync(
     dry_run: bool = Query(default=False),
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_edit),
+    current_user: User = Depends(require_seguimiento),
 ) -> dict[str, Any]:
     """«Actualizar hoja de Drive»: sincronización MANUAL. ERP-F6-fix7 — SOLO
     AÑADE: identifica cada pedido por su número desnudo (ERP-F6-fix2) para no
@@ -310,7 +310,7 @@ class ExcludePreviewIn(BaseModel):
 def exclude_preview(
     payload: ExcludePreviewIn,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_edit),
+    current_user: User = Depends(require_seguimiento),
 ) -> dict[str, Any]:
     """Control manual — antes de «Quitar del seguimiento»: qué tiene cada pedido
     aguas abajo (factura, cobro, albarán, SAT, Drive…) para AVISAR. No escribe
@@ -336,7 +336,7 @@ class ExcludeIn(BaseModel):
 def exclude_orders(
     payload: ExcludeIn,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_edit),
+    current_user: User = Depends(require_seguimiento),
 ) -> dict[str, Any]:
     """ERP-F6-fix7 + control manual — QUITAR pedidos del seguimiento (uno o
     varios), en CUALQUIER estado, aunque tengan factura, cobro o albarán (se
@@ -382,7 +382,7 @@ class IncludeIn(BaseModel):
 def include_orders(
     payload: IncludeIn,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_edit),
+    current_user: User = Depends(require_seguimiento),
 ) -> dict[str, Any]:
     """ERP-F6-fix7 — REINCLUIR en el seguimiento pedidos antes excluidos
     (revierte `/exclude`). Limpia quién/cuándo/motivo de exclusión. Idempotente:
@@ -411,7 +411,7 @@ def reconcile_woo(
     dry_run: bool = Query(default=True),
     store: str | None = Query(default=None),
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_edit),
+    current_user: User = Depends(require_seguimiento),
 ) -> dict[str, Any]:
     """ERP-Woo — «poner al día» los estados de WooCommerce de los pedidos que
     BoHub tiene como activos: lista por estado en cada tienda y cruza con los
@@ -432,7 +432,7 @@ def reconcile_woo(
 def reconcile_woo_status(
     job_id: str,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_edit),
+    current_user: User = Depends(require_seguimiento),
 ) -> dict[str, Any]:
     """Polling del job de reconciliación: `pending` / `finished` (+`result` con
     el recuento por categoría) / `error` (+`error` legible)."""
@@ -448,7 +448,7 @@ def reconcile_woo_status(
 def reconcile_factusol(
     dry_run: bool = Query(default=True),
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_edit),
+    current_user: User = Depends(require_seguimiento),
 ) -> dict[str, Any]:
     """ERP — enlaza a los pedidos las facturas que YA existen en FACTUSOL (las
     creadas a mano incluidas), por REFFAC. Pasa el pedido a «facturado» y lo
@@ -469,7 +469,7 @@ def reconcile_factusol(
 def reconcile_factusol_status(
     job_id: str,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_edit),
+    current_user: User = Depends(require_seguimiento),
 ) -> dict[str, Any]:
     """Polling del job de vinculación de facturas: `pending` / `finished`
     (+`result` con lo enlazado y los conflictos) / `error`."""

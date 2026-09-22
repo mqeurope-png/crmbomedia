@@ -28,6 +28,7 @@ import { WorkflowAlerts } from "../../../components/erp/flow/WorkflowAlerts";
 import { QUEUE_LABEL } from "../../../components/erp/flow/WorkflowQueueCards";
 import { WorkflowProgress, WorkflowSteps } from "../../../components/erp/flow/WorkflowSteps";
 import { getCurrentUser, type User } from "../../../lib/api";
+import { Cap, can } from "../../../lib/capabilities";
 import { extractErrorMessage } from "../../../lib/errors";
 import { usePersistentState } from "../../../lib/usePersistentState";
 import {
@@ -51,7 +52,6 @@ import {
   uncompleteOrder,
   updateOrderLanguage,
   updateOrderSeguimiento,
-  ERP_EDIT_ROLES,
   type AvailableTransition,
   type FactusolCobroStatus,
   type FactusolInvoiceRef,
@@ -289,7 +289,13 @@ function ErpOrderDetailScreen() {
     load();
   }, [load]);
 
-  const canEmit = !!user && (ERP_EDIT_ROLES as readonly string[]).includes(user.role);
+  // Roles y permisos: `canEmit` = trabajo de oficina sobre el pedido (emitir
+  // factura, albarán, completar, editar cliente FACTUSOL) — admin/pedidos/
+  // comercial. El COBRO en FACTUSOL es aparte: el Comercial NO cobra (capacidad
+  // `erp.cobro.register`), solo admin/pedidos. El backend revalida en cada
+  // endpoint (403 si falta la capacidad).
+  const canEmit = can(user, Cap.INVOICE_EMIT);
+  const canCobro = can(user, Cap.COBRO_REGISTER);
   // Señal para abrir el modal de emisión desde «Siguiente paso» / «Solicitar
   // factura», y fase de la emisión (para no ofrecer dos veces «Emitir»).
   const [emitSignal, setEmitSignal] = useState(0);
@@ -414,7 +420,8 @@ function ErpOrderDetailScreen() {
       case "registrar_cobro": {
         // Misma lógica que el botón del panel FACTUSOL: el estado en vivo
         // manda (cobrada fuera de BoHub → no ofrecer un segundo cobro).
-        if (!canEmit || !order.factusol_invoice_number) return null;
+        // Cobro = capacidad `erp.cobro.register` (el Comercial no cobra).
+        if (!canCobro || !order.factusol_invoice_number) return null;
         const cobrada = cobroStatusOf(order) === "cobrada";
         return (
           <button
@@ -1160,7 +1167,7 @@ function ErpOrderDetailScreen() {
               {cobroLive?.status === "pendiente" && cobroLive.saldo_pendiente != null ? (
                 <span className="muted small">saldo {cobroLive.saldo_pendiente.toFixed(2)} €</span>
               ) : null}
-              {canEmit && wf?.next_action !== "registrar_cobro" ? (
+              {canCobro && wf?.next_action !== "registrar_cobro" ? (
                 <button
                   type="button"
                   className="button small secondary"

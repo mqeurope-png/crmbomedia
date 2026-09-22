@@ -188,7 +188,7 @@ def test_seguimiento_list_filters_and_sorts(session_factory, http) -> None:
         _order(s, "BOP-200003", cliente="Beta SL", carrier_id=ups,
                placed="2026-09-01", origin="OFI")
         s.commit()
-    headers = auth_headers(http, "user")
+    headers = auth_headers(http, "pedidos")
     r = http.get("/api/erp/seguimiento", headers=headers)
     assert r.status_code == 200, r.text
     body = r.json()
@@ -235,7 +235,7 @@ def test_seguimiento_search_by_serial_and_tracking(session_factory, http) -> Non
         _order(s, "BOP-300002", cliente="Dos SL", serial="ADO12611204959")
         _order(s, "BOP-300003", cliente="Tres SL", factura="5-260777")
         s.commit()
-    headers = auth_headers(http, "user")
+    headers = auth_headers(http, "pedidos")
     for q, expected in [
         ("FBAP12613", ["BOP-300001"]),               # nº de serie
         ("1z999aa10", ["BOP-300001"]),               # tracking, sin mayúsculas
@@ -261,7 +261,7 @@ def test_seguimiento_default_shows_open_orders(session_factory, http) -> None:
         ext = _order(s, "BOP-400004", cliente="Externo SL")
         ext.externally_processed_at = datetime.now(UTC)
         s.commit()
-    headers = auth_headers(http, "user")
+    headers = auth_headers(http, "pedidos")
     # Por defecto: SOLO los en curso — la parte de arriba del Excel.
     r = http.get("/api/erp/seguimiento", headers=headers)
     assert {i["order_number"] for i in r.json()["items"]} == {"BOP-400001", "BOP-400002"}
@@ -412,13 +412,13 @@ def test_view_works_without_drive_credentials(session_factory, http) -> None:
         _order(s, "BOP-600001", cliente="Sin Drive SL")
         s.commit()
     # La vista funciona igual sin Drive configurado…
-    r = http.get("/api/erp/seguimiento", headers=auth_headers(http, "user"))
+    r = http.get("/api/erp/seguimiento", headers=auth_headers(http, "pedidos"))
     assert r.status_code == 200, r.text
     assert r.json()["total"] == 1
     assert r.json()["drive"]["configured"] is False
     assert r.json()["drive"]["service_account_email"] is None
     # …y la exportación también.
-    r = http.get("/api/erp/seguimiento/export", headers=auth_headers(http, "user"))
+    r = http.get("/api/erp/seguimiento/export", headers=auth_headers(http, "pedidos"))
     assert r.status_code == 200
     # El botón de sincronizar avisa de que falta configurarlo (409, no 500).
     r = http.post("/api/erp/seguimiento/drive-sync", headers=auth_headers(http, "pedidos"))
@@ -438,7 +438,7 @@ def test_export_xlsx_respects_filters_and_column_order(session_factory, http) ->
         _order(s, "BOP-700002", cliente="Dos SL", carrier_id=mrw, placed="2026-09-03")
         s.commit()
     r = http.get("/api/erp/seguimiento/export?transportista=UPS",
-                 headers=auth_headers(http, "user"))
+                 headers=auth_headers(http, "pedidos"))
     assert r.status_code == 200, r.text
     assert "seguimiento_pedidos_" in r.headers["content-disposition"]
     wb = load_workbook(io.BytesIO(r.content), read_only=True)
@@ -466,7 +466,7 @@ def test_export_xlsx_respects_filters_and_column_order(session_factory, http) ->
     assert inc_grid[0] == core.INCIDENCIAS_COLUMNS
     assert [r2[0] for r2 in inc_grid[1:]] == ["BOP-700001"]
     # Sin filtro salen las dos, con el orden de la vista.
-    r = http.get("/api/erp/seguimiento/export", headers=auth_headers(http, "user"))
+    r = http.get("/api/erp/seguimiento/export", headers=auth_headers(http, "pedidos"))
     ws = load_workbook(io.BytesIO(r.content), read_only=True)["Pedidos"]
     assert sum(1 for _ in ws.iter_rows()) == 3
 

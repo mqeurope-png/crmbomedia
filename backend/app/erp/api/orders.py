@@ -20,7 +20,13 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.core.errors import not_found
 from app.db.session import get_session
-from app.erp.api.deps import require_erp_approve, require_erp_edit, require_erp_view
+from app.erp.api.deps import (
+    require_email_sat,
+    require_erp_approve,
+    require_erp_edit,
+    require_erp_view,
+    require_sat_tracking,
+)
 from app.erp.factusol_albaran import MANUAL_SERIES, PaymentIn
 from app.erp.models import (
     ErpException,
@@ -173,13 +179,17 @@ class TransitionIn(BaseModel):
 # --- helpers -----------------------------------------------------------------
 
 
-def _get_order(session: Session, order_id: str) -> Order:
+def _get_order(session: Session, order_id: str, user=None) -> Order:  # noqa: ANN001
     order = session.scalar(
         select(Order).where(Order.id == order_id)
         .options(selectinload(Order.lines), selectinload(Order.status_history))
     )
     if order is None:
         raise not_found("Order")
+    # Roles y permisos: un pedido WEB no existe para quien no puede verlos
+    # (Comercial) — acceso directo por URL y cualquier acción → 403.
+    if user is not None:
+        order_web_or_403(order, user)
     return order
 
 
@@ -562,17 +572,40 @@ def _warnings(session: Session, o: Order) -> list[dict[str, str]]:
 _INVOICED_FILTER = ("generated", "invoiced_by_erp", "already_invoiced_externally")
 
 
-def worklist_visible(stmt):  # noqa: ANN001, ANN201 — Select[Order]
+def worklist_visible(stmt, user=None):  # noqa: ANN001, ANN201 — Select[Order]
     """Control manual (#388 + bandeja): los pedidos QUITADOS a mano
     (`seguimiento_excluded_at`) salen de TODAS las listas de trabajo — bandeja,
     Cola PEDIDOS, colas SAT y seguimiento/Drive — con un solo flag. «Quitar»
     significa «este pedido fuera de mis listas»; «Reincluir» lo devuelve a
     todas. La ficha del pedido (`/{order_id}`) sigue accesible.
     Los ANULADOS («Anular», estado final reversible) salen igual de todas las
-    listas de trabajo; se ven con «Ver anulados»."""
-    return stmt.where(
+    listas de trabajo; se ven con «Ver anulados».
+
+    Roles y permisos: si `user` no puede ver pedidos web (Comercial), los
+    pedidos de origen WEB (WooCommerce) quedan FUERA de todas sus listas."""
+    stmt = stmt.where(
         Order.seguimiento_excluded_at.is_(None), Order.cancelled_at.is_(None),
     )
+    if user is not None and not _can_see_web_orders(user):
+        stmt = stmt.where(Order.external_source != OrderSource.WOOCOMMERCE.value)
+    return stmt
+
+
+def _can_see_web_orders(user) -> bool:  # noqa: ANN001
+    from app.erp.capabilities import can_view_web_orders  # noqa: PLC0415
+
+    return can_view_web_orders(user)
+
+
+def order_web_or_403(order: Order, user) -> None:  # noqa: ANN001
+    """403 si el pedido es de origen WEB y el usuario no puede ver pedidos web.
+    Cubre el acceso directo por URL y las acciones sobre pedidos web del
+    Comercial (que ni ve ni toca web)."""
+    from app.core.errors import forbidden  # noqa: PLC0415
+    from app.erp.factusol_albaran import is_web_order  # noqa: PLC0415
+
+    if order is not None and is_web_order(order) and not _can_see_web_orders(user):
+        raise forbidden()
 
 
 # --- endpoints ---------------------------------------------------------------
@@ -895,7 +928,7 @@ def list_orders(
         )
     else:
         # Control manual: los quitados no aparecen en la bandeja.
-        stmt = worklist_visible(stmt)
+        stmt = worklist_visible(stmt, current_user)
         # B-2-fix4: por defecto la bandeja esconde los procesados externamente.
         if not show_external:
             stmt = stmt.where(Order.externally_processed_at.is_(None))
@@ -956,7 +989,10 @@ def pending_approval(
     """Cola PEDIDOS: pendientes de revisión con sus bloqueos calculados."""
     _ = current_user
     stmt = _where_store_slug(
-        worklist_visible(select(Order).where(Order.preparation_status == "pending_review")),
+        worklist_visible(
+            select(Order).where(Order.preparation_status == "pending_review"),
+            current_user,
+        ),
         store_slug,
     )
     rows = list(session.scalars(
@@ -1229,7 +1265,7 @@ def create_order_albaran(
     from app.erp.factusol_albaran import albaran_blocker  # noqa: PLC0415
     from app.integrations.factusol.jobs import enqueue_create_order_albaran  # noqa: PLC0415
 
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     # Tarea A: un pedido MANUAL también puede tenerlo (desde sus líneas) si
     # tiene líneas y una empresa vinculada a F_CLI; los web nunca.
     blocker = albaran_blocker(order, session)
@@ -1264,7 +1300,8 @@ def get_order(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_view),
 ) -> dict[str, Any]:
-    return _serialise_detail(session, _get_order(session, order_id), current_user)
+    order = _get_order(session, order_id, current_user)
+    return _serialise_detail(session, order, current_user)
 
 
 # --- Lote 4: cliente FACTUSOL del pedido (también los WEB) --------------------
@@ -1342,7 +1379,7 @@ def order_factusol_customer(
     primero que resuelve). Para verlo y completarlo también en los pedidos WEB
     sin empresa en el CRM. Solo LECTURA en FACTUSOL."""
     _ = current_user
-    return _resolve_factusol_customer(session, _get_order(session, order_id))
+    return _resolve_factusol_customer(session, _get_order(session, order_id, current_user))
 
 
 class OrderFactusolCustomerWriteIn(BaseModel):
@@ -1384,7 +1421,7 @@ def complete_order_factusol_customer(
         update_customer_fields,
     )
 
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     if not payload.confirm:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, {
             "code": "confirmation_required",
@@ -1472,7 +1509,7 @@ def link_order_factusol_company(
         link_to_crm,
     )
 
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     if not payload.confirm:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, {
             "code": "confirmation_required",
@@ -1549,7 +1586,7 @@ def fire_transition(
 ) -> dict[str, Any]:
     """Dispara una transición vía engine. El gate aquí es de VISTA — la
     matriz fina por arco la aplica el engine (role_forbidden → 403)."""
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     try:
         domain = StatusDomain(payload.domain)
     except ValueError as exc:
@@ -1568,7 +1605,7 @@ def fire_transition(
         }.get(exc.code, 400)
         raise HTTPException(http, {"code": exc.code, "detail": exc.detail}) from exc
     session.commit()
-    return _serialise_detail(session, _get_order(session, order_id), current_user)
+    return _serialise_detail(session, _get_order(session, order_id, current_user), current_user)
 
 
 def approve_inline(session: Session, order: Order, actor: User, *, reason: str) -> None:
@@ -1592,7 +1629,7 @@ def approve_order(
 ) -> dict[str, Any]:
     """Cola PEDIDOS: valida que no hay bloqueos, marca approved_at y pasa
     preparation pending_review → in_queue (vía engine)."""
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     blockers = _blockers(session, order)
     if blockers:
         raise HTTPException(
@@ -1606,7 +1643,7 @@ def approve_order(
             409, {"code": exc.code, "detail": exc.detail}
         ) from exc
     session.commit()
-    return _serialise_detail(session, _get_order(session, order_id), current_user)
+    return _serialise_detail(session, _get_order(session, order_id, current_user), current_user)
 
 
 # --- completado (solo BoHub, reversible) --------------------------------------
@@ -1655,11 +1692,17 @@ def complete_order(
     ni FACTUSOL ni los 4 estados. Manual, reversible (`/uncomplete`) e
     idempotente: el ya completado conserva fecha y quién. Devuelve la ficha +
     `completion_avisos` (no bloqueantes)."""
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     already = mark_order_completed(session, order, current_user)
     if not already:
+        from app.core.audit import record_event  # noqa: PLC0415
+        record_event(
+            session, action="erp.order_completed", target_type="order",
+            target_id=order.id, actor=current_user,
+            metadata={"order_number": order.order_number},
+        )
         session.commit()
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     return {
         **_serialise_detail(session, order, current_user),
         "already_completed": already,
@@ -1706,7 +1749,7 @@ def bulk_complete_orders(
             logger.warning("bulk-complete: pedido %s KO: %s", order_id, exc)
             failed.append({"order_id": order_id, "error": str(exc)[:200]})
             continue
-        order = _get_order(session, order_id)
+        order = _get_order(session, order_id, current_user)
         (already if was_already else completed).append(order.id)
         items.append({
             **_serialise_summary(order, customer_names(session, [order]).get(order.id)),
@@ -1782,7 +1825,7 @@ def bulk_approve_orders(
             logger.warning("bulk-approve: pedido %s KO: %s", order_id, exc)
             failed.append({"order_id": order_id, "error": str(exc)[:200]})
             continue
-        order = _get_order(session, order_id)
+        order = _get_order(session, order_id, current_user)
         approved.append(order.id)
         items.append({
             **_serialise_summary(order, customer_names(session, [order]).get(order.id)),
@@ -1865,7 +1908,7 @@ def cancel_order_preview(
     )
 
     _ = current_user
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     blockers = cancel_blockers(order)
     warnings: list[str] = []
     if order.cancelled_at is not None:
@@ -1910,7 +1953,7 @@ def cancel_order(
             "code": "confirmation_required",
             "detail": "Anular requiere confirmación explícita.",
         })
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     blockers = cancel_blockers(order)
     if blockers:
         raise HTTPException(status.HTTP_409_CONFLICT, {
@@ -1945,7 +1988,7 @@ def cancel_order(
             job_id = enqueue_cancel_order_documents(
                 order.id, to_delete, ejercicio, current_user.id,
             )
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     return {
         **_serialise_detail(session, order, current_user),
         "already_cancelled": already,
@@ -1967,7 +2010,7 @@ def uncancel_order(
     from app.core.audit import record_event  # noqa: PLC0415
     from app.erp.order_cancel import UNCANCELLED_EVENT, unmark_cancelled  # noqa: PLC0415
 
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     already = unmark_cancelled(session, order)
     if not already:
         record_event(
@@ -1976,7 +2019,7 @@ def uncancel_order(
             metadata={"order_number": order.order_number},
         )
         session.commit()
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     return {**_serialise_detail(session, order, current_user), "already_active": already}
 
 
@@ -2003,7 +2046,7 @@ def change_order_factusol_serie(
     Registra `erp.order_serie_changed` (serie/nº viejo → nuevo)."""
     from app.erp.factusol_albaran import change_order_serie, is_web_order  # noqa: PLC0415
 
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     if not payload.confirm:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, {
             "code": "confirmation_required",
@@ -2035,7 +2078,7 @@ def change_order_factusol_serie(
         )
 
         job_id = enqueue_change_order_serie(order.id, serie, current_user.id)
-        order = _get_order(session, order_id)
+        order = _get_order(session, order_id, current_user)
         return {
             **_serialise_detail(session, order, current_user),
             "factusol_serie_job_id": job_id,
@@ -2048,7 +2091,7 @@ def change_order_factusol_serie(
         session, order, serie, client=None, ejercicio=ejercicio_for(session),
         actor=current_user,
     )
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     return {
         **_serialise_detail(session, order, current_user),
         "factusol_serie_job_id": None,
@@ -2064,14 +2107,20 @@ def uncomplete_order(
     current_user: User = Depends(require_erp_edit),
 ) -> dict[str, Any]:
     """«Desmarcar completado»: revierte `/complete`. Idempotente. Solo BoHub."""
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     already = order.completed_at is None
     if not already:
         order.completed_at = None
         order.completed_by_user_id = None
+        from app.core.audit import record_event  # noqa: PLC0415
+        record_event(
+            session, action="erp.order_uncompleted", target_type="order",
+            target_id=order.id, actor=current_user,
+            metadata={"order_number": order.order_number},
+        )
         session.commit()
     return {
-        **_serialise_detail(session, _get_order(session, order_id), current_user),
+        **_serialise_detail(session, _get_order(session, order_id, current_user), current_user),
         "already_uncompleted": already,
     }
 
@@ -2101,12 +2150,12 @@ def mark_externally_processed(
 ) -> dict[str, Any]:
     from app.erp.external_processing import mark_order_externally_processed  # noqa: PLC0415
 
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     mark_order_externally_processed(
         session, order=order, actor=current_user, note=payload.note,
     )
     session.commit()
-    return _serialise_detail(session, _get_order(session, order_id), current_user)
+    return _serialise_detail(session, _get_order(session, order_id, current_user), current_user)
 
 
 @router.post("/bulk-mark-externally-processed")
@@ -2190,7 +2239,7 @@ def emit_factusol_invoice(
     """Encola la emisión REAL de la factura en FACTUSOL (cola serializada
     `factusol:writes`). Rechaza doble facturación. El cuerpo es opcional: sin
     él se emite con las opciones por defecto (tipo '1', fecha de hoy)."""
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     inv = _status_value(order.invoice_status)
     if order.factusol_invoice_number or inv == InvoiceStatus.INVOICED_BY_ERP.value:
         raise HTTPException(status.HTTP_409_CONFLICT, {
@@ -2257,7 +2306,7 @@ def refresh_factusol_cobros(
     if payload.ids:
         stmt = stmt.where(Order.id.in_(payload.ids))
     else:
-        stmt = worklist_visible(stmt).where(Order.externally_processed_at.is_(None))
+        stmt = worklist_visible(stmt, current_user).where(Order.externally_processed_at.is_(None))
     orders = list(session.scalars(stmt.order_by(Order.placed_at.desc()).limit(500)))
     try:
         client, ejercicio, fop_names = _factusol_cobro_client(session)
@@ -2300,7 +2349,7 @@ def order_factusol_cobro(
     from app.erp.factusol_cobro import order_cobro_info  # noqa: PLC0415
     from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
 
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     base = {"order_id": order.id, "order_number": order.order_number}
     if not order.factusol_invoice_number:
         return {
@@ -2335,7 +2384,7 @@ def factusol_status(
     Solo hace la consulta en vivo si `factusol_live` está activo; si no, o si
     FACTUSOL no responde, devuelve `status: "unknown"` y el frontend cae al
     botón de emisión manual (cuyo worker reconfirma antes de escribir)."""
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     if order.factusol_invoice_number:
         return {"status": "invoiced", "codfac": order.factusol_invoice_number,
                 "auto_linked": False}
@@ -2380,7 +2429,7 @@ def update_order_language(
     current_user: User = Depends(require_erp_edit),
 ) -> dict[str, Any]:
     _ = current_user
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     order.language = payload.language
     session.commit()
     return {"id": order.id, "language": order.language}
@@ -2402,10 +2451,10 @@ def update_seguimiento_fields(
     order_id: str,
     payload: SeguimientoFieldsIn,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_edit),
+    current_user: User = Depends(require_sat_tracking),
 ) -> dict[str, Any]:
     _ = current_user
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     data = payload.model_dump(exclude_unset=True)
     for field in ("serial_number", "whiterip_license", "shipping_origin"):
         if field in data:
@@ -2436,15 +2485,22 @@ def update_order_tracking(
     order_id: str,
     payload: OrderTrackingIn,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_sat_tracking),
 ) -> dict[str, Any]:
     """Lote 5 — guarda el nº de seguimiento del pedido sin marcarlo recogido ni
     enviado: solo persiste el tracking para más tarde. Gate de VISTA (mismo que
     «Marcar recogido»), para que el taller / SAT pueda rellenarlo. Recorta y,
     vacío, lo deja en null."""
     _ = current_user
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     order.tracking_number = (payload.tracking_number or "").strip() or None
+    from app.core.audit import record_event  # noqa: PLC0415
+    record_event(
+        session, action="erp.order_tracking_updated", target_type="order",
+        target_id=order.id, actor=current_user,
+        metadata={"order_number": order.order_number,
+                  "tracking_number": order.tracking_number},
+    )
     session.commit()
     return {"id": order.id, "tracking_number": order.tracking_number}
 
@@ -2472,7 +2528,7 @@ def order_factusol_invoice_ref(
         ejercicio_for,
     )
 
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     try:
         client = FactusolClient.from_settings()
         ejercicio = ejercicio_for(session)
@@ -2595,7 +2651,7 @@ def order_factusol_pedido_pdf(
         serie_of_row,
     )
 
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     document = _factusol_document(session, order)
     if document is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, {
@@ -2697,7 +2753,7 @@ def order_factusol_albaran_pdf(
         ejercicio_for,
     )
 
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     numero = str(order.factusol_albaran_number or "").strip()
     if not numero:
         raise HTTPException(status.HTTP_404_NOT_FOUND, {
@@ -2753,12 +2809,12 @@ def order_factusol_albaran_pdf(
 # --- ERP · enviar el pedido por email (SAT / taller + otros) ----------------
 
 
-def _order_email_context(session: Session, order_id: str):
+def _order_email_context(session: Session, order_id: str, user=None):  # noqa: ANN001
     """Pedido + cliente FACTUSOL listos para el envío por email."""
     from app.integrations.factusol.client import FactusolClient  # noqa: PLC0415
     from app.integrations.factusol.service import ejercicio_for  # noqa: PLC0415
 
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, user)
     return order, FactusolClient.from_settings(), ejercicio_for(session)
 
 
@@ -2767,7 +2823,7 @@ def order_email_preview(
     order_id: str,
     lang: str | None = Query(default=None, pattern="^(es|en|de|fr|nl)$"),
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_edit),
+    current_user: User = Depends(require_email_sat),
 ) -> dict[str, Any]:
     """Datos del modal «Enviar por email»: destinatario SAT precargado (de
     Ajustes ERP), asunto y cuerpo editables, remitente y qué PDF se pueden
@@ -2776,7 +2832,7 @@ def order_email_preview(
     from app.erp.order_email import build_order_email_preview  # noqa: PLC0415
     from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
 
-    order, client, ejercicio = _order_email_context(session, order_id)
+    order, client, ejercicio = _order_email_context(session, order_id, current_user)
     try:
         return build_order_email_preview(
             session, client, order, ejercicio=ejercicio,
@@ -2813,7 +2869,7 @@ def send_order_email_endpoint(
     order_id: str,
     payload: OrderEmailPayload,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_edit),
+    current_user: User = Depends(require_email_sat),
 ) -> dict[str, Any]:
     """Envía el pedido por email con la cuenta de Gmail integrada: albarán
     adjunto por defecto, PDF del pedido y de la factura opcionales. Registra
@@ -2850,7 +2906,7 @@ def send_order_email_endpoint(
 
     _require_sender_alias(session, current_user, payload.from_alias)
 
-    order, client, ejercicio = _order_email_context(session, order_id)
+    order, client, ejercicio = _order_email_context(session, order_id, current_user)
     try:
         return send_order_email(
             session, client, order, ejercicio=ejercicio,
@@ -2887,7 +2943,7 @@ def factusol_invoice_status(
 ) -> dict[str, Any]:
     """Estado de la facturación del pedido para el polling del frontend."""
     _ = current_user
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     if order.factusol_invoice_number:
         return {"status": "invoiced",
                 "codfac": order.factusol_invoice_number}

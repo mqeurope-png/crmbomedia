@@ -11,11 +11,12 @@ export const ROLE_LABELS: Record<Role, string> = {
   viewer: "Solo lectura",
   pedidos: "ERP · Pedidos",
   sat: "ERP · Taller (SAT)",
+  comercial: "ERP · Comercial",
 };
 
 /** Roles agrupados por ÁMBITO para el desplegable (CRM arriba, ERP abajo). */
 export const CRM_ROLES: ReadonlyArray<Role> = ["admin", "manager", "user", "viewer"];
-export const ERP_ROLES: ReadonlyArray<Role> = ["pedidos", "sat"];
+export const ERP_ROLES: ReadonlyArray<Role> = ["comercial", "pedidos", "sat"];
 
 export type RoleScope = "crm" | "erp";
 

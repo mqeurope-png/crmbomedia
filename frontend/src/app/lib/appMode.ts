@@ -4,9 +4,9 @@ import type { Role } from "./api";
  *  ve el usuario: el CRM de siempre o un ERP sin rastro del CRM. */
 export type AppMode = "crm" | "erp";
 
-/** Roles OPERATIVOS de solo-ERP (pedidos/taller): entran a un ERP, no al CRM.
- *  Espejo de `ERP_ONLY_ROLES` del backend (app/core/auth.py). */
-export const ERP_ONLY_ROLES: ReadonlyArray<Role> = ["pedidos", "sat"];
+/** Roles OPERATIVOS de solo-ERP (pedidos/taller/comercial): entran a un ERP, no
+ *  al CRM. Espejo de `ERP_ONLY_ROLES` del backend (app/core/auth.py). */
+export const ERP_ONLY_ROLES: ReadonlyArray<Role> = ["pedidos", "sat", "comercial"];
 
 export function isErpOnlyRole(role: Role): boolean {
   return (ERP_ONLY_ROLES as readonly string[]).includes(role);
