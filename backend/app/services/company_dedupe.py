@@ -483,16 +483,41 @@ class MergeGroupReview:
     linked_codclis: list[str]
 
 
+#: Cómo se agruparon las fichas del plan. El guard de aplicación necesita
+#: saberlo: en `MODE_NIF` todos los miembros comparten NIF, mientras que en
+#: `MODE_NAME` los absorbidos NO tienen NIF (es la condición del modo).
+MODE_NIF = "nif"
+MODE_NAME = "name"
+
+
 @dataclass
 class MassMergePlan:
     to_merge: list[MergeGroupAction] = dc_field(default_factory=list)
     review: list[MergeGroupReview] = dc_field(default_factory=list)
     #: Fichas NO archivadas examinadas (denominador del informe).
     total_companies: int = 0
+    #: Criterio con el que se agrupó (`MODE_NIF` / `MODE_NAME`).
+    mode: str = MODE_NIF
 
     @property
     def companies_to_archive(self) -> int:
         return sum(len(a.merge_ids) for a in self.to_merge)
+
+
+def _nif_compatible(keep_key: str | None, other_key: str | None, mode: str) -> bool:
+    """¿Puede `other` absorberse en `keep` según el NIF, para este modo?
+
+    - `MODE_NIF`: el grupo se formó PORQUE comparten NIF, así que se exige que
+      sigan compartiéndolo (si no, el plan está obsoleto: se aborta).
+    - `MODE_NAME`: el grupo se formó por NOMBRE, con UNA ficha con NIF y las
+      demás SIN él. Un absorbido sin NIF es lo ESPERADO, no un conflicto; solo
+      se aborta si los dos tienen NIF y son DISTINTOS.
+
+    La comparación usa la clave canónica `nif_key` (vía `_norm_nif`), que
+    ignora el prefijo de país, para no reintroducir el `FR…` ≠ `…`."""
+    if mode == MODE_NAME:
+        return not (keep_key and other_key and keep_key != other_key)
+    return keep_key == other_key
 
 
 def _norm_nif(company: Any) -> str | None:
@@ -544,7 +569,7 @@ def plan_name_only_merges(
             continue
         groups.setdefault(key, []).append(company)
 
-    plan = MassMergePlan(total_companies=len(companies))
+    plan = MassMergePlan(total_companies=len(companies), mode=MODE_NAME)
     for key, members in sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0])):
         if len(members) < 2:
             continue
@@ -717,7 +742,11 @@ def apply_duplicate_merges(
                 if other is None or other.is_archived:
                     continue
                 # Guard: no fusionar dos NIF que ya no casan (plan obsoleto).
-                if _norm_nif(other) != keep_key:
+                # Se aplica SEGÚN EL MODO con el que se agrupó, o contradiría
+                # al propio plan: en `MODE_NAME` los absorbidos NO tienen NIF
+                # (esa es la condición del modo: una ficha con NIF + varias sin
+                # él), así que exigir igualdad abortaba TODOS los grupos.
+                if not _nif_compatible(keep_key, _norm_nif(other), plan.mode):
                     raise ValueError(
                         f"«{other.name}» ya no comparte NIF normalizado con "
                         f"«{keep.name}»: se aborta el grupo")
