@@ -58,4 +58,33 @@ describe("QuotePicker — buscador de proformas (el listado de la ficha, en el a
     render(<QuotePicker companyId="c9" onPick={() => {}} />);
     expect(await screen.findByText(/no está vinculada a FACTUSOL/)).toBeInTheDocument();
   });
+
+  // --- los DOS modos de carga (ajuste post-#451) --------------------------
+
+  it("ofrece «Solo conceptos» además de «Cargar todo» cuando se pasa el 2º modo", async () => {
+    // El camino «por referencia» solo exponía «cargar todo»; ahora ofrece los
+    // mismos dos modos que el listado de proformas de la empresa.
+    const onPick = jest.fn();
+    const onPickLines = jest.fn();
+    const user = userEvent.setup();
+    render(
+      <QuotePicker companyId="c1" onPick={onPick} onPickLines={onPickLines}
+                   pickLabel="Cargar todo" />,
+    );
+    await screen.findByText("Cabezal + SAT");
+
+    await user.click(screen.getByRole("button", { name: "Solo conceptos" }));
+    expect(onPickLines).toHaveBeenCalledWith(expect.objectContaining({ codpre: "574" }));
+    expect(onPick).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Cargar todo" }));
+    expect(onPick).toHaveBeenCalledWith(expect.objectContaining({ codpre: "574" }));
+  });
+
+  it("sin el 2º modo sigue ofreciendo solo «cargar todo» (compatibilidad)", async () => {
+    render(<QuotePicker companyId="c1" onPick={jest.fn()} />);
+    await screen.findByText("Cabezal + SAT");
+    expect(screen.queryByRole("button", { name: "Solo conceptos" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Cargar en el pedido" })).toBeInTheDocument();
+  });
 });

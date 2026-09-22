@@ -20,12 +20,19 @@ const DAYS_BACK = 365;
 export function QuotePicker({
   companyId,
   onPick,
+  onPickLines,
   pickLabel = "Cargar en el pedido",
+  linesLabel = "Solo conceptos",
   busy,
 }: {
   companyId?: string | null;
+  /** Modo «cargar todo»: cliente + líneas. */
   onPick: (q: FactusolQuote) => void;
+  /** Modo «solo conceptos»: añade las líneas SIN tocar el cliente elegido.
+   *  Si no se pasa, el buscador ofrece solo «cargar todo» (compatibilidad). */
+  onPickLines?: (q: FactusolQuote) => void;
   pickLabel?: string;
+  linesLabel?: string;
   busy?: boolean;
 }) {
   const [query, setQuery] = useState("");
@@ -90,10 +97,20 @@ export function QuotePicker({
           showCliente
           emptyText={emptyText}
           actions={(q) => (
-            <button type="button" className="button small" disabled={busy}
-                    onClick={() => onPick(q)}>
-              {pickLabel}
-            </button>
+            <span className="erp-quote-actions">
+              {onPickLines ? (
+                <button type="button" className="button small secondary" disabled={busy}
+                        title="Añade solo los conceptos; el cliente que tengas elegido no cambia."
+                        onClick={() => onPickLines(q)}>
+                  {linesLabel}
+                </button>
+              ) : null}
+              <button type="button" className="button small" disabled={busy}
+                      title="Trae el cliente de la proforma y sus líneas."
+                      onClick={() => onPick(q)}>
+                {pickLabel}
+              </button>
+            </span>
           )}
         />
       )}

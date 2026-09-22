@@ -210,3 +210,50 @@ def test_un_pedido_normal_sigue_siendo_facturable(http, session_factory):
         estados = {st["key"]: st["state"] for st in order_steps(o)}
     assert estados["factura"] != "skipped"
     assert estados["cobro"] != "skipped"
+
+
+# --- destinatario completo (ajuste post-#451) ---------------------------------
+
+
+def test_guarda_empresa_contacto_email_y_telefono(http, session_factory):
+    """El taller necesita a quién llamar: empresa, persona, email y teléfono
+    quedan en el pedido (la etiqueta imprime la EMPRESA como destinatario)."""
+    r = _crear(
+        http,
+        recipient_name="Marta Ruiz",
+        recipient_company="Prospecto SL",
+        recipient_email="marta@prospecto.example",
+        recipient_phone="+34 600 111 222",
+    )
+    assert r.status_code == 201, r.text
+    packing = r.json()["packing"]
+    assert packing["shipping_contact"] == {
+        "company": "Prospecto SL", "name": "Marta Ruiz",
+        "email": "marta@prospecto.example", "phone": "+34 600 111 222",
+    }
+    with session_factory() as s:
+        o = s.scalar(select(Order).where(Order.order_number == r.json()["order_number"]))
+        # La línea del destinatario de la etiqueta es la EMPRESA cuando la hay.
+        assert o.shipping_name == "Prospecto SL"
+
+
+def test_sin_empresa_el_destinatario_es_la_persona(http, session_factory):
+    """Una muestra a un particular: la etiqueta va a nombre de la persona."""
+    r = _crear(http, recipient_name="Marta Ruiz", recipient_company=None)
+    assert r.status_code == 201, r.text
+    assert r.json()["packing"]["shipping_contact"]["company"] is None
+    with session_factory() as s:
+        o = s.scalar(select(Order).where(Order.order_number == r.json()["order_number"]))
+        assert o.shipping_name == "Marta Ruiz"
+
+
+def test_empresa_email_y_telefono_son_opcionales(http):
+    """Solo la persona de contacto es obligatoria."""
+    assert _crear(http, recipient_company=None, recipient_email=None,
+                  recipient_phone=None).status_code == 201
+    # Sin persona de contacto, no.
+    r = http.post("/api/erp/orders/sample",
+                  json={"recipient_name": "", "recipient_company": "Prospecto SL",
+                        "shipping_address": DIRECCION, "lines": LINEAS},
+                  headers=auth_headers(http, "comercial"))
+    assert r.status_code == 422

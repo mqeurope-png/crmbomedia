@@ -167,7 +167,7 @@ describe("Fase 1 · alta de pedido desde FACTUSOL y desde la ficha de empresa", 
     render(<NewManualOrderPage />);
     // Proformas: se busca (nº, referencia o cliente) y se elige, sin serie+número.
     await user.type(screen.getByLabelText("Buscar proforma"), "575");
-    await user.click(await screen.findByRole("button", { name: "Cargar en el pedido" }));
+    await user.click(await screen.findByRole("button", { name: "Cargar todo" }));
     await waitFor(() =>
       expect(previewOrderFromFactusol).toHaveBeenCalledWith("presupuestos", 1, 575),
     );
