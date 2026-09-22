@@ -2586,6 +2586,23 @@ export type InvoiceEmailSendResult = {
 /** Factura de FACTUSOL vinculada a un pedido del CRM (serie + número). */
 export type FactusolInvoiceRef = { serie: number; codigo: number; numero: string };
 
+/** Un remitente disponible para los envíos del ERP: un «enviar como» verificado
+ *  de la cuenta de Gmail conectada del CRM. */
+export type EmailSender = { email: string; name: string; is_primary: boolean };
+
+export type EmailSendersResult = {
+  senders: EmailSender[];
+  /** false = Gmail no conectado/accesible: la UI cae al remitente propuesto. */
+  available: boolean;
+  problem: string | null;
+};
+
+/** Remitentes disponibles para el selector «Enviar desde» (sendAs verificados
+ *  del Gmail del CRM). */
+export async function getEmailSenders(): Promise<EmailSendersResult> {
+  return apiFetch(`/api/erp/email-senders`);
+}
+
 export async function getInvoiceEmailPreview(
   serie: number, codigo: number | string, lang?: FactusolPdfLang,
   orderId?: string | null,

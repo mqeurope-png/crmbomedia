@@ -66,6 +66,38 @@ from app.models.crm import User
 router = APIRouter(prefix="/api/erp", tags=["erp-exceptions"])
 
 
+@router.get("/email-senders")
+def email_senders(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """Remitentes disponibles para los envíos del ERP: los «enviar como»
+    VERIFICADOS de la cuenta de Gmail conectada del CRM (cualquiera, no solo los
+    mapeados a una tienda/serie). Alimenta el selector «Enviar desde». Si Gmail
+    no está conectado / accesible, devuelve la lista vacía y el motivo, y la UI
+    cae al remitente propuesto por tienda/serie."""
+    from app.integrations.gmail import service as gmail_service  # noqa: PLC0415
+
+    try:
+        aliases = gmail_service.list_aliases(session, current_user.id)
+    except Exception as exc:  # noqa: BLE001 — Gmail desconectado / sin scope / caído
+        return {
+            "senders": [], "available": False,
+            "problem": "gmail_unavailable", "detail": str(exc)[:200],
+        }
+    senders = [
+        {
+            "email": a["send_as_email"],
+            "name": (a.get("display_name") or "").strip(),
+            "is_primary": bool(a.get("is_primary")),
+        }
+        for a in aliases if a.get("send_as_email")
+    ]
+    # La cuenta base (primaria) primero; el resto por dirección.
+    senders.sort(key=lambda s: (not s["is_primary"], s["email"].lower()))
+    return {"senders": senders, "available": True, "problem": None}
+
+
 # --- schemas -----------------------------------------------------------------
 
 

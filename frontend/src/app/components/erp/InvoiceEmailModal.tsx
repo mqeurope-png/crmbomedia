@@ -14,6 +14,7 @@ import {
   splitContactChannels,
   type ContactChannel,
 } from "./CompanyContactsPicker";
+import { SenderSelect } from "./SenderSelect";
 
 /** Idiomas soportados (mismo orden y etiquetas que el selector del PDF). Se
  *  define aquí y no se importa de FactusolDocumentDetailModal para no crear
@@ -121,6 +122,8 @@ export function InvoiceEmailModal({
   const [cc, setCc] = useState("");
   // Contactos de la empresa elegidos (email → canal Para/CC).
   const [contactSel, setContactSel] = useState<Record<string, ContactChannel>>({});
+  // Remitente elegido («Enviar desde»); por defecto el de tienda/serie.
+  const [fromAlias, setFromAlias] = useState("");
   const [lang, setLang] = useState<FactusolPdfLang>("es");
   const [langSource, setLangSource] = useState<InvoiceEmailLangSource | null>(null);
   const [subject, setSubject] = useState("");
@@ -147,6 +150,7 @@ export function InvoiceEmailModal({
           setLangSource(p.lang_source);
           setSubject(p.subject);
           setBody(p.body_text);
+          if (!keepRecipient) setFromAlias(p.from_alias);
           if (!keepRecipient) {
             const contacts = p.company_contacts ?? [];
             if (contacts.length > 0) {
@@ -190,7 +194,7 @@ export function InvoiceEmailModal({
   const canSend =
     !!preview && !sending && recipientsValid && ccValid
     && subject.trim().length > 0
-    && body.trim().length > 0 && !!preview.from_alias;
+    && body.trim().length > 0 && !!fromAlias;
 
   async function send() {
     if (!preview || !canSend) return;
@@ -204,7 +208,7 @@ export function InvoiceEmailModal({
         subject: subject.trim(),
         body_text: body,
         lang,
-        from_alias: preview.from_alias,
+        from_alias: fromAlias,
         reply_to_message_id: preview.reply_to_message_id,
         bank: bank ?? null,
         variant: variant ?? null,
@@ -363,24 +367,31 @@ export function InvoiceEmailModal({
               <span aria-hidden="true">📎</span>{" "}
               Adjunto: <strong>{preview.attachment_filename}</strong>
             </p>
-            <p className="muted small">
-              Se envía desde <strong>{preview.from_alias || "—"}</strong>
-              {preview.from_alias
-                ? preview.from_alias_source === "tienda"
-                  ? ` (remitente de la tienda${preview.store ? ` ${preview.store}` : ""})`
-                  : preview.from_alias_source === "serie"
-                    ? " (empresa emisora de la serie)"
-                    : " (alias por defecto del usuario)"
-                : ""}.
-              {preview.replies_to_thread
-                ? " Se responderá al hilo del pedido."
-                : ""}
-            </p>
-            {!preview.from_alias ? (
+            <SenderSelect
+              defaultAlias={preview.from_alias}
+              value={fromAlias}
+              onChange={setFromAlias}
+              disabled={sending}
+              hint={
+                <>
+                  Por defecto, el remitente
+                  {preview.from_alias_source === "tienda"
+                    ? ` de la tienda${preview.store ? ` ${preview.store}` : ""}`
+                    : preview.from_alias_source === "serie"
+                      ? " de la empresa emisora de la serie"
+                      : " por defecto del usuario"}
+                  ; puedes elegir cualquier «enviar como» del Gmail.
+                  {preview.replies_to_thread
+                    ? " Se responderá al hilo del pedido."
+                    : ""}
+                </>
+              }
+            />
+            {!fromAlias ? (
               <p className="form-error">
-                No tienes un alias de envío configurado (en /account).
+                No hay ningún remitente disponible (revisa la conexión de Gmail).
               </p>
-            ) : preview.from_alias_ok === false ? (
+            ) : fromAlias === preview.from_alias && preview.from_alias_ok === false ? (
               <p className="form-error" role="alert">
                 {ALIAS_PROBLEMS[preview.from_alias_problem ?? ""]
                   ?? "No se podrá enviar desde ese remitente."}

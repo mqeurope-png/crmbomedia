@@ -1,15 +1,17 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { OrderEmailModal } from "./OrderEmailModal";
-import { getOrderEmailPreview, sendOrderEmail } from "../../lib/erpApi";
+import { getOrderEmailPreview, sendOrderEmail, getEmailSenders } from "../../lib/erpApi";
 
 jest.mock("../../lib/erpApi", () => ({
   getOrderEmailPreview: jest.fn(),
   sendOrderEmail: jest.fn(),
+  getEmailSenders: jest.fn(),
 }));
 
 const mockPreview = getOrderEmailPreview as jest.Mock;
 const mockSend = sendOrderEmail as jest.Mock;
+const mockSenders = getEmailSenders as jest.Mock;
 
 const PREVIEW = {
   order_id: "o1",
@@ -54,6 +56,8 @@ beforeEach(() => {
     to: ["taller@bomedia.net"], cc: [], bcc: [], lang: "es",
     attachments: ["albaran.pdf"], attachment_kinds: ["albaran"],
   });
+  mockSenders.mockReset();
+  mockSenders.mockResolvedValue({ senders: [], available: true, problem: null });
 });
 
 describe("OrderEmailModal — enviar el pedido al SAT", () => {
