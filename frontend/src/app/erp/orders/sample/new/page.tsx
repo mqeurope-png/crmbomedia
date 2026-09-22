@@ -24,7 +24,10 @@ import { extractErrorMessage } from "../../../../lib/errors";
 export default function NuevaMuestraPage() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
+  const [recipientCompany, setRecipientCompany] = useState("");
   const [recipient, setRecipient] = useState("");
+  const [recipientEmail, setRecipientEmail] = useState("");
+  const [recipientPhone, setRecipientPhone] = useState("");
   const [addressLine, setAddressLine] = useState("");
   const [city, setCity] = useState("");
   const [postalCode, setPostalCode] = useState("");
@@ -63,6 +66,9 @@ export default function NuevaMuestraPage() {
       }));
       const order = await createSampleOrder({
         recipient_name: recipient.trim(),
+        recipient_company: recipientCompany.trim() || null,
+        recipient_email: recipientEmail.trim() || null,
+        recipient_phone: recipientPhone.trim() || null,
         shipping_address: {
           address_line: addressLine.trim() || null,
           city: city.trim() || null,
@@ -115,11 +121,29 @@ export default function NuevaMuestraPage() {
             ser un prospecto.
           </p>
           <label className="field">
-            <span>Nombre *</span>
+            <span>Empresa</span>
+            <input value={recipientCompany} maxLength={200}
+                   placeholder="Empresa destinataria (opcional)"
+                   onChange={(e) => setRecipientCompany(e.target.value)} />
+          </label>
+          <label className="field">
+            <span>Persona de contacto *</span>
             <input value={recipient} required maxLength={120}
-                   placeholder="Nombre de la persona o empresa"
+                   placeholder="A quién va dirigido"
                    onChange={(e) => setRecipient(e.target.value)} />
           </label>
+          <div className="erp-form-row">
+            <label className="field">
+              <span>Email</span>
+              <input value={recipientEmail} type="email" maxLength={255}
+                     onChange={(e) => setRecipientEmail(e.target.value)} />
+            </label>
+            <label className="field">
+              <span>Teléfono</span>
+              <input value={recipientPhone} maxLength={40}
+                     onChange={(e) => setRecipientPhone(e.target.value)} />
+            </label>
+          </div>
           <label className="field">
             <span>Dirección *</span>
             <input value={addressLine} required maxLength={500}

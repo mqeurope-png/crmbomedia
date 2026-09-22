@@ -785,8 +785,13 @@ class SampleOrderCreate(BaseModel):
     pide empresa vinculada a FACTUSOL, ni serie, ni NIF — este pedido no se
     factura y no toca FACTUSOL."""
 
-    #: Destinatario: nombre obligatorio (la dirección va aparte).
+    #: Destinatario. La PERSONA DE CONTACTO es lo único obligatorio (a quién va
+    #: dirigido); la empresa, el email y el teléfono son opcionales porque una
+    #: muestra puede ir a un particular o a un prospecto.
     recipient_name: str = Field(min_length=1, max_length=120)
+    recipient_company: str | None = Field(default=None, max_length=200)
+    recipient_email: str | None = Field(default=None, max_length=255)
+    recipient_phone: str | None = Field(default=None, max_length=40)
     shipping_address: AddressIn
     #: Vincular empresa/contacto del CRM es OPCIONAL (una muestra puede ir a un
     #: prospecto que aún no es cliente).
@@ -809,14 +814,33 @@ class SampleOrderCreate(BaseModel):
 
 
 def _sample_packing_json(payload: SampleOrderCreate) -> str:
-    """Dirección + motivo de la muestra → `packing_json` (igual que el alta
-    manual: el pedido no tiene columnas de dirección)."""
+    """Destinatario + dirección + motivo de la muestra → `packing_json` (igual
+    que el alta manual: el pedido no tiene columnas para estos datos y esto no
+    lleva migración).
+
+    El bloque `shipping_contact` guarda a QUIÉN se le manda con los cuatro
+    datos que pide el taller para la etiqueta: empresa, persona de contacto,
+    email y teléfono. `Order.shipping_name` sigue siendo la LÍNEA que imprime
+    la etiqueta (la empresa si la hay, si no la persona)."""
     from app.erp.sample_orders import SAMPLE_REASON_KEY  # noqa: PLC0415
 
     data: dict[str, Any] = {"shipping_address": payload.shipping_address.model_dump()}
+    contacto = {
+        "company": (payload.recipient_company or "").strip() or None,
+        "name": payload.recipient_name.strip(),
+        "email": (payload.recipient_email or "").strip() or None,
+        "phone": (payload.recipient_phone or "").strip() or None,
+    }
+    data["shipping_contact"] = contacto
     if (payload.reason or "").strip():
         data[SAMPLE_REASON_KEY] = payload.reason.strip()
     return json.dumps(data)
+
+
+def sample_recipient_line(payload: SampleOrderCreate) -> str:
+    """Lo que imprime la etiqueta como destinatario: la EMPRESA si la hay y, si
+    no, la persona de contacto."""
+    return (payload.recipient_company or "").strip() or payload.recipient_name.strip()
 
 
 @router.post("/sample", status_code=201)
@@ -855,7 +879,7 @@ def create_sample_order(
         notes=payload.notes,
         placed_at=datetime.now(UTC),
         packing_json=_sample_packing_json(payload),
-        shipping_name=payload.recipient_name.strip(),
+        shipping_name=sample_recipient_line(payload),
     )
     session.add(order)
     session.flush()

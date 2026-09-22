@@ -665,6 +665,9 @@ Para encargos por teléfono, muestras o reparaciones sin ticket web.
   elegido **no cambia**. Es lo que quieres para repetir los mismos artículos
   con otro cliente.
 
+Los mismos dos botones salen al buscar una proforma **por referencia** en
+**«Importar de FACTUSOL»**, así que da igual por dónde llegues.
+
 En ambos casos: si ya habías escrito líneas, te pregunta si **añadirlas** o
 **reemplazarlas**; las líneas quedan **editables** (cantidad, precio,
 descripción) antes de crear el pedido, y los **portes** de la proforma se
@@ -710,8 +713,11 @@ ni factura, ni cobro — solo se prepara y se envía.
 
 Bandeja → **«+ Nuevo envío / muestra»**. El formulario es corto a propósito:
 
-1. **Destinatario** — nombre y dirección (obligatorios). **No** hace falta que
-   sea un cliente del CRM ni que esté en FACTUSOL: puede ser un prospecto.
+1. **Destinatario** — **Empresa** (opcional), **Persona de contacto**
+   (obligatoria: a quién va dirigido), **Email** y **Teléfono** (opcionales) y
+   la **dirección**. **No** hace falta que sea un cliente del CRM ni que esté
+   en FACTUSOL: puede ser un prospecto o un particular. La etiqueta sale a
+   nombre de la **empresa** si la pones y, si no, de la persona.
 2. **Qué se envía** — artículos o conceptos libres, para que el taller sepa qué
    preparar. El **precio es opcional** (0 por defecto): no se cobra.
 3. **Motivo** — por qué se manda (*«muestra»*, *«pieza olvidada del pedido

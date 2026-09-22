@@ -125,7 +125,7 @@ describe("Alta de pedido — buscador de proformas y precarga desde FACTUSOL", (
     );
     expect(await screen.findByText("Cabezal + SAT")).toBeInTheDocument();
     expect(screen.getByText("Roca Joiers")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Cargar en el pedido" }));
+    await user.click(screen.getByRole("button", { name: "Cargar todo" }));
     await waitFor(() =>
       expect(previewOrderFromFactusol).toHaveBeenCalledWith("presupuestos", 1, 574),
     );

@@ -1198,6 +1198,7 @@ export default function NewManualOrderPage() {
                   <QuotePicker
                     companyId={companyId}
                     busy={facLoading}
+                    pickLabel="Cargar todo"
                     onPick={(q) => {
                       if (!q.codpre) return;
                       // La SERIE es la de la proforma, no siempre la 1: con el
@@ -1207,6 +1208,9 @@ export default function NewManualOrderPage() {
                         "presupuestos", q.serie || 1, Number(q.codpre),
                       );
                     }}
+                    // Mismo modo «solo conceptos» que el listado de proformas
+                    // de la empresa: reutiliza la misma carga, sin duplicarla.
+                    onPickLines={(q) => void loadQuoteIntoForm(q, "lines")}
                   />
                 ) : (
                   <PedidoClientePicker
@@ -1257,7 +1261,7 @@ export default function NewManualOrderPage() {
                   <p className="form-info" role="status">{quoteNotice}</p>
                 ) : null}
                 {quotesOpen ? (
-                  <ul className="erp-quote-list">
+                  <ul className="erp-quote-list" aria-label="Proformas de la empresa">
                     {quotes.slice(0, 5).map((q) => (
                       <li key={q.codpre ?? ""}>
                         <span>

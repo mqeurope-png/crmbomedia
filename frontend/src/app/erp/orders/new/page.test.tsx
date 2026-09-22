@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import NewManualOrderPage from "./page";
 import { listContacts } from "../../../lib/api";
@@ -410,7 +410,8 @@ describe("NewManualOrderPage", () => {
       await screen.findByRole("button", { name: /Proformas FACTUSOL disponibles/ }),
     );
     await user.click(
-      await screen.findByRole("button", { name: "Solo conceptos" }),
+      within(await screen.findByRole("list", { name: "Proformas de la empresa" }))
+        .getByRole("button", { name: "Solo conceptos" }),
     );
 
     await waitFor(() => expect(mockGetQuote).toHaveBeenCalledWith("77"));
@@ -493,7 +494,8 @@ describe("NewManualOrderPage", () => {
       await screen.findByRole("button", { name: /Proformas FACTUSOL disponibles/ }),
     );
     await user.click(
-      await screen.findByRole("button", { name: "Solo conceptos" }),
+      within(await screen.findByRole("list", { name: "Proformas de la empresa" }))
+        .getByRole("button", { name: "Solo conceptos" }),
     );
 
     expect(await screen.findByText(/FACTUSOL de escritorio/)).toBeInTheDocument();

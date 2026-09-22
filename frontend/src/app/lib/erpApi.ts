@@ -1071,7 +1071,12 @@ export async function createOrder(
  *  ni cobro. Entra directa a la Cola SAT — solo queda prepararla y enviarla.
  *  La pueden crear Comercial, ERP Pedidos, ERP SAT y Admin. */
 export type SampleOrderPayload = {
+  /** Persona de contacto: a quién va dirigido (obligatorio). */
   recipient_name: string;
+  /** Empresa destinataria; opcional (puede ir a un particular/prospecto). */
+  recipient_company?: string | null;
+  recipient_email?: string | null;
+  recipient_phone?: string | null;
   shipping_address: {
     address_line?: string | null;
     city?: string | null;
