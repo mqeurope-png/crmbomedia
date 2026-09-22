@@ -26,7 +26,7 @@ export function WooStoreForm({
 
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Añadir tienda WooCommerce">
-      <div className="modal-dialog">
+      <div className="modal-dialog erp-modal">
         <h2>Añadir tienda WooCommerce</h2>
         <label className="field">
           <span>Slug de tienda (id interno)</span>

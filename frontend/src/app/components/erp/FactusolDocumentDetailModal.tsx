@@ -1,11 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { Cap, can } from "../../lib/capabilities";
 import { getCurrentUser, type User } from "../../lib/api";
 import {
   convertFactusolDocument,
   downloadFactusolDocumentPdf,
-  ERP_EDIT_ROLES,
+
   getErpSettings,
   getFactusolConvertStatus,
   getFactusolDocument,
@@ -332,7 +333,7 @@ export function FactusolDocumentDetailModal({
   }, [jobId, load, onChanged]);
 
   const canEdit =
-    !!user && (ERP_EDIT_ROLES as readonly string[]).includes(user.role);
+    can(user, Cap.DOCUMENTS);
   const ciclo = doc?.ciclo ?? null;
   const badge = cycleBadge(current.docType, ciclo);
   const actions = doc ? availableActions(current.docType, ciclo) : [];

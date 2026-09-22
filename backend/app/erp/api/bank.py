@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.db.session import get_session
-from app.erp.api.deps import require_erp_admin, require_erp_edit, require_erp_view
+from app.erp.api.deps import require_conciliacion
 from app.erp.bank import service
 from app.erp.bank.parsing import ParseError
 from app.models.crm import User
@@ -61,7 +61,7 @@ class AccountPatch(BaseModel):
 @router.get("/accounts")
 def list_accounts(
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_conciliacion),
 ) -> dict[str, Any]:
     _ = current_user
     return {"items": service.list_accounts(session)}
@@ -70,7 +70,7 @@ def list_accounts(
 @router.get("/accounts/suggested")
 def suggested_accounts(
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_conciliacion),
 ) -> dict[str, Any]:
     """Las 2 cuentas de F_BAN como SUGERENCIA (no se imponen)."""
     _ = current_user
@@ -89,7 +89,7 @@ def suggested_accounts(
 def create_account(
     payload: AccountIn,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_admin),
+    current_user: User = Depends(require_conciliacion),
 ) -> dict[str, Any]:
     _ = current_user
     try:
@@ -105,7 +105,7 @@ def update_account(
     account_id: str,
     payload: AccountPatch,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_admin),
+    current_user: User = Depends(require_conciliacion),
 ) -> dict[str, Any]:
     _ = current_user
     try:
@@ -125,7 +125,7 @@ def update_account(
 def delete_account(
     account_id: str,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_admin),
+    current_user: User = Depends(require_conciliacion),
 ) -> Response:
     _ = current_user
     try:
@@ -144,7 +144,7 @@ async def import_statement(
     account_id: str | None = Form(default=None),
     run_match: bool = Form(default=True),
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_edit),
+    current_user: User = Depends(require_conciliacion),
 ) -> dict[str, Any]:
     """Sube el extracto (.xlsx/.csv). Identifica la cuenta por el IBAN de la
     cabecera (avisa si no está dada de alta), deduplica y, si `run_match`,
@@ -199,7 +199,7 @@ def _run_match(session: Session, account_id: str | None) -> dict[str, Any]:
 def run_match(
     account_id: str | None = Query(default=None),
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_edit),
+    current_user: User = Depends(require_conciliacion),
 ) -> dict[str, Any]:
     """Recalcula las propuestas de los movimientos pendientes (p. ej. tras
     aprender una regla). Solo propone."""
@@ -222,7 +222,7 @@ def list_movements(
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_conciliacion),
 ) -> dict[str, Any]:
     _ = current_user
     return service.list_movements(
@@ -263,7 +263,7 @@ class DiscardIn(BaseModel):
 def confirm_movement(
     movement_id: str,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_edit),
+    current_user: User = Depends(require_conciliacion),
 ) -> dict[str, Any]:
     try:
         return service.confirm_movement(session, movement_id, current_user.id)
@@ -280,7 +280,7 @@ def reassign_movement(
     movement_id: str,
     payload: ReassignIn,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_edit),
+    current_user: User = Depends(require_conciliacion),
 ) -> dict[str, Any]:
     try:
         return service.reassign_movement(
@@ -303,7 +303,7 @@ def discard_movement(
     movement_id: str,
     payload: DiscardIn,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_edit),
+    current_user: User = Depends(require_conciliacion),
 ) -> dict[str, Any]:
     try:
         return service.discard_movement(
@@ -317,7 +317,7 @@ def discard_movement(
 def reopen_movement(
     movement_id: str,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_edit),
+    current_user: User = Depends(require_conciliacion),
 ) -> dict[str, Any]:
     _ = current_user
     try:
@@ -330,7 +330,7 @@ def reopen_movement(
 def confirm_all_high(
     account_id: str | None = Query(default=None),
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_edit),
+    current_user: User = Depends(require_conciliacion),
 ) -> dict[str, Any]:
     """Acción en BLOQUE (un clic de Bart): confirma las de confianza alta."""
     return {"confirmed": service.confirm_all_high(session, current_user.id, account_id=account_id)}
@@ -350,7 +350,7 @@ class RuleIn(BaseModel):
 @router.get("/rules")
 def list_rules(
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_conciliacion),
 ) -> dict[str, Any]:
     _ = current_user
     service.ensure_default_rules(session)
@@ -361,7 +361,7 @@ def list_rules(
 def create_rule(
     payload: RuleIn,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_edit),
+    current_user: User = Depends(require_conciliacion),
 ) -> dict[str, Any]:
     try:
         rule = service.create_rule(session, payload.model_dump(), current_user.id)
@@ -374,7 +374,7 @@ def create_rule(
 def delete_rule(
     rule_id: str,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_edit),
+    current_user: User = Depends(require_conciliacion),
 ) -> Response:
     _ = current_user
     try:
@@ -393,7 +393,7 @@ def export_xlsx(
     desde: date | None = Query(default=None),
     hasta: date | None = Query(default=None),
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_conciliacion),
 ) -> Response:
     """Excel NUEVO con el formato del extracto y FACTURA/PRESUPUESTO/PEDIDO
     rellenas con lo confirmado. El original de Bart no se toca."""

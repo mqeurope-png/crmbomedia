@@ -467,7 +467,10 @@ describe("SatQueuePage (Lote B6)", () => {
     expect(await screen.findByText("FLX-9999")).toHaveClass("sat-tech-value");
   });
 
-  it("#2 · rol sat (sin permiso) no ofrece editar los datos técnicos", async () => {
+  it("#2 · rol sat (taller) SÍ edita los datos técnicos (serial/WhiteRIP)", async () => {
+    // Roles y permisos: el SAT es el taller — «full shipping/tracking/serial/
+    // WhiteRIP». Con la capacidad `erp.sat.prepare` la card ofrece editar el nº
+    // de serie in situ (antes el rol sat no tenía permiso de edición).
     mockUser.mockResolvedValue({
       id: "s", role: "sat", full_name: "Sat User", email: "s@x", is_active: true,
     });
@@ -478,7 +481,7 @@ describe("SatQueuePage (Lote B6)", () => {
     render(<SatQueuePage />);
     await loaded(1, 0);
     expect(screen.getByText("FLX-1")).toHaveClass("sat-tech-value");
-    expect(screen.queryByRole("button", { name: /Editar/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Editar/ })).toBeInTheDocument();
   });
 
   // --- Lote 4 -----------------------------------------------------------------

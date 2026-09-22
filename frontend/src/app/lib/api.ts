@@ -1,7 +1,15 @@
 import { extractErrorMessage, formatFastApiDetail } from "./errors";
 
 // BoHub ERP Fase A: roles operativos añadidos al backend (UserRole).
-export type Role = "admin" | "manager" | "user" | "viewer" | "pedidos" | "sat";
+// Roles y permisos: `comercial` es el rol de ventas (trabaja pedidos NO web).
+export type Role =
+  | "admin"
+  | "manager"
+  | "user"
+  | "viewer"
+  | "pedidos"
+  | "sat"
+  | "comercial";
 
 export type User = {
   id: string;
@@ -19,6 +27,14 @@ export type User = {
    *  "incluir opción de baja" toggle. The send modal uses it as the
    *  toggle's initial value. */
   email_include_unsubscribe_default?: boolean;
+  /** Roles y permisos — roles operativos adicionales del ERP (multi-rol).
+   *  Se editan en /admin/users (solo admin). Presente en la lista de usuarios
+   *  y en /api/auth/me. */
+  erp_roles?: string[];
+  /** Roles y permisos — capacidades EFECTIVAS del usuario (unión de las de
+   *  todos sus roles). SOLO viene en GET /api/auth/me. El frontend gatea las
+   *  acciones por capacidad (ver `lib/capabilities.ts`), no por rol. */
+  capabilities?: string[];
 };
 
 export type LoginResult = {

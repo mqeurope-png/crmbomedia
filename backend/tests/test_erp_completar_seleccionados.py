@@ -101,7 +101,7 @@ def test_completar_seleccionados_marca_todos(session_factory, http) -> None:
         "BOPRIN-81001", "BOPRIN-81002", "BOPRIN-81003",
     }
     seg = http.get("/api/erp/seguimiento", params={"estado": "completado"},
-                   headers=auth_headers(http, "user")).json()["items"]
+                   headers=auth_headers(http, "pedidos")).json()["items"]
     assert len(seg) == 3 and all(row["completado"] for row in seg)
 
 

@@ -127,7 +127,7 @@ def _seed(s: Session) -> None:
 def test_situacion_orden_y_campos(session_factory, http) -> None:
     with session_factory() as s:
         _seed(s)
-    r = http.get("/api/erp/seguimiento", headers=auth_headers(http, "user"))
+    r = http.get("/api/erp/seguimiento", headers=auth_headers(http, "pedidos"))
     assert r.status_code == 200, r.text
     items = {i["order_number"]: i for i in r.json()["items"]}
 
@@ -168,7 +168,7 @@ def test_situacion_orden_y_campos(session_factory, http) -> None:
 def test_incidencias_sheet_es_subconjunto_exacto(session_factory, http) -> None:
     with session_factory() as s:
         _seed(s)
-    r = http.get("/api/erp/seguimiento/export", headers=auth_headers(http, "user"))
+    r = http.get("/api/erp/seguimiento/export", headers=auth_headers(http, "pedidos"))
     assert r.status_code == 200, r.text
     wb = load_workbook(io.BytesIO(r.content), read_only=True)
     assert wb.sheetnames == ["Pedidos", "Incidencias"]
@@ -186,9 +186,9 @@ def test_orden_por_situacion_funciona_como_defecto(session_factory, http) -> Non
     """La ordenación por Situación es la de por defecto (sin `sort`)."""
     with session_factory() as s:
         _seed(s)
-    sin_sort = http.get("/api/erp/seguimiento", headers=auth_headers(http, "user"))
+    sin_sort = http.get("/api/erp/seguimiento", headers=auth_headers(http, "pedidos"))
     con_sort = http.get(
-        "/api/erp/seguimiento?sort=situacion", headers=auth_headers(http, "user")
+        "/api/erp/seguimiento?sort=situacion", headers=auth_headers(http, "pedidos")
     )
     assert (
         [i["order_number"] for i in sin_sort.json()["items"]]

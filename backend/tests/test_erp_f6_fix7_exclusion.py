@@ -105,7 +105,7 @@ def _bare_sheet() -> list[list[str]]:
 
 
 def _list(http, **params) -> dict:
-    r = http.get("/api/erp/seguimiento", params=params, headers=auth_headers(http, "user"))
+    r = http.get("/api/erp/seguimiento", params=params, headers=auth_headers(http, "pedidos"))
     assert r.status_code == 200, r.text
     return r.json()
 

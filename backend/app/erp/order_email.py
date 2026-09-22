@@ -417,6 +417,24 @@ def _order_reference(order: Any) -> str:
     return ""
 
 
+def _ensure_in_sat_queue(session: Session, order: Any, current_user: Any) -> bool:
+    """«Enviar al SAT» ENCOLA el pedido en la Cola SAT (si no estaba ya),
+    idempotente («verify/add»):
+
+    - pendiente de revisión y SIN bloqueos → se aprueba (→ in_queue), igual que
+      aprobar en la Cola PEDIDOS (approved_at/by + transición);
+    - pendiente de revisión CON bloqueos (excepciones abiertas) → NO se encola:
+      un pedido bloqueado no entra en la cola hasta resolver la excepción, la
+      MISMA regla que aplica el endpoint de «Añadir a mano a la Cola SAT»
+      (que devuelve 409 `blocked`). El correo sale igual;
+    - ya en la cola (in_queue/preparando/embalado/bloqueado) o en un estado
+      terminal → no se toca (idempotente).
+
+    Devuelve True si el envío también APROBÓ el pedido. Nunca hace fallar el
+    envío: el correo ya está fuera pase lo que pase."""
+    return _approve_after_sat_email(session, order, current_user)
+
+
 def _approve_after_sat_email(session: Session, order: Any, current_user: Any) -> bool:
     """Regla del taller: «enviado al SAT» = aprobado. Si el pedido seguía
     pendiente de revisión y no tiene bloqueos, pasa a in_queue como si se
@@ -509,9 +527,11 @@ def send_order_email(
             "message_id": message.id, "thread_id": message.thread_id,
         },
     )
-    # «Enviado al taller» = aprobado: si seguía pendiente de revisión pasa a
-    # la Cola SAT en la misma transacción que el registro del envío.
-    approved = _approve_after_sat_email(session, order, current_user)
+    # «Enviado al taller» = está en la Cola SAT: si seguía pendiente de revisión
+    # se encola (aprobándolo si no hay bloqueos, o forzándolo a la cola si los
+    # hay). Idempotente: si ya estaba en la cola (o en un estado terminal) no se
+    # toca. El correo ya está fuera pase lo que pase.
+    approved = _ensure_in_sat_queue(session, order, current_user)
     session.commit()
     logger.info(
         "order_email: pedido %s enviado a %s (%s)",

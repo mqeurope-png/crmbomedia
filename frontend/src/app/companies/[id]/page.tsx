@@ -4,6 +4,7 @@ import { Building2, FileText, Save, Users } from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Cap, can } from "../../lib/capabilities";
 import { PageHeader } from "../../components/PageHeader";
 import { getCurrentUser } from "../../lib/api";
 import {
@@ -24,7 +25,7 @@ import {
 } from "../../lib/companiesApi";
 import { formatBackendDateTime } from "../../lib/dates";
 import { extractErrorMessage } from "../../lib/errors";
-import { ERP_EDIT_ROLES, type FactusolCustomer } from "../../lib/erpApi";
+import { type FactusolCustomer } from "../../lib/erpApi";
 import { CompanyActivityPanel } from "../../components/erp/CompanyActivityPanel";
 import { CompanyFactusolPanel } from "../../components/erp/CompanyFactusolPanel";
 import { CompanyQuotesPanel } from "../../components/erp/CompanyQuotesPanel";
@@ -115,7 +116,7 @@ export default function CompanyDetailPage() {
 
   useEffect(() => {
     getCurrentUser()
-      .then((u) => setCanEdit((ERP_EDIT_ROLES as readonly string[]).includes(u.role)))
+      .then((u) => setCanEdit(can(u, Cap.COMPANIES)))
       .catch(() => setCanEdit(false));
   }, []);
 

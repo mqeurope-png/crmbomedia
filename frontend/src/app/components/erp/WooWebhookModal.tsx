@@ -62,7 +62,7 @@ export function WooWebhookModal({
 
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={`Webhook de ${storeName}`}>
-      <div className="modal-dialog">
+      <div className="modal-dialog erp-modal">
         <h2>Webhook · {storeName}</h2>
         {error ? <p className="form-error">{error}</p> : null}
         {!status ? (

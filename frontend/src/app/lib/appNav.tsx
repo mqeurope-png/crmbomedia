@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import type { User } from "./api";
 import type { AppMode } from "./appMode";
+import { Cap, type Capability, can } from "./capabilities";
 
 /** ERP-F2 — DEFINICIÓN ÚNICA del menú, con su ÁMBITO (`scope`) y el permiso
  *  requerido (`allowedRoles`/`public`). El ámbito decide si la entrada
@@ -39,6 +40,12 @@ export type NavItem = {
   /** Visible para cualquier rol (dentro de su ámbito). */
   public?: boolean;
   allowedRoles?: ReadonlyArray<User["role"]>;
+  /** Roles y permisos — capacidad requerida para ver la entrada. Cuando está,
+   *  MANDA sobre `allowedRoles`: la entrada se muestra si el usuario tiene la
+   *  capacidad (unión de sus roles). Las secciones de ERP se gatean así; la
+   *  bandeja de pedidos usa `allowedRoles` porque su conjunto de roles no se
+   *  corresponde con una sola capacidad. */
+  requiredCapability?: Capability;
   children?: ReadonlyArray<{ href: string; label: string }>;
 };
 
@@ -67,7 +74,10 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     label: "ERP · Pedidos",
     icon: Package,
     scope: "erp",
-    allowedRoles: ["admin", "manager", "pedidos", "user"],
+    // Bandeja de pedidos: oficina (admin/pedidos/comercial) + legacy view-only
+    // (manager/user). El SAT (taller) NO la ve; trabaja la Cola SAT. No hay una
+    // sola capacidad que case este conjunto, así que se lista por rol.
+    allowedRoles: ["admin", "manager", "pedidos", "user", "comercial"],
     // Lote 2 D: la Cola PEDIDOS ya no es pantalla aparte — es la cola «Por
     // revisar» de la bandeja (`/erp/orders?queue=por_revisar`).
     children: [
@@ -82,14 +92,14 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     label: "ERP · Proformas",
     icon: FileCheck,
     scope: "erp",
-    allowedRoles: ["admin", "manager", "pedidos", "user"],
+    requiredCapability: Cap.PROFORMAS,
   },
   {
     href: "/erp/documentos",
     label: "ERP · Documentos",
     icon: FileText,
     scope: "erp",
-    allowedRoles: ["admin", "manager", "pedidos", "user"],
+    requiredCapability: Cap.DOCUMENTS,
   },
   {
     // ERP-F6 — seguimiento de pedidos (sustituye el Excel manual de Bart).
@@ -97,7 +107,7 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     label: "ERP · Seguimiento",
     icon: ClipboardList,
     scope: "erp",
-    allowedRoles: ["admin", "manager", "pedidos", "sat", "user"],
+    requiredCapability: Cap.SEGUIMIENTO,
   },
   {
     // ERP-F4-A — conciliación bancaria (revisión humana de propuestas).
@@ -105,28 +115,28 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     label: "ERP · Conciliación",
     icon: Landmark,
     scope: "erp",
-    allowedRoles: ["admin", "manager", "pedidos"],
+    requiredCapability: Cap.CONCILIACION,
   },
   {
     href: "/erp/sat",
     label: "ERP · Taller (SAT)",
     icon: Wrench,
     scope: "erp",
-    allowedRoles: ["admin", "manager", "sat"],
+    requiredCapability: Cap.SAT_VIEW,
   },
   {
     href: "/erp/settings",
     label: "ERP · Configuración",
     icon: Sliders,
     scope: "erp",
-    allowedRoles: ["admin"],
+    requiredCapability: Cap.CONFIG,
   },
   {
     href: "/admin/erp/integrations/woocommerce",
     label: "ERP · Integraciones · Woo",
     icon: Plug,
     scope: "erp",
-    allowedRoles: ["admin"],
+    requiredCapability: Cap.INTEGRACIONES,
   },
   // --- CRM (continuación) ---------------------------------------------------
   {
@@ -227,6 +237,9 @@ export function resolveVisibleNav(
     if (mode === "erp" && item.scope !== "erp") return false;
     if (item.public) return true;
     if (!user) return false;
+    // Roles y permisos: si la entrada declara capacidad, manda la capacidad
+    // (unión de los roles del usuario); si no, el listado de roles de siempre.
+    if (item.requiredCapability) return can(user, item.requiredCapability);
     return item.allowedRoles?.includes(user.role) ?? false;
   });
 }

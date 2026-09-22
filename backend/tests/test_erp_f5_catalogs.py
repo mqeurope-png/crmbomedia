@@ -283,8 +283,8 @@ def test_bank_account_links_to_contrapartida(http) -> None:
     assert r.status_code == 200, r.text
     assert r.json()["contrapartida_codigo"] == "8"
     assert r.json()["contrapartida_nombre"] == "Streamtec Sabadell"
-    # El listado lleva el nombre resuelto.
-    r = http.get("/api/erp/bank/accounts", headers=auth_headers(http, "user"))
+    # El listado lleva el nombre resuelto (conciliación es admin-only).
+    r = http.get("/api/erp/bank/accounts", headers=admin)
     assert r.json()["items"][0]["contrapartida_nombre"] == "Streamtec Sabadell"
     # Desenlazar.
     r = http.patch(f"/api/erp/bank/accounts/{acc['id']}", json={"contrapartida_codigo": ""},

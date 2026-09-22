@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import { Cap, can } from "../../lib/capabilities";
 import { PageHeader } from "../../components/PageHeader";
 import {
   cycleBadge,
@@ -20,7 +21,7 @@ import {
   createOrderFromDocumentType,
   downloadFacturasPdfZip,
   downloadFactusolDocumentPdf,
-  ERP_EDIT_ROLES,
+
   getFactusolSeries,
   listFactusolDocuments,
   saveBlob,
@@ -176,7 +177,7 @@ export default function FactusolDocumentosPage() {
 
   useEffect(() => {
     getCurrentUser()
-      .then((u) => setCanEdit((ERP_EDIT_ROLES as readonly string[]).includes(u.role)))
+      .then((u) => setCanEdit(can(u, Cap.DOCUMENTS)))
       .catch(() => setCanEdit(false));
   }, []);
 

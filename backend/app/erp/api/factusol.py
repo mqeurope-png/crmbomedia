@@ -30,6 +30,8 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_session
 from app.erp.api.deps import (
+    require_cobro_register,
+    require_email_client,
     require_erp_admin,
     require_erp_edit,
     require_erp_view,
@@ -1036,7 +1038,7 @@ def invoice_email_preview(
     lang: str | None = Query(default=None, pattern="^(es|en|de|fr|nl)$"),
     order_id: str | None = Query(default=None, max_length=64),
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_edit),
+    current_user: User = Depends(require_email_client),
 ) -> dict[str, Any]:
     """Datos para la PREVISUALIZACIÓN obligatoria antes de enviar la factura
     por email: destinatario, asunto, idioma (+ procedencia), cuerpo editable
@@ -1096,7 +1098,7 @@ def send_invoice_email_endpoint(
     codigo: int,
     payload: InvoiceEmailPayload,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_edit),
+    current_user: User = Depends(require_email_client),
 ) -> dict[str, Any]:
     """Envía la factura por email (síncrono, como el resto de la app). El
     idioma vale para el PDF adjunto y el cuerpo; se responde al hilo del
@@ -1213,7 +1215,7 @@ def mark_invoice_payment_endpoint(
     codigo: int,
     payload: InvoicePaymentPayload,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_edit),
+    current_user: User = Depends(require_cobro_register),
 ) -> dict[str, Any]:
     """Encola escribir `ESTFAC` (cobrada/pendiente) por clave COMPUESTA en
     `factusol:writes` (202 + job_id). Pre-chequeo EN VIVO: confirma que la
@@ -1336,7 +1338,7 @@ def register_invoice_collection_endpoint(
     codigo: int,
     payload: InvoiceCollectionPayload,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_edit),
+    current_user: User = Depends(require_cobro_register),
 ) -> dict[str, Any]:
     """Encola registrar el cobro de la factura en `factusol:writes` (202 +
     job_id). Pre-chequeo EN VIVO: resuelve la contrapartida (400 si no está en

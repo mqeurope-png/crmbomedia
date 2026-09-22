@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Cap, can } from "../../lib/capabilities";
 import { PageHeader } from "../../components/PageHeader";
 import { CompanyPickerModal } from "../../components/CompanyPickerModal";
 import { ConvertQuoteDialog } from "../../components/erp/ConvertQuoteDialog";
@@ -13,7 +14,7 @@ import { conversionNotice, pollQuoteJob } from "../../components/erp/quoteJobs";
 import { getCurrentUser } from "../../lib/api";
 import { getCompany } from "../../lib/companiesApi";
 import {
-  ERP_EDIT_ROLES,
+
   convertFactusolQuoteToOrder,
   downloadFactusolDocumentPdf,
   listFactusolQuotes,
@@ -196,7 +197,7 @@ export default function ProformasPage() {
 
   useEffect(() => {
     getCurrentUser()
-      .then((u) => setCanEdit((ERP_EDIT_ROLES as readonly string[]).includes(u.role)))
+      .then((u) => setCanEdit(can(u, Cap.PROFORMAS)))
       .catch(() => setCanEdit(false));
   }, []);
 

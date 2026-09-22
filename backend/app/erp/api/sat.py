@@ -39,7 +39,13 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.core.errors import not_found
 from app.db.session import get_session
-from app.erp.api.deps import require_erp_edit, require_erp_view
+from app.erp.api.deps import (
+    require_erp_view,
+    require_orders_approve,
+    require_sat_no_shipping,
+    require_sat_prepare,
+    require_sat_shipping,
+)
 from app.erp.factusol_albaran import is_web_order
 from app.erp.models import (
     EXCEPTION_SUBTYPES,
@@ -104,12 +110,18 @@ class PackingInfoIn(BaseModel):
     packages: int | None = Field(default=None, ge=1)
 
 
-def _get_order(session: Session, order_id: str) -> Order:
+def _get_order(session: Session, order_id: str, user: User | None = None) -> Order:
     order = session.scalar(
         select(Order).where(Order.id == order_id).options(selectinload(Order.lines))
     )
     if order is None:
         raise not_found("Order")
+    # Roles y permisos: un pedido WEB es invisible para quien no puede verlos
+    # (Comercial) — acceso directo o acción sobre él → 403.
+    if user is not None:
+        from app.erp.api.orders import order_web_or_403  # noqa: PLC0415
+
+        order_web_or_403(order, user)
     return order
 
 
@@ -308,7 +320,6 @@ def sat_queue(
     (`por_embalar` = las 3 de arriba · `blocked` · `in_queue` · `preparing` ·
     `ready`/`packed` = solo «Listos») y `q` (nº de pedido o cliente).
     """
-    _ = current_user
     from app.erp.api.orders import worklist_visible  # noqa: PLC0415
 
     filters = {"desde": desde, "hasta": hasta, "store_slug": store_slug, "q": q}
@@ -327,7 +338,7 @@ def sat_queue(
             _apply_filters(worklist_visible(
                 select(Order).where(
                     Order.preparation_status.in_(list(prep_statuses)), ship_flag,
-                )
+                ), current_user
             ), **filters).options(selectinload(Order.lines))
         ))
         prep_rows.sort(key=lambda o: (
@@ -341,7 +352,7 @@ def sat_queue(
                 Order.preparation_status == PreparationStatus.PACKED.value,
                 Order.transport_status.notin_(_SHIPPED_TRANSPORT),
                 ship_flag,
-            )), **filters).options(selectinload(Order.lines))
+            ), current_user), **filters).options(selectinload(Order.lines))
             .order_by(Order.placed_at.asc())
         ))
 
@@ -431,7 +442,7 @@ class BulkNoShippingIn(BaseModel):
 def bulk_no_shipping(
     payload: BulkNoShippingIn,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_edit),
+    current_user: User = Depends(require_sat_no_shipping),
 ) -> dict[str, Any]:
     """Marca (o desmarca) «No requiere envío» en varios pedidos a la vez desde la
     Cola SAT. Marcar los saca de la Cola SAT y de la cola «Por enviar»; NO toca
@@ -664,7 +675,10 @@ def _force_in_queue(session: Session, order: Order, actor: User, reason: str) ->
 def sat_enqueue(
     order_id: str,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_edit),
+    # «Añadir a mano a la Cola SAT» es una acción de gestión de pedido
+    # (aprobar/meter en cola), no de taller: la hace la oficina (admin/pedidos/
+    # comercial). El SAT trabaja lo que ya está en la cola, no lo añade.
+    current_user: User = Depends(require_orders_approve),
 ) -> dict[str, Any]:
     """Añade un pedido a la Cola SAT a mano (Lote B6).
 
@@ -678,7 +692,7 @@ def sat_enqueue(
     """
     from app.erp.api.orders import _blockers, approve_inline  # noqa: PLC0415
 
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     if order.cancelled_at is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, {
             "code": "cancelled",
@@ -744,12 +758,12 @@ def report_exception(
     order_id: str,
     payload: ReportExceptionIn,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_sat_prepare),
 ) -> dict[str, Any]:
     """SAT reporta un problema: crea la excepción y bloquea la preparación.
     VER es suficiente para reportar (SAT puede) — el bloqueo lo aplica el
     engine, que permite blocked a admin/pedidos/sat."""
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     try:
         etype = ExceptionType(payload.type)
     except ValueError as exc:
@@ -803,12 +817,12 @@ def packing_info(
     order_id: str,
     payload: PackingInfoIn,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_sat_shipping),
 ) -> dict[str, Any]:
     """SAT introduce peso/dimensiones/bultos. Se guarda en packing_json
     (junto a los documentos adjuntos)."""
     _ = current_user
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     packing = _packing(order)
     if payload.weight_kg is not None:
         packing["weight_kg"] = payload.weight_kg
@@ -826,12 +840,12 @@ async def attach_document(
     order_id: str,
     file: UploadFile = File(...),
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_sat_shipping),
 ) -> dict[str, Any]:
     """Sube una foto/PDF a HiDrive (o disco local si no hay creds) vía la
     interfaz DocumentStorage y guarda su referencia en packing_json."""
     _ = current_user
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     data = await file.read()
     if not data:
         raise HTTPException(400, "Archivo vacío.")

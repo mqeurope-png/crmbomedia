@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import { Cap, can } from "../../lib/capabilities";
 import { PageHeader } from "../../components/PageHeader";
 import { ExcludeSeguimientoModal } from "../../components/erp/ExcludeSeguimientoModal";
 import { getCurrentUser, type User } from "../../lib/api";
 import {
   downloadFacturasPdfZip,
   downloadFactusolDocumentPdf,
-  ERP_EDIT_ROLES,
+
   excludeSeguimiento,
   type ExclusionReasonCode,
   exportSeguimientoXlsx,
@@ -102,7 +103,7 @@ export default function SeguimientoPage() {
   // ERP — previsualización de la vinculación de facturas de FACTUSOL.
   const [facturaLink, setFacturaLink] = useState<FactusolLinkSummary | null>(null);
 
-  const canEdit = !!user && (ERP_EDIT_ROLES as readonly string[]).includes(user.role);
+  const canEdit = can(user, Cap.SEGUIMIENTO);
   const viewExcluded = filters.ver_excluidos === true;
   const viewOcultos = filters.ver_ocultos_estado === true;
 

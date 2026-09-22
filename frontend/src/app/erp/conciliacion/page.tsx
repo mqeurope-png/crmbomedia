@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { PageHeader } from "../../components/PageHeader";
 import { getCurrentUser, type User } from "../../lib/api";
+import { Cap, can } from "../../lib/capabilities";
 import {
   confirmAllHighBank,
   confirmBankMovement,
@@ -12,7 +13,6 @@ import {
   deleteBankRule,
   discardBankMovement,
   downloadBankExport,
-  ERP_EDIT_ROLES,
   getContrapartidas,
   importBankStatement,
   listBankAccounts,
@@ -74,7 +74,9 @@ export default function ConciliacionPage() {
   const [reassignFor, setReassignFor] = useState<BankMovement | null>(null);
   const [discardFor, setDiscardFor] = useState<BankMovement | null>(null);
 
-  const canEdit = !!user && (ERP_EDIT_ROLES as readonly string[]).includes(user.role);
+  // Roles y permisos: la conciliación bancaria es admin-only (capacidad
+  // `erp.conciliacion`). El backend vuelve a comprobarlo en cada endpoint.
+  const canEdit = can(user, Cap.CONCILIACION);
   const isAdmin = user?.role === "admin";
 
   const loadMovements = useCallback(async () => {

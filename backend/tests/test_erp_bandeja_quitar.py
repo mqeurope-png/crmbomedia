@@ -106,7 +106,7 @@ def _cola(http) -> set[str]:
 
 
 def _seguimiento(http, **params) -> set[str]:
-    r = http.get("/api/erp/seguimiento", params=params, headers=auth_headers(http, "user"))
+    r = http.get("/api/erp/seguimiento", params=params, headers=auth_headers(http, "pedidos"))
     assert r.status_code == 200, r.text
     return _numeros(r.json()["items"])
 

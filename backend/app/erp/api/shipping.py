@@ -38,7 +38,7 @@ from sqlalchemy.orm import Session
 
 from app.core.errors import not_found
 from app.db.session import get_session
-from app.erp.api.deps import require_erp_view
+from app.erp.api.deps import require_erp_view, require_sat_shipping
 from app.erp.models import (
     KIND_ALBARAN,
     KIND_ETIQUETA,
@@ -73,10 +73,16 @@ ALLOWED_SHIPPING_MIME = frozenset({
 ETIQUETA_TRANSITION_REASON = "etiqueta subida"
 
 
-def _get_order(session: Session, order_id: str) -> Order:
+def _get_order(session: Session, order_id: str, user: User | None = None) -> Order:
     order = session.get(Order, order_id)
     if order is None:
         raise not_found("Order")
+    # Roles y permisos: un pedido WEB es invisible para quien no puede verlos
+    # (Comercial) — acceso directo o acción sobre él → 403.
+    if user is not None:
+        from app.erp.api.orders import order_web_or_403  # noqa: PLC0415
+
+        order_web_or_403(order, user)
     return order
 
 
@@ -124,12 +130,12 @@ def set_packages(
     order_id: str,
     packages: list[PackageIn],
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_sat_shipping),
 ) -> dict[str, Any]:
     """Reemplaza la lista de bultos del pedido (idempotente). Rechaza (400) los
     bultos incompletos o con peso/medidas ≤ 0."""
     _ = current_user
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     for i, p in enumerate(packages):
         _validate_package(i, p)
     # Borra los previos y crea los nuevos con position 1..N.
@@ -158,7 +164,7 @@ def list_packages(
     current_user: User = Depends(require_erp_view),
 ) -> dict[str, Any]:
     _ = current_user
-    _get_order(session, order_id)
+    _get_order(session, order_id, current_user)
     rows = session.scalars(
         select(ShipmentPackage).where(ShipmentPackage.order_id == order_id)
         .order_by(ShipmentPackage.position.asc())
@@ -174,7 +180,7 @@ def transition_packed(
 ) -> dict[str, Any]:
     """Marca el pedido `packed`. Exige ≥1 bulto (400 si no hay). La matriz de
     roles/estado la aplica el engine (403/409)."""
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     n = session.scalar(
         select(ShipmentPackage.id).where(ShipmentPackage.order_id == order.id).limit(1)
     )
@@ -265,7 +271,7 @@ def list_shipping_files(
 ) -> dict[str, Any]:
     """Ficheros vigentes (no reemplazados), opcionalmente filtrados por kind."""
     _ = current_user
-    _get_order(session, order_id)
+    _get_order(session, order_id, current_user)
     if kind is not None and kind not in SHIPMENT_FILE_KINDS:
         raise HTTPException(400, f"kind inválido: {kind!r}")
     return {"items": [_serialise_file(f)
@@ -329,7 +335,7 @@ async def upload_shipping_file(
     kind: str = Form(...),
     file: UploadFile = File(...),
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_sat_shipping),
 ) -> dict[str, Any]:
     """Subida manual de albarán o etiqueta. Marca el fichero previo del mismo
     kind como reemplazado (se conserva) y guarda el nuevo.
@@ -339,7 +345,7 @@ async def upload_shipping_file(
     `transition_applied`, `transport_status` (el que queda) y
     `transition_reason` (por qué NO se aplicó, si el engine la rechazó: el
     fichero se guarda igual). El albarán nunca mueve el transporte."""
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     if kind not in SHIPMENT_FILE_KINDS:
         raise HTTPException(400, f"kind inválido: {kind!r} (usa albaran|etiqueta)")
     mime = (file.content_type or "").lower()
@@ -379,13 +385,13 @@ async def upload_shipping_file(
 def fetch_albaran_from_woo(
     order_id: str,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_sat_shipping),
 ) -> dict[str, Any]:
     """Descarga el albarán del plugin PDF de WooCommerce y lo guarda como
     ShipmentFile. Idempotente: si ya hay un albarán de Woo vigente, lo devuelve
     sin re-descargar. 502 si la descarga falla (el operativo sube a mano)."""
     _ = current_user
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     if _status_value(order.external_source) != OrderSource.WOOCOMMERCE.value:
         raise HTTPException(400, {
             "code": "not_woo_order",
@@ -462,13 +468,13 @@ def mark_picked_up(
     order_id: str,
     payload: MarkPickedUpPayload | None = None,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_sat_shipping),
 ) -> dict[str, Any]:
     """«Marcar recogido» desde el taller: el paquete salió. Lleva transporte a
     `in_transit` (auto-creando el registro de envío si hacía falta). Exige el
     pedido `packed`. La recogida es manual (sin tracking del sistema), así que
     se marca `manual_pickup` en la evidencia (respeta el guard de tracking)."""
-    order = _get_order(session, order_id)
+    order = _get_order(session, order_id, current_user)
     if _status_value(order.preparation_status) != "packed":
         raise HTTPException(400, {
             "code": "not_packed",

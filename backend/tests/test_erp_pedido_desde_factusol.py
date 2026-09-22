@@ -291,7 +291,7 @@ def test_crear_pedido_desde_presupuesto_factusol(session_factory, http) -> None:
         assert o.external_id == "574"
     # Entra en la bandeja como uno más y en el seguimiento con su nº de proforma.
     assert _numeros(_bandeja(http)) == {"PRO-000574"}
-    seg = http.get("/api/erp/seguimiento", headers=auth_headers(http, "user")).json()
+    seg = http.get("/api/erp/seguimiento", headers=auth_headers(http, "pedidos")).json()
     assert [row["proforma"] for row in seg["items"]] == ["574"]
 
 

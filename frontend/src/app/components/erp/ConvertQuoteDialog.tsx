@@ -19,7 +19,7 @@ export function ConvertQuoteDialog({
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true"
          aria-label="Convertir proforma en pedido">
-      <div className="modal-dialog">
+      <div className="modal-dialog erp-modal">
         <h2>Convertir la proforma {quote.codpre} en pedido</h2>
         <p className="muted small">
           {quote.referencia || "Sin referencia"} · {quote.total.toFixed(2)} €.

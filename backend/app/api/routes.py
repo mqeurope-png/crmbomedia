@@ -52,6 +52,7 @@ from app.core.totp import (
     verify_totp_code,
 )
 from app.db.session import get_session
+from app.erp.capabilities import capabilities_for, parse_erp_roles
 from app.integrations.errors import IntegrationError, IntegrationServerError
 from app.models.crm import (
     Company,
@@ -584,6 +585,10 @@ def read_current_user(current_user: User = Depends(get_current_user)) -> Current
         email_include_unsubscribe_default=(
             current_user.email_include_unsubscribe_default
         ),
+        # ERP roles y permisos — roles operativos adicionales + capacidades
+        # efectivas (unión). El frontend gatea acciones por capacidad.
+        erp_roles=parse_erp_roles(current_user.erp_roles),
+        capabilities=sorted(capabilities_for(current_user)),
     )
 
 
@@ -744,9 +749,19 @@ def update_user(
                 ),
             },
         )
+    # ERP roles y permisos — los roles operativos adicionales viajan como lista
+    # en el payload pero se persisten como JSON-texto en `User.erp_roles`. El
+    # schema ya validó los valores (solo `ASSIGNABLE_ERP_ROLES`) y normalizó la
+    # lista; aquí capturamos el antes para el audit y la serializamos.
+    erp_roles_before = parse_erp_roles(user.erp_roles)
+    erp_roles_after = erp_roles_before
     for field, value in changes.items():
         if field == "full_name" and value is not None:
             value = value.strip()
+        if field == "erp_roles":
+            erp_roles_after = list(value or [])
+            user.erp_roles = json.dumps(erp_roles_after) if erp_roles_after else None
+            continue
         setattr(user, field, value)
     record_event(
         session,
@@ -773,6 +788,23 @@ def update_user(
                 "target_email": user.email,
                 "from_role": role_before.value,
                 "to_role": user.role.value,
+            },
+            request=request,
+        )
+    # ERP roles y permisos — asignar/retirar roles operativos también deja su
+    # propia fila de auditoría (misma acción que el cambio de rol principal),
+    # para que quede registrado quién dio acceso al ERP y cuándo.
+    if "erp_roles" in changes and erp_roles_after != erp_roles_before:
+        record_event(
+            session,
+            action=Action.USER_ROLE_CHANGED,
+            target_type="user",
+            target_id=user.id,
+            actor=current_user,
+            metadata={
+                "target_email": user.email,
+                "from_erp_roles": erp_roles_before,
+                "to_erp_roles": erp_roles_after,
             },
             request=request,
         )

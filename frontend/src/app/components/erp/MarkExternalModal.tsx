@@ -23,7 +23,7 @@ export function MarkExternalModal({
       : `Marcar ${count} pedidos como procesados externamente`;
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={title}>
-      <div className="modal-dialog">
+      <div className="modal-dialog erp-modal">
         <h2>{title}</h2>
         <p className="muted small">
           Saldrá de las colas activas y sus 4 estados (pago, preparación,

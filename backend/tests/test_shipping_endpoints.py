@@ -283,22 +283,38 @@ def test_etiqueta_upload_on_unpacked_order_keeps_file_without_transition(
         assert _history(s, oid) == []
 
 
-def test_etiqueta_upload_by_role_without_transition_permission_keeps_file(
-    client, session_factory
-):
-    """Un rol que puede subir ficheros pero no disparar el arco (USER): el
-    fichero se guarda, la transición no, y el motivo vuelve."""
+def test_etiqueta_upload_forbidden_for_view_only_role(client, session_factory):
+    """Roles y permisos: subir la etiqueta exige la capacidad `erp.sat.shipping`
+    (SAT/Pedidos/Comercial/Admin). Un rol de solo lectura del ERP (`user`) ya no
+    puede subirla → 403, y no queda ningún fichero."""
     with session_factory() as s:
         oid = _mk_order(s, prep="packed")
     r = _upload(client, oid, "etiqueta", role="user")
+    assert r.status_code == 403, r.text
+    with session_factory() as s:
+        assert list(s.scalars(select(ShipmentFile).where(
+            ShipmentFile.order_id == oid))) == []
+        assert _transport_of(s, oid) == "not_shipped"
+
+
+def test_etiqueta_upload_when_transition_blocked_keeps_file(client, session_factory):
+    """Un rol autorizado a subir (SAT) sobre un pedido que NO está embalado: el
+    guard «sin embalar» rechaza «Crear envío», pero el fichero se guarda igual y
+    el motivo vuelve al cliente (el estado lo moverá una subida posterior)."""
+    with session_factory() as s:
+        oid = _mk_order(s, prep="preparing")  # no packed → guard bloquea el arco
+    r = _upload(client, oid, "etiqueta", role="sat")
     assert r.status_code == 201, r.text
     body = r.json()
     assert body["transition_applied"] is False
     assert body["transport_status"] == "not_shipped"
-    assert "rol" in body["transition_reason"]
+    assert "embalada" in body["transition_reason"]
     with session_factory() as s:
         assert _transport_of(s, oid) == "not_shipped"
         assert _history(s, oid) == []
+        # El fichero SÍ se conservó pese a no aplicarse la transición.
+        assert len(list(s.scalars(select(ShipmentFile).where(
+            ShipmentFile.order_id == oid)))) == 1
 
 
 def test_albaran_upload_never_transitions(client, session_factory):

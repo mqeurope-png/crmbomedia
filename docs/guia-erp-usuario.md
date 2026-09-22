@@ -14,6 +14,7 @@ dice qué se ve, qué se pulsa y qué pasa después.
 ## Índice
 
 - [Cómo está organizado el ERP](#cómo-está-organizado-el-erp)
+- [Roles y permisos](#roles-y-permisos)
 - [Conceptos clave: los pasos del pedido](#conceptos-clave-los-pasos-del-pedido)
 - [El menú y las pantallas](#el-menú-y-las-pantallas)
 - [Parte 1: recorrido por el ERP](#parte-1-recorrido-por-el-erp)
@@ -50,9 +51,61 @@ albarán, registrar un cobro, crear/actualizar un cliente, guardar una proforma)
 Las pantallas que solo consultan (como **Documentos FACTUSOL**) lo dicen: *«Solo
 lectura»*. **Las facturas nunca se borran desde BoHub.**
 
-**Quién puede hacer qué:** para *aprobar*, *emitir*, *cobrar* o *editar* hace
-falta un rol de edición (administración / pedidos). El resto del equipo puede
-consultarlo todo. En **Ajustes**, solo un administrador puede guardar cambios.
+**Quién puede hacer qué:** cada acción del ERP exige un **permiso** concreto
+según tu **rol**. Lo tienes en detalle en [Roles y permisos](#roles-y-permisos);
+en resumen: el **Comercial** trabaja sus pedidos (no web) de punta a punta pero
+**no cobra en FACTUSOL** ni ve los pedidos web; **ERP Pedidos** hace todo lo de
+pedidos (web y no web) más la Cola SAT y los cobros; **ERP SAT** (taller) prepara,
+embala y gestiona el envío; y el **Administrador** puede todo, incluido asignar
+roles.
+
+---
+
+## Roles y permisos
+
+La autorización del ERP va **por capacidad**, no por «nivel»: cada pantalla y
+cada acción pide el permiso que le toca, y el servidor lo comprueba **siempre**
+(si te falta, la acción se rechaza con un aviso claro; la interfaz además esconde
+o deshabilita lo que no puedes hacer). Un usuario puede tener **uno o varios
+roles**: su permiso es la **unión** de lo que permite cada uno.
+
+| Área / acción | Comercial | ERP Pedidos | ERP SAT (taller) | Admin |
+|---|:---:|:---:|:---:|:---:|
+| Ver el ERP | ✅ | ✅ | ✅ | ✅ |
+| **Pedidos web** (WooCommerce): verlos y actuar | ❌ | ✅ | ✅ (solo lectura) | ✅ |
+| Pedidos **no web**: crear / aprobar / anular | ✅ | ✅ | ❌ | ✅ |
+| Crear albarán / emitir factura (FACTUSOL) | ✅ | ✅ | ❌ | ✅ |
+| **Registrar cobro** (FACTUSOL) | ❌ | ✅ | ❌ | ✅ |
+| Enviar al cliente por email (factura/pedido) | ✅ | ✅ | ❌ | ✅ |
+| Enviar al taller (SAT) por email | ✅ | ✅ | ✅ | ✅ |
+| Proformas · Empresas · Documentos FACTUSOL | ✅ | ✅ | ❌ | ✅ |
+| **Cola SAT**: ver | ✅ | ✅ | ✅ | ✅ |
+| Cola SAT: subir etiqueta | ✅ | ✅ | ✅ | ✅ |
+| Cola SAT: preparar / embalar / técnicos (serie, WhiteRIP) | ❌ | ✅ | ✅ | ✅ |
+| Seguimiento (hoja / Drive) | ❌ | ✅ | ❌ | ✅ |
+| Conciliación bancaria | ❌ | ❌ | ❌ | ✅ |
+| Configuración · Integraciones (Woo) | ❌ | ❌ | ❌ | ✅ |
+| **Asignar roles** a usuarios | ❌ | ❌ | ❌ | ✅ |
+
+**Regla dura de los pedidos web:** el **Comercial no ve los pedidos web** en
+ninguna lista (bandeja, Cola SAT, seguimiento) ni puede abrir su ficha —
+la app los filtra y el acceso directo por enlace se rechaza.
+
+**Enviar al taller (SAT) por email** también **mete el pedido en la Cola SAT**
+(si aún no estaba): así el taller siempre lo ve. Un pedido con una excepción
+abierta no entra en la cola hasta resolverla (misma regla que «Añadir a mano»).
+
+**Auditoría:** toda acción con efecto (aprobar, emitir, cobrar, enviar, preparar,
+cambiar de estado…) queda registrada con **quién** y **cuándo** en el historial
+del pedido.
+
+> **Roles antiguos (reconciliación).** Antes solo había «ver / editar / admin».
+> Ahora: **Responsable** y **Usuario** quedan como **solo lectura** del ERP
+> (pásalos a **Comercial** si trabajan pedidos); **Solo lectura (viewer)** no
+> entra al ERP; y la **conciliación bancaria** pasa a ser **solo de admin**
+> (antes la tocaba pedidos). El **Comercial** es un rol nuevo. Un administrador
+> asigna los roles en **Usuarios** (menú de Administración): el rol principal y,
+> si hace falta, roles de ERP **adicionales** (multi-rol).
 
 ---
 

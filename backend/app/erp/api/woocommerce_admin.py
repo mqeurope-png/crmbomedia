@@ -26,7 +26,7 @@ from app.core.audit import record_event
 from app.core.crypto import encrypt
 from app.core.errors import not_found
 from app.db.session import get_session
-from app.erp.api.deps import require_erp_admin
+from app.erp.api.deps import require_integraciones
 from app.erp.models import IntegrationEvent, IntegrationEventStatus
 from app.integrations.woocommerce.client import WooError, WooHTTPClient
 from app.integrations.woocommerce.webhooks import (
@@ -174,7 +174,7 @@ def _get_woo(session: Session, store_id: str) -> IntegrationAccount:
 @router.get("/stores")
 def list_stores(
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_admin),
+    current_user: User = Depends(require_integraciones),
 ) -> dict[str, Any]:
     _ = current_user
     rows = list(session.scalars(select(IntegrationAccount).where(
@@ -188,7 +188,7 @@ def list_stores(
 def create_store(
     payload: StoreCreate,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_admin),
+    current_user: User = Depends(require_integraciones),
 ) -> dict[str, Any]:
     _ = current_user
     if not _SLUG_RE.match(payload.account_id):
@@ -228,7 +228,7 @@ def update_store(
     store_id: str,
     payload: StoreUpdate,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_admin),
+    current_user: User = Depends(require_integraciones),
 ) -> dict[str, Any]:
     _ = current_user
     account = _get_woo(session, store_id)
@@ -253,7 +253,7 @@ def update_store(
 def webhook_status(
     store_id: str,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_admin),
+    current_user: User = Depends(require_integraciones),
 ) -> dict[str, Any]:
     """URL + últimos-4 del secreto + métricas 24h para el editor de tienda."""
     _ = current_user
@@ -274,7 +274,7 @@ def webhook_status(
 def regenerate_secret(
     store_id: str,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_admin),
+    current_user: User = Depends(require_integraciones),
 ) -> dict[str, Any]:
     """Rota el secreto de webhook. Devuelve el nuevo COMPLETO una única vez
     (luego solo se muestran los últimos 4). Hay que actualizarlo en el admin
@@ -300,7 +300,7 @@ def regenerate_secret(
 def test_connection(
     store_id: str,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_admin),
+    current_user: User = Depends(require_integraciones),
 ) -> dict[str, Any]:
     _ = current_user
     account = _get_woo(session, store_id)
@@ -316,7 +316,7 @@ def sync_backfill(
     store_id: str,
     since_iso: str | None = None,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_admin),
+    current_user: User = Depends(require_integraciones),
 ) -> dict[str, Any]:
     """Encola el backfill en la cola `woocommerce:backfill`. Si Redis no
     está disponible en local, se ejecuta síncronamente (útil en pruebas)."""
@@ -355,7 +355,7 @@ def reimport_order(
     store_id: str,
     payload: ReimportOrder,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_admin),
+    current_user: User = Depends(require_integraciones),
 ) -> dict[str, Any]:
     """Fuerza el reimport de UN pedido Woo por su id, sin backfill completo
     (Lote 6 · Bloque 3 — para desatascar 9557 y similares al instante).

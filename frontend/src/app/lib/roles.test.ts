@@ -24,7 +24,7 @@ describe("roles — metadatos", () => {
 
   it("agrupa CRM y ERP sin solaparse", () => {
     expect(CRM_ROLES).toEqual(["admin", "manager", "user", "viewer"]);
-    expect(ERP_ROLES).toEqual(["pedidos", "sat"]);
+    expect(ERP_ROLES).toEqual(["comercial", "pedidos", "sat"]);
     expect(CRM_ROLES.some((r) => ERP_ROLES.includes(r))).toBe(false);
   });
 

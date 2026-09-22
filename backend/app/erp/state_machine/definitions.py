@@ -36,9 +36,11 @@ _ADMIN = UserRole.ADMIN.value
 _MANAGER = UserRole.MANAGER.value
 _PEDIDOS = UserRole.PEDIDOS.value
 _SAT = UserRole.SAT.value
+_COMERCIAL = UserRole.COMERCIAL.value
 
-#: "Oficina": quienes gestionan pedidos desde el back-office.
-_OFFICE = frozenset({_ADMIN, _MANAGER, _PEDIDOS})
+#: "Oficina": quienes gestionan pedidos desde el back-office. El COMERCIAL
+#: trabaja sus pedidos (no web) de punta a punta, así que también es oficina.
+_OFFICE = frozenset({_ADMIN, _MANAGER, _PEDIDOS, _COMERCIAL})
 _OFFICE_OR_SYSTEM = _OFFICE | {SYSTEM}
 
 
@@ -112,7 +114,7 @@ TRANSITIONS: tuple[TransitionDef, ...] = (
     TransitionDef(
         StatusDomain.PREPARATION, PreparationStatus.PENDING_REVIEW.value,
         PreparationStatus.IN_QUEUE.value,
-        "Aprobar pedido", frozenset({_ADMIN, _PEDIDOS}),
+        "Aprobar pedido", frozenset({_ADMIN, _PEDIDOS, _COMERCIAL}),
     ),
     TransitionDef(
         StatusDomain.PREPARATION, PreparationStatus.IN_QUEUE.value,
@@ -147,7 +149,9 @@ TRANSITIONS: tuple[TransitionDef, ...] = (
         StatusDomain.PREPARATION, PreparationStatus.PACKED.value,
         PreparationStatus.IN_QUEUE.value,
         # Fase D-1-fix1: el operativo SAT que embaló puede reabrir si detecta un
-        # error de picking tarde (además de admin).
+        # error de picking tarde (además de admin). PEDIDOS reencola un pedido
+        # embalado por la vía «Añadir a mano a la Cola SAT» (forzado), no por
+        # este arco de corrección del taller.
         "Reabrir (error de picking)", frozenset({_ADMIN, _SAT}),
         required_evidence=("reason",),
     ),
