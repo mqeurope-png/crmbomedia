@@ -57,67 +57,75 @@ export function CompanyContactsPicker({
   }
 
   return (
-    <fieldset className="erp-contacts-picker">
-      <legend>Contactos de la empresa</legend>
-      {withEmail.map((c) => {
-        const email = c.email as string;
-        const channel = value[email] ?? null;
-        return (
-          <div key={c.id} className="erp-contact-row">
-            <label className="erp-contact-check">
-              <input
-                type="checkbox"
-                checked={channel !== null}
-                disabled={disabled}
-                aria-label={`Enviar a ${c.name} (${email})`}
-                onChange={(e) => set(email, e.target.checked ? "to" : null)}
-              />
-              <span className="erp-contact-name">
-                {c.name}
-                {c.is_order_contact ? (
-                  <span className="badge muted" title="Contacto del pedido">
-                    {" "}pedido
+    <div className="erp-contacts-picker">
+      <span className="erp-contacts-title">Contactos de la empresa</span>
+      <div className="erp-contacts-list">
+        {withEmail.map((c) => {
+          const email = c.email as string;
+          const channel = value[email] ?? null;
+          return (
+            <div key={c.id} className="erp-contact-row">
+              <label className="erp-contact-check">
+                <input
+                  type="checkbox"
+                  checked={channel !== null}
+                  disabled={disabled}
+                  aria-label={`Enviar a ${c.name} (${email})`}
+                  onChange={(e) => set(email, e.target.checked ? "to" : null)}
+                />
+                <span className="erp-contact-info">
+                  <span className="erp-contact-name">
+                    {c.name}
+                    {c.is_order_contact ? (
+                      <span className="badge muted" title="Contacto del pedido">
+                        {" "}pedido
+                      </span>
+                    ) : null}
                   </span>
-                ) : null}
-              </span>
-              <span className="muted small erp-contact-email">{email}</span>
-            </label>
-            {channel !== null ? (
-              <span
-                className="erp-contact-channel"
-                role="group"
-                aria-label={`Canal de ${c.name}`}
-              >
-                <button
-                  type="button"
-                  className={`button small ${channel === "to" ? "" : "secondary"}`}
-                  disabled={disabled}
-                  aria-pressed={channel === "to"}
-                  onClick={() => set(email, "to")}
+                  <span className="erp-contact-email muted small">{email}</span>
+                </span>
+              </label>
+              {channel !== null ? (
+                <span
+                  className="erp-contact-channel"
+                  role="group"
+                  aria-label={`Canal de ${c.name}`}
                 >
-                  Para
-                </button>
-                <button
-                  type="button"
-                  className={`button small ${channel === "cc" ? "" : "secondary"}`}
-                  disabled={disabled}
-                  aria-pressed={channel === "cc"}
-                  onClick={() => set(email, "cc")}
-                >
-                  CC
-                </button>
+                  <button
+                    type="button"
+                    className={`button small ${channel === "to" ? "" : "secondary"}`}
+                    disabled={disabled}
+                    aria-pressed={channel === "to"}
+                    onClick={() => set(email, "to")}
+                  >
+                    Para
+                  </button>
+                  <button
+                    type="button"
+                    className={`button small ${channel === "cc" ? "" : "secondary"}`}
+                    disabled={disabled}
+                    aria-pressed={channel === "cc"}
+                    onClick={() => set(email, "cc")}
+                  >
+                    CC
+                  </button>
+                </span>
+              ) : null}
+            </div>
+          );
+        })}
+        {withoutEmail.map((c) => (
+          <div key={c.id} className="erp-contact-row is-disabled">
+            <span className="erp-contact-info">
+              <span className="erp-contact-name muted">{c.name}</span>
+              <span className="erp-contact-email muted small">
+                sin email — no se puede seleccionar
               </span>
-            ) : null}
+            </span>
           </div>
-        );
-      })}
-      {withoutEmail.map((c) => (
-        <div key={c.id} className="erp-contact-row is-disabled">
-          <span className="erp-contact-name muted">{c.name}</span>
-          <span className="muted small">sin email — no se puede seleccionar</span>
-        </div>
-      ))}
-    </fieldset>
+        ))}
+      </div>
+    </div>
   );
 }
 

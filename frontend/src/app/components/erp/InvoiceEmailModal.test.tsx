@@ -226,6 +226,9 @@ describe("InvoiceEmailModal — contactos de la empresa", () => {
     expect(await screen.findByText("Contactos de la empresa")).toBeInTheDocument();
     // El contacto del pedido (Ana) viene marcado por defecto en «Para».
     expect(screen.getByLabelText(/Enviar a Ana Compras/)).toBeChecked();
+    // Cada contacto enseña su nombre y su email (fila legible, no fieldset).
+    expect(screen.getByText("Ana Compras")).toBeInTheDocument();
+    expect(screen.getByText("ana@cli.com")).toBeInTheDocument();
     // El contacto sin email se enseña deshabilitado con aviso.
     expect(screen.getByText("Ciro Tec")).toBeInTheDocument();
     expect(screen.getByText(/sin email/)).toBeInTheDocument();
