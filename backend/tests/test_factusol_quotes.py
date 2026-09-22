@@ -594,6 +594,68 @@ def test_create_quote_keeps_explicit_reference(session):
     assert fake.writes_to("F_PRE")[0]["REFPRE"] == "Pedido telefónico Marta"
 
 
+# --- serie / empresa emisora ------------------------------------------------
+
+
+def test_create_quote_sin_serie_sigue_creando_en_bomedia(session):
+    """Sin elegir nada, la proforma nace en la serie 1 (Bomedia) — cabecera y
+    líneas—, exactamente como se creaban todas hasta ahora."""
+    fake = _FakeFactusol()
+    result = create_quote(
+        fake, session, ejercicio="2026", customer={"codcli": "55555"},
+        lines=[{"description": "UV INK", "quantity": 1, "unit_price": 80}],
+    )
+    assert fake.writes_to("F_PRE")[0]["TIPPRE"] == "1"
+    assert fake.writes_to("F_LPS")[0]["TIPLPS"] == "1"
+    assert result["serie"] == 1
+
+
+@pytest.mark.parametrize("serie", [2, 4, 5])
+def test_create_quote_escribe_la_serie_elegida(session, serie):
+    """La serie elegida va a `TIPPRE` (cabecera) y al `TIPLPS` de cada línea:
+    es lo que hace que la proforma salga bajo esa empresa emisora en Proformas
+    y en Documentos."""
+    fake = _FakeFactusol()
+    result = create_quote(
+        fake, session, ejercicio="2026", customer={"codcli": "55555"},
+        lines=[{"description": "UV INK", "quantity": 1, "unit_price": 80},
+               {"description": "Montaje", "quantity": 1, "unit_price": 30}],
+        serie=serie,
+    )
+    assert fake.writes_to("F_PRE")[0]["TIPPRE"] == str(serie)
+    assert [line["TIPLPS"] for line in fake.writes_to("F_LPS")] == [str(serie)] * 2
+    assert result["serie"] == serie
+
+
+def test_patch_quote_conserva_la_serie_de_la_proforma(session):
+    """Editar NO mueve el documento de empresa emisora. Antes la cabecera se
+    reescribía con el default '1', así que guardar una proforma de la serie 5
+    —visibles desde el #451— la pasaba a Bomedia sin avisar."""
+    _ = session
+    fake = _FakeFactusol(
+        quotes=[{**_quote_row(703, serie="5"), "ESTPRE": 0}],
+        lines=[_line_row(703, 1)],
+    )
+    update_quote(
+        fake, "703", ejercicio="2026", customer={"codcli": "55555"},
+        lines=[{"description": "Línea nueva", "quantity": 1, "unit_price": 10}],
+    )
+    assert fake.updates_to("F_PRE")[0]["TIPPRE"] == "5"
+    assert fake.writes_to("F_LPS")[0]["TIPLPS"] == "5"
+
+
+def test_duplicate_quote_mantiene_la_serie_en_cabecera_y_lineas(session):
+    """La copia se queda en la misma empresa emisora. La cabecera ya arrastraba
+    su `TIPPRE` (se copia la fila entera); las líneas iban con el '1' fijo."""
+    fake = _FakeFactusol(
+        quotes=[_quote_row(704, serie="2")],
+        lines=[_line_row(704, 1, desc="Cable")],
+    )
+    duplicate_quote(fake, session, "704", ejercicio="2026")
+    assert fake.writes_to("F_PRE")[0]["TIPPRE"] == "2"
+    assert fake.writes_to("F_LPS")[0]["TIPLPS"] == "2"
+
+
 # --- edición de proformas (C-4-fix6) ----------------------------------------
 
 

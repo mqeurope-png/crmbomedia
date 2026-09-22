@@ -3418,6 +3418,10 @@ export async function bulkMatchApply(
 
 export type CreateQuotePayload = {
   company_id: string;
+  /** Serie = empresa emisora del documento (`TIPPRE` de F_PRE), como en el
+   *  alta de pedido manual. Solo en el ALTA: la serie de una proforma que ya
+   *  existe no se cambia al editarla. Omitir → 1 (Bomedia). */
+  serie?: number;
   referencia?: string;
   lines?: {
     codart?: string;

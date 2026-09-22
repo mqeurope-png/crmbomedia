@@ -6,6 +6,7 @@ import { extractErrorMessage } from "../../lib/errors";
 import {
   createFactusolQuote,
   downloadFactusolDocumentPdf,
+  FACTUSOL_SERIES,
   getFactusolCustomerAddresses,
   getFactusolQuote,
   saveBlob,
@@ -143,6 +144,9 @@ export function CreateQuoteModal({
   const [mode, setMode] = useState<Mode>(duplicateSource ? "duplicate" : "articles");
   const [lines, setLines] = useState<DocumentLine[]>([emptyDocumentLine()]);
   const [portes, setPortes] = useState("");
+  // Serie = empresa emisora del documento. Solo en el alta: la de una proforma
+  // que ya existe no se toca (el backend conserva su TIPPRE al editarla).
+  const [serie, setSerie] = useState(PRESUPUESTO_SERIE);
   const [fecha, setFecha] = useState(today());
   const [referencia, setReferencia] = useState("");
   // Direcciones del cliente: la sede + las adicionales de FACTUSOL.
@@ -226,6 +230,8 @@ export function CreateQuoteModal({
         const rows = rowsFromQuote(quote);
         setLines(rows.length > 0 ? rows : [emptyDocumentLine()]);
         setPortes(quote.portes ? String(quote.portes) : "");
+        // Solo para enseñarla: al editar, la serie no se manda ni se cambia.
+        setSerie(serieOf(quote));
       })
       .catch((e) => {
         if (alive) setError(extractErrorMessage(e, "No se pudo cargar la proforma."));
@@ -284,9 +290,15 @@ export function CreateQuoteModal({
    *
    *  C-4-fix3: las líneas son las **reales** de F_LPS, así que funciona igual
    *  con proformas creadas en el FACTUSOL de escritorio. Si F_LPS no devuelve
-   *  nada es que la proforma está vacía, y se avisa dejando la tabla editable. */
+   *  nada es que la proforma está vacía, y se avisa dejando la tabla editable.
+   *
+   *  La copia HEREDA la empresa emisora de la plantilla: duplicar una proforma
+   *  de Streamtec sin mirar el selector no debe acabar creando una de Bomedia.
+   *  Es solo el valor de partida — el selector sigue arriba y se puede cambiar
+   *  antes de crearla. */
   function applyTemplate() {
     if (!template?.codpre) return;
+    setSerie(serieOf(template));
     const rows = rowsFromQuote(template);
     if (rows.length > 0) {
       setLines(rows);
@@ -330,6 +342,10 @@ export function CreateQuoteModal({
     const payload = {
       company_id: targetId,
       referencia: referencia.trim(),
+      // Empresa emisora. Al editar no viaja: la serie de la proforma que ya
+      // existe la conserva el backend (mover un documento de serie sería
+      // renumerarlo en la contabilidad).
+      ...(editing ? {} : { serie }),
       lines: lines
         .filter((l) => l.description.trim() && num(l.quantity) > 0)
         .map((l) => ({
@@ -430,6 +446,35 @@ export function CreateQuoteModal({
             </datalist>
           </label>
         ) : null}
+
+        {/* Empresa EMISORA del documento (serie / `TIPPRE`), las mismas cuatro
+            que ofrece el alta de pedido manual. Es independiente del cliente:
+            dice desde qué empresa de la casa sale la proforma. Al editar no se
+            elige — cambiar la serie de un documento ya creado sería
+            renumerarlo en la contabilidad—, solo se enseña cuál es. */}
+        {editing ? (
+          <p className="muted small">
+            Empresa emisora:{" "}
+            <strong>
+              {serie} · {FACTUSOL_SERIES.find((s) => s.value === serie)?.label
+                ?? `Serie ${serie}`}
+            </strong>{" "}
+            — no cambia al editar.
+          </p>
+        ) : (
+          <label className="field">
+            <span>Empresa emisora (serie)</span>
+            <select value={serie} aria-label="Empresa emisora (serie)"
+                    title="Desde qué empresa de la casa sale la proforma. No tiene nada que ver con el cliente."
+                    onChange={(e) => setSerie(Number(e.target.value))}>
+              {FACTUSOL_SERIES.map((s) => (
+                <option key={s.value} value={s.value}>
+                  {s.value} · {s.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
 
         {/* Solo se ofrece si el cliente tiene alguna dirección adicional. */}
         {addresses.length > 1 ? (
@@ -587,6 +632,11 @@ export function CreateQuoteModal({
                     {" · "}{template.cliente_nombre ?? "—"}
                     {" · "}{template.total.toFixed(2)} €
                     {template.referencia ? ` · ${template.referencia}` : ""}
+                    {/* De qué empresa emisora es: al usarla como plantilla, la
+                        copia parte de esa misma serie (y se puede cambiar). */}
+                    {" · emisora "}
+                    {FACTUSOL_SERIES.find((s) => s.value === serieOf(template))?.label
+                      ?? `Serie ${serieOf(template)}`}
                   </span>
                   <div className="erp-quote-preview-actions">
                     <button type="button" className="button small secondary"

@@ -411,15 +411,26 @@ Acciones por proforma:
   pedido en BoHub y **su albarán en FACTUSOL (sin factura)**; botón **«Crear
   pedido y albarán»**.
 - **«Duplicar»** — crea una proforma nueva a partir de otra (con vista previa de
-  sus líneas y su PDF) para el cliente que elijas.
+  sus líneas y su PDF) para el cliente que elijas. La copia parte de la **misma
+  empresa emisora** que la plantilla (la vista previa la dice), y puedes
+  cambiarla en el selector antes de crearla.
 - **«PDF»** — descarga el PDF de la proforma.
 
-**«Nueva proforma».** Eliges la **empresa destino** (vinculada a FACTUSOL),
-añades líneas (buscando por **SKU** o **Descripción**, o escribiéndolas a mano),
-los **portes** en su campo aparte y una **referencia** opcional. Se guarda como
-un presupuesto **real** en FACTUSOL. Para dropshipping, activa **«Enviar a otro
-nombre / dirección»**: la proforma sigue a nombre fiscal del cliente, solo cambia
-el destinatario del documento.
+**«Nueva proforma».** Eliges la **empresa destino** (vinculada a FACTUSOL) y la
+**empresa emisora (serie)** —1 Bomedia · 2 MQ Europe · 4 Lambert · 5 Streamtec,
+las mismas que en el alta de pedido manual—, añades líneas (buscando por **SKU**
+o **Descripción**, o escribiéndolas a mano), los **portes** en su campo aparte y
+una **referencia** opcional. Se guarda como un presupuesto **real** en FACTUSOL,
+bajo la serie elegida: ahí es donde la verás en esta pantalla y en Documentos.
+Para dropshipping, activa **«Enviar a otro nombre / dirección»**: la proforma
+sigue a nombre fiscal del cliente, solo cambia el destinatario del documento.
+
+> La **emisora no tiene nada que ver con el cliente**: dice desde qué empresa de
+> la casa sale el documento. Por defecto, Bomedia.
+>
+> **Al editar una proforma la serie no se cambia** (mover un documento de serie
+> sería renumerarlo en la contabilidad): el modal enseña cuál es y ya está. Si
+> te equivocaste de emisora, crea la proforma de nuevo en la correcta.
 
 ### Documentos de FACTUSOL
 
