@@ -24,6 +24,7 @@ export function QuotePicker({
   pickLabel = "Cargar en el pedido",
   linesLabel = "Solo conceptos",
   busy,
+  notice,
 }: {
   companyId?: string | null;
   /** Modo «cargar todo»: cliente + líneas. */
@@ -34,6 +35,8 @@ export function QuotePicker({
   pickLabel?: string;
   linesLabel?: string;
   busy?: boolean;
+  /** Resultado de la última carga, para que el buscador dé feedback él mismo. */
+  notice?: string | null;
 }) {
   const [query, setQuery] = useState("");
   const [quotes, setQuotes] = useState<FactusolQuote[]>([]);
@@ -89,6 +92,7 @@ export function QuotePicker({
         />
       </label>
       {error ? <p className="form-error">{error}</p> : null}
+      {notice ? <p className="form-info" role="status">{notice}</p> : null}
       {loading ? (
         <p className="muted small" role="status">Buscando proformas…</p>
       ) : (

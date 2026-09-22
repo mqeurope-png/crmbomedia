@@ -5,6 +5,7 @@ import { listContacts } from "../../../lib/api";
 import { getCompany, listCompanies } from "../../../lib/companiesApi";
 import {
   createOrder,
+  getFactusolQuote,
   listFactusolQuotes,
   previewOrderFromFactusol,
   searchFactusolArticles,
@@ -78,6 +79,8 @@ async function waitForCompanyOption() {
 const QUOTE = {
   codpre: "574", referencia: "Cabezal + SAT", fecha: "2026-09-01", clipre: "55555",
   cliente_nombre: "Roca Joiers", base: 355, iva: 74.55, total: 429.55,
+  serie: 1, numero: "1-000574",
+  company: { id: "c1", name: "Acme SL", country: "ES", factusol_id: "55555" },
 };
 
 beforeEach(() => {
@@ -96,6 +99,16 @@ beforeEach(() => {
   (searchFactusolCustomers as jest.Mock).mockResolvedValue([F_CLI]);
   (searchFactusolQuotes as jest.Mock).mockReset();
   (searchFactusolQuotes as jest.Mock).mockResolvedValue([QUOTE]);
+  (getFactusolQuote as jest.Mock).mockReset();
+  (getFactusolQuote as jest.Mock).mockResolvedValue({
+    ...QUOTE, line_source: "F_LPS", portes: 0,
+    lines: [
+      { position: 1, codart: "MBO", description: "Cabezal MBO 250",
+        quantity: 1, unit_price: 250, line_total: 250, discount_pct: 0, iva_pct: 21 },
+      { position: 2, codart: "SAT", description: "Hora SAT",
+        quantity: 1, unit_price: 105, line_total: 105, discount_pct: 0, iva_pct: 21 },
+    ],
+  });
   (previewOrderFromFactusol as jest.Mock).mockReset();
   (previewOrderFromFactusol as jest.Mock).mockResolvedValue({
     doc_type: "presupuestos", serie: 1, codigo: 574, numero: "1-000574",
@@ -126,13 +139,20 @@ describe("Alta de pedido — buscador de proformas y precarga desde FACTUSOL", (
     expect(await screen.findByText("Cabezal + SAT")).toBeInTheDocument();
     expect(screen.getByText("Roca Joiers")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Cargar todo" }));
-    await waitFor(() =>
-      expect(previewOrderFromFactusol).toHaveBeenCalledWith("presupuestos", 1, 574),
-    );
-    expect(await screen.findByText(/presupuesto 1-000574 cargado: 2 línea\(s\)/)).toBeInTheDocument();
-    expect(screen.getByLabelText("SKU línea 1")).toHaveValue("MBO");
+
+    // «Cargar todo» copia cliente + líneas y deja un PEDIDO MANUAL normal: NO
+    // pasa por la vía «documento FACTUSOL» (nada de `previewOrderFromFactusol`,
+    // ni paso de pago, ni albarán). Para convertir la proforma COMO DOCUMENTO
+    // está «Convertir en pedido» en la pantalla de Proformas.
+    await waitFor(() => expect(getFactusolQuote).toHaveBeenCalledWith("574"));
+    expect(previewOrderFromFactusol).not.toHaveBeenCalled();
+    expect(await screen.findByLabelText("SKU línea 1")).toHaveValue("MBO");
     expect(screen.getByLabelText("Descripción línea 2")).toHaveValue("Hora SAT");
-    expect(screen.getByText(/Origen:/)).toHaveTextContent("presupuesto FACTUSOL 1-000574");
+    // Trae el cliente de la proforma...
+    expect(screen.getByLabelText("Empresa")).toHaveValue("Acme SL");
+    // ...y el pedido queda como MANUAL, no como documento de FACTUSOL.
+    expect(screen.getByText(/Origen:/)).toHaveTextContent("Origen: manual");
+    expect(screen.queryByText(/presupuesto FACTUSOL/)).toBeNull();
   });
 
   it("con empresa elegida, el buscador lista sus proformas sin escribir nada", async () => {
