@@ -298,6 +298,84 @@ def order_store_slug(session: Session, order: Any) -> str | None:
     return store.account_id if store is not None else None
 
 
+def company_contacts_for_order(session: Session, order: Any) -> list[dict[str, Any]]:
+    """Contactos candidatos a destinatarios de los envíos del pedido:
+    `{id, name, email, has_email, is_order_contact}`. Incluye los contactos de
+    la EMPRESA del pedido y, además, el propio contacto del pedido aunque no
+    esté asociado a la empresa (frecuente en pedidos web). Ordenados por nombre;
+    un contacto con email inválido/ausente sale `has_email=False` (se enseña
+    deshabilitado). Sin pedido → lista vacía."""
+    if order is None:
+        return []
+    from app.models.crm import Contact  # noqa: PLC0415
+
+    rows: list[Any] = []
+    seen: set[str] = set()
+    if getattr(order, "company_id", None):
+        rows = list(session.scalars(
+            select(Contact).where(
+                Contact.company_id == order.company_id,
+                Contact.is_active.is_(True),
+            ).order_by(Contact.last_name.asc(), Contact.first_name.asc())
+        ))
+        seen = {c.id for c in rows}
+    # El contacto del pedido siempre debe poder elegirse, aunque no esté
+    # vinculado a la empresa (el «Para» que se precargaba hasta ahora).
+    order_contact_id = getattr(order, "contact_id", None)
+    if order_contact_id and order_contact_id not in seen:
+        oc = session.get(Contact, order_contact_id)
+        if oc is not None:
+            rows = [oc, *rows]
+    out: list[dict[str, Any]] = []
+    for c in rows:
+        email = (c.email or "").strip() if c.is_email_valid else ""
+        name = " ".join(p for p in (c.first_name, c.last_name) if p).strip()
+        out.append({
+            "id": c.id,
+            "name": name or email or "—",
+            "email": email or None,
+            "has_email": bool(email),
+            "is_order_contact": c.id == order_contact_id,
+        })
+    return out
+
+
+def resolve_primary_contact(
+    session: Session, order: Any, recipients: list[str],
+) -> str | None:
+    """Contacto al que se ENLAZA el correo (para el timeline), elegido entre los
+    destinatarios: el contacto del pedido si su email está entre ellos; si no,
+    el primer destinatario (en orden) que sea un contacto de la empresa; si
+    ninguno lo es, el contacto del pedido (comportamiento de siempre). La
+    auditoría registra aparte TODOS los destinatarios."""
+    if order is None:
+        return None
+    emails = [e.strip().lower() for e in recipients if e and e.strip()]
+    email_set = set(emails)
+    from app.models.crm import Contact  # noqa: PLC0415
+
+    order_contact_id = getattr(order, "contact_id", None)
+    if order_contact_id:
+        oc = session.get(Contact, order_contact_id)
+        if oc is not None and (oc.email or "").strip().lower() in email_set:
+            return oc.id
+    if getattr(order, "company_id", None) and emails:
+        by_email: dict[str, str] = {}
+        for c in session.scalars(
+            select(Contact).where(
+                Contact.company_id == order.company_id,
+                Contact.email.isnot(None),
+            )
+        ):
+            key = (c.email or "").strip().lower()
+            if key:
+                by_email.setdefault(key, c.id)
+        for e in emails:
+            if e in by_email:
+                return by_email[e]
+    return order_contact_id
+
+
 class OrderInvoiceMismatch(ValueError):
     """La factura pedida NO es la del pedido indicado (o el pedido no tiene
     factura): nunca se envía la factura de un pedido desde otro."""
@@ -565,6 +643,9 @@ def build_invoice_email_preview(
         # del pedido (posible vínculo erróneo: el operador debe mirar el «Para»).
         "invoice_customer": (data.get("cliente") or {}).get("nombre") or None,
         "customer_mismatch": customer_mismatch,
+        # Contactos de la empresa del pedido para el selector de destinatarios
+        # (además del «Para» libre). Los sin email salen deshabilitados.
+        "company_contacts": company_contacts_for_order(session, order),
     }
 
 
@@ -597,6 +678,8 @@ def send_invoice_email(
     ejercicio: str,
     current_user: Any,
     to: list[str],
+    cc: list[str] | None = None,
+    bcc: list[str] | None = None,
     subject: str,
     body_text: str,
     lang: str,
@@ -648,6 +731,11 @@ def send_invoice_email(
     )
     filename = pdf_filename("facturas", data, lang, variant)
     body_html = _text_to_html(body_text)
+    # El correo se enlaza a UN contacto para el timeline (el principal entre los
+    # destinatarios); la auditoría registra aparte a TODOS.
+    primary_contact = resolve_primary_contact(
+        session, order, list(to) + list(cc or []),
+    )
 
     # El envío es la parte irreversible: si falla, la excepción sube y no se
     # registra nada (el caller devuelve error y el PDF se puede reintentar).
@@ -657,11 +745,11 @@ def send_invoice_email(
         from_alias=from_alias,
         from_name=None,
         to=to,
-        cc=None, bcc=None,
+        cc=cc or None, bcc=bcc or None,
         subject=subject,
         body_html=body_html,
         body_text=body_text,
-        contact_id=order.contact_id if order is not None else None,
+        contact_id=primary_contact,
         in_reply_to_message_id=reply_to_message_id,
         attachments=[{
             "filename": filename,
@@ -674,6 +762,7 @@ def send_invoice_email(
     if order is not None:
         _LANG_NAMES = {"es": "español", "en": "inglés", "de": "alemán",
                        "fr": "francés", "nl": "neerlandés"}
+        destinatarios = list(to) + list(cc or [])
         record_event(
             session,
             action="erp.invoice_emailed",
@@ -681,11 +770,12 @@ def send_invoice_email(
             target_id=order.id,
             actor=current_user,
             message=(
-                f"Factura {data['numero']} enviada a {', '.join(to)} "
+                f"Factura {data['numero']} enviada a {', '.join(destinatarios)} "
                 f"en {_LANG_NAMES.get(lang, lang)}"
             ),
             metadata={
-                "factura": data["numero"], "to": to, "lang": lang,
+                "factura": data["numero"], "to": list(to),
+                "cc": list(cc or []), "bcc": list(bcc or []), "lang": lang,
                 "message_id": message.id, "thread_id": message.thread_id,
                 "attachment": filename,
             },
@@ -696,7 +786,9 @@ def send_invoice_email(
         "sent": True,
         "message_id": message.id,
         "thread_id": message.thread_id,
-        "to": to,
+        "to": list(to),
+        "cc": list(cc or []),
+        "bcc": list(bcc or []),
         "lang": lang,
         "numero": data["numero"],
         "attachment_filename": filename,

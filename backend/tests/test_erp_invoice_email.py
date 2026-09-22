@@ -1236,3 +1236,123 @@ def test_settings_template_test_send_requires_admin(http, session_factory) -> No
                       headers=auth_headers(http, "pedidos"))
     assert r.status_code == 403
     mock_send.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Destinatarios = contactos de la empresa (multi-destinatario + timeline)
+# ---------------------------------------------------------------------------
+
+
+def test_company_contacts_and_primary_resolver(session_factory) -> None:
+    """`company_contacts_for_order` lista los contactos de la empresa (con flag
+    de email) y `resolve_primary_contact` elige el contacto al que se enlaza el
+    correo entre los destinatarios."""
+    from app.erp.invoice_email import (
+        company_contacts_for_order,
+        resolve_primary_contact,
+    )
+
+    with session_factory() as s:
+        company = Company(name="Client SARL", source="manual")
+        s.add(company)
+        s.flush()
+        ana = Contact(first_name="Ana", last_name="Compras",
+                      email="ana@cli.com", company_id=company.id)
+        beto = Contact(first_name="Beto", last_name="Admin",
+                       email="beto@cli.com", company_id=company.id)
+        ciro = Contact(first_name="Ciro", last_name="Tec",
+                       email=None, company_id=company.id)
+        s.add_all([ana, beto, ciro])
+        s.flush()
+        order = Order(external_source=OrderSource.MANUAL, order_number="ART-1",
+                      contact_id=ana.id, company_id=company.id,
+                      total_amount=1, currency="EUR")
+        s.add(order)
+        s.commit()
+
+        contacts = company_contacts_for_order(s, order)
+        by_email = {c["email"]: c for c in contacts if c["email"]}
+        assert {c["name"] for c in contacts} == {"Ana Compras", "Beto Admin", "Ciro Tec"}
+        assert by_email["ana@cli.com"]["is_order_contact"] is True
+        assert by_email["ana@cli.com"]["has_email"] is True
+        ciro_row = next(c for c in contacts if c["name"] == "Ciro Tec")
+        assert ciro_row["has_email"] is False and ciro_row["email"] is None
+
+        # El contacto del pedido si su email está entre los destinatarios…
+        assert resolve_primary_contact(s, order, ["beto@cli.com", "ana@cli.com"]) == ana.id
+        # …si no, el primer destinatario que sea contacto de la empresa…
+        assert resolve_primary_contact(s, order, ["libre@x.com", "beto@cli.com"]) == beto.id
+        # …y si ninguno lo es, cae al contacto del pedido (como hoy).
+        assert resolve_primary_contact(s, order, ["libre@x.com"]) == ana.id
+
+
+def test_preview_lists_company_contacts(http, session_factory) -> None:
+    """La previsualización de la factura trae los contactos de la empresa del
+    pedido para el selector de destinatarios."""
+    with session_factory() as s:
+        order = _seed_order(s)  # contacto Jean (client@example.fr)
+        _seed_alias(s)
+        s.add(Contact(first_name="Marie", last_name="Achats",
+                      email="marie@example.fr", company_id=order.company_id))
+        s.commit()
+    with _patched_factusol():
+        pre = http.get(
+            "/api/erp/factusol/documents/facturas/5/260063/email-preview",
+            headers=auth_headers(http, "pedidos"),
+        )
+    assert pre.status_code == 200, pre.text
+    contacts = pre.json()["company_contacts"]
+    emails = {c["email"] for c in contacts}
+    assert {"client@example.fr", "marie@example.fr"} <= emails
+    jean = next(c for c in contacts if c["email"] == "client@example.fr")
+    assert jean["is_order_contact"] is True
+
+
+def test_send_invoice_multi_recipient_cc_links_primary_and_audits(
+    http, session_factory,
+) -> None:
+    """Envío a varios destinatarios (To + CC): el correo lleva to y cc, se
+    enlaza al contacto principal (el del pedido, que va en CC) y la auditoría
+    registra TODOS los destinatarios."""
+    import json
+
+    from app.models.crm import AuditLog
+
+    with session_factory() as s:
+        order = _seed_order(s)  # Jean = client@example.fr, order.contact_id
+        _seed_alias(s)
+        s.add(Contact(first_name="Marie", last_name="Achats",
+                      email="marie@example.fr", company_id=order.company_id))
+        s.commit()
+        order_id = order.id
+        jean_id = order.contact_id
+
+    send_patch, _ = _patch_send()
+    with _patched_factusol(), send_patch as mock_send:
+        r = http.post(
+            "/api/erp/factusol/documents/facturas/5/260063/email",
+            json={
+                "confirm": True,
+                "to": ["marie@example.fr", "extra@libre.com"],
+                "cc": ["client@example.fr"],
+                "subject": "Factura", "body_text": "Hola",
+                "lang": "es", "from_alias": "ventas@bomedia.net",
+                "order_id": order_id,
+            },
+            headers=auth_headers(http, "pedidos"),
+        )
+    assert r.status_code == 201, r.text
+    kwargs = mock_send.call_args.kwargs
+    assert kwargs["to"] == ["marie@example.fr", "extra@libre.com"]
+    assert kwargs["cc"] == ["client@example.fr"]
+    # Contacto principal: el del pedido (Jean), porque su email va en CC.
+    assert kwargs["contact_id"] == jean_id
+
+    with session_factory() as s:
+        log = s.query(AuditLog).filter_by(
+            action="erp.invoice_emailed", target_id=order_id,
+        ).one()
+        meta = json.loads(log.metadata_json)
+        assert meta["to"] == ["marie@example.fr", "extra@libre.com"]
+        assert meta["cc"] == ["client@example.fr"]
+

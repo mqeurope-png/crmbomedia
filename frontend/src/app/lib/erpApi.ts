@@ -2498,6 +2498,17 @@ export type InvoiceEmailLangSource =
   | "pedido" | "cliente" | "pais_documento" | "pais_cliente"
   | "empresa" | "defecto";
 
+/** Un contacto de la empresa del pedido, para el selector de destinatarios de
+ *  los envíos de documentos (factura / pedido / proforma). */
+export type EmailContact = {
+  id: string;
+  name: string;
+  email: string | null;
+  has_email: boolean;
+  /** Es el contacto ligado al pedido (se marca por defecto). */
+  is_order_contact: boolean;
+};
+
 /** Datos de la PREVISUALIZACIÓN obligatoria antes de enviar la factura. Todo
  *  editable en el modal salvo el nombre del adjunto (se regenera al enviar). */
 export type InvoiceEmailPreview = {
@@ -2535,12 +2546,17 @@ export type InvoiceEmailPreview = {
    *  pedido (posible vínculo erróneo: revisar el «Para»). */
   invoice_customer?: string | null;
   customer_mismatch?: boolean;
+  /** Contactos de la empresa del pedido para el selector de destinatarios. */
+  company_contacts?: EmailContact[];
 };
 
 export type InvoiceEmailSendPayload = {
   /** OBLIGATORIO true: enviar es irreversible, nunca un clic accidental. */
   confirm: boolean;
   to: string[];
+  /** Copia (CC) y copia oculta (CCO): contactos de la empresa o emails libres. */
+  cc?: string[];
+  bcc?: string[];
   subject: string;
   body_text: string;
   lang: FactusolPdfLang;
@@ -2560,6 +2576,8 @@ export type InvoiceEmailSendResult = {
   message_id: string;
   thread_id: string;
   to: string[];
+  cc?: string[];
+  bcc?: string[];
   lang: FactusolPdfLang;
   numero: string;
   attachment_filename: string;
@@ -2622,6 +2640,8 @@ export type OrderEmailPreview = {
   };
   /** Qué viene marcado: el albarán si existe; los otros no. */
   defaults: { albaran: boolean; pedido: boolean; factura: boolean };
+  /** Contactos de la empresa del pedido para el selector de destinatarios. */
+  company_contacts?: EmailContact[];
 };
 
 export type OrderEmailSendPayload = {

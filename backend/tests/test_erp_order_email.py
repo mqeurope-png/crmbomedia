@@ -217,6 +217,8 @@ def test_email_destinatario_sat_por_defecto_configurable(http, session_factory) 
     assert "Obra X" in preview["body_text"]          # referencia del documento
     assert preview["from_alias"] == ALIAS
     assert preview["defaults"] == {"albaran": True, "pedido": False, "factura": False}
+    # El selector trae los contactos de la empresa (incl. el del pedido).
+    assert any(c["is_order_contact"] for c in preview["company_contacts"])
 
     # Enviar a OTROS destinatarios además del SAT, con CC y CCO.
     send, msg = _patch_send()

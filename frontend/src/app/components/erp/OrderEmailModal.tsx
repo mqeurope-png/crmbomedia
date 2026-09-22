@@ -8,6 +8,11 @@ import {
   type OrderEmailPreview,
 } from "../../lib/erpApi";
 import { extractErrorMessage } from "../../lib/errors";
+import {
+  CompanyContactsPicker,
+  splitContactChannels,
+  type ContactChannel,
+} from "./CompanyContactsPicker";
 
 const EMAIL_LANGS: { value: FactusolPdfLang; label: string }[] = [
   { value: "es", label: "ES" },
@@ -24,6 +29,23 @@ function parseRecipients(raw: string): string[] {
 
 function looksLikeEmail(value: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+/** Une listas de emails quitando duplicados (sin distinguir mayúsculas). */
+function dedupeEmails(...lists: string[][]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const list of lists) {
+    for (const raw of list) {
+      const email = raw.trim();
+      const key = email.toLowerCase();
+      if (email && !seen.has(key)) {
+        seen.add(key);
+        out.push(email);
+      }
+    }
+  }
+  return out;
 }
 
 /** ERP · enviar el PEDIDO por email al SAT / taller (y a quien haga falta).
@@ -53,6 +75,8 @@ export function OrderEmailModal({
   const [to, setTo] = useState("");
   const [cc, setCc] = useState("");
   const [bcc, setBcc] = useState("");
+  // Contactos de la empresa elegidos (email → canal Para/CC).
+  const [contactSel, setContactSel] = useState<Record<string, ContactChannel>>({});
   const [showCopies, setShowCopies] = useState(false);
   const [lang, setLang] = useState<FactusolPdfLang>("es");
   const [subject, setSubject] = useState("");
@@ -78,6 +102,7 @@ export function OrderEmailModal({
           setBody(p.body_text);
           if (!keepRecipients) {
             setTo(p.to.join(", "));
+            setContactSel({});
             setWithAlbaran(p.defaults.albaran);
             setWithPedido(p.defaults.pedido);
             setWithFactura(p.defaults.factura);
@@ -97,8 +122,9 @@ export function OrderEmailModal({
 
   useEffect(() => loadPreview(), [loadPreview]);
 
-  const recipients = parseRecipients(to);
-  const ccList = parseRecipients(cc);
+  const { to: contactTo, cc: contactCc } = splitContactChannels(contactSel);
+  const recipients = dedupeEmails(contactTo, parseRecipients(to));
+  const ccList = dedupeEmails(contactCc, parseRecipients(cc));
   const bccList = parseRecipients(bcc);
   const allValid = [...recipients, ...ccList, ...bccList].every(looksLikeEmail);
   const anyAttachment = withAlbaran || withPedido || withFactura;
@@ -167,6 +193,15 @@ export function OrderEmailModal({
               Revisa destinatarios y adjuntos antes de enviar. Se envía con la
               cuenta de Gmail integrada y queda registrado en el pedido.
             </p>
+
+            {(preview.company_contacts?.length ?? 0) > 0 ? (
+              <CompanyContactsPicker
+                contacts={preview.company_contacts ?? []}
+                value={contactSel}
+                onChange={setContactSel}
+                disabled={sending}
+              />
+            ) : null}
 
             <label className="field">
               <span>Para</span>
