@@ -503,7 +503,8 @@ describe("CreateQuoteModal", () => {
 
     // Carga la proforma de la fila (líneas reales de F_LPS) sin pasar por el
     // buscador: es el mismo `getFactusolQuote` que usa «Cargar esta plantilla».
-    await waitFor(() => expect(mockGetQuote).toHaveBeenCalledWith("39"));
+    // La plantilla se pide por (serie, número), no por el número a secas.
+    await waitFor(() => expect(mockGetQuote).toHaveBeenCalledWith("39", 1));
     const preview = await screen.findByRole("region", { name: "Plantilla nº 39" });
     // Líneas de origen visibles, ya mapeadas (SKU comercial, no el CODART).
     expect(within(preview).getByText("CDR80WPT")).toBeInTheDocument();
@@ -638,6 +639,30 @@ describe("CreateQuoteModal", () => {
 
     await waitFor(() => expect(mockCreate).toHaveBeenCalled());
     expect(mockCreate.mock.calls[0][0].serie).toBe(2);
+  });
+
+  it("editar identifica la proforma por (serie, número), al leerla y al guardarla", async () => {
+    // Los CODPRE se repiten entre series: sin la serie se editaría «una» 574,
+    // no necesariamente la que el operador tiene delante.
+    mockGetQuote.mockResolvedValue({
+      ...quote({ codpre: "574" }), referencia: "REF", line_source: "F_LPS",
+      serie: 2, tippre: "2",
+      lines: [{ position: 1, codart: "MBO", description: "Cabezal MBO",
+                quantity: 1, unit_price: 250, discount_pct: 0,
+                line_total: 250, iva_pct: 21 }],
+    });
+    const user = userEvent.setup();
+    render(<CreateQuoteModal {...base({ editCodpre: "574", editSerie: 2 })} />);
+
+    await waitFor(() => expect(mockGetQuote).toHaveBeenCalledWith("574", 2));
+    await waitFor(() =>
+      expect(screen.getByLabelText("Referencia (opcional)")).toHaveValue("REF"));
+
+    await user.click(screen.getByRole("button", { name: "Guardar cambios" }));
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
+    // La serie va en el 3.er argumento (la URL), no en el cuerpo.
+    expect(mockUpdate.mock.calls[0][2]).toBe(2);
+    expect(mockUpdate.mock.calls[0][1]).not.toHaveProperty("serie");
   });
 
   it("al EDITAR no se elige serie: se enseña la de la proforma y no viaja al PATCH", async () => {

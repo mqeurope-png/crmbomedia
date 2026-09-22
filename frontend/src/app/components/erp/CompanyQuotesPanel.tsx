@@ -44,7 +44,8 @@ export function CompanyQuotesPanel({
   const [notice, setNotice] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   // CODPRE de la proforma que se está editando (C-4-fix6).
-  const [editing, setEditing] = useState<string | null>(null);
+  // La proforma que se edita, entera: la clave de F_PRE es serie + número.
+  const [editing, setEditing] = useState<FactusolQuote | null>(null);
   const [busyJob, setBusyJob] = useState(false);
   // Fase 2: proforma pendiente de confirmar el pago antes de convertir.
   const [converting, setConverting] = useState<FactusolQuote | null>(null);
@@ -91,13 +92,18 @@ export function CompanyQuotesPanel({
     load();
   }
 
-  async function convert(codpre: string, payment: PaymentIntentInput) {
+  async function convert(quote: FactusolQuote, payment: PaymentIntentInput) {
+    const codpre = quote.codpre ?? "";
     setConverting(null);
     setBusyJob(true);
     setError(null);
     setNotice("Creando el pedido y el albarán en FACTUSOL…");
     try {
-      const r = await convertFactusolQuoteToOrder(codpre, { payment, create_albaran: true });
+      // Por (serie, número): los CODPRE se repiten entre series.
+      const r = await convertFactusolQuoteToOrder(
+        codpre, { payment, create_albaran: true },
+        quote.serie ?? (Number(quote.tippre) || undefined),
+      );
       const result = await waitForJob(r.job_id);
       if (result) {
         setNotice(conversionNotice(codpre, result, payment.paid));
@@ -145,7 +151,7 @@ export function CompanyQuotesPanel({
             <>
               <button type="button" className="button small secondary"
                       disabled={busyJob}
-                      onClick={() => setEditing(q.codpre ?? "")}>
+                      onClick={() => setEditing(q)}>
                 Editar
               </button>
               <button type="button" className="button small secondary"
@@ -163,7 +169,8 @@ export function CompanyQuotesPanel({
           companyId={companyId}
           companyName={companyName}
           factusolCodcli={factusolCodcli}
-          editCodpre={editing}
+          editCodpre={editing?.codpre ?? null}
+          editSerie={editing ? (editing.serie ?? (Number(editing.tippre) || undefined)) : undefined}
           onCreated={onCreated}
           onCancel={() => { setCreating(false); setEditing(null); }}
         />
@@ -173,7 +180,7 @@ export function CompanyQuotesPanel({
         <ConvertQuoteDialog
           quote={converting}
           onCancel={() => setConverting(null)}
-          onConfirm={(payment) => void convert(converting.codpre ?? "", payment)}
+          onConfirm={(payment) => void convert(converting, payment)}
         />
       ) : null}
     </section>

@@ -276,7 +276,9 @@ export default function ProformasPage() {
     setError(null);
     setNotice(`Creando el pedido y el albarán en FACTUSOL para la proforma ${codpre}…`);
     try {
-      const r = await convertFactusolQuoteToOrder(codpre, { payment, create_albaran: true });
+      const r = await convertFactusolQuoteToOrder(
+        codpre, { payment, create_albaran: true }, serieOf(q) || undefined,
+      );
       const result = await waitFor(r.job_id);
       if (result) setNotice(conversionNotice(codpre, result, payment.paid));
       await load();
@@ -607,6 +609,7 @@ export default function ProformasPage() {
           companyName={editing.company.name}
           factusolCodcli={editing.company.codcli}
           editCodpre={editing.quote.codpre}
+          editSerie={serieOf(editing.quote) || undefined}
           onCreated={(jobId) => void onQuoteJob(jobId, "Actualizando")}
           onCancel={() => setEditing(null)}
         />

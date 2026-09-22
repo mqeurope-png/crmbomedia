@@ -590,7 +590,10 @@ def test_endpoint_albaran_reintento_y_estado(db, http) -> None:
     assert detail["factusol_albaran_number"] == "5-500004"
     bandeja = http.get("/api/erp/orders", headers=headers).json()["items"]
     assert {it["order_number"]: it["factusol_albaran_number"] for it in bandeja} == {
-        "PRO-000027": "5-500004", "MANUAL-000001": None,
+        # El presupuesto es de la SERIE 5, así que su pedido se llama
+        # `PRO-5-000027` — igual que los albaranes (`ALB-5-…`). La serie 1
+        # conserva el `PRO-000027` de siempre.
+        "PRO-5-000027": "5-500004", "MANUAL-000001": None,
     }
     # Solo lectura no puede.
     assert http.post(f"/api/erp/orders/{order.id}/albaran",
@@ -619,7 +622,10 @@ def test_convertir_proforma_endpoint_lleva_pago_y_albaran(db, http) -> None:
         r2 = http.post("/api/erp/factusol/quotes/574/convert-to-order",
                        headers=auth_headers(http, "pedidos"))
     assert r2.status_code == 202
-    assert enq2.call_args.kwargs == {"payment": None, "create_albaran": True}
+    # `serie` identifica la proforma (None = sin `?serie=`, enlace antiguo).
+    assert enq2.call_args.kwargs == {
+        "payment": None, "create_albaran": True, "serie": None,
+    }
     bad = http.post("/api/erp/factusol/quotes/574/convert-to-order", json={
         "payment": {"paid": True, "contrapartida": "Cuenta Inventada"},
     }, headers=auth_headers(http, "pedidos"))

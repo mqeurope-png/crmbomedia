@@ -330,6 +330,60 @@ def test_patch_quote_ignora_la_serie(client, session_factory):
     assert 5 not in enq.call_args.args
 
 
+def test_get_quote_pasa_la_serie_pedida(client):
+    """El detalle identifica la proforma por (serie, número): dos series pueden
+    compartir CODPRE."""
+    with patch("app.integrations.factusol.quotes.get_quote",
+               return_value={"codpre": "574", "lines": []}) as leer:
+        r = client.get("/api/erp/factusol/quotes/574?serie=2",
+                       headers=auth_headers(client, "user"))
+    assert r.status_code == 200, r.text
+    assert leer.call_args.kwargs["serie"] == 2
+
+
+def test_get_quote_sin_serie_sigue_funcionando(client):
+    """Un enlace antiguo (sin `?serie=`) no se rompe."""
+    with patch("app.integrations.factusol.quotes.get_quote",
+               return_value={"codpre": "574", "lines": []}) as leer:
+        r = client.get("/api/erp/factusol/quotes/574",
+                       headers=auth_headers(client, "user"))
+    assert r.status_code == 200, r.text
+    assert leer.call_args.kwargs["serie"] is None
+
+
+@pytest.mark.parametrize("serie", [1, 2, 3, 5])
+def test_patch_quote_pasa_la_serie_al_job(client, session_factory, serie):
+    """Incluida la 3, que existe en los datos aunque no sea una emisora en la
+    que se pueda CREAR."""
+    with session_factory() as s:
+        cid = _company(s)
+    with patch("app.integrations.factusol.jobs.enqueue_update_quote",
+               return_value="job-u1") as enq:
+        r = client.patch(f"/api/erp/factusol/quotes/700?serie={serie}",
+                         headers=auth_headers(client, "pedidos"),
+                         json={"company_id": cid, "referencia": "X"})
+    assert r.status_code == 202, r.text
+    assert enq.call_args.args[6] == serie
+
+
+def test_duplicate_quote_pasa_la_serie_al_job(client):
+    with patch("app.integrations.factusol.jobs.enqueue_duplicate_quote",
+               return_value="job-d1") as enq:
+        r = client.post("/api/erp/factusol/quotes/574/duplicate?serie=5",
+                        headers=auth_headers(client, "pedidos"))
+    assert r.status_code == 202, r.text
+    assert enq.call_args.args[2] == 5
+
+
+def test_convert_quote_pasa_la_serie_al_job(client):
+    with patch("app.integrations.factusol.jobs.enqueue_convert_quote_to_order",
+               return_value="job-c1") as enq:
+        r = client.post("/api/erp/factusol/quotes/574/convert-to-order?serie=2",
+                        headers=auth_headers(client, "pedidos"))
+    assert r.status_code == 202, r.text
+    assert enq.call_args.kwargs["serie"] == 2
+
+
 def test_create_quote_409_si_la_empresa_no_esta_vinculada(client, session_factory):
     with session_factory() as s:
         cid = _company(s, codcli=None)

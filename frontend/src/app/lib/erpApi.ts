@@ -3132,8 +3132,16 @@ export async function searchFactusolQuotes(
   return r.items;
 }
 
-export async function getFactusolQuote(codpre: string): Promise<FactusolQuote> {
-  return apiFetch(`/api/erp/factusol/quotes/${encodeURIComponent(codpre)}`);
+/** Una proforma por su clave REAL: serie + número. En FACTUSOL la clave de
+ *  F_PRE es (`TIPPRE`, `CODPRE`) y cada serie lleva su contador, así que los
+ *  números se repiten entre series — sin `serie` se abre la que toque por
+ *  descarte, que con un número repetido puede no ser la que se quería. */
+export async function getFactusolQuote(
+  codpre: string, serie?: number | null,
+): Promise<FactusolQuote> {
+  return apiFetch(
+    `/api/erp/factusol/quotes/${encodeURIComponent(codpre)}${qs({ serie: serie ?? undefined })}`,
+  );
 }
 
 /** Dirección del cliente en FACTUSOL. `codigo: 0` es la sede; 1-4 son las
@@ -3475,18 +3483,21 @@ export async function createFactusolQuote(
  *  `code: "quote_not_editable"` cuando hace falta. */
 export async function updateFactusolQuote(
   codpre: string, payload: CreateQuotePayload & { force?: boolean },
+  serie?: number | null,
 ): Promise<{ job_id: string; status: string; codpre: string }> {
-  return apiFetch(`/api/erp/factusol/quotes/${encodeURIComponent(codpre)}`, {
-    method: "PATCH",
-    body: JSON.stringify(payload),
-  });
+  // `serie` IDENTIFICA cuál se edita; no la cambia (va en la URL, no en el
+  // cuerpo: el cuerpo de la edición no lleva serie a propósito).
+  return apiFetch(
+    `/api/erp/factusol/quotes/${encodeURIComponent(codpre)}${qs({ serie: serie ?? undefined })}`,
+    { method: "PATCH", body: JSON.stringify(payload) },
+  );
 }
 
 export async function duplicateFactusolQuote(
-  codpre: string,
+  codpre: string, serie?: number | null,
 ): Promise<{ job_id: string; status: string; source_codpre: string }> {
   return apiFetch(
-    `/api/erp/factusol/quotes/${encodeURIComponent(codpre)}/duplicate`,
+    `/api/erp/factusol/quotes/${encodeURIComponent(codpre)}/duplicate${qs({ serie: serie ?? undefined })}`,
     { method: "POST" },
   );
 }
@@ -3497,9 +3508,11 @@ export async function duplicateFactusolQuote(
 export async function convertFactusolQuoteToOrder(
   codpre: string,
   opts?: { payment?: PaymentIntentInput | null; create_albaran?: boolean },
+  serie?: number | null,
 ): Promise<{ job_id: string; status: string; codpre: string }> {
   return apiFetch(
-    `/api/erp/factusol/quotes/${encodeURIComponent(codpre)}/convert-to-order`,
+    `/api/erp/factusol/quotes/${encodeURIComponent(codpre)}/convert-to-order`
+    + qs({ serie: serie ?? undefined }),
     { method: "POST", body: JSON.stringify(opts ?? {}) },
   );
 }

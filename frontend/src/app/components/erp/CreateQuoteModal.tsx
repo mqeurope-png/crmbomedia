@@ -111,6 +111,7 @@ export function CreateQuoteModal({
   companyName,
   factusolCodcli,
   editCodpre,
+  editSerie,
   duplicateSource,
   prefillLines,
   prefillReferencia,
@@ -123,6 +124,10 @@ export function CreateQuoteModal({
   factusolCodcli?: string | null;
   /** Si viene, el modal edita esa proforma en vez de crear una nueva. */
   editCodpre?: string | null;
+  /** Serie de la proforma que se edita. La clave de F_PRE es serie + número y
+   *  los números se repiten entre series: sin ella se editaría «una» 574, no
+   *  necesariamente la que el operador tiene delante. */
+  editSerie?: number | null;
   /** Lote 7 · P3 — líneas iniciales (p. ej. las de un pedido manual del que se
    *  quiere sacar una proforma de cobro). Solo en modo alta (no edición ni
    *  duplicar): siembran el formulario para revisarlo y crear la proforma. */
@@ -223,7 +228,7 @@ export function CreateQuoteModal({
   useEffect(() => {
     if (!editCodpre) return;
     let alive = true;
-    getFactusolQuote(editCodpre)
+    getFactusolQuote(editCodpre, editSerie)
       .then((quote) => {
         if (!alive) return;
         setReferencia(quote.referencia ?? "");
@@ -237,7 +242,7 @@ export function CreateQuoteModal({
         if (alive) setError(extractErrorMessage(e, "No se pudo cargar la proforma."));
       });
     return () => { alive = false; };
-  }, [editCodpre]);
+  }, [editCodpre, editSerie]);
 
   // Lote 7 · P3 — siembra las líneas del pedido manual una sola vez (solo alta).
   useEffect(() => {
@@ -268,7 +273,9 @@ export function CreateQuoteModal({
     setNotice(null);
     setLoadingTemplate(quote.codpre);
     try {
-      setTemplate(await getFactusolQuote(quote.codpre));
+      // La plantilla se pide por (serie, número): dos proformas de series
+      // distintas pueden compartir el número.
+      setTemplate(await getFactusolQuote(quote.codpre, serieOf(quote)));
     } catch (e) {
       setError(extractErrorMessage(e, "No se pudo cargar la plantilla."));
     } finally {
@@ -378,7 +385,7 @@ export function CreateQuoteModal({
     };
     try {
       const r = editCodpre
-        ? await updateFactusolQuote(editCodpre, { ...payload, force })
+        ? await updateFactusolQuote(editCodpre, { ...payload, force }, editSerie)
         : await createFactusolQuote(payload);
       // Se espera al job aquí para poder ofrecer «Guardar de todos modos» sin
       // que el operador pierda lo que acaba de escribir: si el modal se

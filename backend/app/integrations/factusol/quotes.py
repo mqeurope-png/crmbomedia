@@ -150,6 +150,54 @@ def tip_of(serie: Any) -> str:
     return text if text.isdigit() else DEFAULT_TIPPRE
 
 
+def _same_serie(value: Any, serie: Any) -> bool:
+    """¿La fila es de esa serie? `TIPPRE`/`TIPLPS` llegan como texto o como
+    número según la fila, así que se comparan normalizados (por eso el filtro
+    de serie se resuelve en Python y no en el SQL de la API)."""
+    return tip_of(value) == tip_of(serie)
+
+
+def rows_of_serie(
+    rows: list[dict[str, Any]], serie: Any, column: str,
+) -> list[dict[str, Any]]:
+    """Las filas de la serie pedida. `serie=None` las devuelve todas, para los
+    llamadores que aún no saben de qué serie es la proforma (enlaces antiguos
+    sin `?serie=`)."""
+    if serie is None:
+        return list(rows)
+    return [r for r in rows if _same_serie(r.get(column), serie)]
+
+
+def _pick_quote_row(
+    rows: list[dict[str, Any]], codpre: Any, serie: Any,
+) -> dict[str, Any] | None:
+    """La cabecera de la proforma (serie + número) entre las que comparten
+    CODPRE.
+
+    En FACTUSOL la clave de F_PRE es (`TIPPRE`, `CODPRE`) y cada serie lleva su
+    propio contador, así que los números SE REPITEN entre series: en producción
+    (ejercicio 2026) 69 de 692 CODPRE están en más de una serie — el 1 existe
+    en la 1, la 2, la 3 y la 5. Leer por CODPRE a secas devolvía cualquiera de
+    ellas.
+
+    Sin serie (un enlace viejo) se acepta la única que haya; si hay varias se
+    avisa y se coge la de la serie más baja, que es lo que daba antes quedarse
+    con la primera fila."""
+    candidatas = rows_of_serie(rows, serie, "TIPPRE")
+    if not candidatas:
+        return None
+    if len(candidatas) > 1:
+        series = sorted({tip_of(r.get("TIPPRE")) for r in candidatas})
+        if serie is None:
+            logger.warning(
+                "factusol: la proforma %s existe en las series %s y no se ha "
+                "dicho cuál: se usa la %s. Pásala para no jugársela.",
+                codpre, ", ".join(series), series[0],
+            )
+        candidatas.sort(key=lambda r: tip_of(r.get("TIPPRE")))
+    return dict(candidatas[0])
+
+
 def _sql_escape(value: str) -> str:
     """Escapa un literal para el `filtro` (fragmento SQL WHERE crudo)."""
     return (value or "").replace("'", "''")
@@ -421,7 +469,7 @@ def _iva_pct_from_line(row: dict[str, Any]) -> float:
 
 
 def list_quote_lines(
-    client: FactusolClient, codpre: str, *, ejercicio: str,
+    client: FactusolClient, codpre: str, *, ejercicio: str, serie: Any = None,
 ) -> list[dict[str, Any]]:
     """Líneas REALES de una proforma, leídas de `F_LPS`.
 
@@ -429,6 +477,12 @@ def list_quote_lines(
     `factusol_quote_lines_cache`, que era un apaño por haber buscado la tabla de
     líneas con el nombre equivocado. Funciona con **todas** las proformas,
     incluidas las creadas en el FACTUSOL de escritorio.
+
+    La línea se identifica por `(TIPLPS, CODLPS, POSLPS)`: sin `serie` salían
+    MEZCLADAS las de todas las proformas con ese número, que en producción son
+    69 números repartidos entre varias series. El número se filtra en el SQL
+    (comparación trivial, segura) y la serie en Python, por lo mismo que en
+    `list_quotes`: `TIPLPS` viene como texto o como número según la fila.
     """
     if not str(codpre).strip().isdigit():
         return []
@@ -437,7 +491,7 @@ def list_quote_lines(
         filtro=f"CODLPS={int(codpre)} ORDER BY POSLPS",
         ejercicio=ejercicio,
     )
-    return [_row_to_quote_line(r) for r in rows]
+    return [_row_to_quote_line(r) for r in rows_of_serie(rows, serie, "TIPLPS")]
 
 
 def skus_for_codarts(
@@ -490,8 +544,12 @@ def _attach_line_skus(
 
 def get_quote(
     client: FactusolClient, session: Session, codpre: str, *, ejercicio: str,
+    serie: Any = None,
 ) -> dict[str, Any] | None:
-    """Una proforma con su desglose real de F_LPS. None si el CODPRE no existe.
+    """Una proforma con su desglose real de F_LPS. None si no existe.
+
+    La proforma se identifica por (`serie`, `codpre`) — la clave real de F_PRE.
+    Sin `serie` se acepta la única que haya con ese número (ver `_pick_quote_row`).
 
     Cada línea lleva `codart` (el interno de `ARTLPS`) y `sku` (el comercial,
     ver `skus_for_codarts`), para que el modal de duplicar muestre el artículo
@@ -505,10 +563,14 @@ def get_quote(
     rows = client.load_table(
         TABLE_QUOTES, filtro=f"CODPRE={int(codpre)}", ejercicio=ejercicio,
     ) if str(codpre).strip().isdigit() else []
-    if not rows:
+    row = _pick_quote_row(rows, codpre, serie)
+    if row is None:
         return None
-    quote = _row_to_quote(rows[0])
-    quote["lines"] = list_quote_lines(client, str(quote["codpre"]), ejercicio=ejercicio)
+    quote = _row_to_quote(row)
+    # Las líneas, de la MISMA serie que la cabecera que se ha resuelto.
+    quote["lines"] = list_quote_lines(
+        client, str(quote["codpre"]), ejercicio=ejercicio, serie=quote.get("tippre"),
+    )
     _attach_line_skus(client, quote["lines"], ejercicio=ejercicio)
     quote["line_source"] = TABLE_QUOTE_LINES
     return quote
@@ -517,16 +579,32 @@ def get_quote(
 # --- escritura de proformas --------------------------------------------------
 
 
-def next_codpre(client: FactusolClient, ejercicio: str) -> str:
-    """Siguiente CODPRE = max + 1. Misma estrategia que `next_codfac` /
-    `next_codcli`: sin LIMIT en la API, se pide ordenado DESC y se toma la
-    primera fila. La race la evita el worker serializado."""
+def next_codpre(
+    client: FactusolClient, ejercicio: str, serie: Any = DEFAULT_TIPPRE,
+) -> str:
+    """Siguiente CODPRE **de esa serie** = max de la serie + 1.
+
+    Cada serie de FACTUSOL lleva su propio contador (la 1 va por el 526.080 y
+    la 5 por el 39), así que numerar con el máximo GLOBAL metía las proformas
+    nuevas de las series pequeñas con un número altísimo, lejos de lo que el
+    escritorio enseña. El máximo se calcula sobre las filas de la serie, que
+    llegan ya filtradas en Python (`TIPPRE` viene como texto o número).
+
+    Carrera con el escritorio: si alguien crea una proforma en FACTUSOL entre
+    este `MAX+1` y la escritura, los dos cogerían el mismo número. Entre dos
+    altas de BoHub lo evita el worker serializado (`factusol:writes`,
+    concurrency=1); contra el escritorio no hay nada que lo impida, igual que
+    en `next_codfac` / `next_codcli`. Es el riesgo que ya se asumía, ahora
+    acotado a la serie en la que se está creando en vez de a toda la tabla.
+    """
     rows = client.load_table(
         TABLE_QUOTES, filtro="1=1 ORDER BY CODPRE DESC", ejercicio=ejercicio,
     )
-    if not rows:
+    de_la_serie = rows_of_serie(rows, serie, "TIPPRE")
+    if not de_la_serie:
         return "1"
-    return str((_int_or_none(rows[0].get("CODPRE")) or 0) + 1)
+    mayor = max((_int_or_none(r.get("CODPRE")) or 0) for r in de_la_serie)
+    return str(mayor + 1)
 
 
 def _totals(
@@ -814,17 +892,8 @@ def create_quote(
     """Crea la proforma: cabecera en `F_PRE` + una fila por línea en `F_LPS`.
 
     `serie` es la EMPRESA EMISORA del documento (`TIPPRE` en la cabecera y
-    `TIPLPS` en las líneas). Por defecto 1 (Bomedia).
-
-    ⚠️ El CODPRE se sigue pidiendo GLOBAL (`next_codpre` = max de toda F_PRE + 1),
-    no por serie. En FACTUSOL la numeración es por serie, pero el resto de la
-    app identifica una proforma por CODPRE a secas — el detalle, la edición, la
-    conversión a pedido y las líneas (`CODLPS={codpre}`, sin filtrar `TIPLPS`).
-    Numerar por serie crearía CODPRE repetidos entre series y esas lecturas
-    devolverían la proforma (o las líneas) de otra. Con el máximo global, lo que
-    creamos sigue siendo único mire quien lo mire, a costa de que una proforma
-    nuestra en la serie 2 salga con un número alto en vez de seguir el contador
-    de esa serie en el escritorio.
+    `TIPLPS` en las líneas). Por defecto 1 (Bomedia). El CODPRE sale del
+    contador de ESA serie (`next_codpre`), como en el escritorio.
 
     `referencia` la escribe el operador cuando quiere fijar el texto de REFPRE;
     si no la pasa, se compone desde las líneas.
@@ -851,7 +920,7 @@ def create_quote(
     # Sin referencia explícita, REFPRE se queda vacío (C-4-fix5): el desglose
     # está en F_LPS y repetirlo resumido en «Su ref.» solo ensucia el documento.
     refpre = (referencia or "").strip()
-    codpre = next_codpre(client, ejercicio)
+    codpre = next_codpre(client, ejercicio, serie)
     payload = build_quote_payload(
         codpre, ejercicio=ejercicio, customer=customer, refpre=refpre,
         lines=lines, fecha=fecha, fopfac=fopfac, portes=portes, serie=serie,
@@ -933,24 +1002,27 @@ def quote_estado(estpre: int | None) -> str:
 
 
 def _quote_row(
-    client: FactusolClient, codpre: str, *, ejercicio: str,
+    client: FactusolClient, codpre: str, *, ejercicio: str, serie: Any = None,
 ) -> dict[str, Any] | None:
-    """Fila F_PRE completa de la proforma, o None si no existe."""
+    """Fila F_PRE completa de la proforma (serie + número), o None si no
+    existe. Sin `serie`, ver `_pick_quote_row`."""
     if not str(codpre).strip().isdigit():
         return None
     rows = client.load_table(
         TABLE_QUOTES, filtro=f"CODPRE={int(codpre)}", ejercicio=ejercicio,
     )
-    return dict(rows[0]) if rows else None
+    return _pick_quote_row(rows, codpre, serie)
 
 
 def _estado_of(row: dict[str, Any]) -> int:
     return _int_or_none(row.get("ESTPRE")) or ESTPRE_PENDING
 
 
-def quote_state(client: FactusolClient, codpre: str, *, ejercicio: str) -> int | None:
-    """`ESTPRE` de la proforma, o None si no existe."""
-    row = _quote_row(client, codpre, ejercicio=ejercicio)
+def quote_state(
+    client: FactusolClient, codpre: str, *, ejercicio: str, serie: Any = None,
+) -> int | None:
+    """`ESTPRE` de la proforma (serie + número), o None si no existe."""
+    row = _quote_row(client, codpre, ejercicio=ejercicio, serie=serie)
     return None if row is None else _estado_of(row)
 
 
@@ -958,7 +1030,7 @@ def update_quote(
     client: FactusolClient, codpre: str, *, ejercicio: str,
     customer: dict[str, Any], lines: list[dict[str, Any]],
     referencia: str | None = None, force: bool = False,
-    portes: float = 0.0,
+    portes: float = 0.0, serie: Any = None,
 ) -> dict[str, Any]:
     """Reescribe una proforma: cabecera con `ActualizarRegistro` y líneas
     borradas + vueltas a escribir.
@@ -975,14 +1047,19 @@ def update_quote(
     totales nuevos. Solo se escribe el 0 cuando la fila tenía valor: en una
     proforma que nunca los tuvo el registro sale como hasta ahora.
 
-    La SERIE (`TIPPRE`) NO se elige al editar: se conserva la que la proforma
-    ya tiene. Antes se reescribía con el default '1', así que guardar una
-    proforma de la serie 2/4/5 —visibles desde el #451— la movía a la 1 sin
-    avisar; las líneas, que se borran y se reescriben, heredan esa misma serie.
+    `serie` IDENTIFICA qué proforma se edita (la clave de F_PRE es serie +
+    número), no la cambia: la nueva cabecera conserva el `TIPPRE` de la fila y
+    las líneas se reescriben con ese mismo `TIPLPS`.
+
+    ⚠️ El borrado de líneas lleva la serie en el filtro. Con `CODLPS={n}` a
+    secas se llevaba por delante las líneas de TODAS las proformas con ese
+    número: editar la 574 de Bomedia vaciaba la 574 de MQ Europe. Es la misma
+    lección que ya estaba escrita para las facturas en `service.py` («el filtro
+    DEBE incluir el tipo»), que aquí no se había aplicado.
 
     `force` salta el guard de estado (ver `ESTPRE_PENDING`).
     """
-    row = _quote_row(client, codpre, ejercicio=ejercicio)
+    row = _quote_row(client, codpre, ejercicio=ejercicio, serie=serie)
     if row is None:
         raise FactusolError(
             f"La proforma {codpre} no existe en el ejercicio {ejercicio}"
@@ -996,11 +1073,11 @@ def update_quote(
             estado=estado,
         )
 
-    serie = tip_of(row.get("TIPPRE"))
+    propia = tip_of(row.get("TIPPRE"))
     header = build_quote_payload(
         str(codpre), ejercicio=ejercicio, customer=customer,
         refpre=(referencia or "").strip(), lines=lines, portes=portes,
-        serie=serie,
+        serie=propia,
     )
     if "IPOR1PRE" not in header and _num(row.get("IPOR1PRE")):
         header["IPOR1PRE"] = 0.0
@@ -1010,14 +1087,19 @@ def update_quote(
     header.pop("FECPRE", None)
     client.update_record(TABLE_QUOTES, header, ejercicio=ejercicio)
 
+    # La clave de la línea es (TIPLPS, CODLPS, POSLPS): el filtro lleva las dos
+    # columnas, con el mismo formato entrecomillado que ya usan el borrado de
+    # facturas y el de la cadena de documentos.
     client.delete_records(
-        TABLE_QUOTE_LINES, f"CODLPS={int(codpre)}", ejercicio=ejercicio,
+        TABLE_QUOTE_LINES,
+        f"TIPLPS='{propia}' AND CODLPS='{int(codpre)}'", ejercicio=ejercicio,
     )
-    written = _write_quote_lines(client, str(codpre), ejercicio, lines, serie)
-    logger.info("factusol: proforma %s actualizada (%d/%d líneas, estado %s)",
-                codpre, written, len(lines), estado)
+    written = _write_quote_lines(client, str(codpre), ejercicio, lines, propia)
+    logger.info("factusol: proforma %s-%s actualizada (%d/%d líneas, estado %s)",
+                propia, codpre, written, len(lines), estado)
     result = {"codpre": str(codpre), "ejercicio": ejercicio,
-              "updated": True, "lines": written, "estado": estado}
+              "serie": int(propia), "updated": True,
+              "lines": written, "estado": estado}
     if written < len(lines):
         result["warning"] = (
             f"La proforma {codpre} se guardó con {written} de {len(lines)} "
@@ -1028,7 +1110,7 @@ def update_quote(
 
 def duplicate_quote(
     client: FactusolClient, session: Session, codpre: str, *, ejercicio: str,
-    fecha: str | None = None,
+    fecha: str | None = None, serie: Any = None,
 ) -> dict[str, Any]:
     """Copia una proforma existente con CODPRE nuevo y fecha de hoy.
 
@@ -1037,9 +1119,10 @@ def duplicate_quote(
     **cualquier** proforma, también las creadas en el FACTUSOL de escritorio:
     las líneas salen de F_LPS, no de una caché que solo tenía las del CRM.
 
-    La copia se queda en la MISMA serie que el original: la cabecera arrastra su
-    `TIPPRE` (viene en la fila) y las líneas se escriben con ese mismo `TIPLPS`
-    — antes iban con el default '1' aunque la cabecera fuera de otra serie.
+    El original se identifica por (`serie`, `codpre`), y la copia se queda en la
+    MISMA serie: la cabecera arrastra su `TIPPRE` (viene en la fila), el número
+    nuevo sale del contador de esa serie y las líneas se escriben con ese mismo
+    `TIPLPS` — antes iban con el default '1' aunque la cabecera fuera de otra.
     """
     _ = session
     if not str(codpre).strip().isdigit():
@@ -1047,27 +1130,27 @@ def duplicate_quote(
     rows = client.load_table(
         TABLE_QUOTES, filtro=f"CODPRE={int(codpre)}", ejercicio=ejercicio,
     )
-    if not rows:
+    source = _pick_quote_row(rows, codpre, serie)
+    if source is None:
         raise FactusolError(f"La proforma {codpre} no existe en el ejercicio {ejercicio}")
 
-    lines = list_quote_lines(client, str(codpre), ejercicio=ejercicio)
-    source = dict(rows[0])
-    nuevo = next_codpre(client, ejercicio)
+    propia = tip_of(source.get("TIPPRE"))
+    lines = list_quote_lines(client, str(codpre), ejercicio=ejercicio, serie=propia)
+    nuevo = next_codpre(client, ejercicio, propia)
     source["CODPRE"] = nuevo
     source["FECPRE"] = fecha or datetime.now(UTC).date().isoformat()
     client.write_record(TABLE_QUOTES, source, ejercicio=ejercicio)
 
-    written = _write_quote_lines(
-        client, nuevo, ejercicio, lines, tip_of(source.get("TIPPRE")),
-    )
-    logger.info("factusol: proforma %s duplicada → %s (%d/%d líneas)",
-                codpre, nuevo, written, len(lines))
+    written = _write_quote_lines(client, nuevo, ejercicio, lines, propia)
+    logger.info("factusol: proforma %s-%s duplicada → %s-%s (%d/%d líneas)",
+                propia, codpre, propia, nuevo, written, len(lines))
     return {"codpre": nuevo, "source_codpre": str(codpre), "ejercicio": ejercicio,
-            "lines": written}
+            "serie": int(propia), "lines": written}
 
 
 def quote_lines_for_order(
     client: FactusolClient, session: Session, codpre: str, *, ejercicio: str,
+    serie: Any = None,
 ) -> dict[str, Any]:
     """Líneas de la proforma listas para volcarlas a un pedido.
 
@@ -1078,7 +1161,7 @@ def quote_lines_for_order(
     Si F_LPS no devuelve nada (proforma sin líneas, edge case), se reconstruye
     una línea con la cabecera para no dejar el pedido vacío.
     """
-    quote = get_quote(client, session, codpre, ejercicio=ejercicio)
+    quote = get_quote(client, session, codpre, ejercicio=ejercicio, serie=serie)
     if quote is None:
         raise FactusolError(f"La proforma {codpre} no existe en el ejercicio {ejercicio}")
     lines = quote["lines"]
@@ -1103,6 +1186,9 @@ def quote_lines_for_order(
         }]
     return {
         "codpre": str(quote["codpre"]),
+        # La serie REAL de la proforma que se ha leído, para que quien convierta
+        # no tenga que volver a adivinarla.
+        "serie": int(tip_of(quote.get("tippre"))),
         "ejercicio": ejercicio,
         "line_source": quote["line_source"],
         "lines": lines,
@@ -1114,7 +1200,7 @@ def quote_lines_for_order(
 
 def convert_quote_to_order(
     client: FactusolClient, session: Session, codpre: str, *, ejercicio: str,
-    actor_user_id: str | None = None,
+    actor_user_id: str | None = None, serie: Any = None,
 ) -> dict[str, Any]:
     """Convierte la proforma en un pedido de BoHub (`Order`).
 
@@ -1132,33 +1218,45 @@ def convert_quote_to_order(
     El pedido creado sigue el circuito normal del ERP (preparar → embalar →
     enviar → `emit_invoice`), que es lo que Bart necesita de «convertir».
 
+    La proforma se identifica por (`serie`, `codpre`), y la SERIE REAL —no un
+    '1' fijo como antes— es la que viaja al `external_id`, al nº de pedido y al
+    bloque `factusol_source`. Convertir la 574 de MQ Europe creaba un pedido que
+    decía ser de la 574 de Bomedia, y la segunda conversión de cualquiera de las
+    dos devolvía el pedido de la otra.
+
     Fase 1: el pedido queda marcado con origen `factusol_proforma` y
-    `external_id` = CODPRE (la columna «Proforma» del seguimiento lo enseña),
-    nº `PRO-nnnnnn`, y la conversión es IDEMPOTENTE: la segunda vez devuelve el
-    pedido ya creado (`already_existed`) en vez de duplicarlo. Comparte el
-    constructor con el alta desde documento (`app.erp.orders_from_factusol`).
+    `external_id` = la clave de `external_id_for` (el CODPRE a secas en la serie
+    1, `serie-código` en las demás; la columna «Proforma» del seguimiento lo
+    enseña), nº `PRO-nnnnnn`, y la conversión es IDEMPOTENTE: la segunda vez
+    devuelve el pedido ya creado (`already_existed`) en vez de duplicarlo.
+    Comparte el constructor con el alta desde documento
+    (`app.erp.orders_from_factusol`).
     """
     from app.erp.models import OrderSource  # noqa: PLC0415
     from app.erp.orders_from_factusol import (  # noqa: PLC0415
         build_order,
         external_id_for,
         factusol_source_block,
-        find_existing,
+        find_quote_order,
         order_number_for,
         resolve_company_id,
+        visible_number,
     )
 
-    data = quote_lines_for_order(client, session, codpre, ejercicio=ejercicio)
+    data = quote_lines_for_order(client, session, codpre, ejercicio=ejercicio,
+                                 serie=serie)
     codpre = data["codpre"]
-    serie = int(DEFAULT_TIPPRE)
+    serie = int(data["serie"])
     external_id = external_id_for("presupuestos", serie, int(codpre))
-    existing = find_existing(session, OrderSource.FACTUSOL_PROFORMA, external_id)
+    # Idempotencia por (serie, número), aceptando la clave histórica de las
+    # proformas convertidas antes de este fix (ver `find_quote_order`).
+    existing = find_quote_order(session, serie, int(codpre))
     if existing is not None:
-        logger.info("factusol: la proforma %s ya era el pedido %s (no se duplica)",
-                    codpre, existing.order_number)
+        logger.info("factusol: la proforma %s-%s ya era el pedido %s (no se duplica)",
+                    serie, codpre, existing.order_number)
         return {
             "order_id": existing.id, "order_number": existing.order_number,
-            "codpre": codpre, "lines": len(data["lines"]),
+            "codpre": codpre, "serie": serie, "lines": len(data["lines"]),
             "total": float(existing.total_amount or 0),
             "company_id": existing.company_id, "already_existed": True,
         }
@@ -1177,25 +1275,27 @@ def convert_quote_to_order(
         contact_id=None,
         placed_at=datetime.now(UTC),
         lines=data["lines"],
-        notes=f"Creado desde la proforma FACTUSOL {codpre}" + (
-            f" · ref. {referencia}" if referencia else ""
-        ),
+        notes=f"Creado desde la proforma FACTUSOL {visible_number(serie, int(codpre))}"
+              + (f" · ref. {referencia}" if referencia else ""),
         packing_extra={"factusol_source": factusol_source_block(
             doc_type="presupuestos", serie=serie, codigo=int(codpre),
             referencia=referencia, forma_pago=None, forma_pago_nombre=None,
             cliente_codigo=data["clipre"], total=data["total"],
         )},
         actor_user_id=actor_user_id,
-        history_reason=f"Pedido creado desde la proforma FACTUSOL {codpre}",
+        history_reason=(
+            "Pedido creado desde la proforma FACTUSOL "
+            f"{visible_number(serie, int(codpre))}"
+        ),
         total_with_tax=data["total"],
     )
     session.commit()
-    logger.info("factusol: proforma %s → pedido %s (%d líneas, %.2f €)",
-                codpre, order.order_number, len(data["lines"]),
+    logger.info("factusol: proforma %s-%s → pedido %s (%d líneas, %.2f €)",
+                serie, codpre, order.order_number, len(data["lines"]),
                 float(order.total_amount))
     return {
         "order_id": order.id, "order_number": order.order_number,
-        "codpre": codpre, "lines": len(data["lines"]),
+        "codpre": codpre, "serie": serie, "lines": len(data["lines"]),
         "total": float(order.total_amount), "company_id": company_id,
         "already_existed": False,
     }

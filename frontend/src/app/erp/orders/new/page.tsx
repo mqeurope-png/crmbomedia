@@ -425,7 +425,11 @@ export default function NewManualOrderPage() {
     setLoadingQuote(codpre);
     setQuoteNotice(null);
     try {
-      const full = await getFactusolQuote(codpre);
+      // Por (serie, número): dos proformas de series distintas pueden
+      // compartir el CODPRE, y cargaríamos las líneas de la que no es.
+      const full = await getFactusolQuote(
+        codpre, quote.serie ?? (Number(quote.tippre) || undefined),
+      );
       const rows: DocumentLine[] = (full.lines ?? []).map((l) => emptyDocumentLine({
         sku: l.codart ?? "",
         description: l.description,

@@ -83,17 +83,42 @@ def _companies_by_codcli(session: Session, codclis: set[str]) -> dict[str, Compa
     return out
 
 
-def _orders_by_codpre(session: Session, codpres: set[str]) -> dict[str, Order]:
-    """Pedidos de BoHub creados desde esas proformas (`external_id` = CODPRE)."""
-    if not codpres:
+def _orders_by_quote(
+    session: Session, claves: set[tuple[int | None, str]],
+) -> dict[tuple[int | None, str], Order]:
+    """Pedidos de BoHub creados desde esas proformas, indexados por
+    (serie, número) — la clave real de F_PRE.
+
+    Se buscaba solo por CODPRE, así que la proforma 574 de MQ Europe enseñaba
+    el pedido de la 574 de Bomedia (en producción hay 69 números repetidos
+    entre series). El `external_id` que guarda cada pedido lo compone
+    `external_id_for`: el número a secas en la serie 1 —la clave histórica, que
+    no se toca— y `serie-número` en las demás."""
+    from app.erp.orders_from_factusol import (  # noqa: PLC0415
+        order_is_from_quote,
+        quote_external_ids,
+    )
+
+    utiles = [(s, c) for s, c in claves if str(c).strip().isdigit()]
+    if not utiles:
         return {}
+    external_ids = {
+        eid for serie, codpre in utiles
+        for eid in quote_external_ids(serie or 1, int(codpre))
+    }
     rows = session.scalars(
         select(Order).where(
             Order.external_source == OrderSource.FACTUSOL_PROFORMA,
-            or_(Order.external_id.in_(sorted(codpres))),
+            or_(Order.external_id.in_(sorted(external_ids))),
         )
     ).all()
-    return {str(o.external_id): o for o in rows if o.external_id}
+    out: dict[tuple[int | None, str], Order] = {}
+    for serie, codpre in utiles:
+        for order in rows:
+            if order_is_from_quote(order, serie or 1, int(codpre)):
+                out[(serie, codpre)] = order
+                break
+    return out
 
 
 def document_order_key(doc_type: str, doc: dict[str, Any]) -> str | None:
@@ -124,7 +149,12 @@ def document_order_key(doc_type: str, doc: dict[str, Any]) -> str | None:
         return visible_number(doc["serie"], codigo)
     if doc_type in SOURCE_BY_DOC_TYPE:
         try:
-            return external_id_for(doc_type, int(doc.get("serie") or 0), codigo)
+            # Un presupuesto sin serie legible se trata como de la 1, que es lo
+            # que asumía el código cuando la clave era el CODPRE a secas.
+            serie = doc.get("serie")
+            if serie is None and doc_type == "presupuestos":
+                serie = 1
+            return external_id_for(doc_type, int(serie or 0), codigo)
         except (TypeError, ValueError):
             return None
     return None
@@ -160,6 +190,8 @@ def _orders_by_document(
         return _orders_by_albaran(session, docs)
     if doc_type == "facturas":
         return _orders_by_invoice(session, docs)
+    if doc_type == "presupuestos":
+        return _orders_by_presupuesto(session, docs)
     if doc_type in SOURCE_BY_DOC_TYPE:
         ext_ids = {k for k in (document_order_key(doc_type, d) for d in docs) if k}
         if not ext_ids:
@@ -172,6 +204,45 @@ def _orders_by_document(
         ).all()
         return {str(o.external_id): o for o in rows if o.external_id}
     return {}
+
+
+def _orders_by_presupuesto(
+    session: Session, docs: list[dict[str, Any]],
+) -> dict[str, Order]:
+    """Presupuestos: el pedido importado de cada uno, cruzado por (serie,
+    número) y no por el número a secas — con los CODPRE repetidos entre series,
+    un presupuesto de Streamtec enseñaba el pedido del de Bomedia. Se acepta la
+    clave histórica solo si el pedido dice venir de esa misma serie
+    (`quotes.find_quote_order` sigue la misma regla)."""
+    from app.erp.orders_from_factusol import (  # noqa: PLC0415
+        order_is_from_quote,
+        quote_external_ids,
+    )
+
+    pares = [
+        (int(d.get("serie") or 1), int(d["codigo"]))
+        for d in docs if isinstance(d.get("codigo"), int)
+    ]
+    if not pares:
+        return {}
+    external_ids = {eid for serie, codigo in pares
+                    for eid in quote_external_ids(serie, codigo)}
+    rows = session.scalars(
+        select(Order).where(
+            Order.external_source == OrderSource.FACTUSOL_PROFORMA,
+            Order.external_id.in_(sorted(external_ids)),
+        )
+    ).all()
+    out: dict[str, Order] = {}
+    for serie, codigo in pares:
+        clave = document_order_key("presupuestos", {"serie": serie, "codigo": codigo})
+        if clave is None:
+            continue
+        for order in rows:
+            if order_is_from_quote(order, serie, codigo):
+                out[clave] = order
+                break
+    return out
 
 
 def _orders_by_albaran(session: Session, docs: list[dict[str, Any]]) -> dict[str, Order]:
@@ -316,9 +387,14 @@ def annotate_quotes(session: Session, quotes: list[dict[str, Any]]) -> dict[str,
     """Añade estado / cola / empresa / régimen / pedido a cada proforma (in
     place) y devuelve `{queue_counts, estpre_values}`."""
     codclis = {str(q.get("clipre")) for q in quotes if q.get("clipre")}
-    codpres = {str(q.get("codpre")) for q in quotes if q.get("codpre")}
+    # La proforma se identifica por (serie, número): dos proformas distintas
+    # pueden compartir el CODPRE si están en series distintas.
+    claves = {
+        (_serie_of(q.get("tippre")), str(q.get("codpre")))
+        for q in quotes if q.get("codpre")
+    }
     companies = _companies_by_codcli(session, codclis)
-    orders = _orders_by_codpre(session, codpres)
+    orders = _orders_by_quote(session, claves)
     serie_names = _serie_names(session)
 
     counts: Counter[str] = Counter()
@@ -339,7 +415,7 @@ def annotate_quotes(session: Session, quotes: list[dict[str, Any]]) -> dict[str,
         company = companies.get(clipre) or (
             companies.get(str(int(clipre))) if clipre.isdigit() else None
         )
-        order = orders.get(str(q.get("codpre")))
+        order = orders.get((serie, str(q.get("codpre"))))
         q["company"] = _company_block(company) if company is not None else None
         q["order"] = (
             {"id": order.id, "order_number": order.order_number} if order is not None else None

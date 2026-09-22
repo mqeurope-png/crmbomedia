@@ -635,8 +635,13 @@ def create_quote_job(
 def update_quote_job(
     codpre: str, customer: dict[str, Any], lines: list[dict[str, Any]],
     referencia: str | None = None, force: bool = False, portes: float = 0.0,
+    serie: int | None = None,
 ) -> dict[str, Any]:
-    """Reescribe cabecera + líneas de una proforma existente."""
+    """Reescribe cabecera + líneas de una proforma existente.
+
+    `serie` IDENTIFICA cuál (la clave de F_PRE es serie + número); no la
+    cambia. Va al final y opcional para que un job encolado antes del
+    despliegue siga funcionando."""
     from sqlalchemy.orm import Session  # noqa: PLC0415
 
     from app.db.session import get_engine  # noqa: PLC0415
@@ -648,14 +653,17 @@ def update_quote_job(
         result = update_quote(
             client, codpre, ejercicio=ejercicio_for(session),
             customer=customer, lines=lines, referencia=referencia, force=force,
-            portes=portes,
+            portes=portes, serie=serie,
         )
     logger.info("factusol: proforma %s actualizada", codpre)
     return result
 
 
-def duplicate_quote_job(codpre: str, fecha: str | None = None) -> dict[str, Any]:
-    """Duplica una proforma existente con CODPRE nuevo y fecha de hoy."""
+def duplicate_quote_job(
+    codpre: str, fecha: str | None = None, serie: int | None = None,
+) -> dict[str, Any]:
+    """Duplica una proforma existente (serie + número) con número nuevo de su
+    propia serie y fecha de hoy."""
     from sqlalchemy.orm import Session  # noqa: PLC0415
 
     from app.db.session import get_engine  # noqa: PLC0415
@@ -665,7 +673,8 @@ def duplicate_quote_job(codpre: str, fecha: str | None = None) -> dict[str, Any]
     with Session(get_engine()) as session:
         client = FactusolClient.from_settings()
         result = duplicate_quote(
-            client, session, codpre, ejercicio=ejercicio_for(session), fecha=fecha,
+            client, session, codpre, ejercicio=ejercicio_for(session),
+            fecha=fecha, serie=serie,
         )
     logger.info("factusol: proforma %s duplicada → %s", codpre, result.get("codpre"))
     return result
@@ -674,6 +683,7 @@ def duplicate_quote_job(codpre: str, fecha: str | None = None) -> dict[str, Any]
 def convert_quote_to_order_job(
     codpre: str, actor_user_id: str | None = None,
     payment: dict[str, Any] | None = None, create_albaran: bool = True,
+    serie: int | None = None,
 ) -> dict[str, Any]:
     """Crea el pedido de BoHub a partir de la proforma y, Fase 2, en el MISMO
     job del worker serial: apunta el pago (opción B, ya resuelto por el
@@ -691,7 +701,7 @@ def convert_quote_to_order_job(
         ejercicio = ejercicio_for(session)
         result = convert_quote_to_order(
             client, session, codpre, ejercicio=ejercicio,
-            actor_user_id=actor_user_id,
+            actor_user_id=actor_user_id, serie=serie,
         )
         result.update(apply_conversion_extras(
             session, client, order_id=result["order_id"], payment=payment,
@@ -719,26 +729,30 @@ def enqueue_create_quote(
 def enqueue_update_quote(
     codpre: str, customer: dict[str, Any], lines: list[dict[str, Any]],
     referencia: str | None = None, force: bool = False, portes: float = 0.0,
+    serie: int | None = None,
 ) -> str:
     return _enqueue(
         "app.integrations.factusol.jobs.update_quote_job",
-        codpre, customer, lines, referencia, force, portes,
+        codpre, customer, lines, referencia, force, portes, serie,
     )
 
 
-def enqueue_duplicate_quote(codpre: str, fecha: str | None = None) -> str:
+def enqueue_duplicate_quote(
+    codpre: str, fecha: str | None = None, serie: int | None = None,
+) -> str:
     return _enqueue(
-        "app.integrations.factusol.jobs.duplicate_quote_job", codpre, fecha,
+        "app.integrations.factusol.jobs.duplicate_quote_job", codpre, fecha, serie,
     )
 
 
 def enqueue_convert_quote_to_order(
     codpre: str, actor_user_id: str | None = None,
     payment: dict[str, Any] | None = None, create_albaran: bool = True,
+    serie: int | None = None,
 ) -> str:
     return _enqueue(
         "app.integrations.factusol.jobs.convert_quote_to_order_job",
-        codpre, actor_user_id, payment, create_albaran,
+        codpre, actor_user_id, payment, create_albaran, serie,
     )
 
 
