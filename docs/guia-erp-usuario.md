@@ -660,11 +660,15 @@ Para encargos por teléfono, muestras o reparaciones sin ticket web.
 **«Proformas FACTUSOL disponibles»**, cada proforma trae dos botones:
 
 - **«Cargar todo»** — trae **el cliente y las líneas** de la proforma (como
-  duplicarla, pero hacia un pedido). El pedido que sale es un **pedido manual
-  normal**: sigue su ciclo de siempre y **no** queda atado a la proforma. Si lo
-  que quieres es convertir la proforma **como documento** (con su trazabilidad,
-  su paso de pago y su albarán), eso se hace con **«Convertir en pedido»** desde
-  la pantalla de [Proformas](#proformas).
+  duplicarla, pero hacia un pedido). El cliente es el **mismo cliente FACTUSOL**
+  de la proforma, con su NIF, su nombre fiscal y su dirección: es con quien se
+  va a facturar. Si ese cliente aún no tiene empresa en el CRM, el aviso lo dice
+  y ahí mismo puedes **crearla** o **vincularla** sin salir del formulario. El
+  pedido que sale es un **pedido manual normal**: sigue su ciclo de siempre y
+  **no** queda atado a la proforma. Si lo que quieres es convertir la proforma
+  **como documento** (con su trazabilidad, su paso de pago y su albarán), eso se
+  hace con **«Convertir en pedido»** desde la pantalla de
+  [Proformas](#proformas).
 - **«Solo conceptos»** — trae **solo las líneas**; el cliente que ya tengas
   elegido **no cambia**. Es lo que quieres para repetir los mismos artículos
   con otro cliente.
