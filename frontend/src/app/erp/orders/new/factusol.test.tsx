@@ -151,10 +151,11 @@ describe("Fase 1 · alta de pedido desde FACTUSOL y desde la ficha de empresa", 
     expect(push).toHaveBeenCalledWith("/erp/orders/new-order-1");
   });
 
-  it("proforma cuyo cliente no está en el CRM: avisa y deja elegir la empresa a mano", async () => {
+  it("proforma cuyo cliente no está en el CRM: avisa y ofrece crear o vincular la empresa", async () => {
     // «Cargar todo» carga la proforma como PEDIDO MANUAL (no como documento de
-    // FACTUSOL). Si su cliente no tiene empresa CRM vinculada no hay a quién
-    // ponerle el pedido: se avisa y el alta sigue bloqueada hasta elegirla.
+    // FACTUSOL). El cliente F_CLI de la proforma SÍ se carga, pero si no tiene
+    // empresa CRM vinculada no hay a quién ponerle el pedido: se avisa, se
+    // ofrecen las dos acciones y el alta sigue bloqueada hasta resolverlo.
     const { searchFactusolQuotes, getFactusolQuote } = jest.requireMock("../../../lib/erpApi");
     const sinEmpresa = {
       codpre: "575", referencia: "Tinta", fecha: "2026-09-01", clipre: "99999",
@@ -167,6 +168,14 @@ describe("Fase 1 · alta de pedido desde FACTUSOL y desde la ficha de empresa", 
       lines: [{ position: 1, codart: "TIN", description: "Tinta", quantity: 1,
                 unit_price: 100, line_total: 100, discount_pct: 0, iva_pct: 21 }],
     });
+    // Su ficha F_CLI existe, pero sin vínculo con el CRM.
+    (searchFactusolCustomers as jest.Mock).mockResolvedValue([{
+      codcli: "99999", nombre: "Nuevo Cliente", nif: "B99999999",
+      nofcli: "NUEVO CLIENTE SL", noccli: "Nuevo Cliente", nifcli: "B99999999",
+      domcli: "C/ Nueva 3", pobcli: "Girona", cpocli: "17001", procli: "Girona",
+      paicli: "724", pais_iso2: "ES", emacli: null, telcli: null,
+      crm_link: null, factusol_matches_crm_id: null,
+    }]);
     const user = userEvent.setup();
     render(<NewManualOrderPage />);
     // Proformas: se busca (nº, referencia o cliente) y se elige, sin serie+número.
@@ -177,8 +186,12 @@ describe("Fase 1 · alta de pedido desde FACTUSOL y desde la ficha de empresa", 
     expect(previewOrderFromFactusol).not.toHaveBeenCalled();
     const status = await screen.findByText(/Proforma 1-000575/);
     expect(status).toHaveTextContent("NO está vinculado a ninguna empresa del CRM");
-    // Las líneas sí entran; lo que falta es el cliente.
+    // Las líneas sí entran; y los datos del cliente FACTUSOL también.
     expect(screen.getByLabelText("Descripción línea 1")).toHaveValue("Tinta");
+    expect(await screen.findByLabelText("NIF FACTUSOL")).toHaveValue("B99999999");
+    // Y las dos salidas reales, sin salir del formulario.
+    expect(screen.getByRole("button", { name: /Crear empresa CRM con estos datos/ }))
+      .toBeInTheDocument();
     // Sin empresa el alta sigue deshabilitada hasta que Bart la elija.
     expect(screen.getByRole("button", { name: "Crear pedido" })).toBeDisabled();
   });

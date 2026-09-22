@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import NewManualOrderPage from "./page";
 import { listContacts } from "../../../lib/api";
@@ -148,11 +148,71 @@ describe("Alta de pedido — buscador de proformas y precarga desde FACTUSOL", (
     expect(previewOrderFromFactusol).not.toHaveBeenCalled();
     expect(await screen.findByLabelText("SKU línea 1")).toHaveValue("MBO");
     expect(screen.getByLabelText("Descripción línea 2")).toHaveValue("Hora SAT");
-    // Trae el cliente de la proforma...
-    expect(screen.getByLabelText("Empresa")).toHaveValue("Acme SL");
+    // Trae el CLIENTE FACTUSOL de la proforma (el CODCLI de su cabecera), con
+    // su empresa CRM, su NIF y su nombre fiscal: es con quien se facturará.
+    await waitFor(() =>
+      expect(searchFactusolCustomers).toHaveBeenCalledWith("55555", "codcli"),
+    );
+    await waitFor(() => expect(screen.getByLabelText("Empresa")).toHaveValue("Acme SL"));
+    expect(screen.getByLabelText("NIF FACTUSOL")).toHaveValue("B12345678");
+    expect(screen.getByLabelText("Nombre fiscal FACTUSOL")).toHaveValue("ACME SL");
+    // La pastilla del CODCLI: sin él el alta se quedaría en «falta vincular la
+    // empresa a FACTUSOL» aunque la empresa estuviera puesta.
+    expect(screen.getByText("55555")).toHaveClass("mono");
     // ...y el pedido queda como MANUAL, no como documento de FACTUSOL.
     expect(screen.getByText(/Origen:/)).toHaveTextContent("Origen: manual");
     expect(screen.queryByText(/presupuesto FACTUSOL/)).toBeNull();
+  });
+
+  it("«Solo conceptos» añade las líneas y NO toca el cliente ya elegido", async () => {
+    // La diferencia entre los dos modos: «todo» fija el cliente de la proforma,
+    // «conceptos» reutiliza sus artículos con el cliente que ya hubiera.
+    (searchFactusolQuotes as jest.Mock).mockResolvedValue([{
+      ...QUOTE, codpre: "600", clipre: "99999", cliente_nombre: "Otro Cliente",
+      numero: "1-000600", company: null,
+    }]);
+    (getFactusolQuote as jest.Mock).mockResolvedValue({
+      ...QUOTE, codpre: "600", clipre: "99999", line_source: "F_LPS", portes: 0,
+      lines: [{ position: 1, codart: "MBO", description: "Cabezal MBO 250",
+                quantity: 1, unit_price: 250, line_total: 250, discount_pct: 0, iva_pct: 21 }],
+    });
+    const user = userEvent.setup();
+    render(<NewManualOrderPage />);
+    await waitForCompanyOption();
+    await user.type(screen.getByPlaceholderText("Buscar empresa…"), "Acme SL");
+    await waitFor(() => expect(screen.getByLabelText("Empresa")).toHaveValue("Acme SL"));
+
+    // La proforma buscada es de OTRO cliente (el listado de la empresa enseña
+    // las suyas: hay que esperar a que la búsqueda las sustituya).
+    await user.type(screen.getByLabelText("Buscar proforma"), "600");
+    expect(await screen.findByText("Otro Cliente")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Solo conceptos" }));
+
+    await waitFor(() => expect(getFactusolQuote).toHaveBeenCalledWith("600"));
+    expect(await screen.findByLabelText("SKU línea 1")).toHaveValue("MBO");
+    // El cliente sigue siendo el que eligió el comercial, no el de la proforma.
+    expect(screen.getByLabelText("Empresa")).toHaveValue("Acme SL");
+    expect(searchFactusolCustomers).not.toHaveBeenCalledWith("99999", "codcli");
+  });
+
+  it("el listado de proformas de la empresa carga igual que el buscador", async () => {
+    // Los dos caminos del alta tienen que dejar el MISMO estado por modo.
+    const user = userEvent.setup();
+    render(<NewManualOrderPage />);
+    await waitForCompanyOption();
+    await user.type(screen.getByPlaceholderText("Buscar empresa…"), "Acme SL");
+    await user.click(await screen.findByRole("button", {
+      name: /Proformas FACTUSOL disponibles/,
+    }));
+    const listado = within(screen.getByRole("list", { name: "Proformas de la empresa" }));
+    await user.click(listado.getByRole("button", { name: "Cargar todo" }));
+
+    await waitFor(() => expect(getFactusolQuote).toHaveBeenCalledWith("574"));
+    expect(previewOrderFromFactusol).not.toHaveBeenCalled();
+    expect(await screen.findByLabelText("SKU línea 1")).toHaveValue("MBO");
+    expect(screen.getByLabelText("Empresa")).toHaveValue("Acme SL");
+    expect(screen.getByLabelText("NIF FACTUSOL")).toHaveValue("B12345678");
+    expect(screen.getByText(/Origen:/)).toHaveTextContent("Origen: manual");
   });
 
   it("con empresa elegida, el buscador lista sus proformas sin escribir nada", async () => {

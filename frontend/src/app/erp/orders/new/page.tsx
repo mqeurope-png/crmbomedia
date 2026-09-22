@@ -448,19 +448,7 @@ export default function NewManualOrderPage() {
       if (portes > 0) setPortes(String(portes));
 
       const partes: string[] = [];
-      if (mode === "all") {
-        const empresa = quote.company ?? full.company ?? null;
-        if (empresa) {
-          setCompanyId(empresa.id);
-          setCompanyQuery(empresa.name);
-          partes.push(`cliente «${empresa.name}»`);
-        } else {
-          partes.push(
-            `su cliente (${quote.cliente_nombre || "sin nombre"}) NO está `
-            + "vinculado a ninguna empresa del CRM: elígelo a mano",
-          );
-        }
-      }
+      if (mode === "all") partes.push(await loadQuoteCustomer(quote, full));
       partes.push(
         `${next.length} línea${next.length === 1 ? "" : "s"} `
         + `${replace ? "reemplazadas" : "añadidas"}`,
@@ -477,6 +465,48 @@ export default function NewManualOrderPage() {
       setQuoteNotice(extractErrorMessage(e, "No se pudo cargar la proforma."));
     } finally {
       setLoadingQuote(null);
+    }
+  }
+
+  /** «Cargar todo» — el CLIENTE de la proforma pasa a ser el del pedido.
+   *
+   *  Se lee su ficha F_CLI por el CODCLI de la cabecera (`CLIPRE`) y se aplica
+   *  igual que al elegirlo en el buscador de clientes: nombre fiscal, NIF,
+   *  dirección, régimen de IVA y —si ese CODCLI ya está vinculado— la empresa
+   *  CRM del PROPIO cliente. Ni se busca en el CRM por nombre ni se sustituye
+   *  por otra ficha: es el cliente con el que se va a facturar.
+   *
+   *  El CODCLI hay que leerlo de la cabecera y no de un `company` anotado: el
+   *  buscador de proformas (`/quotes/search`) y el detalle (`/quotes/{codpre}`)
+   *  NO cruzan con el CRM — solo lo hace el listado por empresa—, así que desde
+   *  el buscador no venía empresa ninguna y «Cargar todo» se quedaba sin
+   *  cliente (regresión del #453). Aun con empresa anotada faltaba su CODCLI,
+   *  y sin él el alta se queda bloqueada en «falta vincular a FACTUSOL».
+   *
+   *  Nada de esto mete el pedido en la vía «documento FACTUSOL»: sigue siendo
+   *  un pedido MANUAL (sin `factusol_source`, sin paso de pago ni albarán).
+   *
+   *  Devuelve la frase que le toca en el aviso de la carga. */
+  async function loadQuoteCustomer(
+    quote: FactusolQuote, full: FactusolQuote,
+  ): Promise<string> {
+    const codcli = String(quote.clipre ?? full.clipre ?? "").trim();
+    const nombre = quote.cliente_nombre || full.cliente_nombre || "sin nombre";
+    if (!codcli) return "la proforma no dice de qué cliente es: elígelo a mano";
+    try {
+      const cust = await fetchFactusolCustomer(codcli);
+      if (!cust) {
+        return `su cliente FACTUSOL nº ${codcli} («${nombre}») no está en `
+          + "FACTUSOL: elige la empresa a mano";
+      }
+      return setFactusolClient(cust)
+        ? `cliente «${cust.crm_link?.name ?? nombre}»`
+        : `su cliente FACTUSOL nº ${codcli} («${fiscalName(cust) || nombre}») NO `
+          + "está vinculado a ninguna empresa del CRM: créala o vincúlala debajo";
+    } catch (e) {
+      // Un fallo leyendo el cliente no puede tirar las líneas ya cargadas: por
+      // eso va en su propio try y solo cambia el texto del aviso.
+      return extractErrorMessage(e, `no se pudo leer su cliente FACTUSOL nº ${codcli}`);
     }
   }
 
@@ -515,10 +545,7 @@ export default function NewManualOrderPage() {
   }
 
   /** C-3: elección desde el buscador FACTUSOL/CRM.
-   *  - Cliente FACTUSOL ya vinculado → usa la empresa CRM existente.
-   *  - Cliente FACTUSOL sin vincular → rellena el formulario con sus datos y
-   *    avisa de que se vinculará (el vínculo real necesita empresa CRM, que se
-   *    crea desde Contactos/Empresas — aquí solo pre-rellenamos).
+   *  - Cliente FACTUSOL (vinculado o no) → `setFactusolClient`.
    *  - Empresa CRM sin código FACTUSOL → ofrece crearla en FACTUSOL. */
   function onPickCustomer(choice: CustomerChoice) {
     setFactusolNotice(null);
@@ -531,26 +558,45 @@ export default function NewManualOrderPage() {
       setPendingCrmCompany(c.factusol_company_id ? null : c);
       return;
     }
-    const cust = choice.customer;
     // B) FACTUSOL manda: NIF y dirección del cliente F_CLI al formulario (el
     // hit del buscador ya trae la fila, no hace falta releer).
+    setFactusolClient(choice.customer);
+  }
+
+  /** Deja un cliente F_CLI como CLIENTE del pedido: sus datos (nombre fiscal,
+   *  NIF, dirección, régimen) en el formulario y, si ese CODCLI ya está
+   *  vinculado, la empresa CRM del propio cliente — nunca otra ficha. Sin
+   *  vínculo no hay empresa a la que ponerle el pedido, y se ofrecen ahí mismo
+   *  «crearla» o «vincularla».
+   *
+   *  Lo usan el buscador de clientes y «Cargar todo» de una proforma.
+   *  Devuelve si el cliente tenía empresa CRM. */
+  function setFactusolClient(cust: FactusolCustomer): boolean {
     prefillSeq.current += 1;
+    setPendingCrmCompany(null);
+    setLinkingExisting(false);
     const loaded = applyFactusolCustomer(cust);
     if (cust.crm_link?.type === "company") {
       setCompanyId(cust.crm_link.id);
       setCompanyQuery(cust.crm_link.name);
       setCompanyCodcli(cust.codcli);
+      setPendingFactusolCustomer(null);
       setFactusolNotice(loadedNotice(cust, loaded, {
         crmName: cust.crm_link.name,
         prefix: `Cliente FACTUSOL nº ${cust.codcli} — ya vinculado a «${cust.crm_link.name}».`,
       }));
-    } else {
-      setCompanyQuery(cust.nombre ?? "");
-      setPendingFactusolCustomer(cust);
-      setFactusolNotice(loadedNotice(cust, loaded, {
-        prefix: `Cliente FACTUSOL nº ${cust.codcli} sin empresa en el CRM. Elige debajo qué hacer.`,
-      }));
+      return true;
     }
+    // Sin empresa CRM, el pedido tampoco puede quedarse con la que hubiera
+    // elegida antes: sería OTRO cliente distinto del que se acaba de cargar.
+    setCompanyId(null);
+    setCompanyCodcli(null);
+    setCompanyQuery(cust.nombre ?? "");
+    setPendingFactusolCustomer(cust);
+    setFactusolNotice(loadedNotice(cust, loaded, {
+      prefix: `Cliente FACTUSOL nº ${cust.codcli} sin empresa en el CRM. Elige debajo qué hacer.`,
+    }));
+    return false;
   }
 
   function applyCompany(c: Company) {
@@ -781,6 +827,15 @@ export default function NewManualOrderPage() {
     }
   }
 
+  /** La ficha F_CLI de ese CODCLI (solo lectura de FACTUSOL). `null` si no
+   *  aparece: el buscador por CODCLI puede traer varios parecidos, y entonces
+   *  solo vale el que casa exactamente. */
+  async function fetchFactusolCustomer(codcli: string): Promise<FactusolCustomer | null> {
+    const hits = await searchFactusolCustomers(codcli, "codcli");
+    return hits.find((h) => h.codcli === codcli)
+      ?? (hits.length === 1 ? hits[0] : null);
+  }
+
   /** B) Empresa vinculada a FACTUSOL → NIF, dirección y nombre fiscal del
    *  cliente F_CLI (solo lectura de FACTUSOL; sus datos mandan sobre lo que
    *  tuviera el formulario, del CRM o tecleado). El aviso dice exactamente
@@ -790,10 +845,8 @@ export default function NewManualOrderPage() {
   async function prefillFromFactusol(codcli: string, crmName?: string, prefix?: string) {
     const seq = ++prefillSeq.current;
     try {
-      const hits = await searchFactusolCustomers(codcli, "codcli");
+      const cust = await fetchFactusolCustomer(codcli);
       if (seq !== prefillSeq.current) return;
-      const cust = hits.find((h) => h.codcli === codcli)
-        ?? (hits.length === 1 ? hits[0] : null);
       if (!cust) {
         setFactusolCustomer(null);
         setFactusolNotice({
@@ -1197,15 +1250,18 @@ export default function NewManualOrderPage() {
                      empresa: sin teclear serie y número. */
                   <QuotePicker
                     companyId={companyId}
-                    busy={facLoading}
+                    // Mientras se carga una proforma, sus botones bloqueados —
+                    // como en el listado de la empresa. Si no, dos clics
+                    // seguidos cargan las líneas (y el cliente) dos veces.
+                    busy={facLoading || loadingQuote !== null}
                     pickLabel="Cargar todo"
                     // Los DOS caminos (este buscador y el listado de proformas
                     // de la empresa) usan la MISMA carga y producen un pedido
-                    // MANUAL normal: copian cliente + líneas y siguen el ciclo
-                    // manual. Antes este camino pasaba por `loadFactusolDocument`
-                    // y metía el pedido en la vía «documento FACTUSOL»
-                    // (`factusol_source` + paso de pago + albarán), que no es lo
-                    // que se quiere al partir de una proforma: para convertirla
+                    // MANUAL normal: traen el cliente FACTUSOL de la proforma +
+                    // sus líneas y siguen el ciclo manual. Lo que NO hacen es
+                    // pasar por `loadFactusolDocument`, que además metía el
+                    // pedido en la vía «documento FACTUSOL» (`factusol_source`
+                    // + paso de pago + albarán): para convertir la proforma
                     // COMO DOCUMENTO está «Convertir en pedido» en Proformas.
                     onPick={(q) => void loadQuoteIntoForm(q, "all")}
                     onPickLines={(q) => void loadQuoteIntoForm(q, "lines")}
