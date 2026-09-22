@@ -1,0 +1,332 @@
+"""Volcado del seguimiento (formato NUEVO) a su pestaña gestionada de Drive.
+
+Dos contratos, y el primero es el importante:
+
+1. La pestaña HISTÓRICA no se toca. El volcado reescribe su pestaña entera, así
+   que apuntar por error a la histórica borraría el archivo de Bart (miles de
+   filas con anotaciones a mano). Aquí se fija que se niega a hacerlo y que
+   ninguna escritura la nombra.
+2. Lo que se escribe es exactamente lo de la pantalla: las 17 columnas del
+   rediseño 2026, ordenadas por Situación, con la celda Situación del color que
+   les toca, y la pestaña de Incidencias como subconjunto exacto.
+
+Sin red: el transporte de Sheets es un doble que registra lo que se le pide.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from app.erp.drive_historico import (
+    SITUACION_HISTORICO,
+    import_historico,
+    map_row,
+    plan_import,
+)
+from app.erp.drive_managed import (
+    DEFAULT_INCIDENCIAS_TAB,
+    DEFAULT_MANAGED_TAB,
+    build_incidencias_grid,
+    build_pedidos_grid,
+    pedidos_format,
+    push_managed_tabs,
+)
+from app.erp.drive_sheets import DriveSyncError, _with_sheet_id
+from app.erp.seguimiento import (
+    INCIDENCIAS_COLUMNS,
+    SEGUIMIENTO_COLUMNS,
+    SEGUIMIENTO_COLUMNS_V2,
+    SITUACION_FILL,
+)
+
+HISTORICA = "Pedidos Bomedia 2020-2026"
+
+
+class FakeTabs:
+    """Doble del transporte: guarda pestañas, valores y formato pedidos."""
+
+    def __init__(self, tabs: dict[str, list[list[Any]]] | None = None) -> None:
+        self.tabs: dict[str, list[list[Any]]] = tabs or {HISTORICA: []}
+        self.created: list[str] = []
+        self.written: dict[str, list[list[Any]]] = {}
+        self.formats: dict[str, list[dict[str, Any]]] = {}
+        self.cleared: list[str] = []
+
+    def tab_titles(self) -> list[str]:
+        return list(self.tabs)
+
+    def first_tab_title(self) -> str:
+        return next(iter(self.tabs))
+
+    def ensure_tab(self, title: str) -> int:
+        if title not in self.tabs:
+            self.tabs[title] = []
+            self.created.append(title)
+        return list(self.tabs).index(title)
+
+    def replace_tab(self, title: str, rows: list[list[Any]]) -> None:
+        self.cleared.append(title)
+        self.tabs[title] = rows
+        self.written[title] = rows
+
+    def format_tab(self, title: str, requests: list[dict[str, Any]]) -> None:
+        self.formats[title] = requests
+
+    def tab_values(self, title: str) -> list[list[str]]:
+        return [[str(c) for c in row] for row in self.tabs.get(title, [])]
+
+
+def _row(situacion: str, numero: str, *, fecha: str | None = "2026-09-01",
+         **extra: Any) -> dict[str, Any]:
+    from app.erp.seguimiento import SITUACION_LABELS
+
+    base = {
+        "situacion": situacion,
+        "situacion_label": SITUACION_LABELS[situacion],
+        "order_number": numero, "fecha": fecha, "cliente": "Acme SL",
+        "origen_label": "Web", "productos": "Cabezal", "importe": 121.0,
+        "empresa_serie": "1 · Bomedia", "factura": "", "fecha_factura": None,
+        "factura_enviada": None, "cobro_label": "—", "preparacion": "En cola",
+        "envio": "Sin enviar", "tracking": "", "serie_whiterip": "",
+        "nota_incidencia": "",
+    }
+    base.update(extra)
+    return base
+
+
+@pytest.fixture()
+def session(db_session=None):
+    """`series_config` solo necesita leer los ajustes; sin fila, devuelve {}."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session as S
+    from sqlalchemy.pool import StaticPool
+
+    import app.main  # noqa: F401
+    from app.db.base import Base
+
+    engine = create_engine("sqlite+pysqlite:///:memory:",
+                           connect_args={"check_same_thread": False},
+                           poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    with S(engine) as s:
+        yield s
+    Base.metadata.drop_all(engine)
+
+
+# --- la histórica no se toca ---------------------------------------------------
+
+
+def test_no_escribe_en_la_pestana_historica(session):
+    sheets = FakeTabs()
+    push_managed_tabs(session, sheets, [_row("listo", "BOP-1")])
+    assert HISTORICA not in sheets.written
+    assert HISTORICA not in sheets.cleared
+    assert HISTORICA not in sheets.formats
+    # Y sigue existiendo, vacía como estaba.
+    assert sheets.tabs[HISTORICA] == []
+
+
+def test_se_niega_si_la_gestionada_es_la_historica(session, monkeypatch):
+    """Si alguien configura como gestionada el título de la histórica, el
+    volcado la borraría entera. Se niega en cada escritura, no solo al
+    configurarla: en Drive se pueden renombrar pestañas."""
+    monkeypatch.setattr(
+        "app.erp.drive_managed.managed_tab_titles",
+        lambda _s: (HISTORICA, DEFAULT_INCIDENCIAS_TAB),
+    )
+    sheets = FakeTabs()
+    with pytest.raises(DriveSyncError) as exc:
+        push_managed_tabs(session, sheets, [_row("listo", "BOP-1")])
+    assert "HISTÓRICA" in str(exc.value)
+    assert sheets.written == {}
+
+
+# --- lo que se escribe ---------------------------------------------------------
+
+
+def test_crea_las_pestanas_y_escribe_las_17_columnas(session):
+    sheets = FakeTabs()
+    resumen = push_managed_tabs(session, sheets, [_row("listo", "BOP-1")])
+    assert sheets.created == [DEFAULT_MANAGED_TAB, DEFAULT_INCIDENCIAS_TAB]
+    assert sheets.written[DEFAULT_MANAGED_TAB][0] == SEGUIMIENTO_COLUMNS_V2
+    assert sheets.written[DEFAULT_INCIDENCIAS_TAB][0] == INCIDENCIAS_COLUMNS
+    assert resumen["written"] is True
+    assert resumen["tab"] == DEFAULT_MANAGED_TAB
+    assert resumen["historic_tab"] == HISTORICA
+    # No es el formato viejo.
+    assert sheets.written[DEFAULT_MANAGED_TAB][0] != SEGUIMIENTO_COLUMNS
+
+
+def test_ordena_por_situacion(session):
+    """Lo urgente arriba: Incidencia → Por revisar → … → Listo. El mismo orden
+    que la pantalla y el Excel."""
+    rows = [
+        _row("listo", "L-1"), _row("incidencias", "I-1"),
+        _row("por_cobrar", "C-1"), _row("por_revisar", "R-1"),
+    ]
+    sheets = FakeTabs()
+    push_managed_tabs(session, sheets, rows)
+    escritas = sheets.written[DEFAULT_MANAGED_TAB][1:]
+    assert [f[1] for f in escritas] == ["I-1", "R-1", "C-1", "L-1"]
+
+
+def test_colorea_la_celda_situacion_con_los_tonos_del_diseno(session):
+    rows = [_row("incidencias", "I-1"), _row("listo", "L-1")]
+    sheets = FakeTabs()
+    push_managed_tabs(session, sheets, rows)
+    fondos = [
+        r["repeatCell"]["cell"]["userEnteredFormat"]["backgroundColor"]
+        for r in sheets.formats[DEFAULT_MANAGED_TAB]
+        if r.get("repeatCell", {}).get("range", {}).get("startColumnIndex") == 0
+        and r["repeatCell"]["range"]["startRowIndex"] > 0
+    ]
+    esperado_incidencia = SITUACION_FILL["incidencias"][0]
+    assert fondos[0]["red"] == pytest.approx(int(esperado_incidencia[0:2], 16) / 255)
+    assert len(fondos) == 2
+
+
+def test_incidencias_es_el_subconjunto_exacto(session):
+    rows = [_row("incidencias", "I-1"), _row("listo", "L-1"),
+            _row("incidencias", "I-2")]
+    sheets = FakeTabs()
+    resumen = push_managed_tabs(session, sheets, rows)
+    inc = sheets.written[DEFAULT_INCIDENCIAS_TAB][1:]
+    assert [f[0] for f in inc] == ["I-1", "I-2"]
+    assert resumen["incidencias"] == 2
+
+
+def test_es_idempotente(session):
+    """Reejecutar deja la pestaña igual: se reescribe entera, no se añade."""
+    rows = [_row("listo", "L-1"), _row("incidencias", "I-1")]
+    sheets = FakeTabs()
+    push_managed_tabs(session, sheets, rows)
+    primera = list(sheets.written[DEFAULT_MANAGED_TAB])
+    push_managed_tabs(session, sheets, rows)
+    assert sheets.written[DEFAULT_MANAGED_TAB] == primera
+    assert sheets.created == [DEFAULT_MANAGED_TAB, DEFAULT_INCIDENCIAS_TAB]
+
+
+def test_dry_run_no_escribe_pero_resume(session):
+    rows = [_row("incidencias", "I-1"), _row("listo", "L-1")]
+    sheets = FakeTabs()
+    resumen = push_managed_tabs(session, sheets, rows, dry_run=True)
+    assert sheets.written == {} and sheets.created == []
+    assert resumen["written"] is False and resumen["dry_run"] is True
+    assert resumen["rows"] == 2 and resumen["incidencias"] == 1
+    assert resumen["por_situacion"] == {"Incidencia": 1, "Listo": 1}
+
+
+def test_sin_filas_escribe_solo_la_cabecera(session):
+    sheets = FakeTabs()
+    push_managed_tabs(session, sheets, [])
+    assert sheets.written[DEFAULT_MANAGED_TAB] == [SEGUIMIENTO_COLUMNS_V2]
+
+
+def test_el_grid_usa_la_misma_serializacion_que_el_excel():
+    """No se duplica la serialización: la fila de Drive es la de
+    `row_to_pedidos_values`."""
+    from app.erp.seguimiento import row_to_pedidos_values
+
+    row = _row("por_enviar", "BOP-9")
+    assert build_pedidos_grid([row])[1] == row_to_pedidos_values(row)
+    assert build_incidencias_grid([_row("incidencias", "I-1")])[0] == INCIDENCIAS_COLUMNS
+
+
+def test_el_formato_deja_el_hueco_del_sheet_id():
+    """El constructor del formato no conoce el id de la pestaña (se crea sobre
+    la marcha): lo deja a None y el cliente lo rellena."""
+    reqs = pedidos_format([_row("listo", "L-1")])
+    assert all("sheetId" in str(r) for r in reqs)
+    resuelto = _with_sheet_id(reqs, 42)
+    assert "'sheetId': None" not in str(resuelto)
+    assert "42" in str(resuelto)
+
+
+# --- importación del histórico -------------------------------------------------
+
+
+HEADER_VIEJA = list(SEGUIMIENTO_COLUMNS)
+_IDX = {name: i for i, name in enumerate(SEGUIMIENTO_COLUMNS)}
+
+
+def _vieja(**cells: str) -> list[str]:
+    out = [""] * len(HEADER_VIEJA)
+    for name, value in cells.items():
+        out[_IDX[name]] = value
+    return out
+
+
+def _hoja_vieja() -> list[list[str]]:
+    return [
+        HEADER_VIEJA,
+        _vieja(**{"Albarán / Nº Pedido Web": "99866", "Cliente": "Roca",
+                  "Fecha entrada albarán": "3/2/2026", "Empresa": "BO",
+                  "Nº de Factura": "1-260001", "Tracking": "TRK1",
+                  "Nº de Serie": "SN-7", "WhiteRIP": "sí",
+                  "Orden": "revisar con Marta", "Vendedor": "Bart"}),
+        ["^^^^  Aqui arriba pedidos que faltan entregar ."],
+        [],
+        HEADER_VIEJA,                                   # cabecera repetida
+        _vieja(**{"Albarán / Nº Pedido Web": "99867", "Cliente": "Duaner"}),
+        _vieja(**{"Cliente": "Nota suelta sin pedido"}),  # dudosa
+    ]
+
+
+def test_plan_import_descarta_estructura_y_cuenta_dudosas():
+    plan = plan_import(_hoja_vieja())
+    assert plan["mapeadas"] == 3          # 2 pedidos + 1 dudosa
+    assert plan["descartadas"] == 3       # «^^^^», vacía, cabecera repetida
+    assert plan["dudosas"] == 1
+    assert plan["dudosas_muestra"][0]["cliente"] == "Nota suelta sin pedido"
+    assert "Albarán / Nº Pedido Web" in plan["columnas_reconocidas"]
+
+
+def test_map_row_conserva_lo_que_no_tiene_columna_nueva():
+    """«Orden» (las notas a mano), vendedor, transporte… no se pierden: van a
+    «Nota / Incidencia»."""
+    from app.erp.seguimiento import match_header_columns
+
+    col_map = match_header_columns(HEADER_VIEJA)
+    fila = map_row(_hoja_vieja()[1], col_map)
+    assert fila[0] == SITUACION_HISTORICO
+    assert fila[1] == "99866"             # Nº pedido
+    assert fila[3] == "Roca"              # Cliente
+    assert fila[15] == "SN-7 · sí"        # Nº serie · WhiteRIP
+    assert "revisar con Marta" in fila[16]
+    assert "Bart" in fila[16]
+    assert len(fila) == len(SEGUIMIENTO_COLUMNS_V2)
+
+
+def test_import_historico_escribe_en_otra_pestana_y_no_toca_la_vieja():
+    sheets = FakeTabs({HISTORICA: _hoja_vieja()})
+    original = [list(r) for r in sheets.tabs[HISTORICA]]
+    resumen = import_historico(sheets, dry_run=False)
+    assert resumen["written"] is True
+    assert resumen["origen"] == HISTORICA
+    assert sheets.tabs[HISTORICA] == original      # intacta
+    destino = sheets.written[resumen["tab"]]
+    assert destino[0] == SEGUIMIENTO_COLUMNS_V2
+    assert all(f[0] == SITUACION_HISTORICO for f in destino[1:])
+
+
+def test_import_historico_dry_run_no_escribe():
+    sheets = FakeTabs({HISTORICA: _hoja_vieja()})
+    resumen = import_historico(sheets)
+    assert resumen["written"] is False and sheets.written == {}
+    assert resumen["mapeadas"] == 3
+
+
+def test_import_historico_se_niega_a_escribir_sobre_la_vieja():
+    sheets = FakeTabs({HISTORICA: _hoja_vieja()})
+    with pytest.raises(DriveSyncError):
+        import_historico(sheets, tab_title=HISTORICA, dry_run=False)
+    assert sheets.written == {}
+
+
+def test_import_historico_sin_cabecera_reconocible_falla_claro():
+    sheets = FakeTabs({HISTORICA: [["a", "b"], ["c", "d"]]})
+    with pytest.raises(DriveSyncError) as exc:
+        import_historico(sheets)
+    assert "cabecera" in str(exc.value)

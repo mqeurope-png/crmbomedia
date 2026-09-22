@@ -111,6 +111,23 @@ def service_account_email(cfg: ErpSettings | None) -> str | None:
     return str(info.get("client_email"))
 
 
+class ManagedTabTransport(Protocol):
+    """Lo que necesita el volcado del formato NUEVO a su pestaña gestionada.
+
+    Es un transporte aparte del de la sincronización histórica a propósito: ahí
+    las reglas son «solo celdas que cambian, nunca formato, nunca borrar» porque
+    la hoja es de Bart; aquí la pestaña es de la app y se reescribe entera. Que
+    sean dos interfaces distintas impide que un método de reescritura acabe
+    apuntando por descuido al histórico."""
+
+    def tab_titles(self) -> list[str]: ...
+    def first_tab_title(self) -> str: ...
+    def ensure_tab(self, title: str) -> int: ...
+    def replace_tab(self, title: str, rows: list[list[Any]]) -> None: ...
+    def format_tab(self, title: str, requests: list[dict[str, Any]]) -> None: ...
+    def tab_values(self, title: str) -> list[list[str]]: ...
+
+
 class SheetsTransport(Protocol):
     """Lo que necesita el sincronizador. `GoogleSheetsClient` lo implementa
     contra la API real; los tests usan una hoja en memoria."""
@@ -130,6 +147,7 @@ class GoogleSheetsClient:
         self._token: str | None = None
         self._sheet_id: int | None = None
         self._sheet_title: str | None = None
+        self._props: list[dict[str, Any]] | None = None
         # ERP-F6-fix6 — traza de las llamadas a la API (método, rango, tamaño
         # del payload). Se vuelca en el log tras cada sincronización para poder
         # comprobar que NUNCA se manda un rango mayor que las celdas que cambian
@@ -175,11 +193,106 @@ class GoogleSheetsClient:
 
     def _sheet(self) -> tuple[int, str]:
         if self._sheet_id is None or self._sheet_title is None:
-            data = self._request("GET", "?fields=sheets.properties")
-            props = (data.get("sheets") or [{}])[0].get("properties") or {}
+            props = (self._properties() or [{}])[0]
             self._sheet_id = int(props.get("sheetId") or 0)
             self._sheet_title = str(props.get("title") or "Hoja 1")
         return self._sheet_id, self._sheet_title
+
+    # --- pestañas (volcado del formato nuevo) ---------------------------------
+    #
+    # La sincronización histórica trabaja SIEMPRE sobre la primera pestaña
+    # (`_sheet`). Lo de aquí abajo es lo que necesita la pestaña GESTIONADA por
+    # la app, que se reescribe entera; nunca debe apuntar al histórico, y
+    # `drive_managed` lo comprueba antes de escribir.
+
+    def _properties(self, *, refresh: bool = False) -> list[dict[str, Any]]:
+        if self._props is None or refresh:
+            data = self._request("GET", "?fields=sheets.properties")
+            self._props = [
+                (s.get("properties") or {}) for s in (data.get("sheets") or [])
+            ]
+        return self._props
+
+    def tab_titles(self) -> list[str]:
+        return [str(p.get("title") or "") for p in self._properties()]
+
+    def first_tab_title(self) -> str:
+        """La primera pestaña = la HISTÓRICA (es la que escribe la
+        sincronización de siempre)."""
+        return self._sheet()[1]
+
+    def _tab_id(self, title: str) -> int | None:
+        for props in self._properties():
+            if str(props.get("title") or "") == title:
+                return int(props.get("sheetId") or 0)
+        return None
+
+    def ensure_tab(self, title: str) -> int:
+        """Id de la pestaña, creándola si no existe. Un 403 aquí significa que
+        la cuenta de servicio tiene la hoja compartida solo como lectora."""
+        existing = self._tab_id(title)
+        if existing is not None:
+            return existing
+        self._record({"method": "POST", "api": "batchUpdate:addSheet",
+                      "title": title})
+        try:
+            data = self._request("POST", ":batchUpdate", json={"requests": [
+                {"addSheet": {"properties": {"title": title}}},
+            ]})
+        except DriveSyncError as exc:
+            if "403" in str(exc):
+                raise DriveSyncError(
+                    f"la cuenta de servicio no puede crear la pestaña «{title}»: "
+                    "comparte la hoja con ella como EDITOR (hoy parece tener "
+                    "solo lectura)"
+                ) from exc
+            raise
+        self._properties(refresh=True)
+        props = (((data.get("replies") or [{}])[0].get("addSheet") or {})
+                 .get("properties") or {})
+        return int(props.get("sheetId") or self._tab_id(title) or 0)
+
+    def tab_values(self, title: str) -> list[list[str]]:
+        rng = f"{title}!A1:Z100000"
+        data = self._request("GET", f"/values/{rng}")
+        values = data.get("values") or []
+        self._record({"method": "GET", "api": "values.get", "range": rng,
+                      "rows_read": len(values)})
+        return values
+
+    def replace_tab(self, title: str, rows: list[list[Any]]) -> None:
+        """Reescribe la pestaña ENTERA: vacía lo que hubiera y escribe `rows`.
+
+        Solo para pestañas de la app. Se manda `USER_ENTERED` (no `RAW`) para
+        que los números entren como números y las fechas como texto tal cual se
+        han formateado; la pestaña no tiene histórico que corromper."""
+        self._record({"method": "POST", "api": "values:clear", "range": title})
+        self._request("POST", f"/values/{title}!A1:Z100000:clear", json={})
+        if not rows:
+            return
+        width = max(len(r) for r in rows)
+        rng = f"{title}!A1:{_col_a1(width - 1)}{len(rows)}"
+        self._record({"method": "PUT", "api": "values.update",
+                      "valueInputOption": "USER_ENTERED", "range": rng,
+                      "rows": len(rows)})
+        self._request(
+            "PUT", f"/values/{rng}?valueInputOption=USER_ENTERED",
+            json={"values": rows},
+        )
+
+    def format_tab(self, title: str, requests: list[dict[str, Any]]) -> None:
+        """Aplica peticiones de formato a la pestaña, rellenando su `sheetId`.
+
+        Cada petición trae `{"__range": {...}}` o `{"__sheet": true}` como
+        marcador; aquí se sustituye por el id real. Así quien construye el
+        formato no necesita conocer ids de Google."""
+        if not requests:
+            return
+        sheet_id = self.ensure_tab(title)
+        resolved = _with_sheet_id(requests, sheet_id)
+        self._record({"method": "POST", "api": "batchUpdate:format",
+                      "title": title, "requests": len(resolved)})
+        self._request("POST", ":batchUpdate", json={"requests": resolved})
 
     def get_values(self) -> list[list[str]]:
         _, title = self._sheet()
@@ -252,6 +365,27 @@ class GoogleSheetsClient:
             "PUT", f"/values/{rng}?valueInputOption=RAW",
             json={"values": rows},
         )
+
+
+def _with_sheet_id(
+    requests: list[dict[str, Any]], sheet_id: int,
+) -> list[dict[str, Any]]:
+    """Sustituye los marcadores `sheetId: None` por el id real, recursivamente.
+
+    El constructor del formato (`drive_managed`) no puede conocer el id de la
+    pestaña —se crea sobre la marcha—, así que deja el hueco a `None` y el
+    cliente lo rellena aquí."""
+    def walk(node: Any) -> Any:
+        if isinstance(node, dict):
+            return {
+                k: (sheet_id if k == "sheetId" and v is None else walk(v))
+                for k, v in node.items()
+            }
+        if isinstance(node, list):
+            return [walk(v) for v in node]
+        return node
+
+    return [walk(r) for r in requests]
 
 
 def _col_a1(idx: int) -> str:

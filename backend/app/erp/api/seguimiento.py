@@ -192,12 +192,19 @@ def drive_sync(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_seguimiento),
 ) -> dict[str, Any]:
-    """«Actualizar hoja de Drive»: sincronización MANUAL. ERP-F6-fix7 — SOLO
-    AÑADE: identifica cada pedido por su número desnudo (ERP-F6-fix2) para no
-    duplicar; el que ya está en la hoja no se toca. Sin borrar filas ajenas ni
-    pisar celdas manuales. `dry_run=true` PREVISUALIZA (cuántas añade / a
-    revisar / info) sin escribir nada — para que Bart lo vea antes de confirmar."""
+    """«Actualizar hoja de Drive»: vuelca el formato NUEVO (rediseño 2026) a la
+    pestaña gestionada por la app («Seguimiento (app)» + «Incidencias (app)»),
+    reescribiéndola entera: 17 columnas, orden por Situación, celda Situación
+    coloreada. La pestaña HISTÓRICA no se toca — sigue siendo el archivo.
+
+    `dry_run=true` PREVISUALIZA (qué pestañas, cuántas filas, desglose por
+    Situación) sin escribir nada, para que Bart lo vea antes de confirmar.
+
+    Modo antiguo: con `drive_legacy_insert` puesto en los ajustes, se conserva
+    la sincronización incremental de ERP-F6 (solo AÑADE filas a la histórica,
+    sin pisar nada). Ya no es el comportamiento por defecto."""
     _ = current_user
+    from app.erp.drive_managed import push_managed_tabs  # noqa: PLC0415
     from app.erp.drive_sheets import (  # noqa: PLC0415
         DriveConfigError,
         DriveSyncError,
@@ -224,11 +231,17 @@ def drive_sync(
             ),
         })
     info, spreadsheet_id = conf
-    prefer_albaran = bool(series_config(session).get("drive_reference_prefer_albaran", True))
-    rows = build_drive_sync_rows(session)
+    cfg_json = series_config(session)
+    client = GoogleSheetsClient(info, spreadsheet_id)
     try:
+        if not cfg_json.get("drive_legacy_insert"):
+            # Por defecto: el formato nuevo a la pestaña gestionada. Se vuelcan
+            # TODAS las filas del seguimiento (las mismas que la pantalla), no
+            # solo las «en curso» que buscaba la inserción incremental.
+            return push_managed_tabs(session, client, _rows(session), dry_run=dry_run)
+        prefer_albaran = bool(cfg_json.get("drive_reference_prefer_albaran", True))
         return sync_to_sheet(
-            session, GoogleSheetsClient(info, spreadsheet_id), rows,
+            session, client, build_drive_sync_rows(session),
             prefer_albaran=prefer_albaran, dry_run=dry_run,
             invoice_serie_resolver=_factusol_invoice_serie_resolver(session),
         )

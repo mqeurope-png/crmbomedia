@@ -540,11 +540,35 @@ autofiltro y el importe con formato €) y **«Incidencias»** (los mismos pedid
 que están en Situación=Incidencia, con más detalle: nº pedido, cliente, tipo,
 motivo, asignado, fecha y estado, tomado de la bandeja de Excepciones).
 
-> La hoja de **Drive** conserva por ahora su formato histórico (miles de filas
-> que el equipo edita a mano): «Actualizar hoja de Drive» sigue **añadiendo** sin
-> tocar ese histórico. El nuevo diseño se aplica a la pantalla y al Excel
-> descargable; llevar el formato nuevo a Drive (en una pestaña propia gestionada
-> por la app) queda pendiente de validarlo sobre la hoja real.
+**«Actualizar hoja de Drive»** vuelca ese mismo formato nuevo al Google Sheet,
+en **pestañas propias de la app**:
+
+- **«Seguimiento (app)»** — las 17 columnas, ordenadas por Situación, con la
+  celda Situación coloreada, la cabecera fija y autofiltro. Se **reescribe
+  entera** en cada actualización, así que refleja siempre lo que ves en
+  pantalla y repetirla no duplica nada.
+- **«Incidencias (app)»** — los pedidos en Situación=Incidencia, con su detalle.
+
+La **vista previa** sigue estando antes de escribir: te dice a qué pestañas va,
+cuántas filas y el desglose por Situación.
+
+> **La pestaña histórica no se toca.** Es la hoja de siempre, con miles de filas
+> que el equipo ha editado a mano, y queda como archivo de consulta: la app
+> nunca la reescribe ni borra nada de ella. Si el título de la pestaña
+> gestionada coincidiera con el de la histórica, la actualización se niega a
+> escribir y te lo dice.
+>
+> El **histórico en formato nuevo** se genera una sola vez con el comando
+> `python -m scripts.importar_historico_seguimiento` (primero sin `--apply`, que
+> te dice cuántas filas mapea, cuántas descarta —el bloque «^^^^», las cabeceras
+> repetidas, las vacías— y cuántas quedan dudosas). Aterriza en la pestaña
+> **«Histórico (formato nuevo)»**, con Situación «Histórico» y lo que no tiene
+> columna nueva (la columna «Orden», vendedor, transporte…) recogido en
+> «Nota / Incidencia». Esa pestaña **no** la reescribe la actualización
+> periódica.
+>
+> El bloque manual **«^^^^ Aquí arriba pedidos que faltan…»** ya no hace falta:
+> su función la cumple el orden por Situación.
 
 ### Excepciones
 

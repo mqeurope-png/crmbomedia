@@ -749,7 +749,30 @@ export type DriveSyncReviewGroup = {
   items: DriveSyncConflict[];
 };
 
-export type DriveSyncSummary = {
+/** Volcado del formato NUEVO a la pestaña gestionada por la app (lo que hace
+ *  «Actualizar hoja de Drive» desde el rediseño 2026). La pestaña histórica no
+ *  se toca: se nombra solo para decirlo. */
+export type DriveManagedSummary = {
+  mode: "managed_tab";
+  /** Pestaña que la app reescribe entera. */
+  tab: string;
+  incidencias_tab: string;
+  /** La pestaña histórica, que NO se toca. */
+  historic_tab: string;
+  rows: number;
+  incidencias: number;
+  por_situacion: Record<string, number>;
+  columns: string[];
+  dry_run: boolean;
+  written: boolean;
+  /** Pestañas creadas en esta escritura (vacío si ya existían). */
+  created_tabs?: string[];
+};
+
+/** Resumen de la sincronización INCREMENTAL a la hoja histórica (ERP-F6). Solo
+ *  se usa con el ajuste `drive_legacy_insert`; ya no es el modo por defecto. */
+export type DriveLegacySummary = {
+  mode?: undefined;
   ok: boolean;
   preview: boolean;
   orders_considered: number;
@@ -771,6 +794,15 @@ export type DriveSyncSummary = {
   sheet_rows: number;
   omitted_columns: string[];
 };
+
+/** Lo que devuelve «Actualizar hoja de Drive»: el volcado a la pestaña
+ *  gestionada (por defecto) o la sincronización histórica (con el toggle).
+ *  Se distinguen por `mode`. */
+export type DriveSyncSummary = DriveManagedSummary | DriveLegacySummary;
+
+export function isManagedSummary(s: DriveSyncSummary): s is DriveManagedSummary {
+  return s.mode === "managed_tab";
+}
 
 /** Previsualiza (dry_run) o ejecuta la sincronización con la hoja de Drive. */
 export async function syncSeguimientoDrive(

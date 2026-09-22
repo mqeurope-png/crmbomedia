@@ -1,6 +1,7 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import SeguimientoPageView from "./page";
-import { listSeguimiento } from "../../lib/erpApi";
+import userEvent from "@testing-library/user-event";
+import { listSeguimiento, syncSeguimientoDrive } from "../../lib/erpApi";
 
 jest.mock("next/link", () => ({
   __esModule: true,
@@ -14,6 +15,8 @@ jest.mock("../../lib/api", () => ({
 }));
 jest.mock("../../lib/erpApi", () => ({
   ERP_EDIT_ROLES: ["admin", "pedidos"],
+  // Discrimina el resumen nuevo del histórico; no es un mock, es la función real.
+  isManagedSummary: (s: { mode?: string }) => s.mode === "managed_tab",
   listSeguimiento: jest.fn(),
   getErpSettings: jest.fn(() => Promise.resolve({ shipping_origins: [] })),
   exportSeguimientoXlsx: jest.fn(),
@@ -58,6 +61,18 @@ function mockRows(items: ReturnType<typeof row>[]) {
     items, total: items.length,
     columns: [], incidencias_columns: [],
     drive: { configured: false, service_account_email: null, spreadsheet_id: null },
+  });
+}
+
+/** Con Drive configurado se puede pulsar «Actualizar hoja de Drive…». */
+function mockRowsConDrive(items: ReturnType<typeof row>[]) {
+  (listSeguimiento as jest.Mock).mockResolvedValue({
+    items, total: items.length,
+    columns: [], incidencias_columns: [],
+    drive: {
+      configured: true, spreadsheet_id: "sheet-1",
+      service_account_email: "bohub-seguimiento@x.iam.gserviceaccount.com",
+    },
   });
 }
 
@@ -113,6 +128,38 @@ describe("ERP · Seguimiento — hoja simplificada (rediseño 2026)", () => {
     expect(pill).toHaveClass("seg-situacion", "is-r");
     const table = screen.getByRole("table");
     expect(within(table).getByText(/no está vinculada a un cliente de FACTUSOL/))
+      .toBeInTheDocument();
+  });
+
+  // --- volcado del formato nuevo a la pestaña gestionada de Drive ----------
+
+  it("la previsualización de Drive dice a qué pestaña va y que el histórico no se toca", async () => {
+    mockRowsConDrive([row()]);
+    (syncSeguimientoDrive as jest.Mock).mockResolvedValue({
+      mode: "managed_tab", tab: "Seguimiento (app)",
+      incidencias_tab: "Incidencias (app)",
+      historic_tab: "Pedidos Bomedia 2020-2026",
+      rows: 12, incidencias: 2,
+      por_situacion: { Incidencia: 2, "Por cobrar": 10 },
+      columns: new Array(17).fill("x"), dry_run: true, written: false,
+    });
+    const user = userEvent.setup();
+    render(<SeguimientoPageView />);
+    await user.click(await screen.findByRole("button", {
+      name: /Actualizar hoja de Drive/,
+    }));
+
+    await waitFor(() =>
+      expect(syncSeguimientoDrive).toHaveBeenCalledWith({ preview: true }));
+    const aviso = await screen.findByText(/Se reescribirá la pestaña/);
+    expect(aviso).toHaveTextContent("«Seguimiento (app)»");
+    expect(aviso).toHaveTextContent("17 columnas");
+    expect(screen.getByText(/no se toca/)).toHaveTextContent(
+      "Pedidos Bomedia 2020-2026",
+    );
+    expect(screen.getByText(/Incidencia: 2 · Por cobrar: 10/)).toBeInTheDocument();
+    // El botón de confirmar habla de escribir, no de «añadir filas».
+    expect(screen.getByRole("button", { name: /Confirmar y escribir 12 filas/ }))
       .toBeInTheDocument();
   });
 
