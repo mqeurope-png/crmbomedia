@@ -1199,18 +1199,22 @@ export default function NewManualOrderPage() {
                     companyId={companyId}
                     busy={facLoading}
                     pickLabel="Cargar todo"
-                    onPick={(q) => {
-                      if (!q.codpre) return;
-                      // La SERIE es la de la proforma, no siempre la 1: con el
-                      // 1 fijo, una proforma de MQ Europe / Lambert / Streamtec
-                      // daba «documento no encontrado».
-                      void loadFactusolDocument(
-                        "presupuestos", q.serie || 1, Number(q.codpre),
-                      );
-                    }}
-                    // Mismo modo «solo conceptos» que el listado de proformas
-                    // de la empresa: reutiliza la misma carga, sin duplicarla.
+                    // Los DOS caminos (este buscador y el listado de proformas
+                    // de la empresa) usan la MISMA carga y producen un pedido
+                    // MANUAL normal: copian cliente + líneas y siguen el ciclo
+                    // manual. Antes este camino pasaba por `loadFactusolDocument`
+                    // y metía el pedido en la vía «documento FACTUSOL»
+                    // (`factusol_source` + paso de pago + albarán), que no es lo
+                    // que se quiere al partir de una proforma: para convertirla
+                    // COMO DOCUMENTO está «Convertir en pedido» en Proformas.
+                    onPick={(q) => void loadQuoteIntoForm(q, "all")}
                     onPickLines={(q) => void loadQuoteIntoForm(q, "lines")}
+                    // El aviso de la carga (qué entró, si el cliente no está
+                    // vinculado…) se pinta aquí SOLO cuando no hay listado de
+                    // proformas de la empresa que ya lo esté enseñando: si no,
+                    // desde el buscador el comercial se quedaba sin feedback —
+                    // y con los dos, saldría el mismo mensaje por duplicado.
+                    notice={quotes.length === 0 ? quoteNotice : null}
                   />
                 ) : (
                   <PedidoClientePicker

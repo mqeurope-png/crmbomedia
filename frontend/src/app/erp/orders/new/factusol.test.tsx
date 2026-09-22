@@ -151,28 +151,34 @@ describe("Fase 1 · alta de pedido desde FACTUSOL y desde la ficha de empresa", 
     expect(push).toHaveBeenCalledWith("/erp/orders/new-order-1");
   });
 
-  it("cliente FACTUSOL sin vincular: avisa y deja elegir la empresa a mano", async () => {
-    (previewOrderFromFactusol as jest.Mock).mockResolvedValue(preview({
-      doc_type: "presupuestos", serie: 1, codigo: 575, numero: "1-000575",
-      cliente_codigo: "99999", cliente_nombre: "Nuevo Cliente",
-      company_id: null, company_name: null, company_linked: false,
-      order_number: "PRO-000575",
-    }));
-    const { searchFactusolQuotes } = jest.requireMock("../../../lib/erpApi");
-    (searchFactusolQuotes as jest.Mock).mockResolvedValue([{
+  it("proforma cuyo cliente no está en el CRM: avisa y deja elegir la empresa a mano", async () => {
+    // «Cargar todo» carga la proforma como PEDIDO MANUAL (no como documento de
+    // FACTUSOL). Si su cliente no tiene empresa CRM vinculada no hay a quién
+    // ponerle el pedido: se avisa y el alta sigue bloqueada hasta elegirla.
+    const { searchFactusolQuotes, getFactusolQuote } = jest.requireMock("../../../lib/erpApi");
+    const sinEmpresa = {
       codpre: "575", referencia: "Tinta", fecha: "2026-09-01", clipre: "99999",
       cliente_nombre: "Nuevo Cliente", base: 100, iva: 21, total: 121,
-    }]);
+      serie: 1, numero: "1-000575", company: null,
+    };
+    (searchFactusolQuotes as jest.Mock).mockResolvedValue([sinEmpresa]);
+    (getFactusolQuote as jest.Mock).mockResolvedValue({
+      ...sinEmpresa, line_source: "F_LPS", portes: 0,
+      lines: [{ position: 1, codart: "TIN", description: "Tinta", quantity: 1,
+                unit_price: 100, line_total: 100, discount_pct: 0, iva_pct: 21 }],
+    });
     const user = userEvent.setup();
     render(<NewManualOrderPage />);
     // Proformas: se busca (nº, referencia o cliente) y se elige, sin serie+número.
     await user.type(screen.getByLabelText("Buscar proforma"), "575");
     await user.click(await screen.findByRole("button", { name: "Cargar todo" }));
-    await waitFor(() =>
-      expect(previewOrderFromFactusol).toHaveBeenCalledWith("presupuestos", 1, 575),
-    );
-    const status = await screen.findByText(/presupuesto 1-000575 cargado/);
-    expect(status).toHaveTextContent("«Nuevo Cliente» (nº 99999) sin vincular");
+
+    await waitFor(() => expect(getFactusolQuote).toHaveBeenCalledWith("575"));
+    expect(previewOrderFromFactusol).not.toHaveBeenCalled();
+    const status = await screen.findByText(/Proforma 1-000575/);
+    expect(status).toHaveTextContent("NO está vinculado a ninguna empresa del CRM");
+    // Las líneas sí entran; lo que falta es el cliente.
+    expect(screen.getByLabelText("Descripción línea 1")).toHaveValue("Tinta");
     // Sin empresa el alta sigue deshabilitada hasta que Bart la elija.
     expect(screen.getByRole("button", { name: "Crear pedido" })).toBeDisabled();
   });
