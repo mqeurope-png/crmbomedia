@@ -414,7 +414,7 @@ describe("NewManualOrderPage", () => {
         .getByRole("button", { name: "Solo conceptos" }),
     );
 
-    await waitFor(() => expect(mockGetQuote).toHaveBeenCalledWith("77"));
+    await waitFor(() => expect(mockGetQuote).toHaveBeenCalledWith("77", undefined));
     expect(screen.getByLabelText("Descripción línea 1")).toHaveValue("Cable HDMI");
     expect(screen.getByLabelText("SKU línea 1")).toHaveValue("ART-1");
   });

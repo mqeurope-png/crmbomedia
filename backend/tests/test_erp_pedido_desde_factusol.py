@@ -519,7 +519,10 @@ def test_convertir_proforma_en_pedido(session_factory) -> None:
         lines = list(s.scalars(select(OrderLine).where(OrderLine.order_id == o.id)
                                .order_by(OrderLine.position)))
         assert [ln.product_codart for ln in lines] == ["MBO", "SAT"]
-        assert any("proforma FACTUSOL 574" in (h.reason or "") for h in s.scalars(
+        # El historial nombra la proforma por su nº VISIBLE (serie-número), que
+        # es como la enseña la pantalla de Proformas: «574» a secas es ambiguo
+        # porque los CODPRE se repiten entre series.
+        assert any("proforma FACTUSOL 1-000574" in (h.reason or "") for h in s.scalars(
             select(OrderStatusHistory).where(OrderStatusHistory.order_id == o.id)))
         # Convertir otra vez NO duplica: devuelve el mismo pedido.
         second = convert_quote_to_order(fake, s, "574", ejercicio="2026")

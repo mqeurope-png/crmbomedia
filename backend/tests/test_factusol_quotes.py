@@ -133,10 +133,11 @@ def _quote_row(codpre: int, *, clipre="55555", fecha="2026-08-01",
 
 
 def _line_row(codpre: int, pos: int, *, art="", desc="Línea", cant=1.0,
-              precio=10.0, dto=0.0, iva=21.0) -> dict[str, Any]:
-    """Fila de F_LPS. Columnas verificadas contra la base real."""
+              precio=10.0, dto=0.0, iva=21.0, serie="1") -> dict[str, Any]:
+    """Fila de F_LPS. Columnas verificadas contra la base real. `TIPLPS` es la
+    serie, siempre la misma que el `TIPPRE` de su cabecera."""
     return {
-        "TIPLPS": "1", "CODLPS": codpre, "POSLPS": pos, "ARTLPS": art,
+        "TIPLPS": serie, "CODLPS": codpre, "POSLPS": pos, "ARTLPS": art,
         "DESLPS": desc, "CANLPS": cant, "DT1LPS": dto, "DT2LPS": 0.0,
         "DT3LPS": 0.0, "PRELPS": precio,
         "TOTLPS": round(cant * precio * (1 - dto / 100), 2), "IVALPS": iva,
@@ -170,6 +171,24 @@ def test_next_codpre_es_max_mas_uno():
 
 def test_next_codpre_arranca_en_uno_sin_presupuestos():
     assert next_codpre(_FakeFactusol(), "2026") == "1"
+
+
+def test_next_codpre_cuenta_dentro_de_su_serie():
+    """Cada serie lleva su propio contador: la 1 puede ir por el 526.080 y la 5
+    por el 5. Con el máximo GLOBAL, una proforma nueva de Streamtec salía con un
+    número altísimo que no casaba con lo que enseña el escritorio."""
+    fake = _FakeFactusol(quotes=[
+        _quote_row(526080, serie="1"), _quote_row(526079, serie="1"),
+        _quote_row(39, serie="5"), _quote_row(12, serie="2"),
+    ])
+    assert next_codpre(fake, "2026", 1) == "526081"
+    assert next_codpre(fake, "2026", 5) == "40"
+    assert next_codpre(fake, "2026", 2) == "13"
+
+
+def test_next_codpre_de_una_serie_sin_proformas_arranca_en_uno():
+    fake = _FakeFactusol(quotes=[_quote_row(526080, serie="1")])
+    assert next_codpre(fake, "2026", 4) == "1"
 
 
 # --- lectura ----------------------------------------------------------------
@@ -594,6 +613,139 @@ def test_create_quote_keeps_explicit_reference(session):
     assert fake.writes_to("F_PRE")[0]["REFPRE"] == "Pedido telefónico Marta"
 
 
+# --- clave (serie + número): CODPRE repetidos entre series --------------------
+#
+# En producción (ejercicio 2026) 69 de 692 proformas comparten CODPRE con otra
+# serie: el 1 existe en la 1, la 2, la 3 y la 5. Identificar por el número a
+# secas hacía que abrir, editar o convertir una actuara sobre otra.
+
+
+def _dos_series(codpre: int = 574):
+    """La MISMA proforma nº `codpre` en Bomedia (1) y en MQ Europe (2), cada
+    una con su línea."""
+    return _FakeFactusol(
+        quotes=[
+            {**_quote_row(codpre, serie="1", ref="La de Bomedia"), "ESTPRE": 0},
+            {**_quote_row(codpre, serie="2", ref="La de MQ Europe"), "ESTPRE": 0},
+        ],
+        lines=[
+            _line_row(codpre, 1, desc="Línea de Bomedia", serie="1"),
+            _line_row(codpre, 1, desc="Línea de MQ Europe", serie="2"),
+        ],
+        articles=[{"CODART": "NUEVO", "EQUART": ""}],
+    )
+
+
+def test_get_quote_devuelve_la_cabecera_de_la_serie_pedida(session):
+    fake = _dos_series()
+    assert get_quote(fake, session, "574", ejercicio="2026", serie=1)["referencia"] \
+        == "La de Bomedia"
+    assert get_quote(fake, session, "574", ejercicio="2026", serie=2)["referencia"] \
+        == "La de MQ Europe"
+
+
+def test_get_quote_devuelve_las_lineas_de_la_serie_pedida(session):
+    """Y no las de las dos mezcladas, que es lo que salía leyendo F_LPS por
+    `CODLPS` sin mirar `TIPLPS`."""
+    fake = _dos_series()
+    de_mq = get_quote(fake, session, "574", ejercicio="2026", serie=2)
+    assert [line["description"] for line in de_mq["lines"]] == ["Línea de MQ Europe"]
+
+
+def test_list_quote_lines_filtra_por_serie():
+    fake = _dos_series()
+    assert len(list_quote_lines(fake, "574", ejercicio="2026")) == 2       # sin serie
+    assert [line["description"]
+            for line in list_quote_lines(fake, "574", ejercicio="2026", serie=1)] \
+        == ["Línea de Bomedia"]
+
+
+def test_get_quote_devuelve_none_si_esa_serie_no_tiene_esa_proforma(session):
+    fake = _dos_series()
+    assert get_quote(fake, session, "574", ejercicio="2026", serie=5) is None
+
+
+def test_patch_quote_toca_solo_la_proforma_de_su_serie():
+    """Editar la 574 de MQ Europe no puede vaciar la 574 de Bomedia: el borrado
+    de líneas lleva la serie en el filtro."""
+    fake = _dos_series()
+    update_quote(
+        fake, "574", ejercicio="2026", serie=2,
+        customer={"codcli": "55555", "nombre": "Acme SL"},
+        lines=[{"codart": "NUEVO", "description": "Nueva", "quantity": 1,
+                "unit_price": 10}],
+        referencia="EDITADA",
+    )
+    assert fake.deletes == [("F_LPS", "TIPLPS='2' AND CODLPS='574'")]
+    cabecera = fake.updates_to("F_PRE")[0]
+    assert cabecera["TIPPRE"] == "2"          # sigue en su serie
+    assert cabecera["REFPRE"] == "EDITADA"
+    assert fake.writes_to("F_LPS")[0]["TIPLPS"] == "2"
+
+
+def test_duplicate_quote_copia_la_de_su_serie(session):
+    fake = _dos_series()
+    result = duplicate_quote(fake, session, "574", ejercicio="2026", serie=2)
+    copia = fake.writes_to("F_PRE")[0]
+    assert copia["TIPPRE"] == "2"
+    assert copia["REFPRE"] == "La de MQ Europe"
+    # Número nuevo del contador de la serie 2, no del global.
+    assert copia["CODPRE"] == "575" and result["serie"] == 2
+    assert [line["DESLPS"] for line in fake.writes_to("F_LPS")] == ["Línea de MQ Europe"]
+
+
+def test_convert_quote_to_order_usa_la_proforma_de_su_serie(session):
+    """La conversión coge las líneas de SU proforma y el pedido queda marcado
+    con la serie real (antes iba un '1' fijo, dijera lo que dijera F_PRE)."""
+    fake = _dos_series()
+    result = convert_quote_to_order(fake, session, "574", ejercicio="2026", serie=2)
+    order = session.get(Order, result["order_id"])
+    assert result["serie"] == 2
+    assert order.external_id == "2-000574"      # clave compuesta, no «574»
+    assert order.order_number == "PRO-2-000574"
+    lineas = session.scalars(
+        select(OrderLine).where(OrderLine.order_id == order.id)
+    ).all()
+    assert [line.description for line in lineas] == ["Línea de MQ Europe"]
+
+
+def test_convert_quote_to_order_de_la_serie_1_conserva_la_clave_historica(session):
+    """La serie 1 sigue guardándose con el CODPRE a secas: es la clave con la
+    que están TODAS las proformas ya convertidas, y cambiarla rompería la
+    idempotencia (la segunda conversión crearía un pedido duplicado)."""
+    fake = _dos_series()
+    result = convert_quote_to_order(fake, session, "574", ejercicio="2026", serie=1)
+    order = session.get(Order, result["order_id"])
+    assert order.external_id == "574"
+    assert order.order_number == "PRO-000574"
+    # Y sigue siendo idempotente.
+    otra_vez = convert_quote_to_order(fake, session, "574", ejercicio="2026", serie=1)
+    assert otra_vez["already_existed"] is True
+    assert otra_vez["order_id"] == result["order_id"]
+
+
+def test_convertir_las_dos_homonimas_crea_dos_pedidos(session):
+    """La 574 de Bomedia y la 574 de MQ Europe son documentos distintos: cada
+    una tiene su pedido. Antes la segunda devolvía el de la primera."""
+    fake = _dos_series()
+    uno = convert_quote_to_order(fake, session, "574", ejercicio="2026", serie=1)
+    dos = convert_quote_to_order(fake, session, "574", ejercicio="2026", serie=2)
+    assert dos["already_existed"] is False
+    assert dos["order_id"] != uno["order_id"]
+
+
+def test_una_serie_que_no_es_emisora_se_lee_igual(session):
+    """En los datos hay una serie 3 además de 1/2/4/5. No se puede CREAR en
+    ella (eso lo acota el endpoint), pero abrirla y leerla tiene que ir."""
+    fake = _FakeFactusol(
+        quotes=[{**_quote_row(7, serie="3", ref="La de la serie 3"), "ESTPRE": 0}],
+        lines=[_line_row(7, 1, desc="Línea serie 3", serie="3")],
+    )
+    quote = get_quote(fake, session, "7", ejercicio="2026", serie=3)
+    assert quote["referencia"] == "La de la serie 3"
+    assert [line["description"] for line in quote["lines"]] == ["Línea serie 3"]
+
+
 # --- serie / empresa emisora ------------------------------------------------
 
 
@@ -649,7 +801,7 @@ def test_duplicate_quote_mantiene_la_serie_en_cabecera_y_lineas(session):
     su `TIPPRE` (se copia la fila entera); las líneas iban con el '1' fijo."""
     fake = _FakeFactusol(
         quotes=[_quote_row(704, serie="2")],
-        lines=[_line_row(704, 1, desc="Cable")],
+        lines=[_line_row(704, 1, desc="Cable", serie="2")],
     )
     duplicate_quote(fake, session, "704", ejercicio="2026")
     assert fake.writes_to("F_PRE")[0]["TIPPRE"] == "2"
@@ -683,7 +835,9 @@ def test_patch_quote_updates_header_and_replaces_lines():
     # La fecha de creación no se toca al editar.
     assert "FECPRE" not in header
 
-    assert fake.deletes == [("F_LPS", "CODLPS=700")]
+    # El borrado lleva la serie: con `CODLPS=700` a secas se llevaba por
+    # delante las líneas de las proformas 700 de las DEMÁS series.
+    assert fake.deletes == [("F_LPS", "TIPLPS='1' AND CODLPS='700'")]
     written = fake.writes_to("F_LPS")
     assert len(written) == 1
     assert written[0]["DESLPS"] == "Línea nueva"

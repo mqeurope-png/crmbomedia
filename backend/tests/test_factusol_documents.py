@@ -6,6 +6,7 @@ paginación, el detalle con join compuesto y los endpoints HTTP.
 """
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Generator
 from typing import Any
@@ -536,13 +537,19 @@ def test_documents_list_links_bohub_order_for_presupuesto(
     client, session_factory,
 ) -> None:
     """Un presupuesto ya importado a BoHub trae su pedido (para «Abrir
-    pedido»); ESTPRE=1 (aceptado) pinta la pastilla en verde."""
+    pedido»); ESTPRE=1 (aceptado) pinta la pastilla en verde.
+
+    El pedido es de la serie 5 y se guardó con la clave HISTÓRICA (el CODPRE a
+    secas, de cuando el cruce no miraba la serie): se reconoce igual porque su
+    propio `factusol_source` dice de qué serie salió."""
     with session_factory() as s:
         s.add(Company(id="es", name="Duplicoder SL", country="ES",
                       tax_id="B12345678", factusol_company_id="2458"))
         s.add(Order(id="o27", order_number="PRO-000027", company_id="es",
                     external_source=OrderSource.FACTUSOL_PROFORMA,
                     external_id="27", total_amount=100.0, currency="EUR",
+                    packing_json=json.dumps({"factusol_source": {
+                        "doc_type": "presupuestos", "serie": 5, "codigo": 27}}),
                     payment_status="pending", preparation_status="pending_review"))
         s.commit()
     with _patched_factusol(FakeClient({"F_PRE": [F_PRE_27]})):
@@ -555,6 +562,31 @@ def test_documents_list_links_bohub_order_for_presupuesto(
     assert d["numero"] == "5-000027"
     assert d["order"] == {"id": "o27", "order_number": "PRO-000027"}
     assert d["estado_tone"] == "ok"  # ESTPRE=1 → aceptado
+
+
+def test_presupuesto_no_coge_el_pedido_del_homonimo_de_otra_serie(
+    client, session_factory,
+) -> None:
+    """Los CODPRE se repiten entre series (69 de 692 en producción). El
+    presupuesto 27 de Streamtec NO debe enseñar el pedido que salió del 27 de
+    Bomedia, que es lo que pasaba cruzando por el número a secas."""
+    with session_factory() as s:
+        s.add(Order(id="o27bom", order_number="PRO-000027",
+                    external_source=OrderSource.FACTUSOL_PROFORMA,
+                    external_id="27", total_amount=100.0, currency="EUR",
+                    packing_json=json.dumps({"factusol_source": {
+                        "doc_type": "presupuestos", "serie": 1, "codigo": 27}}),
+                    payment_status="pending", preparation_status="pending_review"))
+        s.commit()
+    with _patched_factusol(FakeClient({"F_PRE": [F_PRE_27]})):
+        r = client.get(
+            "/api/erp/factusol/documents/presupuestos",
+            headers=auth_headers(client, "user"),
+        )
+    assert r.status_code == 200, r.text
+    d = r.json()["items"][0]
+    assert d["numero"] == "5-000027"
+    assert d["order"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -661,7 +693,9 @@ def test_presupuestos_linked_filter_uses_imported_order(client, session_factory)
     siendo «Crear pedido»)."""
     with session_factory() as s:
         s.add(Order(id="o27", order_number="PRO-000027", total_amount=100.0, currency="EUR",
-                    external_source=OrderSource.FACTUSOL_PROFORMA, external_id="27"))
+                    external_source=OrderSource.FACTUSOL_PROFORMA, external_id="27",
+                    packing_json=json.dumps({"factusol_source": {
+                        "doc_type": "presupuestos", "serie": 5, "codigo": 27}})))
         s.commit()
     otro = {**F_PRE_27, "CODPRE": 28, "REFPRE": "REF-28"}
     with _patched_factusol(FakeClient({"F_PRE": [F_PRE_27, otro]})):

@@ -246,9 +246,13 @@ describe("Pantalla Proformas (rediseño de flujo, Fase 4)", () => {
       queue_counts: { aceptadas: 2, pendientes: 1, rechazadas: 1, convertidas: 2 },
     });
     await user.click(within(dialog).getByRole("button", { name: "Crear pedido y albarán" }));
+    // La conversión identifica la proforma por (serie, número): la 39 es de
+    // la serie 5, y esa serie viaja al endpoint.
+    // Se convierte LA PROFORMA DE SU SERIE: la 39 de la fila es de la 5, y esa
+    // serie viaja al endpoint (los CODPRE se repiten entre series).
     await waitFor(() => expect(mockConvert).toHaveBeenCalledWith("39", expect.objectContaining({
       create_albaran: true, payment: expect.objectContaining({ paid: false }),
-    })));
+    }), 5));
     const notice = await screen.findByRole("status");
     expect(notice).toHaveTextContent("Pedido PRO-000039 creado desde la proforma 39");
     expect(notice).toHaveTextContent("Albarán FACTUSOL 5-500009 creado");

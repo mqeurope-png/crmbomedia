@@ -120,16 +120,29 @@ def _f(value: Any, default: float = 0.0) -> float:
 
 
 def external_id_for(doc_type: str, serie: int, codigo: int) -> str:
-    """Proformas: el CODPRE a secas (TIPPRE es siempre '1' y así lo enseña la
-    columna «Proforma» del seguimiento). Pedidos de cliente, albaranes y
-    facturas: `serie-código` (la clave compuesta que los identifica)."""
-    if doc_type == "presupuestos":
+    """Clave con la que un pedido recuerda de qué documento FACTUSOL salió.
+
+    Pedidos de cliente, albaranes y facturas: `serie-código`, la clave compuesta
+    que los identifica.
+
+    Proformas: `serie-código` TAMBIÉN, salvo la serie 1, que conserva el CODPRE
+    a secas. El código asumía que «TIPPRE es siempre 1» y guardaba solo el
+    número, pero cada serie tiene su contador y los CODPRE se repiten (en
+    producción, 69 de 692 están en más de una serie), así que una proforma de
+    la serie 2 se confundía con la homónima de la 1. La excepción de la serie 1
+    NO es cosmética: es la clave con la que están guardadas TODAS las proformas
+    ya convertidas, y cambiarla rompería la idempotencia de la conversión (la
+    segunda vez crearía un pedido duplicado en vez de devolver el que existe).
+    Así cada serie tiene una clave propia sin tocar ni una fila histórica."""
+    if doc_type == "presupuestos" and int(serie) == 1:
         return str(int(codigo))
     return visible_number(serie, codigo)
 
 
 def order_number_for(doc_type: str, serie: int, codigo: int) -> str:
-    if doc_type == "presupuestos":
+    # Misma regla que `external_id_for`: la serie 1 conserva el `PRO-000574` de
+    # siempre y las demás llevan su serie delante, como albaranes y facturas.
+    if doc_type == "presupuestos" and int(serie) == 1:
         return f"{PREFIX_BY_DOC_TYPE[doc_type]}-{int(codigo):06d}"
     return f"{PREFIX_BY_DOC_TYPE[doc_type]}-{visible_number(serie, codigo)}"
 
@@ -138,6 +151,64 @@ def find_existing(session: Session, source: OrderSource, external_id: str) -> Or
     return session.scalar(select(Order).where(
         Order.external_source == source, Order.external_id == external_id,
     ))
+
+
+def recorded_serie(order: Order) -> int | None:
+    """Serie del documento FACTUSOL del que salió el pedido, según el bloque
+    `factusol_source` que él mismo guarda. `None` si no lo tiene."""
+    try:
+        packing = json.loads(order.packing_json or "{}")
+    except (TypeError, ValueError):
+        return None
+    bloque = packing.get("factusol_source")
+    if not isinstance(bloque, dict):
+        return None
+    try:
+        return int(bloque["serie"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def quote_external_ids(serie: int, codigo: int) -> list[str]:
+    """Los `external_id` con los que puede estar guardado el pedido de esa
+    proforma: el de ahora y, fuera de la serie 1, el HISTÓRICO —el número a
+    secas, de cuando el código daba por hecho que `TIPPRE` era siempre 1—.
+
+    La clave vieja no se adopta a ciegas: `order_is_from_quote` comprueba que
+    el pedido diga venir de esa misma serie, para no confundir la proforma 27
+    de Streamtec con la 27 de Bomedia."""
+    claves = [external_id_for("presupuestos", int(serie), int(codigo))]
+    legacy = str(int(codigo))
+    if legacy not in claves:
+        claves.append(legacy)
+    return claves
+
+
+def order_is_from_quote(order: Order, serie: int, codigo: int) -> bool:
+    """¿Este pedido salió de esa proforma (serie + número)?
+
+    Con la clave nueva basta el `external_id`. Con la histórica hay que mirar
+    la serie que el propio pedido anotó en `factusol_source`; si no anotó
+    ninguna (pedidos muy viejos) se asume la 1, que es lo que valía entonces."""
+    external_id = str(order.external_id or "")
+    if external_id == external_id_for("presupuestos", int(serie), int(codigo)):
+        return True
+    if external_id != str(int(codigo)):
+        return False
+    return (recorded_serie(order) or 1) == int(serie)
+
+
+def find_quote_order(session: Session, serie: int, codigo: int) -> Order | None:
+    """El pedido creado desde esa proforma, con la clave de ahora o la
+    histórica. `None` si no hay ninguno."""
+    rows = session.scalars(select(Order).where(
+        Order.external_source == OrderSource.FACTUSOL_PROFORMA,
+        Order.external_id.in_(quote_external_ids(serie, codigo)),
+    )).all()
+    for order in rows:
+        if order_is_from_quote(order, serie, codigo):
+            return order
+    return None
 
 
 def resolve_company_id(session: Session, codcli: Any) -> str | None:
@@ -252,7 +323,13 @@ def preview_factusol_document(
         )
     source = SOURCE_BY_DOC_TYPE[doc_type]
     external_id = external_id_for(doc_type, serie, codigo)
-    existing = find_existing(session, source, external_id)
+    # Presupuestos: por (serie, número), aceptando la clave histórica solo si
+    # el pedido dice venir de esa serie (ver `find_quote_order`).
+    existing = (
+        find_quote_order(session, int(serie), int(codigo))
+        if doc_type == "presupuestos"
+        else find_existing(session, source, external_id)
+    )
     company_id = resolve_company_id(session, doc.get("cliente_codigo"))
     company_name = (
         session.scalar(select(Company.name).where(Company.id == company_id))
@@ -336,8 +413,12 @@ def create_order_from_factusol_document(
         ejercicio=ejercicio,
     )
     if preview["already_imported"]:
-        existing = find_existing(
-            session, SOURCE_BY_DOC_TYPE[doc_type], preview["external_id"],
+        existing = (
+            find_quote_order(session, int(serie), int(codigo))
+            if doc_type == "presupuestos"
+            else find_existing(
+                session, SOURCE_BY_DOC_TYPE[doc_type], preview["external_id"],
+            )
         )
         raise AlreadyImported(existing)  # type: ignore[arg-type]
     company_id = company_id or preview["company_id"]

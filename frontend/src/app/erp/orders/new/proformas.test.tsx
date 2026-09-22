@@ -144,7 +144,7 @@ describe("Alta de pedido — buscador de proformas y precarga desde FACTUSOL", (
     // pasa por la vía «documento FACTUSOL» (nada de `previewOrderFromFactusol`,
     // ni paso de pago, ni albarán). Para convertir la proforma COMO DOCUMENTO
     // está «Convertir en pedido» en la pantalla de Proformas.
-    await waitFor(() => expect(getFactusolQuote).toHaveBeenCalledWith("574"));
+    await waitFor(() => expect(getFactusolQuote).toHaveBeenCalledWith("574", 1));
     expect(previewOrderFromFactusol).not.toHaveBeenCalled();
     expect(await screen.findByLabelText("SKU línea 1")).toHaveValue("MBO");
     expect(screen.getByLabelText("Descripción línea 2")).toHaveValue("Hora SAT");
@@ -188,7 +188,7 @@ describe("Alta de pedido — buscador de proformas y precarga desde FACTUSOL", (
     expect(await screen.findByText("Otro Cliente")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Solo conceptos" }));
 
-    await waitFor(() => expect(getFactusolQuote).toHaveBeenCalledWith("600"));
+    await waitFor(() => expect(getFactusolQuote).toHaveBeenCalledWith("600", 1));
     expect(await screen.findByLabelText("SKU línea 1")).toHaveValue("MBO");
     // El cliente sigue siendo el que eligió el comercial, no el de la proforma.
     expect(screen.getByLabelText("Empresa")).toHaveValue("Acme SL");
@@ -207,7 +207,7 @@ describe("Alta de pedido — buscador de proformas y precarga desde FACTUSOL", (
     const listado = within(screen.getByRole("list", { name: "Proformas de la empresa" }));
     await user.click(listado.getByRole("button", { name: "Cargar todo" }));
 
-    await waitFor(() => expect(getFactusolQuote).toHaveBeenCalledWith("574"));
+    await waitFor(() => expect(getFactusolQuote).toHaveBeenCalledWith("574", 1));
     expect(previewOrderFromFactusol).not.toHaveBeenCalled();
     expect(await screen.findByLabelText("SKU línea 1")).toHaveValue("MBO");
     expect(screen.getByLabelText("Empresa")).toHaveValue("Acme SL");

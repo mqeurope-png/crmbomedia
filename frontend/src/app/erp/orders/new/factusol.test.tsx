@@ -182,7 +182,7 @@ describe("Fase 1 · alta de pedido desde FACTUSOL y desde la ficha de empresa", 
     await user.type(screen.getByLabelText("Buscar proforma"), "575");
     await user.click(await screen.findByRole("button", { name: "Cargar todo" }));
 
-    await waitFor(() => expect(getFactusolQuote).toHaveBeenCalledWith("575"));
+    await waitFor(() => expect(getFactusolQuote).toHaveBeenCalledWith("575", 1));
     expect(previewOrderFromFactusol).not.toHaveBeenCalled();
     const status = await screen.findByText(/Proforma 1-000575/);
     expect(status).toHaveTextContent("NO está vinculado a ninguna empresa del CRM");

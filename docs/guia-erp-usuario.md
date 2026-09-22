@@ -428,6 +428,13 @@ sigue a nombre fiscal del cliente, solo cambia el destinatario del documento.
 > La **emisora no tiene nada que ver con el cliente**: dice desde qué empresa de
 > la casa sale el documento. Por defecto, Bomedia.
 >
+> La proforma nueva toma el **siguiente número de su propia serie**, como en el
+> escritorio de FACTUSOL: cada serie lleva su contador (la 1 va por el 526.080 y
+> la 5 por el 39), así que dos proformas de series distintas **pueden tener el
+> mismo número**. Por eso en BoHub una proforma se identifica siempre por
+> **serie + número** (el «5-000039» que ves en la lista): abrir, editar,
+> duplicar o convertir actúa sobre la de esa serie, nunca sobre su homónima.
+>
 > **Al editar una proforma la serie no se cambia** (mover un documento de serie
 > sería renumerarlo en la contabilidad): el modal enseña cuál es y ya está. Si
 > te equivocaste de emisora, crea la proforma de nuevo en la correcta.

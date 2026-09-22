@@ -99,7 +99,7 @@ describe("CompanyQuotesPanel", () => {
     await waitFor(() => expect(mockConvert).toHaveBeenCalledWith("77", expect.objectContaining({
       create_albaran: true,
       payment: expect.objectContaining({ paid: false, contrapartida: null }),
-    })));
+    }), undefined));
     const notice = await screen.findByText(/PRO-000077/);
     expect(notice).toHaveTextContent("Albarán FACTUSOL 5-500008 creado");
     expect(notice).toHaveTextContent("Sin pago: pendiente");
@@ -127,7 +127,7 @@ describe("CompanyQuotesPanel", () => {
     await user.click(confirm);
     await waitFor(() => expect(mockConvert).toHaveBeenCalledWith("77", expect.objectContaining({
       payment: expect.objectContaining({ paid: true, contrapartida: "8" }),
-    })));
+    }), undefined));
     const notice = await screen.findByText(/PRO-000077/);
     expect(notice).toHaveTextContent("El albarán NO se creó: no cuadra");
     expect(notice).toHaveTextContent("Pago apuntado");

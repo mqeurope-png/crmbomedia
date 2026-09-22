@@ -2731,10 +2731,15 @@ def _failed_status(exc_info: str) -> dict[str, Any]:
 @router.get("/quotes/{codpre}")
 def get_quote_endpoint(
     codpre: str,
+    serie: int | None = Query(default=None, ge=1, le=9),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_view),
 ) -> dict[str, Any]:
     """Una proforma con su desglose real de F_LPS (`line_source: "F_LPS"`).
+
+    La proforma se identifica por SERIE + número: en FACTUSOL la clave de
+    F_PRE es (`TIPPRE`, `CODPRE`) y los números se repiten entre series. Sin
+    `serie` (enlaces antiguos) se devuelve la única que haya con ese número.
 
     Cada línea trae `codart` (interno, `ARTLPS`) y `sku` (el comercial
     `EQUART`; None en las de texto libre) para que el modal de duplicar
@@ -2746,7 +2751,7 @@ def get_quote_endpoint(
 
     client, ejercicio = _client_and_ejercicio(session)
     try:
-        quote = get_quote(client, session, codpre, ejercicio=ejercicio)
+        quote = get_quote(client, session, codpre, ejercicio=ejercicio, serie=serie)
     except FactusolError as exc:
         raise _factusol_gateway_error(exc, "factusol_quote_failed") from exc
     if quote is None:
@@ -2989,6 +2994,7 @@ class UpdateQuotePayload(QuoteBodyPayload):
 def update_quote_endpoint(
     codpre: str,
     payload: UpdateQuotePayload,
+    serie: int | None = Query(default=None, ge=1, le=9),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_edit),
 ) -> dict[str, Any]:
@@ -3014,30 +3020,34 @@ def update_quote_endpoint(
     job_id = enqueue_update_quote(
         codpre, customer, [line.model_dump() for line in payload.lines],
         payload.referencia.strip() or None, payload.force,
-        float(payload.portes or 0),
+        float(payload.portes or 0), serie,
     )
     _audit_quote(session, current_user, "erp.factusol_quote_update", codpre,
                  {"job_id": job_id, "lines": len(payload.lines),
-                  "force": payload.force, "portes": float(payload.portes or 0),
+                  "serie": serie, "force": payload.force,
+                  "portes": float(payload.portes or 0),
                   "shipping": payload.shipping is not None})
     session.commit()
-    return {"job_id": job_id, "status": "queued", "codpre": codpre}
+    return {"job_id": job_id, "status": "queued", "codpre": codpre, "serie": serie}
 
 
 @router.post("/quotes/{codpre}/duplicate", status_code=202)
 def duplicate_quote_endpoint(
     codpre: str,
+    serie: int | None = Query(default=None, ge=1, le=9),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_edit),
 ) -> dict[str, Any]:
-    """Encola la duplicación de una proforma (CODPRE nuevo, fecha de hoy)."""
+    """Encola la duplicación de una proforma (serie + número). La copia se
+    queda en la misma serie y con el siguiente número DE ESA serie."""
     from app.integrations.factusol.jobs import enqueue_duplicate_quote  # noqa: PLC0415
 
-    job_id = enqueue_duplicate_quote(codpre)
+    job_id = enqueue_duplicate_quote(codpre, None, serie)
     _audit_quote(session, current_user, "erp.factusol_quote_duplicate",
-                 codpre, {"job_id": job_id})
+                 codpre, {"job_id": job_id, "serie": serie})
     session.commit()
-    return {"job_id": job_id, "status": "queued", "source_codpre": codpre}
+    return {"job_id": job_id, "status": "queued", "source_codpre": codpre,
+            "serie": serie}
 
 
 class ConvertQuotePayload(BaseModel):
@@ -3051,6 +3061,7 @@ class ConvertQuotePayload(BaseModel):
 def convert_quote_endpoint(
     codpre: str,
     payload: ConvertQuotePayload | None = Body(default=None),
+    serie: int | None = Query(default=None, ge=1, le=9),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_edit),
 ) -> dict[str, Any]:
@@ -3075,13 +3086,14 @@ def convert_quote_endpoint(
             }) from exc
     job_id = enqueue_convert_quote_to_order(
         codpre, current_user.id, payment=resolved,
-        create_albaran=opts.create_albaran,
+        create_albaran=opts.create_albaran, serie=serie,
     )
     _audit_quote(session, current_user, "erp.factusol_quote_convert",
                  codpre, {"job_id": job_id, "payment": resolved,
+                          "serie": serie,
                           "create_albaran": opts.create_albaran})
     session.commit()
-    return {"job_id": job_id, "status": "queued", "codpre": codpre}
+    return {"job_id": job_id, "status": "queued", "codpre": codpre, "serie": serie}
 
 
 def _audit_quote(
