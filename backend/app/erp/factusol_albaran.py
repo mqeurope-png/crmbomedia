@@ -179,11 +179,20 @@ def albaran_blocker(
 ) -> tuple[str, str] | None:
     """`(code, detail)` si el pedido NO puede tener albarán de BoHub.
 
+    - MUESTRA / envío no facturable → nunca (no pasa por FACTUSOL);
     - web → nunca (lo crea WooCommerce);
     - con documento de origen (Fase 1) → se convierte ese documento;
     - MANUAL (sin documento en FACTUSOL) → el albarán se crea desde las
       LÍNEAS del pedido (Tarea A): hace falta al menos una línea y, con
       `session`, una empresa vinculada a un cliente de F_CLI."""
+    from app.erp.sample_orders import (  # noqa: PLC0415
+        NOT_BILLABLE_CODE,
+        NOT_BILLABLE_DETAIL,
+        is_sample_order,
+    )
+
+    if is_sample_order(order):
+        return (NOT_BILLABLE_CODE, NOT_BILLABLE_DETAIL)
     if is_web_order(order):
         return (
             WebOrderNoAlbaran.code,

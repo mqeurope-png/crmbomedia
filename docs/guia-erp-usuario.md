@@ -394,6 +394,17 @@ estado.»* Botón **«+ Nueva proforma»**.
 lenguaje claro (p. ej. *«Enviada hace 41 días · sin respuesta»*), y a partir de
 30 días sin respuesta se resalta en ámbar.
 
+**Todas las empresas emisoras.** La pantalla enseña las proformas de **todas
+las series** (1 Bomedia · 2 MQ Europe · 4 Lambert · 5 Streamtec), igual que
+Documentos. El filtro **«Empresa emisora»** acota a una; **«Todas»** (por
+defecto) las muestra todas, y las colas cuentan sobre lo que se está viendo.
+
+> Antes solo se veían, en la práctica, las de la serie 1. No era un filtro: los
+> contadores de FACTUSOL son **por serie** (la 1 va por el nº 526.080 mientras
+> la 5 va por el 5), y el listado se ordenaba por número y se recortaba, así que
+> las series de numeración baja se quedaban siempre fuera. Ahora se ordena por
+> **fecha**, que es lo que de verdad interesa.
+
 Acciones por proforma:
 
 - **«Convertir en pedido»** — abre **«Convertir proforma en pedido»**. Crea el
@@ -645,6 +656,21 @@ Para encargos por teléfono, muestras o reparaciones sin ticket web.
 5. Pulsa **«Crear pedido»**. *Qué pasa:* se guarda en BoHub con nº **MANUAL-…**
    y te lleva a su ficha.
 
+**Atajo: partir de una proforma que ya existe.** En el alta, bajo
+**«Proformas FACTUSOL disponibles»**, cada proforma trae dos botones:
+
+- **«Cargar todo»** — trae **el cliente y las líneas** de la proforma (como
+  duplicarla, pero hacia un pedido).
+- **«Solo conceptos»** — trae **solo las líneas**; el cliente que ya tengas
+  elegido **no cambia**. Es lo que quieres para repetir los mismos artículos
+  con otro cliente.
+
+En ambos casos: si ya habías escrito líneas, te pregunta si **añadirlas** o
+**reemplazarlas**; las líneas quedan **editables** (cantidad, precio,
+descripción) antes de crear el pedido, y los **portes** de la proforma se
+cargan en su campo de portes, no como una línea suelta. Funciona con proformas
+de **cualquier serie**, no solo la 1.
+
 **Paso 1 — (Opcional) Proforma para cobro.** Si necesitas cobrar por
 adelantado, en la ficha (panel FACTUSOL, sección Serie) pulsa **«Crear proforma
 de cobro»**, o crea una desde **Proformas**. Envíala al cliente con **«PDF»**.
@@ -676,6 +702,39 @@ anulado sale de la bandeja, las colas y el seguimiento, y **se puede restaurar**
 con **«Restaurar pedido»**.
 
 ### C) Casos especiales
+
+**Envío de muestra / no facturable.** Para mandar una **muestra** a un cliente o
+prospecto, o un envío fuera de facturación (una pieza olvidada, un repuesto de
+cortesía, material de prueba). **No se factura**: no lleva empresa, ni albarán,
+ni factura, ni cobro — solo se prepara y se envía.
+
+Bandeja → **«+ Nuevo envío / muestra»**. El formulario es corto a propósito:
+
+1. **Destinatario** — nombre y dirección (obligatorios). **No** hace falta que
+   sea un cliente del CRM ni que esté en FACTUSOL: puede ser un prospecto.
+2. **Qué se envía** — artículos o conceptos libres, para que el taller sepa qué
+   preparar. El **precio es opcional** (0 por defecto): no se cobra.
+3. **Motivo** — por qué se manda (*«muestra»*, *«pieza olvidada del pedido
+   BOP-1234»*).
+
+*Qué pasa al guardarlo:* se crea con nº **MUESTRA-…**, **no se escribe nada en
+FACTUSOL**, y **entra directa a la Cola SAT** (no hay que aprobarla ni esperar
+a ningún pago). El taller la prepara, embala, sube etiqueta y marca recogido
+igual que cualquier otro pedido; luego se **marca completada**.
+
+En qué se nota que es distinta:
+
+- Pastilla **«Muestra · no facturable»** en la bandeja.
+- **Factura** y **Cobro** salen en **«No aplica»** (gris) y sus botones no
+  aparecen: no se puede emitir factura, crear albarán ni registrar cobro.
+- **No** entra en las colas **«Por facturar»** ni **«Por cobrar»**; sí en
+  **«Por enviar»** y en la **Cola SAT**.
+- En **Seguimiento** aparece como envío no facturable (su situación es la del
+  envío; Factura/Cobro, **«No aplica»**).
+- Se **anula** como cualquier pedido (no hay documentos de FACTUSOL que borrar).
+
+**Quién puede crearla:** Comercial, ERP Pedidos, **ERP Taller (SAT)** y
+Administración — el taller también manda muestras, no solo las prepara.
 
 **Cliente intracomunitario (factura sin IVA).** Si la empresa es de otro país de
 la UE **con un NIF-IVA válido**, su régimen es **intracomunitario** y la factura

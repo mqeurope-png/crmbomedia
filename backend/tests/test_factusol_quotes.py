@@ -121,9 +121,9 @@ class _FakeFactusol:
 
 
 def _quote_row(codpre: int, *, clipre="55555", fecha="2026-08-01",
-               ref="Proforma de prueba", total=121.0) -> dict[str, Any]:
+               ref="Proforma de prueba", total=121.0, serie="1") -> dict[str, Any]:
     return {
-        "CODPRE": codpre, "TIPPRE": "1", "REFPRE": ref,
+        "CODPRE": codpre, "TIPPRE": serie, "REFPRE": ref,
         "FECPRE": f"{fecha}T00:00:00", "CLIPRE": clipre,
         "CNOPRE": "Acme SL", "CDOPRE": "C/ Mayor 1", "CPOPRE": "Madrid",
         "CCPPRE": "28001", "CPRPRE": "Madrid", "CNIPRE": "B12345678",
@@ -1028,3 +1028,38 @@ def test_skus_for_codarts_traduce_en_lote():
         "99cy": "Ink500mlCY", "1712": "CAB-HDMI",
     }
     assert skus_for_codarts(fake, [], ejercicio="2026") == {}
+
+
+# --- series (empresa emisora): la pantalla Proformas las enseñaba todas menos
+# la 1 porque el recorte por CODPRE se las comía -------------------------------
+
+
+def test_list_quotes_filtra_por_serie():
+    """`serie` acota a una empresa emisora; sin él salen todas (como en
+    Documentos)."""
+    fake = _FakeFactusol(quotes=[
+        _quote_row(500, serie="1"),
+        _quote_row(7, serie="5"),
+        _quote_row(3, serie="2"),
+    ])
+    todas = list_quotes(fake, ejercicio="2026", days_back=0)
+    assert {q["codpre"] for q in todas} == {"500", "7", "3"}
+
+    solo5 = list_quotes(fake, ejercicio="2026", days_back=0, serie=5)
+    assert [q["codpre"] for q in solo5] == ["7"]
+    assert list_quotes(fake, ejercicio="2026", days_back=0, serie=9) == []
+
+
+def test_list_quotes_no_starva_las_series_de_numeracion_baja():
+    """El bug de la pantalla Proformas: los contadores CODPRE son POR SERIE, así
+    que ordenar por CODPRE y recortar dejaba fuera SIEMPRE a las series 2/4/5
+    (números bajos) aunque fueran más recientes. Se ordena por FECHA."""
+    fake = _FakeFactusol(quotes=[
+        # Serie 1 con números altísimos pero ANTIGUAS.
+        _quote_row(526080, serie="1", fecha="2026-01-01"),
+        _quote_row(526081, serie="1", fecha="2026-01-02"),
+        # Serie 5 con número bajo pero RECIENTE: no puede quedarse fuera.
+        _quote_row(5, serie="5", fecha="2026-08-01"),
+    ])
+    items = list_quotes(fake, ejercicio="2026", days_back=0, limit=2)
+    assert [q["codpre"] for q in items] == ["5", "526081"]

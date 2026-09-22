@@ -32,7 +32,14 @@ export type OrderStatusGridInput = {
   transport_status?: string | null;
   /** «No requiere envío»: el envío no aplica (gris), no cuenta como pendiente. */
   shipping_not_required?: boolean;
+  /** `"sample"` = muestra / envío NO facturable: Factura y Cobro no aplican. */
+  order_kind?: string | null;
 };
+
+/** ¿Es una muestra / envío no facturable? (no lleva factura ni cobro). */
+export function isSampleOrder(o: { order_kind?: string | null }): boolean {
+  return (o.order_kind || "") === "sample";
+}
 
 export type StatusCell = {
   key: StatusCellKey;
@@ -88,6 +95,12 @@ function factura(o: OrderStatusGridInput): StatusCell {
   const base = { key: "factura" as const, label: "Factura" };
   const facturado = isInvoiced(o);
   const legacyLabel = `Facturado: ${facturado ? "sí" : "no"}`;
+  if (isSampleOrder(o)) {
+    return {
+      ...base, state: "na", value: "No aplica",
+      title: "Muestra / envío no facturable: no lleva factura.", legacyLabel,
+    };
+  }
   if (facturado) {
     return {
       ...base, state: "done", value: "Emitida",
@@ -108,6 +121,13 @@ function cobro(o: OrderStatusGridInput): StatusCell {
   const base = { key: "cobro" as const, label: "Cobro" };
   const cobrado = o.factusol_cobro_status === "cobrada";
   const legacyLabel = `Cobro registrado: ${cobrado ? "sí" : "no"}`;
+  if (isSampleOrder(o)) {
+    return {
+      ...base, state: "na", value: "No aplica",
+      title: "Muestra / envío no facturable: no hay cobro que registrar.",
+      legacyLabel,
+    };
+  }
   if (cobrado) {
     return { ...base, state: "done", value: "Cobrado", title: "El cobro de la factura consta registrado en FACTUSOL.", legacyLabel };
   }

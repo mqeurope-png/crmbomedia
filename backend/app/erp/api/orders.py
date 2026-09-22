@@ -25,6 +25,7 @@ from app.erp.api.deps import (
     require_erp_approve,
     require_erp_edit,
     require_erp_view,
+    require_samples_create,
     require_sat_tracking,
 )
 from app.erp.factusol_albaran import MANUAL_SERIES, PaymentIn
@@ -343,6 +344,9 @@ def _serialise_summary(
         # «No requiere envío» (SAT opcional): fuera de la Cola SAT y de «Por
         # enviar»; la casilla/hito de Envío pasa a «No aplica». Reversible.
         "shipping_not_required": bool(o.shipping_not_required),
+        # Tipo de pedido cuando no es el corriente: `sample` = muestra / envío
+        # NO FACTURABLE (sin albarán, factura ni cobro). null = pedido normal.
+        "order_kind": o.order_kind,
     }
 
 
@@ -772,6 +776,128 @@ def _next_manual_number(session: Session) -> str:
         if suffix.isdigit():
             top = max(top, int(suffix))
     return f"{MANUAL_ORDER_PREFIX}{top + 1:0{MANUAL_ORDER_PAD}d}"
+
+
+class SampleOrderCreate(BaseModel):
+    """Alta de una MUESTRA / envío no facturable.
+
+    Formulario propio y simplificado: basta con a quién se le manda y qué. No
+    pide empresa vinculada a FACTUSOL, ni serie, ni NIF — este pedido no se
+    factura y no toca FACTUSOL."""
+
+    #: Destinatario: nombre obligatorio (la dirección va aparte).
+    recipient_name: str = Field(min_length=1, max_length=120)
+    shipping_address: AddressIn
+    #: Vincular empresa/contacto del CRM es OPCIONAL (una muestra puede ir a un
+    #: prospecto que aún no es cliente).
+    contact_id: str | None = None
+    company_id: str | None = None
+    #: Por qué se manda («muestra», «pieza olvidada del pedido X»…).
+    reason: str | None = Field(default=None, max_length=500)
+    notes: str | None = None
+    #: Qué se envía. El precio es opcional (0 por defecto): sirve para saber
+    #: qué sale del almacén, no para cobrar.
+    lines: list[OrderLineIn] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _require_address(self) -> SampleOrderCreate:
+        if self.shipping_address.is_empty():
+            raise ValueError(
+                "Una muestra necesita dirección de envío: es un envío, no un pedido."
+            )
+        return self
+
+
+def _sample_packing_json(payload: SampleOrderCreate) -> str:
+    """Dirección + motivo de la muestra → `packing_json` (igual que el alta
+    manual: el pedido no tiene columnas de dirección)."""
+    from app.erp.sample_orders import SAMPLE_REASON_KEY  # noqa: PLC0415
+
+    data: dict[str, Any] = {"shipping_address": payload.shipping_address.model_dump()}
+    if (payload.reason or "").strip():
+        data[SAMPLE_REASON_KEY] = payload.reason.strip()
+    return json.dumps(data)
+
+
+@router.post("/sample", status_code=201)
+def create_sample_order(
+    payload: SampleOrderCreate,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_samples_create),
+) -> dict[str, Any]:
+    """Alta de una MUESTRA / envío no facturable (`MUESTRA-000001`).
+
+    No exige empresa, serie ni NIF y **no escribe nada en FACTUSOL**: no habrá
+    albarán, factura ni cobro (esos pasos salen «No aplica»). Entra DIRECTO a
+    la Cola SAT: lo único que queda es prepararlo y enviarlo.
+
+    Lo pueden crear Comercial, ERP Pedidos, ERP SAT y Admin — el taller también
+    manda muestras, no solo las prepara."""
+    from app.core.audit import record_event  # noqa: PLC0415
+    from app.erp.sample_orders import ORDER_KIND_SAMPLE, next_sample_number  # noqa: PLC0415
+
+    number = next_sample_number(session)
+    if session.scalar(select(Order.id).where(Order.order_number == number)):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"order_number ya existe: {number!r}",
+        )
+    total = 0.0
+    order = Order(
+        # El ORIGEN sigue siendo «a mano»; lo que la hace no facturable es
+        # `order_kind`, que es ortogonal al origen.
+        external_source=OrderSource.MANUAL,
+        order_kind=ORDER_KIND_SAMPLE,
+        order_number=number,
+        contact_id=payload.contact_id,
+        company_id=payload.company_id,
+        currency="EUR",
+        notes=payload.notes,
+        placed_at=datetime.now(UTC),
+        packing_json=_sample_packing_json(payload),
+        shipping_name=payload.recipient_name.strip(),
+    )
+    session.add(order)
+    session.flush()
+    for i, line in enumerate(payload.lines):
+        line_total = round(line.quantity * line.unit_price, 2)
+        total += line_total
+        session.add(OrderLine(
+            order_id=order.id, position=i,
+            product_sku=line.product_sku, product_codart=line.product_codart,
+            description=line.description or line.product_sku,
+            quantity=line.quantity, unit_price=line.unit_price,
+            # Una muestra no se factura: sin IVA que repercutir.
+            tax_rate=0, line_total=line_total, notes=line.notes,
+            is_shipping=line.is_shipping,
+        ))
+    order.total_amount = round(total, 2)
+    session.add(OrderStatusHistory(
+        order_id=order.id, domain=StatusDomain.PREPARATION,
+        from_status=None, to_status=_status_value(order.preparation_status),
+        changed_at=datetime.now(UTC), changed_by_user_id=current_user.id,
+        reason="Muestra / envío no facturable creado desde el ERP",
+        metadata_json=json.dumps({
+            "event": "sample_order_created",
+            "created_by_user_id": current_user.id,
+            "recipient": order.shipping_name,
+        }),
+    ))
+    session.flush()
+    # Entra DIRECTO a la Cola SAT: no hay puerta de facturación que esperar.
+    from app.erp.sat_autoenqueue import enqueue_paid_order  # noqa: PLC0415
+
+    enqueue_paid_order(session, order, actor=current_user)
+    record_event(
+        session, action="erp.sample_order_created", target_type="order",
+        target_id=order.id, actor=current_user,
+        metadata={"order_number": order.order_number,
+                  "recipient": order.shipping_name},
+        message=f"Muestra {order.order_number} creada para «{order.shipping_name}»",
+    )
+    session.commit()
+    return _serialise_detail(session, _get_order(session, order.id, current_user),
+                            current_user)
 
 
 def _manual_packing_json(payload: OrderCreate) -> str | None:
@@ -2239,7 +2365,11 @@ def emit_factusol_invoice(
     """Encola la emisión REAL de la factura en FACTUSOL (cola serializada
     `factusol:writes`). Rechaza doble facturación. El cuerpo es opcional: sin
     él se emite con las opciones por defecto (tipo '1', fecha de hoy)."""
+    from app.erp.sample_orders import reject_if_sample  # noqa: PLC0415
+
     order = _get_order(session, order_id, current_user)
+    # Una muestra no se factura (no pasa por FACTUSOL).
+    reject_if_sample(order)
     inv = _status_value(order.invoice_status)
     if order.factusol_invoice_number or inv == InvoiceStatus.INVOICED_BY_ERP.value:
         raise HTTPException(status.HTTP_409_CONFLICT, {

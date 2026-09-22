@@ -400,32 +400,78 @@ export default function NewManualOrderPage() {
   /** C-4: vuelca el desglose de una proforma en las líneas del pedido.
    *  Si la proforma se hizo en el FACTUSOL de escritorio no hay desglose
    *  (F_PRE es mono-línea) y llega una única línea con su texto e importe. */
-  async function loadQuoteLines(codpre: string) {
+  /** Carga una proforma existente en el alta.
+   *
+   *  `mode`:
+   *   - `"all"`    → cliente + líneas (como duplicar, pero hacia un pedido).
+   *   - `"lines"`  → SOLO los conceptos; el cliente que ya hubiera elegido el
+   *     comercial NO se toca (reutilizar los mismos artículos con otro cliente).
+   *
+   *  Si ya hay líneas escritas se pregunta si añadir o reemplazar. Los portes
+   *  de la proforma van a su campo de portes, no a una línea. Las líneas
+   *  quedan editables antes de crear el pedido. */
+  async function loadQuoteIntoForm(quote: FactusolQuote, mode: "all" | "lines") {
+    const codpre = quote.codpre ?? "";
+    if (!codpre) return;
+    const hasLines = lines.some((l) => l.description.trim() || l.sku.trim());
+    let replace = false;
+    if (hasLines) {
+      replace = window.confirm(
+        `Ya hay líneas en el pedido.\n\n`
+        + `Aceptar = REEMPLAZARLAS por las de la proforma ${codpre}.\n`
+        + `Cancelar = AÑADIRLAS a las que ya hay.`,
+      );
+    }
     setLoadingQuote(codpre);
     setQuoteNotice(null);
     try {
-      const quote = await getFactusolQuote(codpre);
-      const rows: DocumentLine[] = (quote.lines ?? []).map((l) => emptyDocumentLine({
+      const full = await getFactusolQuote(codpre);
+      const rows: DocumentLine[] = (full.lines ?? []).map((l) => emptyDocumentLine({
         sku: l.codart ?? "",
         description: l.description,
         quantity: String(l.quantity),
         unit_price: String(l.unit_price),
       }));
       const fallback: DocumentLine[] = [emptyDocumentLine({
-        description: quote.referencia || `Proforma ${codpre}`,
-        unit_price: String(quote.base),
+        description: full.referencia || `Proforma ${codpre}`,
+        unit_price: String(full.base),
       })];
       const next = rows.length > 0 ? rows : fallback;
-      // Se AÑADEN a lo que ya haya, descartando las filas vacías del inicio.
       setLines((prev) => {
+        if (replace) return next;
         const kept = prev.filter((l) => l.description.trim() || l.sku.trim());
         return [...kept, ...next];
       });
+      // Los portes de la cabecera van a SU campo (no a una línea): si no, al
+      // crear el pedido se duplicarían con la línea de portes que arma `submit`.
+      const portes = full.portes ?? quote.portes ?? 0;
+      if (portes > 0) setPortes(String(portes));
+
+      const partes: string[] = [];
+      if (mode === "all") {
+        const empresa = quote.company ?? full.company ?? null;
+        if (empresa) {
+          setCompanyId(empresa.id);
+          setCompanyQuery(empresa.name);
+          partes.push(`cliente «${empresa.name}»`);
+        } else {
+          partes.push(
+            `su cliente (${quote.cliente_nombre || "sin nombre"}) NO está `
+            + "vinculado a ninguna empresa del CRM: elígelo a mano",
+          );
+        }
+      }
+      partes.push(
+        `${next.length} línea${next.length === 1 ? "" : "s"} `
+        + `${replace ? "reemplazadas" : "añadidas"}`,
+      );
+      if (portes > 0) partes.push(`portes ${portes} €`);
       setQuoteNotice(
-        quote.line_source === "cache"
-          ? `Cargadas ${next.length} líneas de la proforma ${codpre}.`
-          : `La proforma ${codpre} se creó en FACTUSOL de escritorio: se ha `
-            + "cargado como una línea única, revisa el importe.",
+        `Proforma ${quote.numero || codpre}: ${partes.join(" · ")}.`
+        + (full.line_source && full.line_source !== "F_LPS" && rows.length === 0
+          ? " Se creó en FACTUSOL de escritorio: ha entrado como una línea"
+            + " única, revisa el importe."
+          : ""),
       );
     } catch (e) {
       setQuoteNotice(extractErrorMessage(e, "No se pudo cargar la proforma."));
@@ -1153,7 +1199,13 @@ export default function NewManualOrderPage() {
                     companyId={companyId}
                     busy={facLoading}
                     onPick={(q) => {
-                      if (q.codpre) void loadFactusolDocument("presupuestos", 1, Number(q.codpre));
+                      if (!q.codpre) return;
+                      // La SERIE es la de la proforma, no siempre la 1: con el
+                      // 1 fijo, una proforma de MQ Europe / Lambert / Streamtec
+                      // daba «documento no encontrado».
+                      void loadFactusolDocument(
+                        "presupuestos", q.serie || 1, Number(q.codpre),
+                      );
                     }}
                   />
                 ) : (
@@ -1212,11 +1264,20 @@ export default function NewManualOrderPage() {
                           nº {q.codpre} · {q.fecha ?? "—"} ·{" "}
                           {q.total.toFixed(2)} € · {q.referencia || "—"}
                         </span>
-                        <button type="button" className="button small"
-                                disabled={loadingQuote !== null}
-                                onClick={() => loadQuoteLines(q.codpre ?? "")}>
-                          {loadingQuote === q.codpre ? "Cargando…" : "Cargar líneas al pedido"}
-                        </button>
+                        <span className="erp-quote-actions">
+                          <button type="button" className="button small secondary"
+                                  disabled={loadingQuote !== null}
+                                  title="Añade solo los conceptos; el cliente que tengas elegido no cambia."
+                                  onClick={() => void loadQuoteIntoForm(q, "lines")}>
+                            {loadingQuote === q.codpre ? "Cargando…" : "Solo conceptos"}
+                          </button>
+                          <button type="button" className="button small"
+                                  disabled={loadingQuote !== null}
+                                  title="Trae el cliente de la proforma y sus líneas."
+                                  onClick={() => void loadQuoteIntoForm(q, "all")}>
+                            {loadingQuote === q.codpre ? "Cargando…" : "Cargar todo"}
+                          </button>
+                        </span>
                       </li>
                     ))}
                   </ul>

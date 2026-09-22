@@ -16,6 +16,7 @@ export const Cap = {
   ORDERS_CREATE: "erp.orders.create",
   ORDERS_APPROVE: "erp.orders.approve",
   ORDERS_CANCEL: "erp.orders.cancel",
+  SAMPLES_CREATE: "erp.samples.create",
   ALBARAN_CREATE: "erp.albaran.create",
   INVOICE_EMIT: "erp.invoice.emit",
   COBRO_REGISTER: "erp.cobro.register",
@@ -47,6 +48,7 @@ const COMERCIAL_CAPS: ReadonlyArray<string> = [
   Cap.ACCESS, Cap.ORDERS_CREATE, Cap.ORDERS_APPROVE, Cap.ORDERS_CANCEL,
   Cap.ALBARAN_CREATE, Cap.INVOICE_EMIT, Cap.EMAIL_SAT, Cap.EMAIL_CLIENT,
   Cap.PROFORMAS, Cap.DOCUMENTS, Cap.COMPANIES, Cap.SAT_VIEW, Cap.SAT_SHIPPING,
+  Cap.SAMPLES_CREATE,
 ];
 const PEDIDOS_CAPS: ReadonlyArray<string> = [
   ...COMERCIAL_CAPS,
@@ -56,6 +58,8 @@ const PEDIDOS_CAPS: ReadonlyArray<string> = [
 const SAT_CAPS: ReadonlyArray<string> = [
   Cap.ACCESS, Cap.ORDERS_VIEW_WEB, Cap.SAT_VIEW, Cap.SAT_PREPARE,
   Cap.SAT_SHIPPING, Cap.SAT_TRACKING, Cap.SAT_NO_SHIPPING, Cap.EMAIL_SAT,
+  // El taller también DA DE ALTA muestras, no solo las prepara.
+  Cap.SAMPLES_CREATE,
 ];
 /** Legacy `manager`/`user`: solo lectura del ERP (reasignar a `comercial`). */
 const USER_CAPS: ReadonlyArray<string> = [

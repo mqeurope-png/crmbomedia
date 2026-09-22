@@ -142,6 +142,10 @@ export type OrderSummary = {
   /** «No requiere envío» (SAT opcional): fuera de la Cola SAT y de «Por
    *  enviar»; la casilla/hito de Envío pasa a «No aplica». Reversible. */
   shipping_not_required?: boolean;
+  /** Tipo de pedido cuando no es el corriente. `"sample"` = MUESTRA / envío
+   *  NO FACTURABLE: sin albarán, factura ni cobro (esas casillas salen «No
+   *  aplica») y no entra en «Por facturar» ni «Por cobrar». null = normal. */
+  order_kind?: string | null;
   /** Fase 2: nº del albarán FACTUSOL (`5-500008`) creado por BoHub al
    *  convertir la proforma / pedido de cliente. Los pedidos web no lo llevan. */
   factusol_albaran_number?: string | null;
@@ -1037,22 +1041,55 @@ export type OrderCreatePayload = {
   /** Fase 2 (solo con `factusol_source`): paso de pago y albarán en FACTUSOL. */
   payment?: PaymentIntentInput | null;
   create_albaran?: boolean;
-  lines: {
-    product_sku: string;
-    product_codart?: string | null;
-    description?: string;
-    quantity: number;
-    unit_price: number;
-    tax_rate?: number;
-    /** Portes: línea aparte que el backend manda a los portes del documento. */
-    is_shipping?: boolean;
-  }[];
+  lines: OrderLinePayload[];
+};
+
+/** Línea de un alta de pedido (manual o muestra). Al menos SKU o descripción. */
+export type OrderLinePayload = {
+  product_sku: string;
+  product_codart?: string | null;
+  description?: string;
+  quantity: number;
+  unit_price: number;
+  tax_rate?: number;
+  /** Portes: línea aparte que el backend manda a los portes del documento. */
+  is_shipping?: boolean;
 };
 
 export async function createOrder(
   payload: OrderCreatePayload,
 ): Promise<OrderDetail & AlbaranJobExtra> {
   return apiFetch<OrderDetail & AlbaranJobExtra>("/api/erp/orders", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+/** Alta de una MUESTRA / envío NO FACTURABLE (`MUESTRA-000001`).
+ *
+ *  No pide empresa, serie ni NIF y no toca FACTUSOL: no habrá albarán, factura
+ *  ni cobro. Entra directa a la Cola SAT — solo queda prepararla y enviarla.
+ *  La pueden crear Comercial, ERP Pedidos, ERP SAT y Admin. */
+export type SampleOrderPayload = {
+  recipient_name: string;
+  shipping_address: {
+    address_line?: string | null;
+    city?: string | null;
+    postal_code?: string | null;
+    state?: string | null;
+    country?: string | null;
+  };
+  contact_id?: string | null;
+  company_id?: string | null;
+  reason?: string | null;
+  notes?: string | null;
+  lines: OrderLinePayload[];
+};
+
+export async function createSampleOrder(
+  payload: SampleOrderPayload,
+): Promise<OrderDetail> {
+  return apiFetch<OrderDetail>("/api/erp/orders/sample", {
     method: "POST",
     body: JSON.stringify(payload),
   });
@@ -3070,7 +3107,11 @@ export type QuotesListing = {
 };
 
 export async function listFactusolQuotes(
-  opts: { company_id?: string; days_back?: number; queue?: QuoteQueue; limit?: number } = {},
+  opts: {
+    company_id?: string; days_back?: number; queue?: QuoteQueue; limit?: number;
+    /** Serie = empresa emisora. Omitir = TODAS (como en Documentos). */
+    serie?: number;
+  } = {},
 ): Promise<QuotesListing> {
   return apiFetch(`/api/erp/factusol/quotes${qs(opts)}`);
 }

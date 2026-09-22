@@ -10858,6 +10858,8 @@ tr.is-inactive {
 .erp-quotes-inline { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; align-items: flex-start; }
 .erp-quote-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; width: 100%; }
 .erp-quote-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--r-control); background: #f8fafc; font-size: var(--fs-body); }
+/* Los dos modos de carga de una proforma: «Solo conceptos» / «Cargar todo». */
+.erp-quote-actions { display: flex; gap: 6px; flex-shrink: 0; }
 /* C-4-fix1: SKU comercial · descripción · precio en 3 columnas. */
 .erp-article-hit { display: grid; grid-template-columns: minmax(90px, auto) 1fr auto; gap: 12px; align-items: baseline; width: 100%; text-align: left; padding: 8px; border: 0; background: none; font: inherit; cursor: pointer; }
 .erp-article-hit:hover { background: #f1f5f9; }
@@ -11366,6 +11368,13 @@ tr.is-inactive {
 }
 .erp-flow-src.is-woo { color: var(--st-purple-ink); background: var(--st-purple-bg); }
 .erp-flow-src.is-man { color: var(--st-teal-ink); background: var(--st-teal-bg); }
+/* Muestra / envío NO facturable: se distingue de un vistazo de los pedidos
+   que sí pasan por facturación. */
+.erp-flow-src.is-sample {
+  color: var(--st-amber-ink, var(--muted));
+  background: var(--st-amber-bg, var(--bg));
+  border: 1px solid var(--line);
+}
 .erp-flow-item-side {
   display: flex;
   flex-direction: column;
