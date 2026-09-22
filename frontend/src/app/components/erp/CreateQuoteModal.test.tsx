@@ -16,6 +16,8 @@ import {
 
 jest.mock("../../lib/companiesApi", () => ({ listCompanies: jest.fn() }));
 jest.mock("../../lib/erpApi", () => ({
+  // El selector de empresa emisora usa la misma lista que el pedido manual.
+  FACTUSOL_SERIES: jest.requireActual("../../lib/erpApi").FACTUSOL_SERIES,
   createFactusolQuote: jest.fn(),
   updateFactusolQuote: jest.fn(),
   getFactusolQuote: jest.fn(),
@@ -561,6 +563,101 @@ describe("CreateQuoteModal", () => {
 
     await waitFor(() => expect(mockCreate).toHaveBeenCalled());
     expect(mockCreate.mock.calls[0][0].referencia).toBe("PROY-2026-42");
+  });
+
+  // --- serie / empresa emisora ---------------------------------------------
+
+  it("ofrece las cuatro empresas emisoras y arranca en Bomedia", async () => {
+    render(<CreateQuoteModal {...base()} />);
+    const selector = screen.getByLabelText("Empresa emisora (serie)");
+    expect(selector).toHaveValue("1");
+    expect(
+      within(selector).getAllByRole("option").map((o) => o.textContent),
+    ).toEqual(["1 · Bomedia", "2 · MQ Europe", "4 · Lambert", "5 · Streamtec"]);
+  });
+
+  it("la empresa emisora elegida viaja en el payload", async () => {
+    const user = userEvent.setup();
+    render(<CreateQuoteModal {...base()} />);
+
+    await user.selectOptions(screen.getByLabelText("Empresa emisora (serie)"), "2");
+    await user.type(screen.getByLabelText("Descripción línea 1"), "Vinilo");
+    await user.type(screen.getByLabelText("Precio línea 1"), "100");
+    await user.click(screen.getByRole("button", { name: "Crear proforma" }));
+
+    await waitFor(() => expect(mockCreate).toHaveBeenCalled());
+    expect(mockCreate.mock.calls[0][0].serie).toBe(2);
+  });
+
+  it("sin tocar el selector, la proforma se crea en la serie 1", async () => {
+    const user = userEvent.setup();
+    render(<CreateQuoteModal {...base()} />);
+    await user.type(screen.getByLabelText("Descripción línea 1"), "Vinilo");
+    await user.type(screen.getByLabelText("Precio línea 1"), "100");
+    await user.click(screen.getByRole("button", { name: "Crear proforma" }));
+
+    await waitFor(() => expect(mockCreate).toHaveBeenCalled());
+    expect(mockCreate.mock.calls[0][0].serie).toBe(1);
+  });
+
+  it("duplicar: la copia parte de la empresa emisora de la plantilla", async () => {
+    mockGetQuote.mockResolvedValue({
+      ...quote({ codpre: "39" }), tippre: "5", line_source: "F_LPS",
+      lines: [{ position: 1, codart: "MBO", sku: "MBO", description: "Cabezal",
+                quantity: 1, unit_price: 250, discount_pct: 0,
+                line_total: 250, iva_pct: 21 }],
+    });
+    const user = userEvent.setup();
+    render(<CreateQuoteModal {...base({ duplicateSource: quote({ codpre: "39" }) })} />);
+
+    // La vista previa dice de qué emisora es la plantilla…
+    const preview = await screen.findByRole("region", { name: "Plantilla nº 39" });
+    expect(preview).toHaveTextContent("emisora Streamtec");
+    // …y al usarla, el selector la hereda (sin quedarse en Bomedia).
+    await user.click(within(preview).getByRole("button", { name: "Usar como plantilla" }));
+    expect(screen.getByLabelText("Empresa emisora (serie)")).toHaveValue("5");
+
+    await user.click(screen.getByRole("button", { name: "Crear proforma" }));
+    await waitFor(() => expect(mockCreate).toHaveBeenCalled());
+    expect(mockCreate.mock.calls[0][0].serie).toBe(5);
+  });
+
+  it("duplicar: la emisora heredada se puede cambiar antes de crear", async () => {
+    mockGetQuote.mockResolvedValue({
+      ...quote({ codpre: "39" }), tippre: "5", line_source: "F_LPS",
+      lines: [{ position: 1, codart: "MBO", sku: "MBO", description: "Cabezal",
+                quantity: 1, unit_price: 250, discount_pct: 0,
+                line_total: 250, iva_pct: 21 }],
+    });
+    const user = userEvent.setup();
+    render(<CreateQuoteModal {...base({ duplicateSource: quote({ codpre: "39" }) })} />);
+
+    await user.click(await screen.findByRole("button", { name: "Usar como plantilla" }));
+    await user.selectOptions(screen.getByLabelText("Empresa emisora (serie)"), "2");
+    await user.click(screen.getByRole("button", { name: "Crear proforma" }));
+
+    await waitFor(() => expect(mockCreate).toHaveBeenCalled());
+    expect(mockCreate.mock.calls[0][0].serie).toBe(2);
+  });
+
+  it("al EDITAR no se elige serie: se enseña la de la proforma y no viaja al PATCH", async () => {
+    mockGetQuote.mockResolvedValue({
+      ...quote({ codpre: "574" }), referencia: "REF", line_source: "F_LPS",
+      serie: 5, tippre: "5",
+      lines: [{ position: 1, codart: "MBO", description: "Cabezal MBO",
+                quantity: 1, unit_price: 250, discount_pct: 0,
+                line_total: 250, iva_pct: 21 }],
+    });
+    const user = userEvent.setup();
+    render(<CreateQuoteModal {...base({ editCodpre: "574" })} />);
+
+    expect(await screen.findByText(/Empresa emisora:/))
+      .toHaveTextContent("5 · Streamtec");
+    expect(screen.queryByLabelText("Empresa emisora (serie)")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Guardar cambios" }));
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
+    expect(mockUpdate.mock.calls[0][1]).not.toHaveProperty("serie");
   });
 
   it("la columna DTO recalcula el total de la línea y viaja al payload", async () => {

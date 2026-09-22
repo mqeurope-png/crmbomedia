@@ -4,6 +4,7 @@ La cola RQ y el cliente FACTUSOL se mockean: sin Redis ni red.
 """
 from __future__ import annotations
 
+import json
 from collections.abc import Generator
 from typing import Any
 from unittest.mock import patch
@@ -268,6 +269,65 @@ def test_create_quote_encola_y_audita(client, session_factory):
         audits = list(s.scalars(select(AuditLog).where(
             AuditLog.action == "erp.factusol_quote_create")))
         assert len(audits) == 1
+
+
+def test_create_quote_sin_serie_usa_bomedia(client, session_factory):
+    """Compatibilidad: un cuerpo sin `serie` crea en la 1, como siempre."""
+    with session_factory() as s:
+        cid = _company(s)
+    with patch("app.integrations.factusol.jobs.enqueue_create_quote",
+               return_value="job-q0") as enq:
+        client.post("/api/erp/factusol/quotes",
+                    headers=auth_headers(client, "pedidos"),
+                    json={"company_id": cid, "referencia": "Sin serie"})
+    assert enq.call_args.args[6] == 1
+
+
+@pytest.mark.parametrize("serie", [1, 2, 4, 5])
+def test_create_quote_respeta_la_serie_elegida(client, session_factory, serie):
+    """La empresa emisora elegida llega al job (y queda en la auditoría)."""
+    with session_factory() as s:
+        cid = _company(s)
+    with patch("app.integrations.factusol.jobs.enqueue_create_quote",
+               return_value="job-q2") as enq:
+        r = client.post("/api/erp/factusol/quotes",
+                        headers=auth_headers(client, "pedidos"),
+                        json={"company_id": cid, "serie": serie,
+                              "lines": [{"description": "Cable", "quantity": 1,
+                                         "unit_price": 10}]})
+    assert r.status_code == 202, r.text
+    assert enq.call_args.args[6] == serie
+    with session_factory() as s:
+        audit = s.scalars(select(AuditLog).where(
+            AuditLog.action == "erp.factusol_quote_create")).one()
+        assert json.loads(audit.metadata_json)["serie"] == serie
+
+
+@pytest.mark.parametrize("serie", [3, 9, 0, -1])
+def test_create_quote_422_si_la_serie_no_es_una_emisora(client, session_factory, serie):
+    """Solo las cuatro empresas emisoras reales (1, 2, 4, 5)."""
+    with session_factory() as s:
+        cid = _company(s)
+    r = client.post("/api/erp/factusol/quotes",
+                    headers=auth_headers(client, "pedidos"),
+                    json={"company_id": cid, "referencia": "X", "serie": serie})
+    assert r.status_code == 422, r.text
+
+
+def test_patch_quote_ignora_la_serie(client, session_factory):
+    """La serie de una proforma que ya existe no se cambia al editarla: el
+    cuerpo de la edición ni siquiera la declara (el job conserva su TIPPRE)."""
+    with session_factory() as s:
+        cid = _company(s)
+    with patch("app.integrations.factusol.jobs.enqueue_update_quote",
+               return_value="job-u9") as enq:
+        r = client.patch("/api/erp/factusol/quotes/700",
+                         headers=auth_headers(client, "pedidos"),
+                         json={"company_id": cid, "serie": 5,
+                               "lines": [{"description": "Cable", "quantity": 1,
+                                          "unit_price": 10}]})
+    assert r.status_code == 202, r.text
+    assert 5 not in enq.call_args.args
 
 
 def test_create_quote_409_si_la_empresa_no_esta_vinculada(client, session_factory):

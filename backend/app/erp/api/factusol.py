@@ -25,7 +25,7 @@ from fastapi import (
     UploadFile,
     status,
 )
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 from app.db.session import get_session
@@ -36,7 +36,7 @@ from app.erp.api.deps import (
     require_erp_edit,
     require_erp_view,
 )
-from app.erp.factusol_albaran import PaymentIn
+from app.erp.factusol_albaran import MANUAL_SERIES, PaymentIn
 from app.models.crm import User
 
 logger = logging.getLogger(__name__)
@@ -2794,9 +2794,10 @@ class QuoteShippingIn(BaseModel):
     country: str = Field(default="", max_length=64)
 
 
-class CreateQuotePayload(BaseModel):
-    """Alta de proforma. El cliente sale de la empresa CRM vinculada; el
-    operador solo elige líneas (o escribe una referencia libre)."""
+class QuoteBodyPayload(BaseModel):
+    """Lo común al alta y a la edición de una proforma. El cliente sale de la
+    empresa CRM vinculada; el operador solo elige líneas (o escribe una
+    referencia libre)."""
 
     company_id: str = Field(min_length=1, max_length=36)
     #: «Su ref.» del documento: nº de pedido del cliente, obra, proyecto…
@@ -2813,6 +2814,25 @@ class CreateQuotePayload(BaseModel):
     #: Lote B3b: destinatario libre (dropshipping). Si viene junto con
     #: `address`, manda el libre.
     shipping: QuoteShippingIn | None = None
+
+
+class CreateQuotePayload(QuoteBodyPayload):
+    """Alta de proforma: el cuerpo común + la SERIE (empresa emisora)."""
+
+    #: Serie = empresa emisora del documento (`TIPPRE` de F_PRE), la misma
+    #: elección que ofrece el alta de pedido manual. 1 (Bomedia) por defecto,
+    #: que es lo que se creaba siempre antes de poder elegirla.
+    serie: int = 1
+
+    @field_validator("serie")
+    @classmethod
+    def _valid_serie(cls, v: int) -> int:
+        if v not in MANUAL_SERIES:
+            raise ValueError(
+                f"Serie no válida: {v} (usa una de {MANUAL_SERIES}: "
+                "1 Bomedia / 2 MQ Europe / 4 Lambert / 5 Streamtec)."
+            )
+        return v
 
 
 def _apply_address(
@@ -2943,19 +2963,24 @@ def create_quote_endpoint(
         payload.fecha,
         payload.fopfac,
         float(payload.portes or 0),
+        payload.serie,
     )
     _audit_quote(session, current_user, "erp.factusol_quote_create",
                  payload.company_id, {"job_id": job_id,
                                       "lines": len(payload.lines),
+                                      "serie": payload.serie,
                                       "portes": float(payload.portes or 0),
                                       "shipping": payload.shipping is not None})
     session.commit()
     return {"job_id": job_id, "status": "queued"}
 
 
-class UpdateQuotePayload(CreateQuotePayload):
-    """Edición de proforma. Mismo cuerpo que el alta más `force`, que salta el
-    guard de estado (ver `quotes.ESTPRE_PENDING`)."""
+class UpdateQuotePayload(QuoteBodyPayload):
+    """Edición de proforma. El cuerpo común más `force`, que salta el guard de
+    estado (ver `quotes.ESTPRE_PENDING`).
+
+    Sin `serie`, y a propósito: la empresa emisora de una proforma que ya
+    existe no se cambia desde aquí — el job conserva el `TIPPRE` de la fila."""
 
     force: bool = False
 

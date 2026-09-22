@@ -606,10 +606,14 @@ def enqueue_change_order_serie(
 def create_quote_job(
     customer: dict[str, Any], lines: list[dict[str, Any]],
     referencia: str | None = None, fecha: str | None = None,
-    fopfac: str | None = None, portes: float = 0.0,
+    fopfac: str | None = None, portes: float = 0.0, serie: int = 1,
 ) -> dict[str, Any]:
     """Crea la proforma en F_PRE (cabecera + líneas F_LPS). `portes` (Lote
-    B3b) van a la banda IPOR1PRE de la cabecera, no como línea."""
+    B3b) van a la banda IPOR1PRE de la cabecera, no como línea.
+
+    `serie` es la empresa emisora (`TIPPRE`). Va al final y con default 1 a
+    propósito: un job encolado ANTES del despliegue llega sin ella y sigue
+    creando la proforma en Bomedia, como hasta ahora."""
     from sqlalchemy.orm import Session  # noqa: PLC0415
 
     from app.db.session import get_engine  # noqa: PLC0415
@@ -621,9 +625,10 @@ def create_quote_job(
         result = create_quote(
             client, session, ejercicio=ejercicio_for(session),
             customer=customer, lines=lines, referencia=referencia,
-            fecha=fecha, fopfac=fopfac, portes=portes,
+            fecha=fecha, fopfac=fopfac, portes=portes, serie=serie,
         )
-    logger.info("factusol: proforma creada codpre=%s", result.get("codpre"))
+    logger.info("factusol: proforma creada codpre=%s serie=%s",
+                result.get("codpre"), result.get("serie"))
     return result
 
 
@@ -703,11 +708,11 @@ def convert_quote_to_order_job(
 def enqueue_create_quote(
     customer: dict[str, Any], lines: list[dict[str, Any]],
     referencia: str | None = None, fecha: str | None = None,
-    fopfac: str | None = None, portes: float = 0.0,
+    fopfac: str | None = None, portes: float = 0.0, serie: int = 1,
 ) -> str:
     return _enqueue(
         "app.integrations.factusol.jobs.create_quote_job",
-        customer, lines, referencia, fecha, fopfac, portes,
+        customer, lines, referencia, fecha, fopfac, portes, serie,
     )
 
 

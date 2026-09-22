@@ -77,7 +77,10 @@ DEFAULT_TARIFA = 1
 #: que el recorte lo hacemos nosotros y de forma visible (con «…»).
 REFPRE_MAX_LENGTH = 250
 
-#: `TIPPRE` vale siempre '1' en los 653 presupuestos de Bomedia.
+#: `TIPPRE` es la SERIE del presupuesto = empresa emisora (1 Bomedia ·
+#: 2 MQ Europe · 4 Lambert · 5 Streamtec), la misma que `annotate_quotes` lee
+#: para pintar el nº visible «serie-código» (5-000039). Vale '1' en los 653
+#: presupuestos de Bomedia, y es lo que se escribe si nadie elige otra.
 DEFAULT_TIPPRE = "1"
 #: Almacén por defecto de la base real.
 DEFAULT_ALMPRE = "GEN"
@@ -132,8 +135,19 @@ QUOTE_LINE_FIELDS = (
     "DT1LPS", "DT2LPS", "DT3LPS", "PRELPS", "TOTLPS", "IVALPS",
 )
 
-#: `TIPLPS` vale siempre '1', igual que el `TIPPRE` de la cabecera.
+#: `TIPLPS` es la serie de la línea: SIEMPRE la misma que el `TIPPRE` de su
+#: cabecera (F_LPS se identifica por `(TIPLPS, CODLPS, POSLPS)`). '1' es el
+#: default, el de Bomedia.
 DEFAULT_TIPLPS = "1"
+
+
+def tip_of(serie: Any) -> str:
+    """`TIPPRE`/`TIPLPS` a partir de la serie elegida. FACTUSOL los guarda como
+    TEXTO ('1', '2'…), que es como los leen `annotate_quotes` y el explorador
+    de documentos. Lo que no sea un número cae a la serie por defecto: validar
+    qué series son legítimas es cosa del endpoint, no de la capa de escritura."""
+    text = str(serie or "").strip()
+    return text if text.isdigit() else DEFAULT_TIPPRE
 
 
 def _sql_escape(value: str) -> str:
@@ -585,8 +599,12 @@ def build_quote_payload(
     codpre: str, *, ejercicio: str, customer: dict[str, Any],
     refpre: str, lines: list[dict[str, Any]], fecha: str | None = None,
     fopfac: str | None = None, portes: float = 0.0,
+    serie: Any = DEFAULT_TIPPRE,
 ) -> dict[str, Any]:
     """Registro F_PRE listo para `EscribirRegistro`.
+
+    `serie` es la EMPRESA EMISORA y va a `TIPPRE`. Por defecto 1 (Bomedia),
+    que es lo que se escribía siempre hasta ahora.
 
     Solo columnas verificadas contra la base real. Las que no ponemos las deja
     FACTUSOL con sus defaults — no inventamos valores (la lección de C-3-fix1).
@@ -599,7 +617,7 @@ def build_quote_payload(
     totals = _totals(lines, regime=customer.get("regime"), portes=portes)
     payload: dict[str, Any] = {
         "CODPRE": codpre,
-        "TIPPRE": DEFAULT_TIPPRE,
+        "TIPPRE": tip_of(serie),
         "FECPRE": fecha or datetime.now(UTC).date().isoformat(),
         "CLIPRE": str(customer.get("codcli") or ""),
         "CNOPRE": str(customer.get("nombre") or "")[:255],
@@ -644,8 +662,12 @@ def build_quote_payload(
 
 def build_quote_line_payload(
     codpre: str, position: int, line: dict[str, Any],
+    serie: Any = DEFAULT_TIPLPS,
 ) -> dict[str, Any]:
     """Una línea del CRM → registro `F_LPS` listo para `EscribirRegistro`.
+
+    `serie` es la de su cabecera: `TIPLPS` tiene que ir siempre igual que el
+    `TIPPRE` del presupuesto al que pertenece la línea.
 
     Solo columnas verificadas. Las medidas (`ALTLPS`/`ANCLPS`/`FONLPS`) y
     `MEMLPS` se dejan a FACTUSOL: no inventamos valores."""
@@ -664,7 +686,7 @@ def build_quote_line_payload(
     # Para cerrarlo: SELECT DISTINCT IVALPS FROM F_LPS (ver el script de
     # descubrimiento). Si son 0/1/2 → es código y hay que traducir.
     return {
-        "TIPLPS": DEFAULT_TIPLPS,
+        "TIPLPS": tip_of(serie),
         "CODLPS": codpre,
         "POSLPS": position,
         "ARTLPS": str(line.get("codart") or "")[:64],
@@ -720,9 +742,12 @@ def resolve_codarts(
 
 def _write_quote_lines(
     client: FactusolClient, codpre: str, ejercicio: str,
-    lines: list[dict[str, Any]],
+    lines: list[dict[str, Any]], serie: Any = DEFAULT_TIPLPS,
 ) -> int:
     """Escribe las líneas en F_LPS. Devuelve cuántas se escribieron.
+
+    `serie` es la de la cabecera: las líneas llevan el mismo `TIPLPS` que el
+    `TIPPRE` de su presupuesto.
 
     Los SKU se traducen antes a CODART interno (ver `resolve_codarts`): escribir
     un EQUART en `ARTLPS` hace que el FACTUSOL de escritorio crashee al abrir la
@@ -757,7 +782,9 @@ def _write_quote_lines(
             )
         elif codart and codart != sku:
             logger.info("factusol: SKU %r → CODART %r (vía EQUART)", sku, codart)
-        payload = build_quote_line_payload(codpre, i, {**line, "codart": codart})
+        payload = build_quote_line_payload(
+            codpre, i, {**line, "codart": codart}, serie,
+        )
         try:
             client.write_record(TABLE_QUOTE_LINES, payload, ejercicio=ejercicio)
             written += 1
@@ -782,8 +809,22 @@ def create_quote(
     customer: dict[str, Any], lines: list[dict[str, Any]],
     referencia: str | None = None, fecha: str | None = None,
     fopfac: str | None = None, portes: float = 0.0,
+    serie: Any = DEFAULT_TIPPRE,
 ) -> dict[str, Any]:
     """Crea la proforma: cabecera en `F_PRE` + una fila por línea en `F_LPS`.
+
+    `serie` es la EMPRESA EMISORA del documento (`TIPPRE` en la cabecera y
+    `TIPLPS` en las líneas). Por defecto 1 (Bomedia).
+
+    ⚠️ El CODPRE se sigue pidiendo GLOBAL (`next_codpre` = max de toda F_PRE + 1),
+    no por serie. En FACTUSOL la numeración es por serie, pero el resto de la
+    app identifica una proforma por CODPRE a secas — el detalle, la edición, la
+    conversión a pedido y las líneas (`CODLPS={codpre}`, sin filtrar `TIPLPS`).
+    Numerar por serie crearía CODPRE repetidos entre series y esas lecturas
+    devolverían la proforma (o las líneas) de otra. Con el máximo global, lo que
+    creamos sigue siendo único mire quien lo mire, a costa de que una proforma
+    nuestra en la serie 2 salga con un número alto en vez de seguir el contador
+    de esa serie en el escritorio.
 
     `referencia` la escribe el operador cuando quiere fijar el texto de REFPRE;
     si no la pasa, se compone desde las líneas.
@@ -813,7 +854,7 @@ def create_quote(
     codpre = next_codpre(client, ejercicio)
     payload = build_quote_payload(
         codpre, ejercicio=ejercicio, customer=customer, refpre=refpre,
-        lines=lines, fecha=fecha, fopfac=fopfac, portes=portes,
+        lines=lines, fecha=fecha, fopfac=fopfac, portes=portes, serie=serie,
     )
     try:
         client.write_record(TABLE_QUOTES, payload, ejercicio=ejercicio)
@@ -828,10 +869,13 @@ def create_quote(
             "Columnas enviadas: %s", codpre, exc, ", ".join(payload),
         )
         raise
-    written = _write_quote_lines(client, codpre, ejercicio, lines)
-    logger.info("factusol: proforma creada CODPRE %s (cliente %s, %d/%d líneas)",
-                codpre, customer.get("codcli"), written, len(lines))
+    written = _write_quote_lines(client, codpre, ejercicio, lines, payload["TIPPRE"])
+    logger.info(
+        "factusol: proforma creada CODPRE %s serie %s (cliente %s, %d/%d líneas)",
+        codpre, payload["TIPPRE"], customer.get("codcli"), written, len(lines),
+    )
     result = {"codpre": codpre, "ejercicio": ejercicio, "referencia": refpre,
+              "serie": int(payload["TIPPRE"]),
               "lines": written, "total": payload["TOTPRE"]}
     if written < len(lines):
         result["warning"] = (
@@ -931,6 +975,11 @@ def update_quote(
     totales nuevos. Solo se escribe el 0 cuando la fila tenía valor: en una
     proforma que nunca los tuvo el registro sale como hasta ahora.
 
+    La SERIE (`TIPPRE`) NO se elige al editar: se conserva la que la proforma
+    ya tiene. Antes se reescribía con el default '1', así que guardar una
+    proforma de la serie 2/4/5 —visibles desde el #451— la movía a la 1 sin
+    avisar; las líneas, que se borran y se reescriben, heredan esa misma serie.
+
     `force` salta el guard de estado (ver `ESTPRE_PENDING`).
     """
     row = _quote_row(client, codpre, ejercicio=ejercicio)
@@ -947,9 +996,11 @@ def update_quote(
             estado=estado,
         )
 
+    serie = tip_of(row.get("TIPPRE"))
     header = build_quote_payload(
         str(codpre), ejercicio=ejercicio, customer=customer,
         refpre=(referencia or "").strip(), lines=lines, portes=portes,
+        serie=serie,
     )
     if "IPOR1PRE" not in header and _num(row.get("IPOR1PRE")):
         header["IPOR1PRE"] = 0.0
@@ -962,7 +1013,7 @@ def update_quote(
     client.delete_records(
         TABLE_QUOTE_LINES, f"CODLPS={int(codpre)}", ejercicio=ejercicio,
     )
-    written = _write_quote_lines(client, str(codpre), ejercicio, lines)
+    written = _write_quote_lines(client, str(codpre), ejercicio, lines, serie)
     logger.info("factusol: proforma %s actualizada (%d/%d líneas, estado %s)",
                 codpre, written, len(lines), estado)
     result = {"codpre": str(codpre), "ejercicio": ejercicio,
@@ -985,6 +1036,10 @@ def duplicate_quote(
     columnas que no mapeamos) y sus líneas de F_LPS. Desde C-4-fix3 funciona con
     **cualquier** proforma, también las creadas en el FACTUSOL de escritorio:
     las líneas salen de F_LPS, no de una caché que solo tenía las del CRM.
+
+    La copia se queda en la MISMA serie que el original: la cabecera arrastra su
+    `TIPPRE` (viene en la fila) y las líneas se escriben con ese mismo `TIPLPS`
+    — antes iban con el default '1' aunque la cabecera fuera de otra serie.
     """
     _ = session
     if not str(codpre).strip().isdigit():
@@ -1002,7 +1057,9 @@ def duplicate_quote(
     source["FECPRE"] = fecha or datetime.now(UTC).date().isoformat()
     client.write_record(TABLE_QUOTES, source, ejercicio=ejercicio)
 
-    written = _write_quote_lines(client, nuevo, ejercicio, lines)
+    written = _write_quote_lines(
+        client, nuevo, ejercicio, lines, tip_of(source.get("TIPPRE")),
+    )
     logger.info("factusol: proforma %s duplicada → %s (%d/%d líneas)",
                 codpre, nuevo, written, len(lines))
     return {"codpre": nuevo, "source_codpre": str(codpre), "ejercicio": ejercicio,
