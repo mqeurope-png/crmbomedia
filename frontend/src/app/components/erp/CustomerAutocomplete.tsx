@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { listCompanies, type Company } from "../../lib/companiesApi";
+import { looksLikeFiscalId } from "../../lib/fiscalId";
 import {
   searchFactusolCustomers,
   type FactusolCustomer,
@@ -45,7 +46,7 @@ export function CustomerAutocomplete({
     setLoading(true);
     const handle = window.setTimeout(() => {
       // Un NIF se busca exacto; cualquier otra cosa, por nombre.
-      const by = /^[A-Za-z]?\d{7,8}[A-Za-z]?$/.test(q) ? "nif" : "name";
+      const by = looksLikeFiscalId(q) ? "nif" : "name";
       Promise.allSettled([
         searchFactusolCustomers(q, by),
         listCompanies({ q, limit: 10 }),

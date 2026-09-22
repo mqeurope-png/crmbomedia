@@ -150,14 +150,26 @@ def test_factusol_customers_search_by_nif_not_found(client):
     assert r.json()["items"] == []
 
 
-def test_nif_candidates_covers_bare_and_es_forms():
-    """La consulta se normaliza como la limpieza de empresas y se prueba en las
-    dos formas (desnuda y con prefijo ES), venga como venga escrita."""
+def test_nif_candidates_covers_bare_and_prefixed_forms():
+    """La consulta se normaliza como la limpieza de empresas y se prueba tanto
+    desnuda como con prefijo de país, venga como venga escrita. Se prueban
+    TODOS los prefijos de la UE (no solo `ES`): FACTUSOL guarda el NIF-IVA
+    extranjero con su prefijo (`FR91523447399`) y la búsqueda por el número
+    desnudo tiene que encontrarlo igual, y al revés."""
     from app.integrations.factusol.customers import _nif_candidates
 
-    assert _nif_candidates("ESB63609309") == ["B63609309", "ESB63609309"]
-    assert _nif_candidates("B63609309") == ["B63609309", "ESB63609309"]
-    assert _nif_candidates("es-b63.609.309") == ["B63609309", "ESB63609309"]
+    for query in ("ESB63609309", "B63609309", "es-b63.609.309"):
+        cands = _nif_candidates(query)
+        assert "B63609309" in cands, query      # desnuda
+        assert "ESB63609309" in cands, query    # prefijada (España)
+
+    # Extranjero: el caso que no encontraba antes, en los dos sentidos.
+    for query in ("FR91523447399", "91523447399", "fr 91.523.447-399"):
+        cands = _nif_candidates(query)
+        assert "91523447399" in cands, query
+        assert "FR91523447399" in cands, query
+
+    assert _nif_candidates("") == []
 
 
 def test_search_by_nif_matches_es_prefix_and_separators(client):

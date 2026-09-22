@@ -128,6 +128,12 @@ def import_woo_order(
 
     order = _create_order(session, woo_order, store, contact, company)
     session.flush()
+    # La empresa CRM por la vía fiable: el CLIENTE de FACTUSOL del pedido
+    # (REFPCL → F_PCL.CLIPCL → F_CLI). El billing de Woo no siempre trae NIF y
+    # entonces `_resolve_company` se quedaba en None. Best-effort: si FACTUSOL
+    # no responde (o FesteWeb aún no ha creado el F_PCL) el pedido entra igual
+    # y el backfill lo recupera.
+    _link_company_from_factusol(session, order, woo_order)
     _apply_lines(session, order, woo_order, store)
     session.flush()
     # B-2-fix4: pedidos anteriores a la fecha de corte de la tienda se
@@ -215,6 +221,36 @@ def _resolve_company(
     session.add(company)
     session.flush()
     return company, True
+
+
+def _link_company_from_factusol(
+    session: Session, order: Order, woo: dict[str, Any],
+) -> None:
+    """Resuelve y vincula la empresa CRM del pedido web por su cliente de
+    FACTUSOL. Idempotente y best-effort: si ya está resuelto no toca nada y
+    cualquier fallo de FACTUSOL se registra sin romper la importación."""
+    from app.erp.web_order_company import ensure_web_order_company  # noqa: PLC0415
+
+    try:
+        result = ensure_web_order_company(
+            session, order, fallback_nif=_extract_cif(woo),
+        )
+    except Exception:  # noqa: BLE001 — la ingesta de Woo nunca cae por esto
+        logger.warning(
+            "woo import: empresa de %s no resuelta (error inesperado)",
+            order.order_number, exc_info=True,
+        )
+        return
+    if result.resolved:
+        logger.info(
+            "woo import: pedido %s → empresa %s (F_CLI %s)%s",
+            order.order_number, result.company.id, result.codcli,
+            " [creada]" if result.created else "",
+        )
+    elif result.reason not in (None, "ya_tenia_empresa"):
+        logger.info(
+            "woo import: pedido %s sin empresa (%s)", order.order_number, result.reason,
+        )
 
 
 def _extract_cif(woo: dict[str, Any]) -> str | None:
@@ -374,6 +410,10 @@ def _refresh_existing(
         order.contact_id = contact.id
     if company is not None and order.company_id is None:
         order.company_id = company.id
+    # Y si sigue sin empresa (el billing de Woo no traía NIF), se resuelve por
+    # el cliente de FACTUSOL: un `order.updated` posterior recupera el pedido
+    # que se importó antes de que FesteWeb escribiera el F_PCL.
+    _link_company_from_factusol(session, order, woo)
     # E4-fix1: idioma — solo si aún no se conocía (no pisa una corrección
     # manual de Bart).
     if not order.language:

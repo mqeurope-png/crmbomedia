@@ -502,6 +502,107 @@ def _norm_nif(company: Any) -> str | None:
     return nif_key(getattr(company, "tax_id", None)) or nif_key(getattr(company, "vat", None))
 
 
+def _name_key(company: Any) -> str:
+    """Nombre comparable: sin puntuación, espacios ni mayúsculas."""
+    from app.erp.company_discovery import _NON_ALNUM_RE  # noqa: PLC0415
+
+    return _NON_ALNUM_RE.sub("", str(getattr(company, "name", "") or "").upper())
+
+
+#: Parecido MÍNIMO para agrupar por NOMBRE (sin NIF que lo respalde). Es
+#: deliberadamente más exigente que `NAME_SIMILARITY_LOW`: el nombre solo es
+#: evidencia débil y aquí no hay NIF que confirme que son la misma empresa.
+NAME_ONLY_SIMILARITY = 0.92
+
+
+def plan_name_only_merges(
+    session: Session, *, similarity: float = NAME_ONLY_SIMILARITY,
+) -> MassMergePlan:
+    """Duplicados que el cruce por NIF NO ve: fichas **sin NIF** que se llaman
+    igual que una ficha **con NIF** (típico de las importadas de Brevo, que
+    llegan solo con el nombre).
+
+    Es una pasada OPT-IN y conservadora — el nombre solo no prueba que sean la
+    misma empresa. Solo propone fusión cuando el grupo es inequívoco:
+
+    - hay EXACTAMENTE UNA ficha con NIF (la canónica, que además suele ser la
+      vinculada a FACTUSOL) y el resto NO tiene NIF ninguno;
+    - los nombres se parecen por encima de `similarity` (0.92 por defecto).
+
+    Cualquier otra forma (dos fichas con NIF distinto, ninguna con NIF…) va a
+    REVISIÓN. Solo lectura: no escribe nada."""
+    from app.erp.company_discovery import name_similarity, nif_looks_malformed  # noqa: PLC0415
+    from app.models.crm import Company  # noqa: PLC0415
+
+    companies = list(session.scalars(
+        select(Company).where(Company.is_archived.is_(False))
+    ))
+    groups: dict[str, list[Any]] = {}
+    for company in companies:
+        key = _name_key(company)
+        if len(key) < 4:      # nombres demasiado cortos: no son evidencia
+            continue
+        groups.setdefault(key, []).append(company)
+
+    plan = MassMergePlan(total_companies=len(companies))
+    for key, members in sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+        if len(members) < 2:
+            continue
+        names = [m.name for m in members]
+        with_nif = [
+            m for m in members
+            if (k := _norm_nif(m)) and not nif_looks_malformed(k)
+        ]
+        # Ya lo cubre el cruce por NIF (y con más garantías): fuera de aquí.
+        if len({_norm_nif(m) for m in with_nif}) > 1:
+            plan.review.append(MergeGroupReview(
+                nif_key=f"nombre:{key}",
+                reason="varias fichas con NIF DISTINTO y el mismo nombre: "
+                       "revisar a mano (no es un duplicado de Brevo)",
+                company_ids=[m.id for m in members], names=names,
+                linked_codclis=sorted({
+                    str(m.factusol_company_id).strip() for m in members
+                    if str(m.factusol_company_id or "").strip()
+                })))
+            continue
+        if len(with_nif) != 1:
+            plan.review.append(MergeGroupReview(
+                nif_key=f"nombre:{key}",
+                reason="ninguna ficha del grupo tiene NIF: sin canónica clara, "
+                       "elige a mano cuál se queda",
+                company_ids=[m.id for m in members], names=names,
+                linked_codclis=[]))
+            continue
+
+        keep = with_nif[0]
+        others = [m for m in members if m.id != keep.id]
+        disparate = [
+            (o.name, sim) for o in others
+            if (sim := name_similarity(keep.name, o.name)) is not None
+            and sim < similarity
+        ]
+        if disparate:
+            detalle = ", ".join(f"«{n}» ({s})" for n, s in disparate)
+            plan.review.append(MergeGroupReview(
+                nif_key=f"nombre:{key}",
+                reason=f"nombres no lo bastante parecidos a «{keep.name}»: "
+                       f"{detalle}. Revisar a mano",
+                company_ids=[m.id for m in members], names=names,
+                linked_codclis=[]))
+            continue
+
+        plan.to_merge.append(MergeGroupAction(
+            nif_key=f"nombre:{key}", keep_id=keep.id, keep_name=keep.name,
+            keep_codcli=str(keep.factusol_company_id or "").strip() or None,
+            merge_ids=[o.id for o in others],
+            merge_names=[o.name for o in others]))
+
+    logger.info(
+        "fusión por nombre (sin NIF): %d a fusionar, %d a revisar (de %d fichas)",
+        len(plan.to_merge), len(plan.review), len(companies))
+    return plan
+
+
 def plan_duplicate_merges(
     session: Session, *, name_threshold: float = NAME_SIMILARITY_LOW,
     only_key: str | None = None,
