@@ -17,6 +17,7 @@ import {
 
   convertFactusolQuoteToOrder,
   downloadFactusolDocumentPdf,
+  FACTUSOL_SERIES,
   listFactusolQuotes,
   saveBlob,
   type FactusolPdfLang,
@@ -175,6 +176,10 @@ export default function ProformasPage() {
   const [canEdit, setCanEdit] = useState(false);
   const [queue, setQueue] = useState<QuoteQueue | null>("aceptadas");
   const [daysBack, setDaysBack] = useState(365);
+  // Serie = empresa emisora. 0 / vacío = TODAS (por defecto), igual que en
+  // Documentos: antes la pantalla solo llegaba a ver las de la serie 1 porque
+  // el listado se recortaba por CODPRE y los contadores son POR serie.
+  const [serie, setSerie] = useState<number>(0);
   // Filtros combinables (sobre las colas): texto, rango de fechas; y orden.
   const [text, setText] = useState("");
   const [desde, setDesde] = useState("");
@@ -207,7 +212,11 @@ export default function ProformasPage() {
     setLoading(true);
     setError(null);
     try {
-      const r = await listFactusolQuotes({ days_back: effectiveDays, limit: LIST_LIMIT });
+      const r = await listFactusolQuotes({
+        days_back: effectiveDays, limit: LIST_LIMIT,
+        // Sin serie = TODAS las empresas emisoras (igual que Documentos).
+        ...(serie ? { serie } : {}),
+      });
       setQuotes(r.items);
       setNow(Date.now());
     } catch (e) {
@@ -215,7 +224,7 @@ export default function ProformasPage() {
     } finally {
       setLoading(false);
     }
-  }, [effectiveDays]);
+  }, [effectiveDays, serie]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -417,6 +426,16 @@ export default function ProformasPage() {
           <span>Hasta</span>
           <input type="date" aria-label="Fecha hasta" value={hasta}
                  onChange={(e) => setHasta(e.target.value)} />
+        </label>
+        <label className="field">
+          <span>Empresa emisora</span>
+          <select value={serie} aria-label="Empresa emisora (serie)"
+                  onChange={(e) => setSerie(Number(e.target.value))}>
+            <option value={0}>Todas</option>
+            {FACTUSOL_SERIES.map((s) => (
+              <option key={s.value} value={s.value}>{s.value} · {s.label}</option>
+            ))}
+          </select>
         </label>
         <label className="field">
           <span>Periodo</span>

@@ -58,7 +58,9 @@ def enqueue_paid_order(
     """Mete un pedido PAGADO en la Cola SAT (`in_queue`) sin aprobación previa.
 
     Guards (todos deben cumplirse; si no, devuelve False y NO toca nada):
-      - pago en {paid, credit_approved, partial_paid} (PAYMENT_OK_FOR_PREPARATION);
+      - pago en {paid, credit_approved, partial_paid} (PAYMENT_OK_FOR_PREPARATION),
+        SALVO en una MUESTRA / envío no facturable: no se cobra, así que no hay
+        pago que esperar — entra a la cola al crearse;
       - no anulado (`cancelled_at is None`);
       - no completado (`completed_at is None`);
       - no quitado a mano (`seguimiento_excluded_at is None`);
@@ -69,7 +71,14 @@ def enqueue_paid_order(
 
     NO hace commit. Devuelve True si lo encoló ahora, False si algún guard lo
     impidió (incl. el ya-en-cola: reintentar es un no-op)."""
-    if _value(order.payment_status) not in PAYMENT_OK_FOR_PREPARATION:
+    from app.erp.sample_orders import is_sample_order  # noqa: PLC0415
+
+    # Una muestra no se cobra: el gate de pago no aplica (si no, no entraría
+    # nunca a la Cola SAT, que es lo ÚNICO que hay que hacer con ella).
+    if (
+        not is_sample_order(order)
+        and _value(order.payment_status) not in PAYMENT_OK_FOR_PREPARATION
+    ):
         return False
     if order.cancelled_at is not None:
         return False

@@ -410,7 +410,7 @@ describe("NewManualOrderPage", () => {
       await screen.findByRole("button", { name: /Proformas FACTUSOL disponibles/ }),
     );
     await user.click(
-      await screen.findByRole("button", { name: "Cargar líneas al pedido" }),
+      await screen.findByRole("button", { name: "Solo conceptos" }),
     );
 
     await waitFor(() => expect(mockGetQuote).toHaveBeenCalledWith("77"));
@@ -493,7 +493,7 @@ describe("NewManualOrderPage", () => {
       await screen.findByRole("button", { name: /Proformas FACTUSOL disponibles/ }),
     );
     await user.click(
-      await screen.findByRole("button", { name: "Cargar líneas al pedido" }),
+      await screen.findByRole("button", { name: "Solo conceptos" }),
     );
 
     expect(await screen.findByText(/FACTUSOL de escritorio/)).toBeInTheDocument();

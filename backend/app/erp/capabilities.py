@@ -37,6 +37,7 @@ class Cap:
     ORDERS_CREATE = "erp.orders.create"      # crear pedido manual / desde FACTUSOL
     ORDERS_APPROVE = "erp.orders.approve"    # aprobar pedido
     ORDERS_CANCEL = "erp.orders.cancel"      # anular / restaurar
+    SAMPLES_CREATE = "erp.samples.create"    # crear muestra / envío no facturable
     ALBARAN_CREATE = "erp.albaran.create"    # crear albarán en FACTUSOL
     INVOICE_EMIT = "erp.invoice.emit"        # emitir factura en FACTUSOL
     COBRO_REGISTER = "erp.cobro.register"    # registrar cobro en FACTUSOL
@@ -68,6 +69,7 @@ _COMERCIAL_CAPS: frozenset[str] = frozenset({
     Cap.ACCESS, Cap.ORDERS_CREATE, Cap.ORDERS_APPROVE, Cap.ORDERS_CANCEL,
     Cap.ALBARAN_CREATE, Cap.INVOICE_EMIT, Cap.EMAIL_SAT, Cap.EMAIL_CLIENT,
     Cap.PROFORMAS, Cap.DOCUMENTS, Cap.COMPANIES, Cap.SAT_VIEW, Cap.SAT_SHIPPING,
+    Cap.SAMPLES_CREATE,
 })
 #: ERP Pedidos = comercial + web + cobro + Cola SAT completa + seguimiento.
 _PEDIDOS_CAPS: frozenset[str] = _COMERCIAL_CAPS | frozenset({
@@ -75,9 +77,12 @@ _PEDIDOS_CAPS: frozenset[str] = _COMERCIAL_CAPS | frozenset({
     Cap.SAT_NO_SHIPPING, Cap.SEGUIMIENTO,
 })
 #: ERP SAT = taller + envío/técnicos + enviar al SAT + ver pedidos (incl. web).
+#: El taller también DA DE ALTA muestras (además de prepararlas y enviarlas):
+#: una muestra no es facturable, así que crearla no requiere ser «oficina».
 _SAT_CAPS: frozenset[str] = frozenset({
     Cap.ACCESS, Cap.ORDERS_VIEW_WEB, Cap.SAT_VIEW, Cap.SAT_PREPARE,
     Cap.SAT_SHIPPING, Cap.SAT_TRACKING, Cap.SAT_NO_SHIPPING, Cap.EMAIL_SAT,
+    Cap.SAMPLES_CREATE,
 })
 #: Legacy `user`: solo lectura del ERP (sin edición). Reasignar a `comercial`.
 _USER_CAPS: frozenset[str] = frozenset({

@@ -36,6 +36,7 @@ from app.erp.models import (
     PreparationStatus,
     TransportStatus,
 )
+from app.erp.sample_orders import is_sample_order
 
 # --- colas -------------------------------------------------------------------
 
@@ -321,6 +322,18 @@ def _next_step(order: Order) -> tuple[str, str, str]:
     El orden es el del ciclo real: revisar → facturar → cobrar → enviar →
     completar. No decide nada nuevo: cada rama refleja el estado que ya
     gobierna los botones de la ficha."""
+    # Muestra / envío no facturable: se salta TODO el tramo fiscal (aprobar,
+    # facturar, cobrar). Lo único que queda es prepararla y enviarla, así que
+    # va directa al tramo de envío/completado — y nunca entra en las colas
+    # «Por facturar» ni «Por cobrar», que se calculan aquí mismo.
+    if is_sample_order(order):
+        if order.completed_at is None:
+            return (
+                QUEUE_POR_ENVIAR, "marcar_completado",
+                "Muestra: prepárala y envíala desde el taller; "
+                "márcala completada cuando salga.",
+            )
+        return (QUEUE_LISTO, "ninguna", "Muestra enviada.")
     if not is_approved(order):
         return (
             QUEUE_POR_REVISAR, "aprobar",
@@ -536,6 +549,13 @@ STEP_KEYS: tuple[str, ...] = (
 #: «Paso N de N» ni bloquean el «completado» (informativos). Hoy: el envío de la
 #: factura por email al cliente.
 OPTIONAL_STEP_KEYS: tuple[str, ...] = ("factura_enviada",)
+#: Pasos que NO APLICAN en una muestra / envío no facturable: no se cobra ni se
+#: factura, así que su ciclo es «Creado → (Preparación) → Enviado». Se pintan
+#: en gris igual que el albarán de un pedido web. «Aprobado» NO está aquí: la
+#: muestra entra a la Cola SAT al crearse, así que ese paso se cumple de verdad.
+SAMPLE_SKIPPED_STEPS: frozenset[str] = frozenset(
+    {"pagado", "albaran", "factura", "cobro"}
+)
 STEP_LABELS: dict[str, str] = {
     "creado": "Creado", "pagado": "Pagado", "aprobado": "Aprobado",
     "albaran": "Albarán", "factura": "Factura", "cobro": "Cobro",
@@ -580,6 +600,11 @@ def order_steps(
         elif key == "albaran" and is_web_order(order):
             state = "skipped"
             detail = "lo crea WooCommerce"
+        elif key in SAMPLE_SKIPPED_STEPS and is_sample_order(order):
+            # Muestra / envío no facturable: no hay nada que cobrar ni que
+            # facturar. Su ciclo es corto (creado → preparación → enviado).
+            state = "skipped"
+            detail = "no facturable"
         elif not now_set:
             state = "now"
             now_set = True
@@ -594,8 +619,15 @@ def order_steps(
     # cliente» cuando ya hay factura). Nunca es `now` ni cuenta como obligatorio.
     steps.append({
         "key": "factura_enviada", "label": STEP_LABELS["factura_enviada"],
-        "state": "done" if invoice_emailed_at else "pending",
-        "detail": _fecha_iso(invoice_emailed_at) if invoice_emailed_at else None,
+        # En una muestra no hay factura que enviar: el hito tampoco aplica.
+        "state": (
+            "skipped" if is_sample_order(order)
+            else "done" if invoice_emailed_at else "pending"
+        ),
+        "detail": (
+            "no facturable" if is_sample_order(order)
+            else _fecha_iso(invoice_emailed_at) if invoice_emailed_at else None
+        ),
         "optional": True,
     })
     return steps

@@ -735,12 +735,27 @@ def _cobro_state(order: Order) -> str:
     return "cobrado" if (order.factusol_cobro_status or "") == "cobrada" else "pendiente"
 
 
+def _factura_label(order: Order) -> str:
+    """Texto de la columna Factura: el nº de factura o, en una MUESTRA / envío
+    no facturable, «No aplica» (no hay factura que esperar)."""
+    from app.erp.sample_orders import is_sample_order  # noqa: PLC0415
+
+    if is_sample_order(order):
+        return NO_APLICA
+    return order.factusol_invoice_number or ""
+
+
 def _origen_label(order: Order) -> str:
-    """Origen del pedido: `WEB` para los de la tienda; para los demás, el canal
-    de origen (`shipping_origin`: SAT/OFI/TER…) o «Manual» si no consta. No hay
-    campo de comercial/agente en el pedido todavía."""
+    """Origen del pedido: `WEB` para los de la tienda; `Muestra` para un envío
+    no facturable; para los demás, el canal de origen (`shipping_origin`:
+    SAT/OFI/TER…) o «Manual» si no consta. No hay campo de comercial/agente en
+    el pedido todavía."""
+    from app.erp.sample_orders import is_sample_order  # noqa: PLC0415
+
     if order.external_source == OrderSource.WOOCOMMERCE:
         return "WEB"
+    if is_sample_order(order):
+        return "Muestra"
     return (order.shipping_origin or "").strip() or "Manual"
 
 
@@ -987,7 +1002,7 @@ def build_rows(
             # ERP-F6-fix2: nº de albarán de FACTUSOL, si algún día se conoce.
             # Hoy BoHub no lo rastrea (queda None → se usa el nº de pedido web).
             "albaran_number": None,
-            "factura": o.factusol_invoice_number,
+            "factura": _factura_label(o),
             "tracking": o.tracking_number,
             "num_serie": o.serial_number,
             "whiterip": o.whiterip_license,

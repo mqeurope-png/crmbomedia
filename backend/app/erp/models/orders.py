@@ -285,6 +285,17 @@ class Order(TimestampMixin, Base):
         Boolean, nullable=False, default=False, server_default=text("0"),
     )
 
+    # TIPO de pedido, cuando no es el corriente. Mismo patrón que
+    # `OrderLine.line_kind`: NULL = pedido normal (facturable), que es lo que
+    # son todos los existentes, así que la columna no necesita backfill.
+    #   - 'sample' → MUESTRA / envío NO FACTURABLE: se manda una muestra o una
+    #     pieza de cortesía. No lleva empresa ni serie, NO pasa por FACTUSOL
+    #     (sin cliente F_CLI, sin albarán, sin factura, sin cobro) y sus pasos
+    #     fiscales salen «No aplica». Solo se prepara y se envía desde el taller.
+    # Es ORTOGONAL a `external_source` (el ORIGEN: web/manual/FACTUSOL): una
+    # muestra se da de alta a mano, pero no es un pedido manual corriente.
+    order_kind: Mapped[str | None] = mapped_column(String(16))
+
     # E4-fix1: idioma del pedido (ISO 639-1: es/en/de/fr/nl), detectado en la
     # importación Woo (WPML/locale/país) o corregido a mano en la ficha.
     # NULL = desconocido — la cascada de idioma del PDF cae al cliente o a la

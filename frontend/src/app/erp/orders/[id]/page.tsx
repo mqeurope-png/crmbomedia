@@ -27,6 +27,7 @@ import { RegimePill } from "../../../components/erp/flow/RegimePill";
 import { WorkflowAlerts } from "../../../components/erp/flow/WorkflowAlerts";
 import { QUEUE_LABEL } from "../../../components/erp/flow/WorkflowQueueCards";
 import { WorkflowProgress, WorkflowSteps } from "../../../components/erp/flow/WorkflowSteps";
+import { isSampleOrder } from "../../../components/erp/OrderStatusGrid";
 import { getCurrentUser, type User } from "../../../lib/api";
 import { Cap, can } from "../../../lib/capabilities";
 import { extractErrorMessage } from "../../../lib/errors";
@@ -294,8 +295,11 @@ function ErpOrderDetailScreen() {
   // comercial. El COBRO en FACTUSOL es aparte: el Comercial NO cobra (capacidad
   // `erp.cobro.register`), solo admin/pedidos. El backend revalida en cada
   // endpoint (403 si falta la capacidad).
-  const canEmit = can(user, Cap.INVOICE_EMIT);
-  const canCobro = can(user, Cap.COBRO_REGISTER);
+  // Una MUESTRA / envío no facturable no lleva albarán, factura ni cobro: sus
+  // acciones fiscales no se ofrecen (el backend las rechaza con 409 igualmente).
+  const esMuestra = !!order && isSampleOrder(order);
+  const canEmit = can(user, Cap.INVOICE_EMIT) && !esMuestra;
+  const canCobro = can(user, Cap.COBRO_REGISTER) && !esMuestra;
   // Señal para abrir el modal de emisión desde «Siguiente paso» / «Solicitar
   // factura», y fase de la emisión (para no ofrecer dos veces «Emitir»).
   const [emitSignal, setEmitSignal] = useState(0);

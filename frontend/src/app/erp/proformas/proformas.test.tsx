@@ -40,6 +40,8 @@ jest.mock("../../lib/api", () => ({
 jest.mock("../../lib/companiesApi", () => ({ getCompany: jest.fn() }));
 jest.mock("../../lib/erpApi", () => ({
   ERP_EDIT_ROLES: ["admin", "pedidos"],
+  // Constante real (no mock): alimenta el filtro «Empresa emisora».
+  FACTUSOL_SERIES: jest.requireActual("../../lib/erpApi").FACTUSOL_SERIES,
   listFactusolQuotes: jest.fn(),
   convertFactusolQuoteToOrder: jest.fn(),
   duplicateFactusolQuote: jest.fn(),
@@ -515,5 +517,28 @@ describe("Pantalla Proformas (rediseño de flujo, Fase 4)", () => {
     expect(conv.getByText("pedido PRO-000071")).toHaveClass("badge");
     expect(conv.queryByRole("button", { name: "Convertir en pedido" })).toBeNull();
     expect(conv.queryByText(/sin respuesta/)).toBeNull();                       // ya es pedido
+  });
+
+  // --- series (empresa emisora) ------------------------------------------
+
+  it("el filtro «Empresa emisora» pide esa serie; «Todas» no filtra ninguna", async () => {
+    // La pantalla enseñaba en la práctica solo la serie 1: el recorte del
+    // listado iba por CODPRE y los contadores de FACTUSOL son POR serie.
+    const user = userEvent.setup();
+    render(<ProformasPage />);
+    await screen.findByRole("list", { name: "Proformas" });
+
+    // Por defecto, «Todas»: no se manda serie al backend.
+    expect(mockList).toHaveBeenCalled();
+    expect(mockList.mock.calls[0][0]).not.toHaveProperty("serie");
+
+    const selector = screen.getByLabelText("Empresa emisora (serie)");
+    expect(within(selector).getByRole("option", { name: "Todas" })).toBeInTheDocument();
+    await user.selectOptions(selector, "5");
+
+    await waitFor(() => {
+      const ultima = mockList.mock.calls[mockList.mock.calls.length - 1][0];
+      expect(ultima).toMatchObject({ serie: 5 });
+    });
   });
 });

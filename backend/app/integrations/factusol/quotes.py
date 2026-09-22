@@ -311,23 +311,41 @@ def _quote_matches(quote: dict[str, Any], needle: str) -> bool:
     return needle in haystack.casefold()
 
 
+def _quote_sort_key(quote: dict[str, Any]) -> tuple[int, int]:
+    """Orden de listado: por FECHA descendente y, a igualdad, por CODPRE.
+
+    Ordenar por CODPRE a secas **starvaba las series distintas de la 1**: los
+    contadores de FACTUSOL son POR SERIE (la 1 va por `526082` mientras la 5
+    va por `000005`), así que un `ORDER BY CODPRE DESC` global pone toda la
+    serie 1 delante y el recorte a `limit` se come las demás. Por fecha, las
+    proformas recientes de cualquier serie entran por igual."""
+    fecha = quote.get("fecha")
+    dia = date.fromisoformat(fecha).toordinal() if fecha else 0
+    codpre = quote.get("codpre")
+    return (dia, int(codpre) if str(codpre or "").isdigit() else 0)
+
+
 def list_quotes(
     client: FactusolClient, *, ejercicio: str, codcli: str | None = None,
     days_back: int = DEFAULT_DAYS_BACK, today: date | None = None,
     text: str | None = None, limit: int = QUOTE_LIST_LIMIT,
+    serie: int | None = None,
 ) -> list[dict[str, Any]]:
     """Proformas de un cliente (o de TODOS si `codcli` es None) en los últimos
-    `days_back` días, opcionalmente filtradas por `text`.
+    `days_back` días, opcionalmente filtradas por `text` y por `serie`
+    (empresa emisora; None = TODAS, como en Documentos).
 
-    Se ordena DESC por CODPRE y se recorta en Python (la API no soporta LIMIT).
-    El filtro de fecha se resuelve **en Python** a propósito: el dialecto SQL de
-    la API DELSOL no está documentado y una función de fecha no soportada
-    devolvería `[]` en silencio (la trampa de C-3-fix1). Filtrar por `CLIPRE`,
-    que es una comparación trivial, sí es seguro.
+    Se recorta en Python (la API no soporta LIMIT) **ordenando por fecha**, no
+    por CODPRE: ver `_quote_sort_key`. El filtro de fecha se resuelve también
+    en Python a propósito: el dialecto SQL de la API DELSOL no está documentado
+    y una función de fecha no soportada devolvería `[]` en silencio (la trampa
+    de C-3-fix1). Filtrar por `CLIPRE`, que es una comparación trivial, sí es
+    seguro. La SERIE se filtra en Python por lo mismo (y porque `TIPPRE` viene
+    como texto o número según la fila).
 
-    `text` también se aplica en Python, y **antes** del recorte a `limit`: si se
-    truncase primero, buscar una plantilla antigua no la encontraría nunca
-    porque las 100 más recientes se la habrían comido.
+    `text` y `serie` se aplican **antes** del recorte a `limit`: si se truncase
+    primero, buscar una plantilla antigua no la encontraría nunca porque las
+    100 más recientes se la habrían comido.
     """
     filtro = "1=1"
     if codcli:
@@ -343,9 +361,14 @@ def list_quotes(
             q for q in quotes
             if q["fecha"] is None or date.fromisoformat(q["fecha"]).toordinal() >= ref
         ]
+    if serie is not None:
+        from app.integrations.factusol.service import coerce_serie  # noqa: PLC0415
+
+        quotes = [q for q in quotes if coerce_serie(q.get("tippre")) == serie]
     needle = (text or "").strip().casefold()
     if needle:
         quotes = [q for q in quotes if _quote_matches(q, needle)]
+    quotes.sort(key=_quote_sort_key, reverse=True)
     return quotes[:limit]
 
 

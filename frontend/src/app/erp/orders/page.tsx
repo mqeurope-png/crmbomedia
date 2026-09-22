@@ -7,6 +7,7 @@ import { PageHeader } from "../../components/PageHeader";
 import { CobroFactusolBadge } from "../../components/erp/CobroFactusolBadge";
 import { ExcludeSeguimientoModal } from "../../components/erp/ExcludeSeguimientoModal";
 import { OrderStatusBadge } from "../../components/erp/OrderStatusBadge";
+import { isSampleOrder } from "../../components/erp/OrderStatusGrid";
 import { isInvoiced, OrderStatusPills } from "../../components/erp/OrderStatusPills";
 import { RegistrarCobroModal } from "../../components/erp/RegistrarCobroModal";
 import {
@@ -336,8 +337,19 @@ function ErpOrdersScreen() {
     return m;
   }, [stores]);
 
-  /** Origen del pedido, como pastilla (tienda web / manual / FACTUSOL). */
+  /** Origen del pedido, como pastilla (tienda web / manual / FACTUSOL), o el
+   *  TIPO cuando no es un pedido corriente (muestra no facturable). */
   function sourcePill(o: OrderSummary) {
+    if (isSampleOrder(o)) {
+      return (
+        <span
+          className="erp-flow-src is-sample"
+          title="Muestra / envío no facturable: sin albarán, factura ni cobro."
+        >
+          Muestra · no facturable
+        </span>
+      );
+    }
     const web = o.external_source === "woocommerce";
     const manual = o.external_source === "manual";
     const tienda = web ? storeByPrefix.get(o.order_number.split("-")[0].toUpperCase()) : null;
@@ -826,9 +838,18 @@ function ErpOrdersScreen() {
         description="Bandeja de trabajo — ordenada por lo que hay que hacer."
         crumbs={[{ label: "ERP" }, { label: "Pedidos" }]}
         actions={
-          <Link href="/erp/orders/new" className="button small">
-            + Nuevo pedido manual
-          </Link>
+          <>
+            <Link href="/erp/orders/new" className="button small">
+              + Nuevo pedido manual
+            </Link>
+            {/* Muestra / envío no facturable: alta propia y corta (sin empresa
+                ni FACTUSOL). También la crea el taller, no solo la oficina. */}
+            {can(user, Cap.SAMPLES_CREATE) ? (
+              <Link href="/erp/orders/sample/new" className="button small secondary">
+                + Nuevo envío / muestra
+              </Link>
+            ) : null}
+          </>
         }
       />
 

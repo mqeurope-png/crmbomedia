@@ -54,6 +54,7 @@ require_erp_view = require_capability(Cap.ACCESS)          # ver el ERP
 require_orders_create = require_capability(Cap.ORDERS_CREATE)
 require_orders_approve = require_capability(Cap.ORDERS_APPROVE)
 require_orders_cancel = require_capability(Cap.ORDERS_CANCEL)
+require_samples_create = require_capability(Cap.SAMPLES_CREATE)
 require_albaran_create = require_capability(Cap.ALBARAN_CREATE)
 require_invoice_emit = require_capability(Cap.INVOICE_EMIT)
 require_cobro_register = require_capability(Cap.COBRO_REGISTER)

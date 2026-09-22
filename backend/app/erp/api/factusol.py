@@ -2586,6 +2586,9 @@ def list_quotes_endpoint(
     days_back: int = Query(default=180, ge=0, le=1825),
     queue: str | None = Query(default=None, max_length=20),
     limit: int = Query(default=100, ge=1, le=1000),
+    # Serie = empresa emisora (1 Bomedia / 2 MQ Europe / 4 Lambert /
+    # 5 Streamtec). None = TODAS, igual que en Documentos.
+    serie: int | None = Query(default=None, ge=1, le=9),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_view),
 ) -> dict[str, Any]:
@@ -2627,13 +2630,14 @@ def list_quotes_endpoint(
     client, ejercicio = _client_and_ejercicio(session)
     try:
         items = list_quotes(client, ejercicio=ejercicio, codcli=codcli,
-                            days_back=days_back, limit=limit)
+                            days_back=days_back, limit=limit, serie=serie)
     except FactusolError as exc:
         raise _factusol_gateway_error(exc, "factusol_quotes_failed") from exc
     summary = annotate_quotes(session, items)
     if queue:
         items = [q for q in items if q.get("queue") == queue]
-    return {"items": items, "unlinked": False, "ejercicio": ejercicio, **summary}
+    return {"items": items, "unlinked": False, "ejercicio": ejercicio,
+            "serie": serie, **summary}
 
 
 @router.get("/quotes/search")
