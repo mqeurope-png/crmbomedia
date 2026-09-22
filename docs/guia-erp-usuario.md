@@ -238,6 +238,16 @@ Es la pantalla de un pedido concreto. De arriba abajo:
   e idioma.
 - **«Enviar factura al cliente»** — abre **«Enviar factura por email»** con el
   PDF de la factura adjunto.
+
+> **Destinatarios: los contactos de la empresa.** En los tres envíos (factura,
+> pedido/proforma) el modal muestra la lista de **contactos de la empresa del
+> pedido** con su email: marca a quién enviar y elige si va en **Para** o en
+> **CC** (puedes marcar varios). También puedes escribir direcciones a mano.
+> Un contacto sin email sale deshabilitado. El correo sale por el **remitente
+> por tienda/serie** de siempre (la ventana indica cuál se usará) y, como
+> cualquier email del CRM, queda registrado en el **timeline del contacto** y de
+> su empresa; la auditoría guarda todos los destinatarios.
+
 - **«Marcar completado»** / **«Desmarcar completado»** — marca el pedido como
   terminado (solo en BoHub; WooCommerce no cambia).
 - **«⋯» (Más acciones del pedido)** — cambiar el **idioma del pedido**,
@@ -543,8 +553,10 @@ fecha, marca la confirmación y **«Registrar cobro»**. *Qué pasa:* BoHub apun
 cobro en FACTUSOL y la factura queda **cobrada**.
 
 **Paso 8 — Enviar la factura al cliente.** En la ficha, **«Enviar factura al
-cliente»** → revisa destinatario, idioma y mensaje → **«Enviar factura»**. Sale
-el email con el PDF adjunto desde el remitente configurado.
+cliente»** → marca los **contactos de la empresa** que reciben (Para/CC) o
+escribe una dirección, revisa idioma y mensaje → **«Enviar factura»**. Sale el
+email con el PDF adjunto desde el remitente configurado y queda en el timeline
+del contacto.
 
 **Paso 9 — Marcar completado.** Cuando no quede nada, **«Marcar completado»** (en
 la ficha o en la fila). El pedido sale de las colas de trabajo (solo en BoHub;

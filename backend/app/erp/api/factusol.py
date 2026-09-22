@@ -1075,6 +1075,9 @@ class InvoiceEmailPayload(BaseModel):
 
     confirm: bool = False
     to: list[str] = Field(default_factory=list)
+    #: Copia (CC) y copia oculta (CCO): contactos de la empresa o emails libres.
+    cc: list[str] = Field(default_factory=list)
+    bcc: list[str] = Field(default_factory=list)
     subject: str = Field(min_length=1, max_length=500)
     body_text: str = Field(min_length=1)
     lang: str = Field(pattern="^(es|en|de|fr|nl)$")
@@ -1119,6 +1122,8 @@ def send_invoice_email_endpoint(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {
             "code": "no_recipient", "detail": "Falta el destinatario.",
         })
+    cc = [t.strip() for t in payload.cc if t and t.strip()]
+    bcc = [t.strip() for t in payload.bcc if t and t.strip()]
     # El alias: en las preferencias permitidas del usuario, o un remitente
     # configurado en Ajustes ERP (tienda / serie) que sea send-as VERIFICADO
     # en Gmail (comprobado en vivo). Nunca un alias ajeno cualquiera.
@@ -1133,7 +1138,8 @@ def send_invoice_email_endpoint(
     try:
         return send_invoice_email(
             session, client, serie=serie, codigo=codigo, ejercicio=ejercicio,
-            current_user=current_user, to=to, subject=payload.subject,
+            current_user=current_user, to=to, cc=cc, bcc=bcc,
+            subject=payload.subject,
             body_text=payload.body_text, lang=payload.lang,
             from_alias=payload.from_alias,
             reply_to_message_id=payload.reply_to_message_id,

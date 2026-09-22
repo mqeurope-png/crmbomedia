@@ -9,6 +9,11 @@ import {
   type InvoiceEmailPreview,
 } from "../../lib/erpApi";
 import { extractErrorMessage } from "../../lib/errors";
+import {
+  CompanyContactsPicker,
+  splitContactChannels,
+  type ContactChannel,
+} from "./CompanyContactsPicker";
 
 /** Idiomas soportados (mismo orden y etiquetas que el selector del PDF). Se
  *  define aquí y no se importa de FactusolDocumentDetailModal para no crear
@@ -56,6 +61,23 @@ function looksLikeEmail(value: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
+/** Une listas de emails quitando duplicados (sin distinguir mayúsculas). */
+function dedupeEmails(...lists: string[][]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const list of lists) {
+    for (const raw of list) {
+      const email = raw.trim();
+      const key = email.toLowerCase();
+      if (email && !seen.has(key)) {
+        seen.add(key);
+        out.push(email);
+      }
+    }
+  }
+  return out;
+}
+
 /** ERP-F1 Parte 2 — PREVISUALIZACIÓN OBLIGATORIA antes de enviar la factura
  *  por email. Enseña destinatario (editable), idioma (editable, con su
  *  procedencia), asunto y cuerpo (editables) y el adjunto identificado; el
@@ -96,6 +118,9 @@ export function InvoiceEmailModal({
 
   // Campos editables del formulario.
   const [to, setTo] = useState("");
+  const [cc, setCc] = useState("");
+  // Contactos de la empresa elegidos (email → canal Para/CC).
+  const [contactSel, setContactSel] = useState<Record<string, ContactChannel>>({});
   const [lang, setLang] = useState<FactusolPdfLang>("es");
   const [langSource, setLangSource] = useState<InvoiceEmailLangSource | null>(null);
   const [subject, setSubject] = useState("");
@@ -122,7 +147,26 @@ export function InvoiceEmailModal({
           setLangSource(p.lang_source);
           setSubject(p.subject);
           setBody(p.body_text);
-          if (!keepRecipient) setTo(p.to);
+          if (!keepRecipient) {
+            const contacts = p.company_contacts ?? [];
+            if (contacts.length > 0) {
+              // Con contactos de la empresa: se pre-marca el del pedido (con
+              // email) en «Para»; el campo libre queda vacío.
+              const sel: Record<string, ContactChannel> = {};
+              for (const c of contacts) {
+                if (c.is_order_contact && c.has_email && c.email) {
+                  sel[c.email] = "to";
+                }
+              }
+              setContactSel(sel);
+              setTo("");
+            } else {
+              // Sin contactos: se precarga el destinatario propuesto a mano.
+              setContactSel({});
+              setTo(p.to);
+            }
+            setCc("");
+          }
         })
         .catch((e) => {
           if (alive) {
@@ -138,10 +182,14 @@ export function InvoiceEmailModal({
 
   useEffect(() => loadPreview(), [loadPreview]);
 
-  const recipients = parseRecipients(to);
+  const { to: contactTo, cc: contactCc } = splitContactChannels(contactSel);
+  const recipients = dedupeEmails(contactTo, parseRecipients(to));
+  const ccRecipients = dedupeEmails(contactCc, parseRecipients(cc));
   const recipientsValid = recipients.length > 0 && recipients.every(looksLikeEmail);
+  const ccValid = ccRecipients.every(looksLikeEmail);
   const canSend =
-    !!preview && !sending && recipientsValid && subject.trim().length > 0
+    !!preview && !sending && recipientsValid && ccValid
+    && subject.trim().length > 0
     && body.trim().length > 0 && !!preview.from_alias;
 
   async function send() {
@@ -152,6 +200,7 @@ export function InvoiceEmailModal({
       const result = await sendInvoiceEmail(serie, codigo, {
         confirm: true,
         to: recipients,
+        cc: ccRecipients,
         subject: subject.trim(),
         body_text: body,
         lang,
@@ -205,8 +254,21 @@ export function InvoiceEmailModal({
               adjunta y se genera en el idioma seleccionado.
             </p>
 
+            {(preview.company_contacts?.length ?? 0) > 0 ? (
+              <CompanyContactsPicker
+                contacts={preview.company_contacts ?? []}
+                value={contactSel}
+                onChange={setContactSel}
+                disabled={sending}
+              />
+            ) : null}
+
             <label className="field">
-              <span>Para</span>
+              <span>
+                {(preview.company_contacts?.length ?? 0) > 0
+                  ? "Para (otras direcciones)"
+                  : "Para"}
+              </span>
               <input
                 type="text"
                 value={to}
@@ -216,9 +278,30 @@ export function InvoiceEmailModal({
                 onChange={(e) => setTo(e.target.value)}
               />
             </label>
-            {to.trim() && !recipientsValid ? (
+            <label className="field">
+              <span>CC (otras direcciones)</span>
+              <input
+                type="text"
+                value={cc}
+                aria-label="Copia (CC)"
+                placeholder="opcional"
+                disabled={sending}
+                onChange={(e) => setCc(e.target.value)}
+              />
+            </label>
+            {recipients.length > 0 && !recipientsValid ? (
               <span className="muted small form-error">
-                Revisa la dirección de correo.
+                Revisa las direcciones de «Para».
+              </span>
+            ) : null}
+            {!ccValid ? (
+              <span className="muted small form-error">
+                Revisa las direcciones de «CC».
+              </span>
+            ) : null}
+            {recipients.length === 0 ? (
+              <span className="muted small">
+                Elige al menos un destinatario (un contacto o una dirección).
               </span>
             ) : null}
             {preview.customer_mismatch ? (

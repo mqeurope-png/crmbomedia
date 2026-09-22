@@ -360,7 +360,10 @@ def build_order_email_preview(
     """Datos del modal de envío: destinatarios precargados (el SAT), asunto y
     cuerpo editables, remitente y qué se puede adjuntar. No envía nada ni
     genera PDF."""
-    from app.erp.invoice_email import default_from_alias  # noqa: PLC0415
+    from app.erp.invoice_email import (  # noqa: PLC0415
+        company_contacts_for_order,
+        default_from_alias,
+    )
 
     lang = lang_override if lang_override in SUPPORTED_LANGS else (
         order.language if (order.language or "") in SUPPORTED_LANGS else "es"
@@ -384,6 +387,10 @@ def build_order_email_preview(
         "body_text": body_text,
         "from_alias": default_from_alias(session, current_user),
         "attachments": attachments,
+        # Contactos de la empresa del pedido para el selector de destinatarios
+        # (enviar el pedido/proforma/factura a los contactos del cliente, no
+        # solo al taller). Los sin email salen deshabilitados.
+        "company_contacts": company_contacts_for_order(session, order),
         # El albarán va SIEMPRE por defecto (es el envío típico al taller);
         # los otros dos, solo si el operador los marca.
         "defaults": {
@@ -454,7 +461,7 @@ def send_order_email(
     no sale ningún correo. Si el envío falla, la excepción sube y no se
     registra nada (no queda constancia de un envío que no ocurrió)."""
     from app.core.audit import record_event  # noqa: PLC0415
-    from app.erp.invoice_email import _text_to_html  # noqa: PLC0415
+    from app.erp.invoice_email import _text_to_html, resolve_primary_contact  # noqa: PLC0415
     from app.integrations.gmail import service as gmail_service  # noqa: PLC0415
 
     attachments = build_attachments(
@@ -473,9 +480,10 @@ def send_order_email(
         subject=subject,
         body_html=_text_to_html(body_text),
         body_text=body_text,
-        # Se liga al contacto del pedido, como cualquier email del CRM (el
-        # destinatario es el taller, así que no se responde a ningún hilo).
-        contact_id=order.contact_id,
+        # Se liga a UN contacto para el timeline: el principal entre los
+        # destinatarios (el del pedido si está entre ellos, o el primer contacto
+        # de la empresa elegido); la auditoría registra a todos.
+        contact_id=resolve_primary_contact(session, order, list(to) + list(cc or [])),
         attachments=[
             {k: a[k] for k in ("filename", "content_type", "data")}
             for a in attachments

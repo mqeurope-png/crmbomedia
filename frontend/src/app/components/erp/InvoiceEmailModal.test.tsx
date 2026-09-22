@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { InvoiceEmailModal } from "./InvoiceEmailModal";
 import {
@@ -136,7 +136,7 @@ describe("InvoiceEmailModal", () => {
     await user.clear(screen.getByLabelText("Destinatario"));
     await user.type(screen.getByLabelText("Destinatario"), "no-es-un-email");
     expect(screen.getByRole("button", { name: "Enviar factura" })).toBeDisabled();
-    expect(screen.getByText(/Revisa la dirección/i)).toBeInTheDocument();
+    expect(screen.getByText(/Revisa las direcciones/i)).toBeInTheDocument();
   });
 
   it("cancelar llama onClose sin enviar", async () => {
@@ -200,5 +200,44 @@ describe("InvoiceEmailModal — ficha de pedido (#426)", () => {
     render(<InvoiceEmailModal serie={5} codigo={63} onClose={jest.fn()} />);
     await screen.findByLabelText("Destinatario");
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+});
+
+// --- destinatarios = contactos de la empresa --------------------------------
+
+describe("InvoiceEmailModal — contactos de la empresa", () => {
+  const contacts = [
+    { id: "c1", name: "Ana Compras", email: "ana@cli.com", has_email: true, is_order_contact: true },
+    { id: "c2", name: "Beto Admin", email: "beto@cli.com", has_email: true, is_order_contact: false },
+    { id: "c3", name: "Ciro Tec", email: null, has_email: false, is_order_contact: false },
+  ];
+
+  beforeEach(() => {
+    mockPreview.mockResolvedValue(preview({ to: "", company_contacts: contacts }));
+  });
+
+  it("lista los contactos; el del pedido va pre-marcado y el sin email deshabilitado", async () => {
+    render(<InvoiceEmailModal serie={5} codigo={63} onClose={jest.fn()} />);
+    expect(await screen.findByText("Contactos de la empresa")).toBeInTheDocument();
+    // El contacto del pedido (Ana) viene marcado por defecto en «Para».
+    expect(screen.getByLabelText(/Enviar a Ana Compras/)).toBeChecked();
+    // El contacto sin email se enseña deshabilitado con aviso.
+    expect(screen.getByText("Ciro Tec")).toBeInTheDocument();
+    expect(screen.getByText(/sin email/)).toBeInTheDocument();
+  });
+
+  it("envía a los contactos marcados repartidos en To y CC", async () => {
+    const user = userEvent.setup();
+    render(<InvoiceEmailModal serie={5} codigo={63} onClose={jest.fn()} />);
+    await screen.findByText("Contactos de la empresa");
+    // Marca a Beto (entra en «Para») y lo pasa a CC.
+    await user.click(screen.getByLabelText(/Enviar a Beto Admin/));
+    const betoGroup = screen.getByRole("group", { name: /Canal de Beto Admin/ });
+    await user.click(within(betoGroup).getByRole("button", { name: "CC" }));
+    await user.click(screen.getByRole("button", { name: "Enviar factura" }));
+    await waitFor(() => expect(mockSend).toHaveBeenCalledTimes(1));
+    const payload = mockSend.mock.calls[0][2];
+    expect(payload.to).toEqual(["ana@cli.com"]);   // Ana (contacto del pedido)
+    expect(payload.cc).toEqual(["beto@cli.com"]);  // Beto movido a CC
   });
 });

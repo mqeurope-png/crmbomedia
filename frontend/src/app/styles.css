@@ -12361,6 +12361,33 @@ input[type="radio"]:focus-visible {
   border-radius: var(--r-control);
 }
 .erp-email-attachments legend { padding: 0 var(--sp-1); font-size: var(--fs-label); font-weight: 600; color: var(--muted); }
+
+/* ERP · selector de contactos de la empresa como destinatarios del envío. */
+.erp-contacts-picker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin: 0;
+  padding: var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  max-height: 220px;
+  overflow-y: auto;
+}
+.erp-contacts-picker legend { padding: 0 var(--sp-1); font-size: var(--fs-label); font-weight: 600; color: var(--muted); }
+.erp-contact-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: 2px 0;
+  flex-wrap: wrap;
+}
+.erp-contact-row.is-disabled { opacity: 0.6; }
+.erp-contact-check { display: flex; align-items: center; gap: var(--sp-2); flex: 1 1 auto; min-width: 0; cursor: pointer; }
+.erp-contact-name { font-weight: 500; }
+.erp-contact-email { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.erp-contact-channel { display: inline-flex; gap: 4px; flex: 0 0 auto; }
 .erp-reason-chips { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin: 0 0 var(--sp-2); }
 .erp-bulto-row { display: flex; flex-direction: column; gap: var(--sp-2); padding: var(--sp-3); border: 1px solid var(--line); border-radius: var(--r-control); }
 .erp-bulto-head { display: flex; justify-content: space-between; align-items: center; gap: var(--sp-2); }
