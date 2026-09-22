@@ -115,5 +115,18 @@ a ciegas.
    en la ficha, y la empresa queda enlazada a su `CODCLI`.
 2. El backfill en dry-run lista los pendientes; tras `--apply` esos pedidos tienen
    empresa.
-3. En el alta manual, buscar `FR91523447399` encuentra «EURL Y'A PAS PHOTO» en el
-   CRM y su cliente F_CLI (antes no encontraba nada).
+3. En el alta manual, buscar `FR91523447399` **y** `91523447399` (sin el prefijo)
+   encuentra «EURL Y'A PAS PHOTO» en el CRM y su cliente F_CLI. La búsqueda es
+   simétrica: con o sin prefijo de país, con o sin separadores, da el mismo
+   resultado.
+
+> **Nota (fix posterior).** El número **desnudo** no se reconocía como
+> identificador fiscal en el alta manual (el patrón solo cubría el NIF español
+> de 7-8 dígitos), así que se buscaba «por nombre» en F_CLI y no salía nada —
+> y la empresa, ya vinculada tras el backfill, tampoco aparecía en la columna
+> del CRM. Corregido en `frontend/src/app/lib/fiscalId.ts`.
+>
+> En el mismo fix: `--by-name` no llegaba a fusionar nada porque el guard de
+> aplicación exigía que los absorbidos compartieran el NIF de la superviviente,
+> cuando la condición del modo es justo que **no tengan NIF**. Ahora el guard
+> distingue el modo y solo aborta si hay dos NIF no vacíos y distintos.

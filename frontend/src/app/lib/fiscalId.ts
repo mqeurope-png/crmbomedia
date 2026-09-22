@@ -13,10 +13,11 @@ export function normalizeFiscalId(value: string): string {
 
 /** ¿El texto tiene pinta de NIF / CIF / NIF-IVA (y no de un nombre)?
  *
- *  Acepta el NIF español con o sin letra (`B64113590`, `12345678Z`,
- *  `X1234567L`) y el NIF-IVA con prefijo de país (`FR91523447399`,
- *  `ESB64113590`). El regex anterior solo cubría el español, así que un
- *  NIF-IVA extranjero se buscaba «por nombre» y no encontraba nada. */
+ *  Es SIMÉTRICO respecto al prefijo de país: tanto `FR91523447399` como el
+ *  número desnudo `91523447399` se reconocen como identificador fiscal. Antes
+ *  el desnudo se colaba al `else` español (letra opcional + 7-8 dígitos), no
+ *  casaba, y la búsqueda se hacía «por nombre» — por eso `FR91523447399`
+ *  encontraba la empresa y `91523447399` no. */
 export function looksLikeFiscalId(value: string): boolean {
   const raw = normalizeFiscalId(value);
   if (!raw) return false;
@@ -25,6 +26,11 @@ export function looksLikeFiscalId(value: string): boolean {
     const rest = raw.slice(2);
     if (/^[A-Z0-9]{2,12}$/.test(rest) && /\d/.test(rest)) return true;
   }
-  // NIF/CIF español desnudo: letra opcional + 7-8 dígitos + letra opcional.
-  return /^[A-Z]?\d{7,8}[A-Z]?$/.test(raw);
+  // NIF/CIF español: letra opcional + 7-8 dígitos + letra opcional.
+  if (/^[A-Z]?\d{7,8}[A-Z]?$/.test(raw)) return true;
+  // NIF-IVA extranjero DESNUDO (sin prefijo de país): 8-12 alfanuméricos que
+  // empiezan por dígito y son casi todo dígitos (`91523447399`, `123456789B01`).
+  // El límite de letras evita confundirlo con un nombre («3M ESPAÑA»).
+  if (!/^\d[A-Z0-9]{7,11}$/.test(raw)) return false;
+  return raw.replace(/\d/g, "").length <= 2;
 }

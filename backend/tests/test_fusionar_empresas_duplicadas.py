@@ -252,3 +252,92 @@ def test_apply_completes_group_with_garbage_domain(session):
     assert summary["errors"] == []
     session.expire_all()
     assert session.get(Company, keep.id).domain is None  # basura no heredada
+
+
+# --- modo --by-name: el guard debe alinearse con el criterio del plan --------
+
+
+def test_apply_by_name_merges_absorbed_without_nif(session):
+    """El bug: en `--by-name` los absorbidos NO tienen NIF (es la condición del
+    modo), pero el guard exigía que compartieran el NIF de la superviviente, así
+    que abortaba TODOS los grupos («ya no comparte NIF normalizado»). Ahora un
+    absorbido sin NIF es compatible y el grupo se fusiona."""
+    from app.services.company_dedupe import plan_name_only_merges
+
+    keep = _company(session, "EURL Y'A PAS PHOTO", tax_id="FR91523447399",
+                    factusol_company_id="3854")
+    sin_nif = [_company(session, "EURL Y'A PAS PHOTO") for _ in range(3)]
+
+    plan = plan_name_only_merges(session)
+    assert len(plan.to_merge) == 1, "el dry-run ya los veía"
+
+    summary = apply_duplicate_merges(session, plan)
+
+    assert summary["errors"] == []
+    assert summary["merged_groups"] == 1
+    assert summary["companies_archived"] == 3
+    session.expire_all()
+    assert session.get(Company, keep.id).is_archived is False
+    for other in sin_nif:
+        assert session.get(Company, other.id).is_archived is True
+
+
+def test_apply_by_name_still_aborts_two_distinct_nifs(session):
+    """Sigue sin fusionar a ciegas: dos NIF no vacíos y DISTINTOS se abortan
+    aunque el plan (manipulado) los traiga juntos."""
+    from app.services.company_dedupe import (
+        MODE_NAME,
+        MassMergePlan,
+        MergeGroupAction,
+    )
+
+    keep = _company(session, "Talleres Gomez", tax_id="B64113590")
+    otro = _company(session, "Talleres Gomez", tax_id="B12345674")
+    plan = MassMergePlan(mode=MODE_NAME, to_merge=[MergeGroupAction(
+        nif_key="nombre:TALLERESGOMEZ", keep_id=keep.id, keep_name=keep.name,
+        keep_codcli=None, merge_ids=[otro.id], merge_names=[otro.name])])
+
+    summary = apply_duplicate_merges(session, plan)
+
+    assert summary["merged_groups"] == 0
+    assert len(summary["errors"]) == 1
+    assert "no comparte NIF" in summary["errors"][0]["error"]
+    session.expire_all()
+    assert session.get(Company, otro.id).is_archived is False
+
+
+def test_apply_by_nif_guard_unchanged(session):
+    """El modo por-NIF conserva su guard estricto: si el plan quedó obsoleto y
+    los NIF ya no casan, se aborta el grupo."""
+    from app.services.company_dedupe import MassMergePlan, MergeGroupAction
+
+    keep = _company(session, "Bomedia", tax_id="B64113590",
+                    factusol_company_id="11")
+    otro = _company(session, "Bomedia SL", tax_id="B64113590")
+    plan = MassMergePlan(to_merge=[MergeGroupAction(
+        nif_key="B64113590", keep_id=keep.id, keep_name=keep.name,
+        keep_codcli="11", merge_ids=[otro.id], merge_names=[otro.name])])
+    # El plan se queda obsoleto: alguien corrige el NIF de la absorbida.
+    otro.tax_id = "B99999999"
+    session.commit()
+
+    summary = apply_duplicate_merges(session, plan)
+
+    assert summary["merged_groups"] == 0
+    assert "no comparte NIF" in summary["errors"][0]["error"]
+
+
+def test_apply_by_name_is_idempotent(session):
+    """Re-ejecutar tras aplicar no vuelve a fusionar nada."""
+    from app.services.company_dedupe import plan_name_only_merges
+
+    _company(session, "EURL Y'A PAS PHOTO", tax_id="FR91523447399")
+    _company(session, "EURL Y'A PAS PHOTO")
+
+    plan = plan_name_only_merges(session)
+    apply_duplicate_merges(session, plan)
+    session.expire_all()
+
+    # Las absorbidas quedaron archivadas → salen del universo del plan.
+    again = plan_name_only_merges(session)
+    assert again.to_merge == [] and again.review == []
