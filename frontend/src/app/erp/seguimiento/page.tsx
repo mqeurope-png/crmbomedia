@@ -23,7 +23,9 @@ import {
   waitForFactusolReconcile,
   waitForReconcileWoo,
   type FactusolLinkSummary,
+  isManagedSummary,
   syncSeguimientoDrive,
+  type DriveManagedSummary,
   type DriveSyncReviewGroup,
   type DriveSyncSummary,
   type DriveSyncUnknownInvoice,
@@ -311,8 +313,11 @@ export default function SeguimientoPage() {
       setSyncSummary(summary);
       setPreviewSummary(null);
       setNotice(
-        `Hoja actualizada: ${summary.appended_rows} filas añadidas. `
-        + `${summary.orders_to_review} pedidos a revisar.`,
+        isManagedSummary(summary)
+          ? `Hoja actualizada: ${summary.rows} filas en «${summary.tab}». `
+            + `El histórico («${summary.historic_tab}») no se ha tocado.`
+          : `Hoja actualizada: ${summary.appended_rows} filas añadidas. `
+            + `${summary.orders_to_review} pedidos a revisar.`,
       );
       await load();
     } catch (e) {
@@ -740,7 +745,26 @@ export default function SeguimientoPage() {
         </section>
       ) : null}
 
-      {previewSummary ? (
+      {previewSummary && isManagedSummary(previewSummary) ? (
+        <section className="erp-card">
+          <h3>Previsualización — revisa antes de escribir</h3>
+          <ManagedPreview summary={previewSummary} />
+          <div className="modal-actions">
+            <button type="button" className="button secondary" disabled={busy}
+              onClick={() => setPreviewSummary(null)}>
+              Cancelar
+            </button>
+            <button type="button" className="button" disabled={busy}
+              onClick={onConfirmSync}>
+              {busy
+                ? "Escribiendo…"
+                : `Confirmar y escribir ${previewSummary.rows} filas`}
+            </button>
+          </div>
+        </section>
+      ) : null}
+
+      {previewSummary && !isManagedSummary(previewSummary) ? (
         <section className="erp-card">
           <h3>Previsualización — revisa antes de escribir</h3>
           <p className="muted small">
@@ -783,7 +807,23 @@ export default function SeguimientoPage() {
         </section>
       ) : null}
 
-      {syncSummary ? (
+      {syncSummary && isManagedSummary(syncSummary) ? (
+        <section className="erp-card">
+          <h3>Hoja actualizada</h3>
+          <p className="muted small">
+            {syncSummary.rows} filas en «{syncSummary.tab}» ·{" "}
+            {syncSummary.incidencias} en «{syncSummary.incidencias_tab}».
+            {syncSummary.created_tabs?.length
+              ? ` Pestañas creadas: ${syncSummary.created_tabs.join(", ")}.`
+              : ""}
+          </p>
+          <p className="muted small">
+            La pestaña «{syncSummary.historic_tab}» (el histórico) no se ha tocado.
+          </p>
+        </section>
+      ) : null}
+
+      {syncSummary && !isManagedSummary(syncSummary) ? (
         <section className="erp-card">
           <h3>Hoja actualizada</h3>
           <p className="muted small">
@@ -990,6 +1030,37 @@ const REVIEW_KIND_LABEL: Record<string, string> = {
 
 /** ERP-F6-fix4 — a revisar, agrupado POR PEDIDO (Parte G). Cada pedido lista
  *  sus motivos; nada se toca, Bart decide. */
+/** Previsualización del volcado a la pestaña gestionada: a qué pestañas va,
+ *  cuántas filas y el desglose por Situación — y que el histórico no se toca,
+ *  que es lo que a Bart le importa antes de pulsar. */
+function ManagedPreview({ summary }: { summary: DriveManagedSummary }) {
+  const situaciones = Object.entries(summary.por_situacion);
+  return (
+    <>
+      <p className="muted small">
+        Se reescribirá la pestaña <strong>«{summary.tab}»</strong> con las{" "}
+        {summary.columns.length} columnas del seguimiento, ordenada por
+        Situación. Nada se ha escrito todavía.
+      </p>
+      <ul className="item-list">
+        <li><strong>{summary.rows}</strong> filas (todos los pedidos de la vista).</li>
+        <li>
+          <strong>{summary.incidencias}</strong> en «{summary.incidencias_tab}»
+          (Situación = Incidencia).
+        </li>
+        {situaciones.length > 0 ? (
+          <li className="muted small">
+            {situaciones.map(([label, n]) => `${label}: ${n}`).join(" · ")}
+          </li>
+        ) : null}
+        <li className="muted small">
+          La pestaña «{summary.historic_tab}» (el histórico) no se toca.
+        </li>
+      </ul>
+    </>
+  );
+}
+
 function ReviewGroups({ groups }: { groups: DriveSyncReviewGroup[] }) {
   if (groups.length === 0) return null;
   return (

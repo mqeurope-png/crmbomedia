@@ -1177,13 +1177,20 @@ def _situacion_sort_key(row: dict[str, Any]) -> tuple[int, bool, int]:
     return (prio, iso is None, _neg_ordinal(iso))
 
 
+def sort_by_situacion(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Las filas ordenadas por Situación (prioridad de cola + fecha desc), que
+    es el orden del rediseño 2026. Lo usan la pantalla, el Excel y el volcado
+    a la pestaña gestionada de Drive, para que las tres enseñen lo mismo."""
+    return sorted(rows, key=_situacion_sort_key)
+
+
 def _sort_rows(
     out: list[dict[str, Any]], sort: str, direction: str,
 ) -> list[dict[str, Any]]:
     # Rediseño 2026 — orden por Situación: prioridad de cola + fecha desc. No
     # depende de `direction` (la prioridad manda; la fecha va siempre desc).
     if sort == "situacion":
-        return sorted(out, key=_situacion_sort_key)
+        return sort_by_situacion(out)
     key = sort if sort in SORT_KEYS else "fecha"
     reverse = direction != "asc"
     out = sorted(
