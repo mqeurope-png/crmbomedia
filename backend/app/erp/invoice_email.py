@@ -450,22 +450,20 @@ def erp_configured_senders(session: Session) -> set[str]:
 def check_sender_alias(session: Session, user: Any, alias: str) -> dict[str, Any]:
     """¿Puede `user` enviar desde `alias`? `{ok, source, reason}`.
 
-    Bug 3 (#426): `gmail:sync_aliases` refleja TODOS los send-as de la cuenta
-    Google compartida en `user_email_alias_prefs`, pero marca `is_allowed=0`
-    a todo alias que no sea el email propio del usuario (para que cada
-    comercial solo vea los suyos en el compositor). `pedidos@streamtec.es`
-    es un alias de la organización, no de nadie → quedaba oculto y el ERP
-    lo rechazaba aunque en Gmail esté verificado.
+    El envío sale por la cuenta de Gmail conectada del CRM, así que un remitente
+    es válido si Gmail lo tiene como «enviar como» VERIFICADO — cualquiera de
+    ellos, no solo los mapeados a una tienda/serie. Gmail es quien verifica la
+    dirección; el operador elige el remitente del selector.
 
-    Criterio ahora:
+    Criterio:
       1. Alias en las preferencias PERMITIDAS del usuario → ok (`preferencia`).
-      2. Alias configurado como remitente en Ajustes ERP (tienda o serie) y
-         send-as VERIFICADO en Gmail (lista en vivo; si Gmail no responde, el
-         espejo local aunque esté oculto) → ok (`gmail` / `gmail_cache`). Se
-         refresca el espejo local con lo que dice Gmail (sin cambiar la
-         visibilidad que eligió el usuario).
-      3. Cualquier otro alias → no (nadie suplanta un alias ajeno que el ERP
-         no tenga configurado)."""
+      2. Alias que es un send-as VERIFICADO de la cuenta de Gmail (lista en
+         vivo) → ok (`gmail`); se refresca el espejo local sin cambiar su
+         visibilidad en el compositor.
+      3. Si Gmail no responde, solo se admite un remitente configurado en
+         Ajustes ERP del que ya haya espejo local (lo puso el sync) → ok
+         (`gmail_cache`).
+      4. Cualquier otro alias → no (`not_in_gmail` / `gmail_unavailable`)."""
     from app.integrations.gmail import service as gmail_service  # noqa: PLC0415
     from app.models.crm import UserEmailAliasPref  # noqa: PLC0415
 
@@ -480,12 +478,15 @@ def check_sender_alias(session: Session, user: Any, alias: str) -> dict[str, Any
     row = mine.get(key)
     if row is not None and row.is_allowed:
         return {"ok": True, "source": "preferencia", "reason": None}
-    if key not in erp_configured_senders(session):
-        return {"ok": False, "source": None, "reason": "alias_not_allowed"}
+    # Cualquier «enviar como» VERIFICADO de la cuenta de Gmail conectada vale
+    # como remitente (Gmail ya lo verifica). No hace falta que esté mapeado a
+    # una tienda/serie ni en las preferencias del usuario.
     try:
         gmail = gmail_service.list_aliases(session, user.id)
     except Exception:  # noqa: BLE001 — Gmail desconectado / sin scope / caído
-        if row is not None:
+        # Sin Gmail en vivo solo se admite un remitente configurado en Ajustes
+        # ERP del que ya haya espejo local (lo puso el sync desde Gmail).
+        if row is not None and key in erp_configured_senders(session):
             return {"ok": True, "source": "gmail_cache", "reason": None}
         return {"ok": False, "source": None, "reason": "gmail_unavailable"}
     verified = {
@@ -776,6 +777,7 @@ def send_invoice_email(
             metadata={
                 "factura": data["numero"], "to": list(to),
                 "cc": list(cc or []), "bcc": list(bcc or []), "lang": lang,
+                "from_alias": from_alias,
                 "message_id": message.id, "thread_id": message.thread_id,
                 "attachment": filename,
             },

@@ -4,17 +4,20 @@ import { InvoiceEmailModal } from "./InvoiceEmailModal";
 import {
   getInvoiceEmailPreview,
   sendInvoiceEmail,
+  getEmailSenders,
   type InvoiceEmailPreview,
 } from "../../lib/erpApi";
 
 jest.mock("../../lib/erpApi", () => ({
   getInvoiceEmailPreview: jest.fn(),
   sendInvoiceEmail: jest.fn(),
+  getEmailSenders: jest.fn(),
   // PDF_LANGS lo importa el componente desde FactusolDocumentDetailModal, no
   // desde aquí, así que no hace falta mockearlo.
 }));
 const mockPreview = getInvoiceEmailPreview as jest.Mock;
 const mockSend = sendInvoiceEmail as jest.Mock;
+const mockSenders = getEmailSenders as jest.Mock;
 
 function preview(over: Partial<InvoiceEmailPreview> = {}): InvoiceEmailPreview {
   return {
@@ -45,6 +48,8 @@ beforeEach(() => {
     to: ["cliente@ejemplo.fr"], lang: "fr", numero: "5-000063",
     attachment_filename: "Factura_5-000063.pdf",
   });
+  mockSenders.mockReset();
+  mockSenders.mockResolvedValue({ senders: [], available: true, problem: null });
 });
 
 describe("InvoiceEmailModal", () => {
@@ -239,5 +244,35 @@ describe("InvoiceEmailModal — contactos de la empresa", () => {
     const payload = mockSend.mock.calls[0][2];
     expect(payload.to).toEqual(["ana@cli.com"]);   // Ana (contacto del pedido)
     expect(payload.cc).toEqual(["beto@cli.com"]);  // Beto movido a CC
+  });
+});
+
+// --- selector de remitente («Enviar desde») ---------------------------------
+
+describe("InvoiceEmailModal — remitente («Enviar desde»)", () => {
+  beforeEach(() => {
+    mockSenders.mockResolvedValue({
+      senders: [
+        { email: "pedidos@streamtec.es", name: "Streamtec", is_primary: false },
+        { email: "bart@bomedia.net", name: "Bart", is_primary: true },
+      ],
+      available: true,
+      problem: null,
+    });
+  });
+
+  it("ofrece los sendAs del Gmail, con el propuesto por defecto, y envía con el elegido", async () => {
+    const user = userEvent.setup();
+    render(<InvoiceEmailModal serie={5} codigo={63} onClose={jest.fn()} />);
+    const select = await screen.findByLabelText("Remitente");
+    // Espera a que carguen los sendAs de Gmail.
+    await screen.findByRole("option", { name: /bart@bomedia\.net/ });
+    // Por defecto, el remitente propuesto por el preview (from_alias).
+    expect(select).toHaveValue("ventas@bomedia.es");
+    // Cambia el remitente y envía → se usa el elegido como From.
+    await user.selectOptions(select, "bart@bomedia.net");
+    await user.click(screen.getByRole("button", { name: "Enviar factura" }));
+    await waitFor(() => expect(mockSend).toHaveBeenCalledTimes(1));
+    expect(mockSend.mock.calls[0][2].from_alias).toBe("bart@bomedia.net");
   });
 });

@@ -905,14 +905,15 @@ def test_send_rejects_erp_sender_not_verified_in_gmail(http, session_factory) ->
     mock_send.assert_not_called()
 
 
-def test_send_rejects_unconfigured_alias_even_if_in_gmail(http, session_factory) -> None:
-    """Un alias que NO está en Ajustes ERP ni en las preferencias del usuario
-    no se acepta aunque Gmail lo tenga: nadie suplanta un alias ajeno."""
+def test_send_accepts_any_verified_sendas_even_if_unconfigured(http, session_factory) -> None:
+    """Cualquier «enviar como» VERIFICADO de la cuenta de Gmail vale como
+    remitente, aunque no esté mapeado a una tienda/serie ni en las preferencias
+    del usuario: el operador puede elegir cualquiera del selector «Enviar desde»."""
     with session_factory() as s:
         _seed_order(s)
         _seed_alias(s, alias="ventas@bomedia.net")
     send_patch, _ = _patch_send()
-    with (_patched_factusol(), _gmail_aliases("bart@bomedia.net") as gmail,
+    with (_patched_factusol(), _gmail_aliases("bart@bomedia.net"),
           send_patch as mock_send):
         r = http.post(
             "/api/erp/factusol/documents/facturas/5/260063/email",
@@ -921,10 +922,8 @@ def test_send_rejects_unconfigured_alias_even_if_in_gmail(http, session_factory)
                   "from_alias": "bart@bomedia.net"},
             headers=auth_headers(http, "pedidos"),
         )
-    assert r.status_code == 403
-    assert r.json()["detail"]["reason"] == "alias_not_allowed"
-    gmail.assert_not_called()
-    mock_send.assert_not_called()
+    assert r.status_code == 201, r.text
+    assert mock_send.call_args.kwargs["from_alias"] == "bart@bomedia.net"
 
 
 def test_hidden_mirror_row_allows_erp_sender_when_gmail_unavailable(
@@ -1355,4 +1354,73 @@ def test_send_invoice_multi_recipient_cc_links_primary_and_audits(
         meta = json.loads(log.metadata_json)
         assert meta["to"] == ["marie@example.fr", "extra@libre.com"]
         assert meta["cc"] == ["client@example.fr"]
+
+
+# ---------------------------------------------------------------------------
+# Selector de remitente («Enviar desde»): sendAs del Gmail + auditoría
+# ---------------------------------------------------------------------------
+
+
+def test_email_senders_lists_verified_sendas(http, session_factory) -> None:
+    """El endpoint de remitentes devuelve los «enviar como» verificados de la
+    cuenta de Gmail, con la cuenta base (primaria) primero."""
+    _ = session_factory
+    aliases = [
+        {"send_as_email": "pedidos@streamtec.es", "display_name": "Streamtec Pedidos",
+         "is_primary": False, "is_default": False, "verification_status": "accepted"},
+        {"send_as_email": "bart@bomedia.net", "display_name": "Bart Olde Wolbers",
+         "is_primary": True, "is_default": True, "verification_status": "accepted"},
+    ]
+    with patch("app.integrations.gmail.service.list_aliases", return_value=aliases):
+        r = http.get("/api/erp/email-senders", headers=auth_headers(http, "pedidos"))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["available"] is True and body["problem"] is None
+    emails = [s["email"] for s in body["senders"]]
+    assert emails == ["bart@bomedia.net", "pedidos@streamtec.es"]  # primaria primero
+    assert body["senders"][0]["is_primary"] is True
+    assert body["senders"][0]["name"] == "Bart Olde Wolbers"
+
+
+def test_email_senders_gmail_unavailable(http, session_factory) -> None:
+    """Sin Gmail conectado, el endpoint devuelve lista vacía y el motivo (la UI
+    cae al remitente propuesto)."""
+    from app.integrations.gmail.service import GmailNotConnectedError
+
+    _ = session_factory
+    with patch("app.integrations.gmail.service.list_aliases",
+               side_effect=GmailNotConnectedError("no")):
+        r = http.get("/api/erp/email-senders", headers=auth_headers(http, "pedidos"))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["available"] is False and body["senders"] == []
+    assert body["problem"] == "gmail_unavailable"
+
+
+def test_send_records_chosen_sender_in_audit(http, session_factory) -> None:
+    """El envío usa y AUDITA el remitente elegido."""
+    import json
+
+    from app.models.crm import AuditLog
+
+    with session_factory() as s:
+        order = _seed_order(s)
+        _seed_alias(s, alias="pedidos@streamtec.es")
+        order_id = order.id
+    send_patch, _ = _patch_send()
+    with _patched_factusol(), send_patch as mock_send:
+        r = http.post(
+            "/api/erp/factusol/documents/facturas/5/260063/email",
+            json={"confirm": True, "to": ["client@example.fr"], "subject": "s",
+                  "body_text": "b", "lang": "fr",
+                  "from_alias": "pedidos@streamtec.es", "order_id": order_id},
+            headers=auth_headers(http, "pedidos"),
+        )
+    assert r.status_code == 201, r.text
+    assert mock_send.call_args.kwargs["from_alias"] == "pedidos@streamtec.es"
+    with session_factory() as s:
+        log = s.query(AuditLog).filter_by(
+            action="erp.invoice_emailed", target_id=order_id,
+        ).one()
+        assert json.loads(log.metadata_json)["from_alias"] == "pedidos@streamtec.es"
 

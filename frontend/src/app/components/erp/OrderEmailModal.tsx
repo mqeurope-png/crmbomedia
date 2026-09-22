@@ -13,6 +13,7 @@ import {
   splitContactChannels,
   type ContactChannel,
 } from "./CompanyContactsPicker";
+import { SenderSelect } from "./SenderSelect";
 
 const EMAIL_LANGS: { value: FactusolPdfLang; label: string }[] = [
   { value: "es", label: "ES" },
@@ -77,6 +78,8 @@ export function OrderEmailModal({
   const [bcc, setBcc] = useState("");
   // Contactos de la empresa elegidos (email → canal Para/CC).
   const [contactSel, setContactSel] = useState<Record<string, ContactChannel>>({});
+  // Remitente elegido («Enviar desde»); por defecto el propuesto.
+  const [fromAlias, setFromAlias] = useState("");
   const [showCopies, setShowCopies] = useState(false);
   const [lang, setLang] = useState<FactusolPdfLang>("es");
   const [subject, setSubject] = useState("");
@@ -100,6 +103,7 @@ export function OrderEmailModal({
           setLang(p.lang);
           setSubject(p.subject);
           setBody(p.body_text);
+          if (!keepRecipients) setFromAlias(p.from_alias);
           if (!keepRecipients) {
             setTo(p.to.join(", "));
             setContactSel({});
@@ -131,7 +135,7 @@ export function OrderEmailModal({
   const canSend =
     !!preview && !sending && recipients.length > 0 && allValid
     && subject.trim().length > 0 && body.trim().length > 0
-    && !!preview.from_alias && anyAttachment;
+    && !!fromAlias && anyAttachment;
 
   async function send() {
     if (!preview || !canSend) return;
@@ -146,7 +150,7 @@ export function OrderEmailModal({
         subject: subject.trim(),
         body_text: body,
         lang,
-        from_alias: preview.from_alias,
+        from_alias: fromAlias,
         include_albaran: withAlbaran,
         include_pedido: withPedido,
         include_factura: withFactura,
@@ -336,12 +340,16 @@ export function OrderEmailModal({
                         onChange={(e) => setBody(e.target.value)} />
             </label>
 
-            <p className="muted small">
-              Se envía desde <strong>{preview.from_alias || "—"}</strong>.
-            </p>
-            {!preview.from_alias ? (
+            <SenderSelect
+              defaultAlias={preview.from_alias}
+              value={fromAlias}
+              onChange={setFromAlias}
+              disabled={sending}
+              hint="Por defecto el remitente propuesto; puedes elegir cualquier «enviar como» del Gmail."
+            />
+            {!fromAlias ? (
               <p className="form-error">
-                No tienes un alias de envío configurado (en /account).
+                No hay ningún remitente disponible (revisa la conexión de Gmail).
               </p>
             ) : null}
 

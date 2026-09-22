@@ -243,10 +243,17 @@ Es la pantalla de un pedido concreto. De arriba abajo:
 > pedido/proforma) el modal muestra la lista de **contactos de la empresa del
 > pedido** con su email: marca a quién enviar y elige si va en **Para** o en
 > **CC** (puedes marcar varios). También puedes escribir direcciones a mano.
-> Un contacto sin email sale deshabilitado. El correo sale por el **remitente
-> por tienda/serie** de siempre (la ventana indica cuál se usará) y, como
-> cualquier email del CRM, queda registrado en el **timeline del contacto** y de
-> su empresa; la auditoría guarda todos los destinatarios.
+> Un contacto sin email sale deshabilitado. El correo queda registrado en el
+> **timeline del contacto** y de su empresa; la auditoría guarda todos los
+> destinatarios.
+
+> **Remitente: elígelo con «Enviar desde».** El correo sale por la cuenta de
+> Gmail conectada del CRM, y el desplegable **«Enviar desde»** ofrece todos los
+> **«enviar como» verificados** de esa cuenta (p. ej. `pedidos@streamtec.es`,
+> `info@bomedia.net`, la cuenta base…). Viene **preseleccionado** el remitente
+> por tienda/serie del documento; puedes cambiarlo y el correo sale con ese
+> `De`. Si Gmail solo tiene la cuenta base, el desplegable muestra solo esa.
+
 
 - **«Marcar completado»** / **«Desmarcar completado»** — marca el pedido como
   terminado (solo en BoHub; WooCommerce no cambia).
