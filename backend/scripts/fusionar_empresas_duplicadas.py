@@ -54,14 +54,23 @@ def main(argv: list[str] | None = None) -> int:
                         help="parecido mínimo de nombre para fusionar (0-1); "
                              "por debajo, el grupo va a revisión")
     parser.add_argument("--csv", default=DEFAULT_CSV, help="CSV del plan (dry-run)")
+    parser.add_argument("--by-name", action="store_true",
+                        help="OTRA pasada: agrupa por NOMBRE las fichas SIN NIF "
+                             "con la que sí lo tiene (duplicados de Brevo). "
+                             "Conservadora y opt-in; el cruce por NIF no las ve")
+    parser.add_argument("--name-similarity", type=float, default=None,
+                        help="parecido mínimo de nombre para --by-name (0-1, "
+                             "por defecto 0.92)")
     args = parser.parse_args(argv)
 
     from app.db.session import get_engine
     from app.services.company_dedupe import (
+        NAME_ONLY_SIMILARITY,
         NAME_SIMILARITY_LOW,
         _company_fk_tables,
         apply_duplicate_merges,
         plan_duplicate_merges,
+        plan_name_only_merges,
     )
 
     threshold = args.name_threshold if args.name_threshold is not None else NAME_SIMILARITY_LOW
@@ -72,8 +81,17 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Tablas con FK a companies.id (se reasignan todas): {', '.join(fks)}")
 
     with Session(get_engine()) as session:
-        plan = plan_duplicate_merges(
-            session, name_threshold=threshold, only_key=args.only)
+        if args.by_name:
+            similarity = (
+                args.name_similarity if args.name_similarity is not None
+                else NAME_ONLY_SIMILARITY
+            )
+            print(f"\nModo --by-name: agrupando por NOMBRE (parecido ≥ {similarity}). "
+                  "Solo se fusiona cuando hay UNA ficha con NIF y las demás sin él.")
+            plan = plan_name_only_merges(session, similarity=similarity)
+        else:
+            plan = plan_duplicate_merges(
+                session, name_threshold=threshold, only_key=args.only)
 
         print(f"\nFichas CRM no archivadas examinadas: {plan.total_companies}")
         print(f"Grupos a FUSIONAR: {len(plan.to_merge)} "

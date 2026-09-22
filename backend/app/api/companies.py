@@ -53,10 +53,21 @@ def find_companies_by_nif(
 ) -> list[Company]:
     """Empresas del CRM cuyo `tax_id` o `vat` coincide con alguno de los
     identificadores dados (comparación normalizada). Es el guard
-    anti-duplicados del alta y del buscador de la Fase 2."""
-    keys = {_nif_key(v) for v in values if _nif_key(v)}
+    anti-duplicados del alta y del buscador de la Fase 2.
+
+    La comparación es por CLAVE CANÓNICA (`company_discovery.nif_key`): sin
+    separadores y **sin el prefijo de país de la UE**, así que `FR91523447399`
+    y `91523447399` son el mismo identificador (y `ESB64113590` ≡ `B64113590`).
+    Es la misma clave que usa el buscador de clientes F_CLI, para que el CRM y
+    FACTUSOL no discrepen sobre qué NIF es cuál."""
+    from app.erp.company_discovery import nif_key, nif_sql_variants  # noqa: PLC0415
+
+    keys = {nif_key(v) for v in values if nif_key(v)}
     if not keys:
         return []
+    # Prefiltro en SQL: la clave canónica no se puede calcular en SQL, así que
+    # se prueban por igualdad todas las formas en que puede estar guardada.
+    variants = {v for value in values for v in nif_sql_variants(value)}
 
     def sql_key(column):  # noqa: ANN001, ANN202 — misma normalización, en SQL
         stripped = column
@@ -65,15 +76,15 @@ def find_companies_by_nif(
         return func.upper(stripped)
 
     stmt = select(Company).where(or_(
-        sql_key(Company.tax_id).in_(keys),
-        sql_key(Company.vat).in_(keys),
+        sql_key(Company.tax_id).in_(variants),
+        sql_key(Company.vat).in_(variants),
     ))
     if exclude_id:
         stmt = stmt.where(Company.id != exclude_id)
     hits = list(session.scalars(stmt.order_by(Company.name.asc())))
-    # Re-filtro en Python: `ilike` no normaliza puntos/guiones y `upper()`
-    # no quita separadores; aquí manda la clave comparable.
-    return [c for c in hits if _nif_key(c.tax_id) in keys or _nif_key(c.vat) in keys]
+    # Re-filtro en Python: manda la clave canónica (el prefiltro de SQL es
+    # deliberadamente ancho y puede traer formas prefijadas de otro país).
+    return [c for c in hits if nif_key(c.tax_id) in keys or nif_key(c.vat) in keys]
 
 
 def _to_read(session: Session, row: Company) -> CompanyRead:
@@ -149,15 +160,29 @@ def list_companies(
         stmt = stmt.where(Company.is_archived.is_(False))
     if q:
         like = f"%{q}%"
-        stmt = stmt.where(
-            or_(
-                Company.name.ilike(like),
-                Company.domain.ilike(like),
-                Company.tax_id.ilike(like),
-                # Fase 2 (buscador unificado): el NIF-IVA también identifica.
-                Company.vat.ilike(like),
-            )
+        conditions = [
+            Company.name.ilike(like),
+            Company.domain.ilike(like),
+            Company.tax_id.ilike(like),
+            # Fase 2 (buscador unificado): el NIF-IVA también identifica.
+            Company.vat.ilike(like),
+        ]
+        # Búsqueda por NIF-IVA con prefijo de país: un `LIKE` no casa la forma
+        # desnuda con la prefijada (`91523447399` ↔ `FR91523447399`) ni tolera
+        # separadores. Se añaden por id las que casan por CLAVE CANÓNICA, la
+        # misma que usa el buscador de clientes de FACTUSOL. Solo se hace la
+        # pasada cuando la consulta TIENE PINTA de identificador fiscal: buscar
+        # «Bomedia» no necesita el rodeo.
+        from app.erp.company_discovery import (  # noqa: PLC0415
+            nif_key,
+            nif_looks_malformed,
         )
+
+        if not nif_looks_malformed(nif_key(q)):
+            nif_hits = [c.id for c in find_companies_by_nif(session, q)]
+            if nif_hits:
+                conditions.append(Company.id.in_(nif_hits))
+        stmt = stmt.where(or_(*conditions))
     if country:
         stmt = stmt.where(Company.country == country)
     if source:

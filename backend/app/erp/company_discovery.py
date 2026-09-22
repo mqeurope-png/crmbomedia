@@ -69,6 +69,34 @@ def nif_key(value: Any) -> str | None:
     return raw
 
 
+def nif_sql_variants(value: Any) -> list[str]:
+    """Formas con las que probar un NIF/NIF-IVA en SQL **por igualdad**.
+
+    `nif_key` es la clave canónica (desnuda, sin prefijo de país), pero SQL no
+    puede calcularla: en la columna puede estar guardada la forma desnuda
+    (`91523447399`) o la prefijada (`FR91523447399`), y una `IN` con una sola
+    de las dos pierde la otra. Se devuelven la desnuda, la que traiga el valor
+    y la desnuda con CADA prefijo de país de la UE, de modo que la consulta
+    encuentre la fila esté como esté guardada. El filtro FINO se hace después
+    en Python con `nif_key` (aquí solo se ensancha el prefiltro).
+
+    Orden estable: primero la forma que trae el valor, luego la desnuda, luego
+    las prefijadas — para que un acierto exacto salga antes."""
+    bare = nif_key(value)
+    if not bare:
+        return []
+    raw = _SEP_RE.sub("", str(value or "")).upper()
+    out: list[str] = []
+    for cand in (raw, bare):
+        if cand and cand not in out:
+            out.append(cand)
+    out.extend(
+        f"{prefix}{bare}" for prefix in sorted(_VAT_PREFIX_TO_ISO2)
+        if f"{prefix}{bare}" not in out
+    )
+    return out
+
+
 def nif_looks_malformed(key: str | None) -> bool:
     """Demasiado corto, sin ningún dígito o con caracteres raros: no es un
     identificador fiscal con el que fiarse del cruce."""

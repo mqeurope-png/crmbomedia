@@ -115,22 +115,15 @@ def _nif_candidates(query: str) -> list[str]:
 
     FACTUSOL puede guardar el NIF como CIF DESNUDO (`B63609309`) mientras la
     ficha del CRM busca con la forma NIF-IVA (`ESB63609309`) o al revés: una
-    igualdad exacta se los pierde. Se reutilizan los MISMOS normalizadores que
-    la limpieza de empresas (nada nuevo): `company_discovery.nif_key` da la
-    forma desnuda (sin el prefijo de país de la UE, p. ej. `B63609309`) y
-    `companies._nif_key` conserva el prefijo que traiga la consulta (p. ej.
-    `ESB63609309`, o un `PT…`). Se prueban la desnuda, la desnuda con `ES`
-    (España, el caso habitual) y la que traiga la consulta."""
-    from app.api.companies import _nif_key  # noqa: PLC0415
-    from app.erp.company_discovery import nif_key  # noqa: PLC0415
+    igualdad exacta se los pierde. Se reutiliza el MISMO generador de formas
+    que el buscador de empresas del CRM (`company_discovery.nif_sql_variants`):
+    la desnuda, la que traiga la consulta y la desnuda con cada prefijo de país
+    de la UE. Antes solo se probaba `ES`, así que un NIF-IVA extranjero
+    guardado con su prefijo (`FR91523447399`) no se encontraba buscando el
+    número desnudo (ni al revés)."""
+    from app.erp.company_discovery import nif_sql_variants  # noqa: PLC0415
 
-    bare = nif_key(query)   # sin prefijo de país de la UE: B63609309
-    raw = _nif_key(query)   # con el prefijo que venga: ESB63609309 / PT…
-    out: list[str] = []
-    for cand in (bare, f"ES{bare}" if bare else None, raw):
-        if cand and cand not in out:
-            out.append(cand)
-    return out
+    return nif_sql_variants(query)
 
 
 def _nif_filtro(query: str) -> str | None:
