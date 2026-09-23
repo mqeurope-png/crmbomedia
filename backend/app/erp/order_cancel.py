@@ -38,9 +38,16 @@ CANCELLED_EVENT = "erp.order_cancelled"
 UNCANCELLED_EVENT = "erp.order_uncancelled"
 DOCS_DELETED_EVENT = "erp.order_cancel_docs_deleted"
 
-#: Motivo con el que se sella la auto-anulación por reembolso/cancelación Woo.
+#: Motivo con el que se sella la auto-anulación por cancelación en Woo.
 AUTO_CANCEL_REASON = (
-    "Anulado automáticamente: pedido reembolsado/cancelado en WooCommerce"
+    "Anulado automáticamente: pedido cancelado en WooCommerce"
+)
+#: Motivo del REEMBOLSO. En BoHub un pedido reembolsado tiene estado PROPIO
+#: «Reembolsado» (`woo_status='refunded'`), no «Anulado»: se sella la misma
+#: anulación —para que salga de las colas y no se le puedan hacer acciones—
+#: pero se dice por lo que es, y el Seguimiento lo SIGUE enseñando.
+AUTO_REFUND_REASON = (
+    "Reembolsado en WooCommerce (reembolso total)"
 )
 #: Estados Woo que disparan la auto-anulación (reembolso TOTAL / cancelado). Un
 #: reembolso PARCIAL deja el pedido en `processing` en Woo, así que no entra
@@ -260,15 +267,21 @@ def mark_cancelled(session: Session, order: Order, actor: Any, reason: str | Non
 
 
 def autocancel_web_order(session: Session, order: Order) -> bool:
-    """Auto-anula un pedido WEB reembolsado/cancelado en WooCommerce (Parte A).
+    """Cierra un pedido WEB reembolsado/cancelado en WooCommerce (Parte A).
+
+    Un `cancelled` queda ANULADO; un `refunded` queda REEMBOLSADO — mismo sello
+    técnico (sale de las colas y de las acciones), motivo y timeline distintos,
+    porque en BoHub son estados distintos y el Seguimiento sigue enseñando el
+    reembolsado.
 
     Idempotente y conservador: NO toca un pedido ya anulado, ni uno YA
-    FACTURADO (estado terminal — solo lo registra en el log). Marca la
-    anulación en BoHub + timeline y encola (best-effort) el borrado del F_PCL
-    en `factusol:writes` (nunca inline; si Redis falla, la anulación queda igual
-    y el F_PCL se puede limpiar a mano). NO hace commit — lo hace el caller
-    (el job de ingesta Woo). Devuelve True si anuló ahora."""
+    FACTURADO (estado terminal — solo lo registra en el log). Marca el cierre
+    en BoHub + timeline y encola (best-effort) el borrado del F_PCL en
+    `factusol:writes` (nunca inline; si Redis falla, el sello queda igual y el
+    F_PCL se puede limpiar a mano). NO hace commit — lo hace el caller (el job
+    de ingesta Woo). Devuelve True si lo selló ahora."""
     from app.core.audit import record_event  # noqa: PLC0415
+    from app.erp.woo_status import is_refunded  # noqa: PLC0415
 
     if order.cancelled_at is not None:
         return False
@@ -279,12 +292,14 @@ def autocancel_web_order(session: Session, order: Order) -> bool:
             order.order_number, order.woo_status,
         )
         return False
-    mark_cancelled(session, order, None, AUTO_CANCEL_REASON)
+    refunded = is_refunded(order)
+    reason = AUTO_REFUND_REASON if refunded else AUTO_CANCEL_REASON
+    mark_cancelled(session, order, None, reason)
     record_event(
         session, action=CANCELLED_EVENT, target_type="order", target_id=order.id,
-        actor=None, message=AUTO_CANCEL_REASON,
+        actor=None, message=reason,
         metadata={"auto": True, "woo_status": order.woo_status,
-                  "order_number": order.order_number},
+                  "refunded": refunded, "order_number": order.order_number},
     )
     try:
         from app.integrations.factusol.jobs import (  # noqa: PLC0415

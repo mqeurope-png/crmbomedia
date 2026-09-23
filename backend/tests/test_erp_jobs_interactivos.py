@@ -24,8 +24,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 _SUMMARY = {
     "ok": True, "preview": True, "scanned": 42, "woo_calls": 9,
-    "removed_total": 5, "to_cancel": 3, "to_fail": 1, "to_refund_out": 1,
-    "to_trash": 0, "to_refund_kept": 2, "unchanged": 35, "errors": [],
+    "removed_total": 5, "to_cancel": 3, "to_fail": 1, "to_unpaid": 1,
+    "to_trash": 0, "to_refunded": 2, "unchanged": 35, "errors": [],
     "capped": False,
 }
 

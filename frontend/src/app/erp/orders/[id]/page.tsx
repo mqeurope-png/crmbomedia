@@ -867,12 +867,15 @@ function ErpOrderDetailScreen() {
       ) : null}
       {order.cancelled ? (
         <p className="form-error" role="status">
-          <span className="badge muted">Anulado</span>{" "}
-          Pedido anulado el{" "}
+          <span className="badge muted">{order.refunded ? "Reembolsado" : "Anulado"}</span>{" "}
+          {order.refunded ? "Pedido reembolsado el " : "Pedido anulado el "}
           {order.cancelled_at ? new Date(order.cancelled_at).toLocaleString("es-ES") : "—"}
           {order.cancelled_by_name ? ` por ${order.cancelled_by_name}` : ""}
           {order.cancelled_reason ? ` — ${order.cancelled_reason}` : ""}. Fuera de la
-          bandeja, las colas y el seguimiento; se puede restaurar desde «⋯».
+          bandeja y de las colas
+          {order.refunded
+            ? "; en Seguimiento se sigue viendo, como «Reembolsado»."
+            : " y del seguimiento; se puede restaurar desde «⋯»."}
         </p>
       ) : null}
       {order.externally_processed_at ? (

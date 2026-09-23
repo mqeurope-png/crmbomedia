@@ -40,6 +40,7 @@ from app.erp.models import (
     StatusDomain,
 )
 from app.erp.state_machine import TransitionError, apply_transition, available_transitions
+from app.erp.woo_status import is_refunded
 from app.erp.workflow import order_workflow
 from app.models.crm import User
 
@@ -333,6 +334,10 @@ def _serialise_summary(
         "completed_at": o.completed_at.isoformat() if o.completed_at else None,
         "completed_by_user_id": o.completed_by_user_id,
         "completed_by_name": names.get("completed_by_name"),
+        # Estado propio «Reembolsado» (deriva de `woo_status='refunded'`): un
+        # pedido web reembolsado NO es «anulado», aunque lleve el mismo sello
+        # técnico. La ficha y las listas lo dicen por lo que es.
+        "refunded": is_refunded(o),
         # «Anular» (reversible, distinto de quitar): quién, cuándo y motivo.
         "cancelled": o.cancelled_at is not None,
         "cancelled_at": o.cancelled_at.isoformat() if o.cancelled_at else None,

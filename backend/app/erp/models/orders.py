@@ -246,6 +246,19 @@ class Order(TimestampMixin, Base):
     )
     seguimiento_excluded_reason: Mapped[str | None] = mapped_column(Text)
 
+    # ERP-Woo — FORZAR en el seguimiento: el contrario del anterior, y para el
+    # otro eje. Un pedido que queda OCULTO POR ESTADO (anulado, o web que la
+    # tienda no ha llegado a procesar: pending / on-hold / cancelado…) no se
+    # rescata con «Reincluir» —eso solo deshace la exclusión manual—, así que
+    # aquí se guarda la decisión explícita de verlo igualmente. Reversible y
+    # sin tocar nada del pedido: es solo la vista.
+    seguimiento_forced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    seguimiento_forced_by_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+
     # «Marcar completado» (decisión de Bart, SOLO BoHub): estado FINAL del
     # pedido — ya facturado y enviado, aunque el envío se tramite fuera de
     # BoHub. Manual y reversible («Desmarcar»); no exige que Transporte esté

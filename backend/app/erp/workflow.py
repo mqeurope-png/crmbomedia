@@ -417,8 +417,14 @@ def order_workflow(
     review = [a for a in alerts if a.get("review")]
     if getattr(order, "cancelled_at", None):
         # Anulado (estado final reversible, distinto de «quitar»): nada que
-        # hacer; las listas de trabajo ya no lo enseñan.
-        queue, action, explain = QUEUE_LISTO, "ninguna", "Pedido anulado."
+        # hacer; las listas de trabajo ya no lo enseñan. Un pedido web
+        # reembolsado lleva el mismo sello, pero es su propio estado: se dice
+        # «Reembolsado» (y el Seguimiento sí lo sigue enseñando).
+        from app.erp.woo_status import is_refunded  # noqa: PLC0415
+
+        queue, action, explain = QUEUE_LISTO, "ninguna", (
+            "Pedido reembolsado." if is_refunded(order) else "Pedido anulado."
+        )
     elif order.completed_at:
         # Completado a mano: fuera de las colas de trabajo aunque quede algo
         # suelto (es el estado final que decide Bart).

@@ -130,6 +130,10 @@ export type OrderSummary = {
   completed_at?: string | null;
   completed_by_user_id?: string | null;
   completed_by_name?: string | null;
+  /** Estado propio «Reembolsado» (WooCommerce `refunded`). Lleva el mismo
+   *  sello técnico que un anulado, pero NO es lo mismo: se dice por lo que es
+   *  y el Seguimiento lo sigue enseñando. */
+  refunded?: boolean;
   /** «Anular pedido» (solo manuales/FACTUSOL, reversible, distinto de
    *  quitar): estado final; fuera de bandeja, colas y seguimiento. */
   cancelled?: boolean;
@@ -619,15 +623,25 @@ export type SeguimientoRow = {
   pendiente_escribir: boolean;
   /** ERP-Woo — estado crudo de WooCommerce y su efecto en el seguimiento. */
   woo_status: string | null;
-  /** Oculto por estado (cancelado/fallido/reembolso no cumplido). Distinto de
-   *  la exclusión manual. */
+  /** Oculto por estado: anulado, o web que la tienda no llegó a procesar
+   *  (sin pagar / en espera / cancelado / fallido / borrador). Distinto de la
+   *  exclusión manual. */
   oculto_por_estado: boolean;
   estado_woo_motivo: string | null;
-  /** Reembolsado ya cumplido: se queda visible, marcado. */
+  /** El mismo motivo, en legible («Sin pagar», «En espera»…). */
+  estado_woo_motivo_label?: string;
+  /** Estado propio «Reembolsado»: se VE en el seguimiento, aunque el pedido
+   *  esté anulado en BoHub. */
   reembolsado: boolean;
+  /** «Forzar en seguimiento»: decisión explícita de ver un oculto por estado.
+   *  Sigue listado en «Ver ocultos por estado» (para poder deshacerlo). */
+  forzado?: boolean;
+  forzado_en?: string | null;
+  forzado_por_nombre?: string | null;
   /** --- rediseño 2026: hoja simplificada, ordenada por Situación --- */
-  /** Situación = cola de la línea de vida (reutiliza el workflow). */
-  situacion: "incidencias" | "por_revisar" | "por_facturar" | "por_cobrar" | "por_enviar" | "listo";
+  /** Situación = cola de la línea de vida (reutiliza el workflow), más el
+   *  estado propio «Reembolsado». */
+  situacion: "incidencias" | "por_revisar" | "por_facturar" | "por_cobrar" | "por_enviar" | "listo" | "reembolsado";
   situacion_label: string;
   /** Tono de color de la celda Situación (letras del sistema de diseño). */
   situacion_tone: "r" | "a" | "b" | "t" | "g" | "n";
@@ -885,6 +899,19 @@ export async function includeSeguimiento(
   });
 }
 
+/** ERP-Woo — forzar (o dejar de forzar) en el seguimiento pedidos ocultos POR
+ *  ESTADO. Es otro eje que `includeSeguimiento`, que solo deshace la exclusión
+ *  manual: un oculto por estado no se rescata con «Reincluir». No toca el
+ *  pedido ni el estado de la tienda; es solo la vista. */
+export async function forceSeguimiento(
+  orderIds: string[], forced = true,
+): Promise<{ ok: boolean; forced: boolean; changed: number; already: number }> {
+  return apiFetch("/api/erp/seguimiento/force", {
+    method: "POST",
+    body: JSON.stringify({ order_ids: orderIds, forced }),
+  });
+}
+
 /** ERP-Woo — resultado de la puesta al día de estados de WooCommerce. */
 export type WooReconcileSummary = {
   ok: boolean;
@@ -898,12 +925,13 @@ export type WooReconcileSummary = {
   to_cancel: number;
   to_fail: number;
   to_trash: number;
-  to_refund_out: number;
+  /** Volvieron a «sin pagar» / «en espera»: salen del seguimiento y vuelven
+   *  solos si la tienda los pasa otra vez a `processing`. */
+  to_unpaid: number;
   removed_total: number;
-  /** Reembolsos YA CUMPLIDOS (enviados o facturados). También salen del
-   *  seguimiento —es la lista de pedidos vivos—, marcados «reembolsado» para
-   *  poder distinguirlos en «Ver ocultos por estado». */
-  to_refund_done: number;
+  /** Reembolsos. NO salen del seguimiento —es el estado propio
+   *  «Reembolsado»—: solo se marcan como tales. */
+  to_refunded: number;
   errors: { order_number?: string | null; store?: string; status?: string; error: string }[];
   samples: Record<string, string[]>;
 };

@@ -79,7 +79,7 @@ export function importe(n: number | null | undefined, moneda = "EUR"): string {
 function orderRow(o: OrderSummary): ActivityRow {
   const wf = o.workflow;
   const estado = o.cancelled
-    ? { estado: "Anulado", tone: "n" }
+    ? { estado: o.refunded ? "Reembolsado" : "Anulado", tone: "n" }
     : wf
       ? { estado: wf.queue_label, tone: QUEUE_TONE[wf.queue] ?? "n" }
       : { estado: "—", tone: "n" };
