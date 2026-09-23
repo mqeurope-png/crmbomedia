@@ -785,6 +785,15 @@ export type DriveManagedSummary = {
   historico_preservado?: number;
   /** Pendientes heredados que se conservan en la pestaña de incidencias. */
   pendientes_preservados?: number;
+  /** Filas tecleadas A MANO (Origen = MANUAL) que se conservan arriba. */
+  manuales?: number;
+  /** De ellas, cuántas se han cruzado con su pedido de BoHub (mismo Nº). */
+  manuales_fusionadas?: number;
+  /** Cuántas se entregan a BoHub (sin nada que perder: dejan de ser manuales). */
+  manuales_entregadas?: number;
+  /** Celdas en las que BoHub dice otra cosa: se conserva lo manual y se marca
+   *  en la Nota («⚠ BoHub …»). */
+  conflictos?: number;
 };
 
 /** Resumen de la sincronización INCREMENTAL a la hoja histórica (ERP-F6). Solo

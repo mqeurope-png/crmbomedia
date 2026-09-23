@@ -1109,9 +1109,31 @@ function ManagedPreview({ summary }: { summary: DriveManagedSummary }) {
       </p>
       <ul className="item-list">
         <li>
-          <strong>{summary.rows}</strong> filas: los mismos pedidos que la vista
-          en curso (fuera los excluidos y los ocultos por estado).
+          Se escribirán <strong>{summary.rows}</strong> filas de BoHub (los mismos
+          pedidos que la vista en curso; fuera los excluidos y los ocultos por
+          estado)
+          {summary.manuales ? (
+            <>
+              {" "}+ <strong>{summary.manuales}</strong> añadidas a mano
+              (Origen = MANUAL), que se <strong>conservan</strong> arriba
+            </>
+          ) : null}
+          .
         </li>
+        {summary.manuales_fusionadas ? (
+          <li>
+            <strong>{summary.manuales_fusionadas}</strong> fila(s) a mano ya
+            tienen su pedido en BoHub: una sola fila, con los huecos rellenados
+            desde BoHub
+            {summary.manuales_entregadas
+              ? ` (${summary.manuales_entregadas} pasan a BoHub: ya no tenían nada que perder)`
+              : ""}
+            {summary.conflictos
+              ? `; ${summary.conflictos} dato(s) no coinciden: se conserva lo escrito a mano y se marca «⚠ BoHub» en la Nota`
+              : ""}
+            .
+          </li>
+        ) : null}
         <li>
           <strong>{summary.incidencias}</strong> en «{summary.incidencias_tab}»
           (Situación = Incidencia).

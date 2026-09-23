@@ -637,6 +637,30 @@ en **pestañas propias de la app**. Cada una tiene **dos zonas**:
 - **«Incidencias (app)»** — arriba, las incidencias que habéis reportado a
   mano; debajo del separador, los **pendientes heredados** de la hoja vieja.
 
+**Pedidos añadidos a mano (transición).** Mientras no todos los pedidos pasen
+por la app, puedes **teclear uno en la primera fila** de «Seguimiento (app)»
+(justo bajo la cabecera) poniendo **`MANUAL` en la columna Origen**. Ese es el
+marcador: «Actualizar hoja de Drive» **lee la hoja antes de escribir** y las
+filas con Origen = MANUAL se **conservan arriba del todo**, en el orden en que
+estén e intactas (no se pisa ninguna celda que hayas rellenado); debajo se
+reescribe lo de BoHub como siempre. Una fila **sin** ese marcador es de BoHub y
+se reescribe: no pongas pedidos a mano sin él.
+
+Si más tarde **el mismo pedido entra por BoHub** (mismo Nº de pedido), no se
+duplica: queda **una sola fila**, BoHub **rellena los huecos** y lo que tú
+escribiste se respeta. Si BoHub dice otra cosa en una celda que ya tenía dato,
+**se conserva lo tuyo** y se apunta en la Nota, p. ej. *«⚠ BoHub Cliente: Roca
+SL»*. Mientras haya algo así —o algún dato que solo esté escrito a mano— la
+fila sigue siendo MANUAL, para no perderlo en el siguiente «Actualizar».
+Cuando ya no queda nada que perder (lo tuyo coincide con BoHub), la fila **pasa
+a BoHub** con su Origen real y deja de ser manual. Para entregarla antes, borra
+las celdas que no coincidan o cambia tú el Origen. El Nº se compara sin
+espacios ni mayúsculas; `99931` casa con `BOPRIN-99931` solo si ninguna otra
+tienda tiene ese número. Sin Nº, la fila se queda como manual suelta.
+
+La vista previa te dice cuántas filas son de BoHub y cuántas **a mano se
+conservan**. Reimportar el histórico tampoco las toca.
+
 **Solo se regenera la zona de arriba.** Del separador hacia abajo se conserva
 tal cual, cambie como cambie el número de pedidos vivos, y repetir la
 actualización no duplica el separador ni descuadra nada.
