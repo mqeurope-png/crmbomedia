@@ -813,28 +813,52 @@ def _col(nombre: str) -> int:
     return SEGUIMIENTO_COLUMNS_V2.index(nombre)
 
 
-def test_las_filas_manuales_se_conservan_arriba_en_su_orden(session):
-    """Validaciones 1, 2 y 3: con y sin Nº, editadas a mano, varias: siguen
-    arriba del todo, en su orden e intactas; BoHub se reescribe debajo."""
+def test_zona_viva_pedidos_intercala_por_fecha_y_sube_las_sin_fecha():
+    """El núcleo del orden nuevo: `build_pedidos_grid` mezcla manuales y de
+    BoHub en la misma lista y ordena TODO junto por Fecha (más reciente
+    primero) — sin anteponer las manuales. Una manual sin Fecha reconocible
+    sube arriba del todo; una de BoHub sin fecha se queda al final, como
+    siempre."""
+    from app.erp.drive_managed import dates_to_serial
+
+    con_fecha = dates_to_serial(
+        [_manual("M-1", Fecha="20/09/2026", Cliente="Con fecha")], PEDIDOS_DATE_COLUMNS,
+    )[0]
+    sin_fecha = _manual("M-2", Cliente="Sin fecha")
+    rows = [_row("listo", "L-1", fecha="2026-09-25"),
+            _row("por_cobrar", "C-1", fecha="2026-09-10"),
+            _row("por_revisar", "SIN-FECHA", fecha=None)]
+    grid = build_pedidos_grid(rows, manual=[con_fecha, sin_fecha])
+    assert [f[1] for f in grid[1:]] == ["M-2", "L-1", "M-1", "C-1", "SIN-FECHA"]
+
+
+def test_las_filas_manuales_se_intercalan_con_bohub_por_fecha(session):
+    """Validaciones 1, 2 y 3: con y sin Nº, editadas a mano, varias: se
+    intercalan con BoHub por Fecha (no fijas arriba), intactas; sin Fecha
+    reconocible sí suben arriba del todo, para no perderlas de vista."""
     sep = [f"{SEPARATOR_PREFIX} HISTÓRICO {SEPARATOR_PREFIX}"]
-    nueva = _manual("", Situación="Por enviar", Fecha="23/09/2026",
-                    Cliente="Nuevo SL", Tracking="1Z-A")
-    otra = _manual("MAN-7", Cliente="Roca", **{"Nota / Incidencia": "llamar martes"})
+    sin_fecha = _manual("MAN-7", Cliente="Roca", **{"Nota / Incidencia": "llamar martes"})
+    con_fecha = _manual("", Situación="Por enviar", Fecha="23/09/2026",
+                        Cliente="Nuevo SL", Tracking="1Z-A")
     sheets = _pestana(
-        nueva, otra, ["Listo", "VIEJO-BOHUB"],        # fila vieja de BoHub
+        sin_fecha, con_fecha, ["Listo", "VIEJO-BOHUB"],        # fila vieja de BoHub
         historico=[sep, ["Histórico", "H-1"]],
     )
-    resumen = push_managed_tabs(session, sheets, [_row("listo", "L-1"),
-                                                  _row("por_cobrar", "C-1")])
+    resumen = push_managed_tabs(session, sheets, [
+        _row("listo", "L-1", fecha="2026-09-25"),
+        _row("por_cobrar", "C-1", fecha="2026-09-10"),
+    ])
     escrito = sheets.written[DEFAULT_MANAGED_TAB]
     assert escrito[0] == SEGUIMIENTO_COLUMNS_V2
-    assert escrito[1][1] == "" and escrito[1][3] == "Nuevo SL"
-    assert escrito[1][_col("Tracking")] == "1Z-A"
-    assert escrito[1][_col("Fecha")] == sheet_serial(date(2026, 9, 23))
-    assert escrito[2][1] == "MAN-7" and escrito[2][-1] == "llamar martes"
-    assert all(f[4] == "MANUAL" for f in escrito[1:3])
-    # La zona de BoHub se reescribe debajo; la fila vieja de BoHub ya no está.
-    assert {f[1] for f in escrito[3:5]} == {"L-1", "C-1"}
+    # Sin Fecha reconocible: arriba del todo.
+    assert escrito[1][1] == "MAN-7" and escrito[1][-1] == "llamar martes"
+    # Con Fecha: intercalada por orden cronológico entre BoHub (25/09 → 23/09
+    # → 10/09), no fijada arriba.
+    assert [f[1] for f in escrito[2:5]] == ["L-1", "", "C-1"]
+    assert escrito[3][3] == "Nuevo SL" and escrito[3][_col("Tracking")] == "1Z-A"
+    assert escrito[3][_col("Fecha")] == sheet_serial(date(2026, 9, 23))
+    assert all(f[4] == "MANUAL" for f in (escrito[1], escrito[3]))
+    # La fila vieja de BoHub ya no está (se reescribe desde `rows`).
     assert "VIEJO-BOHUB" not in {f[1] for f in escrito if len(f) > 1}
     assert escrito[5] == sep and escrito[6][1] == "H-1"
     assert resumen["manuales"] == 2 and resumen["rows"] == 2
