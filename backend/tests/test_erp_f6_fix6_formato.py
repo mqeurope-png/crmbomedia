@@ -120,6 +120,8 @@ def _order(s: Session, number: str, *, cliente: str = "Cliente", store_id: str |
     s.flush()
     s.add(Order(
         order_number=number, external_source=OrderSource.WOOCOMMERCE,
+        # Web que pasó por caja: sin `woo_status` quedaría oculto (#461).
+        woo_status="processing",
         company_id=comp.id, store_id=store_id, tracking_number=tracking,
         serial_number=serial, placed_at=datetime(2026, 9, 1, tzinfo=UTC),
     ))

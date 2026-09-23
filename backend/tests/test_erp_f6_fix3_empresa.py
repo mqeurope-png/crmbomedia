@@ -162,6 +162,8 @@ def _order(s: Session, number: str, *, cliente: str, store_id: str | None = None
     s.add(Order(
         order_number=number, external_source=source, company_id=comp.id,
         store_id=store_id, factusol_invoice_number=factura,
+        # Web que pasó por caja: sin `woo_status` quedaría oculto (#461).
+        woo_status="processing" if source == OrderSource.WOOCOMMERCE else None,
         placed_at=datetime(2026, 9, 1, tzinfo=UTC),
     ))
     s.flush()
@@ -243,6 +245,7 @@ def test_invoice_emission_series_logic_unchanged(session_factory) -> None:
     with session_factory() as s:
         artis = _store(s, "artisjet-europe")
         o = Order(order_number="ARTISJ-9600", external_source=OrderSource.WOOCOMMERCE,
+                  woo_status="processing",
                   store_id=artis, placed_at=datetime(2026, 9, 1, tzinfo=UTC))
         s.add(o)
         s.flush()
