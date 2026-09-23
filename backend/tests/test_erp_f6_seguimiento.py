@@ -101,6 +101,9 @@ def _order(
         factusol_invoice_number=factura, transport_status=transport,
         invoice_status=invoice, notes=notes,
         placed_at=datetime.fromisoformat(placed).replace(tzinfo=UTC),
+        # Aprobado: Seguimiento solo lista pedidos VIVOS, y un manual sin
+        # aprobar todavía no ha entrado al flujo.
+        approved_at=datetime.fromisoformat(placed).replace(tzinfo=UTC),
     )
     s.add(o)
     s.flush()

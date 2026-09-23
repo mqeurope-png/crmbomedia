@@ -370,7 +370,7 @@ export default function SeguimientoPage() {
           `Puesta al día aplicada: ${r.removed_total} pedidos salieron del `
           + `seguimiento (${r.to_cancel} cancelados, ${r.to_fail} fallidos, `
           + `${r.to_refund_out} reembolsos no cumplidos, ${r.to_trash} en papelera); `
-          + `${r.to_refund_kept} reembolsos ya cumplidos quedaron marcados.`,
+          + `${r.to_refund_done} reembolsos ya cumplidos también salieron.`,
         );
         await load();
       } else {
@@ -722,8 +722,8 @@ export default function SeguimientoPage() {
               {reconcile.to_trash} en papelera.
             </li>
             <li>
-              <strong>{reconcile.to_refund_kept}</strong> reembolsos ya cumplidos
-              se quedarían, marcados «reembolsado».
+              <strong>{reconcile.to_refund_done}</strong> reembolsos ya cumplidos
+              también saldrían, marcados «reembolsado» para poder revisarlos.
             </li>
             <li className="muted small">
               {reconcile.unchanged} siguen activos.
@@ -739,7 +739,7 @@ export default function SeguimientoPage() {
             </button>
             <button type="button" className="button" disabled={busy}
               onClick={onReconcileApply}>
-              {busy ? "Aplicando…" : `Aplicar (${reconcile.removed_total + reconcile.to_refund_kept} cambios)`}
+              {busy ? "Aplicando…" : `Aplicar (${reconcile.removed_total} cambios)`}
             </button>
           </div>
         </section>

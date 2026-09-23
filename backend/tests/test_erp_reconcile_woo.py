@@ -286,13 +286,19 @@ def test_reconcile_rules_unchanged(session_factory) -> None:
             }}, calls),
         )
     assert summary["to_cancel"] == 1
-    assert summary["to_refund_kept"] == 1
-    assert summary["removed_total"] == 1
+    # El reembolso CUMPLIDO también sale ahora del seguimiento (antes se
+    # quedaba marcado), así que cuenta entre los retirados.
+    assert summary["to_refund_done"] == 1
+    assert summary["removed_total"] == 2
     live = _numbers(_rows_for(s, en_curso=True))
     assert "BOPRIN-50" not in live            # cancelado fuera
     assert "BOPRIN-52" in live                # pending/processing se queda
-    row51 = next(r for r in _rows_for(s, en_curso=True) if r["order_number"] == "BOPRIN-51")
-    assert row51["reembolsado"] is True       # reembolso cumplido, marcado
+    # El reembolso CUMPLIDO ya no se queda en la vista: sale como el resto de
+    # reembolsos, marcado para poder distinguirlo al revisar los ocultos.
+    assert "BOPRIN-51" not in live
+    ocultos = _rows_for(s, en_curso=True, ver_ocultos_estado=True)
+    row51 = next(r for r in ocultos if r["order_number"] == "BOPRIN-51")
+    assert row51["reembolsado"] is True
 
 
 def test_reconcile_preview_counts_by_category(session_factory) -> None:

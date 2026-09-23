@@ -163,6 +163,46 @@ def test_pending_order_stays_in_seguimiento(session_factory) -> None:
         assert row["pendiente_escribir"] is True
 
 
+def test_pedido_anulado_sale_del_seguimiento(session_factory) -> None:
+    """El caso reportado: un pedido que se anula en BoHub seguía saliendo como
+    «Pendiente» / «Por revisar». Seguimiento es la lista de pedidos VIVOS."""
+    with session_factory() as s:
+        st = _store(s)
+        o = _order(s, woo_id="10", number="BOPRIN-10", woo_status="processing",
+                   store=st)
+        o.cancelled_at = datetime(2026, 9, 10, tzinfo=UTC)
+        s.commit()
+        assert "BOPRIN-10" not in _numbers(_rows_for(s, en_curso=True))
+        ocultos = _rows_for(s, ver_ocultos_estado=True)
+        row = next(r for r in ocultos if r["order_number"] == "BOPRIN-10")
+        assert row["oculto_por_estado"] is True
+        assert row["estado_woo_motivo"] == "anulado"
+
+
+def test_la_anulacion_manda_sobre_el_estado_de_la_tienda(session_factory) -> None:
+    """Anulado en BoHub sale aunque en la tienda siga «completed»."""
+    with session_factory() as s:
+        st = _store(s)
+        o = _order(s, woo_id="11", number="BOPRIN-11", woo_status="completed",
+                   store=st, invoiced=True)
+        o.cancelled_at = datetime(2026, 9, 10, tzinfo=UTC)
+        s.commit()
+        assert "BOPRIN-11" not in _numbers(_rows_for(s, en_curso=True))
+
+
+def test_un_pedido_sin_pagar_sigue_en_seguimiento(session_factory) -> None:
+    """No se excluye por falta de cobro: un pedido vivo sin pagar es
+    exactamente lo que hay que ver."""
+    with session_factory() as s:
+        st = _store(s)
+        _order(s, woo_id="12", number="BOPRIN-12", woo_status="pending", store=st)
+        s.commit()
+        rows = _rows_for(s, en_curso=True)
+        assert "BOPRIN-12" in _numbers(rows)
+        row = next(r for r in rows if r["order_number"] == "BOPRIN-12")
+        assert row["oculto_por_estado"] is False
+
+
 def test_refunded_unfulfilled_order_removed(session_factory) -> None:
     with session_factory() as s:
         st = _store(s)
@@ -173,27 +213,34 @@ def test_refunded_unfulfilled_order_removed(session_factory) -> None:
         assert ocultos[0]["estado_woo_motivo"] == "refunded_sin_cumplir"
 
 
-def test_refunded_fulfilled_order_kept_and_marked(session_factory) -> None:
+def test_refunded_fulfilled_order_sale_de_la_vista_pero_marcado(session_factory) -> None:
+    """Un reembolso YA CUMPLIDO (enviado) se quedaba antes en la vista marcado
+    «reembolsado». Ya no: el seguimiento es la lista de pedidos VIVOS y un
+    reembolsado no lo está. Sigue a un clic, en «Ver ocultos por estado», y
+    conserva la marca para distinguirlo del que nunca se cumplió."""
     with session_factory() as s:
         st = _store(s)
-        # Reembolsado PERO ya enviado (tiene tracking) → se queda, marcado.
         _order(s, woo_id="5", number="BOPRIN-5", woo_status="refunded", store=st,
                tracking="1Z-ENVIADO")
         s.commit()
-        rows = _rows_for(s, en_curso=True)
-        assert "BOPRIN-5" in _numbers(rows)
-        row = next(r for r in rows if r["order_number"] == "BOPRIN-5")
-        assert row["reembolsado"] is True
-        assert row["oculto_por_estado"] is False
+        assert "BOPRIN-5" not in _numbers(_rows_for(s, en_curso=True))
+        ocultos = _rows_for(s, en_curso=True, ver_ocultos_estado=True)
+        row = next(r for r in ocultos if r["order_number"] == "BOPRIN-5")
+        assert row["oculto_por_estado"] is True
+        assert row["reembolsado"] is True                  # cumplido
+        assert row["estado_woo_motivo"] == "refunded"
 
 
-def test_refunded_fulfilled_by_invoice_is_kept(session_factory) -> None:
+def test_refunded_fulfilled_by_invoice_tambien_sale(session_factory) -> None:
+    """Cumplido por FACTURA (no por envío): misma regla."""
     with session_factory() as s:
         st = _store(s)
         _order(s, woo_id="6", number="BOPRIN-6", woo_status="refunded", store=st,
                invoiced=True)
         s.commit()
-        row = next(r for r in _rows_for(s, en_curso=True) if r["order_number"] == "BOPRIN-6")
+        assert "BOPRIN-6" not in _numbers(_rows_for(s, en_curso=True))
+        ocultos = _rows_for(s, en_curso=True, ver_ocultos_estado=True)
+        row = next(r for r in ocultos if r["order_number"] == "BOPRIN-6")
         assert row["reembolsado"] is True
 
 

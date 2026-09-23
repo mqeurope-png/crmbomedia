@@ -120,6 +120,9 @@ def _order(s: Session, number: str, *, cliente: str, tracking: str | None = None
         order_number=number, external_source=OrderSource.MANUAL,
         company_id=comp.id, tracking_number=tracking, serial_number=serial,
         placed_at=datetime(2026, 9, 1, tzinfo=UTC),
+        # Aprobado: Seguimiento solo lista pedidos vivos, y un manual sin
+        # aprobar todavía no ha entrado al flujo.
+        approved_at=datetime(2026, 9, 1, tzinfo=UTC),
     ))
     s.flush()
 

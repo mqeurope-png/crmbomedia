@@ -110,7 +110,7 @@ def reconcile_open_order_statuses(
               "refunded_sin_cumplir": 0, "refunded": 0}
     samples: dict[str, list[str]] = {k: [] for k in counts}
     removed = 0
-    kept_marked = 0
+
     matched_ids: set[tuple[str, str]] = set()
     errors: list[dict[str, str]] = []
     capped = False
@@ -154,20 +154,12 @@ def reconcile_open_order_statuses(
         for extid, new_status in fetched.items():
             o = orders_by_extid[extid]
             est = _estado(o)
-            hidden, motivo, reembolsado = visibility_for_status(o, est, new_status)
+            hidden, motivo, _reembolsado = visibility_for_status(o, est, new_status)
             if hidden and motivo in counts:
                 counts[motivo] += 1
                 if len(samples[motivo]) < 20:
                     samples[motivo].append(o.order_number)
                 removed += 1
-                matched_ids.add((store_id, extid))
-                if not dry_run:
-                    o.woo_status = new_status
-            elif reembolsado:
-                counts["refunded"] += 1
-                if len(samples["refunded"]) < 20:
-                    samples["refunded"].append(o.order_number)
-                kept_marked += 1
                 matched_ids.add((store_id, extid))
                 if not dry_run:
                     o.woo_status = new_status
@@ -191,9 +183,12 @@ def reconcile_open_order_statuses(
         "to_fail": counts["failed"],
         "to_trash": counts["trash"],
         "to_refund_out": counts["refunded_sin_cumplir"],
+        # Reembolsos YA CUMPLIDOS (enviados o facturados). Antes se quedaban en
+        # la vista marcados «reembolsado»; ahora salen como el resto de
+        # reembolsos —el seguimiento es la lista de pedidos vivos— y conservan
+        # la marca para distinguirlos en «Ver ocultos por estado».
+        "to_refund_done": counts["refunded"],
         "removed_total": removed,
-        # Reembolsos ya cumplidos: se quedan, marcados.
-        "to_refund_kept": kept_marked,
         "errors": errors,
         "samples": {k: v for k, v in samples.items() if v},
     }

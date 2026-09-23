@@ -95,6 +95,8 @@ def _order(
         order_number=number, external_source=source, external_id=number.split("-")[-1],
         store_id=store.id if store else None, company_id=comp.id,
         woo_status=woo_status, placed_at=datetime(2026, 9, 1, tzinfo=UTC),
+        # Aprobado: un manual sin aprobar no sale en Seguimiento.
+        approved_at=datetime(2026, 9, 1, tzinfo=UTC),
     )
     if invoiced:
         o.invoice_status = InvoiceStatus.GENERATED
