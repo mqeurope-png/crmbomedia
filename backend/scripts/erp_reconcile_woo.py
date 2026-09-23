@@ -46,6 +46,9 @@ def _print_summary(summary: dict[str, Any], *, applied: bool) -> None:
     print(f"    · en papelera (trash):     {summary['to_trash']}")
     print(f"  Reembolsados (NO salen, se marcan «Reembolsado»): "
           f"{summary['to_refunded']}")
+    print(f"  Sin estado (NULL) consultados uno a uno: {summary.get('unknown_total', 0)}")
+    print(f"    · rellenados con su estado real:    {summary.get('to_filled', 0)}")
+    print(f"    · ya no existen en la tienda:       {summary.get('to_not_found', 0)}")
     print(f"  Sin cambios: {summary['unchanged']}")
     if summary.get("errors"):
         print(f"  ⚠ {len(summary['errors'])} errores (tiendas no consultables):")

@@ -200,14 +200,132 @@ def test_un_web_que_no_paso_por_caja_no_sale_en_seguimiento(
         assert row["estado_woo_motivo_label"]
 
 
-def test_un_web_sin_estado_conocido_se_queda(session_factory) -> None:
-    """Importado antes de #376: no se conoce su estado, así que no se le aplica
-    la puerta (misma política que `woocommerce/cleanup.py`)."""
+@pytest.mark.parametrize("woo_status", [None, ""])
+def test_un_web_sin_estado_queda_oculto_con_reincluir(session_factory, http, woo_status) -> None:
+    """El caso de BOPRIN-99878/99880: web con `woo_status` NULL que se colaban.
+    Un web cuyo estado sigue sin conocerse después de «Poner al día estados
+    Woo» no es un activo fiable: fuera, con motivo «Estado desconocido». Y
+    como puede haber algún caso legítimo, se «Reincluye» (fuerza) a mano."""
     with session_factory() as s:
         st = _store(s)
-        _order(s, woo_id="3b", number="BOPRIN-3B", woo_status=None, store=st)
+        o = _order(s, woo_id="3b", number="BOPRIN-3B", woo_status=woo_status, store=st)
         s.commit()
+        oid = o.id
+        assert "BOPRIN-3B" not in _numbers(_rows_for(s, en_curso=True))
+        row = next(r for r in _rows_for(s, ver_ocultos_estado=True)
+                   if r["order_number"] == "BOPRIN-3B")
+        assert row["estado_woo_motivo"] == "sin_estado"
+        assert row["estado_woo_motivo_label"] == "Estado desconocido"
+    r = http.post("/api/erp/seguimiento/force", json={"order_ids": [oid]},
+                  headers=auth_headers(http, "pedidos"))
+    assert r.status_code == 200, r.text
+    with session_factory() as s:
         assert "BOPRIN-3B" in _numbers(_rows_for(s, en_curso=True))
+
+
+def test_los_valores_reales_de_produccion_quedan_ocultos_en_los_tres_caminos(
+    session_factory, http,
+) -> None:
+    """Los valores EXACTOS de la BD de producción (sin `wc-`, con guion):
+    `on-hold` (BOPRIN-99922/99931) y `cancelled` (FLUXLA-5751/5786) tienen que
+    desaparecer en el camino REAL de la pantalla, de «Descargar Excel» y de la
+    zona viva de Drive — no solo en el helper de visibilidad."""
+    import io  # noqa: PLC0415
+
+    from openpyxl import load_workbook  # noqa: PLC0415
+
+    from app.erp.api.seguimiento import drive_live_rows  # noqa: PLC0415
+
+    with session_factory() as s:
+        st = _store(s)
+        _order(s, woo_id="99922", number="BOPRIN-99922", woo_status="on-hold", store=st)
+        _order(s, woo_id="99931", number="BOPRIN-99931", woo_status="on-hold", store=st)
+        _order(s, woo_id="5751", number="FLUXLA-5751", woo_status="cancelled", store=st)
+        _order(s, woo_id="5786", number="FLUXLA-5786", woo_status="cancelled", store=st)
+        _order(s, woo_id="99878", number="BOPRIN-99878", woo_status=None, store=st)
+        _order(s, woo_id="1", number="BOPRIN-1", woo_status="processing", store=st)
+        s.commit()
+        drive = {r["order_number"] for r in drive_live_rows(s)}
+    h = auth_headers(http, "pedidos")
+    pantalla = {i["order_number"]
+                for i in http.get("/api/erp/seguimiento", headers=h).json()["items"]}
+    wb = load_workbook(io.BytesIO(
+        http.get("/api/erp/seguimiento/export", headers=h).content,
+    ), read_only=True)
+    filas = [list(row) for row in wb["Pedidos"].iter_rows(values_only=True)]
+    excel = {f[filas[0].index("Nº pedido")] for f in filas[1:]}
+    assert pantalla == excel == drive == {"BOPRIN-1"}
+    ocultos = http.get("/api/erp/seguimiento?ver_ocultos_estado=true", headers=h).json()
+    motivos = {i["order_number"]: i["estado_woo_motivo_label"] for i in ocultos["items"]}
+    assert motivos == {
+        "BOPRIN-99922": "En espera", "BOPRIN-99931": "En espera",
+        "FLUXLA-5751": "Cancelado en la tienda", "FLUXLA-5786": "Cancelado en la tienda",
+        "BOPRIN-99878": "Estado desconocido",
+    }
+
+
+def test_actualizar_hoja_de_drive_vuelca_solo_lo_que_ensena_la_pantalla(
+    session_factory, http,
+) -> None:
+    """El bug de producción: «Actualizar hoja de Drive» pasaba TODAS las filas
+    (sin filtrar) a la pestaña gestionada, y la hoja enseñaba los web
+    `on-hold`/`cancelled` que la pantalla escondía. El endpoint real tiene que
+    volcar exactamente la zona viva (`drive_live_rows`)."""
+    _fake_sa = {
+        "type": "service_account", "project_id": "bohub-drive",
+        "client_email": "bohub@bohub-drive.iam.gserviceaccount.com",
+        "private_key": "-----BEGIN PRIVATE KEY-----\nX\n-----END PRIVATE KEY-----\n",
+    }
+    with session_factory() as s:
+        st = _store(s)
+        _order(s, woo_id="99922", number="BOPRIN-99922", woo_status="on-hold", store=st)
+        _order(s, woo_id="5751", number="FLUXLA-5751", woo_status="cancelled", store=st)
+        _order(s, woo_id="99878", number="BOPRIN-99878", woo_status=None, store=st)
+        _order(s, woo_id="2", number="BOPRIN-2", woo_status="completed", store=st,
+               tracking="1Z")
+        _order(s, woo_id="1", number="BOPRIN-1", woo_status="processing", store=st)
+        s.commit()
+    r = http.patch("/api/erp/settings", json={
+        "drive_service_account_json": json.dumps(_fake_sa),
+        "drive_spreadsheet_id": "1AbCdEfGhIjKlMnOpQrStUvWxYz",
+    }, headers=auth_headers(http, "admin"))
+    assert r.status_code == 200, r.text
+    captured: dict = {}
+
+    def fake_push(session, client, rows, *, dry_run=False):
+        captured["rows"] = rows
+        return {"mode": "managed_tab", "dry_run": dry_run, "written": not dry_run,
+                "rows": len(rows), "por_situacion": {}}
+
+    with patch("app.erp.drive_managed.push_managed_tabs", side_effect=fake_push), \
+         patch("app.erp.drive_sheets.GoogleSheetsClient", return_value=MagicMock()):
+        r = http.post("/api/erp/seguimiento/drive-sync?dry_run=true",
+                      headers=auth_headers(http, "pedidos"))
+    assert r.status_code == 200, r.text
+    numeros = [row["order_number"] for row in captured["rows"]]
+    assert set(numeros) == {"BOPRIN-1", "BOPRIN-2"}
+    # Y ya ordenadas por fecha del pedido (ambas del mismo día: orden estable).
+    assert all(row["fecha"] == "2026-09-01" for row in captured["rows"])
+
+
+@pytest.mark.parametrize(
+    ("raw", "canonical"),
+    [
+        ("on-hold", "on_hold"), ("wc-on-hold", "on_hold"), ("on_hold", "on_hold"),
+        ("ON-HOLD", "on_hold"), (" Wc-On-Hold ", "on_hold"),
+        ("cancelled", "cancelled"), ("wc-cancelled", "cancelled"), ("CANCELLED", "cancelled"),
+        ("pending", "pending"), ("wc-pending", "pending"),
+        ("refunded", "refunded"), ("wc-refunded", "refunded"),
+        ("processing", "processing"), ("wc-processing", "processing"),
+        ("completed", "completed"), ("wc-completed", "completed"),
+        ("checkout-draft", "checkout_draft"), (None, ""), ("", ""),
+    ],
+)
+def test_normalizacion_unica_de_estados(raw, canonical) -> None:
+    """Guion, guion bajo, prefijo `wc-` y mayúsculas son el mismo estado."""
+    from app.erp.woo_status import normalize  # noqa: PLC0415
+
+    assert normalize(raw) == canonical
 
 
 def test_al_pasar_a_processing_vuelve_al_seguimiento(session_factory) -> None:

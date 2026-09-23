@@ -115,6 +115,7 @@ def _seed(s: Session) -> None:
     # (está vivo desde que entra); a un manual sin aprobar, sí.
     _order(s, "ART-900004", cid, approved_at=None,
            external_source=OrderSource.WOOCOMMERCE, external_id="900004",
+           woo_status="processing",
            preparation_status=PreparationStatus.PENDING_REVIEW)
     # E — excepción abierta → «Incidencia» (aunque tenga factura).
     e = _order(s, "ART-900005", cid, factusol_invoice_number="5-260005")

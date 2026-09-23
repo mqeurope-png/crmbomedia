@@ -932,6 +932,11 @@ export type WooReconcileSummary = {
   /** Reembolsos. NO salen del seguimiento —es el estado propio
    *  «Reembolsado»—: solo se marcan como tales. */
   to_refunded: number;
+  /** Web SIN estado (NULL) consultados uno a uno: rellenados con su estado
+   *  real, y los que la tienda ya no tiene (quedan `not_found`, ocultos). */
+  unknown_total?: number;
+  to_filled?: number;
+  to_not_found?: number;
   errors: { order_number?: string | null; store?: string; status?: string; error: string }[];
   samples: Record<string, string[]>;
 };
