@@ -123,9 +123,11 @@ class ManagedTabTransport(Protocol):
     def tab_titles(self) -> list[str]: ...
     def first_tab_title(self) -> str: ...
     def ensure_tab(self, title: str) -> int: ...
-    def replace_tab(self, title: str, rows: list[list[Any]]) -> None: ...
+    def replace_tab(
+        self, title: str, rows: list[list[Any]], *, raw: bool = False,
+    ) -> None: ...
     def format_tab(self, title: str, requests: list[dict[str, Any]]) -> None: ...
-    def tab_values(self, title: str) -> list[list[str]]: ...
+    def tab_values(self, title: str, *, raw: bool = False) -> list[list[Any]]: ...
 
 
 class SheetsTransport(Protocol):
@@ -252,20 +254,30 @@ class GoogleSheetsClient:
                  .get("properties") or {})
         return int(props.get("sheetId") or self._tab_id(title) or 0)
 
-    def tab_values(self, title: str) -> list[list[str]]:
+    def tab_values(self, title: str, *, raw: bool = False) -> list[list[Any]]:
+        """Valores de la pestaña. Por defecto, como se VEN (texto formateado).
+        Con `raw=True`, sin formatear: números como números, fechas como su
+        serial y texto como texto — lo que hace falta para volver a escribir
+        una celda exactamente como estaba."""
         rng = f"{title}!A1:Z100000"
-        data = self._request("GET", f"/values/{rng}")
+        params = (
+            {"valueRenderOption": "UNFORMATTED_VALUE",
+             "dateTimeRenderOption": "SERIAL_NUMBER"} if raw else None
+        )
+        data = self._request("GET", f"/values/{rng}", params=params)
         values = data.get("values") or []
         self._record({"method": "GET", "api": "values.get", "range": rng,
-                      "rows_read": len(values)})
+                      "raw": raw, "rows_read": len(values)})
         return values
 
-    def replace_tab(self, title: str, rows: list[list[Any]]) -> None:
+    def replace_tab(self, title: str, rows: list[list[Any]], *, raw: bool = False) -> None:
         """Reescribe la pestaña ENTERA: vacía lo que hubiera y escribe `rows`.
 
-        Solo para pestañas de la app. Se manda `USER_ENTERED` (no `RAW`) para
-        que los números entren como números y las fechas como texto tal cual se
-        han formateado; la pestaña no tiene histórico que corromper."""
+        Solo para pestañas de la app. Con `raw=True` se manda `RAW`: cada valor
+        entra tal cual (número como número, texto como texto; las fechas ya van
+        como serial), sin que Sheets reinterprete nada — ni una celda tecleada
+        a mano ni un texto que empiece por «=». Sin él, `USER_ENTERED`."""
+        modo = "RAW" if raw else "USER_ENTERED"
         self._record({"method": "POST", "api": "values:clear", "range": title})
         self._request("POST", f"/values/{title}!A1:Z100000:clear", json={})
         if not rows:
@@ -273,10 +285,10 @@ class GoogleSheetsClient:
         width = max(len(r) for r in rows)
         rng = f"{title}!A1:{_col_a1(width - 1)}{len(rows)}"
         self._record({"method": "PUT", "api": "values.update",
-                      "valueInputOption": "USER_ENTERED", "range": rng,
+                      "valueInputOption": modo, "range": rng,
                       "rows": len(rows)})
         self._request(
-            "PUT", f"/values/{rng}?valueInputOption=USER_ENTERED",
+            "PUT", f"/values/{rng}?valueInputOption={modo}",
             json={"values": rows},
         )
 

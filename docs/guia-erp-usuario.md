@@ -648,15 +648,32 @@ se reescribe: no pongas pedidos a mano sin él.
 
 Si más tarde **el mismo pedido entra por BoHub** (mismo Nº de pedido), no se
 duplica: queda **una sola fila**, BoHub **rellena los huecos** y lo que tú
-escribiste se respeta. Si BoHub dice otra cosa en una celda que ya tenía dato,
-**se conserva lo tuyo** y se apunta en la Nota, p. ej. *«⚠ BoHub Cliente: Roca
-SL»*. Mientras haya algo así —o algún dato que solo esté escrito a mano— la
-fila sigue siendo MANUAL, para no perderlo en el siguiente «Actualizar».
-Cuando ya no queda nada que perder (lo tuyo coincide con BoHub), la fila **pasa
-a BoHub** con su Origen real y deja de ser manual. Para entregarla antes, borra
+escribiste se respeta. La Nota lleva entonces dos marcas de la app, siempre
+**entre corchetes** (tu texto no se toca):
+
+- **`[BoHub: Factura, Tracking…]`** — las celdas que rellenó BoHub. Esas se
+  **mantienen al día** en cada «Actualizar» (si BoHub cambia la Situación o el
+  tracking, cambian). Si quieres quedarte tú con una, quita su nombre de la
+  marca.
+- **`[⚠ BoHub Cliente: Roca SL]`** — una celda que ya tenía **dato tuyo** y
+  BoHub dice otra cosa: **se conserva lo tuyo** y se apunta aquí lo de BoHub.
+
+Mientras haya un aviso así —o algo que solo esté escrito a mano: una celda que
+BoHub no tiene, tu nota, algo en columnas de más allá de la última— la fila
+sigue siendo **MANUAL**, para no perderlo en el siguiente «Actualizar». Cuando
+ya no queda nada que perder (lo tuyo coincide con BoHub), la fila **pasa a
+BoHub** con su Origen real y deja de ser manual. Para entregarla antes, borra
 las celdas que no coincidan o cambia tú el Origen. El Nº se compara sin
-espacios ni mayúsculas; `99931` casa con `BOPRIN-99931` solo si ninguna otra
-tienda tiene ese número. Sin Nº, la fila se queda como manual suelta.
+espacios ni mayúsculas; si tecleas **solo el número** (`99931`), casa con
+`BOPRIN-99931` solo si ninguna otra tienda tiene ese número (con prefijo, tiene
+que coincidir entero). Sin Nº, la fila se queda como manual suelta. Si el mismo
+pedido está en dos filas a mano, se quedan las dos (no se entrega ninguna).
+
+Las filas se leen y se escriben **tal cual** (sin que Google Sheets
+reinterprete lo tecleado: un `00123` sigue siendo `00123`, un texto que empiece
+por `=` no se convierte en fórmula). Los pedidos manuales **creados en BoHub**
+sin canal salen con Origen **«Manual (BoHub)»**, para no confundirse con los
+tecleados a mano.
 
 La vista previa te dice cuántas filas son de BoHub y cuántas **a mano se
 conservan**. Reimportar el histórico tampoco las toca.

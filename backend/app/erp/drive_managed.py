@@ -35,6 +35,7 @@ Y es idempotente: reejecutar no duplica el separador ni el bloque.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date, timedelta
 from typing import Any
 
@@ -298,9 +299,18 @@ def normalize_static_pedidos(
 
 #: Valor de la columna Origen que marca una fila tecleada a mano.
 MANUAL_MARKER = "MANUAL"
-#: Prefijo de las marcas de conflicto que la app escribe en la Nota. Se
-#: reconocen para quitarlas y recalcularlas en cada pasada (idempotente).
+#: Prefijo de las marcas de conflicto que la app escribe en la Nota, siempre
+#: ENTRE CORCHETES (`[⚠ BoHub Cliente: Roca SL]`): así se quitan enteras y se
+#: recalculan en cada pasada aunque el valor lleve «·» dentro (`1 · Bomedia`),
+#: sin tocar ni una letra de lo que escribió el usuario.
 CONFLICT_PREFIX = "⚠ BoHub"
+#: Marca de las celdas que RELLENÓ BoHub (`[BoHub: Factura, Tracking]`): esas
+#: no las escribió nadie a mano, así que en la siguiente pasada se ponen al día
+#: con BoHub en vez de quedarse congeladas (y salir luego como falso conflicto).
+#: Para quedarte tú con una de ellas, quita su nombre de la marca.
+OWNED_PREFIX = "BoHub:"
+_MARCAS_RE = re.compile(r"\s*\[(?:⚠ BoHub|BoHub:)[^\]]*\]")
+_PROPIAS_RE = re.compile(r"\[BoHub:([^\]]*)\]")
 
 _SITUACION_INDEX = SEGUIMIENTO_COLUMNS_V2.index("Situación")
 _NUMERO_INDEX = SEGUIMIENTO_COLUMNS_V2.index("Nº pedido")
@@ -325,10 +335,19 @@ def is_manual_row(row: list[Any]) -> bool:
     return _texto(row[_ORIGEN_INDEX]).replace(" ", "").casefold() == MANUAL_MARKER.casefold()
 
 
+def es_cabecera(row: list[Any]) -> bool:
+    """¿Es la fila de cabecera? Si alguien la borra o mete una fila encima, la
+    primera fila podría ser un pedido tecleado a mano: no se descarta a ciegas."""
+    celdas = {_texto(c).casefold() for c in row}
+    return "nº pedido" in celdas or "situación" in celdas
+
+
 def live_zone(values: list[list[Any]]) -> list[list[Any]]:
-    """Las filas de la zona VIVA de la pestaña: de debajo de la cabecera hasta
-    el separador del histórico (o hasta el final si no hay)."""
-    cuerpo = [list(r) for r in values[1:]] if values else []
+    """Las filas de la zona VIVA de la pestaña: de debajo de la cabecera (si
+    la hay) hasta el separador del histórico (o hasta el final si no hay)."""
+    if not values:
+        return []
+    cuerpo = [list(r) for r in (values[1:] if es_cabecera(values[0]) else values)]
     for i, row in enumerate(cuerpo):
         if is_separator(row):
             return cuerpo[:i]
@@ -353,7 +372,7 @@ def manual_rows(values: list[list[Any]]) -> list[list[Any]]:
     El resto de celdas, tal cual."""
     if not values:
         return []
-    header = values[0]
+    header = values[0] if es_cabecera(values[0]) else []
     filas = [realinear_fila(r, header) for r in live_zone(values)]
     return dates_to_serial([r for r in filas if is_manual_row(r)], PEDIDOS_DATE_COLUMNS)
 
@@ -386,9 +405,16 @@ def _importe(value: Any) -> float | None:
         return None
 
 
-def _vacio(value: Any, *, bohub: bool = False) -> bool:
-    txt = _texto(value)
-    return txt in _BOHUB_VACIOS if bohub else not txt
+def _vacio(value: Any) -> bool:
+    return not _texto(value)
+
+
+def _vacio_bohub(col: int, value: Any) -> bool:
+    """¿BoHub no tiene dato aquí? «—» y vacío; y un importe 0, que en BoHub es
+    «sin importe» (no rellenar un 0,00 € falso ni marcarlo como conflicto)."""
+    if _texto(value) in _BOHUB_VACIOS:
+        return True
+    return col == _IMPORTE_INDEX and (_importe(value) or 0.0) == 0.0
 
 
 def _iguales(col: int, manual: Any, bohub: Any) -> bool:
@@ -404,40 +430,58 @@ def _iguales(col: int, manual: Any, bohub: Any) -> bool:
     return _texto(manual).casefold() == _texto(bohub).casefold()
 
 
-def _sin_marcas(nota: Any) -> str:
-    """La Nota sin las marcas de conflicto que puso la app en otra pasada."""
-    partes = [p.strip() for p in _texto(nota).split("·")]
-    return " · ".join(p for p in partes if p and not p.startswith(CONFLICT_PREFIX))
+def _separar_marcas(nota: Any) -> tuple[str, set[str]]:
+    """(lo que escribió el usuario, columnas que rellenó BoHub). Quita SOLO las
+    marcas de la app —entre corchetes—; el texto del usuario sale tal cual."""
+    texto = _texto(nota)
+    propias: set[str] = set()
+    for grupo in _PROPIAS_RE.findall(texto):
+        propias.update(c.strip() for c in grupo.split(",") if c.strip())
+    return _MARCAS_RE.sub("", texto).strip(), propias
+
+
+def _en_marca(value: str) -> str:
+    """Un valor dentro de una marca no puede cerrar ni abrir corchetes."""
+    return value.replace("[", "(").replace("]", ")")
 
 
 def _fusionar(manual: list[Any], bohub: list[Any]) -> tuple[list[Any], int, bool]:
     """Una fila manual + la de BoHub del mismo pedido → (fila fusionada,
     nº de conflictos, ¿se puede entregar a BoHub?).
 
-    Rellena SOLO los huecos; lo escrito a mano manda y, si BoHub dice otra
-    cosa, se marca en la Nota. Se puede entregar cuando no hay conflictos y
-    no queda nada que solo esté escrito a mano: entonces la fila de BoHub lo
-    dice todo y la siguiente pasada no pierde nada."""
+    - Un hueco se rellena con lo de BoHub y queda apuntado en `[BoHub: …]`;
+      las celdas apuntadas ahí son de BoHub y se ponen al día en cada pasada.
+    - Lo escrito a mano manda; si BoHub dice otra cosa, se marca en la Nota
+      (`[⚠ BoHub Columna: valor]`), nunca se pisa.
+    - Se puede entregar a BoHub cuando no hay conflictos y no queda nada que
+      solo esté escrito a mano (ni una celda que BoHub no tenga, ni la Nota
+      del usuario, ni nada tecleado más allá de la última columna): entonces
+      la fila de BoHub lo dice todo y la siguiente pasada no pierde nada."""
     fila = list(manual)
-    nota_usuario = _sin_marcas(fila[_NOTA_INDEX])
-    fila[_NOTA_INDEX] = nota_usuario
+    nota_usuario, de_bohub = _separar_marcas(fila[_NOTA_INDEX])
+    rellenadas: list[str] = []
     marcas: list[str] = []
-    solo_a_mano = False
+    solo_a_mano = bool(nota_usuario) or any(
+        _texto(c) for c in fila[len(SEGUIMIENTO_COLUMNS_V2):]
+    )
     for col, nombre in enumerate(SEGUIMIENTO_COLUMNS_V2):
-        if col in (_ORIGEN_INDEX, _NUMERO_INDEX):
-            continue                      # el marcador y la clave del emparejamiento
-        mio, suyo = fila[col], bohub[col]
-        if _vacio(mio):
-            if not _vacio(suyo, bohub=True):
-                fila[col] = suyo
+        if col in (_ORIGEN_INDEX, _NUMERO_INDEX, _NOTA_INDEX):
             continue
-        if _vacio(suyo, bohub=True):
+        mio, suyo = fila[col], bohub[col]
+        suyo_vacio = _vacio_bohub(col, suyo)
+        if nombre in de_bohub or _vacio(mio):
+            # Hueco, o celda que ya rellenó BoHub: manda BoHub (al día).
+            fila[col] = "" if suyo_vacio else suyo
+            if not suyo_vacio:
+                rellenadas.append(nombre)
+            continue
+        if suyo_vacio:
             solo_a_mano = True
             continue
         if not _iguales(col, mio, suyo):
-            marcas.append(f"{CONFLICT_PREFIX} {nombre}: {_legible(col, suyo)}")
-    if marcas:
-        fila[_NOTA_INDEX] = " · ".join(p for p in (fila[_NOTA_INDEX], *marcas) if p)
+            marcas.append(f"[{CONFLICT_PREFIX} {nombre}: {_en_marca(_legible(col, suyo))}]")
+    propias = f"[{OWNED_PREFIX} {', '.join(rellenadas)}]" if rellenadas else ""
+    fila[_NOTA_INDEX] = " ".join(p for p in (nota_usuario, propias, *marcas) if p)
     return fila, len(marcas), not marcas and not solo_a_mano
 
 
@@ -477,15 +521,31 @@ def merge_manual_rows(
         if desnudo:
             desnudos.setdefault(desnudo, []).append(r)
 
+    def _pedido_de(fila: list[Any]) -> dict[str, Any] | None:
+        numero = _numero_normalizado(fila[_NUMERO_INDEX])
+        if not numero:
+            return None
+        if numero in exactos:
+            return exactos[numero]
+        # El número desnudo solo si el usuario tecleó SOLO el número: `BOP-9`
+        # no puede casar con `FLUXLA-9` por compartir el 9.
+        if numero.isdigit():
+            candidatos = desnudos.get(extract_order_number(numero) or "", [])
+            return candidatos[0] if len(candidatos) == 1 else None
+        return None
+
+    emparejadas = [(fila, _pedido_de(fila)) for fila in manuales]
+    # Dos filas manuales del mismo pedido: ninguna se entrega (si una pasara a
+    # BoHub y la otra consumiera el pedido, la entregada desaparecería).
+    veces: dict[int, int] = {}
+    for _fila, pedido in emparejadas:
+        if pedido is not None:
+            veces[id(pedido)] = veces.get(id(pedido), 0) + 1
+
     quedan: list[list[Any]] = []
     consumidos: set[int] = set()
     fusionadas = entregadas = conflictos = 0
-    for fila in manuales:
-        numero = _numero_normalizado(fila[_NUMERO_INDEX])
-        pedido = exactos.get(numero) if numero else None
-        if pedido is None and numero:
-            candidatos = desnudos.get(extract_order_number(fila[_NUMERO_INDEX]) or "", [])
-            pedido = candidatos[0] if len(candidatos) == 1 else None
+    for fila, pedido in emparejadas:
         if pedido is None:
             quedan.append(fila)
             continue
@@ -493,7 +553,7 @@ def merge_manual_rows(
         fusion, n_conflictos, entregable = _fusionar(fila, suyo)
         fusionadas += 1
         conflictos += n_conflictos
-        if entregable:
+        if entregable and veces[id(pedido)] == 1:
             entregadas += 1               # la escribe BoHub, con su Origen real
             continue
         consumidos.add(id(pedido))
@@ -618,6 +678,18 @@ def pedidos_format(
     columns = len(SEGUIMIENTO_COLUMNS_V2)
     total_rows = len(ordered) + 1
     requests = _header_format(columns, _PEDIDOS_WIDTHS_PX)
+    # La columna Situación se limpia antes de colorear: `replace_tab` borra los
+    # valores, no el formato, y una celda que hoy no lleva color (una fila a
+    # mano con una Situación que no se reconoce, o una fila que ha bajado)
+    # heredaría el de la pasada anterior.
+    ultima = total_rows + len(static or [])
+    if ultima > 1:
+        requests.append({"repeatCell": {
+            "range": {"sheetId": None, "startRowIndex": 1, "endRowIndex": ultima,
+                      "startColumnIndex": 0, "endColumnIndex": 1},
+            "cell": {"userEnteredFormat": {}},
+            "fields": "userEnteredFormat(backgroundColor,textFormat)",
+        }})
     if ordered:
         # Importe (columna 7, índice 6) con formato de moneda.
         requests.append({"repeatCell": {
@@ -707,20 +779,28 @@ def push_managed_tabs(
     # Ambas cosas se conservan; lo demás de la zona viva es de BoHub y se
     # reescribe. Se lee también en dry-run, para que la vista previa diga qué
     # sobrevive — que es justo lo que da miedo al pulsar.
-    valores_pedidos = sheets.tab_values(pedidos_tab) if pedidos_tab in existing else []
+    # Se lee EN BRUTO (sin formatear: números como números, fechas como
+    # serial, texto como texto) y se escribe igual, para que una celda tecleada
+    # a mano vuelva exactamente como estaba — leída formateada y reescrita
+    # «como si la teclease un usuario», Sheets la reinterpretaría.
+    valores_pedidos = (
+        sheets.tab_values(pedidos_tab, raw=True) if pedidos_tab in existing else []
+    )
     fusion = merge_manual_rows(manual_rows(valores_pedidos), rows)
     manuales = fusion["manuales"]
-    # Un pedido que ya está en una fila manual (fusionada) NO se repite en la
-    # zona de BoHub: una sola fila por pedido.
-    rows = [r for r in rows if id(r) not in fusion["consumidos"]]
 
     # Zona viva por fecha del pedido, de más reciente a más antiguo (la
     # Situación es una columna más: con su color y reordenable con el
     # autofiltro). El bloque histórico de debajo del separador NO se toca.
-    ordenadas = sort_by_fecha_desc(rows)
-    incidencias = incidencia_rows(ordenadas)
+    todas = sort_by_fecha_desc(rows)
+    # Un pedido que ya está en una fila manual (fusionada) NO se repite en la
+    # zona de BoHub de «Seguimiento (app)»: una sola fila por pedido. Pero
+    # sigue siendo un pedido de BoHub: cuenta en el desglose y, si es una
+    # Incidencia, sale en «Incidencias (app)».
+    ordenadas = [r for r in todas if id(r) not in fusion["consumidos"]]
+    incidencias = incidencia_rows(todas)
     por_situacion: dict[str, int] = {}
-    for row in ordenadas:
+    for row in todas:
         clave = str(row.get("situacion_label") or row.get("situacion") or "—")
         por_situacion[clave] = por_situacion.get(clave, 0) + 1
 
@@ -750,7 +830,7 @@ def push_managed_tabs(
         static_block(valores_pedidos), valores_pedidos[0] if valores_pedidos else [],
     )
     estatico_incidencias = dates_to_serial(
-        static_block(sheets.tab_values(incidencias_tab))
+        static_block(sheets.tab_values(incidencias_tab, raw=True))
         if incidencias_tab in existing else [],
         INCIDENCIAS_DATE_COLUMNS,
     )
@@ -767,16 +847,16 @@ def push_managed_tabs(
 
     sheets.ensure_tab(pedidos_tab)
     sheets.replace_tab(
-        pedidos_tab, build_pedidos_grid(ordenadas, estatico_pedidos, manuales),
+        pedidos_tab, build_pedidos_grid(ordenadas, estatico_pedidos, manuales), raw=True,
     )
     sheets.format_tab(pedidos_tab, pedidos_format(ordenadas, estatico_pedidos, manuales))
 
     sheets.ensure_tab(incidencias_tab)
     sheets.replace_tab(
-        incidencias_tab, build_incidencias_grid(ordenadas, estatico_incidencias),
+        incidencias_tab, build_incidencias_grid(todas, estatico_incidencias), raw=True,
     )
     sheets.format_tab(
-        incidencias_tab, incidencias_format(ordenadas, estatico_incidencias),
+        incidencias_tab, incidencias_format(todas, estatico_incidencias),
     )
 
     resumen["written"] = True

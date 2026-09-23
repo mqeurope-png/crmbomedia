@@ -276,6 +276,7 @@ def import_historico(
     from app.erp.drive_managed import (  # noqa: PLC0415
         compose,
         dates_to_serial,
+        es_cabecera,
         historic_block,
         incidencias_format,
         is_separator,
@@ -313,7 +314,7 @@ def import_historico(
         está por encima del separador."""
         if title not in sheets.tab_titles():
             return []
-        values = [list(r) for r in sheets.tab_values(title)]
+        values = [list(r) for r in sheets.tab_values(title, raw=True)]
         cuerpo = values[1:] if values else []
         for i, row in enumerate(cuerpo):
             if is_separator(row):
@@ -328,13 +329,18 @@ def import_historico(
     # reemplaza el histórico, nunca absorbe una fila manual. Se realinea a las
     # 18 columnas si la pestaña era de 17, y sus fechas van como fecha; en la
     # zona viva «Preparación» es un estado, así que no se toca.
-    valores = sheets.tab_values(pedidos_tab) if pedidos_tab in sheets.tab_titles() else []
+    # Se lee y se escribe EN BRUTO: lo tecleado a mano vuelve tal cual.
+    valores = (
+        sheets.tab_values(pedidos_tab, raw=True) if pedidos_tab in sheets.tab_titles() else []
+    )
+    cabecera = valores[0] if valores and es_cabecera(valores[0]) else []
     vivas_pedidos = dates_to_serial(
-        [realinear_fila(r, valores[0]) for r in live_zone(valores)] if valores else [],
-        PEDIDOS_DATE_COLUMNS,
+        [realinear_fila(r, cabecera) for r in live_zone(valores)], PEDIDOS_DATE_COLUMNS,
     )
     sheets.ensure_tab(pedidos_tab)
-    sheets.replace_tab(pedidos_tab, compose(SEGUIMIENTO_COLUMNS_V2, vivas_pedidos, historico))
+    sheets.replace_tab(
+        pedidos_tab, compose(SEGUIMIENTO_COLUMNS_V2, vivas_pedidos, historico), raw=True,
+    )
     # El mismo formato que el volcado periódico (cabecera congelada, anchos,
     # fechas, Situación coloreada según su etiqueta), por posición: la zona
     # viva se ha conservado tal cual.
@@ -348,7 +354,7 @@ def import_historico(
         sheets.ensure_tab(incidencias_tab)
         sheets.replace_tab(incidencias_tab, compose(
             INCIDENCIAS_COLUMNS, vivas_inc, pendientes,
-        ))
+        ), raw=True)
         sheets.format_tab(incidencias_tab, incidencias_format(
             [{"situacion": "incidencias", "fecha": None} for _ in vivas_inc], pendientes,
         ))

@@ -60,6 +60,7 @@ class FakeTabs:
         self.written: dict[str, list[list[Any]]] = {}
         self.formats: dict[str, list[dict[str, Any]]] = {}
         self.cleared: list[str] = []
+        self.raw_writes: dict[str, bool] = {}
 
     def tab_titles(self) -> list[str]:
         return list(self.tabs)
@@ -73,16 +74,22 @@ class FakeTabs:
             self.created.append(title)
         return list(self.tabs).index(title)
 
-    def replace_tab(self, title: str, rows: list[list[Any]]) -> None:
+    def replace_tab(self, title: str, rows: list[list[Any]], *, raw: bool = False) -> None:
         self.cleared.append(title)
         self.tabs[title] = rows
         self.written[title] = rows
+        self.raw_writes[title] = raw
 
     def format_tab(self, title: str, requests: list[dict[str, Any]]) -> None:
         self.formats[title] = requests
 
-    def tab_values(self, title: str) -> list[list[str]]:
-        return [[str(c) for c in row] for row in self.tabs.get(title, [])]
+    def tab_values(self, title: str, *, raw: bool = False) -> list[list[Any]]:
+        """Como la API: formateado (texto) por defecto; en bruto, cada celda
+        con su tipo (número, texto)."""
+        filas = self.tabs.get(title, [])
+        if raw:
+            return [list(row) for row in filas]
+        return [[str(c) for c in row] for row in filas]
 
 
 def _row(situacion: str, numero: str, *, fecha: str | None = "2026-09-01",
@@ -188,6 +195,7 @@ def test_ordena_la_zona_viva_por_fecha_del_pedido_desc(session):
         for r in sheets.formats[DEFAULT_MANAGED_TAB]
         if r.get("repeatCell", {}).get("range", {}).get("startColumnIndex") == 0
         and r["repeatCell"]["range"]["startRowIndex"] > 0
+        and "backgroundColor" in r["repeatCell"]["cell"]["userEnteredFormat"]
     }
     rojo = int(SITUACION_FILL["incidencias"][0][0:2], 16) / 255
     verde = int(SITUACION_FILL["listo"][0][0:2], 16) / 255
@@ -234,6 +242,7 @@ def test_colorea_la_celda_situacion_con_los_tonos_del_diseno(session):
         for r in sheets.formats[DEFAULT_MANAGED_TAB]
         if r.get("repeatCell", {}).get("range", {}).get("startColumnIndex") == 0
         and r["repeatCell"]["range"]["startRowIndex"] > 0
+        and "backgroundColor" in r["repeatCell"]["cell"]["userEnteredFormat"]
     ]
     esperado_incidencia = SITUACION_FILL["incidencias"][0]
     assert fondos[0]["red"] == pytest.approx(int(esperado_incidencia[0:2], 16) / 255)
@@ -987,3 +996,154 @@ def test_reimportar_el_historico_no_absorbe_las_filas_manuales():
     assert escrito[2][1] == "L-1"
     assert is_separator(escrito[3])
     assert "VIEJO" not in {f[1] for f in escrito if len(f) > 1}
+
+
+# --- regresiones de la revisión adversarial -----------------------------------
+
+
+def _pasadas(session, sheets, rows, n: int = 3) -> list[list[list[Any]]]:
+    """`n` «Actualizar» seguidos, releyendo la hoja en bruto cada vez."""
+    escritos = []
+    for _ in range(n):
+        push_managed_tabs(session, sheets, rows)
+        escritos.append([list(r) for r in sheets.written[DEFAULT_MANAGED_TAB]])
+    return escritos
+
+
+def test_un_pedido_manual_de_bohub_no_se_confunde_con_uno_tecleado(session):
+    """El Origen de un pedido manual de BoHub sin canal es «Manual (BoHub)»,
+    no «Manual»: si no, la siguiente pasada lo tomaría por tecleado a mano y
+    dejaría de actualizarse."""
+    from app.erp.drive_managed import is_manual_row
+
+    fila = _manual("M-1")
+    fila[4] = "Manual (BoHub)"
+    assert not is_manual_row(fila)
+    rows = [_row("listo", "MANUAL-000002", origen_label="Manual (BoHub)")]
+    sheets = FakeTabs()
+    push_managed_tabs(session, sheets, rows)
+    rows[0]["situacion"], rows[0]["situacion_label"] = "por_cobrar", "Por cobrar"
+    resumen = push_managed_tabs(session, sheets, rows)
+    assert resumen["manuales"] == 0
+    assert sheets.written[DEFAULT_MANAGED_TAB][1][0] == "Por cobrar"
+
+
+def test_la_marca_con_un_punto_medio_dentro_no_crece(session):
+    """«1 · Bomedia» dentro de una marca: se quita entera y no deja trozos."""
+    sheets = _pestana(_manual("BOP-9", **{"Empresa (serie)": "Bomedia",
+                                          "Nota / Incidencia": "urgente"}))
+    escritos = _pasadas(session, sheets, [_row("listo", "BOP-9")])
+    notas = [e[1][-1] for e in escritos]
+    assert notas[0] == notas[1] == notas[2]
+    assert notas[0].startswith("urgente [")
+    assert "[⚠ BoHub Empresa (serie): 1 · Bomedia]" in notas[0]
+
+
+def test_la_nota_del_usuario_sale_tal_cual(session):
+    raro = "a·b  ·· c   ⚠ ojo"
+    sheets = _pestana(_manual("BOP-9", Cliente="Otro", **{"Nota / Incidencia": raro}))
+    escritos = _pasadas(session, sheets, [_row("listo", "BOP-9")])
+    for e in escritos:
+        assert e[1][-1].startswith(raro + " [")
+
+
+def test_lo_que_relleno_bohub_se_pone_al_dia(session):
+    """Una celda que rellenó BoHub sigue a BoHub en las pasadas siguientes; no
+    se congela ni sale luego como conflicto falso."""
+    sheets = _pestana(_manual("BOP-9", Cliente="Otro nombre"))
+    pedido = _row("por_cobrar", "BOP-9", tracking="1Z-A")
+    push_managed_tabs(session, sheets, [pedido])
+    f = sheets.written[DEFAULT_MANAGED_TAB][1]
+    assert f[_col("Situación")] == "Por cobrar" and f[_col("Tracking")] == "1Z-A"
+    assert "[BoHub: " in f[-1] and "Situación" in f[-1]
+    pedido.update(situacion="listo", situacion_label="Listo", tracking="1Z-B")
+    push_managed_tabs(session, sheets, [pedido])
+    f = sheets.written[DEFAULT_MANAGED_TAB][1]
+    assert f[_col("Situación")] == "Listo" and f[_col("Tracking")] == "1Z-B"
+    assert "⚠ BoHub Situación" not in f[-1] and "⚠ BoHub Tracking" not in f[-1]
+    assert f[_col("Cliente")] == "Otro nombre"        # lo tecleado, intacto
+
+
+def test_una_incidencia_fusionada_sigue_en_incidencias(session):
+    sheets = _pestana(_manual("BOP-9", Cliente="Otro"))
+    pedido = _row("incidencias", "BOP-9", incidencia={"tipo": "Falta stock"})
+    resumen = push_managed_tabs(session, sheets, [pedido])
+    inc = sheets.written[DEFAULT_INCIDENCIAS_TAB]
+    assert [f[0] for f in inc[1:]] == ["BOP-9"]
+    assert resumen["incidencias"] == 1
+    assert resumen["por_situacion"] == {"Incidencia": 1}
+
+
+def test_el_numero_con_prefijo_no_casa_con_otra_tienda(session):
+    sheets = _pestana(_manual("BOP-9", Cliente="Acme SL"))
+    resumen = push_managed_tabs(session, sheets, [_row("listo", "FLUXLA-9")])
+    assert resumen["manuales_fusionadas"] == 0
+    numeros = sorted(f[1] for f in sheets.written[DEFAULT_MANAGED_TAB][1:])
+    assert numeros == ["BOP-9", "FLUXLA-9"]
+
+
+def test_lo_tecleado_mas_alla_de_la_ultima_columna_impide_entregar(session):
+    fila = _manual("BOP-9", Situación="Listo", Cliente="Acme SL", Fecha="01/09/2026")
+    sheets = _pestana(fila + ["apunte en la columna S"])
+    resumen = push_managed_tabs(session, sheets, [_row("listo", "BOP-9")])
+    assert resumen["manuales_entregadas"] == 0
+    assert sheets.written[DEFAULT_MANAGED_TAB][1][-1] == "apunte en la columna S"
+
+
+def test_dos_filas_manuales_del_mismo_pedido_no_desaparecen(session):
+    limpia = _manual("BOP-9", Situación="Listo", Cliente="Acme SL", Fecha="01/09/2026")
+    con_nota = _manual("BOP-9", **{"Nota / Incidencia": "la otra"})
+    sheets = _pestana(limpia, con_nota)
+    resumen = push_managed_tabs(session, sheets, [_row("listo", "BOP-9")])
+    escrito = sheets.written[DEFAULT_MANAGED_TAB][1:]
+    assert sum(1 for f in escrito if f[1] == "BOP-9") == 2
+    assert resumen["manuales_entregadas"] == 0 and resumen["rows"] == 0
+
+
+def test_sin_cabecera_no_se_come_la_primera_fila_manual(session):
+    """Si alguien borra la cabecera, la primera fila puede ser un pedido a
+    mano: no se descarta a ciegas."""
+    sheets = FakeTabs({HISTORICA: [], DEFAULT_MANAGED_TAB: [_manual("", Cliente="Sola")]})
+    resumen = push_managed_tabs(session, sheets, [])
+    assert resumen["manuales"] == 1
+    assert sheets.written[DEFAULT_MANAGED_TAB][1][3] == "Sola"
+
+
+def test_un_importe_cero_de_bohub_no_rellena_ni_choca(session):
+    sheets = _pestana(_manual("BOP-9", Importe=121.0),
+                      _manual("BOP-8", **{"Nota / Incidencia": "sigue a mano"}))
+    push_managed_tabs(session, sheets, [_row("listo", "BOP-9", importe=0.0),
+                                        _row("listo", "BOP-8", importe=0.0)])
+    escrito = sheets.written[DEFAULT_MANAGED_TAB]
+    nueve = next(f for f in escrito if f[1] == "BOP-9")
+    ocho = next(f for f in escrito if f[1] == "BOP-8")
+    assert "Importe" not in nueve[-1] and nueve[_col("Importe")] == 121.0
+    assert ocho[_col("Importe")] == ""
+
+
+def test_lo_tecleado_se_lee_y_se_escribe_en_bruto(session):
+    """Leído formateado y reescrito «como si lo teclease alguien», Sheets
+    reinterpretaría lo tecleado («00123» → 123). Se lee y se escribe en bruto."""
+    fila = _manual("", Cliente="=SUMA(A1)", Tracking="00123")
+    fila[_col("Importe")] = 1234.5
+    sheets = _pestana(fila)
+    push_managed_tabs(session, sheets, [])
+    f = sheets.written[DEFAULT_MANAGED_TAB][1]
+    assert f[_col("Tracking")] == "00123" and f[_col("Cliente")] == "=SUMA(A1)"
+    assert f[_col("Importe")] == 1234.5
+    assert sheets.raw_writes == {DEFAULT_MANAGED_TAB: True, DEFAULT_INCIDENCIAS_TAB: True}
+
+
+def test_la_columna_situacion_se_limpia_antes_de_colorear(session):
+    """`replace_tab` borra valores, no formato: sin limpiar, una celda sin
+    color heredaría el de la pasada anterior."""
+    sep = [f"{SEPARATOR_PREFIX} HISTÓRICO {SEPARATOR_PREFIX}"]
+    sheets = _pestana(_manual("", Situación="loquesea"),
+                      historico=[sep, ["Histórico", "H-1"]])
+    push_managed_tabs(session, sheets, [_row("listo", "L-1")])
+    reset = next(
+        r["repeatCell"] for r in sheets.formats[DEFAULT_MANAGED_TAB]
+        if r.get("repeatCell", {}).get("cell", {}).get("userEnteredFormat") == {}
+    )
+    assert reset["range"]["startColumnIndex"] == 0
+    assert (reset["range"]["startRowIndex"], reset["range"]["endRowIndex"]) == (1, 5)
