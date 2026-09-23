@@ -8,7 +8,8 @@ La hoja de Drive de Bart tiene dos mundos y no se mezclan:
   comprueba antes de escribir (`_guard_not_historic`).
 - La pestaña **gestionada** («Seguimiento (app)», configurable) es de la app:
   se reescribe entera en cada actualización con las 17 columnas del rediseño
-  2026, ordenada por Situación y con la celda Situación coloreada — la misma
+  2026, ordenada por fecha del pedido (más reciente primero) y con la celda
+  Situación coloreada — la misma
   forma que la pantalla y que «Descargar Excel», porque comparte la
   serialización (`row_to_pedidos_values`, `incidencia_values`).
 

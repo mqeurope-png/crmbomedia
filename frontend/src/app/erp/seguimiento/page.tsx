@@ -1100,11 +1100,15 @@ function ManagedPreview({ summary }: { summary: DriveManagedSummary }) {
     <>
       <p className="muted small">
         Se reescribirá la pestaña <strong>«{summary.tab}»</strong> con las{" "}
-        {summary.columns.length} columnas del seguimiento, ordenada por
-        Situación. Nada se ha escrito todavía.
+        {summary.columns.length} columnas del seguimiento, ordenada por fecha
+        del pedido (más reciente primero) y con la cabecera congelada. Nada se
+        ha escrito todavía.
       </p>
       <ul className="item-list">
-        <li><strong>{summary.rows}</strong> filas (todos los pedidos de la vista).</li>
+        <li>
+          <strong>{summary.rows}</strong> filas: los mismos pedidos que la vista
+          en curso (fuera los excluidos y los ocultos por estado).
+        </li>
         <li>
           <strong>{summary.incidencias}</strong> en «{summary.incidencias_tab}»
           (Situación = Incidencia).

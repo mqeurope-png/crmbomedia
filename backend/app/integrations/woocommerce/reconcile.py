@@ -51,6 +51,11 @@ RECONCILE_WOO_STATUSES = (
 #: alcanza; si se alcanza, se marca `capped` y Bart puede re-ejecutar.
 DEFAULT_MAX_PAGES = 20
 _PER_PAGE = 100
+#: Tope de pedidos SIN estado que se consultan uno a uno por pasada: cada uno
+#: es una llamada a la tienda y el job corre con un timeout fijo. Los que
+#: quedan siguen a NULL (ocultos) y entran en la siguiente pasada; se marca
+#: `capped` para que la pantalla diga «vuelve a ejecutar para el resto».
+DEFAULT_MAX_UNKNOWN = 150
 
 
 def _open_woo_orders(session: Session, store_account_id: str | None) -> list[Order]:
@@ -179,6 +184,7 @@ def reconcile_open_order_statuses(
     store_account_id: str | None = None,
     client_factory: Callable[[IntegrationAccount], Any] = WooHTTPClient,
     max_pages: int = DEFAULT_MAX_PAGES,
+    max_unknown: int = DEFAULT_MAX_UNKNOWN,
 ) -> dict[str, Any]:
     """Pone al día el estado de los pedidos activos y aplica la regla. Devuelve
     el resumen (recuentos + muestras). Con `dry_run=True` no persiste nada."""
@@ -192,8 +198,12 @@ def reconcile_open_order_statuses(
     errors: list[dict[str, str]] = []
     capped = False
 
-    # 1) Los SIN estado, uno a uno (pocos; el listado por estado no los ve).
+    # 1) Los SIN estado, uno a uno (el listado por estado no los ve), con tope
+    #    por pasada: el resto sigue a NULL y cae en la siguiente.
     unknown = _unknown_status_woo_orders(session, store_account_id)
+    if len(unknown) > max_unknown:
+        capped = True
+        unknown = unknown[:max_unknown]
     woo_calls = _fill_unknown_statuses(
         session, unknown, client_factory, dry_run=dry_run,
         counts=counts, samples=samples, errors=errors,

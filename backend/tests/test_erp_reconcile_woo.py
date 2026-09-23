@@ -358,6 +358,33 @@ def test_reconcile_rellena_los_sin_estado_uno_a_uno(session_factory) -> None:
         assert ocultos["BOPRIN-99999"] == "No encontrado en la tienda"
 
 
+def test_reconcile_acota_los_sin_estado_por_pasada(session_factory) -> None:
+    """Cada sin estado es una llamada a la tienda y el job tiene timeout: se
+    consultan como mucho `max_unknown` por pasada, se marca `capped` (la
+    pantalla ya dice «vuelve a ejecutar para el resto») y los demás siguen a
+    NULL para la siguiente."""
+    with session_factory() as s:
+        st = _store(s)
+        for i in (1, 2, 3):
+            _order(s, woo_id=str(900 + i), number=f"BOPRIN-90{i}", woo_status=None, store=st)
+        s.commit()
+        calls: list[tuple] = []
+        summary = reconcile_open_order_statuses(
+            s, dry_run=False, max_unknown=2,
+            client_factory=_factory({}, calls, by_id_by_store={"boprint": {
+                901: {"id": 901, "status": "processing"},
+                902: {"id": 902, "status": "processing"},
+                903: {"id": 903, "status": "processing"},
+            }}),
+        )
+        assert summary["capped"] is True
+        assert summary["unknown_total"] == 2
+        assert summary["to_filled"] == 2
+        assert len([c for c in calls if c[0] == "get_order"]) == 2
+        sin_estado = [o.order_number for o in s.query(Order) if o.woo_status is None]
+        assert len(sin_estado) == 1
+
+
 def test_reconcile_dry_run_consulta_los_sin_estado_pero_no_persiste(session_factory) -> None:
     with session_factory() as s:
         st = _store(s)

@@ -195,7 +195,8 @@ def drive_sync(
 ) -> dict[str, Any]:
     """«Actualizar hoja de Drive»: vuelca el formato NUEVO (rediseño 2026) a la
     pestaña gestionada por la app («Seguimiento (app)» + «Incidencias (app)»),
-    reescribiéndola entera: 17 columnas, orden por Situación, celda Situación
+    reescribiéndola entera: 17 columnas, orden por fecha del pedido (más
+    reciente primero), cabecera congelada, celda Situación
     coloreada. La pestaña HISTÓRICA no se toca — sigue siendo el archivo.
 
     `dry_run=true` PREVISUALIZA (qué pestañas, cuántas filas, desglose por
