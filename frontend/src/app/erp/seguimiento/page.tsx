@@ -1053,8 +1053,20 @@ function ManagedPreview({ summary }: { summary: DriveManagedSummary }) {
             {situaciones.map(([label, n]) => `${label}: ${n}`).join(" · ")}
           </li>
         ) : null}
+        {summary.historico_preservado ? (
+          <li>
+            <strong>{summary.historico_preservado}</strong> filas del histórico se
+            conservan bajo el separador (no se reescriben).
+          </li>
+        ) : null}
+        {summary.pendientes_preservados ? (
+          <li>
+            <strong>{summary.pendientes_preservados}</strong> pendientes heredados
+            se conservan en «{summary.incidencias_tab}».
+          </li>
+        ) : null}
         <li className="muted small">
-          La pestaña «{summary.historic_tab}» (el histórico) no se toca.
+          La pestaña «{summary.historic_tab}» (la hoja vieja en bruto) no se toca.
         </li>
       </ul>
     </>

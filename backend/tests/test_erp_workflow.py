@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -209,28 +209,35 @@ def test_workflow_lineas_sin_mapear_no_cuentan_para_el_flujo(session_factory) ->
     assert wf["queue"] == "por_revisar" and wf["next_action"] == "aprobar"
 
 
-def test_workflow_las_demas_incidencias_siguen(session_factory) -> None:
-    """Quitar el mapeo no toca las otras incidencias: empresa sin vincular (y
-    el pedido con líneas sin mapear sigue entrando por ESA razón, no por el
-    mapeo)."""
+def test_workflow_las_demas_alertas_siguen(session_factory) -> None:
+    """Quitar el mapeo no toca las otras alertas: empresa sin vincular sigue
+    saliendo (y el pedido con líneas sin mapear entra por ESA razón, no por el
+    mapeo). Desde que «Incidencia» es solo lo reportado a mano, este aviso —que
+    lo detecta la app— manda el pedido a «Por revisar»."""
     with session_factory() as s:
         _order(s, oid="o5c", number="MANUAL-9", company_id="sinlink",
                external_source=OrderSource.MANUAL, payment_status="paid",
                preparation_status="in_queue", approved_at=datetime.now(UTC),
                lines=[{"sku": "RARO-3", "codart": None}])
     wf = _wf(session_factory, "o5c")
-    assert wf["queue"] == "incidencias" and wf["next_action"] == "vincular_empresa"
-    assert [a["code"] for a in wf["alerts"] if a["blocking"]] == ["empresa_sin_vincular"]
+    assert wf["queue"] == "por_revisar" and wf["next_action"] == "vincular_empresa"
+    assert [a["code"] for a in wf["alerts"] if a["review"]] == ["empresa_sin_vincular"]
+    # Y NO es bloqueante: no es una incidencia de nadie.
+    assert [a for a in wf["alerts"] if a["blocking"]] == []
 
 
-def test_workflow_incidencia_empresa_sin_vincular(session_factory) -> None:
+def test_workflow_empresa_sin_vincular_va_a_por_revisar(session_factory) -> None:
+    """Lo detecta la app, no una persona: «Por revisar», no «Incidencia». Sigue
+    destacado y con su acción (hay que vincular antes de facturar), pero no
+    entra en la lista de incidencias del equipo."""
     with session_factory() as s:
         _order(s, oid="o6", number="MANUAL-1", company_id="sinlink",
                external_source=OrderSource.MANUAL, payment_status="paid",
                preparation_status="in_queue", approved_at=datetime.now(UTC))
     wf = _wf(session_factory, "o6")
-    assert wf["queue"] == "incidencias" and wf["next_action"] == "vincular_empresa"
+    assert wf["queue"] == "por_revisar" and wf["next_action"] == "vincular_empresa"
     assert "Sin FACTUSOL SL" in wf["alerts"][0]["text"]
+    assert wf["blocked"] is False
 
 
 def test_workflow_incidencia_excepcion_abierta(session_factory) -> None:
@@ -243,8 +250,32 @@ def test_workflow_incidencia_excepcion_abierta(session_factory) -> None:
         ))
         s.commit()
     wf = _wf(session_factory, "o7")
+    # Lo REPORTADO A MANO (el botón «Reportar problema» de la Cola SAT) es lo
+    # único que hace «Incidencia»: es la lista de problemas del equipo.
     assert wf["queue"] == "incidencias"
     assert "excepcion_abierta" in [a["code"] for a in wf["alerts"]]
+    assert wf["blocked"] is True
+
+
+def test_resolver_la_excepcion_saca_el_pedido_de_incidencias(session_factory) -> None:
+    """Resuelta la incidencia manual, el pedido vuelve a su cola de siempre."""
+    with session_factory() as s:
+        _order(s, oid="o7b", number="BOPRIN-3B", payment_status="paid",
+               preparation_status="pending_review")
+        s.add(ErpException(
+            order_id="o7b", type="sat_issue", subtype=None,
+            status=ExceptionStatus.OPEN,
+        ))
+        s.commit()
+    assert _wf(session_factory, "o7b")["queue"] == "incidencias"
+    with session_factory() as s:
+        exc = s.scalars(select(ErpException).where(
+            ErpException.order_id == "o7b")).one()
+        exc.status = ExceptionStatus.RESOLVED
+        s.commit()
+    wf = _wf(session_factory, "o7b")
+    assert wf["queue"] != "incidencias"
+    assert "excepcion_abierta" not in [a["code"] for a in wf["alerts"]]
 
 
 def test_workflow_lineas_sin_mapear_tampoco_si_ya_facturado(session_factory) -> None:
@@ -278,19 +309,22 @@ def test_bandeja_devuelve_colas_contadores_y_filtro(http, session_factory) -> No
     r = http.get("/api/erp/orders", headers=auth_headers(http, "pedidos"))
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["queue_counts"]["por_revisar"] == 1
+    # A-3 (empresa sin vincular) es un aviso de la app: cae en «Por revisar»
+    # junto a A-1, no en «Incidencias» —que ahora es solo lo reportado a mano—.
+    assert body["queue_counts"]["por_revisar"] == 2
     assert body["queue_counts"]["por_facturar"] == 1
-    assert body["queue_counts"]["incidencias"] == 1
+    assert body["queue_counts"]["incidencias"] == 0
     by_number = {i["order_number"]: i for i in body["items"]}
     assert by_number["A-1"]["workflow"]["next_action"] == "aprobar"
     assert by_number["A-2"]["workflow"]["next_action"] == "emitir_factura"
+    assert by_number["A-3"]["workflow"]["next_action"] == "vincular_empresa"
 
-    r = http.get("/api/erp/orders?queue=incidencias",
+    r = http.get("/api/erp/orders?queue=por_revisar",
                  headers=auth_headers(http, "pedidos"))
     body = r.json()
-    assert [i["order_number"] for i in body["items"]] == ["A-3"]
-    assert body["queue"] == "incidencias"
-    assert body["queue_counts"]["por_revisar"] == 1     # contadores completos
+    assert sorted(i["order_number"] for i in body["items"]) == ["A-1", "A-3"]
+    assert body["queue"] == "por_revisar"
+    assert body["queue_counts"]["por_facturar"] == 1    # contadores completos
 
 
 def test_ficha_devuelve_el_mismo_workflow(http, session_factory) -> None:

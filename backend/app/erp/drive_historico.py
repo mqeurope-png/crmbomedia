@@ -1,10 +1,16 @@
 """Importación del histórico de la hoja vieja al formato NUEVO (una vez).
 
 La pestaña histórica de Bart tiene miles de filas en el formato de siempre (17
-columnas: Empresa, Fecha entrada albarán, Cliente, …, Orden). Este módulo las
-LEE, las mapea a las 17 columnas del rediseño 2026 y las deja en su propia
-pestaña «Histórico (formato nuevo)». La hoja vieja **no se toca**: sigue siendo
-el archivo en bruto por si hay que revisar algo del mapeo.
+columnas: Empresa, Fecha entrada albarán, Cliente, …, Orden) y un marcador a
+mano —«^^^^ Aquí arriba pedidos que faltan entregar»— que la parte en dos:
+
+- **encima**: su lista de trabajo, pedidos pendientes de entregar. NO son
+  histórico, así que se heredan como incidencias abiertas en la zona estática de
+  «Incidencias (app)»;
+- **debajo**: lo ya entregado → la zona estática de «Seguimiento (app)».
+
+La hoja vieja **no se toca**: sigue siendo el archivo en bruto por si hay que
+revisar algo del mapeo.
 
 Dónde se apoya el mapeo (y por qué es fiable): las columnas reales de la hoja
 están modeladas en `seguimiento.SEG_COLUMNS` —con sus alias, verificados contra
@@ -34,6 +40,7 @@ from typing import Any
 
 from app.erp.drive_sheets import DriveSyncError, ManagedTabTransport
 from app.erp.seguimiento import (
+    INCIDENCIAS_COLUMNS,
     SEG_COLUMNS,
     SEGUIMIENTO_COLUMNS_V2,
     is_structure_row,
@@ -42,26 +49,22 @@ from app.erp.seguimiento import (
 
 logger = logging.getLogger(__name__)
 
-#: Pestaña donde aterriza el histórico convertido. Propia y aparte de la
-#: gestionada: el volcado periódico reordena por Situación y se lo llevaría por
-#: delante si compartieran pestaña.
-DEFAULT_HISTORICO_TAB = "Histórico (formato nuevo)"
-HISTORICO_TAB_SETTING = "drive_historico_tab"
+#: Pestaña donde aterrizaba el histórico antes de las zonas. Ya no se escribe:
+#: el histórico es la zona estática de «Seguimiento (app)». Se conserva el
+#: nombre para poder avisar de que sobra si alguien la tiene de la vez anterior.
+LEGACY_HISTORICO_TAB = "Histórico (formato nuevo)"
 
 #: Situación fija del histórico: no se puede recalcular en vivo.
 SITUACION_HISTORICO = "Histórico"
+#: Tipo con el que se heredan los «faltan entregar» de la hoja vieja.
+TIPO_PENDIENTE = "Pendiente entrega (histórico)"
+#: Prefijo del marcador que parte la hoja vieja (lo escribe Bart a mano).
+MARKER_PREFIX = "^^^^"
 
 #: Mínimo de columnas reconocidas para fiarse de la cabecera encontrada.
 _MIN_HEADER_MATCHES = 5
 
 _IDX = {c.header: i for i, c in enumerate(SEG_COLUMNS)}
-
-
-def historico_tab_title(session: Any) -> str:
-    from app.integrations.factusol.service import series_config  # noqa: PLC0415
-
-    cfg = series_config(session)
-    return str(cfg.get(HISTORICO_TAB_SETTING) or "").strip() or DEFAULT_HISTORICO_TAB
 
 
 def _cell(row: list[Any], col_map: dict[int, int], header: str) -> str:
@@ -138,34 +141,84 @@ def map_row(row: list[Any], col_map: dict[int, int]) -> list[Any]:
     ]
 
 
+def map_pendiente(row: list[Any], col_map: dict[int, int]) -> list[Any]:
+    """Una fila de ENCIMA del marcador «^^^^» → los 7 valores de Incidencias.
+
+    Ese bloque es la lista de trabajo de Bart: «pedidos que faltan entregar».
+    No son histórico —están pendientes— así que se heredan como incidencias
+    abiertas en vez de enterrarse en el archivo."""
+    productos = _cell(row, col_map, "Productos")
+    nota = _nota(row, col_map)
+    motivo = " · ".join(p for p in (productos, nota) if p)[:500]
+    return [
+        _cell(row, col_map, "Albarán / Nº Pedido Web"),   # Nº pedido
+        _cell(row, col_map, "Cliente"),                   # Cliente
+        TIPO_PENDIENTE,                                   # Tipo
+        motivo,                                           # Motivo
+        _cell(row, col_map, "Vendedor"),                  # Asignado a
+        _cell(row, col_map, "Fecha entrada albarán"),     # Fecha
+        "Abierta",                                        # Estado
+    ]
+
+
+def _marker_index(values: list[list[Any]], start: int) -> int | None:
+    """Fila del marcador «^^^^ Aquí arriba pedidos que faltan entregar», que
+    parte la hoja vieja en dos mundos. `None` si la hoja no lo tiene."""
+    for i in range(start, len(values)):
+        first = str((list(values[i]) or [""])[0] or "").strip()
+        if first.startswith(MARKER_PREFIX):
+            return i
+    return None
+
+
 def plan_import(values: list[list[Any]]) -> dict[str, Any]:
     """Lee la hoja vieja y planifica la conversión SIN escribir nada.
 
-    Devuelve el recuento honesto que pide el dry-run: cuántas filas se mapean,
-    cuántas se descartan por ser estructura (el bloque «^^^^», cabeceras
-    repetidas, vacías) y cuántas quedan DUDOSAS — filas que no son estructura
-    pero tampoco traen nº de pedido, que es lo que identifica un pedido. Las
-    dudosas se importan igualmente (con su nota) para no perder información,
-    pero se listan para que alguien las mire."""
+    La hoja tiene DOS mundos separados por el marcador «^^^^ Aquí arriba
+    pedidos que faltan entregar»:
+
+    - ENCIMA: la lista de trabajo de Bart, pedidos pendientes de entregar. No
+      son histórico: se heredan como incidencias abiertas.
+    - DEBAJO: lo ya entregado, que es el archivo → histórico.
+
+    La fila del propio marcador se descarta, como el resto de estructura
+    (cabeceras repetidas, separadores, vacías).
+
+    Devuelve el recuento honesto que pide el dry-run: cuántas van a pendientes,
+    cuántas a histórico, cuántas se descartan y cuántas quedan DUDOSAS — filas
+    que no son estructura pero tampoco traen nº de pedido. Las dudosas se
+    importan igualmente (con su nota) para no perder información, pero se
+    listan para que alguien las mire."""
     header_row, col_map = locate_header(values)
     reconocidas = [SEG_COLUMNS[c].header for c in sorted(col_map)]
     ausentes = [c.header for i, c in enumerate(SEG_COLUMNS) if i not in col_map]
+    marker = _marker_index(values, header_row + 1)
 
     mapeadas: list[list[Any]] = []
+    pendientes: list[list[Any]] = []
     dudosas: list[dict[str, Any]] = []
     descartadas = 0
-    for i, raw in enumerate(values[header_row + 1:], start=header_row + 2):
+    for i, raw in enumerate(values[header_row + 1:], start=header_row + 1):
         row = list(raw)
         if is_structure_row(row):
-            descartadas += 1
+            descartadas += 1                 # incluye la fila del propio «^^^^»
+            continue
+        # Encima del marcador: pendientes de entregar. Sin marcador, todo es
+        # histórico (que es como se comportaba antes de este split).
+        if marker is not None and i < marker:
+            pendientes.append(map_pendiente(row, col_map))
             continue
         mapped = map_row(row, col_map)
         if not mapped[1]:                    # sin nº de pedido
-            dudosas.append({"fila": i, "cliente": mapped[3],
+            dudosas.append({"fila": i + 1, "cliente": mapped[3],
                             "nota": mapped[16][:120]})
         mapeadas.append(mapped)
 
     return {
+        "marcador_fila": (marker + 1) if marker is not None else None,
+        "pendientes": len(pendientes),
+        "pendientes_rows": pendientes,
+        "pendientes_muestra": pendientes[:5],
         "header_row": header_row + 1,
         "columnas_reconocidas": reconocidas,
         "columnas_ausentes": ausentes,
@@ -182,42 +235,83 @@ def plan_import(values: list[list[Any]]) -> dict[str, Any]:
 def import_historico(
     sheets: ManagedTabTransport,
     *,
-    tab_title: str = DEFAULT_HISTORICO_TAB,
+    pedidos_tab: str,
+    incidencias_tab: str,
     dry_run: bool = True,
 ) -> dict[str, Any]:
-    """Convierte el histórico y lo deja en su pestaña. `dry_run` (por defecto)
-    solo informa.
+    """Convierte la hoja vieja y la reparte en las DOS zonas estáticas:
 
-    Nunca escribe en la hoja vieja: se lee con `get_values` y se escribe en
-    otra pestaña. Reejecutar reescribe la pestaña de histórico entera, así que
-    es idempotente."""
+    - el histórico (debajo del «^^^^») → zona estática de «Seguimiento (app)»,
+    - los pendientes de entregar (encima) → zona estática de «Incidencias (app)».
+
+    `dry_run` (por defecto) solo informa.
+
+    La hoja vieja NO se escribe: se lee y ya. Y las zonas VIVAS de las dos
+    pestañas se conservan: se leen antes y se vuelven a poner encima del
+    separador, igual que el volcado periódico conserva las estáticas. Reejecutar
+    reemplaza los bloques estáticos enteros, así que es idempotente y no duplica
+    separadores."""
+    from app.erp.drive_managed import (  # noqa: PLC0415
+        _header_format,
+        compose,
+        historic_block,
+        is_separator,
+        pendientes_block,
+    )
+
     historic = sheets.first_tab_title()
-    if tab_title.strip().casefold() == historic.strip().casefold():
-        raise DriveSyncError(
-            f"«{tab_title}» es la pestaña histórica en bruto: el histórico "
-            "convertido va a una pestaña APARTE, para no tocar el original"
-        )
+    for destino in (pedidos_tab, incidencias_tab):
+        if destino.strip().casefold() == historic.strip().casefold():
+            raise DriveSyncError(
+                f"«{destino}» es la pestaña histórica en bruto: lo convertido va "
+                "a las pestañas de la app, para no tocar el original"
+            )
+
     plan = plan_import(sheets.tab_values(historic))
-    resumen = {k: v for k, v in plan.items() if k != "rows"}
-    resumen.update({"tab": tab_title, "origen": historic,
-                    "dry_run": dry_run, "written": False})
+    resumen = {k: v for k, v in plan.items()
+               if k not in ("rows", "pendientes_rows")}
+    resumen.update({
+        "tab": pedidos_tab, "incidencias_tab": incidencias_tab,
+        "origen": historic, "dry_run": dry_run, "written": False,
+    })
     if dry_run:
         return resumen
 
-    sheets.ensure_tab(tab_title)
-    sheets.replace_tab(
-        tab_title, [list(SEGUIMIENTO_COLUMNS_V2), *plan["rows"]],
-    )
-    from app.erp.drive_managed import _header_format  # noqa: PLC0415
+    def _live(title: str) -> list[list[Any]]:
+        """La zona VIVA que ya hay en la pestaña (sin cabecera): todo lo que
+        está por encima del separador."""
+        if title not in sheets.tab_titles():
+            return []
+        values = [list(r) for r in sheets.tab_values(title)]
+        cuerpo = values[1:] if values else []
+        for i, row in enumerate(cuerpo):
+            if is_separator(row):
+                return cuerpo[:i]
+        return cuerpo
 
+    sheets.ensure_tab(pedidos_tab)
+    sheets.replace_tab(pedidos_tab, compose(
+        SEGUIMIENTO_COLUMNS_V2, _live(pedidos_tab), historic_block(plan["rows"]),
+    ))
     sheets.format_tab(
-        tab_title, _header_format(len(SEGUIMIENTO_COLUMNS_V2), [110] * 17),
+        pedidos_tab, _header_format(len(SEGUIMIENTO_COLUMNS_V2), [110] * 17),
     )
+
+    if plan["pendientes_rows"]:
+        sheets.ensure_tab(incidencias_tab)
+        sheets.replace_tab(incidencias_tab, compose(
+            INCIDENCIAS_COLUMNS, _live(incidencias_tab),
+            pendientes_block(plan["pendientes_rows"]),
+        ))
+        sheets.format_tab(
+            incidencias_tab, _header_format(len(INCIDENCIAS_COLUMNS), [130] * 7),
+        )
+
     resumen["written"] = True
     logger.info(
-        "drive: histórico convertido a «%s» (%d filas mapeadas, %d descartadas, "
-        "%d dudosas); «%s» sin tocar",
-        tab_title, plan["mapeadas"], plan["descartadas"], plan["dudosas"],
-        historic,
+        "drive: hoja vieja repartida — %d al histórico de «%s», %d a pendientes "
+        "de «%s» (%d descartadas, %d dudosas); «%s» sin tocar",
+        plan["mapeadas"], pedidos_tab, plan["pendientes"], incidencias_tab,
+        plan["descartadas"], plan["dudosas"], historic,
     )
     return resumen

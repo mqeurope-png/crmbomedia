@@ -21,6 +21,7 @@ import pytest
 
 from app.erp.drive_historico import (
     SITUACION_HISTORICO,
+    TIPO_PENDIENTE,
     import_historico,
     map_row,
     plan_import,
@@ -28,10 +29,13 @@ from app.erp.drive_historico import (
 from app.erp.drive_managed import (
     DEFAULT_INCIDENCIAS_TAB,
     DEFAULT_MANAGED_TAB,
+    SEPARATOR_PREFIX,
     build_incidencias_grid,
     build_pedidos_grid,
+    is_separator,
     pedidos_format,
     push_managed_tabs,
+    static_block,
 )
 from app.erp.drive_sheets import DriveSyncError, _with_sheet_id
 from app.erp.seguimiento import (
@@ -244,6 +248,109 @@ def test_el_formato_deja_el_hueco_del_sheet_id():
     assert "42" in str(resuelto)
 
 
+# --- zonas: viva arriba, estática debajo del separador -------------------------
+
+
+def test_el_actualizar_preserva_el_bloque_historico(session):
+    """Lo que de verdad da miedo: que «Actualizar» se lleve por delante los
+    ~7.800 pedidos del histórico. La zona viva se regenera; del separador hacia
+    abajo se preserva tal cual."""
+    historico = [
+        [f"{SEPARATOR_PREFIX} HISTÓRICO — no se actualiza {SEPARATOR_PREFIX}"],
+        ["Histórico", "VIEJO-1", "1/1/2020", "Cliente viejo"],
+        ["Histórico", "VIEJO-2", "2/1/2020", "Otro viejo"],
+    ]
+    sheets = FakeTabs({HISTORICA: [], DEFAULT_MANAGED_TAB: [
+        list(SEGUIMIENTO_COLUMNS_V2), ["Listo", "L-0"], *historico,
+    ]})
+    push_managed_tabs(session, sheets, [_row("listo", "L-1"),
+                                        _row("incidencias", "I-1")])
+    escrito = sheets.written[DEFAULT_MANAGED_TAB]
+    sep = next(i for i, r in enumerate(escrito) if is_separator(r))
+    # Zona viva NUEVA (el L-0 de antes ya no está) y el histórico intacto.
+    assert [f[1] for f in escrito[1:sep]] == ["I-1", "L-1"]
+    assert escrito[sep:] == historico
+
+
+def test_preserva_el_historico_aunque_cambie_el_numero_de_vivos(session):
+    """Con más o menos vivos, el bloque estático sale exactamente igual: no hay
+    aritmética de filas que pueda descuadrarlo."""
+    historico = [[f"{SEPARATOR_PREFIX} HISTÓRICO {SEPARATOR_PREFIX}"],
+                 ["Histórico", "VIEJO-1"]]
+    sheets = FakeTabs({HISTORICA: [], DEFAULT_MANAGED_TAB: [
+        list(SEGUIMIENTO_COLUMNS_V2), *historico,
+    ]})
+    push_managed_tabs(session, sheets, [_row("listo", f"L-{i}") for i in range(5)])
+    tras_cinco = sheets.written[DEFAULT_MANAGED_TAB]
+    assert tras_cinco[-len(historico):] == historico
+
+    sheets.tabs[DEFAULT_MANAGED_TAB] = tras_cinco
+    push_managed_tabs(session, sheets, [_row("listo", "L-0")])
+    tras_uno = sheets.written[DEFAULT_MANAGED_TAB]
+    assert tras_uno[-len(historico):] == historico
+    assert len(tras_uno) == 1 + 1 + len(historico)
+
+
+def test_no_duplica_el_separador_al_reejecutar(session):
+    historico = [[f"{SEPARATOR_PREFIX} HISTÓRICO {SEPARATOR_PREFIX}"],
+                 ["Histórico", "VIEJO-1"]]
+    sheets = FakeTabs({HISTORICA: [], DEFAULT_MANAGED_TAB: [
+        list(SEGUIMIENTO_COLUMNS_V2), *historico,
+    ]})
+    for _ in range(3):
+        push_managed_tabs(session, sheets, [_row("listo", "L-1")])
+        sheets.tabs[DEFAULT_MANAGED_TAB] = sheets.written[DEFAULT_MANAGED_TAB]
+    escrito = sheets.written[DEFAULT_MANAGED_TAB]
+    assert sum(1 for r in escrito if is_separator(r)) == 1
+
+
+def test_sin_separador_no_se_inventa_zona_estatica(session):
+    """Una pestaña escrita antes de que existieran las zonas es toda viva:
+    adivinar dónde empezaría el histórico sería inventarse un bloque."""
+    sheets = FakeTabs({HISTORICA: [], DEFAULT_MANAGED_TAB: [
+        list(SEGUIMIENTO_COLUMNS_V2), ["Listo", "L-0"],
+    ]})
+    push_managed_tabs(session, sheets, [_row("listo", "L-1")])
+    escrito = sheets.written[DEFAULT_MANAGED_TAB]
+    assert escrito == [list(SEGUIMIENTO_COLUMNS_V2),
+                       *[f for f in escrito[1:]]]
+    assert not any(is_separator(r) for r in escrito)
+    assert [f[1] for f in escrito[1:]] == ["L-1"]
+
+
+def test_el_actualizar_preserva_los_pendientes_heredados(session):
+    """Lo mismo en Incidencias: arriba las manuales, debajo los heredados."""
+    heredados = [[f"{SEPARATOR_PREFIX} PENDIENTES HEREDADOS {SEPARATOR_PREFIX}"],
+                 ["VIEJO-9", "Institut Les Vinyes", TIPO_PENDIENTE]]
+    sheets = FakeTabs({HISTORICA: [], DEFAULT_INCIDENCIAS_TAB: [
+        list(INCIDENCIAS_COLUMNS), *heredados,
+    ]})
+    push_managed_tabs(session, sheets, [_row("incidencias", "I-1")])
+    escrito = sheets.written[DEFAULT_INCIDENCIAS_TAB]
+    sep = next(i for i, r in enumerate(escrito) if is_separator(r))
+    assert [f[0] for f in escrito[1:sep]] == ["I-1"]
+    assert escrito[sep:] == heredados
+
+
+def test_la_vista_previa_cuenta_lo_que_se_preserva(session):
+    historico = [[f"{SEPARATOR_PREFIX} HISTÓRICO {SEPARATOR_PREFIX}"],
+                 ["Histórico", "V-1"], ["Histórico", "V-2"]]
+    sheets = FakeTabs({HISTORICA: [], DEFAULT_MANAGED_TAB: [
+        list(SEGUIMIENTO_COLUMNS_V2), *historico,
+    ]})
+    resumen = push_managed_tabs(session, sheets, [_row("listo", "L-1")],
+                                dry_run=True)
+    assert resumen["historico_preservado"] == 2
+    assert sheets.written == {}
+
+
+def test_static_block_solo_desde_el_separador():
+    values = [["Situación"], ["Listo", "L-1"],
+              [f"{SEPARATOR_PREFIX} X"], ["Histórico", "V-1"]]
+    assert static_block(values) == [[f"{SEPARATOR_PREFIX} X"], ["Histórico", "V-1"]]
+    assert static_block([["Situación"], ["Listo", "L-1"]]) == []
+
+
 # --- importación del histórico -------------------------------------------------
 
 
@@ -274,13 +381,51 @@ def _hoja_vieja() -> list[list[str]]:
     ]
 
 
-def test_plan_import_descarta_estructura_y_cuenta_dudosas():
+def test_plan_import_parte_la_hoja_en_el_marcador():
+    """El «^^^^» separa dos mundos: encima, pedidos que faltan entregar (lista
+    de trabajo, NO histórico); debajo, lo entregado."""
     plan = plan_import(_hoja_vieja())
-    assert plan["mapeadas"] == 3          # 2 pedidos + 1 dudosa
+    assert plan["pendientes"] == 1        # la de encima del «^^^^»
+    assert plan["pendientes_rows"][0][0] == "99866"
+    assert plan["pendientes_rows"][0][2] == TIPO_PENDIENTE
+    assert plan["mapeadas"] == 2          # 1 pedido + 1 dudosa, de debajo
     assert plan["descartadas"] == 3       # «^^^^», vacía, cabecera repetida
     assert plan["dudosas"] == 1
     assert plan["dudosas_muestra"][0]["cliente"] == "Nota suelta sin pedido"
     assert "Albarán / Nº Pedido Web" in plan["columnas_reconocidas"]
+
+
+def test_plan_import_sin_marcador_todo_es_historico():
+    """Una hoja sin «^^^^» no tiene lista de pendientes: todo es archivo."""
+    plan = plan_import([HEADER_VIEJA, _vieja(**{"Albarán / Nº Pedido Web": "1"})])
+    assert plan["pendientes"] == 0 and plan["mapeadas"] == 1
+    assert plan["marcador_fila"] is None
+
+
+def test_map_pendiente_hereda_cliente_vendedor_y_productos():
+    from app.erp.drive_historico import map_pendiente
+    from app.erp.seguimiento import match_header_columns
+
+    col_map = match_header_columns(HEADER_VIEJA)
+    fila = map_pendiente(_hoja_vieja()[1], col_map)
+    assert fila[0] == "99866"              # Nº pedido
+    assert fila[1] == "Roca"               # Cliente
+    assert fila[2] == TIPO_PENDIENTE       # Tipo
+    assert "revisar con Marta" in fila[3]  # Motivo (productos + nota)
+    assert fila[4] == "Bart"               # Asignado a (vendedor)
+    assert fila[6] == "Abierta"            # Estado
+    assert len(fila) == len(INCIDENCIAS_COLUMNS)
+
+
+def test_import_historico_deja_los_pendientes_en_incidencias():
+    sheets = FakeTabs({HISTORICA: _hoja_vieja()})
+    import_historico(sheets, pedidos_tab=DEFAULT_MANAGED_TAB,
+                     incidencias_tab=DEFAULT_INCIDENCIAS_TAB, dry_run=False)
+    inc = sheets.written[DEFAULT_INCIDENCIAS_TAB]
+    assert inc[0] == INCIDENCIAS_COLUMNS
+    sep = next(i for i, r in enumerate(inc) if is_separator(r))
+    assert [f[0] for f in inc[sep + 1:]] == ["99866"]
+    assert inc[sep + 1][2] == TIPO_PENDIENTE
 
 
 def test_map_row_conserva_lo_que_no_tiene_columna_nueva():
@@ -302,31 +447,39 @@ def test_map_row_conserva_lo_que_no_tiene_columna_nueva():
 def test_import_historico_escribe_en_otra_pestana_y_no_toca_la_vieja():
     sheets = FakeTabs({HISTORICA: _hoja_vieja()})
     original = [list(r) for r in sheets.tabs[HISTORICA]]
-    resumen = import_historico(sheets, dry_run=False)
+    resumen = import_historico(sheets, pedidos_tab=DEFAULT_MANAGED_TAB,
+                            incidencias_tab=DEFAULT_INCIDENCIAS_TAB,
+                            dry_run=False)
     assert resumen["written"] is True
     assert resumen["origen"] == HISTORICA
     assert sheets.tabs[HISTORICA] == original      # intacta
-    destino = sheets.written[resumen["tab"]]
+    destino = sheets.written[DEFAULT_MANAGED_TAB]
     assert destino[0] == SEGUIMIENTO_COLUMNS_V2
-    assert all(f[0] == SITUACION_HISTORICO for f in destino[1:])
+    # El histórico va DEBAJO del separador, no mezclado con la zona viva.
+    sep = next(i for i, r in enumerate(destino) if is_separator(r))
+    assert all(f[0] == SITUACION_HISTORICO for f in destino[sep + 1:])
 
 
 def test_import_historico_dry_run_no_escribe():
     sheets = FakeTabs({HISTORICA: _hoja_vieja()})
-    resumen = import_historico(sheets)
+    resumen = import_historico(sheets, pedidos_tab=DEFAULT_MANAGED_TAB,
+                            incidencias_tab=DEFAULT_INCIDENCIAS_TAB)
     assert resumen["written"] is False and sheets.written == {}
-    assert resumen["mapeadas"] == 3
+    assert resumen["mapeadas"] == 2 and resumen["pendientes"] == 1
 
 
 def test_import_historico_se_niega_a_escribir_sobre_la_vieja():
     sheets = FakeTabs({HISTORICA: _hoja_vieja()})
     with pytest.raises(DriveSyncError):
-        import_historico(sheets, tab_title=HISTORICA, dry_run=False)
+        import_historico(sheets, pedidos_tab=HISTORICA,
+                         incidencias_tab=DEFAULT_INCIDENCIAS_TAB,
+                         dry_run=False)
     assert sheets.written == {}
 
 
 def test_import_historico_sin_cabecera_reconocible_falla_claro():
     sheets = FakeTabs({HISTORICA: [["a", "b"], ["c", "d"]]})
     with pytest.raises(DriveSyncError) as exc:
-        import_historico(sheets)
+        import_historico(sheets, pedidos_tab=DEFAULT_MANAGED_TAB,
+                         incidencias_tab=DEFAULT_INCIDENCIAS_TAB)
     assert "cabecera" in str(exc.value)

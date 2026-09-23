@@ -767,6 +767,10 @@ export type DriveManagedSummary = {
   written: boolean;
   /** Pestañas creadas en esta escritura (vacío si ya existían). */
   created_tabs?: string[];
+  /** Filas del histórico que se CONSERVAN bajo el separador (no se reescriben). */
+  historico_preservado?: number;
+  /** Pendientes heredados que se conservan en la pestaña de incidencias. */
+  pendientes_preservados?: number;
 };
 
 /** Resumen de la sincronización INCREMENTAL a la hoja histórica (ERP-F6). Solo

@@ -15,7 +15,11 @@ sugerida y las mismas alertas en los dos sitios.
   que las resuelve).
 
 Un pedido con alerta BLOQUEANTE cae en `incidencias` aunque su siguiente paso
-sea otro: es lo que hay que mirar primero. Las alertas informativas (el aviso
+sea otro: es lo que hay que mirar primero. «Incidencia» es SOLO lo reportado a
+mano (el botón «Reportar problema» de la Cola SAT) — la lista de problemas del
+equipo, no la de la app. Lo que la app detecta sola (empresa sin vincular,
+NIF-IVA no válido en VIES) cae en `por_revisar`: hay que arreglarlo antes de
+facturar, pero no es una incidencia de nadie. Las alertas informativas (el aviso
 de IVA de un intracomunitario, por ejemplo) se enseñan sin sacarlo de su cola.
 
 Se calcula sin tocar FACTUSOL: todo sale de la BD (el estado de cobro es el
@@ -143,11 +147,23 @@ def is_web_order(order: Order) -> bool:
 
 def _alert(
     code: str, text: str, *, action: str | None = None, blocking: bool = False,
+    review: bool = False,
 ) -> dict[str, Any]:
+    """Una alerta con su gravedad.
+
+    `blocking` → cola «Incidencias». Se reserva a lo que alguien ha reportado A
+    MANO (la excepción operativa del botón «Reportar problema» de la Cola SAT):
+    «Incidencia» es la lista de problemas del equipo, no la de la app.
+
+    `review` → cola «Por revisar». Es donde caen los avisos que detecta la app
+    sola (empresa sin vincular, NIF-IVA no válido en VIES): hay que arreglarlos
+    antes de facturar y siguen destacados, pero no ensucian las incidencias
+    reportadas por personas."""
     return {
         "code": code, "text": text, "action": action,
         "action_label": ACTION_LABELS.get(action or "", None),
         "blocking": blocking,
+        "review": review,
     }
 
 
@@ -156,9 +172,10 @@ def order_alerts(
 ) -> list[dict[str, Any]]:
     """Incidencias accionables del pedido, de la más grave a la más leve.
 
-    `blocking=True` manda el pedido a la cola «Incidencias»; las demás solo se
-    enseñan (la del IVA intracomunitario, por ejemplo, es información para no
-    facturar mal, no un bloqueo).
+    `blocking=True` manda el pedido a «Incidencias» y se reserva a lo reportado
+    a mano; `review=True` lo manda a «Por revisar» (lo que detecta la app sola);
+    las demás solo se enseñan (la del IVA intracomunitario, por ejemplo, es
+    información para no facturar mal, no un bloqueo).
 
     `ctx` evita el N+1 de la bandeja (empresas y excepciones en dos queries)."""
     alerts: list[dict[str, Any]] = []
@@ -178,7 +195,8 @@ def order_alerts(
         alerts.append(_alert(
             "empresa_sin_vincular",
             f"«{company.name}» no está vinculada a un cliente de FACTUSOL.",
-            action="vincular_empresa", blocking=True,
+            # Lo detecta la app, no una persona: va a «Por revisar».
+            action="vincular_empresa", review=True,
         ))
 
     # 2) Régimen de IVA del cliente: un intracomunitario / exportación factura
@@ -193,7 +211,8 @@ def order_alerts(
             "vat_no_valido_vies",
             f"El NIF-IVA {vies['vat']} NO es válido en VIES: no se puede eximir de "
             "IVA; se trata como nacional con IVA.",
-            action="revalidar_vies", blocking=True,
+            # Igual que la anterior: aviso automático, no incidencia.
+            action="revalidar_vies", review=True,
         ))
     if regime == "intracomunitario":
         if vies["vat"] and vies["status"] == "valido":
@@ -395,6 +414,7 @@ def order_workflow(
         invoice_emailed_at = latest_invoice_emailed_map(session, [order.id]).get(order.id)
     queue, action, explain = _next_step(order)
     blocking = [a for a in alerts if a["blocking"]]
+    review = [a for a in alerts if a.get("review")]
     if getattr(order, "cancelled_at", None):
         # Anulado (estado final reversible, distinto de «quitar»): nada que
         # hacer; las listas de trabajo ya no lo enseñan.
@@ -408,6 +428,12 @@ def order_workflow(
         queue = QUEUE_INCIDENCIAS
         action = blocking[0]["action"] or "revisar_incidencia"
         explain = blocking[0]["text"]
+    elif review:
+        # Aviso de la app (empresa sin vincular, VIES): hay que arreglarlo
+        # antes de facturar, pero no es una incidencia reportada por nadie.
+        queue = QUEUE_POR_REVISAR
+        action = review[0]["action"] or action
+        explain = review[0]["text"]
     return {
         "queue": queue,
         "queue_label": QUEUE_LABELS[queue],

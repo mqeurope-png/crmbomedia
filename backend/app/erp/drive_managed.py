@@ -16,9 +16,19 @@ Reescribir entera es lo correcto AQUÍ y sería un desastre en la histórica: es
 pestaña no tiene nada que conservar, así que el volcado es idempotente por
 construcción (mismo contenido dentro → misma pestaña fuera, sin duplicados).
 
-El histórico convertido al formato nuevo vive en su propia pestaña
-(«Histórico (formato nuevo)», ver `drive_historico`), que el volcado periódico
-NO reescribe: así reordenar por Situación no se lo lleva por delante.
+Cada pestaña gestionada tiene DOS ZONAS separadas por una fila marcador:
+
+    cabecera
+    zona VIVA        ← se regenera en cada «Actualizar»
+    ──── separador ────
+    zona ESTÁTICA    ← se preserva tal cual (histórico / pendientes heredados)
+
+La escritura es leer-preservar-reescribir: antes de escribir se lee la pestaña,
+se rescata lo que hay del separador hacia abajo y se vuelve a poner debajo de la
+zona viva nueva. Se hace así, y no insertando/borrando filas por encima del
+separador, porque no hay aritmética de filas que pueda descuadrarse: cambie como
+cambie el número de vivos, el bloque estático sale exactamente igual que entró.
+Y es idempotente: reejecutar no duplica el separador ni el bloque.
 """
 
 from __future__ import annotations
@@ -57,6 +67,47 @@ _INCIDENCIAS_WIDTHS_PX = [116, 210, 170, 280, 130, 82, 92]
 
 #: Gris de la cabecera (el mismo `F2F4F7` del Excel).
 _HEADER_BG = (0xF2, 0xF4, 0xF7)
+#: Gris del separador entre la zona viva y la estática.
+_SEPARATOR_BG = (0xE4, 0xE7, 0xEC)
+
+#: Fila que separa la zona viva de la estática. Se reconoce por el prefijo, no
+#: por el texto entero: así se puede retocar la leyenda sin romper las hojas ya
+#: escritas (y sin que un «Actualizar» se coma el bloque de abajo).
+SEPARATOR_PREFIX = "────"
+SEPARATOR_PEDIDOS = f"{SEPARATOR_PREFIX} HISTÓRICO — no se actualiza {SEPARATOR_PREFIX}"
+SEPARATOR_INCIDENCIAS = (
+    f"{SEPARATOR_PREFIX} PENDIENTES HEREDADOS (hoja vieja) — no se actualiza "
+    f"{SEPARATOR_PREFIX}"
+)
+
+
+def is_separator(row: list[Any]) -> bool:
+    """¿Esta fila es el separador de zonas?"""
+    return str((row or [""])[0] or "").strip().startswith(SEPARATOR_PREFIX)
+
+
+def static_block(values: list[list[Any]]) -> list[list[Any]]:
+    """Lo que hay del separador hacia abajo (separador incluido), o [] si la
+    pestaña aún no tiene zona estática.
+
+    Sin separador NO se preserva nada a propósito: una pestaña escrita antes de
+    que existieran las zonas es toda zona viva, y adivinar dónde empezaría el
+    histórico sería inventarse un bloque."""
+    for i, row in enumerate(values):
+        if is_separator(list(row)):
+            return [list(r) for r in values[i:]]
+    return []
+
+
+def compose(
+    header: list[str], live: list[list[Any]], static: list[list[Any]],
+) -> list[list[Any]]:
+    """Cabecera + zona viva + zona estática (que ya trae su separador)."""
+    return [list(header), *live, *static]
+
+
+def _separator_row(text: str, columns: int) -> list[Any]:
+    return [text] + [""] * (columns - 1)
 
 
 def managed_tab_titles(session: Session) -> tuple[str, str]:
@@ -95,19 +146,49 @@ def _guard_not_historic(sheets: ManagedTabTransport, title: str) -> None:
         )
 
 
-def build_pedidos_grid(rows: list[dict[str, Any]]) -> list[list[Any]]:
-    """Cabecera + una fila por pedido, ordenadas por Situación. Misma
-    serialización que la pantalla y que «Descargar Excel»."""
-    return [list(SEGUIMIENTO_COLUMNS_V2)] + [
-        row_to_pedidos_values(row) for row in sort_by_situacion(rows)
-    ]
+def live_pedidos_rows(rows: list[dict[str, Any]]) -> list[list[Any]]:
+    """Una fila por pedido vivo, ordenadas por Situación. Misma serialización
+    que la pantalla y que «Descargar Excel»."""
+    return [row_to_pedidos_values(row) for row in sort_by_situacion(rows)]
 
 
-def build_incidencias_grid(rows: list[dict[str, Any]]) -> list[list[Any]]:
-    """Cabecera + el subconjunto EXACTO de Situación=Incidencia."""
-    return [list(INCIDENCIAS_COLUMNS)] + [
+def live_incidencias_rows(rows: list[dict[str, Any]]) -> list[list[Any]]:
+    """El subconjunto EXACTO de Situación=Incidencia (ahora, solo lo reportado
+    a mano: ver `workflow.order_alerts`)."""
+    return [
         incidencia_values(row) for row in incidencia_rows(sort_by_situacion(rows))
     ]
+
+
+def build_pedidos_grid(
+    rows: list[dict[str, Any]], static: list[list[Any]] | None = None,
+) -> list[list[Any]]:
+    return compose(SEGUIMIENTO_COLUMNS_V2, live_pedidos_rows(rows), static or [])
+
+
+def build_incidencias_grid(
+    rows: list[dict[str, Any]], static: list[list[Any]] | None = None,
+) -> list[list[Any]]:
+    return compose(INCIDENCIAS_COLUMNS, live_incidencias_rows(rows), static or [])
+
+
+def historic_block(
+    historic_rows: list[list[Any]], *, columns: int = len(SEGUIMIENTO_COLUMNS_V2),
+) -> list[list[Any]]:
+    """Separador + filas del histórico, listo para pegarlo bajo la zona viva."""
+    if not historic_rows:
+        return []
+    return [_separator_row(SEPARATOR_PEDIDOS, columns), *historic_rows]
+
+
+def pendientes_block(
+    pendientes: list[list[Any]], *, columns: int = len(INCIDENCIAS_COLUMNS),
+) -> list[list[Any]]:
+    """Separador + pendientes heredados de la hoja vieja (los de encima del
+    marcador «^^^^»), para la pestaña de Incidencias."""
+    if not pendientes:
+        return []
+    return [_separator_row(SEPARATOR_INCIDENCIAS, columns), *pendientes]
 
 
 def _header_format(columns: int, widths: list[int]) -> list[dict[str, Any]]:
@@ -161,9 +242,11 @@ def _situacion_format(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return requests
 
 
-def pedidos_format(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Formato completo de la pestaña «Pedidos»: cabecera, anchos, Importe en
-    €, Situación coloreada y autofiltro sobre todo el rango."""
+def pedidos_format(
+    rows: list[dict[str, Any]], static: list[list[Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Formato completo de la pestaña: cabecera, anchos, Importe en €,
+    Situación coloreada (solo en la zona VIVA) y el separador destacado."""
     ordered = sort_by_situacion(rows)
     columns = len(SEGUIMIENTO_COLUMNS_V2)
     total_rows = len(ordered) + 1
@@ -180,14 +263,35 @@ def pedidos_format(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "fields": "userEnteredFormat.numberFormat",
         }})
         requests.extend(_situacion_format(ordered))
+    # El autofiltro cubre SOLO la zona viva: si abarcara el histórico, ordenar
+    # por una columna mezclaría los dos bloques.
     requests.append({"setBasicFilter": {"filter": {"range": {
         "sheetId": None, "startRowIndex": 0, "endRowIndex": total_rows,
         "startColumnIndex": 0, "endColumnIndex": columns,
     }}}})
+    if static:
+        requests.append(_separator_format(total_rows, columns))
     return requests
 
 
-def incidencias_format(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _separator_format(row_index: int, columns: int) -> dict[str, Any]:
+    """La fila del separador, en gris y negrita, para que se vea de lejos que
+    ahí abajo empieza algo que la app no actualiza."""
+    return {"repeatCell": {
+        "range": {"sheetId": None, "startRowIndex": row_index,
+                  "endRowIndex": row_index + 1,
+                  "startColumnIndex": 0, "endColumnIndex": columns},
+        "cell": {"userEnteredFormat": {
+            "backgroundColor": _rgb(_SEPARATOR_BG),
+            "textFormat": {"bold": True},
+        }},
+        "fields": "userEnteredFormat(backgroundColor,textFormat)",
+    }}
+
+
+def incidencias_format(
+    rows: list[dict[str, Any]], static: list[list[Any]] | None = None,
+) -> list[dict[str, Any]]:
     columns = len(INCIDENCIAS_COLUMNS)
     total_rows = len(incidencia_rows(rows)) + 1
     requests = _header_format(columns, _INCIDENCIAS_WIDTHS_PX)
@@ -195,6 +299,8 @@ def incidencias_format(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         "sheetId": None, "startRowIndex": 0, "endRowIndex": total_rows,
         "startColumnIndex": 0, "endColumnIndex": columns,
     }}}})
+    if static:
+        requests.append(_separator_format(total_rows, columns))
     return requests
 
 
@@ -233,27 +339,46 @@ def push_managed_tabs(
         "dry_run": dry_run,
         "written": False,
     }
+    existing = sheets.tab_titles()
+    # Lo que hay que PRESERVAR: del separador hacia abajo. Se lee también en
+    # dry-run, para poder decir en la vista previa cuántas filas estáticas
+    # sobreviven — que es justo lo que da miedo al pulsar.
+    estatico_pedidos = (
+        static_block(sheets.tab_values(pedidos_tab)) if pedidos_tab in existing else []
+    )
+    estatico_incidencias = (
+        static_block(sheets.tab_values(incidencias_tab))
+        if incidencias_tab in existing else []
+    )
+    # El separador no cuenta como fila de datos.
+    resumen["historico_preservado"] = max(len(estatico_pedidos) - 1, 0)
+    resumen["pendientes_preservados"] = max(len(estatico_incidencias) - 1, 0)
+
     if dry_run:
         return resumen
 
-    existing = sheets.tab_titles()
     resumen["created_tabs"] = [
         t for t in (pedidos_tab, incidencias_tab) if t not in existing
     ]
 
     sheets.ensure_tab(pedidos_tab)
-    sheets.replace_tab(pedidos_tab, build_pedidos_grid(ordenadas))
-    sheets.format_tab(pedidos_tab, pedidos_format(ordenadas))
+    sheets.replace_tab(pedidos_tab, build_pedidos_grid(ordenadas, estatico_pedidos))
+    sheets.format_tab(pedidos_tab, pedidos_format(ordenadas, estatico_pedidos))
 
     sheets.ensure_tab(incidencias_tab)
-    sheets.replace_tab(incidencias_tab, build_incidencias_grid(ordenadas))
-    sheets.format_tab(incidencias_tab, incidencias_format(ordenadas))
+    sheets.replace_tab(
+        incidencias_tab, build_incidencias_grid(ordenadas, estatico_incidencias),
+    )
+    sheets.format_tab(
+        incidencias_tab, incidencias_format(ordenadas, estatico_incidencias),
+    )
 
     resumen["written"] = True
     logger.info(
-        "drive: volcado del seguimiento a «%s» (%d filas) y «%s» (%d); "
-        "histórico «%s» intacto",
-        pedidos_tab, len(ordenadas), incidencias_tab, len(incidencias),
+        "drive: volcado del seguimiento a «%s» (%d vivas + %d históricas) y «%s» "
+        "(%d vivas + %d heredadas); histórico en bruto «%s» intacto",
+        pedidos_tab, len(ordenadas), resumen["historico_preservado"],
+        incidencias_tab, len(incidencias), resumen["pendientes_preservados"],
         resumen["historic_tab"],
     )
     return resumen
