@@ -1118,7 +1118,8 @@ function ManagedPreview({ summary }: { summary: DriveManagedSummary }) {
           {summary.manuales ? (
             <>
               {" "}+ <strong>{summary.manuales}</strong> añadidas a mano
-              (Origen = MANUAL), que se <strong>conservan</strong> arriba
+              (Origen = MANUAL), que se <strong>conservan</strong>, mezcladas
+              por fecha con las de BoHub
             </>
           ) : null}
           .

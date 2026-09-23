@@ -291,9 +291,12 @@ def normalize_static_pedidos(
 # - El marcador es la columna Origen = «MANUAL» (tolerante a may/min y
 #   espacios): es el ÚNICO criterio. Lo demás de la zona viva es salida de BoHub
 #   y se reescribe como siempre.
-# - Las manuales se re-emiten arriba del todo, en el orden en que están (la
-#   recién tecleada en la primera fila se queda en cabeza), sin tocar ninguna
-#   celda que el usuario haya escrito.
+# - Las manuales se re-emiten MEZCLADAS con las de BoHub, todas juntas por
+#   Fecha (más reciente primero, igual que la zona viva de BoHub): una fila
+#   manual del 21/09 queda entre los pedidos de BoHub del 21/09, no fijada
+#   arriba. Solo si no tiene una Fecha reconocible sube arriba del todo, para
+#   que no se pierda de vista. Nunca se toca una celda que el usuario haya
+#   escrito.
 # - Si el pedido llega después por BoHub (mismo Nº), se FUSIONA en una sola
 #   fila: BoHub rellena los huecos, lo escrito a mano se conserva y lo que
 #   difiere se marca en la Nota («⚠ BoHub Columna: valor»), nunca se pisa.
@@ -590,7 +593,7 @@ def merge_manual_rows(
 ) -> dict[str, Any]:
     """Cruza las filas manuales con los pedidos de BoHub por Nº de pedido.
 
-    Devuelve `manuales` (las que se quedan arriba, ya fusionadas), `consumidos`
+    Devuelve `manuales` (las que sobreviven, ya fusionadas), `consumidos`
     (las filas de BoHub —por identidad del objeto, no por un campo que podría
     faltar— que NO se escriben en su zona porque ya están en una fila manual:
     nunca duplicar) y los recuentos para la vista previa.
@@ -705,15 +708,51 @@ def rows_for_format(values: list[list[Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def _clave_numero_desc(texto: str) -> tuple[int, ...]:
+    """Desempate determinista: el Nº de pedido «más alto» (como texto)
+    primero, para que dos pasadas seguidas ordenen igual — el mismo desempate
+    que usa `sort_by_fecha_desc` con el pedido de BoHub."""
+    return tuple(-ord(c) for c in texto.casefold())
+
+
+def _clave_zona_viva(fila: list[Any]) -> tuple[int, float, tuple[int, ...]]:
+    """Orden de una fila YA MATERIALIZADA (18 columnas, Fecha como serial si
+    se pudo leer): por Fecha, más reciente primero — el mismo criterio que
+    `sort_by_fecha_desc`, con el mismo desempate por Nº de pedido.
+
+    Sin una Fecha reconocible, el criterio depende de si la fila es tecleada a
+    mano (Origen = MANUAL): esa sube arriba del todo, para que no se pierda de
+    vista; una de BoHub se queda al final, como ya hacía `sort_by_fecha_desc`."""
+    fecha = fila[2] if len(fila) > 2 else ""
+    numero = _clave_numero_desc(_texto(fila[_NUMERO_INDEX] if len(fila) > _NUMERO_INDEX else ""))
+    if isinstance(fecha, (int, float)) and not isinstance(fecha, bool):
+        return (1, -float(fecha), numero)
+    return (0, 0.0, numero) if is_manual_row(fila) else (2, 0.0, numero)
+
+
+def zona_viva_pedidos(
+    rows: list[dict[str, Any]], manual: list[list[Any]] | None = None,
+) -> list[list[Any]]:
+    """La zona viva de «Seguimiento (app)»: los pedidos de BoHub (`rows`) y
+    las filas tecleadas a mano (`manual`) YA FUSIONADAS, todas juntas y por
+    Fecha (más reciente primero) — el mismo criterio y sentido que ya usaba
+    la zona viva de BoHub (`sort_by_fecha_desc`). Una manual del 21/09 queda
+    entre los pedidos de BoHub del 21/09, no fijada arriba; una manual sin
+    Fecha reconocible sí sube arriba del todo, para que no se pierda de
+    vista (una de BoHub sin fecha se sigue quedando al final, como siempre)."""
+    de_bohub = dates_to_serial(
+        [row_to_pedidos_values(row) for row in rows], PEDIDOS_DATE_COLUMNS,
+    )
+    return sorted([*(manual or []), *de_bohub], key=_clave_zona_viva)
+
+
 def build_pedidos_grid(
     rows: list[dict[str, Any]], static: list[list[Any]] | None = None,
     manual: list[list[Any]] | None = None,
 ) -> list[list[Any]]:
-    """Cabecera + filas manuales (arriba, en su orden) + zona viva de BoHub
-    (por fecha) + bloque estático."""
-    return compose(
-        SEGUIMIENTO_COLUMNS_V2, [*(manual or []), *live_pedidos_rows(rows)], static or [],
-    )
+    """Cabecera + zona viva (manuales y de BoHub mezcladas por Fecha, ver
+    `zona_viva_pedidos`) + bloque estático."""
+    return compose(SEGUIMIENTO_COLUMNS_V2, zona_viva_pedidos(rows, manual), static or [])
 
 
 def build_incidencias_grid(
@@ -797,11 +836,11 @@ def pedidos_format(
 ) -> list[dict[str, Any]]:
     """Formato completo de la pestaña: cabecera, anchos, Importe en €,
     Situación coloreada (solo en la zona VIVA) y el separador destacado. La
-    zona viva son las filas `manual` (arriba) + las de BoHub."""
-    # MISMO orden que `build_pedidos_grid` (manuales arriba, BoHub por fecha
-    # desc): el color de Situación va por índice de fila, así que grid y
-    # formato no pueden ordenar distinto.
-    ordered = [*rows_for_format(manual or []), *sort_by_fecha_desc(rows)]
+    zona viva mezcla las filas `manual` y las de BoHub por Fecha (ver
+    `zona_viva_pedidos`)."""
+    # MISMA función que `build_pedidos_grid`: el color de Situación va por
+    # índice de fila, así que grid y formato no pueden ordenar distinto.
+    ordered = rows_for_format(zona_viva_pedidos(rows, manual))
     columns = len(SEGUIMIENTO_COLUMNS_V2)
     total_rows = len(ordered) + 1
     requests = _header_format(columns, _PEDIDOS_WIDTHS_PX)
@@ -952,9 +991,10 @@ def push_managed_tabs(
         "columns": list(SEGUIMIENTO_COLUMNS_V2),
         "dry_run": dry_run,
         "written": False,
-        # Filas tecleadas a mano que se CONSERVAN arriba, y cuántas de ellas
-        # ya se han cruzado con su pedido de BoHub (y con cuántos conflictos
-        # marcados) o se han entregado a BoHub por no tener nada que perder.
+        # Filas tecleadas a mano que se CONSERVAN (mezcladas con las de BoHub
+        # por Fecha), y cuántas de ellas ya se han cruzado con su pedido de
+        # BoHub (y con cuántos conflictos marcados) o se han entregado a
+        # BoHub por no tener nada que perder.
         "manuales": len(manuales),
         "manuales_fusionadas": fusion["fusionadas"],
         "manuales_entregadas": fusion["entregadas"],

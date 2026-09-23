@@ -638,13 +638,17 @@ en **pestañas propias de la app**. Cada una tiene **dos zonas**:
   mano; debajo del separador, los **pendientes heredados** de la hoja vieja.
 
 **Pedidos añadidos a mano (transición).** Mientras no todos los pedidos pasen
-por la app, puedes **teclear uno en la primera fila** de «Seguimiento (app)»
-(justo bajo la cabecera) poniendo **`MANUAL` en la columna Origen** (mejor en
-mayúsculas). Ese es el marcador: «Actualizar hoja de Drive» **lee la hoja antes de escribir** y las
-filas con Origen = MANUAL se **conservan arriba del todo**, en el orden en que
-estén e intactas (no se pisa ninguna celda que hayas rellenado); debajo se
-reescribe lo de BoHub como siempre. Una fila **sin** ese marcador es de BoHub y
-se reescribe: no pongas pedidos a mano sin él.
+por la app, puedes **teclear uno en cualquier fila** de la zona viva de
+«Seguimiento (app)» (por debajo de la cabecera) poniendo **`MANUAL` en la
+columna Origen** (mejor en mayúsculas). Ese es el marcador: «Actualizar hoja
+de Drive» **lee la hoja antes de escribir** y las
+filas con Origen = MANUAL se **conservan intactas** (no se pisa ninguna celda
+que hayas rellenado), **intercaladas con las de BoHub por Fecha** —la más
+reciente primero, el mismo orden que el resto de la zona viva—: una fila
+manual del 21/09 queda entre los pedidos de BoHub del 21/09, no fijada arriba.
+Si no tiene una Fecha reconocible, sí **sube arriba del todo**, para que no se
+pierda de vista. Una fila **sin** el marcador es de BoHub y se reescribe: no
+pongas pedidos a mano sin él.
 
 Si más tarde **el mismo pedido entra por BoHub** (mismo Nº de pedido), no se
 duplica: queda **una sola fila**, BoHub **rellena los huecos** y lo que tú
