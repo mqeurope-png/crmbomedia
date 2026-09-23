@@ -68,13 +68,14 @@ class ImportOutcome:
 
 
 #: Regla de creación (pedida por Bart): un pedido de WooCommerce solo se CREA en
-#: BoHub cuando su estado es `processing`. Un pedido no llega a `completed` sin
-#: pasar antes por `processing`, así que importando en `processing` se capturan
-#: todos; `pending`/`on-hold` (aún sin pagar) o `completed`/`cancelled`/
-#: `refunded`/`failed` de un pedido que BoHub no conoce se IGNORAN. Solo
+#: BoHub cuando ha ENTRADO EN EL FLUJO: `processing` (pagado / en preparación),
+#: `completed` (servido) o `refunded` (pagado y devuelto). Los `pending`,
+#: `on-hold` (aún sin pagar), `failed`, `draft`/`checkout-draft` y `cancelled`
+#: de un pedido que BoHub no conoce se IGNORAN: son carritos, no pedidos. Solo
 #: gobierna la creación: los pedidos ya importados se siguen actualizando
-#: (`woo_status`) con cualquier cambio de estado, como hace #376.
-CREATE_ON_STATUSES: frozenset[str] = frozenset({"processing"})
+#: (`woo_status`) con cualquier cambio de estado, como hace #376, y el que
+#: pasa a `processing` se crea en ese momento.
+CREATE_ON_STATUSES: frozenset[str] = frozenset({"processing", "completed", "refunded"})
 
 
 def should_create_order(woo_order: dict[str, Any]) -> bool:

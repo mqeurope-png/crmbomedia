@@ -201,26 +201,38 @@ def test_un_web_que_no_paso_por_caja_no_sale_en_seguimiento(
 
 
 @pytest.mark.parametrize("woo_status", [None, ""])
-def test_un_web_sin_estado_queda_oculto_con_reincluir(session_factory, http, woo_status) -> None:
-    """El caso de BOPRIN-99878/99880: web con `woo_status` NULL que se colaban.
-    Un web cuyo estado sigue sin conocerse después de «Poner al día estados
-    Woo» no es un activo fiable: fuera, con motivo «Estado desconocido». Y
-    como puede haber algún caso legítimo, se «Reincluye» (fuerza) a mano."""
+def test_un_web_sin_estado_se_queda(session_factory, woo_status) -> None:
+    """Ocultar los NULL (#461) se llevó ~90 pedidos legítimos (BOPRIN-99915…,
+    ARTISJ-9460…, FLUXLA-5742…): los web importados antes de que existiera el
+    campo. Un web sin estado no se conoce → se queda; solo oculta un estado
+    EXPLÍCITO de la tienda (o el `not_found` de la reconciliación)."""
     with session_factory() as s:
         st = _store(s)
-        o = _order(s, woo_id="3b", number="BOPRIN-3B", woo_status=woo_status, store=st)
+        _order(s, woo_id="3b", number="BOPRIN-3B", woo_status=woo_status, store=st)
+        s.commit()
+        rows = _rows_for(s, en_curso=True)
+        assert "BOPRIN-3B" in _numbers(rows)
+        row = next(r for r in rows if r["order_number"] == "BOPRIN-3B")
+        assert row["oculto_por_estado"] is False
+
+
+def test_un_web_que_la_tienda_ya_no_tiene_queda_oculto(session_factory, http) -> None:
+    """`not_found` lo pone «Poner al día estados Woo» al recibir el 404 de
+    WooCommerce: fuera, con su motivo, y con «Reincluir» por si acaso."""
+    with session_factory() as s:
+        st = _store(s)
+        o = _order(s, woo_id="3c", number="BOPRIN-3C", woo_status="not_found", store=st)
         s.commit()
         oid = o.id
-        assert "BOPRIN-3B" not in _numbers(_rows_for(s, en_curso=True))
+        assert "BOPRIN-3C" not in _numbers(_rows_for(s, en_curso=True))
         row = next(r for r in _rows_for(s, ver_ocultos_estado=True)
-                   if r["order_number"] == "BOPRIN-3B")
-        assert row["estado_woo_motivo"] == "sin_estado"
-        assert row["estado_woo_motivo_label"] == "Estado desconocido"
+                   if r["order_number"] == "BOPRIN-3C")
+        assert row["estado_woo_motivo_label"] == "No encontrado en la tienda"
     r = http.post("/api/erp/seguimiento/force", json={"order_ids": [oid]},
                   headers=auth_headers(http, "pedidos"))
     assert r.status_code == 200, r.text
     with session_factory() as s:
-        assert "BOPRIN-3B" in _numbers(_rows_for(s, en_curso=True))
+        assert "BOPRIN-3C" in _numbers(_rows_for(s, en_curso=True))
 
 
 def test_los_valores_reales_de_produccion_quedan_ocultos_en_los_tres_caminos(
@@ -243,6 +255,7 @@ def test_los_valores_reales_de_produccion_quedan_ocultos_en_los_tres_caminos(
         _order(s, woo_id="5751", number="FLUXLA-5751", woo_status="cancelled", store=st)
         _order(s, woo_id="5786", number="FLUXLA-5786", woo_status="cancelled", store=st)
         _order(s, woo_id="99878", number="BOPRIN-99878", woo_status=None, store=st)
+        _order(s, woo_id="5790", number="FLUXLA-5790", woo_status="not_found", store=st)
         _order(s, woo_id="1", number="BOPRIN-1", woo_status="processing", store=st)
         s.commit()
         drive = {r["order_number"] for r in drive_live_rows(s)}
@@ -254,13 +267,14 @@ def test_los_valores_reales_de_produccion_quedan_ocultos_en_los_tres_caminos(
     ), read_only=True)
     filas = [list(row) for row in wb["Pedidos"].iter_rows(values_only=True)]
     excel = {f[filas[0].index("Nº pedido")] for f in filas[1:]}
-    assert pantalla == excel == drive == {"BOPRIN-1"}
+    # El NULL (BOPRIN-99878) se QUEDA: no se conoce su estado.
+    assert pantalla == excel == drive == {"BOPRIN-1", "BOPRIN-99878"}
     ocultos = http.get("/api/erp/seguimiento?ver_ocultos_estado=true", headers=h).json()
     motivos = {i["order_number"]: i["estado_woo_motivo_label"] for i in ocultos["items"]}
     assert motivos == {
         "BOPRIN-99922": "En espera", "BOPRIN-99931": "En espera",
         "FLUXLA-5751": "Cancelado en la tienda", "FLUXLA-5786": "Cancelado en la tienda",
-        "BOPRIN-99878": "Estado desconocido",
+        "FLUXLA-5790": "No encontrado en la tienda",
     }
 
 
@@ -280,7 +294,7 @@ def test_actualizar_hoja_de_drive_vuelca_solo_lo_que_ensena_la_pantalla(
         st = _store(s)
         _order(s, woo_id="99922", number="BOPRIN-99922", woo_status="on-hold", store=st)
         _order(s, woo_id="5751", number="FLUXLA-5751", woo_status="cancelled", store=st)
-        _order(s, woo_id="99878", number="BOPRIN-99878", woo_status=None, store=st)
+        _order(s, woo_id="99878", number="BOPRIN-99878", woo_status="not_found", store=st)
         _order(s, woo_id="2", number="BOPRIN-2", woo_status="completed", store=st,
                tracking="1Z")
         _order(s, woo_id="1", number="BOPRIN-1", woo_status="processing", store=st)

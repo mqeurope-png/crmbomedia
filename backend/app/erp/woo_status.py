@@ -24,7 +24,6 @@ from typing import Any
 __all__ = [
     "NOT_FOUND",
     "REFUNDED",
-    "SIN_ESTADO",
     "WEB_HIDDEN_MOTIVOS",
     "WEB_VISIBLE_STATUSES",
     "is_refunded",
@@ -40,13 +39,6 @@ REFUNDED = "refunded"
 #: es un estado de WooCommerce; se guarda en `woo_status` para poder ocultarlo
 #: con su motivo.
 NOT_FOUND = "not_found"
-
-#: Motivo de ocultación de un pedido web SIN `woo_status` (NULL). No es un
-#: estado guardado —el campo sigue a NULL—: es lo que el seguimiento dice de
-#: él. Un web cuyo estado sigue sin conocerse después de «Poner al día
-#: estados Woo» ya no es un activo fiable; se oculta, y si es un caso legítimo
-#: se «Reincluye» a mano.
-SIN_ESTADO = "sin_estado"
 
 #: Estados con los que un pedido WEB entra en el Seguimiento.
 WEB_VISIBLE_STATUSES: frozenset[str] = frozenset({
@@ -65,7 +57,6 @@ WEB_HIDDEN_MOTIVOS: dict[str, str] = {
     "trash": "En la papelera",
     "deleted": "Borrado en la tienda",
     NOT_FOUND: "No encontrado en la tienda",
-    SIN_ESTADO: "Estado desconocido",
 }
 
 

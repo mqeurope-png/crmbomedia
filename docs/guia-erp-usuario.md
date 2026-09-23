@@ -582,10 +582,12 @@ tienda **ya no tiene** queda marcado *No encontrado en la tienda* y oculto.
 Siempre enseña antes una previsualización con los números; nada se cambia hasta
 que confirmas.
 
-> Un pedido web que **sigue sin estado** después de ponerlos al día (la tienda
-> no respondió, o es un pedido interno de prueba) **no se ve** en Seguimiento:
-> sale en «Ver ocultos por estado» como *Estado desconocido*. Si es legítimo,
-> «Reincluir» lo fuerza a la lista.
+> Un pedido web **sin estado** (los importados antes de que existiera el dato)
+> **se ve** en Seguimiento: no se conoce su estado, y ocultarlo se llevaba
+> pedidos legítimos. Solo se oculta por un estado **explícito** de la tienda
+> (sin pagar, en espera, cancelado, fallido, borrador) o cuando la tienda ya
+> no lo tiene (*No encontrado en la tienda*). «Poner al día estados Woo» les
+> pone su estado real, de 150 en 150 por pasada.
 
 > **«Incidencia» es solo lo que marcáis vosotros.** Un pedido llega a esa
 > situación cuando alguien **reporta un problema a mano** desde la Cola SAT
@@ -703,8 +705,10 @@ después**. Con esto un compañero nuevo puede llevar un pedido de principio a f
 ### A) Pedido web (WooCommerce), de principio a fin
 
 **Cómo entra.** El cliente paga en la web. WooCommerce avisa a BoHub (webhook) y,
-**solo cuando el pedido está en estado *processing*** (pagado y listo para
-preparar), BoHub lo crea automáticamente. Nace con:
+**solo cuando el pedido ha entrado en el flujo** —*processing* (pagado y listo
+para preparar), *completed* o *refunded*—, BoHub lo crea automáticamente. Un
+carrito *pending* / *on-hold* / *failed* / *draft* / *cancelled* no se crea; si
+más tarde pasa a *processing*, se crea en ese momento. Nace con:
 
 - **Preparación = Pend. revisión** → aparece en la cola **«Por revisar»**.
 - **Pago = Pagado** si la web ya registró el pago.
@@ -942,7 +946,8 @@ a mano de la bandeja) · **Anulado**.
 ## Preguntas frecuentes
 
 **Un pedido web no aparece en la bandeja.** BoHub solo crea el pedido cuando en
-WooCommerce está en *processing* (pagado y listo para preparar). Los pedidos
+WooCommerce ha entrado en el flujo (*processing*, *completed* o *refunded*); un
+carrito sin pagar o en espera no se crea hasta que pasa a *processing*. Los pedidos
 anteriores a la **fecha de corte** de la tienda entran como *procesados
 externamente* y no salen en las colas (marca **«Mostrar procesados externamente»**
 para verlos).
