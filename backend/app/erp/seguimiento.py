@@ -298,9 +298,15 @@ def parse_sheet_date(value: Any) -> date | None:
         return None
     for fmt in _SHEET_DATE_FORMATS:
         try:
-            return datetime.strptime(s, fmt).date()  # noqa: DTZ007 — fecha civil
+            parsed = datetime.strptime(s, fmt).date()  # noqa: DTZ007 — fecha civil
         except ValueError:
             continue
+        # `%Y` acepta un año de 3 dígitos («27/07/202», un dígito de menos):
+        # eso es una fecha ROTA, no el año 202. No se inventa: None, y la
+        # celda se queda como texto.
+        if not (1990 <= parsed.year <= 2100):
+            return None
+        return parsed
     # Serial de Excel: un entero «grande» (evita confundir un día suelto).
     if s.isdigit() and 20000 <= int(s) <= 90000:
         from datetime import timedelta  # noqa: PLC0415
@@ -1358,36 +1364,53 @@ def row_to_sheet_values(row: dict[str, Any], *, include_orden: bool = False) -> 
 SEGUIMIENTO_COLUMNS_V2: list[str] = [
     "Situación", "Nº pedido", "Fecha", "Cliente", "Origen", "Productos",
     "Importe", "Empresa (serie)", "Factura", "Fecha factura",
-    "Factura enviada", "Cobro", "Preparación", "Envío", "Tracking",
-    "Nº serie · WhiteRIP", "Nota / Incidencia",
+    "Factura enviada", "Cobro", "Preparación", "Envío", "Fecha recogido",
+    "Tracking", "Nº serie · WhiteRIP", "Nota / Incidencia",
 ]
 #: Columnas de la pestaña «Incidencias» (subconjunto de Situación=Incidencia).
 INCIDENCIAS_COLUMNS: list[str] = [
     "Nº pedido", "Cliente", "Tipo", "Motivo", "Asignado a", "Fecha", "Estado",
 ]
+#: Índices (0-based) de las columnas que son FECHAS. Se escriben como valor de
+#: fecha real —`date` en el Excel, serial + `numberFormat` en Drive—, nunca
+#: como texto, para que la hoja ordene por fecha de verdad (como texto,
+#: «1/9/2026» va antes que «12/3/2026»). Visualización uniforme DD/MM/AAAA.
+#: Fecha · Fecha factura · Factura enviada · Fecha recogido.
+PEDIDOS_DATE_COLUMNS: tuple[int, ...] = (2, 9, 10, 14)
+INCIDENCIAS_DATE_COLUMNS: tuple[int, ...] = (5,)
+#: Formato de fecha de esas columnas (Excel y Sheets usan el mismo patrón).
+DATE_PATTERN = "DD/MM/YYYY"
 #: Ancho aproximado de cada columna de «Pedidos» (para que el Excel se lea).
-_PEDIDOS_WIDTHS = [13, 16, 11, 30, 10, 34, 12, 18, 14, 12, 13, 12, 13, 13, 16, 20, 30]
+_PEDIDOS_WIDTHS = [13, 16, 11, 30, 10, 34, 12, 18, 14, 12, 13, 12, 13, 13, 12, 16, 20, 30]
 _INCIDENCIAS_WIDTHS = [16, 30, 24, 40, 18, 11, 12]
+
+def _sheet_date_value(iso: str | None) -> date | str:
+    """Celda de fecha del formato nuevo: un `date` real, o "" si no hay."""
+    return date.fromisoformat(iso) if iso else ""
 
 
 def row_to_pedidos_values(row: dict[str, Any]) -> list[Any]:
-    """Los 17 valores de una fila de «Pedidos», en orden. `Importe` va como
-    NÚMERO (float) para que el Excel lo formatee; el resto, texto."""
+    """Los 18 valores de una fila de «Pedidos», en orden. `Importe` va como
+    NÚMERO (float) y las fechas como `date` (ver `PEDIDOS_DATE_COLUMNS`) para
+    que el Excel y la hoja las traten como lo que son; el resto, texto."""
     return [
         row.get("situacion_label") or "",
         row.get("order_number") or "",
-        _sheet_date(row.get("fecha")),
+        _sheet_date_value(row.get("fecha")),
         row.get("cliente") or "",
         row.get("origen_label") or "",
         (row.get("productos") or "")[:300],
         float(row.get("importe") or 0),
         row.get("empresa_serie") or "",
         row.get("factura") or "",
-        _sheet_date(row.get("fecha_factura")),
-        _sheet_date(row.get("factura_enviada")),
+        _sheet_date_value(row.get("fecha_factura")),
+        _sheet_date_value(row.get("factura_enviada")),
         row.get("cobro_label") or "",
         row.get("preparacion") or "",
         row.get("envio") or "",
+        # «Fecha recogido»: el hecho real de la Cola SAT (recogido / en
+        # tránsito / etiqueta), nunca una fecha estampada al importar.
+        _sheet_date_value(row.get("recogido")),
         row.get("tracking") or "",
         row.get("serie_whiterip") or "",
         row.get("nota_incidencia") or "",
@@ -1409,7 +1432,7 @@ def incidencia_values(row: dict[str, Any]) -> list[Any]:
         detail.get("tipo") or "",
         detail.get("motivo") or "",
         detail.get("asignado") or "",
-        _sheet_date(detail.get("fecha")),
+        _sheet_date_value(detail.get("fecha")),
         detail.get("estado") or "",
     ]
 
@@ -1451,6 +1474,9 @@ def export_xlsx(rows: list[dict[str, Any]]) -> bytes:
         situ_cell.fill = PatternFill("solid", fgColor=bg)
         situ_cell.font = Font(bold=True, color=ink)
         ws.cell(row=r_i, column=7).number_format = "#,##0.00 €"  # Importe
+        # Fechas como VALOR de fecha (ordenables), DD/MM/AAAA.
+        for c in PEDIDOS_DATE_COLUMNS:
+            ws.cell(row=r_i, column=c + 1).number_format = DATE_PATTERN
         if row.get("cobro") == "cobrado":  # «Cobrado ✓» en verde
             ws.cell(row=r_i, column=12).font = Font(bold=True, color="1F7A45")
     ws.auto_filter.ref = (
@@ -1460,8 +1486,10 @@ def export_xlsx(rows: list[dict[str, Any]]) -> bytes:
     inc = wb.create_sheet("Incidencias")
     inc.append(INCIDENCIAS_COLUMNS)
     _style_header(inc, _INCIDENCIAS_WIDTHS)
-    for row in incidencia_rows(rows):
+    for r_i, row in enumerate(incidencia_rows(rows), start=2):
         inc.append(incidencia_values(row))
+        for c in INCIDENCIAS_DATE_COLUMNS:
+            inc.cell(row=r_i, column=c + 1).number_format = DATE_PATTERN
     inc.auto_filter.ref = (
         f"A1:{get_column_letter(len(INCIDENCIAS_COLUMNS))}{inc.max_row}"
     )

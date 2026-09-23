@@ -35,17 +35,22 @@ Y es idempotente: reejecutar no duplica el separador ni el bloque.
 from __future__ import annotations
 
 import logging
+from datetime import date
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 from app.erp.drive_sheets import DriveSyncError, ManagedTabTransport
 from app.erp.seguimiento import (
+    DATE_PATTERN,
     INCIDENCIAS_COLUMNS,
+    INCIDENCIAS_DATE_COLUMNS,
+    PEDIDOS_DATE_COLUMNS,
     SEGUIMIENTO_COLUMNS_V2,
     SITUACION_FILL,
     incidencia_rows,
     incidencia_values,
+    parse_sheet_date,
     row_to_pedidos_values,
     sort_by_fecha_desc,
 )
@@ -63,7 +68,7 @@ INCIDENCIAS_TAB_SETTING = "drive_incidencias_tab"
 
 #: Anchos de columna de la pestaña «Pedidos» (píxeles ≈ los del Excel local).
 _PEDIDOS_WIDTHS_PX = [96, 116, 82, 210, 76, 240, 88, 130, 102, 88,
-                      96, 88, 96, 96, 116, 150, 220]
+                      96, 88, 96, 96, 92, 116, 150, 220]
 _INCIDENCIAS_WIDTHS_PX = [116, 210, 170, 280, 130, 82, 92]
 
 #: Gris de la cabecera (el mismo `F2F4F7` del Excel).
@@ -147,18 +152,118 @@ def _guard_not_historic(sheets: ManagedTabTransport, title: str) -> None:
         )
 
 
+#: Día 0 de Google Sheets (y de Excel): las fechas son «días desde aquí».
+_SHEETS_EPOCH = date(1899, 12, 30)
+
+
+def sheet_serial(value: date) -> int:
+    """Serial de Sheets de una fecha: con `numberFormat` DATE se ve como fecha
+    y, sobre todo, ORDENA como fecha."""
+    return (value - _SHEETS_EPOCH).days
+
+
+def _date_cell(value: Any) -> Any:
+    """Celda de una columna de fecha, lista para `USER_ENTERED`:
+      - `date` (formato nuevo) → serial;
+      - texto con fecha reconocible (histórico: «3/2/2026», «2026-02-03») →
+        serial, para que el bloque estático también ordene;
+      - un serial que ya viene como número (o como texto de dígitos, que es
+        como devuelve la API una celda de fecha sin formato) → tal cual;
+      - una fecha ROTA («27/07/202») o cualquier otro texto → se queda como
+        texto, sin inventar nada."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value
+    parsed = parse_sheet_date(value)
+    if parsed is not None:
+        return sheet_serial(parsed)
+    text = str(value or "").strip()
+    if text.isdigit() and 4 <= len(text) <= 6:
+        return int(text)
+    return value if value is not None else ""
+
+
+def dates_to_serial(rows: list[list[Any]], columns: tuple[int, ...]) -> list[list[Any]]:
+    """Las columnas de fecha de `rows`, como valor de fecha (serial)."""
+    out: list[list[Any]] = []
+    for row in rows:
+        r = list(row)
+        for c in columns:
+            if c < len(r):
+                r[c] = _date_cell(r[c])
+        out.append(r)
+    return out
+
+
+def date_format_requests(
+    columns: tuple[int, ...], *, first_row: int, last_row: int,
+) -> list[dict[str, Any]]:
+    """`numberFormat` de fecha (DD/MM/AAAA) sobre las columnas de fecha, filas
+    `first_row`..`last_row` (0-based, `last_row` excluido). Cubre también el
+    bloque estático: una celda de texto no se ve afectada."""
+    if last_row <= first_row:
+        return []
+    return [{"repeatCell": {
+        "range": {"sheetId": None, "startRowIndex": first_row, "endRowIndex": last_row,
+                  "startColumnIndex": c, "endColumnIndex": c + 1},
+        "cell": {"userEnteredFormat": {"numberFormat": {
+            "type": "DATE", "pattern": DATE_PATTERN.lower(),
+        }}},
+        "fields": "userEnteredFormat.numberFormat",
+    }} for c in columns]
+
+
 def live_pedidos_rows(rows: list[dict[str, Any]]) -> list[list[Any]]:
     """Una fila por pedido vivo, por fecha del pedido (más reciente primero).
-    Misma serialización que la pantalla y que «Descargar Excel»."""
-    return [row_to_pedidos_values(row) for row in sort_by_fecha_desc(rows)]
+    Misma serialización que la pantalla y que «Descargar Excel», con las
+    fechas como serial de Sheets (valor de fecha real)."""
+    return dates_to_serial(
+        [row_to_pedidos_values(row) for row in sort_by_fecha_desc(rows)],
+        PEDIDOS_DATE_COLUMNS,
+    )
 
 
 def live_incidencias_rows(rows: list[dict[str, Any]]) -> list[list[Any]]:
     """El subconjunto EXACTO de Situación=Incidencia (ahora, solo lo reportado
     a mano: ver `workflow.order_alerts`), en el mismo orden que la hoja."""
-    return [
-        incidencia_values(row) for row in incidencia_rows(sort_by_fecha_desc(rows))
-    ]
+    return dates_to_serial(
+        [incidencia_values(row) for row in incidencia_rows(sort_by_fecha_desc(rows))],
+        INCIDENCIAS_DATE_COLUMNS,
+    )
+
+
+#: Cabecera del formato nuevo ANTES de «Fecha recogido» (17 columnas, #457).
+_HEADER_V2_SIN_RECOGIDO: list[str] = [
+    c for c in SEGUIMIENTO_COLUMNS_V2 if c != "Fecha recogido"
+]
+_RECOGIDO_INDEX = SEGUIMIENTO_COLUMNS_V2.index("Fecha recogido")
+
+
+def normalize_static_pedidos(
+    static: list[list[Any]], old_header: list[Any],
+) -> list[list[Any]]:
+    """El bloque estático de «Seguimiento (app)», puesto al día del formato:
+
+    - si la pestaña se escribió con la cabecera de 17 columnas (sin «Fecha
+      recogido»), se abre el hueco de esa columna en cada fila, para que el
+      histórico no quede desplazado bajo la cabecera nueva;
+    - las fechas reconocibles pasan a valor de fecha (serial); las rotas se
+      quedan como texto.
+
+    El separador no se toca (más allá del hueco). Idempotente."""
+    if not static:
+        return []
+    header = [str(h or "").strip() for h in old_header]
+    realinear = header[:len(_HEADER_V2_SIN_RECOGIDO)] == _HEADER_V2_SIN_RECOGIDO
+    out: list[list[Any]] = []
+    for row in static:
+        r = list(row)
+        if realinear:
+            r = r + [""] * (len(_HEADER_V2_SIN_RECOGIDO) - len(r))
+            r.insert(_RECOGIDO_INDEX, "")
+        out.append(r)
+    return dates_to_serial(out, PEDIDOS_DATE_COLUMNS)
 
 
 def build_pedidos_grid(
@@ -266,6 +371,10 @@ def pedidos_format(
             "fields": "userEnteredFormat.numberFormat",
         }})
         requests.extend(_situacion_format(ordered))
+    # Fechas como fecha (DD/MM/AAAA) en la zona viva Y en la estática.
+    requests.extend(date_format_requests(
+        PEDIDOS_DATE_COLUMNS, first_row=1, last_row=total_rows + len(static or []),
+    ))
     # El autofiltro cubre SOLO la zona viva: si abarcara el histórico, ordenar
     # por una columna mezclaría los dos bloques.
     requests.append({"setBasicFilter": {"filter": {"range": {
@@ -298,6 +407,9 @@ def incidencias_format(
     columns = len(INCIDENCIAS_COLUMNS)
     total_rows = len(incidencia_rows(rows)) + 1
     requests = _header_format(columns, _INCIDENCIAS_WIDTHS_PX)
+    requests.extend(date_format_requests(
+        INCIDENCIAS_DATE_COLUMNS, first_row=1, last_row=total_rows + len(static or []),
+    ))
     requests.append({"setBasicFilter": {"filter": {"range": {
         "sheetId": None, "startRowIndex": 0, "endRowIndex": total_rows,
         "startColumnIndex": 0, "endColumnIndex": columns,
@@ -348,13 +460,17 @@ def push_managed_tabs(
     existing = sheets.tab_titles()
     # Lo que hay que PRESERVAR: del separador hacia abajo. Se lee también en
     # dry-run, para poder decir en la vista previa cuántas filas estáticas
-    # sobreviven — que es justo lo que da miedo al pulsar.
-    estatico_pedidos = (
-        static_block(sheets.tab_values(pedidos_tab)) if pedidos_tab in existing else []
+    # sobreviven — que es justo lo que da miedo al pulsar. Se pone al día del
+    # formato (hueco de «Fecha recogido» si la pestaña era de 17 columnas,
+    # fechas como valor de fecha), sin reordenarlo ni quitar nada.
+    valores_pedidos = sheets.tab_values(pedidos_tab) if pedidos_tab in existing else []
+    estatico_pedidos = normalize_static_pedidos(
+        static_block(valores_pedidos), valores_pedidos[0] if valores_pedidos else [],
     )
-    estatico_incidencias = (
+    estatico_incidencias = dates_to_serial(
         static_block(sheets.tab_values(incidencias_tab))
-        if incidencias_tab in existing else []
+        if incidencias_tab in existing else [],
+        INCIDENCIAS_DATE_COLUMNS,
     )
     # El separador no cuenta como fila de datos.
     resumen["historico_preservado"] = max(len(estatico_pedidos) - 1, 0)

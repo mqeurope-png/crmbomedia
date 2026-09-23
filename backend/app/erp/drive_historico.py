@@ -65,6 +65,8 @@ MARKER_PREFIX = "^^^^"
 _MIN_HEADER_MATCHES = 5
 
 _IDX = {c.header: i for i, c in enumerate(SEG_COLUMNS)}
+#: Posición de «Nota / Incidencia» en el formato nuevo (la última).
+NOTA_INDEX = SEGUIMIENTO_COLUMNS_V2.index("Nota / Incidencia")
 
 
 def _cell(row: list[Any], col_map: dict[int, int], header: str) -> str:
@@ -95,15 +97,13 @@ def locate_header(values: list[list[Any]]) -> tuple[int, dict[int, int]]:
 
 
 def _nota(row: list[Any], col_map: dict[int, int]) -> str:
-    """Lo que no tiene columna propia en el formato nuevo, junto y etiquetado,
-    para no perder nada del histórico."""
+    """Lo que NO tiene columna propia en el formato nuevo (las notas a mano y
+    la proforma), junto y etiquetado, para no perder nada del histórico. Lo
+    que sí la tiene —vendedor, transporte, preparado, recogido— va a su
+    columna (`map_row`), no aquí."""
     piezas: list[str] = []
     for etiqueta, header in (
         ("Orden", "Orden"),                 # la columna de notas a mano
-        ("Vendedor", "Vendedor"),
-        ("Transporte", "Transport"),
-        ("Preparado", "Preparado"),
-        ("Recogido", "Recogido"),
         ("Proforma", "Proforma"),
     ):
         valor = _cell(row, col_map, header)
@@ -112,11 +112,23 @@ def _nota(row: list[Any], col_map: dict[int, int]) -> str:
     return " · ".join(piezas)[:500]
 
 
-def map_row(row: list[Any], col_map: dict[int, int]) -> list[Any]:
-    """Una fila de la hoja vieja → los 17 valores del formato nuevo.
+def _origen(row: list[Any], col_map: dict[int, int]) -> str:
+    """Origen del histórico: el vendedor (WEB / nombre) y el canal
+    (OFI-TER-SAT), juntos si hay los dos y son distintos («WEB · SAT»)."""
+    partes = [_cell(row, col_map, "Vendedor"), _cell(row, col_map, "OFI-TER-SAT")]
+    return " · ".join(dict.fromkeys(p for p in partes if p))
 
-    Lo que no existe en el histórico (Importe, Cobro, Preparación, Envío,
-    Factura enviada) se deja vacío: inventarlo sería peor que no tenerlo."""
+
+def map_row(row: list[Any], col_map: dict[int, int]) -> list[Any]:
+    """Una fila de la hoja vieja → los 18 valores del formato nuevo.
+
+    Cada dato de la hoja vieja va a su columna real: Vendedor (+ canal) →
+    Origen, Transporte → Envío, Preparado → Preparación, Recogido → Fecha
+    recogido. Solo lo que no tiene columna (Orden, Proforma) va a «Nota /
+    Incidencia». Lo que no existe en el histórico (Importe, Cobro, Fecha
+    factura) se deja vacío: inventarlo sería peor que no tenerlo. Las fechas
+    se dejan tal cual vienen (texto): el volcado las pasa a valor de fecha si
+    se pueden leer, y una rota se queda como texto."""
     num_serie = _cell(row, col_map, "Nº de Serie")
     whiterip = _cell(row, col_map, "WhiteRIP")
     serie_whiterip = " · ".join(p for p in (num_serie, whiterip) if p)
@@ -125,7 +137,7 @@ def map_row(row: list[Any], col_map: dict[int, int]) -> list[Any]:
         _cell(row, col_map, "Albarán / Nº Pedido Web"),       # Nº pedido
         _cell(row, col_map, "Fecha entrada albarán"),         # Fecha
         _cell(row, col_map, "Cliente"),                       # Cliente
-        _cell(row, col_map, "OFI-TER-SAT"),                   # Origen
+        _origen(row, col_map),                                # Origen
         _cell(row, col_map, "Productos")[:300],               # Productos
         "",                                                   # Importe
         _cell(row, col_map, "Empresa"),                       # Empresa (serie)
@@ -133,8 +145,9 @@ def map_row(row: list[Any], col_map: dict[int, int]) -> list[Any]:
         "",                                                   # Fecha factura
         _cell(row, col_map, "F Envío Factura"),               # Factura enviada
         "",                                                   # Cobro
-        "",                                                   # Preparación
-        "",                                                   # Envío
+        _cell(row, col_map, "Preparado"),                     # Preparación
+        _cell(row, col_map, "Transport"),                     # Envío
+        _cell(row, col_map, "Recogido"),                      # Fecha recogido
         _cell(row, col_map, "Tracking"),                      # Tracking
         serie_whiterip,                                       # Nº serie · WhiteRIP
         _nota(row, col_map),                                  # Nota / Incidencia
@@ -211,7 +224,7 @@ def plan_import(values: list[list[Any]]) -> dict[str, Any]:
         mapped = map_row(row, col_map)
         if not mapped[1]:                    # sin nº de pedido
             dudosas.append({"fila": i + 1, "cliente": mapped[3],
-                            "nota": mapped[16][:120]})
+                            "nota": mapped[NOTA_INDEX][:120]})
         mapeadas.append(mapped)
 
     return {
@@ -252,11 +265,17 @@ def import_historico(
     reemplaza los bloques estáticos enteros, así que es idempotente y no duplica
     separadores."""
     from app.erp.drive_managed import (  # noqa: PLC0415
-        _header_format,
         compose,
+        dates_to_serial,
         historic_block,
+        incidencias_format,
         is_separator,
+        pedidos_format,
         pendientes_block,
+    )
+    from app.erp.seguimiento import (  # noqa: PLC0415
+        INCIDENCIAS_DATE_COLUMNS,
+        PEDIDOS_DATE_COLUMNS,
     )
 
     historic = sheets.first_tab_title()
@@ -289,23 +308,31 @@ def import_historico(
                 return cuerpo[:i]
         return cuerpo
 
+    # Las fechas del histórico, como valor de fecha donde se puedan leer (una
+    # rota se queda como texto): así el bloque también ordena por fecha.
+    historico = historic_block(dates_to_serial(plan["rows"], PEDIDOS_DATE_COLUMNS))
+    vivas_pedidos = dates_to_serial(_live(pedidos_tab), PEDIDOS_DATE_COLUMNS)
     sheets.ensure_tab(pedidos_tab)
-    sheets.replace_tab(pedidos_tab, compose(
-        SEGUIMIENTO_COLUMNS_V2, _live(pedidos_tab), historic_block(plan["rows"]),
+    sheets.replace_tab(pedidos_tab, compose(SEGUIMIENTO_COLUMNS_V2, vivas_pedidos, historico))
+    # El mismo formato que el volcado periódico (cabecera congelada, anchos,
+    # fechas), calculado sobre las filas que hay: la zona viva de la pestaña se
+    # ha conservado tal cual, así que el formato va por posición.
+    sheets.format_tab(pedidos_tab, pedidos_format(
+        [{"fecha": None} for _ in vivas_pedidos], historico,
     ))
-    sheets.format_tab(
-        pedidos_tab, _header_format(len(SEGUIMIENTO_COLUMNS_V2), [110] * 17),
-    )
 
     if plan["pendientes_rows"]:
+        pendientes = pendientes_block(
+            dates_to_serial(plan["pendientes_rows"], INCIDENCIAS_DATE_COLUMNS),
+        )
+        vivas_inc = dates_to_serial(_live(incidencias_tab), INCIDENCIAS_DATE_COLUMNS)
         sheets.ensure_tab(incidencias_tab)
         sheets.replace_tab(incidencias_tab, compose(
-            INCIDENCIAS_COLUMNS, _live(incidencias_tab),
-            pendientes_block(plan["pendientes_rows"]),
+            INCIDENCIAS_COLUMNS, vivas_inc, pendientes,
         ))
-        sheets.format_tab(
-            incidencias_tab, _header_format(len(INCIDENCIAS_COLUMNS), [130] * 7),
-        )
+        sheets.format_tab(incidencias_tab, incidencias_format(
+            [{"situacion": "incidencias", "fecha": None} for _ in vivas_inc], pendientes,
+        ))
 
     resumen["written"] = True
     logger.info(

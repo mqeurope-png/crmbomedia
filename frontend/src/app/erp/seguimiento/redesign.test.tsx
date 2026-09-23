@@ -89,7 +89,7 @@ describe("ERP · Seguimiento — hoja simplificada (rediseño 2026)", () => {
     for (const label of [
       "Situación", "Nº pedido", "Origen", "Importe", "Empresa (serie)",
       "Fecha factura", "Factura enviada", "Cobro", "Preparación", "Envío",
-      "Nº serie · WhiteRIP", "Nota / Incidencia",
+      "Fecha recogido", "Nº serie · WhiteRIP", "Nota / Incidencia",
     ]) {
       expect(heads).toContain(label);
     }
