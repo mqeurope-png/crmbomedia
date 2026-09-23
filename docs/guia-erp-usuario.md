@@ -513,20 +513,41 @@ sustituye el Excel manual de seguimiento: la app la genera y la **ordena sola**,
 sin mover filas a mano. Una **fila por pedido**, con el estado en una **columna**
 (no en la posición). Por defecto muestra los pedidos en curso.
 
-**Qué entra y qué no.** Seguimiento es la lista de pedidos **vivos**:
+**Qué entra y qué no.** Seguimiento es la lista de pedidos **vivos**, y la
+puerta es distinta según de dónde venga el pedido:
 
-- **Entran** los pedidos activos que ya están en el flujo: los manuales
-  **aprobados** y los pedidos **web**, *aunque no estén pagados* — un pedido
-  aprobado sin cobrar es justo lo que hay que ver.
-- **Quedan fuera** los **anulados**, los **reembolsados**, los pedidos web
-  **cancelados / fallidos / en la papelera**, y los **manuales que nadie ha
-  aprobado todavía** (aún no han entrado al flujo; en cuanto se aprueban,
-  aparecen).
+- **Web** — entra el que **ha pasado por caja**: `processing` (pagado / en
+  preparación), `completed` (servido) y `refunded` (pagado y devuelto después).
+  **Quedan fuera** `pending` (sin pagar), `on-hold` (en espera), `cancelled`,
+  `failed` y los borradores: son carritos que todavía no han entrado en el
+  flujo real, no trabajo de nadie. En cuanto la tienda los pasa a
+  `processing`, aparecen solos en el siguiente refresco (y si vuelven atrás o
+  se cancelan, desaparecen).
+- **Manual** — entra el **aprobado**, *aunque no esté pagado*: un pedido
+  aprobado sin cobrar es justo lo que hay que ver. El que nadie ha aprobado
+  todavía queda fuera hasta que se apruebe.
+- **Fuera en los dos casos**: los **anulados**. Con **una excepción**: un
+  pedido web **reembolsado se sigue viendo** aunque esté anulado en BoHub
+  (ver abajo).
 
 Nada de eso se borra: está a un clic en **«Ver ocultos por estado»**, con el
-motivo por el que salió (*anulado*, *sin aprobar*, *cancelled*, *refunded*…).
-Y esto vale igual para los tres sitios: la pantalla, **«Descargar Excel»** y la
-pestaña **«Seguimiento (app)»** de Drive, que salen de la misma consulta.
+motivo por el que salió (*anulado*, *sin aprobar*, *Sin pagar*, *En espera*,
+*Cancelado en la tienda*…). Si alguno hay que verlo igualmente, **«Reincluir»**
+lo **fuerza** a la lista (sale marcado *forzado*) y se deshace desde esa misma
+vista con **«Dejar de forzar»**. Ojo: eso es distinto de la casilla **«Ver
+excluidos»**, que es la lista de los que se quitaron **a mano** con «Quitar del
+seguimiento» — son dos ejes distintos, y «Reincluir» en uno no rescata del otro.
+Todo esto vale igual para los tres sitios: la pantalla, **«Descargar Excel»** y
+la pestaña **«Seguimiento (app)»** de Drive, que salen de la misma consulta.
+
+**«Reembolsado» es un estado propio, no «anulado».** Un pedido web que se
+reembolsa entero en la tienda se pagó y se sirvió de verdad: en BoHub se marca
+**Reembolsado**, con su pastilla gris y su Situación «Reembolsado» al final de
+la lista, y **se sigue viendo en Seguimiento** — normalmente queda el abono por
+hacer. Sale de la bandeja y de las colas, y sus acciones siguen cerradas (es el
+mismo sello que la anulación), pero se dice por lo que es, tanto en la ficha
+como en la lista de pedidos. Cuando ya no haga falta verlo, se retira con
+**«Marcar completado»**.
 
 **Columnas (en orden):** **Situación**, **Nº pedido**, **Fecha**, **Cliente**,
 **Origen** (WEB o el canal), **Productos**, **Importe**, **Empresa (serie)**
@@ -538,8 +559,10 @@ transporte; **«No aplica»** si el pedido no requiere envío), **Tracking**,
 
 **Situación** es la cola de la línea de vida del pedido —la misma de la bandeja—
 y va **coloreada**: `Incidencia` (rojo), `Por revisar` (ámbar), `Por facturar` /
-`Por cobrar` (azul), `Por enviar` (teal) y `Listo` (verde). La tabla se **ordena
-por Situación** (lo urgente arriba: primero las incidencias, al final lo listo) y,
+`Por cobrar` (azul), `Por enviar` (teal), `Listo` (verde) y `Reembolsado`
+(gris). La tabla se **ordena
+por Situación** (lo urgente arriba: primero las incidencias, al final lo listo
+y los reembolsos) y,
 dentro de cada grupo, por fecha (lo más nuevo primero); así lo importante sube
 solo. Puedes reordenar pulsando en las cabeceras y filtrar como siempre (buscar,
 empresa/serie, transportista, origen, estado, fechas).
@@ -548,6 +571,13 @@ Botones útiles: **«Descargar Excel»**, **«Actualizar hoja de Drive…»** (v
 los datos a la hoja de Google Drive, con vista previa antes de escribir),
 **«Poner al día estados Woo…»** y **«Vincular facturas de FACTUSOL…»**. Por fila,
 **«PDF»** (de la factura) y **«Quitar»**/**«Reincluir»**.
+
+**«Poner al día estados Woo…»** vuelve a preguntar a las tiendas por los pedidos
+que BoHub tiene como activos y aplica la misma regla: saca los que se
+**cancelaron**, **fallaron**, se fueron a la **papelera** o volvieron a **sin
+pagar / en espera**, y marca **«Reembolsado»** los reembolsados (esos no salen).
+Siempre enseña antes una previsualización con los números; nada se cambia hasta
+que confirmas.
 
 > **«Incidencia» es solo lo que marcáis vosotros.** Un pedido llega a esa
 > situación cuando alguien **reporta un problema a mano** desde la Cola SAT
@@ -791,6 +821,12 @@ facturado) o el **presupuesto** (si sigue pendiente). **La factura no se borra
 nunca desde aquí**: primero se anula en FACTUSOL y luego el pedido. El pedido
 anulado sale de la bandeja, las colas y el seguimiento, y **se puede restaurar**
 con **«Restaurar pedido»**.
+
+**Un pedido web reembolsado** lleva el mismo cierre —sale de la bandeja y de las
+colas—, pero **no se llama «anulado»**: la ficha y las listas lo enseñan como
+**«Reembolsado»**, y en **Seguimiento se sigue viendo** (Situación
+«Reembolsado»). Lo marca el propio sync con la tienda en cuanto el pedido pasa
+a `refunded`; no hay que hacer nada a mano.
 
 ### C) Casos especiales
 

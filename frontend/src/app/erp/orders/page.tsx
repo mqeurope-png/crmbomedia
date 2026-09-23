@@ -764,9 +764,9 @@ function ErpOrdersScreen() {
           </span>
         ) : null}
         {o.cancelled ? (
-          <span className="badge bad"
-            title={`Anulado${o.cancelled_at ? ` el ${d(o.cancelled_at)}` : ""}${o.cancelled_by_name ? ` por ${o.cancelled_by_name}` : ""}${o.cancelled_reason ? `: ${o.cancelled_reason}` : ""} (reversible desde la ficha)`}>
-            Anulado
+          <span className={o.refunded ? "badge warn" : "badge bad"}
+            title={`${o.refunded ? "Reembolsado" : "Anulado"}${o.cancelled_at ? ` el ${d(o.cancelled_at)}` : ""}${o.cancelled_by_name ? ` por ${o.cancelled_by_name}` : ""}${o.cancelled_reason ? `: ${o.cancelled_reason}` : ""} (reversible desde la ficha)`}>
+            {o.refunded ? "Reembolsado" : "Anulado"}
           </span>
         ) : null}
       </>
@@ -790,7 +790,7 @@ function ErpOrdersScreen() {
       return (
         <p className="erp-flow-item-r2 small">
           <span>
-            Anulado {d(o.cancelled_at)}
+            {o.refunded ? "Reembolsado" : "Anulado"} {d(o.cancelled_at)}
             {o.cancelled_by_name ? ` · ${o.cancelled_by_name}` : ""}
           </span>
           <span className="muted">{o.cancelled_reason || "sin motivo"}</span>

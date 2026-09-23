@@ -267,3 +267,49 @@ def test_aprobado_sin_pagar_sigue_en_seguimiento(session_factory, http) -> None:
     listado = http.get("/api/erp/seguimiento",
                        headers=auth_headers(http, "pedidos")).json()
     assert "MANUAL-4" in {i["order_number"] for i in listado["items"]}
+
+
+def _web(s: Session, number: str, cid: str, woo_status: str, **kw):
+    return _order(
+        s, number, cid, external_source=OrderSource.WOOCOMMERCE,
+        external_id=number.split("-")[-1], woo_status=woo_status, **kw,
+    )
+
+
+def test_pantalla_excel_y_drive_dicen_lo_mismo(session_factory, http) -> None:
+    """Coherencia de las tres salidas: la pantalla, «Descargar Excel» y las
+    filas que se vuelcan a la pestaña «Seguimiento (app)» de Drive salen de la
+    misma consulta, así que la puerta web vale igual en las tres."""
+    from app.erp import seguimiento as core  # noqa: PLC0415
+    from app.erp.api.seguimiento import build_drive_sync_rows  # noqa: PLC0415
+
+    with session_factory() as s:
+        cid = _company(s)
+        _web(s, "BOPRIN-99931", cid, "on-hold")        # fuera
+        _web(s, "BOPRIN-99880", cid, "pending")        # fuera
+        _web(s, "BOPRIN-99001", cid, "processing")     # dentro
+        _web(s, "ARTISJ-9557", cid, "refunded",        # dentro, «Reembolsado»
+             cancelled_at=_dt("2026-09-12"))
+        s.commit()
+
+    h = auth_headers(http, "pedidos")
+    pantalla = {i["order_number"]
+                for i in http.get("/api/erp/seguimiento", headers=h).json()["items"]}
+
+    r = http.get("/api/erp/seguimiento/export", headers=h)
+    wb = load_workbook(io.BytesIO(r.content), read_only=True)
+    filas = [list(row) for row in wb["Pedidos"].iter_rows(values_only=True)]
+    num = filas[0].index("Nº pedido")
+    situacion_col = filas[0].index("Situación")
+    excel = {f[num] for f in filas[1:]}
+
+    with session_factory() as s:
+        # Las mismas filas que `push_managed_tabs` vuelca a «Seguimiento (app)».
+        vivas = core.sort_by_situacion(build_drive_sync_rows(s))
+        drive_rows = [core.row_to_pedidos_values(r2) for r2 in vivas]
+    drive = {f[num] for f in drive_rows}
+
+    assert pantalla == excel == drive == {"BOPRIN-99001", "ARTISJ-9557"}
+    # Y el reembolsado se dice por lo que es, también en el Excel.
+    fila = next(f for f in filas[1:] if f[num] == "ARTISJ-9557")
+    assert fila[situacion_col] == "Reembolsado"

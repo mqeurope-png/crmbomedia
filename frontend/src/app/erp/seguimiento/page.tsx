@@ -13,6 +13,7 @@ import {
   excludeSeguimiento,
   type ExclusionReasonCode,
   exportSeguimientoXlsx,
+  forceSeguimiento,
   getErpSettings,
   getOrderFactusolInvoiceRef,
   includeSeguimiento,
@@ -225,6 +226,28 @@ export default function SeguimientoPage() {
     void onIncludeRows([...selected]);
   }
 
+  // ERP-Woo — «Reincluir» en la vista de OCULTOS POR ESTADO: fuerza el pedido
+  // a la vista aunque su estado lo deje fuera (y lo deshace). Es otro eje que
+  // la exclusión manual: por eso no vale `includeSeguimiento`.
+  async function onForceRows(ids: string[], forced: boolean) {
+    if (ids.length === 0) return;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const r = await forceSeguimiento(ids, forced);
+      setNotice(forced
+        ? `${r.changed} pedido(s) forzado(s) en el seguimiento pese a su estado.`
+        : `${r.changed} pedido(s) ya no se fuerzan: vuelven a estar ocultos por estado.`);
+      setSelected(new Set());
+      await load();
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudo cambiar el forzado de los pedidos."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   // ERP — descargar el PDF de la factura de una fila (solo lectura). El pedido
   // solo guarda el CODFAC; la serie real (empresa emisora) la resuelve
   // FACTUSOL vía la clave {serie, código}. No marca ni envía nada.
@@ -369,8 +392,8 @@ export default function SeguimientoPage() {
         setNotice(
           `Puesta al día aplicada: ${r.removed_total} pedidos salieron del `
           + `seguimiento (${r.to_cancel} cancelados, ${r.to_fail} fallidos, `
-          + `${r.to_refund_out} reembolsos no cumplidos, ${r.to_trash} en papelera); `
-          + `${r.to_refund_done} reembolsos ya cumplidos también salieron.`,
+          + `${r.to_unpaid} sin pagar / en espera, ${r.to_trash} en papelera); `
+          + `${r.to_refunded} quedaron marcados «Reembolsado» (siguen a la vista).`,
         );
         await load();
       } else {
@@ -568,7 +591,9 @@ export default function SeguimientoPage() {
             />
             <span>Ver excluidos</span>
           </label>
-          {/* ERP-Woo — ocultados por estado (cancelado/reembolsado/fallido). */}
+          {/* ERP-Woo — ocultados por estado: anulados y los web que la tienda
+              no llegó a procesar (sin pagar, en espera, cancelado, fallido,
+              borrador). Se pueden «Reincluir» desde aquí. */}
           <label className="field erp-check-field">
             <input
               type="checkbox"
@@ -598,7 +623,7 @@ export default function SeguimientoPage() {
           {canEdit ? (
             <button
               type="button" className="button small secondary" disabled={busy}
-              title="Re-consulta WooCommerce y saca del seguimiento los cancelados / reembolsados / fallidos"
+              title="Re-consulta WooCommerce: saca los cancelados / fallidos / sin pagar y marca los reembolsados"
               onClick={onReconcilePreview}
             >
               {busy ? "Trabajando…" : "Poner al día estados Woo…"}
@@ -619,7 +644,13 @@ export default function SeguimientoPage() {
                 onClick={onDownloadSelectedPdf}>
                 Descargar facturas (PDF) ({selected.size})
               </button>
-              {viewExcluded ? (
+              {viewOcultos ? (
+                <button type="button" className="button small" disabled={busy}
+                  title="Fuerza los seleccionados a la vista pese a su estado"
+                  onClick={() => void onForceRows([...selected], true)}>
+                  Reincluir ({selected.size})
+                </button>
+              ) : viewExcluded ? (
                 <button type="button" className="button small" disabled={busy}
                   onClick={onIncludeSelected}>
                   Reincluir ({selected.size})
@@ -718,12 +749,12 @@ export default function SeguimientoPage() {
             <li>
               <strong>{reconcile.removed_total}</strong> saldrían del seguimiento:{" "}
               {reconcile.to_cancel} cancelados · {reconcile.to_fail} fallidos ·{" "}
-              {reconcile.to_refund_out} reembolsos no cumplidos ·{" "}
+              {reconcile.to_unpaid} sin pagar / en espera ·{" "}
               {reconcile.to_trash} en papelera.
             </li>
             <li>
-              <strong>{reconcile.to_refund_done}</strong> reembolsos ya cumplidos
-              también saldrían, marcados «reembolsado» para poder revisarlos.
+              <strong>{reconcile.to_refunded}</strong> quedarían marcados
+              «Reembolsado». No salen del seguimiento: es su propio estado.
             </li>
             <li className="muted small">
               {reconcile.unchanged} siguen activos.
@@ -846,7 +877,7 @@ export default function SeguimientoPage() {
           {viewExcluded
             ? " excluidos"
             : viewOcultos
-              ? " ocultados por estado (cancelado/reembolsado/fallido)"
+              ? " ocultados por estado (anulado, sin pagar, en espera, cancelado…)"
               : filters.en_curso === false ? " (todos)" : " en curso"}
         </p>
         <div style={{ overflowX: "auto" }}>
@@ -907,14 +938,20 @@ export default function SeguimientoPage() {
                         {" "}completado
                       </span>
                     ) : null}
-                    {r.reembolsado ? (
-                      <span className="badge warn" title="Reembolsado en WooCommerce (ya enviado/facturado)">
+                    {r.reembolsado && r.situacion !== "reembolsado" ? (
+                      <span className="badge warn" title="Reembolsado en WooCommerce (reembolso total)">
                         {" "}reembolsado
                       </span>
                     ) : null}
                     {r.oculto_por_estado && r.estado_woo_motivo ? (
-                      <span className="badge bad" title={`Oculto por estado de WooCommerce: ${r.woo_status ?? ""}`}>
-                        {" "}{r.estado_woo_motivo}
+                      <span className="badge bad" title={`Oculto por estado: ${r.woo_status ?? r.estado_woo_motivo}`}>
+                        {" "}{r.estado_woo_motivo_label || r.estado_woo_motivo}
+                      </span>
+                    ) : null}
+                    {r.forzado ? (
+                      <span className="badge muted"
+                        title={`Forzado a la vista pese a su estado${r.forzado_en ? ` el ${d(r.forzado_en)}` : ""}${r.forzado_por_nombre ? ` por ${r.forzado_por_nombre}` : ""}`}>
+                        {" "}forzado
                       </span>
                     ) : null}
                   </td>
@@ -969,7 +1006,20 @@ export default function SeguimientoPage() {
                   ) : null}
                   {canEdit ? (
                     <td>
-                      {r.excluido ? (
+                      {viewOcultos ? (
+                        <button
+                          type="button" className="button small secondary" disabled={busy}
+                          title={r.forzado
+                            ? "Deja de forzarlo: vuelve a estar oculto por su estado"
+                            : "Fuérzalo a la vista del seguimiento pese a su estado"}
+                          aria-label={r.forzado
+                            ? `Dejar de forzar ${r.albaran_pedido} en el seguimiento`
+                            : `Reincluir ${r.albaran_pedido} en el seguimiento`}
+                          onClick={() => void onForceRows([r.id], !r.forzado)}
+                        >
+                          {r.forzado ? "Dejar de forzar" : "Reincluir"}
+                        </button>
+                      ) : r.excluido ? (
                         <button
                           type="button" className="button small secondary" disabled={busy}
                           title="Vuelve a incluir este pedido en el seguimiento"

@@ -157,4 +157,22 @@ describe("Ficha · Anular pedido", () => {
     await user.click(screen.getByRole("button", { name: "Restaurar pedido" }));
     await waitFor(() => expect(uncancelOrder).toHaveBeenCalledWith("o-1"));
   });
+
+  it("un pedido web reembolsado se dice «Reembolsado», no «anulado»", async () => {
+    // Mismo sello técnico que la anulación (`cancelled`), estado PROPIO: se
+    // llama por lo que es y el Seguimiento lo sigue enseñando.
+    (getOrder as jest.Mock).mockResolvedValue(detail({
+      external_source: "woocommerce", order_number: "ARTISJ-9557",
+      cancelled: true, refunded: true, cancelled_at: "2026-09-15T10:00:00",
+      cancelled_reason: "Reembolsado en WooCommerce (reembolso total)",
+      workflow: { ...detail().workflow, queue: "listo", queue_label: "Listo",
+        next_action: "ninguna", next_action_label: "ninguna",
+        next_action_hint: "Pedido reembolsado." },
+    }));
+    render(<ErpOrderDetailPage />);
+    const banner = await screen.findByText(/Pedido reembolsado el/);
+    expect(banner).toHaveTextContent("Reembolsado");
+    expect(banner).toHaveTextContent("en Seguimiento se sigue viendo");
+    expect(screen.queryByText(/Pedido anulado el/)).toBeNull();
+  });
 });

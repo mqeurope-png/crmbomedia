@@ -5,16 +5,18 @@ procesaba (o antes de que BoHub guardara el estado) se quedan «colgados» como
 activos. Esta reconciliación pone al día el estado de los pedidos que BoHub
 tiene como activos/en curso (los del seguimiento, NUNCA el histórico del Excel)
 y aplica la misma regla que el resto del sistema (`visibility_for_status`):
-cancelado/fallido/trash → fuera; reembolso-no-cumplido → fuera; reembolso
-cumplido → marcado. Solo escribe `orders.woo_status`; no borra ni toca nada
-más, y NO escribe en la hoja de Drive.
+solo se quedan los que pasaron por caja (`processing`/`completed`), los
+`refunded` se quedan MARCADOS como «Reembolsado», y lo demás —cancelado,
+fallido, papelera, y los que volvieron a `pending`/`on-hold`— sale. Solo
+escribe `orders.woo_status`; no borra ni toca nada más, y NO escribe en la hoja
+de Drive.
 
 EFICIENCIA (en vez de un `get_order` por pedido activo, que daba 504): se PIDE a
-cada tienda la LISTA de pedidos en los estados que ocultan (`cancelled`,
-`refunded`, `failed`, `trash`) desde la fecha del pedido activo más antiguo, y
-se CRUZA con los activos de BoHub. Así son unas pocas llamadas de listado por
-tienda, no decenas de consultas individuales. Corre en segundo plano
-(worker-sync); esta función es el núcleo, sin Redis ni HTTP del request.
+cada tienda la LISTA de pedidos en los estados que interesan desde la fecha del
+pedido activo más antiguo, y se CRUZA con los activos de BoHub. Así son unas
+pocas llamadas de listado por tienda, no decenas de consultas individuales.
+Corre en segundo plano (worker-sync); esta función es el núcleo, sin Redis ni
+HTTP del request.
 
 `dry_run=True` (por defecto) NO persiste: devuelve el recuento de lo que
 CAMBIARÍA (la magnitud del problema), para que Bart lo vea antes de aplicar.
@@ -31,14 +33,19 @@ from sqlalchemy.orm import Session
 
 from app.erp.models import Order, OrderSource
 from app.erp.seguimiento import _en_curso, _estado, visibility_for_status
+from app.erp.woo_status import REFUNDED, normalize
 from app.integrations.woocommerce.client import WooError, WooHTTPClient
 from app.models.integration_settings import IntegrationAccount
 
 logger = logging.getLogger(__name__)
 
-#: Estados de WooCommerce que OCULTAN el pedido (se piden por listado). `trash`
-#: cubre los pedidos enviados a la papelera en la tienda.
-HIDDEN_WOO_STATUSES = ("cancelled", "failed", "refunded", "trash")
+#: Estados de WooCommerce que se piden por listado para cruzarlos con los
+#: activos de BoHub: los que SACAN el pedido del seguimiento (`cancelled`,
+#: `failed`, `trash` = papelera, y `pending`/`on-hold`, que es volver a «no ha
+#: pasado por caja») más `refunded`, que no lo saca pero lo marca «Reembolsado».
+RECONCILE_WOO_STATUSES = (
+    "cancelled", "failed", "refunded", "trash", "pending", "on-hold",
+)
 
 #: Tope de páginas por (tienda, estado). Con la fecha de corte rara vez se
 #: alcanza; si se alcanza, se marca `capped` y Bart puede re-ejecutar.
@@ -62,10 +69,9 @@ def _open_woo_orders(session: Session, store_account_id: str | None) -> list[Ord
     for o in session.scalars(stmt):
         if store_account_id and not _store_matches(session, o, store_account_id):
             continue
-        est = _estado(o)
-        if not _en_curso(o, est):
+        if not _en_curso(o, _estado(o)):
             continue
-        if visibility_for_status(o, est, o.woo_status)[0]:
+        if visibility_for_status(o.woo_status)[0]:
             continue  # ya oculto por estado
         out.append(o)
     return out
@@ -107,7 +113,7 @@ def reconcile_open_order_statuses(
         by_store.setdefault(o.store_id, {})[str(o.external_id)] = o
 
     counts = {"cancelled": 0, "failed": 0, "trash": 0,
-              "refunded_sin_cumplir": 0, "refunded": 0}
+              "pending": 0, "on_hold": 0, "refunded": 0}
     samples: dict[str, list[str]] = {k: [] for k in counts}
     removed = 0
 
@@ -131,7 +137,7 @@ def reconcile_open_order_statuses(
         # id de WooCommerce → estado actual, SOLO de los que están en un estado
         # que oculta Y además son pedidos activos de BoHub (la intersección).
         fetched: dict[str, str] = {}
-        for st in HIDDEN_WOO_STATUSES:
+        for st in RECONCILE_WOO_STATUSES:
             try:
                 for page in range(1, max_pages + 1):
                     woo_calls += 1
@@ -153,13 +159,19 @@ def reconcile_open_order_statuses(
 
         for extid, new_status in fetched.items():
             o = orders_by_extid[extid]
-            est = _estado(o)
-            hidden, motivo, _reembolsado = visibility_for_status(o, est, new_status)
-            if hidden and motivo in counts:
-                counts[motivo] += 1
-                if len(samples[motivo]) < 20:
-                    samples[motivo].append(o.order_number)
-                removed += 1
+            if normalize(o.woo_status) == normalize(new_status):
+                continue    # ya estaba en ese estado: nada que poner al día
+            hidden, motivo, reembolsado = visibility_for_status(new_status)
+            # Un reembolso NO sale del seguimiento: se queda marcado
+            # «Reembolsado». Se cuenta aparte para que la previsualización no
+            # lo mezcle con lo que sí desaparece.
+            key = motivo if hidden else (REFUNDED if reembolsado else None)
+            if key in counts:
+                counts[key] += 1
+                if len(samples[key]) < 20:
+                    samples[key].append(o.order_number)
+                if hidden:
+                    removed += 1
                 matched_ids.add((store_id, extid))
                 if not dry_run:
                     o.woo_status = new_status
@@ -182,12 +194,12 @@ def reconcile_open_order_statuses(
         "to_cancel": counts["cancelled"],
         "to_fail": counts["failed"],
         "to_trash": counts["trash"],
-        "to_refund_out": counts["refunded_sin_cumplir"],
-        # Reembolsos YA CUMPLIDOS (enviados o facturados). Antes se quedaban en
-        # la vista marcados «reembolsado»; ahora salen como el resto de
-        # reembolsos —el seguimiento es la lista de pedidos vivos— y conservan
-        # la marca para distinguirlos en «Ver ocultos por estado».
-        "to_refund_done": counts["refunded"],
+        # Volvieron a «no ha pasado por caja» (sin pagar / en espera): salen,
+        # y vuelven solos si la tienda los pasa otra vez a `processing`.
+        "to_unpaid": counts["pending"] + counts["on_hold"],
+        # Reembolsos: NO salen del seguimiento —es el estado propio
+        # «Reembolsado»—, solo se marcan como tales.
+        "to_refunded": counts["refunded"],
         "removed_total": removed,
         "errors": errors,
         "samples": {k: v for k, v in samples.items() if v},

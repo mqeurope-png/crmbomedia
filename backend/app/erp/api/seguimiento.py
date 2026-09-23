@@ -74,7 +74,8 @@ def list_seguimiento(
     # ERP-F6-fix7 — ver SOLO los excluidos (para revisarlos/reincluirlos), o
     # solo los que faltan por escribir en la hoja de Drive.
     ver_excluidos: bool = Query(default=False),
-    # ERP-Woo — ver SOLO los ocultados por estado (cancelado/reembolsado/fallido).
+    # ERP-Woo — ver SOLO los ocultados por estado (anulado, o web sin pagar /
+    # en espera / cancelado / fallido / borrador).
     ver_ocultos_estado: bool = Query(default=False),
     pendiente_escribir: bool = Query(default=False),
     sort: str = Query(default="situacion"),
@@ -419,6 +420,46 @@ def include_orders(
     return {"ok": True, "included": included, "already_included": already}
 
 
+class ForceIn(BaseModel):
+    order_ids: list[str] = Field(min_length=1, max_length=500)
+    #: `false` deshace el forzado (el pedido vuelve a estar oculto por estado).
+    forced: bool = True
+
+
+@router.post("/force")
+def force_orders(
+    payload: ForceIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_seguimiento),
+) -> dict[str, Any]:
+    """ERP-Woo — FORZAR en el seguimiento pedidos ocultos POR ESTADO (anulado,
+    o web que la tienda no llegó a procesar: pending / on-hold / cancelado /
+    fallido / borrador).
+
+    Es otro eje que `/exclude`-`/include`, que solo tocan la exclusión MANUAL:
+    «Reincluir» no rescata a un oculto por estado, por diseño. Aquí se guarda
+    la decisión explícita de verlo igualmente. No toca el pedido ni FACTUSOL ni
+    el estado de la tienda: es solo la vista, y se deshace con `forced=false`.
+    Idempotente."""
+    from sqlalchemy import select  # noqa: PLC0415
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    changed = 0
+    already = 0
+    for order in session.scalars(
+        select(Order).where(Order.id.in_(payload.order_ids))
+    ):
+        if (order.seguimiento_forced_at is not None) == payload.forced:
+            already += 1
+            continue
+        order.seguimiento_forced_at = now if payload.forced else None
+        order.seguimiento_forced_by_user_id = current_user.id if payload.forced else None
+        changed += 1
+    session.commit()
+    return {"ok": True, "forced": payload.forced, "changed": changed,
+            "already": already}
+
+
 @router.post("/reconcile-woo", status_code=status.HTTP_202_ACCEPTED)
 def reconcile_woo(
     dry_run: bool = Query(default=True),
@@ -428,8 +469,9 @@ def reconcile_woo(
 ) -> dict[str, Any]:
     """ERP-Woo — «poner al día» los estados de WooCommerce de los pedidos que
     BoHub tiene como activos: lista por estado en cada tienda y cruza con los
-    activos, aplicando la regla (cancelado/fallido/reembolso-no-cumplido → fuera
-    del seguimiento; reembolso-cumplido → marcado). `dry_run=true` (por defecto)
+    activos, aplicando la regla (cancelado / fallido / papelera / vuelta a
+    `pending`-`on-hold` → fuera del seguimiento; reembolsado → marcado
+    «Reembolsado», sin salir). `dry_run=true` (por defecto)
     PREVISUALIZA. Corre en SEGUNDO PLANO (worker-sync): responde al instante con
     un `job_id`; el estado se consulta en `reconcile-woo-status/{job_id}`. Así
     no se bloquea la petición (era lo que daba 504). Nunca toca Drive ni el

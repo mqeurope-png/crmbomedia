@@ -42,9 +42,10 @@ def _print_summary(summary: dict[str, Any], *, applied: bool) -> None:
     print(f"  Saldrían del seguimiento: {summary['removed_total']} pedidos que {verbo}")
     print(f"    · cancelados:              {summary['to_cancel']}")
     print(f"    · fallidos:                {summary['to_fail']}")
-    print(f"    · reembolsos no cumplidos: {summary['to_refund_out']}")
+    print(f"    · sin pagar / en espera:   {summary['to_unpaid']}")
     print(f"    · en papelera (trash):     {summary['to_trash']}")
-    print(f"  Reembolsos ya cumplidos (se quedan, marcados): {summary['to_refund_kept']}")
+    print(f"  Reembolsados (NO salen, se marcan «Reembolsado»): "
+          f"{summary['to_refunded']}")
     print(f"  Sin cambios: {summary['unchanged']}")
     if summary.get("errors"):
         print(f"  ⚠ {len(summary['errors'])} errores (tiendas no consultables):")

@@ -270,12 +270,14 @@ def test_reconcile_intersects_with_active_orders(session_factory) -> None:
 
 
 def test_reconcile_rules_unchanged(session_factory) -> None:
+    """El cancelado sale; el reembolsado NO sale, se marca «Reembolsado»; el
+    que sigue en `processing` se queda igual."""
     with session_factory() as s:
         st = _store(s)
         _order(s, woo_id="50", number="BOPRIN-50", woo_status="processing", store=st)
         _order(s, woo_id="51", number="BOPRIN-51", woo_status="processing",
-               store=st, tracking="1Z")            # reembolso cumplido
-        _order(s, woo_id="52", number="BOPRIN-52", woo_status="processing", store=st)  # se queda
+               store=st, tracking="1Z")
+        _order(s, woo_id="52", number="BOPRIN-52", woo_status="processing", store=st)
         s.commit()
         calls: list[tuple] = []
         summary = reconcile_open_order_statuses(
@@ -286,19 +288,59 @@ def test_reconcile_rules_unchanged(session_factory) -> None:
             }}, calls),
         )
     assert summary["to_cancel"] == 1
-    # El reembolso CUMPLIDO también sale ahora del seguimiento (antes se
-    # quedaba marcado), así que cuenta entre los retirados.
-    assert summary["to_refund_done"] == 1
-    assert summary["removed_total"] == 2
+    # El reembolso se marca, pero NO cuenta entre los retirados.
+    assert summary["to_refunded"] == 1
+    assert summary["removed_total"] == 1
     live = _numbers(_rows_for(s, en_curso=True))
     assert "BOPRIN-50" not in live            # cancelado fuera
-    assert "BOPRIN-52" in live                # pending/processing se queda
-    # El reembolso CUMPLIDO ya no se queda en la vista: sale como el resto de
-    # reembolsos, marcado para poder distinguirlo al revisar los ocultos.
-    assert "BOPRIN-51" not in live
-    ocultos = _rows_for(s, en_curso=True, ver_ocultos_estado=True)
-    row51 = next(r for r in ocultos if r["order_number"] == "BOPRIN-51")
+    assert "BOPRIN-52" in live                # processing se queda
+    assert "BOPRIN-51" in live                # reembolsado: se queda, marcado
+    row51 = next(r for r in _rows_for(s, en_curso=True)
+                 if r["order_number"] == "BOPRIN-51")
     assert row51["reembolsado"] is True
+    assert row51["situacion"] == "reembolsado"
+
+
+def test_reconcile_no_recuenta_un_reembolso_ya_marcado(session_factory) -> None:
+    """Un reembolsado se queda en el seguimiento, así que se vuelve a escanear
+    en cada pasada; no debe contarse otra vez (nada que poner al día)."""
+    with session_factory() as s:
+        st = _store(s)
+        _order(s, woo_id="53", number="BOPRIN-53", woo_status="refunded", store=st)
+        s.commit()
+        calls: list[tuple] = []
+        summary = reconcile_open_order_statuses(
+            s, dry_run=False,
+            client_factory=_factory({"boprint": {
+                "refunded": [{"id": 53, "status": "refunded"}],
+            }}, calls),
+        )
+    assert summary["to_refunded"] == 0
+    assert summary["removed_total"] == 0
+    assert "BOPRIN-53" in _numbers(_rows_for(s, en_curso=True))
+
+
+def test_reconcile_saca_los_que_volvieron_a_sin_pagar(session_factory) -> None:
+    """Un pedido que vuelve a `pending`/`on-hold` en la tienda deja de estar en
+    Seguimiento: ya no ha pasado por caja."""
+    with session_factory() as s:
+        st = _store(s)
+        _order(s, woo_id="55", number="BOPRIN-55", woo_status="processing", store=st)
+        _order(s, woo_id="56", number="BOPRIN-56", woo_status="processing", store=st)
+        s.commit()
+        calls: list[tuple] = []
+        summary = reconcile_open_order_statuses(
+            s, dry_run=False,
+            client_factory=_factory({"boprint": {
+                "pending": [{"id": 55, "status": "pending"}],
+                "on-hold": [{"id": 56, "status": "on-hold"}],
+            }}, calls),
+        )
+    assert summary["to_unpaid"] == 2
+    assert summary["removed_total"] == 2
+    live = _numbers(_rows_for(s, en_curso=True))
+    assert "BOPRIN-55" not in live
+    assert "BOPRIN-56" not in live
 
 
 def test_reconcile_preview_counts_by_category(session_factory) -> None:

@@ -1,4 +1,9 @@
-"""ERP · WooCommerce — cancelado / reembolsado / fallido salen del seguimiento.
+"""ERP · WooCommerce — qué pedidos web entran en el seguimiento, según su estado.
+
+La puerta es haber PASADO POR CAJA: `processing` / `completed` / `refunded`
+entran; `pending`, `on-hold`, `cancelled`, `failed`, `draft` y `trash` quedan
+ocultos por estado. `refunded` es el estado PROPIO «Reembolsado» y se ve
+AUNQUE el pedido esté anulado en BoHub.
 
 Cubre: la regla de visibilidad por estado (Parte A/D), el webhook de cambio de
 estado (Parte B), la reconciliación de los ya importados (Parte C), el efecto
@@ -151,16 +156,74 @@ def test_failed_order_removed_from_seguimiento(session_factory) -> None:
         assert _numbers(_rows_for(s, ver_ocultos_estado=True)) == {"BOPRIN-2"}
 
 
-def test_pending_order_stays_in_seguimiento(session_factory) -> None:
+@pytest.mark.parametrize("woo_status", ["processing", "completed"])
+def test_un_web_que_paso_por_caja_esta_en_seguimiento(session_factory, woo_status) -> None:
+    """La puerta web: `processing` (pagado) y `completed` (servido) entran."""
     with session_factory() as s:
         st = _store(s)
-        _order(s, woo_id="3", number="BOPRIN-3", woo_status="pending", store=st)
+        _order(s, woo_id="3", number="BOPRIN-3", woo_status=woo_status, store=st)
         s.commit()
         rows = _rows_for(s, en_curso=True)
         assert "BOPRIN-3" in _numbers(rows)
         row = next(r for r in rows if r["order_number"] == "BOPRIN-3")
         assert row["oculto_por_estado"] is False
         assert row["pendiente_escribir"] is True
+
+
+@pytest.mark.parametrize(
+    ("woo_status", "motivo"),
+    [
+        ("pending", "pending"),
+        ("on-hold", "on_hold"),
+        ("wc-on-hold", "on_hold"),        # export/BD de la tienda, con prefijo
+        ("failed", "failed"),
+        ("draft", "draft"),
+        ("checkout-draft", "checkout_draft"),
+    ],
+)
+def test_un_web_que_no_paso_por_caja_no_sale_en_seguimiento(
+    session_factory, woo_status, motivo,
+) -> None:
+    """El caso reportado: BOPRIN-99931/99922 (`on-hold`) y BOPRIN-99880/99878/
+    99886 (`pending`) salían en Seguimiento sin haber entrado al flujo real.
+    Quedan ocultos POR ESTADO, con su motivo y a un clic."""
+    with session_factory() as s:
+        st = _store(s)
+        _order(s, woo_id="3", number="BOPRIN-3", woo_status=woo_status, store=st)
+        s.commit()
+        assert "BOPRIN-3" not in _numbers(_rows_for(s, en_curso=True))
+        ocultos = _rows_for(s, ver_ocultos_estado=True)
+        row = next(r for r in ocultos if r["order_number"] == "BOPRIN-3")
+        assert row["oculto_por_estado"] is True
+        assert row["estado_woo_motivo"] == motivo
+        # Y con su etiqueta legible para «Ver ocultos por estado».
+        assert row["estado_woo_motivo_label"]
+
+
+def test_un_web_sin_estado_conocido_se_queda(session_factory) -> None:
+    """Importado antes de #376: no se conoce su estado, así que no se le aplica
+    la puerta (misma política que `woocommerce/cleanup.py`)."""
+    with session_factory() as s:
+        st = _store(s)
+        _order(s, woo_id="3b", number="BOPRIN-3B", woo_status=None, store=st)
+        s.commit()
+        assert "BOPRIN-3B" in _numbers(_rows_for(s, en_curso=True))
+
+
+def test_al_pasar_a_processing_vuelve_al_seguimiento(session_factory) -> None:
+    """Un `on-hold` que paga aparece en el siguiente refresco; si se cancela,
+    desaparece otra vez."""
+    with session_factory() as s:
+        st = _store(s)
+        o = _order(s, woo_id="3c", number="BOPRIN-3C", woo_status="on-hold", store=st)
+        s.commit()
+        assert "BOPRIN-3C" not in _numbers(_rows_for(s, en_curso=True))
+        o.woo_status = "processing"
+        s.commit()
+        assert "BOPRIN-3C" in _numbers(_rows_for(s, en_curso=True))
+        o.woo_status = "cancelled"
+        s.commit()
+        assert "BOPRIN-3C" not in _numbers(_rows_for(s, en_curso=True))
 
 
 def test_pedido_anulado_sale_del_seguimiento(session_factory) -> None:
@@ -190,58 +253,90 @@ def test_la_anulacion_manda_sobre_el_estado_de_la_tienda(session_factory) -> Non
         assert "BOPRIN-11" not in _numbers(_rows_for(s, en_curso=True))
 
 
-def test_un_pedido_sin_pagar_sigue_en_seguimiento(session_factory) -> None:
-    """No se excluye por falta de cobro: un pedido vivo sin pagar es
-    exactamente lo que hay que ver."""
+def test_un_manual_aprobado_sin_pagar_sigue_en_seguimiento(session_factory) -> None:
+    """La puerta de estado es SOLO para los web: un pedido manual aprobado se
+    ve aunque no haya pagado (no tiene `woo_status` que mirar)."""
+    from app.erp.models import PreparationStatus  # noqa: PLC0415
+
     with session_factory() as s:
-        st = _store(s)
-        _order(s, woo_id="12", number="BOPRIN-12", woo_status="pending", store=st)
+        comp = Company(name="Cliente Manual SL")
+        s.add(comp)
+        s.flush()
+        s.add(Order(
+            external_source=OrderSource.MANUAL, order_number="MAN-12",
+            company_id=comp.id, approved_at=datetime(2026, 9, 2, tzinfo=UTC),
+            preparation_status=PreparationStatus.IN_QUEUE,
+            placed_at=datetime(2026, 9, 1, tzinfo=UTC),
+        ))
         s.commit()
         rows = _rows_for(s, en_curso=True)
-        assert "BOPRIN-12" in _numbers(rows)
-        row = next(r for r in rows if r["order_number"] == "BOPRIN-12")
+        assert "MAN-12" in _numbers(rows)
+        row = next(r for r in rows if r["order_number"] == "MAN-12")
         assert row["oculto_por_estado"] is False
 
 
-def test_refunded_unfulfilled_order_removed(session_factory) -> None:
+def test_refunded_se_queda_con_su_propia_situacion(session_factory) -> None:
+    """`refunded` es el estado PROPIO «Reembolsado» de BoHub: se pagó y luego
+    se devolvió el dinero. Se queda a la vista, con su Situación — ni «Listo»
+    ni oculto."""
     with session_factory() as s:
         st = _store(s)
         _order(s, woo_id="4", number="BOPRIN-4", woo_status="refunded", store=st)
         s.commit()
-        assert "BOPRIN-4" not in _numbers(_rows_for(s, en_curso=True))
-        ocultos = _rows_for(s, ver_ocultos_estado=True)
-        assert ocultos[0]["estado_woo_motivo"] == "refunded_sin_cumplir"
+        rows = _rows_for(s, en_curso=True)
+        row = next(r for r in rows if r["order_number"] == "BOPRIN-4")
+        assert row["oculto_por_estado"] is False
+        assert row["reembolsado"] is True
+        assert row["situacion"] == "reembolsado"
+        assert row["situacion_label"] == "Reembolsado"
 
 
-def test_refunded_fulfilled_order_sale_de_la_vista_pero_marcado(session_factory) -> None:
-    """Un reembolso YA CUMPLIDO (enviado) se quedaba antes en la vista marcado
-    «reembolsado». Ya no: el seguimiento es la lista de pedidos VIVOS y un
-    reembolsado no lo está. Sigue a un clic, en «Ver ocultos por estado», y
-    conserva la marca para distinguirlo del que nunca se cumplió."""
+def test_refunded_se_ve_aunque_este_anulado_en_bohub(session_factory) -> None:
+    """El caso de ARTISJ-9557 / ARTISJ-9494 / FLUXLA-5749: la auto-anulación
+    por reembolso los sacaba de la vista. Para un `refunded`, el estado de la
+    tienda manda sobre la anulación — es SOLO visibilidad, el pedido sigue
+    anulado para sus acciones."""
     with session_factory() as s:
         st = _store(s)
-        _order(s, woo_id="5", number="BOPRIN-5", woo_status="refunded", store=st,
-               tracking="1Z-ENVIADO")
+        o = _order(s, woo_id="5", number="ARTISJ-9557", woo_status="refunded",
+                   store=st, tracking="1Z-ENVIADO", invoiced=True, delivered=True)
+        o.cancelled_at = datetime(2026, 9, 10, tzinfo=UTC)
         s.commit()
-        assert "BOPRIN-5" not in _numbers(_rows_for(s, en_curso=True))
-        ocultos = _rows_for(s, en_curso=True, ver_ocultos_estado=True)
-        row = next(r for r in ocultos if r["order_number"] == "BOPRIN-5")
-        assert row["oculto_por_estado"] is True
-        assert row["reembolsado"] is True                  # cumplido
-        assert row["estado_woo_motivo"] == "refunded"
+        rows = _rows_for(s, en_curso=True)
+        row = next(r for r in rows if r["order_number"] == "ARTISJ-9557")
+        assert row["oculto_por_estado"] is False
+        assert row["reembolsado"] is True
+        assert row["situacion"] == "reembolsado"
+        # Sigue anulado en el pedido: esto no reactiva nada.
+        assert o.cancelled_at is not None
 
 
-def test_refunded_fulfilled_by_invoice_tambien_sale(session_factory) -> None:
-    """Cumplido por FACTURA (no por envío): misma regla."""
+def test_un_anulado_no_reembolsado_sigue_oculto(session_factory) -> None:
+    """La excepción es SOLO del reembolso."""
     with session_factory() as s:
         st = _store(s)
-        _order(s, woo_id="6", number="BOPRIN-6", woo_status="refunded", store=st,
-               invoiced=True)
+        o = _order(s, woo_id="6", number="BOPRIN-6", woo_status="completed",
+                   store=st, invoiced=True)
+        o.cancelled_at = datetime(2026, 9, 10, tzinfo=UTC)
         s.commit()
         assert "BOPRIN-6" not in _numbers(_rows_for(s, en_curso=True))
-        ocultos = _rows_for(s, en_curso=True, ver_ocultos_estado=True)
+        ocultos = _rows_for(s, ver_ocultos_estado=True)
         row = next(r for r in ocultos if r["order_number"] == "BOPRIN-6")
-        assert row["reembolsado"] is True
+        assert row["estado_woo_motivo"] == "anulado"
+
+
+def test_un_reembolsado_entregado_y_facturado_sigue_en_curso(session_factory) -> None:
+    """Un reembolso deja trabajo por delante (el abono): se queda «en curso»
+    aunque esté entregado y facturado, hasta que se marque completado."""
+    with session_factory() as s:
+        st = _store(s)
+        o = _order(s, woo_id="7", number="FLUXLA-5749", woo_status="refunded",
+                   store=st, invoiced=True, delivered=True)
+        s.commit()
+        assert "FLUXLA-5749" in _numbers(_rows_for(s, en_curso=True))
+        o.completed_at = datetime(2026, 9, 12, tzinfo=UTC)
+        s.commit()
+        assert "FLUXLA-5749" not in _numbers(_rows_for(s, en_curso=True))
 
 
 # --- Parte B: webhook de cambio de estado ------------------------------------------
@@ -391,6 +486,31 @@ def test_woo_status_is_separate_from_manual_exclusion(session_factory, http) -> 
         assert o.woo_status == "cancelled"          # el estado no se tocó
         assert o.seguimiento_excluded_at is None
 
+    # …pero «forzarlo» desde «Ver ocultos por estado» SÍ lo devuelve a la vista
+    # (es el otro eje: la decisión explícita de verlo pese a su estado).
+    r = http.post("/api/erp/seguimiento/force", json={"order_ids": [cancelled_id]},
+                  headers=auth_headers(http, "pedidos"))
+    assert r.status_code == 200, r.text
+    assert r.json()["changed"] == 1
+    with session_factory() as s:
+        rows = _rows_for(s, en_curso=True)
+        assert "BOPRIN-1400" in _numbers(rows)
+        row = next(r2 for r2 in rows if r2["order_number"] == "BOPRIN-1400")
+        assert row["forzado"] is True
+        assert row["oculto_por_estado"] is True     # sigue oculto POR ESTADO
+        # Y se sigue listando en la vista de ocultos, para poder deshacerlo.
+        assert "BOPRIN-1400" in _numbers(_rows_for(s, ver_ocultos_estado=True))
+        o = s.get(Order, cancelled_id)
+        assert o.woo_status == "cancelled"          # el estado no se tocó
+
+    # Deshacer el forzado lo vuelve a esconder.
+    r = http.post("/api/erp/seguimiento/force",
+                  json={"order_ids": [cancelled_id], "forced": False},
+                  headers=auth_headers(http, "pedidos"))
+    assert r.status_code == 200
+    with session_factory() as s:
+        assert "BOPRIN-1400" not in _numbers(_rows_for(s, en_curso=True))
+
     # Excluir a mano un pedido activo NO le cambia el woo_status.
     r = http.post("/api/erp/seguimiento/exclude", json={"order_ids": [active_id]},
                   headers=auth_headers(http, "pedidos"))
@@ -431,6 +551,50 @@ def test_import_refunded_autocancels_web_order(session_factory) -> None:
         assert o.cancelled_at is not None
         assert o.woo_status == "refunded"
     enq.assert_called_once()
+
+
+def test_el_sync_marca_reembolsado_no_anulado(session_factory) -> None:
+    """En adelante el sync web sella el reembolso por lo que es: motivo
+    «Reembolsado…» (no «Anulado automáticamente»), y el pedido SIGUE en
+    Seguimiento con su Situación «Reembolsado»."""
+    from app.erp.order_cancel import AUTO_CANCEL_REASON, AUTO_REFUND_REASON  # noqa: PLC0415
+
+    with patch(
+        "app.integrations.factusol.jobs.enqueue_autocancel_order_documents",
+        return_value="job-x",
+    ), session_factory() as s:
+        st = _store(s)
+        p = _woo_payload(st, woo_id=952, number="9494", status="processing")
+        import_woo_order(s, store=st, woo_order=p)
+        s.commit()
+        import_woo_order(s, store=st, woo_order={**p, "status": "refunded"})
+        s.commit()
+        o = s.scalar(select(Order).where(Order.external_id == "952"))
+        assert o.cancelled_reason == AUTO_REFUND_REASON
+        assert o.cancelled_reason != AUTO_CANCEL_REASON
+        # Anulado para sus acciones, pero a la vista en Seguimiento.
+        assert o.cancelled_at is not None
+        row = next(r for r in _rows_for(s, en_curso=True) if r["id"] == o.id)
+        assert row["situacion"] == "reembolsado"
+
+
+def test_un_cancelado_en_la_tienda_sigue_diciendose_anulado(session_factory) -> None:
+    """La otra mitad: `cancelled` sí es una anulación."""
+    from app.erp.order_cancel import AUTO_CANCEL_REASON  # noqa: PLC0415
+
+    with patch(
+        "app.integrations.factusol.jobs.enqueue_autocancel_order_documents",
+        return_value="job-x",
+    ), session_factory() as s:
+        st = _store(s)
+        p = _woo_payload(st, woo_id=953, number="953", status="processing")
+        import_woo_order(s, store=st, woo_order=p)
+        s.commit()
+        import_woo_order(s, store=st, woo_order={**p, "status": "cancelled"})
+        s.commit()
+        o = s.scalar(select(Order).where(Order.external_id == "953"))
+        assert o.cancelled_reason == AUTO_CANCEL_REASON
+        assert o.id not in {r["id"] for r in _rows_for(s, en_curso=True)}
 
 
 def test_import_still_processing_does_not_autocancel(session_factory) -> None:

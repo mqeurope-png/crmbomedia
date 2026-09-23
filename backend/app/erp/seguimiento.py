@@ -30,6 +30,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from app.erp import woo_status as woo
 from app.erp.models import (
     Carrier,
     InvoiceStatus,
@@ -573,83 +574,88 @@ def _en_curso(order: Order, estado: str) -> bool:
     # «Marcar completado» (decisión de Bart): estado FINAL → sale de «en curso».
     if order.completed_at is not None:
         return False
+    # Estado propio «Reembolsado»: se queda a la vista (con su pastilla) aunque
+    # esté entregado y facturado — un reembolso deja trabajo por delante (el
+    # abono) y es justo lo que hay que ver. Se cierra con «Marcar completado».
+    if woo.is_refunded(order):
+        return True
     return not (
         estado == "facturado" and order.transport_status == TransportStatus.DELIVERED
     )
 
 
-#: ERP-Woo — estados de WooCommerce que SIEMPRE sacan el pedido del seguimiento
-#: (`trash`/`deleted` = pedido enviado a la papelera en la tienda).
-_WOO_STATUS_ALWAYS_OUT = {"cancelled", "failed", "trash", "deleted"}
+def visibility_for_status(woo_status: str | None) -> tuple[bool, str | None, bool]:
+    """(oculto_por_estado, motivo, reembolsado) de un pedido WEB según el estado
+    de la tienda.
 
+    La puerta de entrada web es HABER PASADO POR CAJA: `processing` (pagado /
+    en preparación), `completed` (servido) y `refunded` (pagado y devuelto
+    después) se quedan; `pending`, `on-hold`, `cancelled`, `failed`,
+    `draft`/`checkout-draft` y `trash` quedan OCULTOS POR ESTADO, con su motivo
+    y a un clic en «Ver ocultos por estado» (con «Reincluir» si hay que
+    forzarlo). Un `pending` u `on-hold` es un carrito que todavía no ha entrado
+    en el flujo real: no es trabajo de nadie.
 
-def _is_fulfilled(order: Order, estado: str) -> bool:
-    """¿El pedido se CUMPLIÓ (se envió o se facturó)? Señales de BoHub que se
-    usan (informe): enviado (transporte in_transit / delivered /
-    already_shipped_externally), facturado (factura FACTUSOL emitida o
-    invoice_status facturado), o con número de tracking. Sirve para la regla del
-    reembolso: solo se ocultan los reembolsos de pedidos que NUNCA se cumplieron.
-    """
-    if estado in ("enviado", "facturado"):
-        return True
-    if order.transport_status in _SHIPPED_STATUSES:
-        return True
-    return bool(order.tracking_number)
+    `refunded` NO oculta: es el estado propio «Reembolsado» de BoHub. Se
+    devuelve marcado para que pantalla, Excel y Drive lo enseñen como tal y no
+    se confunda ni con un pedido vivo ni con un anulado.
 
-
-def visibility_for_status(
-    order: Order, estado: str, woo_status: str | None,
-) -> tuple[bool, str | None, bool]:
-    """(oculto_por_estado, motivo, reembolsado_visible) para un estado de
-    WooCommerce dado:
-      - cancelled / failed (y trash) → FUERA, siempre.
-      - refunded → FUERA. Se marca `reembolsado` si el pedido llegó a cumplirse
-        (enviado o facturado), para poder distinguirlo al revisarlo.
-      - pending / processing / completed / on-hold / None → normal, se queda.
-
-    Un reembolso CUMPLIDO se quedaba antes en la vista, marcado «reembolsado».
-    Ya no: el seguimiento es la lista de pedidos vivos y un reembolsado no lo
-    está. Sigue a un clic, en «Ver ocultos por estado», y el trabajo contable
-    que le quede (un abono) vive en la BANDEJA, que no se toca aquí.
+    Un pedido SIN estado (importado antes de #376) no se conoce: se queda, como
+    en la limpieza de `woocommerce/cleanup.py`.
 
     Es INDEPENDIENTE de la exclusión manual de F6-fix7 (que va por su flag).
     La reconciliación la usa con el estado RECIÉN consultado en la tienda."""
-    st = (woo_status or "").strip().lower()
-    if st in _WOO_STATUS_ALWAYS_OUT:
-        return True, st, False
-    if st == "refunded":
-        if _is_fulfilled(order, estado):
-            return True, "refunded", True
-        return True, "refunded_sin_cumplir", False
-    return False, None, False
+    st = woo.normalize(woo_status)
+    if st == woo.REFUNDED:
+        return False, None, True
+    if not st or st in woo.WEB_VISIBLE_STATUSES:
+        return False, None, False
+    return True, st, False
 
 
-def woo_status_visibility(order: Order, estado: str) -> tuple[bool, str | None, bool]:
+def woo_status_visibility(order: Order) -> tuple[bool, str | None, bool]:
     """Visibilidad según el estado de WooCommerce ALMACENADO en el pedido."""
-    return visibility_for_status(order, estado, order.woo_status)
+    return visibility_for_status(order.woo_status)
 
 
-def seguimiento_visibility(order: Order, estado: str) -> tuple[bool, str | None, bool]:
+def seguimiento_visibility(order: Order) -> tuple[bool, str | None, bool]:
     """(oculto, motivo, reembolsado) para el SEGUIMIENTO, que es la lista de
-    pedidos VIVOS: fuera lo anulado, lo reembolsado/cancelado en la tienda y lo
-    que todavía no ha entrado al flujo.
+    pedidos VIVOS: fuera lo anulado, lo que la tienda no ha llegado a procesar
+    y lo que todavía no ha entrado al flujo.
 
-    Se resuelve con los flags que ya existen —no hay estado nuevo—: la
-    anulación por `cancelled_at`, la aprobación por `workflow.is_approved` (que
-    cuenta también los pedidos ya avanzados y las muestras, que entran directas
-    a la Cola SAT) y el estado de la tienda por `woo_status_visibility`.
+    Se resuelve con lo que ya cuenta el pedido: la anulación por `cancelled_at`,
+    la aprobación por `workflow.is_approved` (que cuenta también los pedidos ya
+    avanzados y las muestras, que entran directas a la Cola SAT) y el estado de
+    la tienda por `woo_status_visibility`. El «forzar en seguimiento» es otra
+    cosa y va aparte (lo resuelve `build_rows`): esto dice si el pedido queda
+    oculto POR ESTADO, y el forzado decide si se enseña igualmente.
 
-    Ojo con el orden: la aprobación NO se le exige a un pedido WEB. Un pedido
-    de la tienda está vivo desde que entra, aunque nadie lo haya aprobado aún
-    (y de hecho su cola es «Por revisar», que es justo donde hay que verlo).
-    Exigírsela los sacaría a todos de la vista."""
+    Tres asimetrías, a propósito:
+
+    - El REEMBOLSO manda sobre la anulación. Un web `refunded` se VE aunque
+      esté anulado en BoHub — la auto-anulación por reembolso es justo lo que
+      lo sacaba de la vista. Es SOLO visibilidad: el pedido sigue anulado para
+      sus acciones, no se reactiva nada.
+    - La aprobación NO se le exige a un pedido WEB: para la tienda, la puerta
+      es el estado (`processing` en adelante), no que alguien lo apruebe.
+    - La puerta de estado NO se le aplica a un pedido MANUAL: no tiene
+      `woo_status`, y su regla sigue siendo `is_approved` (un manual aprobado
+      se ve aunque no haya pagado)."""
     from app.erp.workflow import is_approved, is_web_order  # noqa: PLC0415
 
+    web = is_web_order(order)
+    oculto, motivo, reembolsado = (
+        woo_status_visibility(order) if web else (False, None, False)
+    )
+    if reembolsado:
+        return False, None, True
     if order.cancelled_at is not None:
         return True, "anulado", False
-    if not is_web_order(order) and not is_approved(order):
+    if oculto:
+        return True, motivo, False
+    if not web and not is_approved(order):
         return True, "sin_aprobar", False
-    return woo_status_visibility(order, estado)
+    return False, None, False
 
 
 # --- rediseño 2026: hoja simplificada, ordenada por Situación ------------------
@@ -660,6 +666,10 @@ def seguimiento_visibility(order: Order, estado: str) -> tuple[bool, str | None,
 # presenta. Las incidencias van a una pestaña aparte del Excel, subconjunto
 # EXACTO de los pedidos con Situación = Incidencia.
 
+#: Situación propia (NO es una cola de la bandeja): pedido web reembolsado en
+#: la tienda. Ni «Listo» ni «Anulado» — se ve por lo que es.
+SITUACION_REEMBOLSADO = "reembolsado"
+
 #: Etiqueta de la Situación en la hoja. Singular «Incidencia» (una fila por
 #: pedido), a diferencia de la cola «Incidencias» de la bandeja.
 SITUACION_LABELS: dict[str, str] = {
@@ -669,17 +679,21 @@ SITUACION_LABELS: dict[str, str] = {
     "por_cobrar": "Por cobrar",
     "por_enviar": "Por enviar",
     "listo": "Listo",
+    SITUACION_REEMBOLSADO: "Reembolsado",
 }
 #: Prioridad de orden: lo urgente sube solo (Incidencia arriba, Listo abajo).
+#: «Reembolsado» va al final: es informativo, no trabajo pendiente.
 SITUACION_ORDER: dict[str, int] = {
     "incidencias": 0, "por_revisar": 1, "por_facturar": 2,
     "por_cobrar": 3, "por_enviar": 4, "listo": 5,
+    SITUACION_REEMBOLSADO: 6,
 }
 #: Tono de color de la celda Situación (letras del sistema de diseño `--st-*`):
-#: rojo(r) · ámbar(a) · azul(b) · teal(t) · verde(g).
+#: rojo(r) · ámbar(a) · azul(b) · teal(t) · verde(g) · neutro(n).
 SITUACION_TONE: dict[str, str] = {
     "incidencias": "r", "por_revisar": "a", "por_facturar": "b",
     "por_cobrar": "b", "por_enviar": "t", "listo": "g",
+    SITUACION_REEMBOLSADO: "n",
 }
 #: Relleno/tinta de la celda Situación en el Excel (hex del sistema de diseño,
 #: sin `#`).
@@ -690,6 +704,7 @@ SITUACION_FILL: dict[str, tuple[str, str]] = {
     "por_cobrar": ("E8F0FF", "2451C7"),
     "por_enviar": ("E6F5F3", "0F766E"),
     "listo": ("E7F6EC", "1F7A45"),
+    SITUACION_REEMBOLSADO: ("EEF0F4", "5B6472"),
 }
 #: Relleno neutro para una Situación desconocida.
 _SITUACION_FILL_FALLBACK = ("EEF0F4", "5B6472")
@@ -900,7 +915,8 @@ def build_rows(
     # la vista de excluidos), en 1 query.
     excluded_by_ids = {
         uid for o in orders
-        for uid in (o.seguimiento_excluded_by_user_id, o.completed_by_user_id)
+        for uid in (o.seguimiento_excluded_by_user_id, o.completed_by_user_id,
+                    o.seguimiento_forced_by_user_id)
         if uid
     }
     excluded_by_names: dict[str, str] = {}
@@ -965,10 +981,16 @@ def build_rows(
         )
         serie = serie_invoice if serie_invoice is not None else serie_store
         estado = _estado(o)
-        # Regla de vivos: anulado / sin aprobar / cancelado-reembolsado en la
-        # tienda quedan FUERA (independiente de la
-        # exclusión manual de F6-fix7).
-        oculto_estado, estado_woo_motivo, reembolsado = seguimiento_visibility(o, estado)
+        # Regla de vivos: anulado, manual sin aprobar y web que la tienda no ha
+        # llegado a procesar (pending/on-hold/cancelled/failed/draft) quedan
+        # FUERA; el web `refunded` se queda, marcado «Reembolsado». Independiente
+        # de la exclusión manual de F6-fix7.
+        oculto_estado, estado_woo_motivo, reembolsado = seguimiento_visibility(o)
+        # «Forzar en seguimiento»: decisión explícita de ver igualmente uno de
+        # los ocultos por estado. Sigue marcado como oculto (para poder
+        # deshacerlo desde esa misma vista), pero cuenta como visible.
+        forzado = o.seguimiento_forced_at is not None
+        fuera_por_estado = oculto_estado and not forzado
         productos = " · ".join(
             f"{float(line.quantity):g}× {line.description or line.product_sku}"
             for line in o.lines
@@ -995,6 +1017,12 @@ def build_rows(
                 "fecha": _iso_date(o.placed_at or o.created_at),
                 "estado": "Abierta",
             }
+        # Estado propio «Reembolsado»: manda sobre la cola de la línea de vida
+        # (que, al estar el pedido auto-anulado, diría «Listo»). No pisa una
+        # Incidencia: si hay una excepción abierta, sigue habiendo trabajo y la
+        # pestaña Incidencias tiene que seguir cuadrando con la hoja.
+        if reembolsado and situacion != QUEUE_INCIDENCIAS:
+            situacion = SITUACION_REEMBOLSADO
         emailed = (emailed_map.get(o.id) or "")[:10] or None
         cobro = _cobro_state(o)
         rows.append({
@@ -1069,14 +1097,25 @@ def build_rows(
             "pendiente_escribir": (
                 _en_curso(o, estado)
                 and o.seguimiento_excluded_at is None
-                and not oculto_estado
+                and not fuera_por_estado
                 and o.id not in written_ids
             ),
             # ERP-Woo — estado de WooCommerce y su efecto en el seguimiento.
             "woo_status": o.woo_status,
             "oculto_por_estado": oculto_estado,
             "estado_woo_motivo": estado_woo_motivo,
+            #: El mismo motivo, en legible («Sin pagar», «En espera»…), para
+            #: «Ver ocultos por estado».
+            "estado_woo_motivo_label": woo.motivo_label(estado_woo_motivo),
+            #: Estado propio «Reembolsado» (NO «anulado»): reembolsado en la
+            #: tienda. Se VE en el seguimiento aunque esté anulado en BoHub.
             "reembolsado": reembolsado,
+            #: «Forzar en seguimiento»: se ve aunque esté oculto por estado.
+            "forzado": forzado,
+            "forzado_en": _iso_date(o.seguimiento_forced_at),
+            "forzado_por_nombre": excluded_by_names.get(
+                o.seguimiento_forced_by_user_id or "",
+            ),
             # --- rediseño 2026: hoja simplificada, ordenada por Situación ---
             #: Situación = cola de la línea de vida (reutiliza workflow.py).
             "situacion": situacion,
@@ -1152,9 +1191,11 @@ def filter_rows(
 
     ERP-F6-fix7 — los pedidos EXCLUIDOS a mano quedan FUERA por defecto. Con
     `ver_excluidos` se listan SOLO los excluidos.
-    ERP-Woo — los OCULTOS POR ESTADO (cancelado/fallido/reembolso no cumplido)
-    también quedan FUERA por defecto; con `ver_ocultos_estado` se listan SOLO
-    esos (para revisarlos). Son cosas DISTINTAS y con vistas distintas.
+    ERP-Woo — los OCULTOS POR ESTADO (anulado, o web que la tienda no llegó a
+    procesar: pending / on-hold / cancelado / fallido / borrador) también quedan
+    FUERA por defecto; con `ver_ocultos_estado` se listan SOLO esos (para
+    revisarlos y, si hace falta, «Reincluir»). Son cosas DISTINTAS de la
+    exclusión manual, y con vistas distintas.
     `pendiente_escribir=True` deja solo los que aún no están en la hoja de
     Drive."""
     out = rows
@@ -1162,11 +1203,15 @@ def filter_rows(
         # Vista de excluidos MANUALMENTE: solo ellos, sin el filtro de «en curso».
         return _sort_rows([r for r in out if r["excluido"]], sort, direction)
     if ver_ocultos_estado:
-        # Vista de ocultados por ESTADO de WooCommerce: solo esos.
+        # Vista de ocultados por ESTADO: solo esos — incluidos los FORZADOS,
+        # que siguen listados aquí para poder deshacer el forzado.
         return _sort_rows([r for r in out if r["oculto_por_estado"]], sort, direction)
     # En cualquier otra vista, ni los excluidos ni los ocultados por estado
-    # aparecen (ni cuentan como pendientes).
-    out = [r for r in out if not r["excluido"] and not r["oculto_por_estado"]]
+    # aparecen (ni cuentan como pendientes); un forzado sí.
+    out = [
+        r for r in out
+        if not r["excluido"] and not (r["oculto_por_estado"] and not r["forzado"])
+    ]
     if pendiente_escribir:
         out = [r for r in out if r["pendiente_escribir"]]
     if estado == "completado":
