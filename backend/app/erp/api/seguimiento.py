@@ -195,7 +195,8 @@ def drive_sync(
 ) -> dict[str, Any]:
     """«Actualizar hoja de Drive»: vuelca el formato NUEVO (rediseño 2026) a la
     pestaña gestionada por la app («Seguimiento (app)» + «Incidencias (app)»),
-    reescribiéndola entera: 17 columnas, orden por Situación, celda Situación
+    reescribiéndola entera: 17 columnas, orden por fecha del pedido (más
+    reciente primero), cabecera congelada, celda Situación
     coloreada. La pestaña HISTÓRICA no se toca — sigue siendo el archivo.
 
     `dry_run=true` PREVISUALIZA (qué pestañas, cuántas filas, desglose por
@@ -236,10 +237,14 @@ def drive_sync(
     client = GoogleSheetsClient(info, spreadsheet_id)
     try:
         if not cfg_json.get("drive_legacy_insert"):
-            # Por defecto: el formato nuevo a la pestaña gestionada. Se vuelcan
-            # TODAS las filas del seguimiento (las mismas que la pantalla), no
-            # solo las «en curso» que buscaba la inserción incremental.
-            return push_managed_tabs(session, client, _rows(session), dry_run=dry_run)
+            # Por defecto: el formato nuevo a la pestaña gestionada, con las
+            # MISMAS filas que la pantalla por defecto (`drive_live_rows`): en
+            # curso, y fuera los excluidos y los ocultos por estado. Antes se
+            # pasaban las filas SIN filtrar y la hoja enseñaba lo que la
+            # pantalla escondía (web `on-hold`/`cancelled`, anulados…).
+            return push_managed_tabs(
+                session, client, drive_live_rows(session), dry_run=dry_run,
+            )
         prefer_albaran = bool(cfg_json.get("drive_reference_prefer_albaran", True))
         return sync_to_sheet(
             session, client, build_drive_sync_rows(session),
@@ -253,11 +258,23 @@ def drive_sync(
         ) from exc
 
 
+def drive_live_rows(session: Session) -> list[dict[str, Any]]:
+    """La zona VIVA de la pestaña gestionada «Seguimiento (app)»: exactamente
+    las filas de la pantalla por defecto (en curso; fuera los excluidos a mano
+    y los ocultos por estado), ordenadas por fecha del pedido, de más reciente
+    a más antiguo. Un solo filtro (`core.filter_rows`) para pantalla, Excel y
+    Drive: si algo se esconde en la pantalla, no puede aparecer en la hoja."""
+    return core.filter_rows(
+        _rows(session), en_curso=True, sort="fecha", direction="desc",
+    )
+
+
 def build_drive_sync_rows(session: Session) -> list[dict[str, Any]]:
-    """Pedidos candidatos a escribirse en la hoja: los EN CURSO, excluidos
-    fuera (ERP-F6-fix7). El emparejamiento evita duplicar los que ya están; los
-    excluidos no se listan ni se insertan. Reutilizado por el endpoint y por el
-    script de medición `scripts.erp_f6_verify_sheet_format`."""
+    """Pedidos candidatos a escribirse en la hoja HISTÓRICA (modo antiguo,
+    `drive_legacy_insert`): los EN CURSO, excluidos fuera (ERP-F6-fix7). El
+    emparejamiento evita duplicar los que ya están; los excluidos no se listan
+    ni se insertan. Reutilizado por el endpoint y por el script de medición
+    `scripts.erp_f6_verify_sheet_format`."""
     return core.filter_rows(
         _rows(session), en_curso=True, sort="fecha", direction="asc",
     )

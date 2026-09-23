@@ -22,7 +22,9 @@ from __future__ import annotations
 from typing import Any
 
 __all__ = [
+    "NOT_FOUND",
     "REFUNDED",
+    "SIN_ESTADO",
     "WEB_HIDDEN_MOTIVOS",
     "WEB_VISIBLE_STATUSES",
     "is_refunded",
@@ -32,6 +34,19 @@ __all__ = [
 
 #: Reembolso TOTAL en la tienda (el PARCIAL deja el pedido en `processing`).
 REFUNDED = "refunded"
+
+#: Estado PROPIO que pone la reconciliación cuando la tienda ya no tiene el
+#: pedido (404 al consultarlo): borrado del todo, no solo en la papelera. No
+#: es un estado de WooCommerce; se guarda en `woo_status` para poder ocultarlo
+#: con su motivo.
+NOT_FOUND = "not_found"
+
+#: Motivo de ocultación de un pedido web SIN `woo_status` (NULL). No es un
+#: estado guardado —el campo sigue a NULL—: es lo que el seguimiento dice de
+#: él. Un web cuyo estado sigue sin conocerse después de «Poner al día
+#: estados Woo» ya no es un activo fiable; se oculta, y si es un caso legítimo
+#: se «Reincluye» a mano.
+SIN_ESTADO = "sin_estado"
 
 #: Estados con los que un pedido WEB entra en el Seguimiento.
 WEB_VISIBLE_STATUSES: frozenset[str] = frozenset({
@@ -49,15 +64,21 @@ WEB_HIDDEN_MOTIVOS: dict[str, str] = {
     "checkout_draft": "Carrito sin terminar",
     "trash": "En la papelera",
     "deleted": "Borrado en la tienda",
+    NOT_FOUND: "No encontrado en la tienda",
+    SIN_ESTADO: "Estado desconocido",
 }
 
 
 def normalize(value: Any) -> str:
-    """Estado de WooCommerce en su forma canónica: `wc-on-hold` → `on_hold`.
+    """Estado de WooCommerce en su forma canónica, para COMPARAR: `on-hold` ≡
+    `wc-on-hold` ≡ `on_hold` ≡ `ON-HOLD` → `on_hold`.
 
-    WooCommerce entrega el estado SIN el prefijo `wc-` en la REST API y CON él
-    en los exports y en la BD de la tienda; el guion se pasa a `_` para poder
-    usarlo tal cual como clave y como motivo. Cadena vacía si no consta."""
+    WooCommerce entrega el estado SIN el prefijo `wc-` en la REST API (que es
+    como lo guarda BoHub: `on-hold`, `cancelled`, `pending`…) y CON él en los
+    exports y en la BD de la tienda; el guion se pasa a `_` para poder usarlo
+    tal cual como clave y como motivo. Es el ÚNICO sitio que normaliza: los dos
+    lados de cualquier comparación pasan por aquí, nunca se compara el valor
+    crudo. Cadena vacía si no consta."""
     st = str(value or "").strip().lower()
     if st.startswith("wc-"):
         st = st[3:]

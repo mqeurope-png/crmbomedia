@@ -8,7 +8,8 @@ La hoja de Drive de Bart tiene dos mundos y no se mezclan:
   comprueba antes de escribir (`_guard_not_historic`).
 - La pestaña **gestionada** («Seguimiento (app)», configurable) es de la app:
   se reescribe entera en cada actualización con las 17 columnas del rediseño
-  2026, ordenada por Situación y con la celda Situación coloreada — la misma
+  2026, ordenada por fecha del pedido (más reciente primero) y con la celda
+  Situación coloreada — la misma
   forma que la pantalla y que «Descargar Excel», porque comparte la
   serialización (`row_to_pedidos_values`, `incidencia_values`).
 
@@ -46,7 +47,7 @@ from app.erp.seguimiento import (
     incidencia_rows,
     incidencia_values,
     row_to_pedidos_values,
-    sort_by_situacion,
+    sort_by_fecha_desc,
 )
 
 logger = logging.getLogger(__name__)
@@ -147,16 +148,16 @@ def _guard_not_historic(sheets: ManagedTabTransport, title: str) -> None:
 
 
 def live_pedidos_rows(rows: list[dict[str, Any]]) -> list[list[Any]]:
-    """Una fila por pedido vivo, ordenadas por Situación. Misma serialización
-    que la pantalla y que «Descargar Excel»."""
-    return [row_to_pedidos_values(row) for row in sort_by_situacion(rows)]
+    """Una fila por pedido vivo, por fecha del pedido (más reciente primero).
+    Misma serialización que la pantalla y que «Descargar Excel»."""
+    return [row_to_pedidos_values(row) for row in sort_by_fecha_desc(rows)]
 
 
 def live_incidencias_rows(rows: list[dict[str, Any]]) -> list[list[Any]]:
     """El subconjunto EXACTO de Situación=Incidencia (ahora, solo lo reportado
-    a mano: ver `workflow.order_alerts`)."""
+    a mano: ver `workflow.order_alerts`), en el mismo orden que la hoja."""
     return [
-        incidencia_values(row) for row in incidencia_rows(sort_by_situacion(rows))
+        incidencia_values(row) for row in incidencia_rows(sort_by_fecha_desc(rows))
     ]
 
 
@@ -247,7 +248,9 @@ def pedidos_format(
 ) -> list[dict[str, Any]]:
     """Formato completo de la pestaña: cabecera, anchos, Importe en €,
     Situación coloreada (solo en la zona VIVA) y el separador destacado."""
-    ordered = sort_by_situacion(rows)
+    # MISMO orden que `live_pedidos_rows` (fecha desc): el color de Situación
+    # va por índice de fila, así que grid y formato no pueden ordenar distinto.
+    ordered = sort_by_fecha_desc(rows)
     columns = len(SEGUIMIENTO_COLUMNS_V2)
     total_rows = len(ordered) + 1
     requests = _header_format(columns, _PEDIDOS_WIDTHS_PX)
@@ -320,7 +323,10 @@ def push_managed_tabs(
     _guard_not_historic(sheets, pedidos_tab)
     _guard_not_historic(sheets, incidencias_tab)
 
-    ordenadas = sort_by_situacion(rows)
+    # Zona viva por fecha del pedido, de más reciente a más antiguo (la
+    # Situación es una columna más: con su color y reordenable con el
+    # autofiltro). El bloque histórico de debajo del separador NO se toca.
+    ordenadas = sort_by_fecha_desc(rows)
     incidencias = incidencia_rows(ordenadas)
     por_situacion: dict[str, int] = {}
     for row in ordenadas:

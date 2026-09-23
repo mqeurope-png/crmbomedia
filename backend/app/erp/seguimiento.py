@@ -600,15 +600,23 @@ def visibility_for_status(woo_status: str | None) -> tuple[bool, str | None, boo
     devuelve marcado para que pantalla, Excel y Drive lo enseñen como tal y no
     se confunda ni con un pedido vivo ni con un anulado.
 
-    Un pedido SIN estado (importado antes de #376) no se conoce: se queda, como
-    en la limpieza de `woocommerce/cleanup.py`.
+    Un pedido SIN estado (NULL) también queda FUERA, con motivo `sin_estado`:
+    «Poner al día estados Woo» rellena el estado de todos los web que la
+    tienda todavía tiene (y marca `not_found` los que ya no existen), así que
+    el que sigue a NULL después no es un activo fiable — se cuelan por aquí los
+    pedidos internos de prueba. Si alguno es legítimo, se «Reincluye» a mano.
 
-    Es INDEPENDIENTE de la exclusión manual de F6-fix7 (que va por su flag).
-    La reconciliación la usa con el estado RECIÉN consultado en la tienda."""
+    Los dos lados de la comparación pasan por `woo.normalize` (guion, guion
+    bajo, prefijo `wc-` y mayúsculas son lo mismo): el valor guardado es el
+    crudo de la REST API (`on-hold`, `cancelled`…) y aquí nunca se compara tal
+    cual. Es INDEPENDIENTE de la exclusión manual de F6-fix7 (que va por su
+    flag). La reconciliación la usa con el estado RECIÉN consultado."""
     st = woo.normalize(woo_status)
     if st == woo.REFUNDED:
         return False, None, True
-    if not st or st in woo.WEB_VISIBLE_STATUSES:
+    if not st:
+        return True, woo.SIN_ESTADO, False
+    if st in woo.WEB_VISIBLE_STATUSES:
         return False, None, False
     return True, st, False
 
@@ -1262,9 +1270,28 @@ def _situacion_sort_key(row: dict[str, Any]) -> tuple[int, bool, int]:
 
 def sort_by_situacion(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Las filas ordenadas por Situación (prioridad de cola + fecha desc), que
-    es el orden del rediseño 2026. Lo usan la pantalla, el Excel y el volcado
-    a la pestaña gestionada de Drive, para que las tres enseñen lo mismo."""
+    es el orden del rediseño 2026 en la pantalla y en «Descargar Excel»."""
     return sorted(rows, key=_situacion_sort_key)
+
+
+def sort_by_fecha_desc(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Las filas por fecha del pedido, de más reciente a más antiguo (los sin
+    fecha al final). Es el orden de la zona viva de la pestaña gestionada de
+    Drive: ahí la Situación es una columna más (con su color y su autofiltro),
+    no el criterio de orden. Desempate determinista por nº de pedido (el más
+    alto primero), para que dos pasadas seguidas escriban la hoja igual."""
+    return sorted(
+        rows,
+        key=lambda r: (
+            r.get("fecha") is None, _neg_ordinal(r.get("fecha")),
+            _desc_key(str(r.get("order_number") or "")),
+        ),
+    )
+
+
+def _desc_key(text: str) -> tuple[int, ...]:
+    """Clave que ordena un texto DESCENDENTE dentro de un `sorted` ascendente."""
+    return tuple(-ord(c) for c in text)
 
 
 def _sort_rows(

@@ -163,21 +163,67 @@ def test_crea_las_pestanas_y_escribe_las_17_columnas(session):
     assert sheets.written[DEFAULT_MANAGED_TAB][0] != SEGUIMIENTO_COLUMNS
 
 
-def test_ordena_por_situacion(session):
-    """Lo urgente arriba: Incidencia → Por revisar → … → Listo. El mismo orden
-    que la pantalla y el Excel."""
+def test_ordena_la_zona_viva_por_fecha_del_pedido_desc(session):
+    """La zona viva va por fecha del pedido, de más reciente a más antiguo (los
+    sin fecha al final). La Situación es una columna más: se colorea y se
+    reordena con el autofiltro, pero no es el criterio de orden."""
     rows = [
-        _row("listo", "L-1"), _row("incidencias", "I-1"),
-        _row("por_cobrar", "C-1"), _row("por_revisar", "R-1"),
+        _row("listo", "L-1", fecha="2026-09-01"),
+        _row("incidencias", "I-1", fecha="2026-09-03"),
+        _row("por_cobrar", "C-1", fecha=None),
+        _row("por_revisar", "R-1", fecha="2026-09-02"),
     ]
     sheets = FakeTabs()
     push_managed_tabs(session, sheets, rows)
     escritas = sheets.written[DEFAULT_MANAGED_TAB][1:]
-    assert [f[1] for f in escritas] == ["I-1", "R-1", "C-1", "L-1"]
+    assert [f[1] for f in escritas] == ["I-1", "R-1", "L-1", "C-1"]
+    # El color de Situación va por índice de fila: el formato usa el MISMO
+    # orden que el grid (la fila 1 es I-1, roja; la 3 es L-1, verde).
+    fondos = {
+        r["repeatCell"]["range"]["startRowIndex"]:
+            r["repeatCell"]["cell"]["userEnteredFormat"]["backgroundColor"]
+        for r in sheets.formats[DEFAULT_MANAGED_TAB]
+        if r.get("repeatCell", {}).get("range", {}).get("startColumnIndex") == 0
+        and r["repeatCell"]["range"]["startRowIndex"] > 0
+    }
+    rojo = int(SITUACION_FILL["incidencias"][0][0:2], 16) / 255
+    verde = int(SITUACION_FILL["listo"][0][0:2], 16) / 255
+    assert fondos[1]["red"] == pytest.approx(rojo)
+    assert fondos[3]["red"] == pytest.approx(verde)
+
+
+def test_congela_la_cabecera_y_pone_autofiltro_en_las_dos_pestanas(session):
+    """La fila 1 (los 17 encabezados) queda congelada al hacer scroll y es la
+    cabecera del autofiltro, que cubre SOLO la zona viva (cabecera + vivos),
+    nunca el histórico de debajo del separador."""
+    historico = [
+        [f"{SEPARATOR_PREFIX} HISTÓRICO — no se actualiza {SEPARATOR_PREFIX}"],
+        ["Histórico", "VIEJO-1", "1/1/2020", "Cliente viejo"],
+    ]
+    sheets = FakeTabs({HISTORICA: [], DEFAULT_MANAGED_TAB: [
+        list(SEGUIMIENTO_COLUMNS_V2), *historico,
+    ]})
+    push_managed_tabs(session, sheets, [_row("listo", "L-1"), _row("listo", "L-2")])
+    for tab, columnas, vivas in (
+        (DEFAULT_MANAGED_TAB, len(SEGUIMIENTO_COLUMNS_V2), 2),
+        (DEFAULT_INCIDENCIAS_TAB, len(INCIDENCIAS_COLUMNS), 0),
+    ):
+        reqs = sheets.formats[tab]
+        frozen = [r for r in reqs if "updateSheetProperties" in r]
+        assert frozen[0]["updateSheetProperties"]["properties"]["gridProperties"] == {
+            "frozenRowCount": 1,
+        }
+        assert frozen[0]["updateSheetProperties"]["fields"] == "gridProperties.frozenRowCount"
+        filtro = next(r for r in reqs if "setBasicFilter" in r)["setBasicFilter"]["filter"]["range"]
+        assert filtro["startRowIndex"] == 0             # la cabecera es la del filtro
+        assert filtro["endRowIndex"] == vivas + 1       # … y no llega al histórico
+        assert filtro["endColumnIndex"] == columnas
 
 
 def test_colorea_la_celda_situacion_con_los_tonos_del_diseno(session):
-    rows = [_row("incidencias", "I-1"), _row("listo", "L-1")]
+    # I-1 más reciente → primera fila viva (el orden es por fecha desc).
+    rows = [_row("incidencias", "I-1", fecha="2026-09-02"),
+            _row("listo", "L-1", fecha="2026-09-01")]
     sheets = FakeTabs()
     push_managed_tabs(session, sheets, rows)
     fondos = [
@@ -192,8 +238,9 @@ def test_colorea_la_celda_situacion_con_los_tonos_del_diseno(session):
 
 
 def test_incidencias_es_el_subconjunto_exacto(session):
-    rows = [_row("incidencias", "I-1"), _row("listo", "L-1"),
-            _row("incidencias", "I-2")]
+    # Mismo orden que la hoja (fecha desc): I-1 es más reciente que I-2.
+    rows = [_row("incidencias", "I-1", fecha="2026-09-03"), _row("listo", "L-1"),
+            _row("incidencias", "I-2", fecha="2026-09-02")]
     sheets = FakeTabs()
     resumen = push_managed_tabs(session, sheets, rows)
     inc = sheets.written[DEFAULT_INCIDENCIAS_TAB][1:]
@@ -263,11 +310,12 @@ def test_el_actualizar_preserva_el_bloque_historico(session):
     sheets = FakeTabs({HISTORICA: [], DEFAULT_MANAGED_TAB: [
         list(SEGUIMIENTO_COLUMNS_V2), ["Listo", "L-0"], *historico,
     ]})
-    push_managed_tabs(session, sheets, [_row("listo", "L-1"),
-                                        _row("incidencias", "I-1")])
+    push_managed_tabs(session, sheets, [_row("listo", "L-1", fecha="2026-09-01"),
+                                        _row("incidencias", "I-1", fecha="2026-09-02")])
     escrito = sheets.written[DEFAULT_MANAGED_TAB]
     sep = next(i for i, r in enumerate(escrito) if is_separator(r))
-    # Zona viva NUEVA (el L-0 de antes ya no está) y el histórico intacto.
+    # Zona viva NUEVA (el L-0 de antes ya no está), por fecha desc, y el
+    # histórico intacto, con su propio orden.
     assert [f[1] for f in escrito[1:sep]] == ["I-1", "L-1"]
     assert escrito[sep:] == historico
 

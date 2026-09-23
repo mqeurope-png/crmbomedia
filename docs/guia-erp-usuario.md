@@ -576,8 +576,16 @@ los datos a la hoja de Google Drive, con vista previa antes de escribir),
 que BoHub tiene como activos y aplica la misma regla: saca los que se
 **cancelaron**, **fallaron**, se fueron a la **papelera** o volvieron a **sin
 pagar / en espera**, y marca **«Reembolsado»** los reembolsados (esos no salen).
+Los pedidos web que estaban **sin estado** (importados antes de que existiera
+el dato) se consultan **uno a uno**: recuperan su estado real, y el que la
+tienda **ya no tiene** queda marcado *No encontrado en la tienda* y oculto.
 Siempre enseña antes una previsualización con los números; nada se cambia hasta
 que confirmas.
+
+> Un pedido web que **sigue sin estado** después de ponerlos al día (la tienda
+> no respondió, o es un pedido interno de prueba) **no se ve** en Seguimiento:
+> sale en «Ver ocultos por estado» como *Estado desconocido*. Si es legítimo,
+> «Reincluir» lo fuerza a la lista.
 
 > **«Incidencia» es solo lo que marcáis vosotros.** Un pedido llega a esa
 > situación cuando alguien **reporta un problema a mano** desde la Cola SAT
@@ -598,10 +606,14 @@ motivo, asignado, fecha y estado, tomado de la bandeja de Excepciones).
 **«Actualizar hoja de Drive»** vuelca ese mismo formato nuevo al Google Sheet,
 en **pestañas propias de la app**. Cada una tiene **dos zonas**:
 
-- **«Seguimiento (app)»** — arriba, los pedidos vivos (las 17 columnas,
-  ordenadas por Situación, con la celda Situación coloreada, cabecera fija y
-  autofiltro); debajo de una fila separadora
-  *«──── HISTÓRICO — no se actualiza ────»*, el **histórico** en formato nuevo.
+- **«Seguimiento (app)»** — arriba, los pedidos vivos: **los mismos que ves en
+  la pantalla** (en curso; fuera los quitados a mano y los ocultos por estado),
+  con las 17 columnas, **ordenados por fecha del pedido, del más reciente al
+  más antiguo**, la celda Situación coloreada, la **fila 1 de encabezados
+  congelada** (no se va al hacer scroll) y el **autofiltro** sobre esa misma
+  cabecera, con el que puedes reordenar por Situación o por cualquier otra
+  columna. Debajo de una fila separadora *«──── HISTÓRICO — no se actualiza
+  ────»*, el **histórico** en formato nuevo, que conserva su propio orden.
 - **«Incidencias (app)»** — arriba, las incidencias que habéis reportado a
   mano; debajo del separador, los **pendientes heredados** de la hoja vieja.
 

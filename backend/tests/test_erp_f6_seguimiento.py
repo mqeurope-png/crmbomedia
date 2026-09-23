@@ -87,6 +87,7 @@ def _order(
     invoice: InvoiceStatus = InvoiceStatus.NOT_INVOICED,
     placed: str = "2026-09-01",
     notes: str | None = None,
+    woo_status: str | None = None,
 ) -> Order:
     company_id = None
     if cliente:
@@ -94,8 +95,13 @@ def _order(
         s.add(comp)
         s.flush()
         company_id = comp.id
+    # Un pedido WEB sin `woo_status` queda oculto por estado (#461): los de
+    # estas pruebas son pedidos que han pasado por caja.
+    if source == OrderSource.WOOCOMMERCE and woo_status is None:
+        woo_status = "processing"
     o = Order(
         order_number=number, external_source=source, external_id=external_id,
+        woo_status=woo_status,
         company_id=company_id, carrier_id=carrier_id, tracking_number=tracking,
         serial_number=serial, whiterip_license=whiterip, shipping_origin=origin,
         factusol_invoice_number=factura, transport_status=transport,

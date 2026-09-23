@@ -393,7 +393,11 @@ export default function SeguimientoPage() {
           `Puesta al día aplicada: ${r.removed_total} pedidos salieron del `
           + `seguimiento (${r.to_cancel} cancelados, ${r.to_fail} fallidos, `
           + `${r.to_unpaid} sin pagar / en espera, ${r.to_trash} en papelera); `
-          + `${r.to_refunded} quedaron marcados «Reembolsado» (siguen a la vista).`,
+          + `${r.to_refunded} quedaron marcados «Reembolsado» (siguen a la vista)`
+          + ((r.unknown_total ?? 0) > 0
+            ? `; de ${r.unknown_total} sin estado, ${r.to_filled ?? 0} recuperaron el suyo `
+              + `y ${r.to_not_found ?? 0} ya no existen en la tienda.`
+            : "."),
         );
         await load();
       } else {
@@ -756,6 +760,13 @@ export default function SeguimientoPage() {
               <strong>{reconcile.to_refunded}</strong> quedarían marcados
               «Reembolsado». No salen del seguimiento: es su propio estado.
             </li>
+            {(reconcile.unknown_total ?? 0) > 0 ? (
+              <li>
+                <strong>{reconcile.unknown_total}</strong> sin estado, consultados
+                uno a uno: {reconcile.to_filled ?? 0} recuperarían su estado real ·{" "}
+                {reconcile.to_not_found ?? 0} ya no existen en la tienda (quedan ocultos).
+              </li>
+            ) : null}
             <li className="muted small">
               {reconcile.unchanged} siguen activos.
               {reconcile.errors.length > 0
@@ -1089,11 +1100,15 @@ function ManagedPreview({ summary }: { summary: DriveManagedSummary }) {
     <>
       <p className="muted small">
         Se reescribirá la pestaña <strong>«{summary.tab}»</strong> con las{" "}
-        {summary.columns.length} columnas del seguimiento, ordenada por
-        Situación. Nada se ha escrito todavía.
+        {summary.columns.length} columnas del seguimiento, ordenada por fecha
+        del pedido (más reciente primero) y con la cabecera congelada. Nada se
+        ha escrito todavía.
       </p>
       <ul className="item-list">
-        <li><strong>{summary.rows}</strong> filas (todos los pedidos de la vista).</li>
+        <li>
+          <strong>{summary.rows}</strong> filas: los mismos pedidos que la vista
+          en curso (fuera los excluidos y los ocultos por estado).
+        </li>
         <li>
           <strong>{summary.incidencias}</strong> en «{summary.incidencias_tab}»
           (Situación = Incidencia).

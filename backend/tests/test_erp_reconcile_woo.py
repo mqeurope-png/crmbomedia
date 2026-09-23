@@ -116,13 +116,17 @@ def _numbers(rows: list[dict]) -> set[str]:
 
 class FakeWoo:
     """Cliente falso: responde a `list_orders(status=…)` con la lista
-    configurada por estado; registra las llamadas. NO tiene `get_order` — si la
-    reconciliación lo llamara, el test fallaría (AttributeError)."""
+    configurada por estado y a `get_order(id)` con el pedido configurado por
+    id (404 si no está); registra las llamadas. `get_order` solo debe usarse
+    para los pedidos SIN estado, uno a uno: las llamadas quedan registradas
+    para poder comprobarlo."""
 
     def __init__(self, store, by_status: dict[str, list[dict]],
-                 calls: list[tuple], raise_on: str | None = None) -> None:
+                 calls: list[tuple], raise_on: str | None = None,
+                 by_id: dict[int, dict] | None = None) -> None:
         self.store = store
         self.by_status = by_status
+        self.by_id = by_id or {}
         self.calls = calls
         self.raise_on = raise_on
 
@@ -134,13 +138,29 @@ class FakeWoo:
             return []
         return list(self.by_status.get(status, []))
 
+    def get_order(self, order_id: int):
+        self.calls.append(("get_order", self.store.account_id, order_id))
+        if self.raise_on == "get_order":
+            raise WooError("store down", status=503)
+        if self.raise_on == "get_order_404_html":
+            # Un 404 que NO es de WooCommerce (URL de tienda mal, proxy…).
+            raise WooError(f"GET /orders/{order_id} → 404: <html>Not Found</html>",
+                           status=404, body="<html>Not Found</html>")
+        if order_id not in self.by_id:
+            body = ('{"code":"woocommerce_rest_shop_order_invalid_id",'
+                    '"message":"ID no válido.","data":{"status":404}}')
+            raise WooError(f"GET /orders/{order_id} → 404: {body}", status=404, body=body)
+        return dict(self.by_id[order_id])
+
 
 def _factory(by_status_by_store: dict[str, dict[str, list[dict]]], calls: list[tuple],
-             raise_for: dict[str, str] | None = None):
+             raise_for: dict[str, str] | None = None,
+             by_id_by_store: dict[str, dict[int, dict]] | None = None):
     def factory(store):
         return FakeWoo(
             store, by_status_by_store.get(store.account_id, {}), calls,
             raise_on=(raise_for or {}).get(store.account_id),
+            by_id=(by_id_by_store or {}).get(store.account_id),
         )
     return factory
 
@@ -299,6 +319,130 @@ def test_reconcile_rules_unchanged(session_factory) -> None:
                  if r["order_number"] == "BOPRIN-51")
     assert row51["reembolsado"] is True
     assert row51["situacion"] == "reembolsado"
+
+
+# --- Sin estado (NULL): se consultan uno a uno ------------------------------------
+
+
+def test_reconcile_rellena_los_sin_estado_uno_a_uno(session_factory) -> None:
+    """El caso de BOPRIN-99878/99880: web con `woo_status` NULL que el listado
+    por estado nunca tocaba (un `processing` no sale en ningún listado de los
+    que se piden). Ahora se les pregunta uno a uno y se rellena su estado real;
+    el que la tienda ya no tiene (404) queda `not_found`, oculto."""
+    with session_factory() as s:
+        st = _store(s)
+        _order(s, woo_id="99878", number="BOPRIN-99878", woo_status=None, store=st)
+        _order(s, woo_id="99880", number="BOPRIN-99880", woo_status=None, store=st)
+        _order(s, woo_id="99999", number="BOPRIN-99999", woo_status=None, store=st)
+        _order(s, woo_id="1", number="BOPRIN-1", woo_status="processing", store=st)
+        s.commit()
+        calls: list[tuple] = []
+        summary = reconcile_open_order_statuses(
+            s, dry_run=False,
+            client_factory=_factory({}, calls, by_id_by_store={"boprint": {
+                99878: {"id": 99878, "status": "processing"},
+                99880: {"id": 99880, "status": "on-hold"},
+                # 99999 no está: la tienda lo borró del todo.
+            }}),
+        )
+        assert summary["unknown_total"] == 3
+        assert summary["to_filled"] == 2
+        assert summary["to_not_found"] == 1
+        # Solo los SIN estado se consultan uno a uno; el `processing` no.
+        assert sorted(c[2] for c in calls if c[0] == "get_order") == [99878, 99880, 99999]
+        by_num = {o.order_number: o.woo_status for o in s.query(Order)}
+        assert by_num["BOPRIN-99878"] == "processing"
+        assert by_num["BOPRIN-99880"] == "on-hold"
+        assert by_num["BOPRIN-99999"] == "not_found"
+        live = _numbers(_rows_for(s, en_curso=True))
+        assert "BOPRIN-99878" in live                # rellenado → pasó por caja
+        assert "BOPRIN-99880" not in live            # rellenado → en espera
+        assert "BOPRIN-99999" not in live            # ya no existe en la tienda
+        ocultos = {r["order_number"]: r["estado_woo_motivo_label"]
+                   for r in _rows_for(s, ver_ocultos_estado=True)}
+        assert ocultos["BOPRIN-99880"] == "En espera"
+        assert ocultos["BOPRIN-99999"] == "No encontrado en la tienda"
+
+
+def test_reconcile_un_404_que_no_es_de_woocommerce_no_marca_not_found(session_factory) -> None:
+    """Una tienda con la URL mal configurada devuelve 404 a TODO: eso no puede
+    marcar como «no encontrados» todos sus pedidos sin estado. Solo el 404 con
+    el código de WooCommerce de id inexistente cuenta como `not_found`."""
+    with session_factory() as s:
+        st = _store(s)
+        _order(s, woo_id="99878", number="BOPRIN-99878", woo_status=None, store=st)
+        s.commit()
+        calls: list[tuple] = []
+        summary = reconcile_open_order_statuses(
+            s, dry_run=False,
+            client_factory=_factory({}, calls, raise_for={"boprint": "get_order_404_html"}),
+        )
+        assert summary["to_not_found"] == 0
+        assert any(e.get("order_number") == "BOPRIN-99878" for e in summary["errors"])
+        assert s.scalar(select(Order).where(Order.external_id == "99878")).woo_status is None
+
+
+def test_reconcile_acota_los_sin_estado_por_pasada(session_factory) -> None:
+    """Cada sin estado es una llamada a la tienda y el job tiene timeout: se
+    consultan como mucho `max_unknown` por pasada, se marca `capped` (la
+    pantalla ya dice «vuelve a ejecutar para el resto») y los demás siguen a
+    NULL para la siguiente."""
+    with session_factory() as s:
+        st = _store(s)
+        for i in (1, 2, 3):
+            _order(s, woo_id=str(900 + i), number=f"BOPRIN-90{i}", woo_status=None, store=st)
+        s.commit()
+        calls: list[tuple] = []
+        summary = reconcile_open_order_statuses(
+            s, dry_run=False, max_unknown=2,
+            client_factory=_factory({}, calls, by_id_by_store={"boprint": {
+                901: {"id": 901, "status": "processing"},
+                902: {"id": 902, "status": "processing"},
+                903: {"id": 903, "status": "processing"},
+            }}),
+        )
+        assert summary["capped"] is True
+        assert summary["unknown_total"] == 2
+        assert summary["to_filled"] == 2
+        assert len([c for c in calls if c[0] == "get_order"]) == 2
+        sin_estado = [o.order_number for o in s.query(Order) if o.woo_status is None]
+        assert len(sin_estado) == 1
+
+
+def test_reconcile_dry_run_consulta_los_sin_estado_pero_no_persiste(session_factory) -> None:
+    with session_factory() as s:
+        st = _store(s)
+        _order(s, woo_id="99878", number="BOPRIN-99878", woo_status=None, store=st)
+        s.commit()
+        calls: list[tuple] = []
+        summary = reconcile_open_order_statuses(
+            s, dry_run=True,
+            client_factory=_factory({}, calls, by_id_by_store={"boprint": {
+                99878: {"id": 99878, "status": "processing"},
+            }}),
+        )
+        assert summary["preview"] is True
+        assert summary["to_filled"] == 1
+        assert summary["samples"]["filled"] == ["BOPRIN-99878 → processing"]
+        s.expire_all()
+        assert s.scalar(select(Order).where(Order.external_id == "99878")).woo_status is None
+
+
+def test_reconcile_un_error_de_tienda_deja_el_sin_estado_como_esta(session_factory) -> None:
+    """Si la tienda no responde, el pedido sigue a NULL (oculto) y se informa;
+    no se inventa un estado."""
+    with session_factory() as s:
+        st = _store(s)
+        _order(s, woo_id="99878", number="BOPRIN-99878", woo_status=None, store=st)
+        s.commit()
+        calls: list[tuple] = []
+        summary = reconcile_open_order_statuses(
+            s, dry_run=False,
+            client_factory=_factory({}, calls, raise_for={"boprint": "get_order"}),
+        )
+        assert summary["to_filled"] == 0 and summary["to_not_found"] == 0
+        assert any(e.get("order_number") == "BOPRIN-99878" for e in summary["errors"])
+        assert s.scalar(select(Order).where(Order.external_id == "99878")).woo_status is None
 
 
 def test_reconcile_no_recuenta_un_reembolso_ya_marcado(session_factory) -> None:
