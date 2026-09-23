@@ -805,7 +805,7 @@ def _factura_label(order: Order) -> str:
 def _origen_label(order: Order) -> str:
     """Origen del pedido: `WEB` para los de la tienda; `Muestra` para un envío
     no facturable; para los demás, el canal de origen (`shipping_origin`:
-    SAT/OFI/TER…) o «Manual» si no consta. No hay campo de comercial/agente en
+    SAT/OFI/TER…) o «Manual (BoHub)» si no consta. No hay campo de comercial/agente en
     el pedido todavía."""
     from app.erp.sample_orders import is_sample_order  # noqa: PLC0415
 
@@ -813,7 +813,10 @@ def _origen_label(order: Order) -> str:
         return "WEB"
     if is_sample_order(order):
         return "Muestra"
-    return (order.shipping_origin or "").strip() or "Manual"
+    # «Manual (BoHub)», no «Manual» a secas: en la hoja de Drive, Origen =
+    # MANUAL marca una fila tecleada a mano (ver `drive_managed`), y un pedido
+    # manual de BoHub no puede confundirse con ella.
+    return (order.shipping_origin or "").strip() or "Manual (BoHub)"
 
 
 def _serie_whiterip(order: Order) -> str:

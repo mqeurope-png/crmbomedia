@@ -274,17 +274,21 @@ def import_historico(
     reemplaza los bloques estáticos enteros, así que es idempotente y no duplica
     separadores."""
     from app.erp.drive_managed import (  # noqa: PLC0415
+        cabecera_de,
         compose,
         dates_to_serial,
         historic_block,
         incidencias_format,
         is_separator,
+        live_zone,
         pedidos_format,
         pendientes_block,
+        realinear_fila,
     )
     from app.erp.seguimiento import (  # noqa: PLC0415
         HISTORICO_DATE_COLUMNS,
         INCIDENCIAS_DATE_COLUMNS,
+        PEDIDOS_DATE_COLUMNS,
     )
 
     historic = sheets.first_tab_title()
@@ -310,7 +314,7 @@ def import_historico(
         está por encima del separador."""
         if title not in sheets.tab_titles():
             return []
-        values = [list(r) for r in sheets.tab_values(title)]
+        values = [list(r) for r in sheets.tab_values(title, raw=True)]
         cuerpo = values[1:] if values else []
         for i, row in enumerate(cuerpo):
             if is_separator(row):
@@ -320,15 +324,27 @@ def import_historico(
     # Las fechas del histórico, como valor de fecha donde se puedan leer (una
     # rota se queda como texto): así el bloque también ordena por fecha.
     historico = historic_block(dates_to_serial(plan["rows"], HISTORICO_DATE_COLUMNS))
-    vivas_pedidos = dates_to_serial(_live(pedidos_tab), HISTORICO_DATE_COLUMNS)
+    # La zona VIVA que ya hay —las filas de BoHub y las tecleadas a mano
+    # (Origen = MANUAL)— se conserva ENTERA y en su orden: el import solo
+    # reemplaza el histórico, nunca absorbe una fila manual. Se realinea a las
+    # 18 columnas si la pestaña era de 17, y sus fechas van como fecha; en la
+    # zona viva «Preparación» es un estado, así que no se toca.
+    # Se lee y se escribe EN BRUTO: lo tecleado a mano vuelve tal cual.
+    valores = (
+        sheets.tab_values(pedidos_tab, raw=True) if pedidos_tab in sheets.tab_titles() else []
+    )
+    cabecera = cabecera_de(valores)
+    vivas_pedidos = dates_to_serial(
+        [realinear_fila(r, cabecera) for r in live_zone(valores)], PEDIDOS_DATE_COLUMNS,
+    )
     sheets.ensure_tab(pedidos_tab)
-    sheets.replace_tab(pedidos_tab, compose(SEGUIMIENTO_COLUMNS_V2, vivas_pedidos, historico))
+    sheets.replace_tab(
+        pedidos_tab, compose(SEGUIMIENTO_COLUMNS_V2, vivas_pedidos, historico), raw=True,
+    )
     # El mismo formato que el volcado periódico (cabecera congelada, anchos,
-    # fechas), calculado sobre las filas que hay: la zona viva de la pestaña se
-    # ha conservado tal cual, así que el formato va por posición.
-    sheets.format_tab(pedidos_tab, pedidos_format(
-        [{"fecha": None} for _ in vivas_pedidos], historico,
-    ))
+    # fechas, Situación coloreada según su etiqueta), por posición: la zona
+    # viva se ha conservado tal cual.
+    sheets.format_tab(pedidos_tab, pedidos_format([], historico, vivas_pedidos))
 
     if plan["pendientes_rows"]:
         pendientes = pendientes_block(
@@ -338,7 +354,7 @@ def import_historico(
         sheets.ensure_tab(incidencias_tab)
         sheets.replace_tab(incidencias_tab, compose(
             INCIDENCIAS_COLUMNS, vivas_inc, pendientes,
-        ))
+        ), raw=True)
         sheets.format_tab(incidencias_tab, incidencias_format(
             [{"situacion": "incidencias", "fecha": None} for _ in vivas_inc], pendientes,
         ))

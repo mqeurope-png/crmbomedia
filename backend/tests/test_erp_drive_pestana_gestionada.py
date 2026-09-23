@@ -34,6 +34,7 @@ from app.erp.drive_managed import (
     build_incidencias_grid,
     build_pedidos_grid,
     is_separator,
+    live_pedidos_rows,
     pedidos_format,
     push_managed_tabs,
     sheet_serial,
@@ -60,6 +61,7 @@ class FakeTabs:
         self.written: dict[str, list[list[Any]]] = {}
         self.formats: dict[str, list[dict[str, Any]]] = {}
         self.cleared: list[str] = []
+        self.raw_writes: dict[str, bool] = {}
 
     def tab_titles(self) -> list[str]:
         return list(self.tabs)
@@ -73,16 +75,22 @@ class FakeTabs:
             self.created.append(title)
         return list(self.tabs).index(title)
 
-    def replace_tab(self, title: str, rows: list[list[Any]]) -> None:
+    def replace_tab(self, title: str, rows: list[list[Any]], *, raw: bool = False) -> None:
         self.cleared.append(title)
         self.tabs[title] = rows
         self.written[title] = rows
+        self.raw_writes[title] = raw
 
     def format_tab(self, title: str, requests: list[dict[str, Any]]) -> None:
         self.formats[title] = requests
 
-    def tab_values(self, title: str) -> list[list[str]]:
-        return [[str(c) for c in row] for row in self.tabs.get(title, [])]
+    def tab_values(self, title: str, *, raw: bool = False) -> list[list[Any]]:
+        """Como la API: formateado (texto) por defecto; en bruto, cada celda
+        con su tipo (número, texto)."""
+        filas = self.tabs.get(title, [])
+        if raw:
+            return [list(row) for row in filas]
+        return [[str(c) for c in row] for row in filas]
 
 
 def _row(situacion: str, numero: str, *, fecha: str | None = "2026-09-01",
@@ -188,6 +196,7 @@ def test_ordena_la_zona_viva_por_fecha_del_pedido_desc(session):
         for r in sheets.formats[DEFAULT_MANAGED_TAB]
         if r.get("repeatCell", {}).get("range", {}).get("startColumnIndex") == 0
         and r["repeatCell"]["range"]["startRowIndex"] > 0
+        and "backgroundColor" in r["repeatCell"]["cell"]["userEnteredFormat"]
     }
     rojo = int(SITUACION_FILL["incidencias"][0][0:2], 16) / 255
     verde = int(SITUACION_FILL["listo"][0][0:2], 16) / 255
@@ -234,6 +243,7 @@ def test_colorea_la_celda_situacion_con_los_tonos_del_diseno(session):
         for r in sheets.formats[DEFAULT_MANAGED_TAB]
         if r.get("repeatCell", {}).get("range", {}).get("startColumnIndex") == 0
         and r["repeatCell"]["range"]["startRowIndex"] > 0
+        and "backgroundColor" in r["repeatCell"]["cell"]["userEnteredFormat"]
     ]
     esperado_incidencia = SITUACION_FILL["incidencias"][0]
     assert fondos[0]["red"] == pytest.approx(int(esperado_incidencia[0:2], 16) / 255)
@@ -779,3 +789,550 @@ def test_un_texto_libre_sin_tokens_se_queda_tal_cual() -> None:
 
     for texto in ("revisar con Marta", "RMA 20250626-1", "172€"):
         assert redistribute_nota(_nota_de(texto))[17] == texto
+
+
+# --- filas añadidas A MANO (Origen = MANUAL): leer → fusionar → escribir -------
+
+
+def _manual(numero: str, **celdas: Any) -> list[Any]:
+    """Una fila tecleada a mano en la zona viva (18 columnas)."""
+    fila = [""] * len(SEGUIMIENTO_COLUMNS_V2)
+    fila[1], fila[4] = numero, "MANUAL"
+    for nombre, valor in celdas.items():
+        fila[SEGUIMIENTO_COLUMNS_V2.index(nombre.replace("_", " "))] = valor
+    return fila
+
+
+def _pestana(*vivas: list[Any], historico: list[list[Any]] | None = None) -> FakeTabs:
+    return FakeTabs({HISTORICA: [], DEFAULT_MANAGED_TAB: [
+        list(SEGUIMIENTO_COLUMNS_V2), *vivas, *(historico or []),
+    ]})
+
+
+def _col(nombre: str) -> int:
+    return SEGUIMIENTO_COLUMNS_V2.index(nombre)
+
+
+def test_las_filas_manuales_se_conservan_arriba_en_su_orden(session):
+    """Validaciones 1, 2 y 3: con y sin Nº, editadas a mano, varias: siguen
+    arriba del todo, en su orden e intactas; BoHub se reescribe debajo."""
+    sep = [f"{SEPARATOR_PREFIX} HISTÓRICO {SEPARATOR_PREFIX}"]
+    nueva = _manual("", Situación="Por enviar", Fecha="23/09/2026",
+                    Cliente="Nuevo SL", Tracking="1Z-A")
+    otra = _manual("MAN-7", Cliente="Roca", **{"Nota / Incidencia": "llamar martes"})
+    sheets = _pestana(
+        nueva, otra, ["Listo", "VIEJO-BOHUB"],        # fila vieja de BoHub
+        historico=[sep, ["Histórico", "H-1"]],
+    )
+    resumen = push_managed_tabs(session, sheets, [_row("listo", "L-1"),
+                                                  _row("por_cobrar", "C-1")])
+    escrito = sheets.written[DEFAULT_MANAGED_TAB]
+    assert escrito[0] == SEGUIMIENTO_COLUMNS_V2
+    assert escrito[1][1] == "" and escrito[1][3] == "Nuevo SL"
+    assert escrito[1][_col("Tracking")] == "1Z-A"
+    assert escrito[1][_col("Fecha")] == sheet_serial(date(2026, 9, 23))
+    assert escrito[2][1] == "MAN-7" and escrito[2][-1] == "llamar martes"
+    assert all(f[4] == "MANUAL" for f in escrito[1:3])
+    # La zona de BoHub se reescribe debajo; la fila vieja de BoHub ya no está.
+    assert {f[1] for f in escrito[3:5]} == {"L-1", "C-1"}
+    assert "VIEJO-BOHUB" not in {f[1] for f in escrito if len(f) > 1}
+    assert escrito[5] == sep and escrito[6][1] == "H-1"
+    assert resumen["manuales"] == 2 and resumen["rows"] == 2
+    # Y el autofiltro abarca manuales + BoHub, sin llegar al histórico.
+    filtro = next(r for r in sheets.formats[DEFAULT_MANAGED_TAB]
+                  if "setBasicFilter" in r)["setBasicFilter"]["filter"]["range"]
+    assert filtro["endRowIndex"] == 5
+
+
+@pytest.mark.parametrize("marcador", ["MANUAL", "manual", " Manual ", "MAN UAL"])
+def test_el_marcador_es_tolerante(marcador):
+    from app.erp.drive_managed import is_manual_row
+
+    fila = _manual("X")
+    fila[4] = marcador
+    assert is_manual_row(fila)
+
+
+@pytest.mark.parametrize("origen", ["WEB", "SAT", "", "MANUALES", "Manual (Bart)"])
+def test_sin_el_marcador_no_se_conserva(session, origen):
+    """Validación 5: lo que no lleva Origen = MANUAL es de BoHub y se
+    reescribe; no se conserva por error."""
+    fila = _manual("SUELTA-1")
+    fila[4] = origen
+    sheets = _pestana(fila)
+    push_managed_tabs(session, sheets, [_row("listo", "L-1")])
+    assert "SUELTA-1" not in {f[1] for f in sheets.written[DEFAULT_MANAGED_TAB]}
+
+
+def test_el_mismo_pedido_por_bohub_se_fusiona_sin_duplicar(session):
+    """Validación 4: una sola fila; BoHub rellena los huecos; lo manual se
+    conserva; lo que difiere se marca en la Nota, no se pisa."""
+    manual = _manual("BOP-9", Situación="Por enviar", Cliente="Roca a mano",
+                     Tracking="", **{"Nota / Incidencia": "urgente"})
+    sheets = _pestana(manual)
+    bohub = _row("por_cobrar", "BOP-9", fecha="2026-09-20", cliente="Roca SL",
+                 factura="5-260001", tracking="1Z-B", fecha_factura="2026-09-21")
+    resumen = push_managed_tabs(session, sheets, [bohub, _row("listo", "L-1")])
+    escrito = sheets.written[DEFAULT_MANAGED_TAB]
+    filas_bop = [f for f in escrito if f[1] == "BOP-9"]
+    assert len(filas_bop) == 1                       # no se duplica
+    f = filas_bop[0]
+    assert escrito.index(f) == 1                     # sigue arriba
+    assert f[_col("Cliente")] == "Roca a mano"       # lo manual se conserva
+    assert f[_col("Situación")] == "Por enviar"
+    assert f[_col("Factura")] == "5-260001"          # huecos rellenados
+    assert f[_col("Tracking")] == "1Z-B"
+    assert f[_col("Fecha")] == sheet_serial(date(2026, 9, 20))
+    assert f[_col("Fecha factura")] == sheet_serial(date(2026, 9, 21))
+    nota = f[_col("Nota / Incidencia")]
+    assert nota.startswith("urgente")
+    assert "⚠ BoHub Cliente: Roca SL" in nota
+    assert "⚠ BoHub Situación: Por cobrar" in nota
+    # Hay conflictos: se queda MANUAL, para no pisar lo escrito a mano en la
+    # siguiente pasada.
+    assert f[_col("Origen")] == "MANUAL"
+    assert resumen["manuales_fusionadas"] == 1 and resumen["conflictos"] == 2
+    assert resumen["rows"] == 1                      # BOP-9 no cuenta en BoHub
+
+
+def test_la_fusion_es_idempotente(session):
+    """Relanzar no apila marcas ni cambia nada."""
+    sheets = _pestana(_manual("BOP-9", Cliente="Roca a mano"))
+    rows = [_row("listo", "BOP-9", cliente="Roca SL")]
+    push_managed_tabs(session, sheets, rows)
+    primera = [list(r) for r in sheets.written[DEFAULT_MANAGED_TAB]]
+    sheets.tabs[DEFAULT_MANAGED_TAB] = [[str(c) for c in r] for r in primera]
+    push_managed_tabs(session, sheets, rows)
+    segunda = sheets.written[DEFAULT_MANAGED_TAB]
+    assert segunda[1][-1].count("⚠ BoHub") == 1
+    assert [str(c) for c in segunda[1]] == [str(c) for c in primera[1]]
+
+
+def test_sin_nada_que_perder_se_entrega_a_bohub(session):
+    """Si lo escrito a mano coincide con BoHub y no hay nada que solo esté a
+    mano, la fila pasa a BoHub con su Origen real: deja de ser manual."""
+    bohub = _row("listo", "BOP-9", fecha="2026-09-20", cliente="Roca SL")
+    manual = _manual("bop-9 ", Situación="listo", Cliente="roca sl",
+                     Fecha="20/09/2026")
+    sheets = _pestana(manual)
+    resumen = push_managed_tabs(session, sheets, [bohub])
+    escrito = sheets.written[DEFAULT_MANAGED_TAB]
+    filas = [f for f in escrito[1:] if str(f[1]).upper() == "BOP-9"]
+    assert len(filas) == 1
+    assert filas[0][_col("Origen")] == "Web"          # el real, de BoHub
+    assert resumen["manuales"] == 0 and resumen["manuales_entregadas"] == 1
+    assert resumen["rows"] == 1
+
+
+def test_empareja_por_numero_desnudo_solo_si_es_unico(session):
+    """`99931` casa con `BOPRIN-99931` si nadie más tiene ese número; si dos
+    tiendas lo comparten, no se adivina: se queda suelta."""
+    sheets = _pestana(_manual("99931", Cliente="Acme SL"))
+    push_managed_tabs(session, sheets, [_row("listo", "BOPRIN-99931")])
+    numeros = [f[1] for f in sheets.written[DEFAULT_MANAGED_TAB][1:]]
+    assert numeros.count("BOPRIN-99931") + numeros.count("99931") == 1
+
+    sheets = _pestana(_manual("5781", Cliente="Acme SL"))
+    push_managed_tabs(session, sheets, [_row("listo", "BOPRIN-5781"),
+                                        _row("listo", "FLUXLA-5781")])
+    numeros = [f[1] for f in sheets.written[DEFAULT_MANAGED_TAB][1:]]
+    assert sorted(numeros) == ["5781", "BOPRIN-5781", "FLUXLA-5781"]
+
+
+def test_sin_numero_no_se_fusiona(session):
+    sheets = _pestana(_manual("", Cliente="Acme SL"))
+    resumen = push_managed_tabs(session, sheets, [_row("listo", "L-1")])
+    assert resumen["manuales"] == 1 and resumen["manuales_fusionadas"] == 0
+
+
+def test_la_vista_previa_cuenta_las_manuales_y_no_escribe(session):
+    sheets = _pestana(_manual("", Cliente="A"), _manual("", Cliente="B"))
+    resumen = push_managed_tabs(session, sheets, [_row("listo", "L-1")], dry_run=True)
+    assert resumen["manuales"] == 2 and resumen["rows"] == 1
+    assert sheets.written == {}
+
+
+def test_una_fila_manual_bajo_la_cabecera_de_17_se_realinea(session):
+    """Tecleada en una pestaña aún de 17 columnas: se abre el hueco de «Fecha
+    recogido» para que Tracking y la Nota no queden desplazadas."""
+    cabecera_17 = [c for c in SEGUIMIENTO_COLUMNS_V2 if c != "Fecha recogido"]
+    fila_17 = ["Por enviar", "M-1", "", "Acme", "MANUAL"] + [""] * 9 + [
+        "TRK-9", "", "nota a mano"]
+    sheets = FakeTabs({HISTORICA: [], DEFAULT_MANAGED_TAB: [cabecera_17, fila_17]})
+    push_managed_tabs(session, sheets, [])
+    f = sheets.written[DEFAULT_MANAGED_TAB][1]
+    assert f[_col("Tracking")] == "TRK-9" and f[_col("Fecha recogido")] == ""
+    assert f[-1] == "nota a mano"
+
+
+def test_la_fila_manual_se_colorea_segun_su_situacion(session):
+    sheets = _pestana(_manual("", Situación="Incidencia"), _manual("", Situación="loquesea"))
+    push_managed_tabs(session, sheets, [_row("listo", "L-1")])
+    pintadas = {
+        r["repeatCell"]["range"]["startRowIndex"]
+        for r in sheets.formats[DEFAULT_MANAGED_TAB]
+        if r.get("repeatCell", {}).get("range", {}).get("startColumnIndex") == 0
+        and r["repeatCell"]["range"]["startRowIndex"] > 0
+        and "backgroundColor" in r["repeatCell"]["cell"]["userEnteredFormat"]
+    }
+    # Fila 1 (Incidencia) y fila 3 (BoHub «Listo»); la de etiqueta desconocida, no.
+    assert pintadas == {1, 3}
+
+
+def test_reimportar_el_historico_no_absorbe_las_filas_manuales():
+    """Validación 6: el import del histórico conserva la zona viva entera —
+    incluidas las filas manuales—, en su orden, y solo reemplaza el histórico."""
+    sep = [f"{SEPARATOR_PREFIX} HISTÓRICO {SEPARATOR_PREFIX}"]
+    manual = _manual("", Cliente="A mano SL", Fecha="23/09/2026")
+    sheets = FakeTabs({
+        HISTORICA: _hoja_vieja(),
+        DEFAULT_MANAGED_TAB: [list(SEGUIMIENTO_COLUMNS_V2), manual,
+                              ["Listo", "L-1"], sep, ["Histórico", "VIEJO"]],
+    })
+    import_historico(sheets, pedidos_tab=DEFAULT_MANAGED_TAB,
+                     incidencias_tab=DEFAULT_INCIDENCIAS_TAB, dry_run=False)
+    escrito = sheets.written[DEFAULT_MANAGED_TAB]
+    assert escrito[1][3] == "A mano SL" and escrito[1][4] == "MANUAL"
+    assert escrito[1][2] == sheet_serial(date(2026, 9, 23))
+    assert escrito[2][1] == "L-1"
+    assert is_separator(escrito[3])
+    assert "VIEJO" not in {f[1] for f in escrito if len(f) > 1}
+
+
+# --- regresiones de la revisión adversarial -----------------------------------
+
+
+def _pasadas(session, sheets, rows, n: int = 3) -> list[list[list[Any]]]:
+    """`n` «Actualizar» seguidos, releyendo la hoja en bruto cada vez."""
+    escritos = []
+    for _ in range(n):
+        push_managed_tabs(session, sheets, rows)
+        escritos.append([list(r) for r in sheets.written[DEFAULT_MANAGED_TAB]])
+    return escritos
+
+
+def test_un_pedido_manual_de_bohub_no_se_confunde_con_uno_tecleado(session):
+    """El Origen de un pedido manual de BoHub sin canal es «Manual (BoHub)»,
+    no «Manual»: si no, la siguiente pasada lo tomaría por tecleado a mano y
+    dejaría de actualizarse."""
+    from app.erp.drive_managed import is_manual_row
+
+    fila = _manual("M-1")
+    fila[4] = "Manual (BoHub)"
+    assert not is_manual_row(fila)
+    rows = [_row("listo", "MANUAL-000002", origen_label="Manual (BoHub)")]
+    sheets = FakeTabs()
+    push_managed_tabs(session, sheets, rows)
+    rows[0]["situacion"], rows[0]["situacion_label"] = "por_cobrar", "Por cobrar"
+    resumen = push_managed_tabs(session, sheets, rows)
+    assert resumen["manuales"] == 0
+    assert sheets.written[DEFAULT_MANAGED_TAB][1][0] == "Por cobrar"
+
+
+def test_la_marca_con_un_punto_medio_dentro_no_crece(session):
+    """«1 · Bomedia» dentro de una marca: se quita entera y no deja trozos."""
+    sheets = _pestana(_manual("BOP-9", **{"Empresa (serie)": "Bomedia",
+                                          "Nota / Incidencia": "urgente"}))
+    escritos = _pasadas(session, sheets, [_row("listo", "BOP-9")])
+    notas = [e[1][-1] for e in escritos]
+    assert notas[0] == notas[1] == notas[2]
+    assert notas[0].startswith("urgente [")
+    assert "[⚠ BoHub Empresa (serie): 1 · Bomedia]" in notas[0]
+
+
+def test_la_nota_del_usuario_sale_tal_cual(session):
+    raro = "a·b  ·· c   ⚠ ojo"
+    sheets = _pestana(_manual("BOP-9", Cliente="Otro", **{"Nota / Incidencia": raro}))
+    escritos = _pasadas(session, sheets, [_row("listo", "BOP-9")])
+    for e in escritos:
+        assert e[1][-1].startswith(raro + " [")
+
+
+def test_lo_que_relleno_bohub_se_pone_al_dia(session):
+    """Una celda que rellenó BoHub sigue a BoHub en las pasadas siguientes; no
+    se congela ni sale luego como conflicto falso."""
+    sheets = _pestana(_manual("BOP-9", Cliente="Otro nombre"))
+    pedido = _row("por_cobrar", "BOP-9", tracking="1Z-A")
+    push_managed_tabs(session, sheets, [pedido])
+    f = sheets.written[DEFAULT_MANAGED_TAB][1]
+    assert f[_col("Situación")] == "Por cobrar" and f[_col("Tracking")] == "1Z-A"
+    assert "[BoHub: " in f[-1] and "Situación" in f[-1]
+    pedido.update(situacion="listo", situacion_label="Listo", tracking="1Z-B")
+    push_managed_tabs(session, sheets, [pedido])
+    f = sheets.written[DEFAULT_MANAGED_TAB][1]
+    assert f[_col("Situación")] == "Listo" and f[_col("Tracking")] == "1Z-B"
+    assert "⚠ BoHub Situación" not in f[-1] and "⚠ BoHub Tracking" not in f[-1]
+    assert f[_col("Cliente")] == "Otro nombre"        # lo tecleado, intacto
+
+
+def test_una_incidencia_fusionada_sigue_en_incidencias(session):
+    sheets = _pestana(_manual("BOP-9", Cliente="Otro"))
+    pedido = _row("incidencias", "BOP-9", incidencia={"tipo": "Falta stock"})
+    resumen = push_managed_tabs(session, sheets, [pedido])
+    inc = sheets.written[DEFAULT_INCIDENCIAS_TAB]
+    assert [f[0] for f in inc[1:]] == ["BOP-9"]
+    assert resumen["incidencias"] == 1
+    assert resumen["por_situacion"] == {"Incidencia": 1}
+
+
+def test_el_numero_con_prefijo_no_casa_con_otra_tienda(session):
+    sheets = _pestana(_manual("BOP-9", Cliente="Acme SL"))
+    resumen = push_managed_tabs(session, sheets, [_row("listo", "FLUXLA-9")])
+    assert resumen["manuales_fusionadas"] == 0
+    numeros = sorted(f[1] for f in sheets.written[DEFAULT_MANAGED_TAB][1:])
+    assert numeros == ["BOP-9", "FLUXLA-9"]
+
+
+def test_lo_tecleado_mas_alla_de_la_ultima_columna_impide_entregar(session):
+    fila = _manual("BOP-9", Situación="Listo", Cliente="Acme SL", Fecha="01/09/2026")
+    sheets = _pestana(fila + ["apunte en la columna S"])
+    resumen = push_managed_tabs(session, sheets, [_row("listo", "BOP-9")])
+    assert resumen["manuales_entregadas"] == 0
+    assert sheets.written[DEFAULT_MANAGED_TAB][1][-1] == "apunte en la columna S"
+
+
+def test_dos_filas_manuales_del_mismo_pedido_no_desaparecen(session):
+    limpia = _manual("BOP-9", Situación="Listo", Cliente="Acme SL", Fecha="01/09/2026")
+    con_nota = _manual("BOP-9", **{"Nota / Incidencia": "la otra"})
+    sheets = _pestana(limpia, con_nota)
+    resumen = push_managed_tabs(session, sheets, [_row("listo", "BOP-9")])
+    escrito = sheets.written[DEFAULT_MANAGED_TAB][1:]
+    assert sum(1 for f in escrito if f[1] == "BOP-9") == 2
+    assert resumen["manuales_entregadas"] == 0 and resumen["rows"] == 0
+
+
+def test_sin_cabecera_no_se_come_la_primera_fila_manual(session):
+    """Si alguien borra la cabecera, la primera fila puede ser un pedido a
+    mano: no se descarta a ciegas."""
+    sheets = FakeTabs({HISTORICA: [], DEFAULT_MANAGED_TAB: [_manual("", Cliente="Sola")]})
+    resumen = push_managed_tabs(session, sheets, [])
+    assert resumen["manuales"] == 1
+    assert sheets.written[DEFAULT_MANAGED_TAB][1][3] == "Sola"
+
+
+def test_un_importe_cero_de_bohub_no_rellena_ni_choca(session):
+    sheets = _pestana(_manual("BOP-9", Importe=121.0),
+                      _manual("BOP-8", **{"Nota / Incidencia": "sigue a mano"}))
+    push_managed_tabs(session, sheets, [_row("listo", "BOP-9", importe=0.0),
+                                        _row("listo", "BOP-8", importe=0.0)])
+    escrito = sheets.written[DEFAULT_MANAGED_TAB]
+    nueve = next(f for f in escrito if f[1] == "BOP-9")
+    ocho = next(f for f in escrito if f[1] == "BOP-8")
+    assert "Importe" not in nueve[-1] and nueve[_col("Importe")] == 121.0
+    assert ocho[_col("Importe")] == ""
+
+
+def test_lo_tecleado_se_lee_y_se_escribe_en_bruto(session):
+    """Leído formateado y reescrito «como si lo teclease alguien», Sheets
+    reinterpretaría lo tecleado («00123» → 123). Se lee y se escribe en bruto."""
+    fila = _manual("", Cliente="=SUMA(A1)", Tracking="00123")
+    fila[_col("Importe")] = 1234.5
+    sheets = _pestana(fila)
+    push_managed_tabs(session, sheets, [])
+    f = sheets.written[DEFAULT_MANAGED_TAB][1]
+    assert f[_col("Tracking")] == "00123" and f[_col("Cliente")] == "=SUMA(A1)"
+    assert f[_col("Importe")] == 1234.5
+    assert sheets.raw_writes == {DEFAULT_MANAGED_TAB: True, DEFAULT_INCIDENCIAS_TAB: True}
+
+
+def test_la_columna_situacion_se_limpia_antes_de_colorear(session):
+    """`replace_tab` borra valores, no formato: sin limpiar, una celda sin
+    color heredaría el de la pasada anterior."""
+    sep = [f"{SEPARATOR_PREFIX} HISTÓRICO {SEPARATOR_PREFIX}"]
+    sheets = _pestana(_manual("", Situación="loquesea"),
+                      historico=[sep, ["Histórico", "H-1"]])
+    push_managed_tabs(session, sheets, [_row("listo", "L-1")])
+    reset = next(
+        r["repeatCell"] for r in sheets.formats[DEFAULT_MANAGED_TAB]
+        if r.get("repeatCell", {}).get("cell", {}).get("userEnteredFormat") == {}
+    )
+    assert reset["range"]["startColumnIndex"] == 0
+    assert reset["range"]["startRowIndex"] == 1
+    # Hasta el final de la hoja: si la pestaña encoge, no quedan restos.
+    assert "endRowIndex" not in reset["range"]
+
+
+# --- regresiones de la segunda revisión ----------------------------------------
+
+
+def _pedido_en_bd(session, numero: str) -> None:
+    from datetime import UTC, datetime
+
+    from app.erp.models import Order, OrderSource
+
+    session.add(Order(order_number=numero, external_source=OrderSource.MANUAL,
+                      placed_at=datetime(2026, 9, 1, tzinfo=UTC)))
+    session.flush()
+
+
+def test_las_filas_manual_que_escribio_bohub_antes_no_se_congelan(session):
+    """Antes de este cambio, un pedido manual de BoHub sin canal salía con
+    Origen «Manual». Esas filas ya están en la hoja: no son tecleadas a mano.
+    Se descartan y BoHub las reescribe con su etiqueta nueva — también si su
+    pedido ya ha salido de la zona viva."""
+    heredada = live_pedidos_rows([_row("por_facturar", "MANUAL-000002",
+                                       origen_label="Manual", cobro_label="—")])[0]
+    ya_no_viva = live_pedidos_rows([_row("listo", "MANUAL-000003",
+                                         origen_label="Manual")])[0]
+    sheets = _pestana(heredada, ya_no_viva)
+    rows = [_row("listo", "MANUAL-000002", origen_label="Manual (BoHub)")]
+    resumen = push_managed_tabs(session, sheets, rows)
+    escrito = sheets.written[DEFAULT_MANAGED_TAB]
+    assert resumen["manuales"] == 0
+    assert [f[1] for f in escrito[1:]] == ["MANUAL-000002"]
+    assert escrito[1][_col("Origen")] == "Manual (BoHub)"
+    assert escrito[1][_col("Situación")] == "Listo"
+
+
+def test_manual_con_mayuscula_inicial_tecleado_sigue_siendo_manual(session):
+    """«Manual» tecleado a mano (sin el vocabulario de BoHub en Cobro,
+    Preparación y Envío) es una fila a mano — también cuando su pedido entra
+    luego en BoHub: se fusiona, no se borra."""
+    fila = _manual("PED-777", Cliente="Cliente Real SL",
+                   **{"Nota / Incidencia": "llamar martes"})
+    fila[4] = "Manual"
+    sheets = _pestana(fila)
+    assert push_managed_tabs(session, sheets, [])["manuales"] == 1
+    _pedido_en_bd(session, "PED-777")
+    resumen = push_managed_tabs(session, sheets, [_row("listo", "PED-777", cliente="Acme SL")])
+    assert resumen["manuales"] == 1 and resumen["manuales_fusionadas"] == 1
+    f = sheets.written[DEFAULT_MANAGED_TAB][1]
+    assert f[_col("Cliente")] == "Cliente Real SL"
+    assert f[-1].startswith("llamar martes") and "[⚠ BoHub Cliente: Acme SL]" in f[-1]
+
+
+def test_una_fila_heredada_con_el_numero_guardado_como_numero_tambien_se_reconoce(session):
+    """`main` escribía USER_ENTERED: un Nº «004352» quedó como el número 4352.
+    La fila heredada se reconoce por su contenido, no por el Nº."""
+    heredada = live_pedidos_rows([_row("por_facturar", "004352", origen_label="Manual")])[0]
+    heredada[1] = 4352
+    sheets = _pestana(heredada)
+    resumen = push_managed_tabs(session, sheets, [
+        _row("listo", "004352", origen_label="Manual (BoHub)"),
+    ])
+    escrito = sheets.written[DEFAULT_MANAGED_TAB]
+    assert resumen["manuales"] == 0 and resumen["manuales_fusionadas"] == 0
+    assert [f[1] for f in escrito[1:]] == ["004352"]
+    assert escrito[1][_col("Situación")] == "Listo"
+
+
+@pytest.mark.parametrize(("cruda", "vista"), [
+    (123456, "123.456"),                        # separador de miles
+    (123456789012345, "1,23457E+14"),           # notación científica
+])
+def test_un_numero_mostrado_de_otra_forma_sigue_siendo_numero(session, cruda, vista):
+    fila = _manual("", Cliente="Acme SL", Tracking=cruda)
+    vista_fila = [str(c) for c in fila]
+    vista_fila[_col("Tracking")] = vista
+    cabecera = list(SEGUIMIENTO_COLUMNS_V2)
+    sheets = _FakeConVista(
+        {HISTORICA: [], DEFAULT_MANAGED_TAB: [cabecera, fila]},
+        {DEFAULT_MANAGED_TAB: [cabecera, vista_fila]},
+    )
+    push_managed_tabs(session, sheets, [])
+    assert sheets.written[DEFAULT_MANAGED_TAB][1][_col("Tracking")] == cruda
+
+
+def test_corregir_solo_las_mayusculas_tambien_es_corregir(session):
+    sheets = _pestana(_manual("BOP-9", Cliente="Otro"))
+    pedido = _row("listo", "BOP-9", tracking="1z999aa1")
+    push_managed_tabs(session, sheets, [pedido])
+    sheets.written[DEFAULT_MANAGED_TAB][1][_col("Tracking")] = "1Z999AA1"
+    push_managed_tabs(session, sheets, [pedido])
+    assert sheets.written[DEFAULT_MANAGED_TAB][1][_col("Tracking")] == "1Z999AA1"
+
+
+def test_una_fecha_con_hora_no_es_un_conflicto(session):
+    fila = _manual("BOP-9", Cliente="Otro", Fecha=sheet_serial(date(2026, 9, 1)) + 0.4166)
+    sheets = _pestana(fila)
+    push_managed_tabs(session, sheets, [_row("listo", "BOP-9")])
+    assert "⚠ BoHub Fecha" not in sheets.written[DEFAULT_MANAGED_TAB][1][-1]
+
+
+@pytest.mark.parametrize("numero", ["12", "1543", "002"])
+def test_un_numero_corto_no_casa_con_un_pedido_manual_de_bohub(session, numero):
+    """El número desnudo usa las reglas del resto del sistema: 4 dígitos como
+    mínimo y nunca un `MANUAL-`."""
+    sheets = _pestana(_manual(numero, Cliente="Roca SL"))
+    resumen = push_managed_tabs(session, sheets, [
+        _row("listo", "MANUAL-000012"), _row("listo", "MANUAL-001543"),
+        _row("listo", "MANUAL-000002"),
+    ])
+    assert resumen["manuales_fusionadas"] == 0
+    assert len(sheets.written[DEFAULT_MANAGED_TAB]) == 1 + 1 + 3
+
+
+@pytest.mark.parametrize("sin_dato", ["—", "-", " — "])
+def test_un_guion_tecleado_es_un_hueco(session, sin_dato):
+    """«—» es la convención de la hoja para «sin dato»: se rellena desde BoHub
+    y no impide entregar la fila."""
+    fila = _manual("BOP-9", Situación="Listo", Cliente="Acme SL", Fecha="01/09/2026",
+                   Tracking=sin_dato)
+    sheets = _pestana(fila)
+    resumen = push_managed_tabs(session, sheets, [_row("listo", "BOP-9", tracking="1Z-A")])
+    assert resumen["manuales_entregadas"] == 1
+    fila_bohub = next(f for f in sheets.written[DEFAULT_MANAGED_TAB][1:] if f[1] == "BOP-9")
+    assert fila_bohub[_col("Tracking")] == "1Z-A"
+
+
+class _FakeConVista(FakeTabs):
+    """Como la API: en bruto, una fecha tecleada es su serial; formateada, el
+    texto que ve el usuario."""
+
+    def __init__(self, tabs, vistas):
+        super().__init__(tabs)
+        self.vistas = vistas
+
+    def tab_values(self, title, *, raw=False):
+        if raw or title not in self.vistas:
+            return super().tab_values(title, raw=raw)
+        return [list(r) for r in self.vistas[title]]
+
+
+def test_una_fecha_tecleada_en_una_columna_sin_formato_se_ve_igual(session):
+    """Preparación no lleva formato de fecha en la zona viva: si la fila se
+    mueve, el serial se vería como un número. Se escribe lo que se veía."""
+    serial = sheet_serial(date(2026, 8, 28))
+    cruda = _manual("", Cliente="Acme SL", Preparación=serial)
+    vista = [str(c) for c in cruda]
+    vista[_col("Preparación")] = "28/08/2026"
+    cabecera = list(SEGUIMIENTO_COLUMNS_V2)
+    sheets = _FakeConVista(
+        {HISTORICA: [], DEFAULT_MANAGED_TAB: [cabecera, cruda]},
+        {DEFAULT_MANAGED_TAB: [cabecera, vista]},
+    )
+    push_managed_tabs(session, sheets, [])
+    assert sheets.written[DEFAULT_MANAGED_TAB][1][_col("Preparación")] == "28/08/2026"
+
+
+def test_una_cabecera_que_no_esta_arriba_no_se_copia_como_dato(session):
+    """Si alguien mete una fila encima de la cabecera, la cabecera no acaba
+    duplicada como una fila más (ni en el volcado ni al reimportar)."""
+    manual = _manual("", Cliente="Arriba SL")
+    sheets = FakeTabs({HISTORICA: _hoja_vieja(), DEFAULT_MANAGED_TAB: [
+        manual, list(SEGUIMIENTO_COLUMNS_V2), ["Listo", "L-0"],
+    ]})
+    push_managed_tabs(session, sheets, [])
+    escrito = sheets.written[DEFAULT_MANAGED_TAB]
+    assert sum(1 for f in escrito if f[:2] == ["Situación", "Nº pedido"]) == 1
+    assert escrito[1][3] == "Arriba SL"
+    import_historico(sheets, pedidos_tab=DEFAULT_MANAGED_TAB,
+                     incidencias_tab=DEFAULT_INCIDENCIAS_TAB, dry_run=False)
+    escrito = sheets.written[DEFAULT_MANAGED_TAB]
+    assert sum(1 for f in escrito if f[:2] == ["Situación", "Nº pedido"]) == 1
+
+
+def test_si_corriges_una_celda_que_relleno_bohub_se_queda_la_tuya(session):
+    """La huella de `[BoHub: …]` ya no casa: la celda es del usuario, no se
+    pisa, y si BoHub dice otra cosa se marca."""
+    sheets = _pestana(_manual("BOP-9", Cliente="Otro"))
+    pedido = _row("listo", "BOP-9", tracking="1Z-A")
+    push_managed_tabs(session, sheets, [pedido])
+    fila = sheets.written[DEFAULT_MANAGED_TAB][1]
+    assert fila[_col("Tracking")] == "1Z-A"
+    fila[_col("Tracking")] = "CORREGIDO-A-MANO"           # el usuario lo corrige
+    push_managed_tabs(session, sheets, [pedido])
+    fila = sheets.written[DEFAULT_MANAGED_TAB][1]
+    assert fila[_col("Tracking")] == "CORREGIDO-A-MANO"
+    assert "[⚠ BoHub Tracking: 1Z-A]" in fila[-1]
+    assert "Tracking#" not in fila[-1]

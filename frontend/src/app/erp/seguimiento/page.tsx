@@ -338,8 +338,9 @@ export default function SeguimientoPage() {
       setPreviewSummary(null);
       setNotice(
         isManagedSummary(summary)
-          ? `Hoja actualizada: ${summary.rows} filas en «${summary.tab}». `
-            + `El histórico («${summary.historic_tab}») no se ha tocado.`
+          ? `Hoja actualizada: ${summary.rows} filas de BoHub`
+            + (summary.manuales ? ` + ${summary.manuales} añadidas a mano (conservadas)` : "")
+            + ` en «${summary.tab}». El histórico («${summary.historic_tab}») no se ha tocado.`
           : `Hoja actualizada: ${summary.appended_rows} filas añadidas. `
             + `${summary.orders_to_review} pedidos a revisar.`,
       );
@@ -801,7 +802,7 @@ export default function SeguimientoPage() {
               onClick={onConfirmSync}>
               {busy
                 ? "Escribiendo…"
-                : `Confirmar y escribir ${previewSummary.rows} filas`}
+                : `Confirmar y escribir ${previewSummary.rows + (previewSummary.manuales ?? 0)} filas`}
             </button>
           </div>
         </section>
@@ -854,7 +855,9 @@ export default function SeguimientoPage() {
         <section className="erp-card">
           <h3>Hoja actualizada</h3>
           <p className="muted small">
-            {syncSummary.rows} filas en «{syncSummary.tab}» ·{" "}
+            {syncSummary.rows} filas de BoHub
+            {syncSummary.manuales ? ` + ${syncSummary.manuales} a mano` : ""} en
+            «{syncSummary.tab}» ·{" "}
             {syncSummary.incidencias} en «{syncSummary.incidencias_tab}».
             {syncSummary.created_tabs?.length
               ? ` Pestañas creadas: ${syncSummary.created_tabs.join(", ")}.`
@@ -1109,9 +1112,31 @@ function ManagedPreview({ summary }: { summary: DriveManagedSummary }) {
       </p>
       <ul className="item-list">
         <li>
-          <strong>{summary.rows}</strong> filas: los mismos pedidos que la vista
-          en curso (fuera los excluidos y los ocultos por estado).
+          Se escribirán <strong>{summary.rows}</strong> filas de BoHub (los mismos
+          pedidos que la vista en curso; fuera los excluidos y los ocultos por
+          estado)
+          {summary.manuales ? (
+            <>
+              {" "}+ <strong>{summary.manuales}</strong> añadidas a mano
+              (Origen = MANUAL), que se <strong>conservan</strong> arriba
+            </>
+          ) : null}
+          .
         </li>
+        {summary.manuales_fusionadas ? (
+          <li>
+            <strong>{summary.manuales_fusionadas}</strong> fila(s) a mano ya
+            tienen su pedido en BoHub: una sola fila, con los huecos rellenados
+            desde BoHub
+            {summary.manuales_entregadas
+              ? ` (${summary.manuales_entregadas} pasan a BoHub: ya no tenían nada que perder)`
+              : ""}
+            {summary.conflictos
+              ? `; ${summary.conflictos} dato(s) no coinciden: se conserva lo escrito a mano y se marca «[⚠ BoHub …]» en la Nota`
+              : ""}
+            .
+          </li>
+        ) : null}
         <li>
           <strong>{summary.incidencias}</strong> en «{summary.incidencias_tab}»
           (Situación = Incidencia).
