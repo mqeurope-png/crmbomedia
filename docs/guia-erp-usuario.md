@@ -554,8 +554,16 @@ como en la lista de pedidos. Cuando ya no haga falta verlo, se retira con
 (p. ej. «2 · MQ Europe»), **Factura**, **Fecha factura**, **Factura enviada**
 (cuándo se mandó la factura por email al cliente), **Cobro** (*Cobrado ✓* /
 *Pendiente* / *—*), **Preparación** y **Envío** (estado del taller y del
-transporte; **«No aplica»** si el pedido no requiere envío), **Tracking**,
-**Nº serie · WhiteRIP** y **Nota / Incidencia**.
+transporte; **«No aplica»** si el pedido no requiere envío), **Fecha recogido**
+(el día real en que el paquete salió del taller, según la Cola SAT),
+**Tracking**, **Nº serie · WhiteRIP** y **Nota / Incidencia**. Son 18 columnas.
+
+Las columnas de **fecha** (Fecha, Fecha factura, Factura enviada, Fecha
+recogido) van como **valor de fecha real**, no como texto, tanto en el Excel
+como en Drive: se ven siempre como DD/MM/AAAA y, sobre todo, **ordenan por
+fecha de verdad** (como texto, «1/9/2026» iría antes que «12/3/2026»). Una
+fecha rota de origen en el histórico (p. ej. `27/07/202`, con un dígito de
+menos) se deja como texto, sin inventarla.
 
 **Situación** es la cola de la línea de vida del pedido —la misma de la bandeja—
 y va **coloreada**: `Incidencia` (rojo), `Por revisar` (ámbar), `Por facturar` /
@@ -599,7 +607,7 @@ que confirmas.
 > que VIES da por no válido— cae en **«Por revisar»**: hay que arreglarlo antes
 > de facturar y sigue destacado, pero no ensucia la lista de incidencias.
 
-El **Excel** que se descarga trae dos pestañas: **«Pedidos»** (las 17 columnas,
+El **Excel** que se descarga trae dos pestañas: **«Pedidos»** (las 18 columnas,
 ordenadas por Situación, con la celda Situación coloreada, la cabecera fija, el
 autofiltro y el importe con formato €) y **«Incidencias»** (los mismos pedidos
 que están en Situación=Incidencia, con más detalle: nº pedido, cliente, tipo,
@@ -610,7 +618,7 @@ en **pestañas propias de la app**. Cada una tiene **dos zonas**:
 
 - **«Seguimiento (app)»** — arriba, los pedidos vivos: **los mismos que ves en
   la pantalla** (en curso; fuera los quitados a mano y los ocultos por estado),
-  con las 17 columnas, **ordenados por fecha del pedido, del más reciente al
+  con las 18 columnas, **ordenados por fecha del pedido, del más reciente al
   más antiguo**, la celda Situación coloreada, la **fila 1 de encabezados
   congelada** (no se va al hacer scroll) y el **autofiltro** sobre esa misma
   cabecera, con el que puedes reordenar por Situación o por cualquier otra

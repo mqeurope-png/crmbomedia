@@ -458,7 +458,7 @@ def test_export_xlsx_respects_filters_and_column_order(session_factory, http) ->
     assert wb.sheetnames == ["Pedidos", "Incidencias"]
     ws = wb["Pedidos"]
     grid = [list(row) for row in ws.iter_rows(values_only=True)]
-    # Cabecera del rediseño, en su orden (17 columnas).
+    # Cabecera del rediseño, en su orden (18 columnas).
     assert list(grid[0]) == core.SEGUIMIENTO_COLUMNS_V2
     # Solo la fila filtrada (transportista=UPS).
     assert len(grid) == 2
@@ -467,12 +467,13 @@ def test_export_xlsx_respects_filters_and_column_order(session_factory, http) ->
     # (aviso automático; «Incidencia» se reserva a lo reportado a mano).
     assert row[0] == "Por revisar"                     # Situación
     assert row[1] == "BOP-700001"                      # Nº pedido (con prefijo)
-    assert row[2] == "4/9/2026"                        # Fecha d/m/yyyy
+    # Fecha como VALOR de fecha (ordenable), no como texto.
+    assert row[2] == datetime(2026, 9, 4)
     assert row[3] == "Uno SL"                          # Cliente
     assert row[4] == "SAT"                             # Origen (manual → canal)
     assert row[7] == "5 · Streamtec"                   # Empresa (serie)
     assert row[8] == "5-260050"                        # Factura
-    assert row[15] == "FBAP1 · 4829"                   # Nº serie · WhiteRIP
+    assert row[16] == "FBAP1 · 4829"                   # Nº serie · WhiteRIP
     # La pestaña Incidencias NO lo contiene: un aviso automático (empresa sin
     # vincular) no es una incidencia. La pestaña es solo de lo reportado a mano.
     inc = wb["Incidencias"]

@@ -15,6 +15,7 @@ Sin red: el transporte de Sheets es un doble que registra lo que se le pide.
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 import pytest
@@ -35,11 +36,13 @@ from app.erp.drive_managed import (
     is_separator,
     pedidos_format,
     push_managed_tabs,
+    sheet_serial,
     static_block,
 )
 from app.erp.drive_sheets import DriveSyncError, _with_sheet_id
 from app.erp.seguimiento import (
     INCIDENCIAS_COLUMNS,
+    PEDIDOS_DATE_COLUMNS,
     SEGUIMIENTO_COLUMNS,
     SEGUIMIENTO_COLUMNS_V2,
     SITUACION_FILL,
@@ -278,10 +281,14 @@ def test_sin_filas_escribe_solo_la_cabecera(session):
 def test_el_grid_usa_la_misma_serializacion_que_el_excel():
     """No se duplica la serialización: la fila de Drive es la de
     `row_to_pedidos_values`."""
+    from app.erp.drive_managed import dates_to_serial
     from app.erp.seguimiento import row_to_pedidos_values
 
     row = _row("por_enviar", "BOP-9")
-    assert build_pedidos_grid([row])[1] == row_to_pedidos_values(row)
+    # Misma fila; en Drive las fechas van como serial (valor de fecha).
+    assert build_pedidos_grid([row])[1] == dates_to_serial(
+        [row_to_pedidos_values(row)], PEDIDOS_DATE_COLUMNS,
+    )[0]
     assert build_incidencias_grid([_row("incidencias", "I-1")])[0] == INCIDENCIAS_COLUMNS
 
 
@@ -315,9 +322,81 @@ def test_el_actualizar_preserva_el_bloque_historico(session):
     escrito = sheets.written[DEFAULT_MANAGED_TAB]
     sep = next(i for i, r in enumerate(escrito) if is_separator(r))
     # Zona viva NUEVA (el L-0 de antes ya no está), por fecha desc, y el
-    # histórico intacto, con su propio orden.
+    # histórico intacto, con su propio orden. Lo ÚNICO que cambia en el
+    # histórico es que sus fechas legibles pasan a valor de fecha (serial),
+    # para que la hoja ordene por fecha también ahí.
     assert [f[1] for f in escrito[1:sep]] == ["I-1", "L-1"]
-    assert escrito[sep:] == historico
+    assert escrito[sep] == historico[0]
+    assert escrito[sep + 1] == ["Histórico", "VIEJO-1", sheet_serial(date(2020, 1, 1)),
+                                "Cliente viejo"]
+    assert escrito[sep + 2] == ["Histórico", "VIEJO-2", sheet_serial(date(2020, 1, 2)),
+                                "Otro viejo"]
+
+
+def test_las_fechas_se_escriben_como_valor_de_fecha(session):
+    """Las fechas van como serial de Sheets con `numberFormat` DD/MM/AAAA, no
+    como texto: solo así la hoja ordena por fecha de verdad (como texto,
+    «1/9/2026» va antes que «12/3/2026»). Vale para la zona viva y para el
+    bloque estático; una fecha ROTA de origen se queda como texto, sin
+    inventar nada."""
+    historico = [
+        [f"{SEPARATOR_PREFIX} HISTÓRICO {SEPARATOR_PREFIX}"],
+        ["Histórico", "V-1", "27/07/202", "Cliente", "", "", "", "", "", "",
+         "2023-01-17"],                                   # fecha ROTA + ISO
+    ]
+    sheets = FakeTabs({HISTORICA: [], DEFAULT_MANAGED_TAB: [
+        list(SEGUIMIENTO_COLUMNS_V2), *historico,
+    ]})
+    push_managed_tabs(session, sheets, [_row(
+        "listo", "L-1", fecha="2026-09-01", fecha_factura="2026-09-03",
+        factura_enviada=None, recogido="2026-09-02",
+    )])
+    escrito = sheets.written[DEFAULT_MANAGED_TAB]
+    viva = escrito[1]
+    assert viva[2] == sheet_serial(date(2026, 9, 1))          # Fecha
+    assert viva[9] == sheet_serial(date(2026, 9, 3))          # Fecha factura
+    assert viva[10] == ""                                     # sin fecha
+    assert viva[14] == sheet_serial(date(2026, 9, 2))         # Fecha recogido
+    assert escrito[3][2] == "27/07/202"                       # rota: texto
+    assert escrito[3][10] == sheet_serial(date(2023, 1, 17))  # ISO: fecha
+    # Y el numberFormat de fecha cubre las 4 columnas, zona viva + estática.
+    fmts = [r["repeatCell"] for r in sheets.formats[DEFAULT_MANAGED_TAB]
+            if r.get("repeatCell", {}).get("cell", {}).get("userEnteredFormat", {})
+            .get("numberFormat", {}).get("type") == "DATE"]
+    assert sorted(f["range"]["startColumnIndex"] for f in fmts) == [2, 9, 10, 14]
+    assert all(f["cell"]["userEnteredFormat"]["numberFormat"]["pattern"] == "dd/mm/yyyy"
+               for f in fmts)
+    assert all(f["range"]["startRowIndex"] == 1 and f["range"]["endRowIndex"] == len(escrito)
+               for f in fmts)
+
+
+def test_abre_el_hueco_de_fecha_recogido_en_un_historico_de_17_columnas(session):
+    """La pestaña escrita con el formato de 17 columnas (#457) tiene el
+    histórico sin «Fecha recogido»: al volcar con la cabecera nueva se abre el
+    hueco en cada fila, para que Tracking, Nº serie y Nota no queden
+    desplazadas. Con la cabecera nueva ya escrita, no se toca nada."""
+    from app.erp.drive_managed import normalize_static_pedidos
+
+    cabecera_17 = [c for c in SEGUIMIENTO_COLUMNS_V2 if c != "Fecha recogido"]
+    fila_17 = ["Histórico", "V-1", "3/2/2026", "Roca", "WEB", "Cabezal", "", "BO",
+               "1-260001", "", "", "", "", "UPS", "TRK1", "SN-7", "Orden: revisar"]
+    sep = [f"{SEPARATOR_PREFIX} HISTÓRICO {SEPARATOR_PREFIX}"]
+    migrado = normalize_static_pedidos([sep, fila_17], cabecera_17)
+    assert migrado[1][14] == ""                      # el hueco nuevo
+    assert migrado[1][15] == "TRK1"                  # Tracking, en su sitio
+    assert migrado[1][16] == "SN-7"
+    assert migrado[1][17] == "Orden: revisar"
+    assert migrado[1][2] == sheet_serial(date(2026, 2, 3))
+    assert len(migrado[1]) == len(SEGUIMIENTO_COLUMNS_V2)
+    # Con la cabecera actual, idempotente (solo las fechas).
+    otra = normalize_static_pedidos(migrado, list(SEGUIMIENTO_COLUMNS_V2))
+    assert otra == migrado
+    # Y de punta a punta: una pestaña vieja se realinea al volcar.
+    sheets = FakeTabs({HISTORICA: [], DEFAULT_MANAGED_TAB: [cabecera_17, sep, fila_17]})
+    push_managed_tabs(session, sheets, [_row("listo", "L-1")])
+    escrito = sheets.written[DEFAULT_MANAGED_TAB]
+    assert escrito[0] == SEGUIMIENTO_COLUMNS_V2
+    assert escrito[-1][15] == "TRK1" and escrito[-1][14] == ""
 
 
 def test_preserva_el_historico_aunque_cambie_el_numero_de_vivos(session):
@@ -476,20 +555,54 @@ def test_import_historico_deja_los_pendientes_en_incidencias():
     assert inc[sep + 1][2] == TIPO_PENDIENTE
 
 
-def test_map_row_conserva_lo_que_no_tiene_columna_nueva():
-    """«Orden» (las notas a mano), vendedor, transporte… no se pierden: van a
-    «Nota / Incidencia»."""
+def test_map_row_reparte_a_columnas_y_conserva_lo_que_no_tiene_columna():
+    """Vendedor → Origen, Transporte → Envío, Preparado → Preparación,
+    Recogido → «Fecha recogido»; solo «Orden» (las notas a mano) y Proforma
+    van a «Nota / Incidencia», que ya no los repite."""
     from app.erp.seguimiento import match_header_columns
 
     col_map = match_header_columns(HEADER_VIEJA)
-    fila = map_row(_hoja_vieja()[1], col_map)
+    fila = map_row(_vieja(**{
+        "Albarán / Nº Pedido Web": "99866", "Cliente": "Roca",
+        "Fecha entrada albarán": "3/2/2026", "Vendedor": "WEB",
+        "OFI-TER-SAT": "SAT", "Transport": "UPS", "Preparado": "16/01/2023",
+        "Recogido": "17/01/2023", "Proforma": "296", "Orden": "revisar con Marta",
+        "Nº de Serie": "SN-7", "WhiteRIP": "sí",
+    }), col_map)
     assert fila[0] == SITUACION_HISTORICO
-    assert fila[1] == "99866"             # Nº pedido
-    assert fila[3] == "Roca"              # Cliente
-    assert fila[15] == "SN-7 · sí"        # Nº serie · WhiteRIP
-    assert "revisar con Marta" in fila[16]
-    assert "Bart" in fila[16]
+    assert fila[1] == "99866"                 # Nº pedido
+    assert fila[2] == "3/2/2026"              # Fecha (texto: el volcado la pasa a fecha)
+    assert fila[3] == "Roca"                  # Cliente
+    assert fila[4] == "WEB · SAT"             # Origen = vendedor + canal
+    assert fila[12] == "16/01/2023"           # Preparación ← Preparado
+    assert fila[13] == "UPS"                  # Envío ← Transporte
+    assert fila[14] == "17/01/2023"           # Fecha recogido ← Recogido
+    assert fila[16] == "SN-7 · sí"            # Nº serie · WhiteRIP
+    assert fila[17] == "Orden: revisar con Marta · Proforma: 296"
+    assert "UPS" not in fila[17] and "WEB" not in fila[17]
     assert len(fila) == len(SEGUIMIENTO_COLUMNS_V2)
+
+
+def test_import_historico_escribe_las_fechas_como_fecha():
+    """Las fechas del histórico (entrada, envío de factura, recogido) van como
+    valor de fecha con su `numberFormat`; una rota, como texto."""
+    hoja = [
+        HEADER_VIEJA,
+        _vieja(**{"Albarán / Nº Pedido Web": "1", "Fecha entrada albarán": "3/2/2026",
+                  "Recogido": "17/01/2023", "F Envío Factura": "27/07/202"}),
+    ]
+    sheets = FakeTabs({HISTORICA: hoja})
+    import_historico(sheets, pedidos_tab=DEFAULT_MANAGED_TAB,
+                     incidencias_tab=DEFAULT_INCIDENCIAS_TAB, dry_run=False)
+    destino = sheets.written[DEFAULT_MANAGED_TAB]
+    fila = destino[-1]
+    assert fila[2] == sheet_serial(date(2026, 2, 3))
+    assert fila[14] == sheet_serial(date(2023, 1, 17))
+    assert fila[10] == "27/07/202"
+    formatos = [r["repeatCell"]["cell"]["userEnteredFormat"]
+                for r in sheets.formats[DEFAULT_MANAGED_TAB] if "repeatCell" in r]
+    tipos = [f["numberFormat"]["type"] for f in formatos if "numberFormat" in f]
+    assert tipos.count("DATE") == len(PEDIDOS_DATE_COLUMNS)
 
 
 def test_import_historico_escribe_en_otra_pestana_y_no_toca_la_vieja():

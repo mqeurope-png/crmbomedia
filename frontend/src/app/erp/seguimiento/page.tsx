@@ -55,6 +55,7 @@ const HEADERS: { label: string; sort: string | null }[] = [
   { label: "Cobro", sort: null },
   { label: "Preparación", sort: null },
   { label: "Envío", sort: null },
+  { label: "Fecha recogido", sort: null },
   { label: "Tracking", sort: null },
   { label: "Nº serie · WhiteRIP", sort: null },
   { label: "Nota / Incidencia", sort: null },
@@ -1005,6 +1006,8 @@ export default function SeguimientoPage() {
                   <td className={r.envio === "No aplica" ? "muted small" : "small"}>
                     {r.envio}
                   </td>
+                  {/* Fecha real de recogida (Cola SAT: recogido / en tránsito). */}
+                  <td>{d(r.recogido)}</td>
                   <td className="muted small">{r.tracking ?? "—"}</td>
                   <td className="muted small">{r.serie_whiterip || "—"}</td>
                   <td className="small">{r.nota_incidencia || "—"}</td>
