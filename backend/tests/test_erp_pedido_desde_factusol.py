@@ -8,6 +8,7 @@ uno más, y el filtro «solo processing» de #387 (ingesta Woo) ni lo ve.
 from __future__ import annotations
 
 from collections.abc import Generator
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import patch
 
@@ -289,9 +290,18 @@ def test_crear_pedido_desde_presupuesto_factusol(session_factory, http) -> None:
         o = s.get(Order, body["id"])
         assert o.external_source == OrderSource.FACTUSOL_PROFORMA
         assert o.external_id == "574"
-    # Entra en la bandeja como uno más y en el seguimiento con su nº de proforma.
+    # Entra en la bandeja como uno más. En SEGUIMIENTO todavía no: nace en
+    # «Pendiente de revisión» y esa vista solo lista pedidos vivos ya
+    # aprobados (un pedido sin aprobar aún no ha entrado al flujo).
     assert _numeros(_bandeja(http)) == {"PRO-000574"}
-    seg = http.get("/api/erp/seguimiento", headers=auth_headers(http, "pedidos")).json()
+    h = auth_headers(http, "pedidos")
+    assert http.get("/api/erp/seguimiento", headers=h).json()["items"] == []
+    # Aprobado, aparece con su nº de proforma.
+    with session_factory() as s:
+        o = s.get(Order, body["id"])
+        o.approved_at = datetime.now(UTC)
+        s.commit()
+    seg = http.get("/api/erp/seguimiento", headers=h).json()
     assert [row["proforma"] for row in seg["items"]] == ["574"]
 
 

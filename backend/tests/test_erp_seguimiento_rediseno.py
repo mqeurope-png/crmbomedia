@@ -30,6 +30,7 @@ from app.erp.models import (
     InvoiceStatus,
     Order,
     OrderSource,
+    PaymentStatus,
     PreparationStatus,
     TransportStatus,
 )
@@ -109,8 +110,11 @@ def _seed(s: Session) -> None:
     ))
     # C — aprobado, sin factura → «Por facturar».
     _order(s, "ART-900003", cid)
-    # D — sin aprobar → «Por revisar».
+    # D — pedido WEB sin aprobar → «Por revisar». Es web a propósito: a un
+    # pedido de la tienda no se le exige aprobación para estar en Seguimiento
+    # (está vivo desde que entra); a un manual sin aprobar, sí.
     _order(s, "ART-900004", cid, approved_at=None,
+           external_source=OrderSource.WOOCOMMERCE, external_id="900004",
            preparation_status=PreparationStatus.PENDING_REVIEW)
     # E — excepción abierta → «Incidencia» (aunque tenga factura).
     e = _order(s, "ART-900005", cid, factusol_invoice_number="5-260005")
@@ -194,3 +198,72 @@ def test_orden_por_situacion_funciona_como_defecto(session_factory, http) -> Non
         [i["order_number"] for i in sin_sort.json()["items"]]
         == [i["order_number"] for i in con_sort.json()["items"]]
     )
+
+
+# --- solo pedidos VIVOS -------------------------------------------------------
+
+
+def test_un_manual_sin_aprobar_no_sale_en_seguimiento(session_factory, http) -> None:
+    """Seguimiento es la lista de pedidos vivos: un manual que nadie ha
+    aprobado todavía no ha entrado al flujo. Sigue a un clic en «Ver ocultos
+    por estado», y en cuanto se aprueba aparece."""
+    with session_factory() as s:
+        cid = _company(s)
+        _order(s, "MANUAL-1", cid, approved_at=None,
+               preparation_status=PreparationStatus.PENDING_REVIEW)
+        s.commit()
+    h = auth_headers(http, "pedidos")
+    listado = http.get("/api/erp/seguimiento", headers=h).json()
+    assert "MANUAL-1" not in {i["order_number"] for i in listado["items"]}
+
+    ocultos = http.get("/api/erp/seguimiento?ver_ocultos_estado=true",
+                       headers=h).json()["items"]
+    fila = next(i for i in ocultos if i["order_number"] == "MANUAL-1")
+    assert fila["estado_woo_motivo"] == "sin_aprobar"
+
+
+def test_al_aprobarlo_vuelve_a_seguimiento(session_factory, http) -> None:
+    with session_factory() as s:
+        cid = _company(s)
+        oid = _order(s, "MANUAL-2", cid, approved_at=None,
+                     preparation_status=PreparationStatus.PENDING_REVIEW).id
+        s.commit()
+    h = auth_headers(http, "pedidos")
+    assert "MANUAL-2" not in {
+        i["order_number"] for i in http.get("/api/erp/seguimiento", headers=h).json()["items"]
+    }
+    with session_factory() as s:
+        o = s.get(Order, oid)
+        o.approved_at = _dt("2026-09-05")
+        o.preparation_status = PreparationStatus.IN_QUEUE
+        s.commit()
+    assert "MANUAL-2" in {
+        i["order_number"] for i in http.get("/api/erp/seguimiento", headers=h).json()["items"]
+    }
+
+
+def test_un_pedido_anulado_no_sale_en_seguimiento(session_factory, http) -> None:
+    """El caso reportado: se anula y seguía saliendo como «Pendiente»."""
+    with session_factory() as s:
+        cid = _company(s)
+        o = _order(s, "MANUAL-3", cid)
+        o.cancelled_at = _dt("2026-09-06")
+        s.commit()
+    h = auth_headers(http, "pedidos")
+    listado = http.get("/api/erp/seguimiento", headers=h).json()
+    assert "MANUAL-3" not in {i["order_number"] for i in listado["items"]}
+    ocultos = http.get("/api/erp/seguimiento?ver_ocultos_estado=true",
+                       headers=h).json()["items"]
+    assert next(i for i in ocultos
+                if i["order_number"] == "MANUAL-3")["estado_woo_motivo"] == "anulado"
+
+
+def test_aprobado_sin_pagar_sigue_en_seguimiento(session_factory, http) -> None:
+    """No se excluye por falta de cobro."""
+    with session_factory() as s:
+        cid = _company(s)
+        _order(s, "MANUAL-4", cid, payment_status=PaymentStatus.PENDING)
+        s.commit()
+    listado = http.get("/api/erp/seguimiento",
+                       headers=auth_headers(http, "pedidos")).json()
+    assert "MANUAL-4" in {i["order_number"] for i in listado["items"]}

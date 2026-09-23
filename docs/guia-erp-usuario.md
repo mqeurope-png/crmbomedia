@@ -513,6 +513,21 @@ sustituye el Excel manual de seguimiento: la app la genera y la **ordena sola**,
 sin mover filas a mano. Una **fila por pedido**, con el estado en una **columna**
 (no en la posición). Por defecto muestra los pedidos en curso.
 
+**Qué entra y qué no.** Seguimiento es la lista de pedidos **vivos**:
+
+- **Entran** los pedidos activos que ya están en el flujo: los manuales
+  **aprobados** y los pedidos **web**, *aunque no estén pagados* — un pedido
+  aprobado sin cobrar es justo lo que hay que ver.
+- **Quedan fuera** los **anulados**, los **reembolsados**, los pedidos web
+  **cancelados / fallidos / en la papelera**, y los **manuales que nadie ha
+  aprobado todavía** (aún no han entrado al flujo; en cuanto se aprueban,
+  aparecen).
+
+Nada de eso se borra: está a un clic en **«Ver ocultos por estado»**, con el
+motivo por el que salió (*anulado*, *sin aprobar*, *cancelled*, *refunded*…).
+Y esto vale igual para los tres sitios: la pantalla, **«Descargar Excel»** y la
+pestaña **«Seguimiento (app)»** de Drive, que salen de la misma consulta.
+
 **Columnas (en orden):** **Situación**, **Nº pedido**, **Fecha**, **Cliente**,
 **Origen** (WEB o el canal), **Productos**, **Importe**, **Empresa (serie)**
 (p. ej. «2 · MQ Europe»), **Factura**, **Fecha factura**, **Factura enviada**

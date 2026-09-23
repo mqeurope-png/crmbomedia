@@ -601,11 +601,17 @@ def visibility_for_status(
     order: Order, estado: str, woo_status: str | None,
 ) -> tuple[bool, str | None, bool]:
     """(oculto_por_estado, motivo, reembolsado_visible) para un estado de
-    WooCommerce dado, según la regla de Bart:
+    WooCommerce dado:
       - cancelled / failed (y trash) → FUERA, siempre.
-      - refunded sin cumplir (ni enviado ni facturado) → FUERA (como cancelado).
-      - refunded ya cumplido → se QUEDA, marcado «reembolsado».
+      - refunded → FUERA. Se marca `reembolsado` si el pedido llegó a cumplirse
+        (enviado o facturado), para poder distinguirlo al revisarlo.
       - pending / processing / completed / on-hold / None → normal, se queda.
+
+    Un reembolso CUMPLIDO se quedaba antes en la vista, marcado «reembolsado».
+    Ya no: el seguimiento es la lista de pedidos vivos y un reembolsado no lo
+    está. Sigue a un clic, en «Ver ocultos por estado», y el trabajo contable
+    que le quede (un abono) vive en la BANDEJA, que no se toca aquí.
+
     Es INDEPENDIENTE de la exclusión manual de F6-fix7 (que va por su flag).
     La reconciliación la usa con el estado RECIÉN consultado en la tienda."""
     st = (woo_status or "").strip().lower()
@@ -613,7 +619,7 @@ def visibility_for_status(
         return True, st, False
     if st == "refunded":
         if _is_fulfilled(order, estado):
-            return False, "refunded", True
+            return True, "refunded", True
         return True, "refunded_sin_cumplir", False
     return False, None, False
 
@@ -621,6 +627,29 @@ def visibility_for_status(
 def woo_status_visibility(order: Order, estado: str) -> tuple[bool, str | None, bool]:
     """Visibilidad según el estado de WooCommerce ALMACENADO en el pedido."""
     return visibility_for_status(order, estado, order.woo_status)
+
+
+def seguimiento_visibility(order: Order, estado: str) -> tuple[bool, str | None, bool]:
+    """(oculto, motivo, reembolsado) para el SEGUIMIENTO, que es la lista de
+    pedidos VIVOS: fuera lo anulado, lo reembolsado/cancelado en la tienda y lo
+    que todavía no ha entrado al flujo.
+
+    Se resuelve con los flags que ya existen —no hay estado nuevo—: la
+    anulación por `cancelled_at`, la aprobación por `workflow.is_approved` (que
+    cuenta también los pedidos ya avanzados y las muestras, que entran directas
+    a la Cola SAT) y el estado de la tienda por `woo_status_visibility`.
+
+    Ojo con el orden: la aprobación NO se le exige a un pedido WEB. Un pedido
+    de la tienda está vivo desde que entra, aunque nadie lo haya aprobado aún
+    (y de hecho su cola es «Por revisar», que es justo donde hay que verlo).
+    Exigírsela los sacaría a todos de la vista."""
+    from app.erp.workflow import is_approved, is_web_order  # noqa: PLC0415
+
+    if order.cancelled_at is not None:
+        return True, "anulado", False
+    if not is_web_order(order) and not is_approved(order):
+        return True, "sin_aprobar", False
+    return woo_status_visibility(order, estado)
 
 
 # --- rediseño 2026: hoja simplificada, ordenada por Situación ------------------
@@ -936,9 +965,10 @@ def build_rows(
         )
         serie = serie_invoice if serie_invoice is not None else serie_store
         estado = _estado(o)
-        # ERP-Woo — regla de cancelado/reembolsado/fallido (independiente de la
+        # Regla de vivos: anulado / sin aprobar / cancelado-reembolsado en la
+        # tienda quedan FUERA (independiente de la
         # exclusión manual de F6-fix7).
-        oculto_estado, estado_woo_motivo, reembolsado = woo_status_visibility(o, estado)
+        oculto_estado, estado_woo_motivo, reembolsado = seguimiento_visibility(o, estado)
         productos = " · ".join(
             f"{float(line.quantity):g}× {line.description or line.product_sku}"
             for line in o.lines

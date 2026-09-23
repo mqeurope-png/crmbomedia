@@ -900,7 +900,10 @@ export type WooReconcileSummary = {
   to_trash: number;
   to_refund_out: number;
   removed_total: number;
-  to_refund_kept: number;
+  /** Reembolsos YA CUMPLIDOS (enviados o facturados). También salen del
+   *  seguimiento —es la lista de pedidos vivos—, marcados «reembolsado» para
+   *  poder distinguirlos en «Ver ocultos por estado». */
+  to_refund_done: number;
   errors: { order_number?: string | null; store?: string; status?: string; error: string }[];
   samples: Record<string, string[]>;
 };
