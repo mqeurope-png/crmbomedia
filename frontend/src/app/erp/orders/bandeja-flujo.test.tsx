@@ -43,6 +43,9 @@ jest.mock("../../lib/api", () => ({
 jest.mock("../../lib/erpApi", () => ({
   ERP_EDIT_ROLES: ["admin", "pedidos"],
   EXCLUSION_REASON_CODES: ["cancelado", "otro"],
+  WORKFLOW_QUEUES: [
+    "por_revisar", "por_facturar", "por_cobrar", "por_enviar", "incidencias", "listo",
+  ],
   customerLabel: (o: { contact_name?: string | null; company_name?: string | null }) =>
     [o.contact_name, o.company_name].filter(Boolean).join(" · "),
   listOrders: jest.fn(),
@@ -148,6 +151,13 @@ function page(items: unknown[]) {
 
 function row(number: string) {
   return screen.getByText(number).closest("[data-order-row]") as HTMLElement;
+}
+
+/** El Nº de cada pedido VISIBLE, en el orden en que salen en el DOM — vale
+ *  igual para Tarjetas (`<article>`) que para Lista (`<tr>`). */
+function ordenVisible(): string[] {
+  return Array.from(document.querySelectorAll("[data-order-row]"))
+    .map((el) => el.getAttribute("data-order-row") as string);
 }
 
 async function abrirMenu(user: ReturnType<typeof userEvent.setup>, numero: string) {
@@ -355,17 +365,19 @@ describe("ERP · Bandeja (Lote B7) — filtros nuevos y orden", () => {
     })));
   });
 
-  it("el botón de orden invierte la fecha (desc ↔ asc) y la fecha va destacada en cada fila", async () => {
+  it("A2: «Ordenar por» + el botón de sentido invierten la fecha (desc ↔ asc) y la fecha va destacada en cada fila", async () => {
     const user = userEvent.setup();
     render(<ErpOrdersPage />);
     await screen.findByText("BOPRIN-1");
     expect(within(row("BOPRIN-1")).getByText("8/9/2026")).toHaveClass("erp-flow-date");
 
+    // Por defecto: Fecha, descendente.
+    expect(screen.getByRole("combobox", { name: "Ordenar por" })).toHaveValue("fecha");
     const orden = screen.getByRole("button", { name: "Orden descendente" });
-    expect(orden).toHaveTextContent("Fecha ↓");
+    expect(orden).toHaveTextContent("↓ desc");
     await user.click(orden);
     await waitFor(() => expect(ultimaLlamada()).toEqual(expect.objectContaining({ sort: "placed_asc" })));
-    expect(screen.getByRole("button", { name: "Orden ascendente" })).toHaveTextContent("Fecha ↑");
+    expect(screen.getByRole("button", { name: "Orden ascendente" })).toHaveTextContent("↑ asc");
     await user.click(screen.getByRole("button", { name: "Orden ascendente" }));
     await waitFor(() => expect(ultimaLlamada()).toEqual(expect.objectContaining({ sort: "placed_desc" })));
   });
@@ -609,5 +621,110 @@ describe("ERP · Bandeja (Lote B7) — vista lista", () => {
     await screen.findByText("BOPRIN-1");
     expect(screen.getByRole("table")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Lista" })).toHaveAttribute("aria-pressed", "true");
+  });
+});
+
+// --- Buscador + orden + tipo de pedido (A1/A2/A3) ----------------------------
+
+const W1 = order({
+  id: "w-1", order_number: "BOPRIN-10", contact_name: "Ana", company_name: null,
+  total_amount: 200, placed_at: "2026-09-20T10:00:00",
+  workflow: wf({ queue: "listo", queue_label: "Listo", next_action: "ninguna" }),
+});
+const M1 = order({
+  id: "m-1", order_number: "MANUAL-000005", external_source: "manual",
+  contact_name: "Bruno", company_name: null, total_amount: 50,
+  placed_at: "2026-09-10T10:00:00",
+  workflow: wf({ queue: "por_revisar", queue_label: "Por revisar", next_action: "ninguna" }),
+});
+const S1 = order({
+  id: "s-1", order_number: "MUESTRA-0007", external_source: "manual", order_kind: "sample",
+  contact_name: "Carla", company_name: null, total_amount: 0,
+  placed_at: "2026-09-23T10:00:00",
+  workflow: wf({ queue: "por_enviar", queue_label: "Por enviar", next_action: "ninguna" }),
+});
+const P1 = order({
+  id: "p-1", order_number: "PRO-99", external_source: "factusol_proforma",
+  contact_name: "Diego", company_name: null, total_amount: 999,
+  placed_at: "2026-09-01T10:00:00",
+  workflow: wf({ queue: "por_facturar", queue_label: "Por facturar", next_action: "ninguna" }),
+});
+
+describe("ERP · Bandeja — buscador, orden y tipo (A1/A2/A3)", () => {
+  beforeEach(() => {
+    (listOrders as jest.Mock).mockResolvedValue(page([W1, M1, S1, P1]));
+  });
+
+  it("A1: el buscador filtra por cliente y por Nº de pedido, en vivo", async () => {
+    const user = userEvent.setup();
+    render(<ErpOrdersPage />);
+    await screen.findByText("BOPRIN-10");
+
+    await user.type(screen.getByRole("searchbox", { name: "Buscar pedidos" }), "ana");
+    expect(ordenVisible()).toEqual(["BOPRIN-10"]);
+
+    await user.clear(screen.getByRole("searchbox", { name: "Buscar pedidos" }));
+    await user.type(screen.getByRole("searchbox", { name: "Buscar pedidos" }), "manual-000005");
+    expect(ordenVisible()).toEqual(["MANUAL-000005"]);
+
+    // Sin resultados: aviso propio (no confundir con «bandeja vacía»).
+    await user.clear(screen.getByRole("searchbox", { name: "Buscar pedidos" }));
+    await user.type(screen.getByRole("searchbox", { name: "Buscar pedidos" }), "nadie tiene este nombre");
+    expect(screen.getByText("Ningún pedido coincide con la búsqueda o el filtro de tipo.")).toBeInTheDocument();
+
+    // No llama otra vez al backend: es un filtro EN VIVO sobre lo cargado.
+    expect(listOrders).toHaveBeenCalledTimes(1);
+  });
+
+  it("A2: ordena por Fecha, Importe, Cliente y Situación, igual en Tarjetas y en Lista; por defecto Fecha desc", async () => {
+    const user = userEvent.setup();
+    render(<ErpOrdersPage />);
+    await screen.findByText("BOPRIN-10");
+
+    // Por defecto: Fecha, la más reciente primero.
+    expect(screen.getByRole("combobox", { name: "Ordenar por" })).toHaveValue("fecha");
+    expect(ordenVisible()).toEqual(["MUESTRA-0007", "BOPRIN-10", "MANUAL-000005", "PRO-99"]);
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "Ordenar por" }), "importe");
+    expect(ordenVisible()).toEqual(["PRO-99", "BOPRIN-10", "MANUAL-000005", "MUESTRA-0007"]);
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "Ordenar por" }), "cliente");
+    expect(ordenVisible()).toEqual(["PRO-99", "MUESTRA-0007", "MANUAL-000005", "BOPRIN-10"]);
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "Ordenar por" }), "situacion");
+    expect(ordenVisible()).toEqual(["BOPRIN-10", "MUESTRA-0007", "PRO-99", "MANUAL-000005"]);
+
+    // El mismo orden en la vista Lista.
+    await user.click(screen.getByRole("button", { name: "Lista" }));
+    expect(ordenVisible()).toEqual(["BOPRIN-10", "MUESTRA-0007", "PRO-99", "MANUAL-000005"]);
+  });
+
+  it("A3: el filtro de tipo usa el mismo origen que las tarjetas (WEB/Manual/Muestra/Proforma)", async () => {
+    const user = userEvent.setup();
+    render(<ErpOrdersPage />);
+    await screen.findByText("BOPRIN-10");
+
+    await user.click(screen.getByRole("button", { name: "Filtro tipo Muestra" }));
+    expect(ordenVisible()).toEqual(["MUESTRA-0007"]);
+    expect(screen.getByRole("button", { name: "Filtro tipo Muestra" })).toHaveAttribute("aria-pressed", "true");
+    await user.click(screen.getByRole("button", { name: "Filtro tipo Muestra" }));
+
+    await user.click(screen.getByRole("button", { name: "Filtro tipo WEB" }));
+    expect(ordenVisible()).toEqual(["BOPRIN-10"]);
+    await user.click(screen.getByRole("button", { name: "Filtro tipo WEB" }));
+
+    await user.click(screen.getByRole("button", { name: "Filtro tipo Proforma" }));
+    expect(ordenVisible()).toEqual(["PRO-99"]);
+    await user.click(screen.getByRole("button", { name: "Filtro tipo Proforma" }));
+
+    await user.click(screen.getByRole("button", { name: "Filtro tipo Manual" }));
+    expect(ordenVisible()).toEqual(["MANUAL-000005"]);
+
+    // Multiselección: Manual + Muestra a la vez.
+    await user.click(screen.getByRole("button", { name: "Filtro tipo Muestra" }));
+    expect([...ordenVisible()].sort()).toEqual(["MANUAL-000005", "MUESTRA-0007"].sort());
+
+    // No llama otra vez al backend.
+    expect(listOrders).toHaveBeenCalledTimes(1);
   });
 });

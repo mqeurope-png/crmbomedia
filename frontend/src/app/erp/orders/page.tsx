@@ -38,6 +38,7 @@ import {
   refreshOrdersFactusolCobro,
   uncompleteOrder,
   type WorkflowQueue,
+  WORKFLOW_QUEUES,
 } from "../../lib/erpApi";
 
 function d(iso: string | null | undefined): string {
@@ -50,6 +51,65 @@ function d(iso: string | null | undefined): string {
 
 type SortDir = "desc" | "asc";
 type Vista = "cards" | "list";
+
+/** A2 (Lote de bandeja): campo de orden — como mínimo Fecha/Importe/Cliente/
+ *  Situación (la cola de trabajo). Reemplaza al viejo botón «Fecha ↓», que
+ *  solo invertía el sentido. */
+type SortBy = "fecha" | "importe" | "cliente" | "situacion";
+const SORT_LABEL: Record<SortBy, string> = {
+  fecha: "Fecha", importe: "Importe", cliente: "Cliente", situacion: "Situación",
+};
+/** Prioridad de cola (la misma que las tarjetas arriba), para ordenar por
+ *  Situación: «por revisar» antes que «listo». */
+const QUEUE_ORDER: Record<WorkflowQueue, number> = Object.fromEntries(
+  WORKFLOW_QUEUES.map((q, i) => [q, i]),
+) as Record<WorkflowQueue, number>;
+
+/** Orden de la bandeja (Tarjetas y Lista comparten la misma lista ya
+ *  ordenada): por Fecha, Importe, Cliente o Situación (cola). Sin fecha /
+ *  sin cola, siempre al final, sea el sentido que sea — igual que en
+ *  Seguimiento. Empate → Nº de pedido, para que el orden sea estable. */
+function compareOrders(a: OrderSummary, b: OrderSummary, by: SortBy, dir: SortDir): number {
+  const mul = dir === "asc" ? 1 : -1;
+  if (by === "cliente") {
+    const av = customerLabel(a).toLocaleLowerCase();
+    const bv = customerLabel(b).toLocaleLowerCase();
+    return av.localeCompare(bv) * mul || a.order_number.localeCompare(b.order_number);
+  }
+  if (by === "importe") {
+    return (a.total_amount - b.total_amount) * mul
+      || a.order_number.localeCompare(b.order_number);
+  }
+  if (by === "situacion") {
+    const av = a.workflow ? QUEUE_ORDER[a.workflow.queue] : 99;
+    const bv = b.workflow ? QUEUE_ORDER[b.workflow.queue] : 99;
+    return (av - bv) * mul || a.order_number.localeCompare(b.order_number);
+  }
+  const av = a.placed_at ? Date.parse(a.placed_at) : null;
+  const bv = b.placed_at ? Date.parse(b.placed_at) : null;
+  if (av == null || bv == null) {
+    if (av == null && bv == null) return a.order_number.localeCompare(b.order_number);
+    return av == null ? 1 : -1;
+  }
+  return (av - bv) * mul || a.order_number.localeCompare(b.order_number);
+}
+
+/** A3: tipo/canal del pedido, con el MISMO criterio que ya distingue las
+ *  tarjetas (`sourcePill`, `isSampleOrder`): muestra > web > manual >
+ *  proforma de FACTUSOL. Los demás orígenes (pedido/albarán/factura de
+ *  FACTUSOL) no caen en ninguno de los cuatro — no se inventa un tipo para
+ *  ellos, así que ningún filtro de tipo los incluye. */
+type TipoPedido = "sample" | "web" | "manual" | "factusol_proforma";
+const TIPO_OPTIONS: [TipoPedido, string][] = [
+  ["web", "WEB"], ["manual", "Manual"], ["sample", "Muestra"], ["factusol_proforma", "Proforma"],
+];
+function tipoDePedido(o: OrderSummary): TipoPedido | null {
+  if (isSampleOrder(o)) return "sample";
+  if (o.external_source === "woocommerce") return "web";
+  if (o.external_source === "manual") return "manual";
+  if (o.external_source === "factusol_proforma") return "factusol_proforma";
+  return null;
+}
 
 /** Vista de revisión (Lote 2 A2): la bandeja normal («activos»), SOLO los
  *  quitados a mano («ocultados») o SOLO los anulados («anulados»). Son
@@ -87,6 +147,8 @@ type Filtros = {
   from: string;
   to: string;
   sortDir: SortDir;
+  /** A2: campo de orden (Fecha por defecto). */
+  sortBy: SortBy;
 };
 
 /** Al entrar por primera vez: pagados y sin completar (lo que toca trabajar).
@@ -94,7 +156,7 @@ type Filtros = {
  *  vuelve a esto. */
 const DEFAULT_FILTROS: Filtros = {
   prep: "", payment: "paid", completed: "no", cobro: "", invoiced: "",
-  invoiceEmail: "", store: "", from: "", to: "", sortDir: "desc",
+  invoiceEmail: "", store: "", from: "", to: "", sortDir: "desc", sortBy: "fecha",
 };
 /** «Limpiar filtros»: todo a «todos», sin ningún valor por defecto. */
 const EMPTY_FILTROS: Filtros = { ...DEFAULT_FILTROS, payment: "", completed: "" };
@@ -135,6 +197,8 @@ function sanitizeFiltros(raw: unknown): Filtros {
     const v = src[key];
     if (key === "sortDir") {
       if (v === "asc" || v === "desc") out.sortDir = v;
+    } else if (key === "sortBy") {
+      if (v === "fecha" || v === "importe" || v === "cliente" || v === "situacion") out.sortBy = v;
     } else if (typeof v === "string") {
       out[key] = v;
     }
@@ -233,6 +297,11 @@ function ErpOrdersScreen() {
   const [refreshingCobros, setRefreshingCobros] = useState(false);
   // Tiendas Woo dadas de alta (para el filtro «Tienda» y la pastilla de origen).
   const [stores, setStores] = useState<{ slug: string; label: string }[]>([]);
+  // A1/A3: buscador (cliente / Nº / factura / albarán) y tipo de pedido — en
+  // vivo sobre lo ya cargado, no se persisten (como `revision`): no tiene
+  // sentido volver a entrar con un filtro de refinamiento puesto sin querer.
+  const [query, setQuery] = useState("");
+  const [tipos, setTipos] = useState<Set<TipoPedido>>(new Set());
 
   // Roles y permisos: `canEdit` = trabajo de oficina sobre pedidos (aprobar,
   // completar, acciones de bloque) — admin/pedidos/comercial. El COBRO en
@@ -260,7 +329,10 @@ function ErpOrdersScreen() {
         cobro: (filtros.cobro || undefined) as "cobrada" | "pendiente" | "sin_comprobar" | undefined,
         invoice_email: (filtros.invoiceEmail || undefined) as "enviada" | "no_enviada" | undefined,
         queue: queue ?? undefined,
-        sort: filtros.sortDir === "asc" ? "placed_asc" : "placed_desc",
+        // El orden de verdad (Importe/Cliente/Situación incluidos) se aplica
+        // en cliente sobre lo cargado (`filteredRows`); aquí solo se pide al
+        // backend la ventana de fecha que toca recortar a `PAGE_LIMIT`.
+        sort: filtros.sortBy === "fecha" && filtros.sortDir === "asc" ? "placed_asc" : "placed_desc",
         limit: PAGE_LIMIT,
       });
       setRows(r.items);
@@ -320,12 +392,31 @@ function ErpOrdersScreen() {
     setFiltro("sortDir", filtros.sortDir === "desc" ? "asc" : "desc");
   }
 
+  /** Cabecera de columna (vista Lista): si ya se ordena por ese campo,
+   *  invierte el sentido; si no, cambia de campo (con el sentido que tuviera). */
+  function sortByClick(by: SortBy) {
+    setFiltros((prev) => (
+      prev.sortBy === by ? { ...prev, sortDir: prev.sortDir === "desc" ? "asc" : "desc" }
+        : { ...prev, sortBy: by }
+    ));
+  }
+
+  function toggleTipo(value: TipoPedido) {
+    setTipos((prev) => {
+      const next = new Set(prev);
+      if (next.has(value)) next.delete(value); else next.add(value);
+      return next;
+    });
+  }
+
   /** «Limpiar filtros»: TODO a «todos» (ni los defaults, ni cola, ni vistas
-   *  de revisión). */
+   *  de revisión, ni búsqueda ni tipo). */
   function limpiarFiltros() {
     setFiltros(EMPTY_FILTROS);
     setQueue(null);
     setShowExternal(false);
+    setQuery("");
+    setTipos(new Set());
     setRevision("activos");
   }
 
@@ -336,6 +427,28 @@ function ErpOrdersScreen() {
     for (const s of stores) m.set(s.slug.slice(0, 6).toUpperCase(), s.label);
     return m;
   }, [stores]);
+
+  /** A1 + A2 + A3: lo que se VE, sobre `rows` ya filtrado por el backend
+   *  (Tienda, fechas, Activos/Ocultados/Anulados…) — búsqueda y tipo son
+   *  refinamiento EN VIVO sobre eso, y el orden final es el mismo en
+   *  Tarjetas y en Lista. */
+  const filteredRows = useMemo(() => {
+    let out = rows;
+    if (tipos.size > 0) out = out.filter((o) => {
+      const t = tipoDePedido(o);
+      return t != null && tipos.has(t);
+    });
+    const needle = query.trim().toLocaleLowerCase();
+    if (needle) {
+      out = out.filter((o) => {
+        const hay = [
+          customerLabel(o), o.order_number, o.factusol_invoice_number, o.factusol_albaran_number,
+        ].map((s) => (s || "").toLocaleLowerCase()).join(" ");
+        return hay.includes(needle);
+      });
+    }
+    return [...out].sort((a, b) => compareOrders(a, b, filtros.sortBy, filtros.sortDir));
+  }, [rows, tipos, query, filtros.sortBy, filtros.sortDir]);
 
   /** Origen del pedido, como pastilla (tienda web / manual / FACTUSOL), o el
    *  TIPO cuando no es un pedido corriente (muestra no facturable). */
@@ -373,7 +486,7 @@ function ErpOrdersScreen() {
 
   function toggleAll() {
     setSelected((prev) =>
-      prev.size === rows.length ? new Set() : new Set(rows.map((r) => r.id)),
+      prev.size === filteredRows.length ? new Set() : new Set(filteredRows.map((r) => r.id)),
     );
   }
 
@@ -813,22 +926,24 @@ function ErpOrdersScreen() {
   if (filtros.from) chips.push({ key: "from", label: `Desde ${d(filtros.from)}` });
   if (filtros.to) chips.push({ key: "to", label: `Hasta ${d(filtros.to)}` });
   const hayFiltros = chips.length > 0 || !!queue || showExternal || revision !== "activos"
-    || filtros.sortDir !== "desc";
+    || filtros.sortDir !== "desc" || filtros.sortBy !== "fecha" || query.trim() !== "" || tipos.size > 0;
   const esDefault = mismosFiltros(filtros, DEFAULT_FILTROS);
 
   const enCola = queue ? QUEUE_LABEL[queue] : "Todos los pedidos";
   const subtitulo = (queue
-    ? `· ${rows.length} pedido(s) ${QUEUE_HINT[queue]}`
-    : `· ${rows.length} pedido(s)`)
+    ? `· ${filteredRows.length} pedido(s) ${QUEUE_HINT[queue]}`
+    : `· ${filteredRows.length} pedido(s)`)
     + (rows.length >= PAGE_LIMIT ? ` (los ${PAGE_LIMIT} primeros: afina los filtros)` : "");
 
   const vacio = showCancelled
     ? "No hay pedidos anulados."
     : showExcluded
       ? "No hay pedidos ocultados."
-      : queue
-        ? "Esta cola está vacía con los filtros actuales."
-        : "No hay pedidos con este filtro.";
+      : rows.length > 0
+        ? "Ningún pedido coincide con la búsqueda o el filtro de tipo."
+        : queue
+          ? "Esta cola está vacía con los filtros actuales."
+          : "No hay pedidos con este filtro.";
 
   return (
     <main className="shell shell-wide erp-flow">
@@ -857,6 +972,15 @@ function ErpOrdersScreen() {
 
       {/* Los filtros de siempre: ahora REFINAN la cola elegida. */}
       <div className="wf-list-filters erp-flow-filters" role="search" aria-label="Filtros de la bandeja">
+        {/* A1: buscador en vivo sobre lo ya cargado (respeta el resto de
+            filtros, que son los que deciden QUÉ se carga). */}
+        <label className="field erp-flow-filter-grow">
+          <span className="sr-only">Buscar</span>
+          <input
+            type="search" value={query} placeholder="Buscar por cliente, Nº, factura o albarán…"
+            aria-label="Buscar pedidos" onChange={(e) => setQuery(e.target.value)}
+          />
+        </label>
         <span className="erp-flow-filters-label">Refinar</span>
         <select value={filtros.prep} onChange={(e) => setFiltro("prep", e.target.value)} aria-label="Filtro preparación">
           <option value="">Preparación: todas</option>
@@ -901,15 +1025,27 @@ function ErpOrdersScreen() {
                  min={filtros.from || undefined}
                  onChange={(e) => setFiltro("to", e.target.value)} />
         </label>
+        {/* A2: campo + sentido (sustituye al viejo «Fecha ↓», que solo invertía). */}
+        <label className="field">
+          <span>Ordenar por</span>
+          <select
+            value={filtros.sortBy} aria-label="Ordenar por"
+            onChange={(e) => setFiltro("sortBy", e.target.value as SortBy)}
+          >
+            {(Object.keys(SORT_LABEL) as SortBy[]).map((k) => (
+              <option key={k} value={k}>{SORT_LABEL[k]}</option>
+            ))}
+          </select>
+        </label>
         <button
           type="button" className="button small secondary"
           aria-label={filtros.sortDir === "desc" ? "Orden descendente" : "Orden ascendente"}
           title={filtros.sortDir === "desc"
-            ? "Por fecha del pedido, los más recientes primero (pulsa para invertir)"
-            : "Por fecha del pedido, los más antiguos primero (pulsa para invertir)"}
+            ? "Los más recientes/altos primero (pulsa para invertir)"
+            : "Los más antiguos/bajos primero (pulsa para invertir)"}
           onClick={toggleSort}
         >
-          {filtros.sortDir === "desc" ? "Fecha ↓" : "Fecha ↑"}
+          {filtros.sortDir === "desc" ? "↓ desc" : "↑ asc"}
         </button>
         <button
           type="button" className="button small secondary" disabled={busy || refreshingCobros || loading}
@@ -941,6 +1077,23 @@ function ErpOrdersScreen() {
               aria-label={`Ver ${label.toLowerCase()}`}
               title={hint}
               onClick={() => setRevision(value)}
+            >
+              {label}
+            </button>
+          ))}
+        </span>
+        {/* A3: tipo/canal — multiselección (chips independientes, no
+            excluyentes como «Ver»): se puede pedir «Muestra» + «Proforma» a
+            la vez. */}
+        <span className="erp-flow-seg" role="group" aria-label="Tipo de pedido">
+          <span className="erp-flow-seg-label small">Tipo</span>
+          {TIPO_OPTIONS.map(([value, label]) => (
+            <button
+              key={value} type="button"
+              className={`erp-flow-seg-btn${tipos.has(value) ? " is-on" : ""}`}
+              aria-pressed={tipos.has(value)}
+              aria-label={`Filtro tipo ${label}`}
+              onClick={() => toggleTipo(value)}
             >
               {label}
             </button>
@@ -1000,12 +1153,12 @@ function ErpOrdersScreen() {
             Lista
           </button>
         </span>
-        {selectable && rows.length > 0 ? (
+        {selectable && filteredRows.length > 0 ? (
           <label className="checkbox-inline" style={{ display: "flex", alignItems: "center", gap: 6, marginLeft: "auto" }}>
             <input
               type="checkbox"
               aria-label="Seleccionar todo"
-              checked={rows.length > 0 && selected.size === rows.length}
+              checked={filteredRows.length > 0 && selected.size === filteredRows.length}
               onChange={toggleAll}
             />
             <span className="small muted">Seleccionar todo</span>
@@ -1047,7 +1200,7 @@ function ErpOrdersScreen() {
       {notice ? <p className="form-success" role="status">{notice}</p> : null}
       {loading ? (
         <p className="muted">Cargando…</p>
-      ) : rows.length === 0 ? (
+      ) : filteredRows.length === 0 ? (
         <p className="muted">{vacio}</p>
       ) : vista === "list" ? (
         /* --- Vista LISTA: la misma información y las mismas acciones, en tabla. --- */
@@ -1059,12 +1212,13 @@ function ErpOrdersScreen() {
                 <th>Nº</th>
                 <th>Cliente</th>
                 <th>Tienda</th>
-                <th className="sortable" aria-sort={filtros.sortDir === "asc" ? "ascending" : "descending"}>
+                <th className="sortable" aria-sort={filtros.sortBy === "fecha"
+                  ? (filtros.sortDir === "asc" ? "ascending" : "descending") : undefined}>
                   <button
                     type="button" className="erp-bandeja-sort"
                     aria-label={`Ordenar por fecha (${filtros.sortDir === "asc" ? "ascendente" : "descendente"})`}
                     title="Pulsa para invertir el orden"
-                    onClick={toggleSort}
+                    onClick={() => sortByClick("fecha")}
                   >
                     Fecha <span className="sort-arrow" aria-hidden>{filtros.sortDir === "asc" ? "↑" : "↓"}</span>
                   </button>
@@ -1076,7 +1230,7 @@ function ErpOrdersScreen() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((o) => {
+              {filteredRows.map((o) => {
                 const wf = o.workflow;
                 return (
                   <tr
@@ -1138,7 +1292,7 @@ function ErpOrdersScreen() {
         </div>
       ) : (
         <div className="erp-flow-list">
-          {rows.map((o) => {
+          {filteredRows.map((o) => {
             const wf = o.workflow;
             return (
               <article

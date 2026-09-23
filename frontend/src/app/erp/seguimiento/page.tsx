@@ -39,7 +39,8 @@ import { extractErrorMessage } from "../../lib/errors";
 
 /** Cabeceras de la tabla (rediseño 2026), en orden, con su clave de orden
  *  (null = no ordenable). El estado va en la columna Situación, no en la
- *  posición; la tabla se ordena por Situación por defecto. */
+ *  posición; la tabla se ordena por Fecha por defecto (Situación sigue
+ *  disponible pulsando su cabecera). */
 const HEADERS: { label: string; sort: string | null }[] = [
   { label: "Situación", sort: "situacion" },
   { label: "Nº pedido", sort: "albaran_pedido" },
@@ -87,8 +88,11 @@ function eur(n: number, moneda: string): string {
 export default function SeguimientoPage() {
   const [user, setUser] = useState<User | null>(null);
   const [page, setPage] = useState<SeguimientoPage | null>(null);
-  // Rediseño 2026 — por defecto, ordenado por Situación (lo urgente arriba).
-  const [filters, setFilters] = useState<SeguimientoFilters>({ sort: "situacion", dir: "desc" });
+  // Lote de bandeja (Parte B): por defecto, ordenado por Fecha (más reciente
+  // primero) — antes era Situación, y eso enterraba abajo (por «Por enviar»)
+  // pedidos recientes como una MUESTRA-xxxx recién creada. Situación sigue
+  // disponible pulsando su cabecera (orden manual, como cualquier otra).
+  const [filters, setFilters] = useState<SeguimientoFilters>({ sort: "fecha", dir: "desc" });
   const [q, setQ] = useState("");
   const [origins, setOrigins] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);

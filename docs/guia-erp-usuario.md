@@ -568,12 +568,13 @@ menos) se deja como texto, sin inventarla.
 **Situación** es la cola de la línea de vida del pedido —la misma de la bandeja—
 y va **coloreada**: `Incidencia` (rojo), `Por revisar` (ámbar), `Por facturar` /
 `Por cobrar` (azul), `Por enviar` (teal), `Listo` (verde) y `Reembolsado`
-(gris). La tabla se **ordena
-por Situación** (lo urgente arriba: primero las incidencias, al final lo listo
-y los reembolsos) y,
-dentro de cada grupo, por fecha (lo más nuevo primero); así lo importante sube
-solo. Puedes reordenar pulsando en las cabeceras y filtrar como siempre (buscar,
-empresa/serie, transportista, origen, estado, fechas).
+(gris). La tabla se **ordena por Fecha** al abrir (la más reciente primero), para
+que un pedido recién llegado —una muestra, por ejemplo— no quede enterrado
+abajo por su Situación. Pulsa la cabecera de **Situación** para volver a ese
+orden (lo urgente arriba: primero las incidencias, al final lo listo y los
+reembolsos, y dentro de cada grupo por fecha) o la de cualquier otra columna
+ordenable; filtra como siempre (buscar, empresa/serie, transportista, origen,
+estado, fechas).
 
 Botones útiles: **«Descargar Excel»**, **«Actualizar hoja de Drive…»** (vuelca
 los datos a la hoja de Google Drive, con vista previa antes de escribir),
@@ -608,8 +609,9 @@ que confirmas.
 > de facturar y sigue destacado, pero no ensucia la lista de incidencias.
 
 El **Excel** que se descarga trae dos pestañas: **«Pedidos»** (las 18 columnas,
-ordenadas por Situación, con la celda Situación coloreada, la cabecera fija, el
-autofiltro y el importe con formato €) y **«Incidencias»** (los mismos pedidos
+en el mismo orden que tengas puesto en la pantalla —Fecha al entrar—, con la
+celda Situación coloreada, la cabecera fija, el autofiltro y el importe con
+formato €) y **«Incidencias»** (los mismos pedidos
 que están en Situación=Incidencia, con más detalle: nº pedido, cliente, tipo,
 motivo, asignado, fecha y estado, tomado de la bandeja de Excepciones).
 

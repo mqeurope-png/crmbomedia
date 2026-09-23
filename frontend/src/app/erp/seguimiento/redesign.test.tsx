@@ -163,12 +163,12 @@ describe("ERP · Seguimiento — hoja simplificada (rediseño 2026)", () => {
       .toBeInTheDocument();
   });
 
-  it("por defecto pide el orden por Situación", async () => {
+  it("por defecto pide el orden por Fecha (más reciente primero), no por Situación", async () => {
     mockRows([row()]);
     render(<SeguimientoPageView />);
     await waitFor(() => expect(listSeguimiento).toHaveBeenCalled());
     expect((listSeguimiento as jest.Mock).mock.calls[0][0]).toMatchObject({
-      sort: "situacion", dir: "desc",
+      sort: "fecha", dir: "desc",
     });
   });
 });
