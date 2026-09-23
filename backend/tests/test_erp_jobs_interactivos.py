@@ -68,8 +68,8 @@ def test_reconcile_cli_dry_run_prints_counts(monkeypatch) -> None:
     assert "PREVISUALIZACIÓN" in out
     assert "cancelados:              3" in out
     assert "fallidos:                1" in out
-    assert "reembolsos no cumplidos: 1" in out
-    assert "ya cumplidos" in out and "2" in out
+    assert "sin pagar / en espera:   1" in out
+    assert "Reembolsados (NO salen" in out and "2" in out
     assert "9 llamadas a WooCommerce" in out
 
 
