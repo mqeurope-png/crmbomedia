@@ -45,12 +45,16 @@ from sqlalchemy.orm import Session
 
 from app.erp.drive_sheets import DriveSyncError, ManagedTabTransport
 from app.erp.seguimiento import (
+    COBRO_LABELS,
     DATE_PATTERN,
+    ENVIO_LABELS,
     HISTORICO_DATE_COLUMNS,
     INCIDENCIAS_COLUMNS,
     INCIDENCIAS_DATE_COLUMNS,
+    NO_APLICA,
     PEDIDOS_DATE_COLUMNS,
     PREPARACION_INDEX,
+    PREPARACION_LABELS,
     SEGUIMIENTO_COLUMNS_V2,
     SITUACION_FILL,
     SITUACION_LABELS,
@@ -370,6 +374,10 @@ def realinear_fila(row: list[Any], header: list[Any]) -> list[Any]:
     return r + [""] * (len(SEGUIMIENTO_COLUMNS_V2) - len(r))
 
 
+_FECHA_VISTA_RE = re.compile(r"^\d{1,4}[/-]\d{1,2}[/-]\d{1,4}")
+_HORA_VISTA_RE = re.compile(r"^\d{1,2}:\d{2}")
+
+
 def cabecera_de(values: list[list[Any]]) -> list[Any]:
     """La fila de cabecera de la pestaña (la primera que lo parezca), o []."""
     return next((list(r) for r in values[:5] if es_cabecera(r)), [])
@@ -385,12 +393,15 @@ def _como_se_ve(cruda: list[Any], vista: list[Any]) -> list[Any]:
     viva y conviene que sigan siendo números."""
     out = list(cruda)
     for col, valor in enumerate(cruda):
-        if col in PEDIDOS_DATE_COLUMNS or col == _IMPORTE_INDEX or col >= len(vista):
+        if (col in PEDIDOS_DATE_COLUMNS or col in (_IMPORTE_INDEX, _NUMERO_INDEX)
+                or col >= len(vista)):
             continue
         if isinstance(valor, (int, float)) and not isinstance(valor, bool):
             texto = _texto(vista[col])
-            crudo = _texto(int(valor) if float(valor).is_integer() else valor)
-            if texto and texto != crudo:
+            # Solo si lo que se ve es una FECHA u HORA. Un número mostrado de
+            # otra forma («123.456», «1,23E+14») se queda como número: su
+            # texto perdería dígitos o cambiaría de significado.
+            if texto and (_FECHA_VISTA_RE.match(texto) or _HORA_VISTA_RE.match(texto)):
                 out[col] = texto
     return out
 
@@ -494,7 +505,8 @@ def _huella(value: Any) -> str:
         value = float(value.strip())
     if isinstance(value, float) and value.is_integer():
         value = int(value)
-    return f"{zlib.crc32(_texto(value).casefold().encode('utf-8')) & 0xFFFF:04x}"
+    # Sin pasar a minúsculas: corregir solo las mayúsculas también es corregir.
+    return f"{zlib.crc32(_texto(value).encode('utf-8')):08x}"
 
 
 def _separar_marcas(nota: Any) -> tuple[str, dict[str, str | None]]:
@@ -645,34 +657,41 @@ def merge_manual_rows(
     }
 
 
+_COBRO_INDEX = SEGUIMIENTO_COLUMNS_V2.index("Cobro")
+_ENVIO_INDEX = SEGUIMIENTO_COLUMNS_V2.index("Envío")
+#: El vocabulario exacto con el que BoHub rellena esas columnas.
+_COBRO_BOHUB = set(COBRO_LABELS.values())
+_PREPARACION_BOHUB = {*PREPARACION_LABELS.values(), NO_APLICA, "—"}
+_ENVIO_BOHUB = {*ENVIO_LABELS.values(), NO_APLICA, "—"}
 #: Etiqueta de Origen que BoHub escribía antes para un pedido manual sin canal.
 #: Una pestaña escrita antes de este cambio las tiene en su zona viva: NO son
 #: filas tecleadas a mano (ver `_es_fila_heredada_de_bohub`).
 _ORIGEN_BOHUB_ANTIGUO = "Manual"
 
 
-def _es_fila_heredada_de_bohub(session: Session, fila: list[Any]) -> bool:
+def _es_fila_heredada_de_bohub(fila: list[Any]) -> bool:
     """¿Es una fila que escribió BoHub antes de existir el marcador?
 
     Hasta este cambio, un pedido manual de BoHub sin canal salía con Origen
     «Manual», que ahora es el marcador de fila tecleada. Esas filas ya están en
-    la hoja: tomarlas por manuales las congelaría arriba para siempre. Se
-    reconocen porque llevan EXACTAMENTE esa etiqueta (así la escribía BoHub; el
-    marcador que se teclea es «MANUAL») y su Nº es de un pedido que BoHub
-    conoce. Esas se descartan y BoHub las reescribe con su etiqueta nueva."""
+    la hoja y tomarlas por manuales las congelaría arriba para siempre.
+
+    Se reconocen por su CONTENIDO, no por el Nº (que puede haberse guardado
+    como número) ni consultando BoHub (una fila tecleada con «Manual» cuyo
+    pedido entra luego en BoHub no puede confundirse con una heredada):
+    Origen exactamente «Manual» —así lo escribía BoHub; el marcador que se
+    teclea es «MANUAL»—, sin marcas de la app en la Nota, y Cobro, Preparación
+    y Envío con el vocabulario EXACTO que usa BoHub. Quien teclea un pedido a
+    mano no rellena esas tres columnas con esas etiquetas."""
     if _texto(fila[_ORIGEN_INDEX]) != _ORIGEN_BOHUB_ANTIGUO:
         return False
-    numero = _texto(fila[_NUMERO_INDEX])
-    if not numero:
+    if _MARCAS_RE.search(_texto(fila[_NOTA_INDEX])):
         return False
-    from sqlalchemy import func, select  # noqa: PLC0415
-
-    from app.erp.models import Order  # noqa: PLC0415
-
-    return session.scalar(
-        select(func.count()).select_from(Order)
-        .where(func.lower(Order.order_number) == numero.casefold()),
-    ) > 0
+    return (
+        _texto(fila[_COBRO_INDEX]) in _COBRO_BOHUB
+        and _texto(fila[PREPARACION_INDEX]) in _PREPARACION_BOHUB
+        and _texto(fila[_ENVIO_INDEX]) in _ENVIO_BOHUB
+    )
 
 
 def rows_for_format(values: list[list[Any]]) -> list[dict[str, Any]]:
@@ -902,7 +921,7 @@ def push_managed_tabs(
     )
     manuales_leidas = [
         r for r in manual_rows(valores_pedidos, vistos)
-        if not _es_fila_heredada_de_bohub(session, r)
+        if not _es_fila_heredada_de_bohub(r)
     ]
     fusion = merge_manual_rows(manuales_leidas, rows)
     manuales = fusion["manuales"]

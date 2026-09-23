@@ -677,9 +677,10 @@ reinterprete lo tecleado: un `00123` sigue siendo `00123`, un texto que empiece
 por `=` no se convierte en fórmula). Los pedidos manuales **creados en BoHub**
 sin canal salen con Origen **«Manual (BoHub)»**, para no confundirse con los
 tecleados a mano. Las filas que BoHub ya había escrito antes con Origen
-«Manual» (así, con mayúscula inicial) se reconocen como suyas —su Nº es de un
-pedido que BoHub conoce— y se reescriben con la etiqueta nueva: no se quedan
-congeladas como si fueran a mano.
+«Manual» (así, con mayúscula inicial) se reconocen como suyas —llevan en
+Cobro, Preparación y Envío las etiquetas exactas de BoHub— y se reescriben con
+la etiqueta nueva: no se quedan congeladas como si fueran a mano. Por eso,
+**escribe `MANUAL` en mayúsculas**: así nunca hay duda.
 
 La vista previa te dice cuántas filas son de BoHub y cuántas **a mano se
 conservan**. Reimportar el histórico tampoco las toca.

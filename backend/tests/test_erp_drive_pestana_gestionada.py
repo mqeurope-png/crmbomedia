@@ -1170,8 +1170,6 @@ def test_las_filas_manual_que_escribio_bohub_antes_no_se_congelan(session):
     Origen «Manual». Esas filas ya están en la hoja: no son tecleadas a mano.
     Se descartan y BoHub las reescribe con su etiqueta nueva — también si su
     pedido ya ha salido de la zona viva."""
-    _pedido_en_bd(session, "MANUAL-000002")
-    _pedido_en_bd(session, "MANUAL-000003")
     heredada = live_pedidos_rows([_row("por_facturar", "MANUAL-000002",
                                        origen_label="Manual", cobro_label="—")])[0]
     ya_no_viva = live_pedidos_rows([_row("listo", "MANUAL-000003",
@@ -1186,13 +1184,62 @@ def test_las_filas_manual_que_escribio_bohub_antes_no_se_congelan(session):
     assert escrito[1][_col("Situación")] == "Listo"
 
 
-def test_manual_con_mayuscula_inicial_de_un_pedido_desconocido_sigue_siendo_manual(session):
-    """«Manual» tecleado para un pedido que BoHub no conoce: es una fila a mano."""
-    fila = _manual("PEDIDO-FUERA", Cliente="Acme SL")
+def test_manual_con_mayuscula_inicial_tecleado_sigue_siendo_manual(session):
+    """«Manual» tecleado a mano (sin el vocabulario de BoHub en Cobro,
+    Preparación y Envío) es una fila a mano — también cuando su pedido entra
+    luego en BoHub: se fusiona, no se borra."""
+    fila = _manual("PED-777", Cliente="Cliente Real SL",
+                   **{"Nota / Incidencia": "llamar martes"})
     fila[4] = "Manual"
     sheets = _pestana(fila)
-    resumen = push_managed_tabs(session, sheets, [])
-    assert resumen["manuales"] == 1
+    assert push_managed_tabs(session, sheets, [])["manuales"] == 1
+    _pedido_en_bd(session, "PED-777")
+    resumen = push_managed_tabs(session, sheets, [_row("listo", "PED-777", cliente="Acme SL")])
+    assert resumen["manuales"] == 1 and resumen["manuales_fusionadas"] == 1
+    f = sheets.written[DEFAULT_MANAGED_TAB][1]
+    assert f[_col("Cliente")] == "Cliente Real SL"
+    assert f[-1].startswith("llamar martes") and "[⚠ BoHub Cliente: Acme SL]" in f[-1]
+
+
+def test_una_fila_heredada_con_el_numero_guardado_como_numero_tambien_se_reconoce(session):
+    """`main` escribía USER_ENTERED: un Nº «004352» quedó como el número 4352.
+    La fila heredada se reconoce por su contenido, no por el Nº."""
+    heredada = live_pedidos_rows([_row("por_facturar", "004352", origen_label="Manual")])[0]
+    heredada[1] = 4352
+    sheets = _pestana(heredada)
+    resumen = push_managed_tabs(session, sheets, [
+        _row("listo", "004352", origen_label="Manual (BoHub)"),
+    ])
+    escrito = sheets.written[DEFAULT_MANAGED_TAB]
+    assert resumen["manuales"] == 0 and resumen["manuales_fusionadas"] == 0
+    assert [f[1] for f in escrito[1:]] == ["004352"]
+    assert escrito[1][_col("Situación")] == "Listo"
+
+
+@pytest.mark.parametrize(("cruda", "vista"), [
+    (123456, "123.456"),                        # separador de miles
+    (123456789012345, "1,23457E+14"),           # notación científica
+])
+def test_un_numero_mostrado_de_otra_forma_sigue_siendo_numero(session, cruda, vista):
+    fila = _manual("", Cliente="Acme SL", Tracking=cruda)
+    vista_fila = [str(c) for c in fila]
+    vista_fila[_col("Tracking")] = vista
+    cabecera = list(SEGUIMIENTO_COLUMNS_V2)
+    sheets = _FakeConVista(
+        {HISTORICA: [], DEFAULT_MANAGED_TAB: [cabecera, fila]},
+        {DEFAULT_MANAGED_TAB: [cabecera, vista_fila]},
+    )
+    push_managed_tabs(session, sheets, [])
+    assert sheets.written[DEFAULT_MANAGED_TAB][1][_col("Tracking")] == cruda
+
+
+def test_corregir_solo_las_mayusculas_tambien_es_corregir(session):
+    sheets = _pestana(_manual("BOP-9", Cliente="Otro"))
+    pedido = _row("listo", "BOP-9", tracking="1z999aa1")
+    push_managed_tabs(session, sheets, [pedido])
+    sheets.written[DEFAULT_MANAGED_TAB][1][_col("Tracking")] = "1Z999AA1"
+    push_managed_tabs(session, sheets, [pedido])
+    assert sheets.written[DEFAULT_MANAGED_TAB][1][_col("Tracking")] == "1Z999AA1"
 
 
 def test_una_fecha_con_hora_no_es_un_conflicto(session):
