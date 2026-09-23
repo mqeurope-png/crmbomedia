@@ -30,12 +30,12 @@ from app.erp.drive_managed import (
     DEFAULT_INCIDENCIAS_TAB,
     DEFAULT_MANAGED_TAB,
     SEPARATOR_PREFIX,
-    is_separator,
-    static_block,
     build_incidencias_grid,
     build_pedidos_grid,
+    is_separator,
     pedidos_format,
     push_managed_tabs,
+    static_block,
 )
 from app.erp.drive_sheets import DriveSyncError, _with_sheet_id
 from app.erp.seguimiento import (
