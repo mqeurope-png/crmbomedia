@@ -953,6 +953,18 @@ a mano de la bandeja) · **Anulado**.
 
 ## Preguntas frecuentes
 
+**Hay carritos (pending / on-hold / failed / borradores) entre los pedidos.**
+Entraron con la regla antigua del sync. Se borran de verdad con el comando
+`python -m scripts.limpiar_pedidos_web_no_procesados` (dentro del contenedor
+`api`): sin `--apply` solo **lista** lo que borraría (nº, cliente, estado,
+importe y total) y lo que **protege**; con `--apply` pide teclear `BORRAR` y
+los elimina con sus líneas, historial, excepciones, envíos y fila de Drive,
+sin dejar restos. **Nunca** borra un pedido con factura, albarán, cobro, nº de
+serie, tracking, WhiteRIP, excepción/tarea SAT o ya en preparación, ni un
+*refunded* / *completed* / *processing* / *cancelled*, ni un manual, ni una
+muestra. **Haz copia de seguridad de la base de datos antes**: no tiene vuelta
+atrás. Reejecutarlo después da 0.
+
 **Un pedido web no aparece en la bandeja.** BoHub solo crea el pedido cuando en
 WooCommerce ha entrado en el flujo (*processing*, *completed* o *refunded*); un
 carrito sin pagar o en espera no se crea hasta que pasa a *processing*. Los pedidos
