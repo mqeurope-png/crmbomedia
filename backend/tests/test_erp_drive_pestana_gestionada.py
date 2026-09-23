@@ -34,6 +34,7 @@ from app.erp.drive_managed import (
     build_incidencias_grid,
     build_pedidos_grid,
     is_separator,
+    live_pedidos_rows,
     pedidos_format,
     push_managed_tabs,
     sheet_serial,
@@ -1146,4 +1147,145 @@ def test_la_columna_situacion_se_limpia_antes_de_colorear(session):
         if r.get("repeatCell", {}).get("cell", {}).get("userEnteredFormat") == {}
     )
     assert reset["range"]["startColumnIndex"] == 0
-    assert (reset["range"]["startRowIndex"], reset["range"]["endRowIndex"]) == (1, 5)
+    assert reset["range"]["startRowIndex"] == 1
+    # Hasta el final de la hoja: si la pestaña encoge, no quedan restos.
+    assert "endRowIndex" not in reset["range"]
+
+
+# --- regresiones de la segunda revisión ----------------------------------------
+
+
+def _pedido_en_bd(session, numero: str) -> None:
+    from datetime import UTC, datetime
+
+    from app.erp.models import Order, OrderSource
+
+    session.add(Order(order_number=numero, external_source=OrderSource.MANUAL,
+                      placed_at=datetime(2026, 9, 1, tzinfo=UTC)))
+    session.flush()
+
+
+def test_las_filas_manual_que_escribio_bohub_antes_no_se_congelan(session):
+    """Antes de este cambio, un pedido manual de BoHub sin canal salía con
+    Origen «Manual». Esas filas ya están en la hoja: no son tecleadas a mano.
+    Se descartan y BoHub las reescribe con su etiqueta nueva — también si su
+    pedido ya ha salido de la zona viva."""
+    _pedido_en_bd(session, "MANUAL-000002")
+    _pedido_en_bd(session, "MANUAL-000003")
+    heredada = live_pedidos_rows([_row("por_facturar", "MANUAL-000002",
+                                       origen_label="Manual", cobro_label="—")])[0]
+    ya_no_viva = live_pedidos_rows([_row("listo", "MANUAL-000003",
+                                         origen_label="Manual")])[0]
+    sheets = _pestana(heredada, ya_no_viva)
+    rows = [_row("listo", "MANUAL-000002", origen_label="Manual (BoHub)")]
+    resumen = push_managed_tabs(session, sheets, rows)
+    escrito = sheets.written[DEFAULT_MANAGED_TAB]
+    assert resumen["manuales"] == 0
+    assert [f[1] for f in escrito[1:]] == ["MANUAL-000002"]
+    assert escrito[1][_col("Origen")] == "Manual (BoHub)"
+    assert escrito[1][_col("Situación")] == "Listo"
+
+
+def test_manual_con_mayuscula_inicial_de_un_pedido_desconocido_sigue_siendo_manual(session):
+    """«Manual» tecleado para un pedido que BoHub no conoce: es una fila a mano."""
+    fila = _manual("PEDIDO-FUERA", Cliente="Acme SL")
+    fila[4] = "Manual"
+    sheets = _pestana(fila)
+    resumen = push_managed_tabs(session, sheets, [])
+    assert resumen["manuales"] == 1
+
+
+def test_una_fecha_con_hora_no_es_un_conflicto(session):
+    fila = _manual("BOP-9", Cliente="Otro", Fecha=sheet_serial(date(2026, 9, 1)) + 0.4166)
+    sheets = _pestana(fila)
+    push_managed_tabs(session, sheets, [_row("listo", "BOP-9")])
+    assert "⚠ BoHub Fecha" not in sheets.written[DEFAULT_MANAGED_TAB][1][-1]
+
+
+@pytest.mark.parametrize("numero", ["12", "1543", "002"])
+def test_un_numero_corto_no_casa_con_un_pedido_manual_de_bohub(session, numero):
+    """El número desnudo usa las reglas del resto del sistema: 4 dígitos como
+    mínimo y nunca un `MANUAL-`."""
+    sheets = _pestana(_manual(numero, Cliente="Roca SL"))
+    resumen = push_managed_tabs(session, sheets, [
+        _row("listo", "MANUAL-000012"), _row("listo", "MANUAL-001543"),
+        _row("listo", "MANUAL-000002"),
+    ])
+    assert resumen["manuales_fusionadas"] == 0
+    assert len(sheets.written[DEFAULT_MANAGED_TAB]) == 1 + 1 + 3
+
+
+@pytest.mark.parametrize("sin_dato", ["—", "-", " — "])
+def test_un_guion_tecleado_es_un_hueco(session, sin_dato):
+    """«—» es la convención de la hoja para «sin dato»: se rellena desde BoHub
+    y no impide entregar la fila."""
+    fila = _manual("BOP-9", Situación="Listo", Cliente="Acme SL", Fecha="01/09/2026",
+                   Tracking=sin_dato)
+    sheets = _pestana(fila)
+    resumen = push_managed_tabs(session, sheets, [_row("listo", "BOP-9", tracking="1Z-A")])
+    assert resumen["manuales_entregadas"] == 1
+    fila_bohub = next(f for f in sheets.written[DEFAULT_MANAGED_TAB][1:] if f[1] == "BOP-9")
+    assert fila_bohub[_col("Tracking")] == "1Z-A"
+
+
+class _FakeConVista(FakeTabs):
+    """Como la API: en bruto, una fecha tecleada es su serial; formateada, el
+    texto que ve el usuario."""
+
+    def __init__(self, tabs, vistas):
+        super().__init__(tabs)
+        self.vistas = vistas
+
+    def tab_values(self, title, *, raw=False):
+        if raw or title not in self.vistas:
+            return super().tab_values(title, raw=raw)
+        return [list(r) for r in self.vistas[title]]
+
+
+def test_una_fecha_tecleada_en_una_columna_sin_formato_se_ve_igual(session):
+    """Preparación no lleva formato de fecha en la zona viva: si la fila se
+    mueve, el serial se vería como un número. Se escribe lo que se veía."""
+    serial = sheet_serial(date(2026, 8, 28))
+    cruda = _manual("", Cliente="Acme SL", Preparación=serial)
+    vista = [str(c) for c in cruda]
+    vista[_col("Preparación")] = "28/08/2026"
+    cabecera = list(SEGUIMIENTO_COLUMNS_V2)
+    sheets = _FakeConVista(
+        {HISTORICA: [], DEFAULT_MANAGED_TAB: [cabecera, cruda]},
+        {DEFAULT_MANAGED_TAB: [cabecera, vista]},
+    )
+    push_managed_tabs(session, sheets, [])
+    assert sheets.written[DEFAULT_MANAGED_TAB][1][_col("Preparación")] == "28/08/2026"
+
+
+def test_una_cabecera_que_no_esta_arriba_no_se_copia_como_dato(session):
+    """Si alguien mete una fila encima de la cabecera, la cabecera no acaba
+    duplicada como una fila más (ni en el volcado ni al reimportar)."""
+    manual = _manual("", Cliente="Arriba SL")
+    sheets = FakeTabs({HISTORICA: _hoja_vieja(), DEFAULT_MANAGED_TAB: [
+        manual, list(SEGUIMIENTO_COLUMNS_V2), ["Listo", "L-0"],
+    ]})
+    push_managed_tabs(session, sheets, [])
+    escrito = sheets.written[DEFAULT_MANAGED_TAB]
+    assert sum(1 for f in escrito if f[:2] == ["Situación", "Nº pedido"]) == 1
+    assert escrito[1][3] == "Arriba SL"
+    import_historico(sheets, pedidos_tab=DEFAULT_MANAGED_TAB,
+                     incidencias_tab=DEFAULT_INCIDENCIAS_TAB, dry_run=False)
+    escrito = sheets.written[DEFAULT_MANAGED_TAB]
+    assert sum(1 for f in escrito if f[:2] == ["Situación", "Nº pedido"]) == 1
+
+
+def test_si_corriges_una_celda_que_relleno_bohub_se_queda_la_tuya(session):
+    """La huella de `[BoHub: …]` ya no casa: la celda es del usuario, no se
+    pisa, y si BoHub dice otra cosa se marca."""
+    sheets = _pestana(_manual("BOP-9", Cliente="Otro"))
+    pedido = _row("listo", "BOP-9", tracking="1Z-A")
+    push_managed_tabs(session, sheets, [pedido])
+    fila = sheets.written[DEFAULT_MANAGED_TAB][1]
+    assert fila[_col("Tracking")] == "1Z-A"
+    fila[_col("Tracking")] = "CORREGIDO-A-MANO"           # el usuario lo corrige
+    push_managed_tabs(session, sheets, [pedido])
+    fila = sheets.written[DEFAULT_MANAGED_TAB][1]
+    assert fila[_col("Tracking")] == "CORREGIDO-A-MANO"
+    assert "[⚠ BoHub Tracking: 1Z-A]" in fila[-1]
+    assert "Tracking#" not in fila[-1]

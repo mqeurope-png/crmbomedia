@@ -35,7 +35,9 @@ Y es idempotente: reejecutar no duplica el separador ni el bloque.
 from __future__ import annotations
 
 import logging
+import math
 import re
+import zlib
 from datetime import date, timedelta
 from typing import Any
 
@@ -52,9 +54,9 @@ from app.erp.seguimiento import (
     SEGUIMIENTO_COLUMNS_V2,
     SITUACION_FILL,
     SITUACION_LABELS,
-    extract_order_number,
     incidencia_rows,
     incidencia_values,
+    match_number,
     parse_sheet_date,
     redistribute_nota,
     row_to_pedidos_values,
@@ -304,10 +306,11 @@ MANUAL_MARKER = "MANUAL"
 #: recalculan en cada pasada aunque el valor lleve «·» dentro (`1 · Bomedia`),
 #: sin tocar ni una letra de lo que escribió el usuario.
 CONFLICT_PREFIX = "⚠ BoHub"
-#: Marca de las celdas que RELLENÓ BoHub (`[BoHub: Factura, Tracking]`): esas
-#: no las escribió nadie a mano, así que en la siguiente pasada se ponen al día
-#: con BoHub en vez de quedarse congeladas (y salir luego como falso conflicto).
-#: Para quedarte tú con una de ellas, quita su nombre de la marca.
+#: Marca de las celdas que RELLENÓ BoHub (`[BoHub: Factura#1a2b, Tracking#…]`),
+#: cada una con la huella del valor que escribió. En la siguiente pasada, si la
+#: celda sigue con ese valor (nadie la ha tocado), se pone al día con BoHub en
+#: vez de quedarse congelada; si el usuario la ha corregido, la huella ya no
+#: casa y la celda pasa a ser SUYA (lo escrito a mano manda, como siempre).
 OWNED_PREFIX = "BoHub:"
 _MARCAS_RE = re.compile(r"\s*\[(?:⚠ BoHub|BoHub:)[^\]]*\]")
 _PROPIAS_RE = re.compile(r"\[BoHub:([^\]]*)\]")
@@ -347,10 +350,12 @@ def live_zone(values: list[list[Any]]) -> list[list[Any]]:
     la hay) hasta el separador del histórico (o hasta el final si no hay)."""
     if not values:
         return []
-    cuerpo = [list(r) for r in (values[1:] if es_cabecera(values[0]) else values)]
-    for i, row in enumerate(cuerpo):
-        if is_separator(row):
-            return cuerpo[:i]
+    cuerpo: list[list[Any]] = []
+    for row in values:
+        if is_separator(list(row)):
+            break
+        if not es_cabecera(row):          # la cabecera, esté donde esté
+            cuerpo.append(list(row))
     return cuerpo
 
 
@@ -365,16 +370,51 @@ def realinear_fila(row: list[Any], header: list[Any]) -> list[Any]:
     return r + [""] * (len(SEGUIMIENTO_COLUMNS_V2) - len(r))
 
 
-def manual_rows(values: list[list[Any]]) -> list[list[Any]]:
-    """Las filas manuales de la zona viva, en su orden, a 18 columnas y con
-    las fechas como valor de fecha (lo que devuelve la API es el texto
-    formateado, «28/08/2026»; se vuelve a escribir como fecha, no como texto).
-    El resto de celdas, tal cual."""
+def cabecera_de(values: list[list[Any]]) -> list[Any]:
+    """La fila de cabecera de la pestaña (la primera que lo parezca), o []."""
+    return next((list(r) for r in values[:5] if es_cabecera(r)), [])
+
+
+def _como_se_ve(cruda: list[Any], vista: list[Any]) -> list[Any]:
+    """Una fila manual leída en bruto, con los NÚMEROS de columnas sin formato
+    propio sustituidos por el texto que se veía. Una fecha tecleada en, p. ej.,
+    Preparación se lee en bruto como su serial (46262); al subir o bajar la
+    fila, esa celda ya no tendría su formato de fecha y se vería el número. Con
+    el texto que se veía («28/08/2026») se queda igual que la tecleó el usuario.
+    Las columnas de fecha y el importe no: esas llevan su formato en la zona
+    viva y conviene que sigan siendo números."""
+    out = list(cruda)
+    for col, valor in enumerate(cruda):
+        if col in PEDIDOS_DATE_COLUMNS or col == _IMPORTE_INDEX or col >= len(vista):
+            continue
+        if isinstance(valor, (int, float)) and not isinstance(valor, bool):
+            texto = _texto(vista[col])
+            crudo = _texto(int(valor) if float(valor).is_integer() else valor)
+            if texto and texto != crudo:
+                out[col] = texto
+    return out
+
+
+def manual_rows(
+    values: list[list[Any]], formatted: list[list[Any]] | None = None,
+) -> list[list[Any]]:
+    """Las filas manuales de la zona viva, en su orden, a 18 columnas, con las
+    fechas como valor de fecha y el resto tal cual. `values` es la lectura en
+    bruto; `formatted` (opcional), la misma pestaña como se VE, para no perder
+    el aspecto de una fecha tecleada en una columna que no es de fecha."""
     if not values:
         return []
-    header = values[0] if es_cabecera(values[0]) else []
-    filas = [realinear_fila(r, header) for r in live_zone(values)]
-    return dates_to_serial([r for r in filas if is_manual_row(r)], PEDIDOS_DATE_COLUMNS)
+    header = cabecera_de(values)
+    vistas = live_zone(formatted) if formatted else []
+    filas: list[list[Any]] = []
+    for i, cruda in enumerate(live_zone(values)):
+        fila = realinear_fila(cruda, header)
+        if not is_manual_row(fila):
+            continue
+        if i < len(vistas):
+            fila = _como_se_ve(fila, realinear_fila(vistas[i], header))
+        filas.append(fila)
+    return dates_to_serial(filas, PEDIDOS_DATE_COLUMNS)
 
 
 def _numero_normalizado(value: Any) -> str:
@@ -409,12 +449,18 @@ def _vacio(value: Any) -> bool:
     return not _texto(value)
 
 
-def _vacio_bohub(col: int, value: Any) -> bool:
-    """¿BoHub no tiene dato aquí? «—» y vacío; y un importe 0, que en BoHub es
-    «sin importe» (no rellenar un 0,00 € falso ni marcarlo como conflicto)."""
+def _sin_dato(col: int, value: Any) -> bool:
+    """¿La celda no dice nada? Vacía, «—»/«-» (la convención de la hoja para
+    «sin dato», la use BoHub o quien teclea) o un importe 0."""
     if _texto(value) in _BOHUB_VACIOS:
         return True
     return col == _IMPORTE_INDEX and (_importe(value) or 0.0) == 0.0
+
+
+def _vacio_bohub(col: int, value: Any) -> bool:
+    """¿BoHub no tiene dato aquí? Un importe 0 en BoHub es «sin importe»: no
+    se rellena un 0,00 € falso ni se marca como conflicto."""
+    return _sin_dato(col, value)
 
 
 def _iguales(col: int, manual: Any, bohub: Any) -> bool:
@@ -422,7 +468,14 @@ def _iguales(col: int, manual: Any, bohub: Any) -> bool:
     su valor (da igual «28/08/2026» que el serial), el importe por número, el
     resto como texto sin mayúsculas ni espacios de más."""
     if col in PEDIDOS_DATE_COLUMNS:
-        return _date_cell(manual) == _date_cell(bohub)
+        # El día, sin la hora: una fecha tecleada «01/09/2026 10:00» se lee en
+        # bruto como 46266.4 y es el mismo día que el 46266 de BoHub.
+        a, b = _date_cell(manual), _date_cell(bohub)
+        if isinstance(a, float):
+            a = math.floor(a)
+        if isinstance(b, float):
+            b = math.floor(b)
+        return a == b
     if col == _IMPORTE_INDEX:
         a, b = _importe(manual), _importe(bohub)
         if a is not None and b is not None:
@@ -430,13 +483,33 @@ def _iguales(col: int, manual: Any, bohub: Any) -> bool:
     return _texto(manual).casefold() == _texto(bohub).casefold()
 
 
-def _separar_marcas(nota: Any) -> tuple[str, set[str]]:
-    """(lo que escribió el usuario, columnas que rellenó BoHub). Quita SOLO las
-    marcas de la app —entre corchetes—; el texto del usuario sale tal cual."""
+_NUMERO_PLANO_RE = re.compile(r"^-?\d+(?:\.\d+)?$")
+
+
+def _huella(value: Any) -> str:
+    """Huella corta de un valor, para saber si alguien ha tocado la celda. Un
+    número vale lo mismo escrito como 121, 121.0 o «121.0» (según cómo lo
+    devuelva la hoja), así que se normaliza antes."""
+    if isinstance(value, str) and _NUMERO_PLANO_RE.match(value.strip()):
+        value = float(value.strip())
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    return f"{zlib.crc32(_texto(value).casefold().encode('utf-8')) & 0xFFFF:04x}"
+
+
+def _separar_marcas(nota: Any) -> tuple[str, dict[str, str | None]]:
+    """(lo que escribió el usuario, {columna rellenada por BoHub: huella}).
+    Quita SOLO las marcas de la app —entre corchetes—; el texto del usuario
+    sale tal cual."""
     texto = _texto(nota)
-    propias: set[str] = set()
+    propias: dict[str, str | None] = {}
     for grupo in _PROPIAS_RE.findall(texto):
-        propias.update(c.strip() for c in grupo.split(",") if c.strip())
+        for pieza in grupo.split(","):
+            nombre, _sep, huella = pieza.strip().rpartition("#")
+            if not nombre:                          # sin huella: toda la pieza
+                nombre, huella = pieza.strip(), ""
+            if nombre:
+                propias[nombre] = huella or None
     return _MARCAS_RE.sub("", texto).strip(), propias
 
 
@@ -469,11 +542,14 @@ def _fusionar(manual: list[Any], bohub: list[Any]) -> tuple[list[Any], int, bool
             continue
         mio, suyo = fila[col], bohub[col]
         suyo_vacio = _vacio_bohub(col, suyo)
-        if nombre in de_bohub or _vacio(mio):
-            # Hueco, o celda que ya rellenó BoHub: manda BoHub (al día).
+        # ¿La rellenó BoHub y nadie la ha tocado desde entonces? (La huella
+        # casa con lo que hay; sin huella —marca antigua— se da por intacta.)
+        intacta = nombre in de_bohub and de_bohub[nombre] in (None, _huella(mio))
+        if intacta or _sin_dato(col, mio):
+            # Hueco, o celda de BoHub sin tocar: manda BoHub (al día).
             fila[col] = "" if suyo_vacio else suyo
             if not suyo_vacio:
-                rellenadas.append(nombre)
+                rellenadas.append(f"{nombre}#{_huella(suyo)}")
             continue
         if suyo_vacio:
             solo_a_mano = True
@@ -517,7 +593,9 @@ def merge_manual_rows(
         numero = _numero_normalizado(r.get("order_number"))
         if numero:
             exactos.setdefault(numero, r)
-        desnudo = extract_order_number(r.get("order_number"))
+        # Número desnudo con las MISMAS reglas que el resto del sistema
+        # (`match_number`): 4 dígitos como mínimo y nunca un `MANUAL-`.
+        desnudo = match_number(r.get("order_number"))
         if desnudo:
             desnudos.setdefault(desnudo, []).append(r)
 
@@ -530,7 +608,7 @@ def merge_manual_rows(
         # El número desnudo solo si el usuario tecleó SOLO el número: `BOP-9`
         # no puede casar con `FLUXLA-9` por compartir el 9.
         if numero.isdigit():
-            candidatos = desnudos.get(extract_order_number(numero) or "", [])
+            candidatos = desnudos.get(match_number(numero) or "", [])
             return candidatos[0] if len(candidatos) == 1 else None
         return None
 
@@ -565,6 +643,36 @@ def merge_manual_rows(
         "entregadas": entregadas,
         "conflictos": conflictos,
     }
+
+
+#: Etiqueta de Origen que BoHub escribía antes para un pedido manual sin canal.
+#: Una pestaña escrita antes de este cambio las tiene en su zona viva: NO son
+#: filas tecleadas a mano (ver `_es_fila_heredada_de_bohub`).
+_ORIGEN_BOHUB_ANTIGUO = "Manual"
+
+
+def _es_fila_heredada_de_bohub(session: Session, fila: list[Any]) -> bool:
+    """¿Es una fila que escribió BoHub antes de existir el marcador?
+
+    Hasta este cambio, un pedido manual de BoHub sin canal salía con Origen
+    «Manual», que ahora es el marcador de fila tecleada. Esas filas ya están en
+    la hoja: tomarlas por manuales las congelaría arriba para siempre. Se
+    reconocen porque llevan EXACTAMENTE esa etiqueta (así la escribía BoHub; el
+    marcador que se teclea es «MANUAL») y su Nº es de un pedido que BoHub
+    conoce. Esas se descartan y BoHub las reescribe con su etiqueta nueva."""
+    if _texto(fila[_ORIGEN_INDEX]) != _ORIGEN_BOHUB_ANTIGUO:
+        return False
+    numero = _texto(fila[_NUMERO_INDEX])
+    if not numero:
+        return False
+    from sqlalchemy import func, select  # noqa: PLC0415
+
+    from app.erp.models import Order  # noqa: PLC0415
+
+    return session.scalar(
+        select(func.count()).select_from(Order)
+        .where(func.lower(Order.order_number) == numero.casefold()),
+    ) > 0
 
 
 def rows_for_format(values: list[list[Any]]) -> list[dict[str, Any]]:
@@ -682,14 +790,14 @@ def pedidos_format(
     # valores, no el formato, y una celda que hoy no lleva color (una fila a
     # mano con una Situación que no se reconoce, o una fila que ha bajado)
     # heredaría el de la pasada anterior.
-    ultima = total_rows + len(static or [])
-    if ultima > 1:
-        requests.append({"repeatCell": {
-            "range": {"sheetId": None, "startRowIndex": 1, "endRowIndex": ultima,
-                      "startColumnIndex": 0, "endColumnIndex": 1},
-            "cell": {"userEnteredFormat": {}},
-            "fields": "userEnteredFormat(backgroundColor,textFormat)",
-        }})
+    # Hasta el FINAL de la hoja (sin `endRowIndex`): si la pestaña encoge, las
+    # filas que ya no se escriben tampoco se quedan con color.
+    requests.append({"repeatCell": {
+        "range": {"sheetId": None, "startRowIndex": 1,
+                  "startColumnIndex": 0, "endColumnIndex": 1},
+        "cell": {"userEnteredFormat": {}},
+        "fields": "userEnteredFormat(backgroundColor,textFormat)",
+    }})
     if ordered:
         # Importe (columna 7, índice 6) con formato de moneda.
         requests.append({"repeatCell": {
@@ -786,7 +894,17 @@ def push_managed_tabs(
     valores_pedidos = (
         sheets.tab_values(pedidos_tab, raw=True) if pedidos_tab in existing else []
     )
-    fusion = merge_manual_rows(manual_rows(valores_pedidos), rows)
+    # La misma pestaña como se VE, solo si hay filas manuales: sirve para no
+    # perder el aspecto de lo tecleado en columnas sin formato propio.
+    vistos = (
+        sheets.tab_values(pedidos_tab)
+        if any(is_manual_row(r) for r in live_zone(valores_pedidos)) else None
+    )
+    manuales_leidas = [
+        r for r in manual_rows(valores_pedidos, vistos)
+        if not _es_fila_heredada_de_bohub(session, r)
+    ]
+    fusion = merge_manual_rows(manuales_leidas, rows)
     manuales = fusion["manuales"]
 
     # Zona viva por fecha del pedido, de más reciente a más antiguo (la

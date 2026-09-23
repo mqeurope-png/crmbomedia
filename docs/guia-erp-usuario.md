@@ -639,8 +639,8 @@ en **pestañas propias de la app**. Cada una tiene **dos zonas**:
 
 **Pedidos añadidos a mano (transición).** Mientras no todos los pedidos pasen
 por la app, puedes **teclear uno en la primera fila** de «Seguimiento (app)»
-(justo bajo la cabecera) poniendo **`MANUAL` en la columna Origen**. Ese es el
-marcador: «Actualizar hoja de Drive» **lee la hoja antes de escribir** y las
+(justo bajo la cabecera) poniendo **`MANUAL` en la columna Origen** (mejor en
+mayúsculas). Ese es el marcador: «Actualizar hoja de Drive» **lee la hoja antes de escribir** y las
 filas con Origen = MANUAL se **conservan arriba del todo**, en el orden en que
 estén e intactas (no se pisa ninguna celda que hayas rellenado); debajo se
 reescribe lo de BoHub como siempre. Una fila **sin** ese marcador es de BoHub y
@@ -651,15 +651,18 @@ duplica: queda **una sola fila**, BoHub **rellena los huecos** y lo que tú
 escribiste se respeta. La Nota lleva entonces dos marcas de la app, siempre
 **entre corchetes** (tu texto no se toca):
 
-- **`[BoHub: Factura, Tracking…]`** — las celdas que rellenó BoHub. Esas se
-  **mantienen al día** en cada «Actualizar» (si BoHub cambia la Situación o el
-  tracking, cambian). Si quieres quedarte tú con una, quita su nombre de la
-  marca.
+- **`[BoHub: Factura#…, Tracking#…]`** — las celdas que rellenó BoHub (el
+  código tras `#` es una huella de lo que escribió). Esas se **mantienen al
+  día** en cada «Actualizar» (si BoHub cambia la Situación o el tracking,
+  cambian). **Si corriges tú una de ellas, se queda la tuya**: la huella ya no
+  casa y la celda pasa a ser tuya como cualquier otra.
 - **`[⚠ BoHub Cliente: Roca SL]`** — una celda que ya tenía **dato tuyo** y
   BoHub dice otra cosa: **se conserva lo tuyo** y se apunta aquí lo de BoHub.
 
-Mientras haya un aviso así —o algo que solo esté escrito a mano: una celda que
-BoHub no tiene, tu nota, algo en columnas de más allá de la última— la fila
+Una celda con `—` o `-` cuenta como vacía (es la convención de la hoja para
+«sin dato»). Mientras haya un aviso así —o algo que solo esté escrito a mano:
+una celda que BoHub no tiene, tu nota, algo en columnas de más allá de la
+última— la fila
 sigue siendo **MANUAL**, para no perderlo en el siguiente «Actualizar». Cuando
 ya no queda nada que perder (lo tuyo coincide con BoHub), la fila **pasa a
 BoHub** con su Origen real y deja de ser manual. Para entregarla antes, borra
@@ -673,7 +676,10 @@ Las filas se leen y se escriben **tal cual** (sin que Google Sheets
 reinterprete lo tecleado: un `00123` sigue siendo `00123`, un texto que empiece
 por `=` no se convierte en fórmula). Los pedidos manuales **creados en BoHub**
 sin canal salen con Origen **«Manual (BoHub)»**, para no confundirse con los
-tecleados a mano.
+tecleados a mano. Las filas que BoHub ya había escrito antes con Origen
+«Manual» (así, con mayúscula inicial) se reconocen como suyas —su Nº es de un
+pedido que BoHub conoce— y se reescriben con la etiqueta nueva: no se quedan
+congeladas como si fueran a mano.
 
 La vista previa te dice cuántas filas son de BoHub y cuántas **a mano se
 conservan**. Reimportar el histórico tampoco las toca.

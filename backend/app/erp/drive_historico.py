@@ -274,9 +274,9 @@ def import_historico(
     reemplaza los bloques estáticos enteros, así que es idempotente y no duplica
     separadores."""
     from app.erp.drive_managed import (  # noqa: PLC0415
+        cabecera_de,
         compose,
         dates_to_serial,
-        es_cabecera,
         historic_block,
         incidencias_format,
         is_separator,
@@ -333,7 +333,7 @@ def import_historico(
     valores = (
         sheets.tab_values(pedidos_tab, raw=True) if pedidos_tab in sheets.tab_titles() else []
     )
-    cabecera = valores[0] if valores and es_cabecera(valores[0]) else []
+    cabecera = cabecera_de(valores)
     vivas_pedidos = dates_to_serial(
         [realinear_fila(r, cabecera) for r in live_zone(valores)], PEDIDOS_DATE_COLUMNS,
     )
