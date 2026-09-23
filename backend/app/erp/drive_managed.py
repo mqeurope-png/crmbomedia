@@ -43,14 +43,17 @@ from sqlalchemy.orm import Session
 from app.erp.drive_sheets import DriveSyncError, ManagedTabTransport
 from app.erp.seguimiento import (
     DATE_PATTERN,
+    HISTORICO_DATE_COLUMNS,
     INCIDENCIAS_COLUMNS,
     INCIDENCIAS_DATE_COLUMNS,
     PEDIDOS_DATE_COLUMNS,
+    PREPARACION_INDEX,
     SEGUIMIENTO_COLUMNS_V2,
     SITUACION_FILL,
     incidencia_rows,
     incidencia_values,
     parse_sheet_date,
+    redistribute_nota,
     row_to_pedidos_values,
     sort_by_fecha_desc,
 )
@@ -248,6 +251,9 @@ def normalize_static_pedidos(
     - si la pestaña se escribió con la cabecera de 17 columnas (sin «Fecha
       recogido»), se abre el hueco de esa columna en cada fila, para que el
       histórico no quede desplazado bajo la cabecera nueva;
+    - lo que el import viejo empaquetó en «Nota / Incidencia»
+      (`Vendedor: WEB · Transporte: UPS · Preparado: … · Proforma: …`) se
+      reparte a sus columnas, sin pisar lo que ya tuviera dato;
     - las fechas reconocibles pasan a valor de fecha (serial); las rotas se
       quedan como texto.
 
@@ -262,8 +268,8 @@ def normalize_static_pedidos(
         if realinear:
             r = r + [""] * (len(_HEADER_V2_SIN_RECOGIDO) - len(r))
             r.insert(_RECOGIDO_INDEX, "")
-        out.append(r)
-    return dates_to_serial(out, PEDIDOS_DATE_COLUMNS)
+        out.append(r if is_separator(r) else redistribute_nota(r))
+    return dates_to_serial(out, HISTORICO_DATE_COLUMNS)
 
 
 def build_pedidos_grid(
@@ -371,10 +377,17 @@ def pedidos_format(
             "fields": "userEnteredFormat.numberFormat",
         }})
         requests.extend(_situacion_format(ordered))
-    # Fechas como fecha (DD/MM/AAAA) en la zona viva Y en la estática.
+    # Fechas como fecha (DD/MM/AAAA) en la zona viva Y en la estática. En el
+    # bloque estático «Preparación» también es una fecha (en vivo es un estado),
+    # así que ahí se le da formato de fecha aparte.
+    estaticas = len(static or [])
     requests.extend(date_format_requests(
-        PEDIDOS_DATE_COLUMNS, first_row=1, last_row=total_rows + len(static or []),
+        PEDIDOS_DATE_COLUMNS, first_row=1, last_row=total_rows + estaticas,
     ))
+    if estaticas:
+        requests.extend(date_format_requests(
+            (PREPARACION_INDEX,), first_row=total_rows, last_row=total_rows + estaticas,
+        ))
     # El autofiltro cubre SOLO la zona viva: si abarcara el histórico, ordenar
     # por una columna mezclaría los dos bloques.
     requests.append({"setBasicFilter": {"filter": {"range": {

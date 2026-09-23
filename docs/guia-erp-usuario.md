@@ -616,6 +616,16 @@ motivo, asignado, fecha y estado, tomado de la bandeja de Excepciones).
 **«Actualizar hoja de Drive»** vuelca ese mismo formato nuevo al Google Sheet,
 en **pestañas propias de la app**. Cada una tiene **dos zonas**:
 
+> **El histórico se reparte en columnas.** Las filas antiguas llevaban todo
+> apelotonado en «Nota / Incidencia» (`Vendedor: WEB · Transporte: UPS ·
+> Preparado: 28/08/2026 · Recogido: 28/08/2026 · Proforma: 1543`). Ahora cada
+> dato va a su columna —Vendedor a **Origen**, Transporte a **Envío**,
+> Preparado a **Preparación**, Recogido a **Fecha recogido**, como fechas de
+> verdad— y en la Nota solo queda lo que no tiene columna: el texto libre de
+> «Orden» y la **Proforma**. Se arregla solo en el siguiente «Actualizar hoja
+> de Drive»; lo que no sea una fecha (`X`, `pendiente`, `CANCELADO`…) se queda
+> como texto en su columna, sin inventar nada.
+
 - **«Seguimiento (app)»** — arriba, los pedidos vivos: **los mismos que ves en
   la pantalla** (en curso; fuera los quitados a mano y los ocultos por estado),
   con las 18 columnas, **ordenados por fecha del pedido, del más reciente al
