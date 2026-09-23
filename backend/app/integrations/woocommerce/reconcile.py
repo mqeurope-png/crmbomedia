@@ -103,6 +103,20 @@ def _unknown_status_woo_orders(
     ]
 
 
+#: Código con el que WooCommerce (REST v3) dice que un id de pedido NO existe.
+#: Un 404 sin este código no es «el pedido no está»: es una URL de tienda mal
+#: configurada, un plugin caído o un proxy — y en ese caso NO se marca nada.
+_WC_ORDER_INVALID_ID = "woocommerce_rest_shop_order_invalid_id"
+
+
+def _is_order_not_found(exc: WooError) -> bool:
+    """404 de WooCommerce por id inexistente, y no cualquier 404."""
+    if getattr(exc, "status", None) != 404:
+        return False
+    body = str(getattr(exc, "body", "") or "") + str(exc)
+    return _WC_ORDER_INVALID_ID in body
+
+
 def _fill_unknown_statuses(
     session: Session, orders: list[Order], client_factory: Callable[..., Any],
     *, dry_run: bool, counts: dict[str, int], samples: dict[str, list[str]],
@@ -127,15 +141,17 @@ def _fill_unknown_statuses(
             errors.append({"store": store.account_id, "error": str(exc)[:200]})
             continue
         for o in pending:
-            calls += 1
             try:
-                woo = client.get_order(int(o.external_id))
+                woo_id = int(str(o.external_id).strip())
             except (TypeError, ValueError):
                 errors.append({"order_number": o.order_number,
                                "error": f"external_id no numérico: {o.external_id!r}"})
                 continue
+            calls += 1
+            try:
+                woo = client.get_order(woo_id)
             except WooError as exc:
-                if getattr(exc, "status", None) == 404:
+                if _is_order_not_found(exc):
                     new_status = NOT_FOUND
                 else:
                     errors.append({"order_number": o.order_number,

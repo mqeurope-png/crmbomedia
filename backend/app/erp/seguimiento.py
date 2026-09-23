@@ -1278,8 +1278,20 @@ def sort_by_fecha_desc(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Las filas por fecha del pedido, de más reciente a más antiguo (los sin
     fecha al final). Es el orden de la zona viva de la pestaña gestionada de
     Drive: ahí la Situación es una columna más (con su color y su autofiltro),
-    no el criterio de orden."""
-    return _sort_rows(list(rows), "fecha", "desc")
+    no el criterio de orden. Desempate determinista por nº de pedido (el más
+    alto primero), para que dos pasadas seguidas escriban la hoja igual."""
+    return sorted(
+        rows,
+        key=lambda r: (
+            r.get("fecha") is None, _neg_ordinal(r.get("fecha")),
+            _desc_key(str(r.get("order_number") or "")),
+        ),
+    )
+
+
+def _desc_key(text: str) -> tuple[int, ...]:
+    """Clave que ordena un texto DESCENDENTE dentro de un `sorted` ascendente."""
+    return tuple(-ord(c) for c in text)
 
 
 def _sort_rows(

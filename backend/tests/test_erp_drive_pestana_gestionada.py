@@ -221,7 +221,9 @@ def test_congela_la_cabecera_y_pone_autofiltro_en_las_dos_pestanas(session):
 
 
 def test_colorea_la_celda_situacion_con_los_tonos_del_diseno(session):
-    rows = [_row("incidencias", "I-1"), _row("listo", "L-1")]
+    # I-1 más reciente → primera fila viva (el orden es por fecha desc).
+    rows = [_row("incidencias", "I-1", fecha="2026-09-02"),
+            _row("listo", "L-1", fecha="2026-09-01")]
     sheets = FakeTabs()
     push_managed_tabs(session, sheets, rows)
     fondos = [
@@ -236,8 +238,9 @@ def test_colorea_la_celda_situacion_con_los_tonos_del_diseno(session):
 
 
 def test_incidencias_es_el_subconjunto_exacto(session):
-    rows = [_row("incidencias", "I-1"), _row("listo", "L-1"),
-            _row("incidencias", "I-2")]
+    # Mismo orden que la hoja (fecha desc): I-1 es más reciente que I-2.
+    rows = [_row("incidencias", "I-1", fecha="2026-09-03"), _row("listo", "L-1"),
+            _row("incidencias", "I-2", fecha="2026-09-02")]
     sheets = FakeTabs()
     resumen = push_managed_tabs(session, sheets, rows)
     inc = sheets.written[DEFAULT_INCIDENCIAS_TAB][1:]

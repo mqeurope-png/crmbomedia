@@ -142,8 +142,14 @@ class FakeWoo:
         self.calls.append(("get_order", self.store.account_id, order_id))
         if self.raise_on == "get_order":
             raise WooError("store down", status=503)
+        if self.raise_on == "get_order_404_html":
+            # Un 404 que NO es de WooCommerce (URL de tienda mal, proxy…).
+            raise WooError(f"GET /orders/{order_id} → 404: <html>Not Found</html>",
+                           status=404, body="<html>Not Found</html>")
         if order_id not in self.by_id:
-            raise WooError(f"GET /orders/{order_id} → 404: no existe", status=404)
+            body = ('{"code":"woocommerce_rest_shop_order_invalid_id",'
+                    '"message":"ID no válido.","data":{"status":404}}')
+            raise WooError(f"GET /orders/{order_id} → 404: {body}", status=404, body=body)
         return dict(self.by_id[order_id])
 
 
@@ -356,6 +362,24 @@ def test_reconcile_rellena_los_sin_estado_uno_a_uno(session_factory) -> None:
                    for r in _rows_for(s, ver_ocultos_estado=True)}
         assert ocultos["BOPRIN-99880"] == "En espera"
         assert ocultos["BOPRIN-99999"] == "No encontrado en la tienda"
+
+
+def test_reconcile_un_404_que_no_es_de_woocommerce_no_marca_not_found(session_factory) -> None:
+    """Una tienda con la URL mal configurada devuelve 404 a TODO: eso no puede
+    marcar como «no encontrados» todos sus pedidos sin estado. Solo el 404 con
+    el código de WooCommerce de id inexistente cuenta como `not_found`."""
+    with session_factory() as s:
+        st = _store(s)
+        _order(s, woo_id="99878", number="BOPRIN-99878", woo_status=None, store=st)
+        s.commit()
+        calls: list[tuple] = []
+        summary = reconcile_open_order_statuses(
+            s, dry_run=False,
+            client_factory=_factory({}, calls, raise_for={"boprint": "get_order_404_html"}),
+        )
+        assert summary["to_not_found"] == 0
+        assert any(e.get("order_number") == "BOPRIN-99878" for e in summary["errors"])
+        assert s.scalar(select(Order).where(Order.external_id == "99878")).woo_status is None
 
 
 def test_reconcile_acota_los_sin_estado_por_pasada(session_factory) -> None:
