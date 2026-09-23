@@ -169,12 +169,12 @@ def test_quitar_pedido_cualquier_estado(session_factory, http) -> None:
     # …y todos están en la vista de excluidos.
     assert _list(http, ver_excluidos="true")["total"] == len(ids)
     # La vista «ocultos por estado» es una lista de revisión aparte (#376): los
-    # que la tienda no llegó a procesar (`on-hold`, `cancelled`) y el web SIN
-    # estado (NULL) siguen ahí, marcados además como excluidos. El `refunded`
-    # NO: es el estado propio «Reembolsado», que se ve en el seguimiento (y
-    # aquí solo sale de la lista por la exclusión MANUAL, que es el otro eje).
+    # que la tienda no llegó a procesar (`on-hold`, `cancelled`) siguen ahí,
+    # marcados además como excluidos. Ni el `refunded` (estado propio
+    # «Reembolsado», que se ve) ni el SIN estado (no se conoce → se queda):
+    # esos dos salen de la lista solo por la exclusión MANUAL, el otro eje.
     ocultos = _list(http, ver_ocultos_estado="true")
-    assert {r["woo_status"] for r in ocultos["items"]} == {"cancelled", "on-hold", None}
+    assert {r["woo_status"] for r in ocultos["items"]} == {"cancelled", "on-hold"}
     assert all(r["excluido"] for r in ocultos["items"])
     with session_factory() as s:
         for key, oid in ids.items():

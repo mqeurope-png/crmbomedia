@@ -96,7 +96,7 @@ def _unknown_status_woo_orders(
         Order.external_id.isnot(None),
         Order.store_id.isnot(None),
         (Order.woo_status.is_(None)) | (Order.woo_status == ""),
-    )
+    ).order_by(Order.placed_at.desc(), Order.id)   # los recientes, primero
     return [
         o for o in session.scalars(stmt)
         if not store_account_id or _store_matches(session, o, store_account_id)
@@ -225,8 +225,14 @@ def reconcile_open_order_statuses(
         counts=counts, samples=samples, errors=errors,
     )
 
-    # 2) Los activos, cruzados con los listados por estado de cada tienda.
-    active = _open_woo_orders(session, store_account_id)
+    # 2) Los activos, cruzados con los listados por estado de cada tienda. Un
+    #    sin estado es VISIBLE (así que también «activo»), pero ya se ha
+    #    resuelto en 1): no se cuenta dos veces (en dry-run seguiría a NULL).
+    unknown_ids = {o.id for o in unknown}
+    active = [
+        o for o in _open_woo_orders(session, store_account_id)
+        if o.id not in unknown_ids
+    ]
     # Agrupar por tienda e indexar por id de WooCommerce (external_id).
     by_store: dict[str, dict[str, Order]] = {}
     for o in active:

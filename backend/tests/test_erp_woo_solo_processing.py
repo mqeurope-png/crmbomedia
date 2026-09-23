@@ -1,4 +1,5 @@
-"""ERP · WooCommerce — SOLO se crean pedidos en estado `processing`.
+"""ERP · WooCommerce — SOLO se crean pedidos que han entrado en el flujo
+(`processing` / `completed` / `refunded`); un carrito no.
 
 Cubre: la regla en el punto común de ingesta (`import_woo_order`), que un pedido
 ya creado sigue actualizando `woo_status` (processing → completed / cancelled),
@@ -110,21 +111,38 @@ def _orders(s: Session) -> list[Order]:
 
 
 def test_regla_solo_processing_constante():
-    assert CREATE_ON_STATUSES == frozenset({"processing"})
+    # Entra en el flujo: pagado / en preparación, servido, o pagado y devuelto.
+    assert CREATE_ON_STATUSES == frozenset({"processing", "completed", "refunded"})
     assert should_create_order({"status": "processing"})
     assert should_create_order({"status": "Processing"})  # insensible a mayúsculas
-    for st in ("pending", "on-hold", "completed", "cancelled", "refunded",
-               "failed", "checkout-draft", "", None):
+    assert should_create_order({"status": "completed"})
+    assert should_create_order({"status": "refunded"})
+    for st in ("pending", "on-hold", "cancelled", "failed", "draft",
+               "checkout-draft", "", None):
         assert not should_create_order({"status": st}), st
     assert not should_create_order({})
 
 
+@pytest.mark.parametrize("status", ["completed", "refunded"])
+def test_woo_crea_tambien_completed_y_refunded(session_factory, status):
+    """Un pedido DESCONOCIDO que llega ya servido o reembolsado también entró en
+    el flujo (pagó): se crea, con su estado tal cual."""
+    with session_factory() as s:
+        store = _store(s)
+        out = import_woo_order(s, store=store, woo_order=_woo_order(id=701, status=status))
+        s.commit()
+        assert out.created is True and out.skipped_status is None
+        orders = _orders(s)
+        assert len(orders) == 1 and orders[0].woo_status == status
+
+
 @pytest.mark.parametrize(
-    "status", ["pending", "on-hold", "completed", "cancelled", "refunded", "failed"],
+    "status", ["pending", "on-hold", "cancelled", "failed", "draft", "checkout-draft"],
 )
 def test_woo_crea_solo_processing(session_factory, status):
-    """Un pedido DESCONOCIDO solo se crea si llega en `processing`; en cualquier
-    otro estado se ignora sin crear NADA (ni pedido, ni contacto, ni empresa)."""
+    """Un pedido DESCONOCIDO que no ha entrado en el flujo (sin pagar, en
+    espera, cancelado, fallido, borrador) se ignora sin crear NADA (ni pedido,
+    ni contacto, ni empresa); en cuanto pasa a `processing`, se crea."""
     with session_factory() as s:
         store = _store(s)
         contacts0, companies0 = _count(s, Contact), _count(s, Company)

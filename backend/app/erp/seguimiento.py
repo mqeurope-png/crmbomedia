@@ -600,11 +600,12 @@ def visibility_for_status(woo_status: str | None) -> tuple[bool, str | None, boo
     devuelve marcado para que pantalla, Excel y Drive lo enseñen como tal y no
     se confunda ni con un pedido vivo ni con un anulado.
 
-    Un pedido SIN estado (NULL) también queda FUERA, con motivo `sin_estado`:
-    «Poner al día estados Woo» rellena el estado de todos los web que la
-    tienda todavía tiene (y marca `not_found` los que ya no existen), así que
-    el que sigue a NULL después no es un activo fiable — se cuelan por aquí los
-    pedidos internos de prueba. Si alguno es legítimo, se «Reincluye» a mano.
+    Un pedido SIN estado (NULL) se QUEDA: no se conoce, y ocultarlo (#461)
+    se llevó por delante ~90 pedidos legítimos importados antes de que
+    existiera el campo. Solo oculta un estado EXPLÍCITO de la tienda (o el
+    `not_found` que pone la reconciliación cuando la tienda ya no lo tiene).
+    «Poner al día estados Woo» recorre también los NULL y les pone su estado
+    real, así que con el tiempo dejan de serlo.
 
     Los dos lados de la comparación pasan por `woo.normalize` (guion, guion
     bajo, prefijo `wc-` y mayúsculas son lo mismo): el valor guardado es el
@@ -614,9 +615,7 @@ def visibility_for_status(woo_status: str | None) -> tuple[bool, str | None, boo
     st = woo.normalize(woo_status)
     if st == woo.REFUNDED:
         return False, None, True
-    if not st:
-        return True, woo.SIN_ESTADO, False
-    if st in woo.WEB_VISIBLE_STATUSES:
+    if not st or st in woo.WEB_VISIBLE_STATUSES:
         return False, None, False
     return True, st, False
 
