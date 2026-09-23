@@ -363,11 +363,17 @@ def test_las_fechas_se_escriben_como_valor_de_fecha(session):
     fmts = [r["repeatCell"] for r in sheets.formats[DEFAULT_MANAGED_TAB]
             if r.get("repeatCell", {}).get("cell", {}).get("userEnteredFormat", {})
             .get("numberFormat", {}).get("type") == "DATE"]
-    assert sorted(f["range"]["startColumnIndex"] for f in fmts) == [2, 9, 10, 14]
+    # 4 columnas de fecha del formato + «Preparación», que en el bloque
+    # ESTÁTICO también es una fecha (en la zona viva es un estado del taller).
+    assert sorted(f["range"]["startColumnIndex"] for f in fmts) == [2, 9, 10, 12, 14]
     assert all(f["cell"]["userEnteredFormat"]["numberFormat"]["pattern"] == "dd/mm/yyyy"
                for f in fmts)
-    assert all(f["range"]["startRowIndex"] == 1 and f["range"]["endRowIndex"] == len(escrito)
-               for f in fmts)
+    filas = {f["range"]["startColumnIndex"]: (f["range"]["startRowIndex"],
+                                              f["range"]["endRowIndex"])
+             for f in fmts}
+    # Las 4 del formato cubren viva + estática; «Preparación», solo la estática.
+    assert all(filas[c] == (1, len(escrito)) for c in (2, 9, 10, 14))
+    assert filas[12] == (2, len(escrito))
 
 
 def test_abre_el_hueco_de_fecha_recogido_en_un_historico_de_17_columnas(session):
@@ -385,7 +391,7 @@ def test_abre_el_hueco_de_fecha_recogido_en_un_historico_de_17_columnas(session)
     assert migrado[1][14] == ""                      # el hueco nuevo
     assert migrado[1][15] == "TRK1"                  # Tracking, en su sitio
     assert migrado[1][16] == "SN-7"
-    assert migrado[1][17] == "Orden: revisar"
+    assert migrado[1][17] == "revisar"
     assert migrado[1][2] == sheet_serial(date(2026, 2, 3))
     assert len(migrado[1]) == len(SEGUIMIENTO_COLUMNS_V2)
     # Con la cabecera actual, idempotente (solo las fechas).
@@ -578,7 +584,8 @@ def test_map_row_reparte_a_columnas_y_conserva_lo_que_no_tiene_columna():
     assert fila[13] == "UPS"                  # Envío ← Transporte
     assert fila[14] == "17/01/2023"           # Fecha recogido ← Recogido
     assert fila[16] == "SN-7 · sí"            # Nº serie · WhiteRIP
-    assert fila[17] == "Orden: revisar con Marta · Proforma: 296"
+    # `Orden` va SIN su prefijo (es texto libre); `Proforma` lo conserva.
+    assert fila[17] == "revisar con Marta · Proforma: 296"
     assert "UPS" not in fila[17] and "WEB" not in fila[17]
     assert len(fila) == len(SEGUIMIENTO_COLUMNS_V2)
 
@@ -602,7 +609,8 @@ def test_import_historico_escribe_las_fechas_como_fecha():
     formatos = [r["repeatCell"]["cell"]["userEnteredFormat"]
                 for r in sheets.formats[DEFAULT_MANAGED_TAB] if "repeatCell" in r]
     tipos = [f["numberFormat"]["type"] for f in formatos if "numberFormat" in f]
-    assert tipos.count("DATE") == len(PEDIDOS_DATE_COLUMNS)
+    # Las 4 del formato + «Preparación» del bloque estático.
+    assert tipos.count("DATE") == len(PEDIDOS_DATE_COLUMNS) + 1
 
 
 def test_import_historico_escribe_en_otra_pestana_y_no_toca_la_vieja():
@@ -644,3 +652,130 @@ def test_import_historico_sin_cabecera_reconocible_falla_claro():
         import_historico(sheets, pedidos_tab=DEFAULT_MANAGED_TAB,
                          incidencias_tab=DEFAULT_INCIDENCIAS_TAB)
     assert "cabecera" in str(exc.value)
+
+
+# --- reparto de la columna R («Nota / Incidencia» empaquetada) ------------------
+
+
+def _nota_de(texto: str) -> list[Any]:
+    """Una fila del formato nuevo con solo la nota puesta."""
+    fila = [""] * len(SEGUIMIENTO_COLUMNS_V2)
+    fila[-1] = texto
+    return fila
+
+
+@pytest.mark.parametrize(
+    ("texto", "esperado"),
+    [
+        # 1) El caso corriente: cada token a su columna, la proforma a la nota.
+        ("Vendedor: WEB · Transporte: UPS · Preparado: 28/08/2026 · "
+         "Recogido: 28/08/2026 · Proforma: 1543",
+         {"origen": "WEB", "envio": "UPS", "preparacion": "28/08/2026",
+          "recogido": "28/08/2026", "nota": "Proforma: 1543"}),
+        # 2) `Orden:` lleva `:` DENTRO y va entero a la nota, sin su prefijo.
+        ("Orden: ALBARÁN: RECOGE EL CLIENTE - SIN ENVÍO. ETIQUETA APORTADA POR "
+         "EL CLIENTE. · Vendedor: WEB · Transporte: ELLOS · Preparado: 30/07/2026 · "
+         "Recogido: 31/07/2026 · Proforma: ABP0173",
+         {"origen": "WEB", "envio": "ELLOS", "preparacion": "30/07/2026",
+          "recogido": "31/07/2026",
+          "nota": "ALBARÁN: RECOGE EL CLIENTE - SIN ENVÍO. ETIQUETA APORTADA POR "
+                  "EL CLIENTE. · Proforma: ABP0173"}),
+        # 3) Lo que no es fecha se queda como texto en su columna.
+        ("Vendedor: MAN · Transporte: NOS · Preparado: X · Recogido: X · Proforma: 830",
+         {"origen": "MAN", "envio": "NOS", "preparacion": "X", "recogido": "X",
+          "nota": "Proforma: 830"}),
+        # 4) Un solo token: el resto vacío, y la nota TAMBIÉN (no se repite).
+        ("Vendedor: WEB",
+         {"origen": "WEB", "envio": "", "preparacion": "", "recogido": "", "nota": ""}),
+        # 5) Cabecera colada y vacío: no se parsean.
+        ("Nota / Incidencia",
+         {"origen": "", "envio": "", "preparacion": "", "recogido": "", "nota": ""}),
+        ("", {"origen": "", "envio": "", "preparacion": "", "recogido": "", "nota": ""}),
+        # Sin vendedor, con transporte y preparado.
+        ("Transporte: Seitrans · Preparado: 20/8/2026",
+         {"origen": "", "envio": "Seitrans", "preparacion": "20/8/2026",
+          "recogido": "", "nota": ""}),
+        # Token sin valor y clave suelta: se ignoran, no rompen.
+        ("Vendedor: · Transporte: cts · Recogido",
+         {"origen": "", "envio": "cts", "preparacion": "", "recogido": "", "nota": ""}),
+        # Clave desconocida: a la nota, CON su etiqueta (si no, no se sabe qué es).
+        ("Vendedor: SAT · Bultos: 3",
+         {"origen": "SAT", "envio": "", "preparacion": "", "recogido": "",
+          "nota": "Bultos: 3"}),
+        # Tildes/mayúsculas en la clave y espacios de más en el separador.
+        ("VENDEDOR: WEB  ·   Transporte: DHL",
+         {"origen": "WEB", "envio": "DHL", "preparacion": "", "recogido": "",
+          "nota": ""}),
+        # `Orden:` suelto (sin más tokens) → solo nota.
+        ("Orden: 172€",
+         {"origen": "", "envio": "", "preparacion": "", "recogido": "",
+          "nota": "172€"}),
+    ],
+)
+def test_reparte_la_nota_empaquetada_del_historico(texto, esperado) -> None:
+    from app.erp.seguimiento import redistribute_nota
+
+    f = redistribute_nota(_nota_de(texto))
+    assert f[4] == esperado["origen"]
+    assert f[12] == esperado["preparacion"]
+    assert f[13] == esperado["envio"]
+    assert f[14] == esperado["recogido"]
+    assert f[17] == esperado["nota"]
+    assert len(f) == len(SEGUIMIENTO_COLUMNS_V2)
+
+
+def test_el_reparto_no_pisa_lo_que_ya_tiene_dato_y_es_idempotente() -> None:
+    from app.erp.seguimiento import redistribute_nota
+
+    fila = _nota_de("Vendedor: WEB · Transporte: UPS")
+    fila[13] = "SEUR"                                  # Envío ya resuelto
+    f = redistribute_nota(fila)
+    assert f[4] == "WEB" and f[13] == "SEUR"
+    assert redistribute_nota(f) == f                   # idempotente
+
+
+def test_el_historico_ya_escrito_se_reparte_al_volcar(session) -> None:
+    """El bloque estático de la pestaña (escrito por el import viejo) se
+    reparte en el siguiente «Actualizar»: la zona viva no se toca."""
+    sep = [f"{SEPARATOR_PREFIX} HISTÓRICO {SEPARATOR_PREFIX}"]
+    vieja = ["Histórico", "V-1", "3/2/2026", "Roca"] + [""] * 13 + [
+        "Vendedor: WEB · Transporte: UPS · Preparado: 28/08/2026 · "
+        "Recogido: 28/08/2026 · Proforma: 1543",
+    ]
+    sheets = FakeTabs({HISTORICA: [], DEFAULT_MANAGED_TAB: [
+        list(SEGUIMIENTO_COLUMNS_V2), sep, vieja,
+    ]})
+    push_managed_tabs(session, sheets, [_row("listo", "L-1")])
+    escrito = sheets.written[DEFAULT_MANAGED_TAB]
+    assert escrito[1][1] == "L-1"                      # zona viva intacta
+    fila = escrito[-1]
+    assert fila[4] == "WEB" and fila[13] == "UPS"
+    # Preparado y Recogido, como VALOR de fecha (ordenables con la zona viva).
+    assert fila[12] == sheet_serial(date(2026, 8, 28))
+    assert fila[14] == sheet_serial(date(2026, 8, 28))
+    assert fila[17] == "Proforma: 1543"
+    assert escrito[-2] == sep                          # el separador no se toca
+
+
+def test_el_import_reparte_orden_y_proforma_a_la_nota() -> None:
+    """Al reimportar, `Orden` va a la nota SIN prefijo y `Proforma` con él."""
+    from app.erp.seguimiento import match_header_columns
+
+    col_map = match_header_columns(HEADER_VIEJA)
+    fila = map_row(_vieja(**{
+        "Albarán / Nº Pedido Web": "1", "Vendedor": "WEB", "Transport": "ELLOS",
+        "Preparado": "30/07/2026", "Recogido": "31/07/2026", "Proforma": "ABP0173",
+        "Orden": "ALBARÁN: RECOGE EL CLIENTE - SIN ENVÍO.",
+    }), col_map)
+    assert fila[4] == "WEB" and fila[13] == "ELLOS"
+    assert fila[12] == "30/07/2026" and fila[14] == "31/07/2026"
+    assert fila[17] == "ALBARÁN: RECOGE EL CLIENTE - SIN ENVÍO. · Proforma: ABP0173"
+
+
+def test_un_texto_libre_sin_tokens_se_queda_tal_cual() -> None:
+    """Una nota que no lleva `Clave: Valor` es texto libre del equipo: no se
+    reparte ni se borra."""
+    from app.erp.seguimiento import redistribute_nota
+
+    for texto in ("revisar con Marta", "RMA 20250626-1", "172€"):
+        assert redistribute_nota(_nota_de(texto))[17] == texto

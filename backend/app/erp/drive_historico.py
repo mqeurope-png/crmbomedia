@@ -24,9 +24,13 @@ que faltan…», las cabeceras repetidas a media hoja, los separadores y las fil
 vacías — lo decide `is_structure_row`, la misma función que ya usa la
 sincronización para no pisarlas.
 
-Qué se conserva: lo que no tiene hueco limpio en el formato nuevo (la columna
-manual «Orden», el vendedor, el transportista, las fechas de preparado/recogido)
-se acumula en «Nota / Incidencia» en vez de perderse.
+Qué se conserva, y DÓNDE: cada dato va a su columna real (Vendedor → Origen,
+Transporte → Envío, Preparado → Preparación, Recogido → Fecha recogido). En
+«Nota / Incidencia» solo queda lo que no tiene columna: la columna manual
+«Orden» (texto libre, sin su etiqueta) y la «Proforma» (con ella, que si no no
+se sabe qué es ese número). Un histórico ya escrito con el formato viejo, que
+lo llevaba todo empaquetado ahí (`Vendedor: WEB · Transporte: UPS · …`), se
+reparte solo en el siguiente volcado (`seguimiento.redistribute_nota`).
 
 La Situación NO se puede recalcular para el histórico (haría falta el pedido en
 BoHub, y estas filas son de años atrás), así que va fija a «Histórico». Así
@@ -45,6 +49,7 @@ from app.erp.seguimiento import (
     SEGUIMIENTO_COLUMNS_V2,
     is_structure_row,
     match_header_columns,
+    redistribute_nota,
 )
 
 logger = logging.getLogger(__name__)
@@ -132,7 +137,7 @@ def map_row(row: list[Any], col_map: dict[int, int]) -> list[Any]:
     num_serie = _cell(row, col_map, "Nº de Serie")
     whiterip = _cell(row, col_map, "WhiteRIP")
     serie_whiterip = " · ".join(p for p in (num_serie, whiterip) if p)
-    return [
+    fila = [
         SITUACION_HISTORICO,                                  # Situación
         _cell(row, col_map, "Albarán / Nº Pedido Web"),       # Nº pedido
         _cell(row, col_map, "Fecha entrada albarán"),         # Fecha
@@ -152,6 +157,10 @@ def map_row(row: list[Any], col_map: dict[int, int]) -> list[Any]:
         serie_whiterip,                                       # Nº serie · WhiteRIP
         _nota(row, col_map),                                  # Nota / Incidencia
     ]
+    # Y se reparte lo que la nota traiga empaquetado (`Orden: …`, `Proforma: …`,
+    # y los `Vendedor/Transporte/Preparado/Recogido` de un histórico importado
+    # con el formato viejo): cada token a su columna, sin pisar lo que ya hay.
+    return redistribute_nota(fila)
 
 
 def map_pendiente(row: list[Any], col_map: dict[int, int]) -> list[Any]:
@@ -274,8 +283,8 @@ def import_historico(
         pendientes_block,
     )
     from app.erp.seguimiento import (  # noqa: PLC0415
+        HISTORICO_DATE_COLUMNS,
         INCIDENCIAS_DATE_COLUMNS,
-        PEDIDOS_DATE_COLUMNS,
     )
 
     historic = sheets.first_tab_title()
@@ -310,8 +319,8 @@ def import_historico(
 
     # Las fechas del histórico, como valor de fecha donde se puedan leer (una
     # rota se queda como texto): así el bloque también ordena por fecha.
-    historico = historic_block(dates_to_serial(plan["rows"], PEDIDOS_DATE_COLUMNS))
-    vivas_pedidos = dates_to_serial(_live(pedidos_tab), PEDIDOS_DATE_COLUMNS)
+    historico = historic_block(dates_to_serial(plan["rows"], HISTORICO_DATE_COLUMNS))
+    vivas_pedidos = dates_to_serial(_live(pedidos_tab), HISTORICO_DATE_COLUMNS)
     sheets.ensure_tab(pedidos_tab)
     sheets.replace_tab(pedidos_tab, compose(SEGUIMIENTO_COLUMNS_V2, vivas_pedidos, historico))
     # El mismo formato que el volcado periódico (cabecera congelada, anchos,

@@ -1378,6 +1378,10 @@ INCIDENCIAS_COLUMNS: list[str] = [
 #: Fecha · Fecha factura · Factura enviada · Fecha recogido.
 PEDIDOS_DATE_COLUMNS: tuple[int, ...] = (2, 9, 10, 14)
 INCIDENCIAS_DATE_COLUMNS: tuple[int, ...] = (5,)
+#: En la zona VIVA «Preparación» es un estado del taller («En cola», «Listo»),
+#: pero en el HISTÓRICO es la fecha en que se preparó: ahí también va como
+#: valor de fecha, para que ordene con el resto.
+HISTORICO_DATE_COLUMNS: tuple[int, ...] = (*PEDIDOS_DATE_COLUMNS, 12)
 #: Formato de fecha de esas columnas (Excel y Sheets usan el mismo patrón).
 DATE_PATTERN = "DD/MM/YYYY"
 #: Ancho aproximado de cada columna de «Pedidos» (para que el Excel se lea).
@@ -1387,6 +1391,101 @@ _INCIDENCIAS_WIDTHS = [16, 30, 24, 40, 18, 11, 12]
 def _sheet_date_value(iso: str | None) -> date | str:
     """Celda de fecha del formato nuevo: un `date` real, o "" si no hay."""
     return date.fromisoformat(iso) if iso else ""
+
+
+#: Columnas del formato nuevo a las que se reparten los tokens que el histórico
+#: traía empaquetados en «Nota / Incidencia» (`Clave: Valor · Clave: Valor`).
+ORIGEN_INDEX = SEGUIMIENTO_COLUMNS_V2.index("Origen")
+PREPARACION_INDEX = SEGUIMIENTO_COLUMNS_V2.index("Preparación")
+ENVIO_INDEX = SEGUIMIENTO_COLUMNS_V2.index("Envío")
+RECOGIDO_INDEX = SEGUIMIENTO_COLUMNS_V2.index("Fecha recogido")
+NOTA_INDEX = SEGUIMIENTO_COLUMNS_V2.index("Nota / Incidencia")
+
+#: Clave del token (normalizada: sin tildes, en minúsculas) → columna destino.
+_NOTA_DESTINOS: dict[str, int] = {
+    "vendedor": ORIGEN_INDEX,
+    "transporte": ENVIO_INDEX,
+    "transport": ENVIO_INDEX,
+    "preparado": PREPARACION_INDEX,
+    "recogido": RECOGIDO_INDEX,
+}
+#: Claves que se quedan en la Nota. `orden` va SIN su prefijo (es texto libre
+#: del equipo, lo más valioso que hay ahí); `proforma` conserva la etiqueta
+#: porque no tiene columna propia y sin ella no se sabría qué número es.
+_NOTA_LIBRE_SIN_ETIQUETA = {"orden"}
+#: Separador de tokens que escribió el import (punto medio con espacios).
+_NOTA_SEPARADOR = "\u00b7"
+#: Cabecera colada como fila de datos: no es una nota, es basura.
+_NOTA_CABECERA = "nota / incidencia"
+
+
+def _clave_token(text: str) -> str:
+    """Clave de un token, normalizada para comparar: sin tildes, minúsculas."""
+    s = unicodedata.normalize("NFKD", str(text or "").strip())
+    return "".join(c for c in s if not unicodedata.combining(c)).casefold()
+
+
+def split_nota_tokens(text: Any) -> tuple[dict[int, str], str]:
+    """Reparte la «Nota / Incidencia» empaquetada del histórico.
+
+    El import viejo volcaba ahí todo lo que no tenía columna, como
+    `Vendedor: WEB · Transporte: UPS · Preparado: 28/08/2026 · Proforma: 1543`.
+    Devuelve (columna destino → valor, nota que queda).
+
+    Detalles que importan:
+
+    - el valor puede llevar `:` dentro (`Orden: ALBARÁN: RECOGE EL CLIENTE…`),
+      así que se parte por el PRIMER `:` y el resto es el valor entero;
+    - `Orden` va a la nota SIN el prefijo; `Proforma` y cualquier clave
+      desconocida, CON él (si no, no se sabría qué es ese número);
+    - un token sin valor (`Vendedor:` a secas) o sin `:` se ignora, no rompe;
+    - la cabecera colada (`Nota / Incidencia`) y el vacío no se parsean.
+
+    Las fechas no se tocan aquí: `Preparado`/`Recogido` salen como texto y el
+    volcado las pasa a valor de fecha si se pueden leer (una rota se queda como
+    texto, ver `parse_sheet_date`)."""
+    raw = str(text or "").strip()
+    if not raw or raw.casefold() == _NOTA_CABECERA:
+        return {}, ""
+    campos: dict[int, str] = {}
+    libres: list[str] = []
+    for token in raw.split(_NOTA_SEPARADOR):
+        token = token.strip()
+        if not token:
+            continue
+        clave, sep, valor = token.partition(":")
+        valor = valor.strip()
+        if not sep or not valor:
+            continue                      # `Vendedor:` a secas, o clave suelta
+        destino = _NOTA_DESTINOS.get(_clave_token(clave))
+        if destino is not None:
+            campos.setdefault(destino, valor)
+        elif _clave_token(clave) in _NOTA_LIBRE_SIN_ETIQUETA:
+            libres.append(valor)
+        else:
+            libres.append(f"{clave.strip()}: {valor}")
+    return campos, " · ".join(libres)[:500]
+
+
+def redistribute_nota(row: list[Any]) -> list[Any]:
+    """Una fila del formato nuevo con la nota empaquetada → la misma fila con
+    cada token en su columna. Solo rellena columnas VACÍAS (lo que ya tiene
+    dato manda) y deja la nota con lo que de verdad es texto libre. Idempotente:
+    una fila ya repartida no tiene tokens que mover."""
+    original = list(row)
+    cruda = original[NOTA_INDEX] if len(original) > NOTA_INDEX else ""
+    texto = str(cruda or "").strip()
+    campos, nota = split_nota_tokens(cruda)
+    if not campos and not nota and texto and texto.casefold() != _NOTA_CABECERA:
+        return original                   # texto libre sin tokens: se queda tal cual
+    if not campos and nota == texto:
+        return original                   # nada que repartir: ni se toca ni se rellena
+    out = original + [""] * max(0, len(SEGUIMIENTO_COLUMNS_V2) - len(original))
+    for destino, valor in campos.items():
+        if not str(out[destino] or "").strip():
+            out[destino] = valor
+    out[NOTA_INDEX] = nota
+    return out
 
 
 def row_to_pedidos_values(row: dict[str, Any]) -> list[Any]:
