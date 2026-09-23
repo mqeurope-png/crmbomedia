@@ -534,6 +534,16 @@ los datos a la hoja de Google Drive, con vista previa antes de escribir),
 **«Poner al día estados Woo…»** y **«Vincular facturas de FACTUSOL…»**. Por fila,
 **«PDF»** (de la factura) y **«Quitar»**/**«Reincluir»**.
 
+> **«Incidencia» es solo lo que marcáis vosotros.** Un pedido llega a esa
+> situación cuando alguien **reporta un problema a mano** desde la Cola SAT
+> («Reportar problema»): esa es la lista de incidencias del equipo, y es lo que
+> alimenta la pestaña «Incidencias (app)». Al resolver la incidencia el pedido
+> sale de ahí.
+>
+> Lo que detecta la app sola —una empresa sin vincular a FACTUSOL, un NIF-IVA
+> que VIES da por no válido— cae en **«Por revisar»**: hay que arreglarlo antes
+> de facturar y sigue destacado, pero no ensucia la lista de incidencias.
+
 El **Excel** que se descarga trae dos pestañas: **«Pedidos»** (las 17 columnas,
 ordenadas por Situación, con la celda Situación coloreada, la cabecera fija, el
 autofiltro y el importe con formato €) y **«Incidencias»** (los mismos pedidos
@@ -541,16 +551,22 @@ que están en Situación=Incidencia, con más detalle: nº pedido, cliente, tipo
 motivo, asignado, fecha y estado, tomado de la bandeja de Excepciones).
 
 **«Actualizar hoja de Drive»** vuelca ese mismo formato nuevo al Google Sheet,
-en **pestañas propias de la app**:
+en **pestañas propias de la app**. Cada una tiene **dos zonas**:
 
-- **«Seguimiento (app)»** — las 17 columnas, ordenadas por Situación, con la
-  celda Situación coloreada, la cabecera fija y autofiltro. Se **reescribe
-  entera** en cada actualización, así que refleja siempre lo que ves en
-  pantalla y repetirla no duplica nada.
-- **«Incidencias (app)»** — los pedidos en Situación=Incidencia, con su detalle.
+- **«Seguimiento (app)»** — arriba, los pedidos vivos (las 17 columnas,
+  ordenadas por Situación, con la celda Situación coloreada, cabecera fija y
+  autofiltro); debajo de una fila separadora
+  *«──── HISTÓRICO — no se actualiza ────»*, el **histórico** en formato nuevo.
+- **«Incidencias (app)»** — arriba, las incidencias que habéis reportado a
+  mano; debajo del separador, los **pendientes heredados** de la hoja vieja.
+
+**Solo se regenera la zona de arriba.** Del separador hacia abajo se conserva
+tal cual, cambie como cambie el número de pedidos vivos, y repetir la
+actualización no duplica el separador ni descuadra nada.
 
 La **vista previa** sigue estando antes de escribir: te dice a qué pestañas va,
-cuántas filas y el desglose por Situación.
+cuántas filas, el desglose por Situación y **cuántas filas del histórico se
+conservan**.
 
 > **La pestaña histórica no se toca.** Es la hoja de siempre, con miles de filas
 > que el equipo ha editado a mano, y queda como archivo de consulta: la app
@@ -558,17 +574,24 @@ cuántas filas y el desglose por Situación.
 > gestionada coincidiera con el de la histórica, la actualización se niega a
 > escribir y te lo dice.
 >
-> El **histórico en formato nuevo** se genera una sola vez con el comando
+> El **histórico** se genera una sola vez con el comando
 > `python -m scripts.importar_historico_seguimiento` (primero sin `--apply`, que
-> te dice cuántas filas mapea, cuántas descarta —el bloque «^^^^», las cabeceras
-> repetidas, las vacías— y cuántas quedan dudosas). Aterriza en la pestaña
-> **«Histórico (formato nuevo)»**, con Situación «Histórico» y lo que no tiene
-> columna nueva (la columna «Orden», vendedor, transporte…) recogido en
-> «Nota / Incidencia». Esa pestaña **no** la reescribe la actualización
-> periódica.
+> te dice qué columnas reconoce, cuántas filas mapea, cuántas descarta y cuántas
+> quedan dudosas). El comando **parte la hoja vieja por el marcador
+> «^^^^ Aquí arriba pedidos que faltan entregar»**:
 >
-> El bloque manual **«^^^^ Aquí arriba pedidos que faltan…»** ya no hace falta:
-> su función la cumple el orden por Situación.
+> - lo de **debajo** (ya entregado) → zona de histórico de «Seguimiento (app)»,
+>   con Situación «Histórico»;
+> - lo de **encima** (tu lista de pedidos por entregar) → pendientes heredados
+>   en «Incidencias (app)», con tipo «Pendiente entrega (histórico)» y estado
+>   «Abierta». No se entierran en el archivo: siguen pendientes.
+>
+> Lo que no tiene columna equivalente (la columna «Orden», vendedor,
+> transporte…) se recoge en «Nota / Incidencia». La fila del propio marcador se
+> descarta: su función la cumple ahora el orden por Situación.
+>
+> Si te quedó una pestaña **«Histórico (formato nuevo)»** de una importación
+> anterior, ya sobra — bórrala a mano cuando hayas comprobado la nueva.
 
 ### Excepciones
 

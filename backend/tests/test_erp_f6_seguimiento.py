@@ -198,7 +198,10 @@ def test_seguimiento_list_filters_and_sorts(session_factory, http) -> None:
     # la empresa de prueba no está vinculada a FACTUSOL), fecha desc.
     assert [i["order_number"] for i in body["items"]] == [
         "BOP-200001", "BOP-200002", "BOP-200003"]
-    assert {i["situacion"] for i in body["items"]} == {"incidencias"}
+    # La empresa de prueba no está vinculada a FACTUSOL: es un aviso que
+    # detecta la app, así que cae en «Por revisar» (Incidencia es solo lo que
+    # alguien reporta a mano desde la Cola SAT).
+    assert {i["situacion"] for i in body["items"]} == {"por_revisar"}
     # La fila lleva lo que pinta la tabla (y el enlace via id).
     top = body["items"][0]
     assert top["cliente"] == "Zeta SL"
@@ -451,8 +454,9 @@ def test_export_xlsx_respects_filters_and_column_order(session_factory, http) ->
     # Solo la fila filtrada (transportista=UPS).
     assert len(grid) == 2
     row = grid[1]
-    # La empresa de prueba no está vinculada a FACTUSOL → Situación=Incidencia.
-    assert row[0] == "Incidencia"                      # Situación
+    # La empresa de prueba no está vinculada a FACTUSOL → Situación=Por revisar
+    # (aviso automático; «Incidencia» se reserva a lo reportado a mano).
+    assert row[0] == "Por revisar"                     # Situación
     assert row[1] == "BOP-700001"                      # Nº pedido (con prefijo)
     assert row[2] == "4/9/2026"                        # Fecha d/m/yyyy
     assert row[3] == "Uno SL"                          # Cliente
@@ -460,11 +464,12 @@ def test_export_xlsx_respects_filters_and_column_order(session_factory, http) ->
     assert row[7] == "5 · Streamtec"                   # Empresa (serie)
     assert row[8] == "5-260050"                        # Factura
     assert row[15] == "FBAP1 · 4829"                   # Nº serie · WhiteRIP
-    # La pestaña Incidencias contiene ese pedido (subconjunto de Incidencia).
+    # La pestaña Incidencias NO lo contiene: un aviso automático (empresa sin
+    # vincular) no es una incidencia. La pestaña es solo de lo reportado a mano.
     inc = wb["Incidencias"]
     inc_grid = [list(r2) for r2 in inc.iter_rows(values_only=True)]
     assert inc_grid[0] == core.INCIDENCIAS_COLUMNS
-    assert [r2[0] for r2 in inc_grid[1:]] == ["BOP-700001"]
+    assert [r2[0] for r2 in inc_grid[1:]] == []
     # Sin filtro salen las dos, con el orden de la vista.
     r = http.get("/api/erp/seguimiento/export", headers=auth_headers(http, "pedidos"))
     ws = load_workbook(io.BytesIO(r.content), read_only=True)["Pedidos"]

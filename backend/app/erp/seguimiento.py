@@ -828,10 +828,17 @@ def _incidencia_details(
     return out
 
 
-def _primary_blocking_alert(workflow_row: dict[str, Any]) -> dict[str, Any] | None:
-    """La primera alerta BLOQUEANTE del workflow (la que manda a Incidencias)."""
-    for alert in workflow_row.get("alerts", []):
+def _primary_alert(workflow_row: dict[str, Any]) -> dict[str, Any] | None:
+    """La alerta que explica por qué el pedido está donde está: la BLOQUEANTE
+    (Incidencia, reportada a mano) y, si no hay, la de REVISAR (el aviso que
+    detecta la app sola y manda a «Por revisar»). Alimenta la columna
+    «Nota / Incidencia» de la hoja, que tiene que decir algo en los dos casos."""
+    alerts = workflow_row.get("alerts", [])
+    for alert in alerts:
         if alert.get("blocking"):
+            return alert
+    for alert in alerts:
+        if alert.get("review"):
             return alert
     return None
 
@@ -944,14 +951,15 @@ def build_rows(
         # datos derivados de la nueva hoja.
         wf = wf_map.get(o.id) or {}
         situacion = wf.get("queue") or "listo"
-        blocking = _primary_blocking_alert(wf)
-        # Detalle de la incidencia: la excepción abierta si la hay; si no
-        # (bloqueo por empresa sin vincular / VIES), se sintetiza de la alerta
-        # bloqueante para que la pestaña Incidencias case SIEMPRE con la hoja.
+        blocking = _primary_alert(wf)
+        # Detalle de la incidencia: la excepción abierta reportada a mano. Desde
+        # que «Incidencia» es solo manual, esa excepción existe siempre que la
+        # situación sea Incidencia; el fallback se queda por si acaso, para que
+        # la pestaña Incidencias case SIEMPRE con la hoja.
         incidencia = inc_details.get(o.id)
         if situacion == QUEUE_INCIDENCIAS and incidencia is None:
             incidencia = {
-                "tipo": "Bloqueo",
+                "tipo": "Incidencia",
                 "motivo": (blocking or {}).get("text") or "",
                 "asignado": "",
                 "fecha": _iso_date(o.placed_at or o.created_at),

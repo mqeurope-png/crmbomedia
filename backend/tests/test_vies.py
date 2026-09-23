@@ -548,9 +548,13 @@ def test_vat_no_valido_no_exime_y_bloquea_en_el_pedido(http, session_factory) ->
         wf = order_workflow(s, s.get(Order, "o1"))
     assert wf["regime"] == "nacional"
     alerta = next(a for a in wf["alerts"] if a["code"] == "vat_no_valido_vies")
-    assert alerta["blocking"] is True and alerta["action"] == "revalidar_vies"
+    # El NIF-IVA no válido lo detecta la app (VIES), no una persona: va a
+    # «Por revisar», no a «Incidencia» —que se reserva a lo reportado a mano—.
+    # Sigue destacado y con su acción: no se puede eximir de IVA sin resolverlo.
+    assert alerta["review"] is True and alerta["blocking"] is False
+    assert alerta["action"] == "revalidar_vies"
     assert alerta["action_label"] == "Revalidar en VIES" and FR in alerta["text"]
-    assert wf["blocked"] is True and wf["queue"] == "incidencias"
+    assert wf["blocked"] is False and wf["queue"] == "por_revisar"
     assert wf["company"]["vies"]["status"] == "no_valido"
     assert not [a for a in wf["alerts"] if a["code"] == "cliente_intracomunitario"]
 
@@ -668,7 +672,9 @@ def test_vat_cacheado_como_no_valido_se_revalida_a_valido(http, session_factory)
         s.commit()
         _order(s, oid="o3", company_id="bandit")
         wf = order_workflow(s, s.get(Order, "o3"))
-    assert wf["regime"] == "nacional" and wf["blocked"] is True       # antes del fix
+    # Antes de revalidar: nacional (no exime) y en «Por revisar» por el aviso
+    # automático de VIES.
+    assert wf["regime"] == "nacional" and wf["queue"] == "por_revisar"
 
     sent: list[dict] = []
 
