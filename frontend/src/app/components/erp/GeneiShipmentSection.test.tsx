@@ -36,8 +36,8 @@ const PKG = { weight: 1, height: 20, width: 20, length: 20 };
 function prefill(over = {}) {
   return {
     order_id: "o-1", configured: true, destination: DEST, missing: [],
-    default_package: PKG, preferred_couriers: ["GLS"], origin_address_id: "1304422",
-    state: {}, ...over,
+    packages: [], default_package: PKG, preferred_couriers: ["GLS"],
+    origin_address_id: "1304422", is_packed: true, state: {}, ...over,
   };
 }
 
@@ -137,4 +137,32 @@ it("sin permiso no ofrece crear/gestionar", async () => {
   render(<GeneiShipmentSection orderId="o-1" canManage={false} />);
   await screen.findByText(/Aún no hay envío en Genei/);
   expect(screen.queryByRole("button", { name: "Crear envío con Genei" })).toBeNull();
+});
+
+it("pedido no embalado: no deja crear y avisa de empaquetar primero", async () => {
+  mockPrefill.mockResolvedValue(prefill({ is_packed: false }));
+  render(<GeneiShipmentSection orderId="o-1" canManage />);
+  expect(await screen.findByText(/Empaqueta el pedido primero/)).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Crear envío con Genei" })).toBeNull();
+});
+
+it("prellena el modal con las medidas reales del embalaje (multi-bulto)", async () => {
+  mockPrefill.mockResolvedValue(prefill({
+    packages: [
+      { weight: 2.5, height: 30, width: 20, length: 15 },
+      { weight: 1, height: 10, width: 10, length: 10 },
+    ],
+  }));
+  mockPrices.mockResolvedValue({
+    order_id: "o-1", default: null, home_options: [], all_options: [], preferred_couriers: [],
+  });
+  const user = userEvent.setup();
+  render(<GeneiShipmentSection orderId="o-1" canManage />);
+  await user.click(await screen.findByRole("button", { name: "Crear envío con Genei" }));
+  const dialog = await screen.findByRole("dialog", { name: "Crear envío con Genei" });
+  // Dos bultos reales (no el genérico 1/20/20/20): el primero pesa 2.5 kg.
+  const pesos = within(dialog).getAllByLabelText("Peso (kg)") as HTMLInputElement[];
+  expect(pesos).toHaveLength(2);
+  expect(pesos[0].value).toBe("2.5");
+  expect(within(dialog).getByText(/medidas reales del embalaje/)).toBeInTheDocument();
 });

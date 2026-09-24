@@ -329,7 +329,11 @@ def test_missing_base_url_or_creds_raise():
 
 
 def test_encode_credentials_roundtrip_and_no_plaintext():
-    enc = GeneiClient.encode_credentials("user@x", "pw")
-    assert "user@x" not in enc and "pw" not in enc  # cifrado, no en claro
+    # Password larga y distintiva a propósito: comprobar «no en claro» con «pw»
+    # (2 letras) era frágil — el base64 del cifrado puede contener «pw» por azar
+    # (~2-3% de las veces, IV aleatorio de Fernet) y volvía el test flaky. Con un
+    # valor largo la coincidencia es astronómicamente improbable.
+    enc = GeneiClient.encode_credentials("user@x", "S3cr3t-Passw0rd-ZQ9")
+    assert "user@x" not in enc and "S3cr3t-Passw0rd-ZQ9" not in enc  # cifrado, no en claro
     creds = GeneiClient._decode_credentials(enc)
-    assert creds == {"username": "user@x", "password": "pw"}
+    assert creds == {"username": "user@x", "password": "S3cr3t-Passw0rd-ZQ9"}

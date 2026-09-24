@@ -161,11 +161,16 @@ export function GeneiShipmentSection({
       ) : (
         <div className="erp-genei-empty">
           <p className="muted small">Aún no hay envío en Genei para este pedido.</p>
-          {canManage ? (
+          {canManage && prefill.is_packed ? (
             <button type="button" className="button small" disabled={busy}
                     onClick={() => setCreating(true)}>
               Crear envío con Genei
             </button>
+          ) : canManage ? (
+            /* Regla de negocio: el envío solo se crea con el pedido embalado. */
+            <p className="muted small" role="note">
+              Empaqueta el pedido primero (debe estar en «Listos») para crear el envío.
+            </p>
           ) : null}
         </div>
       )}
@@ -198,7 +203,11 @@ function CreateGeneiShipmentModal({
   onCreated: (state: GeneiState) => void;
 }) {
   const [dest, setDest] = useState<GeneiDestination>(prefill.destination);
-  const [pkg, setPkg] = useState<GeneiPackage>(prefill.default_package);
+  // Bultos REALES del pedido (medidos por el SAT al embalar); si el pedido no
+  // los trae, se cae al bulto por defecto de la config (editable).
+  const [pkgs, setPkgs] = useState<GeneiPackage[]>(
+    prefill.packages.length > 0 ? prefill.packages : [prefill.default_package],
+  );
   const [options, setOptions] = useState<GeneiAgencyOption[] | null>(null);
   const [agencyId, setAgencyId] = useState<string | null>(null);
   const [homeOnly, setHomeOnly] = useState(true);
@@ -208,10 +217,29 @@ function CreateGeneiShipmentModal({
 
   const missing = destMissing(dest);
 
+  // Cambiar los bultos invalida la comparativa: la agencia elegida era factible
+  // para las medidas anteriores, así que se fuerza a volver a comparar.
+  function invalidateComparison() {
+    setOptions(null);
+    setAgencyId(null);
+  }
+  function updatePkg(idx: number, patch: Partial<GeneiPackage>) {
+    setPkgs((prev) => prev.map((p, i) => (i === idx ? { ...p, ...patch } : p)));
+    invalidateComparison();
+  }
+  function addPkg() {
+    setPkgs((prev) => [...prev, prefill.default_package]);
+    invalidateComparison();
+  }
+  function removePkg(idx: number) {
+    setPkgs((prev) => (prev.length > 1 ? prev.filter((_, i) => i !== idx) : prev));
+    invalidateComparison();
+  }
+
   const compare = useCallback(async () => {
     setBusy(true); setError(null);
     try {
-      const r = await geneiPrices(orderId, { destination: dest, packages: [pkg], home_only: homeOnly });
+      const r = await geneiPrices(orderId, { destination: dest, packages: pkgs, home_only: homeOnly });
       setOptions(r.all_options);
       setAgencyId(r.default?.agency_id ?? r.home_options[0]?.agency_id ?? null);
     } catch (e) {
@@ -220,7 +248,7 @@ function CreateGeneiShipmentModal({
     } finally {
       setBusy(false);
     }
-  }, [orderId, dest, pkg, homeOnly]);
+  }, [orderId, dest, pkgs, homeOnly]);
 
   // Autocompara al abrir si el destino ya está completo (comparador por defecto).
   useEffect(() => {
@@ -235,7 +263,7 @@ function CreateGeneiShipmentModal({
     setBusy(true); setError(null);
     try {
       const r = await geneiCreateShipment(orderId, {
-        agency_id: agencyId, destination: dest, packages: [pkg],
+        agency_id: agencyId, destination: dest, packages: pkgs,
         observations: dest.observations || null,
       });
       onCreated(r.state);
@@ -278,13 +306,27 @@ function CreateGeneiShipmentModal({
         </fieldset>
 
         <fieldset className="erp-genei-pkg" disabled={busy}>
-          <legend>Bulto</legend>
-          <div className="form-row">
-            <NumField label="Peso (kg)" value={pkg.weight} onChange={(v) => setPkg({ ...pkg, weight: v })} />
-            <NumField label="Alto (cm)" value={pkg.height} onChange={(v) => setPkg({ ...pkg, height: v })} />
-            <NumField label="Ancho (cm)" value={pkg.width} onChange={(v) => setPkg({ ...pkg, width: v })} />
-            <NumField label="Largo (cm)" value={pkg.length} onChange={(v) => setPkg({ ...pkg, length: v })} />
-          </div>
+          <legend>Bultos {pkgs.length > 1 ? `(${pkgs.length})` : ""}</legend>
+          {prefill.packages.length > 0 ? (
+            <p className="muted small">Prellenado con las medidas reales del embalaje; ajústalas si hace falta.</p>
+          ) : null}
+          {pkgs.map((p, i) => (
+            <div className="form-row erp-genei-pkg-row" key={i}>
+              <NumField label="Peso (kg)" value={p.weight} onChange={(v) => updatePkg(i, { weight: v })} />
+              <NumField label="Alto (cm)" value={p.height} onChange={(v) => updatePkg(i, { height: v })} />
+              <NumField label="Ancho (cm)" value={p.width} onChange={(v) => updatePkg(i, { width: v })} />
+              <NumField label="Largo (cm)" value={p.length} onChange={(v) => updatePkg(i, { length: v })} />
+              {pkgs.length > 1 ? (
+                <button type="button" className="button small danger" aria-label={`Quitar bulto ${i + 1}`}
+                        onClick={() => removePkg(i)}>
+                  Quitar
+                </button>
+              ) : null}
+            </div>
+          ))}
+          <button type="button" className="button small secondary" onClick={addPkg}>
+            + Añadir bulto
+          </button>
         </fieldset>
 
         {missing.length > 0 ? (

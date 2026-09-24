@@ -23,6 +23,7 @@ from app.erp.integrations.genei.client import GeneiClient, GeneiLabel
 from app.erp.integrations.genei.config import DefaultPackage, GeneiConfig
 from app.erp.models import Order, ShipmentFile
 from app.erp.models.carriers import Carrier
+from app.erp.models.shipping import ShipmentPackage
 from app.main import app
 from app.models.crm import Company
 from app.storage.local import LocalShippingStorage
@@ -195,6 +196,27 @@ def test_prefill_resolves_destination(client, session_factory):
     assert dest["dni"] == "FR123"               # NIF de la empresa
     assert body["missing"] == []                # destino completo
     assert body["origin_address_id"] == "1304422"
+    assert body["is_packed"] is True            # pedido embalado → puede crear
+    assert body["packages"] == []               # sin bultos medidos → cae al default
+
+
+def test_prefill_returns_real_measured_packages(client, session_factory):
+    # Los bultos reales del SAT (shipment_packages) llegan al prefill; depth_cm
+    # se mapea a `length`. Así el modal no abre con el genérico 1/20/20/20.
+    with session_factory() as s:
+        _seed_carrier(s)
+        oid = _seed_order(s)
+        s.add(ShipmentPackage(order_id=oid, position=1, weight_kg=2.5,
+                              height_cm=30, width_cm=20, depth_cm=15))
+        s.add(ShipmentPackage(order_id=oid, position=2, weight_kg=1.0,
+                              height_cm=10, width_cm=10, depth_cm=10))
+        s.commit()
+    r = client.get(f"/api/erp/orders/{oid}/genei/prefill", headers=auth_headers(client))
+    assert r.status_code == 200, r.text
+    pkgs = r.json()["packages"]
+    assert len(pkgs) == 2
+    assert pkgs[0] == {"weight": 2.5, "height": 30.0, "width": 20.0, "length": 15.0}
+    assert pkgs[1]["weight"] == 1.0 and pkgs[1]["length"] == 10.0
 
 
 def test_prefill_web_order_uses_shipping_block(client, session_factory):
@@ -296,6 +318,31 @@ def test_create_shipment_requires_origin_configured(client, session_factory):
     })
     assert r.status_code == 400
     assert r.json()["detail"]["code"] == "origin_not_configured"
+
+
+def test_create_shipment_requires_packed(client, session_factory):
+    # Regla de negocio: no se puede crear el envío si el pedido no está embalado.
+    with session_factory() as s:
+        _seed_carrier(s)
+        company = Company(name="La Maison", vat="FR123", country="ES",
+                          address_line="C/ Mayor 1", city="Madrid", postal_code="28001")
+        s.add(company)
+        s.flush()
+        o = Order(order_number="MAN-0002", preparation_status="in_queue",  # aún NO embalado
+                  payment_status="paid", transport_status="not_shipped",
+                  external_source="manual", company_id=company.id, shipping_name="Alexandre")
+        o.packing_json = json.dumps({"shipping_address": {
+            "address_line": "12 Rue", "city": "Paris", "postal_code": "75001", "country": "FR",
+        }})
+        s.add(o)
+        s.commit()
+        oid = o.id
+    r = client.post(f"/api/erp/orders/{oid}/genei/shipments", headers=auth_headers(client), json={
+        "agency_id": "2", "destination": {"name": "X", "address": "a", "postalCode": "1",
+                                          "town": "t", "isoCountry": "ES"}, "packages": [],
+    })
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "not_packed"
 
 
 def test_create_shipment_surfaces_genei_error(client, session_factory, fake):

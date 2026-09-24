@@ -15,6 +15,7 @@ import {
   type ShipmentFileKind,
 } from "../../lib/erpApi";
 import { FileUploadButton } from "./FileUploadButton";
+import { GeneiShipmentSection } from "./GeneiShipmentSection";
 import { SatAlbaranChip, useSatAlbaranAction } from "./SatPreparingCard";
 import { satShortDate } from "./SatQueueTable";
 import { SatObservaciones, SatTechData, type SatTechEdit } from "./SatTechData";
@@ -270,15 +271,20 @@ export function SatReadyCard({
   order,
   onChanged,
   canEdit = false,
+  canShip = false,
 }: {
   order: SatQueueItem;
   onChanged: () => void;
   /** Lote 3: habilita la edición inline de los datos técnicos (admin/pedidos). */
   canEdit?: boolean;
+  /** Genei (envíos): `Cap.SAT_SHIPPING`. Muestra «Crear envío con Genei» en la
+   *  propia card (el pedido «Listo» ya está embalado, así que puede crearse). */
+  canShip?: boolean;
 }) {
   const actions = useSatReadyActions(order, onChanged);
   // Lote 3: actualización optimista de los campos de seguimiento tras editar.
   const [seg, setSeg] = useState<SeguimientoFieldsPatch | null>(null);
+  const [showGenei, setShowGenei] = useState(false);
   const serial = seg ? seg.serial_number : order.serial_number;
   const license = seg ? seg.whiterip_license : order.whiterip_license;
   const edit: SatTechEdit | undefined = canEdit
@@ -315,6 +321,20 @@ export function SatReadyCard({
         </div>
         {/* Lote 5 · #3 — nº de seguimiento, junto a la etiqueta. */}
         <SatTrackingField order={order} onChanged={onChanged} />
+        {/* Genei (PR-1 follow-up): crear el envío desde la propia Cola SAT, sin
+            ir a la ficha. El pedido «Listo» ya está embalado, así que se puede
+            crear. Reutiliza GeneiShipmentSection (comparador, etiqueta, estado). */}
+        {canShip ? (
+          <div className="sat-card-genei">
+            <button type="button" className="button small" aria-expanded={showGenei}
+                    onClick={() => setShowGenei((v) => !v)}>
+              🚚 {showGenei ? "Ocultar envío Genei" : "Crear envío con Genei"}
+            </button>
+            {showGenei ? (
+              <GeneiShipmentSection orderId={order.id} canManage={canShip} onChanged={onChanged} />
+            ) : null}
+          </div>
+        ) : null}
         <div className="sat-card-actions-tertiary">
           <SatReopenButton actions={actions} />
         </div>
