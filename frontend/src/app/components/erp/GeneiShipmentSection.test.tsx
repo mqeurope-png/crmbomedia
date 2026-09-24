@@ -5,6 +5,7 @@ import {
   geneiCreateShipment,
   geneiDeleteShipment,
   geneiFetchLabel,
+  geneiPay,
   geneiPrefill,
   geneiPrices,
   geneiRefresh,
@@ -17,6 +18,7 @@ jest.mock("../../lib/geneiApi", () => ({
   geneiCreateShipment: jest.fn(),
   geneiFetchLabel: jest.fn(),
   geneiRefresh: jest.fn(),
+  geneiPay: jest.fn(),
   geneiDeleteShipment: jest.fn(),
 }));
 
@@ -25,6 +27,7 @@ const mockPrices = geneiPrices as jest.Mock;
 const mockCreate = geneiCreateShipment as jest.Mock;
 const mockLabel = geneiFetchLabel as jest.Mock;
 const mockRefresh = geneiRefresh as jest.Mock;
+const mockPay = geneiPay as jest.Mock;
 const mockDelete = geneiDeleteShipment as jest.Mock;
 
 const DEST = {
@@ -42,7 +45,8 @@ function prefill(over = {}) {
 }
 
 beforeEach(() => {
-  [mockPrefill, mockPrices, mockCreate, mockLabel, mockRefresh, mockDelete].forEach((m) => m.mockReset());
+  [mockPrefill, mockPrices, mockCreate, mockLabel, mockRefresh, mockPay, mockDelete]
+    .forEach((m) => m.mockReset());
 });
 
 it("sin configurar: invita a configurar Genei en Ajustes", async () => {
@@ -91,11 +95,31 @@ it("sin envío: crea uno con el comparador (propone el preferido más barato) y 
   await waitFor(() => expect(mockCreate).toHaveBeenCalledWith("o-1", expect.objectContaining({
     agency_id: "2", destination: expect.objectContaining({ town: "Paris" }),
   })));
-  // Estado tras crear: pastilla + enlace de pago (pago manual en Genei).
+  // Estado tras crear: pastilla + botón «Pagar y tramitar» (pago por API, sin popup).
   expect(await screen.findByText("Recogida pendiente de pago")).toBeInTheDocument();
-  expect(screen.getByRole("link", { name: /Pagar y tramitar en Genei/ }))
-    .toHaveAttribute("href", "https://pay/x");
+  expect(screen.getByRole("button", { name: "Pagar y tramitar" })).toBeInTheDocument();
   expect(onChanged).toHaveBeenCalled();
+});
+
+it("«Pagar y tramitar» paga por API (sin popup) y refresca el estado", async () => {
+  mockPrefill.mockResolvedValue(prefill({
+    state: { shipment_code: "GEN9", state_bucket: "created",
+             state_label: "Recogida pendiente de pago", transaction_id: "555" },
+  }));
+  mockPay.mockResolvedValue({
+    order_id: "o-1",
+    summary: { shipment_code: "GEN9", state_bucket: "ready", state_label: "Tramitado",
+               tracking: "TRK9", courier: "GLS", payment_url: null, state_code: 1 },
+    state: { shipment_code: "GEN9", state_bucket: "ready", state_label: "Tramitado",
+             tracking: "TRK9", courier: "GLS" },
+  });
+  const user = userEvent.setup();
+  render(<GeneiShipmentSection orderId="o-1" canManage />);
+  await user.click(await screen.findByRole("button", { name: "Pagar y tramitar" }));
+  await waitFor(() => expect(mockPay).toHaveBeenCalledWith("o-1"));
+  // Tras pagar: estado tramitado y ya no ofrece pagar.
+  expect(await screen.findByText("Tramitado")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Pagar y tramitar" })).toBeNull();
 });
 
 it("con envío: etiqueta, actualizar estado y eliminar", async () => {

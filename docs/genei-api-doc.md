@@ -33,7 +33,11 @@ El cliente DEBE tratar `status:0` (o `errors` no vacío) como error; si no, un f
   - Query (del encargo): `isWarehouse` (bool, req), `isoCountryOrigin` (req), `isoCountryDestination` (req), `postalCodeOrigin`, `postalCodeDestination`, `townOrigin`, `townDestination`, `packages[]`.
 - **Crear envío:** `POST /shipments` — se pasa un `agencyId` factible. Devuelve `shipmentCode` y **`paymentUrl`**. Nace en estado **7 (pendiente de pago)**.
   - Body (del encargo): `agencyId`, **`paymentMethodShipping` (=4, pago con saldo — OBLIGATORIO)**, **`origin`** y `destination` `{ name, contact, dni, email, phone (con prefijo +34…), address, postalCode, town, isoCountry, observations }` (ambos OBLIGATORIOS y completos), `packagesArray`, `shippingFromWarehouse` (=0 en BoHub), `externalShippingCode` (= nº pedido BoHub), `clientReference`, `notificationUrl` (webhook BoHub, PR-2), opcionales `goodsValue`, `insurance`/`insuranceAmount`, `cashOnDelivery`/`cashOnDeliveryAmount`, `note`, `priority`, `pickupDate`/`pickupTimeFrom`/`pickupTimeTo`, `destinationOffice`/`originOffice`, `contentsArray` (aduanas). **Ver arriba** el detalle de `origin`/`paymentMethodShipping` verificado en vivo.
-- **Pagar:** llamar a la `paymentUrl` devuelta (SIEMPRE lo dispara una persona; nunca automático). [PR-2]
+- **Pagar (PR-2, verificado en Swagger):** el pago se ejecuta por API contra el **SALDO** de la cuenta, sin popup, y **SIEMPRE** lo dispara una persona (botón «Pagar y tramitar»); nunca automático.
+  - Al crear, se guarda `data.transactionId` (y `paymentUrl`) del envío.
+  - Al pagar: `GET /payments/token?pg=4` → **JWT de pago fresco** (el de la creación caduca ~2 h, por eso se pide uno nuevo cada vez) → `GET /payments/pay/transactions/{transactionId}?payment_token=<jwt>` **ejecuta el pago** (RESTful solo para saldo/crédito, pg=4). Un rechazo (sin saldo, ya pagado…) llega como envoltorio `status:0` → `GeneiError` con el mensaje, visible en la UI.
+  - Tras pagar, el envío pasa **7 → 6 → 1** (tramitado) y la etiqueta queda disponible; BoHub refresca el estado leyendo `GET /shipments/{code}`.
+  - `GET /transactions?search=<shipmentCode>` localiza la transacción de un envío (respaldo si no se guardó el `transactionId`).
 - **Eliminar / cancelar:** `DELETE /shipments/{shipmentCode}` — elimina si es prueba; cancela un envío tramitado mientras no haya pasado a tránsito.
 - **Etiqueta:** `GET /shipments/{shipmentCode}/label` — PDF o ZPL, base64 o binario.
 - **Datos completos** (tracking/estado/detalles): `GET /shipments/{shipmentCode}`.

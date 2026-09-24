@@ -325,6 +325,36 @@ class GeneiClient:
         data = self._request("GET", f"/shipments/{shipment_code}")
         return _as_dict(data)
 
+    #: Pasarela de pago de Genei: 4 = SALDO/CRÉDITO (la que usa BoHub). El
+    #: endpoint `pay/transactions` es RESTful (ejecuta el pago) SOLO con saldo;
+    #: tarjeta/PSD2 serían una URL de redirección.
+    PAYMENT_GATEWAY_BALANCE = 4
+
+    def payment_token(self, gateway: int = PAYMENT_GATEWAY_BALANCE) -> str:
+        """`GET /payments/token?pg=<gateway>` — JWT fresco para el pago. El token
+        caduca (~2 h), así que se pide uno nuevo justo antes de pagar en vez de
+        reutilizar el de la creación."""
+        data = self._request("GET", "/payments/token", params={"pg": gateway})
+        token = data.get("data") if isinstance(data, dict) else None
+        if not isinstance(token, str) or not token.strip():
+            raise GeneiError("Genei no devolvió un token de pago.", status=200)
+        return token.strip()
+
+    def pay_transaction(self, transaction_id: str) -> dict[str, Any]:
+        """`GET /payments/pay/transactions/{id}?payment_token=…` — EJECUTA el
+        pago de la transacción contra el SALDO de la cuenta (pg=4). MUEVE DINERO
+        REAL: solo se llama desde el botón «Pagar y tramitar» (acción humana).
+
+        El token se pide fresco cada vez (evita el caducado de la creación). Un
+        rechazo (sin saldo, transacción ya pagada…) llega como envoltorio
+        `status:0` y se eleva como `GeneiError` con el mensaje de Genei."""
+        token = self.payment_token(self.PAYMENT_GATEWAY_BALANCE)
+        data = self._request(
+            "GET", f"/payments/pay/transactions/{transaction_id}",
+            params={"payment_token": token},
+        )
+        return _as_dict(data)
+
     def get_address(self, address_id: str) -> dict[str, Any]:
         """`GET /addresses/{id}` — dirección registrada en Genei (el remitente
         por defecto de la cuenta). Se usa para componer el bloque `origin` del

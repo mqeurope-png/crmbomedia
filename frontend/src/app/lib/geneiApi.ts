@@ -33,7 +33,9 @@ export type GeneiState = {
   state_label?: string;
   tracking?: string | null;
   payment_url?: string | null;
+  transaction_id?: string | null;
   created_at?: string;
+  paid_at?: string;
   label_fetched_at?: string;
   refreshed_at?: string;
 };
@@ -129,6 +131,14 @@ export function geneiRefresh(
   orderId: string,
 ): Promise<{ order_id: string; summary: GeneiShipmentSummary; state: GeneiState }> {
   return apiFetch(`${base(orderId)}/refresh`, { method: "POST" });
+}
+
+/** «Pagar y tramitar»: paga el envío por API (contra el saldo de la cuenta), sin
+ *  popup. Lo dispara una persona con el botón; nunca automático. */
+export function geneiPay(
+  orderId: string,
+): Promise<{ order_id: string; summary: GeneiShipmentSummary; state: GeneiState }> {
+  return apiFetch(`${base(orderId)}/pay`, { method: "POST" });
 }
 
 export function geneiDeleteShipment(orderId: string): Promise<{ order_id: string; deleted: boolean }> {
