@@ -119,9 +119,13 @@ rm deploy/nginx/conf.d/bootstrap.conf
 sed 's/CRM_DOMAIN/crm.tudominio.com/g' \
   deploy/nginx/conf.d/app.conf.example \
   > deploy/nginx/conf.d/app.conf
+# Zonas de rate limit (fichero canónico de zonas; NO están en nginx.conf).
+cp deploy/nginx/conf.d/zones.conf.example deploy/nginx/conf.d/zones.conf
 ```
 
-`app.conf` y `bootstrap.conf` están en `.gitignore` (sufijo `.conf` dentro de `deploy/nginx/conf.d/` se gestiona por las plantillas `.example`).
+`app.conf`, `bootstrap.conf` y `zones.conf` están en `.gitignore` (sufijo `.conf` dentro de `deploy/nginx/conf.d/` se gestiona por las plantillas `.example`).
+
+> **Nota (fix del 502):** las `limit_req_zone` viven SOLO en `zones.conf` (plantilla `zones.conf.example`), nunca también en `nginx.conf`. Definir la misma zona en los dos sitios hace que nginx falle al arrancar («duplicate zone "webhooks"») y devuelva 502. Si un VPS tenía `nginx.conf` editado a mano con la zona duplicada, antes de este `git pull` haz `git checkout -- deploy/nginx/nginx.conf` (o `git stash`) para evitar conflicto y luego recrea nginx.
 
 ## 8. Arrancar la pila
 

@@ -1867,14 +1867,16 @@ td {
   inset: 0;
   background: rgba(15, 23, 42, 0.45);
   display: flex;
-  align-items: center;
+  /* `flex-start`, NO `center`: con `align-items: center` un diálogo más alto
+     que el viewport se recorta por ARRIBA y no se puede subir a verlo (el
+     margen `auto` del diálogo colapsa a 0 al desbordar y `center` come el tope).
+     Con `flex-start` + `margin: auto` en el diálogo, se centra cuando cabe y se
+     ancla arriba (scrolleable) cuando no cabe — el título nunca queda
+     inalcanzable. La capa scrollea como red de seguridad. */
+  align-items: flex-start;
   justify-content: center;
   z-index: 1000;
   padding: 24px;
-  /* Red de seguridad genérica: si un diálogo excede el alto (contenido no
-     scrollable, zoom, viewport muy bajo), la capa scrollea en vez de recortar
-     por arriba/abajo. `margin: auto` en el diálogo evita el clipping del tope
-     que produce `align-items: center` al desbordar. */
   overflow-y: auto;
   animation: modal-fade 120ms ease-out;
 }
@@ -2898,8 +2900,13 @@ a.origin-chip:hover { filter: brightness(0.97); }
   inset: 0;
   background: rgba(15, 35, 95, 0.32);
   display: flex;
-  align-items: center;
+  /* Igual que la capa principal (ver arriba): `flex-start` + `margin: auto` en
+     el diálogo, nunca `center` (recorta el tope de un modal alto). Esta segunda
+     definición de `.modal-overlay` (editor de vistas) va después en la cascada,
+     así que si aquí quedara `center` pisaría el arreglo para TODOS los modales. */
+  align-items: flex-start;
   justify-content: center;
+  overflow-y: auto;
   z-index: 40;
 }
 
@@ -2908,6 +2915,11 @@ a.origin-chip:hover { filter: brightness(0.97); }
   border-radius: 16px;
   padding: 24px;
   width: min(420px, calc(100% - 32px));
+  /* Centrado vertical robusto: cabe → centrado; no cabe → anclado arriba y
+     scrolleable (nunca recortado por arriba). */
+  margin: auto;
+  max-height: calc(100dvh - 48px);
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -12703,7 +12715,8 @@ input[type="radio"]:focus-visible {
   /* Modal: hoja a pantalla completa desde abajo. */
   .modal-overlay { padding: 0; align-items: flex-end; }
   /* Como hoja inferior: pegada abajo (sin `margin: auto`, que la recentraría). */
-  .modal-overlay > .modal-dialog { margin: 0; }
+  .modal-overlay > .modal-dialog,
+  .modal-overlay > .modal-card { margin: 0; }
   .modal-dialog,
   .modal-dialog.wide,
   .modal-dialog.modal-wide {

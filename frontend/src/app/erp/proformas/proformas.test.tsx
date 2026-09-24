@@ -657,6 +657,36 @@ describe("Pantalla Proformas (rediseño de flujo, Fase 4)", () => {
     expect(await within(row("37")).findByText(/Sin líneas en FACTUSOL/)).toBeInTheDocument();
   });
 
+  it("Flecos #471 · tras EDITAR, «Ver líneas» refleja las líneas nuevas sin recargar (F5)", async () => {
+    // El detalle F_LPS se cachea; al editar hay que refrescarlo o la vista se
+    // queda con las líneas viejas hasta un F5 (la escritura ya va bien, #471).
+    mockStatus.mockResolvedValue({ status: "finished", result: { codpre: "39", serie: 5 } });
+    mockGetQuote
+      .mockResolvedValueOnce({ ...BRAILLE, portes: 0, lines: [
+        { position: 1, codart: "A1", sku: "SKU-1", description: "Línea vieja",
+          quantity: 1, unit_price: 10, discount_pct: 0, line_total: 10, iva_pct: 21 },
+      ] })
+      .mockResolvedValue({ ...BRAILLE, portes: 0, lines: [
+        { position: 1, codart: "A1", sku: "SKU-1", description: "Línea nueva",
+          quantity: 2, unit_price: 20, discount_pct: 0, line_total: 40, iva_pct: 21 },
+      ] });
+    const user = userEvent.setup();
+    render(<ProformasPage />);
+    await screen.findByRole("list", { name: "Proformas" });
+    const braille = () => within(row("39"));
+    // «Ver líneas» abre y cachea la línea vieja.
+    await user.click(braille().getByRole("button", { name: "Ver líneas 39" }));
+    expect(await braille().findByText("Línea vieja")).toBeInTheDocument();
+    // Editar y guardar: el job termina.
+    await user.click(braille().getByRole("button", { name: "Más acciones 39" }));
+    await user.click(braille().getByRole("button", { name: "Editar" }));
+    await user.click(screen.getByRole("button", { name: "GUARDAR MODAL" }));
+    // Sin F5, el panel ya abierto pasa a mostrar la línea nueva (re-fetch).
+    expect(await braille().findByText("Línea nueva")).toBeInTheDocument();
+    expect(braille().queryByText("Línea vieja")).toBeNull();
+    await waitFor(() => expect(mockGetQuote).toHaveBeenCalledTimes(2));
+  });
+
   // --- fix: el buscador filtra la LISTA pintada aunque el CODPRE se repita
   //     entre series (clave de React única serie+número) -------------------
 
