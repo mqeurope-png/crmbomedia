@@ -1175,15 +1175,13 @@ function ErpOrderDetailScreen() {
             onError={setError}
           />
           {/* Genei (PR-1): crear el envío, comparar agencias, etiqueta y estado.
-              Los web (Woo) crean su propio albarán/envío; aquí es para los que
-              se envían desde el taller. */}
-          {!isWeb ? (
-            <GeneiShipmentSection
-              orderId={order.id}
-              canManage={canSat || canEmit}
-              onChanged={() => load()}
-            />
-          ) : null}
+              Vale para pedidos web (Woo, con su dirección de envío) y manuales.
+              El albarán FACTUSOL sigue su camino aparte; esto es el TRANSPORTE. */}
+          <GeneiShipmentSection
+            orderId={order.id}
+            canManage={canSat || canEmit}
+            onChanged={() => load()}
+          />
         </div>
       </FichaPanel>
       </div>

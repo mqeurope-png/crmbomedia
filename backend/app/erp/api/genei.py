@@ -117,13 +117,18 @@ def resolve_destination_fields(session: Session, order: Order) -> dict[str, Any]
             return ""
         return " ".join(p for p in (contact.first_name, contact.last_name) if p).strip()
 
-    name = order_shipping_name(order) or (company.name if company else "") or contact_name()
+    # El bloque `shipping_address` de un pedido web (Woo) ya trae nombre, tel,
+    # email y NIF; para uno manual salen del contacto/empresa. Se prefiere lo
+    # que traiga la dirección de envío del pedido.
+    name = (str(addr.get("name") or "").strip()
+            or order_shipping_name(order)
+            or (company.name if company else "") or contact_name())
     return {
         "name": name,
         "contact": contact_name() or name,
-        "email": (contact.email if contact else "") or "",
-        "phone": (contact.phone if contact else "") or "",
-        "dni": (company.vat if company else "") or "",
+        "email": str(addr.get("email") or "").strip() or (contact.email if contact else "") or "",
+        "phone": str(addr.get("phone") or "").strip() or (contact.phone if contact else "") or "",
+        "dni": str(addr.get("nif") or "").strip() or (company.vat if company else "") or "",
         "address": addr.get("address_line")
         or (company.address_line if company else "")
         or (contact.address_line if contact else "") or "",

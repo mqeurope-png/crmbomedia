@@ -181,6 +181,32 @@ def test_prefill_resolves_destination(client, session_factory):
     assert body["origin_address_id"] == "1304422"
 
 
+def test_prefill_web_order_uses_shipping_block(client, session_factory):
+    # Pedido web (Woo) sin empresa/contacto: el destino sale del bloque
+    # `shipping_address` que dejó el mapper (nombre, tel, email, NIF).
+    with session_factory() as s:
+        _seed_carrier(s)
+        o = Order(order_number="BOPRIN-1001", preparation_status="packed",
+                  payment_status="paid", transport_status="not_shipped",
+                  external_source="woocommerce")
+        o.packing_json = json.dumps({"shipping_address": {
+            "name": "Alexandre Dubois", "address_line": "12 Rue", "city": "Paris",
+            "postal_code": "75001", "country": "FR",
+            "phone": "+33 1 23", "email": "a@x.fr", "nif": "FR9999",
+        }})
+        s.add(o)
+        s.commit()
+        oid = o.id
+    r = client.get(f"/api/erp/orders/{oid}/genei/prefill", headers=auth_headers(client))
+    assert r.status_code == 200, r.text
+    dest = r.json()["destination"]
+    assert dest["name"] == "Alexandre Dubois"
+    assert dest["email"] == "a@x.fr" and dest["phone"] == "+33 1 23"
+    assert dest["dni"] == "FR9999"
+    assert dest["isoCountry"] == "FR" and dest["town"] == "Paris"
+    assert r.json()["missing"] == []
+
+
 def test_prices_proposes_cheapest_preferred_home(client, session_factory, fake):
     with session_factory() as s:
         _seed_carrier(s)
