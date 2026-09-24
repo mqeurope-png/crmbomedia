@@ -38,3 +38,9 @@ class Carrier(TimestampMixin, Base):
     api_base_url: Mapped[str | None] = mapped_column(String(255))
     webhook_secret_encrypted: Mapped[str | None] = mapped_column(Text)
     default_address_id: Mapped[str | None] = mapped_column(String(64))
+
+    # BoHub ERP Genei PR-1 (migración 0118). Config NO secreta del adaptador en
+    # JSON: couriers preferidos por país de destino y medidas/peso de bulto por
+    # defecto (ver `app.erp.integrations.genei.config`). Nullable — sin config
+    # se usan los valores por defecto en código.
+    config_json: Mapped[str | None] = mapped_column(Text)
