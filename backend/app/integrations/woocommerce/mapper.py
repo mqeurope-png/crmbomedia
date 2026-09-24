@@ -269,6 +269,73 @@ def _extract_cif(woo: dict[str, Any]) -> str | None:
     return None
 
 
+#: Campos de dirección que hacen «útil» un bloque (calle/ciudad/CP/provincia).
+_ADDR_FIELDS = ("address_1", "city", "postcode", "state")
+
+
+def _has_address(block: dict[str, Any]) -> bool:
+    return any((block.get(k) or "").strip() for k in _ADDR_FIELDS)
+
+
+def shipping_address_block(woo: dict[str, Any]) -> dict[str, Any] | None:
+    """Dirección de ENVÍO del pedido Woo para `packing_json.shipping_address`
+    (la que usa el albarán manual y ahora Genei). Usa `shipping` si trae
+    dirección; si no (Woo lo manda vacío cuando «enviar a otra dirección» está
+    sin marcar), cae a `billing`. Teléfono y email salen del billing (Woo no los
+    guarda en shipping); el NIF, de `_extract_cif`. El país va normalizado a
+    ISO2 con el helper real. `None` si no hay ni dirección ni nombre.
+
+    Claves compatibles con `order_shipping_address` (`address_line`, `city`,
+    `postal_code`, `state`, `country`) + extras para Genei (`name`, `phone`,
+    `email`, `nif`)."""
+    shipping = woo.get("shipping") or {}
+    billing = woo.get("billing") or {}
+    src = shipping if _has_address(shipping) else billing
+
+    address_line = " ".join(
+        p for p in [(src.get("address_1") or "").strip(), (src.get("address_2") or "").strip()] if p
+    ).strip()
+    parts = [(src.get("first_name") or "").strip(), (src.get("last_name") or "").strip()]
+    name = " ".join(p for p in parts if p).strip() \
+        or (shipping.get("company") or billing.get("company") or "").strip()
+    iso2 = normalize_country(src.get("country"))
+
+    block = {
+        "address_line": address_line,
+        "city": (src.get("city") or "").strip(),
+        "postal_code": (src.get("postcode") or "").strip(),
+        "state": (src.get("state") or "").strip(),
+        "country": iso2 or (src.get("country") or "").strip(),
+        # Extras para el destino de Genei (el billing manda en contacto).
+        "name": name,
+        "phone": (billing.get("phone") or "").strip(),
+        "email": (billing.get("email") or "").strip(),
+        "nif": _extract_cif(woo) or "",
+    }
+    if not (block["address_line"] or block["city"] or block["postal_code"] or block["name"]):
+        return None
+    return block
+
+
+def _apply_shipping_address(order: Order, woo: dict[str, Any], *, overwrite: bool) -> None:
+    """Guarda la dirección de envío en `packing_json.shipping_address` sin pisar
+    otros bloques del packing (factusol_payment, genei…). En el refresh solo se
+    escribe si falta (backfill de pedidos ya importados); en el alta siempre."""
+    block = shipping_address_block(woo)
+    if block is None:
+        return
+    try:
+        data = json.loads(order.packing_json) if order.packing_json else {}
+        if not isinstance(data, dict):
+            data = {}
+    except (TypeError, ValueError):
+        data = {}
+    if not overwrite and isinstance(data.get("shipping_address"), dict):
+        return
+    data["shipping_address"] = block
+    order.packing_json = json.dumps(data)
+
+
 # --- order + líneas ---------------------------------------------------------
 
 
@@ -364,6 +431,9 @@ def _create_order(
         # puede deducir (editable en la ficha).
         language=detect_order_language(woo)[0],
     )
+    # Dirección de envío de Woo (para el albarán manual y para Genei). Aditivo:
+    # los pedidos sin dirección quedan como hasta ahora.
+    _apply_shipping_address(order, woo, overwrite=True)
     session.add(order)
     return order
 
@@ -394,6 +464,10 @@ def _refresh_existing(
         autocancel_web_order,
     )
 
+    # Backfill de la dirección de envío en pedidos ya importados: solo si falta
+    # (no pisa una dirección ya guardada ni editada a mano). Un re-sync o el
+    # próximo `order.updated` la puebla en los pedidos abiertos.
+    _apply_shipping_address(order, woo, overwrite=False)
     if (new_woo_status or "") in WOO_AUTOCANCEL_STATUSES:
         autocancel_web_order(session, order)
         return   # anulado: no promociona pagos ni cola SAT

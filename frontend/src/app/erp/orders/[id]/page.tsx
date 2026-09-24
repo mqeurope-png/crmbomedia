@@ -22,6 +22,7 @@ import { PrimaryActionBar } from "../../../components/erp/PrimaryActionBar";
 import { RegistrarCobroModal } from "../../../components/erp/RegistrarCobroModal";
 import { MarkPaidDialog } from "../../../components/erp/MarkPaidDialog";
 import { OrderStatusMachine } from "../../../components/erp/OrderStatusMachine";
+import { GeneiShipmentSection } from "../../../components/erp/GeneiShipmentSection";
 import { ShippingFilesSection } from "../../../components/erp/ShippingFilesSection";
 import { ActionsMenu } from "../../../components/erp/flow/ActionsMenu";
 import { NextActionBar } from "../../../components/erp/flow/NextActionBar";
@@ -1172,6 +1173,14 @@ function ErpOrderDetailScreen() {
             canEdit={canEmit}
             onSaved={(patch) => setOrder((o) => (o ? { ...o, ...patch } : o))}
             onError={setError}
+          />
+          {/* Genei (PR-1): crear el envío, comparar agencias, etiqueta y estado.
+              Vale para pedidos web (Woo, con su dirección de envío) y manuales.
+              El albarán FACTUSOL sigue su camino aparte; esto es el TRANSPORTE. */}
+          <GeneiShipmentSection
+            orderId={order.id}
+            canManage={canSat || canEmit}
+            onChanged={() => load()}
           />
         </div>
       </FichaPanel>

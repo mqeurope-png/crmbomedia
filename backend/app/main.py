@@ -142,6 +142,7 @@ from app.erp.api import bank_router as erp_bank_router  # noqa: E402
 from app.erp.api import catalogs_router as erp_catalogs_router  # noqa: E402
 from app.erp.api import exceptions_router as erp_exceptions_router  # noqa: E402
 from app.erp.api import factusol_router as erp_factusol_router  # noqa: E402
+from app.erp.api import genei_router as erp_genei_router  # noqa: E402
 from app.erp.api import order_timeline_router as erp_order_timeline_router  # noqa: E402
 from app.erp.api import orders_router as erp_orders_router  # noqa: E402
 from app.erp.api import sat_router as erp_sat_router  # noqa: E402
@@ -158,6 +159,7 @@ app.include_router(erp_exceptions_router)
 app.include_router(erp_woocommerce_admin_router)
 app.include_router(erp_factusol_router)
 app.include_router(erp_shipping_router)
+app.include_router(erp_genei_router)
 # ERP-F4-A — conciliación bancaria (importación, casado, revisión, export).
 app.include_router(erp_bank_router)
 app.include_router(erp_catalogs_router)

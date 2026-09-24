@@ -10,6 +10,10 @@ import {
   type ErpSettings,
 } from "../../lib/erpApi";
 
+// La tarjeta de Genei tiene su propio endpoint; aquí se prueba aparte.
+jest.mock("../../components/erp/GeneiSettingsCard", () => ({
+  GeneiSettingsCard: () => null,
+}));
 jest.mock("../../lib/erpApi", () => ({
   getErpSettings: jest.fn(),
   updateErpSettings: jest.fn(),

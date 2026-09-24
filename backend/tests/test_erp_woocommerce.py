@@ -34,7 +34,7 @@ from app.integrations.woocommerce.client import (
     WooHTTPClient,
     _to_iso8601_datetime,
 )
-from app.integrations.woocommerce.mapper import import_woo_order
+from app.integrations.woocommerce.mapper import import_woo_order, shipping_address_block
 from app.main import app
 from app.models.crm import Company, Contact, ExternalSystem
 from app.models.integration_settings import (
@@ -119,6 +119,64 @@ def _woo(**over) -> dict:
     }
     base.update(over)
     return base
+
+
+# --- dirección de envío (Genei) ---------------------------------------------
+
+
+def test_shipping_block_uses_shipping_when_present():
+    woo = _woo(shipping={
+        "first_name": "Alexandre", "last_name": "Dubois",
+        "address_1": "12 Rue de Paris", "address_2": "Bat B",
+        "city": "Paris", "postcode": "75001", "state": "IDF", "country": "France",
+    })
+    block = shipping_address_block(woo)
+    assert block["name"] == "Alexandre Dubois"
+    assert block["address_line"] == "12 Rue de Paris Bat B"
+    assert block["city"] == "Paris" and block["postal_code"] == "75001"
+    assert block["country"] == "FR"                 # normalizado a ISO2
+    # Tel/email salen del billing (Woo no los guarda en shipping).
+    assert block["phone"] == "600111222"
+    assert block["email"] == "laura@ejemplo.com"
+
+
+def test_shipping_block_falls_back_to_billing_when_no_shipping():
+    # Sin `shipping` (o vacío) → usa la de facturación.
+    block = shipping_address_block(_woo())
+    assert block["name"] == "Laura Pérez"
+    assert block["address_line"] == "Calle Falsa 1"
+    assert block["city"] == "Barcelona" and block["postal_code"] == "08001"
+    assert block["country"] == "ES"
+
+
+def test_shipping_block_none_without_any_address():
+    woo = _woo(billing={"email": "x@y.z"}, shipping={})
+    assert shipping_address_block(woo) is None
+
+
+def test_import_persists_shipping_address_and_backfills(session_factory):
+    with session_factory() as s:
+        store = _mk_store(s)
+        payload = _woo(shipping={
+            "first_name": "Alexandre", "last_name": "Dubois",
+            "address_1": "12 Rue", "city": "Paris", "postcode": "75001", "country": "FR",
+        })
+        out = import_woo_order(s, store=store, woo_order=payload)
+        s.commit()
+        order = s.get(Order, out.order_id)
+        addr = json.loads(order.packing_json)["shipping_address"]
+        assert addr["town" if "town" in addr else "city"] == "Paris"
+        assert addr["postal_code"] == "75001" and addr["country"] == "FR"
+
+        # Backfill: un pedido sin dirección (se borra) recibe la del re-sync,
+        # sin pisar otros bloques del packing.
+        order.packing_json = json.dumps({"factusol_payment": {"paid": True}})
+        s.commit()
+        import_woo_order(s, store=store, woo_order=payload)
+        s.commit()
+        data = json.loads(s.get(Order, out.order_id).packing_json)
+        assert data["factusol_payment"] == {"paid": True}   # no se pisa
+        assert data["shipping_address"]["city"] == "Paris"
 
 
 # --- mapper ------------------------------------------------------------------
