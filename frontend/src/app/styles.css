@@ -1,5 +1,12 @@
 :root {
   color-scheme: light;
+  /* Modal por encima de la barra superior pegajosa (`.app-topbar`, z-index 50):
+     con la capa por debajo, la barra se pintaba sobre la cabecera del modal y
+     cortaba el título. 1000 la deja sobre la barra pero por debajo de lo que
+     debe taparla (confirm 1050, TinyMCE fullscreen 1200, dropdowns 5000, toasts
+     9999). Un token para que las DOS definiciones de `.modal-overlay` no vuelvan
+     a desincronizarse. */
+  --z-modal: 1000;
   /* Sprint Rebranding BoHub CRM (PR-A). La paleta nueva sustituye los
      azules de "CRMBO Media CRM". Mapeo de identidad:
        --color-primary       #2563EB  azul royal (nodos + arcos + CTAs)
@@ -1875,7 +1882,7 @@ td {
      inalcanzable. La capa scrollea como red de seguridad. */
   align-items: flex-start;
   justify-content: center;
-  z-index: 1000;
+  z-index: var(--z-modal);
   padding: 24px;
   overflow-y: auto;
   animation: modal-fade 120ms ease-out;
@@ -2907,7 +2914,9 @@ a.origin-chip:hover { filter: brightness(0.97); }
   align-items: flex-start;
   justify-content: center;
   overflow-y: auto;
-  z-index: 40;
+  /* Antes 40: por debajo de `.app-topbar` (50), que tapaba el modal. La barra
+     nunca debe pintarse sobre un modal, así que va con el token, por encima. */
+  z-index: var(--z-modal);
 }
 
 .modal-card {
