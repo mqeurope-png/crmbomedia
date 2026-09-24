@@ -27,7 +27,9 @@ PACKING_KEY = "genei"
 _STATE_KEYS = ("estado", "status", "state", "id_estado", "codigo_estado")
 _TRACKING_KEYS = ("codigo_seguimiento", "tracking", "trackingNumber", "tracking_number")
 _COURIER_KEYS = ("nombre_agencia", "courier", "agency", "agencia", "carrier")
-_CODE_KEYS = ("shipmentCode", "shipment_code", "codigo_envio", "code")
+# Al CREAR, Genei devuelve el código en `data.reference`; al leer/listar, en
+# `codigo_envio` (verificado en vivo).
+_CODE_KEYS = ("reference", "shipmentCode", "shipment_code", "codigo_envio", "code")
 _PAYMENT_KEYS = ("paymentUrl", "payment_url", "url_pago", "urlPago")
 
 
@@ -105,38 +107,90 @@ def build_destination(fields: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def destination_is_complete(dest: dict[str, Any]) -> list[str]:
-    """Campos mínimos que faltan en `destination` para poder enviar (nombre,
-    dirección, CP, población, país). Lista vacía = completo."""
+def address_missing_fields(addr: dict[str, Any]) -> list[str]:
+    """Campos mínimos que faltan en una dirección (origen o destino) para poder
+    enviar: nombre, dirección, CP, población, país. Lista vacía = completa."""
     required = {
         "name": "nombre", "address": "dirección", "postalCode": "código postal",
         "town": "población", "isoCountry": "país",
     }
-    return [label for key, label in required.items() if not _s(dest.get(key))]
+    return [label for key, label in required.items() if not _s(addr.get(key))]
+
+
+def destination_is_complete(dest: dict[str, Any]) -> list[str]:
+    """Campos mínimos que faltan en `destination` (alias de más contexto)."""
+    return address_missing_fields(dest)
+
+
+#: Forma de pago del envío. Doc de Genei: «Normally 4 (payment with balance)»
+#: (pago contra el saldo de la cuenta). El pago en sí lo dispara una persona
+#: (PR-2); esto solo declara la modalidad exigida al crear.
+PAYMENT_METHOD_BALANCE = 4
+
+
+def build_origin(raw: dict[str, Any]) -> dict[str, Any]:
+    """Dirección registrada en Genei (`GET /addresses/{id}`) → bloque `origin`
+    del envío (misma forma que `destination`). El remitente por defecto de la
+    cuenta ya trae nombre, dirección, email y teléfono con prefijo (E.164).
+
+    Genei EXIGE el bloque `origin` completo al crear (todos los campos del
+    ejemplo son obligatorios, incluido el prefijo internacional del teléfono).
+    """
+    if not isinstance(raw, dict):
+        raw = {}
+    iso = _s(raw.get("country_code") or raw.get("country_code_unico"))
+    if not iso:
+        iso2, _name = normalize_country(_s(raw.get("nombre_pais")))
+        iso = iso2
+    name = _s(raw.get("nombre"))
+    # El teléfono DEBE llevar prefijo internacional; Genei lo da ya en E.164.
+    phone = _s(raw.get("telefono_e164"))
+    if not phone:
+        prefix = _s(raw.get("prefijo_telefonico"))
+        national = _s(raw.get("telefono"))
+        phone = f"+{prefix}{national}" if prefix and national else national
+    return {
+        "name": name,
+        "contact": _s(raw.get("contact")) or name,
+        "dni": _s(raw.get("vat_number") or raw.get("dni")),
+        "email": _s(raw.get("mail") or raw.get("email")),
+        "phone": phone,
+        "address": _s(raw.get("direccion") or raw.get("address")),
+        "postalCode": _s(raw.get("codigo_postal") or raw.get("postalCode")),
+        "town": _s(raw.get("poblacion") or raw.get("town")),
+        "isoCountry": iso.upper(),
+        "observations": _s(raw.get("observaciones") or raw.get("observations")),
+    }
 
 
 def build_shipment_payload(
     *,
     agency_id: str,
-    origin_address_id: str | None,
+    origin: dict[str, Any],
     destination: dict[str, Any],
     packages: list[dict[str, Any]],
     external_shipping_code: str,
     notification_url: str | None,
+    payment_method_shipping: int = PAYMENT_METHOD_BALANCE,
+    shipping_from_warehouse: int = 0,
     client_reference: str | None = None,
     observations: str | None = None,
 ) -> dict[str, Any]:
-    """Body de `POST /shipments`. El origen es el remitente por defecto de Genei
-    (`originAddressId` = `Carrier.default_address_id`); el destino, el del
-    pedido; `externalShippingCode` enlaza con el nº de pedido de BoHub."""
+    """Body de `POST /shipments`. Genei exige `origin` (bloque de dirección
+    completo del remitente, resuelto desde el `originAddressId` de la cuenta),
+    `destination` (el del pedido), `packagesArray` y `paymentMethodShipping`.
+    `externalShippingCode` enlaza con el nº de pedido de BoHub."""
     payload: dict[str, Any] = {
         "agencyId": agency_id,
         "externalShippingCode": external_shipping_code,
+        "origin": origin,
         "destination": destination,
         "packagesArray": packages,
+        # Obligatorio (faltaba): forma de pago; 4 = pago con saldo.
+        "paymentMethodShipping": payment_method_shipping,
+        # Origen = dirección propia de BoHub, no el centro logístico de Genei.
+        "shippingFromWarehouse": shipping_from_warehouse,
     }
-    if origin_address_id:
-        payload["originAddressId"] = origin_address_id
     if notification_url:
         payload["notificationUrl"] = notification_url
     if client_reference:

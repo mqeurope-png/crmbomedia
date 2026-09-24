@@ -37,7 +37,11 @@ class FakeGenei:
             {"agencyId": 2, "name": "GLS Domicilio", "price": 4.5},
             {"agencyId": 4, "name": "GLS Oficina", "price": 2.0},
         ]
-        self.created = {"shipmentCode": "GEN123", "paymentUrl": "https://pay/x", "status": 7}
+        # Forma REAL de la respuesta de creación (verificada en vivo): el código
+        # va en `reference` y NO viene el estado (nace en 7, pdte de pago). Esto
+        # es lo que devuelve GeneiClient.create_shipment tras `_as_dict`.
+        self.created = {"reference": "GEN123", "transactionId": 555,
+                        "paymentUrl": "https://pay/x"}
         self.shipment = {"shipmentCode": "GEN123", "estado": 5,
                          "codigo_seguimiento": "TRK-9", "nombre_agencia": "GLS"}
 
@@ -48,6 +52,18 @@ class FakeGenei:
     def create_shipment(self, payload):
         self.calls.append(("create", payload))
         return self.created
+
+    def get_address(self, address_id):
+        self.calls.append(("address", address_id))
+        # Forma real de GET /addresses/{id}: el remitente por defecto de la
+        # cuenta (verificado en vivo, con el teléfono en E.164).
+        return {
+            "nombre": "SAT Bomedia", "direccion": "Mossen Antoni Solanas",
+            "mail": "sat@bomedia.es", "codigo_postal": "08830",
+            "poblacion": "SANT BOI DE LLOBREGAT", "country_code": "ES",
+            "telefono": "609144424", "telefono_e164": "+34609144424",
+            "prefijo_telefonico": 34, "vat_number": None, "observaciones": "",
+        }
 
     def get_shipment(self, code):
         self.calls.append(("get", code))
@@ -238,17 +254,67 @@ def test_create_shipment_stores_state(client, session_factory, fake):
     })
     assert r.status_code == 201, r.text
     body = r.json()
+    # El código viene en `reference`; sin él, el envío quedaría huérfano en Genei.
     assert body["summary"]["shipment_code"] == "GEN123"
     assert body["state"]["shipment_code"] == "GEN123"
     assert body["state"]["payment_url"] == "https://pay/x"
+    # La creación no trae estado → se fija a 7 (pendiente de pago), no «desconocido».
+    assert body["summary"]["state_code"] == 7
+    assert body["state"]["state_bucket"] == "created"
     # El payload llevó el nº de pedido como externalShippingCode.
     create_call = next(c for c in fake.calls if c[0] == "create")
     assert create_call[1]["externalShippingCode"] == "MAN-0001"
-    assert create_call[1]["originAddressId"] == "1304422"
+    # Los DOS campos que faltaban y hacían fallar la creación en vivo:
+    assert create_call[1]["origin"]["name"] == "SAT Bomedia"
+    assert create_call[1]["origin"]["isoCountry"] == "ES"
+    assert create_call[1]["origin"]["phone"] == "+34609144424"   # con prefijo
+    assert create_call[1]["paymentMethodShipping"] == 4          # pago con saldo
+    assert create_call[1]["shippingFromWarehouse"] == 0
     assert "notificationUrl" not in create_call[1]      # PR-1 sin webhook
+    # El origen se resolvió desde la dirección registrada de Genei (no duplicado).
+    assert ("address", "1304422") in fake.calls
     with session_factory() as s:
         order = s.get(Order, oid)
         assert order.carrier_id is not None
+
+
+def test_create_shipment_requires_origin_configured(client, session_factory):
+    # Sin dirección de origen (remitente) en Ajustes → no se crea (400 claro).
+    with session_factory() as s:
+        cfg = GeneiConfig(preferred_couriers={"ES": ["GLS"]}, default_package=DefaultPackage())
+        s.add(Carrier(
+            name="Genei", code="genei", has_api=True, adapter_class=GENEI_ADAPTER,
+            api_base_url="https://apiv2.genei.es",
+            api_credentials_encrypted=GeneiClient.encode_credentials("sat@b.es", "pw"),
+            default_address_id=None, config_json=cfg.to_json(),
+        ))
+        s.commit()
+        oid = _seed_order(s)
+    r = client.post(f"/api/erp/orders/{oid}/genei/shipments", headers=auth_headers(client), json={
+        "agency_id": "2", "destination": {"name": "X", "address": "a", "postalCode": "1",
+                                          "town": "t", "isoCountry": "ES"}, "packages": [],
+    })
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "origin_not_configured"
+
+
+def test_create_shipment_surfaces_genei_error(client, session_factory, fake):
+    # Un error de Genei al crear se propaga como 502 con su mensaje (no se traga).
+    from app.erp.integrations.genei.client import GeneiError  # noqa: PLC0415
+
+    def boom(payload):
+        raise GeneiError('POST /shipments → Genei rechazó: "origin" is mandatory', status=200)
+    fake.create_shipment = boom
+    with session_factory() as s:
+        _seed_carrier(s)
+        oid = _seed_order(s)
+    r = client.post(f"/api/erp/orders/{oid}/genei/shipments", headers=auth_headers(client), json={
+        "agency_id": "2", "destination": {"name": "X", "address": "a", "postalCode": "1",
+                                          "town": "t", "isoCountry": "ES"}, "packages": [],
+    })
+    assert r.status_code == 502
+    assert r.json()["detail"]["code"] == "genei_error"
+    assert "origin" in r.json()["detail"]["detail"]
 
 
 def test_create_shipment_rejects_incomplete_destination(client, session_factory):
