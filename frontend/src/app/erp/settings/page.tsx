@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { CompanyLogoThumbnail } from "../../components/erp/CompanyLogoThumbnail";
+import { GeneiSettingsCard } from "../../components/erp/GeneiSettingsCard";
 import { PageHeader } from "../../components/PageHeader";
 import { extractErrorMessage } from "../../lib/errors";
 import {
@@ -326,6 +327,7 @@ export default function ErpSettingsPage() {
             {s.title}{dirtyById[s.id] ? " •" : ""}
           </a>
         ))}
+        <a href="#ajuste-genei">Envíos (Genei)</a>
       </nav>
       <div className="erp-settings-form">
         {/* ---------------------------------------------------------------- */}
@@ -1232,6 +1234,8 @@ export default function ErpSettingsPage() {
             </span>
           </label>
         </SettingsSection>
+        {/* Genei (envíos): endpoint propio, tarjeta autónoma. */}
+        <GeneiSettingsCard canEdit={canEdit} />
       </div>
     </main>
   );

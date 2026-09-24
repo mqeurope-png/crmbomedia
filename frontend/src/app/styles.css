@@ -11436,6 +11436,11 @@ a.erp-ficha-customer-name:hover { text-decoration: underline; }
 .erp-genei-pkg { border: 0; padding: 0; margin: var(--sp-2) 0 0; }
 .erp-genei-dest legend,
 .erp-genei-pkg legend { font-size: var(--fs-label); color: var(--muted); font-weight: 600; padding: 0; }
+/* Ajustes de Genei (página de configuración). */
+.erp-genei-cfg { border: 0; padding: 0; margin: 0; display: flex; flex-direction: column; gap: var(--sp-2); }
+.erp-genei-couriers { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--sp-2); }
+.erp-genei-couriers li { align-items: flex-end; }
+.erp-genei-couriers-list { flex: 1 1 auto; }
 .erp-flow-src {
   font-size: var(--fs-label);
   font-weight: 600;
