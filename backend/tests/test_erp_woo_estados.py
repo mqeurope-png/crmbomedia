@@ -306,8 +306,9 @@ def test_actualizar_hoja_de_drive_vuelca_solo_lo_que_ensena_la_pantalla(
     assert r.status_code == 200, r.text
     captured: dict = {}
 
-    def fake_push(session, client, rows, *, dry_run=False):
+    def fake_push(session, client, rows, *, completados=None, dry_run=False):
         captured["rows"] = rows
+        captured["completados"] = completados or []
         return {"mode": "managed_tab", "dry_run": dry_run, "written": not dry_run,
                 "rows": len(rows), "por_situacion": {}}
 
@@ -320,6 +321,9 @@ def test_actualizar_hoja_de_drive_vuelca_solo_lo_que_ensena_la_pantalla(
     assert set(numeros) == {"BOPRIN-1", "BOPRIN-2"}
     # Y ya ordenadas por fecha del pedido (ambas del mismo día: orden estable).
     assert all(row["fecha"] == "2026-09-01" for row in captured["rows"])
+    # El `completed` de la TIENDA (BOPRIN-2) NO es «Marcar completado»
+    # (`completed_at`) de BoHub: sigue en la zona viva, no en los completados.
+    assert captured["completados"] == []
 
 
 @pytest.mark.parametrize(
