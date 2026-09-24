@@ -265,6 +265,55 @@ describe("Pantalla Proformas (rediseño de flujo, Fase 4)", () => {
     expect(screen.queryByRole("listitem", { name: "Proforma 39" })).toBeNull();
   });
 
+  it("B2: si el job de conversión falla, el aviso lo dice (no se queda «cargando» sin desenlace)", async () => {
+    mockConvert.mockResolvedValue({ job_id: "job-cf", status: "queued", codpre: "39" });
+    // El estado del job resuelve YA como fallido: la UI cierra el paso con un
+    // error claro, sin botón colgado.
+    mockStatus.mockResolvedValue({ status: "failed", error: "FACTUSOL rechazó el pedido." });
+    const user = userEvent.setup();
+    render(<ProformasPage />);
+    await screen.findByRole("list", { name: "Proformas" });
+    await user.click(within(row("39")).getByRole("button", { name: "Convertir en pedido" }));
+    const dialog = await screen.findByRole("dialog", { name: "Convertir proforma en pedido" });
+    await user.click(within(dialog).getByRole("button", { name: "Crear pedido y albarán" }));
+    const alerta = await screen.findByRole("alert");
+    expect(alerta).toHaveTextContent("No se pudo convertir la proforma 39");
+    expect(alerta).toHaveTextContent("FACTUSOL rechazó el pedido.");
+    // No queda ningún aviso «en curso» pegado.
+    expect(screen.queryByText(/se está creando en FACTUSOL/)).toBeNull();
+  });
+
+  it("B2: si el estado del job expira pero el pedido YA existe, resuelve como éxito con enlace al pedido", async () => {
+    jest.useFakeTimers();
+    try {
+      mockConvert.mockResolvedValue({ job_id: "job-ct", status: "queued", codpre: "39" });
+      // El estado nunca llega a «finished» dentro del margen de poll (~60 s).
+      mockStatus.mockResolvedValue({ status: "pending" });
+      const user = userEvent.setup({ advanceTimers: jest.advanceTimersByTime });
+      render(<ProformasPage />);
+      await screen.findByRole("list", { name: "Proformas" });
+      await user.click(within(row("39")).getByRole("button", { name: "Convertir en pedido" }));
+      const dialog = await screen.findByRole("dialog", { name: "Convertir proforma en pedido" });
+      // Tras encolar, la recarga ya muestra la 39 convertida (el worker la creó
+      // aunque el poll del estado no lo alcanzara).
+      mockList.mockResolvedValue({
+        ...LISTING,
+        items: LISTING.items.map((q) => (q.codpre === "39"
+          ? { ...q, queue: "convertidas", order: { id: "o39", order_number: "PRO-000039" } } : q)),
+        queue_counts: { aceptadas: 2, pendientes: 1, rechazadas: 1, convertidas: 2 },
+      });
+      await user.click(within(dialog).getByRole("button", { name: "Crear pedido y albarán" }));
+      // Se agota el poll (30 × 2 s) sin «finished»; la vuelta extra deja correr
+      // la recarga posterior (load) y su setState.
+      await jest.advanceTimersByTimeAsync(60000);
+      await jest.advanceTimersByTimeAsync(100);
+      const notice = screen.getByRole("status");
+      expect(notice).toHaveTextContent("Proforma 39 convertida en el pedido PRO-000039");
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it("PDF descarga el presupuesto en el idioma del cliente; Duplicar abre la previsualización (modal en modo «Duplicar»), sin duplicado directo", async () => {
     mockPdf.mockResolvedValue(new Blob(["%PDF"]));
     mockStatus.mockResolvedValue({ status: "finished", result: { codpre: "600" } });
@@ -606,5 +655,41 @@ describe("Pantalla Proformas (rediseño de flujo, Fase 4)", () => {
     await screen.findByRole("list", { name: "Proformas" });
     await user.click(within(row("37")).getByRole("button", { name: "Ver líneas 37" }));
     expect(await within(row("37")).findByText(/Sin líneas en FACTUSOL/)).toBeInTheDocument();
+  });
+
+  // --- fix: el buscador filtra la LISTA pintada aunque el CODPRE se repita
+  //     entre series (clave de React única serie+número) -------------------
+
+  it("el buscador filtra la lista aunque dos proformas compartan CODPRE en series distintas", async () => {
+    // Mismo número «999» en la serie 1 y en la 5, clientes distintos: la lista
+    // pintada tiene que seguir a `filtered` con las dos filas distinguidas (la
+    // clave de React es serie+número, no solo el CODPRE que se repite).
+    const EDUARD = {
+      ...BRAILLE, codpre: "999", tippre: "1", serie: 1, serie_label: "Bomedia",
+      numero: "1-000999", cliente_nombre: "EDUARD RIERA", company: null,
+      referencia: "Rótulo Eduard",
+    };
+    const MARTA = {
+      ...BRAILLE, codpre: "999", tippre: "5", serie: 5, serie_label: "Streamtec",
+      numero: "5-000999", cliente_nombre: "MARTA COLL", company: null,
+      referencia: "Placa Marta",
+    };
+    mockList.mockResolvedValue({
+      items: [EDUARD, MARTA], unlinked: false,
+      queue_counts: { aceptadas: 2 }, estpre_values: { "1": 2 },
+    });
+    const user = userEvent.setup();
+    render(<ProformasPage />);
+    await screen.findByRole("list", { name: "Proformas" });
+    // Las dos se pintan (misma cola «aceptadas»).
+    expect(screen.getByText("EDUARD RIERA")).toBeInTheDocument();
+    expect(screen.getByText("MARTA COLL")).toBeInTheDocument();
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+
+    // Buscar «eduard» → SOLO la de Eduard queda en la lista pintada.
+    await user.type(screen.getByRole("searchbox", { name: "Buscar proforma" }), "eduard");
+    expect(screen.getByText("EDUARD RIERA")).toBeInTheDocument();
+    expect(screen.queryByText("MARTA COLL")).toBeNull();
+    expect(screen.getAllByRole("listitem")).toHaveLength(1);
   });
 });

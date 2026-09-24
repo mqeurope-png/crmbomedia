@@ -27,9 +27,10 @@ export function initialPayment(
   };
 }
 
-/** ¿Se puede enviar? «Pagado» exige la cuenta; «sin pago» siempre vale. */
-export function paymentReady(value: PaymentIntentInput): boolean {
-  return !value.paid || Boolean((value.contrapartida ?? "").trim());
+/** ¿Se puede enviar? Siempre: la cuenta (contrapartida) es OPCIONAL al marcar
+ *  «Pagado» — es solo un apunte del pedido, no un cobro en FACTUSOL. */
+export function paymentReady(_value: PaymentIntentInput): boolean {
+  return true;
 }
 
 /** Fase 2 — paso de confirmación de pago al convertir (opción B, decidida
@@ -133,23 +134,23 @@ export function PaymentStep({
       {value.paid ? (
         <div className="form-row">
           <label className="field">
-            <span>Cuenta donde entró el dinero</span>
+            <span>Cuenta donde entró el dinero (opcional)</span>
             <select
-              aria-label="Cuenta del cobro"
+              aria-label="Cuenta del pago"
               value={value.contrapartida ?? ""}
               onChange={(e) => onChange({ ...value, contrapartida: e.target.value || null })}
             >
-              <option value="">— elige la cuenta —</option>
+              <option value="">— sin indicar —</option>
               {cuentas.map((c) => (
                 <option key={c.codigo} value={c.codigo}>{c.codigo} · {c.nombre}</option>
               ))}
             </select>
           </label>
           <label className="field">
-            <span>Fecha del cobro</span>
+            <span>Fecha del pago (opcional)</span>
             <input
               type="date"
-              aria-label="Fecha del cobro"
+              aria-label="Fecha del pago"
               value={value.fecha ?? ""}
               onChange={(e) => onChange({ ...value, fecha: e.target.value || null })}
             />
@@ -158,7 +159,7 @@ export function PaymentStep({
       ) : null}
       <p className="muted small">
         {value.paid
-          ? "No se emite ninguna factura. El pago queda apuntado en el pedido; el cobro se registra en FACTUSOL a mano («Registrar cobro») cuando exista la factura."
+          ? "No se emite ninguna factura ni se escribe el cobro en FACTUSOL: el pago queda apuntado en el pedido (con la cuenta y la fecha si se conocen — son opcionales). El cobro se registra a mano («Registrar cobro») cuando exista la factura."
           : "Solo se apunta la forma de pago: el pedido queda pendiente de pago, sin cobro."}
       </p>
     </fieldset>

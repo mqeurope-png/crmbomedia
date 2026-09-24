@@ -357,20 +357,33 @@ def test_convertir_pagado_B_no_emite_factura_apunta_pago(db, http) -> None:
         assert payment_intent(order)["paid"] is True
         assert order.factusol_cobro_status is None      # nada cobrado: será manual
         assert any("Pago confirmado al convertir" in x for x in _reasons(s, order))
-    # Sin cuenta conocida no se apunta nada (400) y sin cuenta con `paid` → 422.
+    # Una cuenta ESCRITA que no casa sí es un error (no se apunta a ciegas): 400.
     with _patched(_client()):
         bad = http.post("/api/erp/orders/from-factusol", json={
             "doc_type": "pedidos", "serie": 5, "codigo": 123,
             "payment": {"paid": True, "contrapartida": "Banco Inventado"},
         }, headers=auth_headers(http, "pedidos"))
         assert bad.status_code == 400 and bad.json()["detail"]["code"] == "unknown_account"
-        bad2 = http.post("/api/erp/orders/from-factusol", json={
-            "doc_type": "pedidos", "serie": 5, "codigo": 123,
-            "payment": {"paid": True},
-        }, headers=auth_headers(http, "pedidos"))
-        assert bad2.status_code == 422
     with db as s:
         assert s.scalar(select(Order).where(Order.external_id == "5-000123")) is None
+
+    # Fix C: marcar «Pagado» SIN cuenta ya es válido (solo apunta el pago;
+    # el cobro FACTUSOL sigue siendo manual). Se crea el pedido, pagado, con la
+    # forma pero sin contrapartida.
+    with _patched(_client()):
+        ok = http.post("/api/erp/orders/from-factusol", json={
+            "doc_type": "pedidos", "serie": 5, "codigo": 123,
+            "payment": {"paid": True, "forma_pago": "002",
+                        "forma_pago_nombre": "Transferencia"},
+        }, headers=auth_headers(http, "pedidos"))
+        assert ok.status_code == 201, ok.text
+        assert ok.json()["payment_status"] == "paid"
+    with db as s:
+        creado = s.scalar(select(Order).where(Order.external_id == "5-000123"))
+        assert creado is not None
+        fp2 = payment_intent(creado)
+        assert fp2["paid"] is True and fp2["contrapartida"] is None
+        assert fp2["forma_pago_nombre"] == "Transferencia"
 
 
 def test_emitir_factura_no_registra_cobro_automatico(db) -> None:
@@ -688,3 +701,44 @@ def test_job_proforma_a_pedido_crea_albaran_y_apunta_pago(db) -> None:
     assert again["albaran"]["status"] == "already"
     assert len(_written(fake, "F_ALB")) == 1
     assert _written(fake, "F_FAC") == [] and _written(fake, "F_LCO") == []
+
+
+def test_convertir_proforma_lleva_las_lineas_reales_de_f_lps(db) -> None:
+    """B1: el pedido convertido lleva las líneas REALES de la proforma (F_LPS),
+    no un placeholder «Proforma NNNN». La proforma 5-27 tiene 2 líneas."""
+    from app.erp.models import OrderLine
+    from app.integrations.factusol.quotes import convert_quote_to_order
+
+    fake = _client()
+    res = convert_quote_to_order(fake, db, "27", ejercicio="2026", serie=5)
+    assert res["lines"] == 2
+    lines = db.scalars(
+        select(OrderLine).where(OrderLine.order_id == res["order_id"])
+        .order_by(OrderLine.position)
+    ).all()
+    descripciones = [ln.description for ln in lines]
+    assert "Tinta cyan" in descripciones and "Portes" in descripciones
+    assert all("Proforma" not in (ln.description or "") for ln in lines)
+
+
+def test_record_order_payment_apunta_la_forma_sin_exigir_cuenta(db, http) -> None:
+    """C-bis: la acción rápida «Pagado» de la ficha apunta el pago (forma) sin
+    exigir la cuenta, deja el pedido `paid` y NO escribe cobro en FACTUSOL."""
+    from app.erp.factusol_albaran import payment_intent
+
+    with db as s:
+        s.add(Order(id="o-pay", external_source=OrderSource.MANUAL,
+                    external_id="MANUAL-1", order_number="MANUAL-000001",
+                    company_id="dupli", total_amount=50.0,
+                    payment_status="pending", invoice_status="not_invoiced"))
+        s.commit()
+    r = http.post("/api/erp/orders/o-pay/payment", json={
+        "payment": {"paid": True, "forma_pago": "005", "forma_pago_nombre": "Paypal"},
+    }, headers=auth_headers(http, "pedidos"))
+    assert r.status_code == 200, r.text
+    assert r.json()["payment_status"] == "paid"
+    with db as s:
+        o = s.get(Order, "o-pay")
+        fp = payment_intent(o)
+        assert fp["paid"] is True and fp["contrapartida"] is None
+        assert fp["forma_pago_nombre"] == "Paypal"

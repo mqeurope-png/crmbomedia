@@ -295,7 +295,7 @@ export default function ProformasPage() {
 
   // «Desde» más antiguo que el periodo amplía lo que se pide al backend.
   const effectiveDays = daysBackFor(daysBack, desde);
-  const load = useCallback(async () => {
+  const load = useCallback(async (): Promise<FactusolQuote[]> => {
     setLoading(true);
     setError(null);
     try {
@@ -306,8 +306,10 @@ export default function ProformasPage() {
       });
       setQuotes(r.items);
       setNow(Date.now());
+      return r.items;
     } catch (e) {
       setError(extractErrorMessage(e, "No se pudieron cargar las proformas."));
+      return [];
     } finally {
       setLoading(false);
     }
@@ -390,17 +392,38 @@ export default function ProformasPage() {
 
   async function convert(q: FactusolQuote, payment: PaymentIntentInput) {
     const codpre = q.codpre ?? "";
+    const serie = serieOf(q);
     setConverting(null);
     setBusy(true);
     setError(null);
     setNotice(`Creando el pedido y el albarán en FACTUSOL para la proforma ${codpre}…`);
     try {
       const r = await convertFactusolQuoteToOrder(
-        codpre, { payment, create_albaran: true }, serieOf(q) || undefined,
+        codpre, { payment, create_albaran: true }, serie || undefined,
       );
-      const result = await waitFor(r.job_id);
-      if (result) setNotice(conversionNotice(codpre, result, payment.paid));
-      await load();
+      // B2: el job resuelve SIEMPRE (éxito / error / aún en curso). Se recarga
+      // la lista y se localiza la proforma: si ya quedó convertida (tiene
+      // pedido), es éxito aunque el poll del estado haya expirado (la cola de
+      // FACTUSOL va en serie y puede tardar), con enlace al pedido; nada de
+      // botón colgado sin desenlace.
+      const outcome = await pollQuoteJob(r.job_id);
+      const items = await load();
+      const fresh = items.find((x) => (x.codpre ?? "") === codpre && serieOf(x) === serie);
+      if (outcome.status === "finished") {
+        setNotice(conversionNotice(codpre, outcome.result, payment.paid));
+      } else if (fresh?.order) {
+        const pago = payment.paid
+          ? " Pago apuntado (el cobro se registra a mano con «Registrar cobro» cuando exista la factura)."
+          : " Sin pago: pendiente.";
+        setNotice(`Proforma ${codpre} convertida en el pedido ${fresh.order.order_number}.${pago}`);
+      } else if (outcome.status === "failed") {
+        setError(`No se pudo convertir la proforma ${codpre}: ${outcome.error}`);
+      } else {
+        setNotice(
+          `El pedido de la proforma ${codpre} se está creando en FACTUSOL (la cola va en `
+          + `serie y puede tardar). Aparecerá como «Convertida» en unos segundos; recarga si tarda.`,
+        );
+      }
     } catch (e) {
       setError(extractErrorMessage(e, "No se pudo convertir la proforma."));
     } finally {
@@ -447,7 +470,17 @@ export default function ProformasPage() {
     setNotice(`${verb} la proforma en FACTUSOL…`);
     const result = await waitFor(jobId);
     setBusy(false);
-    if (result) setNotice(`Proforma nº ${result.codpre} ${verb === "Creando" ? "creada" : "actualizada"}.`);
+    if (result) {
+      const hecho = `Proforma nº ${result.codpre} ${verb === "Creando" ? "creada" : "actualizada"}.`;
+      // B1: si FACTUSOL rechazó las líneas, la proforma queda sin ellas — se
+      // avisa con el error (no un «hecho» en verde que oculta el problema).
+      if (typeof result.warning === "string" && result.warning) {
+        setNotice(null);
+        setError(`${hecho} ${result.warning}`);
+      } else {
+        setNotice(hecho);
+      }
+    }
     await load();
   }
 
@@ -633,7 +666,12 @@ export default function ProformasPage() {
               ) : null,
             ].filter(Boolean);
             return (
-              <article key={codpre} role="listitem" className="erp-flow-item is-plain"
+              // Clave ÚNICA por (serie + número): los CODPRE se repiten entre
+              // series (#456), y con `key={codpre}` React no podía distinguir
+              // dos proformas con el mismo número → no reordenaba ni quitaba las
+              // que el buscador filtraba. Con la clave real, la lista pintada
+              // sigue de verdad a `filtered`/orden.
+              <article key={quoteKey(q)} role="listitem" className="erp-flow-item is-plain"
                        data-quote-row={codpre} aria-label={`Proforma ${codpre}`}>
                 <div className="erp-flow-item-main">
                   {/* Nº (mono) con las pastillas de origen (serie) y régimen al lado,

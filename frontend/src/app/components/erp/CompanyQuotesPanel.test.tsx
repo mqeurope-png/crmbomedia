@@ -106,7 +106,7 @@ describe("CompanyQuotesPanel", () => {
     expect(onOrderCreated).toHaveBeenCalledWith("o-1");
   });
 
-  it("«Pagado» exige la cuenta y viaja al job (opción B: sin factura)", async () => {
+  it("«Pagado» con cuenta opcional viaja al job (opción B: sin factura)", async () => {
     mockList.mockResolvedValue({ items: [quote()], unlinked: false });
     mockConvert.mockResolvedValue({ job_id: "job-c2", status: "queued", codpre: "77" });
     mockStatus.mockResolvedValue({
@@ -119,10 +119,12 @@ describe("CompanyQuotesPanel", () => {
     const dialog = await screen.findByRole("dialog", { name: "Convertir proforma en pedido" });
     await user.click(within(dialog).getByLabelText("Pagado"));
     const confirm = within(dialog).getByRole("button", { name: "Crear pedido y albarán" });
-    expect(confirm).toBeDisabled();                      // sin cuenta no hay pago
+    // Fix C: la cuenta es OPCIONAL (apunte del pedido, no cobro en FACTUSOL);
+    // se puede confirmar sin ella. Si se indica, viaja en el job.
+    expect(confirm).toBeEnabled();
     // El catálogo de cuentas llega de forma asíncrona.
     await within(dialog).findByRole("option", { name: "8 · Streamtec Sabadell" });
-    await user.selectOptions(within(dialog).getByLabelText("Cuenta del cobro"), "8");
+    await user.selectOptions(within(dialog).getByLabelText("Cuenta del pago"), "8");
     expect(within(dialog).getByText(/No se emite ninguna factura/)).toBeInTheDocument();
     await user.click(confirm);
     await waitFor(() => expect(mockConvert).toHaveBeenCalledWith("77", expect.objectContaining({

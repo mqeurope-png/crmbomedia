@@ -118,7 +118,10 @@ describe("ERP · Ficha del pedido — albarán FACTUSOL en «Documentos de enví
     // Una sola vez: en «Documentos de envío». La tarjeta duplicada ya no existe.
     expect(screen.getAllByText("Albarán FACTUSOL 5-500008")).toHaveLength(1);
     expect(screen.queryByText("Albarán y pago FACTUSOL")).not.toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "PDF del albarán (FACTUSOL)" })).toHaveLength(1);
+    // E3 — «PDF del albarán» pasa a estar TAMBIÉN en la cabecera (acceso rápido,
+    // como «PDF del pedido» y «PDF de la factura»); el detallado sigue en
+    // «Documentos de envío». Dos en total, uno por sitio.
+    expect(screen.getAllByRole("button", { name: "PDF del albarán (FACTUSOL)" })).toHaveLength(2);
     expect(screen.queryByRole("button", { name: "Crear albarán en FACTUSOL" })).not.toBeInTheDocument();
     // El bloque FACTUSOL de arriba solo informa del nº (no repite el PDF).
     expect(screen.getByRole("region", { name: "FACTUSOL" })).toHaveTextContent("5-500008");
@@ -151,7 +154,9 @@ describe("ERP · Ficha del pedido — albarán FACTUSOL en «Documentos de enví
     await waitFor(() => expect(getQuoteJobStatus).toHaveBeenCalledWith("job-7"));
     expect(await screen.findByText("Albarán FACTUSOL 5-500009 creado.")).toBeInTheDocument();
     expect(await screen.findByText("Albarán FACTUSOL 5-500009")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "PDF del albarán (FACTUSOL)" })).toBeInTheDocument();
+    // E3 — con el albarán ya creado, su PDF está en la cabecera (acceso rápido)
+    // y en «Documentos de envío».
+    expect(screen.getAllByRole("button", { name: "PDF del albarán (FACTUSOL)" })).toHaveLength(2);
   });
 
   it("al llegar del alta con ?albaran_job= hace polling y enseña el error si el job falla", async () => {

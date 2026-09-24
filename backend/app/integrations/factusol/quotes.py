@@ -491,7 +491,19 @@ def list_quote_lines(
         filtro=f"CODLPS={int(codpre)} ORDER BY POSLPS",
         ejercicio=ejercicio,
     )
-    return [_row_to_quote_line(r) for r in rows_of_serie(rows, serie, "TIPLPS")]
+    matching = rows_of_serie(rows, serie, "TIPLPS")
+    # Robustez (fix conversión): el filtro por serie está para desambiguar los
+    # 69 números repetidos entre varias series. Pero en el escritorio el
+    # `TIPLPS` de la línea no siempre casa con el `TIPPRE` de su cabecera (viene
+    # en blanco o con un valor heredado), y entonces el filtro se comía TODAS
+    # las líneas y el pedido salía con un placeholder «Proforma NNNN». Si el
+    # filtro deja la lista vacía pero las líneas de ese CODLPS son de UNA sola
+    # serie (no hay homónimo que desambiguar), se usan igual: es la proforma.
+    if not matching and rows:
+        series_presentes = {tip_of(r.get("TIPLPS")) for r in rows}
+        if len(series_presentes) == 1:
+            matching = rows
+    return [_row_to_quote_line(r) for r in matching]
 
 
 def skus_for_codarts(
@@ -582,28 +594,35 @@ def get_quote(
 def next_codpre(
     client: FactusolClient, ejercicio: str, serie: Any = DEFAULT_TIPPRE,
 ) -> str:
-    """Siguiente CODPRE **de esa serie** = max de la serie + 1.
+    """Siguiente CODPRE = **máximo GLOBAL de F_PRE + 1** (único entre TODAS las
+    series). `serie` se acepta por compatibilidad de firma pero NO acota la
+    numeración: el número tiene que ser único en toda la tabla, no por serie.
 
-    Cada serie de FACTUSOL lleva su propio contador (la 1 va por el 526.080 y
-    la 5 por el 39), así que numerar con el máximo GLOBAL metía las proformas
-    nuevas de las series pequeñas con un número altísimo, lejos de lo que el
-    escritorio enseña. El máximo se calcula sobre las filas de la serie, que
-    llegan ya filtradas en Python (`TIPPRE` viene como texto o número).
+    ⚠️ REGRESIÓN corregida (post-#456). #456 numeraba «por serie» (max de la
+    serie + 1) para que una proforma nueva de la serie 5 saliera con el 40 y no
+    con un número altísimo. Pero eso da un CODPRE que **ya existe en otra serie**
+    (el 40 es una proforma vieja de Bomedia), y las LÍNEAS de F_LPS se guardan
+    por `CODLPS` (= CODPRE): escribir las líneas de la proforma nueva 5-40
+    chocaba con las líneas de la vieja 1-40 y el INSERT en F_LPS se rechazaba —
+    la cabecera (F_PRE, clave serie+número) sí entraba, así que quedaba «con
+    total pero sin líneas». Numerar GLOBAL (como antes de #456) da un CODPRE que
+    no existe en ninguna serie, así que sus líneas nunca chocan. El coste es
+    cosmético (el nº de una serie pequeña no sigue el contador del escritorio);
+    perder las líneas es mucho peor.
 
     Carrera con el escritorio: si alguien crea una proforma en FACTUSOL entre
     este `MAX+1` y la escritura, los dos cogerían el mismo número. Entre dos
     altas de BoHub lo evita el worker serializado (`factusol:writes`,
-    concurrency=1); contra el escritorio no hay nada que lo impida, igual que
-    en `next_codfac` / `next_codcli`. Es el riesgo que ya se asumía, ahora
-    acotado a la serie en la que se está creando en vez de a toda la tabla.
+    concurrency=1); contra el escritorio no hay nada que lo impida, igual que en
+    `next_codfac` / `next_codcli`. Es el riesgo que ya se asumía.
     """
+    _ = serie  # la numeración es global, no por serie (ver docstring)
     rows = client.load_table(
         TABLE_QUOTES, filtro="1=1 ORDER BY CODPRE DESC", ejercicio=ejercicio,
     )
-    de_la_serie = rows_of_serie(rows, serie, "TIPPRE")
-    if not de_la_serie:
+    if not rows:
         return "1"
-    mayor = max((_int_or_none(r.get("CODPRE")) or 0) for r in de_la_serie)
+    mayor = max((_int_or_none(r.get("CODPRE")) or 0) for r in rows)
     return str(mayor + 1)
 
 
@@ -821,8 +840,15 @@ def resolve_codarts(
 def _write_quote_lines(
     client: FactusolClient, codpre: str, ejercicio: str,
     lines: list[dict[str, Any]], serie: Any = DEFAULT_TIPLPS,
-) -> int:
-    """Escribe las líneas en F_LPS. Devuelve cuántas se escribieron.
+) -> tuple[int, str | None]:
+    """Escribe las líneas en F_LPS. Devuelve `(cuántas se escribieron, error)`
+    —el mensaje de FACTUSOL de la primera línea que falló, o None—.
+
+    Se devuelve el error, además de dejarlo en el log, porque una proforma que
+    guarda la cabecera pero PIERDE las líneas es invisible para el operador
+    («sin líneas» sin más): con el detalle, la UI puede avisar de que las líneas
+    no se guardaron y por qué (qué columna rechaza F_LPS), en vez de que el
+    documento quede mudo en la contabilidad.
 
     `serie` es la de la cabecera: las líneas llevan el mismo `TIPLPS` que el
     `TIPPRE` de su presupuesto.
@@ -849,6 +875,7 @@ def _write_quote_lines(
         codarts = {}
 
     written = 0
+    error: str | None = None
     for i, line in enumerate(lines, start=1):
         sku = str(line.get("codart") or "").strip()
         codart = codarts.get(sku, "")
@@ -878,8 +905,9 @@ def _write_quote_lines(
                 codpre, i, written, len(lines), exc, ", ".join(payload),
                 exc_info=True,
             )
+            error = f"{exc} (columnas: {', '.join(payload)})"
             break
-    return written
+    return written, error
 
 
 def create_quote(
@@ -892,8 +920,9 @@ def create_quote(
     """Crea la proforma: cabecera en `F_PRE` + una fila por línea en `F_LPS`.
 
     `serie` es la EMPRESA EMISORA del documento (`TIPPRE` en la cabecera y
-    `TIPLPS` en las líneas). Por defecto 1 (Bomedia). El CODPRE sale del
-    contador de ESA serie (`next_codpre`), como en el escritorio.
+    `TIPLPS` en las líneas). Por defecto 1 (Bomedia). El CODPRE es el máximo
+    GLOBAL + 1 (`next_codpre`), único en toda la tabla: un número por serie
+    reutilizaría un CODPRE ya usado en otra y sus líneas de F_LPS chocarían.
 
     `referencia` la escribe el operador cuando quiere fijar el texto de REFPRE;
     si no la pasa, se compone desde las líneas.
@@ -938,7 +967,9 @@ def create_quote(
             "Columnas enviadas: %s", codpre, exc, ", ".join(payload),
         )
         raise
-    written = _write_quote_lines(client, codpre, ejercicio, lines, payload["TIPPRE"])
+    written, lines_error = _write_quote_lines(
+        client, codpre, ejercicio, lines, payload["TIPPRE"],
+    )
     logger.info(
         "factusol: proforma creada CODPRE %s serie %s (cliente %s, %d/%d líneas)",
         codpre, payload["TIPPRE"], customer.get("codcli"), written, len(lines),
@@ -950,7 +981,9 @@ def create_quote(
         result["warning"] = (
             f"La proforma {codpre} se creó con {written} de {len(lines)} líneas. "
             "Revísala en FACTUSOL antes de enviarla."
+            + (f" FACTUSOL rechazó la línea: {lines_error}" if lines_error else "")
         )
+        result["lines_error"] = lines_error
     return result
 
 
@@ -1094,7 +1127,9 @@ def update_quote(
         TABLE_QUOTE_LINES,
         f"TIPLPS='{propia}' AND CODLPS='{int(codpre)}'", ejercicio=ejercicio,
     )
-    written = _write_quote_lines(client, str(codpre), ejercicio, lines, propia)
+    written, lines_error = _write_quote_lines(
+        client, str(codpre), ejercicio, lines, propia,
+    )
     logger.info("factusol: proforma %s-%s actualizada (%d/%d líneas, estado %s)",
                 propia, codpre, written, len(lines), estado)
     result = {"codpre": str(codpre), "ejercicio": ejercicio,
@@ -1104,7 +1139,9 @@ def update_quote(
         result["warning"] = (
             f"La proforma {codpre} se guardó con {written} de {len(lines)} "
             "líneas. Revísala en FACTUSOL."
+            + (f" FACTUSOL rechazó la línea: {lines_error}" if lines_error else "")
         )
+        result["lines_error"] = lines_error
     return result
 
 
@@ -1121,8 +1158,9 @@ def duplicate_quote(
 
     El original se identifica por (`serie`, `codpre`), y la copia se queda en la
     MISMA serie: la cabecera arrastra su `TIPPRE` (viene en la fila), el número
-    nuevo sale del contador de esa serie y las líneas se escriben con ese mismo
-    `TIPLPS` — antes iban con el default '1' aunque la cabecera fuera de otra.
+    nuevo es el máximo GLOBAL + 1 (`next_codpre`, único en toda la tabla para
+    que sus líneas de F_LPS no choquen con las de otra proforma con ese número) y
+    las líneas se escriben con ese mismo `TIPLPS`.
     """
     _ = session
     if not str(codpre).strip().isdigit():
@@ -1141,11 +1179,18 @@ def duplicate_quote(
     source["FECPRE"] = fecha or datetime.now(UTC).date().isoformat()
     client.write_record(TABLE_QUOTES, source, ejercicio=ejercicio)
 
-    written = _write_quote_lines(client, nuevo, ejercicio, lines, propia)
+    written, lines_error = _write_quote_lines(client, nuevo, ejercicio, lines, propia)
     logger.info("factusol: proforma %s-%s duplicada → %s-%s (%d/%d líneas)",
                 propia, codpre, propia, nuevo, written, len(lines))
-    return {"codpre": nuevo, "source_codpre": str(codpre), "ejercicio": ejercicio,
-            "serie": int(propia), "lines": written}
+    result = {"codpre": nuevo, "source_codpre": str(codpre), "ejercicio": ejercicio,
+              "serie": int(propia), "lines": written}
+    if written < len(lines):
+        result["warning"] = (
+            f"La copia {nuevo} se creó con {written} de {len(lines)} líneas."
+            + (f" FACTUSOL rechazó la línea: {lines_error}" if lines_error else "")
+        )
+        result["lines_error"] = lines_error
+    return result
 
 
 def quote_lines_for_order(
