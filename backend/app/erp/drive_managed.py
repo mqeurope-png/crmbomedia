@@ -97,25 +97,9 @@ SEPARATOR_INCIDENCIAS = (
     f"{SEPARATOR_PREFIX} PENDIENTES HEREDADOS (hoja vieja) — no se actualiza "
     f"{SEPARATOR_PREFIX}"
 )
-#: Separador del bloque de COMPLETADOS de BoHub (histórico AUTOMÁTICO): va entre
-#: la zona viva y el histórico MANUAL. Lo distingue de `SEPARATOR_PEDIDOS` la
-#: palabra «COMPLETADOS», para no confundir el bloque que la app regenera con
-#: el histórico manual —irrepetible— que se preserva byte a byte.
-SEPARATOR_COMPLETADOS = (
-    f"{SEPARATOR_PREFIX} COMPLETADOS (BoHub) — histórico automático {SEPARATOR_PREFIX}"
-)
-
-
 def is_separator(row: list[Any]) -> bool:
-    """¿Esta fila es un separador de zonas (cualquiera de los dos)?"""
+    """¿Esta fila es un separador de zonas?"""
     return str((row or [""])[0] or "").strip().startswith(SEPARATOR_PREFIX)
-
-
-def is_completados_separator(row: list[Any]) -> bool:
-    """¿El separador del bloque de COMPLETADOS de BoHub (histórico automático)?
-    Se reconoce por la palabra «completados», para separarlo del histórico
-    MANUAL sin depender del texto exacto de la leyenda."""
-    return is_separator(row) and "completados" in str((row or [""])[0] or "").casefold()
 
 
 def static_block(values: list[list[Any]]) -> list[list[Any]]:
@@ -131,34 +115,35 @@ def static_block(values: list[list[Any]]) -> list[list[Any]]:
     return []
 
 
-def manual_static_block(values: list[list[Any]]) -> list[list[Any]]:
-    """El histórico MANUAL —lo irrepetible— del separador del histórico manual
-    hacia abajo (separador incluido), o [] si no hay.
+def historico_manual_rows(values: list[list[Any]]) -> list[list[Any]]:
+    """El histórico MANUAL —lo irrepetible— como filas de DATOS (sin separador),
+    del PRIMER separador hacia abajo.
 
-    Salta el separador de COMPLETADOS (bloque que la app regenera): así, aunque
-    encima del histórico manual haya un bloque de completados, este se preserva
-    tal cual. Sin ningún separador (pestaña previa a las zonas), [] — no se
-    inventa un bloque."""
-    for i, row in enumerate(values):
+    En la zona estática conviven, bajo el único separador «HISTÓRICO», los
+    COMPLETADOS de BoHub (que la app REGENERA en cada pasada, reconocibles por
+    `Situación = "Completado"`) y el histórico MANUAL —irrepetible— que se
+    preserva byte a byte. Aquí se devuelve SOLO el manual: se saltan los
+    separadores (incluido el viejo «COMPLETADOS» de hojas anteriores) y las
+    filas de completados de BoHub. Sin separador (pestaña previa a las zonas),
+    [] — no se inventa un histórico."""
+    return [
+        list(r) for r in static_block(values)
+        if not is_separator(list(r)) and not es_fila_completado(list(r))
+    ]
+
+
+def historico_separator_row(
+    values: list[list[Any]], *, columns: int = len(SEGUIMIENTO_COLUMNS_V2),
+) -> list[Any]:
+    """La fila del separador «HISTÓRICO», reutilizando la que ya hubiera en la
+    pestaña (byte a byte, como el resto de la zona estática) o una nueva si no la
+    hay. Se salta un separador «COMPLETADOS» de hojas viejas (#478): su leyenda no
+    debe quedarse como separador del histórico."""
+    for row in static_block(values):
         r = list(row)
-        if is_separator(r) and not is_completados_separator(r):
-            return [list(x) for x in values[i:]]
-    return []
-
-
-def completados_static_block(values: list[list[Any]]) -> list[list[Any]]:
-    """El bloque de COMPLETADOS ya escrito (su separador incluido), desde el
-    separador de completados hasta —sin incluirlo— el del histórico manual (o
-    hasta el final si no hay histórico manual). [] si la pestaña no lo tiene."""
-    inicio: int | None = None
-    for i, row in enumerate(values):
-        r = list(row)
-        if is_completados_separator(r):
-            inicio = i
-            continue
-        if inicio is not None and is_separator(r):
-            return [list(x) for x in values[inicio:i]]
-    return [list(x) for x in values[inicio:]] if inicio is not None else []
+        if is_separator(r) and "completados" not in _texto(r[0]).casefold():
+            return r
+    return _separator_row(SEPARATOR_PEDIDOS, columns)
 
 
 def compose(
@@ -808,8 +793,9 @@ def build_incidencias_grid(
 def historic_block(
     historic_rows: list[list[Any]], *, columns: int = len(SEGUIMIENTO_COLUMNS_V2),
 ) -> list[list[Any]]:
-    """Separador + filas del histórico manual, listo para pegarlo bajo la zona
-    viva (o bajo el bloque de completados, si lo hay)."""
+    """El único separador «HISTÓRICO» + las filas de debajo (completados de BoHub
+    y/o histórico manual), listo para pegarlo bajo la zona viva. [] si no hay
+    filas (no se escribe un separador suelto)."""
     if not historic_rows:
         return []
     return [_separator_row(SEPARATOR_PEDIDOS, columns), *historic_rows]
@@ -817,9 +803,21 @@ def historic_block(
 
 #: Etiqueta de la columna Situación de un pedido COMPLETADO en el histórico.
 #: No es una cola de la línea de vida: dice, sin más, que Bart lo dio por
-#: cerrado («Marcar completado»). Como el histórico manual usa «Histórico», el
-#: bloque de completados no se colorea (el color va solo en la zona viva).
+#: cerrado («Marcar completado»). Es además la MARCA que distingue una fila de
+#: BoHub (que la app regenera en cada pasada) del histórico MANUAL —irrepetible—
+#: que usa «Histórico»: por eso el histórico manual se preserva y los completados
+#: se vuelven a escribir al día. El bloque de completados no se colorea (el color
+#: va solo en la zona viva).
 SITUACION_COMPLETADO_LABEL = "Completado"
+
+
+def es_fila_completado(row: list[Any]) -> bool:
+    """¿Fila de un COMPLETADO de BoHub? (Situación = «Completado»). Es lo que
+    separa lo que la app regenera del histórico MANUAL, ahora que ambos viven
+    bajo el mismo separador «HISTÓRICO» (sin un bloque etiquetado aparte)."""
+    if len(row) <= _SITUACION_INDEX:
+        return False
+    return _texto(row[_SITUACION_INDEX]).casefold() == SITUACION_COMPLETADO_LABEL.casefold()
 
 
 def completados_values(rows: list[dict[str, Any]]) -> list[list[Any]]:
@@ -846,19 +844,27 @@ def _numeros_del_bloque(bloque: list[list[Any]]) -> set[str]:
     return nums
 
 
-def completados_block(
+def completados_filas(
     completados: list[dict[str, Any]], manual_static: list[list[Any]],
-    *, columns: int = len(SEGUIMIENTO_COLUMNS_V2),
 ) -> list[list[Any]]:
-    """Separador + filas de los pedidos COMPLETADOS de BoHub, para pegarlo entre
-    la zona viva y el histórico manual.
+    """Las filas de los pedidos COMPLETADOS de BoHub (SIN separador propio), para
+    pegarlas bajo el separador «HISTÓRICO», encima del histórico manual.
 
-    - Se REGENERA entero desde la BD en cada actualización → idempotente por
-      construcción (una fila por pedido, sin duplicar entre pasadas).
+    - Se REGENERAN enteras desde la BD en cada actualización → «Envío en vivo»:
+      tracking, fecha recogido, `transport_status` del webhook, factura, cobro…
+      quedan al día por Nº aunque el pedido ya esté abajo, en el histórico. Y es
+      idempotente por construcción (una fila por pedido, sin duplicar entre
+      pasadas: al releer, la fila anterior —Situación «Completado»— se descarta).
     - Deduplicado por Nº contra el histórico MANUAL (`manual_static`): un
       completado que Bart ya tenía tecleado a mano no se vuelve a escribir.
-    Sin completados (o si todos ya están a mano), []: no se escribe ni el
-    separador, y la salida queda idéntica a la de antes de este cambio."""
+    Sin completados (o si todos ya están a mano), [].
+
+    Nota (evolución): este casado por Nº es el ÚNICO punto que asume el Nº como
+    identidad. Cuando la hoja lleve un `id` de pedido estable (columna `id` +
+    histórico importado a `seguimiento_legacy` con ids), este match por Nº pasa a
+    ser el «backfill de la primera vez» para asignar esos ids; el resto de la
+    lógica ya es por marca (`Situación = "Completado"`), no por Nº, así que no hay
+    arquitectura que desmontar."""
     if not completados:
         return []
     ya_a_mano = _numeros_del_bloque(manual_static)
@@ -868,9 +874,7 @@ def completados_block(
         if num and num in ya_a_mano:
             continue  # ya está en el histórico manual: no duplicar
         filas.append(vals)
-    if not filas:
-        return []
-    return [_separator_row(SEPARATOR_COMPLETADOS, columns), *filas]
+    return filas
 
 
 def pendientes_block(
@@ -986,15 +990,18 @@ def pedidos_format(
         "sheetId": None, "startRowIndex": 0, "endRowIndex": total_rows,
         "startColumnIndex": 0, "endColumnIndex": columns,
     }}}})
-    # Cada separador (completados + histórico manual) en gris; y «Preparación»
-    # como fecha desde el separador del histórico MANUAL hacia abajo.
+    # El separador «HISTÓRICO» en gris; y «Preparación» como fecha en el histórico
+    # MANUAL. Bajo ese único separador conviven los completados de BoHub (cuya
+    # «Preparación» es un ESTADO, como en la zona viva) y el histórico manual
+    # (donde «Preparación» es una FECHA), así que el formato de fecha empieza en la
+    # primera fila manual: la primera que no es separador ni completado.
     manual_start: int | None = None
     for offset, row in enumerate(static or []):
         abs_row = total_rows + offset
         if is_separator(row):
             requests.append(_separator_format(abs_row, columns))
-            if manual_start is None and not is_completados_separator(row):
-                manual_start = abs_row
+        elif manual_start is None and not es_fila_completado(row):
+            manual_start = abs_row
     if manual_start is not None:
         requests.extend(date_format_requests(
             (PREPARACION_INDEX,), first_row=manual_start, last_row=total_rows + estaticas,
@@ -1120,28 +1127,35 @@ def push_managed_tabs(
         "manuales_entregadas": fusion["entregadas"],
         "conflictos": fusion["conflictos"],
     }
-    # El histórico MANUAL (irrepetible) que hay que PRESERVAR bajo su separador,
-    # puesto al día del formato (hueco de «Fecha recogido» si la pestaña era de
-    # 17 columnas, fechas como valor de fecha), sin reordenarlo ni quitar nada.
-    # Se lee con `manual_static_block`: salta el bloque de completados de encima
-    # (que la app regenera), así el histórico manual se conserva byte a byte.
+    # El histórico MANUAL (irrepetible) que hay que PRESERVAR, puesto al día del
+    # formato (hueco de «Fecha recogido» si la pestaña era de 17 columnas, fechas
+    # como valor de fecha), sin reordenarlo ni quitar nada. `historico_manual_rows`
+    # devuelve SOLO el manual: salta los separadores y las filas de completados de
+    # BoHub (Situación «Completado»), que la app regenera. Así el histórico manual
+    # se conserva byte a byte aunque comparta separador con los completados.
     estatico_manual = normalize_static_pedidos(
-        manual_static_block(valores_pedidos), valores_pedidos[0] if valores_pedidos else [],
+        historico_manual_rows(valores_pedidos),
+        valores_pedidos[0] if valores_pedidos else [],
     )
-    # Los pedidos completados de BoHub: su propio bloque, encima del histórico
-    # manual, REGENERADO en cada actualización y deduplicado por Nº contra el
-    # manual. Idempotente por construcción; sin completados no se escribe nada
-    # (salida idéntica a la de antes de este cambio).
-    bloque_completados = completados_block(completados or [], estatico_manual)
-    estatico_pedidos = [*bloque_completados, *estatico_manual]
+    # Los pedidos completados de BoHub, REGENERADOS en cada actualización y
+    # deduplicados por Nº contra el manual: van bajo el ÚNICO separador
+    # «HISTÓRICO», encima del histórico manual (sin un bloque etiquetado aparte).
+    # Regenerar = «Envío en vivo»: aunque el pedido ya esté abajo, su fila se
+    # reescribe al día por Nº. Idempotente (al releer, la fila anterior se
+    # descarta por su Situación «Completado»).
+    filas_completados = completados_filas(completados or [], estatico_manual)
+    estatico_pedidos = (
+        [historico_separator_row(valores_pedidos), *filas_completados, *estatico_manual]
+        if (filas_completados or estatico_manual) else []
+    )
     estatico_incidencias = dates_to_serial(
         static_block(sheets.tab_values(incidencias_tab, raw=True))
         if incidencias_tab in existing else [],
         INCIDENCIAS_DATE_COLUMNS,
     )
+    resumen["historico_preservado"] = len(estatico_manual)
+    resumen["completados_historico"] = len(filas_completados)
     # El separador no cuenta como fila de datos.
-    resumen["historico_preservado"] = max(len(estatico_manual) - 1, 0)
-    resumen["completados_historico"] = max(len(bloque_completados) - 1, 0)
     resumen["pendientes_preservados"] = max(len(estatico_incidencias) - 1, 0)
 
     if dry_run:

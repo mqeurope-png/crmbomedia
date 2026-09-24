@@ -275,9 +275,9 @@ def import_historico(
     separadores."""
     from app.erp.drive_managed import (  # noqa: PLC0415
         cabecera_de,
-        completados_static_block,
         compose,
         dates_to_serial,
+        es_fila_completado,
         historic_block,
         incidencias_format,
         is_separator,
@@ -285,6 +285,7 @@ def import_historico(
         pedidos_format,
         pendientes_block,
         realinear_fila,
+        static_block,
     )
     from app.erp.seguimiento import (  # noqa: PLC0415
         HISTORICO_DATE_COLUMNS,
@@ -324,7 +325,7 @@ def import_historico(
 
     # Las fechas del histórico, como valor de fecha donde se puedan leer (una
     # rota se queda como texto): así el bloque también ordena por fecha.
-    historico = historic_block(dates_to_serial(plan["rows"], HISTORICO_DATE_COLUMNS))
+    historico = dates_to_serial(plan["rows"], HISTORICO_DATE_COLUMNS)
     # La zona VIVA que ya hay —las filas de BoHub y las tecleadas a mano
     # (Origen = MANUAL)— se conserva ENTERA y en su orden: el import solo
     # reemplaza el histórico, nunca absorbe una fila manual. Se realinea a las
@@ -338,15 +339,18 @@ def import_historico(
     vivas_pedidos = dates_to_serial(
         [realinear_fila(r, cabecera) for r in live_zone(valores)], PEDIDOS_DATE_COLUMNS,
     )
-    # El bloque de COMPLETADOS de BoHub (histórico automático) que ya hubiera se
-    # CONSERVA entre la zona viva y el histórico manual: el import solo
-    # reemplaza el histórico manual (el que sale de la hoja vieja). Si no lo
-    # preservara, la siguiente actualización lo regeneraría igualmente desde la
-    # BD, pero así no hay un estado intermedio raro.
+    # Los COMPLETADOS de BoHub que ya hubiera (Situación «Completado») se
+    # CONSERVAN bajo el único separador «HISTÓRICO», encima del histórico manual
+    # (el que sale de la hoja vieja): el import solo reemplaza el manual. La
+    # siguiente actualización los regeneraría igualmente desde la BD, pero así no
+    # hay un estado intermedio raro. Ya no hay un bloque etiquetado aparte: el
+    # separador de completados de hojas anteriores se descarta (es un separador).
     completados_prev = dates_to_serial(
-        completados_static_block(valores), PEDIDOS_DATE_COLUMNS,
+        [r for r in static_block(valores) if es_fila_completado(r)], PEDIDOS_DATE_COLUMNS,
     )
-    estatico = [*completados_prev, *historico]
+    # Separador «HISTÓRICO» único + completados de BoHub (arriba) + histórico
+    # manual importado (debajo), como en el volcado periódico.
+    estatico = historic_block([*completados_prev, *historico])
     sheets.ensure_tab(pedidos_tab)
     sheets.replace_tab(
         pedidos_tab, compose(SEGUIMIENTO_COLUMNS_V2, vivas_pedidos, estatico), raw=True,

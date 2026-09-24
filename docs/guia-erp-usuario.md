@@ -677,6 +677,20 @@ en **pestañas propias de la app**. Cada una tiene **dos zonas**:
 - **«Incidencias (app)»** — arriba, las incidencias que habéis reportado a
   mano; debajo del separador, los **pendientes heredados** de la hoja vieja.
 
+**Los completados bajan al histórico (y siguen vivos).** Cuando pulsas **«Marcar
+completado»**, el pedido **sale de la zona viva y baja al histórico** (bajo el
+separador *«HISTÓRICO»*), en vez de desaparecer. No hay un bloque «COMPLETADOS»
+etiquetado aparte: se integran con el histórico manual, arriba de él. El
+disparador de bajar es **«Marcar completado»** (`completed_at`) —**nunca** el
+estado de envío—. Y aunque ya estén abajo, **sus filas de BoHub no se congelan**:
+en cada «Actualizar hoja de Drive» se **resincroniza la fila entera por Nº**, así
+la columna **Envío** queda **viva** (tracking, fecha recogido, estado del
+transporte que manda el webhook de Genei, factura, cobro, entregado…). Una
+**incidencia de envío** (transporte) **no mueve la fila**: solo pone **Envío =
+Incidencia** (distinta de una incidencia de pedido —taller/stock—, que va a
+«Incidencias»). El **histórico manual** (las miles de filas de siempre) se
+**conserva byte a byte**: no es de BoHub, así que nunca se toca.
+
 **Pedidos añadidos a mano (transición).** Mientras no todos los pedidos pasen
 por la app, puedes **teclear uno en cualquier fila** de la zona viva de
 «Seguimiento (app)» (por debajo de la cabecera) poniendo **`MANUAL` en la
