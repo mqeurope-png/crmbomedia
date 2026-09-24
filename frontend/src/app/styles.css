@@ -12750,6 +12750,24 @@ input[type="radio"]:focus-visible {
 }
 .erp-pf-age .mono { font-size: var(--fs-mono); }
 
+/* A5 «Ver líneas»: el desglose F_LPS bajo la fila, solo lectura. */
+.erp-pf-lines {
+  margin: var(--sp-2) 0 0;
+  overflow-x: auto;
+}
+.erp-pf-lines-table {
+  width: 100%;
+  font-size: var(--fs-label);
+}
+.erp-pf-lines-table th,
+.erp-pf-lines-table td { padding: 4px 8px; }
+.erp-pf-lines-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.erp-pf-lines-portes td { color: var(--muted); }
+.erp-pf-lines-msg { margin: var(--sp-2) 0 0; }
+
 /* C3 · sugerencias tras aprobar el pedido (ficha), no bloqueantes. */
 .erp-approve-suggest {
   display: flex;

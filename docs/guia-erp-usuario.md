@@ -400,10 +400,12 @@ allí eliges o creas la empresa con el mismo buscador único.
 **Menú: «ERP · Proformas». Título: «Proformas».** *«Presupuestos enviados y su
 estado.»* Botón **«+ Nueva proforma»**.
 
-**Colas:** **«Aceptadas · por convertir»**, **«Pendientes de respuesta»**,
-**«Rechazadas»** y **«Convertidas»**. Cada fila muestra la **antigüedad** en
-lenguaje claro (p. ej. *«Enviada hace 41 días · sin respuesta»*), y a partir de
-30 días sin respuesta se resalta en ámbar.
+**Colas:** **«Todas»**, **«Aceptadas · por convertir»**, **«Pendientes de
+respuesta»**, **«Rechazadas»** y **«Convertidas»**. **«Todas»** enseña las
+proformas de todas las colas juntas en una sola lista (respetando empresa
+emisora, fechas y búsqueda); las demás acotan a su cola. Cada fila muestra la
+**antigüedad** en lenguaje claro (p. ej. *«Enviada hace 41 días · sin
+respuesta»*), y a partir de 30 días sin respuesta se resalta en ámbar.
 
 **Todas las empresas emisoras.** La pantalla enseña las proformas de **todas
 las series** (1 Bomedia · 2 MQ Europe · 4 Lambert · 5 Streamtec), igual que
@@ -425,6 +427,12 @@ Acciones por proforma:
   sus líneas y su PDF) para el cliente que elijas. La copia parte de la **misma
   empresa emisora** que la plantilla (la vista previa la dice), y puedes
   cambiarla en el selector antes de crearla.
+- **«Ver líneas»** — despliega en la propia fila el desglose de la proforma
+  (SKU, descripción, cantidad, precio, IVA y total, y los portes si los lleva),
+  para decidir si duplicar o convertir sin abrirla. Es solo lectura y se cierra
+  con **«Ocultar líneas»**. Una proforma hecha en el FACTUSOL de escritorio no
+  guarda sus líneas en la base (es de una sola línea), así que en ese caso lo
+  dice en vez de una tabla vacía.
 - **«PDF»** — descarga el PDF de la proforma.
 
 **«Nueva proforma».** Eliges la **empresa destino** (vinculada a FACTUSOL) y la
