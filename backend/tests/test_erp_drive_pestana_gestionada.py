@@ -30,11 +30,17 @@ from app.erp.drive_historico import (
 from app.erp.drive_managed import (
     DEFAULT_INCIDENCIAS_TAB,
     DEFAULT_MANAGED_TAB,
+    SEPARATOR_COMPLETADOS,
     SEPARATOR_PREFIX,
+    SITUACION_COMPLETADO_LABEL,
     build_incidencias_grid,
     build_pedidos_grid,
+    completados_block,
+    completados_static_block,
+    is_completados_separator,
     is_separator,
     live_pedidos_rows,
+    manual_static_block,
     pedidos_format,
     push_managed_tabs,
     sheet_serial,
@@ -492,6 +498,133 @@ def test_static_block_solo_desde_el_separador():
               [f"{SEPARATOR_PREFIX} X"], ["Histórico", "V-1"]]
     assert static_block(values) == [[f"{SEPARATOR_PREFIX} X"], ["Histórico", "V-1"]]
     assert static_block([["Situación"], ["Listo", "L-1"]]) == []
+
+
+# --- completados de BoHub: se acumulan en el histórico -------------------------
+
+
+def test_manual_static_block_salta_el_bloque_de_completados():
+    """El histórico manual se localiza por SU separador, saltando el de
+    completados que la app pone encima; el bloque de completados se lee aparte."""
+    values = [["Situación"], ["Listo", "L-1"],
+              [SEPARATOR_COMPLETADOS], ["Completado", "C-1"],
+              [f"{SEPARATOR_PREFIX} HISTÓRICO — no se actualiza {SEPARATOR_PREFIX}"],
+              ["Histórico", "V-1"]]
+    manual = manual_static_block(values)
+    assert is_separator(manual[0]) and not is_completados_separator(manual[0])
+    assert manual[1] == ["Histórico", "V-1"]
+    comp = completados_static_block(values)
+    assert is_completados_separator(comp[0])
+    assert comp[1] == ["Completado", "C-1"]
+    # Sin separador de completados, el histórico manual es todo lo de debajo.
+    assert completados_static_block(
+        [["Situación"], [f"{SEPARATOR_PREFIX} H"], ["Histórico", "V-1"]]
+    ) == []
+
+
+def test_completados_block_vacio_o_deduplicado():
+    assert completados_block([], [["Histórico", "12345"]]) == []
+    # Un completado cuyo Nº ya está en el histórico manual no se escribe.
+    bloque = completados_block([_row("listo", "BOP-12345")], [["Histórico", "12345"]])
+    assert bloque == []
+    bloque = completados_block([_row("listo", "COMP-9")], [["Histórico", "12345"]])
+    assert is_completados_separator(bloque[0]) and bloque[1][1] == "COMP-9"
+
+
+def test_los_completados_bajan_al_historico_no_a_la_zona_viva(session):
+    historico = [[f"{SEPARATOR_PREFIX} HISTÓRICO — no se actualiza {SEPARATOR_PREFIX}"],
+                 ["Histórico", "VIEJO-1"]]
+    sheets = FakeTabs({HISTORICA: [], DEFAULT_MANAGED_TAB: [
+        list(SEGUIMIENTO_COLUMNS_V2), *historico,
+    ]})
+    resumen = push_managed_tabs(
+        session, sheets, [_row("listo", "VIVO-1")],
+        completados=[_row("listo", "COMP-1")],
+    )
+    escrito = sheets.written[DEFAULT_MANAGED_TAB]
+    sep_comp = next(i for i, r in enumerate(escrito) if is_completados_separator(r))
+    sep_man = next(i for i, r in enumerate(escrito)
+                   if is_separator(r) and not is_completados_separator(r))
+    assert sep_comp < sep_man                       # completados, encima del manual
+    viva = [r[1] for r in escrito[1:sep_comp]]
+    completados = escrito[sep_comp + 1:sep_man]
+    assert viva == ["VIVO-1"]                        # el vivo, arriba
+    assert [r[1] for r in completados] == ["COMP-1"]  # el completado, al histórico
+    assert completados[0][0] == SITUACION_COMPLETADO_LABEL  # Situación «Completado»
+    # El histórico manual, intacto debajo.
+    assert escrito[sep_man] == historico[0]
+    assert escrito[sep_man + 1] == ["Histórico", "VIEJO-1"]
+    assert resumen["completados_historico"] == 1
+    assert resumen["historico_preservado"] == 1
+
+
+def test_refrescar_dos_veces_no_duplica_el_completado(session):
+    historico = [[f"{SEPARATOR_PREFIX} HISTÓRICO {SEPARATOR_PREFIX}"], ["Histórico", "VIEJO-1"]]
+    sheets = FakeTabs({HISTORICA: [], DEFAULT_MANAGED_TAB: [
+        list(SEGUIMIENTO_COLUMNS_V2), *historico,
+    ]})
+    for _ in range(2):
+        push_managed_tabs(session, sheets, [_row("listo", "VIVO-1")],
+                          completados=[_row("listo", "COMP-1")])
+        sheets.tabs[DEFAULT_MANAGED_TAB] = sheets.written[DEFAULT_MANAGED_TAB]
+    escrito = sheets.written[DEFAULT_MANAGED_TAB]
+    assert sum(1 for r in escrito if is_completados_separator(r)) == 1
+    assert sum(1 for r in escrito if len(r) > 1 and r[1] == "COMP-1") == 1
+    assert sum(1 for r in escrito if len(r) > 1 and r[1] == "VIEJO-1") == 1
+
+
+def test_el_historico_manual_intacto_con_completados_encima(session):
+    historico = [[f"{SEPARATOR_PREFIX} HISTÓRICO — no se actualiza {SEPARATOR_PREFIX}"],
+                 ["Histórico", "VIEJO-1", "1/1/2020", "Cliente viejo"]]
+    sheets = FakeTabs({HISTORICA: [], DEFAULT_MANAGED_TAB: [
+        list(SEGUIMIENTO_COLUMNS_V2), ["Listo", "L-0"], *historico,
+    ]})
+    push_managed_tabs(session, sheets, [_row("listo", "L-1")],
+                      completados=[_row("listo", "C-1")])
+    escrito = sheets.written[DEFAULT_MANAGED_TAB]
+    sep_man = next(i for i, r in enumerate(escrito)
+                   if is_separator(r) and not is_completados_separator(r))
+    assert escrito[sep_man] == historico[0]
+    assert escrito[sep_man + 1] == ["Histórico", "VIEJO-1",
+                                    sheet_serial(date(2020, 1, 1)), "Cliente viejo"]
+    # Segundo refresh (releyendo la hoja): el histórico manual byte a byte igual.
+    sheets.tabs[DEFAULT_MANAGED_TAB] = escrito
+    push_managed_tabs(session, sheets, [_row("listo", "L-2")],
+                      completados=[_row("listo", "C-1")])
+    escrito2 = sheets.written[DEFAULT_MANAGED_TAB]
+    sep_man2 = next(i for i, r in enumerate(escrito2)
+                    if is_separator(r) and not is_completados_separator(r))
+    assert escrito2[sep_man2:] == escrito[sep_man:]
+
+
+def test_un_completado_ya_en_el_historico_manual_no_se_duplica(session):
+    historico = [[f"{SEPARATOR_PREFIX} HISTÓRICO {SEPARATOR_PREFIX}"],
+                 ["Histórico", "12345", "1/1/2020", "Cliente viejo"]]
+    sheets = FakeTabs({HISTORICA: [], DEFAULT_MANAGED_TAB: [
+        list(SEGUIMIENTO_COLUMNS_V2), *historico,
+    ]})
+    push_managed_tabs(
+        session, sheets, [],
+        completados=[_row("listo", "BOP-12345"), _row("listo", "COMP-2")],
+    )
+    escrito = sheets.written[DEFAULT_MANAGED_TAB]
+    numeros = [r[1] for r in escrito if len(r) > 1 and not is_separator(r)]
+    assert "COMP-2" in numeros                    # este sí baja
+    assert numeros.count("12345") == 1            # el manual, una sola vez
+    assert "BOP-12345" not in numeros             # el completado con ese Nº se omite
+
+
+def test_sin_completados_no_hay_bloque_ni_separador(session):
+    """Sin completados, la salida es idéntica a la de antes de este cambio: ni
+    bloque ni separador de completados."""
+    historico = [[f"{SEPARATOR_PREFIX} HISTÓRICO {SEPARATOR_PREFIX}"], ["Histórico", "VIEJO-1"]]
+    sheets = FakeTabs({HISTORICA: [], DEFAULT_MANAGED_TAB: [
+        list(SEGUIMIENTO_COLUMNS_V2), *historico,
+    ]})
+    push_managed_tabs(session, sheets, [_row("listo", "L-1")], completados=[])
+    escrito = sheets.written[DEFAULT_MANAGED_TAB]
+    assert not any(is_completados_separator(r) for r in escrito)
+    assert sum(1 for r in escrito if is_separator(r)) == 1
 
 
 # --- importación del histórico -------------------------------------------------

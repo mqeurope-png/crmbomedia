@@ -243,7 +243,8 @@ def drive_sync(
             # pasaban las filas SIN filtrar y la hoja enseñaba lo que la
             # pantalla escondía (web `on-hold`/`cancelled`, anulados…).
             return push_managed_tabs(
-                session, client, drive_live_rows(session), dry_run=dry_run,
+                session, client, drive_live_rows(session),
+                completados=drive_completados_rows(session), dry_run=dry_run,
             )
         prefer_albaran = bool(cfg_json.get("drive_reference_prefer_albaran", True))
         return sync_to_sheet(
@@ -266,6 +267,17 @@ def drive_live_rows(session: Session) -> list[dict[str, Any]]:
     Drive: si algo se esconde en la pantalla, no puede aparecer en la hoja."""
     return core.filter_rows(
         _rows(session), en_curso=True, sort="fecha", direction="desc",
+    )
+
+
+def drive_completados_rows(session: Session) -> list[dict[str, Any]]:
+    """Los pedidos COMPLETADOS de BoHub que se acumulan en el histórico de la
+    pestaña gestionada («Marcar completado» → `completed_at`). Salen fuera los
+    excluidos a mano y los ocultos por estado (anulado / la tienda no llegó a
+    procesarlo), igual que la zona viva: la hoja no enseña lo que la pantalla
+    esconde. Ordenados por fecha del pedido (más reciente primero)."""
+    return core.filter_rows(
+        _rows(session), estado="completado", sort="fecha", direction="desc",
     )
 
 

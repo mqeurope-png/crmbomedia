@@ -120,6 +120,23 @@ def _rows_for_sync(s: Session) -> list[dict]:
     return core.filter_rows(_rows(s), en_curso=True, sort="fecha", direction="asc")
 
 
+def test_un_pedido_completado_va_al_historico_no_a_la_zona_viva(session_factory) -> None:
+    """Al marcar un pedido completado sale de la zona viva (`drive_live_rows`) y
+    pasa a los completados que se acumulan en el histórico
+    (`drive_completados_rows`), en vez de desaparecer de la hoja."""
+    from app.erp.api.seguimiento import drive_completados_rows, drive_live_rows
+
+    with session_factory() as s:
+        _order(s, "VIVO-1", cliente="Acme")
+        comp = _order(s, "COMP-1", cliente="Beta")
+        comp.completed_at = datetime(2026, 9, 2, tzinfo=UTC)
+        s.commit()
+        viva = {r["order_number"] for r in drive_live_rows(s)}
+        historico = {r["order_number"] for r in drive_completados_rows(s)}
+    assert "VIVO-1" in viva and "COMP-1" not in viva          # el vivo, arriba
+    assert "COMP-1" in historico and "VIVO-1" not in historico  # el completado, abajo
+
+
 # --- Parte A: campos nuevos --------------------------------------------------------
 
 
