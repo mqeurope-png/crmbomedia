@@ -166,6 +166,8 @@ def test_summarize_shipment_creation_reference_key():
     })
     assert summary["shipment_code"] == "DPEHLDPC"
     assert summary["payment_url"] == "https://pay/x"
+    # PR-2: el id de transacción se guarda para pagar por API.
+    assert summary["transaction_id"] == "16157377"
 
 
 # --- estado en packing_json -------------------------------------------------

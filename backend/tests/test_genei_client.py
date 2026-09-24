@@ -337,3 +337,51 @@ def test_encode_credentials_roundtrip_and_no_plaintext():
     assert "user@x" not in enc and "S3cr3t-Passw0rd-ZQ9" not in enc  # cifrado, no en claro
     creds = GeneiClient._decode_credentials(enc)
     assert creds == {"username": "user@x", "password": "S3cr3t-Passw0rd-ZQ9"}
+
+
+# --- pago interno (PR-2): token fresco + pay/transactions --------------------
+
+
+def test_pay_transaction_gets_fresh_token_and_pays():
+    calls: list[tuple[str, dict]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        params = dict(request.url.params)
+        calls.append((path, params))
+        if path == "/api/v2/login":
+            return _ok({"token": "tok-abc"})
+        if path == "/api/v2/payments/token":
+            return _ok({"status": 1, "data": "pay.jwt.token", "errors": []})
+        if path.startswith("/api/v2/payments/pay/transactions/"):
+            return _ok({"status": 1, "message": "Paid", "errors": []})
+        return httpx.Response(404)
+
+    c = _client(handler)
+    c.pay_transaction("16157377")
+    # Pide un token FRESCO de la pasarela de saldo (pg=4)…
+    token_call = next(c for p, c in calls if p == "/api/v2/payments/token")
+    assert token_call == {"pg": "4"}
+    # …y paga esa transacción con ese token.
+    pay_path, pay_params = next(
+        (p, c) for p, c in calls if p.startswith("/api/v2/payments/pay/transactions/")
+    )
+    assert pay_path == "/api/v2/payments/pay/transactions/16157377"
+    assert pay_params == {"payment_token": "pay.jwt.token"}
+
+
+def test_pay_transaction_surfaces_rejection():
+    # Un rechazo (sin saldo) llega como envoltorio status:0 → GeneiError, no se
+    # traga: el botón «Pagar y tramitar» enseña el motivo.
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/v2/login":
+            return _ok({"token": "tok-abc"})
+        if path == "/api/v2/payments/token":
+            return _ok({"status": 1, "data": "tok", "errors": []})
+        return _ok({"status": 0, "message": "Error", "errors": ["Saldo insuficiente"]})
+
+    c = _client(handler)
+    with pytest.raises(GeneiError) as exc:
+        c.pay_transaction("999")
+    assert "Saldo insuficiente" in str(exc.value)

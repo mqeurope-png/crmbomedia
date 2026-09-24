@@ -31,6 +31,9 @@ _COURIER_KEYS = ("nombre_agencia", "courier", "agency", "agencia", "carrier")
 # `codigo_envio` (verificado en vivo).
 _CODE_KEYS = ("reference", "shipmentCode", "shipment_code", "codigo_envio", "code")
 _PAYMENT_KEYS = ("paymentUrl", "payment_url", "url_pago", "urlPago")
+#: Id de la transacción de pago (al crear, en `data.transactionId`). Se guarda
+#: en el pedido para poder pagar por API con un token fresco (PR-2).
+_TRANSACTION_KEYS = ("transactionId", "transaction_id", "id_transaccion", "idTransaccion")
 
 
 def _pick(data: dict[str, Any], keys: tuple[str, ...]) -> Any:
@@ -218,6 +221,7 @@ def summarize_shipment(raw: dict[str, Any]) -> dict[str, Any]:
         "tracking": _s(_pick(raw, _TRACKING_KEYS)) or None,
         "courier": _s(_pick(raw, _COURIER_KEYS)) or None,
         "payment_url": _s(_pick(raw, _PAYMENT_KEYS)) or None,
+        "transaction_id": _s(_pick(raw, _TRANSACTION_KEYS)) or None,
     }
 
 

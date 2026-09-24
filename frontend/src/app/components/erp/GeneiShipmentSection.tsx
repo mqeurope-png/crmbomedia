@@ -6,6 +6,7 @@ import {
   geneiCreateShipment,
   geneiDeleteShipment,
   geneiFetchLabel,
+  geneiPay,
   geneiPrefill,
   geneiPrices,
   geneiRefresh,
@@ -85,6 +86,20 @@ export function GeneiShipmentSection({
     }
   }
 
+  async function onPay() {
+    setBusy(true); setError(null); setNotice(null);
+    try {
+      const r = await geneiPay(orderId);
+      setState(r.state);
+      setNotice(`Pagado y tramitado en Genei: ${r.summary.state_label}.`);
+      onChanged?.();
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudo pagar el envío en Genei."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function onDelete() {
     setBusy(true); setError(null); setNotice(null);
     try {
@@ -136,11 +151,18 @@ export function GeneiShipmentSection({
             <div className="erp-flow-kv"><span className="k">Seguimiento</span>
               <span className="v mono">{state.tracking}</span></div>
           ) : null}
-          {state.payment_url && state.state_bucket === "created" ? (
-            <p className="muted small">
-              Pendiente de pagar en Genei.{" "}
-              <a href={state.payment_url} target="_blank" rel="noreferrer">Pagar y tramitar en Genei ↗</a>
-            </p>
+          {canManage && state.state_bucket === "created" ? (
+            /* PR-2: se paga por API contra el saldo de la cuenta, sin popup. Lo
+               dispara SIEMPRE una persona con este botón (nunca automático). */
+            <div className="erp-genei-pay">
+              <p className="muted small">
+                Pendiente de pago. Se paga contra el saldo de Genei, sin salir de BoHub.
+              </p>
+              <button type="button" className="button small" disabled={busy}
+                      onClick={() => void onPay()}>
+                Pagar y tramitar
+              </button>
+            </div>
           ) : null}
           {canManage ? (
             <div className="erp-genei-actions">

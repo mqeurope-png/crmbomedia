@@ -414,11 +414,70 @@ def genei_create_shipment(
         "state_bucket": summary["state_bucket"],
         "state_label": summary["state_label"],
         "payment_url": summary["payment_url"],
+        # PR-2: id de la transacción, para pagar por API con token fresco.
+        "transaction_id": summary["transaction_id"],
         "created_at": now_iso(),
     })
     _audit(session, current_user, "erp.genei.shipment_created", order.id, {
         "shipment_code": summary["shipment_code"], "agency_id": payload.agency_id,
     })
+    session.commit()
+    session.refresh(order)
+    return {"order_id": order.id, "summary": summary, "state": _serialise_state(order)}
+
+
+@router.post("/orders/{order_id}/genei/pay")
+def genei_pay(
+    order_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_sat_shipping),
+) -> dict[str, Any]:
+    """«Pagar y tramitar»: paga el envío por API contra el SALDO de la cuenta
+    (sin popup) y refresca el estado. El envío pasa 7 → 6 → 1 (tramitado) y la
+    etiqueta queda disponible.
+
+    MUEVE DINERO REAL: SIEMPRE lo dispara una persona con este botón, nunca
+    automático. Si no hay saldo o Genei rechaza el pago, el error se propaga
+    (502) con el mensaje de Genei — no falla en silencio."""
+    order = _get_order(session, order_id)
+    state = genei_state_of(order)
+    code = shipment_code_of_order(order)
+    if not code:
+        raise HTTPException(409, {
+            "code": "no_shipment", "detail": "El pedido no tiene envío en Genei; créalo primero.",
+        })
+    transaction_id = state.get("transaction_id")
+    if not transaction_id:
+        raise HTTPException(409, {
+            "code": "no_transaction",
+            "detail": ("Este envío no tiene transacción de pago (creado antes de PR-2). "
+                       "Elimínalo y créalo de nuevo para poder pagar por API."),
+        })
+    carrier = _require_carrier(session)
+    client = _client_or_400(carrier)
+    # Paga (token fresco pg=4 + pay/transactions). Un rechazo (sin saldo, ya
+    # pagado…) llega como GeneiError y se ve como 502 con su mensaje.
+    try:
+        client.pay_transaction(str(transaction_id))
+    except GeneiError as exc:
+        raise _genei_error(exc) from exc
+    # Tras pagar, refresca el estado real del envío (7 → 6 → 1) y el tracking.
+    try:
+        raw = client.get_shipment(code)
+    except GeneiError as exc:
+        raise _genei_error(exc) from exc
+    summary = summarize_shipment(raw)
+    if summary["tracking"]:
+        order.tracking_number = summary["tracking"]
+    set_genei_state(order, {
+        "state_code": summary["state_code"],
+        "state_bucket": summary["state_bucket"],
+        "state_label": summary["state_label"],
+        "tracking": summary["tracking"],
+        "courier": summary["courier"],
+        "paid_at": now_iso(),
+    })
+    _audit(session, current_user, "erp.genei.shipment_paid", order.id, {"shipment_code": code})
     session.commit()
     session.refresh(order)
     return {"order_id": order.id, "summary": summary, "state": _serialise_state(order)}

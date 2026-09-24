@@ -66,6 +66,10 @@ class FakeGenei:
             "prefijo_telefonico": 34, "vat_number": None, "observaciones": "",
         }
 
+    def pay_transaction(self, transaction_id):
+        self.calls.append(("pay", transaction_id))
+        return {"status": 1, "message": "Paid"}
+
     def get_shipment(self, code):
         self.calls.append(("get", code))
         return self.shipment
@@ -293,6 +297,8 @@ def test_create_shipment_stores_state(client, session_factory, fake):
     assert create_call[1]["paymentMethodShipping"] == 4          # pago con saldo
     assert create_call[1]["shippingFromWarehouse"] == 0
     assert "notificationUrl" not in create_call[1]      # PR-1 sin webhook
+    # PR-2: se guarda el id de transacción para poder pagar por API.
+    assert body["state"]["transaction_id"] == "555"
     # El origen se resolvió desde la dirección registrada de Genei (no duplicado).
     assert ("address", "1304422") in fake.calls
     with session_factory() as s:
@@ -388,6 +394,68 @@ def test_create_shipment_conflicts_when_exists(client, session_factory):
     })
     assert r.status_code == 409
     assert r.json()["detail"]["code"] == "shipment_exists"
+
+
+# --- pago interno (PR-2) ----------------------------------------------------
+
+
+def _seed_with_shipment(s, *, transaction_id="555", code="GEN123"):
+    _seed_carrier(s)
+    oid = _seed_order(s)
+    order = s.get(Order, oid)
+    block = {"shipment_code": code, "state_bucket": "created", "state_code": 7}
+    if transaction_id is not None:
+        block["transaction_id"] = transaction_id
+    order.packing_json = json.dumps({"genei": block})
+    s.commit()
+    return oid
+
+
+def test_pay_pays_by_api_and_refreshes(client, session_factory, fake):
+    with session_factory() as s:
+        oid = _seed_with_shipment(s)
+    r = client.post(f"/api/erp/orders/{oid}/genei/pay", headers=auth_headers(client))
+    assert r.status_code == 200, r.text
+    # Pagó la transacción y refrescó el estado leyendo el envío (7 → …).
+    pay_call = next(c for c in fake.calls if c[0] == "pay")
+    assert pay_call[1] == "555"
+    assert any(c[0] == "get" and c[1] == "GEN123" for c in fake.calls)
+    body = r.json()
+    assert body["state"]["state_bucket"] == "in_transit"   # fake.shipment: estado 5
+    assert body["state"]["tracking"] == "TRK-9"
+    assert body["state"].get("paid_at")
+
+
+def test_pay_without_shipment_is_409(client, session_factory):
+    with session_factory() as s:
+        _seed_carrier(s)
+        oid = _seed_order(s)
+    r = client.post(f"/api/erp/orders/{oid}/genei/pay", headers=auth_headers(client))
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "no_shipment"
+
+
+def test_pay_without_transaction_is_409(client, session_factory):
+    with session_factory() as s:
+        oid = _seed_with_shipment(s, transaction_id=None)
+    r = client.post(f"/api/erp/orders/{oid}/genei/pay", headers=auth_headers(client))
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "no_transaction"
+
+
+def test_pay_surfaces_rejection(client, session_factory, fake):
+    # Sin saldo / rechazo → 502 con el mensaje de Genei (no falla en silencio).
+    from app.erp.integrations.genei.client import GeneiError  # noqa: PLC0415
+
+    def boom(transaction_id):
+        raise GeneiError("GET /payments/pay → Genei rechazó: Saldo insuficiente", status=200)
+    fake.pay_transaction = boom
+    with session_factory() as s:
+        oid = _seed_with_shipment(s)
+    r = client.post(f"/api/erp/orders/{oid}/genei/pay", headers=auth_headers(client))
+    assert r.status_code == 502
+    assert r.json()["detail"]["code"] == "genei_error"
+    assert "Saldo" in r.json()["detail"]["detail"]
 
 
 def test_label_stores_shipment_file_and_transitions(client, session_factory, fake):
