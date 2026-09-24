@@ -170,6 +170,35 @@ def test_config_put_then_get_hides_password(client, session_factory):
         assert "s3cret" not in carrier.api_credentials_encrypted
 
 
+def test_config_webhook_base_generates_secret_and_sends_notification(
+    client, session_factory, fake,
+):
+    h = auth_headers(client)
+    # Credenciales primero; luego la base del webhook → genera el secreto cifrado.
+    client.put("/api/erp/genei/config", headers=h, json={
+        "username": "sat@bomedia.es", "password": "s3cret", "default_address_id": "1304422",
+    })
+    r = client.put("/api/erp/genei/config", headers=h, json={
+        "webhook_base_url": "https://api.bohub.example",
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["webhook_base_url"] == "https://api.bohub.example"
+    assert body["webhook_configured"] is True
+    assert "webhook_secret" not in json.dumps(body)     # el secreto nunca se devuelve
+    # Al crear un envío se envía el notificationUrl con el token.
+    with session_factory() as s:
+        oid = _seed_order(s)
+    r = client.post(f"/api/erp/orders/{oid}/genei/shipments", headers=h, json={
+        "agency_id": "2", "destination": {"name": "X", "address": "a", "postalCode": "1",
+                                          "town": "t", "isoCountry": "ES"}, "packages": [],
+    })
+    assert r.status_code == 201, r.text
+    create_call = next(c for c in fake.calls if c[0] == "create")
+    notif = create_call[1]["notificationUrl"]
+    assert notif.startswith("https://api.bohub.example/api/webhooks/genei?token=")
+
+
 def test_config_update_keeps_password_when_only_email_changes(client, session_factory):
     with session_factory() as s:
         _seed_carrier(s)

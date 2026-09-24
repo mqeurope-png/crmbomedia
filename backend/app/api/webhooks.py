@@ -12,7 +12,7 @@ import json
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -185,6 +185,49 @@ def _enqueue_brevo_events(events: list[dict[str, Any]], account_id: str) -> None
             len(events),
         )
         process_brevo_webhook_batch(events, account_id)
+
+
+@router.post("/genei", status_code=status.HTTP_200_OK)
+async def receive_genei_webhook(
+    request: Request,
+    token: str = Query(default=""),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Webhook de estados de Genei (PR-2). Genei llama al `notificationUrl` que
+    BoHub envió al crear el envío, con `?token=<secreto>`.
+
+    Seguridad: se valida el token (comparación en tiempo constante) contra el
+    secreto guardado CIFRADO en las credenciales del carrier Genei. Sin secreto
+    configurado o token que no casa → 401; no se actúa por payloads no
+    verificados. Idempotente: el mismo estado dos veces no descuadra."""
+    import hmac as _hmac  # noqa: PLC0415
+
+    from app.erp.api.genei import get_genei_carrier  # noqa: PLC0415
+    from app.erp.integrations.genei.client import GeneiClient  # noqa: PLC0415
+    from app.erp.integrations.genei.webhook import process_webhook  # noqa: PLC0415
+
+    carrier = get_genei_carrier(session)
+    secret = (
+        GeneiClient.webhook_secret_of(carrier.api_credentials_encrypted)
+        if carrier else None
+    )
+    if not secret or not token or not _hmac.compare_digest(secret, token):
+        logger.warning("genei.webhook rechazado: token %s",
+                       "presente" if token else "ausente")
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid webhook token")
+
+    raw_body = await request.body()
+    try:
+        payload: Any = json.loads(raw_body.decode("utf-8")) if raw_body else {}
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Body must be JSON") from exc
+
+    result = process_webhook(session, payload)
+    session.commit()
+    out: dict[str, Any] = {"received": True, "matched": bool(result.get("matched"))}
+    if result.get("matched"):
+        out["order_id"] = result["order_id"]
+    return out
 
 
 @router.post(

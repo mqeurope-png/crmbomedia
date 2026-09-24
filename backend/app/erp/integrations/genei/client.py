@@ -209,14 +209,30 @@ class GeneiClient:
         return {str(k): str(v) for k, v in data.items() if v is not None}
 
     @staticmethod
-    def encode_credentials(username: str, password: str) -> str:
-        """`{username, password}` → ciphertext Fernet listo para guardar en el
-        carrier. (Lo usa el endpoint de Ajustes; nunca se registra en claro.)"""
+    def encode_credentials(
+        username: str, password: str, *, webhook_secret: str | None = None,
+    ) -> str:
+        """`{username, password[, webhook_secret]}` → ciphertext Fernet listo
+        para guardar en el carrier. El `webhook_secret` (PR-2) valida el webhook
+        de estados; va cifrado con el resto, nunca en `config_json` en claro."""
         from app.core.crypto import encrypt  # noqa: PLC0415 - evita ciclo al importar
 
         if not username or not password:
             raise ValueError("Genei necesita email y password.")
-        return encrypt(json.dumps({"username": username, "password": password}))
+        blob: dict[str, str] = {"username": username, "password": password}
+        if webhook_secret:
+            blob["webhook_secret"] = webhook_secret
+        return encrypt(json.dumps(blob))
+
+    @classmethod
+    def webhook_secret_of(cls, ciphertext: str | None) -> str | None:
+        """Secreto del webhook guardado en las credenciales cifradas, o None."""
+        if not ciphertext:
+            return None
+        try:
+            return cls._decode_credentials(ciphertext).get("webhook_secret") or None
+        except GeneiConfigError:
+            return None
 
     # --- auth ---------------------------------------------------------------
 

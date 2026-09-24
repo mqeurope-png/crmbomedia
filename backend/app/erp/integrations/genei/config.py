@@ -89,6 +89,18 @@ class GeneiConfig:
     origin: OriginAddress = field(default_factory=OriginAddress)
     #: El origen es un almacén/remitente registrado en Genei (usa su address_id).
     is_warehouse: bool = True
+    #: Base pública del backend para el webhook de estados (PR-2). El
+    #: `notificationUrl` que se envía al crear = `<base>/api/webhooks/genei?token=…`
+    #: (el token/secreto va cifrado en las credenciales). Vacío → no se envía
+    #: notificationUrl y el webhook queda apagado (el resto sigue funcionando).
+    webhook_base_url: str = ""
+
+    def webhook_url(self, secret: str | None) -> str | None:
+        """`notificationUrl` para Genei, o None si falta la base o el secreto."""
+        base = (self.webhook_base_url or "").strip().rstrip("/")
+        if not base or not secret:
+            return None
+        return f"{base}/api/webhooks/genei?token={secret}"
 
     def preferred_for(self, country_iso: str | None) -> list[str]:
         """Couriers preferidos para ese país de destino (ISO2, may/min da igual)."""
@@ -106,6 +118,7 @@ class GeneiConfig:
             "default_package": asdict(self.default_package),
             "origin": asdict(self.origin),
             "is_warehouse": self.is_warehouse,
+            "webhook_base_url": self.webhook_base_url,
         })
 
     @classmethod
@@ -131,6 +144,7 @@ class GeneiConfig:
             default_package=DefaultPackage.from_dict(data.get("default_package")),
             origin=OriginAddress.from_dict(data.get("origin")),
             is_warehouse=bool(is_warehouse) if is_warehouse is not None else True,
+            webhook_base_url=str(data.get("webhook_base_url") or "").strip(),
         )
 
     @classmethod

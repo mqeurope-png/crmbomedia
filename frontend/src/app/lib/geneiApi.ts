@@ -89,6 +89,10 @@ export type GeneiConfig = {
   default_package: GeneiPackage;
   origin: { iso_country: string; postal_code: string; town: string };
   is_warehouse: boolean;
+  /** PR-2: base pública del backend para el webhook de estados. */
+  webhook_base_url: string;
+  /** El webhook está operativo (base + secreto + credenciales). El secreto no se devuelve. */
+  webhook_configured: boolean;
 };
 
 const base = (orderId: string) => `/api/erp/orders/${orderId}/genei`;
@@ -156,6 +160,7 @@ export function saveGeneiConfig(body: {
   default_package?: GeneiPackage;
   origin?: { iso_country: string; postal_code: string; town: string };
   is_warehouse?: boolean;
+  webhook_base_url?: string;
 }): Promise<GeneiConfig> {
   return apiFetch(`/api/erp/genei/config`, {
     method: "PUT", body: JSON.stringify(body),

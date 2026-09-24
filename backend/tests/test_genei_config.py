@@ -33,6 +33,17 @@ def test_config_defaults_when_missing_or_bad():
     assert GeneiConfig.from_json("[]").preferred_couriers == {}
 
 
+def test_webhook_url_and_roundtrip():
+    cfg = GeneiConfig(webhook_base_url="https://api.bohub.example/")
+    # notificationUrl = base + /api/webhooks/genei?token=<secreto> (barra final aparte).
+    assert cfg.webhook_url("s3cr3t") == "https://api.bohub.example/api/webhooks/genei?token=s3cr3t"
+    # Sin base o sin secreto → None (webhook apagado).
+    assert cfg.webhook_url(None) is None
+    assert GeneiConfig().webhook_url("s3cr3t") is None
+    # La base pública sobrevive el roundtrip por config_json.
+    assert GeneiConfig.from_json(cfg.to_json()).webhook_base_url == "https://api.bohub.example/"
+
+
 def test_default_package_tolerant_and_as_package():
     pkg = DefaultPackage.from_dict({"weight": "0.5", "height": 2, "width": 10, "length": 10})
     assert pkg.weight == 0.5
