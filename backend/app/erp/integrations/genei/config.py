@@ -60,11 +60,35 @@ class DefaultPackage:
 
 
 @dataclass
+class OriginAddress:
+    """Origen (remitente) para la consulta de tarifas: el almacén SAT. El
+    `default_address_id` de Genei (id del remitente registrado) va aparte, en la
+    fila del carrier; esto es solo el país/CP/población para pedir precios."""
+
+    iso_country: str = ""
+    postal_code: str = ""
+    town: str = ""
+
+    @classmethod
+    def from_dict(cls, data: Any) -> OriginAddress:
+        if not isinstance(data, dict):
+            return cls()
+        return cls(
+            iso_country=str(data.get("iso_country") or data.get("country") or "").strip().upper(),
+            postal_code=str(data.get("postal_code") or "").strip(),
+            town=str(data.get("town") or data.get("city") or "").strip(),
+        )
+
+
+@dataclass
 class GeneiConfig:
     """Config del adaptador Genei (no secreta)."""
 
     preferred_couriers: dict[str, list[str]] = field(default_factory=dict)
     default_package: DefaultPackage = field(default_factory=DefaultPackage)
+    origin: OriginAddress = field(default_factory=OriginAddress)
+    #: El origen es un almacén/remitente registrado en Genei (usa su address_id).
+    is_warehouse: bool = True
 
     def preferred_for(self, country_iso: str | None) -> list[str]:
         """Couriers preferidos para ese país de destino (ISO2, may/min da igual)."""
@@ -80,6 +104,8 @@ class GeneiConfig:
                 for k, v in self.preferred_couriers.items() if v
             },
             "default_package": asdict(self.default_package),
+            "origin": asdict(self.origin),
+            "is_warehouse": self.is_warehouse,
         })
 
     @classmethod
@@ -99,9 +125,12 @@ class GeneiConfig:
             for country, couriers in prefs_raw.items():
                 if isinstance(couriers, list):
                     prefs[str(country).upper()] = [str(c) for c in couriers if str(c).strip()]
+        is_warehouse = data.get("is_warehouse")
         return cls(
             preferred_couriers=prefs,
             default_package=DefaultPackage.from_dict(data.get("default_package")),
+            origin=OriginAddress.from_dict(data.get("origin")),
+            is_warehouse=bool(is_warehouse) if is_warehouse is not None else True,
         )
 
     @classmethod

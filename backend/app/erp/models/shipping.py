@@ -32,6 +32,7 @@ SOURCE_WOO_PDF_PLUGIN = "woo_pdf_plugin"   # descarga automática del plugin PDF
 SOURCE_MANUAL_UPLOAD = "manual_upload"     # subido a mano por el operativo
 SOURCE_FACTUSOL_PDF = "factusol_pdf"       # futuro: PDF generado desde FACTUSOL
 SOURCE_CRM_GENERATED_PDF = "crm_generated_pdf"  # albarán generado por el CRM (reportlab)
+SOURCE_GENEI_API = "genei_api"             # etiqueta descargada de la API de Genei
 
 
 class ShipmentPackage(TimestampMixin, Base):

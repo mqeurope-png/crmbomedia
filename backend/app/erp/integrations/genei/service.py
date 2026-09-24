@@ -19,6 +19,7 @@ from typing import Any
 from app.erp.factusol_albaran import packing_of, save_packing
 from app.erp.integrations.genei.status import state_of
 from app.erp.models.orders import Order
+from app.integrations.country_codes import normalize_country
 
 #: Bloque de `packing_json` donde vive el estado del envío Genei.
 PACKING_KEY = "genei"
@@ -86,6 +87,8 @@ def build_destination(fields: dict[str, Any]) -> dict[str, Any]:
     empresa para teléfono, email y NIF). Se rellena lo que haya; los vacíos van
     como cadena vacía (Genei valida al crear y su error se propaga con contexto).
     """
+    raw_country = _s(fields.get("iso_country") or fields.get("country"))
+    iso2, _name = normalize_country(raw_country)
     return {
         "name": _s(fields.get("name")),
         "contact": _s(fields.get("contact") or fields.get("name")),
@@ -95,7 +98,9 @@ def build_destination(fields: dict[str, Any]) -> dict[str, Any]:
         "address": _s(fields.get("address")),
         "postalCode": _s(fields.get("postal_code")),
         "town": _s(fields.get("town") or fields.get("city")),
-        "isoCountry": _s(fields.get("iso_country") or fields.get("country")).upper()[:2],
+        # País a ISO2 de verdad («France»→FR, «España»→ES); si no se reconoce,
+        # se deja lo que venía (Genei lo rechazará y el error se verá).
+        "isoCountry": (iso2 or raw_country.upper()[:2]),
         "observations": _s(fields.get("observations")),
     }
 
