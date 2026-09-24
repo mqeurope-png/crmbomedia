@@ -7,8 +7,23 @@ Base: `https://apiv2.genei.es/api/v2`. Swagger (interactivo, requiere login): `h
 - Todas las llamadas: cabecera `Authorization: Bearer <token>`.
 - Renovar el token al caducar o ante 401 (re-login). Password/token **cifrados**, nunca en logs.
 
+## ⚠️ Verificado EN VIVO (rev 2026-09-24) — cosas que la doc no dejaba claras
+
+**Envoltorio de respuesta.** Genei responde **HTTP 200 SIEMPRE**, tanto en éxito como en error:
+- Éxito: `{ "status": 1, "message": "", "data": [ ... ], "errors": [] }` — los datos van en `data`.
+- Error: `{ "status": 0, "message": "Error validacion", "data": { "details": { ... } }, "errors": [ "..." ] }`.
+El cliente DEBE tratar `status:0` (o `errors` no vacío) como error; si no, un fallo se cuela como lista vacía (fue el bug «0 agencias siempre»).
+
+**`GET /agencies/prices` — formato REAL de `packages`** (esquema del Swagger + verificado):
+- Query, nombre `packages[]`, array de objetos; se envía en notación bracket: `packages[0][height]=15&packages[0][width]=15&packages[0][length]=20&packages[0][weight]=1&packages[0][isBox]=false`.
+- Cada bulto: `{ height, width, length, weight (números), isBox (bool) }`. **`isBox` es OBLIGATORIO** (sin él → «Invalid bultos array format» y cero agencias). `isBox=false` = bulto normal (el caso de BoHub).
+- `isWarehouse` puede ir `true` o `false` (ambos devuelven agencias); Bart usa su propio origen → `false`.
+- **Respuesta** (`data[]`): cada agencia trae `id_agencia`, `importe` (precio), `nombre_agencia` / `nombre_completo_agencia`, `nombre_integracion_cliente` (p. ej. «Dom-Dom»), `domicilio_domicilio` (**1 = entrega a domicilio**, 0 = punto/oficina), `servicio` (1=24h, 2=48h), `estrellas`/`valoracion_agencia`, `maximo_*_bulto`, `descripcion_agencia`.
+
+**`POST /shipments` — campos OBLIGATORIOS** (de la validación real): `agencyId`, `origin`, `destination`, `packagesArray`, **`paymentMethodShipping`** (este último NO estaba documentado; el payload actual de BoHub aún no lo envía → arreglar antes de probar la creación en vivo).
+
 ## Endpoints principales
-- **Precios / agencias factibles:** `GET /agencies/prices` — lista de agencias posibles para (origen, destino, bultos). Se elige un `agencyId` factible de aquí.
+- **Precios / agencias factibles:** `GET /agencies/prices` — lista de agencias posibles para (origen, destino, bultos). Se elige un `id_agencia` factible de aquí (ver arriba el formato REAL de `packages`).
   - Query (del encargo): `isWarehouse` (bool, req), `isoCountryOrigin` (req), `isoCountryDestination` (req), `postalCodeOrigin`, `postalCodeDestination`, `townOrigin`, `townDestination`, `packages[]`.
 - **Crear envío:** `POST /shipments` — se pasa un `agencyId` factible. Devuelve `shipmentCode` y **`paymentUrl`**. Nace en estado **7 (pendiente de pago)**.
   - Body (del encargo): `agencyId`, `clientReference`, `externalShippingCode` (= nº pedido BoHub), `notificationUrl` (webhook BoHub), `origin` y `destination` `{ name, contact, dni, email, phone, address, postalCode, town, isoCountry, observations }`, `packagesArray`, opcionales `goodsValue`, `insurance`/`insuranceAmount`, `cashOnDelivery`/`cashOnDeliveryAmount`, `note`, `priority`, `pickupDate`/`pickupTimeFrom`/`pickupTimeTo`, `destinationOffice`/`originOffice`, `contentsArray` (aduanas).

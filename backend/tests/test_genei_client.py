@@ -137,9 +137,45 @@ def test_agency_prices_builds_query_and_returns_list():
     assert captured["isoCountryOrigin"] == "ES"
     assert captured["isoCountryDestination"] == "FR"
     assert captured["postalCodeDestination"] == "75001"
-    assert json.loads(captured["packages"]) == [
-        {"weight": 0.5, "height": 2, "width": 10, "length": 10}
-    ]
+    # `packages[]` como array bracket, con isBox OBLIGATORIO (el bug de prod).
+    assert captured["packages[0][weight]"] == "0.5"
+    assert captured["packages[0][height]"] == "2"
+    assert captured["packages[0][length]"] == "10"
+    assert captured["packages[0][isBox]"] == "false"
+
+
+def test_agency_prices_raises_on_status_zero_envelope():
+    # Genei devuelve HTTP 200 con {status:0, errors:[...]} en validación. Antes
+    # se colaba como lista vacía («0 agencias siempre»); ahora se eleva.
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v2/login":
+            return _ok({"token": "t"})
+        return _ok({"status": 0, "message": "Error validacion",
+                    "errors": ["\"packages\" failed: Invalid bultos array format"]})
+
+    with pytest.raises(GeneiError) as exc:
+        _client(handler).agency_prices(
+            is_warehouse=False, iso_country_origin="ES", iso_country_destination="ES",
+            packages=[{"weight": 1, "height": 15, "width": 15, "length": 20}],
+        )
+    assert "Invalid bultos" in str(exc.value)
+
+
+def test_agency_prices_success_envelope_status_one():
+    # Éxito real: {status:1, data:[...agencias...]} (con id_agencia/importe).
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v2/login":
+            return _ok({"token": "t"})
+        return _ok({"status": 1, "message": "", "errors": [],
+                    "data": [{"id_agencia": "2", "importe": 4.23,
+                              "nombre_completo_agencia": "Correos Dom-Dom",
+                              "domicilio_domicilio": 1}]})
+
+    prices = _client(handler).agency_prices(
+        is_warehouse=False, iso_country_origin="ES", iso_country_destination="ES",
+        packages=[{"weight": 1, "height": 15, "width": 15, "length": 20}],
+    )
+    assert prices[0]["id_agencia"] == "2"
 
 
 def test_agency_prices_unwraps_data_envelope():

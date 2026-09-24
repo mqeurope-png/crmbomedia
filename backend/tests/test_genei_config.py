@@ -59,6 +59,23 @@ def test_normalize_prices_tolerant_naming():
     assert agencies[1].is_home_delivery is False
 
 
+def test_normalize_prices_real_genei_shape():
+    # Forma real de /agencies/prices (verificada en vivo): id_agencia, importe,
+    # nombre_completo_agencia y domicilio_domicilio (1 = a domicilio).
+    rows = [
+        {"id_agencia": "2", "importe": 4.23, "nombre_completo_agencia": "Correos Dom-Dom",
+         "domicilio_domicilio": 1},
+        {"id_agencia": "9", "importe": 3.5, "nombre_completo_agencia": "GLS Punto",
+         "domicilio_domicilio": 0},
+    ]
+    agencies = normalize_prices(rows)
+    assert agencies[0].agency_id == "2"
+    assert agencies[0].name == "Correos Dom-Dom"
+    assert agencies[0].price == 4.23
+    assert agencies[0].is_home_delivery is True     # domicilio_domicilio=1
+    assert agencies[1].is_home_delivery is False     # domicilio_domicilio=0
+
+
 # --- comparador -------------------------------------------------------------
 
 
