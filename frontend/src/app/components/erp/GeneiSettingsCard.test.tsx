@@ -20,6 +20,8 @@ const CONFIG = {
   default_package: { weight: 1, height: 20, width: 20, length: 20 },
   origin: { iso_country: "ES", postal_code: "08201", town: "Sabadell" },
   is_warehouse: true,
+  webhook_base_url: "",
+  webhook_configured: false,
 };
 
 beforeEach(() => {

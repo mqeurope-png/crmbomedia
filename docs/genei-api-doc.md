@@ -50,8 +50,10 @@ Origen ≠ centro logístico de Genei (caso BoHub) → NO `box` ni `references`:
 ```
 (Solo si el origen es el almacén de Genei se usan `box: { idBox }` y `references: [{ idReference, quantity }]`. Para BoHub NO aplica.)
 
-## Enlace con el pedido y webhook [webhook = PR-2]
-- Al crear: `externalShippingCode` = nº pedido BoHub (aparece como `codigo_envio_externo`); `notificationUrl` = webhook BoHub.
+## Enlace con el pedido y webhook (PR-2)
+- Al crear: `externalShippingCode` = nº pedido BoHub (aparece como `codigo_envio_externo`); `notificationUrl` = webhook BoHub = `<base pública>/api/webhooks/genei?token=<secreto>`. La base va en la config del carrier; el **secreto va cifrado con las credenciales** (se genera al activar el webhook) y **nunca** en `config_json` en claro.
+- **Endpoint:** `POST /api/webhooks/genei?token=<secreto>`. Valida el token (comparación en tiempo constante) contra el secreto guardado; sin token válido → **401** (no se actúa por payloads no verificados). Localiza el pedido por `codigo_envio_externo` (nº de pedido) o por `codigo_envio` (guardado en `packing_json.genei`). **Idempotente**: el mismo estado dos veces no descuadra (un arco ya recorrido no vuelve a aplicarse).
+- **Mapeo estado Genei → `transport_status` del pedido** (fuente COMÚN para ficha, Cola SAT y hoja de Seguimiento; lo aplica el webhook y también «Actualizar estado» manual, como SYSTEM): `5`/`80`/`85`/`2`/`13`/`86` → **in_transit**; `3` → **delivered**; `9`/`10`/`14`/`15`/`78` → **incident** (incidencia de TRANSPORTE, distinta de una de pedido/taller; el texto va a `desc_incidencia`). `7`/`6`/`1`/`77`/`79` no mueven el transporte.
 - Genei hace `POST` a esa URL en cada cambio de estado: `{ "status": 1, "message": "Shipment processed", "data": { ... } }`.
 - Campos clave de `data`: `codigo_envio` (=shipmentCode), `codigo_envio_externo` (=nº pedido), `codigo_seguimiento` (tracking), `estado` (num), `nombre_estado`, `nombre_agencia` (courier), `importe`/`importe_total`/`importe_sin_iva`/`valor_impuesto`, `fecha_recogida`, direcciones (`nombre_llegada`, `dir_llegada`, `cp_llegada`, `pob_llegada`, `prov_llegada`, `pais_llegada`, `tel_llegada`, `email_llegada`), `desc_incidencia`, `historico_estados[]` (`{fecha,id_estado,codigo_estado,descripcion}`), `etiqueta` (PDF base64 en la creación; null después), `datos_adicionales[]` (incluye `url_notificacion_api`).
 

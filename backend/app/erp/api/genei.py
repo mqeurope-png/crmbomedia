@@ -233,6 +233,9 @@ class GeneiConfigIn(BaseModel):
     default_package: PackageIn | None = None
     origin: dict[str, str] | None = None
     is_warehouse: bool | None = None
+    #: Base pública del backend para el webhook de estados (PR-2). Al fijarla se
+    #: genera el secreto (cifrado); el `notificationUrl` se envía al crear.
+    webhook_base_url: str | None = None
 
 
 # --- prefill / prices -------------------------------------------------------
@@ -382,7 +385,12 @@ def genei_create_shipment(
         destination=dest,
         packages=packages,
         external_shipping_code=order.order_number or order.id,
-        notification_url=None,  # PR-2: el webhook de estados
+        # PR-2: webhook de estados. `notificationUrl` = base pública +
+        # `?token=<secreto>` (secreto cifrado en las credenciales). Si falta la
+        # base o el secreto, va None y el webhook queda apagado (el resto sirve).
+        notification_url=cfg.webhook_url(
+            GeneiClient.webhook_secret_of(carrier.api_credentials_encrypted)
+        ),
         observations=payload.observations,
     )
     try:
@@ -535,8 +543,11 @@ def genei_refresh(
     current_user: User = Depends(require_sat_tracking),
 ) -> dict[str, Any]:
     """«Actualizar estado»: consulta el envío en Genei y refresca el estado, el
-    tracking y el courier en el pedido (respaldo del webhook, que llega en
-    PR-2). No mueve el estado de transporte del pedido (eso lo hará el webhook)."""
+    tracking y el courier en el pedido. Es el RESPALDO MANUAL del webhook: usa
+    la misma lógica (`apply_shipment_state`), así que también mueve el
+    `transport_status` del pedido (recogido / entregado / incidencia)."""
+    from app.erp.integrations.genei.webhook import apply_shipment_state  # noqa: PLC0415
+
     order = _get_order(session, order_id)
     code = shipment_code_of_order(order)
     if not code:
@@ -550,17 +561,7 @@ def genei_refresh(
     except GeneiError as exc:
         raise _genei_error(exc) from exc
 
-    summary = summarize_shipment(raw)
-    if summary["tracking"]:
-        order.tracking_number = summary["tracking"]
-    set_genei_state(order, {
-        "state_code": summary["state_code"],
-        "state_bucket": summary["state_bucket"],
-        "state_label": summary["state_label"],
-        "tracking": summary["tracking"],
-        "courier": summary["courier"],
-        "refreshed_at": now_iso(),
-    })
+    summary, _applied = apply_shipment_state(session, order, raw)
     session.commit()
     session.refresh(order)
     return {"order_id": order.id, "summary": summary, "state": _serialise_state(order)}
@@ -622,6 +623,14 @@ def genei_config_get(
         "origin": {"iso_country": cfg.origin.iso_country,
                    "postal_code": cfg.origin.postal_code, "town": cfg.origin.town},
         "is_warehouse": cfg.is_warehouse,
+        # PR-2 webhook: la base pública (sin secreto) y si ya está operativo
+        # (base + secreto + credenciales). El secreto NUNCA se devuelve.
+        "webhook_base_url": cfg.webhook_base_url,
+        "webhook_configured": bool(
+            cfg.webhook_url(
+                GeneiClient.webhook_secret_of(carrier.api_credentials_encrypted)
+            ) if carrier else None
+        ),
     }
 
 
@@ -679,6 +688,22 @@ def genei_config_put(
         cfg.origin = OriginAddress.from_dict(payload.origin)
     if payload.is_warehouse is not None:
         cfg.is_warehouse = payload.is_warehouse
+    # PR-2 webhook: la base pública va en config (no es secreta); el SECRETO se
+    # genera al activar el webhook (base fijada + credenciales) y se guarda
+    # CIFRADO con las credenciales, nunca en config_json en claro.
+    if payload.webhook_base_url is not None:
+        cfg.webhook_base_url = payload.webhook_base_url.strip()
+    if cfg.webhook_base_url and carrier.api_credentials_encrypted:
+        try:
+            creds = GeneiClient._decode_credentials(carrier.api_credentials_encrypted)
+        except GeneiConfigError:
+            creds = {}
+        if creds.get("username") and creds.get("password") and not creds.get("webhook_secret"):
+            import secrets as _secrets  # noqa: PLC0415
+            carrier.api_credentials_encrypted = GeneiClient.encode_credentials(
+                creds["username"], creds["password"],
+                webhook_secret=_secrets.token_urlsafe(24),
+            )
     carrier.config_json = cfg.to_json()
 
     session.add(AuditLog(

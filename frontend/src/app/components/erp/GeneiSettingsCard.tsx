@@ -59,6 +59,7 @@ export function GeneiSettingsCard({ canEdit }: { canEdit: boolean }) {
         default_package: cfg.default_package,
         origin: cfg.origin,
         is_warehouse: cfg.is_warehouse,
+        webhook_base_url: cfg.webhook_base_url,
       });
       setCfg(next);
       setPassword("");
@@ -126,6 +127,20 @@ export function GeneiSettingsCard({ canEdit }: { canEdit: boolean }) {
             <input value={cfg.default_address_id ?? ""} aria-label="ID de dirección de origen"
                    onChange={(e) => set("default_address_id", e.target.value)} />
           </label>
+        </div>
+        <div className="form-row">
+          <label className="field">
+            <span>URL pública del backend (webhook de estados)</span>
+            <input value={cfg.webhook_base_url ?? ""} aria-label="URL pública del backend para el webhook"
+                   placeholder="https://api.bohub.example"
+                   onChange={(e) => set("webhook_base_url", e.target.value)} />
+          </label>
+          <p className="muted small" role="note">
+            Genei avisa aquí de cada cambio de estado (recogido/entregado/incidencia).
+            {cfg.webhook_configured
+              ? " ✓ Webhook operativo (secreto generado y cifrado)."
+              : " Al guardar una URL con las credenciales puestas se genera el secreto."}
+          </p>
         </div>
 
         <h3 className="erp-settings-sub">Origen (para comparar tarifas)</h3>
