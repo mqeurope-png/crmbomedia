@@ -2497,8 +2497,12 @@ export type OrderCobroInfo = {
   cobros?: number;
   fopfac?: string;
   forma_pago_nombre?: string | null;
-  /** Cuenta sugerida por defecto (serie / empresa emisora, PayPal por tienda). */
+  /** Cuenta sugerida por defecto (serie / empresa emisora, PayPal por tienda,
+   *  o la que se apuntó en el pedido al pagar — Bloque B). */
   suggested_cuenta?: Contrapartida | null;
+  /** Fecha sugerida (Bloque B): la del pago apuntado en el pedido, si la hay,
+   *  para prellenar «Registrar cobro»; ausente → el modal usa hoy. */
+  suggested_fecha?: string | null;
   warnings?: string[];
   checked_at?: string;
   persisted_status?: FactusolCobroStatus | null;

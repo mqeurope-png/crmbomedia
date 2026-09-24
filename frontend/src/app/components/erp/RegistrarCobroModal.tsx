@@ -84,6 +84,9 @@ export function RegistrarCobroModal({
         setInfo(res);
         if (res.suggested_cuenta?.codigo) setCuenta(res.suggested_cuenta.codigo);
         if (res.forma_pago_nombre) setForma(res.forma_pago_nombre);
+        // Bloque B: si al dar de alta el pedido se apuntó la fecha del pago,
+        // se prellena aquí (si no, se queda «hoy»).
+        if (res.suggested_fecha) setFecha(res.suggested_fecha);
       })
       .catch((e) => {
         if (alive) setLoadError(extractErrorMessage(e, "No se pudo consultar la factura en FACTUSOL."));
