@@ -140,10 +140,12 @@ class GeneiConfig:
 
 # --- normalización + comparador de agencias ---------------------------------
 
-_ID_KEYS = ("agencyId", "agency_id", "id", "idAgencia", "id_agencia")
-_NAME_KEYS = ("name", "nombre", "nombre_agencia", "agency", "agencia", "courier", "label")
-_PRICE_KEYS = ("price", "precio", "importe", "total", "amount", "cost", "coste")
-_SERVICE_KEYS = ("service", "servicio", "tipo", "type", "modalidad", "deliveryType")
+_ID_KEYS = ("id_agencia", "agencyId", "agency_id", "id", "idAgencia")
+_NAME_KEYS = ("nombre_completo_agencia", "nombre_agencia", "name", "nombre",
+              "agency", "agencia", "courier", "label")
+_PRICE_KEYS = ("importe", "price", "precio", "total", "amount", "cost", "coste")
+_SERVICE_KEYS = ("nombre_integracion_cliente", "service", "servicio", "tipo", "type",
+                 "modalidad", "deliveryType")
 
 
 def _first(data: dict[str, Any], keys: tuple[str, ...]) -> Any:
@@ -185,8 +187,15 @@ class AgencyPrice:
         name = str(_first(data, _NAME_KEYS) or "").strip()
         price = _to_float(_first(data, _PRICE_KEYS))
         service = str(_first(data, _SERVICE_KEYS) or "").lower()
-        blob = f"{name} {service}".lower()
-        is_home = not any(hint in blob for hint in _OFFICE_HINTS)
+        # Genei marca la entrega a domicilio con `domicilio_domicilio` (1) o el
+        # tipo de integración «Dom-Dom»; si no viene, se cae a la heurística del
+        # nombre (oficina/punto de recogida).
+        dom = data.get("domicilio_domicilio")
+        if dom is not None:
+            is_home = str(dom).strip() in ("1", "true", "True")
+        else:
+            blob = f"{name} {service}".lower()
+            is_home = not any(hint in blob for hint in _OFFICE_HINTS)
         return cls(str(agency_id), name, price, is_home, data)
 
     def matches_preferred(self, preferred: list[str]) -> int | None:

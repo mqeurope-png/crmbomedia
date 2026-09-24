@@ -112,6 +112,40 @@ def _first_str(data: dict[str, Any], keys: tuple[str, ...]) -> str | None:
     return None
 
 
+def _package_query(packages: list[dict[str, Any]]) -> dict[str, Any]:
+    """Serializa `packages[]` para la query de `/agencies/prices`: cada bulto
+    como `packages[i][height|width|length|weight|isBox]`. `isBox` es OBLIGATORIO
+    (bool; default False = bulto normal, no una caja registrada de Genei). Sin
+    él, Genei devuelve «Invalid bultos array format» y cero agencias."""
+    out: dict[str, Any] = {}
+    for i, pkg in enumerate(packages):
+        is_box = bool(pkg.get("isBox", pkg.get("is_box", False)))
+        item = {
+            "height": pkg.get("height", 0),
+            "width": pkg.get("width", 0),
+            "length": pkg.get("length", 0),
+            "weight": pkg.get("weight", 0),
+            "isBox": "true" if is_box else "false",
+        }
+        for key, val in item.items():
+            out[f"packages[{i}][{key}]"] = val
+    return out
+
+
+def _envelope_error(data: Any) -> str | None:
+    """Genei responde HTTP 200 tanto en éxito (`status:1`) como en ERROR
+    (`status:0`, `message:"Error validacion"`, `errors:[...]`). Devuelve el
+    mensaje de error si lo es; None si es una respuesta buena."""
+    if not isinstance(data, dict):
+        return None
+    errors = data.get("errors")
+    if data.get("status") == 0 or (isinstance(errors, list) and errors):
+        msgs = [str(m) for m in (errors or []) if m] or [str(data.get("message") or "")]
+        detail = "; ".join(m for m in msgs if m)
+        return detail or "error de validación"
+    return None
+
+
 class GeneiClient:
     """Cliente HTTP de Genei v2. `adapter_class` del carrier apunta aquí."""
 
@@ -266,9 +300,11 @@ class GeneiClient:
             params["townOrigin"] = town_origin
         if town_destination:
             params["townDestination"] = town_destination
-        # `packages[]` viaja como JSON (peso/medidas de cada bulto).
-        if packages:
-            params["packages"] = json.dumps(packages)
+        # `packages[]` va como ARRAY en la query (notación bracket), con cada
+        # bulto {height,width,length,weight,isBox}. FALTABA `isBox`: sin él,
+        # Genei responde HTTP 200 con «Invalid bultos array format» y CERO
+        # agencias (el bug de producción). Verificado en vivo contra la API real.
+        params.update(_package_query(packages or []))
         data = self._request("GET", "/agencies/prices", params=params)
         return _as_list(data)
 
@@ -320,6 +356,10 @@ class GeneiClient:
         JSON. Los errores de Genei se elevan como `GeneiError` con el cuerpo."""
         self._ensure_token()
         reauthed = False
+        # Log mínimo (sin token ni cuerpo con datos personales) para no depurar
+        # a ciegas: método + ruta + claves de query.
+        logger.info("genei %s %s%s", method, path,
+                    f" params={sorted(params)}" if params else "")
         while True:
             resp = self._raw_request(method, path, json=json, params=params, authed=True)
             if resp.status_code == 401 and not reauthed:
@@ -327,6 +367,8 @@ class GeneiClient:
                 self.login()
                 continue
             if resp.status_code >= 400:
+                logger.warning("genei %s %s → HTTP %s: %s", method, path,
+                               resp.status_code, resp.text[:300])
                 raise GeneiError(
                     f"{method} {path} → {resp.status_code}: {resp.text[:500]}",
                     status=resp.status_code, body=resp.text,
@@ -334,12 +376,21 @@ class GeneiClient:
             if not resp.content:
                 return {}
             try:
-                return resp.json()
+                data = resp.json()
             except ValueError as exc:
                 raise GeneiError(
                     f"{method} {path} → respuesta no-JSON de Genei",
                     status=resp.status_code, body=resp.text,
                 ) from exc
+            # Genei devuelve HTTP 200 tanto en éxito (`status:1`) como en ERROR
+            # (`status:0`, `message:"Error validacion"`, `errors:[...]`). Sin
+            # esto, un error se colaba como lista vacía (el «0 agencias siempre»).
+            err = _envelope_error(data)
+            if err is not None:
+                logger.warning("genei %s %s → status:0 %s", method, path, err[:300])
+                raise GeneiError(f"{method} {path} → Genei rechazó: {err}",
+                                 status=resp.status_code, body=resp.text)
+            return data
 
     def _raw_request(
         self, method: str, path: str, *,
