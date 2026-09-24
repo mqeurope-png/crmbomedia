@@ -1483,6 +1483,35 @@ def create_order_albaran(
     return {"job_id": job_id, "order_id": order.id, "status": "queued"}
 
 
+class OrderPaymentIn(BaseModel):
+    """C-bis: apuntar el pago de un pedido YA creado (la acción rápida
+    «Pagado» de la ficha). Solo forma (transferencia/PayPal/contado/crédito…);
+    la cuenta y la fecha son opcionales. Es un apunte del pedido, no un cobro
+    en FACTUSOL."""
+
+    payment: PaymentIn
+
+
+@router.post("/{order_id}/payment")
+def record_order_payment(
+    order_id: str,
+    payload: OrderPaymentIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """Apunta el pago en el pedido (opción B): `payment_status`, forma, y cuenta/
+    fecha si se dan. NO escribe ningún cobro en FACTUSOL (eso sigue siendo
+    manual con «Registrar cobro», cuando exista la factura)."""
+    from app.erp.factusol_albaran import record_payment_intent  # noqa: PLC0415
+
+    order = _get_order(session, order_id, current_user)
+    resolved = _resolve_payment_or_400(session, payload.payment)
+    if resolved is not None:
+        record_payment_intent(session, order, resolved, actor_user_id=current_user.id)
+    session.commit()
+    return _serialise_detail(session, _get_order(session, order.id), current_user)
+
+
 @router.get("/{order_id}")
 def get_order(
     order_id: str,

@@ -30,25 +30,26 @@ describe("PaymentStep — paso de confirmación de pago (opción B)", () => {
     expect(screen.getByLabelText("Pagado")).not.toBeChecked();
     // La forma del documento se preselecciona aunque el catálogo aún no llegue.
     expect(screen.getByLabelText("Forma de pago")).toHaveValue("011");
-    expect(screen.queryByLabelText("Cuenta del cobro")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Cuenta del pago")).not.toBeInTheDocument();
     expect(screen.getByText(/Solo se apunta la forma de pago/)).toBeInTheDocument();
     expect(paymentReady(initialPayment("011"))).toBe(true);
   });
 
-  it("«Pagado» pide la cuenta (obligatoria) y la fecha, y avisa de que no se emite factura", async () => {
+  it("«Pagado» permite guardar sin cuenta (opcional); la cuenta y la fecha se pueden indicar", async () => {
     const onChange = jest.fn();
     const user = userEvent.setup();
     render(<Harness initial={initialPayment("002", "Transferencia")} onChange={onChange} />);
     await user.click(screen.getByLabelText("Pagado"));
-    expect(screen.getByLabelText("Fecha del cobro")).toHaveValue(
+    expect(screen.getByLabelText("Fecha del pago")).toHaveValue(
       new Date().toISOString().slice(0, 10),
     );
-    expect(screen.getByText(/No se emite ninguna factura/)).toBeInTheDocument();
+    expect(screen.getByText(/se escribe el cobro en FACTUSOL/)).toBeInTheDocument();
     const last = () => onChange.mock.calls[onChange.mock.calls.length - 1][0] as PaymentIntentInput;
     expect(last().paid).toBe(true);
-    expect(paymentReady(last())).toBe(false);          // sin cuenta no vale
+    // Fix C: sin cuenta ya vale (la contrapartida es opcional).
+    expect(paymentReady(last())).toBe(true);
     await screen.findByRole("option", { name: "6 · Bomedia Sabadell" });
-    await user.selectOptions(screen.getByLabelText("Cuenta del cobro"), "6");
+    await user.selectOptions(screen.getByLabelText("Cuenta del pago"), "6");
     expect(last().contrapartida).toBe("6");
     expect(paymentReady(last())).toBe(true);
     // Cambiar la forma de pago arrastra su nombre del catálogo.

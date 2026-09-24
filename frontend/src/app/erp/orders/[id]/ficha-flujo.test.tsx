@@ -59,26 +59,44 @@ jest.mock("../../../components/erp/EmitFactusolButton", () => ({
 }));
 // El panel real se prueba aparte; aquí solo importa si la ficha le pidió
 // abrir el selector de la etiqueta (Lote 2 C) y que, subida, la ficha recargue.
-jest.mock("../../../components/erp/ShippingFilesSection", () => ({
-  ShippingFilesSection: ({ openEtiquetaSignal, onUploaded }: {
-    openEtiquetaSignal?: number;
-    onUploaded?: (r: unknown) => void;
-  }) => (
-    <>
-      <div>documentos de envío</div>
-      <span>etiqueta:{openEtiquetaSignal ?? 0}</span>
-      <button
-        type="button"
-        onClick={() => onUploaded?.({
-          kind: "etiqueta", file: { id: "f-1" }, transition_applied: true,
-          transport_status: "label_created", transition_reason: null,
-        })}
-      >
-        simular etiqueta subida
-      </button>
-    </>
-  ),
-}));
+// El panel real se prueba aparte; aquí solo importa si la ficha le pidió abrir
+// el selector de la etiqueta (Lote 2 C) y —C3— que, al pedir crear el albarán
+// (`createSignal`), llame a `createOrderAlbaran(orderId, null)` como el real.
+jest.mock("../../../components/erp/ShippingFilesSection", () => {
+  const React = jest.requireActual("react");
+  return {
+    ShippingFilesSection: ({ orderId, createSignal, factusolAlbaranNumber, openEtiquetaSignal, onUploaded }: {
+      orderId?: string;
+      createSignal?: number;
+      factusolAlbaranNumber?: string | null;
+      openEtiquetaSignal?: number;
+      onUploaded?: (r: unknown) => void;
+    }) => {
+      React.useEffect(() => {
+        if ((createSignal ?? 0) > 0 && !factusolAlbaranNumber) {
+          const { createOrderAlbaran } = jest.requireMock("../../../lib/erpApi");
+          void Promise.resolve(createOrderAlbaran(orderId, null)).catch(() => undefined);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [createSignal]);
+      return (
+        <>
+          <div>documentos de envío</div>
+          <span>etiqueta:{openEtiquetaSignal ?? 0}</span>
+          <button
+            type="button"
+            onClick={() => onUploaded?.({
+              kind: "etiqueta", file: { id: "f-1" }, transition_applied: true,
+              transport_status: "label_created", transition_reason: null,
+            })}
+          >
+            simular etiqueta subida
+          </button>
+        </>
+      );
+    },
+  };
+});
 jest.mock("../../../components/erp/OrderFactusolClientPanel", () => ({
   OrderFactusolClientPanel: () => null,
 }));
@@ -300,7 +318,13 @@ describe("ERP · Ficha del pedido (rediseño de flujo)", () => {
     expect(eco.getByText("Total").nextSibling).toHaveTextContent("351.52 EUR");
 
     const fac = within(screen.getByRole("region", { name: "FACTUSOL" }));
-    expect(fac.getByText("Cliente").nextSibling).toHaveTextContent("2760 · vinculado");
+    // F2 — la fila «Cliente» lleva el NOMBRE (enlazado a la ficha de empresa) y
+    // el nº de FACTUSOL como detalle, no solo «2760 · vinculado».
+    const cliente = fac.getByText("Cliente").nextSibling as HTMLElement;
+    expect(cliente).toHaveTextContent("La Maison de la Plaque");
+    expect(cliente).toHaveTextContent("2760 vinculado");
+    expect(within(cliente).getByRole("link", { name: "La Maison de la Plaque" }))
+      .toHaveAttribute("href", "/companies/c-1");
     expect(fac.getByText("Albarán").nextSibling).toHaveTextContent("2-100418");
     // La fila «Factura» lleva el control de emisión (aquí, su mock); «Cobro»
     // dice que aún no hay factura sobre la que cobrar.
@@ -454,24 +478,33 @@ describe("ERP · Ficha del pedido (rediseño de flujo)", () => {
   });
 
   it("C3: aprobar desde la ficha llama a approveOrder y ofrece (sin bloquear) enviar a SAT y generar albarán", async () => {
-    const { approveOrder } = jest.requireMock("../../../lib/erpApi");
+    const { approveOrder, createOrderAlbaran, getQuoteJobStatus } =
+      jest.requireMock("../../../lib/erpApi");
     const manual = conSiguientePaso(
       { next_action: "aprobar", next_action_label: "Aprobar", next_action_hint: "Revisa y aprueba." },
       { external_source: "manual", order_number: "MANUAL-000090", factusol_albaran_number: null },
     );
     (getOrder as jest.Mock).mockResolvedValue(manual);
     (approveOrder as jest.Mock).mockResolvedValue({ ...manual, preparation_status: "in_queue" });
+    (getQuoteJobStatus as jest.Mock).mockResolvedValue({ status: "queued" });
+    // C3 (fix): aprobar un pedido manual DISPARA la generación del albarán
+    // (que pide la decisión de pago); el endpoint responde 409 y la ficha abre
+    // el diálogo de pago.
+    const { ApiError } = jest.requireActual("../../../lib/api");
+    (createOrderAlbaran as jest.Mock).mockRejectedValue(
+      new ApiError("decide el pago", 409, { code: "payment_undecided" }),
+    );
     const user = userEvent.setup();
     render(<ErpOrderDetailPage />);
     const bar = within(await screen.findByRole("region", { name: "Siguiente paso" }));
     await user.click(bar.getByRole("button", { name: "Aprobar" }));
     await waitFor(() => expect(approveOrder).toHaveBeenCalledWith("o-1"));
-    // Sugerencias tras aprobar (no bloqueantes), en su propio banner.
+    // Se genera el albarán en el acto (como al convertir una proforma).
+    await waitFor(() => expect(createOrderAlbaran).toHaveBeenCalledWith("o-1", null));
+    // Y queda la sugerencia (no bloqueante) de enviar a SAT.
     const banner = within((await screen.findByText(/está en la Cola SAT/))
       .closest(".erp-approve-suggest") as HTMLElement);
     expect(banner.getByRole("button", { name: "Enviar a SAT" })).toBeInTheDocument();
-    expect(banner.getByRole("button", { name: "Generar albarán (pago / sin cobro)" })).toBeInTheDocument();
-    // Se pueden descartar.
     await user.click(banner.getByRole("button", { name: "Descartar sugerencias" }));
     expect(screen.queryByText(/está en la Cola SAT/)).toBeNull();
   });

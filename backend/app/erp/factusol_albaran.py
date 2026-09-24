@@ -59,14 +59,19 @@ ALBARAN_KEY = "factusol_albaran"
 
 class PaymentIn(BaseModel):
     """Paso de confirmación de pago al convertir. `paid=False` = «sin pago»
-    (solo se apunta la forma de pago). `paid=True` exige la contrapartida
-    (código «6» o nombre «Bomedia (Sabadell)») y admite la fecha del cobro
-    (ISO o dd/mm/yyyy; por defecto hoy).
+    (solo se apunta la forma de pago). `paid=True` apunta el pago en el pedido
+    con la forma (transferencia/PayPal/contado/crédito…) y, si se conoce, la
+    cuenta (contrapartida) y la fecha.
+
+    La contrapartida es OPCIONAL (fix post-#470): muchas veces se sabe que está
+    pagado y con qué forma, pero no en qué cuenta entró. Como esto es solo un
+    apunte del pedido —NUNCA escribe el cobro en FACTUSOL—, no hace falta la
+    cuenta ahora; se pedirá al «Registrar cobro» a mano, cuando exista la
+    factura y ahí sí haga falta.
 
     `no_charge=True` = «sin cobro» (envío de cortesía / no se cobra): decisión
     explícita de que este pedido NO se factura ni se cobra. Es incompatible con
-    `paid` y no necesita cuenta: se apunta en el pedido y lo saca de «Por
-    facturar» / «Por cobrar» (Bloque C · C1)."""
+    `paid` (Bloque C · C1)."""
 
     paid: bool = False
     no_charge: bool = False
@@ -80,11 +85,6 @@ class PaymentIn(BaseModel):
         if self.paid and self.no_charge:
             raise ValueError(
                 "Un pedido no puede estar «pagado» y «sin cobro» a la vez."
-            )
-        if self.paid and not (self.contrapartida or "").strip():
-            raise ValueError(
-                "Un pago confirmado necesita la cuenta (contrapartida) donde "
-                "entró el dinero."
             )
         return self
 
@@ -300,10 +300,13 @@ def web_pedido_reason(session: Session, pcl_row: dict[str, Any]) -> str | None:
 
 
 def resolve_payment(session: Session, payment: PaymentIn) -> dict[str, Any]:
-    """Valida y resuelve el paso de pago contra los catálogos: contrapartida
-    (código o nombre del Excel → código real, 400 si no casa) y fecha (ISO o
-    dd/mm/yyyy → `YYYY-MM-DD`). Nunca se apunta un cobro contra una cuenta
-    adivinada."""
+    """Valida y resuelve el paso de pago contra los catálogos: la contrapartida
+    (código o nombre del Excel → código real) SI se indica —400 si se da una que
+    no casa, pero es OPCIONAL— y la fecha (ISO o dd/mm/yyyy → `YYYY-MM-DD`).
+
+    Marcar «Pagado» solo apunta el pago en el pedido (forma, y cuenta/fecha si
+    se conocen); no escribe ningún cobro en FACTUSOL. Por eso la cuenta no es
+    obligatoria: se pedirá al «Registrar cobro» a mano, cuando exista factura."""
     from app.erp.contrapartidas import (  # noqa: PLC0415
         resolve_contrapartida,
         resolve_contrapartida_code,
@@ -323,15 +326,19 @@ def resolve_payment(session: Session, payment: PaymentIn) -> dict[str, Any]:
     }
     if not payment.paid:
         return data
-    code = resolve_contrapartida_code(session, payment.contrapartida)
-    if code is None:
-        raise PaymentError(
-            "unknown_account",
-            f"La cuenta {payment.contrapartida!r} no casa con ninguna "
-            "contrapartida del catálogo (/erp/settings).",
-        )
-    data["contrapartida"] = code
-    data["contrapartida_nombre"] = resolve_contrapartida(session, code) or code
+    # Cuenta OPCIONAL: solo se valida (y se guarda) si se ha indicado; una
+    # cuenta escrita que no casa sí es un error (no se apunta contra una cuenta
+    # adivinada), pero no darla es válido.
+    if (payment.contrapartida or "").strip():
+        code = resolve_contrapartida_code(session, payment.contrapartida)
+        if code is None:
+            raise PaymentError(
+                "unknown_account",
+                f"La cuenta {payment.contrapartida!r} no casa con ninguna "
+                "contrapartida del catálogo (/erp/settings).",
+            )
+        data["contrapartida"] = code
+        data["contrapartida_nombre"] = resolve_contrapartida(session, code) or code
     try:
         fecha_iso = factusol_datetime(payment.fecha or datetime.now(UTC).date())
     except ValueError as exc:

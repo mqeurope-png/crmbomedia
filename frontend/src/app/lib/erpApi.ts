@@ -519,6 +519,16 @@ export async function approveOrder(id: string): Promise<OrderDetail> {
   return apiFetch<OrderDetail>(`/api/erp/orders/${id}/approve`, { method: "POST" });
 }
 
+/** C-bis: apunta el pago de un pedido ya creado (acción rápida «Pagado»):
+ *  forma obligatoria; cuenta y fecha opcionales. No escribe cobro en FACTUSOL. */
+export async function recordOrderPayment(
+  id: string, payment: PaymentIntentInput,
+): Promise<OrderDetail> {
+  return apiFetch<OrderDetail>(`/api/erp/orders/${id}/payment`, {
+    method: "POST", body: JSON.stringify({ payment }),
+  });
+}
+
 /** «Aprobar seleccionados» (bandeja): la misma lógica que `approveOrder`
  *  aplicada a cada pedido. Los bloqueados / inexistentes van en `failed` con
  *  su motivo; los que ya no estaban pendientes se cuentan aparte; el resto

@@ -1871,6 +1871,11 @@ td {
   justify-content: center;
   z-index: 1000;
   padding: 24px;
+  /* Red de seguridad genérica: si un diálogo excede el alto (contenido no
+     scrollable, zoom, viewport muy bajo), la capa scrollea en vez de recortar
+     por arriba/abajo. `margin: auto` en el diálogo evita el clipping del tope
+     que produce `align-items: center` al desbordar. */
+  overflow-y: auto;
   animation: modal-fade 120ms ease-out;
 }
 
@@ -1885,7 +1890,11 @@ td {
   border-radius: 22px;
   width: 100%;
   max-width: 600px;
-  max-height: calc(100vh - 48px);
+  /* `dvh` (no `vh`): en móvil la barra del navegador hace que `100vh` supere el
+     alto visible y recorte la cabecera/pie. Deja ~24px de margen arriba y abajo
+     (con los 24px de `padding` de la capa, márgenes por los cuatro lados). */
+  max-height: calc(100dvh - 48px);
+  margin: auto;
   overflow-y: auto;
   box-shadow: 0 24px 60px rgba(15, 23, 42, 0.25);
   display: flex;
@@ -11356,6 +11365,28 @@ tr.is-inactive {
   align-items: center;
   flex-wrap: wrap;
 }
+/* F1 — el nombre del cliente, protagonista de la cabecera y enlazado a su
+   ficha (subrayado sutil al pasar). */
+.erp-ficha-customer-name {
+  font-size: var(--fs-subtitle);
+  font-weight: 700;
+  color: var(--ink);
+  text-decoration: none;
+}
+a.erp-ficha-customer-name:hover { text-decoration: underline; }
+/* E1 — cajón de taller (ERP·SAT): botones más grandes para el trabajo manual
+   del taller (albarán, etiqueta, seguimiento). */
+.erp-sat-hint {
+  margin: 0 0 var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-control);
+  background: var(--st-blue-bg, var(--bg));
+  color: var(--ink);
+}
+.erp-sat-scope .button {
+  min-height: var(--control-h-touch);
+  font-size: var(--fs-subtitle);
+}
 .erp-flow-src {
   font-size: var(--fs-label);
   font-weight: 600;
@@ -12671,6 +12702,8 @@ input[type="radio"]:focus-visible {
   .erp-flow-item-actions > .button:not(.small):first-child { flex: 1 1 auto; }
   /* Modal: hoja a pantalla completa desde abajo. */
   .modal-overlay { padding: 0; align-items: flex-end; }
+  /* Como hoja inferior: pegada abajo (sin `margin: auto`, que la recentraría). */
+  .modal-overlay > .modal-dialog { margin: 0; }
   .modal-dialog,
   .modal-dialog.wide,
   .modal-dialog.modal-wide {

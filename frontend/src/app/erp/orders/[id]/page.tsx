@@ -12,6 +12,7 @@ import { emptyDocumentLine, type DocumentLine } from "../../../components/erp/Do
 import { CancelOrderModal } from "../../../components/erp/CancelOrderModal";
 import { EmbalarModal } from "../../../components/erp/EmbalarModal";
 import { PDF_LANGS } from "../../../components/erp/FactusolDocumentDetailModal";
+import { FactusolAlbaranPdfButton } from "../../../components/erp/FactusolAlbaranPdfButton";
 import { InvoiceEmailModal } from "../../../components/erp/InvoiceEmailModal";
 import { OrderEmailModal } from "../../../components/erp/OrderEmailModal";
 import { CobroFactusolBadge } from "../../../components/erp/CobroFactusolBadge";
@@ -19,6 +20,7 @@ import { OrderFactusolClientPanel } from "../../../components/erp/OrderFactusolC
 import { EmitFactusolButton } from "../../../components/erp/EmitFactusolButton";
 import { PrimaryActionBar } from "../../../components/erp/PrimaryActionBar";
 import { RegistrarCobroModal } from "../../../components/erp/RegistrarCobroModal";
+import { MarkPaidDialog } from "../../../components/erp/MarkPaidDialog";
 import { OrderStatusMachine } from "../../../components/erp/OrderStatusMachine";
 import { ShippingFilesSection } from "../../../components/erp/ShippingFilesSection";
 import { ActionsMenu } from "../../../components/erp/flow/ActionsMenu";
@@ -38,6 +40,7 @@ import {
   completeOrder,
   customerLabel,
   factusolSerieLabel,
+  recordOrderPayment,
   downloadFactusolDocumentPdf,
   downloadOrderFactusolPedidoPdf,
   getErpSettings,
@@ -61,6 +64,7 @@ import {
   type FactusolStatus,
   type OrderDetail,
   type OrderLine,
+  type PaymentIntentInput,
   type StatusDomain,
   type TimelineEvent,
   type WorkflowAction,
@@ -251,6 +255,9 @@ function ErpOrderDetailScreen() {
   // enviar a SAT y generar el albarán decidiendo el pago / «sin cobro».
   const [justApproved, setJustApproved] = useState(false);
   const [approveBusy, setApproveBusy] = useState(false);
+  // C-bis: diálogo «Marcar como pagado» (pide la forma de pago).
+  const [markPaidOpen, setMarkPaidOpen] = useState(false);
+  const [markPaidBusy, setMarkPaidBusy] = useState(false);
   // «No requiere envío» (SAT opcional): marca/desmarca por pedido.
   const [noShipBusy, setNoShipBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -305,6 +312,9 @@ function ErpOrderDetailScreen() {
   const esMuestra = !!order && isSampleOrder(order);
   const canEmit = can(user, Cap.INVOICE_EMIT) && !esMuestra;
   const canCobro = can(user, Cap.COBRO_REGISTER) && !esMuestra;
+  // E — el rol de taller (ERP·SAT) tiene su cajón de envío/taller con botones
+  // más grandes (el albarán, la etiqueta y el seguimiento viven ahí juntos).
+  const canSat = can(user, Cap.SAT_VIEW);
   // Señal para abrir el modal de emisión desde «Siguiente paso» / «Solicitar
   // factura», y fase de la emisión (para no ofrecer dos veces «Emitir»).
   const [emitSignal, setEmitSignal] = useState(0);
@@ -315,6 +325,12 @@ function ErpOrderDetailScreen() {
     // directa (el backend exige ≥1 bulto medido antes de pasar a packed).
     if (domain === "preparation" && t.to_status === "packed") {
       setEmbalarOpen(true);
+      return;
+    }
+    // C-bis: «Pagado» pide la FORMA de pago (no la contrapartida) y la apunta
+    // en el pedido, en vez de un cambio de estado a secas.
+    if (domain === "payment" && t.to_status === "paid") {
+      setMarkPaidOpen(true);
       return;
     }
     // ERP-E2-fix2: «Solicitar factura» abre el MISMO modal de emisión que el
@@ -386,12 +402,38 @@ function ErpOrderDetailScreen() {
     setError(null);
     setNotice(null);
     try {
-      setOrder(await approveOrder(order.id));
-      setJustApproved(true);   // C3: enseña las sugerencias
+      const updated = await approveOrder(order.id);
+      setOrder(updated);
+      setJustApproved(true);   // C3: enseña la sugerencia de enviar a SAT
+      // C3 (fix): en un pedido manual/FACTUSOL, aprobar GENERA el albarán en
+      // el acto —como al convertir una proforma— presentando ahí mismo la
+      // decisión de pago (el diálogo del gate C1). Idempotente: si ya tiene
+      // albarán, no se dispara. Las muestras y los web no llevan albarán aquí.
+      const puedeAlbaran = updated.external_source !== "woocommerce"
+        && !isSampleOrder(updated) && !updated.factusol_albaran_number;
+      if (puedeAlbaran) setAlbaranSignal((n) => n + 1);
     } catch (e) {
       setError(extractErrorMessage(e, "No se pudo aprobar el pedido."));
     } finally {
       setApproveBusy(false);
+    }
+  }
+
+  async function onMarkPaid(payment: PaymentIntentInput) {
+    if (!order) return;
+    setMarkPaidBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      setOrder(await recordOrderPayment(order.id, payment));
+      const tl = await getOrderTimeline(order.id);
+      setTimeline(tl.items);
+      setMarkPaidOpen(false);
+      setNotice("Pago apuntado en el pedido (el cobro se registra a mano en FACTUSOL cuando exista la factura).");
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudo apuntar el pago."));
+    } finally {
+      setMarkPaidBusy(false);
     }
   }
 
@@ -708,6 +750,16 @@ function ErpOrderDetailScreen() {
             >
               {invoicePdfBusy ? "Generando…" : "PDF de la factura"}
             </button>
+            {/* E3 — «PDF del albarán» en la cabecera, junto al del pedido y la
+                factura, cuando el pedido ya tiene albarán en FACTUSOL. */}
+            {order.factusol_albaran_number ? (
+              <FactusolAlbaranPdfButton
+                orderId={order.id}
+                numero={order.factusol_albaran_number}
+                lang={pdfLang}
+                onError={setError}
+              />
+            ) : null}
             {canEmit ? (
               <>
                 {/* ERP · enviar el PEDIDO al SAT / taller (y a quien haga
@@ -864,12 +916,6 @@ function ErpOrderDetailScreen() {
                 Enviar a SAT
               </button>
             ) : null}
-            {canEmit && !isWeb && !order.factusol_albaran_number ? (
-              <button type="button" className="button small secondary"
-                      onClick={() => { setJustApproved(false); setAlbaranSignal((n) => n + 1); }}>
-                Generar albarán (pago / sin cobro)
-              </button>
-            ) : null}
             <button type="button" className="button small secondary"
                     aria-label="Descartar sugerencias" onClick={() => setJustApproved(false)}>
               ×
@@ -887,8 +933,16 @@ function ErpOrderDetailScreen() {
           el ciclo y qué toca AHORA. Todo sale del bloque `workflow` que
           calcula el backend (el mismo que ve la bandeja): aquí no se deduce
           ningún estado. */}
-      <p className="erp-flow-item-r2" style={{ margin: "0 0 12px" }}>
-        <strong>{customerLabel(order) || "Sin cliente"}</strong>
+      <p className="erp-flow-item-r2 erp-ficha-customer" style={{ margin: "0 0 12px" }}>
+        {/* F1 — el cliente, bien visible y enlazado a su ficha de empresa. */}
+        {order.company_id ? (
+          <Link href={`/companies/${order.company_id}`} className="erp-ficha-customer-name"
+                title="Abrir la ficha del cliente">
+            {customerLabel(order) || "Sin cliente"}
+          </Link>
+        ) : (
+          <strong className="erp-ficha-customer-name">{customerLabel(order) || "Sin cliente"}</strong>
+        )}
         {wf ? <span className="erp-flow-pill is-n" title="Cola de la bandeja">{wf.queue_label}</span> : null}
         {wf ? <RegimePill regime={wf.regime} country={wf.company?.country} /> : null}
         {wf?.company?.factusol_id ? (
@@ -1085,30 +1139,41 @@ function ErpOrderDetailScreen() {
         defaultOpen={panelDefault("envio")}
         openSignal={albaranSignal + etiquetaSignal}
       >
-        {order.shipping_not_required ? (
-          <p className="erp-flow-emailed is-muted">
-            Este pedido no requiere envío: fuera de la Cola SAT. El envío es
-            opcional (puedes revertirlo desde «⋯ → Requiere envío»).
-          </p>
-        ) : null}
-        <ShippingFilesSection
-          orderId={order.id}
-          isWooOrder={isWeb}
-          orderSource={order.external_source}
-          factusolAlbaranNumber={order.factusol_albaran_number ?? null}
-          pdfLang={pdfLang}
-          canCreateAlbaran={canEmit}
-          createSignal={albaranSignal}
-          onAlbaranCreated={({ error: err }) => { if (err) setError(err); load(); }}
-          openEtiquetaSignal={etiquetaSignal}
-          onUploaded={() => load()}
-        />
-        <SeguimientoFieldsCard
-          order={order}
-          canEdit={canEmit}
-          onSaved={(patch) => setOrder((o) => (o ? { ...o, ...patch } : o))}
-          onError={setError}
-        />
+        {/* E1/E2 — este cajón ES el área de taller (ERP·SAT): el albarán y su
+            PDF, la etiqueta de envío y el seguimiento viven aquí, juntos. Para
+            el rol de taller, botones más grandes (`erp-sat-scope`). */}
+        <div className={canSat ? "erp-sat-scope" : undefined}>
+          {canSat ? (
+            <p className="erp-sat-hint muted small" role="note">
+              Taller (SAT): aquí tienes el albarán y su PDF, la etiqueta de envío
+              y el seguimiento del pedido.
+            </p>
+          ) : null}
+          {order.shipping_not_required ? (
+            <p className="erp-flow-emailed is-muted">
+              Este pedido no requiere envío: fuera de la Cola SAT. El envío es
+              opcional (puedes revertirlo desde «⋯ → Requiere envío»).
+            </p>
+          ) : null}
+          <ShippingFilesSection
+            orderId={order.id}
+            isWooOrder={isWeb}
+            orderSource={order.external_source}
+            factusolAlbaranNumber={order.factusol_albaran_number ?? null}
+            pdfLang={pdfLang}
+            canCreateAlbaran={canEmit}
+            createSignal={albaranSignal}
+            onAlbaranCreated={({ error: err }) => { if (err) setError(err); load(); }}
+            openEtiquetaSignal={etiquetaSignal}
+            onUploaded={() => load()}
+          />
+          <SeguimientoFieldsCard
+            order={order}
+            canEdit={canEmit}
+            onSaved={(patch) => setOrder((o) => (o ? { ...o, ...patch } : o))}
+            onError={setError}
+          />
+        </div>
       </FichaPanel>
       </div>
 
@@ -1127,9 +1192,20 @@ function ErpOrderDetailScreen() {
           <div className="erp-flow-kv">
             <span className="k">Cliente</span>
             <span className="v">
-              {wf?.company?.factusol_id
-                ? `${wf.company.factusol_id} · vinculado`
-                : wf?.company ? "sin vincular" : "—"}
+              {/* F2 — nombre del cliente + enlace a su ficha; el nº de FACTUSOL
+                  queda como detalle, no como único dato. */}
+              {order.company_id ? (
+                <Link href={`/companies/${order.company_id}`}>
+                  {wf?.company?.name || order.company_name || customerLabel(order) || "cliente"}
+                </Link>
+              ) : (
+                wf?.company?.name || order.company_name || "—"
+              )}
+              {wf?.company?.factusol_id ? (
+                <span className="muted"> · {wf.company.factusol_id} vinculado</span>
+              ) : wf?.company ? (
+                <span className="muted"> · sin vincular</span>
+              ) : null}
             </span>
           </div>
           <div className="erp-flow-kv">
@@ -1360,6 +1436,13 @@ function ErpOrderDetailScreen() {
           orderId={order.id}
           onCancel={() => setEmbalarOpen(false)}
           onDone={() => { setEmbalarOpen(false); load(); }}
+        />
+      ) : null}
+      {markPaidOpen ? (
+        <MarkPaidDialog
+          busy={markPaidBusy}
+          onCancel={() => setMarkPaidOpen(false)}
+          onConfirm={(payment) => void onMarkPaid(payment)}
         />
       ) : null}
     </main>

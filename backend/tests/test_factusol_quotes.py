@@ -579,6 +579,37 @@ def test_create_quote_does_not_write_ivalps(session):
     assert fake.writes_to("F_PRE")[0]["PIVA1PRE"] == 21.0
 
 
+def test_create_quote_surfaces_the_factusol_line_error(session):
+    """Fix: si F_LPS rechaza la escritura de líneas, la proforma queda con la
+    cabecera pero sin líneas. Eso ya no es mudo: el resultado avisa y trae el
+    error de FACTUSOL (y las columnas), para poder diagnosticar qué rechaza."""
+    fake = _FakeFactusol(quotes=[_quote_row(50)], write_fails_for="F_LPS")
+    result = create_quote(
+        fake, session, ejercicio="2026", customer={"codcli": "55555"},
+        lines=[{"description": "Cable", "quantity": 1, "unit_price": 10, "iva_pct": 21}],
+    )
+    # La cabecera se escribió; ninguna línea (F_LPS rechazó).
+    assert [t for t, _ in fake.writes] == ["F_PRE"]
+    assert result["lines"] == 0
+    assert "lines_error" in result and "BDEscribirRegistroError" in (result["lines_error"] or "")
+    assert "rechazó la línea" in result["warning"]
+
+
+def test_get_quote_recupera_lineas_si_el_tiplps_no_casa_la_serie(session):
+    """Robustez de lectura: si las líneas de un CODLPS tienen un `TIPLPS` que no
+    casa con la serie de la cabecera (dato de escritorio, en blanco o heredado)
+    pero son de UNA sola serie, se usan igual en vez de dejar «sin líneas»."""
+    fake = _FakeFactusol(
+        quotes=[_quote_row(60, serie="5")],
+        # La cabecera es serie 5, pero sus líneas llevan TIPLPS en blanco.
+        lines=[_line_row(60, 1, desc="Tinta", serie=""),
+               _line_row(60, 2, desc="Portes", serie="")],
+    )
+    quote = get_quote(fake, session, "60", ejercicio="2026", serie=5)
+    assert quote is not None
+    assert [ln["description"] for ln in quote["lines"]] == ["Tinta", "Portes"]
+
+
 def test_read_line_ignores_ivalps_that_cannot_be_a_spanish_rate():
     """Si IVALPS resulta ser un código, un 1 se leería como «1 % de IVA», que
     no existe. Solo se acepta el valor si puede ser un tipo español."""

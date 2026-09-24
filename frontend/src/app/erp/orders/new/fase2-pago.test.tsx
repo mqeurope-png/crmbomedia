@@ -124,11 +124,12 @@ describe("Fase 2 · alta desde FACTUSOL: paso de pago y albarán", () => {
     render(<NewManualOrderPage />);
     await loadPedido(user);
     await user.click(screen.getByLabelText("Pagado"));
-    // Sin cuenta el formulario no se puede enviar.
     await user.click(screen.getByLabelText("Recogida en tienda"));
-    expect(screen.getByRole("button", { name: "Crear pedido" })).toBeDisabled();
+    // Fix C: la cuenta es OPCIONAL al marcar «Pagado» (es un apunte del pedido,
+    // no un cobro en FACTUSOL); si se indica, viaja en el alta.
+    expect(screen.getByRole("button", { name: "Crear pedido" })).toBeEnabled();
     await screen.findByRole("option", { name: "8 · Streamtec Sabadell" });
-    await user.selectOptions(screen.getByLabelText("Cuenta del cobro"), "8");
+    await user.selectOptions(screen.getByLabelText("Cuenta del pago"), "8");
     await user.click(screen.getByRole("button", { name: "Crear pedido" }));
     await waitFor(() => expect(createOrder).toHaveBeenCalled());
     const payload = (createOrder as jest.Mock).mock.calls[0][0];

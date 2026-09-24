@@ -491,7 +491,19 @@ def list_quote_lines(
         filtro=f"CODLPS={int(codpre)} ORDER BY POSLPS",
         ejercicio=ejercicio,
     )
-    return [_row_to_quote_line(r) for r in rows_of_serie(rows, serie, "TIPLPS")]
+    matching = rows_of_serie(rows, serie, "TIPLPS")
+    # Robustez (fix conversión): el filtro por serie está para desambiguar los
+    # 69 números repetidos entre varias series. Pero en el escritorio el
+    # `TIPLPS` de la línea no siempre casa con el `TIPPRE` de su cabecera (viene
+    # en blanco o con un valor heredado), y entonces el filtro se comía TODAS
+    # las líneas y el pedido salía con un placeholder «Proforma NNNN». Si el
+    # filtro deja la lista vacía pero las líneas de ese CODLPS son de UNA sola
+    # serie (no hay homónimo que desambiguar), se usan igual: es la proforma.
+    if not matching and rows:
+        series_presentes = {tip_of(r.get("TIPLPS")) for r in rows}
+        if len(series_presentes) == 1:
+            matching = rows
+    return [_row_to_quote_line(r) for r in matching]
 
 
 def skus_for_codarts(
@@ -821,8 +833,15 @@ def resolve_codarts(
 def _write_quote_lines(
     client: FactusolClient, codpre: str, ejercicio: str,
     lines: list[dict[str, Any]], serie: Any = DEFAULT_TIPLPS,
-) -> int:
-    """Escribe las líneas en F_LPS. Devuelve cuántas se escribieron.
+) -> tuple[int, str | None]:
+    """Escribe las líneas en F_LPS. Devuelve `(cuántas se escribieron, error)`
+    —el mensaje de FACTUSOL de la primera línea que falló, o None—.
+
+    Se devuelve el error, además de dejarlo en el log, porque una proforma que
+    guarda la cabecera pero PIERDE las líneas es invisible para el operador
+    («sin líneas» sin más): con el detalle, la UI puede avisar de que las líneas
+    no se guardaron y por qué (qué columna rechaza F_LPS), en vez de que el
+    documento quede mudo en la contabilidad.
 
     `serie` es la de la cabecera: las líneas llevan el mismo `TIPLPS` que el
     `TIPPRE` de su presupuesto.
@@ -849,6 +868,7 @@ def _write_quote_lines(
         codarts = {}
 
     written = 0
+    error: str | None = None
     for i, line in enumerate(lines, start=1):
         sku = str(line.get("codart") or "").strip()
         codart = codarts.get(sku, "")
@@ -878,8 +898,9 @@ def _write_quote_lines(
                 codpre, i, written, len(lines), exc, ", ".join(payload),
                 exc_info=True,
             )
+            error = f"{exc} (columnas: {', '.join(payload)})"
             break
-    return written
+    return written, error
 
 
 def create_quote(
@@ -938,7 +959,9 @@ def create_quote(
             "Columnas enviadas: %s", codpre, exc, ", ".join(payload),
         )
         raise
-    written = _write_quote_lines(client, codpre, ejercicio, lines, payload["TIPPRE"])
+    written, lines_error = _write_quote_lines(
+        client, codpre, ejercicio, lines, payload["TIPPRE"],
+    )
     logger.info(
         "factusol: proforma creada CODPRE %s serie %s (cliente %s, %d/%d líneas)",
         codpre, payload["TIPPRE"], customer.get("codcli"), written, len(lines),
@@ -950,7 +973,9 @@ def create_quote(
         result["warning"] = (
             f"La proforma {codpre} se creó con {written} de {len(lines)} líneas. "
             "Revísala en FACTUSOL antes de enviarla."
+            + (f" FACTUSOL rechazó la línea: {lines_error}" if lines_error else "")
         )
+        result["lines_error"] = lines_error
     return result
 
 
@@ -1094,7 +1119,9 @@ def update_quote(
         TABLE_QUOTE_LINES,
         f"TIPLPS='{propia}' AND CODLPS='{int(codpre)}'", ejercicio=ejercicio,
     )
-    written = _write_quote_lines(client, str(codpre), ejercicio, lines, propia)
+    written, lines_error = _write_quote_lines(
+        client, str(codpre), ejercicio, lines, propia,
+    )
     logger.info("factusol: proforma %s-%s actualizada (%d/%d líneas, estado %s)",
                 propia, codpre, written, len(lines), estado)
     result = {"codpre": str(codpre), "ejercicio": ejercicio,
@@ -1104,7 +1131,9 @@ def update_quote(
         result["warning"] = (
             f"La proforma {codpre} se guardó con {written} de {len(lines)} "
             "líneas. Revísala en FACTUSOL."
+            + (f" FACTUSOL rechazó la línea: {lines_error}" if lines_error else "")
         )
+        result["lines_error"] = lines_error
     return result
 
 
@@ -1141,11 +1170,18 @@ def duplicate_quote(
     source["FECPRE"] = fecha or datetime.now(UTC).date().isoformat()
     client.write_record(TABLE_QUOTES, source, ejercicio=ejercicio)
 
-    written = _write_quote_lines(client, nuevo, ejercicio, lines, propia)
+    written, lines_error = _write_quote_lines(client, nuevo, ejercicio, lines, propia)
     logger.info("factusol: proforma %s-%s duplicada → %s-%s (%d/%d líneas)",
                 propia, codpre, propia, nuevo, written, len(lines))
-    return {"codpre": nuevo, "source_codpre": str(codpre), "ejercicio": ejercicio,
-            "serie": int(propia), "lines": written}
+    result = {"codpre": nuevo, "source_codpre": str(codpre), "ejercicio": ejercicio,
+              "serie": int(propia), "lines": written}
+    if written < len(lines):
+        result["warning"] = (
+            f"La copia {nuevo} se creó con {written} de {len(lines)} líneas."
+            + (f" FACTUSOL rechazó la línea: {lines_error}" if lines_error else "")
+        )
+        result["lines_error"] = lines_error
+    return result
 
 
 def quote_lines_for_order(
