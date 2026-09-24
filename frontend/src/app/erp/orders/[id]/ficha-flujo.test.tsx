@@ -35,6 +35,7 @@ jest.mock("../../../components/PageHeader", () => ({
   ),
 }));
 jest.mock("../../../components/erp/EmbalarModal", () => ({ EmbalarModal: () => null }));
+jest.mock("../../../components/erp/GeneiShipmentSection", () => ({ GeneiShipmentSection: () => null }));
 jest.mock("../../../components/erp/FactusolDocumentDetailModal", () => ({
   PDF_LANGS: [{ value: "es", label: "Español" }],
 }));

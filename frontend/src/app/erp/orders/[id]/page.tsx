@@ -22,6 +22,7 @@ import { PrimaryActionBar } from "../../../components/erp/PrimaryActionBar";
 import { RegistrarCobroModal } from "../../../components/erp/RegistrarCobroModal";
 import { MarkPaidDialog } from "../../../components/erp/MarkPaidDialog";
 import { OrderStatusMachine } from "../../../components/erp/OrderStatusMachine";
+import { GeneiShipmentSection } from "../../../components/erp/GeneiShipmentSection";
 import { ShippingFilesSection } from "../../../components/erp/ShippingFilesSection";
 import { ActionsMenu } from "../../../components/erp/flow/ActionsMenu";
 import { NextActionBar } from "../../../components/erp/flow/NextActionBar";
@@ -1173,6 +1174,16 @@ function ErpOrderDetailScreen() {
             onSaved={(patch) => setOrder((o) => (o ? { ...o, ...patch } : o))}
             onError={setError}
           />
+          {/* Genei (PR-1): crear el envío, comparar agencias, etiqueta y estado.
+              Los web (Woo) crean su propio albarán/envío; aquí es para los que
+              se envían desde el taller. */}
+          {!isWeb ? (
+            <GeneiShipmentSection
+              orderId={order.id}
+              canManage={canSat || canEmit}
+              onChanged={() => load()}
+            />
+          ) : null}
         </div>
       </FichaPanel>
       </div>
