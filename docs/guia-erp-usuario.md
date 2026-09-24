@@ -487,8 +487,10 @@ es una ventana a FACTUSOL: aquí no se cambia nada salvo las acciones concretas
 lo que hay que preparar y enviar.
 
 **Vistas (pestañas):** **«Por embalar»**, **«Listos»**, **«Global»** (las dos
-juntas), **«No requieren envío»** (los marcados como que no se envían) y
-**«Enviados»** (historial de lo ya mandado al taller). Vista **«Tarjetas»** /
+juntas), **«No requieren envío»** (los marcados como que no se envían),
+**«Enviados»** (historial de lo ya mandado al taller, ahora con una columna
+**«Estado envío»** que muestra el estado del transporte —sin enviar, en tránsito,
+entregado…—) e **«Incidencias»** (ver más abajo). Vista **«Tarjetas»** /
 **«Lista»**.
 **Filtros:** buscador (*«Nº de pedido o cliente…»*), **«Desde»**/**«Hasta»**,
 **«Tienda»**, **«Estado»** (*Todos / Por embalar / Bloqueados / En cola /
@@ -505,6 +507,20 @@ o **«Listos»**, marca sus casillas (o **«Seleccionar todo»**) y pulsa **«Ma
 **No toca la factura ni el cobro** y es **reversible**: en la pestaña **«No
 requieren envío»** puedes seleccionarlos y **«Volver a requerir envío»** (vuelven
 al taller). También por pedido, desde el menú **«⋯»** de la ficha.
+
+**«Incidencias».** Cuando un pedido **ya enviado** tiene un problema, **sale de
+«Enviados»** y aparece en esta pestaña hasta que se resuelve. Reúne dos orígenes:
+
+- **De envío** (transporte): el **seguimiento de Genei** (o **«Actualizar
+  estado»**) detecta una incidencia del transportista. El motivo es la
+  descripción de la incidencia. **«Resolver»** devuelve el envío a **«en
+  tránsito»** y el pedido vuelve a **«Enviados»** (lo puede hacer el propio SAT).
+- **De pedido**: una **excepción abierta** del taller/stock/VIES… (la misma que
+  ves en la bandeja de excepciones). **«Resolver»** cierra la excepción.
+
+Cada fila lleva su **tipo** (Envío / Pedido), el **motivo**, el nº de
+**seguimiento** y el **estado de envío**. Resolver una incidencia de envío es de
+**oficina o SAT**; cerrar la de pedido es de **oficina**.
 
 En cada tarjeta:
 

@@ -286,11 +286,11 @@ describe("SatQueuePage (Lote B6)", () => {
     });
     render(<SatQueuePage />);
     await loaded();
-    // Pestañas; «No requieren envío» y «Enviados» sin contador hasta que
-    // cargan (perezosos).
+    // Pestañas; «No requieren envío», «Enviados» e «Incidencias» sin contador
+    // hasta que cargan (perezosos).
     const tabs = screen.getAllByRole("tab");
     expect(tabs.map((t) => t.textContent?.trim())).toEqual(
-      ["Por embalar 1", "Listos 1", "Global 2", "No requieren envío", "Enviados"],
+      ["Por embalar 1", "Listos 1", "Global 2", "No requieren envío", "Enviados", "Incidencias"],
     );
     expect(screen.getByRole("tab", { name: /Por embalar/ })).toHaveAttribute("aria-selected", "true");
     expect(mockHistory).not.toHaveBeenCalled();
@@ -308,9 +308,12 @@ describe("SatQueuePage (Lote B6)", () => {
     expect(screen.queryByRole("link", { name: /Abrir modo trabajo/ })).not.toBeInTheDocument();
     // Ahora la pestaña lleva contador.
     expect(await screen.findByRole("tab", { name: "Enviados 2" })).toHaveAttribute("aria-selected", "true");
-    // Hora + responsable + tipo + destinatario + estado + albarán.
+    // Hora + responsable + tipo + destinatario + estado (prep + envío) + albarán.
     const headers = within(table).getAllByRole("columnheader").map((h) => h.textContent);
-    expect(headers).toEqual(["Nº", "Cliente", "Cuándo", "Quién", "Tipo", "Destinatario", "Estado actual", "Albarán"]);
+    expect(headers).toEqual([
+      "Nº", "Cliente", "Cuándo", "Quién", "Tipo", "Destinatario",
+      "Estado actual", "Estado envío", "Albarán",
+    ]);
     const rows = within(table).getAllByRole("row");
     expect(rows).toHaveLength(3); // cabecera + 2
     expect(within(rows[1]).getByRole("link", { name: "BOP-1" })).toHaveAttribute("href", "/erp/orders/o1");

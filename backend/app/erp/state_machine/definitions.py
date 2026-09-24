@@ -184,7 +184,9 @@ TRANSITIONS: tuple[TransitionDef, ...] = (
     TransitionDef(
         StatusDomain.TRANSPORT, TransportStatus.INCIDENT.value,
         TransportStatus.IN_TRANSIT.value,
-        "Incidencia resuelta", _OFFICE,
+        # El SAT también resuelve la incidencia de envío desde la Cola SAT (es su
+        # workspace); antes solo Oficina. Sigue permitiendo SYSTEM (webhook).
+        "Incidencia resuelta", _OFFICE_OR_SYSTEM | {_SAT},
     ),
     TransitionDef(
         StatusDomain.TRANSPORT, TransportStatus.INCIDENT.value,

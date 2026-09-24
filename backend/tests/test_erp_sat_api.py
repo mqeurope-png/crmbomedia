@@ -659,3 +659,69 @@ def test_bulk_no_shipping_no_toca_factura_ni_completado(client, session_factory)
         assert o.factusol_invoice_number == "260200"
         assert o.factusol_cobro_status == "cobrada"
         assert o.completed_at is None
+
+
+# --- incidencias (Cola SAT): envío (webhook) + pedido (excepción) ------------
+
+
+def test_sat_incidencias_lists_envio_and_pedido(client, session_factory):
+    with session_factory() as s:
+        env = _mk_order(s, number="ENV-1", prep="packed", transport="incident")
+        o = s.get(Order, env)
+        o.packing_json = json.dumps({"genei": {"desc_incidencia": "Paquete roto"}})
+        ped = _mk_order(s, number="PED-1", prep="preparing", transport="not_shipped")
+        s.add(ErpException(type=ExceptionType.STOCK_SHORTAGE, order_id=ped,
+                           status=ExceptionStatus.OPEN))
+        s.commit()
+    r = client.get("/api/erp/sat/incidencias", headers=auth_headers(client, "sat"))
+    assert r.status_code == 200, r.text
+    items = {it["order_number"]: it for it in r.json()["items"]}
+    # Incidencia de ENVÍO (transporte): motivo del bloque genei, sin excepción.
+    assert items["ENV-1"]["tipo"] == "envio"
+    assert items["ENV-1"]["motivo"] == "Paquete roto"
+    assert items["ENV-1"]["exception_id"] is None
+    # Incidencia de PEDIDO (excepción abierta): trae el id para resolverla.
+    assert items["PED-1"]["tipo"] == "pedido"
+    assert items["PED-1"]["exception_id"] is not None
+
+
+def test_sat_history_excludes_orders_in_incidencia(client, session_factory):
+    from app.core.audit import record_event  # noqa: PLC0415
+    from app.models.crm import User  # noqa: PLC0415
+
+    with session_factory() as s:
+        pedidos = s.query(User).filter_by(email="pedidos@example.com").one()
+        oid = _mk_order(s, number="INC-HIST", prep="packed", transport="incident")
+        record_event(
+            s, action="erp.order_emailed", target_type="order", target_id=oid,
+            actor=pedidos, message="x",
+            metadata={"to": [], "cc": [], "subject": "x", "attachment_kinds": []},
+        )
+        s.commit()
+    # En incidencia de envío → NO sale en «Enviados»…
+    hist = client.get("/api/erp/sat/history", headers=auth_headers(client, "sat")).json()
+    assert "INC-HIST" not in [i["order_number"] for i in hist["items"]]
+    # …sino en «Incidencias».
+    inc = client.get("/api/erp/sat/incidencias", headers=auth_headers(client, "sat")).json()
+    assert "INC-HIST" in [i["order_number"] for i in inc["items"]]
+
+
+def test_sat_resolve_shipping_incidencia_back_to_in_transit(client, session_factory):
+    with session_factory() as s:
+        oid = _mk_order(s, number="ENV-R", prep="packed", transport="incident")
+    # El SAT resuelve la incidencia de envío desde la Cola SAT → «en tránsito».
+    r = client.post(f"/api/erp/sat/orders/{oid}/shipping-incidencia/resolve",
+                    headers=auth_headers(client, "sat"))
+    assert r.status_code == 200, r.text
+    assert r.json()["transport_status"] == "in_transit"
+    with session_factory() as s:
+        assert s.get(Order, oid).transport_status.value == "in_transit"
+
+
+def test_sat_resolve_shipping_incidencia_rejects_non_incident(client, session_factory):
+    with session_factory() as s:
+        oid = _mk_order(s, number="ENV-NI", prep="packed", transport="in_transit")
+    r = client.post(f"/api/erp/sat/orders/{oid}/shipping-incidencia/resolve",
+                    headers=auth_headers(client, "sat"))
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "not_incident"
