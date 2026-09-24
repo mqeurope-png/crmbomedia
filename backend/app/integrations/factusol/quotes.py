@@ -594,28 +594,35 @@ def get_quote(
 def next_codpre(
     client: FactusolClient, ejercicio: str, serie: Any = DEFAULT_TIPPRE,
 ) -> str:
-    """Siguiente CODPRE **de esa serie** = max de la serie + 1.
+    """Siguiente CODPRE = **máximo GLOBAL de F_PRE + 1** (único entre TODAS las
+    series). `serie` se acepta por compatibilidad de firma pero NO acota la
+    numeración: el número tiene que ser único en toda la tabla, no por serie.
 
-    Cada serie de FACTUSOL lleva su propio contador (la 1 va por el 526.080 y
-    la 5 por el 39), así que numerar con el máximo GLOBAL metía las proformas
-    nuevas de las series pequeñas con un número altísimo, lejos de lo que el
-    escritorio enseña. El máximo se calcula sobre las filas de la serie, que
-    llegan ya filtradas en Python (`TIPPRE` viene como texto o número).
+    ⚠️ REGRESIÓN corregida (post-#456). #456 numeraba «por serie» (max de la
+    serie + 1) para que una proforma nueva de la serie 5 saliera con el 40 y no
+    con un número altísimo. Pero eso da un CODPRE que **ya existe en otra serie**
+    (el 40 es una proforma vieja de Bomedia), y las LÍNEAS de F_LPS se guardan
+    por `CODLPS` (= CODPRE): escribir las líneas de la proforma nueva 5-40
+    chocaba con las líneas de la vieja 1-40 y el INSERT en F_LPS se rechazaba —
+    la cabecera (F_PRE, clave serie+número) sí entraba, así que quedaba «con
+    total pero sin líneas». Numerar GLOBAL (como antes de #456) da un CODPRE que
+    no existe en ninguna serie, así que sus líneas nunca chocan. El coste es
+    cosmético (el nº de una serie pequeña no sigue el contador del escritorio);
+    perder las líneas es mucho peor.
 
     Carrera con el escritorio: si alguien crea una proforma en FACTUSOL entre
     este `MAX+1` y la escritura, los dos cogerían el mismo número. Entre dos
     altas de BoHub lo evita el worker serializado (`factusol:writes`,
-    concurrency=1); contra el escritorio no hay nada que lo impida, igual que
-    en `next_codfac` / `next_codcli`. Es el riesgo que ya se asumía, ahora
-    acotado a la serie en la que se está creando en vez de a toda la tabla.
+    concurrency=1); contra el escritorio no hay nada que lo impida, igual que en
+    `next_codfac` / `next_codcli`. Es el riesgo que ya se asumía.
     """
+    _ = serie  # la numeración es global, no por serie (ver docstring)
     rows = client.load_table(
         TABLE_QUOTES, filtro="1=1 ORDER BY CODPRE DESC", ejercicio=ejercicio,
     )
-    de_la_serie = rows_of_serie(rows, serie, "TIPPRE")
-    if not de_la_serie:
+    if not rows:
         return "1"
-    mayor = max((_int_or_none(r.get("CODPRE")) or 0) for r in de_la_serie)
+    mayor = max((_int_or_none(r.get("CODPRE")) or 0) for r in rows)
     return str(mayor + 1)
 
 
@@ -913,8 +920,9 @@ def create_quote(
     """Crea la proforma: cabecera en `F_PRE` + una fila por línea en `F_LPS`.
 
     `serie` es la EMPRESA EMISORA del documento (`TIPPRE` en la cabecera y
-    `TIPLPS` en las líneas). Por defecto 1 (Bomedia). El CODPRE sale del
-    contador de ESA serie (`next_codpre`), como en el escritorio.
+    `TIPLPS` en las líneas). Por defecto 1 (Bomedia). El CODPRE es el máximo
+    GLOBAL + 1 (`next_codpre`), único en toda la tabla: un número por serie
+    reutilizaría un CODPRE ya usado en otra y sus líneas de F_LPS chocarían.
 
     `referencia` la escribe el operador cuando quiere fijar el texto de REFPRE;
     si no la pasa, se compone desde las líneas.
@@ -1150,8 +1158,9 @@ def duplicate_quote(
 
     El original se identifica por (`serie`, `codpre`), y la copia se queda en la
     MISMA serie: la cabecera arrastra su `TIPPRE` (viene en la fila), el número
-    nuevo sale del contador de esa serie y las líneas se escriben con ese mismo
-    `TIPLPS` — antes iban con el default '1' aunque la cabecera fuera de otra.
+    nuevo es el máximo GLOBAL + 1 (`next_codpre`, único en toda la tabla para
+    que sus líneas de F_LPS no choquen con las de otra proforma con ese número) y
+    las líneas se escriben con ese mismo `TIPLPS`.
     """
     _ = session
     if not str(codpre).strip().isdigit():

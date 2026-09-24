@@ -173,22 +173,29 @@ def test_next_codpre_arranca_en_uno_sin_presupuestos():
     assert next_codpre(_FakeFactusol(), "2026") == "1"
 
 
-def test_next_codpre_cuenta_dentro_de_su_serie():
-    """Cada serie lleva su propio contador: la 1 puede ir por el 526.080 y la 5
-    por el 5. Con el máximo GLOBAL, una proforma nueva de Streamtec salía con un
-    número altísimo que no casaba con lo que enseña el escritorio."""
+def test_next_codpre_es_global_no_por_serie():
+    """El CODPRE es único en TODA la tabla, no por serie (regresión post-#456).
+
+    Numerar «por serie» daba a una proforma nueva de la serie 5 el número 40,
+    que YA existe como proforma vieja de Bomedia (serie 1). Las líneas de F_LPS
+    se guardan por CODLPS (= CODPRE), así que las de la 5-40 chocaban con las de
+    la 1-40 y el INSERT se rechazaba: cabecera sí, líneas no. Con el máximo
+    GLOBAL el número no existe en ninguna serie y las líneas nunca chocan."""
     fake = _FakeFactusol(quotes=[
         _quote_row(526080, serie="1"), _quote_row(526079, serie="1"),
         _quote_row(39, serie="5"), _quote_row(12, serie="2"),
     ])
+    # Sea cual sea la serie elegida, el número es el máximo global + 1.
     assert next_codpre(fake, "2026", 1) == "526081"
-    assert next_codpre(fake, "2026", 5) == "40"
-    assert next_codpre(fake, "2026", 2) == "13"
+    assert next_codpre(fake, "2026", 5) == "526081"
+    assert next_codpre(fake, "2026", 2) == "526081"
 
 
-def test_next_codpre_de_una_serie_sin_proformas_arranca_en_uno():
+def test_next_codpre_global_aunque_la_serie_no_tenga_proformas():
+    # La serie 4 no tiene proformas, pero el número sigue siendo el global + 1
+    # (no arranca en 1, que chocaría con la 1-1 y sus líneas).
     fake = _FakeFactusol(quotes=[_quote_row(526080, serie="1")])
-    assert next_codpre(fake, "2026", 4) == "1"
+    assert next_codpre(fake, "2026", 4) == "526081"
 
 
 # --- lectura ----------------------------------------------------------------
@@ -476,6 +483,36 @@ def test_create_quote_writes_header_and_lines_to_f_lps(session):
     # Línea de texto libre: sin artículo, pero se escribe igual.
     assert lines[1]["ARTLPS"] == ""
     assert result["lines"] == 3
+
+
+def test_create_quote_serie_pequena_usa_codpre_global_para_no_chocar_las_lineas(session):
+    """Regresión post-#456 (B1): una proforma NUEVA de una serie pequeña (5) no
+    puede reutilizar un CODPRE que ya existe en otra serie. El 40 es una vieja
+    de Bomedia (serie 1) con sus líneas en F_LPS (CODLPS=40); si la nueva 5-40
+    escribiera sus líneas en CODLPS=40 chocarían con las de la 1-40 y el INSERT
+    se rechazaría (cabecera sí, líneas no). El número tiene que ser el máximo
+    GLOBAL + 1, único en toda la tabla, para que sus líneas nunca colisionen."""
+    fake = _FakeFactusol(
+        quotes=[_quote_row(40, serie="1"), _quote_row(526080, serie="1")],
+        lines=[_line_row(40, 1, serie="1", desc="Vieja de Bomedia")],
+    )
+    result = create_quote(
+        fake, session, ejercicio="2026",
+        customer={"codcli": "55555", "nombre": "Acme SL"},
+        lines=[{"description": "Tinta", "quantity": 1, "unit_price": 45, "iva_pct": 21}],
+        serie=5,
+    )
+    # Número global único: ni el 41 «de la serie 5» ni el 40 ya ocupado.
+    assert result["codpre"] == "526081"
+    assert result["serie"] == 5
+    header = fake.writes_to("F_PRE")[0]
+    assert header["CODPRE"] == "526081"
+    assert header["TIPPRE"] == "5"
+    # Las líneas nuevas van bajo el CODLPS global, no bajo el 40 de la vieja.
+    nuevas = fake.writes_to("F_LPS")
+    assert result["lines"] == 1
+    assert [line["CODLPS"] for line in nuevas] == ["526081"]
+    assert [line["TIPLPS"] for line in nuevas] == ["5"]
 
 
 def test_build_quote_payload_uses_cempre_not_emapre_for_email():
