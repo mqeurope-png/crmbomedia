@@ -6,6 +6,7 @@ import {
   convertFactusolQuoteToOrder,
   downloadFactusolDocumentPdf,
   duplicateFactusolQuote,
+  getFactusolQuote,
   getQuoteJobStatus,
   listFactusolQuotes,
   saveBlob,
@@ -45,6 +46,7 @@ jest.mock("../../lib/erpApi", () => ({
   listFactusolQuotes: jest.fn(),
   convertFactusolQuoteToOrder: jest.fn(),
   duplicateFactusolQuote: jest.fn(),
+  getFactusolQuote: jest.fn(),
   getQuoteJobStatus: jest.fn(),
   downloadFactusolDocumentPdf: jest.fn(),
   saveBlob: jest.fn(),
@@ -80,6 +82,7 @@ const mockDuplicate = duplicateFactusolQuote as jest.Mock;
 const mockStatus = getQuoteJobStatus as jest.Mock;
 const mockPdf = downloadFactusolDocumentPdf as jest.Mock;
 const mockCompany = getCompany as jest.Mock;
+const mockGetQuote = getFactusolQuote as jest.Mock;
 
 const BRAILLE = {
   codpre: "39", referencia: "Placas braille", fecha: "2026-09-04", clipre: "3392",
@@ -148,6 +151,7 @@ beforeEach(() => {
   mockStatus.mockReset();
   mockPdf.mockReset();
   mockCompany.mockReset();
+  mockGetQuote.mockReset();
   (saveBlob as jest.Mock).mockReset();
 });
 
@@ -544,5 +548,63 @@ describe("Pantalla Proformas (rediseño de flujo, Fase 4)", () => {
       const ultima = mockList.mock.calls[mockList.mock.calls.length - 1][0];
       expect(ultima).toMatchObject({ serie: 5 });
     });
+  });
+
+  // --- A4: «Ver todas» (sin cola) ----------------------------------------
+
+  it("A4 · la tarjeta «Todas» enseña todas las proformas juntas y cuenta el total", async () => {
+    const user = userEvent.setup();
+    render(<ProformasPage />);
+    await screen.findByRole("list", { name: "Proformas" });
+    const colas = within(screen.getByRole("navigation", { name: "Colas de proformas" }));
+    // Existe, cuenta el total del periodo y arranca inactiva (empezamos en «aceptadas»).
+    const todas = colas.getByRole("button", { name: "Todas (6)" });
+    expect(todas).toHaveAttribute("aria-pressed", "false");
+    expect(order()).toHaveLength(3);              // solo la cola activa
+
+    await user.click(todas);
+    expect(todas).toHaveAttribute("aria-pressed", "true");
+    expect(order()).toHaveLength(6);             // todas las colas juntas
+    // Respeta el resto de filtros: el buscador sigue acotando dentro de «Todas».
+    await user.type(screen.getByRole("searchbox", { name: "Buscar proforma" }), "ligue");
+    // Fecha desc; 39 y 71 comparten fecha (04/09), empate → nº desc (71 > 39).
+    expect(order()).toEqual(["Proforma 9", "Proforma 71", "Proforma 39"]);
+  });
+
+  // --- A5: «Ver líneas» desde la lista -----------------------------------
+
+  it("A5 · «Ver líneas» carga el detalle F_LPS, lo enseña y lo cachea; se oculta al volver a pulsar", async () => {
+    mockGetQuote.mockResolvedValue({
+      ...BRAILLE, portes: 12,
+      lines: [
+        { position: 1, codart: "A1", sku: "SKU-1", description: "Placa braille",
+          quantity: 3, unit_price: 100, discount_pct: 0, line_total: 300, iva_pct: 21 },
+      ],
+    });
+    const user = userEvent.setup();
+    render(<ProformasPage />);
+    await screen.findByRole("list", { name: "Proformas" });
+    const braille = within(row("39"));
+    await user.click(braille.getByRole("button", { name: "Ver líneas 39" }));
+    // Pide el detalle por (número, serie) — la 39 es de la serie 5.
+    await waitFor(() => expect(mockGetQuote).toHaveBeenCalledWith("39", 5));
+    expect(await braille.findByText("Placa braille")).toBeInTheDocument();
+    expect(braille.getByText("SKU-1")).toBeInTheDocument();
+    expect(braille.getByText("Portes")).toBeInTheDocument();          // portes de cabecera
+    // Ocultar y volver a abrir NO vuelve a pedir (cacheado).
+    await user.click(braille.getByRole("button", { name: "Ocultar líneas 39" }));
+    expect(braille.queryByText("Placa braille")).toBeNull();
+    await user.click(braille.getByRole("button", { name: "Ver líneas 39" }));
+    expect(await braille.findByText("Placa braille")).toBeInTheDocument();
+    expect(mockGetQuote).toHaveBeenCalledTimes(1);
+  });
+
+  it("A5 · una proforma de escritorio (sin líneas en F_LPS) lo dice, en vez de una tabla vacía", async () => {
+    mockGetQuote.mockResolvedValue({ ...CLOSSET, portes: 0, lines: [] });
+    const user = userEvent.setup();
+    render(<ProformasPage />);
+    await screen.findByRole("list", { name: "Proformas" });
+    await user.click(within(row("37")).getByRole("button", { name: "Ver líneas 37" }));
+    expect(await within(row("37")).findByText(/Sin líneas en FACTUSOL/)).toBeInTheDocument();
   });
 });

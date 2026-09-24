@@ -18,10 +18,12 @@ import {
   convertFactusolQuoteToOrder,
   downloadFactusolDocumentPdf,
   FACTUSOL_SERIES,
+  getFactusolQuote,
   listFactusolQuotes,
   saveBlob,
   type FactusolPdfLang,
   type FactusolQuote,
+  type FactusolQuoteLine,
   type PaymentIntentInput,
   type QuoteEstado,
   type QuoteQueue,
@@ -99,6 +101,21 @@ function codpreOf(q: FactusolQuote): number {
   return Number(q.codpre) || 0;
 }
 
+/** A5 «Ver líneas»: estado de la carga bajo demanda del detalle F_LPS. */
+type QuoteLinesState = {
+  loading: boolean;
+  error: string | null;
+  lines: FactusolQuoteLine[] | null;
+  portes: number;
+};
+
+/** Clave real de una proforma: serie + número. Dos series pueden repetir
+ *  número (F_PRE se indexa por TIPPRE+CODPRE), así que expandir por CODPRE a
+ *  secas mezclaría filas. */
+function quoteKey(q: FactusolQuote): string {
+  return `${serieOf(q)}-${q.codpre ?? ""}`;
+}
+
 /** Orden de la lista: fecha (empate → nº), serie (empate → nº) o nº; siempre
  *  numérico en el nº. */
 function sortQuotes(list: FactusolQuote[], key: SortKey, dir: SortDir): FactusolQuote[] {
@@ -156,6 +173,70 @@ function amountHint(q: FactusolQuote): string {
 
 type Company = { id: string; name: string; codcli: string };
 
+/** A5: las líneas de una proforma, en la propia fila, para decidir si duplicar
+ *  o convertir sin abrirla. Solo lectura. Una F_PRE de escritorio no guarda
+ *  líneas en F_LPS (es mono-línea): en ese caso no hay desglose que enseñar y
+ *  se dice, en vez de una tabla vacía. */
+function QuoteLinesPanel({
+  state, total,
+}: {
+  state: QuoteLinesState | undefined;
+  total: number;
+}) {
+  if (!state || state.loading) {
+    return <p className="erp-pf-lines-msg muted small">Cargando líneas…</p>;
+  }
+  if (state.error) {
+    return <p className="erp-pf-lines-msg form-error small">{state.error}</p>;
+  }
+  const lines = state.lines ?? [];
+  if (lines.length === 0) {
+    return (
+      <p className="erp-pf-lines-msg muted small">
+        Sin líneas en FACTUSOL (proforma de escritorio); el total es {total.toFixed(2)} €.
+      </p>
+    );
+  }
+  return (
+    <div className="erp-pf-lines">
+      <table className="data-table erp-pf-lines-table">
+        <thead>
+          <tr>
+            <th>SKU</th>
+            <th>Descripción</th>
+            <th className="num">Cant.</th>
+            <th className="num">Precio</th>
+            <th className="num">IVA</th>
+            <th className="num">Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          {lines.map((l) => (
+            <tr key={l.position}>
+              <td className="mono">{l.sku ?? l.codart ?? "—"}</td>
+              <td>{l.description || "—"}</td>
+              <td className="num">{l.quantity}</td>
+              <td className="num">{l.unit_price.toFixed(2)} €</td>
+              <td className="num">{l.iva_pct}%</td>
+              <td className="num">{l.line_total.toFixed(2)} €</td>
+            </tr>
+          ))}
+          {state.portes > 0 ? (
+            <tr className="erp-pf-lines-portes">
+              <td className="mono">—</td>
+              <td>Portes</td>
+              <td className="num">—</td>
+              <td className="num">—</td>
+              <td className="num">—</td>
+              <td className="num">{state.portes.toFixed(2)} €</td>
+            </tr>
+          ) : null}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 /** Pantalla Proformas (rediseño de flujo, Fase 4): colas arriba con contador,
  *  lista de la cola elegida con nº, cliente (país · régimen), importe, estado
  *  y su acción principal («Convertir en pedido», la misma conversión de la
@@ -199,6 +280,12 @@ export default function ProformasPage() {
   // «Ahora» para la antigüedad en palabras: el momento de la última carga (no
   // se llama a Date.now() al pintar).
   const [now, setNow] = useState(() => Date.now());
+  // A5 «Ver líneas»: por clave real (serie + número), el detalle F_LPS cargado
+  // bajo demanda y cacheado. Solo lectura; no añade acciones. La lista F_PRE
+  // es mono-línea, así que las líneas se piden aparte (getFactusolQuote), la
+  // MISMA lectura que usan el detalle y el modal de duplicar.
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [linesById, setLinesById] = useState<Record<string, QuoteLinesState>>({});
 
   useEffect(() => {
     getCurrentUser()
@@ -259,6 +346,38 @@ export default function ProformasPage() {
   const hasFilters = Boolean(text.trim() || desde || hasta);
   /** «Más antiguas primero» solo cuando lo decide la cola, no el usuario. */
   const byAge = queue === "pendientes" && sortKey === null && sortDir === null;
+
+  /** A5: abre/cierra las líneas de una proforma. La primera vez pide el
+   *  detalle (F_LPS por serie + número) y lo cachea; cerrar y volver a abrir
+   *  no vuelve a pedir. Solo lectura. */
+  function toggleLines(q: FactusolQuote) {
+    const key = quoteKey(q);
+    const willOpen = !expanded.has(key);
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+    if (!willOpen || linesById[key]?.lines || linesById[key]?.loading) return;
+    setLinesById((prev) => ({
+      ...prev, [key]: { loading: true, error: null, lines: null, portes: 0 },
+    }));
+    void getFactusolQuote(q.codpre ?? "", serieOf(q) || undefined)
+      .then((full) => setLinesById((prev) => ({
+        ...prev,
+        [key]: {
+          loading: false, error: null,
+          lines: full.lines ?? [], portes: full.portes ?? 0,
+        },
+      })))
+      .catch((e) => setLinesById((prev) => ({
+        ...prev,
+        [key]: {
+          loading: false, lines: null, portes: 0,
+          error: extractErrorMessage(e, "No se pudieron cargar las líneas."),
+        },
+      })));
+  }
 
   /** Espera al job y devuelve su resultado, o null (con el error ya puesto). */
   async function waitFor(jobId: string): Promise<Record<string, unknown> | null> {
@@ -405,6 +524,9 @@ export default function ProformasPage() {
         colors={QUEUE_COLOR}
         hints={QUEUE_HINT}
         ariaLabel="Colas de proformas"
+        allLabel="Todas"
+        allCount={filtered.length}
+        allHint="Todas las proformas del periodo, sin separar por cola"
       />
 
       {error ? <p className="form-error" role="alert">{error}</p> : null}
@@ -545,6 +667,9 @@ export default function ProformasPage() {
                     <span className="mono">{fmtDate(q.fecha)}</span>
                     {q.referencia ? <span className="muted">{q.referencia}</span> : null}
                   </p>
+                  {expanded.has(quoteKey(q)) ? (
+                    <QuoteLinesPanel state={linesById[quoteKey(q)]} total={q.total} />
+                  ) : null}
                 </div>
                 <div className="erp-flow-item-side">
                   <p className="erp-flow-amount">
@@ -567,6 +692,14 @@ export default function ProformasPage() {
                     <button type="button" className="button small secondary" disabled={busy}
                             onClick={() => void pdf(q)}>
                       PDF
+                    </button>
+                    <button
+                      type="button" className="button small secondary"
+                      aria-expanded={expanded.has(quoteKey(q))}
+                      aria-label={`${expanded.has(quoteKey(q)) ? "Ocultar" : "Ver"} líneas ${codpre}`}
+                      onClick={() => toggleLines(q)}
+                    >
+                      {expanded.has(quoteKey(q)) ? "Ocultar líneas" : "Ver líneas"}
                     </button>
                     {menu.length > 0 ? (
                       <ActionsMenu label={`Más acciones ${codpre}`}>{menu}</ActionsMenu>

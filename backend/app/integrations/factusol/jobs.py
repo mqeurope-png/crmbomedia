@@ -87,18 +87,26 @@ def enqueue_emit_invoice(
     )
 
 
-def _enqueue(func_path: str, *args: Any) -> str:
+def _enqueue(func_path: str, *args: Any, **kwargs: Any) -> str:
     """Encola en `factusol:writes` y devuelve el job_id. Un solo sitio donde
-    se abre Redis para todas las escrituras FACTUSOL."""
+    se abre Redis para todas las escrituras FACTUSOL.
+
+    Acepta `kwargs` y usa `enqueue_call` (que separa `args`/`kwargs` de las
+    opciones de RQ) para que un llamador pueda pasar los argumentos del job
+    POR NOMBRE. Así, si a la firma de un job se le añade un parámetro nuevo,
+    los valores siguen cayendo en su sitio en vez de desplazarse por posición
+    —justo el desajuste que dejó las proformas sin poder crearse tras añadir
+    `serie`—. Los llamadores que aún pasan posicional siguen igual
+    (`kwargs` vacío)."""
     from redis import Redis  # noqa: PLC0415
     from rq import Queue  # noqa: PLC0415
 
     from app.core.config import get_settings  # noqa: PLC0415
 
     conn = Redis.from_url(get_settings().redis_url)
-    job = Queue(FACTUSOL_QUEUE_WRITES, connection=conn).enqueue(
-        func_path, *args,
-        job_timeout=JOB_TIMEOUT_SECONDS,
+    job = Queue(FACTUSOL_QUEUE_WRITES, connection=conn).enqueue_call(
+        func_path, args=args, kwargs=kwargs,
+        timeout=JOB_TIMEOUT_SECONDS,
         result_ttl=RESULT_TTL_SECONDS,
     )
     return job.id
@@ -722,7 +730,8 @@ def enqueue_create_quote(
 ) -> str:
     return _enqueue(
         "app.integrations.factusol.jobs.create_quote_job",
-        customer, lines, referencia, fecha, fopfac, portes, serie,
+        customer=customer, lines=lines, referencia=referencia, fecha=fecha,
+        fopfac=fopfac, portes=portes, serie=serie,
     )
 
 
@@ -733,7 +742,8 @@ def enqueue_update_quote(
 ) -> str:
     return _enqueue(
         "app.integrations.factusol.jobs.update_quote_job",
-        codpre, customer, lines, referencia, force, portes, serie,
+        codpre=codpre, customer=customer, lines=lines, referencia=referencia,
+        force=force, portes=portes, serie=serie,
     )
 
 
@@ -741,7 +751,8 @@ def enqueue_duplicate_quote(
     codpre: str, fecha: str | None = None, serie: int | None = None,
 ) -> str:
     return _enqueue(
-        "app.integrations.factusol.jobs.duplicate_quote_job", codpre, fecha, serie,
+        "app.integrations.factusol.jobs.duplicate_quote_job",
+        codpre=codpre, fecha=fecha, serie=serie,
     )
 
 
@@ -752,7 +763,8 @@ def enqueue_convert_quote_to_order(
 ) -> str:
     return _enqueue(
         "app.integrations.factusol.jobs.convert_quote_to_order_job",
-        codpre, actor_user_id, payment, create_albaran, serie,
+        codpre=codpre, actor_user_id=actor_user_id, payment=payment,
+        create_albaran=create_albaran, serie=serie,
     )
 
 

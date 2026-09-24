@@ -42,6 +42,7 @@ export const QUEUE_HINT: Record<WorkflowQueue, string> = {
  *  proformas (Fase 4). Volver a pulsar la cola activa quita el filtro. */
 export function QueueCards<Q extends string>({
   counts, active, onSelect, queues, labels, colors, hints, ariaLabel = "Colas de trabajo",
+  allLabel, allCount, allHint,
 }: {
   counts: Partial<Record<Q, number>>;
   active: Q | null;
@@ -51,9 +52,32 @@ export function QueueCards<Q extends string>({
   colors: Record<Q, string>;
   hints?: Partial<Record<Q, string>>;
   ariaLabel?: string;
+  /** Opt-in: una tarjeta «Todas» al principio que quita el filtro de cola
+   *  (activa cuando `active === null`). Solo aparece si se pasa `allLabel`, así
+   *  que la bandeja de pedidos —que no lo pasa— queda igual que siempre. */
+  allLabel?: string;
+  allCount?: number;
+  allHint?: string;
 }) {
   return (
     <nav className="erp-flow-queues" aria-label={ariaLabel}>
+      {allLabel != null ? (
+        <button
+          type="button"
+          className={`erp-flow-queue${active === null ? " is-active" : ""}`}
+          style={{ ["--qc" as string]: "#5B6674" }}
+          aria-pressed={active === null}
+          aria-label={`${allLabel} (${allCount ?? 0})`}
+          title={allHint}
+          onClick={() => onSelect(null)}
+        >
+          <span className="erp-flow-queue-n">{allCount ?? 0}</span>
+          <span className="erp-flow-queue-l">
+            <span className="erp-flow-dot" aria-hidden />
+            {allLabel}
+          </span>
+        </button>
+      ) : null}
       {queues.map((q) => (
         <button
           key={q}
