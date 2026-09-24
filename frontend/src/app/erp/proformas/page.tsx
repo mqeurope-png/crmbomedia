@@ -352,19 +352,12 @@ export default function ProformasPage() {
   /** A5: abre/cierra las líneas de una proforma. La primera vez pide el
    *  detalle (F_LPS por serie + número) y lo cachea; cerrar y volver a abrir
    *  no vuelve a pedir. Solo lectura. */
-  function toggleLines(q: FactusolQuote) {
-    const key = quoteKey(q);
-    const willOpen = !expanded.has(key);
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key); else next.add(key);
-      return next;
-    });
-    if (!willOpen || linesById[key]?.lines || linesById[key]?.loading) return;
+  /** Pide el detalle F_LPS de una proforma y lo deja cacheado bajo su clave. */
+  function fetchLinesInto(key: string, codpre: string, serie: number) {
     setLinesById((prev) => ({
       ...prev, [key]: { loading: true, error: null, lines: null, portes: 0 },
     }));
-    void getFactusolQuote(q.codpre ?? "", serieOf(q) || undefined)
+    void getFactusolQuote(codpre, serie || undefined)
       .then((full) => setLinesById((prev) => ({
         ...prev,
         [key]: {
@@ -379,6 +372,36 @@ export default function ProformasPage() {
           error: extractErrorMessage(e, "No se pudieron cargar las líneas."),
         },
       })));
+  }
+
+  /** Tras EDITAR una proforma, «Ver líneas» debe reflejar los cambios sin F5:
+   *  si el panel está abierto se recarga en vivo; si no, se tira la caché vieja
+   *  para que la próxima apertura pida las líneas nuevas. (La escritura ya va
+   *  bien —#471—; esto es solo el refresco de la vista.) */
+  function refreshQuoteLines(codpre: string, serie: number) {
+    const key = `${serie}-${codpre}`;
+    if (expanded.has(key)) {
+      fetchLinesInto(key, codpre, serie);
+    } else {
+      setLinesById((prev) => {
+        if (!(key in prev)) return prev;
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+    }
+  }
+
+  function toggleLines(q: FactusolQuote) {
+    const key = quoteKey(q);
+    const willOpen = !expanded.has(key);
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+    if (!willOpen || linesById[key]?.lines || linesById[key]?.loading) return;
+    fetchLinesInto(key, q.codpre ?? "", serieOf(q));
   }
 
   /** Espera al job y devuelve su resultado, o null (con el error ya puesto). */
@@ -479,6 +502,11 @@ export default function ProformasPage() {
         setError(`${hecho} ${result.warning}`);
       } else {
         setNotice(hecho);
+      }
+      // Flecos #471: tras editar, «Ver líneas» refleja los cambios sin F5
+      // (refresca el detalle F_LPS cacheado de esta proforma).
+      if (result.codpre != null) {
+        refreshQuoteLines(String(result.codpre), Number(result.serie) || 0);
       }
     }
     await load();
