@@ -313,4 +313,14 @@ describe("SatReadyCard", () => {
     render(<SatReadyCard order={order({ tracking_number: "PREV-9" })} onChanged={() => {}} />);
     expect(screen.getByLabelText("Nº de seguimiento")).toHaveValue("PREV-9");
   });
+
+  // --- Genei (PR-1 follow-up): crear envío desde la Cola SAT ------------------
+
+  it("con permiso de envío (SAT_SHIPPING) ofrece «Crear envío con Genei»; sin él, no", () => {
+    const { rerender } = render(<SatReadyCard order={order()} onChanged={() => {}} canShip />);
+    expect(screen.getByRole("button", { name: /Crear envío con Genei/ })).toBeInTheDocument();
+    // Sin la capacidad (por defecto) el botón no aparece en la card.
+    rerender(<SatReadyCard order={order()} onChanged={() => {}} canShip={false} />);
+    expect(screen.queryByRole("button", { name: /Crear envío con Genei/ })).not.toBeInTheDocument();
+  });
 });

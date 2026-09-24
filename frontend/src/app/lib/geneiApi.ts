@@ -43,9 +43,13 @@ export type GeneiPrefill = {
   configured: boolean;
   destination: GeneiDestination;
   missing: string[];
+  /** Bultos reales medidos por el SAT al embalar (vacío si aún no hay). */
+  packages: GeneiPackage[];
   default_package: GeneiPackage;
   preferred_couriers: string[];
   origin_address_id: string | null;
+  /** El pedido está embalado («Listos»): requisito para crear el envío. */
+  is_packed: boolean;
   state: GeneiState;
 };
 

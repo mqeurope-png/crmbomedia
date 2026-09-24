@@ -39,8 +39,8 @@ from app.erp.integrations.genei.service import (
 )
 from app.erp.integrations.genei.status import state_of
 from app.erp.models.carriers import Carrier
-from app.erp.models.orders import Order
-from app.erp.models.shipping import KIND_ETIQUETA, SOURCE_GENEI_API
+from app.erp.models.orders import Order, PreparationStatus
+from app.erp.models.shipping import KIND_ETIQUETA, SOURCE_GENEI_API, ShipmentPackage
 from app.models.crm import AuditLog, Company, Contact, User
 
 logger = logging.getLogger(__name__)
@@ -151,6 +151,26 @@ def _config_of(carrier: Carrier | None) -> GeneiConfig:
     return GeneiConfig.from_json(carrier.config_json) if carrier else GeneiConfig()
 
 
+def _order_packages(session: Session, order_id: str) -> list[dict[str, float]]:
+    """Bultos REALES del pedido (medidos por el SAT al embalar, tabla
+    `shipment_packages`) en formato de bulto de Genei. `depth_cm` → `length`.
+    Lista vacía si el pedido aún no tiene bultos medidos."""
+    rows = session.scalars(
+        select(ShipmentPackage).where(ShipmentPackage.order_id == order_id)
+        .order_by(ShipmentPackage.position.asc())
+    )
+    return [
+        {"weight": float(p.weight_kg), "height": float(p.height_cm),
+         "width": float(p.width_cm), "length": float(p.depth_cm)}
+        for p in rows
+    ]
+
+
+def _is_packed(order: Order) -> bool:
+    """El pedido está embalado (en «Listos»): requisito para crear el envío."""
+    return order.preparation_status == PreparationStatus.PACKED.value
+
+
 def _audit(session: Session, user: User, action: str, order_id: str | None, meta: dict) -> None:
     session.add(AuditLog(
         actor_user_id=getattr(user, "id", None),
@@ -232,14 +252,20 @@ def genei_prefill(
     carrier = get_genei_carrier(session)
     cfg = _config_of(carrier)
     dest = build_destination(resolve_destination_fields(session, order))
+    # Bultos REALES medidos por el SAT al embalar; si no hay, el modal cae al
+    # bulto por defecto de la config (editable).
+    packages = _order_packages(session, order.id)
     return {
         "order_id": order.id,
         "configured": bool(carrier and carrier.api_credentials_encrypted),
         "destination": dest,
         "missing": destination_is_complete(dest),
+        "packages": packages,
         "default_package": cfg.default_package.as_package(),
         "preferred_couriers": cfg.preferred_for(dest.get("isoCountry")),
         "origin_address_id": carrier.default_address_id if carrier else None,
+        # El envío solo se puede crear si el pedido está embalado («Listos»).
+        "is_packed": _is_packed(order),
         "state": _serialise_state(order),
     }
 
@@ -311,6 +337,14 @@ def genei_create_shipment(
             "code": "shipment_exists",
             "detail": "El pedido ya tiene un envío en Genei; elimínalo antes de crear otro.",
             "state": _serialise_state(order),
+        })
+    # Regla de negocio: no se crea el envío si el pedido no está EMBALADO. En la
+    # Cola SAT solo pasa a «Listos» cuando el SAT ha medido/embalado los bultos.
+    if not _is_packed(order):
+        raise HTTPException(409, {
+            "code": "not_packed",
+            "detail": ("Empaqueta el pedido primero: solo se puede crear el "
+                       "envío cuando está en «Listos»."),
         })
     carrier = _require_carrier(session)
     cfg = _config_of(carrier)

@@ -145,6 +145,9 @@ export default function SatQueuePage() {
   // (capacidad `erp.orders.approve` — oficina), NO trabajo de taller: el SAT no
   // lo ve. Va aparte de `canEdit` (trabajo de taller).
   const [canEnqueue, setCanEnqueue] = useState(false);
+  // Genei (crear envío): capacidad `erp.sat.shipping`. El botón vive en la card
+  // de «Listos»; el backend revalida.
+  const [canShip, setCanShip] = useState(false);
 
   useEffect(() => {
     getCurrentUser()
@@ -155,10 +158,12 @@ export default function SatQueuePage() {
       .then((u) => {
         setCanEdit(can(u, Cap.SAT_PREPARE));
         setCanEnqueue(can(u, Cap.ORDERS_APPROVE));
+        setCanShip(can(u, Cap.SAT_SHIPPING));
       })
       .catch(() => {
         setCanEdit(false);
         setCanEnqueue(false);
+        setCanShip(false);
       });
     // Tiendas (filtro) best-effort: sin ellas el filtro no sale.
     getErpSettings()
@@ -523,7 +528,7 @@ export default function SatQueuePage() {
               <div className="sat-cards">
                 {ready.map((o) => withSelect(o,
                   <SatReadyCard key={o.id} order={o} onChanged={refreshAll}
-                                canEdit={canEdit} />,
+                                canEdit={canEdit} canShip={canShip} />,
                 ))}
               </div>
             )}
@@ -575,7 +580,7 @@ export default function SatQueuePage() {
                   <div className="sat-cards sat-cards--single">
                     {ready.map((o) => (
                       <SatReadyCard key={o.id} order={o} onChanged={refreshAll}
-                                    canEdit={canEdit} />
+                                    canEdit={canEdit} canShip={canShip} />
                     ))}
                   </div>
                 )}
