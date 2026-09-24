@@ -279,6 +279,8 @@ export type FactusolOriginDocument = {
  *  registra solo: lo hace «Registrar cobro» cuando exista la factura. */
 export type PaymentIntentInput = {
   paid: boolean;
+  /** C1 «sin cobro» (cortesía): ni se factura ni se cobra. Excluyente con `paid`. */
+  no_charge?: boolean;
   forma_pago?: string | null;
   forma_pago_nombre?: string | null;
   contrapartida?: string | null;
@@ -1186,8 +1188,14 @@ export async function createSampleOrder(
  *  pedido web o si no procede de un documento de FACTUSOL. */
 export async function createOrderAlbaran(
   orderId: string,
+  payment?: PaymentIntentInput | null,
 ): Promise<{ job_id: string; order_id: string; status: string }> {
-  return apiFetch(`/api/erp/orders/${orderId}/albaran`, { method: "POST" });
+  // C1: si el pago no está decidido y no se manda una decisión, el backend
+  // responde 409 `payment_undecided` (la ficha pide elegir).
+  return apiFetch(`/api/erp/orders/${orderId}/albaran`, {
+    method: "POST",
+    ...(payment ? { body: JSON.stringify({ payment }) } : {}),
+  });
 }
 
 // --- Fase 1 · pedido desde un documento de FACTUSOL (solo lectura allí) -------
@@ -1392,6 +1400,10 @@ export type SatQueueFilters = {
   /** `true` = enseñar SOLO los pedidos marcados «No requiere envío» (para
    *  revisarlos / desmarcar); por defecto quedan fuera de la cola. */
   no_shipping?: boolean;
+  /** C4: orden por fecha del pedido. `fecha_desc` (por defecto) = los más
+   *  recientes primero; `fecha_asc` = los más antiguos (FIFO). La prioridad
+   *  por estado sigue mandando dentro de cada sección. */
+  sort?: "fecha_desc" | "fecha_asc";
 };
 
 export async function getSatQueue(filters: SatQueueFilters = {}): Promise<SatQueue> {
@@ -2497,8 +2509,12 @@ export type OrderCobroInfo = {
   cobros?: number;
   fopfac?: string;
   forma_pago_nombre?: string | null;
-  /** Cuenta sugerida por defecto (serie / empresa emisora, PayPal por tienda). */
+  /** Cuenta sugerida por defecto (serie / empresa emisora, PayPal por tienda,
+   *  o la que se apuntó en el pedido al pagar — Bloque B). */
   suggested_cuenta?: Contrapartida | null;
+  /** Fecha sugerida (Bloque B): la del pago apuntado en el pedido, si la hay,
+   *  para prellenar «Registrar cobro»; ausente → el modal usa hoy. */
+  suggested_fecha?: string | null;
   warnings?: string[];
   checked_at?: string;
   persisted_status?: FactusolCobroStatus | null;

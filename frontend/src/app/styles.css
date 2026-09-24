@@ -12768,6 +12768,20 @@ input[type="radio"]:focus-visible {
 .erp-pf-lines-portes td { color: var(--muted); }
 .erp-pf-lines-msg { margin: var(--sp-2) 0 0; }
 
+/* C3 · sugerencias tras aprobar el pedido (ficha), no bloqueantes. */
+.erp-approve-suggest {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2) var(--sp-3);
+}
+.erp-approve-suggest-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
 /* ==========================================================================
    Lote 2 · PR-2 · ficha de empresa  (companies/[id]/page.tsx +
    components/erp/CompanyActivityPanel.tsx · revisión §4 «Ficha de empresa»)

@@ -286,9 +286,9 @@ Es la pantalla de un pedido concreto. De arriba abajo:
   (presupuesto/pedido) en el idioma que elijas en **«Idioma del PDF»**.
 - **«PDF de la factura»** — descarga el PDF de la factura (disponible cuando ya
   está emitida).
-- **«Enviar por email»** — manda el pedido (con su albarán) por email al taller
-  (SAT). Abre **«Enviar pedido por email»** para elegir destinatarios, adjuntos
-  e idioma.
+- **«Enviar a SAT»** — manda el pedido (con su albarán) por email al taller y,
+  a la vez, lo **mete en la Cola SAT** (si ya estaba, no se duplica). Abre
+  **«Enviar pedido por email»** para elegir destinatarios, adjuntos e idioma.
 - **«Enviar factura al cliente»** — abre **«Enviar factura por email»** con el
   PDF de la factura adjunto.
 
@@ -320,7 +320,18 @@ Es la pantalla de un pedido concreto. De arriba abajo:
   emisora/serie, fecha y forma de pago; botón **«Emitir factura»**.
 - **«Registrar cobro en FACTUSOL»** — eliges la **cuenta/contrapartida**, la
   fecha y la forma de pago, marcas la casilla de confirmación y pulsas
-  **«Registrar cobro»** (es un apunte contable en FACTUSOL).
+  **«Registrar cobro»** (es un apunte contable en FACTUSOL). Si al dar de alta
+  el pedido ya apuntaste el pago (forma, cuenta y fecha), la ventana **viene
+  prellenada** con esos datos; solo tienes que confirmar.
+- **«Antes de generar el albarán»** — al generar el albarán de un pedido cuyo
+  pago aún no se ha decidido, se pide elegir: **confirmar el pago** (queda
+  apuntado en el pedido, sin escribir el cobro en FACTUSOL) o marcarlo **«sin
+  cobro»** de un clic (envío de cortesía: ni se factura ni se cobra, y sale de
+  «Por facturar» / «Por cobrar»). No se genera el albarán dejando el pago «en
+  el aire».
+- **Tras «Aprobar»** — la ficha ofrece, sin obligar, los siguientes pasos:
+  **«Enviar a SAT»** y **«Generar albarán»** (que decide el pago / sin cobro).
+  Se descartan con la ×.
 - **«Anular pedido»** — solo pedidos **no web**. Puedes marcar **«Borrar también
   en FACTUSOL»** el albarán/presupuesto; **la factura no se borra nunca**. El
   pedido sale de la bandeja, las colas y el seguimiento, y **se puede restaurar**
@@ -480,8 +491,11 @@ juntas), **«No requieren envío»** (los marcados como que no se envían) y
 **«Enviados»** (historial de lo ya mandado al taller). Vista **«Tarjetas»** /
 **«Lista»**.
 **Filtros:** buscador (*«Nº de pedido o cliente…»*), **«Desde»**/**«Hasta»**,
-**«Tienda»** y **«Estado»** (*Todos / Por embalar / Bloqueados / En cola /
-Preparando / Listos*), con **«Limpiar filtros»**.
+**«Tienda»**, **«Estado»** (*Todos / Por embalar / Bloqueados / En cola /
+Preparando / Listos*) y **«Orden»** por fecha del pedido —**recientes primero**
+por defecto, o **antiguos primero** (FIFO)—, con **«Limpiar filtros»**. La
+prioridad por estado (bloqueado → preparando → en cola) manda igual: la fecha
+ordena dentro de cada grupo.
 
 **«No requiere envío» (en lote).** Hay pedidos que no se envían nunca
 (servicios, RMA, asistencias remotas, tintas ya entregadas…). En **«Por embalar»**

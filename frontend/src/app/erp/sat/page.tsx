@@ -88,6 +88,8 @@ export default function SatQueuePage() {
   const [hasta, setHasta] = useState("");
   const [store, setStore] = useState("");
   const [estado, setEstado] = useState<"" | SatQueueEstado>("");
+  // C4: orden por fecha del pedido. Por defecto, los más recientes primero.
+  const [sort, setSort] = useState<"fecha_desc" | "fecha_asc">("fecha_desc");
   const [qInput, setQInput] = useState("");
   const [q, setQ] = useState("");
   const [stores, setStores] = useState<{ slug: string; label: string }[]>([]);
@@ -106,12 +108,16 @@ export default function SatQueuePage() {
     if (store) f.store_slug = store;
     if (estado) f.estado = estado;
     if (q) f.q = q;
+    // El orden siempre viaja (por defecto `fecha_desc`); no cuenta como
+    // «filtro activo» para el botón «Limpiar».
+    if (sort !== "fecha_desc") f.sort = sort;
     return f;
-  }, [desde, hasta, store, estado, q]);
+  }, [desde, hasta, store, estado, q, sort]);
   const hasFilters = Object.keys(filters).length > 0;
 
   function limpiar() {
-    setDesde(""); setHasta(""); setStore(""); setEstado(""); setQInput(""); setQ("");
+    setDesde(""); setHasta(""); setStore(""); setEstado("");
+    setSort("fecha_desc"); setQInput(""); setQ("");
   }
 
   // --- vista -----------------------------------------------------------------
@@ -396,6 +402,14 @@ export default function SatQueuePage() {
           <select value={estado} aria-label="Estado"
                   onChange={(e) => changeEstado(e.target.value as "" | SatQueueEstado)}>
             {ESTADO_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </label>
+        <label className="field">
+          <span>Orden</span>
+          <select value={sort} aria-label="Orden por fecha del pedido"
+                  onChange={(e) => setSort(e.target.value as "fecha_desc" | "fecha_asc")}>
+            <option value="fecha_desc">Fecha: recientes primero</option>
+            <option value="fecha_asc">Fecha: antiguos primero</option>
           </select>
         </label>
         {hasFilters || qInput ? (

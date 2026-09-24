@@ -241,6 +241,34 @@ def test_sat_queue_filters_fecha_tienda_estado_y_texto(client, session_factory):
     assert art_item["placed_at"].startswith("2026-09-01")
 
 
+def test_sat_queue_orden_por_fecha_recientes_primero(client, session_factory):
+    """C4: dentro de cada grupo la cola ordena por FECHA del pedido; por
+    defecto los más recientes primero, y `sort=fecha_asc` los invierte. La
+    prioridad por estado (bloqueado antes que en cola) sigue mandando."""
+    with session_factory() as s:
+        s.add_all([
+            Order(order_number="IQ-VIEJO", preparation_status="in_queue",
+                  payment_status="paid", placed_at=datetime(2026, 9, 1, 10, tzinfo=UTC)),
+            Order(order_number="IQ-NUEVO", preparation_status="in_queue",
+                  payment_status="paid", placed_at=datetime(2026, 9, 20, 10, tzinfo=UTC)),
+            Order(order_number="BLOQ", preparation_status="blocked",
+                  payment_status="paid", placed_at=datetime(2026, 9, 10, 10, tzinfo=UTC)),
+            Order(order_number="RD-VIEJO", preparation_status="packed",
+                  payment_status="paid", placed_at=datetime(2026, 9, 2, 10, tzinfo=UTC)),
+            Order(order_number="RD-NUEVO", preparation_status="packed",
+                  payment_status="paid", placed_at=datetime(2026, 9, 15, 10, tzinfo=UTC)),
+        ])
+        s.commit()
+    # Por defecto: recientes primero dentro del grupo (bloqueado sigue el 1º).
+    prep, ready = _nums(client, {})
+    assert prep == ["BLOQ", "IQ-NUEVO", "IQ-VIEJO"]
+    assert ready == ["RD-NUEVO", "RD-VIEJO"]
+    # `fecha_asc`: los más antiguos primero (FIFO), sin tocar la prioridad.
+    prep_asc, ready_asc = _nums(client, {"sort": "fecha_asc"})
+    assert prep_asc == ["BLOQ", "IQ-VIEJO", "IQ-NUEVO"]
+    assert ready_asc == ["RD-VIEJO", "RD-NUEVO"]
+
+
 # --- Lote B6: historial de enviados al taller --------------------------------
 
 

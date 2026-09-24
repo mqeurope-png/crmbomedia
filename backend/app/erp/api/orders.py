@@ -1407,17 +1407,37 @@ def create_order_from_factusol(
     }
 
 
+class CreateAlbaranIn(BaseModel):
+    """C1: al generar el albarán se puede decidir el pago en el mismo paso —
+    confirmarlo (opción B, apunte en el pedido, sin cobro en FACTUSOL) o
+    marcarlo «sin cobro»—. Sin cuerpo, si el pago ya estaba decidido se genera
+    igual; si no, el endpoint responde 409 `payment_undecided`."""
+
+    payment: PaymentIn | None = None
+
+
 @router.post("/{order_id}/albaran", status_code=202)
 def create_order_albaran(
     order_id: str,
+    payload: CreateAlbaranIn | None = None,
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_edit),
 ) -> dict[str, Any]:
     """Fase 2 — (re)encola la creación del albarán FACTUSOL del pedido en
     `factusol:writes` (202 + job_id; estado por `/factusol/quotes/status/`).
     Idempotente: 409 si ya tiene albarán; 409 si es un pedido web (el albarán
-    lo crea WooCommerce) o no procede de un documento de FACTUSOL."""
-    from app.erp.factusol_albaran import albaran_blocker  # noqa: PLC0415
+    lo crea WooCommerce) o no procede de un documento de FACTUSOL.
+
+    C1 — no se genera dejando el pago «en el aire»: si el pago no está decidido
+    (ni pagado, ni sin cobro, ni el paso de pago del alta) y no llega una
+    decisión en el cuerpo, responde 409 `payment_undecided` para que la ficha
+    pida elegir. Una decisión en el cuerpo (`payment`: pagado o sin cobro) se
+    apunta en el pedido antes de encolar el albarán."""
+    from app.erp.factusol_albaran import (  # noqa: PLC0415
+        albaran_blocker,
+        payment_decided,
+        record_payment_intent,
+    )
     from app.integrations.factusol.jobs import enqueue_create_order_albaran  # noqa: PLC0415
 
     order = _get_order(session, order_id, current_user)
@@ -1434,6 +1454,20 @@ def create_order_albaran(
             "detail": f"El pedido ya tiene el albarán {order.factusol_albaran_number}.",
             "numero": order.factusol_albaran_number,
         })
+    # C1: decidir el pago antes de generar. Con decisión en el cuerpo, se
+    # apunta (opción B / sin cobro); sin ella, si no estaba decidido, se pide.
+    resolved_payment = None
+    if payload is not None and payload.payment is not None:
+        resolved_payment = _resolve_payment_or_400(session, payload.payment)
+        record_payment_intent(session, order, resolved_payment, actor_user_id=current_user.id)
+    elif not payment_decided(order):
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "payment_undecided",
+            "detail": (
+                "Antes de generar el albarán decide el pago: confírmalo (forma, "
+                "cuenta y fecha) o márcalo «sin cobro» (envío de cortesía)."
+            ),
+        })
     try:
         job_id = enqueue_create_order_albaran(order.id, current_user.id)
     except Exception as exc:  # noqa: BLE001 — Redis caído, etc.
@@ -1443,7 +1477,7 @@ def create_order_albaran(
     _audit_fase2(
         session, order, current_user,
         {"albaran_job_id": job_id, "albaran_skipped": None, "albaran_error": None},
-        None,
+        resolved_payment,
     )
     session.commit()
     return {"job_id": job_id, "order_id": order.id, "status": "queued"}

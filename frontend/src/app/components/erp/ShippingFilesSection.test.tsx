@@ -144,7 +144,7 @@ describe("ShippingFilesSection", () => {
     const btn = screen.getByRole("button", { name: "Crear albarán en FACTUSOL" });
     expect(btn).toHaveAttribute("title", expect.stringMatching(/pedido manual/));
     await user.click(btn);
-    await waitFor(() => expect(createOrderAlbaran).toHaveBeenCalledWith("o1"));
+    await waitFor(() => expect(createOrderAlbaran).toHaveBeenCalledWith("o1", null));
     await waitFor(() => expect(getQuoteJobStatus).toHaveBeenCalledWith("job-1"));
     expect(await screen.findByText("Albarán FACTUSOL 5-500009 creado.")).toBeInTheDocument();
     expect(onCreated).toHaveBeenCalledWith({ numero: "5-500009", error: null });
@@ -180,9 +180,30 @@ describe("ShippingFilesSection", () => {
       <ShippingFilesSection orderId="o1" isWooOrder={false} orderSource="factusol_proforma"
                             createSignal={1} />,
     );
-    await waitFor(() => expect(createOrderAlbaran).toHaveBeenCalledWith("o1"));
+    await waitFor(() => expect(createOrderAlbaran).toHaveBeenCalledWith("o1", null));
     expect(await screen.findByText("Creando el albarán en FACTUSOL…")).toBeInTheDocument();
     expect(screen.getByText(/Albarán encolado en FACTUSOL/)).toBeInTheDocument();
+  });
+
+  it("C1: sin pago decidido, generar el albarán abre el diálogo; «Sin cobro» reintenta con la decisión", async () => {
+    const { ApiError } = jest.requireActual("../../lib/api");
+    (createOrderAlbaran as jest.Mock)
+      .mockRejectedValueOnce(new ApiError("decide el pago", 409, { code: "payment_undecided" }))
+      .mockResolvedValueOnce({ job_id: "job-nc", order_id: "o1", status: "queued" });
+    (getQuoteJobStatus as jest.Mock).mockResolvedValue({ status: "queued" });
+    const user = userEvent.setup();
+    render(
+      <ShippingFilesSection orderId="o1" isWooOrder={false} canCreateAlbaran createSignal={1} />,
+    );
+    // El primer intento (sin pago) devuelve 409 → se abre el diálogo, no error.
+    expect(await screen.findByRole("dialog", { name: "Decidir el pago antes del albarán" }))
+      .toBeInTheDocument();
+    await waitFor(() => expect(createOrderAlbaran).toHaveBeenCalledWith("o1", null));
+    // «Sin cobro» reintenta con la decisión apuntada.
+    await user.click(screen.getByRole("button", { name: "Sin cobro (cortesía)" }));
+    await waitFor(() => expect(createOrderAlbaran).toHaveBeenLastCalledWith(
+      "o1", expect.objectContaining({ no_charge: true }),
+    ));
   });
 
   // --- Lote 2 C: subir la etiqueta ES «Crear envío» ---

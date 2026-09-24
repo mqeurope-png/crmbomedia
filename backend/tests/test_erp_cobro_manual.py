@@ -257,6 +257,47 @@ def test_registrar_cobro_manual_desde_ficha(http, session_factory, engine) -> No
     assert r.json()["status"] == "cobrada" and r.json()["saldo_pendiente"] == 0.0
 
 
+def test_cobro_prefill_desde_el_pago_apuntado_en_el_pedido(http, session_factory) -> None:
+    """Bloque B: si al dar de alta el pedido se apuntó el pago (forma, cuenta y
+    fecha), «Registrar cobro» los PRELLENA — lo que tecleó el usuario manda
+    sobre la heurística (FOPFAC / serie), y la fecha llega como
+    `suggested_fecha` (que antes no existía)."""
+    from app.erp.factusol_albaran import PAYMENT_KEY
+
+    with session_factory() as s:
+        o = _order(s, "o-pf", "BOPRIN-99931", invoice="260729")
+        # El pago que quedó apuntado en el pedido: Paypal, cuenta 8, 10/09.
+        o.packing_json = json.dumps({PAYMENT_KEY: {
+            "paid": True, "forma_pago": "005", "forma_pago_nombre": "Paypal",
+            "contrapartida": "8", "contrapartida_nombre": "Paypal Bomedia",
+            "fecha": "2026-09-10", "cobro": None,
+        }})
+        s.commit()
+    fake = FakeCobroClient(f_fac=[_fac(1, 260729, 72.60)])   # FOPFAC 002 = Transferencia
+    with _patched(fake):
+        r = _get_cobro(http, "o-pf")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # Lo apuntado a mano manda sobre lo que diría FOPFAC / la serie.
+    assert body["forma_pago_nombre"] == "Paypal"
+    assert body["suggested_cuenta"] == {"codigo": "8", "nombre": "Paypal Bomedia"}
+    assert body["suggested_fecha"] == "2026-09-10"
+
+
+def test_cobro_sin_pago_apuntado_sugiere_por_heuristica(http, session_factory) -> None:
+    """Sin pago apuntado en el pedido, la sugerencia sigue siendo la de siempre
+    (serie / FOPFAC) y no hay `suggested_fecha`."""
+    with session_factory() as s:
+        _order(s, "o-h", "BOPRIN-99932", invoice="260729")
+        s.commit()
+    fake = FakeCobroClient(f_fac=[_fac(1, 260729, 72.60)])
+    with _patched(fake):
+        body = _get_cobro(http, "o-h").json()
+    assert body["forma_pago_nombre"] == "Transferencia"
+    assert body["suggested_cuenta"] == {"codigo": "6", "nombre": "Bomedia Sabadell"}
+    assert body["suggested_fecha"] is None
+
+
 def test_cobro_manual_idempotente_no_doble(http, session_factory) -> None:
     """Ya cobrada (ESTFAC=2 / saldo 0) → `GET` dice «cobrada» y el endpoint
     F-4-B responde `already` SIN encolar nada. Con una línea de cobro previa

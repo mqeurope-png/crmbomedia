@@ -24,7 +24,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.erp.factusol_albaran import packing_of, save_packing
+from app.erp.factusol_albaran import packing_of, payment_intent, save_packing
 from app.erp.models import Order, OrderStatusHistory, StatusDomain
 from app.integrations.factusol.client import FactusolClient
 from app.integrations.factusol.collections import load_collections_index
@@ -286,6 +286,22 @@ def order_cobro_info(
         session, serie=key["serie"], forma_nombre=forma_nombre,
         store=_store_slug(session, order),
     )
+    # Bloque B: si al dar de alta (o convertir) se apuntó el pago en el pedido
+    # —forma, cuenta y fecha—, eso PRELLENA «Registrar cobro» en vez de
+    # adivinarlo: lo que tecleó el usuario manda sobre la heurística. Es solo
+    # una sugerencia; el operador la cambia si quiere.
+    suggested_fecha = None
+    intent = payment_intent(order)
+    if intent:
+        if intent.get("forma_pago_nombre"):
+            forma_nombre = str(intent["forma_pago_nombre"])
+        if intent.get("contrapartida"):
+            suggested = {
+                "codigo": str(intent["contrapartida"]),
+                "nombre": str(intent.get("contrapartida_nombre") or intent["contrapartida"]),
+            }
+        if intent.get("fecha"):
+            suggested_fecha = str(intent["fecha"])
     return {
         "status": COBRADA if status_info["ya_cobrada"] else PENDIENTE,
         "invoice": invoice,
@@ -294,7 +310,8 @@ def order_cobro_info(
         "saldo_pendiente": status_info["saldo_pendiente"],
         "estfac": status_info["estfac"], "cobros": status_info["cobros"],
         "fopfac": status_info["fopfac"], "forma_pago_nombre": forma_nombre,
-        "suggested_cuenta": suggested, "warnings": warnings,
+        "suggested_cuenta": suggested, "suggested_fecha": suggested_fecha,
+        "warnings": warnings,
         "checked_at": block["checked_at"],
     }
 

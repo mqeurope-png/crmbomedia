@@ -453,3 +453,26 @@ def test_workflow_no_requiere_envio_fuera_de_por_enviar(session_factory) -> None
         s.commit()
     wf = _wf(session_factory, "ns")
     assert wf["queue"] == "listo" and wf["next_action"] == "marcar_completado"
+
+
+def test_workflow_sin_cobro_fuera_de_facturar_y_cobrar(session_factory) -> None:
+    """C1: un pedido «sin cobro» (cortesía), aunque esté aprobado y con factura,
+    no entra en «Por facturar» ni «Por cobrar»: solo queda enviarlo y
+    completarlo (como una muestra, pero conservando empresa y FACTUSOL)."""
+    import json
+
+    from app.erp.factusol_albaran import PAYMENT_KEY
+
+    with session_factory() as s:
+        # Aprobado + con factura pendiente de cobro: sin la marca sería «por_cobrar».
+        _order(s, oid="onc", number="MANUAL-000050", payment_status="pending",
+               preparation_status="in_queue", approved_at=datetime.now(UTC),
+               invoice_status="invoiced_by_erp", factusol_invoice_number="260099")
+    assert _wf(session_factory, "onc")["queue"] == "por_cobrar"
+    with session_factory() as s:
+        s.get(Order, "onc").packing_json = json.dumps(
+            {PAYMENT_KEY: {"paid": False, "no_charge": True}},
+        )
+        s.commit()
+    wf = _wf(session_factory, "onc")
+    assert wf["queue"] == "por_enviar" and wf["next_action"] == "marcar_completado"

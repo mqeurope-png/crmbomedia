@@ -61,16 +61,26 @@ class PaymentIn(BaseModel):
     """Paso de confirmación de pago al convertir. `paid=False` = «sin pago»
     (solo se apunta la forma de pago). `paid=True` exige la contrapartida
     (código «6» o nombre «Bomedia (Sabadell)») y admite la fecha del cobro
-    (ISO o dd/mm/yyyy; por defecto hoy)."""
+    (ISO o dd/mm/yyyy; por defecto hoy).
+
+    `no_charge=True` = «sin cobro» (envío de cortesía / no se cobra): decisión
+    explícita de que este pedido NO se factura ni se cobra. Es incompatible con
+    `paid` y no necesita cuenta: se apunta en el pedido y lo saca de «Por
+    facturar» / «Por cobrar» (Bloque C · C1)."""
 
     paid: bool = False
+    no_charge: bool = False
     forma_pago: str | None = Field(default=None, max_length=10)
     forma_pago_nombre: str | None = Field(default=None, max_length=120)
     contrapartida: str | None = Field(default=None, max_length=80)
     fecha: str | None = Field(default=None, max_length=25)
 
     @model_validator(mode="after")
-    def _paid_needs_account(self) -> PaymentIn:
+    def _check(self) -> PaymentIn:
+        if self.paid and self.no_charge:
+            raise ValueError(
+                "Un pedido no puede estar «pagado» y «sin cobro» a la vez."
+            )
         if self.paid and not (self.contrapartida or "").strip():
             raise ValueError(
                 "Un pago confirmado necesita la cuenta (contrapartida) donde "
@@ -304,6 +314,7 @@ def resolve_payment(session: Session, payment: PaymentIn) -> dict[str, Any]:
 
     data: dict[str, Any] = {
         "paid": bool(payment.paid),
+        "no_charge": bool(payment.no_charge),
         "forma_pago": (payment.forma_pago or "").strip() or None,
         "forma_pago_nombre": (payment.forma_pago_nombre or "").strip() or None,
         "contrapartida": None,
@@ -388,6 +399,17 @@ def record_payment_intent(
 
         actor = session.get(User, actor_user_id) if actor_user_id else None
         enqueue_paid_order(session, order, actor=actor)
+    elif resolved.get("no_charge"):
+        # «Sin cobro» (cortesía): decisión explícita de no facturar ni cobrar.
+        # No cambia el «Pagado» del CRM (sigue pendiente), pero queda apuntado
+        # y el workflow lo saca de «Por facturar» / «Por cobrar».
+        _history(
+            session, order, domain=StatusDomain.PAYMENT, from_status=prev,
+            to_status=prev,
+            reason="Sin cobro (cortesía): este pedido no se factura ni se cobra",
+            actor_user_id=actor_user_id,
+            metadata={"event": "factusol_payment_intent", **resolved},
+        )
     else:
         _history(
             session, order, domain=StatusDomain.PAYMENT, from_status=prev,
@@ -405,6 +427,27 @@ def record_payment_intent(
 def payment_intent(order: Order) -> dict[str, Any] | None:
     block = packing_of(order).get(PAYMENT_KEY)
     return block if isinstance(block, dict) else None
+
+
+def is_no_charge(order: Order) -> bool:
+    """¿El pedido está marcado «sin cobro» (cortesía)? (Bloque C · C1.)"""
+    intent = payment_intent(order)
+    return bool(intent and intent.get("no_charge"))
+
+
+def payment_decided(order: Order) -> bool:
+    """¿Se ha decidido ya el pago del pedido? (Bloque C · C1: antes de generar
+    el albarán hay que haber elegido —pagado, sin cobro, o el paso de pago del
+    alta—; no se genera dejando el pago «en el aire».)
+
+    Cuenta como decidido: hay un apunte de pago (`factusol_payment`, sea
+    pagado / sin pago / sin cobro) o el pedido ya consta pagado en el CRM."""
+    from app.erp.models import PaymentStatus  # noqa: PLC0415
+
+    if payment_intent(order) is not None:
+        return True
+    status = getattr(order.payment_status, "value", order.payment_status)
+    return status == PaymentStatus.PAID.value
 
 
 # --- albarán ----------------------------------------------------------------------
