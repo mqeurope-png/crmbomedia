@@ -33,6 +33,7 @@ import { Cap, can } from "../../../lib/capabilities";
 import { extractErrorMessage } from "../../../lib/errors";
 import { usePersistentState } from "../../../lib/usePersistentState";
 import {
+  approveOrder,
   bulkNoShipping,
   completeOrder,
   customerLabel,
@@ -246,6 +247,10 @@ function ErpOrderDetailScreen() {
   const [etiquetaSignal, setEtiquetaSignal] = useState(0);
   // «Marcar completado» (solo BoHub, reversible).
   const [completeBusy, setCompleteBusy] = useState(false);
+  // C3: tras aprobar, se sugieren (sin bloquear) los siguientes pasos —
+  // enviar a SAT y generar el albarán decidiendo el pago / «sin cobro».
+  const [justApproved, setJustApproved] = useState(false);
+  const [approveBusy, setApproveBusy] = useState(false);
   // «No requiere envío» (SAT opcional): marca/desmarca por pedido.
   const [noShipBusy, setNoShipBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -375,6 +380,21 @@ function ErpOrderDetailScreen() {
     }
   }
 
+  async function onApprove() {
+    if (!order) return;
+    setApproveBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      setOrder(await approveOrder(order.id));
+      setJustApproved(true);   // C3: enseña las sugerencias
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudo aprobar el pedido."));
+    } finally {
+      setApproveBusy(false);
+    }
+  }
+
   async function onToggleNoShipping() {
     if (!order) return;
     const value = !order.shipping_not_required;
@@ -477,14 +497,20 @@ function ErpOrderDetailScreen() {
           </button>
         ) : null;
       case "enviar_sat":
-        // El «Enviar por email» de la cabecera se esconde: es este.
+        // El «Enviar a SAT» de la cabecera se esconde: es este. Enviar el
+        // correo al taller mete el pedido en la Cola SAT (idempotente).
         return canEmit ? (
           <button type="button" className="button small" onClick={() => setOrderEmailOpen(true)}>
-            Enviar por email
+            Enviar a SAT
           </button>
         ) : null;
       case "aprobar":
-        return (
+        return canEmit ? (
+          <button type="button" className="button small" disabled={approveBusy}
+                  onClick={() => void onApprove()}>
+            {label}
+          </button>
+        ) : (
           <Link href="/erp/orders/pending-approval" className="button small">
             Ir a la Cola PEDIDOS
           </Link>
@@ -690,10 +716,10 @@ function ErpOrderDetailScreen() {
                   <button
                     type="button"
                     className="button small secondary"
-                    title="Envía el pedido por email (Gmail) con el albarán adjunto; el PDF del pedido y la factura son opcionales"
+                    title="Envía el pedido al taller (SAT) por email (Gmail) con el albarán adjunto y lo mete en la Cola SAT; el PDF del pedido y la factura son opcionales"
                     onClick={() => setOrderEmailOpen(true)}
                   >
-                    Enviar por email
+                    Enviar a SAT
                   </button>
                 )}
                 {/* «Enviar factura al cliente»: la factura de FACTUSOL en PDF,
@@ -825,6 +851,32 @@ function ErpOrderDetailScreen() {
       />
       {error ? <p className="form-error">{error}</p> : null}
       {notice ? <p className="form-success" role="status">{notice}</p> : null}
+      {/* C3: sugerencias tras aprobar (no bloquean; se cierran con ×). */}
+      {justApproved ? (
+        <div className="form-info erp-approve-suggest" role="status">
+          <span>
+            <strong>Aprobado</strong>: el pedido está en la Cola SAT (taller). ¿Ahora?
+          </span>
+          <span className="erp-approve-suggest-actions">
+            {canEmit && !isWeb ? (
+              <button type="button" className="button small"
+                      onClick={() => { setJustApproved(false); setOrderEmailOpen(true); }}>
+                Enviar a SAT
+              </button>
+            ) : null}
+            {canEmit && !isWeb && !order.factusol_albaran_number ? (
+              <button type="button" className="button small secondary"
+                      onClick={() => { setJustApproved(false); setAlbaranSignal((n) => n + 1); }}>
+                Generar albarán (pago / sin cobro)
+              </button>
+            ) : null}
+            <button type="button" className="button small secondary"
+                    aria-label="Descartar sugerencias" onClick={() => setJustApproved(false)}>
+              ×
+            </button>
+          </span>
+        </div>
+      ) : null}
       {pdfNotice ? <p className="muted small" role="status">{pdfNotice}</p> : null}
       {emailBusy ? (
         <p className="muted small" role="status">Localizando la factura en FACTUSOL…</p>

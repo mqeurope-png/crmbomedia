@@ -130,7 +130,7 @@ describe("ERP · Ficha del pedido — albarán FACTUSOL en «Documentos de enví
     // Y las acciones de cabecera no están repetidas abajo.
     expect(screen.getAllByRole("button", { name: /PDF del pedido \(FACTUSOL\)/ })).toHaveLength(1);
     expect(screen.getAllByRole("button", { name: "Marcar completado" })).toHaveLength(1);
-    expect(screen.getAllByRole("button", { name: "Enviar por email" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Enviar a SAT" })).toHaveLength(1);
     expect(screen.getAllByRole("button", { name: /Registrar cobro/ })).toHaveLength(1);
   });
 
@@ -147,7 +147,7 @@ describe("ERP · Ficha del pedido — albarán FACTUSOL en «Documentos de enví
     expect(await screen.findByText("Sin albarán en FACTUSOL")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "PDF del albarán (FACTUSOL)" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Crear albarán en FACTUSOL" }));
-    await waitFor(() => expect(createOrderAlbaran).toHaveBeenCalledWith("o-1"));
+    await waitFor(() => expect(createOrderAlbaran).toHaveBeenCalledWith("o-1", null));
     await waitFor(() => expect(getQuoteJobStatus).toHaveBeenCalledWith("job-7"));
     expect(await screen.findByText("Albarán FACTUSOL 5-500009 creado.")).toBeInTheDocument();
     expect(await screen.findByText("Albarán FACTUSOL 5-500009")).toBeInTheDocument();
@@ -198,7 +198,7 @@ describe("ERP · Ficha del pedido — albarán FACTUSOL en «Documentos de enví
     const btn = screen.getByRole("button", { name: "Crear albarán en FACTUSOL" });
     expect(btn).toHaveAttribute("title", expect.stringMatching(/desde las líneas de este pedido manual/));
     await user.click(btn);
-    await waitFor(() => expect(createOrderAlbaran).toHaveBeenCalledWith("o-1"));
+    await waitFor(() => expect(createOrderAlbaran).toHaveBeenCalledWith("o-1", null));
     expect(await screen.findByText("Albarán FACTUSOL 5-500004 creado.")).toBeInTheDocument();
     expect(await screen.findByText("Albarán FACTUSOL 5-500004")).toBeInTheDocument();
     // Ya con nº: el PDF del albarán (#396) está disponible y no se ofrece crear otro.

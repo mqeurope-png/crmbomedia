@@ -110,6 +110,7 @@ jest.mock("../../../lib/erpApi", () => ({
   downloadOrderFactusolPedidoPdf: jest.fn(),
   createOrderAlbaran: jest.fn(),
   getQuoteJobStatus: jest.fn(),
+  approveOrder: jest.fn(),
   fireTransition: jest.fn(),
   saveBlob: jest.fn(),
   updateOrderLanguage: jest.fn(),
@@ -324,7 +325,7 @@ describe("ERP · Ficha del pedido (rediseño de flujo)", () => {
     // y «⋯» (idioma del pedido).
     expect(screen.getByRole("combobox", { name: "Idioma del PDF" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /PDF del pedido \(FACTUSOL\)/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Enviar por email" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Enviar a SAT" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Enviar factura al cliente" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Marcar completado" })).toBeInTheDocument();
     const user = userEvent.setup();
@@ -353,7 +354,7 @@ describe("ERP · Ficha del pedido (rediseño de flujo)", () => {
     expect(screen.getAllByRole("button", { name: /Emitir factura/ })).toHaveLength(1);
     expect(screen.queryByRole("button", { name: "Emitir factura FACTUSOL" })).toBeNull();
     expect(screen.getAllByRole("button", { name: "Marcar completado" })).toHaveLength(1);
-    expect(screen.getAllByRole("button", { name: "Enviar por email" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Enviar a SAT" })).toHaveLength(1);
     expect(screen.getAllByRole("button", { name: "Enviar factura al cliente" })).toHaveLength(1);
     expect(screen.getAllByRole("button", { name: /PDF del pedido/ })).toHaveLength(1);
     expect(screen.getAllByRole("button", { name: /Registrar cobro/ })).toHaveLength(1);
@@ -380,8 +381,8 @@ describe("ERP · Ficha del pedido (rediseño de flujo)", () => {
     const btns = await screen.findAllByRole("button", { name: "Enviar factura al cliente" });
     const btn = btns[0];
     expect(btn).toBeEnabled();
-    // Está junto a «Enviar por email» (SAT), en la misma cabecera.
-    expect(screen.getByRole("button", { name: "Enviar por email" })).toBeInTheDocument();
+    // Está junto a «Enviar a SAT» (SAT), en la misma cabecera.
+    expect(screen.getByRole("button", { name: "Enviar a SAT" })).toBeInTheDocument();
     await user.click(btn);
     // Resuelve la factura del PEDIDO (no una cualquiera) y abre el modal de
     // previsualización — que es quien pide confirmación antes de enviar —
@@ -442,14 +443,37 @@ describe("ERP · Ficha del pedido (rediseño de flujo)", () => {
     expect(screen.getAllByRole("button", { name: "Marcar completado" })).toHaveLength(1);
   });
 
-  it("«Enviar a SAT» como siguiente paso: un solo «Enviar por email»", async () => {
+  it("«Enviar a SAT» como siguiente paso: un solo «Enviar a SAT»", async () => {
     (getOrder as jest.Mock).mockResolvedValue(conSiguientePaso({
       next_action: "enviar_sat", next_action_label: "Enviar a SAT",
       next_action_hint: "El taller tiene que preparar el pedido.",
     }));
     render(<ErpOrderDetailPage />);
     await screen.findByRole("region", { name: "Siguiente paso" });
-    expect(screen.getAllByRole("button", { name: "Enviar por email" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Enviar a SAT" })).toHaveLength(1);
+  });
+
+  it("C3: aprobar desde la ficha llama a approveOrder y ofrece (sin bloquear) enviar a SAT y generar albarán", async () => {
+    const { approveOrder } = jest.requireMock("../../../lib/erpApi");
+    const manual = conSiguientePaso(
+      { next_action: "aprobar", next_action_label: "Aprobar", next_action_hint: "Revisa y aprueba." },
+      { external_source: "manual", order_number: "MANUAL-000090", factusol_albaran_number: null },
+    );
+    (getOrder as jest.Mock).mockResolvedValue(manual);
+    (approveOrder as jest.Mock).mockResolvedValue({ ...manual, preparation_status: "in_queue" });
+    const user = userEvent.setup();
+    render(<ErpOrderDetailPage />);
+    const bar = within(await screen.findByRole("region", { name: "Siguiente paso" }));
+    await user.click(bar.getByRole("button", { name: "Aprobar" }));
+    await waitFor(() => expect(approveOrder).toHaveBeenCalledWith("o-1"));
+    // Sugerencias tras aprobar (no bloqueantes), en su propio banner.
+    const banner = within((await screen.findByText(/está en la Cola SAT/))
+      .closest(".erp-approve-suggest") as HTMLElement);
+    expect(banner.getByRole("button", { name: "Enviar a SAT" })).toBeInTheDocument();
+    expect(banner.getByRole("button", { name: "Generar albarán (pago / sin cobro)" })).toBeInTheDocument();
+    // Se pueden descartar.
+    await user.click(banner.getByRole("button", { name: "Descartar sugerencias" }));
+    expect(screen.queryByText(/está en la Cola SAT/)).toBeNull();
   });
 
   it("«Registrar cobro» como siguiente paso respeta el estado en vivo: cobrada fuera de BoHub → deshabilitado, sin segundo cobro", async () => {

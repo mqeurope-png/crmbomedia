@@ -33,6 +33,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.erp.factusol_albaran import is_no_charge
 from app.erp.models import (
     InvoiceStatus,
     Order,
@@ -358,6 +359,16 @@ def _next_step(order: Order) -> tuple[str, str, str]:
             QUEUE_POR_REVISAR, "aprobar",
             "Revisa el pedido y apruébalo para que pase al taller.",
         )
+    # «Sin cobro» (cortesía, C1): no se factura ni se cobra. Como la muestra,
+    # solo queda prepararlo/enviarlo y darlo por completado — nunca entra en
+    # «Por facturar» ni «Por cobrar».
+    if is_no_charge(order) and order.completed_at is None:
+        return (
+            QUEUE_POR_ENVIAR, "marcar_completado",
+            "Envío sin cobro: prepáralo y márcalo completado cuando salga.",
+        )
+    if is_no_charge(order):
+        return (QUEUE_LISTO, "ninguna", "Envío sin cobro completado.")
     if not is_invoiced(order):
         return (
             QUEUE_POR_FACTURAR, "emitir_factura",

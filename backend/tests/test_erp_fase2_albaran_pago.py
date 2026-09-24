@@ -574,7 +574,9 @@ def test_endpoint_albaran_reintento_y_estado(db, http) -> None:
     headers = auth_headers(http, "pedidos")
     with patch("app.integrations.factusol.jobs.enqueue_create_order_albaran",
                return_value="job-alb-9") as enq:
-        r = http.post(f"/api/erp/orders/{order.id}/albaran", headers=headers)
+        # C1: decidir el pago antes de generar; «sin cobro» de un clic.
+        r = http.post(f"/api/erp/orders/{order.id}/albaran", headers=headers,
+                      json={"payment": {"no_charge": True}})
     assert r.status_code == 202 and r.json() == {
         "job_id": "job-alb-9", "order_id": order.id, "status": "queued",
     }
@@ -598,6 +600,29 @@ def test_endpoint_albaran_reintento_y_estado(db, http) -> None:
     # Solo lectura no puede.
     assert http.post(f"/api/erp/orders/{order.id}/albaran",
                      headers=auth_headers(http, "user")).status_code in (401, 403)
+
+
+def test_albaran_exige_decidir_el_pago(db, http) -> None:
+    """C1: no se genera el albarán dejando el pago «en el aire». Sin decidir →
+    409 `payment_undecided`; con «sin cobro» (un clic) → 202 y queda apuntado
+    en el pedido, sin escribir nada en FACTUSOL."""
+    fake = _client()
+    order = _import(db, fake, "presupuestos", 5, 27)
+    headers = auth_headers(http, "pedidos")
+    # Sin decisión previa ni en el cuerpo: se pide elegir.
+    r = http.post(f"/api/erp/orders/{order.id}/albaran", headers=headers)
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "payment_undecided"
+    # «Sin cobro» de un clic: se genera y queda apuntado (no toca FACTUSOL).
+    with patch("app.integrations.factusol.jobs.enqueue_create_order_albaran",
+               return_value="job-nc") as enq:
+        r2 = http.post(f"/api/erp/orders/{order.id}/albaran", headers=headers,
+                       json={"payment": {"no_charge": True}})
+    assert r2.status_code == 202, r2.text
+    enq.assert_called_once()
+    detail = http.get(f"/api/erp/orders/{order.id}", headers=headers).json()
+    assert detail["factusol_payment"]["no_charge"] is True
+    assert detail["workflow"]["queue"] not in ("por_facturar", "por_cobrar")
 
 
 def test_convertir_proforma_endpoint_lleva_pago_y_albaran(db, http) -> None:

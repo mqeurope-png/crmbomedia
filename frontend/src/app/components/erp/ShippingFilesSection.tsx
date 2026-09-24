@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ApiError } from "../../lib/api";
 import { extractErrorMessage } from "../../lib/errors";
 import {
   createOrderAlbaran,
@@ -10,10 +11,12 @@ import {
   openShippingFile,
   uploadShippingFile,
   type FactusolPdfLang,
+  type PaymentIntentInput,
   type ShipmentFile,
   type ShipmentFileKind,
   type ShippingFileUploadResult,
 } from "../../lib/erpApi";
+import { AlbaranPagoDialog } from "./AlbaranPagoDialog";
 import { FactusolAlbaranPdfButton } from "./FactusolAlbaranPdfButton";
 import { FileUploadButton } from "./FileUploadButton";
 
@@ -101,6 +104,9 @@ export function ShippingFilesSection({
   );
   const [creating, setCreating] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  // C1: si el pago no está decidido, generar el albarán abre este diálogo
+  // (confirmar pago / sin cobro) en vez de fallar.
+  const [pagoDialog, setPagoDialog] = useState(false);
   // Siempre el último `onAlbaranCreated` (la ficha pasa una arrow nueva en
   // cada render): el polling dura hasta ~60 s y no debe quedarse con el viejo.
   const onCreated = useRef(onAlbaranCreated);
@@ -171,16 +177,23 @@ export function ShippingFilesSection({
     return () => { alive = false; if (timer) clearTimeout(timer); };
   }, [jobId]);
 
-  async function crearAlbaran() {
+  async function crearAlbaran(payment?: PaymentIntentInput) {
     if (creating || jobId) return;   // ya hay uno en vuelo: no encolar dos
     setCreating(true);
     setError(null);
     setNotice(null);
     try {
-      const r = await createOrderAlbaran(orderId);
+      const r = await createOrderAlbaran(orderId, payment ?? null);
+      setPagoDialog(false);
       setNotice("Albarán encolado en FACTUSOL: el worker es serie, puede tardar unos segundos.");
       setJobId(r.job_id);
     } catch (e) {
+      // C1: el pago no está decidido → se pide elegir (confirmar pago / sin
+      // cobro) en vez de dar error; al confirmar se reintenta con la decisión.
+      if (e instanceof ApiError && e.code === "payment_undecided") {
+        setPagoDialog(true);
+        return;
+      }
       // Si la ficha escucha, el error va a su banner (la petición pudo venir
       // de arriba: email al SAT / «Siguiente paso»); si no, aquí mismo.
       const msg = extractErrorMessage(e, "No se pudo encolar el albarán en FACTUSOL.");
@@ -253,6 +266,13 @@ export function ShippingFilesSection({
   return (
     <section ref={sectionRef} className="erp-flow-panel" aria-label="Documentos de envío">
       <h3>Documentos de envío</h3>
+      {pagoDialog ? (
+        <AlbaranPagoDialog
+          busy={creating}
+          onCancel={() => setPagoDialog(false)}
+          onConfirm={(payment) => void crearAlbaran(payment)}
+        />
+      ) : null}
       {error ? <p className="form-error">{error}</p> : null}
       {warning ? <p className="form-warning" role="status">{warning}</p> : null}
       {notice ? <p className="form-info" role="status">{notice}</p> : null}

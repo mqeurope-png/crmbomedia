@@ -305,6 +305,11 @@ def sat_queue(
     # «No requiere envío»: por defecto (False) se EXCLUYEN del taller; con True
     # se enseñan SOLO ellos (vista «No requieren envío» para revisar / desmarcar).
     no_shipping: bool = Query(default=False),
+    # C4: orden por FECHA del pedido. Por defecto los más recientes primero
+    # (`fecha_desc`); `fecha_asc` = los más antiguos primero (FIFO de siempre).
+    # La prioridad por estado (bloqueado → preparando → en cola) manda igual:
+    # la fecha ordena DENTRO de cada grupo.
+    sort: str = Query(default="fecha_desc", pattern="^fecha_(desc|asc)$"),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_view),
 ) -> dict[str, Any]:
@@ -332,6 +337,13 @@ def sat_queue(
     # «No requiere envío»: por defecto FUERA del taller; con `no_shipping=True`,
     # SOLO ellos (para revisarlos / desmarcar en lote).
     ship_flag = Order.shipping_not_required.is_(no_shipping)
+    # C4: dirección de la fecha (por defecto, los más recientes primero).
+    newest_first = sort != "fecha_asc"
+
+    def _fecha_key(o: Order) -> float:
+        d = o.placed_at or o.created_at
+        return d.timestamp() if d is not None else 0.0
+
     prep_rows: list[Order] = []
     if prep_statuses:
         prep_rows = list(session.scalars(
@@ -341,19 +353,23 @@ def sat_queue(
                 ), current_user
             ), **filters).options(selectinload(Order.lines))
         ))
+        # La prioridad por estado manda; la fecha ordena dentro de cada grupo
+        # (signo según la dirección elegida).
+        signo = -1.0 if newest_first else 1.0
         prep_rows.sort(key=lambda o: (
             _QUEUE_ORDER.get(_prep(o), 9),
-            o.placed_at or o.created_at,
+            signo * _fecha_key(o),
         ))
     ready_rows: list[Order] = []
     if want_ready:
+        orden_fecha = Order.placed_at.desc() if newest_first else Order.placed_at.asc()
         ready_rows = list(session.scalars(
             _apply_filters(worklist_visible(select(Order).where(
                 Order.preparation_status == PreparationStatus.PACKED.value,
                 Order.transport_status.notin_(_SHIPPED_TRANSPORT),
                 ship_flag,
             ), current_user), **filters).options(selectinload(Order.lines))
-            .order_by(Order.placed_at.asc())
+            .order_by(orden_fecha)
         ))
 
     all_rows = [*prep_rows, *ready_rows]

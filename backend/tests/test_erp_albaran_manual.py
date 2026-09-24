@@ -180,7 +180,10 @@ def test_crear_albaran_manual_desde_lineas(http, session_factory, engine) -> Non
 
     with patch("app.integrations.factusol.jobs.enqueue_create_order_albaran",
                return_value="job-alb") as enq:
-        r = http.post("/api/erp/orders/o-1/albaran", headers=auth_headers(http, "pedidos"))
+        # C1: hay que decidir el pago antes de generar el albarán; aquí «sin
+        # cobro» (un clic) para centrar el test en el mecanismo del albarán.
+        r = http.post("/api/erp/orders/o-1/albaran", headers=auth_headers(http, "pedidos"),
+                      json={"payment": {"no_charge": True}})
     assert r.status_code == 202, r.text
     assert r.json()["job_id"] == "job-alb"
     enq.assert_called_once()
