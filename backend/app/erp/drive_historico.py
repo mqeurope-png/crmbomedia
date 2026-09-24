@@ -275,6 +275,7 @@ def import_historico(
     separadores."""
     from app.erp.drive_managed import (  # noqa: PLC0415
         cabecera_de,
+        completados_static_block,
         compose,
         dates_to_serial,
         historic_block,
@@ -337,14 +338,23 @@ def import_historico(
     vivas_pedidos = dates_to_serial(
         [realinear_fila(r, cabecera) for r in live_zone(valores)], PEDIDOS_DATE_COLUMNS,
     )
+    # El bloque de COMPLETADOS de BoHub (histórico automático) que ya hubiera se
+    # CONSERVA entre la zona viva y el histórico manual: el import solo
+    # reemplaza el histórico manual (el que sale de la hoja vieja). Si no lo
+    # preservara, la siguiente actualización lo regeneraría igualmente desde la
+    # BD, pero así no hay un estado intermedio raro.
+    completados_prev = dates_to_serial(
+        completados_static_block(valores), PEDIDOS_DATE_COLUMNS,
+    )
+    estatico = [*completados_prev, *historico]
     sheets.ensure_tab(pedidos_tab)
     sheets.replace_tab(
-        pedidos_tab, compose(SEGUIMIENTO_COLUMNS_V2, vivas_pedidos, historico), raw=True,
+        pedidos_tab, compose(SEGUIMIENTO_COLUMNS_V2, vivas_pedidos, estatico), raw=True,
     )
     # El mismo formato que el volcado periódico (cabecera congelada, anchos,
     # fechas, Situación coloreada según su etiqueta), por posición: la zona
     # viva se ha conservado tal cual.
-    sheets.format_tab(pedidos_tab, pedidos_format([], historico, vivas_pedidos))
+    sheets.format_tab(pedidos_tab, pedidos_format([], estatico, vivas_pedidos))
 
     if plan["pendientes_rows"]:
         pendientes = pendientes_block(
