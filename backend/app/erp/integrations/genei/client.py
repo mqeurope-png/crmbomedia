@@ -50,8 +50,10 @@ DEFAULT_TIMEOUT = 30.0
 
 #: Claves donde puede venir el token según el envoltorio (login).
 _TOKEN_KEYS = ("token", "access_token", "accessToken", "jwt", "bearer")
-#: Claves donde puede venir el código del envío al crearlo.
-_SHIPMENT_CODE_KEYS = ("shipmentCode", "shipment_code", "codigo_envio", "code")
+#: Claves donde puede venir el código del envío al crearlo. Al CREAR, Genei
+#: devuelve el código en `data.reference` (verificado en vivo); al leer/listar,
+#: en `codigo_envio`.
+_SHIPMENT_CODE_KEYS = ("reference", "shipmentCode", "shipment_code", "codigo_envio", "code")
 #: Claves donde puede venir la URL de pago al crear el envío.
 _PAYMENT_URL_KEYS = ("paymentUrl", "payment_url", "url_pago", "urlPago")
 
@@ -321,6 +323,13 @@ class GeneiClient:
     def get_shipment(self, shipment_code: str) -> dict[str, Any]:
         """`GET /shipments/{code}` — datos completos (estado, tracking…)."""
         data = self._request("GET", f"/shipments/{shipment_code}")
+        return _as_dict(data)
+
+    def get_address(self, address_id: str) -> dict[str, Any]:
+        """`GET /addresses/{id}` — dirección registrada en Genei (el remitente
+        por defecto de la cuenta). Se usa para componer el bloque `origin` del
+        envío a partir del `originAddressId` configurado, sin duplicar el dato."""
+        data = self._request("GET", f"/addresses/{address_id}")
         return _as_dict(data)
 
     def delete_shipment(self, shipment_code: str) -> dict[str, Any]:

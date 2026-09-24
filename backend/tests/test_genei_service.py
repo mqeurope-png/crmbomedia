@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from app.erp.integrations.genei.service import (
+    address_missing_fields,
     build_destination,
+    build_origin,
     build_shipment_payload,
     clear_genei_state,
     destination_is_complete,
@@ -72,7 +74,8 @@ def test_destination_is_complete_lists_missing():
 
 def test_build_shipment_payload_shape():
     payload = build_shipment_payload(
-        agency_id="10", origin_address_id="1304422",
+        agency_id="10",
+        origin={"name": "SAT Bomedia", "isoCountry": "ES"},
         destination={"name": "X"},
         packages=[{"weight": 0.5, "height": 2, "width": 10, "length": 10}],
         external_shipping_code="BOPRIN-99917",
@@ -80,18 +83,57 @@ def test_build_shipment_payload_shape():
     )
     assert payload["agencyId"] == "10"
     assert payload["externalShippingCode"] == "BOPRIN-99917"
-    assert payload["originAddressId"] == "1304422"
+    assert payload["origin"] == {"name": "SAT Bomedia", "isoCountry": "ES"}
+    assert payload["destination"] == {"name": "X"}
+    # Los DOS campos que faltaban y hacían fallar la creación en vivo
+    # («"origin" is mandatory; "paymentMethodShipping" is mandatory»).
+    assert payload["paymentMethodShipping"] == 4     # 4 = pago con saldo
+    assert payload["shippingFromWarehouse"] == 0     # origen propio, no Genei
     assert payload["notificationUrl"] == "https://bohub/webhooks/genei"
     assert payload["packagesArray"][0]["weight"] == 0.5
 
 
 def test_build_shipment_payload_omits_empty_optionals():
     payload = build_shipment_payload(
-        agency_id="10", origin_address_id=None, destination={},
+        agency_id="10", origin={}, destination={},
         packages=[], external_shipping_code="X", notification_url=None,
     )
-    assert "originAddressId" not in payload
     assert "notificationUrl" not in payload
+    # origin y paymentMethodShipping son OBLIGATORIOS: siempre van.
+    assert "origin" in payload
+    assert payload["paymentMethodShipping"] == 4
+
+
+def test_build_origin_from_genei_address():
+    # Forma real de GET /addresses/{id} (verificada en vivo): el remitente por
+    # defecto de la cuenta ya trae todo, incl. el teléfono en E.164.
+    origin = build_origin({
+        "nombre": "Streamtec SAT", "direccion": "Mossen Antoni Solanas",
+        "mail": "sat@example.com", "codigo_postal": "08830",
+        "poblacion": "SANT BOI DE LLOBREGAT", "provincia": "Barcelona",
+        "nombre_pais": "España", "country_code": "ES",
+        "telefono": "609144424", "telefono_e164": "+34609144424",
+        "prefijo_telefonico": 34, "vat_number": None, "observaciones": "",
+    })
+    assert origin["name"] == "Streamtec SAT"
+    assert origin["contact"] == "Streamtec SAT"      # cae al nombre
+    assert origin["address"] == "Mossen Antoni Solanas"
+    assert origin["postalCode"] == "08830"
+    assert origin["town"] == "SANT BOI DE LLOBREGAT"
+    assert origin["isoCountry"] == "ES"
+    assert origin["phone"] == "+34609144424"         # con prefijo internacional
+    # Bloque completo → sin campos mínimos que falten.
+    assert address_missing_fields(origin) == []
+
+
+def test_build_origin_phone_falls_back_to_prefix():
+    # Sin telefono_e164, se compone «+<prefijo><nacional>».
+    origin = build_origin({
+        "nombre": "X", "direccion": "C/1", "codigo_postal": "08001",
+        "poblacion": "BCN", "country_code": "ES",
+        "prefijo_telefonico": 34, "telefono": "600111222",
+    })
+    assert origin["phone"] == "+34600111222"
 
 
 # --- summarize --------------------------------------------------------------
@@ -113,6 +155,17 @@ def test_summarize_shipment_creation_with_payment_url():
     summary = summarize_shipment({"shipmentCode": "GEN2", "status": 7, "paymentUrl": "https://pay"})
     assert summary["state_bucket"] == CREATED
     assert summary["payment_url"] == "https://pay"
+
+
+def test_summarize_shipment_creation_reference_key():
+    # Forma REAL de la respuesta de creación (verificada en vivo): el código va
+    # en `reference` (no `codigo_envio`/`shipmentCode`). Sin esto, shipment_code
+    # salía None y el envío quedaba huérfano en Genei.
+    summary = summarize_shipment({
+        "reference": "DPEHLDPC", "transactionId": 16157377, "paymentUrl": "https://pay/x",
+    })
+    assert summary["shipment_code"] == "DPEHLDPC"
+    assert summary["payment_url"] == "https://pay/x"
 
 
 # --- estado en packing_json -------------------------------------------------

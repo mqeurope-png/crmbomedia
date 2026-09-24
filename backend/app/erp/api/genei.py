@@ -25,7 +25,9 @@ from app.erp.api.deps import require_config, require_sat_shipping, require_sat_t
 from app.erp.integrations.genei.client import GeneiClient, GeneiConfigError, GeneiError
 from app.erp.integrations.genei.config import GeneiConfig, choose_agencies
 from app.erp.integrations.genei.service import (
+    address_missing_fields,
     build_destination,
+    build_origin,
     build_shipment_payload,
     clear_genei_state,
     destination_is_complete,
@@ -35,6 +37,7 @@ from app.erp.integrations.genei.service import (
     shipment_code_of_order,
     summarize_shipment,
 )
+from app.erp.integrations.genei.status import state_of
 from app.erp.models.carriers import Carrier
 from app.erp.models.orders import Order
 from app.erp.models.shipping import KIND_ETIQUETA, SOURCE_GENEI_API
@@ -318,17 +321,36 @@ def genei_create_shipment(
             "code": "destination_incomplete",
             "detail": f"Faltan datos del destino: {', '.join(missing)}.",
         })
+    # Genei exige el bloque `origin` completo (remitente). Se resuelve desde la
+    # dirección registrada de la cuenta (`originAddressId` = default_address_id),
+    # así no se duplica el dato ni se desincroniza.
+    if not carrier.default_address_id:
+        raise HTTPException(400, {
+            "code": "origin_not_configured",
+            "detail": "Falta la dirección de origen (remitente) en los Ajustes de Genei.",
+        })
     packages = [p.as_dict() for p in payload.packages] or [cfg.default_package.as_package()]
+    client = _client_or_400(carrier)
+    try:
+        origin = build_origin(client.get_address(carrier.default_address_id))
+    except GeneiError as exc:
+        raise _genei_error(exc) from exc
+    origin_missing = address_missing_fields(origin)
+    if origin_missing:
+        raise HTTPException(422, {
+            "code": "origin_incomplete",
+            "detail": ("La dirección de origen de Genei está incompleta: "
+                       f"{', '.join(origin_missing)}."),
+        })
     body = build_shipment_payload(
         agency_id=payload.agency_id,
-        origin_address_id=carrier.default_address_id,
+        origin=origin,
         destination=dest,
         packages=packages,
         external_shipping_code=order.order_number or order.id,
         notification_url=None,  # PR-2: el webhook de estados
         observations=payload.observations,
     )
-    client = _client_or_400(carrier)
     try:
         created = client.create_shipment(body)
     except GeneiError as exc:
@@ -340,6 +362,14 @@ def genei_create_shipment(
             "code": "genei_no_code",
             "detail": "Genei no devolvió el código del envío.",
         })
+    # La respuesta de creación trae `reference` + `paymentUrl` pero NO el estado:
+    # el envío nace en 7 (pendiente de pago). Lo fijamos para que la ficha no
+    # muestre «Estado desconocido» (el refresh/webhook lo actualizará luego).
+    if summary["state_code"] is None:
+        born = state_of(7)
+        summary["state_code"] = born.code
+        summary["state_bucket"] = born.bucket
+        summary["state_label"] = born.label
     # El pedido queda ligado al carrier Genei.
     order.carrier_id = carrier.id
     set_genei_state(order, {
