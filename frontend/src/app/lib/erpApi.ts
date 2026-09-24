@@ -1471,6 +1471,41 @@ export async function getSatHistory(
   return apiFetch(`/api/erp/sat/history${qs({ desde, hasta, store_slug, q, limit })}`);
 }
 
+/** Fila de la pestaña «Incidencias» de la Cola SAT: de ENVÍO (transporte, del
+ *  webhook de Genei) o de PEDIDO (excepción abierta: taller / stock / VIES…). */
+export type SatIncidenciaRow = {
+  order_id: string;
+  order_number: string;
+  contact_name: string | null;
+  company_name: string | null;
+  tipo: "envio" | "pedido";
+  motivo: string;
+  /** Solo en las de PEDIDO: id de la excepción (para resolverla) + su etiqueta. */
+  exception_id: string | null;
+  exception_type: string | null;
+  transport_status: TransportStatus;
+  tracking_number: string | null;
+  store_slug: string | null;
+  placed_at: string | null;
+};
+
+export async function getSatIncidencias(
+  filters: SatQueueFilters = {},
+): Promise<{ items: SatIncidenciaRow[] }> {
+  const { desde, hasta, store_slug, q } = filters;
+  return apiFetch(`/api/erp/sat/incidencias${qs({ desde, hasta, store_slug, q })}`);
+}
+
+/** Resuelve una incidencia de ENVÍO: el transporte vuelve a «en tránsito» y el
+ *  pedido sale de «Incidencias» → «Enviados». */
+export function resolveShippingIncidencia(
+  orderId: string,
+): Promise<{ order_id: string; transport_status: TransportStatus }> {
+  return apiFetch(`/api/erp/sat/orders/${orderId}/shipping-incidencia/resolve`, {
+    method: "POST",
+  });
+}
+
 /** «Añadir pedido a la cola»: nº de pedido → id + situación actual. */
 export type SatOrderLookup = {
   id: string;
@@ -1632,7 +1667,7 @@ export async function setExceptionStatus(id: string, status: string): Promise<Er
   });
 }
 
-export async function resolveException(id: string, note: string): Promise<ErpExceptionRow> {
+export async function resolveException(id: string, note = ""): Promise<ErpExceptionRow> {
   return apiFetch(`/api/erp/exceptions/${id}/resolve`, {
     method: "POST",
     body: JSON.stringify({ resolution_note: note }),

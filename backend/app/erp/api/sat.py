@@ -52,12 +52,14 @@ from app.erp.models import (
     KIND_ALBARAN,
     KIND_ETIQUETA,
     ErpException,
+    ExceptionStatus,
     ExceptionType,
     Order,
     OrderStatusHistory,
     PreparationStatus,
     ShipmentFile,
     StatusDomain,
+    TransportStatus,
 )
 from app.erp.state_machine import TransitionError, apply_transition
 from app.erp.storage import get_document_storage
@@ -616,8 +618,141 @@ def sat_history(
             "reason": h.reason,
             "from_status": h.from_status,
         })
+    # Los pedidos con INCIDENCIA (de envío o de pedido) NO salen en «Enviados»:
+    # se ven en la pestaña «Incidencias». Cuando se resuelven, vuelven aquí.
+    incidencia_ids = _incidencia_order_ids(session)
+    items = [it for it in items if it["order_id"] not in incidencia_ids]
     items.sort(key=lambda it: it["at"], reverse=True)
     return {"items": items[:limit], "limit": limit}
+
+
+# --- incidencias (Cola SAT): de ENVÍO (webhook) o de PEDIDO (excepción) -------
+
+
+def _incidencia_order_ids(session: Session) -> set[str]:
+    """Ids de pedidos con incidencia: de ENVÍO (`transport_status = incident`,
+    lo pone el webhook de Genei / «Actualizar estado») o de PEDIDO (una
+    `ErpException` abierta: taller, falta de stock, VIES…)."""
+    envio = set(session.scalars(
+        select(Order.id).where(Order.transport_status == TransportStatus.INCIDENT)
+    ))
+    pedido = set(session.scalars(
+        select(ErpException.order_id).where(
+            ErpException.status.in_([ExceptionStatus.OPEN, ExceptionStatus.IN_PROGRESS]),
+        )
+    ))
+    return envio | pedido
+
+
+@router.get("/sat/incidencias")
+def sat_incidencias(
+    desde: date | None = Query(default=None),
+    hasta: date | None = Query(default=None),
+    store_slug: str | None = Query(default=None, max_length=64),
+    q: str | None = Query(default=None, max_length=120),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> dict[str, Any]:
+    """Pedidos con INCIDENCIA para la Cola SAT (los que salen de «Enviados»):
+
+    - **envío**: `transport_status = incident` (incidencia de TRANSPORTE, del
+      webhook de Genei o de «Actualizar estado»); el motivo es la descripción
+      de la incidencia de transporte.
+    - **pedido**: una `ErpException` abierta (taller, falta de stock, VIES…).
+
+    Distingue el `tipo` para que el operario sepa qué resolver. «Resolver» de
+    envío devuelve a «en tránsito»; el de pedido cierra la excepción (endpoint
+    de excepciones)."""
+    _ = current_user
+    from app.erp.api.orders import customer_names  # noqa: PLC0415
+    from app.erp.integrations.genei.service import genei_state_of  # noqa: PLC0415
+    from app.erp.seguimiento import EXCEPTION_TYPE_LABELS, _exception_motivo  # noqa: PLC0415
+
+    filters = {"desde": desde, "hasta": hasta, "store_slug": store_slug, "q": q}
+    envio_orders = list(session.scalars(_apply_filters(
+        select(Order).where(Order.transport_status == TransportStatus.INCIDENT), **filters,
+    )))
+    excs = list(session.scalars(
+        select(ErpException).where(
+            ErpException.status.in_([ExceptionStatus.OPEN, ExceptionStatus.IN_PROGRESS]),
+        ).order_by(ErpException.created_at.desc())
+    ))
+    exc_by_order: dict[str, ErpException] = {}
+    for e in excs:
+        exc_by_order.setdefault(e.order_id, e)      # la más reciente por pedido
+    pedido_orders = list(session.scalars(_apply_filters(
+        select(Order).where(Order.id.in_(set(exc_by_order))), **filters,
+    ))) if exc_by_order else []
+
+    todos = list({o.id: o for o in (*envio_orders, *pedido_orders)}.values())
+    names = customer_names(session, todos)
+    stores = _stores_by_id(session, todos)
+
+    def _row(o: Order, tipo: str, motivo: str, *, exc: ErpException | None) -> dict[str, Any]:
+        who = names.get(o.id) or {}
+        tipo_v = getattr(exc.type, "value", exc.type) if exc else None
+        return {
+            "order_id": o.id, "order_number": o.order_number,
+            "contact_name": who.get("contact_name"), "company_name": who.get("company_name"),
+            "tipo": tipo,                          # "envio" | "pedido"
+            "motivo": motivo,
+            # Solo en las de PEDIDO: id + etiqueta de la excepción (para resolver).
+            "exception_id": exc.id if exc else None,
+            "exception_type": (
+                EXCEPTION_TYPE_LABELS.get(str(tipo_v or ""), str(tipo_v or "")) or None
+            ),
+            "transport_status": getattr(o.transport_status, "value", o.transport_status),
+            "tracking_number": _clean(o.tracking_number),
+            "store_slug": _store_slug(stores, o),
+            "placed_at": _iso(o.placed_at),
+        }
+
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for o in envio_orders:                          # envío primero (transporte urgente)
+        motivo = str(genei_state_of(o).get("desc_incidencia") or "Incidencia de transporte")
+        items.append(_row(o, "envio", motivo, exc=None))
+        seen.add(o.id)
+    for o in pedido_orders:
+        if o.id in seen:
+            continue                                # ya está como incidencia de envío
+        e = exc_by_order.get(o.id)
+        tipo_v = getattr(e.type, "value", e.type) if e else ""
+        motivo = ((_exception_motivo(e) if e else "")
+                  or EXCEPTION_TYPE_LABELS.get(str(tipo_v), "Incidencia de pedido"))
+        items.append(_row(o, "pedido", str(motivo), exc=e))
+    items.sort(key=lambda it: it["placed_at"] or "", reverse=True)
+    return {"items": items}
+
+
+@router.post("/sat/orders/{order_id}/shipping-incidencia/resolve")
+def sat_resolve_shipping_incidencia(
+    order_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_sat_shipping),
+) -> dict[str, Any]:
+    """Marca resuelta una incidencia de ENVÍO: el transporte vuelve a «en
+    tránsito» y el pedido sale de «Incidencias» → «Enviados». El SAT puede
+    hacerlo desde la Cola SAT (el arco `incident → in_transit` se abrió a SAT)."""
+    order = session.get(Order, order_id)
+    if order is None:
+        raise not_found("Pedido")
+    current = getattr(order.transport_status, "value", order.transport_status)
+    if current != TransportStatus.INCIDENT.value:
+        raise HTTPException(409, {
+            "code": "not_incident", "detail": "El pedido no está en incidencia de envío.",
+        })
+    try:
+        apply_transition(
+            session, order=order, domain=StatusDomain.TRANSPORT,
+            to_status=TransportStatus.IN_TRANSIT.value, actor=current_user,
+            reason="Incidencia de envío resuelta (Cola SAT)",
+        )
+    except TransitionError as exc:
+        raise HTTPException(409, {"code": "invalid_transition", "detail": str(exc)}) from exc
+    session.commit()
+    return {"order_id": order.id,
+            "transport_status": getattr(order.transport_status, "value", order.transport_status)}
 
 
 # --- añadir a mano ------------------------------------------------------------

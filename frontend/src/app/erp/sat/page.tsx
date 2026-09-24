@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { SatIncidenciasTab } from "../../components/erp/SatIncidenciasTab";
 import { SatPreparingCard } from "../../components/erp/SatPreparingCard";
 import { satDateTime, SatQueueTable } from "../../components/erp/SatQueueTable";
 import { SatReadyCard } from "../../components/erp/SatReadyCard";
@@ -29,8 +30,11 @@ type View = "cards" | "list";
 /** Lote 2 · PR-2: las pestañas de la cola. «Enviados» es el antiguo historial
  *  plegable (email al SAT o aprobación), ahora al mismo nivel que las otras
  *  para que se vea a qué hora se envió cada pedido y quién.
- *  Lote 3: «Global» muestra «Por embalar» y «Listos» a la vez (50/50). */
-type Tab = "por_embalar" | "listos" | "global" | "no_shipping" | "enviados";
+ *  Lote 3: «Global» muestra «Por embalar» y «Listos» a la vez (50/50).
+ *  Lote 2 · PR-2 A5: «Incidencias» reúne los pedidos que salen de «Enviados»
+ *  por una incidencia (de envío del webhook de Genei o de pedido/excepción). */
+type Tab =
+  | "por_embalar" | "listos" | "global" | "no_shipping" | "enviados" | "incidencias";
 
 /** Preferencia de vista (tarjetas / lista) por dispositivo: la tablet del
  *  taller quiere tarjetas; el escritorio de oficina, lista. */
@@ -146,8 +150,12 @@ export default function SatQueuePage() {
   // lo ve. Va aparte de `canEdit` (trabajo de taller).
   const [canEnqueue, setCanEnqueue] = useState(false);
   // Genei (crear envío): capacidad `erp.sat.shipping`. El botón vive en la card
-  // de «Listos»; el backend revalida.
+  // de «Listos»; el backend revalida. También habilita «Resolver» una incidencia
+  // de ENVÍO en la pestaña «Incidencias».
   const [canShip, setCanShip] = useState(false);
+  // Resolver una incidencia de PEDIDO (cerrar la excepción) es de oficina:
+  // capacidad `erp.orders.create` (mismo gate que la bandeja de excepciones).
+  const [canResolvePedido, setCanResolvePedido] = useState(false);
 
   useEffect(() => {
     getCurrentUser()
@@ -159,11 +167,13 @@ export default function SatQueuePage() {
         setCanEdit(can(u, Cap.SAT_PREPARE));
         setCanEnqueue(can(u, Cap.ORDERS_APPROVE));
         setCanShip(can(u, Cap.SAT_SHIPPING));
+        setCanResolvePedido(can(u, Cap.ORDERS_CREATE));
       })
       .catch(() => {
         setCanEdit(false);
         setCanEnqueue(false);
         setCanShip(false);
+        setCanResolvePedido(false);
       });
     // Tiendas (filtro) best-effort: sin ellas el filtro no sale.
     getErpSettings()
@@ -205,10 +215,17 @@ export default function SatQueuePage() {
     if (historyOpen) loadHistory();
   }, [historyOpen, loadHistory]);
 
+  // --- «Incidencias»: pedidos que salen de «Enviados» (carga en el componente).
+  // Aquí solo llevamos el contador (chip) y una señal de recarga para que
+  // «Actualizar» refresque la pestaña; el componente hace el fetch.
+  const [incidenciasCount, setIncidenciasCount] = useState<number | null>(null);
+  const [incidenciasReload, setIncidenciasReload] = useState(0);
+
   const refreshAll = useCallback(() => {
     load();
     if (historyOpen) loadHistory();
-  }, [load, loadHistory, historyOpen]);
+    if (tab === "incidencias") setIncidenciasReload((n) => n + 1);
+  }, [load, loadHistory, historyOpen, tab]);
 
   // --- «No requiere envío»: vista de marcados (carga perezosa) ---------------
   const noShipOpen = tab === "no_shipping";
@@ -348,6 +365,7 @@ export default function SatQueuePage() {
     { key: "no_shipping", label: "No requieren envío",
       count: noShipLoaded ? noShip.length : null },
     { key: "enviados", label: "Enviados", count: historyLoaded ? history.length : null },
+    { key: "incidencias", label: "Incidencias", count: incidenciasCount },
   ];
 
   return (
@@ -652,6 +670,7 @@ export default function SatQueuePage() {
                     <th>Tipo</th>
                     <th>Destinatario</th>
                     <th>Estado actual</th>
+                    <th>Estado envío</th>
                     <th>Albarán</th>
                   </tr>
                 </thead>
@@ -678,6 +697,11 @@ export default function SatQueuePage() {
                         {h.cancelled ? <span className="badge bad"> Anulado</span> : null}
                         {h.excluded ? <span className="badge muted"> Quitado</span> : null}
                       </td>
+                      <td data-label="Estado envío">
+                        <span className={`badge ${STATUS_LABELS[h.transport_status]?.tone ?? "muted"}`}>
+                          {STATUS_LABELS[h.transport_status]?.label ?? h.transport_status}
+                        </span>
+                      </td>
                       <td data-label="Albarán" className="mono">{h.factusol_albaran_number ?? (h.has_albaran ? "Subido" : "—")}</td>
                     </tr>
                   ))}
@@ -687,6 +711,17 @@ export default function SatQueuePage() {
           )}
           </div>
         </section>
+      ) : null}
+
+      {tab === "incidencias" ? (
+        <SatIncidenciasTab
+          filters={filters}
+          canResolveEnvio={canShip}
+          canResolvePedido={canResolvePedido}
+          reloadKey={incidenciasReload}
+          onCount={setIncidenciasCount}
+          onResolved={refreshAll}
+        />
       ) : null}
 
       {confirmOpen ? (
