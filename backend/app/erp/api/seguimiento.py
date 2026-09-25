@@ -6,6 +6,7 @@ sincronizado con la hoja es un extra que avisa si falta configuración.
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, date, datetime
 from typing import Any, Literal
 
@@ -19,6 +20,8 @@ from app.erp import seguimiento as core
 from app.erp.api.deps import require_seguimiento
 from app.erp.models import ERP_SETTINGS_SINGLETON_ID, ErpSettings, Order
 from app.models.crm import User
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/erp/seguimiento", tags=["erp-seguimiento"])
 
@@ -206,7 +209,7 @@ def drive_sync(
     la sincronización incremental de ERP-F6 (solo AÑADE filas a la histórica,
     sin pisar nada). Ya no es el comportamiento por defecto."""
     _ = current_user
-    from app.erp.drive_managed import push_managed_tabs  # noqa: PLC0415
+    from app.erp.drive_managed import managed_tab_titles, push_managed_tabs  # noqa: PLC0415
     from app.erp.drive_sheets import (  # noqa: PLC0415
         DriveConfigError,
         DriveSyncError,
@@ -265,6 +268,18 @@ def drive_sync(
                 )
                 session.commit()
             return resumen
+        # El modo antiguo AÑADE filas a la PRIMERA pestaña del documento. Si ahí
+        # está ahora la pestaña de la app (alguien la ha movido al principio),
+        # le metería filas del formato viejo: no se escribe.
+        primera = client.first_tab_title()
+        de_la_app = {t.strip().casefold() for t in managed_tab_titles(session)}
+        if primera.strip().casefold() in de_la_app:
+            raise DriveSyncError(
+                f"modo antiguo: la primera pestaña del documento es «{primera}», "
+                "la que gestiona la app, y el modo antiguo añade filas a la "
+                "primera pestaña. Pon la hoja vieja la primera o quita el modo "
+                "antiguo en Configuración ERP."
+            )
         prefer_albaran = bool(cfg_json.get("drive_reference_prefer_albaran", True))
         return sync_to_sheet(
             session, client, build_drive_sync_rows(session),
@@ -272,6 +287,14 @@ def drive_sync(
             invoice_serie_resolver=_factusol_invoice_serie_resolver(session),
         )
     except DriveSyncError as exc:
+        # Nada de lo leído de la hoja se confirma si la pasada no terminó.
+        session.rollback()
+        # Solo el mensaje de `DriveSyncError`, que ya viene saneado (nunca
+        # `exc_info`: la causa encadenada de un fallo de autenticación puede
+        # arrastrar material de la clave privada).
+        logger.warning(
+            "drive-sync (%s) falló: %s", "vista previa" if dry_run else "escritura", exc,
+        )
         raise HTTPException(
             status.HTTP_502_BAD_GATEWAY,
             {"code": "drive_sync_failed", "detail": str(exc)[:300]},

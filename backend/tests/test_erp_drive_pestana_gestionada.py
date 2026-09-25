@@ -154,18 +154,108 @@ def test_no_escribe_en_la_pestana_historica(session):
 
 
 def test_se_niega_si_la_gestionada_es_la_historica(session, monkeypatch):
-    """Si alguien configura como gestionada el título de la histórica, el
-    volcado la borraría entera. Se niega en cada escritura, no solo al
-    configurarla: en Drive se pueden renombrar pestañas."""
+    """Si alguien configura como gestionada el título de la hoja vieja, el
+    volcado la borraría entera. Se niega en cada escritura (y en la vista
+    previa), no solo al configurarla: en Drive se renombran pestañas."""
     monkeypatch.setattr(
         "app.erp.drive_managed.managed_tab_titles",
         lambda _s: (HISTORICA, DEFAULT_INCIDENCIAS_TAB),
     )
-    sheets = FakeTabs()
+    sheets = FakeTabs({HISTORICA: _hoja_vieja()})
+    original = [list(r) for r in sheets.tabs[HISTORICA]]
+    for dry_run in (True, False):
+        with pytest.raises(DriveSyncError) as exc:
+            push_managed_tabs(session, sheets, [_row("listo", "BOP-1")], dry_run=dry_run)
+        assert "no tiene el formato de la app" in str(exc.value)
+    assert sheets.written == {}
+    assert sheets.tabs[HISTORICA] == original
+
+
+def test_la_hoja_vieja_se_protege_este_donde_este(session, monkeypatch):
+    """La protección va por CONTENIDO, no por posición: la hoja vieja movida a
+    la segunda pestaña (o más allá) se sigue negando."""
+    monkeypatch.setattr(
+        "app.erp.drive_managed.managed_tab_titles",
+        lambda _s: (HISTORICA, DEFAULT_INCIDENCIAS_TAB),
+    )
+    sheets = FakeTabs({"Portada": [["hola"]], HISTORICA: _hoja_vieja()})
+    with pytest.raises(DriveSyncError):
+        push_managed_tabs(session, sheets, [_row("listo", "BOP-1")])
+    assert sheets.written == {}
+
+
+def test_la_de_incidencias_tambien_se_comprueba_antes_de_escribir_nada(session, monkeypatch):
+    """Si la de incidencias apunta a una pestaña hecha a mano, no se escribe
+    NINGUNA de las dos: la de pedidos tampoco (no queda una a medias)."""
+    monkeypatch.setattr(
+        "app.erp.drive_managed.managed_tab_titles",
+        lambda _s: (DEFAULT_MANAGED_TAB, HISTORICA),
+    )
+    sheets = FakeTabs({HISTORICA: _hoja_vieja()})
     with pytest.raises(DriveSyncError) as exc:
         push_managed_tabs(session, sheets, [_row("listo", "BOP-1")])
-    assert "HISTÓRICA" in str(exc.value)
+    assert f"«{HISTORICA}»" in str(exc.value)
     assert sheets.written == {}
+    assert sheets.created == []
+
+
+def _gestionada_con_historico() -> list[list[Any]]:
+    """«Seguimiento (app)» como la deja la app: cabecera, zona viva y, bajo el
+    separador, el histórico importado."""
+    return [
+        list(SEGUIMIENTO_COLUMNS_V2),
+        [f"{SEPARATOR_PREFIX} HISTÓRICO — no se actualiza {SEPARATOR_PREFIX}"],
+        ["Histórico", "VIEJO-1", "1/1/2020", "Cliente viejo", "WEB"],
+        ["Histórico", "VIEJO-2", "2/1/2020", "Otro cliente", "SAT"],
+    ]
+
+
+@pytest.mark.parametrize("con_hoja_vieja", [False, True])
+def test_gestiona_seguimiento_app_aunque_sea_la_primera_pestana(session, con_hoja_vieja):
+    """El bug: con «Seguimiento (app)» como PRIMERA pestaña, la salvaguarda la
+    tomaba por la histórica y el botón devolvía 502. El histórico vive DENTRO
+    de ella, bajo el separador, y se preserva en cada pasada: se gestiona. Da
+    igual que sea la única pestaña o que la hoja vieja siga detrás."""
+    otras = {HISTORICA: _hoja_vieja()} if con_hoja_vieja else {}
+    sheets = FakeTabs({DEFAULT_MANAGED_TAB: _gestionada_con_historico(), **otras})
+    vista = push_managed_tabs(session, sheets, [_row("listo", "BOP-1")], dry_run=True)
+    assert vista["historico_preservado"] == 2
+    assert sheets.written == {}
+    resumen = push_managed_tabs(session, sheets, [_row("listo", "BOP-1")])
+    assert resumen["written"] is True
+    # Lo que nombra la vista previa como «no se toca» es la otra pestaña, si la
+    # hay; nunca la propia gestionada.
+    assert resumen["historic_tab"] == (HISTORICA if otras else "")
+    escrita = sheets.written[DEFAULT_MANAGED_TAB]
+    assert escrita[0] == SEGUIMIENTO_COLUMNS_V2
+    assert escrita[1][1] == "BOP-1"
+    sep = next(i for i, f in enumerate(escrita) if is_separator(f))
+    assert [f[1] for f in escrita[sep + 1:]] == ["VIEJO-1", "VIEJO-2"]
+    if otras:
+        assert HISTORICA not in sheets.written
+
+
+def test_la_gestionada_sin_cabecera_se_reconoce_por_el_separador(session):
+    """Si alguien borra la fila de cabecera, la pestaña sigue siendo de la app
+    (tiene su separador): se gestiona y la cabecera vuelve."""
+    tab = _gestionada_con_historico()[1:]
+    sheets = FakeTabs({DEFAULT_MANAGED_TAB: tab})
+    push_managed_tabs(session, sheets, [_row("listo", "BOP-1")])
+    escrita = sheets.written[DEFAULT_MANAGED_TAB]
+    assert escrita[0] == SEGUIMIENTO_COLUMNS_V2
+    assert [f[1] for f in escrita if not is_separator(f)][-2:] == ["VIEJO-1", "VIEJO-2"]
+
+
+def test_una_pestana_vacia_configurada_se_puede_gestionar(session, monkeypatch):
+    """Vacía no hay nada que perder: se escribe (es lo que pasa al crearla)."""
+    monkeypatch.setattr(
+        "app.erp.drive_managed.managed_tab_titles",
+        lambda _s: ("Pedidos nuevos", DEFAULT_INCIDENCIAS_TAB),
+    )
+    sheets = FakeTabs({"Pedidos nuevos": [], HISTORICA: _hoja_vieja()})
+    push_managed_tabs(session, sheets, [_row("listo", "BOP-1")])
+    assert sheets.written["Pedidos nuevos"][0] == SEGUIMIENTO_COLUMNS_V2
+    assert HISTORICA not in sheets.written
 
 
 # --- lo que se escribe ---------------------------------------------------------
