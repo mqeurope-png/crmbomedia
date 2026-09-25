@@ -57,8 +57,13 @@ from app.erp.seguimiento import (
 logger = logging.getLogger(__name__)
 
 SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets"
+#: Solo lo usa la migración de la hoja (propietario, compartir, archivar).
+DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
 _API = "https://sheets.googleapis.com/v4/spreadsheets"
+_DRIVE_API = "https://www.googleapis.com/drive/v3/files"
 _TIMEOUT = 30
+#: Copiar una pestaña de miles de filas (`sheets.copyTo`) tarda más.
+_TIMEOUT_COPIA = 180
 
 
 class DriveConfigError(RuntimeError):
@@ -67,6 +72,110 @@ class DriveConfigError(RuntimeError):
 
 class DriveSyncError(RuntimeError):
     """La hoja no tiene la forma esperada (cabecera no encontrada, etc.)."""
+
+
+def _service_account_token(info: dict[str, Any], scopes: list[str]) -> str:
+    """Token de acceso de la cuenta de servicio para esos `scopes`."""
+    try:
+        from google.auth.transport.requests import Request  # noqa: PLC0415
+        from google.oauth2.service_account import Credentials  # noqa: PLC0415
+
+        creds = Credentials.from_service_account_info(info, scopes=scopes)
+        creds.refresh(Request())
+        return str(creds.token)
+    except Exception as exc:
+        # SOLO el tipo del error: jamás su contenido (podría arrastrar
+        # material de la clave privada).
+        raise DriveSyncError(
+            "no se pudo autenticar con la cuenta de servicio "
+            f"({type(exc).__name__}); revisa las credenciales y que la "
+            "hoja esté compartida con su client_email"
+        ) from exc
+
+
+def _google_request(
+    api: str, method: str, url: str, headers: dict[str, str], *,
+    timeout: int = _TIMEOUT, **kwargs: Any,
+) -> dict[str, Any]:
+    import requests  # noqa: PLC0415
+
+    r = requests.request(method, url, headers=headers, timeout=timeout, **kwargs)
+    if r.status_code >= 400:
+        # El cuerpo del error de Google puede ser largo pero nunca contiene
+        # credenciales; se recorta igualmente.
+        raise DriveSyncError(f"{api} {r.status_code}: {r.text[:300]}")
+    return r.json() if r.text else {}
+
+
+def create_spreadsheet(
+    info: dict[str, Any], title: str, *, locale: str | None = None,
+    time_zone: str | None = None,
+) -> str:
+    """Crea una hoja NUEVA como la cuenta de servicio (que queda de
+    PROPIETARIA) y devuelve su id. Falla con 403 si Google no deja a esta cuenta
+    tener archivos (las creadas desde el 15/04/2025 no tienen cuota de Drive)."""
+    props: dict[str, Any] = {"title": title}
+    if locale:
+        props["locale"] = locale
+    if time_zone:
+        props["timeZone"] = time_zone
+    token = _service_account_token(info, [SHEETS_SCOPE])
+    data = _google_request(
+        "Sheets API", "POST", _API, {"Authorization": f"Bearer {token}"},
+        json={"properties": props},
+    )
+    return str(data["spreadsheetId"])
+
+
+class GoogleDriveFiles:
+    """Lo mínimo de la API de Drive v3 que necesita la migración de la hoja:
+    propietario y permisos de un archivo, compartir, renombrar y borrar. Como
+    la cuenta de servicio (nunca se escribe el contenido de las celdas aquí)."""
+
+    def __init__(self, info: dict[str, Any]) -> None:
+        self._info = info
+        self._token: str | None = None
+        self.calls: list[dict[str, Any]] = []
+
+    def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+        if self._token is None:
+            self._token = _service_account_token(self._info, [DRIVE_SCOPE])
+        params = {"supportsAllDrives": "true", **(kwargs.pop("params", None) or {})}
+        self.calls.append({"method": method, "path": path.split("?")[0]})
+        return _google_request(
+            "Drive API", method, f"{_DRIVE_API}{path}",
+            {"Authorization": f"Bearer {self._token}"}, params=params, **kwargs,
+        )
+
+    def file_info(self, file_id: str) -> dict[str, Any]:
+        """Nombre, PROPIETARIOS, si los editores pueden compartir y qué puede
+        hacer la cuenta de servicio con el archivo."""
+        return self._request("GET", f"/{file_id}", params={
+            "fields": "id,name,owners(emailAddress,displayName),writersCanShare,"
+                      "capabilities(canEdit,canShare),trashed",
+        })
+
+    def permissions(self, file_id: str) -> list[dict[str, Any]]:
+        data = self._request("GET", f"/{file_id}/permissions", params={
+            "fields": "permissions(id,type,role,emailAddress,displayName,deleted)",
+        })
+        return list(data.get("permissions") or [])
+
+    def share(self, file_id: str, email: str, role: str, *, kind: str = "user") -> None:
+        """Da acceso a una persona (o grupo). Google le manda el aviso por email."""
+        self._request("POST", f"/{file_id}/permissions",
+                      params={"sendNotificationEmail": "true"},
+                      json={"type": kind, "role": role, "emailAddress": email})
+
+    def set_role(self, file_id: str, permission_id: str, role: str) -> None:
+        self._request("PATCH", f"/{file_id}/permissions/{permission_id}", json={"role": role})
+
+    def update(self, file_id: str, fields: dict[str, Any]) -> None:
+        """Metadatos del archivo (`writersCanShare`, `name`…)."""
+        self._request("PATCH", f"/{file_id}", json=fields)
+
+    def delete(self, file_id: str) -> None:
+        self._request("DELETE", f"/{file_id}")
 
 
 def parse_service_account_json(raw: str) -> dict[str, Any]:
@@ -161,37 +270,90 @@ class GoogleSheetsClient:
 
     def _headers(self) -> dict[str, str]:
         if self._token is None:
-            try:
-                from google.auth.transport.requests import Request  # noqa: PLC0415
-                from google.oauth2.service_account import Credentials  # noqa: PLC0415
-
-                creds = Credentials.from_service_account_info(
-                    self._info, scopes=[SHEETS_SCOPE],
-                )
-                creds.refresh(Request())
-                self._token = creds.token
-            except Exception as exc:
-                # SOLO el tipo del error: jamás su contenido (podría arrastrar
-                # material de la clave privada).
-                raise DriveSyncError(
-                    "no se pudo autenticar con la cuenta de servicio "
-                    f"({type(exc).__name__}); revisa las credenciales y que la "
-                    "hoja esté compartida con su client_email"
-                ) from exc
+            self._token = _service_account_token(self._info, [SHEETS_SCOPE])
         return {"Authorization": f"Bearer {self._token}"}
 
     def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
-        import requests  # noqa: PLC0415
-
-        r = requests.request(
-            method, f"{_API}/{self.spreadsheet_id}{path}",
-            headers=self._headers(), timeout=_TIMEOUT, **kwargs,
+        return _google_request(
+            "Sheets API", method, f"{_API}/{self.spreadsheet_id}{path}",
+            self._headers(), **kwargs,
         )
-        if r.status_code >= 400:
-            # El cuerpo del error de Google puede ser largo pero nunca
-            # contiene credenciales; se recorta igualmente.
-            raise DriveSyncError(f"Sheets API {r.status_code}: {r.text[:300]}")
-        return r.json() if r.text else {}
+
+    # --- operaciones de hoja completa (migración a la hoja de la cuenta de
+    # servicio, `drive_migracion`) ---------------------------------------------
+
+    def spreadsheet_properties(self) -> dict[str, Any]:
+        """Título, idioma y zona horaria de la hoja."""
+        data = self._request("GET", "?fields=properties(title,locale,timeZone)")
+        return dict(data.get("properties") or {})
+
+    def set_spreadsheet_properties(self, props: dict[str, Any]) -> None:
+        """Cambia propiedades de la hoja (título, idioma, zona horaria)."""
+        if not props:
+            return
+        self._record({"method": "POST", "api": "batchUpdate:spreadsheetProperties",
+                      "fields": sorted(props)})
+        self._request("POST", ":batchUpdate", json={"requests": [{
+            "updateSpreadsheetProperties": {
+                "properties": props, "fields": ",".join(sorted(props)),
+            },
+        }]})
+
+    def copy_tab_to(self, title: str, destination_id: str) -> int:
+        """Copia la pestaña ENTERA (valores, formato, columnas ocultas, anchos,
+        validación, formato condicional) a otra hoja con `sheets.copyTo`.
+        Devuelve el `sheetId` de la copia en la hoja destino (que Google titula
+        «Copia de …»: hay que renombrarla)."""
+        sheet_id = self._tab_id(title)
+        if sheet_id is None:
+            raise DriveSyncError(f"la hoja no tiene la pestaña «{title}»")
+        self._record({"method": "POST", "api": "sheets.copyTo", "title": title})
+        data = _google_request(
+            "Sheets API", "POST",
+            f"{_API}/{self.spreadsheet_id}/sheets/{sheet_id}:copyTo",
+            self._headers(), json={"destinationSpreadsheetId": destination_id},
+            timeout=_TIMEOUT_COPIA,
+        )
+        return int(data.get("sheetId") or 0)
+
+    def rename_tab(self, sheet_id: int, title: str, *, index: int | None = None) -> None:
+        props: dict[str, Any] = {"sheetId": sheet_id, "title": title}
+        fields = ["title"]
+        if index is not None:
+            props["index"] = index
+            fields.append("index")
+        self._record({"method": "POST", "api": "batchUpdate:renameSheet", "title": title})
+        self._request("POST", ":batchUpdate", json={"requests": [{
+            "updateSheetProperties": {"properties": props, "fields": ",".join(fields)},
+        }]})
+        self._properties(refresh=True)
+
+    def delete_tab(self, title: str) -> None:
+        sheet_id = self._tab_id(title)
+        if sheet_id is None:
+            return
+        self._record({"method": "POST", "api": "batchUpdate:deleteSheet", "title": title})
+        self._request("POST", ":batchUpdate", json={"requests": [
+            {"deleteSheet": {"sheetId": sheet_id}},
+        ]})
+        self._properties(refresh=True)
+
+    def refresh_tabs(self) -> None:
+        self._properties(refresh=True)
+
+    def protections(self, title: str) -> list[dict[str, Any]]:
+        """Las protecciones de la pestaña, con sus EDITORES y si la cuenta de
+        servicio puede editarlas (`requestingUserCanEdit`): para verificar que
+        solo BoHub escribe las columnas bloqueadas."""
+        data = self._request(
+            "GET",
+            "?fields=sheets(properties(title),protectedRanges(protectedRangeId,"
+            "description,warningOnly,editors,requestingUserCanEdit,range))",
+        )
+        for sheet in data.get("sheets") or []:
+            if str((sheet.get("properties") or {}).get("title") or "") == title:
+                return list(sheet.get("protectedRanges") or [])
+        return []
 
     def _sheet(self) -> tuple[int, str]:
         if self._sheet_id is None or self._sheet_title is None:
