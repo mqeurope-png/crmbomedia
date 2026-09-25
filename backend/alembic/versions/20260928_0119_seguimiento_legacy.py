@@ -28,7 +28,10 @@ def upgrade() -> None:
         sa.Column("numero_raw", sa.String(length=64), nullable=False, server_default=""),
         sa.Column("cliente_raw", sa.String(length=300), nullable=False, server_default=""),
         sa.Column("fecha_raw", sa.String(length=64), nullable=False, server_default=""),
-        sa.Column("raw_json", sa.Text(), nullable=False, server_default="[]"),
+        # MySQL no admite DEFAULT en columnas TEXT (error 1101): sin server_default.
+        # El ORM siempre da valor (el `default="[]"` del modelo) y la tabla nace
+        # vacía, así que NOT NULL sin default no rompe ninguna fila.
+        sa.Column("raw_json", sa.Text(), nullable=False),
         sa.Column("matched_order_id", sa.String(length=36), nullable=True),
         sa.Column("match_status", sa.String(length=20), nullable=False, server_default="pending"),
         sa.Column("match_note", sa.Text(), nullable=True),
