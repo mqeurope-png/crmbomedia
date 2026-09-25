@@ -2702,6 +2702,9 @@ class OrderTrackingIn(BaseModel):
     la card de «Listos». Vacío / solo espacios → se limpia (null)."""
 
     tracking_number: str | None = Field(default=None, max_length=64)
+    #: Courier de un envío que NO es de Genei (UPS, MRW… o texto libre). Solo
+    #: se toca si viene en la petición; vacío lo borra.
+    courier: str | None = Field(default=None, max_length=60)
 
 
 @router.patch("/{order_id}/tracking")
@@ -2717,16 +2720,39 @@ def update_order_tracking(
     vacío, lo deja en null."""
     _ = current_user
     order = _get_order(session, order_id, current_user)
-    order.tracking_number = (payload.tracking_number or "").strip() or None
+    if "tracking_number" in payload.model_fields_set or "courier" not in payload.model_fields_set:
+        order.tracking_number = (payload.tracking_number or "").strip() or None
+    from app.erp.shipping_courier import (  # noqa: PLC0415
+        external_state,
+        is_external_shipment,
+        is_genei_shipment,
+        normalize_courier,
+        set_external_state,
+    )
+
+    # Courier de un envío con OTRO courier (el de Genei lo pone Genei).
+    if "courier" in payload.model_fields_set and not is_genei_shipment(order):
+        set_external_state(order, {"courier": normalize_courier(payload.courier)})
     from app.core.audit import record_event  # noqa: PLC0415
     record_event(
         session, action="erp.order_tracking_updated", target_type="order",
         target_id=order.id, actor=current_user,
         metadata={"order_number": order.order_number,
-                  "tracking_number": order.tracking_number},
+                  "tracking_number": order.tracking_number,
+                  "courier": external_state(order).get("courier")},
     )
     session.commit()
-    return {"id": order.id, "tracking_number": order.tracking_number}
+    # Envío externo ya recogido: con el tracking puesto ahora, sale el aviso
+    # al cliente si estaba pendiente (una sola vez).
+    if is_external_shipment(order):
+        from app.erp.shipment_email import maybe_send_shipment_email  # noqa: PLC0415
+
+        try:
+            maybe_send_shipment_email(session, order, actor=current_user)
+        except Exception:  # noqa: BLE001
+            session.rollback()
+    return {"id": order.id, "tracking_number": order.tracking_number,
+            "courier": None if is_genei_shipment(order) else external_state(order).get("courier")}
 
 
 @router.get("/{order_id}/factusol-invoice-ref")

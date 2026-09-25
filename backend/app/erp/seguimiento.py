@@ -805,6 +805,19 @@ def _envio_label(order: Order) -> str:
     if real:
         return real
     st = getattr(order.transport_status, "value", order.transport_status)
+    # Envío con OTRO courier (sin Genei) ya recogido: «Enviado · UPS» /
+    # «Enviado · otro courier» (el histórico llevaba el courier en Envío).
+    from app.erp.shipping_courier import (  # noqa: PLC0415
+        external_envio_label,
+        external_state,
+        is_genei_shipment,
+    )
+
+    if not is_genei_shipment(order) and (
+        st == "in_transit"
+        or (st == "already_shipped_externally" and external_state(order).get("courier"))
+    ):
+        return external_envio_label(order)
     return ENVIO_LABELS.get(str(st or ""), "—")
 
 
@@ -812,8 +825,17 @@ def envio_vocabulary() -> list[str]:
     """Todos los valores que BoHub escribe en la columna Envío (transporte +
     escaneo real del transportista), sin repetir."""
     from app.erp.integrations.genei.tracking import CARRIER_STEP_LABELS  # noqa: PLC0415
+    from app.erp.shipping_courier import external_envio_vocabulary  # noqa: PLC0415
 
-    return list(dict.fromkeys([*ENVIO_LABELS.values(), *CARRIER_STEP_LABELS.values()]))
+    return list(dict.fromkeys([*ENVIO_LABELS.values(), *CARRIER_STEP_LABELS.values(),
+                               *external_envio_vocabulary()]))
+
+
+def is_bohub_envio(value: str) -> bool:
+    """¿Es un valor de Envío que escribe BoHub? (vocabulario + «Enviado · X»
+    con cualquier courier, también los de texto libre)."""
+    text = str(value or "").strip()
+    return text in envio_vocabulary() or text.startswith("Enviado · ")
 
 
 def _cobro_state(order: Order) -> str:
@@ -1101,9 +1123,12 @@ def build_rows(
             # ERP-F6-fix4: SOLO hechos reales; nunca la fecha estampada en la
             # importación (esas quedan vacías, no engañan ni en vista ni hoja).
             "preparado": _iso_date(_real_event_date(o, "preparation", {"packed"})),
-            "recogido": _iso_date(_real_event_date(
-                o, "transport", {"in_transit", "delivered", "label_created"},
-            )),
+            # La de «📤 Marcar recogido» (en tránsito); si aún no se recogió, la
+            # de la etiqueta (como antes).
+            "recogido": _iso_date(
+                _real_event_date(o, "transport", {"in_transit", "delivered"})
+                or _real_event_date(o, "transport", {"label_created"})
+            ),
             "fecha_envio_factura": _iso_date(_real_event_date(
                 o, "invoice", {"generated", "invoiced_by_erp"},
             )),

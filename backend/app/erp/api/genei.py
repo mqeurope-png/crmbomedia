@@ -54,6 +54,7 @@ from app.erp.shipment_email import (
     maybe_send_shipment_email,
     send_shipment_email,
 )
+from app.erp.shipping_courier import shipment_info
 from app.erp.shipping_destination import resolve_shipping_destination
 from app.models.crm import AuditLog, User
 
@@ -714,6 +715,16 @@ def genei_delete_shipment(
 # --- aviso de envío al cliente (BoHub, en su idioma) --------------------------
 
 
+def _require_any_shipment(order: Order) -> None:
+    """El aviso al cliente vale para un envío de Genei o de OTRO courier ya
+    recogido; sin envío, 409."""
+    from app.erp.shipping_courier import is_external_shipment  # noqa: PLC0415
+
+    if not (shipment_code_of_order(order) or is_external_shipment(order)):
+        raise HTTPException(409, {"code": "no_shipment",
+                                  "detail": "El pedido aún no tiene envío."})
+
+
 class CustomerEmailIn(BaseModel):
     #: Destinatario (vacío = el del envío Genei / el contacto del pedido).
     to: str | None = Field(default=None, max_length=255)
@@ -732,9 +743,7 @@ def genei_customer_email_preview(
     asunto, cuerpo) y su estado (enviado / pendiente / error). No envía."""
     _ = current_user
     order = _get_order(session, order_id)
-    if not shipment_code_of_order(order):
-        raise HTTPException(409, {"code": "no_shipment",
-                                  "detail": "El pedido no tiene envío en Genei."})
+    _require_any_shipment(order)
     return build_shipment_email(session, order, lang=lang)
 
 
@@ -748,9 +757,7 @@ def genei_customer_email_send(
     """Enviar (o REENVIAR) a mano el aviso de envío al cliente, con el nº de
     seguimiento y el enlace, en su idioma. Queda en el timeline del pedido."""
     order = _get_order(session, order_id)
-    if not shipment_code_of_order(order):
-        raise HTTPException(409, {"code": "no_shipment",
-                                  "detail": "El pedido no tiene envío en Genei."})
+    _require_any_shipment(order)
     body = payload or CustomerEmailIn()
     to = (body.to or "").strip() or None
     if to is not None and ("@" not in to or " " in to):
@@ -771,7 +778,8 @@ def genei_customer_email_send(
         }) from exc
     session.commit()
     session.refresh(order)
-    return {"order_id": order.id, "result": result, "state": _serialise_state(order)}
+    return {"order_id": order.id, "result": result, "state": _serialise_state(order),
+            "shipment": shipment_info(session, order)}
 
 
 # --- ajustes del carrier «Genei» --------------------------------------------
