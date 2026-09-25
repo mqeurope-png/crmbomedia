@@ -170,11 +170,13 @@ def test_apply_solo_escribe_claras_y_sinteticas_deja_dudosas(factory):
         assert res["aplicadas"] == 1 and res["sinteticas"] == 1
         assert res["dudosas_pendientes"] == 1
         by_num = {r.numero_raw: r for r in s.scalars(select(SeguimientoLegacy))}
-        # La clara casó con el pedido real; la dudosa sigue pendiente de revisión.
+        # La clara casó con el pedido real; la dudosa sigue PENDIENTE de revisión
+        # (ni casada ni sintetizada), con su motivo y candidatos en la nota.
         assert by_num["BOP-100"].match_status == "confirmed"
         assert by_num["BOP-100"].matched_order_id == oid
-        assert by_num["BOPRIN-99927"].match_status == "dubious"
+        assert by_num["BOPRIN-99927"].match_status == "pending"
         assert by_num["BOPRIN-99927"].matched_order_id is None
+        assert "candidatos" in (by_num["BOPRIN-99927"].match_note or "")
 
 
 def test_apply_confirma_una_dudosa_que_bart_revisa(factory):
@@ -188,3 +190,87 @@ def test_apply_confirma_una_dudosa_que_bart_revisa(factory):
         assert res["confirmadas_a_mano"] == 1
         s.refresh(dudosa)
         assert dudosa.match_status == "confirmed" and dudosa.matched_order_id == oid
+
+
+# --- arreglo Fase 2: dudosas pendientes + --confirm que sobrescribe ------------
+
+
+def test_parse_confirmar_formas():
+    from app.erp.seguimiento_backfill import parse_confirmar
+
+    assert parse_confirmar("a, b=ord-1 ,c=none,,") == {"a": "", "b": "ord-1", "c": "none"}
+    assert parse_confirmar("") == {}
+
+
+def test_una_dudosa_sigue_pendiente_en_corridas_sucesivas(factory):
+    """Bug Fase 1: tras un `--apply` la dudosa salía del informe y ya no se
+    podía confirmar. Ahora sigue pendiente y se vuelve a proponer."""
+    with factory() as s:
+        _mk_order(s, number="FLUXLA-99927", cliente="Otra Cosa SL")
+        import_legacy_rows(s, [_hist_row("BOPRIN-99927", "Acme SL")])
+        s.commit()
+        for _ in range(2):
+            res = apply_backfill(s)
+            s.commit()
+            assert res["dudosas_pendientes"] == 1 and res["sinteticas"] == 0
+            assert backfill_report(s)["dudosas"] == 1        # sigue en el informe
+        fila = s.scalars(select(SeguimientoLegacy)).one()
+        assert fila.match_status == "pending" and fila.matched_order_id is None
+
+
+def test_filas_dubious_de_corridas_antiguas_se_vuelven_a_proponer(factory):
+    with factory() as s:
+        _mk_order(s, number="FLUXLA-99927", cliente="Otra Cosa SL")
+        import_legacy_rows(s, [_hist_row("BOPRIN-99927", "Acme SL")])
+        s.commit()
+        fila = s.scalars(select(SeguimientoLegacy)).one()
+        fila.match_status = "dubious"                      # estado de una corrida vieja
+        s.commit()
+        assert backfill_report(s)["dudosas"] == 1
+
+
+def test_confirm_sobrescribe_una_fila_ya_resuelta(factory):
+    """Bug Fase 1: `--confirm` no reenganchaba una fila ya resuelta. Ahora manda
+    sobre el estado actual: sintética → casada con un pedido, y casada → sin
+    pedido."""
+    with factory() as s:
+        oid = _mk_order(s, number="BOP-100", cliente="Acme SL")
+        import_legacy_rows(s, [_hist_row("", "Cliente suelto"),      # sintética
+                               _hist_row("BOP-100", "Acme SL")])     # clara
+        s.commit()
+        apply_backfill(s)
+        s.commit()
+        suelta, clara = s.scalars(
+            select(SeguimientoLegacy).order_by(SeguimientoLegacy.row_index)).all()
+        assert suelta.match_status == "synthetic" and clara.match_status == "confirmed"
+
+        res = apply_backfill(s, confirmar={suelta.id: oid, clara.id: "none"})
+        s.commit()
+        assert res["confirmadas_a_mano"] == 2 and res["errores"] == []
+        s.refresh(suelta)
+        s.refresh(clara)
+        assert suelta.match_status == "confirmed" and suelta.matched_order_id == oid
+        assert clara.match_status == "synthetic" and clara.matched_order_id is None
+        # Idempotente: otra corrida sin --confirm no deshace la corrección.
+        apply_backfill(s)
+        s.commit()
+        s.refresh(suelta)
+        s.refresh(clara)
+        assert suelta.matched_order_id == oid and clara.match_status == "synthetic"
+
+
+def test_confirm_con_errores_no_toca_nada(factory):
+    with factory() as s:
+        _mk_order(s, number="9562", cliente="A")
+        _mk_order(s, number="9562", cliente="B")                       # ambiguo
+        import_legacy_rows(s, [_hist_row("9562", "A")])
+        s.commit()
+        fila = s.scalars(select(SeguimientoLegacy)).one()
+        res = apply_backfill(s, confirmar={fila.id: "", "no-existe": "", fila.id + "x": ""})
+        s.commit()
+        assert res["confirmadas_a_mano"] == 0
+        assert len(res["errores"]) == 3
+        s.refresh(fila)
+        assert fila.match_status == "pending"                          # sin tocar
+        res = apply_backfill(s, confirmar={fila.id: "ord-inexistente"})
+        assert any("no existe" in e for e in res["errores"])
