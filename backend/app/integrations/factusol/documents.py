@@ -296,6 +296,27 @@ def normalize_header(doc_type: str, row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def delivery_block(doc_type: str, row: dict[str, Any]) -> dict[str, str | None]:
+    """Bloque de CLIENTE/ENTREGA de la cabecera (`CNO/CDO/CPO/CCP/CPR/CPA/TEL/
+    CEM/CNI*`): lo que el escritorio copia de F_CLI al elegir el cliente y que
+    se edita para mandar a otra dirección. Es el destino del envío de un
+    pedido que nace de este documento. El email va en `CEM*` (`CEMPRE`,
+    `CEMALB`…); en facturas también existe `EMA*`, que se usa si `CEM*` viene
+    vacío."""
+    sfx = DOC_SPECS[doc_type].suffix
+    return {
+        "nombre": _clean(row.get(f"CNO{sfx}")),
+        "direccion": _clean(row.get(f"CDO{sfx}")),
+        "poblacion": _clean(row.get(f"CPO{sfx}")),
+        "cp": _clean(row.get(f"CCP{sfx}")),
+        "provincia": _clean(row.get(f"CPR{sfx}")),
+        "pais": _clean(row.get(f"CPA{sfx}")),
+        "telefono": _clean(row.get(f"TEL{sfx}")),
+        "email": _clean(row.get(f"CEM{sfx}")) or _clean(row.get(f"EMA{sfx}")),
+        "nif": _clean(row.get(f"CNI{sfx}")),
+    }
+
+
 #: Columnas de F_CLI donde casa el término del filtro de cliente. Todas
 #: confirmadas en vivo (C-3-fix1 + sondeo 2026-08-20): nombre fiscal y
 #: comercial, CIF y email.
@@ -565,7 +586,11 @@ def get_header(
         match = rows[0]
     if match is None:
         return None
-    return normalize_header(doc_type, match)
+    header = normalize_header(doc_type, match)
+    # Destino de ENVÍO del documento (dirección, teléfono, email): solo al leer
+    # UN documento, no en el listado (no hace falta pasearlo en cada fila).
+    header["entrega"] = delivery_block(doc_type, match)
+    return header
 
 
 def get_document(

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { extractErrorMessage } from "../../lib/errors";
+import { printShippingFile } from "../../lib/erpApi";
 import {
   geneiCreateShipment,
   geneiDeleteShipment,
@@ -18,10 +19,11 @@ import {
   type GeneiState,
 } from "../../lib/geneiApi";
 
-/** Envío con Genei desde la Cola SAT (PR-1). Vive dentro del cajón «Envío y
- *  seguimiento»: si no hay envío, propone crearlo (comparador de agencias); si
- *  ya lo hay, enseña el estado y permite traer la etiqueta, actualizar el estado
- *  y eliminarlo. El PAGO se hace a mano en Genei (PR-2 añade el botón). */
+/** Envío con Genei (Cola SAT y ficha). Si NO hay envío, propone crearlo
+ *  (comparador de agencias); si ya lo hay, NO vuelve a ofrecer «Crear»:
+ *  enseña el envío (estado, agencia, seguimiento), «Pagar y tramitar» si está
+ *  pendiente de pago, y la etiqueta —descargar e imprimir en un clic— solo
+ *  cuando el envío ya está tramitado (Genei estado 1+). */
 export function GeneiShipmentSection({
   orderId,
   canManage,
@@ -57,16 +59,39 @@ export function GeneiShipmentSection({
   useEffect(() => { void load(); }, [load]);
 
   const hasShipment = !!state.shipment_code;
+  // La etiqueta solo existe con el envío TRAMITADO (Genei estado 1+); antes,
+  // Genei responde con un error: no se ofrece.
+  const labelReady = !!state.label_available;
 
+  /** Etiqueta: la trae de Genei (queda adjunta en «Documentos de envío») y
+   *  lanza la impresión en el MISMO clic. */
   async function onLabel() {
     setBusy(true); setError(null); setNotice(null);
     try {
       const r = await geneiFetchLabel(orderId);
       setState(r.state);
-      setNotice("Etiqueta descargada y adjunta en «Documentos de envío».");
+      await printShippingFile(r.file);
+      setNotice("Etiqueta enviada a imprimir (queda en «Documentos de envío»).");
       onChanged?.();
     } catch (e) {
       setError(extractErrorMessage(e, "No se pudo traer la etiqueta de Genei."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** «Crear envío»: antes de abrir el modal se completa el destino (dirección,
+   *  teléfono, email) — si falta algo, el backend lo lee de FACTUSOL. */
+  async function onOpenCreate() {
+    setBusy(true); setError(null); setNotice(null);
+    try {
+      const p = await geneiPrefill(orderId, { completar: true });
+      setPrefill(p);
+      setState(p.state ?? {});
+      if (p.state?.shipment_code) return;   // alguien lo creó entretanto
+      setCreating(true);
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudieron preparar los datos del envío."));
     } finally {
       setBusy(false);
     }
@@ -164,10 +189,18 @@ export function GeneiShipmentSection({
               </button>
             </div>
           ) : null}
+          {canManage && !labelReady ? (
+            <p className="muted small" role="note">
+              La etiqueta estará disponible tras pagar y tramitar el envío.
+            </p>
+          ) : null}
           {canManage ? (
             <div className="erp-genei-actions">
-              <button type="button" className="button small" disabled={busy} onClick={() => void onLabel()}>
-                Descargar etiqueta
+              <button type="button" className="button small" disabled={busy || !labelReady}
+                      title={labelReady ? "Descarga la etiqueta y abre el diálogo de imprimir"
+                        : "La etiqueta estará disponible tras pagar y tramitar el envío"}
+                      onClick={() => void onLabel()}>
+                🖨 Imprimir etiqueta
               </button>
               <button type="button" className="button small secondary" disabled={busy}
                       onClick={() => void onRefresh()}>
@@ -185,13 +218,13 @@ export function GeneiShipmentSection({
           <p className="muted small">Aún no hay envío en Genei para este pedido.</p>
           {canManage && prefill.is_packed ? (
             <button type="button" className="button small" disabled={busy}
-                    onClick={() => setCreating(true)}>
+                    onClick={() => void onOpenCreate()}>
               Crear envío con Genei
             </button>
           ) : canManage ? (
             /* Regla de negocio: el envío solo se crea con el pedido embalado. */
             <p className="muted small" role="note">
-              Empaqueta el pedido primero (debe estar en «Listos») para crear el envío.
+              Embala el pedido primero (debe estar en «Embalados») para crear el envío.
             </p>
           ) : null}
         </div>
@@ -304,7 +337,7 @@ function CreateGeneiShipmentModal({
         <h2>Crear envío con Genei</h2>
         <p className="muted small">
           Revisa el destino y el bulto, compara agencias y crea el envío. Nace
-          pendiente de pago; el pago se hace a mano en Genei.
+          pendiente de pago: págalo con «Pagar y tramitar».
         </p>
 
         <fieldset className="erp-genei-dest" disabled={busy}>

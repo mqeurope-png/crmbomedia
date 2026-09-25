@@ -1,10 +1,14 @@
 "use client";
 
-import { useParams, useRouter } from "next/navigation";
+import Link from "next/link";
+import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
-import { EmbalarModal } from "../../../components/erp/EmbalarModal";
+import { PackingForm } from "../../../components/erp/EmbalarModal";
+import { GeneiShipmentSection } from "../../../components/erp/GeneiShipmentSection";
 import { ReportExceptionModal } from "../../../components/erp/ReportExceptionModal";
 import { SatObservaciones, SatTechData } from "../../../components/erp/SatTechData";
+import { getCurrentUser } from "../../../lib/api";
+import { Cap, can } from "../../../lib/capabilities";
 import { extractErrorMessage } from "../../../lib/errors";
 import {
   attachDocument,
@@ -16,19 +20,29 @@ import {
 } from "../../../lib/erpApi";
 
 /** Modo trabajo SAT de un pedido: líneas verificables, subir foto y avanzar el
- *  estado (Empezar / Embalado) o reportar un problema. Táctil, botones grandes.
- *  Fase D: «Embalado» abre el modal multi-bulto (el backend exige ≥1 bulto).
+ *  estado (Empezar / Embalar) o reportar un problema. Táctil, botones grandes.
  *  Lote 2 · PR-2: lo mismo que la card — observaciones del comercial arriba en
- *  ámbar (solo si hay) y nº de serie / licencia WhiteRIP grandes con «copiar». */
+ *  ámbar (solo si hay) y nº de serie / licencia WhiteRIP grandes con «copiar».
+ *
+ *  Cada paso se hace SIN SALIR del pedido: al pulsar «Empezar» aparecen aquí
+ *  mismo los bultos (peso y medidas, varios si hace falta) y «Embalar»; al
+ *  embalar, el pedido sigue abierto con el siguiente paso (el envío). Solo se
+ *  vuelve a la cola cuando lo decide la persona. */
 export default function SatOrderWorkPage() {
   const params = useParams<{ id: string }>();
-  const router = useRouter();
   const id = params.id;
   const [order, setOrder] = useState<OrderDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [showReport, setShowReport] = useState(false);
-  const [embalarOpen, setEmbalarOpen] = useState(false);
+  const [canShip, setCanShip] = useState(false);
+
+  useEffect(() => {
+    getCurrentUser()
+      .then((u) => setCanShip(can(u, Cap.SAT_SHIPPING)))
+      .catch(() => setCanShip(false));
+  }, []);
 
   const load = useCallback(() => {
     getOrder(id)
@@ -38,16 +52,27 @@ export default function SatOrderWorkPage() {
 
   useEffect(() => { load(); }, [load]);
 
+  /** Avanza el estado y SIGUE en el pedido (se recarga aquí mismo). */
   async function advance(toStatus: string) {
     setBusy(true);
     setError(null);
+    setNotice(null);
     try {
       await fireTransition(id, { domain: "preparation", to_status: toStatus });
-      router.push("/erp/sat");
+      if (toStatus === "preparing") {
+        setNotice("Preparación empezada. Cuando lo tengas, mete los bultos y embala.");
+      }
+      load();
     } catch (e) {
       setError(extractErrorMessage(e, "No se pudo avanzar el estado."));
+    } finally {
       setBusy(false);
     }
+  }
+
+  function onPacked() {
+    setNotice("Embalado. Siguiente paso: el envío (o volver a la cola).");
+    load();
   }
 
   async function onUpload(e: React.ChangeEvent<HTMLInputElement>) {
@@ -70,9 +95,11 @@ export default function SatOrderWorkPage() {
     try {
       await reportException(id, data);
       setShowReport(false);
-      router.push("/erp/sat");
+      setNotice("Problema reportado: el pedido queda bloqueado.");
+      load();
     } catch (e) {
       setError(extractErrorMessage(e, "No se pudo reportar."));
+    } finally {
       setBusy(false);
     }
   }
@@ -86,11 +113,13 @@ export default function SatOrderWorkPage() {
 
   return (
     <div className="sat-work">
+      <Link href="/erp/sat" className="sat-work-back">← Volver a la Cola SAT</Link>
       <h1>{order.order_number}</h1>
       <span className={`badge ${STATUS_LABELS[prep]?.tone ?? "muted"}`}>
         {STATUS_LABELS[prep]?.label ?? prep}
       </span>
       {error ? <p className="form-error">{error}</p> : null}
+      {notice ? <p className="form-success" role="status">{notice}</p> : null}
 
       <SatObservaciones notes={order.notes} />
       <section className="sat-work-tech" aria-label="Datos técnicos">
@@ -124,14 +153,29 @@ export default function SatOrderWorkPage() {
         ) : null}
       </section>
 
+      {prep === "preparing" ? (
+        /* Preparación empezada: los bultos y «Embalar» AQUÍ, sin reabrir nada. */
+        <section className="sat-work-embalar" aria-label="Embalar">
+          <h2>📦 Embalar</h2>
+          <PackingForm orderId={id} onDone={onPacked} submitLabel="📦 Embalar" />
+        </section>
+      ) : null}
+
+      {prep === "packed" ? (
+        <section className="sat-work-embalado" aria-label="Envío">
+          <h2>✓ Embalado</h2>
+          {canShip ? (
+            <GeneiShipmentSection orderId={id} canManage={canShip} onChanged={load} />
+          ) : (
+            <p className="muted small">El envío lo gestiona la oficina desde la Cola SAT.</p>
+          )}
+        </section>
+      ) : null}
+
       <div className="sat-work-actions">
         {prep === "in_queue" ? (
           <button type="button" className="sat-btn start" disabled={busy}
-            onClick={() => advance("preparing")}>▶ EMPEZAR</button>
-        ) : null}
-        {prep === "preparing" ? (
-          <button type="button" className="sat-btn pack" disabled={busy}
-            onClick={() => setEmbalarOpen(true)}>📦 EMBALADO</button>
+            onClick={() => advance("preparing")}>▶ EMPEZAR PREPARACIÓN</button>
         ) : null}
         {prep !== "blocked" ? (
           <button type="button" className="sat-btn issue" disabled={busy}
@@ -140,14 +184,6 @@ export default function SatOrderWorkPage() {
           <p className="muted">Pedido bloqueado — resolver desde la bandeja de excepciones.</p>
         )}
       </div>
-
-      {embalarOpen ? (
-        <EmbalarModal
-          orderId={id}
-          onCancel={() => setEmbalarOpen(false)}
-          onDone={() => router.push("/erp/sat")}
-        />
-      ) : null}
 
       {showReport ? (
         <ReportExceptionModal onSubmit={onReport} onClose={() => setShowReport(false)} busy={busy} />

@@ -14346,3 +14346,20 @@ table.erp-doc-lines { width: 100%; table-layout: fixed; }
   /* Objetivo táctil de 48 px para el chip de añadir en la tablet del taller. */
   .sat-tech-add { min-height: var(--control-h-touch); }
 }
+
+/* Cola SAT · pestañas por paso — embalar EN LA CARD / modo trabajo (bultos en
+   línea, sin modal ni salir del pedido) y card de pedido ya enviado. */
+.erp-packing-form { display: flex; flex-direction: column; gap: var(--sp-3); }
+.sat-card-embalar,
+.sat-work-embalar,
+.sat-work-embalado {
+  display: flex; flex-direction: column; gap: var(--sp-3);
+  padding: var(--sp-3); border: 1px solid var(--line); border-radius: var(--r-control);
+}
+.sat-card-embalar h3 { margin: 0; font-size: var(--fs-subtitle); }
+.sat-work-back { display: inline-block; margin-bottom: var(--sp-2); }
+.sat-shipped-kv {
+  display: grid; grid-template-columns: auto 1fr; gap: var(--sp-1) var(--sp-3); margin: 0;
+}
+.sat-shipped-kv dt { color: var(--muted); }
+.sat-shipped-kv dd { margin: 0; }

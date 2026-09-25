@@ -566,7 +566,8 @@ def _estado(order: Order) -> str:
     """pendiente / enviado / facturado — el filtro de estado de la vista."""
     if order.invoice_status in _INVOICED_STATUSES or order.factusol_invoice_number:
         return "facturado"
-    if order.transport_status in _SHIPPED_STATUSES:
+    # «Sin seguimiento» = enviado sin tracking: cuenta como enviado.
+    if order.transport_status in _SHIPPED_STATUSES or is_sin_seguimiento(order):
         return "enviado"
     return "pendiente"
 
@@ -763,23 +764,35 @@ COBRO_LABELS: dict[str, str] = {
     "cobrado": "Cobrado ✓", "pendiente": "Pendiente", "na": "—",
 }
 
-#: Texto de «no aplica» (Preparación/Envío de un pedido que no requiere envío).
+#: Texto de «no aplica» (Preparación de un pedido «Sin seguimiento» que no
+#: llegó a pasar por el taller; y lo que escribían las hojas de antes).
 NO_APLICA = "No aplica"
+#: Envío de un pedido marcado «Sin seguimiento» (antes «No requiere envío»): se
+#: ENVIÓ, solo que sin nº de tracking (recogida en tienda, transporte sin
+#: seguimiento…). Cuenta como enviado.
+ENVIO_SIN_SEGUIMIENTO = "Enviado (sin seguimiento)"
+
+
+def is_sin_seguimiento(order: Order) -> bool:
+    """¿Marcado «Sin seguimiento» (enviado sin tracking)? Es la marca de
+    siempre (`shipping_not_required`), con el significado nuevo."""
+    return bool(getattr(order, "shipping_not_required", False))
 
 
 def _prep_label(order: Order) -> str:
-    """Etiqueta de la columna Preparación; «No aplica» si el pedido no requiere
-    envío (no pasa por el taller)."""
-    if getattr(order, "shipping_not_required", False):
+    """Etiqueta de la columna Preparación. Un pedido «Sin seguimiento» que se
+    embaló sale «Listo»; si no pasó por el taller, «No aplica»."""
+    st = str(getattr(order.preparation_status, "value", order.preparation_status) or "")
+    if is_sin_seguimiento(order) and st != "packed":
         return NO_APLICA
-    st = getattr(order.preparation_status, "value", order.preparation_status)
-    return PREPARACION_LABELS.get(str(st or ""), "—")
+    return PREPARACION_LABELS.get(st, "—")
 
 
 def _envio_label(order: Order) -> str:
-    """Etiqueta de la columna Envío; «No aplica» si no requiere envío."""
-    if getattr(order, "shipping_not_required", False):
-        return NO_APLICA
+    """Etiqueta de la columna Envío; «Enviado (sin seguimiento)» si se marcó
+    así (enviado sin tracking)."""
+    if is_sin_seguimiento(order):
+        return ENVIO_SIN_SEGUIMIENTO
     st = getattr(order.transport_status, "value", order.transport_status)
     return ENVIO_LABELS.get(str(st or ""), "—")
 

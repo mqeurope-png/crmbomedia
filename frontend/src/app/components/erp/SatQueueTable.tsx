@@ -4,7 +4,7 @@ import Link from "next/link";
 import { customerLabel, STATUS_LABELS, type SatQueueItem } from "../../lib/erpApi";
 import { SatAlbaranChip, useSatAlbaranAction } from "./SatPreparingCard";
 import {
-  SatReadyButtons, SatReadyDocChips, SatTrackingField, useSatReadyActions,
+  SatReadyButtons, SatReadyDocChips, SatTrackingField, satShippedLabel, useSatReadyActions,
 } from "./SatReadyCard";
 import { SatObservaciones, SatTechData } from "./SatTechData";
 
@@ -41,7 +41,7 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 /** Casilla de selección de una fila (solo cuando la cola es seleccionable,
- *  para marcar «No requiere envío» en lote). */
+ *  para marcar «Sin seguimiento» en lote). */
 type SelectProps = {
   selectable?: boolean;
   selected?: boolean;
@@ -180,30 +180,64 @@ function SatReadyRow(
   );
 }
 
+/** Fila de un pedido YA ENVIADO (tras «Marcar recogido» en su sitio). */
+function SatShippedRow({ order, ...sel }: { order: SatQueueItem } & SelectProps) {
+  return (
+    <tr>
+      <SelectCell order={order} {...sel} />
+      <td className="sat-td-num">
+        <Link href={`/erp/orders/${order.id}`}>{order.order_number}</Link>
+      </td>
+      <td className="sat-td-cliente">{customerLabel(order) || "—"}</td>
+      <td>{order.store_slug ?? "—"}</td>
+      <td><span className={`badge ${order.sin_seguimiento ? "muted" : "ok"}`}>
+        {satShippedLabel(order)}
+      </span></td>
+      {/* En la columna de datos técnicos, el nº de seguimiento. */}
+      <td className="mono">{order.tracking_number || order.genei?.tracking || "—"}</td>
+      <td>
+        <Link href={`/erp/orders/${order.id}`} className="button secondary small">Ficha</Link>
+      </td>
+    </tr>
+  );
+}
+
+function rowKind(o: SatQueueItem, variant: "preparing" | "ready" | "auto") {
+  if (variant !== "auto") return variant;
+  if (o.sat_tab === "embalados" || o.sat_tab === "pendiente_recogida") return "ready";
+  if (o.sat_tab === "enviados" || o.sat_tab === "sin_seguimiento") return "shipped";
+  return "preparing";
+}
+
 /** Vista lista de la Cola SAT (Lote B6): tabla compacta con las MISMAS
- *  acciones que las tarjetas. `variant` decide qué fila se pinta. Lote 2 ·
- *  PR-2: columna «Datos técnicos» (nº de serie / licencia con «copiar»,
- *  origen) y las observaciones del comercial encima de la fila. */
+ *  acciones que las tarjetas. `variant` decide qué fila se pinta (`auto` =
+ *  según el paso ACTUAL de cada pedido). Lote 2 · PR-2: columna «Datos
+ *  técnicos» (nº de serie / licencia con «copiar», origen) y las observaciones
+ *  del comercial encima de la fila. Con `onItemChanged`, una acción refresca
+ *  SOLO su pedido (se queda en su sitio) en vez de recargar la cola. */
 export function SatQueueTable({
   items,
   variant,
   onChanged,
+  onItemChanged,
   ariaLabel,
   selectable = false,
   selected,
   onToggle,
 }: {
   items: SatQueueItem[];
-  variant: "preparing" | "ready";
+  variant: "preparing" | "ready" | "auto";
   onChanged: () => void;
+  onItemChanged?: (id: string) => void;
   ariaLabel: string;
-  /** Selección múltiple (para «No requiere envío» en lote). */
+  /** Selección múltiple (para «Sin seguimiento» en lote). */
   selectable?: boolean;
   selected?: Set<string>;
   onToggle?: (id: string) => void;
 }) {
   const cols = selectable ? COLS + 1 : COLS;
   const sel = { selectable, onToggle };
+  const changed = (id: string) => () => (onItemChanged ? onItemChanged(id) : onChanged());
   return (
     <div className="sat-table-wrap">
       <table className="sat-table" aria-label={ariaLabel}>
@@ -219,13 +253,20 @@ export function SatQueueTable({
           </tr>
         </thead>
         <tbody>
-          {items.map((o) => variant === "preparing" ? (
-            <SatPreparingRow key={o.id} order={o} onChanged={onChanged} cols={cols}
-                             selected={selected?.has(o.id)} {...sel} />
-          ) : (
-            <SatReadyRow key={o.id} order={o} onChanged={onChanged} cols={cols}
-                         selected={selected?.has(o.id)} {...sel} />
-          ))}
+          {items.map((o) => {
+            const kind = rowKind(o, variant);
+            if (kind === "shipped") {
+              return <SatShippedRow key={o.id} order={o}
+                                    selected={selected?.has(o.id)} {...sel} />;
+            }
+            return kind === "preparing" ? (
+              <SatPreparingRow key={o.id} order={o} onChanged={changed(o.id)} cols={cols}
+                               selected={selected?.has(o.id)} {...sel} />
+            ) : (
+              <SatReadyRow key={o.id} order={o} onChanged={changed(o.id)} cols={cols}
+                           selected={selected?.has(o.id)} {...sel} />
+            );
+          })}
         </tbody>
       </table>
     </div>

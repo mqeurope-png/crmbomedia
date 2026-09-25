@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react
 import { SatIncidenciasTab } from "../../components/erp/SatIncidenciasTab";
 import { SatPreparingCard } from "../../components/erp/SatPreparingCard";
 import { satDateTime, SatQueueTable } from "../../components/erp/SatQueueTable";
-import { SatReadyCard } from "../../components/erp/SatReadyCard";
+import { SatReadyCard, SatShippedCard, satShippedLabel } from "../../components/erp/SatReadyCard";
 import { getCurrentUser } from "../../lib/api";
 import { Cap, can } from "../../lib/capabilities";
 import { extractErrorMessage } from "../../lib/errors";
@@ -14,27 +14,106 @@ import {
   customerLabel,
   findSatOrderByNumber,
   getErpSettings,
-  getSatHistory,
+  getSatOrderItem,
   getSatQueue,
+  getSatShipped,
   satEnqueueOrder,
-  STATUS_LABELS,
-  type SatHistoryRow,
-  type SatQueue,
-  type SatQueueEstado,
+  type SatQueueCounts,
   type SatQueueFilters,
   type SatQueueItem,
+  type SatTab,
 } from "../../lib/erpApi";
 
 type View = "cards" | "list";
 
-/** Lote 2 · PR-2: las pestañas de la cola. «Enviados» es el antiguo historial
- *  plegable (email al SAT o aprobación), ahora al mismo nivel que las otras
- *  para que se vea a qué hora se envió cada pedido y quién.
- *  Lote 3: «Global» muestra «Por embalar» y «Listos» a la vez (50/50).
- *  Lote 2 · PR-2 A5: «Incidencias» reúne los pedidos que salen de «Enviados»
- *  por una incidencia (de envío del webhook de Genei o de pedido/excepción). */
-type Tab =
-  | "por_embalar" | "listos" | "global" | "no_shipping" | "enviados" | "incidencias";
+/** Pestañas de la cola, en el orden del flujo del taller:
+ *  Por embalar → En preparación → Embalados → (Todos pendientes) → Sin
+ *  seguimiento → Pendiente de recogida → Enviados, e Incidencias. El backend
+ *  decide la pestaña de cada pedido y sus contadores. */
+type PendingTab = "por_embalar" | "en_preparacion" | "embalados" | "pendiente_recogida";
+type Tab = PendingTab | "pendientes" | "sin_seguimiento" | "enviados" | "incidencias";
+
+const PENDING_TABS: PendingTab[] = [
+  "por_embalar", "en_preparacion", "embalados", "pendiente_recogida",
+];
+const EMPTY_LISTS: Record<PendingTab, SatQueueItem[]> = {
+  por_embalar: [], en_preparacion: [], embalados: [], pendiente_recogida: [],
+};
+const EMPTY_COUNTS: SatQueueCounts = {
+  por_embalar: 0, en_preparacion: 0, embalados: 0, pendiente_recogida: 0,
+  pendientes: 0, sin_seguimiento: 0, enviados: 0,
+};
+
+function isPendingTab(t: string | null | undefined): t is PendingTab {
+  return !!t && (PENDING_TABS as string[]).includes(t);
+}
+
+/** La card que toca según el estado ACTUAL del pedido (tras avanzarlo en su
+ *  sitio, la card cambia a la del paso siguiente sin moverse). */
+function SatCard({
+  order, onChanged, canEdit, canShip,
+}: {
+  order: SatQueueItem; onChanged: () => void; canEdit: boolean; canShip: boolean;
+}) {
+  const t = order.sat_tab;
+  if (t === "embalados" || t === "pendiente_recogida") {
+    return <SatReadyCard order={order} onChanged={onChanged} canEdit={canEdit} canShip={canShip} />;
+  }
+  if (t === "enviados" || t === "sin_seguimiento") return <SatShippedCard order={order} />;
+  return <SatPreparingCard order={order} onChanged={onChanged} canEdit={canEdit} />;
+}
+
+/** Tabla de enviados («Enviados» / «Sin seguimiento»). */
+function SatShippedTable({
+  items, ariaLabel, selectable = false, selected, onToggle,
+}: {
+  items: SatQueueItem[]; ariaLabel: string;
+  selectable?: boolean; selected?: Set<string>; onToggle?: (id: string) => void;
+}) {
+  return (
+    <div className="table-wrapper sat-history-wrap">
+      <table className="data-table data-table--responsive sat-history-table" aria-label={ariaLabel}>
+        <thead>
+          <tr>
+            {selectable ? <th className="sat-td-select" aria-label="Selección" /> : null}
+            <th>Nº</th>
+            <th>Cliente</th>
+            <th>Fecha</th>
+            <th>Envío</th>
+            <th>Seguimiento</th>
+            <th>Agencia</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((o) => (
+            <tr key={o.id}>
+              {selectable ? (
+                <td className="sat-td-select">
+                  <input type="checkbox" aria-label={`Seleccionar ${o.order_number}`}
+                         checked={!!selected?.has(o.id)} onChange={() => onToggle?.(o.id)} />
+                </td>
+              ) : null}
+              <td data-label="Nº" className="mono">
+                <Link href={`/erp/orders/${o.id}`}>{o.order_number}</Link>
+              </td>
+              <td data-label="Cliente" className="sat-td-cliente">{customerLabel(o) || "—"}</td>
+              <td data-label="Fecha" className="mono">{satDateTime(o.placed_at)}</td>
+              <td data-label="Envío">
+                <span className={`badge ${o.sin_seguimiento ? "muted" : "ok"}`}>
+                  {satShippedLabel(o)}
+                </span>
+              </td>
+              <td data-label="Seguimiento" className="mono">
+                {o.tracking_number || o.genei?.tracking || (o.sin_seguimiento ? "—" : "—")}
+              </td>
+              <td data-label="Agencia">{o.genei?.courier ?? "—"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
 /** Preferencia de vista (tarjetas / lista) por dispositivo: la tablet del
  *  taller quiere tarjetas; el escritorio de oficina, lista. */
@@ -56,34 +135,22 @@ function storeView(view: View): void {
   }
 }
 
-const ESTADO_OPTIONS: { value: "" | SatQueueEstado; label: string }[] = [
-  { value: "", label: "Todos" },
-  { value: "por_embalar", label: "Por embalar" },
-  { value: "blocked", label: "Bloqueados" },
-  { value: "in_queue", label: "En cola" },
-  { value: "preparing", label: "Preparando" },
-  { value: "ready", label: "Listos" },
-];
-
-const KIND_LABEL: Record<SatHistoryRow["kind"], string> = {
-  email_sat: "Email SAT",
-  aprobado: "Aprobado",
-};
-
-/** Cola SAT táctil (D-1-fix1): «Por embalar» (con acceso al modo trabajo) y
- *  «Listos para envío» (imprimir albarán/etiqueta + marcar recogido).
+/** Cola SAT táctil. Pestañas por paso del taller (las decide el backend, con
+ *  sus contadores): «Por embalar» · «En preparación» · «Embalados» · «Todos
+ *  pendientes» · «Sin seguimiento» · «Pendiente de recogida» · «Enviados» ·
+ *  «Incidencias».
  *
- *  Lote B6: filtros (fechas, tienda, estado, texto), vista tarjetas/lista con
- *  las mismas acciones, historial de «enviados al taller» (email al SAT o
- *  aprobación) y «Añadir pedido a la cola» a mano por nº de pedido.
+ *  Avanzar un pedido (empezar, embalar, crear envío, recogido…) se hace EN SU
+ *  SITIO: solo se refresca su card, que se queda donde estaba aunque ya
+ *  pertenezca a otra pestaña (los contadores se actualizan al momento). Al
+ *  cambiar de pestaña, cada pedido pasa a la suya.
  *
- *  Lote 2 · PR-2 (revisión de diseño §8): la pantalla se diseña primero para
- *  móvil. Tres pestañas con contador — «Por embalar» · «Listos» · «Enviados»
- *  (el historial, con hora y responsable) —, y en las cards: observaciones
- *  del comercial arriba en ámbar, datos técnicos grandes con «copiar» y tres
- *  acciones de 48 px en dos filas. En escritorio, la misma card en rejilla. */
+ *  Lote B6: filtros (fechas, tienda, texto, orden), vista tarjetas/lista y
+ *  «Añadir pedido a la cola» a mano por nº de pedido. Lote 2 · PR-2: diseño
+ *  móvil primero; en escritorio, la misma card en rejilla. */
 export default function SatQueuePage() {
-  const [queue, setQueue] = useState<SatQueue>({ preparing: [], ready_for_pickup: [] });
+  const [lists, setLists] = useState<Record<PendingTab, SatQueueItem[]>>(EMPTY_LISTS);
+  const [counts, setCounts] = useState<SatQueueCounts>(EMPTY_COUNTS);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -91,7 +158,6 @@ export default function SatQueuePage() {
   const [desde, setDesde] = useState("");
   const [hasta, setHasta] = useState("");
   const [store, setStore] = useState("");
-  const [estado, setEstado] = useState<"" | SatQueueEstado>("");
   // C4: orden por fecha del pedido. Por defecto, los más recientes primero.
   const [sort, setSort] = useState<"fecha_desc" | "fecha_asc">("fecha_desc");
   const [qInput, setQInput] = useState("");
@@ -110,17 +176,16 @@ export default function SatQueuePage() {
     if (desde) f.desde = desde;
     if (hasta) f.hasta = hasta;
     if (store) f.store_slug = store;
-    if (estado) f.estado = estado;
     if (q) f.q = q;
     // El orden siempre viaja (por defecto `fecha_desc`); no cuenta como
     // «filtro activo» para el botón «Limpiar».
     if (sort !== "fecha_desc") f.sort = sort;
     return f;
-  }, [desde, hasta, store, estado, q, sort]);
+  }, [desde, hasta, store, q, sort]);
   const hasFilters = Object.keys(filters).length > 0;
 
   function limpiar() {
-    setDesde(""); setHasta(""); setStore(""); setEstado("");
+    setDesde(""); setHasta(""); setStore("");
     setSort("fecha_desc"); setQInput(""); setQ("");
   }
 
@@ -132,37 +197,18 @@ export default function SatQueuePage() {
     storeView(v);
   }
 
-  // --- pestañas --------------------------------------------------------------
-  const [tab, setTab] = useState<Tab>("por_embalar");
-
-  /** El filtro «Estado» solo llena una sección: al elegirlo se salta a su
-   *  pestaña para no dejar al operario mirando una cola vacía. */
-  function changeEstado(v: "" | SatQueueEstado) {
-    setEstado(v);
-    if (v === "ready") setTab("listos");
-    else if (v) setTab("por_embalar");
-  }
-
-  // --- permisos: añadir a mano es de oficina (admin / pedidos) ---------------
+  // --- permisos --------------------------------------------------------------
+  // Trabajo de taller (empezar/embalar/técnicos): `erp.sat.prepare`.
   const [canEdit, setCanEdit] = useState(false);
-  // Roles y permisos: «Añadir a mano a la cola» es aprobar/meter en cola
-  // (capacidad `erp.orders.approve` — oficina), NO trabajo de taller: el SAT no
-  // lo ve. Va aparte de `canEdit` (trabajo de taller).
+  // «Añadir a mano a la cola» es aprobar/meter en cola (oficina).
   const [canEnqueue, setCanEnqueue] = useState(false);
-  // Genei (crear envío): capacidad `erp.sat.shipping`. El botón vive en la card
-  // de «Listos»; el backend revalida. También habilita «Resolver» una incidencia
-  // de ENVÍO en la pestaña «Incidencias».
+  // Genei (crear/ver envío) y «Resolver» una incidencia de ENVÍO.
   const [canShip, setCanShip] = useState(false);
-  // Resolver una incidencia de PEDIDO (cerrar la excepción) es de oficina:
-  // capacidad `erp.orders.create` (mismo gate que la bandeja de excepciones).
+  // Resolver una incidencia de PEDIDO (cerrar la excepción) es de oficina.
   const [canResolvePedido, setCanResolvePedido] = useState(false);
 
   useEffect(() => {
     getCurrentUser()
-      // Roles y permisos: el trabajo de taller (preparar/embalar/técnicos) exige
-      // la capacidad `erp.sat.prepare` (SAT/Pedidos/Admin). El Comercial solo ve
-      // la cola; sube la etiqueta desde la ficha del pedido (envío). El backend
-      // revalida cada acción (403 si falta la capacidad).
       .then((u) => {
         setCanEdit(can(u, Cap.SAT_PREPARE));
         setCanEnqueue(can(u, Cap.ORDERS_APPROVE));
@@ -183,67 +229,142 @@ export default function SatQueuePage() {
       .catch(() => { setStores([]); });
   }, []);
 
-  // --- cola ------------------------------------------------------------------
+  // --- cola (pestañas de pendientes + contadores) ------------------------------
+  // Pedidos que han cambiado de paso EN SU SITIO: siguen donde estaban hasta
+  // cambiar de pestaña; entonces pasan a la suya (`aplicarMovimientos`).
+  const [moves, setMoves] = useState<Record<string, SatTab | null>>({});
+
   const load = useCallback(() => {
     setLoading(true);
     setError(null);
     getSatQueue(filters)
-      .then(setQueue)
+      .then((r) => {
+        setLists({
+          por_embalar: r.por_embalar ?? [],
+          en_preparacion: r.en_preparacion ?? [],
+          embalados: r.embalados ?? [],
+          pendiente_recogida: r.pendiente_recogida ?? [],
+        });
+        setCounts(r.counts ?? EMPTY_COUNTS);
+        setMoves({});
+      })
       .catch((e) => setError(extractErrorMessage(e, "No se pudo cargar la cola.")))
       .finally(() => setLoading(false));
   }, [filters]);
 
   useEffect(() => { load(); }, [load]);
 
-  // --- «Enviados»: historial de enviados al taller (carga perezosa) ----------
-  const historyOpen = tab === "enviados";
-  const [history, setHistory] = useState<SatHistoryRow[]>([]);
-  const [historyLoaded, setHistoryLoaded] = useState(false);
-  const [historyLoading, setHistoryLoading] = useState(false);
-  const [historyError, setHistoryError] = useState<string | null>(null);
+  // --- «Enviados» / «Sin seguimiento» (carga al abrir la pestaña) --------------
+  const [shipped, setShipped] = useState<{ items: SatQueueItem[]; total: number } | null>(null);
+  const [sinSeg, setSinSeg] = useState<{ items: SatQueueItem[]; total: number } | null>(null);
+  const [shippedLoading, setShippedLoading] = useState(false);
 
-  const loadHistory = useCallback(() => {
-    setHistoryLoading(true);
-    setHistoryError(null);
-    getSatHistory(filters)
-      .then((r) => { setHistory(r.items); setHistoryLoaded(true); })
-      .catch((e) => setHistoryError(extractErrorMessage(e, "No se pudo cargar el historial.")))
-      .finally(() => setHistoryLoading(false));
+  const [tab, setTab] = useState<Tab>("por_embalar");
+
+  const loadShipped = useCallback((kind: "enviados" | "sin_seguimiento") => {
+    setShippedLoading(true);
+    getSatShipped(filters, kind === "sin_seguimiento")
+      .then((r) => {
+        const data = { items: r.items, total: r.total };
+        if (kind === "enviados") setShipped(data); else setSinSeg(data);
+      })
+      .catch((e) => setError(extractErrorMessage(e, "No se pudieron cargar los enviados.")))
+      .finally(() => setShippedLoading(false));
   }, [filters]);
 
   useEffect(() => {
-    if (historyOpen) loadHistory();
-  }, [historyOpen, loadHistory]);
+    if (tab === "enviados" || tab === "sin_seguimiento") loadShipped(tab);
+  }, [tab, loadShipped]);
 
-  // --- «Incidencias»: pedidos que salen de «Enviados» (carga en el componente).
-  // Aquí solo llevamos el contador (chip) y una señal de recarga para que
-  // «Actualizar» refresque la pestaña; el componente hace el fetch.
+  // --- «Incidencias» (carga en el componente) --------------------------------
   const [incidenciasCount, setIncidenciasCount] = useState<number | null>(null);
   const [incidenciasReload, setIncidenciasReload] = useState(0);
 
   const refreshAll = useCallback(() => {
     load();
-    if (historyOpen) loadHistory();
+    if (tab === "enviados" || tab === "sin_seguimiento") loadShipped(tab);
     if (tab === "incidencias") setIncidenciasReload((n) => n + 1);
-  }, [load, loadHistory, historyOpen, tab]);
+  }, [load, loadShipped, tab]);
 
-  // --- «No requiere envío»: vista de marcados (carga perezosa) ---------------
-  const noShipOpen = tab === "no_shipping";
-  const [noShip, setNoShip] = useState<SatQueueItem[]>([]);
-  const [noShipLoaded, setNoShipLoaded] = useState(false);
-  const [noShipLoading, setNoShipLoading] = useState(false);
+  /** Refresca UN pedido tras avanzarlo, sin recargar la cola: su card cambia
+   *  al paso siguiente en el mismo sitio y los contadores se ajustan ya. */
+  const refreshItem = useCallback(async (id: string) => {
+    let item: SatQueueItem;
+    try {
+      item = await getSatOrderItem(id);
+    } catch {
+      load();
+      return;
+    }
+    const previo = [
+      ...PENDING_TABS.flatMap((t) => lists[t]),
+      ...(shipped?.items ?? []), ...(sinSeg?.items ?? []),
+    ].find((o) => o.id === id);
+    setLists((prev) => {
+      const next = { ...prev };
+      for (const t of PENDING_TABS) {
+        if (next[t].some((o) => o.id === id)) {
+          next[t] = next[t].map((o) => (o.id === id ? item : o));
+        }
+      }
+      return next;
+    });
+    const sustituir = (d: { items: SatQueueItem[]; total: number } | null) =>
+      d ? { ...d, items: d.items.map((o) => (o.id === id ? item : o)) } : d;
+    setShipped(sustituir);
+    setSinSeg(sustituir);
+    const antes = previo?.sat_tab ?? null;
+    const ahora = item.sat_tab ?? null;
+    if (antes !== ahora) {
+      setMoves((m) => ({ ...m, [id]: ahora }));
+      setCounts((c) => {
+        const n = { ...c };
+        const ajusta = (k: SatTab | null, d: number) => {
+          if (k && k in n) n[k as keyof SatQueueCounts] = Math.max(0, n[k as keyof SatQueueCounts] + d);
+        };
+        ajusta(antes, -1);
+        ajusta(ahora, +1);
+        // «Sin seguimiento» también está en «Enviados».
+        if (ahora === "sin_seguimiento" && antes !== "enviados") ajusta("enviados", +1);
+        if (antes === "sin_seguimiento" && ahora !== "enviados") ajusta("enviados", -1);
+        n.pendientes = n.por_embalar + n.en_preparacion + n.embalados + n.pendiente_recogida;
+        return n;
+      });
+    }
+  }, [lists, shipped, sinSeg, load]);
 
-  const loadNoShip = useCallback(() => {
-    setNoShipLoading(true);
-    getSatQueue({ ...filters, no_shipping: true })
-      .then((r) => { setNoShip([...r.preparing, ...r.ready_for_pickup]); setNoShipLoaded(true); })
-      .catch((e) => setError(extractErrorMessage(e, "No se pudieron cargar los marcados.")))
-      .finally(() => setNoShipLoading(false));
-  }, [filters]);
+  /** Al cambiar de pestaña, cada pedido avanzado pasa a la suya. */
+  function aplicarMovimientos() {
+    const ids = Object.keys(moves);
+    if (ids.length === 0) return;
+    setLists((prev) => {
+      const next = { ...prev };
+      const movidos: SatQueueItem[] = [];
+      for (const t of PENDING_TABS) {
+        next[t] = next[t].filter((o) => {
+          if (!ids.includes(o.id)) return true;
+          movidos.push(o);
+          return false;
+        });
+      }
+      for (const o of movidos) {
+        if (isPendingTab(o.sat_tab)) next[o.sat_tab] = [o, ...next[o.sat_tab]];
+      }
+      return next;
+    });
+    if (ids.some((id) => moves[id] === "enviados" || moves[id] === "sin_seguimiento")) {
+      setShipped(null);
+      setSinSeg(null);
+    }
+    setMoves({});
+  }
 
-  useEffect(() => { if (noShipOpen) loadNoShip(); }, [noShipOpen, loadNoShip]);
+  function changeTab(t: Tab) {
+    aplicarMovimientos();
+    setTab(t);
+  }
 
-  // --- selección múltiple (marcar/desmarcar «No requiere envío» en lote) -----
+  // --- selección múltiple («Sin seguimiento» en lote) --------------------------
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -251,12 +372,10 @@ export default function SatQueuePage() {
 
   /** Pedidos visibles y seleccionables de la pestaña actual. */
   const visibleItems = useMemo<SatQueueItem[]>(() => {
-    if (tab === "no_shipping") return noShip;
-    if (tab === "listos") return queue.ready_for_pickup;
-    if (tab === "global") return [...queue.preparing, ...queue.ready_for_pickup];
-    if (tab === "por_embalar") return queue.preparing;
+    if (isPendingTab(tab)) return lists[tab];
+    if (tab === "sin_seguimiento") return sinSeg?.items ?? [];
     return [];
-  }, [tab, noShip, queue]);
+  }, [tab, lists, sinSeg]);
 
   // Cambiar de pestaña limpia la selección.
   useEffect(() => { setSelected(new Set()); }, [tab]);
@@ -276,13 +395,10 @@ export default function SatQueuePage() {
     );
   }
 
-  // En las pestañas normales el lote MARCA «No requiere envío»; en la pestaña
-  // «No requieren envío», DESMARCA (vuelven a la Cola SAT).
-  const bulkValue = tab !== "no_shipping";
-  // Selección solo en las colas de una sección (no en «Global» ni «Enviados»).
-  const selectable = canEdit && (
-    tab === "por_embalar" || tab === "listos" || tab === "no_shipping"
-  );
+  // En las pestañas de pendientes el lote MARCA «Sin seguimiento» (enviado sin
+  // tracking); en «Sin seguimiento», lo QUITA (vuelven al taller).
+  const bulkValue = tab !== "sin_seguimiento";
+  const selectable = canEdit && (isPendingTab(tab) || tab === "sin_seguimiento");
 
   async function applyBulk() {
     if (selected.size === 0 || bulkBusy) return;
@@ -292,13 +408,14 @@ export default function SatQueuePage() {
       const r = await bulkNoShipping([...selected], bulkValue);
       setNotice(
         bulkValue
-          ? `${r.changed} pedido(s) marcados «No requiere envío».`
-          : `${r.changed} pedido(s) vuelven a requerir envío.`,
+          ? `${r.changed} pedido(s) marcados «Sin seguimiento»: enviados, sin nº de tracking.`
+          : `${r.changed} pedido(s) vuelven a los pendientes del taller.`,
       );
       setSelected(new Set());
       setConfirmOpen(false);
+      setShipped(null);
+      setSinSeg(null);
       refreshAll();
-      if (noShipLoaded || noShipOpen) loadNoShip();
     } catch (e) {
       setError(extractErrorMessage(e, "No se pudo aplicar el cambio."));
     } finally {
@@ -308,7 +425,7 @@ export default function SatQueuePage() {
 
   /** Envuelve una card con su casilla de selección (solo si `selectable`). */
   function withSelect(o: SatQueueItem, card: React.ReactNode): React.ReactNode {
-    if (!selectable) return card;
+    if (!selectable) return <div key={o.id}>{card}</div>;
     return (
       <div key={o.id} className="sat-select-item">
         <label className="sat-select-check">
@@ -319,6 +436,13 @@ export default function SatQueuePage() {
         </label>
         <div className="sat-select-body">{card}</div>
       </div>
+    );
+  }
+
+  function card(o: SatQueueItem): React.ReactNode {
+    return (
+      <SatCard order={o} onChanged={() => void refreshItem(o.id)}
+               canEdit={canEdit} canShip={canShip} />
     );
   }
 
@@ -356,24 +480,75 @@ export default function SatQueuePage() {
     }
   }
 
-  const { preparing, ready_for_pickup: ready } = queue;
-
   const TABS: { key: Tab; label: string; count: number | null }[] = [
-    { key: "por_embalar", label: "Por embalar", count: preparing.length },
-    { key: "listos", label: "Listos", count: ready.length },
-    { key: "global", label: "Global", count: preparing.length + ready.length },
-    { key: "no_shipping", label: "No requieren envío",
-      count: noShipLoaded ? noShip.length : null },
-    { key: "enviados", label: "Enviados", count: historyLoaded ? history.length : null },
+    { key: "por_embalar", label: "Por embalar", count: counts.por_embalar },
+    { key: "en_preparacion", label: "En preparación", count: counts.en_preparacion },
+    { key: "embalados", label: "Embalados", count: counts.embalados },
+    { key: "pendientes", label: "Todos pendientes", count: counts.pendientes },
+    { key: "sin_seguimiento", label: "Sin seguimiento", count: counts.sin_seguimiento },
+    { key: "pendiente_recogida", label: "Pendiente de recogida", count: counts.pendiente_recogida },
+    { key: "enviados", label: "Enviados", count: counts.enviados },
     { key: "incidencias", label: "Incidencias", count: incidenciasCount },
   ];
+
+  const EMPTY_TEXT: Record<PendingTab, string> = {
+    por_embalar: "Nada por embalar",
+    en_preparacion: "Nada en preparación",
+    embalados: "Nada embalado pendiente de envío",
+    pendiente_recogida: "Nada pendiente de recogida",
+  };
+  const TAB_HINT: Partial<Record<Tab, string>> = {
+    en_preparacion: "Preparación empezada, aún sin embalar: mete peso y medidas y embala aquí mismo.",
+    embalados: "Embalados, sin etiqueta tramitada: crea el envío con Genei o sube la etiqueta.",
+    pendiente_recogida: "Con el envío tramitado y la etiqueta lista: esperando al transportista. "
+      + "Cuando la agencia lo recoge (Genei) o marcas «Recogido», pasa a «Enviados».",
+    sin_seguimiento: "Enviados SIN nº de tracking (recogida en tienda, transporte sin "
+      + "seguimiento…). Cuentan como enviados. Selecciónalos para devolverlos al taller.",
+    enviados: "Pedidos que ya han salido: recogidos, en tránsito o entregados, y los "
+      + "enviados sin seguimiento.",
+  };
+
+  const TABLE_LABEL: Record<PendingTab, string> = {
+    por_embalar: "Pedidos por embalar",
+    en_preparacion: "Pedidos en preparación",
+    embalados: "Pedidos embalados",
+    pendiente_recogida: "Pedidos pendientes de recogida",
+  };
+
+  function pendingPanel(
+    t: PendingTab, items: SatQueueItem[], single = false, ariaLabel = TABLE_LABEL[t],
+  ) {
+    if (items.length === 0) {
+      return (
+        <p className="sat-empty">
+          {EMPTY_TEXT[t]}{hasFilters ? " con estos filtros." : "."}
+        </p>
+      );
+    }
+    if (view === "list") {
+      return (
+        <SatQueueTable items={items} variant="auto" onChanged={refreshAll}
+                       onItemChanged={(id) => void refreshItem(id)}
+                       ariaLabel={ariaLabel}
+                       selectable={selectable && !single} selected={selected}
+                       onToggle={toggleSel} />
+      );
+    }
+    return (
+      <div className={`sat-cards${single ? " sat-cards--single" : ""}`}>
+        {items.map((o) => (single ? <div key={o.id}>{card(o)}</div> : withSelect(o, card(o))))}
+      </div>
+    );
+  }
+
+  const shippedData = tab === "sin_seguimiento" ? sinSeg : shipped;
 
   return (
     <div className={`sat-queue-wrap ${view === "list" ? "sat-view-list" : "sat-view-cards"}`}>
       <div className="sat-queue-head">
         <h1>Cola SAT</h1>
         <span className="muted small sat-queue-count">
-          {loading ? "Cargando…" : `${preparing.length + ready.length} en el taller`}
+          {loading ? "Cargando…" : `${counts.pendientes} en el taller`}
         </span>
         <div className="sat-queue-tools">
           <div className="sat-view-toggle" role="group" aria-label="Vista">
@@ -421,13 +596,6 @@ export default function SatQueuePage() {
           </label>
         ) : null}
         <label className="field">
-          <span>Estado</span>
-          <select value={estado} aria-label="Estado"
-                  onChange={(e) => changeEstado(e.target.value as "" | SatQueueEstado)}>
-            {ESTADO_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
-        </label>
-        <label className="field">
           <span>Orden</span>
           <select value={sort} aria-label="Orden por fecha del pedido"
                   onChange={(e) => setSort(e.target.value as "fecha_desc" | "fecha_asc")}>
@@ -472,7 +640,7 @@ export default function SatQueuePage() {
             aria-selected={tab === t.key}
             aria-controls={`sat-panel-${t.key}`}
             className="sat-tab"
-            onClick={() => setTab(t.key)}
+            onClick={() => changeTab(t.key)}
           >
             {t.label}{" "}
             {t.count !== null ? <span className="sat-tab-count">{t.count}</span> : null}
@@ -480,7 +648,7 @@ export default function SatQueuePage() {
         ))}
       </div>
 
-      {/* Barra de acción en lote «No requiere envío» (marcar / desmarcar). */}
+      {/* Barra de acción en lote «Sin seguimiento» (marcar / quitar). */}
       {selectable && visibleItems.length > 0 ? (
         <div className="sat-bulk-bar" role="group" aria-label="Acciones en lote">
           <label className="sat-bulk-all">
@@ -497,218 +665,83 @@ export default function SatQueuePage() {
             disabled={selected.size === 0}
             onClick={() => setConfirmOpen(true)}
           >
-            {bulkValue ? "Marcar «No requiere envío»" : "Volver a requerir envío"}
+            {bulkValue ? "Marcar enviado sin seguimiento" : "Quitar «Sin seguimiento»"}
           </button>
         </div>
       ) : null}
       {notice ? <p className="form-info small" role="status">{notice}</p> : null}
+      {TAB_HINT[tab] ? <p className="muted small sat-history-hint">{TAB_HINT[tab]}</p> : null}
 
-      {tab === "por_embalar" ? (
+      {isPendingTab(tab) ? (
         <section
-          className="sat-section" role="tabpanel" id="sat-panel-por_embalar"
-          aria-label="Por embalar"
+          className="sat-section" role="tabpanel" id={`sat-panel-${tab}`}
+          aria-label={TABS.find((x) => x.key === tab)?.label}
         >
-          {/* Lote 4 · #1 — el contenido de la vista vive en un contenedor con
-              scroll vertical propio, así se alcanza el último pedido aunque la
-              cola sea larga (el body es overflow:hidden). */}
-          <div className="sat-scroll">
-            {preparing.length === 0 ? (
-              <p className="sat-empty">{hasFilters ? "Nada por embalar con estos filtros." : "Nada por embalar."}</p>
-            ) : view === "list" ? (
-              <SatQueueTable items={preparing} variant="preparing" onChanged={refreshAll}
-                             ariaLabel="Pedidos por embalar"
-                             selectable={selectable} selected={selected} onToggle={toggleSel} />
-            ) : (
-              <div className="sat-cards">
-                {preparing.map((o) => withSelect(o,
-                  <SatPreparingCard key={o.id} order={o} onChanged={refreshAll}
-                                    canEdit={canEdit} />,
-                ))}
-              </div>
-            )}
-          </div>
+          {/* Lote 4 · #1 — cada vista scrollea en su propio contenedor. */}
+          <div className="sat-scroll">{pendingPanel(tab, lists[tab])}</div>
         </section>
       ) : null}
 
-      {tab === "listos" ? (
+      {tab === "pendientes" ? (
         <section
-          className="sat-section" role="tabpanel" id="sat-panel-listos"
-          aria-label="Listos para envío"
+          className="sat-section sat-global" role="tabpanel" id="sat-panel-pendientes"
+          aria-label="Todos pendientes"
         >
-          <div className="sat-scroll">
-            {ready.length === 0 ? (
-              <p className="sat-empty">{hasFilters ? "Nada listo para enviar con estos filtros." : "Nada listo para enviar."}</p>
-            ) : view === "list" ? (
-              <SatQueueTable items={ready} variant="ready" onChanged={refreshAll}
-                             ariaLabel="Pedidos listos para envío"
-                             selectable={selectable} selected={selected} onToggle={toggleSel} />
-            ) : (
-              <div className="sat-cards">
-                {ready.map((o) => withSelect(o,
-                  <SatReadyCard key={o.id} order={o} onChanged={refreshAll}
-                                canEdit={canEdit} canShip={canShip} />,
-                ))}
-              </div>
-            )}
-          </div>
-        </section>
-      ) : null}
-
-      {tab === "global" ? (
-        <section
-          className="sat-section sat-global" role="tabpanel" id="sat-panel-global"
-          aria-label="Por embalar y listos"
-        >
-          {/* Lote 4 · #2 — la vista global también respeta el toggle
-              Tarjetas/Lista: cada columna pinta su tabla compacta o sus
-              tarjetas. #1 — cada columna scrollea por su cuenta (o la página,
-              en móvil) para llegar a todos los pedidos de ambas colas. */}
+          {/* Lote 3/4 — dos columnas: por hacer en el banco y ya embalados. */}
           <div className="sat-global-cols">
-            <div className="sat-global-col" aria-label="Por embalar">
+            <div className="sat-global-col" aria-label="Por embalar y en preparación">
               <h2 className="sat-global-title">
-                📦 Por embalar <span className="sat-tab-count">{preparing.length}</span>
+                📦 Por embalar · en preparación{" "}
+                <span className="sat-tab-count">{counts.por_embalar + counts.en_preparacion}</span>
               </h2>
               <div className="sat-scroll">
-                {preparing.length === 0 ? (
-                  <p className="sat-empty">{hasFilters ? "Nada por embalar con estos filtros." : "Nada por embalar."}</p>
-                ) : view === "list" ? (
-                  <SatQueueTable items={preparing} variant="preparing" onChanged={refreshAll}
-                                 ariaLabel="Pedidos por embalar" />
-                ) : (
-                  <div className="sat-cards sat-cards--single">
-                    {preparing.map((o) => (
-                      <SatPreparingCard key={o.id} order={o} onChanged={refreshAll}
-                                        canEdit={canEdit} />
-                    ))}
-                  </div>
-                )}
+                {pendingPanel("por_embalar", [...lists.por_embalar, ...lists.en_preparacion], true,
+                              "Pedidos por embalar y en preparación")}
               </div>
             </div>
-            <div className="sat-global-col" aria-label="Listos para envío">
+            <div className="sat-global-col" aria-label="Embalados y pendientes de recogida">
               <h2 className="sat-global-title">
-                🚚 Listos <span className="sat-tab-count">{ready.length}</span>
+                🚚 Embalados · pendiente de recogida{" "}
+                <span className="sat-tab-count">{counts.embalados + counts.pendiente_recogida}</span>
               </h2>
               <div className="sat-scroll">
-                {ready.length === 0 ? (
-                  <p className="sat-empty">{hasFilters ? "Nada listo para enviar con estos filtros." : "Nada listo para enviar."}</p>
-                ) : view === "list" ? (
-                  <SatQueueTable items={ready} variant="ready" onChanged={refreshAll}
-                                 ariaLabel="Pedidos listos para envío" />
-                ) : (
-                  <div className="sat-cards sat-cards--single">
-                    {ready.map((o) => (
-                      <SatReadyCard key={o.id} order={o} onChanged={refreshAll}
-                                    canEdit={canEdit} canShip={canShip} />
-                    ))}
-                  </div>
-                )}
+                {pendingPanel("embalados", [...lists.embalados, ...lists.pendiente_recogida], true,
+                              "Pedidos embalados y pendientes de recogida")}
               </div>
             </div>
           </div>
         </section>
       ) : null}
 
-      {tab === "no_shipping" ? (
+      {tab === "enviados" || tab === "sin_seguimiento" ? (
         <section
-          className="sat-section" role="tabpanel" id="sat-panel-no_shipping"
-          aria-label="No requieren envío"
+          className="sat-section sat-history" role="tabpanel" id={`sat-panel-${tab}`}
+          aria-label={tab === "enviados" ? "Enviados" : "Sin seguimiento"}
         >
-          <p className="muted small sat-history-hint">
-            Pedidos marcados «No requiere envío»: fuera de la Cola SAT y de «Por
-            enviar». Selecciónalos para devolverlos al taller. No afecta a la
-            factura ni al cobro.
-          </p>
           <div className="sat-scroll">
-            {noShipLoading && noShip.length === 0 ? (
+            {shippedLoading && !shippedData ? (
               <p className="muted">Cargando…</p>
-            ) : noShip.length === 0 ? (
+            ) : !shippedData || shippedData.items.length === 0 ? (
               <p className="sat-empty">
-                {hasFilters ? "Ninguno con estos filtros." : "Ningún pedido marcado «No requiere envío»."}
+                {tab === "enviados" ? "Ningún pedido enviado" : "Ningún pedido sin seguimiento"}
+                {hasFilters ? " con estos filtros." : "."}
               </p>
-            ) : view === "list" ? (
-              <SatQueueTable items={noShip} variant="preparing" onChanged={refreshAll}
-                             ariaLabel="Pedidos que no requieren envío"
-                             selectable={selectable} selected={selected} onToggle={toggleSel} />
             ) : (
-              <div className="sat-cards">
-                {noShip.map((o) => withSelect(o,
-                  <SatPreparingCard key={o.id} order={o} onChanged={refreshAll}
-                                    canEdit={canEdit} />,
-                ))}
-              </div>
+              <>
+                {shippedData.total > shippedData.items.length ? (
+                  <p className="muted small">
+                    Mostrando los {shippedData.items.length} más recientes de {shippedData.total}
+                    {" "}(usa los filtros de fecha para ver otros).
+                  </p>
+                ) : null}
+                <SatShippedTable
+                  items={shippedData.items}
+                  ariaLabel={tab === "enviados" ? "Pedidos enviados" : "Pedidos enviados sin seguimiento"}
+                  selectable={selectable && tab === "sin_seguimiento"}
+                  selected={selected} onToggle={toggleSel}
+                />
+              </>
             )}
-          </div>
-        </section>
-      ) : null}
-
-      {tab === "enviados" ? (
-        <section
-          className="sat-section sat-history" role="tabpanel" id="sat-panel-enviados"
-          aria-label="Enviados al taller"
-        >
-          <p className="muted small sat-history-hint">
-            Cada envío al taller (email al SAT o aprobación), con su hora y quién lo hizo:
-            así no se manda dos veces.
-          </p>
-          <div className="sat-scroll">
-          {historyError ? (
-            <p className="form-error">{historyError}</p>
-          ) : historyLoading && history.length === 0 ? (
-            <p className="muted">Cargando historial…</p>
-          ) : history.length === 0 ? (
-            <p className="muted">Sin envíos al taller{hasFilters ? " con estos filtros" : ""}.</p>
-          ) : (
-            <div className="table-wrapper sat-history-wrap">
-              <table className="data-table data-table--responsive sat-history-table"
-                     aria-label="Enviados al taller">
-                <thead>
-                  <tr>
-                    <th>Nº</th>
-                    <th>Cliente</th>
-                    <th>Cuándo</th>
-                    <th>Quién</th>
-                    <th>Tipo</th>
-                    <th>Destinatario</th>
-                    <th>Estado actual</th>
-                    <th>Estado envío</th>
-                    <th>Albarán</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {history.map((h, i) => (
-                    <tr key={`${h.kind}-${h.order_id}-${h.at}-${i}`}>
-                      <td data-label="Nº" className="mono">
-                        <Link href={`/erp/orders/${h.order_id}`}>{h.order_number}</Link>
-                      </td>
-                      <td data-label="Cliente" className="sat-td-cliente">{customerLabel(h) || "—"}</td>
-                      <td data-label="Cuándo" className="mono">{satDateTime(h.at)}</td>
-                      <td data-label="Quién">{h.actor_name ?? "—"}</td>
-                      <td data-label="Tipo" title={h.reason ?? h.subject ?? undefined}>
-                        <span className={`badge ${h.kind === "email_sat" ? "active" : "ok"}`}>
-                          {KIND_LABEL[h.kind]}
-                        </span>
-                        {h.reason ? <span className="muted small sat-history-reason"> {h.reason}</span> : null}
-                      </td>
-                      <td data-label="Destinatario">{h.to.length > 0 ? h.to.join(", ") : "—"}</td>
-                      <td data-label="Estado actual">
-                        <span className={`badge ${STATUS_LABELS[h.preparation_status]?.tone ?? "muted"}`}>
-                          {STATUS_LABELS[h.preparation_status]?.label ?? h.preparation_status}
-                        </span>
-                        {h.cancelled ? <span className="badge bad"> Anulado</span> : null}
-                        {h.excluded ? <span className="badge muted"> Quitado</span> : null}
-                      </td>
-                      <td data-label="Estado envío">
-                        <span className={`badge ${STATUS_LABELS[h.transport_status]?.tone ?? "muted"}`}>
-                          {STATUS_LABELS[h.transport_status]?.label ?? h.transport_status}
-                        </span>
-                      </td>
-                      <td data-label="Albarán" className="mono">{h.factusol_albaran_number ?? (h.has_albaran ? "Subido" : "—")}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
           </div>
         </section>
       ) : null}
@@ -726,15 +759,16 @@ export default function SatQueuePage() {
 
       {confirmOpen ? (
         <div className="modal-overlay" role="dialog" aria-modal="true"
-             aria-label="Confirmar No requiere envío">
+             aria-label="Confirmar Sin seguimiento">
           <div className="modal-dialog erp-modal">
-            <h2>{bulkValue ? "Marcar «No requiere envío»" : "Volver a requerir envío"}</h2>
+            <h2>{bulkValue ? "Marcar enviado sin seguimiento" : "Quitar «Sin seguimiento»"}</h2>
             <p>
               {bulkValue
-                ? `Vas a marcar ${selected.size} pedido(s) como «No requiere envío». `
-                  + "Saldrán de la Cola SAT. No afecta a la factura ni al cobro. Es reversible."
-                : `Vas a devolver ${selected.size} pedido(s) al taller: volverán a `
-                  + "requerir envío según su estado de preparación."}
+                ? `Vas a marcar ${selected.size} pedido(s) como ENVIADOS sin nº de tracking `
+                  + "(recogida en tienda, transporte sin seguimiento…). Pasan a «Enviados» "
+                  + "y «Sin seguimiento». No afecta a la factura ni al cobro. Es reversible."
+                : `Vas a devolver ${selected.size} pedido(s) al taller: volverán a su `
+                  + "pestaña según su estado de preparación."}
             </p>
             <div className="modal-actions">
               <button type="button" className="button secondary" disabled={bulkBusy}

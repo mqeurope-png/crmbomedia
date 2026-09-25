@@ -124,7 +124,10 @@ def is_paid(order: Order) -> bool:
 
 
 def is_shipped(order: Order) -> bool:
-    return _v(order.transport_status) in _SHIPPED
+    """Enviado: en tránsito / entregado / externalizado, o marcado «Sin
+    seguimiento» (enviado sin nº de tracking)."""
+    return _v(order.transport_status) in _SHIPPED or bool(
+        getattr(order, "shipping_not_required", False))
 
 
 def is_approved(order: Order) -> bool:
@@ -391,14 +394,14 @@ def _next_step(order: Order) -> tuple[str, str, str]:
     # procede, desde la sección «Envío y seguimiento» de la ficha), pero su
     # ausencia no impide completar.
     if not order.completed_at:
-        # «No requiere envío»: no cuenta como pendiente de envío, así que sale
-        # de la cola «Por enviar» y queda como listo (con el completado opcional
-        # a mano). El SAT ya era opcional; esto solo lo formaliza.
+        # «Sin seguimiento» (antes «No requiere envío»): ya se ENVIÓ, sin nº
+        # de tracking, así que no está pendiente de envío: sale de «Por
+        # enviar» y queda como listo (con el completado opcional a mano).
         if getattr(order, "shipping_not_required", False):
             return (
                 QUEUE_LISTO, "marcar_completado",
-                "Facturado y cobrado; este pedido no requiere envío. Márcalo "
-                "como completado cuando quieras.",
+                "Facturado y cobrado; enviado sin seguimiento. Márcalo como "
+                "completado cuando quieras.",
             )
         return (
             QUEUE_POR_ENVIAR, "marcar_completado",

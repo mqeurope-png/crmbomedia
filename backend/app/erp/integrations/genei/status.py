@@ -77,3 +77,14 @@ BUCKET_TO_TRANSPORT: dict[str, str | None] = {
 
 def transport_status_for(bucket: str) -> str | None:
     return BUCKET_TO_TRANSPORT.get(bucket)
+
+
+#: Buckets con el envío YA TRAMITADO (Genei estado 1 o posterior): la etiqueta
+#: existe y se puede descargar. Antes (7 «pendiente de pago», 6 «pendiente de
+#: tramitar») Genei responde 400 a la etiqueta; cerrado/destruido, tampoco vale.
+TRAMITADO_BUCKETS: frozenset[str] = frozenset({READY, IN_TRANSIT, DELIVERED, INCIDENT, OTHER})
+
+
+def is_tramitado(bucket: str | None) -> bool:
+    """¿El envío Genei está tramitado (estado 1+)? Solo entonces hay etiqueta."""
+    return (bucket or "") in TRAMITADO_BUCKETS

@@ -19,7 +19,7 @@ import app.main  # noqa: F401
 from app.db.base import Base
 from app.db.session import get_session
 from app.erp.api.genei import GENEI_ADAPTER
-from app.erp.integrations.genei.client import GeneiClient, GeneiLabel
+from app.erp.integrations.genei.client import GeneiClient, GeneiError, GeneiLabel
 from app.erp.integrations.genei.config import DefaultPackage, GeneiConfig
 from app.erp.models import Order, ShipmentFile
 from app.erp.models.carriers import Carrier
@@ -492,7 +492,9 @@ def test_label_stores_shipment_file_and_transitions(client, session_factory, fak
         _seed_carrier(s)
         oid = _seed_order(s)
         order = s.get(Order, oid)
-        order.packing_json = json.dumps({"genei": {"shipment_code": "GEN123"}})
+        # La etiqueta se pide con el envío ya TRAMITADO (Genei estado 1).
+        order.packing_json = json.dumps({"genei": {
+            "shipment_code": "GEN123", "state_bucket": "ready", "state_code": 1}})
         s.commit()
     r = client.post(f"/api/erp/orders/{oid}/genei/label", headers=auth_headers(client))
     assert r.status_code == 201, r.text
@@ -547,3 +549,90 @@ def test_not_configured_returns_400(client, session_factory):
     })
     assert r.status_code == 400
     assert r.json()["detail"]["code"] == "genei_not_configured"
+
+
+# --- etiqueta: solo con el envío tramitado; errores sin códigos HTTP ---------
+
+
+def _with_shipment(session_factory, **genei) -> str:
+    with session_factory() as s:
+        _seed_carrier(s)
+        oid = _seed_order(s)
+        order = s.get(Order, oid)
+        order.packing_json = json.dumps({"genei": {"shipment_code": "GEN123", **genei}})
+        s.commit()
+    return oid
+
+
+def test_label_before_tramitado_is_refused_without_calling_genei_label(
+    client, session_factory, fake,
+):
+    """Pendiente de pago (7): la etiqueta aún no existe. Se consulta el estado
+    (por si se pagó fuera) y, si sigue sin tramitar, 409 con un aviso legible."""
+    fake.shipment = {"shipmentCode": "GEN123", "estado": 7}
+    oid = _with_shipment(session_factory, state_code=7, state_bucket="created")
+    r = client.post(f"/api/erp/orders/{oid}/genei/label", headers=auth_headers(client))
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"] == {
+        "code": "label_not_ready",
+        "detail": "La etiqueta estará disponible tras pagar y tramitar el envío.",
+    }
+    assert ("label", "GEN123") not in fake.calls
+
+
+def test_label_after_paying_outside_refreshes_state_and_downloads(
+    client, session_factory, fake,
+):
+    """Guardado como «pendiente de pago» pero ya tramitado en Genei (pagado en
+    su web, sin webhook): se refresca y se descarga."""
+    fake.shipment = {"shipmentCode": "GEN123", "estado": 1}
+    oid = _with_shipment(session_factory, state_code=7, state_bucket="created")
+    r = client.post(f"/api/erp/orders/{oid}/genei/label", headers=auth_headers(client))
+    assert r.status_code == 201, r.text
+    assert r.json()["state"]["state_bucket"] == "ready"
+    assert r.json()["state"]["label_available"] is True
+
+
+def test_label_not_yet_in_genei_is_a_notice_not_a_raw_http_error(
+    client, session_factory, fake,
+):
+    def no_label(code):
+        raise GeneiError(f"GET /shipments/{code}/label → 400", status=400, body="")
+
+    fake.get_label = no_label
+    oid = _with_shipment(session_factory, state_code=1, state_bucket="ready")
+    r = client.post(f"/api/erp/orders/{oid}/genei/label", headers=auth_headers(client))
+    assert r.status_code == 409
+    detail = r.json()["detail"]["detail"]
+    assert "tras pagar y tramitar" in detail
+    assert "GET" not in detail and "/shipments" not in detail and "400" not in detail
+
+
+def test_genei_errors_never_show_method_path_or_http_code(client, session_factory, fake):
+    def caido(code):
+        raise GeneiError(f"GET /shipments/{code} → 503: <html>Service Unavailable</html>",
+                         status=503, body="<html>Service Unavailable</html>")
+
+    fake.get_shipment = caido
+    oid = _with_shipment(session_factory, state_code=1, state_bucket="ready")
+    r = client.post(f"/api/erp/orders/{oid}/genei/refresh", headers=auth_headers(client))
+    assert r.status_code == 502
+    detail = r.json()["detail"]["detail"]
+    assert detail == "Genei no responde ahora mismo: prueba en un momento."
+
+
+def test_genei_error_keeps_genei_message_from_json_body(client, session_factory, fake):
+    def rechazo(code):
+        raise GeneiError(f"GET /shipments/{code} → 422: {{\"message\": \"Envío inexistente\"}}",
+                         status=422, body='{"message": "Envío inexistente"}')
+
+    fake.get_shipment = rechazo
+    oid = _with_shipment(session_factory, state_code=1, state_bucket="ready")
+    r = client.post(f"/api/erp/orders/{oid}/genei/refresh", headers=auth_headers(client))
+    assert r.json()["detail"]["detail"] == "Genei no ha aceptado la petición: Envío inexistente"
+
+
+def test_prefill_state_says_if_the_label_is_available(client, session_factory):
+    oid = _with_shipment(session_factory, state_code=7, state_bucket="created")
+    r = client.get(f"/api/erp/orders/{oid}/genei/prefill", headers=auth_headers(client))
+    assert r.json()["state"]["label_available"] is False
