@@ -23,7 +23,13 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_session
 from app.erp.api.deps import require_config, require_sat_shipping, require_sat_tracking
-from app.erp.integrations.genei.client import GeneiClient, GeneiConfigError, GeneiError
+from app.erp.integrations.genei.client import (
+    SHARED_TOKEN_CACHE,
+    GeneiAuthError,
+    GeneiClient,
+    GeneiConfigError,
+    GeneiError,
+)
 from app.erp.integrations.genei.config import GeneiConfig, choose_agencies
 from app.erp.integrations.genei.service import (
     address_missing_fields,
@@ -103,7 +109,10 @@ _PREFIJO_HTTP = re.compile(r"^\s*(GET|POST|PUT|PATCH|DELETE)\s+\S+\s*→\s*")
 _CODIGO_Y_CUERPO = re.compile(r"^(\d{3})(?::\s*(.*))?$", re.S)
 #: Mensaje legible por código HTTP de Genei (sin enseñar el código).
 _MENSAJE_POR_CODIGO: tuple[tuple[range, str], ...] = (
-    (range(401, 404), "Genei ha rechazado las credenciales: revísalas en Ajustes → Envíos"),
+    # 401/403 aquí ya NO es la sesión: el cliente renueva el token solo y
+    # reintenta; si aun así Genei lo rechaza, es esta operación.
+    (range(401, 402), "Genei no autoriza esta operación con la cuenta configurada"),
+    (range(403, 404), "Genei no autoriza esta operación con la cuenta configurada"),
     (range(404, 405), "Genei no encuentra ese envío"),
     (range(409, 410), "Genei no lo permite en el estado actual del envío"),
     (range(429, 430), "Genei está recibiendo demasiadas peticiones: prueba en un momento"),
@@ -155,7 +164,9 @@ def _genei_error(exc: GeneiError) -> HTTPException:
     persona (sin «GET /… → 400»); el técnico va al log."""
     logger.warning("genei: %s", exc)
     return HTTPException(status.HTTP_502_BAD_GATEWAY, {
-        "code": "genei_error",
+        # Credenciales rechazadas en el login: la persona tiene que revisarlas
+        # (no se reintenta en bucle; ver `GeneiAuthError`).
+        "code": "genei_auth_failed" if isinstance(exc, GeneiAuthError) else "genei_error",
         "detail": genei_user_message(exc),
         "status": exc.status,
     })
@@ -686,6 +697,8 @@ def genei_config_get(
                 GeneiClient.webhook_secret_of(carrier.api_credentials_encrypted)
             ) if carrier else None
         ),
+        # Estado de la conexión (sesión renovada sola): nunca el token.
+        "auth": GeneiClient.auth_status_of(carrier),
     }
 
 
@@ -727,7 +740,12 @@ def genei_config_put(
                     else current.get("username", "")) or ""
         password = (payload.password if payload.password else current.get("password", "")) or ""
         if username and password:
-            carrier.api_credentials_encrypted = GeneiClient.encode_credentials(username, password)
+            # El secreto del webhook se CONSERVA: los envíos ya creados llevan
+            # su `notificationUrl` con él. Antes se perdía en cada «Guardar» y
+            # se generaba otro → Genei recibía 401 y el estado se quedaba parado.
+            carrier.api_credentials_encrypted = GeneiClient.encode_credentials(
+                username, password, webhook_secret=current.get("webhook_secret") or None,
+            )
 
     cfg = _config_of(carrier)
     if payload.preferred_couriers is not None:
@@ -760,6 +778,11 @@ def genei_config_put(
                 webhook_secret=_secrets.token_urlsafe(24),
             )
     carrier.config_json = cfg.to_json()
+    # Guardar es la forma humana de «vuelve a intentarlo»: si las credenciales
+    # estaban bloqueadas por un login rechazado, se desbloquean ya.
+    key = GeneiClient.cache_key_of(carrier)
+    if key:
+        SHARED_TOKEN_CACHE.clear_failure(key)
 
     session.add(AuditLog(
         actor_user_id=getattr(current_user, "id", None),
@@ -771,3 +794,28 @@ def genei_config_put(
     session.commit()
     session.refresh(carrier)
     return genei_config_get(session=session, current_user=current_user)
+
+
+@router.post("/genei/test-connection")
+def genei_test_connection(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_config),
+) -> dict[str, Any]:
+    """«Probar conexión»: login con las credenciales GUARDADAS (salta el bloqueo
+    por rechazo) y deja el token en la caché. Responde si funciona y hasta
+    cuándo vale el token — nunca el token ni la password."""
+    carrier = _require_carrier(session)
+    client = _client_or_400(carrier)
+    ok, detail = True, None
+    try:
+        client.login(force=True)
+    except GeneiError as exc:
+        ok, detail = False, genei_user_message(exc)
+    session.add(AuditLog(
+        actor_user_id=getattr(current_user, "id", None),
+        actor_email=getattr(current_user, "email", None),
+        action="erp.genei.connection_tested", target_type="carrier",
+        target_id=carrier.id, metadata_json=json.dumps({"ok": ok}),
+    ))
+    session.commit()
+    return {"ok": ok, "detail": detail, "auth": GeneiClient.auth_status_of(carrier)}

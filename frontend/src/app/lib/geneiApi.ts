@@ -99,6 +99,18 @@ export type GeneiConfig = {
   webhook_base_url: string;
   /** El webhook está operativo (base + secreto + credenciales). El secreto no se devuelve. */
   webhook_configured: boolean;
+  /** Estado de la conexión: la sesión (token) se renueva sola con las
+   *  credenciales guardadas. Nunca trae el token ni la password. */
+  auth?: GeneiAuthStatus;
+};
+
+export type GeneiAuthStatus = {
+  /** ok = sesión activa · error = Genei rechazó las credenciales · unknown = aún sin conectar. */
+  state: "ok" | "error" | "unknown";
+  token_valid_until: string | null;
+  last_login_at: string | null;
+  last_error: string | null;
+  last_error_at: string | null;
 };
 
 const base = (orderId: string) => `/api/erp/orders/${orderId}/genei`;
@@ -176,6 +188,14 @@ export function saveGeneiConfig(body: {
   return apiFetch(`/api/erp/genei/config`, {
     method: "PUT", body: JSON.stringify(body),
   });
+}
+
+/** «Probar conexión»: login con las credenciales GUARDADAS (no hace falta
+ *  volver a escribir la password). */
+export function testGeneiConnection(): Promise<{
+  ok: boolean; detail: string | null; auth: GeneiAuthStatus;
+}> {
+  return apiFetch(`/api/erp/genei/test-connection`, { method: "POST" });
 }
 
 /** Color de pastilla por bucket de estado Genei (reutiliza los tonos del ERP). */

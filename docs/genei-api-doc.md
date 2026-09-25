@@ -6,6 +6,26 @@ Base: `https://apiv2.genei.es/api/v2`. Swagger (interactivo, requiere login): `h
 - `POST /login` con `{ "username": "<email>", "password": "<password>" }` → **token Bearer**, validez **15 días**.
 - Todas las llamadas: cabecera `Authorization: Bearer <token>`.
 - Renovar el token al caducar o ante 401 (re-login). Password/token **cifrados**, nunca en logs.
+- **Re-autenticación automática (BoHub, rev 2026-09-25).** El token se guarda en una
+  **caché del proceso** (`TokenCache`, por credenciales) y se reutiliza entre
+  peticiones; se renueva solo antes de caducar (`exp` del JWT − 1 h) y, como
+  mucho, cada 12 h. Si Genei rechaza el token — HTTP `401`/`403`/`419`/`440`, o
+  su envoltorio HTTP 200 `status:0` con un mensaje de token/sesión/autenticación —
+  se hace login con las credenciales guardadas y se **reintenta la llamada una
+  vez**. Un error de DATOS («Invalid bultos…», «agencia no factible») no dispara
+  re-login. El pago (`/payments/pay/transactions`) mantiene su regla: reintento
+  solo ante un `401` HTTP (un `status:0` ahí se refiere al token DE PAGO).
+- **Credenciales rechazadas** en el login (HTTP 400/401/403/422 o `status:0`) →
+  `GeneiAuthError` («revisa las credenciales de Genei en Ajustes → Envíos») y
+  bloqueo de 5 min para esas credenciales (sin bucle ni martilleo). Un 5xx,
+  timeout o fallo de red en el login es pasajero y no bloquea. «Guardar» en
+  Ajustes y «Probar conexión» (`POST /api/erp/genei/test-connection`, login
+  forzado) desbloquean al momento. `GET /api/erp/genei/config` devuelve `auth`
+  (`state` ok/error/unknown, hasta cuándo vale el token, último error), nunca el
+  token.
+- **Secreto del webhook**: guardar credenciales lo **conserva** (antes se perdía
+  en cada «Guardar» y se generaba otro, con lo que Genei recibía 401 al avisar
+  de los envíos ya creados).
 
 ## ⚠️ Verificado EN VIVO (rev 2026-09-24) — cosas que la doc no dejaba claras
 

@@ -38,3 +38,15 @@ def _clear_factusol_chain_caches():
     _clear()
     yield
     _clear()
+
+
+@pytest.fixture(autouse=True)
+def _clear_genei_token_cache():
+    """El token de Genei vive en una caché del proceso (compartida entre
+    peticiones): un test no puede heredar el token ni el bloqueo por login
+    rechazado de otro."""
+    from app.erp.integrations.genei.client import SHARED_TOKEN_CACHE
+
+    SHARED_TOKEN_CACHE.clear()
+    yield
+    SHARED_TOKEN_CACHE.clear()

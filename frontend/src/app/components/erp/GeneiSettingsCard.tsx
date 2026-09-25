@@ -2,9 +2,49 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { extractErrorMessage } from "../../lib/errors";
-import { getGeneiConfig, saveGeneiConfig, type GeneiConfig } from "../../lib/geneiApi";
+import {
+  getGeneiConfig, saveGeneiConfig, testGeneiConnection,
+  type GeneiAuthStatus, type GeneiConfig,
+} from "../../lib/geneiApi";
 
 type CourierRow = { country: string; couriers: string };
+
+function fmtDate(iso: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? "" : d.toLocaleString("es-ES", {
+    day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit",
+  });
+}
+
+/** Estado de la conexión con Genei. La sesión se renueva SOLA con las
+ *  credenciales guardadas: la password solo hay que tocarla si Genei la
+ *  rechaza de verdad (estado «error»). */
+function GeneiAuthLine({ auth }: { auth?: GeneiAuthStatus }) {
+  if (!auth || auth.state === "unknown") {
+    return (
+      <p className="muted small" role="status">
+        Conexión: sin comprobar todavía. La sesión se abre y se renueva sola con
+        las credenciales guardadas.
+      </p>
+    );
+  }
+  if (auth.state === "error") {
+    return (
+      <p className="form-error small" role="status">
+        ⚠ {auth.last_error ?? "Genei ha rechazado las credenciales guardadas."}
+        {auth.last_error_at ? ` (${fmtDate(auth.last_error_at)})` : ""}
+      </p>
+    );
+  }
+  return (
+    <p className="form-success small" role="status">
+      ✓ Conectado. La sesión se renueva sola
+      {auth.token_valid_until ? ` (la actual vale hasta el ${fmtDate(auth.token_valid_until)})` : ""};
+      no hace falta volver a meter la password.
+    </p>
+  );
+}
 
 /** Ajustes de Genei (envíos): credenciales cifradas, origen (almacén SAT),
  *  bulto por defecto y couriers preferidos por país. Usa su endpoint propio
@@ -18,6 +58,8 @@ export function GeneiSettingsCard({ canEdit }: { canEdit: boolean }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testMsg, setTestMsg] = useState<string | null>(null);
 
   useEffect(() => {
     getGeneiConfig()
@@ -71,6 +113,19 @@ export function GeneiSettingsCard({ canEdit }: { canEdit: boolean }) {
     }
   }
 
+  async function probar() {
+    setTesting(true); setTestMsg(null);
+    try {
+      const r = await testGeneiConnection();
+      setCfg((c) => (c ? { ...c, auth: r.auth } : c));
+      setTestMsg(r.ok ? "Conexión correcta." : (r.detail ?? "Genei ha rechazado la conexión."));
+    } catch (e) {
+      setTestMsg(extractErrorMessage(e, "No se pudo probar la conexión con Genei."));
+    } finally {
+      setTesting(false);
+    }
+  }
+
   if (!cfg) {
     return (
       <section className="erp-settings-section" id="ajuste-genei" aria-labelledby="ajuste-genei-t">
@@ -115,6 +170,20 @@ export function GeneiSettingsCard({ canEdit }: { canEdit: boolean }) {
             <input type="password" value={password} aria-label="Password de Genei"
                    onChange={(e) => { setPassword(e.target.value); touch(); }} />
           </label>
+        </div>
+        <div className="erp-genei-auth">
+          <GeneiAuthLine auth={cfg.auth} />
+          {cfg.configured ? (
+            <div className="erp-genei-auth-actions">
+              <button type="button" className="button small secondary"
+                      disabled={testing || dirty}
+                      title={dirty ? "Guarda los cambios antes de probar" : undefined}
+                      onClick={() => void probar()}>
+                {testing ? "Probando…" : "Probar conexión"}
+              </button>
+              {testMsg ? <span className="muted small" role="status">{testMsg}</span> : null}
+            </div>
+          ) : null}
         </div>
         <div className="form-row">
           <label className="field">
