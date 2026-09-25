@@ -56,6 +56,11 @@ from app.erp.seguimiento import (
 
 HISTORICA = "Pedidos Bomedia 2020-2026"
 
+#: Índice de «Nota / Incidencia». Antes era la última columna (`[-1]`); desde el
+#: hito «id estable» la última es la «id» técnica, así que la Nota se referencia
+#: por su índice, no por `[-1]`.
+_NOTA = SEGUIMIENTO_COLUMNS_V2.index("Nota / Incidencia")
+
 
 class FakeTabs:
     """Doble del transporte: guarda pestañas, valores y formato pedidos."""
@@ -859,9 +864,10 @@ def test_import_historico_sin_cabecera_reconocible_falla_claro():
 
 
 def _nota_de(texto: str) -> list[Any]:
-    """Una fila del formato nuevo con solo la nota puesta."""
+    """Una fila del formato nuevo con solo la nota puesta (la «id» técnica, que
+    ahora es la ÚLTIMA columna, queda vacía)."""
     fila = [""] * len(SEGUIMIENTO_COLUMNS_V2)
-    fila[-1] = texto
+    fila[SEGUIMIENTO_COLUMNS_V2.index("Nota / Incidencia")] = texto
     return fila
 
 
@@ -1042,7 +1048,7 @@ def test_las_filas_manuales_se_intercalan_con_bohub_por_fecha(session):
     escrito = sheets.written[DEFAULT_MANAGED_TAB]
     assert escrito[0] == SEGUIMIENTO_COLUMNS_V2
     # Sin Fecha reconocible: arriba del todo.
-    assert escrito[1][1] == "MAN-7" and escrito[1][-1] == "llamar martes"
+    assert escrito[1][1] == "MAN-7" and escrito[1][_NOTA] == "llamar martes"
     # Con Fecha: intercalada por orden cronológico entre BoHub (25/09 → 23/09
     # → 10/09), no fijada arriba.
     assert [f[1] for f in escrito[2:5]] == ["L-1", "", "C-1"]
@@ -1119,7 +1125,7 @@ def test_la_fusion_es_idempotente(session):
     sheets.tabs[DEFAULT_MANAGED_TAB] = [[str(c) for c in r] for r in primera]
     push_managed_tabs(session, sheets, rows)
     segunda = sheets.written[DEFAULT_MANAGED_TAB]
-    assert segunda[1][-1].count("⚠ BoHub") == 1
+    assert segunda[1][_NOTA].count("⚠ BoHub") == 1
     assert [str(c) for c in segunda[1]] == [str(c) for c in primera[1]]
 
 
@@ -1177,7 +1183,7 @@ def test_una_fila_manual_bajo_la_cabecera_de_17_se_realinea(session):
     push_managed_tabs(session, sheets, [])
     f = sheets.written[DEFAULT_MANAGED_TAB][1]
     assert f[_col("Tracking")] == "TRK-9" and f[_col("Fecha recogido")] == ""
-    assert f[-1] == "nota a mano"
+    assert f[_NOTA] == "nota a mano"
 
 
 def test_la_fila_manual_se_colorea_segun_su_situacion(session):
@@ -1249,7 +1255,7 @@ def test_la_marca_con_un_punto_medio_dentro_no_crece(session):
     sheets = _pestana(_manual("BOP-9", **{"Empresa (serie)": "Bomedia",
                                           "Nota / Incidencia": "urgente"}))
     escritos = _pasadas(session, sheets, [_row("listo", "BOP-9")])
-    notas = [e[1][-1] for e in escritos]
+    notas = [e[1][_NOTA] for e in escritos]
     assert notas[0] == notas[1] == notas[2]
     assert notas[0].startswith("urgente [")
     assert "[⚠ BoHub Empresa (serie): 1 · Bomedia]" in notas[0]
@@ -1260,7 +1266,7 @@ def test_la_nota_del_usuario_sale_tal_cual(session):
     sheets = _pestana(_manual("BOP-9", Cliente="Otro", **{"Nota / Incidencia": raro}))
     escritos = _pasadas(session, sheets, [_row("listo", "BOP-9")])
     for e in escritos:
-        assert e[1][-1].startswith(raro + " [")
+        assert e[1][_NOTA].startswith(raro + " [")
 
 
 def test_lo_que_relleno_bohub_se_pone_al_dia(session):
@@ -1271,12 +1277,12 @@ def test_lo_que_relleno_bohub_se_pone_al_dia(session):
     push_managed_tabs(session, sheets, [pedido])
     f = sheets.written[DEFAULT_MANAGED_TAB][1]
     assert f[_col("Situación")] == "Por cobrar" and f[_col("Tracking")] == "1Z-A"
-    assert "[BoHub: " in f[-1] and "Situación" in f[-1]
+    assert "[BoHub: " in f[_NOTA] and "Situación" in f[_NOTA]
     pedido.update(situacion="listo", situacion_label="Listo", tracking="1Z-B")
     push_managed_tabs(session, sheets, [pedido])
     f = sheets.written[DEFAULT_MANAGED_TAB][1]
     assert f[_col("Situación")] == "Listo" and f[_col("Tracking")] == "1Z-B"
-    assert "⚠ BoHub Situación" not in f[-1] and "⚠ BoHub Tracking" not in f[-1]
+    assert "⚠ BoHub Situación" not in f[_NOTA] and "⚠ BoHub Tracking" not in f[_NOTA]
     assert f[_col("Cliente")] == "Otro nombre"        # lo tecleado, intacto
 
 
@@ -1303,7 +1309,37 @@ def test_lo_tecleado_mas_alla_de_la_ultima_columna_impide_entregar(session):
     sheets = _pestana(fila + ["apunte en la columna S"])
     resumen = push_managed_tabs(session, sheets, [_row("listo", "BOP-9")])
     assert resumen["manuales_entregadas"] == 0
+    # Lo tecleado MÁS ALLÁ de la última columna (aquí, tras la «id» técnica) se
+    # conserva en su sitio, al final de la fila.
     assert sheets.written[DEFAULT_MANAGED_TAB][1][-1] == "apunte en la columna S"
+
+
+def test_la_fusion_casa_por_id_de_pedido_antes_que_por_numero(session):
+    """Hito «id estable»: una fila con el `id` técnico de un pedido casa con él
+    aunque el Nº escrito sea otro; el id manda y no se duplica. (El casado por Nº
+    queda de transición, hasta que cada fila lleva su id.)"""
+    fila = _manual("NUM-VIEJO", Cliente="Acme SL", Fecha="01/09/2026")
+    fila[_col("id")] = "ord-123"
+    sheets = _pestana(fila)
+    resumen = push_managed_tabs(session, sheets, [
+        _row("listo", "BOP-9", id="ord-123", cliente="Acme SL"),
+    ])
+    escrito = sheets.written[DEFAULT_MANAGED_TAB][1:]
+    con_id = [f for f in escrito if len(f) > _col("id") and f[_col("id")] == "ord-123"]
+    assert len(con_id) == 1                      # una sola fila para ese pedido
+    # Se cruzó (por id): el pedido no se escribe además como fila suelta de BoHub.
+    assert resumen["manuales_fusionadas"] == 1
+
+
+def test_una_fila_manual_casada_recibe_el_id_del_pedido(session):
+    """Una fila manual que casa con su pedido (por Nº, en transición) se queda con
+    el `id` estable de ese pedido: a partir de ahí «upsert por id»."""
+    fila = _manual("BOP-9", **{"Nota / Incidencia": "sigue a mano"})
+    sheets = _pestana(fila)
+    push_managed_tabs(session, sheets, [_row("listo", "BOP-9", id="ord-9")])
+    fila_escrita = next(f for f in sheets.written[DEFAULT_MANAGED_TAB][1:] if f[1] == "BOP-9")
+    assert fila_escrita[_col("id")] == "ord-9"   # id estampado
+    assert "id#" not in fila_escrita[_NOTA]      # y NO en la Nota (no es un dato más)
 
 
 def test_dos_filas_manuales_del_mismo_pedido_no_desaparecen(session):
@@ -1333,7 +1369,7 @@ def test_un_importe_cero_de_bohub_no_rellena_ni_choca(session):
     escrito = sheets.written[DEFAULT_MANAGED_TAB]
     nueve = next(f for f in escrito if f[1] == "BOP-9")
     ocho = next(f for f in escrito if f[1] == "BOP-8")
-    assert "Importe" not in nueve[-1] and nueve[_col("Importe")] == 121.0
+    assert "Importe" not in nueve[_NOTA] and nueve[_col("Importe")] == 121.0
     assert ocho[_col("Importe")] == ""
 
 
@@ -1413,7 +1449,7 @@ def test_manual_con_mayuscula_inicial_tecleado_sigue_siendo_manual(session):
     assert resumen["manuales"] == 1 and resumen["manuales_fusionadas"] == 1
     f = sheets.written[DEFAULT_MANAGED_TAB][1]
     assert f[_col("Cliente")] == "Cliente Real SL"
-    assert f[-1].startswith("llamar martes") and "[⚠ BoHub Cliente: Acme SL]" in f[-1]
+    assert f[_NOTA].startswith("llamar martes") and "[⚠ BoHub Cliente: Acme SL]" in f[_NOTA]
 
 
 def test_una_fila_heredada_con_el_numero_guardado_como_numero_tambien_se_reconoce(session):
@@ -1461,7 +1497,7 @@ def test_una_fecha_con_hora_no_es_un_conflicto(session):
     fila = _manual("BOP-9", Cliente="Otro", Fecha=sheet_serial(date(2026, 9, 1)) + 0.4166)
     sheets = _pestana(fila)
     push_managed_tabs(session, sheets, [_row("listo", "BOP-9")])
-    assert "⚠ BoHub Fecha" not in sheets.written[DEFAULT_MANAGED_TAB][1][-1]
+    assert "⚠ BoHub Fecha" not in sheets.written[DEFAULT_MANAGED_TAB][1][_NOTA]
 
 
 @pytest.mark.parametrize("numero", ["12", "1543", "002"])
@@ -1549,5 +1585,5 @@ def test_si_corriges_una_celda_que_relleno_bohub_se_queda_la_tuya(session):
     push_managed_tabs(session, sheets, [pedido])
     fila = sheets.written[DEFAULT_MANAGED_TAB][1]
     assert fila[_col("Tracking")] == "CORREGIDO-A-MANO"
-    assert "[⚠ BoHub Tracking: 1Z-A]" in fila[-1]
-    assert "Tracking#" not in fila[-1]
+    assert "[⚠ BoHub Tracking: 1Z-A]" in fila[_NOTA]
+    assert "Tracking#" not in fila[_NOTA]

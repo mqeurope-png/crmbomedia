@@ -677,6 +677,17 @@ en **pestañas propias de la app**. Cada una tiene **dos zonas**:
 - **«Incidencias (app)»** — arriba, las incidencias que habéis reportado a
   mano; debajo del separador, los **pendientes heredados** de la hoja vieja.
 
+**Columna técnica «id» (clave estable).** La hoja lleva ahora una **última
+columna «id», oculta**: es la clave con la que BoHub localiza cada fila para
+actualizarla, en vez de casar por Nº de pedido (frágil: `9562.0`, con/sin
+prefijo, cruces falsos). Para los pedidos de BoHub es su id interno; para el
+histórico, un id propio. **No la toques ni la borres** (está oculta justo para
+eso); tampoco aparece a la vista en «Descargar Excel». Los ids del histórico
+antiguo se asignan **una sola vez**, con revisión, mediante
+`python -m scripts.backfill_seguimiento_ids` (primero sin `--apply`, que **lista
+las coincidencias dudosas** para que las revises; las claras se aplican solas).
+El histórico manual se conserva intacto.
+
 **Los completados bajan al histórico (y siguen vivos).** Cuando pulsas **«Marcar
 completado»**, el pedido **sale de la zona viva y baja al histórico** (bajo el
 separador *«HISTÓRICO»*), en vez de desaparecer. No hay un bloque «COMPLETADOS»

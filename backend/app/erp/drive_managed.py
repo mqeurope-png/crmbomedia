@@ -78,9 +78,10 @@ DEFAULT_INCIDENCIAS_TAB = "Incidencias (app)"
 MANAGED_TAB_SETTING = "drive_managed_tab"
 INCIDENCIAS_TAB_SETTING = "drive_incidencias_tab"
 
-#: Anchos de columna de la pestaña «Pedidos» (píxeles ≈ los del Excel local).
+#: Anchos de columna de la pestaña «Pedidos» (píxeles ≈ los del Excel local). La
+#: última («id») es técnica y va OCULTA; el ancho es indiferente.
 _PEDIDOS_WIDTHS_PX = [96, 116, 82, 210, 76, 240, 88, 130, 102, 88,
-                      96, 88, 96, 96, 92, 116, 150, 220]
+                      96, 88, 96, 96, 92, 116, 150, 220, 300]
 _INCIDENCIAS_WIDTHS_PX = [116, 210, 170, 280, 130, 82, 92]
 
 #: Gris de la cabecera (el mismo `F2F4F7` del Excel).
@@ -274,11 +275,15 @@ def live_incidencias_rows(rows: list[dict[str, Any]]) -> list[list[Any]]:
     )
 
 
-#: Cabecera del formato nuevo ANTES de «Fecha recogido» (17 columnas, #457).
+#: Cabecera del formato nuevo ANTES de «Fecha recogido» (17 columnas, #457). Es
+#: una FOTO histórica: nunca llevó «Fecha recogido» NI la «id» técnica (última,
+#: hito id estable), así que ambas se excluyen para detectar una hoja de 17 col.
 _HEADER_V2_SIN_RECOGIDO: list[str] = [
-    c for c in SEGUIMIENTO_COLUMNS_V2 if c != "Fecha recogido"
+    c for c in SEGUIMIENTO_COLUMNS_V2 if c not in ("Fecha recogido", "id")
 ]
 _RECOGIDO_INDEX = SEGUIMIENTO_COLUMNS_V2.index("Fecha recogido")
+#: Índice de la columna técnica «id» (la última). Oculta en la hoja.
+_ID_INDEX = SEGUIMIENTO_COLUMNS_V2.index("id")
 
 
 def normalize_static_pedidos(
@@ -306,6 +311,9 @@ def normalize_static_pedidos(
         if realinear:
             r = r + [""] * (len(_HEADER_V2_SIN_RECOGIDO) - len(r))
             r.insert(_RECOGIDO_INDEX, "")
+        # El histórico manual se preserva byte a byte: NO se rellena la «id»
+        # técnica aquí. La fila gana su id solo cuando el backfill se lo asigna
+        # (por id de pedido real o sintético), reescribiendo esa celda.
         out.append(r if is_separator(r) else redistribute_nota(r))
     return dates_to_serial(out, HISTORICO_DATE_COLUMNS)
 
@@ -582,7 +590,9 @@ def _fusionar(manual: list[Any], bohub: list[Any]) -> tuple[list[Any], int, bool
         _texto(c) for c in fila[len(SEGUIMIENTO_COLUMNS_V2):]
     )
     for col, nombre in enumerate(SEGUIMIENTO_COLUMNS_V2):
-        if col in (_ORIGEN_INDEX, _NUMERO_INDEX, _NOTA_INDEX):
+        # La «id» técnica no es un dato editable ni un conflicto: la fija el
+        # writer (o el backfill), no la lógica de fusión. No va a la Nota.
+        if col in (_ORIGEN_INDEX, _NUMERO_INDEX, _NOTA_INDEX, _ID_INDEX):
             continue
         mio, suyo = fila[col], bohub[col]
         suyo_vacio = _vacio_bohub(col, suyo)
@@ -627,13 +637,20 @@ def merge_manual_rows(
     faltar— que NO se escriben en su zona porque ya están en una fila manual:
     nunca duplicar) y los recuentos para la vista previa.
 
-    Emparejamiento: por Nº normalizado (`BOPRIN-99931` ≡ ` boprin-99931 `); si
-    no, por el número desnudo (`99931`) SOLO si un único pedido de BoHub lo
-    tiene — dos tiendas pueden compartir número y casar la equivocada sería
-    peor que no casar. Nº vacío → fila manual suelta."""
+    Emparejamiento: PRIMERO por `id` de pedido (columna técnica, hito id estable)
+    —exacto, sin falsos positivos—; si la fila aún no lo lleva (transición, antes
+    del backfill), por Nº normalizado (`BOPRIN-99931` ≡ ` boprin-99931 `); si no,
+    por el número desnudo (`99931`) SOLO si un único pedido de BoHub lo tiene —dos
+    tiendas pueden compartir número y casar la equivocada sería peor que no
+    casar—. Nº/id vacíos → fila manual suelta. (El casado por Nº es la «semilla
+    del backfill»: cuando cada fila lleve su `id`, este manda y el Nº ya no.)"""
+    por_id: dict[str, dict[str, Any]] = {}
     exactos: dict[str, dict[str, Any]] = {}
     desnudos: dict[str, list[dict[str, Any]]] = {}
     for r in rows:
+        oid = _texto(r.get("id"))
+        if oid:
+            por_id.setdefault(oid, r)
         numero = _numero_normalizado(r.get("order_number"))
         if numero:
             exactos.setdefault(numero, r)
@@ -644,6 +661,11 @@ def merge_manual_rows(
             desnudos.setdefault(desnudo, []).append(r)
 
     def _pedido_de(fila: list[Any]) -> dict[str, Any] | None:
+        # 1) Por id de pedido (columna técnica): exacto, es la clave estable.
+        fid = _texto(fila[_ID_INDEX]) if len(fila) > _ID_INDEX else ""
+        if fid and fid in por_id:
+            return por_id[fid]
+        # 2) Transición: por Nº mientras la fila no tenga id (semilla del backfill).
         numero = _numero_normalizado(fila[_NUMERO_INDEX])
         if not numero:
             return None
@@ -673,6 +695,11 @@ def merge_manual_rows(
             continue
         suyo = dates_to_serial([row_to_pedidos_values(pedido)], PEDIDOS_DATE_COLUMNS)[0]
         fusion, n_conflictos, entregable = _fusionar(fila, suyo)
+        # Una fila manual que casa con un pedido de BoHub (LIVE, casado claro) se
+        # queda con el `id` estable de ese pedido: a partir de aquí «upsert por
+        # id». El casado dudoso del histórico va aparte, por el backfill revisado.
+        if len(fusion) > _ID_INDEX:
+            fusion[_ID_INDEX] = _texto(pedido.get("id"))
         fusionadas += 1
         conflictos += n_conflictos
         if entregable and veces[id(pedido)] == 1:
@@ -951,6 +978,14 @@ def pedidos_format(
     columns = len(SEGUIMIENTO_COLUMNS_V2)
     total_rows = len(ordered) + 1
     requests = _header_format(columns, _PEDIDOS_WIDTHS_PX)
+    # La columna técnica «id» (última) va OCULTA: es la clave de casado, no la mira
+    # una persona. Se oculta, no se protege aquí (eso es Fase 2).
+    requests.append({"updateDimensionProperties": {
+        "range": {"sheetId": None, "dimension": "COLUMNS",
+                  "startIndex": _ID_INDEX, "endIndex": _ID_INDEX + 1},
+        "properties": {"hiddenByUser": True},
+        "fields": "hiddenByUser",
+    }})
     # La columna Situación se limpia antes de colorear: `replace_tab` borra los
     # valores, no el formato, y una celda que hoy no lleva color (una fila a
     # mano con una Situación que no se reconoce, o una fila que ha bajado)

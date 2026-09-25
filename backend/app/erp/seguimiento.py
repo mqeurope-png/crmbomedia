@@ -1369,7 +1369,14 @@ SEGUIMIENTO_COLUMNS_V2: list[str] = [
     "Importe", "Empresa (serie)", "Factura", "Fecha factura",
     "Factura enviada", "Cobro", "Preparación", "Envío", "Fecha recogido",
     "Tracking", "Nº serie · WhiteRIP", "Nota / Incidencia",
+    # Hito «id estable»: clave técnica de casado (última columna, OCULTA en la
+    # hoja). Va la última a propósito: así los índices posicionales de todo lo
+    # anterior (fechas, parser #465, anchos) no se mueven. Para pedidos de BoHub
+    # es el `Order.id`; para el histórico legacy, su id sintético.
+    "id",
 ]
+#: Índice (0-based) de la columna técnica «id» (la última). Oculta en la hoja.
+ID_INDEX = SEGUIMIENTO_COLUMNS_V2.index("id")
 #: Columnas de la pestaña «Incidencias» (subconjunto de Situación=Incidencia).
 INCIDENCIAS_COLUMNS: list[str] = [
     "Nº pedido", "Cliente", "Tipo", "Motivo", "Asignado a", "Fecha", "Estado",
@@ -1387,8 +1394,9 @@ INCIDENCIAS_DATE_COLUMNS: tuple[int, ...] = (5,)
 HISTORICO_DATE_COLUMNS: tuple[int, ...] = (*PEDIDOS_DATE_COLUMNS, 12)
 #: Formato de fecha de esas columnas (Excel y Sheets usan el mismo patrón).
 DATE_PATTERN = "DD/MM/YYYY"
-#: Ancho aproximado de cada columna de «Pedidos» (para que el Excel se lea).
-_PEDIDOS_WIDTHS = [13, 16, 11, 30, 10, 34, 12, 18, 14, 12, 13, 12, 13, 13, 12, 16, 20, 30]
+#: Ancho aproximado de cada columna de «Pedidos» (para que el Excel se lea). La
+#: última («id») es técnica y va OCULTA; el ancho solo se usaría si se muestra.
+_PEDIDOS_WIDTHS = [13, 16, 11, 30, 10, 34, 12, 18, 14, 12, 13, 12, 13, 13, 12, 16, 20, 30, 300]
 _INCIDENCIAS_WIDTHS = [16, 30, 24, 40, 18, 11, 12]
 
 def _sheet_date_value(iso: str | None) -> date | str:
@@ -1492,9 +1500,11 @@ def redistribute_nota(row: list[Any]) -> list[Any]:
 
 
 def row_to_pedidos_values(row: dict[str, Any]) -> list[Any]:
-    """Los 18 valores de una fila de «Pedidos», en orden. `Importe` va como
+    """Los 19 valores de una fila de «Pedidos», en orden. `Importe` va como
     NÚMERO (float) y las fechas como `date` (ver `PEDIDOS_DATE_COLUMNS`) para
-    que el Excel y la hoja las traten como lo que son; el resto, texto."""
+    que el Excel y la hoja las traten como lo que son; el resto, texto. La última
+    columna es el `id` técnico (clave de casado; para un pedido de BoHub, su
+    `Order.id`)."""
     return [
         row.get("situacion_label") or "",
         row.get("order_number") or "",
@@ -1516,6 +1526,8 @@ def row_to_pedidos_values(row: dict[str, Any]) -> list[Any]:
         row.get("tracking") or "",
         row.get("serie_whiterip") or "",
         row.get("nota_incidencia") or "",
+        # id técnico (clave de casado). Para un pedido de BoHub, su `Order.id`.
+        row.get("id") or "",
     ]
 
 
@@ -1568,6 +1580,9 @@ def export_xlsx(rows: list[dict[str, Any]]) -> bytes:
     ws.title = "Pedidos"
     ws.append(SEGUIMIENTO_COLUMNS_V2)
     _style_header(ws, _PEDIDOS_WIDTHS)
+    # La columna técnica «id» (última) va OCULTA también en el Excel: es la clave
+    # de casado, no un dato que Bart mire. Sigue ahí para no perder la referencia.
+    ws.column_dimensions[get_column_letter(ID_INDEX + 1)].hidden = True
     for r_i, row in enumerate(rows, start=2):
         ws.append(row_to_pedidos_values(row))
         situ = row.get("situacion") or "listo"
