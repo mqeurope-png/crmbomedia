@@ -32,6 +32,10 @@ from app.erp.models.orders import (
     TransportStatus,
 )
 from app.erp.models.quotes import FactusolQuoteLineCache
+from app.erp.models.seguimiento_legacy import (
+    LEGACY_MATCH_STATUSES,
+    SeguimientoLegacy,
+)
 from app.erp.models.settings import ERP_SETTINGS_SINGLETON_ID, ErpSettings, InvoiceMode
 from app.erp.models.shipping import (
     KIND_ALBARAN,
@@ -73,6 +77,7 @@ __all__ = [
     "IntegrationEventStatus",
     "InvoiceMode",
     "InvoiceStatus",
+    "LEGACY_MATCH_STATUSES",
     "Order",
     "OrderLine",
     "OrderSource",
@@ -80,6 +85,7 @@ __all__ = [
     "PaymentStatus",
     "PreparationStatus",
     "ProductSkuMapping",
+    "SeguimientoLegacy",
     "ShipmentFile",
     "ShipmentPackage",
     "SkuMatchedBy",

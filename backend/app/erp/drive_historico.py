@@ -156,6 +156,7 @@ def map_row(row: list[Any], col_map: dict[int, int]) -> list[Any]:
         _cell(row, col_map, "Tracking"),                      # Tracking
         serie_whiterip,                                       # Nº serie · WhiteRIP
         _nota(row, col_map),                                  # Nota / Incidencia
+        "",                                                   # id (lo pone el backfill)
     ]
     # Y se reparte lo que la nota traiga empaquetado (`Orden: …`, `Proforma: …`,
     # y los `Vendedor/Transporte/Preparado/Recogido` de un histórico importado
