@@ -183,6 +183,17 @@ def canon_datos(fila: list[Any]) -> list[str]:
     return celdas
 
 
+def _valores_bohub(row: dict[str, Any]) -> list[Any]:
+    """La fila tal como la pintaría BoHub SIN nada manual (sus valores
+    originales, antes de aplicar overrides)."""
+    from app.erp.drive_managed import dates_to_serial  # noqa: PLC0415
+    from app.erp.seguimiento import row_to_pedidos_values  # noqa: PLC0415
+
+    base = dict(row)
+    base.update(row.get("bohub") or {})
+    return dates_to_serial([row_to_pedidos_values(base)], PEDIDOS_DATE_COLUMNS)[0]
+
+
 def _clave_legacy(fila: list[Any]) -> tuple[str, str]:
     """(Nº, Cliente) de una fila del histórico, para el casado de reserva."""
     num = fila[_NUMERO] if len(fila) > _NUMERO else ""
@@ -409,16 +420,28 @@ class Espejo:
                 en_hoja.setdefault(rid, fila)
 
         tracking_nuevos: dict[str, str] = {}
+        previos = load_overrides(self.session, sorted(en_hoja)) if en_hoja else {}
+        por_id = {str(r.get("id")): r for r in todas if r.get("id")}
         for rid, fila in en_hoja.items():
             snap = self.snapshot.get(rid)
             if snap is None or snap[0] != KIND_ORDER or not snap[1]:
                 continue
             anterior = snap[1]
+            de_bohub = _valores_bohub(por_id[rid])
             for nombre in EDITABLES:
                 col = _COL[nombre]
                 ahora = fila[col] if len(fila) > col else ""
                 antes = anterior[col] if len(anterior) > col else ""
                 if _mismo(col, ahora, antes):
+                    continue
+                # Blindaje contra un snapshot desfasado (p. ej. la pasada anterior
+                # escribió la hoja pero no llegó a confirmar): si la columna NO
+                # tiene valor manual y la hoja dice lo mismo que BoHub AHORA, eso
+                # lo escribió BoHub — no una persona. Así un cambio de BoHub nunca
+                # se convierte en un «valor manual» pegajoso.
+                clave = OVERRIDE_COLUMNS.get(nombre)
+                sin_manual = clave is None or clave not in previos.get(rid, {})
+                if sin_manual and _mismo(col, ahora, de_bohub[col]):
                     continue
                 self.stats["ediciones_leidas"] += 1
                 if nombre == "Tracking":
@@ -549,7 +572,10 @@ class Espejo:
                                      rid if rid in ids_pedidos else None)
             if rid:
                 vistos.add(rid)
-                self.tipos.setdefault(rid, KIND_MANUAL)
+                # Una fila manual que lleva el id de un pedido (casada, #466) ES la
+                # fila de ese pedido en la hoja: se trata como manual (editable
+                # entera, sin proteger), no como fila de BoHub.
+                self.tipos[rid] = KIND_MANUAL
             out.append(fila)
         return out
 
@@ -644,7 +670,7 @@ class Espejo:
                                     and rec.match_status == "confirmed"):
                 self.stats["historico_duplicados_suprimidos"] += 1
                 continue
-            self.tipos.setdefault(sid, KIND_LEGACY)
+            self.tipos[sid] = KIND_LEGACY
             out.append(_con_id(fila, sid))
         self._legacy_por_sheet_id = por_sheet_id
         # Registros que no aparecen en la hoja (borrados antes de activar el
@@ -775,3 +801,157 @@ class Espejo:
             self.session.execute(delete(SeguimientoSnapshot).where(
                 SeguimientoSnapshot.row_id.in_(sobran)))
         self.session.flush()
+
+
+# --- protección de la hoja (rangos protegidos + validación + marca naranja) -----
+
+#: Descripción (y prefijo) de las protecciones del espejo: así cada pasada
+#: localiza y sustituye las SUYAS sin tocar las que haya puesto una persona.
+PROTECT_DESC_PREFIX = "BoHub · espejo"
+PROTECT_DESC = f"{PROTECT_DESC_PREFIX}: columnas bloqueadas (solo BoHub)"
+PROTECT_DESC_GENEI = f"{PROTECT_DESC_PREFIX}: Tracking de Genei (solo BoHub)"
+#: Regla de formato condicional: fila en naranja si su Nota lleva «⚠ revisar».
+#: (Fórmulas por API: nombres en inglés y comas, sea cual sea el idioma.)
+REVISAR_FORMULA = '=REGEXMATCH($R2,"\\[⚠ revisar")'
+_NARANJA = {"red": 1.0, "green": 0.8, "blue": 0.6}
+
+
+def _es_regla_revisar(regla: dict[str, Any]) -> bool:
+    """¿Es la regla naranja del espejo (por su fórmula)?"""
+    cond = (regla.get("booleanRule") or {}).get("condition") or {}
+    return any(v.get("userEnteredValue") == REVISAR_FORMULA for v in cond.get("values") or [])
+
+
+def _tramos(cols: list[int]) -> list[tuple[int, int]]:
+    """Índices de columna → tramos contiguos [inicio, fin)."""
+    out: list[tuple[int, int]] = []
+    for c in sorted(cols):
+        if out and out[-1][1] == c:
+            out[-1] = (out[-1][0], c + 1)
+        else:
+            out.append((c, c + 1))
+    return out
+
+
+def _grupos(filas: list[int]) -> list[tuple[int, int]]:
+    """Índices de fila → grupos contiguos [inicio, fin)."""
+    return _tramos(filas)
+
+
+#: Tramos de columnas bloqueadas (en las filas de BoHub).
+_TRAMOS_BLOQUEADOS = _tramos([_COL[c] for c in BLOQUEADAS])
+
+
+def _listas_cerradas() -> dict[int, list[str]]:
+    """Columnas de valor cerrado → sus valores válidos (para el desplegable de las
+    filas manuales; en las de BoHub van protegidas)."""
+    from app.erp.seguimiento import (  # noqa: PLC0415
+        COBRO_LABELS,
+        ENVIO_LABELS,
+        NO_APLICA,
+        PREPARACION_LABELS,
+        SITUACION_LABELS,
+    )
+
+    return {
+        _COL["Situación"]: list(SITUACION_LABELS.values()),
+        _COL["Preparación"]: [*PREPARACION_LABELS.values(), NO_APLICA, "—"],
+        _COL["Envío"]: [*ENVIO_LABELS.values(), NO_APLICA, "—"],
+        _COL["Cobro"]: list(dict.fromkeys(COBRO_LABELS.values())),
+    }
+
+
+def protection_requests(
+    grid: list[list[Any]], tipos: dict[str, str], genei_ids: set[str],
+    *, meta: dict[str, Any] | None = None, service_email: str | None = None,
+) -> list[dict[str, Any]]:
+    """Peticiones `batchUpdate` que gobiernan la edición de la hoja:
+
+      1. Quita las protecciones y la regla naranja que puso el espejo la vez
+         anterior (por su descripción / fórmula) — nunca las de una persona.
+      2. Protege las columnas BLOQUEADAS de las filas de BoHub (y el Tracking de
+         las que tienen envío Genei): solo las escribe la cuenta de servicio.
+         Las filas manuales y del histórico quedan abiertas enteras.
+      3. Validación (sin rechazar: marca) en la zona viva: desplegables en
+         Situación / Preparación / Envío / Cobro y fecha válida en las fechas;
+         el histórico queda sin validación.
+      4. Regla de formato condicional: fila en naranja si su Nota lleva
+         «⚠ revisar».
+
+    Google SIEMPRE deja editar un rango protegido al PROPIETARIO de la hoja: para
+    él la protección no bloquea, pero cada pasada revierte lo bloqueado."""
+    from app.erp.drive_managed import is_separator  # noqa: PLC0415
+
+    meta = meta or {}
+    req: list[dict[str, Any]] = []
+    for pr in meta.get("protected_ranges") or []:
+        propia = str(pr.get("description") or "").startswith(PROTECT_DESC_PREFIX)
+        if propia and pr.get("id") is not None:
+            req.append({"deleteProtectedRange": {"protectedRangeId": pr["id"]}})
+    reglas = meta.get("conditional_formats") or []
+    propias = [i for i, r in enumerate(reglas) if _es_regla_revisar(r)]
+    for idx in sorted(propias, reverse=True):   # de atrás adelante: índices válidos
+        req.append({"deleteConditionalFormatRule": {"sheetId": None, "index": idx}})
+
+    filas_bohub: list[int] = []
+    filas_genei: list[int] = []
+    fin_viva = len(grid)
+    for i, fila in enumerate(grid):
+        if i == 0:
+            continue
+        if is_separator(list(fila)):
+            fin_viva = min(fin_viva, i)
+            continue
+        rid = _fila_id(fila)
+        if rid and tipos.get(rid) == KIND_ORDER:
+            filas_bohub.append(i)
+            if rid in genei_ids:
+                filas_genei.append(i)
+
+    editores = {"editors": {"users": [service_email]}} if service_email else {}
+
+    def _proteger(r0: int, r1: int, c0: int, c1: int, desc: str) -> dict[str, Any]:
+        return {"addProtectedRange": {"protectedRange": {
+            "range": {"sheetId": None, "startRowIndex": r0, "endRowIndex": r1,
+                      "startColumnIndex": c0, "endColumnIndex": c1},
+            "description": desc, "warningOnly": False, **editores,
+        }}}
+
+    for r0, r1 in _grupos(filas_bohub):
+        for c0, c1 in _TRAMOS_BLOQUEADOS:
+            req.append(_proteger(r0, r1, c0, c1, PROTECT_DESC))
+    for r0, r1 in _grupos(filas_genei):
+        req.append(_proteger(r0, r1, _TRACKING, _TRACKING + 1, PROTECT_DESC_GENEI))
+
+    # Validación: en la zona viva (filas 1..fin_viva); fuera, se limpia.
+    if fin_viva > 1:
+        for col, valores in _listas_cerradas().items():
+            req.append({"setDataValidation": {
+                "range": {"sheetId": None, "startRowIndex": 1, "endRowIndex": fin_viva,
+                          "startColumnIndex": col, "endColumnIndex": col + 1},
+                "rule": {"condition": {"type": "ONE_OF_LIST",
+                                       "values": [{"userEnteredValue": v} for v in valores]},
+                         "strict": False, "showCustomUi": True},
+            }})
+        for col in PEDIDOS_DATE_COLUMNS:
+            req.append({"setDataValidation": {
+                "range": {"sheetId": None, "startRowIndex": 1, "endRowIndex": fin_viva,
+                          "startColumnIndex": col, "endColumnIndex": col + 1},
+                "rule": {"condition": {"type": "DATE_IS_VALID"}, "strict": False},
+            }})
+    req.append({"setDataValidation": {"range": {
+        "sheetId": None, "startRowIndex": max(fin_viva, 1),
+        "startColumnIndex": 0, "endColumnIndex": len(SEGUIMIENTO_COLUMNS_V2),
+    }}})
+
+    # Marca naranja de las filas «⚠ revisar» (se ve en cuanto aparece la marca).
+    req.append({"addConditionalFormatRule": {"index": 0, "rule": {
+        "ranges": [{"sheetId": None, "startRowIndex": 1,
+                    "startColumnIndex": 0, "endColumnIndex": len(SEGUIMIENTO_COLUMNS_V2)}],
+        "booleanRule": {
+            "condition": {"type": "CUSTOM_FORMULA",
+                          "values": [{"userEnteredValue": REVISAR_FORMULA}]},
+            "format": {"backgroundColor": _NARANJA},
+        },
+    }}})
+    return req

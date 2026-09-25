@@ -455,3 +455,122 @@ def test_la_vista_previa_detecta_pero_no_escribe_nada(factory):
         assert res["espejo"]["ediciones_leidas"] == 1
         assert s.scalars(select(SeguimientoOverride)).all() == []   # nada guardado
         assert sheets.tabs[TAB] == antes                           # hoja sin tocar
+
+
+# --- blindaje: un snapshot desfasado no crea valores manuales falsos ------------
+
+
+def test_un_snapshot_desfasado_no_convierte_un_cambio_de_bohub_en_manual(factory):
+    """Si una pasada escribió la hoja pero no llegó a confirmar, el snapshot queda
+    atrasado. Un cambio de BoHub ya pintado NO debe leerse como edición manual."""
+    with factory() as s:
+        o = _order(s, "BOP-S")
+        sheets = FakeTabs({HISTORICA: [], TAB: []})
+        _pasada(s, sheets, [_row(o, factura="")])
+        # BoHub factura; la pasada pinta F-1 pero «no confirma»: la hoja dice F-1
+        # y el snapshot sigue diciendo «».
+        push_managed_tabs(s, sheets, [_row(o, factura="F-1")], completados=[])
+        s.rollback()
+        assert _fila(sheets, o.id)[_c("Factura")] == "F-1"
+        res = _pasada(s, sheets, [_row(o, factura="F-1")])
+        assert res["espejo"]["ediciones_leidas"] == 0
+        assert s.scalars(select(SeguimientoOverride)).all() == []
+
+
+# --- protección de la hoja --------------------------------------------------------
+
+
+class FakeTabsConMeta(FakeTabs):
+    """Transporte que sabe leer las protecciones actuales (como el real)."""
+
+    service_email = "bohub@proyecto.iam.gserviceaccount.com"
+
+    def __init__(self, *a: Any, **kw: Any) -> None:
+        super().__init__(*a, **kw)
+        self.calls: list[list[dict[str, Any]]] = []
+        self.meta: dict[str, Any] = {"protected_ranges": [], "conditional_formats": []}
+
+    def format_tab(self, title: str, requests: list[dict[str, Any]]) -> None:
+        super().format_tab(title, requests)
+        if title == TAB:
+            self.calls.append(requests)
+
+    def tab_metadata(self, title: str) -> dict[str, Any]:
+        return self.meta
+
+
+def _protecciones(reqs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [r["addProtectedRange"]["protectedRange"] for r in reqs if "addProtectedRange" in r]
+
+
+def test_protege_las_columnas_bloqueadas_de_las_filas_de_bohub(factory):
+    from app.erp.seguimiento_mirror import PROTECT_DESC, PROTECT_DESC_GENEI
+
+    with factory() as s:
+        o1, o2 = _order(s, "BOP-A"), _order(s, "BOP-B")
+        g = _order(s, "BOP-G", packing_json=json.dumps({"genei": {"shipment_code": "G1"}}))
+        sheets = FakeTabsConMeta({HISTORICA: [], TAB: [
+            list(SEGUIMIENTO_COLUMNS_V2), _manual("MAN-1", Cliente="A", Fecha="01/09/2026"),
+        ]})
+        sheets.meta["protected_ranges"] = [
+            {"id": 11, "description": "BoHub · espejo: columnas bloqueadas (solo BoHub)"},
+            {"id": 12, "description": "Protección puesta por Bart"},
+        ]
+        _pasada(s, sheets, [_row(o1), _row(o2), _row(g, envio_genei=True)])
+        reqs = sheets.calls[-1]
+        # Solo se quitan las protecciones del espejo, nunca las de una persona.
+        borradas = [r["deleteProtectedRange"]["protectedRangeId"]
+                    for r in reqs if "deleteProtectedRange" in r]
+        assert borradas == [11]
+        prot = _protecciones(reqs)
+        assert all(p["editors"]["users"] == [FakeTabsConMeta.service_email] for p in prot)
+        assert all(p["warningOnly"] is False for p in prot)
+        grid = sheets.tabs[TAB]
+        filas_bohub = {i for i, f in enumerate(grid)
+                       if len(f) > ID and f[ID] in (o1.id, o2.id, g.id)}
+        fila_manual = next(i for i, f in enumerate(grid) if len(f) > 1 and f[1] == "MAN-1")
+        bloqueadas = [p for p in prot if p["description"] == PROTECT_DESC]
+        cubiertas = {r for p in bloqueadas
+                     for r in range(p["range"]["startRowIndex"], p["range"]["endRowIndex"])}
+        assert filas_bohub <= cubiertas and fila_manual not in cubiertas
+        cols = {c for p in bloqueadas
+                for c in range(p["range"]["startColumnIndex"], p["range"]["endColumnIndex"])}
+        editables = {_c(n) for n in ("Cliente", "Factura", "Factura enviada", "Tracking",
+                                     "Nº serie · WhiteRIP", "Nota / Incidencia")}
+        assert not (cols & editables) and ID in cols and _c("Importe") in cols
+        # El Tracking de la fila con envío Genei, protegido aparte.
+        genei = [p for p in prot if p["description"] == PROTECT_DESC_GENEI]
+        fila_g = next(i for i, f in enumerate(grid) if len(f) > ID and f[ID] == g.id)
+        assert len(genei) == 1 and genei[0]["range"]["startRowIndex"] == fila_g
+        assert genei[0]["range"]["startColumnIndex"] == _c("Tracking")
+        # Marca naranja de «⚠ revisar» + validación en la zona viva.
+        assert any("addConditionalFormatRule" in r for r in reqs)
+        assert any("setDataValidation" in r for r in reqs)
+
+
+def test_sin_leer_las_protecciones_no_las_apila(factory):
+    """Un transporte que no sabe leer las protecciones actuales no recibe
+    protecciones nuevas (se apilarían en cada pasada)."""
+    with factory() as s:
+        o = _order(s, "BOP-N")
+        sheets = FakeTabs({HISTORICA: [], TAB: []})
+        _pasada(s, sheets, [_row(o)])
+        assert not any("addProtectedRange" in r for r in sheets.formats[TAB])
+
+
+def test_la_regla_naranja_anterior_se_sustituye(factory):
+    from app.erp.seguimiento_mirror import REVISAR_FORMULA
+
+    with factory() as s:
+        sheets = FakeTabsConMeta({HISTORICA: [], TAB: []})
+        sheets.meta["conditional_formats"] = [
+            {"booleanRule": {"condition": {"type": "TEXT_CONTAINS",
+                                           "values": [{"userEnteredValue": "de Bart"}]}}},
+            {"booleanRule": {"condition": {"type": "CUSTOM_FORMULA",
+                                           "values": [{"userEnteredValue": REVISAR_FORMULA}]}}},
+        ]
+        _pasada(s, sheets, [])
+        reqs = sheets.calls[-1]
+        assert [r["deleteConditionalFormatRule"]["index"]
+                for r in reqs if "deleteConditionalFormatRule" in r] == [1]
+        assert sum(1 for r in reqs if "addConditionalFormatRule" in r) == 1

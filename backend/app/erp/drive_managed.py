@@ -1246,6 +1246,26 @@ def push_managed_tabs(
     sheets.ensure_tab(pedidos_tab)
     sheets.replace_tab(pedidos_tab, grid_pedidos, raw=True)
     sheets.format_tab(pedidos_tab, pedidos_format(ordenadas, estatico_pedidos, manuales))
+    # ESPEJO: protección de columnas bloqueadas (filas de BoHub), validación en
+    # la zona viva y marca naranja de «⚠ revisar». Va aparte y es de mejor
+    # esfuerzo: si Google la rechaza, los datos ya están bien escritos y la
+    # pasada no se pierde (se avisa en el resumen y se reintenta en la siguiente).
+    from app.erp.seguimiento_mirror import protection_requests  # noqa: PLC0415
+
+    # Solo si el transporte sabe leer las protecciones actuales: sin eso, cada
+    # pasada APILARÍA protecciones nuevas encima de las anteriores.
+    leer_meta = getattr(sheets, "tab_metadata", None)
+    if callable(leer_meta):
+        try:
+            proteccion = protection_requests(
+                grid_pedidos, espejo.tipos, espejo.genei_ids, meta=leer_meta(pedidos_tab),
+                service_email=getattr(sheets, "service_email", None),
+            )
+            sheets.format_tab(pedidos_tab, proteccion)
+            espejo.stats["protecciones"] = sum(1 for r in proteccion if "addProtectedRange" in r)
+        except DriveSyncError as exc:
+            espejo.stats["proteccion_error"] = str(exc)[:200]
+            logger.warning("drive: no se pudo aplicar la protección del espejo: %s", exc)
     # La foto nueva, SOLO tras escribir bien la hoja (si la escritura falla, el
     # llamador no confirma y la pasada siguiente lo repite todo).
     espejo.guardar_snapshot(grid_pedidos)
