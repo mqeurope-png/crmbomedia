@@ -222,7 +222,21 @@ async def receive_genei_webhook(
     except (UnicodeDecodeError, ValueError) as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Body must be JSON") from exc
 
-    result = process_webhook(session, payload)
+    # El webhook solo trae el estado de Genei: se leen además los eventos del
+    # transportista (`/tracking`) para no dar por recogido lo no escaneado.
+    # Si Genei no responde, se sigue sin ellos (el sondeo lo completará).
+    def _fetch_tracking(code: str) -> dict[str, Any] | None:
+        from app.erp.api.genei import build_client  # noqa: PLC0415
+        from app.erp.integrations.genei.client import GeneiError  # noqa: PLC0415
+        from app.erp.integrations.genei.webhook import safe_tracking  # noqa: PLC0415
+
+        try:
+            client = build_client(carrier)
+        except GeneiError:
+            return None
+        return safe_tracking(client, code)
+
+    result = process_webhook(session, payload, fetch_tracking=_fetch_tracking)
     session.commit()
     out: dict[str, Any] = {"received": True, "matched": bool(result.get("matched"))}
     if result.get("matched"):

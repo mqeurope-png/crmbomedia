@@ -134,3 +134,20 @@ describe("conexión con Genei (la sesión se renueva sola)", () => {
     expect(await screen.findAllByText(/rechazado el usuario o la contraseña/)).not.toHaveLength(0);
   });
 });
+
+it("sondeo del tracking del transportista: se puede apagar y cambiar el intervalo", async () => {
+  const user = userEvent.setup();
+  mockGet.mockResolvedValue({ ...CONFIG, tracking_poll_enabled: true, tracking_poll_minutes: 30 });
+  render(<GeneiSettingsCard canEdit />);
+  const toggle = await screen.findByLabelText("Consultar el tracking del transportista automáticamente");
+  expect(toggle).toBeChecked();
+  await user.click(toggle);
+  const minutos = screen.getByLabelText("Minutos entre consultas del tracking");
+  await user.clear(minutos);
+  await user.type(minutos, "60");
+  await user.click(screen.getByRole("button", { name: /Guardar cambios/ }));
+  await waitFor(() => expect(mockSave).toHaveBeenCalled());
+  const body = mockSave.mock.calls[0][0];
+  expect(body.tracking_poll_enabled).toBe(false);
+  expect(body.tracking_poll_minutes).toBe(60);
+});

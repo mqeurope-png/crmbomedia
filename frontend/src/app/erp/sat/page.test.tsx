@@ -363,6 +363,48 @@ describe("SatQueuePage · «Sin envío» («No requiere envío»)", () => {
   });
 });
 
+describe("«Enviados»: estado REAL del transportista (Genei /tracking)", () => {
+  it("enseña el último escaneo de la agencia, no el genérico «Recogido · en tránsito»", async () => {
+    mockShipped.mockResolvedValue({ total: 1, limit: 200, items: [
+      item({ id: "e2", order_number: "ALB-2-200038", preparation_status: "packed",
+             transport_status: "in_transit", sat_tab: "enviados",
+             tracking_number: "0033260080539700026674",
+             genei: { shipment_code: "G2", courier: "Ctt Premium", state_bucket: "in_transit",
+                      state_label: "Recogida efectuada / en tránsito", label_available: true,
+                      carrier_status: "PENDIENTE DE ENTRADA EN RED",
+                      carrier_status_at: "2026-09-24T18:00:00+00:00",
+                      carrier_step: "pre_transit",
+                      tracking_url: "https://www.cttexpress.com/localizador/" } }),
+    ] });
+    const user = userEvent.setup();
+    render(<SatQueuePage />);
+    await loaded();
+    await pestana(user, /^Enviados/);
+    const table = await screen.findByRole("table", { name: "Pedidos enviados" });
+    const row = within(table).getAllByRole("row")[1];
+    const estado = within(row).getByText("PENDIENTE DE ENTRADA EN RED");
+    expect(estado).toHaveClass("badge", "warn");          // aún sin escanear: aviso
+    expect(within(row).queryByText("Recogido · en tránsito")).not.toBeInTheDocument();
+    expect(within(row).queryByText(/Recogida efectuada/)).not.toBeInTheDocument();
+    expect(within(row).getByText("Ctt Premium")).toBeInTheDocument();
+  });
+
+  it("sin escaneos del transportista, el estado de Genei antes que el genérico", async () => {
+    mockShipped.mockResolvedValue({ total: 1, limit: 200, items: [
+      item({ id: "e3", order_number: "BOP-E3", preparation_status: "packed",
+             transport_status: "in_transit", sat_tab: "enviados",
+             genei: { shipment_code: "G3", state_bucket: "in_transit", state_label: "En reparto",
+                      label_available: true } }),
+    ] });
+    const user = userEvent.setup();
+    render(<SatQueuePage />);
+    await loaded();
+    await pestana(user, /^Enviados/);
+    const table = await screen.findByRole("table", { name: "Pedidos enviados" });
+    expect(within(table).getByText("En reparto")).toBeInTheDocument();
+  });
+});
+
 describe("SatQueuePage (regresión)", () => {
   it("carga la cola sin filtros y pasa los filtros a getSatQueue", async () => {
     const user = userEvent.setup();

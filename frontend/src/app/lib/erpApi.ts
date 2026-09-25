@@ -1436,6 +1436,13 @@ export type SatGeneiSummary = {
   courier?: string | null;
   tracking?: string | null;
   label_available: boolean;
+  /** Último escaneo REAL del transportista (Genei `/tracking`), tal cual. */
+  carrier_status?: string | null;
+  carrier_status_at?: string | null;
+  carrier_step?: string | null;
+  carrier_step_label?: string | null;
+  tracking_url?: string | null;
+  tracking_checked_at?: string | null;
 };
 
 /** Contadores de cada pestaña (el backend los calcula con su criterio). */

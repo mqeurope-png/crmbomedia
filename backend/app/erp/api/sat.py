@@ -184,6 +184,14 @@ def _genei_summary(order: Order) -> dict[str, Any] | None:
         "courier": state.get("courier"),
         "tracking": state.get("tracking"),
         "label_available": is_tramitado(state.get("state_bucket")),
+        # Último escaneo REAL del transportista (texto tal cual lo da la
+        # agencia, su fecha y el paso normalizado), leído de Genei `/tracking`.
+        "carrier_status": state.get("carrier_status"),
+        "carrier_status_at": state.get("carrier_status_at"),
+        "carrier_step": state.get("carrier_step"),
+        "carrier_step_label": state.get("carrier_step_label"),
+        "tracking_url": state.get("tracking_url"),
+        "tracking_checked_at": state.get("tracking_checked_at"),
     }
 
 
@@ -193,15 +201,21 @@ def pendiente_de_recogida(order: Order) -> bool:
     subida a mano de otra agencia). Aún no ha salido."""
     from app.erp.integrations.genei.service import genei_state_of  # noqa: PLC0415
     from app.erp.integrations.genei.status import READY  # noqa: PLC0415
+    from app.erp.integrations.genei.tracking import PRE_TRANSIT  # noqa: PLC0415
 
     transport = getattr(order.transport_status, "value", order.transport_status)
     if transport == TransportStatus.LABEL_CREATED.value:
         return True
-    # Tramitado y aún sin recoger (Genei 1). Una incidencia/devolución ya salió
+    # Tramitado y aún sin recoger (Genei 1/2). Una incidencia/devolución ya salió
     # y tiene un problema: va a «Incidencias», no a esperar al transportista.
     if transport in (TransportStatus.INCIDENT.value, TransportStatus.RETURNED.value):
         return False
-    return genei_state_of(order).get("state_bucket") == READY
+    state = genei_state_of(order)
+    if state.get("state_bucket") == READY:
+        return True
+    # Genei ya lo da por recogido, pero el transportista aún NO lo ha escaneado
+    # («Pendiente de entrada en red»): sigue esperando al transportista.
+    return bool(state.get("shipment_code")) and state.get("carrier_step") == PRE_TRANSIT
 
 
 def sat_tab_of(order: Order) -> str | None:

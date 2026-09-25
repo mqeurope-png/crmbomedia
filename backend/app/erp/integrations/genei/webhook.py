@@ -13,12 +13,19 @@ de Seguimiento leen de ahí. La misma función (`apply_shipment_state`) la usa e
 botón «Actualizar estado» (respaldo manual), así que funciona aunque el webhook
 no esté desplegado.
 
+Tracking DETALLADO: con la respuesta de `GET /shipments/{code}/tracking` (los
+eventos del propio transportista, ver `tracking.py`) se guarda el último
+escaneo real y el transporte solo pasa a «en tránsito» cuando el transportista
+lo ha escaneado de verdad — nunca por el estado grueso de Genei si la agencia
+aún dice «Pendiente de entrada en red».
+
 Idempotente: recibir el mismo estado dos veces no descuadra — un arco que ya se
 recorrió no vuelve a aplicarse (no es un arco válido desde el estado actual).
 """
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from sqlalchemy import select
@@ -30,7 +37,12 @@ from app.erp.integrations.genei.service import (
     set_genei_state,
     summarize_shipment,
 )
-from app.erp.integrations.genei.status import transport_status_for
+from app.erp.integrations.genei.tracking import (
+    UNKNOWN,
+    carrier_step_label,
+    summarize_tracking,
+    transport_target,
+)
 from app.erp.models import Order
 from app.erp.state_machine.definitions import StatusDomain
 from app.erp.state_machine.engine import TransitionError, apply_transition
@@ -105,23 +117,64 @@ def advance_transport(
     return applied
 
 
+#: Un escaneo del transportista guardado sigue valiendo para decidir el
+#: transporte durante este tiempo (si en esta pasada no se pudo leer otro).
+CARRIER_STEP_FRESH_SECONDS = 24 * 3600
+
+
+def _stored_carrier_step(order: Order) -> str | None:
+    """Último paso del transportista guardado, si es reciente (si no, None:
+    manda el estado de Genei, para no dejar un pedido parado por un dato viejo)."""
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    state = genei_state_of(order)
+    step = state.get("carrier_step")
+    checked = state.get("tracking_checked_at")
+    if not step or not checked:
+        return None
+    try:
+        when = datetime.fromisoformat(str(checked))
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    age = (datetime.now(UTC) - when).total_seconds()
+    return step if age <= CARRIER_STEP_FRESH_SECONDS else None
+
+
 def apply_shipment_state(
-    session: Session, order: Order, shipment: dict[str, Any],
+    session: Session, order: Order, shipment: dict[str, Any], *,
+    tracking: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """Aplica el estado de un envío Genei (objeto `data`) al pedido: guarda el
     bloque `genei` + tracking y mueve el `transport_status`. Devuelve
-    `(summary, transporte_aplicado)`. La usan el webhook y «Actualizar estado»."""
+    `(summary, transporte_aplicado)`. La usan el webhook, «Actualizar estado»
+    y el sondeo periódico.
+
+    `tracking` = respuesta de `GET /shipments/{code}/tracking` (eventos del
+    transportista). Con ella se guarda el último escaneo real y se decide el
+    transporte con él; sin ella, se usa el último escaneo guardado (si es
+    reciente) o, si no hay, el estado de Genei. Idempotente."""
     summary = summarize_shipment(shipment)
     incidencia = str(_pick(shipment, _INCIDENCIA_KEYS) or "").strip()
     if summary["tracking"]:
         order.tracking_number = summary["tracking"]
-    target = transport_status_for(summary["state_bucket"])
+    carrier = summarize_tracking(tracking) if tracking is not None else None
+    if carrier is not None and carrier["carrier_step"] is not None:
+        carrier_step = carrier["carrier_step"]
+    elif carrier is not None:
+        carrier_step = None           # consultado y sin escaneos aún: manda Genei
+    else:
+        carrier_step = _stored_carrier_step(order)
+    target = transport_target(summary["state_bucket"], carrier_step)
     evidence = {
         "tracking_number": summary["tracking"] or order.tracking_number or "",
         "description": incidencia or summary["state_label"] or "Incidencia de transporte",
     }
+    if carrier is not None and carrier["carrier_status"]:
+        evidence["carrier_status"] = carrier["carrier_status"]
     applied = advance_transport(session, order, target, evidence=evidence)
-    set_genei_state(order, {
+    patch: dict[str, Any] = {
         "state_code": summary["state_code"],
         "state_bucket": summary["state_bucket"],
         "state_label": summary["state_label"],
@@ -130,8 +183,33 @@ def apply_shipment_state(
         # Incidencia de TRANSPORTE (distinta de una incidencia de pedido/taller).
         "desc_incidencia": incidencia or None,
         "refreshed_at": now_iso(),
-    })
+    }
+    if carrier is not None:
+        step = carrier["carrier_step"]
+        patch.update({
+            "carrier_status": carrier["carrier_status"],
+            "carrier_status_code": carrier["carrier_status_code"],
+            "carrier_status_at": carrier["carrier_status_at"],
+            "carrier_step": step,
+            "carrier_step_label": carrier_step_label(step) if step != UNKNOWN else None,
+            "carrier_events": carrier["carrier_events"],
+            "tracking_url": carrier["tracking_url"],
+            "tracking_checked_at": now_iso(),
+        })
+    set_genei_state(order, patch)
     return summary, applied
+
+
+def safe_tracking(client: Any, shipment_code: str) -> dict[str, Any] | None:
+    """`GET /shipments/{code}/tracking` sin romper nada: si Genei falla (aún sin
+    eventos, caído, credenciales…), None y se sigue con el estado de Genei."""
+    from app.erp.integrations.genei.client import GeneiError  # noqa: PLC0415
+
+    try:
+        return client.get_tracking(shipment_code)
+    except GeneiError as exc:
+        logger.info("genei tracking %s no disponible: %s", shipment_code, exc)
+        return None
 
 
 def find_order(session: Session, shipment: dict[str, Any]) -> Order | None:
@@ -157,17 +235,28 @@ def find_order(session: Session, shipment: dict[str, Any]) -> Order | None:
     return None
 
 
-def process_webhook(session: Session, payload: Any) -> dict[str, Any]:
+def process_webhook(
+    session: Session, payload: Any, *,
+    fetch_tracking: Callable[[str], dict[str, Any] | None] | None = None,
+) -> dict[str, Any]:
     """Procesa una llamada del webhook de Genei (ya validada). Localiza el
     pedido, aplica el estado y devuelve el resultado. No hace commit (lo hace el
-    endpoint) ni valida el secreto (lo hace el endpoint)."""
+    endpoint) ni valida el secreto (lo hace el endpoint).
+
+    El webhook trae solo el estado de Genei; con `fetch_tracking(código)` se
+    leen además los eventos del transportista, para no dar por recogido un
+    envío que la agencia aún no ha escaneado. Si falla, se sigue sin ellos."""
     shipment = _shipment_data(payload)
     order = find_order(session, shipment)
     if order is None:
         logger.warning("genei webhook: pedido no encontrado (externo=%s codigo=%s)",
                        _pick(shipment, _EXTERNAL_KEYS), _pick(shipment, _SHIP_CODE_KEYS))
         return {"matched": False}
-    summary, applied = apply_shipment_state(session, order, shipment)
+    tracking = None
+    code = genei_state_of(order).get("shipment_code") or _pick(shipment, _SHIP_CODE_KEYS)
+    if fetch_tracking is not None and code:
+        tracking = fetch_tracking(str(code))
+    summary, applied = apply_shipment_state(session, order, shipment, tracking=tracking)
     set_genei_state(order, {"webhook_at": now_iso()})
     logger.info("genei webhook: pedido %s → %s (transporte %s)",
                 order.id, summary["state_label"], "movido" if applied else "sin cambio")

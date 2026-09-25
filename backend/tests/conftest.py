@@ -50,3 +50,19 @@ def _clear_genei_token_cache():
     SHARED_TOKEN_CACHE.clear()
     yield
     SHARED_TOKEN_CACHE.clear()
+
+
+@pytest.fixture(autouse=True)
+def _genei_sin_red(monkeypatch):
+    """Ningún test habla con la API real de Genei: el cliente que construyen los
+    endpoints y el webhook (`build_client`) falla con un error de configuración
+    salvo que el test lo sustituya (fake o MockTransport). Así, un flujo que
+    consulta Genei por su cuenta (p. ej. el webhook leyendo `/tracking`) nunca
+    manda credenciales de prueba a Internet."""
+    import app.erp.api.genei as genei_api
+    from app.erp.integrations.genei.client import GeneiConfigError
+
+    def _sin_red(carrier):  # noqa: ARG001
+        raise GeneiConfigError("Genei deshabilitado en tests (sin red).")
+
+    monkeypatch.setattr(genei_api, "build_client", _sin_red)

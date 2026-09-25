@@ -41,7 +41,57 @@ export type GeneiState = {
   /** Envío TRAMITADO (Genei estado 1+): la etiqueta ya se puede descargar.
    *  Antes (pendiente de pago / de tramitar) no se ofrece. */
   label_available?: boolean;
+  /** Último escaneo REAL del transportista (Genei `/tracking`), tal cual lo
+   *  da la agencia («Pendiente de entrada en red», «En reparto»…). */
+  carrier_status?: string | null;
+  carrier_status_code?: string | null;
+  carrier_status_at?: string | null;
+  /** Paso normalizado de ese escaneo (ver `CARRIER_STEP_LABELS`). */
+  carrier_step?: CarrierStep | null;
+  carrier_step_label?: string | null;
+  /** Historial del transportista, del más antiguo al más reciente. */
+  carrier_events?: CarrierEvent[];
+  /** Web de seguimiento de la agencia. */
+  tracking_url?: string | null;
+  /** Última consulta del tracking a Genei. */
+  tracking_checked_at?: string | null;
 };
+
+/** Paso real del envío según el transportista (lo decide el backend). */
+export type CarrierStep =
+  | "pre_transit" | "picked_up" | "in_transit" | "out_for_delivery"
+  | "available_pickup" | "delivered" | "incident" | "unknown";
+
+export type CarrierEvent = {
+  fecha: string;
+  codigo: string;
+  descripcion: string;
+  step: CarrierStep;
+};
+
+/** Tono de pastilla para el paso real del transportista. */
+export function carrierStepTone(step: string | null | undefined): string {
+  switch (step) {
+    case "delivered": return "ok";
+    case "incident": return "bad";
+    case "pre_transit": return "warn";
+    case "picked_up":
+    case "in_transit":
+    case "out_for_delivery":
+    case "available_pickup": return "info";
+    default: return "muted";
+  }
+}
+
+/** «25/09 10:32» (hora local) de una fecha ISO del transportista; «» si no se lee. */
+export function carrierDate(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString("es-ES", {
+    day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit",
+  });
+}
 
 export type GeneiPrefill = {
   order_id: string;
@@ -102,6 +152,9 @@ export type GeneiConfig = {
   /** Estado de la conexión: la sesión (token) se renueva sola con las
    *  credenciales guardadas. Nunca trae el token ni la password. */
   auth?: GeneiAuthStatus;
+  /** Sondeo del tracking detallado (eventos del transportista) en segundo plano. */
+  tracking_poll_enabled?: boolean;
+  tracking_poll_minutes?: number;
 };
 
 export type GeneiAuthStatus = {
@@ -184,6 +237,8 @@ export function saveGeneiConfig(body: {
   origin?: { iso_country: string; postal_code: string; town: string };
   is_warehouse?: boolean;
   webhook_base_url?: string;
+  tracking_poll_enabled?: boolean;
+  tracking_poll_minutes?: number;
 }): Promise<GeneiConfig> {
   return apiFetch(`/api/erp/genei/config`, {
     method: "PUT", body: JSON.stringify(body),

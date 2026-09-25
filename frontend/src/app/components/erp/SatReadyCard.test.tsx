@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { SatReadyCard } from "./SatReadyCard";
+import { SatReadyCard, SatShippedCard, satShippedLabel } from "./SatReadyCard";
 import type { SatQueueItem } from "../../lib/erpApi";
 import {
   downloadOrderFactusolAlbaranPdf,
@@ -324,3 +324,53 @@ describe("SatReadyCard", () => {
     expect(screen.queryByRole("button", { name: /Crear envío con Genei/ })).not.toBeInTheDocument();
   });
 });
+
+describe("estado REAL del transportista (Genei /tracking)", () => {
+  const CTT = {
+    shipment_code: "G2", courier: "Ctt Premium", state_bucket: "in_transit",
+    state_label: "Recogida efectuada / en tránsito", label_available: true,
+    tracking: "0033260080539700026674",
+    carrier_status: "PENDIENTE DE ENTRADA EN RED",
+    carrier_status_at: "2026-09-24T18:00:00+00:00", carrier_step: "pre_transit",
+    tracking_url: "https://www.cttexpress.com/localizador/",
+  };
+
+  it("«Pendiente de recogida»: la card enseña el último escaneo y el enlace de la agencia", () => {
+    render(<SatReadyCard order={order({ transport_status: "label_created", genei: CTT })}
+                         onChanged={() => {}} />);
+    const estado = screen.getByLabelText("Estado según el transportista");
+    expect(estado).toHaveTextContent("PENDIENTE DE ENTRADA EN RED");
+    expect(estado).toHaveTextContent("Ctt Premium");
+    expect(screen.getByRole("link", { name: "Ver en la web de la agencia" }))
+      .toHaveAttribute("href", "https://www.cttexpress.com/localizador/");
+  });
+
+  it("sin escaneos aún, la card no enseña nada del transportista", () => {
+    render(<SatReadyCard order={order({ genei: { shipment_code: "G1", label_available: true } })}
+                         onChanged={() => {}} />);
+    expect(screen.queryByLabelText("Estado según el transportista")).not.toBeInTheDocument();
+  });
+
+  it("«Enviados»: la card enseña el texto de la agencia, su fecha y el tracking enlazado", () => {
+    render(<SatShippedCard order={order({ transport_status: "in_transit", genei: CTT,
+                                          tracking_number: "0033260080539700026674" })} />);
+    const badge = screen.getByText("PENDIENTE DE ENTRADA EN RED");
+    expect(badge).toHaveClass("badge", "warn");
+    expect(screen.queryByText("Recogido · en tránsito")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "0033260080539700026674" }))
+      .toHaveAttribute("href", "https://www.cttexpress.com/localizador/");
+    expect(screen.getByText("Ctt Premium")).toBeInTheDocument();
+  });
+
+  it("orden del texto: transportista › Genei › transporte", () => {
+    expect(satShippedLabel(order({ transport_status: "in_transit", genei: CTT })))
+      .toBe("PENDIENTE DE ENTRADA EN RED");
+    expect(satShippedLabel(order({ transport_status: "in_transit",
+      genei: { shipment_code: "G", label_available: true, state_label: "En reparto" } })))
+      .toBe("En reparto");
+    expect(satShippedLabel(order({ transport_status: "in_transit" })))
+      .toBe("Recogido · en tránsito");
+    expect(satShippedLabel(order({ sin_envio: true, genei: CTT }))).toBe("No requiere envío");
+  });
+});
+

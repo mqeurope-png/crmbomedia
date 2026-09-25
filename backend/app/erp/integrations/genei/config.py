@@ -26,6 +26,9 @@ if TYPE_CHECKING:  # pragma: no cover
 
 logger = logging.getLogger(__name__)
 
+#: Mínimo del intervalo del sondeo de tracking (no martillear a Genei).
+TRACKING_POLL_MIN_MINUTES = 10
+
 
 @dataclass
 class DefaultPackage:
@@ -94,6 +97,12 @@ class GeneiConfig:
     #: (el token/secreto va cifrado en las credenciales). Vacío → no se envía
     #: notificationUrl y el webhook queda apagado (el resto sigue funcionando).
     webhook_base_url: str = ""
+    #: Sondeo del tracking DETALLADO (eventos del transportista vía
+    #: `/shipments/{code}/tracking`) en el `worker-sync`: el webhook de Genei
+    #: solo avisa de su estado grueso. Encendido por defecto; solo lee de Genei.
+    tracking_poll_enabled: bool = True
+    #: Cada cuántos minutos se revisa cada envío vivo (mínimo 10).
+    tracking_poll_minutes: int = 30
 
     def webhook_url(self, secret: str | None) -> str | None:
         """`notificationUrl` para Genei, o None si falta la base o el secreto."""
@@ -119,6 +128,8 @@ class GeneiConfig:
             "origin": asdict(self.origin),
             "is_warehouse": self.is_warehouse,
             "webhook_base_url": self.webhook_base_url,
+            "tracking_poll_enabled": self.tracking_poll_enabled,
+            "tracking_poll_minutes": self.tracking_poll_minutes,
         })
 
     @classmethod
@@ -139,12 +150,19 @@ class GeneiConfig:
                 if isinstance(couriers, list):
                     prefs[str(country).upper()] = [str(c) for c in couriers if str(c).strip()]
         is_warehouse = data.get("is_warehouse")
+        poll_enabled = data.get("tracking_poll_enabled")
+        try:
+            poll_minutes = int(data.get("tracking_poll_minutes") or 30)
+        except (TypeError, ValueError):
+            poll_minutes = 30
         return cls(
             preferred_couriers=prefs,
             default_package=DefaultPackage.from_dict(data.get("default_package")),
             origin=OriginAddress.from_dict(data.get("origin")),
             is_warehouse=bool(is_warehouse) if is_warehouse is not None else True,
             webhook_base_url=str(data.get("webhook_base_url") or "").strip(),
+            tracking_poll_enabled=bool(poll_enabled) if poll_enabled is not None else True,
+            tracking_poll_minutes=max(poll_minutes, TRACKING_POLL_MIN_MINUTES),
         )
 
     @classmethod

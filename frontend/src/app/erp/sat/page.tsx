@@ -6,7 +6,9 @@ import { SatIncidenciasTab } from "../../components/erp/SatIncidenciasTab";
 import { SatPrepModal } from "../../components/erp/SatPrepModal";
 import { SatPreparingCard } from "../../components/erp/SatPreparingCard";
 import { satDateTime, SatQueueTable } from "../../components/erp/SatQueueTable";
-import { SatReadyCard, SatShippedCard, satShippedLabel } from "../../components/erp/SatReadyCard";
+import {
+  SatReadyCard, SatShippedCard, satShippedLabel, satShippedTone,
+} from "../../components/erp/SatReadyCard";
 import { getCurrentUser } from "../../lib/api";
 import { Cap, can } from "../../lib/capabilities";
 import { extractErrorMessage } from "../../lib/errors";
@@ -104,7 +106,7 @@ function SatShippedTable({
               <td data-label="Cliente" className="sat-td-cliente">{customerLabel(o) || "—"}</td>
               <td data-label="Fecha" className="mono">{satDateTime(o.placed_at)}</td>
               <td data-label="Envío">
-                <span className={`badge ${o.sin_envio ? "muted" : "ok"}`}>
+                <span className={`badge ${satShippedTone(o)}`}>
                   {satShippedLabel(o)}
                 </span>
               </td>

@@ -248,3 +248,47 @@ it("«Crear envío» completa el destino antes de abrir el modal (teléfono y em
   expect(within(dialog).getByLabelText("Teléfono")).toHaveValue("934000000");
   expect(within(dialog).getByLabelText("Email")).toHaveValue("compras@cliente.es");
 });
+
+describe("ficha: estado REAL del transportista (Genei /tracking)", () => {
+  const STATE = {
+    shipment_code: "G2", courier: "Ctt Premium", state_bucket: "in_transit",
+    state_label: "Recogida efectuada / en tránsito", tracking: "0033260080539700026674",
+    label_available: true,
+    carrier_status: "EN REPARTO", carrier_status_at: "2026-09-26T07:30:00+00:00",
+    carrier_step: "out_for_delivery",
+    tracking_url: "https://www.cttexpress.com/localizador/",
+    carrier_events: [
+      { fecha: "2026-09-24T18:00:00+00:00", codigo: "0", descripcion: "PENDIENTE DE ENTRADA EN RED", step: "pre_transit" },
+      { fecha: "2026-09-25T09:10:00+00:00", codigo: "1", descripcion: "EN TRANSITO", step: "in_transit" },
+      { fecha: "2026-09-26T07:30:00+00:00", codigo: "2", descripcion: "EN REPARTO", step: "out_for_delivery" },
+    ],
+  };
+
+  it("enseña el último escaneo, el tracking enlazado y el historial (lo más reciente arriba)", async () => {
+    mockPrefill.mockResolvedValue(prefill({ state: STATE }));
+    render(<GeneiShipmentSection orderId="o-1" canManage />);
+    const kv = (await screen.findByText("Transportista")).parentElement as HTMLElement;
+    expect(within(kv).getByText("EN REPARTO")).toHaveClass("badge", "info");
+    expect(screen.getByRole("link", { name: "0033260080539700026674" }))
+      .toHaveAttribute("href", "https://www.cttexpress.com/localizador/");
+    expect(screen.getByText("Historial del transportista (3)")).toBeInTheDocument();
+    const lista = screen.getByRole("list", { name: "Historial del transportista" });
+    const items = within(lista).getAllByRole("listitem");
+    expect(items[0]).toHaveTextContent("EN REPARTO");
+    expect(items[2]).toHaveTextContent("PENDIENTE DE ENTRADA EN RED");
+  });
+
+  it("«Actualizar estado» avisa con el escaneo real del transportista", async () => {
+    const user = userEvent.setup();
+    mockPrefill.mockResolvedValue(prefill({ state: { ...STATE, carrier_status: null,
+                                                     carrier_events: [] } }));
+    mockRefresh.mockResolvedValue({
+      order_id: "o-1", summary: { state_label: "Recogida efectuada / en tránsito" },
+      state: { ...STATE, carrier_status: "PENDIENTE DE ENTRADA EN RED", carrier_step: "pre_transit" },
+    });
+    render(<GeneiShipmentSection orderId="o-1" canManage />);
+    await user.click(await screen.findByRole("button", { name: "Actualizar estado" }));
+    expect(await screen.findByText("Estado actualizado: PENDIENTE DE ENTRADA EN RED."))
+      .toBeInTheDocument();
+  });
+});

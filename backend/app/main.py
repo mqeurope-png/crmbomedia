@@ -340,6 +340,23 @@ async def _arm_seguimiento_reconcile() -> None:
 
 
 @app.on_event("startup")
+async def _arm_genei_tracking() -> None:
+    """Genei — sondeo del tracking DETALLADO (eventos del transportista) de los
+    envíos vivos (cola `genei:shipments`, la escucha `worker-sync`). Interruptor
+    en la config de Genei (encendido por defecto; solo lee de Genei)."""
+    try:
+        from app.erp.integrations.genei.tracking_job import arm  # noqa: PLC0415
+
+        arm()
+    except Exception:  # noqa: BLE001
+        import logging  # noqa: PLC0415
+
+        logging.getLogger(__name__).warning(
+            "genei.tracking arm failed at startup", exc_info=True
+        )
+
+
+@app.on_event("startup")
 async def _arm_gmail_oauth_lifecycle() -> None:
     """PR-OAuth-Permisos-Admin Items 9 + 13. Arma los crons de aviso de
     caducidad de token Gmail, digest admin y sync de aliases Send-As."""

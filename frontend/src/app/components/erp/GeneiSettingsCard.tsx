@@ -102,6 +102,9 @@ export function GeneiSettingsCard({ canEdit }: { canEdit: boolean }) {
         origin: cfg.origin,
         is_warehouse: cfg.is_warehouse,
         webhook_base_url: cfg.webhook_base_url,
+        tracking_poll_enabled: cfg.tracking_poll_enabled,
+        // Mínimo 10 min (no martillear a Genei); vacío → 30.
+        tracking_poll_minutes: Math.max(10, cfg.tracking_poll_minutes || 30),
       });
       setCfg(next);
       setPassword("");
@@ -210,6 +213,28 @@ export function GeneiSettingsCard({ canEdit }: { canEdit: boolean }) {
               ? " ✓ Webhook operativo (secreto generado y cifrado)."
               : " Al guardar una URL con las credenciales puestas se genera el secreto."}
           </p>
+        </div>
+
+        <h3 className="erp-settings-sub">Estado real del envío (transportista)</h3>
+        <p className="muted small">
+          BoHub lee de Genei los escaneos del propio transportista («Pendiente de
+          entrada en red», «En reparto», «Entregado»…) de los envíos en curso y los
+          enseña en «Enviados», la ficha y la hoja. El aviso de Genei solo trae su
+          estado general, así que se consulta cada cierto tiempo. Solo lee de Genei.
+        </p>
+        <div className="form-row">
+          <label className="field form-check">
+            <input type="checkbox" checked={cfg.tracking_poll_enabled ?? true}
+                   aria-label="Consultar el tracking del transportista automáticamente"
+                   onChange={(e) => set("tracking_poll_enabled", e.target.checked)} />
+            <span>Consultar automáticamente</span>
+          </label>
+          <label className="field">
+            <span>Cada (minutos, mínimo 10)</span>
+            <input type="number" min={10} step={5} value={cfg.tracking_poll_minutes || ""}
+                   aria-label="Minutos entre consultas del tracking"
+                   onChange={(e) => set("tracking_poll_minutes", Number(e.target.value) || 0)} />
+          </label>
         </div>
 
         <h3 className="erp-settings-sub">Origen (para comparar tarifas)</h3>

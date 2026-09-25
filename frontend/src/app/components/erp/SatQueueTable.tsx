@@ -4,7 +4,8 @@ import Link from "next/link";
 import { customerLabel, STATUS_LABELS, type SatQueueItem } from "../../lib/erpApi";
 import { SatAlbaranChip, useSatAlbaranAction } from "./SatPreparingCard";
 import {
-  SatReadyButtons, SatReadyDocChips, SatTrackingField, satShippedLabel, useSatReadyActions,
+  SatCarrierStatus, SatReadyButtons, SatReadyDocChips, SatTrackingField, satShippedLabel,
+  satShippedTone, useSatReadyActions,
 } from "./SatReadyCard";
 import { SatObservaciones, SatTechData } from "./SatTechData";
 
@@ -175,6 +176,7 @@ function SatReadyRow(
             <SatReadyDocChips order={order} actions={actions} />
             {/* Lote 5 · #3 — nº de seguimiento en la fila de «Listos». */}
             <SatTrackingField order={order} onChanged={onChanged} compact />
+            <SatCarrierStatus order={order} />
             <SatReadyButtons actions={actions} compact />
           </div>
         </td>
@@ -198,7 +200,7 @@ function SatShippedRow({ order, ...sel }: { order: SatQueueItem } & SelectProps)
       </td>
       <td className="sat-td-cliente">{customerLabel(order) || "—"}</td>
       <td>{order.store_slug ?? "—"}</td>
-      <td><span className={`badge ${order.sin_envio ? "muted" : "ok"}`}>
+      <td><span className={`badge ${satShippedTone(order)}`}>
         {satShippedLabel(order)}
       </span></td>
       {/* En la columna de datos técnicos, el nº de seguimiento. */}
