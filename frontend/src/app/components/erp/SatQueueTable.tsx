@@ -41,7 +41,7 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 /** Casilla de selección de una fila (solo cuando la cola es seleccionable,
- *  para marcar «Sin seguimiento» en lote). */
+ *  para marcar «No requiere envío» en lote). */
 type SelectProps = {
   selectable?: boolean;
   selected?: boolean;
@@ -96,20 +96,24 @@ function TechCell({ order }: { order: SatQueueItem }) {
   );
 }
 
-/** Fila de «Por embalar»: mismas acciones que la card (abrir modo trabajo +
- *  albarán sin salir de la lista). */
+/** Fila de «Por embalar» / «En preparación»: las mismas acciones que la card
+ *  (empezar / embalar en el MODAL sobre la cola + albarán sin salir). */
 function SatPreparingRow(
-  { order, onChanged, cols, ...sel }:
-  { order: SatQueueItem; onChanged: () => void; cols: number } & SelectProps,
+  { order, onChanged, onPrepare, cols, ...sel }:
+  {
+    order: SatQueueItem; onChanged: () => void; cols: number;
+    onPrepare?: (order: SatQueueItem) => void;
+  } & SelectProps,
 ) {
   const albaran = useSatAlbaranAction(order, onChanged);
+  const prep = order.preparation_status;
   return (
     <>
       <NotesRow order={order} cols={cols} />
       <tr>
         <SelectCell order={order} {...sel} />
         <td className="sat-td-num">
-          <Link href={`/erp/sat/${order.id}`}>{order.order_number}</Link>
+          <Link href={`/erp/orders/${order.id}`}>{order.order_number}</Link>
           {order.payment_status !== "paid" ? (
             <span className="sat-row-warn" title="Sin cobrar">⚠ SIN COBRAR</span>
           ) : null}
@@ -120,7 +124,11 @@ function SatPreparingRow(
         <TechCell order={order} />
         <td>
           <div className="sat-td-actions">
-            <Link href={`/erp/sat/${order.id}`} className="button small">Abrir →</Link>
+            {onPrepare && (prep === "in_queue" || prep === "preparing") ? (
+              <button type="button" className="button small" onClick={() => onPrepare(order)}>
+                {prep === "in_queue" ? "▶ Empezar" : "📦 Embalar"}
+              </button>
+            ) : null}
             <SatAlbaranChip order={order} albaran={albaran} />
             <Link href={`/erp/orders/${order.id}`} className="button secondary small">Ficha</Link>
           </div>
@@ -190,7 +198,7 @@ function SatShippedRow({ order, ...sel }: { order: SatQueueItem } & SelectProps)
       </td>
       <td className="sat-td-cliente">{customerLabel(order) || "—"}</td>
       <td>{order.store_slug ?? "—"}</td>
-      <td><span className={`badge ${order.sin_seguimiento ? "muted" : "ok"}`}>
+      <td><span className={`badge ${order.sin_envio ? "muted" : "ok"}`}>
         {satShippedLabel(order)}
       </span></td>
       {/* En la columna de datos técnicos, el nº de seguimiento. */}
@@ -205,7 +213,7 @@ function SatShippedRow({ order, ...sel }: { order: SatQueueItem } & SelectProps)
 function rowKind(o: SatQueueItem, variant: "preparing" | "ready" | "auto") {
   if (variant !== "auto") return variant;
   if (o.sat_tab === "embalados" || o.sat_tab === "pendiente_recogida") return "ready";
-  if (o.sat_tab === "enviados" || o.sat_tab === "sin_seguimiento") return "shipped";
+  if (o.sat_tab === "enviados" || o.sat_tab === "sin_envio") return "shipped";
   return "preparing";
 }
 
@@ -213,13 +221,12 @@ function rowKind(o: SatQueueItem, variant: "preparing" | "ready" | "auto") {
  *  acciones que las tarjetas. `variant` decide qué fila se pinta (`auto` =
  *  según el paso ACTUAL de cada pedido). Lote 2 · PR-2: columna «Datos
  *  técnicos» (nº de serie / licencia con «copiar», origen) y las observaciones
- *  del comercial encima de la fila. Con `onItemChanged`, una acción refresca
- *  SOLO su pedido (se queda en su sitio) en vez de recargar la cola. */
+ *  del comercial encima de la fila. */
 export function SatQueueTable({
   items,
   variant,
   onChanged,
-  onItemChanged,
+  onPrepare,
   ariaLabel,
   selectable = false,
   selected,
@@ -228,16 +235,16 @@ export function SatQueueTable({
   items: SatQueueItem[];
   variant: "preparing" | "ready" | "auto";
   onChanged: () => void;
-  onItemChanged?: (id: string) => void;
+  /** Abre el modal de preparar / embalar sobre la cola (sin cambiar de pantalla). */
+  onPrepare?: (order: SatQueueItem) => void;
   ariaLabel: string;
-  /** Selección múltiple (para «Sin seguimiento» en lote). */
+  /** Selección múltiple (para «No requiere envío» en lote). */
   selectable?: boolean;
   selected?: Set<string>;
   onToggle?: (id: string) => void;
 }) {
   const cols = selectable ? COLS + 1 : COLS;
   const sel = { selectable, onToggle };
-  const changed = (id: string) => () => (onItemChanged ? onItemChanged(id) : onChanged());
   return (
     <div className="sat-table-wrap">
       <table className="sat-table" aria-label={ariaLabel}>
@@ -260,10 +267,10 @@ export function SatQueueTable({
                                     selected={selected?.has(o.id)} {...sel} />;
             }
             return kind === "preparing" ? (
-              <SatPreparingRow key={o.id} order={o} onChanged={changed(o.id)} cols={cols}
-                               selected={selected?.has(o.id)} {...sel} />
+              <SatPreparingRow key={o.id} order={o} onChanged={onChanged} cols={cols}
+                               onPrepare={onPrepare} selected={selected?.has(o.id)} {...sel} />
             ) : (
-              <SatReadyRow key={o.id} order={o} onChanged={changed(o.id)} cols={cols}
+              <SatReadyRow key={o.id} order={o} onChanged={onChanged} cols={cols}
                            selected={selected?.has(o.id)} {...sel} />
             );
           })}

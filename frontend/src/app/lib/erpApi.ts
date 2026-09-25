@@ -143,9 +143,9 @@ export type OrderSummary = {
   cancelled_by_name?: string | null;
   /** Nombre de envío (dropshipping) del pedido manual; null = la empresa. */
   shipping_name?: string | null;
-  /** «Sin seguimiento» (antes «No requiere envío»): ENVIADO sin nº de
-   *  tracking. Sale de los pendientes de la Cola SAT y de «Por enviar»; el
-   *  Envío sale «Enviado (sin seguimiento)». Reversible. */
+  /** «No requiere envío» (pestaña «Sin envío» de la Cola SAT): el pedido NO se
+   *  envía. Fuera de los pendientes del taller y de «Por enviar»; el Envío
+   *  sale «No aplica». Reversible. */
   shipping_not_required?: boolean;
   /** Tipo de pedido cuando no es el corriente. `"sample"` = MUESTRA / envío
    *  NO FACTURABLE: sin albarán, factura ni cobro (esas casillas salen «No
@@ -670,8 +670,7 @@ export type SeguimientoRow = {
   /** Estado de cobro FACTUSOL (contable). */
   cobro: "cobrado" | "pendiente" | "na";
   cobro_label: string;
-  /** Preparación (SAT) y Envío; Envío «Enviado (sin seguimiento)» si se
-   *  marcó así (enviado sin tracking). */
+  /** Preparación (SAT) y Envío; «No aplica» si no requiere envío. */
   preparacion: string;
   envio: string;
   /** Origen: WEB o el canal/comercial. */
@@ -1415,16 +1414,17 @@ export type SatQueueItem = {
   shipping_origin?: string | null;
   /** Pestaña de la Cola SAT a la que pertenece (la decide el backend). */
   sat_tab?: SatTab | null;
-  /** Marcado «Sin seguimiento»: ENVIADO sin nº de tracking. */
-  sin_seguimiento?: boolean;
+  /** Marcado «No requiere envío» (pestaña «Sin envío»): NO se envía. */
+  sin_envio?: boolean;
   /** Envío Genei del pedido, si ya lo hay («Ver envío Genei» vs «Crear»). */
   genei?: SatGeneiSummary | null;
 };
 
-/** Pestañas de la Cola SAT. «Todos pendientes» = las cuatro primeras. */
+/** Pestañas de la Cola SAT. «Todos pendientes» = las cuatro de pendientes;
+ *  «Sin envío» = «No requiere envío» (NO es enviado). */
 export type SatTab =
   | "por_embalar" | "en_preparacion" | "embalados" | "pendiente_recogida"
-  | "sin_seguimiento" | "enviados";
+  | "sin_envio" | "enviados";
 
 /** Resumen del envío Genei en la card del taller. `label_available` = envío
  *  tramitado (estado 1+): antes no se ofrece la etiqueta. */
@@ -1445,7 +1445,7 @@ export type SatQueueCounts = {
   embalados: number;
   pendiente_recogida: number;
   pendientes: number;
-  sin_seguimiento: number;
+  sin_envio: number;
   enviados: number;
 };
 
@@ -1473,7 +1473,7 @@ export type SatQueueFilters = {
   store_slug?: string;
   estado?: SatQueueEstado;
   q?: string;
-  /** `true` = enseñar SOLO los pedidos marcados «Sin seguimiento» (para
+  /** `true` = enseñar SOLO los pedidos marcados «No requiere envío» (para
    *  revisarlos / desmarcar); por defecto quedan fuera de la cola. */
   no_shipping?: boolean;
   /** C4: orden por fecha del pedido. `fecha_desc` (por defecto) = los más
@@ -1489,26 +1489,20 @@ export async function getSatQueue(filters: SatQueueFilters = {}): Promise<SatQue
   );
 }
 
-/** «Enviados» (recogido / en tránsito / entregado + los «Sin seguimiento») o,
- *  con `sinSeguimiento`, solo los enviados SIN tracking. `total` = recuento
- *  completo; `items` = los `limit` primeros por fecha del pedido. */
+/** «Enviados» (recogido / en tránsito / entregado) o, con `sinEnvio`, los
+ *  «No requiere envío» (pestaña «Sin envío», que NO son enviados). `total` =
+ *  recuento completo; `items` = los `limit` primeros por fecha del pedido. */
 export async function getSatShipped(
-  filters: SatQueueFilters = {}, sinSeguimiento = false,
+  filters: SatQueueFilters = {}, sinEnvio = false,
 ): Promise<{ items: SatQueueItem[]; total: number; limit: number }> {
   const { no_shipping: _ns, estado: _e, ...rest } = filters;
   return apiFetch(
-    `/api/erp/sat/shipped${qs({ ...rest, sin_seguimiento: sinSeguimiento ? "true" : undefined })}`,
+    `/api/erp/sat/shipped${qs({ ...rest, sin_envio: sinEnvio ? "true" : undefined })}`,
   );
 }
 
-/** Un pedido como item de la Cola SAT: la card se refresca en su sitio tras
- *  avanzarlo de estado (sin recargar la cola ni cerrar el pedido). */
-export async function getSatOrderItem(orderId: string): Promise<SatQueueItem> {
-  return apiFetch<SatQueueItem>(`/api/erp/sat/orders/${orderId}`);
-}
-
-/** Marcar/desmarcar «Sin seguimiento» en lote (antes «No requiere envío»).
- *  `value=true` = el pedido se ENVIÓ sin nº de tracking (pasa a «Enviados»);
+/** Marcar/desmarcar «No requiere envío» en lote. `value=true` = el pedido NO
+ *  se envía (recogida en tienda, licencia, servicio…) y pasa a «Sin envío»;
  *  `value=false` lo devuelve a los pendientes. Reversible; no toca factura,
  *  cobro ni completado. */
 export async function bulkNoShipping(

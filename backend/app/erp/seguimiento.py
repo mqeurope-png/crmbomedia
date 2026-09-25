@@ -566,8 +566,7 @@ def _estado(order: Order) -> str:
     """pendiente / enviado / facturado — el filtro de estado de la vista."""
     if order.invoice_status in _INVOICED_STATUSES or order.factusol_invoice_number:
         return "facturado"
-    # «Sin seguimiento» = enviado sin tracking: cuenta como enviado.
-    if order.transport_status in _SHIPPED_STATUSES or is_sin_seguimiento(order):
+    if order.transport_status in _SHIPPED_STATUSES:
         return "enviado"
     return "pendiente"
 
@@ -764,35 +763,35 @@ COBRO_LABELS: dict[str, str] = {
     "cobrado": "Cobrado ✓", "pendiente": "Pendiente", "na": "—",
 }
 
-#: Texto de «no aplica» (Preparación de un pedido «Sin seguimiento» que no
-#: llegó a pasar por el taller; y lo que escribían las hojas de antes).
+#: Texto de «no aplica»: Envío (y Preparación, si no pasó por el taller) de un
+#: pedido «No requiere envío» (pestaña «Sin envío» de la Cola SAT).
 NO_APLICA = "No aplica"
-#: Envío de un pedido marcado «Sin seguimiento» (antes «No requiere envío»): se
-#: ENVIÓ, solo que sin nº de tracking (recogida en tienda, transporte sin
-#: seguimiento…). Cuenta como enviado.
-ENVIO_SIN_SEGUIMIENTO = "Enviado (sin seguimiento)"
+#: Lo que escribió #487 en la columna Envío para estos pedidos («enviado sin
+#: seguimiento»). Ya NO se escribe: se sigue reconociendo como valor de BoHub
+#: para las hojas que lo tengan hasta la siguiente pasada.
+ENVIO_SIN_SEGUIMIENTO_LEGACY = "Enviado (sin seguimiento)"
 
 
-def is_sin_seguimiento(order: Order) -> bool:
-    """¿Marcado «Sin seguimiento» (enviado sin tracking)? Es la marca de
-    siempre (`shipping_not_required`), con el significado nuevo."""
+def is_sin_envio(order: Order) -> bool:
+    """¿Marcado «No requiere envío» (pestaña «Sin envío»)? El pedido NO se
+    envía (recogida en tienda, licencia, servicio…): no cuenta como enviado."""
     return bool(getattr(order, "shipping_not_required", False))
 
 
 def _prep_label(order: Order) -> str:
-    """Etiqueta de la columna Preparación. Un pedido «Sin seguimiento» que se
-    embaló sale «Listo»; si no pasó por el taller, «No aplica»."""
+    """Etiqueta de la columna Preparación. Un pedido «No requiere envío» que
+    se llegó a embalar sale «Listo»; si no pasó por el taller, «No aplica»."""
     st = str(getattr(order.preparation_status, "value", order.preparation_status) or "")
-    if is_sin_seguimiento(order) and st != "packed":
+    if is_sin_envio(order) and st != "packed":
         return NO_APLICA
     return PREPARACION_LABELS.get(st, "—")
 
 
 def _envio_label(order: Order) -> str:
-    """Etiqueta de la columna Envío; «Enviado (sin seguimiento)» si se marcó
-    así (enviado sin tracking)."""
-    if is_sin_seguimiento(order):
-        return ENVIO_SIN_SEGUIMIENTO
+    """Etiqueta de la columna Envío; «No aplica» si no requiere envío (no se
+    envía: no es «enviado»)."""
+    if is_sin_envio(order):
+        return NO_APLICA
     st = getattr(order.transport_status, "value", order.transport_status)
     return ENVIO_LABELS.get(str(st or ""), "—")
 

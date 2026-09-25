@@ -486,19 +486,23 @@ es una ventana a FACTUSOL: aquí no se cambia nada salvo las acciones concretas
 **Menú: «ERP · Taller (SAT)». Título: «Cola SAT».** Es la pantalla del taller:
 lo que hay que preparar y enviar.
 
-**Pestañas, por paso del taller** (cada una con su contador, que cuadra con lo
-que lista):
+**Pestañas, por paso del taller**, en este orden (cada una con su contador,
+que cuadra con lo que lista, y **su propio color** para distinguirlas de un
+vistazo; la activa va un punto más intensa y subrayada):
 
-| Pestaña | Qué hay |
-|---|---|
-| **Por embalar** | En cola, sin empezar (y los **bloqueados**, arriba). |
-| **En preparación** | Con **«Empezar preparación»** pulsado, aún sin embalar. |
-| **Embalados** | Embalados, sin etiqueta tramitada: crea el envío con Genei o sube la etiqueta. |
-| **Todos pendientes** | Las cuatro de pendientes juntas (por hacer · embalados). |
-| **Sin seguimiento** | Enviados **sin nº de tracking** (ver abajo). |
-| **Pendiente de recogida** | Embalados con el **envío Genei ya tramitado** (o la etiqueta puesta): esperando al transportista. |
-| **Enviados** | Los que ya salieron: **recogidos, en tránsito o entregados**, y los «Sin seguimiento». |
-| **Incidencias** | Ver más abajo. |
+| Pestaña | Color | Qué hay |
+|---|---|---|
+| **Todos pendientes** (la que se abre por defecto) | azul | Las cuatro de pendientes juntas (por hacer · embalados). |
+| **Por embalar** | naranja | En cola, sin empezar (y los **bloqueados**, arriba). |
+| **En preparación** | amarillo | Con **«Empezar preparación»** pulsado, aún sin embalar. |
+| **Embalados** | verde | Embalados, sin etiqueta tramitada: crea el envío con Genei o sube la etiqueta. |
+| **Pendiente de recogida** | lila | Embalados con el **envío Genei ya tramitado** (o la etiqueta puesta): esperando al transportista. |
+| **Enviados** | gris | Los que ya salieron: **recogidos, en tránsito o entregados**. Los «Sin envío» **no** salen aquí. |
+| **Sin envío** | marrón claro | Pedidos que **no se envían** (ver abajo). |
+| **Incidencias** | rojo | Ver más abajo. |
+
+Fondos claros con texto oscuro del mismo tono: el texto se lee bien en todas
+(contraste ≥ 7:1).
 
 Cuando la agencia recoge el paquete (Genei lo avisa solo, o pulsas **«Actualizar
 estado»** o **«📤 Marcar recogido»**), el pedido pasa de **«Pendiente de
@@ -516,25 +520,34 @@ defecto, o **antiguos primero** (FIFO)—, con **«Limpiar filtros»**. (El filt
 «Estado» ya no hace falta: cada estado tiene su pestaña.) En **«Enviados»** se
 listan los más recientes; usa las fechas para ver otros.
 
-**Todo se hace sin salir del pedido.** En la tarjeta de un pedido en cola,
-**«▶ Empezar preparación»**; en cuanto está empezada, **ahí mismo** aparecen los
-**bultos** (peso y medidas; **«+ Añadir bulto»** si hay varios) y **«📦
-Embalar»**. Al embalar, la tarjeta pasa al paso siguiente (envío, etiqueta,
-recogido) **en el mismo sitio**: no se cierra ni salta de pestaña, y los
-contadores se actualizan al momento. Al cambiar de pestaña, cada pedido aparece
-en la suya. Lo mismo en el **modo trabajo** del pedido.
+**Preparar y embalar, en una ventana sobre la cola.** En la tarjeta (o la
+fila de la lista) de un pedido en cola, **«▶ Empezar preparación»** empieza la
+preparación y abre una **ventana (modal) encima de la cola**, sin cambiar de
+pantalla: las **líneas** para cotejar, los **bultos** (peso y medidas;
+**«+ Añadir bulto»** si hay varios) y **«📦 Embalar»**. Si el pedido ya estaba
+empezado, su botón es **«📦 Embalar»** y abre la misma ventana. En ella también
+puedes **«📷 Subir foto / documento»** o **«⚠ Reportar problema»**. Al embalar
+(o con **«Cerrar»**) vuelves a la cola **donde estabas**, y la cola se
+**actualiza sola, sin recargar la página (sin F5)**: el pedido sale de su
+pestaña, aparece en **«Embalados»** y los contadores cuadran al momento. Ya no
+hay «modo trabajo» a pantalla completa: un enlace viejo a él te devuelve a la
+cola.
 
-**«Sin seguimiento» (enviado sin tracking).** Antes era «No requiere envío».
-Ahora significa que el pedido **se ENVIÓ, pero sin nº de seguimiento**: recogida
-en tienda, transporte sin seguimiento… Cuenta como **enviado**: sale de los
-pendientes y aparece en **«Enviados»** y en **«Sin seguimiento»**. En la hoja
-«Seguimiento (app)» su Envío sale **«Enviado (sin seguimiento)»** con el
-tracking vacío. En las pestañas de pendientes, marca las casillas y pulsa
-**«Marcar enviado sin seguimiento»**. **No toca la factura ni el cobro** y es
-**reversible**: en **«Sin seguimiento»**, selecciónalos y **«Quitar «Sin
-seguimiento»»** (vuelven a su pestaña). También por pedido, desde el menú
-**«⋯»** de la ficha. Los pedidos que ya estaban marcados «No requiere envío»
-pasan a «Sin seguimiento» tal cual (es la misma marca).
+**«Sin envío» (no requiere envío).** Para pedidos que **no se envían**: recogida
+en tienda, licencia, servicio… Marca las casillas en las pestañas de pendientes
+y pulsa **«No requiere envío»**. El pedido sale de los pendientes y pasa a su
+pestaña **«Sin envío»**; **no cuenta como enviado** y **no aparece en
+«Enviados»**. En la hoja «Seguimiento (app)» su Envío sale **«No aplica»** (no
+enviado) con el tracking vacío. **No toca la factura ni el cobro** y es
+**reversible**: en **«Sin envío»**, selecciónalos y **«Requiere envío (volver
+al taller)»** (vuelven a su pestaña). También por pedido, desde el menú **«⋯»**
+de la ficha (**«No requiere envío»** / **«Requiere envío (volver a SAT)»**).
+
+> Durante unos días esta marca se llamó «Sin seguimiento» y contaba como
+> enviado. Es **la misma marca**, así que los pedidos marcados entonces pasan
+> solos a **«Sin envío»** (no hay que hacer nada ni se ha migrado nada). Si
+> alguno de ellos **sí se envió**, quítale la marca («Requiere envío») y
+> márcalo como recogido / enviado de la forma normal.
 
 **Envío con Genei (en la tarjeta y en la ficha).** Si el pedido **no** tiene
 envío, **«Crear envío con Genei»**: la dirección, el teléfono y el email del
@@ -570,13 +583,13 @@ En cada tarjeta:
   **«🖨 Imprimir etiqueta»** (la descarga e imprime en un clic).
 - **Nº de seguimiento**: campo para guardar el tracking del transportista.
 
-**Flujo del taller** (también desde la pantalla del pedido en el taller):
+**Flujo del taller** (todo en la ventana sobre la cola):
 
-1. **«▶ Empezar preparación»** — el pedido pasa a *En preparación* y, **sin
-   salir de él**, aparecen los bultos.
+1. **«▶ Empezar preparación»** — el pedido pasa a *En preparación* y se abre
+   la ventana con las líneas y los bultos.
 2. **«📦 Embalar»** — indica **peso y medidas de cada bulto** (**«+ Añadir
-   bulto»**) y pulsa **«📦 Embalar»**. El pedido pasa a **Embalados** (y sigue
-   abierto con el paso siguiente).
+   bulto»**) y pulsa **«📦 Embalar»**. La ventana se cierra, el pedido pasa a
+   **Embalados** y la cola se actualiza sin recargar.
 3. **«📤 Marcar recogido»** — confirma *«¿El paquete ha salido?»* → **«Sí,
    recogido»**. El transporte pasa a *En tránsito*.
 

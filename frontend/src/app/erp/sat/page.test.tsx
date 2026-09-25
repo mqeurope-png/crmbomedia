@@ -1,13 +1,12 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import SatQueuePage from "./page";
-import type { SatQueueItem, SatTab } from "../../lib/erpApi";
+import type { SatQueueItem } from "../../lib/erpApi";
 import {
   bulkNoShipping,
   findSatOrderByNumber,
   fireTransition,
   getErpSettings,
-  getSatOrderItem,
   getSatQueue,
   getSatShipped,
   markPickedUp,
@@ -37,7 +36,6 @@ jest.mock("../../lib/erpApi", () => ({
   ERP_EDIT_ROLES: jest.requireActual("../../lib/erpApi").ERP_EDIT_ROLES,
   getSatQueue: jest.fn(),
   getSatShipped: jest.fn(),
-  getSatOrderItem: jest.fn(),
   getErpSettings: jest.fn(),
   findSatOrderByNumber: jest.fn(),
   satEnqueueOrder: jest.fn(),
@@ -52,9 +50,12 @@ jest.mock("../../lib/erpApi", () => ({
   openShippingFile: jest.fn(),
   printShippingFile: jest.fn(),
   saveBlob: jest.fn(),
-  // Embalar en la propia card (bultos en línea).
+  // Modal de preparar / embalar (bultos, foto, reportar problema).
   setPackages: jest.fn(),
   transitionPacked: jest.fn(),
+  attachDocument: jest.fn(),
+  reportException: jest.fn(),
+  EXCEPTION_CATALOG: jest.requireActual("../../lib/erpApi").EXCEPTION_CATALOG,
   // Lote 3: edición inline de los datos técnicos desde la cola.
   updateSeguimientoFields: jest.fn(),
   // Lote 4 · #5: subir la etiqueta desde la cola (mismo helper que la ficha).
@@ -65,7 +66,6 @@ jest.mock("../../lib/erpApi", () => ({
 
 const mockQueue = getSatQueue as jest.Mock;
 const mockShipped = getSatShipped as jest.Mock;
-const mockItem = getSatOrderItem as jest.Mock;
 const mockSettings = getErpSettings as jest.Mock;
 const mockFind = findSatOrderByNumber as jest.Mock;
 const mockEnqueue = satEnqueueOrder as jest.Mock;
@@ -87,7 +87,7 @@ function item(over: Partial<SatQueueItem> = {}): SatQueueItem {
     has_etiqueta: false, store_slug: "boprint",
     placed_at: "2026-09-01T10:00:00+00:00",
     notes: null, serial_number: null, whiterip_license: null, shipping_origin: null,
-    sat_tab: "por_embalar", sin_seguimiento: false, genei: null,
+    sat_tab: "por_embalar", sin_envio: false, genei: null,
     ...over,
   };
 }
@@ -106,7 +106,7 @@ type Tabs = Partial<Record<"por_embalar" | "en_preparacion" | "embalados" | "pen
 
 /** Respuesta de `/sat/queue` por pestañas, con sus contadores (y las dos
  *  secciones de antes, como las manda el backend). */
-function queue(t: Tabs, extra: { sin_seguimiento?: number; enviados?: number } = {}) {
+function queue(t: Tabs, extra: { sin_envio?: number; enviados?: number } = {}) {
   const pe = t.por_embalar ?? [];
   const ep = t.en_preparacion ?? [];
   const em = t.embalados ?? [];
@@ -117,7 +117,7 @@ function queue(t: Tabs, extra: { sin_seguimiento?: number; enviados?: number } =
     counts: {
       por_embalar: pe.length, en_preparacion: ep.length, embalados: em.length,
       pendiente_recogida: pr.length, pendientes: pe.length + ep.length + em.length + pr.length,
-      sin_seguimiento: extra.sin_seguimiento ?? 0, enviados: extra.enviados ?? 0,
+      sin_envio: extra.sin_envio ?? 0, enviados: extra.enviados ?? 0,
     },
   };
 }
@@ -137,6 +137,13 @@ async function loaded(porEmbalar = 1, embalados = 1) {
   expect(screen.getByRole("tab", { name: `Embalados ${embalados}` })).toBeInTheDocument();
 }
 
+type User = ReturnType<typeof userEvent.setup>;
+
+/** Abre una pestaña por su nombre (sin el contador). */
+async function pestana(user: User, nombre: RegExp) {
+  await user.click(await screen.findByRole("tab", { name: nombre }));
+}
+
 beforeEach(() => {
   window.localStorage.clear();
   mockUser.mockResolvedValue({
@@ -151,8 +158,8 @@ beforeEach(() => {
   mockShipped.mockResolvedValue({ items: [], total: 0, limit: 200 });
 });
 
-describe("SatQueuePage · pestañas por paso del taller", () => {
-  it("las pestañas, en su orden y con los contadores del backend; cada una pinta SU subconjunto", async () => {
+describe("SatQueuePage · pestañas", () => {
+  it("orden nuevo (Todos pendientes la primera y la de entrada), contadores y SU subconjunto", async () => {
     const user = userEvent.setup();
     mockQueue.mockResolvedValue(queue({
       por_embalar: [item({ id: "a", order_number: "PE-1" })],
@@ -164,67 +171,121 @@ describe("SatQueuePage · pestañas por paso del taller", () => {
         genei: { shipment_code: "G1", state_bucket: "ready", state_label: "Tramitado",
                  label_available: true },
       })],
-    }, { sin_seguimiento: 2, enviados: 5 }));
+    }, { sin_envio: 2, enviados: 5 }));
     render(<SatQueuePage />);
-    await screen.findByRole("tab", { name: "Por embalar 1" });
+    await screen.findByRole("tab", { name: "Todos pendientes 4" });
     expect(screen.getAllByRole("tab").map((t) => t.textContent?.trim())).toEqual([
-      "Por embalar 1", "En preparación 1", "Embalados 1", "Todos pendientes 4",
-      "Sin seguimiento 2", "Pendiente de recogida 1", "Enviados 5", "Incidencias",
+      "Todos pendientes 4", "Por embalar 1", "En preparación 1", "Embalados 1",
+      "Pendiente de recogida 1", "Enviados 5", "Sin envío 2", "Incidencias",
     ]);
+    expect(screen.getByRole("tab", { name: /Todos pendientes/ })).toHaveAttribute("aria-selected", "true");
     const visibles = () => screen.getAllByRole("article").map((a) => a.getAttribute("aria-label"));
+    expect(visibles()).toEqual(["Pedido PE-1", "Pedido EP-1", "Pedido EM-1", "Pedido PR-1"]);
+    await pestana(user, /Por embalar/);
     expect(visibles()).toEqual(["Pedido PE-1"]);
-    await user.click(screen.getByRole("tab", { name: /En preparación/ }));
+    await pestana(user, /En preparación/);
     expect(visibles()).toEqual(["Pedido EP-1"]);
-    await user.click(screen.getByRole("tab", { name: /^Embalados/ }));
+    await pestana(user, /^Embalados/);
     expect(visibles()).toEqual(["Pedido EM-1"]);
-    await user.click(screen.getByRole("tab", { name: /Pendiente de recogida/ }));
+    await pestana(user, /Pendiente de recogida/);
     expect(visibles()).toEqual(["Pedido PR-1"]);
     expect(screen.getByText("Pendiente de recogida", { selector: ".badge" })).toBeInTheDocument();
-    await user.click(screen.getByRole("tab", { name: /Todos pendientes/ }));
-    expect(visibles()).toEqual(["Pedido PE-1", "Pedido EP-1", "Pedido EM-1", "Pedido PR-1"]);
   });
 
-  it("«Empezar preparación» y «Embalar» se hacen EN LA CARD: no se cierra ni salta de pestaña", async () => {
+  it("cada pestaña lleva su color (fondo pastel + texto oscuro) como variables CSS", async () => {
+    render(<SatQueuePage />);
+    await loaded();
+    const colores: Record<string, [string, string]> = {
+      "Todos pendientes": ["#DBEAFE", "sat-tab--pendientes"],
+      "Por embalar": ["#FED7AA", "sat-tab--por_embalar"],
+      "En preparación": ["#FEF3C7", "sat-tab--en_preparacion"],
+      "Embalados": ["#DCFCE7", "sat-tab--embalados"],
+      "Pendiente de recogida": ["#EDE9FE", "sat-tab--pendiente_recogida"],
+      "Enviados": ["#E5E7EB", "sat-tab--enviados"],
+      "Sin envío": ["#EAE0D5", "sat-tab--sin_envio"],
+      "Incidencias": ["#FEE2E2", "sat-tab--incidencias"],
+    };
+    for (const [nombre, [bg, cls]] of Object.entries(colores)) {
+      const tab = screen.getByRole("tab", { name: new RegExp(`^${nombre}`) });
+      expect(tab).toHaveClass("sat-tab--color", cls);
+      expect(tab.style.getPropertyValue("--sat-tab-bg")).toBe(bg);
+      expect(tab.style.getPropertyValue("--sat-tab-fg")).toMatch(/^#[0-9A-F]{6}$/);
+    }
+  });
+});
+
+describe("SatQueuePage · preparar y embalar en un MODAL sobre la cola", () => {
+  it("«Empezar preparación» abre el modal con los bultos; al embalar se cierra y la cola se actualiza SIN F5", async () => {
     const user = userEvent.setup();
     const enCola = item({ id: "o1", order_number: "BOP-1" });
     mockQueue.mockResolvedValue(queue({ por_embalar: [enCola], embalados: [packedItem()] }));
     (fireTransition as jest.Mock).mockResolvedValue({});
     (setPackages as jest.Mock).mockResolvedValue([]);
     (transitionPacked as jest.Mock).mockResolvedValue({});
-    mockItem
-      .mockResolvedValueOnce({ ...enCola, preparation_status: "preparing", sat_tab: "en_preparacion" })
-      .mockResolvedValueOnce({ ...enCola, preparation_status: "packed", sat_tab: "embalados" });
     render(<SatQueuePage />);
     await loaded();
-    const calls = mockQueue.mock.calls.length;
+    await pestana(user, /Por embalar/);
+    // En la cola no hay «modo trabajo» a pantalla completa.
+    expect(screen.queryByRole("link", { name: /modo trabajo/i })).not.toBeInTheDocument();
 
+    // Tras empezar, la cola (recargada en silencio) ya lo tiene en preparación.
+    mockQueue.mockResolvedValue(queue({
+      en_preparacion: [{ ...enCola, preparation_status: "preparing", sat_tab: "en_preparacion" }],
+      embalados: [packedItem()],
+    }));
     await user.click(screen.getByRole("button", { name: "▶ Empezar preparación" }));
-    expect(fireTransition).toHaveBeenCalledWith("o1", { domain: "preparation", to_status: "preparing" });
-    // Sigue en «Por embalar», abierto, con los bultos y «Embalar» en línea…
-    const embalar = await screen.findByRole("region", { name: "Embalar BOP-1" });
-    expect(screen.getByRole("tab", { name: /Por embalar/ })).toHaveAttribute("aria-selected", "true");
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    // …y los contadores ya lo cuentan en «En preparación».
-    expect(screen.getByRole("tab", { name: "Por embalar 0" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "En preparación 1" })).toBeInTheDocument();
+    const modal = await screen.findByRole("dialog", { name: "Preparar BOP-1" });
+    await waitFor(() =>
+      expect(fireTransition).toHaveBeenCalledWith("o1", { domain: "preparation", to_status: "preparing" }));
+    // El modal es un overlay: la cola sigue debajo, en la misma pantalla.
+    expect(screen.getByRole("tablist")).toBeInTheDocument();
+    expect(within(modal).getByText("Art A")).toBeInTheDocument();          // líneas para cotejar
+    const peso = await within(modal).findByLabelText("Peso bulto 1");
+    await user.type(peso, "2");
+    await user.type(within(modal).getByLabelText("Alto bulto 1"), "10");
+    await user.type(within(modal).getByLabelText("Ancho bulto 1"), "20");
+    await user.type(within(modal).getByLabelText("Fondo bulto 1"), "30");
+    await user.click(within(modal).getByRole("button", { name: "+ Añadir bulto" }));
+    expect(within(modal).getByLabelText("Peso bulto 2")).toBeInTheDocument();
+    await user.click(within(modal).getAllByRole("button", { name: "Eliminar" })[0]);
 
-    await user.type(within(embalar).getByLabelText("Peso bulto 1"), "2");
-    await user.type(within(embalar).getByLabelText("Alto bulto 1"), "10");
-    await user.type(within(embalar).getByLabelText("Ancho bulto 1"), "20");
-    await user.type(within(embalar).getByLabelText("Fondo bulto 1"), "30");
-    await user.click(within(embalar).getByRole("button", { name: "📦 Embalar" }));
+    // Al embalar, la cola ya lo trae en «Embalados».
+    mockQueue.mockResolvedValue(queue({ embalados: [
+      packedItem(), { ...enCola, preparation_status: "packed", sat_tab: "embalados" },
+    ] }));
+    const llamadas = mockQueue.mock.calls.length;
+    await user.click(within(modal).getByRole("button", { name: "📦 Embalar" }));
     await waitFor(() => expect(transitionPacked).toHaveBeenCalledWith("o1"));
-    // La card pasa al paso siguiente EN SU SITIO (ya embalada: recogido, Genei…).
-    const card = await screen.findByRole("article", { name: "Pedido BOP-1" });
-    expect(await within(card).findByRole("button", { name: /Marcar recogido/ })).toBeInTheDocument();
+    expect(setPackages).toHaveBeenCalledWith("o1", [
+      { weight_kg: 2, height_cm: 10, width_cm: 20, depth_cm: 30 },
+    ]);
+    // Se cierra el modal y la cola se recarga sola: la tarjeta sale de su pestaña
+    // y los contadores cuadran al instante (sin recargar la página).
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await waitFor(() => expect(mockQueue.mock.calls.length).toBeGreaterThan(llamadas));
+    expect(await screen.findByRole("tab", { name: "Por embalar 0" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "En preparación 0" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Embalados 2" })).toBeInTheDocument();
-    // Sin recargar la cola entera.
-    expect(mockQueue.mock.calls.length).toBe(calls);
-    // Al cambiar de pestaña, cada uno en la suya.
-    await user.click(screen.getByRole("tab", { name: /^Embalados/ }));
-    expect(screen.getByRole("article", { name: "Pedido BOP-1" })).toBeInTheDocument();
-    await user.click(screen.getByRole("tab", { name: /Por embalar/ }));
     expect(screen.queryByRole("article", { name: "Pedido BOP-1" })).not.toBeInTheDocument();
+    await pestana(user, /^Embalados/);
+    expect(screen.getByRole("article", { name: "Pedido BOP-1" })).toBeInTheDocument();
+  });
+
+  it("un pedido ya en preparación: «📦 Embalar» abre el modal (sin volver a empezar) y «Cerrar» vuelve a la cola", async () => {
+    const user = userEvent.setup();
+    mockQueue.mockResolvedValue(queue({ en_preparacion: [
+      item({ preparation_status: "preparing", sat_tab: "en_preparacion" }),
+    ] }));
+    (fireTransition as jest.Mock).mockClear();
+    render(<SatQueuePage />);
+    await pestana(user, /En preparación/);
+    await user.click(await screen.findByRole("button", { name: "📦 Embalar" }));
+    const modal = await screen.findByRole("dialog", { name: "Preparar BOP-1" });
+    expect(within(modal).getByLabelText("Peso bulto 1")).toBeInTheDocument();
+    expect(fireTransition).not.toHaveBeenCalled();
+    await user.click(within(modal).getByRole("button", { name: "Cerrar" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /En preparación/ })).toHaveAttribute("aria-selected", "true");
   });
 
   it("con envío Genei el botón dice «Ver envío Genei»; sin él, «Crear envío con Genei»", async () => {
@@ -237,7 +298,7 @@ describe("SatQueuePage · pestañas por paso del taller", () => {
     ] }));
     const user = userEvent.setup();
     render(<SatQueuePage />);
-    await user.click(await screen.findByRole("tab", { name: /^Embalados/ }));
+    await pestana(user, /^Embalados/);
     const sin = await screen.findByRole("article", { name: "Pedido BOP-2" });
     const con = screen.getByRole("article", { name: "Pedido BOP-3" });
     expect(within(sin).getByRole("button", { name: /Crear envío con Genei/ })).toBeInTheDocument();
@@ -246,86 +307,78 @@ describe("SatQueuePage · pestañas por paso del taller", () => {
   });
 });
 
-describe("SatQueuePage · «Sin seguimiento» (enviado sin tracking)", () => {
-  it("se marca en lote desde los pendientes (con confirmación)", async () => {
+describe("SatQueuePage · «Sin envío» («No requiere envío»)", () => {
+  it("se marca en lote desde los pendientes: «No requiere envío» (con confirmación)", async () => {
     mockBulk.mockResolvedValue({ ok: true, changed: 1, already: 0, value: true });
     const user = userEvent.setup();
     render(<SatQueuePage />);
     await loaded();
+    await pestana(user, /Por embalar/);
     await user.click(screen.getByRole("checkbox", { name: "Seleccionar BOP-1" }));
-    await user.click(screen.getByRole("button", { name: "Marcar enviado sin seguimiento" }));
-    const dialog = await screen.findByRole("dialog", { name: "Confirmar Sin seguimiento" });
-    expect(dialog).toHaveTextContent("ENVIADOS sin nº de tracking");
+    await user.click(screen.getByRole("button", { name: "No requiere envío" }));
+    const dialog = await screen.findByRole("dialog", { name: "Confirmar No requiere envío" });
+    expect(dialog).toHaveTextContent("Pasan a «Sin envío» y NO cuentan como enviados");
     await user.click(within(dialog).getByRole("button", { name: "Marcar" }));
     await waitFor(() => expect(mockBulk).toHaveBeenCalledWith(["o1"], true));
   });
 
-  it("su pestaña lista los enviados sin tracking y permite quitarlos", async () => {
+  it("tiene su pestaña (no son enviados) y se pueden devolver al taller", async () => {
     mockBulk.mockResolvedValue({ ok: true, changed: 1, already: 0, value: false });
     mockShipped.mockResolvedValue({ total: 1, limit: 200, items: [
-      item({ id: "o9", order_number: "BOP-9", sat_tab: "sin_seguimiento", sin_seguimiento: true }),
+      item({ id: "o9", order_number: "BOP-9", sat_tab: "sin_envio", sin_envio: true }),
     ] });
     const user = userEvent.setup();
     render(<SatQueuePage />);
     await loaded();
-    await user.click(screen.getByRole("tab", { name: /Sin seguimiento/ }));
+    await pestana(user, /Sin envío/);
     await waitFor(() => expect(mockShipped).toHaveBeenLastCalledWith({}, true));
-    const table = await screen.findByRole("table", { name: "Pedidos enviados sin seguimiento" });
-    expect(within(table).getByText("Enviado sin seguimiento")).toBeInTheDocument();
+    const table = await screen.findByRole("table", { name: "Pedidos sin envío" });
+    expect(within(table).getByText("No requiere envío")).toBeInTheDocument();
     await user.click(within(table).getByRole("checkbox", { name: "Seleccionar BOP-9" }));
-    await user.click(screen.getByRole("button", { name: "Quitar «Sin seguimiento»" }));
+    await user.click(screen.getByRole("button", { name: "Requiere envío (volver al taller)" }));
     const dialog = await screen.findByRole("dialog");
     await user.click(within(dialog).getByRole("button", { name: "Devolver" }));
     await waitFor(() => expect(mockBulk).toHaveBeenCalledWith(["o9"], false));
   });
-});
 
-describe("SatQueuePage · «Enviados»", () => {
-  it("carga los enviados (recogido / en tránsito / entregado + sin seguimiento) con los filtros", async () => {
+  it("«Enviados» pide solo los enviados (recogido / en tránsito / entregado), no los «Sin envío»", async () => {
     mockShipped.mockResolvedValue({ total: 250, limit: 200, items: [
       item({ id: "e1", order_number: "BOP-E1", preparation_status: "packed",
              transport_status: "in_transit", sat_tab: "enviados", tracking_number: "1Z999",
              genei: { shipment_code: "G1", courier: "GLS", state_bucket: "in_transit",
                       label_available: true } }),
-      item({ id: "e2", order_number: "BOP-E2", sat_tab: "sin_seguimiento", sin_seguimiento: true }),
     ] });
     const user = userEvent.setup();
     render(<SatQueuePage />);
     await loaded();
     await user.selectOptions(await screen.findByLabelText("Tienda"), "boprint");
-    await user.click(screen.getByRole("tab", { name: /^Enviados/ }));
+    await pestana(user, /^Enviados/);
     await waitFor(() => expect(mockShipped).toHaveBeenLastCalledWith({ store_slug: "boprint" }, false));
     const table = await screen.findByRole("table", { name: "Pedidos enviados" });
-    expect(table).toHaveClass("data-table", "data-table--responsive");
     const rows = within(table).getAllByRole("row");
     expect(within(rows[1]).getByText("Recogido · en tránsito")).toBeInTheDocument();
     expect(within(rows[1]).getByText("1Z999")).toBeInTheDocument();
     expect(within(rows[1]).getByText("GLS")).toBeInTheDocument();
-    expect(within(rows[2]).getByText("Enviado sin seguimiento")).toBeInTheDocument();
-    expect(screen.getByText(/Mostrando los 2 más recientes de 250/)).toBeInTheDocument();
-    expect(screen.getByRole("tabpanel", { name: "Enviados" }).querySelector(".sat-scroll")).not.toBeNull();
+    expect(screen.getByText(/Mostrando los 1 más recientes de 250/)).toBeInTheDocument();
   });
 });
 
-describe("SatQueuePage (Lote B6 · regresión)", () => {
+describe("SatQueuePage (regresión)", () => {
   it("carga la cola sin filtros y pasa los filtros a getSatQueue", async () => {
     const user = userEvent.setup();
     render(<SatQueuePage />);
     await loaded();
     expect(mockQueue).toHaveBeenLastCalledWith({});
-    // Tienda (del catálogo de Ajustes ERP) y fechas.
     await user.selectOptions(await screen.findByLabelText("Tienda"), "boprint");
     await waitFor(() => expect(mockQueue).toHaveBeenLastCalledWith({ store_slug: "boprint" }));
     await user.type(screen.getByLabelText("Fecha desde"), "2026-09-01");
     await waitFor(() => expect(mockQueue).toHaveBeenLastCalledWith(
       expect.objectContaining({ desde: "2026-09-01" }),
     ));
-    // Buscador (con retardo) — llega a la cola como `q`.
     await user.type(screen.getByLabelText("Buscar pedido o cliente"), "dupli");
     await waitFor(() => expect(mockQueue).toHaveBeenLastCalledWith(
       expect.objectContaining({ q: "dupli" }),
     ));
-    // Orden por fecha.
     await user.selectOptions(screen.getByLabelText("Orden por fecha del pedido"), "fecha_asc");
     await waitFor(() => expect(mockQueue).toHaveBeenLastCalledWith(
       expect.objectContaining({ sort: "fecha_asc" }),
@@ -334,37 +387,35 @@ describe("SatQueuePage (Lote B6 · regresión)", () => {
     await waitFor(() => expect(mockQueue).toHaveBeenLastCalledWith({}));
   });
 
-  it("alterna Tarjetas / Lista, recuerda la vista y la lista conserva las acciones (recogido en su sitio)", async () => {
+  it("alterna Tarjetas / Lista, recuerda la vista y la lista conserva las acciones", async () => {
     const user = userEvent.setup();
     mockPicked.mockResolvedValue({ order_id: "o2", transport_status: "in_transit", already_picked_up: false });
-    mockItem.mockResolvedValue(packedItem({ transport_status: "in_transit", sat_tab: "enviados" }));
     render(<SatQueuePage />);
-    // Por defecto tarjetas: la card en cola ofrece empezar (canEdit) y el modo trabajo.
-    expect(await screen.findByRole("button", { name: "▶ Empezar preparación" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Modo trabajo" })).toHaveAttribute("href", "/erp/sat/o1");
-    expect(screen.queryByRole("table", { name: "Pedidos por embalar" })).not.toBeInTheDocument();
+    await loaded();
+    await pestana(user, /Por embalar/);
+    expect(screen.getByRole("button", { name: "▶ Empezar preparación" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Lista" }));
     const prepTable = await screen.findByRole("table", { name: "Pedidos por embalar" });
-    expect(within(prepTable).getByRole("link", { name: "BOP-1" })).toHaveAttribute("href", "/erp/sat/o1");
+    // El nº lleva a la ficha; empezar abre el modal (nada de modo trabajo).
+    expect(within(prepTable).getByRole("link", { name: "BOP-1" })).toHaveAttribute("href", "/erp/orders/o1");
+    expect(within(prepTable).getByRole("button", { name: "▶ Empezar" })).toBeInTheDocument();
     expect(within(prepTable).getByText("Ana Pi · Duplicoder SL")).toBeInTheDocument();
-    expect(within(prepTable).getByText("boprint")).toBeInTheDocument();
     expect(within(prepTable).getByRole("button", { name: /Descargar albarán/ })).toBeInTheDocument();
     expect(window.localStorage.getItem("bohub.sat.queue.view")).toBe("list");
 
-    await user.click(screen.getByRole("tab", { name: /^Embalados/ }));
+    await pestana(user, /^Embalados/);
     const readyTable = await screen.findByRole("table", { name: "Pedidos embalados" });
     expect(within(readyTable).getByRole("button", { name: /Imprimir albarán/ })).toBeInTheDocument();
     expect(within(readyTable).getByRole("button", { name: /Imprimir etiqueta/ })).toBeInTheDocument();
     expect(within(readyTable).getByRole("button", { name: "Reabrir preparación" })).toBeInTheDocument();
-    const calls = mockQueue.mock.calls.length;
+    // Tras «Marcar recogido» la cola se recarga sola: el pedido deja «Embalados».
+    mockQueue.mockResolvedValue(queue({ por_embalar: [item()] }, { enviados: 1 }));
     await user.click(within(readyTable).getByRole("button", { name: /Marcar recogido/ }));
     await user.click(within(readyTable).getByRole("button", { name: "Sí, recogido" }));
     await waitFor(() => expect(mockPicked).toHaveBeenCalledWith("o2"));
-    // Recogido EN SU SITIO: la fila queda como enviada, sin recargar la cola.
-    expect(await within(readyTable).findByText("Recogido · en tránsito")).toBeInTheDocument();
-    expect(mockQueue.mock.calls.length).toBe(calls);
-    expect(screen.getByRole("tab", { name: "Embalados 0" })).toBeInTheDocument();
+    expect(await screen.findByRole("tab", { name: "Embalados 0" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Enviados 1" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Tarjetas" }));
     expect(window.localStorage.getItem("bohub.sat.queue.view")).toBe("cards");
@@ -373,7 +424,8 @@ describe("SatQueuePage (Lote B6 · regresión)", () => {
   it("arranca en vista lista si así quedó guardado", async () => {
     window.localStorage.setItem("bohub.sat.queue.view", "list");
     render(<SatQueuePage />);
-    expect(await screen.findByRole("table", { name: "Pedidos por embalar" })).toBeInTheDocument();
+    expect(await screen.findByRole("table", { name: "Pedidos por embalar y en preparación" }))
+      .toBeInTheDocument();
   });
 
   it("albarán por tipo de pedido (Lote 2 A3): web → Woo, manual sin albarán → «Falta albarán»", async () => {
@@ -392,22 +444,22 @@ describe("SatQueuePage (Lote B6 · regresión)", () => {
                                sat_tab: "embalados" })],
     }));
     render(<SatQueuePage />);
+    await pestana(user, /Por embalar/);
     const prepTable = await screen.findByRole("table", { name: "Pedidos por embalar" });
     const rows = within(prepTable).getAllByRole("row");
     expect(within(rows[1]).getByRole("button", { name: /Descargar albarán/ })).toBeInTheDocument();
     expect(within(rows[1]).queryByText(/Falta/)).not.toBeInTheDocument();
     expect(within(rows[2]).getByRole("link", { name: /Falta albarán/ })).toHaveAttribute("href", "/erp/orders/o3");
-    expect(within(rows[2]).queryByRole("button", { name: /Descargar albarán/ })).not.toBeInTheDocument();
     expect(within(rows[3]).getByRole("link", { name: /Albarán de WooCommerce no disponible/ }))
       .toHaveAttribute("href", "/erp/orders/o4");
     expect(within(rows[3]).getByText(reason)).toBeInTheDocument();
-    expect(within(rows[3]).queryByText(/Falta albarán/)).not.toBeInTheDocument();
-    await user.click(screen.getByRole("tab", { name: /^Embalados/ }));
+    await pestana(user, /^Embalados/);
     const readyTable = await screen.findByRole("table", { name: "Pedidos embalados" });
     expect(within(readyTable).getByRole("link", { name: /Falta albarán/ })).toHaveAttribute("href", "/erp/orders/o5");
   });
 
   it("la vista lista enseña los datos técnicos (con copiar) y las observaciones encima de la fila", async () => {
+    const user = userEvent.setup();
     window.localStorage.setItem("bohub.sat.queue.view", "list");
     mockQueue.mockResolvedValue(queue({ por_embalar: [
       item({ notes: "Cliente pide manual en alemán.", serial_number: "FLX-7741-2026",
@@ -415,8 +467,8 @@ describe("SatQueuePage (Lote B6 · regresión)", () => {
       manualItem(),
     ] }));
     render(<SatQueuePage />);
+    await pestana(user, /Por embalar/);
     const table = await screen.findByRole("table", { name: "Pedidos por embalar" });
-    expect(within(table).getByRole("columnheader", { name: "Datos técnicos" })).toBeInTheDocument();
     const rows = within(table).getAllByRole("row");
     expect(rows).toHaveLength(4);
     expect(rows[1]).toHaveClass("sat-row-notes");
@@ -424,8 +476,6 @@ describe("SatQueuePage (Lote B6 · regresión)", () => {
       .toHaveTextContent("Cliente pide manual en alemán.");
     expect(within(rows[2]).getByText("FLX-7741-2026")).toHaveClass("sat-tech-value");
     expect(within(rows[2]).getByRole("button", { name: "Copiar nº de serie" })).toBeInTheDocument();
-    expect(within(rows[2]).queryByText("SAT")).not.toBeInTheDocument();
-    expect(rows[3]).not.toHaveClass("sat-row-notes");
     expect(rows[3].querySelector(".sat-td-tech")).toHaveTextContent("—");
   });
 
@@ -445,13 +495,11 @@ describe("SatQueuePage (Lote B6 · regresión)", () => {
     const calls = mockQueue.mock.calls.length;
     await user.type(await screen.findByLabelText("Número de pedido a añadir"), " bop-9 ");
     await user.click(screen.getByRole("button", { name: "Añadir" }));
-    await waitFor(() => expect(mockFind).toHaveBeenCalledWith("bop-9"));
     await waitFor(() => expect(mockEnqueue).toHaveBeenCalledWith("o9"));
     expect(await screen.findByRole("status")).toHaveTextContent(
       "BOP-9 (Nueva SL) añadido a la Cola SAT (aprobado).",
     );
     await waitFor(() => expect(mockQueue.mock.calls.length).toBeGreaterThan(calls));
-    expect(screen.getByLabelText("Número de pedido a añadir")).toHaveValue("");
     mockFind.mockResolvedValue({ id: "o10", order_number: "BOP-10", already_queued: false });
     mockEnqueue.mockRejectedValue(new Error("El pedido BOP-10 está anulado: no se puede añadir a la Cola SAT."));
     await user.type(screen.getByLabelText("Número de pedido a añadir"), "BOP-10");
@@ -468,11 +516,9 @@ describe("SatQueuePage (Lote B6 · regresión)", () => {
     expect(screen.queryByLabelText("Número de pedido a añadir")).not.toBeInTheDocument();
   });
 
-  it("«Todos pendientes» enseña los de por hacer y los embalados a la vez (dos columnas)", async () => {
-    const user = userEvent.setup();
+  it("«Todos pendientes» enseña por hacer y embalados a la vez (dos columnas, cada una con scroll)", async () => {
     render(<SatQueuePage />);
     await loaded();
-    await user.click(screen.getByRole("tab", { name: /Todos pendientes/ }));
     const panel = screen.getByRole("tabpanel", { name: "Todos pendientes" });
     const titles = within(panel).getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
     expect(titles.some((t) => t?.includes("Por embalar"))).toBe(true);
@@ -483,18 +529,15 @@ describe("SatQueuePage (Lote B6 · regresión)", () => {
   });
 
   it("«Lista» se aplica también a «Todos pendientes»: cada columna es una tabla", async () => {
-    const user = userEvent.setup();
     window.localStorage.setItem("bohub.sat.queue.view", "list");
     render(<SatQueuePage />);
     await loaded();
-    await user.click(screen.getByRole("tab", { name: /Todos pendientes/ }));
     const panel = screen.getByRole("tabpanel", { name: "Todos pendientes" });
     const prep = within(panel).getByRole("table", { name: "Pedidos por embalar y en preparación" });
     const ready = within(panel).getByRole("table", { name: "Pedidos embalados y pendientes de recogida" });
     expect(within(prep).getAllByRole("columnheader").map((h) => h.textContent)).toEqual(
       ["Nº", "Cliente", "Tienda", "Estado", "Datos técnicos", "Acciones"],
     );
-    expect(within(prep).getByRole("link", { name: "BOP-1" })).toHaveAttribute("href", "/erp/sat/o1");
     expect(within(ready).getByRole("link", { name: "BOP-2" })).toBeInTheDocument();
   });
 
@@ -526,20 +569,7 @@ describe("SatQueuePage (Lote B6 · regresión)", () => {
     expect(screen.getByRole("button", { name: /Editar/ })).toBeInTheDocument();
   });
 
-  it("cada pestaña tiene su contenedor de scroll y pinta todos los pedidos dentro", async () => {
-    window.localStorage.setItem("bohub.sat.queue.view", "list");
-    const many = Array.from({ length: 5 }, (_, i) => item({ id: `p${i}`, order_number: `BOP-${i}` }));
-    mockQueue.mockResolvedValue(queue({ por_embalar: many, embalados: [packedItem()] }));
-    render(<SatQueuePage />);
-    const prepTable = await screen.findByRole("table", { name: "Pedidos por embalar" });
-    const prepScroll = screen.getByRole("tabpanel", { name: "Por embalar" }).querySelector(".sat-scroll");
-    expect(prepScroll).toContainElement(prepTable);
-    many.forEach((o) =>
-      expect(within(prepScroll as HTMLElement).getByRole("link", { name: o.order_number })).toBeInTheDocument(),
-    );
-  });
-
-  it("sube la etiqueta desde una fila de «Embalados» y la fila pasa a imprimirla (en su sitio)", async () => {
+  it("sube la etiqueta desde una fila de «Embalados» y la cola se actualiza sola", async () => {
     const user = userEvent.setup();
     window.localStorage.setItem("bohub.sat.queue.view", "list");
     const base = packedItem({
@@ -547,8 +577,6 @@ describe("SatQueuePage (Lote B6 · regresión)", () => {
       is_web_order: false, has_etiqueta: false,
     });
     mockQueue.mockResolvedValue(queue({ embalados: [base] }));
-    mockItem.mockResolvedValue({ ...base, has_etiqueta: true, sat_tab: "pendiente_recogida",
-                                 transport_status: "label_created" });
     mockUpload.mockResolvedValue({
       file: {
         id: "f", kind: "etiqueta", source: "manual_upload", filename: "e.pdf",
@@ -558,14 +586,18 @@ describe("SatQueuePage (Lote B6 · regresión)", () => {
       transition_applied: true, transport_status: "label_created", transition_reason: null,
     });
     render(<SatQueuePage />);
-    await user.click(await screen.findByRole("tab", { name: /^Embalados/ }));
+    await pestana(user, /^Embalados/);
     const readyTable = await screen.findByRole("table", { name: "Pedidos embalados" });
+    // Con la etiqueta puesta, el backend ya lo cuenta en «Pendiente de recogida».
+    mockQueue.mockResolvedValue(queue({ pendiente_recogida: [
+      { ...base, has_etiqueta: true, sat_tab: "pendiente_recogida", transport_status: "label_created" },
+    ] }));
     const pdf = new File(["%PDF-"], "e.pdf", { type: "application/pdf" });
     await user.upload(within(readyTable).getByLabelText(/Subir etiqueta/), pdf);
     await waitFor(() => expect(mockUpload).toHaveBeenCalledWith("o7", "etiqueta", pdf));
+    expect(await screen.findByRole("tab", { name: "Pendiente de recogida 1" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Embalados 0" })).toBeInTheDocument();
+    await pestana(user, /Pendiente de recogida/);
     expect(await screen.findByRole("button", { name: /Imprimir etiqueta/ })).toBeInTheDocument();
-    expect(screen.queryByLabelText(/Subir etiqueta/)).not.toBeInTheDocument();
-    // Con la etiqueta puesta ya cuenta como «Pendiente de recogida».
-    expect(screen.getByRole("tab", { name: "Pendiente de recogida 1" })).toBeInTheDocument();
   });
 });

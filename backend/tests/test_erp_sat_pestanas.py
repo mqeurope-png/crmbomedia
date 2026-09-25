@@ -1,7 +1,7 @@
-"""Cola SAT por pasos del taller + «Sin seguimiento» (enviado sin tracking).
+"""Cola SAT por pasos del taller + «Sin envío» («No requiere envío»).
 
   Por embalar → En preparación → Embalados → Pendiente de recogida → Enviados
-  «Todos pendientes» = las cuatro primeras · «Sin seguimiento» ⊂ «Enviados».
+  «Todos pendientes» = las cuatro primeras · «Sin envío» aparte (NO es enviado).
 
 El backend decide la pestaña de cada pedido y los contadores (que tienen que
 cuadrar con lo que lista cada pestaña).
@@ -86,7 +86,11 @@ def _seed(s: Session) -> dict[str, str]:
         "en_transito": _order(s, "EN-1", prep="packed", transport="in_transit",
                               tracking_number="1Z1"),
         "entregado": _order(s, "EN-2", prep="packed", transport="delivered"),
-        "sin_seguimiento": _order(s, "SS-1", shipping_not_required=True),
+        "sin_envio": _order(s, "SE-1", shipping_not_required=True),
+        # Marcado «No requiere envío» aunque el transporte diga enviado: manda
+        # la marca (va a «Sin envío», no a «Enviados»).
+        "sin_envio_embalado": _order(s, "SE-2", prep="packed", transport="in_transit",
+                                     shipping_not_required=True),
         # No pasó por el taller (histórico externalizado): ni en «Enviados».
         "externo": _order(s, "EX-1", prep="already_completed_externally",
                           transport="already_shipped_externally"),
@@ -111,7 +115,7 @@ def test_cada_pestana_su_subconjunto_y_los_contadores_cuadran(client, session_fa
     counts = q["counts"]
     assert counts == {
         "por_embalar": 2, "en_preparacion": 1, "embalados": 3, "pendiente_recogida": 2,
-        "pendientes": 8, "sin_seguimiento": 1, "enviados": 3,
+        "pendientes": 8, "sin_envio": 2, "enviados": 2,
     }
     # Cada item dice su pestaña.
     assert {i["sat_tab"] for i in q["pendiente_recogida"]} == {"pendiente_recogida"}
@@ -120,11 +124,12 @@ def test_cada_pestana_su_subconjunto_y_los_contadores_cuadran(client, session_fa
     assert _numeros(q["ready_for_pickup"]) == {"EM-1", "EM-2", "EM-3", "PR-1", "PR-2"}
 
     env = client.get("/api/erp/sat/shipped", headers=h).json()
-    assert _numeros(env["items"]) == {"EN-1", "EN-2", "SS-1"}
+    assert _numeros(env["items"]) == {"EN-1", "EN-2"}      # «Sin envío» NO
     assert env["total"] == counts["enviados"]
-    sin = client.get("/api/erp/sat/shipped?sin_seguimiento=true", headers=h).json()
-    assert _numeros(sin["items"]) == {"SS-1"}
-    assert sin["total"] == counts["sin_seguimiento"]
+    sin = client.get("/api/erp/sat/shipped?sin_envio=true", headers=h).json()
+    assert _numeros(sin["items"]) == {"SE-1", "SE-2"}
+    assert sin["total"] == counts["sin_envio"]
+    assert {i["sat_tab"] for i in sin["items"]} == {"sin_envio"}
 
 
 def test_el_envio_genei_viaja_en_el_item(client, session_factory):
@@ -170,10 +175,10 @@ def test_recogida_por_genei_pasa_de_pendiente_de_recogida_a_enviados(client, ses
     assert oid in {i["id"] for i in client.get("/api/erp/sat/shipped", headers=h).json()["items"]}
 
 
-def test_sin_seguimiento_deja_el_pedido_enviado_sin_tracking(client, session_factory):
-    """Marcar «Sin seguimiento» = ENVIADO sin nº de tracking: sale de los
-    pendientes, entra en «Enviados» y en «Sin seguimiento», y la hoja lo pinta
-    enviado (no «No aplica») con el tracking vacío."""
+def test_no_requiere_envio_va_a_sin_envio_y_no_cuenta_como_enviado(client, session_factory):
+    """Marcar «No requiere envío» = el pedido NO se envía (recogida en tienda,
+    licencia…): sale de los pendientes, va a «Sin envío» y NUNCA a «Enviados»;
+    la hoja lo pinta «No aplica» (no «enviado»)."""
     with session_factory() as s:
         oid = _order(s, "PE-9", prep="packed")
     h = auth_headers(client, "sat")
@@ -183,19 +188,19 @@ def test_sin_seguimiento_deja_el_pedido_enviado_sin_tracking(client, session_fac
     q = client.get("/api/erp/sat/queue", headers=h).json()
     assert oid not in {i["id"] for k in ("por_embalar", "en_preparacion", "embalados",
                                          "pendiente_recogida") for i in q[k]}
-    assert q["counts"]["sin_seguimiento"] == 1 and q["counts"]["enviados"] == 1
-    env = client.get("/api/erp/sat/shipped", headers=h).json()["items"]
-    assert [i["sat_tab"] for i in env if i["id"] == oid] == ["sin_seguimiento"]
+    assert q["counts"]["sin_envio"] == 1 and q["counts"]["enviados"] == 0
+    assert client.get("/api/erp/sat/shipped", headers=h).json()["items"] == []
+    sin = client.get("/api/erp/sat/shipped?sin_envio=true", headers=h).json()["items"]
+    assert [i["sat_tab"] for i in sin if i["id"] == oid] == ["sin_envio"]
 
     fila = client.get("/api/erp/seguimiento?en_curso=false",
                       headers=auth_headers(client, "pedidos")).json()["items"]
     row = next(i for i in fila if i["order_number"] == "PE-9")
-    assert row["envio"] == "Enviado (sin seguimiento)"
-    assert not row["tracking"]
-    assert row["estado"] == "enviado"
-    assert row["preparacion"] == "Listo"              # se embaló
+    assert row["envio"] == "No aplica"
+    assert row["estado"] != "enviado"
+    assert row["preparacion"] == "Listo"              # se llegó a embalar
 
-    # Y al completar no avisa de «el envío no consta como enviado».
+    # Al completar no se echa en falta un envío que no hay.
     from app.erp.api.orders import completion_avisos
 
     with session_factory() as s:
@@ -209,16 +214,16 @@ def test_sin_seguimiento_deja_el_pedido_enviado_sin_tracking(client, session_fac
     assert oid in {i["id"] for i in q["embalados"]}
 
 
-def test_el_no_requiere_envio_antiguo_pasa_a_sin_seguimiento_sin_migrar(session_factory):
-    """Los pedidos ya marcados «No requiere envío» llevan la misma marca: sin
-    tocar datos, son «Sin seguimiento» (enviados sin tracking)."""
+def test_los_marcados_con_la_semantica_de_487_pasan_a_sin_envio_sin_migrar(session_factory):
+    """#487 usó la MISMA marca para «enviado sin seguimiento». Sin tocar datos,
+    esos pedidos (y los «No requiere envío» de siempre) son «Sin envío»."""
     from app.erp import seguimiento as core
     from app.erp.api.sat import sat_tab_of
 
     with session_factory() as s:
         oid = _order(s, "OLD-1", prep="in_queue", shipping_not_required=True)
         order = s.get(Order, oid)
-        assert sat_tab_of(order) == "sin_seguimiento"
-        assert core._envio_label(order) == core.ENVIO_SIN_SEGUIMIENTO
-        # No pasó por el taller: su preparación sigue «No aplica».
+        assert sat_tab_of(order) == "sin_envio"
+        assert core._envio_label(order) == core.NO_APLICA
         assert core._prep_label(order) == core.NO_APLICA
+        assert core._estado(order) == "pendiente"
