@@ -2,7 +2,7 @@
 
 Comprueba que la Situación de cada fila se deriva de la cola de la línea de
 vida (workflow), que la hoja se ordena por Situación (prioridad), que un pedido
-«Sin seguimiento» (antes «No requiere envío») sale ENVIADO sin tracking, que «Factura
+«No requiere envío» muestra Preparación/Envío = «No aplica», que «Factura
 enviada» sale del evento `erp.invoice_emailed`, que «Cobro» refleja el estado
 contable de FACTUSOL, y que la pestaña Incidencias es el subconjunto EXACTO de
 Situación=Incidencia.
@@ -123,7 +123,7 @@ def _seed(s: Session) -> None:
         order_id=e.id, type=ExceptionType.SAT_ISSUE, status=ExceptionStatus.OPEN,
         metadata_json='{"description": "Falta tornillería"}',
     ))
-    # F — «Sin seguimiento» (enviado sin tracking), facturado + cobrado → «Listo».
+    # F — «No requiere envío», facturado + cobrado → «Listo».
     _order(s, "ART-900006", cid, factusol_invoice_number="5-260006",
            factusol_cobro_status="cobrada", shipping_not_required=True)
     s.commit()
@@ -151,12 +151,10 @@ def test_situacion_orden_y_campos(session_factory, http) -> None:
         "ART-900002", "ART-900001", "ART-900006",
     ]
 
-    # «Sin seguimiento» → ENVIADO sin tracking (no «No aplica»). No pasó por
-    # el taller, así que su Preparación sigue «No aplica».
+    # «No requiere envío» → Preparación/Envío = «No aplica» (no se envía).
     f = items["ART-900006"]
-    assert f["envio"] == "Enviado (sin seguimiento)"
-    assert not f["tracking"]
     assert f["preparacion"] == "No aplica"
+    assert f["envio"] == "No aplica"
 
     # Cobro refleja el estado contable de FACTUSOL.
     assert items["ART-900001"]["cobro"] == "cobrado"

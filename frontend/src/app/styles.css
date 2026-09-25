@@ -14363,3 +14363,31 @@ table.erp-doc-lines { width: 100%; table-layout: fixed; }
 }
 .sat-shipped-kv dt { color: var(--muted); }
 .sat-shipped-kv dd { margin: 0; }
+
+/* Cola SAT · un color por pestaña (fondo pastel + texto oscuro del mismo tono,
+   contraste ≥ 7:1). La paleta vive en `erp/sat/tabColors.ts` y llega como
+   variables CSS por pestaña; la activa, un punto más saturada y subrayada. */
+.sat-tab.sat-tab--color {
+  background: var(--sat-tab-bg);
+  border-color: transparent;
+  color: var(--sat-tab-fg);
+}
+.sat-tab.sat-tab--color:hover { color: var(--sat-tab-fg); filter: brightness(0.97); }
+.sat-tab.sat-tab--color[aria-selected="true"] {
+  background: var(--sat-tab-bg-active);
+  border-color: var(--sat-tab-fg);
+  color: var(--sat-tab-fg);
+  box-shadow: inset 0 -3px 0 var(--sat-tab-fg);
+}
+.sat-tab.sat-tab--color .sat-tab-count,
+.sat-tab.sat-tab--color[aria-selected="true"] .sat-tab-count {
+  background: rgba(255, 255, 255, 0.75);
+  color: var(--sat-tab-fg);
+}
+/* Modal de preparar / embalar sobre la cola. */
+.sat-prep-modal { display: flex; flex-direction: column; gap: var(--sp-3); }
+.sat-prep-head { display: flex; align-items: center; gap: var(--sp-3); }
+.sat-prep-head h2 { margin: 0; }
+.sat-prep-lines h3,
+.sat-prep-embalar h3 { margin: 0 0 var(--sp-2); font-size: var(--fs-subtitle); }
+.sat-prep-actions { flex-wrap: wrap; }

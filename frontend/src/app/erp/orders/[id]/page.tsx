@@ -259,7 +259,7 @@ function ErpOrderDetailScreen() {
   // C-bis: diálogo «Marcar como pagado» (pide la forma de pago).
   const [markPaidOpen, setMarkPaidOpen] = useState(false);
   const [markPaidBusy, setMarkPaidBusy] = useState(false);
-  // «Sin seguimiento» (enviado sin tracking; antes «No requiere envío»).
+  // «No requiere envío» (pestaña «Sin envío» de la Cola SAT).
   const [noShipBusy, setNoShipBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   // Cobro manual (F-4-B desde la app): estado de cobro EN VIVO de la factura
@@ -448,11 +448,10 @@ function ErpOrderDetailScreen() {
       await bulkNoShipping([order.id], value);
       setOrder({ ...order, shipping_not_required: value });
       setNotice(value
-        ? "Marcado «Sin seguimiento»: cuenta como ENVIADO, sin nº de tracking "
-          + "(no afecta a factura ni cobro)."
-        : "Quitado «Sin seguimiento»: vuelve a la Cola SAT según su preparación.");
+        ? "Marcado «No requiere envío»: pasa a «Sin envío» en la Cola SAT (no afecta a factura ni cobro)."
+        : "Vuelve a requerir envío (a la Cola SAT según su preparación).");
     } catch (e) {
-      setError(extractErrorMessage(e, "No se pudo cambiar «Sin seguimiento»."));
+      setError(extractErrorMessage(e, "No se pudo cambiar «No requiere envío»."));
     } finally {
       setNoShipBusy(false);
     }
@@ -838,25 +837,24 @@ function ErpOrderDetailScreen() {
                       ))}
                     </select>
                   </label>
-                  {/* «Sin seguimiento» (antes «No requiere envío»): el pedido
-                      queda ENVIADO sin nº de tracking (recogida en tienda,
-                      transporte sin seguimiento…). Sale de los pendientes de
-                      la Cola SAT y pasa a «Enviados»; no toca factura ni
-                      cobro. Reversible. */}
+                  {/* «No requiere envío»: el pedido NO se envía (recogida en
+                      tienda, licencia, servicio…). Sale de los pendientes de la
+                      Cola SAT y pasa a «Sin envío» (nunca a «Enviados»); no
+                      toca factura ni cobro. Reversible. */}
                   <button
                     type="button"
                     className="button small secondary"
                     disabled={noShipBusy}
                     title={order.shipping_not_required
-                      ? "Vuelve a la Cola SAT según su preparación"
-                      : "Enviado sin nº de tracking (recogida en tienda, transporte sin seguimiento…); no afecta a factura ni cobro"}
+                      ? "Este pedido volverá a la Cola SAT según su preparación"
+                      : "No se envía (recogida en tienda, licencia, servicio…); no afecta a factura ni cobro"}
                     onClick={() => void onToggleNoShipping()}
                   >
                     {noShipBusy
                       ? "Guardando…"
                       : order.shipping_not_required
-                        ? "Quitar «Sin seguimiento» (volver a SAT)"
-                        : "Marcar enviado sin seguimiento"}
+                        ? "Requiere envío (volver a SAT)"
+                        : "No requiere envío"}
                   </button>
                   {/* ERP-F1 «Enviar factura por email» vive ahora en la cabecera
                       como «Enviar factura al cliente» (una sola acción, sin
@@ -1155,9 +1153,9 @@ function ErpOrderDetailScreen() {
           ) : null}
           {order.shipping_not_required ? (
             <p className="erp-flow-emailed is-muted">
-              Enviado sin seguimiento (sin nº de tracking): cuenta como enviado
-              y está en «Enviados» de la Cola SAT. Puedes quitarlo desde «⋯ →
-              Quitar «Sin seguimiento»».
+              Este pedido no requiere envío: está en «Sin envío» de la Cola SAT
+              (no cuenta como enviado). Puedes revertirlo desde «⋯ → Requiere
+              envío».
             </p>
           ) : null}
           <ShippingFilesSection

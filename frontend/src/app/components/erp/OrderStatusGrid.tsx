@@ -30,7 +30,7 @@ export type OrderStatusGridInput = {
   factusol_invoice_number: string | null;
   factusol_cobro_status?: string | null;
   transport_status?: string | null;
-  /** «Sin seguimiento» (antes «No requiere envío»): enviado sin tracking. */
+  /** «No requiere envío»: el envío no aplica (gris), no cuenta como pendiente. */
   shipping_not_required?: boolean;
   /** `"sample"` = muestra / envío NO facturable: Factura y Cobro no aplican. */
   order_kind?: string | null;
@@ -146,12 +146,11 @@ function envio(o: OrderStatusGridInput): StatusCell {
   const st = o.transport_status ?? "not_shipped";
   const enviado = st === "in_transit" || st === "delivered" || st === "already_shipped_externally";
   const legacyLabel = `Enviado: ${enviado ? "sí" : "no"}`;
-  // «Sin seguimiento» (antes «No requiere envío»): ENVIADO sin nº de tracking —
-  // cuenta como hecho —, salvo que el transporte diga algo más concreto.
+  // «No requiere envío»: no aplica (gris), no cuenta como pendiente — salvo que
+  // ya se hubiera enviado (raro), donde manda el estado real del transporte.
   if (o.shipping_not_required && !enviado && st !== "incident" && st !== "returned") {
-    return { ...base, state: "done", value: "Enviado (sin seguimiento)",
-             title: "Enviado sin nº de tracking (recogida en tienda, transporte sin seguimiento…).",
-             legacyLabel: "Enviado: sí (sin seguimiento)" };
+    return { ...base, state: "na", value: "—", title: "Este pedido no requiere envío.",
+             legacyLabel: "Enviado: no aplica" };
   }
   if (st === "delivered") {
     return { ...base, state: "done", value: "Entregado", title: "El transportista ha entregado el pedido.", legacyLabel };

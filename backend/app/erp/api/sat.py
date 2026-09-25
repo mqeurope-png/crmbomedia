@@ -150,16 +150,17 @@ _SHIPPED_TRANSPORT = ("in_transit", "delivered", "already_shipped_externally")
 #   (en cola /     («Empezar          (packed)     (envío Genei tramitado,   (recogido /
 #    bloqueado)     preparación»)                   o etiqueta ya puesta)     en tránsito /
 #                                                                             entregado)
-#   «Todos pendientes» = las cuatro primeras. «Sin seguimiento» = enviados SIN
-#   nº de tracking (recogida en tienda, transporte sin seguimiento…): la marca
-#   `shipping_not_required`, que cuenta como ENVIADO. El backend decide la
+#   «Todos pendientes» = las cuatro primeras. «Sin envío» = los que NO se
+#   envían (recogida en tienda, licencia, servicio…): la marca
+#   `shipping_not_required` («No requiere envío»). NO cuentan como enviados:
+#   tienen su propia pestaña y nunca salen en «Enviados». El backend decide la
 #   pestaña de cada pedido (`sat_tab_of`) para que los contadores cuadren.
 
 TAB_POR_EMBALAR = "por_embalar"
 TAB_EN_PREPARACION = "en_preparacion"
 TAB_EMBALADOS = "embalados"
 TAB_PENDIENTE_RECOGIDA = "pendiente_recogida"
-TAB_SIN_SEGUIMIENTO = "sin_seguimiento"
+TAB_SIN_ENVIO = "sin_envio"
 TAB_ENVIADOS = "enviados"
 
 #: «Por embalar»: en cola sin empezar, y los bloqueados (arriba, para resolverlos).
@@ -206,7 +207,7 @@ def pendiente_de_recogida(order: Order) -> bool:
 def sat_tab_of(order: Order) -> str | None:
     """Pestaña de la Cola SAT del pedido (None si no está en ninguna)."""
     if order.shipping_not_required:
-        return TAB_SIN_SEGUIMIENTO
+        return TAB_SIN_ENVIO
     prep = _prep(order)
     if prep in _POR_EMBALAR:
         return TAB_POR_EMBALAR
@@ -222,12 +223,12 @@ def sat_tab_of(order: Order) -> str | None:
 
 def _enviados_clause() -> Any:
     """«Enviados»: embalados que ya salieron (recogido / en tránsito /
-    entregado / externalizado) + los marcados «Sin seguimiento» (enviados sin
-    tracking). Los que nunca pasaron por el taller (histórico importado) no."""
-    return or_(
-        and_(Order.preparation_status == PreparationStatus.PACKED.value,
-             Order.transport_status.in_(_SHIPPED_TRANSPORT)),
-        Order.shipping_not_required.is_(True),
+    entregado / externalizado). Los «No requiere envío» NO (van a «Sin
+    envío»), ni los que nunca pasaron por el taller (histórico importado)."""
+    return and_(
+        Order.preparation_status == PreparationStatus.PACKED.value,
+        Order.transport_status.in_(_SHIPPED_TRANSPORT),
+        Order.shipping_not_required.is_(False),
     )
 
 
@@ -452,7 +453,8 @@ def sat_items(session: Session, rows: list[Order]) -> list[dict[str, Any]]:
             # y el envío Genei, si lo hay («Crear» vs «Ver envío Genei»,
             # etiqueta disponible o no).
             "sat_tab": sat_tab_of(o),
-            "sin_seguimiento": bool(o.shipping_not_required),
+            # «No requiere envío» (pestaña «Sin envío»).
+            "sin_envio": bool(o.shipping_not_required),
             "genei": _genei_summary(o),
         }
 
@@ -470,9 +472,9 @@ def sat_queue(
     store_slug: str | None = Query(default=None, max_length=64),
     estado: str | None = Query(default=None, pattern=_ESTADO_PATTERN),
     q: str | None = Query(default=None, max_length=120),
-    # Antiguo «No requiere envío» (hoy «Sin seguimiento»): por defecto (False)
+    # «No requiere envío» (pestaña «Sin envío»): por defecto (False)
     # se EXCLUYEN de las pestañas de pendientes; con True se enseñan SOLO ellos
-    # (compatibilidad; la pestaña nueva usa `/sat/shipped?sin_seguimiento=true`).
+    # (compatibilidad; la pestaña usa `/sat/shipped?sin_envio=true`).
     no_shipping: bool = Query(default=False),
     # C4: orden por FECHA del pedido. Por defecto los más recientes primero
     # (`fecha_desc`); `fecha_asc` = los más antiguos primero (FIFO de siempre).
@@ -491,7 +493,7 @@ def sat_queue(
     - `pendiente_recogida`: embalados con envío Genei tramitado (estado 1+) o
       etiqueta ya puesta, esperando al transportista;
     - `counts`: los de esas cuatro, `pendientes` (su suma), y los de
-      «Sin seguimiento» y «Enviados» (su lista, en `/sat/shipped`).
+      «Sin envío» y «Enviados» (su lista, en `/sat/shipped`).
 
     `preparing` / `ready_for_pickup` son las dos secciones de antes (por
     embalar + en preparación; embalados + pendiente de recogida), que siguen
@@ -512,7 +514,7 @@ def sat_queue(
 
     # Control manual (#388 + bandeja): los quitados a mano tampoco entran en el
     # taller (mismo flag que la bandeja y el seguimiento).
-    # «Sin seguimiento» (enviado sin tracking): FUERA de los pendientes; con
+    # «No requiere envío» («Sin envío»): FUERA de los pendientes; con
     # `no_shipping=True`, SOLO ellos (compatibilidad).
     ship_flag = Order.shipping_not_required.is_(no_shipping)
     # C4: dirección de la fecha (por defecto, los más recientes primero).
@@ -574,7 +576,7 @@ def sat_queue(
     counts = {key: len(tabs[key]) for key in (
         TAB_POR_EMBALAR, TAB_EN_PREPARACION, TAB_EMBALADOS, TAB_PENDIENTE_RECOGIDA)}
     counts["pendientes"] = sum(counts.values())
-    counts[TAB_SIN_SEGUIMIENTO] = _count(
+    counts[TAB_SIN_ENVIO] = _count(
         session, _base(Order.shipping_not_required.is_(True)))
     counts[TAB_ENVIADOS] = _count(session, _base(_enviados_clause()))
 
@@ -596,19 +598,19 @@ def sat_shipped(
     hasta: date | None = Query(default=None),
     store_slug: str | None = Query(default=None, max_length=64),
     q: str | None = Query(default=None, max_length=120),
-    sin_seguimiento: bool = Query(default=False),
+    sin_envio: bool = Query(default=False),
     sort: str = Query(default="fecha_desc", pattern="^fecha_(desc|asc)$"),
     limit: int = Query(default=200, ge=1, le=1000),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_view),
 ) -> dict[str, Any]:
-    """«Enviados» (recogido / en tránsito / entregado, más los «Sin
-    seguimiento») o, con `sin_seguimiento=true`, solo los enviados SIN
-    tracking. Con los mismos filtros que la cola. `total` es el recuento
+    """«Enviados» (recogido / en tránsito / entregado) o, con
+    `sin_envio=true`, los «No requiere envío» (pestaña «Sin envío», que NO
+    son enviados). Con los mismos filtros que la cola. `total` es el recuento
     completo; la lista trae los `limit` primeros por fecha del pedido."""
     from app.erp.api.orders import worklist_visible  # noqa: PLC0415
 
-    clause = (Order.shipping_not_required.is_(True) if sin_seguimiento
+    clause = (Order.shipping_not_required.is_(True) if sin_envio
               else _enviados_clause())
     stmt = _apply_filters(
         worklist_visible(select(Order).where(clause), current_user),
@@ -634,13 +636,13 @@ def sat_order_item(
     return sat_items(session, [order])[0]
 
 
-# --- «Sin seguimiento» en lote (antes «No requiere envío») ---------------------
+# --- «No requiere envío» en lote (pestaña «Sin envío») -------------------------
 
 
 class BulkNoShippingIn(BaseModel):
-    """Marcar/desmarcar «Sin seguimiento» en lote: `value=True` = el pedido ya
-    se ENVIÓ pero sin nº de tracking (recogida en tienda, transporte sin
-    seguimiento…); `value=False` lo devuelve a los pendientes del taller."""
+    """Marcar/desmarcar «No requiere envío» en lote: `value=True` = el pedido
+    NO se envía (recogida en tienda, licencia, servicio…) y pasa a «Sin
+    envío»; `value=False` lo devuelve a los pendientes del taller."""
 
     order_ids: list[str] = Field(min_length=1, max_length=500)
     value: bool = True
@@ -652,16 +654,15 @@ def bulk_no_shipping(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_sat_no_shipping),
 ) -> dict[str, Any]:
-    """Marca (o desmarca) «Sin seguimiento» en varios pedidos a la vez.
+    """Marca (o desmarca) «No requiere envío» en varios pedidos a la vez.
 
-    Semántica (sustituye a «No requiere envío»): marcar = el pedido cuenta
-    como ENVIADO, solo que sin tracking. Sale de las pestañas de pendientes y
-    aparece en «Enviados» y «Sin seguimiento»; en la hoja «Seguimiento (app)»
-    el Envío sale «Enviado (sin seguimiento)» con el tracking vacío. Usa la
-    misma marca de siempre (`shipping_not_required`), así que los pedidos que
-    ya estaban marcados «No requiere envío» pasan a «Sin seguimiento» sin
-    migrar datos. NO toca pago, factura, cobro ni el «completado». Idempotente
-    y reversible; queda en el audit log."""
+    Marcar = el pedido NO se envía: sale de los pendientes del taller y queda
+    en la pestaña «Sin envío» (NUNCA en «Enviados»); en la hoja «Seguimiento
+    (app)» su Envío sale «No aplica». (#487 lo había convertido en «enviado
+    sin seguimiento»; se revierte a este significado, con la misma marca
+    `shipping_not_required`, así que los ya marcados pasan a «Sin envío» sin
+    migrar datos.) NO toca pago, factura, cobro ni el «completado».
+    Idempotente y reversible; queda en el audit log."""
     from app.core.audit import record_event  # noqa: PLC0415
 
     changed: list[str] = []
@@ -680,10 +681,10 @@ def bulk_no_shipping(
             action="erp.sat_no_shipping" if payload.value else "erp.sat_requires_shipping",
             target_type="order", target_id=None, actor=current_user,
             metadata={"order_ids": payload.order_ids, "value": payload.value,
-                      "order_numbers": changed, "meaning": "sin_seguimiento"},
+                      "order_numbers": changed, "meaning": "sin_envio"},
             message=(
-                f"«Sin seguimiento» (enviado sin tracking) "
-                f"{'marcado' if payload.value else 'desmarcado'} en {len(changed)} pedido(s)"
+                f"«No requiere envío» {'marcado' if payload.value else 'desmarcado'} "
+                f"en {len(changed)} pedido(s)"
             ),
         )
     session.commit()

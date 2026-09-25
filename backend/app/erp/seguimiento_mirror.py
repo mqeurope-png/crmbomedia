@@ -848,7 +848,6 @@ def _listas_cerradas() -> dict[int, list[str]]:
     from app.erp.seguimiento import (  # noqa: PLC0415
         COBRO_LABELS,
         ENVIO_LABELS,
-        ENVIO_SIN_SEGUIMIENTO,
         NO_APLICA,
         PREPARACION_LABELS,
         SITUACION_LABELS,
@@ -857,7 +856,7 @@ def _listas_cerradas() -> dict[int, list[str]]:
     return {
         _COL["Situación"]: list(SITUACION_LABELS.values()),
         _COL["Preparación"]: [*PREPARACION_LABELS.values(), NO_APLICA, "—"],
-        _COL["Envío"]: [*ENVIO_LABELS.values(), ENVIO_SIN_SEGUIMIENTO, NO_APLICA, "—"],
+        _COL["Envío"]: [*ENVIO_LABELS.values(), NO_APLICA, "—"],
         _COL["Cobro"]: list(dict.fromkeys(COBRO_LABELS.values())),
     }
 

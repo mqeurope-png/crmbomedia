@@ -13,8 +13,8 @@ const SAT_ROLES = ["admin", "manager", "pedidos", "sat"];
 export default function SatLayout({ children }: { children: ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
-  // En el modo trabajo de un pedido (`/erp/sat/[id]`) se ofrece volver a la
-  // lista de la Cola SAT, además de «Volver al CRM».
+  // Fuera de la cola (p. ej. el redirect de un enlace viejo a `/erp/sat/<id>`)
+  // se ofrece volver a la lista de la Cola SAT, además de «Volver al CRM».
   const onOrderView = pathname !== "/erp/sat" && pathname.startsWith("/erp/sat/");
   const [user, setUser] = useState<User | null>(null);
   const [ready, setReady] = useState(false);

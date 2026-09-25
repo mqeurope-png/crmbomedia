@@ -178,12 +178,21 @@ describe("SatPreparingCard · Lote 2 PR-2", () => {
     expect(screen.queryByRole("button", { name: /Editar/ })).not.toBeInTheDocument();
   });
 
-  it("tres acciones de 48 px en dos filas: abrir (primario, ancho) y debajo albarán + ficha", () => {
-    const { container } = render(<SatPreparingCard order={order()} onChanged={() => {}} />);
-    const open = screen.getByRole("link", { name: /Abrir modo trabajo/ });
-    expect(open).toHaveAttribute("href", "/erp/sat/o1");
+  it("tres acciones de 48 px en dos filas: empezar (primario, ancho) y debajo albarán + ficha", async () => {
+    const onPrepare = jest.fn();
+    const { container } = render(
+      <SatPreparingCard order={order({ preparation_status: "in_queue" })} onChanged={() => {}}
+                        canEdit onPrepare={onPrepare} />,
+    );
+    // Sin «modo trabajo» a pantalla completa: el primario abre el MODAL de preparar.
+    expect(screen.queryByRole("link", { name: /modo trabajo/i })).not.toBeInTheDocument();
+    const open = screen.getByRole("button", { name: /Empezar preparación/ });
     expect(open).toHaveClass("button", "lg");
     expect(open.closest(".sat-card-actions-primary")).not.toBeNull();
+    await userEvent.click(open);
+    expect(onPrepare).toHaveBeenCalledWith(expect.objectContaining({ id: "o1" }), true);
+    // Ni rastro del modo trabajo a pantalla completa.
+    expect(container.querySelector('a[href="/erp/sat/o1"]')).toBeNull();
     const chip = screen.getByRole("button", { name: /Falta albarán/ });
     expect(chip).toHaveClass("sat-chip-btn", "lg");
     const ficha = screen.getByRole("link", { name: "Ficha" });
@@ -192,6 +201,18 @@ describe("SatPreparingCard · Lote 2 PR-2", () => {
     expect(chip.closest(".sat-card-actions-secondary")).toBe(ficha.closest(".sat-card-actions-secondary"));
     // La card ya no es un enlace entero (con botones dentro se pulsaba el equivocado).
     expect(container.querySelector("a.sat-card")).toBeNull();
+  });
+
+  it("en preparación, «📦 Embalar» abre el modal sin volver a empezar", async () => {
+    const onPrepare = jest.fn();
+    render(<SatPreparingCard order={order()} onChanged={() => {}} canEdit onPrepare={onPrepare} />);
+    await userEvent.click(screen.getByRole("button", { name: "📦 Embalar" }));
+    expect(onPrepare).toHaveBeenCalledWith(expect.objectContaining({ id: "o1" }), false);
+  });
+
+  it("sin permiso de preparar no hay botón de preparar/embalar", () => {
+    render(<SatPreparingCard order={order()} onChanged={() => {}} onPrepare={jest.fn()} />);
+    expect(screen.queryByRole("button", { name: /Embalar|Empezar/ })).not.toBeInTheDocument();
   });
 });
 

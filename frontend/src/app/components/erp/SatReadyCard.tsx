@@ -362,9 +362,9 @@ export function SatReadyCard({
   );
 }
 
-/** Card de un pedido YA ENVIADO (recogido / en tránsito / entregado, o
- *  «Sin seguimiento»: enviado sin nº de tracking). Es lo que queda en su sitio
- *  tras «Marcar recogido», y lo que pintan «Enviados» y «Sin seguimiento». */
+/** Card de un pedido que YA SALIÓ (recogido / en tránsito / entregado) o que
+ *  NO se envía («No requiere envío», pestaña «Sin envío»). Es lo que pintan
+ *  «Enviados» y «Sin envío». */
 export function SatShippedCard({ order }: { order: SatQueueItem }) {
   const tracking = order.tracking_number || order.genei?.tracking || null;
   return (
@@ -374,18 +374,20 @@ export function SatShippedCard({ order }: { order: SatQueueItem }) {
         <span className="sat-card-date mono">{satShortDate(order.placed_at)}</span>
       </div>
       <div className="sat-card-meta">
-        <span className={`badge ${order.sin_seguimiento ? "muted" : "ok"}`}>
+        <span className={`badge ${order.sin_envio ? "muted" : "ok"}`}>
           {satShippedLabel(order)}
         </span>
       </div>
       {customerLabel(order) ? (
         <div className="sat-card-customer">{customerLabel(order)}</div>
       ) : null}
-      <dl className="sat-shipped-kv">
-        <dt>Seguimiento</dt>
-        <dd className="mono">{tracking ?? (order.sin_seguimiento ? "Sin seguimiento" : "—")}</dd>
-        {order.genei?.courier ? (<><dt>Agencia</dt><dd>{order.genei.courier}</dd></>) : null}
-      </dl>
+      {order.sin_envio ? null : (
+        <dl className="sat-shipped-kv">
+          <dt>Seguimiento</dt>
+          <dd className="mono">{tracking ?? "—"}</dd>
+          {order.genei?.courier ? (<><dt>Agencia</dt><dd>{order.genei.courier}</dd></>) : null}
+        </dl>
+      )}
       <div className="sat-card-actions-secondary">
         <Link href={`/erp/orders/${order.id}`} className="button secondary lg">Ficha</Link>
       </div>
@@ -393,9 +395,9 @@ export function SatShippedCard({ order }: { order: SatQueueItem }) {
   );
 }
 
-/** Estado de envío legible de un pedido enviado. */
+/** Estado de envío legible de un pedido enviado (o que no se envía). */
 export function satShippedLabel(order: SatQueueItem): string {
-  if (order.sin_seguimiento) return "Enviado sin seguimiento";
+  if (order.sin_envio) return "No requiere envío";
   switch (order.transport_status) {
     case "delivered": return "Entregado";
     case "already_shipped_externally": return "Enviado (externo)";
