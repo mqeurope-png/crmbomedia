@@ -181,6 +181,32 @@ describe("ErpSettingsPage — serie de facturación (C-2)", () => {
     expect(patch).not.toHaveProperty("default_invoice_mode");
   });
 
+  it("espejo: el reconcile automático viene apagado y se enciende con su intervalo", async () => {
+    const user = userEvent.setup();
+    render(<ErpSettingsPage />);
+    const toggle = await screen.findByLabelText("Sincronizar la hoja automáticamente");
+    expect(toggle).not.toBeChecked();                 // apagado por defecto
+    const minutos = screen.getByLabelText("Minutos entre sincronizaciones automáticas");
+    await user.click(toggle);
+    await user.clear(minutos);
+    await user.type(minutos, "15");
+    await user.click(screen.getByRole("button", { name: "Guardar cambios · Hoja de seguimiento en Drive" }));
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
+    const patch = mockUpdate.mock.calls[0][0];
+    expect(patch.seguimiento_reconcile_enabled).toBe(true);
+    expect(patch.seguimiento_reconcile_interval_minutes).toBe(15);
+  });
+
+  it("espejo: el intervalo nunca queda por debajo del mínimo (5)", async () => {
+    const user = userEvent.setup();
+    render(<ErpSettingsPage />);
+    const minutos = await screen.findByLabelText("Minutos entre sincronizaciones automáticas");
+    await user.clear(minutos);
+    await user.type(minutos, "2");
+    await user.tab();                                   // al salir se ajusta
+    expect(minutos).toHaveValue(5);
+  });
+
   it("expone y guarda el ESTPCL del pedido facturado (ERP-E2-fix2)", async () => {
     const user = userEvent.setup();
     render(<ErpSettingsPage />);

@@ -686,7 +686,61 @@ eso); tampoco aparece a la vista en «Descargar Excel». Los ids del histórico
 antiguo se asignan **una sola vez**, con revisión, mediante
 `python -m scripts.backfill_seguimiento_ids` (primero sin `--apply`, que **lista
 las coincidencias dudosas** para que las revises; las claras se aplican solas).
-El histórico manual se conserva intacto.
+Las dudosas se quedan **pendientes** (salen en cada informe) hasta que las
+confirmas con `--confirm`: `ID` (su único candidato), `ID=ORDER_ID` (ese pedido)
+o `ID=none` (no hay pedido detrás). `--confirm` también corrige una fila ya
+resuelta. El histórico manual se conserva intacto.
+
+#### La hoja como espejo de BoHub (en los dos sentidos)
+
+BoHub es la fuente de verdad y «Seguimiento (app)» es su **espejo**: lo que
+cambia en BoHub llega a la hoja, y lo que escribís a mano en las columnas que
+se pueden editar **vuelve a BoHub**. Cada fila se casa por su «id», nunca por
+el Nº de pedido.
+
+**Qué se puede editar en una fila de BoHub:**
+
+| Columnas | Qué pasa si las editas |
+|---|---|
+| **Cliente, Factura, Factura enviada, Nº serie · WhiteRIP** | Tu valor **manda**: BoHub ya no lo pisa y lo recuerda (se ve también en la pantalla de Seguimiento y en el Excel). Si **vacías** la celda, BoHub vuelve a rellenarla. Nunca se copia a FACTUSOL ni a la factura real del pedido. |
+| **Tracking** | Si el pedido **no** tiene envío Genei, tu tracking se guarda **en el pedido** (lo ven la Cola SAT y la ficha). Si **tiene envío Genei, manda Genei**: la celda va protegida y no se puede cambiar a mano. |
+| **Nota / Incidencia** | Si no hay nota escrita, BoHub pone el motivo del bloqueo; en cuanto escribes una nota, **manda la tuya** y BoHub no la toca. Si la vacías, vuelve el motivo. |
+| **Todo lo demás** (Situación, Nº, Fecha, Origen, Productos, Importe, Empresa, Fecha factura, Cobro, Preparación, Envío, Fecha recogido e «id») | **Solo BoHub**. Esas columnas van **protegidas**: no se pueden editar. |
+
+> Google siempre deja editar las celdas protegidas al **propietario** de la
+> hoja. Si lo haces, BoHub **deshace** el cambio en la siguiente pasada: los
+> datos buenos de esas columnas están en BoHub.
+
+**Filas a mano (Origen = MANUAL): se pueden editar enteras.** BoHub las **valida**:
+tienen que llevar **Nº de pedido o Cliente**, y si pones fechas o importe, que
+lo sean. Las válidas reciben su «id» y **se guardan en BoHub**. Una fila que no
+valida se pone **en naranja** con una marca **«[⚠ revisar: …]»** en la Nota que
+dice qué falla, y **no entra en BoHub** hasta que la corriges (no se pierde nada:
+sigue en la hoja tal cual). Al corregirla, la marca desaparece sola. Para añadir
+una fila nueva, **insértala arriba del todo** (bajo la cabecera) **o al final de
+la zona viva**: entre dos filas de BoHub caería dentro de una zona protegida.
+
+**Si borras una fila de la hoja:**
+
+- **De BoHub** → vuelve a aparecer en la siguiente pasada (el borrado de verdad
+  se hace en BoHub, con «Quitar del seguimiento», que es reversible).
+- **A mano o del histórico** → se respeta: desaparece de la hoja y en BoHub queda
+  como **borrada** (se conserva y se puede recuperar).
+- Si desaparecen **muchas filas de golpe** (alguien vacía la pestaña, o una
+  lectura sale mal), BoHub lo trata como un **accidente** y las **vuelve a
+  poner** todas.
+
+Si alguien está escribiendo en la hoja justo mientras se sincroniza, esa pasada
+**no escribe nada** y lo recoge la siguiente: nunca se pisa lo que acabáis de
+teclear.
+
+**Sincronización automática.** En **Configuración ERP → Hoja de seguimiento en
+Drive**, «**Sincronizar la hoja automáticamente**» hace que el espejo corra solo
+cada pocos minutos (10 por defecto, mínimo 5). Viene **apagado**: antes de
+encenderlo, pulsa **«Actualizar hoja de Drive»** y revisa en la vista previa el
+bloque **«Espejo BoHub ↔ hoja»**. En la **primera** pasada, «histórico nuevas»
+debería ser **~0** (si no, el casado del histórico no ha cuadrado: avisa antes
+de seguir). El botón y el automático nunca corren a la vez.
 
 **Los completados bajan al histórico (y siguen vivos).** Cuando pulsas **«Marcar
 completado»**, el pedido **sale de la zona viva y baja al histórico** (bajo el

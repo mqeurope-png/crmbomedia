@@ -173,6 +173,11 @@ class SettingsIn(BaseModel):
     #: cuando exista (coherente con las filas antiguas de Bart) o el de pedido
     #: web si no. Configurable; por defecto True.
     drive_reference_prefer_albaran: bool | None = None
+    #: Espejo (Fase 2) — reconcile automático BoHub ↔ hoja en worker-sync.
+    #: Apagado por defecto: se enciende tras revisar una pasada manual.
+    seguimiento_reconcile_enabled: bool | None = None
+    #: Cada cuántos minutos corre el reconcile automático (mín. 5).
+    seguimiento_reconcile_interval_minutes: int | None = Field(default=None, ge=5, le=1440)
     #: ERP-F6-fix3 — abreviaturas de empresa por serie ({"1": "BO", "2": "MQ",
     #: "5": "ST"}) que se escriben en la columna Empresa del seguimiento.
     factusol_series_abbreviations: dict[str, str] | None = None
@@ -467,6 +472,13 @@ def _serialise_settings(cfg: ErpSettings, session: Session) -> dict[str, Any]:
         "drive_reference_prefer_albaran": bool(
             _series(cfg).get("drive_reference_prefer_albaran", True)
         ),
+        # Espejo (Fase 2): reconcile automático y su intervalo.
+        "seguimiento_reconcile_enabled": bool(
+            _series(cfg).get("seguimiento_reconcile_enabled", False)
+        ),
+        "seguimiento_reconcile_interval_minutes": int(
+            _series(cfg).get("seguimiento_reconcile_interval_minutes") or 10
+        ),
         # ERP-F6-fix3: abreviaturas de empresa (serie→abrev) y las tiendas Woo
         # para poder configurar la serie de cada una (no un único WooCommerce).
         "factusol_series_abbreviations": {
@@ -605,6 +617,8 @@ def update_settings(
             or payload.paypal_contrapartidas_by_store is not None
             or payload.shipping_origins is not None
             or payload.drive_reference_prefer_albaran is not None
+            or payload.seguimiento_reconcile_enabled is not None
+            or payload.seguimiento_reconcile_interval_minutes is not None
             or payload.factusol_series_abbreviations is not None
             or payload.factusol_series_abbr_variants is not None
             or payload.sat_email is not None
@@ -624,6 +638,15 @@ def update_settings(
         if payload.drive_reference_prefer_albaran is not None:
             series["drive_reference_prefer_albaran"] = bool(
                 payload.drive_reference_prefer_albaran
+            )
+        # Espejo (Fase 2): interruptor y cada cuánto corre el reconcile.
+        if payload.seguimiento_reconcile_enabled is not None:
+            series["seguimiento_reconcile_enabled"] = bool(
+                payload.seguimiento_reconcile_enabled
+            )
+        if payload.seguimiento_reconcile_interval_minutes is not None:
+            series["seguimiento_reconcile_interval_minutes"] = int(
+                payload.seguimiento_reconcile_interval_minutes
             )
         # ERP-F6-fix3: abreviaturas de empresa por serie ({"2": "MQ", …}). Solo
         # se guardan las claves numéricas con valor no vacío.

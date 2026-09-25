@@ -201,12 +201,20 @@ def import_legacy_rows(session: Session, historico: list[list[Any]]) -> int:
     return len(session.scalars(select(SeguimientoLegacy)).all())
 
 
+#: Estados «sin resolver»: se vuelven a proponer en cada pasada. `dubious` es
+#: el estado que dejaban las corridas antiguas (antes de que las dudosas se
+#: quedaran en `pending`); se trata igual para que no se queden fuera.
+_SIN_RESOLVER = ("pending", "dubious")
+
+
 def propose_backfill(session: Session) -> list[MatchProposal]:
-    """Propone el casado de TODAS las filas legacy aún sin resolver (pending),
-    contra los pedidos de BoHub. No escribe nada: es el informe para revisar."""
+    """Propone el casado de TODAS las filas legacy aún sin resolver (pending, o
+    `dubious` de corridas antiguas), contra los pedidos de BoHub. No escribe
+    nada: es el informe para revisar."""
     by_full, by_bare = _index_orders(order_refs(session))
     filas = session.scalars(
-        select(SeguimientoLegacy).where(SeguimientoLegacy.match_status == "pending")
+        select(SeguimientoLegacy)
+        .where(SeguimientoLegacy.match_status.in_(_SIN_RESOLVER))
         .order_by(SeguimientoLegacy.row_index)
     )
     return [
@@ -237,38 +245,112 @@ def backfill_report(session: Session) -> dict[str, Any]:
     }
 
 
-def apply_backfill(session: Session, *, confirmar: set[str] | None = None) -> dict[str, Any]:
+#: Valor de `--confirm` que dice «esta fila NO tiene pedido detrás».
+CONFIRM_SIN_PEDIDO = "none"
+
+
+def parse_confirmar(raw: str) -> dict[str, str]:
+    """`--confirm` → {legacy_id: destino}. Formas admitidas, separadas por comas:
+
+      - `ID`           → casar con el ÚNICO candidato que proponga el backfill;
+      - `ID=ORDER_ID`  → casar con ese pedido concreto (revisión de una persona);
+      - `ID=none`      → la fila NO tiene pedido detrás (id sintético).
+
+    El destino vacío («») significa «el candidato propuesto»."""
+    out: dict[str, str] = {}
+    for trozo in (raw or "").split(","):
+        trozo = trozo.strip()
+        if not trozo:
+            continue
+        legacy_id, _sep, destino = trozo.partition("=")
+        if legacy_id.strip():
+            out[legacy_id.strip()] = destino.strip()
+    return out
+
+
+def apply_backfill(
+    session: Session, *, confirmar: dict[str, str] | set[str] | None = None,
+) -> dict[str, Any]:
     """APLICA el casado: escribe `matched_order_id` + `match_status` en
     `seguimiento_legacy`.
 
       - Las CLARAS (proposed) se confirman solas.
-      - Las SINTÉTICAS se marcan como tal (se quedan con su id sintético).
-      - Las DUDOSAS solo se confirman si su `legacy_id` viene en `confirmar`
-        (revisadas por una persona); si no, se quedan `dubious` para revisión.
+      - Las SINTÉTICAS (sin pedido detrás) se marcan como tal.
+      - Las DUDOSAS se quedan `pending` (con su motivo y candidatos en
+        `match_note`): se vuelven a proponer en cada corrida y NUNCA se
+        resuelven solas —ni se casan ni se sintetizan— hasta que una persona las
+        confirma.
+      - `confirmar` ({legacy_id: destino}, ver `parse_confirmar`) manda sobre
+        TODO lo anterior y puede SOBRESCRIBIR una fila ya resuelta (confirmed o
+        synthetic): es la corrección de una persona.
 
-    Idempotente. Devuelve el recuento de lo aplicado."""
-    confirmar = confirmar or set()
-    props = propose_backfill(session)
+    Idempotente. Devuelve el recuento de lo aplicado (y los errores de
+    confirmación: id legacy o pedido inexistentes, candidato ambiguo)."""
+    if isinstance(confirmar, set):
+        confirmar = dict.fromkeys(confirmar, "")
+    confirmar = confirmar or {}
     por_id = {f.id: f for f in session.scalars(select(SeguimientoLegacy))}
+    by_full, by_bare = _index_orders(order_refs(session))
     aplicadas = confirmadas = sinteticas = pendientes = 0
-    for p in props:
+    errores: list[str] = []
+
+    for p in propose_backfill(session):
         fila = por_id.get(p.legacy_id)
-        if fila is None:
-            continue
+        if fila is None or p.legacy_id in confirmar:
+            continue          # las confirmadas a mano se resuelven abajo
         if p.status == "proposed":
             fila.matched_order_id, fila.match_status = p.order_id, "confirmed"
+            fila.match_note = p.note
             aplicadas += 1
         elif p.status == "synthetic":
             fila.matched_order_id, fila.match_status = None, "synthetic"
+            fila.match_note = p.note
             sinteticas += 1
-        elif p.status == "dubious" and p.legacy_id in confirmar and p.candidates:
-            fila.matched_order_id, fila.match_status = p.candidates[0], "confirmed"
-            confirmadas += 1
-        else:  # dudosa sin confirmar: se queda marcada para revisión
-            fila.match_status, fila.match_note = "dubious", p.note
+        else:  # dudosa: PENDIENTE hasta que una persona la confirme
+            fila.matched_order_id, fila.match_status = None, "pending"
+            fila.match_note = (
+                f"{p.note} · candidatos: {', '.join(p.candidates)}" if p.candidates else p.note
+            )
             pendientes += 1
+
+    if confirmar:
+        explicitos = [d for d in confirmar.values() if d and d != CONFIRM_SIN_PEDIDO]
+        pedidos = (
+            set(session.scalars(select(Order.id).where(Order.id.in_(explicitos))))
+            if explicitos else set()
+        )
+        for legacy_id, destino in confirmar.items():
+            fila = por_id.get(legacy_id)
+            if fila is None:
+                errores.append(f"{legacy_id}: no existe en seguimiento_legacy")
+                continue
+            if destino == CONFIRM_SIN_PEDIDO:
+                fila.matched_order_id, fila.match_status = None, "synthetic"
+                fila.match_note = "confirmado a mano: sin pedido"
+                confirmadas += 1
+                continue
+            if not destino:   # el candidato propuesto (ha de ser único)
+                prop = propose_one(legacy_id=fila.id, numero_raw=fila.numero_raw,
+                                   cliente_raw=fila.cliente_raw,
+                                   by_full=by_full, by_bare=by_bare)
+                cands = [prop.order_id] if prop.order_id else list(prop.candidates)
+                if len(cands) != 1:
+                    errores.append(
+                        f"{legacy_id}: {len(cands)} candidatos — indica el pedido "
+                        f"({legacy_id}=ORDER_ID) o {legacy_id}={CONFIRM_SIN_PEDIDO}"
+                    )
+                    continue
+                destino = cands[0]
+            elif destino not in pedidos:
+                errores.append(f"{legacy_id}: el pedido {destino} no existe")
+                continue
+            fila.matched_order_id, fila.match_status = destino, "confirmed"
+            fila.match_note = "confirmado a mano"
+            confirmadas += 1
+
     session.flush()
     return {
         "aplicadas": aplicadas, "confirmadas_a_mano": confirmadas,
         "sinteticas": sinteticas, "dudosas_pendientes": pendientes,
+        "errores": errores,
     }

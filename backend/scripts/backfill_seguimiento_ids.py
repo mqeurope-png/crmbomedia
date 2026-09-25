@@ -14,8 +14,13 @@ escribir ningún id.
     # 3) Aplicar SOLO las claras (y marcar las sintéticas); las dudosas se quedan
     python -m scripts.backfill_seguimiento_ids --apply
 
-    # 4) Confirmar a mano unas dudosas concretas (tras revisarlas) y aplicarlas
-    python -m scripts.backfill_seguimiento_ids --apply --confirm <legacy_id>,<legacy_id>
+    # 4) Confirmar a mano (tras revisar). Sobrescribe aunque la fila ya esté
+    #    resuelta. Por fila: `ID` (su único candidato), `ID=ORDER_ID` (ese
+    #    pedido) o `ID=none` (no hay pedido detrás):
+    python -m scripts.backfill_seguimiento_ids --apply --confirm <id>,<id>=<order_id>,<id>=none
+
+Las dudosas se quedan PENDIENTES (se vuelven a listar en cada corrida) hasta
+que se confirman; nunca se casan ni se sintetizan solas.
 
 Necesita `INTEGRATION_SECRETS_KEY` (credenciales de la cuenta de servicio
 cifradas en la BD) y la hoja compartida con su `client_email`. NO escribe en la
@@ -43,6 +48,7 @@ from app.erp.seguimiento_backfill import (
     apply_backfill,
     backfill_report,
     import_legacy_rows,
+    parse_confirmar,
 )
 
 
@@ -53,9 +59,11 @@ def main() -> int:
     parser.add_argument("--verbose", action="store_true",
                         help="lista TODAS las dudosas con su motivo y candidatos")
     parser.add_argument("--confirm", default="",
-                        help="ids legacy (separados por comas) de dudosas a confirmar a mano")
+                        help="confirmaciones a mano, separadas por comas: ID (su único "
+                             "candidato), ID=ORDER_ID (ese pedido) o ID=none (sin pedido). "
+                             "Sobrescriben aunque la fila ya esté resuelta.")
     args = parser.parse_args()
-    confirmar = {s.strip() for s in args.confirm.split(",") if s.strip()}
+    confirmar = parse_confirmar(args.confirm)
 
     with Session(get_engine()) as session:
         cfg = session.get(ErpSettings, ERP_SETTINGS_SINGLETON_ID)
@@ -104,10 +112,12 @@ def main() -> int:
         res = apply_backfill(session, confirmar=confirmar)
         session.commit()
         print(f"✔ Aplicado: {res['aplicadas']} claras + "
-              f"{res['confirmadas_a_mano']} dudosas confirmadas a mano; "
+              f"{res['confirmadas_a_mano']} confirmadas a mano; "
               f"{res['sinteticas']} sintéticas; {res['dudosas_pendientes']} dudosas "
-              "siguen pendientes de revisión.")
-        return 0
+              "siguen PENDIENTES de revisión.")
+        for err in res["errores"]:
+            print(f"  ⚠ --confirm {err}", file=sys.stderr)
+        return 1 if res["errores"] else 0
 
 
 if __name__ == "__main__":

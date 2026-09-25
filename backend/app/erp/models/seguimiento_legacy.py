@@ -17,9 +17,10 @@ coincidencias dudosas las revisa una persona antes de escribir nada.
 """
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import Integer, String, Text
+from sqlalchemy import DateTime, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.crm import Base, TimestampMixin
@@ -64,6 +65,9 @@ class SeguimientoLegacy(TimestampMixin, Base):
     #: Por qué es dudosa, o qué candidato(s) propone el backfill (para la
     #: revisión de la persona). Texto libre.
     match_note: Mapped[str | None] = mapped_column(Text)
+    #: Fase 2 (espejo): borrado LÓGICO — alguien quitó la fila de la hoja. Se
+    #: conserva (recuperable) pero ya no se pinta.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     @property
     def stable_id(self) -> str:

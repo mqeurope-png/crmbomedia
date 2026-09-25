@@ -218,6 +218,33 @@ class GoogleSheetsClient:
     def tab_titles(self) -> list[str]:
         return [str(p.get("title") or "") for p in self._properties()]
 
+    @property
+    def service_email(self) -> str | None:
+        """El `client_email` de la cuenta de servicio (el único editor de las
+        columnas bloqueadas del espejo)."""
+        return str(self._info.get("client_email") or "") or None
+
+    def tab_metadata(self, title: str) -> dict[str, Any]:
+        """Protecciones y reglas de formato condicional YA puestas en la
+        pestaña, para que el espejo sustituya las suyas en vez de apilarlas."""
+        data = self._request(
+            "GET",
+            "?fields=sheets(properties(sheetId,title),"
+            "protectedRanges(protectedRangeId,description),conditionalFormats)",
+        )
+        self._record({"method": "GET", "api": "spreadsheets.get:metadata", "title": title})
+        for sheet in data.get("sheets") or []:
+            if str((sheet.get("properties") or {}).get("title") or "") != title:
+                continue
+            return {
+                "protected_ranges": [
+                    {"id": pr.get("protectedRangeId"), "description": pr.get("description") or ""}
+                    for pr in sheet.get("protectedRanges") or []
+                ],
+                "conditional_formats": list(sheet.get("conditionalFormats") or []),
+            }
+        return {"protected_ranges": [], "conditional_formats": []}
+
     def first_tab_title(self) -> str:
         """La primera pestaña = la HISTÓRICA (es la que escribe la
         sincronización de siempre)."""

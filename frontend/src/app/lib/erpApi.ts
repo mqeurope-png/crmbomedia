@@ -806,6 +806,30 @@ export type DriveManagedSummary = {
   /** Celdas en las que BoHub dice otra cosa: se conserva lo manual y se marca
    *  en la Nota («⚠ BoHub …»). */
   conflictos?: number;
+  /** Espejo bidireccional (Fase 2): lo leído de la hoja y lo que se ha hecho. */
+  espejo?: SeguimientoEspejoStats;
+};
+
+/** Recuento del espejo BoHub ↔ hoja en una pasada. */
+export type SeguimientoEspejoStats = {
+  /** Primera pasada (sin foto anterior): no se infiere ninguna edición. */
+  bootstrap?: boolean;
+  ediciones_leidas?: number;
+  overrides_guardados?: number;
+  tracking_leidos?: number;
+  tracking_genei_ignorados?: number;
+  manuales_nuevas?: number;
+  manuales_invalidas?: number;
+  historico_ids_asignados?: number;
+  historico_editadas?: number;
+  historico_nuevas?: number;
+  historico_no_encontradas?: number;
+  historico_duplicados_suprimidos?: number;
+  borradas?: number;
+  restauradas?: number;
+  borrado_masivo?: boolean;
+  protecciones?: number;
+  proteccion_error?: string;
 };
 
 /** Resumen de la sincronización INCREMENTAL a la hoja histórica (ERP-F6). Solo
@@ -1727,6 +1751,11 @@ export type ErpSettings = {
   /** ERP-F6-fix2 — preferir el nº de albarán (si existe) sobre el de pedido
    *  web en la columna de referencia de la hoja. Por defecto true. */
   drive_reference_prefer_albaran?: boolean;
+  /** Espejo Seguimiento (Fase 2) — reconcile automático BoHub ↔ hoja en
+   *  worker-sync. Apagado por defecto. */
+  seguimiento_reconcile_enabled?: boolean;
+  /** Cada cuántos minutos corre el reconcile automático (mín. 5; 10 por defecto). */
+  seguimiento_reconcile_interval_minutes?: number;
   /** ERP-F6-fix3 — abreviaturas de empresa por serie ({"1":"BO","2":"MQ",
    *  "5":"ST"}) para la columna Empresa del seguimiento. */
   factusol_series_abbreviations?: Record<string, string>;

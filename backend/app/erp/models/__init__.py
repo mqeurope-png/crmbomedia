@@ -36,6 +36,11 @@ from app.erp.models.seguimiento_legacy import (
     LEGACY_MATCH_STATUSES,
     SeguimientoLegacy,
 )
+from app.erp.models.seguimiento_mirror import (
+    SeguimientoManual,
+    SeguimientoOverride,
+    SeguimientoSnapshot,
+)
 from app.erp.models.settings import ERP_SETTINGS_SINGLETON_ID, ErpSettings, InvoiceMode
 from app.erp.models.shipping import (
     KIND_ALBARAN,
@@ -86,6 +91,9 @@ __all__ = [
     "PreparationStatus",
     "ProductSkuMapping",
     "SeguimientoLegacy",
+    "SeguimientoManual",
+    "SeguimientoOverride",
+    "SeguimientoSnapshot",
     "ShipmentFile",
     "ShipmentPackage",
     "SkuMatchedBy",
