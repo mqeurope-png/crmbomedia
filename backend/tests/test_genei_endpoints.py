@@ -45,6 +45,10 @@ class FakeGenei:
                         "paymentUrl": "https://pay/x"}
         self.shipment = {"shipmentCode": "GEN123", "estado": 5,
                          "codigo_seguimiento": "TRK-9", "nombre_agencia": "GLS"}
+        # `/tracking`: eventos del transportista (vacío = aún sin escaneos:
+        # manda el estado de Genei, como antes).
+        self.tracking = {"status": 1, "message": "",
+                         "data": {"estadosAgencia": [], "estadosInternos": []}}
 
     def agency_prices(self, **kw):
         self.calls.append(("prices", kw))
@@ -73,6 +77,10 @@ class FakeGenei:
     def get_shipment(self, code):
         self.calls.append(("get", code))
         return self.shipment
+
+    def get_tracking(self, code):
+        self.calls.append(("tracking", code))
+        return self.tracking
 
     def get_label(self, code):
         self.calls.append(("label", code))

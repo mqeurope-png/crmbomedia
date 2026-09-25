@@ -51,7 +51,6 @@ from app.erp.drive_sheets import DriveSyncError, ManagedTabTransport
 from app.erp.seguimiento import (
     COBRO_LABELS,
     DATE_PATTERN,
-    ENVIO_LABELS,
     ENVIO_SIN_SEGUIMIENTO_LEGACY,
     HISTORICO_DATE_COLUMNS,
     INCIDENCIAS_COLUMNS,
@@ -63,6 +62,7 @@ from app.erp.seguimiento import (
     SEGUIMIENTO_COLUMNS_V2,
     SITUACION_FILL,
     SITUACION_LABELS,
+    envio_vocabulary,
     incidencia_rows,
     incidencia_values,
     match_number,
@@ -781,7 +781,7 @@ _ENVIO_INDEX = SEGUIMIENTO_COLUMNS_V2.index("Envío")
 #: El vocabulario exacto con el que BoHub rellena esas columnas.
 _COBRO_BOHUB = set(COBRO_LABELS.values())
 _PREPARACION_BOHUB = {*PREPARACION_LABELS.values(), NO_APLICA, "—"}
-_ENVIO_BOHUB = {*ENVIO_LABELS.values(), ENVIO_SIN_SEGUIMIENTO_LEGACY, NO_APLICA, "—"}
+_ENVIO_BOHUB = {*envio_vocabulary(), ENVIO_SIN_SEGUIMIENTO_LEGACY, NO_APLICA, "—"}
 #: Etiqueta de Origen que BoHub escribía antes para un pedido manual sin canal.
 #: Una pestaña escrita antes de este cambio las tiene en su zona viva: NO son
 #: filas tecleadas a mano (ver `_es_fila_heredada_de_bohub`).

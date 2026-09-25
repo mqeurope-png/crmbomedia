@@ -6,7 +6,9 @@ import { SatIncidenciasTab } from "../../components/erp/SatIncidenciasTab";
 import { SatPrepModal } from "../../components/erp/SatPrepModal";
 import { SatPreparingCard } from "../../components/erp/SatPreparingCard";
 import { satDateTime, SatQueueTable } from "../../components/erp/SatQueueTable";
-import { SatReadyCard, SatShippedCard, satShippedLabel } from "../../components/erp/SatReadyCard";
+import {
+  SatReadyCard, SatShippedCard, satShippedLabel, satShippedTone,
+} from "../../components/erp/SatReadyCard";
 import { getCurrentUser } from "../../lib/api";
 import { Cap, can } from "../../lib/capabilities";
 import { extractErrorMessage } from "../../lib/errors";
@@ -104,7 +106,7 @@ function SatShippedTable({
               <td data-label="Cliente" className="sat-td-cliente">{customerLabel(o) || "—"}</td>
               <td data-label="Fecha" className="mono">{satDateTime(o.placed_at)}</td>
               <td data-label="Envío">
-                <span className={`badge ${o.sin_envio ? "muted" : "ok"}`}>
+                <span className={`badge ${satShippedTone(o)}`}>
                   {satShippedLabel(o)}
                 </span>
               </td>
@@ -440,7 +442,8 @@ export default function SatQueuePage() {
     en_preparacion: "Preparación empezada, aún sin embalar: pulsa «📦 Embalar» para meter peso y medidas.",
     embalados: "Embalados, sin etiqueta tramitada: crea el envío con Genei o sube la etiqueta.",
     pendiente_recogida: "Con el envío tramitado y la etiqueta lista: esperando al transportista. "
-      + "Cuando la agencia lo recoge (Genei) o marcas «Recogido», pasa a «Enviados».",
+      + "Cuando lo recogen, marca «📤 Recogido» y pasa a «Enviados» "
+      + "(el estado del transportista se ve, pero no lo mueve).",
     sin_envio: "Pedidos que NO se envían (recogida en tienda, licencia, servicio…): "
       + "no cuentan como enviados. Selecciónalos para devolverlos al taller.",
     enviados: "Pedidos que ya han salido: recogidos, en tránsito o entregados.",

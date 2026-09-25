@@ -596,6 +596,16 @@ class GeneiClient:
         data = self._request("GET", f"/shipments/{shipment_code}")
         return _as_dict(data)
 
+    def get_tracking(self, shipment_code: str) -> dict[str, Any]:
+        """`GET /shipments/{code}/tracking` — historial DETALLADO: los eventos
+        del propio transportista (`data.estadosAgencia[]`: fecha, código y
+        descripción tal cual los da CTT/UPS/GLS…), los estados internos de
+        Genei (`data.estadosInternos[]`) y la URL de seguimiento de la agencia
+        (`message`). Se devuelve el envoltorio entero (la URL va fuera de
+        `data`); lo interpreta `tracking.summarize_tracking`."""
+        data = self._request("GET", f"/shipments/{shipment_code}/tracking")
+        return data if isinstance(data, dict) else {}
+
     #: Pasarela de pago de Genei: 4 = SALDO/CRÉDITO (la que usa BoHub). El
     #: endpoint `pay/transactions` es RESTful (ejecuta el pago) SOLO con saldo;
     #: tarjeta/PSD2 serían una URL de redirección.

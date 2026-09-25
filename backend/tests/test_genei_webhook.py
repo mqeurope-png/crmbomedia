@@ -105,7 +105,10 @@ def test_webhook_rejects_when_no_secret_configured(client, session_factory):
 # --- mapeo de estados → transporte ------------------------------------------
 
 
-def test_webhook_recogido_moves_to_in_transit(client, session_factory):
+def test_webhook_recogido_no_mueve_de_pestana(client, session_factory):
+    """Genei 5 («recogida efectuada / en tránsito») se guarda y se enseña, pero
+    NO pasa el pedido a «Enviados»: eso lo hace una persona con «📤 Marcar
+    recogido». Solo una incidencia mueve el pedido solo."""
     with session_factory() as s:
         _carrier(s)
         oid = _order(s, transport="label_created")
@@ -116,8 +119,32 @@ def test_webhook_recogido_moves_to_in_transit(client, session_factory):
     assert body["matched"] is True and body["order_id"] == oid
     with session_factory() as s:
         o = s.get(Order, oid)
-        assert o.transport_status.value == "in_transit"
+        assert o.transport_status.value == "label_created"
         assert o.tracking_number == "TRK-9"          # el webhook actualiza el tracking
+        assert json.loads(o.packing_json)["genei"]["state_code"] == 5
+
+
+def test_webhook_entregado_sin_marcar_recogido_no_mueve(client, session_factory):
+    with session_factory() as s:
+        _carrier(s)
+        oid = _order(s, transport="label_created")
+        s.commit()
+    r = client.post(f"/api/webhooks/genei?token={SECRET}", json=_payload(estado=3))
+    assert r.status_code == 200
+    with session_factory() as s:
+        assert _transport(s, oid) == "label_created"
+
+
+def test_webhook_incidencia_mueve_aunque_no_se_haya_marcado_recogido(client, session_factory):
+    with session_factory() as s:
+        _carrier(s)
+        oid = _order(s, transport="label_created")
+        s.commit()
+    r = client.post(f"/api/webhooks/genei?token={SECRET}",
+                    json=_payload(estado=9, desc="Recogida fallida"))
+    assert r.status_code == 200
+    with session_factory() as s:
+        assert _transport(s, oid) == "incident"
 
 
 def test_webhook_entregado_moves_to_delivered(client, session_factory):

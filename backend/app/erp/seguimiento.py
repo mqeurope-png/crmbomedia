@@ -789,11 +789,31 @@ def _prep_label(order: Order) -> str:
 
 def _envio_label(order: Order) -> str:
     """Etiqueta de la columna Envío; «No aplica» si no requiere envío (no se
-    envía: no es «enviado»)."""
+    envía: no es «enviado»).
+
+    Con envío Genei y escaneos del transportista (`/tracking`), manda el ÚLTIMO
+    ESCANEO REAL, en vocabulario cerrado («Pendiente de entrada en red»,
+    «Recogido», «En reparto», «Entregado»…) — no el genérico del transporte,
+    que podía dar por recogido lo que la agencia aún no había escaneado. El
+    texto literal de la agencia se ve en la app (Enviados, ficha)."""
     if is_sin_envio(order):
         return NO_APLICA
+    from app.erp.integrations.genei.service import genei_state_of  # noqa: PLC0415
+    from app.erp.integrations.genei.tracking import carrier_step_label  # noqa: PLC0415
+
+    real = carrier_step_label(genei_state_of(order).get("carrier_step"))
+    if real:
+        return real
     st = getattr(order.transport_status, "value", order.transport_status)
     return ENVIO_LABELS.get(str(st or ""), "—")
+
+
+def envio_vocabulary() -> list[str]:
+    """Todos los valores que BoHub escribe en la columna Envío (transporte +
+    escaneo real del transportista), sin repetir."""
+    from app.erp.integrations.genei.tracking import CARRIER_STEP_LABELS  # noqa: PLC0415
+
+    return list(dict.fromkeys([*ENVIO_LABELS.values(), *CARRIER_STEP_LABELS.values()]))
 
 
 def _cobro_state(order: Order) -> str:

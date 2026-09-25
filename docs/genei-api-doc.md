@@ -61,6 +61,11 @@ El cliente DEBE tratar `status:0` (o `errors` no vacío) como error; si no, un f
 - **Eliminar / cancelar:** `DELETE /shipments/{shipmentCode}` — elimina si es prueba; cancela un envío tramitado mientras no haya pasado a tránsito.
 - **Etiqueta:** `GET /shipments/{shipmentCode}/label` — PDF o ZPL, base64 o binario.
 - **Datos completos** (tracking/estado/detalles): `GET /shipments/{shipmentCode}`.
+- **Tracking DETALLADO del transportista** (Swagger oficial v2.0.0): `GET /shipments/{shipmentCode}/tracking` →
+  `{ status:1, message:"<URL de seguimiento web de la agencia>", data:{ estadosAgencia:[{fecha, codigo_estado, descripcion}], estadosInternos:[{fecha, estado_anterior, id_estado_anterior, estado_actual, id_estado_actual}], reintentosRetramitacionAutomaticos:{} } }`.
+  `estadosAgencia` son los **eventos del propio transportista** (CTT, UPS, GLS…) tal cual («Pendiente de entrada en red», «En reparto», «Entregado»…) y pueden venir **desordenados** (se ordenan por `fecha`). `estadosInternos` = los estados de Genei (7→6→1→5→80→3).
+  Variantes: `/tracking-full` (lo mismo + `tipo_envio` y datos de retramitación), `/tracking/url` (`data.webSeguimiento`, `webSeguimientoBultos[]`), `/state` (solo `data.state` numérico).
+  ⚠️ El ejemplo del Swagger usa códigos/descripciones de relleno («AAA0000X», «Ejemplo: …»): el texto real depende de cada agencia; BoHub lo clasifica por palabras clave (`tracking.classify_carrier_text`) y enseña el literal.
 - Direcciones habituales: `GET/POST /addresses`, `GET/PATCH/DELETE /addresses/{addressId}`. [dirección origen por defecto de la cuenta Genei]
 
 ## packagesArray (bultos)
@@ -73,8 +78,11 @@ Origen ≠ centro logístico de Genei (caso BoHub) → NO `box` ni `references`:
 ## Enlace con el pedido y webhook (PR-2)
 - Al crear: `externalShippingCode` = nº pedido BoHub (aparece como `codigo_envio_externo`); `notificationUrl` = webhook BoHub = `<base pública>/api/webhooks/genei?token=<secreto>`. La base va en la config del carrier; el **secreto va cifrado con las credenciales** (se genera al activar el webhook) y **nunca** en `config_json` en claro.
 - **Endpoint:** `POST /api/webhooks/genei?token=<secreto>`. Valida el token (comparación en tiempo constante) contra el secreto guardado; sin token válido → **401** (no se actúa por payloads no verificados). Localiza el pedido por `codigo_envio_externo` (nº de pedido) o por `codigo_envio` (guardado en `packing_json.genei`). **Idempotente**: el mismo estado dos veces no descuadra (un arco ya recorrido no vuelve a aplicarse).
-- **Mapeo estado Genei → `transport_status` del pedido** (fuente COMÚN para ficha, Cola SAT y hoja de Seguimiento; lo aplica el webhook y también «Actualizar estado» manual, como SYSTEM): `5`/`80`/`85`/`2`/`13`/`86` → **in_transit**; `3` → **delivered**; `9`/`10`/`14`/`15`/`78` → **incident** (incidencia de TRANSPORTE, distinta de una de pedido/taller; el texto va a `desc_incidencia`). `7`/`6`/`1`/`77`/`79` no mueven el transporte.
+- **Mapeo estado Genei → bucket** (lo que se ENSEÑA; qué mueve el transporte, ver «Qué mueve el pedido SOLO» abajo): `5`/`80`/`85`/`13`/`86` → bucket **in_transit** (`2` «pendiente de depositar en oficina» ya NO: el transportista aún no lo tiene → bucket `ready`, como `1`); `3` → **delivered**; `9`/`10`/`14`/`15`/`78` → **incident** (incidencia de TRANSPORTE, distinta de una de pedido/taller; el texto va a `desc_incidencia`). `7`/`6`/`1`/`77`/`79` no mueven el transporte.
 - Genei hace `POST` a esa URL en cada cambio de estado: `{ "status": 1, "message": "Shipment processed", "data": { ... } }`.
+- **Granularidad del webhook**: el Swagger lo define como «push notification when shipment is processed successfully… with the same object as `GET /shipments/{shipmentCode}`» → trae **solo el estado de Genei**, NO los eventos del transportista. Por eso BoHub, al recibirlo, **lee además `/tracking`** (si falla, sigue con el estado de Genei) y hay un **sondeo periódico** para el detalle.
+- **Estado real del envío (rev 2026-09-25)**: se guarda en `packing_json.genei` el último escaneo del transportista (`carrier_status` literal, `carrier_status_at`, `carrier_step` normalizado: `pre_transit` / `picked_up` / `in_transit` / `out_for_delivery` / `available_pickup` / `delivered` / `incident` / `unknown`), el historial (`carrier_events`, máx. 40) y `tracking_url`. **Qué mueve el pedido SOLO (`tracking.transport_target`, rev 2026-09-25, decisión de Bart):** las pestañas de la Cola SAT solo cambian solas con una **incidencia** (Genei `9`/`10`/`14`/`15`/`78` → `incident` → «Incidencias»). El paso de «Pendiente de recogida» a «Enviados» lo hace una **persona con «📤 Marcar recogido»**; Genei `5`/`80`/`85`/`13`/`86` (recogido, reparto…) y los escaneos del transportista **solo se guardan y se enseñan**. Excepción sin cambio de pestaña: Genei `3` (entregado) pasa a `delivered` si el pedido ya estaba `in_transit` (ya marcado recogido). El escaneo del transportista es solo INFORMATIVO.
+- **Sondeo** (`tracking_job.py`): job RQ self-rescheduling en `genei:shipments` (ya la escucha `worker-sync`); revisa los envíos vivos (tramitados, no entregados/cerrados, < 60 días) cuya última consulta supera `tracking_poll_minutes` (30, mín. 10), 40 por pasada, commit por envío, se corta si Genei rechaza las credenciales. Interruptor `tracking_poll_enabled` (encendido por defecto; solo LEE de Genei) en Ajustes → Envíos.
 - Campos clave de `data`: `codigo_envio` (=shipmentCode), `codigo_envio_externo` (=nº pedido), `codigo_seguimiento` (tracking), `estado` (num), `nombre_estado`, `nombre_agencia` (courier), `importe`/`importe_total`/`importe_sin_iva`/`valor_impuesto`, `fecha_recogida`, direcciones (`nombre_llegada`, `dir_llegada`, `cp_llegada`, `pob_llegada`, `prov_llegada`, `pais_llegada`, `tel_llegada`, `email_llegada`), `desc_incidencia`, `historico_estados[]` (`{fecha,id_estado,codigo_estado,descripcion}`), `etiqueta` (PDF base64 en la creación; null después), `datos_adicionales[]` (incluye `url_notificacion_api`).
 
 ## Códigos de estado
@@ -84,7 +92,7 @@ Origen ≠ centro logístico de Genei (caso BoHub) → NO `box` ni `references`:
 5 Recogida efectuada / en tránsito → recogido/enviado
 80 En reparto → tránsito
 85 Disponible en oficina → tránsito
-2 Pdte depositar en oficina de recogida → tránsito
+2 Pdte depositar en oficina de recogida → tramitado, sin recoger (bucket `ready`; antes «tránsito», incorrecto)
 13 Concertado próximo reparto → tránsito
 3 Entregado → entregado
 9 Recogida fallida → incidencia

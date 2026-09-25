@@ -12,7 +12,7 @@ from dataclasses import dataclass
 # Buckets (lenguaje BoHub).
 CREATED = "created"          # 7: recién creado, pendiente de pagar
 PROCESSING = "processing"    # 6: pagado, tramitándose
-READY = "ready"             # 1: tramitado, etiqueta disponible
+READY = "ready"             # 1 / 2: tramitado, etiqueta disponible, sin recoger
 IN_TRANSIT = "in_transit"    # recogido / en reparto / en oficina…
 DELIVERED = "delivered"      # entregado
 INCIDENT = "incident"        # incidencia (fallida, devuelto, siniestro…)
@@ -35,7 +35,11 @@ GENEI_STATES: dict[int, GeneiState] = {
     5: GeneiState(5, "Recogida efectuada / en tránsito", IN_TRANSIT),
     80: GeneiState(80, "En reparto", IN_TRANSIT),
     85: GeneiState(85, "Disponible en oficina", IN_TRANSIT),
-    2: GeneiState(2, "Pendiente de depositar en oficina de recogida", IN_TRANSIT),
+    # 2 = tramitado, pero el paquete aún hay que DEPOSITARLO en la oficina: el
+    # transportista no lo tiene. NO es «en tránsito» (antes lo era, y el pedido
+    # salía como recogido sin haber salido): es como 1, esperando al
+    # transportista (pestaña «Pendiente de recogida»; la etiqueta ya existe).
+    2: GeneiState(2, "Pendiente de depositar en oficina de recogida", READY),
     13: GeneiState(13, "Concertado próximo reparto", IN_TRANSIT),
     86: GeneiState(86, "En el centro logístico", IN_TRANSIT),
     3: GeneiState(3, "Paquete entregado", DELIVERED),

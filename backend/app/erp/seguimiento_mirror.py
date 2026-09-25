@@ -847,16 +847,18 @@ def _listas_cerradas() -> dict[int, list[str]]:
     filas manuales; en las de BoHub van protegidas)."""
     from app.erp.seguimiento import (  # noqa: PLC0415
         COBRO_LABELS,
-        ENVIO_LABELS,
         NO_APLICA,
         PREPARACION_LABELS,
         SITUACION_LABELS,
+        envio_vocabulary,
     )
 
     return {
         _COL["Situación"]: list(SITUACION_LABELS.values()),
         _COL["Preparación"]: [*PREPARACION_LABELS.values(), NO_APLICA, "—"],
-        _COL["Envío"]: [*ENVIO_LABELS.values(), NO_APLICA, "—"],
+        # Transporte + escaneo real del transportista («Pendiente de entrada en
+        # red», «En reparto»…), el vocabulario con el que BoHub rellena Envío.
+        _COL["Envío"]: [*envio_vocabulary(), NO_APLICA, "—"],
         _COL["Cobro"]: list(dict.fromkeys(COBRO_LABELS.values())),
     }
 

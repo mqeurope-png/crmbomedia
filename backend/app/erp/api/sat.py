@@ -184,7 +184,20 @@ def _genei_summary(order: Order) -> dict[str, Any] | None:
         "courier": state.get("courier"),
         "tracking": state.get("tracking"),
         "label_available": is_tramitado(state.get("state_bucket")),
+        # Último escaneo REAL del transportista (texto tal cual lo da la
+        # agencia, su fecha y el paso normalizado), leído de Genei `/tracking`.
+        "carrier_status": state.get("carrier_status"),
+        "carrier_status_at": state.get("carrier_status_at"),
+        "carrier_step": state.get("carrier_step"),
+        "carrier_step_label": state.get("carrier_step_label"),
+        "tracking_url": state.get("tracking_url"),
+        "tracking_checked_at": state.get("tracking_checked_at"),
     }
+
+
+#: Buckets de Genei con el envío tramitado y aún en manos de BoHub/transportista
+#: sin incidencia: esperan a «Marcar recogido» (ver `pendiente_de_recogida`).
+_GENEI_TRAMITADO = ("ready", "in_transit", "delivered")
 
 
 def pendiente_de_recogida(order: Order) -> bool:
@@ -192,16 +205,18 @@ def pendiente_de_recogida(order: Order) -> bool:
     TRAMITADO (estado 1+) o etiqueta ya puesta (`label_created`, también la
     subida a mano de otra agencia). Aún no ha salido."""
     from app.erp.integrations.genei.service import genei_state_of  # noqa: PLC0415
-    from app.erp.integrations.genei.status import READY  # noqa: PLC0415
-
     transport = getattr(order.transport_status, "value", order.transport_status)
     if transport == TransportStatus.LABEL_CREATED.value:
         return True
-    # Tramitado y aún sin recoger (Genei 1). Una incidencia/devolución ya salió
+    # Tramitado y aún sin recoger (Genei 1/2). Una incidencia/devolución ya salió
     # y tiene un problema: va a «Incidencias», no a esperar al transportista.
     if transport in (TransportStatus.INCIDENT.value, TransportStatus.RETURNED.value):
         return False
-    return genei_state_of(order).get("state_bucket") == READY
+    # Envío Genei tramitado aún sin «Marcar recogido»: aunque Genei o el
+    # transportista ya digan recogido/en tránsito, sigue aquí hasta que una
+    # persona lo marque (solo una incidencia lo mueve sola, ver
+    # `tracking.transport_target`).
+    return genei_state_of(order).get("state_bucket") in _GENEI_TRAMITADO
 
 
 def sat_tab_of(order: Order) -> str | None:

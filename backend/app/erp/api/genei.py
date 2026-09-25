@@ -277,6 +277,9 @@ class GeneiConfigIn(BaseModel):
     #: Base pública del backend para el webhook de estados (PR-2). Al fijarla se
     #: genera el secreto (cifrado); el `notificationUrl` se envía al crear.
     webhook_base_url: str | None = None
+    #: Sondeo del tracking detallado (eventos del transportista) en worker-sync.
+    tracking_poll_enabled: bool | None = None
+    tracking_poll_minutes: int | None = Field(default=None, ge=10, le=24 * 60)
 
 
 # --- prefill / prices -------------------------------------------------------
@@ -564,10 +567,15 @@ def genei_fetch_label(
     if not is_tramitado(genei_state_of(order).get("state_bucket")):
         # El estado guardado puede ir atrasado (pagado en la web de Genei sin
         # que llegara el webhook): se consulta a Genei antes de decir que no.
-        from app.erp.integrations.genei.webhook import apply_shipment_state  # noqa: PLC0415
+        from app.erp.integrations.genei.webhook import (  # noqa: PLC0415
+            apply_shipment_state,
+            safe_tracking,
+        )
 
         try:
-            apply_shipment_state(session, order, client.get_shipment(code))
+            shipment = client.get_shipment(code)
+            apply_shipment_state(session, order, shipment,
+                                 tracking=safe_tracking(client, code))
         except GeneiError as exc:
             logger.info("genei: no se pudo refrescar el estado antes de la etiqueta: %s", exc)
         if not is_tramitado(genei_state_of(order).get("state_bucket")):
@@ -609,10 +617,15 @@ def genei_refresh(
     current_user: User = Depends(require_sat_tracking),
 ) -> dict[str, Any]:
     """«Actualizar estado»: consulta el envío en Genei y refresca el estado, el
-    tracking y el courier en el pedido. Es el RESPALDO MANUAL del webhook: usa
-    la misma lógica (`apply_shipment_state`), así que también mueve el
-    `transport_status` del pedido (recogido / entregado / incidencia)."""
-    from app.erp.integrations.genei.webhook import apply_shipment_state  # noqa: PLC0415
+    tracking y el courier en el pedido, y los EVENTOS DEL TRANSPORTISTA
+    (`/tracking`: el último escaneo real, p. ej. «Pendiente de entrada en
+    red»). Es el RESPALDO MANUAL del webhook y del sondeo: usa la misma lógica
+    (`apply_shipment_state`). Solo una incidencia mueve el pedido de pestaña;
+    el paso a «Enviados» es «📤 Marcar recogido»."""
+    from app.erp.integrations.genei.webhook import (  # noqa: PLC0415
+        apply_shipment_state,
+        safe_tracking,
+    )
 
     order = _get_order(session, order_id)
     code = shipment_code_of_order(order)
@@ -627,7 +640,8 @@ def genei_refresh(
     except GeneiError as exc:
         raise _genei_error(exc) from exc
 
-    summary, _applied = apply_shipment_state(session, order, raw)
+    summary, _applied = apply_shipment_state(session, order, raw,
+                                             tracking=safe_tracking(client, code))
     session.commit()
     session.refresh(order)
     return {"order_id": order.id, "summary": summary, "state": _serialise_state(order)}
@@ -699,6 +713,9 @@ def genei_config_get(
         ),
         # Estado de la conexión (sesión renovada sola): nunca el token.
         "auth": GeneiClient.auth_status_of(carrier),
+        # Sondeo del tracking detallado (eventos del transportista).
+        "tracking_poll_enabled": cfg.tracking_poll_enabled,
+        "tracking_poll_minutes": cfg.tracking_poll_minutes,
     }
 
 
@@ -766,6 +783,10 @@ def genei_config_put(
     # CIFRADO con las credenciales, nunca en config_json en claro.
     if payload.webhook_base_url is not None:
         cfg.webhook_base_url = payload.webhook_base_url.strip()
+    if payload.tracking_poll_enabled is not None:
+        cfg.tracking_poll_enabled = payload.tracking_poll_enabled
+    if payload.tracking_poll_minutes is not None:
+        cfg.tracking_poll_minutes = payload.tracking_poll_minutes
     if cfg.webhook_base_url and carrier.api_credentials_encrypted:
         try:
             creds = GeneiClient._decode_credentials(carrier.api_credentials_encrypted)

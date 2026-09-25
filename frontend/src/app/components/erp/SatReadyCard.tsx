@@ -15,6 +15,7 @@ import {
   type SeguimientoFieldsPatch,
   type ShipmentFileKind,
 } from "../../lib/erpApi";
+import { carrierDate, carrierStepTone } from "../../lib/geneiApi";
 import { FileUploadButton } from "./FileUploadButton";
 import { GeneiShipmentSection } from "./GeneiShipmentSection";
 import { SatAlbaranChip, useSatAlbaranAction } from "./SatPreparingCard";
@@ -339,6 +340,8 @@ export function SatReadyCard({
         </div>
         {/* Lote 5 · #3 — nº de seguimiento, junto a la etiqueta. */}
         <SatTrackingField order={order} onChanged={onChanged} />
+        {/* Esperando al transportista: su último escaneo REAL (vía Genei). */}
+        <SatCarrierStatus order={order} />
         {/* Genei (PR-1 follow-up): crear el envío desde la propia Cola SAT, sin
             ir a la ficha. El pedido «Listo» ya está embalado, así que se puede
             crear. Reutiliza GeneiShipmentSection (comparador, etiqueta, estado). */}
@@ -362,11 +365,36 @@ export function SatReadyCard({
   );
 }
 
+/** Último escaneo REAL del transportista (Genei `/tracking`): el texto tal
+ *  cual lo da la agencia, su fecha y el enlace a su web de seguimiento. Nada
+ *  si aún no hay escaneos. */
+export function SatCarrierStatus({ order }: { order: SatQueueItem }) {
+  const g = order.genei;
+  if (!g?.carrier_status) return null;
+  const when = carrierDate(g.carrier_status_at);
+  return (
+    <p className="sat-carrier-status small" aria-label="Estado según el transportista">
+      <span className={`badge ${carrierStepTone(g.carrier_step)}`}>{g.carrier_status}</span>
+      {when ? <span className="muted"> · {when}</span> : null}
+      {g.courier ? <span className="muted"> · {g.courier}</span> : null}
+      {g.tracking_url ? (
+        <>
+          {" · "}
+          <a href={g.tracking_url} target="_blank" rel="noopener noreferrer">
+            Ver en la web de la agencia
+          </a>
+        </>
+      ) : null}
+    </p>
+  );
+}
+
 /** Card de un pedido que YA SALIÓ (recogido / en tránsito / entregado) o que
  *  NO se envía («No requiere envío», pestaña «Sin envío»). Es lo que pintan
  *  «Enviados» y «Sin envío». */
 export function SatShippedCard({ order }: { order: SatQueueItem }) {
   const tracking = order.tracking_number || order.genei?.tracking || null;
+  const when = carrierDate(order.genei?.carrier_status_at);
   return (
     <article className="sat-card sat-shipped-card" aria-label={`Pedido ${order.order_number}`}>
       <div className="sat-card-top">
@@ -374,9 +402,11 @@ export function SatShippedCard({ order }: { order: SatQueueItem }) {
         <span className="sat-card-date mono">{satShortDate(order.placed_at)}</span>
       </div>
       <div className="sat-card-meta">
-        <span className={`badge ${order.sin_envio ? "muted" : "ok"}`}>
+        <span className={`badge ${satShippedTone(order)}`}
+              title={order.genei?.carrier_status ? "Estado según el transportista" : undefined}>
           {satShippedLabel(order)}
         </span>
+        {when ? <span className="muted small"> · {when}</span> : null}
       </div>
       {customerLabel(order) ? (
         <div className="sat-card-customer">{customerLabel(order)}</div>
@@ -384,7 +414,13 @@ export function SatShippedCard({ order }: { order: SatQueueItem }) {
       {order.sin_envio ? null : (
         <dl className="sat-shipped-kv">
           <dt>Seguimiento</dt>
-          <dd className="mono">{tracking ?? "—"}</dd>
+          <dd className="mono">
+            {tracking && order.genei?.tracking_url ? (
+              <a href={order.genei.tracking_url} target="_blank" rel="noopener noreferrer">
+                {tracking}
+              </a>
+            ) : (tracking ?? "—")}
+          </dd>
           {order.genei?.courier ? (<><dt>Agencia</dt><dd>{order.genei.courier}</dd></>) : null}
         </dl>
       )}
@@ -395,13 +431,26 @@ export function SatShippedCard({ order }: { order: SatQueueItem }) {
   );
 }
 
-/** Estado de envío legible de un pedido enviado (o que no se envía). */
+/** Estado de envío legible de un pedido enviado (o que no se envía). Manda el
+ *  ÚLTIMO ESCANEO REAL del transportista, tal cual lo da la agencia (Genei
+ *  `/tracking`); si aún no hay, el estado de Genei; y si tampoco, el del
+ *  transporte. Antes salía siempre el genérico «Recogido · en tránsito», que
+ *  podía ser falso (la agencia aún no lo había escaneado). */
 export function satShippedLabel(order: SatQueueItem): string {
   if (order.sin_envio) return "No requiere envío";
+  if (order.genei?.carrier_status) return order.genei.carrier_status;
+  if (order.genei?.state_label) return order.genei.state_label;
   switch (order.transport_status) {
     case "delivered": return "Entregado";
     case "already_shipped_externally": return "Enviado (externo)";
     case "in_transit": return "Recogido · en tránsito";
     default: return "Enviado";
   }
+}
+
+/** Tono de la pastilla del estado de envío (por el paso real si lo hay). */
+export function satShippedTone(order: SatQueueItem): string {
+  if (order.sin_envio) return "muted";
+  if (order.genei?.carrier_step) return carrierStepTone(order.genei.carrier_step);
+  return order.transport_status === "delivered" ? "ok" : "info";
 }

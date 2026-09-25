@@ -12,10 +12,13 @@ import {
   geneiPrices,
   geneiRefresh,
   geneiStateTone,
+  carrierDate,
+  carrierStepTone,
   type GeneiAgencyOption,
   type GeneiDestination,
   type GeneiPackage,
   type GeneiPrefill,
+  type CarrierEvent,
   type GeneiState,
 } from "../../lib/geneiApi";
 
@@ -102,7 +105,8 @@ export function GeneiShipmentSection({
     try {
       const r = await geneiRefresh(orderId);
       setState(r.state);
-      setNotice(`Estado actualizado: ${r.summary.state_label}.`);
+      // Manda el último escaneo real del transportista, si Genei ya lo tiene.
+      setNotice(`Estado actualizado: ${r.state.carrier_status ?? r.summary.state_label}.`);
       onChanged?.();
     } catch (e) {
       setError(extractErrorMessage(e, "No se pudo actualizar el estado en Genei."));
@@ -174,8 +178,27 @@ export function GeneiShipmentSection({
           ) : null}
           {state.tracking ? (
             <div className="erp-flow-kv"><span className="k">Seguimiento</span>
-              <span className="v mono">{state.tracking}</span></div>
+              <span className="v mono">
+                {state.tracking_url ? (
+                  <a href={state.tracking_url} target="_blank" rel="noopener noreferrer">
+                    {state.tracking}
+                  </a>
+                ) : state.tracking}
+              </span></div>
           ) : null}
+          {state.carrier_status ? (
+            /* Último escaneo REAL del transportista (Genei `/tracking`), tal cual. */
+            <div className="erp-flow-kv"><span className="k">Transportista</span>
+              <span className="v">
+                <span className={`badge ${carrierStepTone(state.carrier_step)}`}>
+                  {state.carrier_status}
+                </span>
+                {state.carrier_status_at ? (
+                  <span className="muted small"> · {carrierDate(state.carrier_status_at)}</span>
+                ) : null}
+              </span></div>
+          ) : null}
+          <CarrierHistory events={state.carrier_events ?? []} />
           {canManage && state.state_bucket === "created" ? (
             /* PR-2: se paga por API contra el saldo de la cuenta, sin popup. Lo
                dispara SIEMPRE una persona con este botón (nunca automático). */
@@ -465,4 +488,23 @@ function destMissing(d: GeneiDestination): string[] {
     ["town", "población"], ["isoCountry", "país"],
   ];
   return req.filter(([k]) => !String(d[k] ?? "").trim()).map(([, l]) => l);
+}
+
+/** Historial del transportista (más reciente arriba), plegado. */
+function CarrierHistory({ events }: { events: CarrierEvent[] }) {
+  if (!events.length) return null;
+  const recientes = [...events].reverse();
+  return (
+    <details className="erp-genei-events">
+      <summary>Historial del transportista ({events.length})</summary>
+      <ol aria-label="Historial del transportista">
+        {recientes.map((e, i) => (
+          <li key={`${e.fecha}-${i}`}>
+            <span className="mono muted">{carrierDate(e.fecha)}</span>{" "}
+            <span className={`badge ${carrierStepTone(e.step)}`}>{e.descripcion}</span>
+          </li>
+        ))}
+      </ol>
+    </details>
+  );
 }

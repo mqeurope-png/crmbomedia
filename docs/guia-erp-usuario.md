@@ -504,9 +504,28 @@ vistazo; la activa va un punto más intensa y subrayada):
 Fondos claros con texto oscuro del mismo tono: el texto se lee bien en todas
 (contraste ≥ 7:1).
 
-Cuando la agencia recoge el paquete (Genei lo avisa solo, o pulsas **«Actualizar
-estado»** o **«📤 Marcar recogido»**), el pedido pasa de **«Pendiente de
-recogida»** a **«Enviados»**.
+Cuando la agencia recoge el paquete, pulsa **«📤 Marcar recogido»**: el pedido
+pasa de **«Pendiente de recogida»** a **«Enviados»**. **Las pestañas solo se
+mueven solas con una incidencia** (Genei avisa de una incidencia → el pedido va a
+**«Incidencias»**); el resto de avisos de Genei y del transportista solo se
+enseñan. Un pedido ya en «Enviados» pasa a *Entregado* solo cuando Genei lo
+confirma (sigue en la misma pestaña).
+
+**Estado real del envío (según el transportista).** En los envíos hechos con
+Genei, BoHub lee los **escaneos del propio transportista** (CTT, UPS, GLS…) y
+enseña el último **tal cual lo da la agencia** —p. ej. *«PENDIENTE DE ENTRADA EN
+RED»*, *«EN REPARTO»*, *«ENTREGADO»*— con su fecha, en la columna **Envío** de
+«Enviados», en la tarjeta de «Pendiente de recogida» y en la ficha (con el
+**historial del transportista** y el enlace a la web de la agencia). Se
+actualiza solo: al avisar Genei y, además, cada 30 minutos para los envíos en
+curso. **Es informativo: no mueve el pedido de pestaña** (eso lo hace «📤 Marcar
+recogido», o una incidencia). Colores: ámbar = aún sin escanear, azul = en
+camino, verde = entregado, rojo = incidencia. En la
+hoja «Seguimiento (app)», la columna Envío lleva ese paso real (*Pendiente de
+entrada en red*, *Recogido*, *En tránsito*, *En reparto*, *Disponible en
+oficina*, *Entregado*, *Incidencia*). Si Genei aún no tiene escaneos, se ve su
+propio estado. Los envíos con etiqueta de otra agencia (no Genei) siguen como
+hasta ahora.
 
 > La antigua pestaña «Enviados» era el **historial de pedidos mandados al
 > taller** (email al SAT o aprobación). Ahora «Enviados» son los que **han
@@ -1012,6 +1031,11 @@ caducidad. Debajo de la password verás el estado:
 
 Guardar esta sección **ya no cambia el secreto del webhook**: los envíos creados
 antes siguen avisando a BoHub de cada cambio de estado.
+
+**«Estado real del envío (transportista)»**: *«Consultar automáticamente»*
+(encendido por defecto) y cada cuántos minutos (mínimo 10) BoHub pregunta a
+Genei por los escaneos del transportista de los envíos en curso. Solo lee de
+Genei; no paga ni crea nada.
 
 **Webhooks y fecha de corte** están en **«ERP · Integraciones · Woo»**: cada
 tienda tiene su **URL de webhook** y un **secreto** (**«Regenerar»** si hace
