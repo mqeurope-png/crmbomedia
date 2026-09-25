@@ -818,9 +818,20 @@ conservan**.
 
 > **La pestaña histórica no se toca.** Es la hoja de siempre, con miles de filas
 > que el equipo ha editado a mano, y queda como archivo de consulta: la app
-> nunca la reescribe ni borra nada de ella. Si el título de la pestaña
-> gestionada coincidiera con el de la histórica, la actualización se niega a
-> escribir y te lo dice.
+> nunca la reescribe ni borra nada de ella. La app reconoce sus pestañas por el
+> **contenido** (su cabecera, el separador del histórico o sus filas), no por la
+> posición: puedes ordenar las pestañas como quieras, y «Seguimiento (app)»
+> puede ser la primera. Si el título configurado apuntara a la hoja vieja (o a
+> cualquier pestaña hecha a mano), la actualización se niega a escribir y te lo
+> dice; la vista previa también.
+>
+> Ojo con el **modo antiguo** (solo añadir filas), si alguna vez lo reactivas:
+> ese sí escribe en la **primera** pestaña del documento. Si la primera es la de
+> la app, se niega; pon la hoja vieja la primera antes de usarlo.
+>
+> El comando de importación del histórico (abajo) también lee la **primera**
+> pestaña como hoja vieja. Ya se ejecutó y no hace falta repetirlo; si alguna
+> vez hubiera que hacerlo, pon antes la hoja vieja la primera.
 >
 > El **histórico** se genera una sola vez con el comando
 > `python -m scripts.importar_historico_seguimiento` (primero sin `--apply`, que

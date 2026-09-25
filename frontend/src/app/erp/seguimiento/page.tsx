@@ -345,7 +345,8 @@ export default function SeguimientoPage() {
         isManagedSummary(summary)
           ? `Hoja actualizada: ${summary.rows} filas de BoHub`
             + (summary.manuales ? ` + ${summary.manuales} añadidas a mano (conservadas)` : "")
-            + ` en «${summary.tab}». El histórico («${summary.historic_tab}») no se ha tocado.`
+            + ` en «${summary.tab}».`
+            + (summary.historic_tab ? ` La pestaña «${summary.historic_tab}» no se ha tocado.` : "")
           : `Hoja actualizada: ${summary.appended_rows} filas añadidas. `
             + `${summary.orders_to_review} pedidos a revisar.`,
       );
@@ -868,9 +869,11 @@ export default function SeguimientoPage() {
               ? ` Pestañas creadas: ${syncSummary.created_tabs.join(", ")}.`
               : ""}
           </p>
-          <p className="muted small">
-            La pestaña «{syncSummary.historic_tab}» (el histórico) no se ha tocado.
-          </p>
+          {syncSummary.historic_tab ? (
+            <p className="muted small">
+              La pestaña «{syncSummary.historic_tab}» no se ha tocado.
+            </p>
+          ) : null}
         </section>
       ) : null}
 
@@ -1164,9 +1167,11 @@ function ManagedPreview({ summary }: { summary: DriveManagedSummary }) {
             se conservan en «{summary.incidencias_tab}».
           </li>
         ) : null}
-        <li className="muted small">
-          La pestaña «{summary.historic_tab}» (la hoja vieja en bruto) no se toca.
-        </li>
+        {summary.historic_tab ? (
+          <li className="muted small">
+            La pestaña «{summary.historic_tab}» no se toca.
+          </li>
+        ) : null}
       </ul>
       {summary.espejo ? <EspejoResumen e={summary.espejo} /> : null}
     </>

@@ -2,10 +2,12 @@
 
 La hoja de Drive de Bart tiene dos mundos y no se mezclan:
 
-- La pestaña **histórica** (la primera del documento) es suya: miles de filas
+- La pestaña **histórica** en bruto (la hoja vieja) es suya: miles de filas
   con anotaciones a mano. La sincronización de siempre (`drive_sheets`) solo
   INSERTA ahí y jamás reescribe ni formatea. Este módulo **no la toca**, y lo
-  comprueba antes de escribir (`_guard_not_historic`).
+  comprueba antes de escribir por su CONTENIDO, esté en la posición que esté
+  (`_guard_pestana_de_la_app`). Su histórico ya vive, importado, bajo el
+  separador de la pestaña gestionada, que lo preserva en cada pasada.
 - La pestaña **gestionada** («Seguimiento (app)», configurable) es de la app:
   se reescribe entera en cada actualización con las 17 columnas del rediseño
   2026, ordenada por fecha del pedido (más reciente primero) y con la celda
@@ -38,11 +40,13 @@ import logging
 import math
 import re
 import zlib
+from collections.abc import Callable
 from datetime import date, timedelta
 from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.erp.drive_historico import SITUACION_HISTORICO
 from app.erp.drive_sheets import DriveSyncError, ManagedTabTransport
 from app.erp.seguimiento import (
     COBRO_LABELS,
@@ -179,19 +183,70 @@ def _hex_rgb(value: str) -> dict[str, float]:
     return _rgb((int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16)))
 
 
-def _guard_not_historic(sheets: ManagedTabTransport, title: str) -> None:
-    """La pestaña gestionada NO puede ser la histórica.
+def _cabecera_de_la_app(row: list[Any], cabecera: list[str]) -> bool:
+    """¿Es esta fila la cabecera que escribe la app en esa pestaña? Basta con el
+    principio: las versiones anteriores del formato (17/18 columnas) empiezan
+    igual y solo se diferencian al final."""
+    return [_texto(c).casefold() for c in row[:3]] == [c.casefold() for c in cabecera[:3]]
+
+
+def fila_de_seguimiento_app(fila: list[Any]) -> bool:
+    """¿Fila con la forma de «Seguimiento (app)»? Tecleada a mano (Origen =
+    MANUAL) o con una Situación de las que escribe la app (incluidas «Completado»
+    y «Histórico»). En la hoja vieja esas columnas son Empresa y OFI-TER-SAT, que
+    nunca llevan esos valores."""
+    situacion = _texto(fila[0]).casefold() if fila else ""
+    return (
+        is_manual_row(fila)
+        or situacion in _SITUACION_POR_ETIQUETA
+        or situacion in {SITUACION_COMPLETADO_LABEL.casefold(), SITUACION_HISTORICO.casefold()}
+    )
+
+
+def _guard_pestana_de_la_app(
+    title: str, valores: list[list[Any]], cabecera: list[str],
+    fila_propia: Callable[[list[Any]], bool] | None = None,
+) -> None:
+    """La pestaña que se va a REESCRIBIR entera tiene que ser de la app.
 
     Es la única protección que separa «reescribir entera» de «destruir el
-    archivo de Bart», así que se comprueba en cada escritura y no una sola vez
-    al configurar: alguien podría renombrar pestañas en Drive."""
-    historic = sheets.first_tab_title()
-    if title.strip().casefold() == historic.strip().casefold():
-        raise DriveSyncError(
-            f"la pestaña gestionada no puede ser «{historic}», que es la "
-            "HISTÓRICA: se reescribe entera en cada actualización y se "
-            "perdería el archivo. Cambia el título en Configuración ERP."
-        )
+    archivo de Bart», así que se comprueba en cada escritura (y en la vista
+    previa), no una sola vez al configurar: en Drive se renombran y se mueven
+    pestañas.
+
+    Se decide por el CONTENIDO, no por la posición. Antes se comparaba con la
+    primera pestaña del documento, y eso fallaba en los dos sentidos: bloqueaba
+    «Seguimiento (app)» en cuanto alguien la ponía la primera, aunque el
+    histórico viva DENTRO de ella (bajo el separador, preservado en cada
+    pasada), y no protegía la hoja vieja si se movía a otro sitio. Es de la app
+    si está vacía (no hay nada que perder), si tiene la cabecera que escribe la
+    app, su separador de zonas o filas con su forma (`fila_propia`: así se
+    reconoce aunque alguien borre la cabecera). La hoja vieja en bruto no tiene
+    nada de eso (su cabecera es «Empresa, Fecha entrada albarán…» y su
+    marcador, «^^^^»), así que se rechaza esté donde esté."""
+    if not any(_texto(c) for fila in valores for c in fila):
+        return
+    if any(_cabecera_de_la_app(list(f), cabecera) for f in valores[:5]):
+        return
+    if any(is_separator(list(f)) for f in valores):
+        return
+    if fila_propia is not None and any(fila_propia(list(f)) for f in valores):
+        return
+    raise DriveSyncError(
+        f"la pestaña «{title}» no tiene el formato de la app (ni su cabecera ni "
+        "el separador del histórico): parece la hoja vieja en bruto u otra "
+        "pestaña hecha a mano, y el volcado la reescribe entera, así que se "
+        "perdería. No se ha escrito nada. Pon otro título en Configuración ERP "
+        "(si la pestaña no existe, la app la crea)."
+    )
+
+
+def pestana_archivo(titles: list[str], gestionadas: tuple[str, ...]) -> str:
+    """La pestaña que la vista previa nombra como «no se toca»: la primera que
+    NO es de la app (normalmente la hoja vieja en bruto), o "" si no hay
+    ninguna. Solo informa; la protección es `_guard_pestana_de_la_app`."""
+    propias = {t.strip().casefold() for t in gestionadas}
+    return next((t for t in titles if t.strip().casefold() not in propias), "")
 
 
 #: Día 0 de Google Sheets (y de Excel): las fechas son «días desde aquí».
@@ -1102,8 +1157,6 @@ def push_managed_tabs(
     ve antes de confirmar. Devuelve qué pestañas se escribirían, cuántas filas
     y el desglose por Situación, más la pestaña histórica que NO se toca."""
     pedidos_tab, incidencias_tab = managed_tab_titles(session)
-    _guard_not_historic(sheets, pedidos_tab)
-    _guard_not_historic(sheets, incidencias_tab)
 
     existing = sheets.tab_titles()
     # LEER antes de escribir: la pestaña trae las filas tecleadas a mano
@@ -1118,6 +1171,15 @@ def push_managed_tabs(
     valores_pedidos = (
         sheets.tab_values(pedidos_tab, raw=True) if pedidos_tab in existing else []
     )
+    valores_incidencias = (
+        sheets.tab_values(incidencias_tab, raw=True) if incidencias_tab in existing else []
+    )
+    # Las DOS pestañas se comprueban antes de escribir ninguna: una que no sea
+    # de la app (la hoja vieja en bruto, una pestaña hecha a mano) no se toca.
+    _guard_pestana_de_la_app(
+        pedidos_tab, valores_pedidos, SEGUIMIENTO_COLUMNS_V2, fila_de_seguimiento_app,
+    )
+    _guard_pestana_de_la_app(incidencias_tab, valores_incidencias, INCIDENCIAS_COLUMNS)
     # La misma pestaña como se VE, solo si hay filas manuales: sirve para no
     # perder el aspecto de lo tecleado en columnas sin formato propio.
     vistos = (
@@ -1162,7 +1224,7 @@ def push_managed_tabs(
         "mode": "managed_tab",
         "tab": pedidos_tab,
         "incidencias_tab": incidencias_tab,
-        "historic_tab": sheets.first_tab_title(),
+        "historic_tab": pestana_archivo(existing, (pedidos_tab, incidencias_tab)),
         "rows": len(ordenadas),
         "incidencias": len(incidencias),
         "por_situacion": por_situacion,
@@ -1225,9 +1287,7 @@ def push_managed_tabs(
         if (filas_completados or estatico_manual) else []
     )
     estatico_incidencias = dates_to_serial(
-        static_block(sheets.tab_values(incidencias_tab, raw=True))
-        if incidencias_tab in existing else [],
-        INCIDENCIAS_DATE_COLUMNS,
+        static_block(valores_incidencias), INCIDENCIAS_DATE_COLUMNS,
     )
     resumen["historico_preservado"] = len(estatico_manual)
     resumen["completados_historico"] = len(filas_completados)
@@ -1291,10 +1351,10 @@ def push_managed_tabs(
     logger.info(
         "drive: volcado del seguimiento a «%s» (%d de BoHub + %d a mano, %d "
         "fusionadas, %d conflictos + %d completados + %d históricas) y «%s» "
-        "(%d vivas + %d heredadas); histórico manual «%s» intacto",
+        "(%d vivas + %d heredadas); pestaña «%s» sin tocar",
         pedidos_tab, len(ordenadas), len(manuales), fusion["fusionadas"],
         fusion["conflictos"], resumen["completados_historico"],
         resumen["historico_preservado"], incidencias_tab, len(incidencias),
-        resumen["pendientes_preservados"], resumen["historic_tab"],
+        resumen["pendientes_preservados"], resumen["historic_tab"] or "—",
     )
     return resumen

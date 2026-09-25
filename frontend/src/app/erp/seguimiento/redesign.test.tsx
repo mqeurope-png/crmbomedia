@@ -163,6 +163,27 @@ describe("ERP · Seguimiento — hoja simplificada (rediseño 2026)", () => {
       .toBeInTheDocument();
   });
 
+  it("sin otra pestaña en el documento, la previsualización no nombra ninguna «que no se toca»", async () => {
+    // «Seguimiento (app)» puede ser la primera (o la única) pestaña: el
+    // histórico vive dentro, bajo el separador. No hay «hoja vieja» que nombrar.
+    mockRowsConDrive([row()]);
+    (syncSeguimientoDrive as jest.Mock).mockResolvedValue({
+      mode: "managed_tab", tab: "Seguimiento (app)",
+      incidencias_tab: "Incidencias (app)", historic_tab: "",
+      rows: 12, incidencias: 0, por_situacion: {}, historico_preservado: 7737,
+      columns: new Array(19).fill("x"), dry_run: true, written: false,
+    });
+    const user = userEvent.setup();
+    render(<SeguimientoPageView />);
+    await user.click(await screen.findByRole("button", { name: /Actualizar hoja de Drive/ }));
+    expect(await screen.findByText(/Se reescribirá la pestaña/)).toHaveTextContent(
+      "«Seguimiento (app)»",
+    );
+    expect(screen.getByText(/filas del histórico se/)).toHaveTextContent("7737");
+    expect(screen.queryByText(/no se toca/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/«»/)).not.toBeInTheDocument();
+  });
+
   it("la previsualización enseña el resumen del espejo (primera pasada)", async () => {
     mockRowsConDrive([row()]);
     (syncSeguimientoDrive as jest.Mock).mockResolvedValue({
