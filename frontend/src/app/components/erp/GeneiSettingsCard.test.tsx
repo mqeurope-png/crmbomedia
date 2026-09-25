@@ -151,3 +151,17 @@ it("sondeo del tracking del transportista: se puede apagar y cambiar el interval
   expect(body.tracking_poll_enabled).toBe(false);
   expect(body.tracking_poll_minutes).toBe(60);
 });
+
+it("aviso de envío al cliente (BoHub): el interruptor viaja al guardar", async () => {
+  const user = userEvent.setup();
+  mockGet.mockResolvedValue({ ...CONFIG, customer_email_enabled: true });
+  render(<GeneiSettingsCard canEdit />);
+  const toggle = await screen.findByLabelText("BoHub envía al cliente el aviso de envío");
+  expect(toggle).toBeChecked();
+  expect(screen.getByText(/desmarca en Genei/)).toBeInTheDocument();
+  await user.click(toggle);
+  await user.click(screen.getByRole("button", { name: /Guardar cambios/ }));
+  await waitFor(() => expect(mockSave).toHaveBeenCalled());
+  expect(mockSave.mock.calls[0][0].customer_email_enabled).toBe(false);
+});
+

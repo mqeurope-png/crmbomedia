@@ -14,6 +14,10 @@ import {
   geneiStateTone,
   carrierDate,
   carrierStepTone,
+  getCustomerEmailPreview,
+  sendCustomerEmail,
+  type CustomerEmailPreview,
+  type CustomerEmailStatus,
   type GeneiAgencyOption,
   type GeneiDestination,
   type GeneiPackage,
@@ -199,6 +203,13 @@ export function GeneiShipmentSection({
               </span></div>
           ) : null}
           <CarrierHistory events={state.carrier_events ?? []} />
+          <CustomerEmailBlock
+            orderId={orderId}
+            status={state.customer_email ?? null}
+            hasTracking={Boolean(state.tracking)}
+            canManage={canManage}
+            onSent={(next) => { setState(next); onChanged?.(); }}
+          />
           {canManage && state.state_bucket === "created" ? (
             /* PR-2: se paga por API contra el saldo de la cuenta, sin popup. Lo
                dispara SIEMPRE una persona con este botón (nunca automático). */
@@ -508,3 +519,150 @@ function CarrierHistory({ events }: { events: CarrierEvent[] }) {
     </details>
   );
 }
+
+const EMAIL_LANGS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: "es", label: "Español" }, { value: "en", label: "English" },
+  { value: "de", label: "Deutsch" }, { value: "fr", label: "Français" },
+  { value: "nl", label: "Nederlands" },
+];
+const LANG_NAME: Record<string, string> = {
+  es: "español", en: "inglés", de: "alemán", fr: "francés", nl: "neerlandés",
+};
+
+/** Texto del estado del aviso de envío al cliente. */
+export function customerEmailLine(st: CustomerEmailStatus | null, hasTracking: boolean): string {
+  if (!st || !st.status) {
+    return "Aviso al cliente: no se envía solo en este envío (creado antes o con el aviso apagado).";
+  }
+  switch (st.status) {
+    case "sent":
+      return `Aviso al cliente enviado${st.sent_at ? ` el ${carrierDate(st.sent_at)}` : ""}`
+        + `${st.to ? ` a ${st.to}` : ""}${st.lang ? ` en ${LANG_NAME[st.lang] ?? st.lang}` : ""}`
+        + `${st.from ? ` desde ${st.from}` : ""}.`;
+    case "pending":
+      return hasTracking
+        ? "Aviso al cliente: se enviará en un momento."
+        : "Aviso al cliente: se enviará solo en cuanto el envío tenga nº de seguimiento.";
+    case "sending":
+      return "Aviso al cliente: enviándose…";
+    case "error":
+      return `Aviso al cliente: no se pudo enviar${st.error ? ` (${st.error})` : ""}. Puedes enviarlo a mano.`;
+    case "disabled":
+      return "Aviso al cliente: desactivado (Ajustes → Envíos). Puedes enviarlo a mano.";
+    default:
+      return "";
+  }
+}
+
+/** Aviso de envío al cliente (lo manda BoHub, en su idioma): estado y
+ *  «Enviar / Reenviar aviso al cliente» con la vista previa. */
+function CustomerEmailBlock({
+  orderId, status, hasTracking, canManage, onSent,
+}: {
+  orderId: string;
+  status: CustomerEmailStatus | null;
+  hasTracking: boolean;
+  canManage: boolean;
+  onSent: (state: GeneiState) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const sent = status?.status === "sent";
+  return (
+    <div className="erp-genei-customer-email">
+      <p className={`small ${status?.status === "error" ? "form-error" : "muted"}`}
+         role="status" aria-label="Aviso de envío al cliente">
+        ✉ {customerEmailLine(status, hasTracking)}
+      </p>
+      {canManage ? (
+        <button type="button" className="button small secondary" disabled={!hasTracking}
+                title={hasTracking ? undefined : "Aún no hay nº de seguimiento"}
+                onClick={() => setOpen(true)}>
+          {sent ? "Reenviar aviso al cliente" : "Enviar aviso al cliente"}
+        </button>
+      ) : null}
+      {open ? (
+        <CustomerEmailModal orderId={orderId} onClose={() => setOpen(false)}
+                            onSent={(next) => { setOpen(false); onSent(next); }} />
+      ) : null}
+    </div>
+  );
+}
+
+function CustomerEmailModal({
+  orderId, onClose, onSent,
+}: {
+  orderId: string;
+  onClose: () => void;
+  onSent: (state: GeneiState) => void;
+}) {
+  const [preview, setPreview] = useState<CustomerEmailPreview | null>(null);
+  const [lang, setLang] = useState<string | undefined>(undefined);
+  const [to, setTo] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    getCustomerEmailPreview(orderId, lang)
+      .then((p) => {
+        if (!alive) return;
+        setPreview(p);
+        setTo((prev) => prev || p.to);
+      })
+      .catch((e) => { if (alive) setError(extractErrorMessage(e, "No se pudo preparar el aviso.")); });
+    return () => { alive = false; };
+  }, [orderId, lang]);
+
+  async function send() {
+    setBusy(true); setError(null);
+    try {
+      const r = await sendCustomerEmail(orderId, { to: to.trim() || undefined, lang });
+      onSent(r.state);
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudo enviar el aviso."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Aviso de envío al cliente">
+      <div className="modal-dialog erp-modal">
+        <h2>Aviso de envío al cliente</h2>
+        {error ? <p className="form-error" role="alert">{error}</p> : null}
+        {!preview ? <p className="muted">Preparando…</p> : (
+          <>
+            <label className="field">
+              <span>Para</span>
+              <input type="email" value={to} aria-label="Para"
+                     onChange={(e) => setTo(e.target.value)} />
+            </label>
+            <label className="field">
+              <span>Idioma</span>
+              <select aria-label="Idioma del aviso" value={lang ?? preview.lang}
+                      onChange={(e) => setLang(e.target.value)}>
+                {EMAIL_LANGS.map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
+              </select>
+            </label>
+            <p className="muted small">
+              Desde <span className="mono">{preview.from_alias}</span>
+              {preview.from_alias_source === "tienda" ? " (remitente de la tienda)" : " (por idioma)"}
+            </p>
+            <p><strong>{preview.subject}</strong></p>
+            <pre className="erp-genei-email-body">{preview.body_text}</pre>
+          </>
+        )}
+        <div className="modal-actions">
+          <button type="button" className="button secondary" onClick={onClose} disabled={busy}>
+            Cancelar
+          </button>
+          <button type="button" className="button" onClick={() => void send()}
+                  disabled={busy || !preview || !to.trim() || (preview?.missing ?? []).length > 0}>
+            {busy ? "Enviando…" : "Enviar aviso"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+

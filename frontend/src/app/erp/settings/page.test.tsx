@@ -20,6 +20,12 @@ jest.mock("../../lib/erpApi", () => ({
   getErpNextReferences: jest.fn(),
   previewInvoiceEmailTemplate: jest.fn(),
   sendInvoiceEmailTemplateTest: jest.fn(),
+  previewShipmentEmailTemplate: jest.fn(() => Promise.resolve({
+    lang: "es", subject: "Tu pedido 9553 ya tiene envío", body_text: "Hola",
+    body_html: "<p>Hola</p>", from_alias_example: "pedidos@streamtec.es",
+    from_alias_source: "idioma", from_alias_scope: null, sample: {},
+  })),
+  sendShipmentEmailTemplateTest: jest.fn(),
   deleteFactusolCompanyLogo: jest.fn(),
   uploadFactusolCompanyLogo: jest.fn(),
 }));
@@ -390,6 +396,40 @@ describe("ErpSettingsPage — «Enviar factura al cliente»: remitente por tiend
     const sent = mockUpdate.mock.calls[0][0].factusol_invoice_email_templates;
     expect(sent.fr.subject).toBe("Votre facture {numero}{pedido}");
     expect(sent.es.subject).toBe("Factura {numero}{pedido}");  // el resto se conserva
+  });
+});
+
+describe("ErpSettingsPage — aviso de envío al cliente", () => {
+  it("remitentes de los pedidos manuales y plantillas por idioma viajan al guardar", async () => {
+    mockGet.mockResolvedValue(settings({
+      shipment_email_from: { es: "pedidos@streamtec.es", otros: "info@artisjet-printers.eu" },
+      shipment_email_templates: {
+        es: { subject: "Tu pedido {pedido} ya tiene envío", body: "Hola {cliente}" },
+        de: { subject: "Ihre Bestellung {pedido}", body: "Hallo {cliente}" },
+      },
+    }));
+    const user = userEvent.setup();
+    render(<ErpSettingsPage />);
+    const region = await screen.findByRole("region", { name: "Aviso de envío al cliente" });
+    const otros = within(region).getByLabelText("Remitente aviso manual en otros idiomas");
+    expect(otros).toHaveValue("info@artisjet-printers.eu");
+    await user.clear(otros);
+    await user.type(otros, "export@artisjet-printers.eu");
+    const asuntoDe = within(region).getByLabelText("Asunto aviso de envío de");
+    await user.clear(asuntoDe);
+    await user.type(asuntoDe, "Versand {{pedido}");
+    // Las etiquetas del aviso no chocan con las de la factura.
+    expect(screen.getByLabelText("Asunto factura de")).toBeInTheDocument();
+    expect(within(region).getByRole("button", { name: "Ver ejemplo aviso es" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Guardar cambios · Aviso de envío al cliente" }));
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
+    const body = mockUpdate.mock.calls[0][0];
+    expect(body.shipment_email_from).toEqual({
+      es: "pedidos@streamtec.es", otros: "export@artisjet-printers.eu",
+    });
+    expect(body.shipment_email_templates.de.subject).toBe("Versand {pedido}");
+    expect(body.shipment_email_templates.es.subject).toBe("Tu pedido {pedido} ya tiene envío");
+    expect(body.factusol_invoice_email_templates).toBeUndefined();   // solo su sección
   });
 });
 

@@ -10,6 +10,8 @@ import {
   geneiPrefill,
   geneiPrices,
   geneiRefresh,
+  getCustomerEmailPreview,
+  sendCustomerEmail,
 } from "../../lib/geneiApi";
 
 jest.mock("../../lib/erpApi", () => ({
@@ -25,6 +27,8 @@ jest.mock("../../lib/geneiApi", () => ({
   geneiRefresh: jest.fn(),
   geneiPay: jest.fn(),
   geneiDeleteShipment: jest.fn(),
+  getCustomerEmailPreview: jest.fn(),
+  sendCustomerEmail: jest.fn(),
 }));
 
 const mockPrefill = geneiPrefill as jest.Mock;
@@ -292,3 +296,64 @@ describe("ficha: estado REAL del transportista (Genei /tracking)", () => {
       .toBeInTheDocument();
   });
 });
+
+describe("ficha: aviso de envío al cliente (BoHub, en su idioma)", () => {
+  const mockPreview = getCustomerEmailPreview as jest.Mock;
+  const mockSendEmail = sendCustomerEmail as jest.Mock;
+  const BASE = {
+    shipment_code: "G2", courier: "Ctt Premium", state_bucket: "ready",
+    tracking: "0033260080539700026674", label_available: true,
+  };
+  beforeEach(() => { mockPreview.mockReset(); mockSendEmail.mockReset(); });
+
+  it("enseña que se envió (a quién, idioma y remitente)", async () => {
+    mockPrefill.mockResolvedValue(prefill({ state: { ...BASE, customer_email: {
+      status: "sent", sent_at: "2026-09-25T10:00:00+00:00", to: "compras@lamaison.fr",
+      lang: "fr", from: "info@artisjet-printers.eu", sends: 1 } } }));
+    render(<GeneiShipmentSection orderId="o-1" canManage />);
+    const line = await screen.findByLabelText("Aviso de envío al cliente");
+    expect(line).toHaveTextContent("enviado");
+    expect(line).toHaveTextContent("compras@lamaison.fr");
+    expect(line).toHaveTextContent("francés");
+    expect(line).toHaveTextContent("info@artisjet-printers.eu");
+    expect(screen.getByRole("button", { name: "Reenviar aviso al cliente" })).toBeEnabled();
+  });
+
+  it("pendiente sin tracking: lo dice y no deja enviar aún", async () => {
+    mockPrefill.mockResolvedValue(prefill({ state: { ...BASE, tracking: null,
+      customer_email: { status: "pending" } } }));
+    render(<GeneiShipmentSection orderId="o-1" canManage />);
+    expect(await screen.findByText(/en cuanto el envío tenga nº de seguimiento/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Enviar aviso al cliente" })).toBeDisabled();
+  });
+
+  it("reenviar: vista previa en el idioma del cliente, se puede cambiar el destinatario", async () => {
+    const user = userEvent.setup();
+    mockPrefill.mockResolvedValue(prefill({ state: { ...BASE,
+      customer_email: { status: "sent", to: "compras@lamaison.fr", lang: "fr" } } }));
+    mockPreview.mockResolvedValue({
+      to: "compras@lamaison.fr", from_alias: "info@artisjet-printers.eu",
+      from_alias_source: "idioma", store: null, lang: "fr", lang_source: "pais_destino",
+      subject: "Votre commande MAN-1 a été expédiée — suivi 0033260080539700026674",
+      body_text: "Bonjour…", tracking: "0033260080539700026674", tracking_url: null,
+      courier: "Ctt Premium", order_ref: "MAN-1", missing: [], status: { status: "sent" },
+    });
+    mockSendEmail.mockResolvedValue({ order_id: "o-1", state: { ...BASE,
+      customer_email: { status: "sent", to: "otra@lamaison.fr", lang: "fr", sends: 2 } } });
+    render(<GeneiShipmentSection orderId="o-1" canManage />);
+    await user.click(await screen.findByRole("button", { name: "Reenviar aviso al cliente" }));
+    const dialog = await screen.findByRole("dialog", { name: "Aviso de envío al cliente" });
+    expect(await within(dialog).findByText(/Votre commande MAN-1/)).toBeInTheDocument();
+    expect(within(dialog).getByText("info@artisjet-printers.eu")).toBeInTheDocument();
+    const para = within(dialog).getByLabelText("Para");
+    await user.clear(para);
+    await user.type(para, "otra@lamaison.fr");
+    await user.click(within(dialog).getByRole("button", { name: "Enviar aviso" }));
+    await waitFor(() => expect(mockSendEmail).toHaveBeenCalledWith("o-1", {
+      to: "otra@lamaison.fr", lang: undefined,
+    }));
+    expect(await screen.findByLabelText("Aviso de envío al cliente"))
+      .toHaveTextContent("otra@lamaison.fr");
+  });
+});
+

@@ -606,6 +606,15 @@ class GeneiClient:
         data = self._request("GET", f"/shipments/{shipment_code}/tracking")
         return data if isinstance(data, dict) else {}
 
+    def get_tracking_url(self, shipment_code: str) -> str | None:
+        """`GET /shipments/{code}/tracking/url` — la web de seguimiento de la
+        agencia para ese envío (`data.webSeguimiento`), o None."""
+        data = self._request("GET", f"/shipments/{shipment_code}/tracking/url")
+        inner = data.get("data") if isinstance(data, dict) else None
+        url = inner.get("webSeguimiento") if isinstance(inner, dict) else None
+        return url.strip() if isinstance(url, str) and url.strip().startswith(
+            ("http://", "https://")) else None
+
     #: Pasarela de pago de Genei: 4 = SALDO/CRÉDITO (la que usa BoHub). El
     #: endpoint `pay/transactions` es RESTful (ejecuta el pago) SOLO con saldo;
     #: tarjeta/PSD2 serían una URL de redirección.

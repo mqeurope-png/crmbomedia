@@ -103,6 +103,7 @@ export function GeneiSettingsCard({ canEdit }: { canEdit: boolean }) {
         is_warehouse: cfg.is_warehouse,
         webhook_base_url: cfg.webhook_base_url,
         tracking_poll_enabled: cfg.tracking_poll_enabled,
+        customer_email_enabled: cfg.customer_email_enabled,
         // Mínimo 10 min (no martillear a Genei); vacío → 30.
         tracking_poll_minutes: Math.max(10, cfg.tracking_poll_minutes || 30),
       });
@@ -214,6 +215,22 @@ export function GeneiSettingsCard({ canEdit }: { canEdit: boolean }) {
               : " Al guardar una URL con las credenciales puestas se genera el secreto."}
           </p>
         </div>
+
+        <h3 className="erp-settings-sub">Aviso de envío al cliente</h3>
+        <label className="field form-check">
+          <input type="checkbox" checked={cfg.customer_email_enabled ?? true}
+                 aria-label="BoHub envía al cliente el aviso de envío"
+                 onChange={(e) => set("customer_email_enabled", e.target.checked)} />
+          <span>
+            BoHub envía al cliente el email con el nº de seguimiento y el enlace, en su
+            idioma, en cuanto el envío tiene tracking (una sola vez).
+          </span>
+        </label>
+        <p className="muted small" role="note">
+          Con esto activo, desmarca en Genei → Perfil → Notificaciones → «Destinatario»
+          la casilla «Al crear un envío» (deja «Si se producen incidencias» y «Al entregar»).
+          Textos y remitentes: Configuración ERP → «Aviso de envío al cliente».
+        </p>
 
         <h3 className="erp-settings-sub">Estado real del envío (transportista)</h3>
         <p className="muted small">

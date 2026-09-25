@@ -48,6 +48,12 @@ from app.erp.integrations.genei.status import is_tramitado, state_of
 from app.erp.models.carriers import Carrier
 from app.erp.models.orders import Order, PreparationStatus
 from app.erp.models.shipping import KIND_ETIQUETA, SOURCE_GENEI_API, ShipmentPackage
+from app.erp.shipment_email import (
+    build_shipment_email,
+    mark_pending_on_create,
+    maybe_send_shipment_email,
+    send_shipment_email,
+)
 from app.erp.shipping_destination import resolve_shipping_destination
 from app.models.crm import AuditLog, User
 
@@ -216,6 +222,25 @@ def _audit(session: Session, user: User, action: str, order_id: str | None, meta
     ))
 
 
+def _send_customer_email_if_due(
+    session: Session, order: Order, client: Any, actor: Any,
+) -> None:
+    """Tras confirmar el estado del envío: aviso al cliente si le toca (una
+    sola vez; ver `shipment_email.maybe_send_shipment_email`). Nunca rompe la
+    acción que lo dispara (pagar, actualizar, etiqueta…)."""
+    def _url(code: str) -> str | None:
+        try:
+            return client.get_tracking_url(code) if code else None
+        except GeneiError:
+            return None
+
+    try:
+        maybe_send_shipment_email(session, order, actor=actor, tracking_url_fetcher=_url)
+    except Exception:  # noqa: BLE001
+        logger.warning("aviso de envío: fallo inesperado (pedido %s)", order.id, exc_info=True)
+        session.rollback()
+
+
 def _serialise_state(order: Order) -> dict[str, Any]:
     """Bloque Genei del pedido + si la etiqueta ya se puede descargar (envío
     tramitado, estado 1+). Antes de tramitar no se ofrece la etiqueta."""
@@ -280,6 +305,8 @@ class GeneiConfigIn(BaseModel):
     #: Sondeo del tracking detallado (eventos del transportista) en worker-sync.
     tracking_poll_enabled: bool | None = None
     tracking_poll_minutes: int | None = Field(default=None, ge=10, le=24 * 60)
+    #: Aviso de envío al cliente (BoHub) automático.
+    customer_email_enabled: bool | None = None
 
 
 # --- prefill / prices -------------------------------------------------------
@@ -478,11 +505,18 @@ def genei_create_shipment(
         # PR-2: id de la transacción, para pagar por API con token fresco.
         "transaction_id": summary["transaction_id"],
         "created_at": now_iso(),
+        # Aviso de envío al cliente (BoHub, en su idioma): a quién va y si se
+        # mandará solo en cuanto haya nº de seguimiento.
+        **mark_pending_on_create(
+            order, enabled=cfg.customer_email_enabled,
+            user_id=getattr(current_user, "id", None), destination=dest,
+        ),
     })
     _audit(session, current_user, "erp.genei.shipment_created", order.id, {
         "shipment_code": summary["shipment_code"], "agency_id": payload.agency_id,
     })
     session.commit()
+    _send_customer_email_if_due(session, order, client, current_user)
     session.refresh(order)
     return {"order_id": order.id, "summary": summary, "state": _serialise_state(order)}
 
@@ -540,6 +574,8 @@ def genei_pay(
     })
     _audit(session, current_user, "erp.genei.shipment_paid", order.id, {"shipment_code": code})
     session.commit()
+    # Ya pagado y confirmado: el aviso al cliente va aparte y NUNCA afecta al pago.
+    _send_customer_email_if_due(session, order, client, current_user)
     session.refresh(order)
     return {"order_id": order.id, "summary": summary, "state": _serialise_state(order)}
 
@@ -601,6 +637,7 @@ def genei_fetch_label(
         "shipment_code": code, "filename": label.filename,
     })
     session.commit()
+    _send_customer_email_if_due(session, order, client, current_user)
     session.refresh(row)
     from app.erp.api.shipping import _serialise_file  # noqa: PLC0415
     return {
@@ -643,6 +680,7 @@ def genei_refresh(
     summary, _applied = apply_shipment_state(session, order, raw,
                                              tracking=safe_tracking(client, code))
     session.commit()
+    _send_customer_email_if_due(session, order, client, current_user)
     session.refresh(order)
     return {"order_id": order.id, "summary": summary, "state": _serialise_state(order)}
 
@@ -671,6 +709,69 @@ def genei_delete_shipment(
     _audit(session, current_user, "erp.genei.shipment_deleted", order.id, {"shipment_code": code})
     session.commit()
     return {"order_id": order.id, "deleted": True}
+
+
+# --- aviso de envío al cliente (BoHub, en su idioma) --------------------------
+
+
+class CustomerEmailIn(BaseModel):
+    #: Destinatario (vacío = el del envío Genei / el contacto del pedido).
+    to: str | None = Field(default=None, max_length=255)
+    #: Idioma (vacío = el del cliente según la cascada).
+    lang: str | None = Field(default=None, max_length=5)
+
+
+@router.get("/orders/{order_id}/genei/customer-email")
+def genei_customer_email_preview(
+    order_id: str,
+    lang: str | None = Query(default=None, max_length=5),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_sat_tracking),
+) -> dict[str, Any]:
+    """El aviso de envío tal como saldría (a quién, desde dónde, idioma,
+    asunto, cuerpo) y su estado (enviado / pendiente / error). No envía."""
+    _ = current_user
+    order = _get_order(session, order_id)
+    if not shipment_code_of_order(order):
+        raise HTTPException(409, {"code": "no_shipment",
+                                  "detail": "El pedido no tiene envío en Genei."})
+    return build_shipment_email(session, order, lang=lang)
+
+
+@router.post("/orders/{order_id}/genei/customer-email")
+def genei_customer_email_send(
+    order_id: str,
+    payload: CustomerEmailIn | None = None,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_sat_shipping),
+) -> dict[str, Any]:
+    """Enviar (o REENVIAR) a mano el aviso de envío al cliente, con el nº de
+    seguimiento y el enlace, en su idioma. Queda en el timeline del pedido."""
+    order = _get_order(session, order_id)
+    if not shipment_code_of_order(order):
+        raise HTTPException(409, {"code": "no_shipment",
+                                  "detail": "El pedido no tiene envío en Genei."})
+    body = payload or CustomerEmailIn()
+    to = (body.to or "").strip() or None
+    if to is not None and ("@" not in to or " " in to):
+        raise HTTPException(400, {"code": "bad_recipient",
+                                  "detail": f"Destinatario inválido: {to}"})
+    try:
+        result = send_shipment_email(session, order, actor=current_user, to=to,
+                                     lang=body.lang, automatic=False)
+    except ValueError as exc:
+        raise HTTPException(409, {"code": "not_ready", "detail": str(exc)}) from exc
+    except Exception as exc:  # noqa: BLE001 — Gmail desconectado, alias…
+        session.rollback()
+        logger.warning("aviso de envío manual falló (pedido %s): %s", order.id,
+                       type(exc).__name__)
+        raise HTTPException(502, {
+            "code": "email_failed",
+            "detail": f"No se pudo enviar el aviso: {str(exc)[:200]}",
+        }) from exc
+    session.commit()
+    session.refresh(order)
+    return {"order_id": order.id, "result": result, "state": _serialise_state(order)}
 
 
 # --- ajustes del carrier «Genei» --------------------------------------------
@@ -716,6 +817,8 @@ def genei_config_get(
         # Sondeo del tracking detallado (eventos del transportista).
         "tracking_poll_enabled": cfg.tracking_poll_enabled,
         "tracking_poll_minutes": cfg.tracking_poll_minutes,
+        # Aviso de envío al cliente lo manda BoHub (no Genei).
+        "customer_email_enabled": cfg.customer_email_enabled,
     }
 
 
@@ -787,6 +890,8 @@ def genei_config_put(
         cfg.tracking_poll_enabled = payload.tracking_poll_enabled
     if payload.tracking_poll_minutes is not None:
         cfg.tracking_poll_minutes = payload.tracking_poll_minutes
+    if payload.customer_email_enabled is not None:
+        cfg.customer_email_enabled = payload.customer_email_enabled
     if cfg.webhook_base_url and carrier.api_credentials_encrypted:
         try:
             creds = GeneiClient._decode_credentials(carrier.api_credentials_encrypted)

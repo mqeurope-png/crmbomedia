@@ -10,7 +10,9 @@ import {
   getErpNextReferences,
   getErpSettings,
   previewInvoiceEmailTemplate,
+  previewShipmentEmailTemplate,
   sendInvoiceEmailTemplateTest,
+  sendShipmentEmailTemplateTest,
   updateErpSettings,
   uploadFactusolCompanyLogo,
   type ErpNextReferences,
@@ -28,6 +30,31 @@ const INVOICE_EMAIL_LANGS: ReadonlyArray<{ value: string; label: string }> = [
   { value: "fr", label: "Français" },
   { value: "nl", label: "Nederlands" },
 ];
+
+/** Qué plantilla edita un `TemplateEditor`: la del email de FACTURA o la del
+ *  AVISO DE ENVÍO al cliente (nº de seguimiento). Cambian las llamadas de
+ *  ejemplo / prueba y las etiquetas (que no se repitan en la página). */
+type TemplateKind = "invoice" | "shipment";
+type TemplateDraft = { subject?: string; body?: string };
+const TEMPLATE_API = {
+  invoice: {
+    preview: (lang: string, d: TemplateDraft) => previewInvoiceEmailTemplate(lang, d),
+    test: (lang: string, d: TemplateDraft) => sendInvoiceEmailTemplateTest(lang, d),
+  },
+  shipment: {
+    preview: (lang: string, d: TemplateDraft) => previewShipmentEmailTemplate(lang, d),
+    test: (lang: string, d: TemplateDraft) => sendShipmentEmailTemplateTest(lang, d),
+  },
+} as const;
+function templateLabels(kind: TemplateKind, lang: string) {
+  return kind === "invoice"
+    ? { example: `Ver ejemplo ${lang}`, test: `Enviarme una prueba ${lang}`,
+        subject: `Asunto factura ${lang}`, body: `Cuerpo factura ${lang}`,
+        testid: `ejemplo-${lang}` }
+    : { example: `Ver ejemplo aviso ${lang}`, test: `Enviarme una prueba aviso ${lang}`,
+        subject: `Asunto aviso de envío ${lang}`, body: `Cuerpo aviso de envío ${lang}`,
+        testid: `ejemplo-envio-${lang}` };
+}
 
 /** ERP-F5 — tiendas con contrapartida PayPal propia (la clave es la que
  *  guarda el backend; `flux` de Woo se normaliza a `fluxlasers`). */
@@ -83,7 +110,7 @@ const REF_PREFIX_RE = /^[A-Z0-9]{1,6}$/;
  *  sus campos (el backend acepta cualquier subconjunto). El orden es el de la
  *  pantalla. */
 type SectionId =
-  | "facturacion" | "tiendas" | "remitentes" | "plantillas" | "series"
+  | "facturacion" | "tiendas" | "remitentes" | "plantillas" | "aviso_envio" | "series"
   | "abreviaturas" | "sat" | "empresas" | "almacenes" | "contrapartidas"
   | "origenes" | "drive";
 
@@ -96,6 +123,8 @@ const SECTIONS: ReadonlyArray<{ id: SectionId; title: string; keys: (keyof ErpSe
     keys: ["factusol_store_email_from", "factusol_series_email_from"] },
   { id: "plantillas", title: "Plantillas del email de factura",
     keys: ["factusol_invoice_email_templates"] },
+  { id: "aviso_envio", title: "Aviso de envío al cliente",
+    keys: ["shipment_email_templates", "shipment_email_from"] },
   { id: "series", title: "Series FACTUSOL",
     keys: ["factusol_series_default", "factusol_series_by_source",
            "factusol_estpcl_invoiced", "factusol_estpre_accepted", "factusol_estalb_invoiced",
@@ -570,6 +599,71 @@ export default function ErpSettingsPage() {
                 onChange={(next) => patch({
                   factusol_invoice_email_templates: {
                     ...(cfg.factusol_invoice_email_templates ?? {}),
+                    [l.value]: { ...tpl, ...next },
+                  },
+                })}
+              />
+            );
+          })}
+        </SettingsSection>
+
+        {/* ---------------------------------------------------------------- */}
+        <SettingsSection
+          {...sectionProps("aviso_envio")}
+          lead="El email con el nº de seguimiento y el enlace que BoHub manda al cliente, en su idioma, en cuanto el envío de Genei tiene tracking (una sola vez; se puede reenviar desde la ficha)."
+        >
+          <p className="muted small">
+            Remitente: los pedidos <strong>web</strong> salen del de su tienda (sección
+            «Remitentes»: boprint y flux → pedidos@streamtec.es, artisJet →
+            info@artisjet-printers.eu). Los <strong>manuales</strong> (factura, proforma,
+            albarán, manual, muestra), por idioma:
+          </p>
+          <div className="form-row">
+            <label className="field">
+              <span>Pedidos manuales en español</span>
+              <input
+                type="email" aria-label="Remitente aviso manual en español"
+                value={cfg.shipment_email_from?.es ?? ""}
+                onChange={(e) => patch({
+                  shipment_email_from: {
+                    es: e.target.value, otros: cfg.shipment_email_from?.otros ?? "",
+                  },
+                })}
+              />
+            </label>
+            <label className="field">
+              <span>Pedidos manuales en otros idiomas</span>
+              <input
+                type="email" aria-label="Remitente aviso manual en otros idiomas"
+                value={cfg.shipment_email_from?.otros ?? ""}
+                onChange={(e) => patch({
+                  shipment_email_from: {
+                    es: cfg.shipment_email_from?.es ?? "", otros: e.target.value,
+                  },
+                })}
+              />
+            </label>
+          </div>
+          <p className="muted small">
+            Idioma: el del pedido; si no, el de la ficha del cliente; si no, el del
+            país de destino del envío; si no, español. Marcadores:{" "}
+            <code>{"{cliente}"}</code>, <code>{"{pedido}"}</code> (el nº que conoce el
+            cliente), <code>{"{tracking}"}</code>, <code>{"{enlace}"}</code> (web de
+            seguimiento) y <code>{"{agencia}"}</code>. Vacío = el texto por defecto.
+          </p>
+          {INVOICE_EMAIL_LANGS.map((l) => {
+            const tpl = cfg.shipment_email_templates?.[l.value] ?? { subject: "", body: "" };
+            return (
+              <TemplateEditor
+                key={`envio-${l.value}`}
+                kind="shipment"
+                lang={l.value}
+                label={l.label}
+                tpl={tpl}
+                canTest={canEdit}
+                onChange={(next) => patch({
+                  shipment_email_templates: {
+                    ...(cfg.shipment_email_templates ?? {}),
                     [l.value]: { ...tpl, ...next },
                   },
                 })}
@@ -1341,8 +1435,9 @@ function SettingsSection({
  *  vivo (datos de muestra, previsualizado por el backend según se escribe),
  *  «Ver ejemplo» (modal con el correo completo) y «Enviarme una prueba». */
 function TemplateEditor({
-  lang, label, tpl, canTest, onChange,
+  kind = "invoice", lang, label, tpl, canTest, onChange,
 }: {
+  kind?: TemplateKind;
   lang: string;
   label: string;
   tpl: { subject: string; body: string };
@@ -1361,21 +1456,21 @@ function TemplateEditor({
   useEffect(() => {
     let alive = true;
     const timer = setTimeout(() => {
-      previewInvoiceEmailTemplate(lang, { subject: tpl.subject, body: tpl.body })
+      TEMPLATE_API[kind].preview(lang, { subject: tpl.subject, body: tpl.body })
         .then((p) => { if (alive) { setExample(p); setExampleError(null); } })
         .catch((e) => {
           if (alive) setExampleError(extractErrorMessage(e, "No se pudo preparar el ejemplo."));
         });
     }, 350);
     return () => { alive = false; clearTimeout(timer); };
-  }, [lang, tpl.subject, tpl.body]);
+  }, [kind, lang, tpl.subject, tpl.body]);
 
   async function sendTest() {
     setTestBusy(true);
     setTestResult(null);
     setTestError(null);
     try {
-      const r = await sendInvoiceEmailTemplateTest(lang, { subject: tpl.subject, body: tpl.body });
+      const r = await TEMPLATE_API[kind].test(lang, { subject: tpl.subject, body: tpl.body });
       setTestResult(`Prueba enviada a ${r.to} desde ${r.from_alias} con el asunto «${r.subject}».`);
     } catch (e) {
       setTestError(extractErrorMessage(e, "No se pudo enviar la prueba."));
@@ -1384,20 +1479,21 @@ function TemplateEditor({
     }
   }
 
+  const labels = templateLabels(kind, lang);
   return (
     <div className="erp-settings-tpl">
       <div className="erp-settings-tpl-head">
         <h3 className="erp-settings-tpl-title">{label}</h3>
         <button
           type="button" className="button small secondary"
-          aria-label={`Ver ejemplo ${lang}`}
+          aria-label={labels.example}
           onClick={() => setShowModal(true)}
         >
           Ver ejemplo
         </button>
         <button
           type="button" className="button small secondary"
-          aria-label={`Enviarme una prueba ${lang}`}
+          aria-label={labels.test}
           disabled={!canTest || testBusy}
           title={!canTest ? "Solo un administrador puede enviar pruebas." : undefined}
           onClick={sendTest}
@@ -1407,19 +1503,19 @@ function TemplateEditor({
       </div>
       <input
         type="text"
-        aria-label={`Asunto factura ${lang}`}
+        aria-label={labels.subject}
         placeholder="Asunto"
         value={tpl.subject}
         onChange={(e) => onChange({ subject: e.target.value })}
       />
       <textarea
-        aria-label={`Cuerpo factura ${lang}`}
+        aria-label={labels.body}
         placeholder="Cuerpo"
         rows={4}
         value={tpl.body}
         onChange={(e) => onChange({ body: e.target.value })}
       />
-      <p className="erp-settings-tpl-example" aria-live="polite" data-testid={`ejemplo-${lang}`}>
+      <p className="erp-settings-tpl-example" aria-live="polite" data-testid={labels.testid}>
         {exampleError ? (
           <span className="erp-settings-status is-error">{exampleError}</span>
         ) : example ? (
@@ -1438,6 +1534,7 @@ function TemplateEditor({
       ) : null}
       {showModal ? (
         <TemplateExampleModal
+          kind={kind}
           lang={lang}
           label={label}
           subject={tpl.subject}
@@ -1452,8 +1549,9 @@ function TemplateEditor({
 /** «Ver ejemplo»: el correo completo (remitente, asunto y cuerpo) con los
  *  datos de muestra, tal como lo enviaría BoHub con lo que hay escrito. */
 function TemplateExampleModal({
-  lang, label, subject, body, onClose,
+  kind = "invoice", lang, label, subject, body, onClose,
 }: {
+  kind?: TemplateKind;
   lang: string;
   label: string;
   subject: string;
@@ -1465,13 +1563,13 @@ function TemplateExampleModal({
 
   useEffect(() => {
     let alive = true;
-    previewInvoiceEmailTemplate(lang, { subject, body })
+    TEMPLATE_API[kind].preview(lang, { subject, body })
       .then((p) => { if (alive) setExample(p); })
       .catch((e) => {
         if (alive) setError(extractErrorMessage(e, "No se pudo preparar el ejemplo."));
       });
     return () => { alive = false; };
-  }, [lang, subject, body]);
+  }, [kind, lang, subject, body]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };

@@ -157,6 +157,12 @@ class SettingsIn(BaseModel):
     #: ({"es": {"subject","body"}, ...}). Placeholders {cliente}/{numero}/
     #: {referencia}. Vacío = defaults del código.
     factusol_invoice_email_templates: dict[str, dict[str, str]] | None = None
+    #: Aviso de ENVÍO al cliente (nº de seguimiento + enlace) por idioma.
+    #: Placeholders {cliente}/{pedido}/{tracking}/{enlace}/{agencia}.
+    shipment_email_templates: dict[str, dict[str, str]] | None = None
+    #: Remitente del aviso de envío de los pedidos MANUALES por idioma:
+    #: {"es": "pedidos@streamtec.es", "otros": "info@artisjet-printers.eu"}.
+    shipment_email_from: dict[str, str] | None = None
     #: ERP-F5 — contrapartidas de cobro ([{codigo, nombre}]; la tabla de
     #: FACTUSOL no se ha localizado, así que el catálogo vive aquí) y la
     #: contrapartida PayPal por tienda ({"artisjet": "12", …}).
@@ -454,6 +460,10 @@ def _serialise_settings(cfg: ErpSettings, session: Session) -> dict[str, Any]:
         "factusol_companies": _companies_with_logos(cfg),
         "factusol_pickup_warehouses": _pickup_warehouses(cfg),
         "factusol_invoice_email_templates": _invoice_email_templates(cfg),
+        # Aviso de envío al cliente: plantillas (defaults + las guardadas) y
+        # remitentes de los pedidos manuales (español / otros idiomas).
+        "shipment_email_templates": _shipment_templates(cfg),
+        "shipment_email_from": _shipment_from(cfg),
         # ERP-F5: contrapartidas de cobro (defaults = las 14 de Bart) y PayPal
         # por tienda, ya completados con los valores iniciales.
         "contrapartidas": contrapartidas_config(_series(cfg).get("contrapartidas")),
@@ -525,6 +535,18 @@ def _invoice_email_templates(cfg: ErpSettings) -> dict[str, Any]:
                     merged[k] = str(over[k])
         out[lang] = merged
     return out
+
+
+def _shipment_templates(cfg: ErpSettings) -> dict[str, Any]:
+    from app.erp.shipment_email import merge_templates  # noqa: PLC0415
+
+    return merge_templates(_series(cfg).get("shipment_email_templates"))
+
+
+def _shipment_from(cfg: ErpSettings) -> dict[str, str]:
+    from app.erp.shipment_email import manual_from_config  # noqa: PLC0415
+
+    return manual_from_config(_series(cfg).get("shipment_email_from"))
 
 
 def _pickup_warehouses(cfg: ErpSettings) -> list[dict[str, str]]:
@@ -613,6 +635,8 @@ def update_settings(
             or payload.factusol_companies is not None
             or payload.factusol_pickup_warehouses is not None
             or payload.factusol_invoice_email_templates is not None
+            or payload.shipment_email_templates is not None
+            or payload.shipment_email_from is not None
             or payload.contrapartidas is not None
             or payload.paypal_contrapartidas_by_store is not None
             or payload.shipping_origins is not None
@@ -770,6 +794,19 @@ def update_settings(
                     "body": str((tpl or {}).get("body") or "").strip(),
                 }
                 for lang, tpl in payload.factusol_invoice_email_templates.items()
+            }
+        if payload.shipment_email_templates is not None:
+            series["shipment_email_templates"] = {
+                str(lang): {
+                    "subject": str((tpl or {}).get("subject") or "").strip(),
+                    "body": str((tpl or {}).get("body") or "").strip(),
+                }
+                for lang, tpl in payload.shipment_email_templates.items()
+            }
+        if payload.shipment_email_from is not None:
+            series["shipment_email_from"] = {
+                key: str(payload.shipment_email_from.get(key) or "").strip()
+                for key in ("es", "otros")
             }
         if payload.factusol_series_names is not None:
             # ERP-E2: {"5": "Streamtec", …}. Claves como string por JSON.
@@ -1060,3 +1097,93 @@ def next_references(
             "example_ref": _compose_ref(f"{slug.upper()[:6]}-{next_number}", prefix),
         })
     return {"manual_next": _next_manual_number(session), "stores": stores}
+
+
+# --- aviso de envío al cliente: ejemplo y prueba de la plantilla -----------------
+
+
+@router.post("/settings/shipment-email/preview")
+def preview_shipment_email_template(
+    payload: TemplatePreviewIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> dict[str, Any]:
+    """Plantilla del aviso de envío rellena con datos de MUESTRA (cliente, nº
+    de pedido, tracking, enlace y agencia ficticios). No envía nada. El
+    remitente de ejemplo es el de un pedido manual en ese idioma."""
+    from app.erp.shipment_email import (  # noqa: PLC0415
+        MANUAL_FROM_KEY,
+        SAMPLE_SHIPMENT_EMAIL,
+        manual_from_config,
+        render_sample,
+    )
+    from app.integrations.factusol.service import series_config  # noqa: PLC0415
+
+    _ = current_user
+    sample = render_sample(session, lang=payload.lang, subject=payload.subject,
+                           body=payload.body)
+    manual = manual_from_config(series_config(session).get(MANUAL_FROM_KEY))
+    return {
+        **sample,
+        "from_alias_example": manual["es"] if sample["lang"] == "es" else manual["otros"],
+        "from_alias_source": "idioma",
+        "from_alias_scope": None,
+        "sample": dict(SAMPLE_SHIPMENT_EMAIL),
+    }
+
+
+@router.post("/settings/shipment-email/test-send", status_code=201)
+def send_shipment_email_template_test(
+    payload: TemplateTestIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_config),
+) -> dict[str, Any]:
+    """Envía al propio usuario (o a `to`) la plantilla del aviso de envío con
+    datos de muestra, desde el remitente de un pedido manual en ese idioma
+    (validado como «enviar como» de Gmail). Asunto con «[Prueba]»."""
+    from app.erp.invoice_email import check_sender_alias  # noqa: PLC0415
+    from app.erp.shipment_email import (  # noqa: PLC0415
+        MANUAL_FROM_KEY,
+        manual_from_config,
+        render_sample,
+    )
+    from app.integrations.factusol.service import series_config  # noqa: PLC0415
+    from app.integrations.gmail import service as gmail_service  # noqa: PLC0415
+
+    to = (payload.to or "").strip() or (current_user.email or "").strip()
+    if "@" not in to or " " in to:
+        raise HTTPException(400, f"Destinatario inválido: {to!r}")
+    sample = render_sample(session, lang=payload.lang, subject=payload.subject,
+                           body=payload.body)
+    manual = manual_from_config(series_config(session).get(MANUAL_FROM_KEY))
+    alias = manual["es"] if sample["lang"] == "es" else manual["otros"]
+    check = check_sender_alias(session, current_user, alias)
+    if not check.get("ok"):
+        reason = str(check.get("reason") or "alias_not_allowed")
+        raise HTTPException(403, {
+            "code": "alias_not_allowed", "reason": reason, "from_alias": alias,
+            "detail": f"No se puede enviar desde {alias}: {_SENDER_PROBLEMS.get(reason, reason)}",
+        })
+    subject = f"[Prueba] {sample['subject']}"
+    message = gmail_service.send_email(
+        session, sender_user_id=current_user.id, from_alias=alias, from_name=None,
+        to=[to], cc=None, bcc=None, subject=subject,
+        body_html=sample["body_html"], body_text=sample["body_text"], contact_id=None,
+    )
+    try:
+        record_event(
+            session, action="erp.settings_template_test_sent",
+            target_type="erp_settings", target_id=ERP_SETTINGS_SINGLETON_ID,
+            actor=current_user,
+            message=(f"Prueba de la plantilla del aviso de envío ({sample['lang']}) "
+                     f"enviada a {to} desde {alias}"),
+            metadata={"lang": sample["lang"], "to": to, "from_alias": alias,
+                      "kind": "shipment", "message_id": message.id},
+        )
+    except Exception:  # noqa: BLE001 — audit nunca bloquea
+        pass
+    session.commit()
+    return {"sent": True, "to": to, "lang": sample["lang"], "subject": subject,
+            "from_alias": alias, "from_alias_source": "idioma", "from_alias_scope": None,
+            "message_id": message.id}
+

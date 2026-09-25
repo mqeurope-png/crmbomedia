@@ -154,6 +154,15 @@ def apply_shipment_state(
         "desc_incidencia": incidencia or None,
         "refreshed_at": now_iso(),
     }
+    # Destinatario y web de seguimiento que ya trae el objeto de Genei (para el
+    # aviso de envío al cliente, sobre todo en envíos creados antes de guardarlos).
+    stored = genei_state_of(order)
+    email_llegada = str(shipment.get("email_llegada") or "").strip()
+    if email_llegada and not stored.get("dest_email"):
+        patch["dest_email"] = email_llegada
+    web = str(shipment.get("web_seguimiento") or "").strip()
+    if web.startswith(("http://", "https://")) and not stored.get("tracking_url"):
+        patch["tracking_url"] = web
     if carrier is not None:
         step = carrier["carrier_step"]
         patch.update({

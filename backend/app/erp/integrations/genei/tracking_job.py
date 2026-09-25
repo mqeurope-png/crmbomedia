@@ -169,6 +169,16 @@ def run_tracking_poll(
             # Sin detalle esta vez: igual se apunta la consulta (no martillear).
             set_genei_state(order, {"tracking_checked_at": datetime.now(UTC).isoformat()})
         session.commit()
+        # Aviso de envío al cliente si ya hay nº de seguimiento (una sola vez).
+        from app.erp.shipment_email import maybe_send_shipment_email  # noqa: PLC0415
+
+        def _url(c: str, _client: Any = client) -> str | None:
+            try:
+                return _client.get_tracking_url(c) if c else None
+            except GeneiError:
+                return None
+
+        maybe_send_shipment_email(session, order, actor=None, tracking_url_fetcher=_url)
         resumen["revisados"] += 1
         resumen["movidos"] += int(bool(movido))
         resumen["con_escaneo"] += int(bool(genei_state_of(order).get("carrier_status")))
