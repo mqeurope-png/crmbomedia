@@ -994,6 +994,25 @@ lo que va a pasar. Secciones destacadas:
   taller**, **Empresas emisoras**, **Almacenes de recogida**, **Contrapartidas
   de cobro**, **Orígenes del envío** y **Hoja de seguimiento en Drive**.
 
+**«Envíos (Genei)».** Email y password de la cuenta de Genei (guardados
+**cifrados**), URL del webhook de estados, origen, bulto por defecto y couriers
+preferidos. **La sesión con Genei se abre y se renueva sola** con esas
+credenciales: cuando el token de Genei caduca, BoHub pide otro y repite la
+operación sin que se note. **No hay que volver a meter la password** por
+caducidad. Debajo de la password verás el estado:
+
+- **«✓ Conectado…»** — todo bien (y hasta cuándo vale la sesión actual).
+- **«⚠ Genei ha rechazado el usuario o la contraseña guardados…»** — la
+  password guardada ya no vale (la cambiaron en Genei, por ejemplo): escribe
+  la buena y **«Guardar cambios»**. Mientras tanto, BoHub no insiste contra
+  Genei (evita bloquear la cuenta) y cada acción de envío muestra ese mismo
+  aviso.
+- **«Probar conexión»** — comprueba **con las credenciales guardadas** que
+  Genei responde (no hace falta escribir la password).
+
+Guardar esta sección **ya no cambia el secreto del webhook**: los envíos creados
+antes siguen avisando a BoHub de cada cambio de estado.
+
 **Webhooks y fecha de corte** están en **«ERP · Integraciones · Woo»**: cada
 tienda tiene su **URL de webhook** y un **secreto** (**«Regenerar»** si hace
 falta; guárdalo, no se vuelve a ver entero) y una **«Fecha de corte»** opcional

@@ -2,9 +2,21 @@
 
 Genei se autentica con **email + password** (`POST /login`) y devuelve un
 **token Bearer con 15 días de validez**; todas las llamadas van con
-`Authorization: Bearer <token>`. El token se cachea en memoria y se renueva al
-caducar o ante un `401` (re-login). Password y token **nunca** se registran en
-el log.
+`Authorization: Bearer <token>`.
+
+Re-autenticación automática (sin que nadie vuelva a meter la password):
+- El token se guarda en una **caché compartida** del proceso (`TokenCache`,
+  por credenciales) y se reutiliza entre peticiones hasta poco antes de
+  caducar (y como mucho `TOKEN_MAX_AGE_SECONDS`); entonces se pide otro solo.
+- Si Genei rechaza el token — `401`/`403` o su envoltorio HTTP 200
+  `status:0` con un mensaje de token/sesión caducada —, se hace **login con las
+  credenciales guardadas** (cifradas) y se **reintenta la llamada una vez**.
+- Si el login falla porque Genei rechaza el usuario/contraseña, se eleva
+  `GeneiAuthError` («revisa credenciales de Genei») y durante
+  `AUTH_FAILURE_BACKOFF_SECONDS` no se vuelve a intentar con esas mismas
+  credenciales (sin bucle ni martilleo a Genei); guardar credenciales o
+  «Probar conexión» lo desbloquean al momento.
+Password y token **nunca** se registran en el log ni salen en respuestas.
 
 El cliente es síncrono a propósito (igual que `FactusolClient`): vive dentro de
 handlers de request o jobs RQ, no en el event loop. Para tests se inyecta un
@@ -21,15 +33,19 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import json
 import logging
+import re
+import threading
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from app.core.crypto import decrypt
+from app.core.crypto import DecryptionError, decrypt
 
 if TYPE_CHECKING:  # pragma: no cover - solo para type checking
     from app.erp.models.carriers import Carrier
@@ -45,6 +61,28 @@ API_PREFIX = "/api/v2"
 TOKEN_FALLBACK_TTL_SECONDS = 14 * 24 * 3600
 #: Margen para renovar antes de que caduque de verdad (evita cortar a mitad).
 TOKEN_SAFETY_MARGIN_SECONDS = 3600
+#: Edad máxima de un token cacheado, diga lo que diga su `exp`: se renueva solo
+#: antes, por si Genei lo invalida por su cuenta (sesión) sin avisar con 401.
+TOKEN_MAX_AGE_SECONDS = 12 * 3600
+#: Tras un login RECHAZADO (usuario/contraseña), no se reintenta con las mismas
+#: credenciales durante este tiempo: error claro al momento, sin bucle.
+AUTH_FAILURE_BACKOFF_SECONDS = 300
+
+#: Lo que ve la persona cuando Genei rechaza las credenciales guardadas.
+AUTH_REJECTED_MESSAGE = (
+    "Genei ha rechazado el usuario o la contraseña guardados: revisa las "
+    "credenciales de Genei en Ajustes → Envíos."
+)
+
+#: HTTP con el que Genei (o su pasarela) rechaza un token no válido/caducado.
+_AUTH_HTTP_STATUSES = frozenset({401, 403, 419, 440})
+#: Genei responde HTTP 200 también en error (`status:0`); estas pistas en el
+#: mensaje indican que lo rechazado es el TOKEN/sesión, no los datos.
+_AUTH_HINTS = re.compile(
+    r"token|jwt|expir|caduc|unauthori[sz]|unauthenticat|no autori[sz]|autentica|"
+    r"authenticat|sesi[oó]n|session|log ?in",
+    re.IGNORECASE,
+)
 
 DEFAULT_TIMEOUT = 30.0
 
@@ -69,6 +107,138 @@ class GeneiError(RuntimeError):
 
 class GeneiConfigError(GeneiError):
     """Falta configuración para hablar con Genei (credenciales / URL base)."""
+
+
+class GeneiAuthError(GeneiError):
+    """Genei rechaza el usuario/contraseña guardados (el login, no el token).
+    El mensaje es para la persona («revisa credenciales de Genei»)."""
+
+
+def _now_iso(epoch: float | None) -> str | None:
+    if not epoch:
+        return None
+    return datetime.fromtimestamp(epoch, UTC).isoformat()
+
+
+def credentials_fingerprint(base_url: str, username: str, password: str) -> str:
+    """Clave de la caché de tokens: hash de (URL, usuario, password). Cambiar
+    las credenciales = otra clave (token y bloqueo nuevos). Nunca se guarda ni
+    se registra la password en claro."""
+    raw = "\x1f".join((base_url.rstrip("/"), username, password))
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+@dataclass
+class _TokenEntry:
+    token: str | None = None
+    expires_at: float = 0.0
+    obtained_at: float = 0.0
+    last_login_at: float | None = None
+    failure: str | None = None
+    failed_at: float | None = None
+
+
+class TokenCache:
+    """Token de Genei compartido entre peticiones (memoria del proceso), por
+    credenciales. Guarda también el último login rechazado para no reintentar
+    en bucle. Seguro entre hilos (los endpoints síncronos corren en un pool)."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._entries: dict[str, _TokenEntry] = {}
+        self._login_locks: dict[str, threading.Lock] = {}
+
+    def _entry(self, key: str) -> _TokenEntry:
+        return self._entries.setdefault(key, _TokenEntry())
+
+    def login_lock(self, key: str) -> threading.Lock:
+        """Un login a la vez por credenciales (dos peticiones con el token
+        caducado no piden dos tokens: la segunda reutiliza el de la primera)."""
+        with self._lock:
+            return self._login_locks.setdefault(key, threading.Lock())
+
+    def valid_token(self, key: str, now: float | None = None) -> str | None:
+        """Token vigente (con margen y edad máxima), o None si toca renovar."""
+        now = time.time() if now is None else now
+        with self._lock:
+            e = self._entries.get(key)
+            if e is None or not e.token:
+                return None
+            renew_at = min(e.expires_at - TOKEN_SAFETY_MARGIN_SECONDS,
+                           e.obtained_at + TOKEN_MAX_AGE_SECONDS)
+            return e.token if now < renew_at else None
+
+    def expires_at(self, key: str) -> float:
+        with self._lock:
+            e = self._entries.get(key)
+            return e.expires_at if e and e.token else 0.0
+
+    def store(self, key: str, token: str, expires_at: float) -> None:
+        now = time.time()
+        with self._lock:
+            e = self._entry(key)
+            e.token, e.expires_at, e.obtained_at = token, expires_at, now
+            e.last_login_at = now
+            e.failure = e.failed_at = None
+
+    def drop(self, key: str, token: str | None) -> None:
+        """Olvida `token` si sigue siendo el cacheado (no pisa uno más nuevo
+        que otra petición ya haya pedido)."""
+        with self._lock:
+            e = self._entries.get(key)
+            if e is not None and token and e.token == token:
+                e.token = None
+
+    def record_failure(self, key: str, message: str) -> None:
+        with self._lock:
+            e = self._entry(key)
+            e.token = None
+            e.failure, e.failed_at = message, time.time()
+
+    def recent_failure(self, key: str, now: float | None = None) -> str | None:
+        """Mensaje del último login rechazado si aún está en el bloqueo."""
+        now = time.time() if now is None else now
+        with self._lock:
+            e = self._entries.get(key)
+            if e is None or not e.failure or e.failed_at is None:
+                return None
+            if now - e.failed_at >= AUTH_FAILURE_BACKOFF_SECONDS:
+                return None
+            return e.failure
+
+    def clear_failure(self, key: str) -> None:
+        with self._lock:
+            e = self._entries.get(key)
+            if e is not None:
+                e.failure = e.failed_at = None
+
+    def status(self, key: str) -> dict[str, Any]:
+        """Estado de la conexión para Ajustes. NUNCA incluye el token."""
+        with self._lock:
+            e = self._entries.get(key) or _TokenEntry()
+            if e.failure:
+                state = "error"
+            elif e.token:
+                state = "ok"
+            else:
+                state = "unknown"
+            return {
+                "state": state,
+                "token_valid_until": _now_iso(e.expires_at) if e.token else None,
+                "last_login_at": _now_iso(e.last_login_at),
+                "last_error": e.failure,
+                "last_error_at": _now_iso(e.failed_at),
+            }
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+            self._login_locks.clear()
+
+
+#: Caché del proceso que usan los clientes construidos desde el carrier
+#: (`from_carrier`): el token sobrevive entre peticiones.
+SHARED_TOKEN_CACHE = TokenCache()
 
 
 @dataclass(frozen=True)
@@ -159,6 +329,7 @@ class GeneiClient:
         default_address_id: str | None = None,
         timeout: float = DEFAULT_TIMEOUT,
         transport: httpx.BaseTransport | None = None,
+        token_cache: TokenCache | None = None,
     ):
         if not base_url:
             raise GeneiConfigError("Genei sin URL base configurada (Carrier.api_base_url).")
@@ -170,19 +341,24 @@ class GeneiClient:
         self.default_address_id = default_address_id
         self._timeout = timeout
         self._transport = transport
+        # Sin caché explícita, una propia (el token vive lo que el cliente);
+        # `from_carrier` usa la compartida del proceso.
+        self._cache = token_cache if token_cache is not None else TokenCache()
+        self._key = credentials_fingerprint(self.base_url, username, password)
+        #: Token con el que va la petición en curso (el de la caché).
         self._token: str | None = None
-        self._token_expires_at: float = 0.0
 
     # --- construcción -------------------------------------------------------
 
     @classmethod
     def from_carrier(
         cls, carrier: Carrier, *, transport: httpx.BaseTransport | None = None,
-        timeout: float = DEFAULT_TIMEOUT,
+        timeout: float = DEFAULT_TIMEOUT, token_cache: TokenCache | None = None,
     ) -> GeneiClient:
         """Construye el cliente desde una fila `Carrier` (Genei). Descifra las
         credenciales (`api_credentials_encrypted`, JSON Fernet `{username,
-        password}`)."""
+        password}`) y usa la caché de tokens COMPARTIDA del proceso: el token
+        se reutiliza entre peticiones y se renueva solo."""
         creds = cls._decode_credentials(carrier.api_credentials_encrypted)
         return cls(
             base_url=carrier.api_base_url or "",
@@ -191,7 +367,33 @@ class GeneiClient:
             default_address_id=carrier.default_address_id,
             timeout=timeout,
             transport=transport,
+            token_cache=token_cache if token_cache is not None else SHARED_TOKEN_CACHE,
         )
+
+    @classmethod
+    def cache_key_of(cls, carrier: Carrier) -> str | None:
+        """Clave de caché de las credenciales guardadas del carrier (o None)."""
+        try:
+            creds = cls._decode_credentials(carrier.api_credentials_encrypted)
+        except GeneiConfigError:
+            return None
+        username = creds.get("username") or creds.get("email") or ""
+        password = creds.get("password") or ""
+        if not (carrier.api_base_url and username and password):
+            return None
+        return credentials_fingerprint(carrier.api_base_url, username, password)
+
+    @classmethod
+    def auth_status_of(
+        cls, carrier: Carrier | None, *, token_cache: TokenCache | None = None,
+    ) -> dict[str, Any]:
+        """Estado de la conexión (token vigente / último error) para Ajustes.
+        Nunca devuelve el token ni la password."""
+        cache = token_cache if token_cache is not None else SHARED_TOKEN_CACHE
+        key = cls.cache_key_of(carrier) if carrier else None
+        if key is None:
+            return TokenCache().status("")
+        return cache.status(key)
 
     @staticmethod
     def _decode_credentials(ciphertext: str | None) -> dict[str, str]:
@@ -199,7 +401,13 @@ class GeneiClient:
         → dict. Sin credenciales, error de configuración claro."""
         if not ciphertext:
             raise GeneiConfigError("Genei sin credenciales guardadas (configúralas en Ajustes).")
-        raw = decrypt(ciphertext)
+        try:
+            raw = decrypt(ciphertext)
+        except DecryptionError as exc:
+            raise GeneiConfigError(
+                "No se pueden leer las credenciales de Genei guardadas (cambió la clave "
+                "de cifrado del servidor): vuelve a guardarlas en Ajustes → Envíos."
+            ) from exc
         try:
             data = json.loads(raw)
         except json.JSONDecodeError as exc:
@@ -236,16 +444,36 @@ class GeneiClient:
 
     # --- auth ---------------------------------------------------------------
 
-    def login(self) -> str:
-        """`POST /login` → token Bearer (15 d). Cachea token + expiración."""
+    def login(self, *, force: bool = False) -> str:
+        """`POST /login` con las credenciales guardadas → token Bearer (15 d).
+        Lo deja en la caché (compartida si viene de `from_carrier`).
+
+        Si Genei rechaza el usuario/contraseña → `GeneiAuthError` y, durante
+        `AUTH_FAILURE_BACKOFF_SECONDS`, las siguientes llamadas fallan al
+        momento con el mismo aviso sin volver a Genei. `force=True` («Probar
+        conexión») se salta ese bloqueo. Un fallo de red o 5xx no bloquea (es
+        pasajero)."""
+        if not force:
+            failure = self._cache.recent_failure(self._key)
+            if failure:
+                raise GeneiAuthError(failure, status=None)
         resp = self._raw_request(
             "POST", "/login",
             json={"username": self._username, "password": self._password},
             authed=False,
         )
+        rejected = self._login_rejection(resp)
+        if rejected is not None:
+            message = AUTH_REJECTED_MESSAGE + (f" (Genei: {rejected})" if rejected else "")
+            self._cache.record_failure(self._key, message)
+            # Solo el motivo de Genei (sin password ni cuerpo completo).
+            logger.warning("genei: login rechazado (HTTP %s)%s", resp.status_code,
+                           f": {rejected}" if rejected else "")
+            raise GeneiAuthError(message, status=resp.status_code)
         if resp.status_code >= 400:
+            logger.warning("genei: login falló (HTTP %s)", resp.status_code)
             raise GeneiError(
-                f"Login Genei → {resp.status_code}",
+                f"POST /login → {resp.status_code}",
                 status=resp.status_code, body=resp.text,
             )
         token = self._extract_token(resp)
@@ -254,12 +482,28 @@ class GeneiClient:
                 "Login Genei sin token en la respuesta.",
                 status=resp.status_code, body=resp.text,
             )
-        self._token = token
         exp = _jwt_exp(token)
-        self._token_expires_at = (
-            exp if exp is not None else time.time() + TOKEN_FALLBACK_TTL_SECONDS
-        )
+        expires_at = exp if exp is not None else time.time() + TOKEN_FALLBACK_TTL_SECONDS
+        self._cache.store(self._key, token, expires_at)
+        self._token = token
+        logger.info("genei: login OK, token válido hasta %s", _now_iso(expires_at))
         return token
+
+    @staticmethod
+    def _login_rejection(resp: httpx.Response) -> str | None:
+        """¿Genei ha RECHAZADO las credenciales en el login? Devuelve su motivo
+        (texto corto, puede ser «»), o None si no es un rechazo (éxito, o fallo
+        pasajero 5xx). Genei responde a veces HTTP 200 con `status:0`."""
+        if resp.status_code >= 500 or resp.status_code in (404, 405, 408, 409, 429):
+            return None
+        try:
+            data = resp.json()
+        except ValueError:
+            data = None
+        if 400 <= resp.status_code < 500:
+            return _short_reason(data)
+        err = _envelope_error(data)
+        return err[:200] if err is not None else None
 
     @staticmethod
     def _extract_token(resp: httpx.Response) -> str | None:
@@ -275,18 +519,29 @@ class GeneiClient:
 
     def token_valid_seconds(self) -> int:
         """Segundos que le quedan al token cacheado (0 si no hay o caducó)."""
-        if self._token is None:
-            return 0
-        return max(0, int(self._token_expires_at - time.time()))
+        return max(0, int(self._cache.expires_at(self._key) - time.time()))
 
     def _ensure_token(self) -> str:
-        if (
-            self._token is None
-            or time.time() >= self._token_expires_at - TOKEN_SAFETY_MARGIN_SECONDS
-        ):
-            self.login()
-        assert self._token is not None
-        return self._token
+        """Token vigente de la caché; si no hay o toca renovarlo, login (uno a la
+        vez por credenciales)."""
+        token = self._cache.valid_token(self._key)
+        if token is None:
+            with self._cache.login_lock(self._key):
+                token = self._cache.valid_token(self._key)
+                if token is None:
+                    token = self.login()
+        self._token = token
+        return token
+
+    def _renew_after_rejection(self, rejected: str | None) -> None:
+        """El token `rejected` ya no vale: se descarta y se obtiene otro con las
+        credenciales guardadas (o el que otra petición acabe de pedir)."""
+        with self._cache.login_lock(self._key):
+            self._cache.drop(self._key, rejected)
+            token = self._cache.valid_token(self._key)
+            if token is None or token == rejected:
+                token = self.login()
+        self._token = token
 
     # --- operaciones --------------------------------------------------------
 
@@ -365,9 +620,12 @@ class GeneiClient:
         rechazo (sin saldo, transacción ya pagada…) llega como envoltorio
         `status:0` y se eleva como `GeneiError` con el mensaje de Genei."""
         token = self.payment_token(self.PAYMENT_GATEWAY_BALANCE)
+        # Reintento SOLO ante un 401 HTTP (como siempre): un `status:0` que hable
+        # de «token» aquí se refiere al token de PAGO, no al de sesión.
         data = self._request(
             "GET", f"/payments/pay/transactions/{transaction_id}",
-            params={"payment_token": token},
+            params={"payment_token": token}, auth_statuses=frozenset({401}),
+            auth_envelope=False,
         )
         return _as_dict(data)
 
@@ -389,11 +647,7 @@ class GeneiClient:
 
         Devuelve los bytes ya decodificados. Genei puede mandar la etiqueta como
         binario (PDF directo) o dentro de un JSON con la cadena en base64."""
-        self._ensure_token()
-        resp = self._raw_request("GET", f"/shipments/{shipment_code}/label", authed=True)
-        if resp.status_code == 401:
-            self.login()
-            resp = self._raw_request("GET", f"/shipments/{shipment_code}/label", authed=True)
+        resp = self._send("GET", f"/shipments/{shipment_code}/label")
         if resp.status_code >= 400:
             raise GeneiError(
                 f"GET /shipments/{shipment_code}/label → {resp.status_code}",
@@ -403,49 +657,69 @@ class GeneiClient:
 
     # --- transporte ---------------------------------------------------------
 
+    def _send(
+        self, method: str, path: str, *,
+        json: dict[str, Any] | None = None, params: dict[str, Any] | None = None,
+        auth_statuses: frozenset[int] = _AUTH_HTTP_STATUSES, auth_envelope: bool = True,
+    ) -> httpx.Response:
+        """Petición autenticada con **re-autenticación automática**: si Genei
+        rechaza el token (HTTP en `auth_statuses` o, con `auth_envelope`, un
+        `status:0` que habla de token/sesión), se hace login con las credenciales
+        guardadas y se reintenta UNA vez. Devuelve la respuesta final."""
+        self._ensure_token()
+        resp = self._raw_request(method, path, json=json, params=params, authed=True)
+        reason = _token_rejection(resp, auth_statuses, auth_envelope)
+        if reason is None:
+            return resp
+        rejected = self._token
+        logger.warning("genei %s %s: token rechazado (%s) → login y reintento",
+                       method, path, reason)
+        self._renew_after_rejection(rejected)
+        resp = self._raw_request(method, path, json=json, params=params, authed=True)
+        if _token_rejection(resp, auth_statuses, auth_envelope) is not None:
+            # Token recién obtenido y aún rechazado: no se insiste (sin bucle).
+            self._cache.drop(self._key, self._token)
+            logger.warning("genei %s %s: token nuevo también rechazado", method, path)
+        return resp
+
     def _request(
         self, method: str, path: str, *,
         json: dict[str, Any] | None = None, params: dict[str, Any] | None = None,
+        auth_statuses: frozenset[int] = _AUTH_HTTP_STATUSES, auth_envelope: bool = True,
     ) -> Any:
-        """Petición autenticada con re-login ante un 401 (una vez) y parseo
+        """Petición autenticada (con re-autenticación, ver `_send`) y parseo
         JSON. Los errores de Genei se elevan como `GeneiError` con el cuerpo."""
-        self._ensure_token()
-        reauthed = False
         # Log mínimo (sin token ni cuerpo con datos personales) para no depurar
         # a ciegas: método + ruta + claves de query.
         logger.info("genei %s %s%s", method, path,
                     f" params={sorted(params)}" if params else "")
-        while True:
-            resp = self._raw_request(method, path, json=json, params=params, authed=True)
-            if resp.status_code == 401 and not reauthed:
-                reauthed = True
-                self.login()
-                continue
-            if resp.status_code >= 400:
-                logger.warning("genei %s %s → HTTP %s: %s", method, path,
-                               resp.status_code, resp.text[:300])
-                raise GeneiError(
-                    f"{method} {path} → {resp.status_code}: {resp.text[:500]}",
-                    status=resp.status_code, body=resp.text,
-                )
-            if not resp.content:
-                return {}
-            try:
-                data = resp.json()
-            except ValueError as exc:
-                raise GeneiError(
-                    f"{method} {path} → respuesta no-JSON de Genei",
-                    status=resp.status_code, body=resp.text,
-                ) from exc
-            # Genei devuelve HTTP 200 tanto en éxito (`status:1`) como en ERROR
-            # (`status:0`, `message:"Error validacion"`, `errors:[...]`). Sin
-            # esto, un error se colaba como lista vacía (el «0 agencias siempre»).
-            err = _envelope_error(data)
-            if err is not None:
-                logger.warning("genei %s %s → status:0 %s", method, path, err[:300])
-                raise GeneiError(f"{method} {path} → Genei rechazó: {err}",
-                                 status=resp.status_code, body=resp.text)
-            return data
+        resp = self._send(method, path, json=json, params=params,
+                          auth_statuses=auth_statuses, auth_envelope=auth_envelope)
+        if resp.status_code >= 400:
+            logger.warning("genei %s %s → HTTP %s: %s", method, path,
+                           resp.status_code, resp.text[:300])
+            raise GeneiError(
+                f"{method} {path} → {resp.status_code}: {resp.text[:500]}",
+                status=resp.status_code, body=resp.text,
+            )
+        if not resp.content:
+            return {}
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise GeneiError(
+                f"{method} {path} → respuesta no-JSON de Genei",
+                status=resp.status_code, body=resp.text,
+            ) from exc
+        # Genei devuelve HTTP 200 tanto en éxito (`status:1`) como en ERROR
+        # (`status:0`, `message:"Error validacion"`, `errors:[...]`). Sin
+        # esto, un error se colaba como lista vacía (el «0 agencias siempre»).
+        err = _envelope_error(data)
+        if err is not None:
+            logger.warning("genei %s %s → status:0 %s", method, path, err[:300])
+            raise GeneiError(f"{method} {path} → Genei rechazó: {err}",
+                             status=resp.status_code, body=resp.text)
+        return data
 
     def _raw_request(
         self, method: str, path: str, *,
@@ -458,8 +732,59 @@ class GeneiClient:
         if authed and self._token:
             headers["Authorization"] = f"Bearer {self._token}"
         url = f"{self.base_url}{API_PREFIX}{path}"
-        with httpx.Client(timeout=self._timeout, transport=self._transport) as client:
-            return client.request(method, url, json=json, params=params, headers=headers)
+        try:
+            with httpx.Client(timeout=self._timeout, transport=self._transport) as client:
+                return client.request(method, url, json=json, params=params, headers=headers)
+        except httpx.TimeoutException as exc:
+            logger.warning("genei %s %s: timeout", method, path)
+            raise GeneiError("Genei no responde ahora mismo (tiempo de espera agotado): "
+                             "prueba en un momento.") from exc
+        except httpx.HTTPError as exc:
+            # Sin la URL completa (lleva query) ni cabeceras (llevan el token).
+            logger.warning("genei %s %s: error de conexión (%s)", method, path,
+                           type(exc).__name__)
+            raise GeneiError("No se pudo conectar con Genei: prueba en un momento.") from exc
+
+
+def _short_reason(data: Any) -> str:
+    """Motivo corto que da Genei en un cuerpo de error (`message`, `error`,
+    `errors`…), o «» si no hay uno legible."""
+    if isinstance(data, dict):
+        for key in ("message", "error", "msg", "detail", "mensaje"):
+            val = data.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()[:200]
+        errs = data.get("errors")
+        if isinstance(errs, list) and errs:
+            return "; ".join(str(e) for e in errs[:3])[:200]
+    if isinstance(data, str):
+        return data.strip()[:200]
+    return ""
+
+
+def _token_rejection(
+    resp: httpx.Response, statuses: frozenset[int], envelope: bool,
+) -> str | None:
+    """¿Genei rechaza el TOKEN (caducado/no válido)? Motivo corto, o None.
+
+    - HTTP en `statuses` (401/403…): siempre es rechazo de token.
+    - Con `envelope`: HTTP 200 `status:0` (el error «normal» de Genei) o un 4xx
+      cuyo mensaje habla de token/sesión/autenticación. Un error de datos
+      («agencia no factible», «Invalid bultos…») NO cuenta."""
+    if resp.status_code in statuses:
+        return f"HTTP {resp.status_code}"
+    if not envelope or not (resp.status_code == 200 or 400 <= resp.status_code < 500):
+        return None
+    if "json" not in resp.headers.get("content-type", "").lower():
+        return None
+    try:
+        data = resp.json()
+    except ValueError:
+        return None
+    text = _envelope_error(data) if resp.status_code == 200 else _short_reason(data)
+    if text and _AUTH_HINTS.search(text):
+        return text[:120]
+    return None
 
 
 # --- helpers de parseo de respuesta -----------------------------------------
