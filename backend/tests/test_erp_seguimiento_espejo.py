@@ -574,3 +574,30 @@ def test_la_regla_naranja_anterior_se_sustituye(factory):
         assert [r["deleteConditionalFormatRule"]["index"]
                 for r in reqs if "deleteConditionalFormatRule" in r] == [1]
         assert sum(1 for r in reqs if "addConditionalFormatRule" in r) == 1
+
+
+def test_si_alguien_edita_durante_la_pasada_no_se_escribe_nada(factory):
+    """La pestaña se reescribe entera: si cambia entre la lectura y la escritura
+    (alguien tecleando), se aborta sin escribir; la siguiente pasada recoge la
+    edición. Nada se pierde."""
+    from app.erp.drive_sheets import DriveSyncError
+
+    class Concurrente(FakeTabs):
+        lecturas = 0
+
+        def tab_values(self, title, *, raw=False):
+            vals = super().tab_values(title, raw=raw)
+            if title == TAB and raw:
+                self.lecturas += 1
+                if self.lecturas == 2:                 # la relectura justo antes de escribir
+                    vals = [*vals, _manual("TECLEADA", Cliente="X", Fecha="01/09/2026")]
+            return vals
+
+    with factory() as s:
+        o = _order(s, "BOP-R")
+        sheets = Concurrente({HISTORICA: [], TAB: [list(SEGUIMIENTO_COLUMNS_V2)]})
+        with pytest.raises(DriveSyncError, match="ha cambiado"):
+            push_managed_tabs(s, sheets, [_row(o)], completados=[])
+        s.rollback()
+        assert TAB not in sheets.written                      # no se escribió nada
+        assert s.scalars(select(SeguimientoSnapshot)).all() == []

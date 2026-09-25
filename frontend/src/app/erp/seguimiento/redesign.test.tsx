@@ -163,6 +163,31 @@ describe("ERP · Seguimiento — hoja simplificada (rediseño 2026)", () => {
       .toBeInTheDocument();
   });
 
+  it("la previsualización enseña el resumen del espejo (primera pasada)", async () => {
+    mockRowsConDrive([row()]);
+    (syncSeguimientoDrive as jest.Mock).mockResolvedValue({
+      mode: "managed_tab", tab: "Seguimiento (app)",
+      incidencias_tab: "Incidencias (app)",
+      historic_tab: "Pedidos Bomedia 2020-2026",
+      rows: 12, incidencias: 0, por_situacion: {},
+      columns: new Array(19).fill("x"), dry_run: true, written: false,
+      espejo: {
+        bootstrap: true, ediciones_leidas: 0, manuales_nuevas: 3, manuales_invalidas: 1,
+        historico_ids_asignados: 7690, historico_nuevas: 0, historico_editadas: 0,
+        historico_duplicados_suprimidos: 92, historico_no_encontradas: 3,
+      },
+    });
+    const user = userEvent.setup();
+    render(<SeguimientoPageView />);
+    await user.click(await screen.findByRole("button", { name: /Actualizar hoja de Drive/ }));
+    const bloque = await screen.findByLabelText("Espejo BoHub ↔ hoja");
+    expect(bloque).toHaveTextContent("primera pasada");
+    expect(bloque).toHaveTextContent("7690 ids asignados");
+    expect(bloque).toHaveTextContent("92 duplicados quitados");
+    expect(bloque).toHaveTextContent("1 a revisar");
+    expect(bloque).toHaveTextContent("3 de BoHub no están en la hoja");
+  });
+
   it("por defecto pide el orden por Fecha (más reciente primero), no por Situación", async () => {
     mockRows([row()]);
     render(<SeguimientoPageView />);

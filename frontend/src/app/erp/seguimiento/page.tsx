@@ -27,6 +27,7 @@ import {
   isManagedSummary,
   syncSeguimientoDrive,
   type DriveManagedSummary,
+  type SeguimientoEspejoStats,
   type DriveSyncReviewGroup,
   type DriveSyncSummary,
   type DriveSyncUnknownInvoice,
@@ -1167,7 +1168,60 @@ function ManagedPreview({ summary }: { summary: DriveManagedSummary }) {
           La pestaña «{summary.historic_tab}» (la hoja vieja en bruto) no se toca.
         </li>
       </ul>
+      {summary.espejo ? <EspejoResumen e={summary.espejo} /> : null}
     </>
+  );
+}
+
+/** Espejo bidireccional (Fase 2): qué se ha leído de la hoja y qué se hará. En
+ *  la PRIMERA pasada es lo que conviene revisar antes de encender el automático
+ *  (p. ej. que «histórico nuevo» sea ~0: si no, el casado del histórico falla). */
+function EspejoResumen({ e }: { e: SeguimientoEspejoStats }) {
+  const n = (v?: number) => v ?? 0;
+  return (
+    <div className="erp-espejo-resumen" aria-label="Espejo BoHub ↔ hoja">
+      <p className="muted small">
+        <strong>Espejo BoHub ↔ hoja</strong>
+        {e.bootstrap ? " — primera pasada: se toma la foto, no se lee ninguna edición" : ""}
+      </p>
+      <ul className="item-list">
+        <li>
+          Ediciones a mano leídas: <strong>{n(e.ediciones_leidas)}</strong>
+          {n(e.tracking_genei_ignorados)
+            ? ` (${n(e.tracking_genei_ignorados)} Tracking con envío Genei: manda Genei)`
+            : ""}
+        </li>
+        <li>
+          Filas a mano: <strong>{n(e.manuales_nuevas)}</strong> nuevas con id
+          {n(e.manuales_invalidas) ? (
+            <>, <strong>{n(e.manuales_invalidas)}</strong> a revisar (marcadas «⚠ revisar», no se ingieren)</>
+          ) : null}
+        </li>
+        <li>
+          Histórico: <strong>{n(e.historico_ids_asignados)}</strong> ids asignados,{" "}
+          {n(e.historico_editadas)} editadas, {n(e.historico_nuevas)} nuevas,{" "}
+          {n(e.historico_duplicados_suprimidos)} duplicados quitados (ya salen arriba)
+          {n(e.historico_no_encontradas)
+            ? `, ${n(e.historico_no_encontradas)} de BoHub no están en la hoja`
+            : ""}
+        </li>
+        {n(e.borradas) ? (
+          <li>
+            <strong>{n(e.borradas)}</strong> fila(s) borradas a mano: se quitan (borrado
+            lógico en BoHub, recuperables)
+          </li>
+        ) : null}
+        {e.borrado_masivo ? (
+          <li className="form-error">
+            Han desaparecido {n(e.restauradas)} filas de golpe: se trata como un
+            accidente y se vuelven a poner.
+          </li>
+        ) : null}
+        {e.proteccion_error ? (
+          <li className="form-error">No se pudo proteger la hoja: {e.proteccion_error}</li>
+        ) : null}
+      </ul>
+    </div>
   );
 }
 

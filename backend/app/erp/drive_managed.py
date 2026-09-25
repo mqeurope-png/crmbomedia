@@ -1243,6 +1243,15 @@ def push_managed_tabs(
     ]
 
     grid_pedidos = build_pedidos_grid(ordenadas, estatico_pedidos, manuales)
+    # ESPEJO: la pestaña se reescribe entera, así que si alguien ha escrito en
+    # ella MIENTRAS se calculaba esta pasada, su cambio se perdería. Se relee
+    # justo antes de escribir y, si ha cambiado, se aborta sin escribir ni
+    # confirmar: la pasada siguiente recoge la edición. Nada se pierde.
+    if pedidos_tab in existing and sheets.tab_values(pedidos_tab, raw=True) != valores_pedidos:
+        raise DriveSyncError(
+            "la hoja ha cambiado mientras se sincronizaba (alguien estaba "
+            "editando): no se ha escrito nada; vuelve a intentarlo en un momento"
+        )
     sheets.ensure_tab(pedidos_tab)
     sheets.replace_tab(pedidos_tab, grid_pedidos, raw=True)
     sheets.format_tab(pedidos_tab, pedidos_format(ordenadas, estatico_pedidos, manuales))
