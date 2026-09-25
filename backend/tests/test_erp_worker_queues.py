@@ -25,6 +25,8 @@ ERP_INTEGRATION_QUEUES = (
     "woocommerce:backfill",
     "genei:shipments",
     "genei:webhooks",
+    # Espejo Seguimiento (Fase 2): reconcile periódico BoHub ↔ hoja.
+    "seguimiento:reconcile",
 )
 
 

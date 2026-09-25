@@ -1727,6 +1727,11 @@ export type ErpSettings = {
   /** ERP-F6-fix2 — preferir el nº de albarán (si existe) sobre el de pedido
    *  web en la columna de referencia de la hoja. Por defecto true. */
   drive_reference_prefer_albaran?: boolean;
+  /** Espejo Seguimiento (Fase 2) — reconcile automático BoHub ↔ hoja en
+   *  worker-sync. Apagado por defecto. */
+  seguimiento_reconcile_enabled?: boolean;
+  /** Cada cuántos minutos corre el reconcile automático (mín. 5; 10 por defecto). */
+  seguimiento_reconcile_interval_minutes?: number;
   /** ERP-F6-fix3 — abreviaturas de empresa por serie ({"1":"BO","2":"MQ",
    *  "5":"ST"}) para la columna Empresa del seguimiento. */
   factusol_series_abbreviations?: Record<string, string>;

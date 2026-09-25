@@ -178,6 +178,9 @@ services:
       #  - genei:webhooks  → integration_events del notificationUrl de Genei.
       - genei:shipments
       - genei:webhooks
+      # Espejo Seguimiento (Fase 2): reconcile BoHub ↔ hoja, con interruptor
+      # en Configuración ERP (apagado por defecto).
+      - seguimiento:reconcile
     volumes:
       # Sprint Backup-Hardening. El worker ejecuta
       # `scripts/backup-crmbo.sh` via subprocess: necesita el script

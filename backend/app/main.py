@@ -323,6 +323,23 @@ async def _arm_vies_sweep() -> None:
 
 
 @app.on_event("startup")
+async def _arm_seguimiento_reconcile() -> None:
+    """Espejo Seguimiento (Fase 2) — latido del reconcile BoHub ↔ hoja (cola
+    `seguimiento:reconcile`, la escucha `worker-sync`). Solo actúa con el
+    interruptor de Configuración ERP encendido (apagado por defecto)."""
+    try:
+        from app.erp.seguimiento_sync_job import arm  # noqa: PLC0415
+
+        arm()
+    except Exception:  # noqa: BLE001
+        import logging  # noqa: PLC0415
+
+        logging.getLogger(__name__).warning(
+            "seguimiento.reconcile arm failed at startup", exc_info=True
+        )
+
+
+@app.on_event("startup")
 async def _arm_gmail_oauth_lifecycle() -> None:
     """PR-OAuth-Permisos-Admin Items 9 + 13. Arma los crons de aviso de
     caducidad de token Gmail, digest admin y sync de aliases Send-As."""

@@ -109,7 +109,8 @@ const SECTIONS: ReadonlyArray<{ id: SectionId; title: string; keys: (keyof ErpSe
     keys: ["contrapartidas", "paypal_contrapartidas_by_store"] },
   { id: "origenes", title: "Orígenes del envío", keys: ["shipping_origins"] },
   { id: "drive", title: "Hoja de seguimiento en Drive",
-    keys: ["drive_spreadsheet_id", "drive_service_account_json", "drive_reference_prefer_albaran"] },
+    keys: ["drive_spreadsheet_id", "drive_service_account_json", "drive_reference_prefer_albaran",
+      "seguimiento_reconcile_enabled", "seguimiento_reconcile_interval_minutes"] },
 ];
 
 /** Estado de guardado de una sección: `saved` = el último guardado fue bien
@@ -1232,6 +1233,45 @@ export default function ErpSettingsPage() {
               albarán en sus filas antiguas. Siempre se escribe el número
               desnudo, nunca la referencia con prefijo.
             </span>
+          </label>
+          {/* Espejo (Fase 2) — reconcile automático BoHub ↔ hoja. */}
+          <label className="field erp-check-field">
+            <input
+              type="checkbox"
+              aria-label="Sincronizar la hoja automáticamente"
+              checked={cfg.seguimiento_reconcile_enabled ?? false}
+              onChange={(e) => patch({ seguimiento_reconcile_enabled: e.target.checked })}
+            />
+            <span>Sincronizar la hoja automáticamente (en los dos sentidos)</span>
+            <span className="muted small">
+              BoHub y la hoja se ponen al día solos cada pocos minutos: lo que
+              cambie en BoHub va a la hoja y lo que escribáis a mano en las
+              columnas editables vuelve a BoHub. Enciéndelo después de revisar
+              una pasada manual con «Actualizar hoja de Drive».
+            </span>
+          </label>
+          <label className="field">
+            <span>Cada cuántos minutos</span>
+            <input
+              type="number"
+              min={5}
+              max={1440}
+              placeholder="10"
+              aria-label="Minutos entre sincronizaciones automáticas"
+              value={cfg.seguimiento_reconcile_interval_minutes ?? ""}
+              onChange={(e) => patch({
+                seguimiento_reconcile_interval_minutes:
+                  e.target.value === "" ? undefined : Number(e.target.value),
+              })}
+              onBlur={(e) => {
+                // Se deja escribir libre; al salir, nunca por debajo del mínimo.
+                const n = Number(e.target.value);
+                if (e.target.value !== "" && n < 5) {
+                  patch({ seguimiento_reconcile_interval_minutes: 5 });
+                }
+              }}
+            />
+            <span className="muted small">Mínimo 5. Por defecto, 10.</span>
           </label>
         </SettingsSection>
         {/* Genei (envíos): endpoint propio, tarjeta autónoma. */}

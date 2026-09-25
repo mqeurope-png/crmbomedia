@@ -105,6 +105,9 @@ services:
       # ruta crítica de pedido y se queda aquí.
       - genei:shipments
       - genei:webhooks
+      # Espejo Seguimiento (Fase 2): reconcile BoHub ↔ hoja, con interruptor
+      # en Configuración ERP (apagado por defecto).
+      - seguimiento:reconcile
     volumes:
       # Sprint-Backfill-Gmail. El worker baja los adjuntos a este volume;
       # api los sirve via FileResponse desde el mismo volume.

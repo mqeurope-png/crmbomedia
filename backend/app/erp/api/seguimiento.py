@@ -242,15 +242,27 @@ def drive_sync(
             # curso, y fuera los excluidos y los ocultos por estado. Antes se
             # pasaban las filas SIN filtrar y la hoja enseñaba lo que la
             # pantalla escondía (web `on-hold`/`cancelled`, anulados…).
-            resumen = push_managed_tabs(
-                session, client, drive_live_rows(session),
-                completados=drive_completados_rows(session), dry_run=dry_run,
-            )
-            # Espejo (Fase 2): lo leído de vuelta de la hoja (overrides, tracking,
-            # filas manuales, histórico, snapshot) se confirma SOLO si la hoja se
-            # escribió bien; si algo falla, no se confirma nada y la pasada
-            # siguiente lo repite.
-            if not dry_run:
+            if dry_run:     # vista previa: solo lee, sin cerrojo
+                return push_managed_tabs(
+                    session, client, drive_live_rows(session),
+                    completados=drive_completados_rows(session), dry_run=True,
+                )
+            # Espejo (Fase 2): un solo reconcile a la vez (este botón y el bucle
+            # de worker-sync comparten cerrojo). Lo leído de vuelta de la hoja se
+            # confirma SOLO si la hoja se escribió bien.
+            from app.erp.seguimiento_sync_job import reconcile_lock  # noqa: PLC0415
+
+            with reconcile_lock() as cogido:
+                if not cogido:
+                    raise HTTPException(status.HTTP_409_CONFLICT, {
+                        "code": "reconcile_running",
+                        "detail": "Ya hay una sincronización con la hoja en curso. "
+                                  "Vuelve a intentarlo en un momento.",
+                    })
+                resumen = push_managed_tabs(
+                    session, client, drive_live_rows(session),
+                    completados=drive_completados_rows(session),
+                )
                 session.commit()
             return resumen
         prefer_albaran = bool(cfg_json.get("drive_reference_prefer_albaran", True))
