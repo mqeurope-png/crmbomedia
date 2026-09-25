@@ -709,7 +709,60 @@ el Nº de pedido.
 
 > Google siempre deja editar las celdas protegidas al **propietario** de la
 > hoja. Si lo haces, BoHub **deshace** el cambio en la siguiente pasada: los
-> datos buenos de esas columnas están en BoHub.
+> datos buenos de esas columnas están en BoHub. Para que la protección bloquee
+> **también al propietario actual**, la hoja tiene que pasar a ser de otra
+> cuenta: mira «Hoja propiedad de BoHub» justo debajo.
+
+#### Hoja propiedad de BoHub (la protección bloquea a todos)
+
+Con la hoja a nombre de una persona, esa persona se salta las columnas
+protegidas. El script `python -m scripts.migrar_hoja_seguimiento` pasa
+«Seguimiento (app)» e «Incidencias (app)» a una **hoja nueva** cuya propietaria
+**no es nadie del equipo**. Lo hace así:
+
+- copia las dos pestañas celda a celda (ids, histórico, filas a mano y formato)
+  y comprueba que la copia es idéntica;
+- pone las protecciones (solo BoHub edita las columnas bloqueadas);
+- comparte la hoja nueva con las mismas personas que la vieja, **como
+  editores** (nadie queda de propietario);
+- re-apunta BoHub a la nueva;
+- deja la vieja de **solo lectura**, renombrada «ARCHIVO · …».
+
+Los valores manuales (overrides), el histórico importado y las filas a mano
+viven en BoHub, casados por id: la migración no los toca. Si alguien había
+editado la hoja vieja desde la última pasada, esa edición también pasa.
+
+1. **Informe** (no escribe nada): `python -m scripts.migrar_hoja_seguimiento`.
+2. **Prueba de propiedad**: `… --probar`. Crea una hoja vacía como la cuenta de
+   servicio y la borra. Dice si Google deja a la cuenta de servicio ser
+   **propietaria** de archivos. Las cuentas de servicio creadas desde el
+   **15/04/2025 no pueden** (no tienen cuota de Drive), y la propiedad tampoco
+   se puede **transferir** a una cuenta de servicio.
+3. **Si puede**: `… --crear` (plan) y luego `… --crear --apply`. La hoja nueva es
+   de la cuenta de servicio desde el origen y **nadie** se salta la protección.
+4. **Si no puede**: crea una **cuenta de Google dedicada** que no use nadie a
+   diario (p. ej. `hoja.bohub@…`). Desde ella:
+   1. crea una hoja **vacía**;
+   2. compártela con la cuenta de servicio como **Editor**;
+   3. en Compartir → ⚙, desmarca «Los editores pueden cambiar los permisos».
+
+   Luego `… --destino ID_DE_ESA_HOJA` (plan) y `… --destino ID --apply`. Todo el
+   equipo, Bart incluido, queda bloqueado. Solo la cuenta dedicada se salta la
+   protección: guárdala como **cuenta de emergencia**.
+
+Avisa al equipo de que no toque la hoja durante el minuto que dura. Si alguien
+escribe en la vieja mientras tanto, la migración se **anula sin cambiar nada** y
+se repite. Hace falta tener activada la **Google Drive API** en el proyecto de
+la cuenta de servicio (además de la de Sheets); si no, el informe lo dice.
+
+Después:
+- `… --verificar` comprueba la hoja actual: quién es el propietario, que las
+  columnas bloqueadas solo las edite BoHub y a quién bloquea.
+- Con la hoja a nombre de la cuenta de servicio, los editores no pueden
+  compartirla. Para dar acceso a alguien nuevo: `… --compartir email` (con
+  `--rol reader` para solo lectura).
+- En Drive, la hoja nueva aparece en **«Compartido conmigo»**; añádela a «Mi
+  unidad» con un acceso directo si la queréis a mano.
 
 **Filas a mano (Origen = MANUAL): se pueden editar enteras.** BoHub las **valida**:
 tienen que llevar **Nº de pedido o Cliente**, y si pones fechas o importe, que
