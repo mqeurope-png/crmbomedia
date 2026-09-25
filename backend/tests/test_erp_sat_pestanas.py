@@ -149,9 +149,12 @@ def test_el_envio_genei_viaja_en_el_item(client, session_factory):
     assert one["genei"]["state_label"] == "Tramitado"
 
 
-def test_recogida_por_genei_pasa_de_pendiente_de_recogida_a_enviados(client, session_factory):
-    """Tramitado (Genei 1) → «Pendiente de recogida»; la agencia recoge (Genei
-    5, webhook o «Actualizar estado») → «Enviados»."""
+def test_recogida_pasa_de_pendiente_de_recogida_a_enviados_al_marcar_recogido(
+    client, session_factory,
+):
+    """Tramitado (Genei 1) → «Pendiente de recogida». Aunque Genei diga luego
+    «recogido» (5), sigue ahí: el paso a «Enviados» lo hace la persona con
+    «📤 Marcar recogido». Solo una incidencia mueve el pedido solo."""
     from app.erp.integrations.genei.webhook import apply_shipment_state
 
     with session_factory() as s:
@@ -167,6 +170,11 @@ def test_recogida_por_genei_pasa_de_pendiente_de_recogida_a_enviados(client, ses
         apply_shipment_state(s, order, {"shipmentCode": "GX", "estado": 5,
                                         "codigo_seguimiento": "TRK-5"})
         s.commit()
+    item = client.get(f"/api/erp/sat/orders/{oid}", headers=h).json()
+    assert item["sat_tab"] == "pendiente_recogida"          # Genei no lo mueve
+    r = client.post(f"/api/erp/orders/{oid}/mark-picked-up", headers=h,
+                    json={"tracking_number": "TRK-5"})
+    assert r.status_code == 200, r.text
     item = client.get(f"/api/erp/sat/orders/{oid}", headers=h).json()
     assert item["sat_tab"] == "enviados"
     assert item["transport_status"] == "in_transit"

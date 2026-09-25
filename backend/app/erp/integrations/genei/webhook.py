@@ -13,11 +13,12 @@ de Seguimiento leen de ahí. La misma función (`apply_shipment_state`) la usa e
 botón «Actualizar estado» (respaldo manual), así que funciona aunque el webhook
 no esté desplegado.
 
-Tracking DETALLADO: con la respuesta de `GET /shipments/{code}/tracking` (los
-eventos del propio transportista, ver `tracking.py`) se guarda el último
-escaneo real y el transporte solo pasa a «en tránsito» cuando el transportista
-lo ha escaneado de verdad — nunca por el estado grueso de Genei si la agencia
-aún dice «Pendiente de entrada en red».
+Qué mueve el transporte SOLO (ver `tracking.transport_target`): únicamente una
+INCIDENCIA (→ «Incidencias») y el «entregado» de un pedido ya marcado como
+recogido (sigue en «Enviados»). El paso a «Enviados» lo hace una persona con
+«📤 Marcar recogido» en la Cola SAT. El tracking DETALLADO (`GET
+/shipments/{code}/tracking`: los eventos del propio transportista) se guarda y
+se ENSEÑA; no mueve nada.
 
 Idempotente: recibir el mismo estado dos veces no descuadra — un arco que ya se
 recorrió no vuelve a aplicarse (no es un arco válido desde el estado actual).
@@ -117,56 +118,25 @@ def advance_transport(
     return applied
 
 
-#: Un escaneo del transportista guardado sigue valiendo para decidir el
-#: transporte durante este tiempo (si en esta pasada no se pudo leer otro).
-CARRIER_STEP_FRESH_SECONDS = 24 * 3600
-
-
-def _stored_carrier_step(order: Order) -> str | None:
-    """Último paso del transportista guardado, si es reciente (si no, None:
-    manda el estado de Genei, para no dejar un pedido parado por un dato viejo)."""
-    from datetime import UTC, datetime  # noqa: PLC0415
-
-    state = genei_state_of(order)
-    step = state.get("carrier_step")
-    checked = state.get("tracking_checked_at")
-    if not step or not checked:
-        return None
-    try:
-        when = datetime.fromisoformat(str(checked))
-    except ValueError:
-        return None
-    if when.tzinfo is None:
-        when = when.replace(tzinfo=UTC)
-    age = (datetime.now(UTC) - when).total_seconds()
-    return step if age <= CARRIER_STEP_FRESH_SECONDS else None
-
-
 def apply_shipment_state(
     session: Session, order: Order, shipment: dict[str, Any], *,
     tracking: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """Aplica el estado de un envío Genei (objeto `data`) al pedido: guarda el
-    bloque `genei` + tracking y mueve el `transport_status`. Devuelve
+    bloque `genei` + tracking y, SOLO si es una incidencia (o un «entregado» de
+    un pedido ya marcado como recogido), mueve el `transport_status`. Devuelve
     `(summary, transporte_aplicado)`. La usan el webhook, «Actualizar estado»
     y el sondeo periódico.
 
     `tracking` = respuesta de `GET /shipments/{code}/tracking` (eventos del
-    transportista). Con ella se guarda el último escaneo real y se decide el
-    transporte con él; sin ella, se usa el último escaneo guardado (si es
-    reciente) o, si no hay, el estado de Genei. Idempotente."""
+    transportista): se guarda el último escaneo real para ENSEÑARLO; no mueve
+    el pedido de pestaña. Idempotente."""
     summary = summarize_shipment(shipment)
     incidencia = str(_pick(shipment, _INCIDENCIA_KEYS) or "").strip()
     if summary["tracking"]:
         order.tracking_number = summary["tracking"]
     carrier = summarize_tracking(tracking) if tracking is not None else None
-    if carrier is not None and carrier["carrier_step"] is not None:
-        carrier_step = carrier["carrier_step"]
-    elif carrier is not None:
-        carrier_step = None           # consultado y sin escaneos aún: manda Genei
-    else:
-        carrier_step = _stored_carrier_step(order)
-    target = transport_target(summary["state_bucket"], carrier_step)
+    target = transport_target(summary["state_bucket"], _transport_value(order))
     evidence = {
         "tracking_number": summary["tracking"] or order.tracking_number or "",
         "description": incidencia or summary["state_label"] or "Incidencia de transporte",
@@ -244,8 +214,8 @@ def process_webhook(
     endpoint) ni valida el secreto (lo hace el endpoint).
 
     El webhook trae solo el estado de Genei; con `fetch_tracking(código)` se
-    leen además los eventos del transportista, para no dar por recogido un
-    envío que la agencia aún no ha escaneado. Si falla, se sigue sin ellos."""
+    leen además los eventos del transportista (para enseñar el estado real).
+    Si falla, se sigue sin ellos."""
     shipment = _shipment_data(payload)
     order = find_order(session, shipment)
     if order is None:

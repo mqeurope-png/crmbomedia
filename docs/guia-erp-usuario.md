@@ -504,9 +504,12 @@ vistazo; la activa va un punto más intensa y subrayada):
 Fondos claros con texto oscuro del mismo tono: el texto se lee bien en todas
 (contraste ≥ 7:1).
 
-Cuando la agencia recoge el paquete (Genei lo avisa solo, o pulsas **«Actualizar
-estado»** o **«📤 Marcar recogido»**), el pedido pasa de **«Pendiente de
-recogida»** a **«Enviados»**.
+Cuando la agencia recoge el paquete, pulsa **«📤 Marcar recogido»**: el pedido
+pasa de **«Pendiente de recogida»** a **«Enviados»**. **Las pestañas solo se
+mueven solas con una incidencia** (Genei avisa de una incidencia → el pedido va a
+**«Incidencias»**); el resto de avisos de Genei y del transportista solo se
+enseñan. Un pedido ya en «Enviados» pasa a *Entregado* solo cuando Genei lo
+confirma (sigue en la misma pestaña).
 
 **Estado real del envío (según el transportista).** En los envíos hechos con
 Genei, BoHub lee los **escaneos del propio transportista** (CTT, UPS, GLS…) y
@@ -515,10 +518,9 @@ RED»*, *«EN REPARTO»*, *«ENTREGADO»*— con su fecha, en la columna **Enví
 «Enviados», en la tarjeta de «Pendiente de recogida» y en la ficha (con el
 **historial del transportista** y el enlace a la web de la agencia). Se
 actualiza solo: al avisar Genei y, además, cada 30 minutos para los envíos en
-curso. **Un envío no pasa a «Enviados» hasta que el transportista lo escanea
-de verdad**: si la agencia aún dice *«Pendiente de entrada en red»*, sigue en
-«Pendiente de recogida» aunque Genei ya lo dé por recogido. Colores: ámbar = aún
-sin escanear, azul = en camino, verde = entregado, rojo = incidencia. En la
+curso. **Es informativo: no mueve el pedido de pestaña** (eso lo hace «📤 Marcar
+recogido», o una incidencia). Colores: ámbar = aún sin escanear, azul = en
+camino, verde = entregado, rojo = incidencia. En la
 hoja «Seguimiento (app)», la columna Envío lleva ese paso real (*Pendiente de
 entrada en red*, *Recogido*, *En tránsito*, *En reparto*, *Disponible en
 oficina*, *Entregado*, *Incidencia*). Si Genei aún no tiene escaneos, se ve su

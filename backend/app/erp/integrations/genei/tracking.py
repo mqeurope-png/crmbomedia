@@ -14,10 +14,10 @@ El webhook de Genei (`notificationUrl`) solo manda el objeto del envío (su
 estado grueso, sin estos eventos): el detalle se CONSULTA (al «Actualizar
 estado», al llegar el webhook y en el sondeo del `worker-sync`).
 
-Aquí, sin red: normalizar los eventos, CLASIFICAR el último (su texto es el del
-transportista) en un paso real del envío, y decidir cuánto puede avanzar el
-`transport_status` del pedido sin marcar «recogido» algo que el transportista
-aún no ha escaneado.
+Aquí, sin red: normalizar los eventos y CLASIFICAR el último (su texto es el
+del transportista) en un paso real del envío, para ENSEÑARLO (Enviados, ficha,
+hoja). El escaneo NO mueve el pedido de pestaña: eso lo hace «📤 Marcar
+recogido» (o una incidencia, ver `transport_target`).
 """
 from __future__ import annotations
 
@@ -51,10 +51,6 @@ CARRIER_STEP_LABELS: dict[str, str] = {
     DELIVERED: "Entregado",
     INCIDENT: "Incidencia",
 }
-
-#: Pasos con el paquete ya escaneado en la red del transportista.
-_SCANNED = frozenset({PICKED_UP, IN_TRANSIT, OUT_FOR_DELIVERY, AVAILABLE_PICKUP})
-
 
 def _fold(text: str) -> str:
     """Minúsculas y sin acentos, para casar texto de cualquier agencia."""
@@ -213,35 +209,29 @@ def summarize_tracking(raw: Any) -> dict[str, Any]:
     }
 
 
-# --- cuánto puede avanzar el transporte ---------------------------------------
+# --- qué puede mover el transporte SOLO (sin persona) -------------------------
 
 
-def transport_target(genei_bucket: str | None, carrier_step: str | None) -> str | None:
-    """Estado de transporte al que llevar el pedido combinando el estado de
-    Genei con el ÚLTIMO escaneo real del transportista.
+def transport_target(genei_bucket: str | None, current_transport: str | None) -> str | None:
+    """Estado de transporte al que BoHub mueve el pedido SIN intervención.
 
-    - Sin detalle del transportista (o texto que no sabemos leer): manda Genei,
-      como siempre.
-    - Entregado según el transportista → entregado.
-    - Escaneado en la red (recogido, en tránsito, en reparto, en oficina) →
-      en tránsito (aunque Genei vaya con retraso), salvo que Genei ya diga
-      entregado/incidencia.
-    - Aún SIN escaneo («Pendiente de entrada en red»): NUNCA «en tránsito»,
-      aunque Genei ya lo dé por recogido. Solo pasan entregado/incidencia de
-      Genei.
-    - Incidencia del transportista (p. ej. «destinatario ausente»): se enseña,
-      pero el transporte lo sigue moviendo Genei (muchas se resuelven solas al
-      día siguiente; las serias Genei ya las marca como incidencia)."""
+    Las pestañas de la Cola SAT solo cambian solas con una INCIDENCIA; el paso
+    de «Pendiente de recogida» a «Enviados» lo hace una persona con «📤 Marcar
+    recogido». Por eso:
+
+    - Incidencia de Genei → incidencia (el pedido va a «Incidencias»).
+    - Entregado de Genei → entregado, pero SOLO si ya se marcó recogido
+      (`in_transit`: ya está en «Enviados», no cambia de pestaña).
+    - Todo lo demás (recogido / en tránsito / en reparto de Genei o del
+      transportista) NO mueve nada: se enseña y ya.
+
+    El escaneo del transportista (`carrier_step`) es solo INFORMATIVO."""
     genei = transport_status_for(genei_bucket or "")
-    if carrier_step in (None, UNKNOWN, INCIDENT):
-        return genei
-    if carrier_step == DELIVERED:
+    if genei == "incident":
+        return "incident"
+    if genei == "delivered" and current_transport == "in_transit":
         return "delivered"
-    if carrier_step in _SCANNED:
-        return genei if genei in ("delivered", "incident") else "in_transit"
-    if carrier_step == PRE_TRANSIT:
-        return genei if genei in ("delivered", "incident") else None
-    return genei
+    return None
 
 
 def carrier_step_label(step: str | None) -> str | None:

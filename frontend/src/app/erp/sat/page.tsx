@@ -442,7 +442,8 @@ export default function SatQueuePage() {
     en_preparacion: "Preparación empezada, aún sin embalar: pulsa «📦 Embalar» para meter peso y medidas.",
     embalados: "Embalados, sin etiqueta tramitada: crea el envío con Genei o sube la etiqueta.",
     pendiente_recogida: "Con el envío tramitado y la etiqueta lista: esperando al transportista. "
-      + "Cuando la agencia lo recoge (Genei) o marcas «Recogido», pasa a «Enviados».",
+      + "Cuando lo recogen, marca «📤 Recogido» y pasa a «Enviados» "
+      + "(el estado del transportista se ve, pero no lo mueve).",
     sin_envio: "Pedidos que NO se envían (recogida en tienda, licencia, servicio…): "
       + "no cuentan como enviados. Selecciónalos para devolverlos al taller.",
     enviados: "Pedidos que ya han salido: recogidos, en tránsito o entregados.",

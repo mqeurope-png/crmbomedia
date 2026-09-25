@@ -1,10 +1,11 @@
 """Genei — estado REAL del envío con el tracking DETALLADO del transportista.
 
 `GET /shipments/{code}/tracking` trae los eventos de la propia agencia
-(`estadosAgencia[]`). El estado que se enseña (Enviados, ficha, hoja) es el del
-último escaneo real, y el transporte no pasa a «en tránsito» sin escaneo — caso
-real ALB-2-200038 (CTT `0033260080539700026674`): Genei lo daba por recogido y
-CTT decía «Pendiente de entrada en red». Todo sin red (MockTransport / fakes).
+(`estadosAgencia[]`). El estado que se ENSEÑA (Enviados, ficha, hoja) es el del
+último escaneo real — caso ALB-2-200038 (CTT `0033260080539700026674`): salía
+«Recogido · en tránsito» y CTT decía «Pendiente de entrada en red». El escaneo
+es INFORMATIVO: las pestañas solo se mueven solas con una incidencia; el paso a
+«Enviados» es «📤 Marcar recogido». Todo sin red (MockTransport / fakes).
 """
 from __future__ import annotations
 
@@ -136,21 +137,18 @@ def test_sin_eventos_no_hay_paso_del_transportista():
     assert summarize_tracking({})["carrier_events"] == []
 
 
-@pytest.mark.parametrize(("genei", "paso", "destino"), [
-    ("in_transit", PRE_TRANSIT, None),          # Genei «recogido», CTT sin escanear
-    ("ready", PRE_TRANSIT, None),
-    ("ready", IN_TRANSIT, "in_transit"),       # la agencia va por delante de Genei
-    ("ready", PICKED_UP, "in_transit"),
-    ("in_transit", DELIVERED, "delivered"),
-    ("in_transit", OUT_FOR_DELIVERY, "in_transit"),
-    ("delivered", PRE_TRANSIT, "delivered"),   # entregado/incidencia de Genei pasan
-    ("incident", PRE_TRANSIT, "incident"),
-    ("in_transit", None, "in_transit"),        # sin detalle: manda Genei
-    ("in_transit", UNKNOWN, "in_transit"),
-    ("in_transit", INCIDENT, "in_transit"),    # incidencia de agencia: se enseña
+@pytest.mark.parametrize(("genei", "actual", "destino"), [
+    ("in_transit", "label_created", None),     # Genei «recogido»: NO mueve
+    ("in_transit", "not_shipped", None),
+    ("ready", "label_created", None),
+    ("delivered", "label_created", None),      # sin «Marcar recogido»: no mueve
+    ("delivered", "in_transit", "delivered"),  # ya en «Enviados»: se queda ahí
+    ("incident", "label_created", "incident"),  # la incidencia SÍ mueve
+    ("incident", "in_transit", "incident"),
+    ("other", "in_transit", None),
 ])
-def test_cuanto_avanza_el_transporte(genei, paso, destino):
-    assert transport_target(genei, paso) == destino
+def test_solo_la_incidencia_mueve_de_pestana(genei, actual, destino):
+    assert transport_target(genei, actual) == destino
 
 
 def test_estado_2_de_genei_ya_no_es_en_transito():
@@ -207,7 +205,7 @@ def _transport(o: Order) -> str:
     return getattr(o.transport_status, "value", o.transport_status)
 
 
-def test_caso_alb_2_200038_no_se_da_por_recogido(session_factory):
+def test_caso_alb_2_200038_enseña_el_escaneo_real_sin_mover(session_factory):
     with session_factory() as s:
         oid = _order(s)
         o = s.get(Order, oid)
@@ -216,71 +214,73 @@ def test_caso_alb_2_200038_no_se_da_por_recogido(session_factory):
         s.commit()
         o = s.get(Order, oid)
         assert movido is False
-        assert _transport(o) == "label_created"             # NO en tránsito
+        assert _transport(o) == "label_created"             # sigue esperando
         g = genei_state_of(o)
         assert g["carrier_status"] == "PENDIENTE DE ENTRADA EN RED"
         assert g["carrier_step"] == PRE_TRANSIT
         assert g["tracking_url"]
-        # Cola SAT: sigue esperando al transportista, no en «Enviados».
         assert sat_tab_of(o) == TAB_PENDIENTE_RECOGIDA
         # Hoja «Seguimiento (app)»: el escaneo real, no el genérico.
         assert _envio_label(o) == "Pendiente de entrada en red"
 
 
-def test_evento_nuevo_actualiza_y_es_idempotente(session_factory):
+def test_evento_nuevo_se_guarda_y_enseña_y_es_idempotente(session_factory):
     with session_factory() as s:
         oid = _order(s)
         o = s.get(Order, oid)
         apply_shipment_state(s, o, _shipment(5), tracking=_tracking(PENDIENTE))
         s.commit()
-        # Llega el escaneo: en tránsito de verdad.
+        # Llega el escaneo de la agencia: se guarda y se enseña, sin mover.
         _s, movido = apply_shipment_state(s, o, _shipment(5),
                                           tracking=_tracking(PENDIENTE, EN_TRANSITO))
         s.commit()
         o = s.get(Order, oid)
-        assert movido is True
-        assert _transport(o) == "in_transit"
-        assert sat_tab_of(o) == TAB_ENVIADOS
+        assert movido is False
+        assert _transport(o) == "label_created"
+        assert sat_tab_of(o) == TAB_PENDIENTE_RECOGIDA
         assert genei_state_of(o)["carrier_status"] == "EN TRANSITO"
         assert _envio_label(o) == "En tránsito"
         historial = s.query(OrderStatusHistory).filter_by(order_id=oid).count()
 
         # El MISMO evento otra vez (webhook repetido / sondeo): nada cambia.
-        _s, movido = apply_shipment_state(s, o, _shipment(5),
-                                          tracking=_tracking(PENDIENTE, EN_TRANSITO))
+        apply_shipment_state(s, o, _shipment(5), tracking=_tracking(PENDIENTE, EN_TRANSITO))
         s.commit()
-        assert movido is False
         assert s.query(OrderStatusHistory).filter_by(order_id=oid).count() == historial
         assert len(genei_state_of(s.get(Order, oid))["carrier_events"]) == 2
 
-        # Entregado según el transportista (aunque Genei siga en 5).
-        _s, movido = apply_shipment_state(
+        # Entregado según la agencia: se enseña; el transporte no se toca.
+        apply_shipment_state(
             s, o, _shipment(5), tracking=_tracking(PENDIENTE, EN_TRANSITO, EN_REPARTO, ENTREGADO))
+        s.commit()
+        o = s.get(Order, oid)
+        assert _transport(o) == "label_created"
+        assert genei_state_of(o)["carrier_status"] == "ENTREGADO"
+        assert _envio_label(o) == "Entregado"
+
+
+def test_tras_marcar_recogido_el_entregado_de_genei_se_aplica(session_factory):
+    with session_factory() as s:
+        oid = _order(s, transport="in_transit")          # ya marcado recogido
+        o = s.get(Order, oid)
+        _s, movido = apply_shipment_state(s, o, _shipment(3),
+                                          tracking=_tracking(PENDIENTE, EN_TRANSITO, ENTREGADO))
         s.commit()
         o = s.get(Order, oid)
         assert movido is True
         assert _transport(o) == "delivered"
-        assert _envio_label(o) == "Entregado"
+        assert sat_tab_of(o) == TAB_ENVIADOS             # misma pestaña
 
 
-def test_sin_tracking_usa_el_escaneo_guardado_si_es_reciente(session_factory):
-    ahora = datetime.now(UTC)
+def test_la_incidencia_de_genei_si_mueve(session_factory):
     with session_factory() as s:
-        oid = _order(s, genei={"carrier_step": PRE_TRANSIT,
-                               "tracking_checked_at": ahora.isoformat()})
+        oid = _order(s, transport="in_transit")
         o = s.get(Order, oid)
-        apply_shipment_state(s, o, _shipment(5))           # webhook sin detalle
+        _s, movido = apply_shipment_state(
+            s, o, {**_shipment(10), "desc_incidencia": "Paquete dañado"},
+            tracking=_tracking(PENDIENTE, EN_TRANSITO))
         s.commit()
-        assert _transport(s.get(Order, oid)) == "label_created"
-
-        viejo = (ahora - timedelta(days=3)).isoformat()
-        oid2 = _order(s, number="ALB-OLD", genei={"carrier_step": PRE_TRANSIT,
-                                                  "tracking_checked_at": viejo})
-        o2 = s.get(Order, oid2)
-        apply_shipment_state(s, o2, _shipment(5, ext="ALB-OLD"))
-        s.commit()
-        # Dato viejo: no deja el pedido parado; manda Genei.
-        assert _transport(s.get(Order, oid2)) == "in_transit"
+        assert movido is True
+        assert _transport(s.get(Order, oid)) == "incident"
 
 
 def test_estado_2_por_webhook_no_marca_recogido(session_factory):
@@ -353,7 +353,7 @@ def _carrier(s: Session, **cfg) -> None:
     s.commit()
 
 
-def test_webhook_lee_el_tracking_y_no_da_por_recogido(api, session_factory, fake):
+def test_webhook_lee_el_tracking_y_no_mueve(api, session_factory, fake):
     with session_factory() as s:
         _carrier(s)
         oid = _order(s)
@@ -367,7 +367,7 @@ def test_webhook_lee_el_tracking_y_no_da_por_recogido(api, session_factory, fake
         assert genei_state_of(o)["carrier_status"] == "PENDIENTE DE ENTRADA EN RED"
 
 
-def test_webhook_sin_tracking_disponible_sigue_como_antes(api, session_factory, fake):
+def test_webhook_sin_tracking_disponible_no_rompe(api, session_factory, fake):
     fake.tracking = GeneiError("GET /shipments/GEN9/tracking → 500")
     with session_factory() as s:
         _carrier(s)
@@ -376,13 +376,16 @@ def test_webhook_sin_tracking_disponible_sigue_como_antes(api, session_factory, 
                  json={"status": 1, "message": "", "data": _shipment(5)})
     assert r.status_code == 200, r.text
     with session_factory() as s:
-        assert _transport(s.get(Order, oid)) == "in_transit"     # manda Genei
+        o = s.get(Order, oid)
+        assert _transport(o) == "label_created"
+        assert genei_state_of(o)["state_code"] == 5          # el estado de Genei, sí
+        assert genei_state_of(o).get("carrier_status") is None
 
 
 def test_actualizar_estado_trae_el_escaneo_y_enviados_lo_muestra(api, session_factory, fake):
     with session_factory() as s:
         _carrier(s)
-        oid = _order(s)
+        oid = _order(s, transport="in_transit")         # ya marcado recogido
     h = auth_headers(api)
     fake.tracking = _tracking(PENDIENTE, EN_TRANSITO, EN_REPARTO)
     r = api.post(f"/api/erp/orders/{oid}/genei/refresh", headers=h)
@@ -428,11 +431,11 @@ def test_sondeo_actualiza_los_envios_vivos_y_es_idempotente(session_factory, fak
     fake.tracking = _tracking(PENDIENTE, EN_TRANSITO)
     with session_factory() as s:
         out = tracking_job.run_tracking_poll(s, client_factory=lambda c: fake)
-    assert out == {"revisados": 1, "movidos": 1, "con_escaneo": 1, "errores": 0}
+    assert out == {"revisados": 1, "movidos": 0, "con_escaneo": 1, "errores": 0}
     assert {c[1] for c in fake.calls} == {"GEN9"}
     with session_factory() as s:
         o = s.get(Order, vivo)
-        assert _transport(o) == "in_transit"
+        assert _transport(o) == "label_created"          # informativo: no mueve
         assert genei_state_of(o)["carrier_status"] == "EN TRANSITO"
         assert _transport(s.get(Order, entregado)) == "delivered"
 
@@ -447,6 +450,18 @@ def test_sondeo_actualiza_los_envios_vivos_y_es_idempotente(session_factory, fak
     with session_factory() as s:
         out = tracking_job.run_tracking_poll(s, client_factory=lambda c: fake, now=luego)
     assert out["revisados"] == 1 and out["movidos"] == 0
+
+
+def test_sondeo_aplica_la_incidencia_de_genei(session_factory, fake):
+    with session_factory() as s:
+        _carrier(s)
+        oid = _order(s, transport="in_transit")
+    fake.estado = 10
+    with session_factory() as s:
+        out = tracking_job.run_tracking_poll(s, client_factory=lambda c: fake)
+    assert out["movidos"] == 1
+    with session_factory() as s:
+        assert _transport(s.get(Order, oid)) == "incident"
 
 
 def test_sondeo_apagado_no_hace_nada(session_factory, fake):

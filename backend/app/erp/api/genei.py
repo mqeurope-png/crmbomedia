@@ -620,9 +620,8 @@ def genei_refresh(
     tracking y el courier en el pedido, y los EVENTOS DEL TRANSPORTISTA
     (`/tracking`: el último escaneo real, p. ej. «Pendiente de entrada en
     red»). Es el RESPALDO MANUAL del webhook y del sondeo: usa la misma lógica
-    (`apply_shipment_state`), así que también mueve el `transport_status` del
-    pedido (recogido / entregado / incidencia) — sin dar por recogido lo que
-    el transportista aún no ha escaneado."""
+    (`apply_shipment_state`). Solo una incidencia mueve el pedido de pestaña;
+    el paso a «Enviados» es «📤 Marcar recogido»."""
     from app.erp.integrations.genei.webhook import (  # noqa: PLC0415
         apply_shipment_state,
         safe_tracking,

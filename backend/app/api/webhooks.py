@@ -223,8 +223,8 @@ async def receive_genei_webhook(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Body must be JSON") from exc
 
     # El webhook solo trae el estado de Genei: se leen además los eventos del
-    # transportista (`/tracking`) para no dar por recogido lo no escaneado.
-    # Si Genei no responde, se sigue sin ellos (el sondeo lo completará).
+    # transportista (`/tracking`) para ENSEÑAR el estado real (no mueven el
+    # pedido de pestaña). Si Genei no responde, se sigue sin ellos.
     def _fetch_tracking(code: str) -> dict[str, Any] | None:
         from app.erp.api.genei import build_client  # noqa: PLC0415
         from app.erp.integrations.genei.client import GeneiError  # noqa: PLC0415
