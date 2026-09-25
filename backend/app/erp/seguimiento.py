@@ -1167,8 +1167,26 @@ def build_rows(
             "nota_incidencia": (blocking or {}).get("text") or "",
             #: Detalle de la incidencia (pestaña Incidencias) o None.
             "incidencia": incidencia,
+            #: Espejo (Fase 2): ¿tiene envío Genei? Entonces su Tracking lo manda
+            #: Genei (no se lee de la hoja y la celda va protegida).
+            "envio_genei": bool(_genei_shipment_code(o)),
         })
+    # Espejo (Fase 2): lo escrito a mano en la hoja en las columnas editables de
+    # una fila de BoHub (Cliente, Factura, Factura enviada, Nº serie · WhiteRIP)
+    # se ve también aquí — pantalla, Excel y hoja dicen lo mismo.
+    from app.erp.seguimiento_mirror import apply_overrides_to_rows  # noqa: PLC0415
+
+    apply_overrides_to_rows(session, rows)
     return rows
+
+
+def _genei_shipment_code(order: Order) -> str | None:
+    from app.erp.integrations.genei.service import shipment_code_of_order  # noqa: PLC0415
+
+    try:
+        return shipment_code_of_order(order)
+    except Exception:  # noqa: BLE001 — packing_json raro: sin envío Genei
+        return None
 
 
 #: Claves de fila por las que se puede ordenar (E3-A-fix1: misma idea).
@@ -1400,8 +1418,16 @@ _PEDIDOS_WIDTHS = [13, 16, 11, 30, 10, 34, 12, 18, 14, 12, 13, 12, 13, 13, 12, 1
 _INCIDENCIAS_WIDTHS = [16, 30, 24, 40, 18, 11, 12]
 
 def _sheet_date_value(iso: str | None) -> date | str:
-    """Celda de fecha del formato nuevo: un `date` real, o "" si no hay."""
-    return date.fromisoformat(iso) if iso else ""
+    """Celda de fecha del formato nuevo: un `date` real, o "" si no hay. Un
+    valor que no es ISO (p. ej. una fecha tecleada a mano en la hoja que no se
+    entiende —espejo, Fase 2—) sale tal cual, como texto: nunca rompe el volcado
+    ni se inventa una fecha."""
+    if not iso:
+        return ""
+    try:
+        return date.fromisoformat(iso)
+    except (TypeError, ValueError):
+        return iso
 
 
 #: Columnas del formato nuevo a las que se reparten los tokens que el histórico

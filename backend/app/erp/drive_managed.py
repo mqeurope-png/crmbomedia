@@ -356,7 +356,10 @@ CONFLICT_PREFIX = "⚠ BoHub"
 #: vez de quedarse congelada; si el usuario la ha corregido, la huella ya no
 #: casa y la celda pasa a ser SUYA (lo escrito a mano manda, como siempre).
 OWNED_PREFIX = "BoHub:"
-_MARCAS_RE = re.compile(r"\s*\[(?:⚠ BoHub|BoHub:)[^\]]*\]")
+#: Marcas de la app en la Nota: `[BoHub: …]` (celdas rellenadas), `[⚠ BoHub …]`
+#: (conflictos) y `[⚠ revisar: …]` (espejo, Fase 2: fila que no valida). Todas
+#: se quitan al leer y se recalculan en cada pasada.
+_MARCAS_RE = re.compile(r"\s*\[(?:⚠ BoHub|BoHub:|⚠ revisar:)[^\]]*\]")
 _PROPIAS_RE = re.compile(r"\[BoHub:([^\]]*)\]")
 
 _SITUACION_INDEX = SEGUIMIENTO_COLUMNS_V2.index("Situación")
@@ -698,8 +701,9 @@ def merge_manual_rows(
         # Una fila manual que casa con un pedido de BoHub (LIVE, casado claro) se
         # queda con el `id` estable de ese pedido: a partir de aquí «upsert por
         # id». El casado dudoso del histórico va aparte, por el backfill revisado.
-        if len(fusion) > _ID_INDEX:
-            fusion[_ID_INDEX] = _texto(pedido.get("id"))
+        oid = _texto(pedido.get("id"))
+        if oid and len(fusion) > _ID_INDEX:
+            fusion[_ID_INDEX] = oid
         fusionadas += 1
         conflictos += n_conflictos
         if entregable and veces[id(pedido)] == 1:
@@ -1120,12 +1124,24 @@ def push_managed_tabs(
         sheets.tab_values(pedidos_tab)
         if any(is_manual_row(r) for r in live_zone(valores_pedidos)) else None
     )
+    # ESPEJO (Fase 2): antes de pintar, lo que una persona editó en las columnas
+    # editables de las filas de BoHub se lee de vuelta (hoja ≠ snapshot), y las
+    # filas se pintan con lo manual aplicado. Sin snapshot no se infiere nada.
+    from app.erp.seguimiento_mirror import Espejo  # noqa: PLC0415
+
+    espejo = Espejo.cargar(session, dry_run=dry_run)
+    rows, completados = espejo.leer_filas_bohub(valores_pedidos, rows, completados or [])
+
     manuales_leidas = [
         r for r in manual_rows(valores_pedidos, vistos)
         if not _es_fila_heredada_de_bohub(r)
     ]
     fusion = merge_manual_rows(manuales_leidas, rows)
-    manuales = fusion["manuales"]
+    # Filas tecleadas a mano: se validan; las válidas reciben id y se ingieren en
+    # BoHub; las que no, se marcan «⚠ revisar» y no se ingieren (#466 intacta).
+    manuales = espejo.procesar_manuales(
+        fusion["manuales"], {str(r.get("id")) for r in rows if r.get("id")},
+    )
 
     # Zona viva por fecha del pedido, de más reciente a más antiguo (la
     # Situación es una columna más: con su color y reordenable con el
@@ -1172,13 +1188,38 @@ def push_managed_tabs(
         historico_manual_rows(valores_pedidos),
         valores_pedidos[0] if valores_pedidos else [],
     )
+    # ESPEJO: con el histórico ya importado a BoHub (`seguimiento_legacy`), cada
+    # fila recibe su id, se leen de vuelta sus ediciones y se quitan las que son
+    # el MISMO pedido que ya se pinta arriba (vivo, completado o fila manual
+    # casada). Sin histórico importado, se conserva tal cual, como siempre.
+    ids_vivos = (
+        {str(r.get("id")) for r in (*ordenadas, *completados) if r.get("id")}
+        | {_texto(f[_ID_INDEX]) for f in manuales if len(f) > _ID_INDEX and _texto(f[_ID_INDEX])}
+    )
+    if espejo.legacy_activo():
+        estatico_manual = espejo.procesar_historico(estatico_manual, ids_vivos)
     # Los pedidos completados de BoHub, REGENERADOS en cada actualización y
     # deduplicados por Nº contra el manual: van bajo el ÚNICO separador
     # «HISTÓRICO», encima del histórico manual (sin un bloque etiquetado aparte).
     # Regenerar = «Envío en vivo»: aunque el pedido ya esté abajo, su fila se
     # reescribe al día por Nº. Idempotente (al releer, la fila anterior se
-    # descarta por su Situación «Completado»).
-    filas_completados = completados_filas(completados or [], estatico_manual)
+    # descarta por su Situación «Completado»). El casado por Nº solo cuenta con
+    # las filas del histórico que aún NO llevan id; con id, el deduplicado es por
+    # id (arriba).
+    filas_completados = completados_filas(
+        completados,
+        [f for f in estatico_manual if not (len(f) > _ID_INDEX and _texto(f[_ID_INDEX]))],
+    )
+    # ESPEJO: filas manuales/del histórico que ya no están en la hoja → borrado
+    # lógico en BoHub; un borrado masivo se trata como accidente y se restaura.
+    ids_pintados = (
+        {str(r.get("id")) for r in ordenadas if r.get("id")}
+        | {_texto(f[_ID_INDEX]) for f in (*filas_completados, *manuales, *estatico_manual)
+           if len(f) > _ID_INDEX and _texto(f[_ID_INDEX])}
+    )
+    restaurar_manuales, restaurar_historico = espejo.borrados(ids_pintados)
+    manuales = [*manuales, *restaurar_manuales]
+    estatico_manual = [*estatico_manual, *restaurar_historico]
     estatico_pedidos = (
         [historico_separator_row(valores_pedidos), *filas_completados, *estatico_manual]
         if (filas_completados or estatico_manual) else []
@@ -1192,6 +1233,7 @@ def push_managed_tabs(
     resumen["completados_historico"] = len(filas_completados)
     # El separador no cuenta como fila de datos.
     resumen["pendientes_preservados"] = max(len(estatico_incidencias) - 1, 0)
+    resumen["espejo"] = espejo.stats
 
     if dry_run:
         return resumen
@@ -1200,11 +1242,13 @@ def push_managed_tabs(
         t for t in (pedidos_tab, incidencias_tab) if t not in existing
     ]
 
+    grid_pedidos = build_pedidos_grid(ordenadas, estatico_pedidos, manuales)
     sheets.ensure_tab(pedidos_tab)
-    sheets.replace_tab(
-        pedidos_tab, build_pedidos_grid(ordenadas, estatico_pedidos, manuales), raw=True,
-    )
+    sheets.replace_tab(pedidos_tab, grid_pedidos, raw=True)
     sheets.format_tab(pedidos_tab, pedidos_format(ordenadas, estatico_pedidos, manuales))
+    # La foto nueva, SOLO tras escribir bien la hoja (si la escritura falla, el
+    # llamador no confirma y la pasada siguiente lo repite todo).
+    espejo.guardar_snapshot(grid_pedidos)
 
     sheets.ensure_tab(incidencias_tab)
     sheets.replace_tab(

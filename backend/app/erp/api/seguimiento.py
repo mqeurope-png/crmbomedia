@@ -242,10 +242,17 @@ def drive_sync(
             # curso, y fuera los excluidos y los ocultos por estado. Antes se
             # pasaban las filas SIN filtrar y la hoja enseñaba lo que la
             # pantalla escondía (web `on-hold`/`cancelled`, anulados…).
-            return push_managed_tabs(
+            resumen = push_managed_tabs(
                 session, client, drive_live_rows(session),
                 completados=drive_completados_rows(session), dry_run=dry_run,
             )
+            # Espejo (Fase 2): lo leído de vuelta de la hoja (overrides, tracking,
+            # filas manuales, histórico, snapshot) se confirma SOLO si la hoja se
+            # escribió bien; si algo falla, no se confirma nada y la pasada
+            # siguiente lo repite.
+            if not dry_run:
+                session.commit()
+            return resumen
         prefer_albaran = bool(cfg_json.get("drive_reference_prefer_albaran", True))
         return sync_to_sheet(
             session, client, build_drive_sync_rows(session),
