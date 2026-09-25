@@ -55,7 +55,61 @@ export type GeneiState = {
   tracking_url?: string | null;
   /** Última consulta del tracking a Genei. */
   tracking_checked_at?: string | null;
+  /** Destinatario del envío (el email puesto al crearlo en Genei). */
+  dest_email?: string | null;
+  /** Aviso de envío al cliente que manda BoHub (una vez, con el tracking). */
+  customer_email?: CustomerEmailStatus | null;
 };
+
+/** Estado del aviso de envío al cliente. */
+export type CustomerEmailStatus = {
+  /** pending = se enviará solo en cuanto haya nº de seguimiento · sent ·
+   *  error (se reintenta; luego, a mano) · sending · disabled (aviso apagado). */
+  status?: "pending" | "sending" | "sent" | "error" | "disabled";
+  sent_at?: string | null;
+  to?: string | null;
+  lang?: string | null;
+  from?: string | null;
+  automatic?: boolean;
+  sends?: number;
+  attempts?: number;
+  error?: string | null;
+};
+
+/** El aviso tal como saldría (a quién, desde dónde, idioma, texto). */
+export type CustomerEmailPreview = {
+  to: string;
+  from_alias: string;
+  from_alias_source: "tienda" | "idioma";
+  store: string | null;
+  lang: string;
+  lang_source: "pedido" | "cliente" | "pais_destino" | "pais_cliente" | "defecto" | "selector";
+  subject: string;
+  body_text: string;
+  tracking: string | null;
+  tracking_url: string | null;
+  courier: string | null;
+  order_ref: string;
+  /** Lo que falta para poder enviarlo ("tracking", "destinatario"). */
+  missing: string[];
+  status: CustomerEmailStatus;
+};
+
+export function getCustomerEmailPreview(
+  orderId: string, lang?: string,
+): Promise<CustomerEmailPreview> {
+  const q = lang ? `?lang=${encodeURIComponent(lang)}` : "";
+  return apiFetch(`/api/erp/orders/${orderId}/genei/customer-email${q}`);
+}
+
+/** Envía (o reenvía) a mano el aviso de envío al cliente. */
+export function sendCustomerEmail(
+  orderId: string, body: { to?: string; lang?: string } = {},
+): Promise<{ order_id: string; state: GeneiState }> {
+  return apiFetch(`/api/erp/orders/${orderId}/genei/customer-email`, {
+    method: "POST", body: JSON.stringify(body),
+  });
+}
 
 /** Paso real del envío según el transportista (lo decide el backend). */
 export type CarrierStep =
@@ -155,6 +209,8 @@ export type GeneiConfig = {
   /** Sondeo del tracking detallado (eventos del transportista) en segundo plano. */
   tracking_poll_enabled?: boolean;
   tracking_poll_minutes?: number;
+  /** El aviso de envío al cliente lo manda BoHub (en su idioma). */
+  customer_email_enabled?: boolean;
 };
 
 export type GeneiAuthStatus = {
@@ -239,6 +295,7 @@ export function saveGeneiConfig(body: {
   webhook_base_url?: string;
   tracking_poll_enabled?: boolean;
   tracking_poll_minutes?: number;
+  customer_email_enabled?: boolean;
 }): Promise<GeneiConfig> {
   return apiFetch(`/api/erp/genei/config`, {
     method: "PUT", body: JSON.stringify(body),

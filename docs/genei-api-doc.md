@@ -110,6 +110,11 @@ Origen ≠ centro logístico de Genei (caso BoHub) → NO `box` ni `references`:
 ### Ciclo de vida
 7 (pdte pago) → pagar → 6 (pdte tramitar) → llamada a la agencia → 1 (tramitado; reintentos si falla) → recogido 5 (tránsito) → 80 (reparto) → 3 (entregado). Webhook por cada salto; idempotente.
 
+## Notificaciones de Genei al destinatario → las manda BoHub (rev 2026-09-25)
+- Genei envía emails al DESTINATARIO según **Perfil → Notificaciones** (columna «Destinatario»: «Al crear un envío», «Al entregar», «Si se producen incidencias», «En reparto»), **sin opción de idioma**. En el Swagger v2 **no hay** parámetro en `POST /shipments` para apagarlo por envío (el `GET /shipments/{code}` trae `not_destinatario`/`not_remitente` = 1, solo lectura). Se apaga a mano en la cuenta: desmarcar «Destinatario → Al crear un envío».
+- BoHub manda ese aviso (`app/erp/shipment_email.py`): nº de seguimiento + enlace (`tracking_url` de `/tracking`, o `GET /shipments/{code}/tracking/url` → `data.webSeguimiento`, o `web_seguimiento` del envío) + nº de pedido, en el idioma del cliente (pedido → cliente → país de destino → país de la empresa → español), desde el remitente de la tienda (web) o por idioma (manuales: es → pedidos@streamtec.es, resto → info@artisjet-printers.eu). Plantillas en Ajustes ERP (`shipment_email_templates`), remitentes manuales (`shipment_email_from`), interruptor en la config de Genei (`customer_email_enabled`, encendido).
+- Disparo: al crear el envío se guarda `dest_email`/`dest_country`/`created_by_user_id` y `customer_email.status = "pending"`; se envía UNA vez en cuanto hay tracking (pagar, webhook, «Actualizar estado», etiqueta o sondeo), con cerrojo de fila y estado `sending` → `sent` (o `error`, máx. 3 reintentos automáticos). Envíos anteriores sin la marca: nunca solos. Reenvío manual: `GET/POST /api/erp/orders/{id}/genei/customer-email`. Auditoría: `erp.shipment_emailed`.
+
 ## Seguridad
 - Pago solo por persona (botón «Pagar y tramitar»); nunca auto-pagar.
 - Webhook validado (secreto/token); no actuar por payloads no verificados.

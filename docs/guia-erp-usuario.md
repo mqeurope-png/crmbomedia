@@ -578,6 +578,29 @@ entonces sale el aviso *«La etiqueta estará disponible tras pagar y tramitar
 el envío»*. **«🖨 Imprimir etiqueta»** la descarga y abre el diálogo de
 imprimir **en un solo clic**.
 
+**Aviso de envío al cliente (lo manda BoHub).** En cuanto un envío de Genei
+tiene **nº de seguimiento** (normalmente al **«Pagar y tramitar»**), BoHub manda
+al cliente **un email con el nº de seguimiento, el enlace para seguirlo y el nº
+de pedido**, **en su idioma** y **una sola vez** (no se repite al actualizar el
+estado). Va al email del destinatario que se puso al crear el envío.
+
+- **Idioma:** el del pedido; si no tiene, el de la ficha del cliente; si no, el
+  del **país de destino** del envío; si no, **español**.
+- **Remitente:** pedidos **web**, el de su tienda (boprint y flux →
+  *pedidos@streamtec.es*; artisJet → *info@artisjet-printers.eu*). Pedidos
+  **manuales** (factura, proforma, albarán, manual o muestra): en **español** →
+  *pedidos@streamtec.es*; en **cualquier otro idioma** →
+  *info@artisjet-printers.eu*.
+- En la sección de Genei de la ficha se ve si se envió (cuándo, a quién, en qué
+  idioma y desde dónde) y está **«Enviar / Reenviar aviso al cliente»** (con
+  vista previa, idioma y destinatario editables). Queda en la línea de tiempo
+  del pedido.
+- Solo se manda solo en los envíos **creados a partir de este cambio** (los
+  anteriores ya los avisó Genei); en esos, se puede mandar a mano.
+- **En Genei**: con esto en marcha, en **Perfil → Notificaciones →
+  «Destinatario»** desmarca **«Al crear un envío»** y guarda. Deja «Si se
+  producen incidencias» y «Al entregar»: esos los sigue mandando Genei.
+
 **«Incidencias».** Cuando un pedido **ya enviado** tiene un problema, **sale de
 «Enviados»** y aparece en esta pestaña hasta que se resuelve. Reúne dos orígenes:
 
@@ -1009,6 +1032,11 @@ lo que va a pasar. Secciones destacadas:
   (**Español, English, Deutsch, Français, Nederlands**), con marcadores como
   `{cliente}`, `{numero}` y `{pedido}` que se sustituyen al enviar. Puedes
   **«Enviarme una prueba»**.
+- **«Aviso de envío al cliente»** — el email con el nº de seguimiento que
+  BoHub manda al cliente al tramitar el envío: textos por idioma (**Español,
+  English, Deutsch, Français, Nederlands**) con **«Ver ejemplo»** / **«Enviarme
+  una prueba»**, y el remitente de los pedidos manuales en español y en otros
+  idiomas.
 - Otras: **Facturación**, **Abreviaturas de empresa**, **Email del SAT /
   taller**, **Empresas emisoras**, **Almacenes de recogida**, **Contrapartidas
   de cobro**, **Orígenes del envío** y **Hoja de seguimiento en Drive**.
@@ -1031,6 +1059,12 @@ caducidad. Debajo de la password verás el estado:
 
 Guardar esta sección **ya no cambia el secreto del webhook**: los envíos creados
 antes siguen avisando a BoHub de cada cambio de estado.
+
+**«Aviso de envío al cliente»**: *«BoHub envía al cliente el aviso de
+envío»* (encendido por defecto). Los textos por idioma (con **«Ver ejemplo»** y
+**«Enviarme una prueba»**) y los remitentes de los pedidos manuales están en
+**«ERP · Configuración» → «Aviso de envío al cliente»** (marcadores
+`{cliente}`, `{pedido}`, `{tracking}`, `{enlace}`, `{agencia}`).
 
 **«Estado real del envío (transportista)»**: *«Consultar automáticamente»*
 (encendido por defecto) y cada cuántos minutos (mínimo 10) BoHub pregunta a

@@ -238,6 +238,25 @@ async def receive_genei_webhook(
 
     result = process_webhook(session, payload, fetch_tracking=_fetch_tracking)
     session.commit()
+    # Aviso de envío al cliente (BoHub, en su idioma) si ya hay nº de
+    # seguimiento y aún no se mandó. Nunca rompe el webhook.
+    if result.get("matched"):
+        from app.erp.models import Order  # noqa: PLC0415
+        from app.erp.shipment_email import maybe_send_shipment_email  # noqa: PLC0415
+
+        order = session.get(Order, result["order_id"])
+
+        def _tracking_url(code: str) -> str | None:
+            from app.erp.api.genei import build_client  # noqa: PLC0415
+
+            try:
+                return build_client(carrier).get_tracking_url(code) if code else None
+            except Exception:  # noqa: BLE001
+                return None
+
+        if order is not None:
+            maybe_send_shipment_email(session, order, actor=None,
+                                      tracking_url_fetcher=_tracking_url)
     out: dict[str, Any] = {"received": True, "matched": bool(result.get("matched"))}
     if result.get("matched"):
         out["order_id"] = result["order_id"]

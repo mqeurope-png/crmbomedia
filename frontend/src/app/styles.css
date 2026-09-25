@@ -14401,3 +14401,9 @@ table.erp-doc-lines { width: 100%; table-layout: fixed; }
 .sat-prep-lines h3,
 .sat-prep-embalar h3 { margin: 0 0 var(--sp-2); font-size: var(--fs-subtitle); }
 .sat-prep-actions { flex-wrap: wrap; }
+
+/* Aviso de envío al cliente (BoHub) en la sección Genei de la ficha. */
+.erp-genei-customer-email { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-2); }
+.erp-genei-customer-email p { margin: 0; }
+.erp-genei-email-body { white-space: pre-wrap; font-family: inherit; font-size: var(--fs-small, 0.875rem);
+  background: var(--surface-2, #f6f7f9); padding: var(--sp-2); border-radius: 8px; margin: 0; }

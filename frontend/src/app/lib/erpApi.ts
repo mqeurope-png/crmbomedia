@@ -1837,6 +1837,13 @@ export type ErpSettings = {
    *  con separador; vacío sin pedido) y {referencia} («su ref.»). Vacío = el
    *  default del código para ese idioma. */
   factusol_invoice_email_templates?: Record<string, { subject: string; body: string }>;
+  /** Aviso de ENVÍO al cliente (nº de seguimiento + enlace) por idioma.
+   *  Placeholders: {cliente}, {pedido}, {tracking}, {enlace}, {agencia}. */
+  shipment_email_templates?: Record<string, { subject: string; body: string }>;
+  /** Remitente del aviso de envío de los pedidos MANUALES (factura, proforma,
+   *  albarán, manual, muestra): en español y en cualquier otro idioma. Los
+   *  pedidos web salen del remitente de su tienda. */
+  shipment_email_from?: { es: string; otros: string };
   /** ERP · email del SAT / taller: destinatario por defecto de «Enviar por
    *  email» desde un pedido. "" = sin destinatario precargado. */
   sat_email?: string;
@@ -1908,6 +1915,30 @@ export async function sendInvoiceEmailTemplateTest(
   draft: { subject?: string; body?: string; to?: string } = {},
 ): Promise<InvoiceEmailTemplateTestResult> {
   return apiFetch<InvoiceEmailTemplateTestResult>("/api/erp/settings/invoice-email/test-send", {
+    method: "POST",
+    body: JSON.stringify({
+      lang, subject: draft.subject ?? null, body: draft.body ?? null, to: draft.to ?? null,
+    }),
+  });
+}
+
+/** Aviso de envío al cliente: plantilla de un idioma con datos de muestra. */
+export async function previewShipmentEmailTemplate(
+  lang: string,
+  draft: { subject?: string; body?: string } = {},
+): Promise<InvoiceEmailTemplatePreview> {
+  return apiFetch<InvoiceEmailTemplatePreview>("/api/erp/settings/shipment-email/preview", {
+    method: "POST",
+    body: JSON.stringify({ lang, subject: draft.subject ?? null, body: draft.body ?? null }),
+  });
+}
+
+/** Aviso de envío al cliente: «Enviarme una prueba» (datos de muestra). */
+export async function sendShipmentEmailTemplateTest(
+  lang: string,
+  draft: { subject?: string; body?: string; to?: string } = {},
+): Promise<InvoiceEmailTemplateTestResult> {
+  return apiFetch<InvoiceEmailTemplateTestResult>("/api/erp/settings/shipment-email/test-send", {
     method: "POST",
     body: JSON.stringify({
       lang, subject: draft.subject ?? null, body: draft.body ?? null, to: draft.to ?? null,

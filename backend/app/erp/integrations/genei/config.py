@@ -103,6 +103,10 @@ class GeneiConfig:
     tracking_poll_enabled: bool = True
     #: Cada cuántos minutos se revisa cada envío vivo (mínimo 10).
     tracking_poll_minutes: int = 30
+    #: Aviso de envío al CLIENTE lo manda BoHub (en su idioma, desde el
+    #: remitente de la marca) en cuanto hay nº de seguimiento. Encendido por
+    #: defecto; en Genei se desmarca «Destinatario → Al crear un envío».
+    customer_email_enabled: bool = True
 
     def webhook_url(self, secret: str | None) -> str | None:
         """`notificationUrl` para Genei, o None si falta la base o el secreto."""
@@ -130,6 +134,7 @@ class GeneiConfig:
             "webhook_base_url": self.webhook_base_url,
             "tracking_poll_enabled": self.tracking_poll_enabled,
             "tracking_poll_minutes": self.tracking_poll_minutes,
+            "customer_email_enabled": self.customer_email_enabled,
         })
 
     @classmethod
@@ -163,6 +168,8 @@ class GeneiConfig:
             webhook_base_url=str(data.get("webhook_base_url") or "").strip(),
             tracking_poll_enabled=bool(poll_enabled) if poll_enabled is not None else True,
             tracking_poll_minutes=max(poll_minutes, TRACKING_POLL_MIN_MINUTES),
+            customer_email_enabled=(bool(data.get("customer_email_enabled"))
+                                    if data.get("customer_email_enabled") is not None else True),
         )
 
     @classmethod
