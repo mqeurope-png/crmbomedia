@@ -2,10 +2,12 @@
 
 import Link from "next/link";
 import { useState } from "react";
+import { extractErrorMessage } from "../../lib/errors";
 import {
   customerLabel,
   downloadOrderFactusolAlbaranPdf,
   fetchAlbaranFromWoo,
+  fireTransition,
   listShippingFiles,
   openShippingFile,
   saveBlob,
@@ -14,6 +16,7 @@ import {
   type SatQueueItem,
   type SeguimientoFieldsPatch,
 } from "../../lib/erpApi";
+import { PackingForm } from "./EmbalarModal";
 import { satShortDate } from "./SatQueueTable";
 import { SatObservaciones, SatTechData, type SatTechEdit } from "./SatTechData";
 
@@ -205,14 +208,18 @@ export function SatAlbaranChip({
   );
 }
 
-/** Card de «📦 Por embalar» (Lote 2 · PR-2, revisión de diseño §8): se usa de
- *  pie y a veces con guantes. Orden de lectura: nº y estado → cliente →
- *  observaciones del comercial (ámbar, solo si hay) → datos técnicos grandes
- *  con «copiar» → líneas → tres acciones de 48 px en dos filas: «Abrir modo
- *  trabajo» (primario, a todo el ancho) y debajo, separados, el albarán (que
- *  descarga/abre el PDF sin salir del táctil — el operativo lo necesita para
- *  cotejar líneas antes de embalar) y la ficha. La card ya NO es un enlace
- *  entero: con botones dentro, era la forma de pulsar el equivocado. */
+/** Card de «📦 Por embalar» y «En preparación» (Lote 2 · PR-2, revisión de
+ *  diseño §8): se usa de pie y a veces con guantes. Orden de lectura: nº y
+ *  estado → cliente → observaciones del comercial (ámbar, solo si hay) → datos
+ *  técnicos grandes con «copiar» → líneas → acciones de 48 px.
+ *
+ *  El paso siguiente se da EN LA PROPIA CARD, sin salir del pedido: «▶ Empezar
+ *  preparación» y, en cuanto está empezada, los bultos (peso y medidas) y
+ *  «📦 Embalar» aquí mismo. La página refresca SOLO esta card y la deja en su
+ *  sitio (no se recarga la cola ni salta de pestaña). Debajo, separados, el
+ *  albarán (lo necesita para cotejar líneas antes de embalar), el modo trabajo
+ *  y la ficha. La card no es un enlace entero: con botones dentro, era la
+ *  forma de pulsar el equivocado. */
 export function SatPreparingCard({
   order,
   onChanged,
@@ -226,6 +233,27 @@ export function SatPreparingCard({
   const albaran = useSatAlbaranAction(order, onChanged);
   // Lote 3: actualización optimista de los campos de seguimiento tras editar.
   const [seg, setSeg] = useState<SeguimientoFieldsPatch | null>(null);
+  const prep = order.preparation_status;
+  // Bultos + «Embalar» en línea: se abre solo al empezar la preparación (o al
+  // pulsar «Embalar» en un pedido que ya estaba en preparación).
+  const [packOpen, setPackOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [stepError, setStepError] = useState<string | null>(null);
+
+  async function empezar() {
+    setBusy(true);
+    setStepError(null);
+    try {
+      await fireTransition(order.id, { domain: "preparation", to_status: "preparing" });
+      setPackOpen(true);
+      onChanged();
+    } catch (e) {
+      setStepError(extractErrorMessage(e, "No se pudo empezar la preparación."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const serial = seg ? seg.serial_number : order.serial_number;
   const license = seg ? seg.whiterip_license : order.whiterip_license;
   const edit: SatTechEdit | undefined = canEdit
@@ -262,14 +290,40 @@ export function SatPreparingCard({
             <li key={i}>{l.quantity}× {l.description}</li>
           ))}
         </ul>
+        {stepError ? <p className="form-error" role="alert">{stepError}</p> : null}
         <div className="sat-card-actions">
           <div className="sat-card-actions-primary">
-            <Link href={`/erp/sat/${order.id}`} className="button lg sat-card-primary">
-              Abrir modo trabajo →
-            </Link>
+            {canEdit && prep === "in_queue" ? (
+              <button type="button" className="button lg sat-card-primary" disabled={busy}
+                      onClick={() => void empezar()}>
+                ▶ Empezar preparación
+              </button>
+            ) : canEdit && prep === "preparing" ? (
+              packOpen ? (
+                <section className="sat-card-embalar" aria-label={`Embalar ${order.order_number}`}>
+                  <h3>📦 Embalar</h3>
+                  <PackingForm orderId={order.id} onDone={onChanged}
+                               submitLabel="📦 Embalar" />
+                </section>
+              ) : (
+                <button type="button" className="button lg sat-card-primary"
+                        onClick={() => setPackOpen(true)}>
+                  📦 Embalar
+                </button>
+              )
+            ) : (
+              <Link href={`/erp/sat/${order.id}`} className="button lg sat-card-primary">
+                Abrir modo trabajo →
+              </Link>
+            )}
           </div>
           <div className="sat-card-actions-secondary">
             <SatAlbaranChip order={order} albaran={albaran} explainInPlace size="lg" />
+            {canEdit && (prep === "in_queue" || prep === "preparing") ? (
+              <Link href={`/erp/sat/${order.id}`} className="button secondary lg">
+                Modo trabajo
+              </Link>
+            ) : null}
             <Link href={`/erp/orders/${order.id}`} className="button secondary lg">
               Ficha
             </Link>

@@ -1881,7 +1881,9 @@ def completion_avisos(order: Order) -> list[str]:
         or order.factusol_invoice_number
     ):
         avisos.append("aún sin facturar")
-    if _status_value(order.transport_status) not in _COMPLETION_SHIPPED:
+    # «Sin seguimiento» = enviado sin tracking: sí consta como enviado.
+    if (_status_value(order.transport_status) not in _COMPLETION_SHIPPED
+            and not order.shipping_not_required):
         avisos.append("el envío no consta como enviado en BoHub")
     return avisos
 

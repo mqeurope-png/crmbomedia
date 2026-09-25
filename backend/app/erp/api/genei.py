@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -37,15 +38,19 @@ from app.erp.integrations.genei.service import (
     shipment_code_of_order,
     summarize_shipment,
 )
-from app.erp.integrations.genei.status import state_of
+from app.erp.integrations.genei.status import is_tramitado, state_of
 from app.erp.models.carriers import Carrier
 from app.erp.models.orders import Order, PreparationStatus
 from app.erp.models.shipping import KIND_ETIQUETA, SOURCE_GENEI_API, ShipmentPackage
-from app.models.crm import AuditLog, Company, Contact, User
+from app.erp.shipping_destination import resolve_shipping_destination
+from app.models.crm import AuditLog, User
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/erp", tags=["erp-genei"])
+
+#: Lo que ve la persona si pide la etiqueta antes de tiempo.
+LABEL_NOT_READY = "La etiqueta estará disponible tras pagar y tramitar el envío."
 
 GENEI_CARRIER_CODE = "genei"
 GENEI_ADAPTER = "app.erp.integrations.genei.client.GeneiClient"
@@ -92,59 +97,79 @@ def _client_or_400(carrier: Carrier) -> GeneiClient:
         raise HTTPException(400, {"code": "genei_not_configured", "detail": str(exc)}) from exc
 
 
+#: «GET /shipments/X/label → 400» y parecidos: método + ruta + flecha. Es la
+#: cabecera técnica de `GeneiError`; nunca debe llegar a la pantalla.
+_PREFIJO_HTTP = re.compile(r"^\s*(GET|POST|PUT|PATCH|DELETE)\s+\S+\s*→\s*")
+_CODIGO_Y_CUERPO = re.compile(r"^(\d{3})(?::\s*(.*))?$", re.S)
+#: Mensaje legible por código HTTP de Genei (sin enseñar el código).
+_MENSAJE_POR_CODIGO: tuple[tuple[range, str], ...] = (
+    (range(401, 404), "Genei ha rechazado las credenciales: revísalas en Ajustes → Envíos"),
+    (range(404, 405), "Genei no encuentra ese envío"),
+    (range(409, 410), "Genei no lo permite en el estado actual del envío"),
+    (range(429, 430), "Genei está recibiendo demasiadas peticiones: prueba en un momento"),
+    (range(500, 600), "Genei no responde ahora mismo: prueba en un momento"),
+    (range(400, 500), "Genei no ha aceptado la petición"),
+)
+
+
+def _mensaje_del_cuerpo(cuerpo: str) -> str:
+    """El mensaje que Genei pone en el cuerpo del error (JSON `message`/`error`
+    …), si es legible. Nunca HTML ni volcados largos."""
+    texto = (cuerpo or "").strip()
+    if not texto:
+        return ""
+    try:
+        data = json.loads(texto)
+    except ValueError:
+        return "" if texto.startswith("<") or len(texto) > 200 else texto
+    if isinstance(data, dict):
+        for key in ("message", "error", "msg", "detail", "mensaje"):
+            valor = data.get(key)
+            if isinstance(valor, str) and valor.strip():
+                return valor.strip()[:200]
+        errores = data.get("errors")
+        if isinstance(errores, list) and errores:
+            return "; ".join(str(e) for e in errores[:3])[:200]
+    return ""
+
+
+def genei_user_message(exc: GeneiError) -> str:
+    """Texto de un fallo de Genei para la PERSONA: sin método, ruta ni código
+    HTTP (el detalle técnico queda en el log). Conserva lo que dice Genei
+    («Saldo insuficiente», «"origin" is mandatory»…)."""
+    texto = _PREFIJO_HTTP.sub("", str(exc)).strip()
+    m = _CODIGO_Y_CUERPO.match(texto)
+    if not m:
+        return texto.replace("respuesta no-JSON de Genei",
+                             "Genei ha respondido algo inesperado")[:400]
+    codigo = int(m.group(1))
+    base = next((msg for rango, msg in _MENSAJE_POR_CODIGO if codigo in rango),
+                "Genei no ha podido completar la petición")
+    detalle = _mensaje_del_cuerpo(exc.body or m.group(2) or "")
+    return f"{base}: {detalle}" if detalle else f"{base}."
+
+
 def _genei_error(exc: GeneiError) -> HTTPException:
     """Traduce un fallo de Genei a un 502 con contexto claro (sin romper la
-    Cola SAT): agencia no factible, credenciales, timeout…"""
+    Cola SAT): agencia no factible, credenciales, timeout… El texto es para la
+    persona (sin «GET /… → 400»); el técnico va al log."""
+    logger.warning("genei: %s", exc)
     return HTTPException(status.HTTP_502_BAD_GATEWAY, {
         "code": "genei_error",
-        "detail": str(exc)[:400],
+        "detail": genei_user_message(exc),
         "status": exc.status,
     })
 
 
-def resolve_destination_fields(session: Session, order: Order) -> dict[str, Any]:
-    """Datos de entrega prellenados del pedido: dirección de ENVÍO (si el pedido
-    la trae en `packing_json.shipping_address`), con teléfono/email/NIF del
-    contacto/empresa. El operario los revisa y edita antes de crear el envío."""
-    from app.integrations.factusol.albaran_manual import (  # noqa: PLC0415
-        order_shipping_address,
-        order_shipping_name,
-    )
-
-    company = session.get(Company, order.company_id) if order.company_id else None
-    contact = session.get(Contact, order.contact_id) if order.contact_id else None
-    addr = order_shipping_address(order) or {}
-
-    def contact_name() -> str:
-        if not contact:
-            return ""
-        return " ".join(p for p in (contact.first_name, contact.last_name) if p).strip()
-
-    # El bloque `shipping_address` de un pedido web (Woo) ya trae nombre, tel,
-    # email y NIF; para uno manual salen del contacto/empresa. Se prefiere lo
-    # que traiga la dirección de envío del pedido.
-    name = (str(addr.get("name") or "").strip()
-            or order_shipping_name(order)
-            or (company.name if company else "") or contact_name())
-    return {
-        "name": name,
-        "contact": contact_name() or name,
-        "email": str(addr.get("email") or "").strip() or (contact.email if contact else "") or "",
-        "phone": str(addr.get("phone") or "").strip() or (contact.phone if contact else "") or "",
-        "dni": str(addr.get("nif") or "").strip() or (company.vat if company else "") or "",
-        "address": addr.get("address_line")
-        or (company.address_line if company else "")
-        or (contact.address_line if contact else "") or "",
-        "postal_code": addr.get("postal_code")
-        or (company.postal_code if company else "")
-        or (contact.address_postal_code if contact else "") or "",
-        "city": addr.get("city")
-        or (company.city if company else "")
-        or (contact.address_city if contact else "") or "",
-        "country": addr.get("country")
-        or (company.country if company else "")
-        or (contact.address_country if contact else "") or "",
-    }
+def resolve_destination_fields(
+    session: Session, order: Order, *, completar: bool = False,
+) -> dict[str, Any]:
+    """Datos de entrega prellenados del pedido, sea cual sea su origen (web,
+    manual, muestra, factura, albarán, proforma): ver `shipping_destination`.
+    Con `completar=True` se completa lo que falte leyendo FACTUSOL. El operario
+    los revisa y edita antes de crear el envío."""
+    campos, _origen = resolve_shipping_destination(session, order, completar=completar)
+    return campos
 
 
 def _config_of(carrier: Carrier | None) -> GeneiConfig:
@@ -181,7 +206,12 @@ def _audit(session: Session, user: User, action: str, order_id: str | None, meta
 
 
 def _serialise_state(order: Order) -> dict[str, Any]:
-    return genei_state_of(order)
+    """Bloque Genei del pedido + si la etiqueta ya se puede descargar (envío
+    tramitado, estado 1+). Antes de tramitar no se ofrece la etiqueta."""
+    state = dict(genei_state_of(order))
+    if state.get("shipment_code"):
+        state["label_available"] = is_tramitado(state.get("state_bucket"))
+    return state
 
 
 # --- modelos de entrada -----------------------------------------------------
@@ -244,6 +274,11 @@ class GeneiConfigIn(BaseModel):
 @router.get("/orders/{order_id}/genei/prefill")
 def genei_prefill(
     order_id: str,
+    # Al ABRIR «Crear envío» (acción de la persona) se completa el destino
+    # leyendo FACTUSOL si faltan dirección/teléfono/email (pedidos de factura,
+    # albarán o proforma creados antes de guardar su bloque de entrega). Al
+    # pintar la sección, no: así ver la ficha no sale a FACTUSOL.
+    completar: bool = Query(default=False),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_sat_shipping),
 ) -> dict[str, Any]:
@@ -254,7 +289,8 @@ def genei_prefill(
     order = _get_order(session, order_id)
     carrier = get_genei_carrier(session)
     cfg = _config_of(carrier)
-    dest = build_destination(resolve_destination_fields(session, order))
+    campos, fuentes = resolve_shipping_destination(session, order, completar=completar)
+    dest = build_destination(campos)
     # Bultos REALES medidos por el SAT al embalar; si no hay, el modal cae al
     # bulto por defecto de la config (editable).
     packages = _order_packages(session, order.id)
@@ -262,6 +298,9 @@ def genei_prefill(
         "order_id": order.id,
         "configured": bool(carrier and carrier.api_credentials_encrypted),
         "destination": dest,
+        # De dónde sale cada dato (pedido, destinatario, contacto, documento,
+        # ficha, empresa…): para saber qué revisar si algo no cuadra.
+        "destination_sources": fuentes,
         "missing": destination_is_complete(dest),
         "packages": packages,
         "default_package": cfg.default_package.as_package(),
@@ -511,9 +550,25 @@ def genei_fetch_label(
         })
     carrier = _require_carrier(session)
     client = _client_or_400(carrier)
+    if not is_tramitado(genei_state_of(order).get("state_bucket")):
+        # El estado guardado puede ir atrasado (pagado en la web de Genei sin
+        # que llegara el webhook): se consulta a Genei antes de decir que no.
+        from app.erp.integrations.genei.webhook import apply_shipment_state  # noqa: PLC0415
+
+        try:
+            apply_shipment_state(session, order, client.get_shipment(code))
+        except GeneiError as exc:
+            logger.info("genei: no se pudo refrescar el estado antes de la etiqueta: %s", exc)
+        if not is_tramitado(genei_state_of(order).get("state_bucket")):
+            session.commit()
+            raise HTTPException(409, {"code": "label_not_ready", "detail": LABEL_NOT_READY})
     try:
         label = client.get_label(code)
     except GeneiError as exc:
+        if exc.status in (400, 404):
+            # Genei aún no tiene la etiqueta: no es un fallo técnico.
+            raise HTTPException(409, {"code": "label_not_ready",
+                                      "detail": LABEL_NOT_READY}) from exc
         raise _genei_error(exc) from exc
 
     row = _store_new_file(

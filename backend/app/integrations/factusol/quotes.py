@@ -1240,6 +1240,14 @@ def quote_lines_for_order(
         "total": quote["total"],
         "referencia": quote["referencia"],
         "clipre": quote["clipre"],
+        # Destino del envío (bloque de cliente de la cabecera F_PRE): el pedido
+        # lo guarda para que Genei tenga dirección, teléfono y email.
+        "entrega": {
+            "nombre": quote.get("cnopre"), "direccion": quote.get("cdopre"),
+            "poblacion": quote.get("cpopre"), "cp": quote.get("ccppre"),
+            "provincia": quote.get("cprpre"), "telefono": quote.get("telpre"),
+            "email": quote.get("cempre"), "nif": quote.get("cnipre"),
+        },
     }
 
 
@@ -1284,6 +1292,7 @@ def convert_quote_to_order(
         factusol_source_block,
         find_quote_order,
         order_number_for,
+        packing_con_destino,
         resolve_company_id,
         visible_number,
     )
@@ -1322,11 +1331,14 @@ def convert_quote_to_order(
         lines=data["lines"],
         notes=f"Creado desde la proforma FACTUSOL {visible_number(serie, int(codpre))}"
               + (f" · ref. {referencia}" if referencia else ""),
-        packing_extra={"factusol_source": factusol_source_block(
-            doc_type="presupuestos", serie=serie, codigo=int(codpre),
-            referencia=referencia, forma_pago=None, forma_pago_nombre=None,
-            cliente_codigo=data["clipre"], total=data["total"],
-        )},
+        packing_extra=packing_con_destino(
+            {"factusol_source": factusol_source_block(
+                doc_type="presupuestos", serie=serie, codigo=int(codpre),
+                referencia=referencia, forma_pago=None, forma_pago_nombre=None,
+                cliente_codigo=data["clipre"], total=data["total"],
+            )},
+            data.get("entrega"),
+        ),
         actor_user_id=actor_user_id,
         history_reason=(
             "Pedido creado desde la proforma FACTUSOL "

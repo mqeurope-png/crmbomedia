@@ -38,6 +38,9 @@ export type GeneiState = {
   paid_at?: string;
   label_fetched_at?: string;
   refreshed_at?: string;
+  /** Envío TRAMITADO (Genei estado 1+): la etiqueta ya se puede descargar.
+   *  Antes (pendiente de pago / de tramitar) no se ofrece. */
+  label_available?: boolean;
 };
 
 export type GeneiPrefill = {
@@ -50,9 +53,12 @@ export type GeneiPrefill = {
   default_package: GeneiPackage;
   preferred_couriers: string[];
   origin_address_id: string | null;
-  /** El pedido está embalado («Listos»): requisito para crear el envío. */
+  /** El pedido está embalado («Embalados»): requisito para crear el envío. */
   is_packed: boolean;
   state: GeneiState;
+  /** De dónde sale cada dato del destino (pedido, destinatario, contacto,
+   *  documento FACTUSOL, ficha F_CLI, empresa…). */
+  destination_sources?: Record<string, string>;
 };
 
 export type GeneiAgencyOption = {
@@ -97,8 +103,13 @@ export type GeneiConfig = {
 
 const base = (orderId: string) => `/api/erp/orders/${orderId}/genei`;
 
-export function geneiPrefill(orderId: string): Promise<GeneiPrefill> {
-  return apiFetch(`${base(orderId)}/prefill`);
+/** Datos para crear el envío. Con `completar`, lo que falte del destino
+ *  (dirección, teléfono, email) se completa leyendo FACTUSOL — se usa al
+ *  ABRIR «Crear envío», no al pintar la sección. */
+export function geneiPrefill(
+  orderId: string, opts: { completar?: boolean } = {},
+): Promise<GeneiPrefill> {
+  return apiFetch(`${base(orderId)}/prefill${opts.completar ? "?completar=true" : ""}`);
 }
 
 export function geneiPrices(

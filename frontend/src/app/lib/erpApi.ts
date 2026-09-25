@@ -143,8 +143,9 @@ export type OrderSummary = {
   cancelled_by_name?: string | null;
   /** Nombre de envío (dropshipping) del pedido manual; null = la empresa. */
   shipping_name?: string | null;
-  /** «No requiere envío» (SAT opcional): fuera de la Cola SAT y de «Por
-   *  enviar»; la casilla/hito de Envío pasa a «No aplica». Reversible. */
+  /** «Sin seguimiento» (antes «No requiere envío»): ENVIADO sin nº de
+   *  tracking. Sale de los pendientes de la Cola SAT y de «Por enviar»; el
+   *  Envío sale «Enviado (sin seguimiento)». Reversible. */
   shipping_not_required?: boolean;
   /** Tipo de pedido cuando no es el corriente. `"sample"` = MUESTRA / envío
    *  NO FACTURABLE: sin albarán, factura ni cobro (esas casillas salen «No
@@ -669,7 +670,8 @@ export type SeguimientoRow = {
   /** Estado de cobro FACTUSOL (contable). */
   cobro: "cobrado" | "pendiente" | "na";
   cobro_label: string;
-  /** Preparación (SAT) y Envío; «No aplica» si no requiere envío. */
+  /** Preparación (SAT) y Envío; Envío «Enviado (sin seguimiento)» si se
+   *  marcó así (enviado sin tracking). */
   preparacion: string;
   envio: string;
   /** Origen: WEB o el canal/comercial. */
@@ -1411,12 +1413,52 @@ export type SatQueueItem = {
   serial_number?: string | null;
   whiterip_license?: string | null;
   shipping_origin?: string | null;
+  /** Pestaña de la Cola SAT a la que pertenece (la decide el backend). */
+  sat_tab?: SatTab | null;
+  /** Marcado «Sin seguimiento»: ENVIADO sin nº de tracking. */
+  sin_seguimiento?: boolean;
+  /** Envío Genei del pedido, si ya lo hay («Ver envío Genei» vs «Crear»). */
+  genei?: SatGeneiSummary | null;
 };
 
-/** Cola SAT en 2 secciones (D-1-fix1): por embalar + listos para envío. */
+/** Pestañas de la Cola SAT. «Todos pendientes» = las cuatro primeras. */
+export type SatTab =
+  | "por_embalar" | "en_preparacion" | "embalados" | "pendiente_recogida"
+  | "sin_seguimiento" | "enviados";
+
+/** Resumen del envío Genei en la card del taller. `label_available` = envío
+ *  tramitado (estado 1+): antes no se ofrece la etiqueta. */
+export type SatGeneiSummary = {
+  shipment_code: string;
+  state_code?: number | null;
+  state_bucket?: string | null;
+  state_label?: string | null;
+  courier?: string | null;
+  tracking?: string | null;
+  label_available: boolean;
+};
+
+/** Contadores de cada pestaña (el backend los calcula con su criterio). */
+export type SatQueueCounts = {
+  por_embalar: number;
+  en_preparacion: number;
+  embalados: number;
+  pendiente_recogida: number;
+  pendientes: number;
+  sin_seguimiento: number;
+  enviados: number;
+};
+
+/** Cola SAT por pestañas. `preparing` / `ready_for_pickup` son las dos
+ *  secciones de antes (compatibilidad). */
 export type SatQueue = {
   preparing: SatQueueItem[];
   ready_for_pickup: SatQueueItem[];
+  por_embalar?: SatQueueItem[];
+  en_preparacion?: SatQueueItem[];
+  embalados?: SatQueueItem[];
+  pendiente_recogida?: SatQueueItem[];
+  counts?: SatQueueCounts;
 };
 
 /** Filtro «Estado» de la Cola SAT: `por_embalar` = las tres de la sección
@@ -1431,7 +1473,7 @@ export type SatQueueFilters = {
   store_slug?: string;
   estado?: SatQueueEstado;
   q?: string;
-  /** `true` = enseñar SOLO los pedidos marcados «No requiere envío» (para
+  /** `true` = enseñar SOLO los pedidos marcados «Sin seguimiento» (para
    *  revisarlos / desmarcar); por defecto quedan fuera de la cola. */
   no_shipping?: boolean;
   /** C4: orden por fecha del pedido. `fecha_desc` (por defecto) = los más
@@ -1447,9 +1489,28 @@ export async function getSatQueue(filters: SatQueueFilters = {}): Promise<SatQue
   );
 }
 
-/** Marcar/desmarcar «No requiere envío» en lote desde la Cola SAT. `value=true`
- *  marca (los saca de la cola); `value=false` desmarca (vuelven). Reversible;
- *  no toca factura, cobro ni completado. */
+/** «Enviados» (recogido / en tránsito / entregado + los «Sin seguimiento») o,
+ *  con `sinSeguimiento`, solo los enviados SIN tracking. `total` = recuento
+ *  completo; `items` = los `limit` primeros por fecha del pedido. */
+export async function getSatShipped(
+  filters: SatQueueFilters = {}, sinSeguimiento = false,
+): Promise<{ items: SatQueueItem[]; total: number; limit: number }> {
+  const { no_shipping: _ns, estado: _e, ...rest } = filters;
+  return apiFetch(
+    `/api/erp/sat/shipped${qs({ ...rest, sin_seguimiento: sinSeguimiento ? "true" : undefined })}`,
+  );
+}
+
+/** Un pedido como item de la Cola SAT: la card se refresca en su sitio tras
+ *  avanzarlo de estado (sin recargar la cola ni cerrar el pedido). */
+export async function getSatOrderItem(orderId: string): Promise<SatQueueItem> {
+  return apiFetch<SatQueueItem>(`/api/erp/sat/orders/${orderId}`);
+}
+
+/** Marcar/desmarcar «Sin seguimiento» en lote (antes «No requiere envío»).
+ *  `value=true` = el pedido se ENVIÓ sin nº de tracking (pasa a «Enviados»);
+ *  `value=false` lo devuelve a los pendientes. Reversible; no toca factura,
+ *  cobro ni completado. */
 export async function bulkNoShipping(
   orderIds: string[], value: boolean,
 ): Promise<{ ok: boolean; changed: number; already: number; value: boolean }> {
@@ -3814,6 +3875,33 @@ export async function openShippingFile(file: ShipmentFile): Promise<void> {
   // El navegador retiene el blob mientras la pestaña lo usa; lo liberamos tras
   // un margen para no cortar la apertura.
   setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+/** Descarga el PDF (etiqueta, albarán) y lanza el diálogo de IMPRIMIR en el
+ *  mismo clic: se carga en un iframe oculto y se imprime. Si el navegador no
+ *  deja imprimir así el PDF, se abre en una pestaña (como `openShippingFile`). */
+export async function printShippingFile(file: ShipmentFile): Promise<void> {
+  const blob = await apiDownloadBlob(file.download_url);
+  const url = URL.createObjectURL(blob);
+  const frame = document.createElement("iframe");
+  frame.setAttribute("aria-hidden", "true");
+  frame.title = "Impresión";
+  frame.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;";
+  const limpiar = () => setTimeout(() => {
+    frame.remove();
+    URL.revokeObjectURL(url);
+  }, 60_000);
+  frame.onload = () => {
+    try {
+      frame.contentWindow?.focus();
+      frame.contentWindow?.print();
+    } catch {
+      window.open(url, "_blank", "noopener");
+    }
+    limpiar();
+  };
+  frame.src = url;
+  document.body.appendChild(frame);
 }
 
 // --- ERP-F4-A · conciliación bancaria (sin escribir en FACTUSOL) -------------

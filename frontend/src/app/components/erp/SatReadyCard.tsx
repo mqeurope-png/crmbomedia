@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import { extractErrorMessage } from "../../lib/errors";
 import {
@@ -7,7 +8,7 @@ import {
   fireTransition,
   listShippingFiles,
   markPickedUp,
-  openShippingFile,
+  printShippingFile,
   setOrderTracking,
   uploadShippingFile,
   type SatQueueItem,
@@ -31,12 +32,15 @@ export function useSatReadyActions(order: SatQueueItem, onChanged: () => void) {
   const [error, setError] = useState<string | null>(null);
   const albaran = useSatAlbaranAction(order, onChanged);
 
+  /** Descarga el documento y lanza la impresión en el MISMO clic. */
   async function openDoc(kind: ShipmentFileKind) {
+    setError(null);
     try {
       const files = await listShippingFiles(order.id, kind);
-      if (files[0]) await openShippingFile(files[0]);
-    } catch {
-      // si falla, el chip «Falta …» lleva a la ficha para subirlo
+      if (files[0]) await printShippingFile(files[0]);
+      else setError("No hay documento que imprimir todavía.");
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudo abrir el documento."));
     }
   }
 
@@ -108,8 +112,9 @@ export function SatReadyDocChips({
       <SatAlbaranChip order={order} albaran={albaran} size={size} />
       {order.has_etiqueta ? (
         <button type="button" className={`sat-chip-btn ok${lg}`}
+                title="Descarga la etiqueta y abre el diálogo de imprimir"
                 onClick={() => openDoc("etiqueta")}>
-          🏷️ Imprimir etiqueta
+          🖨 Imprimir etiqueta
         </button>
       ) : (
         /* Lote 4 · #5 — el pedido está embalado/listo pero falta la etiqueta:
@@ -285,6 +290,9 @@ export function SatReadyCard({
   // Lote 3: actualización optimista de los campos de seguimiento tras editar.
   const [seg, setSeg] = useState<SeguimientoFieldsPatch | null>(null);
   const [showGenei, setShowGenei] = useState(false);
+  // Con envío Genei ya creado no se ofrece «Crear»: se ofrece VERLO.
+  const hasGenei = !!order.genei?.shipment_code;
+  const pendienteRecogida = order.sat_tab === "pendiente_recogida";
   const serial = seg ? seg.serial_number : order.serial_number;
   const license = seg ? seg.whiterip_license : order.whiterip_license;
   const edit: SatTechEdit | undefined = canEdit
@@ -303,6 +311,16 @@ export function SatReadyCard({
         <span className="sat-card-amount mono">
           {order.total_amount.toFixed(2)} {order.currency}
         </span>
+        {pendienteRecogida ? (
+          <span className="badge info" title="Etiqueta lista: falta que pase el transportista">
+            Pendiente de recogida
+          </span>
+        ) : (
+          <span className="badge ok">Embalado</span>
+        )}
+        {hasGenei && order.genei?.state_label ? (
+          <span className="badge muted">Genei: {order.genei.state_label}</span>
+        ) : null}
       </div>
       {customerLabel(order) ? (
         <div className="sat-card-customer">{customerLabel(order)}</div>
@@ -328,7 +346,8 @@ export function SatReadyCard({
           <div className="sat-card-genei">
             <button type="button" className="button small" aria-expanded={showGenei}
                     onClick={() => setShowGenei((v) => !v)}>
-              🚚 {showGenei ? "Ocultar envío Genei" : "Crear envío con Genei"}
+              🚚 {showGenei ? "Ocultar envío Genei"
+                : hasGenei ? "Ver envío Genei" : "Crear envío con Genei"}
             </button>
             {showGenei ? (
               <GeneiShipmentSection orderId={order.id} canManage={canShip} onChanged={onChanged} />
@@ -341,4 +360,46 @@ export function SatReadyCard({
       </div>
     </article>
   );
+}
+
+/** Card de un pedido YA ENVIADO (recogido / en tránsito / entregado, o
+ *  «Sin seguimiento»: enviado sin nº de tracking). Es lo que queda en su sitio
+ *  tras «Marcar recogido», y lo que pintan «Enviados» y «Sin seguimiento». */
+export function SatShippedCard({ order }: { order: SatQueueItem }) {
+  const tracking = order.tracking_number || order.genei?.tracking || null;
+  return (
+    <article className="sat-card sat-shipped-card" aria-label={`Pedido ${order.order_number}`}>
+      <div className="sat-card-top">
+        <span className="sat-card-num">{order.order_number}</span>
+        <span className="sat-card-date mono">{satShortDate(order.placed_at)}</span>
+      </div>
+      <div className="sat-card-meta">
+        <span className={`badge ${order.sin_seguimiento ? "muted" : "ok"}`}>
+          {satShippedLabel(order)}
+        </span>
+      </div>
+      {customerLabel(order) ? (
+        <div className="sat-card-customer">{customerLabel(order)}</div>
+      ) : null}
+      <dl className="sat-shipped-kv">
+        <dt>Seguimiento</dt>
+        <dd className="mono">{tracking ?? (order.sin_seguimiento ? "Sin seguimiento" : "—")}</dd>
+        {order.genei?.courier ? (<><dt>Agencia</dt><dd>{order.genei.courier}</dd></>) : null}
+      </dl>
+      <div className="sat-card-actions-secondary">
+        <Link href={`/erp/orders/${order.id}`} className="button secondary lg">Ficha</Link>
+      </div>
+    </article>
+  );
+}
+
+/** Estado de envío legible de un pedido enviado. */
+export function satShippedLabel(order: SatQueueItem): string {
+  if (order.sin_seguimiento) return "Enviado sin seguimiento";
+  switch (order.transport_status) {
+    case "delivered": return "Entregado";
+    case "already_shipped_externally": return "Enviado (externo)";
+    case "in_transit": return "Recogido · en tránsito";
+    default: return "Enviado";
+  }
 }

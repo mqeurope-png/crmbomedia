@@ -1,6 +1,7 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { GeneiShipmentSection } from "./GeneiShipmentSection";
+import { printShippingFile } from "../../lib/erpApi";
 import {
   geneiCreateShipment,
   geneiDeleteShipment,
@@ -10,6 +11,10 @@ import {
   geneiPrices,
   geneiRefresh,
 } from "../../lib/geneiApi";
+
+jest.mock("../../lib/erpApi", () => ({
+  printShippingFile: jest.fn().mockResolvedValue(undefined),
+}));
 
 jest.mock("../../lib/geneiApi", () => ({
   ...jest.requireActual("../../lib/geneiApi"),
@@ -122,14 +127,15 @@ it("«Pagar y tramitar» paga por API (sin popup) y refresca el estado", async (
   expect(screen.queryByRole("button", { name: "Pagar y tramitar" })).toBeNull();
 });
 
-it("con envío: etiqueta, actualizar estado y eliminar", async () => {
+it("con envío: etiqueta (descarga e imprime en un clic), actualizar estado y eliminar", async () => {
   mockPrefill.mockResolvedValue(prefill({
     state: { shipment_code: "GEN9", state_bucket: "ready", state_label: "Tramitado",
-             courier: "GLS", tracking: null },
+             courier: "GLS", tracking: null, label_available: true },
   }));
   mockLabel.mockResolvedValue({
     order_id: "o-1", file: { id: "f1" }, transition_applied: true, transition_reason: null,
-    state: { shipment_code: "GEN9", state_bucket: "ready", state_label: "Tramitado", courier: "GLS" },
+    state: { shipment_code: "GEN9", state_bucket: "ready", state_label: "Tramitado", courier: "GLS",
+             label_available: true },
   });
   mockRefresh.mockResolvedValue({
     order_id: "o-1",
@@ -143,9 +149,13 @@ it("con envío: etiqueta, actualizar estado y eliminar", async () => {
   render(<GeneiShipmentSection orderId="o-1" canManage />);
 
   expect(await screen.findByText("GEN9")).toBeInTheDocument();
-  await user.click(screen.getByRole("button", { name: "Descargar etiqueta" }));
+  // Con envío no se vuelve a ofrecer «Crear».
+  expect(screen.queryByRole("button", { name: /Crear envío con Genei/ })).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "🖨 Imprimir etiqueta" }));
   await waitFor(() => expect(mockLabel).toHaveBeenCalledWith("o-1"));
-  expect(await screen.findByText(/Etiqueta descargada/)).toBeInTheDocument();
+  // UNA acción: la trae y lanza la impresión del mismo fichero.
+  await waitFor(() => expect(printShippingFile).toHaveBeenCalledWith({ id: "f1" }));
+  expect(await screen.findByText(/Etiqueta enviada a imprimir/)).toBeInTheDocument();
 
   await user.click(screen.getByRole("button", { name: "Actualizar estado" }));
   await waitFor(() => expect(mockRefresh).toHaveBeenCalledWith("o-1"));
@@ -166,7 +176,7 @@ it("sin permiso no ofrece crear/gestionar", async () => {
 it("pedido no embalado: no deja crear y avisa de empaquetar primero", async () => {
   mockPrefill.mockResolvedValue(prefill({ is_packed: false }));
   render(<GeneiShipmentSection orderId="o-1" canManage />);
-  expect(await screen.findByText(/Empaqueta el pedido primero/)).toBeInTheDocument();
+  expect(await screen.findByText(/Embala el pedido primero/)).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Crear envío con Genei" })).toBeNull();
 });
 
@@ -189,4 +199,52 @@ it("prellena el modal con las medidas reales del embalaje (multi-bulto)", async 
   expect(pesos).toHaveLength(2);
   expect(pesos[0].value).toBe("2.5");
   expect(within(dialog).getByText(/medidas reales del embalaje/)).toBeInTheDocument();
+});
+
+
+it("antes de tramitar (pendiente de pago) no ofrece la etiqueta: botón deshabilitado y aviso", async () => {
+  mockPrefill.mockResolvedValue(prefill({
+    state: { shipment_code: "GEN9", state_bucket: "created", state_label: "Recogida pendiente de pago",
+             label_available: false },
+  }));
+  render(<GeneiShipmentSection orderId="o-1" canManage />);
+  expect(await screen.findByText(
+    "La etiqueta estará disponible tras pagar y tramitar el envío.",
+  )).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "🖨 Imprimir etiqueta" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Pagar y tramitar" })).toBeInTheDocument();
+  expect(mockLabel).not.toHaveBeenCalled();
+});
+
+it("un fallo de la etiqueta enseña el mensaje del backend, nunca el código HTTP crudo", async () => {
+  mockPrefill.mockResolvedValue(prefill({
+    state: { shipment_code: "GEN9", state_bucket: "ready", state_label: "Tramitado",
+             label_available: true },
+  }));
+  mockLabel.mockRejectedValue(new Error(
+    "La etiqueta estará disponible tras pagar y tramitar el envío.",
+  ));
+  const user = userEvent.setup();
+  render(<GeneiShipmentSection orderId="o-1" canManage />);
+  await user.click(await screen.findByRole("button", { name: "🖨 Imprimir etiqueta" }));
+  const alert = await screen.findByRole("alert");
+  expect(alert).toHaveTextContent("tras pagar y tramitar");
+  expect(alert.textContent).not.toMatch(/GET \/shipments|→ \d{3}/);
+});
+
+it("«Crear envío» completa el destino antes de abrir el modal (teléfono y email incluidos)", async () => {
+  mockPrefill
+    .mockResolvedValueOnce(prefill({ destination: { ...DEST, phone: "", email: "" } }))
+    .mockResolvedValueOnce(prefill({ destination: { ...DEST, phone: "934000000",
+                                                    email: "compras@cliente.es" } }));
+  mockPrices.mockResolvedValue({
+    order_id: "o-1", default: null, home_options: [], all_options: [], preferred_couriers: [],
+  });
+  const user = userEvent.setup();
+  render(<GeneiShipmentSection orderId="o-1" canManage />);
+  await user.click(await screen.findByRole("button", { name: "Crear envío con Genei" }));
+  await waitFor(() => expect(mockPrefill).toHaveBeenLastCalledWith("o-1", { completar: true }));
+  const dialog = await screen.findByRole("dialog", { name: "Crear envío con Genei" });
+  expect(within(dialog).getByLabelText("Teléfono")).toHaveValue("934000000");
+  expect(within(dialog).getByLabelText("Email")).toHaveValue("compras@cliente.es");
 });

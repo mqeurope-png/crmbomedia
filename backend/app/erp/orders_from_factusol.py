@@ -354,6 +354,9 @@ def preview_factusol_document(
         "forma_pago": doc.get("forma_pago"),
         "cliente_codigo": doc.get("cliente_codigo"),
         "cliente_nombre": doc.get("cliente_nombre"),
+        # Destino del envío del documento (dirección, teléfono, email): el
+        # pedido lo guarda para que Genei lo tenga sin volver a FACTUSOL.
+        "entrega": doc.get("entrega"),
         "company_id": company_id,
         "company_name": company_name,
         "company_linked": company_id is not None,
@@ -394,6 +397,19 @@ def factusol_source_block(
         "cliente_codigo": cliente_codigo,
         "total": total,
     }
+
+
+def packing_con_destino(
+    packing: dict[str, Any], entrega: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """`packing_extra` + el bloque de entrega del documento FACTUSOL como
+    `shipping_contact` (dirección, teléfono y email del destinatario). Lo lee
+    el envío con Genei. NO va a `shipping_address`, que el albarán usaría para
+    pisar los datos de F_CLI."""
+    from app.erp.shipping_destination import entrega_a_bloque  # noqa: PLC0415
+
+    bloque = entrega_a_bloque(entrega)
+    return {**packing, "shipping_contact": bloque} if bloque else packing
 
 
 def create_order_from_factusol_document(
@@ -451,11 +467,14 @@ def create_order_from_factusol_document(
         placed_at=_placed_at_from(preview["fecha"]),
         lines=lines,
         notes=notes,
-        packing_extra={"factusol_source": factusol_source_block(
-            doc_type=doc_type, serie=serie, codigo=codigo, referencia=referencia,
-            forma_pago=preview["forma_pago"], forma_pago_nombre=forma_pago_nombre,
-            cliente_codigo=preview["cliente_codigo"], total=preview["total"],
-        )},
+        packing_extra=packing_con_destino(
+            {"factusol_source": factusol_source_block(
+                doc_type=doc_type, serie=serie, codigo=codigo, referencia=referencia,
+                forma_pago=preview["forma_pago"], forma_pago_nombre=forma_pago_nombre,
+                cliente_codigo=preview["cliente_codigo"], total=preview["total"],
+            )},
+            preview.get("entrega"),
+        ),
         actor_user_id=actor_user_id,
         history_reason=f"Pedido creado desde el {label} FACTUSOL {numero}",
         total_with_tax=preview["total"],

@@ -12,16 +12,21 @@ function num(v: string): number | null {
   return v.trim() !== "" && Number.isFinite(n) ? n : null;
 }
 
-/** Modal «Embalado» (Fase D · D-1): multi-bulto obligatorio. Guarda los bultos
- *  y solicita la transición a `packed` (que exige ≥1 bulto medido). */
-export function EmbalarModal({
+/** Bultos del embalaje (peso y medidas, varios bultos = `shipment_packages`) +
+ *  «Embalar»: guarda los bultos y pasa el pedido a `packed` (el backend exige
+ *  ≥1 bulto medido). Es el MISMO formulario en el modal de la ficha y EN LÍNEA
+ *  en la Cola SAT / modo trabajo, para embalar sin salir del pedido. */
+export function PackingForm({
   orderId,
   onDone,
   onCancel,
+  submitLabel = "Guardar y embalar",
 }: {
   orderId: string;
   onDone: () => void;
-  onCancel: () => void;
+  /** Sin él no se pinta «Cancelar» (el formulario en línea no se cierra). */
+  onCancel?: () => void;
+  submitLabel?: string;
 }) {
   const [rows, setRows] = useState<Row[]>([{ ...EMPTY }]);
   const [busy, setBusy] = useState(false);
@@ -66,70 +71,90 @@ export function EmbalarModal({
   }
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true"
-         aria-label="Embalar pedido (bultos)">
-      <div className="modal-dialog erp-modal">
-        <h2>Embalado — bultos</h2>
-        <p className="muted small">
-          Indica peso y medidas de cada bulto. Todos los valores deben ser &gt; 0.
-        </p>
+    <div className="erp-packing-form" aria-label="Bultos del embalaje">
+      <p className="muted small">
+        Indica peso y medidas de cada bulto. Todos los valores deben ser &gt; 0.
+      </p>
 
-        {rows.map((r, i) => (
-          <div key={i} className="erp-bulto-row" aria-label={`Bulto ${i + 1}`}>
-            <div className="erp-bulto-head">
-              <strong>Bulto {i + 1}</strong>
-              {i > 0 ? (
-                <button type="button" className="button small secondary"
-                        onClick={() => removeRow(i)}>
-                  Eliminar
-                </button>
-              ) : null}
-            </div>
-            <div className="erp-bulto-fields">
-              <label className="field">
-                <span>Peso (kg)</span>
-                <input type="number" step="0.01" min="0" value={r.weight_kg}
-                       aria-label={`Peso bulto ${i + 1}`}
-                       onChange={(e) => update(i, "weight_kg", e.target.value)} />
-              </label>
-              <label className="field">
-                <span>Alto (cm)</span>
-                <input type="number" min="0" value={r.height_cm}
-                       aria-label={`Alto bulto ${i + 1}`}
-                       onChange={(e) => update(i, "height_cm", e.target.value)} />
-              </label>
-              <label className="field">
-                <span>Ancho (cm)</span>
-                <input type="number" min="0" value={r.width_cm}
-                       aria-label={`Ancho bulto ${i + 1}`}
-                       onChange={(e) => update(i, "width_cm", e.target.value)} />
-              </label>
-              <label className="field">
-                <span>Fondo (cm)</span>
-                <input type="number" min="0" value={r.depth_cm}
-                       aria-label={`Fondo bulto ${i + 1}`}
-                       onChange={(e) => update(i, "depth_cm", e.target.value)} />
-              </label>
-            </div>
+      {rows.map((r, i) => (
+        <div key={i} className="erp-bulto-row" aria-label={`Bulto ${i + 1}`}>
+          <div className="erp-bulto-head">
+            <strong>Bulto {i + 1}</strong>
+            {i > 0 ? (
+              <button type="button" className="button small secondary"
+                      onClick={() => removeRow(i)}>
+                Eliminar
+              </button>
+            ) : null}
           </div>
-        ))}
+          <div className="erp-bulto-fields">
+            <label className="field">
+              <span>Peso (kg)</span>
+              <input type="number" step="0.01" min="0" value={r.weight_kg}
+                     aria-label={`Peso bulto ${i + 1}`}
+                     onChange={(e) => update(i, "weight_kg", e.target.value)} />
+            </label>
+            <label className="field">
+              <span>Alto (cm)</span>
+              <input type="number" min="0" value={r.height_cm}
+                     aria-label={`Alto bulto ${i + 1}`}
+                     onChange={(e) => update(i, "height_cm", e.target.value)} />
+            </label>
+            <label className="field">
+              <span>Ancho (cm)</span>
+              <input type="number" min="0" value={r.width_cm}
+                     aria-label={`Ancho bulto ${i + 1}`}
+                     onChange={(e) => update(i, "width_cm", e.target.value)} />
+            </label>
+            <label className="field">
+              <span>Fondo (cm)</span>
+              <input type="number" min="0" value={r.depth_cm}
+                     aria-label={`Fondo bulto ${i + 1}`}
+                     onChange={(e) => update(i, "depth_cm", e.target.value)} />
+            </label>
+          </div>
+        </div>
+      ))}
 
-        <button type="button" className="button small secondary" onClick={addRow}>
-          + Añadir bulto
-        </button>
+      <button type="button" className="button small secondary" onClick={addRow}>
+        + Añadir bulto
+      </button>
 
-        {error ? <p className="form-error">{error}</p> : null}
+      {error ? <p className="form-error">{error}</p> : null}
 
-        <div className="modal-actions">
+      <div className="modal-actions">
+        {onCancel ? (
           <button type="button" className="button secondary"
                   onClick={onCancel} disabled={busy}>
             Cancelar
           </button>
-          <button type="button" className="button"
-                  onClick={save} disabled={busy || !valid}>
-            {busy ? "Guardando…" : "Guardar y embalar"}
-          </button>
-        </div>
+        ) : null}
+        <button type="button" className="button"
+                onClick={save} disabled={busy || !valid}>
+          {busy ? "Guardando…" : submitLabel}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Modal «Embalado» (Fase D · D-1): multi-bulto obligatorio. Guarda los bultos
+ *  y solicita la transición a `packed` (que exige ≥1 bulto medido). */
+export function EmbalarModal({
+  orderId,
+  onDone,
+  onCancel,
+}: {
+  orderId: string;
+  onDone: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="modal-overlay" role="dialog" aria-modal="true"
+         aria-label="Embalar pedido (bultos)">
+      <div className="modal-dialog erp-modal">
+        <h2>Embalado — bultos</h2>
+        <PackingForm orderId={orderId} onDone={onDone} onCancel={onCancel} />
       </div>
     </div>
   );

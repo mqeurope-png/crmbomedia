@@ -486,27 +486,65 @@ es una ventana a FACTUSOL: aquí no se cambia nada salvo las acciones concretas
 **Menú: «ERP · Taller (SAT)». Título: «Cola SAT».** Es la pantalla del taller:
 lo que hay que preparar y enviar.
 
-**Vistas (pestañas):** **«Por embalar»**, **«Listos»**, **«Global»** (las dos
-juntas), **«No requieren envío»** (los marcados como que no se envían),
-**«Enviados»** (historial de lo ya mandado al taller, ahora con una columna
-**«Estado envío»** que muestra el estado del transporte —sin enviar, en tránsito,
-entregado…—) e **«Incidencias»** (ver más abajo). Vista **«Tarjetas»** /
-**«Lista»**.
-**Filtros:** buscador (*«Nº de pedido o cliente…»*), **«Desde»**/**«Hasta»**,
-**«Tienda»**, **«Estado»** (*Todos / Por embalar / Bloqueados / En cola /
-Preparando / Listos*) y **«Orden»** por fecha del pedido —**recientes primero**
-por defecto, o **antiguos primero** (FIFO)—, con **«Limpiar filtros»**. La
-prioridad por estado (bloqueado → preparando → en cola) manda igual: la fecha
-ordena dentro de cada grupo.
+**Pestañas, por paso del taller** (cada una con su contador, que cuadra con lo
+que lista):
 
-**«No requiere envío» (en lote).** Hay pedidos que no se envían nunca
-(servicios, RMA, asistencias remotas, tintas ya entregadas…). En **«Por embalar»**
-o **«Listos»**, marca sus casillas (o **«Seleccionar todo»**) y pulsa **«Marcar
-“No requiere envío”»**; tras confirmar, **salen de la Cola SAT** (y de la cola
-«Por enviar» de la bandeja) y su casilla/hito de **Envío** pasa a **«No aplica»**.
-**No toca la factura ni el cobro** y es **reversible**: en la pestaña **«No
-requieren envío»** puedes seleccionarlos y **«Volver a requerir envío»** (vuelven
-al taller). También por pedido, desde el menú **«⋯»** de la ficha.
+| Pestaña | Qué hay |
+|---|---|
+| **Por embalar** | En cola, sin empezar (y los **bloqueados**, arriba). |
+| **En preparación** | Con **«Empezar preparación»** pulsado, aún sin embalar. |
+| **Embalados** | Embalados, sin etiqueta tramitada: crea el envío con Genei o sube la etiqueta. |
+| **Todos pendientes** | Las cuatro de pendientes juntas (por hacer · embalados). |
+| **Sin seguimiento** | Enviados **sin nº de tracking** (ver abajo). |
+| **Pendiente de recogida** | Embalados con el **envío Genei ya tramitado** (o la etiqueta puesta): esperando al transportista. |
+| **Enviados** | Los que ya salieron: **recogidos, en tránsito o entregados**, y los «Sin seguimiento». |
+| **Incidencias** | Ver más abajo. |
+
+Cuando la agencia recoge el paquete (Genei lo avisa solo, o pulsas **«Actualizar
+estado»** o **«📤 Marcar recogido»**), el pedido pasa de **«Pendiente de
+recogida»** a **«Enviados»**.
+
+> La antigua pestaña «Enviados» era el **historial de pedidos mandados al
+> taller** (email al SAT o aprobación). Ahora «Enviados» son los que **han
+> salido**. Para ver cuándo y quién mandó un pedido al taller, míralo en su
+> ficha (línea de tiempo).
+
+Vista **«Tarjetas»** / **«Lista»**.
+**Filtros:** buscador (*«Nº de pedido o cliente…»*), **«Desde»**/**«Hasta»**,
+**«Tienda»** y **«Orden»** por fecha del pedido —**recientes primero** por
+defecto, o **antiguos primero** (FIFO)—, con **«Limpiar filtros»**. (El filtro
+«Estado» ya no hace falta: cada estado tiene su pestaña.) En **«Enviados»** se
+listan los más recientes; usa las fechas para ver otros.
+
+**Todo se hace sin salir del pedido.** En la tarjeta de un pedido en cola,
+**«▶ Empezar preparación»**; en cuanto está empezada, **ahí mismo** aparecen los
+**bultos** (peso y medidas; **«+ Añadir bulto»** si hay varios) y **«📦
+Embalar»**. Al embalar, la tarjeta pasa al paso siguiente (envío, etiqueta,
+recogido) **en el mismo sitio**: no se cierra ni salta de pestaña, y los
+contadores se actualizan al momento. Al cambiar de pestaña, cada pedido aparece
+en la suya. Lo mismo en el **modo trabajo** del pedido.
+
+**«Sin seguimiento» (enviado sin tracking).** Antes era «No requiere envío».
+Ahora significa que el pedido **se ENVIÓ, pero sin nº de seguimiento**: recogida
+en tienda, transporte sin seguimiento… Cuenta como **enviado**: sale de los
+pendientes y aparece en **«Enviados»** y en **«Sin seguimiento»**. En la hoja
+«Seguimiento (app)» su Envío sale **«Enviado (sin seguimiento)»** con el
+tracking vacío. En las pestañas de pendientes, marca las casillas y pulsa
+**«Marcar enviado sin seguimiento»**. **No toca la factura ni el cobro** y es
+**reversible**: en **«Sin seguimiento»**, selecciónalos y **«Quitar «Sin
+seguimiento»»** (vuelven a su pestaña). También por pedido, desde el menú
+**«⋯»** de la ficha. Los pedidos que ya estaban marcados «No requiere envío»
+pasan a «Sin seguimiento» tal cual (es la misma marca).
+
+**Envío con Genei (en la tarjeta y en la ficha).** Si el pedido **no** tiene
+envío, **«Crear envío con Genei»**: la dirección, el teléfono y el email del
+destino se rellenan solos **venga de donde venga el pedido** (web, manual,
+muestra, o creado desde factura, albarán o proforma de FACTUSOL). Si ya lo
+tiene, el botón es **«Ver envío Genei»** (no se vuelve a ofrecer crear). La
+etiqueta solo aparece cuando el envío está **pagado y tramitado**. Hasta
+entonces sale el aviso *«La etiqueta estará disponible tras pagar y tramitar
+el envío»*. **«🖨 Imprimir etiqueta»** la descarga y abre el diálogo de
+imprimir **en un solo clic**.
 
 **«Incidencias».** Cuando un pedido **ya enviado** tiene un problema, **sale de
 «Enviados»** y aparece en esta pestaña hasta que se resuelve. Reúne dos orígenes:
@@ -529,15 +567,16 @@ En cada tarjeta:
 - **Albarán**: **«Imprimir albarán»** / **«Descargar albarán»** en PDF (o
   **«Falta albarán»** si aún no existe en un pedido manual).
 - **Etiqueta**: **«Subir etiqueta»** (admite imagen o PDF) y, una vez subida,
-  **«Imprimir etiqueta»**.
+  **«🖨 Imprimir etiqueta»** (la descarga e imprime en un clic).
 - **Nº de seguimiento**: campo para guardar el tracking del transportista.
 
 **Flujo del taller** (también desde la pantalla del pedido en el taller):
 
-1. **«▶ EMPEZAR»** — el pedido pasa a *Preparando*.
-2. **«📦 EMBALADO»** — abre **«Embalado — bultos»**: indica **peso y medidas de
-   cada bulto** (**«+ Añadir bulto»**) y pulsa **«Guardar y embalar»**. El pedido
-   pasa a **Listos**.
+1. **«▶ Empezar preparación»** — el pedido pasa a *En preparación* y, **sin
+   salir de él**, aparecen los bultos.
+2. **«📦 Embalar»** — indica **peso y medidas de cada bulto** (**«+ Añadir
+   bulto»**) y pulsa **«📦 Embalar»**. El pedido pasa a **Embalados** (y sigue
+   abierto con el paso siguiente).
 3. **«📤 Marcar recogido»** — confirma *«¿El paquete ha salido?»* → **«Sí,
    recogido»**. El transporte pasa a *En tránsito*.
 
@@ -974,14 +1013,14 @@ pasa:* el pedido pasa a *En cola* y queda listo para el taller. Si algo lo
 bloquea (una incidencia abierta), no dejará aprobar y estará en **«Incidencias»**.
 
 **Paso 2 — Taller: preparar y embalar.** En **Cola SAT**, pestaña **«Por
-embalar»**, abre el pedido. Pulsa **«▶ EMPEZAR»** (pasa a *Preparando*). Cuando
-esté hecho, **«📦 EMBALADO»**: rellena **peso y medidas de cada bulto** y
-**«Guardar y embalar»**. *Qué pasa:* el pedido pasa a **«Listos»**.
+embalar»**, pulsa **«▶ Empezar preparación»** en la tarjeta (pasa a *En
+preparación*). Ahí mismo, rellena **peso y medidas de cada bulto** y **«📦
+Embalar»**. *Qué pasa:* el pedido pasa a **«Embalados»** sin salir de él.
 
 **Paso 3 — Albarán.** En un pedido web **no hay que crear albarán**: lo genera
 WooCommerce. En la Cola SAT puedes **«Descargar albarán»** para imprimirlo.
 
-**Paso 4 — Etiqueta y tracking.** En la tarjeta de **«Listos»** (o en la ficha,
+**Paso 4 — Etiqueta y tracking.** En la tarjeta de **«Embalados»** (o en la ficha,
 **«Documentos de envío» → Etiqueta**) pulsa **«Subir etiqueta»** y sube el PDF/imagen
 de la etiqueta del transportista. Guarda el **«Nº de seguimiento»**. *Qué pasa:*
 el transporte pasa a **«Etiqueta creada»**.

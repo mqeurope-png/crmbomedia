@@ -34,7 +34,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.errors import not_found
@@ -143,6 +143,92 @@ def _prep(o: Order) -> str:
 
 #: Estados de transporte que sacan un pedido de «Listos para envío» (ya salió).
 _SHIPPED_TRANSPORT = ("in_transit", "delivered", "already_shipped_externally")
+
+# --- pestañas de la Cola SAT ---------------------------------------------------
+#
+#   Por embalar ─▶ En preparación ─▶ Embalados ─▶ Pendiente de recogida ─▶ Enviados
+#   (en cola /     («Empezar          (packed)     (envío Genei tramitado,   (recogido /
+#    bloqueado)     preparación»)                   o etiqueta ya puesta)     en tránsito /
+#                                                                             entregado)
+#   «Todos pendientes» = las cuatro primeras. «Sin seguimiento» = enviados SIN
+#   nº de tracking (recogida en tienda, transporte sin seguimiento…): la marca
+#   `shipping_not_required`, que cuenta como ENVIADO. El backend decide la
+#   pestaña de cada pedido (`sat_tab_of`) para que los contadores cuadren.
+
+TAB_POR_EMBALAR = "por_embalar"
+TAB_EN_PREPARACION = "en_preparacion"
+TAB_EMBALADOS = "embalados"
+TAB_PENDIENTE_RECOGIDA = "pendiente_recogida"
+TAB_SIN_SEGUIMIENTO = "sin_seguimiento"
+TAB_ENVIADOS = "enviados"
+
+#: «Por embalar»: en cola sin empezar, y los bloqueados (arriba, para resolverlos).
+_POR_EMBALAR = (PreparationStatus.BLOCKED.value, PreparationStatus.IN_QUEUE.value)
+
+
+def _genei_summary(order: Order) -> dict[str, Any] | None:
+    """El envío Genei del pedido para la card (None si no hay): con él se sabe
+    si ofrecer «Crear» o «Ver envío Genei» y si la etiqueta ya está disponible."""
+    from app.erp.integrations.genei.service import genei_state_of  # noqa: PLC0415
+    from app.erp.integrations.genei.status import is_tramitado  # noqa: PLC0415
+
+    state = genei_state_of(order)
+    if not state.get("shipment_code"):
+        return None
+    return {
+        "shipment_code": state.get("shipment_code"),
+        "state_code": state.get("state_code"),
+        "state_bucket": state.get("state_bucket"),
+        "state_label": state.get("state_label"),
+        "courier": state.get("courier"),
+        "tracking": state.get("tracking"),
+        "label_available": is_tramitado(state.get("state_bucket")),
+    }
+
+
+def pendiente_de_recogida(order: Order) -> bool:
+    """Embalado y con la etiqueta lista, esperando al transportista: envío Genei
+    TRAMITADO (estado 1+) o etiqueta ya puesta (`label_created`, también la
+    subida a mano de otra agencia). Aún no ha salido."""
+    from app.erp.integrations.genei.service import genei_state_of  # noqa: PLC0415
+    from app.erp.integrations.genei.status import READY  # noqa: PLC0415
+
+    transport = getattr(order.transport_status, "value", order.transport_status)
+    if transport == TransportStatus.LABEL_CREATED.value:
+        return True
+    # Tramitado y aún sin recoger (Genei 1). Una incidencia/devolución ya salió
+    # y tiene un problema: va a «Incidencias», no a esperar al transportista.
+    if transport in (TransportStatus.INCIDENT.value, TransportStatus.RETURNED.value):
+        return False
+    return genei_state_of(order).get("state_bucket") == READY
+
+
+def sat_tab_of(order: Order) -> str | None:
+    """Pestaña de la Cola SAT del pedido (None si no está en ninguna)."""
+    if order.shipping_not_required:
+        return TAB_SIN_SEGUIMIENTO
+    prep = _prep(order)
+    if prep in _POR_EMBALAR:
+        return TAB_POR_EMBALAR
+    if prep == PreparationStatus.PREPARING.value:
+        return TAB_EN_PREPARACION
+    if prep == PreparationStatus.PACKED.value:
+        transport = getattr(order.transport_status, "value", order.transport_status)
+        if transport in _SHIPPED_TRANSPORT:
+            return TAB_ENVIADOS
+        return TAB_PENDIENTE_RECOGIDA if pendiente_de_recogida(order) else TAB_EMBALADOS
+    return None
+
+
+def _enviados_clause() -> Any:
+    """«Enviados»: embalados que ya salieron (recogido / en tránsito /
+    entregado / externalizado) + los marcados «Sin seguimiento» (enviados sin
+    tracking). Los que nunca pasaron por el taller (histórico importado) no."""
+    return or_(
+        and_(Order.preparation_status == PreparationStatus.PACKED.value,
+             Order.transport_status.in_(_SHIPPED_TRANSPORT)),
+        Order.shipping_not_required.is_(True),
+    )
 
 
 # --- filtros comunes (cola + historial) --------------------------------------
@@ -297,91 +383,16 @@ def _as_utc(dt: datetime) -> datetime:
 # --- cola ----------------------------------------------------------------------
 
 
-@router.get("/sat/queue")
-def sat_queue(
-    desde: date | None = Query(default=None),
-    hasta: date | None = Query(default=None),
-    store_slug: str | None = Query(default=None, max_length=64),
-    estado: str | None = Query(default=None, pattern=_ESTADO_PATTERN),
-    q: str | None = Query(default=None, max_length=120),
-    # «No requiere envío»: por defecto (False) se EXCLUYEN del taller; con True
-    # se enseñan SOLO ellos (vista «No requieren envío» para revisar / desmarcar).
-    no_shipping: bool = Query(default=False),
-    # C4: orden por FECHA del pedido. Por defecto los más recientes primero
-    # (`fecha_desc`); `fecha_asc` = los más antiguos primero (FIFO de siempre).
-    # La prioridad por estado (bloqueado → preparando → en cola) manda igual:
-    # la fecha ordena DENTRO de cada grupo.
-    sort: str = Query(default="fecha_desc", pattern="^fecha_(desc|asc)$"),
-    session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
-) -> dict[str, Any]:
-    """Cola táctil del taller en 2 secciones (D-1-fix1):
-
-    - `preparing`: por embalar (in_queue / preparing / blocked), priorizados.
-    - `ready_for_pickup`: embalados (`packed`) pero aún no salidos del taller
-      (transporte NO en tránsito/entregado/externalizado) — falta imprimir
-      albarán/etiqueta y marcar recogido.
-
-    Filtros (Lote B6), todos opcionales y aplicados a las dos secciones:
-    `desde`/`hasta` (fecha del pedido), `store_slug`, `estado`
-    (`por_embalar` = las 3 de arriba · `blocked` · `in_queue` · `preparing` ·
-    `ready`/`packed` = solo «Listos») y `q` (nº de pedido o cliente).
-    """
-    from app.erp.api.orders import worklist_visible  # noqa: PLC0415
-
-    filters = {"desde": desde, "hasta": hasta, "store_slug": store_slug, "q": q}
-    # Sin `estado` entran las dos secciones; con él, solo la que toca.
-    prep_statuses = _ESTADO_PREPARING.get(estado or "por_embalar", ())
-    want_ready = not estado or estado in _ESTADO_READY
-
-    # Control manual (#388 + bandeja): los quitados a mano tampoco entran en el
-    # taller (mismo flag que la bandeja y el seguimiento).
-    # «No requiere envío»: por defecto FUERA del taller; con `no_shipping=True`,
-    # SOLO ellos (para revisarlos / desmarcar en lote).
-    ship_flag = Order.shipping_not_required.is_(no_shipping)
-    # C4: dirección de la fecha (por defecto, los más recientes primero).
-    newest_first = sort != "fecha_asc"
-
-    def _fecha_key(o: Order) -> float:
-        d = o.placed_at or o.created_at
-        return d.timestamp() if d is not None else 0.0
-
-    prep_rows: list[Order] = []
-    if prep_statuses:
-        prep_rows = list(session.scalars(
-            _apply_filters(worklist_visible(
-                select(Order).where(
-                    Order.preparation_status.in_(list(prep_statuses)), ship_flag,
-                ), current_user
-            ), **filters).options(selectinload(Order.lines))
-        ))
-        # La prioridad por estado manda; la fecha ordena dentro de cada grupo
-        # (signo según la dirección elegida).
-        signo = -1.0 if newest_first else 1.0
-        prep_rows.sort(key=lambda o: (
-            _QUEUE_ORDER.get(_prep(o), 9),
-            signo * _fecha_key(o),
-        ))
-    ready_rows: list[Order] = []
-    if want_ready:
-        orden_fecha = Order.placed_at.desc() if newest_first else Order.placed_at.asc()
-        ready_rows = list(session.scalars(
-            _apply_filters(worklist_visible(select(Order).where(
-                Order.preparation_status == PreparationStatus.PACKED.value,
-                Order.transport_status.notin_(_SHIPPED_TRANSPORT),
-                ship_flag,
-            ), current_user), **filters).options(selectinload(Order.lines))
-            .order_by(orden_fecha)
-        ))
-
-    all_rows = [*prep_rows, *ready_rows]
-    files_by_order = _files_by_order(session, [o.id for o in all_rows])
-    stores = _stores_by_id(session, all_rows)
+def sat_items(session: Session, rows: list[Order]) -> list[dict[str, Any]]:
+    """Los pedidos como items de la Cola SAT (misma forma en todas las
+    pestañas y en el refresco de una sola card)."""
+    files_by_order = _files_by_order(session, [o.id for o in rows])
+    stores = _stores_by_id(session, rows)
 
     # D-2: nombre del cliente en las cards del taller (el número solo no basta).
     from app.erp.api.orders import customer_names  # noqa: PLC0415
 
-    names = customer_names(session, all_rows)
+    names = customer_names(session, rows)
 
     def _item(o: Order) -> dict[str, Any]:
         who = names.get(o.id) or {}
@@ -437,20 +448,199 @@ def sat_queue(
             # casilla de tracking de «Listos» aparezca precargada si ya existe.
             "tracking_number": _clean(o.tracking_number),
             "notes": _clean(o.notes),
+            # Pestaña a la que pertenece (el backend decide; la UI no adivina)
+            # y el envío Genei, si lo hay («Crear» vs «Ver envío Genei»,
+            # etiqueta disponible o no).
+            "sat_tab": sat_tab_of(o),
+            "sin_seguimiento": bool(o.shipping_not_required),
+            "genei": _genei_summary(o),
         }
 
+    return [_item(o) for o in rows]
+
+
+def _count(session: Session, stmt: Any) -> int:
+    return int(session.scalar(select(func.count()).select_from(stmt.subquery())) or 0)
+
+
+@router.get("/sat/queue")
+def sat_queue(
+    desde: date | None = Query(default=None),
+    hasta: date | None = Query(default=None),
+    store_slug: str | None = Query(default=None, max_length=64),
+    estado: str | None = Query(default=None, pattern=_ESTADO_PATTERN),
+    q: str | None = Query(default=None, max_length=120),
+    # Antiguo «No requiere envío» (hoy «Sin seguimiento»): por defecto (False)
+    # se EXCLUYEN de las pestañas de pendientes; con True se enseñan SOLO ellos
+    # (compatibilidad; la pestaña nueva usa `/sat/shipped?sin_seguimiento=true`).
+    no_shipping: bool = Query(default=False),
+    # C4: orden por FECHA del pedido. Por defecto los más recientes primero
+    # (`fecha_desc`); `fecha_asc` = los más antiguos primero (FIFO de siempre).
+    # La prioridad por estado (bloqueado → preparando → en cola) manda igual:
+    # la fecha ordena DENTRO de cada grupo.
+    sort: str = Query(default="fecha_desc", pattern="^fecha_(desc|asc)$"),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> dict[str, Any]:
+    """Cola del taller, por pestañas (el backend decide la pestaña de cada
+    pedido y los contadores, para que siempre cuadren):
+
+    - `por_embalar`: en cola sin empezar + bloqueados (arriba);
+    - `en_preparacion`: preparación empezada, aún sin embalar;
+    - `embalados`: embalados sin etiqueta tramitada;
+    - `pendiente_recogida`: embalados con envío Genei tramitado (estado 1+) o
+      etiqueta ya puesta, esperando al transportista;
+    - `counts`: los de esas cuatro, `pendientes` (su suma), y los de
+      «Sin seguimiento» y «Enviados» (su lista, en `/sat/shipped`).
+
+    `preparing` / `ready_for_pickup` son las dos secciones de antes (por
+    embalar + en preparación; embalados + pendiente de recogida), que siguen
+    para quien las lea.
+
+    Filtros (Lote B6), todos opcionales y aplicados a todas las pestañas:
+    `desde`/`hasta` (fecha del pedido), `store_slug`, `estado`
+    (`por_embalar` = en cola + preparando + bloqueados · `blocked` ·
+    `in_queue` · `preparing` · `ready`/`packed` = solo embalados) y `q` (nº
+    de pedido o cliente).
+    """
+    from app.erp.api.orders import worklist_visible  # noqa: PLC0415
+
+    filters = {"desde": desde, "hasta": hasta, "store_slug": store_slug, "q": q}
+    # Sin `estado` entran todas las secciones; con él, solo la que toca.
+    prep_statuses = _ESTADO_PREPARING.get(estado or "por_embalar", ())
+    want_ready = not estado or estado in _ESTADO_READY
+
+    # Control manual (#388 + bandeja): los quitados a mano tampoco entran en el
+    # taller (mismo flag que la bandeja y el seguimiento).
+    # «Sin seguimiento» (enviado sin tracking): FUERA de los pendientes; con
+    # `no_shipping=True`, SOLO ellos (compatibilidad).
+    ship_flag = Order.shipping_not_required.is_(no_shipping)
+    # C4: dirección de la fecha (por defecto, los más recientes primero).
+    newest_first = sort != "fecha_asc"
+
+    def _fecha_key(o: Order) -> float:
+        d = o.placed_at or o.created_at
+        return d.timestamp() if d is not None else 0.0
+
+    prep_rows: list[Order] = []
+    if prep_statuses:
+        prep_rows = list(session.scalars(
+            _apply_filters(worklist_visible(
+                select(Order).where(
+                    Order.preparation_status.in_(list(prep_statuses)), ship_flag,
+                ), current_user
+            ), **filters).options(selectinload(Order.lines))
+        ))
+        # La prioridad por estado manda; la fecha ordena dentro de cada grupo
+        # (signo según la dirección elegida).
+        signo = -1.0 if newest_first else 1.0
+        prep_rows.sort(key=lambda o: (
+            _QUEUE_ORDER.get(_prep(o), 9),
+            signo * _fecha_key(o),
+        ))
+    ready_rows: list[Order] = []
+    if want_ready:
+        orden_fecha = Order.placed_at.desc() if newest_first else Order.placed_at.asc()
+        ready_rows = list(session.scalars(
+            _apply_filters(worklist_visible(select(Order).where(
+                Order.preparation_status == PreparationStatus.PACKED.value,
+                Order.transport_status.notin_(_SHIPPED_TRANSPORT),
+                ship_flag,
+            ), current_user), **filters).options(selectinload(Order.lines))
+            .order_by(orden_fecha)
+        ))
+
+    prep_items = sat_items(session, prep_rows)
+    ready_items = sat_items(session, ready_rows)
+    tabs: dict[str, list[dict[str, Any]]] = {
+        TAB_POR_EMBALAR: [], TAB_EN_PREPARACION: [],
+        TAB_EMBALADOS: [], TAB_PENDIENTE_RECOGIDA: [],
+    }
+    for item in [*prep_items, *ready_items]:
+        destino = item["sat_tab"]
+        if no_shipping:
+            # Vista de compatibilidad (todos marcados): por su preparación.
+            destino = (TAB_POR_EMBALAR if item["preparation_status"] in _POR_EMBALAR
+                       else TAB_EN_PREPARACION
+                       if item["preparation_status"] == PreparationStatus.PREPARING.value
+                       else TAB_EMBALADOS)
+        tabs.setdefault(destino, []).append(item)
+
+    def _base(clause: Any) -> Any:
+        return _apply_filters(
+            worklist_visible(select(Order.id).where(clause), current_user), **filters,
+        )
+
+    counts = {key: len(tabs[key]) for key in (
+        TAB_POR_EMBALAR, TAB_EN_PREPARACION, TAB_EMBALADOS, TAB_PENDIENTE_RECOGIDA)}
+    counts["pendientes"] = sum(counts.values())
+    counts[TAB_SIN_SEGUIMIENTO] = _count(
+        session, _base(Order.shipping_not_required.is_(True)))
+    counts[TAB_ENVIADOS] = _count(session, _base(_enviados_clause()))
+
     return {
-        "preparing": [_item(o) for o in prep_rows],
-        "ready_for_pickup": [_item(o) for o in ready_rows],
+        TAB_POR_EMBALAR: tabs[TAB_POR_EMBALAR],
+        TAB_EN_PREPARACION: tabs[TAB_EN_PREPARACION],
+        TAB_EMBALADOS: tabs[TAB_EMBALADOS],
+        TAB_PENDIENTE_RECOGIDA: tabs[TAB_PENDIENTE_RECOGIDA],
+        "counts": counts,
+        # Las dos secciones de antes (compatibilidad).
+        "preparing": prep_items,
+        "ready_for_pickup": ready_items,
     }
 
 
-# --- «No requiere envío» en lote ---------------------------------------------
+@router.get("/sat/shipped")
+def sat_shipped(
+    desde: date | None = Query(default=None),
+    hasta: date | None = Query(default=None),
+    store_slug: str | None = Query(default=None, max_length=64),
+    q: str | None = Query(default=None, max_length=120),
+    sin_seguimiento: bool = Query(default=False),
+    sort: str = Query(default="fecha_desc", pattern="^fecha_(desc|asc)$"),
+    limit: int = Query(default=200, ge=1, le=1000),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> dict[str, Any]:
+    """«Enviados» (recogido / en tránsito / entregado, más los «Sin
+    seguimiento») o, con `sin_seguimiento=true`, solo los enviados SIN
+    tracking. Con los mismos filtros que la cola. `total` es el recuento
+    completo; la lista trae los `limit` primeros por fecha del pedido."""
+    from app.erp.api.orders import worklist_visible  # noqa: PLC0415
+
+    clause = (Order.shipping_not_required.is_(True) if sin_seguimiento
+              else _enviados_clause())
+    stmt = _apply_filters(
+        worklist_visible(select(Order).where(clause), current_user),
+        desde=desde, hasta=hasta, store_slug=store_slug, q=q,
+    )
+    total = _count(session, stmt.with_only_columns(Order.id))
+    orden = Order.placed_at.desc() if sort != "fecha_asc" else Order.placed_at.asc()
+    rows = list(session.scalars(
+        stmt.options(selectinload(Order.lines)).order_by(orden).limit(limit)
+    ))
+    return {"items": sat_items(session, rows), "total": total, "limit": limit}
+
+
+@router.get("/sat/orders/{order_id}")
+def sat_order_item(
+    order_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> dict[str, Any]:
+    """Un pedido como item de la Cola SAT: tras avanzarlo de estado, la card se
+    refresca EN SU SITIO (sin recargar la cola ni sacar a nadie del pedido)."""
+    order = _get_order(session, order_id, current_user)
+    return sat_items(session, [order])[0]
+
+
+# --- «Sin seguimiento» en lote (antes «No requiere envío») ---------------------
 
 
 class BulkNoShippingIn(BaseModel):
-    """Marcar/desmarcar «No requiere envío» en lote. `value=True` marca (saca de
-    la Cola SAT), `value=False` desmarca (vuelve)."""
+    """Marcar/desmarcar «Sin seguimiento» en lote: `value=True` = el pedido ya
+    se ENVIÓ pero sin nº de tracking (recogida en tienda, transporte sin
+    seguimiento…); `value=False` lo devuelve a los pendientes del taller."""
 
     order_ids: list[str] = Field(min_length=1, max_length=500)
     value: bool = True
@@ -462,10 +652,16 @@ def bulk_no_shipping(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_sat_no_shipping),
 ) -> dict[str, Any]:
-    """Marca (o desmarca) «No requiere envío» en varios pedidos a la vez desde la
-    Cola SAT. Marcar los saca de la Cola SAT y de la cola «Por enviar»; NO toca
-    pago, factura, cobro ni el «completado». Idempotente y reversible. Deja
-    constancia en el audit log con los pedidos afectados."""
+    """Marca (o desmarca) «Sin seguimiento» en varios pedidos a la vez.
+
+    Semántica (sustituye a «No requiere envío»): marcar = el pedido cuenta
+    como ENVIADO, solo que sin tracking. Sale de las pestañas de pendientes y
+    aparece en «Enviados» y «Sin seguimiento»; en la hoja «Seguimiento (app)»
+    el Envío sale «Enviado (sin seguimiento)» con el tracking vacío. Usa la
+    misma marca de siempre (`shipping_not_required`), así que los pedidos que
+    ya estaban marcados «No requiere envío» pasan a «Sin seguimiento» sin
+    migrar datos. NO toca pago, factura, cobro ni el «completado». Idempotente
+    y reversible; queda en el audit log."""
     from app.core.audit import record_event  # noqa: PLC0415
 
     changed: list[str] = []
@@ -484,10 +680,10 @@ def bulk_no_shipping(
             action="erp.sat_no_shipping" if payload.value else "erp.sat_requires_shipping",
             target_type="order", target_id=None, actor=current_user,
             metadata={"order_ids": payload.order_ids, "value": payload.value,
-                      "order_numbers": changed},
+                      "order_numbers": changed, "meaning": "sin_seguimiento"},
             message=(
-                f"«No requiere envío» {'marcado' if payload.value else 'desmarcado'} "
-                f"en {len(changed)} pedido(s)"
+                f"«Sin seguimiento» (enviado sin tracking) "
+                f"{'marcado' if payload.value else 'desmarcado'} en {len(changed)} pedido(s)"
             ),
         )
     session.commit()
