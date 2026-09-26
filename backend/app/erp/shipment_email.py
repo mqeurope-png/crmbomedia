@@ -106,13 +106,15 @@ SHIPMENT_EMAIL_DEFAULTS: dict[str, dict[str, str]] = {
     },
 }
 
-#: {enlace} cuando no hay URL de seguimiento.
+#: {enlace} cuando no hay URL de seguimiento pero SÍ se sabe el courier
+#: («Sigue el envío aquí: en la web de MBE»). Sin courier tampoco, la línea del
+#: enlace desaparece y el aviso va solo con el número.
 _NO_LINK: dict[str, str] = {
-    "es": "en la web de la agencia de transporte",
-    "en": "on the carrier's website",
-    "de": "auf der Website des Versanddienstleisters",
-    "fr": "sur le site du transporteur",
-    "nl": "op de website van de vervoerder",
+    "es": "en la web de {agencia}",
+    "en": "on the {agencia} website",
+    "de": "auf der Website von {agencia}",
+    "fr": "sur le site de {agencia}",
+    "nl": "op de website van {agencia}",
 }
 #: {agencia} cuando no consta la agencia.
 _NO_AGENCY: dict[str, str] = {
@@ -132,7 +134,8 @@ SAMPLE_SHIPMENT_EMAIL: dict[str, str] = {
     "cliente": "Rotulación Levante S.L.",
     "pedido": "9553",
     "tracking": "0033260080539700026674",
-    "enlace": "https://www.cttexpress.com/localizador-de-envios/",
+    "enlace": ("https://app.cttexpress.com/AreaClientes/Views/Destinatarios.aspx"
+               "?s=0033260080539700026674"),
     "agencia": "CTT Express",
 }
 
@@ -164,18 +167,26 @@ def merge_templates(stored: Any) -> dict[str, dict[str, str]]:
 
 
 def fill_template(lang: str, subject: str, body: str, fields: dict[str, str]) -> tuple[str, str]:
-    """Sustituye los placeholders (idioma ya resuelto). Los vacíos llevan su
-    texto por defecto localizado (sin enlace → «en la web de la agencia»)."""
+    """Sustituye los placeholders (idioma ya resuelto). Sin enlace: con courier
+    conocido → «en la web de UPS»; sin courier → se quita la línea del enlace
+    (queda solo el número)."""
     lang = lang if lang in SUPPORTED_LANGS else "es"
+    agencia = (fields.get("agencia") or "").strip()
+    enlace = (fields.get("enlace") or "").strip()
+    if not enlace and agencia:
+        enlace = _NO_LINK[lang].replace("{agencia}", agencia)
     values = {
         "cliente": fields.get("cliente") or _GREETING_FALLBACK[lang],
         "pedido": fields.get("pedido") or "",
         "tracking": fields.get("tracking") or "",
-        "enlace": fields.get("enlace") or _NO_LINK[lang],
-        "agencia": fields.get("agencia") or _NO_AGENCY[lang],
+        "enlace": enlace,
+        "agencia": agencia or _NO_AGENCY[lang],
     }
 
     def _fill(text: str) -> str:
+        if not values["enlace"]:
+            # Sin enlace ni courier: fuera la(s) línea(s) que lo llevan.
+            text = "\n".join(line for line in text.split("\n") if "{enlace}" not in line)
         for key, val in values.items():
             text = text.replace("{" + key + "}", val)
         return text
@@ -208,9 +219,32 @@ def render_sample(session: Session, *, lang: str, subject: str | None = None,
 
 
 def _state(order: Any) -> dict[str, Any]:
+    """Bloque del ENVÍO del pedido: el de Genei si el envío es de Genei; si no,
+    el del envío con otro courier (`packing_json.envio`)."""
     from app.erp.integrations.genei.service import genei_state_of  # noqa: PLC0415
+    from app.erp.shipping_courier import external_state  # noqa: PLC0415
 
-    return genei_state_of(order)
+    genei = genei_state_of(order)
+    if genei.get("shipment_code"):
+        return genei
+    return external_state(order)
+
+
+def _set_state(order: Any, patch: dict[str, Any]) -> None:
+    """Guarda en el bloque del envío (Genei u otro courier)."""
+    from app.erp.integrations.genei.service import genei_state_of, set_genei_state  # noqa: PLC0415
+    from app.erp.shipping_courier import set_external_state  # noqa: PLC0415
+
+    if genei_state_of(order).get("shipment_code"):
+        set_genei_state(order, patch)
+    else:
+        set_external_state(order, patch)
+
+
+def _is_genei(order: Any) -> bool:
+    from app.erp.shipping_courier import is_genei_shipment  # noqa: PLC0415
+
+    return is_genei_shipment(order)
 
 
 def brand_store(session: Session, order: Any) -> str | None:
@@ -289,6 +323,17 @@ def recipient_of(session: Session, order: Any) -> str:
     email = str(_state(order).get("dest_email") or "").strip()
     if email:
         return email
+    # El email de ENVÍO del pedido: el mismo que carga el modal de crear envío
+    # (dirección de envío de la web, o factura/albarán/proforma/manual/muestra).
+    try:
+        from app.erp.shipping_destination import resolve_shipping_destination  # noqa: PLC0415
+
+        campos, _origen = resolve_shipping_destination(session, order)
+        email = str(campos.get("email") or "").strip()
+    except Exception:  # noqa: BLE001 — sin destino resoluble, se sigue
+        email = ""
+    if "@" in email:
+        return email
     if getattr(order, "contact_id", None):
         from app.models.crm import Contact  # noqa: PLC0415
 
@@ -341,7 +386,13 @@ def build_shipment_email(
         use_lang = auto_lang
     from_alias, from_source = shipment_from_alias(session, order, use_lang)
     tracking = str(state.get("tracking") or getattr(order, "tracking_number", "") or "").strip()
-    url = str(state.get("tracking_url") or "").strip() or None
+    if _is_genei(order):
+        url = str(state.get("tracking_url") or "").strip() or None
+    else:
+        # Otro courier: el enlace sale de la tabla por courier (si se conoce).
+        from app.erp.shipping_courier import tracking_url_for  # noqa: PLC0415
+
+        url = tracking_url_for(state.get("courier"), tracking)
     fields = {
         "cliente": customer_name(session, order),
         "pedido": customer_order_ref(order),
@@ -415,7 +466,6 @@ def send_shipment_email(
     evento `erp.shipment_emailed` en su timeline). Si Gmail falla, la
     excepción sube y NO se marca como enviado."""
     from app.core.audit import record_event  # noqa: PLC0415
-    from app.erp.integrations.genei.service import set_genei_state  # noqa: PLC0415
     from app.integrations.gmail import service as gmail_service  # noqa: PLC0415
 
     email = build_shipment_email(session, order, lang=lang, to=to)
@@ -438,7 +488,7 @@ def send_shipment_email(
         contact_id=getattr(order, "contact_id", None),
     )
     previous = dict(_state(order).get("customer_email") or {})
-    set_genei_state(order, {"customer_email": {
+    _set_state(order, {"customer_email": {
         **previous,
         "status": "sent",
         "sent_at": _now(),
@@ -486,6 +536,21 @@ def mark_pending_on_create(order: Any, *, enabled: bool, user_id: str | None,
     }
 
 
+def mark_external_pending(order: Any, *, enabled: bool, user_id: str | None) -> None:
+    """Al «📤 Marcar recogido» un envío con OTRO courier: el aviso al cliente
+    queda pendiente (se manda en cuanto haya tracking), una sola vez. Si ya
+    tenía estado (reintento de marcar recogido, reenvío…), no se toca."""
+    from app.erp.shipping_courier import external_state, set_external_state  # noqa: PLC0415
+
+    if external_state(order).get("customer_email"):
+        return
+    set_external_state(order, {
+        "created_by_user_id": user_id,
+        "customer_email": {"status": "pending" if enabled else "disabled",
+                           "attempts": 0, "sends": 0},
+    })
+
+
 def maybe_send_shipment_email(
     session: Session, order: Any, *, actor: Any | None = None,
     tracking_url_fetcher: Any | None = None,
@@ -497,8 +562,6 @@ def maybe_send_shipment_email(
 
     `tracking_url_fetcher(código)` = URL de seguimiento de Genei si aún no se
     tiene (opcional)."""
-    from app.erp.integrations.genei.service import set_genei_state  # noqa: PLC0415
-
     try:
         ce = _state(order).get("customer_email") or {}
         if ce.get("status") not in ("pending", "error"):
@@ -518,15 +581,16 @@ def maybe_send_shipment_email(
         if ce.get("status") not in ("pending", "error"):
             session.rollback()
             return None
-        if not _state(order).get("tracking_url") and tracking_url_fetcher is not None:
+        if (_is_genei(order) and not _state(order).get("tracking_url")
+                and tracking_url_fetcher is not None):
             url = None
             try:
                 url = tracking_url_fetcher(str(_state(order).get("shipment_code") or ""))
             except Exception:  # noqa: BLE001 — sin enlace se envía igual
                 url = None
             if url:
-                set_genei_state(order, {"tracking_url": url})
-        set_genei_state(order, {"customer_email": {**ce, "status": "sending",
+                _set_state(order, {"tracking_url": url})
+        _set_state(order, {"customer_email": {**ce, "status": "sending",
                                                     "attempts": int(ce.get("attempts") or 0) + 1}})
         session.commit()
     except Exception:  # noqa: BLE001
@@ -548,7 +612,7 @@ def maybe_send_shipment_email(
         try:
             session.refresh(order)
             ce = _state(order).get("customer_email") or {}
-            set_genei_state(order, {"customer_email": {
+            _set_state(order, {"customer_email": {
                 **ce, "status": "error", "error": str(exc)[:300], "error_at": _now(),
             }})
             session.commit()

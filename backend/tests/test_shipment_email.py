@@ -180,7 +180,7 @@ def test_el_aviso_lleva_tracking_enlace_y_datos_en_el_idioma(session_factory):
         es = s.get(Order, _order(s, number="M-9", language="es",
                                  genei={**PENDING, "tracking": CTT}))
         mail = build_shipment_email(s, es)
-        assert "Sigue el envío aquí: en la web de la agencia de transporte" in mail["body_text"]
+        assert "Sigue el envío aquí: en la web de Ctt Premium" in mail["body_text"]
         assert "{" not in mail["body_text"]
 
 

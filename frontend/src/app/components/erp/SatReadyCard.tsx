@@ -15,7 +15,9 @@ import {
   type SeguimientoFieldsPatch,
   type ShipmentFileKind,
 } from "../../lib/erpApi";
+import { OTHER_COURIER_LABEL, suggestCourier } from "../../lib/couriers";
 import { carrierDate, carrierStepTone } from "../../lib/geneiApi";
+import { CourierSelect, CourierTrackingEditor, withSuggestion } from "./CourierFields";
 import { FileUploadButton } from "./FileUploadButton";
 import { GeneiShipmentSection } from "./GeneiShipmentSection";
 import { SatAlbaranChip, useSatAlbaranAction } from "./SatPreparingCard";
@@ -26,12 +28,19 @@ import { SatObservaciones, SatTechData, type SatTechEdit } from "./SatTechData";
  *  fila de la vista lista (Lote B6): imprimir albarán (mismo chip que en «Por
  *  embalar»: FACTUSOL › fichero › WooCommerce para los pedidos web, Lote 2 A3)
  *  / etiqueta, «Marcar recogido» con confirmación (evita mispulsados en
- *  tablet) y «Reabrir preparación». */
+ *  tablet) y «Reabrir preparación». El nº de seguimiento y el COURIER (envío
+ *  que no es de Genei) viven aquí: «Marcar recogido» los manda aunque no se
+ *  hayan guardado aparte. */
 export function useSatReadyActions(order: SatQueueItem, onChanged: () => void) {
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const albaran = useSatAlbaranAction(order, onChanged);
+  const isGenei = !!order.genei?.shipment_code;
+  const [tracking, setTracking] = useState(order.tracking_number ?? "");
+  const [courier, setCourier] = useState(
+    isGenei ? "" : (order.courier ?? suggestCourier(order.tracking_number) ?? ""),
+  );
 
   /** Descarga el documento y lanza la impresión en el MISMO clic. */
   async function openDoc(kind: ShipmentFileKind) {
@@ -49,7 +58,8 @@ export function useSatReadyActions(order: SatQueueItem, onChanged: () => void) {
     setBusy(true);
     setError(null);
     try {
-      await markPickedUp(order.id);
+      // Genei trae su agencia y su tracking: ahí no se manda nada (como antes).
+      await markPickedUp(order.id, isGenei ? {} : { tracking, courier });
       onChanged();
     } catch (e) {
       setError(extractErrorMessage(e, "No se pudo marcar recogido."));
@@ -88,6 +98,7 @@ export function useSatReadyActions(order: SatQueueItem, onChanged: () => void) {
 
   return {
     busy, confirming, setConfirming,
+    isGenei, tracking, setTracking, courier, setCourier,
     // Un solo aviso bajo la card: el de recogido/reabrir o el del albarán.
     error: error ?? albaran.error,
     factusolAlbaran: albaran.factusolAlbaran,
@@ -205,17 +216,24 @@ export function SatReadyButtons({
  *  tracking para más tarde). Se siembra del pedido (`tracking_number`), se
  *  edita, se guarda con `setOrderTracking` (muestra «✓ Guardado») y al terminar
  *  refresca la cola (`onChanged`). Va junto a los chips de albarán/etiqueta en
- *  la card y en la fila de la vista lista. */
+ *  la card y en la fila de la vista lista.
+ *
+ *  Envío con OTRO courier (sin Genei): al lado va el desplegable «Courier»
+ *  (UPS, CTT Express… u «Otro»), que se propone solo por el formato del
+ *  tracking (`1Z…` → UPS, `0033…` → CTT Express) y se puede cambiar. El valor
+ *  vive en `actions`, así «Marcar recogido» lo lleva aunque no se guarde. */
 export function SatTrackingField({
   order,
+  actions,
   onChanged,
   compact = false,
 }: {
   order: SatQueueItem;
+  actions: ReturnType<typeof useSatReadyActions>;
   onChanged: () => void;
   compact?: boolean;
 }) {
-  const [value, setValue] = useState(order.tracking_number ?? "");
+  const { isGenei, tracking: value, setTracking: setValue, courier, setCourier } = actions;
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -225,8 +243,11 @@ export function SatTrackingField({
     setBusy(true);
     setError(null);
     try {
-      const r = await setOrderTracking(order.id, value.trim() || null);
+      const r = await setOrderTracking(
+        order.id, value.trim() || null, isGenei ? undefined : courier.trim(),
+      );
       setValue(r.tracking_number ?? "");
+      if (!isGenei && r.courier !== undefined) setCourier(r.courier ?? "");
       setSaved(true);
       onChanged();
     } catch (e) {
@@ -248,9 +269,18 @@ export function SatTrackingField({
           value={value}
           maxLength={64}
           disabled={busy}
-          onChange={(e) => { setValue(e.target.value); setSaved(false); }}
+          onChange={(e) => {
+            const t = e.target.value;
+            setValue(t);
+            if (!isGenei) setCourier((c) => withSuggestion(t, c));
+            setSaved(false);
+          }}
           onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void save(); } }}
         />
+        {isGenei ? null : (
+          <CourierSelect value={courier} disabled={busy} compact={compact}
+                         onChange={(c) => { setCourier(c); setSaved(false); }} />
+        )}
         <button
           type="button"
           className={`button small${saved ? " secondary" : ""}`}
@@ -313,8 +343,11 @@ export function SatReadyCard({
           {order.total_amount.toFixed(2)} {order.currency}
         </span>
         {pendienteRecogida ? (
-          <span className="badge info" title="Etiqueta lista: falta que pase el transportista">
-            Pendiente de recogida
+          /* Mismo criterio de color que «Enviados»: Genei azul, otro courier
+             verde azulado (con su nombre si ya se sabe). */
+          <span className={`badge ${hasGenei ? "info" : "courier-ext"}`}
+                title="Etiqueta lista: falta que pase el transportista">
+            Pendiente de recogida{!hasGenei && order.courier ? ` · ${order.courier}` : ""}
           </span>
         ) : (
           <span className="badge ok">Embalado</span>
@@ -339,7 +372,7 @@ export function SatReadyCard({
           <SatReadyDocChips order={order} actions={actions} size="lg" />
         </div>
         {/* Lote 5 · #3 — nº de seguimiento, junto a la etiqueta. */}
-        <SatTrackingField order={order} onChanged={onChanged} />
+        <SatTrackingField order={order} actions={actions} onChanged={onChanged} />
         {/* Esperando al transportista: su último escaneo REAL (vía Genei). */}
         <SatCarrierStatus order={order} />
         {/* Genei (PR-1 follow-up): crear el envío desde la propia Cola SAT, sin
@@ -391,9 +424,14 @@ export function SatCarrierStatus({ order }: { order: SatQueueItem }) {
 
 /** Card de un pedido que YA SALIÓ (recogido / en tránsito / entregado) o que
  *  NO se envía («No requiere envío», pestaña «Sin envío»). Es lo que pintan
- *  «Enviados» y «Sin envío». */
-export function SatShippedCard({ order }: { order: SatQueueItem }) {
-  const tracking = order.tracking_number || order.genei?.tracking || null;
+ *  «Enviados» y «Sin envío». Con OTRO courier, courier y tracking se corrigen
+ *  aquí mismo (✎), sin volver a «Marcar recogido». */
+export function SatShippedCard({
+  order, onChanged,
+}: {
+  order: SatQueueItem;
+  onChanged?: () => void;
+}) {
   const when = carrierDate(order.genei?.carrier_status_at);
   return (
     <article className="sat-card sat-shipped-card" aria-label={`Pedido ${order.order_number}`}>
@@ -402,10 +440,7 @@ export function SatShippedCard({ order }: { order: SatQueueItem }) {
         <span className="sat-card-date mono">{satShortDate(order.placed_at)}</span>
       </div>
       <div className="sat-card-meta">
-        <span className={`badge ${satShippedTone(order)}`}
-              title={order.genei?.carrier_status ? "Estado según el transportista" : undefined}>
-          {satShippedLabel(order)}
-        </span>
+        <SatShipmentBadge order={order} />
         {when ? <span className="muted small"> · {when}</span> : null}
       </div>
       {customerLabel(order) ? (
@@ -414,16 +449,11 @@ export function SatShippedCard({ order }: { order: SatQueueItem }) {
       {order.sin_envio ? null : (
         <dl className="sat-shipped-kv">
           <dt>Seguimiento</dt>
-          <dd className="mono">
-            {tracking && order.genei?.tracking_url ? (
-              <a href={order.genei.tracking_url} target="_blank" rel="noopener noreferrer">
-                {tracking}
-              </a>
-            ) : (tracking ?? "—")}
-          </dd>
-          {order.genei?.courier ? (<><dt>Agencia</dt><dd>{order.genei.courier}</dd></>) : null}
+          <dd className="mono"><SatTrackingLink order={order} /></dd>
+          {satCourier(order) ? (<><dt>Agencia</dt><dd>{satCourier(order)}</dd></>) : null}
         </dl>
       )}
+      {onChanged ? <SatExternalShipmentEdit order={order} onChanged={onChanged} /> : null}
       <div className="sat-card-actions-secondary">
         <Link href={`/erp/orders/${order.id}`} className="button secondary lg">Ficha</Link>
       </div>
@@ -438,6 +468,16 @@ export function SatShippedCard({ order }: { order: SatQueueItem }) {
  *  podía ser falso (la agencia aún no lo había escaneado). */
 export function satShippedLabel(order: SatQueueItem): string {
   if (order.sin_envio) return "No requiere envío";
+  // Envío con OTRO courier (sin Genei): «Enviado · UPS» / «Enviado · otro
+  // courier» — nunca «Recogido · en tránsito» (BoHub no sigue su tracking).
+  if (order.shipment_kind === "externo") {
+    const courier = order.courier || OTHER_COURIER_LABEL;
+    if (order.transport_status === "delivered") return `Entregado · ${courier}`;
+    if (order.transport_status === "already_shipped_externally" && !order.courier) {
+      return "Enviado (externo)";
+    }
+    return `Enviado · ${courier}`;
+  }
   if (order.genei?.carrier_status) return order.genei.carrier_status;
   if (order.genei?.state_label) return order.genei.state_label;
   switch (order.transport_status) {
@@ -448,9 +488,75 @@ export function satShippedLabel(order: SatQueueItem): string {
   }
 }
 
-/** Tono de la pastilla del estado de envío (por el paso real si lo hay). */
+/** Tono de la pastilla del estado de envío (por el paso real si lo hay). Los
+ *  envíos con OTRO courier van en su propio color (verde azulado) para
+ *  distinguirlos a simple vista de los de Genei (azul). */
 export function satShippedTone(order: SatQueueItem): string {
   if (order.sin_envio) return "muted";
+  if (order.shipment_kind === "externo") return "courier-ext";
   if (order.genei?.carrier_step) return carrierStepTone(order.genei.carrier_step);
   return order.transport_status === "delivered" ? "ok" : "info";
+}
+
+/** Courier del envío (agencia de Genei o el apuntado a mano), o null. */
+export function satCourier(order: SatQueueItem): string | null {
+  return order.courier || order.genei?.courier || null;
+}
+
+/** Pastilla del estado de envío + la etiqueta «Genei» si va por Genei. */
+export function SatShipmentBadge({ order }: { order: SatQueueItem }) {
+  const genei = !order.sin_envio && order.shipment_kind === "genei";
+  return (
+    <>
+      <span className={`badge ${satShippedTone(order)}`}
+            title={order.genei?.carrier_status ? "Estado según el transportista" : undefined}>
+        {satShippedLabel(order)}
+      </span>
+      {genei ? (
+        <span className="sat-genei-tag" title="Envío tramitado con Genei">Genei</span>
+      ) : null}
+    </>
+  );
+}
+
+/** Nº de seguimiento, enlazado a la web del courier si se conoce (la de Genei
+ *  o la de la tabla por courier); «—» si no hay. */
+export function SatTrackingLink({ order }: { order: SatQueueItem }) {
+  const tracking = order.tracking_number || order.genei?.tracking || null;
+  const url = order.tracking_url || order.genei?.tracking_url || null;
+  if (!tracking) return <>—</>;
+  return url ? (
+    <a href={url} target="_blank" rel="noopener noreferrer">{tracking}</a>
+  ) : <>{tracking}</>;
+}
+
+/** ✎ Courier y nº de seguimiento de un envío con OTRO courier ya recogido,
+ *  editables en línea («Enviados»): al guardar se refresca la lista (la hoja
+ *  y el aviso al cliente se actualizan en el backend). Nada para Genei. */
+export function SatExternalShipmentEdit({
+  order, onChanged,
+}: {
+  order: SatQueueItem;
+  onChanged: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  if (order.sin_envio || order.shipment_kind !== "externo") return null;
+  if (!editing) {
+    return (
+      <button type="button" className="button small secondary sat-ext-edit"
+              aria-label={`Editar courier y seguimiento de ${order.order_number}`}
+              onClick={() => setEditing(true)}>
+        ✎ Courier / seguimiento
+      </button>
+    );
+  }
+  return (
+    <CourierTrackingEditor
+      orderId={order.id}
+      tracking={order.tracking_number ?? null}
+      courier={order.courier ?? null}
+      onSaved={() => { setEditing(false); onChanged(); }}
+      onCancel={() => setEditing(false)}
+    />
+  );
 }

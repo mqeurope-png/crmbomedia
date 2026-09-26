@@ -809,7 +809,8 @@ def _es_fila_heredada_de_bohub(fila: list[Any]) -> bool:
     return (
         _texto(fila[_COBRO_INDEX]) in _COBRO_BOHUB
         and _texto(fila[PREPARACION_INDEX]) in _PREPARACION_BOHUB
-        and _texto(fila[_ENVIO_INDEX]) in _ENVIO_BOHUB
+        and (_texto(fila[_ENVIO_INDEX]) in _ENVIO_BOHUB
+             or _texto(fila[_ENVIO_INDEX]).startswith("Enviado · "))
     )
 
 

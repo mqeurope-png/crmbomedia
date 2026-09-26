@@ -22,7 +22,7 @@ import { PrimaryActionBar } from "../../../components/erp/PrimaryActionBar";
 import { RegistrarCobroModal } from "../../../components/erp/RegistrarCobroModal";
 import { MarkPaidDialog } from "../../../components/erp/MarkPaidDialog";
 import { OrderStatusMachine } from "../../../components/erp/OrderStatusMachine";
-import { GeneiShipmentSection } from "../../../components/erp/GeneiShipmentSection";
+import { OrderShipmentSections } from "../../../components/erp/ExternalShipmentSection";
 import { ShippingFilesSection } from "../../../components/erp/ShippingFilesSection";
 import { ActionsMenu } from "../../../components/erp/flow/ActionsMenu";
 import { NextActionBar } from "../../../components/erp/flow/NextActionBar";
@@ -1178,8 +1178,12 @@ function ErpOrderDetailScreen() {
           />
           {/* Genei (PR-1): crear el envío, comparar agencias, etiqueta y estado.
               Vale para pedidos web (Woo, con su dirección de envío) y manuales.
-              El albarán FACTUSOL sigue su camino aparte; esto es el TRANSPORTE. */}
-          <GeneiShipmentSection
+              El albarán FACTUSOL sigue su camino aparte; esto es el TRANSPORTE.
+              Si el paquete salió con OTRO courier (UPS, MRW…), en su lugar va
+              su bloque: courier, seguimiento, recogida y aviso al cliente. Se
+              vuelve a montar cuando cambia el transporte o el tracking. */}
+          <OrderShipmentSections
+            key={`${order.transport_status}|${order.tracking_number ?? ""}`}
             orderId={order.id}
             canManage={canSat || canEmit}
             onChanged={() => load()}

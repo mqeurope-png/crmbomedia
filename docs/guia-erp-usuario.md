@@ -524,8 +524,38 @@ camino, verde = entregado, rojo = incidencia. En la
 hoja «Seguimiento (app)», la columna Envío lleva ese paso real (*Pendiente de
 entrada en red*, *Recogido*, *En tránsito*, *En reparto*, *Disponible en
 oficina*, *Entregado*, *Incidencia*). Si Genei aún no tiene escaneos, se ve su
-propio estado. Los envíos con etiqueta de otra agencia (no Genei) siguen como
-hasta ahora.
+propio estado. Los envíos con **otro courier** (no Genei) se explican justo
+debajo.
+
+**Envíos con otro courier (no Genei).** Hay envíos que no se hacen con Genei
+(UPS, MRW, GLS, DSV…): subes la etiqueta a mano, apuntas el tracking y pulsas
+**«📤 Marcar recogido»**, como siempre. Ahora, además:
+
+- **Campo «Courier»** junto al **«Nº de seguimiento»** (en «Embalados» /
+  «Pendiente de recogida», tarjeta y lista): *UPS, CTT Express, MRW, GLS, DSV,
+  FedEx, DHL, Correos Express, Seitrans, TNT, DB Schenker, MBE* u **«Otro…»**
+  (lo escribes). Si el tracking lo delata, **se propone solo**: `1Z…` → **UPS**;
+  `0033…` (22 dígitos) → **CTT Express**. Puedes cambiarlo. «Marcar recogido»
+  se lleva el tracking y el courier que haya en el campo (aunque no hayas pulsado
+  «Guardar»). Courier y tracking **pueden quedar vacíos** al recoger.
+- **Estado claro**: en «Enviados» sale **«Enviado · UPS»** (o **«Enviado · otro
+  courier»** si no se indicó), **nunca** «Recogido · en tránsito» (BoHub no sigue
+  el tracking de otras agencias). La columna **Agencia** es el courier y el
+  **Seguimiento** va **enlazado a la web del courier** cuando se conoce (UPS, CTT
+  Express, MRW, Correos Express, FedEx, DHL, TNT; GLS, DSV, Seitrans, DB
+  Schenker, MBE y «Otro» salen sin enlace).
+- **Colores**: los envíos de **Genei** van en **azul** con la etiqueta pequeña
+  **«Genei»**; los de **otro courier**, en **verde azulado**. Lo mismo en
+  «Pendiente de recogida».
+- **Se corrigen después** sin volver a «Marcar recogido»: en «Enviados»,
+  **«✎ Courier / seguimiento»** en la fila; en la ficha, **«✎ Editar courier /
+  seguimiento»**.
+- **Ficha**: el bloque **«Envío con otro courier»** (courier, tracking enlazado,
+  fecha de recogida y el aviso al cliente) sustituye a «Envío con Genei», que no
+  lo hay.
+- **Hoja «Seguimiento (app)»**: Envío = **«Enviado · UPS»** / **«Enviado · otro
+  courier»** (están en la lista de valores de la columna), **Tracking** = el
+  número y **Fecha recogido** = el día en que se pulsó «Marcar recogido».
 
 > La antigua pestaña «Enviados» era el **historial de pedidos mandados al
 > taller** (email al SAT o aprobación). Ahora «Enviados» son los que **han
@@ -600,6 +630,17 @@ estado). Va al email del destinatario que se puso al crear el envío.
 - **En Genei**: con esto en marcha, en **Perfil → Notificaciones →
   «Destinatario»** desmarca **«Al crear un envío»** y guarda. Deja «Si se
   producen incidencias» y «Al entregar»: esos los sigue mandando Genei.
+- **Envíos con otro courier** (UPS, MRW…): el mismo aviso (mismo texto, idioma
+  y remitente), **una sola vez por envío**. Sale al pulsar **«📤 Marcar
+  recogido»** si ya hay tracking; si no, **en cuanto se pone el tracking**
+  (desde «Enviados» o la ficha). El enlace es el de la web del courier; si no
+  se conoce, el texto dice *«en la web de GLS»* (o solo el número si no hay
+  courier). Va al **email de envío del pedido**; si no hay, al **email del
+  cliente** de la ficha; si tampoco, **no se manda** y la ficha lo indica
+  (puedes mandarlo a mano con otro destinatario). Corregir el tracking después
+  **no lo repite**; el reenvío manual está en el bloque «Envío con otro
+  courier» de la ficha. No se manda solo en los envíos recogidos antes de este
+  cambio.
 
 **«Incidencias».** Cuando un pedido **ya enviado** tiene un problema, **sale de
 «Enviados»** y aparece en esta pestaña hasta que se resuelve. Reúne dos orígenes:
@@ -633,7 +674,9 @@ En cada tarjeta:
    bulto»**) y pulsa **«📦 Embalar»**. La ventana se cierra, el pedido pasa a
    **Embalados** y la cola se actualiza sin recargar.
 3. **«📤 Marcar recogido»** — confirma *«¿El paquete ha salido?»* → **«Sí,
-   recogido»**. El transporte pasa a *En tránsito*.
+   recogido»**. El transporte pasa a *En tránsito*. Si el envío **no es de
+   Genei**, antes puedes indicar el **«Courier»** junto al nº de seguimiento
+   (ver «Envíos con otro courier»).
 
 **«Añadir pedido a la cola»** — para meter a mano un pedido en el taller por su
 número (p. ej. *BOP-1234*).

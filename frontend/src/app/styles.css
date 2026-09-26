@@ -14402,6 +14402,35 @@ table.erp-doc-lines { width: 100%; table-layout: fixed; }
 .sat-prep-embalar h3 { margin: 0 0 var(--sp-2); font-size: var(--fs-subtitle); }
 .sat-prep-actions { flex-wrap: wrap; }
 
+/* Envíos con OTRO courier (no Genei): color propio (verde azulado, contraste
+   ≥ 7:1) para distinguirlos de los de Genei (azul `.badge.info`), la etiqueta
+   «Genei», el desplegable «Courier» junto al nº de seguimiento y el editor en
+   línea de «Enviados» / ficha. */
+.badge.courier-ext { background: #D9EDE6; color: #1F5140; }
+.sat-genei-tag {
+  display: inline-block; margin-left: var(--sp-1); padding: 0 6px;
+  border-radius: 999px; background: #e0f2fe; color: #0369a1;
+  font-size: 0.72rem; font-weight: 700; letter-spacing: 0.02em; vertical-align: middle;
+}
+.sat-tracking-row { flex-wrap: wrap; }
+.sat-courier { display: inline-flex; align-items: center; gap: var(--sp-1); flex: 0 1 auto; min-width: 0; }
+.sat-courier select,
+.sat-courier input {
+  min-height: var(--control-h); padding: 0 var(--sp-2);
+  border: 1px solid var(--line); border-radius: var(--r-control);
+  background: #fff; color: var(--ink); font-size: var(--fs-body);
+}
+.sat-courier input { width: 11rem; max-width: 100%; }
+.sat-courier.is-compact select,
+.sat-courier.is-compact input { min-height: 32px; }
+.sat-courier-editor { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-1) var(--sp-2); margin-top: var(--sp-1); }
+.sat-courier-editor > input {
+  min-height: 32px; padding: 0 var(--sp-2); flex: 1 1 160px; min-width: 0;
+  border: 1px solid var(--line); border-radius: var(--r-control);
+  font-family: var(--font-mono);
+}
+.sat-ext-edit { margin-left: var(--sp-1); }
+
 /* Aviso de envío al cliente (BoHub) en la sección Genei de la ficha. */
 .erp-genei-customer-email { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-2); }
 .erp-genei-customer-email p { margin: 0; }

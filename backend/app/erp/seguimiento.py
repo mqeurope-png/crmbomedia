@@ -552,8 +552,12 @@ def _real_event_date(order: Order, domain: str, to_statuses: set[str]) -> dateti
             continue
         if (h.reason or "") == _IMPORT_STAMP_REASON:
             continue
-        if import_day and h.changed_at and h.changed_at.date() == import_day:
-            continue  # estampado el día de la importación: no es un hecho
+        if (import_day and h.changed_at and h.changed_at.date() == import_day
+                and not h.changed_by_user_id):
+            # Estampado el día de la importación (sin persona detrás): no es un
+            # hecho. Uno hecho por una persona ese mismo día (p. ej. «📤 Marcar
+            # recogido» de un pedido creado hoy) SÍ cuenta.
+            continue
         return h.changed_at
     return None
 
@@ -805,6 +809,19 @@ def _envio_label(order: Order) -> str:
     if real:
         return real
     st = getattr(order.transport_status, "value", order.transport_status)
+    # Envío con OTRO courier (sin Genei) ya recogido: «Enviado · UPS» /
+    # «Enviado · otro courier» (el histórico llevaba el courier en Envío).
+    from app.erp.shipping_courier import (  # noqa: PLC0415
+        external_envio_label,
+        external_state,
+        is_genei_shipment,
+    )
+
+    if not is_genei_shipment(order) and (
+        st == "in_transit"
+        or (st == "already_shipped_externally" and external_state(order).get("courier"))
+    ):
+        return external_envio_label(order)
     return ENVIO_LABELS.get(str(st or ""), "—")
 
 
@@ -812,8 +829,10 @@ def envio_vocabulary() -> list[str]:
     """Todos los valores que BoHub escribe en la columna Envío (transporte +
     escaneo real del transportista), sin repetir."""
     from app.erp.integrations.genei.tracking import CARRIER_STEP_LABELS  # noqa: PLC0415
+    from app.erp.shipping_courier import external_envio_vocabulary  # noqa: PLC0415
 
-    return list(dict.fromkeys([*ENVIO_LABELS.values(), *CARRIER_STEP_LABELS.values()]))
+    return list(dict.fromkeys([*ENVIO_LABELS.values(), *CARRIER_STEP_LABELS.values(),
+                               *external_envio_vocabulary()]))
 
 
 def _cobro_state(order: Order) -> str:
@@ -1101,9 +1120,12 @@ def build_rows(
             # ERP-F6-fix4: SOLO hechos reales; nunca la fecha estampada en la
             # importación (esas quedan vacías, no engañan ni en vista ni hoja).
             "preparado": _iso_date(_real_event_date(o, "preparation", {"packed"})),
-            "recogido": _iso_date(_real_event_date(
-                o, "transport", {"in_transit", "delivered", "label_created"},
-            )),
+            # La de «📤 Marcar recogido» (en tránsito); si aún no se recogió, la
+            # de la etiqueta (como antes).
+            "recogido": _iso_date(
+                _real_event_date(o, "transport", {"in_transit", "delivered"})
+                or _real_event_date(o, "transport", {"label_created"})
+            ),
             "fecha_envio_factura": _iso_date(_real_event_date(
                 o, "invoice", {"generated", "invoiced_by_erp"},
             )),

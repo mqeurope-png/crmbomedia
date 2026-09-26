@@ -200,6 +200,33 @@ def _genei_summary(order: Order) -> dict[str, Any] | None:
 _GENEI_TRAMITADO = ("ready", "in_transit", "delivered")
 
 
+def _shipment_fields(order: Order) -> dict[str, Any]:
+    from app.erp.shipping_courier import (  # noqa: PLC0415
+        SHIPPED_TRANSPORT,
+        external_state,
+        is_genei_shipment,
+        shipment_courier,
+        shipment_tracking_url,
+    )
+
+    genei = is_genei_shipment(order)
+    transport = getattr(order.transport_status, "value", order.transport_status)
+    external = external_state(order)
+    if genei:
+        kind = "genei"
+    elif transport in SHIPPED_TRANSPORT or external.get("courier"):
+        kind = "externo"
+    else:
+        kind = None
+    return {
+        "shipment_kind": kind,
+        "courier": shipment_courier(order),
+        "tracking_url": shipment_tracking_url(order),
+        "customer_email_status": ((external.get("customer_email") or {}).get("status")
+                                  if not genei else None),
+    }
+
+
 def pendiente_de_recogida(order: Order) -> bool:
     """Embalado y con la etiqueta lista, esperando al transportista: envío Genei
     TRAMITADO (estado 1+) o etiqueta ya puesta (`label_created`, también la
@@ -471,6 +498,10 @@ def sat_items(session: Session, rows: list[Order]) -> list[dict[str, Any]]:
             # «No requiere envío» (pestaña «Sin envío»).
             "sin_envio": bool(o.shipping_not_required),
             "genei": _genei_summary(o),
+            # Envío con Genei u OTRO courier: el courier (la agencia de Genei o
+            # el apuntado a mano), el enlace de seguimiento y el tipo, para
+            # que «Enviados» los distinga y enlace el tracking.
+            **_shipment_fields(o),
         }
 
     return [_item(o) for o in rows]

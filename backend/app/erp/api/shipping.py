@@ -458,9 +458,26 @@ def fetch_albaran_from_woo(
             "already_present": False, "source": source}
 
 
+@router.get("/{order_id}/shipment")
+def order_shipment(
+    order_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> dict[str, Any]:
+    """Envío del pedido (Genei u OTRO courier): courier, tracking y su enlace,
+    fecha de recogida y aviso al cliente. Lo usa la ficha."""
+    from app.erp.shipping_courier import shipment_info  # noqa: PLC0415
+
+    order = _get_order(session, order_id, current_user)
+    return {"order_id": order.id, **shipment_info(session, order)}
+
+
 class MarkPickedUpPayload(BaseModel):
     #: Tracking del transportista si lo hay; opcional en recogida manual.
     tracking_number: str | None = None
+    #: Courier de un envío que NO es de Genei (UPS, MRW… o texto libre).
+    #: Opcional: se puede completar después desde la ficha / «Enviados».
+    courier: str | None = None
 
 
 @router.post("/{order_id}/mark-picked-up")
@@ -507,7 +524,37 @@ def mark_picked_up(
         raise HTTPException(http, {"code": exc.code, "detail": exc.detail}) from exc
     if tracking:
         order.tracking_number = tracking
+    # Envío con OTRO courier (sin Genei): se apunta el courier y el aviso de
+    # envío al cliente queda pendiente (sale ya si hay tracking; si no, cuando
+    # se ponga). Los de Genei siguen con lo suyo.
+    from app.erp.shipping_courier import (  # noqa: PLC0415
+        is_genei_shipment,
+        normalize_courier,
+        set_external_state,
+    )
+
+    if not is_genei_shipment(order):
+        courier = normalize_courier(payload.courier if payload else None)
+        if courier:
+            set_external_state(order, {"courier": courier})
+        from app.erp.shipment_email import _enabled, mark_external_pending  # noqa: PLC0415
+
+        mark_external_pending(order, enabled=_enabled(session),
+                              user_id=getattr(current_user, "id", None))
     session.commit()
+    _send_customer_email(session, order, current_user)
     return {"order_id": order.id,
             "transport_status": _status_value(order.transport_status),
             "already_picked_up": False}
+
+
+def _send_customer_email(session: Session, order: Any, actor: Any) -> None:
+    """Aviso de envío al cliente si le toca (una sola vez). Nunca rompe la
+    acción que lo dispara."""
+    from app.erp.shipment_email import maybe_send_shipment_email  # noqa: PLC0415
+
+    try:
+        maybe_send_shipment_email(session, order, actor=actor)
+    except Exception:  # noqa: BLE001
+        logger.warning("aviso de envío: fallo inesperado (pedido %s)", order.id, exc_info=True)
+        session.rollback()
