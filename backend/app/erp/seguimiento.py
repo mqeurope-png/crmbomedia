@@ -552,8 +552,12 @@ def _real_event_date(order: Order, domain: str, to_statuses: set[str]) -> dateti
             continue
         if (h.reason or "") == _IMPORT_STAMP_REASON:
             continue
-        if import_day and h.changed_at and h.changed_at.date() == import_day:
-            continue  # estampado el día de la importación: no es un hecho
+        if (import_day and h.changed_at and h.changed_at.date() == import_day
+                and not h.changed_by_user_id):
+            # Estampado el día de la importación (sin persona detrás): no es un
+            # hecho. Uno hecho por una persona ese mismo día (p. ej. «📤 Marcar
+            # recogido» de un pedido creado hoy) SÍ cuenta.
+            continue
         return h.changed_at
     return None
 
@@ -829,13 +833,6 @@ def envio_vocabulary() -> list[str]:
 
     return list(dict.fromkeys([*ENVIO_LABELS.values(), *CARRIER_STEP_LABELS.values(),
                                *external_envio_vocabulary()]))
-
-
-def is_bohub_envio(value: str) -> bool:
-    """¿Es un valor de Envío que escribe BoHub? (vocabulario + «Enviado · X»
-    con cualquier courier, también los de texto libre)."""
-    text = str(value or "").strip()
-    return text in envio_vocabulary() or text.startswith("Enviado · ")
 
 
 def _cobro_state(order: Order) -> str:

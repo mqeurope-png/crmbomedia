@@ -80,7 +80,7 @@ def test_set_and_clear_tracking(client):
         headers=auth_headers(client, "pedidos"),
     )
     assert r.status_code == 200, r.text
-    assert r.json() == {"id": oid, "tracking_number": "TRACK-123"}
+    assert r.json() == {"id": oid, "tracking_number": "TRACK-123", "courier": None}
 
     # Persiste: se lee en la ficha del pedido.
     detail = client.get(
@@ -95,7 +95,7 @@ def test_set_and_clear_tracking(client):
         headers=auth_headers(client, "pedidos"),
     )
     assert r.status_code == 200, r.text
-    assert r.json() == {"id": oid, "tracking_number": None}
+    assert r.json() == {"id": oid, "tracking_number": None, "courier": None}
 
     # null explícito también limpia.
     r = client.patch(
