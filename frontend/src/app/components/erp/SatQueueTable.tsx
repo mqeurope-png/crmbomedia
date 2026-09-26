@@ -4,8 +4,8 @@ import Link from "next/link";
 import { customerLabel, STATUS_LABELS, type SatQueueItem } from "../../lib/erpApi";
 import { SatAlbaranChip, useSatAlbaranAction } from "./SatPreparingCard";
 import {
-  SatCarrierStatus, SatReadyButtons, SatReadyDocChips, SatTrackingField, satShippedLabel,
-  satShippedTone, useSatReadyActions,
+  SatCarrierStatus, satCourier, SatExternalShipmentEdit, SatReadyButtons, SatReadyDocChips,
+  SatShipmentBadge, SatTrackingField, SatTrackingLink, useSatReadyActions,
 } from "./SatReadyCard";
 import { SatObservaciones, SatTechData } from "./SatTechData";
 
@@ -175,7 +175,7 @@ function SatReadyRow(
           <div className="sat-td-actions">
             <SatReadyDocChips order={order} actions={actions} />
             {/* Lote 5 · #3 — nº de seguimiento en la fila de «Listos». */}
-            <SatTrackingField order={order} onChanged={onChanged} compact />
+            <SatTrackingField order={order} actions={actions} onChanged={onChanged} compact />
             <SatCarrierStatus order={order} />
             <SatReadyButtons actions={actions} compact />
           </div>
@@ -190,8 +190,11 @@ function SatReadyRow(
   );
 }
 
-/** Fila de un pedido YA ENVIADO (tras «Marcar recogido» en su sitio). */
-function SatShippedRow({ order, ...sel }: { order: SatQueueItem } & SelectProps) {
+/** Fila de un pedido YA ENVIADO (tras «Marcar recogido» en su sitio). Con
+ *  OTRO courier, courier y seguimiento se corrigen en línea (✎). */
+function SatShippedRow(
+  { order, onChanged, ...sel }: { order: SatQueueItem; onChanged: () => void } & SelectProps,
+) {
   return (
     <tr>
       <SelectCell order={order} {...sel} />
@@ -200,13 +203,19 @@ function SatShippedRow({ order, ...sel }: { order: SatQueueItem } & SelectProps)
       </td>
       <td className="sat-td-cliente">{customerLabel(order) || "—"}</td>
       <td>{order.store_slug ?? "—"}</td>
-      <td><span className={`badge ${satShippedTone(order)}`}>
-        {satShippedLabel(order)}
-      </span></td>
-      {/* En la columna de datos técnicos, el nº de seguimiento. */}
-      <td className="mono">{order.tracking_number || order.genei?.tracking || "—"}</td>
       <td>
-        <Link href={`/erp/orders/${order.id}`} className="button secondary small">Ficha</Link>
+        <SatShipmentBadge order={order} />
+        {satCourier(order) && order.shipment_kind !== "externo" ? (
+          <span className="muted small"> · {satCourier(order)}</span>
+        ) : null}
+      </td>
+      {/* En la columna de datos técnicos, el nº de seguimiento (enlazado). */}
+      <td className="mono"><SatTrackingLink order={order} /></td>
+      <td>
+        <div className="sat-td-actions">
+          <Link href={`/erp/orders/${order.id}`} className="button secondary small">Ficha</Link>
+          <SatExternalShipmentEdit order={order} onChanged={onChanged} />
+        </div>
       </td>
     </tr>
   );
@@ -265,7 +274,7 @@ export function SatQueueTable({
           {items.map((o) => {
             const kind = rowKind(o, variant);
             if (kind === "shipped") {
-              return <SatShippedRow key={o.id} order={o}
+              return <SatShippedRow key={o.id} order={o} onChanged={onChanged}
                                     selected={selected?.has(o.id)} {...sel} />;
             }
             return kind === "preparing" ? (

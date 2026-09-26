@@ -1,4 +1,5 @@
 import { ApiError, apiDownloadBlob, apiFetch, apiUpload } from "./api";
+import type { CustomerEmailStatus } from "./geneiApi";
 
 /** BoHub ERP Fase A — cliente de la API de pedidos (PR 3 backend). */
 
@@ -1418,6 +1419,15 @@ export type SatQueueItem = {
   sin_envio?: boolean;
   /** Envío Genei del pedido, si ya lo hay («Ver envío Genei» vs «Crear»). */
   genei?: SatGeneiSummary | null;
+  /** Envío con Genei o con OTRO courier (UPS, MRW… apuntado a mano); null =
+   *  aún sin envío. */
+  shipment_kind?: "genei" | "externo" | null;
+  /** Courier del envío: la agencia de Genei o el apuntado a mano. */
+  courier?: string | null;
+  /** Web de seguimiento (la de Genei o la del courier), si se conoce. */
+  tracking_url?: string | null;
+  /** Aviso de envío al cliente de un envío externo (pending/sent/error…). */
+  customer_email_status?: string | null;
 };
 
 /** Pestañas de la Cola SAT. «Todos pendientes» = las cuatro de pendientes;
@@ -1629,12 +1639,33 @@ export async function satEnqueueOrder(orderId: string): Promise<SatEnqueueResult
 
 /** «Marcar recogido»: el paquete salió del taller → transporte in_transit. */
 export async function markPickedUp(
-  orderId: string, trackingNumber?: string,
+  orderId: string, data: { tracking?: string | null; courier?: string | null } = {},
 ): Promise<{ order_id: string; transport_status: string; already_picked_up: boolean }> {
+  const body: Record<string, string> = {};
+  if (data.tracking?.trim()) body.tracking_number = data.tracking.trim();
+  if (data.courier?.trim()) body.courier = data.courier.trim();
   return apiFetch(`/api/erp/orders/${orderId}/mark-picked-up`, {
     method: "POST",
-    body: JSON.stringify(trackingNumber ? { tracking_number: trackingNumber } : {}),
+    body: JSON.stringify(body),
   });
+}
+
+/** Envío del pedido (Genei u OTRO courier) para la ficha. */
+export type OrderShipmentInfo = {
+  order_id: string;
+  kind: "genei" | "externo" | null;
+  courier: string | null;
+  tracking: string | null;
+  tracking_url: string | null;
+  transport_status: string;
+  picked_up_at: string | null;
+  customer_email: CustomerEmailStatus | null;
+  suggested_courier: string | null;
+  couriers: string[];
+};
+
+export async function getOrderShipment(orderId: string): Promise<OrderShipmentInfo> {
+  return apiFetch(`/api/erp/orders/${orderId}/shipment`);
 }
 
 /** Catálogo de excepciones que SAT puede reportar (subset del backend con
@@ -4291,13 +4322,16 @@ export async function linkOrderFactusolCompany(orderId: string): Promise<{
 /** Lote 5 · #3 — guarda el nº de seguimiento del pedido (Cola SAT «Listos»).
  *  Solo persiste el tracking: NO marca el pedido recogido ni enviado. Gate de
  *  VISTA (mismo que «Marcar recogido»), así que el taller/SAT puede rellenarlo.
- *  Vacío → null. */
+ *  Vacío → null. En un envío con OTRO courier (no Genei) guarda también el
+ *  courier (`courier` ausente = no se toca; "" lo borra). */
 export async function setOrderTracking(
-  orderId: string, tracking: string | null,
-): Promise<{ id: string; tracking_number: string | null }> {
+  orderId: string, tracking: string | null, courier?: string | null,
+): Promise<{ id: string; tracking_number: string | null; courier?: string | null }> {
+  const body: Record<string, string | null> = { tracking_number: tracking };
+  if (courier !== undefined) body.courier = courier;
   return apiFetch(`/api/erp/orders/${orderId}/tracking`, {
     method: "PATCH",
-    body: JSON.stringify({ tracking_number: tracking }),
+    body: JSON.stringify(body),
   });
 }
 

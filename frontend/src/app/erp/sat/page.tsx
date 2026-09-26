@@ -7,7 +7,8 @@ import { SatPrepModal } from "../../components/erp/SatPrepModal";
 import { SatPreparingCard } from "../../components/erp/SatPreparingCard";
 import { satDateTime, SatQueueTable } from "../../components/erp/SatQueueTable";
 import {
-  SatReadyCard, SatShippedCard, satShippedLabel, satShippedTone,
+  satCourier, SatExternalShipmentEdit, SatReadyCard, SatShipmentBadge, SatShippedCard,
+  SatTrackingLink,
 } from "../../components/erp/SatReadyCard";
 import { getCurrentUser } from "../../lib/api";
 import { Cap, can } from "../../lib/capabilities";
@@ -63,18 +64,23 @@ function SatCard({
   if (t === "embalados" || t === "pendiente_recogida") {
     return <SatReadyCard order={order} onChanged={onChanged} canEdit={canEdit} canShip={canShip} />;
   }
-  if (t === "enviados" || t === "sin_envio") return <SatShippedCard order={order} />;
+  if (t === "enviados" || t === "sin_envio") {
+    return <SatShippedCard order={order} onChanged={onChanged} />;
+  }
   return (
     <SatPreparingCard order={order} onChanged={onChanged} canEdit={canEdit}
                       onPrepare={onPrepare} />
   );
 }
 
-/** Tabla de «Enviados» / «Sin envío». */
+/** Tabla de «Enviados» / «Sin envío». Envío: Genei (azul, con etiqueta
+ *  «Genei») u OTRO courier («Enviado · UPS», verde azulado); Seguimiento
+ *  enlazado a la web del courier; Agencia = el courier. Con otro courier, ✎
+ *  corrige courier y seguimiento en línea. */
 function SatShippedTable({
-  items, ariaLabel, selectable = false, selected, onToggle,
+  items, ariaLabel, onChanged, selectable = false, selected, onToggle,
 }: {
-  items: SatQueueItem[]; ariaLabel: string;
+  items: SatQueueItem[]; ariaLabel: string; onChanged: () => void;
   selectable?: boolean; selected?: Set<string>; onToggle?: (id: string) => void;
 }) {
   return (
@@ -105,15 +111,12 @@ function SatShippedTable({
               </td>
               <td data-label="Cliente" className="sat-td-cliente">{customerLabel(o) || "—"}</td>
               <td data-label="Fecha" className="mono">{satDateTime(o.placed_at)}</td>
-              <td data-label="Envío">
-                <span className={`badge ${satShippedTone(o)}`}>
-                  {satShippedLabel(o)}
-                </span>
+              <td data-label="Envío"><SatShipmentBadge order={o} /></td>
+              <td data-label="Seguimiento" className="mono"><SatTrackingLink order={o} /></td>
+              <td data-label="Agencia">
+                {satCourier(o) ?? "—"}
+                <SatExternalShipmentEdit order={o} onChanged={onChanged} />
               </td>
-              <td data-label="Seguimiento" className="mono">
-                {o.tracking_number || o.genei?.tracking || "—"}
-              </td>
-              <td data-label="Agencia">{o.genei?.courier ?? "—"}</td>
             </tr>
           ))}
         </tbody>
@@ -683,6 +686,7 @@ export default function SatQueuePage() {
                 <SatShippedTable
                   items={shippedData.items}
                   ariaLabel={tab === "enviados" ? "Pedidos enviados" : "Pedidos sin envío"}
+                  onChanged={refreshQuiet}
                   selectable={selectable && tab === "sin_envio"}
                   selected={selected} onToggle={toggleSel}
                 />

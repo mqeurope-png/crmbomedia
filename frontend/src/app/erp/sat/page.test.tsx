@@ -11,6 +11,7 @@ import {
   getSatShipped,
   markPickedUp,
   satEnqueueOrder,
+  setOrderTracking,
   setPackages,
   transitionPacked,
   updateSeguimientoFields,
@@ -405,6 +406,71 @@ describe("«Enviados»: estado REAL del transportista (Genei /tracking)", () => 
   });
 });
 
+describe("«Enviados»: envío con OTRO courier (no Genei)", () => {
+  const UPS_URL = "https://www.ups.com/track?tracknum=1ZFV12345678901234";
+
+  it("«Enviado · UPS» en su color, tracking enlazado, Agencia = courier; Genei con su etiqueta", async () => {
+    mockShipped.mockResolvedValue({ total: 2, limit: 200, items: [
+      item({ id: "x1", order_number: "BOP-X1", preparation_status: "packed",
+             transport_status: "in_transit", sat_tab: "enviados",
+             tracking_number: "1ZFV12345678901234", shipment_kind: "externo",
+             courier: "UPS", tracking_url: UPS_URL }),
+      item({ id: "g1", order_number: "BOP-G1", preparation_status: "packed",
+             transport_status: "in_transit", sat_tab: "enviados", shipment_kind: "genei",
+             courier: "GLS",
+             genei: { shipment_code: "G1", courier: "GLS", state_bucket: "in_transit",
+                      state_label: "En reparto", label_available: true } }),
+    ] });
+    const user = userEvent.setup();
+    render(<SatQueuePage />);
+    await loaded();
+    await pestana(user, /^Enviados/);
+    const table = await screen.findByRole("table", { name: "Pedidos enviados" });
+    const [, ext, genei] = within(table).getAllByRole("row");
+    expect(within(ext).getByText("Enviado · UPS")).toHaveClass("badge", "courier-ext");
+    expect(within(ext).queryByText("Recogido · en tránsito")).not.toBeInTheDocument();
+    expect(within(ext).getByRole("link", { name: "1ZFV12345678901234" }))
+      .toHaveAttribute("href", UPS_URL);
+    expect(within(ext).getByText("UPS")).toBeInTheDocument();
+    expect(within(ext).queryByText("Genei")).not.toBeInTheDocument();
+    expect(within(genei).getByText("En reparto")).toHaveClass("badge", "info");
+    expect(within(genei).getByText("Genei")).toHaveClass("sat-genei-tag");
+    expect(within(genei).queryByRole("button", { name: /Editar courier/ })).not.toBeInTheDocument();
+  });
+
+  it("sin courier: «Enviado · otro courier»; se pone en línea y la lista se recarga", async () => {
+    const sinCourier = item({ id: "x2", order_number: "BOP-X2", preparation_status: "packed",
+                              transport_status: "in_transit", sat_tab: "enviados",
+                              shipment_kind: "externo", courier: null, tracking_url: null });
+    mockShipped.mockResolvedValue({ total: 1, limit: 200, items: [sinCourier] });
+    (setOrderTracking as jest.Mock).mockResolvedValue(
+      { id: "x2", tracking_number: "1ZFV12345678901234", courier: "UPS" },
+    );
+    const user = userEvent.setup();
+    render(<SatQueuePage />);
+    await loaded();
+    await pestana(user, /^Enviados/);
+    const table = await screen.findByRole("table", { name: "Pedidos enviados" });
+    expect(within(table).getByText("Enviado · otro courier")).toHaveClass("badge", "courier-ext");
+    await user.click(within(table).getByRole("button", {
+      name: "Editar courier y seguimiento de BOP-X2",
+    }));
+    const editor = within(table).getByRole("group", { name: "Courier y seguimiento" });
+    await user.type(within(editor).getByLabelText("Nº de seguimiento"), "1ZFV12345678901234");
+    expect(within(editor).getByLabelText("Courier")).toHaveValue("UPS");
+    mockShipped.mockResolvedValue({ total: 1, limit: 200, items: [
+      { ...sinCourier, courier: "UPS", tracking_number: "1ZFV12345678901234", tracking_url: UPS_URL },
+    ] });
+    const calls = mockShipped.mock.calls.length;
+    await user.click(within(editor).getByRole("button", { name: "Guardar" }));
+    await waitFor(() => expect(setOrderTracking).toHaveBeenCalledWith(
+      "x2", "1ZFV12345678901234", "UPS",
+    ));
+    await waitFor(() => expect(mockShipped.mock.calls.length).toBeGreaterThan(calls));
+    expect(await within(table).findByText("Enviado · UPS")).toHaveClass("courier-ext");
+  });
+});
+
 describe("SatQueuePage (regresión)", () => {
   it("carga la cola sin filtros y pasa los filtros a getSatQueue", async () => {
     const user = userEvent.setup();
@@ -455,7 +521,7 @@ describe("SatQueuePage (regresión)", () => {
     mockQueue.mockResolvedValue(queue({ por_embalar: [item()] }, { enviados: 1 }));
     await user.click(within(readyTable).getByRole("button", { name: /Marcar recogido/ }));
     await user.click(within(readyTable).getByRole("button", { name: "Sí, recogido" }));
-    await waitFor(() => expect(mockPicked).toHaveBeenCalledWith("o2"));
+    await waitFor(() => expect(mockPicked).toHaveBeenCalledWith("o2", { tracking: "", courier: "" }));
     expect(await screen.findByRole("tab", { name: "Embalados 0" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Enviados 1" })).toBeInTheDocument();
 

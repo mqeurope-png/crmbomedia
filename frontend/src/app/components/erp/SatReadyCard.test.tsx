@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SatReadyCard, SatShippedCard, satShippedLabel } from "./SatReadyCard";
 import type { SatQueueItem } from "../../lib/erpApi";
@@ -215,7 +215,8 @@ describe("SatReadyCard", () => {
     await user.click(screen.getByRole("button", { name: /Marcar recogido/ }));
     // Confirmación antes de disparar.
     await user.click(screen.getByRole("button", { name: "Sí, recogido" }));
-    await waitFor(() => expect(mockPicked).toHaveBeenCalledWith("o1"));
+    // Sin Genei: lleva el tracking y el courier del campo (vacíos aquí).
+    await waitFor(() => expect(mockPicked).toHaveBeenCalledWith("o1", { tracking: "", courier: "" }));
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
   });
 
@@ -301,7 +302,7 @@ describe("SatReadyCard", () => {
     const input = screen.getByLabelText("Nº de seguimiento");
     await user.type(input, "TRACK-123");
     await user.click(screen.getByRole("button", { name: "Guardar nº de seguimiento" }));
-    await waitFor(() => expect(mockSetTracking).toHaveBeenCalledWith("o1", "TRACK-123"));
+    await waitFor(() => expect(mockSetTracking).toHaveBeenCalledWith("o1", "TRACK-123", ""));
     // Refresca la cola y muestra el estado guardado.
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
     expect(input).toHaveValue("TRACK-123");
@@ -374,3 +375,143 @@ describe("estado REAL del transportista (Genei /tracking)", () => {
   });
 });
 
+
+describe("envío con OTRO courier (no Genei)", () => {
+  const UPS_TRACK = "1ZFV12345678901234";
+  const CTT_TRACK = "0033260080539700026674";
+
+  it("el formato del tracking propone el courier (1Z → UPS) y «Marcar recogido» lo manda", async () => {
+    mockPicked.mockResolvedValue({ order_id: "o1", transport_status: "in_transit", already_picked_up: false });
+    const user = userEvent.setup();
+    render(<SatReadyCard order={order()} onChanged={() => {}} />);
+    await user.type(screen.getByLabelText("Nº de seguimiento"), UPS_TRACK);
+    expect(screen.getByLabelText("Courier")).toHaveValue("UPS");
+    await user.click(screen.getByRole("button", { name: /Marcar recogido/ }));
+    await user.click(screen.getByRole("button", { name: "Sí, recogido" }));
+    await waitFor(() => expect(mockPicked).toHaveBeenCalledWith(
+      "o1", { tracking: UPS_TRACK, courier: "UPS" },
+    ));
+  });
+
+  it("0033… → CTT Express, pero se puede cambiar (MRW) y se guarda con el tracking", async () => {
+    mockSetTracking.mockResolvedValue({ id: "o1", tracking_number: CTT_TRACK, courier: "MRW" });
+    const user = userEvent.setup();
+    render(<SatReadyCard order={order()} onChanged={() => {}} />);
+    await user.type(screen.getByLabelText("Nº de seguimiento"), CTT_TRACK);
+    const select = screen.getByLabelText("Courier");
+    expect(select).toHaveValue("CTT Express");
+    await user.selectOptions(select, "MRW");
+    await user.click(screen.getByRole("button", { name: "Guardar nº de seguimiento" }));
+    await waitFor(() => expect(mockSetTracking).toHaveBeenCalledWith("o1", CTT_TRACK, "MRW"));
+    expect(screen.getByLabelText("Courier")).toHaveValue("MRW");
+  });
+
+  it("«Otro…» deja escribir el courier; sin tracking ni courier también se puede recoger", async () => {
+    mockPicked.mockResolvedValue({ order_id: "o1", transport_status: "in_transit", already_picked_up: false });
+    const user = userEvent.setup();
+    render(<SatReadyCard order={order()} onChanged={() => {}} />);
+    await user.selectOptions(screen.getByLabelText("Courier"), "Otro…");
+    await user.type(screen.getByLabelText("Otro courier"), "Nacex");
+    await user.click(screen.getByRole("button", { name: /Marcar recogido/ }));
+    await user.click(screen.getByRole("button", { name: "Sí, recogido" }));
+    await waitFor(() => expect(mockPicked).toHaveBeenCalledWith(
+      "o1", { tracking: "", courier: "Nacex" },
+    ));
+  });
+
+  it("prellena el courier ya apuntado; un tracking que no delata nada no propone nada", async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(
+      <SatReadyCard order={order({ courier: "GLS", shipment_kind: "externo" })} onChanged={() => {}} />,
+    );
+    expect(screen.getByLabelText("Courier")).toHaveValue("GLS");
+    unmount();
+    render(<SatReadyCard order={order()} onChanged={() => {}} />);
+    await user.type(screen.getByLabelText("Nº de seguimiento"), "ABC123");
+    expect(screen.getByLabelText("Courier")).toHaveValue("");
+  });
+
+  it("con envío de Genei no hay desplegable de courier y «Marcar recogido» no manda nada", async () => {
+    mockPicked.mockResolvedValue({ order_id: "o1", transport_status: "in_transit", already_picked_up: false });
+    const user = userEvent.setup();
+    render(<SatReadyCard order={order({ genei: { shipment_code: "G1", label_available: true },
+                                        shipment_kind: "genei" })}
+                         onChanged={() => {}} />);
+    expect(screen.queryByLabelText("Courier")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Marcar recogido/ }));
+    await user.click(screen.getByRole("button", { name: "Sí, recogido" }));
+    await waitFor(() => expect(mockPicked).toHaveBeenCalledWith("o1", {}));
+  });
+
+  it("«Pendiente de recogida»: Genei en azul; otro courier en su color y con su nombre", () => {
+    const { rerender } = render(
+      <SatReadyCard order={order({ sat_tab: "pendiente_recogida", shipment_kind: "genei",
+                                   genei: { shipment_code: "G1", label_available: true } })}
+                    onChanged={() => {}} />,
+    );
+    expect(screen.getByText("Pendiente de recogida")).toHaveClass("badge", "info");
+    rerender(
+      <SatReadyCard order={order({ sat_tab: "pendiente_recogida", shipment_kind: "externo",
+                                   courier: "UPS" })}
+                    onChanged={() => {}} />,
+    );
+    expect(screen.getByText("Pendiente de recogida · UPS")).toHaveClass("badge", "courier-ext");
+  });
+
+  const UPS_URL = `https://www.ups.com/track?tracknum=${UPS_TRACK}`;
+
+  it("«Enviados»: «Enviado · UPS» en su color, tracking enlazado a UPS, agencia y sin etiqueta Genei", () => {
+    render(<SatShippedCard order={order({ transport_status: "in_transit", sat_tab: "enviados",
+                                          shipment_kind: "externo", courier: "UPS",
+                                          tracking_number: UPS_TRACK, tracking_url: UPS_URL })}
+                           onChanged={() => {}} />);
+    expect(screen.getByText("Enviado · UPS")).toHaveClass("badge", "courier-ext");
+    expect(screen.queryByText("Recogido · en tránsito")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: UPS_TRACK })).toHaveAttribute("href", UPS_URL);
+    expect(screen.getByText("UPS")).toBeInTheDocument();
+    expect(screen.queryByText("Genei")).not.toBeInTheDocument();
+  });
+
+  it("«Enviados»: courier y tracking se corrigen en línea (sin volver a «Marcar recogido»)", async () => {
+    mockSetTracking.mockResolvedValue({ id: "o1", tracking_number: UPS_TRACK, courier: "UPS" });
+    const onChanged = jest.fn();
+    const user = userEvent.setup();
+    render(<SatShippedCard order={order({ transport_status: "in_transit", sat_tab: "enviados",
+                                          shipment_kind: "externo", courier: null })}
+                           onChanged={onChanged} />);
+    expect(screen.getByText("Enviado · otro courier")).toHaveClass("badge", "courier-ext");
+    await user.click(screen.getByRole("button", { name: "Editar courier y seguimiento de BOP-1" }));
+    const editor = screen.getByRole("group", { name: "Courier y seguimiento" });
+    await user.type(within(editor).getByLabelText("Nº de seguimiento"), UPS_TRACK);
+    expect(within(editor).getByLabelText("Courier")).toHaveValue("UPS");
+    await user.click(within(editor).getByRole("button", { name: "Guardar" }));
+    await waitFor(() => expect(mockSetTracking).toHaveBeenCalledWith("o1", UPS_TRACK, "UPS"));
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    expect(screen.queryByRole("group", { name: "Courier y seguimiento" })).not.toBeInTheDocument();
+  });
+
+  it("un envío de Genei lleva la etiqueta «Genei» y no se edita en línea", () => {
+    render(<SatShippedCard order={order({ transport_status: "in_transit", sat_tab: "enviados",
+                                          shipment_kind: "genei", courier: "GLS",
+                                          genei: { shipment_code: "G1", courier: "GLS",
+                                                   label_available: true, state_label: "En reparto" } })}
+                           onChanged={() => {}} />);
+    expect(screen.getByText("En reparto")).not.toHaveClass("courier-ext");
+    expect(screen.getByText("Genei")).toHaveClass("sat-genei-tag");
+    expect(screen.queryByRole("button", { name: /Editar courier/ })).not.toBeInTheDocument();
+  });
+
+  it("textos: «Enviado · X», «Enviado · otro courier», «Entregado · X»; Genei como siempre", () => {
+    const ext = { shipment_kind: "externo" as const };
+    expect(satShippedLabel(order({ ...ext, transport_status: "in_transit", courier: "UPS" })))
+      .toBe("Enviado · UPS");
+    expect(satShippedLabel(order({ ...ext, transport_status: "in_transit" })))
+      .toBe("Enviado · otro courier");
+    expect(satShippedLabel(order({ ...ext, transport_status: "delivered", courier: "MRW" })))
+      .toBe("Entregado · MRW");
+    expect(satShippedLabel(order({ ...ext, sin_envio: true }))).toBe("No requiere envío");
+    expect(satShippedLabel(order({ shipment_kind: "genei", transport_status: "in_transit",
+      genei: { shipment_code: "G", label_available: true, state_label: "En reparto" } })))
+      .toBe("En reparto");
+  });
+});

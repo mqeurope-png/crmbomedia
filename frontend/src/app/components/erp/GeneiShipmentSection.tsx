@@ -555,8 +555,9 @@ export function customerEmailLine(st: CustomerEmailStatus | null, hasTracking: b
 }
 
 /** Aviso de envío al cliente (lo manda BoHub, en su idioma): estado y
- *  «Enviar / Reenviar aviso al cliente» con la vista previa. */
-function CustomerEmailBlock({
+ *  «Enviar / Reenviar aviso al cliente» con la vista previa. Lo usan el envío
+ *  de Genei y el de OTRO courier (`ExternalShipmentSection`). */
+export function CustomerEmailBlock({
   orderId, status, hasTracking, canManage, onSent,
 }: {
   orderId: string;
