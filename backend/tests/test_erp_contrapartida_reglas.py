@@ -44,6 +44,8 @@ from app.models.integration_settings import (
 )
 from tests._test_helpers import auth_headers, seed_test_users
 
+STORES = (("artisjet-europe", "Artisjet Europe"), ("boprint", "Boprint"),
+          ("fluxlasers", "Fluxlasers ES"))
 CATALOGO_CON_15 = [
     *({"codigo": str(c), "nombre": n} for c, n in DEFAULT_CONTRAPARTIDAS),
     {"codigo": "15", "nombre": "Tarjetas Mollie Belfius"},
@@ -70,10 +72,11 @@ def session_factory(engine) -> Generator[sessionmaker, None, None]:
     with factory() as seed:
         seed_test_users(seed)
         seed.add(Company(id="acme", name="Acme SL", factusol_company_id="55555"))
-        for slug in ("artisjet", "boprint", "flux"):
+        # Las cuentas Woo REALES de producción (clave de tienda = account_id).
+        for slug, name in STORES:
             seed.add(IntegrationAccount(
                 id=f"store-{slug}", system=ExternalSystem.WOOCOMMERCE, account_id=slug,
-                display_name=slug, enabled=True, mode=IntegrationMode.LIVE,
+                display_name=name, enabled=True, mode=IntegrationMode.LIVE,
                 status=IntegrationStatus.CONFIGURED, base_url=f"https://{slug}.example",
                 consumer_key_encrypted=encrypt("ck"), consumer_secret_encrypted=encrypt("cs"),
                 credential_status="configured",
@@ -157,30 +160,33 @@ def test_reglas_iniciales_migran_paypal_y_anaden_mollie() -> None:
                 "contrapartida": codigo}
 
     assert default_contrapartida_rules() == [
-        regla("artisjet", "paypal", "contiene", "12"),
+        regla("artisjet-europe", "paypal", "contiene", "12"),
         regla("boprint", "paypal", "contiene", "14"),
         regla("fluxlasers", "paypal", "contiene", "14"),
-        regla("artisjet", "Carte", "exacta", "15"),
-        regla("artisjet", "mollie_wc_gateway_creditcard", "exacta", "15"),
+        regla("artisjet-europe", "Carte", "exacta", "15"),
+        regla("artisjet-europe", "mollie_wc_gateway_creditcard", "exacta", "15"),
     ]
     # Lo que Bart hubiera cambiado en PayPal por tienda se conserva al migrar.
     assert default_contrapartida_rules({"boprint": "11"})[1]["contrapartida"] == "11"
 
 
 def test_coincidencia_sin_mayusculas_y_por_gateway() -> None:
-    carte = {"tienda": "artisjet", "metodo": "Carte", "coincidencia": "exacta",
+    carte = {"tienda": "artisjet-europe", "metodo": "Carte", "coincidencia": "exacta",
              "contrapartida": "15"}
-    assert rule_matches(carte, store="artisjet", textos=["CARTE"]) == "CARTE"
-    assert rule_matches(carte, store="ArtisJet", textos=["  carte "]) == "carte"
-    assert rule_matches(carte, store="artisjet", textos=["Carte bancaire"]) is None
+    assert rule_matches(carte, store="artisjet-europe", textos=["CARTE"]) == "CARTE"
+    assert rule_matches(carte, store="ArtisJet-Europe", textos=["  carte "]) == "carte"
+    assert rule_matches(carte, store="artisjet-europe", textos=["Carte bancaire"]) is None
+    # Sin alias: la clave vieja «artisjet» ya no es ninguna tienda.
+    assert rule_matches(carte, store="artisjet", textos=["Carte"]) is None
     assert rule_matches(carte, store="boprint", textos=["Carte"]) is None
     paypal = {"tienda": "", "metodo": "paypal", "coincidencia": "contiene",
               "contrapartida": "12"}
     assert rule_matches(paypal, store="cualquiera",
                         textos=[None, "ppcp-gateway", "PayPal Checkout"])
-    gateway = {"tienda": "artisjet", "metodo": "mollie_wc_gateway_creditcard",
+    gateway = {"tienda": "artisjet-europe", "metodo": "mollie_wc_gateway_creditcard",
                "coincidencia": "exacta", "contrapartida": "15"}
-    assert rule_matches(gateway, store="artisjet", textos=[None, "mollie_wc_gateway_creditcard"])
+    assert rule_matches(gateway, store="artisjet-europe",
+                        textos=[None, "mollie_wc_gateway_creditcard"])
 
 
 # --- sugerencia ---------------------------------------------------------------------------
@@ -195,21 +201,22 @@ def test_sugerencia_por_tienda_y_metodo(http, session_factory) -> None:
                 payment_method=gateway, payment_method_title=title,
             )
 
-        cuenta, motivo = sug("artisjet", "Carte")
+        cuenta, motivo = sug("artisjet-europe", "Carte")
         assert cuenta == {"codigo": "15", "nombre": "Tarjetas Mollie Belfius"}
-        assert motivo == "tienda artisJet · método Carte"
-        assert sug("artisjet", "carte")[0]["codigo"] == "15"
-        assert sug("artisjet", None, "mollie_wc_gateway_creditcard")[0]["codigo"] == "15"
-        assert sug("artisjet", "PayPal")[0]["codigo"] == "12"
+        assert motivo == "tienda Artisjet Europe · método Carte"
+        assert sug("artisjet-europe", "carte")[0]["codigo"] == "15"
+        assert sug("artisjet-europe", None, "mollie_wc_gateway_creditcard")[0]["codigo"] == "15"
+        cuenta, motivo = sug("artisjet-europe", "PayPal")
+        assert cuenta["codigo"] == "12" and motivo == "tienda Artisjet Europe · método PayPal"
         assert sug("boprint", "PayPal", serie=5)[0]["codigo"] == "14"
-        assert sug("flux", "PayPal", serie=5)[0]["codigo"] == "14"      # slug Woo de fluxlasers
+        assert sug("fluxlasers", "PayPal", serie=5)[0]["codigo"] == "14"
         # La forma de pago de FACTUSOL (sin Woo) sigue casando como antes.
         assert sug("boprint", None, forma="Paypal", serie=5)[0]["codigo"] == "14"
         # boprint / fluxlasers no usan Mollie: «Carte» ahí no tiene regla → serie.
         cuenta, motivo = sug("boprint", "Carte", serie=5)
         assert cuenta["codigo"] == "8" and motivo == "cuenta de la serie 5"
         # Sin regla → la cuenta de la serie (2 → MQ Europe Belfius).
-        cuenta, motivo = sug("artisjet", "Virement bancaire")
+        cuenta, motivo = sug("artisjet-europe", "Virement bancaire")
         assert cuenta == {"codigo": "2", "nombre": "MQ Europe Belfius"}
         assert motivo == "cuenta de la serie 2"
 
@@ -219,7 +226,7 @@ def test_regla_con_cuenta_fuera_del_catalogo_no_se_sugiere(session_factory) -> N
     sugiere la cuenta de la serie (nunca una cuenta con la que el cobro daría 400)."""
     with session_factory() as s:
         cuenta, motivo = suggest_contrapartida_explained(
-            s, serie=2, store="artisjet", payment_method_title="Carte",
+            s, serie=2, store="artisjet-europe", payment_method_title="Carte",
         )
     assert cuenta["codigo"] == "2" and motivo == "cuenta de la serie 2"
 
@@ -233,7 +240,7 @@ def test_reglas_configurables_en_orden(http, session_factory) -> None:
     # Una regla general «tarjeta» → 15 por ENCIMA de las demás; «todas» = "".
     nuevas = [
         {"tienda": "", "metodo": "tarjeta", "coincidencia": "contiene", "contrapartida": "15"},
-        {"tienda": "artisjet", "metodo": "paypal", "coincidencia": "contiene",
+        {"tienda": "artisjet-europe", "metodo": "paypal", "coincidencia": "contiene",
          "contrapartida": "12"},
         {"tienda": "", "metodo": "", "coincidencia": "contiene", "contrapartida": ""},   # vacía
     ]
@@ -259,6 +266,9 @@ def test_reglas_configurables_en_orden(http, session_factory) -> None:
          "contrapartida"),
         ({"tienda": "", "metodo": "", "coincidencia": "exacta", "contrapartida": "2"},
          "método"),
+        # Una tienda que no es ninguna cuenta Woo (la clave vieja) no casaría nunca.
+        ({"tienda": "artisjet", "metodo": "Carte", "coincidencia": "exacta",
+          "contrapartida": "15"}, "no es ninguna cuenta WooCommerce"),
     ):
         r = http.patch("/api/erp/settings", json={"contrapartida_rules": [mala]}, headers=admin)
         assert r.status_code == 400 and motivo in r.text
@@ -279,38 +289,116 @@ def test_metodo_de_pago_de_woo_se_guarda_y_se_refresca() -> None:
     assert o.payment_method_title == "Carte"
 
 
+class FakeWooIds:
+    """Tienda falsa: responde a `list_orders_by_ids` con los pedidos que conoce
+    (en cualquier estado) y a los listados por estado con nada (ningún pedido
+    cambia de estado). Registra las llamadas."""
+
+    def __init__(self, store, known: dict[str, dict[int, dict]], calls: list):
+        self.store, self.known, self.calls = store, known, calls
+
+    def list_orders_by_ids(self, ids):
+        self.calls.append(("ids", self.store.account_id, list(ids)))
+        tienda = self.known.get(self.store.account_id, {})
+        return [dict(tienda[i]) for i in ids if i in tienda]
+
+    def list_orders(self, *, status="processing", since=None, per_page=50, page=1):
+        self.calls.append(("list", self.store.account_id, status))
+        return []
+
+    def get_order(self, order_id):
+        raise AssertionError("no hace falta")
+
+
+def _woo_ids(known, calls):
+    return lambda store: FakeWooIds(store, known, calls)
+
+
+CARTE = {"payment_method": "mollie_wc_gateway_creditcard", "payment_method_title": "Carte"}
+
+
 def test_backfill_del_metodo_de_pago_al_poner_al_dia(session_factory) -> None:
+    """Puesta al día: los pedidos web SIN método (en curso, sin cambio de
+    estado en Woo) lo rellenan, pedidos por id a su tienda; en la
+    previsualización solo se cuentan, y lo guardado no se pisa."""
     from app.integrations.woocommerce.reconcile import reconcile_open_order_statuses
 
     with session_factory() as s:
-        _order(s, "9518", store="artisjet", title=None, invoice=None)
+        _order(s, "9638", store="artisjet-europe", title=None, invoice="526300")
+        _order(s, "9648", store="artisjet-europe", title=None, invoice=None)
+        _order(s, "99961", store="boprint", title=None, invoice=None, serie=5)
+        # Ya tiene método (rellenado a mano): no se pisa aunque Woo diga otro.
+        _order(s, "9600", store="artisjet-europe", title="Virement",
+               gateway="bacs", invoice=None)
         s.commit()
+    known = {
+        "artisjet-europe": {
+            9638: {"id": 9638, "status": "processing", **CARTE},
+            9648: {"id": 9648, "status": "processing", **CARTE},
+            9600: {"id": 9600, "status": "processing", **CARTE},
+        },
+        "boprint": {99961: {"id": 99961, "status": "processing",
+                            "payment_method": "ppcp-gateway", "payment_method_title": "PayPal"}},
+    }
+    calls: list = []
+    with session_factory() as s:
+        preview = reconcile_open_order_statuses(
+            s, dry_run=True, client_factory=_woo_ids(known, calls))
+        assert preview["to_payment_method"] == 3
+        assert preview["payment_method_by_store"] == {"artisjet-europe": 2, "boprint": 1}
+        assert s.get(Order, "9638").payment_method is None       # dry-run: nada
+        done = reconcile_open_order_statuses(
+            s, dry_run=False, client_factory=_woo_ids(known, calls))
+        assert done["to_payment_method"] == 3 and done["payment_method_pending"] == 0
+        # Ningún cambio de estado: el relleno no depende de eso.
+        assert done["removed_total"] == 0 and done["to_refunded"] == 0
+    # Por id, una llamada por tienda (no listados enteros de la tienda).
+    ids_calls = [c for c in calls if c[0] == "ids"]
+    assert sorted(ids_calls[-2:]) == [("ids", "artisjet-europe", [9638, 9648]),
+                                      ("ids", "boprint", [99961])]
+    with session_factory() as s:
+        for oid in ("9638", "9648"):
+            o = s.get(Order, oid)
+            assert (o.payment_method, o.payment_method_title) == (
+                "mollie_wc_gateway_creditcard", "Carte")
+            assert o.woo_status == "processing"
+        assert s.get(Order, "99961").payment_method_title == "PayPal"
+        ya = s.get(Order, "9600")
+        assert (ya.payment_method, ya.payment_method_title) == ("bacs", "Virement")
 
-    class FakeWoo:
-        def __init__(self, store):
-            self.store = store
 
-        def list_orders(self, *, status="processing", since=None, per_page=50, page=1):
-            if status != "any" or page > 1 or self.store.account_id != "artisjet":
-                return []
-            return [{"id": 9518, "status": "processing",
-                     "payment_method": "mollie_wc_gateway_creditcard",
-                     "payment_method_title": "Carte"}]
+def test_backfill_inicial_al_desplegar_marca_hecho_y_no_repite(
+    session_factory, engine, caplog,
+) -> None:
+    """El relleno de una sola vez (al desplegar): rellena todos, deja en el log
+    cuántos por tienda, marca «hecho» en Ajustes ERP y la siguiente vez no
+    vuelve a consultar Woo."""
+    import logging
 
-        def get_order(self, order_id):
-            raise AssertionError("no hace falta")
+    from app.integrations.factusol.service import series_config
+    from app.integrations.woocommerce import payment_methods
 
     with session_factory() as s:
-        preview = reconcile_open_order_statuses(s, dry_run=True, client_factory=FakeWoo)
-        assert preview["to_payment_method"] == 1
-        assert preview["payment_method_samples"] == ["ORD-9518 → Carte"]
-        assert s.get(Order, "9518").payment_method is None       # dry-run: nada
-        done = reconcile_open_order_statuses(s, dry_run=False, client_factory=FakeWoo)
-        assert done["to_payment_method"] == 1
+        _order(s, "9638", store="artisjet-europe", title=None, invoice=None)
+        _order(s, "99961", store="boprint", title=None, invoice=None, serie=5)
+        s.commit()
+    known = {"artisjet-europe": {9638: {"id": 9638, **CARTE}},
+             "boprint": {99961: {"id": 99961, "payment_method": "ppcp-gateway",
+                                 "payment_method_title": "PayPal"}}}
+    calls: list = []
+    factory = _woo_ids(known, calls)
+    with patch("app.db.session.get_engine", return_value=engine), \
+            caplog.at_level(logging.INFO, logger=payment_methods.__name__):
+        first = payment_methods.run_backfill_job(client_factory=factory)
+        second = payment_methods.run_backfill_job(client_factory=factory)
+    assert first["filled"] == 2 and first["by_store"] == {"artisjet-europe": 1, "boprint": 1}
+    assert "2 pedidos rellenados (artisjet-europe 1, boprint 1)" in caplog.text
+    assert second["skipped"] is True
+    assert len([c for c in calls if c[0] == "ids"]) == 2        # la 2.ª no consulta
     with session_factory() as s:
-        o = s.get(Order, "9518")
-        assert o.payment_method == "mollie_wc_gateway_creditcard"
-        assert o.payment_method_title == "Carte"
+        hecho = series_config(s)["payment_method_backfill"]
+        assert hecho["filled"] == 2 and hecho["done_at"]
+        assert s.get(Order, "9638").payment_method_title == "Carte"
 
 
 # --- «Registrar cobro» (ficha / cola «Por cobrar») ------------------------------------------
@@ -319,7 +407,7 @@ def test_backfill_del_metodo_de_pago_al_poner_al_dia(session_factory) -> None:
 def test_modal_registrar_cobro_sugiere_15_con_su_motivo(http, session_factory) -> None:
     _catalogo_con_15(http)
     with session_factory() as s:
-        _order(s, "art", store="artisjet", title="Carte",
+        _order(s, "art", store="artisjet-europe", title="Carte",
                gateway="mollie_wc_gateway_creditcard", invoice="526200", serie=2)
         s.commit()
     with _patched(FakeFactusol([_fac(2, 526200)])):
@@ -327,7 +415,7 @@ def test_modal_registrar_cobro_sugiere_15_con_su_motivo(http, session_factory) -
     body = r.json()
     assert r.status_code == 200 and body["status"] == "pendiente", body
     assert body["suggested_cuenta"] == {"codigo": "15", "nombre": "Tarjetas Mollie Belfius"}
-    assert body["suggested_reason"] == "tienda artisJet · método Carte"
+    assert body["suggested_reason"] == "tienda Artisjet Europe · método Carte"
     assert body["payment_method_title"] == "Carte"
     detail = http.get("/api/erp/orders/art", headers=auth_headers(http, "user")).json()
     assert detail["payment_method_title"] == "Carte"
@@ -351,7 +439,7 @@ def test_cobro_sin_cuenta_usa_la_regla_con_cuenta_la_respeta(http, session_facto
     editable). Nunca una cuenta fuera del catálogo."""
     _catalogo_con_15(http)
     with session_factory() as s:
-        _order(s, "art", store="artisjet", title="Carte", invoice="526200", serie=2)
+        _order(s, "art", store="artisjet-europe", title="Carte", invoice="526200", serie=2)
         s.commit()
     fake = FakeFactusol([_fac(2, 526200), _fac(9, 1)])
     with _patched(fake), patch(
@@ -364,7 +452,7 @@ def test_cobro_sin_cuenta_usa_la_regla_con_cuenta_la_respeta(http, session_facto
         nada = _post_cobro(http, 9, 1)        # serie sin empresa ni pedido
     assert sin.status_code == 202, sin.text
     assert sin.json()["contrapartida"] == {"codigo": "15", "nombre": "Tarjetas Mollie Belfius"}
-    assert sin.json()["contrapartida_sugerida_por"] == "tienda artisJet · método Carte"
+    assert sin.json()["contrapartida_sugerida_por"] == "tienda Artisjet Europe · método Carte"
     assert enq.call_args_list[0].args[2] == "15"
     assert con.status_code == 202
     assert con.json()["contrapartida"]["codigo"] == "2"

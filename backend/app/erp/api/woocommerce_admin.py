@@ -6,7 +6,7 @@
   POST   /api/erp/integrations/woocommerce/stores/{id}/test-connection
   POST   /api/erp/integrations/woocommerce/stores/{id}/sync-backfill
 
-Sistema=WOOCOMMERCE, account_id=slug de tienda (boprint/artisjet/flux).
+Sistema=WOOCOMMERCE, account_id=slug de tienda (boprint/artisjet-europe/fluxlasers).
 Secretos CK/CS cifrados con Fernet on-save (leídos desde el modelo
 extendido en PR B-1). Solo ADMIN.
 """

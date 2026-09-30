@@ -111,13 +111,14 @@ Tests: `backend/tests/test_erp_cobro_manual.py`,
   (id del gateway, p. ej. `mollie_wc_gateway_creditcard`) y
   `orders.payment_method_title` («Carte», «PayPal»…), migración `20260930_0121`.
   Se rellenan al importar / actualizar (webhook) y, para los antiguos, en la
-  puesta al día de estados Woo (`to_payment_method`, listado `status=any`).
+  puesta al día de estados Woo (`to_payment_method`). **Rev. 30/09 (fix):** ver
+  «Clave de tienda y relleno del método de pago» abajo.
 - Reglas `contrapartida_rules` en `factusol_series_json`
   (`[{tienda, metodo, coincidencia: exacta|contiene, contrapartida}]`, en orden,
   primera que casa; tienda «» = todas). Casan contra el título, el gateway y la
   forma de pago de FACTUSOL, sin mayúsculas. Si nunca se guardaron, son las
   iniciales: PayPal por tienda (`paypal_contrapartidas_by_store`, migrado) +
-  artisJet «Carte» / `mollie_wc_gateway_creditcard` → 15. Una regla con una
+  `artisjet-europe` «Carte» / `mollie_wc_gateway_creditcard` → 15. Una regla con una
   contrapartida fuera del catálogo se salta. Sin regla → PayPal de la empresa
   emisora (si el método es PayPal) → cuenta bancaria de la serie.
 - Se aplica en `GET /orders/{id}/factusol-cobro` (modal de la ficha y de «Por
@@ -131,6 +132,62 @@ Tests: `backend/tests/test_erp_cobro_manual.py`,
   F_LCO, así que una factura cobrada por la 15 no se vuelve a casar contra
   Belfius; y F-4-B responde `already` si se intenta.
 
+
+## Clave de tienda y relleno del método de pago (fix de #495, 30/09/2026)
+
+**Bug 1 — la clave de artisJet no era la misma en todas partes.** La cuenta
+Woo es `artisjet-europe` (`integration_accounts.account_id`, la que ya usaba
+`by_source`), pero las reglas de contrapartida, la PayPal por tienda y los
+remitentes la guardaban como `artisjet`: la regla «Carte» → 15 (y la PayPal →
+12) no casaban nunca y ARTISJ-9638 sugería «2 · MQ Europe Belfius · cuenta de
+la serie 2»; `store_email_from` de artisJet tampoco se aplicaba.
+
+- **Una sola clave**: el `account_id` de la cuenta Woo (`app/erp/woo_stores.py`).
+  La tienda del pedido sale de `orders.store_id → integration_accounts.account_id`
+  (sugerencia de contrapartida, remitente de factura y del aviso de envío). Sin
+  lista fija ni alias (`_STORE_ALIASES` / `STORES` / `STORE_BY_PREFIX`
+  eliminados): el pedido sin cuenta se resuelve por el prefijo del nº de pedido
+  de las cuentas reales (`account_id.upper()[:6]`). El motivo de la sugerencia
+  usa el `display_name` («tienda Artisjet Europe · método Carte»).
+- Defaults con la clave real (`artisjet-europe`) y `GET
+  /api/erp/catalogs/contrapartidas` → `stores` = las cuentas Woo reales; el
+  desplegable «Tienda» de las reglas de Ajustes usa `woocommerce_stores` (como
+  remitentes, prefijo y serie). El PATCH rechaza (400) una regla cuya tienda no
+  es ninguna cuenta Woo.
+- **Migración `20260930_0122`** (se aplica sola al arrancar `api`): en
+  `factusol_series_json` renombra `artisjet` → `artisjet-europe` (y `flux` →
+  `fluxlasers`) en `contrapartida_rules[].tienda`,
+  `paypal_contrapartidas_by_store`, `store_email_from`, `ref_prefix_by_store` y
+  `by_source`. Solo si la clave vieja no es una cuenta Woo real y la nueva sí;
+  si la nueva ya existe, se fusiona sin pisarla; idempotente.
+
+**Bug 2 — la puesta al día no rellenaba el método de pago.** La puesta al día
+(«Poner al día estados Woo…», job en `erp:interactive` → `worker-factusol`; el
+`seguimiento:reconcile` de `worker-sync` es otro job, el de la hoja de Drive)
+sí tenía un relleno, pero listaba la tienda entera (`status=any`) desde el pedido
+sin método más antiguo con tope de páginas, iba al final de la pasada y la
+pantalla no lo enseñaba: con 0 cambios de estado el botón decía «Aplicar (0
+cambios)».
+
+- `app/integrations/woocommerce/payment_methods.py`: pide a cada tienda los
+  pedidos POR ID (`GET /orders?include=…&status=any`, 100 por llamada, los más
+  recientes primero, tope 2.000 por tienda y pasada). Todos los pedidos web sin
+  método, en curso o no; solo rellena lo VACÍO (lo guardado no se pisa).
+- En la puesta al día es el PRIMER paso y, al aplicar, se confirma ya (no
+  depende de que el resto de la pasada termine). El resumen trae
+  `to_payment_method`, `payment_method_by_store`, `payment_method_pending`; la
+  pantalla lo enseña y el botón lo cuenta.
+- **Relleno inicial al desplegar**: al arrancar `api` se encola una vez
+  (`run_backfill_job`, cola interactiva; SETNX en Redis) y deja en el log
+  `woo.payment_method backfill: N pedidos rellenados (artisjet-europe X,
+  boprint Y, fluxlasers Z)`. Marca `payment_method_backfill.done_at` en
+  `factusol_series_json` si no hubo errores (si los hubo, se reintenta en el
+  siguiente arranque).
+
+Tests: `test_migration_store_keys.py`, `test_erp_contrapartida_reglas.py`,
+`test_erp_reconcile_woo.py`, `test_shipment_email.py`, `test_erp_invoice_email.py`,
+`test_erp_f5_catalogs.py`, `frontend/.../settings/page.test.tsx`,
+`seguimiento/metodo-pago.test.tsx`.
 
 ## Anular / corregir cobro, cobros parciales y descuadre (rev. 30/09/2026)
 

@@ -132,7 +132,7 @@ class ExternalSystem(StrEnum):
     # del admin que dispara el job.
     EMAIL_TEMPLATES = "email_templates"
     # BoHub ERP Fase B — integraciones "live" del ERP. WooCommerce = una
-    # cuenta por tienda (boprint/artisjet/flux); GENEI = 1 sola cuenta
+    # cuenta por tienda (boprint/artisjet-europe/fluxlasers); GENEI = 1 sola cuenta
     # (envios@bomedia.net). Reusan integration_accounts + Fernet.
     WOOCOMMERCE = "woocommerce"
     GENEI = "genei"

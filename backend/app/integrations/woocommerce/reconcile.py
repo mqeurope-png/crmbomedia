@@ -22,8 +22,10 @@ HTTP del request.
 CAMBIARÍA (la magnitud del problema), para que Bart lo vea antes de aplicar.
 
 De paso rellena el MÉTODO DE PAGO (`payment_method` / `payment_method_title`)
-de los pedidos web que aún no lo tienen (importados antes de guardarlo), con un
-listado por tienda (`status=any`) desde el más antiguo de ellos.
+de TODOS los pedidos web que aún no lo tienen (importados antes de guardarlo),
+cambien o no de estado: es el PRIMER paso, se pide a cada tienda por id
+(`payment_methods.backfill_payment_methods`) y, al aplicar, se confirma en BD
+aunque el resto de la pasada falle. Nunca pisa un método ya guardado.
 """
 from __future__ import annotations
 
@@ -39,7 +41,10 @@ from app.erp.models import Order, OrderSource
 from app.erp.seguimiento import _en_curso, _estado, visibility_for_status
 from app.erp.woo_status import NOT_FOUND, REFUNDED, normalize
 from app.integrations.woocommerce.client import WooError, WooHTTPClient
-from app.integrations.woocommerce.mapper import apply_payment_method
+from app.integrations.woocommerce.payment_methods import (
+    backfill_payment_methods,
+    fill_empty_payment_method,
+)
 from app.models.integration_settings import IntegrationAccount
 
 logger = logging.getLogger(__name__)
@@ -177,79 +182,8 @@ def _fill_unknown_statuses(
             if not dry_run:
                 o.woo_status = new_status
                 if new_status != NOT_FOUND:
-                    apply_payment_method(o, woo or {})
+                    fill_empty_payment_method(o, woo or {})
     return calls
-
-
-def _missing_payment_method_orders(
-    session: Session, store_account_id: str | None,
-) -> list[Order]:
-    """Pedidos web sin método de pago guardado (importados antes de guardarlo)."""
-    stmt = select(Order).where(
-        Order.external_source == OrderSource.WOOCOMMERCE,
-        Order.external_id.isnot(None),
-        Order.store_id.isnot(None),
-        (Order.payment_method.is_(None)) | (Order.payment_method == ""),
-        (Order.woo_status.is_(None)) | (Order.woo_status != NOT_FOUND),
-    )
-    return [
-        o for o in session.scalars(stmt)
-        if not store_account_id or _store_matches(session, o, store_account_id)
-    ]
-
-
-def _backfill_payment_methods(
-    session: Session, store_account_id: str | None, client_factory: Callable[..., Any],
-    *, dry_run: bool, max_pages: int, errors: list[dict[str, str]],
-) -> tuple[int, int, list[str], bool]:
-    """Rellena el método de pago de los pedidos web que no lo tienen: por cada
-    tienda, lista sus pedidos (`status=any`) desde el más antiguo pendiente y
-    cruza por id. Devuelve (llamadas, rellenados, muestras, capped). En
-    `dry_run` solo cuenta."""
-    missing = _missing_payment_method_orders(session, store_account_id)
-    by_store: dict[str, dict[str, Order]] = {}
-    for o in missing:
-        by_store.setdefault(o.store_id, {})[str(o.external_id)] = o
-    calls = filled = 0
-    samples: list[str] = []
-    capped = False
-    for store_id, orders_by_extid in by_store.items():
-        store = session.get(IntegrationAccount, store_id)
-        if store is None:
-            continue
-        try:
-            client = client_factory(store)
-        except WooError as exc:
-            errors.append({"store": store.account_id, "error": str(exc)[:200]})
-            continue
-        cutoff = _cutoff_iso(list(orders_by_extid.values()))
-        pending = dict(orders_by_extid)
-        try:
-            for page in range(1, max_pages + 1):
-                calls += 1
-                batch = client.list_orders(
-                    status="any", since=cutoff, per_page=_PER_PAGE, page=page,
-                )
-                if not batch:
-                    break
-                for wo in batch:
-                    o = pending.pop(str(wo.get("id") or ""), None)
-                    if o is None or not str(wo.get("payment_method") or "").strip():
-                        continue
-                    filled += 1
-                    if len(samples) < 20:
-                        title = str(wo.get("payment_method_title") or wo.get("payment_method"))
-                        samples.append(f"{o.order_number} → {title}")
-                    if not dry_run:
-                        apply_payment_method(o, wo)
-                if not pending:
-                    break
-                if len(batch) >= _PER_PAGE and page == max_pages:
-                    capped = True
-        except WooError as exc:
-            errors.append({"store": store.account_id, "status": "any",
-                           "error": str(exc)[:200]})
-    return calls, filled, samples, capped
 
 
 def _store_matches(session: Session, order: Order, account_id: str) -> bool:
@@ -292,13 +226,26 @@ def reconcile_open_order_statuses(
     errors: list[dict[str, str]] = []
     capped = False
 
+    # 0) Método de pago de TODOS los pedidos web que no lo tienen, cambien o no
+    #    de estado (por id, 100 por llamada). Va primero y, al aplicar, se
+    #    confirma ya: no depende de que el resto de la pasada termine.
+    pm = backfill_payment_methods(
+        session, dry_run=dry_run, store_account_id=store_account_id,
+        client_factory=client_factory, errors=errors, commit=not dry_run,
+    )
+    woo_calls = pm["calls"]
+    capped = pm["capped"]
+    if not dry_run and pm["filled"]:
+        logger.info("woo.reconcile: método de pago rellenado en %d pedidos (%s)",
+                    pm["filled"], ", ".join(f"{k} {v}" for k, v in sorted(pm["by_store"].items())))
+
     # 1) Los SIN estado, uno a uno (el listado por estado no los ve), con tope
     #    por pasada: el resto sigue a NULL y cae en la siguiente.
     unknown = _unknown_status_woo_orders(session, store_account_id)
     if len(unknown) > max_unknown:
         capped = True
         unknown = unknown[:max_unknown]
-    woo_calls = _fill_unknown_statuses(
+    woo_calls += _fill_unknown_statuses(
         session, unknown, client_factory, dry_run=dry_run,
         counts=counts, samples=samples, errors=errors,
     )
@@ -370,14 +317,6 @@ def reconcile_open_order_statuses(
                 if not dry_run:
                     o.woo_status = new_status
 
-    # Método de pago de los pedidos web que aún no lo tienen (backfill).
-    pm_calls, pm_filled, pm_samples, pm_capped = _backfill_payment_methods(
-        session, store_account_id, client_factory,
-        dry_run=dry_run, max_pages=max_pages, errors=errors,
-    )
-    woo_calls += pm_calls
-    capped = capped or pm_capped
-
     if not dry_run:
         session.commit()
 
@@ -408,9 +347,13 @@ def reconcile_open_order_statuses(
         "to_not_found": counts["not_found"],
         "unknown_total": len(unknown),
         # Pedidos web a los que se les rellena el método de pago (gateway +
-        # título de la tienda), para sugerir la contrapartida del cobro.
-        "to_payment_method": pm_filled,
-        "payment_method_samples": pm_samples,
+        # título de la tienda), para sugerir la contrapartida del cobro: en
+        # total, por tienda (`account_id`) y los que siguen sin él (la tienda
+        # no lo tiene o quedan para la siguiente pasada).
+        "to_payment_method": pm["filled"],
+        "payment_method_by_store": pm["by_store"],
+        "payment_method_pending": pm["pending"],
+        "payment_method_samples": pm["samples"],
         "removed_total": removed,
         "errors": errors,
         "samples": {k: v for k, v in samples.items() if v},

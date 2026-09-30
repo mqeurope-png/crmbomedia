@@ -80,6 +80,22 @@ function eur(n: number, moneda: string): string {
   }
 }
 
+/** « (artisjet-europe 2 · boprint 1)» — métodos de pago rellenados por tienda. */
+function paymentMethodByStore(r: WooReconcileSummary): string {
+  const parts = Object.entries(r.payment_method_by_store ?? {})
+    .filter(([, n]) => n > 0)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([store, n]) => `${store} ${n}`);
+  return parts.length ? ` (${parts.join(" · ")})` : "";
+}
+
+/** Cambios que aplica la puesta al día: salidas del seguimiento, reembolsos
+ *  marcados, estados recuperados y métodos de pago rellenados. */
+function reconcileChanges(r: WooReconcileSummary): number {
+  return r.removed_total + r.to_refunded + (r.to_filled ?? 0) + (r.to_not_found ?? 0)
+    + (r.to_payment_method ?? 0);
+}
+
 /** ERP-F6 — Seguimiento de pedidos: la vista que sustituye el Excel manual de
  *  Bart. Por defecto enseña los pedidos EN CURSO (la parte de arriba del
  *  Excel); el histórico de 7.743 filas se queda en su fichero.
@@ -404,7 +420,11 @@ export default function SeguimientoPage() {
           + `${r.to_refunded} quedaron marcados «Reembolsado» (siguen a la vista)`
           + ((r.unknown_total ?? 0) > 0
             ? `; de ${r.unknown_total} sin estado, ${r.to_filled ?? 0} recuperaron el suyo `
-              + `y ${r.to_not_found ?? 0} ya no existen en la tienda.`
+              + `y ${r.to_not_found ?? 0} ya no existen en la tienda`
+            : "")
+          + ((r.to_payment_method ?? 0) > 0
+            ? `; ${r.to_payment_method} pedidos web rellenaron su método de pago`
+              + `${paymentMethodByStore(r)}.`
             : "."),
         );
         await load();
@@ -635,7 +655,7 @@ export default function SeguimientoPage() {
           {canEdit ? (
             <button
               type="button" className="button small secondary" disabled={busy}
-              title="Re-consulta WooCommerce: saca los cancelados / fallidos / sin pagar y marca los reembolsados"
+              title="Re-consulta WooCommerce: saca los cancelados / fallidos / sin pagar, marca los reembolsados y rellena el método de pago de los pedidos web que no lo tienen"
               onClick={onReconcilePreview}
             >
               {busy ? "Trabajando…" : "Poner al día estados Woo…"}
@@ -775,6 +795,17 @@ export default function SeguimientoPage() {
                 {reconcile.to_not_found ?? 0} ya no existen en la tienda (quedan ocultos).
               </li>
             ) : null}
+            {(reconcile.to_payment_method ?? 0) > 0 || (reconcile.payment_method_pending ?? 0) > 0 ? (
+              <li aria-label="Métodos de pago">
+                <strong>{reconcile.to_payment_method ?? 0}</strong> pedidos web sin método
+                de pago lo rellenarían (cambien o no de estado)
+                {paymentMethodByStore(reconcile)}
+                {(reconcile.payment_method_pending ?? 0) > (reconcile.to_payment_method ?? 0)
+                  ? ` · ${(reconcile.payment_method_pending ?? 0) - (reconcile.to_payment_method ?? 0)} `
+                    + "siguen sin él (la tienda no lo tiene)"
+                  : ""}.
+              </li>
+            ) : null}
             <li className="muted small">
               {reconcile.unchanged} siguen activos.
               {reconcile.errors.length > 0
@@ -789,7 +820,7 @@ export default function SeguimientoPage() {
             </button>
             <button type="button" className="button" disabled={busy}
               onClick={onReconcileApply}>
-              {busy ? "Aplicando…" : `Aplicar (${reconcile.removed_total} cambios)`}
+              {busy ? "Aplicando…" : `Aplicar (${reconcileChanges(reconcile)} cambios)`}
             </button>
           </div>
         </section>

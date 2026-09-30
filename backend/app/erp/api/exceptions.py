@@ -167,7 +167,7 @@ class SettingsIn(BaseModel):
     shipment_email_from: dict[str, str] | None = None
     #: ERP-F5 — contrapartidas de cobro ([{codigo, nombre}]; la tabla de
     #: FACTUSOL no se ha localizado, así que el catálogo vive aquí) y la
-    #: contrapartida PayPal por tienda ({"artisjet": "12", …}).
+    #: contrapartida PayPal por tienda ({"artisjet-europe": "12", …}).
     contrapartidas: list[dict[str, Any]] | None = None
     paypal_contrapartidas_by_store: dict[str, str] | None = None
     #: Reglas tienda × método de pago → contrapartida sugerida del cobro
@@ -734,9 +734,12 @@ def update_settings(
                 mapping[key] = normalize_code(value)
             series["paypal_contrapartidas_by_store"] = mapping
         if payload.contrapartida_rules is not None:
+            from app.erp.woo_stores import woo_stores  # noqa: PLC0415
+
+            known = {st["key"] for st in woo_stores(session)}
             try:
                 series["contrapartida_rules"] = validate_contrapartida_rules(
-                    payload.contrapartida_rules,
+                    payload.contrapartida_rules, known_stores=known or None,
                 )
             except ValueError as e:
                 raise HTTPException(400, str(e)) from e

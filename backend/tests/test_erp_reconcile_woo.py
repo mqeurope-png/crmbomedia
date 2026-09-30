@@ -86,14 +86,17 @@ def _order(
     s: Session, *, woo_id: str, number: str, woo_status: str | None,
     store: IntegrationAccount, tracking: str | None = None,
     delivered: bool = False, invoiced: bool = False, placed: str = "2026-09-01",
+    payment_method: str | None = "bacs",
 ) -> Order:
+    # Con método de pago por defecto: estos tests son de ESTADOS (el relleno
+    # del método tiene los suyos, y uno aquí abajo).
     comp = Company(name="C")
     s.add(comp)
     s.flush()
     o = Order(
         external_source=OrderSource.WOOCOMMERCE, external_id=woo_id,
         store_id=store.id, order_number=number, company_id=comp.id,
-        woo_status=woo_status, tracking_number=tracking,
+        woo_status=woo_status, tracking_number=tracking, payment_method=payment_method,
         placed_at=datetime.fromisoformat(placed).replace(tzinfo=UTC),
     )
     if delivered:
@@ -137,6 +140,12 @@ class FakeWoo:
         if page > 1:
             return []
         return list(self.by_status.get(status, []))
+
+    def list_orders_by_ids(self, order_ids):
+        self.calls.append(("list_orders_by_ids", self.store.account_id, list(order_ids)))
+        if self.raise_on == "ids":
+            raise WooError("store down", status=503)
+        return [dict(self.by_id[i]) for i in order_ids if i in self.by_id]
 
     def get_order(self, order_id: int):
         self.calls.append(("get_order", self.store.account_id, order_id))
@@ -508,3 +517,45 @@ def test_reconcile_preview_counts_by_category(session_factory) -> None:
         o = s.scalar(select(Order).where(Order.external_id == "60"))
         assert o.woo_status == "processing"
         assert "BOPRIN-60" in _numbers(_rows_for(s, en_curso=True))
+
+
+def test_reconcile_rellena_el_metodo_de_pago_sin_cambio_de_estado(session_factory) -> None:
+    """Un pedido web en curso SIN método de pago, que no cambia de estado en
+    Woo, lo rellena igual (pedido por id); uno que ya lo tiene no se pisa; y si
+    la tienda falla al pedirlos, se informa y el resto de la pasada sigue."""
+    with session_factory() as s:
+        st = _store(s, "artisjet-europe")
+        _order(s, woo_id="9648", number="ARTISJ-9648", woo_status="processing",
+               store=st, payment_method=None)
+        _order(s, woo_id="9600", number="ARTISJ-9600", woo_status="processing",
+               store=st, payment_method="bacs")
+        s.commit()
+        by_id = {"artisjet-europe": {
+            9648: {"id": 9648, "status": "processing",
+                   "payment_method": "mollie_wc_gateway_creditcard",
+                   "payment_method_title": "Carte"},
+            9600: {"id": 9600, "status": "processing", "payment_method": "ppcp-gateway",
+                   "payment_method_title": "PayPal"},
+        }}
+        calls: list[tuple] = []
+        summary = reconcile_open_order_statuses(
+            s, dry_run=False, client_factory=_factory({}, calls, by_id_by_store=by_id),
+        )
+        assert summary["to_payment_method"] == 1
+        assert summary["payment_method_by_store"] == {"artisjet-europe": 1}
+        assert summary["removed_total"] == 0
+        assert ("list_orders_by_ids", "artisjet-europe", [9648]) in calls
+    with session_factory() as s:
+        rows = {o.order_number: o for o in s.scalars(select(Order))}
+        assert rows["ARTISJ-9648"].payment_method_title == "Carte"
+        assert rows["ARTISJ-9648"].woo_status == "processing"
+        assert rows["ARTISJ-9600"].payment_method == "bacs"      # no se pisa
+        _order(s, woo_id="9700", number="ARTISJ-9700", woo_status="processing",
+               store=s.scalars(select(IntegrationAccount)).first(), payment_method=None)
+        s.commit()
+        caida = reconcile_open_order_statuses(
+            s, dry_run=False,
+            client_factory=_factory({}, [], raise_for={"artisjet-europe": "ids"}),
+        )
+    assert caida["to_payment_method"] == 0 and caida["payment_method_pending"] == 1
+    assert any(e.get("store") == "artisjet-europe" for e in caida["errors"])

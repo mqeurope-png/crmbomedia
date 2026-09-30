@@ -134,12 +134,23 @@ def test_idioma_cascada_pedido_cliente_pais_destino_defecto(session_factory):
 
 def test_remitente_web_por_tienda_y_manual_por_idioma(session_factory):
     with session_factory() as s:
+        # La cuenta Woo REAL de artisJet es `artisjet-europe`: un pedido suyo en
+        # español sale de SU tienda, no de la regla por idioma.
         artis = s.get(Order, _order(s, number="ARTISJ-9553", source="woocommerce",
-                                    store="artisjet", external_id="9553"))
+                                    store="artisjet-europe", external_id="9553"))
+        assert brand_store(s, artis) == "artisjet-europe"
         assert shipment_from_alias(s, artis, "es") == ("info@artisjet-printers.eu", "tienda")
+        s.add(IntegrationAccount(system="woocommerce", account_id="boprint",
+                                 display_name="Boprint"))
+        s.commit()
         boprint = s.get(Order, _order(s, number="BOPRIN-99927", source="woocommerce",
                                       external_id="99927"))       # sin cuenta: por prefijo
         assert brand_store(s, boprint) == "boprint"
+        sin_cuenta = s.get(Order, _order(s, number="ARTISJ-9554", source="woocommerce",
+                                         external_id="9554"))
+        assert brand_store(s, sin_cuenta) == "artisjet-europe"   # prefijo de la cuenta real
+        assert shipment_from_alias(s, sin_cuenta, "es") == (
+            "info@artisjet-printers.eu", "tienda")
         assert shipment_from_alias(s, boprint, "fr") == ("pedidos@streamtec.es", "tienda")
         flux = s.get(Order, _order(s, number="FLUXLA-1200", source="woocommerce",
                                    store="fluxlasers", external_id="1200"))
@@ -157,7 +168,7 @@ def test_remitente_web_por_tienda_y_manual_por_idioma(session_factory):
 def test_numero_de_pedido_que_conoce_el_cliente(session_factory):
     with session_factory() as s:
         web = s.get(Order, _order(s, number="ARTISJ-9553", source="woocommerce",
-                                  store="artisjet", external_id="9553"))
+                                  store="artisjet-europe", external_id="9553"))
         assert customer_order_ref(web) == "9553"
         manual = s.get(Order, _order(s, number="MAN-0042"))
         assert customer_order_ref(manual) == "MAN-0042"

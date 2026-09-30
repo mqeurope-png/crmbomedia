@@ -57,14 +57,6 @@ function templateLabels(kind: TemplateKind, lang: string) {
         testid: `ejemplo-envio-${lang}` };
 }
 
-/** Tiendas que se pueden elegir en las reglas de contrapartida (la clave es la
- *  que guarda el backend; `flux` de Woo se normaliza a `fluxlasers`). */
-const RULE_STORES: ReadonlyArray<{ key: string; label: string }> = [
-  { key: "artisjet", label: "artisJet" },
-  { key: "boprint", label: "boprint" },
-  { key: "fluxlasers", label: "fluxlasers" },
-];
-
 /** ERP-E4 — campos de texto de la identidad fiscal de cada empresa emisora
  *  (alimentan los PDF; los valores iniciales salen de los modelos reales de
  *  FACTUSOL). */
@@ -1233,9 +1225,14 @@ export default function ErpSettingsPage() {
                       <select aria-label={`Regla ${i + 1} tienda`} value={r.tienda}
                               onChange={(e) => setRule({ tienda: e.target.value })}>
                         <option value="">Todas</option>
-                        {RULE_STORES.map((st) => (
-                          <option key={st.key} value={st.key}>{st.label}</option>
+                        {/* Las tiendas son las cuentas WooCommerce reales (clave =
+                            su account_id, la misma en toda la app). */}
+                        {stores.map((st) => (
+                          <option key={st.slug} value={st.slug}>{st.label}</option>
                         ))}
+                        {r.tienda && !stores.some((st) => st.slug === r.tienda) ? (
+                          <option value={r.tienda}>{r.tienda} (no es ninguna tienda Woo)</option>
+                        ) : null}
                       </select>
                     </td>
                     <td data-label="Método de pago">

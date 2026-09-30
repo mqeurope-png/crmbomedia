@@ -1,7 +1,7 @@
 """Cliente HTTP WooCommerce (REST API v3) — Fase B PR B-2.
 
 Multi-tienda: se instancia POR cuenta de `integration_accounts` (una fila
-por tienda: boprint / artisjet / flux). Los secretos CK/CS se persisten
+por tienda: boprint / artisjet-europe / fluxlasers). Los secretos CK/CS se persisten
 cifrados con Fernet y se descifran on-demand.
 
 Auth: HTTP Basic sobre HTTPS con Consumer Key/Secret.
@@ -150,6 +150,18 @@ class WooHTTPClient:
             # "2026-07-04T00:00:00".
             params["after"] = _to_iso8601_datetime(since)
         return self.get("/orders", params=params)
+
+    def list_orders_by_ids(self, order_ids: list[int]) -> list[dict[str, Any]]:
+        """Los pedidos con esos ids (hasta 100 por llamada), en cualquier
+        estado: `include` como lista separada por comas (WP REST la admite
+        así; repetir el parámetro solo se quedaría con el último)."""
+        ids = [int(i) for i in order_ids][:100]
+        if not ids:
+            return []
+        return self.get("/orders", params={
+            "include": ",".join(str(i) for i in ids), "per_page": len(ids),
+            "status": "any",
+        })
 
     def get_order(self, order_id: int) -> dict[str, Any]:
         return self.get(f"/orders/{order_id}")

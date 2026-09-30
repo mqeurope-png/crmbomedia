@@ -335,10 +335,10 @@ Es la pantalla de un pedido concreto. De arriba abajo:
   el pedido ya apuntaste el pago (forma, cuenta y fecha), la ventana **viene
   prellenada** con esos datos; solo tienes que confirmar. Si no, la cuenta
   viene **sugerida** según la tienda y el **método de pago del pedido web**
-  (p. ej. artisJet pagado con **«Carte»** —tarjeta por Mollie— → **15 Tarjetas
-  Mollie Belfius**; PayPal de artisJet → 12; PayPal de boprint o fluxlasers →
+  (p. ej. Artisjet Europe pagado con **«Carte»** —tarjeta por Mollie— → **15 Tarjetas
+  Mollie Belfius**; PayPal de Artisjet Europe → 12; PayPal de boprint o fluxlasers →
   14) o, si no hay regla, la cuenta de la serie. Debajo pone **«Sugerida por:
-  tienda artisJet · método Carte»**; puedes elegir otra y se registra la que
+  tienda Artisjet Europe · método Carte»**; puedes elegir otra y se registra la que
   elijas. El método de pago de WooCommerce se ve en el **Resumen económico →
   Forma de pago** y en la cola **«Por cobrar»** («Pago: Carte»).
   El **importe** viene con lo **pendiente en FACTUSOL**; puedes bajarlo para
@@ -798,8 +798,14 @@ pagar / en espera**, y marca **«Reembolsado»** los reembolsados (esos no salen
 Los pedidos web que estaban **sin estado** (importados antes de que existiera
 el dato) se consultan **uno a uno**: recuperan su estado real, y el que la
 tienda **ya no tiene** queda marcado *No encontrado en la tienda* y oculto.
+Además **rellena el método de pago** («Carte», «PayPal»…) de **todos** los
+pedidos web que no lo tienen, cambien o no de estado y aunque la pantalla esté
+en «Solo en curso» (es lo que usa la cuenta sugerida al registrar un cobro). Lo
+que ya tiene método no se toca. La previsualización dice cuántos se
+rellenarían por tienda y el botón **«Aplicar (N cambios)»** los cuenta.
 Siempre enseña antes una previsualización con los números; nada se cambia hasta
-que confirmas.
+que confirmas. *(Al desplegar esta versión, BoHub rellena solo, una vez, el
+método de pago de los pedidos antiguos.)*
 
 > Un pedido web **sin estado** (los importados antes de que existiera el dato)
 > **se ve** en Seguimiento: no se conoce su estado, y ocultarlo se llevaba
@@ -1123,10 +1129,13 @@ lo que va a pasar. Secciones destacadas:
   forma de pago de FACTUSOL) + **coincidencia** (exacta / contiene, sin
   distinguir mayúsculas) → **contrapartida**. Se evalúan **de arriba abajo** y
   manda la primera que casa (↑/↓ para reordenar); si ninguna casa, la cuenta
-  de la serie. Vienen ya con las de PayPal de antes (artisJet → 12; boprint y
-  fluxlasers → 14) y artisJet + «Carte» / tarjeta de Mollie → 15. Una regla
-  cuya cuenta no está en el catálogo se marca en rojo y **no se aplica** hasta
-  que la añadas (nunca se sugiere una cuenta inexistente).
+  de la serie. Vienen ya con las de PayPal de antes (Artisjet Europe → 12;
+  boprint y fluxlasers → 14) y Artisjet Europe + «Carte» / tarjeta de Mollie →
+  15. Una regla cuya cuenta no está en el catálogo se marca en rojo y **no se
+  aplica** hasta que la añadas (nunca se sugiere una cuenta inexistente). El
+  desplegable **«Tienda»** lista las tiendas WooCommerce dadas de alta (las de
+  «Integraciones · Woo»), con su nombre; es la misma tienda en toda la app
+  (reglas, remitentes, prefijo de referencia y serie).
 - Otras: **Facturación**, **Abreviaturas de empresa**, **Email del SAT /
   taller**, **Empresas emisoras**, **Almacenes de recogida**, **Orígenes del
   envío** y **Hoja de seguimiento en Drive**.
