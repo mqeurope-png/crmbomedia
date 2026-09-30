@@ -31,6 +31,12 @@ from app.erp.models.orders import Order
 
 #: Valor de `Order.order_kind` para una muestra / envío no facturable.
 ORDER_KIND_SAMPLE = "sample"
+#: Muestra a la que se le vinculó un documento FACTUSOL (albarán / proforma /
+#: factura): a todos los efectos es un pedido NORMAL con ese documento (pasos
+#: reales, facturable, «Por cobrar»…), pero conserva su nº `MUESTRA-…` y la
+#: marca de que nació como muestra (badge). Si se le desvincula el documento,
+#: vuelve a `sample`.
+ORDER_KIND_SAMPLE_CONVERTED = "sample_converted"
 
 #: Prefijo + ancho del secuencial de las muestras (mismo formato que
 #: `MANUAL-000001`, para que las dos series se lean igual).
@@ -51,6 +57,13 @@ NOT_BILLABLE_DETAIL = (
 def is_sample_order(order: Any) -> bool:
     """¿Es una muestra / envío no facturable?"""
     return str(getattr(order, "order_kind", None) or "") == ORDER_KIND_SAMPLE
+
+
+def born_as_sample(order: Any) -> bool:
+    """¿Nació como muestra? (muestra pura o convertida con un documento)."""
+    return str(getattr(order, "order_kind", None) or "") in (
+        ORDER_KIND_SAMPLE, ORDER_KIND_SAMPLE_CONVERTED,
+    )
 
 
 def is_billable(order: Any) -> bool:

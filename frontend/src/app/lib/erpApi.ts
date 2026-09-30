@@ -162,8 +162,12 @@ export type OrderSummary = {
   shipping_not_required?: boolean;
   /** Tipo de pedido cuando no es el corriente. `"sample"` = MUESTRA / envío
    *  NO FACTURABLE: sin albarán, factura ni cobro (esas casillas salen «No
-   *  aplica») y no entra en «Por facturar» ni «Por cobrar». null = normal. */
+   *  aplica») y no entra en «Por facturar» ni «Por cobrar».
+   *  `"sample_converted"` = muestra con un documento FACTUSOL vinculado: un
+   *  pedido normal a todos los efectos (conserva el nº y el badge). null = normal. */
   order_kind?: string | null;
+  /** Nació como muestra (pura o convertida): badge «muestra». */
+  born_as_sample?: boolean;
   /** Fase 2: nº del albarán FACTUSOL (`5-500008`) creado por BoHub al
    *  convertir la proforma / pedido de cliente. Los pedidos web no lo llevan. */
   factusol_albaran_number?: string | null;
@@ -271,6 +275,12 @@ export type OrderDetail = OrderSummary & {
    *  (1 Bomedia / 2 MQ Europe / 4 Lambert / 5 Streamtec), o null. La ficha la
    *  enseña y ofrece «Cambiar serie» en los pedidos manuales. */
   factusol_manual_serie?: number | null;
+  /** Documentos FACTUSOL vinculados (origen / albarán / factura): la ficha
+   *  ofrece «Desvincular» en cada uno. */
+  linked_documents?: LinkedOrderDocument[];
+  /** Muestra SIN convertir que ya apunta a un documento (vinculado desde
+   *  ERP · Documentos sin cargar sus datos): «Reprocesar vínculo». */
+  sample_pending_link?: LinkedOrderDocument | null;
 };
 
 export type FactusolOriginDocument = {
@@ -437,6 +447,77 @@ export async function getOrder(id: string): Promise<OrderDetail> {
 
 /** Documento FACTUSOL del pedido que se podría BORRAR al anular (albarán o
  *  presupuesto). La factura nunca: se borra desde FACTUSOL. */
+/** Documento FACTUSOL vinculado a un pedido. */
+export type LinkedOrderDocument = {
+  kind: "factura" | "albaran" | "origen";
+  doc_type: "facturas" | "albaranes" | "presupuestos" | "pedidos";
+  serie: number | null;
+  codigo: number | null;
+  /** `2-526110`. */
+  numero: string;
+  /** «factura 2-526110», «albarán 5-000123», «proforma 1-000045». */
+  label: string;
+  /** Solo en la previsualización de «Anular»: el aviso de ese documento. */
+  message?: string;
+};
+
+export type LinkableDocType = "albaranes" | "presupuestos" | "facturas";
+
+/** Lo que cargaría una muestra al vincularle un documento (solo lectura). */
+export type LinkDocumentPreview = {
+  doc_type: LinkableDocType;
+  serie: number;
+  codigo: number;
+  numero: string;
+  fecha: string | null;
+  total: number | null;
+  referencia: string | null;
+  forma_pago: string | null;
+  forma_pago_nombre: string | null;
+  cliente_codigo: string | null;
+  cliente_nombre: string | null;
+  company_id: string | null;
+  company_name: string | null;
+  company_linked: boolean;
+  lines: {
+    codart: string | null; description: string; quantity: number;
+    unit_price: number; discount_pct: number; iva_pct: number | null;
+  }[];
+  is_sample: boolean;
+  linked_elsewhere: { order_id: string; order_number: string } | null;
+};
+
+export async function previewLinkOrderDocument(
+  orderId: string, doc: { doc_type: LinkableDocType; serie: number; codigo: number },
+): Promise<LinkDocumentPreview> {
+  const q = new URLSearchParams({
+    doc_type: doc.doc_type, serie: String(doc.serie), codigo: String(doc.codigo),
+  });
+  return apiFetch(`/api/erp/orders/${orderId}/link-document/preview?${q.toString()}`);
+}
+
+/** «Vincular documento FACTUSOL» a una muestra: carga sus datos. 409
+ *  `factusol_customer_unlinked` (con `codcli`) si el cliente no tiene empresa
+ *  CRM: hay que vincularla / crearla y reintentar. Nunca escribe en FACTUSOL. */
+export async function linkOrderDocument(
+  orderId: string,
+  doc: { doc_type: LinkableDocType; serie: number; codigo: number; company_id?: string | null },
+): Promise<OrderDetail & { linked?: { document: LinkedOrderDocument } }> {
+  return apiFetch(`/api/erp/orders/${orderId}/link-document`, {
+    method: "POST", body: JSON.stringify({ ...doc, confirm: true }),
+  });
+}
+
+/** «Desvincular documento» sin anular: sigue en FACTUSOL. Una muestra
+ *  convertida sin más documentos vuelve a modo muestra (`back_to_sample`). */
+export async function unlinkOrderDocument(
+  orderId: string, kind: LinkedOrderDocument["kind"],
+): Promise<OrderDetail & { unlinked?: { document: LinkedOrderDocument; back_to_sample: boolean } }> {
+  return apiFetch(`/api/erp/orders/${orderId}/unlink-document`, {
+    method: "POST", body: JSON.stringify({ kind, confirm: true }),
+  });
+}
+
 export type CancelOrderDoc = {
   doc_type: "albaranes" | "presupuestos" | "pedidos";
   serie: number;
@@ -456,6 +537,9 @@ export type CancelOrderPreview = {
   /** Avisos no bloqueantes. */
   warnings: string[];
   factusol_docs: CancelOrderDoc[];
+  /** Documentos que se DESVINCULARÁN al anular (siguen en FACTUSOL), con el
+   *  aviso de cada uno. */
+  documents_to_unlink?: LinkedOrderDocument[];
 };
 
 export type CancelOrderPayload = {
@@ -475,6 +559,8 @@ export type CancelOrderResult = OrderDetail & {
    *  `getConvertJobStatus`/`convert-status`. */
   factusol_delete_job_id?: string | null;
   factusol_docs_to_delete?: CancelOrderDoc[];
+  /** Documentos desvinculados al anular (siguen en FACTUSOL). */
+  unlinked_documents?: LinkedOrderDocument[];
 };
 
 export async function previewCancelOrder(orderId: string): Promise<CancelOrderPreview> {
@@ -489,7 +575,11 @@ export async function cancelOrder(
   });
 }
 
-export async function uncancelOrder(orderId: string): Promise<OrderDetail & { already_active?: boolean }> {
+export async function uncancelOrder(orderId: string): Promise<OrderDetail & {
+  already_active?: boolean;
+  /** Documentos que se vuelven a vincular al restaurar (los que nadie más tiene). */
+  relinked?: { restored: string[]; skipped: { numero: string; reason: string }[] };
+}> {
   return apiFetch(`/api/erp/orders/${orderId}/uncancel`, { method: "POST" });
 }
 

@@ -601,6 +601,20 @@ def link_document_to_order(
         raise HTTPException(status.HTTP_404_NOT_FOUND, {
             "code": "order_not_found", "detail": "El pedido no existe en BoHub.",
         })
+    from app.erp.sample_orders import is_sample_order  # noqa: PLC0415
+
+    if is_sample_order(order):
+        # Rev. 30/09/2026: aquí solo se apuntaba el nº y la muestra quedaba
+        # incoherente (0 €, sin cliente… con factura). A una muestra se le
+        # vincula el documento desde su ficha, que carga sus datos.
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "order_is_sample",
+            "detail": (
+                f"{order.order_number} es una muestra: vincúlale el documento desde "
+                "su ficha («Vincular documento FACTUSOL»), que carga el cliente, "
+                "las líneas y los importes."
+            ),
+        })
     numero = visible_number(serie, codigo)
     singular = "albarán" if doc_type == "albaranes" else "factura"
     current = _order_doc_link(order, doc_type)

@@ -90,4 +90,35 @@ describe("CancelOrderModal", () => {
     expect(screen.getByRole("button", { name: "Anular pedido" })).toBeDisabled();
     expect(mockCancel).not.toHaveBeenCalled();
   });
+  it("con FACTURA se puede anular: avisa de que se desvincula y sigue en FACTUSOL", async () => {
+    mockPreview.mockResolvedValue({
+      can_cancel: true, blockers: [], warnings: [], factusol_docs: [],
+      documents_to_unlink: [{
+        kind: "factura", doc_type: "facturas", serie: 2, codigo: 526110,
+        numero: "2-526110", label: "factura 2-526110",
+        message: "La factura 2-526110 seguirá existiendo en FACTUSOL y dejará de estar "
+          + "vinculada a este pedido. Si hay que anularla o abonarla, hazlo en FACTUSOL.",
+      }],
+    });
+    mockCancel.mockResolvedValue({
+      cancelled: true, factusol_delete_job_id: null, cancel_warnings: [],
+      unlinked_documents: [{ kind: "factura", doc_type: "facturas", serie: 2, codigo: 526110,
+        numero: "2-526110", label: "factura 2-526110" }],
+    });
+    const user = userEvent.setup();
+    render(<CancelOrderModal orderId="o-3" orderNumber="MUESTRA-000003" onClose={jest.fn()} />);
+    const aviso = await screen.findByRole("note", { name: "Documentos que se desvincularán" });
+    expect(aviso).toHaveTextContent(
+      "La factura 2-526110 seguirá existiendo en FACTUSOL y dejará de estar vinculada a "
+      + "este pedido. Si hay que anularla o abonarla, hazlo en FACTUSOL.",
+    );
+    // Con factura no se ofrece borrar nada en FACTUSOL.
+    expect(screen.queryByRole("checkbox")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Anular pedido" }));
+    await waitFor(() => expect(mockCancel).toHaveBeenCalledWith("o-3", {
+      confirm: true, reason: null, delete_factusol_docs: false,
+    }));
+    expect(await screen.findByText(/Desvinculado del pedido \(sigue en FACTUSOL\)/))
+      .toHaveTextContent("factura 2-526110");
+  });
 });

@@ -311,6 +311,9 @@ class Order(TimestampMixin, Base):
     #     pieza de cortesía. No lleva empresa ni serie, NO pasa por FACTUSOL
     #     (sin cliente F_CLI, sin albarán, sin factura, sin cobro) y sus pasos
     #     fiscales salen «No aplica». Solo se prepara y se envía desde el taller.
+    #   - 'sample_converted' → muestra a la que se le vinculó un albarán /
+    #     proforma / factura de FACTUSOL: se comporta como un pedido normal con
+    #     ese documento, conservando el nº MUESTRA-… y el badge «muestra».
     # Es ORTOGONAL a `external_source` (el ORIGEN: web/manual/FACTUSOL): una
     # muestra se da de alta a mano, pero no es un pedido manual corriente.
     order_kind: Mapped[str | None] = mapped_column(String(16))

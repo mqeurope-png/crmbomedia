@@ -10,6 +10,8 @@ import { ChangeSerieModal } from "./ChangeSerieModal";
 import { CreateQuoteModal } from "../../../components/erp/CreateQuoteModal";
 import { emptyDocumentLine, type DocumentLine } from "../../../components/erp/DocumentLinesTable";
 import { CancelOrderModal } from "../../../components/erp/CancelOrderModal";
+import { DesvincularDocumentoModal } from "../../../components/erp/DesvincularDocumentoModal";
+import { VincularDocumentoModal } from "../../../components/erp/VincularDocumentoModal";
 import { EmbalarModal } from "../../../components/erp/EmbalarModal";
 import { PDF_LANGS } from "../../../components/erp/FactusolDocumentDetailModal";
 import { FactusolAlbaranPdfButton } from "../../../components/erp/FactusolAlbaranPdfButton";
@@ -64,6 +66,8 @@ import {
   type FactusolInvoiceRef,
   type FactusolPdfLang,
   type FactusolStatus,
+  type LinkableDocType,
+  type LinkedOrderDocument,
   type OrderDetail,
   type OrderLine,
   type PaymentIntentInput,
@@ -240,6 +244,12 @@ function ErpOrderDetailScreen() {
   const [invoicePdfBusy, setInvoicePdfBusy] = useState(false);
   // «Anular pedido» (manual / FACTUSOL): modal con aviso previo; «Restaurar».
   const [cancelOpen, setCancelOpen] = useState(false);
+  // Muestras: vincular un documento FACTUSOL (albarán / proforma / factura) y
+  // desvincular documentos (cualquier pedido), sin tocar FACTUSOL.
+  const [linkDocOpen, setLinkDocOpen] = useState<
+    { initial: { doc_type: LinkableDocType; serie: number; codigo: number } | null } | null
+  >(null);
+  const [unlinkDoc, setUnlinkDoc] = useState<LinkedOrderDocument | null>(null);
   const [cancelBusy, setCancelBusy] = useState(false);
   // Lote 7 · P1 — «Cambiar serie» (empresa emisora) de un pedido manual.
   const [serieOpen, setSerieOpen] = useState(false);
@@ -316,6 +326,10 @@ function ErpOrderDetailScreen() {
   const esMuestra = !!order && isSampleOrder(order);
   const canEmit = can(user, Cap.INVOICE_EMIT) && !esMuestra;
   const canCobro = can(user, Cap.COBRO_REGISTER) && !esMuestra;
+  // Vincular / desvincular documentos y anular: trabajo de oficina sobre el
+  // pedido (mismo permiso que el backend, `erp.orders.create`). Una MUESTRA
+  // también lo tiene: se le vincula su documento o se anula.
+  const canEditOrder = can(user, Cap.ORDERS_CREATE);
   // E — el rol de taller (ERP·SAT) tiene su cajón de envío/taller con botones
   // más grandes (el albarán, la etiqueta y el seguimiento viven ahí juntos).
   const canSat = can(user, Cap.SAT_VIEW);
@@ -811,6 +825,9 @@ function ErpOrderDetailScreen() {
                       : order.completed ? "Desmarcar completado" : "Marcar completado"}
                   </button>
                 )}
+              </>
+            ) : null}
+            {canEmit || (esMuestra && canEditOrder) ? (
                 <ActionsMenu label="Más acciones del pedido">
                   {/* E4-fix1 — idioma del pedido: dato persistente (detectado
                       en la importación Woo) editable a mano; alimenta la
@@ -900,8 +917,17 @@ function ErpOrderDetailScreen() {
                       </button>
                     )
                   )}
+                  {esMuestra && canEditOrder && !order.cancelled ? (
+                    <button
+                      type="button"
+                      className="button small secondary"
+                      title="Vincula a la muestra su albarán, proforma o factura de FACTUSOL y carga sus datos"
+                      onClick={() => setLinkDocOpen({ initial: null })}
+                    >
+                      Vincular documento FACTUSOL
+                    </button>
+                  ) : null}
                 </ActionsMenu>
-              </>
             ) : null}
           </>
         }
@@ -955,7 +981,56 @@ function ErpOrderDetailScreen() {
         ) : wf?.company ? (
           <span className="badge warn">Empresa sin vincular a FACTUSOL</span>
         ) : null}
+        {/* Nació como muestra: pura (no facturable) o con un documento
+            FACTUSOL vinculado (pedido normal a todos los efectos). */}
+        {esMuestra ? (
+          <span className="badge warn erp-badge-muestra">Muestra · no facturable</span>
+        ) : order.born_as_sample ? (
+          <span className="badge warn erp-badge-muestra"
+                title="Nació como muestra; tiene un documento FACTUSOL vinculado">
+            Muestra
+          </span>
+        ) : null}
       </p>
+      {esMuestra && canEditOrder && !order.cancelled ? (
+        <div className="form-info erp-sample-link" role="note" aria-label="Muestra y documentos FACTUSOL">
+          {order.sample_pending_link ? (
+            <>
+              <span>
+                Esta muestra apunta a {order.sample_pending_link.label} pero no cargó sus
+                datos (cliente, importes, serie). «Reprocesar vínculo» los carga; si fue un
+                error, desvincúlala.
+              </span>{" "}
+              <button
+                type="button" className="button small"
+                disabled={!order.sample_pending_link.serie || !order.sample_pending_link.codigo}
+                onClick={() => {
+                  const d = order.sample_pending_link!;
+                  if (d.doc_type === "pedidos" || d.serie == null || d.codigo == null) return;
+                  setLinkDocOpen({ initial: { doc_type: d.doc_type, serie: d.serie, codigo: d.codigo } });
+                }}
+              >
+                Reprocesar vínculo
+              </button>{" "}
+              <button type="button" className="button small secondary"
+                      onClick={() => setUnlinkDoc(order.sample_pending_link ?? null)}>
+                Desvincular
+              </button>
+            </>
+          ) : (
+            <>
+              <span>
+                Muestra / envío no facturable. Si hay que facturarla, vincúlale su
+                albarán, proforma o factura de FACTUSOL y cargará sus datos.
+              </span>{" "}
+              <button type="button" className="button small secondary"
+                      onClick={() => setLinkDocOpen({ initial: null })}>
+                Vincular documento FACTUSOL
+              </button>
+            </>
+          )}
+        </div>
+      ) : null}
       {/* Lote 2 · PR-2: la barra de 7 segmentos («Paso 6 de 7 · Cobro»), la
           lectura rápida sin recorrer la línea de vida. */}
       {wf ? <WorkflowProgress steps={wf.steps} /> : null}
@@ -1207,6 +1282,26 @@ function ErpOrderDetailScreen() {
             albarán (y su PDF) vive en «Documentos de envío». */}
         <section className="erp-flow-panel" aria-label="FACTUSOL">
           <h3>FACTUSOL</h3>
+          {(order.linked_documents ?? []).length > 0 && canEditOrder && !order.cancelled ? (
+            <div className="erp-flow-kv">
+              <span className="k">Vinculado</span>
+              <ul className="v erp-linked-docs" aria-label="Documentos vinculados">
+                {(order.linked_documents ?? []).map((d) => (
+                  <li key={`${d.kind}-${d.numero}`}>
+                    <span>{d.label}</span>{" "}
+                    <button
+                      type="button" className="button small secondary"
+                      aria-label={`Desvincular ${d.label}`}
+                      title="Deja de apuntarlo desde el pedido; sigue en FACTUSOL"
+                      onClick={() => setUnlinkDoc(d)}
+                    >
+                      Desvincular
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
           <div className="erp-flow-kv">
             <span className="k">Cliente</span>
             <span className="v">
@@ -1434,6 +1529,36 @@ function ErpOrderDetailScreen() {
           orderNumber={order.order_number}
           onClose={() => setAnularCobroOpen(false)}
           onDone={(info) => { setCobroLive(info); load(); }}
+        />
+      ) : null}
+      {linkDocOpen ? (
+        <VincularDocumentoModal
+          orderId={order.id}
+          orderNumber={order.order_number}
+          initial={linkDocOpen.initial}
+          onClose={() => setLinkDocOpen(null)}
+          onDone={(detail) => {
+            setNotice(`Documento vinculado: ${(detail.linked_documents ?? []).map((d) => d.label).join(", ")}. `
+              + "La muestra cargó sus datos y sigue el flujo del documento.");
+            void load();
+          }}
+        />
+      ) : null}
+      {unlinkDoc ? (
+        <DesvincularDocumentoModal
+          orderId={order.id}
+          orderNumber={order.order_number}
+          document={unlinkDoc}
+          bornAsSample={!!order.born_as_sample}
+          otherDocuments={(order.linked_documents ?? []).some(
+            (d) => d.kind !== unlinkDoc.kind,
+          )}
+          onClose={() => setUnlinkDoc(null)}
+          onDone={(detail) => {
+            setNotice(`${unlinkDoc.label.charAt(0).toUpperCase()}${unlinkDoc.label.slice(1)} desvinculado del pedido (sigue en FACTUSOL).`
+              + (detail.unlinked?.back_to_sample ? " La muestra vuelve a modo muestra." : ""));
+            void load();
+          }}
         />
       ) : null}
       {cancelOpen ? (

@@ -41,6 +41,8 @@ from app.erp.models import (
     OrderStatusHistory,
     StatusDomain,
 )
+from app.erp.order_documents import linked_documents, sample_pending_link
+from app.erp.sample_orders import born_as_sample
 from app.erp.state_machine import TransitionError, apply_transition, available_transitions
 from app.erp.woo_status import is_refunded
 from app.erp.workflow import order_workflow
@@ -359,8 +361,12 @@ def _serialise_summary(
         # enviar»; la casilla/hito de Envío pasa a «No aplica». Reversible.
         "shipping_not_required": bool(o.shipping_not_required),
         # Tipo de pedido cuando no es el corriente: `sample` = muestra / envío
-        # NO FACTURABLE (sin albarán, factura ni cobro). null = pedido normal.
+        # NO FACTURABLE (sin albarán, factura ni cobro); `sample_converted` =
+        # muestra con un documento FACTUSOL vinculado (pedido normal a todos
+        # los efectos). null = pedido normal.
         "order_kind": o.order_kind,
+        # Nació como muestra (pura o convertida): badge «muestra».
+        "born_as_sample": born_as_sample(o),
     }
 
 
@@ -389,6 +395,12 @@ def _serialise_detail(session: Session, o: Order, actor: User) -> dict[str, Any]
         # Documento de ORIGEN imprimible en FACTUSOL («PDF del pedido
         # (FACTUSOL)»); None = sin documento → la ficha deshabilita el botón.
         "factusol_document": _factusol_document(session, o),
+        # Documentos FACTUSOL vinculados (origen / albarán / factura) — la
+        # ficha ofrece «Desvincular» en cada uno. Y, en una muestra sin
+        # convertir que ya apunta a uno (vinculado desde ERP · Documentos sin
+        # cargar sus datos), el documento para «Reprocesar vínculo».
+        "linked_documents": linked_documents(o),
+        "sample_pending_link": sample_pending_link(o),
         "lines": [
             {
                 "id": line.id, "position": line.position,
@@ -2128,13 +2140,13 @@ def cancel_order_preview(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_edit),
 ) -> dict[str, Any]:
-    """Aviso previo a «Anular»: si se puede (pedido web o con factura → no),
-    y qué documentos FACTUSOL tiene el pedido y cuáles se podrían borrar
-    (albarán no facturado, presupuesto pendiente). No cambia nada."""
-    from app.erp.order_cancel import (  # noqa: PLC0415
-        cancel_blockers,
-        factusol_manual_invoice_warning,
-    )
+    """Aviso previo a «Anular»: qué documentos FACTUSOL se DESVINCULARÁN
+    (factura, albarán, proforma: siguen en FACTUSOL) y, en un pedido sin
+    factura, cuáles se podrían además borrar en FACTUSOL (albarán no
+    facturado, presupuesto pendiente). Rev. 30/09/2026: tener factura ya no
+    impide anular. No cambia nada."""
+    from app.erp.order_cancel import cancel_blockers, is_invoiced_order  # noqa: PLC0415
+    from app.erp.order_documents import cancel_warnings  # noqa: PLC0415
 
     _ = current_user
     order = _get_order(session, order_id, current_user)
@@ -2142,17 +2154,16 @@ def cancel_order_preview(
     warnings: list[str] = []
     if order.cancelled_at is not None:
         warnings.append("El pedido ya está anulado.")
-    invoice_warning = factusol_manual_invoice_warning(order)
-    if invoice_warning and not blockers:
-        warnings.append(invoice_warning)
     docs: list[dict[str, Any]] = []
-    if not blockers:
+    # Con factura no se borra nada en FACTUSOL: solo se desvincula.
+    if not blockers and not is_invoiced_order(order):
         docs, _ejercicio = _factusol_docs_for_cancel_safe(session, order, warnings)
     return {
         "can_cancel": not blockers and order.cancelled_at is None,
         "blockers": blockers,
         "warnings": warnings,
         "factusol_docs": docs,
+        "documents_to_unlink": cancel_warnings(order),
     }
 
 
@@ -2163,18 +2174,25 @@ def cancel_order(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_edit),
 ) -> dict[str, Any]:
-    """«Anular pedido»: estado FINAL reversible, distinto de «quitar». Solo
-    pedidos manuales / de FACTUSOL sin factura (409 `cannot_cancel` si no).
-    Con `delete_factusol_docs` se encola el borrado del albarán / presupuesto
-    borrables (202-style: `factusol_delete_job_id`); la factura nunca.
-    Queda en el timeline (`erp.order_cancelled`)."""
+    """«Anular pedido»: estado FINAL reversible, distinto de «quitar».
+    Rev. 30/09/2026: se puede anular aunque tenga factura (web, manual o
+    muestra). Los documentos vinculados (factura, albarán, proforma) se
+    DESVINCULAN y siguen en FACTUSOL tal cual — la factura nunca se anula ni
+    se abona desde aquí. Historial: «Anulado; factura 2-526110 desvinculada
+    (sigue en FACTUSOL)». Solo en un pedido SIN factura, y si se pide
+    (`delete_factusol_docs`), se encola el borrado del albarán / presupuesto
+    borrables (202-style: `factusol_delete_job_id`)."""
     from app.core.audit import record_event  # noqa: PLC0415
     from app.erp.order_cancel import (  # noqa: PLC0415
         CANCELLED_EVENT,
         cancel_blockers,
-        factusol_manual_invoice_warning,
         is_invoiced_order,
         mark_cancelled,
+    )
+    from app.erp.order_documents import (  # noqa: PLC0415
+        cancel_history_reason,
+        cancel_warnings,
+        unlink_for_cancel,
     )
 
     if not payload.confirm:
@@ -2188,41 +2206,74 @@ def cancel_order(
         raise HTTPException(status.HTTP_409_CONFLICT, {
             "code": "cannot_cancel", "detail": " ".join(blockers), "blockers": blockers,
         })
+    # Avisos: el de la FACTURA (si hay que anularla o abonarla, se hace en
+    # FACTUSOL) y los de FACTUSOL sin responder. El resto de lo desvinculado
+    # va aparte, en `unlinked_documents`.
+    warnings: list[str] = [
+        w["message"] for w in cancel_warnings(order) if w["kind"] == "factura"
+    ]
+    job_id: str | None = None
+    to_delete: list[dict[str, Any]] = []
+    ejercicio: str | None = None
+    # Borrar en FACTUSOL solo en un pedido SIN factura y si se pide: con
+    # factura, todo se desvincula y sigue allí. Se decide ANTES de
+    # desvincular (el borrado localiza los documentos por el pedido).
+    if (payload.delete_factusol_docs and order.cancelled_at is None
+            and not is_invoiced_order(order)):
+        docs, ejercicio = _factusol_docs_for_cancel_safe(session, order, warnings)
+        to_delete = [d for d in docs if d.get("deletable")]
     already = mark_cancelled(session, order, current_user, payload.reason)
+    unlinked: list[dict[str, Any]] = []
     if not already:
+        keep = {(d["doc_type"], int(d["serie"]), int(d["codigo"])) for d in to_delete}
+        unlinked = unlink_for_cancel(session, order, keep=keep)
+        reason_text = cancel_history_reason(unlinked, payload.reason)
+        prep = _status_value(order.preparation_status)
+        session.add(OrderStatusHistory(
+            order_id=order.id, domain=StatusDomain.PREPARATION,
+            from_status=prep, to_status=prep, changed_at=datetime.now(UTC),
+            changed_by_user_id=current_user.id, reason=reason_text[:255],
+            metadata_json=json.dumps({
+                "event": "order_cancelled", "reason": payload.reason,
+                "unlinked": [
+                    {k: e[k] for k in ("kind", "doc_type", "serie", "codigo", "numero")}
+                    for e in unlinked
+                ],
+            }, default=str),
+        ))
         record_event(
             session, action=CANCELLED_EVENT, target_type="order", target_id=order.id,
             actor=current_user,
-            message="Pedido anulado" + (f": {payload.reason}" if payload.reason else ""),
-            metadata={"reason": payload.reason, "order_number": order.order_number},
+            message="Pedido anulado" + (f": {payload.reason}" if payload.reason else "")
+            + (
+                "; desvinculado: " + ", ".join(e["label"] for e in unlinked)
+                + " (sigue en FACTUSOL)" if unlinked else ""
+            ),
+            metadata={"reason": payload.reason, "order_number": order.order_number,
+                      "unlinked": [e["numero"] for e in unlinked]},
         )
         session.commit()
-    warnings: list[str] = []
-    invoice_warning = factusol_manual_invoice_warning(order)
-    if invoice_warning:
-        warnings.append(invoice_warning)
-    job_id: str | None = None
-    to_delete: list[dict[str, Any]] = []
-    # Un pedido con factura no borra nada en FACTUSOL (solo se avisa): la
-    # factura se anula/abona a mano. Los docs borrables ya salen vacíos porque
-    # el F_PCL con factura no es `deletable`, pero cortamos aquí por claridad.
-    if payload.delete_factusol_docs and not is_invoiced_order(order):
-        docs, ejercicio = _factusol_docs_for_cancel_safe(session, order, warnings)
-        to_delete = [d for d in docs if d.get("deletable")]
-        if to_delete and ejercicio:
-            from app.integrations.factusol.jobs import (  # noqa: PLC0415
-                enqueue_cancel_order_documents,
-            )
+    else:
+        to_delete = []
+    if to_delete and ejercicio:
+        from app.integrations.factusol.jobs import (  # noqa: PLC0415
+            enqueue_cancel_order_documents,
+        )
 
-            job_id = enqueue_cancel_order_documents(
-                order.id, to_delete, ejercicio, current_user.id,
-            )
+        job_id = enqueue_cancel_order_documents(
+            order.id, to_delete, ejercicio, current_user.id,
+        )
     order = _get_order(session, order_id, current_user)
     return {
         **_serialise_detail(session, order, current_user),
         "already_cancelled": already,
         # (`warnings` a secas es el bloque estructurado de la ficha.)
         "cancel_warnings": warnings,
+        # Documentos desvinculados al anular (siguen en FACTUSOL).
+        "unlinked_documents": [
+            {k: e[k] for k in ("kind", "doc_type", "serie", "codigo", "numero", "label")}
+            for e in unlinked
+        ],
         "factusol_delete_job_id": job_id,
         "factusol_docs_to_delete": to_delete,
     }
@@ -2235,21 +2286,198 @@ def uncancel_order(
     current_user: User = Depends(require_erp_edit),
 ) -> dict[str, Any]:
     """«Restaurar»: revierte `/cancel` en BoHub (lo borrado en FACTUSOL no se
-    recrea: se avisa). Idempotente."""
+    recrea: se avisa) y vuelve a vincular los documentos que se desvincularon
+    al anular, salvo los que ya tenga otro pedido. Idempotente."""
     from app.core.audit import record_event  # noqa: PLC0415
     from app.erp.order_cancel import UNCANCELLED_EVENT, unmark_cancelled  # noqa: PLC0415
+    from app.erp.order_documents import restore_after_uncancel  # noqa: PLC0415
 
     order = _get_order(session, order_id, current_user)
     already = unmark_cancelled(session, order)
+    relinked: dict[str, Any] = {"restored": [], "skipped": []}
     if not already:
+        relinked = restore_after_uncancel(session, order, actor=current_user)
         record_event(
             session, action=UNCANCELLED_EVENT, target_type="order", target_id=order.id,
-            actor=current_user, message="Pedido restaurado (anulación revertida)",
-            metadata={"order_number": order.order_number},
+            actor=current_user, message="Pedido restaurado (anulación revertida)"
+            + ("; vuelve a vincular: " + ", ".join(relinked["restored"])
+               if relinked["restored"] else ""),
+            metadata={"order_number": order.order_number, **relinked},
         )
         session.commit()
     order = _get_order(session, order_id, current_user)
-    return {**_serialise_detail(session, order, current_user), "already_active": already}
+    return {**_serialise_detail(session, order, current_user), "already_active": already,
+            "relinked": relinked}
+
+
+class LinkDocumentIn(BaseModel):
+    """Vincular un documento FACTUSOL a una MUESTRA (carga sus datos).
+    `confirm` OBLIGATORIO. `company_id`: empresa CRM a usar si el cliente del
+    documento aún no está vinculado (normalmente se vincula antes el cliente
+    y se deja vacío)."""
+
+    doc_type: str = Field(pattern="^(albaranes|presupuestos|facturas)$")
+    serie: int = Field(ge=1, le=9)
+    codigo: int = Field(ge=1)
+    confirm: bool = False
+    company_id: str | None = Field(default=None, max_length=36)
+
+
+class UnlinkDocumentIn(BaseModel):
+    """Desvincular (sin anular) la factura, el albarán o el documento de
+    origen del pedido. `confirm` OBLIGATORIO. No toca FACTUSOL."""
+
+    kind: str = Field(pattern="^(factura|albaran|origen)$")
+    confirm: bool = False
+
+
+_DOC_LINK_STATUS = {
+    "not_a_sample": status.HTTP_409_CONFLICT,
+    "unsupported_doc_type": status.HTTP_422_UNPROCESSABLE_ENTITY,
+    "document_linked_elsewhere": status.HTTP_409_CONFLICT,
+    "factusol_customer_unlinked": status.HTTP_409_CONFLICT,
+    "not_linked": status.HTTP_404_NOT_FOUND,
+}
+
+
+def _doc_link_http_error(exc: Any) -> HTTPException:
+    return HTTPException(_DOC_LINK_STATUS.get(exc.code, status.HTTP_409_CONFLICT), {
+        "code": exc.code, "detail": exc.detail, **exc.extra,
+    })
+
+
+def _read_document_for_link(
+    session: Session, doc_type: str, serie: int, codigo: int,
+) -> dict[str, Any]:
+    """Lee el documento (solo lectura) con la forma de pago resuelta."""
+    from app.erp.api.factusol import _client_and_ejercicio  # noqa: PLC0415
+    from app.erp.orders_from_factusol import (  # noqa: PLC0415
+        FactusolOrderError,
+        preview_factusol_document,
+    )
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+
+    client, ejercicio = _client_and_ejercicio(session)
+    try:
+        preview = preview_factusol_document(
+            session, client, doc_type=doc_type, serie=serie, codigo=codigo,
+            ejercicio=ejercicio,
+        )
+    except FactusolOrderError as exc:
+        raise _factusol_order_http_error(exc) from exc
+    except FactusolError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, {
+            "code": "factusol_detail_failed", "detail": str(exc)[:200],
+        }) from exc
+    preview["forma_pago_nombre"] = _forma_pago_nombre(
+        client, ejercicio, preview.get("forma_pago"),
+    )
+    return preview
+
+
+@router.get("/{order_id}/link-document/preview")
+def preview_link_document(
+    order_id: str,
+    doc_type: str = Query(pattern="^(albaranes|presupuestos|facturas)$"),
+    serie: int = Query(ge=1, le=9),
+    codigo: int = Query(ge=1),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """Qué cargaría la muestra al vincularle ese documento: cliente (y si
+    tiene empresa en el CRM), líneas, base / IVA / total, serie y forma de
+    pago; y si otro pedido ya lo tiene. Solo lectura (BoHub y FACTUSOL)."""
+    from app.erp.order_documents import document_holder  # noqa: PLC0415
+    from app.erp.sample_orders import is_sample_order  # noqa: PLC0415
+
+    order = _get_order(session, order_id, current_user)
+    preview = _read_document_for_link(session, doc_type, serie, codigo)
+    holder = document_holder(session, doc_type, serie, codigo, exclude_order_id=order.id)
+    return {
+        **preview,
+        "is_sample": is_sample_order(order),
+        "linked_elsewhere": (
+            {"order_id": holder.id, "order_number": holder.order_number}
+            if holder is not None else None
+        ),
+    }
+
+
+@router.post("/{order_id}/link-document")
+def link_order_document(
+    order_id: str,
+    payload: LinkDocumentIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """«Vincular documento FACTUSOL» a una MUESTRA: albarán, proforma o
+    factura. Carga cliente → empresa CRM, líneas, importes, serie, forma de
+    pago y el vínculo, y el pedido pasa a comportarse como uno creado desde
+    ese documento (conserva su nº MUESTRA-… y el badge). Re-vincular el mismo
+    documento sirve para «reprocesar» un vínculo hecho sin cargar datos.
+    Cliente sin empresa CRM → 409 `factusol_customer_unlinked` (la ficha abre
+    el flujo de vincular / crear empresa). NUNCA escribe en FACTUSOL."""
+    from app.erp.order_documents import (  # noqa: PLC0415
+        DocumentLinkError,
+        link_document_to_sample,
+    )
+    from app.models.crm import Company  # noqa: PLC0415
+
+    if not payload.confirm:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "confirmation_required",
+            "detail": "Vincular un documento cambia los datos del pedido: requiere confirmación.",
+        })
+    order = _get_order(session, order_id, current_user)
+    if order.cancelled_at is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "order_cancelled", "detail": "El pedido está anulado.",
+        })
+    if payload.company_id and session.get(Company, payload.company_id) is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "unknown_company", "detail": "Esa empresa no existe en el CRM.",
+        })
+    preview = _read_document_for_link(session, payload.doc_type, payload.serie, payload.codigo)
+    try:
+        result = link_document_to_sample(
+            session, order, preview, company_id=payload.company_id,
+            forma_pago_nombre=preview.get("forma_pago_nombre"), actor=current_user,
+        )
+    except DocumentLinkError as exc:
+        session.rollback()
+        raise _doc_link_http_error(exc) from exc
+    session.commit()
+    order = _get_order(session, order_id, current_user)
+    return {**_serialise_detail(session, order, current_user), "linked": result}
+
+
+@router.post("/{order_id}/unlink-document")
+def unlink_order_document(
+    order_id: str,
+    payload: UnlinkDocumentIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """«Desvincular documento» sin anular (vínculos hechos por error): el
+    pedido deja de apuntar la factura / el albarán / el documento de origen,
+    que sigue en FACTUSOL. Rastro en el historial. Una muestra convertida sin
+    más documentos vuelve al modo muestra. NUNCA escribe en FACTUSOL."""
+    from app.erp.order_documents import DocumentLinkError, unlink_document  # noqa: PLC0415
+
+    if not payload.confirm:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "confirmation_required",
+            "detail": "Desvincular un documento requiere confirmación.",
+        })
+    order = _get_order(session, order_id, current_user)
+    try:
+        result = unlink_document(session, order, payload.kind, actor=current_user)
+    except DocumentLinkError as exc:
+        session.rollback()
+        raise _doc_link_http_error(exc) from exc
+    session.commit()
+    order = _get_order(session, order_id, current_user)
+    return {**_serialise_detail(session, order, current_user), "unlinked": result}
 
 
 @router.post("/{order_id}/factusol-serie")

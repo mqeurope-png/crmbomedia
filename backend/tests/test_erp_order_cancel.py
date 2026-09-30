@@ -148,10 +148,11 @@ def test_cancel_preview_marks_invoiced_albaran_not_deletable(http, session_facto
     assert docs2["presupuestos"]["deletable"] is False
 
 
-def test_cancel_web_now_allowed_manual_invoiced_still_blocked(http, session_factory) -> None:
+def test_cancel_web_now_allowed_manual_invoiced_too(http, session_factory) -> None:
     """Parte A: un pedido WEB ya se puede anular desde BoHub (antes se
-    bloqueaba y se quedaba atascado en «por facturar»). Un pedido MANUAL con
-    factura sigue bloqueado (la factura se anula primero en FACTUSOL)."""
+    bloqueaba y se quedaba atascado en «por facturar»). Rev. 30/09/2026: un
+    pedido MANUAL con factura TAMBIÉN: la factura se desvincula y sigue en
+    FACTUSOL (sin escribir nada allí)."""
     with session_factory() as s:
         web = _seed_order(s, source=OrderSource.WOOCOMMERCE, with_docs=False)
         web.order_number = "FLUXLA-1"
@@ -169,9 +170,10 @@ def test_cancel_web_now_allowed_manual_invoiced_still_blocked(http, session_fact
     assert not any("web" in b.lower() for b in pre["blockers"])
     r = http.post(f"/api/erp/orders/{inv_id}/cancel", json={"confirm": True},
                   headers=auth_headers(http, "pedidos"))
-    assert r.status_code == 409
-    assert r.json()["detail"]["code"] == "cannot_cancel"
-    assert "factura" in r.json()["detail"]["detail"].lower()
+    assert r.status_code == 200, r.text
+    assert r.json()["cancelled_at"]
+    assert r.json()["factusol_invoice_number"] is None
+    assert r.json()["unlinked_documents"][0]["numero"] == "260090"
 
 
 def test_cancel_requires_confirmation(http, session_factory) -> None:
@@ -283,7 +285,10 @@ def test_delete_cancelled_order_documents_skips_invoiced_albaran(session_factory
         assert "5-260200" in result["skipped"][0]["reason"]
         assert client.deletes == []
         s.refresh(order)
-        assert order.factusol_albaran_number == "5-500010"  # sigue vinculado
+        # No se borra (está facturado) pero, como el pedido está ANULADO, se
+        # desvincula: sigue en FACTUSOL y deja de apuntarse desde el pedido.
+        assert order.factusol_albaran_number is None
+        assert result["unlinked"] == ["5-500010"]
 
 
 # --- Parte A: anular pedidos web (F_PCL + auto por reembolso) ----------------

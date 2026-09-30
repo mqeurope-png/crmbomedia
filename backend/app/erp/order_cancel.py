@@ -1,11 +1,13 @@
-"""Lote ERP · «Anular pedido» (manual / FACTUSOL; nunca web).
+"""Lote ERP · «Anular pedido» (web, manual, FACTUSOL o muestra).
 
 Distinto de «quitar/ocultar»: anular es un estado FINAL del pedido en BoHub
 (`cancelled_at/by/reason`, reversible con «Restaurar»), y opcionalmente —
 con aviso y confirmación explícita — se BORRAN en FACTUSOL el albarán y/o el
 presupuesto del pedido si siguen «vivos» (no facturado / no aceptado ni
-convertido). La FACTURA nunca se toca: un pedido con factura no se anula desde
-BoHub (se anula la factura en FACTUSOL y luego se anula aquí).
+convertido). La FACTURA nunca se toca en FACTUSOL. Rev. 30/09/2026: un pedido
+CON factura también se anula: la factura (y el albarán / la proforma) se
+DESVINCULAN del pedido y siguen en FACTUSOL; si hay que anularla o abonarla,
+se hace allí (`app.erp.order_documents`).
 
 Borrar en FACTUSOL usa la ÚNICA primitiva que existe (`delete_records`, hasta
 ahora solo compensación de escrituras a medias) con el patrón seguro: filtro
@@ -78,18 +80,12 @@ def is_invoiced_order(order: Order) -> bool:
 def cancel_blockers(order: Order) -> list[str]:
     """Por qué NO se puede anular (lista vacía = se puede).
 
-    Los pedidos WEB SÍ se pueden anular desde BoHub (un pedido reembolsado se
-    quedaba atascado en «por facturar»). El bloqueo por factura se mantiene
-    SOLO para los manuales/FACTUSOL: un web con factura se anula igual pero sin
-    tocar FACTUSOL (ver `factusol_manual_invoice_warning`)."""
-    out: list[str] = []
-    if not is_web_order(order) and is_invoiced_order(order):
-        numero = order.factusol_invoice_number or "—"
-        out.append(
-            f"Tiene factura en FACTUSOL ({numero}): la factura se anula desde "
-            "FACTUSOL; después se puede anular el pedido aquí."
-        )
-    return out
+    Rev. 30/09/2026: tener factura ya NO bloquea (una muestra con factura se
+    quedaba atascada): al anular, la factura se desvincula y sigue en
+    FACTUSOL. Hoy no hay ningún bloqueo; se mantiene la función para el
+    contrato de la API (`blockers`)."""
+    _ = order
+    return []
 
 
 def factusol_manual_invoice_warning(order: Order) -> str | None:
@@ -386,6 +382,13 @@ def delete_cancelled_order_documents(
                 src["deleted_at"] = datetime.now(UTC).isoformat()
                 packing["factusol_source"] = src
                 save_packing(order, packing)
+    # Lo que queda vinculado (no se pudo borrar, o no se pidió borrarlo) se
+    # DESVINCULA: el pedido está anulado y el documento sigue en FACTUSOL.
+    leftovers: list[dict[str, Any]] = []
+    if order.cancelled_at is not None:
+        from app.erp.order_documents import unlink_for_cancel  # noqa: PLC0415
+
+        leftovers = unlink_for_cancel(session, order)
     record_event(
         session,
         action=DOCS_DELETED_EVENT,
@@ -399,7 +402,9 @@ def delete_cancelled_order_documents(
         metadata={
             "deleted": deleted, "skipped": skipped, "ejercicio": ejercicio,
             "actor_user_id": actor_user_id,
+            "unlinked": [e["numero"] for e in leftovers],
         },
     )
     session.commit()
-    return {"deleted": deleted, "skipped": skipped}
+    return {"deleted": deleted, "skipped": skipped,
+            "unlinked": [e["numero"] for e in leftovers]}
