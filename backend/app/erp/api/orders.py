@@ -2191,6 +2191,7 @@ def cancel_order(
     )
     from app.erp.order_documents import (  # noqa: PLC0415
         cancel_history_reason,
+        cancel_warnings,
         unlink_for_cancel,
     )
 
@@ -2205,9 +2206,12 @@ def cancel_order(
         raise HTTPException(status.HTTP_409_CONFLICT, {
             "code": "cannot_cancel", "detail": " ".join(blockers), "blockers": blockers,
         })
-    # Avisos de verdad (p. ej. FACTUSOL no respondió); lo desvinculado va
-    # aparte, en `unlinked_documents`.
-    warnings: list[str] = []
+    # Avisos: el de la FACTURA (si hay que anularla o abonarla, se hace en
+    # FACTUSOL) y los de FACTUSOL sin responder. El resto de lo desvinculado
+    # va aparte, en `unlinked_documents`.
+    warnings: list[str] = [
+        w["message"] for w in cancel_warnings(order) if w["kind"] == "factura"
+    ]
     job_id: str | None = None
     to_delete: list[dict[str, Any]] = []
     ejercicio: str | None = None
