@@ -143,7 +143,7 @@ type Filtros = {
   invoiced: string;
   /** "" = todas, "enviada" / "no_enviada" (factura enviada al cliente). */
   invoiceEmail: string;
-  /** Slug de la tienda Woo (artisjet / boprint / fluxlasers…). */
+  /** Slug de la tienda Woo (artisjet-europe / boprint / fluxlasers…). */
   store: string;
   from: string;
   to: string;

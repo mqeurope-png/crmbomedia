@@ -378,7 +378,7 @@ export type OrderFilters = {
   completed?: boolean;
   /** Fase 6: facturado (true) / sin facturar (false); ausente = todos. */
   invoiced?: boolean;
-  /** Fase 6: tienda por slug (artisjet / boprint / fluxlasers…). */
+  /** Fase 6: tienda por slug (artisjet-europe / boprint / fluxlasers…). */
   store_slug?: string;
   /** Fase 6: rango de fecha del pedido (YYYY-MM-DD, inclusivo). */
   placed_from?: string;
@@ -996,6 +996,13 @@ export type WooReconcileSummary = {
   unknown_total?: number;
   to_filled?: number;
   to_not_found?: number;
+  /** Pedidos web a los que se rellena el MÉTODO DE PAGO (estaba vacío), cambien
+   *  o no de estado: en total, por tienda (`account_id`) y los que siguen sin
+   *  él (la tienda no lo tiene o quedan para la próxima pasada). */
+  to_payment_method?: number;
+  payment_method_by_store?: Record<string, number>;
+  payment_method_pending?: number;
+  payment_method_samples?: string[];
   errors: { order_number?: string | null; store?: string; status?: string; error: string }[];
   samples: Record<string, string[]>;
 };
@@ -2736,7 +2743,7 @@ export type OrderCobroInfo = {
   /** Cuenta sugerida por defecto (serie / empresa emisora, PayPal por tienda,
    *  o la que se apuntó en el pedido al pagar — Bloque B). */
   suggested_cuenta?: Contrapartida | null;
-  /** Por qué se sugiere esa cuenta («tienda artisJet · método Carte»,
+  /** Por qué se sugiere esa cuenta («tienda Artisjet Europe · método Carte»,
    *  «cuenta de la serie 2», «pago apuntado en el pedido»). */
   suggested_reason?: string | null;
   /** Método de pago del pedido web (título en la tienda). */

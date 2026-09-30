@@ -282,7 +282,7 @@ def _apply_filters(
     store_slug: str | None, q: str | None,
 ) -> Any:
     """Filtros compartidos por la cola y el historial: rango de fecha del
-    pedido (`placed_at`, inclusivo), tienda por slug (artisjet / boprint /
+    pedido (`placed_at`, inclusivo), tienda por slug (artisjet-europe / boprint /
     fluxlasers…) y texto (nº de pedido o cliente: empresa, contacto, email).
     Mismo criterio de fechas/tienda que la bandeja (`list_orders`)."""
     if desde:

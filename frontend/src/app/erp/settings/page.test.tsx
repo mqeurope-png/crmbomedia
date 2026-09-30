@@ -315,9 +315,15 @@ describe("ErpSettingsPage — serie de facturación (C-2)", () => {
 // método de pago → contrapartida sugerida (sustituyen al PayPal por tienda).
 describe("ErpSettingsPage — contrapartidas de cobro (F5)", () => {
   const RULES: ContrapartidaRule[] = [
-    { tienda: "artisjet", metodo: "paypal", coincidencia: "contiene", contrapartida: "12" },
+    { tienda: "artisjet-europe", metodo: "paypal", coincidencia: "contiene", contrapartida: "12" },
     { tienda: "boprint", metodo: "paypal", coincidencia: "contiene", contrapartida: "14" },
-    { tienda: "artisjet", metodo: "Carte", coincidencia: "exacta", contrapartida: "15" },
+    { tienda: "artisjet-europe", metodo: "Carte", coincidencia: "exacta", contrapartida: "15" },
+  ];
+  // Las cuentas WooCommerce REALES (clave de tienda = account_id).
+  const WOO = [
+    { slug: "artisjet-europe", label: "Artisjet Europe", ref_prefix_metadata: null,
+      derived_ref_prefix: "ART" },
+    ...STORES,
   ];
 
   it("lista las contrapartidas y las reglas; edita, reordena, añade y guarda", async () => {
@@ -328,11 +334,21 @@ describe("ErpSettingsPage — contrapartidas de cobro (F5)", () => {
         { codigo: "14", nombre: "Paypal Streamtec" },
       ],
       contrapartida_rules: RULES,
+      woocommerce_stores: WOO,
     }));
     const user = userEvent.setup();
     render(<ErpSettingsPage />);
     const desc = await screen.findByLabelText("Contrapartida 1 descripción");
     expect(desc).toHaveValue("Bomedia Sabadell");
+    // El desplegable «Tienda» lista las cuentas Woo reales por su account_id.
+    const tienda1 = screen.getByLabelText("Regla 1 tienda");
+    expect(tienda1).toHaveValue("artisjet-europe");
+    expect(within(tienda1).getAllByRole("option").map((o) => [
+      (o as HTMLOptionElement).value, o.textContent,
+    ])).toEqual([
+      ["", "Todas"], ["artisjet-europe", "Artisjet Europe"],
+      ["boprint", "boprint"], ["fluxlasers", "fluxlasers"],
+    ]);
     expect(screen.getByLabelText("Contrapartida 1 código")).toHaveValue("6");
     // Las reglas, en orden, con su tienda, método, coincidencia y cuenta.
     const table = screen.getByRole("table", { name: "Reglas de contrapartida" });
@@ -356,11 +372,26 @@ describe("ErpSettingsPage — contrapartidas de cobro (F5)", () => {
     const sent = mockUpdate.mock.calls[0][0];
     expect(Object.keys(sent).sort()).toEqual(["contrapartida_rules", "contrapartidas"]);
     expect(sent.contrapartida_rules).toEqual([
-      { tienda: "artisjet", metodo: "Carte", coincidencia: "exacta", contrapartida: "15" },
-      { tienda: "artisjet", metodo: "paypal", coincidencia: "contiene", contrapartida: "12" },
+      { tienda: "artisjet-europe", metodo: "Carte", coincidencia: "exacta", contrapartida: "15" },
+      { tienda: "artisjet-europe", metodo: "paypal", coincidencia: "contiene", contrapartida: "12" },
       { tienda: "boprint", metodo: "paypal", coincidencia: "contiene", contrapartida: "6" },
       { tienda: "", metodo: "transferencia", coincidencia: "contiene", contrapartida: "6" },
     ]);
+  });
+
+  it("una regla con una tienda que no es ninguna cuenta Woo se ve marcada", async () => {
+    mockGet.mockResolvedValue(settings({
+      contrapartidas: [{ codigo: "15", nombre: "Tarjetas Mollie Belfius" }],
+      contrapartida_rules: [
+        { tienda: "artisjet", metodo: "Carte", coincidencia: "exacta", contrapartida: "15" },
+      ],
+      woocommerce_stores: WOO,
+    }));
+    render(<ErpSettingsPage />);
+    const tienda = await screen.findByLabelText("Regla 1 tienda");
+    expect(tienda).toHaveValue("artisjet");
+    expect(within(tienda).getByRole("option", { selected: true }))
+      .toHaveTextContent("artisjet (no es ninguna tienda Woo)");
   });
 
   it("quitar una regla y editar el catálogo viajan juntos", async () => {

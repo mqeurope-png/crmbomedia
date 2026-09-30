@@ -23,6 +23,9 @@ Contrapartida SUGERIDA (solo una sugerencia, editable):
 Las reglas iniciales son las de PayPal por tienda de antes (artisJet → 12;
 boprint y fluxlasers → 14; `paypal_contrapartidas_by_store`, que queda como
 dato heredado) más artisJet + tarjeta de Mollie («Carte») → 15.
+
+La TIENDA es el `account_id` de la cuenta Woo (`artisjet-europe`, `boprint`,
+`fluxlasers`; ver `app.erp.woo_stores`): sin lista fija ni alias.
 """
 
 from __future__ import annotations
@@ -31,6 +34,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.erp.woo_stores import store_display_name, store_key
 from app.integrations.factusol.catalogs import names_index, normalize_code, resolve_name
 
 #: Las 14 contrapartidas de Bart (código → descripción), tal como las lista
@@ -52,27 +56,19 @@ DEFAULT_CONTRAPARTIDAS: list[tuple[int, str]] = [
     (14, "Paypal Streamtec"),
 ]
 
-#: Tiendas (origen del pedido) que se pueden elegir en las reglas.
-STORES: list[tuple[str, str]] = [
-    ("artisjet", "artisJet"),
-    ("boprint", "boprint"),
-    ("fluxlasers", "fluxlasers"),
-]
-#: Nombre heredado (PayPal por tienda).
-PAYPAL_STORES = STORES
-STORE_LABELS: dict[str, str] = dict(STORES)
+#: Contrapartida PayPal inicial por tienda (clave = `account_id` de la cuenta
+#: Woo). Las tiendas que se eligen en las reglas son las cuentas Woo reales
+#: (`woo_stores`), no una lista fija.
 DEFAULT_PAYPAL_BY_STORE: dict[str, str] = {
-    "artisjet": "12",
+    "artisjet-europe": "12",
     "boprint": "14",
     "fluxlasers": "14",
 }
-#: Alias de slug de tienda que usa el resto de la app (`flux` en Woo).
-_STORE_ALIASES = {"flux": "fluxlasers", "flux-lasers": "fluxlasers", "artisjetspain": "artisjet"}
 
 
 def normalize_store(store: Any) -> str:
-    key = str(store or "").strip().lower()
-    return _STORE_ALIASES.get(key, key)
+    """Clave de tienda = `account_id` en minúsculas. Sin alias."""
+    return store_key(store)
 
 
 def _stored_series(session: Session) -> dict[str, Any]:
@@ -214,7 +210,8 @@ def suggest_contrapartida_explained(
         if hit is None:
             continue
         partes = []
-        tienda = store_label(rule.get("tienda") or store) if (rule.get("tienda") or store) else ""
+        tienda_key = rule.get("tienda") or store
+        tienda = store_label(session, tienda_key) if tienda_key else ""
         if tienda:
             partes.append(f"tienda {tienda}")
         partes.append(f"método {metodo_visible or hit}")
@@ -302,9 +299,9 @@ MATCH_KINDS = (MATCH_EXACT, MATCH_CONTAINS)
 #: `mollie_wc_gateway_creditcard`): entra por Mollie en Belfius → 15 (Tarjetas
 #: Mollie Belfius). Confirmado por Bart: solo artisJet usa Mollie.
 MOLLIE_CARD_RULES: list[dict[str, str]] = [
-    {"tienda": "artisjet", "metodo": "Carte", "coincidencia": MATCH_EXACT,
+    {"tienda": "artisjet-europe", "metodo": "Carte", "coincidencia": MATCH_EXACT,
      "contrapartida": "15"},
-    {"tienda": "artisjet", "metodo": "mollie_wc_gateway_creditcard",
+    {"tienda": "artisjet-europe", "metodo": "mollie_wc_gateway_creditcard",
      "coincidencia": MATCH_EXACT, "contrapartida": "15"},
 ]
 
@@ -351,11 +348,15 @@ def contrapartida_rules_config(series: dict[str, Any] | None) -> list[dict[str, 
     return default_contrapartida_rules(series.get("paypal_contrapartidas_by_store"))
 
 
-def validate_contrapartida_rules(raw: list[Any]) -> list[dict[str, str]]:
+def validate_contrapartida_rules(
+    raw: list[Any], *, known_stores: set[str] | None = None,
+) -> list[dict[str, str]]:
     """Valida lo que llega del PATCH de ajustes (el orden importa: primera
     regla que casa). Filas vacías se ignoran. Lanza ValueError con el motivo.
     La contrapartida debe ser un código numérico; si no está en el catálogo, la
-    regla se guarda pero no se aplica hasta que exista."""
+    regla se guarda pero no se aplica hasta que exista. Con `known_stores` (las
+    cuentas Woo reales), una tienda que no es ninguna de ellas se rechaza: una
+    regla así no casaría nunca."""
     out: list[dict[str, str]] = []
     for i, entry in enumerate(raw, start=1):
         entry = entry if isinstance(entry, dict) else {}
@@ -375,6 +376,11 @@ def validate_contrapartida_rules(raw: list[Any]) -> list[dict[str, str]]:
         tienda = normalize_store(entry.get("tienda"))
         if tienda in ("todas", "*"):
             tienda = ""
+        if tienda and known_stores is not None and tienda not in known_stores:
+            raise ValueError(
+                f"regla {i}: la tienda {tienda!r} no es ninguna cuenta WooCommerce "
+                f"({', '.join(sorted(known_stores)) or 'ninguna dada de alta'})",
+            )
         out.append({"tienda": tienda, "metodo": metodo, "coincidencia": coincidencia,
                     "contrapartida": normalize_code(codigo_raw)})
     return out
@@ -407,9 +413,10 @@ def rule_matches(
     return None
 
 
-def store_label(store: Any) -> str:
-    key = normalize_store(store)
-    return STORE_LABELS.get(key, key)
+def store_label(session: Session, store: Any) -> str:
+    """Nombre visible de la tienda («Artisjet Europe», el `display_name` de su
+    cuenta Woo)."""
+    return store_display_name(session, store)
 
 
 __all__ = [
@@ -418,8 +425,6 @@ __all__ = [
     "MATCH_CONTAINS",
     "MATCH_EXACT",
     "MOLLIE_CARD_RULES",
-    "PAYPAL_STORES",
-    "STORES",
     "contrapartida_rules",
     "contrapartida_rules_config",
     "default_contrapartida_rules",

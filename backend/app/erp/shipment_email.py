@@ -11,8 +11,9 @@ en `POST /shipments`).
 Conecta piezas que YA existen, sin reimplementarlas:
 - el envío por Gmail desde alias (`gmail.service.send_email`, integración de
   Google de la organización), igual que el email de factura;
-- los remitentes por TIENDA de Ajustes ERP (`store_email_from`: artisjet →
-  info@artisjet-printers.eu; boprint / fluxlasers → pedidos@streamtec.es);
+- los remitentes por TIENDA de Ajustes ERP (`store_email_from`, clave =
+  `account_id` de la cuenta Woo: artisjet-europe → info@artisjet-printers.eu;
+  boprint / fluxlasers → pedidos@streamtec.es);
 - la cascada de idioma del ERP (`language_for_country`);
 - el tracking y la URL de seguimiento que ya guarda el bloque Genei.
 
@@ -54,12 +55,6 @@ MANUAL_FROM_KEY = "shipment_email_from"
 DEFAULT_MANUAL_FROM: dict[str, str] = {
     "es": "pedidos@streamtec.es",
     "otros": "info@artisjet-printers.eu",
-}
-#: Tienda por prefijo del nº de pedido web (por si el pedido no trae cuenta).
-STORE_BY_PREFIX: dict[str, str] = {
-    "BOPRIN": "boprint",
-    "FLUXLA": "fluxlasers",
-    "ARTISJ": "artisjet",
 }
 #: Reintentos automáticos si Gmail falla (luego, reenvío manual).
 MAX_AUTO_ATTEMPTS = 3
@@ -248,15 +243,14 @@ def _is_genei(order: Any) -> bool:
 
 
 def brand_store(session: Session, order: Any) -> str | None:
-    """Tienda (marca) del pedido: la cuenta Woo o, si no la trae, el prefijo
-    del nº de pedido (BOPRIN-/FLUXLA-/ARTISJ-). None = pedido manual."""
-    from app.erp.invoice_email import order_store_slug  # noqa: PLC0415
+    """Tienda (marca) del pedido: su cuenta Woo (`account_id`) o, si no la
+    trae, la cuenta Woo cuyo prefijo de nº de pedido casa (BOPRIN-/FLUXLA-/
+    ARTISJ- → boprint / fluxlasers / artisjet-europe; sale de las cuentas
+    reales, sin tabla fija). None = pedido manual."""
+    from app.erp.woo_stores import order_store_key, store_for_order_number  # noqa: PLC0415
 
-    slug = order_store_slug(session, order)
-    if slug:
-        return slug.strip().lower()
-    prefix = str(getattr(order, "order_number", "") or "").split("-")[0].upper()
-    return STORE_BY_PREFIX.get(prefix)
+    return (order_store_key(session, order)
+            or store_for_order_number(session, getattr(order, "order_number", None)))
 
 
 def manual_from_config(raw: Any) -> dict[str, str]:

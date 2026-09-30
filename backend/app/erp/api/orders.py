@@ -963,7 +963,7 @@ def _manual_packing_json(payload: OrderCreate) -> str | None:
 
 
 def _where_store_slug(stmt, store_slug: str | None):  # noqa: ANN001, ANN201 — Select[Order]
-    """Tienda por SLUG (`account_id` de la cuenta Woo: artisjet / boprint /
+    """Tienda por SLUG (`account_id` de la cuenta Woo: artisjet-europe / boprint /
     fluxlasers…), sin distinguir mayúsculas. Lo usan la bandeja y la Cola
     PEDIDOS."""
     if not store_slug:
@@ -1010,7 +1010,7 @@ def list_orders(
     # Fase 3 (ficha de empresa): pedidos de UNA empresa, con su `workflow`,
     # para la «actividad reciente».
     company_id: str | None = Query(default=None, max_length=36),
-    # Fase 6 (bandeja): tienda por SLUG (artisjet / boprint / fluxlasers…),
+    # Fase 6 (bandeja): tienda por SLUG (artisjet-europe / boprint / fluxlasers…),
     # facturado sí/no y rango de fechas del pedido (placed_at, ISO date).
     store_slug: str | None = Query(default=None, max_length=64),
     invoiced: bool | None = Query(default=None),

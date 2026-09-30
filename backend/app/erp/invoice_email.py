@@ -246,14 +246,14 @@ def series_from_alias(session: Session, serie: int | None) -> str | None:
     return mapping.get(int(serie))
 
 
-#: Remitente por TIENDA (slug de la cuenta Woo: artisjet / boprint /
-#: fluxlasers…). Más fino que la serie: dos tiendas de la misma empresa
-#: emisora (boprint y flux, ambas serie 5) pueden enviar desde alias
-#: distintos. Precarga = el alias de su serie; CONFIGURABLE en /erp/settings
+#: Remitente por TIENDA (clave = `account_id` de la cuenta Woo:
+#: artisjet-europe / boprint / fluxlasers…). Más fino que la serie: dos
+#: tiendas de la misma empresa emisora (boprint y flux, ambas serie 5) pueden
+#: enviar desde alias distintos. Precarga = el alias de su serie; CONFIGURABLE en /erp/settings
 #: (blob `factusol_series_json.store_email_from`, sin migración). Un valor
 #: vacío en la config BORRA el default de esa tienda (cae a la serie).
 DEFAULT_STORE_EMAIL_FROM: dict[str, str] = {
-    "artisjet": "info@artisjet-printers.eu",
+    "artisjet-europe": "info@artisjet-printers.eu",
     "boprint": "pedidos@streamtec.es",
     "fluxlasers": "pedidos@streamtec.es",
 }
@@ -288,14 +288,12 @@ def store_from_alias(session: Session, store_slug: str | None) -> str | None:
 
 
 def order_store_slug(session: Session, order: Any) -> str | None:
-    """Slug de la tienda Woo del pedido (`IntegrationAccount.account_id`), o
-    None si el pedido no es de tienda / no tiene cuenta."""
-    if order is None or not getattr(order, "store_id", None):
-        return None
-    from app.models.integration_settings import IntegrationAccount  # noqa: PLC0415
+    """Tienda Woo del pedido (`orders.store_id → IntegrationAccount.account_id`,
+    la clave única de tienda de toda la app), o None si el pedido no es de
+    tienda / no tiene cuenta."""
+    from app.erp.woo_stores import order_store_key  # noqa: PLC0415
 
-    store = session.get(IntegrationAccount, order.store_id)
-    return store.account_id if store is not None else None
+    return order_store_key(session, order)
 
 
 def company_contacts_for_order(session: Session, order: Any) -> list[dict[str, Any]]:

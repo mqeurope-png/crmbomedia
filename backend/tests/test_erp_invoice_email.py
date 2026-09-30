@@ -528,7 +528,7 @@ def test_store_email_from_config_defaults_override_and_clear() -> None:
 
     base = store_email_from_config(None)
     assert base["boprint"] == "pedidos@streamtec.es"
-    assert base["artisjet"] == "info@artisjet-printers.eu"
+    assert base["artisjet-europe"] == "info@artisjet-printers.eu"
     over = store_email_from_config({"boprint": "tienda@boprint.es", "Fluxlasers": ""})
     assert over["boprint"] == "tienda@boprint.es"
     assert "fluxlasers" not in over  # vacío borra el default (cae a la serie)
@@ -566,6 +566,26 @@ def test_invoice_email_sender_by_store_beats_serie(http, session_factory) -> Non
     assert pre2["from_alias_source"] == "serie"
 
 
+def test_invoice_email_pedido_artisjet_en_espanol_sale_de_su_tienda(
+    http, session_factory,
+) -> None:
+    """Rev. 30/09/2026: la cuenta Woo de artisJet es `artisjet-europe`. Un
+    pedido suyo en ESPAÑOL (serie 5, cuyo remitente es pedidos@streamtec.es)
+    sale de info@artisjet-printers.eu por su TIENDA, no por la serie."""
+    with session_factory() as s:
+        _seed_store_order(s, "artisjet-europe")
+        _seed_alias(s)
+    with _patched_factusol():
+        pre = http.get(
+            "/api/erp/factusol/documents/facturas/5/260063/email-preview",
+            headers=auth_headers(http, "pedidos"),
+        ).json()
+    assert pre["lang"] == "es"
+    assert pre["store"] == "artisjet-europe"
+    assert pre["from_alias"] == "info@artisjet-printers.eu"
+    assert pre["from_alias_source"] == "tienda"
+
+
 def test_invoice_email_pedido_in_subject_and_body(http, session_factory) -> None:
     """El nº de pedido de BoHub va en el ASUNTO y en el CUERPO (placeholder
     {pedido}), además del nº de factura, en el idioma del pedido."""
@@ -593,7 +613,8 @@ def test_store_email_from_settings_roundtrip(http, session_factory) -> None:
     }, headers=headers)
     assert r2.json()["factusol_store_email_from"]["boprint"] == "tienda@boprint.es"
     # Las demás tiendas conservan su precarga.
-    assert r2.json()["factusol_store_email_from"]["artisjet"] == "info@artisjet-printers.eu"
+    assert r2.json()["factusol_store_email_from"]["artisjet-europe"] == (
+        "info@artisjet-printers.eu")
 
 
 # ---------------------------------------------------------------------------
@@ -1140,7 +1161,7 @@ def test_settings_template_preview_sender_follows_default_serie(
     assert r.json()["from_alias_scope"] == "5"
     # Serie por defecto sin remitente → cae a la primera tienda con alias.
     with session_factory() as s:
-        _seed_store(s, "artisjet")
+        _seed_store(s, "artisjet-europe")
         s.commit()
     http.patch("/api/erp/settings", json={"factusol_series_email_from": {"5": ""}},
                headers=admin)
@@ -1148,7 +1169,7 @@ def test_settings_template_preview_sender_follows_default_serie(
                    headers=admin)
     assert r2.json()["from_alias_example"] == "info@artisjet-printers.eu"
     assert r2.json()["from_alias_source"] == "tienda"
-    assert r2.json()["from_alias_scope"] == "artisjet"
+    assert r2.json()["from_alias_scope"] == "artisjet-europe"
 
 
 def test_settings_template_test_send_to_me(http, session_factory) -> None:

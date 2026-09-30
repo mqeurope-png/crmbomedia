@@ -303,31 +303,50 @@ def test_bank_account_links_to_contrapartida(http) -> None:
 
 
 def test_paypal_contrapartida_by_store(http, session_factory) -> None:
+    from app.models.integration_settings import (
+        ExternalSystem,
+        IntegrationAccount,
+        IntegrationMode,
+    )
+
     with session_factory() as s:
-        assert paypal_contrapartida_for_store(s, "artisjet") == {
+        # Las cuentas Woo reales: la clave de tienda es su `account_id`.
+        for slug, name in (("artisjet-europe", "Artisjet Europe"), ("boprint", "Boprint"),
+                           ("fluxlasers", "Fluxlasers ES")):
+            s.add(IntegrationAccount(system=ExternalSystem.WOOCOMMERCE, account_id=slug,
+                                     display_name=name, enabled=True,
+                                     mode=IntegrationMode.LIVE))
+        s.commit()
+        assert paypal_contrapartida_for_store(s, "artisjet-europe") == {
             "codigo": "12", "nombre": "Paypal MQ Europe"}
         assert paypal_contrapartida_for_store(s, "boprint") == {
             "codigo": "14", "nombre": "Paypal Streamtec"}
         assert paypal_contrapartida_for_store(s, "fluxlasers")["codigo"] == "14"
-        assert paypal_contrapartida_for_store(s, "flux")["codigo"] == "14"   # slug Woo
-        assert paypal_contrapartida_for_store(s, "ArtisJet")["codigo"] == "12"
-        assert paypal_contrapartida_for_store(s, "otra") is None
+        assert paypal_contrapartida_for_store(s, "ArtisJet-Europe")["codigo"] == "12"
+        # Sin alias: las claves viejas no son ninguna tienda.
+        assert paypal_contrapartida_for_store(s, "artisjet") is None
+        assert paypal_contrapartida_for_store(s, "flux") is None
         assert paypal_contrapartida_for_store(s, None) is None
     r = http.get("/api/erp/settings", headers=auth_headers(http, "user"))
     assert r.json()["paypal_contrapartidas_by_store"] == {
-        "artisjet": "12", "boprint": "14", "fluxlasers": "14"}
+        "artisjet-europe": "12", "boprint": "14", "fluxlasers": "14"}
     # Configurable: boprint pasa a «11 Paypal Bomedia»; el resto no cambia.
     r = http.patch("/api/erp/settings", json={"paypal_contrapartidas_by_store": {"boprint": "11"}},
                    headers=auth_headers(http, "admin"))
     assert r.status_code == 200, r.text
     assert r.json()["paypal_contrapartidas_by_store"] == {
-        "artisjet": "12", "boprint": "11", "fluxlasers": "14"}
+        "artisjet-europe": "12", "boprint": "11", "fluxlasers": "14"}
     with session_factory() as s:
         assert paypal_contrapartida_for_store(s, "boprint") == {
             "codigo": "11", "nombre": "Paypal Bomedia"}
     r = http.get("/api/erp/catalogs/contrapartidas", headers=auth_headers(http, "user"))
     assert r.json()["paypal_by_store"]["boprint"] == "11"
-    assert [s["key"] for s in r.json()["stores"]] == ["artisjet", "boprint", "fluxlasers"]
+    # Los desplegables «Tienda» salen de las cuentas Woo reales.
+    assert r.json()["stores"] == [
+        {"key": "artisjet-europe", "label": "Artisjet Europe"},
+        {"key": "boprint", "label": "Boprint"},
+        {"key": "fluxlasers", "label": "Fluxlasers ES"},
+    ]
     r = http.patch("/api/erp/settings", json={"paypal_contrapartidas_by_store": {"boprint": "x"}},
                    headers=auth_headers(http, "admin"))
     assert r.status_code == 400

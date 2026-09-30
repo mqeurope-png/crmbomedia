@@ -13,11 +13,11 @@ from sqlalchemy.orm import Session
 from app.db.session import get_session
 from app.erp.api.deps import require_erp_view
 from app.erp.contrapartidas import (
-    STORES,
     contrapartida_rules,
     contrapartidas,
     paypal_by_store_config,
 )
+from app.erp.woo_stores import woo_stores
 from app.integrations.factusol.catalogs import (
     CATALOGS,
     describe_catalogs,
@@ -60,7 +60,8 @@ def contrapartidas_endpoint(
         "paypal_by_store": paypal_by_store_config(
             series_config(session).get("paypal_contrapartidas_by_store")
         ),
-        "stores": [{"key": k, "label": v} for k, v in STORES],
+        # Tiendas = las cuentas Woo reales (clave = `account_id`).
+        "stores": woo_stores(session),
         # Reglas tienda × método de pago → contrapartida sugerida (en orden).
         "rules": contrapartida_rules(session),
         "source": "erp_settings",
