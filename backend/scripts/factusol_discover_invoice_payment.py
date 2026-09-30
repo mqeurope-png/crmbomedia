@@ -19,6 +19,13 @@ Dos modos:
                    es FALLCO (¿vencimiento?) y qué cuentas conoce F_BAN (sin
                    exponer los IBAN completos). SOLO LECTURA.
 
+  --mullco        Rev. 30/09/2026: qué es F_LCO.MULLCO (¿cobro múltiple /
+                   movimiento de tesorería?). Reparte las líneas de cobro por
+                   MULLCO y TRALCO, dice si los MULLCO casan con F_COB.CODCOB y
+                   enseña de qué facturas es cada MULLCO. BoHub registra sus
+                   cobros con MULLCO=0 y TRALCO=0 (antes heredaba el MULLCO de
+                   la fila plantilla). SOLO LECTURA.
+
 Uso (en producción, dentro del contenedor api):
     docker exec crmbo-api-1 python -m \
         scripts.factusol_discover_invoice_payment --estfac 1
@@ -226,6 +233,30 @@ def dump_lco_rows(client: Any, ejercicio: str, numeros: list[str]) -> int:
     return 0
 
 
+def discover_mullco(client: Any, ejercicio: str) -> int:
+    """Reparto de F_LCO por MULLCO / TRALCO y su relación con F_COB (lectura)."""
+    lco = client.load_table("F_LCO", filtro="1=1", ejercicio=ejercicio)
+    cob = client.load_table("F_COB", filtro="1=1", ejercicio=ejercicio)
+    cob_ids = {_s(r, "CODCOB") for r in cob if _s(r, "CODCOB")}
+    print(f"F_LCO: {len(lco)} líneas · F_COB: {len(cob)} filas · ejercicio {ejercicio}\n")
+    by_mul: dict[str, list[dict[str, Any]]] = {}
+    for r in lco:
+        by_mul.setdefault(_s(r, "MULLCO") or "0", []).append(r)
+    print("== Líneas por MULLCO (TRALCO=0 / TRALCO≠0) · ¿casa con F_COB.CODCOB? ==")
+    for mul, rows in sorted(by_mul.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+        tra0 = sum(1 for r in rows if _s(r, "TRALCO") in ("", "0"))
+        facturas = sorted({f"{_s(r, 'TFALCO')}-{_s(r, 'CFALCO')}" for r in rows})
+        muestra = ", ".join(facturas[:6]) + (" …" if len(facturas) > 6 else "")
+        print(f"  MULLCO={mul:<6} {len(rows):>4} líneas (TRALCO=0: {tra0}, ≠0: "
+              f"{len(rows) - tra0}) · {len(facturas)} factura(s) · "
+              f"{'EN F_COB' if mul in cob_ids else 'no está en F_COB'} · {muestra}")
+    print("\nLectura: si las líneas hechas a mano llevan MULLCO=0 y un MULLCO≠0 agrupa")
+    print("varias facturas o casa con F_COB.CODCOB, MULLCO es el cobro múltiple /")
+    print("movimiento de tesorería: BoHub NO debe heredarlo (registra MULLCO=0).")
+    print("SOLO LECTURA — no se ha escrito nada.")
+    return 0
+
+
 def _resolve_ejercicio(arg: str | None) -> tuple[Any, str]:
     from sqlalchemy.orm import Session  # noqa: PLC0415
 
@@ -250,6 +281,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="Vuelca las columnas de fecha candidatas.")
     parser.add_argument("--collections", action="store_true",
                         help="Documenta F_LCO/F_COB/F_BAN (conciliación).")
+    parser.add_argument("--mullco", action="store_true",
+                        help="Reparto de F_LCO por MULLCO/TRALCO y relación con F_COB.")
     parser.add_argument("--lco-row", nargs="+", default=None, metavar="NUMERO",
                         help="Vuelca las filas REALES de F_LCO de esas facturas "
                              "(valor y tipo por columna), p. ej. 5-260004.")
@@ -264,6 +297,8 @@ def main(argv: list[str] | None = None) -> int:
         return discover_collections(client, ejercicio)
     if args.lco_row:
         return dump_lco_rows(client, ejercicio, args.lco_row)
+    if args.mullco:
+        return discover_mullco(client, ejercicio)
     parser.print_help()
     return 0
 

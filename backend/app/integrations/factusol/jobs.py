@@ -301,6 +301,111 @@ def enqueue_register_invoice_collection(
     )
 
 
+# --- anular / corregir un cobro registrado por BoHub -------------------------
+
+
+def annul_invoice_collection_job(
+    event_id: str,
+    actor_user_id: str | None = None,
+    correction: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """ANULA el cobro que registró BoHub (evento de auditoría `event_id`):
+    borra SU línea de `F_LCO` —solo si sigue siendo la registrada— y deja
+    `ESTFAC` según lo que quede cobrado; los pedidos de la factura pasan a su
+    estado real y el historial lo anota. Con `correction` ({contrapartida,
+    fecha, importe?}) registra a continuación el cobro correcto («Corregir
+    cobro»), en el MISMO job. Corre en `factusol:writes` (serial)."""
+    from sqlalchemy.orm import Session  # noqa: PLC0415
+
+    from app.core.audit import record_event  # noqa: PLC0415
+    from app.db.session import get_engine  # noqa: PLC0415
+    from app.erp.factusol_cobro import (  # noqa: PLC0415
+        ANNULLED_EVENT,
+        annul_reason,
+        bohub_collection,
+        mark_orders_after_annul,
+        mark_orders_after_collection,
+    )
+    from app.integrations.factusol.collections_write import (  # noqa: PLC0415
+        annul_invoice_collection,
+        register_invoice_collection,
+    )
+    from app.integrations.factusol.service import ejercicio_for  # noqa: PLC0415
+    from app.models.crm import User  # noqa: PLC0415
+
+    with Session(get_engine()) as session:
+        cobro = bohub_collection(session, event_id)
+        if cobro is None:
+            return {"annulled": False, "status": "not_found",
+                    "motivo": "Ese cobro no consta como registrado por BoHub."}
+        if not cobro["anulable"]:
+            return {"annulled": False, "status": "already_annulled",
+                    "numero": cobro["numero"],
+                    "motivo": f"El cobro de {cobro['numero']} ya estaba anulado."}
+        client = FactusolClient.from_settings()
+        ejercicio = ejercicio_for(session)
+        result = annul_invoice_collection(
+            client, session, serie=cobro["serie"], codigo=cobro["codigo"],
+            linlco=int(cobro["linlco"]),
+            esperado={"fecha": cobro["fecha"], "importe": cobro["importe"],
+                      "contrapartida": cobro["contrapartida"]},
+            ejercicio=ejercicio,
+        )
+        result["cobro"] = cobro
+        if not result.get("annulled"):
+            return result
+        actor = session.get(User, actor_user_id) if actor_user_id else None
+        record_event(
+            session, action=ANNULLED_EVENT, target_type="document",
+            target_id=cobro["numero"], actor=actor,
+            metadata={
+                "numero": cobro["numero"], "registered_event_id": cobro["id"],
+                "linlco": cobro["linlco"], "importe": cobro["importe"],
+                "fecha": cobro["fecha"], "contrapartida": cobro["contrapartida"],
+                "status": result["status"], "estfac_antes": result.get("estfac_antes"),
+                "estfac": result.get("estfac"),
+                "saldo_pendiente": result.get("saldo_pendiente"),
+            },
+            message=f"{annul_reason(cobro)} en FACTUSOL (factura {cobro['numero']})",
+        )
+        updated = mark_orders_after_annul(
+            session, cobro=cobro, result=result, actor_user_id=actor_user_id,
+        )
+        result["orders_updated"] = [o.id for o in updated]
+        if correction:
+            nuevo = register_invoice_collection(
+                client, session, serie=cobro["serie"], codigo=cobro["codigo"],
+                contrapartida=str(correction["contrapartida"]),
+                fecha=correction["fecha"], importe=correction.get("importe"),
+                forma=correction.get("forma"), ejercicio=ejercicio,
+            )
+            if nuevo.get("registered"):
+                _record_invoice_collection_event(
+                    session, serie=cobro["serie"], codigo=cobro["codigo"],
+                    result=nuevo, actor_user_id=actor_user_id,
+                    meta={"numero": cobro["numero"], "correccion_de": cobro["id"]},
+                )
+            mark_orders_after_collection(
+                session, serie=cobro["serie"], codigo=cobro["codigo"], result=nuevo,
+                actor_user_id=actor_user_id,
+            )
+            result["correccion"] = nuevo
+        session.commit()
+    return result
+
+
+def enqueue_annul_invoice_collection(
+    event_id: str, actor_user_id: str | None = None,
+    correction: dict[str, Any] | None = None,
+) -> str:
+    """Encola `annul_invoice_collection_job` en `factusol:writes` (serial,
+    como el resto de escrituras en FACTUSOL)."""
+    return _enqueue(
+        "app.integrations.factusol.jobs.annul_invoice_collection_job",
+        event_id=event_id, actor_user_id=actor_user_id, correction=correction,
+    )
+
+
 # --- cadena de documentos (ERP-E3-B) -----------------------------------------
 
 

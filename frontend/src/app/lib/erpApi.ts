@@ -2747,7 +2747,73 @@ export type OrderCobroInfo = {
   warnings?: string[];
   checked_at?: string;
   persisted_status?: FactusolCobroStatus | null;
+  /** Cobros de la factura que registró BoHub (se pueden anular / corregir). */
+  bohub_cobros?: BohubCobro[];
+  /** Pedido y factura con totales distintos (portes, líneas cambiadas…). */
+  total_mismatch?: { pedido: number; factura: number; diferencia: number } | null;
 };
+
+/** Un cobro que registró BoHub en FACTUSOL (según su auditoría): su línea de
+ *  F_LCO, fecha, importe y contrapartida. `anulable` = se puede anular /
+ *  corregir (no se anuló ya). Los cobros hechos a mano en FACTUSOL no salen. */
+export type BohubCobro = {
+  id: string;
+  numero: string;
+  serie: number;
+  codigo: number;
+  linlco: number | null;
+  fecha: string | null;
+  importe: number | null;
+  contrapartida: string | null;
+  contrapartida_nombre: string | null;
+  registrado_at: string | null;
+  registrado_por: string | null;
+  anulado: boolean;
+  anulado_at: string | null;
+  anulable: boolean;
+};
+
+/** Resultado del job de anular (y, si es «Corregir», del nuevo cobro). */
+export type AnnulCobroJobResult = {
+  annulled: boolean;
+  status: string;
+  motivo?: string | null;
+  numero?: string;
+  saldo_pendiente?: number;
+  estfac?: string;
+  correccion?: { registered: boolean; status: string; motivo?: string | null;
+                 importe?: number; saldo_pendiente?: number; parcial?: boolean } | null;
+};
+
+/** «Anular cobro» (solo los de BoHub): encola borrar SU línea de F_LCO y dejar
+ *  la factura con el estado de lo que quede cobrado. */
+export async function annulOrderCobro(
+  orderId: string, eventId: string,
+): Promise<{ status: "queued"; job_id: string; cobro: BohubCobro }> {
+  return apiFetch(
+    `/api/erp/orders/${encodeURIComponent(orderId)}/factusol-cobros/${encodeURIComponent(eventId)}/anular`,
+    { method: "POST", body: JSON.stringify({ confirm: true }) },
+  );
+}
+
+/** «Corregir cobro» = anular + registrar de nuevo con estos datos. */
+export async function correctOrderCobro(
+  orderId: string, eventId: string,
+  body: { cuenta: string; fecha: string; importe?: number | null; forma?: string | null },
+): Promise<{ status: "queued"; job_id: string; cobro: BohubCobro }> {
+  return apiFetch(
+    `/api/erp/orders/${encodeURIComponent(orderId)}/factusol-cobros/${encodeURIComponent(eventId)}/corregir`,
+    { method: "POST", body: JSON.stringify({ confirm: true, ...body }) },
+  );
+}
+
+/** Espera al job de anular / corregir (misma cola y polling que el cobro). */
+export async function waitForAnnulCobroJob(
+  jobId: string, opts: { tries?: number; delayMs?: number } = {},
+): Promise<{ status: "pending" } | { status: "finished"; result: AnnulCobroJobResult }
+  | { status: "failed"; error?: string }> {
+  return waitForInvoiceCollectionJob(jobId, opts) as never;
+}
 
 export async function getOrderFactusolCobro(orderId: string): Promise<OrderCobroInfo> {
   return apiFetch(`/api/erp/orders/${encodeURIComponent(orderId)}/factusol-cobro`);
@@ -2791,6 +2857,8 @@ export type InvoiceCollectionResponse = {
   contrapartida: Contrapartida;
   fecha: string;
   forma: string | null;
+  /** El importe es menor que lo pendiente: cobro PARCIAL. */
+  parcial?: boolean;
 };
 
 export type InvoiceCollectionJobStatus =
@@ -2808,6 +2876,9 @@ export type InvoiceCollectionJobStatus =
         fecha?: string;
         estfac_marked?: boolean;
         orders_updated?: string[];
+        /** Estado tras el cobro: parcial = queda saldo pendiente. */
+        parcial?: boolean;
+        saldo_pendiente?: number;
       };
     }
   | { status: "failed"; error?: string; code?: string };

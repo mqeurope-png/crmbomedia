@@ -374,6 +374,10 @@ INVOICE_PAID_KEY = "estfac_cobrada"
 INVOICE_PENDING_KEY = "estfac_pendiente"
 INVOICE_PAID_DEFAULT = "2"
 INVOICE_PENDING_DEFAULT = "0"
+#: Cobro PARCIAL (quedan euros por cobrar): ESTFAC=1, verificado con facturas
+#: reales (0 pendiente · 1 parcial · 2 cobrada). Configurable como los otros.
+INVOICE_PARTIAL_KEY = "estfac_parcial"
+INVOICE_PARTIAL_DEFAULT = "1"
 
 
 def invoice_payment_value(session: Session, *, paid: bool) -> str | None:
@@ -388,6 +392,61 @@ def invoice_payment_value(session: Session, *, paid: bool) -> str | None:
         value = str(raw).strip() if raw is not None else ""
         return value or None
     return default
+
+
+def invoice_estado_value(session: Session, kind: str) -> str | None:
+    """Valor de `ESTFAC` para `cobrada` / `parcial` / `pendiente` (ver
+    `invoice_payment_value`). `None` si la clave está explícitamente vacía."""
+    if kind == "cobrada":
+        return invoice_payment_value(session, paid=True)
+    if kind == "pendiente":
+        return invoice_payment_value(session, paid=False)
+    conf = series_config(session)
+    if INVOICE_PARTIAL_KEY in conf:
+        raw = conf.get(INVOICE_PARTIAL_KEY)
+        value = str(raw).strip() if raw is not None else ""
+        return value or None
+    return INVOICE_PARTIAL_DEFAULT
+
+
+def invoice_estado_kind(*, total: float, cobrado: float, eps: float = 0.005) -> str:
+    """Estado de cobro que corresponde a lo que suman las líneas de F_LCO:
+    `pendiente` (nada cobrado), `parcial` (algo, sin llegar al total) o
+    `cobrada` (el total). Los datos de F_LCO mandan sobre el ESTFAC guardado."""
+    if cobrado <= eps:
+        return "pendiente"
+    if total - cobrado <= eps:
+        return "cobrada"
+    return "parcial"
+
+
+def mark_invoice_estado(
+    client: FactusolClient,
+    session: Session,
+    *,
+    serie: Any,
+    codigo: Any,
+    kind: str,
+    ejercicio: str,
+    current_estado: Any = None,
+) -> tuple[bool, str | None, str | None]:
+    """Escribe el `ESTFAC` de `kind` (cobrada / parcial / pendiente) por clave
+    COMPUESTA con el escritor único. Devuelve `(ok, motivo, valor_escrito)`."""
+    tabla, tip_col, cod_col, est_col = _INVOICE_PAYMENT_SPEC
+    estado = invoice_estado_value(session, kind)
+    if not estado:
+        motivo = (
+            f"falta el valor de ESTFAC para «{kind}» en /erp/settings — la factura "
+            f"{serie}-{codigo} se queda sin marcar"
+        )
+        logger.warning("factusol: %s", motivo)
+        return False, motivo, None
+    ok, motivo = _write_document_estado(
+        client, tabla=tabla, tip_col=tip_col, cod_col=cod_col, est_col=est_col,
+        serie=serie, codigo=codigo, estado=estado, ejercicio=ejercicio,
+        current_estado=current_estado, what="factura",
+    )
+    return ok, motivo, estado
 
 
 def mark_invoice_payment(

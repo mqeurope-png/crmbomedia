@@ -180,4 +180,50 @@ describe("ERP · modal «Registrar cobro en FACTUSOL» (compartido ficha / bande
       2, 526200, expect.objectContaining({ cuenta: "2" }),
     ));
   });
+
+  it("importe editable: cobro PARCIAL (325,49 de 333,96), tope al pendiente y aviso de descuadre", async () => {
+    (getOrderFactusolCobro as jest.Mock).mockResolvedValue({
+      ...PENDIENTE, order_number: "BOPRIN-99940",
+      invoice: { serie: 5, codigo: 260108, numero: "5-260108" },
+      total: 333.96, saldo_pendiente: 333.96,
+      total_mismatch: { pedido: 325.49, factura: 333.96, diferencia: 8.47 },
+    });
+    (registerInvoiceCollection as jest.Mock).mockResolvedValue({
+      status: "queued", job_id: "job-p", numero: "5-260108", importe: 325.49,
+      contrapartida: { codigo: "8", nombre: "Streamtec Sabadell" }, fecha: "2026-09-30",
+      parcial: true,
+    });
+    (waitForInvoiceCollectionJob as jest.Mock).mockResolvedValue({
+      status: "finished", result: { registered: true, status: "registered", importe: 325.49,
+                                    parcial: true, saldo_pendiente: 8.47 },
+    });
+    const user = userEvent.setup();
+    render(<RegistrarCobroModal orderId="o-940" orderNumber="BOPRIN-99940" onClose={() => undefined} />);
+    // Aviso de descuadre pedido / factura y el importe propuesto = lo pendiente.
+    expect(await screen.findByText(/Pedido 325.49 € · Factura/)).toHaveTextContent("diferencia 8.47 €");
+    const importe = screen.getByLabelText("Importe del cobro");
+    expect(importe).toHaveValue(333.96);
+    await user.click(screen.getByLabelText("Confirmo el cobro"));
+    // Más que lo pendiente → no se deja.
+    await user.clear(importe);
+    await user.type(importe, "400");
+    expect(screen.getByText(/No puede ser más que lo pendiente/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Registrar cobro" })).toBeDisabled();
+    // Parcial: se avisa del resto y se manda el importe.
+    await user.clear(importe);
+    await user.type(importe, "325.49");
+    expect(screen.getByText(/Cobro parcial: la factura quedará con 8.47 € pendientes/)).toBeInTheDocument();
+    expect(screen.getByText(/cobro parcial \(ESTFAC=1\)/)).toBeInTheDocument();
+    (getOrderFactusolCobro as jest.Mock).mockResolvedValue({
+      ...PENDIENTE, invoice: { serie: 5, codigo: 260108, numero: "5-260108" },
+      total: 333.96, total_cobrado: 325.49, saldo_pendiente: 8.47, estfac: "1",
+    });
+    await user.click(screen.getByRole("button", { name: "Registrar cobro" }));
+    await waitFor(() => expect(registerInvoiceCollection).toHaveBeenCalledWith(
+      5, 260108, expect.objectContaining({ importe: 325.49 }),
+    ));
+    expect(await screen.findByText(/Cobro parcial de 325.49 € registrado/)).toHaveTextContent(
+      "Quedan 8.47 € pendientes",
+    );
+  });
 });

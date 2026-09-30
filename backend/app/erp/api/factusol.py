@@ -1450,9 +1450,20 @@ def register_invoice_collection_endpoint(
         # Solo si la cuenta NO venía en la petición: por qué se eligió.
         "contrapartida_sugerida_por": sugerida_por,
     }
-    # Idempotente: ya cobrada (saldo 0 / ESTFAC=2) → no se encola nada.
+    # Idempotente: ya cobrada (sus líneas de F_LCO suman el total) → no se
+    # encola nada.
     if status_info["ya_cobrada"]:
         return {"status": "already", "estfac": status_info["estfac"], **meta}
+    # Nunca más que lo pendiente EN FACTUSOL (si es menos, cobro parcial).
+    if importe > float(status_info["saldo_pendiente"]) + 0.005:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "amount_exceeds_pending",
+            "detail": (
+                f"El importe ({importe:.2f} €) es mayor que lo pendiente de la factura "
+                f"{status_info['numero']} en FACTUSOL ({status_info['saldo_pendiente']:.2f} €)."
+            ),
+        })
+    meta["parcial"] = importe < float(status_info["saldo_pendiente"]) - 0.005
     job_id = enqueue_register_invoice_collection(
         serie, int(codigo), contrapartida, fecha_iso,
         importe, payload.forma, payload.observaciones,

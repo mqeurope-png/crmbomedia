@@ -19,6 +19,7 @@ import { CobroFactusolBadge } from "../../../components/erp/CobroFactusolBadge";
 import { OrderFactusolClientPanel } from "../../../components/erp/OrderFactusolClientPanel";
 import { EmitFactusolButton } from "../../../components/erp/EmitFactusolButton";
 import { PrimaryActionBar } from "../../../components/erp/PrimaryActionBar";
+import { AnularCobroModal } from "../../../components/erp/AnularCobroModal";
 import { RegistrarCobroModal } from "../../../components/erp/RegistrarCobroModal";
 import { MarkPaidDialog } from "../../../components/erp/MarkPaidDialog";
 import { OrderStatusMachine } from "../../../components/erp/OrderStatusMachine";
@@ -268,6 +269,7 @@ function ErpOrderDetailScreen() {
   // modal compartido «Registrar cobro en FACTUSOL».
   const [cobroLive, setCobroLive] = useState<OrderCobroInfo | null>(null);
   const [cobroOpen, setCobroOpen] = useState(false);
+  const [anularCobroOpen, setAnularCobroOpen] = useState(false);
 
   const load = useCallback(() => {
     getOrder(id)
@@ -1338,8 +1340,35 @@ function ErpOrderDetailScreen() {
                   {cobroStatus === "cobrada" ? "Cobrado en FACTUSOL" : "Registrar cobro en FACTUSOL"}
                 </button>
               ) : null}
+              {canCobro && (cobroLive?.bohub_cobros ?? []).some((c) => c.anulable) ? (
+                /* Solo los cobros que registró BoHub: se deshacen / corrigen
+                   desde aquí (en FACTUSOL no se pueden editar). */
+                <button
+                  type="button"
+                  className="button small secondary"
+                  onClick={() => setAnularCobroOpen(true)}
+                >
+                  Anular / corregir cobro
+                </button>
+              ) : null}
             </div>
           </div>
+          {(() => {
+            // Pedido y factura con totales distintos: se avisa (el cobro va por
+            // lo pendiente EN FACTUSOL, nunca por el total del pedido).
+            const facturaTotal = cobroLive?.total_mismatch?.factura
+              ?? (order.factusol_cobro?.total ?? null);
+            if (facturaTotal == null) return null;
+            const diferencia = facturaTotal - order.total_amount;
+            if (Math.abs(diferencia) < 0.01) return null;
+            const e2 = (n: number) => `${n.toFixed(2).replace(".", ",")} €`;
+            return (
+              <p className="form-info small" role="alert" aria-label="Descuadre pedido / factura">
+                ⚠ Pedido {e2(order.total_amount)} · Factura {e2(facturaTotal)} · diferencia{" "}
+                {e2(Math.abs(diferencia))}. El cobro se registra por lo pendiente en FACTUSOL.
+              </p>
+            );
+          })()}
         </section>
 
         {/* Lote 3 · #6 — cliente FACTUSOL también en los pedidos WEB. El
@@ -1396,6 +1425,14 @@ function ErpOrderDetailScreen() {
           orderId={order.id}
           orderNumber={order.order_number}
           onClose={() => setCobroOpen(false)}
+          onDone={(info) => { setCobroLive(info); load(); }}
+        />
+      ) : null}
+      {anularCobroOpen ? (
+        <AnularCobroModal
+          orderId={order.id}
+          orderNumber={order.order_number}
+          onClose={() => setAnularCobroOpen(false)}
           onDone={(info) => { setCobroLive(info); load(); }}
         />
       ) : null}

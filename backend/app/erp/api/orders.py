@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.core.errors import not_found
 from app.db.session import get_session
 from app.erp.api.deps import (
+    require_cobro_register,
     require_email_sat,
     require_erp_approve,
     require_erp_edit,
@@ -2601,7 +2602,151 @@ def order_factusol_cobro(
             "code": "factusol_unavailable", "detail": str(exc)[:200],
         }) from exc
     session.commit()
-    return {**base, **info, "persisted_status": order.factusol_cobro_status}
+    from app.erp.factusol_cobro import bohub_collections  # noqa: PLC0415
+
+    extra: dict[str, Any] = {}
+    invoice = info.get("invoice") or {}
+    if invoice.get("serie") is not None and invoice.get("codigo") is not None:
+        # Cobros que registró BoHub (se pueden anular / corregir desde aquí).
+        extra["bohub_cobros"] = bohub_collections(
+            session, serie=int(invoice["serie"]), codigo=int(invoice["codigo"]),
+        )
+    # Pedido y factura con totales distintos (portes, líneas cambiadas, un
+    # recálculo posterior a emitir): se avisa; el cobro va por lo pendiente
+    # EN FACTUSOL, nunca por el total del pedido.
+    if info.get("total") is not None:
+        diferencia = round(float(info["total"]) - float(order.total_amount or 0), 2)
+        if abs(diferencia) >= 0.01:
+            extra["total_mismatch"] = {
+                "pedido": round(float(order.total_amount or 0), 2),
+                "factura": round(float(info["total"]), 2),
+                "diferencia": diferencia,
+            }
+    return {**base, **info, **extra, "persisted_status": order.factusol_cobro_status}
+
+
+class CobroAnularIn(BaseModel):
+    """Anular un cobro que registró BoHub: `confirm` obligatorio (escribe en
+    FACTUSOL)."""
+
+    confirm: bool = False
+
+
+class CobroCorregirIn(BaseModel):
+    """Corregir = anular + registrar de nuevo con estos datos."""
+
+    confirm: bool = False
+    cuenta: str = Field(min_length=1, max_length=80)
+    fecha: str = Field(min_length=6, max_length=25)
+    importe: float | None = Field(default=None, gt=0)
+    forma: str | None = Field(default=None, max_length=80)
+
+
+def _order_bohub_cobro(
+    session: Session, order: Order, event_id: str,
+) -> dict[str, Any]:
+    """El cobro registrado por BoHub `event_id`, comprobando que es de la
+    factura VINCULADA a este pedido y que se puede anular."""
+    from app.erp.factusol_cobro import bohub_collection  # noqa: PLC0415
+    from app.erp.linked_invoice import get_linked_invoice  # noqa: PLC0415
+
+    cobro = bohub_collection(session, event_id)
+    linked = get_linked_invoice(order)
+    if cobro is None or linked is None or (
+        (cobro["serie"], cobro["codigo"]) != (linked.serie, linked.codigo)
+    ):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, {
+            "code": "cobro_not_found",
+            "detail": "Ese cobro no consta como registrado por BoHub en la factura de este pedido.",
+        })
+    if not cobro["anulable"]:
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "cobro_already_annulled",
+            "detail": f"El cobro de {cobro['numero']} ya está anulado.",
+        })
+    return cobro
+
+
+@router.post("/{order_id}/factusol-cobros/{event_id}/anular", status_code=202)
+def annul_order_factusol_cobro(
+    order_id: str,
+    event_id: str,
+    payload: CobroAnularIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_cobro_register),
+) -> dict[str, Any]:
+    """«Anular cobro» (solo los que registró BoHub): encola en
+    `factusol:writes` borrar SU línea de F_LCO —si sigue siendo la
+    registrada— y dejar la factura con el ESTFAC de lo que quede cobrado.
+    202 + job_id; el estado se consulta con el polling de cobros."""
+    from app.integrations.factusol.jobs import (  # noqa: PLC0415
+        enqueue_annul_invoice_collection,
+    )
+
+    if not payload.confirm:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "confirmation_required",
+            "detail": "Anular un cobro escribe en FACTUSOL: requiere confirmación.",
+        })
+    order = _get_order(session, order_id, current_user)
+    cobro = _order_bohub_cobro(session, order, event_id)
+    job_id = enqueue_annul_invoice_collection(event_id, actor_user_id=current_user.id)
+    return {"status": "queued", "job_id": job_id, "cobro": cobro}
+
+
+@router.post("/{order_id}/factusol-cobros/{event_id}/corregir", status_code=202)
+def correct_order_factusol_cobro(
+    order_id: str,
+    event_id: str,
+    payload: CobroCorregirIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_cobro_register),
+) -> dict[str, Any]:
+    """«Corregir cobro» = anular el que registró BoHub y registrar el correcto
+    (fecha / contrapartida / importe) en UN solo job. La cuenta tiene que estar
+    en el catálogo (400) y la fecha tiene que entenderse (400)."""
+    from app.erp.contrapartidas import (  # noqa: PLC0415
+        resolve_contrapartida,
+        resolve_contrapartida_code,
+    )
+    from app.integrations.factusol.collections_write import factusol_datetime  # noqa: PLC0415
+    from app.integrations.factusol.jobs import (  # noqa: PLC0415
+        enqueue_annul_invoice_collection,
+    )
+
+    if not payload.confirm:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "confirmation_required",
+            "detail": "Corregir un cobro escribe en FACTUSOL: requiere confirmación.",
+        })
+    order = _get_order(session, order_id, current_user)
+    cobro = _order_bohub_cobro(session, order, event_id)
+    codigo = resolve_contrapartida_code(session, payload.cuenta)
+    if codigo is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "unknown_account",
+            "detail": (
+                f"La cuenta {payload.cuenta!r} no casa con ninguna contrapartida "
+                "del catálogo (/erp/settings)."
+            ),
+        })
+    try:
+        fecha_iso = factusol_datetime(payload.fecha)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "invalid_date", "detail": str(exc),
+        }) from exc
+    correction = {
+        "contrapartida": codigo, "fecha": fecha_iso,
+        "importe": payload.importe, "forma": payload.forma,
+    }
+    job_id = enqueue_annul_invoice_collection(
+        event_id, actor_user_id=current_user.id, correction=correction,
+    )
+    return {
+        "status": "queued", "job_id": job_id, "cobro": cobro,
+        "nuevo": {**correction, "contrapartida_nombre": resolve_contrapartida(session, codigo)},
+    }
 
 
 @router.get("/{order_id}/factusol-status")

@@ -66,6 +66,9 @@ export function RegistrarCobroModal({
   const [cuentas, setCuentas] = useState<Contrapartida[]>([]);
   const [formas, setFormas] = useState<FormaPago[]>([]);
   const [cuenta, setCuenta] = useState("");
+  // Importe: por defecto lo PENDIENTE en FACTUSOL (leído en vivo); editable
+  // para un cobro parcial. Nunca más que lo pendiente.
+  const [importe, setImporte] = useState("");
   const [fecha, setFecha] = useState(today());
   const [forma, setForma] = useState("");
   const [observaciones, setObservaciones] = useState("");
@@ -83,6 +86,7 @@ export function RegistrarCobroModal({
         if (!alive) return;
         setInfo(res);
         if (res.suggested_cuenta?.codigo) setCuenta(res.suggested_cuenta.codigo);
+        if (res.saldo_pendiente != null) setImporte(res.saldo_pendiente.toFixed(2));
         if (res.forma_pago_nombre) setForma(res.forma_pago_nombre);
         // Bloque B: si al dar de alta el pedido se apuntó la fecha del pago,
         // se prellena aquí (si no, se queda «hoy»).
@@ -110,7 +114,13 @@ export function RegistrarCobroModal({
     ?? (info?.suggested_cuenta?.codigo === cuenta ? info?.suggested_cuenta?.nombre : undefined)
     ?? cuenta;
   const formaKnown = formas.some((f) => f.nombre === forma);
-  const canSubmit = pendiente && !!invoice?.serie && !!cuenta && !!fecha && confirm && !busy && !success;
+  const saldo = info?.saldo_pendiente ?? null;
+  const importeNum = Number(String(importe).replace(",", "."));
+  const importeOk = Number.isFinite(importeNum) && importeNum > 0;
+  const importeExcede = importeOk && saldo != null && importeNum > saldo + 0.005;
+  const parcial = importeOk && !importeExcede && saldo != null && importeNum < saldo - 0.005;
+  const canSubmit = pendiente && !!invoice?.serie && !!cuenta && !!fecha && confirm && !busy
+    && !success && importeOk && !importeExcede;
 
   async function submit() {
     if (!info || !invoice || invoice.serie == null || invoice.codigo == null) return;
@@ -120,6 +130,8 @@ export function RegistrarCobroModal({
       const res = await registerInvoiceCollection(invoice.serie, invoice.codigo, {
         confirm: true, cuenta, fecha,
         forma: forma || null, observaciones: observaciones.trim() || null,
+        // Solo si difiere de lo pendiente (así el total sigue siendo el saldo real).
+        ...(parcial ? { importe: Math.round(importeNum * 100) / 100 } : {}),
       });
       if (res.status === "already") {
         const fresh = await reload();
@@ -149,6 +161,12 @@ export function RegistrarCobroModal({
         setSuccess(
           `Cobro de ${eur(st.result.importe ?? res.importe)} registrado en FACTUSOL para la factura `
           + `${res.numero} (cuenta ${res.contrapartida.nombre}). La factura consta cobrada.`,
+        );
+      } else if (st.result.parcial || res.parcial) {
+        setSuccess(
+          `Cobro parcial de ${eur(st.result.importe ?? res.importe)} registrado en FACTUSOL para la `
+          + `factura ${res.numero} (cuenta ${res.contrapartida.nombre}). Quedan `
+          + `${eur(fresh.saldo_pendiente)} pendientes.`,
         );
       } else {
         setSuccess(
@@ -199,6 +217,16 @@ export function RegistrarCobroModal({
                     {info.estfac != null ? ` · ESTFAC=${info.estfac}` : ""}
                     {info.cobros ? ` · ${info.cobros} línea(s) de cobro` : ""}
                   </p>
+                  {info.total_mismatch ? (
+                    /* El pedido y la factura no valen lo mismo (portes, líneas
+                       cambiadas, recálculo tras emitir): el cobro va por lo
+                       pendiente EN FACTUSOL, nunca por el total del pedido. */
+                    <p className="form-info small" role="alert">
+                      ⚠ Pedido {eur(info.total_mismatch.pedido)} · Factura{" "}
+                      {eur(info.total_mismatch.factura)} · diferencia{" "}
+                      {eur(Math.abs(info.total_mismatch.diferencia))}
+                    </p>
+                  ) : null}
                   {cobrada ? (
                     <p>
                       <span className="badge ok">Cobrado FACTUSOL</span>{" "}
@@ -271,6 +299,25 @@ export function RegistrarCobroModal({
                     </select>
                   </label>
                   <label>
+                    <span>Importe del cobro</span>
+                    <input
+                      type="number" inputMode="decimal" step="0.01" min="0.01"
+                      aria-label="Importe del cobro"
+                      value={importe}
+                      disabled={busy || !!success}
+                      onChange={(e) => setImporte(e.target.value)}
+                    />
+                  </label>
+                  {importeExcede ? (
+                    <p className="form-error small" role="alert">
+                      No puede ser más que lo pendiente en FACTUSOL ({eur(saldo)}).
+                    </p>
+                  ) : parcial ? (
+                    <p className="form-info small" role="note">
+                      Cobro parcial: la factura quedará con {eur((saldo ?? 0) - importeNum)} pendientes.
+                    </p>
+                  ) : null}
+                  <label>
                     <span>Observaciones (opcional)</span>
                     <input
                       type="text"
@@ -283,9 +330,10 @@ export function RegistrarCobroModal({
                   </label>
                   <p className="muted small erp-cobro-summary">
                     Se escribirá <strong>1 línea de cobro en F_LCO</strong> de la factura{" "}
-                    {invoice?.numero}: <strong>{eur(info.saldo_pendiente)}</strong> con fecha{" "}
+                    {invoice?.numero}: <strong>{importeOk ? eur(importeNum) : "—"}</strong> con fecha{" "}
                     {fecha || "—"} en la cuenta <strong>{cuentaNombre || "—"}</strong>
-                    {forma ? ` (${forma})` : ""}, y la factura pasará a cobrada (ESTFAC=2).
+                    {forma ? ` (${forma})` : ""}, y la factura pasará a{" "}
+                    {parcial ? "cobro parcial (ESTFAC=1)" : "cobrada (ESTFAC=2)"}.
                     No se toca ninguna otra cosa en FACTUSOL.
                   </p>
                   <label className="field-toggle">
