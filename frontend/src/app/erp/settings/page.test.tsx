@@ -1,6 +1,7 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import ErpSettingsPage from "./page";
+import type { ContrapartidaRule } from "../../lib/erpApi";
 import {
   getErpNextReferences,
   getErpSettings,
@@ -310,38 +311,78 @@ describe("ErpSettingsPage — serie de facturación (C-2)", () => {
   });
 });
 
-// ERP-F5 — contrapartidas de cobro (catálogo configurable) + PayPal por tienda.
+// ERP-F5 — contrapartidas de cobro (catálogo configurable) + reglas tienda ×
+// método de pago → contrapartida sugerida (sustituyen al PayPal por tienda).
 describe("ErpSettingsPage — contrapartidas de cobro (F5)", () => {
-  it("lista las contrapartidas, permite editarlas y guarda el PayPal por tienda", async () => {
+  const RULES: ContrapartidaRule[] = [
+    { tienda: "artisjet", metodo: "paypal", coincidencia: "contiene", contrapartida: "12" },
+    { tienda: "boprint", metodo: "paypal", coincidencia: "contiene", contrapartida: "14" },
+    { tienda: "artisjet", metodo: "Carte", coincidencia: "exacta", contrapartida: "15" },
+  ];
+
+  it("lista las contrapartidas y las reglas; edita, reordena, añade y guarda", async () => {
     mockGet.mockResolvedValue(settings({
       contrapartidas: [
         { codigo: "6", nombre: "Bomedia Sabadell" },
+        { codigo: "12", nombre: "Paypal MQ Europe" },
         { codigo: "14", nombre: "Paypal Streamtec" },
       ],
-      paypal_contrapartidas_by_store: { artisjet: "12", boprint: "14", fluxlasers: "14" },
+      contrapartida_rules: RULES,
     }));
     const user = userEvent.setup();
     render(<ErpSettingsPage />);
     const desc = await screen.findByLabelText("Contrapartida 1 descripción");
     expect(desc).toHaveValue("Bomedia Sabadell");
     expect(screen.getByLabelText("Contrapartida 1 código")).toHaveValue("6");
-    // El selector PayPal de boprint apunta a la 14 y ofrece las del catálogo.
-    const boprint = screen.getByLabelText("Contrapartida PayPal boprint") as HTMLSelectElement;
-    expect(boprint.value).toBe("14");
-    expect(screen.getAllByRole("option", { name: "6 · Bomedia Sabadell" }).length).toBe(3);
+    // Las reglas, en orden, con su tienda, método, coincidencia y cuenta.
+    const table = screen.getByRole("table", { name: "Reglas de contrapartida" });
+    expect(within(table).getAllByRole("row")).toHaveLength(4);
+    expect(screen.getByLabelText("Regla 2 tienda")).toHaveValue("boprint");
+    expect(screen.getByLabelText("Regla 3 método de pago")).toHaveValue("Carte");
+    expect(screen.getByLabelText("Regla 3 coincidencia")).toHaveValue("exacta");
+    // La 15 aún no está en el catálogo: la regla se guarda pero se avisa.
+    expect(screen.getByLabelText("Regla 3 contrapartida")).toHaveValue("15");
+    expect(within(table).getByRole("note")).toHaveTextContent("La 15 no está en el catálogo");
+    // Editar la de boprint, subir la de Carte a la primera y añadir una general.
+    await user.selectOptions(screen.getByLabelText("Regla 2 contrapartida"), "6");
+    await user.click(screen.getByRole("button", { name: "Subir regla 3" }));
+    await user.click(screen.getByRole("button", { name: "Subir regla 2" }));
+    expect(screen.getByLabelText("Regla 1 método de pago")).toHaveValue("Carte");
+    await user.click(screen.getByRole("button", { name: "+ Añadir regla" }));
+    await user.type(screen.getByLabelText("Regla 4 método de pago"), "transferencia");
+    await user.selectOptions(screen.getByLabelText("Regla 4 contrapartida"), "6");
+    await user.click(screen.getByRole("button", { name: "Guardar cambios · Contrapartidas de cobro" }));
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
+    const sent = mockUpdate.mock.calls[0][0];
+    expect(Object.keys(sent).sort()).toEqual(["contrapartida_rules", "contrapartidas"]);
+    expect(sent.contrapartida_rules).toEqual([
+      { tienda: "artisjet", metodo: "Carte", coincidencia: "exacta", contrapartida: "15" },
+      { tienda: "artisjet", metodo: "paypal", coincidencia: "contiene", contrapartida: "12" },
+      { tienda: "boprint", metodo: "paypal", coincidencia: "contiene", contrapartida: "6" },
+      { tienda: "", metodo: "transferencia", coincidencia: "contiene", contrapartida: "6" },
+    ]);
+  });
+
+  it("quitar una regla y editar el catálogo viajan juntos", async () => {
+    mockGet.mockResolvedValue(settings({
+      contrapartidas: [{ codigo: "6", nombre: "Bomedia Sabadell" }],
+      contrapartida_rules: RULES,
+    }));
+    const user = userEvent.setup();
+    render(<ErpSettingsPage />);
+    const desc = await screen.findByLabelText("Contrapartida 1 descripción");
     await user.clear(desc);
     await user.type(desc, "Bomedia Sabadell (ES33…1918)");
-    await user.selectOptions(boprint, "6");
     await user.click(screen.getByRole("button", { name: "+ Añadir contrapartida" }));
-    expect(screen.getByLabelText("Contrapartida 3 código")).toHaveValue("");
+    expect(screen.getByLabelText("Contrapartida 2 código")).toHaveValue("");
+    await user.click(screen.getByRole("button", { name: "Quitar regla 1" }));
     await user.click(screen.getByRole("button", { name: "Guardar cambios · Contrapartidas de cobro" }));
     await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
     const sent = mockUpdate.mock.calls[0][0];
     expect(sent.contrapartidas[0]).toEqual({ codigo: "6", nombre: "Bomedia Sabadell (ES33…1918)" });
-    expect(sent.contrapartidas).toHaveLength(3);
-    expect(sent.paypal_contrapartidas_by_store.boprint).toBe("6");
-    expect(sent.paypal_contrapartidas_by_store.artisjet).toBe("12");
-    expect(Object.keys(sent).sort()).toEqual(["contrapartidas", "paypal_contrapartidas_by_store"]);
+    expect(sent.contrapartidas).toHaveLength(2);
+    expect(sent.contrapartida_rules.map((r: { contrapartida: string }) => r.contrapartida))
+      .toEqual(["14", "15"]);
   });
 });
 

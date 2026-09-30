@@ -1638,8 +1638,11 @@ function EconomicSummary({
       ) : null}
       <p className="erp-flow-kv">
         <span className="k">Forma de pago</span>
-        <span className="v">
-          {pago?.forma_pago_nombre || pago?.forma_pago || "—"}
+        <span className="v" title={order.payment_method ? `Gateway de WooCommerce: ${order.payment_method}` : undefined}>
+          {/* Lo apuntado en BoHub manda; en un pedido web, el método de pago
+              de WooCommerce (título de la tienda, p. ej. «Carte»). */}
+          {pago?.forma_pago_nombre || pago?.forma_pago
+            || order.payment_method_title || order.payment_method || "—"}
           {pago?.contrapartida_nombre ? ` · ${pago.contrapartida_nombre}` : ""}
         </span>
       </p>

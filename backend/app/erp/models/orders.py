@@ -138,6 +138,12 @@ class Order(TimestampMixin, Base):
     # y de las máquinas de estado propias de BoHub. NULL = aún no se conoce
     # (pedidos importados antes de este cambio, o pedidos no-Woo).
     woo_status: Mapped[str | None] = mapped_column(String(20))
+    # Método de pago del pedido web: id del gateway de WooCommerce
+    # (`mollie_wc_gateway_creditcard`, `ppcp-gateway`…) y su título en la tienda
+    # («Carte», «PayPal»…). Se refrescan desde Woo; sugieren la contrapartida
+    # del cobro (reglas tienda × método). NULL = no-Woo o aún sin rellenar.
+    payment_method: Mapped[str | None] = mapped_column(String(64))
+    payment_method_title: Mapped[str | None] = mapped_column(String(120))
     order_number: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     contact_id: Mapped[str | None] = mapped_column(
         ForeignKey("contacts.id", ondelete="SET NULL")

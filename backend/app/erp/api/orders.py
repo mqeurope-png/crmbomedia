@@ -289,6 +289,9 @@ def _serialise_summary(
         "transport_status": _status_value(o.transport_status),
         "invoice_status": _status_value(o.invoice_status),
         "tracking_number": o.tracking_number,
+        # Método de pago del pedido web (gateway de Woo + título en la tienda).
+        "payment_method": o.payment_method,
+        "payment_method_title": o.payment_method_title,
         "factusol_invoice_number": o.factusol_invoice_number,
         # Fase 2: nº del albarán FACTUSOL creado por BoHub al convertir.
         "factusol_albaran_number": o.factusol_albaran_number,

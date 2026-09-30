@@ -201,6 +201,65 @@ def _forma_nombre(
     return None
 
 
+def suggest_for_order(
+    session: Session, order: Order | None, *, serie: int | None, forma_nombre: Any = None,
+) -> dict[str, Any]:
+    """Cuenta sugerida para el cobro de la factura de un pedido y su porqué:
+    lo apuntado a mano en el pedido (pago al dar de alta / convertir) manda; si
+    no, las reglas tienda × método de pago de WooCommerce y, en su defecto, la
+    cuenta de la serie. Devuelve `{suggested_cuenta, suggested_reason,
+    suggested_fecha, forma_pago_nombre}`. Solo una sugerencia (editable)."""
+    from app.erp.contrapartidas import suggest_contrapartida_explained  # noqa: PLC0415
+
+    suggested, reason = suggest_contrapartida_explained(
+        session, serie=serie, forma_nombre=forma_nombre,
+        store=_store_slug(session, order) if order is not None else None,
+        payment_method=getattr(order, "payment_method", None),
+        payment_method_title=getattr(order, "payment_method_title", None),
+    )
+    suggested_fecha = None
+    intent = payment_intent(order) if order is not None else None
+    if intent:
+        if intent.get("forma_pago_nombre"):
+            forma_nombre = str(intent["forma_pago_nombre"])
+        if intent.get("contrapartida"):
+            suggested = {
+                "codigo": str(intent["contrapartida"]),
+                "nombre": str(intent.get("contrapartida_nombre") or intent["contrapartida"]),
+            }
+            reason = "pago apuntado en el pedido"
+        if intent.get("fecha"):
+            suggested_fecha = str(intent["fecha"])
+    return {
+        "suggested_cuenta": suggested, "suggested_reason": reason if suggested else None,
+        "suggested_fecha": suggested_fecha, "forma_pago_nombre": forma_nombre,
+    }
+
+
+def suggest_for_invoice(
+    session: Session, *, serie: int, codigo: int, referencia: Any = None,
+    cliente_codigo: Any = None, forma_nombre: Any = None,
+) -> dict[str, Any]:
+    """Como `suggest_for_order` pero partiendo de una FACTURA (explorador de
+    documentos, lote por CSV): busca el pedido de BoHub vinculado a ella (sin
+    adivinar: `find_order_for_invoice`) para aplicar sus reglas tienda × método
+    de pago; sin pedido, la cuenta de la serie. Añade `order_number`."""
+    from app.erp.factusol_pdf import find_order_for_invoice  # noqa: PLC0415
+
+    try:
+        order = find_order_for_invoice(
+            session, serie=serie, codigo=codigo, referencia=referencia,
+            cliente_codigo=cliente_codigo,
+        )
+    except Exception:  # noqa: BLE001 — sin pedido, la sugerencia por serie
+        logger.warning("cobro: no se pudo localizar el pedido de %s-%s", serie, codigo,
+                       exc_info=True)
+        order = None
+    out = suggest_for_order(session, order, serie=serie, forma_nombre=forma_nombre)
+    out["order_number"] = order.order_number if order is not None else None
+    return out
+
+
 def order_cobro_info(
     session: Session, client: FactusolClient, order: Order, ejercicio: str, *,
     fac_rows: list[dict[str, Any]] | None = None,
@@ -216,7 +275,6 @@ def order_cobro_info(
     - `pendiente` / `cobrada`: con total, cobrado, saldo, ESTFAC, nº de
       líneas de cobro, forma de pago, cuenta sugerida y avisos (posible doble
       cobro: ya hay líneas de cobro sin llegar al total)."""
-    from app.erp.contrapartidas import suggest_contrapartida  # noqa: PLC0415
 
     early = unusable_invoice_info(order)
     if early is not None:
@@ -248,27 +306,18 @@ def order_cobro_info(
         )
     if status_info["estfac"] == "1":
         warnings.append("FACTUSOL la marca como cobro parcial (ESTFAC=1).")
-    forma_nombre = _forma_nombre(order, status_info["fopfac"], fop_names)
-    suggested = suggest_contrapartida(
-        session, serie=key["serie"], forma_nombre=forma_nombre,
-        store=_store_slug(session, order),
-    )
     # Bloque B: si al dar de alta (o convertir) se apuntó el pago en el pedido
     # —forma, cuenta y fecha—, eso PRELLENA «Registrar cobro» en vez de
-    # adivinarlo: lo que tecleó el usuario manda sobre la heurística. Es solo
+    # adivinarlo: lo que tecleó el usuario manda sobre la heurística. Si no, la
+    # regla tienda × método de pago de Woo o la cuenta de la serie. Es solo
     # una sugerencia; el operador la cambia si quiere.
-    suggested_fecha = None
-    intent = payment_intent(order)
-    if intent:
-        if intent.get("forma_pago_nombre"):
-            forma_nombre = str(intent["forma_pago_nombre"])
-        if intent.get("contrapartida"):
-            suggested = {
-                "codigo": str(intent["contrapartida"]),
-                "nombre": str(intent.get("contrapartida_nombre") or intent["contrapartida"]),
-            }
-        if intent.get("fecha"):
-            suggested_fecha = str(intent["fecha"])
+    sug = suggest_for_order(
+        session, order, serie=key["serie"],
+        forma_nombre=_forma_nombre(order, status_info["fopfac"], fop_names),
+    )
+    forma_nombre = sug["forma_pago_nombre"]
+    suggested = sug["suggested_cuenta"]
+    suggested_fecha = sug["suggested_fecha"]
     return {
         "status": COBRADA if status_info["ya_cobrada"] else PENDIENTE,
         "invoice": invoice,
@@ -278,6 +327,9 @@ def order_cobro_info(
         "estfac": status_info["estfac"], "cobros": status_info["cobros"],
         "fopfac": status_info["fopfac"], "forma_pago_nombre": forma_nombre,
         "suggested_cuenta": suggested, "suggested_fecha": suggested_fecha,
+        "suggested_reason": sug["suggested_reason"],
+        "payment_method": order.payment_method,
+        "payment_method_title": order.payment_method_title,
         "warnings": warnings,
         "checked_at": block["checked_at"],
     }

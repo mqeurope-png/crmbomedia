@@ -16,6 +16,7 @@ import {
   updateErpSettings,
   uploadFactusolCompanyLogo,
   type ErpNextReferences,
+  type ContrapartidaRule,
   type ErpSettings,
   type FactusolCompany,
   type InvoiceEmailTemplatePreview,
@@ -56,9 +57,9 @@ function templateLabels(kind: TemplateKind, lang: string) {
         testid: `ejemplo-envio-${lang}` };
 }
 
-/** ERP-F5 — tiendas con contrapartida PayPal propia (la clave es la que
- *  guarda el backend; `flux` de Woo se normaliza a `fluxlasers`). */
-const PAYPAL_STORES: ReadonlyArray<{ key: string; label: string }> = [
+/** Tiendas que se pueden elegir en las reglas de contrapartida (la clave es la
+ *  que guarda el backend; `flux` de Woo se normaliza a `fluxlasers`). */
+const RULE_STORES: ReadonlyArray<{ key: string; label: string }> = [
   { key: "artisjet", label: "artisJet" },
   { key: "boprint", label: "boprint" },
   { key: "fluxlasers", label: "fluxlasers" },
@@ -135,7 +136,7 @@ const SECTIONS: ReadonlyArray<{ id: SectionId; title: string; keys: (keyof ErpSe
   { id: "empresas", title: "Empresas emisoras", keys: ["factusol_companies"] },
   { id: "almacenes", title: "Almacenes de recogida", keys: ["factusol_pickup_warehouses"] },
   { id: "contrapartidas", title: "Contrapartidas de cobro",
-    keys: ["contrapartidas", "paypal_contrapartidas_by_store"] },
+    keys: ["contrapartidas", "contrapartida_rules"] },
   { id: "origenes", title: "Orígenes del envío", keys: ["shipping_origins"] },
   { id: "drive", title: "Hoja de seguimiento en Drive",
     keys: ["drive_spreadsheet_id", "drive_service_account_json", "drive_reference_prefer_albaran",
@@ -1193,51 +1194,117 @@ export default function ErpSettingsPage() {
             + Añadir contrapartida
           </button>
 
-          <h3 className="erp-settings-sub">PayPal por tienda</h3>
+          <h3 className="erp-settings-sub">Contrapartida sugerida por tienda y método de pago</h3>
           <p className="muted small">
-            La contrapartida de un cobro PayPal no viene de ningún extracto: se
-            deduce de la tienda del pedido.
+            Al registrar un cobro, BoHub PROPONE la cuenta según la tienda del
+            pedido y su método de pago en WooCommerce (el título, p. ej.
+            «Carte», o el id del gateway, p. ej. «mollie_wc_gateway_creditcard»;
+            también casa con la forma de pago de FACTUSOL). Se evalúan de arriba
+            abajo y manda la primera que casa; si ninguna casa, la cuenta de la
+            serie. Sin distinguir mayúsculas. Solo es una sugerencia: en el
+            cobro se puede cambiar.
           </p>
-          <table className="data-table data-table--responsive erp-settings-table">
+          <table className="data-table data-table--responsive erp-settings-table"
+                 aria-label="Reglas de contrapartida">
             <thead>
-              <tr><th>Tienda</th><th>Contrapartida</th><th>Resultado</th></tr>
+              <tr>
+                <th>#</th><th>Tienda</th><th>Método de pago</th><th>Coincidencia</th>
+                <th>Contrapartida</th><th aria-label="Acciones" />
+              </tr>
             </thead>
             <tbody>
-              {PAYPAL_STORES.map((s) => {
-                const code = cfg.paypal_contrapartidas_by_store?.[s.key] ?? "";
-                const match = (cfg.contrapartidas ?? []).find((c) => c.codigo === code);
+              {(cfg.contrapartida_rules ?? []).map((r, i, rules) => {
+                const setRule = (over: Partial<ContrapartidaRule>) => {
+                  const list = [...rules];
+                  list[i] = { ...list[i], ...over };
+                  patch({ contrapartida_rules: list });
+                };
+                const move = (to: number) => {
+                  const list = [...rules];
+                  const [item] = list.splice(i, 1);
+                  list.splice(to, 0, item);
+                  patch({ contrapartida_rules: list });
+                };
+                const inCatalog = (cfg.contrapartidas ?? []).some((c) => c.codigo === r.contrapartida);
                 return (
-                  <tr key={s.key}>
-                    <td data-label="Tienda">{s.label}</td>
+                  <tr key={i}>
+                    <td data-label="#" className="mono">{i + 1}</td>
+                    <td data-label="Tienda">
+                      <select aria-label={`Regla ${i + 1} tienda`} value={r.tienda}
+                              onChange={(e) => setRule({ tienda: e.target.value })}>
+                        <option value="">Todas</option>
+                        {RULE_STORES.map((st) => (
+                          <option key={st.key} value={st.key}>{st.label}</option>
+                        ))}
+                      </select>
+                    </td>
+                    <td data-label="Método de pago">
+                      <input type="text" aria-label={`Regla ${i + 1} método de pago`}
+                             placeholder="Carte, paypal, mollie_wc_gateway_creditcard…"
+                             value={r.metodo} maxLength={80}
+                             onChange={(e) => setRule({ metodo: e.target.value })} />
+                    </td>
+                    <td data-label="Coincidencia">
+                      <select aria-label={`Regla ${i + 1} coincidencia`} value={r.coincidencia}
+                              onChange={(e) => setRule({
+                                coincidencia: e.target.value as ContrapartidaRule["coincidencia"],
+                              })}>
+                        <option value="exacta">exacta</option>
+                        <option value="contiene">contiene</option>
+                      </select>
+                    </td>
                     <td data-label="Contrapartida">
-                      <select
-                        aria-label={`Contrapartida PayPal ${s.label}`}
-                        value={code}
-                        onChange={(e) => patch({
-                          paypal_contrapartidas_by_store: {
-                            ...(cfg.paypal_contrapartidas_by_store ?? {}),
-                            [s.key]: e.target.value,
-                          },
-                        })}
-                      >
+                      <select aria-label={`Regla ${i + 1} contrapartida`} value={r.contrapartida}
+                              onChange={(e) => setRule({ contrapartida: e.target.value })}>
                         <option value="">—</option>
-                        {(cfg.contrapartidas ?? []).map((c, i) => (
-                          <option key={`${c.codigo}-${i}`} value={c.codigo}>
+                        {!inCatalog && r.contrapartida ? (
+                          <option value={r.contrapartida}>{r.contrapartida} · (no está en el catálogo)</option>
+                        ) : null}
+                        {(cfg.contrapartidas ?? []).map((c, j) => (
+                          <option key={`${c.codigo}-${j}`} value={c.codigo}>
                             {c.codigo} · {c.nombre}
                           </option>
                         ))}
                       </select>
+                      {!inCatalog && r.contrapartida ? (
+                        <p className="form-error small" role="note">
+                          La {r.contrapartida} no está en el catálogo de arriba: esta regla no se
+                          aplica hasta que la añadas.
+                        </p>
+                      ) : null}
                     </td>
-                    <td data-label="Resultado" className="erp-settings-result">
-                      {code
-                        ? <>Los cobros PayPal de {s.label} entran en <span className="mono">{code}</span>{match ? ` (${match.nombre})` : ""}.</>
-                        : `Sin contrapartida: los cobros PayPal de ${s.label} piden elegirla a mano.`}
+                    <td data-label="Acciones" className="erp-settings-rule-actions">
+                      <button type="button" className="button small secondary"
+                              aria-label={`Subir regla ${i + 1}`} disabled={i === 0}
+                              onClick={() => move(i - 1)}>↑</button>
+                      <button type="button" className="button small secondary"
+                              aria-label={`Bajar regla ${i + 1}`} disabled={i === rules.length - 1}
+                              onClick={() => move(i + 1)}>↓</button>
+                      <button type="button" className="button small secondary"
+                              aria-label={`Quitar regla ${i + 1}`}
+                              onClick={() => patch({
+                                contrapartida_rules: rules.filter((_, j) => j !== i),
+                              })}>
+                        Quitar
+                      </button>
                     </td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
+          <button
+            type="button"
+            className="button small secondary"
+            onClick={() => patch({
+              contrapartida_rules: [
+                ...(cfg.contrapartida_rules ?? []),
+                { tienda: "", metodo: "", coincidencia: "contiene", contrapartida: "" },
+              ],
+            })}
+          >
+            + Añadir regla
+          </button>
         </SettingsSection>
 
         {/* ERP-F6 — orígenes del envío (OFI-TER-SAT del Excel de seguimiento). */}

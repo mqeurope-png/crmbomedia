@@ -236,6 +236,15 @@ export function RegistrarCobroModal({
                       ))}
                     </select>
                   </label>
+                  {info.suggested_cuenta && info.suggested_reason ? (
+                    /* Por qué se propone esa cuenta (regla tienda × método de
+                       pago de Woo, cuenta de la serie o pago apuntado). Es
+                       solo una sugerencia: se puede elegir otra. */
+                    <p className="muted small erp-cobro-sugerida" role="note">
+                      {cuenta === info.suggested_cuenta.codigo ? "Sugerida" : `Sugerida: ${info.suggested_cuenta.codigo} · ${info.suggested_cuenta.nombre}`}
+                      {" "}por: {info.suggested_reason}
+                    </p>
+                  ) : null}
                   <label>
                     <span>Fecha del cobro</span>
                     <input

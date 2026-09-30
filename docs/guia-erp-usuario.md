@@ -333,7 +333,14 @@ Es la pantalla de un pedido concreto. De arriba abajo:
   fecha y la forma de pago, marcas la casilla de confirmación y pulsas
   **«Registrar cobro»** (es un apunte contable en FACTUSOL). Si al dar de alta
   el pedido ya apuntaste el pago (forma, cuenta y fecha), la ventana **viene
-  prellenada** con esos datos; solo tienes que confirmar.
+  prellenada** con esos datos; solo tienes que confirmar. Si no, la cuenta
+  viene **sugerida** según la tienda y el **método de pago del pedido web**
+  (p. ej. artisJet pagado con **«Carte»** —tarjeta por Mollie— → **15 Tarjetas
+  Mollie Belfius**; PayPal de artisJet → 12; PayPal de boprint o fluxlasers →
+  14) o, si no hay regla, la cuenta de la serie. Debajo pone **«Sugerida por:
+  tienda artisJet · método Carte»**; puedes elegir otra y se registra la que
+  elijas. El método de pago de WooCommerce se ve en el **Resumen económico →
+  Forma de pago** y en la cola **«Por cobrar»** («Pago: Carte»).
 - **«Antes de generar el albarán»** — al generar el albarán de un pedido cuyo
   pago aún no se ha decidido, se pide elegir: **confirmar el pago** (queda
   apuntado en el pedido, sin escribir el cobro en FACTUSOL) o marcarlo **«sin
@@ -1092,9 +1099,21 @@ lo que va a pasar. Secciones destacadas:
   English, Deutsch, Français, Nederlands**) con **«Ver ejemplo»** / **«Enviarme
   una prueba»**, y el remitente de los pedidos manuales en español y en otros
   idiomas.
+- **«Contrapartidas de cobro»** — el catálogo (código → descripción; aquí se da
+  de alta, p. ej., la **15 · Tarjetas Mollie Belfius**) y la tabla **«Contrapartida
+  sugerida por tienda y método de pago»**: cada regla es **tienda** (o
+  «Todas») + **método de pago** (el título de la tienda, p. ej. «Carte», o el
+  id del gateway, p. ej. «mollie_wc_gateway_creditcard»; también casa con la
+  forma de pago de FACTUSOL) + **coincidencia** (exacta / contiene, sin
+  distinguir mayúsculas) → **contrapartida**. Se evalúan **de arriba abajo** y
+  manda la primera que casa (↑/↓ para reordenar); si ninguna casa, la cuenta
+  de la serie. Vienen ya con las de PayPal de antes (artisJet → 12; boprint y
+  fluxlasers → 14) y artisJet + «Carte» / tarjeta de Mollie → 15. Una regla
+  cuya cuenta no está en el catálogo se marca en rojo y **no se aplica** hasta
+  que la añadas (nunca se sugiere una cuenta inexistente).
 - Otras: **Facturación**, **Abreviaturas de empresa**, **Email del SAT /
-  taller**, **Empresas emisoras**, **Almacenes de recogida**, **Contrapartidas
-  de cobro**, **Orígenes del envío** y **Hoja de seguimiento en Drive**.
+  taller**, **Empresas emisoras**, **Almacenes de recogida**, **Orígenes del
+  envío** y **Hoja de seguimiento en Drive**.
 
 **«Envíos (Genei)».** Email y password de la cuenta de Genei (guardados
 **cifrados**), URL del webhook de estados, origen, bulto por defecto y couriers

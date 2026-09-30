@@ -141,4 +141,21 @@ describe("Resumen económico · pedido web", () => {
     const eco = within(await screen.findByRole("region", { name: "Resumen económico" }));
     expect(eco.getByText(/^IVA/).nextSibling).toHaveTextContent("0.00 EUR · exento");
   });
+
+  it("Forma de pago: el método de pago de WooCommerce («Carte»), con el gateway en el título", async () => {
+    (getOrder as jest.Mock).mockResolvedValue(detail({
+      payment_method: "mollie_wc_gateway_creditcard", payment_method_title: "Carte",
+    }));
+    render(<ErpOrderDetailPage />);
+    const eco = within(await screen.findByRole("region", { name: "Resumen económico" }));
+    const forma = eco.getByText("Forma de pago").nextSibling as HTMLElement;
+    expect(forma).toHaveTextContent("Carte");
+    expect(forma).toHaveAttribute("title", "Gateway de WooCommerce: mollie_wc_gateway_creditcard");
+  });
+
+  it("Forma de pago: sin método guardado sigue saliendo «—»", async () => {
+    render(<ErpOrderDetailPage />);
+    const eco = within(await screen.findByRole("region", { name: "Resumen económico" }));
+    expect(eco.getByText("Forma de pago").nextSibling).toHaveTextContent("—");
+  });
 });

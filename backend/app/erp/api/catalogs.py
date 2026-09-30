@@ -13,7 +13,8 @@ from sqlalchemy.orm import Session
 from app.db.session import get_session
 from app.erp.api.deps import require_erp_view
 from app.erp.contrapartidas import (
-    PAYPAL_STORES,
+    STORES,
+    contrapartida_rules,
     contrapartidas,
     paypal_by_store_config,
 )
@@ -59,7 +60,9 @@ def contrapartidas_endpoint(
         "paypal_by_store": paypal_by_store_config(
             series_config(session).get("paypal_contrapartidas_by_store")
         ),
-        "stores": [{"key": k, "label": v} for k, v in PAYPAL_STORES],
+        "stores": [{"key": k, "label": v} for k, v in STORES],
+        # Reglas tienda × método de pago → contrapartida sugerida (en orden).
+        "rules": contrapartida_rules(session),
         "source": "erp_settings",
     }
 

@@ -136,6 +136,7 @@ def collection_status(
         "serie": serie, "codigo": codigo,
         "numero": f"{serie}-{int(codigo):06d}",
         "cliente": str(fac.get("CNOFAC") or "").strip(),
+        "cliente_codigo": str(fac.get("CLIFAC") or "").strip() or None,
         "referencia": str(fac.get("REFFAC") or "").strip(),
         "total": round(total, 2),
         "total_cobrado": summary["total_cobrado"],

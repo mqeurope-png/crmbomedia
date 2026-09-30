@@ -217,4 +217,24 @@ describe("ERP · Bandeja — cobro FACTUSOL por fila, filtro, botón y TOTAL con
     expect(screen.getByRole("status")).toHaveTextContent("comprobado en 2 pedido(s)");
     expect((listOrders as jest.Mock).mock.calls.length).toBe(calls);
   });
+
+  it("cola «Por cobrar»: la fila enseña el método de pago del pedido web junto al importe", async () => {
+    const wf = (queue: string) => ({
+      queue, queue_label: queue, next_action: "registrar_cobro",
+      next_action_label: "Registrar cobro", next_action_hint: "", blocked: false,
+      regime: null, steps: [], alerts: [],
+    });
+    (listOrders as jest.Mock).mockResolvedValue(page([
+      order({ id: "o-7", order_number: "ARTISJ-9530", factusol_cobro_status: "pendiente",
+              payment_method: "mollie_wc_gateway_creditcard", payment_method_title: "Carte",
+              workflow: wf("por_cobrar") }),
+      order({ id: "o-8", order_number: "ARTISJ-9531", payment_method_title: "PayPal",
+              workflow: wf("listo") }),
+    ]));
+    render(<ErpOrdersPage />);
+    await screen.findByText("ARTISJ-9530");
+    expect(within(row("ARTISJ-9530")).getByText("Pago: Carte")).toBeInTheDocument();
+    // Fuera de «Por cobrar» no se repite.
+    expect(within(row("ARTISJ-9531")).queryByText(/Pago:/)).toBeNull();
+  });
 });
