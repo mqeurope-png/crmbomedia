@@ -306,6 +306,12 @@ def order_cobro_info(
         )
     if status_info["estfac"] == "1":
         warnings.append("FACTUSOL la marca como cobro parcial (ESTFAC=1).")
+    if status_info["estfac"] == "2" and not status_info["ya_cobrada"]:
+        warnings.append(
+            f"FACTUSOL la marca cobrada (ESTFAC=2), pero sus líneas de cobro suman "
+            f"{status_info['total_cobrado']:.2f} € de {status_info['total']:.2f} €: "
+            "se trata como pendiente."
+        )
     # Bloque B: si al dar de alta (o convertir) se apuntó el pago en el pedido
     # —forma, cuenta y fecha—, eso PRELLENA «Registrar cobro» en vez de
     # adivinarlo: lo que tecleó el usuario manda sobre la heurística. Si no, la
@@ -359,37 +365,53 @@ def mark_order_from_result(
     session: Session, order: Order, *, serie: int, codigo: int,
     result: dict[str, Any], source: str, actor_user_id: str | None = None,
 ) -> bool:
-    """Tras registrar el cobro (job F-4-B, siempre manual): deja el pedido
-    como «cobrada» sin releer FACTUSOL. `already` también cuenta (ya estaba
-    cobrada). False si el resultado no fue un cobro."""
+    """Tras registrar el cobro (job F-4-B, siempre manual): deja el pedido con
+    el estado REAL que queda en FACTUSOL sin releerlo — «cobrada» si el cobro
+    llega al total, «pendiente» si fue PARCIAL (queda saldo). `already` también
+    cuenta (ya estaba cobrada). False si el resultado no fue un cobro."""
     registered = bool(result.get("registered"))
     if not registered and result.get("status") != "already":
         return False
     numero = f"{int(serie)}-{int(codigo):06d}"
     total = result.get("total")
-    status_info = {
-        "serie": int(serie), "codigo": int(codigo), "numero": numero,
-        "total": total,
-        "total_cobrado": total if registered else result.get("total_cobrado", total),
-        "saldo_pendiente": 0.0 if registered else result.get("saldo_pendiente", 0.0),
-        "estfac": "2" if (not registered or result.get("estfac_marked", True))
-        else result.get("estfac"),
-        "cobros": (int(result.get("cobros") or 0) + 1) if registered
-        else result.get("cobros"),
-        "fopfac": result.get("fopfac"), "ya_cobrada": True,
-    }
+    if registered:
+        saldo = float(result.get("saldo_pendiente") or 0.0)
+        cobrada = bool(result.get("cobrada", saldo <= 0.005))
+        status_info = {
+            "serie": int(serie), "codigo": int(codigo), "numero": numero,
+            "total": total,
+            "total_cobrado": result.get("total_cobrado", total),
+            "saldo_pendiente": saldo,
+            "estfac": result.get("estfac") or ("2" if cobrada else "1"),
+            "cobros": result.get("cobros"),
+            "fopfac": result.get("fopfac"), "ya_cobrada": cobrada,
+        }
+    else:
+        cobrada = True
+        status_info = {
+            "serie": int(serie), "codigo": int(codigo), "numero": numero,
+            "total": total,
+            "total_cobrado": result.get("total_cobrado", total),
+            "saldo_pendiente": result.get("saldo_pendiente", 0.0),
+            "estfac": result.get("estfac") or "2",
+            "cobros": result.get("cobros"),
+            "fopfac": result.get("fopfac"), "ya_cobrada": True,
+        }
     block = persist_cobro(session, order, status_info, source=source)
     paid = _status_value(order.payment_status)
-    reason = (
-        f"Cobro de {result.get('importe')} € registrado en FACTUSOL para la "
-        f"factura {numero} ({source})"
-        if registered else
-        f"La factura {numero} ya constaba cobrada en FACTUSOL ({source})"
-    )
+    if registered:
+        reason = (
+            f"Cobro de {_eur(result.get('importe'))} € registrado en FACTUSOL para la "
+            f"factura {numero} ({source})"
+        )
+        if not cobrada:
+            reason += f" — parcial: quedan {_eur(status_info['saldo_pendiente'])} € pendientes"
+    else:
+        reason = f"La factura {numero} ya constaba cobrada en FACTUSOL ({source})"
     session.add(OrderStatusHistory(
         order_id=order.id, domain=StatusDomain.PAYMENT,
         from_status=paid, to_status=paid, changed_at=_now(),
-        changed_by_user_id=actor_user_id, reason=reason,
+        changed_by_user_id=actor_user_id, reason=reason[:255],
         metadata_json=json.dumps({
             "event": "factusol_cobro", "source": source, **block,
             "linlco": result.get("linlco"), "importe": result.get("importe"),
@@ -399,30 +421,182 @@ def mark_order_from_result(
     return True
 
 
-def mark_orders_after_collection(
-    session: Session, *, serie: int, codigo: int, result: dict[str, Any],
-    actor_user_id: str | None = None,
-) -> list[Order]:
-    """Enganche del job de cobro (`register_invoice_collection_job`): los
-    pedidos vinculados a la factura `serie-codigo` quedan «cobrada» en la
-    bandeja aunque el operador cierre el modal antes de que termine."""
+def _eur(value: Any) -> str:
+    """333.96 → «333,96» (como en FACTUSOL)."""
+    try:
+        return f"{float(value):.2f}".replace(".", ",")
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _fecha_es(value: Any) -> str:
+    """«2026-09-23» → «23/09/2026»."""
+    text = str(value or "")[:10]
+    parts = text.split("-")
+    return f"{parts[2]}/{parts[1]}/{parts[0]}" if len(parts) == 3 else text
+
+
+def orders_for_invoice(session: Session, *, serie: int, codigo: int) -> list[Order]:
+    """Pedidos cuya factura VINCULADA es exactamente esa (serie + código): un
+    homónimo de otra serie o un pedido sin la serie no entran."""
+    from app.erp.linked_invoice import get_linked_invoice  # noqa: PLC0415
+
     candidates = session.scalars(
         select(Order).where(Order.factusol_invoice_number.in_(
             [str(int(codigo)), f"{int(serie)}-{int(codigo):06d}"],
         ))
     ).all()
-    from app.erp.linked_invoice import get_linked_invoice  # noqa: PLC0415
-
-    updated: list[Order] = []
+    out = []
     for order in candidates:
         linked = get_linked_invoice(order)
-        # Solo los pedidos cuya factura vinculada ES esa (serie + código): un
-        # homónimo de otra serie o un pedido sin la serie no se tocan.
-        if linked is None or (linked.serie, linked.codigo) != (int(serie), int(codigo)):
+        if linked is not None and (linked.serie, linked.codigo) == (int(serie), int(codigo)):
+            out.append(order)
+    return out
+
+
+# --- cobros que registró BoHub (anular / corregir) -------------------------------
+
+#: Auditoría del registro de un cobro (lo escribe el job F-4-B) y de su anulación.
+REGISTERED_EVENT = "erp.invoice_collection_registered"
+ANNULLED_EVENT = "erp.invoice_collection_annulled"
+
+
+def bohub_collections(session: Session, *, serie: int, codigo: int) -> list[dict[str, Any]]:
+    """Cobros de la factura que registró BoHub (según su auditoría), en orden,
+    con su línea de F_LCO, fecha, importe y contrapartida, y si ya se anularon.
+    Solo estos se pueden anular / corregir desde BoHub: un cobro hecho a mano
+    en FACTUSOL no está aquí."""
+    from app.erp.contrapartidas import resolve_contrapartida  # noqa: PLC0415
+    from app.models.crm import AuditLog  # noqa: PLC0415
+
+    numero = f"{int(serie)}-{int(codigo):06d}"
+    rows = session.scalars(
+        select(AuditLog)
+        .where(
+            AuditLog.action.in_([REGISTERED_EVENT, ANNULLED_EVENT]),
+            AuditLog.metadata_json.like(f"%{numero}%"),
+        )
+        .order_by(AuditLog.created_at, AuditLog.id)
+    ).all()
+    registrados: list[dict[str, Any]] = []
+    anulados: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        try:
+            meta = json.loads(r.metadata_json or "{}")
+        except (TypeError, ValueError):
             continue
+        if not isinstance(meta, dict) or meta.get("numero") != numero:
+            continue
+        if r.action == ANNULLED_EVENT:
+            if meta.get("registered_event_id"):
+                anulados[str(meta["registered_event_id"])] = {
+                    "at": r.created_at.isoformat() if r.created_at else None,
+                    "by": r.actor_email,
+                }
+            continue
+        linlco = _int_or_none(meta.get("linlco"))
+        codigo_cpa = str(meta.get("contrapartida") or "") or None
+        registrados.append({
+            "id": r.id, "numero": numero, "serie": int(serie), "codigo": int(codigo),
+            "linlco": linlco, "fecha": meta.get("fecha"),
+            "importe": meta.get("importe"),
+            "contrapartida": codigo_cpa,
+            "contrapartida_nombre": (
+                resolve_contrapartida(session, codigo_cpa) if codigo_cpa else None
+            ),
+            "registrado_at": r.created_at.isoformat() if r.created_at else None,
+            "registrado_por": r.actor_email,
+        })
+    for c in registrados:
+        anul = anulados.get(c["id"])
+        c["anulado"] = anul is not None
+        c["anulado_at"] = anul["at"] if anul else None
+        # Se puede anular si no se anuló ya y la auditoría trae la línea.
+        c["anulable"] = anul is None and c["linlco"] is not None
+    return registrados
+
+
+def bohub_collection(session: Session, event_id: str) -> dict[str, Any] | None:
+    """Un cobro registrado por BoHub por el id de su evento de auditoría."""
+    from app.models.crm import AuditLog  # noqa: PLC0415
+
+    ev = session.get(AuditLog, event_id)
+    if ev is None or ev.action != REGISTERED_EVENT:
+        return None
+    try:
+        meta = json.loads(ev.metadata_json or "{}")
+    except (TypeError, ValueError):
+        return None
+    serie, codigo = parse_invoice_number(meta.get("numero"))
+    if serie is None or codigo is None:
+        return None
+    return next(
+        (c for c in bohub_collections(session, serie=serie, codigo=codigo)
+         if c["id"] == event_id),
+        None,
+    )
+
+
+def annul_reason(cobro: dict[str, Any]) -> str:
+    """«Cobro de 333,96 € del 23/09/2026 (contrapartida 8) anulado»."""
+    return (
+        f"Cobro de {_eur(cobro.get('importe'))} € del {_fecha_es(cobro.get('fecha'))} "
+        f"(contrapartida {cobro.get('contrapartida')}) anulado"
+    )
+
+
+def mark_orders_after_annul(
+    session: Session, *, cobro: dict[str, Any], result: dict[str, Any],
+    actor_user_id: str | None = None,
+) -> list[Order]:
+    """Tras anular: los pedidos de esa factura quedan con el estado REAL que
+    dejan las líneas que quedan (pendiente si no llega al total) y con la
+    anotación en su historial."""
+    serie, codigo = int(cobro["serie"]), int(cobro["codigo"])
+    saldo = float(result.get("saldo_pendiente") or 0.0)
+    status_info = {
+        "serie": serie, "codigo": codigo, "numero": cobro["numero"],
+        "total": result.get("total"),
+        "total_cobrado": result.get("total_cobrado"),
+        "saldo_pendiente": saldo,
+        "estfac": result.get("estfac"),
+        "cobros": result.get("cobros"),
+        "fopfac": None, "ya_cobrada": saldo <= 0.005,
+    }
+    reason = annul_reason(cobro)
+    if result.get("status") == "line_missing":
+        reason += " (la línea ya no estaba en FACTUSOL: solo se corrigió el estado)"
+    updated: list[Order] = []
+    for order in orders_for_invoice(session, serie=serie, codigo=codigo):
+        block = persist_cobro(session, order, status_info, source="anulado")
+        paid = _status_value(order.payment_status)
+        session.add(OrderStatusHistory(
+            order_id=order.id, domain=StatusDomain.PAYMENT,
+            from_status=paid, to_status=paid, changed_at=_now(),
+            changed_by_user_id=actor_user_id, reason=reason[:255],
+            metadata_json=json.dumps({
+                "event": "factusol_cobro_anulado", **block,
+                "registered_event_id": cobro["id"], "linlco": cobro.get("linlco"),
+                "importe": cobro.get("importe"), "fecha": cobro.get("fecha"),
+                "contrapartida": cobro.get("contrapartida"),
+            }),
+        ))
+        updated.append(order)
+    return updated
+
+
+def mark_orders_after_collection(
+    session: Session, *, serie: int, codigo: int, result: dict[str, Any],
+    actor_user_id: str | None = None,
+) -> list[Order]:
+    """Enganche del job de cobro (`register_invoice_collection_job`): los
+    pedidos vinculados a la factura `serie-codigo` quedan con el estado de
+    cobro real («cobrada», o «pendiente» si fue parcial) aunque el operador
+    cierre el modal antes de que termine."""
+    return [
+        order for order in orders_for_invoice(session, serie=serie, codigo=codigo)
         if mark_order_from_result(
             session, order, serie=serie, codigo=codigo, result=result,
             source="manual", actor_user_id=actor_user_id,
-        ):
-            updated.append(order)
-    return updated
+        )
+    ]

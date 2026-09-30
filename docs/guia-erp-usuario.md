@@ -341,6 +341,22 @@ Es la pantalla de un pedido concreto. De arriba abajo:
   tienda artisJet · método Carte»**; puedes elegir otra y se registra la que
   elijas. El método de pago de WooCommerce se ve en el **Resumen económico →
   Forma de pago** y en la cola **«Por cobrar»** («Pago: Carte»).
+  El **importe** viene con lo **pendiente en FACTUSOL**; puedes bajarlo para
+  registrar un **cobro parcial** (la factura queda *Parcial* con el resto
+  pendiente, y el siguiente cobro propone ese resto). Nunca deja registrar
+  **más de lo pendiente**. Si el total del pedido y el de la factura no
+  coinciden, avisa: *«Pedido 325,49 · Factura 333,96 · diferencia 8,47»* (el
+  mismo aviso sale en la ficha); el cobro va por lo que dice la factura.
+- **«Anular / corregir cobro»** — solo para los cobros que **registró BoHub**
+  (los hechos a mano en FACTUSOL no salen). Está en la ficha (junto al estado
+  del cobro) y en el menú de la fila de **«Por cobrar»**. **Anular** borra en
+  FACTUSOL esa línea de cobro y la factura vuelve a *Pendiente* (o *Parcial* si
+  tiene otros cobros); el pedido vuelve a «Por cobrar» y el historial dice
+  *«Cobro de 333,96 € del 23/09/2026 (contrapartida 8) anulado»*.
+  **Corregir** hace lo mismo y registra a la vez el cobro bueno con la fecha,
+  cuenta e importe que pongas. Si alguien cambió esa línea en FACTUSOL
+  (importe, fecha o cuenta), **no se borra nada** y se explica qué no coincide.
+  Es una escritura en FACTUSOL: pide confirmación.
 - **«Antes de generar el albarán»** — al generar el albarán de un pedido cuyo
   pago aún no se ha decidido, se pide elegir: **confirmar el pago** (queda
   apuntado en el pedido, sin escribir el cobro en FACTUSOL) o marcarlo **«sin

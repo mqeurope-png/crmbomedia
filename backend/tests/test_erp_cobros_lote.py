@@ -180,7 +180,9 @@ def test_registro_cobro_sobrescribe_solo_lo_minimo(db) -> None:
     real de 5-260001: clave/línea/fechas/importe/contrapartida/concepto
     cambian; `FPALCO` sigue VACÍO (no '002'), el concepto NO lleva sufijo de
     forma, las fechas van en el mismo formato string que la fila real, y
-    MULLCO/TIPLCO/UALLCO/OBSLCO… se heredan tal cual. Nada de F_COB."""
+    TIPLCO/UALLCO/OBSLCO… se heredan tal cual. Nada de F_COB. Rev. 30/09:
+    TRALCO y MULLCO van a 0 (no traspasado a tesorería ni colgado del cobro
+    múltiple de la plantilla: la real tenía MULLCO=51)."""
     _set_cfg(db)
     client = FakeCobroClient(
         f_fac=[_fac(5, 260082, 70.18, CNOFAC="ROCIO BUENO")],
@@ -207,7 +209,8 @@ def test_registro_cobro_sobrescribe_solo_lo_minimo(db) -> None:
     assert rec["CPTLCO"] == "COBRO FACTURA Nº: 5 - 260082"     # sin «(Transferencia)»
     # Lo que DELSOL rechazaba por fijarlo de más: ahora se hereda de la real.
     assert rec["FPALCO"] == ""                                 # NO '002'
-    assert rec["OBSLCO"] == "" and rec["MULLCO"] == 51 and rec["TIPLCO"] == 0
+    assert rec["OBSLCO"] == "" and rec["TIPLCO"] == 0
+    assert rec["MULLCO"] == 0 and rec["TRALCO"] == 0          # ni 51 de la plantilla
     assert rec["UALLCO"] == 8 and rec["FUMLCO"] == "1900-01-01T00:00:00"
     # Las 23 columnas, ni una inventada, y nunca la clave de la plantilla.
     assert set(rec) == LCO_COLUMNS
@@ -215,7 +218,7 @@ def test_registro_cobro_sobrescribe_solo_lo_minimo(db) -> None:
     # Todo lo que NO es override es idéntico a la plantilla.
     tpl = _lco_real(5, 260001, 1, 411.28)
     overrides = {"TFALCO", "CFALCO", "LINLCO", "FECLCO", "FALLCO", "IMPLCO",
-                 "CPALCO", "CPTLCO"}
+                 "CPALCO", "CPTLCO", "TRALCO", "MULLCO"}
     assert {k: v for k, v in rec.items() if k not in overrides} == \
         {k: v for k, v in tpl.items() if k not in overrides}
     # La forma queda en el resultado (auditoría), no en la fila.
@@ -278,7 +281,9 @@ def test_plantilla_prefiere_misma_serie_y_contrapartida() -> None:
 
 
 def test_cobro_idempotente(db) -> None:
-    """Ya cobrada (saldo 0 o ESTFAC=2) → `already`, sin escribir NADA."""
+    """Ya cobrada (sus líneas de F_LCO suman el total) → `already`, sin escribir
+    NADA. Rev. 30/09: un ESTFAC=2 SIN líneas (apunte borrado en FACTUSOL, caso
+    BOPRIN-99940) ya NO cuenta como cobrada: se puede registrar el cobro."""
     _set_cfg(db)
     saldada = FakeCobroClient(
         f_fac=[_fac(1, 260729, 72.60)], f_lco=[_cobro(1, 260729, 1, 72.60)],
@@ -289,13 +294,24 @@ def test_cobro_idempotente(db) -> None:
     )
     assert r1["registered"] is False and r1["status"] == "already"
     assert saldada.writes == [] and saldada.updates == []
-    marcada = FakeCobroClient(f_fac=[_fac(1, 260729, 72.60, estfac="2")])
+    marcada = FakeCobroClient(f_fac=[_fac(1, 260729, 72.60, estfac="2")],
+                              f_lco=[_cobro(5, 260001, 1, 10.0)])   # otra factura
     r2 = register_invoice_collection(
         marcada, db, serie=1, codigo=260729, contrapartida="6",
         fecha="2026-09-10", ejercicio="2026",
     )
-    assert r2["status"] == "already"
-    assert marcada.writes == [] and marcada.updates == []
+    assert r2["status"] == "registered" and r2["cobrada"] is True
+    assert [t for t, _ in marcada.writes] == ["F_LCO"]
+    assert marcada.updates == []          # ya tenía ESTFAC=2: no se reescribe
+    # F_LCO ENTERA vacía (lectura rota / ejercicio recién abierto): no se
+    # pueden comprobar las líneas → se respeta ESTFAC=2 y NO se escribe nada.
+    ciega = FakeCobroClient(f_fac=[_fac(1, 260729, 72.60, estfac="2")])
+    r3 = register_invoice_collection(
+        ciega, db, serie=1, codigo=260729, contrapartida="6",
+        fecha="2026-09-10", ejercicio="2026",
+    )
+    assert r3["registered"] is False and r3["status"] == "already"
+    assert ciega.writes == [] and ciega.updates == []
 
 
 def test_cobro_no_existe_o_falla_no_marca(db) -> None:
@@ -408,7 +424,9 @@ def test_endpoint_queues_or_reports_already(http, session_factory) -> None:
     assert body["contrapartida"]["nombre"] == "Bomedia Sabadell"
     assert enq.call_args.args[:4] == (1, 260729, "6", "2026-09-10T00:00:00")
 
-    cobrada = FakeCobroClient(f_fac=[_fac(1, 260729, 72.60, estfac="2")])
+    cobrada = FakeCobroClient(
+        f_fac=[_fac(1, 260729, 72.60, estfac="2")], f_lco=[_cobro(1, 260729, 1, 72.60)],
+    )
     with _patched_client(cobrada), patch(
         "app.integrations.factusol.jobs.enqueue_register_invoice_collection",
     ) as enq:

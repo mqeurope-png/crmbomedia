@@ -741,16 +741,23 @@ def test_factura_cobro_info_pendiente(client, session_factory) -> None:
 
 
 def test_factura_cobro_info_cobrada(client, session_factory) -> None:
-    """ESTFAC=2 → la factura consta cobrada (no se ofrece registrar cobro)."""
+    """Rev. 30/09/2026: mandan las líneas de F_LCO. Cobrada = sus cobros suman
+    el total; ESTFAC=2 SIN líneas (apunte borrado en FACTUSOL) = pendiente; y
+    con F_LCO entera vacía (no se puede comprobar) se respeta ESTFAC=2."""
     _ = session_factory
     fac = _fac(260099, "5", ESTFAC=2, TOTFAC=100.0)
-    with _patched_factusol(FakeClient({"F_FAC": [fac]})):
-        r = client.get(
-            "/api/erp/factusol/documents/facturas/5/260099/cobro",
-            headers=auth_headers(client, "user"),
-        )
-    assert r.status_code == 200, r.text
-    assert r.json()["status"] == "cobrada"
+    cobro = {"TFALCO": "5", "CFALCO": 260099, "LINLCO": 1, "IMPLCO": 100.0,
+             "FECLCO": "2026-09-01T00:00:00", "CPALCO": "8"}
+    otra = {**cobro, "CFALCO": 260001}
+    casos = [([cobro], "cobrada"), ([otra], "pendiente"), ([], "cobrada")]
+    for f_lco, esperado in casos:
+        with _patched_factusol(FakeClient({"F_FAC": [fac], "F_LCO": f_lco})):
+            r = client.get(
+                "/api/erp/factusol/documents/facturas/5/260099/cobro",
+                headers=auth_headers(client, "user"),
+            )
+        assert r.status_code == 200, r.text
+        assert r.json()["status"] == esperado, (f_lco, r.json())
 
 
 def test_factura_cobro_info_not_found(client, session_factory) -> None:

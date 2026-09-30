@@ -9,6 +9,7 @@ import { ExcludeSeguimientoModal } from "../../components/erp/ExcludeSeguimiento
 import { OrderStatusBadge } from "../../components/erp/OrderStatusBadge";
 import { isSampleOrder } from "../../components/erp/OrderStatusGrid";
 import { isInvoiced, OrderStatusPills } from "../../components/erp/OrderStatusPills";
+import { AnularCobroModal } from "../../components/erp/AnularCobroModal";
 import { RegistrarCobroModal } from "../../components/erp/RegistrarCobroModal";
 import {
   QUEUE_COLOR,
@@ -294,6 +295,7 @@ function ErpOrdersScreen() {
   // modal «Registrar cobro» abierto y el refresco en bloque «Actualizar
   // cobros FACTUSOL». El filtro vive en `filtros.cobro`.
   const [cobroTarget, setCobroTarget] = useState<OrderSummary | null>(null);
+  const [anularTarget, setAnularTarget] = useState<OrderSummary | null>(null);
   const [refreshingCobros, setRefreshingCobros] = useState(false);
   // Tiendas Woo dadas de alta (para el filtro «Tienda» y la pastilla de origen).
   const [stores, setStores] = useState<{ slug: string; label: string }[]>([]);
@@ -832,6 +834,18 @@ function ErpOrdersScreen() {
             {cobrada ? "Cobrado" : "Registrar cobro"}
           </button>
         )}
+        {/* Deshacer / corregir un cobro que registró BoHub (el modal lista
+            solo esos; los hechos a mano en FACTUSOL no se tocan). */}
+        {o.factusol_invoice_number && (o.factusol_cobro?.cobros ?? 0) > 0 ? (
+          <button
+            type="button"
+            disabled={busy}
+            aria-label={`Anular o corregir cobro ${o.order_number}`}
+            onClick={() => { setError(null); setNotice(null); setAnularTarget(o); }}
+          >
+            Anular / corregir cobro
+          </button>
+        ) : null}
         {o.excluded ? (
           <button
             type="button" disabled={busy}
@@ -1356,6 +1370,14 @@ function ErpOrdersScreen() {
           orderId={cobroTarget.id}
           orderNumber={cobroTarget.order_number}
           onClose={() => setCobroTarget(null)}
+          onDone={onCobroDone}
+        />
+      ) : null}
+      {anularTarget ? (
+        <AnularCobroModal
+          orderId={anularTarget.id}
+          orderNumber={anularTarget.order_number}
+          onClose={() => setAnularTarget(null)}
           onDone={onCobroDone}
         />
       ) : null}

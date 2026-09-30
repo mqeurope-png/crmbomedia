@@ -221,4 +221,45 @@ describe("ERP · Ficha del pedido — cobro COHERENTE (fuente única) (#7)", () 
     expect(screen.queryByText("Cobro FACTUSOL sin comprobar")).toBeNull();
     expect(document.querySelector(".form-error")).toBeNull();
   });
+
+});
+
+describe("ERP · Ficha del pedido — anular / corregir cobro y descuadre (BOPRIN-99940)", () => {
+  it("con un cobro de BoHub se ofrece «Anular / corregir cobro»; pedido y factura distintos → aviso", async () => {
+    (getOrder as jest.Mock).mockResolvedValue(detail({
+      order_number: "BOPRIN-99940", total_amount: 325.49, factusol_cobro_status: "cobrada",
+      factusol_cobro: {
+        numero: "5-260108", serie: 5, codigo: 260108, total: 333.96, total_cobrado: 333.96,
+        saldo_pendiente: 0, estfac: "2", cobros: 1, cobrada: true,
+        checked_at: "2026-09-30T09:00:00Z", source: "live",
+      },
+    }));
+    (getOrderFactusolCobro as jest.Mock).mockResolvedValue({
+      order_id: "o-1", order_number: "BOPRIN-99940", status: "cobrada",
+      invoice: { serie: 5, codigo: 260108, numero: "5-260108" }, total: 333.96,
+      saldo_pendiente: 0, total_mismatch: { pedido: 325.49, factura: 333.96, diferencia: 8.47 },
+      bohub_cobros: [{ id: "ev-1", numero: "5-260108", serie: 5, codigo: 260108, linlco: 1,
+        fecha: "2026-09-23", importe: 333.96, contrapartida: "8",
+        contrapartida_nombre: "Streamtec Sabadell", registrado_at: null, registrado_por: null,
+        anulado: false, anulado_at: null, anulable: true }],
+    });
+    render(<ErpOrderDetailPage />);
+    expect(await screen.findByRole("button", { name: "Anular / corregir cobro" })).toBeEnabled();
+    expect(screen.getByLabelText("Descuadre pedido / factura")).toHaveTextContent(
+      "Pedido 325,49 € · Factura 333,96 € · diferencia 8,47 €",
+    );
+  });
+
+  it("sin cobros de BoHub (hechos a mano en FACTUSOL) no se ofrece anular", async () => {
+    (getOrder as jest.Mock).mockResolvedValue(detail({ factusol_cobro_status: "cobrada" }));
+    (getOrderFactusolCobro as jest.Mock).mockResolvedValue({
+      order_id: "o-1", status: "cobrada", invoice: { serie: 1, codigo: 260729, numero: "1-260729" },
+      saldo_pendiente: 0, bohub_cobros: [],
+    });
+    render(<ErpOrderDetailPage />);
+    await waitFor(() => expect(getOrderFactusolCobro).toHaveBeenCalled());
+    await screen.findByRole("button", { name: "Cobrado en FACTUSOL" });
+    expect(screen.queryByRole("button", { name: "Anular / corregir cobro" })).toBeNull();
+    expect(screen.queryByLabelText("Descuadre pedido / factura")).toBeNull();
+  });
 });

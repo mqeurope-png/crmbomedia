@@ -25,7 +25,11 @@ resolver la factura del pedido + el estado de cobro persistido para la bandeja.
    solo encontraba las de los pedidos web).
    Estado de cobro = `collection_status` (F3-fix1): `TOTFAC`, cobros en F_LCO
    por (TFALCO, CFALCO), saldo, `ESTFAC` (2 = cobrada, 1 = parcial, 0 =
-   pendiente); `ya_cobrada = saldo ≈ 0 or ESTFAC == "2"`.
+   pendiente). **Rev. 30/09/2026:** `ya_cobrada = saldo ≈ 0` (las líneas de
+   F_LCO mandan; un `ESTFAC=2` sin líneas que lleguen al total cuenta como
+   pendiente — ver «Anular / corregir cobro»). Salvo si F_LCO viene ENTERA
+   vacía (lectura rota / ejercicio recién abierto): entonces no se puede
+   comprobar y se respeta `ESTFAC=2` (ni se da por pendiente ni se re-cobra).
 2. **Catálogo de cuentas.** `app/erp/contrapartidas.py` (las 14 de Bart,
    editables en `/erp/settings`, endpoint `GET /api/erp/catalogs/contrapartidas`):
    6 Bomedia Sabadell · 8 Streamtec Sabadell · 2 MQ Europe Belfius · 14 Paypal
@@ -127,3 +131,65 @@ Tests: `backend/tests/test_erp_cobro_manual.py`,
   F_LCO, así que una factura cobrada por la 15 no se vuelve a casar contra
   Belfius; y F-4-B responde `already` si se intenta.
 
+
+## Anular / corregir cobro, cobros parciales y descuadre (rev. 30/09/2026)
+
+Deshacer un F-4-B equivocado (caso 5-260108: cobro de 333,96 € del
+23/09/2026 por la contrapartida 8 que no correspondía). Zona sensible:
+escritura en FACTUSOL, en serie por `worker-factusol` (cola `factusol:writes`).
+
+- **Qué se puede anular.** SOLO los cobros que registró BoHub: los eventos
+  `erp.invoice_collection_registered` de la auditoría (`bohub_collections` en
+  `app/erp/factusol_cobro.py`, con número, línea `LINLCO`, fecha, importe y
+  contrapartida). Un cobro hecho a mano en FACTUSOL (no está en la auditoría,
+  o traspasado a tesorería `TRALCO=1` / `F_COB`) no aparece y no se toca.
+- **Anular** (`annul_invoice_collection` en `collections_write.py`): relee
+  F_LCO y borra EXACTAMENTE `TFALCO + CFALCO + LINLCO` —nunca por número de
+  factura— y solo si fecha, importe y `CPALCO` siguen siendo los que registró
+  BoHub y la línea no está traspasada. Si no coincide → `mismatch`, no se borra
+  nada y se explica qué cambió. Después recalcula ESTFAC con las líneas que
+  quedan (0 pendiente / 1 parcial / 2 cobrada) y el saldo vuelve solo (sale de
+  F_LCO). El worker deja en el log la línea y el ESTFAC antes y después, sin
+  credenciales. Si la línea ya no existe (`line_missing`, p. ej. borrada a mano)
+  no se borra nada, pero se corrige ESTFAC según las líneas reales.
+- **En BoHub:** evento `erp.invoice_collection_annulled`, el pedido pasa a
+  `factusol_cobro_status = pendiente` (o sigue cobrada si otras líneas cubren
+  el total) y el historial dice «Cobro de 333,96 € del 23/09/2026
+  (contrapartida 8) anulado».
+- **Corregir** = anular + registrar el correcto (fecha / cuenta / importe) en
+  UN solo job: si la anulación no se hace (mismatch…), no se registra nada; al
+  final queda una sola línea, la nueva.
+- **Endpoints** (permiso de registrar cobros, `confirm` obligatorio, 202 +
+  `job_id`, polling con `collection-status/{job_id}`):
+  `POST /api/erp/orders/{id}/factusol-cobros/{event_id}/anular` y
+  `…/corregir` (`{confirm, cuenta, fecha, importe?, forma?}`; 400
+  `unknown_account` / `invalid_date`). 404 `cobro_not_found` si el cobro no es
+  de la factura vinculada al pedido; 409 `cobro_already_annulled`.
+  `GET /orders/{id}/factusol-cobro` añade `bohub_cobros` (con `anulable`) y
+  `total_mismatch`.
+- **UI:** modal `AnularCobroModal` (ficha: botón «Anular / corregir cobro»
+  cuando hay un cobro de BoHub anulable; «Por cobrar»: opción del menú de la
+  fila). Enseña el cobro, avisa de que se BORRA en FACTUSOL y pide
+  confirmación.
+- **Importe editable y cobros parciales.** El modal «Registrar cobro» propone
+  lo pendiente EN VIVO en FACTUSOL; un importe menor registra un parcial
+  (ESTFAC=1) y varios parciales suman (325,49 + 8,47 sobre 333,96 → cobrada).
+  Nunca más de lo pendiente: el modal no deja y el endpoint responde 400
+  `amount_exceeds_pending` (y el motor tampoco escribe).
+- **Estado en los dos sentidos.** «Actualizar cobros» / la consulta en vivo
+  dejan el pedido `pendiente` si la suma de F_LCO no llega al total (aunque
+  ESTFAC diga 2); «Anular» lo deja pendiente directamente.
+- **Descuadre pedido / factura.** Si `orders.total_amount` ≠ TOTFAC, la ficha y
+  el modal avisan: «Pedido 325,49 · Factura 333,96 · diferencia 8,47». El
+  cobro va siempre por lo pendiente en FACTUSOL.
+- **MULLCO / TRALCO.** La plantilla de F_LCO que copia BoHub traía
+  `MULLCO=51` (heredado de la línea de ejemplo: cobro múltiple / movimiento de
+  tesorería de otra operación) y podía traer `TRALCO=1`. BoHub escribe ahora
+  `MULLCO=0` y `TRALCO=0` (cobro simple, sin traspasar). Para comprobarlo en
+  producción (solo lectura):
+  `docker exec crmbo-api-1 python -m scripts.factusol_discover_invoice_payment --mullco`
+  (reparto de F_LCO por MULLCO/TRALCO y si los MULLCO casan con `F_COB.CODCOB`).
+
+Tests: `backend/tests/test_erp_anular_cobro.py`,
+`frontend/.../AnularCobroModal.test.tsx`, `RegistrarCobroModal.test.tsx`,
+`orders/[id]/cobro.test.tsx`.
