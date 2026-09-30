@@ -95,6 +95,10 @@ export type OrderSummary = {
   transport_status: TransportStatus;
   invoice_status: InvoiceStatus;
   tracking_number: string | null;
+  /** Pedido web: método de pago de WooCommerce — id del gateway
+   *  (`mollie_wc_gateway_creditcard`) y título en la tienda («Carte»). */
+  payment_method?: string | null;
+  payment_method_title?: string | null;
   /** Fase C: nº de factura FACTUSOL (CODFAC) si ya se emitió; null si no. */
   factusol_invoice_number: string | null;
   /** Cobro manual — estado de cobro EN FACTUSOL de la factura del pedido
@@ -1838,8 +1842,12 @@ export type ErpSettings = {
   /** ERP-F5 — contrapartidas de cobro (destino del dinero en FACTUSOL;
    *  código → descripción). La tabla no existe en FACTUSOL: vive aquí. */
   contrapartidas?: Contrapartida[];
-  /** ERP-F5 — contrapartida PayPal por tienda (artisjet / boprint / fluxlasers). */
+  /** ERP-F5 — contrapartida PayPal por tienda (heredado: lo sustituyen las
+   *  reglas `contrapartida_rules`). */
   paypal_contrapartidas_by_store?: Record<string, string>;
+  /** Reglas tienda × método de pago → contrapartida SUGERIDA del cobro, en
+   *  orden (la primera que casa). Sin ninguna, la cuenta de la serie. */
+  contrapartida_rules?: ContrapartidaRule[];
   /** ERP-F6 — orígenes del envío configurables (OFI-TER-SAT del Excel). */
   shipping_origins?: string[];
   /** ERP-F6 — hoja de seguimiento en Drive. El JSON de la cuenta de servicio
@@ -2060,6 +2068,16 @@ export async function updateErpSettings(patch: Partial<ErpSettings>): Promise<Er
 
 /** ERP-F5 — contrapartida de cobro de FACTUSOL (destino del dinero). */
 export type Contrapartida = { codigo: string; nombre: string };
+
+/** Regla de contrapartida sugerida: tienda («» = todas) + método de pago de
+ *  Woo (id del gateway o título; también la forma de pago de FACTUSOL),
+ *  coincidencia exacta o «contiene» sin mayúsculas → código de contrapartida. */
+export type ContrapartidaRule = {
+  tienda: string;
+  metodo: string;
+  coincidencia: "exacta" | "contiene";
+  contrapartida: string;
+};
 
 export async function getContrapartidas(): Promise<Contrapartida[]> {
   const r = await apiFetch<{ items: Contrapartida[] }>("/api/erp/catalogs/contrapartidas");
@@ -2718,6 +2736,11 @@ export type OrderCobroInfo = {
   /** Cuenta sugerida por defecto (serie / empresa emisora, PayPal por tienda,
    *  o la que se apuntó en el pedido al pagar — Bloque B). */
   suggested_cuenta?: Contrapartida | null;
+  /** Por qué se sugiere esa cuenta («tienda artisJet · método Carte»,
+   *  «cuenta de la serie 2», «pago apuntado en el pedido»). */
+  suggested_reason?: string | null;
+  /** Método de pago del pedido web (título en la tienda). */
+  payment_method_title?: string | null;
   /** Fecha sugerida (Bloque B): la del pago apuntado en el pedido, si la hay,
    *  para prellenar «Registrar cobro»; ausente → el modal usa hoy. */
   suggested_fecha?: string | null;

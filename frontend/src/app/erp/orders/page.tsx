@@ -782,6 +782,14 @@ function ErpOrdersScreen() {
     );
   }
 
+  /** Cola «Por cobrar»: el método de pago del pedido web («Carte», «PayPal»…)
+   *  junto al importe — es lo que decide la cuenta sugerida del cobro. */
+  function payMethodNote(o: OrderSummary): ReactNode {
+    if (o.workflow?.queue !== "por_cobrar") return null;
+    const metodo = o.payment_method_title || o.payment_method;
+    return metodo ? <small className="erp-flow-paymethod">Pago: {metodo}</small> : null;
+  }
+
   /** El menú «⋯» de la fila: las acciones que no son la principal. El MISMO
    *  en tarjetas y en la vista lista. */
   function rowMenu(o: OrderSummary): ReactNode {
@@ -1261,6 +1269,7 @@ function ErpOrdersScreen() {
                     <td className="num erp-flow-amount">
                       {o.total_amount.toFixed(2)} {o.currency}
                       {regimeLabel(wf?.regime) ? <small>{regimeLabel(wf?.regime)}</small> : null}
+                      {payMethodNote(o)}
                     </td>
                     <td><OrderStatusPills order={o} size="sm" /></td>
                     <td>
@@ -1329,6 +1338,7 @@ function ErpOrdersScreen() {
                   <p className="erp-flow-amount">
                     {o.total_amount.toFixed(2)} {o.currency}
                     {regimeLabel(wf?.regime) ? <small>{regimeLabel(wf?.regime)}</small> : null}
+                    {payMethodNote(o)}
                   </p>
                   <div className="erp-flow-item-actions">
                     {primaryAction(o)}

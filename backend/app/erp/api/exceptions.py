@@ -37,9 +37,11 @@ from app.erp.api.deps import (
     require_erp_view,
 )
 from app.erp.contrapartidas import (
+    contrapartida_rules_config,
     contrapartidas_config,
     normalize_store,
     paypal_by_store_config,
+    validate_contrapartida_rules,
     validate_contrapartidas,
 )
 from app.erp.drive_sheets import (
@@ -168,6 +170,10 @@ class SettingsIn(BaseModel):
     #: contrapartida PayPal por tienda ({"artisjet": "12", …}).
     contrapartidas: list[dict[str, Any]] | None = None
     paypal_contrapartidas_by_store: dict[str, str] | None = None
+    #: Reglas tienda × método de pago → contrapartida sugerida del cobro
+    #: ([{tienda, metodo, coincidencia, contrapartida}], en orden: la primera
+    #: que casa). Sustituye a `paypal_contrapartidas_by_store` (heredado).
+    contrapartida_rules: list[dict[str, Any]] | None = None
     #: ERP-F6 — orígenes del envío (el «OFI-TER-SAT» del Excel), configurables.
     shipping_origins: list[str] | None = None
     #: ERP-F6 — sincronizado del seguimiento con la hoja de Drive: JSON de la
@@ -470,6 +476,9 @@ def _serialise_settings(cfg: ErpSettings, session: Session) -> dict[str, Any]:
         "paypal_contrapartidas_by_store": paypal_by_store_config(
             _series(cfg).get("paypal_contrapartidas_by_store")
         ),
+        # Reglas tienda × método de pago (las guardadas o, si nunca se
+        # guardaron, las iniciales: PayPal por tienda migrado + Mollie).
+        "contrapartida_rules": contrapartida_rules_config(_series(cfg)),
         # ERP-F6: orígenes del envío + estado del Drive. De las credenciales
         # SOLO sale el client_email (para que Bart comparta la hoja con él);
         # el JSON cifrado no se devuelve nunca.
@@ -639,6 +648,7 @@ def update_settings(
             or payload.shipment_email_from is not None
             or payload.contrapartidas is not None
             or payload.paypal_contrapartidas_by_store is not None
+            or payload.contrapartida_rules is not None
             or payload.shipping_origins is not None
             or payload.drive_reference_prefer_albaran is not None
             or payload.seguimiento_reconcile_enabled is not None
@@ -723,6 +733,13 @@ def update_settings(
                     raise HTTPException(400, f"contrapartida PayPal inválida para {key}: {value!r}")
                 mapping[key] = normalize_code(value)
             series["paypal_contrapartidas_by_store"] = mapping
+        if payload.contrapartida_rules is not None:
+            try:
+                series["contrapartida_rules"] = validate_contrapartida_rules(
+                    payload.contrapartida_rules,
+                )
+            except ValueError as e:
+                raise HTTPException(400, str(e)) from e
         if payload.factusol_series_default is not None:
             series["default"] = payload.factusol_series_default.strip()
         if payload.factusol_series_by_source is not None:

@@ -10,9 +10,11 @@ import {
 jest.mock("../../lib/erpApi", () => ({
   getOrderFactusolCobro: jest.fn(),
   getContrapartidas: jest.fn(() => Promise.resolve([
+    { codigo: "2", nombre: "MQ Europe Belfius" },
     { codigo: "6", nombre: "Bomedia Sabadell" },
     { codigo: "8", nombre: "Streamtec Sabadell" },
     { codigo: "14", nombre: "Paypal Streamtec" },
+    { codigo: "15", nombre: "Tarjetas Mollie Belfius" },
   ])),
   getFactusolFormasPago: jest.fn(() => Promise.resolve([
     { codigo: "002", nombre: "Transferencia" }, { codigo: "005", nombre: "Paypal" },
@@ -146,5 +148,36 @@ describe("ERP · modal «Registrar cobro en FACTUSOL» (compartido ficha / bande
     await user.click(screen.getByRole("button", { name: "Registrar cobro" }));
     await waitFor(() => expect(document.querySelector(".form-error")).toHaveTextContent(/DELSOL rechazó F_LCO/));
     expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("pedido artisJet pagado con «Carte» (Mollie): 15 sugerida con su porqué; editable y se registra con la elegida", async () => {
+    (getOrderFactusolCobro as jest.Mock).mockResolvedValue({
+      ...PENDIENTE, order_number: "ARTISJ-9530",
+      invoice: { serie: 2, codigo: 526200, numero: "2-526200" },
+      suggested_cuenta: { codigo: "15", nombre: "Tarjetas Mollie Belfius" },
+      suggested_reason: "tienda artisJet · método Carte",
+      payment_method_title: "Carte",
+    });
+    (registerInvoiceCollection as jest.Mock).mockResolvedValue({
+      status: "queued", job_id: "job-2", numero: "2-526200", importe: 121,
+      contrapartida: { codigo: "2", nombre: "MQ Europe Belfius" }, fecha: "2026-09-12",
+    });
+    (waitForInvoiceCollectionJob as jest.Mock).mockResolvedValue({
+      status: "finished", result: { registered: true, status: "registered", importe: 121 },
+    });
+    const user = userEvent.setup();
+    render(<RegistrarCobroModal orderId="o-9" orderNumber="ARTISJ-9530" onClose={() => undefined} />);
+    const cuenta = await screen.findByLabelText("Cuenta del cobro");
+    await waitFor(() => expect(cuenta).toHaveValue("15"));
+    expect(screen.getByRole("note")).toHaveTextContent("Sugerida por: tienda artisJet · método Carte");
+    // Se puede cambiar: la nota sigue diciendo cuál era la sugerida.
+    await user.selectOptions(cuenta, "2");
+    expect(screen.getByRole("note"))
+      .toHaveTextContent("Sugerida: 15 · Tarjetas Mollie Belfius por: tienda artisJet · método Carte");
+    await user.click(screen.getByLabelText("Confirmo el cobro"));
+    await user.click(screen.getByRole("button", { name: "Registrar cobro" }));
+    await waitFor(() => expect(registerInvoiceCollection).toHaveBeenCalledWith(
+      2, 526200, expect.objectContaining({ cuenta: "2" }),
+    ));
   });
 });

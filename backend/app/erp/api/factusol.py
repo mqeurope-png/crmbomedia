@@ -1322,7 +1322,9 @@ class InvoiceCollectionPayload(BaseModel):
     confirm: bool = False
     #: Contrapartida (cuenta donde entra el dinero): CÓDIGO («6») o NOMBRE tal
     #: como viene en el Excel («Bomedia (Sabadell)», «Paypal MQ Europe»).
-    cuenta: str = Field(min_length=1, max_length=80)
+    #: Vacía → la SUGERIDA (regla tienda × método de pago del pedido de la
+    #: factura, o la cuenta de la serie); sin sugerencia, 400.
+    cuenta: str | None = Field(default=None, max_length=80)
     #: Fecha del cobro (ISO o dd/mm/yyyy).
     fecha: str = Field(min_length=6, max_length=25)
     #: Forma de pago (texto del Excel: Transferencia/TPV/Paypal…) → concepto.
@@ -1368,8 +1370,9 @@ def register_invoice_collection_endpoint(
             "code": "confirmation_required",
             "detail": "Registrar un cobro requiere confirmación explícita.",
         })
-    contrapartida = resolve_contrapartida_code(session, payload.cuenta)
-    if contrapartida is None:
+    cuenta_txt = (payload.cuenta or "").strip()
+    contrapartida = resolve_contrapartida_code(session, cuenta_txt) if cuenta_txt else None
+    if cuenta_txt and contrapartida is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, {
             "code": "unknown_account",
             "detail": (
@@ -1402,6 +1405,34 @@ def register_invoice_collection_endpoint(
             "code": "invoice_not_found",
             "detail": f"No existe la factura {serie}-{codigo}.",
         })
+    sugerida_por = None
+    if contrapartida is None:
+        # Sin cuenta (p. ej. fila del lote CSV sin contrapartida): la sugerida
+        # —regla tienda × método de pago del pedido de la factura, o la cuenta
+        # de la serie—. Solo códigos del catálogo; sin sugerencia, 400.
+        from app.erp.factusol_cobro import suggest_for_invoice  # noqa: PLC0415
+        from app.integrations.factusol.catalogs import resolve_name  # noqa: PLC0415
+
+        sug = suggest_for_invoice(
+            session, serie=serie, codigo=int(codigo),
+            referencia=status_info.get("referencia"),
+            cliente_codigo=status_info.get("cliente_codigo"),
+            forma_nombre=payload.forma or resolve_name(
+                _fop_names(client, ejercicio), status_info.get("fopfac"),
+            ),
+        )
+        cuenta_sug = sug.get("suggested_cuenta") or {}
+        contrapartida = resolve_contrapartida_code(session, cuenta_sug.get("codigo"))
+        if contrapartida is None:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+                "code": "missing_account",
+                "detail": (
+                    f"Indica la cuenta del cobro de {serie}-{int(codigo):06d}: no hay "
+                    "ninguna sugerida (ni regla por tienda y método de pago ni cuenta "
+                    "de la serie)."
+                ),
+            })
+        sugerida_por = sug.get("suggested_reason")
     cuenta_info = {
         "codigo": contrapartida,
         "nombre": resolve_contrapartida(session, contrapartida) or contrapartida,
@@ -1416,6 +1447,8 @@ def register_invoice_collection_endpoint(
         "saldo_pendiente": status_info["saldo_pendiente"],
         "importe": importe, "contrapartida": cuenta_info,
         "fecha": fecha_iso[:10], "forma": payload.forma,
+        # Solo si la cuenta NO venía en la petición: por qué se eligió.
+        "contrapartida_sugerida_por": sugerida_por,
     }
     # Idempotente: ya cobrada (saldo 0 / ESTFAC=2) → no se encola nada.
     if status_info["ya_cobrada"]:
@@ -1454,7 +1487,7 @@ def factura_cobro_info(
     equivalente por factura de `GET /orders/{id}/factusol-cobro`. Solo lectura:
     este endpoint NO escribe nada en FACTUSOL."""
     _ = current_user
-    from app.erp.contrapartidas import suggest_contrapartida  # noqa: PLC0415
+    from app.erp.factusol_cobro import suggest_for_invoice  # noqa: PLC0415
     from app.integrations.factusol.catalogs import resolve_name  # noqa: PLC0415
     from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
     from app.integrations.factusol.collections_write import (  # noqa: PLC0415
@@ -1488,8 +1521,11 @@ def factura_cobro_info(
         )
     if status_info["estfac"] == "1":
         warnings.append("FACTUSOL la marca como cobro parcial (ESTFAC=1).")
-    suggested = suggest_contrapartida(
-        session, serie=serie, forma_nombre=forma_nombre, store=None,
+    sug = suggest_for_invoice(
+        session, serie=serie, codigo=int(codigo),
+        referencia=status_info.get("referencia"),
+        cliente_codigo=status_info.get("cliente_codigo"),
+        forma_nombre=forma_nombre,
     )
     return {
         "serie": serie, "codigo": codigo, "numero": numero,
@@ -1503,8 +1539,11 @@ def factura_cobro_info(
         "estfac": status_info["estfac"],
         "cobros": status_info["cobros"],
         "fopfac": status_info["fopfac"],
-        "forma_pago_nombre": forma_nombre,
-        "suggested_cuenta": suggested,
+        "forma_pago_nombre": sug["forma_pago_nombre"],
+        "suggested_cuenta": sug["suggested_cuenta"],
+        "suggested_reason": sug["suggested_reason"],
+        "suggested_fecha": sug["suggested_fecha"],
+        "order_number": sug["order_number"],
         "warnings": warnings,
     }
 

@@ -85,7 +85,12 @@ serie,codigo,cuenta,forma,fecha,observaciones
 
 También vale una columna `numero` (`1-260729`) en vez de `serie,codigo`. La
 fecha admite `2026-09-05`, `05/09/2026` o `05-09-2026`. Las filas **sin cuenta**
-(las 16 sin cobro localizado) se saltan solas.
+usan la cuenta **sugerida** por BoHub (regla tienda × método de pago del pedido
+de la factura —p. ej. artisJet pagado con «Carte» → 15 Tarjetas Mollie
+Belfius—, o la cuenta de la serie): el plan la enseña como `15 · Tarjetas Mollie
+Belfius (sugerida por: tienda artisJet · método Carte)` y se manda ese código.
+Si no hay ninguna sugerida, la fila se salta («SIN CUENTA»). Con cuenta en el
+CSV, manda la del CSV.
 
 ### 2. PRUEBA primero (obligatorio)
 

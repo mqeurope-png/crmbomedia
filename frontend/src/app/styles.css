@@ -14436,3 +14436,9 @@ table.erp-doc-lines { width: 100%; table-layout: fixed; }
 .erp-genei-customer-email p { margin: 0; }
 .erp-genei-email-body { white-space: pre-wrap; font-family: inherit; font-size: var(--fs-small, 0.875rem);
   background: var(--surface-2, #f6f7f9); padding: var(--sp-2); border-radius: 8px; margin: 0; }
+
+/* Reglas de contrapartida (Ajustes → Contrapartidas de cobro) y porqué de la
+   cuenta sugerida en «Registrar cobro». */
+.erp-settings-rule-actions { white-space: nowrap; }
+.erp-settings-rule-actions .button + .button { margin-left: var(--sp-1); }
+.erp-cobro-sugerida { margin: 0; }

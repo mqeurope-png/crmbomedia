@@ -339,6 +339,24 @@ def _apply_shipping_address(order: Order, woo: dict[str, Any], *, overwrite: boo
 # --- order + líneas ---------------------------------------------------------
 
 
+def apply_payment_method(order: Order, woo: dict[str, Any]) -> bool:
+    """Guarda el método de pago de WooCommerce en el pedido: `payment_method`
+    (id del gateway, p. ej. `mollie_wc_gateway_creditcard`) y
+    `payment_method_title` (texto de la tienda, p. ej. «Carte»). Woo es la
+    fuente: si trae un valor, manda; si no trae nada, no se borra lo que hay.
+    Devuelve True si cambió algo (para la puesta al día / backfill)."""
+    changed = False
+    method = str(woo.get("payment_method") or "").strip()[:64]
+    title = str(woo.get("payment_method_title") or "").strip()[:120]
+    if method and order.payment_method != method:
+        order.payment_method = method
+        changed = True
+    if title and order.payment_method_title != title:
+        order.payment_method_title = title
+        changed = True
+    return changed
+
+
 def _payment_status(woo: dict[str, Any]) -> PaymentStatus:
     if woo.get("date_paid"):
         return PaymentStatus.PAID
@@ -434,6 +452,8 @@ def _create_order(
     # Dirección de envío de Woo (para el albarán manual y para Genei). Aditivo:
     # los pedidos sin dirección quedan como hasta ahora.
     _apply_shipping_address(order, woo, overwrite=True)
+    # Método de pago (gateway + título): sugiere la contrapartida del cobro.
+    apply_payment_method(order, woo)
     session.add(order)
     return order
 
@@ -455,6 +475,9 @@ def _refresh_existing(
     new_woo_status = _woo_status(woo)
     if new_woo_status is not None:
         order.woo_status = new_woo_status
+    # Método de pago: se refresca desde Woo (y rellena los pedidos importados
+    # antes de guardarlo).
+    apply_payment_method(order, woo)
     # Parte A: un pedido web que pasa a `refunded` (reembolso TOTAL) o
     # `cancelled` en WooCommerce se AUTO-ANULA en BoHub (sale de «por facturar»
     # y demás colas). Idempotente; no toca un pedido ya anulado ni ya facturado.

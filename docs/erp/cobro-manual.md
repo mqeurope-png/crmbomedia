@@ -100,3 +100,30 @@ que leen el mismo campo.
 Tests: `backend/tests/test_erp_cobro_manual.py`,
 `frontend/.../RegistrarCobroModal.test.tsx`, `orders/[id]/cobro.test.tsx`,
 `orders/cobro.test.tsx`.
+
+## Contrapartida sugerida por tienda × método de pago (rev. 30/09/2026)
+
+- El pedido web guarda el método de pago de WooCommerce: `orders.payment_method`
+  (id del gateway, p. ej. `mollie_wc_gateway_creditcard`) y
+  `orders.payment_method_title` («Carte», «PayPal»…), migración `20260930_0121`.
+  Se rellenan al importar / actualizar (webhook) y, para los antiguos, en la
+  puesta al día de estados Woo (`to_payment_method`, listado `status=any`).
+- Reglas `contrapartida_rules` en `factusol_series_json`
+  (`[{tienda, metodo, coincidencia: exacta|contiene, contrapartida}]`, en orden,
+  primera que casa; tienda «» = todas). Casan contra el título, el gateway y la
+  forma de pago de FACTUSOL, sin mayúsculas. Si nunca se guardaron, son las
+  iniciales: PayPal por tienda (`paypal_contrapartidas_by_store`, migrado) +
+  artisJet «Carte» / `mollie_wc_gateway_creditcard` → 15. Una regla con una
+  contrapartida fuera del catálogo se salta. Sin regla → PayPal de la empresa
+  emisora (si el método es PayPal) → cuenta bancaria de la serie.
+- Se aplica en `GET /orders/{id}/factusol-cobro` (modal de la ficha y de «Por
+  cobrar», con `suggested_reason`), en `GET /documents/facturas/{s}/{c}/cobro`
+  (pedido vinculado vía `find_order_for_invoice`) y en
+  `POST …/collection` cuando no llega `cuenta` (lote CSV: `contrapartida_sugerida_por`;
+  sin sugerencia → 400 `missing_account`). Lo apuntado a mano en el pedido
+  (pago al convertir) sigue mandando. Ningún cobro se registra solo: el pago
+  al convertir solo apunta la intención.
+- Conciliación bancaria sin cambios: solo propone contra facturas con saldo en
+  F_LCO, así que una factura cobrada por la 15 no se vuelve a casar contra
+  Belfius; y F-4-B responde `already` si se intenta.
+

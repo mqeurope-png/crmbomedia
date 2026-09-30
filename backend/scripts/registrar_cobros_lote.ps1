@@ -19,7 +19,10 @@
   Entrada: CSV UTF-8 con cabecera y estas columnas (derivado del Excel):
     serie,codigo,cuenta,forma,fecha[,observaciones]
   o bien  numero (p.ej. 1-260729),cuenta,forma,fecha[,observaciones]
-  Las filas SIN cuenta (cobro no localizado) se saltan. Las facturas de la
+  Las filas SIN cuenta usan la cuenta SUGERIDA por BoHub (regla tienda ×
+  método de pago del pedido de la factura —p. ej. artisJet «Carte» → 15—, o la
+  cuenta de la serie); se ve en el plan («sugerida por: …») y, si no hay
+  ninguna, la fila se salta. Con cuenta en el CSV, manda la del CSV. Las facturas de la
   lista EXCLUIR (doble cobro, anticipos, Scalapay, a confirmar) se saltan
   aunque estén en el CSV, salvo con -IncluirExcluidas.
 
@@ -148,7 +151,6 @@ foreach ($f in $filas) {
         contrapartida = (Get-Contrapartida $cuenta); forma = $forma; fecha = $fecha
         observaciones = $obs; estado = ""; registrable = $false
     }
-    if (-not $cuenta) { $row.estado = "SIN CUENTA (cobro no localizado; se salta)"; $plan += $row; continue }
     if (-not $fecha)  { $row.estado = "SIN FECHA (se salta)"; $plan += $row; continue }
     if (($EXCLUIR -contains $num) -and -not $IncluirExcluidas) { $row.estado = "EXCLUIDA (registrar a mano)"; $plan += $row; continue }
     # Estado en vivo: total, cobros, saldo pendiente y ESTFAC.
@@ -165,6 +167,21 @@ foreach ($f in $filas) {
     $estfac = "$($d.estado)"
     if ($estfac -eq "2" -or ($null -ne $row.saldo -and [math]::Abs([double]$row.saldo) -lt 0.005)) {
         $row.estado = "YA COBRADA (se salta)"; $plan += $row; continue
+    }
+    # Sin cuenta en el CSV: la SUGERIDA por BoHub (regla tienda × método de pago
+    # del pedido, o la cuenta de la serie). Se manda el CÓDIGO que se ve aquí.
+    if (-not $cuenta) {
+        $s = $null
+        try {
+            $s = Invoke-RestMethod -Headers $headers -Uri "$BaseUrl/api/erp/factusol/documents/facturas/$serie/$codigo/cobro"
+        } catch { $s = $null }
+        if ($s -and $s.suggested_cuenta -and $s.suggested_cuenta.codigo) {
+            $row.cuenta = "$($s.suggested_cuenta.codigo)"
+            $motivo = if ($s.suggested_reason) { " (sugerida por: $($s.suggested_reason))" } else { " (sugerida)" }
+            $row.contrapartida = "$($s.suggested_cuenta.codigo) · $($s.suggested_cuenta.nombre)$motivo"
+        } else {
+            $row.estado = "SIN CUENTA (sin regla ni cuenta de serie; se salta)"; $plan += $row; continue
+        }
     }
     $row.estado = "a registrar"; $row.registrable = $true
     $plan += $row
