@@ -105,7 +105,9 @@ const TIPO_OPTIONS: [TipoPedido, string][] = [
   ["web", "WEB"], ["manual", "Manual"], ["sample", "Muestra"], ["factusol_proforma", "Proforma"],
 ];
 function tipoDePedido(o: OrderSummary): TipoPedido | null {
-  if (isSampleOrder(o)) return "sample";
+  // Una muestra con documento FACTUSOL vinculado sigue siendo «Muestra» para
+  // el filtro (nació como muestra), aunque ya se comporte como pedido normal.
+  if (isSampleOrder(o) || o.born_as_sample) return "sample";
   if (o.external_source === "woocommerce") return "web";
   if (o.external_source === "manual") return "manual";
   if (o.external_source === "factusol_proforma") return "factusol_proforma";
@@ -468,7 +470,7 @@ function ErpOrdersScreen() {
     const web = o.external_source === "woocommerce";
     const manual = o.external_source === "manual";
     const tienda = web ? storeByPrefix.get(o.order_number.split("-")[0].toUpperCase()) : null;
-    return (
+    const pill = (
       <span
         className={`erp-flow-src${web ? " is-woo" : manual ? " is-man" : ""}`}
         title={web ? `Pedido web${tienda ? ` · ${tienda}` : ""}` : undefined}
@@ -476,6 +478,17 @@ function ErpOrdersScreen() {
         {web ? tienda ?? "woo" : o.external_source}
       </span>
     );
+    // Nació como muestra y ya tiene un documento FACTUSOL: pedido normal, pero
+    // con la marca «muestra» visible.
+    return o.born_as_sample ? (
+      <>
+        {pill}{" "}
+        <span className="erp-flow-src is-sample"
+              title="Nació como muestra; tiene un documento FACTUSOL vinculado">
+          Muestra
+        </span>
+      </>
+    ) : pill;
   }
 
   function toggleRow(id: string) {

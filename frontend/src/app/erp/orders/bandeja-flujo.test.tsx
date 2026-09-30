@@ -728,3 +728,25 @@ describe("ERP · Bandeja — buscador, orden y tipo (A1/A2/A3)", () => {
     expect(listOrders).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("ERP · Bandeja — muestra con documento FACTUSOL (rev. 30/09/2026)", () => {
+  it("una muestra convertida lleva la marca «Muestra» y entra en el filtro Muestra", async () => {
+    const S2 = order({
+      id: "s-2", order_number: "MUESTRA-000003", external_source: "factusol_factura",
+      order_kind: "sample_converted", born_as_sample: true, contact_name: "PREMO",
+      company_name: "PREMO B.V.", total_amount: 5059, placed_at: "2026-09-24T10:00:00",
+      workflow: wf({ queue: "por_cobrar", queue_label: "Por cobrar", next_action: "registrar_cobro" }),
+    });
+    (listOrders as jest.Mock).mockResolvedValue(page([W1, S2]));
+    const user = userEvent.setup();
+    render(<ErpOrdersPage />);
+    await screen.findByText("MUESTRA-000003");
+    // Ya no es «no facturable»: su origen real + la marca «Muestra».
+    expect(screen.queryByText("Muestra · no facturable")).toBeNull();
+    expect(screen.getByTitle("Nació como muestra; tiene un documento FACTUSOL vinculado"))
+      .toHaveTextContent("Muestra");
+    await user.click(screen.getByRole("button", { name: "Filtro tipo Muestra" }));
+    expect(ordenVisible()).toEqual(["MUESTRA-000003"]);
+  });
+});
+

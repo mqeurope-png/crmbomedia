@@ -227,30 +227,12 @@ def resolve_company_id(session: Session, codcli: Any) -> str | None:
     return company_id
 
 
-def build_order(
-    session: Session, *, source: OrderSource, external_id: str, order_number: str,
-    company_id: str | None, contact_id: str | None, placed_at: datetime | None,
-    lines: list[dict[str, Any]], notes: str | None,
-    packing_extra: dict[str, Any] | None, actor_user_id: str | None,
-    history_reason: str, total_with_tax: float | None = None,
-) -> Order:
-    """Crea el `Order` + líneas + historial (sin commit). Las líneas vienen en
-    la forma del lector de documentos / `quote_lines_for_order`: `codart`,
-    `description`, `quantity`, `unit_price`, `discount_pct`, `iva_pct`."""
-    order = Order(
-        external_source=source,
-        external_id=external_id,
-        order_number=order_number,
-        company_id=company_id,
-        contact_id=contact_id,
-        currency="EUR",
-        notes=notes,
-        placed_at=placed_at or datetime.now(UTC),
-        packing_json=json.dumps(packing_extra) if packing_extra else None,
-    )
-    session.add(order)
-    session.flush()
-
+def add_document_lines(
+    session: Session, order: Order, lines: list[dict[str, Any]],
+) -> float:
+    """Añade al pedido las líneas del documento FACTUSOL (forma del lector:
+    `codart`, `description`, `quantity`, `unit_price`, `discount_pct`,
+    `iva_pct`) y devuelve la suma CON IVA. Sin commit."""
     total_tax = 0.0
     for i, line in enumerate(lines):
         quantity = _f(line.get("quantity"), 1.0) or 1.0
@@ -276,6 +258,50 @@ def build_order(
             line_total=line_total,
             notes=f"dto. {discount:g}%" if discount else None,
         ))
+    return total_tax
+
+
+def document_lines_or_total(preview: dict[str, Any]) -> list[dict[str, Any]]:
+    """Las líneas del documento o, si no trae (edge case), una línea con el
+    total para no dejar el pedido vacío — mismo criterio que
+    `quote_lines_for_order`."""
+    lines = list(preview.get("lines") or [])
+    if lines:
+        return lines
+    label = DOC_LABEL.get(str(preview.get("doc_type")), "documento")
+    return [{
+        "codart": None,
+        "description": preview.get("referencia") or f"{label.capitalize()} {preview.get('numero')}",
+        "quantity": 1.0, "unit_price": preview.get("total") or 0.0,
+        "discount_pct": 0.0, "iva_pct": None,
+    }]
+
+
+def build_order(
+    session: Session, *, source: OrderSource, external_id: str, order_number: str,
+    company_id: str | None, contact_id: str | None, placed_at: datetime | None,
+    lines: list[dict[str, Any]], notes: str | None,
+    packing_extra: dict[str, Any] | None, actor_user_id: str | None,
+    history_reason: str, total_with_tax: float | None = None,
+) -> Order:
+    """Crea el `Order` + líneas + historial (sin commit). Las líneas vienen en
+    la forma del lector de documentos / `quote_lines_for_order`: `codart`,
+    `description`, `quantity`, `unit_price`, `discount_pct`, `iva_pct`."""
+    order = Order(
+        external_source=source,
+        external_id=external_id,
+        order_number=order_number,
+        company_id=company_id,
+        contact_id=contact_id,
+        currency="EUR",
+        notes=notes,
+        placed_at=placed_at or datetime.now(UTC),
+        packing_json=json.dumps(packing_extra) if packing_extra else None,
+    )
+    session.add(order)
+    session.flush()
+
+    total_tax = add_document_lines(session, order, lines)
     # `total_amount` es el importe FINAL del pedido (con IVA): el total del
     # documento de origen (TOTPRE / TOTPCL) si lo trae, y si no la suma de
     # líneas con su IVA. La suma de líneas a secas era la BASE y la bandeja
@@ -444,16 +470,7 @@ def create_order_from_factusol_document(
     label = DOC_LABEL[doc_type]
     numero = preview["numero"]
     referencia = preview["referencia"]
-    lines = list(preview["lines"])
-    if not lines:
-        # Documento sin líneas (edge case): una línea con el total para no
-        # dejar el pedido vacío — mismo criterio que `quote_lines_for_order`.
-        lines = [{
-            "codart": None,
-            "description": referencia or f"{label.capitalize()} {numero}",
-            "quantity": 1.0, "unit_price": preview["total"] or 0.0,
-            "discount_pct": 0.0, "iva_pct": None,
-        }]
+    lines = document_lines_or_total(preview)
     notes = f"Creado desde el {label} FACTUSOL {numero}" + (
         f" · ref. {referencia}" if referencia else ""
     )

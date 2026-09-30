@@ -366,10 +366,20 @@ Es la pantalla de un pedido concreto. De arriba abajo:
 - **Tras «Aprobar»** — la ficha ofrece, sin obligar, los siguientes pasos:
   **«Enviar a SAT»** y **«Generar albarán»** (que decide el pago / sin cobro).
   Se descartan con la ×.
-- **«Anular pedido»** — solo pedidos **no web**. Puedes marcar **«Borrar también
-  en FACTUSOL»** el albarán/presupuesto; **la factura no se borra nunca**. El
-  pedido sale de la bandeja, las colas y el seguimiento, y **se puede restaurar**
-  desde la propia ficha.
+- **«Anular pedido»** — cualquier pedido (web, manual o muestra), **también si
+  tiene factura**. La factura (y el albarán / la proforma) **se desvinculan** del
+  pedido y **siguen en FACTUSOL tal cual**: el aviso lo dice, *«La factura
+  2-526110 seguirá existiendo en FACTUSOL y dejará de estar vinculada a este
+  pedido. Si hay que anularla o abonarla, hazlo en FACTUSOL.»* Solo en un pedido
+  **sin factura** puedes marcar **«Borrar también en FACTUSOL»** el
+  albarán/presupuesto. El pedido sale de la bandeja, las colas y el seguimiento,
+  queda en el historial (*«Anulado; factura 2-526110 desvinculada (sigue en
+  FACTUSOL)»*) y **se puede restaurar** desde la ficha (vuelve a vincular lo que
+  se desvinculó, si nadie más lo ha cogido).
+- **«Desvincular»** (bloque FACTUSOL → **Vinculado**) — para un documento
+  vinculado **por error**: el pedido deja de apuntarlo y el documento sigue en
+  FACTUSOL. Un pedido normal queda «sin factura» y facturable de nuevo; una
+  muestra que se queda sin documentos vuelve a ser muestra (no facturable, 0 €).
 
 ### Empresas
 
@@ -1312,12 +1322,14 @@ fecha, confirmar).
 **Paso 6 — Enviar la factura y completar.** **«Enviar factura al cliente»** y,
 al final, **«Marcar completado»**.
 
-**Anular un pedido manual.** En la ficha, **«⋯» → «Anular pedido»**. Puedes marcar
-**«Borrar también en FACTUSOL»** para que se borre el **albarán** (si aún no está
-facturado) o el **presupuesto** (si sigue pendiente). **La factura no se borra
-nunca desde aquí**: primero se anula en FACTUSOL y luego el pedido. El pedido
-anulado sale de la bandeja, las colas y el seguimiento, y **se puede restaurar**
-con **«Restaurar pedido»**.
+**Anular un pedido.** En la ficha, **«⋯» → «Anular pedido»**. Se puede **aunque
+tenga factura**: la factura, el albarán y la proforma se **desvinculan** del
+pedido y siguen en FACTUSOL (si la factura hay que anularla o abonarla, se hace
+en FACTUSOL). En un pedido **sin factura** puedes además marcar **«Borrar
+también en FACTUSOL»** el **albarán** (si aún no está facturado) o el
+**presupuesto** (si sigue pendiente). El pedido anulado sale de la bandeja, las
+colas y el seguimiento, lo dice el historial y **se puede restaurar** con
+**«Restaurar pedido»** (vuelve a vincular sus documentos si siguen libres).
 
 **Un pedido web reembolsado** lleva el mismo cierre —sale de la bandeja y de las
 colas—, pero **no se llama «anulado»**: la ficha y las listas lo enseñan como
@@ -1358,7 +1370,26 @@ En qué se nota que es distinta:
   **«Por enviar»** y en la **Cola SAT**.
 - En **Seguimiento** aparece como envío no facturable (su situación es la del
   envío; Factura/Cobro, **«No aplica»**).
-- Se **anula** como cualquier pedido (no hay documentos de FACTUSOL que borrar).
+- Se **anula** como cualquier pedido, desde **«⋯» → «Anular pedido»**.
+
+**Una muestra que al final se factura.** Si la muestra acaba teniendo su
+**albarán, proforma o factura** en FACTUSOL, en su ficha pulsa **«Vincular
+documento FACTUSOL»** (en el aviso de la muestra o en «⋯»): eliges el tipo, lo
+buscas por serie-número o cliente, y antes de confirmar ves lo que cargará —
+**cliente → empresa del CRM, líneas, base / IVA / total, serie y forma de
+pago**. Al confirmar, la muestra pasa a comportarse como un pedido creado desde
+ese documento: línea de vida real (pagado / albarán / factura / cobro),
+**«Por cobrar»**, PDF y envío de la factura… Conserva su nº **MUESTRA-…** y la
+pastilla **«Muestra»**. Nada se escribe en FACTUSOL.
+
+- Si el cliente de FACTUSOL **no tiene empresa en el CRM**, la ventana te deja
+  **crearla con sus datos** o **vincularla a una existente**, y luego sigues.
+- Si la muestra ya apuntaba a una factura **sin haber cargado sus datos**
+  (vinculada desde ERP · Documentos antes de este cambio, p. ej. MUESTRA-000003
+  ↔ 2-526110), la ficha ofrece **«Reprocesar vínculo»**. ERP · Documentos ya no
+  vincula documentos a muestras: remite a su ficha.
+- **«Desvincular»** el documento (bloque FACTUSOL) devuelve la muestra a modo
+  muestra: no facturable, 0 €, sus líneas originales.
 
 **Quién puede crearla:** Comercial, ERP Pedidos, **ERP Taller (SAT)** y
 Administración — el taller también manda muestras, no solo las prepara.

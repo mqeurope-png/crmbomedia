@@ -16,11 +16,13 @@ const DOC_LABEL: Record<CancelOrderDoc["doc_type"], string> = {
   pedidos: "Pedido de cliente",
 };
 
-/** «Anular pedido» (manual / FACTUSOL Y web). Distinto de «quitar»: es un
- *  estado FINAL del pedido (reversible con «Restaurar»). Antes de anular se
- *  AVISA de qué documentos tiene en FACTUSOL; el operador decide si borrar
- *  allí el albarán / presupuesto / pedido de cliente que sigan vivos (sin
- *  factura). La factura nunca: se anula/abona a mano en FACTUSOL (aviso). */
+/** «Anular pedido» (web, manual, FACTUSOL o muestra). Distinto de «quitar»:
+ *  es un estado FINAL del pedido (reversible con «Restaurar»). Rev. 30/09/2026:
+ *  también con FACTURA — los documentos vinculados (factura, albarán,
+ *  proforma) se DESVINCULAN y siguen en FACTUSOL (se avisa de cada uno); la
+ *  factura se anula / abona, si procede, en FACTUSOL. Sin factura, el
+ *  operador puede además borrar allí el albarán / presupuesto / pedido de
+ *  cliente que sigan vivos. */
 export function CancelOrderModal({
   orderId,
   orderNumber,
@@ -92,6 +94,12 @@ export function CancelOrderModal({
                 El worker lo hace en unos segundos y queda en la actividad del pedido.
               </p>
             ) : null}
+            {(result.unlinked_documents ?? []).length > 0 ? (
+              <p className="muted small">
+                Desvinculado del pedido (sigue en FACTUSOL):{" "}
+                {(result.unlinked_documents ?? []).map((d) => d.label).join(", ")}.
+              </p>
+            ) : null}
             {(result.cancel_warnings ?? []).map((w) => (
               <p key={w} className="form-error">{w}</p>
             ))}
@@ -119,6 +127,14 @@ export function CancelOrderModal({
                 ))}
                 {preview.can_cancel ? (
                   <>
+                    {(preview.documents_to_unlink ?? []).length > 0 ? (
+                      <ul className="form-info erp-cancel-unlink" role="note"
+                          aria-label="Documentos que se desvincularán">
+                        {(preview.documents_to_unlink ?? []).map((d) => (
+                          <li key={`${d.kind}-${d.numero}`}>{d.message}</li>
+                        ))}
+                      </ul>
+                    ) : null}
                     {preview.factusol_docs.length > 0 ? (
                       <div className="field">
                         <span>Documentos en FACTUSOL</span>
