@@ -499,12 +499,13 @@ lo que hay que preparar y enviar.
 
 **Pestañas, por paso del taller**, en este orden (cada una con su contador,
 que cuadra con lo que lista, y **su propio color** para distinguirlas de un
-vistazo; la activa va un punto más intensa y subrayada):
+vistazo; la activa va un punto más intensa y subrayada). Al entrar se abre
+**«Por embalar»**, o la última pestaña que usaste en ese dispositivo:
 
 | Pestaña | Color | Qué hay |
 |---|---|---|
-| **Todos pendientes** (la que se abre por defecto) | azul | Las cuatro de pendientes juntas (por hacer · embalados). |
-| **Por embalar** | naranja | En cola, sin empezar (y los **bloqueados**, arriba). |
+| **Todos pendientes** | azul | Las cuatro de pendientes juntas. En **Tarjetas**, la misma rejilla que «Por embalar», mezcladas por fecha del pedido según **«Orden»**; cada tarjeta lleva el estado y los botones de su paso. En **Lista**, dos columnas (por hacer · embalados). |
+| **Por embalar** (la que se abre por defecto) | naranja | En cola, sin empezar (y los **bloqueados**, arriba). |
 | **En preparación** | amarillo | Con **«Empezar preparación»** pulsado, aún sin embalar. |
 | **Embalados** | verde | Embalados, sin etiqueta tramitada: crea el envío con Genei o sube la etiqueta. |
 | **Pendiente de recogida** | lila | Embalados con el **envío Genei ya tramitado** (o la etiqueta puesta): esperando al transportista. |
