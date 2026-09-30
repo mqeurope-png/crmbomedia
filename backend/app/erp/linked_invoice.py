@@ -118,14 +118,13 @@ def get_linked_invoice(order: Any) -> LinkedInvoice | None:
 
 
 def invoice_label(order: Any) -> str:
-    """Texto de la factura para mostrar: `2-526107`; con número pero sin
-    serie, el número tal cual (`260721`); sin factura, vacío."""
+    """Texto de la factura para mostrar: `2-526107`; si no es una factura
+    utilizable (p. ej. le falta la serie) pero hay número, el número tal como
+    está guardado (`260721`) — se enseña, no se usa; sin número, vacío."""
     linked = get_linked_invoice(order)
     if linked is not None:
         return linked.numero
-    if invoice_link_problem(order) == SIN_SERIE:
-        return str(invoice_parts(order)[1])
-    return ""
+    return str(getattr(order, "factusol_invoice_number", None) or "").strip()
 
 
 def missing_invoice_detail(order: Any) -> str:
