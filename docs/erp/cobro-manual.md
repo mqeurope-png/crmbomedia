@@ -27,7 +27,9 @@ resolver la factura del pedido + el estado de cobro persistido para la bandeja.
    por (TFALCO, CFALCO), saldo, `ESTFAC` (2 = cobrada, 1 = parcial, 0 =
    pendiente). **Rev. 30/09/2026:** `ya_cobrada = saldo ≈ 0` (las líneas de
    F_LCO mandan; un `ESTFAC=2` sin líneas que lleguen al total cuenta como
-   pendiente — ver «Anular / corregir cobro»).
+   pendiente — ver «Anular / corregir cobro»). Salvo si F_LCO viene ENTERA
+   vacía (lectura rota / ejercicio recién abierto): entonces no se puede
+   comprobar y se respeta `ESTFAC=2` (ni se da por pendiente ni se re-cobra).
 2. **Catálogo de cuentas.** `app/erp/contrapartidas.py` (las 14 de Bart,
    editables en `/erp/settings`, endpoint `GET /api/erp/catalogs/contrapartidas`):
    6 Bomedia Sabadell · 8 Streamtec Sabadell · 2 MQ Europe Belfius · 14 Paypal

@@ -294,7 +294,8 @@ def test_cobro_idempotente(db) -> None:
     )
     assert r1["registered"] is False and r1["status"] == "already"
     assert saldada.writes == [] and saldada.updates == []
-    marcada = FakeCobroClient(f_fac=[_fac(1, 260729, 72.60, estfac="2")])
+    marcada = FakeCobroClient(f_fac=[_fac(1, 260729, 72.60, estfac="2")],
+                              f_lco=[_cobro(5, 260001, 1, 10.0)])   # otra factura
     r2 = register_invoice_collection(
         marcada, db, serie=1, codigo=260729, contrapartida="6",
         fecha="2026-09-10", ejercicio="2026",
@@ -302,6 +303,15 @@ def test_cobro_idempotente(db) -> None:
     assert r2["status"] == "registered" and r2["cobrada"] is True
     assert [t for t, _ in marcada.writes] == ["F_LCO"]
     assert marcada.updates == []          # ya tenía ESTFAC=2: no se reescribe
+    # F_LCO ENTERA vacía (lectura rota / ejercicio recién abierto): no se
+    # pueden comprobar las líneas → se respeta ESTFAC=2 y NO se escribe nada.
+    ciega = FakeCobroClient(f_fac=[_fac(1, 260729, 72.60, estfac="2")])
+    r3 = register_invoice_collection(
+        ciega, db, serie=1, codigo=260729, contrapartida="6",
+        fecha="2026-09-10", ejercicio="2026",
+    )
+    assert r3["registered"] is False and r3["status"] == "already"
+    assert ciega.writes == [] and ciega.updates == []
 
 
 def test_cobro_no_existe_o_falla_no_marca(db) -> None:

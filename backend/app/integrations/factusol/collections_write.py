@@ -152,6 +152,13 @@ def collection_status(
     estfac = _estado_str(fac.get("ESTFAC"))
     saldo = summary["saldo_pendiente"] if summary["saldo_pendiente"] is not None else total
     estado_real = invoice_estado_kind(total=total, cobrado=summary["total_cobrado"])
+    ya_cobrada = saldo <= _EPS
+    # F_LCO ENTERA vacía = lectura rota (o ejercicio recién abierto): las
+    # líneas no se pueden comprobar, así que se respeta el ESTFAC=2 guardado
+    # (como antes) — nunca se da por pendiente, ni se re-cobra, a ciegas.
+    lineas_verificables = bool(index)
+    if not lineas_verificables and estfac == "2":
+        ya_cobrada, estado_real = True, "cobrada"
     return {
         "serie": serie, "codigo": codigo,
         "numero": f"{serie}-{int(codigo):06d}",
@@ -170,7 +177,8 @@ def collection_status(
         # manda sobre el ESTFAC guardado, que puede haberse quedado en 2 tras
         # borrar un apunte (caso BOPRIN-99940, 30/09/2026).
         "estado_real": estado_real,
-        "ya_cobrada": saldo <= _EPS,
+        "lineas_verificables": lineas_verificables,
+        "ya_cobrada": ya_cobrada,
     }
 
 
