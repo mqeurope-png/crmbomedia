@@ -25,6 +25,7 @@ import {
   type SatQueueFilters,
   type SatQueueItem,
 } from "../../lib/erpApi";
+import { mergePending } from "./mergePending";
 import { SAT_TAB_COLORS } from "./tabColors";
 
 type View = "cards" | "list";
@@ -51,6 +52,8 @@ const EMPTY_COUNTS: SatQueueCounts = {
 function isPendingTab(t: string | null | undefined): t is PendingTab {
   return !!t && (PENDING_TABS as string[]).includes(t);
 }
+
+const ALL_TABS: Tab[] = ["pendientes", ...PENDING_TABS, "enviados", "sin_envio", "incidencias"];
 
 /** La card que toca según el paso del pedido. */
 function SatCard({
@@ -128,6 +131,26 @@ function SatShippedTable({
 /** Preferencia de vista (tarjetas / lista) por dispositivo: la tablet del
  *  taller quiere tarjetas; el escritorio de oficina, lista. */
 const VIEW_KEY = "bohub.sat.queue.view";
+/** Última pestaña usada (por dispositivo); sin ninguna, «Por embalar». */
+const TAB_KEY = "bohub.sat.queue.tab";
+const DEFAULT_TAB: Tab = "por_embalar";
+
+function readStoredTab(): Tab {
+  try {
+    const t = window.localStorage.getItem(TAB_KEY);
+    return t && (ALL_TABS as string[]).includes(t) ? (t as Tab) : DEFAULT_TAB;
+  } catch {
+    return DEFAULT_TAB;
+  }
+}
+
+function storeTab(tab: Tab): void {
+  try {
+    window.localStorage.setItem(TAB_KEY, tab);
+  } catch {
+    // sin storage: se vuelve a «Por embalar» la próxima vez
+  }
+}
 
 function readStoredView(): View {
   try {
@@ -199,9 +222,11 @@ export default function SatQueuePage() {
     setSort("fecha_desc"); setQInput(""); setQ("");
   }
 
-  // --- vista -----------------------------------------------------------------
+  // --- vista y pestaña (recordadas por dispositivo) --------------------------
   const [view, setView] = useState<View>("cards");
-  useEffect(() => { setView(readStoredView()); }, []);
+  // «Por embalar» es la pestaña de entrada; si ya se usó otra, se vuelve a ella.
+  const [tab, setTab] = useState<Tab>(DEFAULT_TAB);
+  useEffect(() => { setView(readStoredView()); setTab(readStoredTab()); }, []);
   function changeView(v: View) {
     setView(v);
     storeView(v);
@@ -266,9 +291,6 @@ export default function SatQueuePage() {
   const [sinEnvio, setSinEnvio] = useState<{ items: SatQueueItem[]; total: number } | null>(null);
   const [shippedLoading, setShippedLoading] = useState(false);
 
-  // «Todos pendientes» es la primera pestaña y la de entrada.
-  const [tab, setTab] = useState<Tab>("pendientes");
-
   const loadShipped = useCallback((kind: "enviados" | "sin_envio") => {
     setShippedLoading(true);
     getSatShipped(filters, kind === "sin_envio")
@@ -306,6 +328,7 @@ export default function SatQueuePage() {
 
   function changeTab(t: Tab) {
     setTab(t);
+    storeTab(t);
   }
 
   // --- selección múltiple («No requiere envío» en lote) ------------------------
@@ -486,6 +509,9 @@ export default function SatQueuePage() {
   }
 
   const shippedData = tab === "sin_envio" ? sinEnvio : shipped;
+  const pendingAll = useMemo(
+    () => mergePending(PENDING_TABS.map((t) => lists[t]), sort), [lists, sort],
+  );
 
   return (
     <div className={`sat-queue-wrap ${view === "list" ? "sat-view-list" : "sat-view-cards"}`}>
@@ -631,12 +657,34 @@ export default function SatQueuePage() {
         </section>
       ) : null}
 
-      {tab === "pendientes" ? (
+      {tab === "pendientes" && view === "cards" ? (
+        /* En tarjetas, la MISMA rejilla que «Por embalar» (misma card y
+           densidad), con los cuatro pasos mezclados por la fecha del pedido
+           según «Orden»; cada card lleva el badge y las acciones de su paso. */
+        <section
+          className="sat-section" role="tabpanel" id="sat-panel-pendientes"
+          aria-label="Todos pendientes"
+        >
+          <div className="sat-scroll">
+            {pendingAll.length === 0 ? (
+              <p className="sat-empty">
+                Nada pendiente en el taller{hasFilters ? " con estos filtros." : "."}
+              </p>
+            ) : (
+              <div className="sat-cards" aria-label="Pedidos pendientes">
+                {pendingAll.map((o) => <div key={o.id}>{card(o)}</div>)}
+              </div>
+            )}
+          </div>
+        </section>
+      ) : null}
+
+      {tab === "pendientes" && view === "list" ? (
         <section
           className="sat-section sat-global" role="tabpanel" id="sat-panel-pendientes"
           aria-label="Todos pendientes"
         >
-          {/* Lote 3/4 — dos columnas: por hacer en el banco y ya embalados. */}
+          {/* Vista Lista — dos columnas: por hacer en el banco y ya embalados. */}
           <div className="sat-global-cols">
             <div className="sat-global-col" aria-label="Por embalar y en preparación">
               <h2 className="sat-global-title">

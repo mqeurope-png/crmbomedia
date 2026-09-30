@@ -160,7 +160,7 @@ beforeEach(() => {
 });
 
 describe("SatQueuePage · pestañas", () => {
-  it("orden nuevo (Todos pendientes la primera y la de entrada), contadores y SU subconjunto", async () => {
+  it("orden (Todos pendientes la primera), entra en «Por embalar», contadores y SU subconjunto", async () => {
     const user = userEvent.setup();
     mockQueue.mockResolvedValue(queue({
       por_embalar: [item({ id: "a", order_number: "PE-1" })],
@@ -179,8 +179,12 @@ describe("SatQueuePage · pestañas", () => {
       "Todos pendientes 4", "Por embalar 1", "En preparación 1", "Embalados 1",
       "Pendiente de recogida 1", "Enviados 5", "Sin envío 2", "Incidencias",
     ]);
-    expect(screen.getByRole("tab", { name: /Todos pendientes/ })).toHaveAttribute("aria-selected", "true");
+    // La de entrada es «Por embalar» (sin pestaña recordada).
+    expect(screen.getByRole("tab", { name: /Por embalar/ })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: /Todos pendientes/ })).toHaveAttribute("aria-selected", "false");
     const visibles = () => screen.getAllByRole("article").map((a) => a.getAttribute("aria-label"));
+    expect(visibles()).toEqual(["Pedido PE-1"]);
+    await pestana(user, /Todos pendientes/);
     expect(visibles()).toEqual(["Pedido PE-1", "Pedido EP-1", "Pedido EM-1", "Pedido PR-1"]);
     await pestana(user, /Por embalar/);
     expect(visibles()).toEqual(["Pedido PE-1"]);
@@ -532,7 +536,7 @@ describe("SatQueuePage (regresión)", () => {
   it("arranca en vista lista si así quedó guardado", async () => {
     window.localStorage.setItem("bohub.sat.queue.view", "list");
     render(<SatQueuePage />);
-    expect(await screen.findByRole("table", { name: "Pedidos por embalar y en preparación" }))
+    expect(await screen.findByRole("table", { name: "Pedidos por embalar" }))
       .toBeInTheDocument();
   });
 
@@ -624,22 +628,86 @@ describe("SatQueuePage (regresión)", () => {
     expect(screen.queryByLabelText("Número de pedido a añadir")).not.toBeInTheDocument();
   });
 
-  it("«Todos pendientes» enseña por hacer y embalados a la vez (dos columnas, cada una con scroll)", async () => {
+  it("«Todos pendientes» en Tarjetas: la MISMA rejilla y card que «Por embalar», estados mezclados por fecha", async () => {
+    const user = userEvent.setup();
+    mockQueue.mockResolvedValue(queue({
+      por_embalar: [item({ id: "a", order_number: "PE-1", placed_at: "2026-09-01T10:00:00+00:00" })],
+      en_preparacion: [item({ id: "b", order_number: "EP-1", preparation_status: "preparing",
+                              sat_tab: "en_preparacion", placed_at: "2026-09-02T10:00:00+00:00" })],
+      embalados: [packedItem({ id: "c", order_number: "EM-1", is_web_order: false,
+                               placed_at: "2026-09-03T10:00:00+00:00" })],
+    }));
+    render(<SatQueuePage />);
+    await loaded(1, 1);
+    const gridClass = (panelName: string) => {
+      const panel = screen.getByRole("tabpanel", { name: panelName });
+      const grids = panel.querySelectorAll(".sat-cards");
+      expect(grids).toHaveLength(1);                   // una sola rejilla
+      return grids[0].className;
+    };
+    const porEmbalarGrid = gridClass("Por embalar");
+
+    await pestana(user, /Todos pendientes/);
+    const panel = screen.getByRole("tabpanel", { name: "Todos pendientes" });
+    // Sin las dos columnas de antes: la misma rejilla (mismas columnas/densidad).
+    expect(panel.querySelector(".sat-global-cols")).toBeNull();
+    expect(within(panel).queryAllByRole("heading", { level: 2 })).toHaveLength(0);
+    expect(gridClass("Todos pendientes")).toBe(porEmbalarGrid);
+    const cards = within(panel).getAllByRole("article");
+    expect(cards.every((c) => c.classList.contains("sat-card"))).toBe(true);
+    // Recientes primero por defecto, mezclando estados.
+    expect(cards.map((a) => a.getAttribute("aria-label")))
+      .toEqual(["Pedido EM-1", "Pedido EP-1", "Pedido PE-1"]);
+    // Cada card con su badge y las acciones de SU paso.
+    const embalada = within(panel).getByRole("article", { name: "Pedido EM-1" });
+    expect(within(embalada).getByText("Embalado", { selector: ".badge" })).toBeInTheDocument();
+    expect(within(embalada).getByRole("button", { name: /Marcar recogido/ })).toBeInTheDocument();
+    expect(within(embalada).getByLabelText("Nº de seguimiento")).toBeInTheDocument();
+    expect(within(embalada).getByLabelText("Courier")).toBeInTheDocument();
+    expect(within(embalada).getByRole("button", { name: "Guardar nº de seguimiento" }))
+      .toBeInTheDocument();
+    expect(within(embalada).getByRole("button", { name: "Reabrir preparación" })).toBeInTheDocument();
+    const enCola = within(panel).getByRole("article", { name: "Pedido PE-1" });
+    expect(within(enCola).getByRole("button", { name: "▶ Empezar preparación" })).toBeInTheDocument();
+    expect(within(enCola).queryByRole("button", { name: /Marcar recogido/ })).toBeNull();
+
+    // El selector «Orden» manda también aquí.
+    await user.selectOptions(screen.getByLabelText("Orden por fecha del pedido"), "fecha_asc");
+    await waitFor(() => expect(
+      within(screen.getByRole("tabpanel", { name: "Todos pendientes" }))
+        .getAllByRole("article").map((a) => a.getAttribute("aria-label")),
+    ).toEqual(["Pedido PE-1", "Pedido EP-1", "Pedido EM-1"]));
+  });
+
+  it("recuerda la última pestaña usada; sin ninguna (o una que no existe), «Por embalar»", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem("bohub.sat.queue.tab", "embalados");
+    const { unmount } = render(<SatQueuePage />);
+    await loaded();
+    await waitFor(() => expect(screen.getByRole("tab", { name: /^Embalados/ }))
+      .toHaveAttribute("aria-selected", "true"));
+    await pestana(user, /Todos pendientes/);
+    expect(window.localStorage.getItem("bohub.sat.queue.tab")).toBe("pendientes");
+    unmount();
+
+    const { unmount: unmountSecond } = render(<SatQueuePage />);
+    await loaded();
+    await waitFor(() => expect(screen.getByRole("tab", { name: /Todos pendientes/ }))
+      .toHaveAttribute("aria-selected", "true"));
+    unmountSecond();
+
+    window.localStorage.setItem("bohub.sat.queue.tab", "no-existe");
     render(<SatQueuePage />);
     await loaded();
-    const panel = screen.getByRole("tabpanel", { name: "Todos pendientes" });
-    const titles = within(panel).getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
-    expect(titles.some((t) => t?.includes("Por embalar"))).toBe(true);
-    expect(titles.some((t) => t?.includes("Embalados"))).toBe(true);
-    expect(within(panel).getByRole("button", { name: "▶ Empezar preparación" })).toBeInTheDocument();
-    expect(within(panel).getByRole("button", { name: /Marcar recogido/ })).toBeInTheDocument();
-    expect(panel.querySelectorAll(".sat-scroll")).toHaveLength(2);
+    expect(screen.getByRole("tab", { name: /Por embalar/ })).toHaveAttribute("aria-selected", "true");
   });
 
   it("«Lista» se aplica también a «Todos pendientes»: cada columna es una tabla", async () => {
+    const user = userEvent.setup();
     window.localStorage.setItem("bohub.sat.queue.view", "list");
     render(<SatQueuePage />);
     await loaded();
+    await pestana(user, /Todos pendientes/);
     const panel = screen.getByRole("tabpanel", { name: "Todos pendientes" });
     const prep = within(panel).getByRole("table", { name: "Pedidos por embalar y en preparación" });
     const ready = within(panel).getByRole("table", { name: "Pedidos embalados y pendientes de recogida" });
