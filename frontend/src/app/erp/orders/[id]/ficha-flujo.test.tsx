@@ -125,6 +125,7 @@ jest.mock("../../../lib/erpApi", () => ({
   getFactusolStatus: jest.fn(() => Promise.resolve({ status: "none" })),
   getErpSettings: jest.fn(() => Promise.resolve({ shipping_origins: [] })),
   getOrderFactusolInvoiceRef: jest.fn(),
+  downloadFactusolDocumentPdf: jest.fn(() => Promise.resolve(new Blob(["%PDF"]))),
   getOrderFactusolCobro: jest.fn(() => Promise.resolve({ status: "pendiente", invoice: null })),
   downloadOrderFactusolPedidoPdf: jest.fn(),
   createOrderAlbaran: jest.fn(),
@@ -666,5 +667,58 @@ describe("ERP · Ficha del pedido — factura enviada al cliente visible (#8)", 
     const factura = within(list).getByText("Factura").closest("li") as HTMLElement;
     expect(within(factura).queryByText(/Sin enviar al cliente/)).toBeNull();
     expect(within(factura).queryByText(/Factura enviada al cliente/)).toBeNull();
+  });
+});
+
+describe("ERP · Ficha del pedido — factura VINCULADA sea cual sea el origen", () => {
+  it("pedido desde albarán con la factura vinculada después (ALB-2-200038): PDF de la 2-526107, sin banner", async () => {
+    const api = jest.requireMock("../../../lib/erpApi");
+    (api.getOrderFactusolInvoiceRef as jest.Mock).mockReset();
+    (api.getOrderFactusolInvoiceRef as jest.Mock).mockResolvedValue({
+      serie: 2, codigo: 526107, numero: "2-526107",
+    });
+    (api.saveBlob as jest.Mock).mockClear();
+    (getOrder as jest.Mock).mockResolvedValue(detail({
+      order_number: "ALB-2-200038", external_source: "factusol_albaran",
+      invoice_status: "invoiced_by_erp", factusol_invoice_number: "526107",
+      factusol_invoice_serie: 2, factusol_manual_serie: null,
+      factusol_invoice: { serie: 2, codigo: 526107, numero: "2-526107" },
+      factusol_invoice_problem: null,
+    }));
+    const user = userEvent.setup();
+    render(<ErpOrderDetailPage />);
+    const pdf = await screen.findByRole("button", { name: "PDF de la factura" });
+    expect(pdf).toBeEnabled();
+    expect(screen.queryByText(/aún no tiene factura/)).toBeNull();
+    expect(screen.queryByText(/Falta la serie/)).toBeNull();
+    await user.click(pdf);
+    await waitFor(() => expect(api.downloadFactusolDocumentPdf).toHaveBeenCalledWith(
+      "facturas", 2, 526107, "es",
+    ));
+    await waitFor(() => expect(api.saveBlob).toHaveBeenCalledWith(
+      expect.any(Blob), "Factura_2-526107.pdf",
+    ));
+    expect(screen.getAllByRole("button", { name: "Enviar factura al cliente" })[0]).toBeEnabled();
+  });
+
+  it("con nº de factura pero SIN serie: aviso «falta la serie» y el PDF lo explica (no busca por el nº)", async () => {
+    const api = jest.requireMock("../../../lib/erpApi");
+    (api.getOrderFactusolInvoiceRef as jest.Mock).mockReset();
+    (api.getOrderFactusolInvoiceRef as jest.Mock).mockRejectedValue(new Error(
+      "La factura 260721 de este pedido no tiene la serie guardada en BoHub. "
+      + "Sin la serie no se puede localizar: falta la serie.",
+    ));
+    (api.downloadFactusolDocumentPdf as jest.Mock).mockClear();
+    (getOrder as jest.Mock).mockResolvedValue(detail({
+      order_number: "ARTISJ-9460", invoice_status: "already_invoiced_externally",
+      factusol_invoice_number: "260721", factusol_invoice_serie: null,
+      factusol_invoice: null, factusol_invoice_problem: "sin_serie",
+    }));
+    const user = userEvent.setup();
+    render(<ErpOrderDetailPage />);
+    expect(await screen.findByText(/Falta la serie de la factura 260721/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "PDF de la factura" }));
+    expect(await screen.findByText(/no tiene la serie guardada/)).toBeInTheDocument();
+    expect(api.downloadFactusolDocumentPdf).not.toHaveBeenCalled();
   });
 });

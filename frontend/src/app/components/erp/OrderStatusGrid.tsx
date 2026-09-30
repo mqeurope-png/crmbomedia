@@ -21,6 +21,8 @@
  *  sí»), que siguen usando la bandeja (#428) y sus tests. Para el lector de
  *  pantalla manda el de la casilla («Pago: hecho», `role="img"`). */
 
+import { invoiceLabel, type LinkedInvoice } from "../../lib/linkedInvoice";
+
 export type StatusCellState = "done" | "pending" | "na" | "blocked";
 export type StatusCellKey = "pago" | "factura" | "cobro" | "envio";
 
@@ -28,6 +30,9 @@ export type OrderStatusGridInput = {
   payment_status: string;
   invoice_status: string;
   factusol_invoice_number: string | null;
+  /** Factura vinculada («2-526107») y, si no se puede usar, el motivo. */
+  factusol_invoice?: LinkedInvoice | null;
+  factusol_invoice_problem?: string | null;
   factusol_cobro_status?: string | null;
   transport_status?: string | null;
   /** «No requiere envío»: el envío no aplica (gris), no cuenta como pendiente. */
@@ -104,7 +109,7 @@ function factura(o: OrderStatusGridInput): StatusCell {
   if (facturado) {
     return {
       ...base, state: "done", value: "Emitida",
-      title: `Factura emitida${o.factusol_invoice_number ? ` (${o.factusol_invoice_number})` : ""}.`,
+      title: `Factura emitida${invoiceLabel(o) ? ` (${invoiceLabel(o)})` : ""}.`,
       legacyLabel,
     };
   }

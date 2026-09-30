@@ -139,13 +139,13 @@ def albaran_ref(order: Any) -> tuple[int, int] | None:
 
 
 def factura_ref(order: Any) -> tuple[int, int] | None:
-    """`(serie, código)` de la factura del pedido, o None si no está emitida
-    (o no se sabe su serie: el número de factura solo es único por serie)."""
-    codigo = _int_or_none(getattr(order, "factusol_invoice_number", None))
-    serie = _int_or_none(getattr(order, "factusol_invoice_serie", None))
-    if codigo is None or serie is None:
-        return None
-    return serie, codigo
+    """`(serie, código)` de la factura VINCULADA al pedido
+    (`app.erp.linked_invoice`), o None si no la tiene o le falta la serie (el
+    número de factura solo es único por serie)."""
+    from app.erp.linked_invoice import get_linked_invoice  # noqa: PLC0415
+
+    linked = get_linked_invoice(order)
+    return (linked.serie, linked.codigo) if linked is not None else None
 
 
 def pedido_ref(
@@ -235,18 +235,25 @@ def available_attachments(
         "code": None if alb is not None else "albaran_missing",
     }
 
+    from app.erp.linked_invoice import (  # noqa: PLC0415
+        SIN_SERIE,
+        invoice_label,
+        invoice_link_problem,
+        missing_invoice_detail,
+    )
+
     fac = factura_ref(order)
+    sin_serie = fac is None and invoice_link_problem(order) == SIN_SERIE
     out["factura"] = {
         "available": fac is not None,
-        "numero": (
-            f"{fac[0]}-{fac[1]}" if fac is not None
-            else (str(order.factusol_invoice_number)
-                  if order.factusol_invoice_number else None)
-        ),
+        "numero": invoice_label(order) or None,
         "reason": None if fac is not None else (
-            "El pedido aún no tiene factura emitida en FACTUSOL."
+            missing_invoice_detail(order) if sin_serie
+            else "El pedido aún no tiene factura emitida en FACTUSOL."
         ),
-        "code": None if fac is not None else "factura_missing",
+        "code": None if fac is not None else (
+            "factura_sin_serie" if sin_serie else "factura_missing"
+        ),
     }
 
     try:

@@ -286,6 +286,17 @@ Es la pantalla de un pedido concreto. De arriba abajo:
   (presupuesto/pedido) en el idioma que elijas en **«Idioma del PDF»**.
 - **«PDF de la factura»** — descarga el PDF de la factura (disponible cuando ya
   está emitida).
+
+> **Qué es «tener factura».** Un pedido tiene factura cuando consta como
+> **facturado** y tiene guardados el **número y la serie** de su factura de
+> FACTUSOL (se ve como **«serie-número»**, p. ej. **2-526107**, en la línea de
+> vida, el panel FACTUSOL, ERP · Seguimiento y la hoja). Da igual de dónde
+> venga el pedido (web, manual, creado desde una factura, un albarán o una
+> proforma): el PDF de la factura, «Enviar factura al cliente» y «Registrar
+> cobro» usan esa factura. Si un pedido tiene el número pero **le falta la
+> serie**, la ficha lo avisa en rojo (*«Falta la serie de la factura …»*) y
+> esas tres acciones no se hacen: el mismo número existe en varias series, así
+> que BoHub no busca la factura solo por el número. Hay que completar la serie.
 - **«Enviar a SAT»** — manda el pedido (con su albarán) por email al taller y,
   a la vez, lo **mete en la Cola SAT** (si ya estaba, no se duplica). Abre
   **«Enviar pedido por email»** para elegir destinatarios, adjuntos e idioma.
