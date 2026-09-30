@@ -95,21 +95,33 @@ def migrate_series(series: dict[str, Any], renames: dict[str, str]) -> dict[str,
     return out
 
 
+#: Tablas con solo las columnas que se tocan. Core (no SQL a pelo): `system`
+#: es palabra reservada en MySQL 8 y SQLAlchemy la entrecomilla por dialecto.
+_accounts = sa.table(
+    "integration_accounts",
+    sa.column("system", sa.String), sa.column("account_id", sa.String),
+)
+_settings = sa.table(
+    "erp_settings",
+    sa.column("id", sa.String), sa.column("factusol_series_json", sa.Text),
+)
+
+
 def upgrade() -> None:
     bind = op.get_bind()
     woo_accounts = {
         str(row[0] or "").strip().lower()
-        for row in bind.execute(sa.text(
-            "SELECT account_id FROM integration_accounts WHERE system = 'woocommerce'"
-        ))
+        for row in bind.execute(
+            sa.select(_accounts.c.account_id).where(_accounts.c.system == "woocommerce")
+        )
     }
     renames = _renames(woo_accounts)
     if not renames:
         return
-    rows = bind.execute(sa.text(
-        "SELECT id, factusol_series_json FROM erp_settings "
-        "WHERE factusol_series_json IS NOT NULL"
-    )).fetchall()
+    rows = bind.execute(
+        sa.select(_settings.c.id, _settings.c.factusol_series_json)
+        .where(_settings.c.factusol_series_json.isnot(None))
+    ).fetchall()
     for row_id, raw in rows:
         try:
             series = json.loads(raw) if raw else None
@@ -120,8 +132,8 @@ def upgrade() -> None:
         fixed = migrate_series(series, renames)
         if fixed != series:
             bind.execute(
-                sa.text("UPDATE erp_settings SET factusol_series_json = :v WHERE id = :id"),
-                {"v": json.dumps(fixed, ensure_ascii=False), "id": row_id},
+                _settings.update().where(_settings.c.id == row_id)
+                .values(factusol_series_json=json.dumps(fixed, ensure_ascii=False))
             )
 
 
