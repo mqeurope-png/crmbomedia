@@ -31,6 +31,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.erp import woo_status as woo
+from app.erp.linked_invoice import invoice_parts
 from app.erp.models import (
     Carrier,
     InvoiceStatus,
@@ -562,6 +563,22 @@ def _real_event_date(order: Order, domain: str, to_statuses: set[str]) -> dateti
     return None
 
 
+def _fecha_factura(order: Order) -> datetime | None:
+    """Fecha de la factura: la emisión / vinculación registrada en BoHub (el
+    hecho real del evento de factura) o, en un pedido CREADO desde una factura
+    de FACTUSOL (ya nace facturado, sin ese evento), la fecha del propio
+    documento (`placed_at` = FECFAC). Sin factura vinculada, None."""
+    from app.erp.linked_invoice import get_linked_invoice  # noqa: PLC0415
+
+    real = _real_event_date(order, "invoice", {"generated", "invoiced_by_erp"})
+    if real is not None:
+        return real
+    source = getattr(order.external_source, "value", order.external_source)
+    if source == OrderSource.FACTUSOL_FACTURA.value and get_linked_invoice(order):
+        return order.placed_at
+    return None
+
+
 def _iso_date(value: datetime | None) -> str | None:
     return value.date().isoformat() if value else None
 
@@ -844,13 +861,16 @@ def _cobro_state(order: Order) -> str:
 
 
 def _factura_label(order: Order) -> str:
-    """Texto de la columna Factura: el nº de factura o, en una MUESTRA / envío
-    no facturable, «No aplica» (no hay factura que esperar)."""
+    """Texto de la columna Factura: la factura vinculada como `serie-número`
+    (`2-526107`, `app.erp.linked_invoice`; sin la serie, el número tal cual) o,
+    en una MUESTRA / envío no facturable, «No aplica» (no hay factura que
+    esperar)."""
+    from app.erp.linked_invoice import invoice_label  # noqa: PLC0415
     from app.erp.sample_orders import is_sample_order  # noqa: PLC0415
 
     if is_sample_order(order):
         return NO_APLICA
-    return order.factusol_invoice_number or ""
+    return invoice_label(order)
 
 
 def _origen_label(order: Order) -> str:
@@ -1041,7 +1061,7 @@ def build_rows(
         source = getattr(o.external_source, "value", o.external_source)
         # ERP-F6-fix5: serie de FACTURA (real) y serie de TIENDA (deducida) por
         # separado — el sync las trata distinto en filas ya existentes.
-        serie_invoice = _serie_of_invoice(o.factusol_invoice_number)
+        serie_invoice = invoice_parts(o)[0] if o.factusol_invoice_number else None
         serie_store = store_serie_for(
             store_slug=store_slugs.get(o.store_id) if o.store_id else None,
             store_id=o.store_id, source=source, by_source=by_source,
@@ -1201,9 +1221,7 @@ def build_rows(
             ),
             #: Fecha de la factura (emisión registrada en BoHub); reutiliza el
             #: hecho real del evento de factura, sin leer FECFAC en vivo.
-            "fecha_factura": _iso_date(_real_event_date(
-                o, "invoice", {"generated", "invoiced_by_erp"},
-            )),
+            "fecha_factura": _iso_date(_fecha_factura(o)),
             #: Fecha del envío de la factura por email al cliente
             #: (`erp.invoice_emailed`), o None si no se envió.
             "factura_enviada": emailed,

@@ -156,6 +156,8 @@ def _seed_order(
         factusol_albaran_number=albaran,
         factusol_invoice_number=invoice,
         factusol_invoice_serie=invoice_serie,
+        # Una factura vinculada lleva siempre su estado de facturado.
+        invoice_status="invoiced_by_erp" if invoice else "not_invoiced",
         packing_json=json.dumps(packing) if packing else None,
     )
     session.add(order)

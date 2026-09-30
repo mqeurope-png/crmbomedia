@@ -5,9 +5,11 @@ vía `POST /documents/facturas/{serie}/{codigo}/collection`: solo `F_LCO` +
 `ESTFAC=2`, idempotente, cola `factusol:writes`). Aquí solo está lo que
 faltaba para dispararlo desde el pedido:
 
-- resolver la FACTURA del pedido con su clave COMPUESTA (serie + código): el
-  pedido guarda el CODFAC desnudo (`factusol_invoice_number`) y F_FAC solo es
-  única por (TIPFAC, CODFAC);
+- la FACTURA del pedido con su clave COMPUESTA (serie + código), tal como la
+  tiene VINCULADA el pedido (`app.erp.linked_invoice`: estado facturado +
+  `factusol_invoice_number` + `factusol_invoice_serie`), sea cual sea su
+  origen. Sin la serie NO se registra ni se busca por el número solo (F_FAC
+  solo es única por (TIPFAC, CODFAC));
 - su estado de cobro EN FACTUSOL (ESTFAC / saldo en F_LCO), persistido en el
   pedido (`factusol_cobro_status` + `packing_json.factusol_cobro`) para verlo
   fila a fila en la bandeja y filtrar. Es el estado CONTABLE, distinto del
@@ -25,6 +27,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.erp.factusol_albaran import packing_of, payment_intent, save_packing
+from app.erp.linked_invoice import (
+    SIN_FACTURA,
+    SIN_SERIE,
+    invoice_link_problem,
+    invoice_parts,
+    missing_invoice_detail,
+)
 from app.erp.models import Order, OrderStatusHistory, StatusDomain
 from app.integrations.factusol.client import FactusolClient
 from app.integrations.factusol.collections import load_collections_index
@@ -32,7 +41,6 @@ from app.integrations.factusol.collections_write import collection_status
 from app.integrations.factusol.service import (
     _int_or_none,
     coerce_serie,
-    pcl_ref_for_order,
     serie_of_row,
 )
 
@@ -67,50 +75,29 @@ def parse_invoice_number(value: Any) -> tuple[int | None, int | None]:
     return None, _int_or_none(text)
 
 
-def history_invoice_serie(session: Session, order: Order) -> int | None:
-    """Serie apuntada en el historial al vincular la factura (Fase 2 guarda
-    `factusol_serie`); None si ninguna entrada la trae."""
-    rows = session.scalars(
-        select(OrderStatusHistory)
-        .where(
-            OrderStatusHistory.order_id == order.id,
-            OrderStatusHistory.domain == StatusDomain.INVOICE,
-        )
-        .order_by(OrderStatusHistory.changed_at.desc())
-    )
-    for h in rows:
-        if not h.metadata_json:
-            continue
-        try:
-            meta = json.loads(h.metadata_json)
-        except (TypeError, ValueError):
-            continue
-        serie = coerce_serie(meta.get("factusol_serie")) if isinstance(meta, dict) else None
-        if serie is not None:
-            return serie
-    return None
-
-
 def resolve_invoice_key(
     session: Session, order: Order, *,
     fac_rows: list[dict[str, Any]] | None = None,
     client: FactusolClient | None = None, ejercicio: str | None = None,
 ) -> dict[str, Any] | None:
-    """Clave compuesta (serie, código) de la factura del pedido y su fila de
-    F_FAC. `None` si el pedido no tiene factura.
+    """Clave compuesta (serie, código) de la factura VINCULADA al pedido y su
+    fila de F_FAC. `None` si el pedido no tiene factura.
 
-    La serie sale, por orden: del propio número si ya va como `serie-código`;
-    de `factusol_invoice_serie` (resuelta antes); del historial (Fase 2); y
-    si no, de F_FAC: con un solo CODFAC en toda la tabla es esa; con
-    homónimos en varias series, la fila cuya REFFAC es la referencia del
-    pedido web, o la serie del albarán del que se facturó (Fase 2). Si sigue
-    sin saberse, `serie=None` + `ambiguous=True`: NUNCA se adivina. La serie
-    resuelta se guarda en el pedido."""
-    serie, codigo = parse_invoice_number(order.factusol_invoice_number)
-    if codigo is None:
+    La serie es la guardada en el pedido (o la del número si va como
+    `serie-código`). Si no consta: `serie=None` + `missing_serie=True` y NO se
+    consulta F_FAC — nunca se busca la factura por el número solo (las series
+    comparten numeración). Con la serie, la fila es la de esa (serie, código)."""
+    _ = session
+    problem = invoice_link_problem(order)
+    if problem == SIN_FACTURA:
         return None
-    if serie is None:
-        serie = order.factusol_invoice_serie or history_invoice_serie(session, order)
+    serie, codigo = invoice_parts(order)
+    assert codigo is not None  # noqa: S101 — `sin_factura` cubre el caso
+    if problem == SIN_SERIE or serie is None:
+        return {
+            "serie": None, "codigo": codigo, "numero": str(codigo), "row": None,
+            "missing_serie": True, "ambiguous": False, "series": [],
+        }
     if fac_rows is None:
         rows = (
             client.load_table("F_FAC", filtro=f"CODFAC={codigo}", ejercicio=ejercicio)
@@ -118,38 +105,36 @@ def resolve_invoice_key(
         )
     else:
         rows = fac_rows
-    by_serie: dict[int, dict[str, Any]] = {}
-    for row in rows:
-        if _int_or_none(row.get("CODFAC")) != codigo:
-            continue
-        row_serie = serie_of_row(row, "TIPFAC")
-        if row_serie is not None:
-            by_serie[row_serie] = row
-    ambiguous = False
-    if serie is None:
-        if len(by_serie) == 1:
-            serie = next(iter(by_serie))
-        elif by_serie:
-            ref = pcl_ref_for_order(session, order)
-            matches = [
-                s for s, row in by_serie.items()
-                if str(row.get("REFFAC") or "").strip().upper() == ref
-            ]
-            alb_serie, _ = parse_invoice_number(order.factusol_albaran_number)
-            if len(matches) == 1:
-                serie = matches[0]
-            elif alb_serie in by_serie:
-                serie = alb_serie
-            else:
-                ambiguous = True
-    if serie is not None and order.factusol_invoice_serie != serie:
-        order.factusol_invoice_serie = serie
+    row = next(
+        (r for r in rows
+         if _int_or_none(r.get("CODFAC")) == codigo and serie_of_row(r, "TIPFAC") == serie),
+        None,
+    )
     return {
-        "serie": serie, "codigo": codigo,
-        "numero": f"{serie}-{codigo:06d}" if serie is not None else str(codigo),
-        "row": by_serie.get(serie) if serie is not None else None,
-        "ambiguous": ambiguous, "series": sorted(by_serie),
+        "serie": serie, "codigo": codigo, "numero": f"{serie}-{codigo:06d}",
+        "row": row, "missing_serie": False, "ambiguous": False, "series": [serie],
     }
+
+
+def unusable_invoice_info(order: Order) -> dict[str, Any] | None:
+    """Respuesta de «Registrar cobro» cuando el pedido no tiene una factura
+    utilizable, SIN consultar FACTUSOL: `sin_factura` (el botón se
+    deshabilita) o `unresolved` con `reason = "sin_serie"` (falta la serie).
+    None si la factura está bien vinculada."""
+    problem = invoice_link_problem(order)
+    if problem == SIN_FACTURA:
+        return {
+            "status": "sin_factura", "invoice": None,
+            "detail": "El pedido aún no tiene factura en FACTUSOL: emite la factura primero.",
+        }
+    if problem == SIN_SERIE:
+        codigo = invoice_parts(order)[1]
+        return {
+            "status": "unresolved", "reason": SIN_SERIE,
+            "invoice": {"serie": None, "codigo": codigo, "numero": str(codigo)},
+            "detail": missing_invoice_detail(order),
+        }
+    return None
 
 
 # --- estado persistido ----------------------------------------------------------
@@ -225,39 +210,21 @@ def order_cobro_info(
     """Estado de cobro EN VIVO de la factura del pedido, ya persistido:
 
     - `sin_factura`: el pedido no tiene factura (el botón se deshabilita);
-    - `unresolved` / `not_found`: hay CODFAC pero no se localiza su fila
-      (serie ambigua o factura borrada): sin escribir nada;
+    - `unresolved` (`reason = "sin_serie"`): hay CODFAC pero falta la serie —
+      no se busca por el número solo, sin tocar FACTUSOL;
+    - `not_found`: la factura (serie + código) ya no está en F_FAC;
     - `pendiente` / `cobrada`: con total, cobrado, saldo, ESTFAC, nº de
       líneas de cobro, forma de pago, cuenta sugerida y avisos (posible doble
       cobro: ya hay líneas de cobro sin llegar al total)."""
     from app.erp.contrapartidas import suggest_contrapartida  # noqa: PLC0415
 
-    if not order.factusol_invoice_number:
-        return {
-            "status": "sin_factura", "invoice": None,
-            "detail": "El pedido aún no tiene factura en FACTUSOL: emite la factura primero.",
-        }
+    early = unusable_invoice_info(order)
+    if early is not None:
+        return early
     key = resolve_invoice_key(
         session, order, fac_rows=fac_rows, client=client, ejercicio=ejercicio,
     )
-    if key is None or key["serie"] is None:
-        codigo = key["codigo"] if key else None
-        if key and key["ambiguous"]:
-            detail = (
-                f"La factura {codigo} existe en varias series "
-                f"({', '.join(str(s) for s in key['series'])}) y no se puede saber "
-                "cuál es la del pedido: regístrala desde ERP · Documentos."
-            )
-        else:
-            detail = (
-                f"No se encontró la factura {codigo} del pedido en FACTUSOL "
-                f"(ejercicio {ejercicio})."
-            )
-        return {
-            "status": "unresolved",
-            "invoice": {"serie": None, "codigo": codigo, "numero": str(codigo)},
-            "detail": detail,
-        }
+    assert key is not None and key["serie"] is not None  # noqa: S101 — cubierto arriba
     status_info = collection_status(
         client, serie=key["serie"], codigo=key["codigo"], ejercicio=ejercicio,
         row=key["row"], index=index,
@@ -392,10 +359,15 @@ def mark_orders_after_collection(
             [str(int(codigo)), f"{int(serie)}-{int(codigo):06d}"],
         ))
     ).all()
+    from app.erp.linked_invoice import get_linked_invoice  # noqa: PLC0415
+
     updated: list[Order] = []
     for order in candidates:
-        if order.factusol_invoice_serie not in (None, int(serie)):
-            continue  # homónimo de otra serie
+        linked = get_linked_invoice(order)
+        # Solo los pedidos cuya factura vinculada ES esa (serie + código): un
+        # homónimo de otra serie o un pedido sin la serie no se tocan.
+        if linked is None or (linked.serie, linked.codigo) != (int(serie), int(codigo)):
+            continue
         if mark_order_from_result(
             session, order, serie=serie, codigo=codigo, result=result,
             source="manual", actor_user_id=actor_user_id,

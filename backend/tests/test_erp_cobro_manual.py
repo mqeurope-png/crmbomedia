@@ -184,7 +184,7 @@ def test_registrar_cobro_manual_desde_ficha(http, session_factory, engine) -> No
     factura (202 + job) y el job (motor tal cual: F_LCO + ESTFAC=2) deja el
     pedido «cobrada» en la bandeja."""
     with session_factory() as s:
-        _order(s, "o-1", "BOPRIN-99930", invoice="260729")   # CODFAC desnudo
+        _order(s, "o-1", "BOPRIN-99930", invoice="260729", serie=1)   # CODFAC + serie
         s.commit()
     fake = FakeCobroClient(f_fac=[_fac(1, 260729, 72.60)])
     with _patched(fake):
@@ -265,7 +265,7 @@ def test_cobro_prefill_desde_el_pago_apuntado_en_el_pedido(http, session_factory
     from app.erp.factusol_albaran import PAYMENT_KEY
 
     with session_factory() as s:
-        o = _order(s, "o-pf", "BOPRIN-99931", invoice="260729")
+        o = _order(s, "o-pf", "BOPRIN-99931", invoice="260729", serie=1)
         # El pago que quedó apuntado en el pedido: Paypal, cuenta 8, 10/09.
         o.packing_json = json.dumps({PAYMENT_KEY: {
             "paid": True, "forma_pago": "005", "forma_pago_nombre": "Paypal",
@@ -288,7 +288,7 @@ def test_cobro_sin_pago_apuntado_sugiere_por_heuristica(http, session_factory) -
     """Sin pago apuntado en el pedido, la sugerencia sigue siendo la de siempre
     (serie / FOPFAC) y no hay `suggested_fecha`."""
     with session_factory() as s:
-        _order(s, "o-h", "BOPRIN-99932", invoice="260729")
+        _order(s, "o-h", "BOPRIN-99932", invoice="260729", serie=1)
         s.commit()
     fake = FakeCobroClient(f_fac=[_fac(1, 260729, 72.60)])
     with _patched(fake):
@@ -304,8 +304,9 @@ def test_cobro_manual_idempotente_no_doble(http, session_factory) -> None:
     sin llegar al total (anticipo / posible doble cobro) se AVISA pero se
     permite registrar el saldo (control manual, no se bloquea)."""
     with session_factory() as s:
-        _order(s, "o-cobrada", "BOPRIN-99931", invoice="260730", payment=PaymentStatus.PAID)
-        _order(s, "o-parcial", "BOPRIN-99932", invoice="260731")
+        _order(s, "o-cobrada", "BOPRIN-99931", invoice="260730", serie=1,
+               payment=PaymentStatus.PAID)
+        _order(s, "o-parcial", "BOPRIN-99932", invoice="260731", serie=1)
         s.commit()
     fake = FakeCobroClient(
         f_fac=[_fac(1, 260730, 50.0, estfac="2"), _fac(1, 260731, 100.0, estfac="1")],
@@ -359,12 +360,15 @@ def test_cobro_manual_idempotente_no_doble(http, session_factory) -> None:
 def test_cobro_manual_sin_factura_boton_deshabilitado(http, session_factory) -> None:
     """Sin factura: `GET` responde 200 `sin_factura` (el botón se deshabilita
     con tooltip «emite la factura primero», nada de error rojo) SIN tocar
-    FACTUSOL, y la bandeja no lleva estado de cobro. Con CODFAC que no está en
-    F_FAC (o ambiguo entre series) tampoco se adivina: `unresolved`."""
+    FACTUSOL, y la bandeja no lleva estado de cobro. Con serie + CODFAC que ya
+    no está en F_FAC: `not_found`. Con CODFAC pero SIN serie no se busca por el
+    número solo (aunque F_FAC lo tenga en una o varias series): `unresolved`
+    «falta la serie», sin consultar FACTUSOL."""
     with session_factory() as s:
         _order(s, "o-sin", "BOPRIN-99940")
-        _order(s, "o-perdida", "BOPRIN-99941", invoice="999999")
+        _order(s, "o-perdida", "BOPRIN-99941", invoice="999999", serie=1)
         _order(s, "o-ambigua", "BOPRIN-99942", invoice="260750")
+        _order(s, "o-unica", "BOPRIN-99943", invoice="260751")
         s.commit()
     with patch(
         "app.integrations.factusol.client.FactusolClient.from_settings",
@@ -381,14 +385,24 @@ def test_cobro_manual_sin_factura_boton_deshabilitado(http, session_factory) -> 
 
     fake = FakeCobroClient(f_fac=[
         _fac(1, 260750, 10.0, REFFAC="X-1"), _fac(5, 260750, 20.0, REFFAC="Y-2"),
+        _fac(1, 260751, 30.0, REFFAC="BOP-099943"),
     ])
     with _patched(fake):
         perdida = _get_cobro(http, "o-perdida").json()
+    assert perdida["status"] == "not_found" and "1-999999" in perdida["detail"]
+    fake.loaded.clear()
+    with _patched(fake):
         ambigua = _get_cobro(http, "o-ambigua").json()
-    assert perdida["status"] == "unresolved" and "999999" in perdida["detail"]
-    assert ambigua["status"] == "unresolved" and "varias series" in ambigua["detail"]
+        unica = _get_cobro(http, "o-unica").json()
+    for body, codigo in ((ambigua, 260750), (unica, 260751)):
+        assert body["status"] == "unresolved" and body["reason"] == "sin_serie"
+        assert "falta la serie" in body["detail"] and str(codigo) in body["detail"]
+        assert body["invoice"] == {"serie": None, "codigo": codigo, "numero": str(codigo)}
+    assert "F_FAC" not in fake.loaded            # ni se mira: nunca por el nº solo
     with session_factory() as s:
-        assert s.get(Order, "o-ambigua").factusol_cobro_status is None
+        for oid in ("o-ambigua", "o-unica"):
+            o = s.get(Order, oid)
+            assert o.factusol_cobro_status is None and o.factusol_invoice_serie is None
 
 
 # --- bandeja ---------------------------------------------------------------------
@@ -399,17 +413,17 @@ def test_registrar_cobro_manual_desde_bandeja(http, session_factory) -> None:
     pedidos con factura (F_FAC y F_LCO se leen UNA vez, sin N+1), persiste el
     estado y devuelve las filas; el filtro `cobro=` localiza los que faltan
     por registrar. La factura precargada en el modal es la misma clave que
-    resuelve la ficha (serie por REFFAC del pedido web si hay homónimos, o
-    por la serie del albarán de la Fase 2)."""
+    usa la ficha: la VINCULADA al pedido (serie guardada + número); un pedido
+    con el número pero sin la serie no se resuelve «por el número»."""
     with session_factory() as s:
-        _order(s, "o-a", "BOPRIN-99950", invoice="260760")               # pendiente
+        _order(s, "o-a", "BOPRIN-99950", invoice="260760", serie=1)       # pendiente
         _order(s, "o-b", "BOPRIN-99951", invoice="5-260761",              # cobrada
                payment=PaymentStatus.PENDING)
         _order(s, "o-c", "BOPRIN-99952")                                  # sin factura
-        # Homónimo: 260762 existe en la serie 1 y en la 5; el pedido web es
-        # BOPRIN-99953 → REFFAC BOP-099953 en la serie 5.
-        _order(s, "o-d", "BOPRIN-99953", invoice="260762")
-        # Fase 2: factura desde el albarán 1-100327 → serie 1.
+        # Homónimo: 260762 existe en la serie 1 y en la 5; el pedido tiene
+        # guardada la 5 → esa fila, nunca la de la serie 1.
+        _order(s, "o-d", "BOPRIN-99953", invoice="260762", serie=5)
+        # Sin la serie guardada: no se adivina (ni por el albarán ni por REFFAC).
         _order(s, "o-e", "PRO-004352", invoice="260763", source=OrderSource.FACTUSOL_PROFORMA,
                albaran="1-100327")
         s.commit()
@@ -439,7 +453,10 @@ def test_registrar_cobro_manual_desde_bandeja(http, session_factory) -> None:
     assert by_id["o-b"]["factusol_cobro_status"] == "cobrada"
     assert by_id["o-b"]["factusol_invoice_serie"] == 5
     assert by_id["o-d"]["cobro"]["invoice"] == {"serie": 5, "codigo": 260762, "numero": "5-260762"}
-    assert by_id["o-e"]["cobro"]["invoice"]["numero"] == "1-260763"
+    assert by_id["o-d"]["cobro"]["total"] == 12.0
+    assert by_id["o-e"]["cobro"]["status"] == "unresolved"
+    assert by_id["o-e"]["cobro"]["reason"] == "sin_serie"
+    assert by_id["o-e"]["factusol_cobro_status"] is None
     assert "o-c" not in by_id
 
     cobradas = http.get("/api/erp/orders?cobro=cobrada",
@@ -447,9 +464,10 @@ def test_registrar_cobro_manual_desde_bandeja(http, session_factory) -> None:
     assert [x["id"] for x in cobradas] == ["o-b"]
     pendientes = http.get("/api/erp/orders?cobro=pendiente",
                           headers=auth_headers(http, "user")).json()["items"]
-    assert {x["id"] for x in pendientes} == {"o-a", "o-d", "o-e"}
-    assert http.get("/api/erp/orders?cobro=sin_comprobar",
-                    headers=auth_headers(http, "user")).json()["items"] == []
+    assert {x["id"] for x in pendientes} == {"o-a", "o-d"}
+    sin_comprobar = http.get("/api/erp/orders?cobro=sin_comprobar",
+                             headers=auth_headers(http, "user")).json()["items"]
+    assert [x["id"] for x in sin_comprobar] == ["o-e"]
 
     # Solo los ids pedidos (una fila tras cerrar el modal), y FACTUSOL caído
     # → 502 controlado, sin tocar lo persistido.
@@ -517,3 +535,19 @@ def test_resolver_clave_sin_factusol(session_factory) -> None:
         key = resolve_invoice_key(s, o, fac_rows=[])
         assert key["serie"] == 5 and key["codigo"] == 260780
         assert key["numero"] == "5-260780" and key["row"] is None
+
+
+def test_resolver_clave_sin_serie_no_busca_por_numero(session_factory) -> None:
+    """Sin la serie guardada NO se consulta F_FAC ni se deduce la serie (ni
+    aunque el número esté en una sola serie): `missing_serie`."""
+    class NoFactusol:
+        def load_table(self, *_a, **_k):
+            raise AssertionError("no debe consultar FACTUSOL")
+
+    with session_factory() as s:
+        o = _order(s, "o-ns", "BOPRIN-99971", invoice="260721")
+        s.commit()
+        key = resolve_invoice_key(s, o, client=NoFactusol(), ejercicio="2026")
+        assert key["serie"] is None and key["missing_serie"] is True
+        assert key["codigo"] == 260721 and key["row"] is None
+        assert s.get(Order, "o-ns").factusol_invoice_serie is None

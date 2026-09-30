@@ -12,11 +12,17 @@ resolver la factura del pedido + el estado de cobro persistido para la bandeja.
 1. **Enlace pedido → factura.** El pedido guarda el CODFAC desnudo en
    `orders.factusol_invoice_number` (emisión E2, auto-vínculo por REFFAC,
    `attach_invoice` de la Fase 2). La clave de F_FAC es COMPUESTA (TIPFAC,
-   CODFAC), así que la SERIE hay que resolverla: el historial de la Fase 2
-   guarda `factusol_serie`; el pedido web se localiza por REFFAC = referencia
-   común; y si el CODFAC es único en F_FAC, es esa. Ahora se persiste en
-   `orders.factusol_invoice_serie`. Con homónimos en varias series y sin pista
-   NO se adivina (`unresolved`).
+   CODFAC), así que hace falta la SERIE, que se guarda en
+   `orders.factusol_invoice_serie` al vincular (emisión, auto-vínculo, Fase 2,
+   pedido creado desde factura). **Rev. 30/09/2026 (factura vinculada):** la
+   factura del pedido es UNA sola definición para todo BoHub
+   (`app/erp/linked_invoice.py`): estado facturado + nº + serie guardados, sin
+   depender del origen del pedido ni de `factusol_manual_serie`. Sin la serie
+   NO se deduce (ni por el historial, ni por REFFAC, ni porque el CODFAC sea
+   único en F_FAC): `unresolved` con `reason = "sin_serie"` y sin consultar
+   FACTUSOL. `/orders/{id}/factusol-invoice-ref` (PDF y «Enviar factura» de la
+   ficha y de Seguimiento) sale del mismo vínculo, sin buscar por REFFAC (antes
+   solo encontraba las de los pedidos web).
    Estado de cobro = `collection_status` (F3-fix1): `TOTFAC`, cobros en F_LCO
    por (TFALCO, CFALCO), saldo, `ESTFAC` (2 = cobrada, 1 = parcial, 0 =
    pendiente); `ya_cobrada = saldo ≈ 0 or ESTFAC == "2"`.

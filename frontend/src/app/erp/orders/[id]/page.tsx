@@ -72,6 +72,7 @@ import {
   type WorkflowAlert,
   type WorkflowQueue,
 } from "../../../lib/erpApi";
+import { invoiceLabel } from "../../../lib/linkedInvoice";
 
 const INVOICED_STATUSES = new Set(["generated", "invoiced_by_erp", "already_invoiced_externally"]);
 
@@ -1278,7 +1279,7 @@ function ErpOrderDetailScreen() {
                 <EmitFactusolButton
                   orderId={order.id}
                   invoiceStatus={order.invoice_status}
-                  factusolInvoiceNumber={order.factusol_invoice_number}
+                  factusolInvoiceNumber={invoiceLabel(order) || null}
                   totalAmount={order.total_amount}
                   currency={order.currency}
                   companyId={order.company_id}
@@ -1293,10 +1294,19 @@ function ErpOrderDetailScreen() {
                   onInvoiced={() => load()}
                 />
               ) : (
-                order.factusol_invoice_number || "pendiente"
+                invoiceLabel(order) || "pendiente"
               )}
             </div>
           </div>
+          {order.factusol_invoice_problem === "sin_serie" ? (
+            /* Nº de factura sin su serie: el número se repite entre series, así
+               que no se localiza «por el número solo» (ni PDF, ni envío, ni
+               cobro) hasta que se complete la serie. */
+            <p className="form-error small" role="alert">
+              Falta la serie de la factura {order.factusol_invoice_number}: sin ella no se
+              puede descargar el PDF, enviarla al cliente ni registrar el cobro.
+            </p>
+          ) : null}
           {/* Cobro manual (F-4-B desde la app): estado de cobro EN FACTUSOL
               de la factura del pedido y el botón que abre el modal
               compartido. Sin factura → deshabilitado con tooltip, nunca un

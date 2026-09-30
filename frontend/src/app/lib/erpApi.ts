@@ -1,5 +1,6 @@
 import { ApiError, apiDownloadBlob, apiFetch, apiUpload } from "./api";
 import type { CustomerEmailStatus } from "./geneiApi";
+import type { LinkedInvoice } from "./linkedInvoice";
 
 /** BoHub ERP Fase A — cliente de la API de pedidos (PR 3 backend). */
 
@@ -104,6 +105,13 @@ export type OrderSummary = {
   factusol_cobro_checked_at?: string | null;
   /** Serie (TIPFAC) de la factura, resuelta una vez (clave compuesta). */
   factusol_invoice_serie?: number | null;
+  /** Factura VINCULADA (estado facturado + nº + serie, sea cual sea el origen
+   *  del pedido): `numero` = «2-526107». null si no la tiene o le falta la
+   *  serie (ver `factusol_invoice_problem`). */
+  factusol_invoice?: LinkedInvoice | null;
+  /** Por qué no hay factura utilizable: sin factura, o hay nº pero falta la
+   *  serie (no se localiza por el nº solo). null = bien vinculada. */
+  factusol_invoice_problem?: "sin_factura" | "sin_serie" | null;
   /** Último detalle comprobado (nº, total, cobrado, saldo, ESTFAC, líneas). */
   factusol_cobro?: FactusolCobroBlock | null;
   /** ERP-F6 — campos del Excel de seguimiento: nº de serie (texto libre,
@@ -3042,9 +3050,10 @@ export async function sendOrderEmail(
   });
 }
 
-/** ERP-F1 — localiza la factura FACTUSOL del pedido (serie + número) para que
- *  la ficha del pedido reutilice el mismo flujo de email que el detalle de la
- *  factura. 404 si el pedido aún no tiene factura en FACTUSOL. */
+/** ERP-F1 — la factura FACTUSOL VINCULADA al pedido (serie + número) para que
+ *  la ficha / Seguimiento reutilicen el mismo flujo de PDF y email que el
+ *  detalle de la factura. Sale del vínculo guardado (sea cual sea el origen del
+ *  pedido). 404 sin factura; 409 si falta la serie. */
 export async function getOrderFactusolInvoiceRef(
   orderId: string,
 ): Promise<FactusolInvoiceRef> {

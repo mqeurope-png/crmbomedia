@@ -29,6 +29,7 @@ from app.erp.api.deps import (
     require_sat_tracking,
 )
 from app.erp.factusol_albaran import MANUAL_SERIES, PaymentIn
+from app.erp.linked_invoice import linked_invoice_payload
 from app.erp.models import (
     ErpException,
     ExceptionStatus,
@@ -295,6 +296,10 @@ def _serialise_summary(
         # («cobrada» / «pendiente» / null = sin factura o sin comprobar),
         # distinto del «Pagado» del CRM, + serie resuelta y último detalle.
         "factusol_invoice_serie": o.factusol_invoice_serie,
+        # La factura VINCULADA (estado facturado + nº + serie, sea cual sea el
+        # origen del pedido): {serie, codigo, numero «2-526107»} o null, y el
+        # motivo si no se puede usar (`sin_factura` / `sin_serie`).
+        **linked_invoice_payload(o),
         "factusol_cobro_status": o.factusol_cobro_status,
         "factusol_cobro_checked_at": (
             o.factusol_cobro_checked_at.isoformat()
@@ -2575,11 +2580,12 @@ def order_factusol_cobro(
 
     order = _get_order(session, order_id, current_user)
     base = {"order_id": order.id, "order_number": order.order_number}
-    if not order.factusol_invoice_number:
-        return {
-            **base, "status": "sin_factura", "invoice": None,
-            "detail": "El pedido aún no tiene factura en FACTUSOL: emite la factura primero.",
-        }
+    # Sin factura vinculada (o sin su serie) no se consulta FACTUSOL.
+    from app.erp.factusol_cobro import unusable_invoice_info  # noqa: PLC0415
+
+    early = unusable_invoice_info(order)
+    if early is not None:
+        return {**base, **early}
     try:
         client, ejercicio, fop_names = _factusol_cobro_client(session)
         info = order_cobro_info(session, client, order, ejercicio, fop_names=fop_names)
@@ -2761,53 +2767,31 @@ def order_factusol_invoice_ref(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_view),
 ) -> dict[str, Any]:
-    """ERP-F1 — localiza en FACTUSOL la factura del pedido y devuelve su
-    clave compuesta `{serie, codigo}`, para que la ficha del pedido use el
-    MISMO flujo de email que el detalle de la factura (sin duplicarlo). El
-    pedido solo guarda el CODFAC; la serie (TIPFAC) sale de F_FAC por REFFAC.
-    404 si el pedido aún no tiene factura en FACTUSOL."""
+    """ERP-F1 — clave compuesta `{serie, codigo}` de la factura del pedido,
+    para que la ficha / Seguimiento usen el MISMO flujo de PDF y de email que
+    el detalle de la factura. Sale del VÍNCULO guardado en el pedido (estado
+    facturado + número + serie, `app.erp.linked_invoice`), sea cual sea su
+    origen (web, manual, desde factura / albarán / proforma): NO se busca en
+    FACTUSOL por la referencia del pedido (solo la llevan los pedidos web) ni
+    por el número solo. 404 sin factura; 409 si falta la serie."""
     _ = current_user
-    from app.integrations.factusol.client import (  # noqa: PLC0415
-        FactusolClient,
-        FactusolError,
-    )
-    from app.integrations.factusol.service import (  # noqa: PLC0415
-        _store_ref_prefix,
-        check_factusol_status,
-        coerce_serie,
-        ejercicio_for,
+    from app.erp.linked_invoice import (  # noqa: PLC0415
+        SIN_SERIE,
+        get_linked_invoice,
+        invoice_link_problem,
+        missing_invoice_detail,
     )
 
     order = _get_order(session, order_id, current_user)
-    try:
-        client = FactusolClient.from_settings()
-        ejercicio = ejercicio_for(session)
-        status_info = check_factusol_status(
-            client, order, ejercicio, ref_prefix=_store_ref_prefix(session, order),
+    linked = get_linked_invoice(order)
+    if linked is None:
+        missing_serie = invoice_link_problem(order) == SIN_SERIE
+        raise HTTPException(
+            status.HTTP_409_CONFLICT if missing_serie else status.HTTP_404_NOT_FOUND,
+            {"code": "invoice_serie_missing" if missing_serie else "invoice_not_linked",
+             "detail": missing_invoice_detail(order)},
         )
-    except FactusolError as exc:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, {
-            "code": "factusol_unreachable", "detail": str(exc)[:200],
-        }) from exc
-    except Exception as exc:  # noqa: BLE001 — sin credenciales / config
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, {
-            "code": "factusol_unavailable", "detail": str(exc)[:200],
-        }) from exc
-    factura = status_info.get("factura")
-    if not factura:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, {
-            "code": "invoice_not_in_factusol",
-            "detail": "Este pedido aún no tiene factura en FACTUSOL.",
-        })
-    serie = coerce_serie(factura.get("TIPFAC"))
-    codigo = _int_or_none_local(factura.get("CODFAC"))
-    if serie is None or codigo is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, {
-            "code": "invoice_key_unresolved",
-            "detail": "La factura en FACTUSOL no trae serie/número utilizables.",
-        })
-    return {"serie": serie, "codigo": codigo,
-            "numero": f"{serie}-{codigo:06d}"}
+    return linked.as_dict()
 
 
 def _int_or_none_local(value: Any) -> int | None:

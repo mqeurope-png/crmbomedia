@@ -606,6 +606,23 @@ STEP_LABELS: dict[str, str] = {
 }
 
 
+def _factura_detail(order: Order) -> str:
+    """Dato del paso Factura: `serie-número` de la factura vinculada
+    (`2-526107`); con número pero sin serie, el número y el aviso."""
+    from app.erp.linked_invoice import (  # noqa: PLC0415
+        SIN_SERIE,
+        invoice_label,
+        invoice_link_problem,
+    )
+
+    if not is_invoiced(order):
+        return ""
+    label = invoice_label(order)
+    if label and invoice_link_problem(order) == SIN_SERIE:
+        return f"{label} · falta la serie"
+    return label
+
+
 def order_steps(
     order: Order, *, invoice_emailed_at: str | None = None,
 ) -> list[dict[str, Any]]:
@@ -628,10 +645,7 @@ def order_steps(
             bool(order.factusol_albaran_number),
             order.factusol_albaran_number or "",
         ),
-        "factura": (
-            is_invoiced(order),
-            str(order.factusol_invoice_number or "") if is_invoiced(order) else "",
-        ),
+        "factura": (is_invoiced(order), _factura_detail(order)),
         "cobro": (is_cobrada(order), "cobrada" if is_cobrada(order) else ""),
     }
     steps: list[dict[str, Any]] = []
