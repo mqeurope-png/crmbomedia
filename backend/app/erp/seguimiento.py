@@ -752,16 +752,38 @@ PREPARACION_LABELS: dict[str, str] = {
     "blocked": "Bloqueado",
     "already_completed_externally": "Hecho (externo)",
 }
-#: Estado de transporte → etiqueta corta para la columna Envío.
+#: Envío = SOLO el estado del envío, de una lista CERRADA (pantalla, Excel y
+#: hoja). Con qué transportista va, en la columna aparte «Courier». Los pasos
+#: reales del transportista (#490) son un subconjunto de esta lista.
+ENVIO_SIN_ENVIAR = "Sin enviar"
+ENVIO_PRE_TRANSITO = "Pendiente de entrada en red"
+ENVIO_EN_TRANSITO = "En tránsito"
+ENVIO_ENTREGADO = "Entregado"
+ENVIO_INCIDENCIA = "Incidencia"
+#: Envío con OTRO courier ya recogido (BoHub no ve sus escaneos).
+ENVIO_ENVIADO = "Enviado"
+#: Estado de transporte → Envío, cuando no hay escaneo real del transportista.
+#: «Devuelto» no está en la lista: una devolución es una incidencia del envío.
 ENVIO_LABELS: dict[str, str] = {
-    "not_shipped": "Sin enviar",
-    "label_created": "Etiqueta creada",
-    "in_transit": "En tránsito",
-    "delivered": "Entregado",
-    "incident": "Incidencia",
-    "returned": "Devuelto",
-    "already_shipped_externally": "Enviado (externo)",
+    "not_shipped": ENVIO_SIN_ENVIAR,
+    "label_created": ENVIO_SIN_ENVIAR,
+    "in_transit": ENVIO_EN_TRANSITO,
+    "delivered": ENVIO_ENTREGADO,
+    "incident": ENVIO_INCIDENCIA,
+    "returned": ENVIO_INCIDENCIA,
+    "already_shipped_externally": ENVIO_ENVIADO,
 }
+#: Lo que escribía BoHub en Envío ANTES de la lista cerrada (el transportista
+#: iba dentro: «Enviado · UPS»). Ya no se escribe; se sigue reconociendo como
+#: valor de BoHub en las filas que aún lo tengan (`drive_managed`).
+ENVIO_LABELS_ANTIGUAS: tuple[str, ...] = (
+    "Etiqueta creada", "Devuelto", "Enviado (externo)",
+)
+#: Courier de un pedido sin envío (ni Genei ni otro courier).
+COURIER_SIN_ENVIO = "—"
+#: Courier de un envío Genei cuya agencia no consta (raro: Genei la manda al
+#: tramitar y en cada refresco).
+COURIER_GENEI_SIN_AGENCIA = "Genei"
 #: Tipo de excepción → etiqueta legible (pestaña Incidencias).
 EXCEPTION_TYPE_LABELS: dict[str, str] = {
     "stock_shortage": "Falta de stock",
@@ -809,47 +831,89 @@ def _prep_label(order: Order) -> str:
 
 
 def _envio_label(order: Order) -> str:
-    """Etiqueta de la columna Envío; «No aplica» si no requiere envío (no se
-    envía: no es «enviado»).
+    """Columna Envío: SOLO el estado, de la lista cerrada `envio_vocabulary()`
+    (el transportista va aparte, en «Courier»). «No aplica» si no requiere
+    envío (no se envía: no es «enviado»).
 
-    Con envío Genei y escaneos del transportista (`/tracking`), manda el ÚLTIMO
-    ESCANEO REAL, en vocabulario cerrado («Pendiente de entrada en red»,
-    «Recogido», «En reparto», «Entregado»…) — no el genérico del transporte,
-    que podía dar por recogido lo que la agencia aún no había escaneado. El
-    texto literal de la agencia se ve en la app (Enviados, ficha)."""
+    - Genei con escaneos del transportista (`/tracking`): manda el ÚLTIMO
+      ESCANEO REAL («Pendiente de entrada en red», «Recogido», «En reparto»,
+      «Entregado»…) — no el genérico del transporte, que podía dar por recogido
+      lo que la agencia aún no había escaneado. El texto literal de la agencia
+      se ve en la app (Enviados, ficha).
+    - Genei sin escaneos: el del transporte; con la etiqueta ya hecha y sin
+      recoger, «Pendiente de entrada en red» (el paquete espera a la agencia).
+    - OTRO courier (sin Genei): «Enviado» al marcar recogido (BoHub no ve sus
+      escaneos); «Entregado» / «Incidencia» si se marca a mano en la ficha."""
     if is_sin_envio(order):
         return NO_APLICA
     from app.erp.integrations.genei.service import genei_state_of  # noqa: PLC0415
     from app.erp.integrations.genei.tracking import carrier_step_label  # noqa: PLC0415
+    from app.erp.shipping_courier import is_genei_shipment  # noqa: PLC0415
 
     real = carrier_step_label(genei_state_of(order).get("carrier_step"))
     if real:
         return real
-    st = getattr(order.transport_status, "value", order.transport_status)
-    # Envío con OTRO courier (sin Genei) ya recogido: «Enviado · UPS» /
-    # «Enviado · otro courier» (el histórico llevaba el courier en Envío).
+    st = str(getattr(order.transport_status, "value", order.transport_status) or "")
+    if is_genei_shipment(order):
+        if st == "label_created":
+            return ENVIO_PRE_TRANSITO
+    elif st == "in_transit":
+        return ENVIO_ENVIADO
+    return ENVIO_LABELS.get(st, ENVIO_SIN_ENVIAR)
+
+
+def envio_vocabulary() -> list[str]:
+    """La lista CERRADA de la columna Envío, en su orden: lo único que BoHub
+    escribe ahí (y el desplegable de la hoja)."""
+    return [
+        ENVIO_SIN_ENVIAR, ENVIO_PRE_TRANSITO, "Recogido", ENVIO_EN_TRANSITO,
+        "En reparto", "Disponible en oficina", ENVIO_ENTREGADO, ENVIO_INCIDENCIA,
+        ENVIO_ENVIADO, NO_APLICA,
+    ]
+
+
+def envio_vocabulary_antiguo() -> list[str]:
+    """Lo que BoHub escribía en Envío ANTES de la lista cerrada: las etiquetas
+    viejas del transporte y los compuestos «Enviado · UPS». Solo sirve para
+    reconocer filas que escribió BoHub (nunca se vuelve a escribir)."""
+    from app.erp.shipping_courier import external_envio_vocabulary  # noqa: PLC0415
+
+    return [*ENVIO_LABELS_ANTIGUAS, ENVIO_SIN_SEGUIMIENTO_LEGACY,
+            *external_envio_vocabulary()]
+
+
+def courier_label(order: Order) -> str:
+    """Columna «Courier»: con quién va el envío.
+
+    - Envío Genei → la agencia del envío, tal como la da Genei («Ctt Premium»).
+    - Envío con OTRO courier → el apuntado en la Cola SAT («UPS», «MRW»…), o
+      «otro courier» si ya salió y no se apuntó ninguno.
+    - Sin envío (o «No requiere envío») → «—»."""
+    if is_sin_envio(order):
+        return COURIER_SIN_ENVIO
+    from app.erp.integrations.genei.service import genei_state_of  # noqa: PLC0415
     from app.erp.shipping_courier import (  # noqa: PLC0415
-        external_envio_label,
+        OTHER_COURIER_LABEL,
         external_state,
         is_genei_shipment,
     )
 
-    if not is_genei_shipment(order) and (
-        st == "in_transit"
-        or (st == "already_shipped_externally" and external_state(order).get("courier"))
-    ):
-        return external_envio_label(order)
-    return ENVIO_LABELS.get(str(st or ""), "—")
+    if is_genei_shipment(order):
+        agencia = str(genei_state_of(order).get("courier") or "").strip()
+        return agencia or COURIER_GENEI_SIN_AGENCIA
+    apuntado = str(external_state(order).get("courier") or "").strip()
+    if apuntado:
+        return apuntado
+    st = str(getattr(order.transport_status, "value", order.transport_status) or "")
+    if st in _TRANSPORTE_YA_SALIO:
+        return OTHER_COURIER_LABEL
+    return COURIER_SIN_ENVIO
 
 
-def envio_vocabulary() -> list[str]:
-    """Todos los valores que BoHub escribe en la columna Envío (transporte +
-    escaneo real del transportista), sin repetir."""
-    from app.erp.integrations.genei.tracking import CARRIER_STEP_LABELS  # noqa: PLC0415
-    from app.erp.shipping_courier import external_envio_vocabulary  # noqa: PLC0415
-
-    return list(dict.fromkeys([*ENVIO_LABELS.values(), *CARRIER_STEP_LABELS.values(),
-                               *external_envio_vocabulary()]))
+#: Transporte con el paquete ya fuera del taller (recogido o posterior).
+_TRANSPORTE_YA_SALIO = frozenset({
+    "in_transit", "delivered", "incident", "returned", "already_shipped_externally",
+})
 
 
 def _cobro_state(order: Order) -> str:
@@ -1228,9 +1292,14 @@ def build_rows(
             #: Estado de cobro FACTUSOL (contable, ya persistido).
             "cobro": cobro,
             "cobro_label": COBRO_LABELS.get(cobro, "—"),
-            #: Preparación (SAT) y Envío; «No aplica» si no requiere envío.
+            #: Preparación (SAT) y Envío (solo el estado, lista cerrada); «No
+            #: aplica» si no requiere envío.
             "preparacion": _prep_label(o),
             "envio": _envio_label(o),
+            #: Con quién va el envío: la agencia de Genei o el courier apuntado
+            #: en la Cola SAT («otro courier» si no se apuntó); «—» sin envío.
+            #: El filtro «Transportista» de la pantalla filtra por aquí.
+            "courier": courier_label(o),
             #: Origen: WEB o el canal/comercial.
             "origen_label": _origen_label(o),
             #: Datos técnicos combinados (máquinas/licencias).
@@ -1266,7 +1335,7 @@ def _genei_shipment_code(order: Order) -> str | None:
 #: cola y, dentro, por fecha (más nuevo primero) — lo urgente sube solo.
 SORT_KEYS = {
     "situacion", "fecha", "cliente", "empresa", "vendedor", "transportista",
-    "origen", "estado", "factura", "albaran_pedido",
+    "courier", "origen", "estado", "factura", "albaran_pedido",
 }
 _SEARCH_FIELDS = (
     "cliente", "albaran_pedido", "proforma", "factura", "tracking", "num_serie",
@@ -1331,10 +1400,11 @@ def filter_rows(
     if vendedor:
         out = [r for r in out if (r["vendedor"] or "").casefold() == vendedor.casefold()]
     if transportista:
-        out = [
-            r for r in out
-            if (r["transportista"] or "").casefold() == transportista.casefold()
-        ]
+        # «Transportista» filtra por la columna Courier (la agencia de Genei o el
+        # courier de la Cola SAT): contiene, sin mayúsculas ni tildes — «ctt»
+        # encuentra «Ctt Premium» y «CTT Express».
+        aguja = _plegar(transportista)
+        out = [r for r in out if aguja in _plegar(r.get("courier"))]
     if origen:
         out = [r for r in out if (r["origen"] or "").casefold() == origen.casefold()]
     if desde:
@@ -1350,6 +1420,13 @@ def filter_rows(
             if any(needle in str(r[f] or "").casefold() for f in _SEARCH_FIELDS)
         ]
     return _sort_rows(out, sort, direction)
+
+
+def _plegar(value: Any) -> str:
+    """Texto comparable: sin tildes, en minúsculas y sin espacios en los
+    extremos."""
+    s = unicodedata.normalize("NFKD", str(value or "").strip())
+    return "".join(c for c in s if not unicodedata.combining(c)).casefold()
 
 
 def _neg_ordinal(iso: str | None) -> int:
@@ -1449,15 +1526,20 @@ def row_to_sheet_values(row: dict[str, Any], *, include_orden: bool = False) -> 
 
 # --- rediseño 2026: hoja simplificada (pantalla + exportación) -----------------
 #
-# 17 columnas, una fila por pedido, el estado en la columna Situación (no en la
-# posición) y ordenadas por Situación. Es la forma de la pantalla y del Excel;
-# la hoja de Drive mantiene su formato histórico aparte (ver el PR).
+# 20 columnas (la última, la «id» técnica oculta), una fila por pedido, el
+# estado en la columna Situación (no en la posición) y ordenadas por Situación.
+# Es la forma de la pantalla, del Excel y de la pestaña «Seguimiento (app)».
 
 #: Columnas de la hoja «Pedidos» (rediseño 2026), en orden.
 SEGUIMIENTO_COLUMNS_V2: list[str] = [
     "Situación", "Nº pedido", "Fecha", "Cliente", "Origen", "Productos",
     "Importe", "Empresa (serie)", "Factura", "Fecha factura",
-    "Factura enviada", "Cobro", "Preparación", "Envío", "Fecha recogido",
+    "Factura enviada", "Cobro", "Preparación", "Envío",
+    # «Courier» (20 columnas): con quién va el envío, aparte del estado
+    # («Envío»). Entre Envío y Fecha recogido; la hoja de Drive se migra sola
+    # (`drive_managed.migrar_columna_courier`).
+    "Courier",
+    "Fecha recogido",
     "Tracking", "Nº serie · WhiteRIP", "Nota / Incidencia",
     # Hito «id estable»: clave técnica de casado (última columna, OCULTA en la
     # hoja). Va la última a propósito: así los índices posicionales de todo lo
@@ -1475,18 +1557,25 @@ INCIDENCIAS_COLUMNS: list[str] = [
 #: fecha real —`date` en el Excel, serial + `numberFormat` en Drive—, nunca
 #: como texto, para que la hoja ordene por fecha de verdad (como texto,
 #: «1/9/2026» va antes que «12/3/2026»). Visualización uniforme DD/MM/AAAA.
-#: Fecha · Fecha factura · Factura enviada · Fecha recogido.
-PEDIDOS_DATE_COLUMNS: tuple[int, ...] = (2, 9, 10, 14)
+#: Fecha · Fecha factura · Factura enviada · Fecha recogido (por nombre: si se
+#: añade una columna, no se descuadran).
+PEDIDOS_DATE_COLUMNS: tuple[int, ...] = tuple(
+    SEGUIMIENTO_COLUMNS_V2.index(c)
+    for c in ("Fecha", "Fecha factura", "Factura enviada", "Fecha recogido")
+)
 INCIDENCIAS_DATE_COLUMNS: tuple[int, ...] = (5,)
 #: En la zona VIVA «Preparación» es un estado del taller («En cola», «Listo»),
 #: pero en el HISTÓRICO es la fecha en que se preparó: ahí también va como
 #: valor de fecha, para que ordene con el resto.
-HISTORICO_DATE_COLUMNS: tuple[int, ...] = (*PEDIDOS_DATE_COLUMNS, 12)
+HISTORICO_DATE_COLUMNS: tuple[int, ...] = (
+    *PEDIDOS_DATE_COLUMNS, SEGUIMIENTO_COLUMNS_V2.index("Preparación"),
+)
 #: Formato de fecha de esas columnas (Excel y Sheets usan el mismo patrón).
 DATE_PATTERN = "DD/MM/YYYY"
 #: Ancho aproximado de cada columna de «Pedidos» (para que el Excel se lea). La
 #: última («id») es técnica y va OCULTA; el ancho solo se usaría si se muestra.
-_PEDIDOS_WIDTHS = [13, 16, 11, 30, 10, 34, 12, 18, 14, 12, 13, 12, 13, 13, 12, 16, 20, 30, 300]
+_PEDIDOS_WIDTHS = [13, 16, 11, 30, 10, 34, 12, 18, 14, 12, 13, 12, 13, 13, 14, 12, 16, 20, 30,
+                   300]
 _INCIDENCIAS_WIDTHS = [16, 30, 24, 40, 18, 11, 12]
 
 def _sheet_date_value(iso: str | None) -> date | str:
@@ -1507,6 +1596,7 @@ def _sheet_date_value(iso: str | None) -> date | str:
 ORIGEN_INDEX = SEGUIMIENTO_COLUMNS_V2.index("Origen")
 PREPARACION_INDEX = SEGUIMIENTO_COLUMNS_V2.index("Preparación")
 ENVIO_INDEX = SEGUIMIENTO_COLUMNS_V2.index("Envío")
+COURIER_INDEX = SEGUIMIENTO_COLUMNS_V2.index("Courier")
 RECOGIDO_INDEX = SEGUIMIENTO_COLUMNS_V2.index("Fecha recogido")
 NOTA_INDEX = SEGUIMIENTO_COLUMNS_V2.index("Nota / Incidencia")
 
@@ -1598,7 +1688,7 @@ def redistribute_nota(row: list[Any]) -> list[Any]:
 
 
 def row_to_pedidos_values(row: dict[str, Any]) -> list[Any]:
-    """Los 19 valores de una fila de «Pedidos», en orden. `Importe` va como
+    """Los 20 valores de una fila de «Pedidos», en orden. `Importe` va como
     NÚMERO (float) y las fechas como `date` (ver `PEDIDOS_DATE_COLUMNS`) para
     que el Excel y la hoja las traten como lo que son; el resto, texto. La última
     columna es el `id` técnico (clave de casado; para un pedido de BoHub, su
@@ -1618,6 +1708,8 @@ def row_to_pedidos_values(row: dict[str, Any]) -> list[Any]:
         row.get("cobro_label") or "",
         row.get("preparacion") or "",
         row.get("envio") or "",
+        # «Courier»: la agencia de Genei o el courier de la Cola SAT.
+        row.get("courier") or COURIER_SIN_ENVIO,
         # «Fecha recogido»: el hecho real de la Cola SAT (recogido / en
         # tránsito / etiqueta), nunca una fecha estampada al importar.
         _sheet_date_value(row.get("recogido")),
@@ -1647,6 +1739,11 @@ def incidencia_values(row: dict[str, Any]) -> list[Any]:
         _sheet_date_value(detail.get("fecha")),
         detail.get("estado") or "",
     ]
+
+
+#: Columnas (1-based, como las cuenta openpyxl) de Importe y Cobro en el Excel.
+_IMPORTE_COL = SEGUIMIENTO_COLUMNS_V2.index("Importe") + 1
+_COBRO_COL = SEGUIMIENTO_COLUMNS_V2.index("Cobro") + 1
 
 
 def export_xlsx(rows: list[dict[str, Any]]) -> bytes:
@@ -1688,12 +1785,12 @@ def export_xlsx(rows: list[dict[str, Any]]) -> bytes:
         situ_cell = ws.cell(row=r_i, column=1)
         situ_cell.fill = PatternFill("solid", fgColor=bg)
         situ_cell.font = Font(bold=True, color=ink)
-        ws.cell(row=r_i, column=7).number_format = "#,##0.00 €"  # Importe
+        ws.cell(row=r_i, column=_IMPORTE_COL).number_format = "#,##0.00 €"
         # Fechas como VALOR de fecha (ordenables), DD/MM/AAAA.
         for c in PEDIDOS_DATE_COLUMNS:
             ws.cell(row=r_i, column=c + 1).number_format = DATE_PATTERN
         if row.get("cobro") == "cobrado":  # «Cobrado ✓» en verde
-            ws.cell(row=r_i, column=12).font = Font(bold=True, color="1F7A45")
+            ws.cell(row=r_i, column=_COBRO_COL).font = Font(bold=True, color="1F7A45")
     ws.auto_filter.ref = (
         f"A1:{get_column_letter(len(SEGUIMIENTO_COLUMNS_V2))}{ws.max_row}"
     )

@@ -9,8 +9,9 @@ La hoja de Drive de Bart tiene dos mundos y no se mezclan:
   (`_guard_pestana_de_la_app`). Su histórico ya vive, importado, bajo el
   separador de la pestaña gestionada, que lo preserva en cada pasada.
 - La pestaña **gestionada** («Seguimiento (app)», configurable) es de la app:
-  se reescribe entera en cada actualización con las 17 columnas del rediseño
-  2026, ordenada por fecha del pedido (más reciente primero) y con la celda
+  se reescribe entera en cada actualización con las 20 columnas del rediseño
+  2026 (la última, la «id» técnica oculta), ordenada por fecha del pedido (más
+  reciente primero) y con la celda
   Situación coloreada — la misma
   forma que la pantalla y que «Descargar Excel», porque comparte la
   serialización (`row_to_pedidos_values`, `incidencia_values`).
@@ -40,9 +41,10 @@ import logging
 import math
 import re
 import zlib
+from collections import Counter
 from collections.abc import Callable
 from datetime import date, timedelta
-from typing import Any
+from typing import Any, NoReturn
 
 from sqlalchemy.orm import Session
 
@@ -51,7 +53,6 @@ from app.erp.drive_sheets import DriveSyncError, ManagedTabTransport
 from app.erp.seguimiento import (
     COBRO_LABELS,
     DATE_PATTERN,
-    ENVIO_SIN_SEGUIMIENTO_LEGACY,
     HISTORICO_DATE_COLUMNS,
     INCIDENCIAS_COLUMNS,
     INCIDENCIAS_DATE_COLUMNS,
@@ -63,6 +64,7 @@ from app.erp.seguimiento import (
     SITUACION_FILL,
     SITUACION_LABELS,
     envio_vocabulary,
+    envio_vocabulary_antiguo,
     incidencia_rows,
     incidencia_values,
     match_number,
@@ -86,7 +88,7 @@ INCIDENCIAS_TAB_SETTING = "drive_incidencias_tab"
 #: Anchos de columna de la pestaña «Pedidos» (píxeles ≈ los del Excel local). La
 #: última («id») es técnica y va OCULTA; el ancho es indiferente.
 _PEDIDOS_WIDTHS_PX = [96, 116, 82, 210, 76, 240, 88, 130, 102, 88,
-                      96, 88, 96, 96, 92, 116, 150, 220, 300]
+                      96, 88, 96, 96, 110, 92, 116, 150, 220, 300]
 _INCIDENCIAS_WIDTHS_PX = [116, 210, 170, 280, 130, 82, 92]
 
 #: Gris de la cabecera (el mismo `F2F4F7` del Excel).
@@ -331,15 +333,568 @@ def live_incidencias_rows(rows: list[dict[str, Any]]) -> list[list[Any]]:
     )
 
 
-#: Cabecera del formato nuevo ANTES de «Fecha recogido» (17 columnas, #457). Es
-#: una FOTO histórica: nunca llevó «Fecha recogido» NI la «id» técnica (última,
-#: hito id estable), así que ambas se excluyen para detectar una hoja de 17 col.
+#: Cabeceras de formatos ANTERIORES de la pestaña (FOTOS fijas, nunca derivadas
+#: de la actual: así siguen reconociendo una pestaña vieja aunque se añadan
+#: columnas). Las dos columnas que han ido entrando —«Fecha recogido» y
+#: «Courier»— lo hicieron justo detrás de «Envío», así que una fila vieja se
+#: pone al día abriendo huecos en ese punto (`_HUECO`), sin mover nada más.
+#:
+#: 17 columnas (#457): sin «Fecha recogido» ni la «id» técnica.
 _HEADER_V2_SIN_RECOGIDO: list[str] = [
-    c for c in SEGUIMIENTO_COLUMNS_V2 if c not in ("Fecha recogido", "id")
+    "Situación", "Nº pedido", "Fecha", "Cliente", "Origen", "Productos", "Importe",
+    "Empresa (serie)", "Factura", "Fecha factura", "Factura enviada", "Cobro",
+    "Preparación", "Envío", "Tracking", "Nº serie · WhiteRIP", "Nota / Incidencia",
 ]
+#: 18/19 columnas: con «Fecha recogido» (y la «id» al final), sin «Courier».
+_HEADER_V2_SIN_COURIER: list[str] = [
+    *_HEADER_V2_SIN_RECOGIDO[:14], "Fecha recogido", *_HEADER_V2_SIN_RECOGIDO[14:],
+]
+#: Índice por el que entran los huecos (detrás de «Envío»).
+_HUECO = SEGUIMIENTO_COLUMNS_V2.index("Envío") + 1
+_COURIER_INDEX = SEGUIMIENTO_COLUMNS_V2.index("Courier")
 _RECOGIDO_INDEX = SEGUIMIENTO_COLUMNS_V2.index("Fecha recogido")
 #: Índice de la columna técnica «id» (la última). Oculta en la hoja.
 _ID_INDEX = SEGUIMIENTO_COLUMNS_V2.index("id")
+
+#: Formatos de la pestaña: el actual y los dos anteriores (y «no se sabe por
+#: la cabecera»: no la hay, o está retocada).
+FORMATO_ACTUAL = "actual"
+FORMATO_SIN_COURIER = "sin_courier"      # 18/19 columnas
+FORMATO_SIN_RECOGIDO = "sin_recogido"    # 17 columnas
+FORMATO_DESCONOCIDO = "desconocido"
+#: Forma de las «id» que pone BoHub (uuid4): pedido, histórico y filas a mano.
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+#: Huecos que hay que abrir detrás de «Envío» en cada formato viejo (y sus
+#: nombres, por si es la cabecera).
+_HUECOS: dict[str, list[str]] = {
+    FORMATO_SIN_COURIER: ["Courier"],
+    FORMATO_SIN_RECOGIDO: ["Courier", "Fecha recogido"],
+}
+#: Columna de la «id» en cada formato (el de 17 columnas no la tenía).
+_COLUMNA_ID: dict[str, int | None] = {
+    FORMATO_ACTUAL: _ID_INDEX,
+    FORMATO_SIN_COURIER: _ID_INDEX - 1,
+    FORMATO_SIN_RECOGIDO: None,
+}
+#: La cabecera ENTERA de cada formato, columna a columna (la de 18/19 columnas,
+#: con su «id» al final: la de 18, sin ella, solo difiere en esa celda vacía).
+_CABECERAS: dict[str, list[str]] = {
+    FORMATO_ACTUAL: list(SEGUIMIENTO_COLUMNS_V2),
+    FORMATO_SIN_COURIER: [*_HEADER_V2_SIN_COURIER, "id"],
+    FORMATO_SIN_RECOGIDO: list(_HEADER_V2_SIN_RECOGIDO),
+}
+#: Todos los nombres de columna que ha escrito la app, sin mayúsculas (los de
+#: los formatos anteriores están todos en el actual).
+_NOMBRES_CONOCIDOS = frozenset(c.casefold() for c in SEGUIMIENTO_COLUMNS_V2)
+
+
+def _letra(idx: int) -> str:
+    """Letra de columna de la hoja (0 → A, 25 → Z, 26 → AA)."""
+    letras = ""
+    idx += 1
+    while idx:
+        idx, resto = divmod(idx - 1, 26)
+        letras = chr(ord("A") + resto) + letras
+    return letras
+
+
+def _mal_puestas(header: list[Any], esperada: list[str]) -> list[int]:
+    """Columnas de la cabecera `esperada` en las que la leída lleva el nombre de
+    OTRA columna: un nombre conocido fuera de su sitio delata una columna
+    insertada, borrada o movida a mano (todo lo de detrás está corrido). Una
+    celda con otro texto, o vacía, es solo un nombre retocado: no descoloca nada.
+    Lo que haya a la derecha de la última columna del formato no cuenta."""
+    textos = [_texto(h).casefold() for h in header]
+    return [
+        i for i, nombre in enumerate(esperada)
+        if (leido := textos[i] if i < len(textos) else "") != nombre.casefold()
+        and leido in _NOMBRES_CONOCIDOS
+    ]
+
+
+def _formatos_posibles(header: list[Any]) -> list[str]:
+    """Los formatos con los que encaja la cabecera (salvo nombres retocados)."""
+    return [f for f, esperada in _CABECERAS.items() if not _mal_puestas(header, esperada)]
+
+
+def formato_de_cabecera(header: list[Any]) -> str:
+    """¿Con qué formato se escribió la pestaña, según su cabecera? Se compara
+    ENTERA, columna a columna, con la de cada formato (`_mal_puestas`): insertar,
+    borrar o mover una columna a mano deja nombres conocidos fuera de su sitio, y
+    eso nunca se acepta; renombrar o vaciar celdas no descoloca nada (la pasada
+    vuelve a escribir los nombres buenos). Lo que haya a la derecha de la última
+    columna del formato —p. ej. «Courier» tecleado en T1 de una pestaña vieja—
+    no cuenta (ver `comprobar_columnas`). Si no encaja con ninguno, o con varios
+    (cabecera casi toda vaciada), «desconocido»."""
+    posibles = _formatos_posibles(header)
+    return posibles[0] if len(posibles) == 1 else FORMATO_DESCONOCIDO
+
+
+def _ids_por_columna(values: list[list[Any]]) -> Counter[int]:
+    """En qué columna lleva cada fila su «id» (un uuid, como los que pone
+    BoHub): columna → nº de filas. Se miran TODAS las columnas: una «id» que
+    ha ido a parar a la izquierda (columnas borradas) cuenta como fuera de
+    sitio, no como que no hay «id»."""
+    cuenta: Counter[int] = Counter()
+    for fila in values:
+        if not fila or is_separator(list(fila)):
+            continue
+        for i, celda in enumerate(fila):
+            if _UUID_RE.match(_texto(celda)):
+                cuenta[i] += 1
+    return cuenta
+
+
+def _columna_de_las_ids(values: list[list[Any]]) -> int | None:
+    """La columna en la que está la mayoría de las «id» (None si no hay)."""
+    ids = _ids_por_columna(values)
+    return ids.most_common(1)[0][0] if ids else None
+
+
+def formato_de_pestana(values: list[list[Any]]) -> str:
+    """Formato de la pestaña, por su cabecera (`formato_de_cabecera`). Si encaja
+    con varios (cabecera casi toda vaciada o renombrada), decide la columna en la
+    que están las «id». SIN fila de cabecera no hay forma de ver si una columna se
+    ha movido: solo se acepta una pestaña sin ninguna «id» (nueva, o solo filas
+    tecleadas), que se lee con el formato actual; con «id», «desconocido» (ver
+    `comprobar_columnas`: hay que volver a poner la cabecera)."""
+    cabecera = cabecera_de(values)
+    columna = _columna_de_las_ids(values)
+    if not cabecera:
+        return FORMATO_ACTUAL if columna is None else FORMATO_DESCONOCIDO
+    posibles = _formatos_posibles(cabecera)
+    if len(posibles) > 1:
+        return next((f for f in posibles if columna is not None and _COLUMNA_ID[f] == columna),
+                    FORMATO_DESCONOCIDO)
+    return posibles[0] if posibles else FORMATO_DESCONOCIDO
+
+
+def _fila_de_cabecera(values: list[list[Any]]) -> int | None:
+    return next((i for i, r in enumerate(values[:5]) if es_cabecera(r)), None)
+
+
+def _columna_movida(values: list[list[Any]], cabecera: list[Any], formato: str) -> int | None:
+    """Una columna con el nombre de una de la app, a la derecha de las columnas
+    del formato y CON datos debajo —p. ej. «Courier» cortada y pegada detrás de
+    la «id» de una pestaña vieja, o «Nota / Incidencia» llevada más allá de la
+    «id»—: es una columna movida (sus datos no se leerían), no un rótulo suelto
+    (ese, sin nada debajo, no estorba)."""
+    fila_cab = _fila_de_cabecera(values)
+    for i in range(len(_CABECERAS[formato]), len(cabecera)):
+        if _texto(cabecera[i]).casefold() in _NOMBRES_CONOCIDOS and any(
+            len(f) > i and _texto(f[i])
+            for k, f in enumerate(values) if k != fila_cab and not is_separator(list(f))
+        ):
+            return i
+    return None
+
+
+def _hay_filas(values: list[list[Any]]) -> bool:
+    """¿Hay alguna fila con dato, aparte de la cabecera y los separadores?"""
+    fila_cab = _fila_de_cabecera(values)
+    return any(
+        any(_texto(c) for c in f)
+        for k, f in enumerate(values) if k != fila_cab and f and not is_separator(list(f))
+    )
+
+
+#: Qué hacer cuando las columnas no están donde tocan: deshacer el cambio, no
+#: retocar la cabecera (eso no devuelve los datos a su columna).
+_REMEDIO_DESHACER = (
+    "deshaz ese cambio de columnas (Ctrl+Z, o «Historial de versiones» de la hoja; "
+    "cambiar el nombre de la cabecera NO lo arregla)"
+)
+
+
+def comprobar_columnas(values: list[list[Any]], formato: str, title: str) -> None:
+    """ANTES de tocar nada, que la pestaña se sepa leer, columna a columna:
+
+    - la cabecera, la de un formato conocido, sin nombres de otras columnas fuera
+      de su sitio (`formato_de_cabecera`); sin fila de cabecera, solo si no hay
+      ninguna «id» (pestaña nueva o solo filas tecleadas);
+    - ninguna columna con nombre de la app a la derecha de las del formato, con
+      datos (`_columna_movida`);
+    - la «id» (oculta, la última) en su sitio: que esté la columna, y que TODAS
+      las «id» de las filas estén en ella (una fila con su «id» en otra columna
+      tiene celdas corridas: se leería mal y su nota se pisaría).
+
+    Si algo no cuadra —una columna insertada, borrada o movida a mano, celdas
+    insertadas en una fila, «Courier» insertada dos veces, la «id» borrada, la
+    fila de cabecera borrada…—, leerla descolocaría lo que va detrás (y la «id»
+    de cada fila): no se escribe nada y se dice qué no está donde toca. Lo que la
+    cabecera no puede delatar (columnas movidas y la cabecera retocada para que
+    parezca buena) lo comprueba después el espejo contra la foto
+    (`Espejo.comprobar_alineacion`)."""
+    cabecera = cabecera_de(values)
+    ids = _ids_por_columna(values)
+    columna = ids.most_common(1)[0][0] if ids else None
+
+    def _parar(motivo: str, remedio: str) -> NoReturn:
+        raise DriveSyncError(
+            f"la pestaña «{title}» tiene las columnas descolocadas: {motivo}. No se ha "
+            f"escrito nada: {remedio}. Después, vuelve a actualizar."
+        )
+
+    if formato == FORMATO_DESCONOCIDO:
+        if not cabecera:
+            _parar(
+                "no encuentro la fila de cabecera (la de «Situación», «Nº pedido»… en "
+                "las 5 primeras filas) y así no se puede ver si alguna columna se ha "
+                "movido",
+                "vuelve a poner la fila de cabecera como estaba (Ctrl+Z, o «Historial "
+                "de versiones» de la hoja)",
+            )
+        if _formatos_posibles(cabecera):
+            _parar(
+                "la cabecera está casi vacía y las «id» no dicen de qué versión es",
+                "vuelve a poner los nombres de las columnas",
+            )
+        esperada = min(_CABECERAS.values(), key=lambda c: len(_mal_puestas(cabecera, c)))
+        i = _mal_puestas(cabecera, esperada)[0]
+        _parar(
+            f"en la cabecera, la columna {_letra(i)} dice «{_texto(cabecera[i])}» donde "
+            f"debería estar «{esperada[i]}»: se ha insertado, borrado o movido una "
+            "columna a mano",
+            _REMEDIO_DESHACER,
+        )
+    if cabecera and (movida := _columna_movida(values, cabecera, formato)) is not None:
+        nombre = _texto(cabecera[movida])
+        _parar(
+            f"la columna {_letra(movida)} se llama «{nombre}» y tiene datos, pero está "
+            "fuera de las columnas de la app (¿se ha movido a mano?)",
+            f"si es la columna «{nombre}» movida, {_REMEDIO_DESHACER}; si es una columna "
+            "tuya, cámbiale el nombre",
+        )
+    esperada_id = _COLUMNA_ID.get(formato)
+    if not ids:
+        sin_columna_id = esperada_id is not None and (
+            len(cabecera) <= esperada_id
+            or _texto(cabecera[esperada_id]).casefold() != "id"
+        )
+        if cabecera and sin_columna_id and _hay_filas(values):
+            _parar(
+                f"no está la columna «id» (la {_letra(esperada_id)}, oculta) ni ninguna "
+                "«id» en las filas (¿se ha borrado la columna?)",
+                "deshaz el borrado (Ctrl+Z, o «Historial de versiones» de la hoja)",
+            )
+        return
+    if esperada_id is None:
+        _parar(
+            f"las «id» de sus filas están en la columna {_letra(columna)}, pero su "
+            "cabecera es de una versión sin «id»",
+            "revisa la cabecera",
+        )
+    fuera = [
+        k + 1 for k, f in enumerate(values)
+        if f and not is_separator(list(f))
+        and any(_UUID_RE.match(_texto(c)) for j, c in enumerate(f) if j != esperada_id)
+    ]
+    if fuera:
+        filas = ", ".join(str(n) for n in fuera[:5]) + (" …" if len(fuera) > 5 else "")
+        _parar(
+            f"en {len(fuera)} fila(s) (la {filas}) la «id» no está en la columna "
+            f"{_letra(esperada_id)}: tienen celdas o columnas corridas (¿se han "
+            "insertado o borrado celdas o columnas a mano?)",
+            _REMEDIO_DESHACER,
+        )
+
+
+def realinear_fila(row: list[Any], header: list[Any], formato: str | None = None) -> list[Any]:
+    """Una fila escrita con un formato anterior (17 o 18/19 columnas) → la del
+    formato actual: se abren los huecos de «Fecha recogido» y/o «Courier» detrás
+    de «Envío» —lo de delante no se mueve; lo de detrás corre una o dos
+    posiciones— y se completa a su ancho. Sin perder ninguna celda (lo tecleado
+    más allá de la última columna también corre). Una fila del formato actual
+    solo se completa."""
+    r = list(row)
+    huecos = _HUECOS.get(formato or formato_de_cabecera(header), [])
+    if huecos and len(r) > _HUECO:
+        r[_HUECO:_HUECO] = [""] * len(huecos)
+    return r + [""] * (len(SEGUIMIENTO_COLUMNS_V2) - len(r))
+
+
+#: Columnas que lee y escribe la app (`tab_values`: A:Z). Lo que hubiera en la
+#: última (Z) no cabe al insertar una columna: pasaría a AA, fuera de ese
+#: rango, y se quedaría suelto (sin moverse con su fila).
+_ANCHO_LECTURA = 26
+
+
+def recuento_por_columna(values: list[list[Any]]) -> list[int]:
+    """Celdas NO vacías de cada columna de la pestaña (todas las filas)."""
+    out: list[int] = []
+    for fila in values:
+        for i, celda in enumerate(fila):
+            if i >= len(out):
+                out.extend([0] * (i + 1 - len(out)))
+            if _texto(celda):
+                out[i] += 1
+    return out
+
+
+def celdas_que_no_caben(values: list[list[Any]], formato: str = FORMATO_SIN_COURIER) -> int:
+    """Celdas con dato en las últimas columnas que lee la app —Z, o Y y Z si el
+    formato abre dos huecos (17 columnas)— o más allá: al poner la pestaña al
+    formato actual se saldrían de su rango (A:Z)."""
+    huecos = len(_HUECOS.get(formato, []))
+    return sum(recuento_por_columna(values)[_ANCHO_LECTURA - huecos:]) if huecos else 0
+
+
+def comprobar_que_cabe(values: list[list[Any]], formato: str, title: str) -> None:
+    """ANTES de abrir los huecos de un formato viejo: que nada se salga del
+    rango de la app (A:Z). Lo que pasara de Z quedaría fuera de lo que la app
+    lee y borra, suelto, sin moverse ya con su fila: no se escribe nada."""
+    fuera = celdas_que_no_caben(values, formato)
+    if not fuera:
+        return
+    huecos = len(_HUECOS[formato])
+    primera, ultima = _letra(_ANCHO_LECTURA - huecos), _letra(_ANCHO_LECTURA - 1)
+    columnas = f"columna {ultima}" if huecos == 1 else f"columnas {primera} y {ultima}"
+    raise DriveSyncError(
+        f"la {columnas} de «{title}» tiene {fuera} celda(s) con dato: al añadir la "
+        "columna «Courier» se saldrían del rango de la app y se quedarían sueltas. "
+        "Muévelas a otra pestaña (o bórralas) y vuelve a actualizar. No se ha escrito "
+        "nada."
+    )
+
+
+def _sin_filas_vacias_al_final(values: list[list[Any]]) -> list[list[Any]]:
+    filas = list(values)
+    while filas and not any(_texto(c) for c in filas[-1]):
+        filas.pop()
+    return filas
+
+
+def _recuento_con_nombres(recuento: list[int], cabecera: list[Any]) -> dict[str, int]:
+    nombres = [_texto(h) for h in cabecera]
+    return {
+        (nombres[i] if i < len(nombres) and nombres[i] else f"col {i + 1}"): n
+        for i, n in enumerate(recuento) if n
+    }
+
+
+def migrar_columna_courier(
+    sheets: ManagedTabTransport, title: str, valores: list[list[Any]],
+) -> tuple[list[list[Any]], dict[str, Any]]:
+    """MIGRACIÓN de la pestaña escrita antes de «Courier» (18/19 columnas → 20).
+
+    Inserta la columna «Courier» detrás de «Envío» con `insertDimension`, en la
+    cabecera y en TODAS las filas (zona viva, completados e histórico manual):
+    lo de delante no se mueve y lo de detrás (Fecha recogido … la «id» oculta)
+    corre una posición CON sus formatos, notas y su ocultación — que es lo que
+    hace «insertar columna» en Sheets. La cabecera recibe su nombre en la MISMA
+    petición (atómica): desde ese momento la pestaña tiene el formato actual y
+    no se vuelve a migrar (idempotente). La columna nueva queda sin validación
+    (es texto libre; la de BoHub va protegida en sus filas).
+
+    Antes de insertar, dos comprobaciones (si falla alguna, no se toca nada):
+
+    - se relee la pestaña y tiene que ser EXACTAMENTE lo leído: si no (alguien
+      escribía, u otra pasada acaba de migrarla), se para — así nunca se
+      inserta la columna dos veces;
+    - la última columna que lee la app (Z) tiene que estar vacía: su contenido
+      pasaría a AA, fuera del rango de la app, y se quedaría suelto.
+
+    Y después, que no se ha perdido nada: el recuento de celdas no vacías por
+    columna, antes y después, tiene que cuadrar en TODAS las columnas (lo de
+    detrás de «Envío», una posición a la derecha; la columna nueva, solo con su
+    cabecera), y las filas, ser las mismas. Si no cuadra (alguien escribía a la
+    vez), la pasada se para sin escribir nada más; la siguiente parte ya del
+    formato nuevo.
+
+    Devuelve la pestaña releída (en el formato nuevo) y el resumen."""
+    if [list(r) for r in sheets.tab_values(title, raw=True)] != [list(r) for r in valores]:
+        raise DriveSyncError(
+            f"la pestaña «{title}» ha cambiado mientras se preparaba la columna «Courier» "
+            "(alguien estaba editando, u otra actualización la acaba de añadir): no se ha "
+            "escrito nada; vuelve a intentarlo en un momento"
+        )
+    comprobar_que_cabe(valores, FORMATO_SIN_COURIER, title)
+    cabecera_vieja = cabecera_de(valores)
+    fila_cabecera = next(
+        (i for i, r in enumerate(valores[:5]) if es_cabecera(r)), None,
+    )
+    antes = recuento_por_columna(valores)
+    peticiones: list[dict[str, Any]] = [{"insertDimension": {
+        "range": {"sheetId": None, "dimension": "COLUMNS",
+                  "startIndex": _HUECO, "endIndex": _HUECO + 1},
+        "inheritFromBefore": True,
+    }}]
+    # El nombre, en la cabecera (si la hay: sin ella, la pone la propia pasada
+    # al reescribir; nunca en una fila de datos).
+    if fila_cabecera is not None:
+        peticiones.append({"updateCells": {
+            "range": {"sheetId": None,
+                      "startRowIndex": fila_cabecera, "endRowIndex": fila_cabecera + 1,
+                      "startColumnIndex": _HUECO, "endColumnIndex": _HUECO + 1},
+            "rows": [{"values": [{"userEnteredValue": {"stringValue": "Courier"}}]}],
+            "fields": "userEnteredValue",
+        }})
+    # Sin validación heredada de «Envío»: el courier es texto libre.
+    peticiones.append({"setDataValidation": {"range": {
+        "sheetId": None, "startColumnIndex": _HUECO, "endColumnIndex": _HUECO + 1,
+    }}})
+    sheets.format_tab(title, peticiones)
+    nuevos = [list(r) for r in sheets.tab_values(title, raw=True)]
+    despues = recuento_por_columna(nuevos)
+
+    # Lo esperado: el mismo recuento con la columna nueva en `_HUECO` (solo su
+    # cabecera), en TODAS las columnas: con Z vacía antes, lo de Y pasa a Z y
+    # nada sale del rango que se lee.
+    nombre = 1 if fila_cabecera is not None else 0
+    base = antes + [0] * max(_HUECO - len(antes), 0)
+    esperado = [*base[:_HUECO], nombre, *base[_HUECO:]]
+    ancho = max(len(esperado), len(despues))
+    a = esperado + [0] * (ancho - len(esperado))
+    b = despues + [0] * (ancho - len(despues))
+    filas_antes = len(_sin_filas_vacias_al_final(valores))
+    filas_despues = len(_sin_filas_vacias_al_final(nuevos))
+    resumen: dict[str, Any] = {
+        "estado": "hecha",
+        "formato": FORMATO_SIN_COURIER,
+        "filas": filas_antes,
+        # Celdas con dato antes y después (sin contar la cabecera nueva).
+        "celdas_antes": sum(antes),
+        "celdas_despues": sum(despues) - nombre,
+        "por_columna_antes": _recuento_con_nombres(antes, cabecera_vieja),
+        "por_columna_despues": _recuento_con_nombres(despues, cabecera_de(nuevos)),
+    }
+    if filas_antes != filas_despues or a != b:
+        logger.error(
+            "drive: la migración de «%s» (columna Courier) no cuadra — filas %d → %d; "
+            "celdas por columna antes %s, después %s",
+            title, filas_antes, filas_despues, antes, despues,
+        )
+        raise DriveSyncError(
+            f"la pestaña «{title}» ya tiene la columna «Courier», pero el recuento de "
+            "celdas no cuadra con el de antes (¿alguien estaba escribiendo?). No se ha "
+            "escrito nada más: revisa la hoja y vuelve a actualizar."
+        )
+    logger.info(
+        "drive: «%s» migrada a 20 columnas (Courier detrás de Envío): %d filas, "
+        "%d celdas, ninguna perdida", title, filas_antes, resumen["celdas_antes"],
+    )
+    return nuevos, resumen
+
+
+def quitar_columna_courier(
+    sheets: ManagedTabTransport, title: str, *, apply: bool = False,
+) -> dict[str, Any]:
+    """VUELTA ATRÁS de `migrar_columna_courier`, SOLO para volver a la versión
+    anterior a «Courier» (ver docs/guia-erp-usuario.md): borra la columna O
+    («Courier») con la cuenta de servicio —que puede aunque la hoja sea suya o
+    esté protegida—; lo de detrás corre una posición a la izquierda con sus
+    formatos y la «id» sigue la última y oculta. Se pierden las celdas de
+    «Courier» (la versión anterior no las tiene).
+
+    Las mismas comprobaciones que al insertarla: la pestaña tiene que tener su
+    cabecera de 20 columnas y estar bien colocada (`comprobar_columnas`; si no,
+    se dice qué falla y que NO se arranque la versión anterior hasta
+    arreglarlo), se relee justo antes de borrar (si ha cambiado, no se toca) y
+    después el recuento de celdas por columna tiene que cuadrar. Sin `apply`,
+    solo informa."""
+    valores = [list(r) for r in sheets.tab_values(title, raw=True)]
+    cabecera = cabecera_de(valores)
+    formato = formato_de_pestana(valores)
+    if formato == FORMATO_DESCONOCIDO or not cabecera:
+        try:
+            comprobar_columnas(valores, formato, title)
+        except DriveSyncError as exc:
+            raise DriveSyncError(
+                f"{exc} NO arranques la versión anterior hasta arreglarlo: la leería "
+                "corrida."
+            ) from exc
+        raise DriveSyncError(
+            f"la pestaña «{title}» no tiene fila de cabecera: vuelve a ponerla (Ctrl+Z, "
+            "o «Historial de versiones») antes de quitar «Courier». NO arranques la "
+            "versión anterior hasta arreglarlo."
+        )
+    if formato != FORMATO_ACTUAL:
+        comprobar_columnas(valores, formato, title)
+        raise DriveSyncError(
+            f"la pestaña «{title}» ya está en el formato anterior a «Courier» "
+            f"(«{formato}»): no hay nada que quitar"
+        )
+    try:
+        comprobar_columnas(valores, formato, title)
+    except DriveSyncError as exc:
+        raise DriveSyncError(
+            f"{exc} NO arranques la versión anterior hasta arreglarlo: la leería corrida."
+        ) from exc
+    fila_cab = _fila_de_cabecera(valores)
+    antes = recuento_por_columna(valores)
+    resumen: dict[str, Any] = {
+        "filas": len(_sin_filas_vacias_al_final(valores)),
+        "celdas_courier": sum(
+            1 for k, f in enumerate(valores)
+            if k != fila_cab and len(f) > _COURIER_INDEX and _texto(f[_COURIER_INDEX])
+        ),
+        "celdas_antes": sum(antes),
+        "aplicado": False,
+    }
+    if not apply:
+        return resumen
+    if [list(r) for r in sheets.tab_values(title, raw=True)] != valores:
+        raise DriveSyncError(
+            f"la pestaña «{title}» ha cambiado mientras se preparaba: no se ha borrado "
+            "nada; vuelve a intentarlo en un momento"
+        )
+    sheets.format_tab(title, [{"deleteDimension": {"range": {
+        "sheetId": None, "dimension": "COLUMNS",
+        "startIndex": _COURIER_INDEX, "endIndex": _COURIER_INDEX + 1,
+    }}}])
+    nuevos = [list(r) for r in sheets.tab_values(title, raw=True)]
+    # Lo esperado: la misma pestaña sin la columna O. La última columna leída
+    # (Z) no se compara: puede haber recibido lo que había en AA, que la app no
+    # ve (no es una pérdida); por lo mismo, las filas se cuentan sin ella.
+    ultima = _ANCHO_LECTURA - 1
+
+    def _sin_z(filas: list[list[Any]]) -> list[list[Any]]:
+        return _sin_filas_vacias_al_final([list(f[:ultima]) for f in filas])
+
+    esperadas = _sin_z([[*f[:_COURIER_INDEX], *f[_COURIER_INDEX + 1:]] for f in valores])
+    leidas = _sin_z(nuevos)
+    a, b = recuento_por_columna(esperadas), recuento_por_columna(leidas)
+    ancho = max(len(a), len(b))
+    if len(esperadas) != len(leidas) or a + [0] * (ancho - len(a)) != b + [0] * (ancho - len(b)):
+        logger.error(
+            "drive: quitar «Courier» de «%s» no cuadra — esperado %s, leído %s", title, a, b,
+        )
+        raise DriveSyncError(
+            f"la columna «Courier» de «{title}» se ha borrado, pero el recuento de celdas "
+            "no cuadra con el de antes (¿alguien estaba escribiendo?): revisa la hoja "
+            "antes de arrancar la versión anterior"
+        )
+    despues = recuento_por_columna(nuevos)
+    resumen.update({
+        "aplicado": True, "celdas_despues": sum(despues),
+        # Lo que había más allá de Z (invisible para la app) y ahora está en Z.
+        "celdas_que_entran_en_z": despues[ultima] if len(despues) > ultima else 0,
+    })
+    logger.info("drive: columna «Courier» quitada de «%s» (vuelta atrás): %d filas, "
+                "%d celdas de Courier", title, resumen["filas"], resumen["celdas_courier"])
+    return resumen
+
+
+def realinear_pestana(values: list[list[Any]]) -> list[list[Any]]:
+    """La pestaña ENTERA (cabecera, zona viva, separador, completados e
+    histórico manual) puesta al formato actual, si se escribió con uno anterior.
+    La cabecera recibe los nombres de las columnas nuevas; el resto de filas,
+    huecos vacíos. Igual que haría insertar las columnas en la hoja. Con el
+    formato actual, la devuelve tal cual (copia)."""
+    filas = [list(r) for r in values]
+    formato = formato_de_pestana(filas)
+    huecos = _HUECOS.get(formato)
+    if not huecos:
+        return filas
+    out: list[list[Any]] = []
+    for r in filas:
+        if es_cabecera(r) and len(r) >= _HUECO:
+            out.append([*r[:_HUECO], *huecos, *r[_HUECO:]])
+        elif len(r) > _HUECO:
+            out.append([*r[:_HUECO], *([""] * len(huecos)), *r[_HUECO:]])
+        else:
+            out.append(r)
+    return out
 
 
 def normalize_static_pedidos(
@@ -347,9 +902,10 @@ def normalize_static_pedidos(
 ) -> list[list[Any]]:
     """El bloque estático de «Seguimiento (app)», puesto al día del formato:
 
-    - si la pestaña se escribió con la cabecera de 17 columnas (sin «Fecha
-      recogido»), se abre el hueco de esa columna en cada fila, para que el
-      histórico no quede desplazado bajo la cabecera nueva;
+    - si la pestaña se escribió con un formato anterior (17 columnas, sin
+      «Fecha recogido»; 18/19, sin «Courier»), se abren los huecos de esas
+      columnas en cada fila, para que el histórico no quede desplazado bajo la
+      cabecera nueva (normalmente ya llega realineada: `realinear_pestana`);
     - lo que el import viejo empaquetó en «Nota / Incidencia»
       (`Vendedor: WEB · Transporte: UPS · Preparado: … · Proforma: …`) se
       reparte a sus columnas, sin pisar lo que ya tuviera dato;
@@ -359,14 +915,12 @@ def normalize_static_pedidos(
     El separador no se toca (más allá del hueco). Idempotente."""
     if not static:
         return []
-    header = [str(h or "").strip() for h in old_header]
-    realinear = header[:len(_HEADER_V2_SIN_RECOGIDO)] == _HEADER_V2_SIN_RECOGIDO
+    huecos = _HUECOS.get(formato_de_cabecera(old_header), [])
     out: list[list[Any]] = []
     for row in static:
         r = list(row)
-        if realinear:
-            r = r + [""] * (len(_HEADER_V2_SIN_RECOGIDO) - len(r))
-            r.insert(_RECOGIDO_INDEX, "")
+        if huecos and len(r) > _HUECO:
+            r[_HUECO:_HUECO] = [""] * len(huecos)
         # El histórico manual se preserva byte a byte: NO se rellena la «id»
         # técnica aquí. La fila gana su id solo cuando el backfill se lo asigna
         # (por id de pedido real o sintético), reescribiendo esa celda.
@@ -460,17 +1014,6 @@ def live_zone(values: list[list[Any]]) -> list[list[Any]]:
         if not es_cabecera(row):          # la cabecera, esté donde esté
             cuerpo.append(list(row))
     return cuerpo
-
-
-def realinear_fila(row: list[Any], header: list[Any]) -> list[Any]:
-    """Una fila escrita bajo la cabecera de 17 columnas → las 18 de ahora (se
-    abre el hueco de «Fecha recogido»); en cualquier caso, a su ancho."""
-    r = list(row)
-    cabecera = [_texto(h) for h in header]
-    if cabecera[:len(_HEADER_V2_SIN_RECOGIDO)] == _HEADER_V2_SIN_RECOGIDO:
-        r = r + [""] * (len(_HEADER_V2_SIN_RECOGIDO) - len(r))
-        r.insert(_RECOGIDO_INDEX, "")
-    return r + [""] * (len(SEGUIMIENTO_COLUMNS_V2) - len(r))
 
 
 _FECHA_VISTA_RE = re.compile(r"^\d{1,4}[/-]\d{1,2}[/-]\d{1,4}")
@@ -781,7 +1324,7 @@ _ENVIO_INDEX = SEGUIMIENTO_COLUMNS_V2.index("Envío")
 #: El vocabulario exacto con el que BoHub rellena esas columnas.
 _COBRO_BOHUB = set(COBRO_LABELS.values())
 _PREPARACION_BOHUB = {*PREPARACION_LABELS.values(), NO_APLICA, "—"}
-_ENVIO_BOHUB = {*envio_vocabulary(), ENVIO_SIN_SEGUIMIENTO_LEGACY, NO_APLICA, "—"}
+_ENVIO_BOHUB = {*envio_vocabulary(), *envio_vocabulary_antiguo(), NO_APLICA, "—"}
 #: Etiqueta de Origen que BoHub escribía antes para un pedido manual sin canal.
 #: Una pestaña escrita antes de este cambio las tiene en su zona viva: NO son
 #: filas tecleadas a mano (ver `_es_fila_heredada_de_bohub`).
@@ -1060,11 +1603,12 @@ def pedidos_format(
         "fields": "userEnteredFormat(backgroundColor,textFormat)",
     }})
     if ordered:
-        # Importe (columna 7, índice 6) con formato de moneda.
+        # Importe con formato de moneda.
         requests.append({"repeatCell": {
             "range": {"sheetId": None, "startRowIndex": 1,
                       "endRowIndex": total_rows,
-                      "startColumnIndex": 6, "endColumnIndex": 7},
+                      "startColumnIndex": _IMPORTE_INDEX,
+                      "endColumnIndex": _IMPORTE_INDEX + 1},
             "cell": {"userEnteredFormat": {"numberFormat": {
                 "type": "NUMBER", "pattern": "#,##0.00 €",
             }}},
@@ -1182,18 +1726,61 @@ def push_managed_tabs(
         pedidos_tab, valores_pedidos, SEGUIMIENTO_COLUMNS_V2, fila_de_seguimiento_app,
     )
     _guard_pestana_de_la_app(incidencias_tab, valores_incidencias, INCIDENCIAS_COLUMNS)
-    # La misma pestaña como se VE, solo si hay filas manuales: sirve para no
-    # perder el aspecto de lo tecleado en columnas sin formato propio.
-    vistos = (
-        sheets.tab_values(pedidos_tab)
-        if any(is_manual_row(r) for r in live_zone(valores_pedidos)) else None
-    )
-    # ESPEJO (Fase 2): antes de pintar, lo que una persona editó en las columnas
-    # editables de las filas de BoHub se lee de vuelta (hoja ≠ snapshot), y las
-    # filas se pintan con lo manual aplicado. Sin snapshot no se infiere nada.
+    # FORMATO de la pestaña, por su cabecera (o por dónde están las «id»). Si
+    # las «id» no están donde dice el formato (una columna insertada o borrada a
+    # mano…), no se sabe leer: se para aquí, sin tocar nada.
+    formato = formato_de_pestana(valores_pedidos)
+    comprobar_columnas(valores_pedidos, formato, pedidos_tab)
+    # ESPEJO (Fase 2): su estado en la BD se carga ANTES de tocar la hoja. Si lo
+    # guardado es del formato anterior a «Courier», se pone al día aquí (en la
+    # misma transacción que el resto de la pasada); si la BD ni siquiera está
+    # migrada, se para sin haber tocado la hoja.
     from app.erp.seguimiento_mirror import Espejo  # noqa: PLC0415
 
     espejo = Espejo.cargar(session, dry_run=dry_run)
+    # Y, contra la foto, que las filas de BoHub no estén corridas (columnas
+    # movidas con la cabecera retocada para parecer buena): tampoco se toca nada.
+    espejo.comprobar_alineacion(realinear_pestana(valores_pedidos), pedidos_tab)
+    # Una pestaña escrita antes de «Courier» (18/19 columnas) se MIGRA aquí, una
+    # sola vez, insertando la columna en la propia hoja (cabecera y todas las
+    # filas, con un recuento de celdas antes/después); desde ahí ya tiene el
+    # formato actual. En la vista previa no se toca: se lee como si ya estuviera
+    # migrada y se avisa de que se hará. Una pestaña aún más vieja (17 columnas,
+    # sin «Fecha recogido» ni «id») se pone al día al reescribirla, como antes.
+    migracion: dict[str, Any] | None = None
+    if formato != FORMATO_ACTUAL and dry_run:
+        migracion = {
+            "estado": "pendiente", "formato": formato,
+            "filas": len(_sin_filas_vacias_al_final(valores_pedidos)),
+            "celdas_antes": sum(recuento_por_columna(valores_pedidos)),
+            "celdas_que_no_caben": celdas_que_no_caben(valores_pedidos, formato),
+        }
+    elif formato == FORMATO_SIN_COURIER:
+        valores_pedidos, migracion = migrar_columna_courier(
+            sheets, pedidos_tab, valores_pedidos,
+        )
+    elif formato != FORMATO_ACTUAL:
+        # 17 columnas: se reescribe entera con los dos huecos abiertos; antes,
+        # que nada de Y/Z se salga del rango de la app.
+        comprobar_que_cabe(valores_pedidos, formato, pedidos_tab)
+        migracion = {
+            "estado": "reescrita", "formato": formato,
+            "filas": len(_sin_filas_vacias_al_final(valores_pedidos)),
+        }
+    # Lo leído TAL CUAL está en la hoja (para saber, antes de escribir, si alguien
+    # la ha tocado mientras tanto) y la pestaña puesta al formato actual (con lo
+    # que se trabaja).
+    leidos_pedidos = valores_pedidos
+    valores_pedidos = realinear_pestana(valores_pedidos)
+    # La misma pestaña como se VE, solo si hay filas manuales: sirve para no
+    # perder el aspecto de lo tecleado en columnas sin formato propio.
+    vistos = (
+        realinear_pestana(sheets.tab_values(pedidos_tab))
+        if any(is_manual_row(r) for r in live_zone(valores_pedidos)) else None
+    )
+    # ESPEJO: antes de pintar, lo que una persona editó en las columnas
+    # editables de las filas de BoHub se lee de vuelta (hoja ≠ snapshot), y las
+    # filas se pintan con lo manual aplicado. Sin snapshot no se infiere nada.
     rows, completados = espejo.leer_filas_bohub(valores_pedidos, rows, completados or [])
 
     manuales_leidas = [
@@ -1241,6 +1828,10 @@ def push_managed_tabs(
         "manuales_fusionadas": fusion["fusionadas"],
         "manuales_entregadas": fusion["entregadas"],
         "conflictos": fusion["conflictos"],
+        # Migración de la pestaña al formato con «Courier» (None si ya lo tenía):
+        # «pendiente» en la vista previa; «hecha», con el recuento de celdas, al
+        # insertar la columna; «reescrita» si era del formato de 17 columnas.
+        "migracion_courier": migracion,
     }
     # El histórico MANUAL (irrepetible) que hay que PRESERVAR, puesto al día del
     # formato (hueco de «Fecha recogido» si la pestaña era de 17 columnas, fechas
@@ -1309,7 +1900,7 @@ def push_managed_tabs(
     # ella MIENTRAS se calculaba esta pasada, su cambio se perdería. Se relee
     # justo antes de escribir y, si ha cambiado, se aborta sin escribir ni
     # confirmar: la pasada siguiente recoge la edición. Nada se pierde.
-    if pedidos_tab in existing and sheets.tab_values(pedidos_tab, raw=True) != valores_pedidos:
+    if pedidos_tab in existing and sheets.tab_values(pedidos_tab, raw=True) != leidos_pedidos:
         raise DriveSyncError(
             "la hoja ha cambiado mientras se sincronizaba (alguien estaba "
             "editando): no se ha escrito nada; vuelve a intentarlo en un momento"

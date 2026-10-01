@@ -88,6 +88,7 @@ def _order(
     placed: str = "2026-09-01",
     notes: str | None = None,
     woo_status: str | None = None,
+    courier: str | None = None,
 ) -> Order:
     company_id = None
     if cliente:
@@ -111,6 +112,12 @@ def _order(
         # aprobar todavía no ha entrado al flujo.
         approved_at=datetime.fromisoformat(placed).replace(tzinfo=UTC),
     )
+    if courier:
+        # El courier apuntado en la Cola SAT (envío con otro courier): es lo que
+        # sale en la columna «Courier» y por lo que filtra «Transportista».
+        from app.erp.shipping_courier import set_external_state
+
+        set_external_state(o, {"courier": courier})
     s.add(o)
     s.flush()
     return o
@@ -208,11 +215,11 @@ def test_seguimiento_list_filters_and_sorts(session_factory, http) -> None:
     with session_factory() as s:
         ups, mrw = _carrier(s, "UPS"), _carrier(s, "MRW")
         _order(s, "BOP-200001", cliente="Zeta SL", source=OrderSource.WOOCOMMERCE,
-               carrier_id=ups, factura="5-260001", placed="2026-09-03")
+               carrier_id=ups, factura="5-260001", placed="2026-09-03", courier="UPS")
         _order(s, "BOP-200002", cliente="Alfa SL", carrier_id=mrw,
-               factura="1-260002", placed="2026-09-02", origin="SAT")
+               factura="1-260002", placed="2026-09-02", origin="SAT", courier="MRW")
         _order(s, "BOP-200003", cliente="Beta SL", carrier_id=ups,
-               placed="2026-09-01", origin="OFI")
+               placed="2026-09-01", origin="OFI", courier="UPS")
         s.commit()
     headers = auth_headers(http, "pedidos")
     r = http.get("/api/erp/seguimiento", headers=headers)
@@ -233,13 +240,18 @@ def test_seguimiento_list_filters_and_sorts(session_factory, http) -> None:
     assert top["cliente"] == "Zeta SL"
     assert top["vendedor"] == "WEB"                  # pedido web
     assert top["transportista"] == "UPS"
+    assert top["courier"] == "UPS"                   # columna «Courier»
+    assert top["envio"] == "Sin enviar"              # Envío: solo el estado
     assert top["serie"] == 5                          # del nº de factura 5-260001
     assert top["empresa"] == "Streamtec"
     assert top["factura"] == "5-260001"
     assert top["id"]
-    # Filtros: transportista, serie, vendedor, origen, estado.
+    # Filtros: transportista (por la columna Courier), serie, vendedor, origen,
+    # estado.
     r = http.get("/api/erp/seguimiento?transportista=UPS", headers=headers)
     assert {i["order_number"] for i in r.json()["items"]} == {"BOP-200001", "BOP-200003"}
+    r = http.get("/api/erp/seguimiento?transportista=mrw", headers=headers)
+    assert [i["order_number"] for i in r.json()["items"]] == ["BOP-200002"]
     r = http.get("/api/erp/seguimiento?serie=1", headers=headers)
     assert [i["order_number"] for i in r.json()["items"]] == ["BOP-200002"]
     r = http.get("/api/erp/seguimiento?vendedor=WEB", headers=headers)
@@ -463,8 +475,9 @@ def test_export_xlsx_respects_filters_and_column_order(session_factory, http) ->
         ups, mrw = _carrier(s, "UPS"), _carrier(s, "MRW")
         _order(s, "BOP-700001", cliente="Uno SL", carrier_id=ups, origin="SAT",
                serial="FBAP1", whiterip="4829", factura="5-260050",
-               placed="2026-09-04", notes="nota del pedido")
-        _order(s, "BOP-700002", cliente="Dos SL", carrier_id=mrw, placed="2026-09-03")
+               placed="2026-09-04", notes="nota del pedido", courier="UPS")
+        _order(s, "BOP-700002", cliente="Dos SL", carrier_id=mrw, placed="2026-09-03",
+               courier="MRW")
         s.commit()
     r = http.get("/api/erp/seguimiento/export?transportista=UPS",
                  headers=auth_headers(http, "pedidos"))
@@ -475,8 +488,11 @@ def test_export_xlsx_respects_filters_and_column_order(session_factory, http) ->
     assert wb.sheetnames == ["Pedidos", "Incidencias"]
     ws = wb["Pedidos"]
     grid = [list(row) for row in ws.iter_rows(values_only=True)]
-    # Cabecera del rediseño, en su orden (18 columnas).
+    # Cabecera del rediseño, en su orden (20 columnas, «Courier» detrás de
+    # «Envío» y la «id» la última).
     assert list(grid[0]) == core.SEGUIMIENTO_COLUMNS_V2
+    assert len(grid[0]) == 20 and grid[0][-1] == "id"
+    col = core.SEGUIMIENTO_COLUMNS_V2.index
     # Solo la fila filtrada (transportista=UPS).
     assert len(grid) == 2
     row = grid[1]
@@ -490,7 +506,9 @@ def test_export_xlsx_respects_filters_and_column_order(session_factory, http) ->
     assert row[4] == "SAT"                             # Origen (manual → canal)
     assert row[7] == "5 · Streamtec"                   # Empresa (serie)
     assert row[8] == "5-260050"                        # Factura
-    assert row[16] == "FBAP1 · 4829"                   # Nº serie · WhiteRIP
+    assert row[col("Envío")] == "Sin enviar"           # Envío: solo el estado
+    assert row[col("Courier")] == "UPS"                # Courier aparte
+    assert row[col("Nº serie · WhiteRIP")] == "FBAP1 · 4829"
     # La pestaña Incidencias NO lo contiene: un aviso automático (empresa sin
     # vincular) no es una incidencia. La pestaña es solo de lo reportado a mano.
     inc = wb["Incidencias"]

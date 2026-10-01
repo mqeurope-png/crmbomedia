@@ -773,9 +773,16 @@ export type SeguimientoRow = {
   /** Estado de cobro FACTUSOL (contable). */
   cobro: "cobrado" | "pendiente" | "na";
   cobro_label: string;
-  /** Preparación (SAT) y Envío; «No aplica» si no requiere envío. */
+  /** Preparación (SAT) y Envío; «No aplica» si no requiere envío. Envío es
+   *  SOLO el estado, de una lista cerrada (Sin enviar · Pendiente de entrada
+   *  en red · Recogido · En tránsito · En reparto · Disponible en oficina ·
+   *  Entregado · Incidencia · Enviado · No aplica). */
   preparacion: string;
   envio: string;
+  /** Con quién va el envío: la agencia de Genei («Ctt Premium»), el courier
+   *  apuntado en la Cola SAT («UPS»; «otro courier» si no se apuntó) o «—» sin
+   *  envío. El filtro «Transportista» filtra por aquí. */
+  courier: string;
   /** Origen: WEB o el canal/comercial. */
   origen_label: string;
   /** Datos técnicos combinados (Nº serie · WhiteRIP). */
@@ -912,6 +919,28 @@ export type DriveManagedSummary = {
   conflictos?: number;
   /** Espejo bidireccional (Fase 2): lo leído de la hoja y lo que se ha hecho. */
   espejo?: SeguimientoEspejoStats;
+  /** Migración de la pestaña a 20 columnas (columna «Courier»): null si ya la
+   *  tenía; «pendiente» en la vista previa; «hecha» tras insertar la columna,
+   *  con el recuento de celdas no vacías antes/después; «reescrita» si era del
+   *  formato de 17 columnas (se reescribe entera, sin insertar). */
+  migracion_courier?: DriveCourierMigration | null;
+};
+
+/** Migración de «Seguimiento (app)» a 20 columnas: inserta «Courier» entre
+ *  «Envío» y «Fecha recogido» en la cabecera y en todas las filas. */
+export type DriveCourierMigration = {
+  estado: "pendiente" | "hecha" | "reescrita";
+  /** Formato con el que estaba escrita la pestaña: «sin_courier» (19
+   *  columnas: se inserta la columna) o «sin_recogido» (17: se reescribe). */
+  formato?: string;
+  filas?: number;
+  celdas_antes?: number;
+  celdas_despues?: number;
+  /** Vista previa: celdas con dato en la columna Z, que no cabrían al
+   *  insertar «Courier» (hay que moverlas antes; si no, no se migra). */
+  celdas_que_no_caben?: number;
+  por_columna_antes?: Record<string, number>;
+  por_columna_despues?: Record<string, number>;
 };
 
 /** Recuento del espejo BoHub ↔ hoja en una pasada. */
@@ -934,6 +963,8 @@ export type SeguimientoEspejoStats = {
   borrado_masivo?: boolean;
   protecciones?: number;
   proteccion_error?: string;
+  /** Filas guardadas por el espejo puestas al formato de 20 columnas (una vez). */
+  formato_bd_convertidas?: number;
 };
 
 /** Resumen de la sincronización INCREMENTAL a la hoja histórica (ERP-F6). Solo

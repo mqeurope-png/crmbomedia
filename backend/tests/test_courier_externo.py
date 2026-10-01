@@ -1,5 +1,6 @@
-"""Envíos con OTRO courier (no Genei): courier, «Enviado · UPS» en todos lados
-(Cola SAT, ficha, hoja) y el aviso de envío al cliente también para ellos.
+"""Envíos con OTRO courier (no Genei): courier en todos lados (Cola SAT, ficha;
+en Seguimiento, Envío «Enviado» + columna «Courier») y el aviso de envío al
+cliente también para ellos.
 
 Sin red ni emails reales (Gmail simulado)."""
 from __future__ import annotations
@@ -21,7 +22,7 @@ from app.erp.integrations.genei.client import GeneiClient
 from app.erp.integrations.genei.config import GeneiConfig
 from app.erp.models import Order
 from app.erp.models.carriers import Carrier
-from app.erp.seguimiento import _envio_label, envio_vocabulary
+from app.erp.seguimiento import _envio_label, courier_label, envio_vocabulary
 from app.erp.seguimiento_mirror import _COL, _listas_cerradas
 from app.erp.shipping_courier import (
     external_state,
@@ -156,13 +157,16 @@ def test_recogido_con_ups_se_ve_en_enviados_ficha_y_hoja(api, session_factory):
     info = api.get(f"/api/erp/orders/{oid}/shipment", headers=h).json()
     assert info["kind"] == "externo" and info["courier"] == "UPS"
     assert info["tracking_url"].endswith(UPS) and info["picked_up_at"]
-    # Hoja «Seguimiento (app)»: Envío, Tracking y Fecha recogido.
+    # Hoja «Seguimiento (app)»: Envío (solo el estado), Courier aparte,
+    # Tracking y Fecha recogido.
     with session_factory() as s:
         o = s.get(Order, oid)
-        assert _envio_label(o) == "Enviado · UPS"
+        assert _envio_label(o) == "Enviado"
+        assert courier_label(o) == "UPS"
     rows = api.get("/api/erp/seguimiento", headers=h).json()
     fila = next(r for r in rows["items"] if r["id"] == oid)
-    assert fila["envio"] == "Enviado · UPS"
+    assert fila["envio"] == "Enviado"
+    assert fila["courier"] == "UPS"
     assert fila["tracking"] == UPS
     assert fila["recogido"]
     # Aviso al cliente: UNO, al email de envío, en su idioma (alemán, país DE),
@@ -185,7 +189,8 @@ def test_recogido_sin_courier_y_completarlo_despues(api, session_factory):
         item = _shipped_item(api, h, oid)
         assert item["courier"] is None and item["shipment_kind"] == "externo"
         with session_factory() as s:
-            assert _envio_label(s.get(Order, oid)) == "Enviado · otro courier"
+            assert _envio_label(s.get(Order, oid)) == "Enviado"
+            assert courier_label(s.get(Order, oid)) == "otro courier"
         assert send.call_count == 0                 # sin tracking: no sale nada
         # Luego, desde la ficha / «Enviados»: courier y tracking.
         r = api.patch(f"/api/erp/orders/{oid}/tracking", headers=h,
@@ -201,7 +206,8 @@ def test_recogido_sin_courier_y_completarlo_despues(api, session_factory):
     item = _shipped_item(api, h, oid)
     assert item["courier"] == "MRW"
     with session_factory() as s:
-        assert _envio_label(s.get(Order, oid)) == "Enviado · MRW"
+        assert _envio_label(s.get(Order, oid)) == "Enviado"
+        assert courier_label(s.get(Order, oid)) == "MRW"
 
 
 def test_solo_courier_no_borra_el_tracking(api, session_factory):
@@ -303,11 +309,18 @@ def test_un_envio_de_genei_no_cambia(api, session_factory):
         o = s.get(Order, oid)
         assert external_state(o) == {}
         assert _envio_label(o) == "En tránsito"     # el de Genei (sin escaneo)
+        assert courier_label(o) == "Ctt Premium"    # la agencia de Genei, tal cual
 
 
-def test_la_hoja_admite_los_enviado_con_courier():
+def test_la_hoja_valida_envio_con_la_lista_cerrada():
+    """Envío ya no lleva el courier: su desplegable es la lista CERRADA de
+    estados, y el courier va aparte (columna «Courier», texto libre)."""
     envio = _listas_cerradas()[_COL["Envío"]]
-    for v in ("Enviado · UPS", "Enviado · CTT Express", "Enviado · otro courier"):
-        assert v in envio
-        assert v in envio_vocabulary()
-    assert len(envio) == len(set(envio))
+    assert envio == envio_vocabulary() == [
+        "Sin enviar", "Pendiente de entrada en red", "Recogido", "En tránsito",
+        "En reparto", "Disponible en oficina", "Entregado", "Incidencia", "Enviado",
+        "No aplica",
+    ]
+    for v in ("Enviado · UPS", "Enviado · otro courier", "Etiqueta creada", "Devuelto"):
+        assert v not in envio
+    assert _COL["Courier"] not in _listas_cerradas()

@@ -567,12 +567,14 @@ RED»*, *«EN REPARTO»*, *«ENTREGADO»*— con su fecha, en la columna **Enví
 actualiza solo: al avisar Genei y, además, cada 30 minutos para los envíos en
 curso. **Es informativo: no mueve el pedido de pestaña** (eso lo hace «📤 Marcar
 recogido», o una incidencia). Colores: ámbar = aún sin escanear, azul = en
-camino, verde = entregado, rojo = incidencia. En la
-hoja «Seguimiento (app)», la columna Envío lleva ese paso real (*Pendiente de
-entrada en red*, *Recogido*, *En tránsito*, *En reparto*, *Disponible en
-oficina*, *Entregado*, *Incidencia*). Si Genei aún no tiene escaneos, se ve su
-propio estado. Los envíos con **otro courier** (no Genei) se explican justo
-debajo.
+camino, verde = entregado, rojo = incidencia. En
+Seguimiento (pantalla, Excel y hoja «Seguimiento (app)») la columna **Envío**
+lleva ese paso real (*Pendiente de entrada en red*, *Recogido*, *En tránsito*,
+*En reparto*, *Disponible en oficina*, *Entregado*, *Incidencia*) y la columna
+**Courier**, la agencia del envío tal como la da Genei (p. ej. *Ctt Premium*). Si
+Genei aún no tiene escaneos, Envío sale del estado del envío (con la etiqueta ya
+hecha y sin recoger, *Pendiente de entrada en red*). Los envíos con **otro
+courier** (no Genei) se explican justo debajo.
 
 **Envíos con otro courier (no Genei).** Hay envíos que no se hacen con Genei
 (UPS, MRW, GLS, DSV…): subes la etiqueta a mano, apuntas el tracking y pulsas
@@ -600,9 +602,12 @@ debajo.
 - **Ficha**: el bloque **«Envío con otro courier»** (courier, tracking enlazado,
   fecha de recogida y el aviso al cliente) sustituye a «Envío con Genei», que no
   lo hay.
-- **Hoja «Seguimiento (app)»**: Envío = **«Enviado · UPS»** / **«Enviado · otro
-  courier»** (están en la lista de valores de la columna), **Tracking** = el
-  número y **Fecha recogido** = el día en que se pulsó «Marcar recogido».
+- **Seguimiento (pantalla, Excel y hoja «Seguimiento (app)»)**: **Envío** =
+  **«Enviado»** al marcar recogido (BoHub no ve los escaneos de esas agencias);
+  **«Entregado»** o **«Incidencia»** si lo marcas a mano en la ficha («Otras
+  acciones de estado»). El courier va **aparte**, en la columna **Courier**
+  (*UPS*, *MRW*, *Seitrans*…; **«otro courier»** si no se indicó). **Tracking** =
+  el número y **Fecha recogido** = el día en que se pulsó «Marcar recogido».
 
 > La antigua pestaña «Enviados» era el **historial de pedidos mandados al
 > taller** (email al SAT o aprobación). Ahora «Enviados» son los que **han
@@ -777,10 +782,27 @@ como en la lista de pedidos. Cuando ya no haga falta verlo, se retira con
 **Origen** (WEB o el canal), **Productos**, **Importe**, **Empresa (serie)**
 (p. ej. «2 · MQ Europe»), **Factura**, **Fecha factura**, **Factura enviada**
 (cuándo se mandó la factura por email al cliente), **Cobro** (*Cobrado ✓* /
-*Pendiente* / *—*), **Preparación** y **Envío** (estado del taller y del
-transporte; **«No aplica»** si el pedido no requiere envío), **Fecha recogido**
-(el día real en que el paquete salió del taller, según la Cola SAT),
-**Tracking**, **Nº serie · WhiteRIP** y **Nota / Incidencia**. Son 18 columnas.
+*Pendiente* / *—*), **Preparación** (estado del taller), **Envío**, **Courier**,
+**Fecha recogido** (el día real en que el paquete salió del taller, según la
+Cola SAT), **Tracking**, **Nº serie · WhiteRIP** y **Nota / Incidencia**. Son 19
+columnas (20 en el Excel y en la hoja, con la «id» técnica oculta al final).
+
+**Envío** es **solo el estado** del envío, siempre de esta lista cerrada:
+*Sin enviar* · *Pendiente de entrada en red* · *Recogido* · *En tránsito* · *En
+reparto* · *Disponible en oficina* · *Entregado* · *Incidencia* · *Enviado* ·
+*No aplica*. Con Genei es el estado real del transportista; con otro courier,
+*Enviado* al marcar recogido (y *Entregado* / *Incidencia* si se marca a mano en
+la ficha); *No aplica* si el pedido no requiere envío. Una devolución cuenta
+como *Incidencia*.
+
+**Courier** dice **con quién** va: la **agencia del envío de Genei** (*Ctt
+Premium*, *UPS*…), el **courier apuntado en la Cola SAT** para un envío con otro
+courier (*UPS*, *MRW*, *Seitrans*…; **«otro courier»** si salió sin apuntarlo) o
+**«—»** si no hay envío. El filtro **«Transportista»** de la pantalla busca en
+esta columna (contiene, sin mayúsculas ni tildes: *ctt* encuentra *Ctt Premium*
+y *CTT Express*), y en «Columnas» se puede ocultar como cualquier otra (se ve
+por defecto). No hace falta rellenar nada: sale del envío de cada pedido, también
+de los que ya existían.
 
 Las columnas de **fecha** (Fecha, Fecha factura, Factura enviada, Fecha
 recogido) van como **valor de fecha real**, no como texto, tanto en el Excel
@@ -874,8 +896,9 @@ método de pago de los pedidos antiguos.)*
 > que VIES da por no válido— cae en **«Por revisar»**: hay que arreglarlo antes
 > de facturar y sigue destacado, pero no ensucia la lista de incidencias.
 
-El **Excel** que se descarga trae dos pestañas: **«Pedidos»** (las 18 columnas,
-en el mismo orden que tengas puesto en la pantalla —Fecha al entrar—, con la
+El **Excel** que se descarga trae dos pestañas: **«Pedidos»** (las 20 columnas,
+con «Courier» y la «id» técnica oculta al final; las filas en el mismo orden
+que tengas puesto en la pantalla —Fecha al entrar—, con la
 celda Situación coloreada, la cabecera fija, el autofiltro y el importe con
 formato €) y **«Incidencias»** (los mismos pedidos
 que están en Situación=Incidencia, con más detalle: nº pedido, cliente, tipo,
@@ -896,7 +919,8 @@ en **pestañas propias de la app**. Cada una tiene **dos zonas**:
 
 - **«Seguimiento (app)»** — arriba, los pedidos vivos: **los mismos que ves en
   la pantalla** (en curso; fuera los quitados a mano y los ocultos por estado),
-  con las 18 columnas, **ordenados por fecha del pedido, del más reciente al
+  con las 20 columnas (con «Courier»; la «id» técnica va oculta al final),
+  **ordenados por fecha del pedido, del más reciente al
   más antiguo**, la celda Situación coloreada, la **fila 1 de encabezados
   congelada** (no se va al hacer scroll) y el **autofiltro** sobre esa misma
   cabecera, con el que puedes reordenar por Situación o por cualquier otra
@@ -933,7 +957,85 @@ el Nº de pedido.
 | **Cliente, Factura, Factura enviada, Nº serie · WhiteRIP** | Tu valor **manda**: BoHub ya no lo pisa y lo recuerda (se ve también en la pantalla de Seguimiento y en el Excel). Si **vacías** la celda, BoHub vuelve a rellenarla. Nunca se copia a FACTUSOL ni a la factura real del pedido. |
 | **Tracking** | Si el pedido **no** tiene envío Genei, tu tracking se guarda **en el pedido** (lo ven la Cola SAT y la ficha). Si **tiene envío Genei, manda Genei**: la celda va protegida y no se puede cambiar a mano. |
 | **Nota / Incidencia** | Si no hay nota escrita, BoHub pone el motivo del bloqueo; en cuanto escribes una nota, **manda la tuya** y BoHub no la toca. Si la vacías, vuelve el motivo. |
-| **Todo lo demás** (Situación, Nº, Fecha, Origen, Productos, Importe, Empresa, Fecha factura, Cobro, Preparación, Envío, Fecha recogido e «id») | **Solo BoHub**. Esas columnas van **protegidas**: no se pueden editar. |
+| **Todo lo demás** (Situación, Nº, Fecha, Origen, Productos, Importe, Empresa, Fecha factura, Cobro, Preparación, Envío, **Courier**, Fecha recogido e «id») | **Solo BoHub**. Esas columnas van **protegidas**: no se pueden editar. |
+
+En las filas **tecleadas a mano** (Origen = MANUAL) y en el **histórico manual**
+se puede editar todo, también **Courier**. El desplegable de **Envío** (en la
+zona viva) es la lista cerrada de estados de arriba; Courier es texto libre.
+
+**La columna Courier en una hoja ya existente.** La hoja pasó de 19 a 20
+columnas. La primera vez que BoHub actualiza una pestaña escrita antes de
+«Courier», **inserta la columna** entre «Envío» y «Fecha recogido» —en la
+cabecera y en **todas** las filas: zona viva, completados e histórico manual—
+como haría «Insertar columna» en Sheets: lo de detrás corre una posición con
+sus formatos y la «id» sigue la última y oculta. Antes y después **cuenta las
+celdas con dato de cada columna** y, si no cuadra (p. ej. alguien escribía en
+ese momento), para sin escribir nada más. Se hace **una sola vez**: con la
+columna ya puesta no se vuelve a insertar. La vista previa de «Actualizar hoja
+de Drive…» avisa antes de hacerlo, y el resumen de después dice cuántas celdas
+había antes y después. Las filas del **histórico manual** que llevaban el
+transportista en **Envío** (*UPS*, *MRW*, *FEDEX*, *DSV*…) **se quedan como
+están**: no se reinterpretan; su Courier queda vacío (y es editable).
+
+Tres casos en los que **no toca nada** y lo dice (en la vista previa o al
+actualizar), para que lo arregles a mano antes:
+
+- **La columna Z tiene algo.** Al insertar la columna, lo de Z pasaría a AA,
+  fuera de lo que lee la app, y se quedaría suelto. Muévelo a otra pestaña (o
+  bórralo) y vuelve a actualizar. (En una pestaña aún más antigua, de 17
+  columnas, pasa lo mismo con Y y Z.)
+- **Las columnas están descolocadas**: una columna insertada, borrada o movida
+  a mano («Courier» puesta dos veces, cortada y pegada detrás de la «id», la
+  «id» borrada…), celdas insertadas o borradas en una fila, o la fila de
+  cabecera borrada. El aviso dice **qué** no está donde toca. Lo que lo arregla
+  es **deshacer ese cambio** (Ctrl+Z, o «Historial de versiones» de la hoja);
+  cambiar el nombre de la cabecera **no**: los datos seguirían en otra columna.
+- **La base de datos aún no está al día** (la actualización del programa no ha
+  terminado): vuelve a intentarlo en un momento.
+
+Cómo se comprueba (en cada actualización, no solo en la migración):
+
+- **La cabecera** se compara **entera**, columna a columna, con la de cada
+  versión. **Renombrar o vaciar** celdas de la cabecera no descoloca nada y se
+  acepta (la pasada vuelve a escribir los nombres buenos). Lo que no se acepta
+  es el nombre de **otra** columna fuera de su sitio: eso es una columna
+  insertada, borrada o movida. Lo escrito a la derecha de la última columna
+  (p. ej. «Courier» tecleado en T1 de la pestaña vieja) no cuenta, salvo que
+  sea el nombre de una columna de la app con datos debajo (una columna movida).
+- **Sin fila de cabecera** (borrada, o sin «Situación» ni «Nº pedido» en las 5
+  primeras filas) no se puede ver si algo se ha movido: si hay filas con «id»,
+  se pide volver a ponerla.
+- **Las «id»**: todas tienen que estar en su columna (la T). Una fila con su
+  «id» en otra tiene celdas corridas.
+- **Las filas de BoHub** se comparan con lo último que BoHub escribió en ellas:
+  si en sus columnas bloqueadas aparecen los datos de la columna de al lado,
+  hay columnas corridas aunque la cabecera parezca buena.
+
+> **Volver a la versión anterior** (solo si hiciera falta), en este orden:
+>
+> 1. **Para la sincronización**: apaga «Sincronizar la hoja automáticamente»
+>    en Configuración ERP, para el `worker-sync` y que nadie pulse «Actualizar
+>    hoja de Drive». Si no, la versión nueva, que sigue en marcha, volvería a
+>    insertar la columna «Courier» en cuanto la quitaras.
+> 2. **Baja la base de datos** con la imagen nueva, en un contenedor suelto:
+>    `docker compose … run --rm api alembic downgrade 20260930_0122`. Devuelve
+>    lo guardado a 19 columnas y quita la tabla de estado del espejo; desde ese
+>    momento, cualquier pasada de la versión nueva se para sin tocar la hoja.
+>    No reinicies el `api` nuevo: al arrancar vuelve a subir la base de datos.
+> 3. **Quita la columna O («Courier»)** de «Seguimiento (app)» con
+>    `docker compose … run --rm api python -m scripts.quitar_columna_courier`
+>    (informe) y luego con `--apply`. Lo hace la cuenta de servicio, así que
+>    funciona aunque la columna esté protegida o la hoja sea de BoHub; antes
+>    comprueba que la base de datos ya está bajada y que la pestaña está bien
+>    colocada (si no, dice qué falla: arréglalo antes de seguir). Se pierden
+>    las celdas de «Courier». A mano solo podría el propietario de la hoja. **No
+>    restaures una versión de la hoja anterior a la migración**: la versión
+>    anterior tomaría lo que ha cambiado desde entonces por ediciones a mano
+>    (y daría por borradas las filas a mano nuevas).
+> 4. **Arranca la versión anterior.**
+>
+> Si se hace en otro orden, la versión anterior leería corrido todo lo de
+> detrás de «Envío».
 
 > Google siempre deja editar las celdas protegidas al **propietario** de la
 > hoja. Si lo haces, BoHub **deshace** el cambio en la siguiente pasada: los
@@ -1030,10 +1132,10 @@ etiquetado aparte: se integran con el histórico manual, arriba de él. El
 disparador de bajar es **«Marcar completado»** (`completed_at`) —**nunca** el
 estado de envío—. Y aunque ya estén abajo, **sus filas de BoHub no se congelan**:
 en cada «Actualizar hoja de Drive» se **resincroniza la fila entera por Nº**, así
-la columna **Envío** queda **viva** (tracking, fecha recogido, estado del
-transporte que manda el webhook de Genei, factura, cobro, entregado…). Una
-**incidencia de envío** (transporte) **no mueve la fila**: solo pone **Envío =
-Incidencia** (distinta de una incidencia de pedido —taller/stock—, que va a
+las columnas **Envío** y **Courier** quedan **vivas** (tracking, fecha recogido,
+estado del transporte que manda el webhook de Genei, factura, cobro,
+entregado…). Una **incidencia de envío** (transporte) **no mueve la fila**: solo
+pone **Envío = Incidencia** (distinta de una incidencia de pedido —taller/stock—, que va a
 «Incidencias»). El **histórico manual** (las miles de filas de siempre) se
 **conserva byte a byte**: no es de BoHub, así que nunca se toca.
 

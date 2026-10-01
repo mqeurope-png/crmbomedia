@@ -31,8 +31,8 @@ Propiedad por columna en las filas de BoHub:
   - Nota / Incidencia: BoHub rellena el motivo del bloqueo SOLO si no hay nota
     manual; la manual manda y BoHub nunca la pisa. No se lee de vuelta a la
     pantalla (vive en la hoja).
-  - El resto, BLOQUEADAS (solo BoHub): cualquier edición se revierte en la
-    siguiente pasada (y la columna va protegida en la hoja).
+  - El resto, BLOQUEADAS (solo BoHub; también «Courier»): cualquier edición
+    se revierte en la siguiente pasada (y la columna va protegida en la hoja).
 
 Las filas manuales son editables enteras (la fusión de #466 sigue igual). El
 histórico manual se conserva: solo se le estampa su id y se leen de vuelta sus
@@ -55,12 +55,14 @@ from uuid import uuid4
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
+from app.erp.drive_sheets import DriveSyncError
 from app.erp.models import (
     Order,
     SeguimientoLegacy,
     SeguimientoManual,
     SeguimientoOverride,
     SeguimientoSnapshot,
+    SeguimientoSyncMeta,
 )
 from app.erp.models.seguimiento_mirror import KIND_LEGACY, KIND_MANUAL, KIND_ORDER
 from app.erp.seguimiento import (
@@ -82,6 +84,117 @@ _TRACKING = _COL["Tracking"]
 _FACTURA_ENVIADA = _COL["Factura enviada"]
 #: Columnas de DATOS (todo menos la «id» técnica).
 _DATA_WIDTH = ID_INDEX
+#: «Courier» (20 columnas): entró detrás de «Envío». Las filas que el espejo
+#: guardó con el formato anterior (19 columnas) se ponen al día abriendo aquí
+#: su hueco (ver `Espejo.cargar`).
+_COURIER = _COL["Courier"]
+
+# --- formato de lo guardado en la BD ------------------------------------------
+
+#: Clave de `seguimiento_sync_meta`: nº de columnas con el que están escritas
+#: las filas que guarda el espejo (snapshot, manuales, histórico).
+META_FORMATO_BD = "formato_bd"
+#: Formato actual (nº de columnas de la hoja, con la «id»).
+FORMATO_BD_ACTUAL = len(SEGUIMIENTO_COLUMNS_V2)
+
+
+def con_hueco_courier(fila: list[Any]) -> list[Any]:
+    """Una fila guardada con el formato de 19 columnas → el de 20: se abre el
+    hueco de «Courier» detrás de «Envío» (lo de delante no se mueve; lo de
+    detrás corre una posición). Una fila corta, sin nada a partir de ahí, se
+    queda igual (no hay nada que correr)."""
+    r = list(fila)
+    if len(r) > _COURIER:
+        r[_COURIER:_COURIER] = [""]
+    return r
+
+
+def _id_en_posicion_vieja(fila: list[Any], row_id: str) -> bool:
+    """¿Una fila guardada CON su id (la foto, una fila manual) la lleva en la
+    última columna del formato de 19 (S) y no en la del actual (T)?"""
+    vieja = ID_INDEX - 1
+    return (len(fila) > vieja and _texto(fila[vieja]) == row_id
+            and not (len(fila) > ID_INDEX and _texto(fila[ID_INDEX]) == row_id))
+
+
+def al_formato_actual(fila: list[Any], row_id: str | None = None) -> list[Any]:
+    """Una fila guardada con el formato de 19 columnas → el actual. Con
+    `row_id` —la foto y las filas manuales guardan la fila entera, con su id
+    en la última columna— solo si la id está en la posición VIEJA: una fila
+    que ya está al día no se vuelve a correr. Sin él (el histórico, que no
+    siempre la lleva), manda la marca de formato de la BD."""
+    if row_id is not None and not _id_en_posicion_vieja(fila, row_id):
+        return list(fila)
+    return con_hueco_courier(fila)
+
+
+def formato_bd_viejo(session: Session) -> bool:
+    """¿Las filas que guarda el espejo están en un formato anterior al actual?
+    Sin la tabla de estado (BD sin migrar) no se puede saber, y quien vaya a
+    tocar la hoja o esas filas se para aquí, ANTES de escribir nada (la
+    siguiente vez, con la BD al día, sigue)."""
+    try:
+        meta = session.get(SeguimientoSyncMeta, META_FORMATO_BD)
+    except Exception as exc:
+        raise DriveSyncError(
+            "la base de datos aún no está al día (falta la tabla de estado del "
+            "espejo): no se ha escrito nada; vuelve a intentarlo en un momento"
+        ) from exc
+    try:
+        columnas = int(str(meta.valor)) if meta is not None else 0
+    except ValueError:
+        columnas = 0
+    return columnas < FORMATO_BD_ACTUAL
+
+
+def _json(fila: list[Any]) -> str:
+    return json.dumps(fila, ensure_ascii=False, default=str)
+
+
+def poner_bd_al_dia(session: Session) -> int | None:
+    """Pone al día, UNA vez, las filas que el espejo guardó con 19 columnas
+    (antes de «Courier»): la foto de las filas de BoHub y manuales, las filas
+    manuales ingeridas y el histórico (`seguimiento_legacy`) — hueco de
+    «Courier» detrás de «Envío», nada más se mueve. Las que llevan su id solo
+    si la tienen en la posición vieja (`al_formato_actual`).
+
+    Deja la marca del formato en la MISMA transacción: si quien llama no
+    confirma, se deshace todo junto y la siguiente vez se repite; si confirma,
+    no se vuelve a hacer. La llaman el espejo al cargar y quien vaya a guardar
+    filas del histórico en el formato actual (`import_legacy_rows`), para que lo
+    guardado y la marca nunca discrepen. Devuelve cuántas filas ha convertido,
+    o None si ya estaba al día."""
+    if not formato_bd_viejo(session):
+        return None
+    n = 0
+    for snap in session.scalars(select(SeguimientoSnapshot)):
+        if snap.kind == KIND_LEGACY:
+            continue                       # del histórico solo se guarda la presencia
+        vals = _json_lista(snap.values_json)
+        if vals and _id_en_posicion_vieja(vals, snap.row_id):
+            snap.values_json = _json(con_hueco_courier(vals))
+            n += 1
+    for man in session.scalars(select(SeguimientoManual)):
+        vals = _json_lista(man.values_json)
+        if vals and _id_en_posicion_vieja(vals, man.row_id):
+            man.values_json = _json(con_hueco_courier(vals))
+            n += 1
+    for rec in session.scalars(select(SeguimientoLegacy)):
+        vals = _json_lista(rec.raw_json)
+        if vals:
+            rec.raw_json = _json(con_hueco_courier(vals))
+            n += 1
+    meta = session.get(SeguimientoSyncMeta, META_FORMATO_BD)
+    if meta is None:
+        session.add(SeguimientoSyncMeta(clave=META_FORMATO_BD, valor=str(FORMATO_BD_ACTUAL)))
+    else:
+        meta.valor = str(FORMATO_BD_ACTUAL)
+    session.flush()
+    logger.info(
+        "seguimiento: %d filas guardadas del espejo puestas al formato de %d "
+        "columnas (hueco de «Courier»)", n, FORMATO_BD_ACTUAL,
+    )
+    return n
 
 # --- propiedad por columna (filas de BoHub) -----------------------------------
 
@@ -95,6 +208,21 @@ LIBRES: tuple[str, ...] = ("Nota / Incidencia",)
 EDITABLES: tuple[str, ...] = (*REGLA_TRACKING, *LIBRES)
 #: Solo BoHub (se protegen en la hoja). Incluye la «id».
 BLOQUEADAS: tuple[str, ...] = tuple(c for c in SEGUIMIENTO_COLUMNS_V2 if c not in EDITABLES)
+#: Índices de las bloqueadas de DATOS (sin la «id»): en las filas de BoHub, la
+#: hoja y la foto coinciden siempre en ellas (`Espejo.comprobar_alineacion`).
+_COLUMNAS_BLOQUEADAS: tuple[int, ...] = tuple(
+    i for i, c in enumerate(SEGUIMIENTO_COLUMNS_V2) if c in BLOQUEADAS and c != "id"
+)
+
+
+def _valor_de_al_lado(fila: list[Any], foto: list[Any], i: int) -> bool:
+    """¿La celda `i` de la fila trae, en vez del suyo, el valor que la foto tiene
+    en la columna de al lado? Es la marca de una columna insertada, borrada o
+    movida (todo corre una posición)."""
+    valor = _canon(fila[i]) if i < len(fila) else ""
+    if not valor or valor == (_canon(foto[i]) if i < len(foto) else ""):
+        return False
+    return any(0 <= j < len(foto) and valor == _canon(foto[j]) for j in (i - 1, i + 1))
 
 #: Columna de la hoja → clave del override (= clave del dict de fila de BoHub).
 #: Tracking no va aquí: se lee de vuelta al pedido (si no hay envío Genei).
@@ -160,6 +288,15 @@ def _con_id(fila: list[Any], row_id: str) -> list[Any]:
     else:
         r[ID_INDEX] = row_id
     return r
+
+
+def _json_lista(raw: str | None) -> list[Any]:
+    """Una lista guardada como JSON ([] si está vacía o rota)."""
+    try:
+        data = json.loads(raw or "[]")
+    except (TypeError, ValueError):
+        return []
+    return data if isinstance(data, list) else []
 
 
 def _canon(value: Any) -> str:
@@ -356,23 +493,81 @@ class Espejo:
     _overrides: dict[str, dict[str, str]] = field(default_factory=dict)
     #: registros del histórico por el id que llevan en la hoja.
     _legacy_por_sheet_id: dict[str, SeguimientoLegacy] = field(default_factory=dict)
+    #: Vista previa con la BD aún en el formato anterior (sin «Courier»): las
+    #: filas guardadas se leen con su hueco abierto EN MEMORIA (sin escribir).
+    #: En una pasada real se convierten en la BD al cargar (y esto queda False).
+    _bd_formato_viejo: bool = False
 
     # -- carga ---------------------------------------------------------------
 
     @classmethod
     def cargar(cls, session: Session, *, dry_run: bool = False) -> Espejo:
         esp = cls(session=session, dry_run=dry_run)
+        # Formato de lo guardado: si es el anterior a «Courier», se pone al día
+        # (en una pasada real, en la BD y una sola vez; en la vista previa, solo
+        # en memoria). Va ANTES de leer nada guardado; sin la BD migrada, la
+        # pasada se para aquí (DriveSyncError), sin haber tocado la hoja.
+        viejo = formato_bd_viejo(session)
+        if viejo and not dry_run:
+            esp.stats["formato_bd_convertidas"] = poner_bd_al_dia(session)
+        esp._bd_formato_viejo = viejo and dry_run
         try:
             for s in session.scalars(select(SeguimientoSnapshot)):
                 try:
                     vals = json.loads(s.values_json or "[]")
                 except (TypeError, ValueError):
                     vals = []
-                esp.snapshot[s.row_id] = (s.kind, vals if isinstance(vals, list) else [])
+                vals = vals if isinstance(vals, list) else []
+                if s.kind != KIND_LEGACY:
+                    vals = esp._fila_guardada(vals, s.row_id)
+                esp.snapshot[s.row_id] = (s.kind, vals)
         except Exception:  # noqa: BLE001 — BD sin migrar: espejo en modo arranque
             logger.warning("seguimiento: sin snapshot del espejo", exc_info=True)
         esp.stats["bootstrap"] = not esp.snapshot
         return esp
+
+    # -- formato de lo guardado ------------------------------------------------
+
+    def _fila_guardada(self, fila: list[Any], row_id: str | None = None) -> list[Any]:
+        """Una fila leída de la BD, en el formato actual (vista previa con la BD
+        aún sin convertir: hueco de «Courier» en memoria, con el mismo criterio
+        que `poner_bd_al_dia`)."""
+        return al_formato_actual(fila, row_id) if self._bd_formato_viejo else fila
+
+    # -- 0) que la pestaña esté bien colocada (contra la foto) ----------------
+
+    def comprobar_alineacion(self, valores: list[list[Any]], title: str) -> None:
+        """Última comprobación antes de tocar la hoja (y antes de migrarla): las
+        filas de BoHub tal como están en la pestaña —ya puesta al formato
+        actual, en memoria— frente a lo último que BoHub escribió en ellas (la
+        foto). En las columnas BLOQUEADAS coinciden siempre (solo BoHub las
+        escribe). Si en la mayoría de esas filas aparece en una columna el valor
+        que la foto tiene en la de al lado, hay columnas insertadas, borradas o
+        movidas aunque la cabecera parezca buena (p. ej. retocada a mano para
+        «arreglarla»): leerla corrida pisaría el histórico y las filas manuales,
+        así que no se escribe nada. Una celda distinta suelta (el propietario la
+        tocó, o la foto es de una pasada anterior) no cuenta: no es la de al lado.
+        Sin foto (primera pasada) no hay con qué comparar."""
+        from app.erp.drive_managed import _REMEDIO_DESHACER, is_separator  # noqa: PLC0415
+
+        comparadas = corridas = 0
+        for fila in valores:
+            if not fila or is_separator(list(fila)):
+                continue
+            kind, foto = self.snapshot.get(_fila_id(fila), (None, None))
+            if kind != KIND_ORDER or not foto:
+                continue
+            comparadas += 1
+            if any(_valor_de_al_lado(fila, foto, i) for i in _COLUMNAS_BLOQUEADAS):
+                corridas += 1
+        if comparadas and corridas * 2 > comparadas:
+            raise DriveSyncError(
+                f"la pestaña «{title}» tiene las columnas descolocadas: en {corridas} de "
+                f"las {comparadas} filas de BoHub los datos están en la columna de al "
+                "lado de la que les toca (se ha insertado, borrado o movido una columna "
+                f"a mano). No se ha escrito nada: {_REMEDIO_DESHACER}. Después, vuelve "
+                "a actualizar."
+            )
 
     # -- 1) filas de BoHub: lectura de vuelta ----------------------------------
 
@@ -634,10 +829,7 @@ class Espejo:
         por_contenido: dict[tuple[str, ...], list[SeguimientoLegacy]] = {}
         por_clave: dict[tuple[str, str], list[SeguimientoLegacy]] = {}
         for rec in registros:
-            try:
-                raw = json.loads(rec.raw_json or "[]")
-            except (TypeError, ValueError):
-                raw = []
+            raw = self._fila_guardada(_json_lista(rec.raw_json))
             por_contenido.setdefault(tuple(canon_datos(raw)), []).append(rec)
             clave = (_canon(rec.numero_raw).casefold(), _canon(rec.cliente_raw).casefold())
             if any(clave):  # misma clave que `_clave_legacy` sobre la fila de la hoja
@@ -743,12 +935,12 @@ class Espejo:
             rest_leg: list[list[Any]] = []
             for rid in faltan:
                 if rid in manuales:
-                    fila = json.loads(manuales[rid].values_json or "[]")
+                    fila = self._fila_guardada(_json_lista(manuales[rid].values_json), rid)
                     rest_man.append(_con_id(fila, rid))
                     self.tipos[rid] = KIND_MANUAL
                 elif rid in legacy_por_sid:
                     rec = legacy_por_sid[rid]
-                    fila = json.loads(rec.raw_json or "[]")
+                    fila = self._fila_guardada(_json_lista(rec.raw_json))
                     rest_leg.append(_con_id(fila, rid))
                     self.tipos[rid] = KIND_LEGACY
             return rest_man, rest_leg
@@ -810,16 +1002,35 @@ class Espejo:
 PROTECT_DESC_PREFIX = "BoHub · espejo"
 PROTECT_DESC = f"{PROTECT_DESC_PREFIX}: columnas bloqueadas (solo BoHub)"
 PROTECT_DESC_GENEI = f"{PROTECT_DESC_PREFIX}: Tracking de Genei (solo BoHub)"
+def _letra_columna(idx: int) -> str:
+    """Índice 0-based → letra de columna de la hoja (0 → A, 18 → S)."""
+    letras = ""
+    n = idx + 1
+    while n:
+        n, resto = divmod(n - 1, 26)
+        letras = chr(ord("A") + resto) + letras
+    return letras
+
+
 #: Regla de formato condicional: fila en naranja si su Nota lleva «⚠ revisar».
-#: (Fórmulas por API: nombres en inglés y comas, sea cual sea el idioma.)
-REVISAR_FORMULA = '=REGEXMATCH($R2,"\\[⚠ revisar")'
+#: (Fórmulas por API: nombres en inglés y comas, sea cual sea el idioma.) La
+#: columna sale del índice de la Nota: si entra una columna, la fórmula la sigue.
+REVISAR_FORMULA = f'=REGEXMATCH(${_letra_columna(_NOTA)}2,"\\[⚠ revisar")'
+#: La misma regla con CUALQUIER columna: la de una pasada anterior apuntaba a
+#: donde estaba entonces la Nota (p. ej. `$R2` antes de «Courier»).
+_REVISAR_FORMULA_RE = re.compile(r'^=REGEXMATCH\(\$[A-Z]{1,3}2,"\\\[⚠ revisar"\)$')
 _NARANJA = {"red": 1.0, "green": 0.8, "blue": 0.6}
 
 
 def _es_regla_revisar(regla: dict[str, Any]) -> bool:
-    """¿Es la regla naranja del espejo (por su fórmula)?"""
+    """¿Es la regla naranja del espejo (por su fórmula, sea cual sea la columna
+    a la que apunte)? Así cada pasada quita la suya aunque la Nota haya cambiado
+    de sitio, y nunca la de una persona."""
     cond = (regla.get("booleanRule") or {}).get("condition") or {}
-    return any(v.get("userEnteredValue") == REVISAR_FORMULA for v in cond.get("values") or [])
+    return any(
+        _REVISAR_FORMULA_RE.match(str(v.get("userEnteredValue") or ""))
+        for v in cond.get("values") or []
+    )
 
 
 def _tramos(cols: list[int]) -> list[tuple[int, int]]:
@@ -856,9 +1067,9 @@ def _listas_cerradas() -> dict[int, list[str]]:
     return {
         _COL["Situación"]: list(SITUACION_LABELS.values()),
         _COL["Preparación"]: [*PREPARACION_LABELS.values(), NO_APLICA, "—"],
-        # Transporte + escaneo real del transportista («Pendiente de entrada en
-        # red», «En reparto»…), el vocabulario con el que BoHub rellena Envío.
-        _COL["Envío"]: [*envio_vocabulary(), NO_APLICA, "—"],
+        # Envío: la lista CERRADA (solo el estado; el transportista va en
+        # «Courier», que es texto libre y no lleva desplegable).
+        _COL["Envío"]: envio_vocabulary(),
         _COL["Cobro"]: list(dict.fromkeys(COBRO_LABELS.values())),
     }
 

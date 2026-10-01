@@ -67,7 +67,7 @@ function row(over = {}) {
     importe: 100, moneda: "EUR", empresa_serie: "5 · Streamtec",
     fecha_factura: "2026-09-30", factura_enviada: null,
     cobro: "pendiente", cobro_label: "Pendiente",
-    preparacion: "Listo", envio: "En tránsito", origen_label: "WEB",
+    preparacion: "Listo", envio: "En tránsito", courier: "Ctt Premium", origen_label: "WEB",
     serie_whiterip: "", nota_incidencia: "", incidencia: null,
     ...over,
   };
@@ -183,7 +183,7 @@ describe("ERP · Seguimiento — tabla con scroll propio", () => {
     expect(headerNames(screen.getByRole("table"))).not.toContain("Productos");
     expect(headerNames(screen.getByRole("table"))).not.toContain("Tracking");
     expect(screen.queryByText(PRODUCTOS)).toBeNull();
-    expect(screen.getByRole("button", { name: /Columnas \(16\/18\)/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Columnas \(17\/19\)/ })).toBeInTheDocument();
     expect(JSON.parse(window.localStorage.getItem("bohub.seguimiento.columnas.u-1") ?? "[]"))
       .toEqual(expect.arrayContaining(["productos", "tracking"]));
 
@@ -237,6 +237,6 @@ describe("ERP · Seguimiento — tabla con scroll propio", () => {
     window.localStorage.setItem("bohub.seguimiento.columnas.u-1", JSON.stringify(["no-existe", 7]));
     render(<SeguimientoPageView />);
     await screen.findByText("La Rueca");
-    expect(screen.getByRole("button", { name: "Columnas" })).toBeInTheDocument();   // sin «(n/18)»
+    expect(screen.getByRole("button", { name: "Columnas" })).toBeInTheDocument();   // sin «(n/19)»
   });
 });
