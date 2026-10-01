@@ -674,3 +674,44 @@ def test_backfill_corta_si_genei_rechaza_las_credenciales(factory):
         res = rellenar_agencias_genei(s, genei, apply=True)
         assert res["cortado"] == "credenciales rechazadas"
         assert res["rellenados"] == 0 and genei.pedidos == ["G-G-1"]
+
+
+def test_un_cambio_de_bohub_entre_pasadas_no_se_deshace_al_migrar(factory):
+    """El tracking de un pedido cambia en BoHub (1Z-VIEJO → 1Z-NUEVO) entre la
+    última pasada de la versión anterior y la primera de esta (la que migra).
+    La hoja y la foto dicen 1Z-VIEJO: eso no es una edición a mano, así que la
+    hoja se pone al día con 1Z-NUEVO (no se vuelve a 1Z-VIEJO)."""
+    with factory() as s:
+        o, sheets, _mundo = _mundo_viejo(s)
+        o.tracking_number = "1Z-NUEVO"                 # lo cambió BoHub (no la hoja)
+        s.commit()
+        res = push_managed_tabs(s, sheets, [_row(o)])
+        s.commit()
+        s.refresh(o)
+        assert o.tracking_number == "1Z-NUEVO"
+        assert res["espejo"]["tracking_leidos"] == 0
+        fila = next(f for f in sheets.written[TAB] if len(f) > ID_INDEX and f[ID_INDEX] == o.id)
+        assert fila[_c("Tracking")] == "1Z-NUEVO"
+
+
+def test_sin_cabecera_el_formato_viejo_se_reconoce_por_donde_estan_las_ids(factory):
+    """Si alguien borró la fila de cabecera, la pestaña vieja se reconoce por
+    dónde están sus «id» (columna S): se migra igual, sin escribir «Courier»
+    en una fila de datos, y la pasada vuelve a poner la cabecera."""
+    with factory() as s:
+        o, _sheets, mundo = _mundo_viejo(s)
+        sin_cabecera = copy.deepcopy(mundo["hoja"][1:])
+        sheets = FakeTabs({HISTORICA: [], TAB: sin_cabecera})
+        res = push_managed_tabs(s, sheets, [_row(o)])
+        s.commit()
+        assert sheets.inserts == 1 and res["migracion_courier"]["estado"] == "hecha"
+        lotes = [r for lote in sheets.formats[TAB] for r in lote if "updateCells" in r]
+        assert lotes == []                             # nada escrito en una fila de datos
+        escrito = sheets.written[TAB]
+        assert escrito[0] == SEGUIMIENTO_COLUMNS_V2
+        hist = _historico_escrito(sheets)
+        assert [h[ENVIO] for h in hist] == ["UPS", "FEDEX", "DSV"]
+        assert [h[ID_INDEX] for h in hist] == ["leg-1", "leg-2", "leg-3"]
+        man = next(f for f in escrito if len(f) > ID_INDEX and f[ID_INDEX] == "man-1")
+        assert man[_c("Tracking")] == "T-1" and man[COURIER] == ""
+        assert res["espejo"]["ediciones_leidas"] == 0

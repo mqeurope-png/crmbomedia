@@ -284,7 +284,7 @@ def import_historico(
         compose,
         dates_to_serial,
         es_fila_completado,
-        formato_de_cabecera,
+        formato_de_pestana,
         historic_block,
         incidencias_format,
         is_separator,
@@ -347,7 +347,7 @@ def import_historico(
     # Una pestaña escrita antes de «Courier» se migra primero (inserta la columna
     # en la hoja, con su recuento), igual que en el volcado periódico; y lo leído
     # se pone al formato actual.
-    if formato_de_cabecera(cabecera_de(valores)) == FORMATO_SIN_COURIER:
+    if formato_de_pestana(valores) == FORMATO_SIN_COURIER:
         valores, _migracion = migrar_columna_courier(sheets, pedidos_tab, valores)
     valores = realinear_pestana(valores)
     cabecera = cabecera_de(valores)

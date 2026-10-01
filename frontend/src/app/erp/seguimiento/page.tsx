@@ -72,7 +72,7 @@ const COLUMNS: { key: ColKey; label: string; sort: string | null; sticky?: boole
   { key: "envio", label: "Envío", sort: null },
   // Con quién va el envío (la agencia de Genei o el courier de la Cola SAT);
   // «Envío» es solo el estado.
-  { key: "courier", label: "Courier", sort: null },
+  { key: "courier", label: "Courier", sort: "courier" },
   { key: "recogido", label: "Fecha recogido", sort: null },
   { key: "tracking", label: "Tracking", sort: null },
   { key: "serie", label: "Nº serie · WhiteRIP", sort: null },

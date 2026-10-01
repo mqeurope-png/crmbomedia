@@ -31,8 +31,8 @@ Propiedad por columna en las filas de BoHub:
   - Nota / Incidencia: BoHub rellena el motivo del bloqueo SOLO si no hay nota
     manual; la manual manda y BoHub nunca la pisa. No se lee de vuelta a la
     pantalla (vive en la hoja).
-  - El resto, BLOQUEADAS (solo BoHub): cualquier edición se revierte en la
-    siguiente pasada (y la columna va protegida en la hoja).
+  - El resto, BLOQUEADAS (solo BoHub; también «Courier»): cualquier edición
+    se revierte en la siguiente pasada (y la columna va protegida en la hoja).
 
 Las filas manuales son editables enteras (la fusión de #466 sigue igual). El
 histórico manual se conserva: solo se le estampa su id y se leen de vuelta sus
