@@ -806,15 +806,20 @@ los datos a la hoja de Google Drive, con vista previa antes de escribir),
 **«PDF»** (de la factura) y **«Quitar»**/**«Reincluir»**.
 
 **La tabla se desplaza sola, no la página.** La tabla ocupa todo el ancho y el
-alto que queda de pantalla y tiene **su propio scroll**: el título, los
-filtros y los botones no se mueven. La **barra horizontal se ve siempre** (justo
-debajo de la tabla, sin tener que bajar al final; también en Windows con las
-barras ocultas), y con el teclado se desplaza con las flechas tras pulsar en la
-tabla. Al desplazar:
+alto que queda de pantalla y tiene **su propio scroll**: al moverte por las
+columnas, el título, los filtros y los botones no se mueven. La **barra
+horizontal se ve siempre** (justo debajo de la tabla, sin tener que bajar al
+final de la lista; también en Windows con las barras ocultas), y con el teclado
+se desplaza con las flechas tras pulsar en la tabla. En pantallas **bajas** (p.
+ej. un portátil de 1366×768) la tabla no cabe entera bajo los filtros: baja la
+página **una vez** y la tabla queda entera a la vista (con su barra) bajo el
+título; desde ahí solo se mueve la tabla. Al desplazar:
 
 - la **cabecera** queda fija arriba;
 - **la casilla, Situación, Nº pedido y Cliente** quedan fijas a la izquierda y
-  **«Quitar»** a la derecha, siempre a mano;
+  **«Quitar»** a la derecha, siempre a mano (en una pantalla estrecha —móvil o
+  tablet en vertical— no caben y se sueltan, para poder llegar a todas las
+  columnas);
 - un **sombreado** en el borde avisa de que hay más columnas por ese lado.
 
 Va en **modo compacto**: letra un punto menor, menos relleno, cabeceras en dos

@@ -136,6 +136,20 @@ describe("ERP · Seguimiento — tabla con scroll propio", () => {
     expect(trunc).toHaveAttribute("aria-expanded", "false");
   });
 
+  it("«No aplica» en Preparación / Envío sigue en gris; los estados reales no", async () => {
+    (listSeguimiento as jest.Mock).mockResolvedValue(pageOf([
+      row({ preparacion: "No aplica", envio: "No aplica" }),
+      row({ id: "ord-2", order_number: "FLUXLA-5750", cliente: "Otra" }),
+    ]));
+    render(<SeguimientoPageView />);
+    await screen.findByText("La Rueca");
+    for (const cell of screen.getAllByText("No aplica")) {
+      expect(cell.closest("td")).toHaveClass("muted", "small");
+    }
+    expect(screen.getByText("Listo").closest("td")).not.toHaveClass("muted");
+    expect(screen.getByText("En tránsito").closest("td")).not.toHaveClass("muted");
+  });
+
   it("las fechas van cortas (dd/mm/aa) con la completa en el title", async () => {
     render(<SeguimientoPageView />);
     await screen.findByText("La Rueca");

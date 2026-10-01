@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 export type PickerColumn = {
   key: string;
@@ -26,6 +26,7 @@ export function ColumnPicker({
   const [open, setOpen] = useState(false);
   const box = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
+  const pop = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -43,6 +44,20 @@ export function ColumnPicker({
       document.removeEventListener("mousedown", onDocClick);
       document.removeEventListener("keydown", onKey);
     };
+  }, [open]);
+
+  // Si a la derecha del botón no cabe (la página recorta lo que se sale por
+  // los lados), el panel se alinea al borde derecho del botón. El estilo va
+  // directo al nodo (React no lo controla), antes de pintar.
+  useLayoutEffect(() => {
+    const p = pop.current;
+    if (!open || !p || !box.current) return;
+    const page = box.current.closest("main");
+    const limit = Math.min(window.innerWidth, page ? page.getBoundingClientRect().right : window.innerWidth) - 4;
+    if (p.getBoundingClientRect().right > limit) {
+      p.style.left = "auto";
+      p.style.right = "0";
+    }
   }, [open]);
 
   const visibles = columns.filter((c) => !hidden.has(c.key)).length;
@@ -67,7 +82,7 @@ export function ColumnPicker({
         {label}{hidden.size > 0 ? ` (${visibles}/${columns.length})` : ""}
       </button>
       {open ? (
-        <div className="column-picker-pop" role="group" aria-label="Columnas visibles">
+        <div ref={pop} className="column-picker-pop" role="group" aria-label="Columnas visibles">
           {columns.map((c) => (
             <label key={c.key} className="column-picker-item">
               <input

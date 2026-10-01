@@ -14463,7 +14463,8 @@ table.erp-doc-lines { width: 100%; table-layout: fixed; }
   background: var(--card, #fff);
   overscroll-behavior-x: contain;
 }
-.scroll-table:focus-visible { outline: 2px solid var(--color-primary, #2563eb); outline-offset: 2px; }
+/* El foco se pinta por dentro: un contenedor con overflow (Cola SAT) no lo recorta. */
+.scroll-table:focus-visible { outline: 2px solid var(--color-primary, #2563eb); outline-offset: -2px; }
 /* Barras SIEMPRE visibles: con estilo propio Chrome / Safari / Edge no las
    ocultan (macOS, o Windows con «ocultar barras automáticamente»). Firefox
    usa las propiedades estándar. */
@@ -14511,17 +14512,24 @@ table.erp-doc-lines { width: 100%; table-layout: fixed; }
 .scroll-table .sticky-l-3 { left: var(--sl-3, 0px); }
 .scroll-table .sticky-l-4 { left: var(--sl-4, 0px); }
 .scroll-table .sticky-l-5 { left: var(--sl-5, 0px); }
-/* La fila resaltada / seleccionada también pinta sus celdas fijas. */
-.scroll-table tbody tr:hover > .sticky-l,
-.scroll-table tbody tr:hover > .sticky-r { background: var(--color-bg-light); }
-.scroll-table tbody tr.is-selected > .sticky-l,
-.scroll-table tbody tr.is-selected > .sticky-r { background: #f1f4fb; }
+/* La fila resaltada / seleccionada de una `data-table` (que pinta el fondo
+   de la fila) también pinta sus celdas fijas. */
+.scroll-table table.data-table tbody tr:hover > .sticky-l,
+.scroll-table table.data-table tbody tr:hover > .sticky-r { background: var(--color-bg-light); }
+.scroll-table table.data-table tbody tr.is-selected > .sticky-l,
+.scroll-table table.data-table tbody tr.is-selected > .sticky-r { background: #f1f4fb; }
+/* Pantalla estrecha: las fijas no caben (el componente marca `no-pin`) y se
+   sueltan para que se pueda llegar al resto; la cabecera sigue fija arriba. */
+.scroll-table-frame.no-pin > .scroll-table > table > tbody .sticky-l,
+.scroll-table-frame.no-pin > .scroll-table > table > tbody .sticky-r { position: static; }
+.scroll-table-frame.no-pin > .scroll-table > table > thead > tr > th.sticky-l,
+.scroll-table-frame.no-pin > .scroll-table > table > thead > tr > th.sticky-r { left: auto; right: auto; z-index: 3; }
 /* Sombreado de los bordes: hay columnas por la izquierda (bajo las fijas) o
    por la derecha. Sin columna fija a la derecha, un degradado en el marco. */
-.scroll-table-frame.is-scrolled-left .sticky-l-last { box-shadow: 8px 0 8px -8px rgba(15, 23, 42, 0.45); }
-.scroll-table-frame.has-more-right .sticky-r { box-shadow: -8px 0 8px -8px rgba(15, 23, 42, 0.45); }
-.scroll-table-frame.has-more-right:not(:has(.sticky-r))::after,
-.scroll-table-frame.is-scrolled-left:not(:has(.sticky-l))::before {
+.scroll-table-frame.is-scrolled-left:not(.no-pin) .sticky-l-last { box-shadow: 8px 0 8px -8px rgba(15, 23, 42, 0.45); }
+.scroll-table-frame.has-more-right:not(.no-pin) .sticky-r { box-shadow: -8px 0 8px -8px rgba(15, 23, 42, 0.45); }
+.scroll-table-frame.has-more-right:is(.no-pin, :not(:has(.sticky-r)))::after,
+.scroll-table-frame.is-scrolled-left:is(.no-pin, :not(:has(.sticky-l)))::before {
   content: "";
   position: absolute;
   top: 1px;
@@ -14530,11 +14538,11 @@ table.erp-doc-lines { width: 100%; table-layout: fixed; }
   pointer-events: none;
   z-index: 5;
 }
-.scroll-table-frame.has-more-right:not(:has(.sticky-r))::after {
+.scroll-table-frame.has-more-right:is(.no-pin, :not(:has(.sticky-r)))::after {
   right: 13px;
   background: linear-gradient(to left, rgba(15, 23, 42, 0.14), rgba(15, 23, 42, 0));
 }
-.scroll-table-frame.is-scrolled-left:not(:has(.sticky-l))::before {
+.scroll-table-frame.is-scrolled-left:is(.no-pin, :not(:has(.sticky-l)))::before {
   left: 1px;
   background: linear-gradient(to right, rgba(15, 23, 42, 0.14), rgba(15, 23, 42, 0));
 }
@@ -14568,6 +14576,15 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
 .erp-seg-page .item-list { min-width: 0; }
 .erp-seg-page .erp-card { overflow-wrap: anywhere; }
 .erp-seg-page .erp-card .scroll-table { overflow-wrap: normal; }
+/* Pantallas bajas (p. ej. 1366×768): menos aire entre bloques para que a la
+   tabla le quede más alto (si aun así no cabe, la página baja una vez y la
+   tabla entera, con su barra, queda a la vista bajo la cabecera). */
+@media (max-height: 820px) {
+  main.shell.erp-seg-page { padding-bottom: var(--sp-2); }
+  .erp-seg-page > .erp-card { padding-top: var(--sp-3); padding-bottom: var(--sp-3); margin-bottom: var(--sp-2); }
+  .erp-seg-page > .erp-card > .erp-doc-filters { margin-bottom: var(--sp-2); padding-top: var(--sp-2); padding-bottom: var(--sp-2); }
+  .erp-seg-page > .erp-card > p.muted.small { margin-top: var(--sp-1); margin-bottom: var(--sp-1); }
+}
 
 /* Modo compacto (por defecto): un punto menos de letra, menos relleno,
    cabeceras en dos líneas y anchos mínimos por columna en vez de repartir
@@ -14677,6 +14694,19 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
   }
   .scroll-table > table.sat-table { width: 100%; min-width: 620px; }
   .sat-global .scroll-table > table.sat-table { min-width: 0; }
+  /* «Todos pendientes»: cada columna de la rejilla se queda en su mitad (sin
+     esto crecía al ancho de su tabla y la derecha se salía del panel); la
+     tabla scrollea dentro. */
+  .sat-global .sat-global-col { min-width: 0; }
+  /* Observaciones y avisos de fila (a todo el ancho): se quedan en la parte
+     visible al desplazar la tabla a los lados. */
+  .scroll-table .sat-table tr.sat-row-notes .sat-obs,
+  .scroll-table .sat-table tr.sat-row-error p {
+    position: sticky;
+    left: var(--sp-3);
+    max-width: calc(var(--scroll-table-w, 100%) - 2 * var(--sp-3));
+    box-sizing: border-box;
+  }
   .sat-table .sat-td-select { width: 36px; }
 }
 @media (max-width: 767px) {
@@ -14720,7 +14750,7 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
 .scroll-table .erp-bandeja-table tr.is-muted td.sticky-r > * { opacity: 0.72; }
 /* Pedido bloqueado: la marca roja de la primera celda convive con la sombra
    del borde cuando hay columnas por debajo. */
-.scroll-table-frame.is-scrolled-left .erp-bandeja-table tr.is-alert > td.sticky-l-last:first-child {
+.scroll-table-frame.is-scrolled-left:not(.no-pin) .erp-bandeja-table tr.is-alert > td.sticky-l-last:first-child {
   box-shadow: inset 3px 0 0 #E2554A, 8px 0 8px -8px rgba(15, 23, 42, 0.45);
 }
 @media (max-width: 1100px) {

@@ -84,7 +84,16 @@ const CELL_CLASS: Partial<Record<ColKey, string>> = {
   tracking: " muted small",
   serie: " muted small",
   nota: " small",
+  preparacion: " small",
+  envio: " small",
 };
+
+/** Clases de la celda: las de su columna y, en Preparación / Envío, «No
+ *  aplica» en gris (el paso no aplica a ese pedido). */
+function cellClass(key: ColKey, r: SeguimientoRow): string {
+  const muted = (key === "preparacion" || key === "envio") && r[key] === "No aplica";
+  return `${CELL_CLASS[key] ?? ""}${muted ? " muted" : ""}`;
+}
 
 /** Columnas ocultas, por usuario, en este navegador. */
 function columnsStorageKey(user: User | null): string {
@@ -1171,7 +1180,7 @@ export default function SeguimientoPage() {
                     </td>
                   ) : null}
                   {visibleCols.map((c) => (
-                    <td key={c.key} className={`seg-col-${c.key}${CELL_CLASS[c.key] ?? ""}${stickyClass(c.key)}`}
+                    <td key={c.key} className={`seg-col-${c.key}${cellClass(c.key, r)}${stickyClass(c.key)}`}
                         title={cellTitle(c.key, r)}>
                       {renderCell(c.key, r)}
                     </td>

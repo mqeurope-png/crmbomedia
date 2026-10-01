@@ -79,10 +79,31 @@ describe("ScrollTable", () => {
 
   it("ajusta la altura máxima a lo que queda de pantalla (con un mínimo) salvo que se desactive", () => {
     const { unmount } = render(<ScrollTable label="T"><Table /></ScrollTable>);
-    // jsdom: innerHeight 768 y top 0 → 768 − 16.
-    expect(screen.getByRole("region").style.getPropertyValue("--scroll-table-max-h")).toBe("752px");
+    // jsdom: innerHeight 768, top 0, sin página → tope 768 − 16 − 8.
+    expect(screen.getByRole("region").style.getPropertyValue("--scroll-table-max-h")).toBe("744px");
     unmount();
     render(<ScrollTable label="T" fitViewport={false}><Table /></ScrollTable>);
     expect(screen.getByRole("region").style.getPropertyValue("--scroll-table-max-h")).toBe("");
+  });
+
+  it("con las fijas caben: scroll-padding para que el foco no quede bajo ellas; si no caben, se sueltan (no-pin)", () => {
+    const { unmount } = render(<ScrollTable label="T"><Table /></ScrollTable>);
+    let region = screen.getByRole("region", { name: "T" });
+    // Fijas: 30 + 104 + 100 = 234 px a la izquierda; con 1200 px de ancho caben.
+    setBox(region, { clientWidth: 1200, scrollWidth: 1800, scrollLeft: 0 });
+    fireEvent.scroll(region);
+    expect(region.parentElement).not.toHaveClass("no-pin");
+    expect(region.style.scrollPaddingLeft).toBe("234px");
+    unmount();
+
+    // Pantalla estrecha: 234 px de fijas en 300 px de ancho → se sueltan.
+    render(<ScrollTable label="T"><Table /></ScrollTable>);
+    region = screen.getByRole("region", { name: "T" });
+    setBox(region, { clientWidth: 300, scrollWidth: 1800, scrollLeft: 0 });
+    fireEvent.scroll(region);
+    expect(region.parentElement).toHaveClass("no-pin");
+    expect(region.style.scrollPaddingLeft).toBe("0px");
+    // La tabla conoce el ancho visible (avisos de fila a todo el ancho).
+    expect(screen.getByRole("table").style.getPropertyValue("--scroll-table-w")).toBe("300px");
   });
 });
