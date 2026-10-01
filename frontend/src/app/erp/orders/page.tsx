@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { PageHeader } from "../../components/PageHeader";
+import { ScrollTable } from "../../components/ScrollTable";
 import { CobroFactusolBadge } from "../../components/erp/CobroFactusolBadge";
 import { ExcludeSeguimientoModal } from "../../components/erp/ExcludeSeguimientoModal";
 import { OrderStatusBadge } from "../../components/erp/OrderStatusBadge";
@@ -315,6 +316,8 @@ function ErpOrdersScreen() {
   const canCobro = can(user, Cap.COBRO_REGISTER);
   // En «Ver anulados» no hay acciones de bloque (se reactivan desde la ficha).
   const selectable = canEdit && !showCancelled;
+  // Vista lista: el Nº es la última columna fija por la izquierda (tras la casilla).
+  const bandejaNumClass = `erp-bandeja-col-num sticky-l sticky-l-${selectable ? 1 : 0} sticky-l-last`;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -807,12 +810,13 @@ function ErpOrdersScreen() {
 
   /** El menú «⋯» de la fila: las acciones que no son la principal. El MISMO
    *  en tarjetas y en la vista lista. */
-  function rowMenu(o: OrderSummary): ReactNode {
+  function rowMenu(o: OrderSummary, inTable = false): ReactNode {
     if (!canEdit) return null;
     const wf = o.workflow;
     const cobrada = o.factusol_cobro_status === "cobrada";
     return (
-      <ActionsMenu label={`Más acciones ${o.order_number}`}>
+      // En la lista, flotante: la tabla con scroll propio no lo recorta.
+      <ActionsMenu label={`Más acciones ${o.order_number}`} floating={inTable}>
         <Link href={fichaHref(o)}>Abrir ficha</Link>
         {wf?.next_action === "marcar_completado" ? null : (
           <button
@@ -1240,91 +1244,95 @@ function ErpOrdersScreen() {
       ) : vista === "list" ? (
         /* --- Vista LISTA: la misma información y las mismas acciones, en tabla. --- */
         <div className="erp-bandeja-table-wrap">
-          <table className="data-table erp-bandeja-table">
-            <thead>
-              <tr>
-                {selectable ? <th className="bulk-checkbox-cell"><span className="sr-only">Selección</span></th> : null}
-                <th>Nº</th>
-                <th>Cliente</th>
-                <th>Tienda</th>
-                <th className="sortable" aria-sort={filtros.sortBy === "fecha"
-                  ? (filtros.sortDir === "asc" ? "ascending" : "descending") : undefined}>
-                  <button
-                    type="button" className="erp-bandeja-sort"
-                    aria-label={`Ordenar por fecha (${filtros.sortDir === "asc" ? "ascendente" : "descendente"})`}
-                    title="Pulsa para invertir el orden"
-                    onClick={() => sortByClick("fecha")}
-                  >
-                    Fecha <span className="sort-arrow" aria-hidden>{filtros.sortDir === "asc" ? "↑" : "↓"}</span>
-                  </button>
-                </th>
-                <th className="num">Importe</th>
-                <th>Estado</th>
-                <th>Cola · siguiente paso</th>
-                <th>Acciones</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredRows.map((o) => {
-                const wf = o.workflow;
-                return (
-                  <tr
-                    key={o.id}
-                    data-order-row={o.order_number}
-                    className={`${wf?.blocked ? "is-alert" : ""}${o.excluded || o.cancelled ? " is-muted" : ""}${selected.has(o.id) ? " is-selected" : ""}`}
-                  >
-                    {selectable ? (
-                      <td className="bulk-checkbox-cell">
-                        <input
-                          type="checkbox"
-                          aria-label={`Seleccionar ${o.order_number}`}
-                          checked={selected.has(o.id)}
-                          onChange={() => toggleRow(o.id)}
-                        />
+          {/* Scroll propio (≥ 1101 px): cabecera, casilla y Nº a la izquierda y
+              Acciones a la derecha quedan fijas; por debajo se apila. */}
+          <ScrollTable label="Lista de pedidos (desplazable)" className="erp-bandeja-scroll">
+            <table className="data-table erp-bandeja-table">
+              <thead>
+                <tr>
+                  {selectable ? <th className="bulk-checkbox-cell sticky-l sticky-l-0"><span className="sr-only">Selección</span></th> : null}
+                  <th className={bandejaNumClass}>Nº</th>
+                  <th>Cliente</th>
+                  <th>Tienda</th>
+                  <th className="sortable" aria-sort={filtros.sortBy === "fecha"
+                    ? (filtros.sortDir === "asc" ? "ascending" : "descending") : undefined}>
+                    <button
+                      type="button" className="erp-bandeja-sort"
+                      aria-label={`Ordenar por fecha (${filtros.sortDir === "asc" ? "ascendente" : "descendente"})`}
+                      title="Pulsa para invertir el orden"
+                      onClick={() => sortByClick("fecha")}
+                    >
+                      Fecha <span className="sort-arrow" aria-hidden>{filtros.sortDir === "asc" ? "↑" : "↓"}</span>
+                    </button>
+                  </th>
+                  <th className="num">Importe</th>
+                  <th>Estado</th>
+                  <th>Cola · siguiente paso</th>
+                  <th className="sticky-r">Acciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredRows.map((o) => {
+                  const wf = o.workflow;
+                  return (
+                    <tr
+                      key={o.id}
+                      data-order-row={o.order_number}
+                      className={`${wf?.blocked ? "is-alert" : ""}${o.excluded || o.cancelled ? " is-muted" : ""}${selected.has(o.id) ? " is-selected" : ""}`}
+                    >
+                      {selectable ? (
+                        <td className="bulk-checkbox-cell sticky-l sticky-l-0">
+                          <input
+                            type="checkbox"
+                            aria-label={`Seleccionar ${o.order_number}`}
+                            checked={selected.has(o.id)}
+                            onChange={() => toggleRow(o.id)}
+                          />
+                        </td>
+                      ) : null}
+                      <td className={bandejaNumClass}>
+                        <Link href={fichaHref(o)}><strong>{o.order_number}</strong></Link>
+                        <div className="erp-bandeja-badges">{smallBadges(o)}</div>
+                        {reviewInfo(o)}
                       </td>
-                    ) : null}
-                    <td>
-                      <Link href={fichaHref(o)}><strong>{o.order_number}</strong></Link>
-                      <div className="erp-bandeja-badges">{smallBadges(o)}</div>
-                      {reviewInfo(o)}
-                    </td>
-                    <td>{customerLabel(o) || "—"}</td>
-                    <td>{sourcePill(o)}</td>
-                    <td>
-                      <time className="erp-flow-date" dateTime={o.placed_at ?? undefined}>{d(o.placed_at)}</time>
-                    </td>
-                    <td className="num erp-flow-amount">
-                      {o.total_amount.toFixed(2)} {o.currency}
-                      {regimeLabel(wf?.regime) ? <small>{regimeLabel(wf?.regime)}</small> : null}
-                      {payMethodNote(o)}
-                    </td>
-                    <td><OrderStatusPills order={o} size="sm" /></td>
-                    <td>
-                      {wf ? (
-                        <>
-                          <span className="erp-bandeja-queue" style={{ ["--qc" as string]: QUEUE_COLOR[wf.queue] }}>
-                            <span className="erp-flow-dot" aria-hidden />
-                            {wf.queue_label}
-                          </span>
-                          {wf.next_action !== "ninguna" ? (
-                            <span className="muted small erp-bandeja-next" title={wf.next_action_hint}>
-                              {wf.next_action_label}
+                      <td>{customerLabel(o) || "—"}</td>
+                      <td>{sourcePill(o)}</td>
+                      <td>
+                        <time className="erp-flow-date" dateTime={o.placed_at ?? undefined}>{d(o.placed_at)}</time>
+                      </td>
+                      <td className="num erp-flow-amount">
+                        {o.total_amount.toFixed(2)} {o.currency}
+                        {regimeLabel(wf?.regime) ? <small>{regimeLabel(wf?.regime)}</small> : null}
+                        {payMethodNote(o)}
+                      </td>
+                      <td><OrderStatusPills order={o} size="sm" /></td>
+                      <td>
+                        {wf ? (
+                          <>
+                            <span className="erp-bandeja-queue" style={{ ["--qc" as string]: QUEUE_COLOR[wf.queue] }}>
+                              <span className="erp-flow-dot" aria-hidden />
+                              {wf.queue_label}
                             </span>
-                          ) : null}
-                        </>
-                      ) : "—"}
-                    </td>
-                    <td>
-                      <div className="erp-flow-item-actions">
-                        {primaryAction(o)}
-                        {rowMenu(o)}
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                            {wf.next_action !== "ninguna" ? (
+                              <span className="muted small erp-bandeja-next" title={wf.next_action_hint}>
+                                {wf.next_action_label}
+                              </span>
+                            ) : null}
+                          </>
+                        ) : "—"}
+                      </td>
+                      <td className="sticky-r">
+                        <div className="erp-flow-item-actions">
+                          {primaryAction(o)}
+                          {rowMenu(o, true)}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </ScrollTable>
         </div>
       ) : (
         <div className="erp-flow-list">
