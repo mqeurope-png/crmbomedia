@@ -261,6 +261,14 @@ Es la pantalla de un pedido concreto. De arriba abajo:
 - **«Resumen económico»** — **Base imponible**, **IVA** (con el régimen entre
   paréntesis, o *«exento»*), **Portes y otros cargos**, **Forma de pago**,
   **Total**, **Cobrado** y **Pendiente de cobro**.
+- **«Pedido» · Fecha del pedido** — con **«Cambiar fecha»** en los pedidos que
+  no vienen de la tienda (manuales, muestras, creados desde un documento de
+  FACTUSOL). La nueva fecha se usa en todas partes: ficha, listas, bandeja, Cola
+  SAT y Seguimiento (pantalla, Excel y la columna «Fecha» de la hoja de Drive) y
+  en la ordenación. **No** cambia las fechas de factura, cobro ni envío, no
+  vuelve a crear el pedido ni escribe en FACTUSOL, y queda en la auditoría
+  (fecha anterior → nueva, quién y cuándo). En un **pedido web** el botón está
+  bloqueado: su fecha es la de WooCommerce (el tooltip lo explica).
 - **Panel «FACTUSOL»** — las claves del pedido en FACTUSOL:
   - **Cliente** (nº de cliente vinculado, o *«sin vincular»*).
   - **Albarán** (número, o *«lo crea WooCommerce»* en web).
@@ -330,7 +338,12 @@ Es la pantalla de un pedido concreto. De arriba abajo:
 
 - **«Emitir factura en FACTUSOL»** — avisa: *«Se creará una factura real en
   FACTUSOL. Esta acción no es reversible desde el CRM.»* Puedes elegir empresa
-  emisora/serie, fecha y forma de pago; botón **«Emitir factura»**.
+  emisora/serie, fecha y forma de pago; botón **«Emitir factura»**. Si falla,
+  sale solo el **mensaje** (la traza técnica se queda en el log del servidor).
+  En un pedido web que la app WooCommerce→FACTUSOL **aún no ha importado**
+  (*«Este pedido aún no está en FACTUSOL…»*), aparece **«Volver a comprobar»**:
+  vuelve a buscarlo en FACTUSOL (solo lee) y, en cuanto está, **«Emitir
+  factura»** vuelve a estar disponible.
 - **«Registrar cobro en FACTUSOL»** — eliges la **cuenta/contrapartida**, la
   fecha y la forma de pago, marcas la casilla de confirmación y pulsas
   **«Registrar cobro»** (es un apunte contable en FACTUSOL). Si al dar de alta
@@ -521,7 +534,15 @@ es una ventana a FACTUSOL: aquí no se cambia nada salvo las acciones concretas
   FACTUSOL.
 - **«Crear pedido»** — crea un pedido de BoHub a partir del documento. Desde un
   presupuesto o pedido de cliente te lleva al alta ya rellenada; desde un
-  albarán o factura lo crea directamente.
+  albarán o factura lo crea directamente. Si el **cliente FACTUSOL del documento
+  no está vinculado a ninguna empresa del CRM**, se abre **«Vincular empresa»**:
+  busca y elige una empresa que ya exista, o **créala** con los datos de
+  FACTUSOL ya puestos (nombre, CIF, dirección, email…). Al vincularla, el pedido
+  se crea solo. El vínculo queda guardado en la empresa: los siguientes
+  documentos de ese cliente ya no lo piden. No escribe en FACTUSOL.
+- **«Vincular empresa»** (en la fila, cuando el cliente no tiene empresa) — lo
+  mismo sin crear el pedido. **No confundir** con **«Vincular a pedido»**, que
+  enlaza el documento con un pedido de BoHub que ya existe.
 - **«PDF»** — descarga el documento (o varios en ZIP si seleccionas).
 - **«Ver detalle»** — abre una ventana con las líneas, los cobros y opciones de
   PDF; desde ahí también puedes **crear el albarán/la factura** o **vincular** el
@@ -1567,7 +1588,9 @@ ese destinatario; la **factura** va siempre a nombre fiscal de la empresa.
 FACTUSOL**, en la pestaña correspondiente, pulsa **«Crear pedido»** en la fila.
 BoHub crea el pedido copiando cliente, líneas e importes (lee FACTUSOL, no escribe
 nada). Si viene de un albarán/factura, el pedido ya cuenta con ese documento
-enlazado.
+enlazado. Si el cliente FACTUSOL no tiene empresa en el CRM, BoHub pide
+**«Vincular empresa»** (elegir una o crearla con los datos de FACTUSOL) y luego
+sigue con el pedido.
 
 **Vincular / fusionar una empresa con su cliente FACTUSOL.** En la ficha de la
 empresa, panel **FACTUSOL**: **«Buscar en FACTUSOL»** → **«Vincular»**. Si ese

@@ -6,9 +6,11 @@ import {
   getFactusolInvoiceStatus,
   getFactusolFormasPago,
   getFactusolSeries,
+  checkFactusolPedido,
 } from "../../lib/erpApi";
 
 jest.mock("../../lib/erpApi", () => ({
+  checkFactusolPedido: jest.fn(),
   emitFactusolInvoice: jest.fn(),
   getFactusolInvoiceStatus: jest.fn(),
   getFactusolFormasPago: jest.fn(),
@@ -117,14 +119,38 @@ describe("EmitFactusolButton", () => {
     expect(await screen.findByLabelText("Factura FACTUSOL")).toHaveTextContent("526067");
   });
 
-  it("muestra error si el polling devuelve failed", async () => {
+  it("muestra error si el polling devuelve failed (solo el mensaje)", async () => {
     mockEmit.mockResolvedValue({ job_id: "job-2", order_id: "o1", status: "queued" });
     mockStatus.mockResolvedValue({ status: "failed", error: "boom" });
     const user = userEvent.setup();
     render(<EmitFactusolButton {...props()} />);
     await user.click(screen.getByRole("button", { name: /Emitir factura FACTUSOL/ }));
     await user.click(screen.getByRole("button", { name: "Emitir factura" }));
-    expect(await screen.findByText(/Error: boom/)).toBeInTheDocument();
+    expect(await screen.findByText("boom")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Volver a comprobar" })).not.toBeInTheDocument();
+  });
+
+  it("pedido aún no en FACTUSOL: mensaje limpio y «Volver a comprobar» deja emitir", async () => {
+    const mockCheck = checkFactusolPedido as jest.Mock;
+    mockEmit.mockResolvedValue({ job_id: "job-3", order_id: "o1", status: "queued" });
+    mockStatus.mockResolvedValue({
+      status: "failed", code: "pedido_no_en_factusol",
+      error: "Este pedido (BOPRIN-99959) aún no está en FACTUSOL. La app WooCommerce→FACTUSOL debe importarlo antes de facturar.",
+    });
+    mockCheck.mockResolvedValueOnce({ en_factusol: false, detail: "Sigue sin estar (ref BOP-099959)." });
+    mockCheck.mockResolvedValueOnce({ en_factusol: true, detail: null });
+    const user = userEvent.setup();
+    render(<EmitFactusolButton {...props()} />);
+    await user.click(screen.getByRole("button", { name: /Emitir factura FACTUSOL/ }));
+    await user.click(screen.getByRole("button", { name: "Emitir factura" }));
+    const msg = await screen.findByText(/aún no está en FACTUSOL/);
+    expect(msg.textContent).not.toMatch(/Traceback|File "/);
+    await user.click(screen.getByRole("button", { name: "Volver a comprobar" }));
+    expect(await screen.findByText("Sigue sin estar (ref BOP-099959).")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Volver a comprobar" }));
+    expect(await screen.findByText(/ya puedes emitir la factura/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Volver a comprobar" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Emitir factura FACTUSOL/ })).toBeEnabled();
   });
 
   it("openSignal abre el mismo modal (botón «Solicitar factura» de la tarjeta)", async () => {

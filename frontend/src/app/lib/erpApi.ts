@@ -2310,7 +2310,17 @@ export async function regenerateWooWebhookSecret(
 export type FactusolInvoiceStatus =
   | { status: "invoiced"; codfac: string }
   | { status: "pending" }
-  | { status: "failed"; error?: string };
+  /** `error`: solo el mensaje (la traza se queda en el log del servidor).
+   *  `code` «pedido_no_en_factusol»: el pedido web aún no lo ha importado la
+   *  app WooCommerce→FACTUSOL (la ficha ofrece «Volver a comprobar»). */
+  | { status: "failed"; error?: string; code?: string };
+
+/** «Volver a comprobar»: ¿la app WooCommerce→FACTUSOL ya importó el pedido? */
+export async function checkFactusolPedido(
+  orderId: string,
+): Promise<{ en_factusol: boolean; detail: string | null }> {
+  return apiFetch(`/api/erp/orders/${encodeURIComponent(orderId)}/factusol-pedido-check`);
+}
 
 /** Estado del pedido frente a FACTUSOL (C-2-fix2): consulta en vivo si ya
  *  existe factura (auto-vinculada) o albarán. `unknown` = no se pudo consultar
@@ -4600,6 +4610,17 @@ export async function createOrderFromDocumentType(
  *  (`factusol_serie_job_id`; se sigue con `getQuoteJobStatus`); sin albarán,
  *  solo registra la serie. 409 si ya tiene FACTURA (se anula desde FACTUSOL) o
  *  si es un pedido web. `confirm` obligatorio. */
+/** Cambia la FECHA del pedido (solo los que no vienen de la tienda; el
+ *  backend responde 409 `web_order` para un pedido web). Queda en la auditoría. */
+export async function changeOrderDate(
+  orderId: string, fecha: string,
+): Promise<{ id: string; changed: boolean; placed_at: string | null }> {
+  return apiFetch(`/api/erp/orders/${encodeURIComponent(orderId)}/fecha`, {
+    method: "PATCH",
+    body: JSON.stringify({ fecha }),
+  });
+}
+
 export async function changeOrderFactusolSerie(
   orderId: string, serie: number,
 ): Promise<OrderDetail & {

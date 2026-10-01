@@ -376,3 +376,57 @@ def test_prefijo_referencia_por_tienda_en_ajustes(http, session_factory) -> None
 
     with session_factory() as s:
         assert {"BOP", "FLE"} <= store_ref_prefixes(s)
+
+
+# --- «Volver a comprobar» tras «aún no está en FACTUSOL» (Emitir factura) ----
+
+
+def _check(http, order_id: str):
+    return http.get(f"/api/erp/orders/{order_id}/factusol-pedido-check",
+                    headers=auth_headers(http, "user"))
+
+
+def test_volver_a_comprobar_pedido_web(http) -> None:
+    """La app WooCommerce→FACTUSOL ya importó el pedido → `en_factusol` True
+    (vuelve «Emitir factura»); aún no → False con el mismo aviso que el PDF
+    (qué referencia se buscó). Solo lee F_PCL: no escribe nada."""
+    fake = FakeClient(_tables())
+    with _patched(fake):
+        ok = _check(http, "o-web")
+    assert ok.status_code == 200, ok.text
+    assert ok.json() == {"en_factusol": True, "detail": None}
+    assert fake.calls == [("F_PCL", "REFPCL='BOP-099917'")]
+
+    _set_ref_prefixes(http, {"fluxlasers": "FLE"})
+    with _patched(FakeClient(_tables())):
+        falta = _check(http, "o-web-nuevo")
+    assert falta.status_code == 200, falta.text
+    assert falta.json()["en_factusol"] is False
+    assert "FLE-005790" in falta.json()["detail"]
+    assert "aún no existe" in falta.json()["detail"]
+
+
+def test_volver_a_comprobar_no_web_y_factusol_caido(http) -> None:
+    """Mismo camino que la emisión: con albarán, ya se puede (sin consultar);
+    un pedido que no es web sin albarán ni pedido de cliente NO se da por
+    bueno (si no, «Volver a comprobar» y «Emitir» se repetirían sin fin): se
+    le dice que genere el albarán. FACTUSOL caído → 502 con un mensaje."""
+    fake = FakeClient(_tables())
+    with _patched(fake):
+        con_albaran = _check(http, "o-pro")
+    assert con_albaran.json() == {"en_factusol": True, "detail": None}
+    assert fake.calls == []
+    with _patched(FakeClient(_tables())):
+        r = _check(http, "o-manual")
+    assert r.json()["en_factusol"] is False
+    assert "genera el albarán" in r.json()["detail"]
+
+    class Caido(FakeClient):
+        def load_table(self, tabla, *, filtro="1=1", ejercicio=None):
+            raise FactusolError("Traceback (most recent call last): timeout")
+
+    with _patched(Caido(_tables())):
+        r = _check(http, "o-web")
+    assert r.status_code == 502
+    assert r.json()["detail"]["code"] == "factusol_unavailable"
+    assert "Traceback" not in r.text

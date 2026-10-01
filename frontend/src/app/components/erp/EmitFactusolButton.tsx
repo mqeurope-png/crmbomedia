@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { extractErrorMessage } from "../../lib/errors";
 import {
+  checkFactusolPedido,
   emitFactusolInvoice,
   getFactusolInvoiceStatus,
   type EmitFactusolOptions,
@@ -71,6 +72,9 @@ export function EmitFactusolButton({
     factusolInvoiceNumber || preInvoiced,
   );
   const [message, setMessage] = useState<string | null>(null);
+  /** El pedido web aún no está en FACTUSOL: se ofrece «Volver a comprobar». */
+  const [noEnFactusol, setNoEnFactusol] = useState(false);
+  const [comprobando, setComprobando] = useState(false);
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
 
   useEffect(() => () => { timers.current.forEach(clearTimeout); }, []);
@@ -111,7 +115,9 @@ export function EmitFactusolButton({
           onInvoiced?.(s.codfac);
         } else if (s.status === "failed") {
           setPhase("error");
-          setMessage(s.error ? `Error: ${s.error}` : "La emisión falló.");
+          // Solo el mensaje (el backend ya no manda la traza).
+          setMessage(s.error || "La emisión falló.");
+          setNoEnFactusol(s.code === "pedido_no_en_factusol");
         } else if (Date.now() >= deadline) {
           setPhase("error");
           setMessage("La emisión tarda más de lo esperado; revisa la bandeja.");
@@ -129,7 +135,26 @@ export function EmitFactusolButton({
       });
   }
 
+  async function volverAComprobar() {
+    setComprobando(true);
+    try {
+      const r = await checkFactusolPedido(orderId);
+      if (r.en_factusol) {
+        setNoEnFactusol(false);
+        setPhase("idle");
+        setMessage("El pedido ya está en FACTUSOL: ya puedes emitir la factura.");
+      } else {
+        setMessage(r.detail || "El pedido sigue sin estar en FACTUSOL.");
+      }
+    } catch (e) {
+      setMessage(extractErrorMessage(e, "No se pudo consultar FACTUSOL."));
+    } finally {
+      setComprobando(false);
+    }
+  }
+
   async function doEmit(options?: EmitFactusolOptions) {
+    setNoEnFactusol(false);
     setPhase("working");
     setMessage("Factura encolada, generando…");
     try {
@@ -164,6 +189,12 @@ export function EmitFactusolButton({
         <p className={phase === "error" ? "form-error" : "muted small"} role="status">
           {message}
         </p>
+      ) : null}
+      {noEnFactusol ? (
+        <button type="button" className="button small secondary" disabled={comprobando}
+                onClick={() => void volverAComprobar()}>
+          {comprobando ? "Comprobando…" : "Volver a comprobar"}
+        </button>
       ) : null}
 
       {phase === "confirm" && enableOptions ? (

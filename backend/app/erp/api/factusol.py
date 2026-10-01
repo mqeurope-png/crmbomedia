@@ -2789,7 +2789,10 @@ def _failed_status(exc_info: str) -> dict[str, Any]:
         detail = last.split(": ", 1)[1] if ": " in last else last
         return {"status": "failed", "code": "quote_not_editable",
                 "error": detail}
-    return {"status": "failed", "error": (exc_info or "la operación falló")[-400:]}
+    # Solo el mensaje de la excepción: la traza se queda en el log del servidor.
+    from app.erp.job_errors import estado_fallido  # noqa: PLC0415
+
+    return estado_fallido(exc_info, "La operación falló.")
 
 
 @router.get("/quotes/{codpre}")
