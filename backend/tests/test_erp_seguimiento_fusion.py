@@ -247,3 +247,73 @@ def test_la_recuperacion_no_pisa_una_fecha_que_ya_existe(factory):
         again = {c.order_number: c for c in planificar(s, pintados)}
         assert again["BOP-300"].accion == IGUAL
         assert aplicar(s, list(again.values()), actor_email="test") == []
+
+
+# --- arreglos de la revisión ------------------------------------------------------
+
+
+def test_un_numero_que_no_es_fecha_no_rompe_la_pasada(factory):
+    """Un nº grande en «Fecha recogido» de la gemela no desborda (antes,
+    OverflowError y ninguna pasada salía): no es una fecha, queda en la
+    auditoría y la hoja se escribe."""
+    with factory() as s:
+        o = _order(s, "BOP-210")
+        sheets = _con_gemela(s, o, _gemela("BOP-210", "Acme SL",
+                                           **{"Fecha recogido": 1234567890}))
+        _pasada(s, sheets, [_row(o)])
+        s.refresh(o)
+        assert fecha_recogido(o) is None
+        (rastro,) = _auditoria(s, FUSION_EVENT, o.id)
+        assert rastro["descartado"]["Fecha recogido"]["descartado"] == "1234567890"
+
+
+def test_factura_enviada_que_no_es_fecha_se_conserva_marcada(factory):
+    with factory() as s:
+        o = _order(s, "BOP-211")
+        sheets = _con_gemela(s, o, _gemela("BOP-211", "Acme SL",
+                                           **{"Factura enviada": "sí, por email",
+                                              "Nota / Incidencia": "llamar"}))
+        _pasada(s, sheets, [_row(o)])
+        ov = {v.column_key: v.value for v in s.scalars(select(SeguimientoOverride))}
+        assert ov["factura_enviada"] == "sí, por email"
+        assert ov["nota_incidencia"] == "llamar"
+        nota = _fila(sheets, o.id)[_c("Nota / Incidencia")]
+        assert nota.startswith("llamar") and "⚠ revisar" in nota
+
+
+def test_en_una_fila_manual_casada_la_nota_se_conserva_con_sus_marcas(factory):
+    """La Nota de la fila manual casada solo lleva marcas de la app: eso no es
+    un valor; la de la gemela se conserva delante y las marcas se quedan."""
+    from app.erp.seguimiento_mirror import Espejo
+
+    with factory() as s:
+        o = _order(s, "BOP-212")
+        esp = Espejo(session=s)
+        destino: list[Any] = [""] * len(SEGUIMIENTO_COLUMNS_V2)
+        destino[_c("Nº pedido")], destino[_c("Cliente")] = "BOP-212", "Acme SL"
+        destino[_c("Nota / Incidencia")] = "[BoHub: Situación#ab12, Fecha#cd34]"
+        destino[ID] = o.id
+        gemela = _gemela("BOP-212", "Acme SL", **{"Nota / Incidencia": "llamar al cliente"})
+        esp.repetidas.append((o.id, gemela, "fila del histórico"))
+        esp.fusionar_repetidas([], [destino])
+        assert destino[_c("Nota / Incidencia")] == (
+            "llamar al cliente [BoHub: Situación#ab12, Fecha#cd34]")
+        assert esp.stats["valores_rellenados"] == 1
+        assert esp.stats["valores_en_conflicto"] == 0
+
+
+def test_la_recuperacion_no_inventa_fechas_ni_se_tapa_con_texto(factory):
+    with factory() as s:
+        serial_raro = _order(s, "BOP-310")
+        enorme = _order(s, "BOP-311")
+        dos = _order(s, "BOP-312")
+        _legacy(s, serial_raro, 2, 0)                       # «1900-01-01»: no
+        _legacy(s, enorme, 1234567890, 1)                   # antes desbordaba
+        _legacy(s, dos, "recoge el cliente", 2)              # texto…
+        _legacy(s, dos, "24/09/2026", 3)                     # …y la fecha buena
+        s.commit()
+        casos = {c.order_number: c for c in planificar(s, {serial_raro.id, enorme.id, dos.id})}
+        assert casos["BOP-310"].accion == NO_ES_FECHA
+        assert casos["BOP-311"].accion == NO_ES_FECHA
+        assert casos["BOP-312"].accion == RELLENAR
+        assert casos["BOP-312"].fecha_hoja == "2026-09-24"

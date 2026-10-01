@@ -901,17 +901,19 @@ def _envio_label(order: Order) -> str:
       «Entregado»…) — no el genérico del transporte, que podía dar por recogido
       lo que la agencia aún no había escaneado. El texto literal de la agencia
       se ve en la app (Enviados, ficha).
-    - Genei sin escaneos: «Pendiente de entrada en red» mientras Genei siga en
-      un estado de ANTES de la red (`GENEI_ANTES_DE_LA_RED`) — también tras
-      «Marcar recogido» o con Genei en «recogida efectuada» (5): sin un escaneo
-      de la agencia no ha entrado en su red, y decir «En tránsito» era
-      adelantarse. Si Genei ya informa de un paso del transportista (en
-      reparto, en oficina…), el del transporte, como antes.
+    - Genei sin escaneos: con la etiqueta hecha y sin recoger, «Pendiente de
+      entrada en red» (el paquete espera a la agencia). Y también —sin ningún
+      evento del transportista y con Genei aún en un estado de ANTES de la red
+      (`GENEI_ANTES_DE_LA_RED`)— tras «Marcar recogido» o con el envío ya
+      tramitado: sin un escaneo de la agencia no ha entrado en su red, y decir
+      «En tránsito» era adelantarse. Si Genei ya informa de un paso del
+      transportista (en reparto, en oficina…), el del transporte, como antes.
     - OTRO courier (sin Genei): «Enviado» al marcar recogido (BoHub no ve sus
       escaneos); «Entregado» / «Incidencia» si se marca a mano en la ficha."""
     if is_sin_envio(order):
         return NO_APLICA
     from app.erp.integrations.genei.service import genei_state_of  # noqa: PLC0415
+    from app.erp.integrations.genei.status import is_tramitado  # noqa: PLC0415
     from app.erp.integrations.genei.tracking import carrier_step_label  # noqa: PLC0415
     from app.erp.shipping_courier import is_genei_shipment  # noqa: PLC0415
 
@@ -921,7 +923,12 @@ def _envio_label(order: Order) -> str:
         return real
     st = str(getattr(order.transport_status, "value", order.transport_status) or "")
     if is_genei_shipment(order):
-        if st in ("label_created", "in_transit") and _genei_antes_de_la_red(genei):
+        if st == "label_created":
+            return ENVIO_PRE_TRANSITO
+        if not genei.get("carrier_status") and _genei_antes_de_la_red(genei) and (
+            st == "in_transit"
+            or (st == "not_shipped" and is_tramitado(genei.get("state_bucket")))
+        ):
             return ENVIO_PRE_TRANSITO
     elif st == "in_transit":
         return ENVIO_ENVIADO

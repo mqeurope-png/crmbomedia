@@ -487,6 +487,9 @@ export function geneiPendienteDeEntrada(order: SatQueueItem): boolean {
   const g = order.genei;
   if (!g?.shipment_code || g.carrier_status) return false;
   if (["delivered", "incident", "returned"].includes(order.transport_status)) return false;
+  // Sin etiqueta ni recogida, solo si el envío ya está tramitado (como la hoja).
+  if (order.transport_status === "not_shipped"
+      && !["ready", "in_transit"].includes(g.state_bucket ?? "")) return false;
   if (g.state_code != null) return GENEI_ANTES_DE_LA_RED.includes(Number(g.state_code));
   return ["", "created", "processing", "ready"].includes(g.state_bucket ?? "");
 }

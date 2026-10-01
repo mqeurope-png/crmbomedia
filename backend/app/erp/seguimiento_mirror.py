@@ -365,8 +365,31 @@ def _mismo(col: int, a: Any, b: Any) -> bool:
 
 
 def _limpio(col: int, value: Any) -> Any:
-    """Valor de una celda para fusionar: la Nota sin las marcas de la app."""
-    return strip_revisar(value) if col == _NOTA else value
+    """Valor de una celda para fusionar: la Nota sin NINGUNA marca de la app
+    («[BoHub: …]», «[⚠ BoHub …]», «[⚠ revisar: …]»): solo lo que escribió
+    una persona."""
+    return _nota_usuario(value) if col == _NOTA else value
+
+
+def _nota_usuario(nota: Any) -> str:
+    from app.erp.drive_managed import _MARCAS_RE  # noqa: PLC0415
+
+    return _MARCAS_RE.sub("", _texto(nota)).strip()
+
+
+def _marcas_de(nota: Any) -> str:
+    """Solo las marcas de la app que lleva la Nota (para conservarlas)."""
+    from app.erp.drive_managed import _MARCAS_RE  # noqa: PLC0415
+
+    return " ".join(m.strip() for m in _MARCAS_RE.findall(_texto(nota)))
+
+
+def fecha_razonable(iso: str) -> bool:
+    """¿Es una fecha ISO de verdad y de un año creíble (1990–2100)?"""
+    try:
+        return 1990 <= date.fromisoformat(iso).year <= 2100
+    except (TypeError, ValueError):
+        return False
 
 
 def _celda(col: int, value: Any) -> str:
@@ -380,6 +403,11 @@ def _a_iso(value: Any) -> str:
     if value is None or value == "":
         return ""
     if isinstance(value, (int, float)) and not isinstance(value, bool):
+        # Solo un serial de fecha razonable (como `parse_sheet_date`); otro
+        # número (un nº de pedido tecleado ahí, 1234567890…) no es una fecha y
+        # convertirlo daría un año absurdo o desbordaría.
+        if not 20000 <= value <= 90000:
+            return _canon(value)
         return (_SHEETS_EPOCH + timedelta(days=int(math.floor(value)))).isoformat()
     parsed = parse_sheet_date(value)
     return parsed.isoformat() if parsed else _texto(value)
@@ -846,10 +874,8 @@ class Espejo:
             return nuevo
         if nombre == "Fecha recogido":
             iso = _a_iso(valor)
-            try:
-                date.fromisoformat(iso)
-            except ValueError:
-                return None
+            if not fecha_razonable(iso):
+                return None        # no se inventa: queda en la auditoría
             order = self.session.get(Order, rid)
             if order is None:
                 return None
@@ -864,11 +890,20 @@ class Espejo:
             return iso
         guardar, valido = _override_value(nombre, valor)
         if clave == "nota_incidencia":
-            guardar = strip_revisar(valor)
-        if not guardar or not valido:
+            guardar = _nota_usuario(valor)
+        if not guardar:
             return None
+        # Como una edición a mano: una «Factura enviada» que no es fecha se
+        # guarda igual (no se pierde) y sale marcada «⚠ revisar».
         self._leer_override(rid, clave, nombre, guardar)
-        row[clave] = guardar
+        if clave == "nota_incidencia":
+            # Las marcas de la app que ya llevaba la celda se quedan.
+            row[clave] = f"{guardar} {_marcas_de(row.get(clave))}".strip()
+        else:
+            row[clave] = guardar
+        if not valido:
+            row["nota_incidencia"] = add_revisar(
+                row.get("nota_incidencia"), [f"{nombre} no es una fecha"])
         return guardar
 
     def _fusionar_en_manual(
@@ -890,7 +925,8 @@ class Espejo:
                 descartadas[nombre] = {"descartado": _celda(col, suyo),
                                        "se_queda": _celda(col, nuestro)}
                 continue
-            destino[col] = suyo
+            destino[col] = (f"{suyo} {_marcas_de(destino[col])}".strip()
+                            if col == _NOTA else suyo)
             rellenadas[nombre] = _celda(col, suyo)
         self._rastro(rid, _texto(destino[_NUMERO]) or rid, origen, rellenadas, descartadas,
                      es_pedido=self.session.get(Order, rid) is not None)

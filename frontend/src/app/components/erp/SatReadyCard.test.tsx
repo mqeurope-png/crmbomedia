@@ -412,6 +412,16 @@ describe("Genei sin escaneo del transportista (estadosAgencia vacío)", () => {
     expect(screen.getByText("Genei: Recogida efectuada / en tránsito")).toBeInTheDocument();
   });
 
+  it("tramitado sin etiqueta descargada (not_shipped): ámbar solo si Genei ya lo tramitó", () => {
+    expect(satShippedLabel(order({ transport_status: "not_shipped", shipment_kind: "genei",
+      genei: { ...SIN_ESCANEO, state_code: 1, state_bucket: "ready", state_label: "Tramitado" } })))
+      .toBe("Pendiente de entrada en red");
+    expect(satShippedLabel(order({ transport_status: "not_shipped", shipment_kind: "genei",
+      genei: { ...SIN_ESCANEO, state_code: 7, state_bucket: "created",
+               state_label: "Recogida pendiente de pago" } })))
+      .toBe("Recogida pendiente de pago");
+  });
+
   it("en cuanto la agencia escanea, manda su estado", () => {
     expect(satShippedLabel(order({ transport_status: "in_transit", shipment_kind: "genei",
       genei: { ...SIN_ESCANEO, carrier_status: "EN TRANSITO", carrier_step: "in_transit" } })))
@@ -487,13 +497,15 @@ describe("envío con OTRO courier (no Genei)", () => {
     await waitFor(() => expect(mockPicked).toHaveBeenCalledWith("o1", {}));
   });
 
-  it("«Pendiente de recogida»: Genei sin escaneo en ámbar; otro courier en su color y con su nombre", () => {
+  it("«Pendiente de recogida»: Genei en azul; otro courier en su color y con su nombre", () => {
+    // (Genei aún sin tramitar: sin estado. Tramitado y sin escaneo → ámbar,
+    // ver «Genei sin escaneo del transportista».)
     const { rerender } = render(
       <SatReadyCard order={order({ sat_tab: "pendiente_recogida", shipment_kind: "genei",
                                    genei: { shipment_code: "G1", label_available: true } })}
                     onChanged={() => {}} />,
     );
-    expect(screen.getByText("Pendiente de entrada en red")).toHaveClass("badge", "warn");
+    expect(screen.getByText("Pendiente de recogida")).toHaveClass("badge", "info");
     rerender(
       <SatReadyCard order={order({ sat_tab: "pendiente_recogida", shipment_kind: "externo",
                                    courier: "UPS" })}

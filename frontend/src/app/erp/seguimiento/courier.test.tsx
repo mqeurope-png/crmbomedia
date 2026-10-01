@@ -275,6 +275,24 @@ describe("ERP · Seguimiento — columna Courier", () => {
     expect(aviso).toHaveTextContent("FAC-2-526109, ARTISJ-9492");
   });
 
+  it("la vista previa dice qué filas repetidas se fusionan antes de escribir", async () => {
+    mockRows(true);
+    (syncSeguimientoDrive as jest.Mock).mockResolvedValue({
+      ...managed(true),
+      migracion_courier: null,
+      espejo: { filas_fusionadas: ["BOP-200", "BOP-202"], valores_rellenados: 3,
+                valores_en_conflicto: 1 },
+    });
+    const user = userEvent.setup();
+    render(<SeguimientoPageView />);
+    await user.click(await screen.findByRole("button", { name: /Actualizar hoja de Drive/ }));
+    const aviso = await screen.findByText(/repetida\(s\) se fusionan/);
+    expect(aviso).toHaveTextContent("2 fila(s) repetida(s)");
+    expect(aviso).toHaveTextContent("3 valor(es) que faltaban se conservan");
+    expect(aviso).toHaveTextContent("1 distinto(s) se descartan");
+    expect(aviso).toHaveTextContent("BOP-200, BOP-202");
+  });
+
   it("sin migración pendiente, la vista previa no avisa de nada", async () => {
     mockRows(true);
     (syncSeguimientoDrive as jest.Mock).mockResolvedValue({

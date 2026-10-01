@@ -303,6 +303,30 @@ def test_estado_5_sin_escaneo_es_pendiente_de_entrada_en_red(session_factory):
         assert _envio_label(s.get(Order, oid)) == "En tránsito"
 
 
+def test_envio_sin_escaneo_casos_limite(session_factory):
+    """Etiqueta hecha y sin recoger: «Pendiente de entrada en red» como antes,
+    diga lo que diga Genei. Con un escaneo que no se clasifica, el del
+    transporte (#490). Tramitado sin etiqueta descargada: pendiente de
+    entrada; sin pagar aún: «Sin enviar»."""
+    with session_factory() as s:
+        oid = _order(s, genei={"state_code": 80, "state_bucket": "in_transit"})
+        o = s.get(Order, oid)
+        assert _envio_label(o) == "Pendiente de entrada en red"     # label_created
+        o.transport_status = "in_transit"
+        assert _envio_label(o) == "En tránsito"                     # Genei: en reparto
+        o.packing_json = json.dumps({"genei": {
+            "shipment_code": "GEN9", "state_code": 5, "state_bucket": "in_transit",
+            "carrier_status": "EN ALMACEN DESTINO", "carrier_step": "unknown"}})
+        assert _envio_label(o) == "En tránsito"                     # hay escaneo
+        o.transport_status = "not_shipped"
+        o.packing_json = json.dumps({"genei": {
+            "shipment_code": "GEN9", "state_code": 1, "state_bucket": "ready"}})
+        assert _envio_label(o) == "Pendiente de entrada en red"     # tramitado
+        o.packing_json = json.dumps({"genei": {
+            "shipment_code": "GEN9", "state_code": 7, "state_bucket": "created"}})
+        assert _envio_label(o) == "Sin enviar"                      # sin pagar
+
+
 def test_estado_2_por_webhook_no_marca_recogido(session_factory):
     with session_factory() as s:
         oid = _order(s, genei={"state_bucket": "processing"})

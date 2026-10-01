@@ -16,7 +16,6 @@ la siguiente «Actualizar hoja» la pinta.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
 from typing import Any
 
 from sqlalchemy import select
@@ -29,6 +28,7 @@ from app.erp.seguimiento_mirror import (
     _json_lista,
     _texto,
     con_hueco_courier,
+    fecha_razonable,
     formato_bd_viejo,
 )
 
@@ -57,17 +57,18 @@ def planificar(session: Session, pintados: set[str]) -> list[Caso]:
     """Los pedidos que se pintan arriba (`pintados`: ids de la zona viva y de
     los completados) cuya gemela del histórico tenía fecha de recogida."""
     viejo = formato_bd_viejo(session)
-    casos: list[Caso] = []
+    #: Un caso por pedido. Si el pedido tiene varias gemelas, manda la primera
+    #: con una fecha que se entiende (una con texto no tapa a otra con fecha).
+    casos: dict[str, Caso] = {}
     registros = session.scalars(
         select(SeguimientoLegacy)
         .where(SeguimientoLegacy.match_status == "confirmed",
                SeguimientoLegacy.matched_order_id.is_not(None))
         .order_by(SeguimientoLegacy.row_index)
     )
-    vistos: set[str] = set()
     for rec in registros:
         oid = str(rec.matched_order_id)
-        if oid not in pintados or oid in vistos:
+        if oid not in pintados or (oid in casos and casos[oid].accion != NO_ES_FECHA):
             continue
         vals = _json_lista(rec.raw_json)
         if viejo:
@@ -78,19 +79,18 @@ def planificar(session: Session, pintados: set[str]) -> list[Caso]:
         order = session.get(Order, oid)
         if order is None:
             continue
-        vistos.add(oid)
         iso = _a_iso(crudo)
         actual = fecha_recogido(order)
-        try:
-            date.fromisoformat(iso)
-        except ValueError:
+        if not fecha_razonable(iso):
+            if oid in casos:
+                continue           # ya hay una gemela apuntada; esta no aporta
             accion = NO_ES_FECHA
         else:
             accion = RELLENAR if not actual else (IGUAL if actual == iso else YA_TIENE)
-        casos.append(Caso(order_id=oid, order_number=order.order_number or oid,
+        casos[oid] = Caso(order_id=oid, order_number=order.order_number or oid,
                           legacy_id=rec.id, fecha_hoja=iso, fecha_pedido=actual,
-                          accion=accion))
-    return casos
+                          accion=accion)
+    return list(casos.values())
 
 
 def aplicar(session: Session, casos: list[Caso], *, actor_email: str) -> list[Caso]:
