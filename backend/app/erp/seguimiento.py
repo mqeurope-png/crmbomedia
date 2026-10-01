@@ -593,22 +593,20 @@ def _estado(order: Order) -> str:
 
 
 def _en_curso(order: Order, estado: str) -> bool:
-    """La sección de arriba del Excel: lo que Bart mira a diario. Un pedido
-    sale de «en curso» cuando está entregado Y facturado, o cuando se marcó
-    como gestionado fuera del sistema."""
+    """La sección de arriba del Excel y la zona VIVA de la hoja: lo que Bart
+    mira a diario. Un pedido sigue «en curso» hasta que se marca COMPLETADO
+    («Marcar completado», decisión de Bart) o se marca gestionado fuera del
+    sistema; quitarlo o anularlo lo sacan por otro lado (`filter_rows`).
+
+    ENTREGADO NO ES COMPLETADO: un pedido entregado (y facturado) sigue aquí
+    —p. ej. por cobrar— hasta que alguien lo da por cerrado. Antes salía solo
+    al estar entregado y facturado, y su fila desaparecía de la hoja de Drive
+    sin pasar a los completados (01/10/2026: cuatro pedidos, dos por cobrar).
+    `estado` ya no decide; se mantiene en la firma por los que la llaman."""
+    del estado
     if order.externally_processed_at is not None:
         return False
-    # «Marcar completado» (decisión de Bart): estado FINAL → sale de «en curso».
-    if order.completed_at is not None:
-        return False
-    # Estado propio «Reembolsado»: se queda a la vista (con su pastilla) aunque
-    # esté entregado y facturado — un reembolso deja trabajo por delante (el
-    # abono) y es justo lo que hay que ver. Se cierra con «Marcar completado».
-    if woo.is_refunded(order):
-        return True
-    return not (
-        estado == "facturado" and order.transport_status == TransportStatus.DELIVERED
-    )
+    return order.completed_at is None
 
 
 def visibility_for_status(woo_status: str | None) -> tuple[bool, str | None, bool]:

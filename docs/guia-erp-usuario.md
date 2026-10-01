@@ -742,6 +742,14 @@ sustituye el Excel manual de seguimiento: la app la genera y la **ordena sola**,
 sin mover filas a mano. Una **fila por pedido**, con el estado en una **columna**
 (no en la posición). Por defecto muestra los pedidos en curso.
 
+**En curso = hasta que se marca completado.** Un pedido sigue en curso (en la
+pantalla, en el Excel y en la zona viva de la hoja de Drive) hasta que alguien
+pulsa **«Marcar completado»**, o lo **quita** del seguimiento, se **anula** o
+se marca **gestionado fuera**. **Entregado no es completado**: un pedido
+entregado —por ejemplo, entregado pero **por cobrar**— sigue en curso, con
+Envío «Entregado», hasta que se da por cerrado. Al marcarlo completado baja a
+los completados de la hoja.
+
 **Qué entra y qué no.** Seguimiento es la lista de pedidos **vivos**, y la
 puerta es distinta según de dónde venga el pedido:
 
@@ -926,6 +934,11 @@ en **pestañas propias de la app**. Cada una tiene **dos zonas**:
   cabecera, con el que puedes reordenar por Situación o por cualquier otra
   columna. Debajo de una fila separadora *«──── HISTÓRICO — no se actualiza
   ────»*, el **histórico** en formato nuevo, que conserva su propio orden.
+  **Una fila de BoHub nunca desaparece de la hoja** sin motivo: si un pedido
+  deja de estar en curso, baja a los completados; solo sale si se quita del
+  seguimiento, se anula o se marca gestionado fuera. Si por un fallo de la
+  selección una fila fuera a desaparecer, BoHub la conserva y lo deja en el
+  log («se conservan sus filas») y en el resumen de la actualización.
 - **«Incidencias (app)»** — arriba, las incidencias que habéis reportado a
   mano; debajo del separador, los **pendientes heredados** de la hoja vieja.
 

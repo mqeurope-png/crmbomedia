@@ -292,29 +292,37 @@ def test_seguimiento_search_by_serial_and_tracking(session_factory, http) -> Non
 
 
 def test_seguimiento_default_shows_open_orders(session_factory, http) -> None:
+    """Entregado NO es completado: un pedido sigue «en curso» (pantalla, Excel
+    y zona viva de la hoja) hasta que se marca completado o se gestiona fuera,
+    aunque esté entregado y facturado (p. ej. por cobrar)."""
     with session_factory() as s:
         _order(s, "BOP-400001", cliente="Abierto SL")                   # en curso
         _order(s, "BOP-400002", cliente="Enviado SL",
                transport=TransportStatus.IN_TRANSIT)                    # en curso
-        _order(s, "BOP-400003", cliente="Cerrado SL",
+        _order(s, "BOP-400003", cliente="Entregado SL",
                transport=TransportStatus.DELIVERED,
-               invoice=InvoiceStatus.INVOICED_BY_ERP, factura="1-260100")
+               invoice=InvoiceStatus.INVOICED_BY_ERP, factura="1-260100")  # en curso
         ext = _order(s, "BOP-400004", cliente="Externo SL")
         ext.externally_processed_at = datetime.now(UTC)
+        hecho = _order(s, "BOP-400005", cliente="Completado SL",
+                       transport=TransportStatus.DELIVERED,
+                       invoice=InvoiceStatus.INVOICED_BY_ERP, factura="1-260101")
+        hecho.completed_at = datetime.now(UTC)
         s.commit()
     headers = auth_headers(http, "pedidos")
     # Por defecto: SOLO los en curso — la parte de arriba del Excel.
     r = http.get("/api/erp/seguimiento", headers=headers)
-    assert {i["order_number"] for i in r.json()["items"]} == {"BOP-400001", "BOP-400002"}
+    assert {i["order_number"] for i in r.json()["items"]} == {
+        "BOP-400001", "BOP-400002", "BOP-400003"}
     assert all(i["en_curso"] for i in r.json()["items"])
-    # Entregado+facturado y externalizado salen con en_curso=false.
+    # Completado y gestionado fuera salen con en_curso=false.
     r = http.get("/api/erp/seguimiento?en_curso=false", headers=headers)
-    assert r.json()["total"] == 4
+    assert r.json()["total"] == 5
     by_num = {i["order_number"]: i for i in r.json()["items"]}
-    assert by_num["BOP-400003"]["en_curso"] is False
+    assert by_num["BOP-400003"]["en_curso"] is True
     assert by_num["BOP-400003"]["estado"] == "facturado"
     assert by_num["BOP-400004"]["en_curso"] is False
-    # Enviado pero sin facturar sigue en curso (aún hay trabajo).
+    assert by_num["BOP-400005"]["en_curso"] is False
     assert by_num["BOP-400002"]["estado"] == "enviado"
 
 
