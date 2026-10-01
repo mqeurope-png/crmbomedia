@@ -87,7 +87,8 @@ export function VincularEmpresaFactusolModal({
       <label className="field">
         <span>{label}</span>
         <input
-          aria-label={label} value={datos[key]} disabled={busy}
+          // Mientras llega F_CLI no se edita: su respuesta rellenaría encima.
+          aria-label={label} value={datos[key]} disabled={busy || leyendo}
           onChange={(e) => setDatos((d) => ({ ...d, [key]: e.target.value }))}
         />
       </label>

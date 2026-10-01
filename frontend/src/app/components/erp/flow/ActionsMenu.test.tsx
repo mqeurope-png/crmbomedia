@@ -53,6 +53,25 @@ describe("ActionsMenu", () => {
     expect(screen.queryByRole("button", { name: "Reincluir en la bandeja" })).toBeNull();
   });
 
+  it("flotante: con el teclado, el foco entra en el menú y Escape lo devuelve al botón", async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <ActionsMenu label="Más acciones X-3" floating>
+          <button type="button">Reincluir en la bandeja</button>
+        </ActionsMenu>
+        <button type="button">Siguiente fila</button>
+      </>,
+    );
+    const trigger = screen.getByRole("button", { name: "Más acciones X-3" });
+    trigger.focus();
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("button", { name: "Reincluir en la bandeja" })).toHaveFocus();
+    expect(trigger).toHaveAttribute("aria-controls");
+    await user.keyboard("{Escape}");
+    expect(trigger).toHaveFocus();
+  });
+
   it("flotante: se cierra al desplazar la página o la tabla y al redimensionar; no al desplazar dentro del menú", async () => {
     const user = userEvent.setup();
     render(<Menu floating />);

@@ -66,6 +66,17 @@ it("crea la empresa con los datos de FACTUSOL ya puestos y la vincula", async ()
   expect(onLinked).toHaveBeenCalledWith({ id: "c-nueva", name: "JAP EDICIONES S.L." });
 });
 
+it("mientras lee F_CLI no se puede teclear (la respuesta no pisa lo escrito)", async () => {
+  let resolver: (v: unknown) => void = () => {};
+  (searchFactusolCustomers as jest.Mock).mockReturnValue(new Promise((r) => { resolver = r; }));
+  render(<VincularEmpresaFactusolModal codcli="385" clienteNombre="JAP EDICIONES S.L."
+                                       onClose={jest.fn()} onLinked={jest.fn()} />);
+  expect(screen.getByLabelText("Nombre")).toBeDisabled();
+  resolver([CLIENTE]);
+  await waitFor(() => expect(screen.getByLabelText("Nombre")).toBeEnabled());
+  expect(screen.getByLabelText("CIF / NIF")).toHaveValue("B12345678");
+});
+
 it("enlaza una empresa existente libre", async () => {
   const user = userEvent.setup();
   const onLinked = jest.fn();

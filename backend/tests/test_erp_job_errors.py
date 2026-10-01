@@ -37,6 +37,37 @@ def test_estado_fallido_marca_el_pedido_que_aun_no_esta() -> None:
     assert estado_fallido(otro, "falló") == {"status": "failed", "error": "BDEscribirRegistroError"}
 
 
+def test_mensaje_de_varias_lineas_y_excepciones_encadenadas() -> None:
+    """El cuerpo HTML/JSON de un 502 que FACTUSOL mete en el error no se queda
+    en su última línea («</html>»); con excepciones encadenadas, la última."""
+    html = (
+        "Traceback (most recent call last):\n"
+        '  File "/app/app/integrations/factusol/client.py", line 415, in _request\n'
+        "    raise FactusolError(\n"
+        "    ^^^^^^^^^^^^^^^^^^^\n"
+        "app.integrations.factusol.client.FactusolError: POST /api/CargaTabla → 502: "
+        "<html>\r\n<head><title>502 Bad Gateway</title></head>\r\n</html>\r\n"
+    )
+    msg = mensaje_de_fallo(html, "falló")
+    assert msg.startswith("POST /api/CargaTabla → 502: <html>")
+    assert "502 Bad Gateway" in msg and "\n" not in msg and "Traceback" not in msg
+    encadenada = (
+        "Traceback (most recent call last):\n"
+        '  File "a.py", line 1, in f\n'
+        "    x()\n"
+        "KeyError: 'CODPCL'\n\n"
+        "During handling of the above exception, another exception occurred:\n\n"
+        "Traceback (most recent call last):\n"
+        '  File "b.py", line 2, in g\n'
+        "    raise FactusolError(msg)\n"
+        "app.integrations.factusol.client.FactusolError: Detalle: BDEscribirRegistroError\n"
+    )
+    assert mensaje_de_fallo(encadenada, "falló") == "Detalle: BDEscribirRegistroError"
+    sin_mensaje = 'Traceback (most recent call last):\n  File "c.py", line 3, in h\n' \
+                  "    raise X()\napp.erp.Boom\n"
+    assert mensaje_de_fallo(sin_mensaje, "falló") == "falló"
+
+
 def test_estado_del_job_de_emision_sin_traza() -> None:
     """`GET …/factusol-invoice-status` con el job RQ fallido: mensaje limpio y
     el `code` que ofrece «Volver a comprobar»."""

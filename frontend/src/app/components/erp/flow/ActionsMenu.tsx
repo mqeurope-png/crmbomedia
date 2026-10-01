@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 /** Menú «⋯»: ahí viven las acciones que no son la principal, sin llenar la
@@ -29,6 +29,7 @@ export function ActionsMenu({
   const box = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const pop = useRef<HTMLDivElement>(null);
+  const popId = useId();
 
   useEffect(() => {
     if (!open) return;
@@ -69,6 +70,12 @@ export function ActionsMenu({
     const top = below + h > window.innerHeight - 8 && above >= 8 ? above : below;
     p.style.top = `${Math.round(top)}px`;
     p.style.right = `${Math.max(8, Math.round(window.innerWidth - r.right))}px`;
+    // En el portal, el menú queda al final de la página: con el teclado, Tab
+    // saltaría a la fila siguiente. El foco entra en su primera opción (Escape
+    // lo devuelve al botón).
+    p.querySelector<HTMLElement>(
+      "button:not(:disabled), a[href], select:not(:disabled), input:not(:disabled)",
+    )?.focus({ preventScroll: true });
   }, [open, floating]);
 
   useEffect(() => {
@@ -89,6 +96,7 @@ export function ActionsMenu({
   const popNode = (
     <div
       ref={pop}
+      id={popId}
       className={`erp-flow-menu-pop${floating ? " is-floating" : ""}`}
       // Un botón o enlace cierra el menú; un campo (select, input) no.
       onClick={(e) => {
@@ -109,6 +117,7 @@ export function ActionsMenu({
         aria-label={label}
         aria-haspopup="true"
         aria-expanded={open}
+        aria-controls={open ? popId : undefined}
         onClick={() => setOpen((v) => !v)}
       >
         ⋯

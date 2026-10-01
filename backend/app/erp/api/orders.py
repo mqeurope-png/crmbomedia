@@ -3641,10 +3641,11 @@ def factusol_pedido_check(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_view),
 ) -> dict[str, Any]:
-    """«Volver a comprobar» tras «aún no está en FACTUSOL»: ¿la app
-    WooCommerce→FACTUSOL ya ha importado el pedido (F_PCL por su referencia)?
-    Solo lee. `en_factusol` True → ya se puede emitir la factura. Un pedido que
-    no es web no pasa por esa importación: siempre True."""
+    """«Volver a comprobar» tras «aún no está en FACTUSOL»: ¿ya se puede
+    emitir la factura? Sigue el mismo camino que la emisión: con albarán,
+    sí; si no, ¿está el pedido de cliente (F_PCL por su referencia) que crea la
+    app WooCommerce→FACTUSOL? Solo lee. A un pedido que no es web y no tiene
+    ninguno de los dos se le dice que genere el albarán."""
     from app.erp.workflow import is_web_order  # noqa: PLC0415
     from app.integrations.factusol.client import (  # noqa: PLC0415
         FactusolClient,
@@ -3659,7 +3660,8 @@ def factusol_pedido_check(
     )
 
     order = _get_order(session, order_id, current_user)
-    if not is_web_order(order):
+    # Mismo camino que la emisión: con albarán, la factura sale de él.
+    if order.factusol_albaran_number:
         return {"en_factusol": True, "detail": None}
     try:
         client = FactusolClient.from_settings()
@@ -3667,6 +3669,11 @@ def factusol_pedido_check(
         prefix = _store_ref_prefix(session, order)
         if find_pcl_by_order(client, order, ejercicio, ref_prefix=prefix) is not None:
             return {"en_factusol": True, "detail": None}
+        if not is_web_order(order):
+            return {"en_factusol": False, "detail": (
+                f"El pedido {order.order_number} no tiene albarán en FACTUSOL ni un "
+                "pedido de cliente con su referencia: genera el albarán antes de facturar."
+            )}
         info = _web_pcl_missing_detail(
             session, client, order, ref=_compose_ref(order.order_number, prefix),
             ejercicio=ejercicio, probe=probe_pcl_refs_by_number,

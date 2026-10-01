@@ -407,13 +407,19 @@ def test_volver_a_comprobar_pedido_web(http) -> None:
 
 
 def test_volver_a_comprobar_no_web_y_factusol_caido(http) -> None:
-    """Un pedido que no es web no pasa por la importación (siempre True, sin
-    consultar FACTUSOL); FACTUSOL caído → 502 con un mensaje, no una traza."""
+    """Mismo camino que la emisión: con albarán, ya se puede (sin consultar);
+    un pedido que no es web sin albarán ni pedido de cliente NO se da por
+    bueno (si no, «Volver a comprobar» y «Emitir» se repetirían sin fin): se
+    le dice que genere el albarán. FACTUSOL caído → 502 con un mensaje."""
     fake = FakeClient(_tables())
     with _patched(fake):
-        r = _check(http, "o-manual")
-    assert r.json() == {"en_factusol": True, "detail": None}
+        con_albaran = _check(http, "o-pro")
+    assert con_albaran.json() == {"en_factusol": True, "detail": None}
     assert fake.calls == []
+    with _patched(FakeClient(_tables())):
+        r = _check(http, "o-manual")
+    assert r.json()["en_factusol"] is False
+    assert "genera el albarán" in r.json()["detail"]
 
     class Caido(FakeClient):
         def load_table(self, tabla, *, filtro="1=1", ejercicio=None):
