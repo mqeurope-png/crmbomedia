@@ -455,14 +455,13 @@ def formato_de_pestana(values: list[list[Any]]) -> str:
     """Formato de la pestaña, por su cabecera (`formato_de_cabecera`). Si encaja
     con varios (cabecera casi toda vaciada o renombrada), decide la columna en la
     que están las «id». SIN fila de cabecera no hay forma de ver si una columna se
-    ha movido: solo se acepta el formato actual —las «id» en la T, o ninguna
-    (pestaña nueva, o solo filas tecleadas)—; con las «id» en cualquier otra
-    columna (también en la S del formato anterior), «desconocido» (ver
-    `comprobar_columnas`)."""
+    ha movido: solo se acepta una pestaña sin ninguna «id» (nueva, o solo filas
+    tecleadas), que se lee con el formato actual; con «id», «desconocido» (ver
+    `comprobar_columnas`: hay que volver a poner la cabecera)."""
     cabecera = cabecera_de(values)
     columna = _columna_de_las_ids(values)
     if not cabecera:
-        return FORMATO_ACTUAL if columna in (None, _ID_INDEX) else FORMATO_DESCONOCIDO
+        return FORMATO_ACTUAL if columna is None else FORMATO_DESCONOCIDO
     posibles = _formatos_posibles(cabecera)
     if len(posibles) > 1:
         return next((f for f in posibles if columna is not None and _COLUMNA_ID[f] == columna),
@@ -475,16 +474,14 @@ def _fila_de_cabecera(values: list[list[Any]]) -> int | None:
 
 
 def _columna_movida(values: list[list[Any]], cabecera: list[Any], formato: str) -> int | None:
-    """Una columna del formato actual que el de la pestaña NO tiene, puesta a la
-    derecha de sus columnas y CON datos debajo —p. ej. «Courier» cortada y
-    pegada detrás de la «id» de una pestaña vieja—: es una columna movida, no
-    un rótulo suelto (ese, sin nada debajo, no estorba)."""
-    esperada = _CABECERAS[formato]
-    propios = {n.casefold() for n in esperada}
+    """Una columna con el nombre de una de la app, a la derecha de las columnas
+    del formato y CON datos debajo —p. ej. «Courier» cortada y pegada detrás de
+    la «id» de una pestaña vieja, o «Nota / Incidencia» llevada más allá de la
+    «id»—: es una columna movida (sus datos no se leerían), no un rótulo suelto
+    (ese, sin nada debajo, no estorba)."""
     fila_cab = _fila_de_cabecera(values)
-    for i in range(len(esperada), len(cabecera)):
-        nombre = _texto(cabecera[i]).casefold()
-        if nombre in _NOMBRES_CONOCIDOS and nombre not in propios and any(
+    for i in range(len(_CABECERAS[formato]), len(cabecera)):
+        if _texto(cabecera[i]).casefold() in _NOMBRES_CONOCIDOS and any(
             len(f) > i and _texto(f[i])
             for k, f in enumerate(values) if k != fila_cab and not is_separator(list(f))
         ):
@@ -501,38 +498,51 @@ def _hay_filas(values: list[list[Any]]) -> bool:
     )
 
 
+#: Qué hacer cuando las columnas no están donde tocan: deshacer el cambio, no
+#: retocar la cabecera (eso no devuelve los datos a su columna).
+_REMEDIO_DESHACER = (
+    "deshaz ese cambio de columnas (Ctrl+Z, o «Historial de versiones» de la hoja; "
+    "cambiar el nombre de la cabecera NO lo arregla)"
+)
+
+
 def comprobar_columnas(values: list[list[Any]], formato: str, title: str) -> None:
     """ANTES de tocar nada, que la pestaña se sepa leer, columna a columna:
 
     - la cabecera, la de un formato conocido, sin nombres de otras columnas fuera
-      de su sitio (`formato_de_cabecera`); sin fila de cabecera, solo el formato
-      actual;
-    - ninguna columna del formato actual movida a la derecha de las del formato
-      de la pestaña, con datos (`_columna_movida`);
-    - la «id» (oculta, la última) en su sitio: que exista en el formato actual y
-      que las de las filas estén en la columna que dice el formato.
+      de su sitio (`formato_de_cabecera`); sin fila de cabecera, solo si no hay
+      ninguna «id» (pestaña nueva o solo filas tecleadas);
+    - ninguna columna con nombre de la app a la derecha de las del formato, con
+      datos (`_columna_movida`);
+    - la «id» (oculta, la última) en su sitio: que esté la columna, y que TODAS
+      las «id» de las filas estén en ella (una fila con su «id» en otra columna
+      tiene celdas corridas: se leería mal y su nota se pisaría).
 
-    Si algo no cuadra —una columna insertada, borrada o movida a mano, «Courier»
-    insertada dos veces, la «id» borrada…—, leerla descolocaría todo lo que va
-    detrás (y la «id» de cada fila): no se escribe nada y se dice qué columna no
-    está donde toca."""
+    Si algo no cuadra —una columna insertada, borrada o movida a mano, celdas
+    insertadas en una fila, «Courier» insertada dos veces, la «id» borrada, la
+    fila de cabecera borrada…—, leerla descolocaría lo que va detrás (y la «id»
+    de cada fila): no se escribe nada y se dice qué no está donde toca. Lo que la
+    cabecera no puede delatar (columnas movidas y la cabecera retocada para que
+    parezca buena) lo comprueba después el espejo contra la foto
+    (`Espejo.comprobar_alineacion`)."""
     cabecera = cabecera_de(values)
-    columna = _columna_de_las_ids(values)
+    ids = _ids_por_columna(values)
+    columna = ids.most_common(1)[0][0] if ids else None
 
     def _parar(motivo: str, remedio: str) -> NoReturn:
         raise DriveSyncError(
             f"la pestaña «{title}» tiene las columnas descolocadas: {motivo}. No se ha "
-            f"escrito nada: {remedio} y vuelve a actualizar."
+            f"escrito nada: {remedio}. Después, vuelve a actualizar."
         )
 
     if formato == FORMATO_DESCONOCIDO:
         if not cabecera:
             _parar(
-                f"no tiene fila de cabecera y las «id» de sus filas están en la columna "
-                f"{_letra(columna if columna is not None else _ID_INDEX)}, no en la "
-                f"{_letra(_ID_INDEX)}, así que no se puede ver si alguna columna se ha "
+                "no encuentro la fila de cabecera (la de «Situación», «Nº pedido»… en "
+                "las 5 primeras filas) y así no se puede ver si alguna columna se ha "
                 "movido",
-                "vuelve a poner la fila de cabecera (deshacer, o «Historial de versiones»)",
+                "vuelve a poner la fila de cabecera como estaba (Ctrl+Z, o «Historial "
+                "de versiones» de la hoja)",
             )
         if _formatos_posibles(cabecera):
             _parar(
@@ -542,31 +552,31 @@ def comprobar_columnas(values: list[list[Any]], formato: str, title: str) -> Non
         esperada = min(_CABECERAS.values(), key=lambda c: len(_mal_puestas(cabecera, c)))
         i = _mal_puestas(cabecera, esperada)[0]
         _parar(
-            f"en la cabecera, la columna {_letra(i)} dice «{_texto(cabecera[i])}» y "
-            f"debería decir «{esperada[i]}» (¿se ha insertado, borrado o movido una "
-            "columna a mano?)",
-            "deja las columnas como estaban (quita la que sobra o vuelve a poner la "
-            "que falta)",
+            f"en la cabecera, la columna {_letra(i)} dice «{_texto(cabecera[i])}» donde "
+            f"debería estar «{esperada[i]}»: se ha insertado, borrado o movido una "
+            "columna a mano",
+            _REMEDIO_DESHACER,
         )
     if cabecera and (movida := _columna_movida(values, cabecera, formato)) is not None:
         nombre = _texto(cabecera[movida])
         _parar(
-            f"la columna {_letra(movida)} se llama «{nombre}» y tiene datos, pero en "
-            "esta versión de la pestaña esa columna no va ahí (¿se ha movido a mano?)",
-            f"si es la columna «{nombre}» movida, vuelve a ponerla en su sitio; si es "
-            "una columna tuya, cámbiale el nombre",
+            f"la columna {_letra(movida)} se llama «{nombre}» y tiene datos, pero está "
+            "fuera de las columnas de la app (¿se ha movido a mano?)",
+            f"si es la columna «{nombre}» movida, {_REMEDIO_DESHACER}; si es una columna "
+            "tuya, cámbiale el nombre",
         )
-    if columna is None:
-        sin_id = len(cabecera) <= _ID_INDEX or _texto(cabecera[_ID_INDEX]).casefold() != "id"
-        if formato == FORMATO_ACTUAL and cabecera and sin_id and _hay_filas(values):
-            _parar(
-                f"no está la columna «id» (la {_letra(_ID_INDEX)}, oculta) ni ninguna "
-                "«id» en las filas (¿se ha borrado la columna?)",
-                "deshaz el borrado (o recupera la hoja del «Historial de versiones»)",
-            )
-        return
     esperada_id = _COLUMNA_ID.get(formato)
-    if columna == esperada_id:
+    if not ids:
+        sin_columna_id = esperada_id is not None and (
+            len(cabecera) <= esperada_id
+            or _texto(cabecera[esperada_id]).casefold() != "id"
+        )
+        if cabecera and sin_columna_id and _hay_filas(values):
+            _parar(
+                f"no está la columna «id» (la {_letra(esperada_id)}, oculta) ni ninguna "
+                "«id» en las filas (¿se ha borrado la columna?)",
+                "deshaz el borrado (Ctrl+Z, o «Historial de versiones» de la hoja)",
+            )
         return
     if esperada_id is None:
         _parar(
@@ -574,12 +584,19 @@ def comprobar_columnas(values: list[list[Any]], formato: str, title: str) -> Non
             "cabecera es de una versión sin «id»",
             "revisa la cabecera",
         )
-    _parar(
-        f"las «id» de sus filas están en la columna {_letra(columna)} y deberían ir en "
-        f"la {_letra(esperada_id)}: sobra o falta una columna (¿se ha insertado o "
-        "borrado una a mano?)",
-        "quita la columna que sobra (o vuelve a poner la que falta)",
-    )
+    fuera = [
+        k + 1 for k, f in enumerate(values)
+        if f and not is_separator(list(f))
+        and any(_UUID_RE.match(_texto(c)) for j, c in enumerate(f) if j != esperada_id)
+    ]
+    if fuera:
+        filas = ", ".join(str(n) for n in fuera[:5]) + (" …" if len(fuera) > 5 else "")
+        _parar(
+            f"en {len(fuera)} fila(s) (la {filas}) la «id» no está en la columna "
+            f"{_letra(esperada_id)}: tienen celdas o columnas corridas (¿se han "
+            "insertado o borrado celdas o columnas a mano?)",
+            _REMEDIO_DESHACER,
+        )
 
 
 def realinear_fila(row: list[Any], header: list[Any], formato: str | None = None) -> list[Any]:
@@ -769,18 +786,40 @@ def quitar_columna_courier(
     formatos y la «id» sigue la última y oculta. Se pierden las celdas de
     «Courier» (la versión anterior no las tiene).
 
-    Las mismas comprobaciones que al insertarla: la pestaña tiene que estar en
-    el formato actual y bien colocada (`comprobar_columnas`), se relee justo
-    antes de borrar (si ha cambiado, no se toca) y después el recuento de celdas
-    por columna tiene que cuadrar. Sin `apply`, solo informa."""
+    Las mismas comprobaciones que al insertarla: la pestaña tiene que tener su
+    cabecera de 20 columnas y estar bien colocada (`comprobar_columnas`; si no,
+    se dice qué falla y que NO se arranque la versión anterior hasta
+    arreglarlo), se relee justo antes de borrar (si ha cambiado, no se toca) y
+    después el recuento de celdas por columna tiene que cuadrar. Sin `apply`,
+    solo informa."""
     valores = [list(r) for r in sheets.tab_values(title, raw=True)]
+    cabecera = cabecera_de(valores)
     formato = formato_de_pestana(valores)
-    if formato != FORMATO_ACTUAL:
+    if formato == FORMATO_DESCONOCIDO or not cabecera:
+        try:
+            comprobar_columnas(valores, formato, title)
+        except DriveSyncError as exc:
+            raise DriveSyncError(
+                f"{exc} NO arranques la versión anterior hasta arreglarlo: la leería "
+                "corrida."
+            ) from exc
         raise DriveSyncError(
-            f"la pestaña «{title}» no tiene la columna «Courier» (está en el formato "
-            f"«{formato}»): no hay nada que quitar"
+            f"la pestaña «{title}» no tiene fila de cabecera: vuelve a ponerla (Ctrl+Z, "
+            "o «Historial de versiones») antes de quitar «Courier». NO arranques la "
+            "versión anterior hasta arreglarlo."
         )
-    comprobar_columnas(valores, formato, title)
+    if formato != FORMATO_ACTUAL:
+        comprobar_columnas(valores, formato, title)
+        raise DriveSyncError(
+            f"la pestaña «{title}» ya está en el formato anterior a «Courier» "
+            f"(«{formato}»): no hay nada que quitar"
+        )
+    try:
+        comprobar_columnas(valores, formato, title)
+    except DriveSyncError as exc:
+        raise DriveSyncError(
+            f"{exc} NO arranques la versión anterior hasta arreglarlo: la leería corrida."
+        ) from exc
     fila_cab = _fila_de_cabecera(valores)
     antes = recuento_por_columna(valores)
     resumen: dict[str, Any] = {
@@ -804,20 +843,33 @@ def quitar_columna_courier(
         "startIndex": _COURIER_INDEX, "endIndex": _COURIER_INDEX + 1,
     }}}])
     nuevos = [list(r) for r in sheets.tab_values(title, raw=True)]
-    despues = recuento_por_columna(nuevos)
-    esperado = [*antes[:_COURIER_INDEX], *antes[_COURIER_INDEX + 1:]]
-    ancho = max(len(esperado), len(despues))
-    if (len(_sin_filas_vacias_al_final(nuevos)) != resumen["filas"]
-            or esperado + [0] * (ancho - len(esperado)) != despues + [0] * (ancho - len(despues))):
+    # Lo esperado: la misma pestaña sin la columna O. La última columna leída
+    # (Z) no se compara: puede haber recibido lo que había en AA, que la app no
+    # ve (no es una pérdida); por lo mismo, las filas se cuentan sin ella.
+    ultima = _ANCHO_LECTURA - 1
+
+    def _sin_z(filas: list[list[Any]]) -> list[list[Any]]:
+        return _sin_filas_vacias_al_final([list(f[:ultima]) for f in filas])
+
+    esperadas = _sin_z([[*f[:_COURIER_INDEX], *f[_COURIER_INDEX + 1:]] for f in valores])
+    leidas = _sin_z(nuevos)
+    a, b = recuento_por_columna(esperadas), recuento_por_columna(leidas)
+    ancho = max(len(a), len(b))
+    if len(esperadas) != len(leidas) or a + [0] * (ancho - len(a)) != b + [0] * (ancho - len(b)):
         logger.error(
-            "drive: quitar «Courier» de «%s» no cuadra — antes %s, después %s",
-            title, antes, despues,
+            "drive: quitar «Courier» de «%s» no cuadra — esperado %s, leído %s", title, a, b,
         )
         raise DriveSyncError(
             f"la columna «Courier» de «{title}» se ha borrado, pero el recuento de celdas "
-            "no cuadra con el de antes (¿alguien estaba escribiendo?): revisa la hoja"
+            "no cuadra con el de antes (¿alguien estaba escribiendo?): revisa la hoja "
+            "antes de arrancar la versión anterior"
         )
-    resumen.update({"aplicado": True, "celdas_despues": sum(despues)})
+    despues = recuento_por_columna(nuevos)
+    resumen.update({
+        "aplicado": True, "celdas_despues": sum(despues),
+        # Lo que había más allá de Z (invisible para la app) y ahora está en Z.
+        "celdas_que_entran_en_z": despues[ultima] if len(despues) > ultima else 0,
+    })
     logger.info("drive: columna «Courier» quitada de «%s» (vuelta atrás): %d filas, "
                 "%d celdas de Courier", title, resumen["filas"], resumen["celdas_courier"])
     return resumen
@@ -1686,6 +1738,9 @@ def push_managed_tabs(
     from app.erp.seguimiento_mirror import Espejo  # noqa: PLC0415
 
     espejo = Espejo.cargar(session, dry_run=dry_run)
+    # Y, contra la foto, que las filas de BoHub no estén corridas (columnas
+    # movidas con la cabecera retocada para parecer buena): tampoco se toca nada.
+    espejo.comprobar_alineacion(realinear_pestana(valores_pedidos), pedidos_tab)
     # Una pestaña escrita antes de «Courier» (18/19 columnas) se MIGRA aquí, una
     # sola vez, insertando la columna en la propia hoja (cabecera y todas las
     # filas, con un recuento de celdas antes/después); desde ahí ya tiene el

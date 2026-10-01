@@ -1107,5 +1107,173 @@ def test_vuelta_atras_quita_la_columna_courier_sin_tocar_nada_mas(factory):
         assert res["aplicado"] is True
         assert sheets.tabs[TAB] == [[c for i, c in enumerate(f) if i != COURIER] for f in hoja]
         assert sheets.tabs[TAB][0] == CABECERA_19
-        with pytest.raises(DriveSyncError, match="no tiene la columna «Courier»"):
+        with pytest.raises(DriveSyncError, match="ya está en el formato anterior"):
             quitar_columna_courier(sheets, TAB, apply=True)
+
+
+# --- cuarta revisión: sin cabecera, columnas movidas con la cabecera retocada --------
+
+
+def test_sin_cabecera_y_con_ids_no_se_acepta_ni_en_el_formato_actual(factory):
+    """Sin fila de cabecera (borrada, o «Situación» y «Nº pedido» vaciadas) no se
+    puede ver si una columna se ha movido: con «id» en las filas, no se escribe
+    nada aunque estén en la T (una columna arrastrada las deja ahí)."""
+    with factory() as s:
+        o, sheets = _migrada(s)
+        hoja = copy.deepcopy(sheets.tabs[TAB])
+        hoja[0][0] = hoja[0][1] = ""                       # A1 y B1 vaciadas
+        movida = [[f[0], f[1], f[_c("Tracking")], *[c for i, c in enumerate(f[2:], 2)
+                                                    if i != _c("Tracking")]]
+                  if len(f) > _c("Tracking") else list(f) for f in hoja]
+        for tab in (hoja, movida):
+            tocada = FakeTabs({HISTORICA: [], TAB: copy.deepcopy(tab)})
+            with pytest.raises(DriveSyncError, match="fila de cabecera"):
+                push_managed_tabs(s, tocada, [_row(o)])
+            s.rollback()
+            assert tocada.written == {}
+        s.refresh(o)
+        assert o.tracking_number == "1ZFV75016835455899"
+
+
+def test_una_columna_de_la_app_llevada_detras_de_la_id_no_se_lee_vacia(factory):
+    """«Nota / Incidencia» cortada y pegada más allá de la «id»: su sitio queda
+    vacío (un nombre «retocado»), pero la columna está fuera, con datos. No se
+    lee como vacía (se borrarían las notas y sus overrides): se para."""
+    with factory() as s:
+        o, sheets, _mundo = _mundo_viejo(s)
+        push_managed_tabs(s, sheets, [_row(o)])
+        s.commit()
+        hoja = copy.deepcopy(sheets.tabs[TAB])
+        nota = _c("Nota / Incidencia")
+        for fila in hoja:
+            celda = fila[nota] if len(fila) > nota else ""
+            if len(fila) > nota:
+                fila[nota] = ""
+            fila.extend([""] * (ID_INDEX + 2 - len(fila)))
+            fila.append(celda)
+        tocada = FakeTabs({HISTORICA: [], TAB: copy.deepcopy(hoja)})
+        with pytest.raises(DriveSyncError, match="se llama «Nota / Incidencia» y tiene datos"):
+            push_managed_tabs(s, tocada, [_row(o)])
+        s.rollback()
+        assert tocada.written == {}
+
+
+def test_columna_movida_con_la_cabecera_retocada_la_para_la_foto(factory):
+    """Lo que la cabecera no puede delatar: «Envío» arrastrada detrás de la «id»
+    y, después, N1 renombrada a «Envío» (justo lo que pedía el aviso). La
+    cabecera parece la vieja, pero las filas de BoHub traen en cada columna el
+    valor que la foto tiene en la de al lado: no se inserta nada ni se escribe."""
+    with factory() as s:
+        o, sheets = _migrada(s)
+        hoja = copy.deepcopy(sheets.tabs[TAB])
+        for fila in hoja:
+            celda = fila.pop(ENVIO) if len(fila) > ENVIO else ""
+            fila.extend([""] * (ID_INDEX - len(fila)))
+            fila.append(celda)
+        hoja[0][ENVIO] = "Envío"                           # «arreglada» a mano
+        hoja[0][-1] = ""                                   # y el rótulo movido, vaciado
+        tocada = FakeTabs({HISTORICA: [], TAB: copy.deepcopy(hoja)})
+        for dry_run in (True, False):
+            with pytest.raises(DriveSyncError, match="filas de BoHub"):
+                push_managed_tabs(s, tocada, [_row(o)], dry_run=dry_run)
+            s.rollback()
+        assert tocada.inserts == 0 and tocada.written == {}
+
+
+def test_columna_insertada_en_la_vieja_y_cabecera_retocada_la_para_la_foto(factory):
+    """En la pestaña vieja se inserta una columna vacía en N y se escribe
+    «Courier» en O1: la cabecera parece la nueva y las «id» están en la T, pero
+    el Envío de las filas de BoHub está en la columna de al lado."""
+    with factory() as s:
+        o, _sheets, mundo = _mundo_viejo(s)
+        hoja = _con_columna(copy.deepcopy(mundo["hoja"]), ENVIO)
+        hoja[0][ENVIO], hoja[0][COURIER] = "", "Courier"
+        sheets = FakeTabs({HISTORICA: [], TAB: copy.deepcopy(hoja)})
+        with pytest.raises(DriveSyncError, match="filas de BoHub"):
+            push_managed_tabs(s, sheets, [_row(o)])
+        s.rollback()
+        assert sheets.written == {}
+
+
+def test_una_celda_bloqueada_tocada_por_el_propietario_no_para_la_pasada(factory):
+    """Una celda bloqueada distinta de la foto (el propietario la tocó) no es una
+    columna corrida: la pasada sigue y BoHub la vuelve a escribir."""
+    with factory() as s:
+        o, sheets = _migrada(s)
+        hoja = copy.deepcopy(sheets.tabs[TAB])
+        fila = next(f for f in hoja if len(f) > ID_INDEX and f[ID_INDEX] == o.id)
+        fila[_c("Importe")] = 999
+        tocada = FakeTabs({HISTORICA: [], TAB: hoja})
+        push_managed_tabs(s, tocada, [_row(o)])
+        s.commit()
+        escrita = next(f for f in tocada.written[TAB] if len(f) > ID_INDEX and f[ID_INDEX] == o.id)
+        assert escrita[_c("Importe")] != 999
+
+
+def test_celdas_insertadas_en_una_fila_del_historico_no_se_leen_corridas():
+    """«Insertar celdas → desplazar a la derecha» en una sola fila del histórico:
+    su «id» pasa a la U y su Nota a la T. Aunque la mayoría de las «id» siga en
+    la T, no se lee (se pisaría la nota con una id nueva): se para diciendo qué
+    fila."""
+    from uuid import uuid4
+
+    from app.erp.drive_managed import FORMATO_ACTUAL, comprobar_columnas
+
+    def fila(numero: str) -> list[Any]:
+        f = [""] * len(SEGUIMIENTO_COLUMNS_V2)
+        f[0], f[1], f[_c("Nota / Incidencia")], f[ID_INDEX] = (
+            "Histórico", numero, f"nota {numero}", str(uuid4()))
+        return f
+
+    filas = [fila(f"V-{n}") for n in range(5)]
+    filas[2][3:3] = [""]                                    # la fila 4 de la hoja, corrida
+    hoja = [list(SEGUIMIENTO_COLUMNS_V2), [SEPARATOR_PEDIDOS], *filas]
+    with pytest.raises(DriveSyncError, match=r"\(la 5\) la «id» no está en la columna T"):
+        comprobar_columnas(hoja, FORMATO_ACTUAL, TAB)
+    comprobar_columnas([list(SEGUIMIENTO_COLUMNS_V2), *[fila("V-9")]], FORMATO_ACTUAL, TAB)
+
+
+def test_sin_la_columna_id_en_la_vieja_no_se_migra(factory):
+    """En la pestaña vieja (19 columnas), sin la columna «id» (borrada), no se
+    toma por la de 18 columnas: se para (las filas manuales perderían su id)."""
+    with factory() as s:
+        o, _sheets, mundo = _mundo_viejo(s)
+        hoja = _sin_columna(copy.deepcopy(mundo["hoja"]), CABECERA_19.index("id"))
+        sheets = FakeTabs({HISTORICA: [], TAB: copy.deepcopy(hoja)})
+        with pytest.raises(DriveSyncError, match="no está la columna «id»"):
+            push_managed_tabs(s, sheets, [_row(o)])
+        s.rollback()
+        assert sheets.inserts == 0 and sheets.written == {}
+
+
+def test_vuelta_atras_con_la_pestana_descolocada_avisa_y_no_borra(factory):
+    """Si la pestaña está descolocada, la vuelta atrás no dice «no hay nada que
+    quitar»: dice qué falla y que no se arranque la versión anterior."""
+    from app.erp.drive_managed import quitar_columna_courier
+
+    with factory() as s:
+        _o, sheets = _migrada(s)
+        hoja = _con_columna(copy.deepcopy(sheets.tabs[TAB]), COURIER)
+        hoja[0][COURIER] = "Courier"
+        tocada = FakeTabs({HISTORICA: [], TAB: copy.deepcopy(hoja)})
+        with pytest.raises(DriveSyncError, match="NO arranques la versión anterior"):
+            quitar_columna_courier(tocada, TAB, apply=True)
+        assert getattr(tocada, "deletes", 0) == 0 and tocada.tabs[TAB] == hoja
+
+
+def test_vuelta_atras_con_algo_mas_alla_de_z_no_falla_el_recuento(factory):
+    """Lo que hubiera más allá de Z (la app no lo ve) pasa a la Z al quitar la
+    columna: no es una pérdida, así que el recuento no falla; se avisa."""
+    from app.erp.drive_managed import quitar_columna_courier
+
+    class HastaZ(FakeTabs):
+        def tab_values(self, title: str, *, raw: bool = False) -> list[list[Any]]:
+            return [list(f[:26]) for f in self.tabs.get(title, [])]
+
+    with factory() as s:
+        _o, sheets = _migrada(s)
+        hoja = copy.deepcopy(sheets.tabs[TAB])
+        hoja[-1] = [*hoja[-1], *[""] * (26 - len(hoja[-1])), "nota en AA"]
+        tocada = HastaZ({HISTORICA: [], TAB: hoja})
+        res = quitar_columna_courier(tocada, TAB, apply=True)
+        assert res["aplicado"] is True and res["celdas_que_entran_en_z"] == 1

@@ -86,6 +86,9 @@ def main() -> int:
         return 0
     print(f"✔ Columna «Courier» quitada. Celdas con dato: {res['celdas_antes']} antes, "
           f"{res['celdas_despues']} después (las de «Courier» y su cabecera, fuera).")
+    if res.get("celdas_que_entran_en_z"):
+        print(f"AVISO: {res['celdas_que_entran_en_z']} celda(s) que estaban más allá de "
+              "la columna Z (fuera de lo que lee la app) han pasado a la Z: revísalas.")
     print("Ya puedes arrancar la versión anterior.")
     return 0
 

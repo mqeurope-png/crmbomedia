@@ -986,22 +986,30 @@ actualizar), para que lo arregles a mano antes:
   columnas, pasa lo mismo con Y y Z.)
 - **Las columnas están descolocadas**: una columna insertada, borrada o movida
   a mano («Courier» puesta dos veces, cortada y pegada detrás de la «id», la
-  «id» borrada…), o la fila de cabecera borrada. El aviso dice **qué columna**
-  no está donde toca y qué debería poner: quita la columna que sobra, vuelve a
-  poner la que falta (o la fila de cabecera: deshacer o «Historial de
-  versiones») y vuelve a actualizar.
+  «id» borrada…), celdas insertadas o borradas en una fila, o la fila de
+  cabecera borrada. El aviso dice **qué** no está donde toca. Lo que lo arregla
+  es **deshacer ese cambio** (Ctrl+Z, o «Historial de versiones» de la hoja);
+  cambiar el nombre de la cabecera **no**: los datos seguirían en otra columna.
 - **La base de datos aún no está al día** (la actualización del programa no ha
   terminado): vuelve a intentarlo en un momento.
 
-Una cabecera retocada no engaña a la migración: se compara **entera**, columna
-a columna, con la de cada versión. **Renombrar o vaciar** celdas de la
-cabecera no descoloca nada y se acepta (la pasada vuelve a escribir los
-nombres buenos). Lo que no se acepta es el nombre de **otra** columna fuera de
-su sitio: eso es una columna insertada, borrada o movida. Lo escrito a la
-derecha de la última columna (p. ej. «Courier» tecleado en T1 de la pestaña
-vieja) no cuenta, salvo que sea una columna de la app con datos debajo (una
-columna movida). **Sin fila de cabecera** solo se acepta el formato actual,
-con las «id» en la T: si no, se pide volver a poner la cabecera.
+Cómo se comprueba (en cada actualización, no solo en la migración):
+
+- **La cabecera** se compara **entera**, columna a columna, con la de cada
+  versión. **Renombrar o vaciar** celdas de la cabecera no descoloca nada y se
+  acepta (la pasada vuelve a escribir los nombres buenos). Lo que no se acepta
+  es el nombre de **otra** columna fuera de su sitio: eso es una columna
+  insertada, borrada o movida. Lo escrito a la derecha de la última columna
+  (p. ej. «Courier» tecleado en T1 de la pestaña vieja) no cuenta, salvo que
+  sea el nombre de una columna de la app con datos debajo (una columna movida).
+- **Sin fila de cabecera** (borrada, o sin «Situación» ni «Nº pedido» en las 5
+  primeras filas) no se puede ver si algo se ha movido: si hay filas con «id»,
+  se pide volver a ponerla.
+- **Las «id»**: todas tienen que estar en su columna (la T). Una fila con su
+  «id» en otra tiene celdas corridas.
+- **Las filas de BoHub** se comparan con lo último que BoHub escribió en ellas:
+  si en sus columnas bloqueadas aparecen los datos de la columna de al lado,
+  hay columnas corridas aunque la cabecera parezca buena.
 
 > **Volver a la versión anterior** (solo si hiciera falta), en este orden:
 >
@@ -1019,9 +1027,11 @@ con las «id» en la T: si no, se pide volver a poner la cabecera.
 >    (informe) y luego con `--apply`. Lo hace la cuenta de servicio, así que
 >    funciona aunque la columna esté protegida o la hoja sea de BoHub; antes
 >    comprueba que la base de datos ya está bajada y que la pestaña está bien
->    colocada. Se pierden las celdas de «Courier». (A mano solo podría el
->    propietario de la hoja; restaurar una versión anterior a la migración
->    también vale, pero deshace lo que se haya escrito desde entonces.)
+>    colocada (si no, dice qué falla: arréglalo antes de seguir). Se pierden
+>    las celdas de «Courier». A mano solo podría el propietario de la hoja. **No
+>    restaures una versión de la hoja anterior a la migración**: la versión
+>    anterior tomaría lo que ha cambiado desde entonces por ediciones a mano
+>    (y daría por borradas las filas a mano nuevas).
 > 4. **Arranca la versión anterior.**
 >
 > Si se hace en otro orden, la versión anterior leería corrido todo lo de

@@ -208,6 +208,21 @@ LIBRES: tuple[str, ...] = ("Nota / Incidencia",)
 EDITABLES: tuple[str, ...] = (*REGLA_TRACKING, *LIBRES)
 #: Solo BoHub (se protegen en la hoja). Incluye la «id».
 BLOQUEADAS: tuple[str, ...] = tuple(c for c in SEGUIMIENTO_COLUMNS_V2 if c not in EDITABLES)
+#: Índices de las bloqueadas de DATOS (sin la «id»): en las filas de BoHub, la
+#: hoja y la foto coinciden siempre en ellas (`Espejo.comprobar_alineacion`).
+_COLUMNAS_BLOQUEADAS: tuple[int, ...] = tuple(
+    i for i, c in enumerate(SEGUIMIENTO_COLUMNS_V2) if c in BLOQUEADAS and c != "id"
+)
+
+
+def _valor_de_al_lado(fila: list[Any], foto: list[Any], i: int) -> bool:
+    """¿La celda `i` de la fila trae, en vez del suyo, el valor que la foto tiene
+    en la columna de al lado? Es la marca de una columna insertada, borrada o
+    movida (todo corre una posición)."""
+    valor = _canon(fila[i]) if i < len(fila) else ""
+    if not valor or valor == (_canon(foto[i]) if i < len(foto) else ""):
+        return False
+    return any(0 <= j < len(foto) and valor == _canon(foto[j]) for j in (i - 1, i + 1))
 
 #: Columna de la hoja → clave del override (= clave del dict de fila de BoHub).
 #: Tracking no va aquí: se lee de vuelta al pedido (si no hay envío Genei).
@@ -518,6 +533,41 @@ class Espejo:
         aún sin convertir: hueco de «Courier» en memoria, con el mismo criterio
         que `poner_bd_al_dia`)."""
         return al_formato_actual(fila, row_id) if self._bd_formato_viejo else fila
+
+    # -- 0) que la pestaña esté bien colocada (contra la foto) ----------------
+
+    def comprobar_alineacion(self, valores: list[list[Any]], title: str) -> None:
+        """Última comprobación antes de tocar la hoja (y antes de migrarla): las
+        filas de BoHub tal como están en la pestaña —ya puesta al formato
+        actual, en memoria— frente a lo último que BoHub escribió en ellas (la
+        foto). En las columnas BLOQUEADAS coinciden siempre (solo BoHub las
+        escribe). Si en la mayoría de esas filas aparece en una columna el valor
+        que la foto tiene en la de al lado, hay columnas insertadas, borradas o
+        movidas aunque la cabecera parezca buena (p. ej. retocada a mano para
+        «arreglarla»): leerla corrida pisaría el histórico y las filas manuales,
+        así que no se escribe nada. Una celda distinta suelta (el propietario la
+        tocó, o la foto es de una pasada anterior) no cuenta: no es la de al lado.
+        Sin foto (primera pasada) no hay con qué comparar."""
+        from app.erp.drive_managed import _REMEDIO_DESHACER, is_separator  # noqa: PLC0415
+
+        comparadas = corridas = 0
+        for fila in valores:
+            if not fila or is_separator(list(fila)):
+                continue
+            kind, foto = self.snapshot.get(_fila_id(fila), (None, None))
+            if kind != KIND_ORDER or not foto:
+                continue
+            comparadas += 1
+            if any(_valor_de_al_lado(fila, foto, i) for i in _COLUMNAS_BLOQUEADAS):
+                corridas += 1
+        if comparadas and corridas * 2 > comparadas:
+            raise DriveSyncError(
+                f"la pestaña «{title}» tiene las columnas descolocadas: en {corridas} de "
+                f"las {comparadas} filas de BoHub los datos están en la columna de al "
+                "lado de la que les toca (se ha insertado, borrado o movido una columna "
+                f"a mano). No se ha escrito nada: {_REMEDIO_DESHACER}. Después, vuelve "
+                "a actualizar."
+            )
 
     # -- 1) filas de BoHub: lectura de vuelta ----------------------------------
 
