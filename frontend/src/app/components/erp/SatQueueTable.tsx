@@ -5,8 +5,9 @@ import { customerLabel, STATUS_LABELS, type SatQueueItem } from "../../lib/erpAp
 import { ScrollTable } from "../ScrollTable";
 import { SatAlbaranChip, useSatAlbaranAction } from "./SatPreparingCard";
 import {
-  SatCarrierStatus, satCourier, SatExternalShipmentEdit, SatReadyButtons, SatReadyDocChips,
-  SatShipmentBadge, SatTrackingField, SatTrackingLink, useSatReadyActions,
+  geneiPendienteDeEntrada, PENDIENTE_ENTRADA_RED, SatCarrierStatus, satCourier,
+  SatExternalShipmentEdit, SatReadyButtons, SatReadyDocChips, SatShipmentBadge,
+  SatTrackingField, SatTrackingLink, useSatReadyActions,
 } from "./SatReadyCard";
 import { SatObservaciones, SatTechData } from "./SatTechData";
 
@@ -175,7 +176,17 @@ function SatReadyRow(
         </td>
         <td className="sat-td-cliente">{customerLabel(order) || "—"}</td>
         <td>{order.store_slug ?? "—"}</td>
-        <td><StatusBadge status={order.preparation_status} /></td>
+        <td>
+          <StatusBadge status={order.preparation_status} />
+          {order.sat_tab === "pendiente_recogida" && geneiPendienteDeEntrada(order) ? (
+            <>
+              {" "}<span className="badge warn">{PENDIENTE_ENTRADA_RED}</span>
+              {order.genei?.state_label ? (
+                <span className="muted small"> · Genei: {order.genei.state_label}</span>
+              ) : null}
+            </>
+          ) : null}
+        </td>
         <TechCell order={order} />
         <td>
           <div className="sat-td-actions">

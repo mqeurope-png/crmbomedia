@@ -48,7 +48,7 @@ import logging
 import math
 import re
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -233,6 +233,22 @@ OVERRIDE_COLUMNS: dict[str, str] = {
     "Nº serie · WhiteRIP": "serie_whiterip",
     "Nota / Incidencia": "nota_incidencia",
 }
+#: Columnas que se FUSIONAN cuando el espejo encuentra dos filas con el mismo id
+#: y quita una (una copia en la zona viva, o la gemela del histórico de un
+#: pedido que ya se pinta arriba): columna → clave de la fila de BoHub. Nunca se
+#: tira un valor no vacío: si la fila que se queda no lo tiene, se conserva; si
+#: tiene otro, gana la que se queda y el descartado queda en la auditoría.
+COLUMNAS_FUSION: dict[str, str] = {
+    "Cliente": "cliente",
+    "Factura": "factura",
+    "Factura enviada": "factura_enviada",
+    "Tracking": "tracking",
+    "Fecha recogido": "recogido",
+    "Nº serie · WhiteRIP": "serie_whiterip",
+    "Nota / Incidencia": "nota_incidencia",
+}
+#: Acción de auditoría de una fusión (qué se conservó y qué se descartó).
+FUSION_EVENT = "erp.seguimiento_fila_fusionada"
 #: Overrides que también ve la pantalla de Seguimiento (y el Excel). La Nota
 #: solo vive en la hoja.
 SCREEN_OVERRIDES: tuple[str, ...] = ("cliente", "factura", "factura_enviada", "serie_whiterip")
@@ -346,6 +362,16 @@ def _mismo(col: int, a: Any, b: Any) -> bool:
     if col == _NOTA:
         return strip_revisar(a) == strip_revisar(b)
     return _canon(a) == _canon(b)
+
+
+def _limpio(col: int, value: Any) -> Any:
+    """Valor de una celda para fusionar: la Nota sin las marcas de la app."""
+    return strip_revisar(value) if col == _NOTA else value
+
+
+def _celda(col: int, value: Any) -> str:
+    """Texto de una celda para la auditoría (las fechas, en ISO)."""
+    return _a_iso(value) if col in PEDIDOS_DATE_COLUMNS else _canon(value)
 
 
 def _a_iso(value: Any) -> str:
@@ -482,6 +508,9 @@ class Espejo:
         "restauradas": 0,
         "borrado_masivo": False,
         "historico_no_encontradas": 0,
+        "filas_fusionadas": [],
+        "valores_rellenados": 0,
+        "valores_en_conflicto": 0,
     })
     #: ids leídos en la hoja en esta pasada (cualquier zona).
     ids_leidos: set[str] = field(default_factory=set)
@@ -491,6 +520,9 @@ class Espejo:
     genei_ids: set[str] = field(default_factory=set)
     #: overrides vigentes de las filas de BoHub de esta pasada.
     _overrides: dict[str, dict[str, str]] = field(default_factory=dict)
+    #: filas que se quitan por repetir el id de otra: (id, valores, de dónde).
+    #: Antes de pintar se FUSIONAN en la que se queda (`fusionar_repetidas`).
+    repetidas: list[tuple[str, list[Any], str]] = field(default_factory=list)
     #: registros del histórico por el id que llevan en la hoja.
     _legacy_por_sheet_id: dict[str, SeguimientoLegacy] = field(default_factory=dict)
     #: Vista previa con la BD aún en el formato anterior (sin «Courier»): las
@@ -603,7 +635,10 @@ class Espejo:
             if rid:
                 self.ids_leidos.add(rid)
             if rid in ids_bohub and not is_manual_row(fila):
-                en_hoja.setdefault(rid, fila)
+                if rid in en_hoja:
+                    self._repetida(rid, fila, "fila repetida en la zona viva")
+                else:
+                    en_hoja[rid] = fila
         for cruda in static_block(valores):
             fila = list(cruda)
             if is_separator(fila):
@@ -612,7 +647,10 @@ class Espejo:
             if rid:
                 self.ids_leidos.add(rid)
             if rid in ids_bohub and es_fila_completado(fila):
-                en_hoja.setdefault(rid, fila)
+                if rid in en_hoja:
+                    self._repetida(rid, fila, "fila repetida en completados")
+                else:
+                    en_hoja[rid] = fila
 
         tracking_nuevos: dict[str, str] = {}
         previos = load_overrides(self.session, sorted(en_hoja)) if en_hoja else {}
@@ -731,6 +769,157 @@ class Espejo:
         if rid:
             self.tipos[rid] = KIND_ORDER
         return out
+
+    # -- 1b) filas repetidas (mismo id): fusionar, no descartar ---------------
+
+    def _repetida(self, rid: str, fila: list[Any], origen: str) -> None:
+        """Otra fila de BoHub con el mismo id: se apunta para fusionarla. Lo que
+        en ella es IGUAL a lo último que escribió BoHub (la foto) no es de una
+        persona: no se fusiona (un valor viejo de BoHub no debe volver)."""
+        foto = (self.snapshot.get(rid) or (None, []))[1] or []
+        limpia = list(fila)
+        for nombre in COLUMNAS_FUSION:
+            col = _COL[nombre]
+            if col < len(limpia) and col < len(foto) and _mismo(col, limpia[col], foto[col]):
+                limpia[col] = ""
+        self.repetidas.append((rid, limpia, origen))
+
+    def fusionar_repetidas(
+        self, filas_bohub: list[dict[str, Any]], manuales: list[list[Any]],
+    ) -> None:
+        """Dos filas con el mismo id: la que se quita NO se tira sin más. Por cada
+        columna de `COLUMNAS_FUSION`, si la fila que se queda (la de BoHub, o la
+        fila manual casada con el pedido) está vacía y la otra no, se conserva el
+        valor —en BoHub y ya en la hoja de esta pasada—; si las dos tienen valor
+        y difieren, gana la que se queda y el descartado queda en la auditoría
+        (`FUSION_EVENT`) y en el resumen. Idempotente: lo ya conservado coincide
+        y no se vuelve a tocar."""
+        repetidas, self.repetidas = self.repetidas, []
+        if not repetidas:
+            return
+        bohub = {str(r.get("id")): r for r in filas_bohub if r.get("id")}
+        manual = {_fila_id(f): f for f in manuales if _fila_id(f)}
+        for rid, fila, origen in repetidas:
+            if rid in manual:
+                self._fusionar_en_manual(rid, manual[rid], fila, origen)
+            elif rid in bohub:
+                self._fusionar_en_pedido(bohub[rid], fila, origen)
+
+    def _fusionar_en_pedido(self, row: dict[str, Any], fila: list[Any], origen: str) -> None:
+        from app.erp.seguimiento import row_to_pedidos_values  # noqa: PLC0415
+
+        rid = str(row.get("id") or "")
+        actual = row_to_pedidos_values(row)
+        rellenadas: dict[str, str] = {}
+        descartadas: dict[str, dict[str, str]] = {}
+        for nombre, clave in COLUMNAS_FUSION.items():
+            col = _COL[nombre]
+            suyo = _limpio(col, fila[col] if len(fila) > col else "")
+            if not _texto(suyo):
+                continue
+            nuestro = _limpio(col, actual[col] if len(actual) > col else "")
+            if _mismo(col, suyo, nuestro):
+                continue
+            if _texto(nuestro):
+                descartadas[nombre] = {"descartado": _celda(col, suyo),
+                                       "se_queda": _celda(col, nuestro)}
+                continue
+            guardado = self._rellenar(row, nombre, clave, suyo)
+            if guardado is None:
+                descartadas[nombre] = {"descartado": _celda(col, suyo), "se_queda": ""}
+            else:
+                rellenadas[nombre] = guardado
+        self._rastro(rid, str(row.get("order_number") or rid), origen, rellenadas,
+                     descartadas, es_pedido=True)
+
+    def _rellenar(self, row: dict[str, Any], nombre: str, clave: str, valor: Any) -> str | None:
+        """Guarda en BoHub el valor de la fila que se quita (la que se queda no
+        tiene ninguno) y lo deja en la fila que se pinta. None si no se puede
+        guardar (con envío Genei manda Genei; una fecha que no es fecha)."""
+        rid = str(row.get("id") or "")
+        if nombre == "Tracking":
+            if row.get("envio_genei"):
+                return None
+            nuevo = self._leer_tracking(rid, valor)
+            if nuevo:
+                row["tracking"] = nuevo
+            return nuevo
+        if nombre == "Fecha recogido":
+            iso = _a_iso(valor)
+            try:
+                date.fromisoformat(iso)
+            except ValueError:
+                return None
+            order = self.session.get(Order, rid)
+            if order is None:
+                return None
+            if not self.dry_run:
+                from app.erp.factusol_albaran import packing_of, save_packing  # noqa: PLC0415
+                from app.erp.seguimiento import RECOGIDO_HOJA_KEY  # noqa: PLC0415
+
+                datos = packing_of(order)
+                datos[RECOGIDO_HOJA_KEY] = iso
+                save_packing(order, datos)
+            row["recogido"] = iso
+            return iso
+        guardar, valido = _override_value(nombre, valor)
+        if clave == "nota_incidencia":
+            guardar = strip_revisar(valor)
+        if not guardar or not valido:
+            return None
+        self._leer_override(rid, clave, nombre, guardar)
+        row[clave] = guardar
+        return guardar
+
+    def _fusionar_en_manual(
+        self, rid: str, destino: list[Any], fila: list[Any], origen: str,
+    ) -> None:
+        """La que se queda es una fila manual (casada con el pedido): se rellenan
+        sus celdas vacías; si tiene otro valor, manda la manual."""
+        rellenadas: dict[str, str] = {}
+        descartadas: dict[str, dict[str, str]] = {}
+        for nombre in COLUMNAS_FUSION:
+            col = _COL[nombre]
+            suyo = _limpio(col, fila[col] if len(fila) > col else "")
+            if not _texto(suyo) or col >= len(destino):
+                continue
+            nuestro = _limpio(col, destino[col])
+            if _mismo(col, suyo, nuestro):
+                continue
+            if _texto(nuestro):
+                descartadas[nombre] = {"descartado": _celda(col, suyo),
+                                       "se_queda": _celda(col, nuestro)}
+                continue
+            destino[col] = suyo
+            rellenadas[nombre] = _celda(col, suyo)
+        self._rastro(rid, _texto(destino[_NUMERO]) or rid, origen, rellenadas, descartadas,
+                     es_pedido=self.session.get(Order, rid) is not None)
+
+    def _rastro(
+        self, rid: str, numero: str, origen: str, rellenadas: dict[str, str],
+        descartadas: dict[str, dict[str, str]], *, es_pedido: bool,
+    ) -> None:
+        if not rellenadas and not descartadas:
+            return
+        self.stats["filas_fusionadas"].append(numero)
+        self.stats["valores_rellenados"] += len(rellenadas)
+        self.stats["valores_en_conflicto"] += len(descartadas)
+        logger.info(
+            "seguimiento: %s de %s fusionada: conservado %s; descartado (se queda el "
+            "otro, queda en la auditoría) %s", origen, numero,
+            sorted(rellenadas) or "nada", sorted(descartadas) or "nada",
+        )
+        if self.dry_run or not es_pedido:
+            return
+        from app.core.audit import record_event  # noqa: PLC0415
+
+        record_event(
+            self.session, action=FUSION_EVENT, target_type="order", target_id=rid,
+            actor=None, actor_email="drive-sheet",
+            metadata={"order_number": numero, "origen": origen,
+                      "conservado": rellenadas, "descartado": descartadas,
+                      "source": "seguimiento_drive"},
+        )
 
     # -- 2) filas manuales: validar, marcar, ingerir ---------------------------
 
@@ -861,6 +1050,10 @@ class Espejo:
             if sid in ids_vivos or (rec.matched_order_id and rec.matched_order_id in ids_vivos
                                     and rec.match_status == "confirmed"):
                 self.stats["historico_duplicados_suprimidos"] += 1
+                # Se quita (el pedido ya sale arriba), pero lo suyo NO se tira:
+                # se fusiona en la fila que se queda (`fusionar_repetidas`).
+                destino = sid if sid in ids_vivos else str(rec.matched_order_id)
+                self.repetidas.append((destino, list(fila), "fila del histórico"))
                 continue
             self.tipos[sid] = KIND_LEGACY
             out.append(_con_id(fila, sid))

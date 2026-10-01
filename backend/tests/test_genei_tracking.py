@@ -283,6 +283,26 @@ def test_la_incidencia_de_genei_si_mueve(session_factory):
         assert _transport(s.get(Order, oid)) == "incident"
 
 
+def test_estado_5_sin_escaneo_es_pendiente_de_entrada_en_red(session_factory):
+    """Genei dice «Recogida efectuada / en tránsito» (5) pero `estadosAgencia`
+    viene vacío: la agencia aún no lo ha escaneado. La hoja dice «Pendiente de
+    entrada en red», no «En tránsito» — tampoco tras «📤 Marcar recogido». En
+    cuanto llega el primer escaneo, manda el escaneo (#490)."""
+    with session_factory() as s:
+        oid = _order(s)
+        o = s.get(Order, oid)
+        apply_shipment_state(s, o, _shipment(5), tracking=_tracking())
+        s.commit()
+        o = s.get(Order, oid)
+        assert not genei_state_of(o).get("carrier_status")
+        assert _envio_label(o) == "Pendiente de entrada en red"
+        o.transport_status = "in_transit"                 # «📤 Marcar recogido»
+        assert _envio_label(o) == "Pendiente de entrada en red"
+        apply_shipment_state(s, o, _shipment(5), tracking=_tracking(EN_TRANSITO))
+        s.commit()
+        assert _envio_label(s.get(Order, oid)) == "En tránsito"
+
+
 def test_estado_2_por_webhook_no_marca_recogido(session_factory):
     with session_factory() as s:
         oid = _order(s, genei={"state_bucket": "processing"})
