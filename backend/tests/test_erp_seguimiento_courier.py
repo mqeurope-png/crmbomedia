@@ -902,3 +902,107 @@ def test_poner_la_bd_al_dia_no_corre_las_filas_que_ya_lo_estan(factory):
         assert por_id["man-19"][ID_INDEX] == "man-19" and por_id["man-19"][COURIER] == ""
         assert json.loads(s.get(SeguimientoSnapshot, "man-20").values_json) == nueva
         assert poner_bd_al_dia(s) is None                   # con su marca: nada
+
+
+# --- columnas insertadas / borradas / renombradas a mano (segunda revisión) -----------
+
+
+def _sin_columna(filas: list[list[Any]], col: int) -> list[list[Any]]:
+    """La pestaña con la columna `col` borrada (lo de detrás corre a la izquierda)."""
+    return [[c for i, c in enumerate(f) if i != col] for f in filas]
+
+
+def _con_columna(filas: list[list[Any]], col: int, valor: str = "") -> list[list[Any]]:
+    """La pestaña con una columna insertada en `col` (lo de detrás corre a la derecha)."""
+    return [[*f[:col], valor, *f[col:]] if len(f) > col else list(f) for f in filas]
+
+
+def test_una_columna_borrada_a_mano_en_la_pestana_migrada_no_se_lee_corrida(factory):
+    """Con la hoja ya en 20 columnas, alguien borra «Cliente» (D): la cabecera
+    ya no es la de la app (todo lo de detrás ha corrido) y las «id» han pasado
+    a la S. No se toma por la pestaña vieja (no se inserta otra «Courier») ni
+    se lee corrida: no se escribe nada y se dice qué columna falla."""
+    with factory() as s:
+        o, sheets, _mundo = _mundo_viejo(s)
+        push_managed_tabs(s, sheets, [_row(o)])
+        s.commit()
+        hoja = _sin_columna(sheets.tabs[TAB], _c("Cliente"))
+        tocada = FakeTabs({HISTORICA: [], TAB: copy.deepcopy(hoja)})
+        for dry_run in (True, False):
+            with pytest.raises(DriveSyncError, match="descolocadas.*columna D"):
+                push_managed_tabs(s, tocada, [_row(o)], dry_run=dry_run)
+            s.rollback()
+        assert tocada.inserts == 0 and tocada.written == {} and tocada.tabs[TAB] == hoja
+        assert s.scalars(select(SeguimientoOverride)).all() == []
+
+
+def test_una_columna_insertada_a_mano_en_la_pestana_vieja_no_se_lee_corrida(factory):
+    """En la pestaña vieja (19 columnas) alguien inserta una columna detrás de
+    «Origen»: las «id» quedan en la T, como en el formato nuevo, pero la
+    cabecera delata que todo lo de detrás ha corrido. No se escribe nada."""
+    with factory() as s:
+        o, _sheets, mundo = _mundo_viejo(s)
+        hoja = _con_columna(mundo["hoja"], _c("Origen") + 1)
+        hoja[0][_c("Origen") + 1] = "Comercial"
+        sheets = FakeTabs({HISTORICA: [], TAB: copy.deepcopy(hoja)})
+        for dry_run in (True, False):
+            with pytest.raises(DriveSyncError, match="descolocadas"):
+                push_managed_tabs(s, sheets, [_row(o)], dry_run=dry_run)
+            s.rollback()
+        assert sheets.inserts == 0 and sheets.written == {} and sheets.tabs[TAB] == hoja
+        assert s.get(SeguimientoSyncMeta, META_FORMATO_BD) is None
+
+
+def test_una_celda_de_la_cabecera_renombrada_no_para_la_pasada(factory):
+    """Renombrar una celda de la cabecera no descoloca nada: se tolera (una), la
+    migración se hace igual y la pasada vuelve a escribir el nombre bueno."""
+    with factory() as s:
+        o, _sheets, mundo = _mundo_viejo(s)
+        hoja = copy.deepcopy(mundo["hoja"])
+        hoja[0][CABECERA_19.index("Cliente")] = "Cliente final"
+        sheets = FakeTabs({HISTORICA: [], TAB: hoja})
+        res = push_managed_tabs(s, sheets, [_row(o)])
+        s.commit()
+        assert sheets.inserts == 1 and res["migracion_courier"]["estado"] == "hecha"
+        assert sheets.written[TAB][0] == SEGUIMIENTO_COLUMNS_V2
+        hist = _historico_escrito(sheets)
+        assert [h[ENVIO] for h in hist] == ["UPS", "FEDEX", "DSV"]
+        assert [h[_c("Tracking")] for h in hist] == ["TRK-1", "TRK-2", ""]
+
+
+def test_sin_cabecera_y_con_las_ids_fuera_de_sitio_no_se_escribe(factory):
+    """Sin fila de cabecera, el formato sale de dónde están las «id»; si están
+    en una columna que no es de ningún formato (aquí, a la izquierda de O, tras
+    borrar varias columnas), no se sabe leer: no se escribe nada."""
+    with factory() as s:
+        o, sheets, _mundo = _mundo_viejo(s)
+        push_managed_tabs(s, sheets, [_row(o)])
+        s.commit()
+        hoja = [list(f) for f in sheets.tabs[TAB][1:]]
+        for _ in range(6):
+            hoja = _sin_columna(hoja, 1)
+        tocada = FakeTabs({HISTORICA: [], TAB: copy.deepcopy(hoja)})
+        with pytest.raises(DriveSyncError):
+            push_managed_tabs(s, tocada, [_row(o)])
+        s.rollback()
+        assert tocada.inserts == 0 and tocada.written == {}
+
+
+def test_pestana_de_17_columnas_con_algo_en_y_no_se_reescribe(factory):
+    """Al pasar de 17 a 20 columnas se abren DOS huecos: lo de Y y Z se saldría
+    del rango de la app. La vista previa lo cuenta y la pasada no escribe."""
+    from app.erp.drive_managed import _HEADER_V2_SIN_RECOGIDO
+
+    with factory() as s:
+        o = _order(s, "BOP-301")
+        fila = [""] * 17
+        fila[1], fila[3], fila[4] = "M-17", "Manual SL", "MANUAL"
+        fila = [*fila, *[""] * 7, "apunte en Y"]                # Y = índice 24
+        hoja = [list(_HEADER_V2_SIN_RECOGIDO), fila]
+        sheets = FakeTabs({HISTORICA: [], TAB: copy.deepcopy(hoja)})
+        previa = push_managed_tabs(s, sheets, [_row(o)], dry_run=True)
+        assert previa["migracion_courier"]["celdas_que_no_caben"] == 1
+        with pytest.raises(DriveSyncError, match="columnas Y y Z"):
+            push_managed_tabs(s, sheets, [_row(o)])
+        s.rollback()
+        assert sheets.written == {} and sheets.tabs[TAB] == hoja

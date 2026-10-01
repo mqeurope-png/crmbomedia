@@ -11,10 +11,15 @@ marca), no aquí: así nunca conviven una pasada vieja y datos ya convertidos.
 Vuelta atrás (`downgrade`): si el espejo ya convirtió lo guardado (marca =
 20), se devuelve al formato de 19 columnas —se quita «Courier»— ANTES de
 borrar la tabla, así que al volver a subir se convierte una sola vez. La HOJA
-no la toca una migración: para volver de verdad a la versión anterior hay que
-borrar antes a mano la columna O («Courier») de «Seguimiento (app)» (o
-restaurar una versión de la hoja anterior a la migración); si no, la versión
-anterior leería corrido todo lo de detrás de «Envío».
+no la toca una migración. Para volver de verdad a la versión anterior, en este
+orden (docs/guia-erp-usuario.md): 1) parar la sincronización (interruptor
+automático apagado, `worker-sync` parado, nadie pulsando «Actualizar hoja de
+Drive»); 2) este `downgrade`, con la imagen nueva en un contenedor suelto —sin
+la tabla, cualquier pasada de la versión nueva se para antes de tocar la
+hoja—; 3) borrar a mano la columna O («Courier») de «Seguimiento (app)» (o
+restaurar una versión de la hoja anterior a la migración); 4) arrancar la
+versión anterior. En otro orden, la versión nueva volvería a insertar la
+columna, o la anterior leería corrido todo lo de detrás de «Envío».
 
 Sin DEFAULT en la columna TEXT (MySQL lo rechaza, error 1101): el ORM siempre
 da valor.

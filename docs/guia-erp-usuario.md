@@ -982,22 +982,41 @@ actualizar), para que lo arregles a mano antes:
 
 - **La columna Z tiene algo.** Al insertar la columna, lo de Z pasaría a AA,
   fuera de lo que lee la app, y se quedaría suelto. Muévelo a otra pestaña (o
-  bórralo) y vuelve a actualizar.
-- **Las columnas están descolocadas**: las «id» de las filas no están donde
-  dice la cabecera (una columna insertada o borrada a mano, «Courier» puesta
-  dos veces…). Deja la «id» como última columna (T) y vuelve a actualizar.
+  bórralo) y vuelve a actualizar. (En una pestaña aún más antigua, de 17
+  columnas, pasa lo mismo con Y y Z.)
+- **Las columnas están descolocadas**: la cabecera no es la de la app (una
+  columna insertada, borrada o renombrada a mano, «Courier» puesta dos veces…)
+  o las «id» de las filas no están en su columna. El aviso dice **qué columna**
+  no está donde toca y qué debería poner: quita la columna que sobra, vuelve a
+  poner la que falta (o el nombre que tenía) y vuelve a actualizar.
 - **La base de datos aún no está al día** (la actualización del programa no ha
   terminado): vuelve a intentarlo en un momento.
 
-Una cabecera retocada (p. ej. «Courier» escrito a mano en otra columna) no
-engaña a la migración: el formato se reconoce por lo que hay justo detrás de
-«Envío» y, si la cabecera no se entiende, por dónde están las «id».
+Una cabecera retocada no engaña a la migración: se compara **entera**, columna
+a columna, con la de cada versión. Lo que haya escrito a la derecha de la
+última columna (p. ej. «Courier» tecleado en T1 de la pestaña vieja) no
+cuenta, y una sola celda renombrada se tolera (la pasada la vuelve a escribir
+bien), salvo «Envío» y las dos de detrás, que son las que delatan la versión.
+Sin fila de cabecera, el formato se reconoce por la columna en la que están
+las «id».
 
-> **Volver a la versión anterior** (solo si hiciera falta): antes de arrancarla,
-> borra a mano la columna O («Courier») de «Seguimiento (app)» —o restaura una
-> versión de la hoja anterior a la migración— y luego baja la base de datos
-> (`alembic downgrade 20260930_0122`), que devuelve lo guardado a 19 columnas.
-> Si no, la versión anterior leería corrido todo lo de detrás de «Envío».
+> **Volver a la versión anterior** (solo si hiciera falta), en este orden:
+>
+> 1. **Para la sincronización**: apaga «Sincronizar la hoja automáticamente»
+>    en Configuración ERP, para el `worker-sync` y que nadie pulse «Actualizar
+>    hoja de Drive». Si no, la versión nueva, que sigue en marcha, volvería a
+>    insertar la columna «Courier» en cuanto la quitaras.
+> 2. **Baja la base de datos** con la imagen nueva, en un contenedor suelto:
+>    `docker compose … run --rm api alembic downgrade 20260930_0122`. Devuelve
+>    lo guardado a 19 columnas y quita la tabla de estado del espejo; desde ese
+>    momento, cualquier pasada de la versión nueva se para sin tocar la hoja.
+>    No reinicies el `api` nuevo: al arrancar vuelve a subir la base de datos.
+> 3. **Borra a mano la columna O («Courier»)** de «Seguimiento (app)», o
+>    restaura una versión de la hoja anterior a la migración.
+> 4. **Arranca la versión anterior.**
+>
+> Si se hace en otro orden, la versión anterior leería corrido todo lo de
+> detrás de «Envío».
 
 > Google siempre deja editar las celdas protegidas al **propietario** de la
 > hoja. Si lo haces, BoHub **deshace** el cambio en la siguiente pasada: los

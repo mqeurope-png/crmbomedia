@@ -69,6 +69,23 @@ def _i(nombre: str) -> int:
     return SEGUIMIENTO_COLUMNS_V2.index(nombre)
 
 
+class _SinCerrojo:
+    """`reconcile_lock` sin Redis: siempre libre."""
+
+    def __enter__(self) -> bool:
+        return True
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+
+@pytest.fixture(autouse=True)
+def _cerrojo_libre(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`import_historico` escribe bajo el cerrojo del espejo (Redis): en los
+    tests, sin Redis y siempre libre (como en los demás tests del cerrojo)."""
+    monkeypatch.setattr("app.erp.seguimiento_sync_job.reconcile_lock", lambda: _SinCerrojo())
+
+
 class FakeTabs:
     """Doble del transporte: guarda pestañas, valores y formato pedidos."""
 
@@ -857,6 +874,37 @@ def test_map_pendiente_hereda_cliente_vendedor_y_productos():
     assert fila[4] == "Bart"               # Asignado a (vendedor)
     assert fila[6] == "Abierta"            # Estado
     assert len(fila) == len(INCIDENCIAS_COLUMNS)
+
+
+def test_import_historico_no_escribe_con_otra_sincronizacion_en_curso(monkeypatch):
+    """Reescribe la pestaña entera: nunca a la vez que una pasada del espejo
+    (botón o bucle), que comparten el cerrojo."""
+
+    class _Ocupado(_SinCerrojo):
+        def __enter__(self) -> bool:
+            return False
+
+    monkeypatch.setattr("app.erp.seguimiento_sync_job.reconcile_lock", lambda: _Ocupado())
+    sheets = FakeTabs({HISTORICA: _hoja_vieja()})
+    with pytest.raises(DriveSyncError, match="sincronización con la hoja en curso"):
+        import_historico(sheets, pedidos_tab=DEFAULT_MANAGED_TAB,
+                         incidencias_tab=DEFAULT_INCIDENCIAS_TAB, dry_run=False)
+    assert sheets.written == {} and sheets.formats == {}
+
+
+def test_import_historico_no_escribe_sin_la_bd_migrada():
+    """Con sesión (el script la pasa), si la BD no tiene aún la tabla de estado
+    del espejo (migración 0123 sin aplicar), se para sin tocar la hoja."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    sheets = FakeTabs({HISTORICA: _hoja_vieja()})
+    with Session(create_engine("sqlite://")) as session, \
+            pytest.raises(DriveSyncError, match="base de datos"):
+        import_historico(sheets, pedidos_tab=DEFAULT_MANAGED_TAB,
+                         incidencias_tab=DEFAULT_INCIDENCIAS_TAB, dry_run=False,
+                         session=session)
+    assert sheets.written == {} and sheets.formats == {}
 
 
 def test_import_historico_deja_los_pendientes_en_incidencias():

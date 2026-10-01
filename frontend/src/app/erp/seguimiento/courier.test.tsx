@@ -202,6 +202,20 @@ describe("ERP · Seguimiento — columna Courier", () => {
     expect(alerta).toHaveTextContent("sin escribir nada");
   });
 
+  it("en la pestaña de 17 columnas el aviso es por las columnas Y y Z", async () => {
+    mockRows(true);
+    (syncSeguimientoDrive as jest.Mock).mockResolvedValue({
+      ...managed(true),
+      migracion_courier: { estado: "pendiente", formato: "sin_recogido", filas: 40,
+                           celdas_antes: 300, celdas_que_no_caben: 2 },
+    });
+    const user = userEvent.setup();
+    render(<SeguimientoPageView />);
+    await user.click(await screen.findByRole("button", { name: /Actualizar hoja de Drive/ }));
+    const alerta = await screen.findByRole("alert");
+    expect(alerta).toHaveTextContent("Las columnas Y y Z tienen 2 celda(s) con dato");
+  });
+
   it("una pestaña de 17 columnas se reescribe (sin prometer inserción ni recuento)", async () => {
     mockRows(true);
     (syncSeguimientoDrive as jest.Mock)

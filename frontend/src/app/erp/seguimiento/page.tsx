@@ -1280,29 +1280,30 @@ const REVIEW_KIND_LABEL: Record<string, string> = {
 function CourierMigrationPending({ summary }: { summary: DriveManagedSummary }) {
   const m = summary.migracion_courier;
   if (m?.estado !== "pendiente") return null;
-  if (m.formato === "sin_recogido") {
-    return (
-      <p className="form-info small" role="note">
-        La pestaña está escrita con un formato antiguo (17 columnas, sin
-        «Fecha recogido» ni <strong>«Courier»</strong>): al confirmar se reescribe
-        entera con las 20 columnas; lo de detrás de «Envío» corre dos posiciones.
-      </p>
-    );
-  }
+  const antigua = m.formato === "sin_recogido";
   return (
     <>
-      <p className="form-info small" role="note">
-        La pestaña aún no tiene la columna <strong>«Courier»</strong>: al confirmar
-        se insertará entre «Envío» y «Fecha recogido», en la cabecera y en todas
-        las filas (también el histórico), sin mover nada más. Antes de seguir se
-        comprueba que no se pierde ninguna de sus {m.celdas_antes ?? 0} celdas
-        con dato.
-      </p>
+      {antigua ? (
+        <p className="form-info small" role="note">
+          La pestaña está escrita con un formato antiguo (17 columnas, sin
+          «Fecha recogido» ni <strong>«Courier»</strong>): al confirmar se reescribe
+          entera con las 20 columnas; lo de detrás de «Envío» corre dos posiciones.
+        </p>
+      ) : (
+        <p className="form-info small" role="note">
+          La pestaña aún no tiene la columna <strong>«Courier»</strong>: al confirmar
+          se insertará entre «Envío» y «Fecha recogido», en la cabecera y en todas
+          las filas (también el histórico), sin mover nada más. Antes de seguir se
+          comprueba que no se pierde ninguna de sus {m.celdas_antes ?? 0} celdas
+          con dato.
+        </p>
+      )}
       {m.celdas_que_no_caben ? (
         <p className="form-error small" role="alert">
-          La columna Z tiene {m.celdas_que_no_caben} celda(s) con dato: al insertar
-          la columna se saldrían del rango de la app, así que la actualización se
-          parará sin escribir nada. Muévelas a otra pestaña (o bórralas) antes.
+          {antigua ? "Las columnas Y y Z tienen" : "La columna Z tiene"}{" "}
+          {m.celdas_que_no_caben} celda(s) con dato: al añadir la columna se
+          saldrían del rango de la app, así que la actualización se parará sin
+          escribir nada. Muévelas a otra pestaña (o bórralas) antes.
         </p>
       ) : null}
     </>

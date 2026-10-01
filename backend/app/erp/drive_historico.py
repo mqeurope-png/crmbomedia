@@ -339,6 +339,7 @@ def _escribir_importacion(
         cabecera_de,
         compose,
         comprobar_columnas,
+        comprobar_que_cabe,
         dates_to_serial,
         es_fila_completado,
         formato_de_pestana,
@@ -390,6 +391,8 @@ def _escribir_importacion(
     comprobar_columnas(valores, formato, pedidos_tab)
     if formato == FORMATO_SIN_COURIER:
         valores, _migracion = migrar_columna_courier(sheets, pedidos_tab, valores)
+    else:
+        comprobar_que_cabe(valores, formato, pedidos_tab)      # 17 columnas: Y y Z
     valores = realinear_pestana(valores)
     cabecera = cabecera_de(valores)
     vivas_pedidos = dates_to_serial(
