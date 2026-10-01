@@ -314,6 +314,28 @@ def date_format_requests(
     }} for c in columns]
 
 
+#: Columnas que siempre se ven como texto (ver `text_format_requests`).
+TEXT_COLUMNS: tuple[int, ...] = tuple(
+    SEGUIMIENTO_COLUMNS_V2.index(c) for c in ("Nº pedido", "Factura", "Tracking")
+)
+
+
+def text_format_requests(
+    columns: tuple[int, ...], *, first_row: int, last_row: int,
+) -> list[dict[str, Any]]:
+    """`numberFormat` TEXT sobre esas columnas, filas `first_row`..`last_row`
+    (0-based, `last_row` excluido): un número de pedido, de factura o de
+    seguimiento nunca se ve como fecha ni en notación científica."""
+    if last_row <= first_row:
+        return []
+    return [{"repeatCell": {
+        "range": {"sheetId": None, "startRowIndex": first_row, "endRowIndex": last_row,
+                  "startColumnIndex": c, "endColumnIndex": c + 1},
+        "cell": {"userEnteredFormat": {"numberFormat": {"type": "TEXT"}}},
+        "fields": "userEnteredFormat.numberFormat",
+    }} for c in columns]
+
+
 def live_pedidos_rows(rows: list[dict[str, Any]]) -> list[list[Any]]:
     """Una fila por pedido vivo, por fecha del pedido (más reciente primero).
     Misma serialización que la pantalla y que «Descargar Excel», con las
@@ -1624,6 +1646,15 @@ def pedidos_format(
     requests.extend(date_format_requests(
         PEDIDOS_DATE_COLUMNS, first_row=1, last_row=total_rows + estaticas,
     ))
+    # Nº pedido, Factura y Tracking como TEXTO en toda la pestaña. La pestaña se
+    # reescribe en sitio: cuando la zona viva crece o mengua, las filas de
+    # debajo se desplazan pero los formatos de celda se quedan donde estaban, y
+    # un formato de fecha olvidado convertía un Nº como 5559 en «1915-3». Solo
+    # cambia cómo se ve: los valores se escriben RAW (un número sigue siendo
+    # número).
+    requests.extend(text_format_requests(
+        TEXT_COLUMNS, first_row=1, last_row=total_rows + estaticas,
+    ))
     # El autofiltro cubre SOLO la zona viva: si abarcara el histórico, ordenar
     # por una columna mezclaría los dos bloques.
     requests.append({"setBasicFilter": {"filter": {"range": {
@@ -1903,6 +1934,12 @@ def push_managed_tabs(
     )
     if espejo.legacy_activo():
         estatico_manual = espejo.procesar_historico(estatico_manual, ids_vivos)
+    # ESPEJO: las filas que se quitan por repetir el id de otra (una copia, o la
+    # gemela del histórico de un pedido que ya sale arriba) NO se tiran: lo que
+    # traían y a la que se queda le falta, se conserva (en BoHub y ya en esta
+    # pasada); si las dos tienen valor, gana la que se queda y el otro queda en
+    # la auditoría.
+    espejo.fusionar_repetidas([*ordenadas, *completados], manuales)
     # Los pedidos completados de BoHub, REGENERADOS en cada actualización y
     # deduplicados por Nº contra el manual: van bajo el ÚNICO separador
     # «HISTÓRICO», encima del histórico manual (sin un bloque etiquetado aparte).

@@ -968,6 +968,11 @@ export type SeguimientoEspejoStats = {
   /** Pedidos de BoHub cuya fila iba a desaparecer de la hoja sin estar
    *  quitados, anulados, completados ni gestionados fuera: se conservan. */
   filas_rescatadas?: string[];
+  /** Filas repetidas (mismo id) que se quitan FUSIONADAS en la que se queda:
+   *  Nº de pedido de cada una, valores conservados y en conflicto. */
+  filas_fusionadas?: string[];
+  valores_rellenados?: number;
+  valores_en_conflicto?: number;
 };
 
 /** Resumen de la sincronización INCREMENTAL a la hoja histórica (ERP-F6). Solo

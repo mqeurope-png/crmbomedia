@@ -194,7 +194,9 @@ describe("SatQueuePage · pestañas", () => {
     expect(visibles()).toEqual(["Pedido EM-1"]);
     await pestana(user, /Pendiente de recogida/);
     expect(visibles()).toEqual(["Pedido PR-1"]);
-    expect(screen.getByText("Pendiente de recogida", { selector: ".badge" })).toBeInTheDocument();
+    // Genei «Tramitado» sin escaneo del transportista: aún no ha entrado en su red.
+    expect(screen.getByText("Pendiente de entrada en red", { selector: ".badge" }))
+      .toBeInTheDocument();
   });
 
   it("cada pestaña lleva su color (fondo pastel + texto oscuro) como variables CSS", async () => {

@@ -1459,6 +1459,17 @@ function EspejoResumen({ e }: { e: SeguimientoEspejoStats }) {
         {e.proteccion_error ? (
           <li className="form-error">No se pudo proteger la hoja: {e.proteccion_error}</li>
         ) : null}
+        {e.filas_fusionadas?.length ? (
+          <li>
+            {e.filas_fusionadas.length} fila(s) repetida(s) se fusionan en la que se
+            queda: {n(e.valores_rellenados)} valor(es) que faltaban se conservan en
+            BoHub
+            {e.valores_en_conflicto
+              ? <>; {e.valores_en_conflicto} distinto(s) se descartan (gana BoHub y
+                  quedan en la auditoría)</>
+              : null}: {e.filas_fusionadas.join(", ")}.
+          </li>
+        ) : null}
         {e.filas_rescatadas?.length ? (
           <li className="form-error">
             {e.filas_rescatadas.length} pedido(s) de BoHub iban a desaparecer de la hoja

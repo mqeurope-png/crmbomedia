@@ -342,7 +342,13 @@ export function SatReadyCard({
         <span className="sat-card-amount mono">
           {order.total_amount.toFixed(2)} {order.currency}
         </span>
-        {pendienteRecogida ? (
+        {pendienteRecogida && geneiPendienteDeEntrada(order) ? (
+          /* Genei sin escaneo del transportista: ámbar, con Genei detrás. */
+          <span className="badge warn"
+                title="Etiqueta lista: el transportista aún no ha escaneado el paquete">
+            {PENDIENTE_ENTRADA_RED}
+          </span>
+        ) : pendienteRecogida ? (
           /* Mismo criterio de color que «Enviados»: Genei azul, otro courier
              verde azulado (con su nombre si ya se sabe). */
           <span className={`badge ${hasGenei ? "info" : "courier-ext"}`}
@@ -461,6 +467,33 @@ export function SatShippedCard({
   );
 }
 
+/** El estado mientras el transportista no ha escaneado el paquete. */
+export const PENDIENTE_ENTRADA_RED = "Pendiente de entrada en red";
+
+/** Estados de Genei de ANTES de la red del transportista: 7 pendiente de
+ *  pago, 6 pendiente de tramitar, 1 tramitado, 2 pendiente de depositar y 5
+ *  «recogida efectuada / en tránsito» (lo dice al recoger, antes del primer
+ *  escaneo de la agencia). Igual que la hoja (`GENEI_ANTES_DE_LA_RED`). */
+const GENEI_ANTES_DE_LA_RED = [7, 6, 1, 2, 5];
+
+/** ¿Envío de Genei SIN ningún escaneo del transportista (`estadosAgencia`
+ *  vacío), sin entregar ni incidencia, y con Genei aún en un estado de antes
+ *  de la red? Entonces el paquete no ha entrado en la red de la agencia,
+ *  aunque Genei diga «recogida efectuada» o ya se haya marcado recogido:
+ *  «Pendiente de entrada en red» (ámbar), nunca «en tránsito». En cuanto hay
+ *  escaneo, manda el escaneo; si Genei ya dice «en reparto»…, lo de Genei. */
+export function geneiPendienteDeEntrada(order: SatQueueItem): boolean {
+  if (order.sin_envio || order.shipment_kind === "externo") return false;
+  const g = order.genei;
+  if (!g?.shipment_code || g.carrier_status) return false;
+  if (["delivered", "incident", "returned"].includes(order.transport_status)) return false;
+  // Sin etiqueta ni recogida, solo si el envío ya está tramitado (como la hoja).
+  if (order.transport_status === "not_shipped"
+      && !["ready", "in_transit"].includes(g.state_bucket ?? "")) return false;
+  if (g.state_code != null) return GENEI_ANTES_DE_LA_RED.includes(Number(g.state_code));
+  return ["", "created", "processing", "ready"].includes(g.state_bucket ?? "");
+}
+
 /** Estado de envío legible de un pedido enviado (o que no se envía). Manda el
  *  ÚLTIMO ESCANEO REAL del transportista, tal cual lo da la agencia (Genei
  *  `/tracking`); si aún no hay, el estado de Genei; y si tampoco, el del
@@ -479,6 +512,7 @@ export function satShippedLabel(order: SatQueueItem): string {
     return `Enviado · ${courier}`;
   }
   if (order.genei?.carrier_status) return order.genei.carrier_status;
+  if (geneiPendienteDeEntrada(order)) return PENDIENTE_ENTRADA_RED;
   if (order.genei?.state_label) return order.genei.state_label;
   switch (order.transport_status) {
     case "delivered": return "Entregado";
@@ -495,6 +529,7 @@ export function satShippedTone(order: SatQueueItem): string {
   if (order.sin_envio) return "muted";
   if (order.shipment_kind === "externo") return "courier-ext";
   if (order.genei?.carrier_step) return carrierStepTone(order.genei.carrier_step);
+  if (geneiPendienteDeEntrada(order)) return "warn";
   return order.transport_status === "delivered" ? "ok" : "info";
 }
 
@@ -515,8 +550,16 @@ export function SatShipmentBadge({ order }: { order: SatQueueItem }) {
       {genei ? (
         <span className="sat-genei-tag" title="Envío tramitado con Genei">Genei</span>
       ) : null}
+      <SatGeneiSecundario order={order} />
     </>
   );
+}
+
+/** Lo que dice Genei, en segundo plano, mientras el transportista no ha
+ *  escaneado el paquete («Genei: Recogida efectuada / en tránsito»). */
+export function SatGeneiSecundario({ order }: { order: SatQueueItem }) {
+  if (!geneiPendienteDeEntrada(order) || !order.genei?.state_label) return null;
+  return <span className="badge muted small">Genei: {order.genei.state_label}</span>;
 }
 
 /** Nº de seguimiento, enlazado a la web del courier si se conoce (la de Genei

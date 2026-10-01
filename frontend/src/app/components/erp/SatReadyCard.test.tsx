@@ -363,15 +363,69 @@ describe("estado REAL del transportista (Genei /tracking)", () => {
     expect(screen.getByText("Ctt Premium")).toBeInTheDocument();
   });
 
-  it("orden del texto: transportista › Genei › transporte", () => {
+  it("orden del texto: transportista › (Genei sin escaneo: pendiente de entrada) › transporte", () => {
     expect(satShippedLabel(order({ transport_status: "in_transit", genei: CTT })))
       .toBe("PENDIENTE DE ENTRADA EN RED");
+    // Sin escaneo del transportista y Genei aún antes de la red (5): pendiente
+    // de entrada; si Genei ya dice «En reparto» (80), lo de Genei.
     expect(satShippedLabel(order({ transport_status: "in_transit",
-      genei: { shipment_code: "G", label_available: true, state_label: "En reparto" } })))
+      genei: { shipment_code: "G", label_available: true, state_code: 5,
+               state_label: "Recogida efectuada / en tránsito" } })))
+      .toBe("Pendiente de entrada en red");
+    expect(satShippedLabel(order({ transport_status: "in_transit",
+      genei: { shipment_code: "G", label_available: true, state_code: 80,
+               state_label: "En reparto" } })))
       .toBe("En reparto");
+    // Entregado / incidencia según Genei: eso sí se dice tal cual.
+    expect(satShippedLabel(order({ transport_status: "in_transit",
+      genei: { shipment_code: "G", label_available: true, state_bucket: "delivered",
+               state_label: "Entregado" } })))
+      .toBe("Entregado");
     expect(satShippedLabel(order({ transport_status: "in_transit" })))
       .toBe("Recogido · en tránsito");
     expect(satShippedLabel(order({ sin_envio: true, genei: CTT }))).toBe("No requiere envío");
+  });
+});
+
+describe("Genei sin escaneo del transportista (estadosAgencia vacío)", () => {
+  // Estado interno 5 de Genei y la agencia aún no lo ha escaneado.
+  const SIN_ESCANEO = {
+    shipment_code: "G5", courier: "Ctt Premium", state_code: 5, state_bucket: "in_transit",
+    state_label: "Recogida efectuada / en tránsito", label_available: true,
+    carrier_status: null, carrier_step: null,
+  };
+
+  it("«Enviados»: «Pendiente de entrada en red» en ámbar, con Genei detrás; no «en tránsito»", () => {
+    render(<SatShippedCard order={order({ transport_status: "in_transit", genei: SIN_ESCANEO,
+                                          shipment_kind: "genei" })} />);
+    expect(screen.getByText("Pendiente de entrada en red")).toHaveClass("badge", "warn");
+    expect(screen.getByText("Genei: Recogida efectuada / en tránsito")).toBeInTheDocument();
+    expect(screen.queryByText(/^Recogido · en tránsito$/)).not.toBeInTheDocument();
+  });
+
+  it("«Pendiente de recogida»: la misma pastilla ámbar en la card", () => {
+    render(<SatReadyCard order={order({ transport_status: "label_created", genei: SIN_ESCANEO,
+                                        sat_tab: "pendiente_recogida", shipment_kind: "genei" })}
+                         onChanged={() => {}} />);
+    expect(screen.getByText("Pendiente de entrada en red")).toHaveClass("badge", "warn");
+    expect(screen.queryByText(/^Pendiente de recogida$/)).not.toBeInTheDocument();
+    expect(screen.getByText("Genei: Recogida efectuada / en tránsito")).toBeInTheDocument();
+  });
+
+  it("tramitado sin etiqueta descargada (not_shipped): ámbar solo si Genei ya lo tramitó", () => {
+    expect(satShippedLabel(order({ transport_status: "not_shipped", shipment_kind: "genei",
+      genei: { ...SIN_ESCANEO, state_code: 1, state_bucket: "ready", state_label: "Tramitado" } })))
+      .toBe("Pendiente de entrada en red");
+    expect(satShippedLabel(order({ transport_status: "not_shipped", shipment_kind: "genei",
+      genei: { ...SIN_ESCANEO, state_code: 7, state_bucket: "created",
+               state_label: "Recogida pendiente de pago" } })))
+      .toBe("Recogida pendiente de pago");
+  });
+
+  it("en cuanto la agencia escanea, manda su estado", () => {
+    expect(satShippedLabel(order({ transport_status: "in_transit", shipment_kind: "genei",
+      genei: { ...SIN_ESCANEO, carrier_status: "EN TRANSITO", carrier_step: "in_transit" } })))
+      .toBe("EN TRANSITO");
   });
 });
 
@@ -444,6 +498,8 @@ describe("envío con OTRO courier (no Genei)", () => {
   });
 
   it("«Pendiente de recogida»: Genei en azul; otro courier en su color y con su nombre", () => {
+    // (Genei aún sin tramitar: sin estado. Tramitado y sin escaneo → ámbar,
+    // ver «Genei sin escaneo del transportista».)
     const { rerender } = render(
       <SatReadyCard order={order({ sat_tab: "pendiente_recogida", shipment_kind: "genei",
                                    genei: { shipment_code: "G1", label_available: true } })}
@@ -494,7 +550,8 @@ describe("envío con OTRO courier (no Genei)", () => {
     render(<SatShippedCard order={order({ transport_status: "in_transit", sat_tab: "enviados",
                                           shipment_kind: "genei", courier: "GLS",
                                           genei: { shipment_code: "G1", courier: "GLS",
-                                                   label_available: true, state_label: "En reparto" } })}
+                                                   label_available: true, state_code: 80,
+                                                   state_label: "En reparto" } })}
                            onChanged={() => {}} />);
     expect(screen.getByText("En reparto")).not.toHaveClass("courier-ext");
     expect(screen.getByText("Genei")).toHaveClass("sat-genei-tag");
@@ -511,7 +568,8 @@ describe("envío con OTRO courier (no Genei)", () => {
       .toBe("Entregado · MRW");
     expect(satShippedLabel(order({ ...ext, sin_envio: true }))).toBe("No requiere envío");
     expect(satShippedLabel(order({ shipment_kind: "genei", transport_status: "in_transit",
-      genei: { shipment_code: "G", label_available: true, state_label: "En reparto" } })))
+      genei: { shipment_code: "G", label_available: true, state_code: 80,
+               state_label: "En reparto" } })))
       .toBe("En reparto");
   });
 });

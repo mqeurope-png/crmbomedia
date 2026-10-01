@@ -593,8 +593,13 @@ Seguimiento (pantalla, Excel y hoja «Seguimiento (app)») la columna **Envío**
 lleva ese paso real (*Pendiente de entrada en red*, *Recogido*, *En tránsito*,
 *En reparto*, *Disponible en oficina*, *Entregado*, *Incidencia*) y la columna
 **Courier**, la agencia del envío tal como la da Genei (p. ej. *Ctt Premium*). Si
-Genei aún no tiene escaneos, Envío sale del estado del envío (con la etiqueta ya
-hecha y sin recoger, *Pendiente de entrada en red*). Los envíos con **otro
+Genei aún no tiene escaneos del transportista, el paquete **todavía no ha
+entrado en su red**: Envío dice *Pendiente de entrada en red* (en ámbar en
+«Enviados» y «Pendiente de recogida», con lo que dice Genei al lado en gris, p.
+ej. *Genei: Recogida efectuada / en tránsito*), **también después de «📤 Marcar
+recogido»** — nunca *En tránsito* sin un escaneo. En cuanto la agencia escanea,
+manda su estado. (Si Genei ya informa de un paso del transportista —*En
+reparto*, *Disponible en oficina*…— se enseña ese.) Los envíos con **otro
 courier** (no Genei) se explican justo debajo.
 
 **Envíos con otro courier (no Genei).** Hay envíos que no se hacen con Genei
@@ -960,6 +965,14 @@ en **pestañas propias de la app**. Cada una tiene **dos zonas**:
   seguimiento, se anula o se marca gestionado fuera. Si por un fallo de la
   selección una fila fuera a desaparecer, BoHub la conserva y lo deja en el
   log («se conservan sus filas») y en el resumen de la actualización.
+  **Dos filas del mismo pedido se fusionan, no se tira ninguna:** si el pedido
+  ya sale arriba y su fila del histórico sigue abajo (o alguien copió la fila),
+  BoHub deja una sola, pero antes **conserva lo que traía la otra** y a la que
+  se queda le falta (Tracking, Fecha recogido, Nº serie · WhiteRIP, Nota,
+  Factura, Factura enviada, Cliente): se guarda en BoHub y se ve en la hoja.
+  Si las dos tienen un valor distinto, **gana la de BoHub** y el otro queda en
+  la **auditoría** del pedido («fila fusionada»: qué se conservó y qué se
+  descartó). La vista previa lo dice antes de escribir.
 - **«Incidencias (app)»** — arriba, las incidencias que habéis reportado a
   mano; debajo del separador, los **pendientes heredados** de la hoja vieja.
 
@@ -976,6 +989,23 @@ Las dudosas se quedan **pendientes** (salen en cada informe) hasta que las
 confirmas con `--confirm`: `ID` (su único candidato), `ID=ORDER_ID` (ese pedido)
 o `ID=none` (no hay pedido detrás). `--confirm` también corrige una fila ya
 resuelta. El histórico manual se conserva intacto.
+
+**Fechas de recogida perdidas el 24/09.** Al deduplicar la hoja aquel día se
+tiraron sin fusionar las filas del histórico de los pedidos que ya salían
+arriba; sus *Fecha recogido* siguen en BoHub (`seguimiento_legacy`). Para
+recuperarlas: `python -m scripts.recuperar_fechas_recogido --probar` lista los
+pedidos (con la fecha de la hoja y la que tiene hoy el pedido) sin escribir
+nada; `--apply` guarda la fecha **solo en los que no tienen ninguna** (nunca
+pisa una existente), con rastro en la auditoría. Después, «Actualizar hoja de
+Drive…».
+
+**Formato de Nº pedido, Factura y Tracking.** BoHub reescribe la pestaña en su
+sitio: cuando la zona viva crece o mengua, las filas de debajo bajan o suben,
+pero los **formatos de celda** se quedan donde estaban. Para que un número de
+pedido no se vea nunca como fecha (p. ej. *5559* como «1915-3»), esas tres
+columnas se fuerzan a **texto** en toda la pestaña en cada actualización. Solo
+cambia cómo se ven: el valor es el mismo. Otros formatos que pongas a mano en
+celdas sueltas pueden quedar desplazados (es una limitación conocida).
 
 #### La hoja como espejo de BoHub (en los dos sentidos)
 

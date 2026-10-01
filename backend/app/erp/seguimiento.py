@@ -569,6 +569,38 @@ def _real_event_date(order: Order, domain: str, to_statuses: set[str]) -> dateti
 FECHA_DOCUMENTO_KEY = "fecha_documento"
 
 
+#: «Fecha recogido» que solo constaba en la hoja (tecleada a mano en el
+#: histórico, o en una fila repetida del mismo pedido que el espejo FUSIONA en
+#: vez de tirar): se guarda en el pedido (`packing_json`, ISO) y vale cuando
+#: BoHub no tiene el hecho real. Nunca pisa el hecho real.
+RECOGIDO_HOJA_KEY = "fecha_recogido_hoja"
+
+
+def recogido_de_la_hoja(order: Order) -> str | None:
+    """La fecha de recogida guardada desde la hoja (ISO), o None."""
+    if not order.packing_json:
+        return None
+    try:
+        data = json.loads(order.packing_json)
+    except (TypeError, ValueError):
+        return None
+    valor = data.get(RECOGIDO_HOJA_KEY) if isinstance(data, dict) else None
+    try:
+        return date.fromisoformat(valor).isoformat() if isinstance(valor, str) else None
+    except ValueError:
+        return None
+
+
+def fecha_recogido(order: Order) -> str | None:
+    """«Fecha recogido» (ISO): la de «📤 Marcar recogido» (en tránsito); si aún
+    no se recogió, la de la etiqueta (como antes); sin ninguna de las dos, la
+    que solo constaba en la hoja (`RECOGIDO_HOJA_KEY`)."""
+    return _iso_date(
+        _real_event_date(order, "transport", {"in_transit", "delivered"})
+        or _real_event_date(order, "transport", {"label_created"})
+    ) or recogido_de_la_hoja(order)
+
+
 def _fecha_factura(order: Order) -> datetime | None:
     """Fecha de la factura: la emisión / vinculación registrada en BoHub (el
     hecho real del evento de factura) o, en un pedido CREADO desde una factura
@@ -843,6 +875,22 @@ def _prep_label(order: Order) -> str:
     return PREPARACION_LABELS.get(st, "—")
 
 
+#: Estados de Genei de ANTES de que el paquete entre en la red del transportista:
+#: 7 pendiente de pago, 6 pendiente de tramitar, 1 tramitado, 2 pendiente de
+#: depositar y 5 «recogida efectuada / en tránsito» (Genei lo dice al recoger,
+#: antes del primer escaneo de la agencia).
+GENEI_ANTES_DE_LA_RED: frozenset[int] = frozenset({7, 6, 1, 2, 5})
+
+
+def _genei_antes_de_la_red(genei: dict) -> bool:
+    """¿Genei aún no informa de ningún paso del transportista? Sin código de
+    estado (envío recién creado), se mira el grupo."""
+    try:
+        return int(genei.get("state_code")) in GENEI_ANTES_DE_LA_RED
+    except (TypeError, ValueError):
+        return (genei.get("state_bucket") or "") in ("", "created", "processing", "ready")
+
+
 def _envio_label(order: Order) -> str:
     """Columna Envío: SOLO el estado, de la lista cerrada `envio_vocabulary()`
     (el transportista va aparte, en «Courier»). «No aplica» si no requiere
@@ -853,22 +901,34 @@ def _envio_label(order: Order) -> str:
       «Entregado»…) — no el genérico del transporte, que podía dar por recogido
       lo que la agencia aún no había escaneado. El texto literal de la agencia
       se ve en la app (Enviados, ficha).
-    - Genei sin escaneos: el del transporte; con la etiqueta ya hecha y sin
-      recoger, «Pendiente de entrada en red» (el paquete espera a la agencia).
+    - Genei sin escaneos: con la etiqueta hecha y sin recoger, «Pendiente de
+      entrada en red» (el paquete espera a la agencia). Y también —sin ningún
+      evento del transportista y con Genei aún en un estado de ANTES de la red
+      (`GENEI_ANTES_DE_LA_RED`)— tras «Marcar recogido» o con el envío ya
+      tramitado: sin un escaneo de la agencia no ha entrado en su red, y decir
+      «En tránsito» era adelantarse. Si Genei ya informa de un paso del
+      transportista (en reparto, en oficina…), el del transporte, como antes.
     - OTRO courier (sin Genei): «Enviado» al marcar recogido (BoHub no ve sus
       escaneos); «Entregado» / «Incidencia» si se marca a mano en la ficha."""
     if is_sin_envio(order):
         return NO_APLICA
     from app.erp.integrations.genei.service import genei_state_of  # noqa: PLC0415
+    from app.erp.integrations.genei.status import is_tramitado  # noqa: PLC0415
     from app.erp.integrations.genei.tracking import carrier_step_label  # noqa: PLC0415
     from app.erp.shipping_courier import is_genei_shipment  # noqa: PLC0415
 
-    real = carrier_step_label(genei_state_of(order).get("carrier_step"))
+    genei = genei_state_of(order)
+    real = carrier_step_label(genei.get("carrier_step"))
     if real:
         return real
     st = str(getattr(order.transport_status, "value", order.transport_status) or "")
     if is_genei_shipment(order):
         if st == "label_created":
+            return ENVIO_PRE_TRANSITO
+        if not genei.get("carrier_status") and _genei_antes_de_la_red(genei) and (
+            st == "in_transit"
+            or (st == "not_shipped" and is_tramitado(genei.get("state_bucket")))
+        ):
             return ENVIO_PRE_TRANSITO
     elif st == "in_transit":
         return ENVIO_ENVIADO
@@ -1218,11 +1278,8 @@ def build_rows(
             # importación (esas quedan vacías, no engañan ni en vista ni hoja).
             "preparado": _iso_date(_real_event_date(o, "preparation", {"packed"})),
             # La de «📤 Marcar recogido» (en tránsito); si aún no se recogió, la
-            # de la etiqueta (como antes).
-            "recogido": _iso_date(
-                _real_event_date(o, "transport", {"in_transit", "delivered"})
-                or _real_event_date(o, "transport", {"label_created"})
-            ),
+            # de la etiqueta; sin ninguna, la que solo constaba en la hoja.
+            "recogido": fecha_recogido(o),
             "fecha_envio_factura": _iso_date(_real_event_date(
                 o, "invoice", {"generated", "invoiced_by_erp"},
             )),

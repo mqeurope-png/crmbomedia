@@ -236,8 +236,12 @@ def test_genei_sin_escaneo_usa_el_transporte(factory):
         o = _order(s, "BOP-7", transport_status=TransportStatus.LABEL_CREATED)
         _genei(o)
         assert _envio_label(o) == "Pendiente de entrada en red"   # etiqueta hecha
+        # Marcado recogido pero la agencia aún no lo ha escaneado: sigue
+        # pendiente de entrar en su red (no «En tránsito»).
         o.transport_status = TransportStatus.IN_TRANSIT
-        assert _envio_label(o) == "En tránsito"
+        assert _envio_label(o) == "Pendiente de entrada en red"
+        o.transport_status = TransportStatus.DELIVERED
+        assert _envio_label(o) == "Entregado"
         o.transport_status = TransportStatus.NOT_SHIPPED          # sin pagar aún
         assert _envio_label(o) == "Sin enviar"
         # Agencia desconocida (raro): se dice que es Genei, no «—».
