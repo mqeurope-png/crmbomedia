@@ -7,6 +7,7 @@ import {
 } from "react";
 import { PageHeader } from "../../../components/PageHeader";
 import { ChangeSerieModal } from "./ChangeSerieModal";
+import { OrderDateRow } from "./OrderDateRow";
 import { CreateQuoteModal } from "../../../components/erp/CreateQuoteModal";
 import { emptyDocumentLine, type DocumentLine } from "../../../components/erp/DocumentLinesTable";
 import { CancelOrderModal } from "../../../components/erp/CancelOrderModal";
@@ -1280,6 +1281,17 @@ function ErpOrderDetailScreen() {
         />
         {/* Bloque FACTUSOL: lo que hay allí y la acción de cada cosa. El
             albarán (y su PDF) vive en «Documentos de envío». */}
+        <section className="erp-flow-panel" aria-label="Pedido">
+          <h3>Pedido</h3>
+          <OrderDateRow
+            orderId={order.id}
+            placedAt={order.placed_at}
+            createdAt={order.created_at}
+            isWeb={isWeb}
+            canEdit={canEditOrder && !order.cancelled}
+            onSaved={() => { void load(); }}
+          />
+        </section>
         <section className="erp-flow-panel" aria-label="FACTUSOL">
           <h3>FACTUSOL</h3>
           {(order.linked_documents ?? []).length > 0 && canEditOrder && !order.cancelled ? (

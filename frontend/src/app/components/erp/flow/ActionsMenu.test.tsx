@@ -30,7 +30,27 @@ describe("ActionsMenu", () => {
     expect(pop).toHaveClass("erp-flow-menu-pop", "is-floating");
     expect(pop.style.top).toBe("134px");
     expect(pop.style.right).toBe(`${window.innerWidth - 940}px`);
-    expect(pop.parentElement).toHaveClass("erp-flow-menu", "is-open");
+    // En un portal a nivel de body: ninguna fila (ni su opacidad) lo tapa.
+    expect(pop.parentElement).toBe(document.body);
+    expect(screen.getByRole("button", { name: "Más acciones X-1" }).parentElement)
+      .toHaveClass("erp-flow-menu", "is-open");
+  });
+
+  it("flotante: elegir una opción del portal funciona y un clic fuera lo cierra", async () => {
+    const user = userEvent.setup();
+    const onPick = jest.fn();
+    render(
+      <ActionsMenu label="Más acciones X-2" floating>
+        <button type="button" onClick={onPick}>Reincluir en la bandeja</button>
+      </ActionsMenu>,
+    );
+    await user.click(screen.getByRole("button", { name: "Más acciones X-2" }));
+    await user.click(screen.getByRole("button", { name: "Reincluir en la bandeja" }));
+    expect(onPick).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: "Reincluir en la bandeja" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Más acciones X-2" }));
+    await user.click(document.body);
+    expect(screen.queryByRole("button", { name: "Reincluir en la bandeja" })).toBeNull();
   });
 
   it("flotante: se cierra al desplazar la página o la tabla y al redimensionar; no al desplazar dentro del menú", async () => {

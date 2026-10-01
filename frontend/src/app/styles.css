@@ -11354,6 +11354,10 @@ tr.is-inactive {
 }
 .erp-flow-item.is-alert { border-left: 3px solid #E2554A; }
 .erp-flow-item.is-muted { opacity: 0.72; }
+/* Con su menú «⋯» abierto, la tarjeta atenuada deja de serlo: la opacidad crea
+   un contexto de apilado propio y el desplegable quedaría por debajo de la
+   tarjeta de abajo (y de sus botones). */
+.erp-flow-item.is-muted:has(.erp-flow-menu.is-open) { opacity: 1; }
 /* Sin casilla de selección (proformas): dos columnas. */
 .erp-flow-item.is-plain { grid-template-columns: 1fr auto; }
 /* Barra de filtros (proformas): texto, fechas, periodo y orden; se apilan

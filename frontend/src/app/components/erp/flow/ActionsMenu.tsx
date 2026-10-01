@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 /** Menú «⋯»: ahí viven las acciones que no son la principal, sin llenar la
  *  pantalla de botones. Lo usan la tarjeta de pedido de la bandeja y la
@@ -10,7 +11,11 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "re
  *  `floating`: dentro de una tabla con scroll propio (ScrollTable) un menú
  *  absoluto quedaría recortado por el contenedor; flotante se coloca fijo
  *  junto a su botón (debajo, o encima si no cabe) y se cierra al desplazar o
- *  redimensionar, para no quedarse lejos de su fila. */
+ *  redimensionar, para no quedarse lejos de su fila. Se pinta en un PORTAL
+ *  a nivel de `body`: dentro de la fila quedaría por debajo de los botones de
+ *  las filas siguientes cuando la fila crea su propio contexto de apilado
+ *  (p. ej. las atenuadas con `opacity`: «Reincluir en la bandeja» quedaba
+ *  tapado por «Vincular empresa a FACTUSOL» de la fila de abajo). */
 export function ActionsMenu({
   label,
   children,
@@ -28,13 +33,17 @@ export function ActionsMenu({
   useEffect(() => {
     if (!open) return;
     function onDocClick(e: MouseEvent) {
-      if (box.current && !box.current.contains(e.target as Node)) setOpen(false);
+      const t = e.target as Node;
+      // El menú flotante vive en un portal: un clic dentro de él no es «fuera».
+      if (box.current?.contains(t) || pop.current?.contains(t)) return;
+      setOpen(false);
     }
     function onKey(e: KeyboardEvent) {
       if (e.key !== "Escape") return;
       // Escape sobre un campo del menú (select, input) cierra el campo, no el menú.
       const el = e.target as HTMLElement | null;
-      if (el && box.current?.contains(el) && el.closest("select, input, textarea")) return;
+      const dentro = !!el && (box.current?.contains(el) || pop.current?.contains(el));
+      if (dentro && el?.closest("select, input, textarea")) return;
       setOpen(false);
       trigger.current?.focus();
     }
@@ -77,6 +86,20 @@ export function ActionsMenu({
     };
   }, [open, floating]);
 
+  const popNode = (
+    <div
+      ref={pop}
+      className={`erp-flow-menu-pop${floating ? " is-floating" : ""}`}
+      // Un botón o enlace cierra el menú; un campo (select, input) no.
+      onClick={(e) => {
+        const el = e.target as HTMLElement;
+        if (el.closest("button, a")) setOpen(false);
+      }}
+    >
+      {children}
+    </div>
+  );
+
   return (
     <div className={`erp-flow-menu${open ? " is-open" : ""}`} ref={box}>
       <button
@@ -90,19 +113,9 @@ export function ActionsMenu({
       >
         ⋯
       </button>
-      {open ? (
-        <div
-          ref={pop}
-          className={`erp-flow-menu-pop${floating ? " is-floating" : ""}`}
-          // Un botón o enlace cierra el menú; un campo (select, input) no.
-          onClick={(e) => {
-            const el = e.target as HTMLElement;
-            if (el.closest("button, a")) setOpen(false);
-          }}
-        >
-          {children}
-        </div>
-      ) : null}
+      {open && floating && typeof document !== "undefined"
+        ? createPortal(popNode, document.body)
+        : open ? popNode : null}
     </div>
   );
 }

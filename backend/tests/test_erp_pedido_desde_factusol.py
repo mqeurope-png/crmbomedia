@@ -443,6 +443,33 @@ def test_albaran_factura_cliente_sin_vincular(session_factory, http) -> None:
         assert fac.json()["detail"]["code"] == "factusol_customer_unlinked"
 
 
+def test_vincular_la_empresa_desbloquea_el_alta_y_queda_para_los_siguientes(
+    session_factory, http,
+) -> None:
+    """«Vincular empresa» desde Documentos: el cliente FACTUSOL 99999 se vincula a
+    una empresa del CRM (vínculo persistente en la empresa) y el pedido del
+    albarán se crea; el siguiente documento de ese cliente ya no pide nada."""
+    with session_factory() as s:
+        s.add(Company(id="jap", name="JAP EDICIONES S.L."))
+        s.commit()
+    fake = FakeClient(_tables())
+    headers = auth_headers(http, "pedidos")
+    with _patched(fake):
+        r = http.post("/api/erp/factusol/customers/link", headers=headers, json={
+            "crm_type": "company", "crm_id": "jap", "factusol_codcli": "99999",
+        })
+        assert r.status_code == 200, r.text
+        alb = _post_from_factusol(http, {"doc_type": "albaranes", "serie": 5, "codigo": 9})
+        assert alb.status_code == 201, alb.text
+        assert alb.json()["company_id"] == "jap"
+        fac = _post_from_factusol(http, {"doc_type": "facturas", "serie": 5, "codigo": 9})
+        assert fac.status_code == 201, fac.text
+        assert fac.json()["company_id"] == "jap"
+    assert fake.writes == []                                   # FACTUSOL intacto
+    with session_factory() as s:
+        assert s.get(Company, "jap").factusol_company_id == "99999"
+
+
 # --- 3) el filtro «solo processing» de #387 no toca estos pedidos ----------------
 
 

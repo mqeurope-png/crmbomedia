@@ -2661,8 +2661,10 @@ def _rq_job_status(job_id: str) -> dict[str, Any] | None:
         job = Job.fetch(job_id, connection=conn)
         rq_status = job.get_status(refresh=True)
         if rq_status == "failed":
-            return {"status": "failed",
-                    "error": (job.exc_info or "emisión fallida")[-400:]}
+            # Solo el mensaje: la traza se queda en el log del servidor.
+            from app.erp.job_errors import estado_fallido  # noqa: PLC0415
+
+            return estado_fallido(job.exc_info, "La emisión de la factura falló.")
         return {"status": "pending"}
     except Exception:  # noqa: BLE001 — sin Redis o job caducado → desconocido
         return None
@@ -3039,6 +3041,75 @@ def update_order_language(
     order.language = payload.language
     session.commit()
     return {"id": order.id, "language": order.language}
+
+
+class OrderDateIn(BaseModel):
+    """La nueva fecha del pedido (solo el día)."""
+
+    fecha: date
+
+
+#: Evento de auditoría del cambio de fecha del pedido.
+ORDER_DATE_CHANGED_EVENT = "erp.order_date_changed"
+
+
+@router.patch("/{order_id}/fecha")
+def change_order_date(
+    order_id: str,
+    payload: OrderDateIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """Cambia la FECHA del pedido (`placed_at`) en los que no vienen de la
+    tienda: manuales, muestras, creados desde un albarán / factura / proforma
+    de FACTUSOL… Típico: un pedido dado de alta hoy desde un documento de hace
+    días, que debe llevar la fecha real del documento.
+
+    - Un pedido WEB lleva la fecha de la tienda: no se cambia (409 `web_order`).
+    - La nueva fecha vale para todo lo que usa la fecha del pedido (ficha,
+      listas, bandeja, Cola SAT, Seguimiento —pantalla, Excel y hoja— y el orden
+      por fecha). Las fechas de factura, cobro y envío son suyas y no cambian:
+      en un pedido creado desde una factura, la fecha de la factura (que hasta
+      ahora salía de la fecha del pedido) se guarda aparte la primera vez.
+    - Queda en la auditoría del pedido (anterior → nueva, quién y cuándo).
+    - No crea el pedido de nuevo ni toca FACTUSOL."""
+    from app.core.audit import record_event  # noqa: PLC0415
+    from app.erp.factusol_albaran import packing_of, save_packing  # noqa: PLC0415
+    from app.erp.seguimiento import FECHA_DOCUMENTO_KEY  # noqa: PLC0415
+    from app.erp.workflow import is_web_order  # noqa: PLC0415
+
+    order = _get_order(session, order_id, current_user)
+    if is_web_order(order):
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "web_order",
+            "detail": "La fecha de un pedido web es la de la tienda: no se puede cambiar.",
+        })
+    anterior = order.placed_at or order.created_at
+    anterior_dia = anterior.date() if anterior else None
+    if anterior_dia == payload.fecha:
+        return {"id": order.id, "changed": False,
+                "placed_at": order.placed_at.isoformat() if order.placed_at else None}
+    source = getattr(order.external_source, "value", order.external_source)
+    if source == OrderSource.FACTUSOL_FACTURA.value and anterior is not None:
+        # La «Fecha factura» de un pedido creado desde una factura era su
+        # fecha de alta (FECFAC): se guarda aparte antes de cambiarla.
+        packing = packing_of(order)
+        if not packing.get(FECHA_DOCUMENTO_KEY):
+            packing[FECHA_DOCUMENTO_KEY] = anterior.date().isoformat()
+            save_packing(order, packing)
+    # Medianoche UTC, como el resto de fechas de pedido que no traen hora.
+    order.placed_at = datetime.combine(payload.fecha, time.min, tzinfo=UTC)
+    desde = anterior_dia.isoformat() if anterior_dia else None
+    record_event(
+        session, action=ORDER_DATE_CHANGED_EVENT, target_type="order", target_id=order.id,
+        actor=current_user,
+        metadata={"order_number": order.order_number, "from": desde,
+                  "to": payload.fecha.isoformat()},
+        message=(f"Fecha del pedido {order.order_number}: "
+                 f"{desde or '—'} → {payload.fecha.isoformat()}"),
+    )
+    session.commit()
+    return {"id": order.id, "changed": True, "placed_at": order.placed_at.isoformat()}
 
 
 class SeguimientoFieldsIn(BaseModel):
@@ -3562,6 +3633,51 @@ def factusol_invoice_status(
         if info is not None:
             return info
     return {"status": "pending"}
+
+
+@router.get("/{order_id}/factusol-pedido-check")
+def factusol_pedido_check(
+    order_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> dict[str, Any]:
+    """«Volver a comprobar» tras «aún no está en FACTUSOL»: ¿la app
+    WooCommerce→FACTUSOL ya ha importado el pedido (F_PCL por su referencia)?
+    Solo lee. `en_factusol` True → ya se puede emitir la factura. Un pedido que
+    no es web no pasa por esa importación: siempre True."""
+    from app.erp.workflow import is_web_order  # noqa: PLC0415
+    from app.integrations.factusol.client import (  # noqa: PLC0415
+        FactusolClient,
+        FactusolError,
+    )
+    from app.integrations.factusol.service import (  # noqa: PLC0415
+        _compose_ref,
+        _store_ref_prefix,
+        ejercicio_for,
+        find_pcl_by_order,
+        probe_pcl_refs_by_number,
+    )
+
+    order = _get_order(session, order_id, current_user)
+    if not is_web_order(order):
+        return {"en_factusol": True, "detail": None}
+    try:
+        client = FactusolClient.from_settings()
+        ejercicio = ejercicio_for(session)
+        prefix = _store_ref_prefix(session, order)
+        if find_pcl_by_order(client, order, ejercicio, ref_prefix=prefix) is not None:
+            return {"en_factusol": True, "detail": None}
+        info = _web_pcl_missing_detail(
+            session, client, order, ref=_compose_ref(order.order_number, prefix),
+            ejercicio=ejercicio, probe=probe_pcl_refs_by_number,
+        )
+    except FactusolError as exc:
+        logger.warning("factusol pedido-check %s: %s", order.order_number, exc)
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, {
+            "code": "factusol_unavailable",
+            "detail": "No se pudo consultar FACTUSOL ahora; vuelve a intentarlo en un momento.",
+        }) from exc
+    return {"en_factusol": False, "detail": info["detail"]}
 
 
 def _audit_factusol(

@@ -16,7 +16,11 @@ import {
   type LinkedOrder,
 } from "../../components/erp/LinkDocumentOrderModal";
 import { RegistrarCobroModal } from "../../components/erp/RegistrarCobroModal";
-import { getCurrentUser } from "../../lib/api";
+import {
+  VincularEmpresaFactusolModal,
+  type LinkedCompany,
+} from "../../components/erp/VincularEmpresaFactusolModal";
+import { ApiError, getCurrentUser } from "../../lib/api";
 import {
   createOrderFromDocumentType,
   downloadFacturasPdfZip,
@@ -153,6 +157,11 @@ export default function FactusolDocumentosPage() {
   // Lote 7 · P4 — «Crear pedido» desde un albarán / factura: la fila cuyo alta
   // está en curso (clave `serie-código`), para desactivar su botón.
   const [creando, setCreando] = useState<string | null>(null);
+  /** «Vincular empresa»: el cliente FACTUSOL del documento no tiene empresa en
+   *  el CRM. `crear` = al vincular, se sigue creando el pedido. */
+  const [vincularEmpresa, setVincularEmpresa] = useState<
+    { doc: FactusolDocument; codcli: string; nombre: string | null; crear: boolean } | null
+  >(null);
   // Descarga de PDF (solo facturas): selección múltiple → ZIP, y por fila.
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [downloading, setDownloading] = useState(false);
@@ -322,26 +331,58 @@ export default function FactusolDocumentosPage() {
    *  por CLIALB/CLIFAC — o la empresa del cruce CRM de la fila si la hay. Sin
    *  vínculo, el backend avisa (409) y no auto-crea. Al crear, la fila refleja
    *  el pedido sin releer FACTUSOL y el contador baja, igual que «Vincular». */
-  async function crearPedido(d: FactusolDocument) {
+  async function crearPedido(d: FactusolDocument, companyId?: string) {
     if (d.serie === null || d.codigo === null) return;
     if (tab !== "albaranes" && tab !== "facturas") return;
-    setCreando(rowKey(d));
     setError(null);
     setNotice(null);
+    // Cliente FACTUSOL sin empresa en el CRM: «Crear pedido» no falla en
+    // silencio, abre directamente «Vincular empresa» y sigue al vincular.
+    if (!companyId && d.company === null && d.cliente_codigo) {
+      setVincularEmpresa({ doc: d, codcli: d.cliente_codigo, nombre: d.cliente_nombre, crear: true });
+      return;
+    }
+    setCreando(rowKey(d));
     try {
       const order = await createOrderFromDocumentType(
-        tab, d.serie, Number(d.codigo), { company_id: d.company?.id ?? undefined },
+        tab, d.serie, Number(d.codigo), { company_id: companyId ?? d.company?.id ?? undefined },
       );
       const linked: LinkedOrder = { id: order.id, order_number: order.order_number };
-      setItems((prev) => prev.map((row) => (row === d ? { ...row, order: linked } : row)));
+      setItems((prev) => prev.map((row) => (rowKey(row) === rowKey(d) ? { ...row, order: linked } : row)));
       setUnlinkedTotal((n) => (n === null ? null : Math.max(0, n - 1)));
       const label = tab === "albaranes" ? "Albarán" : "Factura";
       setNotice(`${label} ${d.numero}: pedido ${order.order_number} creado.`);
     } catch (e) {
+      if (e instanceof ApiError && e.code === "factusol_customer_unlinked") {
+        const det = (e.detail && typeof e.detail === "object" ? e.detail : {}) as Record<string, unknown>;
+        const codcli = typeof det.codcli === "string" ? det.codcli : d.cliente_codigo;
+        if (codcli) {
+          setVincularEmpresa({
+            doc: d, codcli,
+            nombre: typeof det.cliente_nombre === "string" ? det.cliente_nombre : d.cliente_nombre,
+            crear: true,
+          });
+          return;
+        }
+      }
       setError(extractErrorMessage(e, "No se pudo crear el pedido."));
     } finally {
       setCreando(null);
     }
+  }
+
+  /** Tras «Vincular empresa»: todas las filas de ese cliente pasan a tener su
+   *  empresa (sin releer FACTUSOL) y, si venía de «Crear pedido», se sigue. */
+  function onEmpresaVinculada(company: LinkedCompany) {
+    const pendiente = vincularEmpresa;
+    setVincularEmpresa(null);
+    if (!pendiente) return;
+    const empresa = { id: company.id, name: company.name, country: null, factusol_id: pendiente.codcli };
+    setItems((prev) => prev.map((row) => (
+      row.cliente_codigo === pendiente.codcli ? { ...row, company: empresa } : row
+    )));
+    setNotice(`Cliente FACTUSOL ${pendiente.codcli} vinculado a «${company.name}».`);
+    if (pendiente.crear) void crearPedido({ ...pendiente.doc, company: empresa }, company.id);
   }
 
   const month = currentMonthRange();
@@ -409,8 +450,23 @@ export default function FactusolDocumentosPage() {
           aria-label={`Vincular ${d.numero} a un pedido`}
           onClick={(e) => { e.stopPropagation(); setVinculando(d); }}
         >
-          Vincular
+          Vincular a pedido
         </button>
+        {d.company === null && d.cliente_codigo ? (
+          <button
+            type="button" className="button small secondary erp-doc-link-btn"
+            aria-label={`Vincular empresa del cliente FACTUSOL ${d.cliente_codigo}`}
+            title="Vincular el cliente FACTUSOL a una empresa del CRM (o crearla)"
+            onClick={(e) => {
+              e.stopPropagation();
+              setVincularEmpresa({
+                doc: d, codcli: d.cliente_codigo as string, nombre: d.cliente_nombre, crear: false,
+              });
+            }}
+          >
+            Vincular empresa
+          </button>
+        ) : null}
       </div>
     );
   }
@@ -781,6 +837,18 @@ export default function FactusolDocumentosPage() {
           numero={vinculando.numero}
           onClose={() => setVinculando(null)}
           onLinked={(order) => onLinked(vinculando, order)}
+        />
+      ) : null}
+
+      {vincularEmpresa ? (
+        <VincularEmpresaFactusolModal
+          codcli={vincularEmpresa.codcli}
+          clienteNombre={vincularEmpresa.nombre}
+          contexto={vincularEmpresa.crear
+            ? `crear el pedido ${tab === "albaranes" ? "del albarán" : "de la factura"} ${vincularEmpresa.doc.numero}`
+            : undefined}
+          onClose={() => setVincularEmpresa(null)}
+          onLinked={onEmpresaVinculada}
         />
       ) : null}
     </main>

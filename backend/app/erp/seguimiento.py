@@ -24,7 +24,7 @@ import json
 import re
 import unicodedata
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -563,6 +563,12 @@ def _real_event_date(order: Order, domain: str, to_statuses: set[str]) -> dateti
     return None
 
 
+#: `packing_json`: la fecha del DOCUMENTO de FACTUSOL de un pedido creado desde
+#: una factura (FECFAC), guardada aparte al cambiar la fecha del pedido: la
+#: «Fecha factura» no se mueve con ella.
+FECHA_DOCUMENTO_KEY = "fecha_documento"
+
+
 def _fecha_factura(order: Order) -> datetime | None:
     """Fecha de la factura: la emisión / vinculación registrada en BoHub (el
     hecho real del evento de factura) o, en un pedido CREADO desde una factura
@@ -575,6 +581,15 @@ def _fecha_factura(order: Order) -> datetime | None:
         return real
     source = getattr(order.external_source, "value", order.external_source)
     if source == OrderSource.FACTUSOL_FACTURA.value and get_linked_invoice(order):
+        # Si se cambió la fecha del pedido, la del documento se guardó aparte.
+        from app.erp.factusol_albaran import packing_of  # noqa: PLC0415
+
+        guardada = packing_of(order).get(FECHA_DOCUMENTO_KEY)
+        if guardada:
+            try:
+                return datetime.fromisoformat(str(guardada)).replace(tzinfo=UTC)
+            except ValueError:
+                pass
         return order.placed_at
     return None
 

@@ -33,8 +33,35 @@ jest.mock("../../components/PageHeader", () => ({
     title: string; description?: string; actions?: React.ReactNode;
   }) => <header><h1>{title}</h1>{description ? <p>{description}</p> : null}{actions}</header>,
 }));
-jest.mock("../../lib/api", () => ({
-  getCurrentUser: jest.fn(() => Promise.resolve({ role: "admin" })),
+jest.mock("../../lib/api", () => {
+  class ApiError extends Error {
+    status: number; code: string | null; detail: unknown;
+    constructor(message: string, status: number, detail: unknown) {
+      super(message);
+      this.status = status;
+      this.detail = detail;
+      const d = detail as { code?: unknown } | null;
+      this.code = d && typeof d.code === "string" ? d.code : null;
+    }
+  }
+  return {
+    ApiError,
+    getCurrentUser: jest.fn(() => Promise.resolve({ role: "admin" })),
+  };
+});
+jest.mock("../../components/erp/VincularEmpresaFactusolModal", () => ({
+  VincularEmpresaFactusolModal: ({ codcli, clienteNombre, contexto, onLinked, onClose }: {
+    codcli: string; clienteNombre?: string | null; contexto?: string;
+    onLinked: (c: { id: string; name: string }) => void; onClose: () => void;
+  }) => (
+    <div role="dialog" aria-label="Vincular empresa">
+      EMPRESA {codcli} {clienteNombre} · {contexto ?? "sin pedido"}
+      <button type="button" onClick={() => onLinked({ id: "jap", name: "JAP EDICIONES S.L." })}>
+        ENLAZAR
+      </button>
+      <button type="button" onClick={onClose}>CERRAR</button>
+    </div>
+  ),
 }));
 jest.mock("../../components/erp/LinkDocumentOrderModal", () => ({
   LinkDocumentOrderModal: ({ docType, numero, onLinked, onClose }: {
@@ -449,6 +476,67 @@ describe("ERP · Documentos FACTUSOL (Lote 2 · PR-2)", () => {
     // El error del backend (cliente sin vincular) se muestra; la fila sigue sin pedido.
     expect(await screen.findByRole("alert")).toHaveTextContent(/no está vinculado/i);
     expect(screen.queryByRole("link", { name: /Abrir pedido/ })).not.toBeInTheDocument();
+  });
+
+  it("albarán de un cliente FACTUSOL sin empresa: «Crear pedido» abre «Vincular empresa» y sigue", async () => {
+    const user = userEvent.setup();
+    const alb = (codigo: number, numero: string) => factura({
+      doc_type: "albaranes", serie: 2, codigo, numero, estado: "0", estado_label: "Pendiente",
+      estado_tone: "muted", cliente_codigo: "385", cliente_nombre: "JAP EDICIONES S.L.",
+      company: null, order: null,
+    });
+    mockList.mockResolvedValue({
+      items: [alb(200038, "2-200038"), alb(200039, "2-200039")], total: 2, unlinked_total: 2,
+    });
+    mockCreate.mockResolvedValue({ id: "o-38", order_number: "ALB-2-200038" });
+    render(<FactusolDocumentosPage />);
+    await user.click(await screen.findByRole("tab", { name: "Albaranes" }));
+    await screen.findByText("2-200038");
+    // Las dos acciones se distinguen: a un pedido / la empresa del cliente.
+    expect(screen.getAllByRole("button", { name: /a un pedido$/ })[0]).toHaveTextContent("Vincular a pedido");
+    expect(screen.getAllByRole("button", { name: "Vincular empresa del cliente FACTUSOL 385" }))
+      .toHaveLength(2);
+    // «Crear pedido» no llama al backend: abre directamente el modal.
+    await user.click(screen.getAllByRole("button", { name: "Crear pedido" })[0]);
+    const modal = await screen.findByRole("dialog", { name: "Vincular empresa" });
+    expect(modal).toHaveTextContent("EMPRESA 385 JAP EDICIONES S.L.");
+    expect(modal).toHaveTextContent("crear el pedido del albarán 2-200038");
+    expect(mockCreate).not.toHaveBeenCalled();
+    // Al vincular, el pedido se crea seguido con esa empresa.
+    await user.click(within(modal).getByRole("button", { name: "ENLAZAR" }));
+    await waitFor(() =>
+      expect(mockCreate).toHaveBeenCalledWith("albaranes", 2, 200038, { company_id: "jap" }),
+    );
+    expect(await screen.findByRole("link", { name: "Abrir pedido ALB-2-200038" })).toBeInTheDocument();
+    // El otro albarán del mismo cliente ya no pide nada.
+    expect(screen.queryByRole("button", { name: /Vincular empresa del cliente/ })).not.toBeInTheDocument();
+    mockCreate.mockResolvedValue({ id: "o-39", order_number: "ALB-2-200039" });
+    await user.click(screen.getByRole("button", { name: "Crear pedido" }));
+    await waitFor(() =>
+      expect(mockCreate).toHaveBeenLastCalledWith("albaranes", 2, 200039, { company_id: "jap" }),
+    );
+    expect(screen.queryByRole("dialog", { name: "Vincular empresa" })).not.toBeInTheDocument();
+  });
+
+  it("si el backend dice que el cliente no está vinculado (409), se abre el modal en vez del error", async () => {
+    const user = userEvent.setup();
+    const { ApiError } = jest.requireMock("../../lib/api") as {
+      ApiError: new (m: string, s: number, d: unknown) => Error;
+    };
+    mockList.mockResolvedValue({
+      items: [factura({ order: null, company: undefined, cliente_codigo: "385" })],
+      total: 1, unlinked_total: 1,
+    });
+    mockCreate.mockRejectedValueOnce(new ApiError("no vinculado", 409, {
+      code: "factusol_customer_unlinked", detail: "no vinculado",
+      codcli: "385", cliente_nombre: "JAP EDICIONES S.L.",
+    }));
+    render(<FactusolDocumentosPage />);
+    await screen.findByText("5-260066");
+    await user.click(screen.getByRole("button", { name: "Crear pedido" }));
+    expect(await screen.findByRole("dialog", { name: "Vincular empresa" }))
+      .toHaveTextContent("EMPRESA 385 JAP EDICIONES S.L.");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("sin permiso de edición no hay «Vincular»: la fila dice «Sin vincular»", async () => {
