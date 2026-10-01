@@ -37,14 +37,21 @@ from app.erp.models import ErpSettings
 from app.erp.models.settings import ERP_SETTINGS_SINGLETON_ID
 
 
-def _ids_en_hoja(valores: list[list[Any]]) -> set[str]:
-    from app.erp.drive_managed import _texto, realinear_pestana  # noqa: PLC0415
+def _ids_en_hoja(valores: list[list[Any]]) -> tuple[set[str], set[str]]:
+    """(ids en la zona viva, ids en el histórico) de la pestaña."""
+    from app.erp.drive_managed import _texto, is_separator, realinear_pestana  # noqa: PLC0415
     from app.erp.seguimiento import ID_INDEX  # noqa: PLC0415
 
-    return {
-        _texto(f[ID_INDEX]) for f in realinear_pestana(valores)
-        if len(f) > ID_INDEX and _texto(f[ID_INDEX])
-    }
+    vivos: set[str] = set()
+    historico: set[str] = set()
+    zona = vivos
+    for f in realinear_pestana(valores):
+        if is_separator(list(f)):
+            zona = historico
+            continue
+        if len(f) > ID_INDEX and _texto(f[ID_INDEX]):
+            zona.add(_texto(f[ID_INDEX]))
+    return vivos, historico
 
 
 def _linea(r: dict[str, Any]) -> str:
@@ -87,16 +94,22 @@ def main() -> int:
 
         vivos = drive_live_rows(session)
         completados = drive_completados_rows(session)
-        en_hoja = (
+        en_viva, en_historico = (
             _ids_en_hoja(client.tab_values(pedidos_tab, raw=True))
-            if pedidos_tab in client.tab_titles() else set()
+            if pedidos_tab in client.tab_titles() else (set(), set())
         )
+        en_hoja = en_viva | en_historico
         faltan_vivos = [r for r in vivos if str(r.get("id")) not in en_hoja]
+        suben = [r for r in vivos if str(r.get("id")) in en_historico - en_viva]
         faltan_compl = [r for r in completados if str(r.get("id")) not in en_hoja]
         print(f"«{pedidos_tab}»: {len(vivos)} pedidos vivos y {len(completados)} "
               "completados en BoHub.")
         print(f"Vivos que NO están en la hoja (volverán a la zona viva): {len(faltan_vivos)}")
         for r in faltan_vivos:
+            print(_linea(r))
+        print("Vivos que hoy solo están en el HISTÓRICO (subirán a la zona viva hasta que "
+              f"se marquen completados): {len(suben)}")
+        for r in suben:
             print(_linea(r))
         print(f"Completados que NO están en la hoja (irán al histórico): {len(faltan_compl)}")
         for r in faltan_compl:
@@ -112,9 +125,16 @@ def main() -> int:
                 return 1
             finally:
                 session.rollback()
+            esp = previa.get("espejo") or {}
             print(f"\nVista previa: {previa['rows']} filas de BoHub en la zona viva, "
                   f"{previa.get('manuales', 0)} a mano, "
-                  f"{previa.get('completados_historico', 0)} completados.")
+                  f"{previa.get('completados_historico', 0)} completados, "
+                  f"{previa.get('historico_preservado', 0)} del histórico "
+                  f"({esp.get('historico_duplicados_suprimidos', 0)} quitadas del histórico "
+                  "porque el pedido sale arriba).")
+            if esp.get("filas_rescatadas"):
+                print("AVISO: filas que se conservarían por la salvaguarda: "
+                      + ", ".join(esp["filas_rescatadas"]))
             print("Nada escrito. Para reponerlas: --apply (o «Actualizar hoja de Drive…»).")
             return 0
 
