@@ -40,9 +40,12 @@ tampoco compite con los pedidos vivos si alguien mira las dos pestañas.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.erp.drive_sheets import DriveSyncError, ManagedTabTransport
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
 from app.erp.seguimiento import (
     INCIDENCIAS_COLUMNS,
     SEG_COLUMNS,
@@ -265,6 +268,7 @@ def import_historico(
     pedidos_tab: str,
     incidencias_tab: str,
     dry_run: bool = True,
+    session: Session | None = None,
 ) -> dict[str, Any]:
     """Convierte la hoja vieja y la reparte en las DOS zonas estáticas:
 
@@ -277,11 +281,64 @@ def import_historico(
     pestañas se conservan: se leen antes y se vuelven a poner encima del
     separador, igual que el volcado periódico conserva las estáticas. Reejecutar
     reemplaza los bloques estáticos enteros, así que es idempotente y no duplica
-    separadores."""
+    separadores.
+
+    Al escribir se coge el cerrojo del espejo (nunca a la vez que una pasada
+    del botón o del bucle) y, con `session`, se comprueba antes que la base de
+    datos esté migrada: si no, se para sin tocar la hoja."""
+    historic = sheets.first_tab_title()
+    for destino in (pedidos_tab, incidencias_tab):
+        if destino.strip().casefold() == historic.strip().casefold():
+            raise DriveSyncError(
+                f"«{destino}» es la pestaña histórica en bruto: lo convertido va "
+                "a las pestañas de la app, para no tocar el original"
+            )
+
+    plan = plan_import(sheets.tab_values(historic))
+    resumen = {k: v for k, v in plan.items()
+               if k not in ("rows", "pendientes_rows")}
+    resumen.update({
+        "tab": pedidos_tab, "incidencias_tab": incidencias_tab,
+        "origen": historic, "dry_run": dry_run, "written": False,
+    })
+    if dry_run:
+        return resumen
+
+    from app.erp.seguimiento_sync_job import reconcile_lock  # noqa: PLC0415
+
+    with reconcile_lock() as cogido:
+        if not cogido:
+            raise DriveSyncError(
+                "hay una sincronización con la hoja en curso: no se ha escrito nada; "
+                "vuelve a intentarlo en un momento"
+            )
+        if session is not None:
+            # Lo mismo que exige el espejo: sin la BD migrada, nada.
+            from app.erp.seguimiento_mirror import formato_bd_viejo  # noqa: PLC0415
+
+            formato_bd_viejo(session)
+        _escribir_importacion(sheets, plan, pedidos_tab, incidencias_tab)
+
+    resumen["written"] = True
+    logger.info(
+        "drive: hoja vieja repartida — %d al histórico de «%s», %d a pendientes "
+        "de «%s» (%d descartadas, %d dudosas); «%s» sin tocar",
+        plan["mapeadas"], pedidos_tab, plan["pendientes"], incidencias_tab,
+        plan["descartadas"], plan["dudosas"], historic,
+    )
+    return resumen
+
+
+def _escribir_importacion(
+    sheets: ManagedTabTransport, plan: dict[str, Any], pedidos_tab: str,
+    incidencias_tab: str,
+) -> None:
+    """La escritura de `import_historico` (bajo el cerrojo del espejo)."""
     from app.erp.drive_managed import (  # noqa: PLC0415
         FORMATO_SIN_COURIER,
         cabecera_de,
         compose,
+        comprobar_columnas,
         dates_to_serial,
         es_fila_completado,
         formato_de_pestana,
@@ -301,24 +358,6 @@ def import_historico(
         INCIDENCIAS_DATE_COLUMNS,
         PEDIDOS_DATE_COLUMNS,
     )
-
-    historic = sheets.first_tab_title()
-    for destino in (pedidos_tab, incidencias_tab):
-        if destino.strip().casefold() == historic.strip().casefold():
-            raise DriveSyncError(
-                f"«{destino}» es la pestaña histórica en bruto: lo convertido va "
-                "a las pestañas de la app, para no tocar el original"
-            )
-
-    plan = plan_import(sheets.tab_values(historic))
-    resumen = {k: v for k, v in plan.items()
-               if k not in ("rows", "pendientes_rows")}
-    resumen.update({
-        "tab": pedidos_tab, "incidencias_tab": incidencias_tab,
-        "origen": historic, "dry_run": dry_run, "written": False,
-    })
-    if dry_run:
-        return resumen
 
     def _live(title: str) -> list[list[Any]]:
         """La zona VIVA que ya hay en la pestaña (sin cabecera): todo lo que
@@ -346,8 +385,10 @@ def import_historico(
     )
     # Una pestaña escrita antes de «Courier» se migra primero (inserta la columna
     # en la hoja, con su recuento), igual que en el volcado periódico; y lo leído
-    # se pone al formato actual.
-    if formato_de_pestana(valores) == FORMATO_SIN_COURIER:
+    # se pone al formato actual. Con las «id» fuera de su sitio, no se toca.
+    formato = formato_de_pestana(valores)
+    comprobar_columnas(valores, formato, pedidos_tab)
+    if formato == FORMATO_SIN_COURIER:
         valores, _migracion = migrar_columna_courier(sheets, pedidos_tab, valores)
     valores = realinear_pestana(valores)
     cabecera = cabecera_de(valores)
@@ -387,12 +428,3 @@ def import_historico(
         sheets.format_tab(incidencias_tab, incidencias_format(
             [{"situacion": "incidencias", "fecha": None} for _ in vivas_inc], pendientes,
         ))
-
-    resumen["written"] = True
-    logger.info(
-        "drive: hoja vieja repartida — %d al histórico de «%s», %d a pendientes "
-        "de «%s» (%d descartadas, %d dudosas); «%s» sin tocar",
-        plan["mapeadas"], pedidos_tab, plan["pendientes"], incidencias_tab,
-        plan["descartadas"], plan["dudosas"], historic,
-    )
-    return resumen

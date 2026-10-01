@@ -1113,15 +1113,7 @@ export default function SeguimientoPage() {
               La pestaña «{syncSummary.historic_tab}» no se ha tocado.
             </p>
           ) : null}
-          {syncSummary.migracion_courier?.estado === "hecha" ? (
-            <p className="muted small" role="note">
-              Columna «Courier» añadida en «{syncSummary.tab}» (entre «Envío» y
-              «Fecha recogido»): {syncSummary.migracion_courier.filas ?? 0} filas,{" "}
-              {syncSummary.migracion_courier.celdas_antes ?? 0} celdas con dato antes
-              y {syncSummary.migracion_courier.celdas_despues ?? 0} después — ninguna
-              perdida.
-            </p>
-          ) : null}
+          <CourierMigrationDone summary={syncSummary} />
         </section>
       ) : null}
 
@@ -1283,6 +1275,66 @@ const REVIEW_KIND_LABEL: Record<string, string> = {
   probable_match: "coincidencia probable",
 };
 
+/** Vista previa: la pestaña aún no tiene la columna «Courier». Con 19
+ *  columnas se inserta (con recuento de celdas); con 17, se reescribe. */
+function CourierMigrationPending({ summary }: { summary: DriveManagedSummary }) {
+  const m = summary.migracion_courier;
+  if (m?.estado !== "pendiente") return null;
+  if (m.formato === "sin_recogido") {
+    return (
+      <p className="form-info small" role="note">
+        La pestaña está escrita con un formato antiguo (17 columnas, sin
+        «Fecha recogido» ni <strong>«Courier»</strong>): al confirmar se reescribe
+        entera con las 20 columnas; lo de detrás de «Envío» corre dos posiciones.
+      </p>
+    );
+  }
+  return (
+    <>
+      <p className="form-info small" role="note">
+        La pestaña aún no tiene la columna <strong>«Courier»</strong>: al confirmar
+        se insertará entre «Envío» y «Fecha recogido», en la cabecera y en todas
+        las filas (también el histórico), sin mover nada más. Antes de seguir se
+        comprueba que no se pierde ninguna de sus {m.celdas_antes ?? 0} celdas
+        con dato.
+      </p>
+      {m.celdas_que_no_caben ? (
+        <p className="form-error small" role="alert">
+          La columna Z tiene {m.celdas_que_no_caben} celda(s) con dato: al insertar
+          la columna se saldrían del rango de la app, así que la actualización se
+          parará sin escribir nada. Muévelas a otra pestaña (o bórralas) antes.
+        </p>
+      ) : null}
+    </>
+  );
+}
+
+/** Tras escribir: la columna «Courier» ya está en la hoja. «Ninguna perdida»
+ *  solo si el recuento de celdas cuadra (si no cuadrara, la pasada se habría
+ *  parado; aun así no se afirma). */
+function CourierMigrationDone({ summary }: { summary: DriveManagedSummary }) {
+  const m = summary.migracion_courier;
+  if (m?.estado === "reescrita") {
+    return (
+      <p className="muted small" role="note">
+        La pestaña «{summary.tab}» estaba en un formato antiguo (17 columnas) y se
+        ha reescrito con las 20, con «Courier» entre «Envío» y «Fecha recogido».
+      </p>
+    );
+  }
+  if (m?.estado !== "hecha") return null;
+  const antes = m.celdas_antes ?? 0;
+  const despues = m.celdas_despues ?? 0;
+  return (
+    <p className="muted small" role="note">
+      Columna «Courier» añadida en «{summary.tab}» (entre «Envío» y «Fecha
+      recogido»): {m.filas ?? 0} filas, {antes} celdas con dato antes y {despues}{" "}
+      después —{" "}
+      {antes === despues ? "ninguna perdida." : "no cuadra: revisa la hoja."}
+    </p>
+  );
+}
+
 /** ERP-F6-fix4 — a revisar, agrupado POR PEDIDO (Parte G). Cada pedido lista
  *  sus motivos; nada se toca, Bart decide. */
 /** Previsualización del volcado a la pestaña gestionada: a qué pestañas va,
@@ -1298,15 +1350,7 @@ function ManagedPreview({ summary }: { summary: DriveManagedSummary }) {
         del pedido (más reciente primero) y con la cabecera congelada. Nada se
         ha escrito todavía.
       </p>
-      {summary.migracion_courier?.estado === "pendiente" ? (
-        <p className="form-info small" role="note">
-          La pestaña aún no tiene la columna <strong>«Courier»</strong>: al confirmar
-          se insertará entre «Envío» y «Fecha recogido», en la cabecera y en todas
-          las filas (también el histórico), sin mover nada más. Antes de seguir se
-          comprueba que no se pierde ninguna de sus{" "}
-          {summary.migracion_courier.celdas_antes ?? 0} celdas con dato.
-        </p>
-      ) : null}
+      <CourierMigrationPending summary={summary} />
       <ul className="item-list">
         <li>
           Se escribirán <strong>{summary.rows}</strong> filas de BoHub (los mismos

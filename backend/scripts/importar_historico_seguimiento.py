@@ -113,10 +113,14 @@ def main() -> int:
 
     client = GoogleSheetsClient(info, spreadsheet_id)
     try:
-        resumen = import_historico(
-            client, pedidos_tab=pedidos_tab, incidencias_tab=incidencias_tab,
-            dry_run=not args.apply,
-        )
+        # Con sesión: antes de escribir se comprueba que la base de datos esté
+        # migrada (lo mismo que exige el espejo). No escribe nada en ella.
+        with Session(get_engine()) as session:
+            resumen = import_historico(
+                client, pedidos_tab=pedidos_tab, incidencias_tab=incidencias_tab,
+                dry_run=not args.apply, session=session,
+            )
+            session.rollback()
     except DriveSyncError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

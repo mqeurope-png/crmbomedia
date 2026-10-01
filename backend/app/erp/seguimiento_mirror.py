@@ -108,6 +108,94 @@ def con_hueco_courier(fila: list[Any]) -> list[Any]:
         r[_COURIER:_COURIER] = [""]
     return r
 
+
+def _id_en_posicion_vieja(fila: list[Any], row_id: str) -> bool:
+    """¿Una fila guardada CON su id (la foto, una fila manual) la lleva en la
+    última columna del formato de 19 (S) y no en la del actual (T)?"""
+    vieja = ID_INDEX - 1
+    return (len(fila) > vieja and _texto(fila[vieja]) == row_id
+            and not (len(fila) > ID_INDEX and _texto(fila[ID_INDEX]) == row_id))
+
+
+def al_formato_actual(fila: list[Any], row_id: str | None = None) -> list[Any]:
+    """Una fila guardada con el formato de 19 columnas → el actual. Con
+    `row_id` —la foto y las filas manuales guardan la fila entera, con su id
+    en la última columna— solo si la id está en la posición VIEJA: una fila
+    que ya está al día no se vuelve a correr. Sin él (el histórico, que no
+    siempre la lleva), manda la marca de formato de la BD."""
+    if row_id is not None and not _id_en_posicion_vieja(fila, row_id):
+        return list(fila)
+    return con_hueco_courier(fila)
+
+
+def formato_bd_viejo(session: Session) -> bool:
+    """¿Las filas que guarda el espejo están en un formato anterior al actual?
+    Sin la tabla de estado (BD sin migrar) no se puede saber, y quien vaya a
+    tocar la hoja o esas filas se para aquí, ANTES de escribir nada (la
+    siguiente vez, con la BD al día, sigue)."""
+    try:
+        meta = session.get(SeguimientoSyncMeta, META_FORMATO_BD)
+    except Exception as exc:
+        raise DriveSyncError(
+            "la base de datos aún no está al día (falta la tabla de estado del "
+            "espejo): no se ha escrito nada; vuelve a intentarlo en un momento"
+        ) from exc
+    try:
+        columnas = int(str(meta.valor)) if meta is not None else 0
+    except ValueError:
+        columnas = 0
+    return columnas < FORMATO_BD_ACTUAL
+
+
+def _json(fila: list[Any]) -> str:
+    return json.dumps(fila, ensure_ascii=False, default=str)
+
+
+def poner_bd_al_dia(session: Session) -> int | None:
+    """Pone al día, UNA vez, las filas que el espejo guardó con 19 columnas
+    (antes de «Courier»): la foto de las filas de BoHub y manuales, las filas
+    manuales ingeridas y el histórico (`seguimiento_legacy`) — hueco de
+    «Courier» detrás de «Envío», nada más se mueve. Las que llevan su id solo
+    si la tienen en la posición vieja (`al_formato_actual`).
+
+    Deja la marca del formato en la MISMA transacción: si quien llama no
+    confirma, se deshace todo junto y la siguiente vez se repite; si confirma,
+    no se vuelve a hacer. La llaman el espejo al cargar y quien vaya a guardar
+    filas del histórico en el formato actual (`import_legacy_rows`), para que lo
+    guardado y la marca nunca discrepen. Devuelve cuántas filas ha convertido,
+    o None si ya estaba al día."""
+    if not formato_bd_viejo(session):
+        return None
+    n = 0
+    for snap in session.scalars(select(SeguimientoSnapshot)):
+        if snap.kind == KIND_LEGACY:
+            continue                       # del histórico solo se guarda la presencia
+        vals = _json_lista(snap.values_json)
+        if vals and _id_en_posicion_vieja(vals, snap.row_id):
+            snap.values_json = _json(con_hueco_courier(vals))
+            n += 1
+    for man in session.scalars(select(SeguimientoManual)):
+        vals = _json_lista(man.values_json)
+        if vals and _id_en_posicion_vieja(vals, man.row_id):
+            man.values_json = _json(con_hueco_courier(vals))
+            n += 1
+    for rec in session.scalars(select(SeguimientoLegacy)):
+        vals = _json_lista(rec.raw_json)
+        if vals:
+            rec.raw_json = _json(con_hueco_courier(vals))
+            n += 1
+    meta = session.get(SeguimientoSyncMeta, META_FORMATO_BD)
+    if meta is None:
+        session.add(SeguimientoSyncMeta(clave=META_FORMATO_BD, valor=str(FORMATO_BD_ACTUAL)))
+    else:
+        meta.valor = str(FORMATO_BD_ACTUAL)
+    session.flush()
+    logger.info(
+        "seguimiento: %d filas guardadas del espejo puestas al formato de %d "
+        "columnas (hueco de «Courier»)", n, FORMATO_BD_ACTUAL,
+    )
+    return n
+
 # --- propiedad por columna (filas de BoHub) -----------------------------------
 
 #: «regla Tracking»: BoHub rellena si está vacía; lo manual manda y se lee de
@@ -402,10 +490,11 @@ class Espejo:
         esp = cls(session=session, dry_run=dry_run)
         # Formato de lo guardado: si es el anterior a «Courier», se pone al día
         # (en una pasada real, en la BD y una sola vez; en la vista previa, solo
-        # en memoria). Va ANTES de leer nada guardado.
-        viejo = esp._formato_bd_viejo()
+        # en memoria). Va ANTES de leer nada guardado; sin la BD migrada, la
+        # pasada se para aquí (DriveSyncError), sin haber tocado la hoja.
+        viejo = formato_bd_viejo(session)
         if viejo and not dry_run:
-            esp._convertir_bd()
+            esp.stats["formato_bd_convertidas"] = poner_bd_al_dia(session)
         esp._bd_formato_viejo = viejo and dry_run
         try:
             for s in session.scalars(select(SeguimientoSnapshot)):
@@ -415,7 +504,7 @@ class Espejo:
                     vals = []
                 vals = vals if isinstance(vals, list) else []
                 if s.kind != KIND_LEGACY:
-                    vals = esp._fila_guardada(vals)
+                    vals = esp._fila_guardada(vals, s.row_id)
                 esp.snapshot[s.row_id] = (s.kind, vals)
         except Exception:  # noqa: BLE001 — BD sin migrar: espejo en modo arranque
             logger.warning("seguimiento: sin snapshot del espejo", exc_info=True)
@@ -424,70 +513,11 @@ class Espejo:
 
     # -- formato de lo guardado ------------------------------------------------
 
-    def _formato_bd_viejo(self) -> bool:
-        """¿Las filas guardadas están en un formato anterior al actual? Sin la
-        tabla de estado (BD sin migrar) no se puede saber: se para la pasada
-        antes de leer ni escribir nada (la siguiente, con la BD al día, sigue)."""
-        try:
-            meta = self.session.get(SeguimientoSyncMeta, META_FORMATO_BD)
-        except Exception as exc:
-            raise DriveSyncError(
-                "la base de datos aún no está al día (falta la tabla de estado del "
-                "espejo): no se ha escrito nada; vuelve a intentarlo en un momento"
-            ) from exc
-        try:
-            columnas = int(str(meta.valor)) if meta is not None else 0
-        except ValueError:
-            columnas = 0
-        return columnas < FORMATO_BD_ACTUAL
-
-    def _fila_guardada(self, fila: list[Any]) -> list[Any]:
+    def _fila_guardada(self, fila: list[Any], row_id: str | None = None) -> list[Any]:
         """Una fila leída de la BD, en el formato actual (vista previa con la BD
-        aún sin convertir: hueco de «Courier» en memoria)."""
-        return con_hueco_courier(fila) if self._bd_formato_viejo else fila
-
-    def _convertir_bd(self) -> None:
-        """Pone al día, UNA vez, las filas que el espejo guardó con 19 columnas
-        (antes de «Courier»): la foto de las filas de BoHub y manuales, las
-        filas manuales ingeridas y el histórico (`seguimiento_legacy`) — hueco de
-        «Courier» detrás de «Envío», nada más se mueve. Deja la marca del formato
-        en la MISMA transacción: si la pasada no termina, se deshace todo junto y
-        la siguiente lo repite; si termina, no se vuelve a hacer."""
-        n = 0
-        for snap in self.session.scalars(select(SeguimientoSnapshot)):
-            if snap.kind == KIND_LEGACY:
-                continue                       # del histórico solo se guarda la presencia
-            vals = _json_lista(snap.values_json)
-            if vals:
-                snap.values_json = json.dumps(con_hueco_courier(vals), ensure_ascii=False,
-                                              default=str)
-                n += 1
-        for man in self.session.scalars(select(SeguimientoManual)):
-            vals = _json_lista(man.values_json)
-            if vals:
-                man.values_json = json.dumps(con_hueco_courier(vals), ensure_ascii=False,
-                                             default=str)
-                n += 1
-        for rec in self.session.scalars(select(SeguimientoLegacy)):
-            vals = _json_lista(rec.raw_json)
-            if vals:
-                rec.raw_json = json.dumps(con_hueco_courier(vals), ensure_ascii=False,
-                                          default=str)
-                n += 1
-        meta = self.session.get(SeguimientoSyncMeta, META_FORMATO_BD)
-        if meta is None:
-            self.session.add(SeguimientoSyncMeta(
-                clave=META_FORMATO_BD, valor=str(FORMATO_BD_ACTUAL),
-            ))
-        else:
-            meta.valor = str(FORMATO_BD_ACTUAL)
-        self.session.flush()
-        self.stats["formato_bd_convertidas"] = n
-        if n:
-            logger.info(
-                "seguimiento: %d filas guardadas del espejo puestas al formato de %d "
-                "columnas (hueco de «Courier»)", n, FORMATO_BD_ACTUAL,
-            )
+        aún sin convertir: hueco de «Courier» en memoria, con el mismo criterio
+        que `poner_bd_al_dia`)."""
+        return al_formato_actual(fila, row_id) if self._bd_formato_viejo else fila
 
     # -- 1) filas de BoHub: lectura de vuelta ----------------------------------
 
@@ -855,7 +885,7 @@ class Espejo:
             rest_leg: list[list[Any]] = []
             for rid in faltan:
                 if rid in manuales:
-                    fila = self._fila_guardada(_json_lista(manuales[rid].values_json))
+                    fila = self._fila_guardada(_json_lista(manuales[rid].values_json), rid)
                     rest_man.append(_con_id(fila, rid))
                     self.tipos[rid] = KIND_MANUAL
                 elif rid in legacy_por_sid:

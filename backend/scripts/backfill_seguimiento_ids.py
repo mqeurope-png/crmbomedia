@@ -36,9 +36,16 @@ import sys
 from sqlalchemy.orm import Session
 
 from app.db.session import get_engine
-from app.erp.drive_managed import historico_manual_rows, managed_tab_titles, realinear_pestana
+from app.erp.drive_managed import (
+    comprobar_columnas,
+    formato_de_pestana,
+    historico_manual_rows,
+    managed_tab_titles,
+    realinear_pestana,
+)
 from app.erp.drive_sheets import (
     DriveConfigError,
+    DriveSyncError,
     GoogleSheetsClient,
     drive_config,
 )
@@ -81,10 +88,18 @@ def main() -> int:
 
         client = GoogleSheetsClient(info, spreadsheet_id)
         # Al formato actual (hueco de «Courier» si la pestaña aún no se migró),
-        # que es el de las filas que guarda el espejo.
-        valores = realinear_pestana(client.tab_values(pedidos_tab, raw=True))
-        historico = historico_manual_rows(valores)
-        n = import_legacy_rows(session, historico)
+        # que es el de las filas que guarda el espejo; `import_legacy_rows` pone
+        # antes la BD en ese formato (con su marca), en esta misma transacción.
+        # Con las columnas descolocadas (o la BD sin migrar), no se importa nada.
+        leidos = client.tab_values(pedidos_tab, raw=True)
+        try:
+            comprobar_columnas(leidos, formato_de_pestana(leidos), pedidos_tab)
+            historico = historico_manual_rows(realinear_pestana(leidos))
+            n = import_legacy_rows(session, historico)
+        except DriveSyncError as exc:
+            session.rollback()
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
         print(f"Histórico importado a «seguimiento_legacy»: {n} fila(s) "
               f"(de la pestaña «{pedidos_tab}»).")
         print()

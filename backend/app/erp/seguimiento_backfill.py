@@ -179,7 +179,15 @@ def import_legacy_rows(session: Session, historico: list[list[Any]]) -> int:
     duplica (actualiza el contenido en bruto, respeta el casado ya resuelto).
 
     `historico` son las filas de datos del histórico (sin cabecera ni separador),
-    en su orden. Devuelve cuántas quedan en la tabla."""
+    en su orden y en el formato ACTUAL de la hoja (20 columnas: realineadas si
+    la pestaña aún no se ha migrado). Devuelve cuántas quedan en la tabla.
+
+    Lo que ya guardaba la BD se pone antes en ese mismo formato (con su marca,
+    en esta misma transacción): así nunca conviven filas de dos formatos y la
+    siguiente pasada del espejo no vuelve a correr las que entran aquí."""
+    from app.erp.seguimiento_mirror import poner_bd_al_dia  # noqa: PLC0415
+
+    poner_bd_al_dia(session)
     existentes = {r.row_index: r for r in session.scalars(select(SeguimientoLegacy))}
     for idx, row in enumerate(historico):
         cells = [_texto(c) for c in row]

@@ -42,6 +42,16 @@ jest.mock("../../lib/erpApi", () => ({
   getOrderFactusolInvoiceRef: jest.fn(),
 }));
 
+/** Resumen de la pestaña gestionada (vista previa o escritura). */
+function managed(dryRun: boolean) {
+  return {
+    mode: "managed_tab", tab: "Seguimiento (app)", incidencias_tab: "Incidencias (app)",
+    historic_tab: "", rows: 4, incidencias: 0, por_situacion: { Listo: 4 },
+    columns: new Array(20).fill("x"), dry_run: dryRun, written: !dryRun,
+    manuales: 0,
+  };
+}
+
 function row(over: Record<string, unknown> = {}) {
   return {
     id: "ord-1", order_number: "BOP-1", serie: 5,
@@ -175,6 +185,65 @@ describe("ERP · Seguimiento — columna Courier", () => {
     expect(aviso).toHaveTextContent("entre «Envío» y «Fecha recogido»");
     expect(aviso).toHaveTextContent("81234 celdas");
     expect(screen.getByText(/Se reescribirá la pestaña/)).toHaveTextContent("20 columnas");
+  });
+
+  it("la vista previa avisa si la columna Z tiene algo (no cabría al insertar)", async () => {
+    mockRows(true);
+    (syncSeguimientoDrive as jest.Mock).mockResolvedValue({
+      ...managed(true),
+      migracion_courier: { estado: "pendiente", formato: "sin_courier", filas: 9000,
+                           celdas_antes: 81234, celdas_que_no_caben: 3 },
+    });
+    const user = userEvent.setup();
+    render(<SeguimientoPageView />);
+    await user.click(await screen.findByRole("button", { name: /Actualizar hoja de Drive/ }));
+    const alerta = await screen.findByRole("alert");
+    expect(alerta).toHaveTextContent("La columna Z tiene 3 celda(s) con dato");
+    expect(alerta).toHaveTextContent("sin escribir nada");
+  });
+
+  it("una pestaña de 17 columnas se reescribe (sin prometer inserción ni recuento)", async () => {
+    mockRows(true);
+    (syncSeguimientoDrive as jest.Mock)
+      .mockResolvedValueOnce({
+        ...managed(true),
+        migracion_courier: { estado: "pendiente", formato: "sin_recogido", filas: 40,
+                             celdas_antes: 300, celdas_que_no_caben: 0 },
+      })
+      .mockResolvedValueOnce({
+        ...managed(false),
+        migracion_courier: { estado: "reescrita", formato: "sin_recogido", filas: 40 },
+      });
+    const user = userEvent.setup();
+    render(<SeguimientoPageView />);
+    await user.click(await screen.findByRole("button", { name: /Actualizar hoja de Drive/ }));
+    const aviso = await screen.findByText(/formato antiguo \(17 columnas/);
+    expect(aviso).toHaveTextContent("se reescribe entera con las 20 columnas");
+    expect(screen.queryByText(/aún no tiene la columna/)).toBeNull();
+    await user.click(screen.getByRole("button", { name: /Confirmar y escribir/ }));
+    expect(await screen.findByText(/se ha reescrito con las 20/)).toBeInTheDocument();
+  });
+
+  it("tras migrar, «ninguna perdida» solo si el recuento cuadra", async () => {
+    mockRows(true);
+    (syncSeguimientoDrive as jest.Mock)
+      .mockResolvedValueOnce({
+        ...managed(true),
+        migracion_courier: { estado: "pendiente", formato: "sin_courier", filas: 9000,
+                             celdas_antes: 81234, celdas_que_no_caben: 0 },
+      })
+      .mockResolvedValueOnce({
+        ...managed(false),
+        migracion_courier: { estado: "hecha", formato: "sin_courier", filas: 9000,
+                             celdas_antes: 81234, celdas_despues: 81234 },
+      });
+    const user = userEvent.setup();
+    render(<SeguimientoPageView />);
+    await user.click(await screen.findByRole("button", { name: /Actualizar hoja de Drive/ }));
+    await user.click(await screen.findByRole("button", { name: /Confirmar y escribir/ }));
+    const hecho = await screen.findByText(/Columna «Courier» añadida/);
+    expect(hecho).toHaveTextContent("81234 celdas con dato antes y 81234 después");
+    expect(hecho).toHaveTextContent("ninguna perdida");
   });
 
   it("sin migración pendiente, la vista previa no avisa de nada", async () => {

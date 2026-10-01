@@ -16,7 +16,7 @@ import copy
 import io
 import json
 from collections.abc import Generator
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any
 
 import pytest
@@ -421,7 +421,7 @@ def _mundo_viejo(s: Session) -> tuple[Order, FakeTabs, dict[str, Any]]:
         SeguimientoManual(row_id="man-1", values_json=json.dumps(manual_19)),
         *[SeguimientoSnapshot(row_id=f"leg-{i}", kind=KIND_LEGACY, values_json="[]")
           for i in (1, 2, 3)],
-        *[SeguimientoLegacy(id=f"leg-{i}", row_index=i, numero_raw=h[1],
+        *[SeguimientoLegacy(id=f"leg-{i}", row_index=i - 1, numero_raw=h[1],
                             cliente_raw=h[3], raw_json=json.dumps(h[:ID_INDEX - 1]),
                             match_status="synthetic")
           for i, h in enumerate(historico, start=1)],
@@ -715,3 +715,190 @@ def test_sin_cabecera_el_formato_viejo_se_reconoce_por_donde_estan_las_ids(facto
         man = next(f for f in escrito if len(f) > ID_INDEX and f[ID_INDEX] == "man-1")
         assert man[_c("Tracking")] == "T-1" and man[COURIER] == ""
         assert res["espejo"]["ediciones_leidas"] == 0
+
+
+# --- lo que la migración NO debe hacer (revisión) -------------------------------------
+
+
+def test_courier_tecleado_en_otra_columna_no_hace_pasar_la_pestana_vieja_por_nueva(factory):
+    """Alguien escribe «Courier» en T1 de la pestaña vieja (19 columnas). El
+    formato se decide por lo que hay detrás de «Envío», no por si «Courier»
+    aparece en alguna celda: la pestaña se migra igual y nada se descoloca."""
+    with factory() as s:
+        o, _sheets, mundo = _mundo_viejo(s)
+        hoja = copy.deepcopy(mundo["hoja"])
+        hoja[0] = [*hoja[0], "Courier"]                       # T1, a mano
+        sheets = FakeTabs({HISTORICA: [], TAB: hoja})
+        res = push_managed_tabs(s, sheets, [_row(o)])
+        s.commit()
+        assert sheets.inserts == 1 and res["migracion_courier"]["estado"] == "hecha"
+        hist = _historico_escrito(sheets)
+        assert [h[ENVIO] for h in hist] == ["UPS", "FEDEX", "DSV"]
+        assert [h[_c("Tracking")] for h in hist] == ["TRK-1", "TRK-2", ""]
+        assert [h[_c("Nota / Incidencia")] for h in hist] == [
+            "nota vieja", "", "llamar antes"]
+        assert [h[ID_INDEX] for h in hist] == ["leg-1", "leg-2", "leg-3"]
+        man = next(f for f in sheets.written[TAB]
+                   if len(f) > ID_INDEX and f[ID_INDEX] == "man-1")
+        assert man[_c("Tracking")] == "T-1" and man[_c("Nota / Incidencia")] == "hola"
+        assert res["espejo"]["borradas"] == 0 and res["espejo"]["ediciones_leidas"] == 0
+
+
+def test_con_courier_insertada_dos_veces_no_se_escribe_nada(factory):
+    """Si la columna se insertó dos veces (dos pasadas a la vez sin cerrojo, o a
+    mano), las «id» quedan en la U: leerla como de 20 columnas descolocaría
+    todo. Se para sin tocar la hoja ni la BD, y lo dice."""
+    with factory() as s:
+        o, _sheets, mundo = _mundo_viejo(s)
+        hoja = copy.deepcopy(mundo["hoja"])
+        for fila in hoja:
+            if len(fila) > COURIER:
+                fila[COURIER:COURIER] = ["", ""]
+        hoja[0][COURIER:COURIER + 2] = ["Courier", "Courier"]
+        sheets = FakeTabs({HISTORICA: [], TAB: copy.deepcopy(hoja)})
+        for dry_run in (True, False):
+            with pytest.raises(DriveSyncError, match="descolocadas"):
+                push_managed_tabs(s, sheets, [_row(o)], dry_run=dry_run)
+            s.rollback()
+        assert sheets.inserts == 0 and sheets.written == {} and sheets.tabs[TAB] == hoja
+        assert s.get(SeguimientoSyncMeta, META_FORMATO_BD) is None
+
+
+def test_sin_la_bd_migrada_no_se_toca_la_hoja(factory):
+    """Una pasada nueva contra una BD sin la migración 0123 (sin la tabla de
+    estado del espejo) se para ANTES de insertar la columna en la hoja: si no,
+    una versión vieja aún en marcha leería la hoja nueva descolocada."""
+    with factory() as s:
+        o, sheets, mundo = _mundo_viejo(s)
+        SeguimientoSyncMeta.__table__.drop(s.get_bind())
+        with pytest.raises(DriveSyncError, match="base de datos"):
+            push_managed_tabs(s, sheets, [_row(o)])
+        s.rollback()
+        assert sheets.inserts == 0 and sheets.written == {}
+        assert sheets.tabs[TAB] == mundo["hoja"]
+
+
+def test_con_algo_en_la_columna_z_no_se_inserta_la_columna(factory):
+    """Lo de la columna Z pasaría a AA al insertar «Courier»: fuera de lo que
+    lee la app, y se quedaría suelto. La vista previa lo avisa y la pasada se
+    para sin tocar nada."""
+    with factory() as s:
+        o, _sheets, mundo = _mundo_viejo(s)
+        hoja = copy.deepcopy(mundo["hoja"])
+        hoja[-1] = [*hoja[-1], *[""] * (25 - len(hoja[-1])), "apunte en Z"]
+        sheets = FakeTabs({HISTORICA: [], TAB: copy.deepcopy(hoja)})
+        previa = push_managed_tabs(s, sheets, [_row(o)], dry_run=True)
+        assert previa["migracion_courier"]["celdas_que_no_caben"] == 1
+        with pytest.raises(DriveSyncError, match="columna Z"):
+            push_managed_tabs(s, sheets, [_row(o)])
+        s.rollback()
+        assert sheets.inserts == 0 and sheets.written == {} and sheets.tabs[TAB] == hoja
+        assert s.get(SeguimientoSyncMeta, META_FORMATO_BD) is None
+
+
+def test_si_la_hoja_cambia_antes_de_insertar_no_se_inserta(factory):
+    """Entre la lectura y la inserción alguien escribe (u otra pasada acaba de
+    migrar la pestaña): se relee justo antes y, si no es lo leído, se para sin
+    insertar nada — nunca dos columnas «Courier»."""
+
+    class HojaQueCambiaAlReleer(FakeTabs):
+        lecturas = 0
+
+        def tab_values(self, title: str, *, raw: bool = False) -> list[list[Any]]:
+            self.lecturas += 1
+            if title == TAB and self.lecturas == 2:
+                self.tabs[TAB][2][CABECERA_19.index("Nota / Incidencia")] = "recién escrito"
+            return super().tab_values(title, raw=raw)
+
+    with factory() as s:
+        o, _sheets, mundo = _mundo_viejo(s)
+        sheets = HojaQueCambiaAlReleer({HISTORICA: [], TAB: copy.deepcopy(mundo["hoja"])})
+        with pytest.raises(DriveSyncError, match="ha cambiado"):
+            push_managed_tabs(s, sheets, [_row(o)])
+        s.rollback()
+        assert sheets.inserts == 0 and sheets.written == {}
+
+
+def test_una_pestana_de_17_columnas_se_reescribe_y_no_queda_pendiente(factory):
+    """Una pestaña del formato de 17 columnas (sin «Fecha recogido» ni «id») se
+    pone al día al reescribirla: el resumen dice «reescrita», no «pendiente»."""
+    from app.erp.drive_managed import _HEADER_V2_SIN_RECOGIDO
+
+    with factory() as s:
+        o = _order(s, "BOP-300")
+        fila = [""] * 17
+        fila[1], fila[3], fila[4] = "M-17", "Manual SL", "MANUAL"
+        fila[13], fila[14], fila[16] = "MRW", "TRK-17", "nota 17"
+        sheets = FakeTabs({HISTORICA: [], TAB: [list(_HEADER_V2_SIN_RECOGIDO), fila]})
+        previa = push_managed_tabs(s, sheets, [_row(o)], dry_run=True)
+        assert previa["migracion_courier"]["estado"] == "pendiente"
+        assert previa["migracion_courier"]["formato"] == "sin_recogido"
+        res = push_managed_tabs(s, sheets, [_row(o)])
+        s.commit()
+        assert res["migracion_courier"]["estado"] == "reescrita"
+        assert sheets.inserts == 0
+        assert sheets.written[TAB][0] == SEGUIMIENTO_COLUMNS_V2
+        man = next(f for f in sheets.written[TAB] if len(f) > 1 and f[1] == "M-17")
+        assert man[ENVIO] == "MRW" and man[COURIER] == ""
+        assert man[_c("Tracking")] == "TRK-17" and man[_c("Nota / Incidencia")] == "nota 17"
+
+
+def test_el_backfill_de_ids_antes_de_la_primera_pasada_no_corre_dos_veces_lo_guardado(factory):
+    """`scripts.backfill_seguimiento_ids --apply` entre el despliegue y la
+    primera pasada guarda el histórico ya en 20 columnas: antes pone la BD al
+    día (con su marca, en la misma transacción), así que la pasada no vuelve a
+    correr nada — tampoco lo que ya no está en la hoja."""
+    from app.erp.drive_managed import historico_manual_rows, realinear_pestana
+    from app.erp.seguimiento_backfill import import_legacy_rows
+
+    with factory() as s:
+        o, sheets, _mundo = _mundo_viejo(s)
+        fuera = _hist("V-X", "MRW", "", "TRK-X", "borrada", "leg-x")
+        s.add(SeguimientoLegacy(
+            id="leg-x", row_index=50, numero_raw="V-X", cliente_raw="Cliente viejo",
+            raw_json=json.dumps(fuera[:ID_INDEX - 1]), match_status="synthetic",
+            deleted_at=datetime.now(UTC),
+        ))
+        s.commit()
+        leidos = sheets.tab_values(TAB, raw=True)
+        import_legacy_rows(s, historico_manual_rows(realinear_pestana(leidos)))
+        s.commit()
+        assert s.get(SeguimientoSyncMeta, META_FORMATO_BD).valor == "20"
+        x = json.loads(s.get(SeguimientoLegacy, "leg-x").raw_json)
+        assert x[ENVIO] == "MRW" and x[COURIER] == "" and x[_c("Tracking")] == "TRK-X"
+
+        res = push_managed_tabs(s, sheets, [_row(o)])
+        s.commit()
+        assert "formato_bd_convertidas" not in res["espejo"]       # ya estaba al día
+        assert json.loads(s.get(SeguimientoLegacy, "leg-x").raw_json) == x
+        for rec in s.scalars(select(SeguimientoLegacy).where(SeguimientoLegacy.id != "leg-x")):
+            raw = json.loads(rec.raw_json)
+            assert raw[ENVIO] in ("UPS", "FEDEX", "DSV") and raw[COURIER] == ""
+        man = json.loads(s.scalars(select(SeguimientoManual)).one().values_json)
+        assert man[_c("Tracking")] == "T-1" and man[ID_INDEX] == "man-1"
+
+
+def test_poner_la_bd_al_dia_no_corre_las_filas_que_ya_lo_estan(factory):
+    """La foto y las filas manuales llevan su id: solo se convierten si la
+    tienen en la posición vieja. Una fila ya de 20 columnas no se corre aunque
+    falte la marca."""
+    from app.erp.seguimiento_mirror import poner_bd_al_dia
+
+    with factory() as s:
+        nueva = [""] * len(SEGUIMIENTO_COLUMNS_V2)
+        nueva[ENVIO], nueva[_c("Tracking")], nueva[ID_INDEX] = "MRW", "T-20", "man-20"
+        vieja = _a_19([*nueva[:ID_INDEX], "man-19"])
+        s.add_all([
+            SeguimientoManual(row_id="man-20", values_json=json.dumps(nueva)),
+            SeguimientoManual(row_id="man-19", values_json=json.dumps(vieja)),
+            SeguimientoSnapshot(row_id="man-20", kind=KIND_MANUAL, values_json=json.dumps(nueva)),
+        ])
+        s.flush()
+        assert poner_bd_al_dia(s) == 1
+        por_id = {m.row_id: json.loads(m.values_json)
+                  for m in s.scalars(select(SeguimientoManual))}
+        assert por_id["man-20"] == nueva
+        assert por_id["man-19"][_c("Tracking")] == "T-20"
+        assert por_id["man-19"][ID_INDEX] == "man-19" and por_id["man-19"][COURIER] == ""
+        assert json.loads(s.get(SeguimientoSnapshot, "man-20").values_json) == nueva
+        assert poner_bd_al_dia(s) is None                   # con su marca: nada

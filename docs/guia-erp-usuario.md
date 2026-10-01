@@ -896,8 +896,9 @@ método de pago de los pedidos antiguos.)*
 > que VIES da por no válido— cae en **«Por revisar»**: hay que arreglarlo antes
 > de facturar y sigue destacado, pero no ensucia la lista de incidencias.
 
-El **Excel** que se descarga trae dos pestañas: **«Pedidos»** (las 18 columnas,
-en el mismo orden que tengas puesto en la pantalla —Fecha al entrar—, con la
+El **Excel** que se descarga trae dos pestañas: **«Pedidos»** (las 20 columnas,
+con «Courier» y la «id» técnica oculta al final; las filas en el mismo orden
+que tengas puesto en la pantalla —Fecha al entrar—, con la
 celda Situación coloreada, la cabecera fija, el autofiltro y el importe con
 formato €) y **«Incidencias»** (los mismos pedidos
 que están en Situación=Incidencia, con más detalle: nº pedido, cliente, tipo,
@@ -918,7 +919,8 @@ en **pestañas propias de la app**. Cada una tiene **dos zonas**:
 
 - **«Seguimiento (app)»** — arriba, los pedidos vivos: **los mismos que ves en
   la pantalla** (en curso; fuera los quitados a mano y los ocultos por estado),
-  con las 18 columnas, **ordenados por fecha del pedido, del más reciente al
+  con las 20 columnas (con «Courier»; la «id» técnica va oculta al final),
+  **ordenados por fecha del pedido, del más reciente al
   más antiguo**, la celda Situación coloreada, la **fila 1 de encabezados
   congelada** (no se va al hacer scroll) y el **autofiltro** sobre esa misma
   cabecera, con el que puedes reordenar por Situación o por cualquier otra
@@ -974,6 +976,28 @@ de Drive…» avisa antes de hacerlo, y el resumen de después dice cuántas cel
 había antes y después. Las filas del **histórico manual** que llevaban el
 transportista en **Envío** (*UPS*, *MRW*, *FEDEX*, *DSV*…) **se quedan como
 están**: no se reinterpretan; su Courier queda vacío (y es editable).
+
+Tres casos en los que **no toca nada** y lo dice (en la vista previa o al
+actualizar), para que lo arregles a mano antes:
+
+- **La columna Z tiene algo.** Al insertar la columna, lo de Z pasaría a AA,
+  fuera de lo que lee la app, y se quedaría suelto. Muévelo a otra pestaña (o
+  bórralo) y vuelve a actualizar.
+- **Las columnas están descolocadas**: las «id» de las filas no están donde
+  dice la cabecera (una columna insertada o borrada a mano, «Courier» puesta
+  dos veces…). Deja la «id» como última columna (T) y vuelve a actualizar.
+- **La base de datos aún no está al día** (la actualización del programa no ha
+  terminado): vuelve a intentarlo en un momento.
+
+Una cabecera retocada (p. ej. «Courier» escrito a mano en otra columna) no
+engaña a la migración: el formato se reconoce por lo que hay justo detrás de
+«Envío» y, si la cabecera no se entiende, por dónde están las «id».
+
+> **Volver a la versión anterior** (solo si hiciera falta): antes de arrancarla,
+> borra a mano la columna O («Courier») de «Seguimiento (app)» —o restaura una
+> versión de la hoja anterior a la migración— y luego baja la base de datos
+> (`alembic downgrade 20260930_0122`), que devuelve lo guardado a 19 columnas.
+> Si no, la versión anterior leería corrido todo lo de detrás de «Envío».
 
 > Google siempre deja editar las celdas protegidas al **propietario** de la
 > hoja. Si lo haces, BoHub **deshace** el cambio en la siguiente pasada: los

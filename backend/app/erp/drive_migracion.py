@@ -49,7 +49,7 @@ from typing import Any, Protocol
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.erp.drive_managed import _texto, is_separator, managed_tab_titles
+from app.erp.drive_managed import _texto, is_separator, managed_tab_titles, realinear_pestana
 from app.erp.drive_sheets import DriveSyncError, ManagedTabTransport
 from app.erp.seguimiento import ID_INDEX
 
@@ -152,7 +152,9 @@ def resumen_pestana(valores: list[list[Any]]) -> dict[str, int]:
                 if any(_texto(c) for c in f) and not is_separator(list(f))]
 
     sep = next((i for i, f in enumerate(valores) if is_separator(list(f))), None)
-    cuerpo = datos(valores[1:])
+    # Las «id», en el formato actual: una pestaña aún sin «Courier» las lleva
+    # una columna antes.
+    cuerpo = datos(realinear_pestana(valores)[1:])
     return {
         "filas": len(valores),
         "vivas": len(datos(valores[1:sep] if sep is not None else valores[1:])),

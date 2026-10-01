@@ -920,20 +920,25 @@ export type DriveManagedSummary = {
   /** Espejo bidireccional (Fase 2): lo leído de la hoja y lo que se ha hecho. */
   espejo?: SeguimientoEspejoStats;
   /** Migración de la pestaña a 20 columnas (columna «Courier»): null si ya la
-   *  tenía; «pendiente» en la vista previa; «hecha» tras escribir, con el
-   *  recuento de celdas no vacías antes/después (no se pierde ninguna). */
+   *  tenía; «pendiente» en la vista previa; «hecha» tras insertar la columna,
+   *  con el recuento de celdas no vacías antes/después; «reescrita» si era del
+   *  formato de 17 columnas (se reescribe entera, sin insertar). */
   migracion_courier?: DriveCourierMigration | null;
 };
 
 /** Migración de «Seguimiento (app)» a 20 columnas: inserta «Courier» entre
  *  «Envío» y «Fecha recogido» en la cabecera y en todas las filas. */
 export type DriveCourierMigration = {
-  estado: "pendiente" | "hecha";
-  /** Formato con el que estaba escrita la pestaña (vista previa). */
+  estado: "pendiente" | "hecha" | "reescrita";
+  /** Formato con el que estaba escrita la pestaña: «sin_courier» (19
+   *  columnas: se inserta la columna) o «sin_recogido» (17: se reescribe). */
   formato?: string;
   filas?: number;
   celdas_antes?: number;
   celdas_despues?: number;
+  /** Vista previa: celdas con dato en la columna Z, que no cabrían al
+   *  insertar «Courier» (hay que moverlas antes; si no, no se migra). */
+  celdas_que_no_caben?: number;
   por_columna_antes?: Record<string, number>;
   por_columna_despues?: Record<string, number>;
 };
