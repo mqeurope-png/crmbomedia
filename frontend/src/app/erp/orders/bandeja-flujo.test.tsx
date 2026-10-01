@@ -615,6 +615,41 @@ describe("ERP · Bandeja (Lote B7) — vista lista", () => {
     expect(screen.getByRole("columnheader", { name: /Fecha/ })).toHaveAttribute("aria-sort", "ascending");
   });
 
+  it("en Lista la tabla scrollea en su región, con casilla y Nº fijos a la izquierda, Acciones a la derecha y el «⋯» flotante", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem("erp.bandeja.vista", "list");
+    render(<ErpOrdersPage />);
+    await screen.findByText("BOPRIN-1");
+    const region = screen.getByRole("region", { name: "Lista de pedidos (desplazable)" });
+    const table = within(region).getByRole("table");
+    expect(region).toHaveClass("scroll-table");
+    expect(region.parentElement).toHaveClass("erp-bandeja-scroll");
+    expect(within(table).getAllByRole("row")).toHaveLength(5);   // una sola tabla: cabecera + 4
+
+    expect(within(table).getByRole("columnheader", { name: "Selección" })).toHaveClass("sticky-l", "sticky-l-0");
+    expect(within(table).getByRole("columnheader", { name: "Nº" })).toHaveClass("sticky-l", "sticky-l-1", "sticky-l-last");
+    expect(within(table).getByRole("columnheader", { name: "Acciones" })).toHaveClass("sticky-r");
+    const dd = row("BOPRIN-4");
+    expect(within(dd).getByRole("link", { name: "BOPRIN-4" }).closest("td")).toHaveClass("sticky-l-1", "sticky-l-last");
+    expect(within(dd).getByRole("checkbox", { name: "Seleccionar BOPRIN-4" }).closest("td")).toHaveClass("sticky-l-0");
+    const masAcciones = within(dd).getByRole("button", { name: "Más acciones BOPRIN-4" });
+    expect(masAcciones.closest("td")).toHaveClass("sticky-r");
+
+    // El menú de la fila es flotante (no lo recorta el contenedor con scroll)…
+    await user.click(masAcciones);
+    const quitar = screen.getByRole("button", { name: "Quitar BOPRIN-4 de la bandeja" });
+    expect(quitar.closest(".erp-flow-menu-pop")).toHaveClass("is-floating");
+    // …y se cierra al desplazar la tabla.
+    fireEvent.scroll(region);
+    expect(screen.queryByRole("button", { name: "Quitar BOPRIN-4 de la bandeja" })).toBeNull();
+
+    // En Tarjetas el menú sigue siendo el de siempre (no flotante).
+    await user.click(screen.getByRole("button", { name: "Tarjetas" }));
+    await user.click(within(row("BOPRIN-4")).getByRole("button", { name: "Más acciones BOPRIN-4" }));
+    expect(screen.getByRole("button", { name: "Quitar BOPRIN-4 de la bandeja" }).closest(".erp-flow-menu-pop"))
+      .not.toHaveClass("is-floating");
+  });
+
   it("la vista guardada se respeta al volver", async () => {
     window.localStorage.setItem("erp.bandeja.vista", "list");
     render(<ErpOrdersPage />);

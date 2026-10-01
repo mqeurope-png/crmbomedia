@@ -225,7 +225,9 @@ defecto»** (pagados y sin completar) reinician la vista.
 
 **Vista.** Botones **«Tarjetas»** (por defecto) y **«Lista»** (tabla con columnas
 **Nº · Cliente · Tienda · Fecha · Importe · Estado · Cola · siguiente paso ·
-Acciones**).
+Acciones**). En pantallas anchas la lista **scrollea dentro de su recuadro**
+(cabecera fija; casilla y **Nº** fijos a la izquierda, **Acciones** a la
+derecha); por debajo de 1100 px se apila en fichas como antes.
 
 **Las pastillas de estado.** Cada pedido muestra una rejilla de cuatro celdas —
 **Pago · Factura · Cobro · Envío** — más la pastilla **«Completado»**. El color
@@ -607,7 +609,9 @@ debajo.
 > salido**. Para ver cuándo y quién mandó un pedido al taller, míralo en su
 > ficha (línea de tiempo).
 
-Vista **«Tarjetas»** / **«Lista»**.
+Vista **«Tarjetas»** / **«Lista»**. En tablet y ordenador la **lista scrollea
+dentro del panel** con la cabecera fija y la casilla y el **Nº** fijos a la
+izquierda (la barra horizontal, si hace falta, se ve sin bajar al final).
 **Filtros:** buscador (*«Nº de pedido o cliente…»*), **«Desde»**/**«Hasta»**,
 **«Tienda»** y **«Orden»** por fecha del pedido —**recientes primero** por
 defecto, o **antiguos primero** (FIFO)—, con **«Limpiar filtros»**. (El filtro
@@ -800,6 +804,42 @@ Botones útiles: **«Descargar Excel»**, **«Actualizar hoja de Drive…»** (v
 los datos a la hoja de Google Drive, con vista previa antes de escribir),
 **«Poner al día estados Woo…»** y **«Vincular facturas de FACTUSOL…»**. Por fila,
 **«PDF»** (de la factura) y **«Quitar»**/**«Reincluir»**.
+
+**La tabla se desplaza sola, no la página.** La tabla ocupa todo el ancho y el
+alto que queda de pantalla y tiene **su propio scroll**: al moverte por las
+columnas, el título, los filtros y los botones no se mueven. La **barra
+horizontal se ve siempre** (justo debajo de la tabla, sin tener que bajar al
+final de la lista; también en Windows con las barras ocultas), y con el teclado
+se desplaza con las flechas tras pulsar en la tabla. En pantallas **bajas** (p.
+ej. un portátil de 1366×768) la tabla no cabe entera bajo los filtros: baja la
+página **una vez** y la tabla queda entera a la vista (con su barra) bajo el
+título; desde ahí solo se mueve la tabla. Al desplazar:
+
+- la **cabecera** queda fija arriba;
+- **la casilla, Situación, Nº pedido y Cliente** quedan fijas a la izquierda y
+  **«Quitar»** a la derecha, siempre a mano (en una pantalla estrecha —móvil o
+  tablet en vertical— no caben y se sueltan, para poder llegar a todas las
+  columnas);
+- un **sombreado** en el borde avisa de que hay más columnas por ese lado.
+
+Va en **modo compacto**: letra un punto menor, menos relleno, cabeceras en dos
+líneas y **fechas cortas** (`30/09/26`; la completa al pasar el ratón). Los
+textos largos (**Cliente**, **Productos**, **Tracking**, **Nº serie**, **Nota**)
+van en **una línea con «…»**: el texto entero sale al pasar el ratón, y
+**Productos** y **Nota** se despliegan con un clic (otro clic los recoge).
+
+**«Columnas»** (junto a «Descargar Excel») elige qué columnas se ven: marca o
+desmarca cada una (el orden es siempre el de la tabla; el **Nº pedido** no se
+puede quitar) y **«Mostrar todas»** lo deja como al principio. Por defecto se
+ven todas. La elección **se recuerda en este navegador para tu usuario** (otra
+persona en el mismo ordenador ve las suyas). **No cambia el Excel ni la hoja de
+Drive**, que siguen saliendo con todas sus columnas.
+
+> Lo mismo en la **bandeja de pedidos** (vista «Lista», en pantallas de más de
+> 1100 px) y en la **Cola SAT** (vista «Lista», en tablet y ordenador): la
+> tabla scrollea dentro de su recuadro con la cabecera fija; en la bandeja la
+> casilla y el **Nº** quedan fijos a la izquierda y **Acciones** a la derecha (el
+> menú **«⋯»** se cierra si desplazas), y en la Cola SAT la casilla y el **Nº**.
 
 **«Poner al día estados Woo…»** vuelve a preguntar a las tiendas por los pedidos
 que BoHub tiene como activos y aplica la misma regla: saca los que se

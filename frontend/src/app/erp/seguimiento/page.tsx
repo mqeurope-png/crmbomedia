@@ -1,9 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Cap, can } from "../../lib/capabilities";
 import { PageHeader } from "../../components/PageHeader";
+import {
+  ColumnPicker,
+  readHiddenColumns,
+  storeHiddenColumns,
+} from "../../components/ColumnPicker";
+import { ScrollTable } from "../../components/ScrollTable";
 import { ExcludeSeguimientoModal } from "../../components/erp/ExcludeSeguimientoModal";
 import { getCurrentUser, type User } from "../../lib/api";
 import {
@@ -38,35 +44,92 @@ import {
 } from "../../lib/erpApi";
 import { extractErrorMessage } from "../../lib/errors";
 
-/** Cabeceras de la tabla (rediseño 2026), en orden, con su clave de orden
- *  (null = no ordenable). El estado va en la columna Situación, no en la
- *  posición; la tabla se ordena por Fecha por defecto (Situación sigue
- *  disponible pulsando su cabecera). */
-const HEADERS: { label: string; sort: string | null }[] = [
-  { label: "Situación", sort: "situacion" },
-  { label: "Nº pedido", sort: "albaran_pedido" },
-  { label: "Fecha", sort: "fecha" },
-  { label: "Cliente", sort: "cliente" },
-  { label: "Origen", sort: null },
-  { label: "Productos", sort: null },
-  { label: "Importe", sort: null },
-  { label: "Empresa (serie)", sort: "empresa" },
-  { label: "Factura", sort: "factura" },
-  { label: "Fecha factura", sort: null },
-  { label: "Factura enviada", sort: null },
-  { label: "Cobro", sort: null },
-  { label: "Preparación", sort: null },
-  { label: "Envío", sort: null },
-  { label: "Fecha recogido", sort: null },
-  { label: "Tracking", sort: null },
-  { label: "Nº serie · WhiteRIP", sort: null },
-  { label: "Nota / Incidencia", sort: null },
+/** Columnas de la tabla (rediseño 2026), en su orden FIJO, con su clave de
+ *  orden (null = no ordenable). El estado va en la columna Situación, no en
+ *  la posición; la tabla se ordena por Fecha por defecto (Situación sigue
+ *  disponible pulsando su cabecera). `sticky` = fija a la izquierda al
+ *  desplazar (con la casilla de selección); `locked` = no se puede ocultar
+ *  con «Columnas». Ocultar columnas NO cambia el Excel ni la hoja de Drive,
+ *  que siguen llevando todas. */
+type ColKey =
+  | "situacion" | "pedido" | "fecha" | "cliente" | "origen" | "productos"
+  | "importe" | "empresa" | "factura" | "fecha_factura" | "factura_enviada"
+  | "cobro" | "preparacion" | "envio" | "recogido" | "tracking" | "serie" | "nota";
+const COLUMNS: { key: ColKey; label: string; sort: string | null; sticky?: boolean; locked?: boolean }[] = [
+  { key: "situacion", label: "Situación", sort: "situacion", sticky: true },
+  { key: "pedido", label: "Nº pedido", sort: "albaran_pedido", sticky: true, locked: true },
+  { key: "fecha", label: "Fecha", sort: "fecha" },
+  { key: "cliente", label: "Cliente", sort: "cliente", sticky: true },
+  { key: "origen", label: "Origen", sort: null },
+  { key: "productos", label: "Productos", sort: null },
+  { key: "importe", label: "Importe", sort: null },
+  { key: "empresa", label: "Empresa (serie)", sort: "empresa" },
+  { key: "factura", label: "Factura", sort: "factura" },
+  { key: "fecha_factura", label: "Fecha factura", sort: null },
+  { key: "factura_enviada", label: "Factura enviada", sort: null },
+  { key: "cobro", label: "Cobro", sort: null },
+  { key: "preparacion", label: "Preparación", sort: null },
+  { key: "envio", label: "Envío", sort: null },
+  { key: "recogido", label: "Fecha recogido", sort: null },
+  { key: "tracking", label: "Tracking", sort: null },
+  { key: "serie", label: "Nº serie · WhiteRIP", sort: null },
+  { key: "nota", label: "Nota / Incidencia", sort: null },
 ];
+const COLUMN_KEYS: string[] = COLUMNS.map((c) => c.key);
+
+/** Clases extra de las celdas (tamaño / color) por columna. */
+const CELL_CLASS: Partial<Record<ColKey, string>> = {
+  productos: " muted small",
+  importe: " erp-num",
+  tracking: " muted small",
+  serie: " muted small",
+  nota: " small",
+  preparacion: " small",
+  envio: " small",
+};
+
+/** Clases de la celda: las de su columna y, en Preparación / Envío, «No
+ *  aplica» en gris (el paso no aplica a ese pedido). */
+function cellClass(key: ColKey, r: SeguimientoRow): string {
+  const muted = (key === "preparacion" || key === "envio") && r[key] === "No aplica";
+  return `${CELL_CLASS[key] ?? ""}${muted ? " muted" : ""}`;
+}
+
+/** Columnas ocultas, por usuario, en este navegador. */
+function columnsStorageKey(user: User | null): string {
+  return `bohub.seguimiento.columnas.${user?.id || user?.email || "anon"}`;
+}
+
+/** Texto largo en una línea, truncado: el completo al pasar el ratón y, con
+ *  un clic, desplegado (se pliega con otro clic). Una sola copia del texto. */
+function TruncText({ text, className }: { text: string | null | undefined; className?: string }) {
+  const [open, setOpen] = useState(false);
+  if (!text) return <>—</>;
+  return (
+    <button
+      type="button"
+      className={`seg-trunc${open ? " is-open" : ""}${className ? ` ${className}` : ""}`}
+      title={text}
+      aria-expanded={open}
+      onClick={() => setOpen((v) => !v)}
+    >
+      {text}
+    </button>
+  );
+}
 
 function d(iso: string | null): string {
   if (!iso) return "—";
   const [y, m, day] = iso.split("-");
   return `${Number(day)}/${Number(m)}/${y}`;
+}
+
+/** Fecha corta de la tabla: `30/09/26`. */
+function dc(iso: string | null): string {
+  if (!iso) return "—";
+  const [y, m, day] = iso.slice(0, 10).split("-");
+  if (!y || !m || !day) return "—";
+  return `${day.padStart(2, "0")}/${m.padStart(2, "0")}/${y.slice(-2)}`;
 }
 
 /** Importe con formato `#.##0,00 €` (es-ES). */
@@ -127,6 +190,8 @@ export default function SeguimientoPage() {
   const [reconcile, setReconcile] = useState<WooReconcileSummary | null>(null);
   // ERP — previsualización de la vinculación de facturas de FACTUSOL.
   const [facturaLink, setFacturaLink] = useState<FactusolLinkSummary | null>(null);
+  // «Columnas»: las ocultas por este usuario (todas visibles por defecto).
+  const [hiddenCols, setHiddenCols] = useState<Set<string>>(new Set());
 
   const canEdit = can(user, Cap.SEGUIMIENTO);
   const viewExcluded = filters.ver_excluidos === true;
@@ -141,7 +206,12 @@ export default function SeguimientoPage() {
   }, [filters]);
 
   useEffect(() => {
-    getCurrentUser().then(setUser).catch(() => undefined);
+    getCurrentUser()
+      .then((u) => {
+        setUser(u);
+        setHiddenCols(readHiddenColumns(columnsStorageKey(u), COLUMN_KEYS));
+      })
+      .catch(() => undefined);
     getErpSettings()
       .then((cfg) => setOrigins(cfg.shipping_origins ?? []))
       .catch(() => setOrigins([]));
@@ -150,6 +220,129 @@ export default function SeguimientoPage() {
   useEffect(() => { void load(); }, [load]);
   // Al cambiar de vista/filtros, la selección deja de tener sentido.
   useEffect(() => { setSelected(new Set()); }, [filters]);
+
+  // Columnas visibles (orden fijo) y columnas fijas a la izquierda al
+  // desplazar: casilla, Situación, Nº pedido y Cliente (las que estén a la
+  // vista). «Quitar» va fija a la derecha.
+  const visibleCols = COLUMNS.filter((c) => !hiddenCols.has(c.key));
+  const stickyLeft = [
+    ...(canEdit ? ["sel"] : []),
+    ...visibleCols.filter((c) => c.sticky).map((c) => c.key as string),
+  ];
+  function stickyClass(key: string): string {
+    const i = stickyLeft.indexOf(key);
+    if (i < 0) return "";
+    return ` sticky-l sticky-l-${i}${i === stickyLeft.length - 1 ? " sticky-l-last" : ""}`;
+  }
+
+  function renderCell(key: ColKey, r: SeguimientoRow): ReactNode {
+    switch (key) {
+      case "situacion":
+        return (
+          <>
+            {/* Situación = cola de la línea de vida, con color. */}
+            <span
+              className={`seg-situacion is-${r.situacion_tone}`}
+              title={r.nota_incidencia || undefined}
+            >
+              {r.situacion_label}
+            </span>
+            {r.completado ? (
+              <span className="badge ok" title={`Completado${r.completado_en ? ` el ${d(r.completado_en)}` : ""}${r.completado_por_nombre ? ` por ${r.completado_por_nombre}` : ""} (solo BoHub)`}>
+                {" "}completado
+              </span>
+            ) : null}
+            {r.reembolsado && r.situacion !== "reembolsado" ? (
+              <span className="badge warn" title="Reembolsado en WooCommerce (reembolso total)">
+                {" "}reembolsado
+              </span>
+            ) : null}
+            {r.oculto_por_estado && r.estado_woo_motivo ? (
+              <span className="badge bad" title={`Oculto por estado: ${r.woo_status ?? r.estado_woo_motivo}`}>
+                {" "}{r.estado_woo_motivo_label || r.estado_woo_motivo}
+              </span>
+            ) : null}
+            {r.forzado ? (
+              <span className="badge muted"
+                title={`Forzado a la vista pese a su estado${r.forzado_en ? ` el ${d(r.forzado_en)}` : ""}${r.forzado_por_nombre ? ` por ${r.forzado_por_nombre}` : ""}`}>
+                {" "}forzado
+              </span>
+            ) : null}
+          </>
+        );
+      case "pedido":
+        // Cada fila enlaza a la ficha del pedido.
+        return <Link href={`/erp/orders/${r.id}`}>{r.order_number}</Link>;
+      case "fecha":
+        return dc(r.fecha);
+      case "cliente":
+        return <span className="seg-ellipsis">{r.cliente ?? "—"}</span>;
+      case "origen":
+        return r.origen_label || "—";
+      case "productos":
+        return <TruncText text={r.productos} />;
+      case "importe":
+        return eur(r.importe, r.moneda);
+      case "empresa":
+        return r.empresa_serie || "—";
+      case "factura":
+        return r.factura ? (
+          <span className="erp-factura-cell">
+            {r.factura}{" "}
+            <button
+              type="button"
+              className="button small secondary"
+              disabled={busy}
+              title="Descargar el PDF de la factura"
+              onClick={() => void onDownloadRowPdf(r)}
+            >
+              PDF
+            </button>
+          </span>
+        ) : "—";
+      case "fecha_factura":
+        return dc(r.fecha_factura);
+      case "factura_enviada":
+        return dc(r.factura_enviada);
+      case "cobro":
+        return <span className={`seg-cobro is-${r.cobro}`}>{r.cobro_label}</span>;
+      case "preparacion":
+        return r.preparacion;
+      case "envio":
+        return r.envio;
+      case "recogido":
+        // Fecha real de recogida (Cola SAT: recogido / en tránsito).
+        return dc(r.recogido);
+      case "tracking":
+        return <span className="seg-ellipsis">{r.tracking ?? "—"}</span>;
+      case "serie":
+        return <span className="seg-ellipsis">{r.serie_whiterip || "—"}</span>;
+      case "nota":
+        return <TruncText text={r.nota_incidencia} />;
+      default:
+        return null;
+    }
+  }
+
+  /** Título (texto completo / fecha larga) de las celdas que se acortan. */
+  function cellTitle(key: ColKey, r: SeguimientoRow): string | undefined {
+    switch (key) {
+      case "fecha": return r.fecha ? d(r.fecha) : undefined;
+      case "fecha_factura": return r.fecha_factura ? d(r.fecha_factura) : undefined;
+      case "factura_enviada": return r.factura_enviada ? d(r.factura_enviada) : undefined;
+      case "recogido": return r.recogido ? d(r.recogido) : undefined;
+      case "cliente": return r.cliente ?? undefined;
+      case "empresa": return r.empresa ?? undefined;
+      case "tracking": return r.tracking ?? undefined;
+      case "serie": return r.serie_whiterip || undefined;
+      default: return undefined;
+    }
+  }
+
+  function onColumnsChange(next: Set<string>) {
+    setHiddenCols(next);
+    storeHiddenColumns(columnsStorageKey(user), next);
+  }
 
   function toggleSort(key: string | null) {
     if (!key) return;
@@ -486,7 +679,7 @@ export default function SeguimientoPage() {
   const items = page?.items ?? [];
 
   return (
-    <main className="shell shell-wide">
+    <main className="shell shell-wide erp-seg-page">
       <PageHeader
         title="Seguimiento de pedidos"
         eyebrow="ERP"
@@ -641,6 +834,13 @@ export default function SeguimientoPage() {
             onClick={onExport}>
             Descargar Excel
           </button>
+          {/* «Columnas»: qué se ve en la tabla (orden fijo, recordado por
+              usuario en este navegador). El Excel y la hoja siguen con todas. */}
+          <ColumnPicker
+            columns={COLUMNS.map((c) => ({ key: c.key, label: c.label, locked: c.locked }))}
+            hidden={hiddenCols}
+            onChange={onColumnsChange}
+          />
           {canEdit && !viewExcluded && !viewOcultos ? (
             <button
               type="button" className="button small" disabled={busy}
@@ -934,12 +1134,12 @@ export default function SeguimientoPage() {
               ? " ocultados por estado (anulado, sin pagar, en espera, cancelado…)"
               : filters.en_curso === false ? " (todos)" : " en curso"}
         </p>
-        <div style={{ overflowX: "auto" }}>
-          <table className="data-table erp-seguimiento-table">
+        <ScrollTable label="Tabla de seguimiento" className="erp-seg-scroll">
+          <table className="data-table erp-seguimiento-table is-compact">
             <thead>
               <tr>
                 {canEdit ? (
-                  <th>
+                  <th className={`seg-col-sel${stickyClass("sel")}`}>
                     <input
                       type="checkbox"
                       aria-label="Seleccionar todo"
@@ -948,10 +1148,10 @@ export default function SeguimientoPage() {
                     />
                   </th>
                 ) : null}
-                {HEADERS.map((h) => (
+                {visibleCols.map((h) => (
                   <th
-                    key={h.label}
-                    className={h.sort ? "sortable" : undefined}
+                    key={h.key}
+                    className={`seg-col-${h.key}${h.sort ? " sortable" : ""}${stickyClass(h.key)}`}
                     aria-sort={filters.sort === h.sort
                       ? (filters.dir === "asc" ? "ascending" : "descending")
                       : undefined}
@@ -962,15 +1162,15 @@ export default function SeguimientoPage() {
                   </th>
                 ))}
                 {/* Control manual — en «Ver excluidos»: cuándo, quién y por qué. */}
-                {viewExcluded ? <th>Quitado</th> : null}
-                {canEdit ? <th aria-label="Acciones" /> : null}
+                {viewExcluded ? <th className="seg-col-quitado">Quitado</th> : null}
+                {canEdit ? <th className="seg-col-acciones sticky-r" aria-label="Acciones" /> : null}
               </tr>
             </thead>
             <tbody>
               {items.map((r) => (
                 <tr key={r.id} className={r.excluido ? "muted" : undefined}>
                   {canEdit ? (
-                    <td>
+                    <td className={`seg-col-sel${stickyClass("sel")}`}>
                       <input
                         type="checkbox"
                         aria-label={`Seleccionar ${r.albaran_pedido}`}
@@ -979,89 +1179,21 @@ export default function SeguimientoPage() {
                       />
                     </td>
                   ) : null}
-                  <td>
-                    {/* Situación = cola de la línea de vida, con color. */}
-                    <span
-                      className={`seg-situacion is-${r.situacion_tone}`}
-                      title={r.nota_incidencia || undefined}
-                    >
-                      {r.situacion_label}
-                    </span>
-                    {r.completado ? (
-                      <span className="badge ok" title={`Completado${r.completado_en ? ` el ${d(r.completado_en)}` : ""}${r.completado_por_nombre ? ` por ${r.completado_por_nombre}` : ""} (solo BoHub)`}>
-                        {" "}completado
-                      </span>
-                    ) : null}
-                    {r.reembolsado && r.situacion !== "reembolsado" ? (
-                      <span className="badge warn" title="Reembolsado en WooCommerce (reembolso total)">
-                        {" "}reembolsado
-                      </span>
-                    ) : null}
-                    {r.oculto_por_estado && r.estado_woo_motivo ? (
-                      <span className="badge bad" title={`Oculto por estado: ${r.woo_status ?? r.estado_woo_motivo}`}>
-                        {" "}{r.estado_woo_motivo_label || r.estado_woo_motivo}
-                      </span>
-                    ) : null}
-                    {r.forzado ? (
-                      <span className="badge muted"
-                        title={`Forzado a la vista pese a su estado${r.forzado_en ? ` el ${d(r.forzado_en)}` : ""}${r.forzado_por_nombre ? ` por ${r.forzado_por_nombre}` : ""}`}>
-                        {" "}forzado
-                      </span>
-                    ) : null}
-                  </td>
-                  <td>
-                    {/* Cada fila enlaza a la ficha del pedido. */}
-                    <Link href={`/erp/orders/${r.id}`}>{r.order_number}</Link>
-                  </td>
-                  <td>{d(r.fecha)}</td>
-                  <td>{r.cliente ?? "—"}</td>
-                  <td>{r.origen_label || "—"}</td>
-                  <td className="muted small" title={r.productos}>
-                    {r.productos.length > 60 ? `${r.productos.slice(0, 60)}…` : r.productos || "—"}
-                  </td>
-                  <td className="erp-num">{eur(r.importe, r.moneda)}</td>
-                  <td title={r.empresa ?? undefined}>{r.empresa_serie || "—"}</td>
-                  <td>
-                    {r.factura ? (
-                      <span className="erp-factura-cell">
-                        {r.factura}{" "}
-                        <button
-                          type="button"
-                          className="button small secondary"
-                          disabled={busy}
-                          title="Descargar el PDF de la factura"
-                          onClick={() => void onDownloadRowPdf(r)}
-                        >
-                          PDF
-                        </button>
-                      </span>
-                    ) : "—"}
-                  </td>
-                  <td>{d(r.fecha_factura)}</td>
-                  <td>{d(r.factura_enviada)}</td>
-                  <td>
-                    <span className={`seg-cobro is-${r.cobro}`}>{r.cobro_label}</span>
-                  </td>
-                  <td className={r.preparacion === "No aplica" ? "muted small" : "small"}>
-                    {r.preparacion}
-                  </td>
-                  <td className={r.envio === "No aplica" ? "muted small" : "small"}>
-                    {r.envio}
-                  </td>
-                  {/* Fecha real de recogida (Cola SAT: recogido / en tránsito). */}
-                  <td>{d(r.recogido)}</td>
-                  <td className="muted small">{r.tracking ?? "—"}</td>
-                  <td className="muted small">{r.serie_whiterip || "—"}</td>
-                  <td className="small">{r.nota_incidencia || "—"}</td>
+                  {visibleCols.map((c) => (
+                    <td key={c.key} className={`seg-col-${c.key}${cellClass(c.key, r)}${stickyClass(c.key)}`}
+                        title={cellTitle(c.key, r)}>
+                      {renderCell(c.key, r)}
+                    </td>
+                  ))}
                   {viewExcluded ? (
-                    <td className="small">
+                    <td className="seg-col-quitado small">
                       {d(r.excluido_en)}{r.excluido_por_nombre ? ` · ${r.excluido_por_nombre}` : ""}
                       <br />
                       <span className="muted">{r.excluido_motivo || "sin motivo"}</span>
                     </td>
                   ) : null}
                   {canEdit ? (
-                    <td>
+                    <td className="seg-col-acciones sticky-r">
                       {viewOcultos ? (
                         <button
                           type="button" className="button small secondary" disabled={busy}
@@ -1100,7 +1232,7 @@ export default function SeguimientoPage() {
               ))}
               {page && items.length === 0 ? (
                 <tr>
-                  <td colSpan={HEADERS.length + (canEdit ? 2 : 0) + (viewExcluded ? 1 : 0)} className="muted">
+                  <td colSpan={visibleCols.length + (canEdit ? 2 : 0) + (viewExcluded ? 1 : 0)} className="muted">
                     {viewExcluded
                       ? "No hay pedidos excluidos."
                       : viewOcultos
@@ -1111,7 +1243,7 @@ export default function SeguimientoPage() {
               ) : null}
             </tbody>
           </table>
-        </div>
+        </ScrollTable>
       </section>
 
       {excludeTarget ? (

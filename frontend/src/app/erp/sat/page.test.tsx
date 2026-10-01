@@ -715,6 +715,32 @@ describe("SatQueuePage (regresión)", () => {
       ["Nº", "Cliente", "Tienda", "Estado", "Datos técnicos", "Acciones"],
     );
     expect(within(ready).getByRole("link", { name: "BOP-2" })).toBeInTheDocument();
+    // En la global no hay casilla: el Nº es la primera columna fija.
+    expect(within(prep).getByRole("columnheader", { name: "Nº" })).toHaveClass("sticky-l-0", "sticky-l-last");
+  });
+
+  it("Lista: cada tabla scrollea en su propia región dentro del panel, con la casilla y el Nº fijos", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem("bohub.sat.queue.view", "list");
+    render(<SatQueuePage />);
+    await loaded();
+    await pestana(user, /Por embalar/);
+    const table = await screen.findByRole("table", { name: "Pedidos por embalar" });
+    const region = screen.getByRole("region", { name: "Pedidos por embalar (lista desplazable)" });
+    expect(region).toContainElement(table);
+    expect(region).toHaveClass("scroll-table");
+    expect(region.parentElement).toHaveClass("sat-table-frame");
+    expect(region.closest(".sat-scroll")).not.toBeNull();
+    // Cabecera y filas igual que antes; casilla (0) y Nº (1) fijos a la izquierda.
+    expect(within(table).getAllByRole("columnheader").map((h) => h.textContent)).toEqual(
+      ["", "Nº", "Cliente", "Tienda", "Estado", "Datos técnicos", "Acciones"],
+    );
+    expect(within(table).getByRole("columnheader", { name: "Selección" })).toHaveClass("sticky-l", "sticky-l-0");
+    expect(within(table).getByRole("columnheader", { name: "Nº" })).toHaveClass("sticky-l", "sticky-l-1", "sticky-l-last");
+    expect(within(table).getByRole("checkbox", { name: "Seleccionar BOP-1" }).closest("td"))
+      .toHaveClass("sticky-l-0");
+    expect(within(table).getByRole("link", { name: "BOP-1" }).closest("td"))
+      .toHaveClass("sat-td-num", "sticky-l-1", "sticky-l-last");
   });
 
   it("edición inline: guardar el nº de serie llama al PATCH y muestra el nuevo valor", async () => {

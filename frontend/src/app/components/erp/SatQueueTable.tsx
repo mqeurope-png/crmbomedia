@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { customerLabel, STATUS_LABELS, type SatQueueItem } from "../../lib/erpApi";
+import { ScrollTable } from "../ScrollTable";
 import { SatAlbaranChip, useSatAlbaranAction } from "./SatPreparingCard";
 import {
   SatCarrierStatus, satCourier, SatExternalShipmentEdit, SatReadyButtons, SatReadyDocChips,
@@ -33,6 +34,11 @@ export function satDateTime(iso: string | null | undefined): string {
  *  para que la fila quepa sin scroll horizontal y se distinga de las tarjetas. */
 const COLS = 6;
 
+/** Columnas fijas de la lista (scroll propio): la casilla, si la hay, y el Nº. */
+function numClass(selectable?: boolean): string {
+  return `sat-td-num sticky-l sticky-l-${selectable ? 1 : 0} sticky-l-last`;
+}
+
 function StatusBadge({ status }: { status: string }) {
   return (
     <span className={`badge ${STATUS_LABELS[status]?.tone ?? "muted"}`}>
@@ -52,7 +58,7 @@ type SelectProps = {
 function SelectCell({ order, selectable, selected, onToggle }: { order: SatQueueItem } & SelectProps) {
   if (!selectable) return null;
   return (
-    <td className="sat-td-select">
+    <td className="sat-td-select sticky-l sticky-l-0">
       <input
         type="checkbox"
         aria-label={`Seleccionar ${order.order_number}`}
@@ -113,7 +119,7 @@ function SatPreparingRow(
       <NotesRow order={order} cols={cols} />
       <tr>
         <SelectCell order={order} {...sel} />
-        <td className="sat-td-num">
+        <td className={numClass(sel.selectable)}>
           <Link href={`/erp/orders/${order.id}`}>{order.order_number}</Link>
           {order.payment_status !== "paid" ? (
             <span className="sat-row-warn" title="Sin cobrar">⚠ SIN COBRAR</span>
@@ -161,7 +167,7 @@ function SatReadyRow(
       <NotesRow order={order} cols={cols} />
       <tr>
         <SelectCell order={order} {...sel} />
-        <td className="sat-td-num">
+        <td className={numClass(sel.selectable)}>
           <Link href={`/erp/orders/${order.id}`}>{order.order_number}</Link>
           <span className="muted small sat-row-total">
             {order.total_amount.toFixed(2)} {order.currency}
@@ -198,7 +204,7 @@ function SatShippedRow(
   return (
     <tr>
       <SelectCell order={order} {...sel} />
-      <td className="sat-td-num">
+      <td className={numClass(sel.selectable)}>
         <Link href={`/erp/orders/${order.id}`}>{order.order_number}</Link>
       </td>
       <td className="sat-td-cliente">{customerLabel(order) || "—"}</td>
@@ -256,13 +262,15 @@ export function SatQueueTable({
 }) {
   const cols = selectable ? COLS + 1 : COLS;
   const sel = { selectable, onToggle };
+  // Scroll propio (ScrollTable): en tablet/escritorio la lista se desplaza
+  // dentro del panel, con la cabecera y el Nº (y la casilla) fijos.
   return (
-    <div className="sat-table-wrap">
+    <ScrollTable label={`${ariaLabel} (lista desplazable)`} className="sat-table-frame" fitViewport={false}>
       <table className="sat-table" aria-label={ariaLabel}>
         <thead>
           <tr>
-            {selectable ? <th className="sat-td-select" aria-label="Selección" /> : null}
-            <th>Nº</th>
+            {selectable ? <th className="sat-td-select sticky-l sticky-l-0" aria-label="Selección" /> : null}
+            <th className={numClass(selectable)}>Nº</th>
             <th>Cliente</th>
             <th>Tienda</th>
             <th>Estado</th>
@@ -287,6 +295,6 @@ export function SatQueueTable({
           })}
         </tbody>
       </table>
-    </div>
+    </ScrollTable>
   );
 }

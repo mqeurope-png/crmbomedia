@@ -14442,3 +14442,332 @@ table.erp-doc-lines { width: 100%; table-layout: fixed; }
 .erp-settings-rule-actions { white-space: nowrap; }
 .erp-settings-rule-actions .button + .button { margin-left: var(--sp-1); }
 .erp-cobro-sugerida { margin: 0; }
+
+/* ===================================================================
+   Tablas anchas con desplazamiento PROPIO (ScrollTable): Seguimiento,
+   bandeja en vista Lista (≥1101 px) y Cola SAT en vista Lista (≥768 px).
+   La tabla scrollea dentro de su contenedor (no la página: título, filtros
+   y botones no se mueven), con la barra siempre visible, cabecera fija,
+   columnas fijas a la izquierda (`.sticky-l-<n>`, offsets medidos por el
+   componente en `--sl-<n>`) y a la derecha (`.sticky-r`), y un sombreado
+   en los bordes cuando hay más columnas. Las celdas fijas llevan fondo
+   opaco (el de la fila no les llega) y la tabla bordes `separate` (con
+   `collapse` el borde no viaja con la celda fija).
+   =================================================================== */
+.scroll-table-frame { position: relative; min-width: 0; max-width: 100%; }
+.scroll-table {
+  overflow: auto;
+  max-height: var(--scroll-table-max-h, calc(100dvh - var(--topbar-h, 56px) - 140px));
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card, #fff);
+  overscroll-behavior-x: contain;
+}
+/* El foco se pinta por dentro: un contenedor con overflow (Cola SAT) no lo recorta. */
+.scroll-table:focus-visible { outline: 2px solid var(--color-primary, #2563eb); outline-offset: -2px; }
+/* Barras SIEMPRE visibles: con estilo propio Chrome / Safari / Edge no las
+   ocultan (macOS, o Windows con «ocultar barras automáticamente»). Firefox
+   usa las propiedades estándar. */
+.scroll-table::-webkit-scrollbar,
+.sat-table-wrap::-webkit-scrollbar { width: 12px; height: 12px; }
+.scroll-table::-webkit-scrollbar-track,
+.sat-table-wrap::-webkit-scrollbar-track { background: var(--color-bg-light); }
+.scroll-table::-webkit-scrollbar-thumb,
+.sat-table-wrap::-webkit-scrollbar-thumb {
+  background: #b8c1cd;
+  border-radius: 6px;
+  border: 3px solid var(--color-bg-light);
+}
+.scroll-table::-webkit-scrollbar-thumb:hover,
+.sat-table-wrap::-webkit-scrollbar-thumb:hover { background: #8a94a3; }
+.scroll-table::-webkit-scrollbar-corner,
+.sat-table-wrap::-webkit-scrollbar-corner { background: var(--color-bg-light); }
+@supports not selector(::-webkit-scrollbar) {
+  .scroll-table, .sat-table-wrap { scrollbar-width: auto; scrollbar-color: #b8c1cd var(--color-bg-light); }
+}
+.scroll-table > table {
+  border-collapse: separate;
+  border-spacing: 0;
+  width: max-content;
+  min-width: 100%;
+  margin: 0;
+}
+/* Con el prefijo del marco: más específico que la cabecera fija general
+   (`.app-shell-content table.data-table thead th`, z-index 2), que si no
+   dejaría la cabecera al nivel de las celdas fijas del cuerpo. */
+.scroll-table-frame > .scroll-table > table > thead > tr > th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--color-bg-light);
+}
+.scroll-table .sticky-l,
+.scroll-table .sticky-r { position: sticky; z-index: 2; background: var(--card, #fff); }
+.scroll-table-frame > .scroll-table > table > thead > tr > th.sticky-l,
+.scroll-table-frame > .scroll-table > table > thead > tr > th.sticky-r { z-index: 4; background: var(--color-bg-light); }
+.scroll-table .sticky-r { right: 0; }
+.scroll-table .sticky-l-0 { left: var(--sl-0, 0px); }
+.scroll-table .sticky-l-1 { left: var(--sl-1, 0px); }
+.scroll-table .sticky-l-2 { left: var(--sl-2, 0px); }
+.scroll-table .sticky-l-3 { left: var(--sl-3, 0px); }
+.scroll-table .sticky-l-4 { left: var(--sl-4, 0px); }
+.scroll-table .sticky-l-5 { left: var(--sl-5, 0px); }
+/* La fila resaltada / seleccionada de una `data-table` (que pinta el fondo
+   de la fila) también pinta sus celdas fijas. */
+.scroll-table table.data-table tbody tr:hover > .sticky-l,
+.scroll-table table.data-table tbody tr:hover > .sticky-r { background: var(--color-bg-light); }
+.scroll-table table.data-table tbody tr.is-selected > .sticky-l,
+.scroll-table table.data-table tbody tr.is-selected > .sticky-r { background: #f1f4fb; }
+/* Pantalla estrecha: las fijas no caben (el componente marca `no-pin`) y se
+   sueltan para que se pueda llegar al resto; la cabecera sigue fija arriba. */
+.scroll-table-frame.no-pin > .scroll-table > table > tbody .sticky-l,
+.scroll-table-frame.no-pin > .scroll-table > table > tbody .sticky-r { position: static; }
+.scroll-table-frame.no-pin > .scroll-table > table > thead > tr > th.sticky-l,
+.scroll-table-frame.no-pin > .scroll-table > table > thead > tr > th.sticky-r { left: auto; right: auto; z-index: 3; }
+/* Sombreado de los bordes: hay columnas por la izquierda (bajo las fijas) o
+   por la derecha. Sin columna fija a la derecha, un degradado en el marco. */
+.scroll-table-frame.is-scrolled-left:not(.no-pin) .sticky-l-last { box-shadow: 8px 0 8px -8px rgba(15, 23, 42, 0.45); }
+.scroll-table-frame.has-more-right:not(.no-pin) .sticky-r { box-shadow: -8px 0 8px -8px rgba(15, 23, 42, 0.45); }
+.scroll-table-frame.has-more-right:is(.no-pin, :not(:has(.sticky-r)))::after,
+.scroll-table-frame.is-scrolled-left:is(.no-pin, :not(:has(.sticky-l)))::before {
+  content: "";
+  position: absolute;
+  top: 1px;
+  bottom: 13px;
+  width: 28px;
+  pointer-events: none;
+  z-index: 5;
+}
+.scroll-table-frame.has-more-right:is(.no-pin, :not(:has(.sticky-r)))::after {
+  right: 13px;
+  background: linear-gradient(to left, rgba(15, 23, 42, 0.14), rgba(15, 23, 42, 0));
+}
+.scroll-table-frame.is-scrolled-left:is(.no-pin, :not(:has(.sticky-l)))::before {
+  left: 1px;
+  background: linear-gradient(to right, rgba(15, 23, 42, 0.14), rgba(15, 23, 42, 0));
+}
+
+/* «Columnas» (selector de columnas visibles). */
+.column-picker { position: relative; display: inline-block; }
+.column-picker-pop {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 30;
+  min-width: 220px;
+  max-height: 70vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: var(--sp-2);
+  background: var(--card, #fff);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.14);
+}
+.column-picker-item { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.column-picker-pop > .button { margin-top: 4px; align-self: flex-start; }
+
+/* ERP · Seguimiento a lo ancho: usa todo el ancho de la pantalla (no los
+   1320 px de .shell-wide) y nada de lo que hay en la página la desplaza en
+   horizontal: solo la tabla scrollea (dentro de su marco). */
+main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; overflow-x: clip; }
+.erp-seg-page .item-list { min-width: 0; }
+.erp-seg-page .erp-card { overflow-wrap: anywhere; }
+.erp-seg-page .erp-card .scroll-table { overflow-wrap: normal; }
+/* Pantallas bajas (p. ej. 1366×768): menos aire entre bloques para que a la
+   tabla le quede más alto (si aun así no cabe, la página baja una vez y la
+   tabla entera, con su barra, queda a la vista bajo la cabecera). */
+@media (max-height: 820px) {
+  main.shell.erp-seg-page { padding-bottom: var(--sp-2); }
+  .erp-seg-page > .erp-card { padding-top: var(--sp-3); padding-bottom: var(--sp-3); margin-bottom: var(--sp-2); }
+  .erp-seg-page > .erp-card > .erp-doc-filters { margin-bottom: var(--sp-2); padding-top: var(--sp-2); padding-bottom: var(--sp-2); }
+  .erp-seg-page > .erp-card > p.muted.small { margin-top: var(--sp-1); margin-bottom: var(--sp-1); }
+}
+
+/* Modo compacto (por defecto): un punto menos de letra, menos relleno,
+   cabeceras en dos líneas y anchos mínimos por columna en vez de repartir
+   a partes iguales. Los textos largos van en una línea truncada (completo
+   al pasar el ratón; Productos y Nota se despliegan con un clic). */
+.scroll-table > table.erp-seguimiento-table.is-compact { font-size: var(--fs-label); }
+.scroll-table > table.erp-seguimiento-table.is-compact th,
+.scroll-table > table.erp-seguimiento-table.is-compact td { padding: 4px 6px; }
+.scroll-table > table.erp-seguimiento-table.is-compact > thead th {
+  white-space: normal;
+  line-height: 1.2;
+  vertical-align: bottom;
+  /* Sin mayúsculas: en compacto la cabecera ocupa lo justo y parte en dos
+     líneas («Fecha / factura») en vez de ensanchar la columna. */
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 600;
+}
+.scroll-table > table.erp-seguimiento-table.is-compact > tbody td {
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.erp-seguimiento-table .seg-col-sel { width: 28px; text-align: center; }
+.erp-seguimiento-table .seg-col-situacion { width: 104px; }
+.erp-seguimiento-table td.seg-col-situacion { white-space: normal; }
+.erp-seguimiento-table .seg-col-pedido { width: 100px; }
+.erp-seguimiento-table .seg-col-fecha,
+.erp-seguimiento-table .seg-col-fecha_factura,
+.erp-seguimiento-table .seg-col-factura_enviada,
+.erp-seguimiento-table .seg-col-recogido { width: 62px; }
+.erp-seguimiento-table .seg-col-cliente { width: 150px; }
+.erp-seguimiento-table .seg-col-origen { width: 46px; }
+.erp-seguimiento-table .seg-col-productos { width: 150px; }
+.erp-seguimiento-table .seg-col-importe { width: 76px; }
+.erp-seguimiento-table .seg-col-empresa { width: 84px; }
+.erp-seguimiento-table .seg-col-factura { width: 96px; }
+.erp-seguimiento-table .seg-col-cobro { width: 70px; }
+.erp-seguimiento-table .seg-col-preparacion,
+.erp-seguimiento-table .seg-col-envio { width: 78px; }
+.erp-seguimiento-table td.seg-col-preparacion,
+.erp-seguimiento-table td.seg-col-envio { white-space: normal; }
+.erp-seguimiento-table .seg-col-tracking,
+.erp-seguimiento-table .seg-col-serie { width: 96px; }
+.erp-seguimiento-table .seg-col-nota { width: 150px; }
+.erp-seguimiento-table .seg-col-quitado { width: 140px; }
+.erp-seguimiento-table td.seg-col-quitado { white-space: normal; }
+.erp-seguimiento-table .seg-col-acciones { width: 1%; text-align: right; }
+.erp-seguimiento-table .erp-factura-cell { white-space: nowrap; }
+/* Botones de la tabla (PDF, Quitar…) al tamaño de la fila compacta. */
+.erp-seguimiento-table.is-compact .button.small {
+  min-height: 0;
+  padding: 2px 8px;
+  font-size: var(--fs-label);
+  line-height: 1.4;
+}
+/* Texto en una línea con «…» (el completo en el title). */
+.erp-seguimiento-table .seg-ellipsis {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.erp-seguimiento-table .seg-col-cliente .seg-ellipsis { max-width: 138px; }
+.erp-seguimiento-table .seg-col-tracking .seg-ellipsis,
+.erp-seguimiento-table .seg-col-serie .seg-ellipsis { max-width: 84px; }
+/* Productos / Nota: una línea truncada; un clic la despliega. */
+.erp-seguimiento-table .seg-trunc {
+  display: block;
+  max-width: 138px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.erp-seguimiento-table .seg-trunc.is-open { white-space: normal; max-width: 260px; }
+.erp-seguimiento-table .seg-trunc:focus-visible { outline: 2px solid var(--color-primary, #2563eb); }
+
+/* Cola SAT · vista Lista (≥ 768 px): la tabla scrollea DENTRO del panel
+   (`.sat-scroll` deja de scrollear y le cede el alto), así la cabecera queda
+   fija arriba, la barra horizontal se ve sin bajar al final y el Nº (con la
+   casilla) no se mueve al desplazar a los lados. Mismo ancho mínimo que
+   antes; en las columnas de la vista global se ajusta al ancho. En móvil
+   sigue apilada en tarjetas (abajo se deshace el contenedor). */
+@media (min-width: 768px) {
+  .sat-scroll:has(> .sat-table-frame) {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .sat-scroll > .sat-table-frame {
+    flex: 0 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .sat-table-frame > .scroll-table {
+    flex: 0 1 auto;
+    min-height: 0;
+    max-height: none;
+    border-radius: var(--r-panel);
+  }
+  .scroll-table > table.sat-table { width: 100%; min-width: 620px; }
+  .sat-global .scroll-table > table.sat-table { min-width: 0; }
+  /* «Todos pendientes»: cada columna de la rejilla se queda en su mitad (sin
+     esto crecía al ancho de su tabla y la derecha se salía del panel); la
+     tabla scrollea dentro. */
+  .sat-global .sat-global-col { min-width: 0; }
+  /* Observaciones y avisos de fila (a todo el ancho): se quedan en la parte
+     visible al desplazar la tabla a los lados. */
+  .scroll-table .sat-table tr.sat-row-notes .sat-obs,
+  .scroll-table .sat-table tr.sat-row-error p {
+    position: sticky;
+    left: var(--sp-3);
+    max-width: calc(var(--scroll-table-w, 100%) - 2 * var(--sp-3));
+    box-sizing: border-box;
+  }
+  .sat-table .sat-td-select { width: 36px; }
+}
+@media (max-width: 767px) {
+  .sat-table-frame > .scroll-table {
+    overflow: visible;
+    max-height: none;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+  .scroll-table > table.sat-table { width: 100%; min-width: 0; }
+  .scroll-table .sat-table .sticky-l { position: static; background: transparent; box-shadow: none; }
+  .sat-table-frame.scroll-table-frame::before,
+  .sat-table-frame.scroll-table-frame::after { display: none; }
+}
+
+/* Bandeja de Pedidos · vista Lista (≥ 1101 px): misma tabla con scroll
+   propio. Llena el ancho y parte el texto como antes (no se estira a una
+   línea); solo si aun así no cabe, scrollea dentro con la casilla y el Nº
+   fijos a la izquierda y Acciones a la derecha. El menú «⋯» de la fila es
+   flotante (no lo recorta el contenedor) y su celda sube por encima de las
+   filas siguientes mientras está abierto. */
+.scroll-table > table.erp-bandeja-table { width: 100%; }
+.erp-bandeja-table .bulk-checkbox-cell { width: 36px; }
+.scroll-table td.sticky-r:has(.erp-flow-menu.is-open),
+.scroll-table td.sticky-l:has(.erp-flow-menu.is-open) { z-index: 5; }
+.erp-flow-menu-pop.is-floating {
+  position: fixed;
+  top: auto;
+  right: auto;
+  z-index: 40;
+  max-height: calc(100dvh - 16px);
+  overflow-y: auto;
+}
+/* Fila atenuada (ocultada / anulada): en las celdas fijas se atenúa el
+   contenido, no la celda (con la celda translúcida se verían debajo las
+   columnas que pasan al desplazar). */
+.scroll-table .erp-bandeja-table tr.is-muted td.sticky-l,
+.scroll-table .erp-bandeja-table tr.is-muted td.sticky-r { opacity: 1; }
+.scroll-table .erp-bandeja-table tr.is-muted td.sticky-l > *,
+.scroll-table .erp-bandeja-table tr.is-muted td.sticky-r > * { opacity: 0.72; }
+/* Pedido bloqueado: la marca roja de la primera celda convive con la sombra
+   del borde cuando hay columnas por debajo. */
+.scroll-table-frame.is-scrolled-left:not(.no-pin) .erp-bandeja-table tr.is-alert > td.sticky-l-last:first-child {
+  box-shadow: inset 3px 0 0 #E2554A, 8px 0 8px -8px rgba(15, 23, 42, 0.45);
+}
+@media (max-width: 1100px) {
+  .erp-bandeja-scroll > .scroll-table {
+    overflow: visible;
+    max-height: none;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+  .scroll-table > table.erp-bandeja-table { width: 100%; min-width: 0; }
+  .scroll-table .erp-bandeja-table .sticky-l,
+  .scroll-table .erp-bandeja-table .sticky-r { position: static; background: transparent; box-shadow: none; }
+  .scroll-table .erp-bandeja-table tr.is-muted td.sticky-l > *,
+  .scroll-table .erp-bandeja-table tr.is-muted td.sticky-r > * { opacity: 1; }
+  .scroll-table .erp-bandeja-table tr.is-muted td.sticky-l,
+  .scroll-table .erp-bandeja-table tr.is-muted td.sticky-r { opacity: 0.72; }
+  .erp-bandeja-scroll.scroll-table-frame::before,
+  .erp-bandeja-scroll.scroll-table-frame::after { display: none; }
+}
