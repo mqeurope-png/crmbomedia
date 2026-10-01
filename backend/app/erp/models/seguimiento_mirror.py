@@ -16,6 +16,10 @@ BoHub, el id de `seguimiento_legacy` para el histórico, el de
     workflows.
   - `SeguimientoManual`: las filas tecleadas a mano (Origen = MANUAL) que BoHub
     validó e ingirió, con su id estable. Borrado LÓGICO (`deleted_at`).
+  - `SeguimientoSyncMeta`: estado propio del espejo, clave → valor. Hoy, el
+    FORMATO (nº de columnas) de las filas que guardan las tablas de arriba y
+    `seguimiento_legacy`: cuando la hoja gana una columna, el espejo las pone
+    al día una sola vez (en la misma transacción que deja la marca).
 """
 from __future__ import annotations
 
@@ -84,3 +88,13 @@ class SeguimientoManual(TimestampMixin, Base):
     #: Borrado lógico: alguien quitó la fila de la hoja. Se conserva (se puede
     #: recuperar) pero ya no se pinta.
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class SeguimientoSyncMeta(TimestampMixin, Base):
+    """Estado propio del espejo (clave → valor), p. ej. el formato de las filas
+    guardadas («formato_bd» = nº de columnas con el que están escritas)."""
+
+    __tablename__ = "seguimiento_sync_meta"
+
+    clave: Mapped[str] = mapped_column(String(40), primary_key=True)
+    valor: Mapped[str] = mapped_column(Text, nullable=False, default="")

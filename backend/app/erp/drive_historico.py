@@ -125,13 +125,16 @@ def _origen(row: list[Any], col_map: dict[int, int]) -> str:
 
 
 def map_row(row: list[Any], col_map: dict[int, int]) -> list[Any]:
-    """Una fila de la hoja vieja → los 18 valores del formato nuevo.
+    """Una fila de la hoja vieja → los valores del formato nuevo (con la «id»
+    vacía al final: la pone el backfill).
 
     Cada dato de la hoja vieja va a su columna real: Vendedor (+ canal) →
     Origen, Transporte → Envío, Preparado → Preparación, Recogido → Fecha
-    recogido. Solo lo que no tiene columna (Orden, Proforma) va a «Nota /
-    Incidencia». Lo que no existe en el histórico (Importe, Cobro, Fecha
-    factura) se deja vacío: inventarlo sería peor que no tenerlo. Las fechas
+    recogido. «Courier» se deja vacía: el histórico llevaba el transportista
+    en «Envío» (UPS, MRW…) y así se queda — no se reinterpreta. Solo lo que
+    no tiene columna (Orden, Proforma) va a «Nota / Incidencia». Lo que no
+    existe en el histórico (Importe, Cobro, Fecha factura) se deja vacío:
+    inventarlo sería peor que no tenerlo. Las fechas
     se dejan tal cual vienen (texto): el volcado las pasa a valor de fecha si
     se pueden leer, y una rota se queda como texto."""
     num_serie = _cell(row, col_map, "Nº de Serie")
@@ -152,6 +155,7 @@ def map_row(row: list[Any], col_map: dict[int, int]) -> list[Any]:
         "",                                                   # Cobro
         _cell(row, col_map, "Preparado"),                     # Preparación
         _cell(row, col_map, "Transport"),                     # Envío
+        "",                                                   # Courier
         _cell(row, col_map, "Recogido"),                      # Fecha recogido
         _cell(row, col_map, "Tracking"),                      # Tracking
         serie_whiterip,                                       # Nº serie · WhiteRIP
@@ -275,17 +279,21 @@ def import_historico(
     reemplaza los bloques estáticos enteros, así que es idempotente y no duplica
     separadores."""
     from app.erp.drive_managed import (  # noqa: PLC0415
+        FORMATO_SIN_COURIER,
         cabecera_de,
         compose,
         dates_to_serial,
         es_fila_completado,
+        formato_de_cabecera,
         historic_block,
         incidencias_format,
         is_separator,
         live_zone,
+        migrar_columna_courier,
         pedidos_format,
         pendientes_block,
         realinear_fila,
+        realinear_pestana,
         static_block,
     )
     from app.erp.seguimiento import (  # noqa: PLC0415
@@ -329,13 +337,19 @@ def import_historico(
     historico = dates_to_serial(plan["rows"], HISTORICO_DATE_COLUMNS)
     # La zona VIVA que ya hay —las filas de BoHub y las tecleadas a mano
     # (Origen = MANUAL)— se conserva ENTERA y en su orden: el import solo
-    # reemplaza el histórico, nunca absorbe una fila manual. Se realinea a las
-    # 18 columnas si la pestaña era de 17, y sus fechas van como fecha; en la
-    # zona viva «Preparación» es un estado, así que no se toca.
+    # reemplaza el histórico, nunca absorbe una fila manual. Se pone al formato
+    # actual si la pestaña era de uno anterior, y sus fechas van como fecha; en
+    # la zona viva «Preparación» es un estado, así que no se toca.
     # Se lee y se escribe EN BRUTO: lo tecleado a mano vuelve tal cual.
     valores = (
         sheets.tab_values(pedidos_tab, raw=True) if pedidos_tab in sheets.tab_titles() else []
     )
+    # Una pestaña escrita antes de «Courier» se migra primero (inserta la columna
+    # en la hoja, con su recuento), igual que en el volcado periódico; y lo leído
+    # se pone al formato actual.
+    if formato_de_cabecera(cabecera_de(valores)) == FORMATO_SIN_COURIER:
+        valores, _migracion = migrar_columna_courier(sheets, pedidos_tab, valores)
+    valores = realinear_pestana(valores)
     cabecera = cabecera_de(valores)
     vivas_pedidos = dates_to_serial(
         [realinear_fila(r, cabecera) for r in live_zone(valores)], PEDIDOS_DATE_COLUMNS,

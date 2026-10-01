@@ -567,12 +567,14 @@ RED»*, *«EN REPARTO»*, *«ENTREGADO»*— con su fecha, en la columna **Enví
 actualiza solo: al avisar Genei y, además, cada 30 minutos para los envíos en
 curso. **Es informativo: no mueve el pedido de pestaña** (eso lo hace «📤 Marcar
 recogido», o una incidencia). Colores: ámbar = aún sin escanear, azul = en
-camino, verde = entregado, rojo = incidencia. En la
-hoja «Seguimiento (app)», la columna Envío lleva ese paso real (*Pendiente de
-entrada en red*, *Recogido*, *En tránsito*, *En reparto*, *Disponible en
-oficina*, *Entregado*, *Incidencia*). Si Genei aún no tiene escaneos, se ve su
-propio estado. Los envíos con **otro courier** (no Genei) se explican justo
-debajo.
+camino, verde = entregado, rojo = incidencia. En
+Seguimiento (pantalla, Excel y hoja «Seguimiento (app)») la columna **Envío**
+lleva ese paso real (*Pendiente de entrada en red*, *Recogido*, *En tránsito*,
+*En reparto*, *Disponible en oficina*, *Entregado*, *Incidencia*) y la columna
+**Courier**, la agencia del envío tal como la da Genei (p. ej. *Ctt Premium*). Si
+Genei aún no tiene escaneos, Envío sale del estado del envío (con la etiqueta ya
+hecha y sin recoger, *Pendiente de entrada en red*). Los envíos con **otro
+courier** (no Genei) se explican justo debajo.
 
 **Envíos con otro courier (no Genei).** Hay envíos que no se hacen con Genei
 (UPS, MRW, GLS, DSV…): subes la etiqueta a mano, apuntas el tracking y pulsas
@@ -600,9 +602,12 @@ debajo.
 - **Ficha**: el bloque **«Envío con otro courier»** (courier, tracking enlazado,
   fecha de recogida y el aviso al cliente) sustituye a «Envío con Genei», que no
   lo hay.
-- **Hoja «Seguimiento (app)»**: Envío = **«Enviado · UPS»** / **«Enviado · otro
-  courier»** (están en la lista de valores de la columna), **Tracking** = el
-  número y **Fecha recogido** = el día en que se pulsó «Marcar recogido».
+- **Seguimiento (pantalla, Excel y hoja «Seguimiento (app)»)**: **Envío** =
+  **«Enviado»** al marcar recogido (BoHub no ve los escaneos de esas agencias);
+  **«Entregado»** o **«Incidencia»** si lo marcas a mano en la ficha («Otras
+  acciones de estado»). El courier va **aparte**, en la columna **Courier**
+  (*UPS*, *MRW*, *Seitrans*…; **«otro courier»** si no se indicó). **Tracking** =
+  el número y **Fecha recogido** = el día en que se pulsó «Marcar recogido».
 
 > La antigua pestaña «Enviados» era el **historial de pedidos mandados al
 > taller** (email al SAT o aprobación). Ahora «Enviados» son los que **han
@@ -777,10 +782,27 @@ como en la lista de pedidos. Cuando ya no haga falta verlo, se retira con
 **Origen** (WEB o el canal), **Productos**, **Importe**, **Empresa (serie)**
 (p. ej. «2 · MQ Europe»), **Factura**, **Fecha factura**, **Factura enviada**
 (cuándo se mandó la factura por email al cliente), **Cobro** (*Cobrado ✓* /
-*Pendiente* / *—*), **Preparación** y **Envío** (estado del taller y del
-transporte; **«No aplica»** si el pedido no requiere envío), **Fecha recogido**
-(el día real en que el paquete salió del taller, según la Cola SAT),
-**Tracking**, **Nº serie · WhiteRIP** y **Nota / Incidencia**. Son 18 columnas.
+*Pendiente* / *—*), **Preparación** (estado del taller), **Envío**, **Courier**,
+**Fecha recogido** (el día real en que el paquete salió del taller, según la
+Cola SAT), **Tracking**, **Nº serie · WhiteRIP** y **Nota / Incidencia**. Son 19
+columnas (20 en el Excel y en la hoja, con la «id» técnica oculta al final).
+
+**Envío** es **solo el estado** del envío, siempre de esta lista cerrada:
+*Sin enviar* · *Pendiente de entrada en red* · *Recogido* · *En tránsito* · *En
+reparto* · *Disponible en oficina* · *Entregado* · *Incidencia* · *Enviado* ·
+*No aplica*. Con Genei es el estado real del transportista; con otro courier,
+*Enviado* al marcar recogido (y *Entregado* / *Incidencia* si se marca a mano en
+la ficha); *No aplica* si el pedido no requiere envío. Una devolución cuenta
+como *Incidencia*.
+
+**Courier** dice **con quién** va: la **agencia del envío de Genei** (*Ctt
+Premium*, *UPS*…), el **courier apuntado en la Cola SAT** para un envío con otro
+courier (*UPS*, *MRW*, *Seitrans*…; **«otro courier»** si salió sin apuntarlo) o
+**«—»** si no hay envío. El filtro **«Transportista»** de la pantalla busca en
+esta columna (contiene, sin mayúsculas ni tildes: *ctt* encuentra *Ctt Premium*
+y *CTT Express*), y en «Columnas» se puede ocultar como cualquier otra (se ve
+por defecto). No hace falta rellenar nada: sale del envío de cada pedido, también
+de los que ya existían.
 
 Las columnas de **fecha** (Fecha, Fecha factura, Factura enviada, Fecha
 recogido) van como **valor de fecha real**, no como texto, tanto en el Excel
@@ -933,7 +955,25 @@ el Nº de pedido.
 | **Cliente, Factura, Factura enviada, Nº serie · WhiteRIP** | Tu valor **manda**: BoHub ya no lo pisa y lo recuerda (se ve también en la pantalla de Seguimiento y en el Excel). Si **vacías** la celda, BoHub vuelve a rellenarla. Nunca se copia a FACTUSOL ni a la factura real del pedido. |
 | **Tracking** | Si el pedido **no** tiene envío Genei, tu tracking se guarda **en el pedido** (lo ven la Cola SAT y la ficha). Si **tiene envío Genei, manda Genei**: la celda va protegida y no se puede cambiar a mano. |
 | **Nota / Incidencia** | Si no hay nota escrita, BoHub pone el motivo del bloqueo; en cuanto escribes una nota, **manda la tuya** y BoHub no la toca. Si la vacías, vuelve el motivo. |
-| **Todo lo demás** (Situación, Nº, Fecha, Origen, Productos, Importe, Empresa, Fecha factura, Cobro, Preparación, Envío, Fecha recogido e «id») | **Solo BoHub**. Esas columnas van **protegidas**: no se pueden editar. |
+| **Todo lo demás** (Situación, Nº, Fecha, Origen, Productos, Importe, Empresa, Fecha factura, Cobro, Preparación, Envío, **Courier**, Fecha recogido e «id») | **Solo BoHub**. Esas columnas van **protegidas**: no se pueden editar. |
+
+En las filas **tecleadas a mano** (Origen = MANUAL) y en el **histórico manual**
+se puede editar todo, también **Courier**. El desplegable de **Envío** (en la
+zona viva) es la lista cerrada de estados de arriba; Courier es texto libre.
+
+**La columna Courier en una hoja ya existente.** La hoja pasó de 19 a 20
+columnas. La primera vez que BoHub actualiza una pestaña escrita antes de
+«Courier», **inserta la columna** entre «Envío» y «Fecha recogido» —en la
+cabecera y en **todas** las filas: zona viva, completados e histórico manual—
+como haría «Insertar columna» en Sheets: lo de detrás corre una posición con
+sus formatos y la «id» sigue la última y oculta. Antes y después **cuenta las
+celdas con dato de cada columna** y, si no cuadra (p. ej. alguien escribía en
+ese momento), para sin escribir nada más. Se hace **una sola vez**: con la
+columna ya puesta no se vuelve a insertar. La vista previa de «Actualizar hoja
+de Drive…» avisa antes de hacerlo, y el resumen de después dice cuántas celdas
+había antes y después. Las filas del **histórico manual** que llevaban el
+transportista en **Envío** (*UPS*, *MRW*, *FEDEX*, *DSV*…) **se quedan como
+están**: no se reinterpretan; su Courier queda vacío (y es editable).
 
 > Google siempre deja editar las celdas protegidas al **propietario** de la
 > hoja. Si lo haces, BoHub **deshace** el cambio en la siguiente pasada: los
@@ -1030,10 +1070,10 @@ etiquetado aparte: se integran con el histórico manual, arriba de él. El
 disparador de bajar es **«Marcar completado»** (`completed_at`) —**nunca** el
 estado de envío—. Y aunque ya estén abajo, **sus filas de BoHub no se congelan**:
 en cada «Actualizar hoja de Drive» se **resincroniza la fila entera por Nº**, así
-la columna **Envío** queda **viva** (tracking, fecha recogido, estado del
-transporte que manda el webhook de Genei, factura, cobro, entregado…). Una
-**incidencia de envío** (transporte) **no mueve la fila**: solo pone **Envío =
-Incidencia** (distinta de una incidencia de pedido —taller/stock—, que va a
+las columnas **Envío** y **Courier** quedan **vivas** (tracking, fecha recogido,
+estado del transporte que manda el webhook de Genei, factura, cobro,
+entregado…). Una **incidencia de envío** (transporte) **no mueve la fila**: solo
+pone **Envío = Incidencia** (distinta de una incidencia de pedido —taller/stock—, que va a
 «Incidencias»). El **histórico manual** (las miles de filas de siempre) se
 **conserva byte a byte**: no es de BoHub, así que nunca se toca.
 

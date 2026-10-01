@@ -14626,6 +14626,9 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
 .erp-seguimiento-table .seg-col-envio { width: 78px; }
 .erp-seguimiento-table td.seg-col-preparacion,
 .erp-seguimiento-table td.seg-col-envio { white-space: normal; }
+/* Courier (la agencia de Genei o el courier de la Cola SAT): una línea con «…»
+   si el nombre es largo; el completo, en el title. */
+.erp-seguimiento-table .seg-col-courier { width: 90px; }
 .erp-seguimiento-table .seg-col-tracking,
 .erp-seguimiento-table .seg-col-serie { width: 96px; }
 .erp-seguimiento-table .seg-col-nota { width: 150px; }
@@ -14650,6 +14653,7 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
 .erp-seguimiento-table .seg-col-cliente .seg-ellipsis { max-width: 138px; }
 .erp-seguimiento-table .seg-col-tracking .seg-ellipsis,
 .erp-seguimiento-table .seg-col-serie .seg-ellipsis { max-width: 84px; }
+.erp-seguimiento-table .seg-col-courier .seg-ellipsis { max-width: 78px; }
 /* Productos / Nota: una línea truncada; un clic la despliega. */
 .erp-seguimiento-table .seg-trunc {
   display: block;

@@ -40,6 +40,7 @@ from app.erp.models.seguimiento_mirror import (
     SeguimientoManual,
     SeguimientoOverride,
     SeguimientoSnapshot,
+    SeguimientoSyncMeta,
 )
 from app.erp.models.settings import ERP_SETTINGS_SINGLETON_ID, ErpSettings, InvoiceMode
 from app.erp.models.shipping import (
@@ -94,6 +95,7 @@ __all__ = [
     "SeguimientoManual",
     "SeguimientoOverride",
     "SeguimientoSnapshot",
+    "SeguimientoSyncMeta",
     "ShipmentFile",
     "ShipmentPackage",
     "SkuMatchedBy",

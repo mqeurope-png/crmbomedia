@@ -54,7 +54,7 @@ import { extractErrorMessage } from "../../lib/errors";
 type ColKey =
   | "situacion" | "pedido" | "fecha" | "cliente" | "origen" | "productos"
   | "importe" | "empresa" | "factura" | "fecha_factura" | "factura_enviada"
-  | "cobro" | "preparacion" | "envio" | "recogido" | "tracking" | "serie" | "nota";
+  | "cobro" | "preparacion" | "envio" | "courier" | "recogido" | "tracking" | "serie" | "nota";
 const COLUMNS: { key: ColKey; label: string; sort: string | null; sticky?: boolean; locked?: boolean }[] = [
   { key: "situacion", label: "Situación", sort: "situacion", sticky: true },
   { key: "pedido", label: "Nº pedido", sort: "albaran_pedido", sticky: true, locked: true },
@@ -70,6 +70,9 @@ const COLUMNS: { key: ColKey; label: string; sort: string | null; sticky?: boole
   { key: "cobro", label: "Cobro", sort: null },
   { key: "preparacion", label: "Preparación", sort: null },
   { key: "envio", label: "Envío", sort: null },
+  // Con quién va el envío (la agencia de Genei o el courier de la Cola SAT);
+  // «Envío» es solo el estado.
+  { key: "courier", label: "Courier", sort: null },
   { key: "recogido", label: "Fecha recogido", sort: null },
   { key: "tracking", label: "Tracking", sort: null },
   { key: "serie", label: "Nº serie · WhiteRIP", sort: null },
@@ -86,6 +89,7 @@ const CELL_CLASS: Partial<Record<ColKey, string>> = {
   nota: " small",
   preparacion: " small",
   envio: " small",
+  courier: " small",
 };
 
 /** Clases de la celda: las de su columna y, en Preparación / Envío, «No
@@ -310,6 +314,8 @@ export default function SeguimientoPage() {
         return r.preparacion;
       case "envio":
         return r.envio;
+      case "courier":
+        return <span className="seg-ellipsis">{r.courier || "—"}</span>;
       case "recogido":
         // Fecha real de recogida (Cola SAT: recogido / en tránsito).
         return dc(r.recogido);
@@ -334,6 +340,7 @@ export default function SeguimientoPage() {
       case "cliente": return r.cliente ?? undefined;
       case "empresa": return r.empresa ?? undefined;
       case "tracking": return r.tracking ?? undefined;
+      case "courier": return r.courier && r.courier !== "—" ? r.courier : undefined;
       case "serie": return r.serie_whiterip || undefined;
       default: return undefined;
     }
@@ -731,8 +738,9 @@ export default function SeguimientoPage() {
             <span>Transportista</span>
             <input
               aria-label="Filtrar por transportista"
+              title="Filtra por la columna Courier (la agencia de Genei o el courier de la Cola SAT)"
               value={filters.transportista ?? ""}
-              placeholder="UPS, MRW…"
+              placeholder="UPS, Ctt…"
               onChange={(e) => setFilters({
                 ...filters, transportista: e.target.value || undefined,
               })}
@@ -1105,6 +1113,15 @@ export default function SeguimientoPage() {
               La pestaña «{syncSummary.historic_tab}» no se ha tocado.
             </p>
           ) : null}
+          {syncSummary.migracion_courier?.estado === "hecha" ? (
+            <p className="muted small" role="note">
+              Columna «Courier» añadida en «{syncSummary.tab}» (entre «Envío» y
+              «Fecha recogido»): {syncSummary.migracion_courier.filas ?? 0} filas,{" "}
+              {syncSummary.migracion_courier.celdas_antes ?? 0} celdas con dato antes
+              y {syncSummary.migracion_courier.celdas_despues ?? 0} después — ninguna
+              perdida.
+            </p>
+          ) : null}
         </section>
       ) : null}
 
@@ -1281,6 +1298,15 @@ function ManagedPreview({ summary }: { summary: DriveManagedSummary }) {
         del pedido (más reciente primero) y con la cabecera congelada. Nada se
         ha escrito todavía.
       </p>
+      {summary.migracion_courier?.estado === "pendiente" ? (
+        <p className="form-info small" role="note">
+          La pestaña aún no tiene la columna <strong>«Courier»</strong>: al confirmar
+          se insertará entre «Envío» y «Fecha recogido», en la cabecera y en todas
+          las filas (también el histórico), sin mover nada más. Antes de seguir se
+          comprueba que no se pierde ninguna de sus{" "}
+          {summary.migracion_courier.celdas_antes ?? 0} celdas con dato.
+        </p>
+      ) : null}
       <ul className="item-list">
         <li>
           Se escribirán <strong>{summary.rows}</strong> filas de BoHub (los mismos

@@ -36,7 +36,7 @@ import sys
 from sqlalchemy.orm import Session
 
 from app.db.session import get_engine
-from app.erp.drive_managed import historico_manual_rows, managed_tab_titles
+from app.erp.drive_managed import historico_manual_rows, managed_tab_titles, realinear_pestana
 from app.erp.drive_sheets import (
     DriveConfigError,
     GoogleSheetsClient,
@@ -80,7 +80,9 @@ def main() -> int:
         pedidos_tab, _incidencias_tab = managed_tab_titles(session)
 
         client = GoogleSheetsClient(info, spreadsheet_id)
-        valores = client.tab_values(pedidos_tab, raw=True)
+        # Al formato actual (hueco de «Courier» si la pestaña aún no se migró),
+        # que es el de las filas que guarda el espejo.
+        valores = realinear_pestana(client.tab_values(pedidos_tab, raw=True))
         historico = historico_manual_rows(valores)
         n = import_legacy_rows(session, historico)
         print(f"Histórico importado a «seguimiento_legacy»: {n} fila(s) "
