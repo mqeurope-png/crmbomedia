@@ -965,6 +965,9 @@ export type SeguimientoEspejoStats = {
   proteccion_error?: string;
   /** Filas guardadas por el espejo puestas al formato de 20 columnas (una vez). */
   formato_bd_convertidas?: number;
+  /** Pedidos de BoHub cuya fila iba a desaparecer de la hoja sin estar
+   *  quitados, anulados, completados ni gestionados fuera: se conservan. */
+  filas_rescatadas?: string[];
 };
 
 /** Resumen de la sincronización INCREMENTAL a la hoja histórica (ERP-F6). Solo

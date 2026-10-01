@@ -1459,6 +1459,13 @@ function EspejoResumen({ e }: { e: SeguimientoEspejoStats }) {
         {e.proteccion_error ? (
           <li className="form-error">No se pudo proteger la hoja: {e.proteccion_error}</li>
         ) : null}
+        {e.filas_rescatadas?.length ? (
+          <li className="form-error">
+            {e.filas_rescatadas.length} pedido(s) de BoHub iban a desaparecer de la hoja
+            sin estar quitados, anulados ni completados; se conservan sus filas:{" "}
+            {e.filas_rescatadas.join(", ")}.
+          </li>
+        ) : null}
       </ul>
     </div>
   );

@@ -260,6 +260,21 @@ describe("ERP · Seguimiento — columna Courier", () => {
     expect(hecho).toHaveTextContent("ninguna perdida");
   });
 
+  it("la vista previa avisa de las filas de BoHub que se conservan", async () => {
+    mockRows(true);
+    (syncSeguimientoDrive as jest.Mock).mockResolvedValue({
+      ...managed(true),
+      migracion_courier: null,
+      espejo: { filas_rescatadas: ["FAC-2-526109", "ARTISJ-9492"] },
+    });
+    const user = userEvent.setup();
+    render(<SeguimientoPageView />);
+    await user.click(await screen.findByRole("button", { name: /Actualizar hoja de Drive/ }));
+    const aviso = await screen.findByText(/iban a desaparecer de la hoja/);
+    expect(aviso).toHaveTextContent("2 pedido(s)");
+    expect(aviso).toHaveTextContent("FAC-2-526109, ARTISJ-9492");
+  });
+
   it("sin migración pendiente, la vista previa no avisa de nada", async () => {
     mockRows(true);
     (syncSeguimientoDrive as jest.Mock).mockResolvedValue({

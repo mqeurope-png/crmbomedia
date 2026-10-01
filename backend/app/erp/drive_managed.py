@@ -1682,6 +1682,53 @@ def incidencias_format(
     return requests
 
 
+def rescatar_filas_de_bohub(
+    session: Session, espejo: Any, rows: list[dict[str, Any]],
+    completados: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """INVARIANTE del volcado: una fila de BoHub que estaba en la hoja (la foto
+    de la pasada anterior) NUNCA desaparece sin motivo. Si un pedido sale de la
+    selección viva, o pasa a los completados, o se quitó del seguimiento, o se
+    anuló (oculto por estado), o se marcó gestionado fuera: eso es legítimo.
+    Cualquier otro caso es un fallo de la selección (01/10/2026: cuatro pedidos
+    entregados y sin completar desaparecieron de la hoja): la fila se conserva
+    —con sus datos al día— en la zona viva (o en los completados) y queda un
+    aviso en el log y en el resumen (`espejo.stats["filas_rescatadas"]`)."""
+    from app.erp.models.seguimiento_mirror import KIND_ORDER  # noqa: PLC0415
+
+    previas = {rid for rid, (kind, _v) in espejo.snapshot.items() if kind == KIND_ORDER}
+    escritas = {str(r.get("id")) for r in (*rows, *completados) if r.get("id")}
+    faltan = previas - escritas
+    if not faltan:
+        return rows, completados
+    from app.erp.api.seguimiento import _rows  # noqa: PLC0415
+
+    por_id = {str(r["id"]): r for r in _rows(session) if str(r.get("id")) in faltan}
+    rows, completados = list(rows), list(completados)
+    rescatadas: list[str] = []
+    for rid in sorted(faltan):
+        fila = por_id.get(rid)
+        if fila is None:
+            continue                                  # el pedido ya no existe
+        if fila["excluido"] or (fila["oculto_por_estado"] and not fila["forzado"]):
+            continue                                  # quitado o anulado
+        if fila["completado"]:
+            completados.append(fila)
+        elif fila["en_curso"]:
+            rows.append(fila)
+        else:
+            continue                                  # gestionado fuera
+        rescatadas.append(str(fila.get("order_number") or rid))
+    if rescatadas:
+        logger.warning(
+            "drive: %d pedido(s) de BoHub iban a desaparecer de «Seguimiento (app)» sin "
+            "estar quitados, anulados, completados ni gestionados fuera; se conservan "
+            "sus filas: %s", len(rescatadas), ", ".join(rescatadas),
+        )
+        espejo.stats["filas_rescatadas"] = rescatadas
+    return rows, completados
+
+
 def push_managed_tabs(
     session: Session,
     sheets: ManagedTabTransport,
@@ -1778,10 +1825,13 @@ def push_managed_tabs(
         realinear_pestana(sheets.tab_values(pedidos_tab))
         if any(is_manual_row(r) for r in live_zone(valores_pedidos)) else None
     )
+    # INVARIANTE: una fila de BoHub que estaba en la hoja no desaparece si el
+    # pedido no se ha quitado, anulado, completado ni gestionado fuera.
+    rows, completados = rescatar_filas_de_bohub(session, espejo, rows, completados or [])
     # ESPEJO: antes de pintar, lo que una persona editó en las columnas
     # editables de las filas de BoHub se lee de vuelta (hoja ≠ snapshot), y las
     # filas se pintan con lo manual aplicado. Sin snapshot no se infiere nada.
-    rows, completados = espejo.leer_filas_bohub(valores_pedidos, rows, completados or [])
+    rows, completados = espejo.leer_filas_bohub(valores_pedidos, rows, completados)
 
     manuales_leidas = [
         r for r in manual_rows(valores_pedidos, vistos)
