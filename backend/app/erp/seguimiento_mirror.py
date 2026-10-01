@@ -367,8 +367,12 @@ def _mismo(col: int, a: Any, b: Any) -> bool:
 def _limpio(col: int, value: Any) -> Any:
     """Valor de una celda para fusionar: la Nota sin NINGUNA marca de la app
     («[BoHub: …]», «[⚠ BoHub …]», «[⚠ revisar: …]»): solo lo que escribió
-    una persona."""
-    return _nota_usuario(value) if col == _NOTA else value
+    una persona. «—» / «-» es «sin dato» en la hoja (como en la fusión de
+    #466): no es un valor que conservar."""
+    from app.erp.drive_managed import _BOHUB_VACIOS  # noqa: PLC0415
+
+    limpio = _nota_usuario(value) if col == _NOTA else value
+    return "" if _texto(limpio) in _BOHUB_VACIOS else limpio
 
 
 def _nota_usuario(nota: Any) -> str:

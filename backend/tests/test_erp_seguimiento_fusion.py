@@ -317,3 +317,18 @@ def test_la_recuperacion_no_inventa_fechas_ni_se_tapa_con_texto(factory):
         assert casos["BOP-311"].accion == NO_ES_FECHA
         assert casos["BOP-312"].accion == RELLENAR
         assert casos["BOP-312"].fecha_hoja == "2026-09-24"
+
+
+def test_un_guion_no_es_un_valor_que_conservar(factory):
+    """«-» / «—» es «sin dato» en la hoja: no llega al pedido como tracking ni
+    como override."""
+    with factory() as s:
+        o = _order(s, "BOP-213")
+        sheets = _con_gemela(s, o, _gemela("BOP-213", "Acme SL", Tracking="-", Factura="-",
+                                           **{"Nº serie · WhiteRIP": "—",
+                                              "Factura enviada": "-"}))
+        res = _pasada(s, sheets, [_row(o)])
+        s.refresh(o)
+        assert not o.tracking_number
+        assert s.scalars(select(SeguimientoOverride)).all() == []
+        assert res["espejo"]["filas_fusionadas"] == []
