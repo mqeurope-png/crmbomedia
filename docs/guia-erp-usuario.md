@@ -984,21 +984,24 @@ actualizar), para que lo arregles a mano antes:
   fuera de lo que lee la app, y se quedaría suelto. Muévelo a otra pestaña (o
   bórralo) y vuelve a actualizar. (En una pestaña aún más antigua, de 17
   columnas, pasa lo mismo con Y y Z.)
-- **Las columnas están descolocadas**: la cabecera no es la de la app (una
-  columna insertada, borrada o renombrada a mano, «Courier» puesta dos veces…)
-  o las «id» de las filas no están en su columna. El aviso dice **qué columna**
+- **Las columnas están descolocadas**: una columna insertada, borrada o movida
+  a mano («Courier» puesta dos veces, cortada y pegada detrás de la «id», la
+  «id» borrada…), o la fila de cabecera borrada. El aviso dice **qué columna**
   no está donde toca y qué debería poner: quita la columna que sobra, vuelve a
-  poner la que falta (o el nombre que tenía) y vuelve a actualizar.
+  poner la que falta (o la fila de cabecera: deshacer o «Historial de
+  versiones») y vuelve a actualizar.
 - **La base de datos aún no está al día** (la actualización del programa no ha
   terminado): vuelve a intentarlo en un momento.
 
 Una cabecera retocada no engaña a la migración: se compara **entera**, columna
-a columna, con la de cada versión. Lo que haya escrito a la derecha de la
-última columna (p. ej. «Courier» tecleado en T1 de la pestaña vieja) no
-cuenta, y una sola celda renombrada se tolera (la pasada la vuelve a escribir
-bien), salvo «Envío» y las dos de detrás, que son las que delatan la versión.
-Sin fila de cabecera, el formato se reconoce por la columna en la que están
-las «id».
+a columna, con la de cada versión. **Renombrar o vaciar** celdas de la
+cabecera no descoloca nada y se acepta (la pasada vuelve a escribir los
+nombres buenos). Lo que no se acepta es el nombre de **otra** columna fuera de
+su sitio: eso es una columna insertada, borrada o movida. Lo escrito a la
+derecha de la última columna (p. ej. «Courier» tecleado en T1 de la pestaña
+vieja) no cuenta, salvo que sea una columna de la app con datos debajo (una
+columna movida). **Sin fila de cabecera** solo se acepta el formato actual,
+con las «id» en la T: si no, se pide volver a poner la cabecera.
 
 > **Volver a la versión anterior** (solo si hiciera falta), en este orden:
 >
@@ -1011,8 +1014,14 @@ las «id».
 >    lo guardado a 19 columnas y quita la tabla de estado del espejo; desde ese
 >    momento, cualquier pasada de la versión nueva se para sin tocar la hoja.
 >    No reinicies el `api` nuevo: al arrancar vuelve a subir la base de datos.
-> 3. **Borra a mano la columna O («Courier»)** de «Seguimiento (app)», o
->    restaura una versión de la hoja anterior a la migración.
+> 3. **Quita la columna O («Courier»)** de «Seguimiento (app)» con
+>    `docker compose … run --rm api python -m scripts.quitar_columna_courier`
+>    (informe) y luego con `--apply`. Lo hace la cuenta de servicio, así que
+>    funciona aunque la columna esté protegida o la hoja sea de BoHub; antes
+>    comprueba que la base de datos ya está bajada y que la pestaña está bien
+>    colocada. Se pierden las celdas de «Courier». (A mano solo podría el
+>    propietario de la hoja; restaurar una versión anterior a la migración
+>    también vale, pero deshace lo que se haya escrito desde entonces.)
 > 4. **Arranca la versión anterior.**
 >
 > Si se hace en otro orden, la versión anterior leería corrido todo lo de

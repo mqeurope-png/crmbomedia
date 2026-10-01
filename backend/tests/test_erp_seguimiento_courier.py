@@ -129,6 +129,12 @@ class FakeTabs:
                     if len(fila) > i0:
                         fila[i0:i0] = [""] * (i1 - i0)
                 self.inserts += 1
+            elif "deleteDimension" in req:
+                rng = req["deleteDimension"]["range"]
+                assert rng["dimension"] == "COLUMNS"
+                for fila in self.tabs[title]:
+                    del fila[rng["startIndex"]:rng["endIndex"]]
+                self.deletes = getattr(self, "deletes", 0) + 1
             elif "updateCells" in req:
                 rng = req["updateCells"]["range"]
                 fila = self.tabs[title][rng["startRowIndex"]]
@@ -694,27 +700,25 @@ def test_un_cambio_de_bohub_entre_pasadas_no_se_deshace_al_migrar(factory):
         assert fila[_c("Tracking")] == "1Z-NUEVO"
 
 
-def test_sin_cabecera_el_formato_viejo_se_reconoce_por_donde_estan_las_ids(factory):
-    """Si alguien borró la fila de cabecera, la pestaña vieja se reconoce por
-    dónde están sus «id» (columna S): se migra igual, sin escribir «Courier»
-    en una fila de datos, y la pasada vuelve a poner la cabecera."""
+def test_sin_cabecera_la_pestana_vieja_no_se_migra_a_ciegas(factory):
+    """Sin fila de cabecera no se puede ver si alguna columna se ha movido: solo
+    se acepta el formato actual. Una pestaña vieja sin cabecera (sus «id» en la
+    S) no se migra a ciegas: se pide volver a poner la cabecera, sin tocar nada."""
     with factory() as s:
         o, _sheets, mundo = _mundo_viejo(s)
         sin_cabecera = copy.deepcopy(mundo["hoja"][1:])
-        sheets = FakeTabs({HISTORICA: [], TAB: sin_cabecera})
+        sheets = FakeTabs({HISTORICA: [], TAB: copy.deepcopy(sin_cabecera)})
+        for dry_run in (True, False):
+            with pytest.raises(DriveSyncError, match="fila de cabecera"):
+                push_managed_tabs(s, sheets, [_row(o)], dry_run=dry_run)
+            s.rollback()
+        assert sheets.inserts == 0 and sheets.written == {} and sheets.tabs[TAB] == sin_cabecera
+        # Con la cabecera de vuelta, se migra como siempre.
+        sheets.tabs[TAB] = copy.deepcopy(mundo["hoja"])
         res = push_managed_tabs(s, sheets, [_row(o)])
         s.commit()
         assert sheets.inserts == 1 and res["migracion_courier"]["estado"] == "hecha"
-        lotes = [r for lote in sheets.formats[TAB] for r in lote if "updateCells" in r]
-        assert lotes == []                             # nada escrito en una fila de datos
-        escrito = sheets.written[TAB]
-        assert escrito[0] == SEGUIMIENTO_COLUMNS_V2
-        hist = _historico_escrito(sheets)
-        assert [h[ENVIO] for h in hist] == ["UPS", "FEDEX", "DSV"]
-        assert [h[ID_INDEX] for h in hist] == ["leg-1", "leg-2", "leg-3"]
-        man = next(f for f in escrito if len(f) > ID_INDEX and f[ID_INDEX] == "man-1")
-        assert man[_c("Tracking")] == "T-1" and man[COURIER] == ""
-        assert res["espejo"]["ediciones_leidas"] == 0
+
 
 
 # --- lo que la migración NO debe hacer (revisión) -------------------------------------
@@ -1006,3 +1010,102 @@ def test_pestana_de_17_columnas_con_algo_en_y_no_se_reescribe(factory):
             push_managed_tabs(s, sheets, [_row(o)])
         s.rollback()
         assert sheets.written == {} and sheets.tabs[TAB] == hoja
+
+
+# --- tercera revisión: renombrados, sin cabecera, columnas movidas, «id» borrada ------
+
+
+def _migrada(s: Session) -> tuple[Order, FakeTabs]:
+    """El mundo viejo tras la primera pasada (la pestaña ya en 20 columnas)."""
+    o, sheets, _mundo = _mundo_viejo(s)
+    push_managed_tabs(s, sheets, [_row(o)])
+    s.commit()
+    return o, sheets
+
+
+def test_renombrar_celdas_de_la_cabecera_no_para_la_pasada(factory):
+    """Renombrar (o vaciar) celdas de la cabecera no descoloca nada, sean las que
+    sean y aunque sean varias: la pasada sigue y vuelve a escribir los nombres."""
+    with factory() as s:
+        o, sheets = _migrada(s)
+        hoja = copy.deepcopy(sheets.tabs[TAB])
+        hoja[0][COURIER] = "Transportista"
+        hoja[0][ENVIO] = "Estado envío"
+        hoja[0][_c("Fecha factura")] = ""
+        tocada = FakeTabs({HISTORICA: [], TAB: hoja})
+        res = push_managed_tabs(s, tocada, [_row(o)])
+        s.commit()
+        assert tocada.inserts == 0 and res["migracion_courier"] is None
+        assert tocada.written[TAB][0] == SEGUIMIENTO_COLUMNS_V2
+        hist = _historico_escrito(tocada)
+        assert [h[ENVIO] for h in hist] == ["UPS", "FEDEX", "DSV"]
+        assert res["espejo"]["ediciones_leidas"] == 0
+
+
+def test_sin_cabecera_y_una_columna_borrada_no_se_toma_por_la_vieja(factory):
+    """Sin cabecera y con una columna borrada en la pestaña ya migrada, las «id»
+    quedan en la S, como en la vieja: no se toma por la vieja (no se inserta otra
+    «Courier» ni se lee corrida)."""
+    with factory() as s:
+        o, sheets = _migrada(s)
+        hoja = _sin_columna([list(f) for f in sheets.tabs[TAB][1:]], _c("Cliente"))
+        tocada = FakeTabs({HISTORICA: [], TAB: copy.deepcopy(hoja)})
+        with pytest.raises(DriveSyncError, match="fila de cabecera"):
+            push_managed_tabs(s, tocada, [_row(o)])
+        s.rollback()
+        assert tocada.inserts == 0 and tocada.written == {}
+        assert s.scalars(select(SeguimientoOverride)).all() == []
+
+
+def test_courier_movida_detras_de_la_id_con_datos_no_se_toma_por_la_vieja(factory):
+    """«Courier» cortada y pegada detrás de la «id» (con couriers tecleados): la
+    cabecera parece la vieja, pero esa columna tiene datos. No se inserta otra
+    «Courier» (los couriers acabarían fuera de su columna): se para y se dice."""
+    with factory() as s:
+        o, sheets = _migrada(s)
+        hoja = copy.deepcopy(sheets.tabs[TAB])
+        man = next(f for f in hoja if len(f) > ID_INDEX and f[ID_INDEX] == "man-1")
+        man[COURIER] = "SEUR"
+        for fila in hoja:
+            celda = fila.pop(COURIER) if len(fila) > COURIER else ""
+            fila.extend([""] * (ID_INDEX - len(fila)))
+            fila.append(celda)
+        tocada = FakeTabs({HISTORICA: [], TAB: copy.deepcopy(hoja)})
+        with pytest.raises(DriveSyncError, match="se llama «Courier» y tiene datos"):
+            push_managed_tabs(s, tocada, [_row(o)])
+        s.rollback()
+        assert tocada.inserts == 0 and tocada.written == {}
+
+
+def test_la_columna_id_borrada_no_se_acepta(factory):
+    """Sin la columna «id» (borrada por el propietario) las filas manuales y del
+    histórico perderían su id y las ediciones de las de BoHub no se casarían: se
+    para y se dice."""
+    with factory() as s:
+        o, sheets = _migrada(s)
+        hoja = _sin_columna(copy.deepcopy(sheets.tabs[TAB]), ID_INDEX)
+        tocada = FakeTabs({HISTORICA: [], TAB: copy.deepcopy(hoja)})
+        with pytest.raises(DriveSyncError, match="no está la columna «id»"):
+            push_managed_tabs(s, tocada, [_row(o)])
+        s.rollback()
+        assert tocada.written == {}
+
+
+def test_vuelta_atras_quita_la_columna_courier_sin_tocar_nada_mas(factory):
+    """El paso 3 de la vuelta atrás: quita la columna O con la cuenta de servicio
+    y deja la pestaña como la escribía la versión anterior (19 columnas, la «id»
+    la última). Sin `apply` solo informa; en una pestaña sin «Courier», nada."""
+    from app.erp.drive_managed import quitar_columna_courier
+
+    with factory() as s:
+        o, sheets = _migrada(s)
+        hoja = copy.deepcopy(sheets.tabs[TAB])
+        info = quitar_columna_courier(sheets, TAB)
+        assert info["aplicado"] is False and sheets.tabs[TAB] == hoja
+        assert info["celdas_courier"] == 1                      # la fila de BoHub («UPS»)
+        res = quitar_columna_courier(sheets, TAB, apply=True)
+        assert res["aplicado"] is True
+        assert sheets.tabs[TAB] == [[c for i, c in enumerate(f) if i != COURIER] for f in hoja]
+        assert sheets.tabs[TAB][0] == CABECERA_19
+        with pytest.raises(DriveSyncError, match="no tiene la columna «Courier»"):
+            quitar_columna_courier(sheets, TAB, apply=True)

@@ -16,10 +16,11 @@ orden (docs/guia-erp-usuario.md): 1) parar la sincronización (interruptor
 automático apagado, `worker-sync` parado, nadie pulsando «Actualizar hoja de
 Drive»); 2) este `downgrade`, con la imagen nueva en un contenedor suelto —sin
 la tabla, cualquier pasada de la versión nueva se para antes de tocar la
-hoja—; 3) borrar a mano la columna O («Courier») de «Seguimiento (app)» (o
-restaurar una versión de la hoja anterior a la migración); 4) arrancar la
-versión anterior. En otro orden, la versión nueva volvería a insertar la
-columna, o la anterior leería corrido todo lo de detrás de «Envío».
+hoja—; 3) quitar la columna O («Courier») de «Seguimiento (app)» con
+`python -m scripts.quitar_columna_courier --apply` (la cuenta de servicio;
+comprueba antes que la BD ya está bajada); 4) arrancar la versión anterior. En
+otro orden, la versión nueva volvería a insertar la columna, o la anterior
+leería corrido todo lo de detrás de «Envío».
 
 Sin DEFAULT en la columna TEXT (MySQL lo rechaza, error 1101): el ORM siempre
 da valor.
