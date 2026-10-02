@@ -369,7 +369,7 @@ def build_standalone_albaran(
     src, dst = DOC_SPECS["presupuestos"], DOC_SPECS["albaranes"]
     virtual_header = build_quote_payload(
         codigo, ejercicio=ejercicio, customer=customer,
-        refpre=(referencia or "").strip(), lines=lines, fecha=fecha, fopfac=fopalb,
+        refpre=(referencia or "").strip(), lines=lines, fecha=fecha, foppre=fopalb,
         portes=portes,
     )
     cabecera = build_target_header(

@@ -66,18 +66,16 @@ TABLE_QUOTES = "F_PRE"
 #: **Líneas** de presupuesto. `CODLPS` referencia a `F_PRE.CODPRE`.
 #: Descubierta en C-4-fix3: C-4 la buscó como F_LPRE/F_LPR/F_LPP y falló.
 TABLE_QUOTE_LINES = "F_LPS"
-#: Caracteres que caben en `F_LPS.DESLPS` por línea. Es el límite CONOCIDO
-#: SEGURO: todas las líneas que BoHub ha escrito hasta hoy (≤255) las ha
-#: aceptado FACTUSOL. La longitud real de la columna no está verificada —
-#: `scripts/factusol_discover_line_lengths.py` la mide contra la base real
-#: (p. ej. la 5-004360, que tiene una descripción larga); si admite más, se
-#: sube aquí. Mientras, una descripción más larga NO se recorta: se reparte en
-#: **líneas de continuación** (texto sin artículo, cantidad 0, precio 0), que
-#: es como el escritorio de FACTUSOL guarda y pinta un texto largo.
-DESLPS_MAX_LENGTH = 255
-#: Tope de BoHub para UNA descripción (≈ 8 líneas de continuación). Por encima
-#: la API rechaza la proforma diciendo el límite y la línea.
+#: Tope de BoHub para UNA descripción de línea. Por encima la API rechaza la
+#: proforma diciendo el límite y la línea.
 QUOTE_LINE_DESCRIPTION_MAX = 2000
+#: Caracteres que BoHub escribe en `F_LPS.DESLPS` por línea: la descripción
+#: ENTERA, con sus saltos de línea. Medido en producción con
+#: `scripts/factusol_discover_line_lengths.py` (02/10/2026): `DESLPS` guarda
+#: hasta 733 caracteres (330 de 3.376 líneas de 2026 pasan de 255) y `MEMLPS`
+#: está vacío en toda la tabla, así que es un campo de texto largo, no un
+#: Texto(255). Ya no se reparte en líneas de continuación: el tope es el de BoHub.
+DESLPS_MAX_LENGTH = QUOTE_LINE_DESCRIPTION_MAX
 #: Tabla de artículos.
 TABLE_ARTICLES = "F_ART"
 #: Tarifas por artículo. `ARTLTA` → `F_ART.CODART`, `PRELTA` = precio de venta.
@@ -443,14 +441,22 @@ def _quote_matches(
 
 def header_shipping(quote: dict[str, Any]) -> dict[str, str | None]:
     """Bloque de entrega de la cabecera F_PRE (a quién y dónde se entrega), en
-    la forma que el modal vuelca en «Enviar a otro nombre / dirección»."""
+    la forma que el modal vuelca en «Enviar a otro nombre / dirección».
+
+    El país va con su NOMBRE en español («Alemania»), no con el código
+    numérico que guarda CPAPRE («276»): es un campo de texto que el operador
+    ve y puede corregir, y al guardar `_cpapre` lo vuelve a traducir al mismo
+    código."""
+    from app.erp.language import country_display_name  # noqa: PLC0415
+
     def texto(key: str) -> str | None:
         return str(quote.get(key) or "").strip() or None
 
     return {
         "nombre": texto("cnopre"), "direccion": texto("cdopre"),
         "poblacion": texto("cpopre"), "cp": texto("ccppre"),
-        "provincia": texto("cprpre"), "pais": texto("cpapre"),
+        "provincia": texto("cprpre"),
+        "pais": country_display_name(quote.get("cpapre"), "es") or None,
     }
 
 
@@ -581,17 +587,23 @@ def _row_to_quote_line(row: dict[str, Any]) -> dict[str, Any]:
     """Fila de F_LPS → la forma que ya consumía el frontend desde C-4.
 
     `text_only`: línea sin artículo, sin cantidad y sin precio — un texto
-    (continuación de una descripción larga, o una nota escrita en el
-    escritorio). No suma y en pantalla se enseña sin importes. NO se fusiona
-    con la línea anterior al leer: una nota que el operador puso aparte debe
-    seguir aparte."""
+    (una nota escrita en el escritorio, o una continuación que BoHub escribió
+    antes de guardar la descripción entera). No suma y en pantalla se enseña
+    sin importes. NO se fusiona con la línea anterior al leer: una nota que el
+    operador puso aparte debe seguir aparte.
+
+    La descripción se lee con sus saltos de línea internos (`\r\n` → `\n`);
+    solo se quitan los espacios y saltos del principio y del final."""
     codart = str(row.get("ARTLPS") or "").strip() or None
     quantity = _num(row.get("CANLPS"))
     unit_price = _num(row.get("PRELPS"))
     return {
         "position": _int_or_none(row.get("POSLPS")) or 0,
         "codart": codart,
-        "description": str(row.get("DESLPS") or "").strip(),
+        # Los saltos de Windows (`\r\n`, como los guarda el escritorio y como
+        # los escribe BoHub) vuelven como `\n`: lo mismo que entrega el área
+        # de texto, así editar y volver a guardar no cambia nada.
+        "description": str(row.get("DESLPS") or "").replace("\r\n", "\n").strip(),
         "quantity": quantity,
         "unit_price": unit_price,
         "discount_pct": _num(row.get("DT1LPS")),
@@ -604,62 +616,6 @@ def _row_to_quote_line(row: dict[str, Any]) -> dict[str, Any]:
 class QuoteLineTooLongError(ValueError):
     """Una descripción no cabe ni repartida: el mensaje dice el límite y la
     línea. Es `ValueError` para que la API lo devuelva como 422."""
-
-
-def split_description(text: Any, limit: int = DESLPS_MAX_LENGTH) -> list[str]:
-    """Reparte una descripción en trozos de ≤ `limit` caracteres cortando por
-    espacios (una palabra más larga que el límite se parte). Nunca devuelve
-    trozos vacíos; un texto que cabe vuelve **tal cual** (con sus saltos de
-    línea y espacios: lo que ya se escribía antes se sigue escribiendo igual),
-    en un solo trozo. Solo lo que hay que repartir se normaliza a espacios
-    simples, para poder medir."""
-    original = str(text or "")
-    if len(original) <= limit:
-        return [original]
-    cleaned = " ".join(original.split())
-    if len(cleaned) <= limit:
-        return [cleaned]
-    chunks: list[str] = []
-    current = ""
-    for word in cleaned.split(" "):
-        while len(word) > limit:
-            if current:
-                chunks.append(current)
-                current = ""
-            chunks.append(word[:limit])
-            word = word[limit:]
-        candidate = f"{current} {word}" if current else word
-        if len(candidate) <= limit:
-            current = candidate
-        else:
-            chunks.append(current)
-            current = word
-    if current:
-        chunks.append(current)
-    return chunks
-
-
-def expand_long_lines(
-    lines: list[dict[str, Any]], limit: int = DESLPS_MAX_LENGTH,
-) -> list[dict[str, Any]]:
-    """Convierte las descripciones más largas que `limit` en la línea original
-    (con el primer trozo) + **líneas de continuación**: texto sin artículo,
-    cantidad 0 y precio 0, que no suman y que FACTUSOL pinta debajo. Las demás
-    líneas salen intactas. Nada se recorta."""
-    out: list[dict[str, Any]] = []
-    for line in lines:
-        chunks = split_description(line.get("description"), limit)
-        if len(chunks) == 1:
-            out.append(line)                 # cabe: la línea sale intacta
-            continue
-        out.append({**line, "description": chunks[0]})
-        for chunk in chunks[1:]:
-            out.append({
-                "codart": "", "description": chunk, "quantity": 0.0,
-                "unit_price": 0.0, "discount_pct": 0.0,
-                "iva_pct": line.get("iva_pct"), "continuation": True,
-            })
-    return out
 
 
 #: Tipos de IVA que existen en España. Cualquier otro valor en `IVALPS` no
@@ -903,13 +859,15 @@ def _cpapre(pais: Any) -> str:
     value = str(pais or "").strip()
     if value.isdigit() and len(value) == 3:
         return value
-    return (country_numeric(value) if value else None) or DEFAULT_CPAPRE
+    # `localized`: el país que la copia directa enseña por su nombre
+    # («Polonia») vuelve al mismo código al guardar.
+    return (country_numeric(value, localized=True) if value else None) or DEFAULT_CPAPRE
 
 
 def build_quote_payload(
     codpre: str, *, ejercicio: str, customer: dict[str, Any],
     refpre: str, lines: list[dict[str, Any]], fecha: str | None = None,
-    fopfac: str | None = None, portes: float = 0.0,
+    foppre: str | None = None, portes: float = 0.0,
     serie: Any = DEFAULT_TIPPRE,
 ) -> dict[str, Any]:
     """Registro F_PRE listo para `EscribirRegistro`.
@@ -920,10 +878,9 @@ def build_quote_payload(
     Solo columnas verificadas contra la base real. Las que no ponemos las deja
     FACTUSOL con sus defaults — no inventamos valores (la lección de C-3-fix1).
 
-    `portes` > 0 añade la banda de portes (`IPOR1PRE`) y la base imponible
-    (`BAS1PRE = NET1PRE + IPOR1PRE`), que es donde viven los gastos de envío
-    de los documentos web. Con `portes=0` (el caso de siempre) el registro
-    sale EXACTAMENTE igual que antes: ninguna columna nueva.
+    `BAS1PRE` (base imponible = `NET1PRE + IPOR1PRE`) se escribe siempre;
+    `portes` > 0 añade además la banda de portes (`IPOR1PRE`), que es donde
+    viven los gastos de envío de los documentos web.
     """
     totals = _totals(lines, regime=customer.get("regime"), portes=portes)
     payload: dict[str, Any] = {
@@ -942,6 +899,11 @@ def build_quote_payload(
         "CPAPRE": _cpapre(customer.get("pais")),
         "ALMPRE": DEFAULT_ALMPRE,
         "NET1PRE": totals["base"],
+        # Base imponible de la banda (neto + portes), SIEMPRE. Antes solo se
+        # escribía con portes y FACTUSOL la dejaba a 0: el PDF decía «Base
+        # imponible 0,00» con un total de 3.084 € (5-004361), y al convertir
+        # la base 0 pasaba al albarán y a la factura.
+        "BAS1PRE": totals["imponible"],
         "PIVA1PRE": totals["iva_pct"],
         "IIVA1PRE": totals["iva"],
         "TOTPRE": totals["total"],
@@ -950,7 +912,6 @@ def build_quote_payload(
         # Portes en la banda 1, la del IVA del documento: así siguen el
         # régimen del cliente y el PDF los pinta como los de los pedidos web.
         payload["IPOR1PRE"] = totals["portes"]
-        payload["BAS1PRE"] = totals["imponible"]
     # REFPRE = «Su ref.» del documento. Solo se escribe si el operador la
     # teclea. C-4 la auto-rellenaba con un resumen de las líneas
     # («1x UV INK; 1x test»), que desde C-4-fix3 es ruido duplicado: el
@@ -966,8 +927,9 @@ def build_quote_payload(
         # cualquier proforma con email (C-4-fix4). Verificado en la proforma
         # real 574: CEMPRE='direccio@fidelroca.cat'.
         payload["CEMPRE"] = str(customer["email"])[:255]
-    if fopfac:
-        payload["FOPPRE"] = str(fopfac)
+    if foppre:
+        # Forma de pago del PRESUPUESTO: `FOPPRE` (la de las facturas es FOPFAC).
+        payload["FOPPRE"] = str(foppre)
     return payload
 
 
@@ -985,16 +947,21 @@ def build_quote_line_payload(
     qty = _num(line.get("quantity"), 1.0)
     price = _num(line.get("unit_price"))
     discount = _num(line.get("discount_pct"))
-    # Tal cual llega (los saltos de línea y espacios de una descripción que
-    # cabe se respetan, como siempre): el reparto ya lo hizo `expand_long_lines`.
+    # Tal cual llega: la descripción entera, con sus saltos de línea y sus
+    # espacios (`DESLPS` es texto largo; ver `DESLPS_MAX_LENGTH`).
     description = str(line.get("description") or "")
     if len(description) > DESLPS_MAX_LENGTH:
-        # Nunca se recorta en silencio: quien escribe reparte antes con
-        # `expand_long_lines`; si llega algo más largo es un error de programa.
+        # Nunca se recorta en silencio: la API ya rechaza lo que pasa del tope
+        # (`QuoteBodyPayload`); si llega algo más largo es un error de programa.
         raise QuoteLineTooLongError(
             f"La descripción de la línea {position} tiene {len(description)} "
             f"caracteres y FACTUSOL admite {DESLPS_MAX_LENGTH} por línea."
         )
+    # Saltos de línea de Windows (`\r\n`): FACTUSOL de escritorio es una
+    # aplicación Windows y sus campos de texto los usan; el área de texto del
+    # navegador entrega `\n` a secas. Se normaliza DESPUÉS de medir: el tope es
+    # de caracteres escritos, no de bytes de fin de línea.
+    description = description.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\r\n")
     # ⚠️ IVALPS NO se escribe (C-4-fix5). No está confirmado si guarda el
     # porcentaje o el CÓDIGO de tipo de IVA (0=general, 1=reducido, …), y la
     # evidencia apunta a lo segundo: la proforma 574, que abre bien en el
@@ -1068,9 +1035,8 @@ def _write_quote_lines(
     """Escribe las líneas en F_LPS. Devuelve `(escritas, previstas, error)`
     —el mensaje de FACTUSOL de la primera línea que falló, o None—.
 
-    Las descripciones más largas que `DESLPS_MAX_LENGTH` se reparten antes en
-    líneas de continuación (`expand_long_lines`), así que `previstas` puede
-    ser mayor que `len(lines)`: es el nº real de filas de F_LPS.
+    Cada línea es UNA fila de F_LPS con la descripción entera (ver
+    `DESLPS_MAX_LENGTH`): ya no hay líneas de continuación.
 
     Se devuelve el error, además de dejarlo en el log, porque una proforma que
     guarda la cabecera pero PIERDE las líneas es invisible para el operador
@@ -1091,8 +1057,6 @@ def _write_quote_lines(
     devuelve el recuento real para que la UI avise. Misma política que la
     caché en C-4, ahora sobre la tabla buena.
     """
-    # Descripciones largas → líneas de continuación. Nada se recorta.
-    lines = expand_long_lines(lines)
     try:
         codarts = resolve_codarts(
             client, [line.get("codart") for line in lines], ejercicio=ejercicio,
@@ -1144,7 +1108,7 @@ def create_quote(
     client: FactusolClient, session: Session, *, ejercicio: str,
     customer: dict[str, Any], lines: list[dict[str, Any]],
     referencia: str | None = None, fecha: str | None = None,
-    fopfac: str | None = None, portes: float = 0.0,
+    foppre: str | None = None, portes: float = 0.0,
     serie: Any = DEFAULT_TIPPRE,
 ) -> dict[str, Any]:
     """Crea la proforma: cabecera en `F_PRE` + una fila por línea en `F_LPS`.
@@ -1182,7 +1146,7 @@ def create_quote(
     codpre = next_codpre(client, ejercicio, serie)
     payload = build_quote_payload(
         codpre, ejercicio=ejercicio, customer=customer, refpre=refpre,
-        lines=lines, fecha=fecha, fopfac=fopfac, portes=portes, serie=serie,
+        lines=lines, fecha=fecha, foppre=foppre, portes=portes, serie=serie,
     )
     try:
         client.write_record(TABLE_QUOTES, payload, ejercicio=ejercicio)
@@ -1293,12 +1257,12 @@ def update_quote(
     client: FactusolClient, codpre: str, *, ejercicio: str,
     customer: dict[str, Any], lines: list[dict[str, Any]],
     referencia: str | None = None, force: bool = False,
-    portes: float = 0.0, serie: Any = None, fopfac: str | None = None,
+    portes: float = 0.0, serie: Any = None, foppre: str | None = None,
 ) -> dict[str, Any]:
     """Reescribe una proforma: cabecera con `ActualizarRegistro` y líneas
     borradas + vueltas a escribir.
 
-    `fopfac` (punto E): forma de pago (`FOPPRE`, código de F_FPA). El modal la
+    `foppre` (punto E): forma de pago (`FOPPRE`, código de F_FPA). El modal la
     precarga con la que tiene la proforma, así que si llega vacía y la fila
     tenía una, es que el operador la quitó: se escribe en blanco (igual que
     los portes; `ActualizarRegistro` solo toca lo que se envía).
@@ -1345,7 +1309,7 @@ def update_quote(
     header = build_quote_payload(
         str(codpre), ejercicio=ejercicio, customer=customer,
         refpre=(referencia or "").strip(), lines=lines, portes=portes,
-        serie=propia, fopfac=(fopfac or "").strip() or None,
+        serie=propia, foppre=(foppre or "").strip() or None,
     )
     if "IPOR1PRE" not in header and _num(row.get("IPOR1PRE")):
         header["IPOR1PRE"] = 0.0

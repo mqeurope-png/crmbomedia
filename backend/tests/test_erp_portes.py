@@ -211,13 +211,14 @@ def test_emision_portes_sigue_regimen(session_factory, engine) -> None:
 
 
 def test_build_quote_payload_sin_portes_no_añade_columnas() -> None:
-    """Sin portes el registro sale idéntico al de siempre (ni `IPOR1PRE` ni
-    `BAS1PRE`): una columna de más tumba el EscribirRegistro entero."""
+    """Sin portes no hay banda de portes (`IPOR1PRE`), pero la base imponible
+    (`BAS1PRE`, columna ya verificada) va siempre: sin ella FACTUSOL la deja a
+    0 y el PDF imprimía «Base imponible 0,00» (5-004361)."""
     customer = {"codcli": "2458", "nombre": "X", "pais": "ES"}
     lines = [{"quantity": 2, "unit_price": 40.0, "iva_pct": 21.0}]
     sin = build_quote_payload("1", ejercicio="2026", customer=customer,
                               refpre="", lines=lines)
-    assert "IPOR1PRE" not in sin and "BAS1PRE" not in sin
+    assert "IPOR1PRE" not in sin and sin["BAS1PRE"] == 80.0
     assert sin["NET1PRE"] == 80.0 and sin["TOTPRE"] == 96.8
 
     con = build_quote_payload("1", ejercicio="2026", customer=customer,

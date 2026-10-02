@@ -74,6 +74,7 @@ export function DocumentLinesTable({
   addLabel = "+ Añadir línea",
   skuPlaceholder,
   descriptionPlaceholder,
+  multilineDescription = false,
   footer,
 }: {
   lines: DocumentLine[];
@@ -88,6 +89,9 @@ export function DocumentLinesTable({
   addLabel?: string;
   skuPlaceholder?: string;
   descriptionPlaceholder?: string;
+  /** Descripción en área de texto (con saltos de línea): la proforma, cuya
+   *  `DESLPS` guarda la descripción entera tal cual. */
+  multilineDescription?: boolean;
   /** Lo que va en la fila de pie junto a «+ Añadir línea» (fecha, portes…). */
   footer?: React.ReactNode;
 }) {
@@ -176,6 +180,7 @@ export function DocumentLinesTable({
                   enabled={isAc(i, "description")}
                   ariaLabel={`Descripción línea ${i + 1}`}
                   placeholder={descriptionPlaceholder}
+                  multiline={multilineDescription}
                   onChange={(v) => update(i, "description", v)}
                   onPick={(a) => applyArticle(i, a)}
                 />

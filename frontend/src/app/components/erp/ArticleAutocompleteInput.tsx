@@ -5,6 +5,13 @@ import { searchFactusolArticles, type FactusolArticle } from "../../lib/erpApi";
 
 const DEBOUNCE_MS = 300;
 const MIN_CHARS = 2;
+/** En el área de texto (descripción de proforma) solo se busca artículo
+ *  mientras parece un nombre de artículo: un texto de varias líneas o largo es
+ *  una descripción escrita, no una búsqueda (y elegir una sugerencia la
+ *  sustituiría entera). */
+const MULTILINE_SEARCH_MAX = 80;
+/** Caracteres por renglón para estimar el alto del área de texto. */
+const CHARS_PER_ROW = 60;
 
 /** Input de texto con autocomplete contra el catálogo F_ART (C-4-fix2).
  *
@@ -22,6 +29,7 @@ export function ArticleAutocompleteInput({
   enabled = true,
   ariaLabel,
   placeholder,
+  multiline = false,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -29,6 +37,10 @@ export function ArticleAutocompleteInput({
   enabled?: boolean;
   ariaLabel: string;
   placeholder?: string;
+  /** Área de texto en vez de input: la descripción de una línea de proforma
+   *  admite saltos de línea (FACTUSOL los guarda en `DESLPS`) y un `<input>`
+   *  los borra en cuanto se toca el campo. */
+  multiline?: boolean;
 }) {
   const [hits, setHits] = useState<FactusolArticle[]>([]);
   const [open, setOpen] = useState(false);
@@ -36,8 +48,10 @@ export function ArticleAutocompleteInput({
   // Evita que la escritura provocada por elegir un artículo relance la búsqueda.
   const skipNext = useRef(false);
 
+  const searchable = !multiline
+    || (!value.includes("\n") && value.length <= MULTILINE_SEARCH_MAX);
   useEffect(() => {
-    if (!enabled || value.trim().length < MIN_CHARS) {
+    if (!enabled || !searchable || value.trim().length < MIN_CHARS) {
       setHits([]);
       setOpen(false);
       return;
@@ -59,7 +73,7 @@ export function ArticleAutocompleteInput({
         .finally(() => { if (alive) setLoading(false); });
     }, DEBOUNCE_MS);
     return () => { alive = false; window.clearTimeout(handle); };
-  }, [enabled, value]);
+  }, [enabled, searchable, value]);
 
   function pick(article: FactusolArticle) {
     skipNext.current = true;
@@ -70,18 +84,34 @@ export function ArticleAutocompleteInput({
 
   return (
     <div className="erp-article-ac">
-      <input
-        type="text"
-        value={value}
-        aria-label={ariaLabel}
-        placeholder={placeholder}
-        autoComplete="off"
-        onChange={(e) => onChange(e.target.value)}
-        // El blur se retrasa: si no, el input se cierra antes de que el clic
-        // en la sugerencia llegue a dispararse.
-        onBlur={() => window.setTimeout(() => setOpen(false), 150)}
-        onFocus={() => setOpen(hits.length > 0)}
-      />
+      {multiline ? (
+        <textarea
+          value={value}
+          aria-label={ariaLabel}
+          placeholder={placeholder}
+          autoComplete="off"
+          // Crece con el texto (hasta 8 renglones; luego, barra de desplazamiento).
+          rows={Math.min(8, Math.max(1, value.split("\n").reduce(
+            (n, line) => n + Math.max(1, Math.ceil(line.length / CHARS_PER_ROW)), 0,
+          )))}
+          onChange={(e) => onChange(e.target.value)}
+          onBlur={() => window.setTimeout(() => setOpen(false), 150)}
+          onFocus={() => setOpen(hits.length > 0)}
+        />
+      ) : (
+        <input
+          type="text"
+          value={value}
+          aria-label={ariaLabel}
+          placeholder={placeholder}
+          autoComplete="off"
+          onChange={(e) => onChange(e.target.value)}
+          // El blur se retrasa: si no, el input se cierra antes de que el clic
+          // en la sugerencia llegue a dispararse.
+          onBlur={() => window.setTimeout(() => setOpen(false), 150)}
+          onFocus={() => setOpen(hits.length > 0)}
+        />
+      )}
       {enabled && open ? (
         <ul className="erp-article-ac-list" role="listbox"
             aria-label={`Artículos para ${ariaLabel}`}>

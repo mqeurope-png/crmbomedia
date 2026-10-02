@@ -340,6 +340,20 @@ describe("FactusolDocumentDetailModal (E3-B)", () => {
     ).toBeInTheDocument();
   });
 
+  it("enseña el país del cliente por su nombre, no el código de FACTUSOL", async () => {
+    mockDetail.mockResolvedValue(presupuesto({
+      cliente_pais: "276", cliente_pais_nombre: "Alemania",
+    }));
+    render(
+      <FactusolDocumentDetailModal
+        docType="presupuestos" serie={5} codigo={27} onClose={() => {}}
+      />,
+    );
+    expect(await screen.findByText("Alemania")).toBeInTheDocument();
+    expect(screen.getByText("País")).toBeInTheDocument();
+    expect(screen.queryByText("276")).not.toBeInTheDocument();
+  });
+
   it("sin rol de edición no hay botones de crear", async () => {
     mockUser.mockResolvedValue({ role: "user" });
     render(

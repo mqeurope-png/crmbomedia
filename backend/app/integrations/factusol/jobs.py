@@ -719,14 +719,19 @@ def enqueue_change_order_serie(
 def create_quote_job(
     customer: dict[str, Any], lines: list[dict[str, Any]],
     referencia: str | None = None, fecha: str | None = None,
-    fopfac: str | None = None, portes: float = 0.0, serie: int = 1,
+    foppre: str | None = None, portes: float = 0.0, serie: int = 1,
+    fopfac: str | None = None,
 ) -> dict[str, Any]:
     """Crea la proforma en F_PRE (cabecera + líneas F_LPS). `portes` (Lote
     B3b) van a la banda IPOR1PRE de la cabecera, no como línea.
 
     `serie` es la empresa emisora (`TIPPRE`). Va al final y con default 1 a
     propósito: un job encolado ANTES del despliegue llega sin ella y sigue
-    creando la proforma en Bomedia, como hasta ahora."""
+    creando la proforma en Bomedia, como hasta ahora.
+
+    `foppre`: forma de pago de la cabecera (`F_PRE.FOPPRE`). `fopfac` es el
+    nombre con el que la encolaba #507 (el de las facturas): se acepta solo
+    para que un job encolado antes del despliegue no falle."""
     from sqlalchemy.orm import Session  # noqa: PLC0415
 
     from app.db.session import get_engine  # noqa: PLC0415
@@ -738,7 +743,7 @@ def create_quote_job(
         result = create_quote(
             client, session, ejercicio=ejercicio_for(session),
             customer=customer, lines=lines, referencia=referencia,
-            fecha=fecha, fopfac=fopfac, portes=portes, serie=serie,
+            fecha=fecha, foppre=foppre or fopfac, portes=portes, serie=serie,
         )
     logger.info("factusol: proforma creada codpre=%s serie=%s",
                 result.get("codpre"), result.get("serie"))
@@ -748,13 +753,17 @@ def create_quote_job(
 def update_quote_job(
     codpre: str, customer: dict[str, Any], lines: list[dict[str, Any]],
     referencia: str | None = None, force: bool = False, portes: float = 0.0,
-    serie: int | None = None, fopfac: str | None = None,
+    serie: int | None = None, foppre: str | None = None,
+    fopfac: str | None = None,
 ) -> dict[str, Any]:
     """Reescribe cabecera + líneas de una proforma existente.
 
     `serie` IDENTIFICA cuál (la clave de F_PRE es serie + número); no la
     cambia. Va al final y opcional para que un job encolado antes del
-    despliegue siga funcionando. `fopfac` (forma de pago, punto E) igual."""
+    despliegue siga funcionando.
+
+    `foppre`: forma de pago (`F_PRE.FOPPRE`); vacía la quita. `fopfac` es el
+    nombre antiguo (#507), aceptado solo para los jobs ya encolados."""
     from sqlalchemy.orm import Session  # noqa: PLC0415
 
     from app.db.session import get_engine  # noqa: PLC0415
@@ -766,7 +775,8 @@ def update_quote_job(
         result = update_quote(
             client, codpre, ejercicio=ejercicio_for(session),
             customer=customer, lines=lines, referencia=referencia, force=force,
-            portes=portes, serie=serie, fopfac=fopfac,
+            portes=portes, serie=serie,
+            foppre=foppre if foppre is not None else fopfac,
         )
     logger.info("factusol: proforma %s actualizada", codpre)
     return result
@@ -831,24 +841,24 @@ def convert_quote_to_order_job(
 def enqueue_create_quote(
     customer: dict[str, Any], lines: list[dict[str, Any]],
     referencia: str | None = None, fecha: str | None = None,
-    fopfac: str | None = None, portes: float = 0.0, serie: int = 1,
+    foppre: str | None = None, portes: float = 0.0, serie: int = 1,
 ) -> str:
     return _enqueue(
         "app.integrations.factusol.jobs.create_quote_job",
         customer=customer, lines=lines, referencia=referencia, fecha=fecha,
-        fopfac=fopfac, portes=portes, serie=serie,
+        foppre=foppre, portes=portes, serie=serie,
     )
 
 
 def enqueue_update_quote(
     codpre: str, customer: dict[str, Any], lines: list[dict[str, Any]],
     referencia: str | None = None, force: bool = False, portes: float = 0.0,
-    serie: int | None = None, fopfac: str | None = None,
+    serie: int | None = None, foppre: str | None = None,
 ) -> str:
     return _enqueue(
         "app.integrations.factusol.jobs.update_quote_job",
         codpre=codpre, customer=customer, lines=lines, referencia=referencia,
-        force=force, portes=portes, serie=serie, fopfac=fopfac,
+        force=force, portes=portes, serie=serie, foppre=foppre,
     )
 
 

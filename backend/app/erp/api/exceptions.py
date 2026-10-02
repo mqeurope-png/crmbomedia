@@ -33,6 +33,7 @@ from app.db.session import get_session
 from app.erp.api.deps import (
     ERP_ADMIN_ROLES,
     require_config,
+    require_email_client,
     require_erp_edit,
     require_erp_view,
 )
@@ -996,6 +997,65 @@ def preview_quote_email_template(
         "from_alias_scope": scope,
         "sample": dict(SAMPLE_QUOTE_EMAIL),
     }
+
+
+@router.get("/contacts/search")
+def search_crm_contacts(
+    q: str = Query(min_length=2, max_length=100),
+    limit: int = Query(default=10, ge=1, le=25),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_email_client),
+) -> dict[str, Any]:
+    """Remates de proformas (punto 3): buscar CUALQUIER contacto del CRM con
+    email para añadirlo a «Para» / «CC» al enviar un documento por email.
+
+    Los perfiles de solo-ERP no pueden usar `/api/contacts` (ámbito CRM), así
+    que esta búsqueda vive en el ERP y devuelve lo justo: id, nombre, email y
+    empresa. Cada palabra tiene que aparecer en el nombre, los apellidos, el
+    email o la empresa; solo contactos activos con un email utilizable."""
+    from sqlalchemy import or_  # noqa: PLC0415
+
+    from app.models.crm import Company, Contact  # noqa: PLC0415
+
+    _ = current_user
+    tokens = [t for t in q.split() if len(t) >= 2][:5]
+    if not tokens:
+        # «  » o «a b»: sin ninguna palabra útil no se lista el CRM entero.
+        raise HTTPException(422, {
+            "code": "query_too_short",
+            "detail": "Escribe al menos 2 letras del nombre, el email o la empresa.",
+        })
+    stmt = (
+        select(Contact, Company.name)
+        .outerjoin(Company, Company.id == Contact.company_id)
+        .where(
+            Contact.is_active.is_(True),
+            Contact.is_email_valid.is_(True),
+            Contact.email.isnot(None),
+            Contact.email != "",
+        )
+    )
+    for token in tokens:
+        like = "%" + token.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        stmt = stmt.where(or_(
+            Contact.first_name.ilike(like, escape="\\"),
+            Contact.last_name.ilike(like, escape="\\"),
+            Contact.email.ilike(like, escape="\\"),
+            Company.name.ilike(like, escape="\\"),
+        ))
+    rows = session.execute(
+        stmt.order_by(Contact.first_name.asc(), Contact.last_name.asc()).limit(limit)
+    ).all()
+    items = []
+    for contact, company_name in rows:
+        name = " ".join(p for p in (contact.first_name, contact.last_name) if p).strip()
+        items.append({
+            "id": contact.id,
+            "name": name or contact.email,
+            "email": contact.email,
+            "company_name": company_name,
+        })
+    return {"items": items}
 
 
 @router.post("/settings/quote-email/test-send", status_code=201)

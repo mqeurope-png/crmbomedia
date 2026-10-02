@@ -164,3 +164,44 @@ describe("DocumentLinesTable", () => {
     expect(within(foot).getByLabelText("Portes")).toBeInTheDocument();
   });
 });
+
+describe("DocumentLinesTable — descripción de varias líneas (remates · punto 5)", () => {
+  it("con `multilineDescription` la descripción es un área de texto que conserva los saltos de línea", async () => {
+    const user = userEvent.setup();
+    const onLines = jest.fn();
+    render(
+      <Harness
+        multilineDescription
+        articleSearch={false}
+        onLines={onLines}
+        initial={[emptyDocumentLine({ description: "1 Jahr Garantie.\nOhne Druckkopf." })]}
+      />,
+    );
+    const desc = screen.getByLabelText("Descripción línea 1");
+    expect(desc.tagName).toBe("TEXTAREA");
+    expect(desc).toHaveValue("1 Jahr Garantie.\nOhne Druckkopf.");
+    await user.type(desc, "{enter}Transport inklusive");
+    expect(onLines).toHaveBeenLastCalledWith([
+      expect.objectContaining({
+        description: "1 Jahr Garantie.\nOhne Druckkopf.\nTransport inklusive",
+      }),
+    ]);
+  });
+
+  it("una descripción de varias líneas o larga no lanza la búsqueda de artículos", async () => {
+    const user = userEvent.setup();
+    render(<Harness multilineDescription />);
+    const desc = screen.getByLabelText("Descripción línea 1");
+    await user.type(desc, "Garantie{enter}12 Monate");
+    await new Promise((r) => setTimeout(r, 400));
+    expect(mockArticles).not.toHaveBeenCalled();
+    await user.clear(desc);
+    await user.type(desc, "CD TQ");
+    await waitFor(() => expect(mockArticles).toHaveBeenCalledWith("CD TQ"));
+  });
+
+  it("sin la opción sigue siendo un campo de una línea (pedido manual)", () => {
+    render(<Harness articleSearch={false} />);
+    expect(screen.getByLabelText("Descripción línea 1").tagName).toBe("INPUT");
+  });
+});

@@ -217,7 +217,7 @@ function QuoteLinesPanel({
           {lines.map((l) => (
             <tr key={l.position}>
               <td className="mono">{l.sku ?? l.codart ?? "—"}</td>
-              <td>{l.description || "—"}</td>
+              <td className="erp-line-desc">{l.description || "—"}</td>
               <td className="num">{l.quantity}</td>
               <td className="num">{l.unit_price.toFixed(2)} €</td>
               <td className="num">{l.iva_pct}%</td>

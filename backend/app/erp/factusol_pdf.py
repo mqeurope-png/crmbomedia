@@ -47,6 +47,7 @@ from sqlalchemy.orm import Session
 
 from app.erp.language import (
     SUPPORTED_LANGS,
+    country_display_name,
     language_for_country,
 )
 from app.integrations.factusol.client import FactusolClient, FactusolError
@@ -461,8 +462,22 @@ COMPANY_DEFAULTS: dict[int, dict[str, Any]] = {
         "legal": {
             "es": "El material suministrado es propiedad de BOMEDIA S.L. "
                   "hasta recibir la totalidad del pago correspondiente.",
+            "en": "The goods supplied remain the property of BOMEDIA S.L. "
+                  "until full payment has been received.",
+            "de": "Die gelieferte Ware bleibt bis zur vollständigen Bezahlung "
+                  "Eigentum der BOMEDIA S.L.",
+            "fr": "Le matériel fourni reste la propriété de BOMEDIA S.L. "
+                  "jusqu'au paiement intégral.",
+            "nl": "De geleverde goederen blijven eigendom van BOMEDIA S.L. "
+                  "tot volledige betaling is ontvangen.",
         },
-        "pie": {"es": "CONDICIONES GENERALES EN WWW.BOMEDIA.NET"},
+        "pie": {
+            "es": "CONDICIONES GENERALES EN WWW.BOMEDIA.NET",
+            "en": "GENERAL TERMS AND CONDITIONS AT WWW.BOMEDIA.NET",
+            "de": "ALLGEMEINE GESCHÄFTSBEDINGUNGEN AUF WWW.BOMEDIA.NET",
+            "fr": "CONDITIONS GÉNÉRALES SUR WWW.BOMEDIA.NET",
+            "nl": "ALGEMENE VOORWAARDEN OP WWW.BOMEDIA.NET",
+        },
         "intracom": {},
         # E4-fix1 Parte C: la variante VALORADA del albarán de Bomedia se
         # titula «ALBARÁN DE ENTREGA» (modelo A-115). Configurable.
@@ -489,8 +504,14 @@ COMPANY_DEFAULTS: dict[int, dict[str, Any]] = {
         ],
         "legal": {},
         "pie": {},
+        # Un texto por idioma del documento: antes solo había el español y
+        # un PDF en alemán lo imprimía en castellano (5-004361).
         "intracom": {
             "es": "Entrega intracomunitaria, o exportación exenta de IVA",
+            "en": "Intra-Community supply, or export exempt from VAT",
+            "de": "Innergemeinschaftliche Lieferung bzw. steuerfreie Ausfuhr",
+            "fr": "Livraison intracommunautaire, ou exportation exonérée de TVA",
+            "nl": "Intracommunautaire levering, of uitvoer vrijgesteld van btw",
         },
         "titulo_albaran_valorado": {},
     },
@@ -801,6 +822,15 @@ def extract_document_data(
             "fin": b("IFIN"), "base": b("BAS"), "piva": b("PIVA"),
             "iva": b("IIVA"), "prec": b("PREC"), "rec": b("IREC"),
         }
+        if abs(band["base"]) < 0.005:
+            # Base vacía con importes en la banda: las proformas que BoHub
+            # creaba sin portes no escribían `BAS1PRE` (FACTUSOL la deja a 0)
+            # y el pie decía «Base imponible 0,00» con un total de 3.084 €
+            # (5-004361). La base es la de FACTUSOL: neto − descuento −
+            # pronto pago + portes + financiación.
+            band["base"] = round(
+                band["neto"] - band["dto"] - b("IPPA") + band["portes"] + band["fin"], 2,
+            )
         if any(abs(v) > 0.004 for k, v in band.items() if k != "exenta"):
             bands.append(band)
 
@@ -887,10 +917,15 @@ def extract_document_data(
         for piva, amount in by_piva.items():
             charges.append({"kind": kind, "piva": piva, "amount": amount})
 
+    # Sin forma de pago en el documento (FOP* vacío) la casilla sale «—». Antes
+    # el código vacío se convertía en «0» y casaba con la forma 0 de F_FPA:
+    # una proforma SIN forma de pago imprimía «SC Sin cargo» (5-004361).
     fop_code = _clean(h("FOP"))
-    fop = (fop_names or {}).get(fop_code) or (fop_names or {}).get(
-        fop_code.lstrip("0") or "0"
-    ) or fop_code
+    fop = ""
+    if fop_code:
+        fop = (fop_names or {}).get(fop_code) or (fop_names or {}).get(
+            fop_code.lstrip("0") or "0"
+        ) or fop_code
 
     return {
         "doc_type": doc_type,
@@ -1023,6 +1058,12 @@ def generate_document_pdf(
         valued = False
     title = _title_for(doc_type, variant, lab, company, lang)
     doc_label = lab[f"doc_{doc_type}"]
+    # País del cliente con su NOMBRE en el idioma del documento: FACTUSOL
+    # guarda el código numérico (CPA* = 276) y el PDF imprimía «Bavière 276».
+    data = {**data, "cliente": {
+        **data["cliente"],
+        "pais": country_display_name(data["cliente"].get("pais"), lang),
+    }}
     if doc_type == "albaranes":
         # Bloque 5a: el albarán (normal, valorado o de devolución) NO lleva
         # datos bancarios en ningún modelo ni idioma; el banco va en la factura.
@@ -1161,7 +1202,8 @@ def _draw_header(
         cli["nombre"],
         cli["domicilio"],
         " ".join(x for x in (cli["cp"], cli["poblacion"]) if x),
-        " ".join(x for x in (cli["provincia"], cli["pais"]) if x),
+        cli["provincia"],
+        cli["pais"],
         cli["telefono"],
     ]
     cy = top - 32 * mm
@@ -1174,8 +1216,16 @@ def _draw_header(
             cv, cy, lab["direccion_recogida"], recogida, size=7.6,
         )
         cy -= 2 * mm
+        # Compacto: provincia y país en una línea («Bavière, Deutschland»)
+        # para que las dos direcciones sigan cabiendo sobre la fila del NIF.
+        compact = [
+            cli["nombre"], cli["domicilio"],
+            " ".join(x for x in (cli["cp"], cli["poblacion"]) if x),
+            ", ".join(x for x in (cli["provincia"], cli["pais"]) if x),
+            cli["telefono"],
+        ]
         cy = _draw_address_block(
-            cv, cy, lab["direccion_entrega"], cli_lines, size=7.6,
+            cv, cy, lab["direccion_entrega"], compact, size=7.6,
         )
     else:
         cv.setFont(FONT_BOLD, 8)

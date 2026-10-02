@@ -10930,6 +10930,9 @@ tr.is-inactive {
 /* C-4-fix2: autocomplete F_ART reutilizable (modal proforma + pedido manual). */
 .erp-article-ac { position: relative; }
 .erp-article-ac input { width: 100%; }
+.erp-article-ac textarea { width: 100%; resize: vertical; font: inherit; line-height: 1.35; }
+/* Descripción de línea con sus saltos de línea (DESLPS entera, punto 5). */
+.erp-line-desc { white-space: pre-line; overflow-wrap: anywhere; }
 .erp-article-ac-list { position: absolute; z-index: 30; top: 100%; left: 0; right: 0; list-style: none; margin: 4px 0 0; padding: 4px; max-height: 260px; overflow-y: auto; background: #fff; border: 1px solid var(--line); border-radius: var(--r-control); box-shadow: 0 8px 24px rgba(15, 23, 42, .12); min-width: 320px; }
 
 /* Deduplicar empresas por CIF (Fase C · C-7). Cada grupo es una tarjeta
@@ -12538,6 +12541,9 @@ input[type="radio"]:focus-visible {
 }
 .erp-contacts-list > .erp-contact-row:first-child { border-top: 0; padding-top: 0; }
 .erp-contact-row.is-disabled { opacity: 0.6; }
+/* Remates · punto 3: buscador de contactos del CRM y los añadidos. */
+.erp-crm-search { display: flex; flex-direction: column; gap: 4px; }
+ul.erp-crm-search-hits, ul.erp-crm-picks { list-style: none; margin: 0 0 8px; padding: 0; }
 .erp-contact-check {
   display: flex;
   align-items: flex-start;
@@ -14051,6 +14057,7 @@ table.erp-doc-lines { width: 100%; table-layout: fixed; }
 .erp-doc-lines td { vertical-align: middle; }
 .erp-doc-lines td { padding-top: var(--sp-1); padding-bottom: var(--sp-1); }
 .erp-doc-lines input { width: 100%; min-width: 0; min-height: var(--control-h); border-radius: var(--r-control); }
+.erp-doc-lines textarea { width: 100%; min-width: 0; min-height: var(--control-h); border-radius: var(--r-control); padding: 6px 8px; }
 .erp-doc-lines td.num input { font-family: var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; }
 .erp-doc-lines td.erp-doc-total { font-family: var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .erp-doc-lines td.erp-doc-del { text-align: right; }

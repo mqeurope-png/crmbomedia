@@ -90,6 +90,13 @@ def inspect_table(client: Any, ejercicio: str) -> None:
     print(f"   DESLPS: máx {max(lens)} | >255: {sum(1 for n in lens if n > 255)} "
           f"| >100: {sum(1 for n in lens if n > 100)}")
     print(f"   MEMLPS con texto: {sum(1 for n in mems if n)} | máx {max(mems)}")
+    textos = [_text(r.get("DESLPS")) for r in rows]
+    crlf = sum(1 for t in textos if "\r\n" in t)
+    solo_lf = sum(1 for t in textos if "\n" in t.replace("\r\n", ""))
+    # Qué saltos de línea usa el escritorio (BoHub escribe \r\n desde los
+    # remates de proformas): si aquí sale «solo \n» en las del escritorio,
+    # hay que revisar la normalización de `build_quote_line_payload`.
+    print(f"   saltos de línea en DESLPS: con \\r\\n {crlf} | solo \\n {solo_lf}")
     print(f"   líneas sin artículo: {len(sin_art)} | de ellas con CANLPS=0: "
           f"{sum(1 for r in sin_art if _num(r.get('CANLPS')) == 0)}")
     print("   5 DESLPS más largas:")

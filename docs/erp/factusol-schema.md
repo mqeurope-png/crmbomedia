@@ -185,7 +185,7 @@ como líneas de presupuesto) eran candidatos y resultaron ser incorrectos.
 | `CODLPS` | FK a `F_PRE.CODPRE`. |
 | `POSLPS` | Orden de la línea dentro del presupuesto. |
 | `ARTLPS` | Código de artículo (`F_ART.CODART`). **Vacío** en líneas de texto libre. |
-| `DESLPS` | Descripción. BoHub escribe como máximo `DESLPS_MAX_LENGTH` (255, el límite conocido seguro) por fila y reparte lo que sobra en **líneas de continuación** (fila sin artículo, cantidad 0, precio 0). La longitud real de la columna se mide con `scripts/factusol_discover_line_lengths.py`. |
+| `DESLPS` | Descripción. Texto largo con saltos de línea: en producción hay líneas de hasta 733 caracteres (`scripts/factusol_discover_line_lengths.py`, 02/10/2026). BoHub escribe la descripción **entera** en una fila (tope de BoHub: 2000). `MEMLPS` está vacío en toda la tabla. |
 | `CANLPS` | Cantidad. |
 | `DT1LPS` / `DT2LPS` / `DT3LPS` | Descuentos en %. |
 | `PRELPS` | Precio unitario. |
@@ -260,11 +260,11 @@ configurar», no artículo gratis: el adaptador lo trata como ausente.
 | `CPAPRE` | País ISO numérico (`'724'` = España). |
 | `ALMPRE` | Almacén (`'GEN'`). |
 | `TIVPRE` | Tipo de IVA del documento. |
-| `NET1PRE` / `BAS1PRE` | Base imponible banda 1. |
+| `NET1PRE` / `BAS1PRE` | Neto y base imponible de la banda 1 (`BAS1PRE` = neto + portes). BoHub escribe `BAS1PRE` siempre; sin ella FACTUSOL la deja a 0. |
 | `PIVA1PRE` / `IIVA1PRE` | % e importe de IVA banda 1. |
 | `PREC1PRE` / `IREC1PRE` | % e importe de recargo de equivalencia banda 1. |
 | `TOTPRE` | Total del presupuesto. |
-| `FOPPRE` | Forma de pago (F_FOP). |
+| `FOPPRE` | Forma de pago del presupuesto (código de `F_FPA`; la de las facturas es `FOPFAC`). Vacía = sin forma de pago. |
 | `USUPRE` / `USMPRE` / `FUMPRE` / `HORPRE` | Auditoría de FACTUSOL. |
 
 Existen además las bandas 2/3/4 (`NET2PRE`, `PIVA2PRE`, …) y ~92 columnas más.

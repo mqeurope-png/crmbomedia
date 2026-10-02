@@ -1262,3 +1262,107 @@ def test_annotate_delivery_recipient(session_factory) -> None:
         data = _albaran_dropship_data()
         assert annotate_delivery_recipient(s, data, client=fcli, ejercicio="2026") is None
         assert "nombre_fiscal" not in data["cliente"]
+
+
+# ---------------------------------------------------------------------------
+# Remates de proformas — el PDF de la 5-004361 (BRAHMON UG, alemán)
+# ---------------------------------------------------------------------------
+
+
+def _brahmon(**over: Any) -> tuple[dict, list[dict]]:
+    """Proforma intracomunitaria como la 5-004361: 3.000 + transporte 120 con
+    un 30 % de descuento (84), sin forma de pago, país 276 y SIN `BAS1PRE`
+    (BoHub no la escribía si no había portes)."""
+    header = _header(
+        "presupuestos", TIPPRE="5", CODPRE=4361,
+        CNOPRE="BRAHMON UG (haftungsbeschränkt)", CDOPRE="Hauptstraße 1",
+        CCPPRE="80331", CPOPRE="München", CPRPRE="Bavière", CPAPRE="276",
+        FOPPRE="", NET1PRE=3084.0, BAS1PRE=0.0, PIVA1PRE=0.0, IIVA1PRE=0.0,
+        TOTPRE=3084.0, OB1PRE="", OB2PRE="",
+    )
+    header.update(over)
+    lines = [
+        _linea("presupuestos", 1, ARTLPS="", DESLPS="Artis Young UV LED Drucker",
+               CANLPS=1, PRELPS=3000.0, DT1LPS=0, TOTLPS=3000.0),
+        _linea("presupuestos", 2, ARTLPS="", DESLPS="Transport",
+               CANLPS=1, PRELPS=120.0, DT1LPS=30, TOTLPS=84.0),
+    ]
+    return header, lines
+
+
+def _pdf_con_forma_cero(header: dict, lines: list[dict], lang: str) -> tuple[bytes, dict]:
+    """F_FPA real tiene una forma con código 0 («SC Sin cargo»): es la que
+    casaba con el código VACÍO."""
+    data = extract_document_data(
+        _alb_resolver(), "presupuestos", header, lines, ejercicio="2026",
+        fop_names={"0": "SC Sin cargo", "000": "SC Sin cargo", "002": "Transferencia"},
+    )
+    return generate_document_pdf(data, company=dict(COMPANY_DEFAULTS[5]), lang=lang), data
+
+
+def test_presupuesto_sin_forma_de_pago_no_imprime_sin_cargo() -> None:
+    header, lines = _brahmon()
+    pdf, data = _pdf_con_forma_cero(header, lines, "de")
+    assert data["forma_pago"] == ""
+    text = _texto(pdf)
+    assert "Sin cargo" not in text and "SC " not in text
+    assert "ZAHLUNGSBEDINGUNGEN" in text
+    # Con forma de pago, sale su nombre como siempre.
+    header2, _ = _brahmon(FOPPRE="002")
+    _, data2 = _pdf_con_forma_cero(header2, lines, "de")
+    assert data2["forma_pago"] == "Transferencia"
+
+
+def test_presupuesto_pais_por_nombre_en_su_linea_y_en_el_idioma() -> None:
+    header, lines = _brahmon()
+    pdf_de, _ = _pdf_con_forma_cero(header, lines, "de")
+    text = _texto(pdf_de)
+    assert "Deutschland" in text
+    assert "276" not in text
+    lineas = text.splitlines()
+    assert "Bavière" in lineas and "Deutschland" in lineas   # cada uno en su línea
+    pdf_es, _ = _pdf_con_forma_cero(header, lines, "es")
+    assert "Alemania" in _texto(pdf_es).splitlines()
+
+
+def test_presupuesto_intracomunitario_base_imponible_y_total() -> None:
+    """Base 3.084 (no 0,00) aunque la cabecera traiga `BAS1PRE` a 0, IVA 0 y
+    TOTAL 3.084; el texto de exención sale en alemán."""
+    header, lines = _brahmon()
+    pdf, data = _pdf_con_forma_cero(header, lines, "de")
+    assert data["bands"][0]["base"] == 3084.0
+    text = _texto(pdf)
+    import re
+
+    assert re.search(r"Bemessungsgrundlage\s+3\.084,00", text), text
+    assert not re.search(r"Bemessungsgrundlage\s+0,00", text)
+    assert "Innergemeinschaftliche Lieferung" in text
+    assert "Entrega intracomunitaria" not in text
+
+
+def test_base_de_respaldo_resta_el_pronto_pago() -> None:
+    header, lines = _brahmon(IPPA1PRE=84.0, TOTPRE=3000.0)
+    _, data = _pdf_con_forma_cero(header, lines, "de")
+    assert data["bands"][0]["base"] == 3000.0
+
+
+@pytest.mark.parametrize(("lang", "fragment"), [
+    ("es", "Entrega intracomunitaria"), ("en", "Intra-Community supply"),
+    ("de", "Innergemeinschaftliche Lieferung"), ("fr", "Livraison intracommunautaire"),
+    ("nl", "Intracommunautaire levering"),
+])
+def test_texto_de_exencion_en_el_idioma_del_documento(lang: str, fragment: str) -> None:
+    header, lines = _brahmon()
+    pdf, _ = _pdf_con_forma_cero(header, lines, lang)
+    assert fragment in _texto(pdf)
+
+
+def test_textos_de_pie_de_bomedia_en_el_idioma_del_documento() -> None:
+    header, lines = _brahmon(TIPPRE="1")
+    data = extract_document_data(
+        _alb_resolver(), "presupuestos", header, lines, ejercicio="2026", fop_names={},
+    )
+    text = _texto(generate_document_pdf(data, company=dict(COMPANY_DEFAULTS[1]), lang="de"))
+    assert "ALLGEMEINE GESCHÄFTSBEDINGUNGEN" in text
+    assert "Eigentum der BOMEDIA" in text
+    assert "CONDICIONES GENERALES" not in text

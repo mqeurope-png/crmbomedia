@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   getQuoteEmailPreview,
   sendQuoteEmail,
+  type CrmContactHit,
   type FactusolPdfLang,
   type QuoteEmailPreview,
 } from "../../lib/erpApi";
@@ -13,7 +14,11 @@ import {
   splitContactChannels,
   type ContactChannel,
 } from "./CompanyContactsPicker";
+import { CrmContactSearch } from "./CrmContactSearch";
 import { SenderSelect } from "./SenderSelect";
+
+/** Contacto del CRM añadido con el buscador (de cualquier empresa). */
+type CrmPick = { id: string; name: string; email: string; channel: ContactChannel };
 
 const EMAIL_LANGS: { value: FactusolPdfLang; label: string }[] = [
   { value: "es", label: "ES" },
@@ -104,6 +109,7 @@ export function QuoteEmailModal({
   const [to, setTo] = useState("");
   const [cc, setCc] = useState("");
   const [contactSel, setContactSel] = useState<Record<string, ContactChannel>>({});
+  const [crmPicks, setCrmPicks] = useState<CrmPick[]>([]);
   const [fromAlias, setFromAlias] = useState("");
   const [lang, setLang] = useState<FactusolPdfLang>(initialLang ?? "es");
   const [langSource, setLangSource] = useState<string | null>(null);
@@ -152,6 +158,7 @@ export function QuoteEmailModal({
             // o sin empresa), el «Para» es el email de la cabecera.
             setTo(Object.keys(sel).length > 0 ? "" : p.to);
             setCc("");
+            setCrmPicks([]);
           }
         })
         .catch((e) => {
@@ -170,8 +177,10 @@ export function QuoteEmailModal({
   useEffect(() => loadPreview(initialLang ?? undefined), [loadPreview, initialLang]);
 
   const { to: contactTo, cc: contactCc } = splitContactChannels(contactSel);
-  const recipients = dedupeEmails(contactTo, parseRecipients(to));
-  const ccRecipients = dedupeEmails(contactCc, parseRecipients(cc));
+  const crmTo = crmPicks.filter((p) => p.channel === "to").map((p) => p.email);
+  const crmCc = crmPicks.filter((p) => p.channel === "cc").map((p) => p.email);
+  const recipients = dedupeEmails(contactTo, crmTo, parseRecipients(to));
+  const ccRecipients = dedupeEmails(contactCc, crmCc, parseRecipients(cc));
   const recipientsValid = recipients.length > 0 && recipients.every(looksLikeEmail);
   const ccValid = ccRecipients.every(looksLikeEmail);
   const canSend =
@@ -179,25 +188,44 @@ export function QuoteEmailModal({
     && subject.trim().length > 0 && body.trim().length > 0 && !!fromAlias;
 
   /** A quién saluda el cuerpo según el primer destinatario elegido: el id del
-   *  primer contacto en «Para», "none" si solo hay direcciones libres, o null
-   *  si no hay nadie todavía. */
-  function greetingFor(sel: Record<string, ContactChannel>, free: string): string | null {
+   *  primer contacto de la empresa en «Para»; si no hay, el del primer
+   *  contacto del CRM añadido con el buscador; "none" si solo hay direcciones
+   *  libres, o null si no hay nadie todavía. */
+  function greetingFor(
+    sel: Record<string, ContactChannel>, picks: CrmPick[], free: string,
+  ): string | null {
     const firstEmail = splitContactChannels(sel).to[0];
     if (firstEmail) {
       const c = (preview?.company_contacts ?? []).find((x) => x.email === firstEmail);
       return c ? c.id : "none";
     }
+    const firstPick = picks.find((p) => p.channel === "to");
+    if (firstPick) return firstPick.id;
     return parseRecipients(free).length > 0 ? "none" : null;
   }
 
   /** Si cambia a quién va el correo, se vuelve a generar el saludo del cuerpo
    *  (salvo que el operador ya lo haya escrito a mano). */
-  function regreet(sel: Record<string, ContactChannel>, free: string) {
+  function regreet(sel: Record<string, ContactChannel>, picks: CrmPick[], free: string) {
     if (!preview || textDirty) return;
-    const wanted = greetingFor(sel, free);
+    const wanted = greetingFor(sel, picks, free);
     if (wanted === null || wanted === (preview.contacto_id ?? "none")) return;
     setReloading(true);
     loadPreview(lang, true, wanted);
+  }
+
+  function addCrmPick(contact: CrmContactHit, channel: ContactChannel) {
+    const next = [
+      ...crmPicks.filter((p) => p.email.toLowerCase() !== contact.email.toLowerCase()),
+      { id: contact.id, name: contact.name, email: contact.email, channel },
+    ];
+    setCrmPicks(next);
+    regreet(contactSel, next, to);
+  }
+
+  function updateCrmPicks(next: CrmPick[]) {
+    setCrmPicks(next);
+    regreet(contactSel, next, to);
   }
 
   async function send() {
@@ -261,24 +289,66 @@ export function QuoteEmailModal({
               {preview.company_name ? <> para <strong>{preview.company_name}</strong></> : null}.
             </p>
 
+            {!preview.company_id ? (
+              <p className="muted small" role="note">
+                Este cliente no está vinculado a una empresa del CRM
+                {preview.customer_name ? ` («${preview.customer_name}»)` : ""}: busca el
+                contacto en el CRM o escribe la dirección.
+              </p>
+            ) : null}
+
             {(preview.company_contacts?.length ?? 0) > 0 ? (
               <CompanyContactsPicker
                 contacts={preview.company_contacts ?? []}
                 value={contactSel}
-                onChange={(next) => { setContactSel(next); regreet(next, to); }}
+                onChange={(next) => { setContactSel(next); regreet(next, crmPicks, to); }}
                 disabled={sending}
               />
             ) : null}
 
+            <CrmContactSearch
+              onAdd={addCrmPick}
+              disabled={sending}
+              exclude={[...contactTo, ...contactCc, ...crmPicks.map((p) => p.email)]}
+            />
+            {crmPicks.length > 0 ? (
+              <ul className="erp-contacts-list erp-crm-picks" aria-label="Contactos del CRM añadidos">
+                {crmPicks.map((p) => (
+                  <li key={p.id} className="erp-contact-row">
+                    <span className="erp-contact-info">
+                      <span className="erp-contact-name">{p.name}</span>
+                      <span className="erp-contact-email muted small">{p.email}</span>
+                    </span>
+                    <span className="erp-contact-channel" role="group" aria-label={`Canal de ${p.name}`}>
+                      {(["to", "cc"] as const).map((ch) => (
+                        <button key={ch} type="button" disabled={sending}
+                                className={`button small ${p.channel === ch ? "" : "secondary"}`}
+                                aria-pressed={p.channel === ch}
+                                onClick={() => updateCrmPicks(crmPicks.map((x) => (
+                                  x.id === p.id ? { ...x, channel: ch } : x)))}>
+                          {ch === "to" ? "Para" : "CC"}
+                        </button>
+                      ))}
+                      <button type="button" className="button small tertiary" disabled={sending}
+                              aria-label={`Quitar a ${p.name}`}
+                              onClick={() => updateCrmPicks(crmPicks.filter((x) => x.id !== p.id))}>
+                        ✕
+                      </button>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+
             <label className="field">
               <span>
-                {(preview.company_contacts?.length ?? 0) > 0
+                {(preview.company_contacts?.length ?? 0) > 0 || crmPicks.length > 0
                   ? "Para (otras direcciones)" : "Para"}
               </span>
               <input type="text" value={to} aria-label="Destinatario"
                      placeholder="cliente@ejemplo.com" disabled={sending}
                      onChange={(e) => setTo(e.target.value)}
-                     onBlur={(e) => regreet(contactSel, e.target.value)} />
+                     onBlur={(e) => regreet(contactSel, crmPicks, e.target.value)} />
             </label>
             <label className="field">
               <span>CC (otras direcciones)</span>
@@ -296,13 +366,6 @@ export function QuoteEmailModal({
                 Elige al menos un destinatario (un contacto o una dirección).
               </span>
             ) : null}
-            {!preview.company_id ? (
-              <p className="muted small">
-                El cliente de FACTUSOL
-                {preview.customer_name ? ` («${preview.customer_name}»)` : ""} no está
-                vinculado a ninguna empresa del CRM: escribe la dirección a mano.
-              </p>
-            ) : null}
 
             <label className="field">
               <span>Idioma del correo y del PDF</span>
@@ -312,7 +375,7 @@ export function QuoteEmailModal({
                         setLang(next);
                         setLangSource(null);
                         setReloading(true);
-                        loadPreview(next, true, greetingFor(contactSel, to) ?? undefined);
+                        loadPreview(next, true, greetingFor(contactSel, crmPicks, to) ?? undefined);
                       }}>
                 {EMAIL_LANGS.map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
               </select>
@@ -325,13 +388,13 @@ export function QuoteEmailModal({
 
             <label className="field">
               <span>Asunto</span>
-              <input type="text" value={subject} aria-label="Asunto" disabled={sending}
+              <input type="text" value={subject} aria-label="Asunto" disabled={sending || reloading}
                      onChange={(e) => { setSubject(e.target.value); setTextDirty(true); }} />
             </label>
             <label className="field">
               <span>Mensaje</span>
               <textarea value={body} aria-label="Cuerpo del mensaje" rows={10}
-                        disabled={sending}
+                        disabled={sending || reloading}
                         onChange={(e) => { setBody(e.target.value); setTextDirty(true); }} />
             </label>
             {reloading ? <p className="muted small" role="status">Actualizando el texto…</p> : null}

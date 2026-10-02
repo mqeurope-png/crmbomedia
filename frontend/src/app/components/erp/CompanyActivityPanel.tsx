@@ -144,12 +144,17 @@ export function CompanyActivityPanel({
   companyName = "",
   factusolCodcli,
   contactsCount,
+  canDuplicate = true,
+  canEmail = true,
 }: {
   companyId: string;
   /** Punto B: nombre de la empresa, para el modal de duplicar proforma. */
   companyName?: string | null;
   factusolCodcli: string | null;
   contactsCount: number;
+  /** Remates · punto 6: sin el permiso, el «⋯» no ofrece la acción. */
+  canDuplicate?: boolean;
+  canEmail?: boolean;
 }) {
   const [orders, setOrders] = useState<OrderSummary[] | null>(null);
   const [invoices, setInvoices] = useState<FactusolDocument[] | null>(null);
@@ -312,14 +317,19 @@ export function CompanyActivityPanel({
                 <td data-label="Acciones" className="erp-quote-row-actions">
                   {/* Punto B: «⋯ → Duplicar» en las proformas (copia directa,
                       punto C). La tabla tiene scroll propio: menú flotante. */}
-                  {r.kind === "proforma" && r.quote && factusolCodcli ? (
+                  {r.kind === "proforma" && r.quote && factusolCodcli
+                    && (canDuplicate || canEmail) ? (
                     <ActionsMenu label={`Más acciones ${r.numero}`} floating>
-                      <button type="button" onClick={() => setDuplicating(r.quote ?? null)}>
-                        Duplicar
-                      </button>
-                      <button type="button" onClick={() => setEmailing(r.quote ?? null)}>
-                        {r.quote.emailed_at ? "Reenviar por email" : "Enviar por email"}
-                      </button>
+                      {canDuplicate ? (
+                        <button type="button" onClick={() => setDuplicating(r.quote ?? null)}>
+                          Duplicar
+                        </button>
+                      ) : null}
+                      {canEmail ? (
+                        <button type="button" onClick={() => setEmailing(r.quote ?? null)}>
+                          {r.quote.emailed_at ? "Reenviar por email" : "Enviar por email"}
+                        </button>
+                      ) : null}
                     </ActionsMenu>
                   ) : null}
                 </td>

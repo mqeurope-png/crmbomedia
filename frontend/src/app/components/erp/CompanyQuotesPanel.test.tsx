@@ -80,6 +80,15 @@ describe("CompanyQuotesPanel", () => {
       .toBeInTheDocument();
   });
 
+  it("Remates · punto 6: sin permiso, ni «Duplicar» ni «Enviar por email»", async () => {
+    mockList.mockResolvedValue({ items: [quote()], unlinked: false });
+    render(<CompanyQuotesPanel {...base()} canDuplicate={false} canEmail={false} />);
+    expect(await screen.findByRole("button", { name: "Editar" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Duplicar" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Enviar por email" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Convertir en pedido" })).toBeInTheDocument();
+  });
+
   it("Punto A · una proforma ya enviada enseña «Enviada dd/mm» y «Reenviar»", async () => {
     mockList.mockResolvedValue({
       items: [quote({ emailed_at: "2026-10-02T09:00:00", emailed_to: ["x@acme.es"] })],

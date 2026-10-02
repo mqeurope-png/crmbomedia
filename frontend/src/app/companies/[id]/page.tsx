@@ -78,6 +78,7 @@ export default function CompanyDetailPage() {
   const [archiving, setArchiving] = useState(false);
   const [mergeOpen, setMergeOpen] = useState(false);
   const [canEdit, setCanEdit] = useState(false);
+  const [quoteCaps, setQuoteCaps] = useState({ duplicate: false, email: false });
   // Régimen detectado por país + NIF-IVA (misma regla que la ficha F_CLI).
   const [fiscal, setFiscal] = useState<FiscalCheck | null>(null);
   // Sincronía CRM ↔ FACTUSOL, la calcula la sección FACTUSOL de abajo.
@@ -116,8 +117,19 @@ export default function CompanyDetailPage() {
 
   useEffect(() => {
     getCurrentUser()
-      .then((u) => setCanEdit(can(u, Cap.COMPANIES)))
-      .catch(() => setCanEdit(false));
+      .then((u) => {
+        setCanEdit(can(u, Cap.COMPANIES));
+        // Remates · punto 6: duplicar una proforma = crearla (permiso de
+        // proformas + de crear documentos); enviarla = email a clientes.
+        setQuoteCaps({
+          duplicate: can(u, Cap.PROFORMAS) && can(u, Cap.ORDERS_CREATE),
+          email: can(u, Cap.PROFORMAS) && can(u, Cap.EMAIL_CLIENT),
+        });
+      })
+      .catch(() => {
+        setCanEdit(false);
+        setQuoteCaps({ duplicate: false, email: false });
+      });
   }, []);
 
   // Régimen por país + NIF-IVA (best-effort: sin país ni NIF no hay nada).
@@ -571,6 +583,8 @@ export default function CompanyDetailPage() {
           companyName={company.name}
           factusolCodcli={company.factusol_company_id}
           contactsCount={contacts.length}
+          canDuplicate={quoteCaps.duplicate}
+          canEmail={quoteCaps.email}
         />
       </div>
 
@@ -769,6 +783,8 @@ export default function CompanyDetailPage() {
           factusolCodcli={company.factusol_company_id}
           createSignal={quoteSignal}
           onOrderCreated={(orderId) => router.push(`/erp/orders/${orderId}`)}
+          canDuplicate={quoteCaps.duplicate}
+          canEmail={quoteCaps.email}
         />
       ) : null}
 

@@ -352,18 +352,18 @@ def test_create_quote_encola_y_audita(client, session_factory):
 
 
 def test_create_quote_acepta_descripciones_de_mas_de_255(client, session_factory):
-    """Punto D: el tope de 255 era de BoHub. La línea viaja ENTERA al job (el
-    reparto en continuaciones lo hace el escritor de F_LPS)."""
+    """Punto D: el tope de 255 era de BoHub. La línea viaja ENTERA al job, con
+    sus saltos de línea, y el job la escribe entera en `DESLPS`."""
     with session_factory() as s:
         cid = _company(s)
-    larga = "x" * 400
+    larga = "Primera línea\n" + "x" * 400 + "\nÚltima línea"
     with patch("app.integrations.factusol.jobs.enqueue_create_quote",
                return_value="job-q1") as enq:
         r = client.post("/api/erp/factusol/quotes",
                         headers=auth_headers(client, "pedidos"),
                         json={"company_id": cid, "lines": [
                             {"description": larga, "quantity": 1, "unit_price": 10},
-                            # Línea de texto (continuación o nota): cantidad 0 sin precio.
+                            # Línea de texto (nota): cantidad 0 sin precio.
                             {"description": "nota", "quantity": 0, "unit_price": 0},
                         ]})
     assert r.status_code == 202, r.text
@@ -383,7 +383,7 @@ def test_create_quote_422_dice_linea_y_limite_si_no_cabe(client, session_factory
                     ]})
     assert r.status_code == 422, r.text
     msg = json.dumps(r.json(), ensure_ascii=False)
-    assert "línea 2" in msg and "2001" in msg and "2000" in msg and "255" in msg
+    assert "línea 2" in msg and "2001" in msg and "2000" in msg
 
 
 def test_create_quote_422_si_una_linea_con_precio_va_sin_cantidad(client, session_factory):
@@ -407,7 +407,7 @@ def test_create_quote_sin_serie_usa_bomedia(client, session_factory):
         client.post("/api/erp/factusol/quotes",
                     headers=auth_headers(client, "pedidos"),
                     json={"company_id": cid, "referencia": "Sin serie"})
-    assert enq.call_args.args[6] == 1
+    assert enq.call_args.kwargs["serie"] == 1
 
 
 @pytest.mark.parametrize("serie", [1, 2, 4, 5])
@@ -423,7 +423,7 @@ def test_create_quote_respeta_la_serie_elegida(client, session_factory, serie):
                               "lines": [{"description": "Cable", "quantity": 1,
                                          "unit_price": 10}]})
     assert r.status_code == 202, r.text
-    assert enq.call_args.args[6] == serie
+    assert enq.call_args.kwargs["serie"] == serie
     with session_factory() as s:
         audit = s.scalars(select(AuditLog).where(
             AuditLog.action == "erp.factusol_quote_create")).one()
@@ -506,11 +506,11 @@ def test_create_quote_pasa_la_forma_de_pago_al_job(client, session_factory):
                return_value="job-q1") as enq:
         r = client.post("/api/erp/factusol/quotes",
                         headers=auth_headers(client, "pedidos"),
-                        json={"company_id": cid, "fopfac": "002", "lines": [
+                        json={"company_id": cid, "foppre": "002", "lines": [
                             {"description": "Cable", "quantity": 1, "unit_price": 10},
                         ]})
     assert r.status_code == 202, r.text
-    assert enq.call_args.args[4] == "002"
+    assert enq.call_args.kwargs["foppre"] == "002"
 
 
 def test_patch_quote_pasa_la_forma_de_pago_al_job(client, session_factory):
@@ -520,16 +520,65 @@ def test_patch_quote_pasa_la_forma_de_pago_al_job(client, session_factory):
                return_value="job-u1") as enq:
         r = client.patch("/api/erp/factusol/quotes/700?serie=2",
                          headers=auth_headers(client, "pedidos"),
-                         json={"company_id": cid, "referencia": "X", "fopfac": "003"})
+                         json={"company_id": cid, "referencia": "X", "foppre": "003"})
     assert r.status_code == 202, r.text
-    assert enq.call_args.args[7] == "003"
+    assert enq.call_args.kwargs["foppre"] == "003"
     # Sin elegir ninguna viaja None (al editar, quita la que tuviera).
     with patch("app.integrations.factusol.jobs.enqueue_update_quote",
                return_value="job-u2") as enq:
         client.patch("/api/erp/factusol/quotes/700?serie=2",
                      headers=auth_headers(client, "pedidos"),
                      json={"company_id": cid, "referencia": "X"})
-    assert enq.call_args.args[7] is None
+    assert enq.call_args.kwargs["foppre"] is None
+    # Una pestaña con el frontend anterior (#507) aún manda `fopfac`: vale igual.
+    with patch("app.integrations.factusol.jobs.enqueue_update_quote",
+               return_value="job-u3") as enq:
+        client.patch("/api/erp/factusol/quotes/700?serie=2",
+                     headers=auth_headers(client, "pedidos"),
+                     json={"company_id": cid, "referencia": "X", "fopfac": "002"})
+    assert enq.call_args.kwargs["foppre"] == "002"
+
+
+def test_editar_proforma_cambia_y_quita_foppre_de_punta_a_punta(client, session_factory):
+    """Punto 1 (remates): la cadena ENTERA — modal → endpoint → cola → job →
+    escritura — con la forma de pago. El `_enqueue` ejecuta el job en el acto
+    (como el worker: por la ruta y con los mismos argumentos), contra un
+    FACTUSOL de pega que guarda lo que se escribe. Cambiarla escribe FOPPRE;
+    quitarla lo deja en blanco."""
+    import importlib
+
+    from app.integrations.factusol import jobs
+    from tests.test_factusol_quotes import _FakeFactusol as _FakeEscritura
+    from tests.test_factusol_quotes import _quote_row as _fila
+
+    with session_factory() as s:
+        cid = _company(s)
+    fake = _FakeEscritura(quotes=[{**_fila(716), "TIPPRE": "2", "ESTPRE": 0, "FOPPRE": "002"}])
+
+    def _worker(func_path, *args, **kwargs):
+        module_path, _, name = func_path.rpartition(".")
+        getattr(importlib.import_module(module_path), name)(*args, **kwargs)
+        return "job-sync"
+
+    def _patch_put(foppre):
+        body = {"company_id": cid, "lines": [
+            {"description": "Vinilo", "quantity": 1, "unit_price": 100}]}
+        if foppre is not None:
+            body["foppre"] = foppre
+        return client.patch("/api/erp/factusol/quotes/716?serie=2",
+                            headers=auth_headers(client, "pedidos"), json=body)
+
+    with patch.object(jobs, "_enqueue", _worker), \
+            patch.object(jobs.FactusolClient, "from_settings", return_value=fake), \
+            patch("app.integrations.factusol.service.ejercicio_for", return_value="2026"), \
+            patch("app.db.session.get_engine",
+                  return_value=session_factory.kw["bind"]):
+        assert _patch_put("003").status_code == 202
+        assert _patch_put(None).status_code == 202
+    cabeceras = fake.updates_to("F_PRE")
+    assert cabeceras[0]["FOPPRE"] == "003"
+    assert cabeceras[1]["FOPPRE"] == ""
+    assert all("FOPFAC" not in c for c in cabeceras)
 
 
 def test_get_quote_devuelve_la_forma_de_pago_con_nombre(client):
@@ -565,13 +614,31 @@ def test_get_quote_devuelve_la_entrega_y_si_difiere_de_la_sede(client, session_f
     assert body["envio_distinto"] is True
     assert body["envio"] == {"nombre": "Hotel Playa", "direccion": "Av. del Mar 3",
                              "poblacion": "Marbella", "cp": "29600", "provincia": "Málaga",
-                             "pais": "724"}
+                             "pais": "España"}
     assert body["company"]["id"] == cid and body["numero"] == "1-000012"
 
     sede_misma = _quote_row(13, CDOPRE="C/ Mayor 1", CPOPRE="Madrid", CCPPRE="28001")
     with _patch_client(_FakeFactusol(quotes=[sede_misma], customers=[sede])):
         r = client.get("/api/erp/factusol/quotes/13", headers=auth_headers(client, "user"))
     assert r.json()["envio_distinto"] is False
+
+
+def test_copia_directa_el_pais_va_por_nombre_y_vuelve_al_mismo_codigo(client, session_factory):
+    """Pendiente de #508: el país de la entrega llegaba al modal como «276».
+    Ahora llega por su nombre («Alemania») y, al crear la copia con ese
+    nombre en el destinatario, CPAPRE vuelve a ser 276 (ni España ni nada)."""
+    from app.integrations.factusol.quotes import _cpapre
+
+    with session_factory() as s:
+        _company(s)
+    fila = _quote_row(17, CNOPRE="Brahmon", CDOPRE="Hauptstraße 1", CPOPRE="München",
+                      CCPPRE="80331", CPRPRE="Bavière", CPAPRE="276")
+    with _patch_client(_FakeFactusol(quotes=[fila], customers=[])):
+        r = client.get("/api/erp/factusol/quotes/17", headers=auth_headers(client, "user"))
+    assert r.json()["envio"]["pais"] == "Alemania"
+    for nombre in ("Alemania", "Deutschland", "Polonia", "Österreich"):
+        assert _cpapre(nombre) == {"Alemania": "276", "Deutschland": "276",
+                                   "Polonia": "616", "Österreich": "040"}[nombre]
 
 
 def test_envio_distinto_no_salta_si_la_cabecera_es_la_sede_de_la_empresa_crm(
@@ -897,7 +964,7 @@ def test_create_quote_pasa_portes_y_destinatario_libre(client, session_factory):
     assert customer["cp"] == "48001"
     assert customer["provincia"] == "Bizkaia"
     assert customer["pais"] == "ES"
-    assert args[5] == 19.5  # portes
+    assert enq.call_args.kwargs["portes"] == 19.5
     # Ninguna línea de portes en las líneas.
     assert [line["description"] for line in args[1]] == ["Vinilo"]
 
@@ -911,7 +978,7 @@ def test_create_quote_sin_portes_ni_envio_manda_cero(client, session_factory):
                         headers=auth_headers(client, "pedidos"),
                         json={"company_id": cid, "referencia": "X"})
     assert r.status_code == 202
-    assert enq.call_args.args[5] == 0.0
+    assert enq.call_args.kwargs["portes"] == 0.0
     assert enq.call_args.args[0]["nombre"] == "Acme SL"
 
 

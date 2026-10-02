@@ -220,25 +220,52 @@ def quote_recipients(
 
 def _contact_id_for(session: Session, company: Any, recipients: list[str]) -> str | None:
     """Contacto al que se ENLAZA el correo (timeline del CRM): el primer
-    destinatario que sea contacto de la empresa, o None."""
-    if company is None:
-        return None
+    destinatario que sea contacto de la empresa; si ninguno lo es (cliente sin
+    empresa vinculada, o contactos añadidos con el buscador del CRM), el primer
+    destinatario que sea un contacto activo de cualquier empresa. None si no."""
+    from sqlalchemy import func  # noqa: PLC0415
+
     from app.models.crm import Contact  # noqa: PLC0415
 
     emails = [e.strip().lower() for e in recipients if e and e.strip()]
     if not emails:
         return None
-    by_email: dict[str, str] = {}
-    for c in session.scalars(
-        select(Contact).where(Contact.company_id == company.id, Contact.email.isnot(None))
-    ):
-        key = (c.email or "").strip().lower()
-        if key:
-            by_email.setdefault(key, c.id)
+    if company is not None:
+        by_email: dict[str, str] = {}
+        for c in session.scalars(
+            select(Contact).where(Contact.company_id == company.id, Contact.email.isnot(None))
+        ):
+            key = (c.email or "").strip().lower()
+            if key:
+                by_email.setdefault(key, c.id)
+        for e in emails:
+            if e in by_email:
+                return by_email[e]
     for e in emails:
-        if e in by_email:
-            return by_email[e]
+        found = session.scalar(
+            select(Contact.id).where(
+                Contact.is_active.is_(True), func.lower(Contact.email) == e,
+            ).order_by(Contact.created_at.asc()).limit(1)
+        )
+        if found:
+            return found
     return None
+
+
+def _crm_contact_greeting(session: Session, contact_id: str | None) -> dict[str, Any] | None:
+    """`{id, name}` de un contacto ACTIVO del CRM que no es de la empresa
+    vinculada (lo añadió el operador con el buscador): `{contacto}` le saluda
+    por su nombre. Sin nombre, `name` va vacío y se saluda a la empresa (nunca
+    al contacto principal, que quizá ni recibe el correo). None si no existe."""
+    if not contact_id or contact_id == "none":
+        return None
+    from app.models.crm import Contact  # noqa: PLC0415
+
+    contact = session.get(Contact, contact_id)
+    if contact is None or not contact.is_active:
+        return None
+    name = " ".join(p for p in (contact.first_name, contact.last_name) if p).strip()
+    return {"id": contact.id, "name": name}
 
 
 # --- datos de la proforma ---------------------------------------------------
@@ -349,7 +376,8 @@ def build_quote_email_preview(
     por serie y nombre del adjunto. No envía nada ni genera el PDF.
 
     `contact_id`: a quién saluda `{contacto}`. Sin él, el premarcado; con el
-    id de un contacto de la lista, ese (el modal lo manda cuando el operador
+    id de un contacto de la lista —o de cualquier contacto activo del CRM
+    añadido con el buscador—, ese (el modal lo manda cuando el operador
     cambia el primer destinatario); `"none"` = ningún contacto (direcciones
     libres) → se saluda a la empresa."""
     from app.erp.factusol_pdf import suggest_pdf_language  # noqa: PLC0415
@@ -374,6 +402,9 @@ def build_quote_email_preview(
         saludo = None
     else:
         saludo = next((c for c in contacts if contact_id and c["id"] == contact_id), None)
+        if saludo is None:
+            # Contacto de OTRA empresa añadido con el buscador del CRM.
+            saludo = _crm_contact_greeting(session, contact_id)
         if saludo is None:
             saludo = next((c for c in contacts if c["is_primary"]), None)
     fields = quote_email_fields(

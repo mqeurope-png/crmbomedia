@@ -18,9 +18,11 @@ y la cascada de idioma del PDF.
 """
 from __future__ import annotations
 
+import gettext
 import logging
 import unicodedata
 from collections import Counter
+from functools import lru_cache
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -195,12 +197,13 @@ def _numeric_lookup(key: str) -> str | None:
     return _NUMERIC_TO_ISO2.get(key.zfill(3))
 
 
-def country_numeric(value: Any) -> str | None:
+def country_numeric(value: Any, *, localized: bool = False) -> str | None:
     """Cualquier valor de país (ISO2, nombre, numérico con o sin ceros) → código
     ISO 3166-1 numérico de 3 cifras («724»), o `None` si no se reconoce. Es lo
     que FACTUSOL guarda en `PAICLI` / `CPAPRE`. Tabla ISO COMPLETA (pycountry),
-    no los 10 países de antes; nunca cae a España."""
-    iso2 = normalize_country(value)
+    no los 10 países de antes; nunca cae a España. `localized`: ver
+    `normalize_country`."""
+    iso2 = normalize_country(value, localized=localized)
     if iso2 is None:
         return None
     return _ISO2_TO_NUMERIC.get(iso2)
@@ -232,7 +235,7 @@ def _pycountry_lookup(key: str) -> str | None:
 
 
 def normalize_country(
-    value: Any, *, unresolved: Counter | None = None,
+    value: Any, *, unresolved: Counter | None = None, localized: bool = False,
 ) -> str | None:
     """Cualquier valor del campo país → ISO-3166 alfa-2, o `None` si no se
     reconoce (NO se adivina). Orden: ISO2 válido tal cual → tabla de alias
@@ -240,7 +243,14 @@ def normalize_country(
 
     `unresolved` (opcional): Counter donde se acumulan los valores crudos no
     reconocidos, para informar en agregado (lo usa el backfill) en vez de
-    loguear uno por uno."""
+    loguear uno por uno.
+
+    `localized=True` reconoce además los nombres en es/de/fr/nl de pycountry
+    («Polonia», «Österreich»). Solo lo usa quien escribe de vuelta un nombre
+    que BoHub ha enseñado (`country_display_name` → CPAPRE en la copia
+    directa): para el régimen de IVA, VIES y el idioma sigue apagado, porque
+    reconocer de más cambia el IVA (p. ej. una provincia «Granada» se tomaría
+    por el país Granada)."""
     key = _norm_key(value)
     if not key:
         return None
@@ -254,6 +264,13 @@ def normalize_country(
     alias = _COUNTRY_ALIASES.get(key)
     if alias is not None:
         return alias
+    # Nombre en es/de/fr/nl («Polonia», «Österreich», «Pays-Bas»…), solo si
+    # se pide: lo que BoHub enseña con `country_display_name` vuelve al mismo
+    # país al guardarlo.
+    if localized:
+        hit = _localized_name_index().get(key)
+        if hit is not None:
+            return hit
     iso = _pycountry_lookup(key)
     if iso is not None:
         return iso
@@ -273,3 +290,84 @@ def language_for_country(
     if iso is None:
         return None
     return COUNTRY_LANGUAGE.get(iso, DEFAULT_COUNTRY_LANGUAGE)
+
+
+# --- nombre del país en el idioma del documento ------------------------------
+
+#: Idiomas con traducción de nombres de país (los del PDF menos el inglés, que
+#: es el nombre base de pycountry).
+_TRANSLATED_LANGS: tuple[str, ...] = ("es", "de", "fr", "nl")
+
+
+@lru_cache(maxsize=8)
+def _country_translator(lang: str) -> gettext.NullTranslations:
+    """Catálogo ISO 3166-1 de pycountry en `lang` (o el nulo: nombre en inglés)."""
+    if pycountry is None or lang not in _TRANSLATED_LANGS:
+        return gettext.NullTranslations()
+    try:
+        return gettext.translation(
+            "iso3166-1", pycountry.LOCALES_DIR, languages=[lang],
+        )
+    except (OSError, AttributeError):  # pragma: no cover - sin catálogos
+        return gettext.NullTranslations()
+
+
+#: Nombres de país que también son otra cosa frecuente en una dirección
+#: (la provincia de Granada no es el país Granada): no se traducen a país.
+_AMBIGUOUS_LOCALIZED_NAMES = frozenset({"GRANADA"})
+
+
+def _display_names(country: Any) -> list[str]:
+    """Nombres (en inglés) con los que se traduce un país: el corriente
+    («Taiwan», «South Korea») si lo hay, y el oficial ISO."""
+    names = [str(getattr(country, "common_name", "") or ""), str(country.name)]
+    return [n for n in dict.fromkeys(names) if n]
+
+
+@lru_cache(maxsize=1)
+def _localized_name_index() -> dict[str, str]:
+    """`{nombre canónico en es/de/fr/nl → ISO2}` sacado de los catálogos de
+    pycountry (nombre corriente y oficial). Solo nombres de 4+ letras (como
+    `_pycountry_lookup`) y sin los ambiguos."""
+    if pycountry is None:
+        return {}
+    index: dict[str, str] = {}
+    for lang in _TRANSLATED_LANGS:
+        translator = _country_translator(lang)
+        for country in pycountry.countries:
+            for name in _display_names(country):
+                key = _norm_key(translator.gettext(name))
+                if len(key) >= 4 and key not in _AMBIGUOUS_LOCALIZED_NAMES:
+                    index.setdefault(key, country.alpha_2)
+    return index
+
+
+def country_display_name(value: Any, lang: str = "es") -> str:
+    """Nombre del país en `lang` (es/en/de/fr/nl) a partir de cualquier forma
+    en que llegue: el código numérico de FACTUSOL («276»), ISO2 («DE») o un
+    nombre («ALEMANIA»). «276» → «Deutschland» en alemán, «Alemania» en
+    español. Lo que no se reconoce vuelve tal cual (no se inventa un país);
+    vacío → ""."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    iso2 = normalize_country(raw, localized=True)
+    if iso2 is None or pycountry is None:
+        return raw
+    country = pycountry.countries.get(alpha_2=iso2)
+    if country is None:
+        return raw
+    names = _display_names(country)
+    if lang not in _TRANSLATED_LANGS:
+        # Inglés (y cualquier otro): el nombre corriente si lo hay
+        # («Bolivia» antes que «Bolivia, Plurinational State of»).
+        return names[0]
+    # El nombre CORRIENTE: traducido si el catálogo lo trae («Taiwán», «Corea
+    # del Sur»); si no, tal cual («Taiwan», «Bolivia» valen en casi todos los
+    # idiomas). El oficial ISO («Taiwán, Provincia de China») solo para los
+    # países sin nombre corriente.
+    translator = _country_translator(lang)
+    common = str(getattr(country, "common_name", "") or "")
+    if common:
+        return translator.gettext(common)
+    return translator.gettext(str(country.name))

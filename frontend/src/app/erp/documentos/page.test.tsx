@@ -96,6 +96,20 @@ jest.mock("../../components/erp/FactusolDocumentDetailModal", () => ({
   cycleBadge: () => null,
   defaultPdfLang: () => "es",
 }));
+// Copia directa (remates · punto 4): el modal real se prueba en su test; aquí
+// basta ver que se abre con el presupuesto de la fila.
+jest.mock("../../components/erp/CreateQuoteModal", () => ({
+  CreateQuoteModal: ({ companyId, duplicateDirect, onCancel }: {
+    companyId: string; onCancel: () => void;
+    duplicateDirect?: { codpre: string | null; serie?: number | null; numero?: string | null } | null;
+  }) => (
+    <div role="dialog" aria-label="Duplicar proforma">
+      COPIA {duplicateDirect?.numero} · {duplicateDirect?.codpre} · serie {duplicateDirect?.serie} · empresa {companyId}
+      <button type="button" onClick={onCancel}>CANCELAR</button>
+    </div>
+  ),
+}));
+jest.mock("../../components/erp/quoteJobs", () => ({ pollQuoteJob: jest.fn() }));
 jest.mock("../../components/erp/RegistrarCobroModal", () => ({
   RegistrarCobroModal: ({ factura, onDone }: {
     factura: { numero: string }; onDone?: (info: unknown) => void;
@@ -627,5 +641,45 @@ describe("ERP · Documentos FACTUSOL (Lote 2 · PR-2)", () => {
     expect(amounts.every((td) => td.className.includes("erp-doc-col-amount"))).toBe(true);
     expect(within(table).getAllByRole("columnheader", { name: /Total|Saldo pend\./ })
       .every((th) => th.className.includes("num"))).toBe(true);
+  });
+});
+
+
+describe("Documentos · Presupuestos — «Duplicar» en el «…» (remates · punto 4)", () => {
+  const presupuesto = () => factura({
+    doc_type: "presupuestos", codigo: 4361, numero: "5-004361",
+    estado: "0", estado_label: "Pendiente", estado_tone: "warn", order: null,
+  });
+
+  it("abre la copia directa con el presupuesto de la fila (cliente y serie de origen)", async () => {
+    const user = userEvent.setup();
+    mockList.mockResolvedValue({ items: [presupuesto()], total: 1 });
+    render(<FactusolDocumentosPage />);
+    await user.click(await screen.findByRole("tab", { name: "Presupuestos" }));
+    await screen.findByText("5-004361");
+    await user.click(screen.getByRole("button", { name: "Más acciones 5-004361" }));
+    await user.click(await screen.findByRole("button", { name: "Duplicar" }));
+    expect(await screen.findByRole("dialog", { name: "Duplicar proforma" })).toHaveTextContent(
+      "COPIA 5-004361 · 4361 · serie 5 · empresa es",
+    );
+  });
+
+  it("sin permiso de proformas no aparece; en facturas tampoco", async () => {
+    const user = userEvent.setup();
+    (getCurrentUser as jest.Mock).mockResolvedValueOnce({ role: "user" });
+    mockList.mockResolvedValue({ items: [presupuesto()], total: 1 });
+    const { unmount } = render(<FactusolDocumentosPage />);
+    await user.click(await screen.findByRole("tab", { name: "Presupuestos" }));
+    await screen.findByText("5-004361");
+    await user.click(screen.getByRole("button", { name: "Más acciones 5-004361" }));
+    expect(await screen.findByText("Ver detalle")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Duplicar" })).not.toBeInTheDocument();
+    unmount();
+    mockList.mockResolvedValue({ items: [factura()], total: 1 });
+    render(<FactusolDocumentosPage />);
+    await screen.findByText("5-260066");
+    await user.click(screen.getByRole("button", { name: "Más acciones 5-260066" }));
+    expect(await screen.findByText("Ver detalle")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Duplicar" })).not.toBeInTheDocument();
   });
 });
