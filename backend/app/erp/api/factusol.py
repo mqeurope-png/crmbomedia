@@ -2704,7 +2704,7 @@ def list_quotes_endpoint(
     vinculada y sus contactos. `total` es cuántas casaban antes del recorte y
     `truncated` avisa de que la lista no las enseña todas."""
     _ = current_user
-    from app.erp.quotes_bandeja import annotate_quotes, crm_codclis_matching  # noqa: PLC0415
+    from app.erp.quotes_bandeja import annotate_quotes, crm_names_by_codcli  # noqa: PLC0415
     from app.erp.workflow import QUOTE_QUEUES  # noqa: PLC0415
     from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
     from app.integrations.factusol.quotes import query_quotes  # noqa: PLC0415
@@ -2727,11 +2727,11 @@ def list_quotes_endpoint(
         codcli = str(company.factusol_company_id)
 
     client, ejercicio = _client_and_ejercicio(session)
-    extra_codclis = crm_codclis_matching(session, q) if q else set()
+    extra_names = crm_names_by_codcli(session) if q and q.strip() else None
     try:
         items, total = query_quotes(
             client, ejercicio=ejercicio, codcli=codcli, days_back=days_back,
-            limit=limit, serie=serie, text=q, extra_codclis=extra_codclis,
+            limit=limit, serie=serie, text=q, extra_names=extra_names,
         )
     except FactusolError as exc:
         raise _factusol_gateway_error(exc, "factusol_quotes_failed") from exc
@@ -2761,17 +2761,17 @@ def search_quotes_endpoint(
     Se declara ANTES de `/quotes/{codpre}`: FastAPI casa por orden y «search»
     encajaría como CODPRE."""
     _ = current_user
-    from app.erp.quotes_bandeja import crm_codclis_matching  # noqa: PLC0415
+    from app.erp.quotes_bandeja import crm_names_by_codcli  # noqa: PLC0415
     from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
     from app.integrations.factusol.quotes import query_quotes  # noqa: PLC0415
 
     client, ejercicio = _client_and_ejercicio(session)
     # Mismo criterio que `GET /quotes`: también por empresa CRM y contacto.
-    extra_codclis = crm_codclis_matching(session, q) if q else set()
+    extra_names = crm_names_by_codcli(session) if q and q.strip() else None
     try:
         items, total = query_quotes(
             client, ejercicio=ejercicio, codcli=None, days_back=days_back,
-            text=q, limit=limit, extra_codclis=extra_codclis,
+            text=q, limit=limit, extra_names=extra_names,
         )
     except FactusolError as exc:
         raise _factusol_gateway_error(exc, "factusol_quotes_search_failed") from exc
@@ -2956,7 +2956,7 @@ class QuoteBodyPayload(BaseModel):
         )
 
         for n, line in enumerate(self.lines, start=1):
-            largo = len(" ".join(line.description.split()))
+            largo = len(line.description)
             if largo > QUOTE_LINE_DESCRIPTION_MAX:
                 raise PydanticCustomError(
                     "quote_line_too_long",

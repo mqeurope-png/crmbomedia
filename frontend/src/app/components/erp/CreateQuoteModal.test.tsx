@@ -698,7 +698,7 @@ describe("CreateQuoteModal", () => {
 
   it("E · sin forma de pago elegida viaja `null`; el operador puede elegir otra", async () => {
     const user = userEvent.setup();
-    render(<CreateQuoteModal {...base()} />);
+    const { unmount } = render(<CreateQuoteModal {...base()} />);
     await screen.findByRole("option", { name: "002 · Transferencia" });
     expect(screen.getByLabelText("Forma de pago")).toHaveValue("");
     await user.type(screen.getByLabelText("Descripción línea 1"), "Mano de obra");
@@ -708,6 +708,21 @@ describe("CreateQuoteModal", () => {
     expect(mockCreate.mock.calls[0][0].fopfac).toBeNull();
     // Sin CODCLI no hay forma por defecto que pedir.
     expect(mockCustomerPayment).not.toHaveBeenCalled();
+    unmount();
+
+    // Elegida a mano, viaja la elegida (y una propuesta tardía del cliente no la pisa).
+    mockCreate.mockClear();
+    let proponer: (v: { codigo: string; nombre: string }) => void = () => {};
+    mockCustomerPayment.mockReturnValue(new Promise((resolve) => { proponer = resolve; }));
+    render(<CreateQuoteModal {...base({ factusolCodcli: "55555" })} />);
+    await screen.findByRole("option", { name: "003 · PayPal" });
+    await user.selectOptions(screen.getByLabelText("Forma de pago"), "003");
+    proponer({ codigo: "002", nombre: "Transferencia" });     // llega tarde: no manda
+    await user.type(screen.getByLabelText("Descripción línea 1"), "Mano de obra");
+    await user.type(screen.getByLabelText("Precio línea 1"), "500");
+    await user.click(screen.getByRole("button", { name: "Crear proforma" }));
+    await waitFor(() => expect(mockCreate).toHaveBeenCalled());
+    expect(mockCreate.mock.calls[0][0].fopfac).toBe("003");
   });
 
   it("E · al editar precarga la forma de pago de la proforma y manda la elegida al guardar", async () => {

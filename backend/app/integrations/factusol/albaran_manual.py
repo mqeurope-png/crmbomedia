@@ -79,10 +79,15 @@ def order_lines_for_document(order: Order) -> list[dict[str, Any]]:
         if getattr(line, "is_shipping", False):
             continue
         m = _DTO_RE.search(line.notes or "")
+        codart = (line.product_codart or line.product_sku or "").strip()
+        # Línea de TEXTO (sin artículo, sin precio y a 0: continuación de una
+        # descripción larga o nota heredada de la proforma): se queda a 0 en
+        # el documento, no se convierte en una unidad de nada.
+        es_texto = not codart and not _num(line.unit_price) and not _num(line.quantity)
         out.append({
-            "codart": (line.product_codart or line.product_sku or "").strip(),
+            "codart": codart,
             "description": (line.description or line.product_sku or "").strip(),
-            "quantity": _num(line.quantity, 1.0) or 1.0,
+            "quantity": 0.0 if es_texto else (_num(line.quantity, 1.0) or 1.0),
             "unit_price": _num(line.unit_price),
             "discount_pct": _num(m.group(1).replace(",", ".")) if m else 0.0,
             "iva_pct": _num(line.tax_rate, 21.0),

@@ -271,7 +271,10 @@ def test_list_quotes_sin_q_recorta_y_avisa(client, session_factory):
 
 
 @pytest.mark.parametrize("q", ["allphone", "Allphonecovers", "Krieg", "krieg",
-                               "14", "000014", "1-000014"])
+                               "14", "000014", "1-000014",
+                               # Mezclando empresa / contacto con el nº o con
+                               # el cliente de FACTUSOL: un único pajar.
+                               "krieg 14", "allphone handels", "Krieg 1-000014"])
 def test_list_quotes_q_encuentra_la_antigua_antes_del_recorte(client, session_factory, q):
     """El texto se aplica en el SERVIDOR antes de recortar: por empresa CRM
     vinculada, por contacto y por nº con o sin serie, la 1-000014 aparece."""
@@ -287,7 +290,7 @@ def test_list_quotes_q_encuentra_la_antigua_antes_del_recorte(client, session_fa
     assert body["q"] == q
     if not q.isdigit():
         # Por nombre solo casa ella; por «14» también 114, 140… (parcial).
-        assert codpres == ["14"]
+        assert codpres == ["14"], q
         assert body["items"][0]["company"]["name"] == "Allphonecovers GmbH"
 
 

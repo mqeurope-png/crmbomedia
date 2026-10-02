@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import logging
 import unicodedata
-from collections.abc import Collection
+from collections.abc import Mapping
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -409,27 +409,31 @@ def _quote_number_variants(quote: dict[str, Any]) -> list[str]:
 
 def _quote_matches(
     quote: dict[str, Any], tokens: list[str],
-    extra_codclis: Collection[str] = (),
+    extra_names: Mapping[str, str] | None = None,
 ) -> bool:
     """¿La proforma casa con el texto buscado?
 
     Casa si TODAS las palabras del buscador aparecen (parcialmente, sin
-    acentos ni mayúsculas) en la referencia, el nombre del cliente de origen o
+    acentos ni mayúsculas) en la referencia, el nombre del cliente de origen,
     el número en cualquiera de sus formas — que es como Bart identifica una
-    plantilla («la de Laboratorios Duaner», «la 512», «rotulación», «1-000014»).
-    `extra_codclis` son los clientes cuyo nombre de empresa CRM o de contacto
-    casó con el texto (lo resuelve la API, que es quien tiene la base del CRM):
-    sus proformas casan aunque el nombre de FACTUSOL sea otro."""
+    plantilla («la de Laboratorios Duaner», «la 512», «rotulación», «1-000014»)
+    — o en `extra_names[clipre]`: el nombre de la empresa CRM vinculada y de
+    sus contactos (lo aporta la API, que es quien tiene la base del CRM), ya
+    plegado. Un único pajar, así que «krieg 14» casa por contacto + nº."""
     if not tokens:
         return True
     clipre = str(quote.get("clipre") or "").strip()
-    if clipre and (clipre in extra_codclis or (
-            clipre.isdigit() and str(int(clipre)) in extra_codclis)):
-        return True
+    crm = ""
+    if extra_names and clipre:
+        crm = extra_names.get(clipre) or (
+            extra_names.get(str(int(clipre)), "") if clipre.isdigit() else ""
+        )
     haystack = fold_text(" ".join(str(x or "") for x in (
         quote.get("referencia"), quote.get("cliente_nombre"),
         *_quote_number_variants(quote),
     )))
+    if crm:
+        haystack = f"{haystack} {crm}"
     return all(token in haystack for token in tokens)
 
 
@@ -451,7 +455,7 @@ def list_quotes(
     client: FactusolClient, *, ejercicio: str, codcli: str | None = None,
     days_back: int = DEFAULT_DAYS_BACK, today: date | None = None,
     text: str | None = None, limit: int = QUOTE_LIST_LIMIT,
-    serie: int | None = None, extra_codclis: Collection[str] = (),
+    serie: int | None = None, extra_names: Mapping[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Proformas de un cliente (o de TODOS si `codcli` es None) en los últimos
     `days_back` días, opcionalmente filtradas por `text` y por `serie`
@@ -460,7 +464,7 @@ def list_quotes(
     items, _total = query_quotes(
         client, ejercicio=ejercicio, codcli=codcli, days_back=days_back,
         today=today, text=text, limit=limit, serie=serie,
-        extra_codclis=extra_codclis,
+        extra_names=extra_names,
     )
     return items
 
@@ -469,7 +473,7 @@ def query_quotes(
     client: FactusolClient, *, ejercicio: str, codcli: str | None = None,
     days_back: int = DEFAULT_DAYS_BACK, today: date | None = None,
     text: str | None = None, limit: int = QUOTE_LIST_LIMIT,
-    serie: int | None = None, extra_codclis: Collection[str] = (),
+    serie: int | None = None, extra_names: Mapping[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Como `list_quotes`, devolviendo `(proformas, total)`: `total` es cuántas
     casaban con los filtros ANTES del recorte a `limit`, para que la pantalla
@@ -487,8 +491,9 @@ def query_quotes(
     primero, buscar una plantilla antigua no la encontraría nunca porque las
     100 más recientes se la habrían comido. `text` casa sin acentos ni
     mayúsculas, por palabras parciales, contra referencia, cliente de FACTUSOL
-    y número con o sin serie; `extra_codclis` añade los clientes cuyo nombre
-    de empresa CRM o de contacto casó (ver `_quote_matches`).
+    y número con o sin serie; `extra_names` (`{codcli: texto plegado}`) añade
+    al pajar de cada proforma el nombre de su empresa CRM vinculada y de sus
+    contactos (ver `_quote_matches`).
     """
     filtro = "1=1"
     if codcli:
@@ -510,8 +515,7 @@ def query_quotes(
         quotes = [q for q in quotes if coerce_serie(q.get("tippre")) == serie]
     tokens = search_tokens(text)
     if tokens:
-        wanted = frozenset(str(c).strip() for c in extra_codclis if str(c).strip())
-        quotes = [q for q in quotes if _quote_matches(q, tokens, wanted)]
+        quotes = [q for q in quotes if _quote_matches(q, tokens, extra_names)]
     quotes.sort(key=_quote_sort_key, reverse=True)
     return quotes[:limit], len(quotes)
 
@@ -548,8 +552,14 @@ class QuoteLineTooLongError(ValueError):
 def split_description(text: Any, limit: int = DESLPS_MAX_LENGTH) -> list[str]:
     """Reparte una descripción en trozos de ≤ `limit` caracteres cortando por
     espacios (una palabra más larga que el límite se parte). Nunca devuelve
-    trozos vacíos; un texto que cabe vuelve tal cual, en un solo trozo."""
-    cleaned = " ".join(str(text or "").split())
+    trozos vacíos; un texto que cabe vuelve **tal cual** (con sus saltos de
+    línea y espacios: lo que ya se escribía antes se sigue escribiendo igual),
+    en un solo trozo. Solo lo que hay que repartir se normaliza a espacios
+    simples, para poder medir."""
+    original = str(text or "")
+    if len(original) <= limit:
+        return [original]
+    cleaned = " ".join(original.split())
     if len(cleaned) <= limit:
         return [cleaned]
     chunks: list[str] = []
@@ -582,6 +592,9 @@ def expand_long_lines(
     out: list[dict[str, Any]] = []
     for line in lines:
         chunks = split_description(line.get("description"), limit)
+        if len(chunks) == 1:
+            out.append(line)                 # cabe: la línea sale intacta
+            continue
         out.append({**line, "description": chunks[0]})
         for chunk in chunks[1:]:
             out.append({
@@ -915,7 +928,9 @@ def build_quote_line_payload(
     qty = _num(line.get("quantity"), 1.0)
     price = _num(line.get("unit_price"))
     discount = _num(line.get("discount_pct"))
-    description = " ".join(str(line.get("description") or "").split())
+    # Tal cual llega (los saltos de línea y espacios de una descripción que
+    # cabe se respetan, como siempre): el reparto ya lo hizo `expand_long_lines`.
+    description = str(line.get("description") or "")
     if len(description) > DESLPS_MAX_LENGTH:
         # Nunca se recorta en silencio: quien escribe reparte antes con
         # `expand_long_lines`; si llega algo más largo es un error de programa.

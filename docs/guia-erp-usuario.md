@@ -513,8 +513,11 @@ Acciones por proforma:
 **«Nueva proforma».** Eliges la **empresa destino** (vinculada a FACTUSOL) y la
 **empresa emisora (serie)** —1 Bomedia · 2 MQ Europe · 4 Lambert · 5 Streamtec,
 las mismas que en el alta de pedido manual—, añades líneas (buscando por **SKU**
-o **Descripción**, o escribiéndolas a mano), los **portes** en su campo aparte y
-una **referencia** opcional. Se guarda como un presupuesto **real** en FACTUSOL,
+o **Descripción**, o escribiéndolas a mano), los **portes** en su campo aparte,
+la **forma de pago** (opcional: la del cliente en FACTUSOL viene propuesta; se
+imprime en el PDF y pasa al pedido al convertir) y una **referencia** opcional.
+Una descripción larga se guarda entera: FACTUSOL la reparte en varias líneas de
+texto. Se guarda como un presupuesto **real** en FACTUSOL,
 bajo la serie elegida: ahí es donde la verás en esta pantalla y en Documentos.
 Para dropshipping, activa **«Enviar a otro nombre / dirección»**: la proforma
 sigue a nombre fiscal del cliente, solo cambia el destinatario del documento.

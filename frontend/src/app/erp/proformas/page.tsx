@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Cap, can } from "../../lib/capabilities";
 import { PageHeader } from "../../components/PageHeader";
 import { CompanyPickerModal } from "../../components/CompanyPickerModal";
@@ -271,6 +271,13 @@ export default function ProformasPage() {
   // las 500 más recientes. El filtro local sigue para que la lista reaccione
   // al instante mientras llega la respuesta.
   const [serverText, setServerText] = useState("");
+  // Texto con el que vinieron las `quotes` actuales (null = aún ninguna):
+  // cuando coincide con lo tecleado, el servidor ya filtró y el filtro local
+  // no se aplica (su criterio es más estrecho: no conoce contactos, acentos
+  // ni variantes de nº y taparía lo que el servidor encontró).
+  const [loadedText, setLoadedText] = useState<string | null>(null);
+  // Nº de la última petición: una respuesta tardía no pisa a una más nueva.
+  const reqId = useRef(0);
   // Aviso de recorte: cuántas casaban y cuántas se enseñan.
   const [truncation, setTruncation] = useState<{ total: number; limit: number } | null>(null);
   const [desde, setDesde] = useState("");
@@ -311,6 +318,7 @@ export default function ProformasPage() {
   // «Desde» más antiguo que el periodo amplía lo que se pide al backend.
   const effectiveDays = daysBackFor(daysBack, desde);
   const load = useCallback(async (): Promise<FactusolQuote[]> => {
+    const id = ++reqId.current;
     setLoading(true);
     setError(null);
     try {
@@ -320,17 +328,22 @@ export default function ProformasPage() {
         ...(serie ? { serie } : {}),
         ...(serverText ? { q: serverText } : {}),
       });
+      // Respuesta tardía (ya hay otra petición más nueva): no pisa nada.
+      if (id !== reqId.current) return r.items;
       setQuotes(r.items);
+      setLoadedText(serverText);
       setTruncation(r.truncated
         ? { total: r.total ?? r.items.length, limit: r.limit ?? LIST_LIMIT }
         : null);
       setNow(Date.now());
       return r.items;
     } catch (e) {
-      setError(extractErrorMessage(e, "No se pudieron cargar las proformas."));
+      if (id === reqId.current) {
+        setError(extractErrorMessage(e, "No se pudieron cargar las proformas."));
+      }
       return [];
     } finally {
-      setLoading(false);
+      if (id === reqId.current) setLoading(false);
     }
   }, [effectiveDays, serie, serverText]);
 
@@ -339,7 +352,10 @@ export default function ProformasPage() {
   // Filtros (texto + fechas) ANTES de la cola: los contadores de las colas
   // siguen al filtro, como en la bandeja.
   const filtered = useMemo(() => {
-    const needle = text.trim().toLowerCase();
+    // El filtro local de texto solo actúa mientras se teclea (hasta que llega
+    // la respuesta con ese texto); después manda lo que filtró el servidor.
+    const typed = text.trim();
+    const needle = loadedText === typed ? "" : typed.toLowerCase();
     return quotes.filter((q) => {
       if (desde && (!q.fecha || q.fecha < desde)) return false;
       if (hasta && (!q.fecha || q.fecha > hasta)) return false;
@@ -348,7 +364,7 @@ export default function ProformasPage() {
         .map((s) => (s || "").toLowerCase()).join(" ");
       return hay.includes(needle);
     });
-  }, [quotes, text, desde, hasta]);
+  }, [quotes, text, loadedText, desde, hasta]);
 
   const counts = useMemo(() => {
     const c: Partial<Record<QuoteQueue, number>> = {};

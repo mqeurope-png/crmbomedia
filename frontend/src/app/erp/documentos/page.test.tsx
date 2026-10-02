@@ -340,7 +340,10 @@ describe("ERP · Documentos FACTUSOL (Fase 5)", () => {
     // Con solo el rango por defecto no hay nada que limpiar.
     expect(screen.queryByRole("button", { name: "Limpiar filtros" })).not.toBeInTheDocument();
     await user.selectOptions(screen.getByLabelText("Serie / empresa"), "2");
-    await user.click(await screen.findByRole("button", { name: "Mes en curso" }));
+    // Un «hasta» distinto del defecto (no se usa «Mes en curso»: el 31 de
+    // enero el mes y el año en curso coinciden y el atajo no existe).
+    await user.clear(screen.getByLabelText("Fecha hasta"));
+    await user.type(screen.getByLabelText("Fecha hasta"), "2026-03-31");
     await user.click(await screen.findByRole("button", { name: "Limpiar filtros" }));
     await waitFor(() => {
       const last = mockList.mock.calls.at(-1);
@@ -571,10 +574,13 @@ describe("ERP · Documentos FACTUSOL (Lote 2 · PR-2)", () => {
     expect(mockList).toHaveBeenCalledWith(
       "facturas", expect.objectContaining({ fecha_desde: ytd.desde, fecha_hasta: ytd.hasta }),
     );
-    // Atajo al mes en curso.
-    await user.click(await screen.findByRole("button", { name: "Mes en curso" }));
-    await waitFor(() => expect(screen.getByLabelText("Fecha desde")).toHaveValue(mes.desde));
-    expect(screen.getByLabelText("Fecha hasta")).toHaveValue(mes.hasta);
+    // Atajo al mes en curso (salvo el 31 de enero, cuando ya ES el rango por
+    // defecto y el atajo no se enseña).
+    if (ytd.desde !== mes.desde || ytd.hasta !== mes.hasta) {
+      await user.click(await screen.findByRole("button", { name: "Mes en curso" }));
+      await waitFor(() => expect(screen.getByLabelText("Fecha desde")).toHaveValue(mes.desde));
+      expect(screen.getByLabelText("Fecha hasta")).toHaveValue(mes.hasta);
+    }
     expect(screen.queryByRole("button", { name: "Mes en curso" })).not.toBeInTheDocument();
     // Borrar «desde» consulta sin ese límite.
     await user.clear(screen.getByLabelText("Fecha desde"));

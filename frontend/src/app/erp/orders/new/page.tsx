@@ -430,12 +430,26 @@ export default function NewManualOrderPage() {
       const full = await getFactusolQuote(
         codpre, quote.serie ?? (Number(quote.tippre) || undefined),
       );
-      const rows: DocumentLine[] = (full.lines ?? []).map((l) => emptyDocumentLine({
-        sku: l.codart ?? "",
-        description: l.description,
-        quantity: String(l.quantity),
-        unit_price: String(l.unit_price),
-      }));
+      // Las líneas de TEXTO (continuación de una descripción larga o nota: sin
+      // artículo, cantidad 0 y precio 0) no son líneas de pedido: se pegan a
+      // la descripción de la línea anterior para no perder el texto y para
+      // que el formulario no quede bloqueado por una cantidad 0.
+      const rows: DocumentLine[] = [];
+      for (const l of full.lines ?? []) {
+        const textOnly = l.text_only
+          || (!l.codart && !(l.quantity > 0) && !(l.unit_price > 0));
+        if (textOnly && rows.length > 0) {
+          const prev = rows[rows.length - 1];
+          prev.description = `${prev.description} ${l.description}`.trim();
+          continue;
+        }
+        rows.push(emptyDocumentLine({
+          sku: l.codart ?? "",
+          description: l.description,
+          quantity: String(textOnly ? 1 : l.quantity),
+          unit_price: String(l.unit_price),
+        }));
+      }
       const fallback: DocumentLine[] = [emptyDocumentLine({
         description: full.referencia || `Proforma ${codpre}`,
         unit_price: String(full.base),

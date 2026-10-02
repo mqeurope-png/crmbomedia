@@ -161,8 +161,14 @@ la mayoría de las plantillas vienen de otro cliente parecido («la de
 Laboratorios Duaner sirve para Laboratorios Porta»).
 
 En el modo «Duplicar» hay un buscador libre sobre todas las proformas del
-último año. El texto casa contra **referencia**, **nombre del cliente de
-origen** y **número de proforma**. Al pulsar *Cargar esta plantilla* el modal
+último año, con el mismo criterio que el buscador de ERP · Proformas: el
+texto se aplica **en el servidor** (`q`, antes del recorte a `limit`) y casa
+sin acentos ni mayúsculas, por palabras parciales en cualquier orden, contra
+el **nº con o sin serie** («14», «000014», «1-000014»), la **referencia**, el
+**cliente de FACTUSOL**, la **empresa CRM vinculada** y sus **contactos**
+(«Krieg», «allphone 14»). La pantalla Proformas avisa cuando la lista viene
+recortada («Mostrando 500 de 716…») y, cuando el servidor ya filtró con el
+texto tecleado, no vuelve a filtrar en local. Al pulsar *Cargar esta plantilla* el modal
 se rellena con su desglose (o con su texto, si la proforma venía del
 escritorio) y se crea una proforma **nueva** para el cliente destino, que se
 puede cambiar arriba del todo con *Cambiar*.

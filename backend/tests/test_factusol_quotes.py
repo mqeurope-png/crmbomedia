@@ -297,17 +297,19 @@ def test_list_quotes_text_numero_con_o_sin_serie():
     assert [(q["tippre"], q["codpre"]) for q in exacto] == [("1", "14")]
 
 
-def test_list_quotes_extra_codclis_casa_por_cliente():
-    """Los CODCLI que resolvió la API (empresa CRM o contacto cuyo nombre
-    casa) hacen casar sus proformas aunque el cliente de FACTUSOL se llame de
-    otra forma; `'0014'` y `'14'` son el mismo cliente."""
+def test_list_quotes_extra_names_casa_por_empresa_crm_y_contacto_junto_al_numero():
+    """Los nombres del CRM (`{codcli: texto plegado}`, los aporta la API) se
+    suman al pajar de la proforma: casa por empresa, por contacto y también
+    MEZCLADO con un nº («krieg 14»); `'0014'` y `'14'` son el mismo cliente."""
     fake = _FakeFactusol(quotes=[
         {**_quote_row(14, clipre="0014"), "CNOPRE": "APC HANDELS"},
         {**_quote_row(15, clipre="0015"), "CNOPRE": "OTRO"},
     ])
-    items = list_quotes(fake, ejercicio="2026", days_back=0, text="allphone",
-                        extra_codclis={"14"})
-    assert [q["codpre"] for q in items] == ["14"]
+    nombres = {"14": "allphonecovers gmbh hans krieg", "0014": "allphonecovers gmbh hans krieg"}
+    for text in ("allphone", "Krieg", "krieg 14", "allphone handels", "1-000014 krieg"):
+        items = list_quotes(fake, ejercicio="2026", days_back=0, text=text,
+                            extra_names=nombres)
+        assert [q["codpre"] for q in items] == ["14"], text
     assert list_quotes(fake, ejercicio="2026", days_back=0, text="allphone") == []
 
 
@@ -333,7 +335,9 @@ def test_split_description_corta_por_palabras_sin_perder_texto():
     assert all(not c.startswith(" ") and not c.endswith(" ") for c in chunks)
     assert " ".join(chunks) == text                           # nada se pierde
     assert split_description("cabe", 100) == ["cabe"]
-    assert split_description("  dos   espacios ", 100) == ["dos espacios"]
+    # Lo que cabe NO se toca (saltos de línea y espacios incluidos): una
+    # proforma del escritorio duplicada escribe sus líneas byte a byte.
+    assert split_description("  dos   espacios \ny salto", 100) == ["  dos   espacios \ny salto"]
     # Una «palabra» más larga que el límite se parte en vez de perderse.
     assert split_description("x" * 250, 100) == ["x" * 100, "x" * 100, "x" * 50]
 
@@ -354,6 +358,9 @@ def test_expand_long_lines_crea_lineas_de_continuacion_sin_importe():
     assert (out[1]["codart"], out[1]["quantity"], out[1]["unit_price"]) == ("", 0.0, 0.0)
     assert f"{out[0]['description']} {out[1]['description']}" == larga
     assert out[2]["description"] == "Montaje"
+    # Una línea que cabe sale como el MISMO objeto, sin tocar.
+    corta = {"description": "Montaje\ncon salto", "quantity": 1, "unit_price": 30}
+    assert expand_long_lines([corta]) == [corta]
 
 
 def test_build_quote_line_payload_no_recorta_y_falla_si_no_cabe():
@@ -1469,6 +1476,24 @@ def test_quote_lines_for_order_lleva_la_forma_de_pago_con_su_nombre(session):
                              lines=[_line_row(82, 1, desc="Cable", cant=1, precio=10)])
     data = quote_lines_for_order(sin, session, "82", ejercicio="2026")
     assert (data["forma_pago"], data["forma_pago_nombre"]) == (None, None)
+
+
+def test_convert_quote_to_order_lleva_la_forma_de_pago_al_pedido(session):
+    """El pedido convertido guarda la forma de pago de la proforma en su
+    bloque `factusol_source` (como los creados desde albarán/factura)."""
+    import json
+
+    from app.integrations.factusol.catalogs import clear_cache
+
+    clear_cache()
+    fake = _FakeConFormasPago(
+        quotes=[{**_quote_row(83), "FOPPRE": "002"}],
+        lines=[_line_row(83, 1, desc="Cable", cant=1, precio=10)],
+    )
+    result = convert_quote_to_order(fake, session, "83", ejercicio="2026")
+    order = session.get(Order, result["order_id"])
+    source = json.loads(order.packing_json or "{}")["factusol_source"]
+    assert (source["forma_pago"], source["forma_pago_nombre"]) == ("002", "Transferencia")
 
 
 def test_get_quote_expone_los_portes_de_la_cabecera(session):

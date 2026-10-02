@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listCompanies, type Company } from "../../lib/companiesApi";
 import { extractErrorMessage } from "../../lib/errors";
 import {
@@ -168,6 +168,11 @@ export function CreateQuoteModal({
   // la de la plantilla al duplicar y la de la proforma al editar.
   const [fopfac, setFopfac] = useState("");
   const [formasPago, setFormasPago] = useState<FormaPago[]>([]);
+  // Una forma de pago ya fijada (heredada de la plantilla o elegida a mano)
+  // manda sobre la propuesta por defecto del cliente, llegue esta antes o
+  // después; cambiar de cliente vuelve a proponer la suya.
+  const fopLocked = useRef(false);
+  const fopCodcli = useRef<string | null | undefined>(undefined);
   // Direcciones del cliente: la sede + las adicionales de FACTUSOL.
   const [addresses, setAddresses] = useState<FactusolAddress[]>([]);
   const [addressCode, setAddressCode] = useState(0);
@@ -252,9 +257,16 @@ export function CreateQuoteModal({
   // a proponer la suya; si no tiene, se respeta lo que hubiera.
   useEffect(() => {
     if (editCodpre || !targetCodcli) return;
+    if (fopCodcli.current !== undefined && fopCodcli.current !== targetCodcli) {
+      fopLocked.current = false;          // otro cliente: se propone la suya
+    }
+    fopCodcli.current = targetCodcli;
+    if (fopLocked.current) return;
     let alive = true;
     getFactusolCustomerPaymentMethod(targetCodcli)
-      .then((r) => { if (alive && r.codigo) setFopfac(r.codigo); })
+      .then((r) => {
+        if (alive && r.codigo && !fopLocked.current) setFopfac(r.codigo);
+      })
       .catch(() => { /* sin defecto: el selector se queda como esté */ });
     return () => { alive = false; };
   }, [editCodpre, targetCodcli]);
@@ -357,7 +369,10 @@ export function CreateQuoteModal({
     // La copia hereda la forma de pago de la plantilla; si no tenía, se queda
     // la propuesta (la del cliente destino) o ninguna.
     const heredada = paymentCodeOf(template);
-    if (heredada) setFopfac(heredada);
+    if (heredada) {
+      fopLocked.current = true;
+      setFopfac(heredada);
+    }
     setLoadedFrom(template.codpre);
     setMode("articles");
   }
@@ -778,7 +793,10 @@ export function CreateQuoteModal({
                     <span>Forma de pago</span>
                     <select value={fopfac} aria-label="Forma de pago"
                             title="Forma de pago del documento (F_FPA). Vacío = sin especificar."
-                            onChange={(e) => setFopfac(e.target.value)}>
+                            onChange={(e) => {
+                              fopLocked.current = true;   // elección del operador: manda
+                              setFopfac(e.target.value);
+                            }}>
                       <option value="">— Sin especificar —</option>
                       {fopfac && !formasPago.some((f) => (f.codigo ?? "") === fopfac) ? (
                         <option value={fopfac}>Código {fopfac}</option>
