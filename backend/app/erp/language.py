@@ -18,9 +18,11 @@ y la cascada de idioma del PDF.
 """
 from __future__ import annotations
 
+import gettext
 import logging
 import unicodedata
 from collections import Counter
+from functools import lru_cache
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -254,6 +256,12 @@ def normalize_country(
     alias = _COUNTRY_ALIASES.get(key)
     if alias is not None:
         return alias
+    # Nombre en es/de/fr/nl («Polonia», «Österreich», «Pays-Bas»…): lo que
+    # escribe el operador o lo que BoHub enseña con `country_display_name`, de
+    # modo que el nombre vuelve al mismo país al guardarlo.
+    localized = _localized_name_index().get(key)
+    if localized is not None:
+        return localized
     iso = _pycountry_lookup(key)
     if iso is not None:
         return iso
@@ -273,3 +281,61 @@ def language_for_country(
     if iso is None:
         return None
     return COUNTRY_LANGUAGE.get(iso, DEFAULT_COUNTRY_LANGUAGE)
+
+
+# --- nombre del país en el idioma del documento ------------------------------
+
+#: Idiomas con traducción de nombres de país (los del PDF menos el inglés, que
+#: es el nombre base de pycountry).
+_TRANSLATED_LANGS: tuple[str, ...] = ("es", "de", "fr", "nl")
+
+
+@lru_cache(maxsize=8)
+def _country_translator(lang: str) -> gettext.NullTranslations:
+    """Catálogo ISO 3166-1 de pycountry en `lang` (o el nulo: nombre en inglés)."""
+    if pycountry is None or lang not in _TRANSLATED_LANGS:
+        return gettext.NullTranslations()
+    try:
+        return gettext.translation(
+            "iso3166-1", pycountry.LOCALES_DIR, languages=[lang],
+        )
+    except (OSError, AttributeError):  # pragma: no cover - sin catálogos
+        return gettext.NullTranslations()
+
+
+@lru_cache(maxsize=1)
+def _localized_name_index() -> dict[str, str]:
+    """`{nombre canónico en es/de/fr/nl → ISO2}` sacado de los catálogos de
+    pycountry. Solo nombres de 4+ letras (como `_pycountry_lookup`)."""
+    if pycountry is None:
+        return {}
+    index: dict[str, str] = {}
+    for lang in _TRANSLATED_LANGS:
+        translator = _country_translator(lang)
+        for country in pycountry.countries:
+            key = _norm_key(translator.gettext(country.name))
+            if len(key) >= 4:
+                index.setdefault(key, country.alpha_2)
+    return index
+
+
+def country_display_name(value: Any, lang: str = "es") -> str:
+    """Nombre del país en `lang` (es/en/de/fr/nl) a partir de cualquier forma
+    en que llegue: el código numérico de FACTUSOL («276»), ISO2 («DE») o un
+    nombre («ALEMANIA»). «276» → «Deutschland» en alemán, «Alemania» en
+    español. Lo que no se reconoce vuelve tal cual (no se inventa un país);
+    vacío → ""."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    iso2 = normalize_country(raw)
+    if iso2 is None or pycountry is None:
+        return raw
+    country = pycountry.countries.get(alpha_2=iso2)
+    if country is None:
+        return raw
+    if lang not in _TRANSLATED_LANGS:
+        # Inglés (y cualquier otro): el nombre corriente si lo hay
+        # («Bolivia» antes que «Bolivia, Plurinational State of»).
+        return str(getattr(country, "common_name", None) or country.name)
+    return _country_translator(lang).gettext(country.name)

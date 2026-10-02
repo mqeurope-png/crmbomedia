@@ -2450,6 +2450,8 @@ export type FactusolDocument = {
   forma_pago: string | null;
   /** E4 — país del cliente (para deducir el idioma por defecto del PDF). */
   cliente_pais?: string | null;
+  /** Nombre del país del cliente (CPA* guarda el código numérico, «276»). */
+  cliente_pais_nombre?: string | null;
   /** E3-B — posición en el ciclo PRE→ALB→FAC. `null`/ausente = el backend
    *  no pudo cargar el índice (anotación best-effort). */
   ciclo?: FactusolCycle;
@@ -3192,6 +3194,24 @@ export async function getQuoteEmailPreview(
       currency: opts.currency ?? undefined, contact_id: opts.contact_id ?? undefined,
     })}`,
   );
+}
+
+/** Contacto del CRM encontrado con el buscador del modal de email. */
+export type CrmContactHit = {
+  id: string;
+  name: string;
+  email: string;
+  company_name: string | null;
+};
+
+/** Remates · punto 3: busca CUALQUIER contacto del CRM con email (nombre,
+ *  email o empresa). Vive en el ERP: los perfiles de pedidos no tienen
+ *  acceso a `/api/contacts`. */
+export async function searchCrmContacts(q: string, limit = 8): Promise<CrmContactHit[]> {
+  const r = await apiFetch<{ items: CrmContactHit[] }>(
+    `/api/erp/contacts/search${qs({ q, limit })}`,
+  );
+  return r.items;
 }
 
 export async function sendQuoteEmail(
@@ -4157,7 +4177,8 @@ export type CreateQuotePayload = {
     iva_pct?: number;
   }[];
   fecha?: string | null;
-  fopfac?: string | null;
+  /** Forma de pago del presupuesto (`F_PRE.FOPPRE`, código de F_FPA). */
+  foppre?: string | null;
   /** Dirección de envío elegida; omitir → la de la empresa CRM. */
   address?: {
     direccion?: string;

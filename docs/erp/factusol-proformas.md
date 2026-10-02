@@ -110,25 +110,29 @@ docker compose -f /opt/crmbo/docker-compose.prod.yml exec api \
     python -m scripts.factusol_discover_article_prices
 ```
 
-### Descripciones largas (líneas de continuación)
+### Descripciones largas
 
 Una descripción de línea puede tener la longitud que haga falta (hasta 2000
 caracteres por línea; por encima la API rechaza la proforma diciendo **qué
-línea** y **qué límite**). FACTUSOL guarda 255 caracteres por fila de `F_LPS`
-(`DESLPS_MAX_LENGTH`, el límite conocido seguro), así que lo que sobra se
-reparte, cortando por palabras, en **líneas de continuación**: filas sin
-artículo, con cantidad 0 y precio 0, que no suman y que el escritorio y el PDF
-pintan debajo de la línea. **Nunca se recorta en silencio.**
+línea** y **qué límite**) y **saltos de línea**. Se escribe **entera en
+`F_LPS.DESLPS`**, en una sola fila, con sus saltos de línea. **Nunca se
+recorta.**
 
-Al leer la proforma esas filas vuelven como líneas con `text_only: true` (igual
-que las notas escritas a mano en el escritorio) y no se fusionan con la
-anterior: una nota que el operador puso aparte sigue aparte. Al editar o
-duplicar, el modal conserva las líneas de texto (cantidad 0 y sin SKU ni
-precio) en vez de descartarlas.
+Medido en producción con `scripts/factusol_discover_line_lengths.py`
+(02/10/2026): `DESLPS` guarda al menos 733 caracteres (330 de las 3.376 líneas
+de 2026 pasan de 255), las descripciones largas llevan saltos de línea dentro y
+`MEMLPS` está vacío en toda la tabla. Es un campo de texto largo, no un
+Texto(255), así que `DESLPS_MAX_LENGTH` es el mismo tope de BoHub (2000) y ya
+no se reparte en líneas de continuación (#507 lo hacía con un tope de 255 por
+precaución).
 
-Si la columna admite más de 255 (se mide con
-`scripts/factusol_discover_line_lengths.py` contra una proforma real con texto
-largo, p. ej. la 5-004360), basta subir `DESLPS_MAX_LENGTH`.
+En el modal la descripción es un área de texto (un `<input>` borraba los
+saltos de línea al tocarla); el detalle en pantalla y el PDF los respetan.
+
+Al leer una proforma, las filas sin artículo, cantidad ni precio (notas del
+escritorio, o las continuaciones que BoHub escribió antes) vuelven como
+`text_only: true` y no se fusionan con la anterior; al editar o duplicar, el
+modal las conserva.
 
 ### Forma de pago
 
@@ -138,11 +142,36 @@ PayPal, 004 TPV…). Se preselecciona la del cliente en FACTUSOL
 (`F_CLI.FPACLI`, vía `GET /customers/{codcli}/payment-method`) si la tiene;
 al duplicar se hereda la de la plantilla; al editar, la de la proforma.
 
-Se escribe en `F_PRE.FOPPRE` (`fopfac` en la API; al editar, vacío borra la
-que hubiera). Documentos FACTUSOL la enseña en el detalle («Forma de pago ·
+Se escribe en `F_PRE.FOPPRE` (`foppre` en toda la cadena: modal → endpoint →
+job → escritura; `FOPFAC` es la de las facturas. El endpoint y el job aceptan
+aún `fopfac`, el nombre de #507, para las pestañas y los jobs anteriores al
+despliegue. Al editar, vacío borra la que hubiera). Documentos FACTUSOL la enseña en el detalle («Forma de pago ·
 Transferencia»), el PDF la imprime y al **convertir en pedido** viaja en el
 bloque `factusol_source` como en los pedidos creados desde albarán/factura.
-Sin elegir ninguna, el campo queda vacío.
+Sin elegir ninguna, el campo queda vacío y el PDF pinta «—» (antes el código
+vacío casaba con la forma 0 de `F_FPA` e imprimía «SC Sin cargo»).
+
+> **Despliegue:** los jobs de escritura (crear / editar / duplicar / convertir)
+> los ejecuta `worker-factusol`, que usa la misma imagen que `api`. Tras
+> `build api`, hay que recrear también ese worker (`up -d --force-recreate api
+> frontend worker-factusol`); si no, sigue con el código anterior. Eso es lo
+> que produjo `update_quote_job() got an unexpected keyword argument 'fopfac'`
+> tras desplegar #507.
+
+### Base imponible, país y textos del PDF
+
+- `BAS1PRE` (base imponible = neto + portes) se escribe **siempre** al crear y
+  al editar; antes solo con portes, y FACTUSOL la dejaba a 0 (el PDF de la
+  5-004361 decía «Bemessungsgrundlage 0,00» con un total de 3.084 €). Para los
+  documentos ya escritos así, el PDF calcula la base de la banda (neto −
+  descuento + portes + financiación) cuando la cabecera la trae a 0.
+- El país del cliente (`CPA*`, código numérico de FACTUSOL: 276, 724…) sale
+  por su **nombre en el idioma del documento** («Deutschland» en alemán) y en
+  su propia línea, no pegado a la provincia. También en el detalle de
+  Documentos («País») y en la copia directa (el nombre vuelve al mismo código
+  al guardar: `normalize_country` entiende los nombres en es/de/fr/nl).
+- Los textos fijos del pie (exención intracomunitaria de Streamtec, reserva de
+  dominio y condiciones generales de Bomedia) van en los cinco idiomas.
 
 ### Artículos en el pedido manual
 
@@ -170,6 +199,15 @@ documento → país de la empresa → emisora → ES) con selector, remitente de
 ERP → Remitentes; si no, el alias del usuario) y el PDF adjunto
 (`Presupuesto-2-000075.pdf` o `Proforma-2-000075.pdf`).
 
+Además de los contactos de la empresa y las direcciones libres, «Buscar
+contacto del CRM» encuentra **cualquier contacto** con email (por nombre,
+email o empresa) y lo añade a «Para» o «CC» con su nombre y email; si es el
+primer destinatario, `{contacto}` le saluda y el correo queda en su ficha. La
+búsqueda es `GET /api/erp/contacts/search?q=` (capacidad de email a clientes):
+los perfiles de solo-ERP no pueden usar `/api/contacts`. Cuando el cliente
+FACTUSOL no está vinculado a una empresa del CRM (p. ej. la 1-004358), el modal
+lo dice en una línea y el buscador es la vía para elegir destinatario.
+
 Las plantillas por idioma (ES/EN/DE/FR/NL) se editan en Ajustes ERP →
 «Plantillas del email de presupuesto», con los marcadores `{numero}`,
 `{empresa}`, `{contacto}`, `{total}`, `{fecha}`, `{validez}` (la frase del PDF)
@@ -185,12 +223,15 @@ destinatarios el envío falla con un mensaje claro y **no** queda marcado.
 
 ### Duplicar directo («⋯ → Duplicar»)
 
-En ERP · Proformas y en la ficha de empresa, «⋯ → Duplicar» abre el modal
+En ERP · Proformas, en la ficha de empresa y en Documentos FACTUSOL →
+Presupuestos, «⋯ → Duplicar» abre el modal
 «Duplicar proforma nº X» ya volcado: cliente destino = el de origen (con
 «Cambiar»), empresa emisora, referencia, líneas reales de F_LPS, portes, forma
 de pago y el destinatario de envío si era distinto de la sede (`envio` /
 `envio_distinto` del detalle). Fecha de hoy y «Crear proforma». Se puede cambiar
-la serie y la empresa antes de crear; el original no se toca.
+la serie y la empresa antes de crear; el original no se toca. «Duplicar» y
+«Enviar por email» solo se ofrecen a quien tiene el permiso de proformas
+(duplicar además el de crear documentos; enviar, el de email a clientes).
 
 ### Duplicar como plantilla
 

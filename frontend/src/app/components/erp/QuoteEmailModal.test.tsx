@@ -4,6 +4,7 @@ import { QuoteEmailModal, emailedMark } from "./QuoteEmailModal";
 import {
   getEmailSenders,
   getQuoteEmailPreview,
+  searchCrmContacts,
   sendQuoteEmail,
   type QuoteEmailPreview,
 } from "../../lib/erpApi";
@@ -17,7 +18,9 @@ jest.mock("../../lib/erpApi", () => ({
   getQuoteEmailPreview: jest.fn(),
   sendQuoteEmail: jest.fn(),
   getEmailSenders: jest.fn(),
+  searchCrmContacts: jest.fn(),
 }));
+const mockSearch = searchCrmContacts as jest.Mock;
 const mockPreview = getQuoteEmailPreview as jest.Mock;
 const mockSend = sendQuoteEmail as jest.Mock;
 const mockSenders = getEmailSenders as jest.Mock;
@@ -55,6 +58,8 @@ beforeEach(() => {
   });
   mockSenders.mockReset();
   mockSenders.mockResolvedValue({ senders: [], available: true, problem: null });
+  mockSearch.mockReset();
+  mockSearch.mockResolvedValue([]);
 });
 
 describe("QuoteEmailModal", () => {
@@ -98,7 +103,7 @@ describe("QuoteEmailModal", () => {
     const boton = await screen.findByRole("button", { name: "Enviar presupuesto" });
     expect(boton).toBeDisabled();
     expect(screen.getByText(/Elige al menos un destinatario/)).toBeInTheDocument();
-    expect(screen.getByText(/no está vinculado a ninguna empresa del CRM/)).toBeInTheDocument();
+    expect(screen.getByText(/Este cliente no está vinculado a una empresa del CRM/)).toBeInTheDocument();
     await user.type(screen.getByLabelText("Destinatario"), "libre@ejemplo.com");
     expect(boton).toBeEnabled();
     await user.click(boton);
@@ -135,5 +140,74 @@ describe("QuoteEmailModal", () => {
     expect(emailedMark(null, null)).toBeNull();
     const mark = emailedMark("2026-10-02T10:15:00", ["a@x.com", "b@x.com"]);
     expect(mark).toEqual({ label: "Enviada 02/10", title: "Enviada por email el 02/10/2026 a a@x.com, b@x.com" });
+  });
+});
+
+
+describe("QuoteEmailModal — buscar cualquier contacto del CRM (remates · punto 3)", () => {
+  const eduard = {
+    id: "c-eduard", name: "Eduard Riera", email: "eduard@riera.example",
+    company_name: "Riera Contijoch SL",
+  };
+
+  it("cliente sin vincular: avisa en una línea y el buscador añade el contacto a «Para» con nombre y email", async () => {
+    mockPreview.mockResolvedValue(preview({
+      company_contacts: [], company_id: null, company_name: null, to: "",
+      customer_name: "EDUARD RIERA CONTIJOCH", contacto_id: null,
+    }));
+    mockSearch.mockResolvedValue([eduard]);
+    const user = userEvent.setup();
+    render(<QuoteEmailModal codpre="4358" serie={1} onClose={jest.fn()} />);
+    expect(await screen.findByText(
+      /Este cliente no está vinculado a una empresa del CRM \(«EDUARD RIERA CONTIJOCH»\)/,
+    )).toBeInTheDocument();
+    await user.type(screen.getByLabelText("Buscar contacto del CRM"), "eduard");
+    await waitFor(() => expect(mockSearch).toHaveBeenCalledWith("eduard"));
+    const hits = await screen.findByRole("list", { name: "Contactos del CRM encontrados" });
+    expect(hits).toHaveTextContent("Eduard Riera");
+    expect(hits).toHaveTextContent("Riera Contijoch SL");
+    expect(hits).toHaveTextContent("eduard@riera.example");
+    await user.click(screen.getByRole("button", { name: "Añadir a Eduard Riera en Para" }));
+    const picks = screen.getByRole("list", { name: "Contactos del CRM añadidos" });
+    expect(picks).toHaveTextContent("Eduard Riera");
+    expect(picks).toHaveTextContent("eduard@riera.example");
+    // El saludo pasa a ser el del contacto elegido (la previsualización se rehace).
+    await waitFor(() => expect(mockPreview).toHaveBeenLastCalledWith(
+      "4358", 1, expect.objectContaining({ contact_id: "c-eduard" }),
+    ));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Enviar presupuesto" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "Enviar presupuesto" }));
+    await waitFor(() => expect(mockSend).toHaveBeenCalledWith("4358", 1, expect.objectContaining({
+      to: ["eduard@riera.example"], cc: [],
+    })));
+  });
+
+  it("también con empresa vinculada: un contacto de otra empresa va a CC y se puede quitar", async () => {
+    mockSearch.mockResolvedValue([eduard]);
+    const user = userEvent.setup();
+    render(<QuoteEmailModal codpre="75" serie={2} onClose={jest.fn()} />);
+    await screen.findByLabelText("Enviar a Marta Coll (marta@maison.example)");
+    expect(screen.queryByText(/no está vinculado/)).not.toBeInTheDocument();
+    await user.type(screen.getByLabelText("Buscar contacto del CRM"), "riera");
+    await user.click(await screen.findByRole("button", { name: "Añadir a Eduard Riera en CC" }));
+    await user.click(screen.getByRole("button", { name: "Enviar presupuesto" }));
+    await waitFor(() => expect(mockSend).toHaveBeenCalledWith("75", 2, expect.objectContaining({
+      to: ["marta@maison.example"], cc: ["eduard@riera.example"],
+    })));
+  });
+
+  it("quitar un contacto añadido lo saca de los destinatarios", async () => {
+    mockSearch.mockResolvedValue([eduard]);
+    const user = userEvent.setup();
+    render(<QuoteEmailModal codpre="75" serie={2} onClose={jest.fn()} />);
+    await screen.findByLabelText("Enviar a Marta Coll (marta@maison.example)");
+    await user.type(screen.getByLabelText("Buscar contacto del CRM"), "riera");
+    await user.click(await screen.findByRole("button", { name: "Añadir a Eduard Riera en CC" }));
+    await user.click(screen.getByRole("button", { name: "Quitar a Eduard Riera" }));
+    expect(screen.queryByRole("list", { name: "Contactos del CRM añadidos" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Enviar presupuesto" }));
+    await waitFor(() => expect(mockSend).toHaveBeenCalledWith("75", 2, expect.objectContaining({
+      to: ["marta@maison.example"], cc: [],
+    })));
   });
 });

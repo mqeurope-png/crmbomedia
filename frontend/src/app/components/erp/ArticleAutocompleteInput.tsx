@@ -22,6 +22,7 @@ export function ArticleAutocompleteInput({
   enabled = true,
   ariaLabel,
   placeholder,
+  multiline = false,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -29,6 +30,10 @@ export function ArticleAutocompleteInput({
   enabled?: boolean;
   ariaLabel: string;
   placeholder?: string;
+  /** Área de texto en vez de input: la descripción de una línea de proforma
+   *  admite saltos de línea (FACTUSOL los guarda en `DESLPS`) y un `<input>`
+   *  los borra en cuanto se toca el campo. */
+  multiline?: boolean;
 }) {
   const [hits, setHits] = useState<FactusolArticle[]>([]);
   const [open, setOpen] = useState(false);
@@ -70,18 +75,32 @@ export function ArticleAutocompleteInput({
 
   return (
     <div className="erp-article-ac">
-      <input
-        type="text"
-        value={value}
-        aria-label={ariaLabel}
-        placeholder={placeholder}
-        autoComplete="off"
-        onChange={(e) => onChange(e.target.value)}
-        // El blur se retrasa: si no, el input se cierra antes de que el clic
-        // en la sugerencia llegue a dispararse.
-        onBlur={() => window.setTimeout(() => setOpen(false), 150)}
-        onFocus={() => setOpen(hits.length > 0)}
-      />
+      {multiline ? (
+        <textarea
+          value={value}
+          aria-label={ariaLabel}
+          placeholder={placeholder}
+          autoComplete="off"
+          // Crece con el texto (hasta 8 renglones; luego, barra de desplazamiento).
+          rows={Math.min(8, Math.max(1, value.split("\n").length))}
+          onChange={(e) => onChange(e.target.value)}
+          onBlur={() => window.setTimeout(() => setOpen(false), 150)}
+          onFocus={() => setOpen(hits.length > 0)}
+        />
+      ) : (
+        <input
+          type="text"
+          value={value}
+          aria-label={ariaLabel}
+          placeholder={placeholder}
+          autoComplete="off"
+          onChange={(e) => onChange(e.target.value)}
+          // El blur se retrasa: si no, el input se cierra antes de que el clic
+          // en la sugerencia llegue a dispararse.
+          onBlur={() => window.setTimeout(() => setOpen(false), 150)}
+          onFocus={() => setOpen(hits.length > 0)}
+        />
+      )}
       {enabled && open ? (
         <ul className="erp-article-ac-list" role="listbox"
             aria-label={`Artículos para ${ariaLabel}`}>

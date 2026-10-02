@@ -30,6 +30,8 @@ export function CompanyQuotesPanel({
   factusolCodcli,
   onOrderCreated,
   createSignal = 0,
+  canDuplicate = true,
+  canEmail = true,
 }: {
   companyId: string;
   companyName: string;
@@ -37,6 +39,10 @@ export function CompanyQuotesPanel({
   onOrderCreated?: (orderId: string) => void;
   /** Fase 3: «Nueva proforma» desde la cabecera de la ficha de empresa. */
   createSignal?: number;
+  /** Remates · punto 6: sin el permiso, ni «Duplicar» ni «Enviar por email»
+   *  (el servidor ya respondía 403; ahora ni se ofrece). */
+  canDuplicate?: boolean;
+  canEmail?: boolean;
 }) {
   const [quotes, setQuotes] = useState<FactusolQuote[]>([]);
   const [unlinked, setUnlinked] = useState(false);
@@ -164,16 +170,20 @@ export function CompanyQuotesPanel({
                         onClick={() => setEditing(q)}>
                   Editar
                 </button>
-                <button type="button" className="button small secondary"
-                        disabled={busyJob}
-                        onClick={() => setDuplicating(q)}>
-                  Duplicar
-                </button>
-                <button type="button" className="button small secondary"
-                        disabled={busyJob}
-                        onClick={() => setEmailing(q)}>
-                  {q.emailed_at ? "Reenviar" : "Enviar por email"}
-                </button>
+                {canDuplicate ? (
+                  <button type="button" className="button small secondary"
+                          disabled={busyJob}
+                          onClick={() => setDuplicating(q)}>
+                    Duplicar
+                  </button>
+                ) : null}
+                {canEmail ? (
+                  <button type="button" className="button small secondary"
+                          disabled={busyJob}
+                          onClick={() => setEmailing(q)}>
+                    {q.emailed_at ? "Reenviar" : "Enviar por email"}
+                  </button>
+                ) : null}
                 <button type="button" className="button small secondary"
                         disabled={busyJob}
                         onClick={() => setConverting(q)}>

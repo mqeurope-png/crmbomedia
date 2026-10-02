@@ -10,6 +10,8 @@ import {
   FactusolDocumentDetailModal,
 } from "../../components/erp/FactusolDocumentDetailModal";
 import { ActionsMenu } from "../../components/erp/flow/ActionsMenu";
+import { CreateQuoteModal } from "../../components/erp/CreateQuoteModal";
+import { pollQuoteJob } from "../../components/erp/quoteJobs";
 import { emailedMark } from "../../components/erp/QuoteEmailModal";
 import { RegimePill } from "../../components/erp/flow/RegimePill";
 import {
@@ -34,6 +36,7 @@ import {
   type FactusolDocument,
   type FactusolDocumentFilters,
   type FactusolDocumentSort,
+  type FactusolQuote,
   type FactusolSerie,
 } from "../../lib/erpApi";
 import { extractErrorMessage } from "../../lib/errors";
@@ -127,6 +130,25 @@ function sinceLabel(iso: string, now: number): string {
 
 /** Idioma del PDF por el país del cliente (E4-fix2): mismo criterio que el
  *  resto del ERP. Prefiere el ISO2 del CRM; cae al país del documento. */
+/** Presupuesto de la lista → la forma que espera la copia directa (el modal
+ *  vuelve a leer la proforma entera de FACTUSOL por serie + número). */
+function quoteFromDocument(d: FactusolDocument): FactusolQuote {
+  return {
+    codpre: d.codigo !== null ? String(d.codigo) : null,
+    referencia: d.referencia ?? "",
+    fecha: d.fecha,
+    clipre: d.cliente_codigo,
+    cliente_nombre: d.cliente_nombre,
+    base: 0,
+    iva: 0,
+    total: d.total ?? 0,
+    serie: d.serie,
+    tippre: d.serie,
+    numero: d.numero,
+    company: d.company ?? null,
+  };
+}
+
 function pdfLangFor(d: FactusolDocument) {
   return defaultPdfLang(d.country_iso2 ?? d.cliente_pais);
 }
@@ -163,6 +185,10 @@ export default function FactusolDocumentosPage() {
   const [series, setSeries] = useState<FactusolSerie[]>([]);
   const [detail, setDetail] = useState<FactusolDocument | null>(null);
   const [canEdit, setCanEdit] = useState(false);
+  // «Duplicar» (copia directa de #508): permiso de proformas + de crear
+  // documentos (el alta de la copia exige este último en el servidor).
+  const [canDuplicate, setCanDuplicate] = useState(false);
+  const [duplicating, setDuplicating] = useState<FactusolDocument | null>(null);
   // Cobro F-4-B (solo facturas pendientes): la factura elegida para el modal.
   const [cobrando, setCobrando] = useState<FactusolDocument | null>(null);
   // Lote 2 · PR-2 — «Vincular»: el albarán / la factura elegido para el modal.
@@ -199,8 +225,11 @@ export default function FactusolDocumentosPage() {
 
   useEffect(() => {
     getCurrentUser()
-      .then((u) => setCanEdit(can(u, Cap.DOCUMENTS)))
-      .catch(() => setCanEdit(false));
+      .then((u) => {
+        setCanEdit(can(u, Cap.DOCUMENTS));
+        setCanDuplicate(can(u, Cap.PROFORMAS) && can(u, Cap.ORDERS_CREATE));
+      })
+      .catch(() => { setCanEdit(false); setCanDuplicate(false); });
   }, []);
 
   useEffect(() => {
@@ -424,6 +453,22 @@ export default function FactusolDocumentosPage() {
    *  para conseguirlo. Presupuestos / pedidos: «Crear pedido» (alta prefijada).
    *  Albaranes / facturas: «Crear pedido» (Lote 7 · P4, alta directa desde el
    *  documento) Y «Vincular» a un pedido ya existente (Lote 2 · PR-2). */
+  async function onDuplicated(jobId: string) {
+    setDuplicating(null);
+    setError(null);
+    setNotice("Creando la proforma en FACTUSOL…");
+    const outcome = await pollQuoteJob(jobId);
+    if (outcome.status === "finished") {
+      setNotice(`Proforma nº ${String(outcome.result.codpre ?? "")} creada.`);
+      void load(offset, true);
+    } else if (outcome.status === "failed") {
+      setNotice(null);
+      setError(outcome.error ?? "La operación falló en FACTUSOL.");
+    } else {
+      setNotice("Sigue en curso; actualiza en unos segundos.");
+    }
+  }
+
   function pedidoCell(d: FactusolDocument) {
     if (d.order) {
       return (
@@ -792,6 +837,11 @@ export default function FactusolDocumentosPage() {
                           {d.company ? (
                             <Link href={`/companies/${d.company.id}`}>Ver empresa</Link>
                           ) : null}
+                          {d.doc_type === "presupuestos" && canDuplicate && d.codigo !== null ? (
+                            <button type="button" onClick={() => setDuplicating(d)}>
+                              Duplicar
+                            </button>
+                          ) : null}
                           {d.order ? (
                             <Link href={`/erp/orders/${d.order.id}`}>
                               Abrir pedido {d.order.order_number}
@@ -875,6 +925,20 @@ export default function FactusolDocumentosPage() {
             : undefined}
           onClose={() => setVincularEmpresa(null)}
           onLinked={onEmpresaVinculada}
+        />
+      ) : null}
+
+      {/* Remates · punto 4: la misma copia directa que en ERP · Proformas y la
+          ficha de empresa: cliente y serie preseleccionados (cambiables) y las
+          líneas reales de la proforma; se crea con «Crear proforma». */}
+      {duplicating ? (
+        <CreateQuoteModal
+          companyId={duplicating.company?.id ?? ""}
+          companyName={duplicating.company?.name ?? ""}
+          factusolCodcli={duplicating.company?.factusol_id ?? duplicating.cliente_codigo ?? null}
+          duplicateDirect={quoteFromDocument(duplicating)}
+          onCreated={(jobId) => void onDuplicated(jobId)}
+          onCancel={() => setDuplicating(null)}
         />
       ) : null}
     </main>

@@ -150,6 +150,20 @@ describe("CreateQuoteModal", () => {
     expect(onCreated).toHaveBeenCalledWith("job-1");
   });
 
+  it("remates · punto 5: la descripción admite saltos de línea y viaja entera, sin recortes", async () => {
+    const user = userEvent.setup();
+    render(<CreateQuoteModal {...base()} />);
+    const desc = screen.getByLabelText("Descripción línea 1");
+    expect(desc.tagName).toBe("TEXTAREA");
+    const larga = "x".repeat(400);
+    await user.type(desc, `0% BTW bij intracommunautaire levering{enter}${larga}`);
+    await user.type(screen.getByLabelText("Precio línea 1"), "3000");
+    await user.click(screen.getByRole("button", { name: "Crear proforma" }));
+    await waitFor(() => expect(mockCreate).toHaveBeenCalled());
+    expect(mockCreate.mock.calls[0][0].lines[0].description)
+      .toBe(`0% BTW bij intracommunautaire levering\n${larga}`);
+  });
+
   it("no deja crear una proforma sin ninguna línea con descripción", () => {
     render(<CreateQuoteModal {...base()} />);
     expect(screen.getByRole("button", { name: "Crear proforma" })).toBeDisabled();
@@ -615,7 +629,7 @@ describe("CreateQuoteModal", () => {
     expect(payload.company_id).toBe("c1");
     expect(payload.serie).toBe(5);
     expect(payload.referencia).toBe("Obra Hotel Playa");
-    expect(payload.fopfac).toBe("003");
+    expect(payload.foppre).toBe("003");
     expect(payload.portes).toBe(15);
     expect(payload.shipping).toMatchObject({ name: "Hotel Playa", city: "Marbella", country: "724" });
     expect(payload.lines).toHaveLength(2);
@@ -754,7 +768,7 @@ describe("CreateQuoteModal", () => {
 
   // --- Punto E: forma de pago ---------------------------------------------
 
-  it("E · el selector lista las formas de pago de FACTUSOL, propone la del cliente y viaja como `fopfac`", async () => {
+  it("E · el selector lista las formas de pago de FACTUSOL, propone la del cliente y viaja como `foppre`", async () => {
     mockCustomerPayment.mockResolvedValue({ codigo: "002", nombre: "Transferencia" });
     const user = userEvent.setup();
     render(<CreateQuoteModal {...base({ factusolCodcli: "55555" })} />);
@@ -767,7 +781,7 @@ describe("CreateQuoteModal", () => {
     await user.type(screen.getByLabelText("Precio línea 1"), "500");
     await user.click(screen.getByRole("button", { name: "Crear proforma" }));
     await waitFor(() => expect(mockCreate).toHaveBeenCalled());
-    expect(mockCreate.mock.calls[0][0].fopfac).toBe("002");
+    expect(mockCreate.mock.calls[0][0].foppre).toBe("002");
   });
 
   it("E · sin forma de pago elegida viaja `null`; el operador puede elegir otra", async () => {
@@ -779,7 +793,7 @@ describe("CreateQuoteModal", () => {
     await user.type(screen.getByLabelText("Precio línea 1"), "500");
     await user.click(screen.getByRole("button", { name: "Crear proforma" }));
     await waitFor(() => expect(mockCreate).toHaveBeenCalled());
-    expect(mockCreate.mock.calls[0][0].fopfac).toBeNull();
+    expect(mockCreate.mock.calls[0][0].foppre).toBeNull();
     // Sin CODCLI no hay forma por defecto que pedir.
     expect(mockCustomerPayment).not.toHaveBeenCalled();
     unmount();
@@ -796,7 +810,7 @@ describe("CreateQuoteModal", () => {
     await user.type(screen.getByLabelText("Precio línea 1"), "500");
     await user.click(screen.getByRole("button", { name: "Crear proforma" }));
     await waitFor(() => expect(mockCreate).toHaveBeenCalled());
-    expect(mockCreate.mock.calls[0][0].fopfac).toBe("003");
+    expect(mockCreate.mock.calls[0][0].foppre).toBe("003");
   });
 
   it("E · al editar precarga la forma de pago de la proforma y manda la elegida al guardar", async () => {
@@ -814,7 +828,7 @@ describe("CreateQuoteModal", () => {
     await user.selectOptions(screen.getByLabelText("Forma de pago"), "002");
     await user.click(screen.getByRole("button", { name: "Guardar cambios" }));
     await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
-    expect(mockUpdate.mock.calls[0][1].fopfac).toBe("002");
+    expect(mockUpdate.mock.calls[0][1].foppre).toBe("002");
   });
 
   // --- Punto D: líneas de texto (continuación de descripciones largas) -----

@@ -611,3 +611,31 @@ def test_fix_script_only_rederives_derived_languages(db) -> None:
     assert stats["pais_corregidos"] == 2
     assert stats["idiomas_cambiados"] == 1
     assert stats["idiomas_respetados"] == 1
+
+
+def test_country_display_name_en_el_idioma_del_documento() -> None:
+    """Remates de proformas: CPA* guarda el código numérico de FACTUSOL. El
+    PDF y la pantalla enseñan el NOMBRE en el idioma del documento."""
+    from app.erp.language import country_display_name
+
+    assert country_display_name("276", "de") == "Deutschland"
+    assert country_display_name("276", "es") == "Alemania"
+    assert country_display_name("276", "fr") == "Allemagne"
+    assert country_display_name("276", "nl") == "Duitsland"
+    assert country_display_name("276", "en") == "Germany"
+    assert country_display_name("056", "nl") == "België"
+    assert country_display_name("BE", "es") == "Bélgica"
+    assert country_display_name("ESPAÑA", "en") == "Spain"
+    # Lo que no se reconoce vuelve tal cual; vacío → "".
+    assert country_display_name("999", "es") == "999"
+    assert country_display_name(None, "es") == ""
+
+
+def test_normalize_country_entiende_los_nombres_traducidos() -> None:
+    """El nombre que enseña BoHub (en es/de/fr/nl) vuelve al mismo país."""
+    from app.erp.language import country_numeric, normalize_country
+
+    assert normalize_country("Polonia") == "PL"
+    assert normalize_country("Niederlande") == "NL"
+    assert normalize_country("Pays-Bas") == "NL"
+    assert country_numeric("Österreich") == "040"

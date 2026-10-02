@@ -30,12 +30,12 @@ from app.integrations.factusol import jobs
 _QUOTE_ENQUEUES: list[tuple[str, dict[str, Any]]] = [
     ("enqueue_create_quote", {
         "customer": {"codcli": "1"}, "lines": [], "referencia": "R",
-        "fecha": "2026-09-24", "fopfac": "011", "portes": 0.0, "serie": 2,
+        "fecha": "2026-09-24", "foppre": "011", "portes": 0.0, "serie": 2,
     }),
     ("enqueue_update_quote", {
         "codpre": "585", "customer": {"codcli": "1"}, "lines": [],
         "referencia": "R", "force": True, "portes": 0.0, "serie": 2,
-        "fopfac": "002",
+        "foppre": "002",
     }),
     ("enqueue_duplicate_quote", {"codpre": "585", "fecha": None, "serie": 5}),
     ("enqueue_convert_quote_to_order", {
@@ -83,3 +83,20 @@ def test_create_quote_se_encola_por_nombre_con_la_serie():
     assert captura["func_path"].endswith("create_quote_job")
     assert captura["args"] == ()          # nada posicional: todo por nombre
     assert captura["kwargs"]["serie"] == 4
+
+
+def test_un_job_encolado_con_el_nombre_antiguo_fopfac_sigue_funcionando():
+    """#507 encolaba la forma de pago como `fopfac` (el nombre de las
+    facturas). Un job que quedó en la cola antes del despliegue tiene que
+    seguir escribiendo `FOPPRE`, no romper con «unexpected keyword»."""
+    for job, extra in ((jobs.create_quote_job, {}), (jobs.update_quote_job, {"codpre": "1"})):
+        inspect.signature(job).bind(
+            customer={"codcli": "1"}, lines=[], fopfac="002", **extra,
+        )
+    with patch("app.integrations.factusol.quotes.update_quote",
+               return_value={"codpre": "585"}) as upd, \
+            patch("app.integrations.factusol.service.ejercicio_for", return_value="2026"), \
+            patch.object(jobs.FactusolClient, "from_settings", return_value=object()), \
+            patch("app.db.session.get_engine"):
+        jobs.update_quote_job("585", {"codcli": "1"}, [], serie=2, fopfac="002")
+    assert upd.call_args.kwargs["foppre"] == "002"

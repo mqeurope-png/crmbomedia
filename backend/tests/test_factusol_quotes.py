@@ -326,71 +326,41 @@ def test_query_quotes_devuelve_el_total_antes_del_recorte():
 # --- descripciones largas (punto D) ------------------------------------------
 
 
-def test_split_description_corta_por_palabras_sin_perder_texto():
-    from app.integrations.factusol.quotes import split_description
-
-    text = " ".join(f"palabra{i:02d}" for i in range(60))   # 599 caracteres
-    chunks = split_description(text, 100)
-    assert all(len(c) <= 100 for c in chunks)
-    assert all(not c.startswith(" ") and not c.endswith(" ") for c in chunks)
-    assert " ".join(chunks) == text                           # nada se pierde
-    assert split_description("cabe", 100) == ["cabe"]
-    # Lo que cabe NO se toca (saltos de línea y espacios incluidos): una
-    # proforma del escritorio duplicada escribe sus líneas byte a byte.
-    assert split_description("  dos   espacios \ny salto", 100) == ["  dos   espacios \ny salto"]
-    # Una «palabra» más larga que el límite se parte en vez de perderse.
-    assert split_description("x" * 250, 100) == ["x" * 100, "x" * 100, "x" * 50]
-
-
-def test_expand_long_lines_crea_lineas_de_continuacion_sin_importe():
-    from app.integrations.factusol.quotes import expand_long_lines
-
-    larga = " ".join(["Impresora UV de gran formato con mesa plana"] * 10)  # 439
-    out = expand_long_lines([
-        {"codart": "UV1", "description": larga, "quantity": 1, "unit_price": 100,
-         "iva_pct": 21},
-        {"description": "Montaje", "quantity": 1, "unit_price": 30},
-    ])
-    assert len(out) == 3
-    assert out[0]["codart"] == "UV1" and out[0]["quantity"] == 1
-    assert len(out[0]["description"]) <= 255
-    assert out[1]["continuation"] is True
-    assert (out[1]["codart"], out[1]["quantity"], out[1]["unit_price"]) == ("", 0.0, 0.0)
-    assert f"{out[0]['description']} {out[1]['description']}" == larga
-    assert out[2]["description"] == "Montaje"
-    # Una línea que cabe sale como el MISMO objeto, sin tocar.
-    corta = {"description": "Montaje\ncon salto", "quantity": 1, "unit_price": 30}
-    assert expand_long_lines([corta]) == [corta]
-
-
 def test_build_quote_line_payload_no_recorta_y_falla_si_no_cabe():
-    """Antes se cortaba a 255 en silencio: ahora o cabe entero o se rechaza
-    diciendo la línea y el límite (el reparto lo hace quien escribe)."""
+    """Antes se cortaba a 255 en silencio: ahora cabe entero (hasta el tope de
+    BoHub, 2000) o se rechaza diciendo la línea y el límite."""
     from app.integrations.factusol.quotes import (
+        DESLPS_MAX_LENGTH,
         QuoteLineTooLongError,
         build_quote_line_payload,
     )
 
-    justo = "a" * 255
+    assert DESLPS_MAX_LENGTH == 2000
+    justo = "a" * 2000
     assert build_quote_line_payload("1", 1, {"description": justo})["DESLPS"] == justo
     with pytest.raises(QuoteLineTooLongError) as exc:
-        build_quote_line_payload("1", 3, {"description": "a" * 256})
-    assert "línea 3" in str(exc.value) and "255" in str(exc.value)
+        build_quote_line_payload("1", 3, {"description": "a" * 2001})
+    assert "línea 3" in str(exc.value) and "2000" in str(exc.value)
 
 
-def test_create_quote_descripcion_de_400_caracteres_llega_entera_a_f_lps(session):
-    """Punto D: una línea de 400 caracteres se crea (antes la API la rechazaba)
-    y al leerla vuelve completa en la línea + su continuación; los totales no
-    cambian porque la continuación no suma."""
+#: Como la 2-5 / 2-44 / 2-46 de producción: 733 caracteres con saltos de línea.
+_DESCRIPCION_733 = (
+    "0% BTW bij intracommunautaure levering\n"
+    "1 jaar inbreng garantie op onderdelen. Alle onderdelen die in contact "
+    "komen met de inkt zoals de printkop, de encoder en het reinigingsstation "
+    "vallen niet onder de garantie.\n"
+    + "Installatie en opleiding op afstand inbegrepen. " * 11
+).strip()
+
+
+def test_create_quote_descripcion_larga_con_saltos_va_entera_en_una_fila(session):
+    """Punto 5 (remates): `DESLPS` guarda al menos 733 caracteres en
+    producción. La descripción se escribe ENTERA en una sola fila, con sus
+    saltos de línea; ya no hay líneas de continuación. Al leerla vuelve igual."""
     from app.integrations.factusol.quotes import list_quote_lines
 
-    larga = ("Sistema de impresión UV con mesa de aspiración, cabezal Ricoh G5, "
-             "tintas CMYK + blanco + barniz, software RIP incluido, formación de "
-             "dos jornadas en las instalaciones del cliente, garantía de dos años "
-             "y mantenimiento preventivo trimestral durante el primer año de uso. "
-             "Incluye transporte, instalación y puesta en marcha con pruebas de "
-             "impresión sobre los materiales habituales del cliente final XYZW.")
-    assert len(larga) == 400
+    larga = _DESCRIPCION_733
+    assert len(larga) > 700 and "\n" in larga
     fake = _FakeFactusol(quotes=[_quote_row(50)])
     result = create_quote(
         fake, session, ejercicio="2026",
@@ -398,23 +368,29 @@ def test_create_quote_descripcion_de_400_caracteres_llega_entera_a_f_lps(session
         lines=[{"description": larga, "quantity": 1, "unit_price": 1000, "iva_pct": 21},
                {"description": "Montaje", "quantity": 1, "unit_price": 30, "iva_pct": 21}],
     )
-    header = fake.writes_to("F_PRE")[0]
-    assert header["NET1PRE"] == 1030.0            # la continuación no suma
     rows = fake.writes_to("F_LPS")
-    assert [r["POSLPS"] for r in rows] == [1, 2, 3]
-    assert all(len(r["DESLPS"]) <= 255 for r in rows)
-    assert f"{rows[0]['DESLPS']} {rows[1]['DESLPS']}" == larga   # nada recortado
-    continuacion = rows[1]
-    assert (continuacion["ARTLPS"], continuacion["CANLPS"]) == ("", 0.0)
-    assert (continuacion["PRELPS"], continuacion["TOTLPS"]) == (0.0, 0.0)
-    assert result["lines"] == 3 and "warning" not in result
+    assert [r["POSLPS"] for r in rows] == [1, 2]
+    assert rows[0]["DESLPS"] == larga                      # entera, saltos incluidos
+    assert fake.writes_to("F_PRE")[0]["NET1PRE"] == 1030.0
+    assert result["lines"] == 2 and "warning" not in result
 
-    # Lectura de vuelta por la misma función que usa la API: la continuación
-    # llega como línea de texto (`text_only`) y el texto completo está ahí.
     fake._lines = [{**r} for r in rows]
     leidas = list_quote_lines(fake, "51", ejercicio="2026", serie="1")
-    assert [line["text_only"] for line in leidas] == [False, True, False]
-    assert f"{leidas[0]['description']} {leidas[1]['description']}" == larga
+    assert leidas[0]["description"] == larga
+    assert [line["text_only"] for line in leidas] == [False, False]
+
+
+def test_las_lineas_de_texto_que_ya_existen_se_siguen_leyendo_aparte():
+    """Las notas del escritorio (y las continuaciones que BoHub escribía antes)
+    son filas sin artículo, cantidad ni precio: se leen como `text_only`."""
+    from app.integrations.factusol.quotes import list_quote_lines
+
+    fake = _FakeFactusol(quotes=[_quote_row(52)], lines=[
+        _line_row(52, 1, art="", desc="Impresora", cant=1, precio=100),
+        _line_row(52, 2, art="", desc="nota aparte", cant=0, precio=0),
+    ])
+    leidas = list_quote_lines(fake, "52", ejercicio="2026", serie="1")
+    assert [line["text_only"] for line in leidas] == [False, True]
 
 
 def test_get_quote_lee_las_lineas_reales_de_f_lps(session):
@@ -1337,8 +1313,9 @@ def test_create_quote_con_portes_escribe_la_banda_ipor1pre(session):
     assert [line["DESLPS"] for line in fake.writes_to("F_LPS")] == ["Vinilo"]
 
 
-def test_create_quote_sin_portes_no_añade_columnas(session):
-    """Con portes=0 el registro sale exactamente como hasta ahora."""
+def test_create_quote_sin_portes_escribe_la_base_y_no_la_banda_de_portes(session):
+    """Con portes=0 no hay `IPOR1PRE`, pero la base imponible sí (antes faltaba
+    y la proforma quedaba con base 0 en FACTUSOL y en el PDF)."""
     fake = _FakeFactusol()
     create_quote(
         fake, session, ejercicio="2026", customer={"codcli": "55555"},
@@ -1346,7 +1323,28 @@ def test_create_quote_sin_portes_no_añade_columnas(session):
         portes=0,
     )
     header = fake.writes_to("F_PRE")[0]
-    assert "IPOR1PRE" not in header and "BAS1PRE" not in header
+    assert "IPOR1PRE" not in header
+    assert header["BAS1PRE"] == header["NET1PRE"] == 10.0
+
+
+def test_create_quote_intracomunitaria_con_descuento_escribe_la_base(session):
+    """El caso de la 5-004361: 3.000 + transporte 120 con un 30 % de descuento
+    (= 84), intracomunitaria. Base 3.084, IVA 0, total 3.084."""
+    from app.integrations.factusol.vat_regime import REGIME_INTRACOMUNITARIO
+
+    fake = _FakeFactusol()
+    create_quote(
+        fake, session, ejercicio="2026",
+        customer={"codcli": "4361", "pais": "DE", "regime": REGIME_INTRACOMUNITARIO},
+        lines=[{"description": "Drucker", "quantity": 1, "unit_price": 3000},
+               {"description": "Transport", "quantity": 1, "unit_price": 120,
+                "discount_pct": 30}],
+        serie=5,
+    )
+    header = fake.writes_to("F_PRE")[0]
+    assert (header["NET1PRE"], header["BAS1PRE"]) == (3084.0, 3084.0)
+    assert (header["PIVA1PRE"], header["IIVA1PRE"], header["TOTPRE"]) == (0.0, 0.0, 3084.0)
+    assert fake.writes_to("F_LPS")[1]["TOTLPS"] == 84.0
 
 
 def test_update_quote_pasa_los_portes_a_la_cabecera():
@@ -1382,15 +1380,15 @@ def test_update_quote_quitar_los_portes_pone_la_banda_a_cero():
     assert header["TOTPRE"] == 121.0
 
 
-def test_update_quote_sin_portes_antes_ni_ahora_no_añade_columnas():
-    """Proforma que nunca tuvo portes: el UPDATE sale como siempre."""
+def test_update_quote_sin_portes_antes_ni_ahora_no_añade_la_banda_de_portes():
+    """Proforma que nunca tuvo portes: sin `IPOR1PRE`; la base sí se reescribe."""
     fake = _FakeFactusol(quotes=[{**_quote_row(712), "ESTPRE": 0}])
     update_quote(
         fake, "712", ejercicio="2026", customer={"codcli": "55555"},
         lines=[{"description": "Vinilo", "quantity": 1, "unit_price": 100}],
     )
     header = fake.updates_to("F_PRE")[0]
-    assert "IPOR1PRE" not in header and "BAS1PRE" not in header
+    assert "IPOR1PRE" not in header and header["BAS1PRE"] == 100.0
 
 
 # --- forma de pago (punto E) --------------------------------------------------
@@ -1412,7 +1410,7 @@ def test_create_quote_escribe_la_forma_de_pago_en_foppre(session):
         fake, session, ejercicio="2026",
         customer={"codcli": "55555", "nombre": "Acme SL", "nif": "B12345678"},
         lines=[{"description": "Vinilo", "quantity": 1, "unit_price": 100}],
-        fopfac="002",
+        foppre="002",
     )
     assert fake.writes_to("F_PRE")[0]["FOPPRE"] == "002"
 
@@ -1432,7 +1430,7 @@ def test_update_quote_escribe_la_forma_de_pago():
     update_quote(
         fake, "713", ejercicio="2026", customer={"codcli": "55555"},
         lines=[{"description": "Vinilo", "quantity": 1, "unit_price": 100}],
-        fopfac="003",
+        foppre="003",
     )
     assert fake.updates_to("F_PRE")[0]["FOPPRE"] == "003"
 
@@ -1444,7 +1442,7 @@ def test_update_quote_quitar_la_forma_de_pago_la_deja_en_blanco():
     update_quote(
         fake, "714", ejercicio="2026", customer={"codcli": "55555"},
         lines=[{"description": "Vinilo", "quantity": 1, "unit_price": 100}],
-        fopfac=None,
+        foppre=None,
     )
     assert fake.updates_to("F_PRE")[0]["FOPPRE"] == ""
 
@@ -1513,7 +1511,7 @@ def test_header_shipping_differs_compara_direccion_poblacion_y_cp_sin_el_nombre(
     assert header_shipping_differs({"cnopre": "Solo nombre"}, sede) is False
     assert header_shipping(otra) == {
         "nombre": "ACME S.L. (otro nombre)", "direccion": "Rue du Chemin Noir 5",
-        "poblacion": "Is-sur-Tille", "cp": "21120", "provincia": None, "pais": "250",
+        "poblacion": "Is-sur-Tille", "cp": "21120", "provincia": None, "pais": "Francia",
     }
 
 

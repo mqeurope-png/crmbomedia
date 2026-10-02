@@ -25,7 +25,7 @@ from fastapi import (
     UploadFile,
     status,
 )
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 from pydantic_core import PydanticCustomError
 from sqlalchemy.orm import Session
 
@@ -3039,13 +3039,12 @@ def send_quote_email_endpoint(
 class QuoteLineIn(BaseModel):
     codart: str = Field(default="", max_length=64)
     #: Sin el tope de 255 de antes: ese límite era de BoHub, no de FACTUSOL.
-    #: Cada fila de F_LPS guarda `DESLPS_MAX_LENGTH` caracteres y lo que sobra
-    #: va en líneas de continuación; el tope de BoHub por descripción
-    #: (`QUOTE_LINE_DESCRIPTION_MAX`) se comprueba en `QuoteBodyPayload`, que
-    #: sabe en qué línea está.
+    #: La descripción va ENTERA a `F_LPS.DESLPS` (texto largo), con sus saltos
+    #: de línea; el tope de BoHub (`QUOTE_LINE_DESCRIPTION_MAX`) se comprueba
+    #: en `QuoteBodyPayload`, que sabe en qué línea está.
     description: str = Field(default="")
-    #: 0 solo en las líneas de TEXTO (sin artículo ni precio): continuaciones
-    #: de una descripción larga o notas. Lo comprueba `QuoteBodyPayload`.
+    #: 0 solo en las líneas de TEXTO (sin artículo ni precio): notas, o
+    #: continuaciones que BoHub escribía antes. Lo comprueba `QuoteBodyPayload`.
     quantity: float = Field(default=1, ge=0)
     unit_price: float = Field(default=0, ge=0)
     discount_pct: float = Field(default=0, ge=0, le=100)
@@ -3090,7 +3089,13 @@ class QuoteBodyPayload(BaseModel):
     referencia: str = Field(default="", max_length=250)
     lines: list[QuoteLineIn] = Field(default_factory=list)
     fecha: str | None = Field(default=None, max_length=10)
-    fopfac: str | None = Field(default=None, max_length=10)
+    #: Forma de pago del presupuesto (`F_PRE.FOPPRE`, código de F_FPA). Se
+    #: acepta también `fopfac`, el nombre que mandaba el frontend de #507,
+    #: para que una pestaña abierta antes del despliegue siga guardando.
+    foppre: str | None = Field(
+        default=None, max_length=10,
+        validation_alias=AliasChoices("foppre", "fopfac"),
+    )
     #: Dirección alternativa; None → la de la empresa CRM.
     address: QuoteAddressIn | None = None
     #: Lote B3b: gastos de envío. Van a la banda de portes de la cabecera
@@ -3106,7 +3111,6 @@ class QuoteBodyPayload(BaseModel):
         """Mensajes con el nº de línea y el límite REAL, en vez del genérico
         «lines.3.description: String should have at most 255 characters»."""
         from app.integrations.factusol.quotes import (  # noqa: PLC0415
-            DESLPS_MAX_LENGTH,
             QUOTE_LINE_DESCRIPTION_MAX,
         )
 
@@ -3116,10 +3120,8 @@ class QuoteBodyPayload(BaseModel):
                 raise PydanticCustomError(
                     "quote_line_too_long",
                     "La descripción de la línea {n} tiene {largo} caracteres y el "
-                    "máximo es {maximo} (FACTUSOL guarda {por_linea} por línea; el "
-                    "resto va en líneas de continuación).",
-                    {"n": n, "largo": largo, "maximo": QUOTE_LINE_DESCRIPTION_MAX,
-                     "por_linea": DESLPS_MAX_LENGTH},
+                    "máximo es {maximo}.",
+                    {"n": n, "largo": largo, "maximo": QUOTE_LINE_DESCRIPTION_MAX},
                 )
             if line.quantity <= 0 and (line.codart.strip() or line.unit_price > 0):
                 raise PydanticCustomError(
@@ -3276,9 +3278,9 @@ def create_quote_endpoint(
         [line.model_dump() for line in payload.lines],
         payload.referencia.strip() or None,
         payload.fecha,
-        payload.fopfac,
-        float(payload.portes or 0),
-        payload.serie,
+        foppre=payload.foppre,
+        portes=float(payload.portes or 0),
+        serie=payload.serie,
     )
     _audit_quote(session, current_user, "erp.factusol_quote_create",
                  payload.company_id, {"job_id": job_id,
@@ -3330,7 +3332,7 @@ def update_quote_endpoint(
     job_id = enqueue_update_quote(
         codpre, customer, [line.model_dump() for line in payload.lines],
         payload.referencia.strip() or None, payload.force,
-        float(payload.portes or 0), serie, payload.fopfac,
+        float(payload.portes or 0), serie, foppre=payload.foppre,
     )
     _audit_quote(session, current_user, "erp.factusol_quote_update", codpre,
                  {"job_id": job_id, "lines": len(payload.lines),

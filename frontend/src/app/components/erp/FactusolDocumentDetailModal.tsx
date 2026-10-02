@@ -451,6 +451,12 @@ export function FactusolDocumentDetailModal({
             <dl className="erp-doc-detail-head">
               <dt>Cliente</dt>
               <dd>{doc.cliente_nombre ?? doc.cliente_codigo ?? "—"}</dd>
+              {doc.cliente_pais_nombre ? (
+                <>
+                  <dt>País</dt>
+                  <dd>{doc.cliente_pais_nombre}</dd>
+                </>
+              ) : null}
               <dt>Fecha</dt>
               <dd>{doc.fecha ?? "—"}</dd>
               <dt>Estado</dt>
@@ -566,7 +572,7 @@ export function FactusolDocumentDetailModal({
                     <tr key={`${ln.position}-${ln.description}`}>
                       <td data-label="#">{ln.position}</td>
                       <td data-label="Artículo" className="muted small mono">{ln.codart ?? "—"}</td>
-                      <td data-label="Descripción">{ln.description}</td>
+                      <td data-label="Descripción" className="erp-line-desc">{ln.description}</td>
                       <td data-label="Cant." className="num">{ln.quantity}</td>
                       <td data-label="Precio" className="num">{ln.unit_price.toFixed(2)}</td>
                       <td data-label="Total" className="num">{ln.line_total.toFixed(2)}</td>

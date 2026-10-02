@@ -202,6 +202,28 @@ describe("CompanyActivityPanel · actividad unificada", () => {
     expect(await screen.findByText(/EMAIL MODAL 2-000071/)).toBeInTheDocument();
   });
 
+  it("Remates · punto 6: sin permiso de proformas el «⋯» no ofrece Duplicar ni Enviar", async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(
+      <CompanyActivityPanel companyId="c1" companyName="La Maison" factusolCodcli="2760"
+                            contactsCount={3} canDuplicate={false} canEmail={false} />,
+    );
+    await screen.findByRole("table");
+    await waitFor(() => expect(bodyRows()).toHaveLength(5));
+    expect(within(bodyRows()[2]).queryByRole("button", { name: /Más acciones/ })).toBeNull();
+    unmount();
+    // Con email pero sin duplicar: el menú solo ofrece el envío.
+    render(
+      <CompanyActivityPanel companyId="c1" companyName="La Maison" factusolCodcli="2760"
+                            contactsCount={3} canDuplicate={false} canEmail />,
+    );
+    await screen.findByRole("table");
+    await waitFor(() => expect(bodyRows()).toHaveLength(5));
+    await user.click(within(bodyRows()[2]).getByRole("button", { name: "Más acciones 2-000071" }));
+    expect(screen.queryByRole("button", { name: "Duplicar" })).toBeNull();
+    expect(screen.getByRole("button", { name: /por email/ })).toBeInTheDocument();
+  });
+
   it("Punto A · una proforma enviada por email enseña «Enviada dd/mm» y ofrece «Reenviar por email»", async () => {
     (listFactusolQuotes as jest.Mock).mockResolvedValue({
       items: [{ ...QUOTES[0], emailed_at: "2026-10-02T09:00:00", emailed_to: ["a@maison.fr"] }],

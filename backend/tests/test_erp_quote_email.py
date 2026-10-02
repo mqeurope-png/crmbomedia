@@ -521,3 +521,80 @@ def test_send_no_escribe_en_factusol(http, session_factory) -> None:
     assert r.status_code == 201, r.text
     # El doble solo tiene `load_table`: cualquier escritura habría fallado.
     assert all(call[0] in {"F_PRE", "F_LPS", "F_FOP", "F_FPA", "F_CLI"} for call in fake.calls)
+
+
+# ---------------------------------------------------------------------------
+# Remates · punto 3 — buscar cualquier contacto del CRM
+# ---------------------------------------------------------------------------
+
+
+def _seed_otra_empresa(session: Session) -> Contact:
+    """Contacto de OTRA empresa (no la del cliente de la proforma) + uno
+    inactivo y uno sin email, que el buscador no debe ofrecer."""
+    otra = Company(name="Riera Contijoch SL", source="manual")
+    session.add(otra)
+    session.flush()
+    eduard = Contact(first_name="Eduard", last_name="Riera", email="eduard@riera.example",
+                     company_id=otra.id)
+    session.add_all([
+        eduard,
+        Contact(first_name="Eduard", last_name="Baja", email="baja@riera.example",
+                company_id=otra.id, is_active=False),
+        Contact(first_name="Eduard", last_name="SinEmail", email=None, company_id=otra.id),
+    ])
+    session.commit()
+    return eduard
+
+
+def test_buscar_contactos_del_crm_desde_el_erp(http, session_factory) -> None:
+    """El perfil de pedidos (solo-ERP, sin acceso a /api/contacts) busca por
+    nombre, email o empresa; solo contactos activos con email."""
+    with session_factory() as s:
+        _seed_company(s)
+        eduard_id = _seed_otra_empresa(s).id
+    r = http.get("/api/erp/contacts/search?q=eduard", headers=auth_headers(http, "pedidos"))
+    assert r.status_code == 200, r.text
+    items = r.json()["items"]
+    assert [i["id"] for i in items] == [eduard_id]
+    assert items[0] == {"id": eduard_id, "name": "Eduard Riera",
+                        "email": "eduard@riera.example", "company_name": "Riera Contijoch SL"}
+    # Por empresa y por trozo de email; varias palabras deben casar todas.
+    for q in ("contijoch", "riera.example", "eduard riera"):
+        got = http.get(f"/api/erp/contacts/search?q={q}",
+                       headers=auth_headers(http, "pedidos")).json()["items"]
+        assert eduard_id in [i["id"] for i in got], q
+    assert http.get("/api/erp/contacts/search?q=eduard%20marta",
+                    headers=auth_headers(http, "pedidos")).json()["items"] == []
+    # Comodines de SQL literales, no patrones.
+    assert http.get("/api/erp/contacts/search?q=%25%25",
+                    headers=auth_headers(http, "pedidos")).json()["items"] == []
+    assert http.get("/api/erp/contacts/search?q=e",
+                    headers=auth_headers(http, "pedidos")).status_code == 422
+
+
+def test_preview_saluda_al_contacto_del_crm_de_otra_empresa(http, session_factory) -> None:
+    """Cliente sin empresa vinculada (como la 1-004358): el operador añade a
+    un contacto con el buscador y el saludo usa su nombre."""
+    with session_factory() as s:
+        eduard_id = _seed_otra_empresa(s).id
+    with _patched_factusol():
+        r = http.get(f"/api/erp/factusol/quotes/75/email-preview?serie=2&lang=es"
+                     f"&contact_id={eduard_id}", headers=auth_headers(http, "pedidos"))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["company_id"] is None and body["company_contacts"] == []
+    assert body["contacto_id"] == eduard_id
+    assert "Eduard Riera" in body["body_text"]
+
+
+def test_send_a_un_contacto_del_crm_lo_enlaza_a_su_ficha(http, session_factory) -> None:
+    with session_factory() as s:
+        eduard_id = _seed_otra_empresa(s).id
+        _seed_alias(s, "info@artisjet-printers.eu")
+    send_patch, _ = _patch_send()
+    with _patched_factusol(), send_patch as mock_send:
+        r = http.post("/api/erp/factusol/quotes/75/email?serie=2",
+                      json=_payload(to=["eduard@riera.example"], lang="es"),
+                      headers=auth_headers(http, "pedidos"))
+    assert r.status_code == 201, r.text
+    assert mock_send.call_args.kwargs["contact_id"] == eduard_id

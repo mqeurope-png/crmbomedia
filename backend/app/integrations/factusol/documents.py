@@ -261,6 +261,13 @@ def _clean(value: Any) -> str | None:
     return text or None
 
 
+def _country_name(value: Any) -> str | None:
+    """`CPA*` («276», «724») → nombre del país en español, o None si vacío."""
+    from app.erp.language import country_display_name  # noqa: PLC0415
+
+    return country_display_name(value, "es") or None
+
+
 def normalize_header(doc_type: str, row: dict[str, Any]) -> dict[str, Any]:
     """Fila de cabecera → la forma que consume la UI. Tolera columnas
     ausentes (`.get`): en F_ALB los nombres son por convención hasta que el
@@ -279,6 +286,8 @@ def normalize_header(doc_type: str, row: dict[str, Any]) -> dict[str, Any]:
         # E4: país del cliente (CPA*) — la UI deduce con él el idioma por
         # defecto del PDF (cliente extranjero → inglés).
         "cliente_pais": _clean(row.get(f"CPA{spec.suffix}")),
+        # El nombre, para enseñarlo (CPA* guarda el código numérico, «276»).
+        "cliente_pais_nombre": _country_name(row.get(f"CPA{spec.suffix}")),
         "fecha": _factusol_date(row.get(spec.fec)),
         "total": _num(row.get(spec.tot)) if row.get(spec.tot) is not None else None,
         # Tarea C: base y % de IVA de la banda 1 de la CABECERA (`NET1*` /

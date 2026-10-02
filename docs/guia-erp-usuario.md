@@ -501,15 +501,22 @@ Acciones por proforma:
 - **«Enviar por email»** — abre la previsualización del correo (contactos de la
   empresa con el vinculado ya marcado, direcciones libres, idioma, asunto y
   mensaje editables, remitente de la empresa emisora) y adjunta el PDF del
-  presupuesto. Tras enviarlo, la fila enseña **«Enviada dd/mm»** (los
-  destinatarios al pasar el ratón) y el botón pasa a **«Reenviar»**. Los textos
-  por idioma se editan en Ajustes ERP → «Plantillas del email de presupuesto».
+  presupuesto. Con **«Buscar contacto del CRM»** puedes añadir a **cualquier
+  contacto** (por nombre, email o empresa) en «Para» o «CC»; si el cliente de
+  FACTUSOL no está vinculado a una empresa del CRM, el modal lo avisa y el
+  buscador es la forma de elegir a quién va. Tras enviarlo, la fila enseña
+  **«Enviada dd/mm»** (los destinatarios al pasar el ratón) y el botón pasa a
+  **«Reenviar»**. Los textos por idioma se editan en Ajustes ERP → «Plantillas
+  del email de presupuesto».
 - **«⋯» → «Duplicar»** — abre **«Duplicar proforma nº X»** ya rellena con todo lo
   de la original (cliente, empresa emisora, referencia, líneas, portes, forma
   de pago y destinatario de envío si era distinto), con la fecha de hoy.
   Puedes cambiar la empresa (**«Cambiar»**) y la emisora antes de pulsar
-  **«Crear proforma»**; la original no se toca. La pestaña «Duplicar» de
-  «+ Nueva proforma» sigue ahí para buscar una plantilla con vista previa.
+  **«Crear proforma»**; la original no se toca. También está en el «⋯» de
+  Documentos FACTUSOL → Presupuestos y en la ficha de empresa. La pestaña
+  «Duplicar» de «+ Nueva proforma» sigue ahí para buscar una plantilla con
+  vista previa. «Duplicar» y «Enviar por email» solo aparecen si tu usuario
+  tiene permiso para hacerlo.
 - **«Ver líneas»** — despliega en la propia fila el desglose de la proforma
   (SKU, descripción, cantidad, precio, IVA y total, y los portes si los lleva),
   para decidir si duplicar o convertir sin abrirla. Es solo lectura y se cierra
@@ -524,8 +531,9 @@ las mismas que en el alta de pedido manual—, añades líneas (buscando por **S
 o **Descripción**, o escribiéndolas a mano), los **portes** en su campo aparte,
 la **forma de pago** (opcional: la del cliente en FACTUSOL viene propuesta; se
 imprime en el PDF y pasa al pedido al convertir) y una **referencia** opcional.
-Una descripción larga se guarda entera: FACTUSOL la reparte en varias líneas de
-texto. Se guarda como un presupuesto **real** en FACTUSOL,
+Una descripción larga se guarda **entera en su línea**, con los saltos de línea
+que escribas (Intro dentro de la descripción), y así sale en el PDF. Se guarda
+como un presupuesto **real** en FACTUSOL,
 bajo la serie elegida: ahí es donde la verás en esta pantalla y en Documentos.
 Para dropshipping, activa **«Enviar a otro nombre / dirección»**: la proforma
 sigue a nombre fiscal del cliente, solo cambia el destinatario del documento.

@@ -175,7 +175,7 @@ export function CreateQuoteModal({
   // Punto E: forma de pago (`FOPPRE`, código de F_FPA). Opcional: "" = sin
   // especificar. Se preselecciona la del cliente (F_CLI.FPACLI) en el alta,
   // la de la plantilla al duplicar y la de la proforma al editar.
-  const [fopfac, setFopfac] = useState("");
+  const [foppre, setFoppre] = useState("");
   const [formasPago, setFormasPago] = useState<FormaPago[]>([]);
   // Una forma de pago ya fijada (heredada de la plantilla o de la copia
   // directa, o elegida a mano)
@@ -275,7 +275,7 @@ export function CreateQuoteModal({
     let alive = true;
     getFactusolCustomerPaymentMethod(targetCodcli)
       .then((r) => {
-        if (alive && r.codigo && !fopLocked.current) setFopfac(r.codigo);
+        if (alive && r.codigo && !fopLocked.current) setFoppre(r.codigo);
       })
       .catch(() => { /* sin defecto: el selector se queda como esté */ });
     return () => { alive = false; };
@@ -304,7 +304,7 @@ export function CreateQuoteModal({
         const heredada = paymentCodeOf(quote);
         if (heredada) {
           fopLocked.current = true;
-          setFopfac(heredada);
+          setFoppre(heredada);
         }
         // Destinatario distinto de la sede (dropshipping): se copia tal cual.
         if (quote.envio_distinto && quote.envio) {
@@ -335,7 +335,7 @@ export function CreateQuoteModal({
         const rows = rowsFromQuote(quote);
         setLines(rows.length > 0 ? rows : [emptyDocumentLine()]);
         setPortes(quote.portes ? String(quote.portes) : "");
-        setFopfac(paymentCodeOf(quote));
+        setFoppre(paymentCodeOf(quote));
         // Solo para enseñarla: al editar, la serie no se manda ni se cambia.
         setSerie(serieOf(quote));
       })
@@ -423,7 +423,7 @@ export function CreateQuoteModal({
     const heredada = paymentCodeOf(template);
     if (heredada) {
       fopLocked.current = true;
-      setFopfac(heredada);
+      setFoppre(heredada);
     }
     setLoadedFrom(template.codpre);
     setMode("articles");
@@ -447,9 +447,9 @@ export function CreateQuoteModal({
     }
   }
 
-  /** Línea de TEXTO: sin SKU, sin precio y cantidad 0 — la continuación de
-   *  una descripción larga (FACTUSOL guarda 255 caracteres por fila) o una
-   *  nota. Se conserva al guardar; no suma. */
+  /** Línea de TEXTO: sin SKU, sin precio y cantidad 0 — una nota (o una
+   *  continuación que BoHub escribía antes de guardar la descripción entera).
+   *  Se conserva al guardar; no suma. */
   const isTextLine = (l: DocumentLine) =>
     !l.sku.trim() && num(l.quantity) === 0 && num(l.unit_price) === 0;
   // Sin empresa destino (proforma de origen sin empresa CRM vinculada) no se
@@ -482,7 +482,7 @@ export function CreateQuoteModal({
       fecha: fecha || null,
       // Forma de pago (FOPPRE). null = sin especificar (al editar, quita la
       // que tuviera).
-      fopfac: fopfac || null,
+      foppre: foppre || null,
       // Solo se manda si el operador eligió una alternativa: la principal ya
       // es lo que el backend toma de la empresa CRM.
       address: chosen && chosen.codigo !== 0 ? {
@@ -814,7 +814,7 @@ export function CreateQuoteModal({
                               {l.sku ?? l.codart ?? "—"}
                             </span>
                           </td>
-                          <td>{l.description}</td>
+                          <td className="erp-line-desc">{l.description}</td>
                           <td className="num">{l.quantity}</td>
                           <td className="num">{l.unit_price.toFixed(2)}</td>
                           <td className="num">{l.line_total.toFixed(2)}</td>
@@ -850,6 +850,7 @@ export function CreateQuoteModal({
               ariaLabel="Líneas de la proforma"
               skuPlaceholder="CDR80WPT"
               descriptionPlaceholder="Descripción del artículo o concepto"
+              multilineDescription
               footer={(
                 <>
                   <label className="field">
@@ -862,15 +863,15 @@ export function CreateQuoteModal({
                       convertir. */}
                   <label className="field">
                     <span>Forma de pago</span>
-                    <select value={fopfac} aria-label="Forma de pago"
+                    <select value={foppre} aria-label="Forma de pago"
                             title="Forma de pago del documento (F_FPA). Vacío = sin especificar."
                             onChange={(e) => {
                               fopLocked.current = true;   // elección del operador: manda
-                              setFopfac(e.target.value);
+                              setFoppre(e.target.value);
                             }}>
                       <option value="">— Sin especificar —</option>
-                      {fopfac && !formasPago.some((f) => (f.codigo ?? "") === fopfac) ? (
-                        <option value={fopfac}>Código {fopfac}</option>
+                      {foppre && !formasPago.some((f) => (f.codigo ?? "") === foppre) ? (
+                        <option value={foppre}>Código {foppre}</option>
                       ) : null}
                       {formasPago.map((f) => (
                         <option key={f.codigo ?? f.nombre} value={f.codigo ?? ""}>
