@@ -118,7 +118,6 @@ export function QuoteEmailModal({
 
   const loadPreview = useCallback(
     (langOverride?: FactusolPdfLang, keepRecipient = false) => {
-      setLoadError(null);
       let alive = true;
       getQuoteEmailPreview(codpre, serie, {
         lang: langOverride, variant: variant ?? undefined,
@@ -126,6 +125,7 @@ export function QuoteEmailModal({
       })
         .then((p) => {
           if (!alive) return;
+          setLoadError(null);
           setPreview(p);
           setLang(p.lang);
           setLangSource(p.lang_source === "selector" ? null : p.lang_source);
