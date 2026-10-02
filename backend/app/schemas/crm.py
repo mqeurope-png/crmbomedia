@@ -4,10 +4,9 @@ from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
+from pydantic_core import PydanticCustomError
 
-from app.core.passwords import MAX_LENGTH as PASSWORD_MAX_LENGTH
-from app.core.passwords import MIN_LENGTH as PASSWORD_MIN_LENGTH
-from app.core.passwords import validate_password_policy
+from app.core.passwords import PasswordPolicyError, validate_password_policy
 from app.models.crm import (
     AuditLog,
     ConsentStatus,
@@ -19,7 +18,13 @@ from app.models.crm import (
 
 
 def _enforce_password_policy(value: str) -> str:
-    validate_password_policy(value)
+    """ÚNICA comprobación de una contraseña nueva (sin `min_length` en el
+    `Field`: pydantic cortaría antes con su mensaje en inglés). El 422 lleva el
+    texto de la política tal cual, sin el prefijo «Value error, »."""
+    try:
+        validate_password_policy(value)
+    except PasswordPolicyError as exc:
+        raise PydanticCustomError("password_policy", str(exc)) from exc
     return value
 
 
@@ -93,7 +98,7 @@ class TotpVerifyRequest(BaseModel):
 
 class ChangePasswordRequest(BaseModel):
     current_password: str = Field(min_length=1)
-    new_password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH)
+    new_password: str = Field()
 
     _validate_new_password = field_validator("new_password")(_enforce_password_policy)
 
@@ -109,7 +114,7 @@ class PasswordResetRequestRead(BaseModel):
 
 class PasswordResetConfirm(BaseModel):
     token: str = Field(min_length=16)
-    new_password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH)
+    new_password: str = Field()
 
     _validate_new_password = field_validator("new_password")(_enforce_password_policy)
 
@@ -128,7 +133,7 @@ class CountRead(BaseModel):
 class UserCreate(BaseModel):
     email: EmailStr
     full_name: str = Field(min_length=1, max_length=255)
-    password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH)
+    password: str = Field()
     role: UserRole = UserRole.VIEWER
     is_active: bool = True
 
@@ -165,7 +170,7 @@ class UserUpdate(BaseModel):
         return out
 
 class UserPasswordUpdate(BaseModel):
-    new_password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH)
+    new_password: str = Field()
 
     _validate_new_password = field_validator("new_password")(_enforce_password_policy)
 

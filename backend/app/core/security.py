@@ -44,8 +44,9 @@ def create_reset_token() -> str:
 
 def generate_temp_password(length: int = 14) -> str:
     """CRM-PERFIL — contraseña temporal aleatoria que cumple la política
-    (>=12 chars, mayúscula + minúscula + dígito) y es legible (sin caracteres
-    ambiguos I/O/l/0/1). La usa el reset de admin: se muestra una sola vez."""
+    (`app.core.passwords`: mínimo 8, mayúscula y número; se genera más larga y
+    con minúsculas para que sea legible) sin caracteres ambiguos I/O/l/0/1. La
+    usa el reset de admin: se muestra una sola vez."""
     from app.core.passwords import validate_password_policy  # noqa: PLC0415
 
     upper = "ABCDEFGHJKLMNPQRSTUVWXYZ"
