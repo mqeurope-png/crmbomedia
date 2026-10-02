@@ -120,6 +120,9 @@ QUOTE_FIELDS = (
     # devolvía None en silencio y escribirlo reventaba el registro entero.
     "CPOPRE", "CCPPRE", "CPRPRE", "CNIPRE", "TELPRE", "CEMPRE",
     "NET1PRE", "PIVA1PRE", "IIVA1PRE", "TOTPRE", "FOPPRE", "ALMPRE",
+    # País de la entrega (ISO numérico). Solo se LEE (punto C: la copia directa
+    # hereda el destinatario); al escribir lo pone `build_quote_payload`.
+    "CPAPRE",
 )
 
 #: Columnas de F_ART que exponemos en el buscador de artículos.
@@ -435,6 +438,43 @@ def _quote_matches(
     if crm:
         haystack = f"{haystack} {crm}"
     return all(token in haystack for token in tokens)
+
+
+def header_shipping(quote: dict[str, Any]) -> dict[str, str | None]:
+    """Bloque de entrega de la cabecera F_PRE (a quién y dónde se entrega), en
+    la forma que el modal vuelca en «Enviar a otro nombre / dirección»."""
+    def texto(key: str) -> str | None:
+        return str(quote.get(key) or "").strip() or None
+
+    return {
+        "nombre": texto("cnopre"), "direccion": texto("cdopre"),
+        "poblacion": texto("cpopre"), "cp": texto("ccppre"),
+        "provincia": texto("cprpre"), "pais": texto("cpapre"),
+    }
+
+
+def _fold_address(value: Any) -> str:
+    return " ".join(str(value or "").split()).casefold()
+
+
+def header_shipping_differs(
+    quote: dict[str, Any], customer_row: dict[str, Any] | None,
+) -> bool:
+    """¿La entrega de la cabecera es distinta de la sede del cliente en F_CLI
+    (dropshipping o dirección alternativa)? Se comparan dirección, población y
+    CP; el nombre no, porque BoHub escribe el de la empresa CRM y el escritorio
+    el de F_CLI y rara vez coinciden letra a letra. Sin fila de F_CLI (o sin
+    dirección en la cabecera) no hay con qué comparar: False."""
+    if not customer_row:
+        return False
+    pairs = (("cdopre", "DOMCLI"), ("cpopre", "POBCLI"), ("ccppre", "CPOCLI"))
+    cabecera = [(_fold_address(quote.get(h)), c) for h, c in pairs]
+    if not any(valor for valor, _ in cabecera):
+        return False
+    return any(
+        valor != _fold_address(customer_row.get(col))
+        for valor, col in cabecera if valor
+    )
 
 
 def _quote_sort_key(quote: dict[str, Any]) -> tuple[int, int]:

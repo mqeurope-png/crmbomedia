@@ -2878,6 +2878,28 @@ def get_quote_endpoint(
         resolve_name(_fop_names(client, ejercicio), quote["forma_pago"])
         if quote["forma_pago"] else None
     )
+    # Punto C (duplicar directo): empresa CRM vinculada, serie y nº visible
+    # como en el listado, y el bloque de entrega con si difiere de la sede del
+    # cliente (dropshipping), para que la copia lo herede tal cual.
+    from app.erp.quotes_bandeja import annotate_quotes  # noqa: PLC0415
+    from app.integrations.factusol.customers import customer_row  # noqa: PLC0415
+    from app.integrations.factusol.quotes import (  # noqa: PLC0415
+        header_shipping,
+        header_shipping_differs,
+    )
+
+    annotate_quotes(session, [quote])
+    quote["envio"] = header_shipping(quote)
+    try:
+        fila_cliente = (
+            customer_row(client, quote.get("clipre"), ejercicio=ejercicio)
+            if quote.get("clipre") else None
+        )
+    except FactusolError:
+        logger.warning("factusol: no se pudo leer F_CLI para la proforma %s", codpre,
+                       exc_info=True)
+        fila_cliente = None
+    quote["envio_distinto"] = header_shipping_differs(quote, fila_cliente)
     return quote
 
 

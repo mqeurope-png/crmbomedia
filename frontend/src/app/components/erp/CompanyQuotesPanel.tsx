@@ -46,6 +46,9 @@ export function CompanyQuotesPanel({
   // CODPRE de la proforma que se está editando (C-4-fix6).
   // La proforma que se edita, entera: la clave de F_PRE es serie + número.
   const [editing, setEditing] = useState<FactusolQuote | null>(null);
+  // Punto B: «Duplicar» abre la copia directa (punto C) con esta empresa como
+  // destino; en el modal se puede cambiar de empresa y de serie.
+  const [duplicating, setDuplicating] = useState<FactusolQuote | null>(null);
   const [busyJob, setBusyJob] = useState(false);
   // Fase 2: proforma pendiente de confirmar el pago antes de convertir.
   const [converting, setConverting] = useState<FactusolQuote | null>(null);
@@ -83,6 +86,7 @@ export function CompanyQuotesPanel({
   async function onCreated(jobId: string) {
     setCreating(false);
     setEditing(null);
+    setDuplicating(null);
     setBusyJob(true);
     setNotice("Creando la proforma en FACTUSOL…");
     setError(null);
@@ -156,6 +160,11 @@ export function CompanyQuotesPanel({
               </button>
               <button type="button" className="button small secondary"
                       disabled={busyJob}
+                      onClick={() => setDuplicating(q)}>
+                Duplicar
+              </button>
+              <button type="button" className="button small secondary"
+                      disabled={busyJob}
                       onClick={() => setConverting(q)}>
                 Convertir en pedido
               </button>
@@ -164,15 +173,16 @@ export function CompanyQuotesPanel({
         />
       )}
 
-      {creating || editing ? (
+      {creating || editing || duplicating ? (
         <CreateQuoteModal
           companyId={companyId}
           companyName={companyName}
           factusolCodcli={factusolCodcli}
           editCodpre={editing?.codpre ?? null}
           editSerie={editing ? (editing.serie ?? (Number(editing.tippre) || undefined)) : undefined}
+          duplicateDirect={duplicating}
           onCreated={onCreated}
-          onCancel={() => { setCreating(false); setEditing(null); }}
+          onCancel={() => { setCreating(false); setEditing(null); setDuplicating(null); }}
         />
       ) : null}
 

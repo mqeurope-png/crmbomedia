@@ -564,6 +564,80 @@ describe("CreateQuoteModal", () => {
     expect(onCreated).toHaveBeenCalledWith("job-1");
   });
 
+  // --- Punto C: duplicado directo ------------------------------------------
+
+  it("Punto C: `duplicateDirect` abre «Duplicar proforma nº X» ya volcada (serie, referencia, líneas, portes, forma de pago y destinatario), sin pestañas, y «Crear proforma» manda la copia", async () => {
+    mockCustomerPayment.mockResolvedValue({ codigo: "002", nombre: "Transferencia" });
+    const origen = quote({ codpre: "79", numero: "2-000079", tippre: "2", serie: 2 });
+    mockGetQuote.mockResolvedValue({
+      ...origen, referencia: "Obra Hotel Playa", portes: 15,
+      forma_pago: "003", forma_pago_nombre: "PayPal", line_source: "F_LPS",
+      envio_distinto: true,
+      envio: { nombre: "Hotel Playa", direccion: "Av. del Mar 3", poblacion: "Marbella",
+               cp: "29600", provincia: "Málaga", pais: "724" },
+      lines: [
+        { position: 1, codart: "00001", sku: "CDR80WPT",
+          description: "CD TQ 700 MB white Thermal WPT", quantity: 10,
+          unit_price: 0.79, discount_pct: 0, line_total: 7.9, iva_pct: 21 },
+        { position: 2, codart: null, sku: null, description: "Hora SAT",
+          quantity: 2, unit_price: 60, discount_pct: 0, line_total: 120, iva_pct: 21 },
+      ],
+    });
+    const onCreated = jest.fn();
+    const user = userEvent.setup();
+    render(<CreateQuoteModal {...base({ factusolCodcli: "55555", duplicateDirect: origen, onCreated })} />);
+
+    expect(screen.getByRole("heading", { name: "Duplicar proforma nº 2-000079" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Duplicar" })).toBeNull();      // sin pestañas
+    // Se pide por (serie, número) y se vuelca entera.
+    await waitFor(() => expect(mockGetQuote).toHaveBeenCalledWith("79", 2));
+    expect(await screen.findByLabelText("SKU línea 1")).toHaveValue("CDR80WPT");
+    expect(screen.getByLabelText("Descripción línea 2")).toHaveValue("Hora SAT");
+    expect(screen.getByLabelText("Empresa emisora (serie)")).toHaveValue("2");
+    expect(screen.getByLabelText("Referencia (opcional)")).toHaveValue("Obra Hotel Playa");
+    expect(screen.getByLabelText("Portes")).toHaveValue(15);
+    expect(screen.getByText(/copia de la nº 2-000079/)).toBeInTheDocument();
+    // Forma de pago heredada (003), NO pisada por la del cliente (002).
+    await screen.findByRole("option", { name: "003 · PayPal" });
+    await waitFor(() => expect(mockCustomerPayment).toHaveBeenCalledWith("55555"));
+    expect(screen.getByLabelText("Forma de pago")).toHaveValue("003");
+    // Destinatario distinto de la sede: bloque abierto y relleno tal cual.
+    expect(screen.getByLabelText("Nombre de envío")).toHaveValue("Hotel Playa");
+    expect(screen.getByLabelText("Ciudad de entrega")).toHaveValue("Marbella");
+    expect(screen.getByLabelText("País de entrega")).toHaveValue("724");
+    expect(mockCreate).not.toHaveBeenCalled();                                 // abrir no crea
+
+    // Se puede cambiar la serie (y la empresa con «Cambiar») antes de crear.
+    await user.selectOptions(screen.getByLabelText("Empresa emisora (serie)"), "5");
+    await user.click(screen.getByRole("button", { name: "Crear proforma" }));
+    await waitFor(() => expect(mockCreate).toHaveBeenCalled());
+    const payload = mockCreate.mock.calls[0][0];
+    expect(payload.company_id).toBe("c1");
+    expect(payload.serie).toBe(5);
+    expect(payload.referencia).toBe("Obra Hotel Playa");
+    expect(payload.fopfac).toBe("003");
+    expect(payload.portes).toBe(15);
+    expect(payload.shipping).toMatchObject({ name: "Hotel Playa", city: "Marbella", country: "724" });
+    expect(payload.lines).toHaveLength(2);
+    expect(payload.lines[0].codart).toBe("CDR80WPT");
+    expect(onCreated).toHaveBeenCalledWith("job-1");
+  });
+
+  it("Punto C: origen sin empresa CRM vinculada: avisa y no deja crear hasta elegir destino con «Cambiar»", async () => {
+    mockGetQuote.mockResolvedValue({
+      ...quote({ codpre: "80", tippre: "1" }), line_source: "F_LPS",
+      lines: [{ position: 1, codart: null, sku: null, description: "Hora SAT",
+                quantity: 2, unit_price: 60, discount_pct: 0, line_total: 120, iva_pct: 21 }],
+    });
+    render(<CreateQuoteModal {...base({
+      companyId: "", companyName: "", factusolCodcli: null,
+      duplicateDirect: quote({ codpre: "80", tippre: "1" }),
+    })} />);
+    expect(await screen.findByLabelText("Descripción línea 1")).toHaveValue("Hora SAT");
+    expect(screen.getByText(/elige la empresa destino con «Cambiar»/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Crear proforma" })).toBeDisabled();
+  });
+
   // --- C-4-fix6: referencia, descuento, direcciones y edición -------------
 
   it("renderiza el campo Referencia y lo envía en el payload", async () => {

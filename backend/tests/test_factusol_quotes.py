@@ -1496,6 +1496,27 @@ def test_convert_quote_to_order_lleva_la_forma_de_pago_al_pedido(session):
     assert (source["forma_pago"], source["forma_pago_nombre"]) == ("002", "Transferencia")
 
 
+# --- entrega de la cabecera (punto C: duplicar directo) ------------------------
+
+
+def test_header_shipping_differs_compara_direccion_poblacion_y_cp_sin_el_nombre():
+    from app.integrations.factusol.quotes import header_shipping, header_shipping_differs
+
+    sede = {"DOMCLI": "C/ Mayor 1", "POBCLI": "Madrid", "CPOCLI": "28001"}
+    misma = {"cnopre": "ACME S.L. (otro nombre)", "cdopre": "c/ mayor  1",
+             "cpopre": "MADRID", "ccppre": "28001"}
+    assert header_shipping_differs(misma, sede) is False          # el nombre no cuenta
+    otra = {**misma, "cdopre": "Rue du Chemin Noir 5", "cpopre": "Is-sur-Tille",
+            "ccppre": "21120", "cpapre": "250"}
+    assert header_shipping_differs(otra, sede) is True
+    assert header_shipping_differs(otra, None) is False            # sin F_CLI no se sabe
+    assert header_shipping_differs({"cnopre": "Solo nombre"}, sede) is False
+    assert header_shipping(otra) == {
+        "nombre": "ACME S.L. (otro nombre)", "direccion": "Rue du Chemin Noir 5",
+        "poblacion": "Is-sur-Tille", "cp": "21120", "provincia": None, "pais": "250",
+    }
+
+
 def test_get_quote_expone_los_portes_de_la_cabecera(session):
     """Al editar, el modal precarga los portes para no perderlos."""
     fake = _FakeFactusol(quotes=[{**_quote_row(43), "IPOR1PRE": 19.0}])

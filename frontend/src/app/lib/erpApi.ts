@@ -3664,6 +3664,14 @@ export type FactusolQuote = {
   foppre?: string | null;
   forma_pago?: string | null;
   forma_pago_nombre?: string | null;
+  /** Punto C: bloque de entrega de la cabecera (a quién y dónde) y si es
+   *  distinto de la sede del cliente en FACTUSOL (dropshipping / dirección
+   *  alternativa). Solo en el detalle; la copia directa lo hereda. */
+  envio?: {
+    nombre: string | null; direccion: string | null; poblacion: string | null;
+    cp: string | null; provincia: string | null; pais: string | null;
+  } | null;
+  envio_distinto?: boolean;
 };
 
 export type QuoteJobStatus =

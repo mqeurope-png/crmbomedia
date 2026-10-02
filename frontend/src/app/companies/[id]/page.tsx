@@ -568,6 +568,7 @@ export default function CompanyDetailPage() {
 
         <CompanyActivityPanel
           companyId={company.id}
+          companyName={company.name}
           factusolCodcli={company.factusol_company_id}
           contactsCount={contacts.length}
         />

@@ -548,6 +548,32 @@ def test_get_quote_devuelve_la_forma_de_pago_con_nombre(client):
     assert (r.json()["forma_pago"], r.json()["forma_pago_nombre"]) == (None, None)
 
 
+def test_get_quote_devuelve_la_entrega_y_si_difiere_de_la_sede(client, session_factory):
+    """Punto C: el detalle trae el bloque de entrega de la cabecera, si es
+    distinto de la sede del cliente en F_CLI (dropshipping) y la empresa CRM
+    vinculada con el nº visible, para que la copia directa lo herede."""
+    with session_factory() as s:
+        cid = _company(s)
+    sede = {"CODCLI": "55555", "NOFCLI": "Acme SL", "DOMCLI": "C/ Mayor 1",
+            "POBCLI": "Madrid", "CPOCLI": "28001"}
+    dropship = _quote_row(12, CNOPRE="Hotel Playa", CDOPRE="Av. del Mar 3",
+                          CPOPRE="Marbella", CCPPRE="29600", CPRPRE="Málaga", CPAPRE="724")
+    with _patch_client(_FakeFactusol(quotes=[dropship], customers=[sede])):
+        r = client.get("/api/erp/factusol/quotes/12", headers=auth_headers(client, "user"))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["envio_distinto"] is True
+    assert body["envio"] == {"nombre": "Hotel Playa", "direccion": "Av. del Mar 3",
+                             "poblacion": "Marbella", "cp": "29600", "provincia": "Málaga",
+                             "pais": "724"}
+    assert body["company"]["id"] == cid and body["numero"] == "1-000012"
+
+    sede_misma = _quote_row(13, CDOPRE="C/ Mayor 1", CPOPRE="Madrid", CCPPRE="28001")
+    with _patch_client(_FakeFactusol(quotes=[sede_misma], customers=[sede])):
+        r = client.get("/api/erp/factusol/quotes/13", headers=auth_headers(client, "user"))
+    assert r.json()["envio_distinto"] is False
+
+
 def test_customer_payment_method_endpoint(client):
     """Forma de pago por defecto del cliente (F_CLI.FPACLI) para preseleccionarla."""
     from app.integrations.factusol.catalogs import clear_cache

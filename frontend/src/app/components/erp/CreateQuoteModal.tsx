@@ -122,6 +122,7 @@ export function CreateQuoteModal({
   editCodpre,
   editSerie,
   duplicateSource,
+  duplicateDirect,
   prefillLines,
   prefillReferencia,
   onCreated,
@@ -148,6 +149,13 @@ export function CreateQuoteModal({
    *  que haya que buscar la plantilla: la duplicación real sigue saliendo de
    *  «Usar como plantilla» → «Crear proforma», nunca directa. */
   duplicateSource?: FactusolQuote | null;
+  /** Punto C: duplicado DIRECTO desde «⋯ → Duplicar» (Proformas y ficha de
+   *  empresa). El modal se abre ya en «Con artículos» con esta proforma
+   *  volcada entera: cliente destino = el de origen (con «Cambiar»), serie,
+   *  referencia, líneas, portes, forma de pago y el destinatario de envío si
+   *  era distinto de la sede; fecha de hoy; botón «Crear proforma». La
+   *  pestaña «Duplicar» de «+ Nueva proforma» sigue para elegir plantilla. */
+  duplicateDirect?: FactusolQuote | null;
   onCreated: (jobId: string) => void;
   onCancel: () => void;
 }) {
@@ -155,6 +163,7 @@ export function CreateQuoteModal({
   // líneas del pedido siembran el formulario una sola vez (solo en alta).
   const [prefilled, setPrefilled] = useState(false);
   const editing = Boolean(editCodpre);
+  const direct = Boolean(duplicateDirect);
   const [mode, setMode] = useState<Mode>(duplicateSource ? "duplicate" : "articles");
   const [lines, setLines] = useState<DocumentLine[]>([emptyDocumentLine()]);
   const [portes, setPortes] = useState("");
@@ -168,7 +177,8 @@ export function CreateQuoteModal({
   // la de la plantilla al duplicar y la de la proforma al editar.
   const [fopfac, setFopfac] = useState("");
   const [formasPago, setFormasPago] = useState<FormaPago[]>([]);
-  // Una forma de pago ya fijada (heredada de la plantilla o elegida a mano)
+  // Una forma de pago ya fijada (heredada de la plantilla o de la copia
+  // directa, o elegida a mano)
   // manda sobre la propuesta por defecto del cliente, llegue esta antes o
   // después; cambiar de cliente vuelve a proponer la suya.
   const fopLocked = useRef(false);
@@ -271,6 +281,48 @@ export function CreateQuoteModal({
     return () => { alive = false; };
   }, [editCodpre, targetCodcli]);
 
+  // Punto C: duplicado directo. Carga la proforma de origen (líneas reales de
+  // F_LPS con SKU comercial, cabecera con entrega y forma de pago) y la vuelca
+  // ENTERA en el formulario, sin paso de vista previa. La fecha queda la de
+  // hoy y el cliente destino es el de origen (props), cambiable con «Cambiar».
+  useEffect(() => {
+    if (!duplicateDirect?.codpre) return;
+    let alive = true;
+    getFactusolQuote(duplicateDirect.codpre, serieOf(duplicateDirect))
+      .then((quote) => {
+        if (!alive) return;
+        setSerie(serieOf(quote));
+        setReferencia(quote.referencia ?? "");
+        const rows = rowsFromQuote(quote);
+        if (rows.length > 0) {
+          setLines(rows);
+        } else {
+          setLines([emptyDocumentLine()]);
+          setNotice(`La proforma ${quote.numero ?? quote.codpre} no tiene líneas en FACTUSOL. Añádelas aquí.`);
+        }
+        setPortes(quote.portes ? String(quote.portes) : "");
+        const heredada = paymentCodeOf(quote);
+        if (heredada) {
+          fopLocked.current = true;
+          setFopfac(heredada);
+        }
+        // Destinatario distinto de la sede (dropshipping): se copia tal cual.
+        if (quote.envio_distinto && quote.envio) {
+          setShippingOpen(true);
+          setShipping({
+            name: quote.envio.nombre ?? "", address_line: quote.envio.direccion ?? "",
+            city: quote.envio.poblacion ?? "", postal_code: quote.envio.cp ?? "",
+            state: quote.envio.provincia ?? "", country: quote.envio.pais ?? "",
+          });
+        }
+        setLoadedFrom(quote.numero ?? quote.codpre);
+      })
+      .catch((e) => {
+        if (alive) setError(extractErrorMessage(e, "No se pudo cargar la proforma de origen."));
+      });
+    return () => { alive = false; };
+  }, [duplicateDirect]);
+
   // Modo edición: precarga la proforma que se va a modificar (líneas con el
   // SKU comercial y portes de la cabecera, para no perderlos al reescribir).
   useEffect(() => {
@@ -295,12 +347,12 @@ export function CreateQuoteModal({
 
   // Lote 7 · P3 — siembra las líneas del pedido manual una sola vez (solo alta).
   useEffect(() => {
-    if (prefilled || editCodpre || duplicateSource) return;
+    if (prefilled || editCodpre || duplicateSource || duplicateDirect) return;
     if (!prefillLines || prefillLines.length === 0) return;
     setLines(prefillLines);
     if (prefillReferencia) setReferencia(prefillReferencia);
     setPrefilled(true);
-  }, [prefilled, editCodpre, duplicateSource, prefillLines, prefillReferencia]);
+  }, [prefilled, editCodpre, duplicateSource, duplicateDirect, prefillLines, prefillReferencia]);
 
   const linesTotal = useMemo(
     () => lines.reduce((sum, l) => sum + documentLineTotal(l), 0),
@@ -400,7 +452,10 @@ export function CreateQuoteModal({
    *  nota. Se conserva al guardar; no suma. */
   const isTextLine = (l: DocumentLine) =>
     !l.sku.trim() && num(l.quantity) === 0 && num(l.unit_price) === 0;
-  const valid = lines.some((l) => l.description.trim() && num(l.quantity) > 0);
+  // Sin empresa destino (proforma de origen sin empresa CRM vinculada) no se
+  // puede crear: el backend exige `company_id`. Se pide elegirla con «Cambiar».
+  const valid = Boolean(targetId)
+    && lines.some((l) => l.description.trim() && num(l.quantity) > 0);
 
   async function submit(force = false) {
     if (!valid) return;
@@ -477,17 +532,24 @@ export function CreateQuoteModal({
 
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true"
-         aria-label={editing ? "Editar proforma FACTUSOL" : "Nueva proforma FACTUSOL"}>
+         aria-label={editing ? "Editar proforma FACTUSOL"
+           : direct ? "Duplicar proforma FACTUSOL" : "Nueva proforma FACTUSOL"}>
       {/* Lote 2 · E6: molde plano del ERP; `modal-wide` es la única excepción
           de ancho (editor de líneas de 8 columnas), ver styles.css. */}
       <div className="modal-dialog erp-modal modal-wide">
-        <h2>{editing ? `Editar proforma nº ${editCodpre}` : "Nueva proforma"}</h2>
+        <h2>
+          {editing ? `Editar proforma nº ${editCodpre}`
+            : direct ? `Duplicar proforma nº ${duplicateDirect?.numero ?? duplicateDirect?.codpre ?? ""}`
+              : "Nueva proforma"}
+        </h2>
 
         <div className="erp-quote-target">
           <span>
-            Cliente destino: <strong>{targetName}</strong>
+            Cliente destino: <strong>{targetName || "— sin empresa —"}</strong>
             {loadedFrom ? (
-              <span className="muted small"> · plantilla nº {loadedFrom}</span>
+              <span className="muted small">
+                {" "}· {direct ? "copia de la nº" : "plantilla nº"} {loadedFrom}
+              </span>
             ) : null}
           </span>
           <button type="button" className="button small secondary"
@@ -644,17 +706,26 @@ export function CreateQuoteModal({
         </p>
         {error ? <p className="form-error">{error}</p> : null}
         {notice ? <p className="form-info" role="status">{notice}</p> : null}
+        {!targetId ? (
+          <p className="form-info" role="status">
+            Esta proforma no está vinculada a ninguna empresa del CRM: elige la
+            empresa destino con «Cambiar» para poder crear la copia.
+          </p>
+        ) : null}
 
-        <div className="tab-bar">
-          <button type="button" className={`tab${mode === "articles" ? " is-active" : ""}`}
-                  onClick={() => setMode("articles")}>
-            Con artículos
-          </button>
-          <button type="button" className={`tab${mode === "duplicate" ? " is-active" : ""}`}
-                  onClick={() => setMode("duplicate")}>
-            Duplicar
-          </button>
-        </div>
+        {/* En el duplicado directo no hay pestañas: la copia ya está volcada. */}
+        {direct ? null : (
+          <div className="tab-bar">
+            <button type="button" className={`tab${mode === "articles" ? " is-active" : ""}`}
+                    onClick={() => setMode("articles")}>
+              Con artículos
+            </button>
+            <button type="button" className={`tab${mode === "duplicate" ? " is-active" : ""}`}
+                    onClick={() => setMode("duplicate")}>
+              Duplicar
+            </button>
+          </div>
+        )}
 
         {mode === "duplicate" ? (
           <>
