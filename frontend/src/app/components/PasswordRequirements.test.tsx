@@ -30,6 +30,12 @@ describe("PasswordRequirements", () => {
     expect(isPasswordCompliant("Password1")).toBe(true);    // ya no hay lista de habituales
   });
 
+  it("cuenta la longitud como el backend (puntos de código): un emoji vale 1", () => {
+    // 7 + emoji = 8 puntos de código (9 unidades UTF-16): válida en los dos lados.
+    expect(isPasswordCompliant("Abcdef1😀")).toBe(true);
+    expect(isPasswordCompliant("Abcde1😀")).toBe(false);   // 7 puntos de código
+  });
+
   it("marca ✗ solo en el punto que falla", () => {
     const checks = passwordChecks("abcdefg1");
     expect(checks.map((c) => [c.id, c.ok])).toEqual([

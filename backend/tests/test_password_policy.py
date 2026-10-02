@@ -104,9 +104,10 @@ def test_create_user_rejects_weak_password(client: TestClient):
         headers=login(client, "admin"),
     )
     assert response.status_code == 422
-    assert any(
-        str(MIN_LENGTH) in str(err.get("msg", "")) for err in response.json()["detail"]
-    )
+    # El mensaje de la API es EXACTAMENTE el de la política (la única fuente de
+    # verdad), no el de pydantic en inglés ni con prefijo «Value error, ».
+    msgs = [str(err.get("msg", "")) for err in response.json()["detail"]]
+    assert msgs == [f"La contraseña no cumple: mínimo {MIN_LENGTH} caracteres."]
 
 
 def test_create_user_accepts_8_chars_and_formerly_common_password(client: TestClient):
@@ -135,9 +136,8 @@ def test_change_password_rejects_no_uppercase(client: TestClient):
         headers=headers,
     )
     assert response.status_code == 422
-    assert any(
-        "mayúscula" in str(err.get("msg", "")) for err in response.json()["detail"]
-    )
+    msgs = [str(err.get("msg", "")) for err in response.json()["detail"]]
+    assert msgs == ["La contraseña no cumple: al menos una letra mayúscula."]
 
 
 def test_change_password_accepts_uppercase_only_letters(client: TestClient):

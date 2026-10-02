@@ -141,7 +141,7 @@ else
   # Defaults sensatos donde aplique
   prompt "Dominio público del CRM" DOMAIN "${DOMAIN:-crm.tudominio.com}"
   prompt "Email del admin inicial" ADMIN_EMAIL "admin@${DOMAIN#*.}"
-  prompt_secret "Password del admin inicial (mínimo 12 chars)" ADMIN_PWD
+  prompt_secret "Password del admin inicial (mínimo 8 chars, una mayúscula y un número)" ADMIN_PWD
   prompt_secret "Password del usuario MySQL crm" MYSQL_PWD
   prompt_secret "Password root MySQL (sólo para backups host)" MYSQL_ROOT_PWD
   prompt "Anthropic API key (vacío para deshabilitar IA)" ANTHROPIC_KEY ""

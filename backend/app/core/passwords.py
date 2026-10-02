@@ -15,8 +15,10 @@ import re
 from collections.abc import Callable
 
 MIN_LENGTH = 8
-#: Tope técnico (bcrypt no mira más allá de 72 bytes); no es una regla de la
-#: política que se enseñe al usuario.
+#: Tope técnico, NO una regla de la política (no se enseña al usuario): el hash
+#: es PBKDF2 (sin límite propio) y esto solo evita entradas desmesuradas. El
+#: frontend lo refleja con `maxLength` en los campos, así que en la práctica
+#: nunca se ve.
 MAX_LENGTH = 128
 
 _UPPERCASE_RE = re.compile(r"[A-Z]")

@@ -9,6 +9,15 @@ import { useMemo } from "react";
 // La política es SOLO esto (ni minúscula obligatoria ni lista de «contraseñas
 // habituales»): mínimo 8 caracteres, una mayúscula y un número.
 export const PASSWORD_MIN_LENGTH = 8;
+/** Tope técnico del backend (no es una regla de la política ni se enseña):
+ *  los campos lo aplican con `maxLength`, así que nunca llega al servidor. */
+export const PASSWORD_MAX_LENGTH = 128;
+
+/** Longitud como la cuenta el backend (`len()` de Python: puntos de código, no
+ *  unidades UTF-16; un emoji cuenta 1). */
+function longitud(p: string): number {
+  return Array.from(p).length;
+}
 
 type Rule = {
   id: string;
@@ -20,7 +29,7 @@ const RULES: Rule[] = [
   {
     id: "length",
     label: `Mínimo ${PASSWORD_MIN_LENGTH} caracteres`,
-    test: (p) => p.length >= PASSWORD_MIN_LENGTH,
+    test: (p) => longitud(p) >= PASSWORD_MIN_LENGTH,
   },
   { id: "upper", label: "Al menos una letra mayúscula", test: (p) => /[A-Z]/.test(p) },
   { id: "digit", label: "Al menos un número", test: (p) => /\d/.test(p) },
@@ -43,7 +52,7 @@ function computeStrength(password: string): Strength {
   // variedad (minúsculas y mayúsculas, un símbolo o 12+ caracteres).
   const bonusVariety =
     (/[a-z]/.test(password) && /[A-Z]/.test(password)) || /[^A-Za-z0-9]/.test(password)
-      || password.length >= 12 ? 1 : 0;
+      || longitud(password) >= 12 ? 1 : 0;
   const score = passed + bonusVariety; // 0..4
   if (score <= 2) return { level: "weak", label: "Débil", score };
   if (score === 3) return { level: "medium", label: "Media", score };

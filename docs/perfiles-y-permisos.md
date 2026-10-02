@@ -53,7 +53,7 @@ admin-only (ver más abajo). La UI de composición de alias no se muestra en el
 ### Reset de contraseña por admin
 
 `POST /api/users/{id}/reset-password` genera una contraseña aleatoria que
-cumple la política (mayúscula + minúscula + dígito, ≥ 12 chars), la persiste
+cumple la política (≥ 8 chars, una mayúscula y un número), la persiste
 como hash y la **devuelve una sola vez** en la respuesta:
 
 ```json
