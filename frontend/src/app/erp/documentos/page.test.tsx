@@ -575,12 +575,11 @@ describe("ERP · Documentos FACTUSOL (Lote 2 · PR-2)", () => {
       "facturas", expect.objectContaining({ fecha_desde: ytd.desde, fecha_hasta: ytd.hasta }),
     );
     // Atajo al mes en curso (salvo el 31 de enero, cuando ya ES el rango por
-    // defecto y el atajo no se enseña).
-    if (ytd.desde !== mes.desde || ytd.hasta !== mes.hasta) {
-      await user.click(await screen.findByRole("button", { name: "Mes en curso" }));
-      await waitFor(() => expect(screen.getByLabelText("Fecha desde")).toHaveValue(mes.desde));
-      expect(screen.getByLabelText("Fecha hasta")).toHaveValue(mes.hasta);
-    }
+    // defecto y el atajo no se enseña; las comprobaciones valen igual).
+    const atajoVisible = ytd.desde !== mes.desde || ytd.hasta !== mes.hasta;
+    if (atajoVisible) await user.click(await screen.findByRole("button", { name: "Mes en curso" }));
+    await waitFor(() => expect(screen.getByLabelText("Fecha desde")).toHaveValue(mes.desde));
+    expect(screen.getByLabelText("Fecha hasta")).toHaveValue(mes.hasta);
     expect(screen.queryByRole("button", { name: "Mes en curso" })).not.toBeInTheDocument();
     // Borrar «desde» consulta sin ese límite.
     await user.clear(screen.getByLabelText("Fecha desde"));
