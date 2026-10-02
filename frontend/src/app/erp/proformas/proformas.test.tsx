@@ -21,7 +21,7 @@ import {
  *
  *  Lote 2 · PR-2 (revisión de diseño §5): antigüedad en palabras por fila
  *  (ámbar pasado el umbral en pendientes), «pendientes» por antigüedad por
- *  defecto, Duplicar como secundario fijo en todas las filas y la convertida
+ *  defecto, Duplicar en «⋯» (punto C: copia directa) y la convertida
  *  enlazando a su pedido desde la frase y desde «Ver pedido». */
 
 jest.mock("next/link", () => ({
@@ -59,19 +59,31 @@ jest.mock("../../components/CompanyPickerModal", () => ({
     open ? <button type="button" onClick={() => onPick("c1", "Acme SL")}>PICK Acme SL</button> : null,
 }));
 // El modal real se prueba en CreateQuoteModal.test.tsx (allí, sin mock, se
-// comprueba que `duplicateSource` arranca en «Duplicar» y precarga la vista
-// previa con las líneas de origen y «Ver PDF»). Aquí basta con ver a qué modo
-// se abre: `edit:` (edición) y `dup:` (duplicar con la proforma de origen).
+// comprueba que `duplicateDirect` vuelca la proforma de origen entera). Aquí
+// basta con ver a qué modo se abre: `edit:` (edición) y `dup:` (duplicado
+// directo con la proforma de origen).
 jest.mock("../../components/erp/CreateQuoteModal", () => ({
-  CreateQuoteModal: ({ companyName, editCodpre, duplicateSource, onCreated, onCancel }: {
+  CreateQuoteModal: ({ companyName, editCodpre, duplicateDirect, onCreated, onCancel }: {
     companyName: string; editCodpre?: string | null;
-    duplicateSource?: { codpre?: string | null } | null;
+    duplicateDirect?: { codpre?: string | null } | null;
     onCreated: (jobId: string) => void; onCancel: () => void;
   }) => (
     <div>
-      QUOTE MODAL {companyName} edit:{editCodpre ?? "—"} dup:{duplicateSource?.codpre ?? "—"}
+      QUOTE MODAL {companyName} edit:{editCodpre ?? "—"} dup:{duplicateDirect?.codpre ?? "—"}
       <button type="button" onClick={() => onCreated("job-9")}>GUARDAR MODAL</button>
       <button type="button" onClick={onCancel}>CANCELAR MODAL</button>
+    </div>
+  ),
+}));
+
+// Punto A: el modal de email se prueba en QuoteEmailModal.test.tsx; aquí basta
+// con ver que se abre con la proforma de la fila.
+jest.mock("../../components/erp/QuoteEmailModal", () => ({
+  ...jest.requireActual("../../components/erp/QuoteEmailModal"),
+  QuoteEmailModal: ({ numero, serie, onClose }: { numero?: string | null; serie: number; onClose: () => void }) => (
+    <div>
+      EMAIL MODAL {numero} serie:{serie}
+      <button type="button" onClick={onClose}>CERRAR EMAIL</button>
     </div>
   ),
 }));
@@ -214,9 +226,9 @@ describe("Pantalla Proformas (rediseño de flujo, Fase 4)", () => {
     const rech = within(row("41"));
     expect(rech.getByText("rechazada")).toBeInTheDocument();
     expect(rech.queryByRole("button", { name: "Convertir en pedido" })).toBeNull();
-    // Duplicar va fijo en la fila; en «⋯» quedan Convertir de todas formas,
-    // Editar y Ver empresa.
-    expect(rech.getByRole("button", { name: "Duplicar" })).toBeInTheDocument();
+    // Punto C: Duplicar va en «⋯», con Convertir de todas formas, Editar y Ver
+    // empresa; no se repite como botón fijo.
+    expect(rech.queryByRole("button", { name: "Duplicar" })).toBeNull();
     await user.click(rech.getByRole("button", { name: "Más acciones 41" }));
     expect(rech.getByRole("button", { name: "Convertir de todas formas" })).toBeInTheDocument();
     expect(rech.getByRole("button", { name: "Editar" })).toBeInTheDocument();
@@ -314,7 +326,7 @@ describe("Pantalla Proformas (rediseño de flujo, Fase 4)", () => {
     }
   });
 
-  it("PDF descarga el presupuesto en el idioma del cliente; Duplicar abre la previsualización (modal en modo «Duplicar»), sin duplicado directo", async () => {
+  it("PDF descarga el presupuesto en el idioma del cliente; «⋯ → Duplicar» abre el modal de copia directa con la proforma de origen", async () => {
     mockPdf.mockResolvedValue(new Blob(["%PDF"]));
     mockStatus.mockResolvedValue({ status: "finished", result: { codpre: "600" } });
     const user = userEvent.setup();
@@ -323,13 +335,14 @@ describe("Pantalla Proformas (rediseño de flujo, Fase 4)", () => {
     await user.click(within(row("39")).getByRole("button", { name: "PDF" }));
     await waitFor(() => expect(mockPdf).toHaveBeenCalledWith("presupuestos", 5, "39", "fr", {}));
     expect(saveBlob).toHaveBeenCalledWith(expect.any(Blob), "Proforma_39.pdf");
-    // Duplicar está en la fila, sin abrir «⋯»; y NO duplica directamente: abre el
-    // modal en modo «Duplicar» con la proforma 39 como origen (previsualización).
+    // Punto C: Duplicar está en «⋯» y abre el modal ya volcado con la 39 de
+    // origen y su empresa como destino; el endpoint de duplicado no se usa.
+    await user.click(within(row("39")).getByRole("button", { name: "Más acciones 39" }));
     await user.click(within(row("39")).getByRole("button", { name: "Duplicar" }));
     expect(await screen.findByText(/QUOTE MODAL Ligue Braille edit:— dup:39/)).toBeInTheDocument();
     expect(mockDuplicate).not.toHaveBeenCalled();
-    // La copia se crea desde el propio modal (tras la vista previa), y la
-    // pantalla espera al job, avisa y recarga — como en el alta y la edición.
+    // La copia se crea desde el propio modal («Crear proforma»), y la pantalla
+    // espera al job, avisa y recarga — como en el alta y la edición.
     await user.click(screen.getByRole("button", { name: "GUARDAR MODAL" }));
     expect(await screen.findByText("Proforma nº 600 creada.")).toBeInTheDocument();
     expect(mockList).toHaveBeenCalledTimes(2);                        // recarga
@@ -514,43 +527,66 @@ describe("Pantalla Proformas (rediseño de flujo, Fase 4)", () => {
     expect(order()).toEqual(["Proforma 42", "Proforma 40"]);
   });
 
-  it("PR-2 · Duplicar es un secundario fijo en cada fila, también en convertidas, y no se repite en «⋯»", async () => {
+  it("Punto C · Duplicar vive en «⋯» en todas las filas (también en convertidas), una sola vez, y abre la copia directa", async () => {
     mockStatus.mockResolvedValue({ status: "finished", result: { codpre: "602" } });
     const user = userEvent.setup();
     render(<ProformasPage />);
     await screen.findByRole("list", { name: "Proformas" });
     for (const codpre of ["9", "39", "37"]) {
-      const dup = within(row(codpre)).getByRole("button", { name: "Duplicar" });
-      expect(dup).toHaveClass("button", "secondary");
-      expect(dup.closest(".erp-flow-menu-pop")).toBeNull();                     // fuera de «⋯»
+      expect(within(row(codpre)).queryByRole("button", { name: "Duplicar" })).toBeNull();   // no fijo
     }
     await user.click(screen.getByRole("button", { name: "Convertidas (1)" }));
     const conv = within(row("71"));
     await user.click(conv.getByRole("button", { name: "Más acciones 71" }));
-    expect(conv.getAllByRole("button", { name: "Duplicar" })).toHaveLength(1);
+    const dup = conv.getAllByRole("button", { name: "Duplicar" });
+    expect(dup).toHaveLength(1);
+    expect(dup[0].closest(".erp-flow-menu-pop")).not.toBeNull();                 // dentro de «⋯»
     expect(conv.queryByRole("link", { name: "Abrir pedido" })).toBeNull();      // «Ver pedido» ya está en la fila
     expect(conv.getByRole("button", { name: "Editar" })).toBeInTheDocument();
-    // También en convertidas, Duplicar abre la previsualización (modal en modo
-    // «Duplicar» con la 71 de origen); nunca duplica directamente.
-    await user.click(conv.getByRole("button", { name: "Duplicar" }));
+    // También en convertidas abre el modal de copia directa con la 71 de origen.
+    await user.click(dup[0]);
     expect(await screen.findByText(/QUOTE MODAL .* dup:71/)).toBeInTheDocument();
     expect(mockDuplicate).not.toHaveBeenCalled();
   });
 
-  // ---- Lote 3 · Duplicar con previsualización ----
+  // ---- Punto A · Enviar por email ----
 
-  it("Lote 3 · Duplicar abre el modal en modo «Duplicar» con la proforma de la fila como origen; no existe duplicado directo", async () => {
+  it("Punto A · «Enviar por email» en cada fila abre el modal con la proforma; una enviada enseña «Enviada dd/mm» (destinatarios en el título) y «Reenviar»", async () => {
+    mockList.mockResolvedValue({
+      ...LISTING,
+      items: [
+        { ...BRAILLE, emailed_at: "2026-10-02T10:15:00", emailed_to: ["ligue@braille.be"] },
+        CLOSSET,
+      ],
+      queue_counts: { aceptadas: 2 },
+    });
+    const user = userEvent.setup();
+    render(<ProformasPage />);
+    await screen.findByRole("list", { name: "Proformas" });
+    const enviada = within(row("39"));
+    expect(enviada.getByText("Enviada 02/10")).toHaveAttribute(
+      "title", "Enviada por email el 02/10/2026 a ligue@braille.be",
+    );
+    expect(enviada.getByRole("button", { name: "Reenviar" })).toBeInTheDocument();
+    expect(within(row("37")).queryByText(/Enviada/)).toBeNull();
+    await user.click(within(row("37")).getByRole("button", { name: "Enviar por email" }));
+    expect(await screen.findByText(/EMAIL MODAL 5-000037 serie:5/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "CERRAR EMAIL" }));
+    expect(screen.queryByText(/EMAIL MODAL/)).toBeNull();
+  });
+
+  // ---- Punto C · Duplicado directo ----
+
+  it("Punto C · «⋯ → Duplicar» abre el modal de copia con la proforma de la fila y su empresa; Cancelar no crea nada", async () => {
     const user = userEvent.setup();
     render(<ProformasPage />);
     await screen.findByRole("list", { name: "Proformas" });
     // El modal aún no está montado.
     expect(screen.queryByText(/QUOTE MODAL/)).toBeNull();
-    // Duplicar abre el MISMO modal que «Nueva proforma → Duplicar», ya en modo
-    // «Duplicar» (dup:39) y con el cliente de la propia proforma como destino.
+    await user.click(within(row("39")).getByRole("button", { name: "Más acciones 39" }));
     await user.click(within(row("39")).getByRole("button", { name: "Duplicar" }));
     expect(await screen.findByText(/QUOTE MODAL Ligue Braille edit:— dup:39/)).toBeInTheDocument();
-    // El endpoint de duplicado directo NO se ha llamado: la copia solo puede
-    // salir de la vista previa del modal (Usar como plantilla → Crear proforma).
+    // El endpoint de duplicado NO se llama: la copia sale de «Crear proforma».
     expect(mockDuplicate).not.toHaveBeenCalled();
     // Cancelar cierra el modal sin crear ni duplicar nada.
     await user.click(screen.getByRole("button", { name: "CANCELAR MODAL" }));

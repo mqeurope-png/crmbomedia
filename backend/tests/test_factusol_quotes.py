@@ -1496,6 +1496,51 @@ def test_convert_quote_to_order_lleva_la_forma_de_pago_al_pedido(session):
     assert (source["forma_pago"], source["forma_pago_nombre"]) == ("002", "Transferencia")
 
 
+# --- entrega de la cabecera (punto C: duplicar directo) ------------------------
+
+
+def test_header_shipping_differs_compara_direccion_poblacion_y_cp_sin_el_nombre():
+    from app.integrations.factusol.quotes import header_shipping, header_shipping_differs
+
+    sede = {"DOMCLI": "C/ Mayor 1", "POBCLI": "Madrid", "CPOCLI": "28001"}
+    misma = {"cnopre": "ACME S.L. (otro nombre)", "cdopre": "c/ mayor  1",
+             "cpopre": "MADRID", "ccppre": "28001"}
+    assert header_shipping_differs(misma, sede) is False          # el nombre no cuenta
+    otra = {**misma, "cdopre": "Rue du Chemin Noir 5", "cpopre": "Is-sur-Tille",
+            "ccppre": "21120", "cpapre": "250"}
+    assert header_shipping_differs(otra, sede) is True
+    assert header_shipping_differs(otra, None) is False            # sin F_CLI no se sabe
+    assert header_shipping_differs({"cnopre": "Solo nombre"}, sede) is False
+    assert header_shipping(otra) == {
+        "nombre": "ACME S.L. (otro nombre)", "direccion": "Rue du Chemin Noir 5",
+        "poblacion": "Is-sur-Tille", "cp": "21120", "provincia": None, "pais": "250",
+    }
+
+
+def test_header_shipping_differs_acepta_la_sede_del_crm_e_ignora_la_puntuacion():
+    """La cabecera que BoHub escribe sale de la empresa CRM: «C/ Mayor, 1»
+    frente a «c mayor 1» o «C/ MAYOR 1.» es la misma sede. Vale con que
+    coincida con F_CLI O con el CRM; sin ninguna de las dos, no se sabe."""
+    from types import SimpleNamespace
+
+    from app.integrations.factusol.quotes import header_shipping_differs
+
+    crm = SimpleNamespace(address_line="C/ Mayor, 1", city="Madrid", postal_code="28001")
+    f_cli = {"DOMCLI": "Calle Mayor 1 - Local", "POBCLI": "Madrid", "CPOCLI": "28001"}
+    cabecera = {"cdopre": "c mayor 1.", "cpopre": "MADRID", "ccppre": "28001"}
+    assert header_shipping_differs(cabecera, f_cli) is True          # F_CLI no casa…
+    assert header_shipping_differs(cabecera, None, crm) is False      # …pero el CRM sí
+    assert header_shipping_differs(cabecera, f_cli, crm) is False     # con cualquiera basta
+    assert header_shipping_differs(
+        {"cdopre": "Calle Mayor, 1, Local", "cpopre": "Madrid", "ccppre": "28001"}, f_cli, crm,
+    ) is False
+    otra = {"cdopre": "Av. del Mar 3", "cpopre": "Marbella", "ccppre": "29600"}
+    assert header_shipping_differs(otra, f_cli, crm) is True
+    # Sede CRM sin dirección (empresa recién creada) no cuenta como «misma».
+    vacia = SimpleNamespace(address_line=None, city=None, postal_code=None)
+    assert header_shipping_differs(otra, None, vacia) is True
+
+
 def test_get_quote_expone_los_portes_de_la_cabecera(session):
     """Al editar, el modal precarga los portes para no perderlos."""
     fake = _FakeFactusol(quotes=[{**_quote_row(43), "IPOR1PRE": 19.0}])

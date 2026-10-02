@@ -154,6 +154,44 @@ Solo se activa si la empresa elegida está **vinculada a FACTUSOL** — sin CODC
 no hay catálogo contra el que buscar. Escribir a mano sigue funcionando: el
 autocomplete sugiere, no obliga.
 
+### Enviar por email
+
+Desde ERP · Proformas (fila), el detalle de Documentos FACTUSOL → Presupuestos
+(junto a «Descargar PDF», con el tipo, la moneda y el idioma elegidos; la
+lista enseña la marca y el reenvío sale del detalle) y la ficha de empresa
+(botón en la pestaña «Proformas FACTUSOL» y «⋯» de «Actividad reciente») se
+puede **enviar el presupuesto / proforma por email**. Reutiliza el flujo de
+la factura: previsualización obligatoria, contactos de la empresa vinculada
+(el de la cabecera o, si ninguno coincide, el primero con email, premarcado;
+`{contacto}` saluda al primer destinatario elegido) más direcciones libres,
+idioma por la cascada del PDF (pedido → idioma de la empresa → país del
+documento → país de la empresa → emisora → ES) con selector, remitente de la
+**empresa emisora de la serie** (1 Bomedia, 2 MQ Europe, 5 Streamtec; Ajustes
+ERP → Remitentes; si no, el alias del usuario) y el PDF adjunto
+(`Presupuesto-2-000075.pdf` o `Proforma-2-000075.pdf`).
+
+Las plantillas por idioma (ES/EN/DE/FR/NL) se editan en Ajustes ERP →
+«Plantillas del email de presupuesto», con los marcadores `{numero}`,
+`{empresa}`, `{contacto}`, `{total}`, `{fecha}`, `{validez}` (la frase del PDF)
+y `{firma}` (la empresa emisora).
+
+Cada envío deja el evento `erp.proforma_emailed` sobre la propia proforma
+(`target_type=factusol_quote`, `target_id=2-000075`; también en el timeline
+del pedido si lo hay) con fecha, usuario, destinatarios e idioma. Las listas
+enseñan «Enviada dd/mm» (destinatarios en el tooltip) y ofrecen «Reenviar»,
+que deja un segundo evento. Sin Gmail, sin remitente utilizable o sin
+destinatarios el envío falla con un mensaje claro y **no** queda marcado.
+**No escribe en FACTUSOL.**
+
+### Duplicar directo («⋯ → Duplicar»)
+
+En ERP · Proformas y en la ficha de empresa, «⋯ → Duplicar» abre el modal
+«Duplicar proforma nº X» ya volcado: cliente destino = el de origen (con
+«Cambiar»), empresa emisora, referencia, líneas reales de F_LPS, portes, forma
+de pago y el destinatario de envío si era distinto de la sede (`envio` /
+`envio_distinto` del detalle). Fecha de hoy y «Crear proforma». Se puede cambiar
+la serie y la empresa antes de crear; el original no se toca.
+
 ### Duplicar como plantilla
 
 Se puede duplicar **cualquier proforma, sea del cliente que sea**: en Bomedia

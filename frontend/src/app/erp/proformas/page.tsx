@@ -7,6 +7,7 @@ import { PageHeader } from "../../components/PageHeader";
 import { CompanyPickerModal } from "../../components/CompanyPickerModal";
 import { ConvertQuoteDialog } from "../../components/erp/ConvertQuoteDialog";
 import { CreateQuoteModal } from "../../components/erp/CreateQuoteModal";
+import { QuoteEmailModal, emailedMark } from "../../components/erp/QuoteEmailModal";
 import { ActionsMenu } from "../../components/erp/flow/ActionsMenu";
 import { RegimePill } from "../../components/erp/flow/RegimePill";
 import { QueueCards } from "../../components/erp/flow/WorkflowQueueCards";
@@ -288,10 +289,13 @@ export default function ProformasPage() {
   const [sortDir, setSortDir] = useState<SortDir | null>(null);
   const [converting, setConverting] = useState<FactusolQuote | null>(null);
   const [editing, setEditing] = useState<{ quote: FactusolQuote; company: Company } | null>(null);
-  // Duplicar con previsualización (Lote 3): la proforma de origen que se abre en
-  // el modal en modo «Duplicar». La copia se crea desde el propio modal tras la
-  // vista previa; ya no hay duplicado directo desde la fila.
+  // Duplicar (punto C): «⋯ → Duplicar» abre el modal ya volcado con la
+  // proforma de origen (cliente, serie, referencia, líneas, portes, forma de
+  // pago y destinatario) y el botón «Crear proforma». La pestaña «Duplicar» de
+  // «+ Nueva proforma» sigue para elegir una plantilla con vista previa.
   const [duplicating, setDuplicating] = useState<FactusolQuote | null>(null);
+  // Punto A: proforma que se envía por email (previsualización en el modal).
+  const [emailing, setEmailing] = useState<FactusolQuote | null>(null);
   const [picking, setPicking] = useState(false);
   const [creatingFor, setCreatingFor] = useState<Company | null>(null);
   // «Ahora» para la antigüedad en palabras: el momento de la última carga (no
@@ -717,8 +721,15 @@ export default function ProformasPage() {
             const codpre = q.codpre ?? "";
             const company = companyOf(q);
             // «⋯» solo con lo que no está ya como botón en la fila (nada
-            // repetido): Editar, Convertir de todas formas, Ver empresa.
+            // repetido): Duplicar (punto C), Editar, Convertir de todas
+            // formas, Ver empresa.
             const menu = [
+              canEdit ? (
+                <button key="duplicar" type="button" disabled={busy}
+                        onClick={() => setDuplicating(q)}>
+                  Duplicar
+                </button>
+              ) : null,
               canEdit && company ? (
                 <button key="editar" type="button" disabled={busy}
                         onClick={() => setEditing({ quote: q, company })}>
@@ -763,6 +774,13 @@ export default function ProformasPage() {
                     {q.order ? (
                       <span className="badge info">pedido {q.order.order_number}</span>
                     ) : null}
+                    {(() => {
+                      // Punto A: «Enviada dd/mm» con los destinatarios en el título.
+                      const mark = emailedMark(q.emailed_at, q.emailed_to);
+                      return mark ? (
+                        <span className="badge ok" title={mark.title}>{mark.label}</span>
+                      ) : null;
+                    })()}
                   </div>
                   <p className="erp-pf-client">
                     {company ? (
@@ -790,16 +808,19 @@ export default function ProformasPage() {
                         Ver pedido
                       </Link>
                     ) : null}
-                    {canEdit ? (
-                      <button type="button" className="button small secondary" disabled={busy}
-                              onClick={() => setDuplicating(q)}>
-                        Duplicar
-                      </button>
-                    ) : null}
                     <button type="button" className="button small secondary" disabled={busy}
                             onClick={() => void pdf(q)}>
                       PDF
                     </button>
+                    {canEdit ? (
+                      <button type="button" className="button small secondary" disabled={busy}
+                              title={q.emailed_at
+                                ? "Ya se envió por email; vuelve a enviarla (queda registrado)"
+                                : "Enviar el presupuesto por email con el PDF adjunto"}
+                              onClick={() => setEmailing(q)}>
+                        {q.emailed_at ? "Reenviar" : "Enviar por email"}
+                      </button>
+                    ) : null}
                     <button
                       type="button" className="button small secondary"
                       aria-expanded={expanded.has(quoteKey(q))}
@@ -855,20 +876,32 @@ export default function ProformasPage() {
         />
       ) : null}
 
-      {/* Duplicar con previsualización (Lote 3): el mismo modal que «Nueva
-          proforma → Duplicar», abierto ya en modo «Duplicar» con la proforma de
-          la fila cargada en la vista previa (líneas reales de F_LPS y «Ver
-          PDF»). El cliente destino arranca en el de la propia proforma si está
-          vinculado a una empresa del CRM; si no, se elige con «Cambiar». La
-          copia se crea desde el modal, nunca directa. */}
+      {/* Duplicar directo (punto C): el modal se abre «Duplicar proforma nº X»
+          ya volcado con la proforma de la fila (líneas reales de F_LPS, serie,
+          referencia, portes, forma de pago y destinatario). El cliente destino
+          arranca en el de la propia proforma si está vinculado a una empresa
+          del CRM; si no, se elige con «Cambiar». La copia se crea con «Crear
+          proforma» desde el modal (nunca por el endpoint de duplicado). */}
       {duplicating ? (
         <CreateQuoteModal
           companyId={companyOf(duplicating)?.id ?? ""}
-          companyName={companyOf(duplicating)?.name ?? duplicating.cliente_nombre ?? "—"}
+          companyName={companyOf(duplicating)?.name ?? ""}
           factusolCodcli={companyOf(duplicating)?.codcli ?? null}
-          duplicateSource={duplicating}
+          duplicateDirect={duplicating}
           onCreated={(jobId) => void onQuoteJob(jobId, "Creando")}
           onCancel={() => setDuplicating(null)}
+        />
+      ) : null}
+
+      {/* Punto A: enviar por email (previsualización obligatoria). Al enviar
+          se recarga la lista para que aparezca la marca «Enviada». */}
+      {emailing ? (
+        <QuoteEmailModal
+          codpre={emailing.codpre ?? ""}
+          serie={serieOf(emailing) || 1}
+          numero={emailing.numero}
+          onClose={() => setEmailing(null)}
+          onSent={() => { void load(); }}
         />
       ) : null}
     </main>

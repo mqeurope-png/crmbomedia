@@ -498,10 +498,18 @@ Acciones por proforma:
 - **«Convertir en pedido»** — abre **«Convertir proforma en pedido»**. Crea el
   pedido en BoHub y **su albarán en FACTUSOL (sin factura)**; botón **«Crear
   pedido y albarán»**.
-- **«Duplicar»** — crea una proforma nueva a partir de otra (con vista previa de
-  sus líneas y su PDF) para el cliente que elijas. La copia parte de la **misma
-  empresa emisora** que la plantilla (la vista previa la dice), y puedes
-  cambiarla en el selector antes de crearla.
+- **«Enviar por email»** — abre la previsualización del correo (contactos de la
+  empresa con el vinculado ya marcado, direcciones libres, idioma, asunto y
+  mensaje editables, remitente de la empresa emisora) y adjunta el PDF del
+  presupuesto. Tras enviarlo, la fila enseña **«Enviada dd/mm»** (los
+  destinatarios al pasar el ratón) y el botón pasa a **«Reenviar»**. Los textos
+  por idioma se editan en Ajustes ERP → «Plantillas del email de presupuesto».
+- **«⋯» → «Duplicar»** — abre **«Duplicar proforma nº X»** ya rellena con todo lo
+  de la original (cliente, empresa emisora, referencia, líneas, portes, forma
+  de pago y destinatario de envío si era distinto), con la fecha de hoy.
+  Puedes cambiar la empresa (**«Cambiar»**) y la emisora antes de pulsar
+  **«Crear proforma»**; la original no se toca. La pestaña «Duplicar» de
+  «+ Nueva proforma» sigue ahí para buscar una plantilla con vista previa.
 - **«Ver líneas»** — despliega en la propia fila el desglose de la proforma
   (SKU, descripción, cantidad, precio, IVA y total, y los portes si los lleva),
   para decidir si duplicar o convertir sin abrirla. Es solo lectura y se cierra

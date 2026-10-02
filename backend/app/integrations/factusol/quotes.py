@@ -36,6 +36,7 @@ en paralelo pisarían la numeración.
 from __future__ import annotations
 
 import logging
+import re
 import unicodedata
 from collections.abc import Mapping
 from datetime import UTC, date, datetime
@@ -120,6 +121,9 @@ QUOTE_FIELDS = (
     # devolvía None en silencio y escribirlo reventaba el registro entero.
     "CPOPRE", "CCPPRE", "CPRPRE", "CNIPRE", "TELPRE", "CEMPRE",
     "NET1PRE", "PIVA1PRE", "IIVA1PRE", "TOTPRE", "FOPPRE", "ALMPRE",
+    # País de la entrega (ISO numérico). Solo se LEE (punto C: la copia directa
+    # hereda el destinatario); al escribir lo pone `build_quote_payload`.
+    "CPAPRE",
 )
 
 #: Columnas de F_ART que exponemos en el buscador de artículos.
@@ -435,6 +439,59 @@ def _quote_matches(
     if crm:
         haystack = f"{haystack} {crm}"
     return all(token in haystack for token in tokens)
+
+
+def header_shipping(quote: dict[str, Any]) -> dict[str, str | None]:
+    """Bloque de entrega de la cabecera F_PRE (a quién y dónde se entrega), en
+    la forma que el modal vuelca en «Enviar a otro nombre / dirección»."""
+    def texto(key: str) -> str | None:
+        return str(quote.get(key) or "").strip() or None
+
+    return {
+        "nombre": texto("cnopre"), "direccion": texto("cdopre"),
+        "poblacion": texto("cpopre"), "cp": texto("ccppre"),
+        "provincia": texto("cprpre"), "pais": texto("cpapre"),
+    }
+
+
+_ADDRESS_PUNCT = re.compile(r"[.,;:/\\\-]+")
+
+
+def _fold_address(value: Any) -> str:
+    """Texto comparable de una dirección: sin acentos ni mayúsculas, sin la
+    puntuación de separación («C/ Mayor, 1» ≡ «c mayor 1»), espacios simples."""
+    return " ".join(_ADDRESS_PUNCT.sub(" ", fold_text(value)).split())
+
+
+def header_shipping_differs(
+    quote: dict[str, Any], customer_row: dict[str, Any] | None,
+    crm_company: Any = None,
+) -> bool:
+    """¿La entrega de la cabecera es distinta de la sede del cliente
+    (dropshipping o dirección alternativa)? La sede es la de F_CLI y/o la de
+    la empresa CRM vinculada (BoHub escribe la del CRM en la cabecera, que
+    puede no coincidir letra a letra con F_CLI). Se comparan dirección,
+    población y CP normalizados; el nombre no. Sin ninguna sede conocida (o
+    sin dirección en la cabecera) no hay con qué comparar: False."""
+    sedes: list[tuple[Any, Any, Any]] = []
+    if customer_row:
+        sedes.append((customer_row.get("DOMCLI"), customer_row.get("POBCLI"),
+                      customer_row.get("CPOCLI")))
+    if crm_company is not None:
+        sedes.append((getattr(crm_company, "address_line", None),
+                      getattr(crm_company, "city", None),
+                      getattr(crm_company, "postal_code", None)))
+    if not sedes:
+        return False
+    cabecera = tuple(_fold_address(quote.get(k)) for k in ("cdopre", "cpopre", "ccppre"))
+    if not any(cabecera):
+        return False
+
+    def misma(sede: tuple[Any, Any, Any]) -> bool:
+        return all(not valor or valor == _fold_address(dato)
+                   for valor, dato in zip(cabecera, sede, strict=True))
+
+    return not any(misma(sede) for sede in sedes)
 
 
 def _quote_sort_key(quote: dict[str, Any]) -> tuple[int, int]:

@@ -27,6 +27,13 @@ jest.mock("../../lib/erpApi", () => ({
     from_alias_source: "idioma", from_alias_scope: null, sample: {},
   })),
   sendShipmentEmailTemplateTest: jest.fn(),
+  // Punto A: plantillas del email de presupuesto.
+  previewQuoteEmailTemplate: jest.fn(() => Promise.resolve({
+    lang: "es", subject: "Presupuesto 2-000075", body_text: "Estimado/a Marta Coll",
+    body_html: "<p>Estimado/a Marta Coll</p>", from_alias_example: "info@artisjet-printers.eu",
+    from_alias_source: "serie", from_alias_scope: "2", sample: {},
+  })),
+  sendQuoteEmailTemplateTest: jest.fn(),
   deleteFactusolCompanyLogo: jest.fn(),
   uploadFactusolCompanyLogo: jest.fn(),
 }));
@@ -468,6 +475,28 @@ describe("ErpSettingsPage — «Enviar factura al cliente»: remitente por tiend
     const sent = mockUpdate.mock.calls[0][0].factusol_invoice_email_templates;
     expect(sent.fr.subject).toBe("Votre facture {numero}{pedido}");
     expect(sent.es.subject).toBe("Factura {numero}{pedido}");  // el resto se conserva
+  });
+
+  it("Punto A · plantillas del email de presupuesto por idioma: editables y viajan al guardar con su propia clave", async () => {
+    mockGet.mockResolvedValue(settings({
+      factusol_quote_email_templates: {
+        es: { subject: "Presupuesto {numero}", body: "Adjuntamos el presupuesto {numero}." },
+        fr: { subject: "Devis {numero}", body: "Ci-joint le devis {numero}." },
+      },
+    }));
+    const user = userEvent.setup();
+    render(<ErpSettingsPage />);
+    const asuntoFr = await screen.findByLabelText("Asunto presupuesto fr");
+    expect(asuntoFr).toHaveValue("Devis {numero}");
+    expect(screen.getByText(/\{validez\}/)).toBeInTheDocument();          // marcadores explicados
+    await user.clear(asuntoFr);
+    await user.type(asuntoFr, "Votre devis {{numero} de {{firma}");
+    await user.click(screen.getByRole("button", { name: "Guardar cambios · Plantillas del email de presupuesto" }));
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
+    const sent = mockUpdate.mock.calls[0][0];
+    expect(sent.factusol_quote_email_templates.fr.subject).toBe("Votre devis {numero} de {firma}");
+    expect(sent.factusol_quote_email_templates.es.subject).toBe("Presupuesto {numero}");
+    expect(sent).not.toHaveProperty("factusol_invoice_email_templates");   // solo su sección
   });
 });
 

@@ -26,6 +26,7 @@ import {
 } from "../../lib/erpApi";
 import { extractErrorMessage } from "../../lib/errors";
 import { InvoiceEmailModal } from "./InvoiceEmailModal";
+import { QuoteEmailModal } from "./QuoteEmailModal";
 
 const TYPE_LABELS: Record<FactusolDocType, string> = {
   pedidos: "Pedido de cliente",
@@ -221,6 +222,9 @@ export function FactusolDocumentDetailModal({
   // backend) + su origen, variante, banco y divisa (E4-fix1).
   const [pdfLang, setPdfLang] = useState<FactusolPdfLang>("es");
   const [pdfLangSource, setPdfLangSource] = useState<string | null>(null);
+  // El operador cambió el idioma a mano (solo entonces manda sobre la cascada
+  // en el email; el respaldo por país sin `pdf_lang` NO es una elección).
+  const [pdfLangManual, setPdfLangManual] = useState(false);
   const [pdfVariant, setPdfVariant] = useState<string>("");
   const [pdfBank, setPdfBank] = useState<number>(0);
   const [pdfCurrency, setPdfCurrency] = useState<string>("EUR");
@@ -284,6 +288,7 @@ export function FactusolDocumentDetailModal({
           setPdfLang(defaultPdfLang(d.cliente_pais));
           setPdfLangSource(null);
         }
+        setPdfLangManual(false);
         setPdfVariant("");
         setPdfBank(0);
         setPdfCurrency("EUR");
@@ -679,6 +684,7 @@ export function FactusolDocumentDetailModal({
                 onChange={(e) => {
                   setPdfLang(e.target.value as FactusolPdfLang);
                   setPdfLangSource(null);  // elección manual: ya no es sugerido
+                  setPdfLangManual(true);
                 }}
               >
                 {PDF_LANGS.map((l) => (
@@ -733,6 +739,17 @@ export function FactusolDocumentDetailModal({
                   onClick={() => setEmailOpen(true)}
                 >
                   Enviar factura por email
+                </button>
+              ) : null}
+              {/* Punto A — enviar el presupuesto / proforma por email con el
+                  tipo, la moneda y el idioma elegidos para el PDF. */}
+              {current.docType === "presupuestos" && canEdit ? (
+                <button
+                  type="button"
+                  className="button"
+                  onClick={() => setEmailOpen(true)}
+                >
+                  {doc.emailed_at ? "Reenviar por email" : "Enviar por email"}
                 </button>
               ) : null}
             </span>
@@ -796,6 +813,27 @@ export function FactusolDocumentDetailModal({
           bank={pdfBankOptions.length > 1 ? pdfBank : null}
           variant={pdfVariant === "anticipo" ? "anticipo" : null}
           onClose={() => setEmailOpen(false)}
+        />
+      ) : null}
+
+      {doc && emailOpen && current.docType === "presupuestos" ? (
+        <QuoteEmailModal
+          codpre={current.codigo}
+          serie={current.serie}
+          numero={doc.numero}
+          variant={pdfVariant === "proforma" ? "proforma" : null}
+          currency={pdfCurrency}
+          bank={pdfBankOptions.length > 1 ? pdfBank : null}
+          // Solo manda el idioma si el operador lo cambió a mano en el PDF;
+          // si no, el backend lo propone por la misma cascada y dice de dónde.
+          initialLang={pdfLangManual ? pdfLang : null}
+          onClose={() => setEmailOpen(false)}
+          onSent={({ to }) => {
+            // La marca «Enviada» y el botón «Reenviar» sin recargar el modal;
+            // la fila del listado de fondo se refresca por `onChanged`.
+            setDoc((d) => (d ? { ...d, emailed_at: new Date().toISOString(), emailed_to: to } : d));
+            onChanged?.();
+          }}
         />
       ) : null}
 

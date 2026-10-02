@@ -10,8 +10,10 @@ import {
   getErpNextReferences,
   getErpSettings,
   previewInvoiceEmailTemplate,
+  previewQuoteEmailTemplate,
   previewShipmentEmailTemplate,
   sendInvoiceEmailTemplateTest,
+  sendQuoteEmailTemplateTest,
   sendShipmentEmailTemplateTest,
   updateErpSettings,
   uploadFactusolCompanyLogo,
@@ -35,7 +37,7 @@ const INVOICE_EMAIL_LANGS: ReadonlyArray<{ value: string; label: string }> = [
 /** Qué plantilla edita un `TemplateEditor`: la del email de FACTURA o la del
  *  AVISO DE ENVÍO al cliente (nº de seguimiento). Cambian las llamadas de
  *  ejemplo / prueba y las etiquetas (que no se repitan en la página). */
-type TemplateKind = "invoice" | "shipment";
+type TemplateKind = "invoice" | "shipment" | "quote";
 type TemplateDraft = { subject?: string; body?: string };
 const TEMPLATE_API = {
   invoice: {
@@ -46,8 +48,19 @@ const TEMPLATE_API = {
     preview: (lang: string, d: TemplateDraft) => previewShipmentEmailTemplate(lang, d),
     test: (lang: string, d: TemplateDraft) => sendShipmentEmailTemplateTest(lang, d),
   },
+  // Punto A: plantilla del email de PRESUPUESTO / proforma.
+  quote: {
+    preview: (lang: string, d: TemplateDraft) => previewQuoteEmailTemplate(lang, d),
+    test: (lang: string, d: TemplateDraft) => sendQuoteEmailTemplateTest(lang, d),
+  },
 } as const;
 function templateLabels(kind: TemplateKind, lang: string) {
+  if (kind === "quote") {
+    return { example: `Ver ejemplo presupuesto ${lang}`,
+             test: `Enviarme una prueba presupuesto ${lang}`,
+             subject: `Asunto presupuesto ${lang}`, body: `Cuerpo presupuesto ${lang}`,
+             testid: `ejemplo-presupuesto-${lang}` };
+  }
   return kind === "invoice"
     ? { example: `Ver ejemplo ${lang}`, test: `Enviarme una prueba ${lang}`,
         subject: `Asunto factura ${lang}`, body: `Cuerpo factura ${lang}`,
@@ -103,7 +116,8 @@ const REF_PREFIX_RE = /^[A-Z0-9]{1,6}$/;
  *  sus campos (el backend acepta cualquier subconjunto). El orden es el de la
  *  pantalla. */
 type SectionId =
-  | "facturacion" | "tiendas" | "remitentes" | "plantillas" | "aviso_envio" | "series"
+  | "facturacion" | "tiendas" | "remitentes" | "plantillas" | "plantillas_presupuesto"
+  | "aviso_envio" | "series"
   | "abreviaturas" | "sat" | "empresas" | "almacenes" | "contrapartidas"
   | "origenes" | "drive";
 
@@ -116,6 +130,8 @@ const SECTIONS: ReadonlyArray<{ id: SectionId; title: string; keys: (keyof ErpSe
     keys: ["factusol_store_email_from", "factusol_series_email_from"] },
   { id: "plantillas", title: "Plantillas del email de factura",
     keys: ["factusol_invoice_email_templates"] },
+  { id: "plantillas_presupuesto", title: "Plantillas del email de presupuesto",
+    keys: ["factusol_quote_email_templates"] },
   { id: "aviso_envio", title: "Aviso de envío al cliente",
     keys: ["shipment_email_templates", "shipment_email_from"] },
   { id: "series", title: "Series FACTUSOL",
@@ -592,6 +608,41 @@ export default function ErpSettingsPage() {
                 onChange={(next) => patch({
                   factusol_invoice_email_templates: {
                     ...(cfg.factusol_invoice_email_templates ?? {}),
+                    [l.value]: { ...tpl, ...next },
+                  },
+                })}
+              />
+            );
+          })}
+        </SettingsSection>
+
+        {/* ---------------------------------------------------------------- */}
+        <SettingsSection
+          {...sectionProps("plantillas_presupuesto")}
+          lead="El texto del correo con el que se envía un presupuesto o proforma desde Proformas, Documentos o la ficha de empresa, en el idioma del cliente; el PDF va adjunto."
+        >
+          <p className="muted small">
+            Marcadores: <code>{"{numero}"}</code>, <code>{"{empresa}"}</code>,{" "}
+            <code>{"{contacto}"}</code>, <code>{"{total}"}</code>, <code>{"{fecha}"}</code>,{" "}
+            <code>{"{validez}"}</code> (la frase de validez del PDF) y{" "}
+            <code>{"{firma}"}</code> (la empresa emisora de la serie). El remitente es el de
+            la empresa emisora (sección «Remitentes»). Vacío = el texto por defecto de
+            ese idioma.
+          </p>
+          {INVOICE_EMAIL_LANGS.map((l) => {
+            const tpl = cfg.factusol_quote_email_templates?.[l.value]
+              ?? { subject: "", body: "" };
+            return (
+              <TemplateEditor
+                key={`presupuesto-${l.value}`}
+                kind="quote"
+                lang={l.value}
+                label={l.label}
+                tpl={tpl}
+                canTest={canEdit}
+                onChange={(next) => patch({
+                  factusol_quote_email_templates: {
+                    ...(cfg.factusol_quote_email_templates ?? {}),
                     [l.value]: { ...tpl, ...next },
                   },
                 })}
@@ -1641,12 +1692,14 @@ function TemplateExampleModal({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  const kindLabel = kind === "quote" ? "email de presupuesto"
+    : kind === "shipment" ? "aviso de envío" : "email de factura";
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true"
-         aria-label={`Ejemplo del email de factura en ${label}`}>
+         aria-label={`Ejemplo del ${kindLabel} en ${label}`}>
       <div className="modal-dialog erp-modal">
         <h2>
-          Ejemplo del email de factura{" "}
+          Ejemplo del {kindLabel}{" "}
           <span className="muted">{label} · datos de muestra</span>
         </h2>
         {error ? <p className="form-error">{error}</p> : null}
@@ -1667,13 +1720,24 @@ function TemplateExampleModal({
             <div className="erp-settings-example-body" data-testid="ejemplo-cuerpo">
               {example.body_text}
             </div>
-            <p className="muted small">
-              Datos de muestra: cliente «{example.sample.cliente}», factura{" "}
-              <span className="mono">{example.sample.numero}</span>, pedido{" "}
-              <span className="mono">{example.sample.pedido}</span>, referencia{" "}
-              <span className="mono">{example.sample.referencia}</span>. Al enviar
-              se sustituyen por los del pedido real.
-            </p>
+            {kind === "quote" ? (
+              <p className="muted small">
+                Datos de muestra: empresa «{example.sample.empresa}», contacto{" "}
+                «{example.sample.contacto}», presupuesto{" "}
+                <span className="mono">{example.sample.numero}</span>, total{" "}
+                <span className="mono">{example.sample.total}</span>, fecha{" "}
+                <span className="mono">{example.sample.fecha}</span>. Al enviar se
+                sustituyen por los de la proforma real.
+              </p>
+            ) : (
+              <p className="muted small">
+                Datos de muestra: cliente «{example.sample.cliente}», factura{" "}
+                <span className="mono">{example.sample.numero}</span>, pedido{" "}
+                <span className="mono">{example.sample.pedido}</span>, referencia{" "}
+                <span className="mono">{example.sample.referencia}</span>. Al enviar
+                se sustituyen por los del pedido real.
+              </p>
+            )}
           </>
         ) : null}
         <div className="modal-actions">

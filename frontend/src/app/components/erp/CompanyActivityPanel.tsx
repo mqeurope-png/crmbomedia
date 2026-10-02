@@ -12,6 +12,10 @@ import {
   type QuoteQueue,
   type WorkflowQueue,
 } from "../../lib/erpApi";
+import { CreateQuoteModal } from "./CreateQuoteModal";
+import { QuoteEmailModal, emailedMark } from "./QuoteEmailModal";
+import { ActionsMenu } from "./flow/ActionsMenu";
+import { pollQuoteJob } from "./quoteJobs";
 
 /** Documentos que entran por cada origen (antes 5; ahora que es una tabla
  *  cabe más historia sin ocupar más). */
@@ -60,6 +64,8 @@ export type ActivityRow = {
   moneda: string;
   estado: string;
   tone: string;
+  /** Punto B: la proforma entera, para «⋯ → Duplicar» (solo en proformas). */
+  quote?: FactusolQuote;
 };
 
 function fecha(iso: string | null | undefined): string {
@@ -109,6 +115,7 @@ function quoteRow(q: FactusolQuote): ActivityRow {
     detalle: q.referencia || null, fecha: q.fecha, importe: q.total, moneda: "EUR",
     estado: q.estado_label || "Proforma",
     tone: q.queue ? QUOTE_TONE[q.queue] ?? "n" : "n",
+    quote: q,
   };
 }
 
@@ -134,10 +141,13 @@ export function buildActivityRows(
  *  y su fallo se dice en la propia tabla sin ocultar las demás. */
 export function CompanyActivityPanel({
   companyId,
+  companyName = "",
   factusolCodcli,
   contactsCount,
 }: {
   companyId: string;
+  /** Punto B: nombre de la empresa, para el modal de duplicar proforma. */
+  companyName?: string | null;
   factusolCodcli: string | null;
   contactsCount: number;
 }) {
@@ -149,6 +159,27 @@ export function CompanyActivityPanel({
   const [invoicesError, setInvoicesError] = useState(false);
   const [quotesError, setQuotesError] = useState(false);
   const [filter, setFilter] = useState<ActivityFilter>("todo");
+  // Punto B: proforma que se duplica («⋯ → Duplicar» en su fila) y el aviso
+  // del resultado; `reloadKey` relee las tres fuentes cuando la copia existe.
+  const [duplicating, setDuplicating] = useState<FactusolQuote | null>(null);
+  // Punto A: proforma que se envía por email desde «⋯».
+  const [emailing, setEmailing] = useState<FactusolQuote | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+
+  async function onDuplicated(jobId: string) {
+    setDuplicating(null);
+    setNotice("Creando la proforma en FACTUSOL…");
+    const outcome = await pollQuoteJob(jobId);
+    if (outcome.status === "finished") {
+      setNotice(`Proforma nº ${String(outcome.result.codpre ?? "")} creada.`);
+      setReloadKey((k) => k + 1);
+    } else if (outcome.status === "failed") {
+      setNotice(outcome.error ?? "La operación falló en FACTUSOL.");
+    } else {
+      setNotice("Sigue en curso; actualiza en unos segundos.");
+    }
+  }
 
   useEffect(() => {
     let alive = true;
@@ -177,7 +208,7 @@ export function CompanyActivityPanel({
       })
       .catch(() => { if (alive) { setQuotes([]); setQuotesError(true); } });
     return () => { alive = false; };
-  }, [companyId, factusolCodcli]);
+  }, [companyId, factusolCodcli, reloadKey]);
 
   const loading = orders === null || invoices === null || quotes === null;
   const rows = useMemo(
@@ -234,6 +265,7 @@ export function CompanyActivityPanel({
           })}
         </div>
       </div>
+      {notice ? <p className="form-info" role="status">{notice}</p> : null}
       <div className="erp-flow-table">
         <table className="data-table data-table--responsive company-activity-table">
           <thead>
@@ -243,15 +275,16 @@ export function CompanyActivityPanel({
               <th scope="col">Fecha</th>
               <th scope="col" className="num">Importe</th>
               <th scope="col">Estado</th>
+              <th scope="col"><span className="sr-only">Acciones</span></th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={5} className="company-activity-msg">Cargando…</td></tr>
+              <tr><td colSpan={6} className="company-activity-msg">Cargando…</td></tr>
             ) : null}
             {notes.map((t) => (
               <tr key={t}>
-                <td colSpan={5} className="company-activity-msg is-warn" role="status">{t}</td>
+                <td colSpan={6} className="company-activity-msg is-warn" role="status">{t}</td>
               </tr>
             ))}
             {visible.map((r) => (
@@ -263,6 +296,12 @@ export function CompanyActivityPanel({
                     <span className="mono">{r.numero}</span>
                   )}
                   {r.detalle ? <span className="company-activity-detail"> · {r.detalle}</span> : null}
+                  {(() => {
+                    const mark = r.quote ? emailedMark(r.quote.emailed_at, r.quote.emailed_to) : null;
+                    return mark ? (
+                      <>{" "}<span className="badge ok" title={mark.title}>{mark.label}</span></>
+                    ) : null;
+                  })()}
                 </td>
                 <td data-label="Tipo">{KIND_LABEL[r.kind]}</td>
                 <td data-label="Fecha" className="mono">{fecha(r.fecha) || "—"}</td>
@@ -270,10 +309,24 @@ export function CompanyActivityPanel({
                 <td data-label="Estado">
                   <span className={`erp-flow-pill is-${r.tone}`}>{r.estado}</span>
                 </td>
+                <td data-label="Acciones" className="erp-quote-row-actions">
+                  {/* Punto B: «⋯ → Duplicar» en las proformas (copia directa,
+                      punto C). La tabla tiene scroll propio: menú flotante. */}
+                  {r.kind === "proforma" && r.quote && factusolCodcli ? (
+                    <ActionsMenu label={`Más acciones ${r.numero}`} floating>
+                      <button type="button" onClick={() => setDuplicating(r.quote ?? null)}>
+                        Duplicar
+                      </button>
+                      <button type="button" onClick={() => setEmailing(r.quote ?? null)}>
+                        {r.quote.emailed_at ? "Reenviar por email" : "Enviar por email"}
+                      </button>
+                    </ActionsMenu>
+                  ) : null}
+                </td>
               </tr>
             ))}
             {!loading && visible.length === 0 ? (
-              <tr><td colSpan={5} className="company-activity-msg">{emptyText}</td></tr>
+              <tr><td colSpan={6} className="company-activity-msg">{emptyText}</td></tr>
             ) : null}
           </tbody>
         </table>
@@ -282,6 +335,27 @@ export function CompanyActivityPanel({
         <span className="k">Contactos</span>
         <span className="v">{contactsCount}</span>
       </div>
+
+      {duplicating ? (
+        <CreateQuoteModal
+          companyId={companyId}
+          companyName={companyName ?? ""}
+          factusolCodcli={factusolCodcli}
+          duplicateDirect={duplicating}
+          onCreated={(jobId) => void onDuplicated(jobId)}
+          onCancel={() => setDuplicating(null)}
+        />
+      ) : null}
+
+      {emailing ? (
+        <QuoteEmailModal
+          codpre={emailing.codpre ?? ""}
+          serie={emailing.serie ?? (Number(emailing.tippre) || 1)}
+          numero={emailing.numero}
+          onClose={() => setEmailing(null)}
+          onSent={() => setReloadKey((k) => k + 1)}
+        />
+      ) : null}
     </section>
   );
 }

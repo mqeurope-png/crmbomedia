@@ -2044,6 +2044,10 @@ export type ErpSettings = {
    *  con separador; vacío sin pedido) y {referencia} («su ref.»). Vacío = el
    *  default del código para ese idioma. */
   factusol_invoice_email_templates?: Record<string, { subject: string; body: string }>;
+  /** Punto A · plantillas del email de PRESUPUESTO / proforma por idioma.
+   *  Marcadores: {numero}, {empresa}, {contacto}, {total}, {fecha}, {validez}
+   *  y {firma}. Vacío = el default del código para ese idioma. */
+  factusol_quote_email_templates?: Record<string, { subject: string; body: string }>;
   /** Aviso de ENVÍO al cliente (nº de seguimiento + enlace) por idioma.
    *  Placeholders: {cliente}, {pedido}, {tracking}, {enlace}, {agencia}. */
   shipment_email_templates?: Record<string, { subject: string; body: string }>;
@@ -2086,7 +2090,9 @@ export type InvoiceEmailTemplatePreview = {
   from_alias_example: string;
   from_alias_source: "serie" | "tienda" | "usuario";
   from_alias_scope: string | null;
-  sample: { cliente: string; numero: string; pedido: string; referencia: string };
+  /** Datos de muestra con los que se rellenó (factura: cliente/numero/pedido/
+   *  referencia; presupuesto: numero/empresa/contacto/total/fecha/validez/firma). */
+  sample: Record<string, string>;
 };
 
 /** Previsualiza la plantilla de un idioma con datos de muestra. `subject` /
@@ -2465,6 +2471,9 @@ export type FactusolDocument = {
   /** Tono de la pastilla de estado (`ok`/`warn`/`muted`…) derivado del mismo
    *  criterio del escritorio (ESTFAC/ESTALB/ESTPRE/ESTPCL). */
   estado_tone?: string;
+  /** Punto A (solo presupuestos): último envío por email, si lo hubo. */
+  emailed_at?: string | null;
+  emailed_to?: string[] | null;
 };
 
 /** F3-fix1 — un cobro de la factura (F_LCO), solo lectura. */
@@ -3116,7 +3125,107 @@ export type EmailContact = {
   has_email: boolean;
   /** Es el contacto ligado al pedido (se marca por defecto). */
   is_order_contact: boolean;
+  /** Punto A (presupuestos): premarcado en «Para» (el contacto vinculado a la
+   *  cabecera o, si no, el principal con email). */
+  is_primary?: boolean;
 };
+
+// --- Punto A · enviar el PRESUPUESTO / proforma por email ---------------------
+
+export type QuoteEmailPreview = {
+  serie: number;
+  codpre: number;
+  numero: string;
+  /** Email de la cabecera de la proforma, por si no hay contactos. */
+  to: string;
+  lang: FactusolPdfLang;
+  lang_source: InvoiceEmailLangSource | "selector";
+  subject: string;
+  body_text: string;
+  /** Remitente: el de la EMPRESA EMISORA de la serie; si no, el del usuario. */
+  from_alias: string;
+  from_alias_source: "serie" | "usuario";
+  from_alias_ok?: boolean | null;
+  from_alias_problem?: string | null;
+  attachment_filename: string;
+  variant: "proforma" | null;
+  currency: string;
+  /** Empresa CRM vinculada al cliente (null = no vinculada). */
+  company_id: string | null;
+  company_name: string | null;
+  customer_name?: string | null;
+  order_id: string | null;
+  order_number?: string | null;
+  company_contacts: EmailContact[];
+  /** A quién saluda `{contacto}` en el cuerpo (null = a la empresa). */
+  contacto_id?: string | null;
+  /** Valores de los marcadores con los que se rellenó la plantilla. */
+  markers?: Record<string, string>;
+};
+
+export type QuoteEmailSendPayload = {
+  confirm: boolean;
+  to: string[];
+  cc?: string[];
+  bcc?: string[];
+  subject: string;
+  body_text: string;
+  lang: FactusolPdfLang;
+  from_alias: string;
+  variant?: "proforma" | null;
+  currency?: string;
+  bank?: number | null;
+};
+
+export async function getQuoteEmailPreview(
+  codpre: string | number, serie: number,
+  opts: {
+    lang?: FactusolPdfLang; variant?: "proforma" | null; currency?: string | null;
+    /** A quién saludar: id de contacto, "none" (direcciones libres → la empresa)
+     *  u omitido (el premarcado). */
+    contact_id?: string | null;
+  } = {},
+): Promise<QuoteEmailPreview> {
+  return apiFetch(
+    `/api/erp/factusol/quotes/${encodeURIComponent(String(codpre))}/email-preview${qs({
+      serie, lang: opts.lang, variant: opts.variant ?? undefined,
+      currency: opts.currency ?? undefined, contact_id: opts.contact_id ?? undefined,
+    })}`,
+  );
+}
+
+export async function sendQuoteEmail(
+  codpre: string | number, serie: number, payload: QuoteEmailSendPayload,
+): Promise<InvoiceEmailSendResult> {
+  return apiFetch(
+    `/api/erp/factusol/quotes/${encodeURIComponent(String(codpre))}/email${qs({ serie })}`,
+    { method: "POST", body: JSON.stringify(payload) },
+  );
+}
+
+/** Plantilla del email de PRESUPUESTO: ejemplo con datos de muestra. */
+export async function previewQuoteEmailTemplate(
+  lang: string,
+  draft: { subject?: string; body?: string } = {},
+): Promise<InvoiceEmailTemplatePreview> {
+  return apiFetch<InvoiceEmailTemplatePreview>("/api/erp/settings/quote-email/preview", {
+    method: "POST",
+    body: JSON.stringify({ lang, subject: draft.subject ?? null, body: draft.body ?? null }),
+  });
+}
+
+/** Plantilla del email de PRESUPUESTO: «Enviarme una prueba». */
+export async function sendQuoteEmailTemplateTest(
+  lang: string,
+  draft: { subject?: string; body?: string; to?: string } = {},
+): Promise<InvoiceEmailTemplateTestResult> {
+  return apiFetch<InvoiceEmailTemplateTestResult>("/api/erp/settings/quote-email/test-send", {
+    method: "POST",
+    body: JSON.stringify({
+      lang, subject: draft.subject ?? null, body: draft.body ?? null, to: draft.to ?? null,
+    }),
+  });
+}
 
 /** Datos de la PREVISUALIZACIÓN obligatoria antes de enviar la factura. Todo
  *  editable en el modal salvo el nombre del adjunto (se regenera al enviar). */
@@ -3664,6 +3773,18 @@ export type FactusolQuote = {
   foppre?: string | null;
   forma_pago?: string | null;
   forma_pago_nombre?: string | null;
+  /** Punto C: bloque de entrega de la cabecera (a quién y dónde) y si es
+   *  distinto de la sede del cliente en FACTUSOL (dropshipping / dirección
+   *  alternativa). Solo en el detalle; la copia directa lo hereda. */
+  envio?: {
+    nombre: string | null; direccion: string | null; poblacion: string | null;
+    cp: string | null; provincia: string | null; pais: string | null;
+  } | null;
+  envio_distinto?: boolean;
+  /** Punto A: último envío por email (evento `erp.proforma_emailed`): fecha
+   *  ISO y destinatarios; null si nunca se envió. */
+  emailed_at?: string | null;
+  emailed_to?: string[] | null;
 };
 
 export type QuoteJobStatus =

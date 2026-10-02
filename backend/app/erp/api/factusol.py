@@ -814,6 +814,11 @@ def get_factusol_document(
     except Exception as exc:  # noqa: BLE001 — la sugerencia nunca tumba nada
         logger.warning("factusol pdf_lang del detalle KO: %s", exc)
         doc["pdf_lang"] = {"lang": "es", "source": "defecto"}
+    if doc_type == "presupuestos":
+        # Punto A: marca «Enviada» también en el detalle (botón «Reenviar»).
+        from app.erp.quotes_bandeja import annotate_emailed  # noqa: PLC0415
+
+        annotate_emailed(session, [doc])
     return doc
 
 
@@ -2878,7 +2883,157 @@ def get_quote_endpoint(
         resolve_name(_fop_names(client, ejercicio), quote["forma_pago"])
         if quote["forma_pago"] else None
     )
+    # Punto C (duplicar directo): empresa CRM vinculada, serie y nº visible
+    # como en el listado, y el bloque de entrega con si difiere de la sede del
+    # cliente (dropshipping), para que la copia lo herede tal cual.
+    from app.erp.quotes_bandeja import annotate_quotes  # noqa: PLC0415
+    from app.integrations.factusol.customers import customer_row  # noqa: PLC0415
+    from app.integrations.factusol.quotes import (  # noqa: PLC0415
+        header_shipping,
+        header_shipping_differs,
+    )
+    from app.models.crm import Company  # noqa: PLC0415
+
+    annotate_quotes(session, [quote])
+    quote["envio"] = header_shipping(quote)
+    try:
+        fila_cliente = (
+            customer_row(client, quote.get("clipre"), ejercicio=ejercicio)
+            if quote.get("clipre") else None
+        )
+    except FactusolError:
+        logger.warning("factusol: no se pudo leer F_CLI para la proforma %s", codpre,
+                       exc_info=True)
+        fila_cliente = None
+    # La sede también puede ser la dirección de la empresa CRM: es la que BoHub
+    # escribe en la cabecera al crear la proforma.
+    empresa_crm = session.get(Company, quote["company"]["id"]) if quote.get("company") else None
+    quote["envio_distinto"] = header_shipping_differs(quote, fila_cliente, empresa_crm)
     return quote
+
+
+# --- punto A: enviar el presupuesto / proforma por email ---------------------
+
+
+@router.get("/quotes/{codpre}/email-preview")
+def quote_email_preview(
+    codpre: int,
+    serie: int = Query(ge=1, le=9),
+    lang: str | None = Query(default=None, pattern="^(es|en|de|fr|nl)$"),
+    variant: str | None = Query(default=None, pattern="^(proforma)$"),
+    currency: str = Query(default="EUR", pattern="^[A-Z]{3}$"),
+    # A quién saluda {contacto}: id de un contacto de la lista, «none» (solo
+    # direcciones libres → se saluda a la empresa) o nada (el premarcado).
+    contact_id: str | None = Query(default=None, max_length=40),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_email_client),
+) -> dict[str, Any]:
+    """PREVISUALIZACIÓN obligatoria antes de enviar el presupuesto por email:
+    contactos de la empresa vinculada (con el premarcado), idioma (+
+    procedencia), asunto y cuerpo editables, remitente por serie y nombre del
+    adjunto. No envía nada ni genera el PDF. Reutiliza el flujo de la factura;
+    NO escribe en FACTUSOL."""
+    from app.erp.quote_email import build_quote_email_preview  # noqa: PLC0415
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+
+    client, ejercicio = _client_and_ejercicio(session)
+    try:
+        preview = build_quote_email_preview(
+            session, client, serie=serie, codpre=codpre, ejercicio=ejercicio,
+            current_user=current_user, lang_override=lang, variant=variant,
+            currency=currency, fop_names=_fop_names(client, ejercicio),
+            contact_id=contact_id,
+        )
+    except FactusolError as exc:
+        raise _factusol_gateway_error(exc, "quote_email_failed") from exc
+    if preview.get("error") == "not_found":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, {
+            "code": "quote_not_found",
+            "detail": f"No existe el presupuesto {serie}-{codpre}.",
+        })
+    return preview
+
+
+class QuoteEmailPayload(BaseModel):
+    """Envío del presupuesto por email. `confirm` OBLIGATORIO: enviar un
+    correo a un cliente es irreversible, no puede ser un clic accidental."""
+
+    confirm: bool = False
+    to: list[str] = Field(default_factory=list)
+    cc: list[str] = Field(default_factory=list)
+    bcc: list[str] = Field(default_factory=list)
+    subject: str = Field(min_length=1, max_length=500)
+    body_text: str = Field(min_length=1)
+    lang: str = Field(pattern="^(es|en|de|fr|nl)$")
+    from_alias: str = Field(min_length=3, max_length=255)
+    #: Tipo del PDF adjunto: presupuesto (None) o «proforma», como en «Descargar PDF».
+    variant: str | None = Field(default=None, pattern="^(proforma)$")
+    currency: str = Field(default="EUR", pattern="^[A-Z]{3}$")
+    bank: int | None = Field(default=None, ge=0, le=20)
+
+
+@router.post("/quotes/{codpre}/email", status_code=201)
+def send_quote_email_endpoint(
+    codpre: int,
+    payload: QuoteEmailPayload,
+    serie: int = Query(ge=1, le=9),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_email_client),
+) -> dict[str, Any]:
+    """Envía el presupuesto por email con el PDF adjunto (tipo / moneda /
+    banco elegidos) desde el remitente indicado (send-as verificado). Deja el
+    evento `erp.proforma_emailed`; si falla, NO queda marcado como enviado.
+    No toca FACTUSOL."""
+    from app.erp.factusol_pdf import bank_accounts, company_for_serie  # noqa: PLC0415
+    from app.erp.quote_email import send_quote_email  # noqa: PLC0415
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+    from app.integrations.gmail.service import (  # noqa: PLC0415
+        GmailNotConnectedError,
+        GmailScopeMissingError,
+    )
+
+    if not payload.confirm:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "confirmation_required",
+            "detail": "El envío requiere confirmación explícita.",
+        })
+    to = [t.strip() for t in payload.to if t and t.strip()]
+    if not to:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {
+            "code": "no_recipient",
+            "detail": "Falta el destinatario: elige un contacto o escribe una dirección.",
+        })
+    cc = [t.strip() for t in payload.cc if t and t.strip()]
+    bcc = [t.strip() for t in payload.bcc if t and t.strip()]
+    _require_sender_alias(session, current_user, payload.from_alias)
+
+    client, ejercicio = _client_and_ejercicio(session)
+    company = company_for_serie(session, serie)
+    accounts = bank_accounts(company)
+    selected_bank = None
+    if payload.bank is not None and accounts:
+        selected_bank = accounts[min(payload.bank, len(accounts) - 1)]
+    try:
+        return send_quote_email(
+            session, client, serie=serie, codpre=codpre, ejercicio=ejercicio,
+            current_user=current_user, to=to, cc=cc, bcc=bcc,
+            subject=payload.subject, body_text=payload.body_text,
+            lang=payload.lang, from_alias=payload.from_alias,
+            variant=payload.variant, currency=payload.currency,
+            bank=selected_bank, fop_names=_fop_names(client, ejercicio),
+            company=company,
+        )
+    except (GmailNotConnectedError, GmailScopeMissingError) as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "gmail_unavailable", "detail": str(exc)[:200],
+        }) from exc
+    except FactusolError as exc:
+        # FACTUSOL caído al leer la proforma: error claro, nada enviado ni marcado.
+        raise _factusol_gateway_error(exc, "quote_email_failed") from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, {
+            "code": "quote_not_found", "detail": str(exc)[:200],
+        }) from exc
 
 
 class QuoteLineIn(BaseModel):

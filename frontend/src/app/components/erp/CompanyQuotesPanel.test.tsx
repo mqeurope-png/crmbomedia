@@ -8,6 +8,7 @@ import {
 } from "../../lib/erpApi";
 
 jest.mock("../../lib/erpApi", () => ({
+  FACTUSOL_SERIES: jest.requireActual("../../lib/erpApi").FACTUSOL_SERIES,
   convertFactusolQuoteToOrder: jest.fn(),
   getQuoteJobStatus: jest.fn(),
   listFactusolQuotes: jest.fn(),
@@ -15,7 +16,8 @@ jest.mock("../../lib/erpApi", () => ({
   createFactusolQuote: jest.fn(),
   updateFactusolQuote: jest.fn(),
   getFactusolQuote: jest.fn(),
-  getFactusolCustomerAddresses: jest.fn(),
+  getFactusolCustomerAddresses: jest.fn(() => Promise.resolve([])),
+  getFactusolCustomerPaymentMethod: jest.fn(() => Promise.resolve({ codigo: null, nombre: null })),
   waitForQuoteJob: jest.fn(),
   duplicateFactusolQuote: jest.fn(),
   searchFactusolArticles: jest.fn(),
@@ -68,12 +70,44 @@ describe("CompanyQuotesPanel", () => {
     expect(screen.getByText("121.00 €")).toBeInTheDocument();
   });
 
-  it("cada proforma ofrece Editar además de Convertir en pedido", async () => {
+  it("cada proforma ofrece Editar, Duplicar y Enviar por email además de Convertir en pedido", async () => {
     mockList.mockResolvedValue({ items: [quote()], unlinked: false });
     render(<CompanyQuotesPanel {...base()} />);
     expect(await screen.findByRole("button", { name: "Editar" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Duplicar" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Enviar por email" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Convertir en pedido" }))
       .toBeInTheDocument();
+  });
+
+  it("Punto A · una proforma ya enviada enseña «Enviada dd/mm» y «Reenviar»", async () => {
+    mockList.mockResolvedValue({
+      items: [quote({ emailed_at: "2026-10-02T09:00:00", emailed_to: ["x@acme.es"] })],
+      unlinked: false,
+    });
+    render(<CompanyQuotesPanel {...base()} />);
+    expect(await screen.findByText("Enviada 02/10")).toHaveAttribute("title", expect.stringContaining("x@acme.es"));
+    expect(screen.getByRole("button", { name: "Reenviar" })).toBeInTheDocument();
+  });
+
+  it("Punto B · «Duplicar» abre la copia directa de esa proforma con la empresa de la ficha como destino", async () => {
+    const { getFactusolQuote } = jest.requireMock("../../lib/erpApi");
+    (getFactusolQuote as jest.Mock).mockResolvedValue({
+      ...quote({ codpre: "77", numero: "1-000077", tippre: "1", serie: 1 }),
+      lines: [{ position: 1, codart: null, sku: null, description: "Instalación",
+                quantity: 1, unit_price: 100, discount_pct: 0, line_total: 100, iva_pct: 21 }],
+    });
+    mockList.mockResolvedValue({ items: [quote({ numero: "1-000077", tippre: "1", serie: 1 })], unlinked: false });
+    const user = userEvent.setup();
+    render(<CompanyQuotesPanel {...base()} />);
+    await user.click(await screen.findByRole("button", { name: "Duplicar" }));
+    const modal = await screen.findByRole("dialog", { name: "Duplicar proforma FACTUSOL" });
+    expect(within(modal).getByRole("heading", { name: "Duplicar proforma nº 1-000077" })).toBeInTheDocument();
+    expect(within(modal).getByText("Acme SL")).toBeInTheDocument();          // cliente destino = la ficha
+    await waitFor(() => expect(getFactusolQuote).toHaveBeenCalledWith("77", 1));
+    await waitFor(() =>
+      expect(within(modal).getByLabelText("Descripción línea 1")).toHaveValue("Instalación"));
+    expect(within(modal).getByRole("button", { name: "Crear proforma" })).toBeInTheDocument();
   });
 
   it("convertir en pedido pasa por el paso de pago, encola, espera al job y avisa del pedido y del albarán", async () => {

@@ -217,7 +217,7 @@ describe("Ficha de empresa (rediseño de flujo, Fase 3 · Lote 2 PR-2)", () => {
     expect(await act.findByRole("link", { name: "ARTISJ-9544" }))
       .toHaveAttribute("href", "/erp/orders/o1");
     expect(act.getAllByRole("columnheader").map((h) => h.textContent))
-      .toEqual(["Documento", "Tipo", "Fecha", "Importe", "Estado"]);
+      .toEqual(["Documento", "Tipo", "Fecha", "Importe", "Estado", "Acciones"]);
     // Una sola tabla, por fecha descendente, con los tres orígenes.
     await waitFor(() => expect(activityRows()).toHaveLength(4));
     const [factura, pedido, proforma, cobrada] = activityRows();
@@ -233,7 +233,10 @@ describe("Ficha de empresa (rediseño de flujo, Fase 3 · Lote 2 PR-2)", () => {
     expect(proforma).toHaveTextContent("Placas");
     expect(cobrada).toHaveTextContent("2-526079");
     expect(cobrada).toHaveTextContent("Cobrada");
-    expect(pedido.querySelectorAll("td[data-label]")).toHaveLength(5);
+    expect(pedido.querySelectorAll("td[data-label]")).toHaveLength(6);
+    // Punto B: la proforma lleva «⋯» (Duplicar); el pedido y la factura, no.
+    expect(within(proforma).getByRole("button", { name: "Más acciones 2-000071" })).toBeInTheDocument();
+    expect(within(pedido).queryByRole("button", { name: /Más acciones/ })).toBeNull();
     // Filtro por tipo.
     await user.click(act.getByRole("button", { name: /^Facturas/ }));
     expect(activityRows().map((r) => r.textContent)).toEqual([

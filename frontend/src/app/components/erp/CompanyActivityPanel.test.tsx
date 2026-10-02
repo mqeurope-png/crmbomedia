@@ -18,6 +18,25 @@ jest.mock("../../lib/erpApi", () => ({
   listFactusolDocuments: jest.fn(),
   listFactusolQuotes: jest.fn(),
 }));
+// Punto B: el modal real se prueba en CreateQuoteModal.test.tsx; aquí basta
+// con ver que «⋯ → Duplicar» lo abre con la proforma de la fila y la empresa.
+jest.mock("./QuoteEmailModal", () => ({
+  ...jest.requireActual("./QuoteEmailModal"),
+  QuoteEmailModal: ({ numero, onClose }: { numero?: string | null; onClose: () => void }) => (
+    <div>EMAIL MODAL {numero}<button type="button" onClick={onClose}>CERRAR EMAIL</button></div>
+  ),
+}));
+jest.mock("./CreateQuoteModal", () => ({
+  CreateQuoteModal: ({ companyName, duplicateDirect, onCancel }: {
+    companyName: string; duplicateDirect?: { codpre?: string | null } | null;
+    onCancel: () => void;
+  }) => (
+    <div>
+      DUP MODAL {companyName} dup:{duplicateDirect?.codpre ?? "—"}
+      <button type="button" onClick={onCancel}>CANCELAR MODAL</button>
+    </div>
+  ),
+}));
 
 const ORDERS = [
   { id: "o1", order_number: "ARTISJ-9544", placed_at: "2026-09-08T10:00:00", total_amount: 351.52,
@@ -53,7 +72,7 @@ describe("CompanyActivityPanel · actividad unificada", () => {
     render(<CompanyActivityPanel companyId="c1" factusolCodcli="2760" contactsCount={3} />);
     const table = await screen.findByRole("table");
     expect(within(table).getAllByRole("columnheader").map((h) => h.textContent))
-      .toEqual(["Documento", "Tipo", "Fecha", "Importe", "Estado"]);
+      .toEqual(["Documento", "Tipo", "Fecha", "Importe", "Estado", "Acciones"]);
     await waitFor(() => expect(bodyRows()).toHaveLength(5));
     expect(firstCells()).toEqual([
       "2-526087", "ARTISJ-9544", "2-000071 · Placas", "2-526079", "BP-2310",
@@ -82,8 +101,12 @@ describe("CompanyActivityPanel · actividad unificada", () => {
     // modo tarjeta (< 768).
     expect(factura.querySelector("td.num")).toHaveTextContent(/4\.?290,00 €/);
     expect(pedido.querySelector("td[data-label='Importe']")).toHaveTextContent("351,52 €");
-    expect(pedido.querySelectorAll("td[data-label]")).toHaveLength(5);
+    expect(pedido.querySelectorAll("td[data-label]")).toHaveLength(6);
     expect(screen.getByText("Contactos").parentElement).toHaveTextContent("3");
+    // Punto B: solo la proforma lleva «⋯ → Duplicar»; pedidos y facturas, no.
+    expect(within(proforma).getByRole("button", { name: "Más acciones 2-000071" })).toBeInTheDocument();
+    expect(within(pedido).queryByRole("button", { name: /Más acciones/ })).toBeNull();
+    expect(within(factura).queryByRole("button", { name: /Más acciones/ })).toBeNull();
     // Hasta 20 por origen.
     expect(listOrders).toHaveBeenCalledWith({ company_id: "c1", limit: 20, show_external: true });
     expect(listFactusolDocuments).toHaveBeenCalledWith("facturas", expect.objectContaining({ codcli: "2760", limit: 20 }));
@@ -159,6 +182,39 @@ describe("CompanyActivityPanel · actividad unificada", () => {
     (listFactusolQuotes as jest.Mock).mockResolvedValue({ items: [], unlinked: false });
     render(<CompanyActivityPanel companyId="c1" factusolCodcli="2760" contactsCount={0} />);
     expect(await screen.findByText("Sin pedidos, facturas ni proformas recientes.")).toBeInTheDocument();
+  });
+
+  it("Punto B · «⋯ → Duplicar» en una proforma abre la copia directa con la empresa de la ficha", async () => {
+    const user = userEvent.setup();
+    render(<CompanyActivityPanel companyId="c1" companyName="La Maison" factusolCodcli="2760" contactsCount={3} />);
+    await screen.findByRole("table");
+    await waitFor(() => expect(bodyRows()).toHaveLength(5));
+    const proforma = bodyRows()[2];
+    await user.click(within(proforma).getByRole("button", { name: "Más acciones 2-000071" }));
+    // El menú es flotante (la tabla tiene scroll propio): se pinta fuera de la fila.
+    await user.click(screen.getByRole("button", { name: "Duplicar" }));
+    expect(await screen.findByText(/DUP MODAL La Maison dup:2-000071/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "CANCELAR MODAL" }));
+    expect(screen.queryByText(/DUP MODAL/)).toBeNull();
+    // Punto A: «Enviar por email» en el mismo menú abre el modal de envío.
+    await user.click(within(proforma).getByRole("button", { name: "Más acciones 2-000071" }));
+    await user.click(screen.getByRole("button", { name: "Enviar por email" }));
+    expect(await screen.findByText(/EMAIL MODAL 2-000071/)).toBeInTheDocument();
+  });
+
+  it("Punto A · una proforma enviada por email enseña «Enviada dd/mm» y ofrece «Reenviar por email»", async () => {
+    (listFactusolQuotes as jest.Mock).mockResolvedValue({
+      items: [{ ...QUOTES[0], emailed_at: "2026-10-02T09:00:00", emailed_to: ["a@maison.fr"] }],
+      unlinked: false,
+    });
+    const user = userEvent.setup();
+    render(<CompanyActivityPanel companyId="c1" companyName="La Maison" factusolCodcli="2760" contactsCount={3} />);
+    await screen.findByRole("table");
+    await waitFor(() => expect(bodyRows()).toHaveLength(5));
+    const proforma = bodyRows()[2];
+    expect(within(proforma).getByText("Enviada 02/10")).toHaveAttribute("title", expect.stringContaining("a@maison.fr"));
+    await user.click(within(proforma).getByRole("button", { name: "Más acciones 2-000071" }));
+    expect(screen.getByRole("button", { name: "Reenviar por email" })).toBeInTheDocument();
   });
 
   it("buildActivityRows: sin fecha al final, y importe al estilo español", () => {
