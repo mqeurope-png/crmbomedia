@@ -90,7 +90,8 @@ SAMPLE_QUOTE_EMAIL: dict[str, str] = {
     "empresa": "Laboratorios Duaner S.L.",
     "contacto": "Marta Coll",
     "total": "1.234,56 €",
-    "fecha": "02/10/2026",
+    # Como lo imprime el PDF y como lo escribe el envío real (dd-mm-aaaa).
+    "fecha": "02-10-2026",
     "validez": "Presupuesto válido durante 30 días, a partir de la fecha de emisión.",
     "firma": "MQ Europe",
 }
@@ -172,10 +173,15 @@ def render_sample_quote_email(
 
 
 def quote_company(session: Session, codcli: Any):
-    """Empresa CRM vinculada al cliente FACTUSOL de la proforma, o None."""
-    from app.erp.factusol_pdf import _find_company_by_codcli  # noqa: PLC0415
+    """Empresa CRM vinculada al cliente FACTUSOL de la proforma, o None. Misma
+    regla que el listado: `'0055'` y `'55'` son el mismo CODCLI."""
+    from app.erp.quotes_bandeja import _companies_by_codcli  # noqa: PLC0415
 
-    return _find_company_by_codcli(session, codcli)
+    code = str(codcli or "").strip()
+    if not code:
+        return None
+    found = _companies_by_codcli(session, {code})
+    return found.get(code) or (found.get(str(int(code))) if code.isdigit() else None)
 
 
 def quote_recipients(
@@ -288,18 +294,27 @@ def quote_email_fields(
     contacto: str, currency: str = "EUR",
 ) -> dict[str, str]:
     """Valores de los marcadores para esta proforma e idioma."""
-    from app.erp.factusol_pdf import _fmt_money  # noqa: PLC0415
+    from app.erp.factusol_pdf import CURRENCIES, _fmt_money  # noqa: PLC0415
 
     empresa = (
         str(company.name) if company is not None and getattr(company, "name", None)
         else str((data.get("cliente") or {}).get("nombre") or "")
     )
     importe = _fmt_money(float(data.get("total") or 0.0), lang, currency)
+    # Mismo símbolo que el PDF adjunto; fuera del euro se añade el código ISO
+    # (un «kr» a secas no dice si son coronas suecas, danesas o noruegas).
+    symbol = str((CURRENCIES.get(currency) or {}).get("symbol") or "").strip()
+    if currency == "EUR":
+        total = f"{importe} €"
+    elif symbol and symbol != currency:
+        total = f"{importe} {symbol} ({currency})"
+    else:
+        total = f"{importe} {currency}"
     return {
         "numero": str(data.get("numero") or ""),
         "empresa": empresa,
         "contacto": contacto or empresa,
-        "total": f"{importe} €" if currency == "EUR" else f"{importe} {currency}",
+        "total": total,
         "fecha": str(data.get("fecha") or ""),
         "validez": _validez_text(lang),
         "firma": _firma_for_serie(session, int(data.get("serie") or 0) or 1),
@@ -327,10 +342,16 @@ def build_quote_email_preview(
     variant: str | None = None,
     currency: str = "EUR",
     fop_names: dict[str, str] | None = None,
+    contact_id: str | None = None,
 ) -> dict[str, Any]:
     """Datos de la PREVISUALIZACIÓN (obligatoria): contactos candidatos (con
     el premarcado), idioma + procedencia, asunto y cuerpo editables, remitente
-    por serie y nombre del adjunto. No envía nada ni genera el PDF."""
+    por serie y nombre del adjunto. No envía nada ni genera el PDF.
+
+    `contact_id`: a quién saluda `{contacto}`. Sin él, el premarcado; con el
+    id de un contacto de la lista, ese (el modal lo manda cuando el operador
+    cambia el primer destinatario); `"none"` = ningún contacto (direcciones
+    libres) → se saluda a la empresa."""
     from app.erp.factusol_pdf import suggest_pdf_language  # noqa: PLC0415
     from app.erp.invoice_email import (  # noqa: PLC0415
         check_sender_alias,
@@ -349,10 +370,15 @@ def build_quote_email_preview(
     source = "selector" if lang_override in SUPPORTED_LANGS else suggestion["source"]
 
     contacts = quote_recipients(session, company, data.get("email"))
-    primary = next((c for c in contacts if c["is_primary"]), None)
+    if contact_id == "none":
+        saludo = None
+    else:
+        saludo = next((c for c in contacts if contact_id and c["id"] == contact_id), None)
+        if saludo is None:
+            saludo = next((c for c in contacts if c["is_primary"]), None)
     fields = quote_email_fields(
         session, data=data, lang=lang, company=company,
-        contacto=primary["name"] if primary else "", currency=currency,
+        contacto=saludo["name"] if saludo else "", currency=currency,
     )
     subject, body_text = render_quote_email(session, lang=lang, fields=fields)
 
@@ -381,6 +407,9 @@ def build_quote_email_preview(
         "order_id": order.id if order is not None else None,
         "order_number": order.order_number if order is not None else None,
         "company_contacts": contacts,
+        # A quién saluda el cuerpo (null = a la empresa): el modal recarga si
+        # el primer destinatario elegido es otro.
+        "contacto_id": saludo["id"] if saludo else None,
         "markers": fields,
     }
 
@@ -451,6 +480,9 @@ def send_quote_email(
     numero = str(data["numero"])
     metadata = {
         "numero": numero, "serie": int(serie), "codpre": int(codpre),
+        # El nº visible se repite de un ejercicio a otro: la marca de la
+        # lista solo cuenta los envíos de SU ejercicio.
+        "ejercicio": str(ejercicio),
         "to": list(to), "cc": list(cc or []), "bcc": list(bcc or []),
         "lang": lang, "from_alias": from_alias, "variant": variant,
         "currency": currency, "message_id": message.id,
@@ -481,12 +513,13 @@ def send_quote_email(
 
 
 def latest_quote_emailed_map(
-    session: Session, numeros: list[str],
+    session: Session, numeros: list[str], ejercicio: str | None = None,
 ) -> dict[str, dict[str, Any]]:
     """`{numero: {"at": ISO, "to": [...]}}` del ÚLTIMO envío de cada proforma
     (evento `erp.proforma_emailed` sobre la propia proforma), en UNA query.
     Alimenta la marca «Enviada dd/mm» (con los destinatarios en el tooltip) y
-    el botón «Reenviar» de las listas."""
+    el botón «Reenviar» de las listas. Con `ejercicio`, se ignoran los envíos
+    de otro ejercicio (el nº visible «2-000075» se repite cada año)."""
     keys = sorted({str(n) for n in numeros if n})
     if not keys:
         return {}
@@ -508,6 +541,8 @@ def latest_quote_emailed_map(
             meta = json.loads(raw) if raw else {}
         except ValueError:
             meta = {}
+        if ejercicio and meta.get("ejercicio") and str(meta["ejercicio"]) != str(ejercicio):
+            continue
         out[target_id] = {
             "at": created_at.isoformat(),
             "to": list(meta.get("to") or []) + list(meta.get("cc") or []),

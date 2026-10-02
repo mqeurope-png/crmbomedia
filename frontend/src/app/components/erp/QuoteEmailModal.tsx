@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   getQuoteEmailPreview,
   sendQuoteEmail,
@@ -109,6 +109,12 @@ export function QuoteEmailModal({
   const [langSource, setLangSource] = useState<string | null>(null);
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
+  // El operador tocó asunto o cuerpo: no se vuelven a generar solos.
+  const [textDirty, setTextDirty] = useState(false);
+  // Recarga en curso (cambio de idioma o de destinatario): no se envía hasta
+  // que el cuerpo y el PDF vayan en el mismo idioma; solo la última respuesta aplica.
+  const [reloading, setReloading] = useState(false);
+  const cancelLoad = useRef<(() => void) | null>(null);
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [sentTo, setSentTo] = useState<string[] | null>(null);
@@ -117,11 +123,12 @@ export function QuoteEmailModal({
   const kind = variant === "proforma" ? "proforma" : "presupuesto";
 
   const loadPreview = useCallback(
-    (langOverride?: FactusolPdfLang, keepRecipient = false) => {
+    (langOverride?: FactusolPdfLang, keepRecipient = false, contactId?: string) => {
+      cancelLoad.current?.();
       let alive = true;
       getQuoteEmailPreview(codpre, serie, {
         lang: langOverride, variant: variant ?? undefined,
-        currency: currency ?? undefined,
+        currency: currency ?? undefined, contact_id: contactId,
       })
         .then((p) => {
           if (!alive) return;
@@ -131,21 +138,19 @@ export function QuoteEmailModal({
           setLangSource(p.lang_source === "selector" ? null : p.lang_source);
           setSubject(p.subject);
           setBody(p.body_text);
+          setTextDirty(false);
           if (!keepRecipient) {
             setFromAlias(p.from_alias);
             const contacts = p.company_contacts ?? [];
-            if (contacts.length > 0) {
-              // Premarcados: los vinculados (email de la cabecera) o el principal.
-              const sel: Record<string, ContactChannel> = {};
-              for (const c of contacts) {
-                if (c.is_primary && c.has_email && c.email) sel[c.email] = "to";
-              }
-              setContactSel(sel);
-              setTo("");
-            } else {
-              setContactSel({});
-              setTo(p.to);
+            // Premarcados: el vinculado (email de la cabecera) o el principal.
+            const sel: Record<string, ContactChannel> = {};
+            for (const c of contacts) {
+              if (c.is_primary && c.has_email && c.email) sel[c.email] = "to";
             }
+            setContactSel(sel);
+            // Sin ningún contacto premarcado (empresa sin contactos con email
+            // o sin empresa), el «Para» es el email de la cabecera.
+            setTo(Object.keys(sel).length > 0 ? "" : p.to);
             setCc("");
           }
         })
@@ -153,8 +158,11 @@ export function QuoteEmailModal({
           if (alive) {
             setLoadError(extractErrorMessage(e, `No se pudo preparar el email del ${kind}.`));
           }
-        });
-      return () => { alive = false; };
+        })
+        .finally(() => { if (alive) setReloading(false); });
+      const cancel = () => { alive = false; };
+      cancelLoad.current = cancel;
+      return cancel;
     },
     [codpre, serie, variant, currency, kind],
   );
@@ -167,8 +175,30 @@ export function QuoteEmailModal({
   const recipientsValid = recipients.length > 0 && recipients.every(looksLikeEmail);
   const ccValid = ccRecipients.every(looksLikeEmail);
   const canSend =
-    !!preview && !sending && recipientsValid && ccValid
+    !!preview && !sending && !reloading && recipientsValid && ccValid
     && subject.trim().length > 0 && body.trim().length > 0 && !!fromAlias;
+
+  /** A quién saluda el cuerpo según el primer destinatario elegido: el id del
+   *  primer contacto en «Para», "none" si solo hay direcciones libres, o null
+   *  si no hay nadie todavía. */
+  function greetingFor(sel: Record<string, ContactChannel>, free: string): string | null {
+    const firstEmail = splitContactChannels(sel).to[0];
+    if (firstEmail) {
+      const c = (preview?.company_contacts ?? []).find((x) => x.email === firstEmail);
+      return c ? c.id : "none";
+    }
+    return parseRecipients(free).length > 0 ? "none" : null;
+  }
+
+  /** Si cambia a quién va el correo, se vuelve a generar el saludo del cuerpo
+   *  (salvo que el operador ya lo haya escrito a mano). */
+  function regreet(sel: Record<string, ContactChannel>, free: string) {
+    if (!preview || textDirty) return;
+    const wanted = greetingFor(sel, free);
+    if (wanted === null || wanted === (preview.contacto_id ?? "none")) return;
+    setReloading(true);
+    loadPreview(lang, true, wanted);
+  }
 
   async function send() {
     if (!preview || !canSend) return;
@@ -235,7 +265,7 @@ export function QuoteEmailModal({
               <CompanyContactsPicker
                 contacts={preview.company_contacts ?? []}
                 value={contactSel}
-                onChange={setContactSel}
+                onChange={(next) => { setContactSel(next); regreet(next, to); }}
                 disabled={sending}
               />
             ) : null}
@@ -247,7 +277,8 @@ export function QuoteEmailModal({
               </span>
               <input type="text" value={to} aria-label="Destinatario"
                      placeholder="cliente@ejemplo.com" disabled={sending}
-                     onChange={(e) => setTo(e.target.value)} />
+                     onChange={(e) => setTo(e.target.value)}
+                     onBlur={(e) => regreet(contactSel, e.target.value)} />
             </label>
             <label className="field">
               <span>CC (otras direcciones)</span>
@@ -275,12 +306,13 @@ export function QuoteEmailModal({
 
             <label className="field">
               <span>Idioma del correo y del PDF</span>
-              <select value={lang} aria-label="Idioma del correo" disabled={sending}
+              <select value={lang} aria-label="Idioma del correo" disabled={sending || reloading}
                       onChange={(e) => {
                         const next = e.target.value as FactusolPdfLang;
                         setLang(next);
                         setLangSource(null);
-                        loadPreview(next, true);
+                        setReloading(true);
+                        loadPreview(next, true, greetingFor(contactSel, to) ?? undefined);
                       }}>
                 {EMAIL_LANGS.map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
               </select>
@@ -294,13 +326,15 @@ export function QuoteEmailModal({
             <label className="field">
               <span>Asunto</span>
               <input type="text" value={subject} aria-label="Asunto" disabled={sending}
-                     onChange={(e) => setSubject(e.target.value)} />
+                     onChange={(e) => { setSubject(e.target.value); setTextDirty(true); }} />
             </label>
             <label className="field">
               <span>Mensaje</span>
               <textarea value={body} aria-label="Cuerpo del mensaje" rows={10}
-                        disabled={sending} onChange={(e) => setBody(e.target.value)} />
+                        disabled={sending}
+                        onChange={(e) => { setBody(e.target.value); setTextDirty(true); }} />
             </label>
+            {reloading ? <p className="muted small" role="status">Actualizando el texto…</p> : null}
 
             <p className="muted small">
               <span aria-hidden="true">📎</span>{" "}
@@ -360,11 +394,20 @@ export function emailedMark(
   emailedAt: string | null | undefined, emailedTo: string[] | null | undefined,
 ): { label: string; title: string } | null {
   if (!emailedAt) return null;
-  const [y, m, d] = emailedAt.slice(0, 10).split("-");
-  const fecha = d && m ? `${d}/${m}` : emailedAt.slice(0, 10);
+  // Fecha en la zona del navegador (el evento se guarda en UTC: a las 0:30
+  // hora española sigue siendo «hoy», no «ayer»).
+  const dt = new Date(emailedAt);
+  let d: string; let m: string; let y: string;
+  if (Number.isNaN(dt.getTime())) {
+    [y, m, d] = emailedAt.slice(0, 10).split("-");
+  } else {
+    d = String(dt.getDate()).padStart(2, "0");
+    m = String(dt.getMonth() + 1).padStart(2, "0");
+    y = String(dt.getFullYear());
+  }
   const to = (emailedTo ?? []).join(", ");
   return {
-    label: `Enviada ${fecha}`,
+    label: `Enviada ${d}/${m}`,
     title: `Enviada por email el ${d}/${m}/${y}${to ? ` a ${to}` : ""}`,
   };
 }

@@ -36,6 +36,7 @@ en paralelo pisarían la numeración.
 from __future__ import annotations
 
 import logging
+import re
 import unicodedata
 from collections.abc import Mapping
 from datetime import UTC, date, datetime
@@ -453,28 +454,44 @@ def header_shipping(quote: dict[str, Any]) -> dict[str, str | None]:
     }
 
 
+_ADDRESS_PUNCT = re.compile(r"[.,;:/\\\-]+")
+
+
 def _fold_address(value: Any) -> str:
-    return " ".join(str(value or "").split()).casefold()
+    """Texto comparable de una dirección: sin acentos ni mayúsculas, sin la
+    puntuación de separación («C/ Mayor, 1» ≡ «c mayor 1»), espacios simples."""
+    return " ".join(_ADDRESS_PUNCT.sub(" ", fold_text(value)).split())
 
 
 def header_shipping_differs(
     quote: dict[str, Any], customer_row: dict[str, Any] | None,
+    crm_company: Any = None,
 ) -> bool:
-    """¿La entrega de la cabecera es distinta de la sede del cliente en F_CLI
-    (dropshipping o dirección alternativa)? Se comparan dirección, población y
-    CP; el nombre no, porque BoHub escribe el de la empresa CRM y el escritorio
-    el de F_CLI y rara vez coinciden letra a letra. Sin fila de F_CLI (o sin
-    dirección en la cabecera) no hay con qué comparar: False."""
-    if not customer_row:
+    """¿La entrega de la cabecera es distinta de la sede del cliente
+    (dropshipping o dirección alternativa)? La sede es la de F_CLI y/o la de
+    la empresa CRM vinculada (BoHub escribe la del CRM en la cabecera, que
+    puede no coincidir letra a letra con F_CLI). Se comparan dirección,
+    población y CP normalizados; el nombre no. Sin ninguna sede conocida (o
+    sin dirección en la cabecera) no hay con qué comparar: False."""
+    sedes: list[tuple[Any, Any, Any]] = []
+    if customer_row:
+        sedes.append((customer_row.get("DOMCLI"), customer_row.get("POBCLI"),
+                      customer_row.get("CPOCLI")))
+    if crm_company is not None:
+        sedes.append((getattr(crm_company, "address_line", None),
+                      getattr(crm_company, "city", None),
+                      getattr(crm_company, "postal_code", None)))
+    if not sedes:
         return False
-    pairs = (("cdopre", "DOMCLI"), ("cpopre", "POBCLI"), ("ccppre", "CPOCLI"))
-    cabecera = [(_fold_address(quote.get(h)), c) for h, c in pairs]
-    if not any(valor for valor, _ in cabecera):
+    cabecera = tuple(_fold_address(quote.get(k)) for k in ("cdopre", "cpopre", "ccppre"))
+    if not any(cabecera):
         return False
-    return any(
-        valor != _fold_address(customer_row.get(col))
-        for valor, col in cabecera if valor
-    )
+
+    def misma(sede: tuple[Any, Any, Any]) -> bool:
+        return all(not valor or valor == _fold_address(dato)
+                   for valor, dato in zip(cabecera, sede, strict=True))
+
+    return not any(misma(sede) for sede in sedes)
 
 
 def _quote_sort_key(quote: dict[str, Any]) -> tuple[int, int]:

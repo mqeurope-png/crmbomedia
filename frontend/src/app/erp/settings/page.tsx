@@ -1692,12 +1692,14 @@ function TemplateExampleModal({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  const kindLabel = kind === "quote" ? "email de presupuesto"
+    : kind === "shipment" ? "aviso de envío" : "email de factura";
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true"
-         aria-label={`Ejemplo del email de factura en ${label}`}>
+         aria-label={`Ejemplo del ${kindLabel} en ${label}`}>
       <div className="modal-dialog erp-modal">
         <h2>
-          Ejemplo del email de factura{" "}
+          Ejemplo del {kindLabel}{" "}
           <span className="muted">{label} · datos de muestra</span>
         </h2>
         {error ? <p className="form-error">{error}</p> : null}
@@ -1718,13 +1720,24 @@ function TemplateExampleModal({
             <div className="erp-settings-example-body" data-testid="ejemplo-cuerpo">
               {example.body_text}
             </div>
-            <p className="muted small">
-              Datos de muestra: cliente «{example.sample.cliente}», factura{" "}
-              <span className="mono">{example.sample.numero}</span>, pedido{" "}
-              <span className="mono">{example.sample.pedido}</span>, referencia{" "}
-              <span className="mono">{example.sample.referencia}</span>. Al enviar
-              se sustituyen por los del pedido real.
-            </p>
+            {kind === "quote" ? (
+              <p className="muted small">
+                Datos de muestra: empresa «{example.sample.empresa}», contacto{" "}
+                «{example.sample.contacto}», presupuesto{" "}
+                <span className="mono">{example.sample.numero}</span>, total{" "}
+                <span className="mono">{example.sample.total}</span>, fecha{" "}
+                <span className="mono">{example.sample.fecha}</span>. Al enviar se
+                sustituyen por los de la proforma real.
+              </p>
+            ) : (
+              <p className="muted small">
+                Datos de muestra: cliente «{example.sample.cliente}», factura{" "}
+                <span className="mono">{example.sample.numero}</span>, pedido{" "}
+                <span className="mono">{example.sample.pedido}</span>, referencia{" "}
+                <span className="mono">{example.sample.referencia}</span>. Al enviar
+                se sustituyen por los del pedido real.
+              </p>
+            )}
           </>
         ) : null}
         <div className="modal-actions">

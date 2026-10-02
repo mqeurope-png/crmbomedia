@@ -2090,7 +2090,9 @@ export type InvoiceEmailTemplatePreview = {
   from_alias_example: string;
   from_alias_source: "serie" | "tienda" | "usuario";
   from_alias_scope: string | null;
-  sample: { cliente: string; numero: string; pedido: string; referencia: string };
+  /** Datos de muestra con los que se rellenó (factura: cliente/numero/pedido/
+   *  referencia; presupuesto: numero/empresa/contacto/total/fecha/validez/firma). */
+  sample: Record<string, string>;
 };
 
 /** Previsualiza la plantilla de un idioma con datos de muestra. `subject` /
@@ -3155,6 +3157,8 @@ export type QuoteEmailPreview = {
   order_id: string | null;
   order_number?: string | null;
   company_contacts: EmailContact[];
+  /** A quién saluda `{contacto}` en el cuerpo (null = a la empresa). */
+  contacto_id?: string | null;
   /** Valores de los marcadores con los que se rellenó la plantilla. */
   markers?: Record<string, string>;
 };
@@ -3175,12 +3179,17 @@ export type QuoteEmailSendPayload = {
 
 export async function getQuoteEmailPreview(
   codpre: string | number, serie: number,
-  opts: { lang?: FactusolPdfLang; variant?: "proforma" | null; currency?: string | null } = {},
+  opts: {
+    lang?: FactusolPdfLang; variant?: "proforma" | null; currency?: string | null;
+    /** A quién saludar: id de contacto, "none" (direcciones libres → la empresa)
+     *  u omitido (el premarcado). */
+    contact_id?: string | null;
+  } = {},
 ): Promise<QuoteEmailPreview> {
   return apiFetch(
     `/api/erp/factusol/quotes/${encodeURIComponent(String(codpre))}/email-preview${qs({
       serie, lang: opts.lang, variant: opts.variant ?? undefined,
-      currency: opts.currency ?? undefined,
+      currency: opts.currency ?? undefined, contact_id: opts.contact_id ?? undefined,
     })}`,
   );
 }

@@ -157,11 +157,13 @@ autocomplete sugiere, no obliga.
 ### Enviar por email
 
 Desde ERP · Proformas (fila), el detalle de Documentos FACTUSOL → Presupuestos
-(junto a «Descargar PDF», con el tipo, la moneda y el idioma elegidos) y la
-ficha de empresa (pestaña «Proformas FACTUSOL» y «⋯» de «Actividad reciente»)
-se puede **enviar el presupuesto / proforma por email**. Reutiliza el flujo de
+(junto a «Descargar PDF», con el tipo, la moneda y el idioma elegidos; la
+lista enseña la marca y el reenvío sale del detalle) y la ficha de empresa
+(botón en la pestaña «Proformas FACTUSOL» y «⋯» de «Actividad reciente») se
+puede **enviar el presupuesto / proforma por email**. Reutiliza el flujo de
 la factura: previsualización obligatoria, contactos de la empresa vinculada
-(el de la cabecera, o el principal, premarcado) más direcciones libres,
+(el de la cabecera o, si ninguno coincide, el primero con email, premarcado;
+`{contacto}` saluda al primer destinatario elegido) más direcciones libres,
 idioma por la cascada del PDF (pedido → idioma de la empresa → país del
 documento → país de la empresa → emisora → ES) con selector, remitente de la
 **empresa emisora de la serie** (1 Bomedia, 2 MQ Europe, 5 Streamtec; Ajustes

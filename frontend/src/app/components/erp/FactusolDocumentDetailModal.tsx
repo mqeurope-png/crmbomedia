@@ -222,6 +222,9 @@ export function FactusolDocumentDetailModal({
   // backend) + su origen, variante, banco y divisa (E4-fix1).
   const [pdfLang, setPdfLang] = useState<FactusolPdfLang>("es");
   const [pdfLangSource, setPdfLangSource] = useState<string | null>(null);
+  // El operador cambió el idioma a mano (solo entonces manda sobre la cascada
+  // en el email; el respaldo por país sin `pdf_lang` NO es una elección).
+  const [pdfLangManual, setPdfLangManual] = useState(false);
   const [pdfVariant, setPdfVariant] = useState<string>("");
   const [pdfBank, setPdfBank] = useState<number>(0);
   const [pdfCurrency, setPdfCurrency] = useState<string>("EUR");
@@ -285,6 +288,7 @@ export function FactusolDocumentDetailModal({
           setPdfLang(defaultPdfLang(d.cliente_pais));
           setPdfLangSource(null);
         }
+        setPdfLangManual(false);
         setPdfVariant("");
         setPdfBank(0);
         setPdfCurrency("EUR");
@@ -680,6 +684,7 @@ export function FactusolDocumentDetailModal({
                 onChange={(e) => {
                   setPdfLang(e.target.value as FactusolPdfLang);
                   setPdfLangSource(null);  // elección manual: ya no es sugerido
+                  setPdfLangManual(true);
                 }}
               >
                 {PDF_LANGS.map((l) => (
@@ -819,8 +824,16 @@ export function FactusolDocumentDetailModal({
           variant={pdfVariant === "proforma" ? "proforma" : null}
           currency={pdfCurrency}
           bank={pdfBankOptions.length > 1 ? pdfBank : null}
-          initialLang={pdfLang}
+          // Solo manda el idioma si el operador lo cambió a mano en el PDF;
+          // si no, el backend lo propone por la misma cascada y dice de dónde.
+          initialLang={pdfLangManual ? pdfLang : null}
           onClose={() => setEmailOpen(false)}
+          onSent={({ to }) => {
+            // La marca «Enviada» y el botón «Reenviar» sin recargar el modal;
+            // la fila del listado de fondo se refresca por `onChanged`.
+            setDoc((d) => (d ? { ...d, emailed_at: new Date().toISOString(), emailed_to: to } : d));
+            onChanged?.();
+          }}
         />
       ) : null}
 

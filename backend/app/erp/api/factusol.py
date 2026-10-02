@@ -814,6 +814,11 @@ def get_factusol_document(
     except Exception as exc:  # noqa: BLE001 — la sugerencia nunca tumba nada
         logger.warning("factusol pdf_lang del detalle KO: %s", exc)
         doc["pdf_lang"] = {"lang": "es", "source": "defecto"}
+    if doc_type == "presupuestos":
+        # Punto A: marca «Enviada» también en el detalle (botón «Reenviar»).
+        from app.erp.quotes_bandeja import annotate_emailed  # noqa: PLC0415
+
+        annotate_emailed(session, [doc])
     return doc
 
 
@@ -2887,6 +2892,7 @@ def get_quote_endpoint(
         header_shipping,
         header_shipping_differs,
     )
+    from app.models.crm import Company  # noqa: PLC0415
 
     annotate_quotes(session, [quote])
     quote["envio"] = header_shipping(quote)
@@ -2899,7 +2905,10 @@ def get_quote_endpoint(
         logger.warning("factusol: no se pudo leer F_CLI para la proforma %s", codpre,
                        exc_info=True)
         fila_cliente = None
-    quote["envio_distinto"] = header_shipping_differs(quote, fila_cliente)
+    # La sede también puede ser la dirección de la empresa CRM: es la que BoHub
+    # escribe en la cabecera al crear la proforma.
+    empresa_crm = session.get(Company, quote["company"]["id"]) if quote.get("company") else None
+    quote["envio_distinto"] = header_shipping_differs(quote, fila_cliente, empresa_crm)
     return quote
 
 
@@ -2913,6 +2922,9 @@ def quote_email_preview(
     lang: str | None = Query(default=None, pattern="^(es|en|de|fr|nl)$"),
     variant: str | None = Query(default=None, pattern="^(proforma)$"),
     currency: str = Query(default="EUR", pattern="^[A-Z]{3}$"),
+    # A quién saluda {contacto}: id de un contacto de la lista, «none» (solo
+    # direcciones libres → se saluda a la empresa) o nada (el premarcado).
+    contact_id: str | None = Query(default=None, max_length=40),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_email_client),
 ) -> dict[str, Any]:
@@ -2922,13 +2934,18 @@ def quote_email_preview(
     adjunto. No envía nada ni genera el PDF. Reutiliza el flujo de la factura;
     NO escribe en FACTUSOL."""
     from app.erp.quote_email import build_quote_email_preview  # noqa: PLC0415
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
 
     client, ejercicio = _client_and_ejercicio(session)
-    preview = build_quote_email_preview(
-        session, client, serie=serie, codpre=codpre, ejercicio=ejercicio,
-        current_user=current_user, lang_override=lang, variant=variant,
-        currency=currency, fop_names=_fop_names(client, ejercicio),
-    )
+    try:
+        preview = build_quote_email_preview(
+            session, client, serie=serie, codpre=codpre, ejercicio=ejercicio,
+            current_user=current_user, lang_override=lang, variant=variant,
+            currency=currency, fop_names=_fop_names(client, ejercicio),
+            contact_id=contact_id,
+        )
+    except FactusolError as exc:
+        raise _factusol_gateway_error(exc, "quote_email_failed") from exc
     if preview.get("error") == "not_found":
         raise HTTPException(status.HTTP_404_NOT_FOUND, {
             "code": "quote_not_found",
@@ -2969,6 +2986,7 @@ def send_quote_email_endpoint(
     No toca FACTUSOL."""
     from app.erp.factusol_pdf import bank_accounts, company_for_serie  # noqa: PLC0415
     from app.erp.quote_email import send_quote_email  # noqa: PLC0415
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
     from app.integrations.gmail.service import (  # noqa: PLC0415
         GmailNotConnectedError,
         GmailScopeMissingError,
@@ -3009,6 +3027,9 @@ def send_quote_email_endpoint(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, {
             "code": "gmail_unavailable", "detail": str(exc)[:200],
         }) from exc
+    except FactusolError as exc:
+        # FACTUSOL caído al leer la proforma: error claro, nada enviado ni marcado.
+        raise _factusol_gateway_error(exc, "quote_email_failed") from exc
     except ValueError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, {
             "code": "quote_not_found", "detail": str(exc)[:200],

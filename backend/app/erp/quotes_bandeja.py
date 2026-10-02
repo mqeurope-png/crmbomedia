@@ -422,7 +422,7 @@ def annotate_documents_crm(
             if order is not None else None
         )
     if doc_type == "presupuestos":
-        _annotate_emailed(session, docs)
+        annotate_emailed(session, docs)
 
 
 def _company_block(company: Company) -> dict[str, Any]:
@@ -486,21 +486,25 @@ def annotate_quotes(session: Session, quotes: list[dict[str, Any]]) -> dict[str,
         q["queue_label"] = QUOTE_QUEUE_LABELS.get(queue) if queue else None
         if queue:
             counts[queue] += 1
-    _annotate_emailed(session, quotes)
+    annotate_emailed(session, quotes)
     return {
         "queue_counts": {queue: counts.get(queue, 0) for queue in QUOTE_QUEUES},
         "estpre_values": dict(estpre_values),
     }
 
 
-def _annotate_emailed(session: Session, docs: list[dict[str, Any]]) -> None:
+def annotate_emailed(session: Session, docs: list[dict[str, Any]]) -> None:
     """Punto A: marca «Enviada» de cada proforma (último `erp.proforma_emailed`
-    sobre su nº visible): `emailed_at` (ISO) y `emailed_to` (destinatarios),
-    o None si nunca se envió. Una sola query para toda la lista."""
+    sobre su nº visible, del ejercicio en curso): `emailed_at` (ISO) y
+    `emailed_to` (destinatarios), o None si nunca se envió. Una sola query
+    para toda la lista. Vale para proformas del listado, el detalle y los
+    presupuestos de Documentos."""
     from app.erp.quote_email import latest_quote_emailed_map  # noqa: PLC0415
+    from app.integrations.factusol.service import ejercicio_for  # noqa: PLC0415
 
     marks = latest_quote_emailed_map(
         session, [str(d.get("numero")) for d in docs if d.get("numero")],
+        ejercicio=ejercicio_for(session),
     )
     for d in docs:
         mark = marks.get(str(d.get("numero") or ""))

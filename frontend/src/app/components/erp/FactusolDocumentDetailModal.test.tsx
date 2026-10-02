@@ -19,6 +19,9 @@ jest.mock("../../lib/erpApi", () => ({
   saveBlob: jest.fn(),
   markInvoicePayment: jest.fn(),
   waitForInvoicePaymentJob: jest.fn(),
+  getQuoteEmailPreview: jest.fn(),
+  sendQuoteEmail: jest.fn(),
+  getEmailSenders: jest.fn(),
   ERP_EDIT_ROLES: ["admin", "pedidos"],
 }));
 jest.mock("../../lib/api", () => ({
@@ -750,6 +753,101 @@ describe("FactusolDocumentDetailModal (E4-fix1 — variantes + banco + idioma)",
     await screen.findByLabelText("Idioma del PDF");
     expect(screen.getByText(/del cliente/)).toBeInTheDocument();
     expect(screen.queryByText(/del país del cliente/)).not.toBeInTheDocument();
+  });
+});
+
+describe("FactusolDocumentDetailModal — enviar presupuesto por email (Punto A)", () => {
+  const { getQuoteEmailPreview, sendQuoteEmail, getEmailSenders } =
+    jest.requireMock("../../lib/erpApi");
+
+  beforeEach(() => {
+    (getQuoteEmailPreview as jest.Mock).mockReset();
+    (getQuoteEmailPreview as jest.Mock).mockResolvedValue({
+      serie: 5, codpre: 27, numero: "5-000027", to: "marta@duplicoder.example",
+      lang: "es", lang_source: "cliente", subject: "Presupuesto 5-000027",
+      body_text: "Hola Marta Coll,", from_alias: "pedidos@streamtec.es",
+      from_alias_source: "serie", from_alias_ok: true, from_alias_problem: null,
+      attachment_filename: "Presupuesto-5-000027.pdf", variant: null, currency: "EUR",
+      company_id: "c1", company_name: "Duplicoder SL", order_id: null,
+      contacto_id: "k1",
+      company_contacts: [{ id: "k1", name: "Marta Coll", email: "marta@duplicoder.example",
+                           has_email: true, is_order_contact: false, is_primary: true }],
+    });
+    (sendQuoteEmail as jest.Mock).mockReset();
+    (sendQuoteEmail as jest.Mock).mockResolvedValue({
+      sent: true, message_id: "m1", thread_id: "t1", to: ["marta@duplicoder.example"],
+      lang: "es", numero: "5-000027", attachment_filename: "Presupuesto-5-000027.pdf",
+    });
+    (getEmailSenders as jest.Mock).mockReset();
+    (getEmailSenders as jest.Mock).mockResolvedValue({ senders: [], available: true, problem: null });
+  });
+
+  it("el presupuesto ofrece «Enviar por email» (o «Reenviar» si ya se envió); solo al rol editor", async () => {
+    const { unmount } = render(
+      <FactusolDocumentDetailModal docType="presupuestos" serie={5} codigo={27} onClose={() => {}} />,
+    );
+    expect(await screen.findByRole("button", { name: "Enviar por email" })).toBeInTheDocument();
+    unmount();
+    mockDetail.mockResolvedValue(presupuesto({
+      emailed_at: "2026-10-01T10:00:00Z", emailed_to: ["marta@duplicoder.example"],
+    }));
+    const { unmount: unmount2 } = render(
+      <FactusolDocumentDetailModal docType="presupuestos" serie={5} codigo={27} onClose={() => {}} />,
+    );
+    expect(await screen.findByRole("button", { name: "Reenviar por email" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Enviar por email" })).not.toBeInTheDocument();
+    unmount2();
+    mockUser.mockResolvedValue({ role: "user" });
+    mockDetail.mockResolvedValue(presupuesto());
+    render(
+      <FactusolDocumentDetailModal docType="presupuestos" serie={5} codigo={27} onClose={() => {}} />,
+    );
+    await screen.findByText("Aceptado");
+    expect(screen.queryByRole("button", { name: /por email/ })).not.toBeInTheDocument();
+  });
+
+  it("abre el modal de envío con el tipo, la divisa y el idioma elegidos para el PDF", async () => {
+    const user = userEvent.setup();
+    render(
+      <FactusolDocumentDetailModal docType="presupuestos" serie={5} codigo={27} onClose={() => {}} />,
+    );
+    // Sin tocar nada: presupuesto en euros, idioma propuesto por el backend.
+    await user.click(await screen.findByRole("button", { name: "Enviar por email" }));
+    expect(await screen.findByRole("heading", { name: /Enviar presupuesto por email/ })).toBeInTheDocument();
+    await waitFor(() => expect(getQuoteEmailPreview).toHaveBeenCalledWith(
+      27, 5, expect.objectContaining({ currency: "EUR" }),
+    ));
+    expect((getQuoteEmailPreview as jest.Mock).mock.calls[0][2].variant).toBeUndefined();
+    expect((getQuoteEmailPreview as jest.Mock).mock.calls[0][2].lang).toBeUndefined();
+    await user.click(screen.getByRole("button", { name: "Cancelar" }));
+    // Proforma en USD con idioma puesto a mano → viaja todo al modal.
+    await user.selectOptions(screen.getByLabelText("Variante del documento"), "proforma");
+    await user.selectOptions(screen.getByLabelText("Divisa"), "USD");
+    await user.selectOptions(screen.getByLabelText("Idioma del PDF"), "fr");
+    await user.click(screen.getByRole("button", { name: "Enviar por email" }));
+    expect(await screen.findByRole("heading", { name: /Enviar proforma por email/ })).toBeInTheDocument();
+    await waitFor(() => expect(getQuoteEmailPreview).toHaveBeenLastCalledWith(
+      27, 5, expect.objectContaining({ variant: "proforma", currency: "USD", lang: "fr" }),
+    ));
+  });
+
+  it("tras enviar, el botón pasa a «Reenviar» sin recargar y avisa al listado (onChanged)", async () => {
+    const user = userEvent.setup();
+    const onChanged = jest.fn();
+    render(
+      <FactusolDocumentDetailModal
+        docType="presupuestos" serie={5} codigo={27} onClose={() => {}} onChanged={onChanged}
+      />,
+    );
+    await user.click(await screen.findByRole("button", { name: "Enviar por email" }));
+    await screen.findByLabelText("Enviar a Marta Coll (marta@duplicoder.example)");
+    await user.click(screen.getByRole("button", { name: "Enviar presupuesto" }));
+    await waitFor(() => expect(sendQuoteEmail).toHaveBeenCalledWith(
+      27, 5, expect.objectContaining({ confirm: true, to: ["marta@duplicoder.example"] }),
+    ));
+    expect(await screen.findByRole("button", { name: "Reenviar por email" })).toBeInTheDocument();
+    expect(onChanged).toHaveBeenCalled();
+    expect(mockDetail).toHaveBeenCalledTimes(1);           // la marca se pinta sin recargar
   });
 });
 

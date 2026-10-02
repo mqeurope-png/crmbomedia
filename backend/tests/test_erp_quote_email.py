@@ -235,6 +235,50 @@ def test_preview_404_si_no_existe(http) -> None:
     assert r.status_code == 404
 
 
+def test_preview_saluda_al_contacto_elegido_o_a_la_empresa(http, session_factory) -> None:
+    """`contact_id`: el modal recarga el cuerpo cuando el operador cambia el
+    primer destinatario. Con el id de otro contacto, {contacto} es ese; con
+    «none» (direcciones libres) se saluda a la empresa; y la respuesta dice
+    a quién saludó (`contacto_id`) para que el modal no recargue en bucle."""
+    with session_factory() as s:
+        company = _seed_company(s, language="es")
+        jean = s.query(Contact).filter_by(company_id=company.id, first_name="Jean").one().id
+        marta = s.query(Contact).filter_by(company_id=company.id, first_name="Marta").one().id
+    base = "/api/erp/factusol/quotes/75/email-preview?serie=2"
+    with _patched_factusol():
+        premarcado = http.get(base, headers=auth_headers(http, "pedidos")).json()
+        otro = http.get(f"{base}&contact_id={jean}", headers=auth_headers(http, "pedidos")).json()
+        libre = http.get(f"{base}&contact_id=none", headers=auth_headers(http, "pedidos")).json()
+        desconocido = http.get(f"{base}&contact_id=no-existe",
+                               headers=auth_headers(http, "pedidos")).json()
+    assert premarcado["contacto_id"] == marta
+    assert "Marta Coll" in premarcado["body_text"]
+    assert otro["contacto_id"] == jean
+    assert "Jean Dupont" in otro["body_text"] and "Marta Coll" not in otro["body_text"]
+    assert libre["contacto_id"] is None
+    assert libre["markers"]["contacto"] == "La Maison de la Plaque"
+    assert "Marta Coll" not in libre["body_text"]
+    # Un id que no es de la lista no cuela: vuelve al premarcado.
+    assert desconocido["contacto_id"] == marta
+
+
+def test_preview_total_fuera_del_euro_lleva_simbolo_y_codigo(http) -> None:
+    """`{total}` sale como lo imprime el PDF adjunto: en euros «1.234,56 €»;
+    en otra divisa, el símbolo y el código ISO («kr» a secas no distingue
+    coronas), y sin repetir el código cuando el símbolo ya lo es (CHF)."""
+    base = "/api/erp/factusol/quotes/75/email-preview?serie=2&lang=en"
+    with _patched_factusol():
+        eur = http.get(base, headers=auth_headers(http, "pedidos")).json()
+        usd = http.get(f"{base}&currency=USD", headers=auth_headers(http, "pedidos")).json()
+        sek = http.get(f"{base}&currency=SEK", headers=auth_headers(http, "pedidos")).json()
+        chf = http.get(f"{base}&currency=CHF", headers=auth_headers(http, "pedidos")).json()
+    assert eur["markers"]["total"] == "1,234.56 €"
+    assert usd["markers"]["total"] == "1,234.56 $ (USD)"
+    assert sek["markers"]["total"] == "1 234,56 kr (SEK)"      # estilo nórdico
+    assert chf["markers"]["total"] == "1,234.56 CHF"
+    assert usd["currency"] == "USD" and "1,234.56 $ (USD)" in usd["body_text"]
+
+
 # ---------------------------------------------------------------------------
 # Envío
 # ---------------------------------------------------------------------------
@@ -306,6 +350,43 @@ def test_reenviar_deja_un_segundo_evento_y_actualiza_la_marca(http, session_fact
     assert item["emailed_to"] == ["jean@maison.example", "marta@maison.example"]
 
 
+def test_send_con_pedido_vinculado_deja_la_traza_tambien_en_el_pedido(
+    http, session_factory,
+) -> None:
+    """Si la proforma ya se convirtió en pedido, la previsualización lo dice y
+    el envío deja un segundo evento sobre el pedido (su timeline), además del
+    de la proforma. La marca de la lista solo cuenta el de la proforma."""
+    from app.erp.models import Order, OrderSource
+    from app.erp.orders_from_factusol import external_id_for
+
+    with session_factory() as s:
+        company = _seed_company(s)
+        _seed_alias(s, "info@artisjet-printers.eu")
+        s.add(Order(id="o-75", order_number="PRO-000075", company_id=company.id,
+                    external_source=OrderSource.FACTUSOL_PROFORMA,
+                    external_id=external_id_for("presupuestos", 2, 75),
+                    total_amount=1234.56, currency="EUR"))
+        s.commit()
+    send_patch, _ = _patch_send()
+    with _patched_factusol(), send_patch:
+        pre = http.get("/api/erp/factusol/quotes/75/email-preview?serie=2",
+                       headers=auth_headers(http, "pedidos")).json()
+        r = http.post("/api/erp/factusol/quotes/75/email?serie=2", json=_payload(),
+                      headers=auth_headers(http, "pedidos"))
+    assert (pre["order_id"], pre["order_number"]) == ("o-75", "PRO-000075")
+    assert r.status_code == 201, r.text
+    with session_factory() as s:
+        eventos = _events(s)
+        assert [(e.target_type, e.target_id) for e in eventos] == [
+            ("factusol_quote", "2-000075"), ("order", "o-75"),
+        ]
+        assert eventos[1].message == eventos[0].message
+    with _patched_factusol():
+        lista = http.get("/api/erp/factusol/quotes?days_back=0",
+                         headers=auth_headers(http, "pedidos")).json()
+    assert next(q for q in lista["items"] if q["numero"] == "2-000075")["emailed_at"]
+
+
 def test_send_sin_destinatarios_no_envia_ni_registra(http, session_factory) -> None:
     with session_factory() as s:
         _seed_company(s)
@@ -368,6 +449,63 @@ def test_send_gmail_no_conectado_da_400_y_no_marca(http, session_factory) -> Non
         lista = http.get("/api/erp/factusol/quotes?days_back=0",
                          headers=auth_headers(http, "pedidos")).json()
     assert next(q for q in lista["items"] if q["numero"] == "2-000075")["emailed_at"] is None
+
+
+def test_settings_quote_template_test_send(http, session_factory) -> None:
+    """«Enviarme una prueba» de la plantilla del presupuesto: Gmail con los
+    datos de muestra, sin PDF, «[Prueba]» delante del asunto, desde el
+    remitente de la serie por defecto; se audita y no toca ninguna proforma."""
+    admin = auth_headers(http, "admin")
+    http.patch("/api/erp/settings", json={"factusol_series_default": "2"}, headers=admin)
+    with session_factory() as s:
+        _seed_alias(s, "info@artisjet-printers.eu", role="admin")
+    send_patch, _ = _patch_send()
+    with send_patch as mock_send:
+        r = http.post("/api/erp/settings/quote-email/test-send",
+                      json={"lang": "fr", "subject": "Devis {numero} — {empresa}"},
+                      headers=admin)
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["sent"] is True and body["to"] == "admin@example.com"
+    assert (body["from_alias"], body["from_alias_source"]) == ("info@artisjet-printers.eu", "serie")
+    assert body["subject"] == "[Prueba] Devis 2-000075 — Laboratorios Duaner S.L."
+    kwargs = mock_send.call_args.kwargs
+    assert kwargs["to"] == ["admin@example.com"]
+    assert kwargs["subject"] == body["subject"]
+    assert "Marta Coll" in kwargs["body_text"]
+    assert kwargs.get("attachments") is None                 # sin PDF: prueba del texto
+    assert kwargs["contact_id"] is None
+    with session_factory() as s:
+        rows = s.query(AuditLog).filter_by(action="erp.settings_template_test_sent").all()
+        assert len(rows) == 1 and "email de presupuesto" in (rows[0].message or "")
+        assert _events(s) == []                              # ninguna proforma marcada
+
+
+def test_settings_quote_template_test_send_rechaza_remitente_no_utilizable(
+    http, session_factory,
+) -> None:
+    """Remitente de la serie que no es un «enviar como» de Gmail → 403 con el
+    motivo y sin enviar; solo ADMIN puede mandar la prueba."""
+    _ = session_factory
+    admin = auth_headers(http, "admin")
+    http.patch("/api/erp/settings", json={"factusol_series_default": "2"}, headers=admin)
+    send_patch, _ = _patch_send()
+    with patch("app.integrations.gmail.service.list_aliases", return_value=[{
+        "send_as_email": "admin@example.com", "display_name": "Admin",
+        "is_primary": True, "is_default": True, "verification_status": "accepted",
+    }]), send_patch as mock_send:
+        r = http.post("/api/erp/settings/quote-email/test-send", json={"lang": "es"},
+                      headers=admin)
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"]["code"] == "alias_not_allowed"
+    assert r.json()["detail"]["from_alias"] == "info@artisjet-printers.eu"
+    mock_send.assert_not_called()
+    send_patch2, _ = _patch_send()
+    with send_patch2 as mock_send2:
+        r2 = http.post("/api/erp/settings/quote-email/test-send", json={"lang": "es"},
+                       headers=auth_headers(http, "pedidos"))
+    assert r2.status_code == 403
+    mock_send2.assert_not_called()
 
 
 def test_send_no_escribe_en_factusol(http, session_factory) -> None:
