@@ -129,14 +129,22 @@ function factura(over = {}) {
   };
 }
 
+const pad = (n: number) => String(n).padStart(2, "0");
+
 /** Mes en curso en la zona del navegador (mismo cálculo que la página). */
 function currentMonth() {
   const now = new Date();
   const y = now.getFullYear();
   const m = now.getMonth();
-  const pad = (n: number) => String(n).padStart(2, "0");
   const last = new Date(y, m + 1, 0).getDate();
   return { desde: `${y}-${pad(m + 1)}-01`, hasta: `${y}-${pad(m + 1)}-${pad(last)}` };
+}
+
+/** Rango por defecto: 1 de enero del año en curso → hoy. */
+function yearToDate() {
+  const now = new Date();
+  const y = now.getFullYear();
+  return { desde: `${y}-01-01`, hasta: `${y}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}` };
 }
 
 beforeEach(() => {
@@ -324,19 +332,27 @@ describe("ERP · Documentos FACTUSOL (Fase 5)", () => {
     expect(saveBlob).toHaveBeenCalledWith(expect.anything(), "facturas_pdf.zip");
   });
 
-  it("«Limpiar filtros» resetea y re-consulta sin filtros", async () => {
+  it("«Limpiar filtros» resetea y re-consulta con las fechas por defecto (año en curso)", async () => {
     const user = userEvent.setup();
+    const { desde, hasta } = yearToDate();
     render(<FactusolDocumentosPage />);
     await screen.findByRole("option", { name: "2 · MQ Europe" });
+    // Con solo el rango por defecto no hay nada que limpiar.
+    expect(screen.queryByRole("button", { name: "Limpiar filtros" })).not.toBeInTheDocument();
     await user.selectOptions(screen.getByLabelText("Serie / empresa"), "2");
+    // Un «hasta» distinto del defecto (no se usa «Mes en curso»: el 31 de
+    // enero el mes y el año en curso coinciden y el atajo no existe).
+    await user.clear(screen.getByLabelText("Fecha hasta"));
+    await user.type(screen.getByLabelText("Fecha hasta"), "2026-03-31");
     await user.click(await screen.findByRole("button", { name: "Limpiar filtros" }));
     await waitFor(() => {
       const last = mockList.mock.calls.at(-1);
       expect(last?.[1].serie).toBeUndefined();
-      // Lote 2 · PR-2: también quita el rango de mes por defecto.
-      expect(last?.[1].fecha_desde).toBeUndefined();
-      expect(last?.[1].fecha_hasta).toBeUndefined();
+      // Las fechas vuelven al defecto (1 ene → hoy), no a «sin fechas».
+      expect(last?.[1].fecha_desde).toBe(desde);
+      expect(last?.[1].fecha_hasta).toBe(hasta);
     });
+    expect(screen.queryByRole("button", { name: "Limpiar filtros" })).not.toBeInTheDocument();
   });
 });
 
@@ -547,25 +563,32 @@ describe("ERP · Documentos FACTUSOL (Lote 2 · PR-2)", () => {
     expect(screen.queryByRole("button", { name: /a un pedido$/ })).not.toBeInTheDocument();
   });
 
-  it("el rango de fechas arranca en el mes en curso, se puede borrar y volver a poner", async () => {
+  it("el rango de fechas arranca en el año en curso (1 ene → hoy); «Mes en curso» es un atajo y se puede borrar", async () => {
     const user = userEvent.setup();
-    const { desde, hasta } = currentMonth();
+    const ytd = yearToDate();
+    const mes = currentMonth();
     render(<FactusolDocumentosPage />);
     await screen.findByText("5-260066");
-    expect(screen.getByLabelText("Fecha desde")).toHaveValue(desde);
-    expect(screen.getByLabelText("Fecha hasta")).toHaveValue(hasta);
+    expect(screen.getByLabelText("Fecha desde")).toHaveValue(ytd.desde);
+    expect(screen.getByLabelText("Fecha hasta")).toHaveValue(ytd.hasta);
     expect(mockList).toHaveBeenCalledWith(
-      "facturas", expect.objectContaining({ fecha_desde: desde, fecha_hasta: hasta }),
+      "facturas", expect.objectContaining({ fecha_desde: ytd.desde, fecha_hasta: ytd.hasta }),
     );
+    // Atajo al mes en curso (salvo el 31 de enero, cuando ya ES el rango por
+    // defecto y el atajo no se enseña; las comprobaciones valen igual).
+    const atajoVisible = ytd.desde !== mes.desde || ytd.hasta !== mes.hasta;
+    if (atajoVisible) await user.click(await screen.findByRole("button", { name: "Mes en curso" }));
+    await waitFor(() => expect(screen.getByLabelText("Fecha desde")).toHaveValue(mes.desde));
+    expect(screen.getByLabelText("Fecha hasta")).toHaveValue(mes.hasta);
     expect(screen.queryByRole("button", { name: "Mes en curso" })).not.toBeInTheDocument();
+    // Borrar «desde» consulta sin ese límite.
     await user.clear(screen.getByLabelText("Fecha desde"));
     await waitFor(() =>
       expect(mockList.mock.calls.at(-1)?.[1]).toEqual(
-        expect.objectContaining({ fecha_desde: undefined, fecha_hasta: hasta }),
+        expect.objectContaining({ fecha_desde: undefined, fecha_hasta: mes.hasta }),
       ),
     );
-    await user.click(await screen.findByRole("button", { name: "Mes en curso" }));
-    await waitFor(() => expect(screen.getByLabelText("Fecha desde")).toHaveValue(desde));
+    expect(await screen.findByRole("button", { name: "Mes en curso" })).toBeInTheDocument();
   });
 
   it("dice «Solo lectura · sincronizado hace X» y «Sincronizar ahora» relee saltando el cache", async () => {

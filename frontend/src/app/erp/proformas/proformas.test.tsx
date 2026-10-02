@@ -620,6 +620,40 @@ describe("Pantalla Proformas (rediseño de flujo, Fase 4)", () => {
     expect(order()).toEqual(["Proforma 9", "Proforma 71", "Proforma 39"]);
   });
 
+  // --- F: búsqueda en el servidor + aviso de recorte -----------------------
+
+  it("F · el buscador consulta al servidor con «q» tras un pequeño retardo y la lista avisa cuando viene recortada", async () => {
+    // 716 proformas del año y límite 500: el backend lo dice y la pantalla avisa.
+    mockList.mockResolvedValue({ ...LISTING, total: 716, limit: 500, truncated: true });
+    const user = userEvent.setup();
+    render(<ProformasPage />);
+    await screen.findByRole("list", { name: "Proformas" });
+    expect(screen.getByText(/Mostrando 500 de 716 proformas del periodo/)).toBeInTheDocument();
+    // La primera carga va sin texto.
+    expect(mockList.mock.calls[0][0]).not.toHaveProperty("q");
+
+    // Teclear «krieg» (un CONTACTO: solo el servidor puede casarlo) → tras el
+    // retardo se pide al servidor con `q` y el mismo límite, UNA sola vez; la
+    // respuesta ya no viene recortada y el aviso desaparece.
+    const KRIEG = {
+      ...BRAILLE, codpre: "14", tippre: "1", serie: 1, serie_label: "Bomedia", numero: "1-000014",
+      cliente_nombre: "APC HANDELS", referencia: "Proforma de prueba",
+      company: { id: "c14", name: "Allphonecovers GmbH", country: "DE", factusol_id: "14" },
+    };
+    mockList.mockResolvedValue({ ...LISTING, items: [KRIEG], total: 1, limit: 500, truncated: false });
+    await user.type(screen.getByRole("searchbox", { name: "Buscar proforma" }), "krieg");
+    await waitFor(() => expect(mockList).toHaveBeenLastCalledWith(
+      expect.objectContaining({ q: "krieg", limit: 500 }),
+    ));
+    // La proforma que encontró el servidor se PINTA aunque «krieg» no esté en
+    // ninguno de sus campos visibles: el filtro local no la tapa.
+    expect(await screen.findByRole("listitem", { name: "Proforma 14" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Aceptadas · por convertir (1)" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText(/Mostrando 500 de 716/)).toBeNull());
+    // Retardo al teclear: cinco teclas → una única petición con `q`.
+    expect(mockList.mock.calls.filter((c) => c[0].q !== undefined)).toHaveLength(1);
+  });
+
   // --- A5: «Ver líneas» desde la lista -----------------------------------
 
   it("A5 · «Ver líneas» carga el detalle F_LPS, lo enseña y lo cachea; se oculta al volver a pulsar", async () => {

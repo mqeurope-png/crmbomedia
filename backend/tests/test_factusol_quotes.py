@@ -262,6 +262,161 @@ def test_list_quotes_text_filter_applies_before_limit():
     assert [q["codpre"] for q in items] == ["5"]
 
 
+def test_list_quotes_text_ignora_acentos_y_mayusculas():
+    fake = _FakeFactusol(quotes=[
+        _quote_row(10, ref="Rotulación nave"),
+        {**_quote_row(11, ref="Otra cosa"), "CNOPRE": "LABORATORIOS DUÁNER"},
+        _quote_row(12, ref="Nada que ver"),
+    ])
+    assert [q["codpre"] for q in list_quotes(
+        fake, ejercicio="2026", days_back=0, text="ROTULACION")] == ["10"]
+    assert [q["codpre"] for q in list_quotes(
+        fake, ejercicio="2026", days_back=0, text="duaner")] == ["11"]
+
+
+def test_list_quotes_text_casa_por_palabras_parciales():
+    """«lab duan» → LABORATORIOS DUANER: todas las palabras, aunque sean
+    trozos, en cualquier orden."""
+    fake = _FakeFactusol(quotes=[
+        {**_quote_row(11), "CNOPRE": "LABORATORIOS DUANER"},
+        {**_quote_row(12), "CNOPRE": "LABORATORIOS PORTA"},
+    ])
+    items = list_quotes(fake, ejercicio="2026", days_back=0, text="duan lab")
+    assert [q["codpre"] for q in items] == ["11"]
+
+
+def test_list_quotes_text_numero_con_o_sin_serie():
+    """«14», «000014», «1-000014» encuentran la 1-000014 (serie 1, nº 14)."""
+    fake = _FakeFactusol(quotes=[
+        _quote_row(14, serie="1"), _quote_row(140, serie="1"), _quote_row(14, serie="5"),
+    ])
+    for text in ("14", "000014", "1-000014", "1-14"):
+        items = list_quotes(fake, ejercicio="2026", days_back=0, text=text)
+        assert any(q["codpre"] == "14" and q["tippre"] == "1" for q in items), text
+    exacto = list_quotes(fake, ejercicio="2026", days_back=0, text="1-000014")
+    assert [(q["tippre"], q["codpre"]) for q in exacto] == [("1", "14")]
+
+
+def test_list_quotes_extra_names_casa_por_empresa_crm_y_contacto_junto_al_numero():
+    """Los nombres del CRM (`{codcli: texto plegado}`, los aporta la API) se
+    suman al pajar de la proforma: casa por empresa, por contacto y también
+    MEZCLADO con un nº («krieg 14»); `'0014'` y `'14'` son el mismo cliente."""
+    fake = _FakeFactusol(quotes=[
+        {**_quote_row(14, clipre="0014"), "CNOPRE": "APC HANDELS"},
+        {**_quote_row(15, clipre="0015"), "CNOPRE": "OTRO"},
+    ])
+    nombres = {"14": "allphonecovers gmbh hans krieg", "0014": "allphonecovers gmbh hans krieg"}
+    for text in ("allphone", "Krieg", "krieg 14", "allphone handels", "1-000014 krieg"):
+        items = list_quotes(fake, ejercicio="2026", days_back=0, text=text,
+                            extra_names=nombres)
+        assert [q["codpre"] for q in items] == ["14"], text
+    assert list_quotes(fake, ejercicio="2026", days_back=0, text="allphone") == []
+
+
+def test_query_quotes_devuelve_el_total_antes_del_recorte():
+    from app.integrations.factusol.quotes import query_quotes
+
+    rows = [_quote_row(i) for i in range(1, 11)]
+    items, total = query_quotes(_FakeFactusol(quotes=rows), ejercicio="2026",
+                                days_back=0, limit=3)
+    assert len(items) == 3
+    assert total == 10
+
+
+# --- descripciones largas (punto D) ------------------------------------------
+
+
+def test_split_description_corta_por_palabras_sin_perder_texto():
+    from app.integrations.factusol.quotes import split_description
+
+    text = " ".join(f"palabra{i:02d}" for i in range(60))   # 599 caracteres
+    chunks = split_description(text, 100)
+    assert all(len(c) <= 100 for c in chunks)
+    assert all(not c.startswith(" ") and not c.endswith(" ") for c in chunks)
+    assert " ".join(chunks) == text                           # nada se pierde
+    assert split_description("cabe", 100) == ["cabe"]
+    # Lo que cabe NO se toca (saltos de línea y espacios incluidos): una
+    # proforma del escritorio duplicada escribe sus líneas byte a byte.
+    assert split_description("  dos   espacios \ny salto", 100) == ["  dos   espacios \ny salto"]
+    # Una «palabra» más larga que el límite se parte en vez de perderse.
+    assert split_description("x" * 250, 100) == ["x" * 100, "x" * 100, "x" * 50]
+
+
+def test_expand_long_lines_crea_lineas_de_continuacion_sin_importe():
+    from app.integrations.factusol.quotes import expand_long_lines
+
+    larga = " ".join(["Impresora UV de gran formato con mesa plana"] * 10)  # 439
+    out = expand_long_lines([
+        {"codart": "UV1", "description": larga, "quantity": 1, "unit_price": 100,
+         "iva_pct": 21},
+        {"description": "Montaje", "quantity": 1, "unit_price": 30},
+    ])
+    assert len(out) == 3
+    assert out[0]["codart"] == "UV1" and out[0]["quantity"] == 1
+    assert len(out[0]["description"]) <= 255
+    assert out[1]["continuation"] is True
+    assert (out[1]["codart"], out[1]["quantity"], out[1]["unit_price"]) == ("", 0.0, 0.0)
+    assert f"{out[0]['description']} {out[1]['description']}" == larga
+    assert out[2]["description"] == "Montaje"
+    # Una línea que cabe sale como el MISMO objeto, sin tocar.
+    corta = {"description": "Montaje\ncon salto", "quantity": 1, "unit_price": 30}
+    assert expand_long_lines([corta]) == [corta]
+
+
+def test_build_quote_line_payload_no_recorta_y_falla_si_no_cabe():
+    """Antes se cortaba a 255 en silencio: ahora o cabe entero o se rechaza
+    diciendo la línea y el límite (el reparto lo hace quien escribe)."""
+    from app.integrations.factusol.quotes import (
+        QuoteLineTooLongError,
+        build_quote_line_payload,
+    )
+
+    justo = "a" * 255
+    assert build_quote_line_payload("1", 1, {"description": justo})["DESLPS"] == justo
+    with pytest.raises(QuoteLineTooLongError) as exc:
+        build_quote_line_payload("1", 3, {"description": "a" * 256})
+    assert "línea 3" in str(exc.value) and "255" in str(exc.value)
+
+
+def test_create_quote_descripcion_de_400_caracteres_llega_entera_a_f_lps(session):
+    """Punto D: una línea de 400 caracteres se crea (antes la API la rechazaba)
+    y al leerla vuelve completa en la línea + su continuación; los totales no
+    cambian porque la continuación no suma."""
+    from app.integrations.factusol.quotes import list_quote_lines
+
+    larga = ("Sistema de impresión UV con mesa de aspiración, cabezal Ricoh G5, "
+             "tintas CMYK + blanco + barniz, software RIP incluido, formación de "
+             "dos jornadas en las instalaciones del cliente, garantía de dos años "
+             "y mantenimiento preventivo trimestral durante el primer año de uso. "
+             "Incluye transporte, instalación y puesta en marcha con pruebas de "
+             "impresión sobre los materiales habituales del cliente final XYZW.")
+    assert len(larga) == 400
+    fake = _FakeFactusol(quotes=[_quote_row(50)])
+    result = create_quote(
+        fake, session, ejercicio="2026",
+        customer={"codcli": "55555", "nombre": "Acme SL", "nif": "B12345678"},
+        lines=[{"description": larga, "quantity": 1, "unit_price": 1000, "iva_pct": 21},
+               {"description": "Montaje", "quantity": 1, "unit_price": 30, "iva_pct": 21}],
+    )
+    header = fake.writes_to("F_PRE")[0]
+    assert header["NET1PRE"] == 1030.0            # la continuación no suma
+    rows = fake.writes_to("F_LPS")
+    assert [r["POSLPS"] for r in rows] == [1, 2, 3]
+    assert all(len(r["DESLPS"]) <= 255 for r in rows)
+    assert f"{rows[0]['DESLPS']} {rows[1]['DESLPS']}" == larga   # nada recortado
+    continuacion = rows[1]
+    assert (continuacion["ARTLPS"], continuacion["CANLPS"]) == ("", 0.0)
+    assert (continuacion["PRELPS"], continuacion["TOTLPS"]) == (0.0, 0.0)
+    assert result["lines"] == 3 and "warning" not in result
+
+    # Lectura de vuelta por la misma función que usa la API: la continuación
+    # llega como línea de texto (`text_only`) y el texto completo está ahí.
+    fake._lines = [{**r} for r in rows]
+    leidas = list_quote_lines(fake, "51", ejercicio="2026", serie="1")
+    assert [line["text_only"] for line in leidas] == [False, True, False]
+    assert f"{leidas[0]['description']} {leidas[1]['description']}" == larga
+
+
 def test_get_quote_lee_las_lineas_reales_de_f_lps(session):
     """C-4-fix3: las líneas salen de F_LPS, no de la caché local. Funciona con
     cualquier proforma, también las hechas en el FACTUSOL de escritorio."""
@@ -1236,6 +1391,109 @@ def test_update_quote_sin_portes_antes_ni_ahora_no_añade_columnas():
     )
     header = fake.updates_to("F_PRE")[0]
     assert "IPOR1PRE" not in header and "BAS1PRE" not in header
+
+
+# --- forma de pago (punto E) --------------------------------------------------
+
+
+class _FakeConFormasPago(_FakeFactusol):
+    """Sirve además F_FPA (formas de pago)."""
+
+    def load_table(self, tabla, *, filtro="1=1", ejercicio=None):
+        if tabla == "F_FPA":
+            return [{"CODFPA": "002", "DESFPA": "Transferencia"},
+                    {"CODFPA": "003", "DESFPA": "PayPal"}]
+        return super().load_table(tabla, filtro=filtro, ejercicio=ejercicio)
+
+
+def test_create_quote_escribe_la_forma_de_pago_en_foppre(session):
+    fake = _FakeFactusol(quotes=[_quote_row(50)])
+    create_quote(
+        fake, session, ejercicio="2026",
+        customer={"codcli": "55555", "nombre": "Acme SL", "nif": "B12345678"},
+        lines=[{"description": "Vinilo", "quantity": 1, "unit_price": 100}],
+        fopfac="002",
+    )
+    assert fake.writes_to("F_PRE")[0]["FOPPRE"] == "002"
+
+
+def test_create_quote_sin_forma_de_pago_no_escribe_foppre(session):
+    fake = _FakeFactusol(quotes=[_quote_row(50)])
+    create_quote(
+        fake, session, ejercicio="2026",
+        customer={"codcli": "55555", "nombre": "Acme SL", "nif": "B12345678"},
+        lines=[{"description": "Vinilo", "quantity": 1, "unit_price": 100}],
+    )
+    assert "FOPPRE" not in fake.writes_to("F_PRE")[0]
+
+
+def test_update_quote_escribe_la_forma_de_pago():
+    fake = _FakeFactusol(quotes=[{**_quote_row(713), "ESTPRE": 0}])
+    update_quote(
+        fake, "713", ejercicio="2026", customer={"codcli": "55555"},
+        lines=[{"description": "Vinilo", "quantity": 1, "unit_price": 100}],
+        fopfac="003",
+    )
+    assert fake.updates_to("F_PRE")[0]["FOPPRE"] == "003"
+
+
+def test_update_quote_quitar_la_forma_de_pago_la_deja_en_blanco():
+    """`ActualizarRegistro` solo toca lo enviado: si la proforma tenía forma
+    de pago y el operador la quita, se escribe en blanco."""
+    fake = _FakeFactusol(quotes=[{**_quote_row(714), "ESTPRE": 0, "FOPPRE": "002"}])
+    update_quote(
+        fake, "714", ejercicio="2026", customer={"codcli": "55555"},
+        lines=[{"description": "Vinilo", "quantity": 1, "unit_price": 100}],
+        fopfac=None,
+    )
+    assert fake.updates_to("F_PRE")[0]["FOPPRE"] == ""
+
+
+def test_update_quote_sin_forma_antes_ni_ahora_no_añade_la_columna():
+    fake = _FakeFactusol(quotes=[{**_quote_row(715), "ESTPRE": 0}])
+    update_quote(
+        fake, "715", ejercicio="2026", customer={"codcli": "55555"},
+        lines=[{"description": "Vinilo", "quantity": 1, "unit_price": 100}],
+    )
+    assert "FOPPRE" not in fake.updates_to("F_PRE")[0]
+
+
+def test_quote_lines_for_order_lleva_la_forma_de_pago_con_su_nombre(session):
+    """Al convertir, el pedido hereda la forma de pago de la proforma (como
+    los pedidos creados desde albarán/factura)."""
+    from app.integrations.factusol.catalogs import clear_cache
+    from app.integrations.factusol.quotes import quote_lines_for_order
+
+    clear_cache()
+    fake = _FakeConFormasPago(
+        quotes=[{**_quote_row(81), "FOPPRE": "002"}],
+        lines=[_line_row(81, 1, art="ART-1", desc="Cable", cant=1, precio=10)],
+    )
+    data = quote_lines_for_order(fake, session, "81", ejercicio="2026")
+    assert (data["forma_pago"], data["forma_pago_nombre"]) == ("002", "Transferencia")
+
+    sin = _FakeConFormasPago(quotes=[_quote_row(82)],
+                             lines=[_line_row(82, 1, desc="Cable", cant=1, precio=10)])
+    data = quote_lines_for_order(sin, session, "82", ejercicio="2026")
+    assert (data["forma_pago"], data["forma_pago_nombre"]) == (None, None)
+
+
+def test_convert_quote_to_order_lleva_la_forma_de_pago_al_pedido(session):
+    """El pedido convertido guarda la forma de pago de la proforma en su
+    bloque `factusol_source` (como los creados desde albarán/factura)."""
+    import json
+
+    from app.integrations.factusol.catalogs import clear_cache
+
+    clear_cache()
+    fake = _FakeConFormasPago(
+        quotes=[{**_quote_row(83), "FOPPRE": "002"}],
+        lines=[_line_row(83, 1, desc="Cable", cant=1, precio=10)],
+    )
+    result = convert_quote_to_order(fake, session, "83", ejercicio="2026")
+    order = session.get(Order, result["order_id"])
+    source = json.loads(order.packing_json or "{}")["factusol_source"]
+    assert (source["forma_pago"], source["forma_pago_nombre"]) == ("002", "Transferencia")
 
 
 def test_get_quote_expone_los_portes_de_la_cabecera(session):

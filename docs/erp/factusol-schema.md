@@ -185,7 +185,7 @@ como líneas de presupuesto) eran candidatos y resultaron ser incorrectos.
 | `CODLPS` | FK a `F_PRE.CODPRE`. |
 | `POSLPS` | Orden de la línea dentro del presupuesto. |
 | `ARTLPS` | Código de artículo (`F_ART.CODART`). **Vacío** en líneas de texto libre. |
-| `DESLPS` | Descripción. |
+| `DESLPS` | Descripción. BoHub escribe como máximo `DESLPS_MAX_LENGTH` (255, el límite conocido seguro) por fila y reparte lo que sobra en **líneas de continuación** (fila sin artículo, cantidad 0, precio 0). La longitud real de la columna se mide con `scripts/factusol_discover_line_lengths.py`. |
 | `CANLPS` | Cantidad. |
 | `DT1LPS` / `DT2LPS` / `DT3LPS` | Descuentos en %. |
 | `PRELPS` | Precio unitario. |

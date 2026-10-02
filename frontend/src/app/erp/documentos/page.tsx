@@ -89,14 +89,26 @@ function eur(n: number | null | undefined): string {
   return n === null || n === undefined ? "—" : `${n.toFixed(2)} €`;
 }
 
-/** Lote 2 · PR-2 — rango de mes por defecto: el mes en curso (para cuadrar
- *  cierres), en la zona horaria del navegador. */
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+/** Atajo «Mes en curso» (para cuadrar cierres), en la zona horaria del
+ *  navegador. Era el rango por defecto (Lote 2 · PR-2); ahora el defecto es
+ *  el año en curso (`yearToDateRange`) y esto queda como atajo. */
 function currentMonthRange(now = new Date()): { desde: string; hasta: string } {
   const y = now.getFullYear();
   const m = now.getMonth();
-  const pad = (n: number) => String(n).padStart(2, "0");
   const last = new Date(y, m + 1, 0).getDate();
-  return { desde: `${y}-${pad(m + 1)}-01`, hasta: `${y}-${pad(m + 1)}-${pad(last)}` };
+  return { desde: `${y}-${pad2(m + 1)}-01`, hasta: `${y}-${pad2(m + 1)}-${pad2(last)}` };
+}
+
+/** Rango por defecto: del 1 de enero del año en curso a hoy. «Limpiar
+ *  filtros» vuelve aquí (no a «sin fechas»). */
+function yearToDateRange(now = new Date()): { desde: string; hasta: string } {
+  const y = now.getFullYear();
+  return {
+    desde: `${y}-01-01`,
+    hasta: `${y}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`,
+  };
 }
 
 /** «hace X» desde una marca ISO del servidor (la de la lectura en vivo). */
@@ -173,8 +185,8 @@ export default function FactusolDocumentosPage() {
   const [serie, setSerie] = useState<string>("");
   const [clienteInput, setClienteInput] = useState("");
   const [clienteQ, setClienteQ] = useState("");
-  const [fechaDesde, setFechaDesde] = useState(() => currentMonthRange().desde);
-  const [fechaHasta, setFechaHasta] = useState(() => currentMonthRange().hasta);
+  const [fechaDesde, setFechaDesde] = useState(() => yearToDateRange().desde);
+  const [fechaHasta, setFechaHasta] = useState(() => yearToDateRange().hasta);
   const [q, setQ] = useState("");
   const [ciclo, setCiclo] = useState<string>("");
   // ERP-F3 — filtro por estado de COBRO (solo facturas), por `estado`.
@@ -246,11 +258,13 @@ export default function FactusolDocumentosPage() {
   }, [load]);
 
   function limpiar() {
+    const def = yearToDateRange();
     setSerie("");
     setClienteInput("");
     setClienteQ("");
-    setFechaDesde("");
-    setFechaHasta("");
+    // Las fechas vuelven al defecto (año en curso), no a «sin fechas».
+    setFechaDesde(def.desde);
+    setFechaHasta(def.hasta);
     setQ("");
     setCiclo("");
     setPago("");
@@ -387,10 +401,11 @@ export default function FactusolDocumentosPage() {
 
   const month = currentMonthRange();
   const isCurrentMonth = fechaDesde === month.desde && fechaHasta === month.hasta;
+  const def = yearToDateRange();
+  const isDefaultRange = fechaDesde === def.desde && fechaHasta === def.hasta;
   const hasFilters =
-    serie !== "" || clienteQ !== "" || fechaDesde !== "" ||
-    fechaHasta !== "" || q.trim() !== "" || ciclo !== "" || pago !== "" ||
-    soloSinVincular;
+    serie !== "" || clienteQ !== "" || !isDefaultRange ||
+    q.trim() !== "" || ciclo !== "" || pago !== "" || soloSinVincular;
   const cicloOptions = CICLO_OPTIONS[tab];
   const isFacturas = tab === "facturas";
   const isLinkable = tab === "albaranes" || tab === "facturas";

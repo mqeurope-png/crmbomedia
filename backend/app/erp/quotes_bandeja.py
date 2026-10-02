@@ -37,7 +37,7 @@ from app.erp.workflow import QUOTE_QUEUE_LABELS, QUOTE_QUEUES, company_regime, q
 from app.integrations.factusol.documents import visible_number
 from app.integrations.factusol.quotes import header_says_no_iva
 from app.integrations.factusol.vat_regime import REGIME_LABELS
-from app.models.crm import Company
+from app.models.crm import Company, Contact
 
 #: Serie (`TIPPRE`) = empresa emisora. Los nombres se leen de los ajustes
 #: (`series_names`, `/erp/settings`); esto es el fallback.
@@ -80,6 +80,53 @@ def _companies_by_codcli(session: Session, codclis: set[str]) -> dict[str, Compa
         out[code] = company
         if code.isdigit():
             out[str(int(code))] = company
+    return out
+
+
+def _both_forms(codcli: str) -> set[str]:
+    """`'0055'` y `'55'` son el mismo cliente según cómo viaje por la API."""
+    code = str(codcli or "").strip()
+    if not code:
+        return set()
+    return {code, str(int(code))} if code.isdigit() else {code}
+
+
+def crm_names_by_codcli(session: Session) -> dict[str, str]:
+    """`{codcli: texto plegado}` con el **nombre de la empresa CRM** vinculada
+    y los de sus **contactos**, indexado por CODCLI (en sus dos formas,
+    `'0055'` y `'55'`). Es lo que permite buscar «Allphonecovers» o «Krieg»
+    en Proformas aunque en FACTUSOL el cliente se llame de otra forma, y
+    combinarlo con un nº o una palabra de FACTUSOL («krieg 14»): el buscador
+    añade este texto al de cada proforma antes de casar las palabras.
+
+    Se resuelve en Python sobre las empresas vinculadas (unos cientos, dos
+    consultas): un LIKE en SQL no ignoraría los acentos en SQLite ni, según
+    la colación, en MySQL."""
+    from app.integrations.factusol.quotes import fold_text  # noqa: PLC0415
+
+    linked = session.execute(
+        select(Company.id, Company.name, Company.factusol_company_id)
+        .where(Company.factusol_company_id.is_not(None))
+    ).all()
+    codcli_by_company = {
+        cid: str(codcli).strip() for cid, _name, codcli in linked if str(codcli or "").strip()
+    }
+    if not codcli_by_company:
+        return {}
+    partes: dict[str, list[str]] = {cid: [str(name or "")] for cid, name, _ in linked
+                                    if cid in codcli_by_company}
+    contacts = session.execute(
+        select(Contact.company_id, Contact.first_name, Contact.last_name)
+        .where(Contact.company_id.in_(sorted(codcli_by_company)))
+    ).all()
+    for cid, first, last in contacts:
+        if cid in partes:
+            partes[cid].append(f"{first or ''} {last or ''}")
+    out: dict[str, str] = {}
+    for cid, textos in partes.items():
+        plegado = fold_text(" ".join(textos))
+        for forma in _both_forms(codcli_by_company[cid]):
+            out[forma] = f"{out[forma]} {plegado}".strip() if forma in out else plegado
     return out
 
 

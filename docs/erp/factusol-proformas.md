@@ -110,6 +110,40 @@ docker compose -f /opt/crmbo/docker-compose.prod.yml exec api \
     python -m scripts.factusol_discover_article_prices
 ```
 
+### Descripciones largas (líneas de continuación)
+
+Una descripción de línea puede tener la longitud que haga falta (hasta 2000
+caracteres por línea; por encima la API rechaza la proforma diciendo **qué
+línea** y **qué límite**). FACTUSOL guarda 255 caracteres por fila de `F_LPS`
+(`DESLPS_MAX_LENGTH`, el límite conocido seguro), así que lo que sobra se
+reparte, cortando por palabras, en **líneas de continuación**: filas sin
+artículo, con cantidad 0 y precio 0, que no suman y que el escritorio y el PDF
+pintan debajo de la línea. **Nunca se recorta en silencio.**
+
+Al leer la proforma esas filas vuelven como líneas con `text_only: true` (igual
+que las notas escritas a mano en el escritorio) y no se fusionan con la
+anterior: una nota que el operador puso aparte sigue aparte. Al editar o
+duplicar, el modal conserva las líneas de texto (cantidad 0 y sin SKU ni
+precio) en vez de descartarlas.
+
+Si la columna admite más de 255 (se mide con
+`scripts/factusol_discover_line_lengths.py` contra una proforma real con texto
+largo, p. ej. la 5-004360), basta subir `DESLPS_MAX_LENGTH`.
+
+### Forma de pago
+
+«Nueva proforma» y el modal de duplicar llevan un selector **Forma de pago**
+(opcional) con las formas de FACTUSOL (`F_FPA`: 002 transferencia, 003
+PayPal, 004 TPV…). Se preselecciona la del cliente en FACTUSOL
+(`F_CLI.FPACLI`, vía `GET /customers/{codcli}/payment-method`) si la tiene;
+al duplicar se hereda la de la plantilla; al editar, la de la proforma.
+
+Se escribe en `F_PRE.FOPPRE` (`fopfac` en la API; al editar, vacío borra la
+que hubiera). Documentos FACTUSOL la enseña en el detalle («Forma de pago ·
+Transferencia»), el PDF la imprime y al **convertir en pedido** viaja en el
+bloque `factusol_source` como en los pedidos creados desde albarán/factura.
+Sin elegir ninguna, el campo queda vacío.
+
 ### Artículos en el pedido manual
 
 `/erp/orders/new` usa el mismo autocomplete en las columnas **SKU** y
@@ -127,8 +161,14 @@ la mayoría de las plantillas vienen de otro cliente parecido («la de
 Laboratorios Duaner sirve para Laboratorios Porta»).
 
 En el modo «Duplicar» hay un buscador libre sobre todas las proformas del
-último año. El texto casa contra **referencia**, **nombre del cliente de
-origen** y **número de proforma**. Al pulsar *Cargar esta plantilla* el modal
+último año, con el mismo criterio que el buscador de ERP · Proformas: el
+texto se aplica **en el servidor** (`q`, antes del recorte a `limit`) y casa
+sin acentos ni mayúsculas, por palabras parciales en cualquier orden, contra
+el **nº con o sin serie** («14», «000014», «1-000014»), la **referencia**, el
+**cliente de FACTUSOL**, la **empresa CRM vinculada** y sus **contactos**
+(«Krieg», «allphone 14»). La pantalla Proformas avisa cuando la lista viene
+recortada («Mostrando 500 de 716…») y, cuando el servidor ya filtró con el
+texto tecleado, no vuelve a filtrar en local. Al pulsar *Cargar esta plantilla* el modal
 se rellena con su desglose (o con su texto, si la proforma venía del
 escritorio) y se crea una proforma **nueva** para el cliente destino, que se
 puede cambiar arriba del todo con *Cambiar*.

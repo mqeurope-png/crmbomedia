@@ -35,6 +35,7 @@ _QUOTE_ENQUEUES: list[tuple[str, dict[str, Any]]] = [
     ("enqueue_update_quote", {
         "codpre": "585", "customer": {"codcli": "1"}, "lines": [],
         "referencia": "R", "force": True, "portes": 0.0, "serie": 2,
+        "fopfac": "002",
     }),
     ("enqueue_duplicate_quote", {"codpre": "585", "fecha": None, "serie": 5}),
     ("enqueue_convert_quote_to_order", {

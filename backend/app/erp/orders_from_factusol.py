@@ -235,7 +235,14 @@ def add_document_lines(
     `iva_pct`) y devuelve la suma CON IVA. Sin commit."""
     total_tax = 0.0
     for i, line in enumerate(lines):
-        quantity = _f(line.get("quantity"), 1.0) or 1.0
+        # Una línea de TEXTO (continuación de una descripción larga o nota:
+        # sin artículo, cantidad 0 y precio 0) se queda a 0, no a 1: no es
+        # mercancía y así llega al albarán/factura como texto.
+        es_texto = bool(line.get("text_only") or line.get("continuation")) or (
+            not str(line.get("codart") or "").strip()
+            and not _f(line.get("unit_price")) and not _f(line.get("quantity"))
+        )
+        quantity = 0.0 if es_texto else (_f(line.get("quantity"), 1.0) or 1.0)
         unit_price = _f(line.get("unit_price"))
         discount = _f(line.get("discount_pct"))
         line_total = round(quantity * unit_price * (1 - discount / 100), 2)
