@@ -84,8 +84,9 @@ function compareOrders(a: OrderSummary, b: OrderSummary, by: SortBy, dir: SortDi
   if (pago) return pago;
   const mul = dir === "asc" ? 1 : -1;
   if (by === "cliente") {
-    const av = customerLabel(a).toLocaleLowerCase();
-    const bv = customerLabel(b).toLocaleLowerCase();
+    // Por lo que se VE: empresa · persona (como la tarjeta y la Lista).
+    const av = customerHeadline(a).toLocaleLowerCase();
+    const bv = customerHeadline(b).toLocaleLowerCase();
     return av.localeCompare(bv) * mul || a.order_number.localeCompare(b.order_number);
   }
   if (by === "importe") {
@@ -358,6 +359,8 @@ function ErpOrdersScreen() {
         cobro: (filtros.cobro || undefined) as "cobrada" | "pendiente" | "sin_comprobar" | undefined,
         invoice_email: (filtros.invoiceEmail || undefined) as "enviada" | "no_enviada" | undefined,
         queue: queue ?? undefined,
+        // Pagados delante, pendientes de pago detrás (también al recortar).
+        paid_first: true,
         // El orden de verdad (Importe/Cliente/Situación incluidos) se aplica
         // en cliente sobre lo cargado (`filteredRows`); aquí solo se pide al
         // backend la ventana de fecha que toca recortar a `PAGE_LIMIT`.
@@ -471,7 +474,8 @@ function ErpOrdersScreen() {
     if (needle) {
       out = out.filter((o) => {
         const hay = [
-          customerLabel(o), o.order_number, o.factusol_invoice_number, o.factusol_albaran_number,
+          customerHeadline(o), customerLabel(o), o.order_number, o.factusol_invoice_number,
+          o.factusol_albaran_number,
         ].map((s) => (s || "").toLocaleLowerCase()).join(" ");
         return hay.includes(needle);
       });

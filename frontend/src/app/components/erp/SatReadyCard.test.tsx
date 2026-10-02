@@ -390,8 +390,10 @@ describe("estado REAL del transportista (Genei /tracking)", () => {
 describe("«Pendiente de recogida» con tracking: aviso al cliente", () => {
   it("con nº de seguimiento enseña si se mandó el aviso; sin él, nada", () => {
     const { rerender } = render(
-      <SatReadyCard order={order({ sat_tab: "pendiente_recogida", shipment_kind: "externo",
-                                   courier: "UPS", tracking_number: "1Z999",
+      <SatReadyCard order={order({ sat_tab: "pendiente_recogida", shipment_kind: "genei",
+                                   genei: { shipment_code: "G1", label_available: true,
+                                            tracking: "CTT1" },
+                                   tracking_number: "CTT1",
                                    customer_email: { status: "sent",
                                                      sent_at: "2026-10-01T12:03:00+02:00",
                                                      to: "cliente@acme.es", sends: 1 } })}
@@ -402,8 +404,16 @@ describe("«Pendiente de recogida» con tracking: aviso al cliente", () => {
     expect(within(aviso).getByRole("button", { name: "Reenviar al cliente de BOP-1" }))
       .toBeInTheDocument();
     rerender(
+      <SatReadyCard order={order({ sat_tab: "pendiente_recogida", shipment_kind: "genei",
+                                   genei: { shipment_code: "G1", label_available: true },
+                                   tracking_number: null })}
+                    onChanged={() => {}} canShip />,
+    );
+    expect(screen.queryByLabelText("Aviso al cliente de BOP-1")).toBeNull();
+    // OTRO courier aún sin recoger: el aviso sale al «Marcar recogido», no aquí.
+    rerender(
       <SatReadyCard order={order({ sat_tab: "pendiente_recogida", shipment_kind: "externo",
-                                   courier: "UPS", tracking_number: null })}
+                                   courier: "UPS", tracking_number: "1Z999" })}
                     onChanged={() => {}} canShip />,
     );
     expect(screen.queryByLabelText("Aviso al cliente de BOP-1")).toBeNull();

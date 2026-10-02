@@ -12041,8 +12041,9 @@ a.erp-ficha-customer-name:hover { text-decoration: underline; }
   --ink-on-color: var(--st-neutral-ink);
   background: var(--st-neutral-bg);
 }
-/* «No completado»: gris claro, texto gris, sin punto. */
-.erp-status-pill.is-off.is-plain { font-weight: 500; opacity: 0.85; }
+/* «No completado»: gris claro, texto gris, sin punto (sin opacidad: el gris
+   neutro ya cumple el contraste 4,5:1). */
+.erp-status-pill.is-off.is-plain { font-weight: 500; }
 .erp-status-pill.is-warn {
   --ink-on-color: var(--st-amber-ink);
   background: var(--st-amber-bg);

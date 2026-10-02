@@ -514,6 +514,12 @@ def test_bandeja_por_revisar_incluye_los_no_pagados_detras(http, session_factory
                placed_at=datetime(2026, 9, 30, tzinfo=UTC))
     h = auth_headers(http, "pedidos")
     r = http.get("/api/erp/orders", headers=h,
-                 params={"completed": "false", "queue": "por_revisar"}).json()
+                 params={"completed": "false", "queue": "por_revisar",
+                         "paid_first": "true"}).json()
     assert [i["order_number"] for i in r["items"]] == ["BOPRIN-100", "BOPRIN-101"]
     assert r["queue_counts"]["por_revisar"] == 2
+    # Sin pedirlo (actividad de una empresa…), el orden por fecha de siempre:
+    # el recorte no deja fuera a los más recientes aunque no estén pagados.
+    r = http.get("/api/erp/orders", headers=h,
+                 params={"company_id": "es", "limit": 1}).json()
+    assert [i["order_number"] for i in r["items"]] == ["BOPRIN-101"]

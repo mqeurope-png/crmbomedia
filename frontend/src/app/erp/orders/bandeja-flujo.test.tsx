@@ -359,8 +359,10 @@ describe("ERP · Bandeja — remates: no pagados, cliente y «Completado»", () 
     (listOrders as jest.Mock).mockResolvedValue(page([pendiente, A, D]));
     render(<ErpOrdersPage />);
     await screen.findByText("BOPRIN-9");
-    // Más reciente que los otros, pero pendiente de pago: va detrás.
+    // Más reciente que los otros, pero pendiente de pago: va detrás (y el
+    // backend lo respeta al recortar).
     expect(ordenVisible()).toEqual(["BOPRIN-1", "BOPRIN-4", "BOPRIN-9"]);
+    expect(ultimaLlamada()).toEqual(expect.objectContaining({ paid_first: true }));
     expect(within(row("BOPRIN-9")).getByLabelText(/Pago: (no|pendiente)/i)).toBeInTheDocument();
   });
 
@@ -374,6 +376,23 @@ describe("ERP · Bandeja — remates: no pagados, cliente y «Completado»", () 
     expect(r1?.nextElementSibling).toBe(cliente);
     // Sin empresa: la persona.
     expect(within(row("PRO-3")).getByText("Eduard Riera")).toHaveClass("erp-flow-item-customer");
+  });
+
+  it("«Ordenar por: Cliente» y el buscador usan lo que se ve (empresa · persona)", async () => {
+    const zeta = order({ id: "o-z", order_number: "BOPRIN-Z", company_name: "Zeta SL",
+                         contact_name: "Ana" });
+    const acme = order({ id: "o-a", order_number: "BOPRIN-A", company_name: "Acme SL",
+                         contact_name: "Zoe" });
+    (listOrders as jest.Mock).mockResolvedValue(page([zeta, acme]));
+    const user = userEvent.setup();
+    render(<ErpOrdersPage />);
+    await screen.findByText("BOPRIN-Z");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Ordenar por" }), "cliente");
+    // Descendente (el sentido por defecto) por lo que se lee: «Zeta SL · Ana»
+    // antes que «Acme SL · Zoe» (por la persona saldría al revés).
+    expect(ordenVisible()).toEqual(["BOPRIN-Z", "BOPRIN-A"]);
+    await user.type(screen.getByRole("searchbox"), "Acme SL · Zoe");
+    expect(ordenVisible()).toEqual(["BOPRIN-A"]);
   });
 
   it("«No completado» neutro y sin punto; «Completado ✓» en verde con fecha y quién", async () => {

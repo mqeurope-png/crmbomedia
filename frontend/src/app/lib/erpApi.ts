@@ -382,6 +382,9 @@ function qs(params: Record<string, string | number | undefined>): string {
 }
 
 export type OrderFilters = {
+  /** Bandeja: los pagados delante y los pendientes de pago detrás, también al
+   *  recortar a `limit` (los demás usos, por fecha). */
+  paid_first?: boolean;
   payment?: string;
   preparation?: string;
   transport?: string;
@@ -430,10 +433,11 @@ const EMPTY_QUEUE_COUNTS = Object.fromEntries(
 
 export async function listOrders(filters: OrderFilters = {}): Promise<OrdersBandeja> {
   const {
-    show_external, show_excluded, show_cancelled, completed, invoiced, ...rest
+    show_external, show_excluded, show_cancelled, completed, invoiced, paid_first, ...rest
   } = filters;
   const query = qs({
     ...rest,
+    paid_first: paid_first ? "true" : undefined,
     show_external: show_external ? "true" : undefined,
     show_excluded: show_excluded ? "true" : undefined,
     show_cancelled: show_cancelled ? "true" : undefined,

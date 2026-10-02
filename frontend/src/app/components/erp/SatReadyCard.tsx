@@ -362,7 +362,9 @@ export function SatReadyCard({
           <span className="badge muted">Genei: {order.genei.state_label}</span>
         ) : null}
       </div>
-      {pendienteRecogida && (order.tracking_number || order.genei?.tracking) ? (
+      {/* Aún sin recoger, el aviso solo se puede mandar con un envío Genei (el
+          de OTRO courier sale al «📤 Marcar recogido»). */}
+      {pendienteRecogida && hasGenei && (order.tracking_number || order.genei?.tracking) ? (
         <SatAvisoCliente order={order} canShip={canShip} onChanged={onChanged} />
       ) : null}
       {customerLabel(order) ? (
