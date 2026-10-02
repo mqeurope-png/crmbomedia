@@ -156,7 +156,10 @@ describe("CreateQuoteModal", () => {
     const desc = screen.getByLabelText("Descripción línea 1");
     expect(desc.tagName).toBe("TEXTAREA");
     const larga = "x".repeat(400);
-    await user.type(desc, `0% BTW bij intracommunautaire levering{enter}${larga}`);
+    // El texto largo se PEGA (teclear 400 caracteres uno a uno pasaba de los
+    // 5 s del test en el runner de CI); el salto de línea sí se teclea.
+    await user.type(desc, "0% BTW bij intracommunautaire levering{enter}");
+    await user.paste(larga);
     await user.type(screen.getByLabelText("Precio línea 1"), "3000");
     await user.click(screen.getByRole("button", { name: "Crear proforma" }));
     await waitFor(() => expect(mockCreate).toHaveBeenCalled());
