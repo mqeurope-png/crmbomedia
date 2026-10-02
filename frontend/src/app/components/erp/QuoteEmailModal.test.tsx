@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QuoteEmailModal, emailedMark } from "./QuoteEmailModal";
 import {
@@ -209,5 +209,47 @@ describe("QuoteEmailModal — buscar cualquier contacto del CRM (remates · punt
     await waitFor(() => expect(mockSend).toHaveBeenCalledWith("75", 2, expect.objectContaining({
       to: ["marta@maison.example"], cc: [],
     })));
+  });
+});
+
+
+describe("QuoteEmailModal — los contactos del CRM añadidos se ven y son los que se envían", () => {
+  const contacto = (i: number) => ({
+    id: `c${i}`, name: `ACEVEDO RUIBAL, FAUSTINO ${i}`, email: `f${i}@crm.example`,
+    company_name: `Empresa ${i}`,
+  });
+
+  it("cuatro contactos añadidos: los cuatro en la lista y en el envío; «Quitar» lo saca de los dos", async () => {
+    const user = userEvent.setup();
+    mockPreview.mockResolvedValue(preview({
+      // Mensaje largo: el caso real en el que el modal llega a su alto máximo.
+      body_text: Array.from({ length: 60 }, (_, i) => `Línea ${i}`).join("\n"),
+    }));
+    render(<QuoteEmailModal codpre="75" serie={2} onClose={jest.fn()} />);
+    await screen.findByLabelText("Enviar a Marta Coll (marta@maison.example)");
+    for (const i of [1, 2, 3, 4]) {
+      mockSearch.mockResolvedValue([contacto(i)]);
+      await user.type(screen.getByLabelText("Buscar contacto del CRM"), "acevedo");
+      await user.click(await screen.findByRole("button", { name: `Añadir a ${contacto(i).name} en Para` }));
+    }
+    const lista = screen.getByRole("list", { name: "Contactos del CRM añadidos" });
+    expect(lista).toHaveClass("erp-contacts-list", "erp-crm-picks");
+    expect(within(lista).getAllByRole("listitem")).toHaveLength(4);
+    for (const i of [1, 2, 3, 4]) {
+      expect(within(lista).getByText(contacto(i).name)).toBeInTheDocument();
+      expect(within(lista).getByText(contacto(i).email)).toBeInTheDocument();
+    }
+    await user.click(screen.getByRole("button", { name: `Quitar a ${contacto(2).name}` }));
+    expect(within(lista).getAllByRole("listitem")).toHaveLength(3);
+    expect(within(lista).queryByText(contacto(2).name)).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Enviar presupuesto" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "Enviar presupuesto" }));
+    await waitFor(() => expect(mockSend).toHaveBeenCalled());
+    // Los destinatarios son exactamente los que se ven: el de la empresa y
+    // los tres del CRM que quedan, sin el quitado.
+    expect(mockSend.mock.calls[0][2].to).toEqual([
+      "marta@maison.example", "f1@crm.example", "f3@crm.example", "f4@crm.example",
+    ]);
+    expect(mockSend.mock.calls[0][2].cc).toEqual([]);
   });
 });

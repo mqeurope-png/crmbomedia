@@ -12452,6 +12452,15 @@ input[type="radio"]:focus-visible {
 .modal-dialog.erp-modal > *,
 .modal-dialog.erp-emit-modal > *,
 .modal-dialog.company-picker-dialog > * { margin-top: 0; margin-bottom: 0; }
+/* En el modal plano scrollea el DIÁLOGO (cabecera y pie pegajosos): sus hijos
+   no se encogen. Si no, cuando el contenido pasa del alto máximo, flexbox
+   encoge al hijo que tenga `overflow` (su mínimo automático es 0) hasta
+   dejarlo en 0 px: así desaparecía la lista «Contactos del CRM añadidos» del
+   email de presupuesto con un mensaje largo (03/10/2026). Fuera quedan los
+   que usan `.modal-body` (buscador de empresa, vincular documento / cliente):
+   ahí el cuerpo SÍ se encoge y scrollea, y la cabecera y el pie no. */
+.modal-dialog.erp-modal > *:not(.modal-body),
+.modal-dialog.erp-emit-modal > *:not(.modal-body) { flex-shrink: 0; }
 .modal-dialog.erp-modal > h2:first-child,
 .modal-dialog.erp-emit-modal > h2:first-child,
 .modal-dialog.company-picker-dialog > .company-picker-head {
@@ -12527,6 +12536,9 @@ input[type="radio"]:focus-visible {
 .erp-contacts-list {
   display: flex;
   flex-direction: column;
+  /* Alto propio con scroll a partir de 220 px, pero nunca encogida por el
+     contenedor: con `overflow` su mínimo flex sería 0 (ver el modal plano). */
+  flex: none;
   max-height: 220px;
   overflow-y: auto;
 }
