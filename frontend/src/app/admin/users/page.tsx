@@ -43,6 +43,13 @@ export default function AdminUsersPage() {
   const [editPasswords, setEditPasswords] = useState<Record<string, string>>({});
   const [resetUser, setResetUser] = useState<User | null>(null);
 
+  // Email y nombre del alta en estado (como la contraseña y el rol): así el
+  // formulario se vacía por estado al crear. Antes se hacía `form.reset()`
+  // sobre `event.currentTarget`, que React ya ha soltado (null) cuando vuelve
+  // el `await`, y la página entera caía en «Cannot read properties of null».
+  const [createEmail, setCreateEmail] = useState("");
+  const [createName, setCreateName] = useState("");
+
   const createCompliant = isPasswordCompliant(createPassword);
   const createMatchesShow = createConfirm.length > 0;
   const createMatches = createPassword === createConfirm;
@@ -66,22 +73,29 @@ export default function AdminUsersPage() {
     event.preventDefault();
     setError(null);
     setMessage(null);
-    const form = new FormData(event.currentTarget);
     try {
       await createUser({
-        email: form.get("email"),
-        full_name: form.get("full_name"),
-        password: form.get("password"),
+        email: createEmail.trim(),
+        full_name: createName.trim(),
+        password: createPassword,
         role: createRole,
       });
-      event.currentTarget.reset();
+      // El usuario ya existe: pase lo que pase con la limpieza del formulario o
+      // la recarga, no se enseña como fallo del alta (ni tumba la página).
+      setCreateEmail("");
+      setCreateName("");
       setCreatePassword("");
       setCreateConfirm("");
       setCreateRole("viewer");
       setMessage("Usuario creado");
-      await loadUsers();
     } catch (err) {
       setError(extractErrorMessage(err, "No se pudo crear el usuario"));
+      return;
+    }
+    try {
+      await loadUsers();
+    } catch (err) {
+      setMessage(`Usuario creado. ${extractErrorMessage(err, "No se pudo recargar la lista")}`);
     }
   }
 
@@ -145,8 +159,14 @@ export default function AdminUsersPage() {
           <article className="card">
             <h2>Crear usuario</h2>
             <form className="form-card embedded" onSubmit={onCreate}>
-              <label>Email<input name="email" type="email" required /></label>
-              <label>Nombre<input name="full_name" required /></label>
+              <label>Email
+                <input name="email" type="email" required value={createEmail}
+                       onChange={(event) => setCreateEmail(event.target.value)} />
+              </label>
+              <label>Nombre
+                <input name="full_name" required value={createName}
+                       onChange={(event) => setCreateName(event.target.value)} />
+              </label>
               <label>
                 Contraseña
                 <input

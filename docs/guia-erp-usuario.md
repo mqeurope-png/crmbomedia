@@ -572,7 +572,9 @@ lo que hay que preparar y enviar.
 **Pestañas, por paso del taller**, en este orden (cada una con su contador,
 que cuadra con lo que lista, y **su propio color** para distinguirlas de un
 vistazo; la activa va un punto más intensa y subrayada). Al entrar se abre
-**«Por embalar»**, o la última pestaña que usaste en ese dispositivo:
+**siempre «Por embalar»** (no se recuerda la última pestaña entre visitas; un
+enlace directo con la pestaña en la dirección, como `?tab=enviados`, sí se
+respeta):
 
 | Pestaña | Color | Qué hay |
 |---|---|---|

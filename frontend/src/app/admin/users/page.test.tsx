@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import AdminUsersPage from "./page";
-import { getCurrentUser, getUsers, type User } from "../../lib/api";
+import { createUser, getCurrentUser, getUsers, type User } from "../../lib/api";
 
 jest.mock("../../lib/api", () => ({
   getCurrentUser: jest.fn(),
@@ -70,5 +70,41 @@ describe("AdminUsersPage — CRM-PERFIL reset de contraseña", () => {
 
     const modal = await screen.findByTestId("reset-modal");
     expect(modal).toHaveTextContent("comercial@bomedia.net");
+  });
+});
+
+
+describe("AdminUsersPage — alta de usuario (bug 02/10/2026: «reading 'reset'»)", () => {
+  beforeEach(() => {
+    mockedGetUser.mockResolvedValue(makeUser({ id: "admin-1", role: "admin" }));
+    mockedGetUsers.mockResolvedValue([makeUser()]);
+  });
+
+  it("crea el usuario: la lista lo muestra, el formulario queda vacío y no hay cuadro de error", async () => {
+    const nuevo = makeUser({ id: "u-99", email: "nuevo@bomedia.net", full_name: "Nuevo SAT", role: "sat" });
+    (createUser as jest.Mock).mockResolvedValue(nuevo);
+    mockedGetUsers.mockResolvedValueOnce([makeUser()]).mockResolvedValue([makeUser(), nuevo]);
+    const user = userEvent.setup();
+    render(<AdminUsersPage />);
+    await screen.findByRole("button", { name: /Resetear contraseña/i });
+
+    await user.type(screen.getByLabelText("Email"), "nuevo@bomedia.net");
+    await user.type(screen.getByLabelText("Nombre"), "Nuevo SAT");
+    await user.type(screen.getByLabelText("Contraseña"), "Abcdefg1");
+    await user.type(screen.getByLabelText("Confirmar contraseña"), "Abcdefg1");
+    await user.click(screen.getByRole("button", { name: "Crear" }));
+
+    await screen.findByText("Usuario creado");
+    expect(createUser).toHaveBeenCalledWith(expect.objectContaining({
+      email: "nuevo@bomedia.net", full_name: "Nuevo SAT", password: "Abcdefg1",
+    }));
+    // El creado está en la lista; el formulario, vacío; y la página sigue viva
+    // (antes caía en «Error de permisos o carga — Cannot read properties of null»).
+    expect(await screen.findByText("nuevo@bomedia.net")).toBeInTheDocument();
+    expect(screen.getByLabelText("Email")).toHaveValue("");
+    expect(screen.getByLabelText("Nombre")).toHaveValue("");
+    expect(screen.getByLabelText("Contraseña")).toHaveValue("");
+    expect(screen.queryByText(/Error de permisos o carga/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/reading 'reset'/)).not.toBeInTheDocument();
   });
 });
