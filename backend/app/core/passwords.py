@@ -1,22 +1,38 @@
-"""Password policy used across signup, password change and reset flows.
+"""Password policy used across user creation, password change and admin reset.
 
-Centralizing the rules here keeps the schemas thin, lets the API surface
-consistent error messages, and provides a single source of truth that the
-tests and the frontend hint copy can reference.
+ÚNICA fuente de verdad de la regla. Los schemas la aplican tal cual, los
+mensajes de error del backend salen de aquí y el frontend
+(`PasswordRequirements.tsx`) refleja los mismos tres puntos.
+
+Regla (y nada más):
+  - mínimo MIN_LENGTH caracteres
+  - al menos una letra mayúscula
+  - al menos un número
 """
 from __future__ import annotations
 
 import re
-from functools import lru_cache
-from pathlib import Path
+from collections.abc import Callable
 
-MIN_LENGTH = 12
+MIN_LENGTH = 8
+#: Tope técnico (bcrypt no mira más allá de 72 bytes); no es una regla de la
+#: política que se enseñe al usuario.
 MAX_LENGTH = 128
 
 _UPPERCASE_RE = re.compile(r"[A-Z]")
-_LOWERCASE_RE = re.compile(r"[a-z]")
 _DIGIT_RE = re.compile(r"\d")
-_COMMON_PASSWORDS_FILE = Path(__file__).resolve().parent / "common_passwords.txt"
+
+#: Los tres requisitos, en el orden en que se enseñan en pantalla:
+#: `(clave, texto, comprobación)`. El texto es el mismo que ve el usuario en la
+#: lista de requisitos y en el error del backend.
+POLICY_RULES: tuple[tuple[str, str, Callable[[str], bool]], ...] = (
+    ("length", f"Mínimo {MIN_LENGTH} caracteres",
+     lambda p: len(p) >= MIN_LENGTH),
+    ("upper", "Al menos una letra mayúscula",
+     lambda p: bool(_UPPERCASE_RE.search(p))),
+    ("digit", "Al menos un número",
+     lambda p: bool(_DIGIT_RE.search(p))),
+)
 
 
 class PasswordPolicyError(ValueError):
@@ -27,59 +43,23 @@ class PasswordPolicyError(ValueError):
     """
 
 
-@lru_cache(maxsize=1)
-def _common_passwords() -> frozenset[str]:
-    if not _COMMON_PASSWORDS_FILE.exists():
-        return frozenset()
-    entries: set[str] = set()
-    for raw in _COMMON_PASSWORDS_FILE.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        entries.add(line.lower())
-    return frozenset(entries)
-
-
-def is_common_password(password: str) -> bool:
-    return password.lower() in _common_passwords()
-
-
 def validate_password_policy(password: str) -> None:
-    """Raise PasswordPolicyError if `password` violates the policy.
-
-    Rules (must all pass):
-      - between MIN_LENGTH and MAX_LENGTH characters
-      - at least one uppercase letter
-      - at least one lowercase letter
-      - at least one digit
-      - not present in the common-passwords blocklist
-    """
+    """Raise PasswordPolicyError if `password` violates the policy."""
     if not isinstance(password, str):
         raise PasswordPolicyError("La contraseña debe ser texto.")
-    if len(password) < MIN_LENGTH:
-        raise PasswordPolicyError(
-            f"La contraseña debe tener al menos {MIN_LENGTH} caracteres."
-        )
     if len(password) > MAX_LENGTH:
         raise PasswordPolicyError(
             f"La contraseña no puede superar {MAX_LENGTH} caracteres."
         )
-    if not _UPPERCASE_RE.search(password):
-        raise PasswordPolicyError("Debe contener al menos una letra mayúscula.")
-    if not _LOWERCASE_RE.search(password):
-        raise PasswordPolicyError("Debe contener al menos una letra minúscula.")
-    if not _DIGIT_RE.search(password):
-        raise PasswordPolicyError("Debe contener al menos un número.")
-    if is_common_password(password):
-        raise PasswordPolicyError(
-            "Esta contraseña aparece en listas públicas; elige una distinta."
-        )
+    for _key, texto, check in POLICY_RULES:
+        if not check(password):
+            raise PasswordPolicyError(f"La contraseña no cumple: {texto.lower()}.")
 
 
-def policy_summary() -> dict[str, int | str]:
+def policy_summary() -> dict[str, object]:
     """Machine-readable description used by tests and the frontend."""
     return {
         "min_length": MIN_LENGTH,
         "max_length": MAX_LENGTH,
-        "requires": "uppercase, lowercase, digit; rejects common passwords",
+        "rules": [texto for _key, texto, _check in POLICY_RULES],
     }

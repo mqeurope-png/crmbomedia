@@ -12,7 +12,7 @@ from sqlalchemy.pool import StaticPool
 from app.core.passwords import (
     MIN_LENGTH,
     PasswordPolicyError,
-    is_common_password,
+    policy_summary,
     validate_password_policy,
 )
 from app.db.session import get_session
@@ -49,43 +49,44 @@ def client() -> Generator[TestClient, None, None]:
 
 
 # -------- Pure policy unit tests ---------------------------------------------
+#
+# La política es SOLO: mínimo 8 caracteres, una mayúscula y un número. Ni
+# minúscula obligatoria ni lista de «contraseñas habituales».
 
 
 def test_policy_accepts_compliant_password():
     validate_password_policy(VALID_PASSWORD)  # does not raise
 
 
+@pytest.mark.parametrize("password", ["Abcdefg1", "PASSWORD1", "Password1", "ABCDEFG1"])
+def test_policy_accepts_8_chars_with_uppercase_and_digit(password):
+    """8 caracteres, mayúscula y número → válida. Sin minúsculas también, y
+    «Password1» también (ya no hay lista de habituales)."""
+    validate_password_policy(password)
+
+
 def test_policy_rejects_short_password():
     with pytest.raises(PasswordPolicyError, match=str(MIN_LENGTH)):
-        validate_password_policy("Abc123!")
+        validate_password_policy("Abcdef1")                   # 7
 
 
 def test_policy_rejects_missing_uppercase():
     with pytest.raises(PasswordPolicyError, match="mayúscula"):
-        validate_password_policy("alllowercase123")
-
-
-def test_policy_rejects_missing_lowercase():
-    with pytest.raises(PasswordPolicyError, match="minúscula"):
-        validate_password_policy("ALLUPPERCASE123")
+        validate_password_policy("abcdefg1")
 
 
 def test_policy_rejects_missing_digit():
+    # 8 letras con mayúscula: pasa longitud y mayúscula, solo falta el número.
     with pytest.raises(PasswordPolicyError, match="número"):
-        validate_password_policy("AllLettersNoDigits")
+        validate_password_policy("Abcdefgh")
 
 
-def test_policy_rejects_common_password_even_if_complex():
-    # "Password1234" satisfies length + uppercase + lowercase + digit, but it is
-    # in common_passwords.txt and must be rejected on the blocklist rule.
-    with pytest.raises(PasswordPolicyError, match="listas públicas"):
-        validate_password_policy("Password1234")
-
-
-def test_is_common_password_helper_is_case_insensitive():
-    assert is_common_password("password")
-    assert is_common_password("Password")
-    assert not is_common_password(VALID_PASSWORD)
+def test_policy_summary_lists_exactly_the_three_rules():
+    """Una sola fuente de verdad: los tres puntos que enseña el frontend."""
+    assert policy_summary()["min_length"] == 8
+    assert policy_summary()["rules"] == [
+        "Mínimo 8 caracteres", "Al menos una letra mayúscula", "Al menos un número",
+    ]
 
 
 # -------- Endpoint integration tests -----------------------------------------
@@ -97,7 +98,7 @@ def test_create_user_rejects_weak_password(client: TestClient):
         json={
             "email": "weak@example.com",
             "full_name": "Weak User",
-            "password": "short1A",
+            "password": "Abcdef1",                               # 7
             "role": "viewer",
         },
         headers=login(client, "admin"),
@@ -108,20 +109,20 @@ def test_create_user_rejects_weak_password(client: TestClient):
     )
 
 
-def test_create_user_rejects_common_password(client: TestClient):
+def test_create_user_accepts_8_chars_and_formerly_common_password(client: TestClient):
+    """Alta por admin: «Password1» entra (8, mayúscula, número; sin lista de
+    habituales) y ese usuario puede entrar con ella."""
+    headers = login(client, "admin")
     response = client.post(
         "/api/users",
-        json={
-            "email": "common@example.com",
-            "full_name": "Common Password",
-            "password": "Password1234",
-            "role": "viewer",
-        },
-        headers=login(client, "admin"),
+        json={"email": "ocho@example.com", "full_name": "Ocho Chars",
+              "password": "Password1", "role": "viewer"},
+        headers=headers,
     )
-    assert response.status_code == 422
-    body_text = response.text.lower()
-    assert any(needle in body_text for needle in ("listas", "común", "comun", "comunes"))
+    assert response.status_code == 201, response.text
+    login_resp = client.post("/api/auth/login",
+                             json={"email": "ocho@example.com", "password": "Password1"})
+    assert login_resp.status_code == 200, login_resp.text
 
 
 def test_change_password_rejects_no_uppercase(client: TestClient):
@@ -130,7 +131,7 @@ def test_change_password_rejects_no_uppercase(client: TestClient):
     headers = login(client, "admin")
     response = client.post(
         "/api/auth/change-password",
-        json={"current_password": "password123", "new_password": "alllowercase123"},
+        json={"current_password": "password123", "new_password": "abcdefg1"},
         headers=headers,
     )
     assert response.status_code == 422
@@ -139,16 +140,34 @@ def test_change_password_rejects_no_uppercase(client: TestClient):
     )
 
 
-def test_admin_password_update_rejects_short(client: TestClient):
+def test_change_password_accepts_uppercase_only_letters(client: TestClient):
+    """Cambio propio: «PASSWORD1» (sin minúscula) es válida ahora."""
+    headers = login(client, "admin")
+    response = client.post(
+        "/api/auth/change-password",
+        json={"current_password": "password123", "new_password": "PASSWORD1"},
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+
+
+def test_admin_password_update_rejects_short_and_accepts_8(client: TestClient):
+    """Mismo resultado en el cambio por admin: 7 → 422; 8 con mayúscula y número → 200."""
     headers = login(client, "admin")
     user_id = client.get("/api/users", headers=headers).json()[0]["id"]
 
     response = client.patch(
         f"/api/users/{user_id}/password",
-        json={"new_password": "Aa1!short"},
+        json={"new_password": "Abcdef1"},
         headers=headers,
     )
     assert response.status_code == 422
+    response = client.patch(
+        f"/api/users/{user_id}/password",
+        json={"new_password": "Abcdefg1"},
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
 
 
 # -------- CRM-PERFIL: flujo público «olvidé contraseña» RETIRADO -------------

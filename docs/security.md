@@ -148,28 +148,36 @@ El campo debe verse como `gAAAAAB...` (prefijo Fernet versión 0x80) y nunca com
 
 # Password policy
 
-Reglas mínimas para contraseñas de usuario, aplicadas de forma consistente en creación, cambio, reset por admin y reset auto-servicio. Centralizadas en `backend/app/core/passwords.py`.
+Reglas de las contraseñas de usuario, aplicadas igual en el alta por admin, el
+cambio del propio usuario y el reset por admin (la contraseña temporal que
+genera cumple la política). Centralizadas en `backend/app/core/passwords.py`,
+que es la **única fuente de verdad**: el frontend solo la refleja.
 
 ## Reglas
 
+La política es **solo esto**, y nada más:
+
 | Regla | Valor |
 |---|---|
-| Longitud mínima | **12** caracteres |
-| Longitud máxima | 128 caracteres |
+| Longitud mínima | **8** caracteres |
 | Mayúscula | al menos una |
-| Minúscula | al menos una |
 | Dígito | al menos uno |
-| Símbolos | recomendados (suman a la fortaleza visual), no obligatorios |
-| Lista de bloqueo | `backend/app/core/common_passwords.txt` (~50 entradas comunes / leaked) |
 
-La comparación con la blocklist es **case-insensitive**: `Password`, `PASSWORD` y `password` se rechazan por igual.
+No se exige minúscula ni se comprueba ninguna lista de «contraseñas
+habituales» (la lista que había se retiró). No hay máximo de longitud como
+regla de la política; el tope de 128 es solo técnico (bcrypt), no se enseña al
+usuario. Los símbolos no son obligatorios: suman a la barra de fortaleza, que
+es orientativa y no bloquea.
+
+Las contraseñas existentes no se tocan ni se obliga a cambiarlas: la política
+solo se aplica al crear o cambiar una contraseña.
 
 ## Justificación
 
-- 12 caracteres es el mínimo NIST recomendado actualmente (SP 800-63B Rev. 4 borrador) y supera el `8` que estaba implícito antes.
-- Variedad (mayúscula + minúscula + dígito) frena ataques con diccionarios pequeños sin obligar a símbolos no-ASCII que rompen teclados internacionales.
-- La blocklist es un sanity check sobre las contraseñas más reutilizadas (RockYou, NCSC bad list); evita que se acepten passwords que ya forman parte de wordlists públicas, sin pretender ser exhaustiva.
-- No se exige rotación periódica obligatoria: NIST desaconseja forzar cambios sin causa, porque empuja a los usuarios a patrones predecibles.
+- 8 caracteres con mayúscula y número es el mínimo que el equipo ha fijado como
+  cómodo para el día a día; el bloqueo por intentos y el 2FA son la defensa
+  frente a fuerza bruta, no la longitud.
+- No se exige rotación periódica: NIST desaconseja forzar cambios sin causa.
 
 ## Aplicación
 
@@ -184,7 +192,12 @@ La violación devuelve **`422 Unprocessable Entity`** con el campo `detail[].msg
 
 ## UI
 
-`frontend/src/app/components/PasswordRequirements.tsx` muestra en tiempo real una checklist (✓/✗) y una barra de fortaleza (Débil / Media / Fuerte) en los formularios de `/admin/users`, `/account/password` y `/password-reset`. La regla autoritativa es la del backend; el componente solo sirve de hint y deshabilita el botón hasta que se cumple la política mínima.
+`frontend/src/app/components/PasswordRequirements.tsx` muestra en tiempo real la
+lista de requisitos —**exactamente los tres puntos de la política**, con su ✓/✗—
+y una barra de fortaleza orientativa (Débil / Media / Fuerte) en `/admin/users` y
+`/account/password`. La regla autoritativa es la del backend (sus mensajes de
+error dicen lo mismo que la lista); el componente deshabilita el botón hasta que
+se cumple.
 
 ## Verificación
 
@@ -195,9 +208,11 @@ python -m pytest tests/test_password_policy.py -q
 
 Cubre:
 
-- Cada regla individual (longitud, mayúscula, minúscula, dígito, blocklist).
-- Rechazo de `Password1234` (cumple las reglas estructurales pero está en la blocklist).
-- Rechazo en cada uno de los 4 endpoints.
+- Cada regla individual (longitud, mayúscula, dígito) y que `policy_summary()`
+  lista exactamente esos tres puntos.
+- `Abcdefg1` válida; `Abcdefg` (sin número), `abcdefg1` (sin mayúscula) y
+  `Abcdef1` (7) inválidas; `PASSWORD1` (sin minúscula) y `Password1` válidas.
+- El mismo resultado en el alta, el cambio propio y el cambio por admin.
 - Caso negativo: una contraseña conforme se acepta.
 
 ---
