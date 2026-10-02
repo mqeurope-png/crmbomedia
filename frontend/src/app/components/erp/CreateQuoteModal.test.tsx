@@ -580,6 +580,30 @@ describe("CreateQuoteModal", () => {
 
   // --- Punto C: duplicado directo ------------------------------------------
 
+  it("remates: repintar con un `duplicateDirect` igual pero nuevo NO recarga la proforma ni pisa lo editado", async () => {
+    // Documentos repinta cada 30 s; antes cada repintado volvía a cargar la
+    // proforma de origen y deshacía los cambios del operador.
+    const origen = quote({ codpre: "81", numero: "5-000081", tippre: "5", serie: 5 });
+    mockGetQuote.mockResolvedValue({
+      ...origen, line_source: "F_LPS",
+      lines: [{ position: 1, codart: null, sku: null, description: "Hora SAT",
+                quantity: 1, unit_price: 60, discount_pct: 0, line_total: 60, iva_pct: 21 }],
+    });
+    const user = userEvent.setup();
+    const props = base({ factusolCodcli: "55555", duplicateDirect: origen });
+    const { rerender } = render(<CreateQuoteModal {...props} />);
+    const desc = await screen.findByLabelText("Descripción línea 1");
+    await waitFor(() => expect(desc).toHaveValue("Hora SAT"));
+    await user.clear(desc);
+    await user.type(desc, "Hora SAT editada");
+    await user.selectOptions(screen.getByLabelText("Empresa emisora (serie)"), "2");
+    rerender(<CreateQuoteModal {...props} duplicateDirect={{ ...origen }} />);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockGetQuote).toHaveBeenCalledTimes(1);
+    expect(screen.getByLabelText("Descripción línea 1")).toHaveValue("Hora SAT editada");
+    expect(screen.getByLabelText("Empresa emisora (serie)")).toHaveValue("2");
+  });
+
   it("Punto C: `duplicateDirect` abre «Duplicar proforma nº X» ya volcada (serie, referencia, líneas, portes, forma de pago y destinatario), sin pestañas, y «Crear proforma» manda la copia", async () => {
     mockCustomerPayment.mockResolvedValue({ codigo: "002", nombre: "Transferencia" });
     const origen = quote({ codpre: "79", numero: "2-000079", tippre: "2", serie: 2 });

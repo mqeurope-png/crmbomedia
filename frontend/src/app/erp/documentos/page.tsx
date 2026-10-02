@@ -188,7 +188,9 @@ export default function FactusolDocumentosPage() {
   // «Duplicar» (copia directa de #508): permiso de proformas + de crear
   // documentos (el alta de la copia exige este último en el servidor).
   const [canDuplicate, setCanDuplicate] = useState(false);
-  const [duplicating, setDuplicating] = useState<FactusolDocument | null>(null);
+  // La copia se guarda YA convertida al hacer clic: un objeto nuevo en cada
+  // render haría que el modal recargase la proforma y pisara lo editado.
+  const [duplicating, setDuplicating] = useState<FactusolQuote | null>(null);
   // Cobro F-4-B (solo facturas pendientes): la factura elegida para el modal.
   const [cobrando, setCobrando] = useState<FactusolDocument | null>(null);
   // Lote 2 · PR-2 — «Vincular»: el albarán / la factura elegido para el modal.
@@ -837,8 +839,9 @@ export default function FactusolDocumentosPage() {
                           {d.company ? (
                             <Link href={`/companies/${d.company.id}`}>Ver empresa</Link>
                           ) : null}
-                          {d.doc_type === "presupuestos" && canDuplicate && d.codigo !== null ? (
-                            <button type="button" onClick={() => setDuplicating(d)}>
+                          {d.doc_type === "presupuestos" && canDuplicate
+                            && d.codigo !== null && d.serie !== null ? (
+                            <button type="button" onClick={() => setDuplicating(quoteFromDocument(d))}>
                               Duplicar
                             </button>
                           ) : null}
@@ -935,8 +938,8 @@ export default function FactusolDocumentosPage() {
         <CreateQuoteModal
           companyId={duplicating.company?.id ?? ""}
           companyName={duplicating.company?.name ?? ""}
-          factusolCodcli={duplicating.company?.factusol_id ?? duplicating.cliente_codigo ?? null}
-          duplicateDirect={quoteFromDocument(duplicating)}
+          factusolCodcli={duplicating.company?.factusol_id ?? duplicating.clipre ?? null}
+          duplicateDirect={duplicating}
           onCreated={(jobId) => void onDuplicated(jobId)}
           onCancel={() => setDuplicating(null)}
         />

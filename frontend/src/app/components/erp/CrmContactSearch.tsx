@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { searchCrmContacts, type CrmContactHit } from "../../lib/erpApi";
 import type { ContactChannel } from "./CompanyContactsPicker";
 
@@ -24,6 +24,7 @@ export function CrmContactSearch({
   const [hits, setHits] = useState<CrmContactHit[]>([]);
   const [searched, setSearched] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     const q = query.trim();
@@ -48,25 +49,27 @@ export function CrmContactSearch({
   }, [query]);
 
   const excluded = new Set(exclude.map((e) => e.trim().toLowerCase()));
-  const visible = query.trim().length >= MIN_CHARS && searched === query.trim()
-    ? hits.filter((h) => !excluded.has(h.email.toLowerCase()))
-    : [];
+  const current = query.trim().length >= MIN_CHARS && searched === query.trim();
+  const visible = current ? hits.filter((h) => !excluded.has(h.email.toLowerCase())) : [];
+  const allChosen = current && hits.length > 0 && visible.length === 0;
 
   function add(contact: CrmContactHit, channel: ContactChannel) {
     onAdd(contact, channel);
     setQuery("");
     setHits([]);
     setSearched(null);
+    // El botón pulsado desaparece con la lista: el foco vuelve al buscador.
+    inputRef.current?.focus();
   }
 
   return (
     <div className="erp-crm-search">
       <label className="field">
         <span>Buscar contacto del CRM</span>
-        <input type="search" value={query} disabled={disabled}
+        <input type="search" value={query} disabled={disabled} ref={inputRef}
                aria-label="Buscar contacto del CRM"
                placeholder="Nombre, email o empresa…"
-               onChange={(e) => setQuery(e.target.value)} />
+               onChange={(e) => { setQuery(e.target.value); setError(null); }} />
       </label>
       {error ? <span className="muted small form-error">{error}</span> : null}
       {visible.length > 0 ? (
@@ -96,7 +99,9 @@ export function CrmContactSearch({
           ))}
         </ul>
       ) : null}
-      {searched !== null && searched === query.trim() && visible.length === 0 && !error ? (
+      {allChosen ? (
+        <span className="muted small">Los contactos que coinciden ya están entre los destinatarios.</span>
+      ) : current && hits.length === 0 && !error ? (
         <span className="muted small">Ningún contacto del CRM con email coincide.</span>
       ) : null}
     </div>

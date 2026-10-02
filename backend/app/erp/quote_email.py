@@ -255,7 +255,8 @@ def _contact_id_for(session: Session, company: Any, recipients: list[str]) -> st
 def _crm_contact_greeting(session: Session, contact_id: str | None) -> dict[str, Any] | None:
     """`{id, name}` de un contacto ACTIVO del CRM que no es de la empresa
     vinculada (lo añadió el operador con el buscador): `{contacto}` le saluda
-    por su nombre. None si no existe o no tiene nombre."""
+    por su nombre. Sin nombre, `name` va vacío y se saluda a la empresa (nunca
+    al contacto principal, que quizá ni recibe el correo). None si no existe."""
     if not contact_id or contact_id == "none":
         return None
     from app.models.crm import Contact  # noqa: PLC0415
@@ -264,7 +265,7 @@ def _crm_contact_greeting(session: Session, contact_id: str | None) -> dict[str,
     if contact is None or not contact.is_active:
         return None
     name = " ".join(p for p in (contact.first_name, contact.last_name) if p).strip()
-    return {"id": contact.id, "name": name} if name else None
+    return {"id": contact.id, "name": name}
 
 
 # --- datos de la proforma ---------------------------------------------------

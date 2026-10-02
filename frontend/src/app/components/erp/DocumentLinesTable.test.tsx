@@ -188,6 +188,18 @@ describe("DocumentLinesTable — descripción de varias líneas (remates · punt
     ]);
   });
 
+  it("una descripción de varias líneas o larga no lanza la búsqueda de artículos", async () => {
+    const user = userEvent.setup();
+    render(<Harness multilineDescription />);
+    const desc = screen.getByLabelText("Descripción línea 1");
+    await user.type(desc, "Garantie{enter}12 Monate");
+    await new Promise((r) => setTimeout(r, 400));
+    expect(mockArticles).not.toHaveBeenCalled();
+    await user.clear(desc);
+    await user.type(desc, "CD TQ");
+    await waitFor(() => expect(mockArticles).toHaveBeenCalledWith("CD TQ"));
+  });
+
   it("sin la opción sigue siendo un campo de una línea (pedido manual)", () => {
     render(<Harness articleSearch={false} />);
     expect(screen.getByLabelText("Descripción línea 1").tagName).toBe("INPUT");

@@ -285,10 +285,15 @@ export function CreateQuoteModal({
   // F_LPS con SKU comercial, cabecera con entrega y forma de pago) y la vuelca
   // ENTERA en el formulario, sin paso de vista previa. La fecha queda la de
   // hoy y el cliente destino es el de origen (props), cambiable con «Cambiar».
+  // Depende de la proforma (nº + serie), no de la identidad del objeto: quien
+  // lo pase puede crearlo en cada render (Documentos repinta cada 30 s) y
+  // volver a cargar pisaría lo que el operador ya ha cambiado en la copia.
+  const directCodpre = duplicateDirect?.codpre ?? null;
+  const directSerie = duplicateDirect ? serieOf(duplicateDirect) : null;
   useEffect(() => {
-    if (!duplicateDirect?.codpre) return;
+    if (!directCodpre || directSerie === null) return;
     let alive = true;
-    getFactusolQuote(duplicateDirect.codpre, serieOf(duplicateDirect))
+    getFactusolQuote(directCodpre, directSerie)
       .then((quote) => {
         if (!alive) return;
         setSerie(serieOf(quote));
@@ -321,7 +326,7 @@ export function CreateQuoteModal({
         if (alive) setError(extractErrorMessage(e, "No se pudo cargar la proforma de origen."));
       });
     return () => { alive = false; };
-  }, [duplicateDirect]);
+  }, [directCodpre, directSerie]);
 
   // Modo edición: precarga la proforma que se va a modificar (líneas con el
   // SKU comercial y portes de la cabecera, para no perderlos al reescribir).

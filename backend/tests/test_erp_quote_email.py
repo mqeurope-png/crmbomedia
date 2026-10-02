@@ -598,3 +598,22 @@ def test_send_a_un_contacto_del_crm_lo_enlaza_a_su_ficha(http, session_factory) 
                       headers=auth_headers(http, "pedidos"))
     assert r.status_code == 201, r.text
     assert mock_send.call_args.kwargs["contact_id"] == eduard_id
+
+
+def test_preview_contacto_del_crm_sin_nombre_saluda_a_la_empresa(http, session_factory) -> None:
+    """Un contacto añadido con el buscador que no tiene nombre: se saluda a la
+    empresa (no al contacto principal, que quizá ni recibe el correo) y la
+    respuesta dice que ya se saludó a ese contacto (sin recargas en bucle)."""
+    with session_factory() as s:
+        _seed_company(s, language="es")
+        sin_nombre = Contact(first_name="", last_name=None, email="info@otra.example")
+        s.add(sin_nombre)
+        s.commit()
+        sin_nombre_id = sin_nombre.id
+    with _patched_factusol():
+        body = http.get(f"/api/erp/factusol/quotes/75/email-preview?serie=2"
+                        f"&contact_id={sin_nombre_id}",
+                        headers=auth_headers(http, "pedidos")).json()
+    assert body["contacto_id"] == sin_nombre_id
+    assert body["markers"]["contacto"] == "La Maison de la Plaque"
+    assert "Marta Coll" not in body["body_text"]

@@ -388,13 +388,13 @@ export function QuoteEmailModal({
 
             <label className="field">
               <span>Asunto</span>
-              <input type="text" value={subject} aria-label="Asunto" disabled={sending}
+              <input type="text" value={subject} aria-label="Asunto" disabled={sending || reloading}
                      onChange={(e) => { setSubject(e.target.value); setTextDirty(true); }} />
             </label>
             <label className="field">
               <span>Mensaje</span>
               <textarea value={body} aria-label="Cuerpo del mensaje" rows={10}
-                        disabled={sending}
+                        disabled={sending || reloading}
                         onChange={(e) => { setBody(e.target.value); setTextDirty(true); }} />
             </label>
             {reloading ? <p className="muted small" role="status">Actualizando el texto…</p> : null}
