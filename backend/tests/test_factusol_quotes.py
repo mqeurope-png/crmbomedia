@@ -370,7 +370,9 @@ def test_create_quote_descripcion_larga_con_saltos_va_entera_en_una_fila(session
     )
     rows = fake.writes_to("F_LPS")
     assert [r["POSLPS"] for r in rows] == [1, 2]
-    assert rows[0]["DESLPS"] == larga                      # entera, saltos incluidos
+    # Entera, con los saltos de línea de Windows (como el escritorio).
+    assert rows[0]["DESLPS"] == larga.replace("\n", "\r\n")
+    assert "\r\r" not in rows[0]["DESLPS"]
     assert fake.writes_to("F_PRE")[0]["NET1PRE"] == 1030.0
     assert result["lines"] == 2 and "warning" not in result
 
@@ -378,6 +380,42 @@ def test_create_quote_descripcion_larga_con_saltos_va_entera_en_una_fila(session
     leidas = list_quote_lines(fake, "51", ejercicio="2026", serie="1")
     assert leidas[0]["description"] == larga
     assert [line["text_only"] for line in leidas] == [False, False]
+
+
+def test_los_saltos_de_linea_se_escriben_como_crlf_y_se_leen_como_lf():
+    """FACTUSOL de escritorio (Windows) usa `\r\n`; el navegador, `\n`. Se
+    escribe `\r\n` sin duplicar los que ya lo eran y se lee `\n`: editar y
+    volver a guardar no cambia la descripción."""
+    from app.integrations.factusol.quotes import build_quote_line_payload, list_quote_lines
+
+    payload = build_quote_line_payload("1", 1, {"description": "A\nB\r\nC\rD"})
+    assert payload["DESLPS"] == "A\r\nB\r\nC\r\nD"
+    fake = _FakeFactusol(quotes=[_quote_row(53)], lines=[
+        _line_row(53, 1, desc="Garantie\r\n12 Monate"),
+    ])
+    assert list_quote_lines(fake, "53", ejercicio="2026", serie="1")[0]["description"] \
+        == "Garantie\n12 Monate"
+
+
+def test_convertir_en_pedido_no_pierde_la_descripcion_larga(session):
+    """La línea del pedido de BoHub guarda 255: una descripción de 733 de la
+    proforma pasa entera, con lo que sobra en líneas de texto (cantidad 0)."""
+
+    larga = _DESCRIPCION_733
+    fake = _FakeConFormasPago(
+        quotes=[_quote_row(84)],
+        lines=[_line_row(84, 1, art="", desc=larga.replace("\n", "\r\n"), cant=1, precio=3000),
+               _line_row(84, 2, art="", desc="Transport", cant=1, precio=120)],
+    )
+    result = convert_quote_to_order(fake, session, "84", ejercicio="2026")
+    order = session.get(Order, result["order_id"])
+    lineas = sorted(order.lines, key=lambda line: line.position)
+    assert all(len(line.description) <= 255 for line in lineas)
+    texto = [line for line in lineas if line.description != "Transport"]
+    assert " ".join(line.description for line in texto) == " ".join(larga.split())
+    assert float(texto[0].quantity) == 1 and float(texto[0].unit_price) == 3000
+    assert all(float(line.quantity) == 0 and float(line.unit_price) == 0 for line in texto[1:])
+    assert [line.description for line in lineas][-1] == "Transport"
 
 
 def test_las_lineas_de_texto_que_ya_existen_se_siguen_leyendo_aparte():

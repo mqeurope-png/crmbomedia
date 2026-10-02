@@ -826,9 +826,10 @@ def extract_document_data(
             # Base vacía con importes en la banda: las proformas que BoHub
             # creaba sin portes no escribían `BAS1PRE` (FACTUSOL la deja a 0)
             # y el pie decía «Base imponible 0,00» con un total de 3.084 €
-            # (5-004361). La base es la de FACTUSOL: neto − dto + portes + fin.
+            # (5-004361). La base es la de FACTUSOL: neto − descuento −
+            # pronto pago + portes + financiación.
             band["base"] = round(
-                band["neto"] - band["dto"] + band["portes"] + band["fin"], 2,
+                band["neto"] - band["dto"] - b("IPPA") + band["portes"] + band["fin"], 2,
             )
         if any(abs(v) > 0.004 for k, v in band.items() if k != "exenta"):
             bands.append(band)

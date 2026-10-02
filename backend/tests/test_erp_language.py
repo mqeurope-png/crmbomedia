@@ -626,16 +626,26 @@ def test_country_display_name_en_el_idioma_del_documento() -> None:
     assert country_display_name("056", "nl") == "België"
     assert country_display_name("BE", "es") == "Bélgica"
     assert country_display_name("ESPAÑA", "en") == "Spain"
+    # El nombre corriente, no el oficial ISO, en lo que ve el cliente.
+    assert country_display_name("158", "es") == "Taiwán"
+    assert country_display_name("158", "de") == "Taiwan"
+    assert country_display_name("410", "es") == "Corea del Sur"
+    assert country_display_name("068", "es") == "Bolivia"
     # Lo que no se reconoce vuelve tal cual; vacío → "".
     assert country_display_name("999", "es") == "999"
     assert country_display_name(None, "es") == ""
 
 
-def test_normalize_country_entiende_los_nombres_traducidos() -> None:
-    """El nombre que enseña BoHub (en es/de/fr/nl) vuelve al mismo país."""
+def test_normalize_country_entiende_los_nombres_traducidos_solo_si_se_pide() -> None:
+    """El nombre que enseña BoHub (en es/de/fr/nl) vuelve al mismo país al
+    guardar (`localized=True`). Por defecto NO: el régimen de IVA, VIES y el
+    idioma no cambian, y «Granada» (la provincia) nunca es un país."""
     from app.erp.language import country_numeric, normalize_country
 
-    assert normalize_country("Polonia") == "PL"
-    assert normalize_country("Niederlande") == "NL"
-    assert normalize_country("Pays-Bas") == "NL"
-    assert country_numeric("Österreich") == "040"
+    assert normalize_country("Polonia", localized=True) == "PL"
+    assert normalize_country("Niederlande", localized=True) == "NL"
+    assert normalize_country("Pays-Bas", localized=True) == "NL"
+    assert country_numeric("Österreich", localized=True) == "040"
+    assert normalize_country("Polonia") is None
+    assert normalize_country("Granada") is None
+    assert normalize_country("Granada", localized=True) is None

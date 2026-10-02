@@ -227,6 +227,38 @@ def resolve_company_id(session: Session, codcli: Any) -> str | None:
     return company_id
 
 
+#: `OrderLine.description` es `String(255)`.
+ORDER_LINE_DESCRIPTION_MAX = 255
+
+
+def _description_chunks(text: str, limit: int = ORDER_LINE_DESCRIPTION_MAX) -> list[str]:
+    """Reparte una descripción en trozos de ≤ `limit` caracteres, cortando por
+    palabras (una palabra más larga se parte). Lo que cabe vuelve tal cual.
+    FACTUSOL guarda la descripción entera en una fila (`DESLPS`, hasta 733+
+    caracteres), pero la línea del pedido de BoHub tiene 255: el resto va en
+    líneas de texto, nunca se recorta."""
+    if len(text) <= limit:
+        return [text]
+    chunks: list[str] = []
+    current = ""
+    for word in text.split():
+        while len(word) > limit:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.append(word[:limit])
+            word = word[limit:]
+        candidate = f"{current} {word}" if current else word
+        if len(candidate) <= limit:
+            current = candidate
+        else:
+            chunks.append(current)
+            current = word
+    if current:
+        chunks.append(current)
+    return chunks or [text[:limit]]
+
+
 def add_document_lines(
     session: Session, order: Order, lines: list[dict[str, Any]],
 ) -> float:
@@ -234,7 +266,8 @@ def add_document_lines(
     `codart`, `description`, `quantity`, `unit_price`, `discount_pct`,
     `iva_pct`) y devuelve la suma CON IVA. Sin commit."""
     total_tax = 0.0
-    for i, line in enumerate(lines):
+    position = 0
+    for line in lines:
         # Una línea de TEXTO (continuación de una descripción larga o nota:
         # sin artículo, cantidad 0 y precio 0) se queda a 0, no a 1: no es
         # mercancía y así llega al albarán/factura como texto.
@@ -255,16 +288,27 @@ def add_document_lines(
         iva = _f(line.get("iva_pct"))
         tax_rate = iva if iva > 0 or line.get("iva_explicit") else DEFAULT_IVA_PCT
         total_tax += line_total * (1 + tax_rate / 100)
+        primero, *resto = _description_chunks(description)
         session.add(OrderLine(
-            order_id=order.id, position=i,
+            order_id=order.id, position=position,
             product_sku=(codart or "")[:128],
             product_codart=(codart or None) and codart[:13],
-            description=description[:255],
+            description=primero,
             quantity=quantity, unit_price=unit_price,
             tax_rate=tax_rate,
             line_total=line_total,
             notes=f"dto. {discount:g}%" if discount else None,
         ))
+        position += 1
+        # Lo que no cabe en los 255 de la línea del pedido: líneas de texto
+        # (cantidad 0, sin precio), que llegan así al albarán y a la factura.
+        for trozo in resto:
+            session.add(OrderLine(
+                order_id=order.id, position=position, product_sku="",
+                product_codart=None, description=trozo, quantity=0.0,
+                unit_price=0.0, tax_rate=tax_rate, line_total=0.0, notes=None,
+            ))
+            position += 1
     return total_tax
 
 

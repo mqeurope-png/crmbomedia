@@ -592,15 +592,18 @@ def _row_to_quote_line(row: dict[str, Any]) -> dict[str, Any]:
     sin importes. NO se fusiona con la línea anterior al leer: una nota que el
     operador puso aparte debe seguir aparte.
 
-    La descripción se lee con sus saltos de línea internos; solo se quitan los
-    espacios y saltos del principio y del final."""
+    La descripción se lee con sus saltos de línea internos (`\r\n` → `\n`);
+    solo se quitan los espacios y saltos del principio y del final."""
     codart = str(row.get("ARTLPS") or "").strip() or None
     quantity = _num(row.get("CANLPS"))
     unit_price = _num(row.get("PRELPS"))
     return {
         "position": _int_or_none(row.get("POSLPS")) or 0,
         "codart": codart,
-        "description": str(row.get("DESLPS") or "").strip(),
+        # Los saltos de Windows (`\r\n`, como los guarda el escritorio y como
+        # los escribe BoHub) vuelven como `\n`: lo mismo que entrega el área
+        # de texto, así editar y volver a guardar no cambia nada.
+        "description": str(row.get("DESLPS") or "").replace("\r\n", "\n").strip(),
         "quantity": quantity,
         "unit_price": unit_price,
         "discount_pct": _num(row.get("DT1LPS")),
@@ -856,7 +859,9 @@ def _cpapre(pais: Any) -> str:
     value = str(pais or "").strip()
     if value.isdigit() and len(value) == 3:
         return value
-    return (country_numeric(value) if value else None) or DEFAULT_CPAPRE
+    # `localized`: el país que la copia directa enseña por su nombre
+    # («Polonia») vuelve al mismo código al guardar.
+    return (country_numeric(value, localized=True) if value else None) or DEFAULT_CPAPRE
 
 
 def build_quote_payload(
@@ -952,6 +957,11 @@ def build_quote_line_payload(
             f"La descripción de la línea {position} tiene {len(description)} "
             f"caracteres y FACTUSOL admite {DESLPS_MAX_LENGTH} por línea."
         )
+    # Saltos de línea de Windows (`\r\n`): FACTUSOL de escritorio es una
+    # aplicación Windows y sus campos de texto los usan; el área de texto del
+    # navegador entrega `\n` a secas. Se normaliza DESPUÉS de medir: el tope es
+    # de caracteres escritos, no de bytes de fin de línea.
+    description = description.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\r\n")
     # ⚠️ IVALPS NO se escribe (C-4-fix5). No está confirmado si guarda el
     # porcentaje o el CÓDIGO de tipo de IVA (0=general, 1=reducido, …), y la
     # evidencia apunta a lo segundo: la proforma 574, que abre bien en el

@@ -127,7 +127,15 @@ no se reparte en líneas de continuación (#507 lo hacía con un tope de 255 por
 precaución).
 
 En el modal la descripción es un área de texto (un `<input>` borraba los
-saltos de línea al tocarla); el detalle en pantalla y el PDF los respetan.
+saltos de línea al tocarla); el detalle en pantalla y el PDF los respetan. Los
+saltos se escriben como `\r\n` (FACTUSOL de escritorio es Windows) y se leen
+como `\n`, así editar y volver a guardar no cambia nada. El script de lectura
+cuenta cuántas filas usan `\r\n` y cuántas `\n` a secas, para confirmarlo
+contra lo que escribe el escritorio.
+
+Al **convertir en pedido**, la línea del pedido de BoHub guarda 255
+caracteres (`OrderLine.description`): lo que sobra pasa en líneas de texto
+(cantidad 0, sin precio) debajo, sin perder nada.
 
 Al leer una proforma, las filas sin artículo, cantidad ni precio (notas del
 escritorio, o las continuaciones que BoHub escribió antes) vuelven como
@@ -169,7 +177,10 @@ vacío casaba con la forma 0 de `F_FPA` e imprimía «SC Sin cargo»).
   por su **nombre en el idioma del documento** («Deutschland» en alemán) y en
   su propia línea, no pegado a la provincia. También en el detalle de
   Documentos («País») y en la copia directa (el nombre vuelve al mismo código
-  al guardar: `normalize_country` entiende los nombres en es/de/fr/nl).
+  al guardar: `normalize_country(..., localized=True)` entiende los nombres en
+  es/de/fr/nl; solo ahí, para no cambiar el régimen de IVA, VIES ni el idioma,
+  y «Granada» nunca se toma por el país). Se usa el nombre corriente
+  («Taiwán», «Corea del Sur»), no el oficial ISO.
 - Los textos fijos del pie (exención intracomunitaria de Streamtec, reserva de
   dominio y condiciones generales de Bomedia) van en los cinco idiomas.
 

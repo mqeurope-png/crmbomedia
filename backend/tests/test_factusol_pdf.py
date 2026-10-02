@@ -1340,6 +1340,12 @@ def test_presupuesto_intracomunitario_base_imponible_y_total() -> None:
     assert "Entrega intracomunitaria" not in text
 
 
+def test_base_de_respaldo_resta_el_pronto_pago() -> None:
+    header, lines = _brahmon(IPPA1PRE=84.0, TOTPRE=3000.0)
+    _, data = _pdf_con_forma_cero(header, lines, "de")
+    assert data["bands"][0]["base"] == 3000.0
+
+
 @pytest.mark.parametrize(("lang", "fragment"), [
     ("es", "Entrega intracomunitaria"), ("en", "Intra-Community supply"),
     ("de", "Innergemeinschaftliche Lieferung"), ("fr", "Livraison intracommunautaire"),

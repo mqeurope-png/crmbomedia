@@ -570,6 +570,12 @@ def test_buscar_contactos_del_crm_desde_el_erp(http, session_factory) -> None:
                     headers=auth_headers(http, "pedidos")).json()["items"] == []
     assert http.get("/api/erp/contacts/search?q=e",
                     headers=auth_headers(http, "pedidos")).status_code == 422
+    # Sin ninguna palabra útil (solo espacios, o letras sueltas) no se lista
+    # el CRM entero.
+    for q in ("%20%20%20", "a%20b"):
+        r = http.get(f"/api/erp/contacts/search?q={q}", headers=auth_headers(http, "pedidos"))
+        assert r.status_code == 422, q
+        assert r.json()["detail"]["code"] == "query_too_short"
 
 
 def test_preview_saluda_al_contacto_del_crm_de_otra_empresa(http, session_factory) -> None:

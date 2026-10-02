@@ -1018,7 +1018,13 @@ def search_crm_contacts(
     from app.models.crm import Company, Contact  # noqa: PLC0415
 
     _ = current_user
-    tokens = [t for t in q.split() if t][:5]
+    tokens = [t for t in q.split() if len(t) >= 2][:5]
+    if not tokens:
+        # «  » o «a b»: sin ninguna palabra útil no se lista el CRM entero.
+        raise HTTPException(422, {
+            "code": "query_too_short",
+            "detail": "Escribe al menos 2 letras del nombre, el email o la empresa.",
+        })
     stmt = (
         select(Contact, Company.name)
         .outerjoin(Company, Company.id == Contact.company_id)
