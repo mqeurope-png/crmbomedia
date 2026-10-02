@@ -29,6 +29,7 @@ import {
   approveOrdersBulk,
   completeOrder,
   completeOrdersBulk,
+  customerHeadline,
   customerLabel,
   excludeSeguimiento,
   type ExclusionReasonCode,
@@ -67,15 +68,25 @@ const QUEUE_ORDER: Record<WorkflowQueue, number> = Object.fromEntries(
   WORKFLOW_QUEUES.map((q, i) => [q, i]),
 ) as Record<WorkflowQueue, number>;
 
+/** ¿Pagado (o crédito aprobado)? Los que no, van detrás dentro de la cola. */
+function isPagado(o: OrderSummary): boolean {
+  return o.payment_status === "paid" || o.payment_status === "credit_approved";
+}
+
 /** Orden de la bandeja (Tarjetas y Lista comparten la misma lista ya
- *  ordenada): por Fecha, Importe, Cliente o Situación (cola). Sin fecha /
- *  sin cola, siempre al final, sea el sentido que sea — igual que en
- *  Seguimiento. Empate → Nº de pedido, para que el orden sea estable. */
+ *  ordenada): primero los pagados y detrás los pendientes de pago (con su
+ *  chip «PAGO Pendiente»); dentro de cada grupo, por Fecha, Importe, Cliente
+ *  o Situación (cola). Sin fecha / sin cola, siempre al final, sea el sentido
+ *  que sea — igual que en Seguimiento. Empate → Nº de pedido, para que el
+ *  orden sea estable. */
 function compareOrders(a: OrderSummary, b: OrderSummary, by: SortBy, dir: SortDir): number {
+  const pago = Number(!isPagado(a)) - Number(!isPagado(b));
+  if (pago) return pago;
   const mul = dir === "asc" ? 1 : -1;
   if (by === "cliente") {
-    const av = customerLabel(a).toLocaleLowerCase();
-    const bv = customerLabel(b).toLocaleLowerCase();
+    // Por lo que se VE: empresa · persona (como la tarjeta y la Lista).
+    const av = customerHeadline(a).toLocaleLowerCase();
+    const bv = customerHeadline(b).toLocaleLowerCase();
     return av.localeCompare(bv) * mul || a.order_number.localeCompare(b.order_number);
   }
   if (by === "importe") {
@@ -155,17 +166,22 @@ type Filtros = {
   sortBy: SortBy;
 };
 
-/** Al entrar por primera vez: pagados y sin completar (lo que toca trabajar).
- *  Es reversible: «Limpiar filtros» lo deja todo en «todos» y «Por defecto»
- *  vuelve a esto. */
+/** Al entrar por primera vez: TODOS los pedidos sin completar, también los no
+ *  pagados (un pedido pendiente de pago que espera aprobación es trabajo de
+ *  «Por revisar»). Es reversible: «Limpiar filtros» lo deja todo en «todos»
+ *  y «Por defecto» vuelve a esto. */
 const DEFAULT_FILTROS: Filtros = {
-  prep: "", payment: "paid", completed: "no", cobro: "", invoiced: "",
+  prep: "", payment: "", completed: "no", cobro: "", invoiced: "",
   invoiceEmail: "", store: "", from: "", to: "", sortDir: "desc", sortBy: "fecha",
 };
 /** «Limpiar filtros»: todo a «todos», sin ningún valor por defecto. */
 const EMPTY_FILTROS: Filtros = { ...DEFAULT_FILTROS, payment: "", completed: "" };
 
 const LS_FILTROS = "erp.bandeja.filtros";
+/** Marca de que los filtros guardados ya pasaron de «Pago: pagados» (el
+ *  antiguo por defecto) a «todos». Se hace UNA vez: si después alguien elige
+ *  «pagados» a mano, se respeta. */
+const LS_PAGO_MIGRADO = "erp.bandeja.pago_todos";
 const LS_VISTA = "erp.bandeja.vista";
 /** Tope de filas por carga (el del backend). */
 const PAGE_LIMIT = 100;
@@ -213,7 +229,14 @@ function sanitizeFiltros(raw: unknown): Filtros {
 function leerFiltros(): Filtros {
   try {
     const raw = window.localStorage.getItem(LS_FILTROS);
-    return raw ? sanitizeFiltros(JSON.parse(raw)) : DEFAULT_FILTROS;
+    const filtros = raw ? sanitizeFiltros(JSON.parse(raw)) : DEFAULT_FILTROS;
+    if (window.localStorage.getItem(LS_PAGO_MIGRADO) == null) {
+      // El antiguo por defecto («Pago: pagados») escondía los pendientes de
+      // pago: se pasa a «todos» una sola vez.
+      window.localStorage.setItem(LS_PAGO_MIGRADO, "1");
+      if (filtros.payment === "paid") return { ...filtros, payment: "" };
+    }
+    return filtros;
   } catch {
     return DEFAULT_FILTROS;
   }
@@ -248,7 +271,7 @@ function mismosFiltros(a: Filtros, b: Filtros): boolean {
  *  del cliente. Quién decide todo eso es el backend (`workflow`), el mismo
  *  bloque que consume la ficha.
  *
- *  Lote B7: al entrar se ven los pagados sin completar (reversible con
+ *  Lote B7: al entrar se ven los pedidos sin completar —pagados o no— (reversible con
  *  «Limpiar filtros»), se puede acotar por facturado / tienda / fechas y
  *  ordenar por fecha, cada pedido lleva las cuatro pastillas de estado
  *  (Pagado · Facturado · Cobro registrado · Completado) y hay una vista de
@@ -336,6 +359,8 @@ function ErpOrdersScreen() {
         cobro: (filtros.cobro || undefined) as "cobrada" | "pendiente" | "sin_comprobar" | undefined,
         invoice_email: (filtros.invoiceEmail || undefined) as "enviada" | "no_enviada" | undefined,
         queue: queue ?? undefined,
+        // Pagados delante, pendientes de pago detrás (también al recortar).
+        paid_first: true,
         // El orden de verdad (Importe/Cliente/Situación incluidos) se aplica
         // en cliente sobre lo cargado (`filteredRows`); aquí solo se pide al
         // backend la ventana de fecha que toca recortar a `PAGE_LIMIT`.
@@ -449,7 +474,8 @@ function ErpOrdersScreen() {
     if (needle) {
       out = out.filter((o) => {
         const hay = [
-          customerLabel(o), o.order_number, o.factusol_invoice_number, o.factusol_albaran_number,
+          customerHeadline(o), customerLabel(o), o.order_number, o.factusol_invoice_number,
+          o.factusol_albaran_number,
         ].map((s) => (s || "").toLocaleLowerCase()).join(" ");
         return hay.includes(needle);
       });
@@ -1141,7 +1167,7 @@ function ErpOrdersScreen() {
       </div>
 
       {/* Filtros activos como chips (cada uno se quita con su ×), «Limpiar
-          filtros» (todo a «todos») y «Por defecto» (pagados y sin completar). */}
+          filtros» (todo a «todos») y «Por defecto» (todos, sin completar). */}
       <div className="erp-flow-chips" aria-label="Filtros activos">
         {chips.length === 0 ? (
           <span className="muted small">Sin filtros de refinamiento.</span>
@@ -1162,7 +1188,7 @@ function ErpOrdersScreen() {
         ) : null}
         {!esDefault ? (
           <button type="button" className="button small secondary"
-                  title="Los filtros iniciales: pagados y sin completar"
+                  title="Los filtros iniciales: todos los pedidos (también los no pagados) sin completar"
                   onClick={() => setFiltros(DEFAULT_FILTROS)}>
             Por defecto
           </button>
@@ -1295,7 +1321,7 @@ function ErpOrdersScreen() {
                         <div className="erp-bandeja-badges">{smallBadges(o)}</div>
                         {reviewInfo(o)}
                       </td>
-                      <td>{customerLabel(o) || "—"}</td>
+                      <td className="erp-bandeja-cliente">{customerHeadline(o) || "—"}</td>
                       <td>{sourcePill(o)}</td>
                       <td>
                         <time className="erp-flow-date" dateTime={o.placed_at ?? undefined}>{d(o.placed_at)}</time>
@@ -1361,11 +1387,14 @@ function ErpOrdersScreen() {
                     </time>
                     {smallBadges(o)}
                   </div>
+                  {/* El cliente, segunda línea y del tamaño del Nº: se lee de lejos. */}
+                  <p className="erp-flow-item-customer">{customerHeadline(o) || "—"}</p>
                   <OrderStatusPills order={o} className="erp-flow-item-pills" />
-                  <p className="erp-flow-item-r2">
-                    <span>{customerLabel(o) || "—"}</span>
-                    {wf ? <span>{wf.queue_label}</span> : null}
-                  </p>
+                  {wf ? (
+                    <p className="erp-flow-item-r2">
+                      <span>{wf.queue_label}</span>
+                    </p>
+                  ) : null}
                   {reviewInfo(o)}
                   {wf ? <WorkflowAlerts alerts={wf.alerts} variant="inline" max={2} /> : null}
                 </div>

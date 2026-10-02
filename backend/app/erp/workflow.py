@@ -400,6 +400,14 @@ def _next_step(order: Order) -> tuple[str, str, str]:
                 "Facturado y cobrado; este pedido no requiere envío. Márcalo "
                 "como completado cuando quieras.",
             )
+        # Ya ENTREGADO: tampoco queda envío pendiente. Como un «No aplica»
+        # facturado y cobrado, es «Listo» (con el completado a mano). Antes de
+        # #501 estos pedidos no llegaban a verse sin completar.
+        if _v(order.transport_status) == TransportStatus.DELIVERED.value:
+            return (
+                QUEUE_LISTO, "marcar_completado",
+                "Facturado, cobrado y entregado: márcalo como completado.",
+            )
         return (
             QUEUE_POR_ENVIAR, "marcar_completado",
             "Facturado y cobrado: márcalo como completado. El envío al taller "

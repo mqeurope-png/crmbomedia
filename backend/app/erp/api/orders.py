@@ -1030,6 +1030,10 @@ def list_orders(
     placed_to: date | None = Query(default=None),
     sort: str = Query(default="placed_desc"),
     limit: int = Query(default=100, ge=1, le=500),
+    # La BANDEJA pide los pagados delante (los pendientes de pago, detrás) y que
+    # el recorte a `limit` respete ese orden. Otros usos (actividad de una
+    # empresa…) siguen recibiendo el orden por fecha que piden.
+    paid_first: bool = Query(default=False),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_view),
 ) -> dict[str, Any]:
@@ -1127,6 +1131,7 @@ def list_orders(
     # alertas) lo calcula el backend UNA vez y lo consumen igual la bandeja y
     # la ficha.
     from app.erp.workflow import (  # noqa: PLC0415
+        is_paid,
         latest_invoice_emailed_map,
         queue_counts,
         workflows_for,
@@ -1136,6 +1141,11 @@ def list_orders(
     counts = queue_counts(flows)
     if queue:
         rows = [o for o in rows if flows[o.id]["queue"] == queue]
+    # La bandeja enseña también los pendientes de pago, DETRÁS de los pagados
+    # (orden estable: dentro de cada grupo, el pedido). Antes del recorte, para
+    # que los no pagados no dejen fuera a los pagados.
+    if paid_first:
+        rows.sort(key=lambda o: not is_paid(o))
     rows = rows[:limit]
     names = customer_names(session, rows)
     # «Factura enviada» de la bandeja: fecha del último envío por email (dato ya

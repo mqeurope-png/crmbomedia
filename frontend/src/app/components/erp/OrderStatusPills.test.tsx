@@ -44,7 +44,7 @@ describe("OrderStatusPills", () => {
     }
     // El completado dice cuándo y quién (solo BoHub).
     expect(screen.getByLabelText("Completado: sí"))
-      .toHaveAttribute("title", "Completado el 10/9/2026 por Bart (solo BoHub)");
+      .toHaveAttribute("title", "Marcado como completado el 10/9/2026 por Bart (solo BoHub)");
     expect(screen.getByRole("img", { name: "Factura: hecho" }))
       .toHaveAttribute("title", expect.stringMatching(/5-260100/));
   });

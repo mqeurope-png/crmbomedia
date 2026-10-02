@@ -43,6 +43,7 @@ import {
   approveOrder,
   bulkNoShipping,
   completeOrder,
+  customerHeadline,
   customerLabel,
   factusolSerieLabel,
   recordOrderPayment,
@@ -691,6 +692,16 @@ function ErpOrderDetailScreen() {
           «Siguiente paso» y en «Otras acciones de estado», no aquí. */}
       <PageHeader
         title={`Pedido ${order.order_number}`}
+        // El cliente, al nivel del título (empresa · persona) y enlazado a su
+        // ficha: se lee antes que el número de pedido.
+        subtitle={order.company_id ? (
+          <Link href={`/companies/${order.company_id}`} className="erp-ficha-customer-name"
+                title="Abrir la ficha del cliente">
+            {customerHeadline(order) || "Sin cliente"}
+          </Link>
+        ) : (
+          <strong className="erp-ficha-customer-name">{customerHeadline(order) || "Sin cliente"}</strong>
+        )}
         eyebrow="ERP"
         description={`${order.external_source} · ${order.total_amount.toFixed(2)} ${order.currency}`}
         crumbs={[
@@ -966,15 +977,7 @@ function ErpOrderDetailScreen() {
           calcula el backend (el mismo que ve la bandeja): aquí no se deduce
           ningún estado. */}
       <p className="erp-flow-item-r2 erp-ficha-customer" style={{ margin: "0 0 12px" }}>
-        {/* F1 — el cliente, bien visible y enlazado a su ficha de empresa. */}
-        {order.company_id ? (
-          <Link href={`/companies/${order.company_id}`} className="erp-ficha-customer-name"
-                title="Abrir la ficha del cliente">
-            {customerLabel(order) || "Sin cliente"}
-          </Link>
-        ) : (
-          <strong className="erp-ficha-customer-name">{customerLabel(order) || "Sin cliente"}</strong>
-        )}
+        {/* El cliente va en la cabecera, bajo el título; aquí, sus chips. */}
         {wf ? <span className="erp-flow-pill is-n" title="Cola de la bandeja">{wf.queue_label}</span> : null}
         {wf ? <RegimePill regime={wf.regime} country={wf.company?.country} /> : null}
         {wf?.company?.factusol_id ? (

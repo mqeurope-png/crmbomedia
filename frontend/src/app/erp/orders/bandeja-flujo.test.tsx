@@ -46,6 +46,8 @@ jest.mock("../../lib/erpApi", () => ({
   WORKFLOW_QUEUES: [
     "por_revisar", "por_facturar", "por_cobrar", "por_enviar", "incidencias", "listo",
   ],
+  customerHeadline: (o: { contact_name?: string | null; company_name?: string | null }) =>
+    [o.company_name, o.contact_name].filter(Boolean).join(" · "),
   customerLabel: (o: { contact_name?: string | null; company_name?: string | null }) =>
     [o.contact_name, o.company_name].filter(Boolean).join(" · "),
   listOrders: jest.fn(),
@@ -277,17 +279,17 @@ describe("ERP · Bandeja de trabajo (rediseño de flujo)", () => {
 // --- Lote B7: defaults, filtros nuevos, pastillas, vista lista, anulados ------
 
 describe("ERP · Bandeja (Lote B7) — defaults reversibles y chips", () => {
-  it("al entrar se piden los pagados sin completar y se ven como chips; «Limpiar» lo deja todo en «todos»", async () => {
+  it("al entrar se piden TODOS los pedidos sin completar (también los no pagados); «Limpiar» lo deja todo en «todos»", async () => {
     const user = userEvent.setup();
     render(<ErpOrdersPage />);
     await screen.findByText("BOPRIN-1");
     expect(listOrders).toHaveBeenCalledTimes(1);
     expect(listOrders).toHaveBeenLastCalledWith(expect.objectContaining({
-      completed: false, payment: "paid", sort: "placed_desc", show_cancelled: false,
+      completed: false, payment: undefined, sort: "placed_desc", show_cancelled: false,
     }));
-    expect(screen.getByRole("combobox", { name: "Filtro pago" })).toHaveValue("paid");
+    expect(screen.getByRole("combobox", { name: "Filtro pago" })).toHaveValue("");
     expect(screen.getByRole("combobox", { name: "Filtro completado" })).toHaveValue("no");
-    expect(screen.getByRole("button", { name: "Eliminar filtro Pago: Pagado" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Eliminar filtro Pago/ })).toBeNull();
     expect(screen.getByRole("button", { name: "Eliminar filtro Sin completar" })).toBeInTheDocument();
     // Con los defaults puestos no hace falta «Por defecto».
     expect(screen.queryByRole("button", { name: "Por defecto" })).toBeNull();
@@ -301,32 +303,114 @@ describe("ERP · Bandeja (Lote B7) — defaults reversibles y chips", () => {
     expect(screen.queryByRole("button", { name: "Limpiar filtros" })).toBeNull();
     expect(screen.getByText("Sin filtros de refinamiento.")).toBeInTheDocument();
 
-    // Y vuelta a los defaults con un clic.
+    // Y vuelta a los defaults con un clic: «Pago: todos», sin completar.
     await user.click(screen.getByRole("button", { name: "Por defecto" }));
     await waitFor(() => expect(listOrders).toHaveBeenLastCalledWith(expect.objectContaining({
-      completed: false, payment: "paid",
+      completed: false, payment: undefined,
     })));
+  });
+
+  it("un «Pago: pagados» guardado (el antiguo por defecto) pasa a «todos» UNA vez", async () => {
+    window.localStorage.setItem("erp.bandeja.filtros", JSON.stringify({
+      payment: "paid", completed: "no", sortDir: "desc", sortBy: "fecha",
+    }));
+    const user = userEvent.setup();
+    const { unmount } = render(<ErpOrdersPage />);
+    await screen.findByText("BOPRIN-1");
+    expect(ultimaLlamada()).toEqual(expect.objectContaining({ payment: undefined, completed: false }));
+    expect(window.localStorage.getItem("erp.bandeja.pago_todos")).toBe("1");
+    // Si después alguien elige «pagados» a mano, se respeta al volver.
+    await user.selectOptions(screen.getByRole("combobox", { name: "Filtro pago" }), "paid");
+    await waitFor(() => expect(ultimaLlamada()).toEqual(expect.objectContaining({ payment: "paid" })));
+    unmount();
+    (listOrders as jest.Mock).mockClear();
+    render(<ErpOrdersPage />);
+    await screen.findByText("BOPRIN-1");
+    expect(ultimaLlamada()).toEqual(expect.objectContaining({ payment: "paid" }));
   });
 
   it("cada chip se quita con su × y los últimos filtros se recuerdan al volver", async () => {
     const user = userEvent.setup();
     const { unmount } = render(<ErpOrdersPage />);
     await screen.findByText("BOPRIN-1");
-    await user.click(screen.getByRole("button", { name: "Eliminar filtro Pago: Pagado" }));
+    await user.click(screen.getByRole("button", { name: "Eliminar filtro Sin completar" }));
     await waitFor(() => expect(listOrders).toHaveBeenLastCalledWith(expect.objectContaining({
-      payment: undefined, completed: false,
+      payment: undefined, completed: undefined,
     })));
-    expect(screen.getByRole("combobox", { name: "Filtro pago" })).toHaveValue("");
+    expect(screen.getByRole("combobox", { name: "Filtro completado" })).toHaveValue("");
     unmount();
 
-    // Segunda visita: sin «Pago: Pagado» pero con «Sin completar» (lo último que dejó).
+    // Segunda visita: sin «Sin completar» (lo último que dejó).
     (listOrders as jest.Mock).mockClear();
     render(<ErpOrdersPage />);
     await screen.findByText("BOPRIN-1");
     expect(listOrders).toHaveBeenCalledTimes(1);
-    expect(ultimaLlamada()).toEqual(expect.objectContaining({ payment: undefined, completed: false }));
-    expect(screen.queryByRole("button", { name: "Eliminar filtro Pago: Pagado" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Eliminar filtro Sin completar" })).toBeInTheDocument();
+    expect(ultimaLlamada()).toEqual(expect.objectContaining({ payment: undefined, completed: undefined }));
+    expect(screen.queryByRole("button", { name: "Eliminar filtro Sin completar" })).toBeNull();
+  });
+});
+
+describe("ERP · Bandeja — remates: no pagados, cliente y «Completado»", () => {
+  it("un pendiente de pago en revisión sale (detrás de los pagados) con su chip de pago", async () => {
+    const pendiente = order({
+      id: "o-9", order_number: "BOPRIN-9", payment_status: "pending",
+      placed_at: "2026-09-10T10:00:00",                    // el más reciente
+    });
+    (listOrders as jest.Mock).mockResolvedValue(page([pendiente, A, D]));
+    render(<ErpOrdersPage />);
+    await screen.findByText("BOPRIN-9");
+    // Más reciente que los otros, pero pendiente de pago: va detrás (y el
+    // backend lo respeta al recortar).
+    expect(ordenVisible()).toEqual(["BOPRIN-1", "BOPRIN-4", "BOPRIN-9"]);
+    expect(ultimaLlamada()).toEqual(expect.objectContaining({ paid_first: true }));
+    expect(within(row("BOPRIN-9")).getByLabelText(/Pago: (no|pendiente)/i)).toBeInTheDocument();
+  });
+
+  it("tarjeta: el cliente es la segunda línea (empresa primero), en negro y semibold", async () => {
+    render(<ErpOrdersPage />);
+    const tarjeta = row(await screen.findByText("BOPRIN-1").then(() => "BOPRIN-1"));
+    const cliente = within(tarjeta).getByText("Grabados FG · Bruno García");
+    expect(cliente).toHaveClass("erp-flow-item-customer");
+    // Justo bajo la línea del Nº de pedido.
+    const r1 = within(tarjeta).getByRole("link", { name: "BOPRIN-1" }).closest(".erp-flow-item-r1");
+    expect(r1?.nextElementSibling).toBe(cliente);
+    // Sin empresa: la persona.
+    expect(within(row("PRO-3")).getByText("Eduard Riera")).toHaveClass("erp-flow-item-customer");
+  });
+
+  it("«Ordenar por: Cliente» y el buscador usan lo que se ve (empresa · persona)", async () => {
+    const zeta = order({ id: "o-z", order_number: "BOPRIN-Z", company_name: "Zeta SL",
+                         contact_name: "Ana" });
+    const acme = order({ id: "o-a", order_number: "BOPRIN-A", company_name: "Acme SL",
+                         contact_name: "Zoe" });
+    (listOrders as jest.Mock).mockResolvedValue(page([zeta, acme]));
+    const user = userEvent.setup();
+    render(<ErpOrdersPage />);
+    await screen.findByText("BOPRIN-Z");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Ordenar por" }), "cliente");
+    // Descendente (el sentido por defecto) por lo que se lee: «Zeta SL · Ana»
+    // antes que «Acme SL · Zoe» (por la persona saldría al revés).
+    expect(ordenVisible()).toEqual(["BOPRIN-Z", "BOPRIN-A"]);
+    await user.type(screen.getByRole("searchbox"), "Acme SL · Zoe");
+    expect(ordenVisible()).toEqual(["BOPRIN-A"]);
+  });
+
+  it("«No completado» neutro y sin punto; «Completado ✓» en verde con fecha y quién", async () => {
+    const hecho = order({
+      id: "o-8", order_number: "BOPRIN-8", completed: true,
+      completed_at: "2026-10-01T09:00:00", completed_by_name: "Bart",
+      workflow: wf({ queue: "listo", queue_label: "Listo", next_action: "ninguna" }),
+    });
+    (listOrders as jest.Mock).mockResolvedValue(page([A, hecho]));
+    render(<ErpOrdersPage />);
+    await screen.findByText("BOPRIN-8");
+    const no = within(row("BOPRIN-1")).getByLabelText("Completado: no");
+    expect(no).toHaveTextContent("No completado");
+    expect(no.querySelector(".erp-status-pill-dot")).toBeNull();
+    const si = within(row("BOPRIN-8")).getByLabelText("Completado: sí");
+    expect(si).toHaveTextContent("Completado ✓");
+    expect(si).toHaveClass("is-on");
+    expect(si).toHaveAttribute("title", "Marcado como completado el 1/10/2026 por Bart (solo BoHub)");
   });
 });
 
@@ -456,7 +540,7 @@ describe("ERP · Bandeja (Lote 2 D) — aprobar aquí mismo y cola desde la URL"
     expect(screen.getByRole("button", { name: "Por revisar (4)" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: "Ver todas las colas" })).toBeInTheDocument();
     // Los filtros recordados siguen (solo la cola viene de la URL).
-    expect(ultimaLlamada()).toEqual(expect.objectContaining({ payment: "paid", completed: false }));
+    expect(ultimaLlamada()).toEqual(expect.objectContaining({ payment: undefined, completed: false }));
   });
 
   it("un valor de cola desconocido en la URL se ignora", async () => {
@@ -580,7 +664,8 @@ describe("ERP · Bandeja (Lote B7) — vista lista", () => {
     const dd = row("BOPRIN-4");
     expect(dd.tagName).toBe("TR");
     expect(within(dd).getByRole("link", { name: "BOPRIN-4" })).toHaveAttribute("href", "/erp/orders/o-4");
-    expect(within(dd).getByText("Bruno García · Grabados FG")).toBeInTheDocument();
+    // Cliente: empresa primero, en negro y semibold.
+    expect(within(dd).getByText("Grabados FG · Bruno García")).toHaveClass("erp-bandeja-cliente");
     expect(within(dd).getByText("8/9/2026")).toBeInTheDocument();
     expect(within(dd).getByText("100.00 EUR")).toBeInTheDocument();
     expect(within(dd).getByLabelText("Facturado: sí")).toBeInTheDocument();

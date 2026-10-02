@@ -476,3 +476,50 @@ def test_workflow_sin_cobro_fuera_de_facturar_y_cobrar(session_factory) -> None:
         s.commit()
     wf = _wf(session_factory, "onc")
     assert wf["queue"] == "por_enviar" and wf["next_action"] == "marcar_completado"
+
+
+# --- remates de bandeja (lote de pantallas) -------------------------------------
+
+
+def test_workflow_entregado_facturado_y_cobrado_es_listo(session_factory) -> None:
+    """Tras #501 un pedido entregado sin completar sigue a la vista: facturado +
+    cobrado + ENTREGADO no está «Por enviar», está «Listo» (como un «No aplica»
+    facturado y cobrado), con el completado a mano. Casos reales FLUXLA-5787 y
+    ARTISJ-9489."""
+    with session_factory() as s:
+        _order(s, oid="ent", number="FLUXLA-5787", payment_status="paid",
+               preparation_status="packed", approved_at=datetime.now(UTC),
+               invoice_status="invoiced_by_erp", factusol_invoice_number="260310",
+               factusol_cobro_status="cobrada", transport_status="delivered")
+    wf = _wf(session_factory, "ent")
+    assert wf["queue"] == "listo" and wf["next_action"] == "marcar_completado"
+    # Seguimiento (pantalla y hoja) usa la misma cola como Situación.
+    with session_factory() as s:
+        from app.erp.api.seguimiento import _rows
+
+        fila = next(f for f in _rows(s) if f["id"] == "ent")
+        assert fila["situacion"] == "listo"
+
+
+def test_bandeja_por_revisar_incluye_los_no_pagados_detras(http, session_factory) -> None:
+    """La bandeja por defecto ya no filtra «pagados»: un pedido pendiente de
+    pago que espera aprobación cuenta en «Por revisar» y sale DETRÁS de los
+    pagados (aunque sea más reciente)."""
+    with session_factory() as s:
+        _order(s, oid="p1", number="BOPRIN-100", payment_status="paid",
+               preparation_status="pending_review",
+               placed_at=datetime(2026, 9, 1, tzinfo=UTC))
+        _order(s, oid="p2", number="BOPRIN-101", payment_status="pending",
+               preparation_status="pending_review",
+               placed_at=datetime(2026, 9, 30, tzinfo=UTC))
+    h = auth_headers(http, "pedidos")
+    r = http.get("/api/erp/orders", headers=h,
+                 params={"completed": "false", "queue": "por_revisar",
+                         "paid_first": "true"}).json()
+    assert [i["order_number"] for i in r["items"]] == ["BOPRIN-100", "BOPRIN-101"]
+    assert r["queue_counts"]["por_revisar"] == 2
+    # Sin pedirlo (actividad de una empresa…), el orden por fecha de siempre:
+    # el recorte no deja fuera a los más recientes aunque no estén pagados.
+    r = http.get("/api/erp/orders", headers=h,
+                 params={"company_id": "es", "limit": 1}).json()
+    assert [i["order_number"] for i in r["items"]] == ["BOPRIN-101"]

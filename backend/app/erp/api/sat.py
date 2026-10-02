@@ -218,12 +218,24 @@ def _shipment_fields(order: Order) -> dict[str, Any]:
         kind = "externo"
     else:
         kind = None
+    # Aviso de envío al cliente (#491/#492), del envío que sea (Genei u otro
+    # courier): para la columna «Aviso» de «Enviados» sin abrir la ficha.
+    from app.erp.integrations.genei.service import genei_state_of  # noqa: PLC0415
+
+    ce = (genei_state_of(order) if genei else external).get("customer_email") or {}
     return {
         "shipment_kind": kind,
         "courier": shipment_courier(order),
         "tracking_url": shipment_tracking_url(order),
         "customer_email_status": ((external.get("customer_email") or {}).get("status")
                                   if not genei else None),
+        "customer_email": {
+            "status": ce.get("status"),
+            "sent_at": ce.get("sent_at"),
+            "to": ce.get("to"),
+            "sends": int(ce.get("sends") or 0),
+            "automatic": bool(ce.get("automatic")),
+        } if ce else None,
     }
 
 

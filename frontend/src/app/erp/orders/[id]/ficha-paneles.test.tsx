@@ -59,6 +59,7 @@ jest.mock("../../../lib/erpApi", () => ({
   ERP_EDIT_ROLES: ["admin", "pedidos"],
   DOMAIN_LABELS: {},
   STATUS_LABELS: {},
+  customerHeadline: () => "Rotulación Levante S.L.",
   customerLabel: () => "Rotulación Levante S.L.",
   resolveOrderCobroStatus: (
     o: { factusol_cobro_status?: string | null },

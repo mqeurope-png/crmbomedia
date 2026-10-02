@@ -11381,6 +11381,17 @@ tr.is-inactive {
   flex-wrap: wrap;
 }
 .erp-flow-item-r1 a { font-weight: 600; }
+/* El cliente, segunda línea de la tarjeta: negro, semibold y del tamaño del
+   Nº de pedido (se lee de lejos). */
+.erp-flow-item-customer {
+  margin: 2px 0 0;
+  color: var(--ink);
+  font-size: var(--fs-subtitle);
+  font-weight: 600;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+.erp-bandeja-cliente { color: var(--ink); font-weight: 600; }
 .erp-flow-item-r2 {
   color: var(--muted);
   font-size: var(--fs-body);
@@ -11399,6 +11410,17 @@ tr.is-inactive {
   text-decoration: none;
 }
 a.erp-ficha-customer-name:hover { text-decoration: underline; }
+/* Segunda línea del título (PageHeader `subtitle`): el cliente en la ficha del
+   pedido, en negro y grande, al nivel del «Pedido …». */
+.page-header-subtitle {
+  margin: 2px 0 0;
+  font-size: var(--fs-title);
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.page-header-subtitle .erp-ficha-customer-name { font-size: inherit; font-weight: inherit; }
 /* E1 — cajón de taller (ERP·SAT): botones más grandes para el trabajo manual
    del taller (albarán, etiqueta, seguimiento). */
 .erp-sat-hint {
@@ -12019,6 +12041,9 @@ a.erp-ficha-customer-name:hover { text-decoration: underline; }
   --ink-on-color: var(--st-neutral-ink);
   background: var(--st-neutral-bg);
 }
+/* «No completado»: gris claro, texto gris, sin punto (sin opacidad: el gris
+   neutro ya cumple el contraste 4,5:1). */
+.erp-status-pill.is-off.is-plain { font-weight: 500; }
 .erp-status-pill.is-warn {
   --ink-on-color: var(--st-amber-ink);
   background: var(--st-amber-bg);
@@ -14779,3 +14804,8 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
   .erp-bandeja-scroll.scroll-table-frame::before,
   .erp-bandeja-scroll.scroll-table-frame::after { display: none; }
 }
+
+/* Cola SAT · «Enviados»: columna «Aviso» (aviso de envío al cliente). */
+.sat-aviso { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1) var(--sp-2); }
+.sat-aviso .form-error { flex-basis: 100%; margin: 0; }
+.sat-aviso-confirm { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1); }

@@ -1,6 +1,6 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { GeneiShipmentSection } from "./GeneiShipmentSection";
+import { customerEmailLine, GeneiShipmentSection } from "./GeneiShipmentSection";
 import { printShippingFile } from "../../lib/erpApi";
 import {
   geneiCreateShipment,
@@ -357,3 +357,22 @@ describe("ficha: aviso de envío al cliente (BoHub, en su idioma)", () => {
   });
 });
 
+
+describe("ficha · línea del aviso al cliente", () => {
+  it("enseña la fecha y el destinatario del ÚLTIMO aviso enviado aunque el estado sea otro", () => {
+    const enviado = customerEmailLine({
+      status: "sent", sent_at: "2026-10-01T12:03:00+02:00", to: "cliente@acme.es", sends: 2,
+    }, true);
+    expect(enviado).toMatch(/^Aviso al cliente enviado el .+ a cliente@acme\.es/);
+    expect(enviado).toContain("(2 envíos)");
+    // Un reenvío que falló no borra lo que sí salió antes.
+    const trasError = customerEmailLine({
+      status: "error", error: "Gmail desconectado",
+      sent_at: "2026-10-01T12:03:00+02:00", to: "cliente@acme.es",
+    }, true);
+    expect(trasError).toContain("no se pudo enviar");
+    expect(trasError).toMatch(/Último aviso enviado el .+ a cliente@acme\.es\./);
+    // Sin ningún aviso enviado: solo el estado.
+    expect(customerEmailLine({ status: "pending" }, true)).not.toContain("Último aviso");
+  });
+});

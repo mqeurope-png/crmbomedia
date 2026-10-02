@@ -48,6 +48,7 @@ jest.mock("../../../lib/api", () => ({
 }));
 jest.mock("../../../lib/erpApi", () => ({
   ERP_EDIT_ROLES: ["admin", "pedidos"],
+  customerHeadline: () => "Duplicoder",
   customerLabel: () => "Duplicoder",
   getOrder: jest.fn(),
   getOrderTimeline: jest.fn(() => Promise.resolve({ total: 0, items: [] })),

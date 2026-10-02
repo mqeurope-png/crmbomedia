@@ -13,7 +13,9 @@ jest.mock("../lib/api", () => ({
   }),
 }));
 jest.mock("../lib/erpApi", () => ({
-  listPendingApproval: jest.fn().mockResolvedValue([{}, {}, {}]),
+  listOrders: jest.fn().mockResolvedValue({
+    items: [], queue: null, queue_counts: { por_revisar: 3, por_facturar: 7 },
+  }),
   getSatQueue: jest.fn().mockResolvedValue({ preparing: [{}], ready_for_pickup: [{}] }),
 }));
 
@@ -28,6 +30,10 @@ describe("ErpHome", () => {
       await screen.findByText("Pedidos pendientes de aprobación"),
     ).toBeInTheDocument();
     expect(screen.getByText("3")).toBeInTheDocument();
+    // Cuenta lo mismo que la cola «Por revisar» de la bandeja por defecto:
+    // sin completar y con todos los pagos (también los pendientes de pago).
+    const { listOrders } = jest.requireMock("../lib/erpApi");
+    expect(listOrders).toHaveBeenCalledWith({ completed: false, limit: 1 });
     // Lote 2 D: lleva a la bandeja filtrada por «Por revisar» (la Cola
     // PEDIDOS ya no es pantalla aparte).
     expect(screen.getByRole("link", { name: /Pedidos pendientes de aprobación/ }))
