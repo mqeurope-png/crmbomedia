@@ -19,7 +19,7 @@ import app.main  # noqa: F401
 from app.db.base import Base
 from app.db.session import get_session
 from app.main import app
-from app.models.crm import AuditLog, Company
+from app.models.crm import AuditLog, Company, Contact
 from tests._test_helpers import auth_headers, seed_test_users
 
 
@@ -229,6 +229,80 @@ def test_search_quotes_no_colisiona_con_la_ruta_de_codpre(client):
                        headers=auth_headers(client, "user"))
     assert r.status_code == 200
     assert "items" in r.json()
+
+
+def _seed_allphonecovers(session_factory) -> None:
+    """Empresa CRM vinculada al CODCLI 14 con un contacto (Krieg)."""
+    with session_factory() as s:
+        company = Company(name="Allphonecovers GmbH", tax_id="DE123456789",
+                          factusol_company_id="14")
+        s.add(company)
+        s.commit()
+        s.add(Contact(first_name="Hans", last_name="Krieg", company_id=company.id,
+                      email="hans.krieg@allphone.example"))
+        s.commit()
+
+
+def _year_of_quotes() -> list[dict[str, Any]]:
+    """716 proformas del año; la 1-000014 es la más antigua y en FACTUSOL su
+    cliente no se llama «Allphonecovers»."""
+    rows = [_quote_row(i, CLIPRE="99999", CNOPRE="RELLENO SL",
+                       FECPRE="2026-06-01T00:00:00") for i in range(15, 730)]
+    rows.append(_quote_row(14, CLIPRE="14", CNOPRE="APC HANDELS",
+                           FECPRE="2026-01-05T00:00:00"))
+    return rows
+
+
+def test_list_quotes_sin_q_recorta_y_avisa(client, session_factory):
+    """716 del año con límite 500: la 1-000014 (la más antigua) no entra y la
+    respuesta lo dice (`truncated`, `total`) para que la pantalla avise."""
+    _seed_allphonecovers(session_factory)
+    with _patch_client(_FakeFactusol(quotes=_year_of_quotes())):
+        r = client.get("/api/erp/factusol/quotes?days_back=0&limit=500",
+                       headers=auth_headers(client, "user"))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert (body["total"], body["limit"], body["truncated"]) == (716, 500, True)
+    assert len(body["items"]) == 500
+    assert "14" not in {q["codpre"] for q in body["items"]}
+
+
+@pytest.mark.parametrize("q", ["allphone", "Allphonecovers", "Krieg", "krieg",
+                               "14", "000014", "1-000014"])
+def test_list_quotes_q_encuentra_la_antigua_antes_del_recorte(client, session_factory, q):
+    """El texto se aplica en el SERVIDOR antes de recortar: por empresa CRM
+    vinculada, por contacto y por nº con o sin serie, la 1-000014 aparece."""
+    _seed_allphonecovers(session_factory)
+    with _patch_client(_FakeFactusol(quotes=_year_of_quotes())):
+        r = client.get(f"/api/erp/factusol/quotes?days_back=0&limit=500&q={q}",
+                       headers=auth_headers(client, "user"))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    codpres = [item["codpre"] for item in body["items"]]
+    assert "14" in codpres, q
+    assert body["truncated"] is False
+    assert body["q"] == q
+    if not q.isdigit():
+        # Por nombre solo casa ella; por «14» también 114, 140… (parcial).
+        assert codpres == ["14"]
+        assert body["items"][0]["company"]["name"] == "Allphonecovers GmbH"
+
+
+def test_search_quotes_tambien_casa_por_empresa_crm_y_contacto(client, session_factory):
+    """«Buscar plantilla» (modal de duplicar y alta de pedido) usa el mismo
+    criterio: nombre de la empresa CRM vinculada y de sus contactos."""
+    _seed_allphonecovers(session_factory)
+    fake = _FakeFactusol(quotes=[
+        _quote_row(14, CLIPRE="14", CNOPRE="APC HANDELS"),
+        _quote_row(15, CLIPRE="99999"),
+    ])
+    for q in ("allphone", "krieg"):
+        with _patch_client(fake):
+            r = client.get(f"/api/erp/factusol/quotes/search?q={q}&days_back=0",
+                           headers=auth_headers(client, "user"))
+        assert r.status_code == 200, r.text
+        assert [item["codpre"] for item in r.json()["items"]] == ["14"], q
+        assert r.json()["truncated"] is False
 
 
 # --- artículos --------------------------------------------------------------

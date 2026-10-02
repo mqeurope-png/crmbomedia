@@ -2653,6 +2653,10 @@ def list_quotes_endpoint(
     # Serie = empresa emisora (1 Bomedia / 2 MQ Europe / 4 Lambert /
     # 5 Streamtec). None = TODAS, igual que en Documentos.
     serie: int | None = Query(default=None, ge=1, le=9),
+    # Texto del buscador de la pantalla Proformas. Se aplica en el servidor
+    # ANTES del recorte a `limit`: filtrando en el navegador sobre las 500 más
+    # recientes, las antiguas (1-000014 entre 716 del año) no aparecían nunca.
+    q: str | None = Query(default=None, max_length=120),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_view),
 ) -> dict[str, Any]:
@@ -2667,12 +2671,17 @@ def list_quotes_endpoint(
     «convertidas» = ya es pedido de BoHub, con `order`), la empresa vinculada
     y su régimen de IVA. `queue_counts` cuenta TODAS las proformas del listado
     aunque se filtre con `queue`; `estpre_values` enseña qué valores reales
-    de `ESTPRE` hay (comprobación del mapeo «rechazada»)."""
+    de `ESTPRE` hay (comprobación del mapeo «rechazada»).
+
+    `q` casa (sin acentos ni mayúsculas, por palabras parciales) con el número
+    con o sin serie, la referencia, el cliente de FACTUSOL, la empresa CRM
+    vinculada y sus contactos. `total` es cuántas casaban antes del recorte y
+    `truncated` avisa de que la lista no las enseña todas."""
     _ = current_user
-    from app.erp.quotes_bandeja import annotate_quotes  # noqa: PLC0415
+    from app.erp.quotes_bandeja import annotate_quotes, crm_codclis_matching  # noqa: PLC0415
     from app.erp.workflow import QUOTE_QUEUES  # noqa: PLC0415
     from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
-    from app.integrations.factusol.quotes import list_quotes  # noqa: PLC0415
+    from app.integrations.factusol.quotes import query_quotes  # noqa: PLC0415
     from app.models.crm import Company  # noqa: PLC0415
 
     if queue and queue not in QUOTE_QUEUES:
@@ -2692,16 +2701,20 @@ def list_quotes_endpoint(
         codcli = str(company.factusol_company_id)
 
     client, ejercicio = _client_and_ejercicio(session)
+    extra_codclis = crm_codclis_matching(session, q) if q else set()
     try:
-        items = list_quotes(client, ejercicio=ejercicio, codcli=codcli,
-                            days_back=days_back, limit=limit, serie=serie)
+        items, total = query_quotes(
+            client, ejercicio=ejercicio, codcli=codcli, days_back=days_back,
+            limit=limit, serie=serie, text=q, extra_codclis=extra_codclis,
+        )
     except FactusolError as exc:
         raise _factusol_gateway_error(exc, "factusol_quotes_failed") from exc
     summary = annotate_quotes(session, items)
     if queue:
-        items = [q for q in items if q.get("queue") == queue]
+        items = [item for item in items if item.get("queue") == queue]
     return {"items": items, "unlinked": False, "ejercicio": ejercicio,
-            "serie": serie, **summary}
+            "serie": serie, "q": q or None, "total": total, "limit": limit,
+            "truncated": total > limit, **summary}
 
 
 @router.get("/quotes/search")
@@ -2722,18 +2735,22 @@ def search_quotes_endpoint(
     Se declara ANTES de `/quotes/{codpre}`: FastAPI casa por orden y «search»
     encajaría como CODPRE."""
     _ = current_user
+    from app.erp.quotes_bandeja import crm_codclis_matching  # noqa: PLC0415
     from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
-    from app.integrations.factusol.quotes import list_quotes  # noqa: PLC0415
+    from app.integrations.factusol.quotes import query_quotes  # noqa: PLC0415
 
     client, ejercicio = _client_and_ejercicio(session)
+    # Mismo criterio que `GET /quotes`: también por empresa CRM y contacto.
+    extra_codclis = crm_codclis_matching(session, q) if q else set()
     try:
-        items = list_quotes(
+        items, total = query_quotes(
             client, ejercicio=ejercicio, codcli=None, days_back=days_back,
-            text=q, limit=limit,
+            text=q, limit=limit, extra_codclis=extra_codclis,
         )
     except FactusolError as exc:
         raise _factusol_gateway_error(exc, "factusol_quotes_search_failed") from exc
-    return {"items": items, "ejercicio": ejercicio}
+    return {"items": items, "ejercicio": ejercicio, "total": total,
+            "limit": limit, "truncated": total > limit}
 
 
 @router.get("/quotes/status/{job_id}")

@@ -262,6 +262,65 @@ def test_list_quotes_text_filter_applies_before_limit():
     assert [q["codpre"] for q in items] == ["5"]
 
 
+def test_list_quotes_text_ignora_acentos_y_mayusculas():
+    fake = _FakeFactusol(quotes=[
+        _quote_row(10, ref="Rotulación nave"),
+        {**_quote_row(11, ref="Otra cosa"), "CNOPRE": "LABORATORIOS DUÁNER"},
+        _quote_row(12, ref="Nada que ver"),
+    ])
+    assert [q["codpre"] for q in list_quotes(
+        fake, ejercicio="2026", days_back=0, text="ROTULACION")] == ["10"]
+    assert [q["codpre"] for q in list_quotes(
+        fake, ejercicio="2026", days_back=0, text="duaner")] == ["11"]
+
+
+def test_list_quotes_text_casa_por_palabras_parciales():
+    """«lab duan» → LABORATORIOS DUANER: todas las palabras, aunque sean
+    trozos, en cualquier orden."""
+    fake = _FakeFactusol(quotes=[
+        {**_quote_row(11), "CNOPRE": "LABORATORIOS DUANER"},
+        {**_quote_row(12), "CNOPRE": "LABORATORIOS PORTA"},
+    ])
+    items = list_quotes(fake, ejercicio="2026", days_back=0, text="duan lab")
+    assert [q["codpre"] for q in items] == ["11"]
+
+
+def test_list_quotes_text_numero_con_o_sin_serie():
+    """«14», «000014», «1-000014» encuentran la 1-000014 (serie 1, nº 14)."""
+    fake = _FakeFactusol(quotes=[
+        _quote_row(14, serie="1"), _quote_row(140, serie="1"), _quote_row(14, serie="5"),
+    ])
+    for text in ("14", "000014", "1-000014", "1-14"):
+        items = list_quotes(fake, ejercicio="2026", days_back=0, text=text)
+        assert any(q["codpre"] == "14" and q["tippre"] == "1" for q in items), text
+    exacto = list_quotes(fake, ejercicio="2026", days_back=0, text="1-000014")
+    assert [(q["tippre"], q["codpre"]) for q in exacto] == [("1", "14")]
+
+
+def test_list_quotes_extra_codclis_casa_por_cliente():
+    """Los CODCLI que resolvió la API (empresa CRM o contacto cuyo nombre
+    casa) hacen casar sus proformas aunque el cliente de FACTUSOL se llame de
+    otra forma; `'0014'` y `'14'` son el mismo cliente."""
+    fake = _FakeFactusol(quotes=[
+        {**_quote_row(14, clipre="0014"), "CNOPRE": "APC HANDELS"},
+        {**_quote_row(15, clipre="0015"), "CNOPRE": "OTRO"},
+    ])
+    items = list_quotes(fake, ejercicio="2026", days_back=0, text="allphone",
+                        extra_codclis={"14"})
+    assert [q["codpre"] for q in items] == ["14"]
+    assert list_quotes(fake, ejercicio="2026", days_back=0, text="allphone") == []
+
+
+def test_query_quotes_devuelve_el_total_antes_del_recorte():
+    from app.integrations.factusol.quotes import query_quotes
+
+    rows = [_quote_row(i) for i in range(1, 11)]
+    items, total = query_quotes(_FakeFactusol(quotes=rows), ejercicio="2026",
+                                days_back=0, limit=3)
+    assert len(items) == 3
+    assert total == 10
+
+
 def test_get_quote_lee_las_lineas_reales_de_f_lps(session):
     """C-4-fix3: las líneas salen de F_LPS, no de la caché local. Funciona con
     cualquier proforma, también las hechas en el FACTUSOL de escritorio."""

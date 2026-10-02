@@ -37,7 +37,7 @@ from app.erp.workflow import QUOTE_QUEUE_LABELS, QUOTE_QUEUES, company_regime, q
 from app.integrations.factusol.documents import visible_number
 from app.integrations.factusol.quotes import header_says_no_iva
 from app.integrations.factusol.vat_regime import REGIME_LABELS
-from app.models.crm import Company
+from app.models.crm import Company, Contact
 
 #: Serie (`TIPPRE`) = empresa emisora. Los nombres se leen de los ajustes
 #: (`series_names`, `/erp/settings`); esto es el fallback.
@@ -80,6 +80,56 @@ def _companies_by_codcli(session: Session, codclis: set[str]) -> dict[str, Compa
         out[code] = company
         if code.isdigit():
             out[str(int(code))] = company
+    return out
+
+
+def _both_forms(codcli: str) -> set[str]:
+    """`'0055'` y `'55'` son el mismo cliente según cómo viaje por la API."""
+    code = str(codcli or "").strip()
+    if not code:
+        return set()
+    return {code, str(int(code))} if code.isdigit() else {code}
+
+
+def crm_codclis_matching(session: Session, text: str | None) -> set[str]:
+    """CODCLI de FACTUSOL de las empresas CRM vinculadas cuyo **nombre** o el
+    de alguno de sus **contactos** contiene todas las palabras de `text` (sin
+    acentos ni mayúsculas). Es lo que permite buscar «Allphonecovers» o
+    «Krieg» en Proformas aunque en FACTUSOL el cliente se llame de otra forma.
+
+    Se resuelve en Python sobre las empresas vinculadas (unos cientos): un
+    LIKE en SQL no ignoraría los acentos en SQLite ni, según la colación, en
+    MySQL. Vacío si no hay texto o nada casa."""
+    from app.integrations.factusol.quotes import fold_text, search_tokens  # noqa: PLC0415
+
+    tokens = search_tokens(text)
+    if not tokens:
+        return set()
+
+    def casa(*parts: Any) -> bool:
+        hay = fold_text(" ".join(str(p or "") for p in parts))
+        return all(token in hay for token in tokens)
+
+    linked = session.execute(
+        select(Company.id, Company.name, Company.factusol_company_id)
+        .where(Company.factusol_company_id.is_not(None))
+    ).all()
+    codcli_by_company = {
+        cid: str(codcli).strip() for cid, _name, codcli in linked if str(codcli or "").strip()
+    }
+    out: set[str] = set()
+    for cid, name, _codcli in linked:
+        if cid in codcli_by_company and casa(name):
+            out |= _both_forms(codcli_by_company[cid])
+    pending = [cid for cid in codcli_by_company if cid not in out]
+    if pending:
+        contacts = session.execute(
+            select(Contact.company_id, Contact.first_name, Contact.last_name)
+            .where(Contact.company_id.in_(sorted(codcli_by_company)))
+        ).all()
+        for cid, first, last in contacts:
+            if cid in codcli_by_company and casa(first, last):
+                out |= _both_forms(codcli_by_company[cid])
     return out
 
 

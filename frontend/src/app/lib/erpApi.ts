@@ -3677,6 +3677,11 @@ export type QuotesListing = {
    *  los valores reales de `ESTPRE` que hay. */
   queue_counts?: Record<QuoteQueue, number>;
   estpre_values?: Record<string, number>;
+  /** Cuántas casaban con los filtros ANTES del recorte a `limit`, y si la
+   *  lista viene recortada (la pantalla avisa «mostrando 500 de 716»). */
+  total?: number;
+  limit?: number;
+  truncated?: boolean;
 };
 
 export async function listFactusolQuotes(
@@ -3684,6 +3689,10 @@ export async function listFactusolQuotes(
     company_id?: string; days_back?: number; queue?: QuoteQueue; limit?: number;
     /** Serie = empresa emisora. Omitir = TODAS (como en Documentos). */
     serie?: number;
+    /** Texto del buscador. Se aplica en el SERVIDOR antes del recorte: casa
+     *  con nº (con o sin serie), referencia, cliente FACTUSOL, empresa CRM
+     *  vinculada y contactos, sin acentos ni mayúsculas. */
+    q?: string;
   } = {},
 ): Promise<QuotesListing> {
   return apiFetch(`/api/erp/factusol/quotes${qs(opts)}`);

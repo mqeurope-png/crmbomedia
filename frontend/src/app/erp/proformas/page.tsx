@@ -65,6 +65,8 @@ const DAYS_OPTIONS = [
 const PRESUPUESTO_SERIE = 1;
 /** Hasta cuántas proformas pide la pantalla (el listado va DESC por CODPRE). */
 const LIST_LIMIT = 500;
+/** Retardo al teclear antes de consultar al servidor con el texto. */
+const SEARCH_DEBOUNCE_MS = 300;
 const MAX_DAYS_BACK = 1825;
 
 type SortKey = "fecha" | "serie" | "codpre";
@@ -263,6 +265,14 @@ export default function ProformasPage() {
   const [serie, setSerie] = useState<number>(0);
   // Filtros combinables (sobre las colas): texto, rango de fechas; y orden.
   const [text, setText] = useState("");
+  // El texto también se manda al SERVIDOR (con un pequeño retardo al teclear):
+  // el backend lo aplica antes del recorte a `LIST_LIMIT`, así que una
+  // proforma antigua (1-000014 entre 716 del año) aparece aunque no esté entre
+  // las 500 más recientes. El filtro local sigue para que la lista reaccione
+  // al instante mientras llega la respuesta.
+  const [serverText, setServerText] = useState("");
+  // Aviso de recorte: cuántas casaban y cuántas se enseñan.
+  const [truncation, setTruncation] = useState<{ total: number; limit: number } | null>(null);
   const [desde, setDesde] = useState("");
   const [hasta, setHasta] = useState("");
   // Orden: null = el propio de la cola (`defaultSortDir`); un valor = lo que
@@ -293,6 +303,11 @@ export default function ProformasPage() {
       .catch(() => setCanEdit(false));
   }, []);
 
+  useEffect(() => {
+    const handle = window.setTimeout(() => setServerText(text.trim()), SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(handle);
+  }, [text]);
+
   // «Desde» más antiguo que el periodo amplía lo que se pide al backend.
   const effectiveDays = daysBackFor(daysBack, desde);
   const load = useCallback(async (): Promise<FactusolQuote[]> => {
@@ -303,8 +318,12 @@ export default function ProformasPage() {
         days_back: effectiveDays, limit: LIST_LIMIT,
         // Sin serie = TODAS las empresas emisoras (igual que Documentos).
         ...(serie ? { serie } : {}),
+        ...(serverText ? { q: serverText } : {}),
       });
       setQuotes(r.items);
+      setTruncation(r.truncated
+        ? { total: r.total ?? r.items.length, limit: r.limit ?? LIST_LIMIT }
+        : null);
       setNow(Date.now());
       return r.items;
     } catch (e) {
@@ -313,7 +332,7 @@ export default function ProformasPage() {
     } finally {
       setLoading(false);
     }
-  }, [effectiveDays, serie]);
+  }, [effectiveDays, serie, serverText]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -592,6 +611,12 @@ export default function ProformasPage() {
 
       {error ? <p className="form-error" role="alert">{error}</p> : null}
       {notice ? <p className="form-info" role="status">{notice}</p> : null}
+      {truncation ? (
+        <p className="form-info" role="status">
+          Mostrando {truncation.limit} de {truncation.total} proformas{serverText ? " que casan con la búsqueda" : " del periodo"}:
+          {" "}usa el buscador o acota el periodo para ver las demás.
+        </p>
+      ) : null}
 
       <div className="erp-flow-filters" role="search" aria-label="Filtros de proformas">
         <label className="field erp-flow-filter-grow">
@@ -664,7 +689,7 @@ export default function ProformasPage() {
         ) : null}
       </div>
 
-      {loading ? (
+      {loading && quotes.length === 0 ? (
         <p className="muted">Cargando…</p>
       ) : rows.length === 0 ? (
         <p className="muted">

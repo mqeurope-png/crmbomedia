@@ -620,6 +620,28 @@ describe("Pantalla Proformas (rediseño de flujo, Fase 4)", () => {
     expect(order()).toEqual(["Proforma 9", "Proforma 71", "Proforma 39"]);
   });
 
+  // --- F: búsqueda en el servidor + aviso de recorte -----------------------
+
+  it("F · el buscador consulta al servidor con «q» tras un pequeño retardo y la lista avisa cuando viene recortada", async () => {
+    // 716 proformas del año y límite 500: el backend lo dice y la pantalla avisa.
+    mockList.mockResolvedValue({ ...LISTING, total: 716, limit: 500, truncated: true });
+    const user = userEvent.setup();
+    render(<ProformasPage />);
+    await screen.findByRole("list", { name: "Proformas" });
+    expect(screen.getByText(/Mostrando 500 de 716 proformas del periodo/)).toBeInTheDocument();
+    // La primera carga va sin texto.
+    expect(mockList.mock.calls[0][0]).not.toHaveProperty("q");
+
+    // Teclear «allphone» → tras el retardo se pide al servidor con `q` y el
+    // mismo límite; la respuesta ya no viene recortada y el aviso desaparece.
+    mockList.mockResolvedValue({ ...LISTING, items: [BRAILLE], total: 1, limit: 500, truncated: false });
+    await user.type(screen.getByRole("searchbox", { name: "Buscar proforma" }), "allphone");
+    await waitFor(() => expect(mockList).toHaveBeenLastCalledWith(
+      expect.objectContaining({ q: "allphone", limit: 500 }),
+    ));
+    await waitFor(() => expect(screen.queryByText(/Mostrando 500 de 716/)).toBeNull());
+  });
+
   // --- A5: «Ver líneas» desde la lista -----------------------------------
 
   it("A5 · «Ver líneas» carga el detalle F_LPS, lo enseña y lo cachea; se oculta al volver a pulsar", async () => {

@@ -36,6 +36,8 @@ en paralelo pisarían la numeración.
 from __future__ import annotations
 
 import logging
+import unicodedata
+from collections.abc import Collection
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -63,6 +65,18 @@ TABLE_QUOTES = "F_PRE"
 #: **Líneas** de presupuesto. `CODLPS` referencia a `F_PRE.CODPRE`.
 #: Descubierta en C-4-fix3: C-4 la buscó como F_LPRE/F_LPR/F_LPP y falló.
 TABLE_QUOTE_LINES = "F_LPS"
+#: Caracteres que caben en `F_LPS.DESLPS` por línea. Es el límite CONOCIDO
+#: SEGURO: todas las líneas que BoHub ha escrito hasta hoy (≤255) las ha
+#: aceptado FACTUSOL. La longitud real de la columna no está verificada —
+#: `scripts/factusol_discover_line_lengths.py` la mide contra la base real
+#: (p. ej. la 5-004360, que tiene una descripción larga); si admite más, se
+#: sube aquí. Mientras, una descripción más larga NO se recorta: se reparte en
+#: **líneas de continuación** (texto sin artículo, cantidad 0, precio 0), que
+#: es como el escritorio de FACTUSOL guarda y pinta un texto largo.
+DESLPS_MAX_LENGTH = 255
+#: Tope de BoHub para UNA descripción (≈ 8 líneas de continuación). Por encima
+#: la API rechaza la proforma diciendo el límite y la línea.
+QUOTE_LINE_DESCRIPTION_MAX = 2000
 #: Tabla de artículos.
 TABLE_ARTICLES = "F_ART"
 #: Tarifas por artículo. `ARTLTA` → `F_ART.CODART`, `PRELTA` = precio de venta.
@@ -363,14 +377,60 @@ def _row_to_quote(row: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _quote_matches(quote: dict[str, Any], needle: str) -> bool:
-    """¿La proforma casa con el texto buscado? Mira en la referencia, el nombre
-    del cliente de origen y el propio número — que es como Bart identifica una
-    plantilla («la de Laboratorios Duaner», «la 512», «rotulación»)."""
-    haystack = " ".join(str(x or "") for x in (
-        quote.get("referencia"), quote.get("cliente_nombre"), quote.get("codpre"),
-    ))
-    return needle in haystack.casefold()
+def fold_text(value: Any) -> str:
+    """Texto comparable: sin acentos, sin mayúsculas, espacios colapsados.
+    «Rotulación» y «ROTULACION» son lo mismo para el buscador."""
+    nfkd = unicodedata.normalize("NFKD", str(value or ""))
+    plain = "".join(c for c in nfkd if not unicodedata.combining(c))
+    return " ".join(plain.casefold().split())
+
+
+def search_tokens(text: Any) -> list[str]:
+    """Palabras (parciales) del buscador, ya normalizadas. Vacío = sin filtro."""
+    return fold_text(text).split()
+
+
+def _quote_number_variants(quote: dict[str, Any]) -> list[str]:
+    """Formas en que un operador escribe el número: «14», «000014», «1-14» y
+    «1-000014» (serie-número, como lo pinta el escritorio de FACTUSOL)."""
+    codpre = str(quote.get("codpre") or "").strip()
+    if not codpre:
+        return []
+    variants = [codpre]
+    if codpre.isdigit():
+        number = int(codpre)
+        variants.append(f"{number:06d}")
+        tippre = str(quote.get("tippre") or "").strip()
+        if tippre.isdigit():
+            serie = int(tippre)
+            variants.extend((f"{serie}-{number}", f"{serie}-{number:06d}"))
+    return variants
+
+
+def _quote_matches(
+    quote: dict[str, Any], tokens: list[str],
+    extra_codclis: Collection[str] = (),
+) -> bool:
+    """¿La proforma casa con el texto buscado?
+
+    Casa si TODAS las palabras del buscador aparecen (parcialmente, sin
+    acentos ni mayúsculas) en la referencia, el nombre del cliente de origen o
+    el número en cualquiera de sus formas — que es como Bart identifica una
+    plantilla («la de Laboratorios Duaner», «la 512», «rotulación», «1-000014»).
+    `extra_codclis` son los clientes cuyo nombre de empresa CRM o de contacto
+    casó con el texto (lo resuelve la API, que es quien tiene la base del CRM):
+    sus proformas casan aunque el nombre de FACTUSOL sea otro."""
+    if not tokens:
+        return True
+    clipre = str(quote.get("clipre") or "").strip()
+    if clipre and (clipre in extra_codclis or (
+            clipre.isdigit() and str(int(clipre)) in extra_codclis)):
+        return True
+    haystack = fold_text(" ".join(str(x or "") for x in (
+        quote.get("referencia"), quote.get("cliente_nombre"),
+        *_quote_number_variants(quote),
+    )))
+    return all(token in haystack for token in tokens)
 
 
 def _quote_sort_key(quote: dict[str, Any]) -> tuple[int, int]:
@@ -391,11 +451,29 @@ def list_quotes(
     client: FactusolClient, *, ejercicio: str, codcli: str | None = None,
     days_back: int = DEFAULT_DAYS_BACK, today: date | None = None,
     text: str | None = None, limit: int = QUOTE_LIST_LIMIT,
-    serie: int | None = None,
+    serie: int | None = None, extra_codclis: Collection[str] = (),
 ) -> list[dict[str, Any]]:
     """Proformas de un cliente (o de TODOS si `codcli` es None) en los últimos
     `days_back` días, opcionalmente filtradas por `text` y por `serie`
-    (empresa emisora; None = TODAS, como en Documentos).
+    (empresa emisora; None = TODAS, como en Documentos). Ver `query_quotes`,
+    que además dice cuántas había antes del recorte."""
+    items, _total = query_quotes(
+        client, ejercicio=ejercicio, codcli=codcli, days_back=days_back,
+        today=today, text=text, limit=limit, serie=serie,
+        extra_codclis=extra_codclis,
+    )
+    return items
+
+
+def query_quotes(
+    client: FactusolClient, *, ejercicio: str, codcli: str | None = None,
+    days_back: int = DEFAULT_DAYS_BACK, today: date | None = None,
+    text: str | None = None, limit: int = QUOTE_LIST_LIMIT,
+    serie: int | None = None, extra_codclis: Collection[str] = (),
+) -> tuple[list[dict[str, Any]], int]:
+    """Como `list_quotes`, devolviendo `(proformas, total)`: `total` es cuántas
+    casaban con los filtros ANTES del recorte a `limit`, para que la pantalla
+    avise de que no las enseña todas («mostrando 500 de 716»).
 
     Se recorta en Python (la API no soporta LIMIT) **ordenando por fecha**, no
     por CODPRE: ver `_quote_sort_key`. El filtro de fecha se resuelve también
@@ -407,7 +485,10 @@ def list_quotes(
 
     `text` y `serie` se aplican **antes** del recorte a `limit`: si se truncase
     primero, buscar una plantilla antigua no la encontraría nunca porque las
-    100 más recientes se la habrían comido.
+    100 más recientes se la habrían comido. `text` casa sin acentos ni
+    mayúsculas, por palabras parciales, contra referencia, cliente de FACTUSOL
+    y número con o sin serie; `extra_codclis` añade los clientes cuyo nombre
+    de empresa CRM o de contacto casó (ver `_quote_matches`).
     """
     filtro = "1=1"
     if codcli:
@@ -427,25 +508,88 @@ def list_quotes(
         from app.integrations.factusol.service import coerce_serie  # noqa: PLC0415
 
         quotes = [q for q in quotes if coerce_serie(q.get("tippre")) == serie]
-    needle = (text or "").strip().casefold()
-    if needle:
-        quotes = [q for q in quotes if _quote_matches(q, needle)]
+    tokens = search_tokens(text)
+    if tokens:
+        wanted = frozenset(str(c).strip() for c in extra_codclis if str(c).strip())
+        quotes = [q for q in quotes if _quote_matches(q, tokens, wanted)]
     quotes.sort(key=_quote_sort_key, reverse=True)
-    return quotes[:limit]
+    return quotes[:limit], len(quotes)
 
 
 def _row_to_quote_line(row: dict[str, Any]) -> dict[str, Any]:
-    """Fila de F_LPS → la forma que ya consumía el frontend desde C-4."""
+    """Fila de F_LPS → la forma que ya consumía el frontend desde C-4.
+
+    `text_only`: línea sin artículo, sin cantidad y sin precio — un texto
+    (continuación de una descripción larga, o una nota escrita en el
+    escritorio). No suma y en pantalla se enseña sin importes. NO se fusiona
+    con la línea anterior al leer: una nota que el operador puso aparte debe
+    seguir aparte."""
+    codart = str(row.get("ARTLPS") or "").strip() or None
+    quantity = _num(row.get("CANLPS"))
+    unit_price = _num(row.get("PRELPS"))
     return {
         "position": _int_or_none(row.get("POSLPS")) or 0,
-        "codart": str(row.get("ARTLPS") or "").strip() or None,
+        "codart": codart,
         "description": str(row.get("DESLPS") or "").strip(),
-        "quantity": _num(row.get("CANLPS")),
-        "unit_price": _num(row.get("PRELPS")),
+        "quantity": quantity,
+        "unit_price": unit_price,
         "discount_pct": _num(row.get("DT1LPS")),
         "line_total": _num(row.get("TOTLPS")),
         "iva_pct": _iva_pct_from_line(row),
+        "text_only": codart is None and quantity == 0 and unit_price == 0,
     }
+
+
+class QuoteLineTooLongError(ValueError):
+    """Una descripción no cabe ni repartida: el mensaje dice el límite y la
+    línea. Es `ValueError` para que la API lo devuelva como 422."""
+
+
+def split_description(text: Any, limit: int = DESLPS_MAX_LENGTH) -> list[str]:
+    """Reparte una descripción en trozos de ≤ `limit` caracteres cortando por
+    espacios (una palabra más larga que el límite se parte). Nunca devuelve
+    trozos vacíos; un texto que cabe vuelve tal cual, en un solo trozo."""
+    cleaned = " ".join(str(text or "").split())
+    if len(cleaned) <= limit:
+        return [cleaned]
+    chunks: list[str] = []
+    current = ""
+    for word in cleaned.split(" "):
+        while len(word) > limit:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.append(word[:limit])
+            word = word[limit:]
+        candidate = f"{current} {word}" if current else word
+        if len(candidate) <= limit:
+            current = candidate
+        else:
+            chunks.append(current)
+            current = word
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def expand_long_lines(
+    lines: list[dict[str, Any]], limit: int = DESLPS_MAX_LENGTH,
+) -> list[dict[str, Any]]:
+    """Convierte las descripciones más largas que `limit` en la línea original
+    (con el primer trozo) + **líneas de continuación**: texto sin artículo,
+    cantidad 0 y precio 0, que no suman y que FACTUSOL pinta debajo. Las demás
+    líneas salen intactas. Nada se recorta."""
+    out: list[dict[str, Any]] = []
+    for line in lines:
+        chunks = split_description(line.get("description"), limit)
+        out.append({**line, "description": chunks[0]})
+        for chunk in chunks[1:]:
+            out.append({
+                "codart": "", "description": chunk, "quantity": 0.0,
+                "unit_price": 0.0, "discount_pct": 0.0,
+                "iva_pct": line.get("iva_pct"), "continuation": True,
+            })
+    return out
 
 
 #: Tipos de IVA que existen en España. Cualquier otro valor en `IVALPS` no
@@ -771,6 +915,14 @@ def build_quote_line_payload(
     qty = _num(line.get("quantity"), 1.0)
     price = _num(line.get("unit_price"))
     discount = _num(line.get("discount_pct"))
+    description = " ".join(str(line.get("description") or "").split())
+    if len(description) > DESLPS_MAX_LENGTH:
+        # Nunca se recorta en silencio: quien escribe reparte antes con
+        # `expand_long_lines`; si llega algo más largo es un error de programa.
+        raise QuoteLineTooLongError(
+            f"La descripción de la línea {position} tiene {len(description)} "
+            f"caracteres y FACTUSOL admite {DESLPS_MAX_LENGTH} por línea."
+        )
     # ⚠️ IVALPS NO se escribe (C-4-fix5). No está confirmado si guarda el
     # porcentaje o el CÓDIGO de tipo de IVA (0=general, 1=reducido, …), y la
     # evidencia apunta a lo segundo: la proforma 574, que abre bien en el
@@ -787,7 +939,7 @@ def build_quote_line_payload(
         "CODLPS": codpre,
         "POSLPS": position,
         "ARTLPS": str(line.get("codart") or "")[:64],
-        "DESLPS": str(line.get("description") or "")[:255],
+        "DESLPS": description,
         "CANLPS": qty,
         "DT1LPS": discount,
         "PRELPS": price,
@@ -840,9 +992,13 @@ def resolve_codarts(
 def _write_quote_lines(
     client: FactusolClient, codpre: str, ejercicio: str,
     lines: list[dict[str, Any]], serie: Any = DEFAULT_TIPLPS,
-) -> tuple[int, str | None]:
-    """Escribe las líneas en F_LPS. Devuelve `(cuántas se escribieron, error)`
+) -> tuple[int, int, str | None]:
+    """Escribe las líneas en F_LPS. Devuelve `(escritas, previstas, error)`
     —el mensaje de FACTUSOL de la primera línea que falló, o None—.
+
+    Las descripciones más largas que `DESLPS_MAX_LENGTH` se reparten antes en
+    líneas de continuación (`expand_long_lines`), así que `previstas` puede
+    ser mayor que `len(lines)`: es el nº real de filas de F_LPS.
 
     Se devuelve el error, además de dejarlo en el log, porque una proforma que
     guarda la cabecera pero PIERDE las líneas es invisible para el operador
@@ -863,6 +1019,8 @@ def _write_quote_lines(
     devuelve el recuento real para que la UI avise. Misma política que la
     caché en C-4, ahora sobre la tabla buena.
     """
+    # Descripciones largas → líneas de continuación. Nada se recorta.
+    lines = expand_long_lines(lines)
     try:
         codarts = resolve_codarts(
             client, [line.get("codart") for line in lines], ejercicio=ejercicio,
@@ -907,7 +1065,7 @@ def _write_quote_lines(
             )
             error = f"{exc} (columnas: {', '.join(payload)})"
             break
-    return written, error
+    return written, len(lines), error
 
 
 def create_quote(
@@ -967,19 +1125,19 @@ def create_quote(
             "Columnas enviadas: %s", codpre, exc, ", ".join(payload),
         )
         raise
-    written, lines_error = _write_quote_lines(
+    written, previstas, lines_error = _write_quote_lines(
         client, codpre, ejercicio, lines, payload["TIPPRE"],
     )
     logger.info(
         "factusol: proforma creada CODPRE %s serie %s (cliente %s, %d/%d líneas)",
-        codpre, payload["TIPPRE"], customer.get("codcli"), written, len(lines),
+        codpre, payload["TIPPRE"], customer.get("codcli"), written, previstas,
     )
     result = {"codpre": codpre, "ejercicio": ejercicio, "referencia": refpre,
               "serie": int(payload["TIPPRE"]),
               "lines": written, "total": payload["TOTPRE"]}
-    if written < len(lines):
+    if written < previstas:
         result["warning"] = (
-            f"La proforma {codpre} se creó con {written} de {len(lines)} líneas. "
+            f"La proforma {codpre} se creó con {written} de {previstas} líneas. "
             "Revísala en FACTUSOL antes de enviarla."
             + (f" FACTUSOL rechazó la línea: {lines_error}" if lines_error else "")
         )
@@ -1127,17 +1285,17 @@ def update_quote(
         TABLE_QUOTE_LINES,
         f"TIPLPS='{propia}' AND CODLPS='{int(codpre)}'", ejercicio=ejercicio,
     )
-    written, lines_error = _write_quote_lines(
+    written, previstas, lines_error = _write_quote_lines(
         client, str(codpre), ejercicio, lines, propia,
     )
     logger.info("factusol: proforma %s-%s actualizada (%d/%d líneas, estado %s)",
-                propia, codpre, written, len(lines), estado)
+                propia, codpre, written, previstas, estado)
     result = {"codpre": str(codpre), "ejercicio": ejercicio,
               "serie": int(propia), "updated": True,
               "lines": written, "estado": estado}
-    if written < len(lines):
+    if written < previstas:
         result["warning"] = (
-            f"La proforma {codpre} se guardó con {written} de {len(lines)} "
+            f"La proforma {codpre} se guardó con {written} de {previstas} "
             "líneas. Revísala en FACTUSOL."
             + (f" FACTUSOL rechazó la línea: {lines_error}" if lines_error else "")
         )
@@ -1179,14 +1337,16 @@ def duplicate_quote(
     source["FECPRE"] = fecha or datetime.now(UTC).date().isoformat()
     client.write_record(TABLE_QUOTES, source, ejercicio=ejercicio)
 
-    written, lines_error = _write_quote_lines(client, nuevo, ejercicio, lines, propia)
+    written, previstas, lines_error = _write_quote_lines(
+        client, nuevo, ejercicio, lines, propia,
+    )
     logger.info("factusol: proforma %s-%s duplicada → %s-%s (%d/%d líneas)",
-                propia, codpre, propia, nuevo, written, len(lines))
+                propia, codpre, propia, nuevo, written, previstas)
     result = {"codpre": nuevo, "source_codpre": str(codpre), "ejercicio": ejercicio,
               "serie": int(propia), "lines": written}
-    if written < len(lines):
+    if written < previstas:
         result["warning"] = (
-            f"La copia {nuevo} se creó con {written} de {len(lines)} líneas."
+            f"La copia {nuevo} se creó con {written} de {previstas} líneas."
             + (f" FACTUSOL rechazó la línea: {lines_error}" if lines_error else "")
         )
         result["lines_error"] = lines_error
