@@ -25,15 +25,18 @@ from tests._test_helpers import auth_headers, seed_test_users
 
 class _FakeFactusol:
     def __init__(self, *, quotes=None, articles=None, lines=None, tariffs=None,
-                 customers=None):
+                 customers=None, payment_methods=None):
         self.default_ejercicio = "2026"
         self._quotes = list(quotes or [])
         self._articles = list(articles or [])
         self._lines = list(lines or [])
         self._tariffs = list(tariffs or [])
         self._customers = list(customers or [])
+        self._payment_methods = list(payment_methods or [])
 
     def load_table(self, tabla, *, filtro="1=1", ejercicio=None):
+        if tabla == "F_FPA":
+            return list(self._payment_methods)
         if tabla == "F_CLI":
             return list(self._customers)
         if tabla == "F_ART":
@@ -345,6 +348,53 @@ def test_create_quote_encola_y_audita(client, session_factory):
         assert len(audits) == 1
 
 
+def test_create_quote_acepta_descripciones_de_mas_de_255(client, session_factory):
+    """Punto D: el tope de 255 era de BoHub. La línea viaja ENTERA al job (el
+    reparto en continuaciones lo hace el escritor de F_LPS)."""
+    with session_factory() as s:
+        cid = _company(s)
+    larga = "x" * 400
+    with patch("app.integrations.factusol.jobs.enqueue_create_quote",
+               return_value="job-q1") as enq:
+        r = client.post("/api/erp/factusol/quotes",
+                        headers=auth_headers(client, "pedidos"),
+                        json={"company_id": cid, "lines": [
+                            {"description": larga, "quantity": 1, "unit_price": 10},
+                            # Línea de texto (continuación o nota): cantidad 0 sin precio.
+                            {"description": "nota", "quantity": 0, "unit_price": 0},
+                        ]})
+    assert r.status_code == 202, r.text
+    lines = enq.call_args.args[1]
+    assert lines[0]["description"] == larga
+    assert lines[1]["quantity"] == 0
+
+
+def test_create_quote_422_dice_linea_y_limite_si_no_cabe(client, session_factory):
+    with session_factory() as s:
+        cid = _company(s)
+    r = client.post("/api/erp/factusol/quotes",
+                    headers=auth_headers(client, "pedidos"),
+                    json={"company_id": cid, "lines": [
+                        {"description": "ok", "quantity": 1, "unit_price": 10},
+                        {"description": "y" * 2001, "quantity": 1, "unit_price": 10},
+                    ]})
+    assert r.status_code == 422, r.text
+    msg = json.dumps(r.json(), ensure_ascii=False)
+    assert "línea 2" in msg and "2001" in msg and "2000" in msg and "255" in msg
+
+
+def test_create_quote_422_si_una_linea_con_precio_va_sin_cantidad(client, session_factory):
+    with session_factory() as s:
+        cid = _company(s)
+    r = client.post("/api/erp/factusol/quotes",
+                    headers=auth_headers(client, "pedidos"),
+                    json={"company_id": cid, "lines": [
+                        {"description": "Cable", "quantity": 0, "unit_price": 10},
+                    ]})
+    assert r.status_code == 422, r.text
+    assert "línea 1" in json.dumps(r.json(), ensure_ascii=False)
+
+
 def test_create_quote_sin_serie_usa_bomedia(client, session_factory):
     """Compatibilidad: un cuerpo sin `serie` crea en la 1, como siempre."""
     with session_factory() as s:
@@ -438,6 +488,83 @@ def test_patch_quote_pasa_la_serie_al_job(client, session_factory, serie):
                          json={"company_id": cid, "referencia": "X"})
     assert r.status_code == 202, r.text
     assert enq.call_args.args[6] == serie
+
+
+# --- forma de pago (punto E) --------------------------------------------------
+
+_FPA = [{"CODFPA": "002", "DESFPA": "Transferencia"},
+        {"CODFPA": "003", "DESFPA": "PayPal"}]
+
+
+def test_create_quote_pasa_la_forma_de_pago_al_job(client, session_factory):
+    with session_factory() as s:
+        cid = _company(s)
+    with patch("app.integrations.factusol.jobs.enqueue_create_quote",
+               return_value="job-q1") as enq:
+        r = client.post("/api/erp/factusol/quotes",
+                        headers=auth_headers(client, "pedidos"),
+                        json={"company_id": cid, "fopfac": "002", "lines": [
+                            {"description": "Cable", "quantity": 1, "unit_price": 10},
+                        ]})
+    assert r.status_code == 202, r.text
+    assert enq.call_args.args[4] == "002"
+
+
+def test_patch_quote_pasa_la_forma_de_pago_al_job(client, session_factory):
+    with session_factory() as s:
+        cid = _company(s)
+    with patch("app.integrations.factusol.jobs.enqueue_update_quote",
+               return_value="job-u1") as enq:
+        r = client.patch("/api/erp/factusol/quotes/700?serie=2",
+                         headers=auth_headers(client, "pedidos"),
+                         json={"company_id": cid, "referencia": "X", "fopfac": "003"})
+    assert r.status_code == 202, r.text
+    assert enq.call_args.args[7] == "003"
+    # Sin elegir ninguna viaja None (al editar, quita la que tuviera).
+    with patch("app.integrations.factusol.jobs.enqueue_update_quote",
+               return_value="job-u2") as enq:
+        client.patch("/api/erp/factusol/quotes/700?serie=2",
+                     headers=auth_headers(client, "pedidos"),
+                     json={"company_id": cid, "referencia": "X"})
+    assert enq.call_args.args[7] is None
+
+
+def test_get_quote_devuelve_la_forma_de_pago_con_nombre(client):
+    from app.integrations.factusol.catalogs import clear_cache
+
+    clear_cache()
+    fake = _FakeFactusol(quotes=[_quote_row(10, FOPPRE="002")], payment_methods=_FPA)
+    with _patch_client(fake):
+        r = client.get("/api/erp/factusol/quotes/10", headers=auth_headers(client, "user"))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert (body["forma_pago"], body["forma_pago_nombre"]) == ("002", "Transferencia")
+
+    with _patch_client(_FakeFactusol(quotes=[_quote_row(11)], payment_methods=_FPA)):
+        r = client.get("/api/erp/factusol/quotes/11", headers=auth_headers(client, "user"))
+    assert (r.json()["forma_pago"], r.json()["forma_pago_nombre"]) == (None, None)
+
+
+def test_customer_payment_method_endpoint(client):
+    """Forma de pago por defecto del cliente (F_CLI.FPACLI) para preseleccionarla."""
+    from app.integrations.factusol.catalogs import clear_cache
+
+    clear_cache()
+    fake = _FakeFactusol(customers=[
+        {"CODCLI": "55555", "NOFCLI": "Acme SL", "FPACLI": "003"},
+        {"CODCLI": "66666", "NOFCLI": "Sin forma", "FPACLI": ""},
+    ], payment_methods=_FPA)
+    with _patch_client(fake):
+        r = client.get("/api/erp/factusol/customers/55555/payment-method",
+                       headers=auth_headers(client, "user"))
+        assert r.status_code == 200, r.text
+        assert (r.json()["codigo"], r.json()["nombre"]) == ("003", "PayPal")
+        r = client.get("/api/erp/factusol/customers/66666/payment-method",
+                       headers=auth_headers(client, "user"))
+        assert (r.json()["codigo"], r.json()["nombre"]) == (None, None)
+        r = client.get("/api/erp/factusol/customers/99999/payment-method",
+                       headers=auth_headers(client, "user"))
+        assert r.status_code == 200 and r.json()["codigo"] is None
 
 
 def test_duplicate_quote_pasa_la_serie_al_job(client):

@@ -8,6 +8,8 @@ import {
   downloadFactusolDocumentPdf,
   FACTUSOL_SERIES,
   getFactusolCustomerAddresses,
+  getFactusolCustomerPaymentMethod,
+  getFactusolFormasPago,
   getFactusolQuote,
   saveBlob,
   searchFactusolQuotes,
@@ -15,6 +17,7 @@ import {
   waitForQuoteJob,
   type FactusolAddress,
   type FactusolQuote,
+  type FormaPago,
   type QuoteShippingInput,
 } from "../../lib/erpApi";
 import {
@@ -48,6 +51,12 @@ function num(v: string): number {
 
 function today(): string {
   return new Date().toISOString().slice(0, 10);
+}
+
+/** Código de forma de pago de una proforma leída (`forma_pago` normalizada o
+ *  la columna cruda `foppre`); "" si no tiene. */
+function paymentCodeOf(q: FactusolQuote): string {
+  return String(q.forma_pago ?? q.foppre ?? "").trim();
 }
 
 function serieOf(q: FactusolQuote): number {
@@ -154,6 +163,11 @@ export function CreateQuoteModal({
   const [serie, setSerie] = useState(PRESUPUESTO_SERIE);
   const [fecha, setFecha] = useState(today());
   const [referencia, setReferencia] = useState("");
+  // Punto E: forma de pago (`FOPPRE`, código de F_FPA). Opcional: "" = sin
+  // especificar. Se preselecciona la del cliente (F_CLI.FPACLI) en el alta,
+  // la de la plantilla al duplicar y la de la proforma al editar.
+  const [fopfac, setFopfac] = useState("");
+  const [formasPago, setFormasPago] = useState<FormaPago[]>([]);
   // Direcciones del cliente: la sede + las adicionales de FACTUSOL.
   const [addresses, setAddresses] = useState<FactusolAddress[]>([]);
   const [addressCode, setAddressCode] = useState(0);
@@ -223,6 +237,28 @@ export function CreateQuoteModal({
     return () => { alive = false; };
   }, [targetCodcli]);
 
+  // Catálogo de formas de pago (F_FPA). Si falla, el selector queda vacío y
+  // la proforma se crea sin forma de pago, como hasta ahora.
+  useEffect(() => {
+    let alive = true;
+    getFactusolFormasPago()
+      .then((items) => { if (alive) setFormasPago(items); })
+      .catch(() => { if (alive) setFormasPago([]); });
+    return () => { alive = false; };
+  }, []);
+
+  // Forma de pago por defecto del cliente destino (F_CLI.FPACLI), solo en el
+  // alta: al editar manda la que tenga la proforma. Cambiar de cliente vuelve
+  // a proponer la suya; si no tiene, se respeta lo que hubiera.
+  useEffect(() => {
+    if (editCodpre || !targetCodcli) return;
+    let alive = true;
+    getFactusolCustomerPaymentMethod(targetCodcli)
+      .then((r) => { if (alive && r.codigo) setFopfac(r.codigo); })
+      .catch(() => { /* sin defecto: el selector se queda como esté */ });
+    return () => { alive = false; };
+  }, [editCodpre, targetCodcli]);
+
   // Modo edición: precarga la proforma que se va a modificar (líneas con el
   // SKU comercial y portes de la cabecera, para no perderlos al reescribir).
   useEffect(() => {
@@ -235,6 +271,7 @@ export function CreateQuoteModal({
         const rows = rowsFromQuote(quote);
         setLines(rows.length > 0 ? rows : [emptyDocumentLine()]);
         setPortes(quote.portes ? String(quote.portes) : "");
+        setFopfac(paymentCodeOf(quote));
         // Solo para enseñarla: al editar, la serie no se manda ni se cambia.
         setSerie(serieOf(quote));
       })
@@ -317,6 +354,10 @@ export function CreateQuoteModal({
       );
     }
     setPortes(template.portes ? String(template.portes) : "");
+    // La copia hereda la forma de pago de la plantilla; si no tenía, se queda
+    // la propuesta (la del cliente destino) o ninguna.
+    const heredada = paymentCodeOf(template);
+    if (heredada) setFopfac(heredada);
     setLoadedFrom(template.codpre);
     setMode("articles");
   }
@@ -339,6 +380,11 @@ export function CreateQuoteModal({
     }
   }
 
+  /** Línea de TEXTO: sin SKU, sin precio y cantidad 0 — la continuación de
+   *  una descripción larga (FACTUSOL guarda 255 caracteres por fila) o una
+   *  nota. Se conserva al guardar; no suma. */
+  const isTextLine = (l: DocumentLine) =>
+    !l.sku.trim() && num(l.quantity) === 0 && num(l.unit_price) === 0;
   const valid = lines.some((l) => l.description.trim() && num(l.quantity) > 0);
 
   async function submit(force = false) {
@@ -354,7 +400,7 @@ export function CreateQuoteModal({
       // renumerarlo en la contabilidad).
       ...(editing ? {} : { serie }),
       lines: lines
-        .filter((l) => l.description.trim() && num(l.quantity) > 0)
+        .filter((l) => l.description.trim() && (num(l.quantity) > 0 || isTextLine(l)))
         .map((l) => ({
           codart: l.sku.trim() || undefined,
           description: l.description.trim(),
@@ -364,6 +410,9 @@ export function CreateQuoteModal({
           iva_pct: num(l.iva_pct),
         })),
       fecha: fecha || null,
+      // Forma de pago (FOPPRE). null = sin especificar (al editar, quita la
+      // que tuviera).
+      fopfac: fopfac || null,
       // Solo se manda si el operador eligió una alternativa: la principal ya
       // es lo que el backend toma de la empresa CRM.
       address: chosen && chosen.codigo !== 0 ? {
@@ -721,6 +770,25 @@ export function CreateQuoteModal({
                     <span>Fecha</span>
                     <input type="date" value={fecha}
                            onChange={(e) => setFecha(e.target.value)} />
+                  </label>
+                  {/* Punto E: forma de pago del documento (FOPPRE). Opcional;
+                      se enseña en Documentos y en el PDF y viaja al pedido al
+                      convertir. */}
+                  <label className="field">
+                    <span>Forma de pago</span>
+                    <select value={fopfac} aria-label="Forma de pago"
+                            title="Forma de pago del documento (F_FPA). Vacío = sin especificar."
+                            onChange={(e) => setFopfac(e.target.value)}>
+                      <option value="">— Sin especificar —</option>
+                      {fopfac && !formasPago.some((f) => (f.codigo ?? "") === fopfac) ? (
+                        <option value={fopfac}>Código {fopfac}</option>
+                      ) : null}
+                      {formasPago.map((f) => (
+                        <option key={f.codigo ?? f.nombre} value={f.codigo ?? ""}>
+                          {f.codigo ? `${f.codigo} · ` : ""}{f.nombre}
+                        </option>
+                      ))}
+                    </select>
                   </label>
                   {/* Portes aparte de la mercancía, como en el pedido manual. En
                       FACTUSOL van a la banda de portes de la cabecera (IPOR1PRE),

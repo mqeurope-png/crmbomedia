@@ -442,6 +442,18 @@ def customer_row(
     return None
 
 
+def customer_payment_method(
+    client: FactusolClient, codcli: Any, *, ejercicio: str,
+) -> str | None:
+    """Forma de pago por defecto del cliente (`F_CLI.FPACLI`, código de
+    F_FPA), o None si no la tiene o el cliente no existe. Punto E: el modal
+    de proforma la preselecciona."""
+    row = customer_row(client, codcli, ejercicio=ejercicio)
+    if row is None:
+        return None
+    return str(row.get("FPACLI") or "").strip() or None
+
+
 def regime_preview(
     row: dict[str, Any], *, country_iso2: str | None, vat: Any = None,
     nif: Any = None, vies_valid: bool | None = None,

@@ -748,13 +748,13 @@ def create_quote_job(
 def update_quote_job(
     codpre: str, customer: dict[str, Any], lines: list[dict[str, Any]],
     referencia: str | None = None, force: bool = False, portes: float = 0.0,
-    serie: int | None = None,
+    serie: int | None = None, fopfac: str | None = None,
 ) -> dict[str, Any]:
     """Reescribe cabecera + líneas de una proforma existente.
 
     `serie` IDENTIFICA cuál (la clave de F_PRE es serie + número); no la
     cambia. Va al final y opcional para que un job encolado antes del
-    despliegue siga funcionando."""
+    despliegue siga funcionando. `fopfac` (forma de pago, punto E) igual."""
     from sqlalchemy.orm import Session  # noqa: PLC0415
 
     from app.db.session import get_engine  # noqa: PLC0415
@@ -766,7 +766,7 @@ def update_quote_job(
         result = update_quote(
             client, codpre, ejercicio=ejercicio_for(session),
             customer=customer, lines=lines, referencia=referencia, force=force,
-            portes=portes, serie=serie,
+            portes=portes, serie=serie, fopfac=fopfac,
         )
     logger.info("factusol: proforma %s actualizada", codpre)
     return result
@@ -843,12 +843,12 @@ def enqueue_create_quote(
 def enqueue_update_quote(
     codpre: str, customer: dict[str, Any], lines: list[dict[str, Any]],
     referencia: str | None = None, force: bool = False, portes: float = 0.0,
-    serie: int | None = None,
+    serie: int | None = None, fopfac: str | None = None,
 ) -> str:
     return _enqueue(
         "app.integrations.factusol.jobs.update_quote_job",
         codpre=codpre, customer=customer, lines=lines, referencia=referencia,
-        force=force, portes=portes, serie=serie,
+        force=force, portes=portes, serie=serie, fopfac=fopfac,
     )
 
 

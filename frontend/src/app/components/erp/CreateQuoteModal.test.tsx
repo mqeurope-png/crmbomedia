@@ -6,6 +6,8 @@ import {
   createFactusolQuote,
   downloadFactusolDocumentPdf,
   getFactusolCustomerAddresses,
+  getFactusolCustomerPaymentMethod,
+  getFactusolFormasPago,
   getFactusolQuote,
   saveBlob,
   searchFactusolArticles,
@@ -22,6 +24,9 @@ jest.mock("../../lib/erpApi", () => ({
   updateFactusolQuote: jest.fn(),
   getFactusolQuote: jest.fn(),
   getFactusolCustomerAddresses: jest.fn(),
+  // Punto E: catálogo de formas de pago y la del cliente por defecto.
+  getFactusolFormasPago: jest.fn(),
+  getFactusolCustomerPaymentMethod: jest.fn(),
   waitForQuoteJob: jest.fn(),
   searchFactusolArticles: jest.fn(),
   searchFactusolQuotes: jest.fn(),
@@ -38,6 +43,8 @@ const mockSearchQuotes = searchFactusolQuotes as jest.Mock;
 const mockCompanies = listCompanies as jest.Mock;
 const mockUpdate = updateFactusolQuote as jest.Mock;
 const mockAddresses = getFactusolCustomerAddresses as jest.Mock;
+const mockFormasPago = getFactusolFormasPago as jest.Mock;
+const mockCustomerPayment = getFactusolCustomerPaymentMethod as jest.Mock;
 const mockWaitJob = waitForQuoteJob as jest.Mock;
 const mockPdf = downloadFactusolDocumentPdf as jest.Mock;
 const mockSaveBlob = saveBlob as jest.Mock;
@@ -84,6 +91,12 @@ beforeEach(() => {
   mockSaveBlob.mockReset();
   mockUpdate.mockResolvedValue({ job_id: "job-u1", status: "queued", codpre: "574" });
   mockAddresses.mockResolvedValue([]);
+  mockFormasPago.mockReset();
+  mockCustomerPayment.mockReset();
+  mockFormasPago.mockResolvedValue([
+    { codigo: "002", nombre: "Transferencia" }, { codigo: "003", nombre: "PayPal" },
+  ]);
+  mockCustomerPayment.mockResolvedValue({ codigo: null, nombre: null });
   mockWaitJob.mockResolvedValue({ status: "finished", result: { codpre: "51" } });
 });
 
@@ -663,6 +676,82 @@ describe("CreateQuoteModal", () => {
     // La serie va en el 3.er argumento (la URL), no en el cuerpo.
     expect(mockUpdate.mock.calls[0][2]).toBe(2);
     expect(mockUpdate.mock.calls[0][1]).not.toHaveProperty("serie");
+  });
+
+  // --- Punto E: forma de pago ---------------------------------------------
+
+  it("E · el selector lista las formas de pago de FACTUSOL, propone la del cliente y viaja como `fopfac`", async () => {
+    mockCustomerPayment.mockResolvedValue({ codigo: "002", nombre: "Transferencia" });
+    const user = userEvent.setup();
+    render(<CreateQuoteModal {...base({ factusolCodcli: "55555" })} />);
+    const select = screen.getByLabelText("Forma de pago");
+    await waitFor(() => expect(select).toHaveValue("002"));
+    expect(mockCustomerPayment).toHaveBeenCalledWith("55555");
+    expect(await screen.findByRole("option", { name: "003 · PayPal" })).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("Descripción línea 1"), "Mano de obra");
+    await user.type(screen.getByLabelText("Precio línea 1"), "500");
+    await user.click(screen.getByRole("button", { name: "Crear proforma" }));
+    await waitFor(() => expect(mockCreate).toHaveBeenCalled());
+    expect(mockCreate.mock.calls[0][0].fopfac).toBe("002");
+  });
+
+  it("E · sin forma de pago elegida viaja `null`; el operador puede elegir otra", async () => {
+    const user = userEvent.setup();
+    render(<CreateQuoteModal {...base()} />);
+    await screen.findByRole("option", { name: "002 · Transferencia" });
+    expect(screen.getByLabelText("Forma de pago")).toHaveValue("");
+    await user.type(screen.getByLabelText("Descripción línea 1"), "Mano de obra");
+    await user.type(screen.getByLabelText("Precio línea 1"), "500");
+    await user.click(screen.getByRole("button", { name: "Crear proforma" }));
+    await waitFor(() => expect(mockCreate).toHaveBeenCalled());
+    expect(mockCreate.mock.calls[0][0].fopfac).toBeNull();
+    // Sin CODCLI no hay forma por defecto que pedir.
+    expect(mockCustomerPayment).not.toHaveBeenCalled();
+  });
+
+  it("E · al editar precarga la forma de pago de la proforma y manda la elegida al guardar", async () => {
+    mockGetQuote.mockResolvedValue({
+      ...quote({ codpre: "574" }), line_source: "F_LPS", serie: 2, tippre: "2",
+      forma_pago: "003", forma_pago_nombre: "PayPal",
+      lines: [{ position: 1, codart: "MBO", description: "Cabezal MBO",
+                quantity: 1, unit_price: 250, discount_pct: 0,
+                line_total: 250, iva_pct: 21 }],
+    });
+    const user = userEvent.setup();
+    render(<CreateQuoteModal {...base({ editCodpre: "574", editSerie: 2 })} />);
+    await screen.findByRole("option", { name: "002 · Transferencia" });
+    await waitFor(() => expect(screen.getByLabelText("Forma de pago")).toHaveValue("003"));
+    await user.selectOptions(screen.getByLabelText("Forma de pago"), "002");
+    await user.click(screen.getByRole("button", { name: "Guardar cambios" }));
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
+    expect(mockUpdate.mock.calls[0][1].fopfac).toBe("002");
+  });
+
+  // --- Punto D: líneas de texto (continuación de descripciones largas) -----
+
+  it("D · las líneas de texto (cantidad 0, sin SKU ni precio) se conservan al guardar", async () => {
+    // FACTUSOL guarda 255 caracteres por fila: el resto vuelve como línea de
+    // texto. Antes el modal las descartaba por tener cantidad 0.
+    mockGetQuote.mockResolvedValue({
+      ...quote({ codpre: "574" }), line_source: "F_LPS", serie: 2, tippre: "2",
+      lines: [
+        { position: 1, codart: "UV1", sku: "UV1", description: "Impresora UV (primera parte)",
+          quantity: 1, unit_price: 1000, discount_pct: 0, line_total: 1000, iva_pct: 21 },
+        { position: 2, codart: null, sku: null, description: "resto de la descripción",
+          quantity: 0, unit_price: 0, discount_pct: 0, line_total: 0, iva_pct: 21,
+          text_only: true },
+      ],
+    });
+    const user = userEvent.setup();
+    render(<CreateQuoteModal {...base({ editCodpre: "574", editSerie: 2 })} />);
+    await waitFor(() =>
+      expect(screen.getByLabelText("Descripción línea 2")).toHaveValue("resto de la descripción"));
+    await user.click(screen.getByRole("button", { name: "Guardar cambios" }));
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
+    const lines = mockUpdate.mock.calls[0][1].lines;
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toMatchObject({ description: "resto de la descripción", quantity: 0, unit_price: 0 });
   });
 
   it("al EDITAR no se elige serie: se enseña la de la proforma y no viaja al PATCH", async () => {

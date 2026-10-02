@@ -3610,6 +3610,10 @@ export type FactusolQuoteLine = {
   discount_pct: number;
   line_total: number;
   iva_pct: number;
+  /** Línea de TEXTO (sin artículo, cantidad 0, precio 0): continuación de una
+   *  descripción larga —FACTUSOL guarda 255 caracteres por fila de F_LPS— o
+   *  una nota del escritorio. No suma. Ausente en respuestas antiguas. */
+  text_only?: boolean;
 };
 
 /** Proforma (presupuesto F_PRE). Recuerda que F_PRE es MONO-LÍNEA: `lines`
@@ -3654,6 +3658,12 @@ export type FactusolQuote = {
   serie?: number | null;
   serie_label?: string | null;
   numero?: string | null;
+  /** Punto E: forma de pago de la cabecera (`FOPPRE`, código F_FPA) y su
+   *  nombre. `foppre` es la columna cruda; `forma_pago` la normalizada (null
+   *  si no tiene). Solo en el detalle (`getFactusolQuote`). */
+  foppre?: string | null;
+  forma_pago?: string | null;
+  forma_pago_nombre?: string | null;
 };
 
 export type QuoteJobStatus =
@@ -3719,6 +3729,15 @@ export async function getFactusolQuote(
   return apiFetch(
     `/api/erp/factusol/quotes/${encodeURIComponent(codpre)}${qs({ serie: serie ?? undefined })}`,
   );
+}
+
+/** Punto E: forma de pago por defecto del cliente en FACTUSOL (`F_CLI.FPACLI`)
+ *  con su nombre. `codigo: null` si no tiene. El modal de proforma la
+ *  preselecciona. */
+export async function getFactusolCustomerPaymentMethod(
+  codcli: string,
+): Promise<{ codigo: string | null; nombre: string | null }> {
+  return apiFetch(`/api/erp/factusol/customers/${encodeURIComponent(codcli)}/payment-method`);
 }
 
 /** Dirección del cliente en FACTUSOL. `codigo: 0` es la sede; 1-4 son las

@@ -25,7 +25,8 @@ from fastapi import (
     UploadFile,
     status,
 )
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic_core import PydanticCustomError
 from sqlalchemy.orm import Session
 
 from app.db.session import get_session
@@ -1985,6 +1986,31 @@ def customer_addresses_endpoint(
     return {"items": items, "ejercicio": ejercicio}
 
 
+@router.get("/customers/{codcli}/payment-method")
+def customer_payment_method_endpoint(
+    codcli: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> dict[str, Any]:
+    """Forma de pago por defecto del cliente en FACTUSOL (`F_CLI.FPACLI`) con
+    su nombre de F_FPA. Punto E: «Nueva proforma» y el modal de duplicar la
+    preseleccionan. `codigo: null` si el cliente no tiene ninguna."""
+    _ = current_user
+    from app.integrations.factusol.catalogs import resolve_name  # noqa: PLC0415
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+    from app.integrations.factusol.customers import (  # noqa: PLC0415
+        customer_payment_method,
+    )
+
+    client, ejercicio = _client_and_ejercicio(session)
+    try:
+        codigo = customer_payment_method(client, codcli, ejercicio=ejercicio)
+        nombre = resolve_name(_fop_names(client, ejercicio), codigo) if codigo else None
+    except FactusolError as exc:
+        raise _factusol_gateway_error(exc, "factusol_payment_method_failed") from exc
+    return {"codigo": codigo, "nombre": nombre, "ejercicio": ejercicio}
+
+
 # --- conciliación masiva CRM ↔ FACTUSOL (Fase C · C-5) -----------------------
 
 
@@ -2843,13 +2869,29 @@ def get_quote_endpoint(
             "code": "quote_not_found",
             "detail": f"La proforma {codpre} no existe en el ejercicio {ejercicio}.",
         })
+    # Punto E: forma de pago de la cabecera (`FOPPRE`) con su nombre de F_FPA,
+    # para que el modal la precargue al editar/duplicar y la pantalla la enseñe.
+    from app.integrations.factusol.catalogs import resolve_name  # noqa: PLC0415
+
+    quote["forma_pago"] = str(quote.get("foppre") or "").strip() or None
+    quote["forma_pago_nombre"] = (
+        resolve_name(_fop_names(client, ejercicio), quote["forma_pago"])
+        if quote["forma_pago"] else None
+    )
     return quote
 
 
 class QuoteLineIn(BaseModel):
     codart: str = Field(default="", max_length=64)
-    description: str = Field(default="", max_length=255)
-    quantity: float = Field(default=1, gt=0)
+    #: Sin el tope de 255 de antes: ese límite era de BoHub, no de FACTUSOL.
+    #: Cada fila de F_LPS guarda `DESLPS_MAX_LENGTH` caracteres y lo que sobra
+    #: va en líneas de continuación; el tope de BoHub por descripción
+    #: (`QUOTE_LINE_DESCRIPTION_MAX`) se comprueba en `QuoteBodyPayload`, que
+    #: sabe en qué línea está.
+    description: str = Field(default="")
+    #: 0 solo en las líneas de TEXTO (sin artículo ni precio): continuaciones
+    #: de una descripción larga o notas. Lo comprueba `QuoteBodyPayload`.
+    quantity: float = Field(default=1, ge=0)
     unit_price: float = Field(default=0, ge=0)
     discount_pct: float = Field(default=0, ge=0, le=100)
     iva_pct: float = Field(default=21, ge=0, le=100)
@@ -2903,6 +2945,35 @@ class QuoteBodyPayload(BaseModel):
     #: Lote B3b: destinatario libre (dropshipping). Si viene junto con
     #: `address`, manda el libre.
     shipping: QuoteShippingIn | None = None
+
+    @model_validator(mode="after")
+    def _lineas_validas(self) -> QuoteBodyPayload:
+        """Mensajes con el nº de línea y el límite REAL, en vez del genérico
+        «lines.3.description: String should have at most 255 characters»."""
+        from app.integrations.factusol.quotes import (  # noqa: PLC0415
+            DESLPS_MAX_LENGTH,
+            QUOTE_LINE_DESCRIPTION_MAX,
+        )
+
+        for n, line in enumerate(self.lines, start=1):
+            largo = len(" ".join(line.description.split()))
+            if largo > QUOTE_LINE_DESCRIPTION_MAX:
+                raise PydanticCustomError(
+                    "quote_line_too_long",
+                    "La descripción de la línea {n} tiene {largo} caracteres y el "
+                    "máximo es {maximo} (FACTUSOL guarda {por_linea} por línea; el "
+                    "resto va en líneas de continuación).",
+                    {"n": n, "largo": largo, "maximo": QUOTE_LINE_DESCRIPTION_MAX,
+                     "por_linea": DESLPS_MAX_LENGTH},
+                )
+            if line.quantity <= 0 and (line.codart.strip() or line.unit_price > 0):
+                raise PydanticCustomError(
+                    "quote_line_quantity",
+                    "La línea {n} necesita una cantidad mayor que 0 (solo las "
+                    "líneas de texto, sin artículo ni precio, pueden ir a 0).",
+                    {"n": n},
+                )
+        return self
 
 
 class CreateQuotePayload(QuoteBodyPayload):
@@ -3104,7 +3175,7 @@ def update_quote_endpoint(
     job_id = enqueue_update_quote(
         codpre, customer, [line.model_dump() for line in payload.lines],
         payload.referencia.strip() or None, payload.force,
-        float(payload.portes or 0), serie,
+        float(payload.portes or 0), serie, payload.fopfac,
     )
     _audit_quote(session, current_user, "erp.factusol_quote_update", codpre,
                  {"job_id": job_id, "lines": len(payload.lines),

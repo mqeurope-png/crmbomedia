@@ -1221,10 +1221,15 @@ def update_quote(
     client: FactusolClient, codpre: str, *, ejercicio: str,
     customer: dict[str, Any], lines: list[dict[str, Any]],
     referencia: str | None = None, force: bool = False,
-    portes: float = 0.0, serie: Any = None,
+    portes: float = 0.0, serie: Any = None, fopfac: str | None = None,
 ) -> dict[str, Any]:
     """Reescribe una proforma: cabecera con `ActualizarRegistro` y líneas
     borradas + vueltas a escribir.
+
+    `fopfac` (punto E): forma de pago (`FOPPRE`, código de F_FPA). El modal la
+    precarga con la que tiene la proforma, así que si llega vacía y la fila
+    tenía una, es que el operador la quitó: se escribe en blanco (igual que
+    los portes; `ActualizarRegistro` solo toca lo que se envía).
 
     Las líneas se reemplazan enteras en vez de intentar un diff: `F_LPS` se
     identifica por `(TIPLPS, CODLPS, POSLPS)`, así que un diff tendría que
@@ -1268,11 +1273,13 @@ def update_quote(
     header = build_quote_payload(
         str(codpre), ejercicio=ejercicio, customer=customer,
         refpre=(referencia or "").strip(), lines=lines, portes=portes,
-        serie=propia,
+        serie=propia, fopfac=(fopfac or "").strip() or None,
     )
     if "IPOR1PRE" not in header and _num(row.get("IPOR1PRE")):
         header["IPOR1PRE"] = 0.0
         header["BAS1PRE"] = header["NET1PRE"]
+    if "FOPPRE" not in header and str(row.get("FOPPRE") or "").strip():
+        header["FOPPRE"] = ""
     # En un UPDATE no se tocan ni el código ni la fecha de creación: el primero
     # es la clave y la segunda es cuándo nació el documento, no cuándo se editó.
     header.pop("FECPRE", None)
@@ -1389,6 +1396,23 @@ def quote_lines_for_order(
             "line_total": quote["base"],
             "iva_pct": _num(quote.get("piva1pre"), DEFAULT_IVA_PCT),
         }]
+    # Punto E: la forma de pago de la cabecera (`FOPPRE`) viaja al pedido como
+    # en los pedidos creados desde un albarán/factura (`factusol_source`).
+    forma_pago = str(quote.get("foppre") or "").strip() or None
+    forma_pago_nombre = None
+    if forma_pago:
+        from app.integrations.factusol.catalogs import (  # noqa: PLC0415
+            payment_method_names,
+            resolve_name,
+        )
+
+        try:
+            forma_pago_nombre = resolve_name(
+                payment_method_names(client, ejercicio=ejercicio), forma_pago,
+            )
+        except FactusolError:
+            logger.warning("factusol: no se pudo leer F_FPA para la proforma %s",
+                           codpre, exc_info=True)
     return {
         "codpre": str(quote["codpre"]),
         # La serie REAL de la proforma que se ha leído, para que quien convierta
@@ -1400,6 +1424,8 @@ def quote_lines_for_order(
         "total": quote["total"],
         "referencia": quote["referencia"],
         "clipre": quote["clipre"],
+        "forma_pago": forma_pago,
+        "forma_pago_nombre": forma_pago_nombre,
         # Destino del envío (bloque de cliente de la cabecera F_PRE): el pedido
         # lo guarda para que Genei tenga dirección, teléfono y email.
         "entrega": {
@@ -1494,7 +1520,8 @@ def convert_quote_to_order(
         packing_extra=packing_con_destino(
             {"factusol_source": factusol_source_block(
                 doc_type="presupuestos", serie=serie, codigo=int(codpre),
-                referencia=referencia, forma_pago=None, forma_pago_nombre=None,
+                referencia=referencia, forma_pago=data.get("forma_pago"),
+                forma_pago_nombre=data.get("forma_pago_nombre"),
                 cliente_codigo=data["clipre"], total=data["total"],
             )},
             data.get("entrega"),
