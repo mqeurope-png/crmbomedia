@@ -140,24 +140,17 @@ function SatShippedTable({
 /** Preferencia de vista (tarjetas / lista) por dispositivo: la tablet del
  *  taller quiere tarjetas; el escritorio de oficina, lista. */
 const VIEW_KEY = "bohub.sat.queue.view";
-/** Última pestaña usada (por dispositivo); sin ninguna, «Por embalar». */
-const TAB_KEY = "bohub.sat.queue.tab";
+/** Pestaña al entrar: SIEMPRE «Por embalar» (#494), salvo que la URL traiga
+ *  una válida (`?tab=enviados`, un enlace directo). No se recuerda la última
+ *  pestaña entre visitas: eso hacía que la cola se abriera en «Enviados». */
 const DEFAULT_TAB: Tab = "por_embalar";
 
-function readStoredTab(): Tab {
+function initialTab(): Tab {
   try {
-    const t = window.localStorage.getItem(TAB_KEY);
+    const t = new URLSearchParams(window.location.search).get("tab");
     return t && (ALL_TABS as string[]).includes(t) ? (t as Tab) : DEFAULT_TAB;
   } catch {
     return DEFAULT_TAB;
-  }
-}
-
-function storeTab(tab: Tab): void {
-  try {
-    window.localStorage.setItem(TAB_KEY, tab);
-  } catch {
-    // sin storage: se vuelve a «Por embalar» la próxima vez
   }
 }
 
@@ -233,9 +226,9 @@ export default function SatQueuePage() {
 
   // --- vista y pestaña (recordadas por dispositivo) --------------------------
   const [view, setView] = useState<View>("cards");
-  // «Por embalar» es la pestaña de entrada; si ya se usó otra, se vuelve a ella.
+  // «Por embalar» es la pestaña de entrada, siempre (salvo `?tab=` en la URL).
   const [tab, setTab] = useState<Tab>(DEFAULT_TAB);
-  useEffect(() => { setView(readStoredView()); setTab(readStoredTab()); }, []);
+  useEffect(() => { setView(readStoredView()); setTab(initialTab()); }, []);
   function changeView(v: View) {
     setView(v);
     storeView(v);
@@ -337,7 +330,6 @@ export default function SatQueuePage() {
 
   function changeTab(t: Tab) {
     setTab(t);
-    storeTab(t);
   }
 
   // --- selección múltiple («No requiere envío» en lote) ------------------------

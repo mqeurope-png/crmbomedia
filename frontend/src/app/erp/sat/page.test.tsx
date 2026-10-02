@@ -738,27 +738,36 @@ describe("SatQueuePage (regresión)", () => {
     ).toEqual(["Pedido PE-1", "Pedido EP-1", "Pedido EM-1"]));
   });
 
-  it("recuerda la última pestaña usada; sin ninguna (o una que no existe), «Por embalar»", async () => {
+  it("al entrar se abre SIEMPRE «Por embalar», aunque la última visita acabara en «Enviados»", async () => {
     const user = userEvent.setup();
-    window.localStorage.setItem("bohub.sat.queue.tab", "embalados");
+    // Lo que una versión anterior dejó guardado no manda.
+    window.localStorage.setItem("bohub.sat.queue.tab", "enviados");
     const { unmount } = render(<SatQueuePage />);
     await loaded();
-    await waitFor(() => expect(screen.getByRole("tab", { name: /^Embalados/ }))
-      .toHaveAttribute("aria-selected", "true"));
-    await pestana(user, /Todos pendientes/);
-    expect(window.localStorage.getItem("bohub.sat.queue.tab")).toBe("pendientes");
+    expect(screen.getByRole("tab", { name: /Por embalar/ })).toHaveAttribute("aria-selected", "true");
+    await pestana(user, /^Enviados/);
+    expect(screen.getByRole("tab", { name: /^Enviados/ })).toHaveAttribute("aria-selected", "true");
     unmount();
 
-    const { unmount: unmountSecond } = render(<SatQueuePage />);
-    await loaded();
-    await waitFor(() => expect(screen.getByRole("tab", { name: /Todos pendientes/ }))
-      .toHaveAttribute("aria-selected", "true"));
-    unmountSecond();
-
-    window.localStorage.setItem("bohub.sat.queue.tab", "no-existe");
+    // Segunda visita: de nuevo «Por embalar», no «Enviados».
     render(<SatQueuePage />);
     await loaded();
     expect(screen.getByRole("tab", { name: /Por embalar/ })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("un enlace directo con la pestaña en la URL (?tab=enviados) sí se respeta; una inválida, no", async () => {
+    window.history.replaceState({}, "", "/erp/sat?tab=enviados");
+    const { unmount } = render(<SatQueuePage />);
+    await loaded();
+    await waitFor(() => expect(screen.getByRole("tab", { name: /^Enviados/ }))
+      .toHaveAttribute("aria-selected", "true"));
+    unmount();
+
+    window.history.replaceState({}, "", "/erp/sat?tab=no-existe");
+    render(<SatQueuePage />);
+    await loaded();
+    expect(screen.getByRole("tab", { name: /Por embalar/ })).toHaveAttribute("aria-selected", "true");
+    window.history.replaceState({}, "", "/erp/sat");
   });
 
   it("«Lista» se aplica también a «Todos pendientes»: cada columna es una tabla", async () => {
