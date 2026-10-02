@@ -11,6 +11,9 @@ type Crumb = {
 
 type Props = {
   title: string;
+  /** Segunda línea del título, a su nivel (p. ej. el cliente en la ficha de
+   *  un pedido): grande y en negro, no como la descripción gris. */
+  subtitle?: ReactNode;
   eyebrow?: string;
   description?: string;
   crumbs?: Crumb[];
@@ -26,6 +29,7 @@ type Props = {
  */
 export function PageHeader({
   title,
+  subtitle,
   eyebrow,
   description,
   crumbs,
@@ -52,6 +56,7 @@ export function PageHeader({
         ) : null}
         {eyebrow ? <p className="eyebrow">{eyebrow}</p> : null}
         <h1>{title}</h1>
+        {subtitle ? <p className="page-header-subtitle">{subtitle}</p> : null}
         {description ? <p className="lead">{description}</p> : null}
       </div>
       {actions ? <div className="page-header-actions">{actions}</div> : null}

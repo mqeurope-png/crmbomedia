@@ -51,6 +51,7 @@ jest.mock("../../../lib/erpApi", () => ({
   ],
   factusolSerieLabel: (n: number | null) =>
     (n == null ? "—" : ({ 1: "Bomedia", 2: "MQ Europe", 4: "Lambert", 5: "Streamtec" }[n] ?? String(n))),
+  customerHeadline: () => "Escola La Muntanyeta",
   customerLabel: () => "Escola La Muntanyeta",
   resolveOrderCobroStatus: (
     o: { factusol_cobro_status?: string | null },

@@ -30,7 +30,7 @@ function fecha(iso: string | null | undefined): string {
 /** Detalle de la pastilla «Completado» (solo BoHub). */
 export function completadoTitle(o: OrderStatusPillsInput): string {
   if (!o.completed) return "Sin marcar como completado.";
-  return `Completado${o.completed_at ? ` el ${fecha(o.completed_at)}` : ""}${o.completed_by_name ? ` por ${o.completed_by_name}` : ""} (solo BoHub)`;
+  return `Marcado como completado${o.completed_at ? ` el ${fecha(o.completed_at)}` : ""}${o.completed_by_name ? ` por ${o.completed_by_name}` : ""} (solo BoHub)`;
 }
 
 /** Detalle de la pastilla «Factura enviada» (envío por email al cliente). */
@@ -69,15 +69,16 @@ export function OrderStatusPills({
           {facturaEnviada ? "Factura enviada" : "Factura sin enviar"}
         </span>
       ) : null}
+      {/* «No completado» neutro, sin punto (no es un estado del proceso que
+          falte, solo la marca manual sin poner); «Completado ✓» en verde. */}
       <span
-        className={`erp-status-pill${completado ? " is-on" : " is-off"}`}
+        className={`erp-status-pill${completado ? " is-on" : " is-off is-plain"}`}
         data-pill="completado"
         role="img"
         aria-label={`Completado: ${completado ? "sí" : "no"}`}
         title={completadoTitle(order)}
       >
-        <span className="erp-status-pill-dot" aria-hidden />
-        Completado
+        {completado ? "Completado ✓" : "No completado"}
       </span>
     </div>
   );

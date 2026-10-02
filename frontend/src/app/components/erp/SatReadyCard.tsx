@@ -16,7 +16,7 @@ import {
   type ShipmentFileKind,
 } from "../../lib/erpApi";
 import { OTHER_COURIER_LABEL, suggestCourier } from "../../lib/couriers";
-import { carrierDate, carrierStepTone } from "../../lib/geneiApi";
+import { carrierDate, carrierStepTone, sendCustomerEmail } from "../../lib/geneiApi";
 import { CourierSelect, CourierTrackingEditor, withSuggestion } from "./CourierFields";
 import { FileUploadButton } from "./FileUploadButton";
 import { GeneiShipmentSection } from "./GeneiShipmentSection";
@@ -362,6 +362,9 @@ export function SatReadyCard({
           <span className="badge muted">Genei: {order.genei.state_label}</span>
         ) : null}
       </div>
+      {pendienteRecogida && (order.tracking_number || order.genei?.tracking) ? (
+        <SatAvisoCliente order={order} canShip={canShip} onChanged={onChanged} />
+      ) : null}
       {customerLabel(order) ? (
         <div className="sat-card-customer">{customerLabel(order)}</div>
       ) : null}
@@ -492,6 +495,85 @@ export function geneiPendienteDeEntrada(order: SatQueueItem): boolean {
       && !["ready", "in_transit"].includes(g.state_bucket ?? "")) return false;
   if (g.state_code != null) return GENEI_ANTES_DE_LA_RED.includes(Number(g.state_code));
   return ["", "created", "processing", "ready"].includes(g.state_bucket ?? "");
+}
+
+/** ¿El aviso de envío al cliente ya salió alguna vez? */
+export function avisoEnviado(order: SatQueueItem): boolean {
+  const ce = order.customer_email;
+  return ce?.status === "sent" || !!ce?.sent_at;
+}
+
+/** Columna «Aviso» de «Enviados» (y de «Pendiente de recogida» con tracking):
+ *  «✉ Enviado 01/10, 12:03» (verde, con el destinatario en el tooltip) o
+ *  «✉ Sin enviar» (gris). Con nº de seguimiento y permiso de envíos, «Enviar
+ *  aviso» / «Reenviar» con una confirmación de una línea: el MISMO endpoint,
+ *  plantilla e idioma que el botón de la ficha (queda en la auditoría del
+ *  pedido, con fecha y usuario). Sin tracking no hay botón. */
+export function SatAvisoCliente({
+  order, canShip, onChanged,
+}: {
+  order: SatQueueItem;
+  canShip: boolean;
+  onChanged?: () => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const ce = order.customer_email;
+  const enviado = avisoEnviado(order);
+  const tracking = order.tracking_number || order.genei?.tracking;
+  const accion = enviado ? "Reenviar" : "Enviar aviso";
+
+  async function enviar() {
+    setBusy(true);
+    setError(null);
+    try {
+      await sendCustomerEmail(order.id);
+      setConfirming(false);
+      onChanged?.();
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudo enviar el aviso."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="sat-aviso" aria-label={`Aviso al cliente de ${order.order_number}`}>
+      <span
+        className={`badge ${enviado ? "ok" : "muted"}`}
+        title={enviado
+          ? `Aviso enviado${ce?.to ? ` a ${ce.to}` : ""}${(ce?.sends ?? 0) > 1 ? ` · ${ce?.sends} envíos` : ""}`
+          : "Aún no se ha mandado el aviso de envío al cliente"}
+      >
+        ✉ {enviado ? `Enviado ${carrierDate(ce?.sent_at)}`.trim() : "Sin enviar"}
+      </span>
+      {canShip && tracking ? (
+        confirming ? (
+          <span className="sat-aviso-confirm" role="group" aria-label={`Confirmar ${accion}`}>
+            <span className="small">
+              ¿{enviado ? "Reenviar" : "Enviar"} el aviso al cliente{ce?.to ? ` (${ce.to})` : ""}?
+            </span>{" "}
+            <button type="button" className="button small" disabled={busy}
+                    onClick={() => void enviar()}>
+              {busy ? "Enviando…" : "Sí, enviar"}
+            </button>{" "}
+            <button type="button" className="button small secondary" disabled={busy}
+                    onClick={() => setConfirming(false)}>
+              No
+            </button>
+          </span>
+        ) : (
+          <button type="button" className="button small secondary"
+                  aria-label={`${accion} al cliente de ${order.order_number}`}
+                  onClick={() => { setError(null); setConfirming(true); }}>
+            {accion}
+          </button>
+        )
+      ) : null}
+      {error ? <p className="form-error small" role="alert">{error}</p> : null}
+    </div>
+  );
 }
 
 /** Estado de envío legible de un pedido enviado (o que no se envía). Manda el

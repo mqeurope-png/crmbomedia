@@ -1127,6 +1127,7 @@ def list_orders(
     # alertas) lo calcula el backend UNA vez y lo consumen igual la bandeja y
     # la ficha.
     from app.erp.workflow import (  # noqa: PLC0415
+        is_paid,
         latest_invoice_emailed_map,
         queue_counts,
         workflows_for,
@@ -1136,6 +1137,10 @@ def list_orders(
     counts = queue_counts(flows)
     if queue:
         rows = [o for o in rows if flows[o.id]["queue"] == queue]
+    # La bandeja enseña también los pendientes de pago, DETRÁS de los pagados
+    # (orden estable: dentro de cada grupo, el pedido). Antes del recorte, para
+    # que los no pagados no dejen fuera a los pagados.
+    rows.sort(key=lambda o: not is_paid(o))
     rows = rows[:limit]
     names = customer_names(session, rows)
     # «Factura enviada» de la bandeja: fecha del último envío por email (dato ya

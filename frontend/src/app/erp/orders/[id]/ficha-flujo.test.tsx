@@ -30,8 +30,10 @@ jest.mock("next/navigation", () => ({
 // La cabecera del rediseño lleva las acciones del pedido (PDF, email,
 // completado, «⋯»): el mock las pinta para que sigan siendo accesibles.
 jest.mock("../../../components/PageHeader", () => ({
-  PageHeader: ({ title, actions }: { title: string; actions?: React.ReactNode }) => (
-    <><h1>{title}</h1>{actions}</>
+  PageHeader: ({ title, subtitle, actions }: {
+    title: string; subtitle?: React.ReactNode; actions?: React.ReactNode;
+  }) => (
+    <><h1>{title}</h1>{subtitle ? <p data-testid="header-subtitle">{subtitle}</p> : null}{actions}</>
   ),
 }));
 jest.mock("../../../components/erp/EmbalarModal", () => ({ EmbalarModal: () => null }));
@@ -112,6 +114,7 @@ jest.mock("../../../lib/erpApi", () => ({
     payment: "Pago", preparation: "Preparación", transport: "Transporte", invoice: "Facturación",
   },
   STATUS_LABELS: {},
+  customerHeadline: () => "La Maison de la Plaque · Alexandre",
   customerLabel: () => "Alexandre · La Maison de la Plaque",
   resolveOrderCobroStatus: (
     o: { factusol_cobro_status?: string | null },
@@ -206,7 +209,11 @@ beforeEach(() => {
 describe("ERP · Ficha del pedido (rediseño de flujo)", () => {
   it("la cabecera dice quién es el cliente, su cola, su régimen y su nº de FACTUSOL", async () => {
     render(<ErpOrderDetailPage />);
-    expect(await screen.findByText("Alexandre · La Maison de la Plaque")).toBeInTheDocument();
+    // El cliente, al nivel del título (empresa · persona): segunda línea de la
+    // cabecera, no en la línea de chips.
+    const cliente = await screen.findByText("La Maison de la Plaque · Alexandre");
+    expect(screen.getByTestId("header-subtitle")).toContainElement(cliente);
+    expect(cliente).toHaveClass("erp-ficha-customer-name");
     expect(screen.getByText("Por facturar")).toBeInTheDocument();
     expect(screen.getByText("FR · intracomunitario · exento")).toBeInTheDocument();
     expect(screen.getByText("FACTUSOL nº 2760")).toBeInTheDocument();

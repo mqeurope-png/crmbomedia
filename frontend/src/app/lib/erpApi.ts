@@ -363,6 +363,15 @@ export function customerLabel(
   return [order.contact_name, order.company_name].filter(Boolean).join(" · ");
 }
 
+/** El cliente como se lee de lejos (tarjeta de la bandeja, cabecera de la
+ *  ficha): la EMPRESA primero y, si hay, la persona detrás («SAS QUALI-CITE ·
+ *  Virginie Marchand»); sin empresa, la persona. */
+export function customerHeadline(
+  order: { contact_name?: string | null; company_name?: string | null },
+): string {
+  return [order.company_name, order.contact_name].filter(Boolean).join(" · ");
+}
+
 function qs(params: Record<string, string | number | undefined>): string {
   const sp = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
@@ -1576,6 +1585,17 @@ export type SatQueueItem = {
   tracking_url?: string | null;
   /** Aviso de envío al cliente de un envío externo (pending/sent/error…). */
   customer_email_status?: string | null;
+  /** Aviso de envío al cliente (Genei u otro courier): estado, cuándo y a
+   *  quién se mandó el último, y cuántas veces. null = sin aviso registrado. */
+  customer_email?: SatCustomerEmail | null;
+};
+
+export type SatCustomerEmail = {
+  status?: string | null;
+  sent_at?: string | null;
+  to?: string | null;
+  sends?: number;
+  automatic?: boolean;
 };
 
 /** Pestañas de la Cola SAT. «Todos pendientes» = las cuatro de pendientes;

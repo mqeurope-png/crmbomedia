@@ -30,6 +30,12 @@ jest.mock("../../lib/api", () => ({
   getCurrentUser: jest.fn(),
 }));
 
+// El aviso de envío al cliente se manda con el MISMO endpoint que la ficha.
+jest.mock("../../lib/geneiApi", () => ({
+  ...jest.requireActual("../../lib/geneiApi"),
+  sendCustomerEmail: jest.fn(),
+}));
+
 jest.mock("../../lib/erpApi", () => ({
   // Helpers puros y catálogos: los reales.
   customerLabel: jest.requireActual("../../lib/erpApi").customerLabel,
@@ -409,6 +415,57 @@ describe("«Enviados»: estado REAL del transportista (Genei /tracking)", () => 
     await pestana(user, /^Enviados/);
     const table = await screen.findByRole("table", { name: "Pedidos enviados" });
     expect(within(table).getByText("En reparto")).toBeInTheDocument();
+  });
+});
+
+describe("«Enviados»: columna «Aviso» (aviso de envío al cliente)", () => {
+  function enviado(over: Partial<SatQueueItem>): SatQueueItem {
+    return item({ preparation_status: "packed", transport_status: "in_transit",
+                  sat_tab: "enviados", shipment_kind: "externo", courier: "UPS", ...over });
+  }
+
+  it("enviado / sin enviar con botón / sin tracking sin botón; «Reenviar» confirma y usa el endpoint de la ficha", async () => {
+    const { sendCustomerEmail } = jest.requireMock("../../lib/geneiApi");
+    (sendCustomerEmail as jest.Mock).mockResolvedValue({ order_id: "a1", state: {} });
+    mockShipped.mockResolvedValue({ total: 3, limit: 200, items: [
+      enviado({ id: "a1", order_number: "BOP-A1", tracking_number: "1Z1",
+                customer_email: { status: "sent", sent_at: "2026-10-01T12:03:00+02:00",
+                                  to: "cliente@acme.es", sends: 1 } }),
+      enviado({ id: "a2", order_number: "BOP-A2", tracking_number: "1Z2",
+                customer_email: { status: "disabled", sends: 0 } }),
+      enviado({ id: "a3", order_number: "BOP-A3", tracking_number: null, customer_email: null }),
+    ] });
+    const user = userEvent.setup();
+    render(<SatQueuePage />);
+    await loaded();
+    await pestana(user, /^Enviados/);
+    const table = await screen.findByRole("table", { name: "Pedidos enviados" });
+    expect(within(table).getByRole("columnheader", { name: "Aviso" })).toBeInTheDocument();
+
+    const a1 = within(table).getByLabelText("Aviso al cliente de BOP-A1");
+    const badge1 = within(a1).getByText(/✉ Enviado/);
+    expect(badge1).toHaveClass("badge", "ok");
+    expect(badge1).toHaveAttribute("title", "Aviso enviado a cliente@acme.es");
+    expect(within(a1).getByRole("button", { name: "Reenviar al cliente de BOP-A1" }))
+      .toBeInTheDocument();
+
+    const a2 = within(table).getByLabelText("Aviso al cliente de BOP-A2");
+    expect(within(a2).getByText("✉ Sin enviar")).toHaveClass("badge", "muted");
+    expect(within(a2).getByRole("button", { name: "Enviar aviso al cliente de BOP-A2" }))
+      .toBeInTheDocument();
+
+    const a3 = within(table).getByLabelText("Aviso al cliente de BOP-A3");
+    expect(within(a3).getByText("✉ Sin enviar")).toBeInTheDocument();
+    expect(within(a3).queryByRole("button")).toBeNull();          // sin tracking, sin botón
+
+    // «Reenviar»: confirmación de una línea y el mismo endpoint de la ficha.
+    const llamadas = mockShipped.mock.calls.length;
+    await user.click(within(a1).getByRole("button", { name: "Reenviar al cliente de BOP-A1" }));
+    expect(within(a1).getByText("¿Reenviar el aviso al cliente (cliente@acme.es)?"))
+      .toBeInTheDocument();
+    await user.click(within(a1).getByRole("button", { name: "Sí, enviar" }));
+    await waitFor(() => expect(sendCustomerEmail).toHaveBeenCalledWith("a1"));
+    await waitFor(() => expect(mockShipped.mock.calls.length).toBeGreaterThan(llamadas));
   });
 });
 

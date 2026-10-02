@@ -185,10 +185,14 @@ manual»** para dar de alta un pedido a mano.
 **Las colas (por acción).** Debajo del título hay tarjetas con un número; cada
 una es una **cola** de pedidos que están esperando lo mismo. En orden:
 
-1. **«Por revisar»** — *esperando tu aprobación*.
+1. **«Por revisar»** — *esperando tu aprobación*. Incluye los pedidos **sin
+   pagar** (detrás de los pagados, con su casilla «Pago» en ámbar); es el mismo
+   número que **«Pedidos pendientes de aprobación»** del inicio del ERP.
 2. **«Por facturar»** — *aprobados, sin factura en FACTUSOL*.
 3. **«Por cobrar»** — *facturados, sin cobro registrado en FACTUSOL*.
-4. **«Por enviar»** — *cobrados, pendientes de salir*.
+4. **«Por enviar»** — *cobrados, pendientes de salir*. Un pedido facturado,
+   cobrado y ya **entregado** no está aquí: está en «Listo», esperando a que lo
+   marques completado.
 5. **«Incidencias»** — *algo bloquea el pedido*.
 6. **«Listo»** — *nada pendiente*.
 
@@ -214,7 +218,9 @@ completar*), **«Cobro FACTUSOL»** (*Cobrado en FACTUSOL* / *Pendiente de cobro
 alterna **«Fecha ↓»** (más nuevos primero) y **«Fecha ↑»**.
 Con **«Actualizar cobros FACTUSOL»** vuelves a leer de FACTUSOL el estado de
 cobro de las facturas (solo lectura). Los botones **«Limpiar filtros»** y **«Por
-defecto»** (pagados y sin completar) reinician la vista.
+defecto»** (todos los pedidos —**también los no pagados**— sin completar)
+reinician la vista. Al entrar, «Pago» está en **«todos»**: los pedidos pendientes
+de pago se ven en su cola, **detrás** de los pagados.
 
 **Ver.** Un selector **«Ver»** con tres modos:
 
@@ -229,8 +235,14 @@ Acciones**). En pantallas anchas la lista **scrollea dentro de su recuadro**
 (cabecera fija; casilla y **Nº** fijos a la izquierda, **Acciones** a la
 derecha); por debajo de 1100 px se apila en fichas como antes.
 
+**El cliente, de lejos.** En cada tarjeta el cliente es la **segunda línea**,
+justo bajo el Nº de pedido, en negro y grande: **empresa · persona** (sin
+empresa, la persona). En la vista Lista, la columna Cliente va en negrita.
+
 **Las pastillas de estado.** Cada pedido muestra una rejilla de cuatro celdas —
-**Pago · Factura · Cobro · Envío** — más la pastilla **«Completado»**. El color
+**Pago · Factura · Cobro · Envío** — más la etiqueta de completado: **«No
+completado»** (gris, neutra) o **«Completado ✓»** (verde; al pasar el ratón,
+*«Marcado como completado el … por …»*). El color
 manda: **verde** = hecho, **ámbar** = pendiente, **gris** = no aplica, **rojo** =
 bloqueado. Verás también badges sueltos como **«Cobrado FACTUSOL»** /
 **«Pendiente de cobro FACTUSOL»**, **«Bloqueado»**, **«Externalizado»**,
@@ -246,6 +258,10 @@ seleccionados»**, **«Quitar de la bandeja»**, etc.
 
 Es la pantalla de un pedido concreto. De arriba abajo:
 
+- **Cabecera** — el título **«Pedido …»** y, justo debajo y al mismo nivel, el
+  **cliente** en negro y grande (**empresa · persona**, enlazado a su ficha):
+  se lee antes que el número. La cola, el régimen de IVA y el nº de FACTUSOL van
+  en su línea de chips.
 - **Línea de vida del pedido** — los **6 pasos obligatorios** en columna (hasta
   **Cobro**); el paso pendiente se marca **«Paso actual»** y, si un pedido web no
   lleva albarán propio, ese paso dice *«lo crea WooCommerce»*. Arriba, una barra
@@ -702,9 +718,17 @@ estado). Va al email del destinatario que se puso al crear el envío.
   *pedidos@streamtec.es*; en **cualquier otro idioma** →
   *info@artisjet-printers.eu*.
 - En la sección de Genei de la ficha se ve si se envió (cuándo, a quién, en qué
-  idioma y desde dónde) y está **«Enviar / Reenviar aviso al cliente»** (con
-  vista previa, idioma y destinatario editables). Queda en la línea de tiempo
-  del pedido.
+  idioma y desde dónde; y, si el estado es otro —un reenvío fallido, pendiente…—,
+  la fecha y el destinatario del **último aviso que sí salió**) y está
+  **«Enviar / Reenviar aviso al cliente»** (con vista previa, idioma y
+  destinatario editables). Queda en la línea de tiempo del pedido.
+- En la **Cola SAT**, pestaña **«Enviados»**, la columna **«Aviso»** lo dice sin
+  abrir la ficha: **«✉ Enviado 01/10, 12:03»** (verde; el destinatario en el
+  tooltip) o **«✉ Sin enviar»** (gris). Con nº de seguimiento hay un botón
+  **«Enviar aviso»** (o **«Reenviar»** si ya salió), con una confirmación de una
+  línea: es el mismo envío que el de la ficha (misma plantilla e idioma) y queda
+  registrado con fecha y usuario. Sin tracking no hay botón. Lo mismo en las
+  tarjetas de **«Pendiente de recogida»** que ya tienen tracking.
 - Solo se manda solo en los envíos **creados a partir de este cambio** (los
   anteriores ya los avisó Genei); en esos, se puede mandar a mano.
 - **En Genei**: con esto en marcha, en **Perfil → Notificaciones →

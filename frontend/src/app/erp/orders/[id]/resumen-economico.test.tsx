@@ -44,6 +44,7 @@ jest.mock("../../../lib/erpApi", () => ({
   DOMAIN_LABELS: { payment: "Pago", preparation: "Preparación", transport: "Transporte", invoice: "Facturación" },
   STATUS_LABELS: {},
   REGIME_TEXT: { nacional: "nacional", intracomunitario: "intracomunitario", exportacion: "exportación" },
+  customerHeadline: () => "Artisjet Cliente",
   customerLabel: () => "Artisjet Cliente",
   resolveOrderCobroStatus: () => null,
   getOrder: jest.fn(),

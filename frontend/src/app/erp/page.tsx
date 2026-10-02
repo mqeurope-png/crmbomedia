@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { PageHeader } from "../components/PageHeader";
 import { getCurrentUser, type User } from "../lib/api";
 import { resolveVisibleNav } from "../lib/appNav";
-import { getSatQueue, listPendingApproval } from "../lib/erpApi";
+import { getSatQueue, listOrders } from "../lib/erpApi";
 
 /** ERP-F2 — INICIO del ERP (`/erp`). Es la pantalla de entrada del perfil de
  *  ERP: accesos a lo que usa a diario (pedidos pendientes, cola de taller,
@@ -22,8 +22,11 @@ export default function ErpHome() {
   useEffect(() => {
     getCurrentUser().then(setUser).catch(() => undefined);
     // Contadores best-effort: si el rol no puede o falla, se ocultan.
-    listPendingApproval()
-      .then((rows) => setPending(rows.length))
+    // «Pendientes de aprobación» = lo que enseña la cola «Por revisar» de la
+    // bandeja POR DEFECTO (todos los pagos, sin completar, sin procesados
+    // fuera ni ocultados): el mismo contador, de la misma fuente.
+    listOrders({ completed: false, limit: 1 })
+      .then((r) => setPending(r.queue_counts.por_revisar ?? 0))
       .catch(() => setPending(null));
     getSatQueue()
       .then((q) => setSatCount(q.preparing.length + q.ready_for_pickup.length))

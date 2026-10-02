@@ -62,6 +62,7 @@ jest.mock("../../../lib/api", () => ({
 }));
 jest.mock("../../../lib/erpApi", () => ({
   ERP_EDIT_ROLES: ["admin", "pedidos"],
+  customerHeadline: () => "Duplicoder",
   customerLabel: () => "Duplicoder",
   resolveOrderCobroStatus: (
     o: { factusol_cobro_status?: string | null },

@@ -7,8 +7,8 @@ import { SatPrepModal } from "../../components/erp/SatPrepModal";
 import { SatPreparingCard } from "../../components/erp/SatPreparingCard";
 import { satDateTime, SatQueueTable } from "../../components/erp/SatQueueTable";
 import {
-  satCourier, SatExternalShipmentEdit, SatReadyCard, SatShipmentBadge, SatShippedCard,
-  SatTrackingLink,
+  SatAvisoCliente, satCourier, SatExternalShipmentEdit, SatReadyCard, SatShipmentBadge,
+  SatShippedCard, SatTrackingLink,
 } from "../../components/erp/SatReadyCard";
 import { getCurrentUser } from "../../lib/api";
 import { Cap, can } from "../../lib/capabilities";
@@ -81,10 +81,13 @@ function SatCard({
  *  enlazado a la web del courier; Agencia = el courier. Con otro courier, ✎
  *  corrige courier y seguimiento en línea. */
 function SatShippedTable({
-  items, ariaLabel, onChanged, selectable = false, selected, onToggle,
+  items, ariaLabel, onChanged, selectable = false, selected, onToggle, aviso = false, canShip = false,
 }: {
   items: SatQueueItem[]; ariaLabel: string; onChanged: () => void;
   selectable?: boolean; selected?: Set<string>; onToggle?: (id: string) => void;
+  /** «Enviados»: columna «Aviso» (aviso de envío al cliente) con Enviar / Reenviar. */
+  aviso?: boolean;
+  canShip?: boolean;
 }) {
   return (
     <div className="table-wrapper sat-history-wrap">
@@ -98,6 +101,7 @@ function SatShippedTable({
             <th>Envío</th>
             <th>Seguimiento</th>
             <th>Agencia</th>
+            {aviso ? <th>Aviso</th> : null}
           </tr>
         </thead>
         <tbody>
@@ -120,6 +124,11 @@ function SatShippedTable({
                 {satCourier(o) ?? "—"}
                 <SatExternalShipmentEdit order={o} onChanged={onChanged} />
               </td>
+              {aviso ? (
+                <td data-label="Aviso">
+                  <SatAvisoCliente order={o} canShip={canShip} onChanged={onChanged} />
+                </td>
+              ) : null}
             </tr>
           ))}
         </tbody>
@@ -737,6 +746,7 @@ export default function SatQueuePage() {
                   onChanged={refreshQuiet}
                   selectable={selectable && tab === "sin_envio"}
                   selected={selected} onToggle={toggleSel}
+                  aviso={tab === "enviados"} canShip={canShip}
                 />
               </>
             )}

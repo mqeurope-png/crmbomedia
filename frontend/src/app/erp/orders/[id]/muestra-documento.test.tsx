@@ -71,6 +71,7 @@ jest.mock("../../../lib/erpApi", () => ({
     payment: "Pago", preparation: "Preparación", transport: "Transporte", invoice: "Facturación",
   },
   STATUS_LABELS: {},
+  customerHeadline: () => "Escola La Muntanyeta",
   customerLabel: () => "Escola La Muntanyeta",
   resolveOrderCobroStatus: (
     o: { factusol_cobro_status?: string | null },

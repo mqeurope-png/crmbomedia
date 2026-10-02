@@ -531,6 +531,17 @@ const LANG_NAME: Record<string, string> = {
 
 /** Texto del estado del aviso de envío al cliente. */
 export function customerEmailLine(st: CustomerEmailStatus | null, hasTracking: boolean): string {
+  const estado = customerEmailStatusLine(st, hasTracking);
+  // El último aviso que sí salió (fecha y destinatario), aunque el estado de
+  // ahora sea otro (pendiente, error de un reenvío, aviso apagado…).
+  if (st?.status !== "sent" && st?.sent_at) {
+    return `${estado} Último aviso enviado el ${carrierDate(st.sent_at)}`
+      + `${st.to ? ` a ${st.to}` : ""}.`;
+  }
+  return estado;
+}
+
+function customerEmailStatusLine(st: CustomerEmailStatus | null, hasTracking: boolean): string {
   if (!st || !st.status) {
     return "Aviso al cliente: no se envía solo en este envío (creado antes o con el aviso apagado).";
   }
@@ -538,7 +549,8 @@ export function customerEmailLine(st: CustomerEmailStatus | null, hasTracking: b
     case "sent":
       return `Aviso al cliente enviado${st.sent_at ? ` el ${carrierDate(st.sent_at)}` : ""}`
         + `${st.to ? ` a ${st.to}` : ""}${st.lang ? ` en ${LANG_NAME[st.lang] ?? st.lang}` : ""}`
-        + `${st.from ? ` desde ${st.from}` : ""}.`;
+        + `${st.from ? ` desde ${st.from}` : ""}`
+        + `${(st.sends ?? 0) > 1 ? ` (${st.sends} envíos)` : ""}.`;
     case "pending":
       return hasTracking
         ? "Aviso al cliente: se enviará en un momento."

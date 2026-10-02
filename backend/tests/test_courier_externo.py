@@ -254,6 +254,13 @@ def test_reenvio_manual_no_se_duplica_con_el_automatico(api, session_factory):
         audit = s.scalars(select(AuditLog).where(
             AuditLog.action == "erp.shipment_emailed", AuditLog.target_id == oid)).all()
         assert len(audit) == 2
+        # El reenvío queda con fecha y usuario.
+        assert all(a.created_at for a in audit)
+        assert any(a.actor_user_id for a in audit)
+    # Cola SAT · «Enviados»: la columna «Aviso» sabe cuándo, a quién y cuántas.
+    aviso = _shipped_item(api, h, oid)["customer_email"]
+    assert aviso["status"] == "sent" and aviso["sent_at"]
+    assert aviso["to"] == "envios@cliente.de" and aviso["sends"] == 2
 
 
 def test_courier_sin_url_el_aviso_dice_en_la_web_de(api, session_factory):
