@@ -10,6 +10,7 @@ import {
 } from "../../lib/erpApi";
 import { ConvertQuoteDialog } from "./ConvertQuoteDialog";
 import { CreateQuoteModal } from "./CreateQuoteModal";
+import { QuoteEmailModal, emailedMark } from "./QuoteEmailModal";
 import { albaranSummary, conversionNotice, pollQuoteJob } from "./quoteJobs";
 import { QuotesTable } from "./QuotesTable";
 
@@ -49,6 +50,8 @@ export function CompanyQuotesPanel({
   // Punto B: «Duplicar» abre la copia directa (punto C) con esta empresa como
   // destino; en el modal se puede cambiar de empresa y de serie.
   const [duplicating, setDuplicating] = useState<FactusolQuote | null>(null);
+  // Punto A: proforma que se envía por email.
+  const [emailing, setEmailing] = useState<FactusolQuote | null>(null);
   const [busyJob, setBusyJob] = useState(false);
   // Fase 2: proforma pendiente de confirmar el pago antes de convertir.
   const [converting, setConverting] = useState<FactusolQuote | null>(null);
@@ -151,27 +154,46 @@ export function CompanyQuotesPanel({
         <QuotesTable
           quotes={quotes}
           emptyText="Sin proformas en el último año."
-          actions={(q) => (
-            <>
-              <button type="button" className="button small secondary"
-                      disabled={busyJob}
-                      onClick={() => setEditing(q)}>
-                Editar
-              </button>
-              <button type="button" className="button small secondary"
-                      disabled={busyJob}
-                      onClick={() => setDuplicating(q)}>
-                Duplicar
-              </button>
-              <button type="button" className="button small secondary"
-                      disabled={busyJob}
-                      onClick={() => setConverting(q)}>
-                Convertir en pedido
-              </button>
-            </>
-          )}
+          actions={(q) => {
+            const mark = emailedMark(q.emailed_at, q.emailed_to);
+            return (
+              <>
+                {mark ? <span className="badge ok" title={mark.title}>{mark.label}</span> : null}
+                <button type="button" className="button small secondary"
+                        disabled={busyJob}
+                        onClick={() => setEditing(q)}>
+                  Editar
+                </button>
+                <button type="button" className="button small secondary"
+                        disabled={busyJob}
+                        onClick={() => setDuplicating(q)}>
+                  Duplicar
+                </button>
+                <button type="button" className="button small secondary"
+                        disabled={busyJob}
+                        onClick={() => setEmailing(q)}>
+                  {q.emailed_at ? "Reenviar" : "Enviar por email"}
+                </button>
+                <button type="button" className="button small secondary"
+                        disabled={busyJob}
+                        onClick={() => setConverting(q)}>
+                  Convertir en pedido
+                </button>
+              </>
+            );
+          }}
         />
       )}
+
+      {emailing ? (
+        <QuoteEmailModal
+          codpre={emailing.codpre ?? ""}
+          serie={emailing.serie ?? (Number(emailing.tippre) || 1)}
+          numero={emailing.numero}
+          onClose={() => setEmailing(null)}
+          onSent={() => load()}
+        />
+      ) : null}
 
       {creating || editing || duplicating ? (
         <CreateQuoteModal

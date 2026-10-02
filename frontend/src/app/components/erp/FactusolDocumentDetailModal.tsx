@@ -26,6 +26,7 @@ import {
 } from "../../lib/erpApi";
 import { extractErrorMessage } from "../../lib/errors";
 import { InvoiceEmailModal } from "./InvoiceEmailModal";
+import { QuoteEmailModal } from "./QuoteEmailModal";
 
 const TYPE_LABELS: Record<FactusolDocType, string> = {
   pedidos: "Pedido de cliente",
@@ -735,6 +736,17 @@ export function FactusolDocumentDetailModal({
                   Enviar factura por email
                 </button>
               ) : null}
+              {/* Punto A — enviar el presupuesto / proforma por email con el
+                  tipo, la moneda y el idioma elegidos para el PDF. */}
+              {current.docType === "presupuestos" && canEdit ? (
+                <button
+                  type="button"
+                  className="button"
+                  onClick={() => setEmailOpen(true)}
+                >
+                  {doc.emailed_at ? "Reenviar por email" : "Enviar por email"}
+                </button>
+              ) : null}
             </span>
           ) : null}
           {doc && canEdit
@@ -795,6 +807,19 @@ export function FactusolDocumentDetailModal({
           numero={doc.numero}
           bank={pdfBankOptions.length > 1 ? pdfBank : null}
           variant={pdfVariant === "anticipo" ? "anticipo" : null}
+          onClose={() => setEmailOpen(false)}
+        />
+      ) : null}
+
+      {doc && emailOpen && current.docType === "presupuestos" ? (
+        <QuoteEmailModal
+          codpre={current.codigo}
+          serie={current.serie}
+          numero={doc.numero}
+          variant={pdfVariant === "proforma" ? "proforma" : null}
+          currency={pdfCurrency}
+          bank={pdfBankOptions.length > 1 ? pdfBank : null}
+          initialLang={pdfLang}
           onClose={() => setEmailOpen(false)}
         />
       ) : null}

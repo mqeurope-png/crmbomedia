@@ -70,13 +70,24 @@ describe("CompanyQuotesPanel", () => {
     expect(screen.getByText("121.00 €")).toBeInTheDocument();
   });
 
-  it("cada proforma ofrece Editar y Duplicar además de Convertir en pedido", async () => {
+  it("cada proforma ofrece Editar, Duplicar y Enviar por email además de Convertir en pedido", async () => {
     mockList.mockResolvedValue({ items: [quote()], unlinked: false });
     render(<CompanyQuotesPanel {...base()} />);
     expect(await screen.findByRole("button", { name: "Editar" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Duplicar" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Enviar por email" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Convertir en pedido" }))
       .toBeInTheDocument();
+  });
+
+  it("Punto A · una proforma ya enviada enseña «Enviada dd/mm» y «Reenviar»", async () => {
+    mockList.mockResolvedValue({
+      items: [quote({ emailed_at: "2026-10-02T09:00:00", emailed_to: ["x@acme.es"] })],
+      unlinked: false,
+    });
+    render(<CompanyQuotesPanel {...base()} />);
+    expect(await screen.findByText("Enviada 02/10")).toHaveAttribute("title", expect.stringContaining("x@acme.es"));
+    expect(screen.getByRole("button", { name: "Reenviar" })).toBeInTheDocument();
   });
 
   it("Punto B · «Duplicar» abre la copia directa de esa proforma con la empresa de la ficha como destino", async () => {

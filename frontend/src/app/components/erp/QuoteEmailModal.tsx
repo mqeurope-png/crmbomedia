@@ -1,0 +1,370 @@
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
+import {
+  getQuoteEmailPreview,
+  sendQuoteEmail,
+  type FactusolPdfLang,
+  type QuoteEmailPreview,
+} from "../../lib/erpApi";
+import { extractErrorMessage } from "../../lib/errors";
+import {
+  CompanyContactsPicker,
+  splitContactChannels,
+  type ContactChannel,
+} from "./CompanyContactsPicker";
+import { SenderSelect } from "./SenderSelect";
+
+const EMAIL_LANGS: { value: FactusolPdfLang; label: string }[] = [
+  { value: "es", label: "ES" },
+  { value: "en", label: "EN" },
+  { value: "de", label: "DE" },
+  { value: "fr", label: "FR" },
+  { value: "nl", label: "NL" },
+];
+
+/** De dónde salió el idioma propuesto (misma cascada que el PDF). */
+const LANG_SOURCE_LABELS: Record<string, string> = {
+  pedido: "del pedido",
+  cliente: "del cliente",
+  pais_documento: "del país en el documento",
+  pais_cliente: "del país del cliente",
+  empresa: "de la empresa emisora",
+  defecto: "por defecto",
+};
+
+const ALIAS_PROBLEMS: Record<string, string> = {
+  alias_not_allowed:
+    "El remitente no está en tus preferencias (/account) ni es un remitente configurado en Ajustes ERP.",
+  not_in_gmail:
+    "El remitente no es un «enviar como» verificado de la cuenta de Gmail: añádelo en Gmail (Configuración → Cuentas → Enviar como) y vuelve a abrir.",
+  gmail_unavailable:
+    "No se pudo comprobar el remitente en Gmail (desconectado o sin permiso).",
+  sin_alias:
+    "No hay remitente configurado para esta empresa emisora ni alias propio: configúralo en Ajustes ERP → Remitentes.",
+};
+
+function parseRecipients(raw: string): string[] {
+  return raw.split(/[,;]/).map((s) => s.trim()).filter(Boolean);
+}
+
+function looksLikeEmail(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+function dedupeEmails(...lists: string[][]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const list of lists) {
+    for (const raw of list) {
+      const email = raw.trim();
+      const key = email.toLowerCase();
+      if (email && !seen.has(key)) {
+        seen.add(key);
+        out.push(email);
+      }
+    }
+  }
+  return out;
+}
+
+/** Punto A · PREVISUALIZACIÓN obligatoria antes de enviar un presupuesto /
+ *  proforma por email, con el mismo molde que el de la factura: contactos de
+ *  la empresa (los vinculados premarcados) + direcciones libres, idioma con su
+ *  procedencia (editable), asunto y cuerpo editables, remitente de la empresa
+ *  emisora de la serie y el PDF adjunto (tipo / moneda / banco elegidos). El
+ *  envío es un botón SEPARADO. Si falla, se enseña el error y NO queda marcada
+ *  como enviada. No escribe en FACTUSOL. */
+export function QuoteEmailModal({
+  codpre,
+  serie,
+  numero,
+  variant,
+  currency,
+  bank,
+  initialLang,
+  onClose,
+  onSent,
+}: {
+  codpre: string | number;
+  serie: number;
+  /** Nº visible para el título («2-000075»); si no, se compone. */
+  numero?: string | null;
+  /** Tipo del PDF adjunto: presupuesto (null) o «proforma», como en «Descargar PDF». */
+  variant?: "proforma" | null;
+  currency?: string | null;
+  bank?: number | null;
+  /** Idioma ya elegido (modal de Documentos); si no, la cascada del backend. */
+  initialLang?: FactusolPdfLang | null;
+  onClose: () => void;
+  onSent?: (result: { to: string[]; lang: FactusolPdfLang }) => void;
+}) {
+  const [preview, setPreview] = useState<QuoteEmailPreview | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [to, setTo] = useState("");
+  const [cc, setCc] = useState("");
+  const [contactSel, setContactSel] = useState<Record<string, ContactChannel>>({});
+  const [fromAlias, setFromAlias] = useState("");
+  const [lang, setLang] = useState<FactusolPdfLang>(initialLang ?? "es");
+  const [langSource, setLangSource] = useState<string | null>(null);
+  const [subject, setSubject] = useState("");
+  const [body, setBody] = useState("");
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [sentTo, setSentTo] = useState<string[] | null>(null);
+
+  const docLabel = numero ?? `${serie}-${String(codpre).padStart(6, "0")}`;
+  const kind = variant === "proforma" ? "proforma" : "presupuesto";
+
+  const loadPreview = useCallback(
+    (langOverride?: FactusolPdfLang, keepRecipient = false) => {
+      setLoadError(null);
+      let alive = true;
+      getQuoteEmailPreview(codpre, serie, {
+        lang: langOverride, variant: variant ?? undefined,
+        currency: currency ?? undefined,
+      })
+        .then((p) => {
+          if (!alive) return;
+          setPreview(p);
+          setLang(p.lang);
+          setLangSource(p.lang_source === "selector" ? null : p.lang_source);
+          setSubject(p.subject);
+          setBody(p.body_text);
+          if (!keepRecipient) {
+            setFromAlias(p.from_alias);
+            const contacts = p.company_contacts ?? [];
+            if (contacts.length > 0) {
+              // Premarcados: los vinculados (email de la cabecera) o el principal.
+              const sel: Record<string, ContactChannel> = {};
+              for (const c of contacts) {
+                if (c.is_primary && c.has_email && c.email) sel[c.email] = "to";
+              }
+              setContactSel(sel);
+              setTo("");
+            } else {
+              setContactSel({});
+              setTo(p.to);
+            }
+            setCc("");
+          }
+        })
+        .catch((e) => {
+          if (alive) {
+            setLoadError(extractErrorMessage(e, `No se pudo preparar el email del ${kind}.`));
+          }
+        });
+      return () => { alive = false; };
+    },
+    [codpre, serie, variant, currency, kind],
+  );
+
+  useEffect(() => loadPreview(initialLang ?? undefined), [loadPreview, initialLang]);
+
+  const { to: contactTo, cc: contactCc } = splitContactChannels(contactSel);
+  const recipients = dedupeEmails(contactTo, parseRecipients(to));
+  const ccRecipients = dedupeEmails(contactCc, parseRecipients(cc));
+  const recipientsValid = recipients.length > 0 && recipients.every(looksLikeEmail);
+  const ccValid = ccRecipients.every(looksLikeEmail);
+  const canSend =
+    !!preview && !sending && recipientsValid && ccValid
+    && subject.trim().length > 0 && body.trim().length > 0 && !!fromAlias;
+
+  async function send() {
+    if (!preview || !canSend) return;
+    setSending(true);
+    setSendError(null);
+    try {
+      const result = await sendQuoteEmail(codpre, serie, {
+        confirm: true,
+        to: recipients,
+        cc: ccRecipients,
+        subject: subject.trim(),
+        body_text: body,
+        lang,
+        from_alias: fromAlias,
+        variant: variant ?? null,
+        currency: currency ?? "EUR",
+        bank: bank ?? null,
+      });
+      setSentTo(result.to);
+      onSent?.({ to: result.to, lang: result.lang });
+    } catch (e) {
+      setSendError(extractErrorMessage(
+        e, `No se pudo enviar el ${kind}. No se ha marcado como enviado.`,
+      ));
+    } finally {
+      setSending(false);
+    }
+  }
+
+  const sent = sentTo !== null;
+
+  return (
+    <div className="modal-overlay" role="dialog" aria-modal="true"
+         aria-label={`Enviar ${kind} ${docLabel} por email`}>
+      <div className="modal-dialog erp-modal erp-invoice-email">
+        <h2>
+          Enviar {kind} por email{" "}
+          <span className="muted">{preview?.numero ?? docLabel}</span>
+        </h2>
+
+        {loadError ? <p className="form-error">{loadError}</p> : null}
+        {!preview && !loadError ? <p className="muted">Preparando…</p> : null}
+
+        {sent ? (
+          <>
+            <p className="form-success" role="status">
+              {kind === "proforma" ? "Proforma enviada" : "Presupuesto enviado"} a{" "}
+              <strong>{sentTo!.join(", ")}</strong> en{" "}
+              {EMAIL_LANGS.find((l) => l.value === lang)?.label ?? lang}.
+            </p>
+            <div className="modal-actions">
+              <button type="button" className="button" onClick={onClose}>Cerrar</button>
+            </div>
+          </>
+        ) : preview ? (
+          <>
+            <p className="muted small">
+              Revisa el correo antes de enviarlo. El PDF del {kind} se adjunta y se
+              genera en el idioma seleccionado
+              {preview.company_name ? <> para <strong>{preview.company_name}</strong></> : null}.
+            </p>
+
+            {(preview.company_contacts?.length ?? 0) > 0 ? (
+              <CompanyContactsPicker
+                contacts={preview.company_contacts ?? []}
+                value={contactSel}
+                onChange={setContactSel}
+                disabled={sending}
+              />
+            ) : null}
+
+            <label className="field">
+              <span>
+                {(preview.company_contacts?.length ?? 0) > 0
+                  ? "Para (otras direcciones)" : "Para"}
+              </span>
+              <input type="text" value={to} aria-label="Destinatario"
+                     placeholder="cliente@ejemplo.com" disabled={sending}
+                     onChange={(e) => setTo(e.target.value)} />
+            </label>
+            <label className="field">
+              <span>CC (otras direcciones)</span>
+              <input type="text" value={cc} aria-label="Copia (CC)" placeholder="opcional"
+                     disabled={sending} onChange={(e) => setCc(e.target.value)} />
+            </label>
+            {recipients.length > 0 && !recipientsValid ? (
+              <span className="muted small form-error">Revisa las direcciones de «Para».</span>
+            ) : null}
+            {!ccValid ? (
+              <span className="muted small form-error">Revisa las direcciones de «CC».</span>
+            ) : null}
+            {recipients.length === 0 ? (
+              <span className="muted small">
+                Elige al menos un destinatario (un contacto o una dirección).
+              </span>
+            ) : null}
+            {!preview.company_id ? (
+              <p className="muted small">
+                El cliente de FACTUSOL
+                {preview.customer_name ? ` («${preview.customer_name}»)` : ""} no está
+                vinculado a ninguna empresa del CRM: escribe la dirección a mano.
+              </p>
+            ) : null}
+
+            <label className="field">
+              <span>Idioma del correo y del PDF</span>
+              <select value={lang} aria-label="Idioma del correo" disabled={sending}
+                      onChange={(e) => {
+                        const next = e.target.value as FactusolPdfLang;
+                        setLang(next);
+                        setLangSource(null);
+                        loadPreview(next, true);
+                      }}>
+                {EMAIL_LANGS.map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
+              </select>
+            </label>
+            <span className="muted small">
+              {langSource
+                ? `Idioma ${LANG_SOURCE_LABELS[langSource] ?? langSource} (editable).`
+                : "Idioma elegido a mano."}
+            </span>
+
+            <label className="field">
+              <span>Asunto</span>
+              <input type="text" value={subject} aria-label="Asunto" disabled={sending}
+                     onChange={(e) => setSubject(e.target.value)} />
+            </label>
+            <label className="field">
+              <span>Mensaje</span>
+              <textarea value={body} aria-label="Cuerpo del mensaje" rows={10}
+                        disabled={sending} onChange={(e) => setBody(e.target.value)} />
+            </label>
+
+            <p className="muted small">
+              <span aria-hidden="true">📎</span>{" "}
+              Adjunto: <strong>{preview.attachment_filename}</strong>
+            </p>
+            <SenderSelect
+              defaultAlias={preview.from_alias}
+              value={fromAlias}
+              onChange={setFromAlias}
+              disabled={sending}
+              hint={
+                <>
+                  Por defecto, el remitente
+                  {preview.from_alias_source === "serie"
+                    ? " de la empresa emisora de la serie"
+                    : " por defecto del usuario"}
+                  ; las respuestas llegan a esa misma dirección.
+                </>
+              }
+            />
+            {!fromAlias ? (
+              <p className="form-error">
+                No hay ningún remitente disponible (revisa la conexión de Gmail y los
+                remitentes de Ajustes ERP).
+              </p>
+            ) : fromAlias === preview.from_alias && preview.from_alias_ok === false ? (
+              <p className="form-error" role="alert">
+                {ALIAS_PROBLEMS[preview.from_alias_problem ?? ""]
+                  ?? "No se podrá enviar desde ese remitente."}
+              </p>
+            ) : null}
+
+            {sendError ? <p className="form-error">{sendError}</p> : null}
+
+            <div className="modal-actions">
+              <button type="button" className="button secondary" onClick={onClose}
+                      disabled={sending}>
+                Cancelar
+              </button>
+              <button type="button" className="button" onClick={send} disabled={!canSend}>
+                {sending ? "Enviando…" : kind === "proforma" ? "Enviar proforma" : "Enviar presupuesto"}
+              </button>
+            </div>
+          </>
+        ) : (
+          <div className="modal-actions">
+            <button type="button" className="button secondary" onClick={onClose}>Cerrar</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** «Enviada 02/10» (con los destinatarios en el título) o null si nunca se envió. */
+export function emailedMark(
+  emailedAt: string | null | undefined, emailedTo: string[] | null | undefined,
+): { label: string; title: string } | null {
+  if (!emailedAt) return null;
+  const [y, m, d] = emailedAt.slice(0, 10).split("-");
+  const fecha = d && m ? `${d}/${m}` : emailedAt.slice(0, 10);
+  const to = (emailedTo ?? []).join(", ");
+  return {
+    label: `Enviada ${fecha}`,
+    title: `Enviada por email el ${d}/${m}/${y}${to ? ` a ${to}` : ""}`,
+  };
+}

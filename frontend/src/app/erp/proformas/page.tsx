@@ -7,6 +7,7 @@ import { PageHeader } from "../../components/PageHeader";
 import { CompanyPickerModal } from "../../components/CompanyPickerModal";
 import { ConvertQuoteDialog } from "../../components/erp/ConvertQuoteDialog";
 import { CreateQuoteModal } from "../../components/erp/CreateQuoteModal";
+import { QuoteEmailModal, emailedMark } from "../../components/erp/QuoteEmailModal";
 import { ActionsMenu } from "../../components/erp/flow/ActionsMenu";
 import { RegimePill } from "../../components/erp/flow/RegimePill";
 import { QueueCards } from "../../components/erp/flow/WorkflowQueueCards";
@@ -293,6 +294,8 @@ export default function ProformasPage() {
   // pago y destinatario) y el botón «Crear proforma». La pestaña «Duplicar» de
   // «+ Nueva proforma» sigue para elegir una plantilla con vista previa.
   const [duplicating, setDuplicating] = useState<FactusolQuote | null>(null);
+  // Punto A: proforma que se envía por email (previsualización en el modal).
+  const [emailing, setEmailing] = useState<FactusolQuote | null>(null);
   const [picking, setPicking] = useState(false);
   const [creatingFor, setCreatingFor] = useState<Company | null>(null);
   // «Ahora» para la antigüedad en palabras: el momento de la última carga (no
@@ -771,6 +774,13 @@ export default function ProformasPage() {
                     {q.order ? (
                       <span className="badge info">pedido {q.order.order_number}</span>
                     ) : null}
+                    {(() => {
+                      // Punto A: «Enviada dd/mm» con los destinatarios en el título.
+                      const mark = emailedMark(q.emailed_at, q.emailed_to);
+                      return mark ? (
+                        <span className="badge ok" title={mark.title}>{mark.label}</span>
+                      ) : null;
+                    })()}
                   </div>
                   <p className="erp-pf-client">
                     {company ? (
@@ -802,6 +812,15 @@ export default function ProformasPage() {
                             onClick={() => void pdf(q)}>
                       PDF
                     </button>
+                    {canEdit ? (
+                      <button type="button" className="button small secondary" disabled={busy}
+                              title={q.emailed_at
+                                ? "Ya se envió por email; vuelve a enviarla (queda registrado)"
+                                : "Enviar el presupuesto por email con el PDF adjunto"}
+                              onClick={() => setEmailing(q)}>
+                        {q.emailed_at ? "Reenviar" : "Enviar por email"}
+                      </button>
+                    ) : null}
                     <button
                       type="button" className="button small secondary"
                       aria-expanded={expanded.has(quoteKey(q))}
@@ -871,6 +890,18 @@ export default function ProformasPage() {
           duplicateDirect={duplicating}
           onCreated={(jobId) => void onQuoteJob(jobId, "Creando")}
           onCancel={() => setDuplicating(null)}
+        />
+      ) : null}
+
+      {/* Punto A: enviar por email (previsualización obligatoria). Al enviar
+          se recarga la lista para que aparezca la marca «Enviada». */}
+      {emailing ? (
+        <QuoteEmailModal
+          codpre={emailing.codpre ?? ""}
+          serie={serieOf(emailing) || 1}
+          numero={emailing.numero}
+          onClose={() => setEmailing(null)}
+          onSent={() => { void load(); }}
         />
       ) : null}
     </main>

@@ -159,6 +159,10 @@ class SettingsIn(BaseModel):
     #: ({"es": {"subject","body"}, ...}). Placeholders {cliente}/{numero}/
     #: {referencia}. Vacío = defaults del código.
     factusol_invoice_email_templates: dict[str, dict[str, str]] | None = None
+    #: Punto A — plantillas del email de PRESUPUESTO / proforma por idioma.
+    #: Marcadores {numero}/{empresa}/{contacto}/{total}/{fecha}/{validez}/
+    #: {firma}. Vacío = defaults del código.
+    factusol_quote_email_templates: dict[str, dict[str, str]] | None = None
     #: Aviso de ENVÍO al cliente (nº de seguimiento + enlace) por idioma.
     #: Placeholders {cliente}/{pedido}/{tracking}/{enlace}/{agencia}.
     shipment_email_templates: dict[str, dict[str, str]] | None = None
@@ -466,6 +470,7 @@ def _serialise_settings(cfg: ErpSettings, session: Session) -> dict[str, Any]:
         "factusol_companies": _companies_with_logos(cfg),
         "factusol_pickup_warehouses": _pickup_warehouses(cfg),
         "factusol_invoice_email_templates": _invoice_email_templates(cfg),
+        "factusol_quote_email_templates": _quote_email_templates(cfg),
         # Aviso de envío al cliente: plantillas (defaults + las guardadas) y
         # remitentes de los pedidos manuales (español / otros idiomas).
         "shipment_email_templates": _shipment_templates(cfg),
@@ -544,6 +549,12 @@ def _invoice_email_templates(cfg: ErpSettings) -> dict[str, Any]:
                     merged[k] = str(over[k])
         out[lang] = merged
     return out
+
+
+def _quote_email_templates(cfg: ErpSettings) -> dict[str, Any]:
+    from app.erp.quote_email import TEMPLATES_KEY, merge_templates  # noqa: PLC0415
+
+    return merge_templates(_series(cfg).get(TEMPLATES_KEY))
 
 
 def _shipment_templates(cfg: ErpSettings) -> dict[str, Any]:
@@ -644,6 +655,7 @@ def update_settings(
             or payload.factusol_companies is not None
             or payload.factusol_pickup_warehouses is not None
             or payload.factusol_invoice_email_templates is not None
+            or payload.factusol_quote_email_templates is not None
             or payload.shipment_email_templates is not None
             or payload.shipment_email_from is not None
             or payload.contrapartidas is not None
@@ -815,6 +827,15 @@ def update_settings(
                 }
                 for lang, tpl in payload.factusol_invoice_email_templates.items()
             }
+        # Punto A: plantillas del email de presupuesto (solo subject/body).
+        if payload.factusol_quote_email_templates is not None:
+            series["quote_email_templates"] = {
+                str(lang): {
+                    "subject": str((tpl or {}).get("subject") or "").strip(),
+                    "body": str((tpl or {}).get("body") or "").strip(),
+                }
+                for lang, tpl in payload.factusol_quote_email_templates.items()
+            }
         if payload.shipment_email_templates is not None:
             series["shipment_email_templates"] = {
                 str(lang): {
@@ -948,6 +969,94 @@ def preview_invoice_email_template(
         "from_alias_source": source,
         "from_alias_scope": scope,
         "sample": dict(SAMPLE_INVOICE_EMAIL),
+    }
+
+
+@router.post("/settings/quote-email/preview")
+def preview_quote_email_template(
+    payload: TemplatePreviewIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> dict[str, Any]:
+    """Punto A: plantilla del email de PRESUPUESTO rellena con datos de
+    muestra (misma sustitución que el envío real). No envía nada."""
+    from app.erp.quote_email import (  # noqa: PLC0415
+        SAMPLE_QUOTE_EMAIL,
+        render_sample_quote_email,
+    )
+
+    sample = render_sample_quote_email(
+        session, lang=payload.lang, subject=payload.subject, body=payload.body,
+    )
+    alias, source, scope = _sample_sender(session, current_user)
+    return {
+        **sample,
+        "from_alias_example": alias,
+        "from_alias_source": source,
+        "from_alias_scope": scope,
+        "sample": dict(SAMPLE_QUOTE_EMAIL),
+    }
+
+
+@router.post("/settings/quote-email/test-send", status_code=201)
+def send_quote_email_template_test(
+    payload: TemplateTestIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_config),
+) -> dict[str, Any]:
+    """Punto A: «Enviarme una prueba» de la plantilla del email de presupuesto
+    (sin PDF; asunto con «[Prueba]»), desde el remitente de la serie por
+    defecto / primera tienda / usuario, validado como send-as."""
+    from app.core.audit import record_event  # noqa: PLC0415
+    from app.erp.invoice_email import check_sender_alias  # noqa: PLC0415
+    from app.erp.quote_email import render_sample_quote_email  # noqa: PLC0415
+    from app.integrations.gmail import service as gmail_service  # noqa: PLC0415
+
+    to = (payload.to or "").strip() or (current_user.email or "").strip()
+    if "@" not in to or " " in to:
+        raise HTTPException(400, f"Destinatario inválido: {to!r}")
+    sample = render_sample_quote_email(
+        session, lang=payload.lang, subject=payload.subject, body=payload.body,
+    )
+    alias, source, scope = _sample_sender(session, current_user)
+    check = (
+        check_sender_alias(session, current_user, alias)
+        if alias else {"ok": False, "reason": "sin_alias"}
+    )
+    if not check.get("ok"):
+        reason = str(check.get("reason") or "alias_not_allowed")
+        raise HTTPException(403, {
+            "code": "alias_not_allowed", "reason": reason, "from_alias": alias,
+            "detail": (
+                f"No se puede enviar desde {alias or '(sin remitente)'}: "
+                f"{_SENDER_PROBLEMS.get(reason, reason)}"
+            ),
+        })
+    subject = f"[Prueba] {sample['subject']}"
+    message = gmail_service.send_email(
+        session, sender_user_id=current_user.id, from_alias=alias, from_name=None,
+        to=[to], cc=None, bcc=None, subject=subject,
+        body_html=sample["body_html"], body_text=sample["body_text"], contact_id=None,
+    )
+    try:
+        record_event(
+            session, action="erp.settings_template_test_sent",
+            target_type="erp_settings", target_id=ERP_SETTINGS_SINGLETON_ID,
+            actor=current_user,
+            message=(
+                f"Prueba de la plantilla del email de presupuesto ({sample['lang']}) "
+                f"enviada a {to} desde {alias}"
+            ),
+            metadata={"lang": sample["lang"], "to": to, "from_alias": alias,
+                      "from_alias_source": source, "message_id": message.id},
+        )
+    except Exception:  # noqa: BLE001 — audit nunca bloquea
+        pass
+    session.commit()
+    return {
+        "sent": True, "to": to, "lang": sample["lang"], "subject": subject,
+        "from_alias": alias, "from_alias_source": source, "from_alias_scope": scope,
+        "message_id": message.id,
     }
 
 

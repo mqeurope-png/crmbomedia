@@ -76,6 +76,18 @@ jest.mock("../../components/erp/CreateQuoteModal", () => ({
   ),
 }));
 
+// Punto A: el modal de email se prueba en QuoteEmailModal.test.tsx; aquí basta
+// con ver que se abre con la proforma de la fila.
+jest.mock("../../components/erp/QuoteEmailModal", () => ({
+  ...jest.requireActual("../../components/erp/QuoteEmailModal"),
+  QuoteEmailModal: ({ numero, serie, onClose }: { numero?: string | null; serie: number; onClose: () => void }) => (
+    <div>
+      EMAIL MODAL {numero} serie:{serie}
+      <button type="button" onClick={onClose}>CERRAR EMAIL</button>
+    </div>
+  ),
+}));
+
 const mockList = listFactusolQuotes as jest.Mock;
 const mockConvert = convertFactusolQuoteToOrder as jest.Mock;
 const mockDuplicate = duplicateFactusolQuote as jest.Mock;
@@ -535,6 +547,32 @@ describe("Pantalla Proformas (rediseño de flujo, Fase 4)", () => {
     await user.click(dup[0]);
     expect(await screen.findByText(/QUOTE MODAL .* dup:71/)).toBeInTheDocument();
     expect(mockDuplicate).not.toHaveBeenCalled();
+  });
+
+  // ---- Punto A · Enviar por email ----
+
+  it("Punto A · «Enviar por email» en cada fila abre el modal con la proforma; una enviada enseña «Enviada dd/mm» (destinatarios en el título) y «Reenviar»", async () => {
+    mockList.mockResolvedValue({
+      ...LISTING,
+      items: [
+        { ...BRAILLE, emailed_at: "2026-10-02T10:15:00", emailed_to: ["ligue@braille.be"] },
+        CLOSSET,
+      ],
+      queue_counts: { aceptadas: 2 },
+    });
+    const user = userEvent.setup();
+    render(<ProformasPage />);
+    await screen.findByRole("list", { name: "Proformas" });
+    const enviada = within(row("39"));
+    expect(enviada.getByText("Enviada 02/10")).toHaveAttribute(
+      "title", "Enviada por email el 02/10/2026 a ligue@braille.be",
+    );
+    expect(enviada.getByRole("button", { name: "Reenviar" })).toBeInTheDocument();
+    expect(within(row("37")).queryByText(/Enviada/)).toBeNull();
+    await user.click(within(row("37")).getByRole("button", { name: "Enviar por email" }));
+    expect(await screen.findByText(/EMAIL MODAL 5-000037 serie:5/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "CERRAR EMAIL" }));
+    expect(screen.queryByText(/EMAIL MODAL/)).toBeNull();
   });
 
   // ---- Punto C · Duplicado directo ----

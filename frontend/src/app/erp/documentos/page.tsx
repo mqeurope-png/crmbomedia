@@ -10,6 +10,7 @@ import {
   FactusolDocumentDetailModal,
 } from "../../components/erp/FactusolDocumentDetailModal";
 import { ActionsMenu } from "../../components/erp/flow/ActionsMenu";
+import { emailedMark } from "../../components/erp/QuoteEmailModal";
 import { RegimePill } from "../../components/erp/flow/RegimePill";
 import {
   LinkDocumentOrderModal,
@@ -759,6 +760,16 @@ export default function FactusolDocumentosPage() {
                       {badge && tab !== "facturas" ? (
                         <span className={`${badge.className} erp-doc-ciclo-badge`}>{badge.label}</span>
                       ) : null}
+                      {(() => {
+                        // Punto A: presupuesto enviado por email («Enviada dd/mm»).
+                        const mark = tab === "presupuestos"
+                          ? emailedMark(d.emailed_at, d.emailed_to) : null;
+                        return mark ? (
+                          <span className="badge ok erp-doc-ciclo-badge" title={mark.title}>
+                            {mark.label}
+                          </span>
+                        ) : null;
+                      })()}
                     </td>
                     <td data-label="Pedido" className="erp-doc-col-pedido"
                         onClick={(e) => e.stopPropagation()}>

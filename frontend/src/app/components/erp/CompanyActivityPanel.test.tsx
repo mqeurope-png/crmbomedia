@@ -20,6 +20,12 @@ jest.mock("../../lib/erpApi", () => ({
 }));
 // Punto B: el modal real se prueba en CreateQuoteModal.test.tsx; aquí basta
 // con ver que «⋯ → Duplicar» lo abre con la proforma de la fila y la empresa.
+jest.mock("./QuoteEmailModal", () => ({
+  ...jest.requireActual("./QuoteEmailModal"),
+  QuoteEmailModal: ({ numero, onClose }: { numero?: string | null; onClose: () => void }) => (
+    <div>EMAIL MODAL {numero}<button type="button" onClick={onClose}>CERRAR EMAIL</button></div>
+  ),
+}));
 jest.mock("./CreateQuoteModal", () => ({
   CreateQuoteModal: ({ companyName, duplicateDirect, onCancel }: {
     companyName: string; duplicateDirect?: { codpre?: string | null } | null;
@@ -190,6 +196,25 @@ describe("CompanyActivityPanel · actividad unificada", () => {
     expect(await screen.findByText(/DUP MODAL La Maison dup:2-000071/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "CANCELAR MODAL" }));
     expect(screen.queryByText(/DUP MODAL/)).toBeNull();
+    // Punto A: «Enviar por email» en el mismo menú abre el modal de envío.
+    await user.click(within(proforma).getByRole("button", { name: "Más acciones 2-000071" }));
+    await user.click(screen.getByRole("button", { name: "Enviar por email" }));
+    expect(await screen.findByText(/EMAIL MODAL 2-000071/)).toBeInTheDocument();
+  });
+
+  it("Punto A · una proforma enviada por email enseña «Enviada dd/mm» y ofrece «Reenviar por email»", async () => {
+    (listFactusolQuotes as jest.Mock).mockResolvedValue({
+      items: [{ ...QUOTES[0], emailed_at: "2026-10-02T09:00:00", emailed_to: ["a@maison.fr"] }],
+      unlinked: false,
+    });
+    const user = userEvent.setup();
+    render(<CompanyActivityPanel companyId="c1" companyName="La Maison" factusolCodcli="2760" contactsCount={3} />);
+    await screen.findByRole("table");
+    await waitFor(() => expect(bodyRows()).toHaveLength(5));
+    const proforma = bodyRows()[2];
+    expect(within(proforma).getByText("Enviada 02/10")).toHaveAttribute("title", expect.stringContaining("a@maison.fr"));
+    await user.click(within(proforma).getByRole("button", { name: "Más acciones 2-000071" }));
+    expect(screen.getByRole("button", { name: "Reenviar por email" })).toBeInTheDocument();
   });
 
   it("buildActivityRows: sin fecha al final, y importe al estilo español", () => {

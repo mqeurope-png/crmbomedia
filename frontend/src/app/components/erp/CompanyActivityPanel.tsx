@@ -13,6 +13,7 @@ import {
   type WorkflowQueue,
 } from "../../lib/erpApi";
 import { CreateQuoteModal } from "./CreateQuoteModal";
+import { QuoteEmailModal, emailedMark } from "./QuoteEmailModal";
 import { ActionsMenu } from "./flow/ActionsMenu";
 import { pollQuoteJob } from "./quoteJobs";
 
@@ -161,6 +162,8 @@ export function CompanyActivityPanel({
   // Punto B: proforma que se duplica («⋯ → Duplicar» en su fila) y el aviso
   // del resultado; `reloadKey` relee las tres fuentes cuando la copia existe.
   const [duplicating, setDuplicating] = useState<FactusolQuote | null>(null);
+  // Punto A: proforma que se envía por email desde «⋯».
+  const [emailing, setEmailing] = useState<FactusolQuote | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
 
@@ -293,6 +296,12 @@ export function CompanyActivityPanel({
                     <span className="mono">{r.numero}</span>
                   )}
                   {r.detalle ? <span className="company-activity-detail"> · {r.detalle}</span> : null}
+                  {(() => {
+                    const mark = r.quote ? emailedMark(r.quote.emailed_at, r.quote.emailed_to) : null;
+                    return mark ? (
+                      <>{" "}<span className="badge ok" title={mark.title}>{mark.label}</span></>
+                    ) : null;
+                  })()}
                 </td>
                 <td data-label="Tipo">{KIND_LABEL[r.kind]}</td>
                 <td data-label="Fecha" className="mono">{fecha(r.fecha) || "—"}</td>
@@ -307,6 +316,9 @@ export function CompanyActivityPanel({
                     <ActionsMenu label={`Más acciones ${r.numero}`} floating>
                       <button type="button" onClick={() => setDuplicating(r.quote ?? null)}>
                         Duplicar
+                      </button>
+                      <button type="button" onClick={() => setEmailing(r.quote ?? null)}>
+                        {r.quote.emailed_at ? "Reenviar por email" : "Enviar por email"}
                       </button>
                     </ActionsMenu>
                   ) : null}
@@ -332,6 +344,16 @@ export function CompanyActivityPanel({
           duplicateDirect={duplicating}
           onCreated={(jobId) => void onDuplicated(jobId)}
           onCancel={() => setDuplicating(null)}
+        />
+      ) : null}
+
+      {emailing ? (
+        <QuoteEmailModal
+          codpre={emailing.codpre ?? ""}
+          serie={emailing.serie ?? (Number(emailing.tippre) || 1)}
+          numero={emailing.numero}
+          onClose={() => setEmailing(null)}
+          onSent={() => setReloadKey((k) => k + 1)}
         />
       ) : null}
     </section>
