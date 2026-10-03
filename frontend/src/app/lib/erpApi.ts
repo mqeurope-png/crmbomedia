@@ -4855,9 +4855,13 @@ export type CuadreComprobacion = {
   /** Qué significa el umbral («Avisar pasados N días»). */
   dias_texto: string | null;
   orden: number;
+  /** Activa si Configuración ERP no dice otra cosa. */
+  activa_defecto?: boolean;
 };
 
 export type CuadreConfig = {
+  /** Versión de los valores por defecto (la pone el backend). */
+  version?: number;
   nocturno_activo: boolean;
   hora: string;
   checks: Record<string, { activo: boolean; dias: number | null }>;

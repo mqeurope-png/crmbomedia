@@ -238,6 +238,8 @@ def test_config_por_defecto_y_validacion(s):
     assert len(registro()) == 12
     assert cfg["checks"]["factura_sin_cobro"] == {"activo": True, "dias": 30}
     assert cfg["checks"]["factura_lineas_ajenas"] == {"activo": True, "dias": None}
+    # El embudo comercial no es un descuadre: apagada por defecto y a 90 días.
+    assert cfg["checks"]["proforma_sin_convertir"] == {"activo": False, "dias": 90}
     with pytest.raises(ValueError, match="Hora"):
         validar_config({"hora": "25:00"})
     with pytest.raises(ValueError, match="desconocida"):
@@ -373,7 +375,9 @@ def test_comprobar_ahora_sin_redis_deja_la_pasada_en_error(s, monkeypatch):
 
 
 def test_la_pasada_encolada_de_factusol_lee_con_el_cliente_y_termina(s, monkeypatch):
-    from tests.test_erp_cuadre_checks import FakeFactusol, _fac
+    from tests.test_erp_cuadre_checks import FakeFactusol, _fac, _vincular
+
+    _vincular(s, (5, 1))
 
     client = FakeFactusol(
         F_FAC=[_fac(5, 1, net=100)],
@@ -386,9 +390,11 @@ def test_la_pasada_encolada_de_factusol_lee_con_el_cliente_y_termina(s, monkeypa
     s.commit()
     run = job.correr(s, fuente="factusol", origen="manual", run_id=run.id)
     assert run.estado == "ok"
+    # «Proforma aceptada sin convertir» viene apagada por defecto: no corre.
     assert set(json.loads(run.resumen_json)) == {
         "factura_lineas_ajenas", "cobro_descuadrado", "factura_sin_cobro",
-        "factura_sin_vincular", "proforma_sin_convertir"}
+        "factura_sin_vincular"}
+    assert client.lecturas["F_PRE"] == 0
     assert client.lecturas["F_FAC"] == 1                              # una lectura por tabla
     vistos = {(f.check_id, f.entidad_id) for f in s.scalars(select(CuadreFinding))}
     assert vistos == {("factura_lineas_ajenas", "5-000001"),        # sin líneas
@@ -398,7 +404,9 @@ def test_la_pasada_encolada_de_factusol_lee_con_el_cliente_y_termina(s, monkeypa
 def test_una_lectura_vacia_de_factusol_no_resuelve_ni_borra_el_revisado(s, monkeypatch):
     """F_LCO llega vacía (lectura rota): las comprobaciones que la usan fallan y
     sus descuadres —incluido un «revisado» con su motivo— se quedan como estaban."""
-    from tests.test_erp_cuadre_checks import FakeFactusol, _fac
+    from tests.test_erp_cuadre_checks import FakeFactusol, _fac, _vincular
+
+    _vincular(s, (5, 74))
 
     tablas = {
         "F_FAC": [_fac(5, 74, net=100, estfac="2")],
@@ -423,7 +431,9 @@ def test_una_lectura_vacia_de_factusol_no_resuelve_ni_borra_el_revisado(s, monke
 def test_al_cambiar_de_ejercicio_no_se_resuelve_lo_del_anterior(s, monkeypatch):
     """Las facturas de 2026 dejan de leerse al pasar a 2027: sus descuadres no
     se dan por resueltos (no se han mirado); los de 2027 van a su aire."""
-    from tests.test_erp_cuadre_checks import FakeFactusol, _fac
+    from tests.test_erp_cuadre_checks import FakeFactusol, _fac, _vincular
+
+    _vincular(s, (5, 80), (5, 1))
 
     def pasada(ejercicio, facs, cuando):
         client = FakeFactusol(
@@ -482,3 +492,25 @@ def test_factusol_sin_configurar_deja_error_sin_tocar_lo_guardado(s, monkeypatch
     run = engine.ejecutar(s, fuente="factusol", origen="manual")
     assert run.estado == "error"
     assert _estados(s) == {"5-000009": "abierto"}
+
+
+def test_una_config_guardada_antes_no_enciende_las_proformas(s):
+    """La sección Cuadre se guarda entera: una config de antes del cambio de
+    defecto traía las proformas activas y a 30 días. Ahí manda el defecto nuevo;
+    lo demás que se eligió se conserva. Al volver a guardar, manda lo elegido."""
+    _config(s, nocturno_activo=True, hora="02:00", checks={
+        "proforma_sin_convertir": {"activo": True, "dias": 30},
+        "factura_sin_cobro": {"activo": False, "dias": 45},
+    })
+    cfg = cuadre_config(s)
+    assert cfg["version"] == 2
+    assert cfg["checks"]["proforma_sin_convertir"] == {"activo": False, "dias": 90}
+    assert cfg["checks"]["factura_sin_cobro"] == {"activo": False, "dias": 45}
+    assert (cfg["nocturno_activo"], cfg["hora"]) == (True, "02:00")
+    guardado = json.loads(s.get(ErpSettings, ERP_SETTINGS_SINGLETON_ID).factusol_series_json)
+    elegido = validar_config(
+        {"checks": {"proforma_sin_convertir": {"activo": True, "dias": 60}}},
+        actual=guardado["cuadre"],
+    )
+    _config(s, **elegido)
+    assert cuadre_config(s)["checks"]["proforma_sin_convertir"] == {"activo": True, "dias": 60}

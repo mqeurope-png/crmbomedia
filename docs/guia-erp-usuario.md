@@ -1386,9 +1386,13 @@ arreglarlo.
 
 | Grupo | Comprobaciones |
 |---|---|
-| Dinero (alta) | Factura con líneas que no son suyas; cobro distinto en BoHub y en FACTUSOL (o cobrada sin línea de cobro); factura sin cobrar pasados 30 días, con lo pendiente. |
+| Dinero (alta) | De las facturas de pedidos de BoHub: factura con líneas que no son suyas; cobro distinto en BoHub y en FACTUSOL (o cobrada sin línea de cobro); factura sin cobrar pasados 30 días, con lo pendiente. |
 | Envíos (media) | «No requiere envío» con tracking o courier; enviado sin aviso al cliente; en tránsito más de 10 días; entregado, facturado y cobrado sin «Marcar completado» a los 14 días. |
-| Documentos y hoja | Pedido que falta en la hoja de Drive (o fila de un pedido que ya no existe); factura de FACTUSOL sin vincular al pedido o vinculada a un número que no existe; factura sin enviar a los 7 días; pedido sin aprobar a los 7 días; proforma aceptada sin convertir a los 30 días. |
+| Documentos y hoja | Pedido que falta en la hoja de Drive (o fila de un pedido que ya no existe); factura de FACTUSOL sin vincular al pedido o vinculada a un número que no existe; factura sin enviar a los 7 días; pedido sin aprobar a los 7 días; proforma aceptada sin convertir a los 90 días (apagada por defecto: es el embudo comercial). |
+
+El panel vigila lo que BoHub gestiona. Las facturas que solo existen en
+FACTUSOL, sin pedido en BoHub, no salen: por ejemplo, otras series o facturas
+anteriores al ERP.
 
 **Si no es un descuadre**
 
