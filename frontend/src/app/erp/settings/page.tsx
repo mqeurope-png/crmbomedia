@@ -1831,7 +1831,10 @@ function CuadreSettings({
           type="time"
           aria-label="Hora de la comprobación nocturna"
           value={cfg.hora}
-          onChange={(e) => onChange({ ...cfg, hora: e.target.value || "03:00" })}
+          onChange={(e) => {
+            // A medio borrar el campo da "": se ignora (no se cambia la hora sin querer).
+            if (e.target.value) onChange({ ...cfg, hora: e.target.value });
+          }}
         />
       </label>
       <table className="data-table data-table--responsive erp-settings-table">
@@ -1843,13 +1846,13 @@ function CuadreSettings({
             const st = check(c.id);
             return (
               <tr key={c.id}>
-                <td>
+                <td data-label="Comprobación">
                   <strong>{c.titulo}</strong>{" "}
                   <span className="muted small">({c.severidad})</span>
                   <br />
                   <span className="muted small">{c.descripcion}</span>
                 </td>
-                <td>
+                <td data-label="Activa">
                   <input
                     type="checkbox"
                     aria-label={`Activar «${c.titulo}»`}
@@ -1857,7 +1860,7 @@ function CuadreSettings({
                     onChange={(e) => setCheck(c.id, { activo: e.target.checked })}
                   />
                 </td>
-                <td>
+                <td data-label="Umbral">
                   {c.dias_defecto !== null ? (
                     <label className="field">
                       <span className="muted small">{c.dias_texto ?? "Días"}</span>
@@ -1865,11 +1868,13 @@ function CuadreSettings({
                         type="number"
                         min={1}
                         max={3650}
+                        step={1}
                         aria-label={`Días para «${c.titulo}»`}
                         placeholder={String(c.dias_defecto)}
                         value={st.dias ?? ""}
                         onChange={(e) => setCheck(c.id, {
-                          dias: e.target.value === "" ? null : Number(e.target.value),
+                          // Días enteros; vacío = el valor de serie.
+                          dias: e.target.value === "" ? null : Math.round(Number(e.target.value)),
                         })}
                       />
                     </label>

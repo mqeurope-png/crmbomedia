@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import CuadrePage from "./page";
 
@@ -26,11 +26,20 @@ const RESUMEN = {
     started_at: "2026-10-03T08:00:00Z", finished_at: "2026-10-03T08:00:05Z",
     created_at: "2026-10-03T08:00:00Z", error: null, resumen: {},
   },
-  ultimas_por_fuente: {},
+  ultimas_por_fuente: {
+    mysql: {
+      id: "r1", fuente: "mysql", origen: "manual", estado: "ok",
+      started_at: "2026-10-03T08:00:00Z", finished_at: "2026-10-03T08:00:05Z",
+      created_at: "2026-10-03T08:00:00Z", error: null,
+      resumen: { enviado_sin_aviso: { hallazgos: 2 }, pedido_sin_aprobar: { hallazgos: 0 } },
+    },
+    factusol: null,
+  },
   en_curso: [],
   nocturno: { activo: false, hora: "03:00" },
   checks: [
     tarjeta({ id: "factura_sin_cobro", titulo: "Factura emitida sin cobro", severidad: "alta",
+              fuente: "factusol",
               abiertos: 1, nuevos: 1, dias: 30, dias_defecto: 30,
               dias_texto: "Avisar pasados N días desde la factura" }),
     tarjeta({ id: "enviado_sin_aviso", titulo: "Enviado con tracking sin aviso al cliente",
@@ -99,7 +108,11 @@ describe("ERP · Cuadre", () => {
     const lista = screen.getByRole("list", { name: "Comprobaciones" });
     expect(within(lista).getAllByRole("listitem")).toHaveLength(3);
     expect(within(lista).getByText("Factura emitida sin cobro")).toBeInTheDocument();
-    expect(screen.getByLabelText("2 abiertos")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Enviado con tracking sin aviso al cliente\s*2 abiertos/ }))
+      .toBeInTheDocument();
+    // FACTUSOL sin ninguna pasada terminada: «Sin comprobar», no «todo cuadra».
+    const factura = within(lista).getByText("Factura emitida sin cobro").closest("article")!;
+    expect(within(factura).getByText("Sin comprobar")).toBeInTheDocument();
     expect(screen.getByText(/Avisar pasados 30 días desde la factura/)).toBeInTheDocument();
   });
 
@@ -184,7 +197,87 @@ describe("ERP · Cuadre", () => {
     const user = userEvent.setup();
     render(<CuadrePage />);
     await user.click(await screen.findByRole("button", { name: "Comprobar ahora" }));
-    expect(await screen.findByText("Comprobando FACTUSOL…")).toBeInTheDocument();
+    expect(await screen.findByText(/Comprobando FACTUSOL/)).toBeInTheDocument();
     expect(screen.getByText(/Las de FACTUSOL se comprueban en segundo plano/)).toBeInTheDocument();
+    // El botón no se bloquea mientras FACTUSOL va en segundo plano.
+    expect(screen.getByRole("button", { name: "Comprobar ahora" })).toBeEnabled();
+  });
+
+  it("una tarjeta sin descuadres solo dice «Todo cuadra.» si se comprobó bien", async () => {
+    const m = api();
+    m.getCuadreResumen.mockResolvedValue({
+      ...RESUMEN,
+      ultimas_por_fuente: {
+        ...RESUMEN.ultimas_por_fuente,
+        mysql: { ...RESUMEN.ultimas_por_fuente.mysql, estado: "con_errores", resumen: {
+          enviado_sin_aviso: { hallazgos: 2 },
+          pedido_sin_aprobar: { error: "RuntimeError: boom" },
+        } },
+      },
+    });
+    const user = userEvent.setup();
+    render(<CuadrePage />);
+    await user.click(await screen.findByRole("button", { name: /Pedido esperando aprobación/ }));
+    expect(screen.getByText("Falló en la última comprobación")).toBeInTheDocument();
+    expect(screen.getByText(/La última comprobación falló: RuntimeError: boom/)).toBeInTheDocument();
+    expect(screen.queryByText("Todo cuadra.")).not.toBeInTheDocument();
+  });
+
+  describe("mientras FACTUSOL se comprueba en segundo plano", () => {
+    const enCola = {
+      ...RESUMEN,
+      en_curso: [{ ...RESUMEN.ultima_pasada, id: "r3", fuente: "factusol", estado: "en_cola",
+                   finished_at: null }],
+    };
+
+    beforeEach(() => { jest.useFakeTimers(); });
+    afterEach(() => { jest.useRealTimers(); });
+
+    it("sigue preguntando aunque una consulta falle y avisa si FACTUSOL termina mal", async () => {
+      const m = api();
+      m.comprobarCuadre.mockResolvedValue({
+        lanzadas: { mysql: { id: "r2", estado: "ok" }, factusol: { id: "r3", estado: "en_cola" } },
+        resumen: enCola,
+      });
+      m.getCuadreResumen
+        .mockResolvedValueOnce(RESUMEN)                       // al entrar
+        .mockRejectedValueOnce(new Error("502"))              // un fallo puntual
+        .mockResolvedValueOnce(enCola)                        // sigue en cola
+        .mockResolvedValue(RESUMEN);                          // terminó… sin pasada nueva
+      const user = userEvent.setup({ advanceTimers: jest.advanceTimersByTime });
+      render(<CuadrePage />);
+      await user.click(await screen.findByRole("button", { name: "Comprobar ahora" }));
+      expect(await screen.findByText(/Comprobando FACTUSOL/)).toBeInTheDocument();
+      for (let i = 0; i < 3; i++) {
+        await act(async () => { await jest.advanceTimersByTimeAsync(5000); });
+      }
+      expect(await screen.findByText(/La comprobación de FACTUSOL no ha terminado bien/))
+        .toBeInTheDocument();
+      expect(screen.queryByText(/Comprobando FACTUSOL/)).not.toBeInTheDocument();
+      expect(m.getCuadreResumen.mock.calls.length).toBeGreaterThanOrEqual(4);
+    });
+
+    it("al terminar bien recarga las filas y lo dice", async () => {
+      const m = api();
+      m.comprobarCuadre.mockResolvedValue({
+        lanzadas: { mysql: { id: "r2", estado: "ok" }, factusol: { id: "r3", estado: "en_cola" } },
+        resumen: enCola,
+      });
+      const hecho = {
+        ...RESUMEN,
+        ultimas_por_fuente: { ...RESUMEN.ultimas_por_fuente,
+          factusol: { ...RESUMEN.ultima_pasada, id: "r3", fuente: "factusol", resumen: {} } },
+      };
+      m.getCuadreResumen.mockResolvedValueOnce(RESUMEN).mockResolvedValue(hecho);
+      const user = userEvent.setup({ advanceTimers: jest.advanceTimersByTime });
+      render(<CuadrePage />);
+      await user.click(await screen.findByRole("button", { name: "Comprobar ahora" }));
+      m.listCuadreHallazgos.mockClear();
+      for (let i = 0; i < 2; i++) {
+        await act(async () => { await jest.advanceTimersByTimeAsync(5000); });
+      }
+      expect(await screen.findByText("Comprobadas también las de FACTUSOL.")).toBeInTheDocument();
+      await waitFor(() => expect(m.listCuadreHallazgos).toHaveBeenCalled());
+    });
   });
 });

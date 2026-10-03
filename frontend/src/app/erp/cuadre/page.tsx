@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { PageHeader } from "../../components/PageHeader";
 import {
   comprobarCuadre,
@@ -29,9 +29,19 @@ const SEV_LABEL: Record<CuadreSeveridad, string> = { alta: "Alta", media: "Media
 const SEV_TONE: Record<CuadreSeveridad, string> = { alta: "bad", media: "warn", baja: "muted" };
 const ORIGEN_LABEL: Record<string, string> = { nocturno: "pasada nocturna", manual: "Comprobar ahora" };
 const FUENTE_LABEL: Record<string, string> = { mysql: "BoHub", factusol: "FACTUSOL" };
-/** Cada cuánto se mira si ha terminado la comprobación de FACTUSOL. */
+/** Cada cuánto se mira si ha terminado la comprobación de FACTUSOL: deprisa
+ *  los primeros minutos y luego más despacio (una pasada atascada en cola no
+ *  martillea la API). Con la pestaña oculta no se pregunta. */
 const POLL_MS = 5000;
+const POLL_LENTO_MS = 30000;
+const POLL_LENTO_TRAS_MS = 2 * 60 * 1000;
 const MOTIVO_MAX = 255;
+
+function hora(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? "" : d.toLocaleTimeString("es-ES", { timeStyle: "short" });
+}
 
 function fechaHora(iso: string | null | undefined): string {
   if (!iso) return "—";
@@ -51,6 +61,7 @@ export default function CuadrePage() {
   const [resumen, setResumen] = useState<CuadreResumen | null>(null);
   const [items, setItems] = useState<CuadreHallazgo[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [errorCarga, setErrorCarga] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [severidad, setSeveridad] = useState<CuadreSeveridad | "">("");
@@ -69,56 +80,79 @@ export default function CuadrePage() {
     incluir_revisados: incluirRevisados,
   }), [severidad, soloNuevos, incluirRevisados]);
 
-  // Recargas explícitas (tras «Comprobar ahora», revisar…): desde los eventos.
-  const recargarItems = useCallback(async () => {
-    try {
-      setItems((await listCuadreHallazgos(filtros)).items);
-    } catch (e) {
-      setError(extractErrorMessage(e, "No se pudieron cargar los descuadres."));
-    }
-  }, [filtros]);
-  const recargarResumen = useCallback(async () => {
-    try {
-      setResumen(await getCuadreResumen());
-    } catch (e) {
-      setError(extractErrorMessage(e, "No se pudo cargar el Cuadre."));
-    }
-  }, []);
-
-  // Carga inicial y al cambiar los filtros.
+  // Filas: UNA sola vía de carga (filtros + recargas tras las acciones), con
+  // guarda: una respuesta vieja nunca pisa la de los filtros actuales.
+  const [recarga, setRecarga] = useState(0);
   useEffect(() => {
     let vivo = true;
     listCuadreHallazgos(filtros)
-      .then((r) => { if (vivo) setItems(r.items); })
+      .then((r) => {
+        if (!vivo) return;
+        setItems(r.items);
+        setErrorCarga(null);
+      })
       .catch((e) => {
-        if (vivo) setError(extractErrorMessage(e, "No se pudieron cargar los descuadres."));
+        if (vivo) setErrorCarga(extractErrorMessage(e, "No se pudieron cargar los descuadres."));
       });
     return () => { vivo = false; };
-  }, [filtros]);
+  }, [filtros, recarga]);
 
-  // Resumen: al entrar y, mientras FACTUSOL se comprueba en segundo plano
-  // («comprobando…»), cada pocos segundos; al terminar se recargan las filas.
+  // Resumen: al entrar, tras cada acción y, mientras FACTUSOL se comprueba en
+  // segundo plano («comprobando…»), cada pocos segundos —aunque una consulta
+  // falle—. Al terminar se recargan las filas y se dice si fue bien.
   const [tick, setTick] = useState(0);
+  const [pausa, setPausa] = useState(0);
   const comprobandoAntes = useRef(false);
+  const comprobandoDesde = useRef<number | null>(null);
+  const lanzadaFactusol = useRef<string | null>(null);
   useEffect(() => {
     let vivo = true;
     getCuadreResumen()
       .then((r) => {
         if (!vivo) return;
         setResumen(r);
+        setErrorCarga(null);
         const ahora = r.en_curso.length > 0;
-        if (comprobandoAntes.current && !ahora) recargarItems();
+        if (comprobandoAntes.current && !ahora) {
+          setRecarga((n) => n + 1);
+          const id = lanzadaFactusol.current;
+          if (id) {
+            if (r.ultimas_por_fuente?.factusol?.id === id) {
+              setNotice("Comprobadas también las de FACTUSOL.");
+            } else {
+              setNotice(null);
+              setError("La comprobación de FACTUSOL no ha terminado bien (¿FACTUSOL o "
+                + "worker-sync parados?): sus tarjetas siguen con lo de la última vez.");
+            }
+          }
+          lanzadaFactusol.current = null;
+        }
         comprobandoAntes.current = ahora;
       })
-      .catch((e) => { if (vivo) setError(extractErrorMessage(e, "No se pudo cargar el Cuadre.")); });
+      .catch((e) => {
+        if (vivo) setErrorCarga(extractErrorMessage(e, "No se pudo cargar el Cuadre."));
+      });
     return () => { vivo = false; };
-  }, [tick, recargarItems]);
+  }, [tick]);
   const comprobando = (resumen?.en_curso.length ?? 0) > 0;
   useEffect(() => {
-    if (!comprobando) return;
-    const t = window.setTimeout(() => setTick((n) => n + 1), POLL_MS);
+    if (!comprobando) {
+      comprobandoDesde.current = null;
+      return;
+    }
+    if (comprobandoDesde.current === null) comprobandoDesde.current = Date.now();
+    const lento = Date.now() - comprobandoDesde.current > POLL_LENTO_TRAS_MS;
+    const t = window.setTimeout(() => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") setPausa((n) => n + 1);
+      else setTick((n) => n + 1);
+    }, lento ? POLL_LENTO_MS : POLL_MS);
     return () => window.clearTimeout(t);
-  }, [comprobando, resumen]);
+  }, [comprobando, tick, pausa]);
+
+  function recargarTodo() {
+    setRecarga((n) => n + 1);
+    setTick((n) => n + 1);
+  }
 
   async function comprobar() {
     setBusy(true);
@@ -128,16 +162,25 @@ export default function CuadrePage() {
       const r = await comprobarCuadre();
       setResumen(r.resumen);
       comprobandoAntes.current = r.resumen.en_curso.length > 0;
-      await recargarItems();
+      setRecarga((n) => n + 1);
+      const ms = r.lanzadas.mysql?.estado;
       const fs = r.lanzadas.factusol?.estado;
-      setNotice(
+      if (fs === "en_cola" || fs === "corriendo") {
+        lanzadaFactusol.current = r.lanzadas.factusol?.id ?? null;
+      }
+      const partes = [
+        ms === "en_curso"
+          ? "Ya había una comprobación de BoHub en curso."
+          : ms === "con_errores" || ms === "error"
+            ? "Comprobadas las de BoHub, pero alguna ha fallado (mira las tarjetas)."
+            : "Comprobadas las de BoHub.",
         fs === "en_cola" || fs === "corriendo"
-          ? "Comprobadas las de BoHub. Las de FACTUSOL se comprueban en segundo plano: "
-            + "la lista se pone al día sola al terminar."
+          ? "Las de FACTUSOL se comprueban en segundo plano: la lista se pone al día sola al terminar."
           : fs === "error"
-            ? "Comprobadas las de BoHub. Las de FACTUSOL no se han podido lanzar (worker parado)."
-            : "Comprobado.",
-      );
+            ? "Las de FACTUSOL no se han podido lanzar (¿worker-sync parado?)."
+            : "",
+      ];
+      setNotice(partes.filter(Boolean).join(" "));
     } catch (e) {
       setError(extractErrorMessage(e, "No se pudo comprobar."));
     } finally {
@@ -167,9 +210,10 @@ export default function CuadrePage() {
       await revisarCuadreHallazgo(h.id, texto);
       setRevisando(null);
       setMotivo("");
-      await Promise.all([recargarItems(), recargarResumen()]);
+      recargarTodo();
     } catch (e) {
       setRowError({ id: h.id, msg: extractErrorMessage(e, "No se pudo marcar como revisado.") });
+      recargarTodo();                     // p. ej. lo resolvió otra pasada mientras tanto
     } finally {
       setRowBusy(null);
     }
@@ -180,9 +224,10 @@ export default function CuadrePage() {
     setRowError(null);
     try {
       await reincluirCuadreHallazgo(h.id);
-      await Promise.all([recargarItems(), recargarResumen()]);
+      recargarTodo();
     } catch (e) {
       setRowError({ id: h.id, msg: extractErrorMessage(e, "No se pudo volver a incluir.") });
+      recargarTodo();
     } finally {
       setRowBusy(null);
     }
@@ -224,7 +269,7 @@ export default function CuadrePage() {
             <button type="button" className="button small secondary" onClick={descargar}>
               Descargar Excel
             </button>
-            <button type="button" className="button small" disabled={busy || comprobando}
+            <button type="button" className="button small" disabled={busy}
                     onClick={comprobar}>
               {busy ? "Comprobando…" : "Comprobar ahora"}
             </button>
@@ -233,13 +278,17 @@ export default function CuadrePage() {
       />
 
       {error ? <p className="form-error" role="alert">{error}</p> : null}
+      {errorCarga ? <p className="form-error" role="alert">{errorCarga}</p> : null}
       {notice ? <p className="form-success" role="status">{notice}</p> : null}
 
       <section className="erp-cuadre-estado" aria-label="Estado del Cuadre">
         <p className="muted">{ultimaPasadaTexto(resumen?.ultima_pasada ?? null)}</p>
         {comprobando ? (
           <p className="erp-cuadre-comprobando" role="status">
-            Comprobando {resumen?.en_curso.map((p) => FUENTE_LABEL[p.fuente] ?? p.fuente).join(" y ")}…
+            Comprobando {resumen?.en_curso.map((p) => (
+              `${FUENTE_LABEL[p.fuente] ?? p.fuente}${p.estado === "en_cola" && hora(p.created_at)
+                ? ` (en cola desde las ${hora(p.created_at)})` : ""}`
+            )).join(" y ")}…
           </p>
         ) : null}
         {resumen && !resumen.nocturno.activo ? (
@@ -296,16 +345,22 @@ export default function CuadrePage() {
       </div>
 
       <div className="erp-cuadre-tarjetas" role="list" aria-label="Comprobaciones">
-        {resumen === null && !error ? <p className="muted">Cargando…</p> : null}
+        {resumen === null && !errorCarga ? <p className="muted">Cargando…</p> : null}
         {resumen !== null && tarjetas.length === 0 ? (
           <p className="muted">No hay comprobaciones con estos filtros.</p>
         ) : null}
         {tarjetas.map((c) => {
           const filas = porCheck.get(c.id) ?? [];
           const abierta = expanded.has(c.id);
+          // Lo que dijo la última comprobación terminada de su fuente: sin
+          // ella, o si la comprobación falló, «0 abiertos» NO es «todo cuadra».
+          const ultima = resumen?.ultimas_por_fuente?.[c.fuente] ?? null;
+          const sinComprobar = !ultima || !(c.id in (ultima.resumen ?? {}));
+          const fallo = ultima?.resumen?.[c.id]?.error ?? null;
+          const cuadra = c.abiertos === 0 && !sinComprobar && !fallo;
           return (
             <article key={c.id} role="listitem"
-                     className={`erp-cuadre-tarjeta is-${c.severidad}${c.abiertos === 0 ? " is-ok" : ""}`}>
+                     className={`erp-cuadre-tarjeta is-${c.severidad}${cuadra ? " is-ok" : ""}`}>
               <header className="erp-cuadre-tarjeta-cab">
                 <button
                   type="button"
@@ -315,11 +370,15 @@ export default function CuadrePage() {
                   onClick={() => toggle(c.id)}
                 >
                   <span className="erp-cuadre-tarjeta-titulo">{c.titulo}</span>
-                  <span className="erp-cuadre-tarjeta-num" aria-label={`${c.abiertos} abiertos`}>
-                    {c.abiertos}
+                  <span className="erp-cuadre-tarjeta-num">
+                    {c.abiertos}<span className="sr-only"> abiertos</span>
                   </span>
                 </button>
                 <span className={`badge ${SEV_TONE[c.severidad]}`}>{SEV_LABEL[c.severidad]}</span>
+                {sinComprobar ? <span className="badge muted">Sin comprobar</span> : null}
+                {fallo ? (
+                  <span className="badge warn" title={fallo}>Falló en la última comprobación</span>
+                ) : null}
                 {c.nuevos > 0 ? <span className="badge active">{c.nuevos} nuevos</span> : null}
                 {c.revisados > 0 ? (
                   <span className="badge muted">{c.revisados} revisados</span>
@@ -329,11 +388,14 @@ export default function CuadrePage() {
                 {c.descripcion}
                 {c.dias !== null && c.dias_texto ? ` · ${c.dias_texto.replace("N", String(c.dias))}` : ""}
               </p>
-              {abierta ? (
-                <div id={`cuadre-${c.id}`} className="erp-cuadre-filas">
-                  {filas.length === 0 ? (
+              <div id={`cuadre-${c.id}`} className="erp-cuadre-filas" hidden={!abierta}>
+                {abierta ? (filas.length === 0 ? (
                     <p className="muted small">
-                      {c.abiertos === 0 ? "Todo cuadra." : "Ninguno con estos filtros."}
+                      {fallo
+                        ? `La última comprobación falló: ${fallo}`
+                        : sinComprobar
+                          ? "Todavía no se ha comprobado."
+                          : c.abiertos === 0 ? "Todo cuadra." : "Ninguno con estos filtros."}
                     </p>
                   ) : (
                     <ul>
@@ -406,9 +468,8 @@ export default function CuadrePage() {
                         </li>
                       ))}
                     </ul>
-                  )}
-                </div>
-              ) : null}
+                  )) : null}
+              </div>
             </article>
           );
         })}
