@@ -2058,6 +2058,11 @@ export type ErpSettings = {
   /** ERP · email del SAT / taller: destinatario por defecto de «Enviar por
    *  email» desde un pedido. "" = sin destinatario precargado. */
   sat_email?: string;
+  /** ERP · Cuadre — job nocturno (interruptor + hora HH:MM de Madrid) y, por
+   *  comprobación, si está activa y su umbral en días. */
+  cuadre?: CuadreConfig;
+  /** ERP · Cuadre — catálogo de comprobaciones (solo lectura; viene en el GET). */
+  cuadre_catalogo?: CuadreComprobacion[];
   /** ERP-F6-fix3 — tiendas Woo dadas de alta, para configurar la serie de
    *  cada una (solo lectura; se rellena en el GET). */
   woocommerce_stores?: {
@@ -4830,4 +4835,135 @@ export async function changeOrderFactusolSerie(
     method: "POST",
     body: JSON.stringify({ serie, confirm: true }),
   });
+}
+
+
+// --- ERP · Cuadre: descuadres entre BoHub, FACTUSOL, envíos y la hoja ----------
+
+export type CuadreSeveridad = "alta" | "media" | "baja";
+
+/** Una comprobación del registro del Cuadre. */
+export type CuadreComprobacion = {
+  id: string;
+  titulo: string;
+  descripcion: string;
+  severidad: CuadreSeveridad;
+  fuente: "mysql" | "factusol";
+  grupo: "dinero" | "envios" | "documentos";
+  /** Umbral en días por defecto (null = la comprobación no usa umbral). */
+  dias_defecto: number | null;
+  /** Qué significa el umbral («Avisar pasados N días»). */
+  dias_texto: string | null;
+  orden: number;
+};
+
+export type CuadreConfig = {
+  nocturno_activo: boolean;
+  hora: string;
+  checks: Record<string, { activo: boolean; dias: number | null }>;
+};
+
+/** Una pasada (nocturna o «Comprobar ahora») sobre una fuente. */
+export type CuadrePasada = {
+  id: string;
+  fuente: "mysql" | "factusol";
+  origen: "nocturno" | "manual";
+  estado: "en_cola" | "corriendo" | "ok" | "con_errores" | "error";
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string | null;
+  error: string | null;
+  resumen: Record<string, { hallazgos?: number; nuevos?: number; error?: string }>;
+};
+
+export type CuadreTarjeta = CuadreComprobacion & {
+  dias: number | null;
+  abiertos: number;
+  revisados: number;
+  nuevos: number;
+};
+
+export type CuadreResumen = {
+  contadores: Record<CuadreSeveridad | "total", number>;
+  ultima_pasada: CuadrePasada | null;
+  ultimas_por_fuente: Record<string, CuadrePasada | null>;
+  /** Pasadas en cola / corriendo: la pantalla enseña «comprobando…». */
+  en_curso: CuadrePasada[];
+  nocturno: { activo: boolean; hora: string };
+  checks: CuadreTarjeta[];
+};
+
+export type CuadreHallazgo = {
+  id: string;
+  check_id: string;
+  check_titulo: string;
+  severidad: CuadreSeveridad;
+  estado: "abierto" | "revisado" | "resuelto";
+  entidad_tipo: "pedido" | "factura" | "presupuesto" | "fila_hoja" | string;
+  entidad_id: string;
+  etiqueta: string;
+  detalle: string;
+  pista_de_arreglo: string;
+  /** Enlace a la entidad (pedido, documento, fila). */
+  enlace: string | null;
+  /** Botón «a donde se arregla»: pantalla con la acción que ya existe. */
+  arreglo_enlace: string | null;
+  arreglo_boton: string | null;
+  datos: Record<string, unknown>;
+  motivo: string | null;
+  visto_por: string | null;
+  revisado_at: string | null;
+  primera_vez_at: string | null;
+  ultima_vez_at: string | null;
+  abierto_at: string | null;
+  nuevo: boolean;
+};
+
+export type CuadreFiltros = {
+  check_id?: string;
+  severidad?: CuadreSeveridad;
+  solo_nuevos?: boolean;
+  incluir_revisados?: boolean;
+};
+
+export async function getCuadreResumen(): Promise<CuadreResumen> {
+  return apiFetch<CuadreResumen>("/api/erp/cuadre/resumen");
+}
+
+export async function listCuadreHallazgos(
+  filtros: CuadreFiltros = {},
+): Promise<{ items: CuadreHallazgo[]; total: number }> {
+  return apiFetch(`/api/erp/cuadre/hallazgos${qs({
+    check_id: filtros.check_id,
+    severidad: filtros.severidad,
+    solo_nuevos: filtros.solo_nuevos ? "true" : undefined,
+    incluir_revisados: filtros.incluir_revisados ? "true" : undefined,
+  })}`);
+}
+
+/** «Revisado / no es un descuadre», con motivo corto obligatorio. */
+export async function revisarCuadreHallazgo(id: string, motivo: string): Promise<CuadreHallazgo> {
+  return apiFetch<CuadreHallazgo>(`/api/erp/cuadre/hallazgos/${encodeURIComponent(id)}/revisar`, {
+    method: "POST", body: JSON.stringify({ motivo }),
+  });
+}
+
+/** «Volver a incluir» un descuadre revisado. */
+export async function reincluirCuadreHallazgo(id: string): Promise<CuadreHallazgo> {
+  return apiFetch<CuadreHallazgo>(
+    `/api/erp/cuadre/hallazgos/${encodeURIComponent(id)}/reincluir`, { method: "POST" },
+  );
+}
+
+/** «Comprobar ahora»: BoHub al momento; FACTUSOL en segundo plano (worker). */
+export async function comprobarCuadre(): Promise<{
+  lanzadas: Record<"mysql" | "factusol", { id?: string; estado: string } | null>;
+  resumen: CuadreResumen;
+}> {
+  return apiFetch("/api/erp/cuadre/comprobar", { method: "POST" });
+}
+
+/** Excel con todos los descuadres abiertos. */
+export async function exportCuadreXlsx(): Promise<Blob> {
+  return apiDownloadBlob("/api/erp/cuadre/export");
 }

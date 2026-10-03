@@ -17,6 +17,9 @@ jest.mock("../lib/erpApi", () => ({
     items: [], queue: null, queue_counts: { por_revisar: 3, por_facturar: 7 },
   }),
   getSatQueue: jest.fn().mockResolvedValue({ preparing: [{}], ready_for_pickup: [{}] }),
+  getCuadreResumen: jest.fn().mockResolvedValue({
+    contadores: { alta: 0, media: 0, baja: 4, total: 4 },
+  }),
 }));
 
 describe("ErpHome", () => {
@@ -38,6 +41,25 @@ describe("ErpHome", () => {
     // PEDIDOS ya no es pantalla aparte).
     expect(screen.getByRole("link", { name: /Pedidos pendientes de aprobación/ }))
       .toHaveAttribute("href", "/erp/orders?queue=por_revisar");
+  });
+
+  it("sin descuadres de severidad alta o media no enseña la tarjeta del Cuadre", async () => {
+    window.history.replaceState({}, "", "/erp");
+    render(<ErpHome />);
+    expect(await screen.findByText("Pedidos pendientes de aprobación")).toBeInTheDocument();
+    const { getCuadreResumen } = jest.requireMock("../lib/erpApi");
+    await waitFor(() => expect(getCuadreResumen).toHaveBeenCalled());
+    expect(screen.queryByText(/en el Cuadre/)).not.toBeInTheDocument();
+  });
+
+  it("con descuadres de severidad alta o media enseña «N descuadres» y lleva al Cuadre", async () => {
+    window.history.replaceState({}, "", "/erp");
+    const { getCuadreResumen } = jest.requireMock("../lib/erpApi");
+    getCuadreResumen.mockResolvedValueOnce({ contadores: { alta: 2, media: 5, baja: 9, total: 16 } });
+    render(<ErpHome />);
+    const card = await screen.findByRole("link", { name: /Descuadres en el Cuadre/ });
+    expect(card).toHaveAttribute("href", "/erp/cuadre");
+    expect(card).toHaveTextContent("7");
   });
 
   it("enseña el aviso cuando se llega desde una URL del CRM (?desde)", async () => {

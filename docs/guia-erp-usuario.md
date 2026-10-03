@@ -26,6 +26,7 @@ dice qué se ve, qué se pulsa y qué pasa después.
   - [Cola SAT (el taller)](#cola-sat-el-taller)
   - [Seguimiento](#seguimiento)
   - [Excepciones](#excepciones)
+  - [Cuadre (descuadres)](#cuadre-descuadres)
   - [Ajustes del ERP](#ajustes-del-erp)
 - [Parte 2: el ciclo de un pedido, paso a paso](#parte-2-el-ciclo-de-un-pedido-paso-a-paso)
   - [A) Pedido web (WooCommerce), de principio a fin](#a-pedido-web-woocommerce-de-principio-a-fin)
@@ -83,6 +84,7 @@ roles**: su permiso es la **unión** de lo que permite cada uno.
 | Cola SAT: subir etiqueta | ✅ | ✅ | ✅ | ✅ |
 | Cola SAT: preparar / embalar / técnicos (serie, WhiteRIP) | ❌ | ✅ | ✅ | ✅ |
 | Seguimiento (hoja / Drive) | ❌ | ✅ | ❌ | ✅ |
+| Cuadre (descuadres) | ❌ | ✅ | ❌ | ✅ |
 | Conciliación bancaria | ❌ | ❌ | ❌ | ✅ |
 | Configuración · Integraciones (Woo) | ❌ | ❌ | ❌ | ✅ |
 | **Asignar roles** a usuarios | ❌ | ❌ | ❌ | ✅ |
@@ -162,6 +164,7 @@ comillas):
 - **«ERP · Proformas»** → [Proformas](#proformas).
 - **«ERP · Documentos»** → [Documentos de FACTUSOL](#documentos-de-factusol).
 - **«ERP · Seguimiento»** → [Seguimiento](#seguimiento).
+- **«ERP · Cuadre»** → [Cuadre (descuadres)](#cuadre-descuadres).
 - **«ERP · Conciliación»** → conciliación bancaria (cuadre de cobros).
 - **«ERP · Taller (SAT)»** → la [Cola SAT](#cola-sat-el-taller).
 - **«ERP · Configuración»** → [Ajustes del ERP](#ajustes-del-erp) (solo admin).
@@ -1356,6 +1359,70 @@ Filtra por **«Estado»** (*Abiertas* por defecto, *En curso*, *Resueltas*,
 *Descartadas*) y por **«Asignación»**. Por fila: **«Asignarme»**, **«Marcar
 vista»** y **«Resolver»**. Mientras haya una incidencia abierta, el pedido va a
 la cola **«Incidencias»** y no se puede aprobar.
+
+### Cuadre (descuadres)
+
+**Menú: «ERP · Cuadre». Título: «Cuadre».** Reúne en un sitio lo que **no
+cuadra** entre BoHub, FACTUSOL, los envíos y la hoja de Drive.
+
+**Es solo lectura.** No escribe en FACTUSOL, no corrige datos y no cambia
+estados. Cada descuadre lleva a la pantalla donde ya está el botón para
+arreglarlo.
+
+**Qué hay en la pantalla**
+
+- **Contadores** de descuadres por severidad (**alta**, **media**, **baja**) y
+  la fecha de la última comprobación. Pulsar un contador filtra por esa
+  severidad.
+- **Una tarjeta por comprobación**, con su título, la severidad y los
+  descuadres abiertos (y cuántos son nuevos o están revisados). Al desplegarla
+  se ven sus filas. Cada fila trae:
+  - un enlace al pedido o documento;
+  - qué no cuadra;
+  - dónde se arregla;
+  - el botón que lleva allí.
+
+**Qué se comprueba**
+
+| Grupo | Comprobaciones |
+|---|---|
+| Dinero (alta) | Factura con líneas que no son suyas; cobro distinto en BoHub y en FACTUSOL (o cobrada sin línea de cobro); factura sin cobrar pasados 30 días, con lo pendiente. |
+| Envíos (media) | «No requiere envío» con tracking o courier; enviado sin aviso al cliente; en tránsito más de 10 días; entregado, facturado y cobrado sin «Marcar completado» a los 14 días. |
+| Documentos y hoja | Pedido que falta en la hoja de Drive (o fila de un pedido que ya no existe); factura de FACTUSOL sin vincular al pedido o vinculada a un número que no existe; factura sin enviar a los 7 días; pedido sin aprobar a los 7 días; proforma aceptada sin convertir a los 30 días. |
+
+**Si no es un descuadre**
+
+Pulsa **«Revisado / no es un descuadre»** y escribe un motivo corto (es
+obligatorio). No vuelve a salir mientras no cambien sus datos. Si cambian (por
+ejemplo, cambia el importe pendiente), vuelve como nuevo.
+
+Con **«Incluir revisados»** los ves y puedes pulsar **«Volver a incluir»**.
+
+Lo que se arregla desaparece solo en la siguiente comprobación: queda como
+*resuelto*, no se borra.
+
+**Filtros:** severidad, comprobación, **«Solo nuevos desde la última vez»** e
+**«Incluir revisados»**.
+
+**«Descargar Excel»** baja todos los descuadres abiertos.
+
+**«Comprobar ahora»**
+
+- Las comprobaciones de BoHub se hacen al momento.
+- Las de FACTUSOL van en segundo plano para no saturar su API: verás
+  **«Comprobando FACTUSOL…»** y la lista se pone al día sola al terminar.
+- Además, si está encendida, hay una comprobación **cada noche** (a las 03:00
+  por defecto).
+
+**Desde el inicio del ERP** sale una tarjeta **«N descuadres»** cuando hay
+alguno de severidad alta o media. Lleva directamente al Cuadre.
+
+**Configuración** (en **«Configuración ERP → Cuadre (descuadres)»**)
+
+- Encender la comprobación nocturna y elegir su hora. Viene **apagada**: se
+  enciende después de revisar el primer lote con «Comprobar ahora».
+- Activar o desactivar cada comprobación.
+- Cambiar los días de aviso de cada comprobación.
 
 ### Ajustes del ERP
 

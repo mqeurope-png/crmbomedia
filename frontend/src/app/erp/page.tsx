@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { PageHeader } from "../components/PageHeader";
 import { getCurrentUser, type User } from "../lib/api";
 import { resolveVisibleNav } from "../lib/appNav";
-import { getSatQueue, listOrders } from "../lib/erpApi";
+import { getCuadreResumen, getSatQueue, listOrders } from "../lib/erpApi";
 
 /** ERP-F2 — INICIO del ERP (`/erp`). Es la pantalla de entrada del perfil de
  *  ERP: accesos a lo que usa a diario (pedidos pendientes, cola de taller,
@@ -15,6 +15,9 @@ export default function ErpHome() {
   const [user, setUser] = useState<User | null>(null);
   const [pending, setPending] = useState<number | null>(null);
   const [satCount, setSatCount] = useState<number | null>(null);
+  // ERP · Cuadre: descuadres de severidad alta o media abiertos (sin permiso o
+  // si falla, la tarjeta no sale).
+  const [descuadres, setDescuadres] = useState<number | null>(null);
   // Aviso cuando se ha redirigido aquí desde una URL del CRM (AppShell añade
   // `?desde=`), para que quede claro por qué no ha aterrizado donde tecleó.
   const [blockedFrom, setBlockedFrom] = useState<string | null>(null);
@@ -31,6 +34,9 @@ export default function ErpHome() {
     getSatQueue()
       .then((q) => setSatCount(q.preparing.length + q.ready_for_pickup.length))
       .catch(() => setSatCount(null));
+    getCuadreResumen()
+      .then((r) => setDescuadres((r.contadores.alta ?? 0) + (r.contadores.media ?? 0)))
+      .catch(() => setDescuadres(null));
     try {
       const params = new URLSearchParams(window.location.search);
       const desde = params.get("desde");
@@ -70,6 +76,15 @@ export default function ErpHome() {
           <Link href="/erp/orders?queue=por_revisar" className="erp-home-stat">
             <span className="erp-home-stat-value">{pending}</span>
             <span className="erp-home-stat-label">Pedidos pendientes de aprobación</span>
+          </Link>
+        ) : null}
+        {descuadres ? (
+          // Solo si hay descuadres de severidad alta o media.
+          <Link href="/erp/cuadre" className="erp-home-stat">
+            <span className="erp-home-stat-value">{descuadres}</span>
+            <span className="erp-home-stat-label">
+              {descuadres === 1 ? "Descuadre" : "Descuadres"} en el Cuadre (alta y media)
+            </span>
           </Link>
         ) : null}
         {satCount !== null ? (

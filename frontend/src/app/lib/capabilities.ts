@@ -31,6 +31,7 @@ export const Cap = {
   SAT_TRACKING: "erp.sat.tracking",
   SAT_NO_SHIPPING: "erp.sat.no_shipping",
   SEGUIMIENTO: "erp.seguimiento",
+  CUADRE: "erp.cuadre",
   CONCILIACION: "erp.conciliacion",
   CONFIG: "erp.config",
   INTEGRACIONES: "erp.integraciones",
@@ -53,7 +54,7 @@ const COMERCIAL_CAPS: ReadonlyArray<string> = [
 const PEDIDOS_CAPS: ReadonlyArray<string> = [
   ...COMERCIAL_CAPS,
   Cap.ORDERS_VIEW_WEB, Cap.COBRO_REGISTER, Cap.SAT_PREPARE, Cap.SAT_TRACKING,
-  Cap.SAT_NO_SHIPPING, Cap.SEGUIMIENTO,
+  Cap.SAT_NO_SHIPPING, Cap.SEGUIMIENTO, Cap.CUADRE,
 ];
 const SAT_CAPS: ReadonlyArray<string> = [
   Cap.ACCESS, Cap.ORDERS_VIEW_WEB, Cap.SAT_VIEW, Cap.SAT_PREPARE,
