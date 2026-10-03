@@ -181,6 +181,10 @@ services:
       # Espejo Seguimiento (Fase 2): reconcile BoHub ↔ hoja, con interruptor
       # en Configuración ERP (apagado por defecto).
       - seguimiento:reconcile
+      # ERP · Cuadre: job nocturno de comprobaciones (interruptor en
+      # Configuración ERP, apagado por defecto) y las de FACTUSOL de
+      # «Comprobar ahora». Solo lectura.
+      - cuadre:run
     volumes:
       # Sprint Backup-Hardening. El worker ejecuta
       # `scripts/backup-crmbo.sh` via subprocess: necesita el script

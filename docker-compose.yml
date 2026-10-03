@@ -108,6 +108,10 @@ services:
       # Espejo Seguimiento (Fase 2): reconcile BoHub ↔ hoja, con interruptor
       # en Configuración ERP (apagado por defecto).
       - seguimiento:reconcile
+      # ERP · Cuadre: job nocturno de comprobaciones (interruptor en
+      # Configuración ERP, apagado por defecto) y las de FACTUSOL de
+      # «Comprobar ahora». Solo lectura.
+      - cuadre:run
     volumes:
       # Sprint-Backfill-Gmail. El worker baja los adjuntos a este volume;
       # api los sirve via FileResponse desde el mismo volume.

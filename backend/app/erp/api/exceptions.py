@@ -45,6 +45,10 @@ from app.erp.contrapartidas import (
     validate_contrapartida_rules,
     validate_contrapartidas,
 )
+from app.erp.cuadre.config import CONFIG_KEY as CUADRE_CONFIG_KEY
+from app.erp.cuadre.config import normalizar_config as normalizar_cuadre
+from app.erp.cuadre.config import validar_config as validar_cuadre
+from app.erp.cuadre.registry import catalogo as cuadre_catalogo
 from app.erp.drive_sheets import (
     DriveConfigError,
     parse_service_account_json,
@@ -214,6 +218,10 @@ class SettingsIn(BaseModel):
     #: ERP · email del SAT / taller: destinatario por defecto de «Enviar por
     #: email» desde un pedido. "" = sin destinatario precargado.
     sat_email: str | None = Field(default=None, max_length=255)
+    #: ERP · Cuadre — job nocturno (interruptor + hora) y, por comprobación,
+    #: activa/inactiva y umbral en días: {"nocturno_activo", "hora", "checks":
+    #: {id: {"activo", "dias"}}}. Ver `app/erp/cuadre/config.py`.
+    cuadre: dict[str, Any] | None = None
 
 
 # --- helpers -----------------------------------------------------------------
@@ -525,6 +533,10 @@ def _serialise_settings(cfg: ErpSettings, session: Session) -> dict[str, Any]:
         ),
         # ERP · destinatario por defecto de «Enviar pedido por email» (taller).
         "sat_email": sat_email_config(_series(cfg).get("sat_email")),
+        # ERP · Cuadre: interruptor y hora del job nocturno + activación y umbral
+        # por comprobación (con los defaults), y el catálogo para pintarlas.
+        "cuadre": normalizar_cuadre(_series(cfg).get(CUADRE_CONFIG_KEY)),
+        "cuadre_catalogo": cuadre_catalogo(),
         "woocommerce_stores": _woocommerce_stores(session),
         "factusol_series_abbr_variants": {
             str(k): v
@@ -670,8 +682,16 @@ def update_settings(
             or payload.factusol_series_abbr_variants is not None
             or payload.sat_email is not None
             or payload.factusol_series_email_from is not None
-            or payload.factusol_store_email_from is not None):
+            or payload.factusol_store_email_from is not None
+            or payload.cuadre is not None):
         series = _series(cfg)
+        # ERP · Cuadre: se valida entero (hora HH:MM, días 1-3650, ids que
+        # existen) y se guarda ya normalizado.
+        if payload.cuadre is not None:
+            try:
+                series[CUADRE_CONFIG_KEY] = validar_cuadre(payload.cuadre)
+            except ValueError as e:
+                raise HTTPException(400, str(e)) from e
         # ERP · email del SAT / taller (destinatario por defecto del envío del
         # pedido). "" lo borra: sin destinatario precargado.
         if payload.sat_email is not None:
