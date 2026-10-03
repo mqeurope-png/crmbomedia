@@ -664,3 +664,48 @@ describe("ErpSettingsPage — Lote 2 · PR-2", () => {
     expect(screen.getByRole("button", { name: "Ver ejemplo es" })).toBeEnabled();
   });
 });
+
+describe("ErpSettingsPage — Cuadre (descuadres)", () => {
+  const catalogo = [
+    { id: "factura_lineas_ajenas", titulo: "Factura con líneas que no son suyas",
+      descripcion: "Líneas ≠ base.", severidad: "alta" as const, fuente: "factusol" as const,
+      grupo: "dinero" as const, dias_defecto: null, dias_texto: null, orden: 1 },
+    { id: "factura_sin_cobro", titulo: "Factura emitida sin cobro",
+      descripcion: "Pendiente de cobro.", severidad: "alta" as const, fuente: "factusol" as const,
+      grupo: "dinero" as const, dias_defecto: 30,
+      dias_texto: "Avisar pasados N días desde la factura", orden: 3 },
+  ];
+
+  it("job nocturno apagado por defecto; activar, hora y umbral por comprobación viajan juntos", async () => {
+    mockGet.mockResolvedValue(settings({
+      cuadre: {
+        nocturno_activo: false, hora: "03:00",
+        checks: { factura_lineas_ajenas: { activo: true, dias: null },
+                  factura_sin_cobro: { activo: true, dias: 30 } },
+      },
+      cuadre_catalogo: catalogo,
+    }));
+    const user = userEvent.setup();
+    render(<ErpSettingsPage />);
+    const nocturno = await screen.findByLabelText("Comprobación nocturna del Cuadre");
+    expect(nocturno).not.toBeChecked();
+    expect(screen.getByLabelText("Hora de la comprobación nocturna")).toHaveValue("03:00");
+    // La comprobación sin umbral no ofrece días.
+    expect(screen.queryByLabelText("Días para «Factura con líneas que no son suyas»"))
+      .not.toBeInTheDocument();
+    await user.click(nocturno);
+    await user.click(screen.getByLabelText("Activar «Factura con líneas que no son suyas»"));
+    const dias = screen.getByLabelText("Días para «Factura emitida sin cobro»");
+    await user.clear(dias);
+    await user.type(dias, "45");
+    await user.click(screen.getByRole("button", { name: "Guardar cambios · Cuadre (descuadres)" }));
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
+    const patch = mockUpdate.mock.calls[0][0];
+    expect(Object.keys(patch)).toEqual(["cuadre"]);         // solo su sección
+    expect(patch.cuadre).toEqual({
+      nocturno_activo: true, hora: "03:00",
+      checks: { factura_lineas_ajenas: { activo: false, dias: null },
+                factura_sin_cobro: { activo: true, dias: 45 } },
+    });
+  });
+});

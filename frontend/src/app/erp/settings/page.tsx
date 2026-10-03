@@ -19,6 +19,8 @@ import {
   uploadFactusolCompanyLogo,
   type ErpNextReferences,
   type ContrapartidaRule,
+  type CuadreComprobacion,
+  type CuadreConfig,
   type ErpSettings,
   type FactusolCompany,
   type InvoiceEmailTemplatePreview,
@@ -119,7 +121,7 @@ type SectionId =
   | "facturacion" | "tiendas" | "remitentes" | "plantillas" | "plantillas_presupuesto"
   | "aviso_envio" | "series"
   | "abreviaturas" | "sat" | "empresas" | "almacenes" | "contrapartidas"
-  | "origenes" | "drive";
+  | "origenes" | "drive" | "cuadre";
 
 const SECTIONS: ReadonlyArray<{ id: SectionId; title: string; keys: (keyof ErpSettings)[] }> = [
   { id: "facturacion", title: "Facturación",
@@ -149,6 +151,7 @@ const SECTIONS: ReadonlyArray<{ id: SectionId; title: string; keys: (keyof ErpSe
   { id: "drive", title: "Hoja de seguimiento en Drive",
     keys: ["drive_spreadsheet_id", "drive_service_account_json", "drive_reference_prefer_albaran",
       "seguimiento_reconcile_enabled", "seguimiento_reconcile_interval_minutes"] },
+  { id: "cuadre", title: "Cuadre (descuadres)", keys: ["cuadre"] },
 ];
 
 /** Estado de guardado de una sección: `saved` = el último guardado fue bien
@@ -1483,6 +1486,17 @@ export default function ErpSettingsPage() {
             <span className="muted small">Mínimo 5. Por defecto, 10.</span>
           </label>
         </SettingsSection>
+        {/* ERP · Cuadre — job nocturno y, por comprobación, activar + umbral. */}
+        <SettingsSection
+          {...sectionProps("cuadre")}
+          lead="El panel ERP · Cuadre busca lo que no cuadra entre BoHub, FACTUSOL, los envíos y la hoja de Drive. Aquí se decide qué se comprueba, con qué umbrales y si corre solo de noche."
+        >
+          <CuadreSettings
+            value={cfg.cuadre}
+            catalogo={cfg.cuadre_catalogo ?? []}
+            onChange={(cuadre) => patch({ cuadre })}
+          />
+        </SettingsSection>
         {/* Genei (envíos): endpoint propio, tarjeta autónoma. */}
         <GeneiSettingsCard canEdit={canEdit} />
       </div>
@@ -1777,5 +1791,95 @@ function AddAbbreviation({ onAdd }: { onAdd: (serie: string, abbr: string) => vo
         + Añadir
       </button>
     </div>
+  );
+}
+
+
+/** ERP · Cuadre — interruptor y hora del job nocturno, y por comprobación si
+ *  está activa y su umbral en días (solo las que usan umbral). */
+function CuadreSettings({
+  value, catalogo, onChange,
+}: {
+  value: CuadreConfig | undefined;
+  catalogo: CuadreComprobacion[];
+  onChange: (next: CuadreConfig) => void;
+}) {
+  const cfg: CuadreConfig = value ?? { nocturno_activo: false, hora: "03:00", checks: {} };
+  const check = (id: string) => cfg.checks[id] ?? { activo: true, dias: null };
+  const setCheck = (id: string, p: Partial<{ activo: boolean; dias: number | null }>) => onChange({
+    ...cfg, checks: { ...cfg.checks, [id]: { ...check(id), ...p } },
+  });
+  return (
+    <>
+      <label className="field erp-check-field">
+        <input
+          type="checkbox"
+          aria-label="Comprobación nocturna del Cuadre"
+          checked={cfg.nocturno_activo}
+          onChange={(e) => onChange({ ...cfg, nocturno_activo: e.target.checked })}
+        />
+        <span>Comprobar todo cada noche</span>
+        <span className="muted small">
+          Corre todas las comprobaciones activas a la hora de abajo (las de
+          FACTUSOL solo de noche o con «Comprobar ahora»). Enciéndelo después de
+          revisar el primer lote con «Comprobar ahora».
+        </span>
+      </label>
+      <label className="field">
+        <span>Hora (Madrid)</span>
+        <input
+          type="time"
+          aria-label="Hora de la comprobación nocturna"
+          value={cfg.hora}
+          onChange={(e) => onChange({ ...cfg, hora: e.target.value || "03:00" })}
+        />
+      </label>
+      <table className="data-table data-table--responsive erp-settings-table">
+        <thead>
+          <tr><th>Comprobación</th><th>Activa</th><th>Umbral</th></tr>
+        </thead>
+        <tbody>
+          {catalogo.map((c) => {
+            const st = check(c.id);
+            return (
+              <tr key={c.id}>
+                <td>
+                  <strong>{c.titulo}</strong>{" "}
+                  <span className="muted small">({c.severidad})</span>
+                  <br />
+                  <span className="muted small">{c.descripcion}</span>
+                </td>
+                <td>
+                  <input
+                    type="checkbox"
+                    aria-label={`Activar «${c.titulo}»`}
+                    checked={st.activo}
+                    onChange={(e) => setCheck(c.id, { activo: e.target.checked })}
+                  />
+                </td>
+                <td>
+                  {c.dias_defecto !== null ? (
+                    <label className="field">
+                      <span className="muted small">{c.dias_texto ?? "Días"}</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={3650}
+                        aria-label={`Días para «${c.titulo}»`}
+                        placeholder={String(c.dias_defecto)}
+                        value={st.dias ?? ""}
+                        onChange={(e) => setCheck(c.id, {
+                          dias: e.target.value === "" ? null : Number(e.target.value),
+                        })}
+                      />
+                    </label>
+                  ) : <span className="muted small">—</span>}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </>
   );
 }

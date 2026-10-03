@@ -11,6 +11,7 @@ import {
   Mail,
   Package,
   Plug,
+  Scale,
   ScrollText,
   Shuffle,
   Sliders,
@@ -108,6 +109,15 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     icon: ClipboardList,
     scope: "erp",
     requiredCapability: Cap.SEGUIMIENTO,
+  },
+  {
+    // ERP · Cuadre — descuadres entre BoHub, FACTUSOL, envíos y la hoja de
+    // Drive (solo lectura: cada uno lleva a donde se arregla).
+    href: "/erp/cuadre",
+    label: "ERP · Cuadre",
+    icon: Scale,
+    scope: "erp",
+    requiredCapability: Cap.CUADRE,
   },
   {
     // ERP-F4-A — conciliación bancaria (revisión humana de propuestas).

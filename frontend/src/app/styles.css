@@ -14828,3 +14828,60 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
 .sat-aviso { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1) var(--sp-2); }
 .sat-aviso .form-error { flex-basis: 100%; margin: 0; }
 .sat-aviso-confirm { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1); }
+
+/* ERP · Cuadre — descuadres entre BoHub, FACTUSOL, envíos y la hoja de Drive.
+   Contadores por severidad, una tarjeta por comprobación (desplegable) y las
+   filas con su enlace de arreglo. Reutiliza .badge, .button, .erp-doc-filters. */
+.erp-cuadre-estado { display: flex; flex-direction: column; gap: 2px; margin: 4px 0 12px; }
+.erp-cuadre-estado p { margin: 0; }
+.erp-cuadre-comprobando { color: var(--brand); font-weight: 600; }
+.erp-cuadre-contadores { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; }
+.erp-cuadre-contador {
+  display: flex; flex-direction: column; gap: 2px; min-width: 150px; padding: 12px 16px;
+  border: 1px solid var(--line); border-left-width: 4px; border-radius: var(--r-panel);
+  background: var(--card); color: inherit; text-align: left; cursor: pointer;
+}
+.erp-cuadre-contador.is-alta { border-left-color: var(--st-red-ink); }
+.erp-cuadre-contador.is-media { border-left-color: var(--st-amber-ink); }
+.erp-cuadre-contador.is-baja { border-left-color: var(--st-neutral-ink); }
+.erp-cuadre-contador.is-active { background: var(--primary-tint); border-color: var(--brand); }
+.erp-cuadre-contador-valor { font-size: var(--fs-display); font-weight: 700; line-height: 1.1; }
+.erp-cuadre-contador-label { color: var(--muted); }
+.erp-doc-filters .erp-check-field { flex-direction: row; align-items: center; gap: 6px; }
+.erp-cuadre-tarjetas { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+.erp-cuadre-tarjeta {
+  border: 1px solid var(--line); border-left-width: 4px; border-radius: var(--r-panel);
+  padding: 10px 14px; background: var(--card);
+}
+.erp-cuadre-tarjeta.is-alta { border-left-color: var(--st-red-ink); }
+.erp-cuadre-tarjeta.is-media { border-left-color: var(--st-amber-ink); }
+.erp-cuadre-tarjeta.is-baja { border-left-color: var(--st-neutral-ink); }
+.erp-cuadre-tarjeta.is-ok { opacity: 0.75; }
+.erp-cuadre-tarjeta > p { margin: 4px 0 0; }
+.erp-cuadre-tarjeta-cab { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.erp-cuadre-tarjeta-toggle {
+  display: flex; align-items: center; gap: 10px; flex: 1 1 auto; min-width: 0;
+  background: none; border: 0; padding: 0; color: inherit; text-align: left; cursor: pointer;
+}
+.erp-cuadre-tarjeta-toggle::before { content: "▸"; color: var(--muted); }
+.erp-cuadre-tarjeta-toggle[aria-expanded="true"]::before { content: "▾"; }
+.erp-cuadre-tarjeta-titulo { font-weight: 600; }
+.erp-cuadre-tarjeta-num {
+  min-width: 28px; padding: 1px 8px; border-radius: 999px; background: var(--line);
+  font-weight: 700; text-align: center;
+}
+.erp-cuadre-filas ul { list-style: none; margin: 10px 0 0; padding: 0; }
+.erp-cuadre-fila {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px;
+  padding: 10px 0; border-top: 1px solid var(--line);
+}
+.erp-cuadre-fila.is-revisado { opacity: 0.7; }
+.erp-cuadre-fila p { margin: 2px 0; }
+.erp-cuadre-fila-r1 { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.erp-cuadre-fila-acciones { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.erp-cuadre-motivo { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; margin-top: 6px; }
+.erp-cuadre-motivo .field { flex: 1 1 260px; }
+@media (max-width: 720px) {
+  .erp-cuadre-fila { grid-template-columns: 1fr; }
+  .erp-cuadre-fila-acciones { align-items: flex-start; flex-direction: row; flex-wrap: wrap; }
+}
