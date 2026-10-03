@@ -443,3 +443,57 @@ def test_proforma_aceptada_sin_convertir(s):
     res = _correr(cf.proforma_sin_convertir, _ctx(s, client))
     assert _ids(res) == {"1-000573"}
     assert res[0].datos["importe"] == 500.0
+
+
+# --- 1 · bandas de portes con neto propio (casos reales del 03/10/2026) -------------
+
+
+def _fac_portes(codigo: int, *, lineas: float, neto_portes: float, cliente: str):
+    """Factura de la serie 2 como las leídas en producción: las líneas en la
+    banda 1 y, en la banda 3, los portes (IPOR3 = 19) con un neto propio que no
+    es de ninguna línea (el 4 % de PayPal sobre líneas + portes)."""
+    return {
+        "TIPFAC": "2", "CODFAC": codigo, "CNOFAC": cliente, "ESTFAC": "2",
+        "FECFAC": "2026-09-30T00:00:00",
+        "NET1FAC": lineas, "BAS1FAC": lineas,
+        "NET3FAC": neto_portes, "IPOR3FAC": 19.00,
+        "BAS3FAC": round(neto_portes + 19.00, 2),
+        "TOTFAC": round(lineas + neto_portes + 19.00, 2),
+    }
+
+
+def test_banda_de_portes_con_neto_propio_no_es_contaminacion(s):
+    """2-526098 (PROTAVIS GMBH, 4 líneas = 215,00; NET3 = 9,36) y 2-526103
+    (innovescence, 1 línea = 25,00; NET3 = 1,76) salían con «diferencia» igual
+    al neto de la banda de portes: no son contaminación."""
+    client = FakeFactusol(
+        F_FAC=[
+            _fac_portes(526098, lineas=215.00, neto_portes=9.36, cliente="PROTAVIS GMBH"),
+            _fac_portes(526103, lineas=25.00, neto_portes=1.76, cliente="innovescence"),
+        ],
+        F_LFA=[
+            _lin(2, 526098, 100.00), _lin(2, 526098, 60.00), _lin(2, 526098, 35.00),
+            _lin(2, 526098, 20.00),
+            _lin(2, 526103, 25.00),
+        ],
+    )
+    assert _correr(cf.factura_lineas_ajenas, _ctx(s, client)) == []
+
+
+def test_contaminacion_382_sigue_saltando_aunque_haya_banda_de_portes(s):
+    """Las líneas suman DE MÁS (renglones del pedido homónimo de otra serie):
+    quitar el neto de la banda de portes solo baja la base, así que sigue
+    saltando."""
+    contaminada = _fac_portes(526110, lineas=215.00, neto_portes=9.36, cliente="Cliente SL")
+    client = FakeFactusol(
+        F_FAC=[contaminada],
+        F_LFA=[_lin(2, 526110, 215.00), _lin(2, 526110, 480.00, "Renglón de otra serie")],
+    )
+    res = _correr(cf.factura_lineas_ajenas, _ctx(s, client))
+    assert _ids(res) == {"2-526110"}
+    assert res[0].huella_datos["suma"] == 695.00
+    # Y una que se queda CORTA en algo que no es el neto de una banda de portes
+    # (faltan líneas) también salta.
+    corta = _fac_portes(526111, lineas=215.00, neto_portes=9.36, cliente="Cliente SL")
+    client = FakeFactusol(F_FAC=[corta], F_LFA=[_lin(2, 526111, 150.00)])
+    assert _ids(_correr(cf.factura_lineas_ajenas, _ctx(s, client))) == {"2-526111"}

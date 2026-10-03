@@ -14885,3 +14885,4 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
   .erp-cuadre-fila { grid-template-columns: 1fr; }
   .erp-cuadre-fila-acciones { align-items: flex-start; flex-direction: row; flex-wrap: wrap; }
 }
+.erp-cuadre-mas { display: flex; align-items: center; gap: 8px; margin: 8px 0 0; }

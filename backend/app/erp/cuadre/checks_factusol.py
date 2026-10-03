@@ -163,21 +163,32 @@ def lineas_cuadran(lineas: list[dict[str, Any]], fac: dict[str, Any]) -> bool:
       como línea «DESCUENTO» del detalle;
     - recargo PayPal del 4 %: base = Σ líneas × 1,04;
     - portes / financiación: van en su banda (`BAS = NET − IDTO − IPPA + IPOR
-      + IFIN`), no son línea.
+      + IFIN`), no son línea;
+    - una BANDA DE PORTES (IPOR > 0) con neto propio sin línea (p. ej. el 4 %
+      de PayPal sobre líneas + portes en la banda de los portes: 2-526098,
+      2-526103): su neto no es de las líneas, así que también se compara con
+      la base SIN esa banda.
 
     Una factura contaminada con las líneas del pedido homónimo de otra serie
-    (#382) no casa con ninguna de esas formas."""
+    (#382) no casa con ninguna de esas formas: allí las líneas suman DE MÁS, y
+    quitar el neto de una banda de portes solo baja la base."""
     suma = round(sum(_num(r.get("TOTLFA")) for r in lineas), 2)
     descuento = round(sum(
         _num(r.get("TOTLFA")) for r in lineas
         if _DESCUENTO_RE.search(f"{_s(r.get('ARTLFA'))} {_s(r.get('DESLFA'))}")
     ), 2)
-    neto = _banda(fac, "NET")
-    bases = {
-        neto,
-        round(neto - _banda(fac, "IDTO") - _banda(fac, "IPPA"), 2),
-        round(_banda(fac, "BAS") - _banda(fac, "IPOR"), 2),
-    }
+    bases: set[float] = set()
+    for fuera in _combinaciones_portes(fac):
+        def banda(prefijo: str, fuera: frozenset[int] = fuera) -> float:
+            return round(sum(
+                _num(fac.get(f"{prefijo}{i}FAC")) for i in range(1, 5) if i not in fuera
+            ), 2)
+        neto = banda("NET")
+        bases |= {
+            neto,
+            round(neto - banda("IDTO") - banda("IPPA"), 2),
+            round(banda("BAS") - banda("IPOR"), 2),
+        }
     sin_descuento = round(suma - descuento, 2)
     totales = {suma, sin_descuento, round(sin_descuento - abs(descuento), 2)}
     n = len(lineas)
@@ -187,6 +198,16 @@ def lineas_cuadran(lineas: list[dict[str, Any]], fac: dict[str, Any]) -> bool:
                 if abs(round(total * factor, 2) - base) <= tolerancia:
                     return True
     return False
+
+
+def _combinaciones_portes(fac: dict[str, Any]) -> list[frozenset[int]]:
+    """Bandas que se pueden dejar FUERA de la base de las líneas: solo las que
+    llevan portes (IPOR > 0); todas las combinaciones, empezando por ninguna."""
+    portes = [i for i in range(1, 5) if _num(fac.get(f"IPOR{i}FAC")) > TOLERANCIA]
+    out = [frozenset()]
+    for i in portes:
+        out += [c | {i} for c in out]
+    return out
 
 
 @comprobacion(
