@@ -94,12 +94,15 @@ class Comprobacion:
     dias_texto: str | None = None
     #: Posición en la pantalla y en Configuración (las nuevas, al final).
     orden: int = 0
+    #: Activa si Configuración ERP no dice otra cosa.
+    activa_defecto: bool = True
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "id": self.id, "titulo": self.titulo, "descripcion": self.descripcion,
             "severidad": self.severidad, "fuente": self.fuente, "grupo": self.grupo,
             "dias_defecto": self.dias_defecto, "dias_texto": self.dias_texto,
+            "activa_defecto": self.activa_defecto,
             "orden": self.orden,
         }
 
@@ -111,7 +114,7 @@ REGISTRO: dict[str, Comprobacion] = {}
 def comprobacion(
     *, id: str, titulo: str, descripcion: str, severidad: str, fuente: str,  # noqa: A002
     grupo: str, dias_defecto: int | None = None, dias_texto: str | None = None,
-    orden: int | None = None,
+    orden: int | None = None, activa_defecto: bool = True,
 ) -> Callable[[Callable[[Contexto], Iterable[Hallazgo]]], Callable[[Contexto], Iterable[Hallazgo]]]:
     """Decorador que registra una comprobación."""
     if severidad not in SEVERIDADES:
@@ -128,6 +131,7 @@ def comprobacion(
             id=id, titulo=titulo, descripcion=descripcion, severidad=severidad,
             fuente=fuente, grupo=grupo, funcion=func, dias_defecto=dias_defecto,
             dias_texto=dias_texto, orden=orden if orden is not None else 100 + len(REGISTRO),
+            activa_defecto=activa_defecto,
         )
         return func
 

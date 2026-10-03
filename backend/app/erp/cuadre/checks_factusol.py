@@ -132,6 +132,17 @@ def pedidos_por_factura(ctx: Contexto) -> dict[tuple[int, int], Any]:
     return ctx.cached("pedidos_por_factura", indexar)
 
 
+def facturas_de_bohub(ctx: Contexto) -> list[tuple[tuple[int, int], dict[str, Any]]]:
+    """ALCANCE del Cuadre en FACTUSOL: solo las facturas VINCULADAS a un pedido
+    de BoHub (y que están en el ejercicio leído). Lo que es solo de FACTUSOL
+    —series que BoHub no usa, facturas anteriores al ERP, facturas hechas a
+    mano sin pedido— no es un descuadre: el panel vigila lo que BoHub gestiona."""
+    facs = facturas(ctx)
+    return [
+        (clave, facs[clave]) for clave in sorted(pedidos_por_factura(ctx)) if clave in facs
+    ]
+
+
 def _enlaces_factura(ctx: Contexto, serie: int | None, codigo: int) -> tuple[str, Any]:
     pedido = pedidos_por_factura(ctx).get((serie, codigo)) if serie is not None else None
     return (enlace_pedido(pedido.id) if pedido is not None else DOCUMENTOS), pedido
@@ -213,15 +224,16 @@ def _combinaciones_portes(fac: dict[str, Any]) -> list[frozenset[int]]:
 @comprobacion(
     id="factura_lineas_ajenas", orden=1,
     titulo="Factura con líneas que no son suyas",
-    descripcion="Las líneas de la factura (F_LFA) no suman la base de su cabecera "
-                "(secuela del bug #382), descontando DESCUENTO y recargo PayPal.",
+    descripcion="Las líneas de una factura de un pedido de BoHub (F_LFA) no suman la base "
+                "de su cabecera (secuela del bug #382), descontando DESCUENTO, recargo "
+                "PayPal y portes.",
     severidad="alta", fuente=FUENTE_FACTUSOL, grupo="dinero",
 )
 def factura_lineas_ajenas(ctx: Contexto) -> Iterator[Hallazgo]:
     from app.erp.invoice_scan import index_lines_by_codigo, lines_for_invoice  # noqa: PLC0415
 
     indice = ctx.cached("lineas_fac", lambda: index_lines_by_codigo(ctx.tabla("F_LFA")))
-    for (serie, codigo), fac in facturas(ctx).items():
+    for (serie, codigo), fac in facturas_de_bohub(ctx):
         lineas = lines_for_invoice(indice, serie, codigo)
         base = _banda(fac, "NET")
         if not lineas and abs(base) <= TOLERANCIA:
@@ -285,8 +297,8 @@ def cobro_descuadrado(ctx: Contexto) -> Iterator[Hallazgo]:
             arreglo_boton="Ir a «Por cobrar»",
             huella_datos={"factusol": estado, "bohub": bohub, "factura": numero},
         )
-    for (serie, codigo), fac in facs.items():
-        if serie is None or _estado_fac(ctx, fac.get("ESTFAC")) != "cobrada":
+    for (serie, codigo), fac in facturas_de_bohub(ctx):
+        if _estado_fac(ctx, fac.get("ESTFAC")) != "cobrada":
             continue
         if (serie, codigo) in lineas_cobro or _num(fac.get("TOTFAC")) <= TOLERANCIA:
             continue
@@ -311,17 +323,18 @@ def cobro_descuadrado(ctx: Contexto) -> Iterator[Hallazgo]:
 @comprobacion(
     id="factura_sin_cobro", orden=3,
     titulo="Factura emitida sin cobro",
-    descripcion="Factura de hace más de N días con importe pendiente de cobro.",
+    descripcion="Factura de un pedido de BoHub de hace más de N días con importe "
+                "pendiente de cobro.",
     severidad="alta", fuente=FUENTE_FACTUSOL, grupo="dinero",
     dias_defecto=30, dias_texto="Avisar pasados N días desde la factura",
 )
 def factura_sin_cobro(ctx: Contexto) -> Iterator[Hallazgo]:
     umbral = ctx.dias("factura_sin_cobro", 30)
     lineas_cobro = cobros(ctx)                # F_LCO vacía → la pasada no la juzga
-    for (serie, codigo), fac in facturas(ctx).items():
+    for (serie, codigo), fac in facturas_de_bohub(ctx):
         total = round(_num(fac.get("TOTFAC")), 2)
-        if serie is None or total <= TOLERANCIA:
-            continue                          # sin serie o abono / importe cero
+        if total <= TOLERANCIA:
+            continue                          # abono / importe cero
         fecha = _fecha_doc(fac.get("FECFAC"))
         dias = ctx.dias_desde(fecha)
         if dias is None or dias <= umbral:
@@ -433,9 +446,11 @@ def factura_sin_vincular(ctx: Contexto) -> Iterator[Hallazgo]:
 @comprobacion(
     id="proforma_sin_convertir", orden=12,
     titulo="Proforma aceptada sin convertir",
-    descripcion="Proforma aceptada hace más de N días que todavía no es un pedido de BoHub.",
+    descripcion="Proforma aceptada hace más de N días que todavía no es un pedido de BoHub "
+                "(es el embudo comercial: apagada por defecto).",
     severidad="baja", fuente=FUENTE_FACTUSOL, grupo="documentos",
-    dias_defecto=30, dias_texto="Avisar pasados N días desde la proforma",
+    dias_defecto=90, dias_texto="Avisar pasados N días desde la proforma",
+    activa_defecto=False,
 )
 def proforma_sin_convertir(ctx: Contexto) -> Iterator[Hallazgo]:
     from app.erp.quotes_bandeja import _orders_by_quote  # noqa: PLC0415
@@ -445,7 +460,7 @@ def proforma_sin_convertir(ctx: Contexto) -> Iterator[Hallazgo]:
     )
     from app.integrations.factusol.service import coerce_serie  # noqa: PLC0415
 
-    umbral = ctx.dias("proforma_sin_convertir", 30)
+    umbral = ctx.dias("proforma_sin_convertir", 90)
     candidatas: list[tuple[int | None, int, dict[str, Any], datetime, int]] = []
     for row in ctx.tabla("F_PRE"):
         codigo = _int(row.get("CODPRE"))

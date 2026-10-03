@@ -101,6 +101,13 @@ Código: `backend/app/erp/cuadre/`. API: `backend/app/erp/api/cuadre.py`
 
 ## Las comprobaciones
 
+**Alcance.** El panel vigila lo que BoHub gestiona. Las comprobaciones de
+facturas (1, 2 y 3) solo miran facturas **vinculadas a un pedido de BoHub**.
+No miran las facturas que son solo de FACTUSOL: series que BoHub no usa,
+facturas anteriores al ERP o hechas a mano sin pedido. Eso no es un descuadre
+(`facturas_de_bohub` en `checks_factusol.py`). Las demás comprobaciones parten
+del pedido de BoHub.
+
 ### Dinero (severidad alta, fuente FACTUSOL)
 
 1. `factura_lineas_ajenas` — **Factura con líneas que no son suyas** (secuela
@@ -125,8 +132,9 @@ Código: `backend/app/erp/cuadre/`. API: `backend/app/erp/api/cuadre.py`
      ERP: 2 / 1 / 0.
    - También avisa de una factura **cobrada en FACTUSOL sin ninguna línea en
      `F_LCO`**.
-3. `factura_sin_cobro` — **Factura emitida sin cobro** pasados N días (30 por
-   defecto), con el importe pendiente: total − Σ `F_LCO`.
+3. `factura_sin_cobro` — **Factura emitida sin cobro** de un pedido de BoHub,
+   pasados N días (30 por defecto), con el importe pendiente: total − Σ `F_LCO`.
+   No es el listado de cuentas por cobrar de FACTUSOL.
    - La factura cobrada en ESTFAC sin ninguna línea no sale aquí, porque ya
      sale en la 2.
 
@@ -176,8 +184,11 @@ Código: `backend/app/erp/cuadre/`. API: `backend/app/erp/api/cuadre.py`
     días (7 por defecto).
     - No cuenta los carritos web sin pagar, que están ocultos por estado.
 12. `proforma_sin_convertir` (baja, fuente FACTUSOL) — Proforma aceptada
-    (`ESTPRE=1`) hace más de N días (30 por defecto) que aún no es un pedido
+    (`ESTPRE=1`) hace más de N días (90 por defecto) que aún no es un pedido
     de BoHub.
+    - Es el embudo comercial, no un descuadre: viene **apagada por defecto**
+      (`activa_defecto=False` en el registro).
+    - Se enciende en Configuración ERP.
 
 ### Qué pedidos se miran
 
@@ -256,6 +267,15 @@ umbral) y la pantalla la recogen solas del registro.
 
 Configuración: `GET/PATCH /api/erp/settings`, campo `cuadre`. Un cambio
 parcial se funde con lo guardado; `dias: null` vuelve al valor de serie.
+
+La config guardada lleva `version`. Si se cambia el defecto de una
+comprobación:
+- se sube `CONFIG_VERSION`;
+- se apunta la comprobación en `_DEFECTOS_CAMBIADOS` (`config.py`).
+
+Así, en una config guardada antes del cambio manda el defecto nuevo hasta que
+se vuelva a guardar. La sección se guarda entera, así que sin esto los
+defectos de entonces quedarían fijados.
 
 ```json
 {

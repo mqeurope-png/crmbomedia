@@ -280,6 +280,14 @@ def _fac(serie: int, codigo: int, *, net: float, total: float | None = None,
             **extra}
 
 
+def _vincular(s: Session, *facturas: tuple[int, int]) -> None:
+    """Un pedido de BoHub por factura: el Cuadre solo mira facturas vinculadas."""
+    for serie, codigo in facturas:
+        _pedido(s, f"PED-{serie}-{codigo}", invoice_status=InvoiceStatus.INVOICED_BY_ERP,
+                factusol_invoice_number=str(codigo), factusol_invoice_serie=serie)
+    s.commit()
+
+
 def _lin(serie: int, codigo: int, total: float, desc: str = "Impresora") -> dict[str, Any]:
     return {"TIPLFA": str(serie), "CODLFA": codigo, "TOTLFA": total, "DESLFA": desc,
             "ARTLFA": "ART"}
@@ -289,6 +297,7 @@ def _lin(serie: int, codigo: int, total: float, desc: str = "Impresora") -> dict
 
 
 def test_factura_contaminada_dispara_y_las_limpias_no(s):
+    _vincular(s, *[(5, c) for c in range(1, 8)], (2, 2))
     client = FakeFactusol(
         F_FAC=[
             _fac(5, 1, net=100),                                     # limpia
@@ -319,6 +328,17 @@ def test_factura_contaminada_dispara_y_las_limpias_no(s):
     assert client.ejercicios == {"2026"}
 
 
+def test_lineas_ajenas_solo_mira_facturas_de_pedidos_de_bohub(s):
+    """Una factura solo de FACTUSOL (sin pedido en BoHub) no es un descuadre,
+    aunque sus líneas no cuadren."""
+    _vincular(s, (5, 2))
+    client = FakeFactusol(
+        F_FAC=[_fac(5, 2, net=100), _fac(3, 9, net=100)],
+        F_LFA=[_lin(5, 2, 100), _lin(5, 2, 300, "Ajena"), _lin(3, 9, 400)],
+    )
+    assert _ids(_correr(cf.factura_lineas_ajenas, _ctx(s, client))) == {"5-000002"}
+
+
 def test_lineas_cuadran_con_descuento_global_y_paypal():
     fac = {"NET1FAC": 104, "BAS1FAC": 104}
     assert cf.lineas_cuadran([{"TOTLFA": 100}], fac)                    # × 1,04
@@ -342,11 +362,13 @@ def test_cobro_descuadrado_en_los_dos_sentidos(s):
     bohub_pendiente = _facturado(s, "BOP-71", 71, "pendiente")
     _facturado(s, "BOP-72", 72, "cobrada")                       # cuadra
     _facturado(s, "BOP-73", 73, None)                            # sin comprobar
+    _facturado(s, "BOP-74", 74, None)                            # cobrada sin líneas
     s.commit()
     client = FakeFactusol(
         F_FAC=[_fac(5, 70, net=100, estfac="0"), _fac(5, 71, net=100, estfac="2"),
                _fac(5, 72, net=100, estfac="2"), _fac(5, 73, net=100, estfac="0"),
-               _fac(5, 74, net=100, estfac="2")],                # cobrada sin líneas
+               _fac(5, 74, net=100, estfac="2"),                 # cobrada sin líneas
+               _fac(3, 75, net=100, estfac="2")],                # ídem, sin pedido: no
         F_LCO=[{"TFALCO": "5", "CFALCO": 71, "IMPLCO": 121},
                {"TFALCO": "5", "CFALCO": 72, "IMPLCO": 121}],
     )
@@ -396,12 +418,17 @@ def test_factura_sin_cobro_con_importe_pendiente(s):
         F_FAC=[_fac(5, 80, net=100, total=121, fecha="2026-08-01"),      # parcial, vieja
                _fac(5, 81, net=100, total=121, fecha="2026-08-01"),      # cobrada entera
                _fac(5, 82, net=100, total=121, fecha="2026-09-30"),      # reciente
-               _fac(5, 83, net=100, total=121, estfac="2")],             # cobrada sin líneas
+               _fac(5, 83, net=100, total=121, estfac="2"),              # cobrada sin líneas
+               _fac(5, 84, net=100, total=121, fecha="2026-03-01"),      # sin pedido en BoHub
+               _fac(3, 85, net=100, total=121, fecha="2026-02-01")],     # serie 3, sin pedido
         F_LCO=[{"TFALCO": "5", "CFALCO": 80, "IMPLCO": 21},
                {"TFALCO": "5", "CFALCO": 81, "IMPLCO": 121}],
     )
+    _vincular(s, (5, 81), (5, 82), (5, 83))
     res = _correr(cf.factura_sin_cobro, _ctx(s, client))
-    assert _ids(res) == {"5-000080"}                     # la 83 es de la comprobación 2
+    # Solo la del pedido con saldo; la 83 es de la comprobación 2 y la 84 y la 85
+    # son facturas solo de FACTUSOL (sin pedido en BoHub): no son un descuadre.
+    assert _ids(res) == {"5-000080"}
     assert res[0].datos["importe"] == 100.0
     assert res[0].enlace == f"/erp/orders/{o.id}"
     assert res[0].huella_datos == {"pendiente": 100.0, "total": 121.0}
@@ -466,6 +493,7 @@ def test_banda_de_portes_con_neto_propio_no_es_contaminacion(s):
     """2-526098 (PROTAVIS GMBH, 4 líneas = 215,00; NET3 = 9,36) y 2-526103
     (innovescence, 1 línea = 25,00; NET3 = 1,76) salían con «diferencia» igual
     al neto de la banda de portes: no son contaminación."""
+    _vincular(s, (2, 526098), (2, 526103))
     client = FakeFactusol(
         F_FAC=[
             _fac_portes(526098, lineas=215.00, neto_portes=9.36, cliente="PROTAVIS GMBH"),
@@ -484,6 +512,7 @@ def test_contaminacion_382_sigue_saltando_aunque_haya_banda_de_portes(s):
     """Las líneas suman DE MÁS (renglones del pedido homónimo de otra serie):
     quitar el neto de la banda de portes solo baja la base, así que sigue
     saltando."""
+    _vincular(s, (2, 526110), (2, 526111))
     contaminada = _fac_portes(526110, lineas=215.00, neto_portes=9.36, cliente="Cliente SL")
     client = FakeFactusol(
         F_FAC=[contaminada],

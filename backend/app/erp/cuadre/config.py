@@ -22,6 +22,15 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 CONFIG_KEY = "cuadre"
+#: Versión de los valores por defecto. Una config guardada con una versión
+#: anterior conserva lo elegido, salvo en las comprobaciones cuyo defecto
+#: cambió después (ahí manda el defecto nuevo hasta que se vuelva a guardar).
+CONFIG_VERSION = 2
+_DEFECTOS_CAMBIADOS: dict[int, set[str]] = {
+    # v2: «Proforma aceptada sin convertir» pasa a apagada y a 90 días (es el
+    # embudo comercial, no un descuadre).
+    2: {"proforma_sin_convertir"},
+}
 HORA_DEFECTO = "03:00"
 DIAS_MIN = 1
 DIAS_MAX = 3650
@@ -50,14 +59,26 @@ def normalizar_config(raw: Any) -> dict[str, Any]:
 
     data = raw if isinstance(raw, dict) else {}
     guardados = data.get("checks") if isinstance(data.get("checks"), dict) else {}
+    try:
+        version = int(data.get("version") or 1)
+    except (TypeError, ValueError):
+        version = 1
+    caducados = {
+        cid for v, ids in _DEFECTOS_CAMBIADOS.items() if v > version for cid in ids
+    }
     checks: dict[str, dict[str, Any]] = {}
     for comp in registro().values():
         entry = guardados.get(comp.id) if isinstance(guardados.get(comp.id), dict) else {}
+        if comp.id in caducados:
+            entry = {}                        # guardado antes de cambiar su defecto
         dias = None
         if comp.dias_defecto is not None:
             dias = _dias(entry.get("dias")) or comp.dias_defecto
-        checks[comp.id] = {"activo": bool(entry.get("activo", True)), "dias": dias}
+        checks[comp.id] = {
+            "activo": bool(entry.get("activo", comp.activa_defecto)), "dias": dias,
+        }
     return {
+        "version": CONFIG_VERSION,
         "nocturno_activo": bool(data.get("nocturno_activo", False)),
         "hora": _hora(data.get("hora")) or HORA_DEFECTO,
         "checks": checks,
