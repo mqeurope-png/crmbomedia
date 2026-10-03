@@ -248,6 +248,17 @@ def test_config_por_defecto_y_validacion(s):
                          "checks": {"factura_sin_cobro": {"dias": 45, "activo": False}}})
     assert ok["hora"] == "04:30" and ok["checks"]["factura_sin_cobro"] == {
         "activo": False, "dias": 45}
+    with pytest.raises(ValueError, match="sí o no"):
+        validar_config({"nocturno_activo": "false"})
+    with pytest.raises(ValueError, match="sí o no"):
+        validar_config({"checks": {"factura_sin_cobro": {"activo": "no"}}})
+    # Un cambio parcial se funde con lo guardado: lo que no viene se conserva.
+    parcial = validar_config({"nocturno_activo": False}, actual=ok)
+    assert parcial["hora"] == "04:30"
+    assert parcial["checks"]["factura_sin_cobro"] == {"activo": False, "dias": 45}
+    # Días vacíos = el de serie.
+    vacio = validar_config({"checks": {"factura_sin_cobro": {"dias": None}}}, actual=ok)
+    assert vacio["checks"]["factura_sin_cobro"]["dias"] == 30
 
 
 # --- job nocturno ----------------------------------------------------------------------
@@ -276,12 +287,6 @@ def test_hora_de_madrid_sin_tzdata(monkeypatch):
         datetime(2026, 10, 4, 1, 0, tzinfo=UTC)
     assert job.proxima_ejecucion("03:00", datetime(2026, 12, 1, 12, 0, tzinfo=UTC)) == \
         datetime(2026, 12, 2, 2, 0, tzinfo=UTC)
-
-
-def test_en_ventana():
-    assert job.en_ventana("03:00", datetime(2026, 10, 4, 1, 10, tzinfo=UTC))
-    assert not job.en_ventana("03:00", datetime(2026, 10, 4, 3, 0, tzinfo=UTC))
-    assert job.en_ventana("00:10", datetime(2026, 10, 3, 21, 50, tzinfo=UTC))  # 23:50 local
 
 
 def test_el_job_se_arma_en_cuadre_run_con_setnx(monkeypatch):
@@ -324,19 +329,23 @@ def test_el_job_se_arma_en_cuadre_run_con_setnx(monkeypatch):
     assert captured["n"] == 1
 
 
-def test_el_nocturno_respeta_el_interruptor_y_la_hora(s, monkeypatch):
+def test_el_nocturno_respeta_el_interruptor_y_no_repite(s, monkeypatch):
     corridas: list[str] = []
     monkeypatch.setattr(job, "correr", lambda session, *, fuente, origen, **kw:
                         corridas.append(f"{fuente}:{origen}"))
     a_las_tres = datetime(2026, 10, 4, 1, 0, tzinfo=UTC)
     assert job.run_nightly(s, ahora=a_las_tres) is False            # apagado por defecto
-    _config(s, nocturno_activo=True)
-    assert job.run_nightly(s, ahora=datetime(2026, 10, 4, 10, 0, tzinfo=UTC)) is False
     assert corridas == []
+    _config(s, nocturno_activo=True)
     assert job.run_nightly(s, ahora=a_las_tres) is True
     assert corridas == ["mysql:nocturno", "factusol:nocturno"]
-    _config(s, nocturno_activo=True, hora="05:30")
-    assert job.run_nightly(s, ahora=a_las_tres) is False            # otra hora: no corre
+    # Si ya hubo pasada nocturna hace menos de 12 h (p. ej. al cambiar la hora,
+    # el tic re-armado para la nueva), no repite.
+    s.add(CuadreRun(fuente="mysql", origen="nocturno", estado="ok", resumen_json="{}",
+                    started_at=a_las_tres))
+    s.commit()
+    assert job.run_nightly(s, ahora=a_las_tres + timedelta(hours=2)) is False
+    assert job.run_nightly(s, ahora=a_las_tres + timedelta(hours=24)) is True
 
 
 def test_comprobar_ahora_bohub_al_momento_y_factusol_a_la_cola(s, monkeypatch):
@@ -366,7 +375,12 @@ def test_comprobar_ahora_sin_redis_deja_la_pasada_en_error(s, monkeypatch):
 def test_la_pasada_encolada_de_factusol_lee_con_el_cliente_y_termina(s, monkeypatch):
     from tests.test_erp_cuadre_checks import FakeFactusol, _fac
 
-    client = FakeFactusol(F_FAC=[_fac(5, 1, net=100)], F_LFA=[], F_LCO=[], F_PRE=[])
+    client = FakeFactusol(
+        F_FAC=[_fac(5, 1, net=100)],
+        F_LFA=[{"TIPLFA": "5", "CODLFA": 99, "TOTLFA": 10}],          # de otra factura
+        F_LCO=[{"TFALCO": "5", "CFALCO": 99, "IMPLCO": 10}],
+        F_PRE=[{"TIPPRE": "1", "CODPRE": 1, "ESTPRE": 0, "FECPRE": "2026-07-01"}],
+    )
     monkeypatch.setattr(engine, "_factusol_client", lambda session: (client, "2026"))
     run = engine.nueva_pasada(s, fuente="factusol", origen="manual")
     s.commit()
@@ -379,6 +393,83 @@ def test_la_pasada_encolada_de_factusol_lee_con_el_cliente_y_termina(s, monkeypa
     vistos = {(f.check_id, f.entidad_id) for f in s.scalars(select(CuadreFinding))}
     assert vistos == {("factura_lineas_ajenas", "5-000001"),        # sin líneas
                       ("factura_sin_cobro", "5-000001")}            # y sin cobrar
+
+
+def test_una_lectura_vacia_de_factusol_no_resuelve_ni_borra_el_revisado(s, monkeypatch):
+    """F_LCO llega vacía (lectura rota): las comprobaciones que la usan fallan y
+    sus descuadres —incluido un «revisado» con su motivo— se quedan como estaban."""
+    from tests.test_erp_cuadre_checks import FakeFactusol, _fac
+
+    tablas = {
+        "F_FAC": [_fac(5, 74, net=100, estfac="2")],
+        "F_LFA": [{"TIPLFA": "5", "CODLFA": 74, "TOTLFA": 100}],
+        "F_LCO": [{"TFALCO": "5", "CFALCO": 1, "IMPLCO": 5}],
+        "F_PRE": [{"TIPPRE": "1", "CODPRE": 1, "ESTPRE": 0, "FECPRE": "2026-07-01"}],
+    }
+    monkeypatch.setattr(engine, "_factusol_client",
+                        lambda session: (FakeFactusol(**tablas), "2026"))
+    engine.ejecutar(s, fuente="factusol", origen="manual", ahora=AHORA)
+    f = s.scalars(select(CuadreFinding).where(
+        CuadreFinding.check_id == "cobro_descuadrado")).one()        # cobrada sin líneas
+    engine.revisar(s, f.id, motivo="Cobrada en caja, sin apunte", user_id="u1")
+    s.commit()
+    tablas["F_LCO"] = []
+    run = engine.ejecutar(s, fuente="factusol", origen="manual", ahora=AHORA + timedelta(days=1))
+    assert run.estado == "con_errores"
+    assert "vacía" in json.loads(run.resumen_json)["cobro_descuadrado"]["error"]
+    assert f.estado == "revisado" and f.motivo == "Cobrada en caja, sin apunte"
+
+
+def test_al_cambiar_de_ejercicio_no_se_resuelve_lo_del_anterior(s, monkeypatch):
+    """Las facturas de 2026 dejan de leerse al pasar a 2027: sus descuadres no
+    se dan por resueltos (no se han mirado); los de 2027 van a su aire."""
+    from tests.test_erp_cuadre_checks import FakeFactusol, _fac
+
+    def pasada(ejercicio, facs, cuando):
+        client = FakeFactusol(
+            F_FAC=facs, F_LFA=[{"TIPLFA": "9", "CODLFA": 1, "TOTLFA": 1}],
+            F_LCO=[{"TFALCO": "9", "CFALCO": 1, "IMPLCO": 1}],
+            F_PRE=[{"TIPPRE": "1", "CODPRE": 1, "ESTPRE": 0, "FECPRE": "2026-07-01"}],
+        )
+        monkeypatch.setattr(engine, "_factusol_client", lambda session: (client, ejercicio))
+        engine.ejecutar(s, fuente="factusol", origen="nocturno", ahora=cuando)
+
+    pasada("2026", [_fac(5, 80, net=100, fecha="2026-08-01")], AHORA)
+    pasada("2027", [_fac(5, 1, net=50, fecha="2027-01-02")], AHORA + timedelta(days=140))
+    sin_cobro = {f.entidad_id: f.estado for f in s.scalars(select(CuadreFinding).where(
+        CuadreFinding.check_id == "factura_sin_cobro"))}
+    assert sin_cobro == {"5-000080": "abierto", "5-000001": "abierto"}
+
+
+def test_la_pasada_carga_los_pedidos_una_vez(s):
+    """Sin caducar los objetos entre comprobaciones: el nº de consultas no crece
+    con los pedidos (antes, ~10 por pedido)."""
+    from sqlalchemy import event
+
+    for i in range(40):
+        o = Order(order_number=f"BOP-{i}", transport_status=TransportStatus.IN_TRANSIT,
+                  created_at=datetime(2026, 1, 1, tzinfo=UTC),
+                  approved_at=datetime(2026, 1, 1, tzinfo=UTC))
+        s.add(o)
+        s.flush()
+        s.add(OrderStatusHistory(order_id=o.id, domain=StatusDomain.TRANSPORT,
+                                 to_status="in_transit", changed_by_user_id="u",
+                                 changed_at=AHORA - timedelta(days=15)))
+    s.commit()
+    consultas: list[str] = []
+
+    def contar(_conn, _cursor, sql, *_a, **_k):
+        consultas.append(sql)
+
+    bind = s.get_bind()
+    event.listen(bind, "before_cursor_execute", contar)
+    try:
+        engine.ejecutar(s, fuente="mysql", origen="manual", ahora=AHORA)
+    finally:
+        event.remove(bind, "before_cursor_execute", contar)
+    assert s.query(CuadreFinding).count() == 40
+    assert len(consultas) < 150, len(consultas)
+    assert s.expire_on_commit is True                                # se restaura
 
 
 def test_factusol_sin_configurar_deja_error_sin_tocar_lo_guardado(s, monkeypatch):

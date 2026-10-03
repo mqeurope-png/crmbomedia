@@ -42,7 +42,15 @@ Código: `backend/app/erp/cuadre/`. API: `backend/app/erp/api/cuadre.py`
   incluir» lo devuelve a abierto a mano.
 - **Fallos.** Solo se tocan los descuadres de las comprobaciones que han
   corrido bien. Si una comprobación falla, sus descuadres se quedan como
-  estaban; el error queda en el `resumen_json` de la pasada.
+  estaban, revisados incluidos; el error queda en el `resumen_json` de la
+  pasada.
+- **Tabla de FACTUSOL vacía o que no se puede leer.** Se trata como lectura
+  rota: las comprobaciones que la usan fallan en esa pasada, en vez de dar
+  todo por resuelto. El fallo se recuerda durante la pasada, así que no se
+  vuelve a pedir la misma tabla desde cada comprobación.
+- **Ejercicio.** Los descuadres de FACTUSOL guardan el ejercicio en el que se
+  vieron. Al cambiar de ejercicio, los del anterior no se dan por resueltos,
+  porque ya no se leen; se cierran con «Revisado» cuando toque.
 - **Desactivadas.** Una comprobación desactivada no corre. Sus descuadres no
   salen en el panel, pero se conservan.
 - **«Nuevo».** Un descuadre es nuevo si su `abierto_at` es igual o posterior
@@ -61,8 +69,8 @@ Código: `backend/app/erp/cuadre/`. API: `backend/app/erp/api/cuadre.py`
   FACTUSOL.
 - Tiene interruptor (`cuadre.nocturno_activo`), **apagado por defecto**.
   Apagado, el tic sigue armado y no hace nada.
-- Si cambia la hora, el tic ya armado no corre fuera de su franja (±45 min) y
-  se re-arma para la hora nueva.
+- Si cambia la hora, el tic ya armado corre a la hora vieja y se re-arma para
+  la nueva. Si ya hubo una pasada nocturna en las últimas 12 h, no repite.
 - Para correrlo a mano, ignorando el interruptor y la hora:
   `python -m app.erp.cuadre.job`.
 
@@ -111,9 +119,11 @@ Código: `backend/app/erp/cuadre/`. API: `backend/app/erp/api/cuadre.py`
      pendiente o parcial. Los valores de ESTFAC son los de Configuración
      ERP: 2 / 1 / 0.
    - También avisa de una factura **cobrada en FACTUSOL sin ninguna línea en
-     `F_LCO`**. Si `F_LCO` llega entera vacía (lectura rota), esto no se juzga.
+     `F_LCO`**.
 3. `factura_sin_cobro` — **Factura emitida sin cobro** pasados N días (30 por
    defecto), con el importe pendiente: total − Σ `F_LCO`.
+   - La factura cobrada en ESTFAC sin ninguna línea no sale aquí, porque ya
+     sale en la 2.
 
 ### Envíos (severidad media, fuente BoHub)
 
@@ -124,6 +134,9 @@ Código: `backend/app/erp/cuadre/`. API: `backend/app/erp/api/cuadre.py`
    aviso de envío al cliente.
    - Cuenta como aviso el evento `erp.shipment_emailed` o el `customer_email`
      enviado en el pedido.
+   - No avisa de los envíos creados con el aviso automático **apagado**
+     (`disabled`) ni de los envíos de Genei anteriores al aviso de BoHub (sin
+     bloque `customer_email`, porque ya los avisó Genei).
    - Solo mira los envíos de los últimos N días (30 por defecto).
    - Enlaza a la Cola SAT → «Enviados», donde está «Enviar aviso».
 6. `envio_sin_entregar` — En tránsito desde hace más de N días (10 por
@@ -147,7 +160,9 @@ Código: `backend/app/erp/cuadre/`. API: `backend/app/erp/api/cuadre.py`
      pedido no la tiene.
    - Vínculo roto: el pedido tiene vinculada una factura que no está en
      FACTUSOL, por un hueco o porque se anuló.
-   - Esto último solo se mira para facturas del ejercicio en curso.
+   - El vínculo roto solo se juzga si el código cae **dentro del rango** de su
+     serie en el ejercicio leído. Fuera del rango es de otro ejercicio y no se
+     ha leído.
 10. `factura_sin_enviar` (media) — Factura de hace más de N días (7 por
     defecto) sin enviar al cliente.
     - Cuenta como enviada el evento `erp.invoice_emailed` o «Factura enviada»
@@ -234,7 +249,8 @@ umbral) y la pantalla la recogen solas del registro.
 | POST | `/api/erp/cuadre/comprobar` | «Comprobar ahora». |
 | GET | `/api/erp/cuadre/export` | Excel con todos los descuadres abiertos. |
 
-Configuración: `GET/PATCH /api/erp/settings`, campo `cuadre`:
+Configuración: `GET/PATCH /api/erp/settings`, campo `cuadre`. Un cambio
+parcial se funde con lo guardado; `dias: null` vuelve al valor de serie.
 
 ```json
 {

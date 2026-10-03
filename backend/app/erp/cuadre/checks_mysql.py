@@ -130,11 +130,19 @@ def _avisos_enviados(ctx: Contexto) -> set[str]:
     return ctx.cached("avisos_enviados", leer)
 
 
-def _aviso_en_pedido(order: Any) -> bool:
+def _aviso_no_toca(order: Any) -> bool:
+    """El pedido no espera aviso de BoHub: ya se mandó (`sent`), se creó con el
+    aviso automático APAGADO (`disabled`: decisión de Configuración), o es un
+    envío de Genei de antes del aviso de BoHub (sin bloque: ya lo avisó Genei).
+    Lo que queda —pendiente, con error, o un envío de otro courier sin aviso—
+    es un cliente sin avisar."""
     from app.erp.shipment_email import _state  # noqa: PLC0415
+    from app.erp.shipping_courier import is_genei_shipment  # noqa: PLC0415
 
     block = _state(order).get("customer_email")
-    return isinstance(block, dict) and (block.get("status") == "sent" or bool(block.get("sent_at")))
+    if isinstance(block, dict) and block:
+        return block.get("status") in ("sent", "disabled") or bool(block.get("sent_at"))
+    return is_genei_shipment(order)
 
 
 def _tracking(order: Any) -> str:
@@ -160,7 +168,7 @@ def enviado_sin_aviso(ctx: Contexto) -> Iterator[Hallazgo]:
         if _v(o.transport_status) not in ("in_transit", "delivered"):
             continue
         tracking = _tracking(o)
-        if not tracking or o.id in avisados or _aviso_en_pedido(o):
+        if not tracking or o.id in avisados or _aviso_no_toca(o):
             continue
         salida = fecha_real(o, "transport", {"in_transit", "delivered"})
         dias = ctx.dias_desde(salida)

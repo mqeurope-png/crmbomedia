@@ -64,13 +64,37 @@ class Contexto:
             select(Order).options(selectinload(Order.status_history))
         )))
 
+    def olvidar_orm(self) -> None:
+        """Tras un rollback los objetos de la sesión caducan: se olvidan las
+        lecturas de la BD (las de FACTUSOL se conservan: no se releen)."""
+        for clave in [k for k in self._cache if not k.startswith("tabla:")]:
+            self._cache.pop(clave, None)
+
     def tabla(self, nombre: str) -> list[dict[str, Any]]:
         """Filas de una tabla de FACTUSOL del ejercicio en curso, leídas UNA vez
         por pasada (`1=1`: filtrar por una columna inexistente devuelve `[]` en
-        silencio). Solo lectura."""
+        silencio). Solo lectura.
+
+        Una tabla VACÍA se trata como lectura rota (`FactusolNoDisponible`): si
+        no, las comprobaciones darían por resueltos (o por nuevos) todos sus
+        descuadres. Un fallo también se recuerda en la pasada, para no volver a
+        cargar a DELSOL desde cada comprobación."""
         if self.client is None or not self.ejercicio:
             raise FactusolNoDisponible("FACTUSOL no está disponible para esta pasada.")
-        return self.cached(
-            f"tabla:{nombre}",
-            lambda: list(self.client.load_table(nombre, filtro="1=1", ejercicio=self.ejercicio)),
-        )
+        clave = f"tabla:{nombre}"
+        if clave not in self._cache:
+            try:
+                filas = list(self.client.load_table(nombre, filtro="1=1", ejercicio=self.ejercicio))
+            except Exception as exc:  # noqa: BLE001 — se recuerda y se relanza
+                self._cache[clave] = FactusolNoDisponible(
+                    f"No se pudo leer {nombre} de FACTUSOL ({type(exc).__name__})."
+                )
+            else:
+                self._cache[clave] = filas if filas else FactusolNoDisponible(
+                    f"{nombre} ha llegado vacía de FACTUSOL (ejercicio {self.ejercicio}): "
+                    "no se juzga para no dar por resuelto lo que no se ha podido leer."
+                )
+        valor = self._cache[clave]
+        if isinstance(valor, FactusolNoDisponible):
+            raise valor
+        return valor

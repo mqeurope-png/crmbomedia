@@ -115,6 +115,10 @@ def test_sin_envio_con_tracking_dispara_y_sin_datos_no(s):
 # --- 5 · Enviado con tracking sin aviso al cliente -------------------------------------
 
 
+def _genei(codigo: str, aviso: str) -> str:
+    return json.dumps({"genei": {"shipment_code": codigo, "customer_email": {"status": aviso}}})
+
+
 def test_enviado_sin_aviso_dispara_y_con_aviso_no(s):
     sin = _pedido(s, "BOP-10", transport_status=TransportStatus.IN_TRANSIT, tracking_number="T1")
     _historial(s, sin, StatusDomain.TRANSPORT, "in_transit", AHORA - timedelta(days=3))
@@ -127,11 +131,24 @@ def test_enviado_sin_aviso_dispara_y_con_aviso_no(s):
     _historial(s, en_pedido, StatusDomain.TRANSPORT, "in_transit", AHORA - timedelta(days=2))
     viejo = _pedido(s, "BOP-13", transport_status=TransportStatus.IN_TRANSIT, tracking_number="T4")
     _historial(s, viejo, StatusDomain.TRANSPORT, "in_transit", AHORA - timedelta(days=90))
+    # Aviso automático APAGADO al crear el envío: decisión de Configuración.
+    apagado = _pedido(s, "BOP-14", transport_status=TransportStatus.IN_TRANSIT,
+                      tracking_number="T5", packing_json=_genei("G5", "disabled"))
+    _historial(s, apagado, StatusDomain.TRANSPORT, "in_transit", AHORA - timedelta(days=2))
+    # Envío de Genei de antes del aviso de BoHub (sin bloque): ya lo avisó Genei.
+    genei_viejo = _pedido(s, "BOP-15", transport_status=TransportStatus.IN_TRANSIT,
+                          tracking_number="T6", packing_json=json.dumps(
+                              {"genei": {"shipment_code": "G6"}}))
+    _historial(s, genei_viejo, StatusDomain.TRANSPORT, "in_transit", AHORA - timedelta(days=2))
+    # Aviso con error: el cliente no lo ha recibido.
+    con_error = _pedido(s, "BOP-16", transport_status=TransportStatus.IN_TRANSIT,
+                        tracking_number="T7", packing_json=_genei("G7", "error"))
+    _historial(s, con_error, StatusDomain.TRANSPORT, "in_transit", AHORA - timedelta(days=2))
     s.commit()
-    assert _ids(_correr(cm.enviado_sin_aviso, _ctx(s))) == {sin.id}
+    assert _ids(_correr(cm.enviado_sin_aviso, _ctx(s))) == {sin.id, con_error.id}
     # La ventana es configurable: con 120 días entra también el viejo.
     ancha = _ctx(s, enviado_sin_aviso={"dias": 120})
-    assert _ids(_correr(cm.enviado_sin_aviso, ancha)) == {sin.id, viejo.id}
+    assert _ids(_correr(cm.enviado_sin_aviso, ancha)) == {sin.id, con_error.id, viejo.id}
 
 
 # --- 6 · Enviado sin entrega ni incidencia -------------------------------------------
@@ -339,9 +356,34 @@ def test_cobro_descuadrado_en_los_dos_sentidos(s):
     assert "sin ninguna línea de cobro" in sin_lineas.detalle
 
 
-def test_cobro_con_f_lco_vacia_no_juzga_las_lineas(s):
+def test_cobro_con_f_lco_vacia_no_juzga(s):
+    """F_LCO vacía = lectura rota: la comprobación no corre (no da por
+    resuelto, ni por nuevo, lo que no ha podido leer)."""
+    from app.erp.cuadre.contexto import FactusolNoDisponible
+
     client = FakeFactusol(F_FAC=[_fac(5, 74, net=100, estfac="2")], F_LCO=[])
-    assert _correr(cf.cobro_descuadrado, _ctx(s, client)) == []
+    with pytest.raises(FactusolNoDisponible, match="F_LCO"):
+        _correr(cf.cobro_descuadrado, _ctx(s, client))
+    with pytest.raises(FactusolNoDisponible):
+        _correr(cf.factura_sin_cobro, _ctx(s, client))
+
+
+def test_una_lectura_fallida_se_recuerda_en_la_pasada(s):
+    """Si DELSOL falla, no se le vuelve a pedir la misma tabla desde cada
+    comprobación de la pasada."""
+    from app.erp.cuadre.contexto import FactusolNoDisponible
+
+    class Caido(FakeFactusol):
+        def load_table(self, tabla, *, filtro="1=1", ejercicio=None):
+            self.lecturas[tabla] += 1
+            raise TimeoutError("DELSOL no responde")
+
+    client = Caido()
+    ctx = _ctx(s, client)
+    for func in (cf.factura_lineas_ajenas, cf.factura_sin_cobro, cf.factura_sin_vincular):
+        with pytest.raises(FactusolNoDisponible):
+            _correr(func, ctx)
+    assert client.lecturas["F_FAC"] == 1
 
 
 # --- 3 · Factura emitida sin cobro --------------------------------------------------
@@ -353,12 +395,13 @@ def test_factura_sin_cobro_con_importe_pendiente(s):
     client = FakeFactusol(
         F_FAC=[_fac(5, 80, net=100, total=121, fecha="2026-08-01"),      # parcial, vieja
                _fac(5, 81, net=100, total=121, fecha="2026-08-01"),      # cobrada entera
-               _fac(5, 82, net=100, total=121, fecha="2026-09-30")],     # reciente
+               _fac(5, 82, net=100, total=121, fecha="2026-09-30"),      # reciente
+               _fac(5, 83, net=100, total=121, estfac="2")],             # cobrada sin líneas
         F_LCO=[{"TFALCO": "5", "CFALCO": 80, "IMPLCO": 21},
                {"TFALCO": "5", "CFALCO": 81, "IMPLCO": 121}],
     )
     res = _correr(cf.factura_sin_cobro, _ctx(s, client))
-    assert _ids(res) == {"5-000080"}
+    assert _ids(res) == {"5-000080"}                     # la 83 es de la comprobación 2
     assert res[0].datos["importe"] == 100.0
     assert res[0].enlace == f"/erp/orders/{o.id}"
     assert res[0].huella_datos == {"pendiente": 100.0, "total": 121.0}
@@ -369,21 +412,19 @@ def test_factura_sin_cobro_con_importe_pendiente(s):
 
 def test_factura_sin_vincular_y_vinculo_roto(s):
     sin_vincular = _pedido(s, "BOPRIN-99866")
-    roto = _facturado(s, "BOP-91", 526080, "pendiente")
-    roto.placed_at = datetime(2026, 9, 1, tzinfo=UTC)
-    _facturado(s, "BOP-92", 92, "pendiente")                     # existe: limpio
-    viejo = _facturado(s, "BOP-93", 93, "pendiente")            # de otro ejercicio
-    viejo.placed_at = datetime(2025, 6, 1, tzinfo=UTC)
-    viejo.created_at = datetime(2025, 6, 1, tzinfo=UTC)
+    roto = _facturado(s, "BOP-91", 526080, "pendiente")         # hueco / anulada
+    _facturado(s, "BOP-92", 526081, "pendiente")                 # existe: limpio
+    _facturado(s, "BOP-93", 525900, "pendiente")                 # del ejercicio anterior
     _pedido(s, "BOPRIN-99867")                                   # sin factura en FACTUSOL
     s.commit()
     client = FakeFactusol(F_FAC=[
-        _fac(5, 300, net=100, REFFAC="BOP-099866"),
-        _fac(5, 92, net=100),
+        _fac(5, 526079, net=100, REFFAC="BOP-099866"),
+        _fac(5, 526081, net=100),
+        _fac(5, 526085, net=100),
     ])
     res = _correr(cf.factura_sin_vincular, _ctx(s, client))
     assert _ids(res) == {sin_vincular.id, roto.id}
-    assert "5-000300" in next(h for h in res if h.entidad_id == sin_vincular.id).detalle
+    assert "5-526079" in next(h for h in res if h.entidad_id == sin_vincular.id).detalle
     assert "5-526080" in next(h for h in res if h.entidad_id == roto.id).detalle
 
 

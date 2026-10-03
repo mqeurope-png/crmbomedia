@@ -8,8 +8,8 @@
 - Detrás de un INTERRUPTOR (`cuadre.nocturno_activo`), APAGADO por defecto:
   primero se pulsa «Comprobar ahora» y se revisa el primer lote. Apagado, el
   job sigue armado y no hace nada.
-- Si se cambia la hora, el tic ya armado no corre fuera de su franja: se
-  re-arma para la hora nueva.
+- Si se cambia la hora, el tic ya armado corre a la hora vieja y se re-arma
+  para la nueva; si ya hubo pasada nocturna hace menos de 12 h, no repite.
 - «Comprobar ahora»: las de BoHub corren al momento (en la petición); las de
   FACTUSOL se ENCOLAN en la misma cola (nunca en la petición web: la API de
   DELSOL no se satura) y la pantalla enseña «comprobando…».
@@ -39,8 +39,9 @@ HEARTBEAT_KEY = "cuadre:nightly:heartbeat"
 LOCK_KEY = "cuadre:lock:{fuente}"
 JOB_TIMEOUT_SECONDS = 1800
 LOCK_TTL_SECONDS = 2400
-#: El tic nocturno solo corre si cae a menos de esto de la hora configurada.
-VENTANA_MINUTOS = 45
+#: Si ya hubo pasada nocturna hace menos de esto, el tic no repite (al cambiar
+#: la hora, el tic ya armado corre a la hora vieja y re-arma para la nueva).
+SIN_REPETIR_HORAS = 12
 ZONA = "Europe/Madrid"
 
 
@@ -100,18 +101,6 @@ def proxima_ejecucion(hora: str, ahora: datetime) -> datetime:
     if objetivo <= local:
         objetivo += timedelta(days=1)
     return a_utc(objetivo)
-
-
-def en_ventana(hora: str, ahora: datetime) -> bool:
-    """¿`ahora` cae en la franja de la hora configurada (± VENTANA_MINUTOS)?"""
-    h, m = _hm(hora)
-    local = a_local(ahora)
-    for delta in (-1, 0, 1):
-        objetivo = (local + timedelta(days=delta)).replace(
-            hour=h, minute=m, second=0, microsecond=0)
-        if abs((local - objetivo).total_seconds()) <= VENTANA_MINUTOS * 60:
-            return True
-    return False
 
 
 # --- cerrojo --------------------------------------------------------------------------
@@ -232,16 +221,29 @@ def _run_factusol(run_id: str) -> None:
             marcar_error(session, run_id, "La comprobación de FACTUSOL ha fallado (ver log).")
 
 
+def _ya_corrio(session: Session, ahora: datetime) -> bool:
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from app.erp.models import CuadreRun  # noqa: PLC0415
+
+    desde = ahora - timedelta(hours=SIN_REPETIR_HORAS)
+    return session.scalars(select(CuadreRun.id).where(
+        CuadreRun.origen == "nocturno", CuadreRun.started_at >= desde,
+    ).limit(1)).first() is not None
+
+
 def run_nightly(session: Session, *, ahora: datetime | None = None, force: bool = False) -> bool:
     """Pasada nocturna: todas las comprobaciones activas, si toca (interruptor
-    encendido y dentro de la franja de la hora, o `force`). True si ha corrido."""
+    encendido y sin otra pasada nocturna en las últimas 12 h, o `force`).
+    True si ha corrido."""
     ahora = ahora or datetime.now(UTC)
     config = cuadre_config(session)
     if not force:
         if not config["nocturno_activo"]:
             return False
-        if not en_ventana(config["hora"], ahora):
-            logger.info("cuadre: tic fuera de la franja de las %s; se re-arma", config["hora"])
+        if _ya_corrio(session, ahora):
+            logger.info("cuadre: ya hubo pasada nocturna hace menos de %d h; se salta",
+                        SIN_REPETIR_HORAS)
             return False
     for fuente in FUENTES:
         try:

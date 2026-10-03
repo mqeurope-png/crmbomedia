@@ -264,8 +264,6 @@ def cobro_descuadrado(ctx: Contexto) -> Iterator[Hallazgo]:
             arreglo_boton="Ir a «Por cobrar»",
             huella_datos={"factusol": estado, "bohub": bohub, "factura": numero},
         )
-    if not lineas_cobro:
-        return                                # F_LCO vacía: lectura rota, no se juzga
     for (serie, codigo), fac in facs.items():
         if serie is None or _estado_fac(ctx, fac.get("ESTFAC")) != "cobrada":
             continue
@@ -298,8 +296,7 @@ def cobro_descuadrado(ctx: Contexto) -> Iterator[Hallazgo]:
 )
 def factura_sin_cobro(ctx: Contexto) -> Iterator[Hallazgo]:
     umbral = ctx.dias("factura_sin_cobro", 30)
-    lineas_cobro = cobros(ctx)
-    verificable = bool(lineas_cobro)
+    lineas_cobro = cobros(ctx)                # F_LCO vacía → la pasada no la juzga
     for (serie, codigo), fac in facturas(ctx).items():
         total = round(_num(fac.get("TOTFAC")), 2)
         if serie is None or total <= TOLERANCIA:
@@ -308,13 +305,9 @@ def factura_sin_cobro(ctx: Contexto) -> Iterator[Hallazgo]:
         dias = ctx.dias_desde(fecha)
         if dias is None or dias <= umbral:
             continue
-        if verificable:
-            cobrado = round(lineas_cobro.get((serie, codigo), 0.0), 2)
-        else:
-            # F_LCO vacía (lectura rota): se fía del ESTFAC, como el resto de BoHub.
-            if _estado_fac(ctx, fac.get("ESTFAC")) == "cobrada":
-                continue
-            cobrado = 0.0
+        if (serie, codigo) not in lineas_cobro and _estado_fac(ctx, fac.get("ESTFAC")) == "cobrada":
+            continue                          # «cobrada sin líneas»: es de la comprobación 2
+        cobrado = round(lineas_cobro.get((serie, codigo), 0.0), 2)
         pendiente = round(total - cobrado, 2)
         if pendiente <= TOLERANCIA:
             continue
@@ -342,11 +335,6 @@ def factura_sin_cobro(ctx: Contexto) -> Iterator[Hallazgo]:
 # --- 9 · Factura sin vincular / vínculo roto ------------------------------------------
 
 
-def _anio_ejercicio(ejercicio: str | None) -> int | None:
-    m = re.search(r"(\d{4})", ejercicio or "")
-    return int(m.group(1)) if m else None
-
-
 @comprobacion(
     id="factura_sin_vincular", orden=9,
     titulo="Factura de FACTUSOL sin vincular o vínculo roto",
@@ -356,7 +344,6 @@ def _anio_ejercicio(ejercicio: str | None) -> int | None:
 )
 def factura_sin_vincular(ctx: Contexto) -> Iterator[Hallazgo]:
     from app.erp.linked_invoice import get_linked_invoice  # noqa: PLC0415
-    from app.erp.seguimiento import _fecha_factura  # noqa: PLC0415
     from app.integrations.factusol.invoice_reconcile import _is_invoiced  # noqa: PLC0415
     from app.integrations.factusol.service import _compose_ref, _store_ref_prefix  # noqa: PLC0415
 
@@ -366,7 +353,15 @@ def factura_sin_vincular(ctx: Contexto) -> Iterator[Hallazgo]:
         ref = _s(fac.get("REFFAC")).upper()
         if ref:
             por_ref[ref].append(clave)
-    anio = _anio_ejercicio(ctx.ejercicio)
+    # Rango de códigos de cada serie en el ejercicio leído: un código vinculado
+    # que cae DENTRO y no existe es un hueco o una anulada; fuera, es de otro
+    # ejercicio (no se ha leído) o de una serie nueva, y no se juzga.
+    rango: dict[int, tuple[int, int]] = {}
+    for serie_f, codigo_f in facs:
+        if serie_f is None:
+            continue
+        lo, hi = rango.get(serie_f, (codigo_f, codigo_f))
+        rango[serie_f] = (min(lo, codigo_f), max(hi, codigo_f))
     for o in ctx.pedidos():
         if o.cancelled_at is not None:
             continue
@@ -396,9 +391,9 @@ def factura_sin_vincular(ctx: Contexto) -> Iterator[Hallazgo]:
         factura = get_linked_invoice(o)
         if factura is None or (factura.serie, factura.codigo) in facs:
             continue
-        fecha = _fecha_factura(o) or o.placed_at or o.created_at
-        if anio is None or fecha is None or fecha.year != anio:
-            continue                          # factura de otro ejercicio: no se ha leído
+        lo, hi = rango.get(factura.serie, (0, -1))
+        if not lo < factura.codigo < hi:
+            continue                          # fuera del rango leído: no se juzga
         yield Hallazgo(
             entidad_tipo=ENTIDAD_PEDIDO, entidad_id=o.id, etiqueta=o.order_number or o.id,
             detalle=f"Tiene vinculada la factura {factura.numero}, que no existe en FACTUSOL "

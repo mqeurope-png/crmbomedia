@@ -64,16 +64,25 @@ def normalizar_config(raw: Any) -> dict[str, Any]:
     }
 
 
-def validar_config(payload: Any) -> dict[str, Any]:
-    """Valida lo que llega del PATCH de Configuración ERP y devuelve lo que se
+def validar_config(payload: Any, actual: Any = None) -> dict[str, Any]:
+    """Valida lo que llega del PATCH de Configuración ERP y lo FUNDE con lo
+    guardado (`actual`): lo que no viene se conserva. Devuelve la config que se
     guarda. `ValueError` con un mensaje legible si algo no vale."""
     from app.erp.cuadre.registry import registro  # noqa: PLC0415
 
     if not isinstance(payload, dict):
         raise ValueError("La configuración del Cuadre no es válida.")
-    hora = payload.get("hora", HORA_DEFECTO)
-    if _hora(hora) is None:
-        raise ValueError(f"Hora del Cuadre no válida: {hora!r} (formato HH:MM).")
+    base = normalizar_config(actual)
+    if "nocturno_activo" in payload:
+        if not isinstance(payload["nocturno_activo"], bool):
+            raise ValueError("«Comprobar todo cada noche» tiene que ser sí o no.")
+        base["nocturno_activo"] = payload["nocturno_activo"]
+    if "hora" in payload:
+        hora = _hora(payload["hora"])
+        if hora is None:
+            raise ValueError(
+                f"Hora del Cuadre no válida: {payload['hora']!r} (formato HH:MM).")
+        base["hora"] = hora
     checks_in = payload.get("checks") or {}
     if not isinstance(checks_in, dict):
         raise ValueError("La lista de comprobaciones del Cuadre no es válida.")
@@ -83,12 +92,22 @@ def validar_config(payload: Any) -> dict[str, Any]:
             raise ValueError(f"Comprobación del Cuadre desconocida: {check_id!r}.")
         if not isinstance(entry, dict):
             raise ValueError(f"Configuración no válida para {check_id!r}.")
-        if entry.get("dias") is not None and reg[check_id].dias_defecto is not None \
-                and _dias(entry.get("dias")) is None:
-            raise ValueError(
-                f"Días no válidos para «{reg[check_id].titulo}»: entre {DIAS_MIN} y {DIAS_MAX}."
-            )
-    return normalizar_config(payload)
+        destino = base["checks"][check_id]
+        if "activo" in entry:
+            if not isinstance(entry["activo"], bool):
+                raise ValueError(f"«Activa» de «{reg[check_id].titulo}» tiene que ser sí o no.")
+            destino["activo"] = entry["activo"]
+        if "dias" in entry and reg[check_id].dias_defecto is not None:
+            if entry["dias"] is None:
+                destino["dias"] = reg[check_id].dias_defecto    # vacío = el de serie
+            elif _dias(entry["dias"]) is None:
+                raise ValueError(
+                    f"Días no válidos para «{reg[check_id].titulo}»: "
+                    f"entre {DIAS_MIN} y {DIAS_MAX}."
+                )
+            else:
+                destino["dias"] = _dias(entry["dias"])
+    return base
 
 
 def cuadre_config(session: Session) -> dict[str, Any]:

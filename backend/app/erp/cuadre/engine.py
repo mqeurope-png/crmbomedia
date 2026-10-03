@@ -72,11 +72,21 @@ def comprobaciones_activas(config: dict[str, Any], fuente: str | None = None) ->
 # --- aplicar el resultado de una comprobación ----------------------------------------
 
 
+def _ambito(f: CuadreFinding) -> str | None:
+    valor = _detalle(f).get("ambito")
+    return str(valor) if valor else None
+
+
 def aplicar(
     session: Session, comp: Comprobacion, hallazgos: list[Hallazgo], ahora: datetime,
+    *, ambito: str | None = None,
 ) -> dict[str, int]:
     """Funde lo que ha visto una comprobación con lo guardado. Devuelve el
-    recuento (hallazgos / nuevos / reabiertos / resueltos)."""
+    recuento (hallazgos / nuevos / reabiertos / resueltos).
+
+    `ambito` = lo que la pasada ha podido ver (el ejercicio de FACTUSOL leído).
+    Un descuadre de OTRO ámbito que no se ve no se da por resuelto: no se ha
+    mirado (al cambiar de ejercicio, las facturas del anterior no se leen)."""
     vistos: dict[str, Hallazgo] = {}
     for h in hallazgos:
         vistos.setdefault(str(h.entidad_id), h)
@@ -88,7 +98,10 @@ def aplicar(
     nuevos = reabiertos = resueltos = 0
     for eid, h in vistos.items():
         huella = h.huella()
-        detalle = json.dumps(h.detalle_dict(), ensure_ascii=False, default=str)
+        det = h.detalle_dict()
+        if ambito:
+            det["ambito"] = ambito
+        detalle = json.dumps(det, ensure_ascii=False, default=str)
         f = existentes.get(eid)
         if f is None:
             session.add(CuadreFinding(
@@ -115,6 +128,8 @@ def aplicar(
         f.ultima_vez_at = ahora
     for eid, f in existentes.items():
         if eid not in vistos and f.estado != ESTADO_RESUELTO:
+            if ambito and _ambito(f) not in (None, ambito):
+                continue                      # de otro ejercicio: no se ha mirado
             f.estado = ESTADO_RESUELTO
             f.resuelto_at = ahora
             resueltos += 1
@@ -153,7 +168,33 @@ def ejecutar(
     ahora: datetime | None = None,
 ) -> CuadreRun:
     """Corre las comprobaciones ACTIVAS de una fuente y guarda el resultado.
-    Confirma en BD tras cada comprobación (un fallo no se lleva las demás)."""
+    Confirma en BD tras cada comprobación (un fallo no se lleva las demás).
+
+    Durante la pasada la sesión no caduca los objetos al confirmar: los
+    pedidos se cargan UNA vez y las comprobaciones los comparten (si no, cada
+    commit los caducaría y la siguiente los releería uno a uno)."""
+    antes = session.expire_on_commit
+    session.expire_on_commit = False
+    try:
+        return _ejecutar(
+            session, fuente=fuente, origen=origen, lanzado_por=lanzado_por, run=run,
+            client=client, ejercicio=ejercicio, ahora=ahora,
+        )
+    finally:
+        session.expire_on_commit = antes
+
+
+def _ejecutar(
+    session: Session,
+    *,
+    fuente: str,
+    origen: str,
+    lanzado_por: str | None,
+    run: CuadreRun | None,
+    client: Any,
+    ejercicio: str | None,
+    ahora: datetime | None,
+) -> CuadreRun:
     config = cuadre_config(session)
     ahora = ahora or _now()
     if run is None:
@@ -168,20 +209,23 @@ def ejecutar(
     if fuente == FUENTE_FACTUSOL and comps and client is None:
         client, ejercicio = _factusol_client(session)
     ctx = Contexto(session, ahora=ahora, config=config, client=client, ejercicio=ejercicio)
+    ambito = ejercicio if fuente == FUENTE_FACTUSOL else None
 
     resumen: dict[str, Any] = {}
     errores = 0
     for comp in comps:
         try:
             hallazgos = list(comp.funcion(ctx))
-            resumen[comp.id] = aplicar(session, comp, hallazgos, ahora)
+            resumen[comp.id] = aplicar(session, comp, hallazgos, ahora, ambito=ambito)
             session.commit()
         except FactusolNoDisponible as exc:
             session.rollback()
+            ctx.olvidar_orm()
             errores += 1
             resumen[comp.id] = {"error": str(exc)}
         except Exception as exc:  # noqa: BLE001 — una comprobación no tumba la pasada
             session.rollback()
+            ctx.olvidar_orm()
             errores += 1
             logger.exception("cuadre: la comprobación %s ha fallado", comp.id)
             resumen[comp.id] = {"error": f"{type(exc).__name__}: {str(exc)[:200]}"}

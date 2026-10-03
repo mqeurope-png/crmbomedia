@@ -689,7 +689,9 @@ def update_settings(
         # existen) y se guarda ya normalizado.
         if payload.cuadre is not None:
             try:
-                series[CUADRE_CONFIG_KEY] = validar_cuadre(payload.cuadre)
+                series[CUADRE_CONFIG_KEY] = validar_cuadre(
+                    payload.cuadre, series.get(CUADRE_CONFIG_KEY),
+                )
             except ValueError as e:
                 raise HTTPException(400, str(e)) from e
         # ERP · email del SAT / taller (destinatario por defecto del envío del
