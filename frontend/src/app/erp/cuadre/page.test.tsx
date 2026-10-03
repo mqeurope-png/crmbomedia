@@ -4,8 +4,9 @@ import CuadrePage from "./page";
 
 jest.mock("next/link", () => ({
   __esModule: true,
-  default: ({ children, href, ...rest }: { children: React.ReactNode; href: string } & Record<string, unknown>) => (
-    <a href={href} {...rest}>{children}</a>
+  default: ({ children, href, prefetch, ...rest }: { children: React.ReactNode; href: string;
+    prefetch?: boolean } & Record<string, unknown>) => (
+    <a href={href} data-prefetch={String(prefetch)} {...rest}>{children}</a>
   ),
 }));
 jest.mock("../../components/PageHeader", () => ({
@@ -124,6 +125,8 @@ describe("ERP · Cuadre", () => {
     await user.click(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("link", { name: "BOP-2" })).toHaveAttribute("href", "/erp/orders/o2");
+    // Sin precarga: cientos de filas no lanzan cientos de precargas de rutas.
+    expect(screen.getByRole("link", { name: "BOP-2" })).toHaveAttribute("data-prefetch", "false");
     expect(screen.getAllByRole("link", { name: "Ir a «Enviados»" })[0])
       .toHaveAttribute("href", "/erp/sat?tab=enviados");
     await user.click(screen.getByRole("button", { name: /Factura emitida sin cobro/ }));
@@ -182,6 +185,25 @@ describe("ERP · Cuadre", () => {
     await user.selectOptions(screen.getByLabelText("Comprobación"), "pedido_sin_aprobar");
     expect(within(lista).getAllByRole("listitem")).toHaveLength(1);
     expect(within(lista).getByText("Pedido esperando aprobación")).toBeInTheDocument();
+  });
+
+  it("una tarjeta con muchas filas pinta 100 y deja ver el resto con «Ver más»", async () => {
+    const m = api();
+    const muchas = Array.from({ length: 150 }, (_, i) => hallazgo({
+      id: `m${i}`, check_id: "enviado_sin_aviso", severidad: "media", entidad_id: `o${i}`,
+      etiqueta: `BOP-${1000 + i}`, detalle: "Sin aviso.", enlace: `/erp/orders/o${i}`,
+      arreglo_enlace: "/erp/sat?tab=enviados", arreglo_boton: "Ir a «Enviados»",
+    }));
+    m.listCuadreHallazgos.mockResolvedValue({ items: muchas, total: muchas.length });
+    const user = userEvent.setup();
+    render(<CuadrePage />);
+    await user.click(await screen.findByRole("button", { name: /Enviado con tracking sin aviso/ }));
+    const panel = document.getElementById("cuadre-enviado_sin_aviso")!;
+    expect(within(panel).getAllByRole("listitem")).toHaveLength(100);
+    expect(screen.getByText("Mostrando 100 de 150.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Ver 50 más" }));
+    expect(within(panel).getAllByRole("listitem")).toHaveLength(150);
+    expect(screen.queryByRole("button", { name: /más$/ })).not.toBeInTheDocument();
   });
 
   it("«Descargar Excel» guarda el fichero de los abiertos", async () => {

@@ -111,7 +111,12 @@ Código: `backend/app/erp/cuadre/`. API: `backend/app/erp/api/cuadre.py`
      - el DESCUENTO global, en la banda `IDTO`/`IPPA` de la cabecera o como
        línea «DESCUENTO» del detalle;
      - el recargo PayPal del 4 % (base = Σ líneas × 1,04);
-     - los portes y la financiación, que van en su banda.
+     - los portes y la financiación, que van en su banda;
+     - una banda de portes (`IPOR > 0`) con neto propio sin línea, como el
+       4 % de PayPal sobre líneas + portes que FACTUSOL pone en la banda de los
+       portes (2-526098, 2-526103). Su neto se deja fuera de la base. La
+       contaminación de #382 sigue saltando, porque allí las líneas suman de
+       más y quitar una banda solo baja la base.
    - Implementado en `lineas_cuadran`.
 2. `cobro_descuadrado` — **Cobro descuadrado BoHub ↔ FACTUSOL**.
    - Compara `F_FAC.ESTFAC` con `orders.factusol_cobro_status` en los dos

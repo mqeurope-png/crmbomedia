@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { PageHeader } from "../../components/PageHeader";
 import {
   comprobarCuadre,
@@ -36,6 +36,8 @@ const POLL_MS = 5000;
 const POLL_LENTO_MS = 30000;
 const POLL_LENTO_TRAS_MS = 2 * 60 * 1000;
 const MOTIVO_MAX = 255;
+/** Filas que se pintan de una vez en una tarjeta (luego, «Ver más»). */
+const FILAS_POR_TANDA = 100;
 
 function hora(iso: string | null | undefined): string {
   if (!iso) return "";
@@ -110,7 +112,9 @@ export default function CuadrePage() {
     getCuadreResumen()
       .then((r) => {
         if (!vivo) return;
-        setResumen(r);
+        // Mientras FACTUSOL se comprueba, el resumen casi nunca cambia: si es el
+        // mismo no se toca el estado y la página no se repinta en cada sondeo.
+        setResumen((prev) => (prev && mismoJson(prev, r) ? prev : r));
         setErrorCarga(null);
         const ahora = r.en_curso.length > 0;
         if (comprobandoAntes.current && !ahora) {
@@ -148,11 +152,6 @@ export default function CuadrePage() {
     }, lento ? POLL_LENTO_MS : POLL_MS);
     return () => window.clearTimeout(t);
   }, [comprobando, tick, pausa]);
-
-  function recargarTodo() {
-    setRecarga((n) => n + 1);
-    setTick((n) => n + 1);
-  }
 
   async function comprobar() {
     setBusy(true);
@@ -198,40 +197,54 @@ export default function CuadrePage() {
     }
   }
 
-  async function guardarRevision(h: CuadreHallazgo) {
-    const texto = motivo.trim();
-    if (texto.length < 3) {
-      setRowError({ id: h.id, msg: "Escribe un motivo (al menos 3 caracteres)." });
-      return;
-    }
-    setRowBusy(h.id);
-    setRowError(null);
-    try {
-      await revisarCuadreHallazgo(h.id, texto);
-      setRevisando(null);
-      setMotivo("");
-      recargarTodo();
-    } catch (e) {
-      setRowError({ id: h.id, msg: extractErrorMessage(e, "No se pudo marcar como revisado.") });
-      recargarTodo();                     // p. ej. lo resolvió otra pasada mientras tanto
-    } finally {
-      setRowBusy(null);
-    }
-  }
+  // Acciones de las filas: estables (solo usan setters), para que las filas
+  // memorizadas no se repinten con cada cambio de la página.
+  const acciones = useMemo<AccionesFila>(() => {
+    const recargar = () => {
+      setRecarga((n) => n + 1);
+      setTick((n) => n + 1);
+    };
+    return {
+      empezar: (id) => { setRevisando(id); setMotivo(""); setRowError(null); },
+      cancelar: () => { setRevisando(null); setMotivo(""); setRowError(null); },
+      escribir: (texto) => setMotivo(texto),
+      guardar: async (h, motivoFila) => {
+        const texto = motivoFila.trim();
+        if (texto.length < 3) {
+          setRowError({ id: h.id, msg: "Escribe un motivo (al menos 3 caracteres)." });
+          return;
+        }
+        setRowBusy(h.id);
+        setRowError(null);
+        try {
+          await revisarCuadreHallazgo(h.id, texto);
+          setRevisando(null);
+          setMotivo("");
+          recargar();
+        } catch (e) {
+          setRowError({ id: h.id, msg: extractErrorMessage(e, "No se pudo marcar como revisado.") });
+          recargar();                     // p. ej. lo resolvió otra pasada mientras tanto
+        } finally {
+          setRowBusy(null);
+        }
+      },
+      reincluir: async (h) => {
+        setRowBusy(h.id);
+        setRowError(null);
+        try {
+          await reincluirCuadreHallazgo(h.id);
+          recargar();
+        } catch (e) {
+          setRowError({ id: h.id, msg: extractErrorMessage(e, "No se pudo volver a incluir.") });
+          recargar();
+        } finally {
+          setRowBusy(null);
+        }
+      },
+    };
+  }, []);
 
-  async function reincluir(h: CuadreHallazgo) {
-    setRowBusy(h.id);
-    setRowError(null);
-    try {
-      await reincluirCuadreHallazgo(h.id);
-      recargarTodo();
-    } catch (e) {
-      setRowError({ id: h.id, msg: extractErrorMessage(e, "No se pudo volver a incluir.") });
-      recargarTodo();
-    } finally {
-      setRowBusy(null);
-    }
-  }
+  const [visibles, setVisibles] = useState<Record<string, number>>({});
 
   function toggle(id: string) {
     setExpanded((prev) => {
@@ -398,76 +411,37 @@ export default function CuadrePage() {
                           : c.abiertos === 0 ? "Todo cuadra." : "Ninguno con estos filtros."}
                     </p>
                   ) : (
-                    <ul>
-                      {filas.map((h) => (
-                        <li key={h.id} className={`erp-cuadre-fila${h.estado === "revisado" ? " is-revisado" : ""}`}>
-                          <div className="erp-cuadre-fila-main">
-                            <div className="erp-cuadre-fila-r1">
-                              {h.enlace ? (
-                                <Link href={h.enlace} className="mono">{h.etiqueta}</Link>
-                              ) : <span className="mono">{h.etiqueta}</span>}
-                              {h.nuevo ? <span className="badge active">Nuevo</span> : null}
-                              {h.estado === "revisado" ? <span className="badge muted">Revisado</span> : null}
-                            </div>
-                            <p>{h.detalle}</p>
-                            <p className="muted small">{h.pista_de_arreglo}</p>
-                            {h.estado === "revisado" && h.motivo ? (
-                              <p className="small">Motivo: {h.motivo}</p>
-                            ) : null}
-                            {rowError?.id === h.id ? (
-                              <p className="form-error" role="alert">{rowError.msg}</p>
-                            ) : null}
-                            {revisando === h.id ? (
-                              <form
-                                className="erp-cuadre-motivo"
-                                onSubmit={(e) => { e.preventDefault(); guardarRevision(h); }}
-                              >
-                                <label className="field">
-                                  <span>Motivo (obligatorio)</span>
-                                  <input
-                                    type="text"
-                                    aria-label={`Motivo para ${h.etiqueta}`}
-                                    maxLength={MOTIVO_MAX}
-                                    value={motivo}
-                                    autoFocus
-                                    onChange={(e) => setMotivo(e.target.value)}
-                                  />
-                                </label>
-                                <button type="submit" className="button small"
-                                        disabled={rowBusy === h.id || motivo.trim().length < 3}>
-                                  Guardar
-                                </button>
-                                <button type="button" className="button small secondary"
-                                        onClick={() => { setRevisando(null); setMotivo(""); setRowError(null); }}>
-                                  Cancelar
-                                </button>
-                              </form>
-                            ) : null}
-                          </div>
-                          <div className="erp-cuadre-fila-acciones">
-                            {h.arreglo_enlace ? (
-                              <Link href={h.arreglo_enlace} className="button small">
-                                {h.arreglo_boton ?? "Ir a arreglarlo"}
-                              </Link>
-                            ) : null}
-                            {h.estado === "abierto" && revisando !== h.id ? (
-                              <button type="button" className="button small secondary"
-                                      disabled={rowBusy === h.id}
-                                      onClick={() => { setRevisando(h.id); setMotivo(""); setRowError(null); }}>
-                                Revisado / no es un descuadre
-                              </button>
-                            ) : null}
-                            {h.estado === "revisado" ? (
-                              <button type="button" className="button small secondary"
-                                      disabled={rowBusy === h.id}
-                                      onClick={() => reincluir(h)}>
-                                Volver a incluir
-                              </button>
-                            ) : null}
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
+                    <>
+                      <ul>
+                        {filas.slice(0, visibles[c.id] ?? FILAS_POR_TANDA).map((h) => (
+                          <FilaCuadre
+                            key={h.id}
+                            h={h}
+                            editando={revisando === h.id}
+                            motivo={revisando === h.id ? motivo : ""}
+                            ocupada={rowBusy === h.id}
+                            error={rowError?.id === h.id ? rowError.msg : null}
+                            acciones={acciones}
+                          />
+                        ))}
+                      </ul>
+                      {filas.length > (visibles[c.id] ?? FILAS_POR_TANDA) ? (
+                        <p className="erp-cuadre-mas">
+                          <span className="muted small">
+                            Mostrando {visibles[c.id] ?? FILAS_POR_TANDA} de {filas.length}.
+                          </span>{" "}
+                          <button
+                            type="button" className="button small secondary"
+                            onClick={() => setVisibles((v) => ({
+                              ...v, [c.id]: (v[c.id] ?? FILAS_POR_TANDA) + FILAS_POR_TANDA,
+                            }))}
+                          >
+                            Ver {Math.min(FILAS_POR_TANDA,
+                              filas.length - (visibles[c.id] ?? FILAS_POR_TANDA))} más
+                          </button>
+                        </p>
+                      ) : null}
+                    </>
                   )) : null}
               </div>
             </article>
@@ -477,3 +451,94 @@ export default function CuadrePage() {
     </main>
   );
 }
+
+function mismoJson(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+type AccionesFila = {
+  empezar: (id: string) => void;
+  cancelar: () => void;
+  escribir: (texto: string) => void;
+  guardar: (h: CuadreHallazgo, motivo: string) => Promise<void>;
+  reincluir: (h: CuadreHallazgo) => Promise<void>;
+};
+
+/** Una fila de descuadre. Memorizada: solo se repinta si cambian sus datos o
+ *  su estado (editando / ocupada / error), no con cada sondeo ni al teclear el
+ *  motivo de otra fila. Los enlaces van sin precarga: cientos de filas no
+ *  lanzan cientos de precargas de rutas al desplegar una tarjeta. */
+const FilaCuadre = memo(function FilaCuadre({
+  h, editando, motivo, ocupada, error, acciones,
+}: {
+  h: CuadreHallazgo;
+  editando: boolean;
+  motivo: string;
+  ocupada: boolean;
+  error: string | null;
+  acciones: AccionesFila;
+}) {
+  return (
+    <li className={`erp-cuadre-fila${h.estado === "revisado" ? " is-revisado" : ""}`}>
+      <div className="erp-cuadre-fila-main">
+        <div className="erp-cuadre-fila-r1">
+          {h.enlace ? (
+            <Link href={h.enlace} prefetch={false} className="mono">{h.etiqueta}</Link>
+          ) : <span className="mono">{h.etiqueta}</span>}
+          {h.nuevo ? <span className="badge active">Nuevo</span> : null}
+          {h.estado === "revisado" ? <span className="badge muted">Revisado</span> : null}
+        </div>
+        <p>{h.detalle}</p>
+        <p className="muted small">{h.pista_de_arreglo}</p>
+        {h.estado === "revisado" && h.motivo ? (
+          <p className="small">Motivo: {h.motivo}</p>
+        ) : null}
+        {error ? <p className="form-error" role="alert">{error}</p> : null}
+        {editando ? (
+          <form
+            className="erp-cuadre-motivo"
+            onSubmit={(e) => { e.preventDefault(); acciones.guardar(h, motivo); }}
+          >
+            <label className="field">
+              <span>Motivo (obligatorio)</span>
+              <input
+                type="text"
+                aria-label={`Motivo para ${h.etiqueta}`}
+                maxLength={MOTIVO_MAX}
+                value={motivo}
+                autoFocus
+                onChange={(e) => acciones.escribir(e.target.value)}
+              />
+            </label>
+            <button type="submit" className="button small"
+                    disabled={ocupada || motivo.trim().length < 3}>
+              Guardar
+            </button>
+            <button type="button" className="button small secondary" onClick={acciones.cancelar}>
+              Cancelar
+            </button>
+          </form>
+        ) : null}
+      </div>
+      <div className="erp-cuadre-fila-acciones">
+        {h.arreglo_enlace ? (
+          <Link href={h.arreglo_enlace} prefetch={false} className="button small">
+            {h.arreglo_boton ?? "Ir a arreglarlo"}
+          </Link>
+        ) : null}
+        {h.estado === "abierto" && !editando ? (
+          <button type="button" className="button small secondary" disabled={ocupada}
+                  onClick={() => acciones.empezar(h.id)}>
+            Revisado / no es un descuadre
+          </button>
+        ) : null}
+        {h.estado === "revisado" ? (
+          <button type="button" className="button small secondary" disabled={ocupada}
+                  onClick={() => acciones.reincluir(h)}>
+            Volver a incluir
+          </button>
+        ) : null}
+      </div>
+    </li>
+  );
+});
