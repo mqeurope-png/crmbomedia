@@ -27,6 +27,8 @@ ERP_INTEGRATION_QUEUES = (
     "genei:webhooks",
     # Espejo Seguimiento (Fase 2): reconcile periódico BoHub ↔ hoja.
     "seguimiento:reconcile",
+    # ERP · Cuadre: job nocturno + comprobaciones de FACTUSOL encoladas.
+    "cuadre:run",
 )
 
 

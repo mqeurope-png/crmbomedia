@@ -52,6 +52,7 @@ class Cap:
     SAT_TRACKING = "erp.sat.tracking"        # tracking / nº serie / WhiteRIP
     SAT_NO_SHIPPING = "erp.sat.no_shipping"  # «No requiere envío» (masivo)
     SEGUIMIENTO = "erp.seguimiento"          # hoja de seguimiento (ver/editar/Drive)
+    CUADRE = "erp.cuadre"                    # panel de descuadres (solo lectura + revisar)
     CONCILIACION = "erp.conciliacion"        # conciliación bancaria
     CONFIG = "erp.config"                    # configuración ERP
     INTEGRACIONES = "erp.integraciones"      # integraciones (Woo, etc.)
@@ -74,7 +75,7 @@ _COMERCIAL_CAPS: frozenset[str] = frozenset({
 #: ERP Pedidos = comercial + web + cobro + Cola SAT completa + seguimiento.
 _PEDIDOS_CAPS: frozenset[str] = _COMERCIAL_CAPS | frozenset({
     Cap.ORDERS_VIEW_WEB, Cap.COBRO_REGISTER, Cap.SAT_PREPARE, Cap.SAT_TRACKING,
-    Cap.SAT_NO_SHIPPING, Cap.SEGUIMIENTO,
+    Cap.SAT_NO_SHIPPING, Cap.SEGUIMIENTO, Cap.CUADRE,
 })
 #: ERP SAT = taller + envío/técnicos + enviar al SAT + ver pedidos (incl. web).
 #: El taller también DA DE ALTA muestras (además de prepararlas y enviarlas):

@@ -140,6 +140,7 @@ app.include_router(web_forms_embed_router)
 # Cola SAT + reportar excepción + packing + adjuntos (PR 5).
 from app.erp.api import bank_router as erp_bank_router  # noqa: E402
 from app.erp.api import catalogs_router as erp_catalogs_router  # noqa: E402
+from app.erp.api import cuadre_router as erp_cuadre_router  # noqa: E402
 from app.erp.api import exceptions_router as erp_exceptions_router  # noqa: E402
 from app.erp.api import factusol_router as erp_factusol_router  # noqa: E402
 from app.erp.api import genei_router as erp_genei_router  # noqa: E402
@@ -164,6 +165,7 @@ app.include_router(erp_genei_router)
 app.include_router(erp_bank_router)
 app.include_router(erp_catalogs_router)
 app.include_router(erp_seguimiento_router)
+app.include_router(erp_cuadre_router)
 
 # Webhooks entrantes (fuera de `/api/*`; auth = firma HMAC, no sesión CRM).
 from app.webhooks.woocommerce import router as woocommerce_webhook_router  # noqa: E402
@@ -336,6 +338,23 @@ async def _arm_seguimiento_reconcile() -> None:
 
         logging.getLogger(__name__).warning(
             "seguimiento.reconcile arm failed at startup", exc_info=True
+        )
+
+
+@app.on_event("startup")
+async def _arm_cuadre_nightly() -> None:
+    """ERP · Cuadre — arma el job nocturno de comprobaciones (cola `cuadre:run`,
+    worker-sync). Con el interruptor apagado (por defecto) el tic no hace nada.
+    Idempotente vía SETNX."""
+    try:
+        from app.erp.cuadre.job import arm  # noqa: PLC0415
+
+        arm()
+    except Exception:  # noqa: BLE001
+        import logging  # noqa: PLC0415
+
+        logging.getLogger(__name__).warning(
+            "cuadre.nightly arm failed at startup", exc_info=True
         )
 
 

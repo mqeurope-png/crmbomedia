@@ -7,6 +7,7 @@ from app.erp.models.bank import (
     BankReconciliation,
 )
 from app.erp.models.carriers import Carrier
+from app.erp.models.cuadre import CuadreFinding, CuadreRun
 from app.erp.models.drive_sync import ErpDriveSyncRow
 from app.erp.models.exceptions import (
     EXCEPTION_SUBTYPES,
@@ -74,6 +75,8 @@ __all__ = [
     "SOURCE_MANUAL_UPLOAD",
     "SOURCE_WOO_PDF_PLUGIN",
     "Carrier",
+    "CuadreFinding",
+    "CuadreRun",
     "ErpException",
     "ErpSettings",
     "ExceptionStatus",
