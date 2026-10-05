@@ -288,6 +288,21 @@ def push_brevo_target(session: Session, sync_log: SyncLog) -> SyncOutcome:
     )
 
 
+def target_en_curso(target: BrevoSyncTarget, ahora: datetime | None = None) -> bool:
+    """¿El target tiene de verdad una ejecución en curso? `RUNNING` solo cuenta
+    mientras dura su cerrojo (`TARGET_LOCK_TTL_SECONDS`, desde que se puso):
+    si el worker murió a mitad, el estado se quedaría en RUNNING para siempre
+    y «Ejecutar ahora» respondería 409 eternamente."""
+    if target.last_run_status != TargetRunStatus.RUNNING:
+        return False
+    desde = target.updated_at
+    if desde is None:
+        return True
+    if desde.tzinfo is None:
+        desde = desde.replace(tzinfo=UTC)
+    return (ahora or datetime.now(UTC)) - desde < timedelta(seconds=TARGET_LOCK_TTL_SECONDS)
+
+
 def brevo_auto_sync_check(session: Session, sync_log: SyncLog) -> SyncOutcome:
     """Heartbeat: enqueue every active, auto-sync target whose
     interval has elapsed, then re-schedule itself in 5 minutes."""

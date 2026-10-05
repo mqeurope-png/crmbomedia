@@ -8,6 +8,7 @@ más que el intervalo, apilar 9 jobs más cada hora era lo que tenía a AgileCRM
 from __future__ import annotations
 
 from collections.abc import Generator
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import create_engine
@@ -44,10 +45,16 @@ def _account(session: Session, account_id: str, *, enabled: bool = True) -> None
     session.commit()
 
 
-def _sync_log(session: Session, account_id: str, status: str) -> None:
+def _sync_log(session: Session, account_id: str, status: str, *,
+              hace: timedelta | None = None) -> None:
+    """Fila de `sync_contacts`; `hace` = cuánto hace que empezó (running) o se
+    encoló (pending)."""
+    inicio = datetime.now(UTC) - hace if hace is not None else None
     session.add(SyncLog(
         system=ExternalSystem.AGILECRM, account_id=account_id,
         operation="sync_contacts", status=status,
+        **({"created_at": inicio} if inicio else {}),
+        **({"started_at": inicio} if inicio and status == SyncStatus.RUNNING.value else {}),
     ))
     session.commit()
 
@@ -108,3 +115,35 @@ def test_reenqueues_only_the_idle_account(session, monkeypatch) -> None:
     _fire(session)
 
     assert calls == ["uk"]
+
+
+# --- el «en curso» caduca (incidencia del 05/10/2026: 18 días sin sincronizar) ---
+
+
+def test_un_en_curso_viejo_ya_no_bloquea_la_cuenta(session, monkeypatch) -> None:
+    """Una fila que se quedó en running/pending porque su worker murió (las de
+    agosto) no cuenta como en curso pasados 60 min: se encola otro sync."""
+    monkeypatch.delenv("SYNC_INFLIGHT_MAX_MINUTES", raising=False)
+    _account(session, "es")
+    _account(session, "uk")
+    _account(session, "fr")
+    _sync_log(session, "es", SyncStatus.RUNNING.value, hace=timedelta(days=40))
+    _sync_log(session, "uk", SyncStatus.PENDING.value, hace=timedelta(hours=2))
+    _sync_log(session, "fr", SyncStatus.RUNNING.value, hace=timedelta(minutes=10))
+    calls = _record_enqueues(monkeypatch)
+
+    outcome = _fire(session)
+
+    assert sorted(calls) == ["es", "uk"]                  # fr sí está en curso de verdad
+    assert outcome.metadata["skipped_inflight"] == 1
+
+
+def test_minutos_de_caducidad_configurables(session, monkeypatch) -> None:
+    monkeypatch.setenv("SYNC_INFLIGHT_MAX_MINUTES", "180")
+    _account(session, "es")
+    _sync_log(session, "es", SyncStatus.RUNNING.value, hace=timedelta(hours=2))
+    calls = _record_enqueues(monkeypatch)
+
+    _fire(session)
+
+    assert calls == []                                    # 2 h < 180 min: sigue en curso

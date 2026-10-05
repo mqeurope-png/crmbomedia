@@ -25,6 +25,7 @@ from app.integrations.brevo.client import BrevoClient
 from app.integrations.brevo.sync_targets import (
     run_brevo_target,
     schedule_heartbeat,
+    target_en_curso,
 )
 from app.integrations.errors import IntegrationError
 from app.models.brevo import (
@@ -32,7 +33,6 @@ from app.models.brevo import (
     BrevoSyncTarget,
     BrevoTemplateCache,
     SyncDirection,
-    TargetRunStatus,
 )
 from app.models.crm import Contact, ExternalSystem, Segment, User
 from app.models.integration_settings import IntegrationAccount
@@ -238,7 +238,7 @@ def run_sync_target(
             ) from exc
         return BrevoTargetRunResponse(dry_run=True, stats=stats)
 
-    if target.last_run_status == TargetRunStatus.RUNNING:
+    if target_en_curso(target):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Este target ya tiene una ejecución en curso.",

@@ -63,3 +63,39 @@ docker compose -f docker-compose.prod.yml up -d --build \
 
 `worker-web` y `worker-agilecrm` son servicios nuevos; `worker-sync` se recrea
 porque cambió su lista de colas. El resto de workers no cambian.
+
+
+## Ejecuciones «en curso» que ya no lo están
+
+Un `sync_logs` se crea en `pending` al encolar y pasa a `running` cuando el
+worker lo coge; el propio job lo cierra. Si el worker muere a mitad
+(contenedor recreado, caída), la fila se quedaba «en curso» para siempre. El
+dedup de `agilecrm:periodic_read` saltaba esa cuenta para siempre: el
+05/10/2026 había 8 de 9 cuentas sin sincronizar desde hacía 18 días.
+
+Ahora (`app/workers/huerfanas.py`):
+
+- **El «en curso» caduca.** Para los dedup, una ejecución en
+  `pending`/`running` que empezó (o se encoló) hace más de
+  `SYNC_INFLIGHT_MAX_MINUTES` (60 por defecto) ya no cuenta, y el siguiente
+  tick encola otra.
+- **Al arrancar, cada worker cierra las huérfanas de sus colas.** Todos los
+  workers arrancan con `--worker-class app.workers.worker.BoHubWorker`. Antes
+  de coger trabajo, marca `failed` (con un mensaje claro) las ejecuciones de
+  sus colas cuyo job ya no está vivo en RQ. Cuenta como huérfana si:
+  - el job no existe;
+  - el job terminó sin cerrar la fila;
+  - el job está «started» en un worker que ya no late.
+
+  Lo que sigue encolado, o en marcha en otro worker vivo de la misma cola, no
+  se toca. Sin Redis no se decide nada. El tick de `agilecrm:periodic_read`
+  hace lo mismo con los `sync_contacts`.
+- **Brevo, sync targets.** El `RUNNING` del target caduca con su cerrojo
+  (2 h). Si no, «Ejecutar ahora» respondía 409 para siempre tras un worker
+  caído. Al cerrar un `push_target` huérfano, el target pasa a `error`.
+- **Brevo, `periodic_read`.** No deduplica, así que no podía bloquearse.
+- **Ya caducaban antes:** las copias de seguridad (1 h), los eventos de
+  WooCommerce en `processing` (15 min) y las pasadas del Cuadre (2 h).
+
+El Cuadre vigila además la comprobación «Sincronización colgada»
+(`docs/erp/cuadre.md`).

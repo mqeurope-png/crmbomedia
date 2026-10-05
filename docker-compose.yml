@@ -67,6 +67,10 @@ services:
     command:
       - rq
       - worker
+      # Al arrancar cierra las sincronizaciones que quedaron «en curso» de un
+      # arranque anterior y cuyo job ya no vive (app/workers/worker.py).
+      - --worker-class
+      - app.workers.worker.BoHubWorker
       # --with-scheduler powers Brevo's self-rescheduling heartbeats
       # (auto-sync targets + campaign cache refresh) via enqueue_in.
       - --with-scheduler
@@ -134,6 +138,10 @@ services:
     command:
       - rq
       - worker
+      # Al arrancar cierra las sincronizaciones que quedaron «en curso» de un
+      # arranque anterior y cuyo job ya no vive (app/workers/worker.py).
+      - --worker-class
+      - app.workers.worker.BoHubWorker
       - --url
       - redis://redis:6379/0
       - woocommerce:webhooks
@@ -158,6 +166,10 @@ services:
     command:
       - rq
       - worker
+      # Al arrancar cierra las sincronizaciones que quedaron «en curso» de un
+      # arranque anterior y cuyo job ya no vive (app/workers/worker.py).
+      - --worker-class
+      - app.workers.worker.BoHubWorker
       - --with-scheduler
       - --url
       - redis://redis:6379/0
@@ -185,6 +197,10 @@ services:
     command:
       - rq
       - worker
+      # Al arrancar cierra las sincronizaciones que quedaron «en curso» de un
+      # arranque anterior y cuyo job ya no vive (app/workers/worker.py).
+      - --worker-class
+      - app.workers.worker.BoHubWorker
       - --with-scheduler
       - --url
       - redis://redis:6379/0
@@ -211,6 +227,10 @@ services:
     command:
       - rq
       - worker
+      # Al arrancar cierra las sincronizaciones que quedaron «en curso» de un
+      # arranque anterior y cuyo job ya no vive (app/workers/worker.py).
+      - --worker-class
+      - app.workers.worker.BoHubWorker
       - --url
       - redis://redis:6379/0
       # ERP-jobs-interactivos: cola de los trabajos que un usuario lanza y
@@ -240,6 +260,10 @@ services:
     command:
       - rq
       - worker
+      # Al arrancar cierra las sincronizaciones que quedaron «en curso» de un
+      # arranque anterior y cuyo job ya no vive (app/workers/worker.py).
+      - --worker-class
+      - app.workers.worker.BoHubWorker
       - --with-scheduler
       - --url
       - redis://redis:6379/0

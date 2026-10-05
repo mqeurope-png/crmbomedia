@@ -190,6 +190,21 @@ del pedido de BoHub.
       (`activa_defecto=False` en el registro).
     - Se enciende en Configuración ERP.
 
+### Integraciones (severidad media, fuente BoHub)
+
+13. `sincronizacion_colgada` — **Sincronización colgada.** Avisa en dos casos:
+    - Una cuenta de integración habilitada tiene una ejecución (`sync_logs`)
+      en `pending`/`running` desde hace más de N **horas** (3 por defecto; el
+      umbral de esta comprobación va en horas).
+    - Una cuenta de un sistema con sincronización periódica no ha tenido
+      ninguna sincronización correcta (`success`/`partial_success`) en las
+      últimas 24 h. Son AgileCRM (cada hora) y las cuentas live de Brevo
+      (cada 12 h). Las cuentas dadas de alta hace menos de 24 h no cuentan.
+    - Enlaza al historial de sincronización de la cuenta.
+    - Nace de la incidencia del 05/10/2026: 8 de 9 cuentas de AgileCRM
+      llevaban 18 días sin sincronizar, bloqueadas por filas «en curso» de
+      agosto.
+
 ### Qué pedidos se miran
 
 - Las comprobaciones de trabajo pendiente (5, 6, 7, 10 y 11) solo miran
