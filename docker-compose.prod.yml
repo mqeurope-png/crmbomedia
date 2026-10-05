@@ -119,6 +119,10 @@ services:
     command:
       - rq
       - worker
+      # Al arrancar cierra las sincronizaciones que quedaron «en curso» de un
+      # arranque anterior y cuyo job ya no vive (app/workers/worker.py).
+      - --worker-class
+      - app.workers.worker.BoHubWorker
       # --with-scheduler aplica para los heartbeats self-rescheduling
       # de Brevo (auto-sync targets + campaign cache refresh) y
       # Agile (periodic_read) via enqueue_in.
@@ -225,6 +229,10 @@ services:
     command:
       - rq
       - worker
+      # Al arrancar cierra las sincronizaciones que quedaron «en curso» de un
+      # arranque anterior y cuyo job ya no vive (app/workers/worker.py).
+      - --worker-class
+      - app.workers.worker.BoHubWorker
       - --url
       - redis://redis:6379/0
       - woocommerce:webhooks
@@ -256,6 +264,10 @@ services:
     command:
       - rq
       - worker
+      # Al arrancar cierra las sincronizaciones que quedaron «en curso» de un
+      # arranque anterior y cuyo job ya no vive (app/workers/worker.py).
+      - --worker-class
+      - app.workers.worker.BoHubWorker
       - --with-scheduler
       - --url
       - redis://redis:6379/0
@@ -291,6 +303,10 @@ services:
     command:
       - rq
       - worker
+      # Al arrancar cierra las sincronizaciones que quedaron «en curso» de un
+      # arranque anterior y cuyo job ya no vive (app/workers/worker.py).
+      - --worker-class
+      - app.workers.worker.BoHubWorker
       # --with-scheduler powers `workflows:scheduler` (heartbeat
       # periódico que despierta waits + cron workflows via enqueue_in).
       - --with-scheduler
@@ -330,6 +346,10 @@ services:
     command:
       - rq
       - worker
+      # Al arrancar cierra las sincronizaciones que quedaron «en curso» de un
+      # arranque anterior y cuyo job ya no vive (app/workers/worker.py).
+      - --worker-class
+      - app.workers.worker.BoHubWorker
       - --url
       - redis://redis:6379/0
       # ERP-jobs-interactivos: los trabajos que un usuario lanza y espera
@@ -364,6 +384,10 @@ services:
     command:
       - rq
       - worker
+      # Al arrancar cierra las sincronizaciones que quedaron «en curso» de un
+      # arranque anterior y cuyo job ya no vive (app/workers/worker.py).
+      - --worker-class
+      - app.workers.worker.BoHubWorker
       - --with-scheduler
       - --url
       - redis://redis:6379/0

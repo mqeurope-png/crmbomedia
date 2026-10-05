@@ -4849,7 +4849,7 @@ export type CuadreComprobacion = {
   descripcion: string;
   severidad: CuadreSeveridad;
   fuente: "mysql" | "factusol";
-  grupo: "dinero" | "envios" | "documentos";
+  grupo: "dinero" | "envios" | "documentos" | "integraciones";
   /** Umbral en días por defecto (null = la comprobación no usa umbral). */
   dias_defecto: number | null;
   /** Qué significa el umbral («Avisar pasados N días»). */

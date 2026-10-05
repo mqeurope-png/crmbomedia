@@ -526,3 +526,56 @@ def test_contaminacion_382_sigue_saltando_aunque_haya_banda_de_portes(s):
     corta = _fac_portes(526111, lineas=215.00, neto_portes=9.36, cliente="Cliente SL")
     client = FakeFactusol(F_FAC=[corta], F_LFA=[_lin(2, 526111, 150.00)])
     assert _ids(_correr(cf.factura_lineas_ajenas, _ctx(s, client))) == {"2-526111"}
+
+
+# --- 13 · Sincronización colgada (incidencia del 05/10/2026) -----------------------
+
+
+def test_sincronizacion_colgada(s):
+    """Lo que el panel tenía que haber cazado: 8 de 9 cuentas de AgileCRM 18 días
+    sin sincronizar, bloqueadas por filas «en curso» de agosto."""
+    from app.models.crm import ExternalSystem, SyncLog
+    from app.models.integration_settings import IntegrationAccount, IntegrationMode
+
+    def cuenta(system, account_id, *, enabled=True, mode=IntegrationMode.LIVE,
+               alta=AHORA - timedelta(days=90)):
+        s.add(IntegrationAccount(system=system, account_id=account_id, display_name=account_id,
+                                 enabled=enabled, mode=mode, credential_status="configured",
+                                 created_at=alta))
+
+    def log(system, account_id, status, *, hace, operation="sync_contacts"):
+        cuando = AHORA - hace
+        s.add(SyncLog(system=system, account_id=account_id, operation=operation, status=status,
+                      created_at=cuando, started_at=cuando,
+                      finished_at=None if status in ("running", "pending") else cuando))
+
+    agile, brevo = ExternalSystem.AGILECRM, ExternalSystem.BREVO
+    cuenta(agile, "colgada")           # running de agosto y sin éxito desde entonces
+    log(agile, "colgada", "running", hace=timedelta(days=50))
+    log(agile, "colgada", "success", hace=timedelta(days=51))
+    cuenta(agile, "al_dia")            # éxito hace 1 h
+    log(agile, "al_dia", "success", hace=timedelta(hours=1))
+    cuenta(agile, "parada")            # sin colgar, pero sin éxito en 24 h
+    log(agile, "parada", "failed", hace=timedelta(hours=2))
+    log(agile, "parada", "success", hace=timedelta(hours=30))
+    cuenta(agile, "corriendo")         # en curso hace 20 min y al día: limpia
+    log(agile, "corriendo", "running", hace=timedelta(minutes=20))
+    log(agile, "corriendo", "partial_success", hace=timedelta(hours=1))
+    cuenta(agile, "nueva", alta=AHORA - timedelta(hours=2))      # recién dada de alta
+    cuenta(agile, "apagada", enabled=False)                      # deshabilitada
+    log(agile, "apagada", "running", hace=timedelta(days=50))
+    cuenta(brevo, "sandbox", mode=IntegrationMode.SANDBOX)       # Brevo no live: sin cron
+    s.commit()
+
+    res = _correr(cm.sincronizacion_colgada, _ctx(s))
+
+    assert _ids(res) == {"agilecrm:colgada", "agilecrm:parada"}
+    colgada = next(h for h in res if h.entidad_id == "agilecrm:colgada")
+    assert "en running desde" in colgada.detalle
+    assert "ninguna «sync_contacts» correcta" in colgada.detalle
+    assert colgada.enlace == "/admin/integrations/agilecrm/colgada/sync-history"
+    parada = next(h for h in res if h.entidad_id == "agilecrm:parada")
+    assert "en running" not in parada.detalle
+    # Umbral en horas configurable: con 72 h, una ejecución de 50 días sigue colgada.
+    assert "agilecrm:colgada" in _ids(_correr(
+        cm.sincronizacion_colgada, _ctx(s, sincronizacion_colgada={"dias": 72})))

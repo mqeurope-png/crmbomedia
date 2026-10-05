@@ -37,6 +37,7 @@ ENTIDAD_PEDIDO = "pedido"
 ENTIDAD_FACTURA = "factura"
 ENTIDAD_PRESUPUESTO = "presupuesto"
 ENTIDAD_FILA_HOJA = "fila_hoja"
+ENTIDAD_CUENTA = "cuenta_integracion"
 
 
 @dataclass

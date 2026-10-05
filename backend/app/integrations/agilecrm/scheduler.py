@@ -30,8 +30,14 @@ from datetime import timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.crm import ExternalSystem, SyncLog, SyncStatus
+from app.models.crm import ExternalSystem, SyncLog
 from app.models.integration_settings import IntegrationAccount
+from app.workers.huerfanas import (
+    INFLIGHT_STATUSES,
+    cerrar_huerfanas,
+    inflight_vigente_desde,
+    inicio_sql,
+)
 from app.workers.jobs import OPERATIONS, SyncOutcome, enqueue_sync_job
 from app.workers.queues import queue_name, redis_connection
 
@@ -41,11 +47,11 @@ logger = logging.getLogger(__name__)
 #: tiene un `sync_contacts` en uno de estos, el tick horario NO encola otro
 #: (evita el apilamiento que tenía a AgileCRM «en bucle»: sus syncs paginan
 #: miles de contactos y duran más que el intervalo, así que sin este guard cada
-#: hora sumaba 9 jobs más sobre los que aún corrían).
-_INFLIGHT_SYNC_STATUSES: tuple[str, ...] = (
-    SyncStatus.PENDING.value,
-    SyncStatus.RUNNING.value,
-)
+#: hora sumaba 9 jobs más sobre los que aún corrían). Pero el «en curso»
+#: CADUCA (`SYNC_INFLIGHT_MAX_MINUTES`, 60 por defecto): una fila que se quedó
+#: en running/pending porque su worker murió no bloquea la cuenta para siempre
+#: (incidencia de 18 días sin sincronizar, 05/10/2026).
+_INFLIGHT_SYNC_STATUSES: tuple[str, ...] = INFLIGHT_STATUSES
 
 # PR-Revert-Webhooks-Agile. Bart escogió polling agresivo en lugar de
 # pagar el plan Enterprise de Agile. 1 h × 9 cuentas × 24 ticks/día =
@@ -109,23 +115,41 @@ def _enabled_agile_accounts(session: Session) -> list[IntegrationAccount]:
 
 
 def _accounts_with_inflight_sync(session: Session) -> set[str]:
-    """`account_id`s de AgileCRM con un `sync_contacts` pendiente o en curso.
-    El heartbeat los salta para no apilar un segundo sync encima."""
+    """`account_id`s de AgileCRM con un `sync_contacts` pendiente o en curso
+    que empezó (o se encoló) hace menos de `SYNC_INFLIGHT_MAX_MINUTES`. El
+    heartbeat los salta para no apilar un segundo sync encima; uno más viejo
+    ya no cuenta (su worker murió o se colgó) y se encola otro."""
     rows = session.scalars(
         select(SyncLog.account_id).where(
             SyncLog.system == ExternalSystem.AGILECRM,
             SyncLog.operation == "sync_contacts",
             SyncLog.status.in_(_INFLIGHT_SYNC_STATUSES),
             SyncLog.account_id.is_not(None),
+            inicio_sql() >= inflight_vigente_desde(),
         )
     )
     return {str(account_id) for account_id in rows}
+
+
+def _cerrar_syncs_huerfanos(session: Session) -> None:
+    """Cierra como fallidos los `sync_contacts` sin terminar cuyo job ya no
+    está vivo en RQ (worker recreado o caído). Best-effort: sin Redis, nada."""
+    try:
+        cerrar_huerfanas(
+            session, conn=redis_connection(),
+            colas={queue_name("agilecrm", "sync_contacts")},
+            motivo="cerrada por agilecrm:periodic_read",
+        )
+    except Exception as exc:  # noqa: BLE001 — el tick sigue
+        session.rollback()
+        logger.warning("agilecrm.periodic_read: no se pudieron cerrar huérfanas: %s", exc)
 
 
 def periodic_read_check(session: Session, sync_log: SyncLog) -> SyncOutcome:
     """Heartbeat: encola `sync_contacts` para cada cuenta Agile
     habilitada, luego re-arma el próximo tick."""
     _ = sync_log
+    _cerrar_syncs_huerfanos(session)
     accounts = _enabled_agile_accounts(session)
     inflight = _accounts_with_inflight_sync(session)
     logger.info(

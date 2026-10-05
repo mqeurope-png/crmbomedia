@@ -14,6 +14,7 @@ from sqlalchemy import select
 
 from app.erp.cuadre.contexto import Contexto
 from app.erp.cuadre.registry import (
+    ENTIDAD_CUENTA,
     ENTIDAD_FILA_HOJA,
     ENTIDAD_PEDIDO,
     FUENTE_MYSQL,
@@ -446,4 +447,94 @@ def pedido_sin_aprobar(ctx: Contexto) -> Iterator[Hallazgo]:
             arreglo_boton="Ir a «Por revisar»",
             huella_datos={"pendiente_aprobacion": True},
             datos={"dias": dias},
+        )
+
+
+# --- 13 · Sincronización colgada ---------------------------------------------------
+
+#: Sistemas con una sincronización PERIÓDICA de cada cuenta (el «sin ninguna
+#: correcta en 24 h» solo tiene sentido en ellos): AgileCRM cada hora y Brevo
+#: (cuentas en modo live) cada 12 h.
+SYNC_PERIODICA: dict[str, str] = {"agilecrm": "sync_contacts", "brevo": "sync_contacts"}
+SIN_SYNC_OK_HORAS = 24
+
+
+@comprobacion(
+    id="sincronizacion_colgada", orden=13,
+    titulo="Sincronización colgada",
+    descripcion="Cuenta de integración con una sincronización en curso desde hace más de N "
+                "horas, o habilitada sin ninguna sincronización correcta en las últimas 24 h.",
+    severidad="media", fuente=FUENTE_MYSQL, grupo="integraciones",
+    dias_defecto=3, dias_texto="Avisar si una sincronización lleva más de N horas en curso",
+)
+def sincronizacion_colgada(ctx: Contexto) -> Iterator[Hallazgo]:
+    from datetime import timedelta  # noqa: PLC0415
+
+    from sqlalchemy import func  # noqa: PLC0415
+
+    from app.models.crm import SyncLog, SyncStatus  # noqa: PLC0415
+    from app.models.integration_settings import (  # noqa: PLC0415
+        IntegrationAccount,
+        IntegrationMode,
+    )
+    from app.workers.huerfanas import INFLIGHT_STATUSES, inicio_sql  # noqa: PLC0415
+
+    horas = ctx.dias("sincronizacion_colgada", 3)
+    colgada_antes = ctx.ahora - timedelta(hours=horas)
+    sin_ok_desde = ctx.ahora - timedelta(hours=SIN_SYNC_OK_HORAS)
+    ok = (SyncStatus.SUCCESS.value, SyncStatus.PARTIAL_SUCCESS.value)
+    cuentas = ctx.session.scalars(
+        select(IntegrationAccount).where(IntegrationAccount.enabled.is_(True))
+    )
+    for cuenta in cuentas:
+        system = _v(cuenta.system)
+        filtro = (SyncLog.system == cuenta.system, SyncLog.account_id == cuenta.account_id)
+        colgada = ctx.session.scalars(
+            select(SyncLog).where(
+                *filtro, SyncLog.status.in_(INFLIGHT_STATUSES), inicio_sql() < colgada_antes,
+            ).order_by(inicio_sql()).limit(1)
+        ).first()
+        sin_ok = False
+        ultimo_ok = None
+        operacion = SYNC_PERIODICA.get(system)
+        periodica = operacion is not None and (
+            system != "brevo" or _v(cuenta.mode) == IntegrationMode.LIVE.value
+        )
+        alta = cuenta.created_at
+        if alta is not None and alta.tzinfo is None:
+            alta = alta.replace(tzinfo=UTC)
+        if periodica and (alta is None or alta < sin_ok_desde):
+            ultimo_ok = ctx.session.scalar(
+                select(func.max(SyncLog.finished_at)).where(
+                    *filtro, SyncLog.operation == operacion, SyncLog.status.in_(ok),
+                )
+            )
+            if ultimo_ok is not None and ultimo_ok.tzinfo is None:
+                ultimo_ok = ultimo_ok.replace(tzinfo=UTC)
+            sin_ok = ultimo_ok is None or ultimo_ok < sin_ok_desde
+        if colgada is None and not sin_ok:
+            continue
+        partes = []
+        if colgada is not None:
+            inicio = colgada.started_at or colgada.created_at
+            partes.append(
+                f"«{colgada.operation}» en {colgada.status} desde el {_fecha(inicio)} "
+                f"(más de {horas} h)"
+            )
+        if sin_ok:
+            partes.append(
+                f"ninguna «{operacion}» correcta en las últimas {SIN_SYNC_OK_HORAS} h"
+                + (f" (la última, el {_fecha(ultimo_ok)})" if ultimo_ok else " (ni una)")
+            )
+        enlace = f"/admin/integrations/{system}/{cuenta.account_id}/sync-history"
+        yield Hallazgo(
+            entidad_tipo=ENTIDAD_CUENTA, entidad_id=f"{system}:{cuenta.account_id}",
+            etiqueta=f"{system} · {cuenta.display_name or cuenta.account_id}",
+            detalle="Sincronización colgada: " + "; ".join(partes) + ".",
+            pista_de_arreglo="Una ejecución que lleva tanto «en curso» es de un worker que murió: "
+                             "deja de bloquear sola y se cierra al reiniciar el worker. Mira el "
+                             "error en el historial y lanza «Sincronizar ahora» en Integraciones.",
+            enlace=enlace, arreglo_enlace=enlace, arreglo_boton="Ver historial",
+            huella_datos={"colgada": colgada.id if colgada is not None else None,
+                          "sin_sync_ok": sin_ok},
         )
