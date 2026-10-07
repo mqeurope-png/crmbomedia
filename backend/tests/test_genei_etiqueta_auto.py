@@ -490,3 +490,66 @@ def test_el_arreglo_no_toca_anulados_y_fecha_cuando_se_tramito(factory):
         h = s.scalar(select(OrderStatusHistory).where(OrderStatusHistory.order_id == oid))
         cuando = h.changed_at if h.changed_at.tzinfo else h.changed_at.replace(tzinfo=UTC)
         assert cuando == datetime(2026, 10, 7, 11, 37, 27, tzinfo=UTC)
+
+
+def test_pedido_creado_y_enviado_el_mismo_dia_tiene_fecha_recogido(http, factory, encolados):
+    """La hoja no descarta la «etiqueta creada» de Genei por caer el día de la
+    importación del pedido (pedido web creado y enviado el mismo día)."""
+    from app.erp.seguimiento import fecha_recogido
+
+    with factory() as s:
+        _carrier(s)
+        oid = _fluxla_5849(s)
+        o = s.get(Order, oid)
+        o.created_at = datetime(2026, 10, 7, 9, 0, tzinfo=UTC)
+        s.commit()
+    assert _webhook(http).status_code == 200
+    with factory() as s:
+        assert fecha_recogido(s.get(Order, oid)) == "2026-10-07"
+
+
+def test_etiqueta_creada_nunca_queda_antes_del_ultimo_hecho(http, factory, encolados):
+    """Pagado (07/10 11:37) antes de embalar (hace un minuto): «etiqueta creada»
+    no puede quedar antes de «embalado»."""
+    embalado = datetime.now(UTC).replace(microsecond=0) - timedelta(minutes=1)
+    with factory() as s:
+        _carrier(s)
+        oid = _fluxla_5849(s)
+        s.add(OrderStatusHistory(order_id=oid, domain="preparation", from_status="preparing",
+                                 to_status="packed", changed_at=embalado))
+        s.commit()
+    assert _webhook(http).status_code == 200
+    with factory() as s:
+        h = s.scalar(select(OrderStatusHistory).where(
+            OrderStatusHistory.order_id == oid, OrderStatusHistory.to_status == "label_created"))
+        cuando = h.changed_at if h.changed_at.tzinfo else h.changed_at.replace(tzinfo=UTC)
+        assert cuando >= embalado
+
+
+def test_si_borran_el_envio_durante_la_llamada_no_se_adjunta(factory):
+    from app.erp.integrations.genei.service import clear_genei_state
+
+    with factory() as s:
+        oid = _fluxla_5849(s, transport="label_created")
+
+    class GeneiYBorrado(Genei):
+        def get_label(self, code):
+            with factory() as s2:
+                clear_genei_state(s2.get(Order, oid))
+                s2.commit()
+            return super().get_label(code)
+
+    assert _intento(factory, oid, 1, GeneiYBorrado(), [])["result"] == "sin_envio"
+    assert _etiquetas(factory, oid) == 0
+    with factory() as s:
+        assert genei_state_of(s.get(Order, oid)) == {}
+
+
+def test_rearmar_no_mueve_la_primera_vez_que_se_vio_tramitado(factory):
+    with factory() as s:
+        oid = _fluxla_5849(s, label_auto={"status": "sin_cola",
+                                          "scheduled_at": "2026-10-07T11:37:40+00:00"})
+        assert label_job.maybe_schedule_auto_label(
+            s, s.get(Order, oid), enqueue=lambda *a: None,
+            now=AHORA + timedelta(hours=5)) is True
+    assert _auto(factory, oid)["scheduled_at"] == "2026-10-07T11:37:40+00:00"

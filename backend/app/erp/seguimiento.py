@@ -527,6 +527,10 @@ def shipping_origins_config(raw: Any) -> list[str]:
 #: Reason con el que la importación/externalización ESTAMPA las transiciones
 #: (external_processing.py). Un valor así NO es un hecho real.
 _IMPORT_STAMP_REASON = "Procesado externamente"
+#: Transiciones del sistema que SÍ son hechos reales aunque caigan el mismo día
+#: en que se importó el pedido: las que aplica Genei (webhook / estado), p. ej.
+#: «etiqueta creada» al tramitarse un pedido web creado y enviado en el día.
+_SYSTEM_REAL_REASONS = {"Genei (webhook/estado)"}
 _EXTERNAL_TERMINAL_STATES = {
     "already_completed_externally",
     "already_shipped_externally",
@@ -554,7 +558,8 @@ def _real_event_date(order: Order, domain: str, to_statuses: set[str]) -> dateti
         if (h.reason or "") == _IMPORT_STAMP_REASON:
             continue
         if (import_day and h.changed_at and h.changed_at.date() == import_day
-                and not h.changed_by_user_id):
+                and not h.changed_by_user_id
+                and (h.reason or "") not in _SYSTEM_REAL_REASONS):
             # Estampado el día de la importación (sin persona detrás): no es un
             # hecho. Uno hecho por una persona ese mismo día (p. ej. «📤 Marcar
             # recogido» de un pedido creado hoy) SÍ cuenta.

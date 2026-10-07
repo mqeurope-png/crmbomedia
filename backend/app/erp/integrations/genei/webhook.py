@@ -58,6 +58,10 @@ _SHIP_CODE_KEYS = ("codigo_envio", "shipmentCode", "shipment_code", "reference",
 #: Texto de la incidencia de TRANSPORTE (para la evidencia del arco).
 _INCIDENCIA_KEYS = ("desc_incidencia", "descripcion_incidencia", "incidencia", "nombre_estado")
 
+#: Motivo de las transiciones que aplica Genei (webhook / estado / arreglo). La
+#: hoja las cuenta como hechos reales (`seguimiento._SYSTEM_REAL_REASONS`).
+GENEI_REASON = "Genei (webhook/estado)"
+
 #: Camino lineal del transporte hasta cada estado objetivo. El webhook avanza
 #: el pedido paso a paso desde donde esté; `incident` cuelga de `in_transit`.
 _STEPS_TO: dict[str, list[tuple[str, str]]] = {
@@ -110,18 +114,21 @@ def advance_transport(
     if not target or target not in _STEPS_TO:
         return False
     applied = False
+    if label_at is not None:
+        # Nunca antes del último hecho del pedido (p. ej. pagado antes de
+        # embalar: «etiqueta creada» no puede quedar antes de «embalado»).
+        previas = [_aware(h.changed_at) for h in order.status_history if h.changed_at]
+        label_at = max([_aware(label_at), *previas])
     for frm, to in _STEPS_TO[target]:
         if _transport_value(order) != frm:
             continue
         try:
             row = apply_transition(
                 session, order=order, domain=StatusDomain.TRANSPORT, to_status=to,
-                actor=None, reason="Genei (webhook/estado)", evidence=evidence,
+                actor=None, reason=GENEI_REASON, evidence=evidence,
             )
-            if to == "label_created" and label_at is not None:
-                cuando = label_at if label_at.tzinfo else label_at.replace(tzinfo=UTC)
-                if cuando < row.changed_at.replace(tzinfo=row.changed_at.tzinfo or UTC):
-                    row.changed_at = cuando
+            if to == "label_created" and label_at is not None and label_at < _aware(row.changed_at):
+                row.changed_at = label_at
             applied = True
         except TransitionError as exc:
             logger.info("genei transporte %s→%s no aplicado: %s", frm, to, exc)
@@ -191,6 +198,10 @@ def apply_shipment_state(
         })
     set_genei_state(order, patch)
     return summary, applied
+
+
+def _aware(dt: datetime) -> datetime:
+    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
 
 
 def _iso(value: Any) -> datetime | None:

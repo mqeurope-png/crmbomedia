@@ -167,8 +167,11 @@ def maybe_schedule_auto_label(
         if not needs_auto_label(session, order, now=now):
             return False
         ahora = now_iso() if now is None else _aware(now).isoformat()
+        # `scheduled_at` = la PRIMERA vez que BoHub lo vio tramitado (el Cuadre
+        # cuenta las horas desde ahí): un re-armado no lo mueve.
+        primera = label_auto_of(order).get("scheduled_at") or ahora
         set_genei_state(order, {"label_auto": {
-            "status": ESPERANDO, "attempts": 0, "scheduled_at": ahora,
+            "status": ESPERANDO, "attempts": 0, "scheduled_at": primera,
             "next_attempt_at": ahora, "max_attempts": MAX_ATTEMPTS,
         }})
         session.commit()
@@ -256,6 +259,11 @@ def auto_fetch_label(
     # esperaba a Genei se conserva. Y si alguien trajo la etiqueta entretanto,
     # no se adjunta otra.
     order = _releer(session, order)
+    if shipment_code_of_order(order) != code:
+        # Borraron (o rehicieron) el envío mientras se esperaba a Genei: esta
+        # etiqueta ya no vale.
+        session.commit()
+        return {"result": "sin_envio"}
     if _ya_adjunta(session, order):
         return _marcar_ya_estaba(session, order, ahora)
     auto = label_auto_of(order)
