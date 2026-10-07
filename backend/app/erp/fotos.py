@@ -85,7 +85,11 @@ def normalizar(filename: str | None, content_type: str | None, data: bytes) -> F
         img = Image.open(io.BytesIO(data))
         formato = (img.format or "").upper()
         img.load()
-    except (UnidentifiedImageError, OSError, ValueError) as exc:
+    except Image.DecompressionBombError as exc:
+        # Cabecera que dice tener muchísimos píxeles (fichero dañado o
+        # malicioso): no se decodifica.
+        raise FotoError("La imagen es demasiado grande o está dañada.") from exc
+    except (UnidentifiedImageError, OSError, ValueError, SyntaxError) as exc:
         raise FotoError(
             "No se reconoce el formato. Sube una foto (JPG, PNG, HEIC o WebP) o un PDF."
         ) from exc
@@ -109,6 +113,9 @@ def miniatura(data: bytes, mime_type: str | None) -> bytes | None:
     _heif_disponible()
     try:
         img = Image.open(io.BytesIO(data))
+        # JPEG: decodifica ya reducido (mucho más rápido y con menos memoria que
+        # la foto entera de 12 MP); en otros formatos no hace nada.
+        img.draft("RGB", (THUMB_PX * 2, THUMB_PX * 2))
         img = ImageOps.exif_transpose(img).convert("RGB")
         img.thumbnail((THUMB_PX, THUMB_PX))
         out = io.BytesIO()
@@ -125,10 +132,16 @@ def guardar_foto(
     """Normaliza y guarda la foto como `shipment_files` (`kind = foto`). No
     reemplaza las anteriores: un pedido puede tener varias. Devuelve la fila
     (sin commit). Lanza `FotoError` (formato) o la excepción del almacén."""
+    return guardar_normalizada(session, order, normalizar(filename, content_type, data),
+                               actor_id=actor_id)
+
+
+def guardar_normalizada(session: Any, order: Any, foto: FotoNormalizada, *,
+                        actor_id: str | None) -> Any:
+    """Guarda una foto ya normalizada (ver `guardar_foto`)."""
     from app.erp.api.shipping import _store_new_file  # noqa: PLC0415
     from app.erp.models.shipping import KIND_FOTO, SOURCE_MANUAL_UPLOAD  # noqa: PLC0415
 
-    foto = normalizar(filename, content_type, data)
     return _store_new_file(
         session, order, kind=KIND_FOTO, source=SOURCE_MANUAL_UPLOAD,
         filename=foto.filename, mime_type=foto.mime_type, data=foto.data,
@@ -160,7 +173,10 @@ def migrar_documentos(
       (nombre y fecha de subida, sin ruta), para que la ficha avise.
 
     Trabaja con SQL de Core (no con el ORM de la app): la uso desde una
-    migración de Alembic. Idempotente: sin `documents`, no hace nada."""
+    migración de Alembic. Idempotente: sin `documents`, no hace nada. Un
+    documento que falla se anota como perdido (con log) y no tumba la
+    migración (ni el arranque del api). Escribe en el almacén LOCAL de
+    expedición (`STORAGE_BACKEND=local`, el de producción)."""
     import sqlalchemy as sa  # noqa: PLC0415
 
     from app.storage.local import LocalShippingStorage  # noqa: PLC0415
@@ -187,44 +203,21 @@ def migrar_documentos(
         for doc in docs:
             if not isinstance(doc, dict):
                 continue
-            key = str(doc.get("storage_key") or "")
-            data = None
-            if doc.get("backend", "local") == "local" and key:
-                for path in _candidatos(key, uploads_dir, rescate_dir):
-                    if path.is_file():
-                        data = path.read_bytes()
-                        break
-            if not data:
-                perdidas += 1
-                perdidas_aqui.append({
-                    "filename": doc.get("filename"), "uploaded_at": doc.get("uploaded_at"),
-                    "size_bytes": doc.get("size_bytes"),
-                    "motivo": "El archivo se perdió en un despliegue (se guardaba dentro "
-                              "del contenedor). Hay que volver a subirlo.",
-                })
-                continue
             try:
-                foto = normalizar(doc.get("filename"), doc.get("content_type"), data)
-            except FotoError:
-                foto = FotoNormalizada(str(doc.get("filename") or "documento"),
-                                       str(doc.get("content_type") or "application/octet-stream"),
-                                       data)
-            from app.erp.models.shipping import KIND_FOTO  # noqa: PLC0415
-
-            path = storage.save(order_id, KIND_FOTO, foto.filename, foto.data)
-            subida = doc.get("uploaded_at") or ahora.isoformat()
-            autor = doc.get("uploaded_by_user_id")
-            if autor and conn.execute(sa.text("SELECT 1 FROM users WHERE id = :u"),
-                                      {"u": autor}).first() is None:
-                autor = None                    # usuario borrado: sin autor
-            conn.execute(sa.text(
-                "INSERT INTO shipment_files (id, order_id, kind, source, filename, mime_type, "
-                "size_bytes, storage_path, uploaded_by_user_id, uploaded_at, replaced_at) "
-                "VALUES (:id, :o, :k, :s, :f, :m, :n, :p, :u, :t, NULL)"
-            ), {"id": str(uuid4()), "o": order_id, "k": KIND_FOTO, "s": "manual_upload",
-                "f": foto.filename, "m": foto.mime_type, "n": len(foto.data), "p": path,
-                "u": autor, "t": _fecha(subida, ahora)})
-            movidas += 1
+                if _migrar_uno(conn, order_id, doc, uploads_dir, rescate_dir, storage, ahora):
+                    movidas += 1
+                    continue
+                motivo = ("El archivo se perdió en un despliegue (se guardaba dentro "
+                          "del contenedor). Hay que volver a subirlo.")
+            except Exception as exc:  # noqa: BLE001 — uno no tumba el arranque del api
+                logger.warning("fotos: no se pudo migrar %s del pedido %s: %s",
+                               doc.get("filename"), order_id, exc)
+                motivo = "No se pudo recuperar el archivo. Hay que volver a subirlo."
+            perdidas += 1
+            perdidas_aqui.append({
+                "filename": doc.get("filename"), "uploaded_at": doc.get("uploaded_at"),
+                "size_bytes": doc.get("size_bytes"), "motivo": motivo,
+            })
         packing.pop("documents", None)
         if perdidas_aqui:
             packing["fotos_perdidas"] = perdidas_aqui
@@ -234,6 +227,45 @@ def migrar_documentos(
         logger.info("fotos: %d pedidos con documentos antiguos · %d movidas a shipment_files · "
                     "%d perdidas (sin referencia rota)", pedidos, movidas, perdidas)
     return {"pedidos": pedidos, "movidas": movidas, "perdidas": perdidas}
+
+
+def _migrar_uno(conn: Any, order_id: str, doc: dict[str, Any], uploads_dir: str,
+                rescate_dir: str, storage: Any, ahora: datetime) -> bool:
+    """Mueve un documento al almacén de expedición y lo registra. False si el
+    archivo ya no existe."""
+    import sqlalchemy as sa  # noqa: PLC0415
+
+    from app.erp.models.shipping import KIND_FOTO  # noqa: PLC0415
+
+    key = str(doc.get("storage_key") or "")
+    data = None
+    if doc.get("backend", "local") == "local" and key:
+        for path in _candidatos(key, uploads_dir, rescate_dir):
+            if path.is_file():
+                data = path.read_bytes()
+                break
+    if not data:
+        return False
+    try:
+        foto = normalizar(doc.get("filename"), doc.get("content_type"), data)
+    except FotoError:
+        foto = FotoNormalizada(str(doc.get("filename") or "documento"),
+                               str(doc.get("content_type") or "application/octet-stream"),
+                               data)
+    path = storage.save(order_id, KIND_FOTO, foto.filename, foto.data)
+    subida = doc.get("uploaded_at") or ahora.isoformat()
+    autor = doc.get("uploaded_by_user_id")
+    if autor and conn.execute(sa.text("SELECT 1 FROM users WHERE id = :u"),
+                              {"u": autor}).first() is None:
+        autor = None                    # usuario borrado: sin autor
+    conn.execute(sa.text(
+        "INSERT INTO shipment_files (id, order_id, kind, source, filename, mime_type, "
+        "size_bytes, storage_path, uploaded_by_user_id, uploaded_at, replaced_at) "
+        "VALUES (:id, :o, :k, :s, :f, :m, :n, :p, :u, :t, NULL)"
+    ), {"id": str(uuid4()), "o": order_id, "k": KIND_FOTO, "s": "manual_upload",
+        "f": foto.filename, "m": foto.mime_type, "n": len(foto.data), "p": path,
+        "u": autor, "t": _fecha(subida, ahora)})
+    return True
 
 
 def _fecha(valor: Any, defecto: datetime) -> datetime:

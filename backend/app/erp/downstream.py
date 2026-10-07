@@ -69,7 +69,9 @@ def downstream_reasons(session: Session, order: Order) -> list[str]:
         reasons.append("cobrado/pagado")
     if session.scalar(select(exists().where(ShipmentPackage.order_id == order.id))):
         reasons.append("albarán/envío")
-    if session.scalar(select(exists().where(ShipmentFile.order_id == order.id))):
+    if session.scalar(select(exists().where(
+        ShipmentFile.order_id == order.id, ShipmentFile.kind != "foto",
+    ))):
         reasons.append("albarán/etiqueta guardada")
     if session.scalar(select(exists().where(ErpException.order_id == order.id))):
         reasons.append("excepción/tarea SAT")

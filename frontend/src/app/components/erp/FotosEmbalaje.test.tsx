@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { FotosEmbalaje } from "./FotosEmbalaje";
+import { FotosEmbalaje, limpiarMiniaturas } from "./FotosEmbalaje";
 import { ApiError } from "../../lib/api";
 import {
   attachDocument,
@@ -30,6 +30,7 @@ function foto(id: string, filename: string, mime = "image/jpeg"): ShipmentFile {
 }
 
 beforeEach(() => {
+  limpiarMiniaturas();
   [mockAttach, mockThumb, mockList, mockOpen].forEach((m) => m.mockReset());
   mockThumb.mockResolvedValue(new Blob(["x"], { type: "image/jpeg" }));
   global.URL.createObjectURL = jest.fn(() => "blob:thumb");
@@ -47,10 +48,23 @@ describe("Fotos del embalaje", () => {
     expect(screen.getByRole("button", { name: "Ver doc.pdf" })).toHaveTextContent("📄 doc.pdf");
     // La miniatura pide la versión pequeña, no la foto entera.
     expect(mockThumb).toHaveBeenCalledTimes(2);
+    expect(mockThumb).toHaveBeenCalledWith("/api/erp/orders/o1/shipping-files/f1/download");
     await user.click(screen.getByRole("button", { name: "Ver dos.jpg" }));
     expect(mockOpen).toHaveBeenCalledWith(expect.objectContaining({ id: "f2" }));
     // Sin permiso / ya recogido: no se ofrece subir.
     expect(screen.queryByText("📷 Añadir foto")).toBeNull();
+  });
+
+  it("un refresco de la cola (objetos nuevos, mismas fotos) no vuelve a pedir las miniaturas", async () => {
+    const { rerender } = render(
+      <FotosEmbalaje orderId="o1" canUpload={false} fotos={[foto("f1", "uno.jpg")]} />,
+    );
+    expect(await screen.findByAltText("uno.jpg")).toHaveAttribute("src", "blob:thumb");
+    rerender(<FotosEmbalaje orderId="o1" canUpload={false}
+                            fotos={[foto("f1", "uno.jpg"), foto("f2", "dos.jpg")]} />);
+    expect(await screen.findByAltText("dos.jpg")).toBeInTheDocument();
+    expect(screen.getByAltText("uno.jpg")).toHaveAttribute("src", "blob:thumb");
+    expect(mockThumb).toHaveBeenCalledTimes(2);
   });
 
   it("subida correcta: dice «Foto adjuntada» y la enseña", async () => {
@@ -70,7 +84,7 @@ describe("Fotos del embalaje", () => {
     [new ApiError("El archivo supera el máximo de 15 MB.", 413,
                   "El archivo supera el máximo de 15 MB."), "El archivo supera el máximo de 15 MB."],
     // El proxy corta sin el detalle de la API: el mensaje sigue siendo claro.
-    [new ApiError("Error de la API (413)", 413, null), "El archivo es demasiado grande (máximo 15 MB)."],
+    [new ApiError("Error de la API (413)", 413, null), "El archivo es demasiado grande (máximo 12 MB)."],
     [new Error("Failed to fetch"), "Failed to fetch"],
   ])("un fallo se enseña y nunca dice «adjuntada» (%s)", async (err, texto) => {
     mockAttach.mockRejectedValue(err);

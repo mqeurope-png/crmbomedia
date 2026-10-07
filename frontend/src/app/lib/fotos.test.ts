@@ -37,7 +37,7 @@ describe("prepararFoto (reducir en el navegador antes de subir)", () => {
     expect(drawImage).toHaveBeenCalledWith(expect.anything(), 0, 0, 2560, 1920);
   });
 
-  it("si el navegador no sabe leerla y pasa de 15 MB, lo dice en vez de subirla", async () => {
+  it("si el navegador no sabe leerla y pasa de 12 MB, lo dice en vez de subirla", async () => {
     (globalThis as { createImageBitmap?: unknown }).createImageBitmap =
       jest.fn().mockRejectedValue(new Error("formato no soportado"));
     await expect(prepararFoto(archivo(FOTO_MAX_BYTES + 1, "IMG_3.HEIC", "image/heic")))

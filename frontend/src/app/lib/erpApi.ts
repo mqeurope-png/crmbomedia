@@ -4453,9 +4453,10 @@ export async function listFotos(
   return { items: r.items, fotos_perdidas: r.fotos_perdidas ?? [] };
 }
 
-/** Miniatura JPEG de una foto (pequeña: para las tarjetas y la ficha). */
-export async function fetchShippingThumb(file: ShipmentFile): Promise<Blob> {
-  return apiDownloadBlob(`${file.download_url}?thumb=1`);
+/** Miniatura JPEG de una foto (pequeña: para las tarjetas y la ficha), a
+ *  partir de su `download_url`. */
+export async function fetchShippingThumb(downloadUrl: string): Promise<Blob> {
+  return apiDownloadBlob(`${downloadUrl}?thumb=1`);
 }
 
 export async function openShippingFile(file: ShipmentFile): Promise<void> {

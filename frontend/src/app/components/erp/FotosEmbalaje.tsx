@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   attachDocument,
   fetchShippingThumb,
@@ -114,31 +114,60 @@ export function FotosEmbalaje({
   );
 }
 
+/** Miniaturas ya pedidas, por URL: la cola se refresca cada pocos segundos y
+ *  no debe volver a pedirlas. Pequeñas (unos KB); se guardan las últimas
+ *  `MAX_MINIATURAS` y las que salen se liberan. */
+const MAX_MINIATURAS = 200;
+const miniaturas = new Map<string, Promise<string>>();
+const resueltas = new Map<string, string>();
+
+function miniatura(clave: string): Promise<string> {
+  const hay = miniaturas.get(clave);
+  if (hay) return hay;
+  const p = Promise.resolve()
+    .then(() => fetchShippingThumb(clave))
+    .then((blob) => {
+      const url = URL.createObjectURL(blob);
+      resueltas.set(clave, url);
+      return url;
+    });
+  // Un fallo no se queda guardado: la próxima vez se reintenta.
+  p.catch(() => { miniaturas.delete(clave); });
+  miniaturas.set(clave, p);
+  while (miniaturas.size > MAX_MINIATURAS) {
+    const vieja = miniaturas.keys().next().value as string;
+    miniaturas.delete(vieja);
+    const url = resueltas.get(vieja);
+    if (url) URL.revokeObjectURL(url);
+    resueltas.delete(vieja);
+  }
+  return p;
+}
+
+/** Solo para los tests: vacía la caché de miniaturas. */
+export function limpiarMiniaturas(): void {
+  miniaturas.clear();
+  resueltas.clear();
+}
+
 /** Una foto: miniatura pulsable (la foto entera se abre en otra pestaña). Un
  *  PDF, su nombre. Mientras carga la miniatura, el nombre. */
 function FotoMiniatura({ file }: { file: ShipmentFile }) {
-  const [src, setSrc] = useState<string | null>(null);
-  const urlRef = useRef<string | null>(null);
+  const clave = file.download_url;
   const esImagen = file.mime_type.startsWith("image/");
-
+  const [cargada, setCargada] = useState<{ clave: string; src: string } | null>(null);
+  // La que ya está en caché se pinta sin esperar.
+  const src = cargada?.clave === clave ? cargada.src : (resueltas.get(clave) ?? null);
+  // El efecto depende de la URL, no del objeto: un refresco de la cola trae
+  // objetos nuevos para las mismas fotos y no debe volver a pedirlas.
   useEffect(() => {
     if (!esImagen) return;
     let vivo = true;
-    Promise.resolve()
-      .then(() => fetchShippingThumb(file))
-      .then((blob) => {
-        if (!vivo) return;
-        const url = URL.createObjectURL(blob);
-        urlRef.current = url;
-        setSrc(url);
-      })
+    miniatura(clave)
+      .then((url) => { if (vivo) setCargada({ clave, src: url }); })
       .catch(() => { /* se queda el nombre */ });
-    return () => {
-      vivo = false;
-      if (urlRef.current) URL.revokeObjectURL(urlRef.current);
-      urlRef.current = null;
-    };
-  }, [file, esImagen]);
+    return () => { vivo = false; };
+  }, [clave, esImagen]);
 
   return (
     <li>

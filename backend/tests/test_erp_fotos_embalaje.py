@@ -199,6 +199,24 @@ def test_rechazos_con_mensaje_claro(http, factory, data, mime, status, texto):
         assert s.scalar(select(ShipmentFile).where(ShipmentFile.order_id == oid)) is None
 
 
+def test_imagen_descomunal_se_rechaza_sin_tumbar_el_api(http, factory, monkeypatch):
+    """Una «bomba de descompresión» (millones de píxeles en pocos KB) es un 415
+    con mensaje, no un 500."""
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 100)   # 40×30 ya pasa del doble
+    oid = _pedido(factory)
+    r = _subir(http, oid, "bomba.png", _jpeg(), "image/png")
+    assert r.status_code == 415 and "demasiado grande" in r.json()["detail"]
+
+
+def test_nombre_con_acentos_en_la_descarga(http, factory):
+    oid = _pedido(factory)
+    f = _subir(http, oid, "Caja «frágil».pdf", b"%PDF-1.4 x", "application/pdf").json()["file"]
+    d = http.get(f["download_url"], headers=auth_headers(http, "sat"))
+    cd = d.headers["content-disposition"]
+    assert d.status_code == 200 and cd.startswith("inline; filename=")
+    assert "filename*=UTF-8''Caja%20%C2%ABfr%C3%A1gil%C2%BB.pdf" in cd
+
+
 def test_mas_de_15_mb_413(http, factory):
     oid = _pedido(factory)
     r = _subir(http, oid, "enorme.jpg", b"\xff\xd8" + b"0" * (15 * 1024 * 1024 + 1),
@@ -264,6 +282,41 @@ def test_migracion_recupera_de_la_carpeta_de_rescate(factory, tmp_path):
     assert r["movidas"] == 1 and r["perdidas"] == 0
     with factory() as s:
         assert s.scalar(select(ShipmentFile).where(ShipmentFile.order_id == oid)).kind == "foto"
+
+
+def test_migracion_un_documento_que_falla_no_tumba_el_resto(factory, tmp_path):
+    """Si copiar uno falla (disco, permisos…), ese queda como perdido con su
+    motivo y los demás se migran: la migración no frena el arranque del api."""
+    uploads = tmp_path / "uploads-erp"
+    shipping = tmp_path / "erp-shipping"
+    oid = _pedido(factory, packing={"documents": [
+        {"storage_key": "ORDER/a_rota.jpg", "backend": "local", "filename": "rota.jpg",
+         "content_type": "image/jpeg"},
+        {"storage_key": "ORDER/b_buena.jpg", "backend": "local", "filename": "buena.jpg",
+         "content_type": "image/jpeg"},
+    ]})
+    for k in ("a_rota.jpg", "b_buena.jpg"):
+        (uploads / "ORDER").mkdir(parents=True, exist_ok=True)
+        (uploads / "ORDER" / k).write_bytes(_jpeg())
+
+    class AlmacenQueFalla(LocalShippingStorage):
+        def save(self, order_id, kind, filename, content):
+            if filename.startswith("rota"):
+                raise OSError("disco lleno")
+            return super().save(order_id, kind, filename, content)
+
+    with factory() as s:
+        r = migrar_documentos(s.connection(), uploads_dir=str(uploads),
+                              shipping_dir=str(shipping),
+                              storage=AlmacenQueFalla(base_dir=str(shipping)))
+        s.commit()
+    assert r == {"pedidos": 1, "movidas": 1, "perdidas": 1}
+    with factory() as s:
+        rows = s.scalars(select(ShipmentFile).where(ShipmentFile.order_id == oid)).all()
+        assert [f.filename for f in rows] == ["buena.jpg"]
+        perdida = json.loads(s.get(Order, oid).packing_json)["fotos_perdidas"][0]
+        assert perdida["filename"] == "rota.jpg"
+        assert "No se pudo recuperar" in perdida["motivo"]
 
 
 def test_la_ficha_avisa_de_las_fotos_perdidas(http, factory):

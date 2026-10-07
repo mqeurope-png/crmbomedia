@@ -332,8 +332,19 @@ def download_shipping_file(
                             headers={"Cache-Control": "private, max-age=86400"})
     return Response(
         content=data, media_type=f.mime_type or "application/octet-stream",
-        headers={"Content-Disposition": f'inline; filename="{f.filename}"'},
+        headers={"Content-Disposition": _inline_disposition(f.filename)},
     )
+
+
+def _inline_disposition(filename: str | None) -> str:
+    """`inline` con el nombre en ASCII y, aparte, el real en UTF-8 (RFC 5987):
+    un «—», un emoji o el espacio fino de las capturas de macOS no pueden romper
+    la descarga (las cabeceras van en latin-1)."""
+    from urllib.parse import quote  # noqa: PLC0415
+
+    nombre = filename or "archivo"
+    ascii_ = "".join(c if 32 <= ord(c) < 127 and c not in '"\\' else "_" for c in nombre)
+    return f"inline; filename=\"{ascii_}\"; filename*=UTF-8''{quote(nombre, safe='')}"
 
 
 def _transition_on_etiqueta(
@@ -428,7 +439,14 @@ async def store_uploaded_photo(
     normaliza (HEIC/WebP → JPEG) y la guarda como `shipment_files` (`kind =
     foto`, no reemplaza las anteriores). Errores claros: 400 vacío, 413 más de
     15 MB, 415 formato no reconocido. Sin commit."""
-    from app.erp.fotos import MAX_FOTO_BYTES, FotoError, guardar_foto  # noqa: PLC0415
+    from starlette.concurrency import run_in_threadpool  # noqa: PLC0415
+
+    from app.erp.fotos import (  # noqa: PLC0415
+        MAX_FOTO_BYTES,
+        FotoError,
+        guardar_normalizada,
+        normalizar,
+    )
 
     data = await file.read()
     if not data:
@@ -439,11 +457,12 @@ async def store_uploaded_photo(
             "El archivo supera el máximo de 15 MB.",
         )
     try:
-        row = guardar_foto(session, order, filename=file.filename,
-                           content_type=file.content_type, data=data,
-                           actor_id=getattr(user, "id", None))
+        # Convertir un HEIC de 12 MP lleva un par de segundos: en un hilo, para
+        # no parar el resto de la API mientras tanto.
+        foto = await run_in_threadpool(normalizar, file.filename, file.content_type, data)
     except FotoError as exc:
         raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, str(exc)) from exc
+    row = guardar_normalizada(session, order, foto, actor_id=getattr(user, "id", None))
     session.flush()
     return row
 
