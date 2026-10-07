@@ -660,13 +660,15 @@ def _rq_reconcile_status(job_id: str, *, error_msg: str,
         extra: dict[str, Any] = {}
         if detallado:
             meta = job.get_meta(refresh=True) if hasattr(job, "get_meta") else job.meta
+            progreso = meta.get("progreso") if isinstance(meta, dict) else None
+            args = job.args if isinstance(job.args, (tuple, list)) else ()
+            fin = job.ended_at if isinstance(job.ended_at, datetime) else None
             extra = {
-                "progress": (meta or {}).get("progreso"),
-                "preview": bool(job.args[0]) if job.args else None,
+                "progress": progreso if isinstance(progreso, dict) else None,
+                "preview": bool(args[0]) if args else None,
                 # RQ guarda la hora sin zona (UTC): se dice explícitamente.
-                "ended_at": (job.ended_at if job.ended_at.tzinfo else
-                             job.ended_at.replace(tzinfo=UTC)).isoformat()
-                if job.ended_at else None,
+                "ended_at": (fin if fin.tzinfo else fin.replace(tzinfo=UTC)).isoformat()
+                if fin else None,
             }
         if rq_status == "failed":
             return {"status": "error", "error": error_msg, **extra}
