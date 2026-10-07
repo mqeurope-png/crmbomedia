@@ -345,6 +345,8 @@ def reconcile_open_order_statuses(
         # y los que la tienda ya no tiene (quedan `not_found`, ocultos).
         "to_filled": counts["filled"],
         "to_not_found": counts["not_found"],
+        # Pedidos conocidos cuyo estado se pone al día (todo lo anterior).
+        "refreshed_total": sum(counts.values()),
         "unknown_total": len(unknown),
         # Pedidos web a los que se les rellena el método de pago (gateway +
         # título de la tienda), para sugerir la contrapartida del cobro: en

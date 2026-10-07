@@ -376,6 +376,24 @@ async def _arm_woo_payment_method_backfill() -> None:
 
 
 @app.on_event("startup")
+async def _arm_woo_missing_check() -> None:
+    """WooCommerce — repaso periódico de pedidos PAGADOS en la tienda que no
+    están en BoHub (la tienda no siempre dispara el webhook al marcar pagado).
+    Cola `woocommerce:backfill` (la escucha `worker-web`, `--with-scheduler`).
+    Interruptor e intervalo en Configuración ERP (encendido, 60 min)."""
+    try:
+        from app.integrations.woocommerce.missing_job import arm  # noqa: PLC0415
+
+        arm()
+    except Exception:  # noqa: BLE001
+        import logging  # noqa: PLC0415
+
+        logging.getLogger(__name__).warning(
+            "woo.missing arm failed at startup", exc_info=True
+        )
+
+
+@app.on_event("startup")
 async def _arm_genei_tracking() -> None:
     """Genei — sondeo del tracking DETALLADO (eventos del transportista) de los
     envíos vivos (cola `genei:shipments`, la escucha `worker-sync`). Interruptor

@@ -395,26 +395,8 @@ def _upsert_backfill_event(
     session: Session, account: IntegrationAccount, woo_order_id: int,
     order_data: dict[str, Any],
 ) -> str:
-    """Crea (o resetea a `received`) el `IntegrationEvent` `backfill:{id}` de un
-    pedido y devuelve su id. Mismo convenio de dedup que el backfill."""
-    external_event_id = f"backfill:{woo_order_id}"
-    event = session.scalar(select(IntegrationEvent).where(
-        IntegrationEvent.system == "woocommerce",
-        IntegrationEvent.account_id == account.account_id,
-        IntegrationEvent.external_event_id == external_event_id,
-    ))
-    payload_json = json.dumps(order_data, default=str)
-    if event is None:
-        event = IntegrationEvent(
-            system="woocommerce", account_id=account.account_id,
-            external_event_id=external_event_id, event_type="order.backfill",
-            payload_json=payload_json,
-        )
-        session.add(event)
-        session.flush()
-    else:
-        event.payload_json = payload_json
-        event.status = IntegrationEventStatus.RECEIVED
-        event.retry_count = 0
-        event.next_retry_at = None
-    return event.id
+    """Ver `jobs.upsert_backfill_event` (vive allí para que la reutilicen la
+    puesta al día y el repaso periódico de pagados que faltan)."""
+    from app.integrations.woocommerce.jobs import upsert_backfill_event  # noqa: PLC0415
+
+    return upsert_backfill_event(session, account, woo_order_id, order_data)

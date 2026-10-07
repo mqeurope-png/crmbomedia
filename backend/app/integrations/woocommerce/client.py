@@ -139,8 +139,15 @@ class WooHTTPClient:
 
     def list_orders(
         self, *, status: str = "processing", since: str | None = None,
-        per_page: int = 50, page: int = 1,
+        per_page: int = 50, page: int = 1, modified_after: str | None = None,
+        dates_are_gmt: bool = False, fields: str | None = None,
     ) -> list[dict[str, Any]]:
+        """Listado de pedidos. `status` admite varios separados por comas
+        («processing,completed»: WP REST lo trata como lista). `since` filtra
+        por fecha de CREACIÓN (`after`) y `modified_after` por la de última
+        modificación; con `dates_are_gmt` ambas se leen en UTC y no en la hora
+        de la tienda. `fields` (`_fields` de WP REST) limita los campos de
+        cada pedido: un listado largo pesa mucho menos."""
         params: dict[str, Any] = {"per_page": per_page, "page": page, "orderby": "date"}
         if status:
             params["status"] = status
@@ -149,6 +156,12 @@ class WooHTTPClient:
             # ISO 8601 CON hora. "2026-07-04" → 400; hay que enviar
             # "2026-07-04T00:00:00".
             params["after"] = _to_iso8601_datetime(since)
+        if modified_after:
+            params["modified_after"] = _to_iso8601_datetime(modified_after)
+        if dates_are_gmt:
+            params["dates_are_gmt"] = "true"
+        if fields:
+            params["_fields"] = fields
         return self.get("/orders", params=params)
 
     def list_orders_by_ids(self, order_ids: list[int]) -> list[dict[str, Any]]:

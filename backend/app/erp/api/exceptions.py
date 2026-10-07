@@ -68,6 +68,9 @@ from app.erp.seguimiento import (
 )
 from app.integrations.factusol.catalogs import normalize_code
 from app.integrations.factusol.service import REF_PREFIX_RE, configured_ref_prefixes
+from app.integrations.woocommerce.missing import DAYS_KEY as WOO_MISSING_DAYS_KEY
+from app.integrations.woocommerce.missing import ENABLED_KEY as WOO_MISSING_ENABLED_KEY
+from app.integrations.woocommerce.missing import INTERVAL_KEY as WOO_MISSING_INTERVAL_KEY
 from app.models.crm import User
 
 router = APIRouter(prefix="/api/erp", tags=["erp-exceptions"])
@@ -199,6 +202,13 @@ class SettingsIn(BaseModel):
     seguimiento_reconcile_enabled: bool | None = None
     #: Cada cuántos minutos corre el reconcile automático (mín. 5).
     seguimiento_reconcile_interval_minutes: int | None = Field(default=None, ge=5, le=1440)
+    #: WooCommerce — repaso periódico de pedidos PAGADOS en la tienda que no
+    #: están en BoHub (la tienda no siempre dispara el webhook): interruptor
+    #: (encendido por defecto), cada cuántos minutos (60; mín. 15) y cuántos
+    #: días hacia atrás miran el repaso y «Poner al día estados Woo…» (90).
+    woo_missing_check_enabled: bool | None = None
+    woo_missing_check_interval_minutes: int | None = Field(default=None, ge=15, le=1440)
+    woo_missing_days: int | None = Field(default=None, ge=1, le=365)
     #: ERP-F6-fix3 — abreviaturas de empresa por serie ({"1": "BO", "2": "MQ",
     #: "5": "ST"}) que se escriben en la columna Empresa del seguimiento.
     factusol_series_abbreviations: dict[str, str] | None = None
@@ -512,6 +522,8 @@ def _serialise_settings(cfg: ErpSettings, session: Session) -> dict[str, Any]:
         "seguimiento_reconcile_interval_minutes": int(
             _series(cfg).get("seguimiento_reconcile_interval_minutes") or 10
         ),
+        # WooCommerce — repaso de pagados que faltan en BoHub (con defaults).
+        **_woo_missing_settings(cfg),
         # ERP-F6-fix3: abreviaturas de empresa (serie→abrev) y las tiendas Woo
         # para poder configurar la serie de cada una (no un único WooCommerce).
         "factusol_series_abbreviations": {
@@ -544,6 +556,17 @@ def _serialise_settings(cfg: ErpSettings, session: Session) -> dict[str, Any]:
                 _series(cfg).get("series_abbr_variants")
             ).items()
         },
+    }
+
+
+def _woo_missing_settings(cfg: ErpSettings) -> dict[str, Any]:
+    from app.integrations.woocommerce.missing import config_from_series  # noqa: PLC0415
+
+    c = config_from_series(_series(cfg))
+    return {
+        "woo_missing_check_enabled": c["enabled"],
+        "woo_missing_check_interval_minutes": c["interval_minutes"],
+        "woo_missing_days": c["days"],
     }
 
 
@@ -678,6 +701,9 @@ def update_settings(
             or payload.drive_reference_prefer_albaran is not None
             or payload.seguimiento_reconcile_enabled is not None
             or payload.seguimiento_reconcile_interval_minutes is not None
+            or payload.woo_missing_check_enabled is not None
+            or payload.woo_missing_check_interval_minutes is not None
+            or payload.woo_missing_days is not None
             or payload.factusol_series_abbreviations is not None
             or payload.factusol_series_abbr_variants is not None
             or payload.sat_email is not None
@@ -717,6 +743,14 @@ def update_settings(
             series["seguimiento_reconcile_interval_minutes"] = int(
                 payload.seguimiento_reconcile_interval_minutes
             )
+        # WooCommerce — repaso de pagados que faltan: interruptor, intervalo y
+        # días hacia atrás (los rangos ya los valida `SettingsIn`).
+        if payload.woo_missing_check_enabled is not None:
+            series[WOO_MISSING_ENABLED_KEY] = bool(payload.woo_missing_check_enabled)
+        if payload.woo_missing_check_interval_minutes is not None:
+            series[WOO_MISSING_INTERVAL_KEY] = int(payload.woo_missing_check_interval_minutes)
+        if payload.woo_missing_days is not None:
+            series[WOO_MISSING_DAYS_KEY] = int(payload.woo_missing_days)
         # ERP-F6-fix3: abreviaturas de empresa por serie ({"2": "MQ", …}). Solo
         # se guardan las claves numéricas con valor no vacío.
         if payload.factusol_series_abbreviations is not None:

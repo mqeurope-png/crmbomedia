@@ -121,7 +121,7 @@ type SectionId =
   | "facturacion" | "tiendas" | "remitentes" | "plantillas" | "plantillas_presupuesto"
   | "aviso_envio" | "series"
   | "abreviaturas" | "sat" | "empresas" | "almacenes" | "contrapartidas"
-  | "origenes" | "drive" | "cuadre";
+  | "origenes" | "drive" | "woo_pagados" | "cuadre";
 
 const SECTIONS: ReadonlyArray<{ id: SectionId; title: string; keys: (keyof ErpSettings)[] }> = [
   { id: "facturacion", title: "Facturación",
@@ -151,6 +151,8 @@ const SECTIONS: ReadonlyArray<{ id: SectionId; title: string; keys: (keyof ErpSe
   { id: "drive", title: "Hoja de seguimiento en Drive",
     keys: ["drive_spreadsheet_id", "drive_service_account_json", "drive_reference_prefer_albaran",
       "seguimiento_reconcile_enabled", "seguimiento_reconcile_interval_minutes"] },
+  { id: "woo_pagados", title: "Pedidos web pagados que no llegan",
+    keys: ["woo_missing_check_enabled", "woo_missing_check_interval_minutes", "woo_missing_days"] },
   { id: "cuadre", title: "Cuadre (descuadres)", keys: ["cuadre"] },
 ];
 
@@ -1484,6 +1486,70 @@ export default function ErpSettingsPage() {
               }}
             />
             <span className="muted small">Mínimo 5. Por defecto, 10.</span>
+          </label>
+        </SettingsSection>
+        {/* WooCommerce — repaso de pedidos pagados que no llegaron a BoHub. */}
+        <SettingsSection
+          {...sectionProps("woo_pagados")}
+          lead="Si una tienda marca un pedido como pagado sin avisar a BoHub (no dispara el webhook), el pedido no entra. Este repaso pregunta a cada tienda por sus pedidos pagados y crea en BoHub los que falten, igual que si hubiera llegado el aviso."
+          note="Una consulta por tienda y repaso. «Poner al día estados Woo…» (Seguimiento) hace lo mismo con vista previa, y el Cuadre avisa si alguno sigue faltando."
+        >
+          <label className="field erp-check-field">
+            <input
+              type="checkbox"
+              aria-label="Repasar pedidos pagados automáticamente"
+              checked={cfg.woo_missing_check_enabled ?? true}
+              onChange={(e) => patch({ woo_missing_check_enabled: e.target.checked })}
+            />
+            <span>Repasar automáticamente las tiendas e importar los pagados que falten</span>
+            <span className="muted small">
+              Encendido por defecto. Cada repaso mira lo que cambió en la tienda desde el
+              anterior.
+            </span>
+          </label>
+          <label className="field">
+            <span>Cada cuántos minutos</span>
+            <input
+              type="number"
+              min={15}
+              max={1440}
+              placeholder="60"
+              aria-label="Minutos entre repasos de pedidos pagados"
+              value={cfg.woo_missing_check_interval_minutes ?? ""}
+              onChange={(e) => patch({
+                woo_missing_check_interval_minutes:
+                  e.target.value === "" ? undefined : Number(e.target.value),
+              })}
+              onBlur={(e) => {
+                const n = Number(e.target.value);
+                if (e.target.value !== "" && n < 15) {
+                  patch({ woo_missing_check_interval_minutes: 15 });
+                }
+              }}
+            />
+            <span className="muted small">Mínimo 15. Por defecto, 60 (cada hora).</span>
+          </label>
+          <label className="field">
+            <span>Días hacia atrás</span>
+            <input
+              type="number"
+              min={1}
+              max={365}
+              placeholder="90"
+              aria-label="Días hacia atrás de pedidos pagados"
+              value={cfg.woo_missing_days ?? ""}
+              onChange={(e) => patch({
+                woo_missing_days: e.target.value === "" ? undefined : Number(e.target.value),
+              })}
+              onBlur={(e) => {
+                const n = Number(e.target.value);
+                if (e.target.value !== "" && n < 1) patch({ woo_missing_days: 1 });
+              }}
+            />
+            <span className="muted small">
+              Pedidos creados en los últimos N días (90 por defecto). Lo usa también
+              «Poner al día estados Woo…».
+            </span>
           </label>
         </SettingsSection>
         {/* ERP · Cuadre — job nocturno y, por comprobación, activar + umbral. */}

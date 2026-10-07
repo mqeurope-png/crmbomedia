@@ -372,6 +372,37 @@ def _event_order_ref(event: IntegrationEvent) -> str | None:
     return str(ref) if ref is not None else None
 
 
+def upsert_backfill_event(
+    session, account: IntegrationAccount, woo_order_id: int, order_data: dict[str, Any],
+) -> str:
+    """Crea (o resetea a `received`) el `IntegrationEvent` `backfill:{id}` de un
+    pedido y devuelve su id. Mismo convenio de dedup que el backfill. Lo usan
+    «Reimportar pedido» y la importación de los pagados que faltan
+    (`woocommerce.missing`): luego `import_order_from_event` lo procesa por el
+    mismo camino que un webhook."""
+    external_event_id = f"backfill:{woo_order_id}"
+    event = session.scalar(select(IntegrationEvent).where(
+        IntegrationEvent.system == "woocommerce",
+        IntegrationEvent.account_id == account.account_id,
+        IntegrationEvent.external_event_id == external_event_id,
+    ))
+    payload_json = json.dumps(order_data, default=str)
+    if event is None:
+        event = IntegrationEvent(
+            system="woocommerce", account_id=account.account_id,
+            external_event_id=external_event_id, event_type="order.backfill",
+            payload_json=payload_json,
+        )
+        session.add(event)
+        session.flush()
+    else:
+        event.payload_json = payload_json
+        event.status = IntegrationEventStatus.RECEIVED
+        event.retry_count = 0
+        event.next_retry_at = None
+    return event.id
+
+
 def _event_exists(session, store: IntegrationAccount, woo: dict[str, Any]) -> bool:
     """Dedup por Woo id — el backfill no crea el event dos veces (pero sí
     re-encola los `received` existentes, ver sync_orders_backfill)."""
@@ -458,8 +489,9 @@ def process_webhook_event(event_id: str) -> dict[str, Any]:
             return {"ok": False, "error": "bad_payload"}
 
 
-#: Timeout y TTL del job de reconciliación (listados a 3 tiendas; generoso).
-RECONCILE_JOB_TIMEOUT = 600
+#: Timeout y TTL del job de reconciliación (listados a 3 tiendas + importar
+#: los pagados que falten, cada uno como un webhook; generoso).
+RECONCILE_JOB_TIMEOUT = 1200
 RECONCILE_RESULT_TTL = 3600
 
 
@@ -468,15 +500,30 @@ def run_woo_reconcile(
 ) -> dict[str, Any]:
     """Job de la puesta al día de estados Woo. Abre su propia sesión y delega
     en el núcleo (`reconcile_open_order_statuses`), que lista por estado y cruza
-    con los activos. Devuelve el resumen (lo recoge RQ como `job.result`)."""
+    con los activos, y DESPUÉS en `import_missing_paid_orders`, que pide a cada
+    tienda sus pagados de los últimos N días y crea los que no están en BoHub
+    (en vista previa solo los lista). Devuelve el resumen (lo recoge RQ como
+    `job.result`), con lo importado en `missing`."""
+    from app.integrations.woocommerce.missing import (  # noqa: PLC0415
+        import_missing_paid_orders,
+    )
     from app.integrations.woocommerce.reconcile import (  # noqa: PLC0415
         reconcile_open_order_statuses,
     )
 
     with _session_factory()() as session:
-        return reconcile_open_order_statuses(
+        summary = reconcile_open_order_statuses(
             session, dry_run=dry_run, store_account_id=store_account_id,
         )
+        try:
+            summary["missing"] = import_missing_paid_orders(
+                session, dry_run=dry_run, store_account_id=store_account_id,
+            )
+        except Exception as exc:  # noqa: BLE001 — no se pierde la puesta al día
+            session.rollback()
+            logger.exception("woo reconcile: la importación de pagados que faltan falló")
+            summary["missing"] = {"error": f"{type(exc).__name__}: {str(exc)[:200]}"}
+        return summary
 
 
 def enqueue_woo_reconcile(

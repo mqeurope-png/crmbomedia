@@ -11,8 +11,9 @@
 - Si se cambia la hora, el tic ya armado corre a la hora vieja y se re-arma
   para la nueva; si ya hubo pasada nocturna hace menos de 12 h, no repite.
 - «Comprobar ahora»: las de BoHub corren al momento (en la petición); las de
-  FACTUSOL se ENCOLAN en la misma cola (nunca en la petición web: la API de
-  DELSOL no se satura) y la pantalla enseña «comprobando…».
+  FACTUSOL y las de WooCommerce (preguntan a las tiendas) se ENCOLAN en la
+  misma cola (nunca en la petición web: la API de DELSOL no se satura) y la
+  pantalla enseña «comprobando…».
 - Una pasada por fuente a la vez (cerrojo en Redis). Sin Redis, sin cerrojo.
 
 Una pasada a mano: `python -m app.erp.cuadre.job`.
@@ -29,7 +30,12 @@ from uuid import uuid4
 from sqlalchemy.orm import Session
 
 from app.erp.cuadre.config import HORA_DEFECTO, cuadre_config
-from app.erp.cuadre.registry import FUENTE_FACTUSOL, FUENTE_MYSQL, FUENTES
+from app.erp.cuadre.registry import (
+    FUENTE_FACTUSOL,
+    FUENTE_MYSQL,
+    FUENTES,
+    FUENTES_EN_SEGUNDO_PLANO,
+)
 from app.workers.queues import queue_name
 
 logger = logging.getLogger(__name__)
@@ -159,8 +165,28 @@ def correr(
         )
 
 
+_NOMBRE_FUENTE = {FUENTE_FACTUSOL: "FACTUSOL", "woocommerce": "WooCommerce"}
+
+
 def comprobar_ahora(session: Session, *, user_id: str | None) -> dict[str, Any]:
-    """«Comprobar ahora»: BoHub al momento; FACTUSOL a la cola de worker-sync."""
+    """«Comprobar ahora»: BoHub al momento; FACTUSOL y WooCommerce a la cola
+    de worker-sync (una pasada por fuente con comprobaciones activas)."""
+    out: dict[str, Any] = {"mysql": None, **{f: None for f in FUENTES_EN_SEGUNDO_PLANO}}
+    try:
+        run = correr(session, fuente=FUENTE_MYSQL, origen="manual", lanzado_por=user_id)
+        out["mysql"] = {"id": run.id, "estado": run.estado}
+    except PasadaEnCurso:
+        out["mysql"] = {"estado": "en_curso"}
+    for fuente in FUENTES_EN_SEGUNDO_PLANO:
+        out[fuente] = _lanzar_en_segundo_plano(session, fuente, user_id)
+    return out
+
+
+def _lanzar_en_segundo_plano(
+    session: Session, fuente: str, user_id: str | None,
+) -> dict[str, Any] | None:
+    """Encola la pasada de una fuente que no corre en la petición web. None si
+    no tiene comprobaciones activas."""
     from app.erp.cuadre.engine import (  # noqa: PLC0415
         comprobaciones_activas,
         marcar_error,
@@ -168,32 +194,22 @@ def comprobar_ahora(session: Session, *, user_id: str | None) -> dict[str, Any]:
         pasadas_en_curso,
     )
 
-    out: dict[str, Any] = {"mysql": None, "factusol": None}
-    try:
-        run = correr(session, fuente=FUENTE_MYSQL, origen="manual", lanzado_por=user_id)
-        out["mysql"] = {"id": run.id, "estado": run.estado}
-    except PasadaEnCurso:
-        out["mysql"] = {"estado": "en_curso"}
-
-    if not comprobaciones_activas(cuadre_config(session), FUENTE_FACTUSOL):
-        return out
-    pendiente = next(
-        (r for r in pasadas_en_curso(session) if r.fuente == FUENTE_FACTUSOL), None,
-    )
+    if not comprobaciones_activas(cuadre_config(session), fuente):
+        return None
+    pendiente = next((r for r in pasadas_en_curso(session) if r.fuente == fuente), None)
     if pendiente is not None:                 # ya hay una en cola / corriendo
-        out["factusol"] = {"id": pendiente.id, "estado": pendiente.estado}
-        return out
-    run = nueva_pasada(session, fuente=FUENTE_FACTUSOL, origen="manual", lanzado_por=user_id)
+        return {"id": pendiente.id, "estado": pendiente.estado}
+    run = nueva_pasada(session, fuente=fuente, origen="manual", lanzado_por=user_id)
     session.commit()
     try:
-        _encolar(_run_factusol, run.id)
-        out["factusol"] = {"id": run.id, "estado": run.estado}
+        _encolar(_run_en_segundo_plano, run.id, fuente)
+        return {"id": run.id, "estado": run.estado}
     except Exception as exc:  # noqa: BLE001
-        logger.warning("cuadre: no se pudo encolar la pasada de FACTUSOL: %s", exc)
-        marcar_error(session, run.id, "No se pudo encolar la comprobación de FACTUSOL "
+        nombre = _NOMBRE_FUENTE.get(fuente, fuente)
+        logger.warning("cuadre: no se pudo encolar la pasada de %s: %s", nombre, exc)
+        marcar_error(session, run.id, f"No se pudo encolar la comprobación de {nombre} "
                                       "(¿Redis / worker-sync parados?).")
-        out["factusol"] = {"id": run.id, "estado": "error"}
-    return out
+        return {"id": run.id, "estado": "error"}
 
 
 def _encolar(func: Any, *args: Any) -> None:
@@ -205,20 +221,26 @@ def _encolar(func: Any, *args: Any) -> None:
           default_timeout=JOB_TIMEOUT_SECONDS).enqueue(func, *args)
 
 
-def _run_factusol(run_id: str) -> None:
-    """Entrada RQ de la pasada de FACTUSOL de «Comprobar ahora»."""
+def _run_en_segundo_plano(run_id: str, fuente: str = FUENTE_FACTUSOL) -> None:
+    """Entrada RQ de la pasada de FACTUSOL / WooCommerce de «Comprobar ahora»."""
     from app.db.session import get_engine  # noqa: PLC0415
     from app.erp.cuadre.engine import marcar_error  # noqa: PLC0415
 
+    nombre = _NOMBRE_FUENTE.get(fuente, fuente)
     with Session(get_engine()) as session:
         try:
-            correr(session, fuente=FUENTE_FACTUSOL, origen="manual", run_id=run_id)
+            correr(session, fuente=fuente, origen="manual", run_id=run_id)
         except PasadaEnCurso:
-            marcar_error(session, run_id, "Ya había una comprobación de FACTUSOL en curso.")
+            marcar_error(session, run_id, f"Ya había una comprobación de {nombre} en curso.")
         except Exception:  # noqa: BLE001
-            logger.exception("cuadre: la pasada de FACTUSOL ha fallado")
+            logger.exception("cuadre: la pasada de %s ha fallado", nombre)
             session.rollback()
-            marcar_error(session, run_id, "La comprobación de FACTUSOL ha fallado (ver log).")
+            marcar_error(session, run_id, f"La comprobación de {nombre} ha fallado (ver log).")
+
+
+def _run_factusol(run_id: str) -> None:
+    """Entrada RQ antigua (jobs ya encolados antes del despliegue)."""
+    _run_en_segundo_plano(run_id, FUENTE_FACTUSOL)
 
 
 def _ya_corrio(session: Session, ahora: datetime) -> bool:
