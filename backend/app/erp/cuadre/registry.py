@@ -3,7 +3,8 @@
 Una comprobación es una función que recibe el `Contexto` de la pasada y
 devuelve los descuadres que ve (`Hallazgo`). Para añadir una nueva basta con
 escribir la función y decorarla con `@comprobacion(...)` en uno de los módulos
-de comprobaciones (`checks_mysql.py` / `checks_factusol.py`): el motor, la
+de comprobaciones (`checks_mysql.py` / `checks_factusol.py` /
+`checks_woocommerce.py`): el motor, la
 API, el job nocturno, la Configuración ERP y la pantalla la recogen solas.
 Ver «Cómo añadir una comprobación» en `docs/erp/cuadre.md`.
 
@@ -30,7 +31,11 @@ if TYPE_CHECKING:  # pragma: no cover
 SEVERIDADES: tuple[str, ...] = ("alta", "media", "baja")
 FUENTE_MYSQL = "mysql"
 FUENTE_FACTUSOL = "factusol"
-FUENTES: tuple[str, ...] = (FUENTE_MYSQL, FUENTE_FACTUSOL)
+#: Las que preguntan a las tiendas (HTTP): corren en el worker, como FACTUSOL.
+FUENTE_WOOCOMMERCE = "woocommerce"
+FUENTES: tuple[str, ...] = (FUENTE_MYSQL, FUENTE_FACTUSOL, FUENTE_WOOCOMMERCE)
+#: Fuentes que «Comprobar ahora» manda al worker (nunca en la petición web).
+FUENTES_EN_SEGUNDO_PLANO: tuple[str, ...] = (FUENTE_FACTUSOL, FUENTE_WOOCOMMERCE)
 
 #: Tipos de entidad de un descuadre.
 ENTIDAD_PEDIDO = "pedido"
@@ -38,6 +43,8 @@ ENTIDAD_FACTURA = "factura"
 ENTIDAD_PRESUPUESTO = "presupuesto"
 ENTIDAD_FILA_HOJA = "fila_hoja"
 ENTIDAD_CUENTA = "cuenta_integracion"
+#: Un pedido de la tienda que (aún) no está en BoHub: `tienda:id de Woo`.
+ENTIDAD_PEDIDO_WOO = "pedido_woo"
 
 
 @dataclass
@@ -61,6 +68,9 @@ class Hallazgo:
     huella_datos: dict[str, Any] = field(default_factory=dict)
     #: Datos extra para la pantalla / el Excel (importe pendiente, días…).
     datos: dict[str, Any] = field(default_factory=dict)
+    #: Parte de la fuente a la que pertenece (la tienda): si la pasada no
+    #: pudo mirar esa parte, sus descuadres no se dan por resueltos.
+    ambito: str | None = None
 
     def huella(self) -> str:
         raw = json.dumps(self.huella_datos, sort_keys=True, ensure_ascii=False, default=str)
@@ -86,7 +96,7 @@ class Comprobacion:
     descripcion: str
     severidad: str
     fuente: str
-    #: dinero | envios | documentos (agrupa en la pantalla).
+    #: dinero | envios | documentos | integraciones (agrupa en la pantalla).
     grupo: str
     funcion: Callable[[Contexto], Iterable[Hallazgo]]
     #: Umbral en días por defecto (None = la comprobación no usa umbral).
@@ -141,7 +151,11 @@ def comprobacion(
 
 def registro() -> dict[str, Comprobacion]:
     """El registro completo (importa los módulos de comprobaciones)."""
-    from app.erp.cuadre import checks_factusol, checks_mysql  # noqa: F401, PLC0415
+    from app.erp.cuadre import (  # noqa: F401, PLC0415
+        checks_factusol,
+        checks_mysql,
+        checks_woocommerce,
+    )
 
     return REGISTRO
 

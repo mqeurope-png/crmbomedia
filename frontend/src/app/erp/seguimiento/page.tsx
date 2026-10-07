@@ -157,10 +157,48 @@ function paymentMethodByStore(r: WooReconcileSummary): string {
 }
 
 /** Cambios que aplica la puesta al día: salidas del seguimiento, reembolsos
- *  marcados, estados recuperados y métodos de pago rellenados. */
+ *  marcados, estados recuperados, métodos de pago rellenados y pedidos
+ *  pagados que faltan en BoHub (se importan). */
 function reconcileChanges(r: WooReconcileSummary): number {
   return r.removed_total + r.to_refunded + (r.to_filled ?? 0) + (r.to_not_found ?? 0)
-    + (r.to_payment_method ?? 0);
+    + (r.to_payment_method ?? 0) + (r.missing?.faltan ?? 0);
+}
+
+/** Pedidos conocidos puestos al día (si el backend aún no lo da, se suma). */
+function refreshedTotal(r: WooReconcileSummary): number {
+  return r.refreshed_total
+    ?? r.removed_total + r.to_refunded + (r.to_filled ?? 0) + (r.to_not_found ?? 0);
+}
+
+function fechaCorta(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime())
+    ? iso
+    : d.toLocaleString("es-ES", { dateStyle: "short", timeStyle: "short" });
+}
+
+/** «; importados 2 pedidos pagados que faltaban (BOPRIN-99976, FLUXLA-5790)»
+ *  — lo que añadió la importación al aplicar (y lo que no pudo). */
+function missingApplied(r: WooReconcileSummary): string {
+  const m = r.missing;
+  if (!m) return "";
+  if (m.error) return ` No se pudo buscar si faltan pedidos pagados: ${m.error}.`;
+  const items = m.items ?? [];
+  const hechos = items.filter((i) => i.resultado === "importado");
+  const fallidos = items.filter((i) => i.resultado === "error");
+  const pendientes = items.filter((i) => i.resultado === "sin_importar");
+  if (!items.length) return " No faltaba ningún pedido pagado en BoHub.";
+  const nums = hechos.map((i) => i.order_number || `${i.tienda} #${i.numero}`);
+  const lista = nums.slice(0, 20).join(", ") + (nums.length > 20 ? ` y ${nums.length - 20} más` : "");
+  return ` Importados ${hechos.length} pedidos pagados que faltaban en BoHub`
+    + (nums.length ? ` (${lista})` : "") + "."
+    + (fallidos.length
+      ? ` ${fallidos.length} no se pudieron importar (${fallidos.slice(0, 5)
+        .map((i) => `${i.tienda} #${i.numero}: ${i.error ?? "error"}`).join(" · ")}): `
+        + "el Cuadre los sigue avisando."
+      : "")
+    + (pendientes.length ? ` ${pendientes.length} quedan para la próxima pasada (tope).` : "");
 }
 
 /** ERP-F6 — Seguimiento de pedidos: la vista que sustituye el Excel manual de
@@ -614,7 +652,8 @@ export default function SeguimientoPage() {
         const r = res.result;
         setReconcile(null);
         setNotice(
-          `Puesta al día aplicada: ${r.removed_total} pedidos salieron del `
+          `Puesta al día aplicada: ${refreshedTotal(r)} pedidos conocidos puestos al día. `
+          + `${r.removed_total} pedidos salieron del `
           + `seguimiento (${r.to_cancel} cancelados, ${r.to_fail} fallidos, `
           + `${r.to_unpaid} sin pagar / en espera, ${r.to_trash} en papelera); `
           + `${r.to_refunded} quedaron marcados «Reembolsado» (siguen a la vista)`
@@ -625,7 +664,8 @@ export default function SeguimientoPage() {
           + ((r.to_payment_method ?? 0) > 0
             ? `; ${r.to_payment_method} pedidos web rellenaron su método de pago`
               + `${paymentMethodByStore(r)}.`
-            : "."),
+            : ".")
+          + missingApplied(r),
         );
         await load();
       } else {
@@ -1021,6 +1061,7 @@ export default function SeguimientoPage() {
                 : ""}
             </li>
           </ul>
+          <MissingPreview missing={reconcile.missing} />
           <div className="modal-actions">
             <button type="button" className="button secondary" disabled={busy}
               onClick={() => setReconcile(null)}>
@@ -1266,6 +1307,57 @@ export default function SeguimientoPage() {
         />
       ) : null}
     </main>
+  );
+}
+
+/** Vista previa de la puesta al día: pedidos PAGADOS en la tienda que no
+ *  están en BoHub (la tienda no disparó el webhook). Al aplicar se importan por
+ *  el mismo camino que el webhook. */
+function MissingPreview({ missing }: { missing?: WooReconcileSummary["missing"] }) {
+  if (!missing) return null;
+  if (missing.error) {
+    return (
+      <p className="form-error" role="alert">
+        No se pudo buscar si faltan pedidos pagados: {missing.error}
+      </p>
+    );
+  }
+  const items = missing.items ?? [];
+  const errores = missing.errores ?? [];
+  return (
+    <div aria-label="Pedidos pagados que faltan">
+      <p>
+        {items.length > 0 ? (
+          <>
+            <strong>{items.length}</strong> pedidos pagados en la tienda no están en BoHub
+            (últimos {missing.dias ?? 90} días): se importarían como si hubiera llegado el
+            webhook (empresa, líneas, método de pago y Cola SAT).
+          </>
+        ) : (
+          <>No falta ningún pedido pagado de los últimos {missing.dias ?? 90} días.</>
+        )}
+        {missing.con_tope ? " (Hay más: vuelve a ejecutar para el resto.)" : ""}
+      </p>
+      {items.length > 0 ? (
+        <ul className="item-list small">
+          {items.slice(0, 50).map((i) => (
+            <li key={`${i.tienda}:${i.woo_id}`}>
+              <a href={i.enlace} target="_blank" rel="noopener noreferrer" className="mono">
+                {i.tienda_nombre} #{i.numero}
+              </a>
+              {" — "}{i.cliente} · {eur(Number(i.importe), i.moneda)} · {i.estado}
+              {" · pagado "}{fechaCorta(i.pagado_el)}
+            </li>
+          ))}
+          {items.length > 50 ? <li className="muted">y {items.length - 50} más</li> : null}
+        </ul>
+      ) : null}
+      {errores.length > 0 ? (
+        <p className="muted small">
+          No se pudo consultar: {errores.map((e) => `${e.store ?? "?"} (${e.error})`).join(" · ")}
+        </p>
+      ) : null}
+    </div>
   );
 }
 

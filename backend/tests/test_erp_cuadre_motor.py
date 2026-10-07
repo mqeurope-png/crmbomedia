@@ -235,7 +235,7 @@ def test_config_por_defecto_y_validacion(s):
     cfg = cuadre_config(s)
     assert cfg["nocturno_activo"] is False and cfg["hora"] == "03:00"
     assert set(cfg["checks"]) == set(registro())
-    assert len(registro()) == 13
+    assert len(registro()) == 14
     assert cfg["checks"]["factura_sin_cobro"] == {"activo": True, "dias": 30}
     assert cfg["checks"]["factura_lineas_ajenas"] == {"activo": True, "dias": None}
     # El embudo comercial no es un descuadre: apagada por defecto y a 90 días.
@@ -340,7 +340,7 @@ def test_el_nocturno_respeta_el_interruptor_y_no_repite(s, monkeypatch):
     assert corridas == []
     _config(s, nocturno_activo=True)
     assert job.run_nightly(s, ahora=a_las_tres) is True
-    assert corridas == ["mysql:nocturno", "factusol:nocturno"]
+    assert corridas == ["mysql:nocturno", "factusol:nocturno", "woocommerce:nocturno"]
     # Si ya hubo pasada nocturna hace menos de 12 h (p. ej. al cambiar la hora,
     # el tic re-armado para la nueva), no repite.
     s.add(CuadreRun(fuente="mysql", origen="nocturno", estado="ok", resumen_json="{}",
@@ -356,12 +356,18 @@ def test_comprobar_ahora_bohub_al_momento_y_factusol_a_la_cola(s, monkeypatch):
     out = job.comprobar_ahora(s, user_id="u1")
     assert out["mysql"]["estado"] == "ok"
     assert out["factusol"]["estado"] == "en_cola"
-    assert encolados == [(job._run_factusol, (out["factusol"]["id"],))]
+    assert out["woocommerce"]["estado"] == "en_cola"      # pregunta a las tiendas: worker
+    assert encolados == [
+        (job._run_en_segundo_plano, (out["factusol"]["id"], "factusol")),
+        (job._run_en_segundo_plano, (out["woocommerce"]["id"], "woocommerce")),
+    ]
     assert s.get(CuadreRun, out["factusol"]["id"]).fuente == "factusol"
-    # Mientras esa sigue en cola no se encola otra.
+    assert s.get(CuadreRun, out["woocommerce"]["id"]).fuente == "woocommerce"
+    # Mientras esas siguen en cola no se encolan otras.
     out2 = job.comprobar_ahora(s, user_id="u1")
-    assert out2["factusol"]["id"] == out["factusol"]["id"] and len(encolados) == 1
-    assert [r["fuente"] for r in engine.resumen(s)["en_curso"]] == ["factusol"]
+    assert out2["factusol"]["id"] == out["factusol"]["id"] and len(encolados) == 2
+    assert sorted(r["fuente"] for r in engine.resumen(s)["en_curso"]) == [
+        "factusol", "woocommerce"]
 
 
 def test_comprobar_ahora_sin_redis_deja_la_pasada_en_error(s, monkeypatch):

@@ -225,6 +225,64 @@ describe("ERP · Cuadre", () => {
     expect(screen.getByRole("button", { name: "Comprobar ahora" })).toBeEnabled();
   });
 
+  it("un pedido pagado que falta enlaza a la tienda en otra pestaña", async () => {
+    const m = api();
+    m.getCuadreResumen.mockResolvedValue({
+      ...RESUMEN,
+      checks: [tarjeta({ id: "pedido_woo_pagado_sin_bohub", fuente: "woocommerce",
+                         grupo: "integraciones", severidad: "alta", abiertos: 1,
+                         titulo: "Pedido pagado en WooCommerce que no está en BoHub" })],
+    });
+    m.listCuadreHallazgos.mockResolvedValue({ total: 1, items: [hallazgo({
+      id: "w1", check_id: "pedido_woo_pagado_sin_bohub", severidad: "alta",
+      entidad_tipo: "pedido_woo", entidad_id: "boprint:99976", etiqueta: "Boprint #99976",
+      detalle: "Pagado en la tienda (processing) y no está en BoHub.",
+      enlace: "https://boprint.example/wp-admin/post.php?post=99976&action=edit",
+      arreglo_enlace: "/erp/seguimiento", arreglo_boton: "Poner al día estados Woo",
+    })] });
+    const user = userEvent.setup();
+    render(<CuadrePage />);
+    await user.click(await screen.findByRole("button", { name: /Pedido pagado en WooCommerce/ }));
+    const enlace = screen.getByRole("link", { name: "Boprint #99976" });
+    expect(enlace).toHaveAttribute("href",
+      "https://boprint.example/wp-admin/post.php?post=99976&action=edit");
+    expect(enlace).toHaveAttribute("target", "_blank");
+    expect(screen.getByRole("link", { name: "Poner al día estados Woo" }))
+      .toHaveAttribute("href", "/erp/seguimiento");
+  });
+
+  it("FACTUSOL y WooCommerce van en segundo plano y se avisa de la que termina mal", async () => {
+    jest.useFakeTimers();
+    try {
+      const m = api();
+      const pasada = (id: string, fuente: string) => ({
+        ...RESUMEN.ultima_pasada, id, fuente, estado: "en_cola", finished_at: null });
+      const enCola = { ...RESUMEN, en_curso: [pasada("r3", "factusol"), pasada("r4", "woocommerce")] };
+      m.comprobarCuadre.mockResolvedValue({
+        lanzadas: { mysql: { id: "r2", estado: "ok" }, factusol: { id: "r3", estado: "en_cola" },
+                    woocommerce: { id: "r4", estado: "en_cola" } },
+        resumen: enCola,
+      });
+      const hecho = { ...RESUMEN, ultimas_por_fuente: { ...RESUMEN.ultimas_por_fuente,
+        factusol: { ...RESUMEN.ultima_pasada, id: "r3", fuente: "factusol" } } };
+      m.getCuadreResumen.mockResolvedValueOnce(RESUMEN).mockResolvedValue(hecho);
+      const user = userEvent.setup({ advanceTimers: jest.advanceTimersByTime });
+      render(<CuadrePage />);
+      await user.click(await screen.findByRole("button", { name: "Comprobar ahora" }));
+      expect(await screen.findByText(/Las de FACTUSOL y WooCommerce se comprueban en segundo plano/))
+        .toBeInTheDocument();
+      expect(screen.getByText(/Comprobando FACTUSOL .*y WooCommerce/)).toBeInTheDocument();
+      for (let i = 0; i < 2; i++) {
+        await act(async () => { await jest.advanceTimersByTimeAsync(5000); });
+      }
+      expect(await screen.findByText("Comprobadas también las de FACTUSOL.")).toBeInTheDocument();
+      expect(screen.getByText(/La comprobación de WooCommerce no ha terminado bien \(¿las tiendas/))
+        .toBeInTheDocument();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it("una tarjeta sin descuadres solo dice «Todo cuadra.» si se comprobó bien", async () => {
     const m = api();
     m.getCuadreResumen.mockResolvedValue({

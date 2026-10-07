@@ -29,7 +29,7 @@ Incidencias que lo motivaron:
 
 | Worker            | Colas | Notas |
 |-------------------|-------|-------|
-| **worker-web**    | `woocommerce:webhooks`, `woocommerce:import`, `woocommerce:backfill` | **Ingesta web. Aislado**: nada de AgileCRM ni otros syncs lo bloquean, así que un pedido web entra en **segundos siempre**. `webhooks` va primero (máxima prioridad). |
+| **worker-web**    | `woocommerce:webhooks`, `woocommerce:import`, `woocommerce:backfill` | **Ingesta web. Aislado**: nada de AgileCRM ni otros syncs lo bloquean, así que un pedido web entra en **segundos siempre**. `webhooks` va primero (máxima prioridad). `--with-scheduler` (07/10/2026): mueve el tic del repaso de pagados que faltan (`woocommerce:backfill`, ver `docs/erp/woo-pagados-que-faltan.md`) y los reintentos con espera de los webhooks. |
 | **worker-agilecrm** | `agilecrm:periodic_read`, `agilecrm:sync_contacts`, `agilecrm:purge_quota` | **Baja prioridad, aislado** (AgileCRM en retirada). `--with-scheduler` para el heartbeat `periodic_read`. `periodic_read` primero para que el tick horario no se retrase tras un sync largo. |
 | **worker-sync**   | `brevo:*`, `freshdesk:sync_tickets`, `factusol:sync_invoices`, `gmail:*`, `emails:snooze_sweep`, `email_templates:import_gmail`, `backups:create` (solo prod), `genei:shipments`, `genei:webhooks`, `seguimiento:reconcile`, `cuadre:run` | Sync externo + housekeeping. Ya **no** lleva AgileCRM ni WooCommerce. |
 | **worker-workflows** | `workflows:dispatch`, `workflows:execute`, `workflows:scheduler`, `vies:sweep` | Motor de workflows. `--with-scheduler`. |

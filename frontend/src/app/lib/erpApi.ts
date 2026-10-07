@@ -1145,8 +1145,47 @@ export type WooReconcileSummary = {
   payment_method_by_store?: Record<string, number>;
   payment_method_pending?: number;
   payment_method_samples?: string[];
+  /** Pedidos conocidos cuyo estado se pone al día (salidas, reembolsos,
+   *  estados recuperados y los que ya no existen). */
+  refreshed_total?: number;
+  /** Pedidos PAGADOS en la tienda que no están en BoHub (la tienda no disparó
+   *  el webhook): en la vista previa, los que se importarían; al aplicar, los
+   *  importados por el mismo camino que el webhook. */
+  missing?: WooMissingSummary;
   errors: { order_number?: string | null; store?: string; status?: string; error: string }[];
   samples: Record<string, string[]>;
+};
+
+/** Un pedido pagado de la tienda que no estaba en BoHub. */
+export type WooMissingItem = {
+  tienda: string;
+  tienda_nombre: string;
+  woo_id: number;
+  numero: string;
+  estado: string;
+  cliente: string;
+  importe: string;
+  moneda: string;
+  pagado_el: string | null;
+  /** El pedido en el admin de la tienda. */
+  enlace: string;
+  /** a_importar (vista previa) · importado · error · sin_importar (tope). */
+  resultado: "a_importar" | "importado" | "error" | "sin_importar";
+  order_id?: string;
+  order_number?: string | null;
+  error?: string;
+};
+
+export type WooMissingSummary = {
+  /** Si la búsqueda entera falló (la puesta al día de estados sí se hizo). */
+  error?: string;
+  dias?: number;
+  faltan?: number;
+  importados?: number;
+  items?: WooMissingItem[];
+  errores?: { store?: string; order_number?: string; error: string }[];
+  con_tope?: boolean;
+  woo_calls?: number;
 };
 
 /** Estado del job de reconciliación (polling). */
@@ -1168,9 +1207,10 @@ export async function getReconcileWooStatus(jobId: string): Promise<WooReconcile
   return apiFetch(`/api/erp/seguimiento/reconcile-woo-status/${encodeURIComponent(jobId)}`);
 }
 
-/** Espera a que el job termine (o error). Hace polling del estado. */
+/** Espera a que el job termine (o error). Hace polling del estado. Hasta 5
+ *  minutos: al aplicar también importa los pagados que faltan, uno a uno. */
 export async function waitForReconcileWoo(
-  jobId: string, { tries = 40, delayMs = 2000 } = {},
+  jobId: string, { tries = 150, delayMs = 2000 } = {},
 ): Promise<WooReconcileStatus> {
   let last: WooReconcileStatus = { status: "pending" };
   for (let i = 0; i < tries; i++) {
@@ -2025,6 +2065,13 @@ export type ErpSettings = {
   seguimiento_reconcile_enabled?: boolean;
   /** Cada cuántos minutos corre el reconcile automático (mín. 5; 10 por defecto). */
   seguimiento_reconcile_interval_minutes?: number;
+  /** WooCommerce — repaso periódico de pedidos PAGADOS en la tienda que no
+   *  están en BoHub (la tienda no siempre dispara el webhook). Encendido por
+   *  defecto; cada 60 min (mín. 15); mira 90 días hacia atrás (también
+   *  «Poner al día estados Woo…» y el Cuadre). */
+  woo_missing_check_enabled?: boolean;
+  woo_missing_check_interval_minutes?: number;
+  woo_missing_days?: number;
   /** ERP-F6-fix3 — abreviaturas de empresa por serie ({"1":"BO","2":"MQ",
    *  "5":"ST"}) para la columna Empresa del seguimiento. */
   factusol_series_abbreviations?: Record<string, string>;
@@ -4842,13 +4889,17 @@ export async function changeOrderFactusolSerie(
 
 export type CuadreSeveridad = "alta" | "media" | "baja";
 
+/** De dónde lee una comprobación: la BD de BoHub (al momento), FACTUSOL o las
+ *  tiendas WooCommerce (estas dos, en segundo plano en el worker). */
+export type CuadreFuente = "mysql" | "factusol" | "woocommerce";
+
 /** Una comprobación del registro del Cuadre. */
 export type CuadreComprobacion = {
   id: string;
   titulo: string;
   descripcion: string;
   severidad: CuadreSeveridad;
-  fuente: "mysql" | "factusol";
+  fuente: CuadreFuente;
   grupo: "dinero" | "envios" | "documentos" | "integraciones";
   /** Umbral en días por defecto (null = la comprobación no usa umbral). */
   dias_defecto: number | null;
@@ -4870,7 +4921,7 @@ export type CuadreConfig = {
 /** Una pasada (nocturna o «Comprobar ahora») sobre una fuente. */
 export type CuadrePasada = {
   id: string;
-  fuente: "mysql" | "factusol";
+  fuente: CuadreFuente;
   origen: "nocturno" | "manual";
   estado: "en_cola" | "corriendo" | "ok" | "con_errores" | "error";
   started_at: string | null;
@@ -4961,7 +5012,7 @@ export async function reincluirCuadreHallazgo(id: string): Promise<CuadreHallazg
 
 /** «Comprobar ahora»: BoHub al momento; FACTUSOL en segundo plano (worker). */
 export async function comprobarCuadre(): Promise<{
-  lanzadas: Record<"mysql" | "factusol", { id?: string; estado: string } | null>;
+  lanzadas: Partial<Record<CuadreFuente, { id?: string; estado: string } | null>>;
   resumen: CuadreResumen;
 }> {
   return apiFetch("/api/erp/cuadre/comprobar", { method: "POST" });

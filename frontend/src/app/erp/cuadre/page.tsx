@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { PageHeader } from "../../components/PageHeader";
 import {
   comprobarCuadre,
@@ -28,7 +28,29 @@ const SEVERIDADES: readonly CuadreSeveridad[] = ["alta", "media", "baja"];
 const SEV_LABEL: Record<CuadreSeveridad, string> = { alta: "Alta", media: "Media", baja: "Baja" };
 const SEV_TONE: Record<CuadreSeveridad, string> = { alta: "bad", media: "warn", baja: "muted" };
 const ORIGEN_LABEL: Record<string, string> = { nocturno: "pasada nocturna", manual: "Comprobar ahora" };
-const FUENTE_LABEL: Record<string, string> = { mysql: "BoHub", factusol: "FACTUSOL" };
+const FUENTE_LABEL: Record<string, string> = {
+  mysql: "BoHub", factusol: "FACTUSOL", woocommerce: "WooCommerce",
+};
+/** Fuentes que «Comprobar ahora» manda al worker (no corren en la petición). */
+const FUENTES_EN_SEGUNDO_PLANO = ["factusol", "woocommerce"] as const;
+/** Qué mirar si una comprobación en segundo plano no termina bien. */
+const FUENTE_SOSPECHOSOS: Record<string, string> = {
+  factusol: "¿FACTUSOL o worker-sync parados?",
+  woocommerce: "¿las tiendas o worker-sync parados?",
+};
+/** «FACTUSOL y WooCommerce». */
+function nombres(fuentes: string[]): string {
+  const ls = fuentes.map((f) => FUENTE_LABEL[f] ?? f);
+  return ls.length > 1 ? `${ls.slice(0, -1).join(", ")} y ${ls[ls.length - 1]}` : (ls[0] ?? "");
+}
+/** Enlace de una fila: a otra pantalla de BoHub o, si es de fuera (el pedido
+ *  en la tienda), en una pestaña nueva. */
+function EnlaceEntidad({ href, children }: { href: string; children: ReactNode }) {
+  if (/^https?:\/\//.test(href)) {
+    return <a href={href} target="_blank" rel="noopener noreferrer" className="mono">{children}</a>;
+  }
+  return <Link href={href} prefetch={false} className="mono">{children}</Link>;
+}
 /** Cada cuánto se mira si ha terminado la comprobación de FACTUSOL: deprisa
  *  los primeros minutos y luego más despacio (una pasada atascada en cola no
  *  martillea la API). Con la pestaña oculta no se pregunta. */
@@ -106,7 +128,8 @@ export default function CuadrePage() {
   const [pausa, setPausa] = useState(0);
   const comprobandoAntes = useRef(false);
   const comprobandoDesde = useRef<number | null>(null);
-  const lanzadaFactusol = useRef<string | null>(null);
+  // Pasadas lanzadas en segundo plano por «Comprobar ahora»: fuente → id.
+  const lanzadas = useRef<Record<string, string>>({});
   useEffect(() => {
     let vivo = true;
     getCuadreResumen()
@@ -119,17 +142,19 @@ export default function CuadrePage() {
         const ahora = r.en_curso.length > 0;
         if (comprobandoAntes.current && !ahora) {
           setRecarga((n) => n + 1);
-          const id = lanzadaFactusol.current;
-          if (id) {
-            if (r.ultimas_por_fuente?.factusol?.id === id) {
-              setNotice("Comprobadas también las de FACTUSOL.");
-            } else {
-              setNotice(null);
-              setError("La comprobación de FACTUSOL no ha terminado bien (¿FACTUSOL o "
-                + "worker-sync parados?): sus tarjetas siguen con lo de la última vez.");
-            }
+          const lanzadasAhora = Object.entries(lanzadas.current);
+          if (lanzadasAhora.length) {
+            const bien = lanzadasAhora
+              .filter(([f, id]) => r.ultimas_por_fuente?.[f]?.id === id).map(([f]) => f);
+            const mal = lanzadasAhora.map(([f]) => f).filter((f) => !bien.includes(f));
+            setNotice(bien.length ? `Comprobadas también las de ${nombres(bien)}.` : null);
+            setError(mal.length
+              ? mal.map((f) => `La comprobación de ${nombres([f])} no ha terminado bien `
+                + `(${FUENTE_SOSPECHOSOS[f] ?? "¿worker-sync parado?"}): sus tarjetas siguen `
+                + "con lo de la última vez.").join(" ")
+              : null);
           }
-          lanzadaFactusol.current = null;
+          lanzadas.current = {};
         }
         comprobandoAntes.current = ahora;
       })
@@ -163,9 +188,17 @@ export default function CuadrePage() {
       comprobandoAntes.current = r.resumen.en_curso.length > 0;
       setRecarga((n) => n + 1);
       const ms = r.lanzadas.mysql?.estado;
-      const fs = r.lanzadas.factusol?.estado;
-      if (fs === "en_cola" || fs === "corriendo") {
-        lanzadaFactusol.current = r.lanzadas.factusol?.id ?? null;
+      const enMarcha: string[] = [];
+      const sinLanzar: string[] = [];
+      lanzadas.current = {};
+      for (const f of FUENTES_EN_SEGUNDO_PLANO) {
+        const l = r.lanzadas[f];
+        if (l?.estado === "en_cola" || l?.estado === "corriendo") {
+          enMarcha.push(f);
+          if (l.id) lanzadas.current[f] = l.id;
+        } else if (l?.estado === "error") {
+          sinLanzar.push(f);
+        }
       }
       const partes = [
         ms === "en_curso"
@@ -173,11 +206,13 @@ export default function CuadrePage() {
           : ms === "con_errores" || ms === "error"
             ? "Comprobadas las de BoHub, pero alguna ha fallado (mira las tarjetas)."
             : "Comprobadas las de BoHub.",
-        fs === "en_cola" || fs === "corriendo"
-          ? "Las de FACTUSOL se comprueban en segundo plano: la lista se pone al día sola al terminar."
-          : fs === "error"
-            ? "Las de FACTUSOL no se han podido lanzar (¿worker-sync parado?)."
-            : "",
+        enMarcha.length
+          ? `Las de ${nombres(enMarcha)} se comprueban en segundo plano: la lista se pone al `
+            + "día sola al terminar."
+          : "",
+        sinLanzar.length
+          ? `Las de ${nombres(sinLanzar)} no se han podido lanzar (¿worker-sync parado?).`
+          : "",
       ];
       setNotice(partes.filter(Boolean).join(" "));
     } catch (e) {
@@ -483,7 +518,7 @@ const FilaCuadre = memo(function FilaCuadre({
       <div className="erp-cuadre-fila-main">
         <div className="erp-cuadre-fila-r1">
           {h.enlace ? (
-            <Link href={h.enlace} prefetch={false} className="mono">{h.etiqueta}</Link>
+            <EnlaceEntidad href={h.enlace}>{h.etiqueta}</EnlaceEntidad>
           ) : <span className="mono">{h.etiqueta}</span>}
           {h.nuevo ? <span className="badge active">Nuevo</span> : null}
           {h.estado === "revisado" ? <span className="badge muted">Revisado</span> : null}

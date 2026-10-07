@@ -142,6 +142,10 @@ services:
       # arranque anterior y cuyo job ya no vive (app/workers/worker.py).
       - --worker-class
       - app.workers.worker.BoHubWorker
+      # --with-scheduler: el repaso periódico de pagados que faltan (tic
+      # self-rescheduling en `woocommerce:backfill`) y los reintentos con
+      # espera de los webhooks necesitan que alguien mueva lo programado.
+      - --with-scheduler
       - --url
       - redis://redis:6379/0
       - woocommerce:webhooks

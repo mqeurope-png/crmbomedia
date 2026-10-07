@@ -79,10 +79,11 @@ def test_comprobar_ahora_contadores_y_hallazgos(http, factory):
     body = r.json()
     assert body["lanzadas"]["mysql"]["estado"] == "ok"
     assert body["lanzadas"]["factusol"]["estado"] == "en_cola"     # a worker-sync
-    assert len(http.encolados) == 1
+    assert body["lanzadas"]["woocommerce"]["estado"] == "en_cola"  # también (HTTP a tiendas)
+    assert len(http.encolados) == 2
     res = body["resumen"]
     assert res["contadores"]["baja"] == 1 and res["contadores"]["total"] == 1
-    assert [p["fuente"] for p in res["en_curso"]] == ["factusol"]   # «comprobando…»
+    assert sorted(p["fuente"] for p in res["en_curso"]) == ["factusol", "woocommerce"]
     assert res["ultima_pasada"]["fuente"] == "mysql"
     tarjeta = next(c for c in res["checks"] if c["id"] == "pedido_sin_aprobar")
     assert (tarjeta["abiertos"], tarjeta["nuevos"], tarjeta["severidad"]) == (1, 1, "baja")
@@ -136,7 +137,7 @@ def test_comprobaciones_y_el_cuadre_no_toca_los_pedidos(http, factory):
     oid = _pedido_sin_aprobar(factory)
     h = auth_headers(http, "admin")
     cat = http.get("/api/erp/cuadre/comprobaciones", headers=h).json()["items"]
-    assert len(cat) == 13 and cat[0]["id"] == "factura_lineas_ajenas"
+    assert len(cat) == 14 and cat[0]["id"] == "factura_lineas_ajenas"
     http.post("/api/erp/cuadre/comprobar", headers=h)
     with factory() as s:
         o = s.get(Order, oid)
@@ -152,7 +153,7 @@ def test_configuracion_del_cuadre_en_ajustes(http):
     cfg = http.get("/api/erp/settings", headers=h).json()
     assert cfg["cuadre"]["nocturno_activo"] is False and cfg["cuadre"]["hora"] == "03:00"
     assert cfg["cuadre"]["checks"]["pedido_sin_aprobar"] == {"activo": True, "dias": 7}
-    assert len(cfg["cuadre_catalogo"]) == 13
+    assert len(cfg["cuadre_catalogo"]) == 14
     r = http.patch("/api/erp/settings", headers=h, json={"cuadre": {
         "nocturno_activo": True, "hora": "02:15",
         "checks": {"pedido_sin_aprobar": {"activo": False, "dias": 10}},

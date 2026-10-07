@@ -33,6 +33,9 @@ class Contexto:
         self.client = client
         self.ejercicio = ejercicio
         self._cache: dict[str, Any] = {}
+        #: Por comprobación, las partes (`Hallazgo.ambito`: una tienda) que la
+        #: pasada NO ha podido mirar: sus descuadres se quedan como estaban.
+        self.no_mirados: dict[str, set[str]] = {}
 
     # -- umbrales ------------------------------------------------------------------
 

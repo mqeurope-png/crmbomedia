@@ -1,7 +1,8 @@
-# ERP · Cuadre — descuadres entre BoHub, FACTUSOL, Genei y la hoja de Drive
+# ERP · Cuadre — descuadres entre BoHub, FACTUSOL, Genei, WooCommerce y la hoja de Drive
 
 Panel que junta en un sitio lo que no cuadra entre BoHub, FACTUSOL, los envíos
-(Genei u otro courier) y la hoja «Seguimiento (app)» de Drive.
+(Genei u otro courier), las tiendas WooCommerce y la hoja «Seguimiento (app)»
+de Drive.
 
 > **Solo lectura.** El Cuadre no escribe en FACTUSOL, no corrige datos y no
 > mueve estados. Cada descuadre enlaza a la pantalla donde ya existe la acción
@@ -20,6 +21,7 @@ Código: `backend/app/erp/cuadre/`. API: `backend/app/erp/api/cuadre.py`
 | Registro | `cuadre/registry.py` | Decorador `@comprobacion(...)`, `Hallazgo`, catálogo. |
 | Comprobaciones de BoHub | `cuadre/checks_mysql.py` | Leen solo la BD de BoHub (fuente `mysql`). |
 | Comprobaciones de FACTUSOL | `cuadre/checks_factusol.py` | Leen FACTUSOL (fuente `factusol`). |
+| Comprobaciones de WooCommerce | `cuadre/checks_woocommerce.py` | Preguntan a las tiendas (fuente `woocommerce`). |
 | Contexto | `cuadre/contexto.py` | Sesión, «ahora», umbrales y lecturas compartidas. Cada tabla de FACTUSOL se lee una vez por pasada, del ejercicio en curso. |
 | Motor | `cuadre/engine.py` | Corre las comprobaciones y guarda los descuadres sin duplicar. |
 | Configuración | `cuadre/config.py` | Configuración ERP → «Cuadre». Se guarda en el blob `factusol_series_json`, clave `cuadre`. |
@@ -51,6 +53,10 @@ Código: `backend/app/erp/cuadre/`. API: `backend/app/erp/api/cuadre.py`
 - **Ejercicio.** Los descuadres de FACTUSOL guardan el ejercicio en el que se
   vieron. Al cambiar de ejercicio, los del anterior no se dan por resueltos,
   porque ya no se leen; se cierran con «Revisado» cuando toque.
+- **Tienda que no responde.** Los descuadres de WooCommerce guardan su tienda
+  (`Hallazgo.ambito`). Si una tienda no responde (o su listado llega con
+  tope), los suyos no se dan por resueltos: la comprobación lo apunta en
+  `ctx.no_mirados`. Si no responde ninguna, la comprobación falla.
 - **Desactivadas.** Una comprobación desactivada no corre. Sus descuadres no
   salen en el panel, pero se conservan.
 - **«Nuevo».** Un descuadre es nuevo si su `abierto_at` es igual o posterior
@@ -65,8 +71,8 @@ Código: `backend/app/erp/cuadre/`. API: `backend/app/erp/api/cuadre.py`
 - Corre en `worker-sync` (`--with-scheduler`), cola **`cuadre:run`**, a la
   hora de Configuración ERP. Por defecto son las **03:00 de Madrid**; si la
   imagen no trae tzdata, se aplica a mano la regla CET/CEST de la UE.
-- Corre todas las comprobaciones activas, primero las de BoHub y luego las de
-  FACTUSOL.
+- Corre todas las comprobaciones activas: primero las de BoHub, luego las de
+  FACTUSOL y luego las de WooCommerce.
 - Tiene interruptor (`cuadre.nocturno_activo`), **apagado por defecto**.
   Apagado, el tic sigue armado y no hace nada.
 - Si cambia la hora, el tic ya armado corre a la hora vieja y se re-arma para
@@ -78,15 +84,16 @@ Código: `backend/app/erp/cuadre/`. API: `backend/app/erp/api/cuadre.py`
 
 - `POST /api/erp/cuadre/comprobar` corre en la propia petición las
   comprobaciones de BoHub.
-- Las de FACTUSOL las **encola** en `cuadre:run` como pasada `en_cola`, y la
-  pantalla enseña «comprobando…».
-- Si ya hay una pasada de FACTUSOL en cola o corriendo, no encola otra.
+- Las de FACTUSOL y las de WooCommerce (hacen llamadas a las tiendas) las
+  **encola** en `cuadre:run`, una pasada `en_cola` por fuente, y la pantalla
+  enseña «comprobando…». Al terminar dice cuál fue bien y cuál no.
+- Si ya hay una pasada de esa fuente en cola o corriendo, no encola otra.
 - Sin Redis, la pasada queda en `error` con el motivo.
 
 ### Una pasada a la vez
 
-- Hay un cerrojo en Redis por fuente (`cuadre:lock:mysql` y
-  `cuadre:lock:factusol`).
+- Hay un cerrojo en Redis por fuente (`cuadre:lock:mysql`,
+  `cuadre:lock:factusol` y `cuadre:lock:woocommerce`).
 - Una pasada en cola o corriendo durante más de 2 h se da por perdida y deja
   de enseñarse como «comprobando…».
 
@@ -205,6 +212,25 @@ del pedido de BoHub.
       llevaban 18 días sin sincronizar, bloqueadas por filas «en curso» de
       agosto.
 
+### Integraciones (severidad alta, fuente WooCommerce)
+
+14. `pedido_woo_pagado_sin_bohub` — **Pedido pagado en WooCommerce que no está
+    en BoHub.**
+    - Pide a cada tienda, en una consulta, sus pedidos pagados (`processing`,
+      `completed` y `refunded`: los estados con los que BoHub crea un pedido)
+      creados en los últimos N días (90 por defecto). Avisa de los que BoHub
+      no tiene: ni por id de la tienda, ni por número de pedido.
+    - Cada aviso lleva número, cliente, importe, fecha de pago y enlace al
+      pedido en el admin de la tienda (se abre en otra pestaña). El botón
+      lleva a Seguimiento, a «Poner al día estados Woo…», que lo importa.
+    - Los modificados hace menos de 5 minutos no se juzgan: su webhook puede
+      estar en camino.
+    - Es la red: el aviso sale aunque la importación falle. Solo lee; quien
+      importa es el repaso periódico (`woocommerce/missing_job.py`) o «Poner
+      al día estados Woo…». Ver `docs/erp/woo-pagados-que-faltan.md`.
+    - Nace del 07/10/2026: el 99976 de boprint se marcó pagado sin que la
+      tienda disparara el webhook.
+
 ### Qué pedidos se miran
 
 - Las comprobaciones de trabajo pendiente (5, 6, 7, 10 y 11) solo miran
@@ -217,8 +243,9 @@ del pedido de BoHub.
 
 ## Cómo añadir una comprobación
 
-1. **Escribe la función** en `checks_mysql.py` si solo lee la BD de BoHub, o
-   en `checks_factusol.py` si lee FACTUSOL. Recibe el `Contexto` y devuelve
+1. **Escribe la función** en `checks_mysql.py` si solo lee la BD de BoHub,
+   en `checks_factusol.py` si lee FACTUSOL o en `checks_woocommerce.py` si
+   pregunta a las tiendas. Recibe el `Contexto` y devuelve
    (o hace `yield` de) un `Hallazgo` por descuadre:
 
    ```python
@@ -227,8 +254,8 @@ del pedido de BoHub.
        titulo="Título corto",
        descripcion="Una línea: qué no cuadra.",
        severidad="media",              # alta | media | baja
-       fuente=FUENTE_MYSQL,            # o FUENTE_FACTUSOL
-       grupo="envios",                 # dinero | envios | documentos
+       fuente=FUENTE_MYSQL,            # o FUENTE_FACTUSOL / FUENTE_WOOCOMMERCE
+       grupo="envios",                 # dinero | envios | documentos | integraciones
        dias_defecto=10,                # opcional: umbral configurable
        dias_texto="Avisar pasados N días",
        orden=13,                       # posición en la pantalla

@@ -25,6 +25,7 @@ from app.erp.cuadre.config import check_activo, cuadre_config
 from app.erp.cuadre.contexto import Contexto, FactusolNoDisponible
 from app.erp.cuadre.registry import (
     FUENTE_FACTUSOL,
+    FUENTES,
     SEVERIDADES,
     Comprobacion,
     Hallazgo,
@@ -79,14 +80,16 @@ def _ambito(f: CuadreFinding) -> str | None:
 
 def aplicar(
     session: Session, comp: Comprobacion, hallazgos: list[Hallazgo], ahora: datetime,
-    *, ambito: str | None = None,
+    *, ambito: str | None = None, no_mirados: set[str] | frozenset[str] = frozenset(),
 ) -> dict[str, int]:
     """Funde lo que ha visto una comprobación con lo guardado. Devuelve el
     recuento (hallazgos / nuevos / reabiertos / resueltos).
 
     `ambito` = lo que la pasada ha podido ver (el ejercicio de FACTUSOL leído).
     Un descuadre de OTRO ámbito que no se ve no se da por resuelto: no se ha
-    mirado (al cambiar de ejercicio, las facturas del anterior no se leen)."""
+    mirado (al cambiar de ejercicio, las facturas del anterior no se leen).
+    Igual con `no_mirados`: las partes (`Hallazgo.ambito`, p. ej. una tienda
+    que no ha respondido) que la pasada no ha podido mirar."""
     vistos: dict[str, Hallazgo] = {}
     for h in hallazgos:
         vistos.setdefault(str(h.entidad_id), h)
@@ -99,8 +102,8 @@ def aplicar(
     for eid, h in vistos.items():
         huella = h.huella()
         det = h.detalle_dict()
-        if ambito:
-            det["ambito"] = ambito
+        if h.ambito or ambito:
+            det["ambito"] = h.ambito or ambito
         detalle = json.dumps(det, ensure_ascii=False, default=str)
         f = existentes.get(eid)
         if f is None:
@@ -130,6 +133,8 @@ def aplicar(
         if eid not in vistos and f.estado != ESTADO_RESUELTO:
             if ambito and _ambito(f) not in (None, ambito):
                 continue                      # de otro ejercicio: no se ha mirado
+            if _ambito(f) in no_mirados:
+                continue                      # esa parte no se ha podido mirar
             f.estado = ESTADO_RESUELTO
             f.resuelto_at = ahora
             resueltos += 1
@@ -216,7 +221,8 @@ def _ejecutar(
     for comp in comps:
         try:
             hallazgos = list(comp.funcion(ctx))
-            resumen[comp.id] = aplicar(session, comp, hallazgos, ahora, ambito=ambito)
+            resumen[comp.id] = aplicar(session, comp, hallazgos, ahora, ambito=ambito,
+                                       no_mirados=ctx.no_mirados.get(comp.id, set()))
             session.commit()
         except FactusolNoDisponible as exc:
             session.rollback()
@@ -349,7 +355,7 @@ def _run_dict(run: CuadreRun | None) -> dict[str, Any] | None:
 def ultimas_pasadas(session: Session) -> dict[str, CuadreRun | None]:
     """La última pasada TERMINADA de cada fuente."""
     out: dict[str, CuadreRun | None] = {}
-    for fuente in ("mysql", "factusol"):
+    for fuente in FUENTES:
         out[fuente] = session.scalars(
             select(CuadreRun)
             .where(CuadreRun.fuente == fuente, CuadreRun.finished_at.is_not(None),

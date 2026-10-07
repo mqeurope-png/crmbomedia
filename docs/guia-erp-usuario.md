@@ -961,6 +961,31 @@ Siempre enseña antes una previsualización con los números; nada se cambia has
 que confirmas. *(Al desplegar esta versión, BoHub rellena solo, una vez, el
 método de pago de los pedidos antiguos.)*
 
+**También importa los pedidos pagados que faltan.** A veces una tienda marca un
+pedido como pagado **sin avisar a BoHub** (no dispara el webhook): pasó con el
+99976 de boprint, que se creó «en espera» y el plugin de TSM lo pasó a pagado
+sin aviso. «Poner al día estados Woo…» pregunta además a cada tienda por sus
+pedidos **pagados** (procesando, completado o reembolsado) de los **últimos 90
+días** y busca los que BoHub no tiene:
+
+- en la **previsualización** salen con su número (enlace al pedido en la
+  tienda, se abre en otra pestaña), cliente, importe y fecha de pago, y cuentan
+  en **«Aplicar (N cambios)»**;
+- al **aplicar** se crean igual que si hubiera llegado el aviso de la tienda:
+  empresa, líneas, método de pago y entrada en la **Cola SAT**;
+- el aviso final dice cuántos pedidos conocidos se pusieron al día y cuántos se
+  importaron, con sus números. Si alguno no se pudo importar, lo dice: el
+  **Cuadre** lo sigue avisando hasta que entre.
+
+Un pedido **en espera** o **sin pagar** no se importa, y uno que ya está en
+BoHub no se toca ni se duplica (aunque lo pulses dos veces).
+
+> **Además, BoHub lo repasa solo cada hora.** Pregunta a cada tienda por lo
+> que cambió desde el repaso anterior y crea los pagados que falten, sin que
+> nadie pulse nada. Se enciende, se apaga y se ajusta (cada cuántos minutos y
+> cuántos días hacia atrás) en **«Configuración ERP → Pedidos web pagados que
+> no llegan»**. Viene **encendido**.
+
 > Un pedido web **sin estado** (los importados antes de que existiera el dato)
 > **se ve** en Seguimiento: no se conoce su estado, y ocultarlo se llevaba
 > pedidos legítimos. Solo se oculta por un estado **explícito** de la tienda
@@ -1363,7 +1388,7 @@ la cola **«Incidencias»** y no se puede aprobar.
 ### Cuadre (descuadres)
 
 **Menú: «ERP · Cuadre». Título: «Cuadre».** Reúne en un sitio lo que **no
-cuadra** entre BoHub, FACTUSOL, los envíos y la hoja de Drive.
+cuadra** entre BoHub, FACTUSOL, los envíos, las tiendas web y la hoja de Drive.
 
 **Es solo lectura.** No escribe en FACTUSOL, no corrige datos y no cambia
 estados. Cada descuadre lleva a la pantalla donde ya está el botón para
@@ -1390,6 +1415,7 @@ arreglarlo.
 | Envíos (media) | «No requiere envío» con tracking o courier; enviado sin aviso al cliente; en tránsito más de 10 días; entregado, facturado y cobrado sin «Marcar completado» a los 14 días. |
 | Documentos y hoja | Pedido que falta en la hoja de Drive (o fila de un pedido que ya no existe); factura de FACTUSOL sin vincular al pedido o vinculada a un número que no existe; factura sin enviar a los 7 días; pedido sin aprobar a los 7 días; proforma aceptada sin convertir a los 90 días (apagada por defecto: es el embudo comercial). |
 | Integraciones (media) | Sincronización colgada: cuenta de integración con una sincronización en curso desde hace más de 3 horas, o sin ninguna sincronización correcta en las últimas 24 h (AgileCRM, Brevo). |
+| Integraciones (alta) | Pedido pagado en WooCommerce que no está en BoHub: de cada tienda, los pagados de los últimos 90 días que no llegaron, con número (enlace al pedido en la tienda), cliente, importe y fecha de pago. El botón lleva a Seguimiento, a «Poner al día estados Woo…», que los importa. Avisa aunque la importación automática haya fallado. |
 
 El panel vigila lo que BoHub gestiona. Las facturas que solo existen en
 FACTUSOL, sin pedido en BoHub, no salen: por ejemplo, otras series o facturas
@@ -1414,8 +1440,10 @@ Lo que se arregla desaparece solo en la siguiente comprobación: queda como
 **«Comprobar ahora»**
 
 - Las comprobaciones de BoHub se hacen al momento.
-- Las de FACTUSOL van en segundo plano para no saturar su API: verás
-  **«Comprobando FACTUSOL…»** y la lista se pone al día sola al terminar.
+- Las de FACTUSOL y las de WooCommerce (preguntan a las tiendas) van en
+  segundo plano: verás **«Comprobando FACTUSOL y WooCommerce…»** y la lista se
+  pone al día sola al terminar. Si una de las dos no termina bien, la pantalla
+  lo dice y sus tarjetas se quedan con lo de la última vez.
 - Además, si está encendida, hay una comprobación **cada noche** (a las 03:00
   por defecto).
 
@@ -1435,6 +1463,11 @@ alguno de severidad alta o media. Lleva directamente al Cuadre.
 administrador puede guardar. Cada sección se guarda por separado y enseña al lado
 lo que va a pasar. Secciones destacadas:
 
+- **«Pedidos web pagados que no llegan»** — el repaso que pregunta a cada
+  tienda por sus pedidos pagados y crea en BoHub los que falten (cuando la
+  tienda no avisó). Interruptor (**encendido** por defecto), **cada cuántos
+  minutos** (60; mínimo 15) y **días hacia atrás** (90; lo usa también «Poner
+  al día estados Woo…»).
 - **«Series FACTUSOL»** — la **serie** es la empresa que emite la factura. Fijas
   la **serie por defecto** y la que usa cada origen de pedido. Las series
   disponibles son **1 · Bomedia**, **2 · MQ Europe**, **4 · Lambert** y **5 ·
