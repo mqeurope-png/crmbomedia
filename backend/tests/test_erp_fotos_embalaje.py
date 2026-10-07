@@ -417,9 +417,19 @@ def alembic_cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     cfg.set_main_option("sqlalchemy.url", db_url)
     old_cwd = os.getcwd()
     os.chdir(BACKEND_ROOT)
+    # `alembic/env.py` llama a `fileConfig()`, que desactiva los loggers que ya
+    # existían: sin restaurarlos, los tests que corren después (caplog) no ven
+    # nada.
+    import logging
+
+    desactivados = {name: lg.disabled for name, lg in logging.root.manager.loggerDict.items()
+                    if isinstance(lg, logging.Logger)}
     try:
         yield cfg, db_url
     finally:
+        for name, lg in logging.root.manager.loggerDict.items():
+            if isinstance(lg, logging.Logger):
+                lg.disabled = desactivados.get(name, False)
         os.chdir(old_cwd)
         get_settings.cache_clear()
 
