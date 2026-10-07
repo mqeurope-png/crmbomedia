@@ -740,7 +740,14 @@ En el bloque de Genei (ficha) y en la tarjeta de la Cola SAT se ve cómo va:
 *«Etiqueta adjunta (fecha)»*, *«Esperando a que Genei genere la etiqueta: se
 trae sola»* o, si se agotaron los intentos, *«Genei no ha dado la etiqueta sola:
 tráela a mano»*. **«🖨 Imprimir etiqueta»** sigue para reimprimir o traerla a
-mano. Si alguien la trae o la sube antes, BoHub no pide otra.
+mano. Si alguien la trae o la sube antes, BoHub no pide otra. Si se **elimina**
+un envío de Genei, su etiqueta deja de valer (se conserva como reemplazada) y
+el envío nuevo trae la suya.
+
+> Al desplegar esta versión, BoHub repasa **una vez** los pedidos con envío de
+> Genei ya tramitado que se quedaron «sin enviar» y los pasa a «etiqueta
+> creada», con la **fecha en que se tramitaron** (no la del despliegue). Los
+> anulados y los que no están embalados no se tocan.
 
 **Aviso de envío al cliente (lo manda BoHub).** En cuanto un envío de Genei
 tiene **nº de seguimiento** (normalmente al **«Pagar y tramitar»**), BoHub manda

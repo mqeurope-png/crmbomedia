@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -95,12 +96,17 @@ def _transport_value(order: Order) -> str:
 
 def advance_transport(
     session: Session, order: Order, target: str | None, *, evidence: dict[str, Any],
+    label_at: datetime | None = None,
 ) -> bool:
     """Avanza el `transport_status` del pedido hasta `target` recorriendo los
     arcos válidos como SYSTEM (`actor=None`). Solo aplica un arco si el pedido
     está justo en su origen, así que es idempotente (un estado ya pasado no
     tiene arco) y no retrocede (un `in_transit` tras `delivered` no hace nada).
-    Un arco que no se puede (guard/rol) detiene el avance sin romper."""
+    Un arco que no se puede (guard/rol) detiene el avance sin romper.
+
+    `label_at` = cuándo se tramitó de verdad el envío: el arco «etiqueta
+    creada» queda fechado entonces y no al aplicarlo (la hoja usa esa fecha
+    como «Fecha recogido» mientras nadie marque recogido)."""
     if not target or target not in _STEPS_TO:
         return False
     applied = False
@@ -108,10 +114,14 @@ def advance_transport(
         if _transport_value(order) != frm:
             continue
         try:
-            apply_transition(
+            row = apply_transition(
                 session, order=order, domain=StatusDomain.TRANSPORT, to_status=to,
                 actor=None, reason="Genei (webhook/estado)", evidence=evidence,
             )
+            if to == "label_created" and label_at is not None:
+                cuando = label_at if label_at.tzinfo else label_at.replace(tzinfo=UTC)
+                if cuando < row.changed_at.replace(tzinfo=row.changed_at.tzinfo or UTC):
+                    row.changed_at = cuando
             applied = True
         except TransitionError as exc:
             logger.info("genei transporte %s→%s no aplicado: %s", frm, to, exc)
@@ -139,13 +149,15 @@ def apply_shipment_state(
         order.tracking_number = summary["tracking"]
     carrier = summarize_tracking(tracking) if tracking is not None else None
     target = transport_target(summary["state_bucket"], _transport_value(order))
+    stored_before = genei_state_of(order)
     evidence = {
         "tracking_number": summary["tracking"] or order.tracking_number or "",
         "description": incidencia or summary["state_label"] or "Incidencia de transporte",
     }
     if carrier is not None and carrier["carrier_status"]:
         evidence["carrier_status"] = carrier["carrier_status"]
-    applied = advance_transport(session, order, target, evidence=evidence)
+    applied = advance_transport(session, order, target, evidence=evidence,
+                                label_at=tramitado_at(stored_before))
     patch: dict[str, Any] = {
         "state_code": summary["state_code"],
         "state_bucket": summary["state_bucket"],
@@ -179,6 +191,30 @@ def apply_shipment_state(
         })
     set_genei_state(order, patch)
     return summary, applied
+
+
+def _iso(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+
+
+def tramitado_at(state: dict[str, Any]) -> datetime | None:
+    """Cuándo se tramitó el envío, lo mejor que se sabe: el pago desde BoHub
+    (`paid_at`); si se pagó en la web de Genei y BoHub ya lo tenía tramitado
+    (se pone al día tarde), la creación del envío. None = ahora."""
+    pagado = _iso(state.get("paid_at"))
+    if pagado is not None:
+        return pagado
+    from app.erp.integrations.genei.status import LABEL_CREATED_BUCKETS  # noqa: PLC0415
+
+    if state.get("state_bucket") in LABEL_CREATED_BUCKETS:
+        return _iso(state.get("created_at"))
+    return None
 
 
 def safe_tracking(client: Any, shipment_code: str) -> dict[str, Any] | None:

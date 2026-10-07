@@ -90,20 +90,27 @@ def label_auto_of(order: Any) -> dict[str, Any]:
     return dict(block) if isinstance(block, dict) else {}
 
 
-def current_label(session: Session, order_id: str) -> Any | None:
-    """La etiqueta vigente adjunta al pedido (la más reciente), o None."""
+def current_label(session: Session, order: Any) -> Any | None:
+    """La etiqueta vigente adjunta al pedido PARA ESTE ENVÍO (la más reciente
+    subida o traída desde que se creó el envío Genei), o None. Una de antes (de
+    un envío borrado, o de otra agencia) no cuenta."""
     from app.erp.models.shipping import KIND_ETIQUETA, ShipmentFile  # noqa: PLC0415
 
-    return session.scalars(select(ShipmentFile).where(
-        ShipmentFile.order_id == order_id, ShipmentFile.kind == KIND_ETIQUETA,
+    creado = _parse(genei_state_of(order).get("created_at"))
+    for row in session.scalars(select(ShipmentFile).where(
+        ShipmentFile.order_id == order.id, ShipmentFile.kind == KIND_ETIQUETA,
         ShipmentFile.replaced_at.is_(None),
-    ).order_by(ShipmentFile.uploaded_at.desc()).limit(1)).first()
+    ).order_by(ShipmentFile.uploaded_at.desc())):
+        subida = _aware(row.uploaded_at) if row.uploaded_at else None
+        if creado is None or (subida is not None and subida >= creado):
+            return row
+    return None
 
 
 def label_info(session: Session | None, order: Any) -> dict[str, Any]:
     """Para la ficha y la Cola SAT: ¿hay etiqueta adjunta (y desde cuándo)? y
     el estado de la descarga automática."""
-    row = current_label(session, order.id) if session is not None else None
+    row = current_label(session, order) if session is not None else None
     return {
         "label_attached": row is not None,
         "label_attached_at": row.uploaded_at.isoformat() if row is not None and row.uploaded_at
@@ -123,7 +130,7 @@ def needs_auto_label(session: Session, order: Any, *, now: datetime | None = Non
     state = genei_state_of(order)
     if not state.get("shipment_code") or state.get("state_bucket") != READY:
         return False
-    if state.get("label_fetched_at") or current_label(session, order.id) is not None:
+    if state.get("label_fetched_at") or current_label(session, order) is not None:
         return False
     auto = label_auto_of(order)
     status = auto.get("status")
@@ -194,6 +201,19 @@ def _client_for(session: Session) -> Any | None:
     return build_client(carrier)
 
 
+def _releer(session: Session, order: Any) -> Any:
+    """Relee el pedido con cerrojo de fila justo antes de guardar: mientras se
+    esperaba a Genei, un webhook o el sondeo pudieron cambiar el bloque genei
+    (p. ej. el aviso al cliente): no se pisa con la copia de antes."""
+    session.refresh(order, with_for_update=True)
+    return order
+
+
+def _ya_adjunta(session: Session, order: Any) -> bool:
+    return bool(genei_state_of(order).get("label_fetched_at")) or \
+        current_label(session, order) is not None
+
+
 def auto_fetch_label(
     session: Session, order_id: str, *, attempt: int = 1, client: Any = None,
     schedule: Callable[[str, int, int], None] | None = None,
@@ -215,18 +235,9 @@ def auto_fetch_label(
     code = shipment_code_of_order(order)
     if not code:
         return {"result": "sin_envio"}
-    auto = label_auto_of(order)
-    existente = current_label(session, order.id)
-    if existente is not None or genei_state_of(order).get("label_fetched_at"):
-        # Alguien la trajo (o la subió) antes: no se pide otra.
-        auto.update(status=ADJUNTA, done_at=auto.get("done_at") or ahora.isoformat(),
-                    via=auto.get("via") or "manual")
-        set_genei_state(order, {"label_auto": auto})
-        session.commit()
-        return {"result": "ya_estaba"}
+    if _ya_adjunta(session, order):
+        return _marcar_ya_estaba(session, order, ahora)
 
-    auto.update(status=ESPERANDO, attempts=attempt, last_attempt_at=ahora.isoformat(),
-                max_attempts=MAX_ATTEMPTS)
     error: str | None = None
     label = None
     try:
@@ -241,6 +252,15 @@ def auto_fetch_label(
     except Exception as exc:  # noqa: BLE001
         error = f"{type(exc).__name__}: {str(exc)[:200]}"
 
+    # Se guarda sobre el pedido RELEÍDO (con cerrojo): lo que cambió mientras se
+    # esperaba a Genei se conserva. Y si alguien trajo la etiqueta entretanto,
+    # no se adjunta otra.
+    order = _releer(session, order)
+    if _ya_adjunta(session, order):
+        return _marcar_ya_estaba(session, order, ahora)
+    auto = label_auto_of(order)
+    auto.update(status=ESPERANDO, attempts=attempt, last_attempt_at=ahora.isoformat(),
+                max_attempts=MAX_ATTEMPTS)
     if label is not None:
         try:
             row = _store_new_file(
@@ -267,9 +287,10 @@ def auto_fetch_label(
             return {"result": "adjunta", "file_id": row.id, "transition_applied": applied}
         except Exception as exc:  # noqa: BLE001 — p. ej. el almacén de ficheros
             session.rollback()
-            order = session.get(Order, order_id)
-            auto = label_auto_of(order) | {"attempts": attempt,
-                                           "last_attempt_at": ahora.isoformat()}
+            order = _releer(session, session.get(Order, order_id))
+            auto = label_auto_of(order) | {"status": ESPERANDO, "attempts": attempt,
+                                           "last_attempt_at": ahora.isoformat(),
+                                           "max_attempts": MAX_ATTEMPTS}
             error = f"No se pudo guardar la etiqueta: {str(exc)[:200]}"
 
     auto["last_error"] = error
@@ -296,6 +317,17 @@ def auto_fetch_label(
     return {"result": "agotada", "error": error}
 
 
+def _marcar_ya_estaba(session: Session, order: Any, ahora: datetime) -> dict[str, Any]:
+    """Alguien la trajo (o la subió) antes: no se pide otra; se apunta."""
+    order = _releer(session, order)
+    auto = label_auto_of(order)
+    auto.update(status=ADJUNTA, done_at=auto.get("done_at") or ahora.isoformat(),
+                via=auto.get("via") or "manual", next_attempt_at=None)
+    set_genei_state(order, {"label_auto": auto})
+    session.commit()
+    return {"result": "ya_estaba"}
+
+
 def fetch_label_job(order_id: str, attempt: int = 1) -> dict[str, Any]:
     """Entrada RQ de un intento."""
     from app.db.session import get_engine  # noqa: PLC0415
@@ -312,13 +344,14 @@ def fix_stuck_transport(session: Session, *, dry_run: bool = True) -> dict[str, 
     «sin enviar» → «etiqueta creada», como hará ya el webhook. Los que esperan
     al transportista y no tienen etiqueta, además, la piden sola. Devuelve lo
     que cambia (o cambiaría, con `dry_run`)."""
-    from app.erp.integrations.genei.webhook import advance_transport  # noqa: PLC0415
+    from app.erp.integrations.genei.webhook import advance_transport, tramitado_at  # noqa: PLC0415
     from app.erp.models import Order  # noqa: PLC0415
     from app.erp.models.orders import TransportStatus  # noqa: PLC0415
 
     candidatos = session.scalars(select(Order).where(
         Order.packing_json.like('%"shipment_code"%'),
         Order.transport_status == TransportStatus.NOT_SHIPPED,
+        Order.cancelled_at.is_(None),
     )).all()
     movidos: list[str] = []
     sin_mover: list[dict[str, str]] = []
@@ -326,18 +359,25 @@ def fix_stuck_transport(session: Session, *, dry_run: bool = True) -> dict[str, 
         state = genei_state_of(order)
         if not state.get("shipment_code") or state.get("state_bucket") not in LABEL_CREATED_BUCKETS:
             continue
+        prep = getattr(order.preparation_status, "value", order.preparation_status)
+        if prep != "packed":
+            # La máquina de estados exige embalado: no se fuerza (ni se cuenta).
+            sin_mover.append({"order_number": order.order_number,
+                              "motivo": f"no está embalado (preparación {prep})"})
+            continue
         if dry_run:
             movidos.append(order.order_number)
             continue
+        # Fechado cuando se tramitó (no hoy): la hoja usa esa fecha como
+        # «Fecha recogido» mientras nadie marque recogido.
         if advance_transport(session, order, "label_created", evidence={
             "tracking_number": state.get("tracking") or order.tracking_number or "",
             "description": "Arreglo: envío Genei tramitado que seguía «sin enviar»",
-        }):
+        }, label_at=tramitado_at(state)):
             movidos.append(order.order_number)
         else:
-            prep = getattr(order.preparation_status, "value", order.preparation_status)
             sin_mover.append({"order_number": order.order_number,
-                              "motivo": f"la transición no se pudo aplicar (preparación {prep})"})
+                              "motivo": "la transición no se pudo aplicar"})
     if not dry_run:
         session.commit()
         for order in candidatos:

@@ -262,12 +262,16 @@ def _advance_if_tramitado(session: Session, order: Order, summary: dict[str, Any
     """Mueve el transporte como el webhook (`transport_target`): tramitado →
     «etiqueta creada»; idempotente."""
     from app.erp.integrations.genei.tracking import transport_target  # noqa: PLC0415
-    from app.erp.integrations.genei.webhook import advance_transport  # noqa: PLC0415
+    from app.erp.integrations.genei.webhook import (
+        advance_transport,  # noqa: PLC0415
+        tramitado_at,  # noqa: PLC0415
+    )
 
     actual = str(getattr(order.transport_status, "value", order.transport_status) or "")
     advance_transport(session, order, transport_target(summary["state_bucket"], actual),
                       evidence={"tracking_number": summary["tracking"] or "",
-                                "description": summary["state_label"] or ""})
+                                "description": summary["state_label"] or ""},
+                      label_at=tramitado_at(genei_state_of(order)))
 
 
 def _schedule_label(session: Session, order: Order) -> None:
@@ -599,11 +603,18 @@ def genei_pay(
         "courier": summary["courier"],
         "paid_at": now_iso(),
     })
-    # Si ya sale tramitado, el transporte pasa a «etiqueta creada» (como hará
-    # el webhook; idempotente).
-    _advance_if_tramitado(session, order, summary)
     _audit(session, current_user, "erp.genei.shipment_paid", order.id, {"shipment_code": code})
     session.commit()
+    # Con el pago ya guardado: si sale tramitado, el transporte pasa a
+    # «etiqueta creada» (como hará el webhook; idempotente). Un fallo aquí no
+    # puede deshacer ni esconder el pago.
+    try:
+        _advance_if_tramitado(session, order, summary)
+        session.commit()
+    except Exception:  # noqa: BLE001
+        logger.warning("genei pagar: no se pudo mover el transporte (pedido %s)", order.id,
+                       exc_info=True)
+        session.rollback()
     # Ya pagado y confirmado: el aviso al cliente va aparte y NUNCA afecta al pago.
     _send_customer_email_if_due(session, order, client, current_user)
     _schedule_label(session, order)
@@ -738,9 +749,25 @@ def genei_delete_shipment(
     except GeneiError as exc:
         raise _genei_error(exc) from exc
     clear_genei_state(order)
+    # La etiqueta de Genei de ESTE envío deja de valer: queda como reemplazada
+    # (se conserva), para que la Cola SAT no la imprima ni la cuente como la del
+    # envío nuevo. Una subida a mano (otra agencia) no se toca.
+    _retire_genei_labels(session, order.id)
     _audit(session, current_user, "erp.genei.shipment_deleted", order.id, {"shipment_code": code})
     session.commit()
     return {"order_id": order.id, "deleted": True}
+
+
+def _retire_genei_labels(session: Session, order_id: str) -> None:
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    from app.erp.models.shipping import ShipmentFile  # noqa: PLC0415
+
+    for row in session.scalars(select(ShipmentFile).where(
+        ShipmentFile.order_id == order_id, ShipmentFile.kind == KIND_ETIQUETA,
+        ShipmentFile.source == SOURCE_GENEI_API, ShipmentFile.replaced_at.is_(None),
+    )):
+        row.replaced_at = datetime.now(UTC)
 
 
 # --- aviso de envío al cliente (BoHub, en su idioma) --------------------------

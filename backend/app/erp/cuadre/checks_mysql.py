@@ -632,10 +632,14 @@ def envio_tramitado_sin_etiqueta(ctx: Contexto) -> Iterator[Hallazgo]:
         g = _genei(o)
         if not g.get("shipment_code") or g.get("state_bucket") != "ready":
             continue
-        desde = _cuando(g.get("paid_at")) or _cuando(g.get("created_at"))
+        auto = g.get("label_auto") if isinstance(g.get("label_auto"), dict) else {}
+        # Desde cuándo está tramitado: el pago en BoHub; si se pagó en la web de
+        # Genei, cuando BoHub lo vio tramitado (empezó a pedir la etiqueta); y
+        # si no, la creación del envío.
+        desde = (_cuando(g.get("paid_at")) or _cuando(auto.get("scheduled_at"))
+                 or _cuando(g.get("created_at")))
         if desde is None or desde > limite:
             continue
-        auto = g.get("label_auto") if isinstance(g.get("label_auto"), dict) else {}
         estado = auto.get("status")
         if estado == "agotada":
             motivo = (f"la descarga automática se rindió tras {auto.get('attempts')} intentos"
@@ -646,7 +650,8 @@ def envio_tramitado_sin_etiqueta(ctx: Contexto) -> Iterator[Hallazgo]:
             motivo = "nadie la ha traído de Genei"
         yield Hallazgo(
             entidad_tipo=ENTIDAD_PEDIDO, entidad_id=o.id, etiqueta=_etiqueta(o),
-            detalle=f"Tramitado en Genei el {_fecha(desde)} y sin etiqueta adjunta: {motivo}.",
+            detalle=f"Tramitado en Genei (desde el {_fecha(desde)}) y sin etiqueta adjunta: "
+                    f"{motivo}.",
             pista_de_arreglo="«Traer etiqueta de Genei» en la Cola SAT (o «Imprimir etiqueta» "
                              "en la ficha) la deja adjunta.",
             enlace=enlace_pedido(o.id), arreglo_enlace=SAT_PENDIENTE_RECOGIDA,

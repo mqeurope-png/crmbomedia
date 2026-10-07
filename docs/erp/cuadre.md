@@ -171,8 +171,9 @@ del pedido de BoHub.
     (07/10/2026): antes solo lo movía traer la etiqueta a mano.
 16. `envio_tramitado_sin_etiqueta` (media) — **Envío tramitado sin etiqueta
     adjunta** pasadas N **horas** (2 por defecto; el umbral va en horas) desde
-    que se pagó/creó: Genei `ready`, transporte `not_shipped`/`label_created` y
-    ninguna etiqueta vigente. Dice cómo acabó la descarga automática (agotada,
+    que se tramitó (pago en BoHub; si se pagó en la web de Genei, desde que
+    BoHub empezó a pedir la etiqueta; si no, la creación): Genei `ready`,
+    transporte `not_shipped`/`label_created` y ninguna etiqueta vigente. Dice cómo acabó la descarga automática (agotada,
     reintentando o nunca). Enlaza a la Cola SAT → «Pendiente de recogida»,
     donde está «📥 Traer etiqueta de Genei».
 

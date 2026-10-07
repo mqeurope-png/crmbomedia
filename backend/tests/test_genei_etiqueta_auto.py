@@ -406,3 +406,87 @@ def test_sin_etiqueta_no_avisa_antes_de_tiempo_ni_con_etiqueta(http, factory, ge
                                ahora=AHORA + timedelta(hours=5))
         assert s.scalar(select(CuadreFinding).where(
             CuadreFinding.check_id == "envio_tramitado_sin_etiqueta")) is None
+
+
+# --- ronda de revisión ---------------------------------------------------------------
+
+
+def test_mientras_se_espera_a_genei_no_se_pisa_lo_que_cambia_el_webhook(http, factory):
+    """El aviso al cliente (u otro dato del bloque genei) cambiado durante la
+    llamada a Genei se conserva: se guarda sobre el pedido releído."""
+    with factory() as s:
+        _carrier(s)
+        oid = _fluxla_5849(s, transport="label_created",
+                           customer_email={"status": "pending"})
+
+    class GeneiLento(Genei):
+        def get_label(self, code):
+            with factory() as s2:              # mientras, el webhook manda el aviso
+                from app.erp.integrations.genei.service import set_genei_state
+                o = s2.get(Order, oid)
+                set_genei_state(o, {"customer_email": {"status": "sent", "count": 1}})
+                s2.commit()
+            return super().get_label(code)
+
+    assert _intento(factory, oid, 1, GeneiLento(), [])["result"] == "adjunta"
+    with factory() as s:
+        g = genei_state_of(s.get(Order, oid))
+        assert g["customer_email"]["status"] == "sent"         # no se ha pisado
+        assert g["label_auto"]["status"] == "adjunta"
+
+
+def test_una_etiqueta_de_antes_del_envio_no_cuenta(http, factory, genei):
+    """Una etiqueta vieja (otro envío / otra agencia) no bloquea la nueva ni sale
+    como «adjunta»; al borrar un envío Genei, su etiqueta deja de valer."""
+    from app.erp.models.shipping import ShipmentFile
+
+    with factory() as s:
+        _carrier(s)
+        oid = _fluxla_5849(s, transport="label_created")
+        s.add(ShipmentFile(order_id=oid, kind="etiqueta", source="genei_api",
+                           filename="vieja.pdf", mime_type="application/pdf", size_bytes=1,
+                           storage_path="x", uploaded_at=datetime(2026, 10, 1, tzinfo=UTC)))
+        s.commit()
+        o = s.get(Order, oid)
+        assert label_job.needs_auto_label(s, o, now=AHORA)
+        assert label_job.label_info(s, o)["label_attached"] is False
+    assert _intento(factory, oid, 1, genei, [])["result"] == "adjunta"     # trae la nueva
+    with factory() as s:
+        assert label_job.label_info(s, s.get(Order, oid))["label_attached"] is True
+    # Borrar el envío retira su etiqueta de Genei (se conserva, como reemplazada).
+    genei.delete_shipment = lambda code: {"deleted": True}
+    r = http.delete(f"/api/erp/orders/{oid}/genei/shipment", headers=auth_headers(http, "sat"))
+    assert r.status_code == 200, r.text
+    assert _etiquetas(factory, oid) == 0
+
+
+def test_etiqueta_creada_queda_fechada_cuando_se_tramito(http, factory, encolados):
+    with factory() as s:
+        _carrier(s)
+        oid = _fluxla_5849(s)                       # paid_at 11:37:27
+    assert _webhook(http).status_code == 200
+    with factory() as s:
+        h = s.scalar(select(OrderStatusHistory).where(
+            OrderStatusHistory.order_id == oid,
+            OrderStatusHistory.to_status == "label_created"))
+        cuando = h.changed_at if h.changed_at.tzinfo else h.changed_at.replace(tzinfo=UTC)
+        assert cuando == datetime(2026, 10, 7, 11, 37, 27, tzinfo=UTC)
+
+
+def test_el_arreglo_no_toca_anulados_y_fecha_cuando_se_tramito(factory):
+    with factory() as s:
+        oid = _fluxla_5849(s)
+        anulado = Order(order_number="FLUXLA-5851", external_source="manual",
+                        preparation_status="packed", transport_status="not_shipped",
+                        cancelled_at=datetime(2026, 10, 7, tzinfo=UTC))
+        anulado.packing_json = json.dumps({"genei": {"shipment_code": "Y",
+                                                     "state_bucket": "ready"}})
+        s.add(anulado)
+        s.commit()
+        with patch.object(label_job, "_enqueue", lambda *a: None):
+            r = label_job.fix_stuck_transport(s, dry_run=False)
+        assert r["movidos"] == ["FLUXLA-5849"]
+        assert s.get(Order, anulado.id).transport_status.value == "not_shipped"
+        h = s.scalar(select(OrderStatusHistory).where(OrderStatusHistory.order_id == oid))
+        cuando = h.changed_at if h.changed_at.tzinfo else h.changed_at.replace(tzinfo=UTC)
+        assert cuando == datetime(2026, 10, 7, 11, 37, 27, tzinfo=UTC)
