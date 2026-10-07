@@ -161,7 +161,7 @@ def _candidatos(storage_key: str, uploads_dir: str, rescate_dir: str) -> list[Pa
 
 def migrar_documentos(
     conn: Any, *, uploads_dir: str, shipping_dir: str, storage: Any = None,
-    now: datetime | None = None,
+    now: datetime | None = None, probar: bool = False,
 ) -> dict[str, Any]:
     """Pasa las referencias de `packing_json.documents` a `shipment_files`.
 
@@ -172,11 +172,11 @@ def migrar_documentos(
       `documents` y queda solo constancia en `packing_json.fotos_perdidas`
       (nombre y fecha de subida, sin ruta), para que la ficha avise.
 
-    Trabaja con SQL de Core (no con el ORM de la app): la uso desde una
-    migración de Alembic. Idempotente: sin `documents`, no hace nada. Un
-    documento que falla se anota como perdido (con log) y no tumba la
-    migración (ni el arranque del api). Escribe en el almacén LOCAL de
-    expedición (`STORAGE_BACKEND=local`, el de producción)."""
+    SQL de Core sobre una conexión (lo usa el traslado de una pasada,
+    `app.erp.fotos_job`). Idempotente: sin `documents`, no hace nada. Un
+    documento que falla se anota como perdido (con log) y no frena el resto.
+    Con `probar`, solo cuenta qué se movería y qué se dio por perdido, sin
+    escribir nada."""
     import sqlalchemy as sa  # noqa: PLC0415
 
     from app.storage.local import LocalShippingStorage  # noqa: PLC0415
@@ -203,6 +203,12 @@ def migrar_documentos(
         for doc in docs:
             if not isinstance(doc, dict):
                 continue
+            if probar:
+                if _localizar(doc, uploads_dir, rescate_dir) is not None:
+                    movidas += 1
+                else:
+                    perdidas += 1
+                continue
             try:
                 if _migrar_uno(conn, order_id, doc, uploads_dir, rescate_dir, storage, ahora):
                     movidas += 1
@@ -218,12 +224,14 @@ def migrar_documentos(
                 "filename": doc.get("filename"), "uploaded_at": doc.get("uploaded_at"),
                 "size_bytes": doc.get("size_bytes"), "motivo": motivo,
             })
+        if probar:
+            continue
         packing.pop("documents", None)
         if perdidas_aqui:
             packing["fotos_perdidas"] = perdidas_aqui
         conn.execute(sa.text("UPDATE orders SET packing_json = :j WHERE id = :id"),
                      {"j": json.dumps(packing, default=str), "id": order_id})
-    if pedidos:
+    if pedidos and not probar:
         logger.info("fotos: %d pedidos con documentos antiguos · %d movidas a shipment_files · "
                     "%d perdidas (sin referencia rota)", pedidos, movidas, perdidas)
     return {"pedidos": pedidos, "movidas": movidas, "perdidas": perdidas}
@@ -237,13 +245,8 @@ def _migrar_uno(conn: Any, order_id: str, doc: dict[str, Any], uploads_dir: str,
 
     from app.erp.models.shipping import KIND_FOTO  # noqa: PLC0415
 
-    key = str(doc.get("storage_key") or "")
-    data = None
-    if doc.get("backend", "local") == "local" and key:
-        for path in _candidatos(key, uploads_dir, rescate_dir):
-            if path.is_file():
-                data = path.read_bytes()
-                break
+    origen = _localizar(doc, uploads_dir, rescate_dir)
+    data = origen.read_bytes() if origen is not None else None
     if not data:
         return False
     try:
@@ -266,6 +269,17 @@ def _migrar_uno(conn: Any, order_id: str, doc: dict[str, Any], uploads_dir: str,
         "f": foto.filename, "m": foto.mime_type, "n": len(foto.data), "p": path,
         "u": autor, "t": _fecha(subida, ahora)})
     return True
+
+
+def _localizar(doc: dict[str, Any], uploads_dir: str, rescate_dir: str) -> Path | None:
+    """Dónde sigue el archivo de un documento antiguo, o None si se perdió."""
+    key = str(doc.get("storage_key") or "")
+    if doc.get("backend", "local") != "local" or not key:
+        return None
+    for path in _candidatos(key, uploads_dir, rescate_dir):
+        if path.is_file():
+            return path
+    return None
 
 
 def _fecha(valor: Any, defecto: datetime) -> datetime:

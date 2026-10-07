@@ -412,6 +412,23 @@ async def _arm_genei_transport_fix() -> None:
 
 
 @app.on_event("startup")
+async def _arm_fotos_traslado() -> None:
+    """Fotos del embalaje — traslado de UNA pasada de las antiguas (dentro del
+    contenedor) al almacén de expedición. En segundo plano; sin carpeta o sin
+    nada que mover, no hace nada."""
+    try:
+        from app.erp.fotos_job import arm  # noqa: PLC0415
+
+        arm()
+    except Exception:  # noqa: BLE001
+        import logging  # noqa: PLC0415
+
+        logging.getLogger(__name__).warning(
+            "fotos.traslado arm failed at startup", exc_info=True
+        )
+
+
+@app.on_event("startup")
 async def _arm_genei_tracking() -> None:
     """Genei — sondeo del tracking DETALLADO (eventos del transportista) de los
     envíos vivos (cola `genei:shipments`, la escucha `worker-sync`). Interruptor

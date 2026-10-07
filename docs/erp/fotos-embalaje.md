@@ -44,21 +44,30 @@ existían (y `url: null`).
   en preparación, embalado, pendiente de recogida), con el permiso de envíos.
   Después solo se ven.
 
-## Migración `20261007_0126` (datos)
+## Traslado de las fotos antiguas (tarea de una pasada)
 
-Pasa las referencias de `packing_json.documents` a `shipment_files`:
+No es una migración de Alembic: las migraciones solo cambian el esquema. El
+traslado mueve archivos, así que va aparte (`app/erp/fotos_job.py`):
 
-- Si el archivo **existe**, en `erp_uploads_dir` o en
-  `/opt/crmbo/uploads/erp-shipping/_rescate/`, se copia al almacén de expedición
-  y se registra como `kind = foto`.
-- Si se **perdió**, se quita la referencia. Queda solo constancia en
-  `packing_json.fotos_perdidas` (nombre y fecha, sin ruta), y la ficha avisa de
-  volver a subirla.
+- Se lanza solo al arrancar el `api`, una vez y en segundo plano.
+- Pasa las referencias de `packing_json.documents` a `shipment_files`:
+  - si el archivo **existe**, en `erp_uploads_dir` o en
+    `/opt/crmbo/uploads/erp-shipping/_rescate/`, se copia al almacén de
+    expedición y se registra como `kind = foto`;
+  - si se **perdió**, se quita la referencia. Queda solo constancia en
+    `packing_json.fotos_perdidas` (nombre y fecha, sin ruta), y la ficha avisa
+    de volver a subirla.
+- No falla nunca: sin la carpeta del almacén o sin nada que mover, no hace
+  nada. Es idempotente.
+- A mano, desde el contenedor `api`:
+  - `python -m app.erp.fotos_job` → vista previa (cuántas se mueven y cuántas
+    se perdieron, sin escribir);
+  - `python -m app.erp.fotos_job --apply` → lo hace.
 
 ### Antes de desplegar: rescatar las fotos que aún están en el contenedor
 
 El despliegue recrea el contenedor `api`, así que lo que hay en `/app/uploads/erp`
-se pierde **antes** de que corra la migración. Para salvar lo que siga ahí (p. ej.
+se pierde **antes** de que corra el traslado. Para salvar lo que siga ahí (p. ej.
 la de BOPRIN-99977), cópialo al volumen **antes** de desplegar:
 
 ```
@@ -66,5 +75,5 @@ docker compose --env-file .env.production -f docker-compose.prod.yml -f docker-c
   exec api sh -c 'mkdir -p /opt/crmbo/uploads/erp-shipping/_rescate && cp -a /app/uploads/erp/. /opt/crmbo/uploads/erp-shipping/_rescate/ 2>/dev/null; ls -R /opt/crmbo/uploads/erp-shipping/_rescate | head'
 ```
 
-La migración las recoge de ahí al arrancar el `api` nuevo. Después, la carpeta
+El traslado las recoge de ahí al arrancar el `api` nuevo. Después, la carpeta
 `_rescate` se puede borrar.

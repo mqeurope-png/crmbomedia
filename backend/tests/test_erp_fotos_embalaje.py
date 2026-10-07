@@ -224,7 +224,7 @@ def test_mas_de_15_mb_413(http, factory):
     assert r.status_code == 413 and "15 MB" in r.json()["detail"]
 
 
-# --- 3 · migración de `packing_json.documents` -----------------------------------------------
+# --- 3 · traslado de `packing_json.documents` (tarea de una pasada) -------------------------
 
 
 def test_migracion_mueve_la_que_existe_y_no_deja_rota_la_perdida(factory, tmp_path):
@@ -326,6 +326,82 @@ def test_la_ficha_avisa_de_las_fotos_perdidas(http, factory):
                  headers=auth_headers(http, "sat"))
     assert r.json()["items"] == []
     assert r.json()["fotos_perdidas"][0]["filename"] == "movil.jpg"
+
+
+def _pedido_con_documento(factory) -> str:
+    return _pedido(factory, packing={"documents": [
+        {"storage_key": "ORDER/x_foto.jpg", "backend": "local", "filename": "foto.jpg",
+         "content_type": "image/jpeg"}]})
+
+
+def test_traslado_sin_carpeta_del_almacen_no_hace_nada_ni_falla(factory, tmp_path):
+    """En un entorno sin el almacén montado (CI, dev) no escribe ni falla, y
+    deja los documentos para cuando sí esté."""
+    from app.erp.fotos_job import trasladar
+
+    oid = _pedido_con_documento(factory)
+    with factory() as s:
+        r = trasladar(s, uploads_dir=str(tmp_path / "u"),
+                      shipping_dir=str(tmp_path / "no-existe"))
+        s.commit()
+    assert r["omitido"] and r["movidas"] == 0
+    assert not (tmp_path / "no-existe").exists()
+    with factory() as s:
+        assert "documents" in json.loads(s.get(Order, oid).packing_json)
+
+
+def test_traslado_sin_nada_que_mover(factory, tmp_path):
+    from app.erp.fotos_job import trasladar
+
+    (tmp_path / "erp-shipping").mkdir()
+    with factory() as s:
+        r = trasladar(s, uploads_dir=str(tmp_path / "u"),
+                      shipping_dir=str(tmp_path / "erp-shipping"))
+    assert (r["pedidos"], r["movidas"], r["perdidas"]) == (0, 0, 0)
+
+
+def test_traslado_vista_previa_cuenta_sin_escribir_y_luego_aplica(factory, tmp_path):
+    from app.erp.fotos_job import trasladar
+
+    shipping = tmp_path / "erp-shipping"
+    oid = _pedido_con_documento(factory)
+    rescate = shipping / "_rescate" / "ORDER" / "x_foto.jpg"
+    rescate.parent.mkdir(parents=True)
+    rescate.write_bytes(_jpeg())
+    kw = {"uploads_dir": str(tmp_path / "u"), "shipping_dir": str(shipping)}
+    with factory() as s:
+        r = trasladar(s, probar=True, **kw)
+        s.commit()
+    assert (r["probar"], r["movidas"], r["perdidas"]) == (True, 1, 0)
+    with factory() as s:
+        assert s.scalar(select(ShipmentFile).where(ShipmentFile.order_id == oid)) is None
+        assert "documents" in json.loads(s.get(Order, oid).packing_json)
+        r = trasladar(s, **kw)
+        s.commit()
+    assert r["movidas"] == 1
+    with factory() as s:
+        assert s.scalar(select(ShipmentFile).where(ShipmentFile.order_id == oid)).kind == "foto"
+
+
+def test_arrancar_sin_redis_no_lanza_nada_ni_falla(monkeypatch):
+    import app.erp.fotos_job as job
+
+    def sin_redis():
+        raise ConnectionError("sin redis")
+
+    lanzados: list[object] = []
+    monkeypatch.setattr("app.workers.queues.redis_connection", sin_redis)
+    monkeypatch.setattr(job.threading, "Thread", lambda **kw: lanzados.append(kw))
+    job.arm()
+    assert lanzados == []
+
+
+def test_las_migraciones_no_tocan_el_disco():
+    """La migración de Alembic solo cambia el esquema: ninguna llama al
+    traslado de fotos."""
+    versiones = BACKEND_ROOT / "alembic" / "versions"
+    assert not any("migrar_documentos" in f.read_text() or "fotos_job" in f.read_text()
+                   for f in versiones.glob("*.py"))
 
 
 # --- 4 · Cuadre ------------------------------------------------------------------------------

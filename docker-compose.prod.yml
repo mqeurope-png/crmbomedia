@@ -106,6 +106,7 @@ services:
     environment:
       DATABASE_URL: mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@db:3306/${MYSQL_DATABASE}
       REDIS_URL: redis://redis:6379/0
+      LOCAL_SHIPPING_STORAGE_DIR: /opt/crmbo/uploads/erp-shipping
     # PR-Fix-Worker-Dedicado-Workflows. Worker A: SOLO queues de sync
     # externo + housekeeping. La queue `workflows:dispatch` se mudó al
     # worker-workflows para no quedarse en posición 22 de 24 esperando
@@ -206,6 +207,11 @@ services:
       # Sprint-Backfill-Gmail. Adjuntos descargados por el job. Mismo
       # volumen que api para que el download endpoint vea los ficheros.
       - crmbo_email_attachments:/var/lib/crmbo/attachments
+      # Almacén de expedición (albarán, etiqueta, fotos). La etiqueta que Genei
+      # trae sola (genei:shipments) se guarda desde aquí: sin este montaje
+      # quedaba dentro del contenedor, invisible para el api y perdida al
+      # recrearlo.
+      - /opt/crmbo/uploads/erp-shipping:/opt/crmbo/uploads/erp-shipping
     depends_on:
       api:
         condition: service_healthy
