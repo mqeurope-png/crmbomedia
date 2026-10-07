@@ -67,13 +67,14 @@ def upgrade() -> None:
     if form_id is None:
         return
     campos = conn.execute(sa.text(
-        "SELECT id, field_key, label, field_type, help_text, maps_to_contact_field "
-        "FROM web_form_fields WHERE form_id = :f"
+        "SELECT id, field_key, label, field_type, help_text, maps_to_contact_field, "
+        "default_value FROM web_form_fields WHERE form_id = :f"
     ), {"f": form_id}).fetchall()
-    for cid, key, label, tipo, ayuda, destino in campos:
+    for cid, key, label, tipo, ayuda, destino, defecto in campos:
         texto = _sin_acentos(label or "")
-        if (tipo == "checkbox" and not destino and "comunicaciones" in texto
-                and "comercial" in texto):
+        # Con valor por defecto daría el consentimiento sin marcar: no se mapea.
+        if (tipo == "checkbox" and not destino and not (defecto or "").strip()
+                and "comunicaciones" in texto and "comercial" in texto):
             conn.execute(sa.text(
                 "UPDATE web_form_fields SET maps_to_contact_field = 'contact.marketing_consent' "
                 "WHERE id = :i"), {"i": cid})

@@ -88,14 +88,16 @@ def test_sin_redis_la_comprobacion_falla_y_no_da_por_resueltos_los_que_habia(fac
         assert _hallazgos(s)[0].estado == "abierto"     # no se resuelve por no poder mirar
 
 
-def test_leer_fallidos_lee_todas_las_colas(monkeypatch):
-    """Sin Redis de verdad: se sustituyen las piezas de RQ."""
+def test_leer_fallidos_lee_todas_las_colas_los_mas_recientes_primero(monkeypatch):
+    """Sin Redis de verdad: se sustituyen las piezas de RQ. Se leen los más
+    nuevos de cada cola (sin limpiar el registro) y se mezclan por fecha."""
     import rq
     import rq.job
     import rq.registry
 
     colas = [SimpleNamespace(name="woocommerce:backfill"), SimpleNamespace(name="genei:shipments")]
-    ids = {"woocommerce:backfill": ["j1"], "genei:shipments": ["j2", "j3"]}
+    # zrevrange: ya en orden del más nuevo al más viejo.
+    ids = {"rq:failed:woocommerce:backfill": [b"j1"], "rq:failed:genei:shipments": [b"j3", b"j2"]}
     trabajos = {
         "j1": SimpleNamespace(func_name="app.x.sync_orders_backfill", args=("boprint",),
                               kwargs={"since": "2026-07-04"}, ended_at=datetime(2026, 8, 3),
@@ -105,19 +107,28 @@ def test_leer_fallidos_lee_todas_las_colas(monkeypatch):
         "j3": SimpleNamespace(func_name="app.y.fetch_label_job", args=(), kwargs={},
                               ended_at=None, enqueued_at=datetime(2026, 10, 7), exc_info=None),
     }
+    pedidos: list[tuple] = []
+
+    class _Conn:
+        def zrevrange(self, key, start, end):
+            pedidos.append((key, start, end))
+            return ids[key]
+
     monkeypatch.setattr(rq.Queue, "all", classmethod(lambda cls, connection=None: colas))
     monkeypatch.setattr(rq.registry, "FailedJobRegistry",
-                        lambda queue: SimpleNamespace(get_job_ids=lambda: ids[queue.name]))
+                        lambda queue: SimpleNamespace(key=f"rq:failed:{queue.name}"))
     monkeypatch.setattr(rq.job.Job, "fetch_many",
                         classmethod(lambda cls, js, connection=None: [trabajos[j] for j in js]))
-    out = leer_fallidos_real(conn=object())
-    assert [(t.cola, t.id) for t in out] == [
-        ("genei:shipments", "j2"), ("genei:shipments", "j3"), ("woocommerce:backfill", "j1")]
-    j1 = out[2]
+    out = leer_fallidos_real(conn=_Conn(), limite=2)
+    assert all(end == 1 for _k, _s, end in pedidos)          # solo los 2 más nuevos por cola
+    # Mezclados por fecha, el más nuevo primero, y con el tope total.
+    assert [t.id for t in out] == ["j3", "j1"]
+    j1 = out[1]
     assert j1.error == "WooError: GET /orders → 400"
     assert j1.argumentos == "'boprint', since='2026-07-04'"
     assert j1.fecha.tzinfo is not None
-    assert out[0].funcion.startswith("(datos")
+    todos = leer_fallidos_real(conn=_Conn())
+    assert todos[-1].funcion.startswith("(datos")              # sin fecha, al final
 
 
 # --- «Poner al día estados Woo…» ---------------------------------------------------------------

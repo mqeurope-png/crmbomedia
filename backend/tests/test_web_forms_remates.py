@@ -194,6 +194,25 @@ def test_casilla_marcada_da_el_consentimiento_y_sin_marcar_no(factory):
         assert s.get(Contact, no.contact_id).marketing_consent == ConsentStatus.UNKNOWN
 
 
+def test_un_valor_por_defecto_no_da_el_consentimiento(factory, http):
+    """Una casilla de consentimiento con «valor por defecto» lo daría aunque
+    la persona no la marcara: no se aplica y el editor no lo deja guardar."""
+    with factory() as s:
+        form = _form(s, [
+            WebFormField(field_key="email", label="Email", field_type="email"),
+            WebFormField(field_key="comerciales", label="Acepto comunicaciones comerciales",
+                         field_type="checkbox", default_value="on",
+                         maps_to_contact_field="contact.marketing_consent"),
+        ], slug="boprint-contacto")
+        out = _enviar(s, form, {"email": "nadie@b.es"})
+        assert s.get(Contact, out.contact_id).marketing_consent == ConsentStatus.UNKNOWN
+    r = http.post("/api/admin/forms", headers=auth_headers(http, "manager"), json={
+        "slug": "f-cd", "name": "F", "fields": [{
+            "label": "Acepto", "field_type": "checkbox", "default_value": "on",
+            "maps_to_contact_field": "contact.marketing_consent"}]})
+    assert r.status_code == 400 and "valor por defecto" in r.json()["detail"]
+
+
 def test_consentimiento_mapeable_solo_desde_una_casilla(http):
     mapeables = http.get("/api/admin/contact-fields-mappable",
                          headers=auth_headers(http, "manager")).json()["standard"]
@@ -403,6 +422,20 @@ def test_apariencia_vacia_es_la_de_siempre():
 
 
 # --- iframe que crece con el contenido ---------------------------------------------------------
+
+
+def test_iframe_lleva_los_enlaces_relativos_a_la_web_que_lo_inserta(http, factory):
+    """El iframe se sirve desde BoHub: sin esto, «/politica-de-privacidad/»
+    abriría la página de BoHub y no la de la marca."""
+    with factory() as s:
+        fid = _form(s, [WebFormField(field_key="email", label="Email", field_type="email")]).id
+    html_ = http.get(f"/forms/{fid}").text
+    assert 'querySelectorAll(\'a[href^="/"]\')' in html_
+    assert "document.referrer" in html_ and "ancestorOrigins" in html_
+
+
+def test_el_widget_escapa_comillas_en_los_atributos():
+    assert 'replace(/"/g,"&quot;")' in embed._WIDGET_BOOT_JS
 
 
 def test_iframe_avisa_de_su_altura_y_el_codigo_la_aplica(http, factory):

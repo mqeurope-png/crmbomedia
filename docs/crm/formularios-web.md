@@ -39,6 +39,11 @@ En la etiqueta y la ayuda de un campo:
   `rel="noopener noreferrer"`) en las tres vías.
 - Una ruta que empieza por `/` vale en la web de cada marca sin escribir el
   dominio: `[Política de privacidad](/politica-de-privacidad/)`.
+  - Con el script JS y el HTML puro el navegador la resuelve contra la web.
+  - El iframe se sirve desde BoHub: su script la reescribe contra el origen de
+    la página que lo inserta (`ancestorOrigins` o `document.referrer`).
+- Una casilla mapeada al consentimiento no admite «valor por defecto»: solo
+  cuenta si la persona la marca.
 - Cualquier otra cosa (`javascript:`, `//otro-dominio`, HTML) se escapa como
   siempre.
 

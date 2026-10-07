@@ -58,7 +58,9 @@ def _argumentos(job: Any) -> str:
 
 
 def leer_fallidos(conn: Any = None, *, limite: int = MAX_FALLIDOS) -> list[TrabajoFallido]:
-    """Los trabajos del registro de fallidos de TODAS las colas de RQ."""
+    """Los trabajos del registro de fallidos de TODAS las colas de RQ, los más
+    recientes primero (hasta `limite` en total). Solo lee: no limpia el
+    registro (`get_job_ids` de RQ lo haría) ni toca los trabajos."""
     from rq import Queue  # noqa: PLC0415
     from rq.job import Job  # noqa: PLC0415
     from rq.registry import FailedJobRegistry  # noqa: PLC0415
@@ -67,25 +69,28 @@ def leer_fallidos(conn: Any = None, *, limite: int = MAX_FALLIDOS) -> list[Traba
 
     conn = conn or redis_connection()
     out: list[TrabajoFallido] = []
-    for cola in sorted(Queue.all(connection=conn), key=lambda q: q.name):
-        ids = FailedJobRegistry(queue=cola).get_job_ids()
+    for cola in Queue.all(connection=conn):
+        registro = FailedJobRegistry(queue=cola)
+        # Puntuación = momento del fallo + TTL: al revés, los más nuevos.
+        ids = [i.decode() if isinstance(i, bytes) else str(i)
+               for i in conn.zrevrange(registro.key, 0, limite - 1)]
         for job_id, job in zip(ids, Job.fetch_many(ids, connection=conn), strict=False):
             if job is None:
                 out.append(TrabajoFallido(job_id, cola.name, "(datos del trabajo caducados)",
                                           "", None, "(sin detalle del error)"))
-            else:
-                try:
-                    funcion = job.func_name
-                except Exception:  # noqa: BLE001
-                    funcion = "(desconocida)"
-                fecha = job.ended_at or job.enqueued_at
-                if fecha is not None and fecha.tzinfo is None:
-                    fecha = fecha.replace(tzinfo=UTC)
-                out.append(TrabajoFallido(job_id, cola.name, str(funcion), _argumentos(job),
-                                          fecha, _recortar(_ultima_linea(job.exc_info), 300)))
-            if len(out) >= limite:
-                return out
-    return out
+                continue
+            try:
+                funcion = job.func_name
+            except Exception:  # noqa: BLE001
+                funcion = "(desconocida)"
+            fecha = job.ended_at or job.enqueued_at
+            if fecha is not None and fecha.tzinfo is None:
+                fecha = fecha.replace(tzinfo=UTC)
+            out.append(TrabajoFallido(job_id, cola.name, str(funcion), _argumentos(job),
+                                      fecha, _recortar(_ultima_linea(job.exc_info), 300)))
+    antiguo = datetime.min.replace(tzinfo=UTC)
+    out.sort(key=lambda t: t.fecha or antiguo, reverse=True)
+    return out[:limite]
 
 
 def _fecha(dt: datetime | None) -> str:

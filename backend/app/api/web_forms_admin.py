@@ -170,6 +170,12 @@ def _validate_enums(payload: FormBase, fields: list[FormFieldIn] | None) -> None
                 "campo del contacto (las etiquetas elegidas se aplican solas). Déjalo "
                 "«sin mapear».",
             )
+        if destino == "contact.marketing_consent" and (f.default_value or "").strip():
+            raise HTTPException(
+                400,
+                f"El campo «{f.label or f.field_key}»: el consentimiento comercial no puede "
+                "tener valor por defecto (solo cuenta si la persona marca la casilla).",
+            )
         if destino == "contact.marketing_consent" and f.field_type != "checkbox":
             raise HTTPException(
                 400,

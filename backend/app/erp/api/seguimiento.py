@@ -663,7 +663,10 @@ def _rq_reconcile_status(job_id: str, *, error_msg: str,
             extra = {
                 "progress": (meta or {}).get("progreso"),
                 "preview": bool(job.args[0]) if job.args else None,
-                "ended_at": job.ended_at.isoformat() if job.ended_at else None,
+                # RQ guarda la hora sin zona (UTC): se dice explícitamente.
+                "ended_at": (job.ended_at if job.ended_at.tzinfo else
+                             job.ended_at.replace(tzinfo=UTC)).isoformat()
+                if job.ended_at else None,
             }
         if rq_status == "failed":
             return {"status": "error", "error": error_msg, **extra}

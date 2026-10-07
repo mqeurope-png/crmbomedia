@@ -114,6 +114,10 @@ def process_submission(
     # los trae (típico de los hidden UTM). Se aplica ANTES de validar y
     # de extraer el contacto, así el default cuenta como valor real.
     for f in form.fields:
+        # El consentimiento comercial solo vale si la persona marca la
+        # casilla: un valor por defecto lo daría aunque no la marcara.
+        if (f.maps_to_contact_field or "").strip() == "contact.marketing_consent":
+            continue
         if f.default_value and not str(payload.get(f.field_key) or "").strip():
             payload[f.field_key] = f.default_value
 

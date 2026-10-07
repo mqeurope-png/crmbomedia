@@ -102,10 +102,22 @@ def render_iframe(
 #: con el contenido (p. ej. al mostrar errores) en vez de recortarlo. La
 #: página lo escucha con el código de inserción del iframe.
 def iframe_resize_js(form_id: str) -> str:
+    """Script del iframe (no cambia el aspecto):
+
+    - avisa a la página que lo contiene de su altura, para que crezca con el
+      contenido;
+    - los enlaces relativos (`/politica-de-privacidad/`) apuntan a la web que
+      lo inserta, no a BoHub (el iframe se sirve desde el dominio de BoHub).
+    """
     return (
         "<script>\n(function(){if(window.parent===window)return;var id="
         + json.dumps(form_id)
-        + ';\nfunction h(){window.parent.postMessage({type:"bohub-form-height",formId:id,'
+        + ';\nvar o="";try{o=(location.ancestorOrigins&&location.ancestorOrigins[0])||'
+        '(document.referrer?new URL(document.referrer).origin:"");}catch(e){}\n'
+        'if(/^https?:\/\/[^\/]+$/.test(o)){Array.prototype.forEach.call('
+        'document.querySelectorAll(\'a[href^="/"]\'),function(a){var h=a.getAttribute("href");'
+        'if(h.charAt(1)!=="/"&&h.charAt(1)!=="\\\\")a.setAttribute("href",o+h);});}\n'
+        'function h(){window.parent.postMessage({type:"bohub-form-height",formId:id,'
         'height:document.documentElement.scrollHeight},"*");}\n'
         'window.addEventListener("load",h);if(window.ResizeObserver){new ResizeObserver(h)'
         ".observe(document.body);}else{setInterval(h,500);}})();\n</script>\n"
@@ -460,7 +472,7 @@ _WIDGET_BOOT_JS = r"""
   var style=document.createElement("style");
   style.textContent='[data-bohub-form] *{box-sizing:border-box}[data-bohub-form] .bh-form{display:flex;flex-direction:column;gap:12px;max-width:520px}[data-bohub-form] .bh-field{display:flex;flex-direction:column;gap:4px}[data-bohub-form] .bh-field label{font-size:14px;font-weight:600}[data-bohub-form] .bh-field input,[data-bohub-form] .bh-field textarea,[data-bohub-form] .bh-field select{padding:10px 12px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;font-family:inherit}[data-bohub-form] .bh-help{font-size:12px;color:#64748b}[data-bohub-form] .bh-req{color:#dc2626}[data-bohub-form] .bh-btn{padding:12px 16px;background:#2563eb;color:#fff;border:0;border-radius:8px;font-size:15px;font-weight:600;cursor:pointer}[data-bohub-form] .bh-msg{padding:14px;border-radius:8px;font-size:14px}[data-bohub-form] .bh-ok{background:#dcfce7;color:#166534}[data-bohub-form] .bh-err{background:#fee2e2;color:#991b1b}[data-bohub-form] .bh-hp{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}[data-bohub-form] .bh-tags{display:flex;flex-direction:column;gap:4px}[data-bohub-form] .bh-check{font-weight:400;display:flex;align-items:center;gap:6px}[data-bohub-form] .bh-stars{display:inline-flex;flex-direction:row-reverse;gap:.15em;justify-content:flex-end}[data-bohub-form] .bh-stars input{position:absolute;opacity:0;pointer-events:none}[data-bohub-form] .bh-stars label{cursor:pointer;color:#d0d0d0;font-size:1.7rem;line-height:1}[data-bohub-form] .bh-stars label:hover,[data-bohub-form] .bh-stars label:hover ~ label,[data-bohub-form] .bh-stars input:checked ~ label{color:#f5b301}';
   document.head.appendChild(style);
-  function esc(s){var d=document.createElement("div");d.textContent=s==null?"":s;return d.innerHTML;}
+  function esc(s){var d=document.createElement("div");d.textContent=s==null?"":s;return d.innerHTML.replace(/"/g,"&quot;").replace(/'/g,"&#39;");}
   function field(f){
     var dv=f.default_value||"";
     if(f.hidden||f.type==="hidden")return'<input type="hidden" name="'+esc(f.key)+'" value="'+esc(dv)+'">';

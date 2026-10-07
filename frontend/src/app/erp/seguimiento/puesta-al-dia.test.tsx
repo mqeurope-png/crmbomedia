@@ -92,6 +92,18 @@ describe("ERP · Seguimiento — «Poner al día estados Woo…» espera a su tr
     expect(reconcileWooStatuses).not.toHaveBeenCalled();
   });
 
+  it("una pasada en marcha al entrar solo bloquea los botones de Woo", async () => {
+    (getLastReconcileWoo as jest.Mock).mockResolvedValue({
+      job_id: "j-otro", preview: true, status: "pending", progress: null,
+    });
+    (waitForReconcileWoo as jest.Mock).mockImplementation(() => new Promise(() => undefined));
+    render(<SeguimientoPageView />);
+    await waitFor(() => expect(waitForReconcileWoo).toHaveBeenCalled());
+    expect(screen.getByRole("button", { name: "Trabajando…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Actualizar hoja de Drive|Actualizar la hoja/ }))
+      .not.toBeDisabled();
+  });
+
   it("si al entrar sigue trabajando, la pantalla sigue esperándolo", async () => {
     (getLastReconcileWoo as jest.Mock).mockResolvedValue({
       job_id: "j-vivo", preview: true, status: "pending",

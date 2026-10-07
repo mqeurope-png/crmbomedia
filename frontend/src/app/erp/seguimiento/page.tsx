@@ -248,6 +248,9 @@ export default function SeguimientoPage() {
   const [excludeTarget, setExcludeTarget] = useState<SeguimientoRow[] | null>(null);
   // ERP-Woo — previsualización de la puesta al día de estados de WooCommerce.
   const [reconcile, setReconcile] = useState<WooReconcileSummary | null>(null);
+  // Una puesta al día que ya estaba en marcha al entrar (de esta u otra
+  // persona): solo bloquea los botones de Woo, no el resto de la pantalla.
+  const [wooEnCurso, setWooEnCurso] = useState(false);
   // ERP — previsualización de la vinculación de facturas de FACTUSOL.
   const [facturaLink, setFacturaLink] = useState<FactusolLinkSummary | null>(null);
   // «Columnas»: las ocultas por este usuario (todas visibles por defecto).
@@ -632,6 +635,11 @@ export default function SeguimientoPage() {
     }
   }
 
+  // La recarga al terminar usa los filtros de ese momento, no los de cuando
+  // empezó a esperar.
+  const loadRef = useRef(load);
+  loadRef.current = load;
+
   // ERP-Woo — puesta al día de estados: corre en SEGUNDO PLANO (4-5 minutos).
   // Se espera al trabajo el tiempo que haga falta, diciendo por dónde va, y al
   // volver a entrar se recupera la última pasada (RQ guarda el resultado una
@@ -668,7 +676,7 @@ export default function SeguimientoPage() {
         setReconcile(null);
         setNotice((ultima ? `Última puesta al día${haceCuanto(res.ended_at)}. ` : "")
           + textoAplicada(res.result));
-        void load();
+        void loadRef.current();
       }
     } else if (res.status === "error") {
       setError(res.error || (preview ? "La puesta al día falló."
@@ -690,11 +698,11 @@ export default function SeguimientoPage() {
       .then(async (u) => {
         if (!vivo || !u || !u.job_id) return;
         if (u.status === "pending") {
-          setBusy(true);
+          setWooEnCurso(true);
           try {
             await esperarPuestaAlDia(u.job_id, u.preview);
           } finally {
-            if (vivo) setBusy(false);
+            if (vivo) setWooEnCurso(false);
           }
         } else if (u.status === "finished") {
           terminarPuestaAlDia(u, u.preview, true);
@@ -977,11 +985,11 @@ export default function SeguimientoPage() {
           ) : null}
           {canEdit ? (
             <button
-              type="button" className="button small secondary" disabled={busy}
+              type="button" className="button small secondary" disabled={busy || wooEnCurso}
               title="Re-consulta WooCommerce: saca los cancelados / fallidos / sin pagar, marca los reembolsados y rellena el método de pago de los pedidos web que no lo tienen"
               onClick={onReconcilePreview}
             >
-              {busy ? "Trabajando…" : "Poner al día estados Woo…"}
+              {busy || wooEnCurso ? "Trabajando…" : "Poner al día estados Woo…"}
             </button>
           ) : null}
           {canEdit ? (
@@ -1142,7 +1150,7 @@ export default function SeguimientoPage() {
               onClick={() => setReconcile(null)}>
               Cancelar
             </button>
-            <button type="button" className="button" disabled={busy}
+            <button type="button" className="button" disabled={busy || wooEnCurso}
               onClick={onReconcileApply}>
               {busy ? "Aplicando…" : `Aplicar (${reconcileChanges(reconcile)} cambios)`}
             </button>
