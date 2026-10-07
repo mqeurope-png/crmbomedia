@@ -176,7 +176,7 @@ Detalles operativos:
   docker run --rm -v composer_uploads:/data -v /var/backups/crmbomedia:/backup alpine \
     tar czf /backup/composer_uploads_$(date +%F).tar.gz -C /data .
   ```
-- **Tamaño máximo**: el cap real lo impone la API (10 MB). El Nginx incluido sube `client_max_body_size` a 12 MB en `/api/` para dejar margen al multipart.
+- **Tamaño máximo**: el cap real lo impone la API (15 MB por foto o documento). El Nginx incluido deja pasar hasta 16 MB (`nginx.conf` y `location /api/` de `app.conf`), para que quien corte sea BoHub con su mensaje y no un 413 de nginx.
 
 ## 10. Backups MySQL
 
@@ -398,6 +398,43 @@ Dos opciones:
    ```
 2. Mantener la copia vieja y añadir `restart nginx` al final de cada
    rebuild (workaround).
+
+### Cambiar la configuración de nginx sin tumbarlo (502)
+
+Para cambios en `deploy/nginx/nginx.conf` o en `conf.d/` (p. ej. el límite de
+subida de 16 MB). Nunca `--force-recreate` de nginx a ciegas: una zona
+`limit_req_zone` duplicada ya tumbó el proxy una vez (502).
+
+```
+C="docker compose --env-file .env.production -f docker-compose.prod.yml -f docker-compose.plesk.yml"
+# 0) nginx.conf no debe estar editado a mano (si sale algo, resolverlo antes del pull):
+git status --short deploy/nginx/nginx.conf
+git pull
+# 1) conf.d/app.conf es una COPIA de la plantilla (no está en git): aplicar el
+#    mismo cambio a mano. Para el límite de subida:
+grep -n client_max_body_size deploy/nginx/conf.d/app.conf
+sed -i 's/client_max_body_size 12m;/client_max_body_size 16m;/' deploy/nginx/conf.d/app.conf
+# 2) Probar la configuración nueva en el contenedor que está sirviendo, sin tocarlo:
+$C cp deploy/nginx/nginx.conf nginx:/tmp/nginx.new.conf
+$C exec nginx nginx -t -c /tmp/nginx.new.conf
+#    Debe decir «syntax is ok» y «test is successful». Con cualquier error
+#    (p. ej. «duplicate zone» o «already bound»): NO seguir.
+# 3) Aplicar con restart (no recreate). nginx.conf está montado como fichero
+#    suelto y `git pull` lo sustituye: un `nginx -s reload` seguiría leyendo
+#    el viejo; el restart lo vuelve a montar. Corte de un par de segundos.
+$C restart nginx
+# 4) Comprobar:
+$C exec nginx sh -c 'grep -h client_max_body_size /etc/nginx/nginx.conf /etc/nginx/conf.d/app.conf'
+curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8080/healthz      # 200
+```
+
+Vuelta atrás: `git checkout <commit anterior> -- deploy/nginx/nginx.conf`,
+deshacer el `sed` en `app.conf`, repetir los pasos 2 y 3.
+
+Importante para el límite de subida: hay que subir los DOS valores. El de
+`location /api/` en `app.conf` manda sobre el de `nginx.conf`; si solo se sube
+`nginx.conf`, una subida de 13 MB sigue dando 413 (comprobado con nginx -t y
+un POST de 13 MB contra la configuración real).
 
 ### Scripts operativos dentro del contenedor
 
