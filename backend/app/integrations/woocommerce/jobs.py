@@ -504,6 +504,7 @@ def run_woo_reconcile(
     tienda sus pagados de los últimos N días y crea los que no están en BoHub
     (en vista previa solo los lista). Devuelve el resumen (lo recoge RQ como
     `job.result`), con lo importado en `missing`."""
+    from app.integrations.woocommerce import progreso  # noqa: PLC0415
     from app.integrations.woocommerce.missing import (  # noqa: PLC0415
         import_missing_paid_orders,
     )
@@ -511,19 +512,62 @@ def run_woo_reconcile(
         reconcile_open_order_statuses,
     )
 
-    with _session_factory()() as session:
-        summary = reconcile_open_order_statuses(
-            session, dry_run=dry_run, store_account_id=store_account_id,
-        )
-        try:
-            summary["missing"] = import_missing_paid_orders(
+    token = progreso.activar(_informador_rq())
+    try:
+        with _session_factory()() as session:
+            summary = reconcile_open_order_statuses(
                 session, dry_run=dry_run, store_account_id=store_account_id,
             )
-        except Exception as exc:  # noqa: BLE001 — no se pierde la puesta al día
-            session.rollback()
-            logger.exception("woo reconcile: la importación de pagados que faltan falló")
-            summary["missing"] = {"error": f"{type(exc).__name__}: {str(exc)[:200]}"}
-        return summary
+            try:
+                summary["missing"] = import_missing_paid_orders(
+                    session, dry_run=dry_run, store_account_id=store_account_id,
+                )
+            except Exception as exc:  # noqa: BLE001 — no se pierde la puesta al día
+                session.rollback()
+                logger.exception("woo reconcile: la importación de pagados que faltan falló")
+                summary["missing"] = {"error": f"{type(exc).__name__}: {str(exc)[:200]}"}
+            progreso.informar("Terminado")
+            return summary
+    finally:
+        progreso.desactivar(token)
+
+
+def _informador_rq():
+    """Guarda «por dónde va» en `job.meta["progreso"]`, que la pantalla lee
+    al consultar el estado. Fuera de RQ no hace nada."""
+    try:
+        from rq import get_current_job  # noqa: PLC0415
+
+        job = get_current_job()
+    except Exception:  # noqa: BLE001
+        job = None
+
+    def informar(fase: str, hechos: int | None, total: int | None) -> None:
+        if job is None:
+            return
+        job.meta["progreso"] = {"fase": fase, "hechos": hechos, "total": total,
+                                "at": datetime.now(UTC).isoformat()}
+        job.save_meta()
+
+    return informar
+
+
+#: La última puesta al día lanzada (vista previa o aplicar), para que la
+#: pantalla la recupere al volver a entrar: RQ guarda el resultado una hora.
+ULTIMA_PUESTA_AL_DIA_KEY = "erp:seguimiento:reconcile-woo:ultima"
+
+
+def ultima_puesta_al_dia() -> dict[str, Any] | None:
+    from app.workers.queues import redis_connection  # noqa: PLC0415
+
+    raw = redis_connection().get(ULTIMA_PUESTA_AL_DIA_KEY)
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return data if isinstance(data, dict) and data.get("job_id") else None
 
 
 def enqueue_woo_reconcile(
@@ -543,6 +587,13 @@ def enqueue_woo_reconcile(
         run_woo_reconcile, dry_run, store_account_id,
         job_timeout=RECONCILE_JOB_TIMEOUT, result_ttl=RECONCILE_RESULT_TTL,
     )
+    try:
+        conn.set(ULTIMA_PUESTA_AL_DIA_KEY, json.dumps({
+            "job_id": job.id, "preview": bool(dry_run), "store": store_account_id,
+            "enqueued_at": datetime.now(UTC).isoformat(),
+        }), ex=RECONCILE_RESULT_TTL + RECONCILE_JOB_TIMEOUT)
+    except Exception:  # noqa: BLE001 — recordarla es una ayuda, no imprescindible
+        logger.warning("woo reconcile: no se pudo recordar la última pasada", exc_info=True)
     return job.id
 
 

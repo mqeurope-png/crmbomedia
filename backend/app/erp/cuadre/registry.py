@@ -45,6 +45,8 @@ ENTIDAD_FILA_HOJA = "fila_hoja"
 ENTIDAD_CUENTA = "cuenta_integracion"
 #: Un pedido de la tienda que (aún) no está en BoHub: `tienda:id de Woo`.
 ENTIDAD_PEDIDO_WOO = "pedido_woo"
+#: Un trabajo de las colas de RQ (su id).
+ENTIDAD_TRABAJO_COLA = "trabajo_cola"
 
 
 @dataclass
@@ -152,6 +154,7 @@ def comprobacion(
 def registro() -> dict[str, Comprobacion]:
     """El registro completo (importa los módulos de comprobaciones)."""
     from app.erp.cuadre import (  # noqa: F401, PLC0415
+        checks_colas,
         checks_factusol,
         checks_mysql,
         checks_woocommerce,

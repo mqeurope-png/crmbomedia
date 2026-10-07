@@ -569,7 +569,30 @@ def reconcile_woo_status(
         job_id,
         error_msg="La puesta al día falló (una tienda no respondió). "
                   "Revisa la conexión con WooCommerce y vuelve a intentarlo.",
+        detallado=True,
     )
+
+
+@router.get("/reconcile-woo-last")
+def reconcile_woo_last(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_seguimiento),
+) -> dict[str, Any]:
+    """La última puesta al día lanzada (vista previa o aplicar) y su estado,
+    para que la pantalla siga esperándola o recupere su resultado al volver a
+    entrar (RQ lo guarda una hora). `{"job_id": null}` si no hay ninguna."""
+    _ = session, current_user
+    from app.integrations.woocommerce.jobs import ultima_puesta_al_dia  # noqa: PLC0415
+
+    try:
+        ultima = ultima_puesta_al_dia()
+    except Exception:  # noqa: BLE001 — sin Redis: no hay nada que recuperar
+        ultima = None
+    if not ultima:
+        return {"job_id": None}
+    estado = reconcile_woo_status(ultima["job_id"], session=session,
+                                  current_user=current_user)
+    return {**ultima, **estado}
 
 
 @router.post("/reconcile-factusol", status_code=status.HTTP_202_ACCEPTED)
@@ -609,24 +632,47 @@ def reconcile_factusol_status(
     )
 
 
-def _rq_reconcile_status(job_id: str, *, error_msg: str) -> dict[str, Any]:
-    """Estado del job RQ (best-effort). Sin Redis (local/tests) → `pending`."""
+def _rq_reconcile_status(job_id: str, *, error_msg: str,
+                         detallado: bool = False) -> dict[str, Any]:
+    """Estado del job RQ (best-effort). Sin Redis (local/tests) → `pending`.
+
+    `detallado` (la puesta al día de Woo): añade «por dónde va»
+    (`progress`, de `job.meta`), la hora en que terminó y si era vista previa;
+    y un trabajo que ya no existe (caducado o borrado) da `missing` en vez de
+    quedarse `pending` para siempre."""
     import logging  # noqa: PLC0415
 
     try:
         from redis import Redis  # noqa: PLC0415
+        from rq.exceptions import NoSuchJobError  # noqa: PLC0415
         from rq.job import Job  # noqa: PLC0415
 
         from app.core.config import get_settings  # noqa: PLC0415
 
         conn = Redis.from_url(get_settings().redis_url)
-        job = Job.fetch(job_id, connection=conn)
+        try:
+            job = Job.fetch(job_id, connection=conn)
+        except NoSuchJobError:
+            if detallado:
+                return {"status": "missing"}
+            raise
         rq_status = job.get_status(refresh=True)
+        extra: dict[str, Any] = {}
+        if detallado:
+            meta = job.get_meta(refresh=True) if hasattr(job, "get_meta") else job.meta
+            extra = {
+                "progress": (meta or {}).get("progreso"),
+                "preview": bool(job.args[0]) if job.args else None,
+                "ended_at": job.ended_at.isoformat() if job.ended_at else None,
+            }
         if rq_status == "failed":
-            return {"status": "error", "error": error_msg}
+            return {"status": "error", "error": error_msg, **extra}
         if rq_status == "finished":
-            return {"status": "finished", "result": job.result}
-        return {"status": "pending"}
+            return {"status": "finished", "result": job.result, **extra}
+        if detallado and rq_status in ("stopped", "canceled"):
+            return {"status": "error", "error": "La puesta al día se paró antes de terminar.",
+                    **extra}
+        return {"status": "pending", **extra}
     except Exception as exc:  # noqa: BLE001 — sin Redis o job caducado
         logging.getLogger(__name__).debug("reconcile job %s no consultable: %s", job_id, exc)
         return {"status": "pending"}

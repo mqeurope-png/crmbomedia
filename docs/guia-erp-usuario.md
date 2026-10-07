@@ -982,8 +982,12 @@ Drive**, que siguen saliendo con todas sus columnas.
 > casilla y el **Nº** quedan fijos a la izquierda y **Acciones** a la derecha (el
 > menú **«⋯»** se cierra si desplazas), y en la Cola SAT la casilla y el **Nº**.
 
-**«Poner al día estados Woo…»** vuelve a preguntar a las tiendas por los pedidos
-que BoHub tiene como activos y aplica la misma regla: saca los que se
+**«Poner al día estados Woo…»** tarda unos minutos y corre en segundo plano: la
+pantalla dice **por dónde va** («Pedidos sin estado, uno a uno (40 de 86)»…) y
+espera lo que haga falta. Si recargas o vuelves luego, **recupera el resultado**
+de la última pasada (se guarda una hora) o sigue esperándola si aún trabaja.
+Vuelve a preguntar a las tiendas por los pedidos que BoHub tiene como activos y
+aplica la misma regla: saca los que se
 **cancelaron**, **fallaron**, se fueron a la **papelera** o volvieron a **sin
 pagar / en espera**, y marca **«Reembolsado»** los reembolsados (esos no salen).
 Los pedidos web que estaban **sin estado** (importados antes de que existiera
@@ -1452,7 +1456,7 @@ arreglarlo.
 | Envíos (media) | «No requiere envío» con tracking o courier; enviado sin aviso al cliente; en tránsito más de 10 días; entregado, facturado y cobrado sin «Marcar completado» a los 14 días; envío de Genei tramitado sin etiqueta adjunta pasadas 2 horas. |
 | Envíos (alta) | Envío de Genei tramitado (con tracking, a veces con el aviso al cliente ya mandado) y el pedido sigue «sin enviar» en BoHub: hay un paquete que la app no está siguiendo. |
 | Documentos y hoja | Pedido que falta en la hoja de Drive (o fila de un pedido que ya no existe); factura de FACTUSOL sin vincular al pedido o vinculada a un número que no existe; factura sin enviar a los 7 días; pedido sin aprobar a los 7 días; proforma aceptada sin convertir a los 90 días (apagada por defecto: es el embudo comercial). |
-| Integraciones (media) | Sincronización colgada: cuenta de integración con una sincronización en curso desde hace más de 3 horas, o sin ninguna sincronización correcta en las últimas 24 h (AgileCRM, Brevo). |
+| Integraciones (media) | Sincronización colgada: cuenta de integración con una sincronización en curso desde hace más de 3 horas, o sin ninguna sincronización correcta en las últimas 24 h (AgileCRM, Brevo). Trabajo en cola fallido sin revisar: un trabajo en segundo plano (sincronización, importación, envío…) que terminó con error, con la función, los argumentos, la fecha y el error; los antiguos se marcan «Revisado». |
 | Integraciones (alta) | Pedido pagado en WooCommerce que no está en BoHub: de cada tienda, los pagados de los últimos N días (los mismos que el repaso automático, en Configuración ERP) que no llegaron, con número (enlace al pedido en la tienda), cliente, importe y fecha de pago. El botón lleva a Seguimiento, a «Poner al día estados Woo…», que los importa. Avisa aunque la importación automática haya fallado. |
 
 El panel vigila lo que BoHub gestiona. Las facturas que solo existen en
