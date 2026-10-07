@@ -201,7 +201,9 @@ export function TagPicker({ excludeTagIds, onPick }: Props) {
             event.preventDefault();
             if (exactMatch) handlePick(exactMatch);
             else if (trimmed) handleCreate();
-          } else if (event.key === "Escape") {
+          } else if (event.key === "Escape" && open) {
+            // Cierra el desplegable, no el modal que lo contenga.
+            event.preventDefault();
             setOpen(false);
           }
         }}

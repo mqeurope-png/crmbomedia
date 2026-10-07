@@ -9,6 +9,8 @@ import {
   type EmitFactusolOptions,
   type FactusolStatus,
 } from "../../lib/erpApi";
+import { ModalCloseButton } from "../ModalCloseButton";
+import { useModalBehaviour } from "../useModalBehaviour";
 import { EmitFactusolModal } from "./EmitFactusolModal";
 
 const POLL_INTERVAL_MS = 2000;
@@ -207,29 +209,52 @@ export function EmitFactusolButton({
       ) : null}
 
       {phase === "confirm" && !enableOptions ? (
-        <div className="modal-overlay" role="dialog" aria-modal="true"
-             aria-label="Confirmar emisión de factura FACTUSOL">
-          <div className="modal-dialog erp-modal">
-            <h2>Emitir factura en FACTUSOL</h2>
-            <p>
-              Total: <strong>{totalAmount.toFixed(2)} {currency}</strong>
-            </p>
-            <p className="form-error">
-              Se creará una factura <strong>real</strong> en FACTUSOL. Esta acción
-              no es reversible desde el CRM.
-            </p>
-            <div className="modal-actions">
-              <button type="button" className="button secondary"
-                      onClick={() => setPhase("idle")}>
-                Cancelar
-              </button>
-              <button type="button" className="button" onClick={() => doEmit()}>
-                Emitir factura
-              </button>
-            </div>
-          </div>
-        </div>
+        <EmitConfirmDialog
+          totalAmount={totalAmount}
+          currency={currency}
+          onCancel={() => setPhase("idle")}
+          onConfirm={() => doEmit()}
+        />
       ) : null}
     </>
+  );
+}
+
+/** Confirmación simple (sin opciones) de la emisión. */
+function EmitConfirmDialog({
+  totalAmount,
+  currency,
+  onCancel,
+  onConfirm,
+}: {
+  totalAmount: number;
+  currency: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose: onCancel });
+  return (
+    <div className="modal-overlay" role="dialog" aria-modal="true"
+         aria-label="Confirmar emisión de factura FACTUSOL" {...overlayProps}>
+      <div className="modal-dialog erp-modal">
+        <h2>Emitir factura en FACTUSOL</h2>
+        <ModalCloseButton onClose={requestClose} />
+        <p>
+          Total: <strong>{totalAmount.toFixed(2)} {currency}</strong>
+        </p>
+        <p className="form-error">
+          Se creará una factura <strong>real</strong> en FACTUSOL. Esta acción
+          no es reversible desde el CRM.
+        </p>
+        <div className="modal-actions">
+          <button type="button" className="button secondary" onClick={onCancel}>
+            Cancelar
+          </button>
+          <button type="button" className="button" onClick={onConfirm}>
+            Emitir factura
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }

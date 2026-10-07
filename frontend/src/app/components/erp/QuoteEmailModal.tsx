@@ -9,6 +9,8 @@ import {
   type QuoteEmailPreview,
 } from "../../lib/erpApi";
 import { extractErrorMessage } from "../../lib/errors";
+import { ModalCloseButton } from "../ModalCloseButton";
+import { UNSAVED_CHANGES_MESSAGE, useModalBehaviour } from "../useModalBehaviour";
 import {
   CompanyContactsPicker,
   splitContactChannels,
@@ -257,15 +259,22 @@ export function QuoteEmailModal({
   }
 
   const sent = sentTo !== null;
+  const { overlayProps, requestClose } = useModalBehaviour({
+    onClose,
+    disabled: sending,
+    // Asunto o cuerpo retocados a mano y sin enviar: se pregunta antes de cerrar.
+    confirmClose: () => !textDirty || sent || window.confirm(UNSAVED_CHANGES_MESSAGE),
+  });
 
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true"
-         aria-label={`Enviar ${kind} ${docLabel} por email`}>
+         aria-label={`Enviar ${kind} ${docLabel} por email`} {...overlayProps}>
       <div className="modal-dialog erp-modal erp-invoice-email">
         <h2>
           Enviar {kind} por email{" "}
           <span className="muted">{preview?.numero ?? docLabel}</span>
         </h2>
+        <ModalCloseButton onClose={requestClose} disabled={sending} />
 
         {loadError ? <p className="form-error">{loadError}</p> : null}
         {!preview && !loadError ? <p className="muted">Preparando…</p> : null}

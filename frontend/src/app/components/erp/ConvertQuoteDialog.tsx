@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import type { FactusolQuote, PaymentIntentInput } from "../../lib/erpApi";
+import { ModalCloseButton } from "../ModalCloseButton";
+import { useModalBehaviour } from "../useModalBehaviour";
 import { initialPayment, paymentReady, PaymentStep } from "./PaymentStep";
 
 /** «Convertir en pedido» (Fase 2): paso de pago (opción B, sin factura) y
@@ -16,11 +18,13 @@ export function ConvertQuoteDialog({
   onConfirm: (payment: PaymentIntentInput) => void;
 }) {
   const [payment, setPayment] = useState<PaymentIntentInput>(initialPayment());
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose: onCancel });
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true"
-         aria-label="Convertir proforma en pedido">
+         aria-label="Convertir proforma en pedido" {...overlayProps}>
       <div className="modal-dialog erp-modal">
         <h2>Convertir la proforma {quote.codpre} en pedido</h2>
+        <ModalCloseButton onClose={requestClose} />
         <p className="muted small">
           {quote.referencia || "Sin referencia"} · {quote.total.toFixed(2)} €.
           Se creará el pedido en BoHub y su <strong>albarán en FACTUSOL</strong>

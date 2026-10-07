@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { ErpModalShell } from "../../components/erp/ErpModalShell";
 import { SatIncidenciasTab } from "../../components/erp/SatIncidenciasTab";
 import { SatPrepModal } from "../../components/erp/SatPrepModal";
 import { SatPreparingCard } from "../../components/erp/SatPreparingCard";
@@ -768,30 +769,28 @@ export default function SatQueuePage() {
       ) : null}
 
       {confirmOpen ? (
-        <div className="modal-overlay" role="dialog" aria-modal="true"
-             aria-label="Confirmar No requiere envío">
-          <div className="modal-dialog erp-modal">
-            <h2>{bulkValue ? "Marcar «No requiere envío»" : "Volver a requerir envío"}</h2>
-            <p>
-              {bulkValue
-                ? `Vas a marcar ${selected.size} pedido(s) como «No requiere envío» `
-                  + "(recogida en tienda, licencia, servicio…). Pasan a «Sin envío» y NO "
-                  + "cuentan como enviados. No afecta a la factura ni al cobro. Es reversible."
-                : `Vas a devolver ${selected.size} pedido(s) al taller: volverán a su `
-                  + "pestaña según su estado de preparación."}
-            </p>
-            <div className="modal-actions">
-              <button type="button" className="button secondary" disabled={bulkBusy}
-                      onClick={() => setConfirmOpen(false)}>
-                Cancelar
-              </button>
-              <button type="button" className="button" disabled={bulkBusy}
-                      onClick={() => void applyBulk()}>
-                {bulkBusy ? "Aplicando…" : bulkValue ? "Marcar" : "Devolver"}
-              </button>
-            </div>
+        <ErpModalShell label="Confirmar No requiere envío"
+                       title={bulkValue ? "Marcar «No requiere envío»" : "Volver a requerir envío"}
+                       onClose={() => setConfirmOpen(false)} disabled={bulkBusy}>
+          <p>
+            {bulkValue
+              ? `Vas a marcar ${selected.size} pedido(s) como «No requiere envío» `
+                + "(recogida en tienda, licencia, servicio…). Pasan a «Sin envío» y NO "
+                + "cuentan como enviados. No afecta a la factura ni al cobro. Es reversible."
+              : `Vas a devolver ${selected.size} pedido(s) al taller: volverán a su `
+                + "pestaña según su estado de preparación."}
+          </p>
+          <div className="modal-actions">
+            <button type="button" className="button secondary" disabled={bulkBusy}
+                    onClick={() => setConfirmOpen(false)}>
+              Cancelar
+            </button>
+            <button type="button" className="button" disabled={bulkBusy}
+                    onClick={() => void applyBulk()}>
+              {bulkBusy ? "Aplicando…" : bulkValue ? "Marcar" : "Devolver"}
+            </button>
           </div>
-        </div>
+        </ErpModalShell>
       ) : null}
     </div>
   );

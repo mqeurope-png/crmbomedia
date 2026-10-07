@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import { EXCEPTION_CATALOG } from "../../lib/erpApi";
+import { ModalCloseButton } from "../ModalCloseButton";
+import { useModalBehaviour } from "../useModalBehaviour";
 
 /** Modal «Reportar problema»: selector de tipo + subtipo (si aplica) +
  *  descripción libre. Usa .modal-dialog (caja centrada del CRM). */
@@ -17,6 +19,7 @@ export function ReportExceptionModal({
   const [type, setType] = useState(EXCEPTION_CATALOG[0].type);
   const [subtype, setSubtype] = useState("");
   const [description, setDescription] = useState("");
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose, disabled: busy });
 
   const selected = EXCEPTION_CATALOG.find((c) => c.type === type);
   const subtypes = selected?.subtypes ?? [];
@@ -30,9 +33,10 @@ export function ReportExceptionModal({
   }
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Reportar problema">
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Reportar problema" {...overlayProps}>
       <div className="modal-dialog erp-modal">
         <h2>Reportar problema</h2>
+        <ModalCloseButton onClose={requestClose} disabled={busy} />
         <label className="field">
           <span>Tipo de incidencia</span>
           <select

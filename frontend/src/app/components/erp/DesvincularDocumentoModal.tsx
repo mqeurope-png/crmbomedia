@@ -7,6 +7,8 @@ import {
   type OrderDetail,
 } from "../../lib/erpApi";
 import { extractErrorMessage } from "../../lib/errors";
+import { ModalCloseButton } from "../ModalCloseButton";
+import { useModalBehaviour } from "../useModalBehaviour";
 
 /** «Desvincular documento» sin anular (vínculos hechos por error): el pedido
  *  deja de apuntar la factura / el albarán / la proforma, que sigue en
@@ -33,6 +35,7 @@ export function DesvincularDocumentoModal({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose, disabled: busy });
 
   async function submit() {
     setBusy(true);
@@ -50,9 +53,10 @@ export function DesvincularDocumentoModal({
 
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true"
-         aria-label={`Desvincular ${document.label} de ${orderNumber}`}>
+         aria-label={`Desvincular ${document.label} de ${orderNumber}`} {...overlayProps}>
       <div className="modal-dialog erp-modal">
         <h2>Desvincular {document.label}</h2>
+        <ModalCloseButton onClose={requestClose} disabled={busy} />
         <p className="form-info" role="note">
           {document.label.charAt(0).toUpperCase() + document.label.slice(1)} seguirá
           existiendo en FACTUSOL tal cual y el pedido {orderNumber} dejará de apuntarla.

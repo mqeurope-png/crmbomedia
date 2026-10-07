@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { extractErrorMessage } from "../../lib/errors";
+import { ModalCloseButton } from "../ModalCloseButton";
+import { useModalBehaviour } from "../useModalBehaviour";
 import {
   getWooWebhookStatus,
   regenerateWooWebhookSecret,
@@ -25,6 +27,7 @@ export function WooWebhookModal({
   const [busy, setBusy] = useState(false);
   const [revealed, setRevealed] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose });
 
   useEffect(() => {
     getWooWebhookStatus(storeId)
@@ -61,9 +64,10 @@ export function WooWebhookModal({
   }
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={`Webhook de ${storeName}`}>
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={`Webhook de ${storeName}`} {...overlayProps}>
       <div className="modal-dialog erp-modal">
         <h2>Webhook · {storeName}</h2>
+        <ModalCloseButton onClose={requestClose} />
         {error ? <p className="form-error">{error}</p> : null}
         {!status ? (
           <p className="muted">Cargando…</p>

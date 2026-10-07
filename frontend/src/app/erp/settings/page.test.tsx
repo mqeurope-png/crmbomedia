@@ -621,7 +621,8 @@ describe("ErpSettingsPage — Lote 2 · PR-2", () => {
     expect(within(dialog).getByTestId("ejemplo-cuerpo")).toHaveTextContent("Rotulación Levante S.L.");
     expect(dialog).toHaveTextContent("pedidos@streamtec.es (remitente de la serie por defecto)");
     expect(dialog).toHaveTextContent("Datos de muestra");
-    await user.click(within(dialog).getByRole("button", { name: "Cerrar" }));
+    // El «Cerrar» del pie (el ✕ de la cabecera también se llama «Cerrar»).
+    await user.click(within(dialog).getByText("Cerrar"));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 

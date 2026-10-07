@@ -4,6 +4,8 @@ import { ExternalLink, Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { getCurrentUser } from "../../lib/api";
 import { extractErrorMessage } from "../../lib/errors";
+import { ModalCloseButton } from "../ModalCloseButton";
+import { useModalBehaviour } from "../useModalBehaviour";
 import {
   getBrevoTemplateHtml,
   getComposerSourceTemplates,
@@ -86,6 +88,7 @@ export function TemplatePicker({ onSelect, onClose }: Props) {
   const [crmFolder, setCrmFolder] = useState<string>(FOLDER_ALL);
   const [crmFolderInitialized, setCrmFolderInitialized] = useState(false);
   const [userId, setUserId] = useState<string | null>(null);
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose });
 
   useEffect(() => {
     let cancelled = false;
@@ -225,21 +228,12 @@ export function TemplatePicker({ onSelect, onClose }: Props) {
       className="modal-overlay"
       role="dialog"
       aria-modal="true"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+      {...overlayProps}
     >
       <div className="modal-dialog tp-dialog">
         <div className="modal-header">
           <h2>Cargar plantilla</h2>
-          <button
-            type="button"
-            className="modal-close"
-            onClick={onClose}
-            aria-label="Cerrar"
-          >
-            ×
-          </button>
+          <ModalCloseButton onClose={requestClose} placement="header" />
         </div>
         <div className="modal-body">
           <div className="tp-tabs" role="tablist">
@@ -435,27 +429,19 @@ function ComposerOpenModal({
   item: ComposerSourceItem;
   onClose: () => void;
 }) {
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose });
   return (
     <div
       className="modal-overlay"
       role="dialog"
       aria-modal="true"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+      {...overlayProps}
       style={{ zIndex: 1100 }}
     >
       <div className="modal-dialog small">
         <div className="modal-header">
           <h2>{item.name}</h2>
-          <button
-            type="button"
-            className="modal-close"
-            onClick={onClose}
-            aria-label="Cerrar"
-          >
-            ×
-          </button>
+          <ModalCloseButton onClose={requestClose} placement="header" />
         </div>
         <div className="modal-body">
           <p>

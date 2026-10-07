@@ -17,6 +17,7 @@ import {
   type OrderFactusolCustomerSource,
 } from "../../lib/erpApi";
 import { CompanyFactusolPanel } from "./CompanyFactusolPanel";
+import { ErpModalShell } from "./ErpModalShell";
 
 /** Lote 4 / Lote 6 · ficha — el cliente FACTUSOL del pedido WEB (este panel solo
  *  se monta en pedidos web: la ficha lo envuelve en `isWeb`).
@@ -150,6 +151,11 @@ function OrderFactusolCodePanel({
 
   useEffect(() => { reload(); }, [reload]);
   useEffect(() => { getCurrentUser().then(setUser).catch(() => undefined); }, []);
+
+  function cancelCompleting() {
+    setCompleting(false);
+    setForm({});
+  }
 
   async function confirmarCompletar() {
     const entered: OrderFactusolCustomerFields = Object.fromEntries(
@@ -310,67 +316,62 @@ function OrderFactusolCodePanel({
       ) : null}
 
       {completing ? (
-        <div className="modal-overlay" role="dialog" aria-modal="true"
-             aria-label="Completar datos del cliente FACTUSOL">
-          <div className="modal-dialog erp-modal">
-            <h2>Completar datos en FACTUSOL</h2>
-            <p className="form-error" role="alert">
-              Esto escribirá en FACTUSOL (cliente nº {data.codcli}) SOLO los datos
-              que rellenes aquí. No se inventa ni se borra nada.
-            </p>
-            {completable.map((field) => (
-              <label key={field} className="field">
-                <span>{MISSING_LABELS[field]}</span>
-                <input
-                  type="text"
-                  value={(form as Record<string, string>)[field] ?? ""}
-                  onChange={(e) => setForm((f) => ({ ...f, [field]: e.target.value }))}
-                />
-              </label>
-            ))}
-            <div className="modal-actions">
-              <button type="button" className="button secondary" disabled={busy}
-                      onClick={() => { setCompleting(false); setForm({}); }}>
-                Cancelar
-              </button>
-              <button type="button" className="button" disabled={busy}
-                      onClick={confirmarCompletar}>
-                {busy ? "Guardando…" : "Guardar en FACTUSOL"}
-              </button>
-            </div>
+        <ErpModalShell label="Completar datos del cliente FACTUSOL" title="Completar datos en FACTUSOL"
+                       onClose={cancelCompleting} disabled={busy}>
+          <p className="form-error" role="alert">
+            Esto escribirá en FACTUSOL (cliente nº {data.codcli}) SOLO los datos
+            que rellenes aquí. No se inventa ni se borra nada.
+          </p>
+          {completable.map((field) => (
+            <label key={field} className="field">
+              <span>{MISSING_LABELS[field]}</span>
+              <input
+                type="text"
+                value={(form as Record<string, string>)[field] ?? ""}
+                onChange={(e) => setForm((f) => ({ ...f, [field]: e.target.value }))}
+              />
+            </label>
+          ))}
+          <div className="modal-actions">
+            <button type="button" className="button secondary" disabled={busy}
+                    onClick={cancelCompleting}>
+              Cancelar
+            </button>
+            <button type="button" className="button" disabled={busy}
+                    onClick={confirmarCompletar}>
+              {busy ? "Guardando…" : "Guardar en FACTUSOL"}
+            </button>
           </div>
-        </div>
+        </ErpModalShell>
       ) : null}
 
       {mergeOffer ? (
-        <div className="modal-overlay" role="dialog" aria-modal="true"
-             aria-label="Fusionar con la empresa vinculada">
-          <div className="modal-dialog erp-modal">
-            <h2>Ese cliente FACTUSOL ya está vinculado</h2>
-            <p>
-              El cliente FACTUSOL nº {data.codcli} ya está vinculado a la empresa{" "}
-              <strong>{mergeOffer.company_name ?? "otra empresa"}</strong>. Un
-              CODCLI solo puede estar en una ficha.
-            </p>
-            <p className="form-error" role="alert">
-              Puedes <strong>fusionar la empresa del pedido en «
-              {mergeOffer.company_name ?? "la empresa vinculada"}»</strong>: sus
-              pedidos (incluido éste), contactos, tareas y actividad pasan a la
-              otra ficha, la empresa del pedido se archiva (reversible: no se
-              borra) y el CODCLI queda en una sola empresa.
-            </p>
-            <div className="modal-actions">
-              <button type="button" className="button secondary" disabled={merging}
-                      onClick={() => setMergeOffer(null)}>
-                Cancelar
-              </button>
-              <button type="button" className="button danger" disabled={merging}
-                      onClick={fusionarConTitular}>
-                {merging ? "Fusionando…" : "Fusionar con esa empresa"}
-              </button>
-            </div>
+        <ErpModalShell label="Fusionar con la empresa vinculada"
+                       title="Ese cliente FACTUSOL ya está vinculado"
+                       onClose={() => setMergeOffer(null)} disabled={merging}>
+          <p>
+            El cliente FACTUSOL nº {data.codcli} ya está vinculado a la empresa{" "}
+            <strong>{mergeOffer.company_name ?? "otra empresa"}</strong>. Un
+            CODCLI solo puede estar en una ficha.
+          </p>
+          <p className="form-error" role="alert">
+            Puedes <strong>fusionar la empresa del pedido en «
+            {mergeOffer.company_name ?? "la empresa vinculada"}»</strong>: sus
+            pedidos (incluido éste), contactos, tareas y actividad pasan a la
+            otra ficha, la empresa del pedido se archiva (reversible: no se
+            borra) y el CODCLI queda en una sola empresa.
+          </p>
+          <div className="modal-actions">
+            <button type="button" className="button secondary" disabled={merging}
+                    onClick={() => setMergeOffer(null)}>
+              Cancelar
+            </button>
+            <button type="button" className="button danger" disabled={merging}
+                    onClick={fusionarConTitular}>
+              {merging ? "Fusionando…" : "Fusionar con esa empresa"}
+            </button>
           </div>
-        </div>
+        </ErpModalShell>
       ) : null}
     </section>
   );

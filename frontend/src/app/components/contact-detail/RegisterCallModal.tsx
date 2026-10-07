@@ -16,7 +16,9 @@ import {
   type ManualWorkflow,
 } from "../../lib/callsApi";
 import { extractErrorMessage } from "../../lib/errors";
+import { ModalCloseButton } from "../ModalCloseButton";
 import { StarRating } from "../StarRating";
+import { useModalBehaviour } from "../useModalBehaviour";
 
 type Props = {
   contactId: string;
@@ -61,6 +63,7 @@ export function RegisterCallModal({
   const [selectedWfs, setSelectedWfs] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { overlayProps, requestClose } = useModalBehaviour({ open, onClose, disabled: busy });
 
   useEffect(() => {
     if (!open) return;
@@ -122,14 +125,14 @@ export function RegisterCallModal({
   }
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true">
+    <div className="modal-overlay" role="dialog" aria-modal="true" {...overlayProps}>
       {/* PR-Hotfix-Ficha-360 Bug 1: la caja del modal es `.modal-dialog`
         * (patrón de TaskModal/TemplatePicker) — la clase `.modal` no
         * existe en styles.css y los inputs flotaban sobre el backdrop. */}
       <div className="modal-dialog register-call-modal">
         <header className="modal-header">
           <h2>📞 Registrar llamada</h2>
-          <button type="button" className="modal-close" onClick={onClose}>×</button>
+          <ModalCloseButton onClose={requestClose} disabled={busy} placement="header" />
         </header>
         <div className="modal-body">
           {error ? <p className="form-error">{error}</p> : null}
@@ -303,6 +306,7 @@ export function RunWorkflowMenu({
   const [wfs, setWfs] = useState<ManualWorkflow[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { overlayProps, requestClose } = useModalBehaviour({ open, onClose });
 
   useEffect(() => {
     if (open) listManualWorkflows().then(setWfs).catch(() => setWfs([]));
@@ -310,12 +314,12 @@ export function RunWorkflowMenu({
 
   if (!open) return null;
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true">
+    <div className="modal-overlay" role="dialog" aria-modal="true" {...overlayProps}>
       {/* PR-Hotfix-Ficha-360 Bug 1: `.modal-dialog` = caja real. */}
       <div className="modal-dialog small run-workflow-modal">
         <header className="modal-header">
           <h2>⚡ Ejecutar workflow</h2>
-          <button type="button" className="modal-close" onClick={onClose}>×</button>
+          <ModalCloseButton onClose={requestClose} placement="header" />
         </header>
         <div className="modal-body">
           {error ? <p className="form-error">{error}</p> : null}

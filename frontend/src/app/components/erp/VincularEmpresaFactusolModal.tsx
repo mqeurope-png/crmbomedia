@@ -10,6 +10,8 @@ import {
 } from "../../lib/erpApi";
 import { extractErrorMessage } from "../../lib/errors";
 import { CompanySearch } from "../CompanySearch";
+import { ModalCloseButton } from "../ModalCloseButton";
+import { useModalBehaviour } from "../useModalBehaviour";
 
 /** Empresa CRM que queda vinculada al cliente FACTUSOL. */
 export type LinkedCompany = { id: string; name: string };
@@ -55,6 +57,7 @@ export function VincularEmpresaFactusolModal({
   const [datos, setDatos] = useState<Datos>({ ...VACIO, nombre: clienteNombre ?? "" });
   const [leyendo, setLeyendo] = useState(true);
   const [busy, setBusy] = useState(false);
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose, disabled: busy });
   const [error, setError] = useState<string | null>(null);
 
   // Los datos del cliente en FACTUSOL (F_CLI), para crear la empresa con ellos.
@@ -155,11 +158,11 @@ export function VincularEmpresaFactusolModal({
   }
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Vincular empresa">
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Vincular empresa" {...overlayProps}>
       <div className="modal-dialog erp-modal">
         <div className="modal-header">
           <h2>Vincular empresa</h2>
-          <button type="button" className="modal-close" aria-label="Cerrar" onClick={onClose}>×</button>
+          <ModalCloseButton onClose={requestClose} disabled={busy} placement="header" />
         </div>
         <div className="modal-body">
           <p>

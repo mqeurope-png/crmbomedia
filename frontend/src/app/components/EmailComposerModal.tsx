@@ -40,6 +40,7 @@ import {
 import { extractErrorMessage } from "../lib/errors";
 import { SaveTemplateModal } from "./email/SaveTemplateModal";
 import { ScheduleSendDialog } from "./email/ScheduleSendDialog";
+import { useModalBehaviour } from "./useModalBehaviour";
 import {
   TemplatePicker,
   type TemplatePickerSelection,
@@ -183,7 +184,14 @@ export function EmailComposerModal({
   const [attachments, setAttachments] = useState<EmailDraftAttachment[]>([]);
   const [uploading, setUploading] = useState(false);
   const [dragging, setDragging] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
+  // Esc (solo si el composer es el modal de arriba: no con «Programar
+  // envío», «Cargar plantilla»… abiertos encima), foco de vuelta al cerrar
+  // y clic fuera cuando el composer hace de capa (ver el `onMouseDown` de la raíz).
+  const {
+    overlayRef: rootRef,
+    overlayProps,
+    requestClose,
+  } = useModalBehaviour({ onClose, disabled: submitting });
   const fileInputRef = useRef<HTMLInputElement>(null);
   const editorRef = useRef<RichEditorHandle | null>(null);
   const draftIdRef = useRef<string | null>(initialDraft?.id ?? null);
@@ -255,22 +263,8 @@ export function EmailComposerModal({
       rootRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     }, 100);
     return () => window.clearTimeout(handle);
-  }, []);
-
-  // PR-Fix-Modal-Nuevo-Email-Layout. Escape cierra como X. Lo
-  // registramos en document para capturarlo aunque el foco esté en
-  // un input / botón del composer. TinyMCE no consume Escape por
-  // defecto, así que llega hasta este listener.
-  useEffect(() => {
-    function handleKey(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        onClose();
-      }
-    }
-    document.addEventListener("keydown", handleKey);
-    return () => document.removeEventListener("keydown", handleKey);
-  }, [onClose]);
+    // `rootRef` es una ref estable (de useModalBehaviour): corre solo al montar.
+  }, [rootRef]);
 
   useEffect(() => {
     getMyEmailAliases()
@@ -540,6 +534,13 @@ export function EmailComposerModal({
       role="dialog"
       aria-modal="true"
       ref={rootRef}
+      onMouseDown={(event) => {
+        // Dentro del panel derecho / la capa de «Redactar», esta raíz ES la
+        // tarjeta blanca: pulsar en su borde no es «fuera». Solo cuando el
+        // composer hace él mismo de capa (respuesta desde el hilo).
+        if (event.currentTarget.parentElement?.matches(".email-compose-panel, .email-compose-overlay")) return;
+        overlayProps.onMouseDown(event);
+      }}
     >
       <div className="modal modal-wide email-compose-modal">
         <header className="composer-header">
@@ -555,7 +556,8 @@ export function EmailComposerModal({
             type="button"
             className="composer-header-close"
             aria-label="Cerrar"
-            onClick={onClose}
+            onClick={requestClose}
+            disabled={submitting}
           >
             <X size={18} aria-hidden />
           </button>

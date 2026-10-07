@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import { listPipelines, type Pipeline } from "../lib/api";
 import { extractErrorMessage } from "../lib/errors";
+import { ModalCloseButton } from "./ModalCloseButton";
+import { useModalBehaviour } from "./useModalBehaviour";
 
 type Props = {
   open: boolean;
@@ -27,6 +29,7 @@ export function AddToPipelineModal({
   const [stageId, setStageId] = useState<string>("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { overlayProps, requestClose } = useModalBehaviour({ open, onClose, disabled: submitting });
 
   useEffect(() => {
     if (!open) return;
@@ -65,9 +68,10 @@ export function AddToPipelineModal({
   }
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal>
+    <div className="modal-overlay" role="dialog" aria-modal {...overlayProps}>
       <form onSubmit={handleSubmit} className="modal-card">
         <h2>Añadir a pipeline</h2>
+        <ModalCloseButton onClose={requestClose} disabled={submitting} />
         <label>
           <span>Pipeline</span>
           <select

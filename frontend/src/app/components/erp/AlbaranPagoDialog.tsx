@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import type { PaymentIntentInput } from "../../lib/erpApi";
+import { ModalCloseButton } from "../ModalCloseButton";
+import { useModalBehaviour } from "../useModalBehaviour";
 import { initialPayment, paymentReady, PaymentStep } from "./PaymentStep";
 
 /** C1 — antes de generar el albarán hay que decidir el pago, no dejarlo «en el
@@ -19,11 +21,13 @@ export function AlbaranPagoDialog({
   busy?: boolean;
 }) {
   const [payment, setPayment] = useState<PaymentIntentInput>(initialPayment());
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose: onCancel, disabled: busy });
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true"
-         aria-label="Decidir el pago antes del albarán">
+         aria-label="Decidir el pago antes del albarán" {...overlayProps}>
       <div className="modal-dialog erp-modal">
         <h2>Antes de generar el albarán</h2>
+        <ModalCloseButton onClose={requestClose} disabled={busy} />
         <p className="muted small">
           Decide el pago: confírmalo o déjalo pendiente (se cobra luego), o
           márcalo <strong>«sin cobro»</strong> si es un envío de cortesía. El

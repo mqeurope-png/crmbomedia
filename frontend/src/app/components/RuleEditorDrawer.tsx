@@ -13,10 +13,12 @@
  * cualquier campo / comparador soportado en filtros también es válido
  * en reglas — sin duplicar el whitelist).
  */
-import { Search, X } from "lucide-react";
+import { Search } from "lucide-react";
 import { useEffect, useState } from "react";
 import { EntityFilterBuilder } from "./entity/EntityFilterBuilder";
 import { extractErrorMessage } from "../lib/errors";
+import { ModalCloseButton } from "./ModalCloseButton";
+import { useModalBehaviour } from "./useModalBehaviour";
 import {
   getEntityFilterSchema,
   type FieldDescriptor,
@@ -109,6 +111,7 @@ export function RuleEditorDrawer({ mode, rule, onClose, onSaved }: Props) {
   const [users, setUsers] = useState<User[]>([]);
   const [fields, setFields] = useState<FieldDescriptor[] | null>(null);
   const [saving, setSaving] = useState(false);
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose, disabled: saving });
   const [previewing, setPreviewing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<AssignmentRuleDryRunResult | null>(null);
@@ -194,23 +197,15 @@ export function RuleEditorDrawer({ mode, rule, onClose, onSaved }: Props) {
   }
 
   return (
-    <div className="drawer-overlay" onClick={onClose}>
+    <div className="drawer-overlay" {...overlayProps}>
       <aside
         className="drawer drawer-wide"
-        onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-label={mode === "create" ? "Nueva regla" : "Editar regla"}
       >
         <header className="drawer-header">
           <h3>{mode === "create" ? "Nueva regla" : `Editar — ${rule?.name}`}</h3>
-          <button
-            type="button"
-            className="btn small"
-            onClick={onClose}
-            aria-label="Cerrar"
-          >
-            <X size={12} aria-hidden />
-          </button>
+          <ModalCloseButton onClose={requestClose} disabled={saving} placement="header" />
         </header>
 
         {error ? <p className="form-error">{error}</p> : null}

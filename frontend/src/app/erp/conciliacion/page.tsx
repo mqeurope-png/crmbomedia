@@ -1,7 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { ModalCloseButton } from "../../components/ModalCloseButton";
 import { PageHeader } from "../../components/PageHeader";
+import { useModalBehaviour } from "../../components/useModalBehaviour";
 import { getCurrentUser, type User } from "../../lib/api";
 import { Cap, can } from "../../lib/capabilities";
 import {
@@ -651,6 +653,7 @@ function ReassignModal({
   const [targets, setTargets] = useState<BankReassignTarget[]>([]);
   const [learn, setLearn] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose });
 
   useEffect(() => {
     const handle = window.setTimeout(() => {
@@ -665,9 +668,10 @@ function ReassignModal({
   const remaining = Math.round((movement.importe - assigned) * 100) / 100;
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Elegir factura">
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Elegir factura" {...overlayProps}>
       <div className="modal-dialog erp-emit-modal">
         <h2>Elegir / repartir · {eur(movement.importe)}</h2>
+        <ModalCloseButton onClose={requestClose} />
         <p className="muted small">{movement.concepto}</p>
         <label className="field">
           <span>Buscar factura</span>
@@ -735,10 +739,12 @@ function DiscardModal({
 }) {
   const [reason, setReason] = useState("no es cobro de cliente");
   const [learn, setLearn] = useState(true);
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose });
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="No es cobro de cliente">
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="No es cobro de cliente" {...overlayProps}>
       <div className="modal-dialog erp-emit-modal">
         <h2>No es un cobro de cliente</h2>
+        <ModalCloseButton onClose={requestClose} />
         <p className="muted small">{movement.concepto} · {eur(movement.importe)}</p>
         <label className="field">
           <span>Motivo</span>

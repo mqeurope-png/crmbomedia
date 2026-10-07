@@ -1,5 +1,6 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { CancelOrderModal } from "./CancelOrderModal";
 import { cancelOrder, previewCancelOrder } from "../../lib/erpApi";
 
@@ -120,5 +121,56 @@ describe("CancelOrderModal", () => {
     }));
     expect(await screen.findByText(/Desvinculado del pedido \(sigue en FACTUSOL\)/))
       .toHaveTextContent("factura 2-526110");
+  });
+
+  describe("✕, Esc, clic fuera y foco", () => {
+    function Abridor() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <button type="button" onClick={() => setOpen(true)}>Anular…</button>
+          {open ? (
+            <CancelOrderModal orderId="o-1" orderNumber="MANUAL-000777" onClose={() => setOpen(false)} />
+          ) : null}
+        </>
+      );
+    }
+
+    it("el ✕ es visible y cierra; Esc cierra y el foco vuelve al botón que lo abrió", async () => {
+      mockPreview.mockResolvedValue({ can_cancel: true, blockers: [], warnings: [], factusol_docs: [] });
+      const user = userEvent.setup();
+      render(<Abridor />);
+      const abrir = screen.getByRole("button", { name: "Anular…" });
+      await user.click(abrir);
+      const dialog = screen.getByRole("dialog", { name: "Anular pedido MANUAL-000777" });
+      expect(within(dialog).getByRole("button", { name: "Cerrar" })).toBeVisible();
+      await user.keyboard("{Escape}");
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(abrir).toHaveFocus();
+
+      await user.click(abrir);
+      await user.click(screen.getByRole("button", { name: "Cerrar" }));
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(abrir).toHaveFocus();
+    });
+
+    it("pulsar fuera cierra; mientras anula, ni Esc ni el ✕ ni la capa cierran", async () => {
+      mockPreview.mockResolvedValue({ can_cancel: true, blockers: [], warnings: [], factusol_docs: [] });
+      let resolve: (v: unknown) => void = () => undefined;
+      mockCancel.mockReturnValue(new Promise((r) => { resolve = r; }));
+      const onClose = jest.fn();
+      const user = userEvent.setup();
+      render(<CancelOrderModal orderId="o-1" orderNumber="MANUAL-000777" onClose={onClose} />);
+      await user.click(await screen.findByRole("button", { name: "Anular pedido" }));
+      const dialog = screen.getByRole("dialog", { name: "Anular pedido MANUAL-000777" });
+      expect(within(dialog).getByRole("button", { name: "Cerrar" })).toBeDisabled();
+      await user.keyboard("{Escape}");
+      fireEvent.mouseDown(dialog);
+      expect(onClose).not.toHaveBeenCalled();
+      resolve({ cancelled: true, factusol_delete_job_id: null, factusol_docs_to_delete: [], cancel_warnings: [] });
+      expect(await screen.findByRole("status")).toHaveTextContent(/Pedido anulado/);
+      fireEvent.mouseDown(dialog);
+      expect(onClose).toHaveBeenCalledTimes(1);
+    });
   });
 });

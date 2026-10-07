@@ -117,6 +117,7 @@ export function CompanyCreateForm({
   onCancel,
   onUseExisting,
   compact = false,
+  onSubmittingChange,
 }: {
   initialName?: string;
   onCreated: (result: CompanyCreated) => void;
@@ -126,6 +127,8 @@ export function CompanyCreateForm({
   onUseExisting?: (company: { id: string; name: string }) => void;
   /** Dentro de un modal: sin cabeceras grandes. */
   compact?: boolean;
+  /** Avisa al modal que lo contiene de que está guardando (desactiva su ✕). */
+  onSubmittingChange?: (submitting: boolean) => void;
 }) {
   const id = useId();
   const [name, setName] = useState(initialName);
@@ -227,6 +230,7 @@ export function CompanyCreateForm({
     e.preventDefault();
     if (submitting || blockedReason) return;
     setSubmitting(true);
+    onSubmittingChange?.(true);
     setError(null);
     const payload: CompanyWrite = {
       name: name.trim(),
@@ -249,6 +253,7 @@ export function CompanyCreateForm({
     } catch (err) {
       setError(extractErrorMessage(err, "No se pudo crear la empresa."));
       setSubmitting(false);
+      onSubmittingChange?.(false);
       return;
     }
     // Alta en FACTUSOL (opcional): la empresa YA existe en el CRM; si esto
@@ -277,6 +282,7 @@ export function CompanyCreateForm({
       }
     }
     setSubmitting(false);
+    onSubmittingChange?.(false);
     onCreated({ company, factusol, factusolError });
   }
 

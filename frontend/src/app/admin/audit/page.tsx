@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { ErrorState } from "../../components/ErrorState";
+import { ModalCloseButton } from "../../components/ModalCloseButton";
 import { PageHeader } from "../../components/PageHeader";
+import { useModalBehaviour } from "../../components/useModalBehaviour";
 import {
   exportAuditLogs,
   getAuditLogs,
@@ -101,6 +103,7 @@ export default function AuditLogsPage() {
   // PR-TagPicker-Ficha-Contacto Feature C. Fila seleccionada → modal
   // con el detalle completo (metadata JSON formateada + user-agent).
   const [selected, setSelected] = useState<AuditLog | null>(null);
+  const detailModal = useModalBehaviour({ open: selected !== null, onClose: () => setSelected(null) });
 
   const refresh = useCallback(
     async (filters: FormFilters, currentPage: number) => {
@@ -357,21 +360,12 @@ export default function AuditLogsPage() {
           className="modal-overlay"
           role="dialog"
           aria-modal="true"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setSelected(null);
-          }}
+          {...detailModal.overlayProps}
         >
           <div className="modal-dialog">
             <div className="modal-header">
               <h2>Detalle del evento</h2>
-              <button
-                type="button"
-                className="modal-close"
-                onClick={() => setSelected(null)}
-                aria-label="Cerrar"
-              >
-                ×
-              </button>
+              <ModalCloseButton onClose={detailModal.requestClose} placement="header" />
             </div>
             <div className="modal-body">
               <dl className="audit-detail">

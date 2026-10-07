@@ -8,8 +8,10 @@ import {
   type SegmentTemplate,
 } from "../lib/api";
 import { extractErrorMessage } from "../lib/errors";
+import { ModalCloseButton } from "./ModalCloseButton";
 import { SegmentAIGenerator } from "./SegmentAIGenerator";
 import { SegmentTemplateGallery } from "./SegmentTemplateGallery";
+import { useModalBehaviour } from "./useModalBehaviour";
 
 type Props = {
   open: boolean;
@@ -38,8 +40,6 @@ export function SegmentWizard({
   );
   const [submitting, setSubmitting] = useState(false);
 
-  if (!open) return null;
-
   function reset() {
     setMode("menu");
     setError(null);
@@ -48,6 +48,16 @@ export function SegmentWizard({
     setPickedTemplate(null);
     setProposal(null);
   }
+
+  const { overlayProps, requestClose } = useModalBehaviour({
+    open,
+    onClose: () => {
+      reset();
+      onClose();
+    },
+  });
+
+  if (!open) return null;
 
   async function createFrom(
     name: string,
@@ -73,7 +83,7 @@ export function SegmentWizard({
   }
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal>
+    <div className="modal-overlay" role="dialog" aria-modal {...overlayProps}>
       <div className="modal-card modal-card-wide">
         <div className="wizard-header">
           {mode !== "menu" ? (
@@ -95,16 +105,7 @@ export function SegmentWizard({
             {mode === "ai" && "Generar con IA"}
             {mode === "preview" && "Revisar propuesta IA"}
           </h2>
-          <button
-            type="button"
-            className="button secondary small"
-            onClick={() => {
-              reset();
-              onClose();
-            }}
-          >
-            Cerrar
-          </button>
+          <ModalCloseButton onClose={requestClose} placement="header" />
         </div>
 
         {error ? <p className="danger-text">{error}</p> : null}

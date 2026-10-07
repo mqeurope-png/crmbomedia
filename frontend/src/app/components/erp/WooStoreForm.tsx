@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import type { WooStoreCreate } from "../../lib/erpApi";
+import { ModalCloseButton } from "../ModalCloseButton";
+import { useModalBehaviour } from "../useModalBehaviour";
 
 /** Formulario para dar de alta una tienda WooCommerce. Al enviar, el
  *  contenedor prueba conexión antes de persistir (o solo persiste si el
@@ -21,13 +23,15 @@ export function WooStoreForm({
   const [ck, setCk] = useState("");
   const [cs, setCs] = useState("");
   const [cutoff, setCutoff] = useState("");
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose: onCancel, disabled: busy });
 
   const canSubmit = accountId && displayName && baseUrl && ck && cs;
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Añadir tienda WooCommerce">
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Añadir tienda WooCommerce" {...overlayProps}>
       <div className="modal-dialog erp-modal">
         <h2>Añadir tienda WooCommerce</h2>
+        <ModalCloseButton onClose={requestClose} disabled={busy} />
         <label className="field">
           <span>Slug de tienda (id interno)</span>
           <input

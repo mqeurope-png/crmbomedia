@@ -9,6 +9,8 @@ import {
   STATUS_LABELS,
   type SatQueueItem,
 } from "../../lib/erpApi";
+import { ModalCloseButton } from "../ModalCloseButton";
+import { useModalBehaviour } from "../useModalBehaviour";
 import { FotosEmbalaje } from "./FotosEmbalaje";
 import { PackingForm } from "./EmbalarModal";
 import { ReportExceptionModal } from "./ReportExceptionModal";
@@ -38,6 +40,7 @@ export function SatPrepModal({
   const [notice, setNotice] = useState<string | null>(null);
   const [showReport, setShowReport] = useState(false);
   const started = useRef(false);
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose });
 
   async function empezar() {
     setBusy(true);
@@ -85,13 +88,14 @@ export function SatPrepModal({
   const who = customerLabel(order);
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true"
-         aria-label={`Preparar ${order.order_number}`}>
+         aria-label={`Preparar ${order.order_number}`} {...overlayProps}>
       <div className="modal-dialog erp-modal sat-prep-modal">
         <div className="sat-prep-head">
           <h2>📦 {order.order_number}</h2>
           <span className={`badge ${STATUS_LABELS[prep]?.tone ?? "muted"}`}>
             {STATUS_LABELS[prep]?.label ?? prep}
           </span>
+          <ModalCloseButton onClose={requestClose} placement="header" />
         </div>
         {who ? <p className="sat-card-customer">{who}</p> : null}
         {error ? <p className="form-error" role="alert">{error}</p> : null}

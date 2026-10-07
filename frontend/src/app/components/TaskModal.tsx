@@ -10,6 +10,8 @@ import {
 } from "../lib/tasksApi";
 import { extractErrorMessage } from "../lib/errors";
 import { getGoogleStatus, type GoogleStatus } from "../lib/googleApi";
+import { ModalCloseButton } from "./ModalCloseButton";
+import { useModalBehaviour } from "./useModalBehaviour";
 
 type Props = {
   /** Pre-fill contact link — used by the contact detail "Tareas" tab. */
@@ -84,6 +86,7 @@ export function TaskModal({
   );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose, disabled: submitting });
   const [googleStatus, setGoogleStatus] = useState<GoogleStatus | null>(null);
   // For new tasks default to ON when GCal is available; for editing
   // start from the task's current sync state.
@@ -154,13 +157,16 @@ export function TaskModal({
     // interno, fea"). Aplicamos `modal-header` (padding + border-
     // bottom) y `modal-form` (padding + gap entre fields) para
     // alinearlo con el modal Editar contacto que sí está bien.
-    <div className="modal-overlay" role="dialog" aria-modal="true">
+    <div className="modal-overlay" role="dialog" aria-modal="true" {...overlayProps}>
       <div className="modal-dialog">
         <header className="modal-header">
-          <h2>{isEdit ? "Editar tarea" : "Nueva tarea"}</h2>
-          {contactId && !isEdit ? (
-            <p className="muted small">Vinculada al contacto actual.</p>
-          ) : null}
+          <div>
+            <h2>{isEdit ? "Editar tarea" : "Nueva tarea"}</h2>
+            {contactId && !isEdit ? (
+              <p className="muted small">Vinculada al contacto actual.</p>
+            ) : null}
+          </div>
+          <ModalCloseButton onClose={requestClose} disabled={submitting} placement="header" />
         </header>
         {error ? (
           <p className="form-error" style={{ margin: "12px 24px 0" }}>

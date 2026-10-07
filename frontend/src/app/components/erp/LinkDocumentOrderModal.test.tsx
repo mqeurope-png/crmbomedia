@@ -131,4 +131,25 @@ describe("LinkDocumentOrderModal", () => {
     expect(onLinked).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
   });
+
+  it("en la confirmación, ✕ y Esc vuelven a la lista («← Elegir otro»); en la lista, cierran", async () => {
+    const user = userEvent.setup();
+    const { onClose } = renderModal();
+    const porRef = await screen.findByRole("region", { name: "Por referencia" });
+    await user.click(within(porRef).getByRole("button", { name: "Usar este: BOPRIN-99919" }));
+    expect(screen.getByRole("button", { name: "Vincular" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Cerrar" }));
+    expect(onClose).not.toHaveBeenCalled();
+    expect(await screen.findByRole("region", { name: "Por referencia" })).toBeInTheDocument();
+
+    await user.click(within(screen.getByRole("region", { name: "Por referencia" }))
+      .getByRole("button", { name: "Usar este: BOPRIN-99919" }));
+    await user.keyboard("{Escape}");
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Vincular" })).not.toBeInTheDocument();
+
+    await user.keyboard("{Escape}");
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
 });

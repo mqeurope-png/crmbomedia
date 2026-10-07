@@ -1,5 +1,6 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { CreateQuoteModal } from "./CreateQuoteModal";
 import { listCompanies } from "../../lib/companiesApi";
 import {
@@ -1232,5 +1233,41 @@ describe("CreateQuoteModal · prefillLines (P3)", () => {
     const payload = mockCreate.mock.calls[0][0];
     expect(payload.referencia).toBe("MANUAL-000006");
     expect(payload.lines.some((l: { description: string }) => l.description === "Placa base")).toBe(true);
+  });
+
+  // --- ✕, Esc, clic fuera y foco (molde común de los modales) -------------
+
+  it("el ✕ cierra como «Cancelar»; Esc y pulsar fuera, también, y el foco vuelve al botón", async () => {
+    function Abridor({ onCancel }: { onCancel: () => void }) {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <button type="button" onClick={() => setOpen(true)}>Nueva proforma…</button>
+          {open ? (
+            <CreateQuoteModal {...base({ onCancel: () => { onCancel(); setOpen(false); } })} />
+          ) : null}
+        </>
+      );
+    }
+    const onCancel = jest.fn();
+    const user = userEvent.setup();
+    render(<Abridor onCancel={onCancel} />);
+    const abrir = screen.getByRole("button", { name: "Nueva proforma…" });
+
+    await user.click(abrir);
+    const dialog = screen.getByRole("dialog", { name: "Nueva proforma FACTUSOL" });
+    await user.click(within(dialog).getByRole("button", { name: "Cerrar" }));
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(abrir).toHaveFocus();
+
+    await user.click(abrir);
+    await user.keyboard("{Escape}");
+    expect(onCancel).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(abrir).toHaveFocus();
+
+    await user.click(abrir);
+    fireEvent.mouseDown(screen.getByRole("dialog", { name: "Nueva proforma FACTUSOL" }));
+    expect(onCancel).toHaveBeenCalledTimes(3);
   });
 });

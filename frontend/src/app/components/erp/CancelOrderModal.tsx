@@ -9,6 +9,8 @@ import {
   type CancelOrderResult,
 } from "../../lib/erpApi";
 import { extractErrorMessage } from "../../lib/errors";
+import { ModalCloseButton } from "../ModalCloseButton";
+import { useModalBehaviour } from "../useModalBehaviour";
 
 const DOC_LABEL: Record<CancelOrderDoc["doc_type"], string> = {
   albaranes: "Albarán",
@@ -42,6 +44,7 @@ export function CancelOrderModal({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<CancelOrderResult | null>(null);
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose, disabled: busy });
 
   useEffect(() => {
     let alive = true;
@@ -77,9 +80,10 @@ export function CancelOrderModal({
 
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true"
-         aria-label={`Anular pedido ${orderNumber}`}>
+         aria-label={`Anular pedido ${orderNumber}`} {...overlayProps}>
       <div className="modal-dialog erp-modal">
         <h2>Anular pedido <span className="muted">{orderNumber}</span></h2>
+        <ModalCloseButton onClose={requestClose} disabled={busy} />
 
         {result ? (
           <>

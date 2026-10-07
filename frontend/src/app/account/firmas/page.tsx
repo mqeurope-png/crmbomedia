@@ -10,7 +10,9 @@ import {
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useState } from "react";
 import { ErrorState } from "../../components/ErrorState";
+import { ModalCloseButton } from "../../components/ModalCloseButton";
 import { PageHeader } from "../../components/PageHeader";
+import { useModalBehaviour } from "../../components/useModalBehaviour";
 import {
   createEmailSignature,
   deleteEmailSignature,
@@ -51,6 +53,7 @@ export default function FirmasPage() {
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState<DraftState | null>(null);
   const [saving, setSaving] = useState(false);
+  const editor = useModalBehaviour({ open: draft !== null, onClose: () => setDraft(null) });
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -225,21 +228,12 @@ export default function FirmasPage() {
           className="modal-overlay"
           role="dialog"
           aria-modal="true"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setDraft(null);
-          }}
+          {...editor.overlayProps}
         >
           <div className="modal-dialog sig-editor-dialog">
             <div className="modal-header">
               <h2>{draft.id ? "Editar firma" : "Nueva firma"}</h2>
-              <button
-                type="button"
-                className="modal-close"
-                onClick={() => setDraft(null)}
-                aria-label="Cerrar"
-              >
-                ×
-              </button>
+              <ModalCloseButton onClose={editor.requestClose} placement="header" />
             </div>
             <div className="modal-body">
               <form className="modal-form" onSubmit={handleSave}>

@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { extractErrorMessage } from "../../lib/errors";
+import { ModalCloseButton } from "../ModalCloseButton";
+import { useModalBehaviour } from "../useModalBehaviour";
 import {
   createEmailTemplate,
   listEmailTemplateFolders,
@@ -33,6 +35,7 @@ export function SaveTemplateModal({ bodyHtml, subject, onClose, onSaved }: Props
   const [folders, setFolders] = useState<EmailTemplateFolderNode[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose });
 
   useEffect(() => {
     listEmailTemplateFolders()
@@ -82,21 +85,12 @@ export function SaveTemplateModal({ bodyHtml, subject, onClose, onSaved }: Props
       className="modal-overlay"
       role="dialog"
       aria-modal="true"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+      {...overlayProps}
     >
       <div className="modal-dialog small">
         <div className="modal-header">
           <h2>Guardar como plantilla</h2>
-          <button
-            type="button"
-            className="modal-close"
-            onClick={onClose}
-            aria-label="Cerrar"
-          >
-            ×
-          </button>
+          <ModalCloseButton onClose={requestClose} placement="header" />
         </div>
         <div className="modal-body">
           <form className="modal-form" onSubmit={handleSubmit}>

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { ErpModalShell } from "../../components/erp/ErpModalShell";
 import { PageHeader } from "../../components/PageHeader";
 import { extractErrorMessage } from "../../lib/errors";
 import {
@@ -555,32 +556,29 @@ export default function FactusolBulkMatchPage() {
       ) : null}
 
       {confirming ? (
-        <div className="modal-overlay" role="dialog" aria-modal="true"
-             aria-label="Confirmar aplicación masiva">
-          <div className="modal-dialog">
-            <h2>Confirmar aplicación masiva</h2>
-            <p>
-              Vas a aplicar <strong>{selectedCount}</strong> operaciones. Esto{" "}
-              {orphans
-                ? `creará ${selectedCount} empresas nuevas en el CRM con los `
-                  + "datos de FACTUSOL"
-                : `modificará ${selectedCount} empresas del CRM con los datos `
-                  + "de FACTUSOL"}
-              . Los cambios son reversibles solo via SQL manual (audit_logs).
-              ¿Continuar?
-            </p>
-            <div className="modal-actions">
-              <button type="button" className="button secondary"
-                      onClick={() => setConfirming(false)}>
-                Cancelar
-              </button>
-              <button type="button" className="button danger"
-                      onClick={applySelected}>
-                Sí, aplicar {selectedCount} cambios
-              </button>
-            </div>
+        <ErpModalShell label="Confirmar aplicación masiva" title="Confirmar aplicación masiva"
+                       onClose={() => setConfirming(false)}>
+          <p>
+            Vas a aplicar <strong>{selectedCount}</strong> operaciones. Esto{" "}
+            {orphans
+              ? `creará ${selectedCount} empresas nuevas en el CRM con los `
+                + "datos de FACTUSOL"
+              : `modificará ${selectedCount} empresas del CRM con los datos `
+                + "de FACTUSOL"}
+            . Los cambios son reversibles solo via SQL manual (audit_logs).
+            ¿Continuar?
+          </p>
+          <div className="modal-actions">
+            <button type="button" className="button secondary"
+                    onClick={() => setConfirming(false)}>
+              Cancelar
+            </button>
+            <button type="button" className="button danger"
+                    onClick={applySelected}>
+              Sí, aplicar {selectedCount} cambios
+            </button>
           </div>
-        </div>
+        </ErpModalShell>
       ) : null}
     </main>
   );

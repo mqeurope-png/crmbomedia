@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listCompanies, type Company } from "../../lib/companiesApi";
 import { extractErrorMessage } from "../../lib/errors";
+import { ModalCloseButton } from "../ModalCloseButton";
+import { useModalBehaviour } from "../useModalBehaviour";
 import {
   createFactusolQuote,
   downloadFactusolDocumentPdf,
@@ -210,6 +212,7 @@ export function CreateQuoteModal({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose: onCancel, disabled: submitting });
 
   // Buscador de plantillas: NO filtra por cliente (C-4-fix1).
   useEffect(() => {
@@ -538,7 +541,8 @@ export function CreateQuoteModal({
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true"
          aria-label={editing ? "Editar proforma FACTUSOL"
-           : direct ? "Duplicar proforma FACTUSOL" : "Nueva proforma FACTUSOL"}>
+           : direct ? "Duplicar proforma FACTUSOL" : "Nueva proforma FACTUSOL"}
+         {...overlayProps}>
       {/* Lote 2 · E6: molde plano del ERP; `modal-wide` es la única excepción
           de ancho (editor de líneas de 8 columnas), ver styles.css. */}
       <div className="modal-dialog erp-modal modal-wide">
@@ -547,6 +551,7 @@ export function CreateQuoteModal({
             : direct ? `Duplicar proforma nº ${duplicateDirect?.numero ?? duplicateDirect?.codpre ?? ""}`
               : "Nueva proforma"}
         </h2>
+        <ModalCloseButton onClose={requestClose} disabled={submitting} />
 
         <div className="erp-quote-target">
           <span>

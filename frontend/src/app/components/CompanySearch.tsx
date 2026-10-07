@@ -120,6 +120,8 @@ export function CompanySearch({
       e.preventDefault();
       pick(active);
     } else if (e.key === "Escape") {
+      // Cierra la lista, no el modal que la contenga.
+      e.preventDefault();
       setOpen(false);
     }
   }

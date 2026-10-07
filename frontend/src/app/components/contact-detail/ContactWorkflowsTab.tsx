@@ -24,6 +24,8 @@ import {
 } from "../../lib/workflowsApi";
 import { formatBackendDateTime } from "../../lib/dates";
 import { extractErrorMessage } from "../../lib/errors";
+import { ModalCloseButton } from "../ModalCloseButton";
+import { useModalBehaviour } from "../useModalBehaviour";
 
 type Props = {
   contactId: string;
@@ -361,6 +363,7 @@ function AddToWorkflowModal({
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose, disabled: submitting });
 
   useEffect(() => {
     let cancelled = false;
@@ -395,14 +398,14 @@ function AddToWorkflowModal({
   };
 
   return (
-    <div className="modal-backdrop" onClick={() => !submitting && onClose()}>
+    <div className="modal-backdrop" {...overlayProps}>
       <div
         className="modal-card"
-        onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
       >
         <h2>Añadir manualmente a un workflow</h2>
+        <ModalCloseButton onClose={requestClose} disabled={submitting} />
         <p className="muted small">
           Crea un workflow run forzado saltándose el trigger y los filtros.
           Audit log registra la entrada como manual.
