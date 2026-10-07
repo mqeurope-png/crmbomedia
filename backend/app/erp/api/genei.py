@@ -1,8 +1,9 @@
 """ERP · Genei — envío desde la Cola SAT (PR-1: sin pago ni webhook).
 
 Endpoints sobre el pedido: preparar (prefill), comparar agencias (`prices`),
-crear el envío, traer la etiqueta (auto-adjunta), «Actualizar estado» (tracking
-manual) y eliminar/cancelar. Más los ajustes del carrier «Genei» (credenciales
+crear el envío, traer la etiqueta a mano («🖨 Imprimir etiqueta»: respaldo y
+reimpresión; la descarga automática vive en `genei/label_job.py`), «Actualizar
+estado» (tracking manual) y eliminar/cancelar. Más los ajustes del carrier «Genei» (credenciales
 cifradas + config de couriers/bulto/origen).
 
 El PAGO («Pagar y tramitar») y el WEBHOOK de estados son PR-2: aquí el envío se
@@ -244,11 +245,36 @@ def _send_customer_email_if_due(
 
 def _serialise_state(order: Order) -> dict[str, Any]:
     """Bloque Genei del pedido + si la etiqueta ya se puede descargar (envío
-    tramitado, estado 1+). Antes de tramitar no se ofrece la etiqueta."""
+    tramitado, estado 1+), si ya está adjunta (y desde cuándo) y cómo va la
+    descarga automática (`label_auto`). Antes de tramitar no se ofrece."""
+    from sqlalchemy.orm import object_session  # noqa: PLC0415
+
+    from app.erp.integrations.genei.label_job import label_info  # noqa: PLC0415
+
     state = dict(genei_state_of(order))
     if state.get("shipment_code"):
         state["label_available"] = is_tramitado(state.get("state_bucket"))
+        state.update(label_info(object_session(order), order))
     return state
+
+
+def _advance_if_tramitado(session: Session, order: Order, summary: dict[str, Any]) -> None:
+    """Mueve el transporte como el webhook (`transport_target`): tramitado →
+    «etiqueta creada»; idempotente."""
+    from app.erp.integrations.genei.tracking import transport_target  # noqa: PLC0415
+    from app.erp.integrations.genei.webhook import advance_transport  # noqa: PLC0415
+
+    actual = str(getattr(order.transport_status, "value", order.transport_status) or "")
+    advance_transport(session, order, transport_target(summary["state_bucket"], actual),
+                      evidence={"tracking_number": summary["tracking"] or "",
+                                "description": summary["state_label"] or ""})
+
+
+def _schedule_label(session: Session, order: Order) -> None:
+    """Envío tramitado sin etiqueta: se pide sola, con reintentos (no rompe)."""
+    from app.erp.integrations.genei.label_job import maybe_schedule_auto_label  # noqa: PLC0415
+
+    maybe_schedule_auto_label(session, order)
 
 
 # --- modelos de entrada -----------------------------------------------------
@@ -573,10 +599,14 @@ def genei_pay(
         "courier": summary["courier"],
         "paid_at": now_iso(),
     })
+    # Si ya sale tramitado, el transporte pasa a «etiqueta creada» (como hará
+    # el webhook; idempotente).
+    _advance_if_tramitado(session, order, summary)
     _audit(session, current_user, "erp.genei.shipment_paid", order.id, {"shipment_code": code})
     session.commit()
     # Ya pagado y confirmado: el aviso al cliente va aparte y NUNCA afecta al pago.
     _send_customer_email_if_due(session, order, client, current_user)
+    _schedule_label(session, order)
     session.refresh(order)
     return {"order_id": order.id, "summary": summary, "state": _serialise_state(order)}
 
@@ -682,6 +712,7 @@ def genei_refresh(
                                              tracking=safe_tracking(client, code))
     session.commit()
     _send_customer_email_if_due(session, order, client, current_user)
+    _schedule_label(session, order)
     session.refresh(order)
     return {"order_id": order.id, "summary": summary, "state": _serialise_state(order)}
 

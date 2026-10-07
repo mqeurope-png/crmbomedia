@@ -7,6 +7,7 @@ import {
   geneiCreateShipment,
   geneiDeleteShipment,
   geneiFetchLabel,
+  geneiLabelStatus,
   geneiPay,
   geneiPrefill,
   geneiPrices,
@@ -69,6 +70,11 @@ export function GeneiShipmentSection({
   // La etiqueta solo existe con el envío TRAMITADO (Genei estado 1+); antes,
   // Genei responde con un error: no se ofrece.
   const labelReady = !!state.label_available;
+  // Cómo va: adjunta (y cuándo), esperando a Genei (se trae sola) o a mano.
+  const labelStatus = geneiLabelStatus({
+    attached: !!state.label_attached, attachedAt: state.label_attached_at,
+    available: labelReady, auto: state.label_auto,
+  });
 
   /** Etiqueta: la trae de Genei (queda adjunta en «Documentos de envío») y
    *  lanza la impresión en el MISMO clic. */
@@ -202,6 +208,14 @@ export function GeneiShipmentSection({
                 ) : null}
               </span></div>
           ) : null}
+          {labelStatus ? (
+            <div className="erp-flow-kv"><span className="k">Etiqueta</span>
+              <span className="v">
+                <span className={`badge ${labelStatus.tone}`} aria-label="Estado de la etiqueta">
+                  {labelStatus.text}
+                </span>
+              </span></div>
+          ) : null}
           <CarrierHistory events={state.carrier_events ?? []} />
           <CustomerEmailBlock
             orderId={orderId}
@@ -230,8 +244,10 @@ export function GeneiShipmentSection({
           ) : null}
           {canManage ? (
             <div className="erp-genei-actions">
+              {/* Respaldo y reimpresión: la etiqueta se trae sola al tramitarse;
+                  este botón la (re)trae de Genei y la imprime en el mismo clic. */}
               <button type="button" className="button small" disabled={busy || !labelReady}
-                      title={labelReady ? "Descarga la etiqueta y abre el diálogo de imprimir"
+                      title={labelReady ? "Trae la etiqueta de Genei y abre el diálogo de imprimir"
                         : "La etiqueta estará disponible tras pagar y tramitar el envío"}
                       onClick={() => void onLabel()}>
                 🖨 Imprimir etiqueta

@@ -394,6 +394,24 @@ async def _arm_woo_missing_check() -> None:
 
 
 @app.on_event("startup")
+async def _arm_genei_transport_fix() -> None:
+    """Genei — arreglo de UNA pasada: los envíos tramitados cuyo transporte
+    se quedó «sin enviar» (antes solo lo movía traer la etiqueta a mano) pasan
+    a «etiqueta creada». Cola `genei:shipments` (worker-sync); marca en Ajustes
+    ERP para no repetir."""
+    try:
+        from app.erp.integrations.genei.label_job import arm  # noqa: PLC0415
+
+        arm()
+    except Exception:  # noqa: BLE001
+        import logging  # noqa: PLC0415
+
+        logging.getLogger(__name__).warning(
+            "genei.transport_fix arm failed at startup", exc_info=True
+        )
+
+
+@app.on_event("startup")
 async def _arm_genei_tracking() -> None:
     """Genei — sondeo del tracking DETALLADO (eventos del transportista) de los
     envíos vivos (cola `genei:shipments`, la escucha `worker-sync`). Interruptor

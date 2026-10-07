@@ -139,7 +139,14 @@ def test_sin_eventos_no_hay_paso_del_transportista():
 
 @pytest.mark.parametrize(("genei", "actual", "destino"), [
     ("in_transit", "label_created", None),     # Genei «recogido»: NO mueve
-    ("in_transit", "not_shipped", None),
+    # Tramitado (o más) con el pedido aún «sin enviar»: «etiqueta creada»
+    # sola, sin esperar a que alguien descargue la etiqueta (FLUXLA-5849).
+    ("in_transit", "not_shipped", "label_created"),
+    ("ready", "not_shipped", "label_created"),
+    ("delivered", "not_shipped", "label_created"),
+    ("processing", "not_shipped", None),       # aún sin tramitar
+    ("created", "not_shipped", None),
+    ("other", "not_shipped", None),            # desconocido: no se mueve
     ("ready", "label_created", None),
     ("delivered", "label_created", None),      # sin «Marcar recogido»: no mueve
     ("delivered", "in_transit", "delivered"),  # ya en «Enviados»: se queda ahí
@@ -147,14 +154,15 @@ def test_sin_eventos_no_hay_paso_del_transportista():
     ("incident", "in_transit", "incident"),
     ("other", "in_transit", None),
 ])
-def test_solo_la_incidencia_mueve_de_pestana(genei, actual, destino):
+def test_que_mueve_el_transporte_solo(genei, actual, destino):
     assert transport_target(genei, actual) == destino
 
 
 def test_estado_2_de_genei_ya_no_es_en_transito():
     st = state_of(2)
     assert st.bucket == READY
-    assert transport_status_for(st.bucket) is None
+    # Tramitado: «etiqueta creada» (no «en tránsito»: eso es «Marcar recogido»).
+    assert transport_status_for(st.bucket) == "label_created"
     assert is_tramitado(st.bucket)        # tramitado: la etiqueta ya existe
 
 

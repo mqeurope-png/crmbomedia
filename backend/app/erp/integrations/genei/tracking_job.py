@@ -179,6 +179,12 @@ def run_tracking_poll(
                 return None
 
         maybe_send_shipment_email(session, order, actor=None, tracking_url_fetcher=_url)
+        # Tramitado sin etiqueta (p. ej. sin webhook): se pide sola.
+        from app.erp.integrations.genei.label_job import (  # noqa: PLC0415
+            maybe_schedule_auto_label,
+        )
+
+        maybe_schedule_auto_label(session, order)
         resumen["revisados"] += 1
         resumen["movidos"] += int(bool(movido))
         resumen["con_escaneo"] += int(bool(genei_state_of(order).get("carrier_status")))

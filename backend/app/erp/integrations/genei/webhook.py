@@ -13,12 +13,13 @@ de Seguimiento leen de ahí. La misma función (`apply_shipment_state`) la usa e
 botón «Actualizar estado» (respaldo manual), así que funciona aunque el webhook
 no esté desplegado.
 
-Qué mueve el transporte SOLO (ver `tracking.transport_target`): únicamente una
-INCIDENCIA (→ «Incidencias») y el «entregado» de un pedido ya marcado como
-recogido (sigue en «Enviados»). El paso a «Enviados» lo hace una persona con
-«📤 Marcar recogido» en la Cola SAT. El tracking DETALLADO (`GET
-/shipments/{code}/tracking`: los eventos del propio transportista) se guarda y
-se ENSEÑA; no mueve nada.
+Qué mueve el transporte SOLO (ver `tracking.transport_target`): el envío
+TRAMITADO de un pedido aún «sin enviar» (→ «etiqueta creada», sin esperar a
+que alguien descargue la etiqueta), una INCIDENCIA (→ «Incidencias») y el
+«entregado» de un pedido ya marcado como recogido (sigue en «Enviados»). El
+paso a «Enviados» lo hace una persona con «📤 Marcar recogido» en la Cola SAT.
+El tracking DETALLADO (`GET /shipments/{code}/tracking`: los eventos del propio
+transportista) se guarda y se ENSEÑA; no mueve nada.
 
 Idempotente: recibir el mismo estado dos veces no descuadra — un arco que ya se
 recorrió no vuelve a aplicarse (no es un arco válido desde el estado actual).
@@ -123,8 +124,9 @@ def apply_shipment_state(
     tracking: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """Aplica el estado de un envío Genei (objeto `data`) al pedido: guarda el
-    bloque `genei` + tracking y, SOLO si es una incidencia (o un «entregado» de
-    un pedido ya marcado como recogido), mueve el `transport_status`. Devuelve
+    bloque `genei` + tracking y mueve el `transport_status` si toca (tramitado
+    → «etiqueta creada», incidencia, o «entregado» de un pedido ya marcado como
+    recogido; ver `transport_target`). Devuelve
     `(summary, transporte_aplicado)`. La usan el webhook, «Actualizar estado»
     y el sondeo periódico.
 

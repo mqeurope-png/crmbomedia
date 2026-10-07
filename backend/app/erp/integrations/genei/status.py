@@ -66,11 +66,15 @@ def state_of(code: int | str | None) -> GeneiState:
 
 
 #: Bucket → estado de transporte de BoHub al que debe llevar (o None = no mover
-#: el estado; solo informar). El webhook de PR-2 lo usará para transicionar.
+#: el estado; solo informar). Lo aplica `tracking.transport_target` (webhook,
+#: «Actualizar estado», pagar y el sondeo).
 BUCKET_TO_TRANSPORT: dict[str, str | None] = {
     CREATED: None,
     PROCESSING: None,
-    READY: None,          # la etiqueta ya mueve a label_created
+    # Tramitado: el envío existe y tiene etiqueta en Genei → «etiqueta creada»
+    # por sí solo, sin esperar a que alguien descargue el PDF (07/10/2026: un
+    # envío tramitado, con tracking y aviso al cliente, seguía «sin enviar»).
+    READY: "label_created",
     IN_TRANSIT: "in_transit",
     DELIVERED: "delivered",
     INCIDENT: "incident",
@@ -87,6 +91,12 @@ def transport_status_for(bucket: str) -> str | None:
 #: existe y se puede descargar. Antes (7 «pendiente de pago», 6 «pendiente de
 #: tramitar») Genei responde 400 a la etiqueta; cerrado/destruido, tampoco vale.
 TRAMITADO_BUCKETS: frozenset[str] = frozenset({READY, IN_TRANSIT, DELIVERED, INCIDENT, OTHER})
+
+
+#: Buckets con el envío tramitado y SIN incidencia: un pedido aún «sin enviar»
+#: pasa solo a «etiqueta creada» (en tránsito / entregado de Genei no lo llevan
+#: más allá: eso es «📤 Marcar recogido»).
+LABEL_CREATED_BUCKETS: frozenset[str] = frozenset({READY, IN_TRANSIT, DELIVERED})
 
 
 def is_tramitado(bucket: str | None) -> bool:

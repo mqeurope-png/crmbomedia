@@ -16,7 +16,9 @@ import {
   type ShipmentFileKind,
 } from "../../lib/erpApi";
 import { OTHER_COURIER_LABEL, suggestCourier } from "../../lib/couriers";
-import { carrierDate, carrierStepTone, sendCustomerEmail } from "../../lib/geneiApi";
+import {
+  carrierDate, carrierStepTone, geneiFetchLabel, geneiLabelStatus, sendCustomerEmail,
+} from "../../lib/geneiApi";
 import { CourierSelect, CourierTrackingEditor, withSuggestion } from "./CourierFields";
 import { FileUploadButton } from "./FileUploadButton";
 import { GeneiShipmentSection } from "./GeneiShipmentSection";
@@ -96,13 +98,31 @@ export function useSatReadyActions(order: SatQueueItem, onChanged: () => void) {
     onChanged();
   }
 
+  /** Traer la etiqueta de Genei desde la propia Cola SAT (sin ir a la ficha):
+   *  queda adjunta en «Documentos de envío» y, al refrescar la cola, el chip
+   *  pasa a «Imprimir etiqueta». Normalmente llega sola al tramitarse; esto es
+   *  para cuando Genei tardó más de la cuenta. */
+  const [fetchingLabel, setFetchingLabel] = useState(false);
+  async function traerEtiqueta() {
+    setFetchingLabel(true);
+    setError(null);
+    try {
+      await geneiFetchLabel(order.id);
+      onChanged();
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudo traer la etiqueta de Genei."));
+    } finally {
+      setFetchingLabel(false);
+    }
+  }
+
   return {
     busy, confirming, setConfirming,
     isGenei, tracking, setTracking, courier, setCourier,
     // Un solo aviso bajo la card: el de recogido/reabrir o el del albarán.
     error: error ?? albaran.error,
     factusolAlbaran: albaran.factusolAlbaran,
-    albaran, openDoc, recogido, reabrir, uploadEtiqueta,
+    albaran, openDoc, recogido, reabrir, uploadEtiqueta, traerEtiqueta, fetchingLabel,
   };
 }
 
@@ -117,8 +137,13 @@ export function SatReadyDocChips({
   actions: ReturnType<typeof useSatReadyActions>;
   size?: "lg";
 }) {
-  const { albaran, openDoc, uploadEtiqueta } = actions;
+  const { albaran, openDoc, uploadEtiqueta, traerEtiqueta, fetchingLabel } = actions;
   const lg = size === "lg" ? " lg" : "";
+  // Envío Genei tramitado sin etiqueta adjunta: se puede traer de Genei aquí.
+  const geneiLabel = !order.has_etiqueta && !!order.genei?.label_available;
+  const labelStatus = geneiLabel ? geneiLabelStatus({
+    attached: false, available: true, auto: order.genei?.label_auto,
+  }) : null;
   return (
     <>
       <SatAlbaranChip order={order} albaran={albaran} size={size} />
@@ -129,14 +154,29 @@ export function SatReadyDocChips({
           🖨 Imprimir etiqueta
         </button>
       ) : (
-        /* Lote 4 · #5 — el pedido está embalado/listo pero falta la etiqueta:
-           se sube aquí mismo (mismo flujo que la ficha) en vez de mandar al
-           operario a la ficha del pedido. */
-        <FileUploadButton
-          label="🏷️ Subir etiqueta"
-          className={`sat-chip-btn warn${lg}`}
-          onFile={uploadEtiqueta}
-        />
+        <>
+          {geneiLabel ? (
+            <button type="button" className={`sat-chip-btn warn${lg}`}
+                    disabled={fetchingLabel}
+                    title={labelStatus?.text ?? "Trae la etiqueta de Genei y la deja adjunta"}
+                    onClick={() => void traerEtiqueta()}>
+              {fetchingLabel ? "Trayendo etiqueta…" : "📥 Traer etiqueta de Genei"}
+            </button>
+          ) : null}
+          {/* Lote 4 · #5 — el pedido está embalado/listo pero falta la etiqueta:
+              se sube aquí mismo (mismo flujo que la ficha) en vez de mandar al
+              operario a la ficha del pedido. */}
+          <FileUploadButton
+            label="🏷️ Subir etiqueta"
+            className={`sat-chip-btn warn${lg}`}
+            onFile={uploadEtiqueta}
+          />
+          {labelStatus ? (
+            <span className={`badge ${labelStatus.tone} small`} aria-label="Estado de la etiqueta">
+              {labelStatus.text}
+            </span>
+          ) : null}
+        </>
       )}
     </>
   );
