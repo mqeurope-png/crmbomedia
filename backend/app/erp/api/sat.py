@@ -192,6 +192,10 @@ def _genei_summary(order: Order) -> dict[str, Any] | None:
         "carrier_step_label": state.get("carrier_step_label"),
         "tracking_url": state.get("tracking_url"),
         "tracking_checked_at": state.get("tracking_checked_at"),
+        # Descarga automática de la etiqueta (esperando / adjunta / agotada):
+        # la card dice si hay que esperar a Genei o traerla a mano.
+        "label_auto": state.get("label_auto") if isinstance(state.get("label_auto"), dict)
+        else None,
     }
 
 

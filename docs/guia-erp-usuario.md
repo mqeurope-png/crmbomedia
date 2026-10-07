@@ -728,6 +728,27 @@ entonces sale el aviso *«La etiqueta estará disponible tras pagar y tramitar
 el envío»*. **«🖨 Imprimir etiqueta»** la descarga y abre el diálogo de
 imprimir **en un solo clic**.
 
+**La etiqueta llega sola.** En cuanto Genei tramita el envío, BoHub:
+
+- pasa el pedido a **«etiqueta creada»** (ya no se queda «sin enviar» hasta que
+  alguien descargue el PDF);
+- pide la etiqueta a Genei y la deja adjunta en **«Documentos de envío»**,
+  igual que el botón. Genei tarda unos segundos en generarla: si aún no la
+  tiene, BoHub lo vuelve a intentar a los 30 s, 2 min, 10 min y 1 h.
+
+En el bloque de Genei (ficha) y en la tarjeta de la Cola SAT se ve cómo va:
+*«Etiqueta adjunta (fecha)»*, *«Esperando a que Genei genere la etiqueta: se
+trae sola»* o, si se agotaron los intentos, *«Genei no ha dado la etiqueta sola:
+tráela a mano»*. **«🖨 Imprimir etiqueta»** sigue para reimprimir o traerla a
+mano. Si alguien la trae o la sube antes, BoHub no pide otra. Si se **elimina**
+un envío de Genei, su etiqueta deja de valer (se conserva como reemplazada) y
+el envío nuevo trae la suya.
+
+> Al desplegar esta versión, BoHub repasa **una vez** los pedidos con envío de
+> Genei ya tramitado que se quedaron «sin enviar» y los pasa a «etiqueta
+> creada», con la **fecha en que se tramitaron** (no la del despliegue). Los
+> anulados y los que no están embalados no se tocan.
+
 **Aviso de envío al cliente (lo manda BoHub).** En cuanto un envío de Genei
 tiene **nº de seguimiento** (normalmente al **«Pagar y tramitar»**), BoHub manda
 al cliente **un email con el nº de seguimiento, el enlace para seguirlo y el nº
@@ -791,7 +812,10 @@ En cada tarjeta:
 - **Albarán**: **«Imprimir albarán»** / **«Descargar albarán»** en PDF (o
   **«Falta albarán»** si aún no existe en un pedido manual).
 - **Etiqueta**: **«Subir etiqueta»** (admite imagen o PDF) y, una vez subida,
-  **«🖨 Imprimir etiqueta»** (la descarga e imprime en un clic).
+  **«🖨 Imprimir etiqueta»** (la descarga e imprime en un clic). Con un envío
+  de Genei **tramitado** y sin etiqueta adjunta, además **«📥 Traer etiqueta
+  de Genei»** (sin ir a la ficha) y el estado de la descarga automática; al
+  traerla, la tarjeta pasa a «Imprimir etiqueta».
 - **Nº de seguimiento**: campo para guardar el tracking del transportista.
 
 **Flujo del taller** (todo en la ventana sobre la cola):
@@ -1412,7 +1436,8 @@ arreglarlo.
 | Grupo | Comprobaciones |
 |---|---|
 | Dinero (alta) | De las facturas de pedidos de BoHub: factura con líneas que no son suyas; cobro distinto en BoHub y en FACTUSOL (o cobrada sin línea de cobro); factura sin cobrar pasados 30 días, con lo pendiente. |
-| Envíos (media) | «No requiere envío» con tracking o courier; enviado sin aviso al cliente; en tránsito más de 10 días; entregado, facturado y cobrado sin «Marcar completado» a los 14 días. |
+| Envíos (media) | «No requiere envío» con tracking o courier; enviado sin aviso al cliente; en tránsito más de 10 días; entregado, facturado y cobrado sin «Marcar completado» a los 14 días; envío de Genei tramitado sin etiqueta adjunta pasadas 2 horas. |
+| Envíos (alta) | Envío de Genei tramitado (con tracking, a veces con el aviso al cliente ya mandado) y el pedido sigue «sin enviar» en BoHub: hay un paquete que la app no está siguiendo. |
 | Documentos y hoja | Pedido que falta en la hoja de Drive (o fila de un pedido que ya no existe); factura de FACTUSOL sin vincular al pedido o vinculada a un número que no existe; factura sin enviar a los 7 días; pedido sin aprobar a los 7 días; proforma aceptada sin convertir a los 90 días (apagada por defecto: es el embudo comercial). |
 | Integraciones (media) | Sincronización colgada: cuenta de integración con una sincronización en curso desde hace más de 3 horas, o sin ninguna sincronización correcta en las últimas 24 h (AgileCRM, Brevo). |
 | Integraciones (alta) | Pedido pagado en WooCommerce que no está en BoHub: de cada tienda, los pagados de los últimos 90 días que no llegaron, con número (enlace al pedido en la tienda), cliente, importe y fecha de pago. El botón lleva a Seguimiento, a «Poner al día estados Woo…», que los importa. Avisa aunque la importación automática haya fallado. |

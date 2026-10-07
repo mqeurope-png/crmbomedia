@@ -1,5 +1,5 @@
 import { ApiError, apiDownloadBlob, apiFetch, apiUpload } from "./api";
-import type { CustomerEmailStatus } from "./geneiApi";
+import type { CustomerEmailStatus, GeneiLabelAuto } from "./geneiApi";
 import type { LinkedInvoice } from "./linkedInvoice";
 
 /** BoHub ERP Fase A — cliente de la API de pedidos (PR 3 backend). */
@@ -1666,6 +1666,8 @@ export type SatGeneiSummary = {
   carrier_step_label?: string | null;
   tracking_url?: string | null;
   tracking_checked_at?: string | null;
+  /** Descarga automática de la etiqueta (esperando / adjunta / agotada). */
+  label_auto?: GeneiLabelAuto | null;
 };
 
 /** Contadores de cada pestaña (el backend los calcula con su criterio). */

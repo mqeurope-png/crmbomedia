@@ -163,6 +163,19 @@ del pedido de BoHub.
    defecto) sin entrega ni incidencia.
 7. `entregado_sin_completar` — Entregado hace más de N días (14 por defecto),
    facturado y cobrado, sin «Marcar completado».
+15. `envio_tramitado_sin_enviar` (**alta**) — **Envío tramitado que BoHub no da
+    por enviado.** Envío de Genei tramitado (estado 1+: `ready`, `in_transit`,
+    `delivered` o `incident`) y el pedido sigue `transport_status =
+    not_shipped`. Dice si el aviso al cliente ya salió. Enlaza a la ficha
+    («Actualizar estado» lo pasa a «etiqueta creada»). Nace de FLUXLA-5849
+    (07/10/2026): antes solo lo movía traer la etiqueta a mano.
+16. `envio_tramitado_sin_etiqueta` (media) — **Envío tramitado sin etiqueta
+    adjunta** pasadas N **horas** (2 por defecto; el umbral va en horas) desde
+    que se tramitó (pago en BoHub; si se pagó en la web de Genei, desde que
+    BoHub empezó a pedir la etiqueta; si no, la creación): Genei `ready`,
+    transporte `not_shipped`/`label_created` y ninguna etiqueta vigente. Dice cómo acabó la descarga automática (agotada,
+    reintentando o nunca). Enlaza a la Cola SAT → «Pendiente de recogida»,
+    donde está «📥 Traer etiqueta de Genei».
 
 ### Documentos y hoja (severidad media o baja)
 

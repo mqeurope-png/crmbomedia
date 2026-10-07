@@ -59,7 +59,55 @@ export type GeneiState = {
   dest_email?: string | null;
   /** Aviso de envío al cliente que manda BoHub (una vez, con el tracking). */
   customer_email?: CustomerEmailStatus | null;
+  /** ¿Hay etiqueta adjunta en «Documentos de envío»? (y desde cuándo). */
+  label_attached?: boolean;
+  label_attached_at?: string | null;
+  /** Descarga automática de la etiqueta al tramitarse el envío. */
+  label_auto?: GeneiLabelAuto | null;
 };
+
+/** Descarga automática de la etiqueta: se pide sola al tramitarse y, si Genei
+ *  aún no la tiene, se reintenta (30 s, 2 min, 10 min, 1 h) y después se rinde. */
+export type GeneiLabelAuto = {
+  /** esperando (reintentando) · adjunta · agotada (traerla a mano) ·
+   *  sin_cola (no se pudo programar: traerla a mano). */
+  status?: "esperando" | "adjunta" | "agotada" | "sin_cola";
+  attempts?: number;
+  max_attempts?: number;
+  last_attempt_at?: string | null;
+  next_attempt_at?: string | null;
+  last_error?: string | null;
+  done_at?: string | null;
+  gave_up_at?: string | null;
+  /** Quién la dejó adjunta: la descarga automática o una persona. */
+  via?: "automatica" | "manual";
+};
+
+/** Cómo va la etiqueta, en una frase (ficha y Cola SAT): adjunta (y cuándo),
+ *  esperando a que Genei la genere, o hay que traerla a mano. Null si el envío
+ *  aún no está tramitado (no hay etiqueta que esperar). */
+export function geneiLabelStatus(opts: {
+  attached: boolean;
+  attachedAt?: string | null;
+  available: boolean;
+  auto?: GeneiLabelAuto | null;
+}): { text: string; tone: "ok" | "warn" | "bad" | "muted" } | null {
+  const { attached, attachedAt, available, auto } = opts;
+  if (attached) {
+    const when = carrierDate(attachedAt ?? auto?.done_at ?? null);
+    return { tone: "ok", text: `Etiqueta adjunta${when ? ` (${when})` : ""}.` };
+  }
+  if (!available) return null;
+  if (auto?.status === "esperando") {
+    const intento = auto.attempts && auto.attempts > 0
+      ? ` (intento ${auto.attempts} de ${auto.max_attempts ?? 5})` : "";
+    return { tone: "muted", text: `Esperando a que Genei genere la etiqueta${intento}: se trae sola.` };
+  }
+  if (auto?.status === "agotada" || auto?.status === "sin_cola") {
+    return { tone: "bad", text: "Genei no ha dado la etiqueta sola: tráela a mano." };
+  }
+  return { tone: "warn", text: "Etiqueta disponible en Genei, aún sin traer." };
+}
 
 /** Estado del aviso de envío al cliente. */
 export type CustomerEmailStatus = {

@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from app.erp.integrations.genei.status import transport_status_for
+from app.erp.integrations.genei.status import LABEL_CREATED_BUCKETS, transport_status_for
 
 # --- pasos reales del envío según el transportista ---------------------------
 
@@ -222,8 +222,12 @@ def transport_target(genei_bucket: str | None, current_transport: str | None) ->
     - Incidencia de Genei → incidencia (el pedido va a «Incidencias»).
     - Entregado de Genei → entregado, pero SOLO si ya se marcó recogido
       (`in_transit`: ya está en «Enviados», no cambia de pestaña).
+    - Tramitado (o más allá, sin incidencia) con el pedido aún «sin enviar» →
+      «etiqueta creada»: el envío existe aunque nadie haya descargado el PDF.
+      Traer la etiqueta después no lo mueve otra vez (`_transition_on_etiqueta`
+      solo actúa desde `not_shipped`).
     - Todo lo demás (recogido / en tránsito / en reparto de Genei o del
-      transportista) NO mueve nada: se enseña y ya.
+      transportista) NO mueve más: se enseña y ya.
 
     El escaneo del transportista (`carrier_step`) es solo INFORMATIVO."""
     genei = transport_status_for(genei_bucket or "")
@@ -231,6 +235,8 @@ def transport_target(genei_bucket: str | None, current_transport: str | None) ->
         return "incident"
     if genei == "delivered" and current_transport == "in_transit":
         return "delivered"
+    if (genei_bucket or "") in LABEL_CREATED_BUCKETS and current_transport == "not_shipped":
+        return "label_created"
     return None
 
 

@@ -257,6 +257,13 @@ async def receive_genei_webhook(
         if order is not None:
             maybe_send_shipment_email(session, order, actor=None,
                                       tracking_url_fetcher=_tracking_url)
+            # Envío tramitado sin etiqueta: se pide sola (worker-sync, con
+            # reintentos), sin esperar a que alguien pulse «Imprimir etiqueta».
+            from app.erp.integrations.genei.label_job import (  # noqa: PLC0415
+                maybe_schedule_auto_label,
+            )
+
+            maybe_schedule_auto_label(session, order)
     out: dict[str, Any] = {"received": True, "matched": bool(result.get("matched"))}
     if result.get("matched"):
         out["order_id"] = result["order_id"]

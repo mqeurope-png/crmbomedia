@@ -538,3 +538,124 @@ def sincronizacion_colgada(ctx: Contexto) -> Iterator[Hallazgo]:
             huella_datos={"colgada": colgada.id if colgada is not None else None,
                           "sin_sync_ok": sin_ok},
         )
+
+
+# --- 15 / 16 · Envío Genei tramitado que BoHub no sigue -----------------------------
+
+SAT_PENDIENTE_RECOGIDA = "/erp/sat?tab=pendiente_recogida"
+#: Genei con el envío tramitado (estado 1+): hay paquete (o lo habrá en horas).
+_GENEI_TRAMITADO = ("ready", "in_transit", "delivered", "incident")
+
+
+def _genei(order: Any) -> dict[str, Any]:
+    from app.erp.integrations.genei.service import genei_state_of  # noqa: PLC0415
+
+    return genei_state_of(order)
+
+
+def _cuando(valor: Any) -> datetime | None:
+    if not valor:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(valor))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+
+
+@comprobacion(
+    id="envio_tramitado_sin_enviar", orden=15,
+    titulo="Envío tramitado que BoHub no da por enviado",
+    descripcion="Envío de Genei ya tramitado (con etiqueta y tracking) y el pedido sigue "
+                "«sin enviar» en BoHub: hay un paquete que la app no está siguiendo.",
+    severidad="alta", fuente=FUENTE_MYSQL, grupo="envios",
+)
+def envio_tramitado_sin_enviar(ctx: Contexto) -> Iterator[Hallazgo]:
+    for o in ctx.pedidos():
+        if o.cancelled_at is not None or _v(o.transport_status) != "not_shipped":
+            continue
+        g = _genei(o)
+        if not g.get("shipment_code") or g.get("state_bucket") not in _GENEI_TRAMITADO:
+            continue
+        aviso = g.get("customer_email") if isinstance(g.get("customer_email"), dict) else {}
+        avisado = aviso.get("status") == "sent" or bool(aviso.get("sent_at"))
+        tracking = _s(g.get("tracking")) or _s(o.tracking_number)
+        partes = [f"Genei: «{g.get('state_label') or g.get('state_bucket')}»"]
+        if g.get("courier"):
+            partes.append(str(g["courier"]))
+        if tracking:
+            partes.append(f"tracking {tracking}")
+        yield Hallazgo(
+            entidad_tipo=ENTIDAD_PEDIDO, entidad_id=o.id, etiqueta=_etiqueta(o),
+            detalle=(", ".join(partes) + " — y BoHub lo tiene «sin enviar»"
+                     + (" aunque el cliente ya recibió el aviso de envío." if avisado else ".")),
+            pista_de_arreglo="«Actualizar estado» en el envío Genei de la ficha lo pasa a "
+                             "«etiqueta creada». Si no se mueve, el pedido no está embalado.",
+            enlace=enlace_pedido(o.id), arreglo_enlace=enlace_pedido(o.id),
+            arreglo_boton="Abrir el pedido",
+            huella_datos={"estado_genei": g.get("state_code"), "avisado": avisado},
+            datos={"shipment_code": g.get("shipment_code"), "tracking": tracking or None,
+                   "avisado": avisado},
+        )
+
+
+def _con_etiqueta(ctx: Contexto) -> set[str]:
+    """Pedidos con una etiqueta adjunta vigente (una lectura por pasada)."""
+    from app.erp.models.shipping import KIND_ETIQUETA, ShipmentFile  # noqa: PLC0415
+
+    return ctx.cached("con_etiqueta", lambda: set(ctx.session.scalars(
+        select(ShipmentFile.order_id).where(
+            ShipmentFile.kind == KIND_ETIQUETA, ShipmentFile.replaced_at.is_(None),
+        ).distinct()
+    )))
+
+
+@comprobacion(
+    id="envio_tramitado_sin_etiqueta", orden=16,
+    titulo="Envío tramitado sin etiqueta adjunta",
+    descripcion="Envío de Genei tramitado, esperando al transportista, sin la etiqueta "
+                "adjunta pasadas N horas (la descarga automática no lo consiguió).",
+    severidad="media", fuente=FUENTE_MYSQL, grupo="envios",
+    dias_defecto=2, dias_texto="Avisar pasadas N horas desde que se tramitó",
+)
+def envio_tramitado_sin_etiqueta(ctx: Contexto) -> Iterator[Hallazgo]:
+    from datetime import timedelta  # noqa: PLC0415
+
+    horas = ctx.dias("envio_tramitado_sin_etiqueta", 2)
+    limite = ctx.ahora - timedelta(hours=horas)
+    con_etiqueta = _con_etiqueta(ctx)
+    for o in ctx.pedidos():
+        if o.cancelled_at is not None or o.id in con_etiqueta:
+            continue
+        if _v(o.transport_status) not in ("not_shipped", "label_created"):
+            continue
+        g = _genei(o)
+        if not g.get("shipment_code") or g.get("state_bucket") != "ready":
+            continue
+        auto = g.get("label_auto") if isinstance(g.get("label_auto"), dict) else {}
+        # Desde cuándo está tramitado: el pago en BoHub; si se pagó en la web de
+        # Genei, cuando BoHub lo vio tramitado (empezó a pedir la etiqueta); y
+        # si no, la creación del envío.
+        desde = (_cuando(g.get("paid_at")) or _cuando(auto.get("scheduled_at"))
+                 or _cuando(g.get("created_at")))
+        if desde is None or desde > limite:
+            continue
+        estado = auto.get("status")
+        if estado == "agotada":
+            motivo = (f"la descarga automática se rindió tras {auto.get('attempts')} intentos"
+                      + (f" ({auto['last_error']})" if auto.get("last_error") else ""))
+        elif estado == "esperando":
+            motivo = f"la descarga automática sigue reintentando (intento {auto.get('attempts')})"
+        else:
+            motivo = "nadie la ha traído de Genei"
+        yield Hallazgo(
+            entidad_tipo=ENTIDAD_PEDIDO, entidad_id=o.id, etiqueta=_etiqueta(o),
+            detalle=f"Tramitado en Genei (desde el {_fecha(desde)}) y sin etiqueta adjunta: "
+                    f"{motivo}.",
+            pista_de_arreglo="«Traer etiqueta de Genei» en la Cola SAT (o «Imprimir etiqueta» "
+                             "en la ficha) la deja adjunta.",
+            enlace=enlace_pedido(o.id), arreglo_enlace=SAT_PENDIENTE_RECOGIDA,
+            arreglo_boton="Ir a «Pendiente de recogida»",
+            huella_datos={"shipment_code": g.get("shipment_code"), "estado": estado},
+            datos={"desde": desde.isoformat()},
+        )

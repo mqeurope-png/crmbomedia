@@ -376,3 +376,53 @@ describe("ficha · línea del aviso al cliente", () => {
     expect(customerEmailLine({ status: "pending" }, true)).not.toContain("Último aviso");
   });
 });
+
+describe("estado de la etiqueta (se trae sola al tramitarse)", () => {
+  const tramitado = {
+    shipment_code: "3B9QGGHO", state_bucket: "ready", state_label: "Tramitado",
+    label_available: true,
+  };
+
+  it("adjunta: lo dice y desde cuándo", async () => {
+    mockPrefill.mockResolvedValue(prefill({ state: {
+      ...tramitado, label_attached: true, label_attached_at: "2026-10-07T11:38:10+00:00",
+      label_auto: { status: "adjunta", attempts: 1, via: "automatica" },
+    } }));
+    render(<GeneiShipmentSection orderId="o-1" canManage />);
+    expect(await screen.findByLabelText("Estado de la etiqueta"))
+      .toHaveTextContent(/^Etiqueta adjunta \(.+\)\.$/);
+    // El botón sigue: para reimprimir.
+    expect(screen.getByRole("button", { name: "🖨 Imprimir etiqueta" })).toBeEnabled();
+  });
+
+  it("esperando a Genei: lo dice en vez de dejar el botón ambiguo", async () => {
+    mockPrefill.mockResolvedValue(prefill({ state: {
+      ...tramitado, label_attached: false,
+      label_auto: { status: "esperando", attempts: 2, max_attempts: 5 },
+    } }));
+    render(<GeneiShipmentSection orderId="o-1" canManage />);
+    expect(await screen.findByLabelText("Estado de la etiqueta")).toHaveTextContent(
+      "Esperando a que Genei genere la etiqueta (intento 2 de 5): se trae sola.",
+    );
+  });
+
+  it("reintentos agotados: avisa de traerla a mano", async () => {
+    mockPrefill.mockResolvedValue(prefill({ state: {
+      ...tramitado, label_attached: false,
+      label_auto: { status: "agotada", attempts: 5, max_attempts: 5 },
+    } }));
+    render(<GeneiShipmentSection orderId="o-1" canManage />);
+    expect(await screen.findByLabelText("Estado de la etiqueta"))
+      .toHaveTextContent("Genei no ha dado la etiqueta sola: tráela a mano.");
+  });
+
+  it("sin tramitar no habla de la etiqueta", async () => {
+    mockPrefill.mockResolvedValue(prefill({ state: {
+      shipment_code: "3B9QGGHO", state_bucket: "created", label_available: false,
+      label_attached: false,
+    } }));
+    render(<GeneiShipmentSection orderId="o-1" canManage />);
+    await screen.findByText("3B9QGGHO");
+    expect(screen.queryByLabelText("Estado de la etiqueta")).not.toBeInTheDocument();
+  });
+});
