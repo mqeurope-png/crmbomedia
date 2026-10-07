@@ -30,10 +30,13 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
@@ -76,7 +79,19 @@ MARGEN_MINUTOS = 15
 PRIMERA_PASADA_HORAS = 24
 
 _PER_PAGE = 100
-DEFAULT_MAX_PAGES = 20
+#: Hasta 10.000 pedidos pagados por tienda y pasada (el listado es ligero:
+#: solo los campos que hacen falta). Más que eso → `con_tope`.
+DEFAULT_MAX_PAGES = 100
+#: Campos del listado (`_fields`): lo justo para cruzar y para el aviso. El
+#: pedido completo se pide aparte, solo para los que faltan, al importarlos.
+CAMPOS_LISTADO = ",".join((
+    "id", "number", "status", "total", "currency", "billing", "date_created_gmt",
+    "date_paid_gmt", "date_completed_gmt", "date_modified_gmt",
+))
+#: Cerrojo por tienda: «Poner al día…» (worker-factusol) y el repaso periódico
+#: (worker-web) no importan a la vez la misma tienda.
+LOCK_KEY = "woocommerce:missing:lock:{tienda}"
+LOCK_TTL_SECONDS = 1800
 #: Importaciones por pasada como mucho (cada una puede consultar FACTUSOL para
 #: la empresa, como el webhook); el resto entra en la siguiente.
 DEFAULT_MAX_IMPORTS = 50
@@ -251,7 +266,7 @@ def pagados_que_faltan(
         lote = client.list_orders(
             status=",".join(PAID_STATUSES), since=_iso_utc(desde),
             modified_after=_iso_utc(modified_after) if modified_after else None,
-            dates_are_gmt=True, per_page=_PER_PAGE, page=page,
+            dates_are_gmt=True, per_page=_PER_PAGE, page=page, fields=CAMPOS_LISTADO,
         )
         if not lote:
             break
@@ -292,49 +307,83 @@ def woo_stores(session: Session, store_account_id: str | None = None) -> list[In
 # --- importar ------------------------------------------------------------------------
 
 
-def _importar_como_webhook(session: Session, store: IntegrationAccount, wo: dict[str, Any]) -> dict:
-    """El camino de «Reimportar pedido»: evento `backfill:{id}` + import inline
-    (`import_woo_order`, el mismo del webhook)."""
+def _importar_como_webhook(
+    session: Session, store: IntegrationAccount, wo: dict[str, Any], *, client: Any,
+) -> dict:
+    """El camino de «Reimportar pedido»: el pedido FRESCO de la tienda (el
+    listado solo trae unos campos), evento `backfill:{id}` e import inline
+    (`import_woo_order`, el mismo del webhook; si ya no está pagado, no lo crea)."""
     from app.integrations.woocommerce.jobs import (  # noqa: PLC0415
         import_order_from_event,
         upsert_backfill_event,
     )
 
-    event_id = upsert_backfill_event(session, store, int(wo["id"]), wo)
+    woo_id = int(wo["id"])
+    event_id = upsert_backfill_event(session, store, woo_id, client.get_order(woo_id))
     session.commit()
     return import_order_from_event(event_id)
 
 
-def _ultima_pasada(session: Session, account_id: str) -> datetime | None:
-    """Inicio de la última pasada de la tienda que listó TODO lo que tocaba
-    (la tienda respondió y sin tope). Una importación fallida no la invalida:
-    ese pedido lo sigue avisando el Cuadre y lo reintenta «Poner al día…»."""
+@contextmanager
+def _cerrojo_tienda(account_id: str) -> Iterator[bool]:
+    """Una importación por tienda a la vez. Cede `True` si se ha cogido (o si no
+    hay Redis) y `False` si ya hay otra en curso."""
+    clave = LOCK_KEY.format(tienda=account_id)
+    try:
+        from app.workers.queues import redis_connection  # noqa: PLC0415
+
+        conn = redis_connection()
+        token = str(uuid4())
+        cogido = bool(conn.set(clave, token, nx=True, ex=LOCK_TTL_SECONDS))
+    except Exception:  # noqa: BLE001 — sin Redis: sin cerrojo
+        yield True
+        return
+    if not cogido:
+        yield False
+        return
+    try:
+        yield True
+    finally:
+        try:
+            actual = conn.get(clave)
+            if actual is not None and actual.decode() == token:
+                conn.delete(clave)
+        except Exception:  # noqa: BLE001
+            logger.warning("woo.missing: no se pudo soltar el cerrojo %s", clave, exc_info=True)
+
+
+def _ultima_pasada(session: Session, account_id: str) -> tuple[datetime | None, bool]:
+    """(inicio de la última pasada COMPLETA de la tienda, ¿hubo alguna?).
+
+    Completa = la tienda respondió, sin tope y sin importaciones fallidas
+    (`success`): si alguna falló, la siguiente vuelve a mirar desde la misma
+    marca y la reintenta."""
     from app.models.crm import SyncLog, SyncStatus  # noqa: PLC0415
 
-    filas = session.scalars(select(SyncLog).where(
-        SyncLog.system == ExternalSystem.WOOCOMMERCE,
-        SyncLog.account_id == account_id,
-        SyncLog.operation == OPERATION,
-        SyncLog.status.in_((SyncStatus.SUCCESS.value, SyncStatus.PARTIAL_SUCCESS.value)),
-    ).order_by(SyncLog.started_at.desc()).limit(20))
-    for fila in filas:
-        try:
-            meta = json.loads(fila.metadata_json or "{}")
-        except (TypeError, ValueError):
-            meta = {}
-        if fila.started_at is not None and not (isinstance(meta, dict) and meta.get("con_tope")):
-            return _aware(fila.started_at)
-    return None
+    filtro = (SyncLog.system == ExternalSystem.WOOCOMMERCE, SyncLog.account_id == account_id,
+              SyncLog.operation == OPERATION)
+    ultima = session.scalars(select(SyncLog.started_at).where(
+        *filtro, SyncLog.status == SyncStatus.SUCCESS.value,
+    ).order_by(SyncLog.started_at.desc()).limit(1)).first()
+    if ultima is not None:
+        return _aware(ultima), True
+    alguna = session.scalars(select(SyncLog.id).where(*filtro).limit(1)).first() is not None
+    return None, alguna
 
 
 def desde_para_repaso(session: Session, store: IntegrationAccount, *, now: datetime,
                       days: int) -> datetime:
     """Desde cuándo mira el repaso periódico (fecha de modificación): su última
-    pasada buena menos el margen; sin pasadas, el último día. Nunca antes de
-    los `days` días."""
-    ultima = _ultima_pasada(session, store.account_id)
-    desde = (ultima - timedelta(minutes=MARGEN_MINUTOS)) if ultima \
-        else now - timedelta(hours=PRIMERA_PASADA_HORAS)
+    pasada completa menos el margen. La primera vez de la tienda, el último
+    día; si hubo pasadas pero ninguna completa, los `days` días enteros. Nunca
+    antes de los `days` días."""
+    ultima, alguna = _ultima_pasada(session, store.account_id)
+    if ultima is not None:
+        desde = ultima - timedelta(minutes=MARGEN_MINUTOS)
+    elif alguna:
+        desde = now - timedelta(days=days)
+    else:
+        desde = now - timedelta(hours=PRIMERA_PASADA_HORAS)
     return max(desde, now - timedelta(days=days))
 
 
@@ -367,6 +416,96 @@ def _registrar(session: Session, store: IntegrationAccount, *, inicio: datetime,
     session.commit()
 
 
+def _pasada_tienda(
+    session: Session,
+    store: IntegrationAccount,
+    *,
+    dry_run: bool,
+    days: int,
+    incremental: bool,
+    trigger: str,
+    client_factory: Callable[[IntegrationAccount], Any],
+    importer: Callable[..., dict] | None,
+    now: datetime,
+    max_pages: int,
+    presupuesto: int,
+) -> dict[str, Any]:
+    """Lista (y, si no es vista previa, importa) los pagados que faltan de UNA
+    tienda. Deja su fila en `sync_logs` al importar."""
+    account_id = store.account_id
+    inicio = now      # conservador: el repaso siguiente mira desde aquí
+    out: dict[str, Any] = {"items": [], "errores": [], "llamadas": 0, "con_tope": False,
+                           "importados": 0, "intentados": 0}
+    resultado: dict[str, Any] = {"faltan": 0, "importados": 0, "fallidos": 0,
+                                 "numeros": [], "con_tope": False}
+    try:
+        client = client_factory(store)
+        modified_after = (
+            desde_para_repaso(session, store, now=now, days=days) if incremental else None
+        )
+        vista = pagados_que_faltan(
+            session, store, client, days=days, now=now,
+            modified_after=modified_after, max_pages=max_pages,
+        )
+    except Exception as exc:  # noqa: BLE001 — una tienda no corta a las demás
+        session.rollback()
+        texto = str(exc) if isinstance(exc, WooError) else f"{type(exc).__name__}: {exc}"
+        out["errores"].append({"store": account_id, "error": texto[:200]})
+        logger.warning("woo.missing %s: no se pudo listar la tienda: %s", account_id, texto)
+        if not dry_run:
+            resultado["error"] = texto
+            _registrar(session, store, inicio=inicio, trigger=trigger, resultado=resultado)
+        return out
+    out["llamadas"] = vista["llamadas"]
+    out["con_tope"] = resultado["con_tope"] = vista["con_tope"]
+    resultado["faltan"] = len(vista["faltan"])
+    importar = importer or partial(_importar_como_webhook, client=client)
+
+    for ausente, wo in vista["faltan"]:
+        item = ausente.as_dict()
+        out["items"].append(item)
+        if dry_run:
+            item["resultado"] = "a_importar"
+            continue
+        if out["intentados"] >= presupuesto:
+            item["resultado"] = "sin_importar"   # tope de la pasada
+            out["con_tope"] = resultado["con_tope"] = True
+            continue
+        # Justo antes: ¿lo ha creado mientras tanto un webhook?
+        if _ya_en_bohub(session, store, {str(ausente.woo_id): wo}):
+            item["resultado"] = "ya_estaba"
+            continue
+        out["intentados"] += 1
+        try:
+            outcome = importar(session, store, wo) or {}
+        except Exception as exc:  # noqa: BLE001 — uno no corta los demás
+            session.rollback()
+            outcome = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:200]}"}
+        order_id = outcome.get("order_id")
+        if order_id and not outcome.get("error"):
+            session.expire_all()
+            order = session.get(Order, order_id)
+            item.update(resultado="importado", order_id=order_id,
+                        order_number=order.order_number if order else None)
+            out["importados"] += 1
+            resultado["importados"] += 1
+            resultado["numeros"].append(item["order_number"] or ausente.numero)
+        else:
+            motivo = (outcome.get("error") or outcome.get("reason")
+                      or (f"estado {outcome['skipped_status']}"
+                          if outcome.get("skipped_status") else "no se creó"))
+            item.update(resultado="error", error=str(motivo)[:200])
+            resultado["fallidos"] += 1
+            out["errores"].append({"store": account_id, "order_number": ausente.numero,
+                                   "error": str(motivo)[:200]})
+    if not dry_run:
+        _registrar(session, store, inicio=inicio, trigger=trigger, resultado=resultado)
+        if resultado["importados"]:
+            logger.info("woo.missing %s: importados %d pedidos pagados que faltaban (%s)",
+                        account_id, resultado["importados"], ", ".join(resultado["numeros"][:20]))
+    return out
+
+
 def import_missing_paid_orders(
     session: Session,
     *,
@@ -391,11 +530,12 @@ def import_missing_paid_orders(
 
     Devuelve `{dias, faltan, importados, items, errores, con_tope, woo_calls}`;
     cada item es un `PedidoAusente` con `resultado` (`a_importar` en vista
-    previa; `importado` / `error` / `sin_importar` al aplicar) y, si se
-    importó, `order_id` y `order_number`."""
+    previa; `importado` / `error` / `sin_importar` (tope) / `ya_estaba` (lo
+    creó un webhook entre el listado y la importación) al aplicar) y, si se
+    importó, `order_id` y `order_number`. Al aplicar, cada tienda va bajo su
+    cerrojo: si ya hay otra importación de esa tienda, se salta."""
     now = _aware(now or datetime.now(UTC))
     days = days or missing_config(session)["days"]
-    importer = importer or _importar_como_webhook
     items: list[dict[str, Any]] = []
     errores: list[dict[str, str]] = []
     woo_calls = 0
@@ -405,71 +545,29 @@ def import_missing_paid_orders(
 
     for store in woo_stores(session, store_account_id):
         account_id = store.account_id
-        inicio = now      # conservador: el repaso siguiente mira desde aquí
-        resultado: dict[str, Any] = {"faltan": 0, "importados": 0, "fallidos": 0,
-                                     "numeros": [], "con_tope": False}
-        try:
-            client = client_factory(store)
-            modified_after = (
-                desde_para_repaso(session, store, now=now, days=days) if incremental else None
+        if dry_run:
+            r = _pasada_tienda(
+                session, store, dry_run=True, days=days, incremental=incremental,
+                trigger=trigger, client_factory=client_factory, importer=importer, now=now,
+                max_pages=max_pages, presupuesto=presupuesto,
             )
-            vista = pagados_que_faltan(
-                session, store, client, days=days, now=now,
-                modified_after=modified_after, max_pages=max_pages,
-            )
-        except Exception as exc:  # noqa: BLE001 — una tienda no corta a las demás
-            session.rollback()
-            texto = str(exc) if isinstance(exc, WooError) else f"{type(exc).__name__}: {exc}"
-            errores.append({"store": account_id, "error": texto[:200]})
-            logger.warning("woo.missing %s: no se pudo listar la tienda: %s", account_id, texto)
-            if not dry_run:
-                resultado["error"] = texto
-                _registrar(session, store, inicio=inicio, trigger=trigger, resultado=resultado)
-            continue
-        woo_calls += vista["llamadas"]
-        con_tope = con_tope or vista["con_tope"]
-        resultado["con_tope"] = vista["con_tope"]
-        resultado["faltan"] = len(vista["faltan"])
-
-        for ausente, wo in vista["faltan"]:
-            item = ausente.as_dict()
-            items.append(item)
-            if dry_run:
-                item["resultado"] = "a_importar"
-                continue
-            if presupuesto <= 0:
-                item["resultado"] = "sin_importar"   # tope de la pasada
-                con_tope = resultado["con_tope"] = True
-                continue
-            presupuesto -= 1
-            try:
-                outcome = importer(session, store, wo) or {}
-            except Exception as exc:  # noqa: BLE001 — uno no corta los demás
-                session.rollback()
-                outcome = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:200]}"}
-            order_id = outcome.get("order_id")
-            if order_id and not outcome.get("error"):
-                session.expire_all()
-                order = session.get(Order, order_id)
-                item.update(resultado="importado", order_id=order_id,
-                            order_number=order.order_number if order else None)
-                importados += 1
-                resultado["importados"] += 1
-                resultado["numeros"].append(item["order_number"] or ausente.numero)
-            else:
-                motivo = (outcome.get("error") or outcome.get("reason")
-                          or (f"estado {outcome['skipped_status']}"
-                              if outcome.get("skipped_status") else "no se creó"))
-                item.update(resultado="error", error=str(motivo)[:200])
-                resultado["fallidos"] += 1
-                errores.append({"store": account_id, "order_number": ausente.numero,
-                                "error": str(motivo)[:200]})
-        if not dry_run:
-            _registrar(session, store, inicio=inicio, trigger=trigger, resultado=resultado)
-            if resultado["importados"]:
-                logger.info("woo.missing %s: importados %d pedidos pagados que faltaban (%s)",
-                            account_id, resultado["importados"],
-                            ", ".join(resultado["numeros"][:20]))
+        else:
+            with _cerrojo_tienda(account_id) as cogido:
+                if not cogido:
+                    errores.append({"store": account_id,
+                                    "error": "ya hay otra importación de esta tienda en curso"})
+                    continue
+                r = _pasada_tienda(
+                    session, store, dry_run=False, days=days, incremental=incremental,
+                    trigger=trigger, client_factory=client_factory, importer=importer,
+                    now=now, max_pages=max_pages, presupuesto=presupuesto,
+                )
+        items.extend(r["items"])
+        errores.extend(r["errores"])
+        woo_calls += r["llamadas"]
+        con_tope = con_tope or r["con_tope"]
+        importados += r["importados"]
+        presupuesto -= r["intentados"]
 
     return {
         "dias": days,

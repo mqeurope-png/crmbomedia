@@ -122,4 +122,28 @@ describe("ERP · Seguimiento — «Poner al día estados Woo…» importa los pa
       "1 no se pudieron importar (boprint #99976: boom): el Cuadre los sigue avisando.",
     );
   });
+
+  it("si una tienda no responde no dice que no falta nada", async () => {
+    (waitForReconcileWoo as jest.Mock)
+      .mockResolvedValueOnce({ status: "finished", result: {
+        ...BASE, preview: true,
+        missing: { dias: 90, faltan: 0, importados: 0, items: [], con_tope: false,
+                   errores: [{ store: "fluxlasers", error: "tienda caída" }] },
+      } })
+      .mockResolvedValueOnce({ status: "finished", result: {
+        ...BASE, preview: false,
+        missing: { dias: 90, faltan: 0, importados: 0, items: [], con_tope: false,
+                   errores: [{ store: "fluxlasers", error: "tienda caída" }] },
+      } });
+    const user = userEvent.setup();
+    render(<SeguimientoPageView />);
+    await user.click(await screen.findByRole("button", { name: "Poner al día estados Woo…" }));
+    expect(await screen.findByLabelText("Pedidos pagados que faltan")).toHaveTextContent(
+      "No se pudo consultar: fluxlasers (tienda caída)",
+    );
+    await user.click(screen.getByRole("button", { name: "Aplicar (1 cambios)" }));
+    const aviso = await screen.findByText(/Puesta al día aplicada/);
+    expect(aviso).toHaveTextContent("No se pudo consultar: fluxlasers (tienda caída).");
+    expect(aviso).not.toHaveTextContent("No faltaba ningún pedido pagado");
+  });
 });

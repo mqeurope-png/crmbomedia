@@ -131,16 +131,20 @@ class Tienda:
         self.ignora_filtro = ignora_filtro
 
     def list_orders(self, *, status="processing", since=None, per_page=50, page=1,
-                    modified_after=None, dates_are_gmt=False):
+                    modified_after=None, dates_are_gmt=False, fields=None):
         self.llamadas.append({"tienda": self.store.account_id, "status": status,
                               "since": since, "modified_after": modified_after,
-                              "gmt": dates_are_gmt, "page": page})
+                              "gmt": dates_are_gmt, "page": page, "fields": fields})
         if self.caida:
             raise WooError("tienda caída", status=503)
         if page > 1:
             return []
         estados = set(str(status).split(","))
         return [dict(p) for p in self.pedidos if self.ignora_filtro or p["status"] in estados]
+
+    def get_order(self, order_id: int):
+        self.llamadas.append({"tienda": self.store.account_id, "get_order": order_id})
+        return next(dict(p) for p in self.pedidos if p["id"] == order_id)
 
 
 def _tiendas(pedidos: dict[str, list[dict]], llamadas: list[dict], **kw):
@@ -174,10 +178,14 @@ def test_pagado_que_falta_entra_como_por_el_webhook_y_no_se_duplica(factory):
     assert item["resultado"] == "importado" and item["order_number"] == "BOPRIN-99976"
     assert item["cliente"] == "Gráficas Norte SL (Laura Pérez)"
     assert item["enlace"] == "https://boprint.example/wp-admin/post.php?post=99976&action=edit"
-    # UNA consulta por tienda: estados pagados juntos, por fecha, en UTC.
-    assert len(llamadas) == 1
-    assert llamadas[0]["status"] == "completed,processing,refunded"
-    assert llamadas[0]["since"] == "2026-07-09T10:00:00" and llamadas[0]["gmt"] is True
+    # UNA consulta por tienda: estados pagados juntos, por fecha, en UTC y
+    # ligera (solo unos campos); el que falta se pide entero, fresco.
+    listados = [c for c in llamadas if "status" in c]
+    assert len(listados) == 1
+    assert listados[0]["status"] == "completed,processing,refunded"
+    assert listados[0]["since"] == "2026-07-09T10:00:00" and listados[0]["gmt"] is True
+    assert "id" in listados[0]["fields"] and "line_items" not in listados[0]["fields"]
+    assert [c["get_order"] for c in llamadas if "get_order" in c] == [99976]
     with factory() as s:
         o = s.scalar(select(Order))
         assert (o.external_source, o.external_id) == (OrderSource.WOOCOMMERCE, "99976")
@@ -320,6 +328,50 @@ def test_si_la_importacion_falla_se_informa_y_el_resto_sigue(factory):
     assert "FACTUSOL no responde" in r["errores"][0]["error"]
 
 
+def test_si_un_webhook_lo_crea_entre_el_listado_y_la_importacion_no_se_duplica(
+    factory, monkeypatch,
+):
+    from app.integrations.woocommerce import missing
+
+    with factory() as s:
+        _store(s)
+    original = missing.pagados_que_faltan
+
+    def listado_y_luego_webhook(session, store, client, **kw):
+        vista = original(session, store, client, **kw)
+        with factory() as s2:                  # mientras tanto llega el webhook
+            payload = _pedido(99976)
+            payload["_store_slug"] = "boprint"
+            import_woo_order(s2, store=s2.scalar(select(IntegrationAccount)), woo_order=payload)
+            s2.commit()
+        return vista
+
+    monkeypatch.setattr(missing, "pagados_que_faltan", listado_y_luego_webhook)
+    r = _importar(factory, {"boprint": [_pedido(99976)]})
+    assert r["importados"] == 0 and r["items"][0]["resultado"] == "ya_estaba"
+    with factory() as s:
+        assert s.scalar(select(func.count(Order.id))) == 1
+
+
+def test_dos_importaciones_de_la_misma_tienda_no_van_a_la_vez(factory):
+    with factory() as s:
+        _store(s)
+
+    class RedisOcupado:
+        def set(self, key, _v, nx=False, ex=None):
+            return False                       # otra importación tiene el cerrojo
+
+    with patch("app.workers.queues.redis_connection", return_value=RedisOcupado()):
+        r = _importar(factory, {"boprint": [_pedido(99976)]})
+    assert r["importados"] == 0
+    assert "otra importación" in r["errores"][0]["error"]
+    with factory() as s:
+        assert s.scalar(select(func.count(Order.id))) == 0
+    # La vista previa no necesita el cerrojo.
+    with patch("app.workers.queues.redis_connection", return_value=RedisOcupado()):
+        assert _importar(factory, {"boprint": [_pedido(99976)]}, dry_run=True)["faltan"] == 1
+
+
 # --- Cuadre: «Pedido pagado en WooCommerce que no está en BoHub» --------------------------
 
 
@@ -421,7 +473,7 @@ def test_el_repaso_respeta_el_interruptor(factory):
     assert llamadas == []
     _ajustes(factory, woo_missing_check_enabled=True)
     r = _repaso(factory, {"boprint": [_pedido(99976)]}, llamadas)
-    assert r["importados"] == 1 and len(llamadas) == 1
+    assert r["importados"] == 1 and len([c for c in llamadas if "status" in c]) == 1
 
 
 def test_el_repaso_respeta_su_intervalo_y_solo_mira_lo_modificado(factory):
@@ -439,6 +491,29 @@ def test_el_repaso_respeta_su_intervalo_y_solo_mira_lo_modificado(factory):
     assert llamadas[-1]["modified_after"] == "2026-10-07T09:45:00"
     with factory() as s:
         assert [t for (t,) in s.execute(select(SyncLog.triggered_by))] == ["cron", "cron"]
+
+
+def test_si_una_importacion_falla_el_repaso_siguiente_vuelve_a_mirarla(factory):
+    with factory() as s:
+        _store(s)
+    llamadas: list[dict] = []
+    tienda = {"boprint": [_pedido(99976)]}
+
+    def repaso(ahora, importer=None):
+        with factory() as s:
+            return missing_job.run_periodic_check(
+                s, client_factory=_tiendas(tienda, llamadas), now=ahora, importer=importer)
+
+    r = repaso(AHORA, importer=lambda *_a: {"ok": False, "error": "FACTUSOL no responde"})
+    assert r["importados"] == 0
+    # La marca no avanza: el siguiente mira los 90 días y lo reintenta.
+    r = repaso(AHORA + timedelta(minutes=60))
+    assert [c["modified_after"] for c in llamadas if "status" in c] == [
+        "2026-10-06T10:00:00", "2026-07-09T11:00:00"]
+    assert r["importados"] == 1
+    # Ya completa: el siguiente mira desde ella menos el margen.
+    repaso(AHORA + timedelta(minutes=120))
+    assert [c for c in llamadas if "status" in c][-1]["modified_after"] == "2026-10-07T10:45:00"
 
 
 def test_el_intervalo_sale_de_configuracion_y_arma_el_tic(factory, monkeypatch):

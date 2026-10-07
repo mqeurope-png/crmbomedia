@@ -188,7 +188,14 @@ function missingApplied(r: WooReconcileSummary): string {
   const hechos = items.filter((i) => i.resultado === "importado");
   const fallidos = items.filter((i) => i.resultado === "error");
   const pendientes = items.filter((i) => i.resultado === "sin_importar");
-  if (!items.length) return " No faltaba ningún pedido pagado en BoHub.";
+  // Tiendas que no se pudieron consultar (no son errores de un pedido).
+  const caidas = (m.errores ?? []).filter((e) => !e.order_number);
+  const sinConsultar = caidas.length
+    ? ` No se pudo consultar: ${caidas.map((e) => `${e.store ?? "?"} (${e.error})`).join(" · ")}.`
+    : "";
+  if (!items.length) {
+    return (caidas.length ? "" : " No faltaba ningún pedido pagado en BoHub.") + sinConsultar;
+  }
   const nums = hechos.map((i) => i.order_number || `${i.tienda} #${i.numero}`);
   const lista = nums.slice(0, 20).join(", ") + (nums.length > 20 ? ` y ${nums.length - 20} más` : "");
   return ` Importados ${hechos.length} pedidos pagados que faltaban en BoHub`
@@ -198,7 +205,8 @@ function missingApplied(r: WooReconcileSummary): string {
         .map((i) => `${i.tienda} #${i.numero}: ${i.error ?? "error"}`).join(" · ")}): `
         + "el Cuadre los sigue avisando."
       : "")
-    + (pendientes.length ? ` ${pendientes.length} quedan para la próxima pasada (tope).` : "");
+    + (pendientes.length ? ` ${pendientes.length} quedan para la próxima pasada (tope).` : "")
+    + sinConsultar;
 }
 
 /** ERP-F6 — Seguimiento de pedidos: la vista que sustituye el Excel manual de
@@ -1336,7 +1344,10 @@ function MissingPreview({ missing }: { missing?: WooReconcileSummary["missing"] 
         ) : (
           <>No falta ningún pedido pagado de los últimos {missing.dias ?? 90} días.</>
         )}
-        {missing.con_tope ? " (Hay más: vuelve a ejecutar para el resto.)" : ""}
+        {missing.con_tope
+          ? " (La tienda tiene más pedidos de los que se miran de una vez: acorta los días en "
+            + "Configuración ERP.)"
+          : ""}
       </p>
       {items.length > 0 ? (
         <ul className="item-list small">

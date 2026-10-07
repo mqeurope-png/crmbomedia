@@ -19,31 +19,42 @@ Tres piezas, las tres sobre el mismo núcleo (`backend/app/integrations/woocomme
 
 ## El núcleo
 
-- **Qué se pide.** Una consulta por tienda (paginada de 100 en 100):
-  `status=completed,processing,refunded` (los estados de `CREATE_ON_STATUSES`,
-  con los que el importador crea un pedido), `after` = hace N días (creación),
-  `dates_are_gmt=true` y, en el repaso, `modified_after` = repaso anterior
-  menos 15 min. Un `on-hold`/`pending` no se pide, y si la tienda lo
+- **Qué se pide.** Una consulta por tienda (paginada de 100 en 100, hasta
+  10.000): `status=completed,processing,refunded` (los estados de
+  `CREATE_ON_STATUSES`, con los que el importador crea un pedido), `after` =
+  hace N días (creación), `dates_are_gmt=true`, `_fields` con solo los campos
+  que hacen falta (el listado pesa poco) y, en el repaso, `modified_after` =
+  repaso anterior menos 15 min. Un `on-hold`/`pending` no se pide, y si la tienda lo
   devolviera igual, se descarta.
 - **Qué falta.** Lo que BoHub no tiene por (`external_source` WooCommerce,
   `external_id`, tienda —o sin tienda, por prudencia—) ni por el número que
   le pondría el importador (`BOPRIN-99976`; por si se dio de alta a mano).
   Los modificados hace menos de 5 min se dejan para la pasada siguiente: su
   webhook puede estar en camino.
-- **Cómo se importa.** Igual que «Reimportar pedido»:
-  `jobs.upsert_backfill_event` (evento `backfill:{id}`) +
+- **Cómo se importa.** Igual que «Reimportar pedido»: el pedido **fresco**
+  (`get_order`, solo de los que faltan), `jobs.upsert_backfill_event` (evento
+  `backfill:{id}`) +
   `import_order_from_event` → `import_woo_order`, el punto único de ingesta
   del webhook. Empresa, líneas, método de pago, corte externo y Cola SAT
   quedan como si hubiera llegado el webhook. Un pedido que ya está en BoHub
-  **no se pasa al importador**: ni se refresca ni se pisa.
+  **no se pasa al importador**: ni se refresca ni se pisa. Justo antes de
+  importar cada uno se vuelve a mirar (por si entró un webhook mientras tanto:
+  queda `ya_estaba`).
+- **Una importación por tienda a la vez.** «Poner al día…» (worker-factusol) y
+  el repaso (worker-web) cogen un cerrojo en Redis por tienda
+  (`woocommerce:missing:lock:{tienda}`); si está cogido, esa tienda se salta
+  con un aviso. La vista previa no lo necesita.
 - **Idempotente.** Una segunda pasada no encuentra nada que importar.
 - **Tope.** 50 importaciones por pasada y 20 páginas por tienda; el resto, en
   la siguiente (se marca `con_tope`).
 - **Rastro.** Al importar (no en vista previa) deja una fila en `sync_logs`
   por tienda, operación `import_missing` (`manual` o `cron`), con los números
-  importados. La última sin tope marca desde dónde mira el repaso siguiente;
-  la primera vez, el último día (los 90, con vista previa, son de «Poner al
-  día…»).
+  importados. La última **completa** (`success`: la tienda respondió, sin tope
+  y sin importaciones fallidas) marca desde dónde mira el repaso siguiente; si
+  alguna falló, el siguiente vuelve a mirar desde la misma marca y la
+  reintenta. La primera vez de la tienda mira el último día (los 90, con
+  vista previa, son de «Poner al día…»); si hubo pasadas pero ninguna
+  completa, los N días.
 
 ## Configuración ERP → «Pedidos web pagados que no llegan»
 

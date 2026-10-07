@@ -1169,8 +1169,9 @@ export type WooMissingItem = {
   pagado_el: string | null;
   /** El pedido en el admin de la tienda. */
   enlace: string;
-  /** a_importar (vista previa) · importado · error · sin_importar (tope). */
-  resultado: "a_importar" | "importado" | "error" | "sin_importar";
+  /** a_importar (vista previa) · importado · error · sin_importar (tope) ·
+   *  ya_estaba (lo creó un webhook entre el listado y la importación). */
+  resultado: "a_importar" | "importado" | "error" | "sin_importar" | "ya_estaba";
   order_id?: string;
   order_number?: string | null;
   error?: string;
