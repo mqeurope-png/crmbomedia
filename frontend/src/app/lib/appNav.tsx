@@ -6,6 +6,7 @@ import {
   Database,
   FileCheck,
   FileText,
+  FormInput,
   Kanban,
   Landmark,
   Mail,
@@ -210,6 +211,14 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     icon: Workflow,
     scope: "crm",
     allowedRoles: ["admin", "manager", "user", "viewer"],
+  },
+  {
+    // La API de formularios exige manager (require_manager).
+    href: "/admin/forms",
+    label: "Formularios",
+    icon: FormInput,
+    scope: "crm",
+    allowedRoles: ["admin", "manager"],
   },
   {
     href: "/admin/custom-fields",

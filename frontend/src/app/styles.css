@@ -14895,3 +14895,13 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
 .erp-foto-nombre { font-size: var(--fs-label); padding: 4px; word-break: break-all; }
 .erp-fotos-perdidas { color: var(--st-amber-ink); background: var(--st-amber-bg); padding: 4px 8px; border-radius: 6px; }
 .erp-fotos-subir { align-self: flex-start; cursor: pointer; }
+
+/* Formularios web — apariencia y vista previa real (servidor). */
+.wf-appearance { display: flex; flex-direction: column; gap: 8px; }
+.wf-color-field { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: var(--fs-label); }
+.wf-color-field > span { flex: 1 1 100%; }
+.wf-color-field input[type="color"] { width: 40px; height: 28px; padding: 0; border: 1px solid var(--line, #e5e7eb); border-radius: 6px; background: transparent; }
+.wf-live-preview { display: flex; flex-direction: column; gap: 8px; }
+.wf-live-preview-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.wf-live-preview-toggle { display: inline-flex; gap: 4px; }
+.wf-live-preview-frame { width: 100%; max-width: 100%; min-height: 480px; border: 1px dashed var(--line, #e5e7eb); border-radius: 8px; background: transparent; align-self: center; }

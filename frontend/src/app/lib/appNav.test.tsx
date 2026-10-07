@@ -10,6 +10,22 @@ function user(role: User["role"]): User {
 const labels = (role: User["role"], mode: "crm" | "erp") =>
   resolveVisibleNav(user(role), mode).map((i) => i.label);
 
+describe("Formularios en el menú", () => {
+  it("lo ven admin y manager (los que pueden usar la pantalla), junto a Workflows", () => {
+    for (const rol of ["admin", "manager"] as const) {
+      const l = labels(rol, "crm");
+      expect(l).toContain("Formularios");
+      expect(l.indexOf("Formularios")).toBe(l.indexOf("Workflows") + 1);
+    }
+    expect(resolveVisibleNav(user("admin"), "crm").find((i) => i.label === "Formularios")?.href)
+      .toBe("/admin/forms");
+  });
+
+  it("un usuario normal no lo ve (la API le daría 403)", () => {
+    expect(labels("user", "crm")).not.toContain("Formularios");
+  });
+});
+
 describe("resolveVisibleNav — menú por ámbito de rol", () => {
   it("un usuario solo-ERP (pedidos) ve SOLO secciones de ERP", () => {
     const l = labels("pedidos", "erp");

@@ -51,6 +51,42 @@ export type FormField = {
   maps_to_contact_field?: string | null;
 };
 
+/** Apariencia por formulario (ancho, alineación, estilo). Cada opción vacía
+ *  deja el aspecto de siempre; el servidor valida colores (#rrggbb) y rangos. */
+export type FormAppearance = {
+  width_pct?: number | null;
+  max_width_px?: number | null;
+  align?: "left" | "center" | "right" | null;
+  theme?: "light" | "dark" | "inherit" | null;
+  primary_color?: string | null;
+  text_color?: string | null;
+  background_color?: string | null;
+  radius_px?: number | null;
+  font?: "inherit" | "system" | "sans" | "serif" | "humanista" | null;
+  font_size_px?: number | null;
+  submit_text?: string | null;
+};
+
+export const APPEARANCE_ALIGN = [
+  { value: "left", label: "Izquierda" },
+  { value: "center", label: "Centrado" },
+  { value: "right", label: "Derecha" },
+] as const;
+
+export const APPEARANCE_THEMES = [
+  { value: "light", label: "Claro" },
+  { value: "dark", label: "Oscuro" },
+  { value: "inherit", label: "Heredar de la web" },
+] as const;
+
+export const APPEARANCE_FONTS = [
+  { value: "inherit", label: "Heredada del sitio" },
+  { value: "system", label: "Sistema" },
+  { value: "sans", label: "Sans (Helvetica / Arial)" },
+  { value: "serif", label: "Serif (Georgia)" },
+  { value: "humanista", label: "Humanista (Segoe / Trebuchet)" },
+] as const;
+
 export type WebFormBase = {
   slug: string;
   name: string;
@@ -66,6 +102,7 @@ export type WebFormBase = {
   fixed_owner_user_id?: string | null;
   notify_owner_on_new: boolean;
   recaptcha_enabled: boolean;
+  appearance?: FormAppearance | null;
 };
 
 export type WebFormDetail = WebFormBase & {
@@ -84,6 +121,9 @@ export type WebFormListItem = {
   is_active: boolean;
   submissions_total: number;
   submissions_spam: number;
+  /** Envíos reales y bloqueados (reCAPTCHA, honeypot…), por separado. */
+  submissions_real?: number;
+  submissions_blocked?: number;
   created_at: string;
 };
 
@@ -110,6 +150,8 @@ export type EmbedCode = {
   iframe_snippet: string;
   // v3 Bug 3: HTML puro copiable (sin estilar) para pegar en cualquier web.
   html_snippet: string;
+  /** Desactivado no se ve en la web: la pantalla avisa al copiar. */
+  is_active?: boolean;
 };
 
 function qs(params: Record<string, string | boolean | undefined>): string {
@@ -172,6 +214,20 @@ export async function getSubmissions(
 
 export async function getEmbedCode(id: string): Promise<EmbedCode> {
   return apiFetch<EmbedCode>(`/api/admin/forms/${id}/embed-code`);
+}
+
+/** HTML de la vista previa (vía iframe) con lo que hay en el editor, sin
+ *  guardar. */
+export async function previewForm(payload: {
+  name: string;
+  language: string;
+  fields: FormField[];
+  appearance?: FormAppearance | null;
+}): Promise<{ html: string }> {
+  return apiFetch<{ html: string }>("/api/admin/forms/preview", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
 export type MappableField = {

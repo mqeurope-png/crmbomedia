@@ -88,8 +88,8 @@ export function WebFormsList() {
               <th>Slug</th>
               <th>Marca</th>
               <th>Idioma</th>
-              <th>Submits</th>
-              <th>Spam</th>
+              <th>Envíos</th>
+              <th title="Intentos bloqueados por reCAPTCHA, honeypot o límite de envíos">Bloqueados</th>
               <th>Activo</th>
               <th />
             </tr>
@@ -101,8 +101,8 @@ export function WebFormsList() {
                 <td className="muted small">{f.slug}</td>
                 <td>{f.brand ?? "—"}</td>
                 <td>{f.language.toUpperCase()}</td>
-                <td>{f.submissions_total}</td>
-                <td>{f.submissions_spam}</td>
+                <td>{f.submissions_real ?? f.submissions_total - f.submissions_spam}</td>
+                <td className="muted">{f.submissions_blocked ?? f.submissions_spam}</td>
                 <td>{f.is_active ? "Sí" : "No"}</td>
                 <td className="wf-row-actions">
                   <Link className="button small secondary" href={`/admin/forms/${f.id}/editor`} title="Editar">
