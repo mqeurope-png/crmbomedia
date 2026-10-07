@@ -4,7 +4,9 @@ import { Plus, RefreshCw, Search } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ErrorState } from "../../components/ErrorState";
+import { ModalCloseButton } from "../../components/ModalCloseButton";
 import { PageHeader } from "../../components/PageHeader";
+import { useModalBehaviour } from "../../components/useModalBehaviour";
 import {
   createBrevoList,
   deleteBrevoList,
@@ -320,12 +322,19 @@ function CreateListModal({
 }) {
   const [name, setName] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose: onCancel, disabled: submitting });
 
+  // Molde de modal del CRM (`.modal-overlay` + `.modal-dialog`): antes iba en
+  // `.modal-backdrop` + `.modal`, una clase sin estilos.
   return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true">
-      <div className="modal">
-        <h2>Nueva lista Brevo</h2>
+    <div className="modal-overlay" role="dialog" aria-modal="true" {...overlayProps}>
+      <div className="modal-dialog small">
+        <header className="modal-header">
+          <h2>Nueva lista Brevo</h2>
+          <ModalCloseButton onClose={requestClose} disabled={submitting} placement="header" />
+        </header>
         <form
+          className="modal-body modal-form"
           onSubmit={async (e) => {
             e.preventDefault();
             if (!name.trim() || submitting) return;
@@ -348,7 +357,7 @@ function CreateListModal({
               maxLength={200}
             />
           </label>
-          <div className="actions">
+          <div className="modal-actions">
             <button
               type="button"
               className="button secondary"

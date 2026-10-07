@@ -3,9 +3,9 @@ import { extractErrorMessage } from "./errors";
 
 /** Fotos del embalaje: preparar la foto en el navegador antes de subirla. */
 
-/** Tope por fichero en el navegador: el del proxy (nginx corta `/api/` a
- *  12 MB), por debajo de los 15 MB de la API. */
-export const FOTO_MAX_BYTES = 12 * 1024 * 1024;
+/** Tope por fichero en el navegador: el de la API (15 MB). nginx deja pasar
+ *  hasta 16 MB, así que quien corta es BoHub, con su mensaje. */
+export const FOTO_MAX_BYTES = 15 * 1024 * 1024;
 /** Lado mayor de una foto reducida: de sobra para ver el embalaje. */
 export const FOTO_LADO_MAX = 2560;
 /** A partir de aquí se reduce (una foto de móvil moderno pasa de esto). */
@@ -25,7 +25,7 @@ function nombreJpg(name: string): string {
 /** Si la foto pesa mucho, la reduce en el navegador (lado mayor 2560 px, JPEG
  *  al 85 %) en vez de dejar que el servidor la rechace. Si el navegador no
  *  sabe leerla (HEIC fuera de Safari) se manda tal cual y el servidor la
- *  convierte; solo si además pasa de 12 MB se avisa aquí. PDF, tal cual. */
+ *  convierte; solo si además pasa de 15 MB se avisa aquí. PDF, tal cual. */
 export async function prepararFoto(file: File): Promise<File> {
   if (!esImagen(file) || file.size <= UMBRAL_REDUCIR) return file;
   try {
@@ -53,7 +53,7 @@ export async function prepararFoto(file: File): Promise<File> {
     const mb = (file.size / 1024 / 1024).toFixed(1);
     throw new Error(
       `La foto pesa ${mb} MB y este navegador no puede reducirla. Hazla con menos `
-      + "resolución o súbela como JPG (máximo 12 MB).",
+      + "resolución o súbela como JPG (máximo 15 MB).",
     );
   }
   return file;
@@ -64,7 +64,7 @@ export async function prepararFoto(file: File): Promise<File> {
 export function mensajeSubida(err: unknown): string {
   if (err instanceof ApiError) {
     if (err.status === 413 && !err.detail) {
-      return "El archivo es demasiado grande (máximo 12 MB).";
+      return "El archivo es demasiado grande (máximo 15 MB).";
     }
     if (err.status === 415 && !err.detail) {
       return "Formato no admitido. Sube una foto (JPG, PNG, HEIC o WebP) o un PDF.";

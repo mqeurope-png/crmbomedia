@@ -66,3 +66,13 @@ def _genei_sin_red(monkeypatch):
         raise GeneiConfigError("Genei deshabilitado en tests (sin red).")
 
     monkeypatch.setattr(genei_api, "build_client", _sin_red)
+
+
+@pytest.fixture(autouse=True)
+def _cuadre_sin_redis(monkeypatch):
+    """La comprobación «Trabajo en cola fallido sin revisar» lee los registros
+    de fallidos de RQ (Redis). En los tests no hay Redis: lista vacía salvo
+    que el test diga otra cosa (tests/test_cuadre_trabajos_fallidos.py)."""
+    import app.erp.cuadre.checks_colas as checks_colas
+
+    monkeypatch.setattr(checks_colas, "leer_fallidos", lambda *a, **k: [])

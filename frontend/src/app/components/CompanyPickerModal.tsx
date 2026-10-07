@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import { CompanyCreateForm, type CompanyCreated } from "./CompanyCreateForm";
 import { CompanySearch } from "./CompanySearch";
+import { ModalCloseButton } from "./ModalCloseButton";
+import { useModalBehaviour } from "./useModalBehaviour";
 
 type Props = {
   open: boolean;
@@ -24,20 +26,21 @@ type Props = {
 export function CompanyPickerModal({ open, onClose, onPick }: Props) {
   const [createName, setCreateName] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
   // Al cerrar se vuelve al buscador (el modal se reabre limpio).
   useEffect(() => {
     if (!open) { setCreateName(null); setNotice(null); }
   }, [open]);
 
-  useEffect(() => {
-    if (!open) return;
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-    }
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  const creating = createName !== null;
+  // Creando, ✕ / Esc / clic fuera vuelven al buscador (el «Cancelar» del
+  // formulario); buscando, cierran el modal.
+  const { overlayProps, requestClose } = useModalBehaviour({
+    open,
+    onClose: creating ? () => setCreateName(null) : onClose,
+    disabled: creating && submitting,
+  });
 
   if (!open) return null;
 
@@ -51,20 +54,13 @@ export function CompanyPickerModal({ open, onClose, onPick }: Props) {
     onClose();
   }
 
-  const creating = createName !== null;
-
   return (
-    <div
-      className="modal-overlay"
-      role="presentation"
-      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
+    <div className="modal-overlay" role="presentation" {...overlayProps}>
       <div
         className={`modal-dialog erp-modal wide company-picker-dialog ${creating ? "is-creating" : "is-searching"}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby="company-picker-title"
-        onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="company-picker-head">
           <h2 id="company-picker-title">
@@ -75,9 +71,7 @@ export function CompanyPickerModal({ open, onClose, onPick }: Props) {
                 : "Busca por nombre, CIF, NIF-IVA o dominio de email."}
             </span>
           </h2>
-          <button type="button" className="modal-close" onClick={onClose} aria-label="Cerrar">
-            ✕
-          </button>
+          <ModalCloseButton onClose={requestClose} disabled={creating && submitting} placement="header" />
         </div>
         <div className="modal-body">
           {notice ? <p className="form-info" role="status">{notice}</p> : null}
@@ -87,6 +81,7 @@ export function CompanyPickerModal({ open, onClose, onPick }: Props) {
               initialName={createName ?? ""}
               onCreated={onCreated}
               onCancel={() => setCreateName(null)}
+              onSubmittingChange={setSubmitting}
               onUseExisting={(c) => { onPick(c.id, c.name); onClose(); }}
             />
           ) : (

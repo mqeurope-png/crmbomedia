@@ -13,6 +13,8 @@ import {
 import { extractErrorMessage } from "../lib/errors";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { HtmlPreview } from "./HtmlPreview";
+import { ModalCloseButton } from "./ModalCloseButton";
+import { useModalBehaviour } from "./useModalBehaviour";
 
 type Props = {
   accountId: string;
@@ -49,6 +51,7 @@ export function TemplateEditor({
   const [testOpen, setTestOpen] = useState(false);
   const [testEmails, setTestEmails] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const testModal = useModalBehaviour({ open: testOpen, onClose: () => setTestOpen(false) });
 
   useEffect(() => {
     listBrevoSenders(accountId)
@@ -276,9 +279,10 @@ export function TemplateEditor({
       </div>
 
       {testOpen ? (
-        <div className="modal-overlay" role="dialog" aria-modal>
+        <div className="modal-overlay" role="dialog" aria-modal {...testModal.overlayProps}>
           <div className="modal-card">
             <h3>Enviar test</h3>
+            <ModalCloseButton onClose={testModal.requestClose} />
             <p className="muted small">
               El test sale con el sender seleccionado arriba
               {senderEmail ? (

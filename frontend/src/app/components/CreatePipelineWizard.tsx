@@ -9,8 +9,10 @@ import {
   type PipelineTemplate,
 } from "../lib/api";
 import { extractErrorMessage } from "../lib/errors";
+import { ModalCloseButton } from "./ModalCloseButton";
 import { PipelineAIGenerator } from "./PipelineAIGenerator";
 import { PipelineTemplateGallery } from "./PipelineTemplateGallery";
+import { useModalBehaviour } from "./useModalBehaviour";
 
 type Props = {
   open: boolean;
@@ -51,8 +53,6 @@ export function CreatePipelineWizard({
   // AI proposal) que terminan creando un pipeline.
   const [draftIsGlobal, setDraftIsGlobal] = useState(true);
 
-  if (!open) return null;
-
   function reset() {
     setMode("menu");
     setError(null);
@@ -64,6 +64,16 @@ export function CreatePipelineWizard({
     setProposalName("");
     setDraftIsGlobal(true);
   }
+
+  const { overlayProps, requestClose } = useModalBehaviour({
+    open,
+    onClose: () => {
+      reset();
+      onClose();
+    },
+  });
+
+  if (!open) return null;
 
   // Solo se manda is_global cuando current_user es admin — el backend
   // lo ignora silenciosamente para los demás roles.
@@ -144,7 +154,7 @@ export function CreatePipelineWizard({
   }
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal>
+    <div className="modal-overlay" role="dialog" aria-modal {...overlayProps}>
       <div className="modal-card modal-card-wide">
         <div className="wizard-header">
           {mode !== "menu" ? (
@@ -166,16 +176,7 @@ export function CreatePipelineWizard({
             {mode === "ai" && "Generar con IA"}
             {mode === "preview" && "Revisar propuesta IA"}
           </h2>
-          <button
-            type="button"
-            className="button secondary small"
-            onClick={() => {
-              reset();
-              onClose();
-            }}
-          >
-            Cerrar
-          </button>
+          <ModalCloseButton onClose={requestClose} placement="header" />
         </div>
 
         {error ? <p className="danger-text">{error}</p> : null}

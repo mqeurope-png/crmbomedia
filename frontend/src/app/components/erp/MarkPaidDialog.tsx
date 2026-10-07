@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import type { PaymentIntentInput } from "../../lib/erpApi";
+import { ModalCloseButton } from "../ModalCloseButton";
+import { useModalBehaviour } from "../useModalBehaviour";
 import { initialPayment, paymentReady, PaymentStep } from "./PaymentStep";
 
 /** C-bis — «Pagado» desde «Otras acciones de estado» de la ficha: al marcar el
@@ -18,11 +20,13 @@ export function MarkPaidDialog({
   const [payment, setPayment] = useState<PaymentIntentInput>(
     { ...initialPayment(), paid: true },
   );
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose: onCancel, disabled: busy });
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true"
-         aria-label="Marcar el pedido como pagado">
+         aria-label="Marcar el pedido como pagado" {...overlayProps}>
       <div className="modal-dialog erp-modal">
         <h2>Marcar como pagado</h2>
+        <ModalCloseButton onClose={requestClose} disabled={busy} />
         <p className="muted small">
           Elige la <strong>forma de pago</strong>. La cuenta y la fecha son
           opcionales: esto solo apunta el pago en el pedido, no escribe el cobro

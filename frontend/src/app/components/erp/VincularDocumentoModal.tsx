@@ -16,6 +16,8 @@ import {
   type OrderDetail,
 } from "../../lib/erpApi";
 import { extractErrorMessage } from "../../lib/errors";
+import { ModalCloseButton } from "../ModalCloseButton";
+import { useModalBehaviour } from "../useModalBehaviour";
 
 const DOC_TABS: { value: LinkableDocType; label: string; singular: string }[] = [
   { value: "facturas", label: "Factura", singular: "la factura" },
@@ -65,6 +67,7 @@ export function VincularDocumentoModal({
   const [confirm, setConfirm] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose, disabled: busy });
   // Cliente FACTUSOL sin empresa CRM: vincular a una existente o crearla.
   const [companyQuery, setCompanyQuery] = useState("");
   const [companies, setCompanies] = useState<Company[]>([]);
@@ -193,11 +196,11 @@ export function VincularDocumentoModal({
 
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true"
-         aria-label={`Vincular documento FACTUSOL a ${orderNumber}`}>
+         aria-label={`Vincular documento FACTUSOL a ${orderNumber}`} {...overlayProps}>
       <div className="modal-dialog erp-modal">
         <div className="modal-header">
           <h2>Vincular documento FACTUSOL <span className="muted">{orderNumber}</span></h2>
-          <button type="button" className="modal-close" aria-label="Cerrar" onClick={onClose}>×</button>
+          <ModalCloseButton onClose={requestClose} disabled={busy} placement="header" />
         </div>
         <div className="modal-body">
           <p className="muted small">

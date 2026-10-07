@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { extractErrorMessage } from "../../lib/errors";
+import { ModalCloseButton } from "../ModalCloseButton";
+import { useModalBehaviour } from "../useModalBehaviour";
 import {
   annulOrderCobro,
   correctOrderCobro,
@@ -56,6 +58,7 @@ export function AnularCobroModal({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose, disabled: busy });
 
   const reload = useCallback(() => getOrderFactusolCobro(orderId), [orderId]);
 
@@ -145,11 +148,11 @@ export function AnularCobroModal({
 
   const title = `Anular / corregir cobro · ${orderNumber}`;
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={title}>
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={title} {...overlayProps}>
       <div className="modal-dialog">
         <div className="modal-header">
           <h2>{title}</h2>
-          <button type="button" className="modal-close" aria-label="Cerrar" onClick={onClose}>×</button>
+          <ModalCloseButton onClose={requestClose} disabled={busy} placement="header" />
         </div>
         <div className="modal-body">
           {!info && !loadError ? <p className="muted">Consultando la factura en FACTUSOL…</p> : null}

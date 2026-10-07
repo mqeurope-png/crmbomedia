@@ -8,6 +8,8 @@ import {
   type OrderEmailPreview,
 } from "../../lib/erpApi";
 import { extractErrorMessage } from "../../lib/errors";
+import { ModalCloseButton } from "../ModalCloseButton";
+import { useModalBehaviour } from "../useModalBehaviour";
 import {
   CompanyContactsPicker,
   splitContactChannels,
@@ -91,6 +93,7 @@ export function OrderEmailModal({
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [sentTo, setSentTo] = useState<string[] | null>(null);
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose, disabled: sending });
 
   const loadPreview = useCallback(
     (langOverride?: FactusolPdfLang, keepRecipients = false) => {
@@ -173,9 +176,10 @@ export function OrderEmailModal({
 
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true"
-         aria-label={`Enviar pedido ${label} por email`}>
+         aria-label={`Enviar pedido ${label} por email`} {...overlayProps}>
       <div className="modal-dialog erp-modal erp-invoice-email">
         <h2>Enviar pedido por email <span className="muted">{label}</span></h2>
+        <ModalCloseButton onClose={requestClose} disabled={sending} />
 
         {loadError ? <p className="form-error">{loadError}</p> : null}
         {!preview && !loadError ? <p className="muted">Preparando…</p> : null}

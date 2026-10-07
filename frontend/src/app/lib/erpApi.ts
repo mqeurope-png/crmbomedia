@@ -1189,11 +1189,44 @@ export type WooMissingSummary = {
   woo_calls?: number;
 };
 
-/** Estado del job de reconciliación (polling). */
+/** Por dónde va la puesta al día (lo informa el propio trabajo). */
+export type WooReconcileProgress = {
+  fase: string;
+  hechos?: number | null;
+  total?: number | null;
+  at?: string;
+};
+
+type WooReconcileExtra = {
+  progress?: WooReconcileProgress | null;
+  preview?: boolean | null;
+  ended_at?: string | null;
+};
+
+/** Estado del job de reconciliación (polling). `missing`: el trabajo ya no
+ *  existe (caducó: RQ guarda el resultado una hora). */
 export type WooReconcileStatus =
-  | { status: "pending" }
-  | { status: "finished"; result: WooReconcileSummary }
-  | { status: "error"; error?: string };
+  | ({ status: "pending" } & WooReconcileExtra)
+  | ({ status: "finished"; result: WooReconcileSummary } & WooReconcileExtra)
+  | ({ status: "error"; error?: string } & WooReconcileExtra)
+  | { status: "missing" };
+
+/** La última puesta al día lanzada y su estado (para recuperarla al volver). */
+export type WooReconcileLast =
+  | { job_id: null }
+  | (WooReconcileStatus & {
+    job_id: string; preview: boolean; store?: string | null; enqueued_at?: string;
+  });
+
+export async function getLastReconcileWoo(): Promise<WooReconcileLast> {
+  return apiFetch("/api/erp/seguimiento/reconcile-woo-last");
+}
+
+/** Texto de «por dónde va» para la pantalla. */
+export function describeReconcileProgress(p?: WooReconcileProgress | null): string {
+  if (!p?.fase) return "En cola…";
+  return p.total ? `${p.fase} (${p.hechos ?? 0} de ${p.total})` : p.fase;
+}
 
 /** ERP-Woo — ENCOLA la puesta al día (corre en segundo plano en worker-sync)
  *  y devuelve un `job_id`. `preview` (por defecto) no escribe. */
@@ -1208,15 +1241,30 @@ export async function getReconcileWooStatus(jobId: string): Promise<WooReconcile
   return apiFetch(`/api/erp/seguimiento/reconcile-woo-status/${encodeURIComponent(jobId)}`);
 }
 
-/** Espera a que el job termine (o error). Hace polling del estado. Hasta 5
- *  minutos: al aplicar también importa los pagados que faltan, uno a uno. */
+/** Espera a que el job termine, el tiempo que haga falta (tarda 4-5 minutos;
+ *  el trabajo tiene un tope de 20 en el servidor), avisando de por dónde va
+ *  con `onProgress`. Solo se rinde si el trabajo deja de existir, si se pide
+ *  parar (`signal`) o pasados `maxMs` (por encima del tope del servidor). */
 export async function waitForReconcileWoo(
-  jobId: string, { tries = 150, delayMs = 2000 } = {},
+  jobId: string,
+  {
+    delayMs = 2000,
+    maxMs = 30 * 60 * 1000,
+    onProgress,
+    signal,
+  }: {
+    delayMs?: number;
+    maxMs?: number;
+    onProgress?: (p: WooReconcileProgress | null | undefined) => void;
+    signal?: { cancelled: boolean };
+  } = {},
 ): Promise<WooReconcileStatus> {
+  const inicio = Date.now();
   let last: WooReconcileStatus = { status: "pending" };
-  for (let i = 0; i < tries; i++) {
+  while (!signal?.cancelled && Date.now() - inicio < maxMs) {
     last = await getReconcileWooStatus(jobId);
     if (last.status !== "pending") return last;
+    onProgress?.(last.progress);
     await new Promise((r) => setTimeout(r, delayMs));
   }
   return last;

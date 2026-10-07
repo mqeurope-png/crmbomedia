@@ -30,6 +30,8 @@ import { CompanyActivityPanel } from "../../components/erp/CompanyActivityPanel"
 import { CompanyFactusolPanel } from "../../components/erp/CompanyFactusolPanel";
 import { CompanyQuotesPanel } from "../../components/erp/CompanyQuotesPanel";
 import { CompanySearch } from "../../components/CompanySearch";
+import { ModalCloseButton } from "../../components/ModalCloseButton";
+import { useModalBehaviour } from "../../components/useModalBehaviour";
 import { ActionsMenu } from "../../components/erp/flow/ActionsMenu";
 import { RegimePill } from "../../components/erp/flow/RegimePill";
 
@@ -834,6 +836,7 @@ function MergeDialog({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose, disabled: busy });
 
   const onPick = async (target: Company) => {
     if (target.id === source.id) {
@@ -858,21 +861,12 @@ function MergeDialog({
   };
 
   return (
-    <div
-      className="modal-overlay"
-      role="presentation"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
+    <div className="modal-overlay" role="presentation" {...overlayProps}>
       <div className="modal-dialog company-picker-dialog" role="dialog" aria-modal="true"
-           aria-labelledby="merge-title" onMouseDown={(e) => e.stopPropagation()}>
+           aria-labelledby="merge-title">
         <div className="company-picker-head">
           <h2 id="merge-title">Fusionar &quot;{source.name}&quot; con otra empresa</h2>
-          <button type="button" className="button small secondary" onClick={onClose}
-                  aria-label="Cerrar" disabled={busy}>
-            ✕
-          </button>
+          <ModalCloseButton onClose={requestClose} disabled={busy} placement="header" />
         </div>
         <p className="muted small">
           Busca la empresa destino. Los contactos de &quot;{source.name}&quot;

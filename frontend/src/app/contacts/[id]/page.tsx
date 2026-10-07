@@ -33,9 +33,11 @@ import { ContactPipelinesSection } from "../../components/ContactPipelinesSectio
 import { ContactTasksSection } from "../../components/ContactTasksSection";
 import { EmailComposerModal } from "../../components/EmailComposerModal";
 import { ErrorState } from "../../components/ErrorState";
+import { ModalCloseButton } from "../../components/ModalCloseButton";
 import { PageHeader } from "../../components/PageHeader";
 import { RefreshExternalDataButton } from "../../components/RefreshExternalDataButton";
 import { TaskModal } from "../../components/TaskModal";
+import { useModalBehaviour } from "../../components/useModalBehaviour";
 import { getCompany } from "../../lib/companiesApi";
 import { ContactEditForm } from "./ContactEditForm";
 import { CONTACT_DETAIL_TABS, type ContactTab } from "./tabs";
@@ -82,6 +84,11 @@ export default function ContactDetailPage() {
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const deleteModal = useModalBehaviour({
+    open: deleteOpen,
+    onClose: () => setDeleteOpen(false),
+    disabled: deleting,
+  });
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
   useEffect(() => {
     void getCurrentUser().then(setCurrentUser).catch(() => {});
@@ -649,17 +656,14 @@ export default function ContactDetailPage() {
 
       {/* PR-Backlog-Consolidado B1. Modal de confirmación doble. */}
       {deleteOpen ? (
-        <div
-          className="modal-backdrop"
-          onClick={() => !deleting && setDeleteOpen(false)}
-        >
+        <div className="modal-backdrop" {...deleteModal.overlayProps}>
           <div
             className="modal-card contact-delete-modal"
-            onClick={(e) => e.stopPropagation()}
             role="dialog"
             aria-modal="true"
           >
             <h2>Borrar contacto definitivamente</h2>
+            <ModalCloseButton onClose={deleteModal.requestClose} disabled={deleting} />
             <p>
               Esta acción <strong>no se puede deshacer</strong>. Vas a
               borrar definitivamente{" "}

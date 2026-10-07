@@ -196,7 +196,8 @@ describe("CompanyFactusolPanel — «Régimen de IVA en FACTUSOL» (Tarea C)", (
     const ok = within(await screen.findByRole("dialog", { name: "Régimen de IVA en FACTUSOL" }));
     expect(ok.getByRole("status")).toHaveTextContent(/ya está bien: nada que corregir/);
     expect(ok.queryByRole("button", { name: /Corregir en FACTUSOL/ })).not.toBeInTheDocument();
-    await user.click(ok.getByRole("button", { name: "Cerrar" }));
+    // El «Cerrar» del pie (el ✕ de la cabecera también se llama «Cerrar»).
+    await user.click(ok.getByText("Cerrar"));
     expect(fixFactusolCustomerRegime).not.toHaveBeenCalled();
   });
 

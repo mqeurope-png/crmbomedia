@@ -24,7 +24,7 @@
  *   - Estado de envíos: si está dado de baja y es admin, checkbox
  *     "Reactivar envíos comerciales" que dispara unsubscribe_action.
  */
-import { Plus, Save, Star, Trash2, X } from "lucide-react";
+import { Plus, Save, Star, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { resetContactManualEdits } from "../../lib/api";
 import { extractErrorMessage } from "../../lib/errors";
@@ -39,7 +39,9 @@ import {
   type ContactUnsubscribeStatus,
   type User,
 } from "../../lib/api";
+import { ModalCloseButton } from "../../components/ModalCloseButton";
 import { StarRating } from "../../components/StarRating";
+import { UNSAVED_CHANGES_MESSAGE, useModalBehaviour } from "../../components/useModalBehaviour";
 import {
   listContactPhones,
   type ContactPhone,
@@ -300,6 +302,21 @@ export function ContactEditForm({
   const [companyQuery, setCompanyQuery] = useState("");
   const [companyResults, setCompanyResults] = useState<Company[]>([]);
   const [usersList, setUsersList] = useState<User[]>([]);
+  const editModal = useModalBehaviour({
+    open,
+    onClose,
+    disabled: submitting,
+    // Con cambios sin guardar, ✕ / Esc / clic fuera preguntan antes de cerrar.
+    confirmClose: () =>
+      Object.keys(buildPayload(initial, draft)).length === 0
+      || window.confirm(UNSAVED_CHANGES_MESSAGE),
+  });
+  // Confirmación de guardado: ✕ / Esc / clic fuera = «Volver a editar».
+  const confirmModal = useModalBehaviour({
+    open: open && confirmOpen,
+    onClose: () => setConfirmOpen(false),
+    disabled: submitting,
+  });
 
   useEffect(() => {
     if (!open) return;
@@ -489,21 +506,12 @@ export function ContactEditForm({
       role="dialog"
       aria-modal="true"
       aria-labelledby="contact-edit-title"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+      {...editModal.overlayProps}
     >
       <div className="modal-dialog contact-edit-modal">
         <div className="modal-header">
           <h2 id="contact-edit-title">Editar contacto</h2>
-          <button
-            type="button"
-            className="modal-close"
-            onClick={onClose}
-            aria-label="Cerrar"
-          >
-            <X size={16} aria-hidden />
-          </button>
+          <ModalCloseButton onClose={editModal.requestClose} disabled={submitting} placement="header" />
         </div>
         <div className="modal-body">
           {/*
@@ -934,10 +942,12 @@ export function ContactEditForm({
           role="dialog"
           aria-modal="true"
           aria-labelledby="contact-edit-confirm-title"
+          {...confirmModal.overlayProps}
         >
           <div className="modal-dialog small contact-edit-confirm-dialog">
             <div className="modal-header">
               <h3 id="contact-edit-confirm-title">Confirmar cambios</h3>
+              <ModalCloseButton onClose={confirmModal.requestClose} disabled={submitting} placement="header" />
             </div>
             <div className="modal-body">
               <p>

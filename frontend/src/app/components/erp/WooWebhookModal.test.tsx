@@ -82,7 +82,12 @@ describe("WooWebhookModal", () => {
     const user = userEvent.setup();
     render(<WooWebhookModal storeId="s1" storeName="boprint" onClose={onClose} />);
     await screen.findByLabelText("Secret enmascarado");
-    await user.click(screen.getByRole("button", { name: "Cerrar" }));
-    expect(onClose).toHaveBeenCalled();
+    // El «Cerrar» del pie y el ✕ de la cabecera (aria-label «Cerrar») cierran igual.
+    const [aspa, pie] = screen.getAllByRole("button", { name: "Cerrar" });
+    expect(aspa).toHaveTextContent("×");
+    await user.click(pie);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    await user.click(aspa);
+    expect(onClose).toHaveBeenCalledTimes(2);
   });
 });

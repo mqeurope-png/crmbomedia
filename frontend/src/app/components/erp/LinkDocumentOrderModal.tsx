@@ -9,6 +9,8 @@ import {
   type FactusolLinkCandidates,
 } from "../../lib/erpApi";
 import { extractErrorMessage } from "../../lib/errors";
+import { ModalCloseButton } from "../ModalCloseButton";
+import { useModalBehaviour } from "../useModalBehaviour";
 
 const SINGULAR: Partial<Record<FactusolDocType, string>> = {
   albaranes: "albarán",
@@ -76,6 +78,17 @@ export function LinkDocumentOrderModal({
   const singular = SINGULAR[docType] ?? "documento";
   const title = "Vincular a pedido";
 
+  function backToList() {
+    setChosen(null);
+    setConfirm(false);
+    setError(null);
+  }
+  // En la confirmación, ✕ / Esc / clic fuera hacen lo de «← Elegir otro».
+  const { overlayProps, requestClose } = useModalBehaviour({
+    onClose: chosen ? backToList : onClose,
+    disabled: busy,
+  });
+
   // El modal se monta por documento: `loading` arranca en true y solo se
   // apaga aquí (nada de setState síncrono dentro del efecto).
   useEffect(() => {
@@ -136,7 +149,7 @@ export function LinkDocumentOrderModal({
 
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true"
-         aria-label={`${title} ${numero}`}>
+         aria-label={`${title} ${numero}`} {...overlayProps}>
       <div className="modal-dialog erp-modal">
         <h2>
           {title}{" "}
@@ -147,6 +160,7 @@ export function LinkDocumentOrderModal({
             {data?.doc.referencia ? ` · ref. ${data.doc.referencia}` : ""}
           </span>
         </h2>
+        <ModalCloseButton onClose={requestClose} disabled={busy} />
 
         {chosen ? (
           <>
@@ -195,7 +209,7 @@ export function LinkDocumentOrderModal({
             {error ? <p className="form-error">{error}</p> : null}
             <div className="modal-actions">
               <button type="button" className="button secondary" disabled={busy}
-                      onClick={() => { setChosen(null); setConfirm(false); setError(null); }}>
+                      onClick={backToList}>
                 ← Elegir otro
               </button>
               <button

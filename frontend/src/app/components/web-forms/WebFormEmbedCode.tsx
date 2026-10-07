@@ -7,17 +7,29 @@ import type { EmbedCode } from "../../lib/formsApi";
 /** Muestra los 3 snippets de embed (script JS + iframe + HTML puro) con
  *  botón copiar. El HTML puro incluye además una preview aislada. */
 export function WebFormEmbedCode({ embed }: { embed: EmbedCode }) {
+  const inactivo = embed.is_active === false;
   return (
     <div className="wf-embed">
+      {inactivo ? (
+        <p className="form-warning" role="alert">
+          Este formulario está <strong>desactivado</strong>: puedes copiar el código, pero no
+          se verá en la web hasta activarlo (Editar formulario → «Activo»).
+        </p>
+      ) : null}
       <Snippet
         title="Script JS (recomendado)"
         description="Hereda el diseño de tu web. Pega esto donde quieras el formulario."
         code={embed.script_snippet}
+        inactivo={inactivo}
       />
       <Snippet
         title="iframe (aislado)"
-        description="Diseño propio BoHub, aislado de la web. Útil si no puedes tocar el CSS."
+        description={
+          "Diseño propio BoHub, aislado de la web. Útil si no puedes tocar el CSS. " +
+          "Crece solo con el contenido (incluye un pequeño script)."
+        }
         code={embed.iframe_snippet}
+        inactivo={inactivo}
       />
       <Snippet
         title="HTML puro"
@@ -27,6 +39,7 @@ export function WebFormEmbedCode({ embed }: { embed: EmbedCode }) {
           ".bh-field, .bh-label, .bh-input, .bh-button."
         }
         code={embed.html_snippet}
+        inactivo={inactivo}
       >
         <div className="wf-embed-preview">
           <span className="muted small">Vista previa (sin estilar):</span>
@@ -47,11 +60,13 @@ function Snippet({
   description,
   code,
   children,
+  inactivo = false,
 }: {
   title: string;
   description: string;
   code: string;
   children?: ReactNode;
+  inactivo?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
 
@@ -82,6 +97,11 @@ function Snippet({
           {copied ? "Copiado" : "Copiar"}
         </button>
       </header>
+      {copied && inactivo ? (
+        <p className="form-warning small" role="status">
+          Copiado, pero no se verá en la web hasta activar el formulario.
+        </p>
+      ) : null}
       <pre className="wf-embed-code">
         <code>{code}</code>
       </pre>

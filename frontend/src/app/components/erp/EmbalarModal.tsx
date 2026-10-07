@@ -3,6 +3,8 @@
 import { useState } from "react";
 import { extractErrorMessage } from "../../lib/errors";
 import { setPackages, transitionPacked, type PackageInput } from "../../lib/erpApi";
+import { ModalCloseButton } from "../ModalCloseButton";
+import { useModalBehaviour } from "../useModalBehaviour";
 
 type Row = { weight_kg: string; height_cm: string; width_cm: string; depth_cm: string };
 const EMPTY: Row = { weight_kg: "", height_cm: "", width_cm: "", depth_cm: "" };
@@ -21,12 +23,15 @@ export function PackingForm({
   onDone,
   onCancel,
   submitLabel = "Guardar y embalar",
+  onBusyChange,
 }: {
   orderId: string;
   onDone: () => void;
   /** Sin él no se pinta «Cancelar» (el formulario en línea no se cierra). */
   onCancel?: () => void;
   submitLabel?: string;
+  /** Avisa al modal que lo contiene de que está guardando (desactiva el ✕). */
+  onBusyChange?: (busy: boolean) => void;
 }) {
   const [rows, setRows] = useState<Row[]>([{ ...EMPTY }]);
   const [busy, setBusy] = useState(false);
@@ -53,6 +58,7 @@ export function PackingForm({
 
   async function save() {
     setBusy(true);
+    onBusyChange?.(true);
     setError(null);
     try {
       const packages: PackageInput[] = rows.map((r) => ({
@@ -67,6 +73,7 @@ export function PackingForm({
     } catch (e) {
       setError(extractErrorMessage(e, "No se pudo embalar."));
       setBusy(false);
+      onBusyChange?.(false);
     }
   }
 
@@ -149,12 +156,15 @@ export function EmbalarModal({
   onDone: () => void;
   onCancel: () => void;
 }) {
+  const [busy, setBusy] = useState(false);
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose: onCancel, disabled: busy });
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true"
-         aria-label="Embalar pedido (bultos)">
+         aria-label="Embalar pedido (bultos)" {...overlayProps}>
       <div className="modal-dialog erp-modal">
         <h2>Embalado — bultos</h2>
-        <PackingForm orderId={orderId} onDone={onDone} onCancel={onCancel} />
+        <ModalCloseButton onClose={requestClose} disabled={busy} />
+        <PackingForm orderId={orderId} onDone={onDone} onCancel={onCancel} onBusyChange={setBusy} />
       </div>
     </div>
   );

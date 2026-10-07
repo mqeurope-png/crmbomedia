@@ -21,8 +21,12 @@ import {
   type MappableField,
   type WebFormBase,
 } from "../../lib/formsApi";
-import { WebFormPreview } from "./WebFormPreview";
+import { WebFormAppearance } from "./WebFormAppearance";
+import { WebFormLivePreview } from "./WebFormLivePreview";
 import { WebFormTagsPicker } from "./WebFormTagsPicker";
+
+/** El consentimiento comercial solo se mapea desde una casilla. */
+const CONSENT = "contact.marketing_consent";
 
 /** Espejo del slugify del backend para prellenar el field_key vacío. */
 function slugifyKey(label: string): string {
@@ -88,6 +92,12 @@ export function WebFormEditor({ formId }: { formId: string }) {
   function changeFieldType(idx: number, newType: FormField["field_type"]) {
     const over: Partial<FormField> = { field_type: newType };
     if (newType === "stars") over.maps_to_contact_field = "contact.stars";
+    // Un campo de etiquetas no se mapea (las etiquetas se aplican solas) y
+    // el consentimiento solo vale para una casilla.
+    const actual = form!.fields[idx].maps_to_contact_field;
+    if (newType === "tags" || (actual === CONSENT && newType !== "checkbox")) {
+      over.maps_to_contact_field = null;
+    }
     patchField(idx, over);
   }
 
@@ -138,7 +148,15 @@ export function WebFormEditor({ formId }: { formId: string }) {
     }
     // Bug 1: autogenera field_key vacíos (slugify + colisión) antes de enviar.
     const withKeys = autofillFieldKeys(form!.fields);
-    const payload = { ...form!, fields: withKeys.map((f, i) => ({ ...f, position: i })) };
+    const payload = {
+      ...form!,
+      fields: withKeys.map((f, i) => ({
+        ...f,
+        position: i,
+        // Por si un campo guardado antes arrastra un mapeo que ya no vale.
+        maps_to_contact_field: f.field_type === "tags" ? null : f.maps_to_contact_field,
+      })),
+    };
     try {
       const saved = isNew ? await createForm(payload) : await updateForm(formId, payload);
       router.push(`/admin/forms/${saved.id}/embed`);
@@ -206,9 +224,11 @@ export function WebFormEditor({ formId }: { formId: string }) {
                   >
                     <option value="">— Sin mapear (solo guardar) —</option>
                     <optgroup label="Campos del contacto">
-                      {mappable.standard.map((m) => (
-                        <option key={m.value} value={m.value}>{m.label}</option>
-                      ))}
+                      {mappable.standard
+                        .filter((m) => m.value !== CONSENT || f.field_type === "checkbox")
+                        .map((m) => (
+                          <option key={m.value} value={m.value}>{m.label}</option>
+                        ))}
                     </optgroup>
                     {mappable.custom.length > 0 ? (
                       <optgroup label="Personalizados">
@@ -273,6 +293,10 @@ export function WebFormEditor({ formId }: { formId: string }) {
                       aria-label={`Ayuda campo ${i + 1}`}
                       value={f.help_text ?? ""}
                       onChange={(e) => patchField(i, { help_text: e.target.value })} />
+                    <span className="muted small">
+                      Enlaces en la etiqueta o la ayuda: [texto](/politica-de-privacidad/) o
+                      [texto](https://…). Una ruta que empieza por / vale en la web de cada marca.
+                    </span>
                     <input type="text" placeholder="Valor por defecto (opcional)"
                       aria-label={`Default campo ${i + 1}`}
                       value={f.default_value ?? ""}
@@ -296,9 +320,10 @@ export function WebFormEditor({ formId }: { formId: string }) {
           </ul>
         </section>
 
-        {/* Centro: preview */}
+        {/* Centro: preview (la pinta el servidor, con la apariencia) */}
         <section className="wf-editor-col" aria-label="Vista previa">
-          <WebFormPreview name={form.name} fields={form.fields} />
+          <WebFormLivePreview name={form.name} language={form.language}
+            fields={form.fields} appearance={form.appearance} />
         </section>
 
         {/* Derecha: config */}
@@ -321,6 +346,11 @@ export function WebFormEditor({ formId }: { formId: string }) {
               </select>
             </label>
           </div>
+          <label className="checkbox-inline">
+            <input type="checkbox" checked={form.is_active}
+              onChange={(e) => patch({ is_active: e.target.checked })} />
+            Activo (desactivado no se muestra en la web)
+          </label>
           <label className="checkbox-inline">
             <input type="checkbox" checked={form.recaptcha_enabled}
               onChange={(e) => patch({ recaptcha_enabled: e.target.checked })} />
@@ -382,6 +412,9 @@ export function WebFormEditor({ formId }: { formId: string }) {
               Notificar al owner de cada lead nuevo
             </label>
           </fieldset>
+
+          <WebFormAppearance value={form.appearance}
+            onChange={(appearance) => patch({ appearance })} />
         </section>
       </div>
 

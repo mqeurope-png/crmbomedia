@@ -9,6 +9,8 @@ import {
   type InvoiceEmailPreview,
 } from "../../lib/erpApi";
 import { extractErrorMessage } from "../../lib/errors";
+import { ModalCloseButton } from "../ModalCloseButton";
+import { useModalBehaviour } from "../useModalBehaviour";
 import {
   CompanyContactsPicker,
   splitContactChannels,
@@ -226,15 +228,17 @@ export function InvoiceEmailModal({
   }
 
   const sent = sentTo !== null;
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose, disabled: sending });
 
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true"
-         aria-label={`Enviar factura ${docLabel} por email`}>
+         aria-label={`Enviar factura ${docLabel} por email`} {...overlayProps}>
       <div className="modal-dialog erp-modal erp-invoice-email">
         <h2>
           Enviar factura por email{" "}
           <span className="muted">{preview?.numero ?? docLabel}</span>
         </h2>
+        <ModalCloseButton onClose={requestClose} disabled={sending} />
 
         {loadError ? <p className="form-error">{loadError}</p> : null}
         {!preview && !loadError ? <p className="muted">Preparando…</p> : null}

@@ -7,6 +7,8 @@ import {
   type BrevoList,
 } from "../lib/brevoApi";
 import { extractErrorMessage } from "../lib/errors";
+import { ModalCloseButton } from "./ModalCloseButton";
+import { useModalBehaviour } from "./useModalBehaviour";
 
 type Props = {
   viewName: string;
@@ -38,6 +40,7 @@ export function PushViewToBrevoModal({
   const [createNew, setCreateNew] = useState(false);
   const [newListName, setNewListName] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose, disabled: submitting });
 
   useEffect(() => {
     resolvePrimaryBrevoAccount()
@@ -86,7 +89,7 @@ export function PushViewToBrevoModal({
   }
 
   return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true">
+    <div className="modal-backdrop" role="dialog" aria-modal="true" {...overlayProps}>
       {/* PR-Hotfix-Brevo-Modal: la caja es `.modal-dialog` — la clase
         * `.modal` no existe en styles.css (mismo bug que el PR #265
         * arregló en los modales de Ficha 360). El contenido va dentro
@@ -94,6 +97,7 @@ export function PushViewToBrevoModal({
       <div className="modal-dialog small">
         <div className="modal-body push-brevo-body">
         <header>
+          <ModalCloseButton onClose={requestClose} disabled={submitting} placement="header" />
           <h2>Enviar contactos a lista Brevo</h2>
           <p className="muted small">
             Vista: <strong>{viewName}</strong> · {contactsCount} contacto

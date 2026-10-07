@@ -225,6 +225,17 @@ del pedido de BoHub.
       llevaban 18 días sin sincronizar, bloqueadas por filas «en curso» de
       agosto.
 
+17. `trabajo_cola_fallido` — **Trabajo en cola fallido sin revisar.** Lee los
+    registros de fallidos de RQ de todas las colas y lista cada trabajo con su
+    función, argumentos, fecha y la última línea del error.
+    - Solo lee: no reintenta ni borra nada de las colas.
+    - Mecánica de «revisado» de siempre: los antiguos se descartan y solo avisa
+      de los nuevos (o del mismo si vuelve a fallar con otro error).
+    - Sin Redis la comprobación falla (sale en el resumen) y los avisos que ya
+      había se quedan como estaban.
+    - Nace del `sync_orders_backfill('boprint', '2026-07-04')` que falló el
+      03/08/2026 (`WooError: GET /orders → 400`) y nadie vio hasta octubre.
+
 ### Integraciones (severidad alta, fuente WooCommerce)
 
 14. `pedido_woo_pagado_sin_bohub` — **Pedido pagado en WooCommerce que no está

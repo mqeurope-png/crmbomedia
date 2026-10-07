@@ -29,7 +29,9 @@ import {
 import { extractErrorMessage } from "../lib/errors";
 import { listWorkflows, type WorkflowRead } from "../lib/workflowsApi";
 import { AddToPipelineModal } from "./AddToPipelineModal";
+import { ModalCloseButton } from "./ModalCloseButton";
 import { TagPicker } from "./TagPicker";
+import { useModalBehaviour } from "./useModalBehaviour";
 
 type Props = {
   selectedIds: string[];
@@ -87,6 +89,11 @@ export function ContactsBulkBar({
   const [pending, setPending] = useState<
     { label: string; run: () => Promise<void> } | null
   >(null);
+  const pendingModal = useModalBehaviour({
+    open: !!(pending && preview),
+    onClose: () => setPending(null),
+    disabled: busy,
+  });
 
   const role = currentUser?.role;
   const canAssign = role === "admin" || role === "manager" || role === "user";
@@ -488,11 +495,11 @@ export function ContactsBulkBar({
     {/* PR-Bulk-Comerciales. Aviso antes de ejecutar cuando la selección
       * del comercial incluye contactos ajenos (serán ignorados). */}
     {pending && preview ? (
-      <div className="modal-overlay" role="dialog" aria-modal="true">
+      <div className="modal-overlay" role="dialog" aria-modal="true" {...pendingModal.overlayProps}>
         <div className="modal-dialog small">
           <header className="modal-header">
             <h2>⚠️ Contactos ajenos en la selección</h2>
-            <button type="button" className="modal-close" onClick={() => setPending(null)}>×</button>
+            <ModalCloseButton onClose={pendingModal.requestClose} disabled={busy} placement="header" />
           </header>
           <div className="modal-body">
             <p>

@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { extractErrorMessage } from "../../lib/errors";
+import { ModalCloseButton } from "../ModalCloseButton";
+import { useModalBehaviour } from "../useModalBehaviour";
 import { printShippingFile } from "../../lib/erpApi";
 import {
   geneiCreateShipment,
@@ -319,6 +321,7 @@ function CreateGeneiShipmentModal({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const didAutoCompare = useRef(false);
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose: onCancel, disabled: busy });
 
   const missing = destMissing(dest);
 
@@ -382,9 +385,10 @@ function CreateGeneiShipmentModal({
   const shown = homeOnly ? (options ?? []).filter((o) => o.home_delivery) : (options ?? []);
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Crear envío con Genei">
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Crear envío con Genei" {...overlayProps}>
       <div className="modal-dialog erp-modal">
         <h2>Crear envío con Genei</h2>
+        <ModalCloseButton onClose={requestClose} disabled={busy} />
         <p className="muted small">
           Revisa el destino y el bulto, compara agencias y crea el envío. Nace
           pendiente de pago: págalo con «Pagar y tramitar».
@@ -629,6 +633,7 @@ function CustomerEmailModal({
   const [to, setTo] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose, disabled: busy });
 
   useEffect(() => {
     let alive = true;
@@ -655,9 +660,10 @@ function CustomerEmailModal({
   }
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Aviso de envío al cliente">
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Aviso de envío al cliente" {...overlayProps}>
       <div className="modal-dialog erp-modal">
         <h2>Aviso de envío al cliente</h2>
+        <ModalCloseButton onClose={requestClose} disabled={busy} />
         {error ? <p className="form-error" role="alert">{error}</p> : null}
         {!preview ? <p className="muted">Preparando…</p> : (
           <>

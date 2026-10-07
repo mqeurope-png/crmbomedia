@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { CompanyLogoThumbnail } from "../../components/erp/CompanyLogoThumbnail";
 import { GeneiSettingsCard } from "../../components/erp/GeneiSettingsCard";
+import { ModalCloseButton } from "../../components/ModalCloseButton";
 import { PageHeader } from "../../components/PageHeader";
+import { useModalBehaviour } from "../../components/useModalBehaviour";
 import { extractErrorMessage } from "../../lib/errors";
 import {
   deleteFactusolCompanyLogo,
@@ -1767,22 +1769,19 @@ function TemplateExampleModal({
     return () => { alive = false; };
   }, [kind, lang, subject, body]);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose });
 
   const kindLabel = kind === "quote" ? "email de presupuesto"
     : kind === "shipment" ? "aviso de envío" : "email de factura";
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true"
-         aria-label={`Ejemplo del ${kindLabel} en ${label}`}>
+         aria-label={`Ejemplo del ${kindLabel} en ${label}`} {...overlayProps}>
       <div className="modal-dialog erp-modal">
         <h2>
           Ejemplo del {kindLabel}{" "}
           <span className="muted">{label} · datos de muestra</span>
         </h2>
+        <ModalCloseButton onClose={requestClose} />
         {error ? <p className="form-error">{error}</p> : null}
         {!example && !error ? <p className="muted">Preparando…</p> : null}
         {example ? (

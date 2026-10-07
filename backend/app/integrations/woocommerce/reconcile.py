@@ -45,6 +45,7 @@ from app.integrations.woocommerce.payment_methods import (
     backfill_payment_methods,
     fill_empty_payment_method,
 )
+from app.integrations.woocommerce.progreso import informar
 from app.models.integration_settings import IntegrationAccount
 
 logger = logging.getLogger(__name__)
@@ -158,6 +159,7 @@ def _fill_unknown_statuses(
                                "error": f"external_id no numérico: {o.external_id!r}"})
                 continue
             calls += 1
+            informar("Pedidos sin estado, uno a uno", calls, len(orders))
             try:
                 woo = client.get_order(woo_id)
             except WooError as exc:
@@ -229,6 +231,7 @@ def reconcile_open_order_statuses(
     # 0) Método de pago de TODOS los pedidos web que no lo tienen, cambien o no
     #    de estado (por id, 100 por llamada). Va primero y, al aplicar, se
     #    confirma ya: no depende de que el resto de la pasada termine.
+    informar("Método de pago de los pedidos web")
     pm = backfill_payment_methods(
         session, dry_run=dry_run, store_account_id=store_account_id,
         client_factory=client_factory, errors=errors, commit=not dry_run,
@@ -279,6 +282,7 @@ def reconcile_open_order_statuses(
         # que oculta Y además son pedidos activos de BoHub (la intersección).
         fetched: dict[str, str] = {}
         for st in RECONCILE_WOO_STATUSES:
+            informar(f"Estados de {store.account_id}: {st}")
             try:
                 for page in range(1, max_pages + 1):
                     woo_calls += 1

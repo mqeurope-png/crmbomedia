@@ -8,6 +8,8 @@ import {
   waitForQuoteJob,
 } from "../../../lib/erpApi";
 import { extractErrorMessage } from "../../../lib/errors";
+import { ModalCloseButton } from "../../../components/ModalCloseButton";
+import { useModalBehaviour } from "../../../components/useModalBehaviour";
 
 /** Lote 7 · P1 — «Cambiar serie» (empresa emisora) de un pedido MANUAL. La
  *  serie manda en `resolve_serie`, así que TODO lo que BoHub emita desde el
@@ -36,6 +38,7 @@ export function ChangeSerieModal({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose, disabled: busy });
 
   const hasAlbaran = Boolean(albaranNumber);
   const changed = serie !== currentSerie;
@@ -76,9 +79,10 @@ export function ChangeSerieModal({
 
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true"
-         aria-label={`Cambiar serie del pedido ${orderNumber}`}>
+         aria-label={`Cambiar serie del pedido ${orderNumber}`} {...overlayProps}>
       <div className="modal-dialog erp-modal">
         <h2>Cambiar serie <span className="muted">{orderNumber}</span></h2>
+        <ModalCloseButton onClose={requestClose} disabled={busy} />
         <p className="muted small">
           La serie es la empresa emisora del pedido: manda en el albarán y —más
           tarde— en la proforma / factura. Serie actual:{" "}

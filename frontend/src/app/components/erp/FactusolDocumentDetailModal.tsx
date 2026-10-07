@@ -25,6 +25,8 @@ import {
   type FactusolSerie,
 } from "../../lib/erpApi";
 import { extractErrorMessage } from "../../lib/errors";
+import { ModalCloseButton } from "../ModalCloseButton";
+import { useModalBehaviour } from "../useModalBehaviour";
 import { InvoiceEmailModal } from "./InvoiceEmailModal";
 import { QuoteEmailModal } from "./QuoteEmailModal";
 
@@ -239,6 +241,7 @@ export function FactusolDocumentDetailModal({
   const [payBusy, setPayBusy] = useState(false);
   const [payError, setPayError] = useState<string | null>(null);
   const [payMsg, setPayMsg] = useState<string | null>(null);
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose });
 
   useEffect(() => {
     // Mantiene la referencia si las props no cambiaron: un objeto nuevo
@@ -411,7 +414,7 @@ export function FactusolDocumentDetailModal({
 
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true"
-         aria-label={`Detalle ${TYPE_LABELS[current.docType]}`}>
+         aria-label={`Detalle ${TYPE_LABELS[current.docType]}`} {...overlayProps}>
       <div className="modal-dialog erp-modal wide erp-doc-detail">
         <h2>
           {TYPE_LABELS[current.docType]}{" "}
@@ -419,6 +422,7 @@ export function FactusolDocumentDetailModal({
             {doc?.numero ?? `${current.serie}-${current.codigo}`}
           </span>
         </h2>
+        <ModalCloseButton onClose={requestClose} />
 
         {error ? <p className="form-error">{error}</p> : null}
         {!doc && !error ? <p className="muted">Cargando…</p> : null}
@@ -844,38 +848,65 @@ export function FactusolDocumentDetailModal({
       ) : null}
 
       {doc && payConfirm !== null ? (
-        <div className="modal-overlay" role="dialog" aria-modal="true"
-             aria-label="Confirmar marcado de cobro">
-          <div className="modal-dialog erp-modal">
-            <h2>
-              Marcar como {payConfirm ? "cobrada" : "pendiente"}
-            </h2>
-            <p className="form-error">
-              Marcar una factura como {payConfirm ? "cobrada" : "pendiente"} es
-              una afirmación contable. Revisa los datos antes de confirmar.
-            </p>
-            <dl className="erp-doc-detail-head">
-              <dt>Factura</dt><dd><strong>{doc.numero}</strong></dd>
-              <dt>Cliente</dt>
-              <dd>{doc.cliente_nombre ?? doc.cliente_codigo ?? "—"}</dd>
-              <dt>Importe</dt>
-              <dd>{doc.total !== null ? `${doc.total.toFixed(2)} €` : "—"}</dd>
-            </dl>
-            <div className="modal-actions">
-              <button type="button" className="button secondary"
-                      onClick={() => setPayConfirm(null)} disabled={payBusy}>
-                Cancelar
-              </button>
-              <button type="button" className="button"
-                      onClick={() => doMarkPayment(payConfirm)} disabled={payBusy}>
-                {payBusy
-                  ? "Marcando…"
-                  : `Confirmar ${payConfirm ? "cobrada" : "pendiente"}`}
-              </button>
-            </div>
-          </div>
-        </div>
+        <PayConfirmDialog
+          doc={doc}
+          paid={payConfirm}
+          busy={payBusy}
+          onCancel={() => setPayConfirm(null)}
+          onConfirm={() => doMarkPayment(payConfirm)}
+        />
       ) : null}
+    </div>
+  );
+}
+
+/** Confirmación de «Marcar como cobrada / pendiente». */
+function PayConfirmDialog({
+  doc,
+  paid,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  doc: FactusolDocumentDetail;
+  paid: boolean;
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose: onCancel, disabled: busy });
+  return (
+    <div className="modal-overlay" role="dialog" aria-modal="true"
+         aria-label="Confirmar marcado de cobro" {...overlayProps}>
+      <div className="modal-dialog erp-modal">
+        <h2>
+          Marcar como {paid ? "cobrada" : "pendiente"}
+        </h2>
+        <ModalCloseButton onClose={requestClose} disabled={busy} />
+        <p className="form-error">
+          Marcar una factura como {paid ? "cobrada" : "pendiente"} es
+          una afirmación contable. Revisa los datos antes de confirmar.
+        </p>
+        <dl className="erp-doc-detail-head">
+          <dt>Factura</dt><dd><strong>{doc.numero}</strong></dd>
+          <dt>Cliente</dt>
+          <dd>{doc.cliente_nombre ?? doc.cliente_codigo ?? "—"}</dd>
+          <dt>Importe</dt>
+          <dd>{doc.total !== null ? `${doc.total.toFixed(2)} €` : "—"}</dd>
+        </dl>
+        <div className="modal-actions">
+          <button type="button" className="button secondary"
+                  onClick={onCancel} disabled={busy}>
+            Cancelar
+          </button>
+          <button type="button" className="button"
+                  onClick={onConfirm} disabled={busy}>
+            {busy
+              ? "Marcando…"
+              : `Confirmar ${paid ? "cobrada" : "pendiente"}`}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -913,6 +944,10 @@ function ConvertConfirmModal({
   const [series, setSeries] = useState<FactusolSerie[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const { overlayProps, requestClose } = useModalBehaviour({
+    onClose: onCancel,
+    disabled: busy || submitting,
+  });
   const tipo = TYPE_LABELS[docType].toLowerCase();
   const targetLabel = partial
     ? `${TARGET_LABELS[target]} parcial`
@@ -946,11 +981,12 @@ function ConvertConfirmModal({
 
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true"
-         aria-label={`Crear ${targetLabel}`}>
+         aria-label={`Crear ${targetLabel}`} {...overlayProps}>
       <div className="modal-dialog erp-modal">
         <h2>
           Crear {targetLabel} desde {tipo} {doc.numero}
         </h2>
+        <ModalCloseButton onClose={requestClose} disabled={busy || submitting} />
         <p>
           Total:{" "}
           <strong>

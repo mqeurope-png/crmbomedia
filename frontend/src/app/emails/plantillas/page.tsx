@@ -18,7 +18,9 @@ import {
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ErrorState } from "../../components/ErrorState";
+import { ModalCloseButton } from "../../components/ModalCloseButton";
 import { PageHeader } from "../../components/PageHeader";
+import { useModalBehaviour } from "../../components/useModalBehaviour";
 import { extractErrorMessage } from "../../lib/errors";
 
 // TinyMCE touches `window` at module load; keep it client-only via
@@ -245,6 +247,10 @@ export default function PlantillasPage() {
   const [newFolderVisibility, setNewFolderVisibility] =
     useState<EmailTemplateFolderVisibility>("private");
   const [folderError, setFolderError] = useState<string | null>(null);
+
+  const editorModal = useModalBehaviour({ open: editorOpen, onClose: () => setEditorOpen(false) });
+  const previewModal = useModalBehaviour({ open: previewing !== null, onClose: () => setPreviewing(null) });
+  const folderModal = useModalBehaviour({ open: folderModalOpen, onClose: () => setFolderModalOpen(false) });
 
   const flatFolders = useMemo(() => flattenFolders(folders), [folders]);
 
@@ -656,21 +662,12 @@ export default function PlantillasPage() {
           className="modal-overlay"
           role="dialog"
           aria-modal="true"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setEditorOpen(false);
-          }}
+          {...editorModal.overlayProps}
         >
           <div className="modal-dialog et-editor-dialog">
             <div className="modal-header">
               <h2>{editingId ? "Editar plantilla" : "Nueva plantilla"}</h2>
-              <button
-                type="button"
-                className="modal-close"
-                onClick={() => setEditorOpen(false)}
-                aria-label="Cerrar"
-              >
-                ×
-              </button>
+              <ModalCloseButton onClose={editorModal.requestClose} placement="header" />
             </div>
             <div className="modal-body">
               <form className="modal-form" onSubmit={handleSaveDraft}>
@@ -771,21 +768,12 @@ export default function PlantillasPage() {
           className="modal-overlay"
           role="dialog"
           aria-modal="true"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setPreviewing(null);
-          }}
+          {...previewModal.overlayProps}
         >
           <div className="modal-dialog et-preview-dialog">
             <div className="modal-header">
               <h2>{previewing.name}</h2>
-              <button
-                type="button"
-                className="modal-close"
-                onClick={() => setPreviewing(null)}
-                aria-label="Cerrar"
-              >
-                ×
-              </button>
+              <ModalCloseButton onClose={previewModal.requestClose} placement="header" />
             </div>
             <div className="modal-body">
               {previewing.subject ? (
@@ -835,21 +823,12 @@ export default function PlantillasPage() {
           className="modal-overlay"
           role="dialog"
           aria-modal="true"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setFolderModalOpen(false);
-          }}
+          {...folderModal.overlayProps}
         >
           <div className="modal-dialog small">
             <div className="modal-header">
               <h2>Nueva carpeta</h2>
-              <button
-                type="button"
-                className="modal-close"
-                onClick={() => setFolderModalOpen(false)}
-                aria-label="Cerrar"
-              >
-                ×
-              </button>
+              <ModalCloseButton onClose={folderModal.requestClose} placement="header" />
             </div>
             <div className="modal-body">
               <form className="modal-form" onSubmit={handleCreateFolder}>

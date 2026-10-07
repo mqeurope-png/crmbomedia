@@ -424,14 +424,18 @@ def test_widget_js_served_small_and_selfcontained(client, session_factory):
     assert len(body.encode()) < 15_000  # <15KB en crudo (gzip aún menor)
 
 
-def test_embed_endpoints_404_when_form_inactive(client, session_factory):
+def test_embed_endpoints_say_form_inactive(client, session_factory):
+    """Desactivado ya no es «Form not found»: el iframe lo dice (403) y el
+    widget sirve un JS que lo explica en la consola."""
     with session_factory() as s:
         form = _mk_form(s)
         form.is_active = False
         s.commit()
         fid = form.id
-    assert client.get(f"/forms/{fid}").status_code == 404
-    assert client.get(f"/forms/embed/{fid}.js").status_code == 404
+    r = client.get(f"/forms/{fid}")
+    assert r.status_code == 403 and "desactivado" in r.text
+    js = client.get(f"/forms/embed/{fid}.js")
+    assert js.status_code == 200 and "console.warn" in js.text and "form_inactive" in js.text
 
 
 # --- Hotfix editor: mapping + validación + default_value --------------------

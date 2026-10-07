@@ -16,7 +16,7 @@ from __future__ import annotations
 import html
 import json
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import HTMLResponse, Response
 from sqlalchemy.orm import Session
 
@@ -24,14 +24,34 @@ from app.core.config import get_settings
 from app.core.errors import not_found
 from app.db.session import get_session
 from app.models.web_forms import WebForm
+from app.services.web_forms import apariencia as aparien
+from app.services.web_forms.enlaces import texto_con_enlaces
 
 router = APIRouter(tags=["web-forms-embed"])
 
+#: Código propio de «el formulario existe pero está desactivado», distinto
+#: del 404 «Form not found» (no existe).
+FORM_INACTIVE_CODE = "form_inactive"
+FORM_INACTIVE_MESSAGE = (
+    "Formulario desactivado: no se muestra en la web hasta activarlo en BoHub."
+)
+
+
+class FormularioDesactivado(HTTPException):
+    def __init__(self) -> None:
+        super().__init__(status_code=403, detail={
+            "code": FORM_INACTIVE_CODE, "message": FORM_INACTIVE_MESSAGE})
+
 
 def _get_active_form(session: Session, form_id: str) -> WebForm:
+    """El formulario publicado. 404 si no existe; 403 `form_inactive` si
+    existe pero está desactivado (antes daba el mismo 404 y no había forma
+    de saber por qué no se pintaba)."""
     form = session.get(WebForm, form_id)
-    if form is None or not form.is_active:
+    if form is None:
         raise not_found("Form")
+    if not form.is_active:
+        raise FormularioDesactivado()
     return form
 
 
@@ -55,6 +75,8 @@ def _field_config(form: WebForm) -> list[dict]:
             "placeholder": f.placeholder or "", "help_text": f.help_text or "",
             "required": f.is_required, "hidden": f.is_hidden,
             "default_value": f.default_value or "", "options": options,
+            "label_html": texto_con_enlaces(f.label),
+            "help_html": texto_con_enlaces(f.help_text or ""),
         })
     return out
 
@@ -65,11 +87,49 @@ def render_iframe(
 ) -> HTMLResponse:
     """Página HTML autocontenida del form para iframe. Estilo propio
     BoHub (aislado de la web host)."""
-    form = _get_active_form(session, form_id)
+    try:
+        form = _get_active_form(session, form_id)
+    except FormularioDesactivado:
+        return HTMLResponse(status_code=403, content=(
+            '<!doctype html><meta charset="utf-8"><p style="font-family:system-ui,sans-serif;'
+            f'color:#64748b;margin:16px">{html.escape(FORM_INACTIVE_MESSAGE)}</p>'))
     settings = get_settings()
     site_key = settings.recaptcha_site_key if form.recaptcha_enabled else None
+    return HTMLResponse(content=render_iframe_html(form, api_base=_api_base(), site_key=site_key))
+
+
+#: El iframe avisa a la página que lo contiene de su altura, para que crezca
+#: con el contenido (p. ej. al mostrar errores) en vez de recortarlo. La
+#: página lo escucha con el código de inserción del iframe.
+def iframe_resize_js(form_id: str) -> str:
+    """Script del iframe (no cambia el aspecto):
+
+    - avisa a la página que lo contiene de su altura, para que crezca con el
+      contenido;
+    - los enlaces relativos (`/politica-de-privacidad/`) apuntan a la web que
+      lo inserta, no a BoHub (el iframe se sirve desde el dominio de BoHub).
+    """
+    return (
+        "<script>\n(function(){if(window.parent===window)return;var id="
+        + json.dumps(form_id)
+        + ';\nvar o="";try{o=(location.ancestorOrigins&&location.ancestorOrigins[0])||'
+        '(document.referrer?new URL(document.referrer).origin:"");}catch(e){}\n'
+        'if(/^https?:\/\/[^\/]+$/.test(o)){Array.prototype.forEach.call('
+        'document.querySelectorAll(\'a[href^="/"]\'),function(a){var h=a.getAttribute("href");'
+        'if(h.charAt(1)!=="/"&&h.charAt(1)!=="\\\\")a.setAttribute("href",o+h);});}\n'
+        'function h(){window.parent.postMessage({type:"bohub-form-height",formId:id,'
+        'height:document.documentElement.scrollHeight},"*");}\n'
+        'window.addEventListener("load",h);if(window.ResizeObserver){new ResizeObserver(h)'
+        ".observe(document.body);}else{setInterval(h,500);}})();\n</script>\n"
+    )
+
+
+def render_iframe_html(form: WebForm, *, api_base: str, site_key: str | None) -> str:
+    """HTML de la vía iframe (también la vista previa del editor)."""
+    ap = aparien.cargar(form.appearance_json)
+    extra_css = aparien.css(ap, via="iframe", form_id=form.id)
+    extra_css = f"{extra_css}\n" if extra_css else ""
     fields = _field_config(form)
-    api_base = _api_base()
 
     rows = "".join(_render_field_html(f) for f in fields)
     recaptcha_script = (
@@ -102,13 +162,13 @@ body{{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:0;pa
 .bh-stars input{{position:absolute;opacity:0;pointer-events:none}}
 .bh-stars label{{cursor:pointer;color:#d0d0d0;font-size:1.7rem;line-height:1}}
 .bh-stars label:hover,.bh-stars label:hover ~ label,.bh-stars input:checked ~ label{{color:#f5b301}}
-</style>
+{extra_css}</style>
 </head>
 <body>
 <form class="bh-form" id="bh-form">
 {rows}
 <input class="bh-hp" type="text" name="website" tabindex="-1" autocomplete="off" aria-hidden="true">
-<button class="bh-btn" type="submit">Enviar</button>
+<button class="bh-btn" type="submit">{html.escape(ap.texto_boton())}</button>
 <div class="bh-msg" id="bh-msg" style="display:none"></div>
 </form>
 <script>
@@ -121,9 +181,9 @@ window.__bhInit({{
   msgEl: document.getElementById("bh-msg")
 }});
 </script>
-</body>
+{iframe_resize_js(form.id)}</body>
 </html>"""
-    return HTMLResponse(content=page)
+    return page
 
 
 @router.get("/forms/embed/{form_id}.js")
@@ -133,7 +193,20 @@ def render_widget_js(
     """Widget JS vanilla que se auto-inyecta en la web host. Renderiza el
     form desde config.json, hereda estilos del host (reset mínimo),
     recopila UTM/referrer/landing y envía. Soporta varias instancias."""
-    form = _get_active_form(session, form_id)
+    try:
+        form = _get_active_form(session, form_id)
+    except FormularioDesactivado:
+        # Un <script> con error no se ejecuta y la página no pinta nada sin
+        # dar pistas: se sirve un JS que lo explica en la consola.
+        aviso = json.dumps(f"BoHub ({form_id}): {FORM_INACTIVE_MESSAGE}")
+        return Response(
+            content=f'console.warn({aviso});document.querySelectorAll('
+                    f'"[data-bohub-form]").forEach(function(m){{if(m.getAttribute('
+                    f'"data-bohub-form")==={json.dumps(form_id)})m.setAttribute('
+                    f'"data-bohub-error",{json.dumps(FORM_INACTIVE_CODE)});}});',
+            media_type="application/javascript", status_code=200,
+            headers={"Cache-Control": "public, max-age=60"},
+        )
     api_base = _api_base()
     js = _WIDGET_CORE_JS + "\n" + _WIDGET_BOOT_JS.replace(
         "__FORM_ID__", json.dumps(form.id)
@@ -158,12 +231,12 @@ def _stars_radio_markup(key: str) -> str:
 
 def _render_field_html(f: dict) -> str:
     key = html.escape(f["key"])
-    label = html.escape(f["label"])
+    label = f["label_html"]
     ph = html.escape(f["placeholder"])
     default = html.escape(f["default_value"])
     req = ' required' if f["required"] else ""
     star = ' <span class="bh-req">*</span>' if f["required"] else ""
-    help_html = f'<span class="bh-help">{html.escape(f["help_text"])}</span>' if f["help_text"] else ""
+    help_html = f'<span class="bh-help">{f["help_html"]}</span>' if f["help_text"] else ""
     # Campos ocultos (UTM): input hidden con su default_value para que se
     # envíe en el submit — antes se descartaban y su default se perdía.
     if f["hidden"] or f["type"] == "hidden":
@@ -235,12 +308,12 @@ def _render_pure_field(f: dict) -> str:
     """Un campo del form como HTML crudo con clases semánticas (bh-label,
     bh-input) SIN estilar. Espeja `_render_field_html` pero neutro."""
     key = html.escape(f["key"])
-    label = html.escape(f["label"])
+    label = f["label_html"]
     ph = html.escape(f["placeholder"])
     default = html.escape(f["default_value"])
     req = " required" if f["required"] else ""
     star = ' <span class="bh-req">*</span>' if f["required"] else ""
-    help_html = f'<span class="bh-help">{html.escape(f["help_text"])}</span>' if f["help_text"] else ""
+    help_html = f'<span class="bh-help">{f["help_html"]}</span>' if f["help_text"] else ""
     if f["hidden"] or f["type"] == "hidden":
         return f'<input type="hidden" name="{key}" value="{default}">'
     if f["type"] == "textarea":
@@ -290,6 +363,8 @@ def build_pure_html_fragment(form: WebForm, *, api_base: str, site_key: str | No
     snippet inline (~25 líneas) que ejecuta reCAPTCHA v3 y envía como JSON
     vía fetch (sin navegación, sin dependencias externas)."""
     fields = _field_config(form)
+    ap = aparien.cargar(form.appearance_json)
+    estilo = aparien.css(ap, via="puro", form_id=form.id)
     action = f"{api_base}/public/forms/{form.id}/submit"
     form_dom_id = f"bh-form-{form.id}"
     rows = "\n".join(_render_pure_field(f) for f in fields)
@@ -332,11 +407,12 @@ def build_pure_html_fragment(form: WebForm, *, api_base: str, site_key: str | No
 </script>"""
     return (
         f'{recaptcha_head}'
+        f'{f"<style>{estilo}</style>" + chr(10) if estilo else ""}'
         f'<form class="bh-form" id="{form_dom_id}" action="{html.escape(action)}" method="POST">\n'
         f'{rows}\n'
         f'{honeypot}\n'
         f'<input type="hidden" name="recaptcha_token" value="">\n'
-        f'<button class="bh-button" type="submit">Enviar</button>\n'
+        f'<button class="bh-button" type="submit">{html.escape(ap.texto_boton())}</button>\n'
         f'<div class="bh-message" role="status" style="display:none"></div>\n'
         f'</form>\n'
         f'{submit_js}\n'
@@ -396,27 +472,29 @@ _WIDGET_BOOT_JS = r"""
   var style=document.createElement("style");
   style.textContent='[data-bohub-form] *{box-sizing:border-box}[data-bohub-form] .bh-form{display:flex;flex-direction:column;gap:12px;max-width:520px}[data-bohub-form] .bh-field{display:flex;flex-direction:column;gap:4px}[data-bohub-form] .bh-field label{font-size:14px;font-weight:600}[data-bohub-form] .bh-field input,[data-bohub-form] .bh-field textarea,[data-bohub-form] .bh-field select{padding:10px 12px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;font-family:inherit}[data-bohub-form] .bh-help{font-size:12px;color:#64748b}[data-bohub-form] .bh-req{color:#dc2626}[data-bohub-form] .bh-btn{padding:12px 16px;background:#2563eb;color:#fff;border:0;border-radius:8px;font-size:15px;font-weight:600;cursor:pointer}[data-bohub-form] .bh-msg{padding:14px;border-radius:8px;font-size:14px}[data-bohub-form] .bh-ok{background:#dcfce7;color:#166534}[data-bohub-form] .bh-err{background:#fee2e2;color:#991b1b}[data-bohub-form] .bh-hp{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}[data-bohub-form] .bh-tags{display:flex;flex-direction:column;gap:4px}[data-bohub-form] .bh-check{font-weight:400;display:flex;align-items:center;gap:6px}[data-bohub-form] .bh-stars{display:inline-flex;flex-direction:row-reverse;gap:.15em;justify-content:flex-end}[data-bohub-form] .bh-stars input{position:absolute;opacity:0;pointer-events:none}[data-bohub-form] .bh-stars label{cursor:pointer;color:#d0d0d0;font-size:1.7rem;line-height:1}[data-bohub-form] .bh-stars label:hover,[data-bohub-form] .bh-stars label:hover ~ label,[data-bohub-form] .bh-stars input:checked ~ label{color:#f5b301}';
   document.head.appendChild(style);
-  function esc(s){var d=document.createElement("div");d.textContent=s==null?"":s;return d.innerHTML;}
+  function esc(s){var d=document.createElement("div");d.textContent=s==null?"":s;return d.innerHTML.replace(/"/g,"&quot;").replace(/'/g,"&#39;");}
   function field(f){
     var dv=f.default_value||"";
     if(f.hidden||f.type==="hidden")return'<input type="hidden" name="'+esc(f.key)+'" value="'+esc(dv)+'">';
     var star=f.required?' <span class="bh-req">*</span>':"";
-    var help=f.help_text?'<span class="bh-help">'+esc(f.help_text)+'</span>':"";
+    var lab=f.label_html!=null?f.label_html:esc(f.label);
+    var help=f.help_text?'<span class="bh-help">'+(f.help_html!=null?f.help_html:esc(f.help_text))+'</span>':"";
     var ctrl;
     if(f.type==="textarea")ctrl='<textarea name="'+esc(f.key)+'" placeholder="'+esc(f.placeholder)+'" rows="4"'+(f.required?" required":"")+'>'+esc(dv)+'</textarea>';
     else if(f.type==="select"){var o=(f.options||[]).map(function(x){return'<option value="'+esc(x.value)+'"'+(String(x.value)===dv?" selected":"")+'>'+esc(x.label)+'</option>';}).join("");ctrl='<select name="'+esc(f.key)+'"'+(f.required?" required":"")+'><option value="">—</option>'+o+'</select>';}
-    else if(f.type==="checkbox")return'<div class="bh-field"><label><input type="checkbox" name="'+esc(f.key)+'"> '+esc(f.label)+star+'</label>'+help+'</div>';
-    else if(f.type==="tags"){var tb=(f.options||[]).map(function(o){return'<label class="bh-check"><input type="checkbox" name="'+esc(f.key)+'[]" value="'+esc(o.tag_id)+'"> '+esc(o.label)+'</label>';}).join("");return'<div class="bh-field"><label>'+esc(f.label)+star+'</label><div class="bh-tags">'+tb+'</div>'+help+'</div>';}
-    else if(f.type==="stars"){var sr="";[5,4,3,2,1].forEach(function(v){sr+='<input type="radio" name="'+esc(f.key)+'" value="'+v+'" id="'+esc(f.key)+'_'+v+'"><label for="'+esc(f.key)+'_'+v+'" aria-label="'+v+'">★</label>';});return'<div class="bh-field"><label>'+esc(f.label)+star+'</label><div class="bh-stars">'+sr+'</div>'+help+'</div>';}
+    else if(f.type==="checkbox")return'<div class="bh-field"><label><input type="checkbox" name="'+esc(f.key)+'"> '+lab+star+'</label>'+help+'</div>';
+    else if(f.type==="tags"){var tb=(f.options||[]).map(function(o){return'<label class="bh-check"><input type="checkbox" name="'+esc(f.key)+'[]" value="'+esc(o.tag_id)+'"> '+esc(o.label)+'</label>';}).join("");return'<div class="bh-field"><label>'+lab+star+'</label><div class="bh-tags">'+tb+'</div>'+help+'</div>';}
+    else if(f.type==="stars"){var sr="";[5,4,3,2,1].forEach(function(v){sr+='<input type="radio" name="'+esc(f.key)+'" value="'+v+'" id="'+esc(f.key)+'_'+v+'"><label for="'+esc(f.key)+'_'+v+'" aria-label="'+v+'">★</label>';});return'<div class="bh-field"><label>'+lab+star+'</label><div class="bh-stars">'+sr+'</div>'+help+'</div>';}
     else{var it=(f.type==="email"||f.type==="tel")?f.type:"text";ctrl='<input type="'+it+'" name="'+esc(f.key)+'" placeholder="'+esc(f.placeholder)+'"'+(f.required?" required":"")+(dv?' value="'+esc(dv)+'"':"")+'>';}
-    return'<div class="bh-field"><label>'+esc(f.label)+star+'</label>'+ctrl+help+'</div>';
+    return'<div class="bh-field"><label>'+lab+star+'</label>'+ctrl+help+'</div>';
   }
-  fetch(API_BASE+"/public/forms/"+FORM_ID+"/config.json").then(function(r){return r.json();}).then(function(cfg){
+  fetch(API_BASE+"/public/forms/"+FORM_ID+"/config.json").then(function(r){return r.json().then(function(j){if(!r.ok){var e=new Error("bohub");e.d=(j&&j.detail)||{};throw e;}return j;});}).then(function(cfg){
+    if(cfg.style_css){var st=document.createElement("style");st.textContent=cfg.style_css;document.head.appendChild(st);}
     var rows=(cfg.fields||[]).map(field).join("");
-    mount.innerHTML='<form class="bh-form">'+rows+'<input class="bh-hp" type="text" name="website" tabindex="-1" autocomplete="off" aria-hidden="true"><button class="bh-btn" type="submit">Enviar</button><div class="bh-msg" style="display:none"></div></form>';
+    mount.innerHTML='<form class="bh-form">'+rows+'<input class="bh-hp" type="text" name="website" tabindex="-1" autocomplete="off" aria-hidden="true"><button class="bh-btn" type="submit">'+esc(cfg.submit_text||"Enviar")+'</button><div class="bh-msg" style="display:none"></div></form>';
     var formEl=mount.querySelector("form"),msgEl=mount.querySelector(".bh-msg");
     function boot(){window.__bhInit({formId:FORM_ID,apiBase:API_BASE,siteKey:cfg.recaptcha_site_key,formEl:formEl,msgEl:msgEl});}
     if(cfg.recaptcha_site_key&&!window.grecaptcha){var s=document.createElement("script");s.src="https://www.google.com/recaptcha/api.js?render="+cfg.recaptcha_site_key;s.onload=boot;document.head.appendChild(s);}else{boot();}
-  }).catch(function(){mount.innerHTML='<p style="color:#991b1b">No se pudo cargar el formulario.</p>';});
+  }).catch(function(e){if(e&&e.d&&e.d.code==="form_inactive"){mount.setAttribute("data-bohub-error","form_inactive");if(window.console)console.warn("BoHub ("+FORM_ID+"): "+e.d.message);return;}mount.innerHTML='<p style="color:#991b1b">No se pudo cargar el formulario.</p>';});
 })();
 """

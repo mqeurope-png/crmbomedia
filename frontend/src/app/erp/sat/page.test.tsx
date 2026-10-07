@@ -296,7 +296,8 @@ describe("SatQueuePage · preparar y embalar en un MODAL sobre la cola", () => {
     const modal = await screen.findByRole("dialog", { name: "Preparar BOP-1" });
     expect(within(modal).getByLabelText("Peso bulto 1")).toBeInTheDocument();
     expect(fireTransition).not.toHaveBeenCalled();
-    await user.click(within(modal).getByRole("button", { name: "Cerrar" }));
+    // El «Cerrar» del pie (el ✕ de la cabecera también se llama «Cerrar»).
+    await user.click(within(modal).getByText("Cerrar"));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /En preparación/ })).toHaveAttribute("aria-selected", "true");
   });

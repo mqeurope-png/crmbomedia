@@ -11,6 +11,8 @@ import {
   type BrevoSyncTarget,
 } from "../lib/brevoApi";
 import { extractErrorMessage } from "../lib/errors";
+import { ModalCloseButton } from "./ModalCloseButton";
+import { useModalBehaviour } from "./useModalBehaviour";
 
 type Props = {
   accountId: string;
@@ -45,6 +47,7 @@ export function BrevoSyncTargetModal({
     unknown
   > | null>(null);
   const [busy, setBusy] = useState(false);
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose });
 
   useEffect(() => {
     listSegments()
@@ -123,17 +126,11 @@ export function BrevoSyncTargetModal({
   }
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal>
+    <div className="modal-overlay" role="dialog" aria-modal {...overlayProps}>
       <div className="modal-card modal-card-wide">
         <div className="wizard-header">
           <h2>{target ? "Editar sync target" : "Nuevo sync target"}</h2>
-          <button
-            type="button"
-            className="button secondary small"
-            onClick={onClose}
-          >
-            Cerrar
-          </button>
+          <ModalCloseButton onClose={requestClose} placement="header" />
         </div>
 
         {error ? <p className="danger-text">{error}</p> : null}

@@ -94,6 +94,9 @@ class WebForm(TimestampMixin, Base):
     recaptcha_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True
     )
+    # Apariencia (ancho, alineación, tema, colores, texto del botón): un JSON
+    # validado por app.services.web_forms.apariencia. NULL = la de siempre.
+    appearance_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by_user_id: Mapped[str] = mapped_column(
         ForeignKey("users.id"), nullable=False
     )

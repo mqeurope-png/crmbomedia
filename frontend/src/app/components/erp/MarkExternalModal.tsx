@@ -2,6 +2,9 @@
 
 import { useState } from "react";
 
+import { ModalCloseButton } from "../ModalCloseButton";
+import { useModalBehaviour } from "../useModalBehaviour";
+
 /** B-2-fix4: confirmación de «Marcar como procesado externamente» — sirve
  *  para un pedido (count=1) o para una selección en bloque. Pide una nota
  *  opcional (motivo/referencia) que se guarda en el historial del pedido. */
@@ -17,14 +20,16 @@ export function MarkExternalModal({
   busy?: boolean;
 }) {
   const [note, setNote] = useState("");
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose: onCancel, disabled: busy });
   const title =
     count === 1
       ? "Marcar pedido como procesado externamente"
       : `Marcar ${count} pedidos como procesados externamente`;
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={title}>
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={title} {...overlayProps}>
       <div className="modal-dialog erp-modal">
         <h2>{title}</h2>
+        <ModalCloseButton onClose={requestClose} disabled={busy} />
         <p className="muted small">
           Saldrá de las colas activas y sus 4 estados (pago, preparación,
           transporte y facturación) pasarán a «externalizado». Úsalo para

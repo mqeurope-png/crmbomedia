@@ -84,7 +84,7 @@ describe("Fotos del embalaje", () => {
     [new ApiError("El archivo supera el máximo de 15 MB.", 413,
                   "El archivo supera el máximo de 15 MB."), "El archivo supera el máximo de 15 MB."],
     // El proxy corta sin el detalle de la API: el mensaje sigue siendo claro.
-    [new ApiError("Error de la API (413)", 413, null), "El archivo es demasiado grande (máximo 12 MB)."],
+    [new ApiError("Error de la API (413)", 413, null), "El archivo es demasiado grande (máximo 15 MB)."],
     [new Error("Failed to fetch"), "Failed to fetch"],
   ])("un fallo se enseña y nunca dice «adjuntada» (%s)", async (err, texto) => {
     mockAttach.mockRejectedValue(err);

@@ -12,7 +12,8 @@ const mockList = listForms as jest.Mock;
 
 const rows = [
   { id: "1", slug: "contacto-mbo-es", name: "MBO ES", brand: "mbo",
-    language: "es", is_active: true, submissions_total: 5, submissions_spam: 1,
+    language: "es", is_active: true, submissions_total: 46, submissions_spam: 41,
+    submissions_real: 5, submissions_blocked: 41,
     created_at: "2026-07-01T00:00:00Z" },
   { id: "2", slug: "contacto-artis-en", name: "Artis EN", brand: "artis",
     language: "en", is_active: true, submissions_total: 2, submissions_spam: 0,
@@ -35,6 +36,17 @@ describe("WebFormsList", () => {
     await user.selectOptions(screen.getByRole("combobox", { name: /Marca/i }), "mbo");
     await waitFor(() => expect(screen.queryByText("Artis EN")).not.toBeInTheDocument());
     expect(screen.getByText("MBO ES")).toBeInTheDocument();
+  });
+
+  it("separa los envíos reales de los bloqueados", async () => {
+    render(<WebFormsList />);
+    const fila = (await screen.findByText("MBO ES")).closest("tr")!;
+    expect(screen.getByRole("columnheader", { name: "Envíos" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Bloqueados" })).toBeInTheDocument();
+    const celdas = Array.from(fila.querySelectorAll("td")).map((td) => td.textContent);
+    expect(celdas).toContain("5");
+    expect(celdas).toContain("41");
+    expect(celdas).not.toContain("46");
   });
 
   it("tiene botón de crear formulario", async () => {

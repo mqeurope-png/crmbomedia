@@ -25,15 +25,15 @@ existían (y `url: null`).
     diferencia del albarán y la etiqueta.
 - **Errores** (siempre con texto claro):
   - 400: archivo vacío;
-  - 413: más de 15 MB (la API) o de 12 MB (nginx corta `/api/` antes; el
-    navegador lo explica igual aunque la respuesta llegue sin detalle);
+  - 413: más de 15 MB (la API; nginx deja pasar hasta 16 MB para que el
+    mensaje sea el de BoHub);
   - 415: formato no reconocido, o imagen descomunal (bomba de
     descompresión: millones de píxeles en pocos KB);
   - 507: el almacén no pudo guardar.
 - **Navegador.** Si la foto pesa más de 2,5 MB, se reduce antes de subirla (lado
   mayor 2560 px, JPEG al 85 %; `lib/fotos.ts`). Si el navegador no sabe leerla
   (HEIC fuera de Safari) se manda tal cual y la convierte el servidor. Solo si
-  además pasa de 12 MB (el tope del proxy) se avisa sin subir.
+  además pasa de 15 MB (el tope de la API) se avisa sin subir.
 - **Ver.**
   - Las fotos salen en la Cola SAT (`fotos` de cada pedido) y en la ficha
     (`GET /shipping-files?kind=foto`), como miniaturas pulsables que abren la

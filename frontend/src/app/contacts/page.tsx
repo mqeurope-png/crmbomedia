@@ -57,10 +57,12 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ContactsBulkBar } from "../components/ContactsBulkBar";
 import { ErrorState } from "../components/ErrorState";
+import { ModalCloseButton } from "../components/ModalCloseButton";
 import { OriginChipsSummary } from "../components/OriginChips";
 import { PageHeader } from "../components/PageHeader";
 import { StarRating } from "../components/StarRating";
 import { PushViewToBrevoModal } from "../components/PushViewToBrevoModal";
+import { useModalBehaviour } from "../components/useModalBehaviour";
 import { EntityFilterBuilder } from "../components/entity/EntityFilterBuilder";
 import {
   EntityTable,
@@ -1202,6 +1204,7 @@ function ViewEditorModal({
   const [isShared, setIsShared] = useState(initial.is_shared ?? false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose, disabled: busy });
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -1224,21 +1227,11 @@ function ViewEditorModal({
   }
 
   return (
-    <div className="modal-overlay" onClick={onClose} role="dialog">
-      <div
-        className="modal-dialog modal-dialog-form"
-        onClick={(e) => e.stopPropagation()}
-      >
+    <div className="modal-overlay" role="dialog" {...overlayProps}>
+      <div className="modal-dialog modal-dialog-form">
         <header className="modal-header">
           <h2>{mode.kind === "edit" ? "Editar vista" : "Nueva vista"}</h2>
-          <button
-            type="button"
-            className="modal-close"
-            onClick={onClose}
-            aria-label="Cerrar"
-          >
-            ×
-          </button>
+          <ModalCloseButton onClose={requestClose} disabled={busy} placement="header" />
         </header>
         <form onSubmit={handleSubmit} className="modal-form">
           <label>

@@ -20,6 +20,7 @@ import {
   type FactusolPullPreview,
   type FactusolRegimePreview,
 } from "../../lib/erpApi";
+import { ErpModalShell } from "./ErpModalShell";
 
 type Diff = { field: string; crm: string; factusol: string };
 
@@ -479,136 +480,128 @@ export function CompanyFactusolPanel({
       )}
 
       {pullPreview ? (
-        <div className="modal-overlay" role="dialog" aria-modal="true"
-             aria-label="Traer datos de FACTUSOL">
-          <div className="modal-dialog erp-modal">
-            <h2>Traer datos de FACTUSOL</h2>
-            <p className="form-error" role="alert">
-              Esto sobrescribirá los datos de la empresa con los de FACTUSOL
-              (cliente nº {pullPreview.codcli}). FACTUSOL es la fuente de verdad:
-              se pisan todos los campos del mapping, no solo los vacíos. No se
-              cambia nada en FACTUSOL.
+        <ErpModalShell label="Traer datos de FACTUSOL" title="Traer datos de FACTUSOL"
+                       onClose={() => setPullPreview(null)} disabled={busy}>
+          <p className="form-error" role="alert">
+            Esto sobrescribirá los datos de la empresa con los de FACTUSOL
+            (cliente nº {pullPreview.codcli}). FACTUSOL es la fuente de verdad:
+            se pisan todos los campos del mapping, no solo los vacíos. No se
+            cambia nada en FACTUSOL.
+          </p>
+          {pullPreview.changes.length === 0 ? (
+            <p className="muted small">No hay diferencias: nada que traer.</p>
+          ) : (
+            <table className="data-table">
+              <thead>
+                <tr><th>Campo</th><th>CRM (ahora)</th><th>FACTUSOL (quedará)</th></tr>
+              </thead>
+              <tbody>
+                {pullPreview.changes.map((c) => (
+                  <tr key={c.field}>
+                    <td>{c.label}</td>
+                    <td>{c.crm || "—"}</td>
+                    <td><strong>{c.factusol || "—"}</strong></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          <div className="modal-actions">
+            <button type="button" className="button secondary" disabled={busy}
+                    onClick={() => setPullPreview(null)}>
+              Cancelar
+            </button>
+            <button type="button" className="button danger"
+                    disabled={busy || pullPreview.changes.length === 0}
+                    onClick={confirmarTraerDatos}>
+              {busy ? "Trayendo…" : `Sobrescribir con FACTUSOL (${pullPreview.changes.length})`}
+            </button>
+          </div>
+        </ErpModalShell>
+      ) : null}
+
+      {regimePreview ? (
+        <ErpModalShell label="Régimen de IVA en FACTUSOL" title="Régimen de IVA en FACTUSOL"
+                       onClose={() => setRegimePreview(null)} disabled={busy}>
+          <p>
+            Por la empresa: <strong>{regimePreview.regime_label}</strong>{" "}
+            <span className="muted small">({regimePreview.reason})</span>
+          </p>
+          <p className="muted small">
+            Ficha F_CLI nº {regimePreview.codcli} ahora:{" "}
+            {regimePreview.current.regime_label ?? "régimen desconocido"} · tipo de
+            documento {regimePreview.current.IFICLI ?? "—"} · país{" "}
+            {regimePreview.current.PAICLI || "—"}.
+          </p>
+          {regimePreview.coherent ? (
+            <p className="form-info" role="status">
+              La ficha de FACTUSOL ya está bien: nada que corregir.
             </p>
-            {pullPreview.changes.length === 0 ? (
-              <p className="muted small">No hay diferencias: nada que traer.</p>
-            ) : (
+          ) : (
+            <>
+              <p className="form-error" role="alert">
+                Esto escribirá en FACTUSOL (cliente nº {regimePreview.codcli}) SOLO las
+                columnas de abajo. Las facturas ya emitidas no cambian.
+              </p>
               <table className="data-table">
                 <thead>
-                  <tr><th>Campo</th><th>CRM (ahora)</th><th>FACTUSOL (quedará)</th></tr>
+                  <tr><th>Campo</th><th>FACTUSOL (ahora)</th><th>Quedará</th></tr>
                 </thead>
                 <tbody>
-                  {pullPreview.changes.map((c) => (
-                    <tr key={c.field}>
-                      <td>{c.label}</td>
-                      <td>{c.crm || "—"}</td>
-                      <td><strong>{c.factusol || "—"}</strong></td>
+                  {regimePreview.changes.map((c) => (
+                    <tr key={c.column}>
+                      <td>{c.label} <code>{c.column}</code></td>
+                      <td>{c.current_label || "—"}</td>
+                      <td><strong>{c.proposed_label}</strong></td>
                     </tr>
                   ))}
                 </tbody>
               </table>
-            )}
-            <div className="modal-actions">
-              <button type="button" className="button secondary" disabled={busy}
-                      onClick={() => setPullPreview(null)}>
-                Cancelar
+            </>
+          )}
+          <div className="modal-actions">
+            <button type="button" className="button secondary" disabled={busy}
+                    onClick={() => setRegimePreview(null)}>
+              {regimePreview.coherent ? "Cerrar" : "Cancelar"}
+            </button>
+            {!regimePreview.coherent ? (
+              <button type="button" className="button danger" disabled={busy}
+                      onClick={confirmarRegimen}>
+                {busy ? "Corrigiendo…" : `Corregir en FACTUSOL (${regimePreview.changes.length})`}
               </button>
-              <button type="button" className="button danger"
-                      disabled={busy || pullPreview.changes.length === 0}
-                      onClick={confirmarTraerDatos}>
-                {busy ? "Trayendo…" : `Sobrescribir con FACTUSOL (${pullPreview.changes.length})`}
-              </button>
-            </div>
+            ) : null}
           </div>
-        </div>
-      ) : null}
-
-      {regimePreview ? (
-        <div className="modal-overlay" role="dialog" aria-modal="true"
-             aria-label="Régimen de IVA en FACTUSOL">
-          <div className="modal-dialog erp-modal">
-            <h2>Régimen de IVA en FACTUSOL</h2>
-            <p>
-              Por la empresa: <strong>{regimePreview.regime_label}</strong>{" "}
-              <span className="muted small">({regimePreview.reason})</span>
-            </p>
-            <p className="muted small">
-              Ficha F_CLI nº {regimePreview.codcli} ahora:{" "}
-              {regimePreview.current.regime_label ?? "régimen desconocido"} · tipo de
-              documento {regimePreview.current.IFICLI ?? "—"} · país{" "}
-              {regimePreview.current.PAICLI || "—"}.
-            </p>
-            {regimePreview.coherent ? (
-              <p className="form-info" role="status">
-                La ficha de FACTUSOL ya está bien: nada que corregir.
-              </p>
-            ) : (
-              <>
-                <p className="form-error" role="alert">
-                  Esto escribirá en FACTUSOL (cliente nº {regimePreview.codcli}) SOLO las
-                  columnas de abajo. Las facturas ya emitidas no cambian.
-                </p>
-                <table className="data-table">
-                  <thead>
-                    <tr><th>Campo</th><th>FACTUSOL (ahora)</th><th>Quedará</th></tr>
-                  </thead>
-                  <tbody>
-                    {regimePreview.changes.map((c) => (
-                      <tr key={c.column}>
-                        <td>{c.label} <code>{c.column}</code></td>
-                        <td>{c.current_label || "—"}</td>
-                        <td><strong>{c.proposed_label}</strong></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </>
-            )}
-            <div className="modal-actions">
-              <button type="button" className="button secondary" disabled={busy}
-                      onClick={() => setRegimePreview(null)}>
-                {regimePreview.coherent ? "Cerrar" : "Cancelar"}
-              </button>
-              {!regimePreview.coherent ? (
-                <button type="button" className="button danger" disabled={busy}
-                        onClick={confirmarRegimen}>
-                  {busy ? "Corrigiendo…" : `Corregir en FACTUSOL (${regimePreview.changes.length})`}
-                </button>
-              ) : null}
-            </div>
-          </div>
-        </div>
+        </ErpModalShell>
       ) : null}
 
       {mergeOffer ? (
-        <div className="modal-overlay" role="dialog" aria-modal="true"
-             aria-label="Fusionar con la empresa vinculada">
-          <div className="modal-dialog erp-modal">
-            <h2>Ese cliente FACTUSOL ya está vinculado</h2>
-            <p>
-              El cliente FACTUSOL ya está vinculado a la empresa{" "}
-              <strong>{mergeOffer.company_name ?? "otra empresa"}</strong>. Un
-              CODCLI solo puede estar en una ficha, así que no se puede vincular
-              por segunda vez.
-            </p>
-            <p className="form-error" role="alert">
-              Puedes <strong>fusionar «{company.name}» en «
-              {mergeOffer.company_name ?? "la empresa vinculada"}»</strong>: todo
-              lo de «{company.name}» (pedidos, contactos, tareas, actividad y
-              vínculo FACTUSOL) pasa a la otra ficha, «{company.name}» se archiva
-              (reversible: no se borra) y el CODCLI queda en una sola empresa.
-            </p>
-            <div className="modal-actions">
-              <button type="button" className="button secondary" disabled={merging}
-                      onClick={() => setMergeOffer(null)}>
-                Cancelar
-              </button>
-              <button type="button" className="button danger" disabled={merging}
-                      onClick={fusionarConTitular}>
-                {merging ? "Fusionando…" : "Fusionar con esa empresa"}
-              </button>
-            </div>
+        <ErpModalShell label="Fusionar con la empresa vinculada"
+                       title="Ese cliente FACTUSOL ya está vinculado"
+                       onClose={() => setMergeOffer(null)} disabled={merging}>
+          <p>
+            El cliente FACTUSOL ya está vinculado a la empresa{" "}
+            <strong>{mergeOffer.company_name ?? "otra empresa"}</strong>. Un
+            CODCLI solo puede estar en una ficha, así que no se puede vincular
+            por segunda vez.
+          </p>
+          <p className="form-error" role="alert">
+            Puedes <strong>fusionar «{company.name}» en «
+            {mergeOffer.company_name ?? "la empresa vinculada"}»</strong>: todo
+            lo de «{company.name}» (pedidos, contactos, tareas, actividad y
+            vínculo FACTUSOL) pasa a la otra ficha, «{company.name}» se archiva
+            (reversible: no se borra) y el CODCLI queda en una sola empresa.
+          </p>
+          <div className="modal-actions">
+            <button type="button" className="button secondary" disabled={merging}
+                    onClick={() => setMergeOffer(null)}>
+              Cancelar
+            </button>
+            <button type="button" className="button danger" disabled={merging}
+                    onClick={fusionarConTitular}>
+              {merging ? "Fusionando…" : "Fusionar con esa empresa"}
+            </button>
           </div>
-        </div>
+        </ErpModalShell>
       ) : null}
     </section>
   );

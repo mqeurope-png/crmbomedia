@@ -8,6 +8,8 @@ import {
   type FactusolSerie,
   type FormaPago,
 } from "../../lib/erpApi";
+import { ModalCloseButton } from "../ModalCloseButton";
+import { useModalBehaviour } from "../useModalBehaviour";
 
 function today(): string {
   return new Date().toISOString().slice(0, 10);
@@ -43,6 +45,7 @@ export function EmitFactusolModal({
   const [comfac, setComfac] = useState("");
   const [formasPago, setFormasPago] = useState<FormaPago[]>([]);
   const [series, setSeries] = useState<FactusolSerie[]>([]);
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose: onCancel, disabled: submitting });
 
   useEffect(() => {
     let alive = true;
@@ -78,9 +81,10 @@ export function EmitFactusolModal({
 
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true"
-         aria-label="Emitir factura FACTUSOL">
+         aria-label="Emitir factura FACTUSOL" {...overlayProps}>
       <div className="modal-dialog erp-modal">
         <h2>Emitir factura en FACTUSOL</h2>
+        <ModalCloseButton onClose={requestClose} disabled={submitting} />
         <p>
           Total: <strong>{totalAmount.toFixed(2)} {currency}</strong>
         </p>

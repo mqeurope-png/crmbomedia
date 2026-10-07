@@ -7,6 +7,8 @@ import {
   type ExcludePreviewItem,
   type ExclusionReasonCode,
 } from "../../lib/erpApi";
+import { ModalCloseButton } from "../ModalCloseButton";
+import { useModalBehaviour } from "../useModalBehaviour";
 
 const REASON_LABELS: Record<ExclusionReasonCode, string> = {
   cancelado: "Cancelado",
@@ -47,6 +49,7 @@ export function ExcludeSeguimientoModal({
   const [text, setText] = useState("");
   const [preview, setPreview] = useState<ExcludePreviewItem[] | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose: onCancel, disabled: busy });
   // Clave estable: el padre puede crear un array nuevo en cada render.
   const ids = rows.map((r) => r.id).join(",");
 
@@ -73,9 +76,10 @@ export function ExcludeSeguimientoModal({
   const loading = preview === null && previewError === null;
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={title}>
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={title} {...overlayProps}>
       <div className="modal-dialog erp-modal">
         <h2>{title}</h2>
+        <ModalCloseButton onClose={requestClose} disabled={busy} />
         <p className="muted small">
           Sale de TODAS tus listas de trabajo a la vez: la bandeja de Pedidos,
           la Cola PEDIDOS, la cola del taller y el seguimiento (y no se escribe

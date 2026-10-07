@@ -197,7 +197,11 @@ def test_reconcile_status_endpoint_reports_progress_and_result(session_factory, 
         r = http.get("/api/erp/seguimiento/reconcile-woo-status/job-rec-1",
                      headers=auth_headers(http, "pedidos"))
     assert r.status_code == 200, r.text
-    assert r.json() == {"status": "finished", "result": summary}
+    body = r.json()
+    assert body["status"] == "finished" and body["result"] == summary
+    # Lo que añade la pantalla que espera (progreso, vista previa, hora de
+    # fin): sin datos reales en el trabajo falso, vacíos.
+    assert body["progress"] is None and body["ended_at"] is None
 
 
 def test_reconcile_job_failure_is_reported(session_factory, http) -> None:

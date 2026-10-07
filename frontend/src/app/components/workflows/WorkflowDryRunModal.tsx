@@ -1,12 +1,14 @@
 "use client";
 
-import { CheckCircle, FlaskConical, X } from "lucide-react";
+import { CheckCircle, FlaskConical } from "lucide-react";
 import { useState } from "react";
 import {
   dryRunWorkflow,
   type WorkflowDryRunResponse,
 } from "../../lib/workflowsApi";
 import { extractErrorMessage } from "../../lib/errors";
+import { ModalCloseButton } from "../ModalCloseButton";
+import { useModalBehaviour } from "../useModalBehaviour";
 
 type Props = {
   workflowId: string;
@@ -20,6 +22,7 @@ export function WorkflowDryRunModal({ workflowId, onClose }: Props) {
   const [result, setResult] = useState<WorkflowDryRunResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { overlayProps, requestClose } = useModalBehaviour({ onClose });
 
   const onRun = async () => {
     if (!contactId.trim()) {
@@ -45,23 +48,14 @@ export function WorkflowDryRunModal({ workflowId, onClose }: Props) {
     <div
       className="email-compose-overlay"
       role="presentation"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+      {...overlayProps}
     >
       <div className="form-card workflow-dryrun-modal">
         <header className="workflow-dryrun-header">
           <h3>
             <FlaskConical size={14} aria-hidden /> Probar workflow
           </h3>
-          <button
-            type="button"
-            className="button secondary small"
-            onClick={onClose}
-            aria-label="Cerrar"
-          >
-            <X size={12} aria-hidden />
-          </button>
+          <ModalCloseButton onClose={requestClose} placement="header" />
         </header>
         <p className="muted small">
           Simula el workflow sobre un contacto real sin commitear ni

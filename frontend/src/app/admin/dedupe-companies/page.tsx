@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { ErpModalShell } from "../../components/erp/ErpModalShell";
 import { PageHeader } from "../../components/PageHeader";
 import {
   findDuplicateCompanies,
@@ -225,32 +226,29 @@ export default function DedupeCompaniesPage() {
       ) : null}
 
       {confirming ? (
-        <div className="modal-overlay" role="dialog" aria-modal="true"
-             aria-label="Confirmar fusión">
-          <div className="modal-dialog">
-            <h2>Confirmar fusión</h2>
-            <p>
-              Vas a fusionar <strong>{impact.groups}</strong> grupo(s). Esto{" "}
-              <strong>borrará {impact.companies} empresa(s)</strong> del CRM y
-              moverá {impact.contacts} contacto(s), {impact.orders} pedido(s) y{" "}
-              {impact.tasks} tarea(s) a la principal de cada grupo.
-            </p>
-            <p className="muted small">
-              Los datos de las borradas quedan en <code>audit_logs</code>: son
-              reversibles solo via SQL manual. ¿Continuar?
-            </p>
-            <div className="modal-actions">
-              <button type="button" className="button secondary"
-                      onClick={() => setConfirming(false)}>
-                Cancelar
-              </button>
-              <button type="button" className="button danger"
-                      onClick={mergePicked}>
-                Sí, fusionar y borrar {impact.companies}
-              </button>
-            </div>
+        <ErpModalShell label="Confirmar fusión" title="Confirmar fusión"
+                       onClose={() => setConfirming(false)}>
+          <p>
+            Vas a fusionar <strong>{impact.groups}</strong> grupo(s). Esto{" "}
+            <strong>borrará {impact.companies} empresa(s)</strong> del CRM y
+            moverá {impact.contacts} contacto(s), {impact.orders} pedido(s) y{" "}
+            {impact.tasks} tarea(s) a la principal de cada grupo.
+          </p>
+          <p className="muted small">
+            Los datos de las borradas quedan en <code>audit_logs</code>: son
+            reversibles solo via SQL manual. ¿Continuar?
+          </p>
+          <div className="modal-actions">
+            <button type="button" className="button secondary"
+                    onClick={() => setConfirming(false)}>
+              Cancelar
+            </button>
+            <button type="button" className="button danger"
+                    onClick={mergePicked}>
+              Sí, fusionar y borrar {impact.companies}
+            </button>
           </div>
-        </div>
+        </ErpModalShell>
       ) : null}
     </main>
   );

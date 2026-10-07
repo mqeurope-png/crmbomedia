@@ -10131,6 +10131,7 @@ tr.is-inactive {
  * padding); solo ajustamos los márgenes del título y separamos la fila
  * de botones. */
 .push-brevo-body > header { margin: 0 0 12px; }
+.push-brevo-body > header > .modal-close { float: right; margin: -4px -8px 0 8px; }
 .push-brevo-body > header h2 { margin: 0 0 4px; font-size: 18px; }
 .push-brevo-body .actions {
   display: flex;
@@ -12492,6 +12493,49 @@ input[type="radio"]:focus-visible {
   margin: auto calc(-1 * var(--sp-6)) calc(-1 * var(--sp-4));
   padding: var(--sp-3) var(--sp-6);
 }
+/* ✕ de cierre (ModalCloseButton) en todos los modales. */
+.modal-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+.modal-close:disabled { opacity: 0.4; cursor: not-allowed; }
+.modal-close:not(.modal-close--corner):disabled:hover { background: transparent; }
+/* En los modales sin `.modal-header` (molde plano del ERP, tarjetas
+   `.modal-card`) el ✕ va DETRÁS del título en el DOM —el h2 sigue siendo
+   `:first-child`, del que cuelgan la cabecera pegajosa y su contexto— y se
+   dibuja delante (`order: -1`), en la esquina superior derecha y pegajoso
+   por encima de la cabecera. Su margen inferior negativo (alto + margen
+   superior + hueco del flex) devuelve el título a su sitio de siempre. */
+.modal-close.modal-close--corner {
+  order: -1;
+  position: sticky;
+  top: var(--sp-3);
+  z-index: 3;
+  align-self: flex-end;
+  width: var(--control-h);
+  height: var(--control-h);
+  padding: 0;
+  margin: var(--sp-3) calc(var(--sp-3) - var(--sp-6)) calc(-2 * var(--sp-3) - var(--control-h)) 0;
+  background: var(--card);
+  font-size: var(--fs-title);
+}
+.modal-close.modal-close--corner:hover:not(:disabled) { background: var(--line); }
+.modal-dialog.erp-modal > h2:first-child:has(+ .modal-close--corner),
+.modal-dialog.erp-emit-modal > h2:first-child:has(+ .modal-close--corner) {
+  padding-right: calc(var(--control-h) + var(--sp-3) + var(--sp-2));
+}
+/* `.modal-card`: padding propio de 24 px, hueco de 12 px y título sin padding.
+   El `top` del sticky cuenta desde el padding de la tarjeta: se descuenta. */
+.modal-card > .modal-close.modal-close--corner {
+  top: calc(var(--sp-3) - var(--sp-6));
+  margin-top: calc(var(--sp-3) - var(--sp-6));
+  margin-bottom: calc(-1 * var(--control-h));
+}
+.modal-card > :first-child:has(+ .modal-close--corner) {
+  padding-right: calc(var(--control-h) - var(--sp-3) + var(--sp-2));
+}
 /* Contenido de los modales del ERP que hasta ahora no tenía CSS propio. */
 .erp-modal .field,
 .erp-modal fieldset.field { margin: 0; }
@@ -12838,6 +12882,8 @@ ul.erp-crm-search-hits, ul.erp-crm-picks { list-style: none; margin: 0 0 8px; pa
   .modal-dialog.erp-modal,
   .modal-dialog.erp-emit-modal,
   .modal-dialog.company-picker-dialog { padding-left: var(--sp-4); padding-right: var(--sp-4); }
+  .modal-dialog.erp-modal > .modal-close.modal-close--corner,
+  .modal-dialog.erp-emit-modal > .modal-close.modal-close--corner { margin-right: calc(var(--sp-3) - var(--sp-4)); }
   .modal-dialog.erp-modal > h2:first-child,
   .modal-dialog.erp-emit-modal > h2:first-child,
   .modal-dialog.company-picker-dialog > .company-picker-head,
@@ -14446,6 +14492,7 @@ table.erp-doc-lines { width: 100%; table-layout: fixed; }
 .sat-prep-modal { display: flex; flex-direction: column; gap: var(--sp-3); }
 .sat-prep-head { display: flex; align-items: center; gap: var(--sp-3); }
 .sat-prep-head h2 { margin: 0; }
+.sat-prep-head > .modal-close { margin-left: auto; }
 .sat-prep-lines h3,
 .sat-prep-embalar h3 { margin: 0 0 var(--sp-2); font-size: var(--fs-subtitle); }
 .sat-prep-actions { flex-wrap: wrap; }
@@ -14895,3 +14942,13 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
 .erp-foto-nombre { font-size: var(--fs-label); padding: 4px; word-break: break-all; }
 .erp-fotos-perdidas { color: var(--st-amber-ink); background: var(--st-amber-bg); padding: 4px 8px; border-radius: 6px; }
 .erp-fotos-subir { align-self: flex-start; cursor: pointer; }
+
+/* Formularios web — apariencia y vista previa real (servidor). */
+.wf-appearance { display: flex; flex-direction: column; gap: 8px; }
+.wf-color-field { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: var(--fs-label); }
+.wf-color-field > span { flex: 1 1 100%; }
+.wf-color-field input[type="color"] { width: 40px; height: 28px; padding: 0; border: 1px solid var(--line, #e5e7eb); border-radius: 6px; background: transparent; }
+.wf-live-preview { display: flex; flex-direction: column; gap: 8px; }
+.wf-live-preview-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.wf-live-preview-toggle { display: inline-flex; gap: 4px; }
+.wf-live-preview-frame { width: 100%; max-width: 100%; min-height: 480px; border: 1px dashed var(--line, #e5e7eb); border-radius: 8px; background: transparent; align-self: center; }

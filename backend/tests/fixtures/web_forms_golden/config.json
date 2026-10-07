@@ -1,0 +1,151 @@
+{
+ "brand": "boprint",
+ "fields": [
+  {
+   "default_value": null,
+   "help_text": null,
+   "hidden": false,
+   "key": "nombre",
+   "label": "Nombre",
+   "options": [],
+   "placeholder": "Tu nombre",
+   "position": 0,
+   "required": true,
+   "type": "text",
+   "validation_pattern": null
+  },
+  {
+   "default_value": null,
+   "help_text": "No lo compartimos",
+   "hidden": false,
+   "key": "email",
+   "label": "Email",
+   "options": [],
+   "placeholder": null,
+   "position": 1,
+   "required": true,
+   "type": "email",
+   "validation_pattern": null
+  },
+  {
+   "default_value": null,
+   "help_text": null,
+   "hidden": false,
+   "key": "telefono",
+   "label": "Teléfono",
+   "options": [],
+   "placeholder": null,
+   "position": 2,
+   "required": false,
+   "type": "tel",
+   "validation_pattern": null
+  },
+  {
+   "default_value": null,
+   "help_text": null,
+   "hidden": false,
+   "key": "mensaje",
+   "label": "Mensaje & dudas",
+   "options": [],
+   "placeholder": "Cuéntanos",
+   "position": 3,
+   "required": false,
+   "type": "textarea",
+   "validation_pattern": null
+  },
+  {
+   "default_value": null,
+   "help_text": null,
+   "hidden": false,
+   "key": "pais",
+   "label": "País",
+   "options": [
+    {
+     "label": "España",
+     "value": "es"
+    },
+    {
+     "label": "México",
+     "value": "mx"
+    }
+   ],
+   "placeholder": null,
+   "position": 4,
+   "required": false,
+   "type": "select",
+   "validation_pattern": null
+  },
+  {
+   "default_value": null,
+   "help_text": null,
+   "hidden": false,
+   "key": "productos",
+   "label": "Productos",
+   "options": [
+    {
+     "label": "Artisjet Young",
+     "tag_id": "t-young"
+    },
+    {
+     "label": "6090",
+     "tag_id": "t-6090"
+    }
+   ],
+   "placeholder": null,
+   "position": 5,
+   "required": false,
+   "type": "tags",
+   "validation_pattern": null
+  },
+  {
+   "default_value": null,
+   "help_text": null,
+   "hidden": false,
+   "key": "valoracion",
+   "label": "Valoración",
+   "options": [],
+   "placeholder": null,
+   "position": 6,
+   "required": false,
+   "type": "stars",
+   "validation_pattern": null
+  },
+  {
+   "default_value": "web",
+   "help_text": null,
+   "hidden": true,
+   "key": "origen",
+   "label": "Origen",
+   "options": [],
+   "placeholder": null,
+   "position": 7,
+   "required": false,
+   "type": "hidden",
+   "validation_pattern": null
+  },
+  {
+   "default_value": null,
+   "help_text": "Consulta la política en la web",
+   "hidden": false,
+   "key": "privacidad",
+   "label": "He leído y acepto la Política de Privacidad",
+   "options": [],
+   "placeholder": null,
+   "position": 8,
+   "required": true,
+   "type": "checkbox",
+   "validation_pattern": null
+  }
+ ],
+ "id": "11111111-2222-3333-4444-555555555555",
+ "language": "es",
+ "name": "Golden <ES>",
+ "recaptcha_enabled": false,
+ "recaptcha_site_key": null,
+ "slug": "golden-es",
+ "submit": {
+  "message": null,
+  "mode": "modal",
+  "redirect_url": null
+ }
+}

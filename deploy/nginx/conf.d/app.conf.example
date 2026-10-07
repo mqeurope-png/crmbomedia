@@ -69,7 +69,7 @@ server {
         proxy_read_timeout 60s;
         proxy_send_timeout 60s;
         # Composer asset uploads can be larger than the default 1 MB.
-        client_max_body_size 12m;
+        client_max_body_size 16m;
     }
 
     # Inbound webhooks (WooCommerce B-3, Genei B-4). No CRM auth — the

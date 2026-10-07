@@ -44,6 +44,7 @@ from sqlalchemy.orm import Session
 from app.erp.models import Order, OrderSource
 from app.integrations.woocommerce.client import WooError, WooHTTPClient
 from app.integrations.woocommerce.mapper import CREATE_ON_STATUSES
+from app.integrations.woocommerce.progreso import informar
 from app.models.crm import ExternalSystem
 from app.models.integration_settings import IntegrationAccount
 
@@ -461,7 +462,8 @@ def _pasada_tienda(
     resultado["faltan"] = len(vista["faltan"])
     importar = importer or partial(_importar_como_webhook, client=client)
 
-    for ausente, wo in vista["faltan"]:
+    for n, (ausente, wo) in enumerate(vista["faltan"], start=1):
+        informar(f"Pagados que faltan en {account_id}", n, len(vista["faltan"]))
         item = ausente.as_dict()
         out["items"].append(item)
         if dry_run:
@@ -545,6 +547,7 @@ def import_missing_paid_orders(
 
     for store in woo_stores(session, store_account_id):
         account_id = store.account_id
+        informar(f"Pagados que faltan en {account_id}")
         if dry_run:
             r = _pasada_tienda(
                 session, store, dry_run=True, days=days, incremental=incremental,
