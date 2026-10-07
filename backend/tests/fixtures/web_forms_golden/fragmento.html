@@ -1,0 +1,58 @@
+<form class="bh-form" id="bh-form-11111111-2222-3333-4444-555555555555" action="https://bohub.example/public/forms/11111111-2222-3333-4444-555555555555/submit" method="POST">
+<div class="bh-field"><label class="bh-label">Nombre <span class="bh-req">*</span></label><input class="bh-input" type="text" name="nombre" placeholder="Tu nombre" required></div>
+<div class="bh-field"><label class="bh-label">Email <span class="bh-req">*</span></label><input class="bh-input" type="email" name="email" placeholder="" required><span class="bh-help">No lo compartimos</span></div>
+<div class="bh-field"><label class="bh-label">Teléfono</label><input class="bh-input" type="tel" name="telefono" placeholder=""></div>
+<div class="bh-field"><label class="bh-label">Mensaje &amp; dudas</label><textarea class="bh-input" name="mensaje" placeholder="Cuéntanos" rows="4"></textarea></div>
+<div class="bh-field"><label class="bh-label">País</label><select class="bh-input" name="pais"><option value="">—</option><option value="es">España</option><option value="mx">México</option></select></div>
+<div class="bh-field"><span class="bh-label">Productos</span><div class="bh-tags"><label class="bh-check-label"><input class="bh-check" type="checkbox" name="productos[]" value="t-young"> Artisjet Young</label><label class="bh-check-label"><input class="bh-check" type="checkbox" name="productos[]" value="t-6090"> 6090</label></div></div>
+<div class="bh-field"><span class="bh-label">Valoración</span><div class="bh-stars"><input type="radio" name="valoracion" value="5" id="valoracion_5"><label for="valoracion_5" aria-label="5">★</label><input type="radio" name="valoracion" value="4" id="valoracion_4"><label for="valoracion_4" aria-label="4">★</label><input type="radio" name="valoracion" value="3" id="valoracion_3"><label for="valoracion_3" aria-label="3">★</label><input type="radio" name="valoracion" value="2" id="valoracion_2"><label for="valoracion_2" aria-label="2">★</label><input type="radio" name="valoracion" value="1" id="valoracion_1"><label for="valoracion_1" aria-label="1">★</label></div></div>
+<input type="hidden" name="origen" value="web">
+<div class="bh-field"><label class="bh-label"><input class="bh-check" type="checkbox" name="privacidad"> He leído y acepto la Política de Privacidad <span class="bh-req">*</span></label><span class="bh-help">Consulta la política en la web</span></div>
+<input class="bh-hp" type="text" name="website" tabindex="-1" autocomplete="off" aria-hidden="true" style="position:absolute;left:-9999px">
+<input type="hidden" name="recaptcha_token" value="">
+<button class="bh-button" type="submit">Enviar</button>
+<div class="bh-message" role="status" style="display:none"></div>
+</form>
+<script>
+(function(){
+  var form=document.getElementById("bh-form-11111111-2222-3333-4444-555555555555");
+  if(!form)return;
+  var SITE_KEY=null,ACTION="https://bohub.example/public/forms/11111111-2222-3333-4444-555555555555/submit";
+  function send(token){
+    var data={};
+    new FormData(form).forEach(function(v,k){if(k.slice(-2)==="[]"){var b=k.slice(0,-2);(data[b]=data[b]||[]).push(v);}else{data[k]=v;}});
+    if(token)data.recaptcha_token=token;
+    var p=new URLSearchParams(location.search);
+    ["utm_source","utm_medium","utm_campaign"].forEach(function(k){if(p.get(k))data[k]=p.get(k);});
+    data.referrer=document.referrer||"";data.landing_page=location.href;
+    var msg=form.querySelector(".bh-message");
+    fetch(ACTION,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(data)})
+      .then(function(r){return r.json();})
+      .then(function(j){
+        if(j.success&&j.action==="redirect"&&j.redirect_url){location.href=j.redirect_url;return;}
+        if(msg){msg.style.display="block";msg.textContent=j.success?(j.success_message||"¡Gracias! Hemos recibido tu solicitud."):"No se pudo enviar. Revisa los datos.";}
+        if(j.success)form.reset();
+      })
+      .catch(function(){if(msg){msg.style.display="block";msg.textContent="Error de conexión. Inténtalo de nuevo.";}});
+  }
+  form.addEventListener("submit",function(e){
+    e.preventDefault();
+    if(SITE_KEY&&window.grecaptcha){grecaptcha.ready(function(){grecaptcha.execute(SITE_KEY,{action:"submit"}).then(send);});}
+    else{send(null);}
+  });
+})();
+</script>
+<!-- Sugerencia de estilos base (descomenta y ajusta a tu web):
+<style>
+.bh-form{max-width:520px;display:flex;flex-direction:column;gap:14px}
+.bh-field{display:flex;flex-direction:column;gap:4px}
+.bh-label{font-size:14px;font-weight:600}
+.bh-input{padding:10px 12px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px}
+.bh-button{padding:12px 16px;background:#2563eb;color:#fff;border:0;border-radius:8px;font-size:15px;font-weight:600;cursor:pointer}
+.bh-message{padding:14px;border-radius:8px;font-size:14px;background:#dcfce7;color:#166534}
+.bh-stars{display:inline-flex;flex-direction:row-reverse;gap:.15em;justify-content:flex-end}
+.bh-stars input{position:absolute;opacity:0;pointer-events:none}
+.bh-stars label{cursor:pointer;color:#d0d0d0;font-size:1.7rem;line-height:1}
+.bh-stars label:hover,.bh-stars label:hover ~ label,.bh-stars input:checked ~ label{color:#f5b301}
+</style>
+-->

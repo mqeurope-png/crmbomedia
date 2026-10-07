@@ -28,6 +28,9 @@ from app.models.web_forms import (
     WebForm,
     WebFormField,
 )
+from app.services.web_forms.apariencia import Apariencia
+from app.services.web_forms.apariencia import cargar as cargar_apariencia
+from app.services.web_forms.apariencia import volcar as volcar_apariencia
 
 router = APIRouter(prefix="/api/admin/forms", tags=["web-forms-admin"])
 # Endpoint auxiliar fuera del prefijo /forms (lo consume el editor).
@@ -75,6 +78,9 @@ class FormBase(BaseModel):
     fixed_owner_user_id: str | None = None
     notify_owner_on_new: bool = True
     recaptcha_enabled: bool = True
+    # Ancho, alineación y estilo (validado: colores #rrggbb, rangos). Sin
+    # enviar = no se toca; vacío = el aspecto de siempre.
+    appearance: Apariencia | None = None
 
 
 class FormCreate(FormBase):
@@ -94,6 +100,10 @@ class FormListItem(BaseModel):
     is_active: bool
     submissions_total: int
     submissions_spam: int
+    # Envíos reales (no bloqueados) y bloqueados (reCAPTCHA, honeypot…),
+    # por separado: el total mezclaba los 41 intentos de bots con los 5 reales.
+    submissions_real: int = 0
+    submissions_blocked: int = 0
     created_at: datetime
 
 
@@ -150,6 +160,22 @@ def _validate_enums(payload: FormBase, fields: list[FormFieldIn] | None) -> None
     for f in fields or []:
         if f.field_type not in FIELD_TYPES:
             raise HTTPException(400, f"field_type inválido: {f.field_type!r}")
+        destino = (f.maps_to_contact_field or "").strip()
+        # Un campo de etiquetas ya sabe a dónde va (las etiquetas elegidas se
+        # aplican al contacto): mapearlo a un campo de texto lo estropea.
+        if f.field_type == "tags" and destino:
+            raise HTTPException(
+                400,
+                f"El campo «{f.label or f.field_key}» es de etiquetas: no se mapea a un "
+                "campo del contacto (las etiquetas elegidas se aplican solas). Déjalo "
+                "«sin mapear».",
+            )
+        if destino == "contact.marketing_consent" and f.field_type != "checkbox":
+            raise HTTPException(
+                400,
+                f"El campo «{f.label or f.field_key}»: el consentimiento comercial solo se "
+                "mapea desde una casilla.",
+            )
         # Bug 3: un desplegable sin opciones es inutilizable.
         if f.field_type == "select" and not f.options:
             raise HTTPException(
@@ -194,6 +220,7 @@ def _serialise_detail(form: WebForm) -> FormDetail:
         fixed_owner_user_id=form.fixed_owner_user_id,
         notify_owner_on_new=form.notify_owner_on_new,
         recaptcha_enabled=form.recaptcha_enabled,
+        appearance=cargar_apariencia(form.appearance_json),
         created_by_user_id=form.created_by_user_id,
         created_at=form.created_at,
         fields=[
@@ -254,6 +281,8 @@ _STANDARD_MAPPABLE: list[tuple[str, str, str]] = [
     ("contact.stars", "Estrellas (rating 1-5)", "select"),
     ("contact.commercial_status", "Estado comercial (lifecycle)", "select"),
     ("contact.company_id", "Empresa (lookup por nombre)", "text"),
+    ("contact.marketing_consent", "Consentimiento comercial (casilla marcada = acepta)",
+     "checkbox"),
 ]
 
 
@@ -344,6 +373,8 @@ def list_forms(
             language=f.language, is_active=f.is_active,
             submissions_total=int(counts.get(f.id, 0)),
             submissions_spam=int(spam_counts.get(f.id, 0)),
+            submissions_real=int(counts.get(f.id, 0)) - int(spam_counts.get(f.id, 0)),
+            submissions_blocked=int(spam_counts.get(f.id, 0)),
             created_at=f.created_at,
         )
         for f in forms
@@ -372,6 +403,7 @@ def create_form(
         fixed_owner_user_id=payload.fixed_owner_user_id,
         notify_owner_on_new=payload.notify_owner_on_new,
         recaptcha_enabled=payload.recaptcha_enabled,
+        appearance_json=volcar_apariencia(payload.appearance),
         created_by_user_id=current_user.id,
     )
     session.add(form)
@@ -415,6 +447,8 @@ def update_form(
         "recaptcha_enabled",
     ):
         setattr(form, attr, getattr(payload, attr))
+    if payload.appearance is not None:
+        form.appearance_json = volcar_apariencia(payload.appearance)
     # Reemplazo total de campos (delete + insert) en la misma transacción.
     if payload.fields is not None:
         for existing in list(form.fields):
@@ -485,7 +519,7 @@ def embed_code(
     form_id: str,
     session: Session = Depends(get_session),
     current_user: User = Depends(require_manager),
-) -> dict[str, str]:
+) -> dict[str, Any]:
     _ = current_user
     from app.api.web_forms_embed import build_pure_html_fragment  # noqa: PLC0415
 
@@ -496,9 +530,17 @@ def embed_code(
         f'<script src="{base}/forms/embed/{form.id}.js" async></script>\n'
         f'<div data-bohub-form="{form.id}"></div>'
     )
+    # El iframe avisa de su altura (postMessage) y este script la aplica:
+    # crece con el contenido en vez de recortarlo con una altura fija.
+    iframe_dom_id = f"bohub-form-{form.id}"
     iframe_snippet = (
-        f'<iframe src="{base}/forms/{form.id}" width="100%" height="600" '
-        f'frameborder="0" style="border:0;max-width:100%"></iframe>'
+        f'<iframe id="{iframe_dom_id}" src="{base}/forms/{form.id}" width="100%" height="600" '
+        f'frameborder="0" style="border:0;max-width:100%"></iframe>\n'
+        "<script>window.addEventListener(\"message\",function(e){var d=e.data;"
+        f"if(e.origin!=={json.dumps(_origin(base))}||!d||d.type!==\"bohub-form-height\""
+        f"||d.formId!=={json.dumps(form.id)})return;"
+        f"var f=document.getElementById({json.dumps(iframe_dom_id)});"
+        "if(f&&d.height>0)f.style.height=d.height+\"px\";});</script>"
     )
     # v3 Bug 3: HTML puro copiable (sin estilar) — mismo builder que sirve
     # el endpoint público /public/forms/{id}/html.
@@ -508,7 +550,47 @@ def embed_code(
         "script_snippet": script_snippet,
         "iframe_snippet": iframe_snippet,
         "html_snippet": html_snippet,
+        # Desactivado no se ve en la web: la pantalla avisa al copiar.
+        "is_active": form.is_active,
     }
+
+
+def _origin(base: str) -> str:
+    from urllib.parse import urlparse  # noqa: PLC0415
+
+    u = urlparse(base)
+    return f"{u.scheme}://{u.netloc}" if u.scheme and u.netloc else base
+
+
+class FormPreviewIn(BaseModel):
+    """Lo que hay en el editor, sin guardar: basta para pintar."""
+    name: str = Field(default="Vista previa", max_length=255)
+    language: str = "es"
+    fields: list[FormFieldIn] = Field(default_factory=list)
+    appearance: Apariencia | None = None
+
+
+@router.post("/preview")
+def preview_form(
+    payload: FormPreviewIn,
+    current_user: User = Depends(require_manager),
+) -> dict[str, str]:
+    """HTML de la vía iframe con lo que hay en el editor (sin guardar ni
+    tocar la base de datos), para ver ancho, alineación y estilo antes de
+    publicar. Sin reCAPTCHA ni envío."""
+    _ = current_user
+    from app.api.web_forms_embed import render_iframe_html  # noqa: PLC0415
+
+    _autofill_field_keys(payload.fields)
+    form = WebForm(id="vista-previa", slug="vista-previa", name=payload.name,
+                   language=payload.language, is_active=True,
+                   appearance_json=volcar_apariencia(payload.appearance))
+    form.fields = [
+        _field_model("vista-previa", f) for f in payload.fields
+    ]
+    settings = get_settings()
+    base = (settings.web_forms_embed_base_url or settings.frontend_base_url).rstrip("/")
+    return {"html": render_iframe_html(form, api_base=base, site_key=None)}
 
 
 def _parse_payload(raw: str) -> dict[str, Any]:

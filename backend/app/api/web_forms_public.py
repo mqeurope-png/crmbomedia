@@ -22,10 +22,11 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.core.errors import not_found
 from app.db.session import get_session
 from app.models.web_forms import WebForm
+from app.services.web_forms import apariencia as aparien
 from app.services.web_forms import process_submission
+from app.services.web_forms.enlaces import texto_con_enlaces
 
 logger = logging.getLogger(__name__)
 
@@ -39,10 +40,11 @@ _META_KEYS = {
 
 
 def _get_active_form(session: Session, form_id: str) -> WebForm:
-    form = session.get(WebForm, form_id)
-    if form is None or not form.is_active:
-        raise not_found("Form")
-    return form
+    """404 si no existe; 403 `form_inactive` si está desactivado (el
+    mismo criterio que las vías de render)."""
+    from app.api.web_forms_embed import _get_active_form as obtener  # noqa: PLC0415
+
+    return obtener(session, form_id)
 
 
 @router.get("/{form_id}/config.json")
@@ -55,6 +57,7 @@ def form_config(
     por diseño."""
     form = _get_active_form(session, form_id)
     settings = get_settings()
+    ap = aparien.cargar(form.appearance_json)
     return {
         "id": form.id,
         "slug": form.slug,
@@ -70,13 +73,19 @@ def form_config(
             "message": form.submit_success_message,
             "redirect_url": form.submit_redirect_url,
         },
+        # Apariencia: texto del botón y CSS ya compuesto por el servidor
+        # (solo valores validados). Vacío = el aspecto de siempre.
+        "submit_text": ap.texto_boton(),
+        "style_css": aparien.css(ap, via="widget", form_id=form.id),
         "fields": [
             {
                 "key": f.field_key,
                 "label": f.label,
+                "label_html": texto_con_enlaces(f.label),
                 "type": f.field_type,
                 "placeholder": f.placeholder,
                 "help_text": f.help_text,
+                "help_html": texto_con_enlaces(f.help_text or ""),
                 "required": f.is_required,
                 "hidden": f.is_hidden,
                 "default_value": f.default_value,

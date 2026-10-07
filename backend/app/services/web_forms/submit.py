@@ -59,8 +59,15 @@ ALLOWED_COMMERCIAL_STATUS = {"new", "qualified", "working", "won", "lost"}
 SPECIAL_MAPPINGS = {
     "contact.notes", "contact.lead_score", "contact.stars",
     "contact.commercial_status", "contact.lifecycle_status",
-    "contact.company_id",
+    "contact.company_id", "contact.marketing_consent",
 }
+
+#: Valores de una casilla marcada (el navegador manda «on» sin `value`).
+CHECKBOX_TRUE = {"on", "true", "1", "si", "sí", "yes", "y", "x"}
+
+#: Envíos bloqueados sin payload (bots que golpean la URL pública) que se
+#: borran pasados estos días.
+PURGA_BLOQUEADOS_DIAS = 90
 
 
 @dataclass
@@ -308,17 +315,18 @@ def _apply_tag_fields(
     """v2 Bug 2. Campos tipo `tags`: aplica al contacto los tags reales del
     CRM seleccionados (por tag_id). Idempotente (assign_tag_to_contact) +
     audit `contact_tag.added` con via=form. No reasigna nada más."""
-    from app.models.crm import Tag  # noqa: PLC0415
-
+    aplicados: list[str] = []
     for f in form.fields:
         if f.field_type != "tags":
             continue
-        tag_ids = _coerce_tag_ids(
+        valores = _coerce_tag_ids(
             payload.get(f.field_key) or payload.get(f"{f.field_key}[]")
         )
-        for tag_id in tag_ids:
-            tag = session.get(Tag, tag_id)
+        for valor in valores:
+            tag = _resolver_tag(session, f, valor)
             if tag is None:
+                logger.warning("web_forms: etiqueta %r del campo %s (%s) no corresponde a "
+                               "ninguna opción", valor, f.field_key, form.slug)
                 continue
             linked = crm_repository.assign_tag_to_contact(
                 session, contact_id=contact.id, tag_id=tag.id,
@@ -326,6 +334,52 @@ def _apply_tag_fields(
             )
             if linked:
                 _audit_form_tag(session, form, contact, tag)
+            aplicados.append(tag.name)
+    if aplicados:
+        _sumar_tags_csv(contact, aplicados)
+
+
+def _opciones_tags(f: Any) -> list[dict[str, Any]]:
+    try:
+        opciones = json.loads(f.options_json or "[]")
+    except (TypeError, ValueError):
+        return []
+    return [o for o in opciones if isinstance(o, dict)] if isinstance(opciones, list) else []
+
+
+def _resolver_tag(session: Session, f: Any, valor: str) -> Any | None:
+    """La etiqueta del CRM que corresponde a un valor enviado en un campo
+    `tags`. Solo vale una de las opciones del campo (nadie puede colar otra
+    etiqueta desde fuera). La opción se reconoce por su `tag_id`, su `value`
+    o su texto; la etiqueta, por id o, si ese id ya no existe (se borró y se
+    volvió a crear), por nombre."""
+    from app.models.crm import Tag  # noqa: PLC0415
+
+    buscado = valor.strip().lower()
+    for o in _opciones_tags(f):
+        claves = {str(o.get(k) or "").strip().lower() for k in ("tag_id", "value", "label")}
+        if buscado not in claves - {""}:
+            continue
+        tag = session.get(Tag, str(o.get("tag_id") or "")) if o.get("tag_id") else None
+        if tag is None:
+            nombre = str(o.get("label") or o.get("value") or "").strip()
+            if nombre:
+                tag = session.scalar(select(Tag).where(
+                    Tag.name_normalized == crm_repository.normalize_tag_name(nombre)))
+        return tag
+    return None
+
+
+def _sumar_tags_csv(contact: Contact, nombres: list[str]) -> None:
+    """La columna antigua `contacts.tags` (CSV) se mantiene en paralelo,
+    como hace el paso de workflow: segmentos, condiciones y GDPR aún la leen."""
+    actuales = [t.strip() for t in (contact.tags or "").split(",") if t.strip()]
+    vistos = {t.lower() for t in actuales}
+    for nombre in nombres:
+        if nombre.lower() not in vistos:
+            actuales.append(nombre)
+            vistos.add(nombre.lower())
+    contact.tags = ",".join(actuales)[:500]
 
 
 def _audit_form_tag(session: Session, form: WebForm, contact: Contact, tag: Any) -> None:
@@ -374,7 +428,36 @@ def _apply_mapped_special_fields(
             _apply_commercial_status(contact, value)
         elif target == "contact.company_id":
             _apply_company(session, contact, value, payload)
+        elif target == "contact.marketing_consent":
+            _apply_marketing_consent(session, form, contact, value)
     session.flush()
+
+
+def _apply_marketing_consent(session: Session, form: WebForm, contact: Contact,
+                             value: str) -> None:
+    """Casilla «Acepto recibir comunicaciones comerciales»: marcada, el
+    contacto da su consentimiento (aunque antes lo hubiera retirado: es un
+    consentimiento nuevo y explícito). Sin marcar no llega el campo y no se
+    toca nada."""
+    from app.models.crm import ConsentStatus  # noqa: PLC0415
+
+    if value.strip().lower() not in CHECKBOX_TRUE:
+        return
+    antes = contact.marketing_consent
+    if antes == ConsentStatus.GRANTED:
+        return
+    contact.marketing_consent = ConsentStatus.GRANTED
+    try:
+        from app.core.audit import record_event  # noqa: PLC0415
+
+        record_event(
+            session, action="contact.marketing_consent", target_type="contact",
+            target_id=contact.id,
+            metadata={"antes": getattr(antes, "value", antes), "despues": "granted",
+                      "via": "form", "form_id": form.id, "form_slug": form.slug},
+        )
+    except Exception:  # noqa: BLE001 — audit nunca bloquea la captura
+        logger.warning("web_forms.audit marketing consent failed", exc_info=True)
 
 
 def _append_contact_note(
@@ -531,6 +614,7 @@ def _record_spam(
         contact_id=None, is_spam=True, spam_reason=reason, score=score,
         contact_action="spam",
     )
+    purgar_bloqueados(session, form_id=form.id)
     session.commit()
     return SubmitOutcome(
         submission_id=submission.id, is_spam=True, spam_reason=reason,
@@ -632,3 +716,24 @@ def _notify_owner(
         )
     except Exception:  # noqa: BLE001
         logger.warning("web_forms.notify_owner failed", exc_info=True)
+
+
+def purgar_bloqueados(session: Session, *, form_id: str | None = None,
+                      ahora: datetime | None = None) -> int:
+    """Borra los envíos bloqueados SIN payload (bots que golpean la URL
+    pública sin pasar por ninguna página) de hace más de 90 días. Los que
+    traen datos se quedan, para poder revisarlos. Se llama al registrar un
+    bloqueo (barato: índice por formulario y fecha)."""
+    from datetime import timedelta  # noqa: PLC0415
+
+    from sqlalchemy import delete  # noqa: PLC0415
+
+    limite = (ahora or datetime.now(UTC)) - timedelta(days=PURGA_BLOQUEADOS_DIAS)
+    stmt = delete(FormSubmission).where(
+        FormSubmission.is_spam.is_(True),
+        FormSubmission.raw_payload_json.in_(("{}", "")),
+        FormSubmission.created_at < limite.replace(tzinfo=None),
+    )
+    if form_id is not None:
+        stmt = stmt.where(FormSubmission.form_id == form_id)
+    return session.execute(stmt).rowcount or 0
