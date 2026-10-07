@@ -231,7 +231,11 @@ del pedido de BoHub.
     en BoHub.**
     - Pide a cada tienda, en una consulta, sus pedidos pagados (`processing`,
       `completed` y `refunded`: los estados con los que BoHub crea un pedido)
-      creados en los últimos N días (90 por defecto). Avisa de los que BoHub
+      creados en los últimos N días. N es el **mismo** ajuste que el repaso
+      automático (Configuración ERP → «Pedidos web pagados que no llegan»,
+      `woo_missing_days`): la comprobación no tiene días propios (con dos
+      ajustes se desincronizaban y avisaba de pedidos anteriores al arranque de
+      la tienda). Avisa de los que BoHub
       no tiene: ni por id de la tienda, ni por número de pedido.
     - Cada aviso lleva número, cliente, importe, fecha de pago y enlace al
       pedido en el admin de la tienda (se abre en otra pestaña). El botón
@@ -351,7 +355,9 @@ docker compose --env-file .env.production -f docker-compose.prod.yml -f docker-c
 docker compose --env-file .env.production -f docker-compose.prod.yml -f docker-compose.plesk.yml up -d --force-recreate api frontend worker-sync
 ```
 
-1. La migración `20261003_0124` se aplica sola al arrancar `api`.
+1. La migración `20261003_0124` se aplica sola al arrancar `api`. La
+   `20261007_0125` amplía `cuadre_runs.fuente` a 32 (`woocommerce` no cabía en
+   10) y `cuadre_findings.check_id` a 64.
 2. `worker-sync` tiene que escuchar `cuadre:run`.
 3. Tras desplegar, pulsa «Comprobar ahora» y revisa con Bart el primer lote.
 4. Después, enciende el job nocturno en Configuración ERP → «Cuadre».

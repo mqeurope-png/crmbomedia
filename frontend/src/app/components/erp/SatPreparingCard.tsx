@@ -16,6 +16,7 @@ import {
 } from "../../lib/erpApi";
 import { satShortDate } from "./SatQueueTable";
 import { SatObservaciones, SatTechData, type SatTechEdit } from "./SatTechData";
+import { FotosEmbalaje } from "./FotosEmbalaje";
 
 /** Estado del chip de albarán de un pedido de la cola (Lote 2 A3), derivado
  *  del contrato del backend (`albaran_source`, prioridad factusol › file › woo):
@@ -219,12 +220,15 @@ export function SatPreparingCard({
   order,
   onChanged,
   canEdit = false,
+  canShip = false,
   onPrepare,
 }: {
   order: SatQueueItem;
   onChanged: () => void;
   /** Lote 3: habilita la edición inline de los datos técnicos (admin/pedidos). */
   canEdit?: boolean;
+  /** Permiso de envíos (`Cap.SAT_SHIPPING`): «📷 Añadir foto» del embalaje. */
+  canShip?: boolean;
   /** Abre el modal de preparar / embalar (`start` = empezar la preparación). */
   onPrepare?: (order: SatQueueItem, start: boolean) => void;
 }) {
@@ -270,6 +274,10 @@ export function SatPreparingCard({
             <li key={i}>{l.quantity}× {l.description}</li>
           ))}
         </ul>
+        {/* Foto del embalaje: se puede subir en cualquier momento antes de
+            «recogido» (aquí, por embalar / en preparación). */}
+        <FotosEmbalaje orderId={order.id} fotos={order.fotos ?? []} canUpload={canShip}
+                       onChanged={onChanged} compact />
         <div className="sat-card-actions">
           {puede && (prep === "in_queue" || prep === "preparing") ? (
             <div className="sat-card-actions-primary">

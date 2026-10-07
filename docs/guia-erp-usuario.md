@@ -817,6 +817,19 @@ En cada tarjeta:
   de Genei»** (sin ir a la ficha) y el estado de la descarga automática; al
   traerla, la tarjeta pasa a «Imprimir etiqueta».
 - **Nº de seguimiento**: campo para guardar el tracking del transportista.
+- **Fotos del embalaje**: **«📷 Añadir foto»** en cualquier momento antes de que el
+  pedido se recoja (por embalar, en preparación, embalado y pendiente de
+  recogida). Las fotos salen como **miniaturas**: al pulsar una se abre entera.
+  Si hay varias, se ven todas. Vale la foto tal cual sale del móvil (también
+  las de iPhone, HEIC): si pesa mucho, el navegador la reduce antes de subirla.
+  Si algo falla, lo dice (nunca «adjuntada» sin estarlo). Una vez recogido, ya
+  no se suben más, pero siguen viéndose en la tarjeta y en la ficha del pedido
+  (panel «Envío y seguimiento»).
+
+> **Las fotos ya no se pierden.** Hasta el 07/10/2026 se guardaban en un sitio que
+> se borraba en cada actualización de BoHub. Ahora se guardan junto al albarán y
+> la etiqueta. Las que se perdieron salen en la ficha con un aviso para volver a
+> subirlas.
 
 **Flujo del taller** (todo en la ventana sobre la cola):
 
@@ -1440,7 +1453,7 @@ arreglarlo.
 | Envíos (alta) | Envío de Genei tramitado (con tracking, a veces con el aviso al cliente ya mandado) y el pedido sigue «sin enviar» en BoHub: hay un paquete que la app no está siguiendo. |
 | Documentos y hoja | Pedido que falta en la hoja de Drive (o fila de un pedido que ya no existe); factura de FACTUSOL sin vincular al pedido o vinculada a un número que no existe; factura sin enviar a los 7 días; pedido sin aprobar a los 7 días; proforma aceptada sin convertir a los 90 días (apagada por defecto: es el embudo comercial). |
 | Integraciones (media) | Sincronización colgada: cuenta de integración con una sincronización en curso desde hace más de 3 horas, o sin ninguna sincronización correcta en las últimas 24 h (AgileCRM, Brevo). |
-| Integraciones (alta) | Pedido pagado en WooCommerce que no está en BoHub: de cada tienda, los pagados de los últimos 90 días que no llegaron, con número (enlace al pedido en la tienda), cliente, importe y fecha de pago. El botón lleva a Seguimiento, a «Poner al día estados Woo…», que los importa. Avisa aunque la importación automática haya fallado. |
+| Integraciones (alta) | Pedido pagado en WooCommerce que no está en BoHub: de cada tienda, los pagados de los últimos N días (los mismos que el repaso automático, en Configuración ERP) que no llegaron, con número (enlace al pedido en la tienda), cliente, importe y fecha de pago. El botón lleva a Seguimiento, a «Poner al día estados Woo…», que los importa. Avisa aunque la importación automática haya fallado. |
 
 El panel vigila lo que BoHub gestiona. Las facturas que solo existen en
 FACTUSOL, sin pedido en BoHub, no salen: por ejemplo, otras series o facturas
@@ -1491,8 +1504,8 @@ lo que va a pasar. Secciones destacadas:
 - **«Pedidos web pagados que no llegan»** — el repaso que pregunta a cada
   tienda por sus pedidos pagados y crea en BoHub los que falten (cuando la
   tienda no avisó). Interruptor (**encendido** por defecto), **cada cuántos
-  minutos** (60; mínimo 15) y **días hacia atrás** (90; lo usa también «Poner
-  al día estados Woo…»).
+  minutos** (60; mínimo 15) y **días hacia atrás** (90). Es la única ventana:
+  la usan también «Poner al día estados Woo…» y el aviso del Cuadre.
 - **«Series FACTUSOL»** — la **serie** es la empresa que emite la factura. Fijas
   la **serie por defecto** y la que usa cada origen de pedido. Las series
   disponibles son **1 · Bomedia**, **2 · MQ Europe**, **4 · Lambert** y **5 ·

@@ -530,28 +530,37 @@ def test_packing_info_stored_in_packing_json(client, session_factory):
 def test_attach_document_saves_to_local_storage_and_records_ref(
     client, session_factory, tmp_path, monkeypatch
 ):
-    from app.core.config import get_settings
-    monkeypatch.setattr(get_settings(), "erp_uploads_dir", str(tmp_path))
-    monkeypatch.setattr(get_settings(), "hidrive_webdav_url", "")
+    """La foto va a `shipment_files` (kind foto) y al almacén de expedición
+    (el bind mount), no dentro del contenedor ni a `packing_json.documents`."""
+    import io
+
+    from PIL import Image
+
+    import app.erp.api.shipping as shipping_api
+    from app.erp.models import ShipmentFile
+    from app.storage.local import LocalShippingStorage
+
+    storage = LocalShippingStorage(base_dir=str(tmp_path))
+    monkeypatch.setattr(shipping_api, "get_shipping_storage", lambda: storage)
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 6), (10, 20, 30)).save(buf, format="JPEG")
     with session_factory() as s:
         oid = _mk_order(s)
     r = client.post(
         f"/api/erp/orders/{oid}/attach-document",
-        files={"file": ("foto.jpg", b"\xff\xd8\xff binary", "image/jpeg")},
+        files={"file": ("foto.jpg", buf.getvalue(), "image/jpeg")},
         headers=auth_headers(client, "sat"),
     )
     assert r.status_code == 201, r.text
-    doc = r.json()["document"]
-    assert doc["backend"] == "local"
-    assert doc["filename"] == "foto.jpg"
-    assert doc["size_bytes"] > 0
-    # El archivo existe en disco y la ref queda en packing_json.
-    saved = list(tmp_path.glob(f"{oid}/*_foto.jpg"))
+    f = r.json()["file"]
+    assert (f["kind"], f["source"], f["filename"]) == ("foto", "manual_upload", "foto.jpg")
+    saved = list(tmp_path.glob(f"{oid}/foto/*_foto.jpg"))
     assert len(saved) == 1
     with session_factory() as s:
+        row = s.scalar(select(ShipmentFile).where(ShipmentFile.order_id == oid))
+        assert row.kind == "foto" and row.mime_type == "image/jpeg"
         o = s.scalar(select(Order).where(Order.id == oid))
-        docs = json.loads(o.packing_json)["documents"]
-        assert len(docs) == 1 and docs[0]["storage_key"].endswith("foto.jpg")
+        assert "documents" not in json.loads(o.packing_json or "{}")
 
 
 def test_attach_document_rejects_empty_file(client, session_factory, tmp_path, monkeypatch):

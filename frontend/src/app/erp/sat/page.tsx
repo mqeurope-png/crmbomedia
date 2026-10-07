@@ -72,7 +72,7 @@ function SatCard({
   }
   return (
     <SatPreparingCard order={order} onChanged={onChanged} canEdit={canEdit}
-                      onPrepare={onPrepare} />
+                      canShip={canShip} onPrepare={onPrepare} />
   );
 }
 

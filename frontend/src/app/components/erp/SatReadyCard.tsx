@@ -21,6 +21,7 @@ import {
 } from "../../lib/geneiApi";
 import { CourierSelect, CourierTrackingEditor, withSuggestion } from "./CourierFields";
 import { FileUploadButton } from "./FileUploadButton";
+import { FotosEmbalaje } from "./FotosEmbalaje";
 import { GeneiShipmentSection } from "./GeneiShipmentSection";
 import { SatAlbaranChip, useSatAlbaranAction } from "./SatPreparingCard";
 import { satShortDate } from "./SatQueueTable";
@@ -412,6 +413,9 @@ export function SatReadyCard({
       ) : null}
       <SatObservaciones notes={order.notes} />
       <SatTechData serial={serial} license={license} edit={edit} />
+      {/* Foto del embalaje: embalado / pendiente de recogida (aún no recogido). */}
+      <FotosEmbalaje orderId={order.id} fotos={order.fotos ?? []} canUpload={canShip}
+                     onChanged={onChanged} compact />
 
       {actions.error ? <p className="form-error">{actions.error}</p> : null}
 
@@ -505,6 +509,8 @@ export function SatShippedCard({
         </dl>
       )}
       {onChanged ? <SatExternalShipmentEdit order={order} onChanged={onChanged} /> : null}
+      {/* Ya recogido: no se suben más, pero lo subido se sigue viendo. */}
+      <FotosEmbalaje orderId={order.id} fotos={order.fotos ?? []} canUpload={false} compact />
       <div className="sat-card-actions-secondary">
         <Link href={`/erp/orders/${order.id}`} className="button secondary lg">Ficha</Link>
       </div>

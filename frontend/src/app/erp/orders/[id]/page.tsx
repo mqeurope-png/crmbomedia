@@ -27,6 +27,7 @@ import { RegistrarCobroModal } from "../../../components/erp/RegistrarCobroModal
 import { MarkPaidDialog } from "../../../components/erp/MarkPaidDialog";
 import { OrderStatusMachine } from "../../../components/erp/OrderStatusMachine";
 import { OrderShipmentSections } from "../../../components/erp/ExternalShipmentSection";
+import { FotosEmbalaje } from "../../../components/erp/FotosEmbalaje";
 import { ShippingFilesSection } from "../../../components/erp/ShippingFilesSection";
 import { ActionsMenu } from "../../../components/erp/flow/ActionsMenu";
 import { NextActionBar } from "../../../components/erp/flow/NextActionBar";
@@ -335,6 +336,8 @@ function ErpOrderDetailScreen() {
   // E — el rol de taller (ERP·SAT) tiene su cajón de envío/taller con botones
   // más grandes (el albarán, la etiqueta y el seguimiento viven ahí juntos).
   const canSat = can(user, Cap.SAT_VIEW);
+  // Fotos del embalaje: las sube quien gestiona envíos (como en la Cola SAT).
+  const canShipFotos = can(user, Cap.SAT_SHIPPING);
   // Señal para abrir el modal de emisión desde «Siguiente paso» / «Solicitar
   // factura», y fase de la emisión (para no ofrecer dos veces «Emitir»).
   const [emitSignal, setEmitSignal] = useState(0);
@@ -1252,6 +1255,16 @@ function ErpOrderDetailScreen() {
             openEtiquetaSignal={etiquetaSignal}
             onUploaded={() => load()}
           />
+          {/* Fotos del embalaje: miniaturas pulsables; se pueden añadir hasta
+              que el pedido se recoge (luego solo se ven). */}
+          <div className="erp-flow-panel" aria-label="Fotos del embalaje (ficha)">
+            <h3>Fotos del embalaje</h3>
+            <FotosEmbalaje
+              orderId={order.id}
+              canUpload={canShipFotos
+                && ["not_shipped", "label_created"].includes(String(order.transport_status))}
+            />
+          </div>
           <SeguimientoFieldsCard
             order={order}
             canEdit={canEmit}

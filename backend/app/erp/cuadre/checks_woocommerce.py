@@ -36,19 +36,23 @@ def _fecha(iso: str | None) -> str:
 @comprobacion(
     id=PAGADO_SIN_BOHUB, orden=14,
     titulo="Pedido pagado en WooCommerce que no está en BoHub",
-    descripcion="Pedido pagado en la tienda (procesando, completado o reembolsado) en los "
-                "últimos N días que no ha llegado a BoHub: la tienda no disparó el webhook.",
+    descripcion="Pedido pagado en la tienda (procesando, completado o reembolsado) que no ha "
+                "llegado a BoHub: la tienda no disparó el webhook. Mira los mismos días que "
+                "el repaso «Pedidos web pagados que no llegan» (Configuración ERP).",
     severidad="alta", fuente=FUENTE_WOOCOMMERCE, grupo="integraciones",
-    dias_defecto=90, dias_texto="Mirar los pedidos pagados de los últimos N días",
 )
 def pedido_woo_pagado_sin_bohub(ctx: Contexto) -> Iterator[Hallazgo]:
     from app.integrations.woocommerce.client import WooError, WooHTTPClient  # noqa: PLC0415
     from app.integrations.woocommerce.missing import (  # noqa: PLC0415
+        missing_config,
         pagados_que_faltan,
         woo_stores,
     )
 
-    dias = ctx.dias(PAGADO_SIN_BOHUB, 90)
+    # UNA sola ventana: la del repaso automático (Configuración ERP → «Pedidos
+    # web pagados que no llegan»). Con dos ajustes se desincronizaban (14 en el
+    # repaso, 90 aquí: avisaba de pedidos anteriores al arranque de la tienda).
+    dias = missing_config(ctx.session)["days"]
     no_mirados: set[str] = set()
     ctx.no_mirados[PAGADO_SIN_BOHUB] = no_mirados
     tiendas = woo_stores(ctx.session)

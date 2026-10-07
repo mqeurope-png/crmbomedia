@@ -62,7 +62,6 @@ from app.erp.models import (
     TransportStatus,
 )
 from app.erp.state_machine import TransitionError, apply_transition
-from app.erp.storage import get_document_storage
 from app.models.crm import AuditLog, User
 from app.models.integration_settings import IntegrationAccount
 
@@ -74,7 +73,6 @@ ALBARAN_FILE = "file"           # fichero vigente (subido a mano o ya bajado de 
 ALBARAN_WOO = "woo"             # pedido web: descargar de WooCommerce y abrir
 
 #: Máximo por documento (foto de móvil ~ pocos MB; PDF de etiqueta pequeño).
-MAX_DOC_BYTES = 15 * 1024 * 1024
 
 #: Orden de prioridad de la cola SAT (bloqueados arriba para resolverlos ya,
 #: luego los que están preparándose, luego los recién aprobados).
@@ -332,17 +330,37 @@ def _apply_filters(
 def _files_by_order(session: Session, order_ids: list[str]) -> dict[str, dict[str, str]]:
     """`{order_id: {kind: source}}` de los albaranes/etiquetas vigentes (Fase
     D) — una sola query. Con varios vigentes del mismo kind (no debería:
-    subir/descargar reemplaza el anterior) se queda el más reciente."""
+    subir/descargar reemplaza el anterior) se queda el más reciente. Las fotos
+    van aparte (`_fotos_by_order`)."""
+    from app.erp.models.shipping import KIND_FOTO  # noqa: PLC0415
+
     files: dict[str, dict[str, str]] = {}
     if order_ids:
         for oid, kind, source in session.execute(
             select(ShipmentFile.order_id, ShipmentFile.kind, ShipmentFile.source).where(
                 ShipmentFile.order_id.in_(order_ids),
                 ShipmentFile.replaced_at.is_(None),
+                ShipmentFile.kind != KIND_FOTO,
             ).order_by(ShipmentFile.uploaded_at.desc())
         ):
             files.setdefault(oid, {}).setdefault(kind, source)
     return files
+
+
+def _fotos_by_order(session: Session, order_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+    """`{order_id: [foto…]}` de las fotos del embalaje (una sola query), de la
+    más antigua a la más reciente."""
+    from app.erp.api.shipping import _serialise_file  # noqa: PLC0415
+    from app.erp.models.shipping import KIND_FOTO  # noqa: PLC0415
+
+    out: dict[str, list[dict[str, Any]]] = {}
+    if order_ids:
+        for f in session.scalars(select(ShipmentFile).where(
+            ShipmentFile.order_id.in_(order_ids), ShipmentFile.kind == KIND_FOTO,
+            ShipmentFile.replaced_at.is_(None),
+        ).order_by(ShipmentFile.uploaded_at)):
+            out.setdefault(f.order_id, []).append(_serialise_file(f))
+    return out
 
 
 def _stores_by_id(session: Session, orders: list[Order]) -> dict[str, IntegrationAccount]:
@@ -446,6 +464,7 @@ def sat_items(session: Session, rows: list[Order]) -> list[dict[str, Any]]:
     """Los pedidos como items de la Cola SAT (misma forma en todas las
     pestañas y en el refresco de una sola card)."""
     files_by_order = _files_by_order(session, [o.id for o in rows])
+    fotos_by_order = _fotos_by_order(session, [o.id for o in rows])
     stores = _stores_by_id(session, rows)
 
     # D-2: nombre del cliente en las cards del taller (el número solo no basta).
@@ -487,6 +506,8 @@ def sat_items(session: Session, rows: list[Order]) -> list[dict[str, Any]]:
             "woo_albaran_available": woo_ok,
             "woo_albaran_unavailable_reason": woo_reason,
             "has_etiqueta": KIND_ETIQUETA in files,
+            # Fotos (o documentos) del embalaje: todas, para verlas en la card.
+            "fotos": fotos_by_order.get(o.id, []),
             # Albarán que BoHub creó en FACTUSOL (Fase 2). Es la fuente
             # PREFERENTE del PDF en el taller: el mismo documento que el botón
             # de la ficha (#396) y el que adjunta el email al SAT (#407).
@@ -1252,29 +1273,15 @@ async def attach_document(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_sat_shipping),
 ) -> dict[str, Any]:
-    """Sube una foto/PDF a HiDrive (o disco local si no hay creds) vía la
-    interfaz DocumentStorage y guarda su referencia en packing_json."""
-    _ = current_user
+    """Foto (o documento) del embalaje. Se guarda como `shipment_files`
+    (`kind = foto`) en el almacén de expedición —el bind mount que ya guarda
+    albaranes y etiquetas—, no dentro del contenedor: antes cada despliegue la
+    borraba. HEIC/WebP se convierten a JPEG. Errores: 400 vacío, 413 más de
+    15 MB, 415 formato no reconocido."""
+    from app.erp.api.shipping import _serialise_file, store_uploaded_photo  # noqa: PLC0415
+
     order = _get_order(session, order_id, current_user)
-    data = await file.read()
-    if not data:
-        raise HTTPException(400, "Archivo vacío.")
-    if len(data) > MAX_DOC_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail="El documento supera el máximo de 15 MB.",
-        )
-    stored = get_document_storage().save(
-        order_id=order.id, filename=file.filename or "documento",
-        content_type=file.content_type, data=data,
-    )
-    packing = _packing(order)
-    docs = packing.get("documents")
-    if not isinstance(docs, list):
-        docs = []
-    doc = {**stored.as_dict(), "uploaded_by_user_id": current_user.id}
-    docs.append(doc)
-    packing["documents"] = docs
-    order.packing_json = json.dumps(packing, default=str)
+    row = await store_uploaded_photo(session, order, file, current_user)
     session.commit()
-    return {"order_id": order.id, "document": doc}
+    serial = _serialise_file(row)
+    return {"order_id": order.id, "file": serial, "document": serial}

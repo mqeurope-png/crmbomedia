@@ -47,6 +47,7 @@ from app.erp.models.settings import ERP_SETTINGS_SINGLETON_ID, ErpSettings, Invo
 from app.erp.models.shipping import (
     KIND_ALBARAN,
     KIND_ETIQUETA,
+    KIND_FOTO,
     SHIPMENT_FILE_KINDS,
     SOURCE_CRM_GENERATED_PDF,
     SOURCE_FACTUSOL_PDF,
@@ -67,6 +68,7 @@ __all__ = [
     "ErpDriveSyncRow",
     "KIND_ALBARAN",
     "KIND_ETIQUETA",
+    "KIND_FOTO",
     "MAX_RETRIES",
     "RETRY_BACKOFF_SECONDS",
     "SHIPMENT_FILE_KINDS",
