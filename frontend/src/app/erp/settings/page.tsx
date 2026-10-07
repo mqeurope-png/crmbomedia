@@ -1547,8 +1547,9 @@ export default function ErpSettingsPage() {
               }}
             />
             <span className="muted small">
-              Pedidos creados en los últimos N días (90 por defecto). Lo usa también
-              «Poner al día estados Woo…».
+              Pedidos creados en los últimos N días (90 por defecto). Es la única
+              ventana: la usan también «Poner al día estados Woo…» y el Cuadre
+              («Pedido pagado en WooCommerce que no está en BoHub»).
             </span>
           </label>
         </SettingsSection>

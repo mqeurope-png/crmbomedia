@@ -47,6 +47,11 @@ jest.mock("../../../components/erp/OrderStatusMachine", () => ({
 jest.mock("../../../components/erp/ShippingFilesSection", () => ({
   ShippingFilesSection: () => <div>documentos de envío</div>,
 }));
+jest.mock("../../../components/erp/FotosEmbalaje", () => ({
+  FotosEmbalaje: ({ canUpload }: { canUpload: boolean }) => (
+    <div>fotos del embalaje · subir {canUpload ? "sí" : "no"}</div>
+  ),
+}));
 // #6 se prueba aparte (ficha-cliente-factusol): aquí solo importa que no
 // arrastre la lectura de la empresa ni el panel real de la ficha de empresa.
 jest.mock("../../../components/erp/OrderFactusolClientPanel", () => ({
@@ -246,6 +251,20 @@ describe("ERP · Ficha (Lote 2 · PR-2) — paneles plegables con resumen y memo
     expect(panel("Líneas")).not.toHaveAttribute("open");
     expect(panel("Historial")).not.toHaveAttribute("open");
     expect(panel("Historial")).toHaveTextContent("Sin eventos");
+  });
+
+  it("fotos del embalaje en «Envío y seguimiento»: se suben hasta que se recoge; después solo se ven", async () => {
+    withOrder();
+    const { unmount } = render(<ErpOrderDetailPage />);
+    await screen.findByRole("heading", { name: "Líneas" });
+    expect(within(panel("Envío y seguimiento")).getByText("fotos del embalaje · subir sí"))
+      .toBeInTheDocument();
+    unmount();
+    withOrder({ transport_status: "in_transit" });
+    render(<ErpOrderDetailPage />);
+    await screen.findByRole("heading", { name: "Líneas" });
+    expect(within(panel("Envío y seguimiento")).getByText("fotos del embalaje · subir no"))
+      .toBeInTheDocument();
   });
 
   it("desde 1280 px todos los paneles se abren por defecto", async () => {

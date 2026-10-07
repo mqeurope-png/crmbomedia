@@ -132,7 +132,7 @@ def comprobacion(
         raise ValueError(f"severidad desconocida: {severidad!r}")
     if fuente not in FUENTES:
         raise ValueError(f"fuente desconocida: {fuente!r}")
-    if len(id) > 40:
+    if len(id) > 64:            # `cuadre_findings.check_id` es varchar(64)
         raise ValueError(f"id demasiado largo: {id!r}")
 
     def deco(func: Callable[[Contexto], Iterable[Hallazgo]]):

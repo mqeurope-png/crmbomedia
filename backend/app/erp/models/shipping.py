@@ -25,7 +25,10 @@ from app.models.crm import Base, TimestampMixin
 #: Tipos de documento de expedición.
 KIND_ALBARAN = "albaran"
 KIND_ETIQUETA = "etiqueta"
-SHIPMENT_FILE_KINDS = frozenset({KIND_ALBARAN, KIND_ETIQUETA})
+#: Foto (o documento) del embalaje. A diferencia del albarán y la etiqueta, un
+#: pedido puede tener VARIAS vigentes: una nueva no reemplaza las anteriores.
+KIND_FOTO = "foto"
+SHIPMENT_FILE_KINDS = frozenset({KIND_ALBARAN, KIND_ETIQUETA, KIND_FOTO})
 
 #: Origen del fichero.
 SOURCE_WOO_PDF_PLUGIN = "woo_pdf_plugin"   # descarga automática del plugin PDF de Woo
@@ -54,9 +57,10 @@ class ShipmentPackage(TimestampMixin, Base):
 
 
 class ShipmentFile(Base):
-    """Albarán o etiqueta guardado. Historial completo: un pedido puede tener
-    varios ficheros del mismo `kind`; solo el último con `replaced_at IS NULL`
-    es el vigente."""
+    """Albarán, etiqueta o foto del embalaje guardado. Historial completo: un
+    pedido puede tener varios ficheros del mismo `kind`; del albarán y la
+    etiqueta solo el último con `replaced_at IS NULL` es el vigente; las fotos
+    conviven todas."""
 
     __tablename__ = "shipment_files"
 
@@ -66,7 +70,7 @@ class ShipmentFile(Base):
     order_id: Mapped[str] = mapped_column(
         ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    # kind: albaran | etiqueta
+    # kind: albaran | etiqueta | foto
     kind: Mapped[str] = mapped_column(String(24), nullable=False)
     # source: woo_pdf_plugin | manual_upload | factusol_pdf
     source: Mapped[str] = mapped_column(String(24), nullable=False)

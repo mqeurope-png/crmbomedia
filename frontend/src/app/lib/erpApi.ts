@@ -1600,6 +1600,8 @@ export type SatQueueItem = {
   factusol_albaran_number?: string | null;
   /** Fase D: presencia de etiqueta vigente (para el chip). */
   has_etiqueta: boolean;
+  /** Fotos (o documentos) del embalaje, todas, de la más antigua a la última. */
+  fotos?: ShipmentFile[];
   /** Lote B6: tienda (slug) y fecha del pedido, para la vista lista. */
   store_slug?: string | null;
   placed_at?: string | null;
@@ -1926,10 +1928,13 @@ export async function savePackingInfo(
   });
 }
 
+/** Foto (o documento) del embalaje: queda como `shipment_files` (`kind =
+ *  foto`) en el almacén de expedición. HEIC/WebP se convierten a JPEG en el
+ *  servidor. Errores claros: 400 vacío, 413 más de 15 MB, 415 formato. */
 export async function attachDocument(
   orderId: string,
   file: File,
-): Promise<{ document: Record<string, unknown> }> {
+): Promise<{ file: ShipmentFile; document: ShipmentFile }> {
   const form = new FormData();
   form.append("file", file);
   // apiUpload deja que el navegador ponga el boundary multipart (apiFetch
@@ -4347,7 +4352,8 @@ export type PackageInput = {
   depth_cm: number | null;
 };
 
-export type ShipmentFileKind = "albaran" | "etiqueta";
+/** `foto` = foto (o documento) del embalaje: un pedido puede tener varias. */
+export type ShipmentFileKind = "albaran" | "etiqueta" | "foto";
 export type ShipmentFileSource = "woo_pdf_plugin" | "manual_upload" | "factusol_pdf";
 
 export type ShipmentFile = {
@@ -4429,6 +4435,30 @@ export async function fetchAlbaranFromWoo(
 
 /** Descarga el PDF con auth y lo abre en una pestaña nueva (imprimible desde
  *  el diálogo del navegador — no hay impresora térmica en el taller). */
+/** Una foto del embalaje que se perdió en un despliegue (antes se guardaban
+ *  dentro del contenedor): solo nombre y fecha, para volver a subirla. */
+export type FotoPerdida = {
+  filename?: string | null;
+  uploaded_at?: string | null;
+  motivo?: string | null;
+};
+
+/** Fotos (y documentos) del embalaje del pedido, y las que se perdieron. */
+export async function listFotos(
+  orderId: string,
+): Promise<{ items: ShipmentFile[]; fotos_perdidas: FotoPerdida[] }> {
+  const r = await apiFetch<{ items: ShipmentFile[]; fotos_perdidas?: FotoPerdida[] }>(
+    `/api/erp/orders/${orderId}/shipping-files?kind=foto`,
+  );
+  return { items: r.items, fotos_perdidas: r.fotos_perdidas ?? [] };
+}
+
+/** Miniatura JPEG de una foto (pequeña: para las tarjetas y la ficha), a
+ *  partir de su `download_url`. */
+export async function fetchShippingThumb(downloadUrl: string): Promise<Blob> {
+  return apiDownloadBlob(`${downloadUrl}?thumb=1`);
+}
+
 export async function openShippingFile(file: ShipmentFile): Promise<void> {
   const blob = await apiDownloadBlob(file.download_url);
   const url = URL.createObjectURL(blob);

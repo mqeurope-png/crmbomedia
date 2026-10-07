@@ -42,6 +42,7 @@ from app.erp.api.deps import require_erp_view, require_sat_shipping
 from app.erp.models import (
     KIND_ALBARAN,
     KIND_ETIQUETA,
+    KIND_FOTO,
     SHIPMENT_FILE_KINDS,
     SOURCE_CRM_GENERATED_PDF,
     SOURCE_MANUAL_UPLOAD,
@@ -245,14 +246,19 @@ def _mark_replaced(session: Session, order_id: str, kind: str) -> None:
 def _store_new_file(
     session: Session, order: Order, *, kind: str, source: str,
     filename: str, mime_type: str, data: bytes, actor_id: str | None,
+    replace_previous: bool = True,
 ) -> ShipmentFile:
+    """Guarda el fichero en el almacén de expedición (bind mount) y su fila.
+    El albarán y la etiqueta reemplazan al anterior (se conserva); las fotos
+    (`replace_previous=False`) conviven."""
     try:
         path = get_shipping_storage().save(order.id, kind, filename, data)
     except (StorageError, NotImplementedError) as exc:
         raise HTTPException(status.HTTP_507_INSUFFICIENT_STORAGE, {
             "code": "storage_error", "detail": str(exc)[:300],
         }) from exc
-    _mark_replaced(session, order.id, kind)
+    if replace_previous:
+        _mark_replaced(session, order.id, kind)
     row = ShipmentFile(
         order_id=order.id, kind=kind, source=source, filename=filename,
         mime_type=mime_type, size_bytes=len(data), storage_path=path,
@@ -269,24 +275,44 @@ def list_shipping_files(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_view),
 ) -> dict[str, Any]:
-    """Ficheros vigentes (no reemplazados), opcionalmente filtrados por kind."""
+    """Ficheros vigentes (no reemplazados), opcionalmente filtrados por kind.
+    Con `kind=foto`, además, las fotos que se perdieron en un despliegue
+    (`fotos_perdidas`: solo nombre y fecha, para avisar de volver a subirlas)."""
     _ = current_user
-    _get_order(session, order_id, current_user)
+    order = _get_order(session, order_id, current_user)
     if kind is not None and kind not in SHIPMENT_FILE_KINDS:
         raise HTTPException(400, f"kind inválido: {kind!r}")
-    return {"items": [_serialise_file(f)
-                      for f in _current_files(session, order_id, kind)]}
+    out: dict[str, Any] = {"items": [_serialise_file(f)
+                                     for f in _current_files(session, order_id, kind)]}
+    if kind == KIND_FOTO:
+        out["fotos_perdidas"] = fotos_perdidas(order)
+    return out
+
+
+def fotos_perdidas(order: Order) -> list[dict[str, Any]]:
+    """Constancia de las fotos antiguas que se perdieron (ver `erp/fotos.py`)."""
+    import json  # noqa: PLC0415
+
+    try:
+        packing = json.loads(order.packing_json or "{}")
+    except (TypeError, ValueError):
+        return []
+    perdidas = packing.get("fotos_perdidas") if isinstance(packing, dict) else None
+    return [p for p in perdidas if isinstance(p, dict)] if isinstance(perdidas, list) else []
 
 
 @router.get("/{order_id}/shipping-files/{file_id}/download")
 def download_shipping_file(
     order_id: str,
     file_id: str,
+    thumb: bool = Query(default=False),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_view),
 ) -> Response:
     """Devuelve el fichero para abrir INLINE en el navegador (imprimir desde
-    el diálogo del navegador — no hay impresora térmica en el taller)."""
+    el diálogo del navegador — no hay impresora térmica en el taller). Con
+    `thumb=1` y una foto, una miniatura JPEG pequeña (tarjetas de la Cola SAT y
+    ficha: no se descargan fotos de varios MB solo para pintarlas)."""
     _ = current_user
     f = session.get(ShipmentFile, file_id)
     if f is None or f.order_id != order_id:
@@ -297,10 +323,28 @@ def download_shipping_file(
         raise HTTPException(404, {
             "code": "file_unavailable", "detail": str(exc)[:300],
         }) from exc
+    if thumb:
+        from app.erp.fotos import miniatura  # noqa: PLC0415
+
+        small = miniatura(data, f.mime_type)
+        if small is not None:
+            return Response(content=small, media_type="image/jpeg",
+                            headers={"Cache-Control": "private, max-age=86400"})
     return Response(
         content=data, media_type=f.mime_type or "application/octet-stream",
-        headers={"Content-Disposition": f'inline; filename="{f.filename}"'},
+        headers={"Content-Disposition": _inline_disposition(f.filename)},
     )
+
+
+def _inline_disposition(filename: str | None) -> str:
+    """`inline` con el nombre en ASCII y, aparte, el real en UTF-8 (RFC 5987):
+    un «—», un emoji o el espacio fino de las capturas de macOS no pueden romper
+    la descarga (las cabeceras van en latin-1)."""
+    from urllib.parse import quote  # noqa: PLC0415
+
+    nombre = filename or "archivo"
+    ascii_ = "".join(c if 32 <= ord(c) < 127 and c not in '"\\' else "_" for c in nombre)
+    return f"inline; filename=\"{ascii_}\"; filename*=UTF-8''{quote(nombre, safe='')}"
 
 
 def _transition_on_etiqueta(
@@ -347,7 +391,14 @@ async def upload_shipping_file(
     fichero se guarda igual). El albarán nunca mueve el transporte."""
     order = _get_order(session, order_id, current_user)
     if kind not in SHIPMENT_FILE_KINDS:
-        raise HTTPException(400, f"kind inválido: {kind!r} (usa albaran|etiqueta)")
+        raise HTTPException(400, f"kind inválido: {kind!r} (usa albaran|etiqueta|foto)")
+    if kind == KIND_FOTO:
+        row = await store_uploaded_photo(session, order, file, current_user)
+        session.commit()
+        return {"order_id": order.id, "file": _serialise_file(row),
+                "transition_applied": False,
+                "transport_status": _status_value(order.transport_status),
+                "transition_reason": None}
     mime = (file.content_type or "").lower()
     if mime not in ALLOWED_SHIPPING_MIME:
         raise HTTPException(
@@ -379,6 +430,41 @@ async def upload_shipping_file(
         "transport_status": _status_value(order.transport_status),
         "transition_reason": reason,
     }
+
+
+async def store_uploaded_photo(
+    session: Session, order: Order, file: UploadFile, user: User,
+) -> ShipmentFile:
+    """Foto (o documento) del embalaje subida a mano: valida el tamaño, la
+    normaliza (HEIC/WebP → JPEG) y la guarda como `shipment_files` (`kind =
+    foto`, no reemplaza las anteriores). Errores claros: 400 vacío, 413 más de
+    15 MB, 415 formato no reconocido. Sin commit."""
+    from starlette.concurrency import run_in_threadpool  # noqa: PLC0415
+
+    from app.erp.fotos import (  # noqa: PLC0415
+        MAX_FOTO_BYTES,
+        FotoError,
+        guardar_normalizada,
+        normalizar,
+    )
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "Archivo vacío.")
+    if len(data) > MAX_FOTO_BYTES:
+        raise HTTPException(
+            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            "El archivo supera el máximo de 15 MB.",
+        )
+    try:
+        # Convertir un HEIC de 12 MP lleva un par de segundos: en un hilo, para
+        # no parar el resto de la API mientras tanto.
+        foto = await run_in_threadpool(normalizar, file.filename, file.content_type, data)
+    except FotoError as exc:
+        raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, str(exc)) from exc
+    row = guardar_normalizada(session, order, foto, actor_id=getattr(user, "id", None))
+    session.flush()
+    return row
 
 
 @router.post("/{order_id}/albaran/fetch-from-woo", status_code=201)

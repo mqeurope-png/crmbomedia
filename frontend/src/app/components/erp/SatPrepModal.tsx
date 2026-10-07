@@ -3,13 +3,13 @@
 import { useEffect, useRef, useState } from "react";
 import { extractErrorMessage } from "../../lib/errors";
 import {
-  attachDocument,
   customerLabel,
   fireTransition,
   reportException,
   STATUS_LABELS,
   type SatQueueItem,
 } from "../../lib/erpApi";
+import { FotosEmbalaje } from "./FotosEmbalaje";
 import { PackingForm } from "./EmbalarModal";
 import { ReportExceptionModal } from "./ReportExceptionModal";
 import { SatObservaciones } from "./SatTechData";
@@ -65,22 +65,6 @@ export function SatPrepModal({
   function embalado() {
     onChanged();
     onClose();
-  }
-
-  async function subirDocumento(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await attachDocument(order.id, file);
-      setNotice("Documento adjuntado.");
-    } catch (err) {
-      setError(extractErrorMessage(err, "No se pudo subir el documento."));
-    } finally {
-      setBusy(false);
-      e.target.value = "";
-    }
   }
 
   async function reportar(data: { type: string; subtype?: string; description: string }) {
@@ -140,12 +124,12 @@ export function SatPrepModal({
           <p className="muted">Pedido bloqueado — se resuelve desde la bandeja de excepciones.</p>
         ) : null}
 
+        {/* Foto (o documento) del embalaje: se ve aquí y en la card, y no se
+            pierde al desplegar. Un fallo de subida se enseña siempre. */}
+        <FotosEmbalaje orderId={order.id} fotos={order.fotos ?? []} canUpload
+                       onChanged={onChanged} />
+
         <div className="modal-actions sat-prep-actions">
-          <label className="button secondary sat-upload">
-            📷 Subir foto / documento
-            <input type="file" accept="image/*,application/pdf" onChange={subirDocumento}
-                   aria-label="Subir foto o documento" disabled={busy} hidden />
-          </label>
           {prep !== "blocked" ? (
             <button type="button" className="button secondary" disabled={busy}
                     onClick={() => setShowReport(true)}>

@@ -50,7 +50,7 @@ class CuadreFinding(TimestampMixin, Base):
         String(36), primary_key=True, default=lambda: str(uuid4())
     )
     #: Id de la comprobación (`app.erp.cuadre.registry`).
-    check_id: Mapped[str] = mapped_column(String(40), nullable=False)
+    check_id: Mapped[str] = mapped_column(String(64), nullable=False)
     #: pedido | factura | presupuesto | fila_hoja.
     entidad_tipo: Mapped[str] = mapped_column(String(20), nullable=False)
     #: `Order.id`, `serie-código` de la factura/proforma o id de la fila.
@@ -84,7 +84,7 @@ class CuadreRun(TimestampMixin, Base):
         String(36), primary_key=True, default=lambda: str(uuid4())
     )
     #: mysql | factusol.
-    fuente: Mapped[str] = mapped_column(String(10), nullable=False)
+    fuente: Mapped[str] = mapped_column(String(32), nullable=False)
     #: nocturno | manual.
     origen: Mapped[str] = mapped_column(String(10), nullable=False)
     #: en_cola | corriendo | ok | con_errores | error.
