@@ -123,6 +123,18 @@ def should_push(contact: Contact) -> tuple[bool, str | None]:
         return False, "no_email"
     if not contact.is_active:
         return False, "inactive"
+    # Brevo ya rechazó este contacto con un 4xx: es un error de DATOS y no se
+    # arregla repitiendo. 146.876 trabajos fallaron con el mismo 400 porque
+    # el runner periódico los reencolaba sin parar (la cuarentena en Redis
+    # solo lo frena 6 horas).
+    #
+    # La marca es PEGAJOSA a propósito: no vale mirar `updated_at`, porque el
+    # propio `commit` que apunta el rechazo ya lo mueve, y cualquier roce con
+    # la ficha lo movería también. Se quita a mano, con «Volver a subir todo»
+    # de la pantalla de Brevo, que es el momento en que alguien ha decidido
+    # que el dato ya está corregido.
+    if contact.brevo_rejected_at is not None:
+        return False, "rejected_by_brevo"
     return True, None
 
 
@@ -209,7 +221,15 @@ def install_listeners() -> None:
 def unsynced_contacts_query(session: Session, *, limit: int | None = None):
     """Query para contactos con owner asignado que AÚN no se han
     subido a Brevo. Lo consume el periodic push runner y el endpoint
-    de backfill manual."""
+    de backfill manual.
+
+    Excluye los que Brevo ya rechazó. Sin ese filtro la marca no serviría
+    de nada: el runner los volvería a detectar cada hora, el job saldría
+    por `should_push` ANTES de `record_push_failure` —así que el contador
+    de Redis ya no se renovaría— y pasarían a encolarse cada hora para
+    siempre. Además, con `LIMIT` por chunk y orden por antigüedad, los
+    rechazados se comerían el hueco de los contactos que sí pueden subir.
+    """
     stmt = (
         select(Contact.id)
         .where(
@@ -217,6 +237,7 @@ def unsynced_contacts_query(session: Session, *, limit: int | None = None):
             Contact.brevo_contact_id.is_(None),
             Contact.email.is_not(None),
             Contact.is_active.is_(True),
+            Contact.brevo_rejected_at.is_(None),
         )
         .order_by(Contact.created_at.asc())
     )
