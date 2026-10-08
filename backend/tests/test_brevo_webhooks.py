@@ -423,3 +423,73 @@ def test_delivered_event_does_not_dispatch(session_factory):
             )
             session.commit()
     mock_dispatch.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Un evento repetido no tumba el lote (1.687 fallidos del 23/07 al 07/10)
+# ---------------------------------------------------------------------------
+
+
+def test_un_reenvio_tras_caducar_la_marca_no_revienta(session_factory):
+    """La tabla de marcas caduca a los 30 días; `activity_events` no. Un
+    reenvío de Brevo más antiguo que eso pasaba el filtro y chocaba con la
+    clave única, y ese IntegrityError se llevaba el lote entero."""
+    from app.integrations.brevo.webhooks import WebhookEventSeen
+
+    with session_factory() as session:
+        assert process_brevo_webhook_event(
+            session, _event("soft_bounce"), account_id="main") == "processed"
+        session.commit()
+        # Se borra la marca, como hace la limpieza de los 30 días.
+        session.query(WebhookEventSeen).delete()
+        session.commit()
+        # El reenvío ahora se reconoce por `activity_events`, no revienta.
+        assert process_brevo_webhook_event(
+            session, _event("soft_bounce"), account_id="main") == "duplicate"
+        session.commit()
+        assert len(session.scalars(select(ActivityEvent)).all()) == 1
+
+
+def test_un_evento_malo_no_se_lleva_los_buenos_del_lote(session_factory, monkeypatch):
+    """Lo que se perdió el 07/10 con la campaña francesa: al morir el lote,
+    se fueron con él las aperturas y los clics que venían en el mismo."""
+    from app.integrations.brevo import webhooks as mod
+
+    lote = [
+        _event("delivered", **{"message-id": "<m1@brevo>"}),
+        _event("opened", **{"message-id": "<m2@brevo>"}),
+        _event("click", **{"message-id": "<malo@brevo>"}, link="x"),
+        _event("click", **{"message-id": "<m4@brevo>"}, link="https://a.es"),
+        _event("hard_bounce", **{"message-id": "<m5@brevo>"}),
+    ]
+    real = mod.process_brevo_webhook_event
+
+    def falla_el_tercero(session, event, *, account_id):
+        if event.get("message-id") == "<malo@brevo>":
+            raise RuntimeError("el evento malo de turno")
+        return real(session, event, account_id=account_id)
+
+    monkeypatch.setattr(mod, "process_brevo_webhook_event", falla_el_tercero)
+    monkeypatch.setattr(mod, "Session", lambda _engine: session_factory())
+    monkeypatch.setattr("app.db.session.get_engine", lambda: None)
+
+    mod.process_brevo_webhook_batch(lote, account_id="main")
+
+    with session_factory() as session:
+        claves = {e.external_id for e in session.scalars(select(ActivityEvent))}
+    assert len(claves) == 4, claves          # los cuatro buenos entraron
+    assert not any("malo" in c for c in claves)
+
+
+def test_reprocesar_un_lote_ya_procesado_no_duplica(session_factory, monkeypatch):
+    from app.integrations.brevo import webhooks as mod
+
+    lote = [_event("delivered", **{"message-id": f"<m{i}@brevo>"}) for i in range(3)]
+    monkeypatch.setattr(mod, "Session", lambda _engine: session_factory())
+    monkeypatch.setattr("app.db.session.get_engine", lambda: None)
+
+    mod.process_brevo_webhook_batch(lote, account_id="main")
+    mod.process_brevo_webhook_batch(lote, account_id="main")      # otra vez
+
+    with session_factory() as session:
+        assert len(session.scalars(select(ActivityEvent)).all()) == 3

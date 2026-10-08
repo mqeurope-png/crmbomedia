@@ -29,6 +29,7 @@ from typing import Any
 
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.audit import Action, record_event
@@ -110,6 +111,32 @@ def mark_event_seen(session: Session, event_key: str) -> bool:
     return True
 
 
+def ya_registrado(session: Session, account_id: str, event_key: str) -> bool:
+    """¿Está ya este evento en `activity_events`?
+
+    La tabla de deduplicación (`webhook_event_seen`) se limpia a los 30 días,
+    pero los eventos viven para siempre. Cuando Brevo reenviaba un evento más
+    antiguo que eso —o cuando la limpieza se había llevado su marca—, pasaba
+    el filtro de `mark_event_seen` y reventaba contra la clave única de
+    `activity_events`:
+
+        Duplicate entry 'brevo-default-2032101:soft_bounce:…' for key
+        'activity_events.uq_activity_event_system_account_external_id'
+
+    y ese `IntegrityError` dejaba la sesión envenenada, con lo que se perdía
+    el LOTE ENTERO: los eventos buenos que venían detrás incluidos. Así se
+    quedaron fuera del CRM las aperturas y los clics de la campaña francesa
+    del 07/10. Un evento ya registrado no es un error: es lo normal.
+    """
+    return session.scalar(
+        select(ActivityEvent.id).where(
+            ActivityEvent.system == "brevo",
+            ActivityEvent.account_id == account_id,
+            ActivityEvent.external_id == event_key,
+        ).limit(1)
+    ) is not None
+
+
 def prune_seen_events(session: Session) -> int:
     """Opportunistic 30-day TTL cleanup, invoked by the worker after
     each processed batch. Cheap: one indexed DELETE."""
@@ -180,6 +207,13 @@ def process_brevo_webhook_event(
         return "unknown_event"
 
     key = event_dedupe_key(event)
+    # Dos filtros, porque cubren huecos distintos: la tabla de marcas es
+    # rápida pero caduca a los 30 días; `activity_events` es la verdad y no
+    # caduca. Antes solo estaba el primero, y el segundo lo hacía la clave
+    # única a base de reventar.
+    if ya_registrado(session, account_id, key):
+        logger.info("brevo.webhook evento ya registrado, se omite key=%s", key)
+        return "duplicate"
     if not mark_event_seen(session, key):
         logger.info("brevo.webhook duplicate delivery skipped key=%s", key)
         return "duplicate"
@@ -232,7 +266,16 @@ def process_brevo_webhook_event(
         _flip_consent(session, contact, account_id, raw_name)
         _invalidate_email(session, contact, account_id, raw_name)
 
-    session.flush()
+    try:
+        session.flush()
+    except IntegrityError:
+        # Cinturón además de los dos filtros de arriba: dos workers con el
+        # mismo evento a la vez. Ya está registrado, así que no es un fallo;
+        # pero hay que DESHACER, o la sesión queda envenenada y se lleva por
+        # delante el resto del lote.
+        session.rollback()
+        logger.info("brevo.webhook carrera con otro worker, ya registrado key=%s", key)
+        return "duplicate"
 
     # PR-Hotfix-Notas-Workflows Item B. Tras persistir el evento, disparar
     # los workflows cuyos triggers reaccionan a eventos Brevo. Antes el
@@ -316,14 +359,41 @@ def process_brevo_webhook_batch(events: list[dict[str, Any]], account_id: str) -
     picks this up)."""
     from app.db.session import get_engine  # noqa: PLC0415
 
+    hechos = fallidos = 0
     with Session(get_engine()) as session:
         for event in events:
+            # Un `commit` POR EVENTO. Antes se procesaba el lote entero y se
+            # confirmaba al final, así que un solo evento malo obligaba a
+            # deshacerlo todo y los buenos que iban con él se perdían. Esto
+            # es más caro, pero un lote de webhook son unas decenas de
+            # eventos, no miles.
             try:
                 process_brevo_webhook_event(session, event, account_id=account_id)
-            except Exception:  # noqa: BLE001 - one bad event ≠ batch failure
+                session.commit()
+                hechos += 1
+            except Exception:  # noqa: BLE001 — un evento malo no tumba el lote
+                # El `rollback` es lo que faltaba: sin él, el `IntegrityError`
+                # dejaba la sesión inválida y todo lo que venía después moría
+                # con un `PendingRollbackError` que no dice nada del problema
+                # original. Se registra el error DE VERDAD, con su traza.
+                session.rollback()
+                fallidos += 1
                 logger.exception(
                     "brevo.webhook event processing failed: %s",
                     json.dumps(event, default=str)[:500],
                 )
-        prune_seen_events(session)
-        session.commit()
+    # La limpieza de marcas caducadas va en su propia sesión y no puede
+    # tumbar nada: es mantenimiento, no parte de la ingesta.
+    try:
+        with Session(get_engine()) as limpieza:
+            borradas = prune_seen_events(limpieza)
+            limpieza.commit()
+    except Exception:  # noqa: BLE001
+        borradas = 0
+        logger.warning("brevo.webhook no se pudo limpiar webhook_event_seen",
+                       exc_info=True)
+    if fallidos:
+        logger.warning(
+            "brevo.webhook lote de %s: %d procesados, %d fallidos (marcas "
+            "caducadas borradas: %d)", account_id, hechos, fallidos, borradas,
+        )
