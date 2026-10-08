@@ -171,8 +171,8 @@ def process_submission(
     # 7. Efectos best-effort post-commit (no deben tumbar la respuesta).
     if form.send_confirmation_email:
         _send_confirmation_email(session, form, contact_email, contact)
-    # Aviso del lead: la dirección fija de los avisos y el comercial
-    # asignado. Lo gobierna el mismo interruptor de siempre.
+    # Aviso del lead: al comercial asignado si lo tiene y, si no, a la
+    # dirección fija. Lo gobierna el mismo interruptor de siempre.
     if form.notify_owner_on_new:
         from app.services.web_forms.aviso import enviar_aviso_lead  # noqa: PLC0415
 

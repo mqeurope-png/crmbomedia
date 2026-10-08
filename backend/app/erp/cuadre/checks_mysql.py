@@ -10,7 +10,7 @@ from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import false, or_, select
 
 from app.erp.cuadre.contexto import Contexto
 from app.erp.cuadre.registry import (
@@ -662,19 +662,48 @@ def envio_tramitado_sin_etiqueta(ctx: Contexto) -> Iterator[Hallazgo]:
         )
 
 
+def _formularios_sin_asignar(ctx: Contexto) -> set[str]:
+    """Los contactos que vienen de un formulario con el modo «Sin asignar»:
+    ahí NO tener comercial es la configuración elegida, no un descuadre."""
+    from app.models.web_forms import FormSubmission, WebForm  # noqa: PLC0415
+
+    return ctx.cached("contactos_de_forms_sin_asignar", lambda: set(ctx.session.scalars(
+        select(FormSubmission.contact_id)
+        .join(WebForm, WebForm.id == FormSubmission.form_id)
+        .where(FormSubmission.contact_id.is_not(None),
+               WebForm.assignment_mode == "none")
+    )))
+
+
+def _comerciales_de_baja(ctx: Contexto) -> set[str]:
+    """Quién no va a leer su buzón: dar de baja a alguien no le quita los
+    leads que tenía asignados."""
+    from app.models.crm import User  # noqa: PLC0415
+
+    return ctx.cached("comerciales_de_baja", lambda: set(ctx.session.scalars(
+        select(User.id).where(User.is_active.is_(False))
+    )))
+
+
 @comprobacion(
     id="lead_web_sin_comercial", orden=18,
     titulo="Lead web sin comercial asignado",
     descripcion="Lead entrado por un formulario web en los últimos N días que sigue "
-                "sin comercial: nadie lo tiene en su cartera y el aviso no ha ido a "
-                "ninguna persona.",
+                "sin comercial (o con uno dado de baja): nadie lo tiene en su cartera "
+                "y el aviso no ha llegado a ninguna persona.",
     severidad="media", fuente=FUENTE_MYSQL, grupo="crm",
-    dias_defecto=7, dias_texto="Solo leads de los últimos N días",
+    dias_defecto=30, dias_texto="Solo leads de los últimos N días",
 )
 def lead_web_sin_comercial(ctx: Contexto) -> Iterator[Hallazgo]:
     """La red que habría cazado en horas lo que se tardó días en ver: los 25
     formularios estaban con un `assignment_mode` que el motor no entendía, así
-    que ningún lead se asignaba a nadie y nadie se enteró."""
+    que ningún lead se asignaba a nadie y nadie se enteró.
+
+    Ojo con la ventana: pasados N días el lead deja de verse y su aviso se da
+    por resuelto aunque siga sin comercial. Por eso el defecto es ancho (30
+    días): si un lead llega ahí sin que nadie lo haya tocado, el problema ya
+    no es que falte avisar.
+    """
     from datetime import timedelta  # noqa: PLC0415
 
     from app.models.crm import Contact  # noqa: PLC0415
@@ -683,31 +712,49 @@ def lead_web_sin_comercial(ctx: Contexto) -> Iterator[Hallazgo]:
         etiqueta_de_origen,
     )
 
-    ventana = ctx.dias("lead_web_sin_comercial", 7)
+    ventana = ctx.dias("lead_web_sin_comercial", 30)
     limite = ctx.ahora - timedelta(days=ventana)
-    leads = ctx.cached("leads_web_sin_owner", lambda: list(ctx.session.scalars(
-        select(Contact)
+    de_baja = _comerciales_de_baja(ctx)
+    a_mano = _formularios_sin_asignar(ctx)
+    # Solo las columnas que se usan: la tabla de contactos es la más ancha y
+    # esto corre dentro de la petición cuando se pulsa «Comprobar ahora».
+    filas = ctx.cached("leads_web_sin_comercial", lambda: list(ctx.session.execute(
+        select(Contact.id, Contact.first_name, Contact.last_name, Contact.email,
+               Contact.origin, Contact.origin_account_id, Contact.owner_user_id,
+               Contact.created_at)
         .where(
-            Contact.owner_user_id.is_(None),
             Contact.origin_account_id.like(f"{ORIGEN_PREFIJO}:%"),
             Contact.created_at >= limite,
+            # Un contacto dado de baja (objeción RGPD, baja a mano) no se
+            # asigna a nadie: pedirlo sería justo lo contrario de lo que toca.
+            Contact.is_active.is_(True),
+            or_(Contact.owner_user_id.is_(None),
+                Contact.owner_user_id.in_(de_baja) if de_baja else false()),
         )
         .order_by(Contact.created_at.desc())
-    )))
-    for c in leads:
-        nombre = " ".join(p for p in (c.first_name, c.last_name) if p).strip()
-        procedencia = etiqueta_de_origen(c.origin_account_id) or _s(c.origin)
-        dias = ctx.dias_desde(c.created_at)
+    ).all()))
+    for f in filas:
+        if f.id in a_mano:
+            continue
+        nombre = " ".join(p for p in (f.first_name, f.last_name) if p).strip()
+        procedencia = etiqueta_de_origen(f.origin_account_id) or _s(f.origin)
+        dias = ctx.dias_desde(f.created_at)
+        cuando = f"hace {dias} día(s)" if dias else "hoy"
+        if f.owner_user_id:
+            porque = ("su comercial está dado de baja, así que el aviso no lo ha "
+                      "leído nadie")
+        else:
+            porque = "todavía sin comercial: no está en la cartera de nadie"
         yield Hallazgo(
-            entidad_tipo=ENTIDAD_CONTACTO, entidad_id=c.id,
-            etiqueta=nombre or _s(c.email) or c.id,
-            detalle=f"Lead de {procedencia} entrado hace {dias} día(s) y todavía sin "
-                    f"comercial: no está en la cartera de nadie.",
+            entidad_tipo=ENTIDAD_CONTACTO, entidad_id=f.id,
+            etiqueta=nombre or _s(f.email) or f.id,
+            detalle=f"Lead de {procedencia} entrado {cuando} y {porque}.",
             pista_de_arreglo="Asígnale un comercial en su ficha. Si se repite con todos "
                              "los leads de una web, mira el modo de asignación de ese "
                              "formulario en CRM · Formularios.",
-            enlace=f"/contacts/{c.id}", arreglo_enlace=f"/contacts/{c.id}",
+            enlace=f"/contacts/{f.id}", arreglo_enlace=f"/contacts/{f.id}",
             arreglo_boton="Abrir la ficha",
-            huella_datos={"origen": _s(c.origin_account_id)},
-            datos={"email": _s(c.email), "creado": c.created_at.isoformat()},
+            huella_datos={"origen": _s(f.origin_account_id),
+                          "owner": _s(f.owner_user_id)},
+            datos={"email": _s(f.email), "creado": f.created_at.isoformat()},
         )

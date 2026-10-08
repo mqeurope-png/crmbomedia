@@ -239,12 +239,20 @@ del pedido de BoHub.
 ### CRM (fuente MySQL)
 
 18. `lead_web_sin_comercial` (media) — **Lead web sin comercial asignado.**
-    Leads entrados por un formulario web en los últimos N días (7 por
-    defecto) que siguen con `owner_user_id` a NULL: no están en la cartera de
-    nadie y su aviso no ha ido a ninguna persona.
+    Leads entrados por un formulario web en los últimos N días (30 por
+    defecto) que siguen con `owner_user_id` a NULL, **o cuyo comercial está
+    dado de baja**: no están en la cartera de nadie y su aviso no ha llegado
+    a ninguna persona (dar de baja a alguien no le quita sus leads).
     - Enlaza a la ficha del contacto, que es donde se asigna.
     - Si salen todos los leads de una misma web, el problema no es lead a
       lead: mirar el modo de asignación de ese formulario.
+    - **No** lista los leads de formularios con el modo «Sin asignar»: ahí no
+      tener comercial es lo configurado, no un descuadre. Tampoco los
+      contactos dados de baja (objeción RGPD): a esos no hay que asignarles
+      nadie.
+    - Ojo con la ventana: pasados N días el lead deja de verse y su aviso se
+      da por resuelto aunque siga sin comercial. Por eso el defecto es ancho
+      (30 días). Si se baja el umbral, se baja también el plazo para verlos.
     - Nace de los 25 formularios cargados con `assignment_mode = 'fixed'`
       (el válido es `fixed_owner`): el motor no lo reconocía y no asignaba
       nada ni lo decía. Pasaron días hasta que se vio por casualidad, y entre

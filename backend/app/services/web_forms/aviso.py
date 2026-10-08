@@ -6,10 +6,10 @@ BoHub, así que el aviso lleva de qué web y en qué idioma viene, los datos
 del contacto, las etiquetas que marcó (por su nombre), su consulta entera,
 si aceptó comunicaciones comerciales y un enlace a la ficha.
 
-Destinatarios: la dirección fija de `WEB_FORMS_NOTIFY_TO`
-(`info@streamtec.es`) y, además, el comercial al que se asignó el lead —una
-sola vez si coinciden—. Lo gobierna el interruptor que ya existía,
-`notify_owner_on_new`.
+Destinatarios: uno, no dos. Si el lead tiene comercial, el aviso va solo a
+él; si no lo tiene, a la dirección fija de `WEB_FORMS_NOTIFY_TO`
+(`info@streamtec.es`). Ver `destinatarios`. Lo gobierna el interruptor que ya
+existía, `notify_owner_on_new`.
 
 La plantilla admite una variante por web sin tocar código: si existe
 `app/templates/email/lead_<sitio>.html` (y/o `.txt`) se usa esa en lugar de
@@ -146,9 +146,12 @@ def destinatarios(session: Session, contact: Contact) -> list[tuple[str, str]]:
     comercial: list[tuple[str, str]] = []
     if contact.owner_user_id:
         owner = session.get(User, contact.owner_user_id)
-        if owner is not None and owner.email:
+        # Un comercial DADO DE BAJA no lee su buzón: su lead tiene que caer al
+        # genérico. Dar de baja a alguien no limpia los leads que tenía
+        # asignados, así que sin esto se quedarían sin que nadie los viera.
+        if owner is not None and owner.email and owner.is_active:
             comercial.append((owner.email, owner.full_name or owner.email))
-    # Sin comercial con correo, el genérico es el único que puede verlo.
+    # Sin comercial que pueda leerlo, el genérico es el único que lo ve.
     if comercial and not settings.web_forms_notify_always:
         salida = comercial
     else:

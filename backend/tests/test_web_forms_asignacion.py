@@ -16,6 +16,7 @@ parte. Aquí se comprueba lo que impide que vuelva a pasar:
 from __future__ import annotations
 
 import logging
+import logging.config
 import os
 from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
@@ -135,11 +136,12 @@ def test_los_modos_validos_siguen_pasando(factory):
 # --- 2b · si ya hay uno mal en la BD, el motor se queja ---------------------------------------
 
 
-def _form_con_modo(s: Session, modo: str, **over) -> WebForm:
+def _form_con_modo(s: Session, modo: str, *, slug: str = "mboprinters-contacto-es",
+                   **over) -> WebForm:
     """Siembra un formulario con un modo CUALQUIERA, saltándose el validador
     del modelo: así se reproduce lo que había en producción."""
     autor = s.scalar(select(User.id).where(User.role == UserRole.ADMIN))
-    form = WebForm(slug="mboprinters-contacto-es", name="Contacto", language="es",
+    form = WebForm(slug=slug, name="Contacto", language="es",
                    created_by_user_id=autor, recaptcha_enabled=False, **over)
     s.add(form)
     s.flush()
@@ -239,22 +241,52 @@ def test_la_migracion_convierte_fixed_y_no_toca_los_buenos(alembic_cfg):
         seed_test_users(seed)
         seed.commit()
         autor = seed.scalar(select(User.id).where(User.role == UserRole.ADMIN))
-    modos = [("f1", "mboprinters-contacto-es", "fixed"),
-             ("f2", "mbolasers-contacto-es", "rules"),
-             ("f3", "boprint-contacto", "none"),
-             ("f4", "pimpam-contacto-es", "inventado")]
+    modos = [("f1", "mboprinters-contacto-es", "fixed", autor),
+             ("f2", "mbolasers-contacto-es", "rules", None),
+             ("f3", "boprint-contacto", "none", None),
+             ("f4", "pimpam-contacto-es", "inventado", None),
+             # Mayúsculas: una carga a mano pudo meterlo así.
+             ("f5", "fluxlasers-contacto-es", "FIXED", autor),
+             # «fixed» sin propietario: arreglar el modo no basta, y el log
+             # tiene que decirlo o se da por arreglado algo que sigue roto.
+             ("f6", "artisjet-es-contacto-es", "fixed", None)]
     with engine.begin() as c:
-        for fid, slug, modo in modos:
+        for fid, slug, modo, propietario in modos:
             c.execute(text(
                 "INSERT INTO web_forms (id, slug, name, language, is_active, "
                 "submit_success_mode, send_confirmation_email, assignment_mode, "
-                "notify_owner_on_new, recaptcha_enabled, is_site_default, "
-                "created_by_user_id, created_at, updated_at) VALUES "
-                "(:i, :s, 'F', 'es', 1, 'modal', 0, :m, 1, 1, 0, :u, "
+                "fixed_owner_user_id, notify_owner_on_new, recaptcha_enabled, "
+                "is_site_default, created_by_user_id, created_at, updated_at) VALUES "
+                "(:i, :s, 'F', 'es', 1, 'modal', 0, :m, :p, 1, 1, 0, :u, "
                 "'2026-10-08', '2026-10-08')"),
-                {"i": fid, "s": slug, "m": modo, "u": autor})
+                {"i": fid, "s": slug, "m": modo, "p": propietario, "u": autor})
     command.stamp(cfg, "20261008_0127")
-    command.upgrade(cfg, "20261009_0128")
+    # `env.py` llama a `fileConfig()`, que apaga los loggers que ya existían
+    # y dejaría `caplog` vacío. En el test no hace falta reconfigurar nada.
+    # `caplog` no sirve aquí: `env.py` llama a `fileConfig()`, que reconfigura
+    # el logging a media ejecución. Se escucha al logger directamente.
+    avisos: list[str] = []
+
+    class Recoge(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            avisos.append(record.getMessage())
+
+    log = logging.getLogger("alembic.runtime.migration")
+    handler = Recoge(level=logging.WARNING)
+    log.addHandler(handler)
+    log.disabled = False
+    log.setLevel(logging.WARNING)
+    # `env.py` llama a `fileConfig()`, que con `disable_existing_loggers`
+    # apagaría este logger justo antes de que la migración escriba. En el
+    # test no hace falta reconfigurar el logging.
+    real = logging.config.fileConfig
+    logging.config.fileConfig = lambda *_a, **_k: None
+    try:
+        command.upgrade(cfg, "20261009_0128")
+    finally:
+        logging.config.fileConfig = real
+        log.removeHandler(handler)
+    registro = "\n".join(avisos)
     with engine.connect() as c:
         final = dict(c.execute(text("SELECT id, assignment_mode FROM web_forms")).all())
     assert final["f1"] == "fixed_owner"       # reparado
@@ -263,6 +295,11 @@ def test_la_migracion_convierte_fixed_y_no_toca_los_buenos(alembic_cfg):
     # Uno que no se puede deducir se deja como está (y queda en el log):
     # cambiarlo a voleo asignaría leads al comercial equivocado.
     assert final["f4"] == "inventado"
+    assert final["f5"] == "fixed_owner"       # «FIXED» también
+    assert final["f6"] == "fixed_owner"
+    # Y el que se queda sin propietario no se da por arreglado en silencio.
+    assert "NO tiene propietario fijo" in registro
+    assert "artisjet-es-contacto-es" in registro
     command.upgrade(cfg, "20261009_0128")     # relanzable: no vuelve a tocar nada
     with engine.connect() as c:
         assert dict(c.execute(
@@ -318,3 +355,56 @@ def test_el_cuadre_no_mira_lo_que_no_es_un_lead_de_formulario(factory):
         s.add(Contact(first_name="Manual", email="manual@muster.de", origin="Manual"))
         s.commit()
         assert _hallazgos(s) == []
+
+
+def test_el_cuadre_ve_el_lead_cuyo_comercial_esta_de_baja(factory):
+    """Dar de baja a alguien no le quita los leads: sin esto, nadie los ve y
+    el Cuadre tampoco, porque sí tienen propietario."""
+    with factory() as s:
+        comercial = s.scalar(select(User).where(User.role == UserRole.USER))
+        lead = _lead(s, email="huerfano@muster.de", owner=comercial.id)
+        assert _hallazgos(s) == []            # mientras está de alta, nada
+        comercial.is_active = False
+        s.commit()
+        hallazgos = _hallazgos(s)
+        assert [h.entidad_id for h in hallazgos] == [lead.id]
+        assert "dado de baja" in (hallazgos[0].detalle_json or "")
+
+
+def test_el_cuadre_no_pide_asignar_un_contacto_dado_de_baja(factory):
+    """Un lead que ejerció su objeción RGPD queda inactivo: pedir que se le
+    asigne comercial sería justo lo contrario de lo que toca."""
+    with factory() as s:
+        lead = _lead(s, email="objecion@muster.de")
+        lead.is_active = False
+        s.commit()
+        assert _hallazgos(s) == []
+
+
+def test_el_cuadre_respeta_los_formularios_de_asignar_a_mano(factory):
+    """«Sin asignar» es una opción de la pantalla: ahí no tener comercial es
+    lo configurado, no un descuadre. Sin esto, cada lead de un formulario así
+    llenaría el Cuadre."""
+    with factory() as s:
+        form = _form_con_modo(s, "none")
+        out = _enviar(s, form, "amano@muster.de")
+        assert s.get(Contact, out.contact_id).owner_user_id is None
+        assert _hallazgos(s) == []
+
+        # El mismo lead, pero de un formulario por reglas, sí sale.
+        otro = _form_con_modo(s, "rules", slug="mbolasers-contacto-es")
+        out2 = _enviar(s, otro, "porreglas@muster.de")
+        assert [h.entidad_id for h in _hallazgos(s)] == [out2.contact_id]
+
+
+def test_el_aviso_de_un_comercial_de_baja_cae_al_generico(factory):
+    """El agujero que abría mandar el aviso solo al comercial: si está de
+    baja, no lo lee nadie."""
+    from app.services.web_forms.aviso import destinatarios
+
+    with factory() as s:
+        comercial = s.scalar(select(User).where(User.role == UserRole.USER))
+        comercial.is_active = False
+        s.flush()
+        contacto = Contact(first_name="X", email="x@y.z", owner_user_id=comercial.id)
+        assert destinatarios(s, contacto) == [("info@streamtec.es", "")]

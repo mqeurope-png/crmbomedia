@@ -159,7 +159,9 @@ lead nuevo»**: apagarlo silencia el aviso entero.
   - Si **no tiene** comercial, va a las direcciones fijas de
     `WEB_FORMS_NOTIFY_TO` (`info@streamtec.es` por defecto, separadas por
     comas). Es el caso en el que hace falta que alguien lo vea, así que nunca
-    se queda sin aviso; también pasa si el comercial no tiene correo puesto.
+    se queda sin aviso; también pasa si el comercial no tiene correo puesto o
+    **está dado de baja** (dar de baja a alguien no le quita sus leads, y su
+    buzón ya no lo lee nadie).
   - `WEB_FORMS_NOTIFY_ALWAYS=true` vuelve al comportamiento de antes (los dos
     siempre), por si el reparto de buzones cambia.
 - **Variante por web sin tocar código**: si existe

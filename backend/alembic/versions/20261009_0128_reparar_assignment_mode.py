@@ -40,14 +40,16 @@ def upgrade() -> None:
     from app.models.web_forms import ALIAS_ASSIGNMENT_MODES, ASSIGNMENT_MODES
 
     conn = op.get_bind()
-    filas = conn.execute(
-        sa.text("SELECT id, slug, assignment_mode FROM web_forms")
-    ).all()
+    filas = conn.execute(sa.text(
+        "SELECT id, slug, assignment_mode, fixed_owner_user_id FROM web_forms"
+    )).all()
+    # Las claves en minúsculas: una carga a mano pudo meter «FIXED».
+    alias = {k.lower(): v for k, v in ALIAS_ASSIGNMENT_MODES.items()}
     arreglados = 0
-    for form_id, slug, modo in filas:
+    for form_id, slug, modo, propietario in filas:
         if modo in ASSIGNMENT_MODES:
             continue
-        bueno = ALIAS_ASSIGNMENT_MODES.get(modo)
+        bueno = alias.get((modo or "").strip().lower())
         if bueno is None:
             logger.warning(
                 "web_forms %s (%s): assignment_mode %r no es válido y no se "
@@ -64,6 +66,14 @@ def upgrade() -> None:
             "web_forms %s (%s): assignment_mode %r → %r (sus leads no se "
             "estaban asignando a nadie)", slug, form_id, modo, bueno,
         )
+        if bueno == "fixed_owner" and not propietario:
+            # Arreglar el modo no basta: sin propietario sigue sin asignar.
+            # La API exige los dos juntos; estas filas entraron por detrás.
+            logger.warning(
+                "web_forms %s (%s): ya es «fixed_owner» pero NO tiene "
+                "propietario fijo, así que sus leads siguen sin comercial. "
+                "Hay que ponerle uno en CRM · Formularios.", slug, form_id,
+            )
     if arreglados:
         logger.warning(
             "web_forms: %d formulario(s) con assignment_mode reparado. Los "
