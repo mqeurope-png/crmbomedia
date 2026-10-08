@@ -26,11 +26,16 @@ class IntegrationError(Exception):
         self.account_id = account_id
         self.status_code = status_code
         # `body` is a short snippet (truncated by the caller) for
-        # diagnostics; never log full payloads here because they may
-        # contain customer data.
+        # diagnostics: it is the RESPONSE from the remote (why it said no),
+        # never the request payload we sent. It goes into `__str__` so the
+        # reason survives into RQ's failed registry and the logs.
         self.body = body
 
-    def __str__(self) -> str:  # pragma: no cover - cosmetic
+    #: Cuánto del cuerpo cabe en el texto del error. El `body` entero (512
+    #: caracteres, lo recorta el cliente) sigue en el atributo.
+    CUERPO_EN_TEXTO = 240
+
+    def __str__(self) -> str:
         bits = [self.message]
         if self.system:
             bits.append(f"system={self.system}")
@@ -38,6 +43,16 @@ class IntegrationError(Exception):
             bits.append(f"account={self.account_id}")
         if self.status_code:
             bits.append(f"status={self.status_code}")
+        # El cuerpo va en el TEXTO del error, no solo en el atributo: es lo
+        # único que dice POR QUÉ el remoto ha dicho no, y es lo que queda
+        # guardado en el registro de fallidos de RQ y en la traza. Sin esto,
+        # 146.876 trabajos de Brevo quedaron registrados como «400 from
+        # brevo/default» a secas y no había forma de diagnosticarlos.
+        cuerpo = " ".join((self.body or "").split())
+        if cuerpo:
+            if len(cuerpo) > self.CUERPO_EN_TEXTO:
+                cuerpo = cuerpo[: self.CUERPO_EN_TEXTO] + "…"
+            bits.append(f"body={cuerpo}")
         return " ".join(bits)
 
 
