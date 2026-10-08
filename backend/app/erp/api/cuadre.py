@@ -12,9 +12,11 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
+from app.core.audit import Action, record_event
+from app.core.auth import require_admin
 from app.db.session import get_session
 from app.erp.api.deps import require_cuadre
 from app.erp.cuadre import engine
@@ -147,12 +149,38 @@ def export(
 
 
 # --- colas: reencolar y vaciar el registro de fallidos -----------------------
-# No es «solo lectura» como el resto del panel, pero es lo mismo que ya hace
-# «revisado»: operar sobre el aviso, no sobre los datos del negocio. Siempre
-# con vista previa y bajo la misma capacidad `erp.cuadre`.
+# El panel es de solo lectura y su capacidad `erp.cuadre` la tiene también el
+# rol `pedidos`. Esto NO es leer: reencolar mueve trabajo de verdad y vaciar es
+# irreversible, así que va aparte, con `require_admin`, vista previa obligada y
+# fila de auditoría.
 
 
-class ColaIn(BaseModel):
+def _colas_conocidas(conn: Any = None) -> list[str]:
+    from rq import Queue  # noqa: PLC0415
+
+    from app.workers.queues import redis_connection  # noqa: PLC0415
+
+    return [c.name for c in Queue.all(connection=conn or redis_connection())]
+
+
+def _cola_valida(nombre: str) -> str:
+    """Una cola que no existe sería un registro vacío y un «hecho» engañoso."""
+    try:
+        conocidas = _colas_conocidas()
+    except Exception:  # noqa: BLE001 — sin Redis el error real es el de abajo
+        conocidas = []
+    if conocidas and nombre not in conocidas:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"La cola «{nombre}» no existe. Colas con trabajos: "
+                + ", ".join(sorted(conocidas))
+            ),
+        )
+    return nombre
+
+
+class ColaReencolarIn(BaseModel):
     cola: str = Field(min_length=1, max_length=120)
     funcion: str | None = Field(default=None, max_length=200)
     limite: int = Field(default=registro_fallidos.TOPE_POR_LLAMADA, ge=1,
@@ -161,10 +189,22 @@ class ColaIn(BaseModel):
     probar: bool = True
 
 
+class ColaVaciarIn(BaseModel):
+    """Sin `funcion` ni `limite` a propósito: vaciar se lleva el registro
+    entero. `extra="forbid"` para que una petición que *parezca* filtrada se
+    rechace en vez de ignorarse en silencio y arrasar con todo."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    cola: str = Field(min_length=1, max_length=120)
+    probar: bool = True
+
+
 @router.post("/colas/reencolar")
 def colas_reencolar(
-    payload: ColaIn,
-    current_user: User = Depends(require_cuadre),
+    payload: ColaReencolarIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_admin),
 ) -> dict[str, Any]:
     """Vuelve a encolar trabajos del registro de fallidos de una cola.
 
@@ -173,10 +213,24 @@ def colas_reencolar(
     eventos ya idempotente, reencolar no duplica nada.
     """
     salida = registro_fallidos.reencolar(
-        payload.cola, funcion=payload.funcion, limite=payload.limite,
-        probar=payload.probar,
+        _cola_valida(payload.cola), funcion=payload.funcion,
+        limite=payload.limite, probar=payload.probar,
     )
     if not payload.probar:
+        record_event(
+            session,
+            action=Action.QUEUE_FAILED_REQUEUED,
+            target_type="rq_queue",
+            target_id=payload.cola,
+            actor=current_user,
+            metadata={
+                "funcion": payload.funcion, "tope": salida["tope"],
+                "reencolados": salida["reencolados"],
+                "fallos": salida["fallos_al_reencolar"],
+                "en_registro": salida["en_registro"],
+            },
+        )
+        session.commit()
         logger.warning("cuadre: %s reencoló %d trabajos de %s",
                        current_user.email, salida["reencolados"], payload.cola)
     return salida
@@ -184,13 +238,29 @@ def colas_reencolar(
 
 @router.post("/colas/vaciar")
 def colas_vaciar(
-    payload: ColaIn,
-    current_user: User = Depends(require_cuadre),
+    payload: ColaVaciarIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_admin),
 ) -> dict[str, Any]:
     """Descarta el registro de fallidos de una cola, con vista previa. Hasta
     ahora la única salida era entrar al contenedor a mano."""
-    salida = registro_fallidos.vaciar(payload.cola, probar=payload.probar)
+    salida = registro_fallidos.vaciar(
+        _cola_valida(payload.cola), probar=payload.probar
+    )
     if not payload.probar:
+        record_event(
+            session,
+            action=Action.QUEUE_FAILED_CLEARED,
+            target_type="rq_queue",
+            target_id=payload.cola,
+            actor=current_user,
+            metadata={
+                "descartados": salida["descartados"],
+                "sin_datos": salida["sin_datos"], "fallos": salida["fallos"],
+                "en_registro": salida["en_registro"], "quedan": salida["quedan"],
+            },
+        )
+        session.commit()
         logger.warning("cuadre: %s descartó %d trabajos fallidos de %s",
                        current_user.email, salida["descartados"], payload.cola)
     return salida

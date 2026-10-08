@@ -107,7 +107,20 @@ def mark_event_seen(session: Session, event_key: str) -> bool:
             system="brevo", event_key=event_key, seen_at=datetime.now(UTC)
         )
     )
-    session.flush()
+    try:
+        session.flush()
+    except IntegrityError:
+        # Aquí es donde rompe de verdad la carrera entre dos workers con el
+        # mismo evento: `uq_webhook_event_seen`. El `SELECT` de arriba no la
+        # cubre, y sin deshacer la sesión queda envenenada y se lleva por
+        # delante el resto del lote. El otro worker ya lo registró, así que
+        # esto es un duplicado, no un fallo.
+        session.rollback()
+        logger.info(
+            "brevo.webhook carrera marcando el evento, ya marcado key=%s",
+            event_key,
+        )
+        return False
     return True
 
 
@@ -270,12 +283,27 @@ def process_brevo_webhook_event(
         session.flush()
     except IntegrityError:
         # Cinturón además de los dos filtros de arriba: dos workers con el
-        # mismo evento a la vez. Ya está registrado, así que no es un fallo;
-        # pero hay que DESHACER, o la sesión queda envenenada y se lleva por
-        # delante el resto del lote.
+        # mismo evento a la vez. Hay que DESHACER en cualquier caso, o la
+        # sesión queda envenenada y se lleva por delante el resto del lote.
         session.rollback()
-        logger.info("brevo.webhook carrera con otro worker, ya registrado key=%s", key)
-        return "duplicate"
+        if ya_registrado(session, account_id, key):
+            logger.info(
+                "brevo.webhook carrera con otro worker, ya registrado key=%s", key
+            )
+            return "duplicate"
+        # No era un duplicado: se rompió otra cosa (una clave ajena porque el
+        # contacto desapareció a media operación, por ejemplo). Que suba con
+        # su error de verdad en vez de contarse como procesado y perderse.
+        logger.warning(
+            "brevo.webhook IntegrityError que NO es un duplicado key=%s", key
+        )
+        raise
+
+    # El evento ya está. Se confirma AQUÍ, antes de disparar los workflows:
+    # si el dispatch falla contra la base de datos, su `except` deja la sesión
+    # inválida y el `commit` del lote se convertiría en `PendingRollbackError`,
+    # deshaciendo justo el evento que el comentario de abajo promete conservar.
+    session.commit()
 
     # PR-Hotfix-Notas-Workflows Item B. Tras persistir el evento, disparar
     # los workflows cuyos triggers reaccionan a eventos Brevo. Antes el
@@ -306,6 +334,10 @@ def process_brevo_webhook_event(
             if event_type in ("email.opened", "email.clicked"):
                 evaluate_brevo_engagement(session, contact.id)
         except Exception:  # noqa: BLE001
+            # Deshacer lo que el dispatch dejara a medias. El evento ya está
+            # confirmado, así que esto no se lo lleva; y la sesión queda
+            # utilizable para el evento siguiente del lote.
+            session.rollback()
             logger.warning(
                 "brevo.webhook workflow dispatch failed contact=%s event=%s",
                 contact.id, event_type, exc_info=True,

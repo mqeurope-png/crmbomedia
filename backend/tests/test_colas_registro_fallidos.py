@@ -19,11 +19,20 @@ import pytest
 from app.workers import registro_fallidos
 
 
-def _trabajo(jid: str, func: str) -> SimpleNamespace:
-    return SimpleNamespace(
+def _trabajo(jid: str, func: str, estado: dict) -> SimpleNamespace:
+    job = SimpleNamespace(
         id=jid, func_name=func, args=(), kwargs={},
         ended_at=datetime(2026, 10, 7, tzinfo=UTC),
     )
+
+    def _delete() -> None:
+        # Como el `delete` de RQ: se lleva el trabajo Y su sitio en el
+        # registro. Contar bien depende de esto.
+        estado["ids"] = [i for i in estado["ids"] if i != jid.encode()]
+        estado["borrados"].append(jid)
+
+    job.delete = _delete
+    return job
 
 
 @pytest.fixture()
@@ -33,21 +42,30 @@ def rq_falso(monkeypatch):
     import rq.job
     import rq.registry
 
-    estado = {
+    estado: dict = {
         # zrange: del más ANTIGUO al más nuevo, que es como se recupera.
         "ids": [b"j1", b"j2", b"j3"],
-        "trabajos": {
-            "j1": _trabajo("j1", "app.integrations.brevo.webhooks."
-                                 "process_brevo_webhook_batch"),
-            "j2": None,                                   # datos caducados
-            "j3": _trabajo("j3", "app.integrations.brevo.push_jobs.push_contact_job"),
-        },
-        "reencolados": [], "borrados": [],
+        "reencolados": [], "borrados": [], "quitados_del_registro": [],
+    }
+    estado["trabajos"] = {
+        "j1": _trabajo("j1", "app.integrations.brevo.webhooks."
+                             "process_brevo_webhook_batch", estado),
+        "j2": None,                                   # datos caducados
+        "j3": _trabajo("j3", "app.integrations.brevo.push_jobs.push_contact_job",
+                       estado),
     }
 
     class _Conn:
-        def zrange(self, _key, _start, _end):
-            return estado["ids"]
+        def zrange(self, _key, start, end):
+            """Como Redis: un tramo, con `end` incluido y -1 = hasta el final."""
+            ids = estado["ids"]
+            return ids[start:] if end == -1 else ids[start : end + 1]
+
+        def zrem(self, _key, job_id):
+            antes = len(estado["ids"])
+            estado["ids"] = [i for i in estado["ids"] if i != job_id.encode()]
+            estado["quitados_del_registro"].append(job_id)
+            return antes - len(estado["ids"])
 
     class _Registro:
         def __init__(self, queue):
@@ -123,10 +141,42 @@ def test_vaciar_cuenta_en_vista_previa_y_descarta_al_confirmar(rq_falso):
     previa = registro_fallidos.vaciar("brevo:push_contact", probar=True,
                                       conn=rq_falso["conn"])
     assert previa["en_registro"] == 3 and previa["descartados"] == 0
+    assert previa["quedan"] == 3
     assert rq_falso["borrados"] == []
 
     hecho = registro_fallidos.vaciar("brevo:push_contact", probar=False,
                                      conn=rq_falso["conn"])
-    assert hecho["descartados"] == 3
-    # Con los datos del trabajo: si no, la traza sigue ocupando Redis.
-    assert all(borra for _jid, borra in rq_falso["borrados"])
+    # Dos trabajos con datos (se borran de verdad, traza incluida: si no,
+    # seguiría ocupando Redis) y uno que solo era un id en el registro. Lo
+    # que NO vale es cantar tres descartados: el recuento es la única prueba
+    # de que la memoria se ha liberado.
+    assert hecho["descartados"] == 2
+    assert hecho["sin_datos"] == 1
+    assert hecho["fallos"] == 0
+    assert hecho["quedan"] == 0
+    assert rq_falso["borrados"] == ["j1", "j3"]
+    assert rq_falso["quitados_del_registro"] == ["j2"]
+
+
+def test_el_filtro_de_funcion_no_casa_por_el_rabo(rq_falso):
+    """`endswith` a secas hacía que «job» casara con todos los `*_job` del
+    sistema: se reencolaría cualquier cosa."""
+    out = registro_fallidos.reencolar(
+        "brevo:push_contact", funcion="job", probar=False,
+        conn=rq_falso["conn"])
+    assert out["elegidos"] == 0 and rq_falso["reencolados"] == []
+
+    out = registro_fallidos.reencolar(
+        "brevo:push_contact", funcion="push_contact_job", probar=False,
+        conn=rq_falso["conn"])
+    assert rq_falso["reencolados"] == ["j3"]
+
+
+def test_la_previa_dice_hasta_donde_ha_mirado(rq_falso):
+    """Con 146.876 entradas no se puede leer el registro entero dentro de una
+    petición: se recorre por páginas y se dice cuántas se han revisado."""
+    out = registro_fallidos.reencolar(
+        "brevo:push_contact", limite=1, probar=True, conn=rq_falso["conn"])
+    assert out["elegidos"] == 1
+    assert out["revisados"] == 3        # una página, que aquí son los tres
+    assert out["ventana_agotada"] is False

@@ -176,3 +176,85 @@ def test_desactivar_en_ajustes_saca_la_comprobacion_del_panel(http, factory):
     res = http.get("/api/erp/cuadre/resumen", headers=h).json()
     assert "pedido_sin_aprobar" not in [c["id"] for c in res["checks"]]
     assert res["contadores"]["total"] == 0
+
+
+# --- colas: reencolar y vaciar el registro de fallidos -----------------------
+
+
+def _parche_colas(monkeypatch) -> dict:
+    """Sin Redis: se sustituyen las dos operaciones y se mira qué se pidió."""
+    from app.erp.api import cuadre as api_cuadre
+
+    visto: dict = {}
+
+    def _reencolar(cola, *, funcion=None, limite=0, probar=True):
+        visto["reencolar"] = {"cola": cola, "funcion": funcion,
+                              "limite": limite, "probar": probar}
+        return {"cola": cola, "funcion": funcion, "probar": probar,
+                "en_registro": 7, "elegidos": 2, "sin_datos": 0,
+                "reencolados": 0 if probar else 2, "fallos_al_reencolar": 0,
+                "tope": limite, "revisados": 7, "ventana_agotada": False}
+
+    def _vaciar(cola, *, probar=True):
+        visto["vaciar"] = {"cola": cola, "probar": probar}
+        return {"cola": cola, "probar": probar, "en_registro": 7,
+                "descartados": 0 if probar else 6, "sin_datos": 1,
+                "fallos": 0, "quedan": 0, "tope": 20_000}
+
+    monkeypatch.setattr(api_cuadre.registro_fallidos, "reencolar", _reencolar)
+    monkeypatch.setattr(api_cuadre.registro_fallidos, "vaciar", _vaciar)
+    monkeypatch.setattr(api_cuadre, "_cola_valida", lambda nombre: nombre)
+    return visto
+
+
+def test_vaciar_una_cola_no_lo_puede_hacer_quien_solo_ve_el_cuadre(
+    http, factory, monkeypatch
+):
+    """El panel es de solo lectura y su capacidad la tiene también el rol de
+    pedidos. Vaciar el registro es irreversible: solo admin."""
+    _parche_colas(monkeypatch)
+    r = http.post("/api/erp/cuadre/colas/vaciar",
+                  json={"cola": "brevo:push_contact", "probar": False},
+                  headers=auth_headers(http, "pedidos"))
+    assert r.status_code == 403, r.text
+
+
+def test_vaciar_una_cola_deja_fila_de_auditoria_con_cuantos(
+    http, factory, monkeypatch
+):
+    from app.models.crm import AuditLog
+
+    visto = _parche_colas(monkeypatch)
+    previa = http.post("/api/erp/cuadre/colas/vaciar",
+                       json={"cola": "brevo:push_contact"},
+                       headers=auth_headers(http, "admin"))
+    assert previa.status_code == 200, previa.text
+    assert previa.json()["descartados"] == 0      # la vista previa no toca
+    assert visto["vaciar"]["probar"] is True
+    with factory() as s:
+        assert s.query(AuditLog).filter(
+            AuditLog.action == "queue.failed_cleared").count() == 0
+
+    hecho = http.post("/api/erp/cuadre/colas/vaciar",
+                      json={"cola": "brevo:push_contact", "probar": False},
+                      headers=auth_headers(http, "admin"))
+    assert hecho.status_code == 200, hecho.text
+    assert hecho.json()["descartados"] == 6
+    with factory() as s:
+        fila = s.query(AuditLog).filter(
+            AuditLog.action == "queue.failed_cleared").one()
+        assert fila.target_id == "brevo:push_contact"
+        assert "6" in (fila.metadata_json or "")
+
+
+def test_vaciar_no_acepta_un_filtro_que_luego_se_ignora(http, monkeypatch):
+    """`funcion`/`limite` en vaciar hacían parecer filtrada una petición que
+    se lleva el registro entero."""
+    _parche_colas(monkeypatch)
+    r = http.post(
+        "/api/erp/cuadre/colas/vaciar",
+        json={"cola": "brevo:push_contact", "probar": False,
+              "funcion": "push_contact_job"},
+        headers=auth_headers(http, "admin"),
+    )
+    assert r.status_code == 422, r.text

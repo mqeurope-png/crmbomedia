@@ -493,3 +493,66 @@ def test_reprocesar_un_lote_ya_procesado_no_duplica(session_factory, monkeypatch
 
     with session_factory() as session:
         assert len(session.scalars(select(ActivityEvent)).all()) == 3
+
+
+def test_un_integrityerror_que_no_es_duplicado_no_se_cuenta_como_hecho(
+    session_factory, monkeypatch
+):
+    """Tratar cualquier `IntegrityError` como «duplicado» a nivel INFO perdía
+    el evento sin dejar rastro: una clave ajena rota (el contacto borrado a
+    media operación) se contaría como procesada."""
+    from sqlalchemy.exc import IntegrityError
+
+    with session_factory() as session:
+        llamadas = {"n": 0}
+        real_flush = session.flush
+
+        def flush_que_revienta_la_segunda(*a, **kw):
+            llamadas["n"] += 1
+            if llamadas["n"] == 2:
+                raise IntegrityError("INSERT", {}, Exception("FK rota"))
+            return real_flush(*a, **kw)
+
+        monkeypatch.setattr(session, "flush", flush_que_revienta_la_segunda)
+        with pytest.raises(IntegrityError):
+            process_brevo_webhook_event(
+                session, _event("delivered", **{"message-id": "<fk@brevo>"}),
+                account_id="main",
+            )
+
+
+def test_la_carrera_entre_dos_workers_marcando_el_evento_no_tumba_el_lote(
+    session_factory,
+):
+    """Dos entregas del mismo evento a la vez rompen en la clave única de
+    `webhook_event_seen`, antes de llegar a `activity_events`. Sin deshacer,
+    la sesión quedaba envenenada y se llevaba por delante el resto del lote."""
+    from datetime import UTC, datetime
+
+    from app.integrations.brevo.webhooks import mark_event_seen
+    from app.models.brevo import WebhookEventSeen
+
+    with session_factory() as a, session_factory() as b:
+        # El otro worker se cuela justo entre el SELECT y el INSERT de este.
+        carrera = {"hecha": False}
+        flush_real = b.flush
+
+        def flush_con_carrera(*args, **kwargs):
+            if not carrera["hecha"]:
+                carrera["hecha"] = True
+                a.add(WebhookEventSeen(system="brevo",
+                                       event_key="clave-en-carrera",
+                                       seen_at=datetime.now(UTC)))
+                a.commit()
+            return flush_real(*args, **kwargs)
+
+        b.flush = flush_con_carrera  # type: ignore[method-assign]
+        assert mark_event_seen(b, "clave-en-carrera") is False
+
+        # Y la sesión sigue usable: el siguiente evento del lote entra.
+        b.flush = flush_real  # type: ignore[method-assign]
+        assert mark_event_seen(b, "otra-clave") is True
+        assert b.scalar(
+            select(WebhookEventSeen).where(
+                WebhookEventSeen.event_key == "otra-clave")
+        ) is not None

@@ -10,8 +10,13 @@ Reglas:
     devuelve un ejemplo. Es lo que ve quien va a pulsar el botón.
   - **Por cola y, si se quiere, por función**: nadie reencola «todo» sin
     querer.
-  - **Con tope**: 146.876 trabajos de `brevo:push_contact` no se reencolan
-    de golpe, ni tiene sentido hacerlo (son un 400 de datos).
+  - **Con tope, y por páginas**: el registro de `brevo:push_contact` tiene
+    146.876 entradas. Nada aquí puede leerlas todas de golpe, porque esto
+    corre dentro de una petición HTTP: se recorre por páginas y se para en
+    el tope o al agotar la ventana de búsqueda.
+  - **Los recuentos dicen hasta dónde se ha mirado** (`revisados`,
+    `ventana_agotada`, `quedan`). Un tope silencioso se lee como «ya está
+    todo» cuando no lo está.
   - Reencolar NO es idempotente por sí mismo: lo es el trabajo. Para los
     webhooks de Brevo lo es desde que la inserción de eventos reconoce los
     que ya están.
@@ -24,8 +29,21 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-#: Tope por llamada. Reencolar de a poco deja ver el efecto antes de seguir.
+#: Tope de reencolados por llamada. De a poco deja ver el efecto antes de
+#: seguir.
 TOPE_POR_LLAMADA = 500
+
+#: Tope de descartados por llamada. Borrar es una ida y vuelta a Redis por
+#: trabajo; con 146.876 de golpe la petición se agotaría a media faena y el
+#: recuento se perdería. La respuesta dice cuántos `quedan`.
+TOPE_VACIAR = 20_000
+
+#: Ids que se piden a Redis de una vez.
+PAGINA = 500
+
+#: Cuántas entradas del registro se miran como mucho buscando las que
+#: encajan con `funcion`. Si se agota, la respuesta lo dice.
+VENTANA_DE_BUSQUEDA = 20_000
 
 
 def _nombre_funcion(job: Any) -> str:
@@ -35,15 +53,31 @@ def _nombre_funcion(job: Any) -> str:
         return ""
 
 
+def _encaja(job: Any, funcion: str | None) -> bool:
+    """`funcion` vale como nombre corto o como ruta entera, pero por tramos
+    completos. Con `endswith` a secas, «job» habría casado con todos los
+    `*_job` del sistema."""
+    if not funcion:
+        return True
+    nombre = _nombre_funcion(job)
+    return nombre == funcion or nombre.rsplit(".", 1)[-1] == funcion
+
+
+def _ids(conn: Any, key: str, desde: int, hasta: int) -> list[str]:
+    """Una página del registro, de los más ANTIGUOS a los más nuevos: se
+    recupera en el orden en que se perdió."""
+    return [i.decode() if isinstance(i, bytes) else str(i)
+            for i in conn.zrange(key, desde, hasta)]
+
+
 def reencolar(
     cola: str, *, funcion: str | None = None, limite: int = TOPE_POR_LLAMADA,
     probar: bool = True, conn: Any = None,
 ) -> dict[str, Any]:
     """Vuelve a encolar trabajos del registro de fallidos de `cola`.
 
-    `funcion` filtra por el nombre completo del job (`endswith`, así vale
-    tanto el nombre corto como la ruta entera). Devuelve el recuento y, en
-    vista previa, un ejemplo de lo que se reencolaría.
+    Devuelve el recuento, cuántas entradas se han mirado y, en vista previa,
+    un ejemplo de lo que se reencolaría.
     """
     from rq import Queue  # noqa: PLC0415
     from rq.job import Job  # noqa: PLC0415
@@ -56,29 +90,36 @@ def reencolar(
     q = Queue(cola, connection=conn)
     registro = FailedJobRegistry(queue=q)
     total_en_registro = len(registro)
-    # Los más ANTIGUOS primero: se recupera en el orden en que se perdió.
-    ids = [i.decode() if isinstance(i, bytes) else str(i)
-           for i in conn.zrange(registro.key, 0, -1)]
 
-    elegidos: list[Job] = []
+    elegidos: list[Any] = []
     sin_datos = 0
-    for job in Job.fetch_many(ids, connection=conn):
-        if len(elegidos) >= limite:
+    revisados = 0
+    while len(elegidos) < limite and revisados < VENTANA_DE_BUSQUEDA:
+        pagina = _ids(conn, registro.key, revisados, revisados + PAGINA - 1)
+        if not pagina:
             break
-        if job is None:
-            # El trabajo caducó y solo queda su id en el registro: no hay
-            # argumentos que reencolar.
-            sin_datos += 1
-            continue
-        if funcion and not _nombre_funcion(job).endswith(funcion):
-            continue
-        elegidos.append(job)
+        revisados += len(pagina)
+        for job in Job.fetch_many(pagina, connection=conn):
+            if job is None:
+                # El trabajo caducó y solo queda su id en el registro: no hay
+                # argumentos que reencolar.
+                sin_datos += 1
+                continue
+            if not _encaja(job, funcion):
+                continue
+            elegidos.append(job)
+            if len(elegidos) >= limite:
+                break
+        if len(pagina) < PAGINA:
+            break
 
     salida: dict[str, Any] = {
         "cola": cola, "funcion": funcion, "probar": probar,
         "en_registro": total_en_registro, "elegidos": len(elegidos),
         "sin_datos": sin_datos, "reencolados": 0, "fallos_al_reencolar": 0,
-        "tope": limite,
+        "tope": limite, "revisados": revisados,
+        "ventana_agotada": revisados >= VENTANA_DE_BUSQUEDA
+        and len(elegidos) < limite,
     }
     if elegidos:
         primero = elegidos[0]
@@ -99,16 +140,21 @@ def reencolar(
                            exc_info=True)
     logger.warning(
         "colas: reencolados %d trabajos de %s (función=%s, quedaban %d en el "
-        "registro, %d sin datos)", salida["reencolados"], cola, funcion,
-        total_en_registro, sin_datos,
+        "registro, %d sin datos, %d revisados)", salida["reencolados"], cola,
+        funcion, total_en_registro, sin_datos, revisados,
     )
     return salida
 
 
 def vaciar(cola: str, *, probar: bool = True, conn: Any = None) -> dict[str, Any]:
-    """Descarta el registro de fallidos de una cola. Deja constancia de
-    cuántos se han descartado; con `probar=True` solo cuenta."""
+    """Descarta el registro de fallidos de una cola, con sus trabajos.
+
+    Deja constancia de cuántos se han descartado de verdad; con `probar=True`
+    solo cuenta. Como mucho `TOPE_VACIAR` por llamada: `quedan` dice si hay
+    que volver a pulsar.
+    """
     from rq import Queue  # noqa: PLC0415
+    from rq.job import Job  # noqa: PLC0415
     from rq.registry import FailedJobRegistry  # noqa: PLC0415
 
     from app.workers.queues import redis_connection  # noqa: PLC0415
@@ -118,19 +164,47 @@ def vaciar(cola: str, *, probar: bool = True, conn: Any = None) -> dict[str, Any
     cuantos = len(registro)
     if probar:
         return {"cola": cola, "probar": True, "en_registro": cuantos,
-                "descartados": 0}
-    descartados = 0
-    for job_id in [i.decode() if isinstance(i, bytes) else str(i)
-                   for i in conn.zrange(registro.key, 0, -1)]:
-        try:
-            # `delete_job` se lleva el trabajo y su traza; sin él solo se
-            # quita del registro y los datos siguen ocupando Redis.
-            registro.remove(job_id, delete_job=True)
-            descartados += 1
-        except Exception:  # noqa: BLE001
-            logger.warning("colas: no se pudo descartar %s de %s", job_id, cola,
-                           exc_info=True)
-    logger.warning("colas: descartados %d trabajos fallidos de %s (de %d)",
-                   descartados, cola, cuantos)
+                "descartados": 0, "sin_datos": 0, "fallos": 0,
+                "quedan": cuantos, "tope": TOPE_VACIAR}
+
+    descartados = sin_datos = fallos = 0
+    while descartados + sin_datos + fallos < TOPE_VACIAR:
+        # Siempre la primera página: lo que se borra sale del registro, así
+        # que el principio se va renovando.
+        pagina = _ids(conn, registro.key, 0, PAGINA - 1)
+        if not pagina:
+            break
+        avance = 0
+        for job_id, job in zip(
+            pagina, Job.fetch_many(pagina, connection=conn), strict=False
+        ):
+            try:
+                if job is None:
+                    # Caducó el trabajo y solo queda su id: se quita del
+                    # registro, pero no había datos que liberar.
+                    conn.zrem(registro.key, job_id)
+                    sin_datos += 1
+                else:
+                    # `delete` se lleva el trabajo, su traza y su sitio en el
+                    # registro; sin él los datos siguen ocupando Redis.
+                    job.delete()
+                    descartados += 1
+                avance += 1
+            except Exception:  # noqa: BLE001 — uno malo no corta los demás
+                fallos += 1
+                logger.warning("colas: no se pudo descartar %s de %s", job_id,
+                               cola, exc_info=True)
+        if avance == 0:
+            # Nada salió del registro: seguir leería la misma página para
+            # siempre.
+            break
+
+    quedan = len(registro)
+    logger.warning(
+        "colas: descartados %d trabajos fallidos de %s (%d sin datos, %d "
+        "fallos, de %d; quedan %d)", descartados, cola, sin_datos, fallos,
+        cuantos, quedan,
+    )
     return {"cola": cola, "probar": False, "en_registro": cuantos,
-            "descartados": descartados}
+            "descartados": descartados, "sin_datos": sin_datos,
+            "fallos": fallos, "quedan": quedan, "tope": TOPE_VACIAR}
