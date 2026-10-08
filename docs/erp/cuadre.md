@@ -236,6 +236,21 @@ del pedido de BoHub.
     - Nace del `sync_orders_backfill('boprint', '2026-07-04')` que falló el
       03/08/2026 (`WooError: GET /orders → 400`) y nadie vio hasta octubre.
 
+### CRM (fuente MySQL)
+
+18. `lead_web_sin_comercial` (media) — **Lead web sin comercial asignado.**
+    Leads entrados por un formulario web en los últimos N días (7 por
+    defecto) que siguen con `owner_user_id` a NULL: no están en la cartera de
+    nadie y su aviso no ha ido a ninguna persona.
+    - Enlaza a la ficha del contacto, que es donde se asigna.
+    - Si salen todos los leads de una misma web, el problema no es lead a
+      lead: mirar el modo de asignación de ese formulario.
+    - Nace de los 25 formularios cargados con `assignment_mode = 'fixed'`
+      (el válido es `fixed_owner`): el motor no lo reconocía y no asignaba
+      nada ni lo decía. Pasaron días hasta que se vio por casualidad, y entre
+      medias se quedaron sin atender un caso de soporte y una petición de
+      presupuesto reales. Esta comprobación lo habría cazado en horas.
+
 ### Integraciones (severidad alta, fuente WooCommerce)
 
 14. `pedido_woo_pagado_sin_bohub` — **Pedido pagado en WooCommerce que no está

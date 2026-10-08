@@ -125,18 +125,34 @@ def construir_lead(
 
 
 def destinatarios(session: Session, contact: Contact) -> list[tuple[str, str]]:
-    """`(correo, nombre)` sin repetir: la dirección fija de los avisos y el
-    comercial del lead (el de la regla de asignación o el propietario fijo,
-    que es quien acaba en `owner_user_id`)."""
-    fijas = [
-        d.strip() for d in (get_settings().web_forms_notify_to or "").split(",")
+    """`(correo, nombre)` sin repetir: a quién se avisa de este lead.
+
+    Si el lead tiene comercial, el aviso va **solo a él**: los comerciales
+    comparten o reenvían el buzón genérico, así que mandarlo a los dos hacía
+    que cada lead llegara dos veces y acabara sin leerse.
+
+    Si NO tiene comercial, va al genérico (`WEB_FORMS_NOTIFY_TO`), que es
+    justo el caso en el que hace falta que alguien lo vea: así un lead sin
+    asignar no se queda sin aviso de ninguna clase.
+
+    `WEB_FORMS_NOTIFY_ALWAYS=true` vuelve al comportamiento de antes (los dos
+    siempre), por si el reparto de buzones cambia.
+    """
+    settings = get_settings()
+    fijas: list[tuple[str, str]] = [
+        (d.strip(), "") for d in (settings.web_forms_notify_to or "").split(",")
         if d.strip()
     ]
-    salida: list[tuple[str, str]] = [(d, "") for d in fijas]
+    comercial: list[tuple[str, str]] = []
     if contact.owner_user_id:
         owner = session.get(User, contact.owner_user_id)
         if owner is not None and owner.email:
-            salida.append((owner.email, owner.full_name or owner.email))
+            comercial.append((owner.email, owner.full_name or owner.email))
+    # Sin comercial con correo, el genérico es el único que puede verlo.
+    if comercial and not settings.web_forms_notify_always:
+        salida = comercial
+    else:
+        salida = fijas + comercial
     vistos: set[str] = set()
     unicos: list[tuple[str, str]] = []
     for correo, nombre in salida:

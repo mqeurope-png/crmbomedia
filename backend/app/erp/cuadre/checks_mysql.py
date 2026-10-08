@@ -14,6 +14,7 @@ from sqlalchemy import select
 
 from app.erp.cuadre.contexto import Contexto
 from app.erp.cuadre.registry import (
+    ENTIDAD_CONTACTO,
     ENTIDAD_CUENTA,
     ENTIDAD_FILA_HOJA,
     ENTIDAD_PEDIDO,
@@ -658,4 +659,55 @@ def envio_tramitado_sin_etiqueta(ctx: Contexto) -> Iterator[Hallazgo]:
             arreglo_boton="Ir a «Pendiente de recogida»",
             huella_datos={"shipment_code": g.get("shipment_code"), "estado": estado},
             datos={"desde": desde.isoformat()},
+        )
+
+
+@comprobacion(
+    id="lead_web_sin_comercial", orden=18,
+    titulo="Lead web sin comercial asignado",
+    descripcion="Lead entrado por un formulario web en los últimos N días que sigue "
+                "sin comercial: nadie lo tiene en su cartera y el aviso no ha ido a "
+                "ninguna persona.",
+    severidad="media", fuente=FUENTE_MYSQL, grupo="crm",
+    dias_defecto=7, dias_texto="Solo leads de los últimos N días",
+)
+def lead_web_sin_comercial(ctx: Contexto) -> Iterator[Hallazgo]:
+    """La red que habría cazado en horas lo que se tardó días en ver: los 25
+    formularios estaban con un `assignment_mode` que el motor no entendía, así
+    que ningún lead se asignaba a nadie y nadie se enteró."""
+    from datetime import timedelta  # noqa: PLC0415
+
+    from app.models.crm import Contact  # noqa: PLC0415
+    from app.services.web_forms.sitios import (  # noqa: PLC0415
+        ORIGEN_PREFIJO,
+        etiqueta_de_origen,
+    )
+
+    ventana = ctx.dias("lead_web_sin_comercial", 7)
+    limite = ctx.ahora - timedelta(days=ventana)
+    leads = ctx.cached("leads_web_sin_owner", lambda: list(ctx.session.scalars(
+        select(Contact)
+        .where(
+            Contact.owner_user_id.is_(None),
+            Contact.origin_account_id.like(f"{ORIGEN_PREFIJO}:%"),
+            Contact.created_at >= limite,
+        )
+        .order_by(Contact.created_at.desc())
+    )))
+    for c in leads:
+        nombre = " ".join(p for p in (c.first_name, c.last_name) if p).strip()
+        procedencia = etiqueta_de_origen(c.origin_account_id) or _s(c.origin)
+        dias = ctx.dias_desde(c.created_at)
+        yield Hallazgo(
+            entidad_tipo=ENTIDAD_CONTACTO, entidad_id=c.id,
+            etiqueta=nombre or _s(c.email) or c.id,
+            detalle=f"Lead de {procedencia} entrado hace {dias} día(s) y todavía sin "
+                    f"comercial: no está en la cartera de nadie.",
+            pista_de_arreglo="Asígnale un comercial en su ficha. Si se repite con todos "
+                             "los leads de una web, mira el modo de asignación de ese "
+                             "formulario en CRM · Formularios.",
+            enlace=f"/contacts/{c.id}", arreglo_enlace=f"/contacts/{c.id}",
+            arreglo_boton="Abrir la ficha",
+            huella_datos={"origen": _s(c.origin_account_id)},
+            datos={"email": _s(c.email), "creado": c.created_at.isoformat()},
         )

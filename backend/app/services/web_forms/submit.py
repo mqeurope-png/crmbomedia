@@ -29,7 +29,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.crm import ActivityEvent, Contact
-from app.models.web_forms import FormSubmission, WebForm
+from app.models.web_forms import ASSIGNMENT_MODES, FormSubmission, WebForm
 from app.repositories import crm as crm_repository
 from app.services.web_forms.antispam import (
     check_and_increment_rate_limit,
@@ -308,7 +308,14 @@ def _apply_assignment(session: Session, form: WebForm, contact: Contact) -> None
         from app.services import assignment_rules  # noqa: PLC0415
 
         assignment_rules.evaluate_for_contact(session, contact, trigger="web_form")
-    elif mode == "fixed_owner" and form.fixed_owner_user_id:
+    elif mode == "fixed_owner":
+        if not form.fixed_owner_user_id:
+            logger.warning(
+                "web_forms.asignacion: el formulario %s (%s) es de propietario "
+                "fijo pero no tiene ninguno puesto; el lead %s queda sin "
+                "comercial", form.slug, form.id, contact.id,
+            )
+            return
         from app.repositories import assignments as assignments_repo  # noqa: PLC0415
 
         assignments_repo.add_assignment(
@@ -318,7 +325,16 @@ def _apply_assignment(session: Session, form: WebForm, contact: Contact) -> None
             is_primary=True,
             source="web_form",
         )
-    # mode == "none" → owner_user_id queda NULL (asignación manual después).
+    elif mode != "none":
+        # «none» sí es un modo: el lead se asigna a mano después. Cualquier
+        # otra cosa es un valor que el motor no entiende, y antes no hacía
+        # nada ni lo decía: los 25 formularios estuvieron días con «fixed»
+        # en vez de «fixed_owner» y ningún lead se asignó a nadie.
+        logger.warning(
+            "web_forms.asignacion: assignment_mode desconocido %r en el "
+            "formulario %s (%s); el lead %s queda sin comercial. Válidos: %s",
+            mode, form.slug, form.id, contact.id, ", ".join(sorted(ASSIGNMENT_MODES)),
+        )
 
 
 def _apply_form_tag(session: Session, form: WebForm, contact: Contact) -> None:
