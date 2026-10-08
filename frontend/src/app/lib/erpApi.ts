@@ -5103,3 +5103,83 @@ export async function comprobarCuadre(): Promise<{
 export async function exportCuadreXlsx(): Promise<Blob> {
   return apiDownloadBlob("/api/erp/cuadre/export");
 }
+
+// --- ERP · Cuadre → Colas: registros de fallidos de RQ ------------------------
+// Hasta ahora la única salida para 149.603 trabajos fallidos era entrar al
+// contenedor. Reencolar y vaciar son de admin y van con vista previa.
+
+export interface ColasResumen {
+  fallidos_por_cola: Record<string, number>;
+  fallidos_total: number;
+  bytes_por_trabajo_medio: number;
+  bytes_estimados: number;
+  redis_usada_bytes: number;
+  muestra: number;
+}
+
+export interface ColaTrabajoFallido {
+  id: string;
+  funcion: string;
+  fecha: string | null;
+  argumentos: string;
+  error: string;
+}
+
+export interface ColaOperacion {
+  cola: string;
+  probar: boolean;
+  en_registro: number;
+  /** reencolar */
+  elegidos?: number;
+  reencolados?: number;
+  fallos_al_reencolar?: number;
+  revisados?: number;
+  ventana_agotada?: boolean;
+  /** vaciar */
+  descartados?: number;
+  sin_datos?: number;
+  fallos?: number;
+  quedan?: number;
+  tope?: number;
+  ejemplo?: { id: string; funcion: string; fecha: string | null };
+}
+
+export async function getColasResumen(): Promise<ColasResumen> {
+  return apiFetch<ColasResumen>("/api/erp/cuadre/colas");
+}
+
+/** Los fallidos de una cola con sus argumentos: es lo que hace falta para
+ *  repetir a mano una operación perdida. */
+export async function listColaFallidos(
+  cola: string, opts: { limite?: number; funcion?: string } = {},
+): Promise<{
+  cola: string; funcion: string | null; en_el_registro: number;
+  mostrados: number; trabajos: ColaTrabajoFallido[];
+}> {
+  return apiFetch(
+    `/api/erp/cuadre/colas/${encodeURIComponent(cola)}/fallidos${qs({
+      limite: opts.limite, funcion: opts.funcion,
+    })}`,
+  );
+}
+
+export async function reencolarCola(
+  cola: string, opts: { probar: boolean; limite?: number; funcion?: string },
+): Promise<ColaOperacion> {
+  return apiFetch<ColaOperacion>("/api/erp/cuadre/colas/reencolar", {
+    method: "POST",
+    body: JSON.stringify({
+      cola, probar: opts.probar, limite: opts.limite ?? 500,
+      ...(opts.funcion ? { funcion: opts.funcion } : {}),
+    }),
+  });
+}
+
+export async function vaciarCola(
+  cola: string, opts: { probar: boolean },
+): Promise<ColaOperacion> {
+  return apiFetch<ColaOperacion>("/api/erp/cuadre/colas/vaciar", {
+    method: "POST",
+    body: JSON.stringify({ cola, probar: opts.probar }),
+  });
+}

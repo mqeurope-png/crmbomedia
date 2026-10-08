@@ -264,3 +264,53 @@ def colas_vaciar(
         logger.warning("cuadre: %s descartó %d trabajos fallidos de %s",
                        current_user.email, salida["descartados"], payload.cola)
     return salida
+
+
+@router.get("/colas")
+def colas_resumen(
+    current_user: User = Depends(require_cuadre),
+) -> dict[str, Any]:
+    """Qué hay en los registros de fallidos y cuánta memoria de Redis ocupan.
+
+    Solo lee. La memoria se estima por muestreo: medir 149.603 trabajos uno a
+    uno costaría más que el dato."""
+    from app.erp.cuadre.checks_colas import memoria_de_colas  # noqa: PLC0415
+
+    _ = current_user
+    return memoria_de_colas()
+
+
+@router.get("/colas/{cola:path}/fallidos")
+def colas_fallidos(
+    cola: str,
+    limite: int = Query(default=50, ge=1, le=500),
+    funcion: str | None = Query(default=None, max_length=200),
+    current_user: User = Depends(require_cuadre),
+) -> dict[str, Any]:
+    """Los trabajos fallidos de una cola, con función, fecha, argumentos y
+    error, los más recientes primero.
+
+    Es lo que hace falta para **repetir a mano** una operación perdida: los
+    ocho documentos de FACTUSOL que no llegaron llevan sus argumentos aquí.
+    Solo lee: no reintenta ni borra."""
+    from app.erp.cuadre.checks_colas import leer_fallidos  # noqa: PLC0415
+
+    _ = current_user
+    trabajos, totales = leer_fallidos(max_por_cola=max(limite * 4, 200))
+    corta = (funcion or "").strip()
+    filas = [
+        {
+            "id": t.id, "funcion": t.funcion,
+            "fecha": t.fecha.isoformat() if t.fecha else None,
+            "argumentos": t.argumentos, "error": t.error,
+        }
+        for t in trabajos
+        if t.cola == cola
+        and (not corta or t.funcion == corta or t.funcion.rsplit(".", 1)[-1] == corta)
+    ]
+    return {
+        "cola": cola, "funcion": corta or None,
+        "en_el_registro": totales.get(cola, 0),
+        "mostrados": len(filas[:limite]),
+        "trabajos": filas[:limite],
+    }

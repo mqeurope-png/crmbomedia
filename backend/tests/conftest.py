@@ -75,4 +75,4 @@ def _cuadre_sin_redis(monkeypatch):
     que el test diga otra cosa (tests/test_cuadre_trabajos_fallidos.py)."""
     import app.erp.cuadre.checks_colas as checks_colas
 
-    monkeypatch.setattr(checks_colas, "leer_fallidos", lambda *a, **k: [])
+    monkeypatch.setattr(checks_colas, "leer_fallidos", lambda *a, **k: ([], {}))

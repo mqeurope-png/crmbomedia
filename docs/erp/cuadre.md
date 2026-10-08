@@ -225,12 +225,27 @@ del pedido de BoHub.
       llevaban 18 días sin sincronizar, bloqueadas por filas «en curso» de
       agosto.
 
-17. `trabajo_cola_fallido` — **Trabajo en cola fallido sin revisar.** Lee los
-    registros de fallidos de RQ de todas las colas y lista cada trabajo con su
-    función, argumentos, fecha y la última línea del error.
-    - Solo lee: no reintenta ni borra nada de las colas.
-    - Mecánica de «revisado» de siempre: los antiguos se descartan y solo avisa
-      de los nuevos (o del mismo si vuelve a fallar con otro error).
+17. `trabajo_cola_fallido` — **Trabajos en cola fallidos sin revisar.** Lee los
+    registros de fallidos de RQ de todas las colas, **agrupados por cola +
+    función + tipo de error**.
+    - **Un descuadre por grupo, no por trabajo.** Con 149.603 fallidos la
+      versión anterior listaba 300 líneas de lo mismo y no se podía leer.
+      1.687 fallos iguales son UNA línea, con su recuento, desde cuándo, hasta
+      cuándo y un ejemplo con sus argumentos.
+    - El tipo de error se normaliza (ids, uuids, fechas y correos fuera) para
+      que el mismo problema con otro id caiga en el mismo grupo. Lo que **no**
+      se normaliza: los números sueltos, porque ahí están los códigos de
+      estado y las aridades — un 400 y un 404, o «takes 2» y «takes 3», son
+      problemas distintos.
+    - **La severidad la marca el dato**: sigue pasando y ≥100 fallos → alta;
+      sigue pasando → media; el último fallo es de hace más de una semana →
+      baja (lo que queda es limpiar el registro).
+    - Tope de 2.000 entradas por cola, porque esto corre dentro de la petición
+      web. Si el registro tiene más, el recuento se enseña como «al menos N» y
+      `recuento_recortado` lo dice.
+    - La huella lleva el tipo de error y el **día** del último fallo: con el
+      recuento, cada fallo nuevo reabriría un descuadre ya revisado.
+    - Solo lee: no reintenta ni borra nada. Eso está en «Colas», abajo.
     - Sin Redis la comprobación falla (sale en el resumen) y los avisos que ya
       había se quedan como estaban.
     - Nace del `sync_orders_backfill('boprint', '2026-07-04')` que falló el
@@ -291,6 +306,27 @@ del pedido de BoHub.
   **ventana**, no una antigüedad mínima.
 
 ---
+
+## Colas · los registros de fallidos
+
+Al final de la pantalla del Cuadre, **«Colas · trabajos fallidos»**. Hasta
+ahora la única salida para 149.603 trabajos fallidos era entrar al contenedor.
+
+- **Cuánta memoria ocupan.** Se estima por muestreo: `MEMORY USAGE` de 25
+  claves por cola, por la media, por el total. Medir 149.603 una a una costaría
+  más que el dato. Se enseña junto a la memoria total de Redis, que es con lo
+  que se compara para saber si preocupa.
+- **«Ver»** lista los fallidos de una cola con función, fecha, **argumentos** y
+  error. Los argumentos son lo que hace falta para repetir a mano una operación
+  perdida (por ejemplo, los ocho documentos de FACTUSOL que no llegaron).
+  Cualquiera con la capacidad del Cuadre puede verlo.
+- **«Reencolar…»** y **«Vaciar…»** son de **admin**: no son leer el aviso, son
+  mover trabajo de verdad y borrar sin vuelta atrás. Las dos van con **vista
+  previa obligatoria** —primero cuentan y enseñan un ejemplo— y vaciar pide
+  además confirmación. Las dos dejan **fila de auditoría**
+  (`queue.failed_requeued`, `queue.failed_cleared`) con quién y cuántos.
+- Con topes por pulsación (500 al reencolar, 20.000 al vaciar) y `quedan` en la
+  respuesta: para 146.876 son varias pulsaciones, a propósito.
 
 ## Cómo añadir una comprobación
 

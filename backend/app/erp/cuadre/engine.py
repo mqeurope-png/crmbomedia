@@ -109,7 +109,8 @@ def aplicar(
         if f is None:
             session.add(CuadreFinding(
                 check_id=comp.id, entidad_tipo=h.entidad_tipo, entidad_id=eid,
-                huella=huella, detalle_json=detalle, severidad=comp.severidad,
+                huella=huella, detalle_json=detalle,
+                severidad=h.severidad or comp.severidad,
                 estado=ESTADO_ABIERTO, primera_vez_at=ahora, ultima_vez_at=ahora,
                 abierto_at=ahora,
             ))
@@ -127,7 +128,7 @@ def aplicar(
         f.entidad_tipo = h.entidad_tipo
         f.huella = huella
         f.detalle_json = detalle
-        f.severidad = comp.severidad
+        f.severidad = h.severidad or comp.severidad
         f.ultima_vez_at = ahora
     for eid, f in existentes.items():
         if eid not in vistos and f.estado != ESTADO_RESUELTO:

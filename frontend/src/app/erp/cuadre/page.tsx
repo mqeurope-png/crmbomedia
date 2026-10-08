@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { ColasFallidasSection } from "../../components/erp/ColasFallidasSection";
 import { PageHeader } from "../../components/PageHeader";
 import {
   comprobarCuadre,
@@ -17,6 +18,7 @@ import {
   type CuadreSeveridad,
   type CuadreTarjeta,
 } from "../../lib/erpApi";
+import { getCurrentUser, type User } from "../../lib/api";
 import { extractErrorMessage } from "../../lib/errors";
 
 /** ERP · Cuadre — descuadres entre BoHub, FACTUSOL, envíos y la hoja de
@@ -91,6 +93,9 @@ export default function CuadrePage() {
   const [severidad, setSeveridad] = useState<CuadreSeveridad | "">("");
   const [checkId, setCheckId] = useState("");
   const [soloNuevos, setSoloNuevos] = useState(false);
+  // Reencolar y vaciar los registros de fallidos son de admin: no son «leer el
+  // aviso», son mover trabajo de verdad y borrar sin vuelta atrás.
+  const [usuario, setUsuario] = useState<User | null>(null);
   const [incluirRevisados, setIncluirRevisados] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [revisando, setRevisando] = useState<string | null>(null);
@@ -103,6 +108,10 @@ export default function CuadrePage() {
     solo_nuevos: soloNuevos,
     incluir_revisados: incluirRevisados,
   }), [severidad, soloNuevos, incluirRevisados]);
+
+  useEffect(() => {
+    getCurrentUser().then(setUsuario).catch(() => undefined);
+  }, []);
 
   // Filas: UNA sola vía de carga (filtros + recargas tras las acciones), con
   // guarda: una respuesta vieja nunca pisa la de los filtros actuales.
@@ -483,6 +492,8 @@ export default function CuadrePage() {
           );
         })}
       </div>
+
+      <ColasFallidasSection puedeOperar={usuario?.role === "admin"} />
     </main>
   );
 }
