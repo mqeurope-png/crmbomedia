@@ -353,6 +353,17 @@ class Contact(TimestampMixin, Base):
     brevo_last_synced_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
+    # Brevo rechazó la subida con un 4xx (migración 0129). 146.876 trabajos
+    # de `brevo:push_contact` fallaron con el mismo 400 del 25/06 al 14/09:
+    # un error de DATOS no se arregla repitiendo, y el runner periódico los
+    # volvía a encolar sin parar. Con esto el contacto queda marcado, deja de
+    # encolarse, y el motivo (lo que contesta Brevo) está a una consulta de
+    # distancia. Se reintenta solo si el contacto cambia después del rechazo:
+    # eso es lo único que puede arreglarlo.
+    brevo_rejected_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    brevo_rejected_reason: Mapped[str | None] = mapped_column(String(500))
     # BoHub ERP Fase A (migración 0080). Vínculo con el contacto FACTUSOL
     # y marca de contacto principal de su empresa a efectos del ERP.
     factusol_contact_id: Mapped[str | None] = mapped_column(String(36))

@@ -223,6 +223,28 @@ def push_contact_to_brevo(contact_id: str) -> None:
             raise
 
 
+def marcar_rechazado(contact: Contact, exc: Exception) -> None:
+    """Apunta EN EL CONTACTO que Brevo lo rechazó, y con qué motivo.
+
+    La cuarentena en Redis que ya había limita el ritmo, pero su contador
+    caduca a las 6 horas: pasada la ventana el contacto se vuelve a intentar,
+    y así 146.876 veces del 25/06 al 14/09. Un 4xx es un error de DATOS y no
+    se arregla repitiendo, así que el rechazo se guarda en la base de datos,
+    donde no caduca, y `should_push` deja de encolarlo hasta que el contacto
+    cambie, que es lo único que puede corregirlo.
+
+    El motivo es lo que contesta Brevo, que desde #522 incluye el cuerpo de
+    la respuesta: es lo que hace diagnosticable el 400. El llamador ya tiene
+    la sesión abierta y hace `commit` después.
+    """
+    contact.brevo_rejected_at = datetime.now(UTC)
+    contact.brevo_rejected_reason = str(exc)[:500]
+    logger.warning(
+        "brevo.push_contact RECHAZADO contact_id=%s: %s — no se volverá a "
+        "encolar hasta que el contacto cambie", contact.id, exc,
+    )
+
+
 def _push_one(session: Session, contact_id: str) -> None:
     contact = session.get(Contact, contact_id)
     if contact is None:
@@ -328,6 +350,10 @@ def _push_one(session: Session, contact_id: str) -> None:
         # supera el límite de intentos (cuarentena con backoff). Así un
         # contacto imposible no satura el worker en bucle.
         attempts = record_push_failure(contact_id)
+        # Además del contador en Redis (que caduca), el rechazo se apunta en
+        # el contacto: es lo que impide que el runner periódico lo reencole
+        # para siempre, y donde queda el motivo que da Brevo.
+        marcar_rechazado(contact, exc)
         record_event(
             session,
             action=Action.BREVO_CONTACT_PUSH_FAILED,

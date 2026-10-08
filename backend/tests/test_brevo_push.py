@@ -1102,3 +1102,96 @@ def test_quarantine_helpers_count_expire_and_fail_open():
     with patch.object(push_jobs, "redis_connection", side_effect=RuntimeError("down")):
         assert push_jobs.is_push_quarantined("c1") is False
         assert push_jobs.record_push_failure("c1") == 0
+
+
+# ---------------------------------------------------------------------------
+# Un 400 no se reintenta (146.876 fallidos del 25/06 al 14/09)
+# ---------------------------------------------------------------------------
+
+
+def _cliente_que_rechaza():
+    """Un BrevoClient falso cuyo `create_contact` contesta 400 con su motivo,
+    como hace Brevo. No vale tocar `fake_brevo.create_contact`: el método vive
+    en la clase interna que fabrica `make_factory`."""
+    from app.integrations.errors import IntegrationClientError
+
+    class _Ctx:
+        def __init__(self, session, account_id, **kwargs):
+            _ = session, account_id, kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_a):
+            return False
+
+        async def get_contact(self, email):
+            raise IntegrationClientError("not found", status_code=404)
+
+        async def create_contact(self, _payload):
+            raise IntegrationClientError(
+                "400 from brevo/default", system="brevo", account_id="default",
+                status_code=400,
+                body='{"code":"invalid_parameter","message":"Invalid phone number"}',
+            )
+
+    return _Ctx
+
+
+def test_un_400_marca_el_contacto_con_el_motivo_y_no_se_reintenta(factory):
+    engine = factory.kw["bind"]
+    with factory() as session:
+        users = _user_ids(session)
+        _seed_mapping(session, user_id=users["admin"], list_id=42, list_name="Admin")
+        contact = _seed_contact(session, owner_user_id=users["admin"],
+                                email="rechazado@example.com")
+        session.commit()
+        cid = contact.id
+
+    with (
+        patch.object(push_jobs, "BrevoClient", _cliente_que_rechaza()),
+        patch("app.db.session.get_engine", return_value=engine),
+        patch.object(push_jobs, "record_push_failure", return_value=1),
+    ):
+        # El 4xx NO se relanza (así RQ no lo reencola): se apunta y se sale.
+        push_jobs.push_contact_to_brevo(cid)
+
+    with factory() as session:
+        c = session.get(Contact, cid)
+        assert c.brevo_rejected_at is not None
+        assert "invalid_parameter" in c.brevo_rejected_reason
+        assert "Invalid phone number" in c.brevo_rejected_reason
+        assert c.brevo_contact_id is None
+        # Y ya no se vuelve a encolar: eso es lo que paró los 146.876.
+        from app.services.brevo_push import should_push
+        assert should_push(c) == (False, "rejected_by_brevo")
+
+
+def test_la_marca_de_rechazo_es_pegajosa_hasta_que_se_levanta_a_mano(factory):
+    """No vale reintentar «si el contacto cambió»: el propio commit que
+    apunta el rechazo ya mueve `updated_at`. Se levanta con «Volver a subir
+    todo», que es cuando alguien ha decidido que el dato está corregido."""
+    from datetime import UTC, datetime, timedelta
+
+    from app.services.brevo_push import should_push
+
+    with factory() as session:
+        users = _user_ids(session)
+        contact = _seed_contact(session, owner_user_id=users["admin"],
+                                email="pegajoso@example.com")
+        contact.brevo_rejected_at = datetime.now(UTC)
+        contact.brevo_rejected_reason = "400 … invalid_parameter"
+        session.commit()
+        assert should_push(contact) == (False, "rejected_by_brevo")
+
+        # Tocar la ficha NO lo reactiva.
+        contact.first_name = "Otro nombre"
+        contact.updated_at = datetime.now(UTC) + timedelta(minutes=5)
+        session.commit()
+        assert should_push(contact) == (False, "rejected_by_brevo")
+
+        # Levantar la marca sí.
+        contact.brevo_rejected_at = None
+        contact.brevo_rejected_reason = None
+        session.commit()
+        assert should_push(contact) == (True, None)

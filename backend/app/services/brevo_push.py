@@ -123,6 +123,18 @@ def should_push(contact: Contact) -> tuple[bool, str | None]:
         return False, "no_email"
     if not contact.is_active:
         return False, "inactive"
+    # Brevo ya rechazó este contacto con un 4xx: es un error de DATOS y no se
+    # arregla repitiendo. 146.876 trabajos fallaron con el mismo 400 porque
+    # el runner periódico los reencolaba sin parar (la cuarentena en Redis
+    # solo lo frena 6 horas).
+    #
+    # La marca es PEGAJOSA a propósito: no vale mirar `updated_at`, porque el
+    # propio `commit` que apunta el rechazo ya lo mueve, y cualquier roce con
+    # la ficha lo movería también. Se quita a mano, con «Volver a subir todo»
+    # de la pantalla de Brevo, que es el momento en que alguien ha decidido
+    # que el dato ya está corregido.
+    if contact.brevo_rejected_at is not None:
+        return False, "rejected_by_brevo"
     return True, None
 
 

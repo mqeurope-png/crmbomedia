@@ -13,6 +13,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import and_, func, or_, select
+from sqlalchemy import update as sa_update
 from sqlalchemy.orm import Session
 
 from app.core.audit import Action, record_event
@@ -2201,6 +2202,22 @@ def admin_backfill_push(
     Si el bulk fetch falla (Brevo down, auth), devuelve 502 con
     detail — no modifica DB ni encola nada."""
     from app.integrations.brevo import push_jobs  # noqa: PLC0415
+
+    # «Volver a subir todo» es el momento en que alguien decide que los datos
+    # ya están corregidos: es lo que levanta la marca de rechazo de Brevo, que
+    # por lo demás es pegajosa (si no, el runner periódico volvería a
+    # reencolar los contactos que Brevo rechaza, 146.876 veces).
+    if not dry_run:
+        limpiados = session.execute(
+            sa_update(Contact)
+            .where(Contact.brevo_rejected_at.is_not(None))
+            .values(brevo_rejected_at=None, brevo_rejected_reason=None)
+        ).rowcount
+        if limpiados:
+            logger.warning(
+                "brevo.backfill_push: %s levantó la marca de rechazo de %d "
+                "contacto(s)", current_user.email, limpiados,
+            )
 
     account = push_jobs._resolve_brevo_account(session)
     if account is None:
