@@ -268,6 +268,11 @@ class Action:
     GDPR_OBJECTION_APPLIED = "gdpr.objection_applied"
     GDPR_RECTIFICATION_GUIDANCE = "gdpr.rectification_guidance"
 
+    # Colas de RQ — operar sobre el registro de fallidos desde la aplicación.
+    # Vaciarlo es irreversible, así que queda escrito quién y cuántos.
+    QUEUE_FAILED_REQUEUED = "queue.failed_requeued"
+    QUEUE_FAILED_CLEARED = "queue.failed_cleared"
+
 
 def client_ip(request: Request | None) -> str | None:
     """Resolve the request's source IP, honouring proxy headers."""
