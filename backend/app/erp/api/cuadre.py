@@ -20,6 +20,7 @@ from app.erp.api.deps import require_cuadre
 from app.erp.cuadre import engine
 from app.erp.cuadre.registry import SEVERIDADES, catalogo
 from app.models.crm import User
+from app.workers import registro_fallidos
 
 logger = logging.getLogger(__name__)
 
@@ -143,3 +144,53 @@ def export(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# --- colas: reencolar y vaciar el registro de fallidos -----------------------
+# No es «solo lectura» como el resto del panel, pero es lo mismo que ya hace
+# «revisado»: operar sobre el aviso, no sobre los datos del negocio. Siempre
+# con vista previa y bajo la misma capacidad `erp.cuadre`.
+
+
+class ColaIn(BaseModel):
+    cola: str = Field(min_length=1, max_length=120)
+    funcion: str | None = Field(default=None, max_length=200)
+    limite: int = Field(default=registro_fallidos.TOPE_POR_LLAMADA, ge=1,
+                        le=registro_fallidos.TOPE_POR_LLAMADA)
+    #: `True` (el defecto) NO toca nada: cuenta y devuelve un ejemplo.
+    probar: bool = True
+
+
+@router.post("/colas/reencolar")
+def colas_reencolar(
+    payload: ColaIn,
+    current_user: User = Depends(require_cuadre),
+) -> dict[str, Any]:
+    """Vuelve a encolar trabajos del registro de fallidos de una cola.
+
+    Es lo que recupera lo que se perdió: los lotes de webhook de Brevo
+    llevan su payload completo en los argumentos. Con la inserción de
+    eventos ya idempotente, reencolar no duplica nada.
+    """
+    salida = registro_fallidos.reencolar(
+        payload.cola, funcion=payload.funcion, limite=payload.limite,
+        probar=payload.probar,
+    )
+    if not payload.probar:
+        logger.warning("cuadre: %s reencoló %d trabajos de %s",
+                       current_user.email, salida["reencolados"], payload.cola)
+    return salida
+
+
+@router.post("/colas/vaciar")
+def colas_vaciar(
+    payload: ColaIn,
+    current_user: User = Depends(require_cuadre),
+) -> dict[str, Any]:
+    """Descarta el registro de fallidos de una cola, con vista previa. Hasta
+    ahora la única salida era entrar al contenedor a mano."""
+    salida = registro_fallidos.vaciar(payload.cola, probar=payload.probar)
+    if not payload.probar:
+        logger.warning("cuadre: %s descartó %d trabajos fallidos de %s",
+                       current_user.email, salida["descartados"], payload.cola)
+    return salida
