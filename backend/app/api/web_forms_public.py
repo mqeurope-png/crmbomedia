@@ -48,24 +48,24 @@ def _get_active_form(session: Session, form_id: str) -> WebForm:
     return obtener(session, form_id)
 
 
-@router.get("/by-brand/{marca}/config.json")
-def form_config_por_marca(
-    marca: str,
+@router.get("/by-site/{sitio}/config.json")
+def form_config_por_sitio(
+    sitio: str,
     lang: str = Query(default="", max_length=16),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    """El formulario de una MARCA en el idioma de la página: así cada web
+    """El formulario de una WEB en el idioma de la página: así cada web
     lleva un solo código de inserción en todas sus traducciones. Sin ese
-    idioma se sirve el de respaldo de la marca (ver `seleccion`)."""
+    idioma se sirve el de respaldo de la web (ver `seleccion`)."""
     from app.services.web_forms.seleccion import (  # noqa: PLC0415
-        formulario_de_marca,
+        formulario_de_sitio,
     )
 
-    form = formulario_de_marca(session, marca, lang)
+    form = formulario_de_sitio(session, sitio, lang)
     if form is None:
         raise HTTPException(status_code=404, detail={
-            "code": "brand_without_forms",
-            "message": f"No hay ningún formulario activo de la marca «{marca}».",
+            "code": "site_without_forms",
+            "message": f"No hay ningún formulario activo de «{sitio}».",
             "loading_error": textos(lang)["no_cargado"],
         })
     return _config_payload(form)

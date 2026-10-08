@@ -16,9 +16,9 @@ export function WebFormEmbedCode({ embed }: { embed: EmbedCode }) {
           se verá en la web hasta activarlo (Editar formulario → «Activo»).
         </p>
       ) : null}
-      {embed.brand_snippet ? (
+      {embed.site_snippet ? (
         <Snippet
-          title={`Un solo código para toda la web (${embed.brand})`}
+          title={`Un solo código para toda la web (${embed.site_web || embed.site})`}
           description={
             "Recomendado en webs con varios idiomas: el mismo código vale en todas " +
             "las traducciones. Mira el idioma de la página (el «lang» del <html> o el " +
@@ -26,7 +26,7 @@ export function WebFormEmbedCode({ embed }: { embed: EmbedCode }) {
             "hay uno, el de respaldo. Se puede poner en la plantilla, no página por página. " +
             "Pega LAS DOS LÍNEAS: sin el <div> el script carga y no pinta nada."
           }
-          code={embed.brand_snippet}
+          code={embed.site_snippet}
           inactivo={inactivo}
         />
       ) : null}

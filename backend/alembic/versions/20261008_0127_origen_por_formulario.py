@@ -1,20 +1,26 @@
-"""Formularios web: origen por formulario (marca + idioma) y respaldo por marca.
+"""Formularios web: la web y el idioma del lead como datos propios.
 
 Con 25 formularios en ocho webs y seis idiomas, «web_form» no dice de dónde
 viene un lead. A partir de ahora:
 
 - `contacts.origin` → «Formulario web · mboprinters.com (alemán)» (legible
   en la ficha);
-- `contacts.origin_account_id` → `web_form:<marca>:<idioma>` (filtrable y
-  segmentable por web y por idioma).
+- `contacts.origin_account_id` → `web_form:<sitio>:<idioma>` (filtrable por
+  web);
+- `contacts.language` → el idioma del formulario, columna nueva: se filtra y
+  se segmenta por él cruzando webs, y manda al escribirle.
 
-Esta migración reconstruye los leads ya entrados (tenían
-`web_form:<slug>`), buscando el formulario por su slug y, si ya no existe
-con ese slug, por el envío guardado (`form_submissions`). Un contacto que no
-venga de un formulario no se toca.
+La web NO sale de `web_forms.brand`: una marca puede estar en dos webs
+(`artisjet`). Sale de la clave del slug (`artisjet-es-contacto-de` →
+`artisjet-es`), ver `app/services/web_forms/sitios.py`.
 
-Añade también `web_forms.is_brand_default`: el formulario de respaldo de una
-marca cuando la página está en un idioma que no tiene el suyo.
+Esta migración reconstruye los leads ya entrados (tenían `web_form:<slug>`),
+buscando el formulario por su slug y, si ya no existe con ese slug, por el
+envío guardado (`form_submissions`). Un contacto que no venga de un
+formulario no se toca. El idioma solo se rellena si está vacío.
+
+Añade también `web_forms.is_site_default`: el formulario de respaldo de una
+web cuando la página está en un idioma que no tiene el suyo.
 
 Revision ID: 20261008_0127
 Revises: 20261008_0126
@@ -33,48 +39,52 @@ depends_on = None
 PREFIJO = "web_form"
 
 
-def _origenes(conn: sa.engine.Connection) -> tuple[dict[str, tuple[str, str]],
-                                                   dict[str, tuple[str, str]]]:
-    """Dos índices de `(marca, idioma)`: por `origin_account_id` antiguo
+def _formularios(conn: sa.engine.Connection) -> tuple[dict[str, tuple[str, str]],
+                                                      dict[str, tuple[str, str]]]:
+    """Dos índices de `(slug, idioma)`: por `origin_account_id` antiguo
     (`web_form:<slug>`) y por id de formulario."""
     por_clave: dict[str, tuple[str, str]] = {}
     por_id: dict[str, tuple[str, str]] = {}
-    filas = conn.execute(sa.text("SELECT id, slug, brand, language FROM web_forms")).all()
-    for fid, slug, brand, language in filas:
-        datos = (brand or "", language or "es")
+    filas = conn.execute(sa.text("SELECT id, slug, language FROM web_forms")).all()
+    for fid, slug, language in filas:
+        datos = (slug or "", language or "es")
         por_clave[f"{PREFIJO}:{slug}"] = datos
         por_id[fid] = datos
     return por_clave, por_id
 
 
 def upgrade() -> None:
-    from app.services.web_forms.marcas import origen_de, origen_legible
+    from app.services.web_forms.sitios import origen_de, origen_legible
+    from app.services.web_forms.textos import normalizar_idioma
 
     with op.batch_alter_table("web_forms") as batch:
-        batch.add_column(sa.Column("is_brand_default", sa.Boolean(), nullable=False,
+        batch.add_column(sa.Column("is_site_default", sa.Boolean(), nullable=False,
                                    server_default=sa.false()))
+    with op.batch_alter_table("contacts") as batch:
+        batch.add_column(sa.Column("language", sa.String(length=5), nullable=True))
+        batch.create_index("ix_contacts_language", ["language"])
 
     conn = op.get_bind()
-    por_clave, por_id = _origenes(conn)
+    por_clave, por_id = _formularios(conn)
     if not por_clave:
         return
 
-    def actualizar(contact_id: str, marca: str, idioma: str) -> None:
+    def actualizar(contact_id: str, slug: str, idioma: str) -> None:
         conn.execute(sa.text(
-            "UPDATE contacts SET origin = :o, origin_account_id = :a WHERE id = :i"
-        ), {"o": origen_legible(marca, idioma), "a": origen_de(marca, idioma),
-            "i": contact_id})
+            "UPDATE contacts SET origin = :o, origin_account_id = :a, "
+            "language = COALESCE(language, :l) WHERE id = :i"
+        ), {"o": origen_legible(slug, idioma), "a": origen_de(slug, idioma),
+            "l": normalizar_idioma(idioma), "i": contact_id})
 
     # 1) Los que llevan el origen antiguo `web_form:<slug>`.
     pendientes: list[str] = []
     antiguos = conn.execute(sa.text(
-        "SELECT id, origin_account_id FROM contacts "
-        "WHERE origin_account_id LIKE :p"
+        "SELECT id, origin_account_id FROM contacts WHERE origin_account_id LIKE :p"
     ), {"p": f"{PREFIJO}:%"}).all()
     for contact_id, clave in antiguos:
         datos = por_clave.get(clave or "")
         if datos is None:
-            # Ya migrado (`web_form:marca:idioma`) o el slug ya no existe.
+            # Ya migrado (`web_form:sitio:idioma`) o el slug ya no existe.
             if (clave or "").count(":") == 1:
                 pendientes.append(contact_id)
             continue
@@ -105,5 +115,8 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     # El origen reconstruido no se deshace (era el dato pobre de antes).
+    with op.batch_alter_table("contacts") as batch:
+        batch.drop_index("ix_contacts_language")
+        batch.drop_column("language")
     with op.batch_alter_table("web_forms") as batch:
-        batch.drop_column("is_brand_default")
+        batch.drop_column("is_site_default")

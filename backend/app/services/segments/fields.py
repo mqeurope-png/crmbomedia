@@ -28,7 +28,7 @@ from app.models.crm import (
     ContactPipelineStage,
     ContactTag,
 )
-from app.services.web_forms.marcas import WEBS
+from app.services.web_forms.sitios import WEBS
 from app.services.web_forms.textos import TEXTOS, nombre_idioma
 
 #: Los idiomas en los que puede estar un formulario (los de `textos`).
@@ -331,8 +331,8 @@ FIELD_SPECS: dict[str, FieldSpec] = {
         source="related_table",
     ),
     # Parte 5 (25 formularios). El lead de un formulario lleva en
-    # `Contact.origin_account_id` su marca y su idioma
-    # (`web_form:<marca>:<idioma>`): así se listan «los leads de
+    # `Contact.origin_account_id` su WEB y su idioma
+    # (`web_form:<sitio>:<idioma>`): así se listan «los leads de
     # mboprinters» o «los leads en alemán» sin tirar de la etiqueta
     # `form:<slug>`. Se compilan con LIKE sobre esa columna (portable:
     # MySQL en producción, SQLite en los tests).
@@ -342,21 +342,25 @@ FIELD_SPECS: dict[str, FieldSpec] = {
         type="enum",
         comparators=("eq", "neq", "in", "not_in"),
         enum_values=tuple(sorted(WEBS)),
-        enum_labels={marca: web for marca, web in sorted(WEBS.items())},
-        relation="origen_formulario.marca",
+        enum_labels=dict(sorted(WEBS.items())),
+        relation="origen_formulario.sitio",
         grouped_under="Propiedad y origen",
         source="related_table",
     ),
-    "lead_idioma": FieldSpec(
-        key="lead_idioma",
-        label="Idioma del formulario",
+    # El idioma del contacto es el del formulario por el que entró, guardado
+    # en `contacts.language`: así se cruzan webs («todos los leads en
+    # alemán», sean de mboprinters, artisjet-printers.eu o mbolasers) y se
+    # puede ver y ordenar como una columna más.
+    "language": FieldSpec(
+        key="language",
+        label="Idioma del contacto",
         type="enum",
-        comparators=("eq", "neq", "in", "not_in"),
+        comparators=("eq", "neq", "in", "not_in", "is_null", "is_not_null"),
+        column=Contact.language,
         enum_values=tuple(IDIOMAS_FORMULARIO),
         enum_labels={c: nombre_idioma(c) for c in IDIOMAS_FORMULARIO},
-        relation="origen_formulario.idioma",
+        sortable=True,
         grouped_under="Propiedad y origen",
-        source="related_table",
     ),
     # QoL sprint. Texto libre en cualquiera de las notas del contacto
     # (timeline Agile importado + Note1..10 + manuales del CRM, todo

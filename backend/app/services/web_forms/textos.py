@@ -29,6 +29,8 @@ TEXTOS: dict[str, dict[str, str]] = {
         "invalid_email": "El correo electrónico no parece válido.",
         "rate_limit": "Demasiados envíos desde esta conexión. Inténtalo más tarde.",
         "elige": "Elige una opción",
+        "confirmacion_asunto": "Gracias por contactar con {quien}",
+        "confirmacion_cuerpo": "¡Gracias! Hemos recibido tu solicitud y te contactaremos pronto.",
     },
     "en": {
         "submit": "Send",
@@ -42,6 +44,9 @@ TEXTOS: dict[str, dict[str, str]] = {
         "invalid_email": "That email address does not look valid.",
         "rate_limit": "Too many submissions from this connection. Please try later.",
         "elige": "Choose an option",
+        "confirmacion_asunto": "Thank you for contacting {quien}",
+        "confirmacion_cuerpo": (
+            "Thank you! We have received your request and will contact you soon."),
     },
     "fr": {
         "submit": "Envoyer",
@@ -55,6 +60,9 @@ TEXTOS: dict[str, dict[str, str]] = {
         "invalid_email": "Cette adresse e-mail ne semble pas valide.",
         "rate_limit": "Trop d'envois depuis cette connexion. Réessayez plus tard.",
         "elige": "Choisissez une option",
+        "confirmacion_asunto": "Merci d'avoir contacté {quien}",
+        "confirmacion_cuerpo": (
+            "Merci ! Nous avons bien reçu votre demande et nous vous contacterons bientôt."),
     },
     "de": {
         "submit": "Senden",
@@ -68,6 +76,9 @@ TEXTOS: dict[str, dict[str, str]] = {
         "invalid_email": "Diese E-Mail-Adresse sieht nicht richtig aus.",
         "rate_limit": "Zu viele Sendungen von dieser Verbindung. Später erneut versuchen.",
         "elige": "Bitte wählen",
+        "confirmacion_asunto": "Vielen Dank für Ihre Anfrage bei {quien}",
+        "confirmacion_cuerpo": (
+            "Vielen Dank! Wir haben Ihre Anfrage erhalten und melden uns in Kürze."),
     },
     "pt": {
         "submit": "Enviar",
@@ -81,6 +92,9 @@ TEXTOS: dict[str, dict[str, str]] = {
         "invalid_email": "O email não parece válido.",
         "rate_limit": "Demasiados envios desta ligação. Tente mais tarde.",
         "elige": "Escolha uma opção",
+        "confirmacion_asunto": "Obrigado por contactar {quien}",
+        "confirmacion_cuerpo": (
+            "Obrigado! Recebemos o seu pedido e entraremos em contacto em breve."),
     },
     "nl": {
         "submit": "Versturen",
@@ -94,6 +108,8 @@ TEXTOS: dict[str, dict[str, str]] = {
         "invalid_email": "Dit e-mailadres lijkt niet geldig.",
         "rate_limit": "Te veel inzendingen vanaf deze verbinding. Probeer het later.",
         "elige": "Kies een optie",
+        "confirmacion_asunto": "Bedankt voor je bericht aan {quien}",
+        "confirmacion_cuerpo": "Bedankt! We hebben je aanvraag ontvangen en nemen snel contact op.",
     },
 }
 

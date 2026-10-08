@@ -140,9 +140,12 @@ def test_public_submit_creates_new_contact_when_email_new(session_factory):
         assert c is not None
         assert c.first_name == "Sergio"
         assert c.phone == "600111222"
-        # El origen identifica el formulario (web + idioma), legible en la ficha.
-    assert c.origin == "Formulario web · mbo (español)"
-    assert c.origin_account_id == "web_form:mbo:es"
+        # El origen identifica la web y el idioma, legible en la ficha. El slug
+    # de este formulario de prueba («contacto-mbo-es») no sigue el convenio
+    # `<sitio>-contacto-<idioma>`, así que es su propio sitio.
+    assert c.origin == "Formulario web · contacto-mbo-es (español)"
+    assert c.origin_account_id == "web_form:contacto-mbo-es:es"
+    assert c.language == "es"
 
 
 def test_public_submit_updates_existing_contact_when_email_exists(session_factory):

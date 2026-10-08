@@ -11,9 +11,9 @@ Destinatarios: la dirección fija de `WEB_FORMS_NOTIFY_TO`
 sola vez si coinciden—. Lo gobierna el interruptor que ya existía,
 `notify_owner_on_new`.
 
-La plantilla admite una variante por marca sin tocar código: si existe
-`app/templates/email/lead_<marca>.html` (y/o `.txt`) se usa esa en lugar de
-`lead_notification.html`, así una marca puede llevar su logotipo y su firma.
+La plantilla admite una variante por web sin tocar código: si existe
+`app/templates/email/lead_<sitio>.html` (y/o `.txt`) se usa esa en lugar de
+`lead_notification.html`, así una web puede llevar su logotipo y su firma.
 """
 
 from __future__ import annotations
@@ -28,8 +28,8 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.models.crm import ConsentStatus, Contact, User
 from app.models.web_forms import WebForm
-from app.services.web_forms.marcas import web_de_marca
-from app.services.web_forms.textos import nombre_idioma
+from app.services.web_forms.sitios import web_de_formulario
+from app.services.web_forms.textos import nombre_idioma, normalizar_idioma
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +87,7 @@ def construir_lead(
     from app.services.web_forms.submit import CHECKBOX_TRUE  # noqa: PLC0415
 
     settings = get_settings()
+    idioma = normalizar_idioma(contact.language or form.language)
     consulta: list[str] = []
     campos: list[tuple[str, str]] = []
     consentimiento = contact.marketing_consent == ConsentStatus.GRANTED
@@ -107,8 +108,8 @@ def construir_lead(
         campos.append((f.label or f.field_key, valor))
     base = (settings.frontend_base_url or "").rstrip("/")
     return Lead(
-        web=web_de_marca(form.brand),
-        idioma=nombre_idioma(form.language),
+        web=web_de_formulario(form.slug),
+        idioma=nombre_idioma(idioma),
         formulario=form.name,
         slug=form.slug,
         nombre=_nombre_completo(contact),
@@ -147,13 +148,13 @@ def destinatarios(session: Session, contact: Contact) -> list[tuple[str, str]]:
     return unicos
 
 
-def _plantilla(marca: str | None, extension: str) -> str:
-    """El nombre de la plantilla a usar: la de la marca si existe."""
+def _plantilla(sitio: str | None, extension: str) -> str:
+    """El nombre de la plantilla a usar: la de la web si existe."""
     from app.services.email import _jinja_env  # noqa: PLC0415
 
-    marca = (marca or "").strip().lower()
-    if marca:
-        propia = f"lead_{marca}.{extension}"
+    sitio = (sitio or "").strip().lower()
+    if sitio:
+        propia = f"lead_{sitio}.{extension}"
         try:
             _jinja_env.get_template(propia)
         except TemplateNotFound:
@@ -163,13 +164,13 @@ def _plantilla(marca: str | None, extension: str) -> str:
     return f"{PLANTILLA_BASE}.{extension}"
 
 
-def render_aviso(lead: Lead, marca: str | None = None) -> tuple[str, str, str]:
+def render_aviso(lead: Lead, sitio: str | None = None) -> tuple[str, str, str]:
     """`(asunto, texto, html)` del aviso."""
     from app.services.email import _jinja_env  # noqa: PLC0415
 
     contexto = lead.contexto()
-    texto = _jinja_env.get_template(_plantilla(marca, "txt")).render(**contexto)
-    html = _jinja_env.get_template(_plantilla(marca, "html")).render(**contexto)
+    texto = _jinja_env.get_template(_plantilla(sitio, "txt")).render(**contexto)
+    html = _jinja_env.get_template(_plantilla(sitio, "html")).render(**contexto)
     return lead.asunto(), texto, html
 
 
@@ -184,7 +185,9 @@ def enviar_aviso_lead(
     enviados: list[str] = []
     try:
         lead = construir_lead(form, contact, payload, etiquetas=etiquetas, nuevo=nuevo)
-        asunto, texto, html = render_aviso(lead, form.brand)
+        from app.services.web_forms.sitios import clave_de_sitio  # noqa: PLC0415
+
+        asunto, texto, html = render_aviso(lead, clave_de_sitio(form.slug))
         quienes = destinatarios(session, contact)
     except Exception:  # noqa: BLE001 — el lead ya está guardado
         logger.warning("web_forms.aviso_lead: no se pudo preparar el aviso", exc_info=True)

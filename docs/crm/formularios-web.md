@@ -17,7 +17,7 @@ Tres formas de insertar un formulario (pantalla «Código de embed»):
 ## Un solo código de inserción por web (marca + idioma)
 
 Con 25 formularios en ocho webs y seis idiomas, pegar un código por
-traducción son 23 pegadas. El embed puede resolverse **por marca**:
+traducción son 23 pegadas. El embed puede resolverse **por web**:
 
 ```html
 <script src="https://…/forms/embed/mbolasers.js" async></script>
@@ -28,12 +28,15 @@ traducción son 23 pegadas. El embed puede resolverse **por marca**:
   pinta nada.
 - El widget mira el idioma de la página: el `lang` del `<html>` y, si no lo
   trae, el primer trozo de la URL (`/de/kontakt`).
-- Sirve el formulario cuyo `brand` e `language` coinciden. Si esa marca no
-  tiene ese idioma: el formulario marcado como **respaldo de la marca**
-  (casilla en el editor), y si tampoco, el castellano, el inglés o el primero
-  por idioma.
-- Si la marca no tiene **ningún** formulario activo, el script lo dice en la
-  consola del navegador (`brand_without_forms`) y marca el `<div>`.
+- La web **no** es la marca: `artisjet` es la marca de dos webs distintas. La
+  web es la **clave del slug**, lo que va antes de `-contacto`
+  (`artisjet-es-contacto-de` → `artisjet-es`), así que esas dos tienen su
+  propio código: `/forms/embed/artisjet-es.js` y `/forms/embed/artisjet-eu.js`.
+- Sirve el formulario de esa web en ese idioma. Si no lo hay: el marcado como
+  **respaldo de la web** (casilla en el editor), y si tampoco, el castellano,
+  el inglés o el primero por idioma.
+- Si la web no tiene **ningún** formulario activo, el script lo dice en la
+  consola del navegador (`site_without_forms`) y marca el `<div>`.
 - El embed **por id sigue igual**: es lo que está pegado hoy.
 - La pantalla de código ofrece los dos, con el `<div>` incluido.
 
@@ -47,6 +50,8 @@ idioma cae al castellano.
 - El botón: el texto propio del formulario si lo tiene (Apariencia →
   «Texto del botón»); si no, el de su idioma (Enviar / Send / Envoyer /
   Senden / Versturen / Enviar).
+- El acuse de recibo que se manda al lead (si está activado) también va en
+  el idioma del formulario cuando no hay plantilla elegida.
 - Los mensajes viajan en `config.json` (`texts`) y van inlineados en el
   iframe y en el fragmento: ya no hay castellano fijo en el JS.
 - Los mensajes de validación del navegador (campo obligatorio, correo mal
@@ -74,15 +79,35 @@ idioma cae al castellano.
 
 - `contacts.origin` → «Formulario web · mboprinters.com (alemán)»: es lo que
   se lee en **Origen del lead** de la ficha, sin traducir códigos.
-- `contacts.origin_account_id` → `web_form:<marca>:<idioma>`.
-- En los filtros de Contactos y en los segmentos hay dos campos nuevos,
-  **Web del formulario** e **Idioma del formulario**: así se listan «los
-  leads de mboprinters» o «los leads en alemán» sin tirar de la etiqueta
-  `form:<slug>` (que sigue existiendo).
-- La lista de webs está en `app/services/web_forms/marcas.py` (`WEBS`): una
-  marca que no esté se enseña tal cual, nunca un dominio inventado. Al
-  añadir una web nueva, su dominio se escribe ahí y aparece en la ficha, en
-  los filtros y en los avisos.
+- `contacts.origin_account_id` → `web_form:<sitio>:<idioma>`.
+- `contacts.language` → el idioma del formulario, **columna propia**: no se
+  queda dentro del texto del origen, así que se filtra, se segmenta y se
+  ordena por él cruzando webs («todos los leads en alemán», sean de
+  mboprinters, artisjet-printers.eu o mbolasers). También se copia a la
+  empresa si la tiene vacía: es de donde lee el idioma la cascada de los
+  correos y los PDF del ERP, así que quien escribió en neerlandés no recibe
+  después un correo en castellano. Un idioma ya puesto nunca se pisa.
+- En los filtros de Contactos y en los segmentos: **Web del formulario**
+  (desde el origen) e **Idioma del contacto** (la columna). Así se listan
+  «los leads de mboprinters» o «los leads en alemán» sin tirar de la
+  etiqueta `form:<slug>` (que sigue existiendo).
+- La web sale de la clave del slug, nunca de la marca (`artisjet` está en dos
+  webs). La lista está en `app/services/web_forms/sitios.py` (`WEBS`):
+
+  | Slug | Web |
+  |---|---|
+  | `artisjet-es-contacto-*` | artisjet-spain.es |
+  | `artisjet-eu-contacto-*` | artisjet-printers.eu |
+  | `boprint-contacto` | boprint.net |
+  | `fluxlasers-contacto-*` | fluxlasers.es |
+  | `mboprinters-contacto-*` | mboprinters.com |
+  | `mbolasers-contacto-*` | mbolasers.com |
+  | `mqeurope-contacto-*` | www.mqeurope.com (sin www redirige) |
+  | `pimpam-contacto-*` | pimpam-vending.com |
+
+  Un sitio que no esté se enseña con su clave, nunca con un dominio
+  inventado. Al publicar una web nueva, su dominio se escribe ahí y aparece
+  en la ficha, en los filtros y en los avisos.
 - Un contacto que **ya existía** conserva su origen: el de un formulario
   solo se pone al crearlo (como el resto de orígenes).
 - La migración 0127 reconstruyó los leads ya entrados (tenían
@@ -102,9 +127,9 @@ lead nuevo»**: apagarlo silencia el aviso entero.
   (`info@streamtec.es` por defecto, separadas por comas) y el comercial al
   que se asignó el lead (la regla de asignación o el propietario fijo). Sin
   duplicar si coinciden.
-- **Variante por marca sin tocar código**: si existe
-  `app/templates/email/lead_<marca>.html` (y/o `.txt`) se usa esa en lugar
-  de `lead_notification.html`, así una marca puede llevar su logotipo y su
+- **Variante por web sin tocar código**: si existe
+  `app/templates/email/lead_<sitio>.html` (y/o `.txt`) se usa esa en lugar
+  de `lead_notification.html`, así una web puede llevar su logotipo y su
   firma.
 - Un fallo de correo **no tumba** la captura: el lead se guarda igual y el
   fallo queda en el log (`web_forms.aviso_lead`).

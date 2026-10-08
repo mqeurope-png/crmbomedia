@@ -26,11 +26,13 @@ describe("WebFormEmbedCode", () => {
   it("con marca, ofrece el código único de la web y explica el <div>", () => {
     render(<WebFormEmbedCode embed={{
       ...embed,
-      brand: "mbolasers",
-      brand_snippet: '<script src="https://crm/forms/embed/mbolasers.js" async></script>\n'
+      site: "mbolasers",
+      site_web: "mbolasers.com",
+      site_snippet: '<script src="https://crm/forms/embed/mbolasers.js" async></script>\n'
         + '<div data-bohub-form="mbolasers"></div>',
     }} />);
-    expect(screen.getByText(/Un solo código para toda la web \(mbolasers\)/)).toBeInTheDocument();
+    expect(screen.getByText(/Un solo código para toda la web \(mbolasers\.com\)/))
+      .toBeInTheDocument();
     expect(screen.getAllByText(/Pega LAS DOS LÍNEAS/).length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText(/data-bohub-form="mbolasers"/)).toBeInTheDocument();
   });

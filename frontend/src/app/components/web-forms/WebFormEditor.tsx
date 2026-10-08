@@ -28,6 +28,12 @@ import { WebFormTagsPicker } from "./WebFormTagsPicker";
 /** El consentimiento comercial solo se mapea desde una casilla. */
 const CONSENT = "contact.marketing_consent";
 
+/** La web de un formulario es la clave de su slug, no su marca (una marca
+ *  puede estar en dos webs). Espejo de `app/services/web_forms/sitios.py`. */
+function claveDeSitio(slug: string): string {
+  return (slug || "").trim().toLowerCase().split("-contacto")[0];
+}
+
 /** Espejo del slugify del backend para prellenar el field_key vacío. */
 function slugifyKey(label: string): string {
   const norm = label
@@ -351,12 +357,12 @@ export function WebFormEditor({ formId }: { formId: string }) {
               onChange={(e) => patch({ is_active: e.target.checked })} />
             Activo (desactivado no se muestra en la web)
           </label>
-          {form.brand?.trim() ? (
+          {claveDeSitio(form.slug) ? (
             <label className="checkbox-inline">
-              <input type="checkbox" checked={form.is_brand_default}
-                onChange={(e) => patch({ is_brand_default: e.target.checked })} />
-              Respaldo de «{form.brand}» (se sirve cuando la página está en un idioma
-              que no tiene su propio formulario)
+              <input type="checkbox" checked={form.is_site_default}
+                onChange={(e) => patch({ is_site_default: e.target.checked })} />
+              Respaldo de «{claveDeSitio(form.slug)}» (se sirve cuando la página de esa
+              web está en un idioma que no tiene su propio formulario)
             </label>
           ) : null}
           <label className="checkbox-inline">

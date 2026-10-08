@@ -247,6 +247,11 @@ class Contact(TimestampMixin, Base):
     # 20260606_0019 relaxed the column from NOT NULL.
     email: Mapped[str | None] = mapped_column(String(255), unique=True, index=True)
     phone: Mapped[str | None] = mapped_column(String(80))
+    # Parte 5 (formularios en seis idiomas). Idioma del contacto: el del
+    # formulario por el que entró. Dato propio, no texto dentro del origen:
+    # se filtra y se segmenta por él cruzando webs («todos los leads en
+    # alemán»), y manda al escribirle.
+    language: Mapped[str | None] = mapped_column(String(5), index=True)
     origin: Mapped[str | None] = mapped_column(String(120))
     # PR-Fix-Sync-Dispara-Reglas-Workflows. Denormaliza la cuenta de
     # origen específica como `{system}:{account_id}` (e.g.

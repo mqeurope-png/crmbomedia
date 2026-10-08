@@ -37,7 +37,12 @@ from app.services.web_forms.antispam import (
     recaptcha_min_score,
     verify_recaptcha,
 )
-from app.services.web_forms.marcas import origen_de, origen_legible
+from app.services.web_forms.sitios import (
+    origen_de,
+    origen_legible,
+    web_de_formulario,
+)
+from app.services.web_forms.textos import normalizar_idioma, textos
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +154,8 @@ def process_submission(
     # estrellas y estado comercial mapeados. Muta `payload` si registra un
     # intento de cambio de empresa descartado (queda en raw_payload).
     _apply_mapped_special_fields(session, form, contact, payload)
+    # Después de la empresa (la crea `_apply_mapped_special_fields`).
+    _idioma_del_formulario(contact, form)
     _record_activity(session, form, contact, payload, meta)
 
     # 6. Submission (no spam). v3 Bug 4: marca created/updated para el badge.
@@ -238,11 +245,12 @@ def _resolve_contact(
         last_name=data.get("last_name"),
         email=email,
         phone=data.get("phone"),
-        # El origen identifica el formulario: la web y el idioma. Legible en
-        # la ficha, y filtrable/segmentable por `origin_account_id`
-        # (`web_form:<marca>:<idioma>`).
-        origin=origen_legible(form.brand, form.language),
-        origin_account_id=origen_de(form.brand, form.language),
+        # El origen identifica el formulario: la web (la clave del slug, no
+        # la marca) y el idioma. Legible en la ficha, y filtrable y
+        # segmentable por `origin_account_id` (`web_form:<sitio>:<idioma>`).
+        origin=origen_legible(form.slug, form.language),
+        origin_account_id=origen_de(form.slug, form.language),
+        language=normalizar_idioma(form.language),
     )
     for col, value in data.items():
         if col in {"email", "first_name", "last_name", "phone"}:
@@ -253,6 +261,19 @@ def _resolve_contact(
     session.add(contact)
     session.flush()
     return contact, True
+
+
+def _idioma_del_formulario(contact: Contact, form: WebForm) -> None:
+    """El idioma del formulario, en el contacto y —si está vacío— en su
+    empresa: quien escribió en neerlandés no debe recibir después un correo
+    en castellano (la cascada de idioma del ERP lee la empresa). Nunca pisa
+    un idioma ya puesto."""
+    idioma = normalizar_idioma(form.language)
+    if not contact.language:
+        contact.language = idioma
+    empresa = getattr(contact, "company", None)
+    if empresa is not None and not empresa.language:
+        empresa.language = idioma
 
 
 def _update_empty_fields(
@@ -660,10 +681,10 @@ def _send_confirmation_email(
     try:
         from app.services.email import get_email_service  # noqa: PLC0415
 
-        subject = f"Gracias por contactar con {form.brand or 'nosotros'}"
-        text = (
-            "¡Gracias! Hemos recibido tu solicitud y te contactaremos pronto."
-        )
+        tx = textos(form.language)
+        quien = (form.brand or "").strip() or web_de_formulario(form.slug)
+        subject = tx["confirmacion_asunto"].format(quien=quien)
+        text = tx["confirmacion_cuerpo"]
         html: str | None = None
         if form.confirmation_email_template_id:
             rendered = _render_template(

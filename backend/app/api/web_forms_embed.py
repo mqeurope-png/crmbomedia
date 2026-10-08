@@ -191,16 +191,17 @@ window.__bhInit({{
 
 
 #: Un id de formulario (uuid4). Lo que no lo sea, en `/forms/embed/<x>.js`,
-#: es una MARCA: un solo código de inserción por web, en todos sus idiomas.
+#: es la clave de una WEB (la del slug): un solo código de inserción por
+#: web, en todos sus idiomas.
 _UUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
 
 
-def _widget_js(*, clave: str, marca: str | None) -> str:
+def _widget_js(*, clave: str, sitio: str | None) -> str:
     return _WIDGET_CORE_JS + "\n" + _WIDGET_BOOT_JS.replace(
         "__CLAVE__", json.dumps(clave)
-    ).replace("__MARCA__", json.dumps(marca)).replace(
+    ).replace("__SITIO__", json.dumps(sitio)).replace(
         "__API_BASE__", json.dumps(_api_base())
     )
 
@@ -227,23 +228,24 @@ def render_widget_js(
     form desde config.json, hereda estilos del host (reset mínimo),
     recopila UTM/referrer/landing y envía. Soporta varias instancias.
 
-    `clave` es el id del formulario (lo publicado hoy) o una MARCA: entonces
-    el propio widget mira el idioma de la página y pide el formulario de esa
-    marca en ese idioma, así cada web lleva un solo código."""
+    `clave` es el id del formulario (lo publicado hoy) o la clave de una WEB
+    (lo que va antes de `-contacto` en el slug): entonces el propio widget
+    mira el idioma de la página y pide el formulario de esa web en ese
+    idioma, así cada web lleva un solo código."""
     if not _UUID_RE.match(clave):
         from app.services.web_forms.seleccion import (  # noqa: PLC0415
-            formularios_de_marca,
+            formularios_de_sitio,
         )
 
-        if not formularios_de_marca(session, clave):
+        if not formularios_de_sitio(session, clave):
             return _aviso_js(
                 clave,
-                f"no hay ningún formulario activo de la marca «{clave}». "
-                "Revisa la marca en BoHub o actívalo.",
-                "brand_without_forms",
+                f"no hay ningún formulario activo de «{clave}». Revisa el slug "
+                "del formulario en BoHub o actívalo.",
+                "site_without_forms",
             )
         return Response(
-            content=_widget_js(clave=clave, marca=clave),
+            content=_widget_js(clave=clave, sitio=clave),
             media_type="application/javascript",
             headers={"Cache-Control": "public, max-age=300"},
         )
@@ -253,7 +255,7 @@ def render_widget_js(
     except FormularioDesactivado:
         return _aviso_js(form_id, FORM_INACTIVE_MESSAGE, FORM_INACTIVE_CODE)
     return Response(
-        content=_widget_js(clave=form.id, marca=None),
+        content=_widget_js(clave=form.id, sitio=None),
         media_type="application/javascript",
         headers={"Cache-Control": "public, max-age=300"},
     )
@@ -508,17 +510,17 @@ window.__bhInit=function(cfg){
 
 _WIDGET_BOOT_JS = r"""
 (function(){
-  var CLAVE=__CLAVE__,API_BASE=__API_BASE__,MARCA=__MARCA__;
-  // Embed por marca: el idioma sale del `lang` del <html> y, si no lo trae,
+  var CLAVE=__CLAVE__,API_BASE=__API_BASE__,SITIO=__SITIO__;
+  // Embed por web: el idioma sale del `lang` del <html> y, si no lo trae,
   // del primer trozo de la URL (/de/kontakt). El servidor elige el
-  // formulario de esa marca en ese idioma, o el de respaldo.
+  // formulario de esa web en ese idioma, o el de respaldo.
   function idiomaPagina(){
     var l=(document.documentElement.getAttribute("lang")||"").trim();
     if(!l){var m=window.location.pathname.match(/^\/([a-zA-Z]{2})(?:[-_][a-zA-Z]{2})?(?:\/|$)/);l=m?m[1]:"";}
     return l.toLowerCase().replace("_","-").split("-")[0];
   }
-  var URL_CFG=MARCA
-    ?API_BASE+"/public/forms/by-brand/"+encodeURIComponent(MARCA)+"/config.json?lang="+encodeURIComponent(idiomaPagina())
+  var URL_CFG=SITIO
+    ?API_BASE+"/public/forms/by-site/"+encodeURIComponent(SITIO)+"/config.json?lang="+encodeURIComponent(idiomaPagina())
     :API_BASE+"/public/forms/"+CLAVE+"/config.json";
   var mount=document.querySelector('[data-bohub-form="'+CLAVE+'"]');
   if(!mount){mount=document.createElement("div");mount.setAttribute("data-bohub-form",CLAVE);
