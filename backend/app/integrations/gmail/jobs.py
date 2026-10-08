@@ -12,6 +12,8 @@ context so they can run under the worker without an HTTP request.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -75,6 +77,25 @@ def _soltar_cerrojo(conn: Any, user_id: str) -> None:
                        user_id, exc)
 
 
+@contextmanager
+def con_cerrojo(user_id: str, *, quien: str) -> Iterator[bool]:
+    """`True` si se puede trabajar, `False` si ya hay otra pasada en marcha.
+
+    Lo usan los TRES caminos que escriben los mismos mensajes de la misma
+    cuenta: el push, el sondeo de respaldo y la recuperación de un hueco. Con
+    el cerrojo solo en el push, el choque push-contra-sondeo —que es el que
+    provoca los `Lock wait timeout (1205)`— seguía vivo."""
+    conn, se_puede = _tomar_cerrojo(user_id)
+    if not se_puede:
+        logger.info("gmail.%s ya hay una pasada en marcha user_id=%s, se omite",
+                    quien, user_id)
+    try:
+        yield se_puede
+    finally:
+        if conn is not None:
+            _soltar_cerrojo(conn, user_id)
+
+
 def process_history_job(user_id: str, new_history_id: int) -> int:
     """RQ entry point. Returns the count of messages imported."""
     from google.auth.exceptions import RefreshError  # noqa: PLC0415
@@ -84,15 +105,12 @@ def process_history_job(user_id: str, new_history_id: int) -> int:
         GoogleAuthExpiredError,
     )
 
-    conn, se_puede = _tomar_cerrojo(user_id)
-    if not se_puede:
-        # Ya hay una pasada en marcha para esta cuenta. No se pierde nada: la
-        # que corre lee el cursor de la base de datos, así que se llevará
-        # también lo que acaba de llegar.
-        logger.info("gmail.process_history ya en marcha user_id=%s, se omite",
-                    user_id)
-        return 0
-    try:
+    # Ya hay una pasada en marcha para esta cuenta → no se pierde nada: la que
+    # corre lee el cursor de la base de datos, así que se llevará también lo
+    # que acaba de llegar.
+    with con_cerrojo(user_id, quien="process_history") as se_puede:
+        if not se_puede:
+            return 0
         with Session(get_engine()) as session:
             try:
                 imported = gmail_service.process_history(
@@ -101,6 +119,17 @@ def process_history_job(user_id: str, new_history_id: int) -> int:
                 session.commit()
                 return imported
             except (GoogleAuthExpiredError, RefreshError) as exc:
+                if isinstance(exc, RefreshError) and not _autorizacion_muerta(exc):
+                    # Un 429 o un 500 del endpoint de tokens de Google también
+                    # llega como `RefreshError`, y ese SÍ se arregla
+                    # reintentando. Marcar la cuenta por eso pararía todo el
+                    # correo hasta que alguien la reconectara a mano.
+                    session.rollback()
+                    logger.warning(
+                        "gmail.process_history fallo temporal al refrescar el "
+                        "token user_id=%s: %s", user_id, exc,
+                    )
+                    raise
                 # `RefreshError` crudo: google-auth refresca el token DENTRO
                 # del `execute()`, así que no pasa por nuestro envoltorio y
                 # se escapaba sin marcar nada. Era el motivo de que los
@@ -128,24 +157,34 @@ def process_history_job(user_id: str, new_history_id: int) -> int:
                     exc_info=True,
                 )
                 raise
-    finally:
-        if conn is not None:
-            _soltar_cerrojo(conn, user_id)
+
+
+#: Lo que dice Google cuando la autorización ya no vale: hay que reconectar.
+#: Cualquier otro `RefreshError` (429, 500, red) se arregla reintentando.
+AUTORIZACION_MUERTA = ("invalid_grant", "invalid_client", "unauthorized_client",
+                       "invalid_request")
+
+
+def _autorizacion_muerta(exc: BaseException) -> bool:
+    texto = str(exc).lower()
+    return any(marca in texto for marca in AUTORIZACION_MUERTA)
+
+
+#: El repaso de diez días no cabe en los 600 s por defecto de la cola.
+RECUPERACION_TIMEOUT = 4 * 60 * 60
 
 
 def enqueue_recuperar_hueco(*, user_id: str, dias: int) -> None:
-    """Encola el repaso que recupera el hueco de un cursor caducado."""
-    try:
-        from app.workers.queues import queue_for  # noqa: PLC0415
+    """Encola el repaso que recupera el hueco de un cursor caducado.
 
-        queue = queue_for("gmail", "poll_fallback")
-        queue.enqueue(recuperar_hueco_job, user_id, dias)
-    except Exception:  # noqa: BLE001 — sin Redis queda el aviso del log
-        logger.warning(
-            "gmail.recuperar_hueco no se pudo encolar user_id=%s dias=%s; "
-            "hazlo a mano con `python -m app.integrations.gmail_watch "
-            "--since <fecha> --yes`", user_id, dias, exc_info=True,
-        )
+    **No se traga el fallo**: si no se puede encolar, la excepción sube y el
+    llamador NO mueve el cursor, así que el próximo push vuelve a intentarlo.
+    Tragárselo dejaba el hueco irrecuperable con solo una línea de log."""
+    from app.workers.queues import queue_for  # noqa: PLC0415
+
+    queue = queue_for("gmail", "poll_fallback")
+    queue.enqueue(recuperar_hueco_job, user_id, dias,
+                  job_timeout=RECUPERACION_TIMEOUT)
 
 
 def recuperar_hueco_job(user_id: str, dias: int) -> int:
@@ -154,34 +193,49 @@ def recuperar_hueco_job(user_id: str, dias: int) -> int:
     Es la sincronización completa acotada a la que se cae cuando el cursor de
     `history.list` ha caducado. Idempotente: el repaso salta lo que ya está
     guardado, así que volver a lanzarlo no duplica nada.
-    """
-    from app.integrations.gmail.backfill_universal import (  # noqa: PLC0415
-        run_backfill_universal,
-    )
 
-    with Session(get_engine()) as session:
-        try:
-            informe = run_backfill_universal(
-                session,
-                user_id=user_id,
-                since=date.today() - timedelta(days=max(1, dias)),
-                until=date.today(),
-                sleep_between_pages=0.5,
-            )
-            session.commit()
-        except Exception:  # noqa: BLE001
-            session.rollback()
-            logger.warning(
-                "gmail.recuperar_hueco falló user_id=%s dias=%s", user_id, dias,
-                exc_info=True,
-            )
-            raise
-        recuperados = informe.imported_linked + informe.imported_orphan
+    **Día a día, con un `commit` por día.** Diez días en una sola transacción
+    se perdían enteros si el trabajo se agotaba a media faena, y el cursor ya
+    estaba movido: el hueco quedaba irrecuperable. Así, como mucho se pierde
+    el día en curso, y como es idempotente se recupera relanzándolo.
+
+    Con cerrojo: escribe los mismos mensajes que el push, y con un conjunto de
+    escritura mucho más grande.
+    """
+    from app.integrations.gmail import backfill_universal  # noqa: PLC0415
+
+    with con_cerrojo(user_id, quien="recuperar_hueco") as se_puede:
+        if not se_puede:
+            # Hay una pasada en marcha: se reencola para más tarde en vez de
+            # perder el hueco.
+            enqueue_recuperar_hueco(user_id=user_id, dias=dias)
+            return 0
+        recuperados = 0
+        fallidos = 0
+        hoy = date.today()
+        for atras in range(max(1, dias), 0, -1):
+            dia = hoy - timedelta(days=atras - 1)
+            with Session(get_engine()) as session:
+                try:
+                    informe = backfill_universal.run_backfill_universal(
+                        session, user_id=user_id, since=dia, until=dia,
+                        sleep_between_pages=0.5,
+                    )
+                    session.commit()
+                except Exception:  # noqa: BLE001 — un día malo no corta los demás
+                    session.rollback()
+                    fallidos += 1
+                    logger.warning(
+                        "gmail.recuperar_hueco falló el día %s user_id=%s",
+                        dia, user_id, exc_info=True,
+                    )
+                    continue
+                recuperados += informe.imported_linked + informe.imported_orphan
         logger.warning(
-            "gmail.recuperar_hueco user_id=%s dias=%s recuperados=%s",
-            user_id, dias, recuperados,
+            "gmail.recuperar_hueco user_id=%s dias=%s recuperados=%s "
+            "dias_fallidos=%s", user_id, dias, recuperados, fallidos,
         )
-        return int(recuperados or 0)
+        return recuperados
 
 
 def enqueue_renew_all_watches() -> None:
@@ -251,15 +305,20 @@ def poll_history_fallback_job() -> int:
         org = get_org_integration(session)
         if org is None or org.status != "active" or not org.connected_by_user_id:
             return 0
-        try:
-            recovered = gmail_service.process_history(
-                session, user_id=org.connected_by_user_id, new_history_id=None
-            )
-            session.commit()
-        except Exception:  # noqa: BLE001
-            session.rollback()
-            logger.warning("gmail.poll_fallback_failed", exc_info=True)
-            return 0
+        # El cerrojo va AQUÍ y no solo en el push: el choque de los dos a la
+        # vez sobre la misma cuenta es el que provoca los 1205.
+        with con_cerrojo(org.connected_by_user_id, quien="poll_fallback") as se_puede:
+            if not se_puede:
+                return 0
+            try:
+                recovered = gmail_service.process_history(
+                    session, user_id=org.connected_by_user_id, new_history_id=None
+                )
+                session.commit()
+            except Exception:  # noqa: BLE001
+                session.rollback()
+                logger.warning("gmail.poll_fallback_failed", exc_info=True)
+                return 0
         if recovered > 0:
             logger.warning(
                 "gmail.poll_fallback recovered=%s — el push en tiempo real "

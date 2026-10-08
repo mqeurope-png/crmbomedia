@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -125,7 +126,11 @@ def test_un_cursor_caducado_recoloca_y_encola_la_recuperacion(
         assert "1000" in (fila.metadata_json or "")
         assert "99999" in (fila.metadata_json or "")
     # Y se encola el repaso acotado que trae lo de en medio.
-    assert encolados == [(dueno, gmail_service.DIAS_DE_RECUPERACION)]
+    # Diez días como mínimo; si el cursor llevaba más sin avanzar, los que
+    # lleve (hasta el tope).
+    assert len(encolados) == 1
+    assert encolados[0][0] == dueno
+    assert encolados[0][1] >= gmail_service.DIAS_DE_RECUPERACION
     assert "cursor_caducado" in caplog.text
 
 
@@ -241,7 +246,7 @@ def test_dos_pasadas_a_la_vez_sobre_la_misma_cuenta_no_se_pisan(
     # No ha corrido: la pasada que ya estaba en marcha lee el cursor de la
     # base de datos, así que se llevará también lo que acaba de llegar.
     assert llamadas == []
-    assert "ya en marcha" in caplog.text
+    assert "ya hay una pasada en marcha" in caplog.text
 
 
 def test_sin_redis_se_sigue_adelante(factory, monkeypatch):
@@ -255,3 +260,70 @@ def test_sin_redis_se_sigue_adelante(factory, monkeypatch):
     monkeypatch.setattr(queues, "redis_connection", _sin_redis)
     conn, se_puede = gmail_jobs._tomar_cerrojo("quien-sea")  # noqa: SLF001
     assert conn is None and se_puede is True
+
+
+def test_un_429_del_endpoint_de_tokens_no_marca_la_cuenta(factory, monkeypatch):
+    """`RefreshError` no siempre es `invalid_grant`: un 429 o un 500 del
+    endpoint de tokens también llega así, y ese SÍ se arregla reintentando.
+    Marcar la cuenta por eso pararía todo el correo hasta que alguien la
+    reconectara a mano."""
+    from google.auth.exceptions import RefreshError
+
+    from app.integrations.gmail import jobs as gmail_jobs
+
+    monkeypatch.setattr(gmail_jobs, "_tomar_cerrojo", lambda _u: (None, True))
+    monkeypatch.setattr(gmail_jobs, "Session", lambda _e: factory())
+    monkeypatch.setattr("app.db.session.get_engine", lambda: factory.kw["bind"])
+    monkeypatch.setattr(
+        "app.integrations.gmail.service.process_history",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            RefreshError("('Too Many Requests', '429')")),
+    )
+    # Sube para que RQ lo reintente, y la cuenta sigue activa.
+    with pytest.raises(RefreshError):
+        gmail_jobs.process_history_job(_dueno(factory), 1001)
+    with factory() as s:
+        assert s.scalar(select(OrgGoogleIntegration)).status == "active"
+
+
+def test_el_sondeo_de_respaldo_tambien_toma_el_cerrojo(factory, monkeypatch):
+    """El choque que provoca los 1205 es push CONTRA sondeo. Con el cerrojo
+    solo en el push, seguía vivo."""
+    from app.integrations.gmail import jobs as gmail_jobs
+    from app.integrations.gmail import service as gmail_service
+
+    llamadas: list[str] = []
+    monkeypatch.setattr(gmail_service, "process_history",
+                        lambda *_a, **_k: llamadas.append("corrió") or 0)
+    monkeypatch.setattr(gmail_jobs, "Session", lambda _e: factory())
+    monkeypatch.setattr("app.db.session.get_engine", lambda: factory.kw["bind"])
+    monkeypatch.setattr(gmail_jobs, "_tomar_cerrojo", lambda _u: (None, False))
+    assert gmail_jobs.poll_history_fallback_job() == 0
+    assert llamadas == []
+
+
+def test_la_recuperacion_va_dia_a_dia_y_un_dia_malo_no_corta_los_demas(
+    factory, monkeypatch
+):
+    """Diez días en una sola transacción se perdían enteros si el trabajo se
+    agotaba, y el cursor ya estaba movido: el hueco quedaba irrecuperable."""
+    from app.integrations.gmail import jobs as gmail_jobs
+
+    dias_pedidos: list[tuple] = []
+
+    def _repaso(session, *, user_id, since, until, **_k):
+        dias_pedidos.append((since, until))
+        if len(dias_pedidos) == 2:
+            raise RuntimeError("Gmail dijo no justo ese día")
+        return SimpleNamespace(imported_linked=1, imported_orphan=0)
+
+    monkeypatch.setattr(gmail_jobs, "_tomar_cerrojo", lambda _u: (None, True))
+    monkeypatch.setattr(gmail_jobs, "Session", lambda _e: factory())
+    monkeypatch.setattr("app.db.session.get_engine", lambda: factory.kw["bind"])
+    monkeypatch.setattr(
+        "app.integrations.gmail.backfill_universal.run_backfill_universal", _repaso)
+
+    recuperados = gmail_jobs.recuperar_hueco_job(_dueno(factory), 4)
+    assert len(dias_pedidos) == 4                 # un día por vuelta
+    assert all(desde == hasta for desde, hasta in dias_pedidos)
+    assert recuperados == 3                       # el día malo no corta el resto

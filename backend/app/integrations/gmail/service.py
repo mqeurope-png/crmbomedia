@@ -1007,10 +1007,15 @@ def send_email(
     return message
 
 
-#: Días que se recuperan cuando el cursor de `history.list` ha caducado.
-#: Gmail conserva el historial algo más de una semana, así que el hueco no
-#: puede ser mayor; se piden unos cuantos días de más por seguridad.
+#: Días que se recuperan como MÍNIMO cuando el cursor ha caducado. Gmail
+#: conserva el historial algo más de una semana, así que un hueco «normal» no
+#: puede ser mayor.
 DIAS_DE_RECUPERACION = 10
+#: Tope del repaso. El hueco se mide desde la última vez que se renovó el
+#: watch: si el push estuvo tres semanas sin funcionar, recuperar solo diez
+#: días perdería once sin decirlo. Y sin tope, un watch viejísimo lanzaría un
+#: repaso de meses dentro de un trabajo de cola.
+MAX_DIAS_DE_RECUPERACION = 60
 
 
 def recolocar_cursor(
@@ -1033,6 +1038,15 @@ def recolocar_cursor(
        lo que Gmail guarda) e idempotente: el repaso salta lo que ya está.
     """
     anterior = watch.history_id
+    # El hueco no lo marca la retención de Gmail, sino cuánto lleva el cursor
+    # sin avanzar. `last_renewed_at` es la señal más cercana que hay.
+    desde = watch.last_renewed_at
+    if desde is not None and desde.tzinfo is None:
+        desde = desde.replace(tzinfo=UTC)
+    dias_hueco = (
+        (datetime.now(UTC) - desde).days + 1 if desde is not None else 0
+    )
+    dias = max(DIAS_DE_RECUPERACION, min(dias_hueco, MAX_DIAS_DE_RECUPERACION))
     perfil = client.get_profile() or {}
     ahora = int(perfil.get("historyId") or 0)
     if ahora <= 0:
@@ -1040,30 +1054,34 @@ def recolocar_cursor(
             "Gmail no devolvió `historyId` en `getProfile`: sin él no se "
             "puede recolocar el cursor caducado."
         )
-    watch.history_id = ahora
-    session.flush()
     from app.core.audit import Action  # noqa: PLC0415
     from app.core.audit import record_event as apuntar
+    from app.integrations.gmail.jobs import (  # noqa: PLC0415
+        enqueue_recuperar_hueco,
+    )
 
+    # El repaso se encola ANTES de mover el cursor. Al revés, un fallo al
+    # encolar dejaba el cursor adelantado y el hueco irrecuperable; así, si no
+    # se puede encolar, la excepción sube, el cursor se queda donde está y el
+    # próximo push vuelve a intentarlo.
+    enqueue_recuperar_hueco(user_id=user_id, dias=dias)
+    watch.history_id = ahora
+    session.flush()
     apuntar(
         session,
         action=Action.GMAIL_HISTORY_CURSOR_RESET,
         target_type="gmail_pubsub_watch",
         target_id=watch.id,
         metadata={"cursor_anterior": anterior, "cursor_nuevo": ahora,
-                  "dias_recuperados": DIAS_DE_RECUPERACION},
+                  "dias_recuperados": dias, "dias_de_hueco": dias_hueco},
     )
     session.commit()
     logger.warning(
-        "gmail.process_history.cursor_caducado user_id=%s cursor %s → %s; se "
-        "encola el repaso de los últimos %s días para recuperar el hueco",
-        user_id, anterior, ahora, DIAS_DE_RECUPERACION,
+        "gmail.process_history.cursor_caducado user_id=%s cursor %s → %s; "
+        "repaso de los últimos %s días encolado para recuperar el hueco "
+        "(el cursor llevaba %s días sin avanzar)",
+        user_id, anterior, ahora, dias, dias_hueco,
     )
-    from app.integrations.gmail.jobs import (  # noqa: PLC0415
-        enqueue_recuperar_hueco,
-    )
-
-    enqueue_recuperar_hueco(user_id=user_id, dias=DIAS_DE_RECUPERACION)
     return 0
 
 
