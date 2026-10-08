@@ -116,7 +116,10 @@ def test_leer_fallidos_lee_todas_las_colas_los_mas_recientes_primero(monkeypatch
     class _Conn:
         def zrevrange(self, key, start, end):
             pedidos.append((key, start, end))
-            return ids[key]
+            return ids[key][start : end + 1]
+
+        def zcard(self, key):
+            return len(ids[key])
 
     monkeypatch.setattr(rq.Queue, "all", classmethod(lambda cls, connection=None: colas))
     class _Registro:
@@ -125,7 +128,10 @@ def test_leer_fallidos_lee_todas_las_colas_los_mas_recientes_primero(monkeypatch
             self.name = queue.name
 
         def __len__(self):
-            return len(ids[self.key])
+            # `len()` de rq pasa por `cleanup()` → `zremrangebyscore`: BORRA
+            # las entradas caducadas. En una comprobación de solo lectura eso
+            # es un borrado silencioso, así que aquí se prohíbe.
+            raise AssertionError("len(registro) escribe en Redis: usa ZCARD")
 
     monkeypatch.setattr(rq.registry, "FailedJobRegistry", _Registro)
     monkeypatch.setattr(rq.job.Job, "fetch_many",
@@ -399,9 +405,12 @@ def test_la_memoria_de_los_fallidos_se_estima_por_muestreo(monkeypatch):
             self.key = f"rq:failed:{queue.name}"
 
         def __len__(self):
-            return 146_876
+            raise AssertionError("len(registro) escribe en Redis: usa ZCARD")
 
     class _Conn:
+        def zcard(self, _key):
+            return 146_876
+
         def zrevrange(self, _key, _start, _end):
             return [f"j{i}".encode() for i in range(25)]
 
@@ -419,3 +428,68 @@ def test_la_memoria_de_los_fallidos_se_estima_por_muestreo(monkeypatch):
     assert out["bytes_estimados"] == 146_876 * 1_024      # ~143 MB
     assert out["redis_usada_bytes"] == 500 * 1024 * 1024
     assert out["muestra"] == 25
+
+
+def test_un_id_numerico_suelto_no_parte_el_grupo(factory, monkeypatch):
+    """Un `KeyError: 12345` por pedido serían miles de grupos (y miles de
+    filas en `cuadre_findings`). Pero un 400 y un 404 sí son distintos."""
+    from app.erp.cuadre.checks_colas import tipo_de_error
+
+    assert tipo_de_error("KeyError: 12345") == tipo_de_error("KeyError: 998877")
+    assert tipo_de_error("WooError: GET /orders/12345 → 404") == \
+        tipo_de_error("WooError: GET /orders/998877 → 404")
+    # Tres cifras o menos se quedan: ahí están los estados y las aridades.
+    assert tipo_de_error("400 from brevo") != tipo_de_error("404 from brevo")
+    assert tipo_de_error("takes 2 arguments") != tipo_de_error("takes 3 arguments")
+
+    ahora = datetime.now(UTC)
+    lote = [TrabajoFallido(id=f"j{i}", cola="woocommerce:backfill",
+                           funcion="app.x.sync_order", argumentos=f"{10000 + i}",
+                           fecha=ahora, error=f"KeyError: {10000 + i}")
+            for i in range(40)]
+    monkeypatch.setattr(checks_colas, "leer_fallidos",
+                        lambda *a, **k: (lote, {"woocommerce:backfill": 40}))
+    with factory() as s:
+        cuadre_engine.ejecutar(s, fuente="mysql", origen="manual")
+        hallazgos = _hallazgos(s)
+    assert len(hallazgos) == 1                       # un grupo, no cuarenta
+    assert json.loads(hallazgos[0].detalle_json)["datos"]["cuantos"] == 40
+
+
+def test_con_muchisimos_grupos_se_sacan_los_gordos_y_se_dice_el_resto(
+    factory, monkeypatch
+):
+    """Cada grupo es una fila en `cuadre_findings`: no se meten miles en
+    silencio."""
+    ahora = datetime.now(UTC)
+    lote = [TrabajoFallido(id=f"j{i}", cola="woocommerce:backfill",
+                           funcion=f"app.x.job_{i}", argumentos="",
+                           fecha=ahora, error="BoomError: distinto cada vez")
+            for i in range(checks_colas.MAX_GRUPOS + 7)]
+    monkeypatch.setattr(checks_colas, "leer_fallidos",
+                        lambda *a, **k: (lote, {"woocommerce:backfill": len(lote)}))
+    with factory() as s:
+        cuadre_engine.ejecutar(s, fuente="mysql", origen="manual")
+        hallazgos = _hallazgos(s)
+    # Los 50 más gordos + UNA línea que dice cuántos quedan fuera.
+    assert len(hallazgos) == checks_colas.MAX_GRUPOS + 1
+    resto = [h for h in hallazgos if h.entidad_id == "otros-grupos-pequenos"]
+    assert len(resto) == 1
+    assert json.loads(resto[0].detalle_json)["datos"]["grupos"] == 7
+    assert resto[0].severidad == "baja"
+
+
+def test_una_funcion_sin_argumentos_tambien_tiene_ejemplo(factory, monkeypatch):
+    """La pista dice «mira el error del ejemplo»: si la función no lleva
+    argumentos, el ejemplo no puede faltar."""
+    ahora = datetime.now(UTC)
+    lote = [TrabajoFallido(id="j1", cola="genei:shipments",
+                           funcion="app.x.fetch_label_job", argumentos="",
+                           fecha=ahora, error="GeneiError: sin etiqueta")]
+    monkeypatch.setattr(checks_colas, "leer_fallidos",
+                        lambda *a, **k: (lote, {"genei:shipments": 1}))
+    with factory() as s:
+        cuadre_engine.ejecutar(s, fuente="mysql", origen="manual")
+        (h,) = _hallazgos(s)
+        d = json.loads(h.detalle_json)
+    assert d["datos"]["ejemplo_error"] == "GeneiError: sin etiqueta"

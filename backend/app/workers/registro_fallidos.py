@@ -63,6 +63,18 @@ def _encaja(job: Any, funcion: str | None) -> bool:
     return nombre == funcion or nombre.rsplit(".", 1)[-1] == funcion
 
 
+def cuantos(conn: Any, registro: Any) -> int:
+    """Cuántas entradas tiene el registro, SIN tocarlo.
+
+    `len(registro)` de rq no es una lectura: pasa por `count` → `cleanup()` →
+    `zremrangebyscore`, o sea que borra las caducadas. Para un recuento que
+    solo se enseña, `ZCARD` cuenta y no escribe."""
+    try:
+        return int(conn.zcard(registro.key) or 0)
+    except Exception:  # noqa: BLE001 — el recuento no puede tumbar la operación
+        return 0
+
+
 def _ids(conn: Any, key: str, desde: int, hasta: int) -> list[str]:
     """Una página del registro, de los más ANTIGUOS a los más nuevos: se
     recupera en el orden en que se perdió."""
@@ -89,7 +101,7 @@ def reencolar(
     conn = conn or redis_connection()
     q = Queue(cola, connection=conn)
     registro = FailedJobRegistry(queue=q)
-    total_en_registro = len(registro)
+    total_en_registro = cuantos(conn, registro)
 
     elegidos: list[Any] = []
     sin_datos = 0
@@ -161,11 +173,11 @@ def vaciar(cola: str, *, probar: bool = True, conn: Any = None) -> dict[str, Any
 
     conn = conn or redis_connection()
     registro = FailedJobRegistry(queue=Queue(cola, connection=conn))
-    cuantos = len(registro)
+    hay = cuantos(conn, registro)
     if probar:
-        return {"cola": cola, "probar": True, "en_registro": cuantos,
+        return {"cola": cola, "probar": True, "en_registro": hay,
                 "descartados": 0, "sin_datos": 0, "fallos": 0,
-                "quedan": cuantos, "tope": TOPE_VACIAR}
+                "quedan": hay, "tope": TOPE_VACIAR}
 
     descartados = sin_datos = fallos = 0
     while descartados + sin_datos + fallos < TOPE_VACIAR:
@@ -199,12 +211,12 @@ def vaciar(cola: str, *, probar: bool = True, conn: Any = None) -> dict[str, Any
             # siempre.
             break
 
-    quedan = len(registro)
+    quedan = cuantos(conn, registro)
     logger.warning(
         "colas: descartados %d trabajos fallidos de %s (%d sin datos, %d "
         "fallos, de %d; quedan %d)", descartados, cola, sin_datos, fallos,
-        cuantos, quedan,
+        hay, quedan,
     )
-    return {"cola": cola, "probar": False, "en_registro": cuantos,
+    return {"cola": cola, "probar": False, "en_registro": hay,
             "descartados": descartados, "sin_datos": sin_datos,
             "fallos": fallos, "quedan": quedan, "tope": TOPE_VACIAR}

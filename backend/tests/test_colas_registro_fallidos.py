@@ -61,6 +61,9 @@ def rq_falso(monkeypatch):
             ids = estado["ids"]
             return ids[start:] if end == -1 else ids[start : end + 1]
 
+        def zcard(self, _key):
+            return len(estado["ids"])
+
         def zrem(self, _key, job_id):
             antes = len(estado["ids"])
             estado["ids"] = [i for i in estado["ids"] if i != job_id.encode()]
@@ -72,7 +75,9 @@ def rq_falso(monkeypatch):
             self.key = f"rq:failed:{queue.name}"
 
         def __len__(self):
-            return len(estado["ids"])
+            # `len()` de rq pasa por `cleanup()` → `zremrangebyscore`: borra
+            # las entradas caducadas. Para contar se usa ZCARD.
+            raise AssertionError("len(registro) escribe en Redis: usa ZCARD")
 
         def requeue(self, job_id):
             estado["reencolados"].append(job_id)

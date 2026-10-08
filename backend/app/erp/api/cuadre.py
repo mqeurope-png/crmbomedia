@@ -296,8 +296,15 @@ def colas_fallidos(
     from app.erp.cuadre.checks_colas import leer_fallidos  # noqa: PLC0415
 
     _ = current_user
-    trabajos, totales = leer_fallidos(max_por_cola=max(limite * 4, 200))
+    _cola_valida(cola)
     corta = (funcion or "").strip()
+    # Con filtro por función hay que mirar más entradas para encontrar `limite`
+    # de esa función; sin filtro, basta con las primeras. Y solo esta cola: no
+    # tiene sentido recorrer las demás para contestar sobre una.
+    ventana = max(limite * 10, 500) if corta else max(limite, 50)
+    trabajos, totales = leer_fallidos(
+        max_por_cola=ventana, max_total=ventana, solo_cola=cola
+    )
     filas = [
         {
             "id": t.id, "funcion": t.funcion,
@@ -305,12 +312,16 @@ def colas_fallidos(
             "argumentos": t.argumentos, "error": t.error,
         }
         for t in trabajos
-        if t.cola == cola
-        and (not corta or t.funcion == corta or t.funcion.rsplit(".", 1)[-1] == corta)
+        if not corta or t.funcion == corta or t.funcion.rsplit(".", 1)[-1] == corta
     ]
+    hay = totales.get(cola, 0)
     return {
         "cola": cola, "funcion": corta or None,
-        "en_el_registro": totales.get(cola, 0),
+        "en_el_registro": hay,
+        "revisados": len(trabajos),
+        # Sin esto, un filtro que no encuentra nada en la ventana se lee como
+        # «no hay ninguno» cuando lo que pasa es que no se ha mirado entero.
+        "ventana_agotada": len(trabajos) >= ventana and hay > len(trabajos),
         "mostrados": len(filas[:limite]),
         "trabajos": filas[:limite],
     }
