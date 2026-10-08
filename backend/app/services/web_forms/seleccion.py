@@ -18,7 +18,11 @@ from sqlalchemy.orm import Session
 
 from app.models.web_forms import WebForm
 from app.services.web_forms.sitios import SEPARADOR, clave_de_sitio
-from app.services.web_forms.textos import IDIOMA_BASE, normalizar_idioma
+from app.services.web_forms.textos import (
+    IDIOMA_BASE,
+    idioma_conocido,
+    normalizar_idioma,
+)
 
 #: Orden de preferencia cuando la web no tiene el idioma pedido ni
 #: formulario de respaldo marcado.
@@ -30,11 +34,18 @@ def formularios_de_sitio(session: Session, clave: str) -> list[WebForm]:
     clave = (clave or "").strip().lower()
     if not clave:
         return []
+    # `%` y `_` de la clave (que viene de la URL pública) se escapan: no van
+    # a colar nada por el filtro exacto de abajo, pero un `%` convertiría
+    # esto en un barrido de la tabla.
+    patron = clave
+    for especial in ("\\", "%", "_"):
+        patron = patron.replace(especial, f"\\{especial}")
     filas = session.scalars(
         select(WebForm)
         .where(
             WebForm.is_active.is_(True),
-            or_(WebForm.slug == clave, WebForm.slug.like(f"{clave}{SEPARADOR}%")),
+            or_(WebForm.slug == clave,
+                WebForm.slug.like(f"{patron}{SEPARADOR}%", escape="\\")),
         )
         .order_by(WebForm.language, WebForm.slug)
     ).all()
@@ -51,11 +62,14 @@ def formulario_de_sitio(
     activos = formularios_de_sitio(session, clave)
     if not activos:
         return None
-    pedido = normalizar_idioma(idioma)
+    # Ojo: aquí NO vale `normalizar_idioma`, que colapsa a castellano
+    # cualquier código raro o vacío. Una página sin `lang` no es una página
+    # en castellano: tiene que llevarse el respaldo que marcó el operador.
+    pedido = idioma_conocido(idioma)
     por_idioma: dict[str, WebForm] = {}
     for f in activos:
         por_idioma.setdefault(normalizar_idioma(f.language), f)
-    if pedido in por_idioma:
+    if pedido is not None and pedido in por_idioma:
         return por_idioma[pedido]
     respaldo = next((f for f in activos if f.is_site_default), None)
     if respaldo is not None:

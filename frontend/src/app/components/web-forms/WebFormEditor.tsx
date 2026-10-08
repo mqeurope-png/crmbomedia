@@ -340,8 +340,13 @@ export function WebFormEditor({ formId }: { formId: string }) {
           </label>
           <label>Slug
             <input type="text" value={form.slug} onChange={(e) => patch({ slug: e.target.value })}
-              placeholder="contacto-mbo-es" />
+              placeholder="mboprinters-contacto-es" />
           </label>
+          <p className="wf-hint">
+            La parte de antes de «-contacto» es la web: de ahí salen el origen del
+            lead, el código único de la web y los filtros. Con otro nombre el
+            formulario funciona, pero se queda fuera de todo eso.
+          </p>
           <div className="wf-config-row">
             <label>Marca
               <input type="text" value={form.brand ?? ""} onChange={(e) => patch({ brand: e.target.value })} />

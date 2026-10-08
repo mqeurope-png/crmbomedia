@@ -12,10 +12,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import Coroutine
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from email.message import EmailMessage
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 import aiosmtplib
 from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -34,6 +37,25 @@ _jinja_env = Environment(
 # Informational only — the backend doesn't enforce token expiry yet. Surfaced
 # in the email so the user knows they shouldn't sit on the link for hours.
 PASSWORD_RESET_EXPIRES_MINUTES = 60
+
+
+def _ejecutar(corutina: Coroutine[Any, Any, None]) -> None:
+    """Manda el correo desde código síncrono, haya o no un bucle de eventos
+    en marcha.
+
+    `asyncio.run` revienta con `RuntimeError` si se llama desde dentro de un
+    bucle activo, y eso es exactamente lo que pasaba al enviar desde un
+    endpoint `async def` (el submit de los formularios web): el correo no
+    salía y el fallo se quedaba en un warning. Con un bucle en marcha se
+    envía desde un hilo aparte, que trae su propio bucle.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(corutina)
+        return
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pool.submit(asyncio.run, corutina).result()
 
 
 @dataclass
@@ -200,9 +222,7 @@ class SMTPEmailService(EmailService):
             text_body=text_body,
             html_body=html_body,
         )
-        # Sync handlers bridge to the async aiosmtplib API via a fresh event
-        # loop. Password reset is rare so the cost of asyncio.run is fine.
-        asyncio.run(self._send(msg))
+        _ejecutar(self._send(msg))
 
     def send_notification(
         self,
@@ -221,7 +241,7 @@ class SMTPEmailService(EmailService):
             text_body=text_body,
             html_body=html_body or f"<pre>{text_body}</pre>",
         )
-        asyncio.run(self._send(msg))
+        _ejecutar(self._send(msg))
 
     async def _send(self, msg: EmailMessage) -> None:
         await aiosmtplib.send(

@@ -150,6 +150,28 @@ def test_se_filtra_por_web_y_por_idioma(factory, campo, valor, encuentra):
         assert seg_engine.evaluate_contact_against_rules(contacto, reglas) is encuentra
 
 
+@pytest.mark.parametrize("comparador", ["neq", "not_in"])
+def test_quien_no_viene_de_formulario_cuenta_como_otra_web(factory, comparador):
+    """«La web NO es mboprinters» incluye a quien no entró por formulario, y
+    tiene que decir lo mismo en SQL que en memoria: el camino en memoria es
+    el de las reglas de asignación."""
+    with factory() as s:
+        suelto = Contact(first_name="Ana", email="ana@woo.es", tags=[],
+                         origin="WooCommerce", origin_account_id="woocommerce:boprint")
+        sin_cuenta = Contact(first_name="Luis", email="luis@manual.es", tags=[],
+                             origin="Manual")
+        s.add_all([suelto, sin_cuenta])
+        s.commit()
+        valor = "mboprinters" if comparador == "neq" else ["mboprinters"]
+        reglas = {"operator": "AND", "children": [
+            {"type": "rule", "field": "lead_web",
+             "comparator": comparador, "value": valor}]}
+        ids = set(s.scalars(select(Contact.id).where(seg_engine.build_filter(reglas))))
+        for c in (suelto, sin_cuenta):
+            assert c.id in ids
+            assert seg_engine.evaluate_contact_against_rules(c, reglas) is True
+
+
 @pytest.mark.parametrize(("slug", "web"), [
     ("artisjet-es-contacto-de", "artisjet-spain.es"),
     ("artisjet-eu-contacto-nl", "artisjet-printers.eu"),
@@ -267,6 +289,22 @@ def test_sin_respaldo_marcado_cae_al_castellano_y_luego_al_ingles(factory):
         assert formulario_de_sitio(s, "fluxlasers", "fr").slug == "fluxlasers-contacto-es"
         assert formulario_de_sitio(s, "FLUXLASERS", "de").slug == "fluxlasers-contacto-de"
         assert formulario_de_sitio(s, "no-existe", "es") is None
+
+
+def test_una_pagina_sin_lang_se_lleva_el_respaldo_no_el_castellano(factory):
+    """Una web europea cuyas plantillas no pongan `lang` debe servir el
+    formulario que el operador marcó de respaldo, no el castellano por el
+    hecho de no saber el idioma."""
+    with factory() as s:
+        _form(s, slug="artisjet-eu-contacto-es", idioma="es")
+        _form(s, slug="artisjet-eu-contacto-de", idioma="de")
+        _form(s, slug="artisjet-eu-contacto-en", idioma="en", is_site_default=True)
+        elegido = lambda lang: formulario_de_sitio(s, "artisjet-eu", lang).slug  # noqa: E731
+        assert elegido("de") == "artisjet-eu-contacto-de"      # el idioma pedido
+        assert elegido("es") == "artisjet-eu-contacto-es"      # castellano de verdad
+        assert elegido("") == "artisjet-eu-contacto-en"        # sin lang → respaldo
+        assert elegido("it") == "artisjet-eu-contacto-en"      # idioma que no tenemos
+        assert elegido(None) == "artisjet-eu-contacto-en"
 
 
 def test_una_web_sin_formularios_activos_lo_dice_en_la_consola(http, factory):
@@ -607,6 +645,21 @@ def test_la_migracion_reconstruye_los_leads_ya_entrados(alembic_cfg):
     assert idiomas["c4"] is None and idiomas["c5"] is None
     assert filas["c4"] == ("Manual", None)                    # lo demás, intacto
     assert filas["c5"] == ("woocommerce", "woocommerce:boprint")
+
+    # Y se puede volver a subir: el origen ya está reconstruido, pero la
+    # columna `language` se va con el downgrade y hay que rellenarla otra vez
+    # (en MySQL el DDL hace commit, así que una migración cortada a medias
+    # deja justo este estado).
+    command.downgrade(cfg, "20261008_0126")
+    command.upgrade(cfg, "20261008_0127")
+    with engine.connect() as c:
+        idiomas = {r[0]: r[1] for r in c.execute(text(
+            "SELECT id, language FROM contacts"))}
+        filas = {r[0]: (r[1], r[2]) for r in c.execute(text(
+            "SELECT id, origin, origin_account_id FROM contacts"))}
+    assert (idiomas["c1"], idiomas["c2"], idiomas["c3"]) == ("de", "nl", "de")
+    assert idiomas["c4"] is None and idiomas["c5"] is None
+    assert filas["c1"] == (origen_legible(slug_de, "de"), origen_de(slug_de, "de"))
     command.downgrade(cfg, "20261008_0126")
 
 

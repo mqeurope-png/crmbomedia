@@ -54,7 +54,11 @@ def _formularios(conn: sa.engine.Connection) -> tuple[dict[str, tuple[str, str]]
 
 
 def upgrade() -> None:
-    from app.services.web_forms.sitios import origen_de, origen_legible
+    from app.services.web_forms.sitios import (
+        origen_de,
+        origen_legible,
+        partes_de_origen,
+    )
     from app.services.web_forms.textos import normalizar_idioma
 
     with op.batch_alter_table("web_forms") as batch:
@@ -65,9 +69,17 @@ def upgrade() -> None:
         batch.create_index("ix_contacts_language", ["language"])
 
     conn = op.get_bind()
+
+    def solo_idioma(contact_id: str, idioma: str) -> None:
+        """El origen ya estaba reconstruido (`web_form:<sitio>:<idioma>`),
+        pero la columna `language` es nueva y está vacía. Pasa si se vuelve
+        atrás y se vuelve a subir, o si la migración se corta a medias en
+        MySQL, donde el DDL hace commit implícito."""
+        conn.execute(sa.text(
+            "UPDATE contacts SET language = COALESCE(language, :l) WHERE id = :i"
+        ), {"l": normalizar_idioma(idioma), "i": contact_id})
+
     por_clave, por_id = _formularios(conn)
-    if not por_clave:
-        return
 
     def actualizar(contact_id: str, slug: str, idioma: str) -> None:
         conn.execute(sa.text(
@@ -84,8 +96,12 @@ def upgrade() -> None:
     for contact_id, clave in antiguos:
         datos = por_clave.get(clave or "")
         if datos is None:
-            # Ya migrado (`web_form:sitio:idioma`) o el slug ya no existe.
-            if (clave or "").count(":") == 1:
+            partes = partes_de_origen(clave)
+            if partes is not None:
+                # Ya migrado: el origen está bien, solo falta el idioma.
+                solo_idioma(contact_id, partes[1])
+            elif (clave or "").count(":") == 1:
+                # Formato antiguo cuyo slug ya no existe: por el envío.
                 pendientes.append(contact_id)
             continue
         actualizar(contact_id, *datos)

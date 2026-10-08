@@ -126,6 +126,17 @@ def normalizar_idioma(idioma: str | None) -> str:
     return codigo if codigo in TEXTOS else IDIOMA_BASE
 
 
+def idioma_conocido(idioma: str | None) -> str | None:
+    """Como `normalizar_idioma`, pero distingue «no lo sé» de «castellano».
+
+    Hace falta para elegir formulario: una página sin `lang` ni prefijo de
+    idioma, o en un idioma que no tenemos, no es una página en castellano,
+    y debe llevarse el formulario de respaldo que marcó el operador.
+    """
+    codigo = (idioma or "").strip().lower().replace("_", "-").split("-")[0]
+    return codigo if codigo in TEXTOS else None
+
+
 def textos(idioma: str | None) -> dict[str, str]:
     """Todos los textos en ese idioma, completando con el castellano lo que
     falte (un idioma nuevo nunca deja un hueco en blanco)."""

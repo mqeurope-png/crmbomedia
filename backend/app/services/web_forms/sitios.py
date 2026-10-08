@@ -76,8 +76,11 @@ def origen_de(slug: str | None, idioma: str | None) -> str:
 def origen_legible(slug: str | None, idioma: str | None) -> str:
     """`Contact.origin` de un lead: «Formulario web · mboprinters.com
     (alemán)». Cabe en los 120 caracteres de la columna."""
+    # Se normaliza igual que en `origen_de` y que en `contact.language`: si
+    # no, un formulario con un idioma que no tenemos diría «(italiano)» en
+    # la ficha mientras el filtro y el correo lo tratan como castellano.
     texto = (f"{ORIGEN_LEGIBLE_PREFIJO} · {web_de_formulario(slug)} "
-             f"({nombre_idioma(idioma)})")
+             f"({nombre_idioma(normalizar_idioma(idioma))})")
     return texto[:120]
 
 

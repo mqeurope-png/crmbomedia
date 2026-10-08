@@ -1087,6 +1087,12 @@ def _evaluate_leaf(
         return actual is None
     if comparator == "is_not_null":
         return actual is not None
+    if actual is None and spec.relation == "origen_formulario.sitio":
+        # El camino SQL mete a propósito las filas sin `origin_account_id` en
+        # «no es de esta web» (`or_(~cond, columna.is_(None))`). Aquí hay que
+        # decir lo mismo, o una regla de asignación en memoria y el segmento
+        # equivalente dejarían de cuadrar.
+        return comparator in {"neq", "not_in"}
     if actual is None and comparator not in {"contains_none"}:
         return False
     if comparator == "eq":

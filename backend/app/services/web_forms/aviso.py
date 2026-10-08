@@ -180,19 +180,18 @@ def enviar_aviso_lead(
 ) -> list[str]:
     """Manda el aviso y devuelve a quién se le envió. Un fallo de correo NO
     tumba la captura del lead: se registra y se sigue."""
-    from app.services.email import get_email_service  # noqa: PLC0415
-
     enviados: list[str] = []
     try:
-        lead = construir_lead(form, contact, payload, etiquetas=etiquetas, nuevo=nuevo)
+        from app.services.email import get_email_service  # noqa: PLC0415
         from app.services.web_forms.sitios import clave_de_sitio  # noqa: PLC0415
 
+        lead = construir_lead(form, contact, payload, etiquetas=etiquetas, nuevo=nuevo)
         asunto, texto, html = render_aviso(lead, clave_de_sitio(form.slug))
         quienes = destinatarios(session, contact)
+        servicio = get_email_service()
     except Exception:  # noqa: BLE001 — el lead ya está guardado
         logger.warning("web_forms.aviso_lead: no se pudo preparar el aviso", exc_info=True)
         return enviados
-    servicio = get_email_service()
     for correo, nombre in quienes:
         try:
             servicio.send_notification(
