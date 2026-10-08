@@ -47,9 +47,14 @@ docker compose exec api python -m app.integrations.vies.client FR90501738249 --i
 veredicto positivo el log del `api` deja `vies … → desconocido|no_valido (…)
 · enviado {…} · respuesta HTTP … {…}` con la respuesta cruda de VIES.
 
-Solo se consulta cuando **aplica**: país de la UE distinto de España y con
-NIF-IVA del país (`Company.vat`, o `tax_id` con prefijo del país). España →
-nacional, fuera de la UE → exportación: VIES no aplica (`vies.applies=false`).
+Solo se consulta cuando **aplica**, y «aplica» depende de la PAREJA emisor →
+cliente (`vat_regime.vies_hace_falta`): los dos países en la UE, **distintos**,
+y el cliente con NIF-IVA del suyo (`Company.vat`, o `tax_id` con prefijo del
+país). Un cliente español facturado por Streamtec (ES) es nacional pase lo que
+pase y ahí no se consulta; ese mismo cliente facturado por **MQ Europe (BE)**
+sí, porque la exención depende de que su NIF-IVA sea válido. Mismo país →
+nacional, fuera de la UE → exportación: VIES no aplica
+(`vies.applies=false`). Ver `docs/erp/factusol-cliente-tipo-documento-iva.md`.
 
 ## Cómo se lee la respuesta
 

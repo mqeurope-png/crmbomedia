@@ -862,11 +862,6 @@ def emit_invoice(
             "WooCommerce→FACTUSOL debe importarlo antes de facturar."
         )
     codpcl = pcl.get("CODPCL")
-    # Tarea C: la factura web COPIA los importes que ya calculó la app
-    # Woo→FACTUSOL (lo que el cliente pagó); no se recalculan. Pero si el
-    # cliente es intracomunitario / exportación y el pedido lleva IVA, se avisa
-    # (historial + log) para revisarlo a mano.
-    regime_warning = regime_warning_for_pcl(session, order, pcl)
     # BUGFIX: la línea de pedido solo es única por la pareja (TIPLPC, CODLPC) —
     # el join documentado es `F_LPC.TIPLPC = F_PCL.TIPPCL AND F_LPC.CODLPC =
     # F_PCL.CODPCL`. Filtrar por CODLPC a secas arrastraba las líneas del pedido
@@ -897,6 +892,12 @@ def emit_invoice(
         replace(options, serie=serie, pedfac=codpcl) if options is not None
         else FacturaOptions(serie=serie, pedfac=codpcl)
     )
+    # Tarea C: la factura web COPIA los importes que ya calculó la app
+    # Woo→FACTUSOL (lo que el cliente pagó); no se recalculan. Pero si el
+    # cliente es intracomunitario / exportación y el pedido lleva IVA, se avisa
+    # (historial + log) para revisarlo a mano. Va DESPUÉS de resolver la serie
+    # porque el régimen es de la pareja: quién factura decide si el IVA toca.
+    regime_warning = regime_warning_for_pcl(session, order, pcl, serie=serie)
     codfac = next_codfac(client, ejercicio, serie)
     fecha_emision = datetime.now(UTC).date().isoformat()
     cabecera = pcl_row_to_fac_payload(
@@ -1023,13 +1024,17 @@ def emit_invoice(
 
 
 def regime_warning_for_pcl(
-    session: Session, order: Order, pcl: dict[str, Any],
+    session: Session, order: Order, pcl: dict[str, Any], *, serie: Any = None,
 ) -> str | None:
     """Tarea C: aviso si la empresa del pedido es intracomunitaria / de
-    exportación (país + NIF-IVA del CRM) y el pedido de cliente F_PCL que se
-    va a copiar lleva IVA (`PIVA1PCL`/`IIVA1PCL` > 0). No cambia importes."""
+    exportación y el pedido de cliente F_PCL que se va a copiar lleva IVA
+    (`PIVA1PCL`/`IIVA1PCL` > 0). No cambia importes.
+
+    El régimen es de la PAREJA país de la empresa que emite la `serie` → país
+    del cliente: sin `serie` se supone el emisor por defecto, como antes."""
     if not order.company_id:
         return None
+    from app.erp.factusol_pdf import issuer_iso2_for_serie  # noqa: PLC0415
     from app.erp.language import normalize_country  # noqa: PLC0415
     from app.integrations.factusol.quotes import _num  # noqa: PLC0415
     from app.integrations.factusol.vat_regime import (  # noqa: PLC0415
@@ -1044,7 +1049,9 @@ def regime_warning_for_pcl(
     if company is None or not company.country:
         return None
     regime = regime_for(
-        normalize_country(company.country), vat=company.vat, nif=company.tax_id,
+        normalize_country(company.country),
+        issuer_iso2=issuer_iso2_for_serie(session, serie) if serie is not None else None,
+        vat=company.vat, nif=company.tax_id,
         vies_valid=company_vies_valid(company),
     )
     if regime == REGIME_NACIONAL:
@@ -1057,7 +1064,8 @@ def regime_warning_for_pcl(
         return None
     warning = (
         f"El pedido {order.order_number} lleva IVA ({iva:g}) pero la empresa "
-        f"«{company.name}» es {REGIME_LABELS[regime]} por su país / NIF-IVA. La "
+        f"«{company.name}» es {REGIME_LABELS[regime]} para la empresa que "
+        f"emite la serie {serie or '—'} (país + NIF-IVA). La "
         "factura copia los importes del pedido web tal cual: revísala en FACTUSOL."
     )
     logger.warning("factusol: %s", warning)

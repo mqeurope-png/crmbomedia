@@ -415,6 +415,21 @@ export function CompanyCreateForm({
               {regimeConsequence(check)}
             </p>
             <p className="company-create-reason">{check.regime_reason}</p>
+            {/* El régimen es de la PAREJA emisor → cliente: si no sale el
+                mismo con todas las empresas que facturan, se dice. Con «España»
+                a secas, una factura de MQ Europe (BE) parecía bien estando
+                mal. */}
+            {(check.regimes ?? []).length > 1
+             && new Set((check.regimes ?? []).map((r) => r.regime)).size > 1 ? (
+              <ul className="company-create-reason">
+                {(check.regimes ?? []).map((r) => (
+                  <li key={r.serie}>
+                    {r.empresa} ({r.pais_iso2 ?? "—"}):{" "}
+                    <strong>{r.regime_label}</strong>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
           </div>
         ) : checking ? (
           <p className="muted small company-create-checking">

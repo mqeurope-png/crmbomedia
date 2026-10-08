@@ -708,6 +708,34 @@ def issuer_iso2_for_serie(session: Session, serie: int | str | None) -> str | No
     return normalize_country(company.get("pais"))
 
 
+def issuer_companies(session: Session) -> list[dict[str, Any]]:
+    """`[{serie, nombre, pais_iso2}]` de las empresas que pueden facturar, por
+    serie. Es la lista de EMISORES: la otra punta de la pareja que decide el
+    régimen de IVA, y lo que hace ver que un mismo cliente no tiene UN régimen
+    (Streamtec le factura con IVA y MQ Europe exento).
+
+    Se queda con las series que tienen identidad configurada con nombre."""
+    out: list[dict[str, Any]] = []
+    for serie, company in sorted(companies_config(session).items()):
+        nombre = str(company.get("nombre") or "").strip()
+        if not nombre:
+            continue
+        out.append({
+            "serie": serie, "nombre": nombre,
+            "pais_iso2": issuer_iso2_for_serie(session, serie),
+        })
+    return out
+
+
+def issuer_iso2_por_serie(session: Session) -> dict[str, str]:
+    """`{serie (texto): país ISO2}` de las empresas emisoras, para calcular el
+    régimen de cada serie antes de saber con cuál se escribirá el documento."""
+    return {
+        str(e["serie"]): e["pais_iso2"] for e in issuer_companies(session)
+        if e["pais_iso2"]
+    }
+
+
 def _lang_text(company: dict[str, Any], field: str, lang: str) -> str:
     """Texto legal en `lang`, cayendo a cualquier idioma disponible (mejor la
     reserva de dominio en español que perderla)."""

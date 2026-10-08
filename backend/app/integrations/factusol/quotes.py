@@ -166,6 +166,65 @@ def tip_of(serie: Any) -> str:
     return text if text.isdigit() else DEFAULT_TIPPRE
 
 
+def regime_de_serie(customer: dict[str, Any], serie: Any) -> str | None:
+    """Régimen de IVA que toca a ESTA serie, o sea a la empresa que emite.
+
+    El endpoint deja en el cliente `regime_por_serie` (`{serie: régimen}`)
+    porque la serie definitiva no se sabe hasta aquí: al editar una proforma es
+    la de la fila que ya existe en FACTUSOL. `regime` a secas queda como
+    respaldo para los jobs encolados ANTES de este cambio (y para los
+    llamadores que ya traen el régimen resuelto, como el albarán manual)."""
+    por_serie = customer.get("regime_por_serie")
+    if isinstance(por_serie, dict):
+        elegido = por_serie.get(tip_of(serie))
+        if elegido:
+            return str(elegido)
+    return customer.get("regime")
+
+
+def customer_con_regimen(
+    client: FactusolClient, customer: dict[str, Any], *, serie: Any,
+    ejercicio: str,
+) -> dict[str, Any]:
+    """El cliente con el `regime` que de verdad toca a esta serie.
+
+    Parte del régimen calculado de la pareja (`regime_de_serie`) y, donde la
+    pareja permite elegir (`ficha_decide_por_serie`, que pone el endpoint sin
+    llamar a FACTUSOL), deja mandar a la ficha F_CLI: es la decisión del
+    operador y lo que FACTUSOL va a aplicar al facturar el documento. Así la
+    proforma y el albarán del mismo pedido no se contradicen.
+
+    Una lectura de F_CLI, en el worker de escrituras. Si FACTUSOL no responde
+    se sigue con el régimen calculado (no se bloquea una proforma por esto)."""
+    calculado = regime_de_serie(customer, serie)
+    decide = (customer.get("ficha_decide_por_serie") or {}).get(tip_of(serie))
+    if not decide or not customer.get("codcli"):
+        return {**customer, "regime": calculado}
+    from app.integrations.factusol.customers import customer_row  # noqa: PLC0415
+    from app.integrations.factusol.vat_regime import (  # noqa: PLC0415
+        ficha_manda,
+        regime_from_fcli_row,
+    )
+
+    try:
+        row = customer_row(client, customer["codcli"], ejercicio=ejercicio)
+    except FactusolError as exc:
+        logger.warning(
+            "factusol: no se pudo leer la ficha del cliente %s para el régimen "
+            "(%s); se sigue con el calculado (%s)",
+            customer.get("codcli"), exc, calculado,
+        )
+        return {**customer, "regime": calculado}
+    ficha = ficha_manda(regime_from_fcli_row(row))
+    if ficha and ficha != calculado:
+        logger.info(
+            "factusol: régimen del cliente %s → %s (lo dice su ficha F_CLI; "
+            "por la pareja de la serie %s saldría %s)",
+            customer.get("codcli"), ficha, tip_of(serie), calculado,
+        )
+    return {**customer, "regime": ficha or calculado}
+
+
 def _same_serie(value: Any, serie: Any) -> bool:
     """¿La fila es de esa serie? `TIPPRE`/`TIPLPS` llegan como texto o como
     número según la fila, así que se comparan normalizados (por eso el filtro
@@ -882,7 +941,10 @@ def build_quote_payload(
     `portes` > 0 añade además la banda de portes (`IPOR1PRE`), que es donde
     viven los gastos de envío de los documentos web.
     """
-    totals = _totals(lines, regime=customer.get("regime"), portes=portes)
+    # El régimen es de la PAREJA emisor → cliente, así que depende de la serie
+    # (la empresa que emite). Con `regime` a secas, una proforma de MQ Europe
+    # (BE) a un cliente español salía al 21 % debiendo salir exenta.
+    totals = _totals(lines, regime=regime_de_serie(customer, serie), portes=portes)
     payload: dict[str, Any] = {
         "CODPRE": codpre,
         "TIPPRE": tip_of(serie),
@@ -1144,6 +1206,9 @@ def create_quote(
     # está en F_LPS y repetirlo resumido en «Su ref.» solo ensucia el documento.
     refpre = (referencia or "").strip()
     codpre = next_codpre(client, ejercicio, serie)
+    # El IVA es de la pareja emisor → cliente, y donde la pareja permite
+    # elegir manda la ficha F_CLI (ver `customer_con_regimen`).
+    customer = customer_con_regimen(client, customer, serie=serie, ejercicio=ejercicio)
     payload = build_quote_payload(
         codpre, ejercicio=ejercicio, customer=customer, refpre=refpre,
         lines=lines, fecha=fecha, foppre=foppre, portes=portes, serie=serie,
@@ -1306,6 +1371,9 @@ def update_quote(
         )
 
     propia = tip_of(row.get("TIPPRE"))
+    # La serie REAL es la de la fila, y con ella el régimen: la empresa que
+    # emite no se cambia al editar, pero el IVA sí tiene que ser el suyo.
+    customer = customer_con_regimen(client, customer, serie=propia, ejercicio=ejercicio)
     header = build_quote_payload(
         str(codpre), ejercicio=ejercicio, customer=customer,
         refpre=(referencia or "").strip(), lines=lines, portes=portes,

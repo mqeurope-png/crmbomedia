@@ -44,7 +44,11 @@ from app.integrations.factusol.quotes import (
     build_quote_payload,
     resolve_codarts,
 )
-from app.integrations.factusol.vat_regime import REGIME_LABELS, REGIME_NACIONAL
+from app.integrations.factusol.vat_regime import (
+    REGIME_LABELS,
+    REGIME_NACIONAL,
+    ficha_manda,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -261,25 +265,37 @@ def fiscal_overrides_for_invoice(
 
 def apply_regime(
     customer: dict[str, Any], lines: list[dict[str, Any]], *,
-    regime: str | None, numero: str,
+    regime: str | None, numero: str, ficha_decide: bool = False,
 ) -> tuple[str, list[dict[str, Any]], str | None]:
     """Régimen EFECTIVO del albarán y las líneas con el IVA que toca.
 
-    Manda el régimen que sale de la empresa CRM (país + NIF-IVA, `regime`);
-    sin país en el CRM, el que codifica la ficha F_CLI; y si tampoco, nacional.
-    Intracomunitario / exportación → todas las líneas al 0 %. Si la ficha
-    F_CLI dice otra cosa que el CRM se avisa (la ficha se corrige desde la
-    empresa, «Régimen de IVA en FACTUSOL»); nunca se escribe F_CLI desde aquí.
-    Devuelve `(régimen, líneas, aviso)`."""
+    `ficha_decide` es si la pareja emisor → cliente está en la zona donde el
+    régimen es una DECISIÓN (los dos países en la UE y distintos,
+    `vat_regime.pareja_elegible`). Ahí manda la ficha F_CLI, que es donde está
+    la decisión del operador y lo que FACTUSOL usa al facturar. Fuera de esa
+    zona el régimen es aritmética (mismo país → nacional, cliente de fuera de
+    la UE → exportación) y manda el cálculo: una ficha mal configurada no puede
+    hacer que se facture con IVA a Noruega.
+
+    Sin régimen calculado (la empresa del CRM no tiene país) se usa el de la
+    ficha, y si tampoco, nacional. Intracomunitario / exportación → todas las
+    líneas al 0 %. Cuando la ficha y el cálculo discrepan se avisa (la ficha se
+    corrige desde la empresa, «Régimen de IVA en FACTUSOL»); nunca se escribe
+    F_CLI desde aquí. Devuelve `(régimen, líneas, aviso)`."""
     fcli_regime = customer.get("regime")
-    effective = regime or fcli_regime or REGIME_NACIONAL
+    manda_ficha = ficha_manda(fcli_regime) if ficha_decide else None
+    effective = manda_ficha or regime or fcli_regime or REGIME_NACIONAL
     warning = None
     if regime and fcli_regime and fcli_regime != regime:
+        quien = ("la ficha de FACTUSOL" if manda_ficha
+                 else "el país / NIF-IVA de la empresa")
         warning = (
             f"La ficha F_CLI del cliente {customer.get('codcli')} está como "
-            f"{REGIME_LABELS.get(fcli_regime, fcli_regime)} y BoHub aplica "
-            f"{REGIME_LABELS.get(effective, effective)} por el país / NIF-IVA de la "
-            "empresa. Corrige la ficha desde la empresa («Régimen de IVA en FACTUSOL»)."
+            f"{REGIME_LABELS.get(fcli_regime, fcli_regime)} y por el país de "
+            f"quien factura saldría {REGIME_LABELS.get(regime, regime)}: BoHub "
+            f"aplica {REGIME_LABELS.get(effective, effective)}, lo que dice "
+            f"{quien}. Repásalo desde la empresa («Régimen de IVA en "
+            "FACTUSOL»)."
         )
         logger.warning("factusol albarán %s: %s", numero, warning)
     if effective != REGIME_NACIONAL:
@@ -391,7 +407,7 @@ def create_standalone_albaran(
     session: Session, client: FactusolClient, *, order: Order,
     codcli: Any, serie: int, ejercicio: str, fecha: str | None = None,
     fopalb: str | None = None, actor_user_id: str | None = None,
-    regime: str | None = None,
+    regime: str | None = None, ficha_decide: bool = False,
 ) -> dict[str, Any]:
     """Crea en FACTUSOL el albarán del pedido manual desde sus líneas.
 
@@ -436,7 +452,7 @@ def create_standalone_albaran(
             codcli,
         )
     effective_regime, lines, regime_warning = apply_regime(
-        customer, lines, regime=regime, numero=numero,
+        customer, lines, regime=regime, numero=numero, ficha_decide=ficha_decide,
     )
     # Cabecera coherente con las líneas: `_totals` también aplica el régimen.
     customer = {**customer, "regime": effective_regime}

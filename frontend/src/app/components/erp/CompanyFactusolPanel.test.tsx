@@ -57,9 +57,15 @@ const CHANGES = [
 /** Tarea C: ficha belga con NIF-IVA que FACTUSOL tiene como nacional (0/0/1). */
 const REGIME_PREVIEW = {
   company_id: "acme", codcli: "55555", company_country: "BE", company_vat: "BE0812240188",
-  country_iso2: "BE", regime: "intracomunitario" as const,
+  country_iso2: "BE", issuer_iso2: "ES", regime: "intracomunitario" as const,
   regime_label: "Intracomunitario (exento)",
-  reason: "BE (UE) con NIF-IVA BE0812240188 → intracomunitario",
+  reason: "España → Bélgica (UE) con NIF-IVA BE0812240188 → intracomunitario",
+  // El régimen es de la PAREJA: se enseña el de cada empresa que factura.
+  regimes: [
+    { serie: 5, empresa: "Streamtec SL", pais_iso2: "ES",
+      regime: "intracomunitario" as const, regime_label: "Intracomunitario (exento)" },
+  ],
+  conflicto: null,
   current: { IFICLI: 0, IVACLI: 0, TIVCLI: 1, PAICLI: "056", regime: "nacional" as const,
              regime_label: "Nacional (con IVA)" },
   proposed: { IFICLI: 2, IVACLI: 2, TIVCLI: 4, PAICLI: "056" },
@@ -162,8 +168,11 @@ describe("CompanyFactusolPanel — «Régimen de IVA en FACTUSOL» (Tarea C)", (
     await user.click(await screen.findByRole("button", { name: "Comprobar régimen de IVA" }));
     await waitFor(() => expect(getFactusolRegimePreview).toHaveBeenCalledWith("acme"));
     const dialog = within(await screen.findByRole("dialog", { name: "Régimen de IVA en FACTUSOL" }));
-    expect(dialog.getByText("Intracomunitario (exento)")).toBeInTheDocument();
-    expect(dialog.getByText(/BE \(UE\) con NIF-IVA BE0812240188/)).toBeInTheDocument();
+    // Dos veces: el régimen de la pareja y el de la empresa que factura.
+    expect(dialog.getAllByText("Intracomunitario (exento)")).toHaveLength(2);
+    expect(dialog.getByText(
+      /España → Bélgica \(UE\) con NIF-IVA BE0812240188/)).toBeInTheDocument();
+    expect(dialog.getByText(/Serie 5 · Streamtec SL \(ES\)/)).toBeInTheDocument();
     expect(dialog.getByText(/Ficha F_CLI nº 55555 ahora: Nacional \(con IVA\)/)).toBeInTheDocument();
     expect(dialog.getByRole("alert")).toHaveTextContent(/SOLO las columnas de abajo/);
     expect(dialog.getByText("2 · NIF/IVA operador intracomunitario")).toBeInTheDocument();
@@ -173,9 +182,39 @@ describe("CompanyFactusolPanel — «Régimen de IVA en FACTUSOL» (Tarea C)", (
     await user.click(dialog.getByRole("button", { name: "Corregir en FACTUSOL (3)" }));
     await waitFor(() => expect(fixFactusolCustomerRegime).toHaveBeenCalledWith("acme"));
     expect(await screen.findByText(
-      /Régimen corregido en FACTUSOL cliente nº 55555: Intracomunitario \(exento\) \(IFICLI, IVACLI, TIVCLI\)/,
+      /Corregido en FACTUSOL cliente nº 55555 \(IFICLI, IVACLI, TIVCLI\)\. Régimen: Intracomunitario \(exento\)/,
     )).toBeInTheDocument();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("con empresas que discrepan NO toca el régimen y lo explica", async () => {
+    // La ficha F_CLI es UNA sola: un cliente español es nacional para
+    // Streamtec (ES) e intracomunitario para MQ Europe (BE), así que no hay
+    // valor que escribir que no sea mentira para una de las dos.
+    const CONFLICTO = "El régimen depende de la empresa que factura: "
+      + "Streamtec SL (ES) → Nacional (con IVA) · MQ Europe BV (BE) → "
+      + "Intracomunitario (exento). La ficha de FACTUSOL es una sola…";
+    (getFactusolRegimePreview as jest.Mock).mockResolvedValueOnce({
+      ...REGIME_PREVIEW, conflicto: CONFLICTO, reason: CONFLICTO,
+      changes: [], coherent: true, proposed: { PAICLI: "724" },
+      regimes: [
+        { serie: 5, empresa: "Streamtec SL", pais_iso2: "ES",
+          regime: "nacional", regime_label: "Nacional (con IVA)" },
+        { serie: 2, empresa: "MQ Europe BV", pais_iso2: "BE",
+          regime: "intracomunitario", regime_label: "Intracomunitario (exento)" },
+      ],
+    });
+    const user = userEvent.setup();
+    render(<CompanyFactusolPanel company={COMPANY} />);
+    await user.click(await screen.findByRole("button", { name: "Comprobar régimen de IVA" }));
+    const dialog = within(await screen.findByRole("dialog", { name: "Régimen de IVA en FACTUSOL" }));
+    expect(dialog.getByText(/depende de la empresa que factura/)).toBeInTheDocument();
+    expect(dialog.getByText(/Serie 2 · MQ Europe BV \(BE\)/)).toBeInTheDocument();
+    expect(dialog.getByText(/el régimen de la ficha lo decides en FACTUSOL/))
+      .toBeInTheDocument();
+    expect(dialog.queryByRole("button", { name: /Corregir en FACTUSOL/ }))
+      .not.toBeInTheDocument();
+    expect(fixFactusolCustomerRegime).not.toHaveBeenCalled();
   });
 
   it("cancelar no escribe; una ficha coherente no ofrece corregir", async () => {

@@ -188,6 +188,31 @@ def company_regime(
     )
 
 
+def company_ficha_decide(
+    session: Session, company_id: str | None, *, serie: int | str | None = None,
+) -> bool:
+    """¿Manda la ficha F_CLI del cliente en el régimen de este albarán?
+
+    Sí cuando la pareja país del emisor → país del cliente está en la zona
+    donde el régimen es una decisión (los dos en la UE y distintos). Fuera de
+    ahí manda el cálculo, que es aritmética. Ver `vat_regime.pareja_elegible`
+    y `albaran_manual.apply_regime`."""
+    if not company_id:
+        return False
+    from app.erp.factusol_pdf import issuer_iso2_for_serie  # noqa: PLC0415
+    from app.erp.language import normalize_country  # noqa: PLC0415
+    from app.integrations.factusol.vat_regime import pareja_elegible  # noqa: PLC0415
+    from app.models.crm import Company  # noqa: PLC0415
+
+    company = session.get(Company, company_id)
+    if company is None or not company.country:
+        return False
+    return pareja_elegible(
+        normalize_country(company.country),
+        issuer_iso2=issuer_iso2_for_serie(session, serie) if serie is not None else None,
+    )
+
+
 #: Código del 409 cuando el pedido manual no tiene empresa vinculada a F_CLI.
 COMPANY_NOT_LINKED = "company_not_linked"
 
@@ -598,6 +623,7 @@ def _create_albaran_from_lines(
         serie=serie, ejercicio=ejercicio,
         fopalb=intent.get("forma_pago") or None, actor_user_id=actor_user_id,
         regime=company_regime(session, order.company_id, serie=serie),
+        ficha_decide=company_ficha_decide(session, order.company_id, serie=serie),
     )
     _attach_albaran(
         session, order, result["numero"],

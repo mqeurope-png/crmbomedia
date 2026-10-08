@@ -54,16 +54,22 @@ Todo en `app/integrations/factusol/vat_regime.py` (lógica pura) y
 `customers.py` (escritura), con el patrón de siempre: fila real + sobrescribir
 lo mínimo + guard + registro exacto en el log.
 
-### Cómo se decide el régimen (país del CRM + NIF-IVA)
+### Cómo se decide el régimen (la PAREJA emisor → cliente)
 
-- España → **nacional**.
-- País de la **UE** (lista de 27 en `vat_regime.EU_ISO2`; Grecia con prefijo
-  `EL`) con **NIF-IVA válido** — `Company.vat` (que hasta ahora nadie leía) o
-  el NIF con el prefijo del país (`BE0812240188`, `DE455128445`) →
-  **intracomunitario**. UE sin NIF-IVA → nacional (consumidor final, IVA
-  español). Un NIF-IVA con prefijo de OTRO país no cuenta.
-- Fuera de la UE → **exportación**.
-- Sin país en el CRM → nacional, sin tocar `PAICLI`.
+⚠️ Esta regla se corrigió en la fase «pareja emisor → cliente» (ver la sección
+final): el régimen **no es del cliente**, es de la pareja país de la empresa
+que emite → país del cliente. Lo que sigue es la regla vigente.
+
+- Mismo país el emisor y el cliente → **nacional**, con el IVA de ese país.
+- Los dos en la **UE** (lista de 27 en `vat_regime.EU_ISO2`; Grecia con
+  prefijo `EL`) y distintos, con **NIF-IVA válido** del cliente —
+  `Company.vat` o el NIF con el prefijo de su país (`BE0812240188`,
+  `DE455128445`) → **intracomunitario**. Un NIF-IVA con prefijo de OTRO país
+  no cuenta.
+- Los dos en la UE y distintos, sin NIF-IVA → **nacional** con el IVA del país
+  del **emisor** (consumidor final).
+- Cliente fuera de la UE → **exportación**.
+- Sin país del cliente en el CRM → nacional, sin tocar `PAICLI`.
 - Fuera de alcance: Canarias / Ceuta / Melilla (IGIC / IPSI), que el CRM no
   distingue de la Península.
 
@@ -165,3 +171,87 @@ que el NIF-IVA NO es válido) **no se puede eximir**: la ficha F_CLI propuesta
 y los documentos salen como nacional con IVA, y el pedido entra en
 «Incidencias». `True` confirma el intracomunitario; `None` (pendiente / VIES
 caído) no cambia la regla. Detalle en `docs/erp/vies.md`.
+
+## Fase «pareja emisor → cliente» (IVA de MQ Europe)
+
+**El fallo.** `regime_for()` tenía `"ES"` escrito a fuego como país de quien
+vende, pero BoHub emite desde dos empresas en dos países: Streamtec, S.L. y
+Bomedia (España, series 5 y 1) y **MQ EUROPE BV (Bélgica, serie 2)**. Visto en
+producción el 08/10: CDCOPIADVD S.L.U (ESB65623175, Barcelona), NIF-IVA válido
+en VIES, documento de la **serie 2**. El modal decía «(España → nacional)» y la
+proforma salió con **21 %**, cuando debía salir **exenta**. Al revés es peor:
+facturar SIN IVA a un cliente belga de MQ Europe deja a la empresa debiendo ese
+IVA.
+
+**El país de cada empresa** está explícito en `COMPANY_DEFAULTS[serie]
+["pais_iso2"]` (`factusol_pdf.py`), editable en `/erp/settings`
+(`factusol_series_json.companies`): 1 Bomedia `ES`, 5 Streamtec `ES`, 2 MQ
+Europe `BE`. Deducirlo del literal `pais` sería adivinar, y aquí adivinar es
+facturar mal. `issuer_iso2_for_serie(session, serie)` lo resuelve;
+`issuer_companies(session)` da la lista de emisores.
+
+### Quién decide: manda la ficha de FACTUSOL
+
+Donde la pareja permite **elegir** —los dos países en la UE y distintos, o sea
+donde la respuesta es «con IVA o exento» (`vat_regime.pareja_elegible`)— manda
+el régimen que ya tiene la ficha `F_CLI` del cliente (`ficha_manda`): es la
+decisión del operador y lo que FACTUSOL va a aplicar al facturar. La excepción
+es el **cliente nuevo creado desde el CRM de BoHub** (`cliente_nuevo_bohub`):
+esa ficha la acaba de escribir BoHub con los datos del CRM, así que no hay
+decisión que respetar. Los pedidos web no son esa excepción (ahí el NIF-IVA ya
+pasa por VIES al entrar el pedido).
+
+Fuera de esa zona el régimen es **aritmética** (mismo país → nacional, cliente
+de fuera de la UE → exportación) y manda el cálculo: una ficha mal configurada
+—el 525 de Noruega venía como nacional— no puede hacer que se facture con IVA.
+
+### VIES solo donde cambia la factura
+
+`vies_hace_falta(cliente, issuer_iso2=…, vat=…)` es True solo cuando la pareja
+puede dar intracomunitario. Un cliente español facturado por Streamtec es
+nacional pase lo que pase: ahí VIES no aporta nada y no se consulta. Para MQ
+Europe ese mismo cliente **sí** lo necesita, y por eso el modal de
+«Crear empresa» ya abre VIES para NIF-IVA españoles (antes la puerta era «UE y
+no España», que dejaba fuera justo el caso del fallo). Un `False` explícito
+sigue siendo lo único que impide eximir cuando decide el cálculo.
+
+### La ficha F_CLI es UNA sola
+
+Hay **una** base de datos de FACTUSOL y una ficha por cliente, así que no se
+puede guardar «exento para MQ Europe y con IVA para Streamtec». Cuando las
+empresas emisoras discrepan, `regime_preview` lo dice (`conflicto`) y BoHub
+**no toca las columnas de régimen** — el país sí, que no está en disputa—;
+`fix-regime` tampoco escribe. El modal enseña el régimen de cada empresa para
+que nadie dé España por supuesta. Donde todas coinciden (un cliente alemán, uno
+de fuera de la UE) la corrección funciona como siempre.
+
+### Los documentos llevan el IVA de SU serie
+
+`_customer_from_company(session, company_id, serie=…)` deja en el cliente
+`regime` (el de la serie pedida), `regime_por_serie` (`{serie: régimen}`) y
+`ficha_decide_por_serie`. La serie definitiva no se sabe en el endpoint —al
+editar una proforma es la de la fila que ya existe en FACTUSOL—, así que la
+resuelve el worker: `quotes.regime_de_serie()` elige del mapa y
+`quotes.customer_con_regimen()` deja mandar a la ficha donde toca (una lectura
+de `F_CLI`; si FACTUSOL no responde se sigue con el calculado). El albarán
+manual hace lo mismo con `company_regime(…, serie=)` +
+`company_ficha_decide(…)` → `apply_regime(…, ficha_decide=)`. El aviso de la
+factura web (`regime_warning_for_pcl`) se calcula después de resolver la serie.
+
+### Informe de auditoría (SOLO LECTURA)
+
+    docker compose -f /opt/crmbo/docker-compose.prod.yml exec api \
+        python -m scripts.auditoria_iva_emisor
+
+Revisa las series cuya empresa NO es española (hoy la 2) y lista: (1) las
+fichas `F_CLI` de sus clientes cuyo régimen no cuadra con esa pareja, (2) las
+**proformas** con el IVA descuadrado (revisables: se vuelven a emitir) y (3)
+los **albaranes y facturas ya emitidos** con el IVA descuadrado. Opciones
+`--serie N`, `--ejercicio AAAA`, `--csv RUTA`, `--detalle N`. No escribe nada:
+las fichas se corrigen en FACTUSOL y lo ya emitido (rectificativa o abono) lo
+decide administración.
+
+Tests: `test_iva_pareja_emisor.py` (la pareja, el motivo de las dos puntas, la
+ficha que manda, VIES por pareja, el país de cada serie, la proforma de la
+serie 2 exenta, el albarán manual y el informe) y los casos actualizados de
+`test_factusol_cliente_regimen.py` / `test_factusol_factura_regimen.py`.

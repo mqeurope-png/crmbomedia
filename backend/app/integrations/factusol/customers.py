@@ -454,24 +454,89 @@ def customer_payment_method(
     return str(row.get("FPACLI") or "").strip() or None
 
 
+def _regimes_por_emisor(
+    emisores: Any, country_iso2: str | None, *, vat: Any, nif: Any,
+    vies_valid: bool | None,
+) -> list[dict[str, Any]]:
+    """`[{serie, empresa, pais_iso2, regime, regime_label}]`: el régimen que le
+    sale al cliente con CADA empresa que factura. `emisores` es lo que da
+    `factusol_pdf.issuer_companies`."""
+    out: list[dict[str, Any]] = []
+    for emisor in emisores or ():
+        pais = emisor.get("pais_iso2")
+        regime = regime_for(country_iso2, issuer_iso2=pais, vat=vat, nif=nif,
+                            vies_valid=vies_valid)
+        out.append({
+            "serie": emisor.get("serie"), "empresa": emisor.get("nombre"),
+            "pais_iso2": pais, "regime": regime,
+            "regime_label": REGIME_LABELS[regime],
+        })
+    return out
+
+
+def _conflicto_de_emisores(por_emisor: list[dict[str, Any]]) -> str | None:
+    """Frase del conflicto si las empresas que facturan NO coinciden en el
+    régimen, o None.
+
+    Hay UNA sola base de datos de FACTUSOL y UNA sola ficha F_CLI por cliente,
+    así que no se puede guardar «exento para MQ Europe y con IVA para
+    Streamtec»: cualquiera de los dos valores sería mentira para la otra
+    empresa. En ese caso BoHub no toca las columnas de régimen (sí el país,
+    que no está en disputa) y lo dice."""
+    if len({e["regime"] for e in por_emisor}) <= 1:
+        return None
+    detalle = " · ".join(
+        f"{e['empresa']} ({e['pais_iso2'] or '—'}) → {e['regime_label']}"
+        for e in por_emisor
+    )
+    return (
+        f"El régimen depende de la empresa que factura: {detalle}. La ficha de "
+        "FACTUSOL es una sola y solo puede decir una cosa, así que BoHub no "
+        "toca el régimen de la ficha: ajústalo en FACTUSOL según la empresa "
+        "con la que vayas a facturar."
+    )
+
+
 def regime_preview(
     row: dict[str, Any], *, country_iso2: str | None, vat: Any = None,
-    nif: Any = None, vies_valid: bool | None = None,
+    nif: Any = None, vies_valid: bool | None = None, emisores: Any = None,
 ) -> dict[str, Any]:
-    """Qué régimen le corresponde al cliente (por el país del CRM + NIF-IVA,
-    y el veredicto VIES si lo hay), qué codifica hoy su ficha F_CLI y qué
-    columnas cambiarían. No escribe."""
-    regime, proposed = proposed_fcli_values(
-        country_iso2, vat=vat, nif=nif, vies_valid=vies_valid,
+    """Qué régimen le corresponde al cliente (por la PAREJA país del emisor →
+    país del CRM, con NIF-IVA y veredicto VIES), qué codifica hoy su ficha
+    F_CLI y qué columnas cambiarían. No escribe.
+
+    `emisores` (`factusol_pdf.issuer_companies`) son las empresas que pueden
+    facturar: el régimen se calcula para cada una y, si no coinciden, no se
+    propone tocar las columnas de régimen (ver `_conflicto_de_emisores`). Sin
+    `emisores` se supone el emisor por defecto, como hacía el código viejo."""
+    por_emisor = _regimes_por_emisor(
+        emisores, country_iso2, vat=vat, nif=nif, vies_valid=vies_valid,
     )
+    conflicto = _conflicto_de_emisores(por_emisor)
+    issuer_iso2 = por_emisor[0]["pais_iso2"] if por_emisor and not conflicto else None
+    regime, proposed = proposed_fcli_values(
+        country_iso2, issuer_iso2=issuer_iso2, vat=vat, nif=nif,
+        vies_valid=vies_valid,
+    )
+    if conflicto:
+        # El país sí se corrige (nadie discute de dónde es el cliente); las
+        # tres columnas de régimen se quedan como están.
+        proposed = {k: v for k, v in proposed.items()
+                    if k not in FCLI_REGIME_COLUMN_NAMES}
     current_regime = regime_from_fcli_row(row)
     changes = fcli_changes(row, proposed)
     return {
         "codcli": str(row.get("CODCLI")),
         "country_iso2": normalize_country(country_iso2) if country_iso2 else None,
+        "issuer_iso2": issuer_iso2,
         "regime": regime,
         "regime_label": REGIME_LABELS[regime],
-        "reason": regime_reason(country_iso2, vat=vat, nif=nif, vies_valid=vies_valid),
+        "reason": conflicto or regime_reason(
+            country_iso2, issuer_iso2=issuer_iso2, vat=vat, nif=nif,
+            vies_valid=vies_valid,
+        ),
+        "regimes": por_emisor,
+        "conflicto": conflicto,
         "vies_valid": vies_valid,
         "current": {
             **{c: row.get(c) for c in (*FCLI_REGIME_COLUMN_NAMES, "PAICLI")},
@@ -487,14 +552,18 @@ def regime_preview(
 def update_customer_regime(
     client: FactusolClient, *, codcli: Any, ejercicio: str,
     country_iso2: str | None, vat: Any = None, nif: Any = None,
-    vies_valid: bool | None = None,
+    vies_valid: bool | None = None, emisores: Any = None,
 ) -> dict[str, Any]:
     """Corrige en F_CLI el tipo de documento / régimen de IVA / país del
     cliente: lee la fila REAL, calcula lo propuesto y escribe con
     `ActualizarRegistro` SOLO la clave y las columnas que cambian (patrón
     «sobrescribir lo mínimo» de los cobros). Guard: cada columna a escribir
     existe en la fila real con el mismo tipo; si no, `FactusolError` y no se
-    escribe nada. Sin cambios → `changed=False` sin escribir."""
+    escribe nada. Sin cambios → `changed=False` sin escribir.
+
+    Si las empresas que facturan (`emisores`) no coinciden en el régimen, las
+    columnas de régimen NO se escriben: la ficha es una sola y no puede ser
+    verdad para las dos. El país sí se corrige."""
     row = customer_row(client, codcli, ejercicio=ejercicio)
     if row is None:
         raise FactusolError(
@@ -502,7 +571,11 @@ def update_customer_regime(
         )
     preview = regime_preview(
         row, country_iso2=country_iso2, vat=vat, nif=nif, vies_valid=vies_valid,
+        emisores=emisores,
     )
+    if preview["conflicto"]:
+        logger.info("factusol cliente %s: régimen sin tocar — %s",
+                    row.get("CODCLI"), preview["conflicto"])
     if not preview["changes"]:
         return {**preview, "changed": False, "written": {}}
     payload: dict[str, Any] = {"CODCLI": row["CODCLI"]}

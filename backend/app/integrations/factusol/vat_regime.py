@@ -40,7 +40,23 @@ debía salir exenta. Y al revés es peor: facturar SIN IVA a un cliente belga de
 MQ Europe deja a la empresa debiendo ese IVA.
 
 El NIF-IVA y su validez en VIES son del CLIENTE y no dependen de quién
-factura: lo que depende de la pareja es si ese NIF-IVA sirve para eximir.
+factura: lo que depende de la pareja es si ese NIF-IVA sirve para eximir. Por
+eso VIES **solo se consulta cuando la pareja puede dar intracomunitario**
+(`vies_hace_falta`): Streamtec a cliente español es nacional pase lo que pase.
+
+Quién decide cuando la pareja puede dar intracomunitario: **manda la ficha de
+FACTUSOL** (`fcli_regime`), que es donde está la decisión del operador y lo que
+FACTUSOL va a usar al facturar de verdad. La excepción es el cliente **nuevo
+creado desde el CRM de BoHub** (`cliente_nuevo_bohub=True`): esa ficha la acaba
+de escribir BoHub con los datos del CRM, así que no hay decisión que respetar y
+manda el cálculo. Los pedidos web NO son esa excepción: ahí el NIF-IVA ya se
+revisa en VIES al entrar el pedido.
+
+La ficha manda solo en esa zona —los dos países en la UE y distintos, donde la
+respuesta es «nacional o exento»—. Que el cliente sea del mismo país que el
+emisor, o de fuera de la UE, no es una decisión de nadie: es aritmética, y ahí
+una ficha mal configurada (el 525 de Noruega venía con `IFICLI=0`) no puede
+hacer que se facture con IVA.
 
 Canarias, Ceuta y Melilla (IGIC/IPSI) quedan fuera: hoy no se distinguen de
 la Península en el CRM.
@@ -148,19 +164,79 @@ def _emisor(issuer_iso2: str | None) -> str:
         if issuer_iso2 else DEFAULT_ISSUER_ISO2
 
 
+def pareja_elegible(country_iso2: str | None, *, issuer_iso2: str | None = None) -> bool:
+    """¿Puede esta pareja dar intracomunitario? Los dos países en la UE y
+    distintos: la única zona donde el régimen es una DECISIÓN (con IVA o
+    exento) y no aritmética.
+
+    Fuera de ella no hay nada que decidir —mismo país → nacional, cliente de
+    fuera de la UE → exportación— y por eso ahí no manda la ficha de FACTUSOL
+    ni hace falta VIES."""
+    cliente = normalize_country(country_iso2) if country_iso2 else None
+    emisor = _emisor(issuer_iso2)
+    if cliente is None or cliente == emisor:
+        return False
+    return cliente in EU_ISO2 and emisor in EU_ISO2
+
+
+def vies_hace_falta(
+    country_iso2: str | None, *, issuer_iso2: str | None = None,
+    vat: Any = None, nif: Any = None,
+) -> bool:
+    """¿Hace falta consultar VIES para ESTA pareja?
+
+    Solo cuando la pareja **puede** dar intracomunitario, que es el único
+    caso en el que la respuesta de VIES cambia la factura: los dos países en
+    la UE, distintos, y el cliente con NIF-IVA.
+
+    Un cliente español facturado por Streamtec es nacional pase lo que pase,
+    así que ahí no se consulta: el caso común no multiplica el tráfico. Para
+    MQ Europe (BE) ese mismo cliente sí lo necesita, porque la exención
+    depende de que su NIF-IVA sea válido.
+    """
+    if not pareja_elegible(country_iso2, issuer_iso2=issuer_iso2):
+        return False
+    cliente = normalize_country(country_iso2)
+    return eu_vat_for(cliente, vat=vat, nif=nif) is not None
+
+
+#: Lo único que la ficha de FACTUSOL puede decidir: dentro de la UE, con los
+#: dos países distintos, la respuesta es «con IVA» o «exento». Una ficha no
+#: convierte una exportación en nacional ni al contrario.
+_FICHA_DECIDE: tuple[str, ...] = (REGIME_NACIONAL, REGIME_INTRACOMUNITARIO)
+
+
+def ficha_manda(fcli_regime: str | None, *, cliente_nuevo_bohub: bool = False) -> str | None:
+    """El régimen de la ficha F_CLI si es ella la que manda, o None.
+
+    Manda siempre, salvo en el cliente **nuevo creado desde el CRM de BoHub**:
+    esa ficha la acaba de escribir BoHub con los datos del CRM, así que no hay
+    decisión del operador que respetar. Los pedidos web no son ese caso (ahí el
+    NIF-IVA ya pasa por VIES al entrar el pedido)."""
+    if cliente_nuevo_bohub:
+        return None
+    return fcli_regime if fcli_regime in _FICHA_DECIDE else None
+
+
 def regime_for(
     country_iso2: str | None, *, issuer_iso2: str | None = None,
     vat: Any = None, nif: Any = None, vies_valid: bool | None = None,
+    fcli_regime: str | None = None, cliente_nuevo_bohub: bool = False,
 ) -> str:
     """Régimen de la PAREJA emisor → cliente. Ver la cabecera del módulo.
 
     `issuer_iso2` es el país de la empresa que emite (de su serie). Sin él se
     supone `DEFAULT_ISSUER_ISO2`, que es lo que hacía siempre el código viejo.
 
-    Fase VIES: `vies_valid=False` (VIES dice que el NIF-IVA NO es válido)
-    impide eximir → nacional con IVA aunque los dos países sean de la UE y
-    haya NIF-IVA. `True` lo confirma; `None` (pendiente / VIES caído) no
-    cambia la regla: se sigue por países + NIF-IVA sin bloquear."""
+    `fcli_regime` es el régimen que ya tiene la ficha F_CLI del cliente. Donde
+    la pareja permite elegir (los dos en la UE, distintos) **manda la ficha**,
+    porque es lo que FACTUSOL usará al facturar; `cliente_nuevo_bohub=True`
+    es la excepción (ficha recién creada por BoHub, sin decisión que respetar).
+
+    Fase VIES, cuando decide el cálculo: `vies_valid=False` (VIES dice que el
+    NIF-IVA NO es válido) impide eximir → nacional con IVA aunque los dos
+    países sean de la UE y haya NIF-IVA. `True` lo confirma; `None` (pendiente
+    / VIES caído) no bloquea: se sigue por países + NIF-IVA."""
     cliente = normalize_country(country_iso2) if country_iso2 else None
     emisor = _emisor(issuer_iso2)
     if cliente is None:
@@ -175,15 +251,26 @@ def regime_for(
         # rama no se da; está para no decidir mal en silencio si algún día
         # entra una tercera.
         return REGIME_EXPORTACION
+    ficha = ficha_manda(fcli_regime, cliente_nuevo_bohub=cliente_nuevo_bohub)
+    if ficha is not None:
+        return ficha
     if eu_vat_for(cliente, vat=vat, nif=nif) and vies_valid is not False:
         return REGIME_INTRACOMUNITARIO
     # Consumidor final de otro país de la UE: IVA del país del EMISOR.
     return REGIME_NACIONAL
 
 
+#: Cómo se cuenta al operador que el régimen sale de la ficha y no del cálculo.
+_FICHA_FRASE: dict[str, str] = {
+    REGIME_NACIONAL: "nacional (con IVA en la ficha de FACTUSOL)",
+    REGIME_INTRACOMUNITARIO: "intracomunitario (exento en la ficha de FACTUSOL)",
+}
+
+
 def regime_reason(
     country_iso2: str | None, *, issuer_iso2: str | None = None,
     vat: Any = None, nif: Any = None, vies_valid: bool | None = None,
+    fcli_regime: str | None = None, cliente_nuevo_bohub: bool = False,
 ) -> str:
     """Frase para el operador: por qué sale ese régimen, **nombrando las dos
     puntas**. Antes decía «España → nacional» aunque emitiera una empresa
@@ -201,6 +288,10 @@ def regime_reason(
     if emisor not in EU_ISO2:
         return f"{de} (fuera de la UE) → {a} → exportación"
     number = eu_vat_for(cliente, vat=vat, nif=nif)
+    ficha = ficha_manda(fcli_regime, cliente_nuevo_bohub=cliente_nuevo_bohub)
+    if ficha is not None:
+        nif_txt = f"con NIF-IVA {number}" if number else "sin NIF-IVA"
+        return f"{de} → {a} (UE) {nif_txt} → {_FICHA_FRASE[ficha]}"
     if number and vies_valid is False:
         return (f"{de} → {a} (UE) con NIF-IVA {number} NO válido en VIES → "
                 "nacional (no se puede eximir)")
@@ -279,6 +370,31 @@ def regimes_por_emisor(
             if str(e or "").strip()
         )
     }
+
+
+def regimes_por_serie(
+    series_paises: Any, country_iso2: str | None, *, vat: Any = None,
+    nif: Any = None, vies_valid: bool | None = None,
+    fcli_regime: str | None = None, cliente_nuevo_bohub: bool = False,
+) -> dict[str, str]:
+    """`{serie (texto): régimen}` a partir de `{serie: país del emisor}`.
+
+    Va en el documento que se encola (`customer["regime_por_serie"]`) porque
+    la serie DEFINITIVA no se sabe hasta que escribe el worker: al editar una
+    proforma la serie sale de la fila que ya existe en FACTUSOL. Así el cálculo
+    del IVA usa la empresa que de verdad emite y no la que supuso el endpoint.
+    """
+    out: dict[str, str] = {}
+    for serie, pais in dict(series_paises or {}).items():
+        clave = str(serie).strip()
+        if not clave:
+            continue
+        out[clave] = regime_for(
+            country_iso2, issuer_iso2=pais, vat=vat, nif=nif,
+            vies_valid=vies_valid, fcli_regime=fcli_regime,
+            cliente_nuevo_bohub=cliente_nuevo_bohub,
+        )
+    return out
 
 
 def regime_unico(
