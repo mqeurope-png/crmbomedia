@@ -101,6 +101,22 @@ describe("Editor de formularios — remates", () => {
   });
 });
 
+describe("Respaldo de la web (embed por web)", () => {
+  it("se ofrece con la clave del slug —no la marca— y se guarda", async () => {
+    const user = userEvent.setup();
+    render(<WebFormEditor formId="new" />);
+    expect(screen.queryByLabelText(/Respaldo de/)).toBeNull();
+    // La marca no decide la web: «artisjet» está en dos webs distintas.
+    await user.type(screen.getByLabelText("Marca"), "artisjet");
+    expect(screen.queryByLabelText(/Respaldo de/)).toBeNull();
+    await user.type(screen.getByLabelText("Slug"), "artisjet-es-contacto-de");
+    await user.click(screen.getByLabelText(/Respaldo de «artisjet-es»/));
+    await user.click(screen.getByRole("button", { name: /Guardar formulario/i }));
+    await waitFor(() => expect(cuerpoDe("/api/admin/forms")).not.toBeNull());
+    expect(cuerpoDe("/api/admin/forms").is_site_default).toBe(true);
+  });
+});
+
 describe("Código de inserción de un formulario desactivado", () => {
   const embed = {
     script_snippet: "<script></script>",

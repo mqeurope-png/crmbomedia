@@ -27,6 +27,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    false,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -97,6 +98,12 @@ class WebForm(TimestampMixin, Base):
     # Apariencia (ancho, alineación, tema, colores, texto del botón): un JSON
     # validado por app.services.web_forms.apariencia. NULL = la de siempre.
     appearance_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Embed por web (`/forms/embed/<sitio>.js`, donde el sitio es la clave
+    # del slug): el formulario de respaldo de esa web cuando la página está
+    # en un idioma que no tiene el suyo.
+    is_site_default: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
     created_by_user_id: Mapped[str] = mapped_column(
         ForeignKey("users.id"), nullable=False
     )

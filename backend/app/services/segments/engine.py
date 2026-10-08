@@ -231,6 +231,8 @@ def _compile_leaf(
         return _compile_tag_leaf(comparator, value)
     if spec.relation in {"external_refs.system", "external_refs.account_id"}:
         return _compile_external_ref_leaf(spec, comparator, value)
+    if spec.relation == "origen_formulario.sitio":
+        return _compile_origen_formulario_leaf(spec, comparator, value)
     if spec.relation in {"pipeline_id", "pipeline_stage_id"}:
         return _compile_pipeline_leaf(spec, comparator, value)
     if spec.relation == "brevo_list_membership":
@@ -743,6 +745,46 @@ def _compile_brevo_campaign_interaction_leaf(
     )
 
 
+def _compile_origen_formulario_leaf(
+    spec: FieldSpec, comparator: str, value: Any
+) -> ColumnElement[bool]:
+    """La WEB del formulario por el que entró el lead, leída de
+    `Contact.origin_account_id` (`web_form:<sitio>:<idioma>`). El idioma no
+    pasa por aquí: es una columna del contacto (`language`).
+
+    Se compila con LIKE y no con funciones de recorte de cadenas, para que
+    valga igual en MySQL (producción) y en SQLite (tests). Un contacto que
+    no viene de un formulario nunca encaja."""
+    from app.services.web_forms.sitios import ORIGEN_PREFIJO  # noqa: PLC0415
+
+    def patron(v: Any) -> str:
+        # `%` y `_` del valor se escapan: una web no los lleva, pero un
+        # valor inventado no debe convertirse en un comodín.
+        texto = str(v or "").strip().lower()
+        for especial in ("\\", "%", "_"):
+            texto = texto.replace(especial, f"\\{especial}")
+        return f"{ORIGEN_PREFIJO}:{texto}:%"
+
+    columna = Contact.origin_account_id
+    if comparator in {"eq", "neq"}:
+        cond = columna.like(patron(value), escape="\\")
+        # `~like` no encaja las filas con NULL (lógica de tres valores): un
+        # contacto que no viene de un formulario cuenta como «no es de esta
+        # web», que es lo que espera quien filtra.
+        return cond if comparator == "eq" else or_(~cond, columna.is_(None))
+    if comparator in {"in", "not_in"}:
+        valores = value if isinstance(value, (list, tuple, set)) else [value]
+        if not valores:
+            raise SegmentRuleError(
+                f"El comparador «{comparator}» de «{spec.label}» necesita al menos un valor."
+            )
+        cond = or_(*[columna.like(patron(v), escape="\\") for v in valores])
+        return cond if comparator == "in" else or_(~cond, columna.is_(None))
+    raise SegmentRuleError(
+        f"El comparador «{comparator}» no vale para «{spec.label}»."
+    )
+
+
 def _compile_external_ref_leaf(
     spec: FieldSpec, comparator: str, value: Any
 ) -> ColumnElement[bool]:
@@ -1045,6 +1087,12 @@ def _evaluate_leaf(
         return actual is None
     if comparator == "is_not_null":
         return actual is not None
+    if actual is None and spec.relation == "origen_formulario.sitio":
+        # El camino SQL mete a propósito las filas sin `origin_account_id` en
+        # «no es de esta web» (`or_(~cond, columna.is_(None))`). Aquí hay que
+        # decir lo mismo, o una regla de asignación en memoria y el segmento
+        # equivalente dejarían de cuadrar.
+        return comparator in {"neq", "not_in"}
     if actual is None and comparator not in {"contains_none"}:
         return False
     if comparator == "eq":
@@ -1107,6 +1155,13 @@ def _resolve_attr(contact: Contact, spec: FieldSpec) -> Any:
             for part in (getattr(contact, first), getattr(contact, last))
             if part
         ).strip() or None
+    if spec.relation == "origen_formulario.sitio":
+        from app.services.web_forms.sitios import (  # noqa: PLC0415
+            partes_de_origen,
+        )
+
+        partes = partes_de_origen(getattr(contact, "origin_account_id", None))
+        return partes[0] if partes is not None else None
     if spec.relation == "external_refs.system":
         return next(
             (ref.system.value for ref in contact.external_refs),

@@ -28,7 +28,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models.crm import ActivityEvent, Contact, User
+from app.models.crm import ActivityEvent, Contact
 from app.models.web_forms import FormSubmission, WebForm
 from app.repositories import crm as crm_repository
 from app.services.web_forms.antispam import (
@@ -37,6 +37,12 @@ from app.services.web_forms.antispam import (
     recaptcha_min_score,
     verify_recaptcha,
 )
+from app.services.web_forms.sitios import (
+    origen_de,
+    origen_legible,
+    web_de_formulario,
+)
+from app.services.web_forms.textos import normalizar_idioma, textos
 
 logger = logging.getLogger(__name__)
 
@@ -143,11 +149,13 @@ def process_submission(
     _apply_assignment(session, form, contact)
     # Tag de origen + tags seleccionados en campos tipo `tags` + historial.
     _apply_form_tag(session, form, contact)
-    _apply_tag_fields(session, form, contact, payload)
+    etiquetas = _apply_tag_fields(session, form, contact, payload)
     # v3 Bugs 1+2: notas (append), empresa (lookup/create), lead_score,
     # estrellas y estado comercial mapeados. Muta `payload` si registra un
     # intento de cambio de empresa descartado (queda en raw_payload).
     _apply_mapped_special_fields(session, form, contact, payload)
+    # Después de la empresa (la crea `_apply_mapped_special_fields`).
+    _idioma_del_formulario(contact, form)
     _record_activity(session, form, contact, payload, meta)
 
     # 6. Submission (no spam). v3 Bug 4: marca created/updated para el badge.
@@ -159,13 +167,17 @@ def process_submission(
     session.commit()
 
     contact_email = email
-    owner_id = contact.owner_user_id
 
     # 7. Efectos best-effort post-commit (no deben tumbar la respuesta).
     if form.send_confirmation_email:
         _send_confirmation_email(session, form, contact_email, contact)
-    if form.notify_owner_on_new and owner_id:
-        _notify_owner(session, form, owner_id, contact)
+    # Aviso del lead: la dirección fija de los avisos y el comercial
+    # asignado. Lo gobierna el mismo interruptor de siempre.
+    if form.notify_owner_on_new:
+        from app.services.web_forms.aviso import enviar_aviso_lead  # noqa: PLC0415
+
+        enviar_aviso_lead(session, form, contact, payload,
+                          etiquetas=etiquetas, nuevo=created)
 
     return SubmitOutcome(
         submission_id=submission.id, is_spam=False, spam_reason=None,
@@ -233,8 +245,12 @@ def _resolve_contact(
         last_name=data.get("last_name"),
         email=email,
         phone=data.get("phone"),
-        origin="web_form",
-        origin_account_id=f"web_form:{form.slug}",
+        # El origen identifica el formulario: la web (la clave del slug, no
+        # la marca) y el idioma. Legible en la ficha, y filtrable y
+        # segmentable por `origin_account_id` (`web_form:<sitio>:<idioma>`).
+        origin=origen_legible(form.slug, form.language),
+        origin_account_id=origen_de(form.slug, form.language),
+        language=normalizar_idioma(form.language),
     )
     for col, value in data.items():
         if col in {"email", "first_name", "last_name", "phone"}:
@@ -245,6 +261,19 @@ def _resolve_contact(
     session.add(contact)
     session.flush()
     return contact, True
+
+
+def _idioma_del_formulario(contact: Contact, form: WebForm) -> None:
+    """El idioma del formulario, en el contacto y —si está vacío— en su
+    empresa: quien escribió en neerlandés no debe recibir después un correo
+    en castellano (la cascada de idioma del ERP lee la empresa). Nunca pisa
+    un idioma ya puesto."""
+    idioma = normalizar_idioma(form.language)
+    if not contact.language:
+        contact.language = idioma
+    empresa = getattr(contact, "company", None)
+    if empresa is not None and not empresa.language:
+        empresa.language = idioma
 
 
 def _update_empty_fields(
@@ -315,7 +344,7 @@ def _coerce_tag_ids(raw: Any) -> list[str]:
 
 def _apply_tag_fields(
     session: Session, form: WebForm, contact: Contact, payload: dict[str, Any]
-) -> None:
+) -> list[str]:
     """v2 Bug 2. Campos tipo `tags`: aplica al contacto los tags reales del
     CRM seleccionados (por tag_id). Idempotente (assign_tag_to_contact) +
     audit `contact_tag.added` con via=form. No reasigna nada más."""
@@ -341,6 +370,7 @@ def _apply_tag_fields(
             aplicados.append(tag.name)
     if aplicados:
         _sumar_tags_csv(contact, aplicados)
+    return aplicados
 
 
 def _opciones_tags(f: Any) -> list[dict[str, Any]]:
@@ -651,10 +681,10 @@ def _send_confirmation_email(
     try:
         from app.services.email import get_email_service  # noqa: PLC0415
 
-        subject = f"Gracias por contactar con {form.brand or 'nosotros'}"
-        text = (
-            "¡Gracias! Hemos recibido tu solicitud y te contactaremos pronto."
-        )
+        tx = textos(form.language)
+        quien = (form.brand or "").strip() or web_de_formulario(form.slug)
+        subject = tx["confirmacion_asunto"].format(quien=quien)
+        text = tx["confirmacion_cuerpo"]
         html: str | None = None
         if form.confirmation_email_template_id:
             rendered = _render_template(
@@ -695,31 +725,6 @@ def _render_template(
     except Exception:  # noqa: BLE001
         logger.warning("web_forms.template render failed", exc_info=True)
         return None
-
-
-def _notify_owner(
-    session: Session, form: WebForm, owner_id: str, contact: Contact
-) -> None:
-    try:
-        from app.services.email import get_email_service  # noqa: PLC0415
-
-        owner = session.get(User, owner_id)
-        if owner is None or not owner.email:
-            return
-        name = " ".join(
-            p for p in [contact.first_name, contact.last_name] if p
-        ) or contact.email
-        get_email_service().send_notification(
-            to_email=owner.email,
-            to_name=owner.full_name or owner.email,
-            subject=f"Nuevo lead del formulario «{form.name}»",
-            text_body=(
-                f"Has recibido un nuevo lead: {name} ({contact.email}).\n"
-                f"Formulario: {form.name} ({form.slug})."
-            ),
-        )
-    except Exception:  # noqa: BLE001
-        logger.warning("web_forms.notify_owner failed", exc_info=True)
 
 
 def purgar_bloqueados(session: Session, *, form_id: str | None = None,

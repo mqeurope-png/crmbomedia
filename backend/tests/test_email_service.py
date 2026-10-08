@@ -252,3 +252,35 @@ def test_smtp_service_maps_implicit_ssl_for_port_465():
     service = SMTPEmailService.from_settings(overridden)
     assert service.use_ssl is True
     assert service.use_tls is False
+
+
+def test_smtp_envia_desde_dentro_de_un_bucle_de_eventos(monkeypatch):
+    """`asyncio.run` revienta si se llama dentro de un bucle activo, y eso es
+    lo que pasa al mandar correo desde un endpoint `async def` (el submit de
+    los formularios web): el correo no salía y solo quedaba un warning."""
+    import asyncio
+
+    enviados: list[str] = []
+
+    async def falso_send(self, msg):
+        enviados.append(msg["To"])
+
+    monkeypatch.setattr(SMTPEmailService, "_send", falso_send)
+    servicio = SMTPEmailService(
+        host="smtp.local", port=587, user="", password="",
+        sender="de@casa.es", sender_name="BoHub", use_tls=True, use_ssl=False,
+    )
+
+    async def dentro_del_bucle():
+        servicio.send_notification(
+            to_email="a@b.es", to_name="A", subject="S", text_body="T"
+        )
+
+    asyncio.run(dentro_del_bucle())
+    assert enviados == ["a@b.es"]
+
+    # Y sin bucle en marcha sigue valiendo (recuperación de contraseña).
+    servicio.send_notification(
+        to_email="c@d.es", to_name="C", subject="S", text_body="T"
+    )
+    assert len(enviados) == 2

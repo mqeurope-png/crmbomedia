@@ -138,6 +138,9 @@ class Settings(BaseSettings):
     # Host público donde el backend sirve /public/forms/* y /forms/* (el
     # embed code apunta aquí). Vacío → cae a frontend_base_url.
     web_forms_embed_base_url: str = ""
+    # Aviso de cada lead de formulario: direcciones fijas, separadas por
+    # comas (además del comercial al que se asigne el lead).
+    web_forms_notify_to: str = "info@streamtec.es"
 
     # BoHub ERP Fase A — almacenamiento de documentos (fotos SAT, PDFs). El
     # backend abstracto `DocumentStorage` usa HiDrive si hay credenciales;

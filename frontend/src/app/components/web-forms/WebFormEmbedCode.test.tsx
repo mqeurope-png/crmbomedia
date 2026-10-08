@@ -11,7 +11,7 @@ const embed = {
 describe("WebFormEmbedCode", () => {
   it("muestra los 3 snippets (script + iframe + HTML puro)", () => {
     render(<WebFormEmbedCode embed={embed} />);
-    expect(screen.getByText(/Script JS \(recomendado\)/i)).toBeInTheDocument();
+    expect(screen.getByText(/Script JS de este formulario/i)).toBeInTheDocument();
     expect(screen.getByText(/iframe \(aislado\)/i)).toBeInTheDocument();
     expect(screen.getByText(/HTML puro/i)).toBeInTheDocument();
     expect(screen.getByText(embed.script_snippet)).toBeInTheDocument();
@@ -23,6 +23,25 @@ describe("WebFormEmbedCode", () => {
     ).toBeInTheDocument();
   });
 
+  it("con marca, ofrece el código único de la web y explica el <div>", () => {
+    render(<WebFormEmbedCode embed={{
+      ...embed,
+      site: "mbolasers",
+      site_web: "mbolasers.com",
+      site_snippet: '<script src="https://crm/forms/embed/mbolasers.js" async></script>\n'
+        + '<div data-bohub-form="mbolasers"></div>',
+    }} />);
+    expect(screen.getByText(/Un solo código para toda la web \(mbolasers\.com\)/))
+      .toBeInTheDocument();
+    expect(screen.getAllByText(/Pega LAS DOS LÍNEAS/).length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText(/data-bohub-form="mbolasers"/)).toBeInTheDocument();
+  });
+
+  it("sin marca no ofrece el código por web", () => {
+    render(<WebFormEmbedCode embed={embed} />);
+    expect(screen.queryByText(/Un solo código para toda la web/)).toBeNull();
+  });
+
   it("copia el snippet al clipboard al pulsar Copiar", async () => {
     const user = userEvent.setup();
     // user-event instala su propio clipboard (getter-only) en setup;
@@ -30,7 +49,7 @@ describe("WebFormEmbedCode", () => {
     const spy = jest.spyOn(navigator.clipboard, "writeText");
     render(<WebFormEmbedCode embed={embed} />);
 
-    await user.click(screen.getByRole("button", { name: /Copiar Script JS/i }));
+    await user.click(screen.getByRole("button", { name: /Copiar Script JS de este formulario/i }));
     expect(spy).toHaveBeenCalledWith(embed.script_snippet);
     expect(await screen.findByText("Copiado")).toBeInTheDocument();
   });

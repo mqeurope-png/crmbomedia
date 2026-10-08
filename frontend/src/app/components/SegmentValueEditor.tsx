@@ -90,7 +90,9 @@ const ENUM_LABELS_BY_FIELD: Record<string, Record<string, string>> = {
 };
 
 function labelForEnumValue(spec: SegmentFieldDescriptor, value: string): string {
-  return ENUM_LABELS_BY_FIELD[spec.key]?.[value] ?? value;
+  // El backend manda el texto de cada valor cuando lo sabe (web e idioma de
+  // los formularios); los de aquí son los de siempre.
+  return spec.enum_labels?.[value] ?? ENUM_LABELS_BY_FIELD[spec.key]?.[value] ?? value;
 }
 
 /**

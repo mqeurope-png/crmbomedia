@@ -73,6 +73,8 @@ export type FieldDescriptor = {
   type: FieldType;
   comparators: Operator[];
   enum_values: string[];
+  /** Texto por valor («mbolasers» → «mbolasers.com»), del backend. */
+  enum_labels?: Record<string, string>;
   sortable: boolean;
   displayable: boolean;
   filterable: boolean;

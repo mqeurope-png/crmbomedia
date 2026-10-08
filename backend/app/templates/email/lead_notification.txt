@@ -1,0 +1,17 @@
+{{ asunto }}
+
+Formulario: {{ formulario }} ({{ slug }})
+{% if nombre %}Nombre: {{ nombre }}
+{% endif %}{% if email %}Email: {{ email }}
+{% endif %}{% if telefono %}Teléfono: {{ telefono }}
+{% endif %}{% if etiquetas %}Productos de interés: {{ etiquetas | join(", ") }}
+{% endif %}{% for etiqueta, valor in campos %}{{ etiqueta }}: {{ valor }}
+{% endfor %}Comunicaciones comerciales: {% if consentimiento %}aceptadas{% else %}no aceptadas{% endif %}
+
+{% if consulta %}Consulta:
+{{ consulta }}
+
+{% endif %}{% if enlace %}Ficha del contacto: {{ enlace }}
+{% endif %}{% if not nuevo %}
+(Ya existía en el CRM: se ha completado con lo que faltaba.)
+{% endif %}

@@ -18,7 +18,7 @@ import json
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -27,6 +27,7 @@ from app.models.web_forms import WebForm
 from app.services.web_forms import apariencia as aparien
 from app.services.web_forms import process_submission
 from app.services.web_forms.enlaces import texto_con_enlaces
+from app.services.web_forms.textos import texto_submit, textos
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,29 @@ def _get_active_form(session: Session, form_id: str) -> WebForm:
     return obtener(session, form_id)
 
 
+@router.get("/by-site/{sitio}/config.json")
+def form_config_por_sitio(
+    sitio: str,
+    lang: str = Query(default="", max_length=16),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """El formulario de una WEB en el idioma de la página: así cada web
+    lleva un solo código de inserción en todas sus traducciones. Sin ese
+    idioma se sirve el de respaldo de la web (ver `seleccion`)."""
+    from app.services.web_forms.seleccion import (  # noqa: PLC0415
+        formulario_de_sitio,
+    )
+
+    form = formulario_de_sitio(session, sitio, lang)
+    if form is None:
+        raise HTTPException(status_code=404, detail={
+            "code": "site_without_forms",
+            "message": f"No hay ningún formulario activo de «{sitio}».",
+            "loading_error": textos(lang)["no_cargado"],
+        })
+    return _config_payload(form)
+
+
 @router.get("/{form_id}/config.json")
 def form_config(
     form_id: str, session: Session = Depends(get_session)
@@ -55,7 +79,10 @@ def form_config(
     secretos (recaptcha_secret, asignación, owner) — solo lo necesario
     para pintar y validar client-side. El `recaptcha_site_key` es público
     por diseño."""
-    form = _get_active_form(session, form_id)
+    return _config_payload(_get_active_form(session, form_id))
+
+
+def _config_payload(form: WebForm) -> dict[str, Any]:
     settings = get_settings()
     ap = aparien.cargar(form.appearance_json)
     return {
@@ -75,7 +102,10 @@ def form_config(
         },
         # Apariencia: texto del botón y CSS ya compuesto por el servidor
         # (solo valores validados). Vacío = el aspecto de siempre.
-        "submit_text": ap.texto_boton(),
+        "submit_text": texto_submit(form.language, ap.submit_text),
+        # Todo lo que ve quien rellena, en el idioma del formulario: el
+        # widget ya no lleva textos fijos en castellano.
+        "texts": textos(form.language),
         "style_css": aparien.css(ap, via="widget", form_id=form.id),
         "fields": [
             {

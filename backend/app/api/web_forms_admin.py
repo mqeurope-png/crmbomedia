@@ -31,6 +31,7 @@ from app.models.web_forms import (
 from app.services.web_forms.apariencia import Apariencia
 from app.services.web_forms.apariencia import cargar as cargar_apariencia
 from app.services.web_forms.apariencia import volcar as volcar_apariencia
+from app.services.web_forms.sitios import clave_de_sitio, web_de_sitio
 
 router = APIRouter(prefix="/api/admin/forms", tags=["web-forms-admin"])
 # Endpoint auxiliar fuera del prefijo /forms (lo consume el editor).
@@ -78,6 +79,9 @@ class FormBase(BaseModel):
     fixed_owner_user_id: str | None = None
     notify_owner_on_new: bool = True
     recaptcha_enabled: bool = True
+    # Embed por web: el formulario de respaldo de su web cuando la página
+    # está en un idioma que no tiene el suyo.
+    is_site_default: bool = False
     # Ancho, alineación y estilo (validado: colores #rrggbb, rangos). Sin
     # enviar = no se toca; vacío = el aspecto de siempre.
     appearance: Apariencia | None = None
@@ -226,6 +230,7 @@ def _serialise_detail(form: WebForm) -> FormDetail:
         fixed_owner_user_id=form.fixed_owner_user_id,
         notify_owner_on_new=form.notify_owner_on_new,
         recaptcha_enabled=form.recaptcha_enabled,
+        is_site_default=form.is_site_default,
         appearance=cargar_apariencia(form.appearance_json),
         created_by_user_id=form.created_by_user_id,
         created_at=form.created_at,
@@ -409,6 +414,7 @@ def create_form(
         fixed_owner_user_id=payload.fixed_owner_user_id,
         notify_owner_on_new=payload.notify_owner_on_new,
         recaptcha_enabled=payload.recaptcha_enabled,
+        is_site_default=payload.is_site_default,
         appearance_json=volcar_apariencia(payload.appearance),
         created_by_user_id=current_user.id,
     )
@@ -450,7 +456,7 @@ def update_form(
         "submit_success_mode", "submit_success_message", "submit_redirect_url",
         "send_confirmation_email", "confirmation_email_template_id",
         "assignment_mode", "fixed_owner_user_id", "notify_owner_on_new",
-        "recaptcha_enabled",
+        "recaptcha_enabled", "is_site_default",
     ):
         setattr(form, attr, getattr(payload, attr))
     if payload.appearance is not None:
@@ -532,10 +538,20 @@ def embed_code(
     form = _get_form(session, form_id)
     settings = get_settings()
     base = (settings.web_forms_embed_base_url or settings.frontend_base_url).rstrip("/")
+    # Las DOS líneas son necesarias: sin el <div> el script carga y no
+    # pinta nada. Van juntas en lo que se copia.
     script_snippet = (
         f'<script src="{base}/forms/embed/{form.id}.js" async></script>\n'
         f'<div data-bohub-form="{form.id}"></div>'
     )
+    # Un solo código por web: el widget mira el idioma de la página y pide
+    # el formulario de esta web en ese idioma. La web es la clave del slug,
+    # no la marca (`artisjet` está en dos webs distintas).
+    sitio = clave_de_sitio(form.slug)
+    site_snippet = (
+        f'<script src="{base}/forms/embed/{sitio}.js" async></script>\n'
+        f'<div data-bohub-form="{sitio}"></div>'
+    ) if sitio else None
     # El iframe avisa de su altura (postMessage) y este script la aplica:
     # crece con el contenido en vez de recortarlo con una altura fija.
     iframe_dom_id = f"bohub-form-{form.id}"
@@ -554,6 +570,9 @@ def embed_code(
     html_snippet = build_pure_html_fragment(form, api_base=base, site_key=site_key)
     return {
         "script_snippet": script_snippet,
+        "site_snippet": site_snippet,
+        "site": sitio or None,
+        "site_web": web_de_sitio(sitio),
         "iframe_snippet": iframe_snippet,
         "html_snippet": html_snippet,
         # Desactivado no se ve en la web: la pantalla avisa al copiar.

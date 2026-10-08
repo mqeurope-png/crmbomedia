@@ -28,6 +28,11 @@ from app.models.crm import (
     ContactPipelineStage,
     ContactTag,
 )
+from app.services.web_forms.sitios import WEBS
+from app.services.web_forms.textos import TEXTOS, nombre_idioma
+
+#: Los idiomas en los que puede estar un formulario (los de `textos`).
+IDIOMAS_FORMULARIO: tuple[str, ...] = tuple(TEXTOS)
 
 # 36-char canonical UUID. Acepta también el hex-32 sin guiones por si
 # algún cliente legacy lo envía así.
@@ -46,6 +51,9 @@ class FieldSpec:
     comparators: tuple[str, ...]
     column: Any | None = None
     enum_values: tuple[str, ...] = ()
+    # Texto que ve la persona para cada valor de la enum («mbolasers» →
+    # «mbolasers.com»). Vacío = se enseña el valor tal cual.
+    enum_labels: dict[str, str] = field(default_factory=dict)
     # When the field requires a join (tags / pipelines), the engine
     # follows this hint to build an `EXISTS (subquery)` predicate so
     # the outer query stays distinct-free.
@@ -321,6 +329,38 @@ FIELD_SPECS: dict[str, FieldSpec] = {
         relation="external_refs.system",
         grouped_under="Origen",
         source="related_table",
+    ),
+    # Parte 5 (25 formularios). El lead de un formulario lleva en
+    # `Contact.origin_account_id` su WEB y su idioma
+    # (`web_form:<sitio>:<idioma>`): así se listan «los leads de
+    # mboprinters» o «los leads en alemán» sin tirar de la etiqueta
+    # `form:<slug>`. Se compilan con LIKE sobre esa columna (portable:
+    # MySQL en producción, SQLite en los tests).
+    "lead_web": FieldSpec(
+        key="lead_web",
+        label="Web del formulario",
+        type="enum",
+        comparators=("eq", "neq", "in", "not_in"),
+        enum_values=tuple(sorted(WEBS)),
+        enum_labels=dict(sorted(WEBS.items())),
+        relation="origen_formulario.sitio",
+        grouped_under="Propiedad y origen",
+        source="related_table",
+    ),
+    # El idioma del contacto es el del formulario por el que entró, guardado
+    # en `contacts.language`: así se cruzan webs («todos los leads en
+    # alemán», sean de mboprinters, artisjet-printers.eu o mbolasers) y se
+    # puede ver y ordenar como una columna más.
+    "language": FieldSpec(
+        key="language",
+        label="Idioma del contacto",
+        type="enum",
+        comparators=("eq", "neq", "in", "not_in", "is_null", "is_not_null"),
+        column=Contact.language,
+        enum_values=tuple(IDIOMAS_FORMULARIO),
+        enum_labels={c: nombre_idioma(c) for c in IDIOMAS_FORMULARIO},
+        sortable=True,
+        grouped_under="Propiedad y origen",
     ),
     # QoL sprint. Texto libre en cualquiera de las notas del contacto
     # (timeline Agile importado + Note1..10 + manuales del CRM, todo
@@ -869,6 +909,7 @@ def field_spec_to_ui(spec: FieldSpec) -> dict[str, Any]:
         "type": spec.type,
         "comparators": list(spec.comparators),
         "enum_values": list(spec.enum_values),
+        "enum_labels": dict(spec.enum_labels),
         "sortable": spec.sortable,
         "displayable": spec.displayable,
         "filterable": spec.filterable,

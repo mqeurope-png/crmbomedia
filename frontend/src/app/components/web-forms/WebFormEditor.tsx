@@ -28,6 +28,12 @@ import { WebFormTagsPicker } from "./WebFormTagsPicker";
 /** El consentimiento comercial solo se mapea desde una casilla. */
 const CONSENT = "contact.marketing_consent";
 
+/** La web de un formulario es la clave de su slug, no su marca (una marca
+ *  puede estar en dos webs). Espejo de `app/services/web_forms/sitios.py`. */
+function claveDeSitio(slug: string): string {
+  return (slug || "").trim().toLowerCase().split("-contacto")[0];
+}
+
 /** Espejo del slugify del backend para prellenar el field_key vacío. */
 function slugifyKey(label: string): string {
   const norm = label
@@ -334,8 +340,13 @@ export function WebFormEditor({ formId }: { formId: string }) {
           </label>
           <label>Slug
             <input type="text" value={form.slug} onChange={(e) => patch({ slug: e.target.value })}
-              placeholder="contacto-mbo-es" />
+              placeholder="mboprinters-contacto-es" />
           </label>
+          <p className="wf-hint">
+            La parte de antes de «-contacto» es la web: de ahí salen el origen del
+            lead, el código único de la web y los filtros. Con otro nombre el
+            formulario funciona, pero se queda fuera de todo eso.
+          </p>
           <div className="wf-config-row">
             <label>Marca
               <input type="text" value={form.brand ?? ""} onChange={(e) => patch({ brand: e.target.value })} />
@@ -351,6 +362,14 @@ export function WebFormEditor({ formId }: { formId: string }) {
               onChange={(e) => patch({ is_active: e.target.checked })} />
             Activo (desactivado no se muestra en la web)
           </label>
+          {claveDeSitio(form.slug) ? (
+            <label className="checkbox-inline">
+              <input type="checkbox" checked={form.is_site_default}
+                onChange={(e) => patch({ is_site_default: e.target.checked })} />
+              Respaldo de «{claveDeSitio(form.slug)}» (se sirve cuando la página de esa
+              web está en un idioma que no tiene su propio formulario)
+            </label>
+          ) : null}
           <label className="checkbox-inline">
             <input type="checkbox" checked={form.recaptcha_enabled}
               onChange={(e) => patch({ recaptcha_enabled: e.target.checked })} />
