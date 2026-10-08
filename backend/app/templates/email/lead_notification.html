@@ -1,0 +1,69 @@
+{#
+  Aviso de un lead de formulario. Para que una marca lleve su logotipo y su
+  firma, se copia este fichero como `lead_<marca>.html` (p. ej.
+  `lead_mbolasers.html`) y se edita: se usa solo, sin tocar código.
+#}
+<!doctype html>
+<html lang="es">
+<head><meta charset="utf-8"><title>{{ asunto }}</title></head>
+<body style="margin:0;padding:0;background:#f1f5f9;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#0f172a">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f1f5f9;padding:24px 12px">
+    <tr><td align="center">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;background:#ffffff;border-radius:10px;overflow:hidden">
+        <tr>
+          <td style="background:#0f172a;color:#ffffff;padding:18px 24px;font-size:17px;font-weight:600">
+            {{ asunto }}
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:20px 24px">
+            <p style="margin:0 0 16px;color:#64748b;font-size:13px">
+              Formulario «{{ formulario }}» ({{ slug }}){% if not nuevo %} · el contacto ya existía en el CRM{% endif %}
+            </p>
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-size:14px">
+              {% if nombre %}<tr>
+                <td style="padding:5px 0;color:#64748b;width:38%">Nombre</td>
+                <td style="padding:5px 0;font-weight:600">{{ nombre }}</td>
+              </tr>{% endif %}
+              {% if email %}<tr>
+                <td style="padding:5px 0;color:#64748b">Email</td>
+                <td style="padding:5px 0"><a href="mailto:{{ email }}" style="color:#2563eb">{{ email }}</a></td>
+              </tr>{% endif %}
+              {% if telefono %}<tr>
+                <td style="padding:5px 0;color:#64748b">Teléfono</td>
+                <td style="padding:5px 0"><a href="tel:{{ telefono }}" style="color:#2563eb">{{ telefono }}</a></td>
+              </tr>{% endif %}
+              {% if etiquetas %}<tr>
+                <td style="padding:5px 0;color:#64748b">Productos de interés</td>
+                <td style="padding:5px 0">{{ etiquetas | join(", ") }}</td>
+              </tr>{% endif %}
+              {% for etiqueta, valor in campos %}<tr>
+                <td style="padding:5px 0;color:#64748b">{{ etiqueta }}</td>
+                <td style="padding:5px 0">{{ valor }}</td>
+              </tr>{% endfor %}
+              <tr>
+                <td style="padding:5px 0;color:#64748b">Comunicaciones comerciales</td>
+                <td style="padding:5px 0">{% if consentimiento %}Aceptadas{% else %}No aceptadas{% endif %}</td>
+              </tr>
+            </table>
+            {% if consulta %}
+            <p style="margin:18px 0 6px;color:#64748b;font-size:13px">Consulta</p>
+            <div style="white-space:pre-wrap;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px;font-size:14px">{{ consulta }}</div>
+            {% endif %}
+            {% if enlace %}
+            <p style="margin:22px 0 0">
+              <a href="{{ enlace }}" style="display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;padding:11px 18px;border-radius:8px;font-size:14px;font-weight:600">Ver la ficha en BoHub</a>
+            </p>
+            {% endif %}
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:14px 24px;background:#f8fafc;color:#64748b;font-size:12px">
+            Lead recibido desde {{ web }} ({{ idioma }}).
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import HTMLResponse, Response
@@ -26,6 +27,7 @@ from app.db.session import get_session
 from app.models.web_forms import WebForm
 from app.services.web_forms import apariencia as aparien
 from app.services.web_forms.enlaces import texto_con_enlaces
+from app.services.web_forms.textos import texto_submit, textos
 
 router = APIRouter(tags=["web-forms-embed"])
 
@@ -127,6 +129,7 @@ def iframe_resize_js(form_id: str) -> str:
 def render_iframe_html(form: WebForm, *, api_base: str, site_key: str | None) -> str:
     """HTML de la vía iframe (también la vista previa del editor)."""
     ap = aparien.cargar(form.appearance_json)
+    tx = textos(form.language)
     extra_css = aparien.css(ap, via="iframe", form_id=form.id)
     extra_css = f"{extra_css}\n" if extra_css else ""
     fields = _field_config(form)
@@ -168,7 +171,7 @@ body{{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:0;pa
 <form class="bh-form" id="bh-form">
 {rows}
 <input class="bh-hp" type="text" name="website" tabindex="-1" autocomplete="off" aria-hidden="true">
-<button class="bh-btn" type="submit">{html.escape(ap.texto_boton())}</button>
+<button class="bh-btn" type="submit">{html.escape(texto_submit(form.language, ap.submit_text))}</button>
 <div class="bh-msg" id="bh-msg" style="display:none"></div>
 </form>
 <script>
@@ -177,6 +180,7 @@ window.__bhInit({{
   formId: {json.dumps(form.id)},
   apiBase: {json.dumps(api_base)},
   siteKey: {json.dumps(site_key)},
+  texts: {json.dumps(tx)},
   formEl: document.getElementById("bh-form"),
   msgEl: document.getElementById("bh-msg")
 }});
@@ -186,33 +190,70 @@ window.__bhInit({{
     return page
 
 
-@router.get("/forms/embed/{form_id}.js")
+#: Un id de formulario (uuid4). Lo que no lo sea, en `/forms/embed/<x>.js`,
+#: es una MARCA: un solo código de inserción por web, en todos sus idiomas.
+_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
+
+def _widget_js(*, clave: str, marca: str | None) -> str:
+    return _WIDGET_CORE_JS + "\n" + _WIDGET_BOOT_JS.replace(
+        "__CLAVE__", json.dumps(clave)
+    ).replace("__MARCA__", json.dumps(marca)).replace(
+        "__API_BASE__", json.dumps(_api_base())
+    )
+
+
+def _aviso_js(clave: str, mensaje: str, codigo: str) -> Response:
+    """Un <script> con un error no se ejecuta y la página no pinta nada sin
+    dar pistas: se sirve un JS que lo explica en la consola y marca el div."""
+    return Response(
+        content=f"console.warn({json.dumps(f'BoHub ({clave}): {mensaje}')});"
+                f'document.querySelectorAll("[data-bohub-form]").forEach('
+                f'function(m){{if(m.getAttribute("data-bohub-form")==='
+                f'{json.dumps(clave)})m.setAttribute("data-bohub-error",'
+                f"{json.dumps(codigo)});}});",
+        media_type="application/javascript", status_code=200,
+        headers={"Cache-Control": "public, max-age=60"},
+    )
+
+
+@router.get("/forms/embed/{clave}.js")
 def render_widget_js(
-    form_id: str, session: Session = Depends(get_session)
+    clave: str, session: Session = Depends(get_session)
 ) -> Response:
     """Widget JS vanilla que se auto-inyecta en la web host. Renderiza el
     form desde config.json, hereda estilos del host (reset mínimo),
-    recopila UTM/referrer/landing y envía. Soporta varias instancias."""
+    recopila UTM/referrer/landing y envía. Soporta varias instancias.
+
+    `clave` es el id del formulario (lo publicado hoy) o una MARCA: entonces
+    el propio widget mira el idioma de la página y pide el formulario de esa
+    marca en ese idioma, así cada web lleva un solo código."""
+    if not _UUID_RE.match(clave):
+        from app.services.web_forms.seleccion import (  # noqa: PLC0415
+            formularios_de_marca,
+        )
+
+        if not formularios_de_marca(session, clave):
+            return _aviso_js(
+                clave,
+                f"no hay ningún formulario activo de la marca «{clave}». "
+                "Revisa la marca en BoHub o actívalo.",
+                "brand_without_forms",
+            )
+        return Response(
+            content=_widget_js(clave=clave, marca=clave),
+            media_type="application/javascript",
+            headers={"Cache-Control": "public, max-age=300"},
+        )
+    form_id = clave
     try:
         form = _get_active_form(session, form_id)
     except FormularioDesactivado:
-        # Un <script> con error no se ejecuta y la página no pinta nada sin
-        # dar pistas: se sirve un JS que lo explica en la consola.
-        aviso = json.dumps(f"BoHub ({form_id}): {FORM_INACTIVE_MESSAGE}")
-        return Response(
-            content=f'console.warn({aviso});document.querySelectorAll('
-                    f'"[data-bohub-form]").forEach(function(m){{if(m.getAttribute('
-                    f'"data-bohub-form")==={json.dumps(form_id)})m.setAttribute('
-                    f'"data-bohub-error",{json.dumps(FORM_INACTIVE_CODE)});}});',
-            media_type="application/javascript", status_code=200,
-            headers={"Cache-Control": "public, max-age=60"},
-        )
-    api_base = _api_base()
-    js = _WIDGET_CORE_JS + "\n" + _WIDGET_BOOT_JS.replace(
-        "__FORM_ID__", json.dumps(form.id)
-    ).replace("__API_BASE__", json.dumps(api_base))
+        return _aviso_js(form_id, FORM_INACTIVE_MESSAGE, FORM_INACTIVE_CODE)
     return Response(
-        content=js,
+        content=_widget_js(clave=form.id, marca=None),
         media_type="application/javascript",
         headers={"Cache-Control": "public, max-age=300"},
     )
@@ -364,6 +405,7 @@ def build_pure_html_fragment(form: WebForm, *, api_base: str, site_key: str | No
     vía fetch (sin navegación, sin dependencias externas)."""
     fields = _field_config(form)
     ap = aparien.cargar(form.appearance_json)
+    tx = textos(form.language)
     estilo = aparien.css(ap, via="puro", form_id=form.id)
     action = f"{api_base}/public/forms/{form.id}/submit"
     form_dom_id = f"bh-form-{form.id}"
@@ -380,7 +422,7 @@ def build_pure_html_fragment(form: WebForm, *, api_base: str, site_key: str | No
 (function(){{
   var form=document.getElementById({json.dumps(form_dom_id)});
   if(!form)return;
-  var SITE_KEY={json.dumps(site_key)},ACTION={json.dumps(action)};
+  var SITE_KEY={json.dumps(site_key)},ACTION={json.dumps(action)},TX={json.dumps(tx)};
   function send(token){{
     var data={{}};
     new FormData(form).forEach(function(v,k){{if(k.slice(-2)==="[]"){{var b=k.slice(0,-2);(data[b]=data[b]||[]).push(v);}}else{{data[k]=v;}}}});
@@ -393,10 +435,10 @@ def build_pure_html_fragment(form: WebForm, *, api_base: str, site_key: str | No
       .then(function(r){{return r.json();}})
       .then(function(j){{
         if(j.success&&j.action==="redirect"&&j.redirect_url){{location.href=j.redirect_url;return;}}
-        if(msg){{msg.style.display="block";msg.textContent=j.success?(j.success_message||"¡Gracias! Hemos recibido tu solicitud."):"No se pudo enviar. Revisa los datos.";}}
+        if(msg){{msg.style.display="block";msg.textContent=j.success?(j.success_message||TX.gracias):(TX[j.error]||TX.error_datos);}}
         if(j.success)form.reset();
       }})
-      .catch(function(){{if(msg){{msg.style.display="block";msg.textContent="Error de conexión. Inténtalo de nuevo.";}}}});
+      .catch(function(){{if(msg){{msg.style.display="block";msg.textContent=TX.error_conexion;}}}});
   }}
   form.addEventListener("submit",function(e){{
     e.preventDefault();
@@ -412,7 +454,8 @@ def build_pure_html_fragment(form: WebForm, *, api_base: str, site_key: str | No
         f'{rows}\n'
         f'{honeypot}\n'
         f'<input type="hidden" name="recaptcha_token" value="">\n'
-        f'<button class="bh-button" type="submit">{html.escape(ap.texto_boton())}</button>\n'
+        f'<button class="bh-button" type="submit">'
+        f'{html.escape(texto_submit(form.language, ap.submit_text))}</button>\n'
         f'<div class="bh-message" role="status" style="display:none"></div>\n'
         f'</form>\n'
         f'{submit_js}\n'
@@ -426,7 +469,8 @@ def build_pure_html_fragment(form: WebForm, *, api_base: str, site_key: str | No
 
 _WIDGET_CORE_JS = r"""
 window.__bhInit=function(cfg){
-  var form=cfg.formEl,msg=cfg.msgEl;
+  var form=cfg.formEl,msg=cfg.msgEl,TX=cfg.texts||{};
+  function T(k){return (k&&TX[k])||"";}
   function show(cls,text){msg.style.display="block";msg.className="bh-msg "+cls;msg.textContent=text;}
   function meta(){
     var p=new URLSearchParams(window.location.search),d={};
@@ -452,11 +496,11 @@ window.__bhInit=function(cfg){
         if(btn)btn.disabled=false;
         if(res.ok&&res.j.success){
           if(res.j.action==="redirect"&&res.j.redirect_url){window.location.href=res.j.redirect_url;return;}
-          form.reset();show("bh-ok",res.j.success_message||"¡Gracias! Hemos recibido tu solicitud.");
+          form.reset();show("bh-ok",res.j.success_message||T("gracias"));
         }else{
-          show("bh-err","No se pudo enviar. Revisa los datos e inténtalo de nuevo.");
+          show("bh-err",T(res.j&&res.j.error)||T("error_datos"));
         }
-      }).catch(function(){if(btn)btn.disabled=false;show("bh-err","Error de conexión. Inténtalo de nuevo.");});
+      }).catch(function(){if(btn)btn.disabled=false;show("bh-err",T("error_conexion"));});
     });
   });
 };
@@ -464,9 +508,20 @@ window.__bhInit=function(cfg){
 
 _WIDGET_BOOT_JS = r"""
 (function(){
-  var FORM_ID=__FORM_ID__,API_BASE=__API_BASE__;
-  var mount=document.querySelector('[data-bohub-form="'+FORM_ID+'"]');
-  if(!mount){mount=document.createElement("div");mount.setAttribute("data-bohub-form",FORM_ID);
+  var CLAVE=__CLAVE__,API_BASE=__API_BASE__,MARCA=__MARCA__;
+  // Embed por marca: el idioma sale del `lang` del <html> y, si no lo trae,
+  // del primer trozo de la URL (/de/kontakt). El servidor elige el
+  // formulario de esa marca en ese idioma, o el de respaldo.
+  function idiomaPagina(){
+    var l=(document.documentElement.getAttribute("lang")||"").trim();
+    if(!l){var m=window.location.pathname.match(/^\/([a-zA-Z]{2})(?:[-_][a-zA-Z]{2})?(?:\/|$)/);l=m?m[1]:"";}
+    return l.toLowerCase().replace("_","-").split("-")[0];
+  }
+  var URL_CFG=MARCA
+    ?API_BASE+"/public/forms/by-brand/"+encodeURIComponent(MARCA)+"/config.json?lang="+encodeURIComponent(idiomaPagina())
+    :API_BASE+"/public/forms/"+CLAVE+"/config.json";
+  var mount=document.querySelector('[data-bohub-form="'+CLAVE+'"]');
+  if(!mount){mount=document.createElement("div");mount.setAttribute("data-bohub-form",CLAVE);
     if(document.currentScript&&document.currentScript.parentNode)document.currentScript.parentNode.insertBefore(mount,document.currentScript);}
   if(mount.getAttribute("data-bh-mounted"))return;mount.setAttribute("data-bh-mounted","1");
   var style=document.createElement("style");
@@ -488,13 +543,14 @@ _WIDGET_BOOT_JS = r"""
     else{var it=(f.type==="email"||f.type==="tel")?f.type:"text";ctrl='<input type="'+it+'" name="'+esc(f.key)+'" placeholder="'+esc(f.placeholder)+'"'+(f.required?" required":"")+(dv?' value="'+esc(dv)+'"':"")+'>';}
     return'<div class="bh-field"><label>'+lab+star+'</label>'+ctrl+help+'</div>';
   }
-  fetch(API_BASE+"/public/forms/"+FORM_ID+"/config.json").then(function(r){return r.json().then(function(j){if(!r.ok){var e=new Error("bohub");e.d=(j&&j.detail)||{};throw e;}return j;});}).then(function(cfg){
+  fetch(URL_CFG).then(function(r){return r.json().then(function(j){if(!r.ok){var e=new Error("bohub");e.d=(j&&j.detail)||{};throw e;}return j;});}).then(function(cfg){
     if(cfg.style_css){var st=document.createElement("style");st.textContent=cfg.style_css;document.head.appendChild(st);}
     var rows=(cfg.fields||[]).map(field).join("");
-    mount.innerHTML='<form class="bh-form">'+rows+'<input class="bh-hp" type="text" name="website" tabindex="-1" autocomplete="off" aria-hidden="true"><button class="bh-btn" type="submit">'+esc(cfg.submit_text||"Enviar")+'</button><div class="bh-msg" style="display:none"></div></form>';
+    mount.innerHTML='<form class="bh-form">'+rows+'<input class="bh-hp" type="text" name="website" tabindex="-1" autocomplete="off" aria-hidden="true"><button class="bh-btn" type="submit">'+esc(cfg.submit_text||(cfg.texts&&cfg.texts.submit)||"")+'</button><div class="bh-msg" style="display:none"></div></form>';
     var formEl=mount.querySelector("form"),msgEl=mount.querySelector(".bh-msg");
-    function boot(){window.__bhInit({formId:FORM_ID,apiBase:API_BASE,siteKey:cfg.recaptcha_site_key,formEl:formEl,msgEl:msgEl});}
+    if(formEl&&cfg.language)formEl.setAttribute("lang",cfg.language);
+    function boot(){window.__bhInit({formId:cfg.id,apiBase:API_BASE,siteKey:cfg.recaptcha_site_key,texts:cfg.texts,formEl:formEl,msgEl:msgEl});}
     if(cfg.recaptcha_site_key&&!window.grecaptcha){var s=document.createElement("script");s.src="https://www.google.com/recaptcha/api.js?render="+cfg.recaptcha_site_key;s.onload=boot;document.head.appendChild(s);}else{boot();}
-  }).catch(function(e){if(e&&e.d&&e.d.code==="form_inactive"){mount.setAttribute("data-bohub-error","form_inactive");if(window.console)console.warn("BoHub ("+FORM_ID+"): "+e.d.message);return;}mount.innerHTML='<p style="color:#991b1b">No se pudo cargar el formulario.</p>';});
+  }).catch(function(e){var d=(e&&e.d)||{};if(d.code){mount.setAttribute("data-bohub-error",d.code);if(window.console)console.warn("BoHub ("+CLAVE+"): "+(d.message||d.code));if(d.code==="form_inactive")return;}mount.innerHTML='<p style="color:#991b1b">'+esc(d.loading_error||"No se pudo cargar el formulario.")+'</p>';});
 })();
 """

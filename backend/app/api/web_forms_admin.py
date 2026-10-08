@@ -78,6 +78,9 @@ class FormBase(BaseModel):
     fixed_owner_user_id: str | None = None
     notify_owner_on_new: bool = True
     recaptcha_enabled: bool = True
+    # Embed por marca: el formulario de respaldo de esta marca cuando la
+    # página está en un idioma que no tiene el suyo.
+    is_brand_default: bool = False
     # Ancho, alineación y estilo (validado: colores #rrggbb, rangos). Sin
     # enviar = no se toca; vacío = el aspecto de siempre.
     appearance: Apariencia | None = None
@@ -226,6 +229,7 @@ def _serialise_detail(form: WebForm) -> FormDetail:
         fixed_owner_user_id=form.fixed_owner_user_id,
         notify_owner_on_new=form.notify_owner_on_new,
         recaptcha_enabled=form.recaptcha_enabled,
+        is_brand_default=form.is_brand_default,
         appearance=cargar_apariencia(form.appearance_json),
         created_by_user_id=form.created_by_user_id,
         created_at=form.created_at,
@@ -409,6 +413,7 @@ def create_form(
         fixed_owner_user_id=payload.fixed_owner_user_id,
         notify_owner_on_new=payload.notify_owner_on_new,
         recaptcha_enabled=payload.recaptcha_enabled,
+        is_brand_default=payload.is_brand_default,
         appearance_json=volcar_apariencia(payload.appearance),
         created_by_user_id=current_user.id,
     )
@@ -450,7 +455,7 @@ def update_form(
         "submit_success_mode", "submit_success_message", "submit_redirect_url",
         "send_confirmation_email", "confirmation_email_template_id",
         "assignment_mode", "fixed_owner_user_id", "notify_owner_on_new",
-        "recaptcha_enabled",
+        "recaptcha_enabled", "is_brand_default",
     ):
         setattr(form, attr, getattr(payload, attr))
     if payload.appearance is not None:
@@ -532,10 +537,19 @@ def embed_code(
     form = _get_form(session, form_id)
     settings = get_settings()
     base = (settings.web_forms_embed_base_url or settings.frontend_base_url).rstrip("/")
+    # Las DOS líneas son necesarias: sin el <div> el script carga y no
+    # pinta nada. Van juntas en lo que se copia.
     script_snippet = (
         f'<script src="{base}/forms/embed/{form.id}.js" async></script>\n'
         f'<div data-bohub-form="{form.id}"></div>'
     )
+    # Un solo código por web: el widget mira el idioma de la página y pide
+    # el formulario de esta marca en ese idioma.
+    marca = (form.brand or "").strip()
+    brand_snippet = (
+        f'<script src="{base}/forms/embed/{marca}.js" async></script>\n'
+        f'<div data-bohub-form="{marca}"></div>'
+    ) if marca else None
     # El iframe avisa de su altura (postMessage) y este script la aplica:
     # crece con el contenido en vez de recortarlo con una altura fija.
     iframe_dom_id = f"bohub-form-{form.id}"
@@ -554,6 +568,8 @@ def embed_code(
     html_snippet = build_pure_html_fragment(form, api_base=base, site_key=site_key)
     return {
         "script_snippet": script_snippet,
+        "brand_snippet": brand_snippet,
+        "brand": marca or None,
         "iframe_snippet": iframe_snippet,
         "html_snippet": html_snippet,
         # Desactivado no se ve en la web: la pantalla avisa al copiar.

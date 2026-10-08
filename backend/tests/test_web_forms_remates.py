@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -350,22 +351,30 @@ def test_ancho_50_centrado_en_las_tres_vias_y_100_en_movil(http, factory):
     assert cfg["submit_text"] == "Pide información"
 
 
+def _sin_scripts(html_: str) -> str:
+    """El HTML sin los bloques <script>: lo que SE VE del formulario. El JS
+    cambia (textos del idioma, altura del iframe) sin cambiar el aspecto."""
+    sin = re.sub(r"<script\b.*?</script>", "", html_, flags=re.S)
+    return re.sub(r"\n{2,}", "\n", sin)
+
+
 def test_estilo_por_defecto_deja_el_html_de_siempre(http, factory):
     """La «foto» de tests/fixtures/web_forms_golden se sacó con el código de
-    antes del PR. Un formulario sin apariencia genera lo mismo (el iframe
-    solo añade el script invisible que avisa de su altura)."""
+    antes del PR: un formulario sin apariencia se sigue VIENDO igual (mismo
+    markup y mismo CSS; el JS embebido no se compara)."""
     golden = BACKEND_ROOT / GOLDEN_DIR
     with factory() as s:
         form = crear_formulario_golden(s)
         fragmento = embed.build_pure_html_fragment(form, api_base=GOLDEN_API_BASE,
                                                    site_key=None)
-    assert fragmento == (golden / "fragmento.html").read_text()
+    assert _sin_scripts(fragmento) == _sin_scripts((golden / "fragmento.html").read_text())
     iframe = http.get(f"/forms/{GOLDEN_FORM_ID}").text
-    assert iframe.replace(embed.iframe_resize_js(GOLDEN_FORM_ID), "") == \
-        (golden / "iframe.html").read_text()
+    assert _sin_scripts(iframe) == _sin_scripts((golden / "iframe.html").read_text())
+    # El botón de un formulario en castellano sigue poniendo «Enviar».
+    assert ">Enviar</button>" in iframe and ">Enviar</button>" in fragmento
     cfg = http.get(f"/public/forms/{GOLDEN_FORM_ID}/config.json").json()
     antes = json.loads((golden / "config.json").read_text())
-    nuevas = {"submit_text", "style_css"}
+    nuevas = {"submit_text", "style_css", "texts"}
     assert {k: v for k, v in cfg.items() if k not in nuevas | {"fields"}} == \
         {k: v for k, v in antes.items() if k != "fields"}
     assert cfg["style_css"] == "" and cfg["submit_text"] == "Enviar"

@@ -231,6 +231,8 @@ def _compile_leaf(
         return _compile_tag_leaf(comparator, value)
     if spec.relation in {"external_refs.system", "external_refs.account_id"}:
         return _compile_external_ref_leaf(spec, comparator, value)
+    if spec.relation in {"origen_formulario.marca", "origen_formulario.idioma"}:
+        return _compile_origen_formulario_leaf(spec, comparator, value)
     if spec.relation in {"pipeline_id", "pipeline_stage_id"}:
         return _compile_pipeline_leaf(spec, comparator, value)
     if spec.relation == "brevo_list_membership":
@@ -743,6 +745,40 @@ def _compile_brevo_campaign_interaction_leaf(
     )
 
 
+def _compile_origen_formulario_leaf(
+    spec: FieldSpec, comparator: str, value: Any
+) -> ColumnElement[bool]:
+    """Web e idioma del formulario por el que entró el lead, leídos de
+    `Contact.origin_account_id` (`web_form:<marca>:<idioma>`).
+
+    Se compila con LIKE y no con funciones de recorte de cadenas, para que
+    valga igual en MySQL (producción) y en SQLite (tests). Un contacto que
+    no viene de un formulario nunca encaja."""
+    from app.services.web_forms.marcas import ORIGEN_PREFIJO  # noqa: PLC0415
+
+    def patron(v: Any) -> str:
+        texto = str(v or "").strip().lower()
+        if spec.relation == "origen_formulario.marca":
+            return f"{ORIGEN_PREFIJO}:{texto}:%"
+        return f"{ORIGEN_PREFIJO}:%:{texto}"
+
+    columna = Contact.origin_account_id
+    if comparator in {"eq", "neq"}:
+        cond = columna.like(patron(value))
+        return cond if comparator == "eq" else ~cond
+    if comparator in {"in", "not_in"}:
+        valores = value if isinstance(value, (list, tuple, set)) else [value]
+        if not valores:
+            raise SegmentRuleError(
+                f"El comparador «{comparator}» de «{spec.label}» necesita al menos un valor."
+            )
+        cond = or_(*[columna.like(patron(v)) for v in valores])
+        return cond if comparator == "in" else ~cond
+    raise SegmentRuleError(
+        f"El comparador «{comparator}» no vale para «{spec.label}»."
+    )
+
+
 def _compile_external_ref_leaf(
     spec: FieldSpec, comparator: str, value: Any
 ) -> ColumnElement[bool]:
@@ -1107,6 +1143,15 @@ def _resolve_attr(contact: Contact, spec: FieldSpec) -> Any:
             for part in (getattr(contact, first), getattr(contact, last))
             if part
         ).strip() or None
+    if spec.relation in {"origen_formulario.marca", "origen_formulario.idioma"}:
+        from app.services.web_forms.marcas import (  # noqa: PLC0415
+            partes_de_origen,
+        )
+
+        partes = partes_de_origen(getattr(contact, "origin_account_id", None))
+        if partes is None:
+            return None
+        return partes[0] if spec.relation == "origen_formulario.marca" else partes[1]
     if spec.relation == "external_refs.system":
         return next(
             (ref.system.value for ref in contact.external_refs),
