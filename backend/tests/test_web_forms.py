@@ -277,15 +277,24 @@ def test_public_submit_stores_utm_and_referrer_in_submission(session_factory):
 # --- emails -----------------------------------------------------------------
 
 
-def test_public_submit_sends_confirmation_email_when_configured(session_factory):
-    from app.services.email import get_email_service
+def test_public_submit_sends_confirmation_email_when_configured(
+    session_factory, monkeypatch
+):
+    """El acuse ya no sale por SMTP: va por el camino de la Bandeja (Gmail
+    con el alias de la marca), que es lo que lo deja en Enviados, en la ficha
+    y con seguimiento de apertura. Lo que se comprueba aquí es que el
+    interruptor lo dispara; el contenido, en `test_web_forms_acuse.py`."""
+    from app.services.web_forms import submit as submit_mod
 
-    svc = get_email_service()
-    svc.sent.clear()
+    llamadas: list[str] = []
+    monkeypatch.setattr(
+        submit_mod, "_send_confirmation_email",
+        lambda _s, _f, correo, *_a, **_k: llamadas.append(correo),
+    )
     with session_factory() as s:
         form = _mk_form(s, send_confirmation_email=True)
         _submit(s, form)
-    assert any(e.to_email == "sergio@lead.com" for e in svc.sent)
+    assert llamadas == ["sergio@lead.com"]
 
 
 def test_public_submit_notifies_owner_on_new_contact(session_factory):
