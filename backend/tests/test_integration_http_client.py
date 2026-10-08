@@ -454,3 +454,47 @@ def test_debug_enabled_logs_masked_request_and_error(
     # what the remote said.
     combined_err = " ".join(r.getMessage() for r in error_logs)
     assert "not found body" in combined_err
+
+
+# --- el motivo del error viaja en su texto ------------------------------------------------
+
+
+def test_el_texto_del_error_lleva_el_motivo_que_da_el_remoto():
+    """146.876 trabajos de Brevo quedaron en el registro de fallidos como
+    «400 from brevo/default» a secas. El cuerpo de la respuesta, que es donde
+    el remoto dice POR QUÉ, se quedaba en un atributo que nadie veía."""
+    from app.integrations.errors import IntegrationClientError
+
+    err = IntegrationClientError(
+        "400 from brevo/default", system="brevo", account_id="default",
+        status_code=400,
+        body='{"code":"invalid_parameter","message":"Invalid email address"}',
+    )
+    texto = str(err)
+    assert "status=400" in texto
+    assert "invalid_parameter" in texto
+    assert "Invalid email address" in texto
+    # Y el atributo sigue completo para quien lo quiera entero.
+    assert err.body is not None and "invalid_parameter" in err.body
+
+
+def test_un_cuerpo_largo_se_recorta_y_se_aplana():
+    from app.integrations.errors import IntegrationClientError
+
+    err = IntegrationClientError(
+        "400 from brevo/default", status_code=400,
+        body="linea1\n   linea2 " + ("x" * 500),
+    )
+    texto = str(err)
+    assert "\n" not in texto                      # una sola línea
+    assert "linea1 linea2" in texto
+    assert texto.endswith("…")
+    assert len(texto) < 400
+
+
+def test_sin_cuerpo_el_texto_queda_como_antes():
+    from app.integrations.errors import IntegrationError
+
+    assert str(IntegrationError("algo", system="brevo", status_code=500)) == (
+        "algo system=brevo status=500"
+    )
