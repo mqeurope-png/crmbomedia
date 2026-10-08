@@ -442,6 +442,10 @@ COMPANY_DEFAULTS: dict[int, dict[str, Any]] = {
         "direccion": "Via Augusta, 48, 2, 5",
         "cp_poblacion": "08006 Barcelona",
         "pais": "España",
+        # El ISO2 del país del EMISOR, que es lo que decide el régimen de IVA
+        # junto con el del cliente. Explícito y editable: derivarlo del
+        # literal de arriba sería adivinar, y aquí adivinar es facturar mal.
+        "pais_iso2": "ES",
         "telefono": "Tel. 932 010 793",
         "email": "bomedia@bomedia.net",
         "nif": "NIF B63609309",
@@ -488,6 +492,7 @@ COMPANY_DEFAULTS: dict[int, dict[str, Any]] = {
         "direccion": "C. Corsega 232, 5",
         "cp_poblacion": "08036 Barcelona",
         "pais": "España",
+        "pais_iso2": "ES",
         "telefono": "Tel. 932022530",
         "email": "",
         "nif": "CIF B64154263",
@@ -520,6 +525,7 @@ COMPANY_DEFAULTS: dict[int, dict[str, Any]] = {
         "direccion": "Arnould Nobelstraat 30, 0405",
         "cp_poblacion": "B3000 Leuven",
         "pais": "Belgium",
+        "pais_iso2": "BE",
         "telefono": "",
         "email": "sales@mqeurope.com",
         "nif": "VAT nr. BE 0883.002.183 (RPR TONGEREN)",
@@ -551,8 +557,8 @@ COMPANY_DEFAULTS: dict[int, dict[str, Any]] = {
 
 #: Campos de texto plano de la empresa (los editables simples de settings).
 COMPANY_TEXT_FIELDS = (
-    "nombre", "direccion", "cp_poblacion", "pais", "telefono", "email",
-    "nif", "idioma_defecto",
+    "nombre", "direccion", "cp_poblacion", "pais", "pais_iso2", "telefono",
+    "email", "nif", "idioma_defecto",
 )
 #: Campos por-idioma (dict {lang: texto}).
 COMPANY_LANG_FIELDS = ("legal", "pie", "intracom", "titulo_albaran_valorado")
@@ -676,6 +682,30 @@ def company_for_serie(session: Session, serie: int) -> dict[str, Any]:
     return {f: "" for f in COMPANY_TEXT_FIELDS} | {
         f: {} for f in COMPANY_LANG_FIELDS
     } | {"bancos": []}
+
+
+def issuer_iso2_for_serie(session: Session, serie: int | str | None) -> str | None:
+    """País (ISO2) de la empresa que emite la serie: la otra punta de la
+    pareja que decide el régimen de IVA.
+
+    Sale de `pais_iso2` de la identidad de la serie, y si no está, del
+    literal `pais` normalizado («Belgium» → BE). `None` cuando la serie no
+    tiene identidad configurada: entonces el llamador se queda con el
+    emisor por defecto, igual que antes.
+    """
+    from app.erp.language import normalize_country  # noqa: PLC0415
+
+    try:
+        numero = int(str(serie).strip())
+    except (TypeError, ValueError):
+        return None
+    company = companies_config(session).get(numero)
+    if not company:
+        return None
+    explicito = str(company.get("pais_iso2") or "").strip().upper()
+    if explicito:
+        return normalize_country(explicito) or explicito or None
+    return normalize_country(company.get("pais"))
 
 
 def _lang_text(company: dict[str, Any], field: str, lang: str) -> str:

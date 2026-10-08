@@ -205,7 +205,12 @@ def order_alerts(
     #    Fase VIES: si VIES dice que el NIF-IVA NO es válido no se puede
     #    eximir → incidencia BLOQUEANTE (se facturaría mal el IVA); si aún no
     #    está validado (pendiente / VIES caído) se avisa sin bloquear.
-    regime = company_regime(company) if not archived else None
+    # La serie del pedido decide quién emite, y con ello el régimen: lo que
+    # para Streamtec (ES) es nacional, para MQ Europe (BE) puede ser
+    # intracomunitario.
+    regime = company_regime(
+        company, issuer_iso2=_issuer_of_order(session, order),
+    ) if not archived else None
     vies = _vies_of(company) if not archived else {"vat": None, "status": None}
     if vies["vat"] and vies["status"] == "no_valido":
         alerts.append(_alert(
@@ -291,9 +296,32 @@ def quote_queue(estado: str, *, converted: bool) -> str | None:
     }.get(estado)
 
 
-def company_regime(company: Any) -> str | None:
-    """Régimen de IVA del cliente del pedido (Tarea C + VIES), o None sin
-    empresa / sin país."""
+def _issuer_of_order(session: Session, order: Any) -> str | None:
+    """País (ISO2) de la empresa que facturaría este pedido, por su serie.
+    `None` si no se puede saber: entonces manda el emisor por defecto."""
+    try:
+        from app.erp.factusol_pdf import issuer_iso2_for_serie  # noqa: PLC0415
+        from app.integrations.factusol.service import resolve_serie  # noqa: PLC0415
+
+        return issuer_iso2_for_serie(session, resolve_serie(session, order))
+    except Exception:  # noqa: BLE001 — el régimen no puede tumbar la ficha
+        import logging  # noqa: PLC0415
+
+        logging.getLogger(__name__).warning(
+            "erp.workflow: no se pudo resolver la serie del pedido %s",
+            getattr(order, "id", "?"), exc_info=True,
+        )
+        return None
+
+
+def company_regime(company: Any, *, issuer_iso2: str | None = None) -> str | None:
+    """Régimen de IVA del documento (Tarea C + VIES), o None sin empresa / sin
+    país del cliente.
+
+    `issuer_iso2` es el país de la empresa que EMITE (la de la serie). El
+    régimen es de la pareja: lo que vale para Streamtec (ES) no vale para MQ
+    Europe (BE). Sin él se supone el emisor por defecto, que es lo que hacía
+    siempre el código viejo."""
     if company is None or not getattr(company, "country", None):
         return None
     from app.erp.language import normalize_country  # noqa: PLC0415
@@ -301,7 +329,7 @@ def company_regime(company: Any) -> str | None:
     from app.services.vies import company_vies_valid  # noqa: PLC0415
 
     return regime_for(
-        normalize_country(company.country),
+        normalize_country(company.country), issuer_iso2=issuer_iso2,
         vat=getattr(company, "vat", None), nif=getattr(company, "tax_id", None),
         vies_valid=company_vies_valid(company),
     )
@@ -432,6 +460,8 @@ def order_workflow(
     else:
         invoice_emailed_at = latest_invoice_emailed_map(session, [order.id]).get(order.id)
     queue, action, explain = _next_step(order)
+    # Quién emitiría este pedido: su serie decide el régimen de IVA.
+    emisor = _issuer_of_order(session, order)
     blocking = [a for a in alerts if a["blocking"]]
     review = [a for a in alerts if a.get("review")]
     if getattr(order, "cancelled_at", None):
@@ -470,10 +500,10 @@ def order_workflow(
         # Pasos de la línea de vida: los obligatorios (hasta Cobro) + el hito
         # opcional «Factura enviada». El SAT/«Enviado» ya no es un paso.
         "steps": order_steps(order, invoice_emailed_at=invoice_emailed_at),
-        "regime": company_regime(company),
+        "regime": company_regime(company, issuer_iso2=emisor),
         # Cliente del pedido: lo que la ficha enseña en cabecera (país +
         # régimen) y en el bloque FACTUSOL (nº de cliente o «sin vincular»).
-        "company": _company_block(company),
+        "company": _company_block(company, issuer_iso2=emisor),
     }
 
 
@@ -490,7 +520,9 @@ def _next_action_label(order: Order, action: str) -> str:
     return ACTION_LABELS.get(action, action)
 
 
-def _company_block(company: Any) -> dict[str, Any] | None:
+def _company_block(
+    company: Any, *, issuer_iso2: str | None = None,
+) -> dict[str, Any] | None:
     if company is None:
         return None
     return {
@@ -498,7 +530,7 @@ def _company_block(company: Any) -> dict[str, Any] | None:
         "name": company.name,
         "country": getattr(company, "country", None),
         "factusol_id": getattr(company, "factusol_company_id", None) or None,
-        "regime": company_regime(company),
+        "regime": company_regime(company, issuer_iso2=issuer_iso2),
         "vies": _vies_of(company),
     }
 

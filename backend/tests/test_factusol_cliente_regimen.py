@@ -318,7 +318,10 @@ def test_regime_preview_muestra_actual_y_propuesto(client, session_factory) -> N
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["codcli"] == "3392" and body["regime"] == REGIME_INTRACOMUNITARIO
-    assert body["reason"] == "BE (UE) con NIF-IVA BE0812240188 → intracomunitario"
+    # El motivo nombra las DOS puntas: antes decía solo «BE (UE) …» y con eso
+    # un documento de MQ Europe parecía bien cuando estaba mal.
+    assert body["reason"] == (
+        "España → Bélgica (UE) con NIF-IVA BE0812240188 → intracomunitario")
     assert body["current"]["regime"] == REGIME_NACIONAL
     assert body["current"]["IFICLI"] == 0 and body["current"]["PAICLI"] == "056"
     assert body["proposed"] == {"IFICLI": 2, "IVACLI": 2, "TIVCLI": 4, "PAICLI": "056"}

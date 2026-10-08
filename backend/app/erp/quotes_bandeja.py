@@ -31,6 +31,7 @@ from typing import Any
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from app.erp.factusol_pdf import issuer_iso2_for_serie
 from app.erp.language import normalize_country
 from app.erp.models import Order, OrderSource
 from app.erp.workflow import QUOTE_QUEUE_LABELS, QUOTE_QUEUES, company_regime, quote_queue
@@ -403,7 +404,9 @@ def annotate_documents_crm(
         company = companies.get(code) or (
             companies.get(str(int(code))) if code.isdigit() else None
         )
-        regime = company_regime(company) if company is not None else None
+        regime = company_regime(
+            company, issuer_iso2=issuer_iso2_for_serie(session, d.get("serie")),
+        ) if company is not None else None
         exento_cabecera = header_says_no_iva(d.get("iva_pct"), d.get("base"))
         d["company"] = _company_block(company) if company is not None else None
         d["country_iso2"] = normalize_country(company.country) if (
@@ -469,9 +472,12 @@ def annotate_quotes(session: Session, quotes: list[dict[str, Any]]) -> dict[str,
         q["order"] = (
             {"id": order.id, "order_number": order.order_number} if order is not None else None
         )
-        # Régimen: la empresa manda (país + NIF-IVA + VIES); sin empresa, la
-        # cabecera del documento (0 % explícito = exento).
-        regime = company_regime(company) if company is not None else None
+        # Régimen: la PAREJA emisor→cliente (país de la empresa de la serie +
+        # país, NIF-IVA y VIES del cliente); sin empresa, la cabecera del
+        # documento (0 % explícito = exento).
+        regime = company_regime(
+            company, issuer_iso2=issuer_iso2_for_serie(session, serie),
+        ) if company is not None else None
         exento_cabecera = header_says_no_iva(q.get("piva1pre"), q.get("base"))
         q["country_iso2"] = normalize_country(company.country) if (
             company is not None and company.country) else None

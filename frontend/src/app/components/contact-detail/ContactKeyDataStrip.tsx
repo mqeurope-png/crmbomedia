@@ -50,11 +50,18 @@ const STATUS_OPTIONS: ReadonlyArray<[string, string]> = [
   ["lost", "Perdido"],
 ];
 
-// PR-Ficha-Cleanup: mostramos `{system} · {account_id}` en lugar de
-// solo `agilecrm`. Bart prefería ver "AgileCRM · artisjet-europe"
-// para distinguir entre las 7 cuentas Agile. La fuente de verdad es
-// `external_references_summary` (siempre presente); `origin` legacy
-// es ahora solo fallback.
+// «Origen del lead» es `contacts.origin`: de DÓNDE vino el lead («Formulario
+// web · boprint.net (español)»). Los vínculos con las integraciones van
+// aparte, en «Sincronizado con».
+//
+// Antes mandaban los vínculos (`external_references_summary`) y `origin` era
+// solo el respaldo. Como todo contacto que se sube a Brevo gana una fila de
+// `external_references`, el origen de TODOS los leads de formulario acabó
+// enseñándose como «Brevo · default» en cuanto se sincronizaban: el dato
+// estaba bien, lo que se veía no.
+//
+// Se mantiene `{system} · {account_id}` en los vínculos porque Bart quiere
+// distinguir las 7 cuentas de Agile.
 const SYSTEM_LABELS: Record<string, string> = {
   agilecrm: "AgileCRM",
   brevo: "Brevo",
@@ -65,16 +72,14 @@ const SYSTEM_LABELS: Record<string, string> = {
 
 function formatOriginPairs(
   summary: ExternalReferenceSummary[] | undefined,
-  fallbackOrigin: string | null | undefined,
 ): string | null {
-  if (summary && summary.length > 0) {
-    const parts = summary.map((ref) => {
+  if (!summary || summary.length === 0) return null;
+  return summary
+    .map((ref) => {
       const label = SYSTEM_LABELS[ref.system] ?? ref.system;
       return ref.account_id ? `${label} · ${ref.account_id}` : label;
-    });
-    return parts.join(", ");
-  }
-  return fallbackOrigin ?? null;
+    })
+    .join(", ");
 }
 
 function copyToClipboard(value: string) {
@@ -91,10 +96,10 @@ export function ContactKeyDataStrip({
   onPatch,
 }: Props) {
   const phone = primaryPhone ?? contact.phone ?? null;
-  const originLabel = formatOriginPairs(
-    contact.external_references_summary,
-    contact.origin,
-  );
+  const vinculos = formatOriginPairs(contact.external_references_summary);
+  // El origen es el del CRM. Los vínculos solo se usan como respaldo cuando
+  // no hay origen: un contacto que entró por un sync no tiene otro.
+  const originLabel = (contact.origin || "").trim() || vinculos;
 
   return (
     <section className="contact-strip" aria-label="Datos clave">
@@ -156,6 +161,12 @@ export function ContactKeyDataStrip({
           {originLabel ?? <span className="muted">—</span>}
         </span>
       </div>
+      {vinculos ? (
+        <div className="contact-strip-cell">
+          <span className="contact-strip-label">Sincronizado con</span>
+          <span className="contact-strip-value">{vinculos}</span>
+        </div>
+      ) : null}
       <div className="contact-strip-cell">
         <span className="contact-strip-label">Última actividad</span>
         <span className="contact-strip-value">

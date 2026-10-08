@@ -19,13 +19,28 @@ y `--cli-row 4279 3392`, 2026-09-12): nacional 3011 (ES), intracomunitarios
 - Además `PAICLI` tiene que ser el ISO 3166-1 numérico REAL del país (el 525
   tenía el literal «Norway»).
 
-Cómo se decide el régimen (país del CRM + NIF-IVA):
-- España → nacional.
-- País de la UE con NIF-IVA válido (`Company.vat` o un NIF con prefijo del
-  país: `BE0812240188`, `DE455128445`) → intracomunitario; sin NIF-IVA →
-  nacional (consumidor final: IVA español).
-- Fuera de la UE → exportación.
-- País desconocido / vacío → nacional (como hasta ahora), sin tocar el país.
+Cómo se decide el régimen: **por la PAREJA** país del emisor → país del
+cliente. No depende solo del cliente, y antes sí: `"ES"` estaba escrito a
+fuego como país de quien vende, y BoHub emite desde dos empresas en países
+distintos (Streamtec, S.L. en España y MQ EUROPE BV en Bélgica).
+
+- emisor == cliente → **nacional**, con el IVA de ese país.
+- los dos en la UE y distintos, con NIF-IVA válido del cliente →
+  **intracomunitario** (exento).
+- los dos en la UE y distintos, sin NIF-IVA válido → **nacional** del país
+  del EMISOR (consumidor final).
+- cliente fuera de la UE → **exportación**.
+- país del cliente desconocido / vacío → nacional (como hasta ahora), sin
+  tocar el país.
+
+Lo que esto arreglaba, visto en producción el 08/10: CDCOPIADVD S.L.U
+(ESB65623175, Barcelona), NIF-IVA válido en VIES, documento de la serie 2 (MQ
+Europe). El modal decía «(España → nacional)» y la proforma salió con 21 %;
+debía salir exenta. Y al revés es peor: facturar SIN IVA a un cliente belga de
+MQ Europe deja a la empresa debiendo ese IVA.
+
+El NIF-IVA y su validez en VIES son del CLIENTE y no dependen de quién
+factura: lo que depende de la pareja es si ese NIF-IVA sirve para eximir.
 
 Canarias, Ceuta y Melilla (IGIC/IPSI) quedan fuera: hoy no se distinguen de
 la Península en el CRM.
@@ -37,7 +52,11 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from app.erp.language import country_numeric, normalize_country
+from app.erp.language import (
+    country_display_name,
+    country_numeric,
+    normalize_country,
+)
 
 #: Los 27 estados miembros (ISO2). Grecia usa el prefijo «EL» en el NIF-IVA.
 EU_ISO2: frozenset[str] = frozenset({
@@ -51,6 +70,11 @@ _VAT_PREFIX_TO_ISO2: dict[str, str] = {
     **{c: c for c in EU_ISO2}, "EL": "GR", "XI": "GB",
 }
 _VAT_RE = re.compile(r"^([A-Z]{2})([A-Z0-9]{2,12})$")
+
+#: País del emisor cuando el llamador no lo sabe. Es el de Streamtec, que es
+#: la serie por defecto; se deja explícito para que la suposición esté en UN
+#: sitio y se vea, en vez de repartida por el código como estaba.
+DEFAULT_ISSUER_ISO2 = "ES"
 
 REGIME_NACIONAL = "nacional"
 REGIME_INTRACOMUNITARIO = "intracomunitario"
@@ -113,47 +137,80 @@ def is_eu(country_iso2: str | None) -> bool:
     return (country_iso2 or "").upper() in EU_ISO2
 
 
+def country_display(iso2: str | None) -> str:
+    """«BE» → «Bélgica». Para el motivo que lee el operador."""
+    return country_display_name(iso2) or str(iso2 or "")
+
+
+def _emisor(issuer_iso2: str | None) -> str:
+    """País del emisor, normalizado. Sin dato, el de la serie por defecto."""
+    return normalize_country(issuer_iso2) or DEFAULT_ISSUER_ISO2 \
+        if issuer_iso2 else DEFAULT_ISSUER_ISO2
+
+
 def regime_for(
-    country_iso2: str | None, *, vat: Any = None, nif: Any = None,
-    vies_valid: bool | None = None,
+    country_iso2: str | None, *, issuer_iso2: str | None = None,
+    vat: Any = None, nif: Any = None, vies_valid: bool | None = None,
 ) -> str:
-    """Régimen por país (ISO2) + NIF-IVA. Ver la cabecera del módulo.
+    """Régimen de la PAREJA emisor → cliente. Ver la cabecera del módulo.
+
+    `issuer_iso2` es el país de la empresa que emite (de su serie). Sin él se
+    supone `DEFAULT_ISSUER_ISO2`, que es lo que hacía siempre el código viejo.
 
     Fase VIES: `vies_valid=False` (VIES dice que el NIF-IVA NO es válido)
-    impide eximir → nacional con IVA aunque el país sea de la UE y haya
-    NIF-IVA. `True` lo confirma; `None` (pendiente / VIES caído) no cambia
-    la regla: se sigue por país + NIF-IVA sin bloquear."""
-    country = normalize_country(country_iso2) if country_iso2 else None
-    if country is None or country == "ES":
+    impide eximir → nacional con IVA aunque los dos países sean de la UE y
+    haya NIF-IVA. `True` lo confirma; `None` (pendiente / VIES caído) no
+    cambia la regla: se sigue por países + NIF-IVA sin bloquear."""
+    cliente = normalize_country(country_iso2) if country_iso2 else None
+    emisor = _emisor(issuer_iso2)
+    if cliente is None:
         return REGIME_NACIONAL
-    if country in EU_ISO2:
-        if eu_vat_for(country, vat=vat, nif=nif) and vies_valid is not False:
-            return REGIME_INTRACOMUNITARIO
+    if cliente == emisor:
         return REGIME_NACIONAL
-    return REGIME_EXPORTACION
+    if cliente not in EU_ISO2:
+        return REGIME_EXPORTACION
+    if emisor not in EU_ISO2:
+        # Emisor fuera de la UE vendiendo a la UE: desde su punto de vista es
+        # una exportación. Hoy las dos empresas son de la UE, así que esta
+        # rama no se da; está para no decidir mal en silencio si algún día
+        # entra una tercera.
+        return REGIME_EXPORTACION
+    if eu_vat_for(cliente, vat=vat, nif=nif) and vies_valid is not False:
+        return REGIME_INTRACOMUNITARIO
+    # Consumidor final de otro país de la UE: IVA del país del EMISOR.
+    return REGIME_NACIONAL
 
 
 def regime_reason(
-    country_iso2: str | None, *, vat: Any = None, nif: Any = None,
-    vies_valid: bool | None = None,
+    country_iso2: str | None, *, issuer_iso2: str | None = None,
+    vat: Any = None, nif: Any = None, vies_valid: bool | None = None,
 ) -> str:
-    """Frase para el operador: por qué sale ese régimen."""
-    country = normalize_country(country_iso2) if country_iso2 else None
-    if country is None:
-        return "sin país en el CRM → nacional (por defecto)"
-    if country == "ES":
-        return "España → nacional"
-    if country in EU_ISO2:
-        number = eu_vat_for(country, vat=vat, nif=nif)
-        if number and vies_valid is False:
-            return (f"{country} (UE) con NIF-IVA {number} NO válido en VIES → "
-                    "nacional (no se puede eximir)")
-        if number and vies_valid is True:
-            return f"{country} (UE) con NIF-IVA {number} verificado en VIES → intracomunitario"
-        if number:
-            return f"{country} (UE) con NIF-IVA {number} → intracomunitario"
-        return f"{country} (UE) sin NIF-IVA → nacional (IVA español)"
-    return f"{country} (fuera de la UE) → exportación"
+    """Frase para el operador: por qué sale ese régimen, **nombrando las dos
+    puntas**. Antes decía «España → nacional» aunque emitiera una empresa
+    belga, que es justo lo que escondía el fallo."""
+    cliente = normalize_country(country_iso2) if country_iso2 else None
+    emisor = _emisor(issuer_iso2)
+    de = country_display(emisor)
+    if cliente is None:
+        return f"{de} → sin país en el CRM → nacional (por defecto)"
+    a = country_display(cliente)
+    if cliente == emisor:
+        return f"{de} → {a} (el mismo país) → nacional"
+    if cliente not in EU_ISO2:
+        return f"{de} → {a} (fuera de la UE) → exportación"
+    if emisor not in EU_ISO2:
+        return f"{de} (fuera de la UE) → {a} → exportación"
+    number = eu_vat_for(cliente, vat=vat, nif=nif)
+    if number and vies_valid is False:
+        return (f"{de} → {a} (UE) con NIF-IVA {number} NO válido en VIES → "
+                "nacional (no se puede eximir)")
+    if number and vies_valid is True:
+        return (f"{de} → {a} (UE) con NIF-IVA {number} verificado en VIES → "
+                "intracomunitario")
+    if number:
+        return f"{de} → {a} (UE) con NIF-IVA {number} → intracomunitario"
+    return (f"{de} → {a} (UE) sin NIF-IVA → nacional "
+            f"(IVA de {de})")
 
 
 def regime_columns(regime: str) -> dict[str, int]:
@@ -206,13 +263,48 @@ def paicli_for(country_iso2: str | None) -> str | None:
     return country_numeric(country_iso2) if country_iso2 else None
 
 
+def regimes_por_emisor(
+    emisores: Any, country_iso2: str | None, *, vat: Any = None,
+    nif: Any = None, vies_valid: bool | None = None,
+) -> dict[str, str]:
+    """`{país del emisor: régimen}` para cada empresa que puede facturar.
+
+    Es lo que hace ver que un mismo cliente no tiene UN régimen: CDCOPIADVD
+    (ES) es nacional para Streamtec y intracomunitario para MQ Europe."""
+    return {
+        emisor: regime_for(country_iso2, issuer_iso2=emisor, vat=vat, nif=nif,
+                           vies_valid=vies_valid)
+        for emisor in dict.fromkeys(
+            normalize_country(e) or str(e or "").upper() for e in (emisores or ())
+            if str(e or "").strip()
+        )
+    }
+
+
+def regime_unico(
+    emisores: Any, country_iso2: str | None, *, vat: Any = None,
+    nif: Any = None, vies_valid: bool | None = None,
+) -> str | None:
+    """El régimen si TODAS las empresas emisoras coinciden; `None` si no.
+
+    La ficha F_CLI es una sola (hay una única base de datos de FACTUSOL) y
+    solo puede guardar un régimen, así que cuando las empresas discrepan no
+    hay nada que escribir que no sea mentira para alguna de ellas."""
+    por_emisor = regimes_por_emisor(
+        emisores, country_iso2, vat=vat, nif=nif, vies_valid=vies_valid,
+    )
+    distintos = set(por_emisor.values())
+    return distintos.pop() if len(distintos) == 1 else None
+
+
 def proposed_fcli_values(
-    country_iso2: str | None, *, vat: Any = None, nif: Any = None,
-    vies_valid: bool | None = None,
+    country_iso2: str | None, *, issuer_iso2: str | None = None,
+    vat: Any = None, nif: Any = None, vies_valid: bool | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """`(régimen, {columna: valor})` que BoHub quiere en la ficha F_CLI del
     cliente: las columnas del régimen y, si el país se reconoce, `PAICLI`."""
-    regime = regime_for(country_iso2, vat=vat, nif=nif, vies_valid=vies_valid)
+    regime = regime_for(country_iso2, issuer_iso2=issuer_iso2, vat=vat, nif=nif,
+                        vies_valid=vies_valid)
     values: dict[str, Any] = regime_columns(regime)
     paicli = paicli_for(country_iso2)
     if paicli is not None:
