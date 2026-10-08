@@ -40,9 +40,8 @@ from app.services.web_forms.antispam import (
 from app.services.web_forms.sitios import (
     origen_de,
     origen_legible,
-    web_de_formulario,
 )
-from app.services.web_forms.textos import normalizar_idioma, textos
+from app.services.web_forms.textos import normalizar_idioma
 
 logger = logging.getLogger(__name__)
 
@@ -170,7 +169,8 @@ def process_submission(
 
     # 7. Efectos best-effort post-commit (no deben tumbar la respuesta).
     if form.send_confirmation_email:
-        _send_confirmation_email(session, form, contact_email, contact)
+        _send_confirmation_email(session, form, contact_email, contact,
+                                 payload, etiquetas)
     # Aviso del lead: al comercial asignado si lo tiene y, si no, a la
     # dirección fija. Lo gobierna el mismo interruptor de siempre.
     if form.notify_owner_on_new:
@@ -692,55 +692,28 @@ def _success_response(form: WebForm) -> dict[str, Any]:
 
 
 def _send_confirmation_email(
-    session: Session, form: WebForm, to_email: str, contact: Contact
+    session: Session, form: WebForm, to_email: str, contact: Contact,
+    payload: dict[str, Any], etiquetas: list[str] | None = None,
 ) -> None:
-    try:
-        from app.services.email import get_email_service  # noqa: PLC0415
+    """El acuse va por el camino de la Bandeja (`web_forms/acuse.py`): desde el
+    remitente de su web, con `Reply-To` del comercial, y queda en la ficha del
+    contacto, en Enviados y con seguimiento de apertura.
 
-        tx = textos(form.language)
-        quien = (form.brand or "").strip() or web_de_formulario(form.slug)
-        subject = tx["confirmacion_asunto"].format(quien=quien)
-        text = tx["confirmacion_cuerpo"]
-        html: str | None = None
-        if form.confirmation_email_template_id:
-            rendered = _render_template(
-                session, form.confirmation_email_template_id, contact
-            )
-            if rendered is not None:
-                subject, html, text = rendered
-        get_email_service().send_notification(
-            to_email=to_email,
-            to_name=contact.first_name or to_email,
-            subject=subject,
-            text_body=text,
-            html_body=html,
-        )
+    Un fallo NO tumba la captura: el lead ya está guardado y comiteado. Queda
+    registrado con su motivo, que es lo que permite enterarse de que un alias
+    no está sincronizado o de que Gmail se ha caído."""
+    _ = to_email      # el destinatario lo resuelve el acuse desde el contacto
+    try:
+        from app.services.web_forms.acuse import enviar_acuse  # noqa: PLC0415
+
+        enviar_acuse(session, form, contact, payload, etiquetas=etiquetas)
+        session.commit()
     except Exception:  # noqa: BLE001 — un fallo de email no tumba la captura
-        logger.warning("web_forms.confirmation_email failed", exc_info=True)
-
-
-def _render_template(
-    session: Session, template_id: str, contact: Contact
-) -> tuple[str, str, str] | None:
-    try:
-        from app.email_templates.models import EmailTemplate  # noqa: PLC0415
-        from app.email_templates.services import (  # noqa: PLC0415
-            extract_text_from_html,
-            replace_merge_vars,
+        session.rollback()
+        logger.warning(
+            "web_forms.acuse: no se pudo enviar el acuse del formulario %s al "
+            "lead %s", form.slug, contact.id, exc_info=True,
         )
-
-        tpl = session.get(EmailTemplate, template_id)
-        if tpl is None:
-            return None
-        subject = replace_merge_vars(tpl.subject or "", contact)
-        html = replace_merge_vars(tpl.body_html or "", contact)
-        text = replace_merge_vars(
-            tpl.body_text or extract_text_from_html(tpl.body_html or ""), contact
-        )
-        return subject, html, text
-    except Exception:  # noqa: BLE001
-        logger.warning("web_forms.template render failed", exc_info=True)
-        return None
 
 
 def purgar_bloqueados(session: Session, *, form_id: str | None = None,

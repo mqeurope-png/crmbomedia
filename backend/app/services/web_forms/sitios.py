@@ -34,6 +34,44 @@ WEBS: dict[str, str] = {
     "pimpam": "pimpam-vending.com",
 }
 
+#: Nombre comercial de cada web: lo que el cliente lee en el acuse de recibo
+#: («Artisjet Europe», no «artisjet-eu»). NO sale de `web_forms.brand`, por lo
+#: mismo que la web: `artisjet` es la marca de dos webs distintas, con nombre
+#: comercial distinto cada una.
+MARCAS: dict[str, str] = {
+    "artisjet-es": "Artisjet España",
+    "artisjet-eu": "Artisjet Europe",
+    "boprint": "Boprint",
+    "fluxlasers": "Fluxlasers",
+    "mboprinters": "MBO Printers",
+    "mbolasers": "MBO Lasers",
+    "mqeurope": "MQ Europe",
+    "pimpam": "Pim Pam Vending",
+}
+
+#: Remitente del acuse de recibo de cada web. El cliente que escribe a
+#: mboprinters.com tiene que recibir la respuesta de mboprinters.com, no de
+#: Streamtec. Los ocho existen como alias de envío en el Gmail de la
+#: organización, así que el correo lo firma el dominio que corresponde.
+#:
+#: No se deriva de `WEBS`: mqeurope no tiene `info@`, y su web se sirve con
+#: `www.`, que en una dirección de correo no pinta nada.
+#:
+#: Esto es solo el DEFECTO. El remitente de verdad es un dato de cada
+#: formulario (`web_forms.confirmation_from_email`), editable desde la
+#: pantalla; esta tabla es lo que se usa cuando ese dato está vacío, para que
+#: un formulario nuevo de una web conocida nunca se quede sin poder enviar.
+REMITENTES: dict[str, str] = {
+    "artisjet-es": "info@artisjet-spain.es",
+    "artisjet-eu": "info@artisjet-printers.eu",
+    "boprint": "info@boprint.net",
+    "fluxlasers": "info@fluxlasers.es",
+    "mboprinters": "info@mboprinters.com",
+    "mbolasers": "info@mbolasers.com",
+    "mqeurope": "sales@mqeurope.com",
+    "pimpam": "info@pimpam-vending.com",
+}
+
 #: Separador del slug: `<sitio>-contacto[-<idioma>]`.
 SEPARADOR = "-contacto"
 
@@ -65,6 +103,27 @@ def web_de_sitio(clave: str | None) -> str:
 
 def web_de_formulario(slug: str | None) -> str:
     return web_de_sitio(clave_de_sitio(slug))
+
+
+def marca_de_sitio(clave: str | None) -> str:
+    """El nombre comercial de un sitio, o su web si no está en la lista."""
+    clave = (clave or "").strip()
+    return MARCAS.get(clave) or web_de_sitio(clave)
+
+
+def marca_de_formulario(slug: str | None) -> str:
+    return marca_de_sitio(clave_de_sitio(slug))
+
+
+def remitente_de_sitio(clave: str | None) -> str | None:
+    """El remitente por defecto de un sitio. `None` si la web no está en la
+    lista: inventarse un `info@` de un dominio que no firma nos mandaría
+    derecho a la carpeta de spam."""
+    return REMITENTES.get((clave or "").strip())
+
+
+def remitente_de_formulario(slug: str | None) -> str | None:
+    return remitente_de_sitio(clave_de_sitio(slug))
 
 
 def origen_de(slug: str | None, idioma: str | None) -> str:
