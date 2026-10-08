@@ -87,6 +87,11 @@ class WebForm(TimestampMixin, Base):
         Boolean, nullable=False, default=False
     )
     confirmation_email_template_id: Mapped[str | None] = mapped_column(String(36))
+    #: Remitente del acuse: de quién recibe el correo quien rellena el
+    #: formulario. Es un dato del formulario, editable desde la pantalla,
+    #: porque un cliente de mboprinters.com no entiende una respuesta que
+    #: llega desde Streamtec. Vacío = el de su web (`sitios.REMITENTES`).
+    confirmation_from_email: Mapped[str | None] = mapped_column(String(320))
 
     # Asignación del contacto capturado.
     assignment_mode: Mapped[str] = mapped_column(

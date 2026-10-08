@@ -171,6 +171,62 @@ lead nuevo»**: apagarlo silencia el aviso entero.
 - Un fallo de correo **no tumba** la captura: el lead se guarda igual y el
   fallo queda en el log (`web_forms.aviso_lead`).
 
+## Acuse de recibo al lead
+
+El correo que recibe **quien rellena el formulario**. Lo gobierna la casilla
+**«Enviar email de confirmación al lead»**.
+
+- **Sale de la web por la que entró el lead**, no de la aplicación: un cliente
+  que escribe a mboprinters.com recibe la respuesta de `info@mboprinters.com`.
+  Es un campo del formulario, **«Remitente del acuse»**, y si se deja vacío se
+  usa el de su web:
+
+  | Web | De |
+  |---|---|
+  | boprint.net | `info@boprint.net` |
+  | artisjet-spain.es | `info@artisjet-spain.es` |
+  | artisjet-printers.eu | `info@artisjet-printers.eu` |
+  | mboprinters.com | `info@mboprinters.com` |
+  | mbolasers.com | `info@mbolasers.com` |
+  | fluxlasers.es | `info@fluxlasers.es` |
+  | mqeurope.com | `sales@mqeurope.com` (en ese dominio no hay `info@`) |
+  | pimpam-vending.com | `info@pimpam-vending.com` |
+
+  Una web que no esté en la tabla y sin remitente puesto a mano **no manda
+  nada**: inventarse un `info@` de un dominio que no firma el correo lo
+  mandaría a la carpeta de spam.
+
+- **`Reply-To`: el comercial del lead.** El cliente ve la marca, pero si
+  contesta le llega a una persona. Sin comercial —o con el comercial dado de
+  baja—, el `Reply-To` es el propio remitente.
+
+- **Va por el mismo camino que la Bandeja** (Gmail, con el alias de la marca),
+  así que **no es un correo fantasma**: aparece en Enviados, en el histórico
+  de correos de la ficha del contacto y con el seguimiento de apertura de
+  siempre. Por eso los ocho remitentes tienen que estar como **alias de envío**
+  en la cuenta de Google de la organización; si un alias no está
+  sincronizado, el acuse **no se manda** y queda en el log con el alias que
+  falta (Gmail reescribiría el remitente, que es justo lo que se quiere
+  evitar).
+
+- **Plantilla por idioma**, en Plantillas → «Acuses de recibo (formularios
+  web)». Seis cubren las ocho webs porque la marca es una variable:
+
+  | Variable | Qué es |
+  |---|---|
+  | `{{nombre}}` | nombre de pila del contacto |
+  | `{{marca}}` | nombre comercial de la web (Artisjet Europe, MBO Printers…) |
+  | `{{web}}` | dominio de la web |
+  | `{{productos}}` | las etiquetas que marcó, por su nombre |
+  | `{{consulta}}` | lo que escribió |
+
+  Y bloques `{{#productos}}…{{/productos}}` / `{{#consulta}}…{{/consulta}}`,
+  que **desaparecen enteros** cuando la variable está vacía: ni «Productos que
+  te interesan:» seguido de un hueco, ni un bloque de consulta en blanco.
+
+- Un fallo **no tumba** la captura: el lead se guarda igual y el fallo queda en
+  el log (`web_forms.acuse`).
+
 ## Textos con enlaces
 
 En la etiqueta y la ayuda de un campo:

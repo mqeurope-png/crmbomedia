@@ -18,6 +18,7 @@ import logging
 import os
 from collections.abc import Generator
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from alembic import command
@@ -246,16 +247,32 @@ def test_un_idioma_ya_puesto_no_se_pisa(factory):
         assert (contacto.language, empresa.language) == ("de", "de")
 
 
-def test_el_acuse_al_lead_va_en_su_idioma(factory):
-    svc = _servicio_email()
+def test_el_acuse_al_lead_va_en_su_idioma(factory, monkeypatch):
+    """Desde que el acuse va por el camino de la Bandeja (ver
+    `test_web_forms_acuse.py`), esto comprueba el idioma del texto de
+    respaldo: el que se usa cuando el formulario no tiene plantilla."""
+    from app.integrations.gmail import service as gmail_service
+
+    enviados: list[dict] = []
+    monkeypatch.setattr(
+        gmail_service, "_client_for",
+        lambda *_a, **_k: SimpleNamespace(
+            list_send_as_aliases=lambda: [
+                {"send_as_email": "info@mboprinters.com"}],
+            send_message=lambda **kw: (enviados.append(kw) or
+                                       {"id": "g1", "threadId": "h1"})),
+    )
     with factory() as s:
         form = _form(s, slug="mboprinters-contacto-de", marca="MBO Printers",
                      idioma="de", send_confirmation_email=True)
         _enviar(s, form, {"nombre": "Hans", "email": "hans@muster.de"})
-    acuse = next(e for e in svc.sent if e.to_email == "hans@muster.de")
-    assert acuse.subject == "Vielen Dank für Ihre Anfrage bei MBO Printers"
-    assert acuse.text_body.startswith("Vielen Dank!")
-    assert "¡Gracias!" not in acuse.text_body
+
+    acuse = enviados[0]
+    assert acuse["to"] == ["hans@muster.de"]
+    # La marca sale de la WEB, no de `brand`: `artisjet` está en dos webs.
+    assert acuse["subject"] == "Vielen Dank für Ihre Anfrage bei MBO Printers"
+    assert acuse["body_text"].startswith("Vielen Dank!")
+    assert "¡Gracias!" not in acuse["body_text"]
 
 
 # --- 15 · un solo código por web -------------------------------------------------------------

@@ -98,6 +98,8 @@ export type WebFormBase = {
   submit_redirect_url?: string | null;
   send_confirmation_email: boolean;
   confirmation_email_template_id?: string | null;
+  /** De quién sale el acuse. Vacío = el remitente de su web. */
+  confirmation_from_email?: string | null;
   assignment_mode: "rules" | "fixed_owner" | "none";
   fixed_owner_user_id?: string | null;
   notify_owner_on_new: boolean;

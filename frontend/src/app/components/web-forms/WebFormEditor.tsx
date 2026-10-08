@@ -398,16 +398,28 @@ export function WebFormEditor({ formId }: { formId: string }) {
               Enviar email de confirmación al lead
             </label>
             {form.send_confirmation_email ? (
-              <select
-                aria-label="Plantilla de email de confirmación"
-                value={form.confirmation_email_template_id ?? ""}
-                onChange={(e) => patch({ confirmation_email_template_id: e.target.value || null })}
-              >
-                <option value="">— Selecciona plantilla —</option>
-                {templates.map((t) => (
-                  <option key={t.id} value={t.id}>{t.name}</option>
-                ))}
-              </select>
+              <>
+                <select
+                  aria-label="Plantilla de email de confirmación"
+                  value={form.confirmation_email_template_id ?? ""}
+                  onChange={(e) => patch({ confirmation_email_template_id: e.target.value || null })}
+                >
+                  <option value="">— Selecciona plantilla —</option>
+                  {templates.map((t) => (
+                    <option key={t.id} value={t.id}>{t.name}</option>
+                  ))}
+                </select>
+                {/* El cliente que escribe a mboprinters.com tiene que recibir
+                    la respuesta de mboprinters.com, no de Streamtec. */}
+                <input type="email" placeholder="Remitente del acuse (vacío = el de su web)"
+                  aria-label="Remitente del acuse"
+                  value={form.confirmation_from_email ?? ""}
+                  onChange={(e) => patch({ confirmation_from_email: e.target.value || null })} />
+                <span className="muted small">
+                  Si lo dejas vacío sale desde la dirección de la web del
+                  formulario. El cliente contesta al comercial asignado.
+                </span>
+              </>
             ) : null}
           </fieldset>
 

@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
@@ -75,6 +75,26 @@ class FormBase(BaseModel):
     submit_redirect_url: str | None = None
     send_confirmation_email: bool = False
     confirmation_email_template_id: str | None = None
+    # Remitente del acuse: de quién lo recibe quien rellena el formulario.
+    # Vacío = el de su web (`sitios.REMITENTES`).
+    confirmation_from_email: str | None = Field(default=None, max_length=320)
+
+    @field_validator("confirmation_from_email")
+    @classmethod
+    def _remitente_con_pinta_de_correo(cls, valor: str | None) -> str | None:
+        """Una dirección mal escrita deja ese formulario SIN acuse y solo lo
+        dice el log. Se rechaza al guardar, que es cuando hay alguien
+        delante."""
+        texto = (valor or "").strip()
+        if not texto:
+            return None
+        local, _, dominio = texto.partition("@")
+        if not local or "." not in dominio or " " in texto:
+            raise ValueError(
+                f"«{texto}» no es una dirección de correo válida para el "
+                "remitente del acuse."
+            )
+        return texto
     assignment_mode: str = "rules"
     fixed_owner_user_id: str | None = None
     notify_owner_on_new: bool = True
@@ -234,6 +254,7 @@ def _serialise_detail(form: WebForm) -> FormDetail:
         submit_redirect_url=form.submit_redirect_url,
         send_confirmation_email=form.send_confirmation_email,
         confirmation_email_template_id=form.confirmation_email_template_id,
+        confirmation_from_email=form.confirmation_from_email,
         assignment_mode=form.assignment_mode,
         fixed_owner_user_id=form.fixed_owner_user_id,
         notify_owner_on_new=form.notify_owner_on_new,
@@ -418,6 +439,7 @@ def create_form(
         submit_redirect_url=payload.submit_redirect_url,
         send_confirmation_email=payload.send_confirmation_email,
         confirmation_email_template_id=payload.confirmation_email_template_id,
+        confirmation_from_email=payload.confirmation_from_email,
         assignment_mode=payload.assignment_mode,
         fixed_owner_user_id=payload.fixed_owner_user_id,
         notify_owner_on_new=payload.notify_owner_on_new,
@@ -463,6 +485,7 @@ def update_form(
         "slug", "name", "brand", "language", "is_active",
         "submit_success_mode", "submit_success_message", "submit_redirect_url",
         "send_confirmation_email", "confirmation_email_template_id",
+        "confirmation_from_email",
         "assignment_mode", "fixed_owner_user_id", "notify_owner_on_new",
         "recaptcha_enabled", "is_site_default",
     ):

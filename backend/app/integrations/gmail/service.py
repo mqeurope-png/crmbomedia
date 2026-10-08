@@ -784,6 +784,7 @@ def send_email(
     include_unsubscribe: bool = False,
     tracking_base_url: str | None = None,
     attachments: list[dict[str, Any]] | None = None,
+    reply_to: str | None = None,
 ) -> EmailMessage:
     """Send a new outbound email and persist the thread + message rows.
 
@@ -887,6 +888,11 @@ def send_email(
     base_url = tracking_base_url or get_settings().frontend_base_url
     track_token = generate_token()
     extra_headers: dict[str, str] = {}
+    # `Reply-To` distinto del remitente: lo usa el acuse de recibo de los
+    # formularios web, que sale de la marca (`info@mboprinters.com`) pero
+    # contesta a la persona que lleva el lead, no a un buzón genérico.
+    if (reply_to or "").strip():
+        extra_headers["Reply-To"] = reply_to.strip()  # type: ignore[union-attr]
     skip_links: set[str] = set()
     unsubscribe_token: str | None = None
     unsubscribe_url: str | None = None
