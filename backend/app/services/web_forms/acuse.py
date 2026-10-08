@@ -108,7 +108,10 @@ def variables_de(
     empresa = getattr(contact, "company", None)
     return {
         "nombre": (contact.first_name or "").strip() or lead.nombre,
-        "marca": marca_de_formulario(form.slug),
+        # Una web que no está en `MARCAS` cae en el `brand` del formulario
+        # antes que en la clave del slug: «webnueva» no es un nombre
+        # comercial, y el cliente lo leería en el asunto y en la firma.
+        "marca": marca_de_formulario(form.slug, respaldo=form.brand),
         "web": web_de_formulario(form.slug),
         "productos": ", ".join(lead.etiquetas),
         "consulta": lead.consulta,
@@ -139,17 +142,22 @@ def reply_to(session: Session, contact: Contact, *, por_defecto: str) -> str:
 
 
 def usuario_remitente(session: Session, alias: str) -> User | None:
-    """El usuario con cuya cuenta de Gmail se puede firmar `alias`.
+    """A nombre de qué usuario queda el envío.
 
-    La cuenta de Google es de la organización y el sync de Send-As deja una
-    fila en `user_email_alias_prefs` por cada alias que Gmail devuelve, para
-    cada usuario. NO se exige `is_allowed`: eso solo gobierna si el alias
-    aparece en el selector del compositor, y los alias de las marcas están a
-    `0` a propósito para que un comercial no vea los de los demás.
-
-    Se prefiere un administrador: es la cuenta que no desaparece cuando a un
-    comercial se le da de baja.
+    La cuenta de Google es de la organización (`_client_for` no distingue por
+    usuario), así que esto no decide con qué buzón se manda: decide de quién
+    es el hilo en BoHub. Se prefiere un administrador, que es la cuenta que no
+    desaparece cuando a un comercial se le da de baja; si no hay, el usuario
+    que tenga el alias entre sus preferencias de envío.
     """
+    admin = session.scalar(
+        select(User)
+        .where(User.role == UserRole.ADMIN, User.is_active.is_(True))
+        .order_by(User.created_at)
+        .limit(1)
+    )
+    if admin is not None:
+        return admin
     ids = list(
         session.scalars(
             select(UserEmailAliasPref.user_id).where(
@@ -159,15 +167,29 @@ def usuario_remitente(session: Session, alias: str) -> User | None:
     )
     if not ids:
         return None
-    usuarios = list(
-        session.scalars(
-            select(User).where(User.id.in_(ids), User.is_active.is_(True))
-        )
+    return session.scalar(
+        select(User).where(User.id.in_(ids), User.is_active.is_(True)).limit(1)
     )
-    for usuario in usuarios:
-        if usuario.role == UserRole.ADMIN:
-            return usuario
-    return usuarios[0] if usuarios else None
+
+
+def alias_verificado(cliente: Any, alias: str) -> bool:
+    """¿Es `alias` un alias de envío de la cuenta de Gmail que autentica?
+
+    Se le pregunta a Gmail, no a `user_email_alias_prefs`. Esa tabla no sirve
+    de prueba: el sync CONSERVA la fila de un alias que Gmail ya no ofrece y
+    solo le baja `is_allowed`, que es la misma marca que llevan a propósito
+    los alias de las marcas para que un comercial no vea los de los demás. O
+    sea, un alias revocado y uno oculto son indistinguibles ahí.
+
+    Y la pregunta importa: Gmail reescribe un `From:` que no sea un alias
+    verificado, así que el acuse saldría desde la cuenta de la organización,
+    que es exactamente el problema que este módulo viene a resolver.
+    """
+    objetivo = alias.strip().lower()
+    for entrada in cliente.list_send_as_aliases() or []:
+        if str(entrada.get("send_as_email") or "").strip().lower() == objetivo:
+            return True
+    return False
 
 
 def _plantilla(session: Session, template_id: str) -> tuple[str, str, str] | None:
@@ -218,7 +240,10 @@ def construir_acuse(
     if form.confirmation_email_template_id:
         plantilla = _plantilla(session, form.confirmation_email_template_id)
         if plantilla is not None and (plantilla[1] or "").strip():
-            asunto, html, texto = plantilla
+            # El asunto solo si la plantilla trae uno: guardada sin asunto,
+            # el acuse habría salido con el `Subject` vacío.
+            asunto = (plantilla[0] or "").strip() or asunto
+            html, texto = plantilla[1], plantilla[2]
     valores_html = _para_html(valores)
     de = remitente(form)
     return {
@@ -255,9 +280,16 @@ def enviar_acuse(
     emisor = usuario_remitente(session, de)
     if emisor is None:
         raise ValueError(
-            f"Ningún usuario activo tiene {de!r} entre sus alias de envío de "
-            "Gmail, así que Gmail reescribiría el remitente. Sincroniza los "
-            "alias de la cuenta de la organización."
+            "No hay ningún usuario activo a cuyo nombre registrar el acuse."
+        )
+    # Se le pregunta a Gmail si el alias sigue siendo suyo ANTES de mandar: si
+    # no lo es, reescribiría el `From:` y el acuse saldría desde la cuenta de
+    # la organización, que es el problema que esto arregla.
+    if not alias_verificado(gmail_service._client_for(session, emisor.id), de):
+        raise ValueError(
+            f"{de!r} no es un alias de envío de la cuenta de Gmail de la "
+            "organización, así que Gmail reescribiría el remitente. Añádelo "
+            "como «Enviar como» en esa cuenta."
         )
     mensaje = gmail_service.send_email(
         session,
@@ -275,6 +307,19 @@ def enviar_acuse(
     # Lo mismo que apunta la Bandeja al enviar: sin esto el acuse estaría en
     # Enviados pero no en el histórico de la ficha del contacto.
     _apuntar_en_la_ficha(session, contact, acuse, mensaje)
+    # El `commit` va AQUÍ, no en el llamador: a partir de este punto el correo
+    # ya ha salido, así que un `rollback` del llamador borraría el rastro de un
+    # acuse que el cliente tiene en su buzón. Si el guardado falla, se dice
+    # exactamente eso.
+    try:
+        session.commit()
+    except Exception:  # noqa: BLE001
+        session.rollback()
+        logger.error(
+            "web_forms.acuse ENVIADO al lead %s desde %s pero NO se pudo "
+            "registrar en BoHub (mensaje de Gmail %s)", contact.id, de,
+            mensaje.gmail_message_id, exc_info=True,
+        )
     logger.info(
         "web_forms.acuse enviado formulario=%s contacto=%s desde=%s responder_a=%s "
         "mensaje=%s", form.slug, contact.id, de, acuse["reply_to"], mensaje.id,

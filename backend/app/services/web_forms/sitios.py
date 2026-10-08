@@ -105,14 +105,17 @@ def web_de_formulario(slug: str | None) -> str:
     return web_de_sitio(clave_de_sitio(slug))
 
 
-def marca_de_sitio(clave: str | None) -> str:
-    """El nombre comercial de un sitio, o su web si no está en la lista."""
+def marca_de_sitio(clave: str | None, respaldo: str | None = None) -> str:
+    """El nombre comercial de un sitio. Si la web no está en la lista, el
+    `respaldo` que dé el llamador (la marca del formulario) y, en último
+    término, su web: la clave del slug («webnueva») no es un nombre que se
+    pueda enseñar a un cliente."""
     clave = (clave or "").strip()
-    return MARCAS.get(clave) or web_de_sitio(clave)
+    return MARCAS.get(clave) or (respaldo or "").strip() or web_de_sitio(clave)
 
 
-def marca_de_formulario(slug: str | None) -> str:
-    return marca_de_sitio(clave_de_sitio(slug))
+def marca_de_formulario(slug: str | None, respaldo: str | None = None) -> str:
+    return marca_de_sitio(clave_de_sitio(slug), respaldo)
 
 
 def remitente_de_sitio(clave: str | None) -> str | None:

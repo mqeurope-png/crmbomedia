@@ -48,8 +48,13 @@ logger = logging.getLogger("alembic.runtime.migration")
 
 
 def _carpeta(conn: sa.Connection, ahora: datetime) -> str | None:
-    """La carpeta de los acuses, creándola si hace falta. `None` si no se
-    puede (la tabla no existe en una instalación muy vieja)."""
+    """La carpeta de los acuses, creándola si hace falta.
+
+    Devuelve `None` solo si la consulta no da ninguna fila y el `INSERT` no
+    devuelve id, que no debería pasar. Si `email_template_folders` no existe,
+    la migración ABORTA, que es lo correcto: las plantillas no pueden quedar
+    colgando sin carpeta.
+    """
     from app.services.web_forms.plantillas_acuse import CARPETA  # noqa: PLC0415
 
     existente = conn.execute(
@@ -138,15 +143,21 @@ def upgrade() -> None:
                 "en la lista; su acuse queda apagado", slug,
             )
             continue
+        # Encender SOLO si el formulario nunca llegó a tener plantilla: eso
+        # es lo que distingue «no estaba configurado» de «alguien lo apagó a
+        # propósito». Sin esta condición, una segunda pasada reactivaría el
+        # acuse de un formulario apagado a mano.
+        encender = 1 if (encendido or not plantilla) else 0
         conn.execute(
             sa.text(
                 "UPDATE web_forms SET confirmation_from_email = :de,"
                 " confirmation_email_template_id = :tpl,"
-                " send_confirmation_email = 1 WHERE id = :id"
+                " send_confirmation_email = :on WHERE id = :id"
             ),
-            {"de": nuevo_remitente, "tpl": nueva_plantilla, "id": fid},
+            {"de": nuevo_remitente, "tpl": nueva_plantilla, "id": fid,
+             "on": encender},
         )
-        if not encendido:
+        if encender and not encendido:
             activados += 1
     logger.info(
         "acuse: %d formulario(s) con el acuse activado, %d sin remitente",

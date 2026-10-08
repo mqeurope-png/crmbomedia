@@ -706,8 +706,10 @@ def _send_confirmation_email(
     try:
         from app.services.web_forms.acuse import enviar_acuse  # noqa: PLC0415
 
+        # `enviar_acuse` confirma por su cuenta en cuanto el correo ha salido:
+        # deshacer aquí borraría el rastro de un acuse que el cliente ya tiene
+        # en su buzón. Este `rollback` cubre lo de ANTES del envío.
         enviar_acuse(session, form, contact, payload, etiquetas=etiquetas)
-        session.commit()
     except Exception:  # noqa: BLE001 — un fallo de email no tumba la captura
         session.rollback()
         logger.warning(

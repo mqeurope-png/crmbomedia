@@ -38,7 +38,6 @@ from app.models.crm import (
     EmailMessage,
     EmailMessageToken,
     User,
-    UserEmailAliasPref,
     UserRole,
 )
 from app.models.web_forms import WebForm, WebFormField
@@ -67,12 +66,16 @@ def factory() -> Generator[sessionmaker, None, None]:
 
 
 class GmailFalso:
-    """Guarda lo que se le manda. `send_message` es lo único que usa el envío
-    de un correo nuevo (el `get_message` solo hace falta al responder)."""
+    """Guarda lo que se le manda y declara de qué alias puede firmar, que es
+    lo que el acuse le pregunta antes de enviar."""
 
     def __init__(self, revienta: bool = False) -> None:
         self.enviados: list[dict] = []
+        self.alias: list[str] = []
         self.revienta = revienta
+
+    def list_send_as_aliases(self) -> list[dict]:
+        return [{"send_as_email": a} for a in self.alias]
 
     def send_message(self, **kwargs) -> dict:
         if self.revienta:
@@ -89,16 +92,6 @@ def gmail(monkeypatch) -> GmailFalso:
     falso = GmailFalso()
     monkeypatch.setattr(gmail_service, "_client_for", lambda *_a, **_k: falso)
     return falso
-
-
-def _alias(s: Session, alias: str, *, user: User) -> None:
-    """Como lo deja el sync de Send-As: una fila por alias de la cuenta de la
-    organización, para cada usuario. `is_allowed=0` es lo normal en los alias
-    de las marcas (no salen en el selector del compositor), y por eso el acuse
-    NO lo exige."""
-    s.add(UserEmailAliasPref(user_id=user.id, alias_email=alias,
-                             is_allowed=False, is_default=False))
-    s.flush()
 
 
 def _admin(s: Session) -> User:
@@ -184,7 +177,7 @@ def test_el_acuse_sale_de_la_web_del_lead_en_su_idioma_y_contesta_al_comercial(
 ):
     with factory() as s:
         comercial = _comercial(s)
-        _alias(s, "info@mboprinters.com", user=_admin(s))
+        gmail.alias.append("info@mboprinters.com")
         form = _form(s, slug="mboprinters-contacto-de", idioma="de",
                      assignment_mode="fixed_owner",
                      fixed_owner_user_id=comercial.id)
@@ -206,7 +199,7 @@ def test_mqeurope_sale_de_sales_porque_no_tiene_info(factory, gmail):
     """`sales@mqeurope.com`: en ese dominio no hay `info@`. Y la web se sirve
     con `www.`, que en un remitente no pinta nada."""
     with factory() as s:
-        _alias(s, "sales@mqeurope.com", user=_admin(s))
+        gmail.alias.append("sales@mqeurope.com")
         form = _form(s, slug="mqeurope-contacto-nl", idioma="nl")
         s.commit()
         _enviar(s, form, {"nombre": "Daan", "email": "daan@voorbeeld.nl",
@@ -223,7 +216,7 @@ def test_sin_comercial_el_reply_to_es_el_propio_remitente_y_el_correo_sale(
     factory, gmail
 ):
     with factory() as s:
-        _alias(s, "info@boprint.net", user=_admin(s))
+        gmail.alias.append("info@boprint.net")
         form = _form(s, slug="boprint-contacto-es", idioma="es",
                      assignment_mode="none")
         s.commit()
@@ -241,7 +234,7 @@ def test_sin_comercial_el_reply_to_es_el_propio_remitente_y_el_correo_sale(
 
 def test_sin_productos_marcados_la_linea_de_productos_no_aparece(factory, gmail):
     with factory() as s:
-        _alias(s, "info@mbolasers.com", user=_admin(s))
+        gmail.alias.append("info@mbolasers.com")
         form = _form(s, slug="mbolasers-contacto-es", idioma="es")
         s.commit()
         _enviar(s, form, {"nombre": "Toni", "email": "toni@ejemplo.es",
@@ -257,7 +250,7 @@ def test_sin_productos_marcados_la_linea_de_productos_no_aparece(factory, gmail)
 def test_con_la_consulta_en_blanco_el_bloque_entero_desaparece(factory, gmail):
     """Pasa de verdad: uno de los leads de prueba del 08/10 la mandó vacía."""
     with factory() as s:
-        _alias(s, "info@fluxlasers.es", user=_admin(s))
+        gmail.alias.append("info@fluxlasers.es")
         form = _form(s, slug="fluxlasers-contacto-es", idioma="es")
         s.commit()
         _enviar(s, form, {"nombre": "Toni", "email": "toni@ejemplo.es",
@@ -271,7 +264,7 @@ def test_con_la_consulta_en_blanco_el_bloque_entero_desaparece(factory, gmail):
 def test_la_consulta_no_puede_colar_html_en_el_acuse(factory, gmail):
     """Es texto escrito por un desconocido en un formulario público."""
     with factory() as s:
-        _alias(s, "info@boprint.net", user=_admin(s))
+        gmail.alias.append("info@boprint.net")
         form = _form(s, slug="boprint-contacto-es", idioma="es")
         s.commit()
         _enviar(s, form, {"nombre": "Toni", "email": "toni@ejemplo.es",
@@ -287,7 +280,7 @@ def test_la_consulta_no_puede_colar_html_en_el_acuse(factory, gmail):
 
 def test_el_acuse_queda_en_la_ficha_en_enviados_y_con_seguimiento(factory, gmail):
     with factory() as s:
-        _alias(s, "info@mboprinters.com", user=_admin(s))
+        gmail.alias.append("info@mboprinters.com")
         form = _form(s, slug="mboprinters-contacto-es", idioma="es")
         s.commit()
         salida = _enviar(s, form, {"nombre": "Toni", "email": "toni@ejemplo.es",
@@ -323,7 +316,7 @@ def test_el_acuse_queda_en_la_ficha_en_enviados_y_con_seguimiento(factory, gmail
 
 def test_un_formulario_sin_remitente_usa_el_de_su_web(factory, gmail):
     with factory() as s:
-        _alias(s, "info@pimpam-vending.com", user=_admin(s))
+        gmail.alias.append("info@pimpam-vending.com")
         form = _form(s, slug="pimpam-contacto-es", idioma="es")
         assert form.confirmation_from_email is None
         s.commit()
@@ -334,7 +327,7 @@ def test_un_formulario_sin_remitente_usa_el_de_su_web(factory, gmail):
 
 def test_el_remitente_del_formulario_manda_sobre_el_de_la_web(factory, gmail):
     with factory() as s:
-        _alias(s, "ventas@boprint.net", user=_admin(s))
+        gmail.alias.append("ventas@boprint.net")
         form = _form(s, slug="boprint-contacto-es", idioma="es",
                      confirmation_from_email="ventas@boprint.net")
         s.commit()
@@ -348,7 +341,7 @@ def test_si_el_acuse_falla_el_lead_se_guarda_igual_y_queda_registrado(
 ):
     gmail.revienta = True
     with factory() as s:
-        _alias(s, "info@boprint.net", user=_admin(s))
+        gmail.alias.append("info@boprint.net")
         form = _form(s, slug="boprint-contacto-es", idioma="es")
         s.commit()
         with caplog.at_level(logging.WARNING):
@@ -365,7 +358,11 @@ def test_sin_alias_sincronizado_no_se_manda_desde_otra_direccion(
 ):
     """Gmail reescribe un `From:` que no sea alias verificado de la cuenta que
     autentica: el acuse saldría desde el buzón de la organización, que es el
-    problema que esto arregla. Mejor no mandarlo y decirlo."""
+    problema que esto arregla. Mejor no mandarlo y decirlo.
+
+    Y la prueba se le pide a Gmail, no a `user_email_alias_prefs`: esa tabla
+    CONSERVA la fila de un alias revocado y solo le baja `is_allowed`, que es
+    la misma marca que llevan los alias de las marcas a propósito."""
     with factory() as s:
         form = _form(s, slug="mbolasers-contacto-es", idioma="es")
         s.commit()
@@ -375,7 +372,7 @@ def test_sin_alias_sincronizado_no_se_manda_desde_otra_direccion(
         assert s.get(Contact, salida.contact_id) is not None
 
     assert gmail.enviados == []
-    assert "alias de envío" in caplog.text
+    assert "no es un alias de envío" in caplog.text
 
 
 def test_una_web_que_no_esta_en_la_lista_no_se_inventa_un_remitente(
@@ -513,10 +510,13 @@ def test_la_migracion_crea_las_plantillas_pone_remitente_y_enciende(alembic_cfg)
     # que no firma acabaría en spam.
     assert filas["f3"][0] is None and filas["f3"][1] == 0
 
-    # Relanzable y sin pisar nada puesto a mano.
+    # Relanzable y sin pisar nada puesto a mano: ni el remitente que alguien
+    # haya cambiado, ni un acuse apagado a propósito.
     with engine.begin() as c:
         c.execute(text("UPDATE web_forms SET confirmation_from_email = "
                        "'ventas@mboprinters.com' WHERE id = 'f1'"))
+        c.execute(text("UPDATE web_forms SET send_confirmation_email = 0 "
+                       "WHERE id = 'f2'"))
     logging.config.fileConfig = lambda *_a, **_k: None
     try:
         command.upgrade(cfg, "20261010_0131")
@@ -528,3 +528,45 @@ def test_la_migracion_crea_las_plantillas_pone_remitente_y_enciende(alembic_cfg)
         )).scalar() == "ventas@mboprinters.com"
         assert c.execute(text(
             "SELECT COUNT(*) FROM email_templates")).scalar() == 6
+        # El que alguien apagó sigue apagado: tener plantilla es la señal de
+        # que ya estaba configurado, así que no se vuelve a encender.
+        assert c.execute(text(
+            "SELECT send_confirmation_email FROM web_forms WHERE id = 'f2'"
+        )).scalar() == 0
+
+
+def test_una_plantilla_sin_asunto_no_manda_el_acuse_con_el_asunto_vacio(factory):
+    from app.email_templates.models import EmailTemplate
+
+    with factory() as s:
+        form = _form(s, slug="boprint-contacto-es", idioma="es",
+                     con_plantilla=False)
+        tpl = EmailTemplate(name="Sin asunto", subject=None,
+                            body_html="<p>Hola {{nombre}}</p>", is_global=True)
+        s.add(tpl)
+        s.flush()
+        form.confirmation_email_template_id = tpl.id
+        s.commit()
+        salida = _enviar(s, form, {"nombre": "Toni", "email": "toni@ejemplo.es"})
+        contacto = s.get(Contact, salida.contact_id)
+        acuse = construir_acuse(s, form, contacto, {})
+
+    # Cae al asunto por idioma, no se manda un `Subject` en blanco.
+    assert acuse["asunto"] == "Gracias por contactar con Boprint"
+    assert "Hola Toni" in acuse["html"]
+
+
+def test_una_web_sin_nombre_comercial_usa_la_marca_del_formulario(factory, gmail):
+    """«webnueva» es una clave interna: no se le puede enseñar a un cliente
+    como nombre de la marca ni como firma."""
+    with factory() as s:
+        gmail.alias.append("hola@webnueva.com")
+        form = _form(s, slug="webnueva-contacto-es", idioma="es",
+                     brand="Web Nueva",
+                     confirmation_from_email="hola@webnueva.com")
+        s.commit()
+        _enviar(s, form, {"nombre": "Toni", "email": "toni@ejemplo.es"})
+
+    enviado = gmail.enviados[0]
+    assert enviado["from_name"] == "Web Nueva"
+    assert "webnueva-contacto-es" not in enviado["body_text"]

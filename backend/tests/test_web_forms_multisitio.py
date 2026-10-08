@@ -252,20 +252,17 @@ def test_el_acuse_al_lead_va_en_su_idioma(factory, monkeypatch):
     `test_web_forms_acuse.py`), esto comprueba el idioma del texto de
     respaldo: el que se usa cuando el formulario no tiene plantilla."""
     from app.integrations.gmail import service as gmail_service
-    from app.models.crm import UserEmailAliasPref
 
     enviados: list[dict] = []
     monkeypatch.setattr(
         gmail_service, "_client_for",
         lambda *_a, **_k: SimpleNamespace(
+            list_send_as_aliases=lambda: [
+                {"send_as_email": "info@mboprinters.com"}],
             send_message=lambda **kw: (enviados.append(kw) or
                                        {"id": "g1", "threadId": "h1"})),
     )
     with factory() as s:
-        admin = s.scalar(select(User).where(User.role == UserRole.ADMIN))
-        s.add(UserEmailAliasPref(user_id=admin.id,
-                                 alias_email="info@mboprinters.com",
-                                 is_allowed=False, is_default=False))
         form = _form(s, slug="mboprinters-contacto-de", marca="MBO Printers",
                      idioma="de", send_confirmation_email=True)
         _enviar(s, form, {"nombre": "Hans", "email": "hans@muster.de"})

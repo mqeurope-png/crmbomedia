@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
@@ -78,6 +78,23 @@ class FormBase(BaseModel):
     # Remitente del acuse: de quién lo recibe quien rellena el formulario.
     # Vacío = el de su web (`sitios.REMITENTES`).
     confirmation_from_email: str | None = Field(default=None, max_length=320)
+
+    @field_validator("confirmation_from_email")
+    @classmethod
+    def _remitente_con_pinta_de_correo(cls, valor: str | None) -> str | None:
+        """Una dirección mal escrita deja ese formulario SIN acuse y solo lo
+        dice el log. Se rechaza al guardar, que es cuando hay alguien
+        delante."""
+        texto = (valor or "").strip()
+        if not texto:
+            return None
+        local, _, dominio = texto.partition("@")
+        if not local or "." not in dominio or " " in texto:
+            raise ValueError(
+                f"«{texto}» no es una dirección de correo válida para el "
+                "remitente del acuse."
+            )
+        return texto
     assignment_mode: str = "rules"
     fixed_owner_user_id: str | None = None
     notify_owner_on_new: bool = True
@@ -422,7 +439,7 @@ def create_form(
         submit_redirect_url=payload.submit_redirect_url,
         send_confirmation_email=payload.send_confirmation_email,
         confirmation_email_template_id=payload.confirmation_email_template_id,
-        confirmation_from_email=(payload.confirmation_from_email or "").strip() or None,
+        confirmation_from_email=payload.confirmation_from_email,
         assignment_mode=payload.assignment_mode,
         fixed_owner_user_id=payload.fixed_owner_user_id,
         notify_owner_on_new=payload.notify_owner_on_new,
