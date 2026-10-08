@@ -47,6 +47,8 @@ ENTIDAD_CUENTA = "cuenta_integracion"
 ENTIDAD_PEDIDO_WOO = "pedido_woo"
 #: Un trabajo de las colas de RQ (su id).
 ENTIDAD_TRABAJO_COLA = "trabajo_cola"
+#: Un contacto del CRM (su id): un lead de formulario, por ejemplo.
+ENTIDAD_CONTACTO = "contacto"
 
 
 @dataclass

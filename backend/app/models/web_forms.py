@@ -30,14 +30,21 @@ from sqlalchemy import (
     false,
     func,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from app.models.crm import Base, TimestampMixin
 
 # --- constantes de validación (capa API) -----------------------------------
 
 SUBMIT_SUCCESS_MODES = {"modal", "redirect"}
+#: Los modos que `app.services.web_forms.submit._apply_assignment` sabe
+#: interpretar. Cualquier otro valor deja el lead sin asignar.
 ASSIGNMENT_MODES = {"rules", "fixed_owner", "none"}
+#: Valores mal escritos vistos en datos cargados a mano → el modo correcto.
+#: Solo los usa la migración 0128 para repararlos. Guardar un alias NO vale:
+#: ni por la API ni por el ORM, para que nadie vuelva a dejar un valor que el
+#: motor no entiende.
+ALIAS_ASSIGNMENT_MODES = {"fixed": "fixed_owner"}
 # `tags` = multi-select de tags reales del CRM; sus opciones (options_json)
 # guardan [{tag_id, label}] y al submit se aplican al contacto.
 # `stars` = widget visual de 5 estrellas (radio 1-5); se mapea normalmente a
@@ -113,6 +120,22 @@ class WebForm(TimestampMixin, Base):
         cascade="all, delete-orphan",
         order_by="WebFormField.position",
     )
+
+    @validates("assignment_mode")
+    def _validar_assignment_mode(self, _clave: str, valor: str) -> str:
+        """Un modo que el motor no entiende deja los leads sin asignar y sin
+        avisar a nadie. Los 25 formularios se cargaron con «fixed» en vez de
+        «fixed_owner» y así estuvieron días. No se guarda por el ORM."""
+        if valor not in ASSIGNMENT_MODES:
+            validos = ", ".join(sorted(ASSIGNMENT_MODES))
+            pista = ""
+            if valor in ALIAS_ASSIGNMENT_MODES:
+                pista = f" ¿Querías decir {ALIAS_ASSIGNMENT_MODES[valor]!r}?"
+            raise ValueError(
+                f"assignment_mode inválido: {valor!r}. Los válidos son: "
+                f"{validos}.{pista}"
+            )
+        return valor
 
 
 class WebFormField(Base):

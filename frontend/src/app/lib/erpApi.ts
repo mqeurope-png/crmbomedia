@@ -4981,7 +4981,7 @@ export type CuadreComprobacion = {
   descripcion: string;
   severidad: CuadreSeveridad;
   fuente: CuadreFuente;
-  grupo: "dinero" | "envios" | "documentos" | "integraciones";
+  grupo: "dinero" | "envios" | "documentos" | "integraciones" | "crm";
   /** Umbral en días por defecto (null = la comprobación no usa umbral). */
   dias_defecto: number | null;
   /** Qué significa el umbral («Avisar pasados N días»). */

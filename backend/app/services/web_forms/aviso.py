@@ -6,10 +6,10 @@ BoHub, así que el aviso lleva de qué web y en qué idioma viene, los datos
 del contacto, las etiquetas que marcó (por su nombre), su consulta entera,
 si aceptó comunicaciones comerciales y un enlace a la ficha.
 
-Destinatarios: la dirección fija de `WEB_FORMS_NOTIFY_TO`
-(`info@streamtec.es`) y, además, el comercial al que se asignó el lead —una
-sola vez si coinciden—. Lo gobierna el interruptor que ya existía,
-`notify_owner_on_new`.
+Destinatarios: uno, no dos. Si el lead tiene comercial, el aviso va solo a
+él; si no lo tiene, a la dirección fija de `WEB_FORMS_NOTIFY_TO`
+(`info@streamtec.es`). Ver `destinatarios`. Lo gobierna el interruptor que ya
+existía, `notify_owner_on_new`.
 
 La plantilla admite una variante por web sin tocar código: si existe
 `app/templates/email/lead_<sitio>.html` (y/o `.txt`) se usa esa en lugar de
@@ -125,18 +125,37 @@ def construir_lead(
 
 
 def destinatarios(session: Session, contact: Contact) -> list[tuple[str, str]]:
-    """`(correo, nombre)` sin repetir: la dirección fija de los avisos y el
-    comercial del lead (el de la regla de asignación o el propietario fijo,
-    que es quien acaba en `owner_user_id`)."""
-    fijas = [
-        d.strip() for d in (get_settings().web_forms_notify_to or "").split(",")
+    """`(correo, nombre)` sin repetir: a quién se avisa de este lead.
+
+    Si el lead tiene comercial, el aviso va **solo a él**: los comerciales
+    comparten o reenvían el buzón genérico, así que mandarlo a los dos hacía
+    que cada lead llegara dos veces y acabara sin leerse.
+
+    Si NO tiene comercial, va al genérico (`WEB_FORMS_NOTIFY_TO`), que es
+    justo el caso en el que hace falta que alguien lo vea: así un lead sin
+    asignar no se queda sin aviso de ninguna clase.
+
+    `WEB_FORMS_NOTIFY_ALWAYS=true` vuelve al comportamiento de antes (los dos
+    siempre), por si el reparto de buzones cambia.
+    """
+    settings = get_settings()
+    fijas: list[tuple[str, str]] = [
+        (d.strip(), "") for d in (settings.web_forms_notify_to or "").split(",")
         if d.strip()
     ]
-    salida: list[tuple[str, str]] = [(d, "") for d in fijas]
+    comercial: list[tuple[str, str]] = []
     if contact.owner_user_id:
         owner = session.get(User, contact.owner_user_id)
-        if owner is not None and owner.email:
-            salida.append((owner.email, owner.full_name or owner.email))
+        # Un comercial DADO DE BAJA no lee su buzón: su lead tiene que caer al
+        # genérico. Dar de baja a alguien no limpia los leads que tenía
+        # asignados, así que sin esto se quedarían sin que nadie los viera.
+        if owner is not None and owner.email and owner.is_active:
+            comercial.append((owner.email, owner.full_name or owner.email))
+    # Sin comercial que pueda leerlo, el genérico es el único que lo ve.
+    if comercial and not settings.web_forms_notify_always:
+        salida = comercial
+    else:
+        salida = fijas + comercial
     vistos: set[str] = set()
     unicos: list[tuple[str, str]] = []
     for correo, nombre in salida:

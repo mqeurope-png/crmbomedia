@@ -476,20 +476,52 @@ def test_el_aviso_lleva_la_web_el_idioma_los_productos_y_la_consulta(factory):
     assert all(p not in aviso.text_body for p in productos)
 
 
-def test_tambien_al_comercial_asignado_y_sin_duplicar(factory):
+def test_con_comercial_el_aviso_va_solo_a_el(factory):
+    """Los comerciales comparten o reenvían el buzón genérico: mandarlo a los
+    dos hacía que cada lead llegara dos veces y no lo leyera nadie."""
     svc = _servicio_email()
     with factory() as s:
         comercial = s.scalar(select(User).where(User.role == UserRole.USER))
         form = _form_completo(s, assignment_mode="fixed_owner",
                               fixed_owner_user_id=comercial.id)
-        _enviar(s, form, {**PAYLOAD, "email": "otro@muster.de"})
-        destinos = sorted(e.to_email for e in svc.sent)
-        assert destinos == sorted(["info@streamtec.es", comercial.email])
-        # Si el comercial ES la dirección fija, un solo correo.
-        contacto = Contact(email="x@y.z", first_name="X", owner_user_id=comercial.id)
-        comercial.email = "info@streamtec.es"
+        out = _enviar(s, form, {**PAYLOAD, "email": "otro@muster.de"})
+        assert s.get(Contact, out.contact_id).owner_user_id == comercial.id
+    assert [e.to_email for e in svc.sent] == [comercial.email]
+
+
+def test_sin_comercial_el_aviso_va_al_generico(factory):
+    """Es el caso peligroso: si no va a nadie en concreto, tiene que verlo el
+    buzón de siempre."""
+    svc = _servicio_email()
+    with factory() as s:
+        form = _form_completo(s, assignment_mode="none")
+        out = _enviar(s, form, {**PAYLOAD, "email": "nadie@muster.de"})
+        assert s.get(Contact, out.contact_id).owner_user_id is None
+    assert [e.to_email for e in svc.sent] == ["info@streamtec.es"]
+
+
+def test_un_comercial_sin_correo_no_deja_el_lead_sin_aviso(factory):
+    with factory() as s:
+        comercial = s.scalar(select(User).where(User.role == UserRole.USER))
+        comercial.email = ""
         s.flush()
+        contacto = Contact(email="x@y.z", first_name="X", owner_user_id=comercial.id)
         assert destinatarios(s, contacto) == [("info@streamtec.es", "")]
+
+
+def test_el_interruptor_devuelve_el_aviso_a_los_dos(factory, monkeypatch):
+    """`WEB_FORMS_NOTIFY_ALWAYS` recupera el comportamiento de antes."""
+    from app.core import config as config_mod
+
+    with factory() as s:
+        comercial = s.scalar(select(User).where(User.role == UserRole.USER))
+        ajustes = config_mod.get_settings()
+        monkeypatch.setattr(ajustes, "web_forms_notify_always", True)
+        monkeypatch.setattr(config_mod, "get_settings", lambda: ajustes)
+        monkeypatch.setattr("app.services.web_forms.aviso.get_settings", lambda: ajustes)
+        contacto = Contact(email="x@y.z", first_name="X", owner_user_id=comercial.id)
+        assert sorted(c for c, _n in destinatarios(s, contacto)) == sorted(
+            ["info@streamtec.es", comercial.email])
 
 
 def test_un_fallo_de_correo_no_tumba_el_lead(factory, monkeypatch, caplog):

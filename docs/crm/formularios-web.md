@@ -65,6 +65,27 @@ idioma cae al castellano.
 
 - Crea o completa el contacto (solo rellena lo vacío), la empresa, el
   propietario y su aviso: como siempre.
+
+### El modo de asignación tiene que ser uno de los tres
+
+`assignment_mode` solo admite `rules` (las reglas de asignación),
+`fixed_owner` (el comercial fijo del formulario, que entonces es obligatorio)
+y `none` (se asigna a mano después).
+
+Los 25 formularios se cargaron con `fixed` en vez de `fixed_owner`, y el
+motor se lo encontraba, no lo reconocía y no hacía nada **sin decirlo**:
+durante días ningún lead se asignó a nadie, el aviso no tenía persona a quien
+ir y los leads no salían en la cartera de ningún comercial. Ahora:
+
+- la pantalla y la API **rechazan** un valor que el motor no entienda, con un
+  error que dice los válidos, y el modelo tampoco lo deja guardar por el ORM;
+- si aun así hay uno mal en la base de datos, el envío se procesa y el lead se
+  guarda, pero queda un aviso en el log identificando el formulario
+  (`web_forms.asignacion`). Lo mismo si es `fixed_owner` sin comercial puesto;
+- la migración 0128 repara los que se puedan deducir (`fixed` →
+  `fixed_owner`) y deja en el log los que no;
+- el Cuadre lista en **«Lead web sin comercial asignado»** (media) los leads
+  de formulario de los últimos días que se quedaron sin nadie.
 - **Campo de etiquetas (`tags`)**: las etiquetas marcadas se aplican al contacto
   (pestaña Etiquetas y columna antigua `contacts.tags`).
   - Solo valen las opciones del campo: nadie puede colar otra etiqueta desde
@@ -130,10 +151,19 @@ lead nuevo»**: apagarlo silencia el aviso entero.
 - **Cuerpo**: nombre y apellidos, correo, teléfono, las etiquetas que marcó
   (por su nombre, no el uuid), el resto de campos que rellenó, si aceptó
   comunicaciones comerciales, su consulta entera y un enlace a la ficha.
-- **Destinatarios**: las direcciones fijas de `WEB_FORMS_NOTIFY_TO`
-  (`info@streamtec.es` por defecto, separadas por comas) y el comercial al
-  que se asignó el lead (la regla de asignación o el propietario fijo). Sin
-  duplicar si coinciden.
+- **Destinatarios**: uno, no dos.
+  - Si el lead **tiene comercial** (la regla de asignación o el propietario
+    fijo), el aviso va **solo a él**. Los comerciales comparten o reenvían el
+    buzón genérico, así que mandarlo a los dos hacía que cada lead llegara
+    dos veces y no lo leyera nadie.
+  - Si **no tiene** comercial, va a las direcciones fijas de
+    `WEB_FORMS_NOTIFY_TO` (`info@streamtec.es` por defecto, separadas por
+    comas). Es el caso en el que hace falta que alguien lo vea, así que nunca
+    se queda sin aviso; también pasa si el comercial no tiene correo puesto o
+    **está dado de baja** (dar de baja a alguien no le quita sus leads, y su
+    buzón ya no lo lee nadie).
+  - `WEB_FORMS_NOTIFY_ALWAYS=true` vuelve al comportamiento de antes (los dos
+    siempre), por si el reparto de buzones cambia.
 - **Variante por web sin tocar código**: si existe
   `app/templates/email/lead_<sitio>.html` (y/o `.txt`) se usa esa en lugar
   de `lead_notification.html`, así una web puede llevar su logotipo y su

@@ -158,7 +158,15 @@ def _validate_enums(payload: FormBase, fields: list[FormFieldIn] | None) -> None
     if payload.submit_success_mode not in SUBMIT_SUCCESS_MODES:
         raise HTTPException(400, f"submit_success_mode inválido: {payload.submit_success_mode!r}")
     if payload.assignment_mode not in ASSIGNMENT_MODES:
-        raise HTTPException(400, f"assignment_mode inválido: {payload.assignment_mode!r}")
+        # El mensaje dice los valores válidos: los 25 formularios se cargaron
+        # con «fixed» en vez de «fixed_owner» y el motor los ignoró en
+        # silencio durante días.
+        validos = ", ".join(sorted(ASSIGNMENT_MODES))
+        raise HTTPException(
+            400,
+            f"assignment_mode inválido: {payload.assignment_mode!r}. "
+            f"Los válidos son: {validos}.",
+        )
     if payload.assignment_mode == "fixed_owner" and not payload.fixed_owner_user_id:
         raise HTTPException(400, "assignment_mode=fixed_owner requiere fixed_owner_user_id.")
     for f in fields or []:

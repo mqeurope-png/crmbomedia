@@ -235,7 +235,7 @@ def test_config_por_defecto_y_validacion(s):
     cfg = cuadre_config(s)
     assert cfg["nocturno_activo"] is False and cfg["hora"] == "03:00"
     assert set(cfg["checks"]) == set(registro())
-    assert len(registro()) == 17
+    assert len(registro()) == 18
     assert cfg["checks"]["factura_sin_cobro"] == {"activo": True, "dias": 30}
     assert cfg["checks"]["factura_lineas_ajenas"] == {"activo": True, "dias": None}
     # El embudo comercial no es un descuadre: apagada por defecto y a 90 días.
