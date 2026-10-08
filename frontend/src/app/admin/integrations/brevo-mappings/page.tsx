@@ -179,7 +179,10 @@ export default function BrevoMappingsPage() {
         `Backfill encolado: ${res.queued_for_creation} contactos a crear + ` +
           `${res.queued_for_list_add_only} ya en Brevo (solo add to list). ` +
           `Tiempo estimado ~${res.estimated_minutes} min. ` +
-          `${res.already_in_brevo_marked} marcados como pre-existing.`,
+          `${res.already_in_brevo_marked} marcados como pre-existing.` +
+          (res.rejections_cleared
+            ? ` Se levantó la marca de rechazo de ${res.rejections_cleared} contacto(s).`
+            : ""),
       );
     } catch (err) {
       setError(extractErrorMessage(err, "No se pudo encolar el backfill."));
@@ -314,6 +317,13 @@ export default function BrevoMappingsPage() {
               ya están en Brevo — se marcarán como pre-existing y solo se
               añadirán a la lista del owner (job ligero, 1 req cada uno).
             </li>
+            {backfillPreview.rejections_cleared > 0 ? (
+              <li>
+                <strong>{backfillPreview.rejections_cleared.toLocaleString()}</strong>{" "}
+                contactos que Brevo rechazó recuperan el derecho a subir — se
+                les levanta la marca de rechazo y se vuelven a intentar.
+              </li>
+            ) : null}
             <li>
               Tiempo estimado: ~<strong>{backfillPreview.estimated_minutes}</strong>{" "}
               min (Brevo rate-limit 400 req/min).

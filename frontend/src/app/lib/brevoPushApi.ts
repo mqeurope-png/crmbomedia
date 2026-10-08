@@ -40,6 +40,9 @@ export interface BrevoBackfillPushResponse {
   already_in_brevo_marked: number;
   queued_for_creation: number;
   queued_for_list_add_only: number;
+  // Contactos a los que el backfill le levanta la marca de rechazo de Brevo.
+  // Se cuenta en la vista previa para que no sea un efecto invisible.
+  rejections_cleared: number;
   estimated_minutes: number;
   dry_run: boolean;
   cached_inventory: boolean;

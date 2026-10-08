@@ -6,9 +6,10 @@ periódico los reencolaba sin parar. Mientras tanto, los contactos del CRM no
 subían a Brevo y las campañas salían contra una lista desactualizada.
 
 Dos columnas en `contacts`:
-  - `brevo_rejected_at`: cuándo lo rechazó Brevo. Mientras esté puesta, el
-    contacto no se vuelve a encolar; se reintenta solo si el contacto cambia
-    DESPUÉS, que es lo único que puede haberlo corregido.
+  - `brevo_rejected_at`: cuándo lo rechazó Brevo. Mientras esté puesta, ni el
+    runner periódico lo detecta ni `should_push` lo deja pasar. La marca es
+    pegajosa: se levanta con «Volver a subir todo» de la pantalla de Brevo,
+    que es cuando alguien ha decidido que el dato ya está corregido.
   - `brevo_rejected_reason`: lo que contesta Brevo, que desde #522 incluye el
     cuerpo de la respuesta. Es lo que hace diagnosticable el 400.
 

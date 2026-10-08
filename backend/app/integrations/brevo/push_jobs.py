@@ -230,8 +230,13 @@ def marcar_rechazado(contact: Contact, exc: Exception) -> None:
     caduca a las 6 horas: pasada la ventana el contacto se vuelve a intentar,
     y así 146.876 veces del 25/06 al 14/09. Un 4xx es un error de DATOS y no
     se arregla repitiendo, así que el rechazo se guarda en la base de datos,
-    donde no caduca, y `should_push` deja de encolarlo hasta que el contacto
-    cambie, que es lo único que puede corregirlo.
+    donde no caduca, y ni el runner periódico lo detecta ni `should_push` lo
+    deja pasar.
+
+    La marca es PEGAJOSA: se quita a mano, con «Volver a subir todo» de la
+    pantalla de Brevo, que es el momento en que alguien ha decidido que el
+    dato ya está corregido. No vale mirar `updated_at`, porque el propio
+    `commit` que apunta el rechazo ya lo mueve.
 
     El motivo es lo que contesta Brevo, que desde #522 incluye el cuerpo de
     la respuesta: es lo que hace diagnosticable el 400. El llamador ya tiene
@@ -241,7 +246,7 @@ def marcar_rechazado(contact: Contact, exc: Exception) -> None:
     contact.brevo_rejected_reason = str(exc)[:500]
     logger.warning(
         "brevo.push_contact RECHAZADO contact_id=%s: %s — no se volverá a "
-        "encolar hasta que el contacto cambie", contact.id, exc,
+        "encolar hasta que se use «Volver a subir todo»", contact.id, exc,
     )
 
 

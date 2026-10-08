@@ -385,8 +385,13 @@ class BrevoBackfillPushResponse(BaseModel):
     - `queued_for_list_add_only`: subconjunto de
       `already_in_brevo_marked` que SI encoló para add_to_list (todos,
       siempre que tengan owner+mapping válidos).
-    - `dry_run`: cuando es True, NO se persistió `brevo_contact_id`
-      ni se encoló nada. Solo retorna los counters para la UI.
+    - `rejections_cleared`: contactos a los que se les levantó la marca
+      de rechazo de Brevo (`brevo_rejected_at`). Es un efecto del
+      backfill, no un cubo aparte: hay que contarlo en la vista previa
+      para que no sea un efecto colateral invisible.
+    - `dry_run`: cuando es True, NO se persistió `brevo_contact_id`,
+      ni se levantó ninguna marca, ni se encoló nada. Solo retorna los
+      counters para la UI.
     - `cached_inventory`: True si el set de emails Brevo vino de
       Redis (TTL 1h). False = se hizo bulk fetch fresh."""
 
@@ -394,6 +399,7 @@ class BrevoBackfillPushResponse(BaseModel):
     already_in_brevo_marked: int
     queued_for_creation: int
     queued_for_list_add_only: int
+    rejections_cleared: int = 0
     estimated_minutes: float
     dry_run: bool = False
     cached_inventory: bool = False

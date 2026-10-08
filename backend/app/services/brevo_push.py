@@ -221,7 +221,15 @@ def install_listeners() -> None:
 def unsynced_contacts_query(session: Session, *, limit: int | None = None):
     """Query para contactos con owner asignado que AÚN no se han
     subido a Brevo. Lo consume el periodic push runner y el endpoint
-    de backfill manual."""
+    de backfill manual.
+
+    Excluye los que Brevo ya rechazó. Sin ese filtro la marca no serviría
+    de nada: el runner los volvería a detectar cada hora, el job saldría
+    por `should_push` ANTES de `record_push_failure` —así que el contador
+    de Redis ya no se renovaría— y pasarían a encolarse cada hora para
+    siempre. Además, con `LIMIT` por chunk y orden por antigüedad, los
+    rechazados se comerían el hueco de los contactos que sí pueden subir.
+    """
     stmt = (
         select(Contact.id)
         .where(
@@ -229,6 +237,7 @@ def unsynced_contacts_query(session: Session, *, limit: int | None = None):
             Contact.brevo_contact_id.is_(None),
             Contact.email.is_not(None),
             Contact.is_active.is_(True),
+            Contact.brevo_rejected_at.is_(None),
         )
         .order_by(Contact.created_at.asc())
     )

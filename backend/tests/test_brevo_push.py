@@ -1195,3 +1195,115 @@ def test_la_marca_de_rechazo_es_pegajosa_hasta_que_se_levanta_a_mano(factory):
         contact.brevo_rejected_reason = None
         session.commit()
         assert should_push(contact) == (True, None)
+
+
+def test_el_runner_periodico_ya_no_detecta_a_los_rechazados(factory):
+    """El filtro en la query es lo que de verdad para la tormenta. Sin él,
+    el runner los detectaría cada hora, el job saldría por `should_push`
+    antes de renovar el contador de Redis, y volverían a encolarse para
+    siempre — peor que antes."""
+    from datetime import UTC, datetime
+
+    from app.services.brevo_push import unsynced_contacts_query
+
+    with factory() as session:
+        users = _user_ids(session)
+        bueno = _seed_contact(
+            session, owner_user_id=users["admin"], email="sube@example.com"
+        )
+        rechazado = _seed_contact(
+            session, owner_user_id=users["admin"], email="rechazado@example.com"
+        )
+        rechazado.brevo_rejected_at = datetime.now(UTC)
+        rechazado.brevo_rejected_reason = "400 … invalid_parameter"
+        session.commit()
+
+        detectados = set(session.scalars(unsynced_contacts_query(session)))
+        assert bueno.id in detectados
+        assert rechazado.id not in detectados
+
+
+def test_volver_a_subir_todo_levanta_la_marca_y_reencola_a_los_ya_subidos(
+    client, factory, fake_brevo, patched_push
+):
+    """«Volver a subir todo» es el único camino de vuelta, así que tiene que
+    recoger también a los que ya tenían `brevo_contact_id`: esos no entran en
+    los cubos del backfill, que filtran `brevo_contact_id IS NULL`."""
+    from datetime import UTC, datetime
+
+    enqueued = patched_push
+    with factory() as session:
+        users = _user_ids(session)
+        _seed_mapping(session, user_id=users["admin"], list_id=1, list_name="A")
+        sin_subir = _seed_contact(
+            session, owner_user_id=users["admin"], email="sinsubir@example.com"
+        )
+        ya_subido = _seed_contact(
+            session,
+            owner_user_id=users["admin"],
+            email="yasubido@example.com",
+            brevo_contact_id="777",
+        )
+        for contacto in (sin_subir, ya_subido):
+            contacto.brevo_rejected_at = datetime.now(UTC)
+            contacto.brevo_rejected_reason = "400 … invalid_parameter"
+        session.commit()
+        sin_subir_id, ya_subido_id = sin_subir.id, ya_subido.id
+        marca_updated_at = ya_subido.updated_at
+
+    enqueued.clear()
+    response = client.post(
+        "/api/brevo/admin/backfill-push",
+        headers=auth_headers(client, "admin"),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["rejections_cleared"] == 2
+    # El que no estaba subido entra por el cubo normal; el que sí, por el
+    # reencolado explícito. Los dos acaban encolados.
+    encolados = {
+        args[0] for nombre, args in enqueued if nombre == "push_contact_to_brevo"
+    }
+    assert sin_subir_id in encolados
+    assert ya_subido_id in encolados
+
+    with factory() as session:
+        for cid in (sin_subir_id, ya_subido_id):
+            contacto = session.get(Contact, cid)
+            assert contacto.brevo_rejected_at is None
+            assert contacto.brevo_rejected_reason is None
+        # `updated_at` no se mueve: es campo de segmento y clave de orden, y
+        # levantar la marca no es un cambio en los datos del contacto.
+        assert session.get(Contact, ya_subido_id).updated_at == marca_updated_at
+
+
+def test_la_vista_previa_cuenta_los_rechazos_pero_no_levanta_la_marca(
+    client, factory, fake_brevo, patched_push
+):
+    """Que el backfill levante marcas no puede ser un efecto invisible: la
+    vista previa lo dice, y en `dry_run` no toca nada."""
+    from datetime import UTC, datetime
+
+    enqueued = patched_push
+    with factory() as session:
+        users = _user_ids(session)
+        _seed_mapping(session, user_id=users["admin"], list_id=1, list_name="A")
+        contacto = _seed_contact(
+            session, owner_user_id=users["admin"], email="previa@example.com"
+        )
+        contacto.brevo_rejected_at = datetime.now(UTC)
+        contacto.brevo_rejected_reason = "400 … invalid_parameter"
+        session.commit()
+        cid = contacto.id
+
+    enqueued.clear()
+    response = client.post(
+        "/api/brevo/admin/backfill-push?dry_run=true",
+        headers=auth_headers(client, "admin"),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["rejections_cleared"] == 1
+    assert enqueued == []
+
+    with factory() as session:
+        assert session.get(Contact, cid).brevo_rejected_at is not None

@@ -2203,22 +2203,6 @@ def admin_backfill_push(
     detail — no modifica DB ni encola nada."""
     from app.integrations.brevo import push_jobs  # noqa: PLC0415
 
-    # «Volver a subir todo» es el momento en que alguien decide que los datos
-    # ya están corregidos: es lo que levanta la marca de rechazo de Brevo, que
-    # por lo demás es pegajosa (si no, el runner periódico volvería a
-    # reencolar los contactos que Brevo rechaza, 146.876 veces).
-    if not dry_run:
-        limpiados = session.execute(
-            sa_update(Contact)
-            .where(Contact.brevo_rejected_at.is_not(None))
-            .values(brevo_rejected_at=None, brevo_rejected_reason=None)
-        ).rowcount
-        if limpiados:
-            logger.warning(
-                "brevo.backfill_push: %s levantó la marca de rechazo de %d "
-                "contacto(s)", current_user.email, limpiados,
-            )
-
     account = push_jobs._resolve_brevo_account(session)
     if account is None:
         raise HTTPException(
@@ -2228,6 +2212,63 @@ def admin_backfill_push(
                 "una en /admin/integrations antes de lanzar el backfill."
             ),
         )
+
+    # «Volver a subir todo» es el momento en que alguien decide que los datos
+    # ya están corregidos: es lo único que levanta la marca de rechazo de
+    # Brevo, que por lo demás es pegajosa (si no, el runner periódico volvería
+    # a reencolar los contactos que Brevo rechaza, 146.876 veces).
+    #
+    # Se hace AQUÍ, antes del bulk fetch del inventario (~8 s para 50K): el
+    # UPDATE y su commit van en su propia transacción, porque si no dejarían
+    # bloqueadas las filas de todos los rechazados durante toda esa ventana.
+    if dry_run:
+        rechazados: list[tuple[str, str | None]] = []
+        rechazados_total = int(
+            session.scalar(
+                select(func.count())
+                .select_from(Contact)
+                .where(Contact.brevo_rejected_at.is_not(None))
+            )
+            or 0
+        )
+    else:
+        rechazados = [
+            (cid, brevo_id)
+            for cid, brevo_id in session.execute(
+                select(Contact.id, Contact.brevo_contact_id).where(
+                    Contact.brevo_rejected_at.is_not(None)
+                )
+            )
+        ]
+        rechazados_total = len(rechazados)
+
+    if rechazados:
+        session.execute(
+            sa_update(Contact)
+            .where(Contact.brevo_rejected_at.is_not(None))
+            .values(
+                brevo_rejected_at=None,
+                brevo_rejected_reason=None,
+                # `updated_at` se preserva a propósito. Es campo de segmento y
+                # clave de orden: levantar la marca de miles de contactos no es
+                # un cambio en sus datos, y si no se fija aquí el `onupdate`
+                # del mixin los re-fecharía todos de golpe.
+                updated_at=Contact.updated_at,
+            )
+        )
+        session.commit()
+        logger.warning(
+            "brevo.backfill_push: %s levantó la marca de rechazo de %d "
+            "contacto(s)", current_user.email, rechazados_total,
+        )
+        for cid, brevo_id in rechazados:
+            # El contador de Redis frenaba al contacto en paralelo a la marca.
+            push_jobs.clear_push_failure(cid)
+            # Los que YA tienen `brevo_contact_id` no entran en los cubos de
+            # abajo, que filtran `brevo_contact_id IS NULL`. Sin esto, «Volver
+            # a subir todo» les quitaría la marca y no los subiría nunca.
+            if brevo_id:
+                push_jobs.enqueue_push_contact(contact_id=cid)
 
     # Detecta si el set venía cacheado ANTES de llamar a fetch (que
     # puede repoblar la cache). Si `refresh=True`, ni siquiera leemos
@@ -2314,6 +2355,7 @@ def admin_backfill_push(
         already_in_brevo_marked=len(pre_existing) if not dry_run else 0,
         queued_for_creation=len(brand_new),
         queued_for_list_add_only=len(pre_existing),
+        rejections_cleared=rechazados_total,
         estimated_minutes=estimated_minutes,
         dry_run=dry_run,
         cached_inventory=inventory_was_cached,
