@@ -169,6 +169,22 @@ def _cabecera(enviado: dict, nombre: str) -> str | None:
     return (enviado.get("extra_headers") or {}).get(nombre)
 
 
+@pytest.fixture()
+def log_acuse(monkeypatch):
+    """Deja hablar al logger del `submit`.
+
+    `env.py` de Alembic llama a `fileConfig()`, que con
+    `disable_existing_loggers` APAGA los loggers que ya existían. Basta con que
+    otro test de la suite corra una migración antes de este para que `caplog`
+    salga vacío — pasó en el CI con los tres tests de abajo, verdes en local.
+    Es el tropiezo recurrente de esta base de código."""
+    from app.services.web_forms import submit as submit_mod
+
+    monkeypatch.setattr(submit_mod.logger, "disabled", False)
+    monkeypatch.setattr(submit_mod.logger, "level", logging.WARNING)
+    return submit_mod.logger
+
+
 # --- 1 · remitente por web, idioma e `Reply-To` -----------------------------
 
 
@@ -337,7 +353,7 @@ def test_el_remitente_del_formulario_manda_sobre_el_de_la_web(factory, gmail):
 
 
 def test_si_el_acuse_falla_el_lead_se_guarda_igual_y_queda_registrado(
-    factory, gmail, caplog
+    factory, gmail, caplog, log_acuse
 ):
     gmail.revienta = True
     with factory() as s:
@@ -354,7 +370,7 @@ def test_si_el_acuse_falla_el_lead_se_guarda_igual_y_queda_registrado(
 
 
 def test_sin_alias_sincronizado_no_se_manda_desde_otra_direccion(
-    factory, gmail, caplog
+    factory, gmail, caplog, log_acuse
 ):
     """Gmail reescribe un `From:` que no sea alias verificado de la cuenta que
     autentica: el acuse saldría desde el buzón de la organización, que es el
@@ -376,7 +392,7 @@ def test_sin_alias_sincronizado_no_se_manda_desde_otra_direccion(
 
 
 def test_una_web_que_no_esta_en_la_lista_no_se_inventa_un_remitente(
-    factory, gmail, caplog
+    factory, gmail, caplog, log_acuse
 ):
     with factory() as s:
         form = _form(s, slug="webnueva-contacto-es", idioma="es")
