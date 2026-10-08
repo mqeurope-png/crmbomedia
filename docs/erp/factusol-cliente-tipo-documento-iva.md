@@ -188,7 +188,11 @@ IVA.
 (`factusol_series_json.companies`): 1 Bomedia `ES`, 5 Streamtec `ES`, 2 MQ
 Europe `BE`. Deducirlo del literal `pais` sería adivinar, y aquí adivinar es
 facturar mal. `issuer_iso2_for_serie(session, serie)` lo resuelve;
-`issuer_companies(session)` da la lista de emisores.
+`issuer_companies(session)` da la lista de emisores (todas las series con
+identidad, también las que no tienen nombre: descartarlas hacía desaparecer a
+MQ Europe del modal y que `fix-regime` volviera a escribir el régimen español).
+El campo se edita en `/erp/settings` → «País en ISO2 (ES, BE…) — decide el
+IVA».
 
 ### Quién decide: manda la ficha de FACTUSOL
 
@@ -214,6 +218,17 @@ Europe ese mismo cliente **sí** lo necesita, y por eso el modal de
 «Crear empresa» ya abre VIES para NIF-IVA españoles (antes la puerta era «UE y
 no España», que dejaba fuera justo el caso del fallo). Un `False` explícito
 sigue siendo lo único que impide eximir cuando decide el cálculo.
+
+Y el mismo `"ES"` a fuego estaba en `services/vies.company_eu_vat`, que dejaba
+a los clientes españoles **sin veredicto posible**: `company_vies_valid` era
+siempre `None`, el barrido los saltaba y un `ESB…` dado de baja se eximía
+igual. Ya no se excluye España, ni en la ficha ni en el barrido. Solo entran
+los que tienen NIF-IVA **con prefijo** (`ESB65623175`): un NIF español a secas
+no es un NIF-IVA y sigue sin consultarse, así que esto no mete al CRM español
+entero en el barrido. El aviso «NIF-IVA no válido» del pedido
+(`workflow._vies_importa`) sale solo donde VIES cambia la factura: que el CIF
+de un cliente español no esté en el ROI no es una incidencia de un pedido que
+factura Streamtec.
 
 ### La ficha F_CLI es UNA sola
 
@@ -243,13 +258,22 @@ factura web (`regime_warning_for_pcl`) se calcula después de resolver la serie.
     docker compose -f /opt/crmbo/docker-compose.prod.yml exec api \
         python -m scripts.auditoria_iva_emisor
 
-Revisa las series cuya empresa NO es española (hoy la 2) y lista: (1) las
-fichas `F_CLI` de sus clientes cuyo régimen no cuadra con esa pareja, (2) las
-**proformas** con el IVA descuadrado (revisables: se vuelven a emitir) y (3)
-los **albaranes y facturas ya emitidos** con el IVA descuadrado. Opciones
-`--serie N`, `--ejercicio AAAA`, `--csv RUTA`, `--detalle N`. No escribe nada:
-las fichas se corrigen en FACTUSOL y lo ya emitido (rectificativa o abono) lo
-decide administración.
+Revisa las series cuya empresa NO es española (hoy la 2; las series sin
+`pais_iso2` configurado se dicen y **no** se auditan, porque juzgarlas sería
+suponer España otra vez) y lista: (1) las fichas `F_CLI` de sus clientes cuyo
+régimen no cuadra con esa pareja, (2) las **proformas** con el IVA descuadrado
+(revisables: se vuelven a emitir) y (3) los **albaranes y facturas ya
+emitidos** con el IVA descuadrado. Opciones `--serie N`, `--ejercicio AAAA`,
+`--csv RUTA`, `--detalle N`. No escribe nada: las fichas se corrigen en
+FACTUSOL y lo ya emitido (rectificativa o abono) lo decide administración.
+
+Cómo leerlo: como en la zona elegible **manda la ficha**, un documento que
+coincide con la ficha de su cliente es el caso normal y lo que hay que repasar
+es la ficha (bloque 1). Cada documento dice si coincide con ella
+(`coincide_con_ficha` en el CSV) y el bloque 3 cuenta aparte los que **no**
+coinciden ni con la ficha, que son los que piden explicación. El informe
+también distingue, de los documentos de la serie, cuántos se han podido
+juzgar: un cliente sin ficha legible o sin país no se evalúa y se dice.
 
 Tests: `test_iva_pareja_emisor.py` (la pareja, el motivo de las dos puntas, la
 ficha que manda, VIES por pareja, el país de cada serie, la proforma de la

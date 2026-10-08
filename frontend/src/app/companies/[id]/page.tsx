@@ -308,6 +308,11 @@ export default function CompanyDetailPage() {
     ...(fiscal ? [fiscal.regime] : []),
     ...regimenesPorEmpresa.map((r) => r.regime),
   ]);
+  // «Depende de quién factura» solo cuando DE VERDAD depende: con tres
+  // empresas y un cliente noruego el régimen es exportación para todas, y
+  // decir que depende sería ruido (y mentira).
+  const regimenesDistintos =
+    new Set(regimenesPorEmpresa.map((r) => r.regime)).size > 1;
   const syncLabel = !linked
     ? { text: "sin vincular", tone: "muted" }
     : sync === null || (sync.customer === null && diffs === null)
@@ -536,7 +541,7 @@ export default function CompanyDetailPage() {
                   mismo para todas las empresas que facturan se dice, porque
                   con «España» a secas una factura de MQ Europe (BE) parecía
                   bien estando mal. */}
-              {regimenesPorEmpresa.length > 1 ? (
+              {regimenesDistintos ? (
                 <span className="muted small">
                   {" · "}Depende de quién factura:{" "}
                   {regimenesPorEmpresa
@@ -586,7 +591,7 @@ export default function CompanyDetailPage() {
               ) : (
                 <>
                   <span className="erp-flow-pill is-n">No aplica</span>
-                  <span className="muted">solo para NIF-IVA de la UE fuera de España</span>
+                  <span className="muted">solo para NIF-IVA intracomunitario</span>
                 </>
               )}
             </dd>

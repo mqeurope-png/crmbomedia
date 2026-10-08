@@ -78,14 +78,18 @@ function templateLabels(kind: TemplateKind, lang: string) {
  *  (alimentan los PDF; los valores iniciales salen de los modelos reales de
  *  FACTUSOL). */
 type CompanyTextKey =
-  | "nombre" | "direccion" | "cp_poblacion" | "pais" | "telefono" | "email" | "nif"
-  | "idioma_defecto";
+  | "nombre" | "direccion" | "cp_poblacion" | "pais" | "pais_iso2" | "telefono"
+  | "email" | "nif" | "idioma_defecto";
 
 const COMPANY_FIELDS: { key: CompanyTextKey; label: string }[] = [
   { key: "nombre", label: "Nombre fiscal" },
   { key: "direccion", label: "Domicilio" },
   { key: "cp_poblacion", label: "CP y población" },
   { key: "pais", label: "País" },
+  // El ISO2 decide el IVA (la pareja emisor → cliente), así que se edita
+  // aparte del literal que se imprime: una serie sin él se factura como
+  // española, que es el fallo que arregló el IVA por pareja.
+  { key: "pais_iso2", label: "País en ISO2 (ES, BE…) — decide el IVA" },
   { key: "telefono", label: "Teléfono" },
   { key: "email", label: "Email" },
   { key: "nif", label: "NIF / VAT (tal como debe imprimirse)" },

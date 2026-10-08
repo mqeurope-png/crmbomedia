@@ -31,8 +31,9 @@ from sqlalchemy.orm import Session
 DEFAULT_CSV = "/tmp/auditoria_iva_emisor.csv"
 _FIELDS = [
     "bloque", "serie", "emisor", "emisor_pais", "tipo", "numero", "fecha",
-    "codcli", "cliente", "pais_cliente", "fuente_pais", "nif",
-    "regimen_ficha", "regimen_esperado", "base", "iva", "total", "problema",
+    "codcli", "cliente", "pais_cliente", "fuente_pais", "nif", "nif_iva",
+    "regimen_ficha", "regimen_esperado", "coincide_con_ficha",
+    "base", "iva", "total", "problema",
 ]
 
 
@@ -74,23 +75,37 @@ def main(argv: list[str] | None = None) -> int:
                       f"{', '.join(str(e.serie) for e in emisores)}")
                 return 2
         else:
-            objetivo = [e for e in emisores if e.pais_iso2 != DEFAULT_ISSUER_ISO2]
+            # Una serie SIN país configurado no se audita: se juzgaría
+            # suponiendo España, que es justo el fallo. Se dice en pantalla
+            # para que se le ponga `pais_iso2` en /erp/settings.
+            sin_pais = [e for e in emisores if not e.pais_iso2]
+            if sin_pais:
+                print("Series sin país configurado (no se auditan; ponles "
+                      "«País en ISO2» en /erp/settings): "
+                      + ", ".join(f"{e.serie} {e.nombre}" for e in sin_pais))
+            objetivo = [e for e in emisores
+                        if e.pais_iso2 and e.pais_iso2 != DEFAULT_ISSUER_ISO2]
             if not objetivo:
-                print("Todas las empresas emisoras son españolas: la pareja "
-                      "siempre sale de España y no hay nada que auditar.")
+                print("Ninguna empresa emisora con país configurado fuera de "
+                      "España: la pareja siempre sale de España y no hay nada "
+                      "que auditar.")
                 return 0
 
         client = FactusolClient.from_settings()
         filas: list[dict[str, str]] = []
-        for emisor in objetivo:
-            resultado = auditar(session, client, ejercicio=ejercicio, emisor=emisor)
-            print(informe_texto(resultado, detalle=args.detalle))
-            print()
-            filas.extend(_csv_rows(resultado))
-
-        ruta = _write_csv(filas, args.csv)
-        print(f"CSV con TODOS los hallazgos: {ruta}")
-        print("SOLO LECTURA: no se ha escrito nada en FACTUSOL ni en BoHub.")
+        try:
+            for emisor in objetivo:
+                resultado = auditar(session, client, ejercicio=ejercicio,
+                                    emisor=emisor)
+                print(informe_texto(resultado, detalle=args.detalle))
+                print()
+                filas.extend(_csv_rows(resultado))
+        finally:
+            # El CSV se escribe aunque reviente el segundo emisor: lo ya
+            # revisado no se pierde.
+            ruta = _write_csv(filas, args.csv)
+            print(f"CSV con TODOS los hallazgos: {ruta}")
+            print("SOLO LECTURA: no se ha escrito nada en FACTUSOL ni en BoHub.")
     return 0
 
 
@@ -104,8 +119,10 @@ def _csv_rows(resultado: dict) -> list[dict[str, str]]:
             **comun, "bloque": "ficha", "tipo": "F_CLI", "numero": "",
             "fecha": "", "codcli": f["codcli"], "cliente": f["cliente"],
             "pais_cliente": f["pais_iso2"] or "", "fuente_pais": f["fuente_pais"],
-            "nif": f["nif"], "regimen_ficha": f["regimen_ficha"] or "",
+            "nif": f["nif"], "nif_iva": f["nif_iva"] or "",
+            "regimen_ficha": f["regimen_ficha"] or "",
             "regimen_esperado": f["regimen_esperado"] or "",
+            "coincide_con_ficha": "",
             "base": "", "iva": "", "total": "", "problema": f["problema"],
         })
     for d in resultado["documentos"]:
@@ -114,8 +131,10 @@ def _csv_rows(resultado: dict) -> list[dict[str, str]]:
             "bloque": "emitido" if d["emitido"] else "proforma",
             "tipo": d["tipo_label"], "numero": d["numero"], "fecha": d["fecha"],
             "codcli": d["codcli"], "cliente": d["cliente"],
-            "pais_cliente": "", "fuente_pais": "", "nif": "",
-            "regimen_ficha": "", "regimen_esperado": d["regimen_esperado"] or "",
+            "pais_cliente": "", "fuente_pais": "", "nif": "", "nif_iva": "",
+            "regimen_ficha": d["regimen_ficha"] or "",
+            "regimen_esperado": d["regimen_esperado"] or "",
+            "coincide_con_ficha": "sí" if d["coincide_con_ficha"] else "no",
             "base": f"{d['base']:.2f}", "iva": f"{d['iva']:.2f}",
             "total": f"{d['total']:.2f}", "problema": d["problema"],
         })

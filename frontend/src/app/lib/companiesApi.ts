@@ -353,7 +353,9 @@ export type FiscalCheck = {
     factusol_checked: boolean;
     factusol_error: string | null;
   };
-  /** Validación VIES del NIF-IVA (UE fuera de España con NIF-IVA): el
+  /** Validación VIES del NIF-IVA (cualquier país de la UE con NIF-IVA, ahora
+   *  también España: la exención de un cliente español depende de su NIF-IVA
+   *  cuando factura MQ Europe): el
    *  régimen ya tiene en cuenta el veredicto. */
   vies: ViesState;
 };

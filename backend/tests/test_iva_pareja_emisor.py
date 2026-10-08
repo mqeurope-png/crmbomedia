@@ -18,7 +18,7 @@ from typing import Any
 
 import pytest
 from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.db.base import Base
@@ -231,6 +231,15 @@ def test_la_proforma_sigue_la_ficha_donde_la_pareja_lo_permite() -> None:
     con_ficha = customer_con_regimen(fake, cliente, serie=2, ejercicio="2026")
     assert con_ficha["regime"] == REGIME_NACIONAL
     assert [t for t, _f in fake.lecturas] == ["F_CLI"]
+    # Y el régimen resuelto tiene que llegar a los IMPORTES: `regime_por_serie`
+    # es lo que lee `build_quote_payload`, así que si se queda sin tocar la
+    # ficha no decide nada (salía exento lo que FACTUSOL factura al 21 %).
+    assert con_ficha["regime_por_serie"]["2"] == REGIME_NACIONAL
+    payload = build_quote_payload(
+        "1", ejercicio="2026", customer=con_ficha, refpre="", lines=[_linea()],
+        serie=2,
+    )
+    assert payload["PIVA1PRE"] == 21.0 and payload["TOTPRE"] == 121.0
 
     # Serie 5 (pareja España → España): no hay nada que decidir, no se lee.
     fake5 = FakeFactusolDocs({"F_CLI": [_ficha(4471)]})
@@ -309,7 +318,8 @@ def test_revisar_documento() -> None:
         esperado=REGIME_INTRACOMUNITARIO,
     )
     assert hallazgo is not None
-    assert hallazgo["numero"] == "2-39" and hallazgo["emitido"] is False
+    # El número como lo pinta el escritorio, para poder buscarlo a mano.
+    assert hallazgo["numero"] == "2-000039" and hallazgo["emitido"] is False
     assert "lleva IVA" in hallazgo["problema"]
     # Factura sin IVA a un cliente belga de MQ Europe: ahí el IVA SÍ toca.
     hallazgo = revisar_documento(
@@ -369,6 +379,55 @@ class FakeFactusolDocs:
         raise AssertionError("la auditoría no escribe")
 
 
+def test_auditar_cruza_por_codcli_normalizado_y_lee_fcli_una_vez(
+    session_factory,
+) -> None:
+    """Un `CLIPRE` con ceros a la izquierda (o `4471.0`) es el MISMO cliente:
+    comparando cadenas se quedaba «sin ficha» y todos sus documentos salían
+    del informe, que aparecía tranquilizadoramente vacío. Y F_CLI se lee UNA
+    vez, no una por cliente."""
+    fake = FakeFactusolDocs({
+        "F_PRE": [{**_pre(39, 4471, piva=21.0), "CLIPRE": "04471"},
+                  {**_pre(40, 4471, piva=21.0), "CLIPRE": 4471.0}],
+        "F_ALB": [], "F_FAC": [],
+        "F_CLI": [{**_ficha(4471), "CODCLI": "04471"}],
+    })
+    with session_factory() as s:
+        s.add(Company(name="CDCOPIADVD S.L.U", country="ES", vat=ES_VAT,
+                      tax_id="B65623175", factusol_company_id="4471"))
+        s.commit()
+        resultado = auditar(s, fake, ejercicio="2026", emisor=MQ)
+
+    assert [d["numero"] for d in resultado["proformas"]] == ["2-000039", "2-000040"]
+    assert resultado["resumen"]["clientes_sin_ficha"] == 0
+    assert [f for t, f in fake.lecturas if t == "F_CLI"] == ["1=1"]
+
+
+def test_auditar_dice_si_el_documento_coincide_con_su_ficha(session_factory) -> None:
+    """En la zona donde manda la ficha, un documento que coincide con ella es
+    el caso «repasa la ficha» — no una factura que haya que rectificar. El
+    informe lo separa para que administración no emita rectificativas a ciegas."""
+    fake = FakeFactusolDocs({
+        "F_PRE": [], "F_ALB": [],
+        # La ficha del 4471 dice nacional y la factura lleva IVA: coinciden.
+        "F_FAC": [_fac(7, 4471, piva=21.0)],
+        "F_CLI": [_ficha(4471)],
+    })
+    with session_factory() as s:
+        s.add(Company(name="CDCOPIADVD S.L.U", country="ES", vat=ES_VAT,
+                      tax_id="B65623175", factusol_company_id="4471"))
+        s.commit()
+        resultado = auditar(s, fake, ejercicio="2026", emisor=MQ)
+
+    (emitido,) = resultado["emitidos"]
+    assert emitido["coincide_con_ficha"] is True
+    assert "coincide con la ficha del cliente" in emitido["problema"]
+    assert resultado["resumen"]["emitidos_fuera_de_ficha"] == 0
+    assert resultado["resumen"]["evaluados"] == {
+        "presupuestos": 0, "albaranes": 0, "facturas": 1}
+    assert "de ellos 0 no coinciden" in informe_texto(resultado)
+
+
 def test_auditar_separa_proformas_de_lo_emitido(session_factory) -> None:
     fake = FakeFactusolDocs({
         "F_PRE": [_pre(39, 4471, piva=21.0),          # mal: debía ser exenta
@@ -386,8 +445,8 @@ def test_auditar_separa_proformas_de_lo_emitido(session_factory) -> None:
 
     assert resultado["resumen"]["revisados"] == {
         "presupuestos": 2, "albaranes": 0, "facturas": 1}
-    assert [d["numero"] for d in resultado["proformas"]] == ["2-39"]
-    assert [d["numero"] for d in resultado["emitidos"]] == ["2-7"]
+    assert [d["numero"] for d in resultado["proformas"]] == ["2-000039"]
+    assert [d["numero"] for d in resultado["emitidos"]] == ["2-000007"]
     # La ficha del cliente español: nacional, y MQ Europe le factura exento.
     assert [f["codcli"] for f in resultado["fichas"]] == ["4471"]
     assert resultado["fichas"][0]["fuente_pais"] == "CRM"

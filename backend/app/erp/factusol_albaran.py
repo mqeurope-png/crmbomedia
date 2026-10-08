@@ -207,10 +207,15 @@ def company_ficha_decide(
     company = session.get(Company, company_id)
     if company is None or not company.country:
         return False
-    return pareja_elegible(
-        normalize_country(company.country),
-        issuer_iso2=issuer_iso2_for_serie(session, serie) if serie is not None else None,
-    )
+    # Serie sin identidad configurada (hoy la 4, Lambert): no se sabe de qué
+    # país emite, así que NO se deja decidir a la ficha. Suponer España aquí
+    # haría que el albarán y la proforma de ese pedido llevaran IVAs
+    # distintos (la proforma solo deja decidir a la ficha en las series con
+    # país configurado). Hay que ponerle `pais_iso2` en /erp/settings.
+    emisor = issuer_iso2_for_serie(session, serie) if serie is not None else None
+    if emisor is None:
+        return False
+    return pareja_elegible(normalize_country(company.country), issuer_iso2=emisor)
 
 
 #: Código del 409 cuando el pedido manual no tiene empresa vinculada a F_CLI.

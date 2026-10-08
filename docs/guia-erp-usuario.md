@@ -429,6 +429,11 @@ sector**).
 CRM»**) y el **régimen de IVA** (**nacional · con IVA** / **intracomunitario ·
 exento** / **exportación · exento**).
 
+La fila **VIES** sale también en las empresas **españolas** que tengan NIF-IVA
+con prefijo (`ESB…`): si les factura MQ Europe, la exención depende de que ese
+NIF-IVA sea válido. En los pedidos que factura una empresa española no se avisa
+de un NIF-IVA no válido, porque ahí no cambia nada.
+
 La ficha dice «Depende de quién factura» con el régimen de cada empresa cuando
 no es el mismo para todas (p. ej. un cliente español: nacional para Streamtec,
 intracomunitario para MQ Europe). **«Régimen de IVA en FACTUSOL»** solo corrige

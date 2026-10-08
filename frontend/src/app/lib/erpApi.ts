@@ -2307,6 +2307,10 @@ export type FactusolCompany = {
   direccion: string;
   cp_poblacion: string;
   pais: string;
+  /** País en ISO2 («ES», «BE»): **decide el IVA** de lo que emite esta serie
+   *  (la pareja emisor → cliente). Se guarda explícito porque deducirlo del
+   *  literal `pais` sería adivinar, y aquí adivinar es facturar mal. */
+  pais_iso2: string;
   telefono: string;
   email: string;
   nif: string;
@@ -3707,10 +3711,10 @@ export type FactusolRegimePreview = {
   reason: string;
   /** País (ISO2) de la empresa emisora con la que se ha calculado, o null
    *  cuando las empresas discrepan (ver `conflicto`). */
-  issuer_iso2: string | null;
+  issuer_iso2?: string | null;
   /** El régimen con CADA empresa que factura: el mismo cliente es nacional
    *  para Streamtec (ES) e intracomunitario para MQ Europe (BE). */
-  regimes: {
+  regimes?: {
     serie: number | null;
     empresa: string | null;
     pais_iso2: string | null;
@@ -3719,7 +3723,7 @@ export type FactusolRegimePreview = {
   }[];
   /** Texto del conflicto cuando las empresas no coinciden: la ficha F_CLI es
    *  una sola y BoHub NO toca sus columnas de régimen (sí el país). */
-  conflicto: string | null;
+  conflicto?: string | null;
   current: {
     IFICLI: number | null;
     IVACLI: number | null;

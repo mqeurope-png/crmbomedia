@@ -66,7 +66,6 @@ MAX_CONSECUTIVE_RATE_LIMITED = 3
 MIN_INTERVAL_MINUTES = 5
 #: Job RQ: un lote de 20 con esperas y reintentos cabe de sobra en 30 min.
 JOB_TIMEOUT_SECONDS = 1800
-_SPAIN = ("ES", "ESPAÑA", "ESPANA", "SPAIN")
 
 Checker = Callable[..., ViesResult | None]
 
@@ -140,9 +139,14 @@ def _sql_vat_key(column):  # noqa: ANN001, ANN202 — misma normalización que `
 def sweep_candidates(
     session: Session, *, now: datetime | None = None, limit: int = 20,
 ) -> list[Company]:
-    """Empresas que deberían tener veredicto y no lo tienen: UE (no España),
-    con NIF-IVA, sin `valido` / `no_valido` para el NIF-IVA actual, y cuyo
-    reintento ya toca. Las nunca consultadas primero."""
+    """Empresas que deberían tener veredicto y no lo tienen: de la UE, con
+    NIF-IVA, sin `valido` / `no_valido` para el NIF-IVA actual, y cuyo
+    reintento ya toca. Las nunca consultadas primero.
+
+    España entra desde que BoHub factura también desde Bélgica: la exención de
+    un cliente español depende de su NIF-IVA cuando emite MQ Europe. Solo las
+    que tienen NIF-IVA con prefijo (`ESB…`) pasan el filtro de
+    `company_eu_vat`, así que el lote no se dispara."""
     now = now or datetime.now(UTC)
     firm = (VIES_VALIDO, VIES_NO_VALIDO)
     stmt = (
@@ -150,7 +154,6 @@ def sweep_candidates(
         .where(
             Company.is_active.is_(True),
             Company.country.is_not(None),
-            func.upper(Company.country).notin_(_SPAIN),
             or_(Company.vat.is_not(None), Company.tax_id.is_not(None)),
             or_(
                 Company.vies_status.is_(None),

@@ -431,14 +431,25 @@ def customer_row(
     client: FactusolClient, codcli: Any, *, ejercicio: str,
 ) -> dict[str, Any] | None:
     """Fila REAL (sin normalizar) de F_CLI por CODCLI, o None. Re-filtra en
-    Python por si la API ignorase el filtro en silencio (gotcha nº 1)."""
-    code = str(codcli or "").strip()
-    if not code.isdigit():
+    Python por si la API ignorase el filtro en silencio (gotcha nº 1).
+
+    La comparación es NUMÉRICA: `'04471'`, `4471` y `'4471.0'` son el mismo
+    cliente. Comparando cadenas, un CODCLI con ceros a la izquierda pasaba el
+    filtro SQL y se caía en el re-filtro, devolviendo None como si el cliente
+    no existiera."""
+    try:
+        numero = int(float(str(codcli or "").strip()))
+    except (TypeError, ValueError):
         return None
-    rows = client.load_table("F_CLI", filtro=f"CODCLI={int(code)}", ejercicio=ejercicio)
+    rows = client.load_table("F_CLI", filtro=f"CODCLI={numero}", ejercicio=ejercicio)
     for row in rows:
-        if str(row.get("CODCLI") or "").strip() == code:
-            return row
+        try:
+            if int(float(str(row.get("CODCLI") or "").strip())) == numero:
+                return row
+        except (TypeError, ValueError):
+            continue
+    logger.info("factusol: F_CLI sin fila para CODCLI %s (ejercicio %s)",
+                numero, ejercicio)
     return None
 
 

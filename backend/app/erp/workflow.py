@@ -208,11 +208,16 @@ def order_alerts(
     # La serie del pedido decide quién emite, y con ello el régimen: lo que
     # para Streamtec (ES) es nacional, para MQ Europe (BE) puede ser
     # intracomunitario.
-    regime = company_regime(
-        company, issuer_iso2=_issuer_of_order(session, order),
-    ) if not archived else None
+    emisor = _issuer_of_order(session, order) if not archived else None
+    regime = company_regime(company, issuer_iso2=emisor) if not archived else None
     vies = _vies_of(company) if not archived else {"vat": None, "status": None}
-    if vies["vat"] and vies["status"] == "no_valido":
+    # El aviso de «NIF-IVA no válido» solo donde VIES cambia la factura (la
+    # pareja puede dar intracomunitario). Un cliente español facturado por
+    # Streamtec es nacional pase lo que pase: su NIF-IVA puede no estar en el
+    # ROI y eso no es una incidencia de este pedido.
+    if vies["vat"] and vies["status"] == "no_valido" and _vies_importa(
+        company, issuer_iso2=emisor,
+    ):
         alerts.append(_alert(
             "vat_no_valido_vies",
             f"El NIF-IVA {vies['vat']} NO es válido en VIES: no se puede eximir de "
@@ -343,6 +348,21 @@ def _vies_of(company: Any) -> dict[str, Any]:
 
     state = vies_state(company)
     return {"vat": state["vat"], "status": state["status"]}
+
+
+def _vies_importa(company: Any, *, issuer_iso2: str | None = None) -> bool:
+    """¿El veredicto de VIES cambia la factura de ESTA pareja? Solo cuando la
+    pareja emisor → cliente puede dar intracomunitario (ver
+    `vat_regime.vies_hace_falta`)."""
+    if company is None:
+        return False
+    from app.erp.language import normalize_country  # noqa: PLC0415
+    from app.integrations.factusol.vat_regime import vies_hace_falta  # noqa: PLC0415
+
+    return vies_hace_falta(
+        normalize_country(company.country) if company.country else None,
+        issuer_iso2=issuer_iso2, vat=company.vat, nif=company.tax_id,
+    )
 
 
 def _open_exception(

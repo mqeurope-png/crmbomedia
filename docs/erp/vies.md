@@ -47,14 +47,20 @@ docker compose exec api python -m app.integrations.vies.client FR90501738249 --i
 veredicto positivo el log del `api` deja `vies … → desconocido|no_valido (…)
 · enviado {…} · respuesta HTTP … {…}` con la respuesta cruda de VIES.
 
-Solo se consulta cuando **aplica**, y «aplica» depende de la PAREJA emisor →
-cliente (`vat_regime.vies_hace_falta`): los dos países en la UE, **distintos**,
-y el cliente con NIF-IVA del suyo (`Company.vat`, o `tax_id` con prefijo del
-país). Un cliente español facturado por Streamtec (ES) es nacional pase lo que
-pase y ahí no se consulta; ese mismo cliente facturado por **MQ Europe (BE)**
-sí, porque la exención depende de que su NIF-IVA sea válido. Mismo país →
-nacional, fuera de la UE → exportación: VIES no aplica
-(`vies.applies=false`). Ver `docs/erp/factusol-cliente-tipo-documento-iva.md`.
+Qué NIF-IVA se valida: el de cualquier empresa **de la UE** que tenga NIF-IVA
+con prefijo (`Company.vat`, o `tax_id` con prefijo del país).
+**España incluida** desde que BoHub factura también desde Bélgica: para la
+pareja MQ Europe (BE) → cliente español la exención depende de que ese
+`ESB…` sea válido, y mientras España estuvo excluida esos clientes no podían
+tener veredicto. Un NIF español a secas (`B65623175`) no es un NIF-IVA y no se
+consulta. Fuera de la UE o sin NIF-IVA, VIES no aplica (`vies.applies=false`).
+
+Dónde **importa** el veredicto: solo donde la pareja emisor → cliente puede dar
+intracomunitario (`vat_regime.vies_hace_falta`). Un cliente español facturado
+por Streamtec (ES) es nacional pase lo que pase: su veredicto no cambia esa
+factura y el aviso «NIF-IVA no válido» del pedido no sale
+(`workflow._vies_importa`). Ver
+`docs/erp/factusol-cliente-tipo-documento-iva.md`.
 
 ## Cómo se lee la respuesta
 

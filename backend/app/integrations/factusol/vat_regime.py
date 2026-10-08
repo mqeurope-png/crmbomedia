@@ -65,6 +65,7 @@ Solo lógica pura: quién escribe en FACTUSOL es `customers.py`.
 """
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
@@ -73,6 +74,8 @@ from app.erp.language import (
     country_numeric,
     normalize_country,
 )
+
+logger = logging.getLogger(__name__)
 
 #: Los 27 estados miembros (ISO2). Grecia usa el prefijo «EL» en el NIF-IVA.
 EU_ISO2: frozenset[str] = frozenset({
@@ -159,9 +162,22 @@ def country_display(iso2: str | None) -> str:
 
 
 def _emisor(issuer_iso2: str | None) -> str:
-    """País del emisor, normalizado. Sin dato, el de la serie por defecto."""
-    return normalize_country(issuer_iso2) or DEFAULT_ISSUER_ISO2 \
-        if issuer_iso2 else DEFAULT_ISSUER_ISO2
+    """País del emisor, normalizado. Sin dato, el de la serie por defecto.
+
+    Un valor que NO normaliza (un `pais_iso2` mal escrito en /erp/settings)
+    cae también al país por defecto, pero deja aviso en el log: ahí se decide
+    el IVA y pasar de «XX» a España en silencio es facturar mal sin rastro."""
+    if not issuer_iso2:
+        return DEFAULT_ISSUER_ISO2
+    pais = normalize_country(issuer_iso2)
+    if pais is None:
+        logger.warning(
+            "factusol: país del emisor %r no reconocido; se usa %s para el "
+            "régimen de IVA. Revisa «País en ISO2» de la serie en /erp/settings.",
+            issuer_iso2, DEFAULT_ISSUER_ISO2,
+        )
+        return DEFAULT_ISSUER_ISO2
+    return pais
 
 
 def pareja_elegible(country_iso2: str | None, *, issuer_iso2: str | None = None) -> bool:
@@ -354,24 +370,6 @@ def paicli_for(country_iso2: str | None) -> str | None:
     return country_numeric(country_iso2) if country_iso2 else None
 
 
-def regimes_por_emisor(
-    emisores: Any, country_iso2: str | None, *, vat: Any = None,
-    nif: Any = None, vies_valid: bool | None = None,
-) -> dict[str, str]:
-    """`{país del emisor: régimen}` para cada empresa que puede facturar.
-
-    Es lo que hace ver que un mismo cliente no tiene UN régimen: CDCOPIADVD
-    (ES) es nacional para Streamtec y intracomunitario para MQ Europe."""
-    return {
-        emisor: regime_for(country_iso2, issuer_iso2=emisor, vat=vat, nif=nif,
-                           vies_valid=vies_valid)
-        for emisor in dict.fromkeys(
-            normalize_country(e) or str(e or "").upper() for e in (emisores or ())
-            if str(e or "").strip()
-        )
-    }
-
-
 def regimes_por_serie(
     series_paises: Any, country_iso2: str | None, *, vat: Any = None,
     nif: Any = None, vies_valid: bool | None = None,
@@ -395,22 +393,6 @@ def regimes_por_serie(
             cliente_nuevo_bohub=cliente_nuevo_bohub,
         )
     return out
-
-
-def regime_unico(
-    emisores: Any, country_iso2: str | None, *, vat: Any = None,
-    nif: Any = None, vies_valid: bool | None = None,
-) -> str | None:
-    """El régimen si TODAS las empresas emisoras coinciden; `None` si no.
-
-    La ficha F_CLI es una sola (hay una única base de datos de FACTUSOL) y
-    solo puede guardar un régimen, así que cuando las empresas discrepan no
-    hay nada que escribir que no sea mentira para alguna de ellas."""
-    por_emisor = regimes_por_emisor(
-        emisores, country_iso2, vat=vat, nif=nif, vies_valid=vies_valid,
-    )
-    distintos = set(por_emisor.values())
-    return distintos.pop() if len(distintos) == 1 else None
 
 
 def proposed_fcli_values(

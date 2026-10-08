@@ -714,17 +714,24 @@ def issuer_companies(session: Session) -> list[dict[str, Any]]:
     régimen de IVA, y lo que hace ver que un mismo cliente no tiene UN régimen
     (Streamtec le factura con IVA y MQ Europe exento).
 
-    Se queda con las series que tienen identidad configurada con nombre."""
-    out: list[dict[str, Any]] = []
-    for serie, company in sorted(companies_config(session).items()):
-        nombre = str(company.get("nombre") or "").strip()
-        if not nombre:
-            continue
-        out.append({
-            "serie": serie, "nombre": nombre,
+    Están TODAS las series con identidad configurada, también las que no
+    tienen nombre (se las llama «Serie N»): descartarlas hacía que el modal
+    dejara de enseñar a MQ Europe y que `fix-regime` volviera a escribir el
+    régimen español en la ficha, mientras las proformas de esa serie seguían
+    calculándose como belgas.
+
+    `pais_iso2` puede ser None: esa serie no sabe de qué país emite y quien
+    decida el IVA con ella tiene que tratarlo aparte (no suponer España)."""
+    companies = companies_config(session)
+    return [
+        {
+            "serie": serie,
+            "nombre": str(companies[serie].get("nombre") or "").strip()
+                      or f"Serie {serie}",
             "pais_iso2": issuer_iso2_for_serie(session, serie),
-        })
-    return out
+        }
+        for serie in sorted(companies)
+    ]
 
 
 def issuer_iso2_por_serie(session: Session) -> dict[str, str]:

@@ -77,7 +77,7 @@ function settings(over: Partial<ErpSettings> = {}): ErpSettings {
     factusol_companies: {
       "5": {
         nombre: "Streamtec SL", direccion: "C. Corsega 232, 5",
-        cp_poblacion: "08036 Barcelona", pais: "España",
+        cp_poblacion: "08036 Barcelona", pais: "España", pais_iso2: "ES",
         telefono: "Tel. 932022530", email: "", nif: "CIF B64154263",
         idioma_defecto: "es",
         bancos: [

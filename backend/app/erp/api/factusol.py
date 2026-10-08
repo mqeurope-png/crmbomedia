@@ -2489,17 +2489,26 @@ def fix_regime_endpoint(
             "code": "factusol_regime_failed", "detail": str(exc)[:300],
         }) from exc
     if result["changed"]:
+        # Con conflicto entre empresas emisoras el régimen NO se toca (solo el
+        # país): el historial no puede decir «régimen corregido» ni guardar un
+        # régimen que no se ha escrito.
+        conflicto = result.get("conflicto")
         session.add(AuditLog(
             actor_user_id=current_user.id,
             action="erp.factusol_customer_regime",
             target_type="company",
             target_id=company.id,
             metadata_json=json.dumps({
-                "factusol_codcli": codcli, "regime": result["regime"],
+                "factusol_codcli": codcli,
+                "regime": None if conflicto else result["regime"],
                 "summary": (
+                    f"país corregido en FACTUSOL cliente nº {codcli}; el "
+                    "régimen no se toca: depende de la empresa que factura"
+                    if conflicto else
                     f"régimen de IVA corregido en FACTUSOL cliente nº {codcli}: "
                     f"{result['regime_label']}"
                 ),
+                **({"conflicto": conflicto} if conflicto else {}),
                 "written": result["written"], "changes": result["changes"],
             }),
         ))

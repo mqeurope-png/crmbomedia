@@ -199,7 +199,7 @@ def customer_con_regimen(
     calculado = regime_de_serie(customer, serie)
     decide = (customer.get("ficha_decide_por_serie") or {}).get(tip_of(serie))
     if not decide or not customer.get("codcli"):
-        return {**customer, "regime": calculado}
+        return _con_regimen(customer, serie, calculado)
     from app.integrations.factusol.customers import customer_row  # noqa: PLC0415
     from app.integrations.factusol.vat_regime import (  # noqa: PLC0415
         ficha_manda,
@@ -214,7 +214,7 @@ def customer_con_regimen(
             "(%s); se sigue con el calculado (%s)",
             customer.get("codcli"), exc, calculado,
         )
-        return {**customer, "regime": calculado}
+        return _con_regimen(customer, serie, calculado)
     ficha = ficha_manda(regime_from_fcli_row(row))
     if ficha and ficha != calculado:
         logger.info(
@@ -222,7 +222,25 @@ def customer_con_regimen(
             "por la pareja de la serie %s saldría %s)",
             customer.get("codcli"), ficha, tip_of(serie), calculado,
         )
-    return {**customer, "regime": ficha or calculado}
+    # ⚠️ El régimen resuelto hay que dejarlo TAMBIÉN en el mapa por serie: es
+    # lo que lee `build_quote_payload` (vía `regime_de_serie`), y `regime` a
+    # secas es solo el respaldo. Con el mapa sin tocar la ficha no decidía
+    # nada: el log decía «manda la ficha» y los importes salían con el otro
+    # régimen — exento lo que FACTUSOL factura al 21 % y al revés.
+    return _con_regimen(customer, serie, ficha or calculado)
+
+
+def _con_regimen(
+    customer: dict[str, Any], serie: Any, regime: str | None,
+) -> dict[str, Any]:
+    """El cliente con `regime` resuelto en los DOS sitios de los que se lee:
+    `regime` y la entrada de `regime_por_serie` de esa serie."""
+    por_serie = {**(customer.get("regime_por_serie") or {})}
+    if regime is None:
+        por_serie.pop(tip_of(serie), None)
+    else:
+        por_serie[tip_of(serie)] = regime
+    return {**customer, "regime": regime, "regime_por_serie": por_serie}
 
 
 def _same_serie(value: Any, serie: Any) -> bool:

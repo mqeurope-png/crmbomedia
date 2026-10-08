@@ -42,7 +42,16 @@ const REGIME_SHORT: Record<FiscalCheck["regime"], string> = {
 /** Lo que el régimen significa en la factura (Lote 2 · «régimen explicado,
  *  no etiquetado»): la consecuencia, no la etiqueta. El porqué técnico lo
  *  da `regime_reason` del backend, que se enseña debajo. */
-export function regimeConsequence(check: Pick<FiscalCheck, "regime" | "vies">): string {
+export function regimeConsequence(
+  check: Pick<FiscalCheck, "regime" | "vies" | "regimes">,
+): string {
+  // El régimen es de la PAREJA empresa que factura → cliente. Si no sale el
+  // mismo con todas las empresas, ninguna frase categórica es verdad: un
+  // cliente español lleva IVA desde Streamtec y sale exento desde MQ Europe.
+  const porEmpresa = check.regimes ?? [];
+  if (new Set(porEmpresa.map((r) => r.regime)).size > 1) {
+    return "Depende de la empresa que facture (ver abajo).";
+  }
   if (check.regime === "intracomunitario") {
     return check.vies?.status === "valido"
       ? "La factura saldrá sin IVA: el VAT está verificado en VIES."
@@ -54,7 +63,7 @@ export function regimeConsequence(check: Pick<FiscalCheck, "regime" | "vies">): 
   if (check.vies?.applies && check.vies.status === "no_valido") {
     return "La factura saldrá con IVA: el VAT no es válido en VIES y no se puede eximir.";
   }
-  return "La factura saldrá con IVA español.";
+  return "La factura saldrá con IVA del país de quien factura.";
 }
 
 /** La hora de la comprobación VIES, siempre visible: «hoy a las 11:42»,

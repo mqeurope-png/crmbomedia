@@ -382,12 +382,16 @@ def fiscal_check(
     # intracomunitario (`vies_hace_falta`). Antes se pedía «UE y no España»,
     # que dejaba fuera justo el caso del fallo: un cliente español facturado
     # por MQ Europe (BE), donde la exención depende de ese NIF-IVA.
+    # `or [None]`: sin ninguna empresa configurada se usa el emisor por
+    # defecto, para no quedarnos SIN consultar VIES (que es peor que
+    # consultarlo de más).
+    paises_emisores = [e["pais_iso2"] for e in emisores] or [None]
     eu_vat = (
         eu_vat_for(iso2, vat=vat_raw or None, nif=tax or None)
         if any(
-            vies_hace_falta(iso2, issuer_iso2=e["pais_iso2"],
+            vies_hace_falta(iso2, issuer_iso2=pais,
                             vat=vat_raw or None, nif=tax or None)
-            for e in emisores
+            for pais in paises_emisores
         ) else None
     )
     vies_block: dict[str, Any] = result_block(None, vat=eu_vat)
