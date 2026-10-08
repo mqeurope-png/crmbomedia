@@ -321,12 +321,25 @@ export function pickDefaultKeep(companies: DuplicateCompany[]): string {
 /** Lo que la pantalla «Crear empresa» sabe de los datos fiscales ANTES de
  *  guardar: régimen de IVA detectado (país + NIF-IVA, la misma regla que fija
  *  la ficha F_CLI), duplicados en el CRM y en FACTUSOL, y el gancho VIES. */
+export type FiscalRegimePorEmpresa = {
+  serie: number;
+  empresa: string;
+  pais_iso2: string | null;
+  regime: "nacional" | "intracomunitario" | "exportacion";
+  regime_label: string;
+  regime_reason: string;
+};
+
 export type FiscalCheck = {
   country_iso2: string | null;
   in_eu: boolean;
   regime: "nacional" | "intracomunitario" | "exportacion";
   regime_label: string;
   regime_reason: string;
+  /** El régimen con CADA empresa que factura (la pareja emisor → cliente):
+   *  `regime` de arriba es el de la empresa española, que es lo que se
+   *  escribe en la ficha F_CLI (que es una sola). */
+  regimes?: FiscalRegimePorEmpresa[];
   vat_normalized: string | null;
   duplicates: {
     /** Tarjeta candidata de «Usar esta» (Lote 2): nombre, NIF, población y
@@ -340,7 +353,9 @@ export type FiscalCheck = {
     factusol_checked: boolean;
     factusol_error: string | null;
   };
-  /** Validación VIES del NIF-IVA (UE fuera de España con NIF-IVA): el
+  /** Validación VIES del NIF-IVA (cualquier país de la UE con NIF-IVA, ahora
+   *  también España: la exención de un cliente español depende de su NIF-IVA
+   *  cuando factura MQ Europe): el
    *  régimen ya tiene en cuenta el veredicto. */
   vies: ViesState;
 };
@@ -353,6 +368,7 @@ export type ViesRevalidateResult = {
   regime: FiscalCheck["regime"];
   regime_label: string;
   regime_reason: string;
+  regimes?: FiscalRegimePorEmpresa[];
   company: Company;
 };
 

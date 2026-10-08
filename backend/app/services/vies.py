@@ -49,9 +49,21 @@ INVALID_VERDICTS_TRUSTED_FROM = datetime(2026, 9, 15, tzinfo=UTC)
 
 def company_eu_vat(company: Any) -> str | None:
     """El NIF-IVA intracomunitario a validar, o None si la empresa no es de la
-    UE (fuera de España) o no tiene NIF-IVA: VIES no aplica."""
+    UE o no tiene NIF-IVA: VIES no aplica.
+
+    España **ya no se excluye**: BoHub factura también desde MQ EUROPE BV
+    (Bélgica), y para esa pareja la exención de un cliente español depende de
+    que su NIF-IVA sea válido (ver `vat_regime.vies_hace_falta`). Era la misma
+    suposición de España a fuego que había en el régimen: dejaba a los
+    clientes españoles sin veredicto POSIBLE, así que un `ESB…` dado de baja
+    se eximía igual.
+
+    Solo entran los que tienen NIF-IVA **con prefijo** (`ESB65623175`): un NIF
+    español a secas (`B65623175`) no es un NIF-IVA y sigue sin consultarse, así
+    que esto no mete al CRM español entero en el barrido.
+    """
     country = normalize_country(getattr(company, "country", None))
-    if country is None or country == "ES":
+    if country is None:
         return None
     return eu_vat_for(
         country, vat=getattr(company, "vat", None), nif=getattr(company, "tax_id", None),

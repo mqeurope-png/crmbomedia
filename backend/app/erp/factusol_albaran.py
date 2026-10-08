@@ -160,12 +160,18 @@ def manual_albaran_codcli(session: Session, order: Order) -> str | None:
     return str(company.factusol_company_id)
 
 
-def company_regime(session: Session, company_id: str | None) -> str | None:
-    """Régimen de IVA de la empresa del pedido por su país + NIF-IVA (Tarea
-    C), o None si la empresa no tiene país en el CRM (entonces manda la ficha
-    F_CLI del cliente)."""
+def company_regime(
+    session: Session, company_id: str | None, *, serie: int | str | None = None,
+) -> str | None:
+    """Régimen de IVA del albarán: la PAREJA país de la empresa que emite la
+    `serie` → país del cliente. `None` si la empresa no tiene país en el CRM
+    (entonces manda la ficha F_CLI del cliente).
+
+    Sin `serie` se supone el emisor por defecto, que es lo que hacía el código
+    viejo con «ES» escrito a fuego."""
     if not company_id:
         return None
+    from app.erp.factusol_pdf import issuer_iso2_for_serie  # noqa: PLC0415
     from app.erp.language import normalize_country  # noqa: PLC0415
     from app.integrations.factusol.vat_regime import regime_for  # noqa: PLC0415
     from app.models.crm import Company  # noqa: PLC0415
@@ -175,9 +181,41 @@ def company_regime(session: Session, company_id: str | None) -> str | None:
     if company is None or not company.country:
         return None
     return regime_for(
-        normalize_country(company.country), vat=company.vat, nif=company.tax_id,
+        normalize_country(company.country),
+        issuer_iso2=issuer_iso2_for_serie(session, serie) if serie is not None else None,
+        vat=company.vat, nif=company.tax_id,
         vies_valid=company_vies_valid(company),
     )
+
+
+def company_ficha_decide(
+    session: Session, company_id: str | None, *, serie: int | str | None = None,
+) -> bool:
+    """¿Manda la ficha F_CLI del cliente en el régimen de este albarán?
+
+    Sí cuando la pareja país del emisor → país del cliente está en la zona
+    donde el régimen es una decisión (los dos en la UE y distintos). Fuera de
+    ahí manda el cálculo, que es aritmética. Ver `vat_regime.pareja_elegible`
+    y `albaran_manual.apply_regime`."""
+    if not company_id:
+        return False
+    from app.erp.factusol_pdf import issuer_iso2_for_serie  # noqa: PLC0415
+    from app.erp.language import normalize_country  # noqa: PLC0415
+    from app.integrations.factusol.vat_regime import pareja_elegible  # noqa: PLC0415
+    from app.models.crm import Company  # noqa: PLC0415
+
+    company = session.get(Company, company_id)
+    if company is None or not company.country:
+        return False
+    # Serie sin identidad configurada (hoy la 4, Lambert): no se sabe de qué
+    # país emite, así que NO se deja decidir a la ficha. Suponer España aquí
+    # haría que el albarán y la proforma de ese pedido llevaran IVAs
+    # distintos (la proforma solo deja decidir a la ficha en las series con
+    # país configurado). Hay que ponerle `pais_iso2` en /erp/settings.
+    emisor = issuer_iso2_for_serie(session, serie) if serie is not None else None
+    if emisor is None:
+        return False
+    return pareja_elegible(normalize_country(company.country), issuer_iso2=emisor)
 
 
 #: Código del 409 cuando el pedido manual no tiene empresa vinculada a F_CLI.
@@ -582,11 +620,15 @@ def _create_albaran_from_lines(
             "(F_CLI): vincúlala o créala en FACTUSOL antes de crear el albarán."
         )
     intent = payment_intent(order) or {}
+    # La misma serie para el documento Y para el régimen: la empresa que
+    # emite es la que decide si el IVA va o no va.
+    serie = resolve_serie(session, order)
     result = create_standalone_albaran(
         session, client, order=order, codcli=codcli,
-        serie=resolve_serie(session, order), ejercicio=ejercicio,
+        serie=serie, ejercicio=ejercicio,
         fopalb=intent.get("forma_pago") or None, actor_user_id=actor_user_id,
-        regime=company_regime(session, order.company_id),
+        regime=company_regime(session, order.company_id, serie=serie),
+        ficha_decide=company_ficha_decide(session, order.company_id, serie=serie),
     )
     _attach_albaran(
         session, order, result["numero"],

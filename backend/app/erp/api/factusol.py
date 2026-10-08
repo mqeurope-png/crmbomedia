@@ -2442,6 +2442,7 @@ def regime_preview_endpoint(
     CRM, lo que codifica hoy su ficha F_CLI (`IFICLI`/`IVACLI`/`TIVCLI`/
     `PAICLI`) y qué columnas cambiarían. No escribe nada."""
     _ = current_user
+    from app.erp.factusol_pdf import issuer_companies  # noqa: PLC0415
     from app.integrations.factusol.customers import regime_preview  # noqa: PLC0415
     from app.services.vies import company_vies_valid  # noqa: PLC0415
 
@@ -2449,6 +2450,7 @@ def regime_preview_endpoint(
     preview = regime_preview(
         row, country_iso2=company.country, vat=company.vat, nif=company.tax_id,
         vies_valid=company_vies_valid(company),
+        emisores=issuer_companies(session),
     )
     return {"company_id": company.id, "codcli": codcli,
             "company_country": company.country, "company_vat": company.vat,
@@ -2465,6 +2467,7 @@ def fix_regime_endpoint(
     que cambian) el tipo de documento, el régimen de IVA y el país del cliente
     vinculado, según el país + NIF-IVA de la empresa CRM. A demanda, con
     auditoría; 502 y nada escrito si el esquema real no cuadra."""
+    from app.erp.factusol_pdf import issuer_companies  # noqa: PLC0415
     from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
     from app.integrations.factusol.customers import (  # noqa: PLC0415
         update_customer_regime,
@@ -2478,6 +2481,7 @@ def fix_regime_endpoint(
             client, codcli=codcli, ejercicio=ejercicio,
             country_iso2=company.country, vat=company.vat, nif=company.tax_id,
             vies_valid=company_vies_valid(company),
+            emisores=issuer_companies(session),
         )
     except FactusolError as exc:
         logger.warning("factusol customers/fix-regime KO: %s", exc)
@@ -2485,17 +2489,26 @@ def fix_regime_endpoint(
             "code": "factusol_regime_failed", "detail": str(exc)[:300],
         }) from exc
     if result["changed"]:
+        # Con conflicto entre empresas emisoras el régimen NO se toca (solo el
+        # país): el historial no puede decir «régimen corregido» ni guardar un
+        # régimen que no se ha escrito.
+        conflicto = result.get("conflicto")
         session.add(AuditLog(
             actor_user_id=current_user.id,
             action="erp.factusol_customer_regime",
             target_type="company",
             target_id=company.id,
             metadata_json=json.dumps({
-                "factusol_codcli": codcli, "regime": result["regime"],
+                "factusol_codcli": codcli,
+                "regime": None if conflicto else result["regime"],
                 "summary": (
+                    f"país corregido en FACTUSOL cliente nº {codcli}; el "
+                    "régimen no se toca: depende de la empresa que factura"
+                    if conflicto else
                     f"régimen de IVA corregido en FACTUSOL cliente nº {codcli}: "
                     f"{result['regime_label']}"
                 ),
+                **({"conflicto": conflicto} if conflicto else {}),
                 "written": result["written"], "changes": result["changes"],
             }),
         ))
@@ -3202,10 +3215,17 @@ def _apply_shipping(
     return out
 
 
-def _customer_from_company(session: Session, company_id: str) -> dict[str, Any]:
+def _customer_from_company(
+    session: Session, company_id: str, *, serie: Any = None,
+) -> dict[str, Any]:
     """Datos de cliente para la cabecera de F_PRE, tomados de la empresa CRM.
     409 si la empresa no está vinculada: sin CODCLI la proforma no tiene dueño
-    en la contabilidad y acabaría huérfana."""
+    en la contabilidad y acabaría huérfana.
+
+    `regime` es el de la `serie` pedida (la empresa que emite), y
+    `regime_por_serie` lleva el de TODAS las series: al editar una proforma la
+    serie definitiva es la de la fila que ya existe y la resuelve el worker, no
+    este endpoint."""
     from app.models.crm import Company  # noqa: PLC0415
 
     company = session.get(Company, company_id)
@@ -3221,15 +3241,26 @@ def _customer_from_company(session: Session, company_id: str) -> dict[str, Any]:
                 "Vincúlala antes de crear la proforma."
             ),
         })
+    from app.erp.factusol_pdf import (  # noqa: PLC0415
+        issuer_iso2_for_serie,
+        issuer_iso2_por_serie,
+    )
     from app.erp.language import normalize_country  # noqa: PLC0415
-    from app.integrations.factusol.vat_regime import regime_for  # noqa: PLC0415
+    from app.integrations.factusol.vat_regime import (  # noqa: PLC0415
+        pareja_elegible,
+        regime_for,
+        regimes_por_serie,
+    )
 
     # Tarea C: país REAL (antes CPAPRE salía siempre 724) y régimen de IVA por
-    # país + NIF-IVA: las proformas de un intracomunitario / exportación se
-    # calculan SIN IVA (`quotes._totals`).
+    # la PAREJA país del emisor (la serie) → país del cliente: las proformas de
+    # un intracomunitario / exportación se calculan SIN IVA (`quotes._totals`).
+    # Antes el emisor era siempre España y una proforma de MQ Europe (BE) a un
+    # cliente español salía con 21 % debiendo salir exenta.
     from app.services.vies import company_vies_valid  # noqa: PLC0415
 
     country = normalize_country(company.country) if company.country else None
+    vies_valid = company_vies_valid(company)
     return {
         "codcli": str(company.factusol_company_id),
         "nombre": company.name,
@@ -3241,9 +3272,22 @@ def _customer_from_company(session: Session, company_id: str) -> dict[str, Any]:
         "pais": country or "",
         "vat": company.vat or "",
         "regime": regime_for(
-            country, vat=company.vat, nif=company.tax_id,
-            vies_valid=company_vies_valid(company),
+            country,
+            issuer_iso2=issuer_iso2_for_serie(session, serie) if serie is not None else None,
+            vat=company.vat, nif=company.tax_id, vies_valid=vies_valid,
         ),
+        "regime_por_serie": regimes_por_serie(
+            issuer_iso2_por_serie(session), country, vat=company.vat,
+            nif=company.tax_id, vies_valid=vies_valid,
+        ),
+        # Series en las que la pareja permite ELEGIR (los dos países en la UE
+        # y distintos): ahí manda la ficha F_CLI y el job la lee. Se calcula
+        # aquí porque es pura (no llama a FACTUSOL) y el job solo consulta la
+        # ficha cuando de verdad puede cambiar algo.
+        "ficha_decide_por_serie": {
+            serie: pareja_elegible(country, issuer_iso2=pais)
+            for serie, pais in issuer_iso2_por_serie(session).items()
+        },
     }
 
 
@@ -3269,7 +3313,8 @@ def create_quote_endpoint(
     # vienen los dos, manda el libre (Lote B3b).
     customer = _apply_shipping(
         _apply_address(
-            _customer_from_company(session, payload.company_id), payload.address,
+            _customer_from_company(session, payload.company_id, serie=payload.serie),
+            payload.address,
         ),
         payload.shipping,
     )
@@ -3325,7 +3370,8 @@ def update_quote_endpoint(
         })
     customer = _apply_shipping(
         _apply_address(
-            _customer_from_company(session, payload.company_id), payload.address,
+            _customer_from_company(session, payload.company_id, serie=serie),
+            payload.address,
         ),
         payload.shipping,
     )

@@ -281,10 +281,15 @@ export function CompanyFactusolPanel({
       const r = await fixFactusolCustomerRegime(company.id);
       setRegimePreview(null);
       const cols = Object.keys(r.written).join(", ");
+      // Con conflicto entre empresas emisoras el régimen NO se toca (solo el
+      // país, si hacía falta): decirlo evita el falso «ya estaba bien».
       setNotice(r.changed
-        ? `Régimen corregido en FACTUSOL cliente nº ${r.codcli}: ${r.regime_label}`
-          + ` (${cols}). Las facturas ya emitidas no cambian.`
-        : `La ficha de FACTUSOL nº ${r.codcli} ya estaba bien (${r.regime_label}).`);
+        ? `Corregido en FACTUSOL cliente nº ${r.codcli} (${cols}).`
+          + (r.conflicto ? ` ${r.conflicto}` : ` Régimen: ${r.regime_label}.`)
+          + " Las facturas ya emitidas no cambian."
+        : r.conflicto
+          ? `La ficha de FACTUSOL nº ${r.codcli} se queda como está. ${r.conflicto}`
+          : `La ficha de FACTUSOL nº ${r.codcli} ya estaba bien (${r.regime_label}).`);
     } catch (e) {
       setError(extractErrorMessage(e, "No se pudo corregir el régimen en FACTUSOL."));
     } finally {
@@ -523,10 +528,28 @@ export function CompanyFactusolPanel({
       {regimePreview ? (
         <ErpModalShell label="Régimen de IVA en FACTUSOL" title="Régimen de IVA en FACTUSOL"
                        onClose={() => setRegimePreview(null)} disabled={busy}>
-          <p>
-            Por la empresa: <strong>{regimePreview.regime_label}</strong>{" "}
-            <span className="muted small">({regimePreview.reason})</span>
-          </p>
+          {/* El régimen es de la PAREJA emisor → cliente: el mismo cliente es
+              nacional para Streamtec (ES) e intracomunitario para MQ Europe
+              (BE). Se enseñan todas las empresas para que nadie dé España por
+              supuesta, que es lo que escondía el fallo. */}
+          {regimePreview.conflicto ? (
+            <p className="form-info" role="status">{regimePreview.conflicto}</p>
+          ) : (
+            <p>
+              Por la empresa: <strong>{regimePreview.regime_label}</strong>{" "}
+              <span className="muted small">({regimePreview.reason})</span>
+            </p>
+          )}
+          {regimePreview.regimes?.length ? (
+            <ul className="muted small">
+              {regimePreview.regimes.map((r) => (
+                <li key={`${r.serie}`}>
+                  Serie {r.serie} · {r.empresa} ({r.pais_iso2 ?? "—"}):{" "}
+                  <strong>{r.regime_label}</strong>
+                </li>
+              ))}
+            </ul>
+          ) : null}
           <p className="muted small">
             Ficha F_CLI nº {regimePreview.codcli} ahora:{" "}
             {regimePreview.current.regime_label ?? "régimen desconocido"} · tipo de
@@ -535,7 +558,10 @@ export function CompanyFactusolPanel({
           </p>
           {regimePreview.coherent ? (
             <p className="form-info" role="status">
-              La ficha de FACTUSOL ya está bien: nada que corregir.
+              {regimePreview.conflicto
+                ? "Nada que corregir desde BoHub: el régimen de la ficha lo "
+                  + "decides en FACTUSOL según la empresa que factura."
+                : "La ficha de FACTUSOL ya está bien: nada que corregir."}
             </p>
           ) : (
             <>

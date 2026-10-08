@@ -330,9 +330,24 @@ describe("helpers de «Crear empresa»", () => {
       .toBe("La factura saldrá sin IVA: el VAT está verificado en VIES.");
     expect(regimeConsequence({ regime: "nacional", vies: v("no_valido") }))
       .toBe("La factura saldrá con IVA: el VAT no es válido en VIES y no se puede eximir.");
+    // «español» no: el IVA es el del país de quien factura, y BoHub factura
+    // también desde Bélgica.
     expect(regimeConsequence({ regime: "nacional", vies: v(null, false) }))
-      .toBe("La factura saldrá con IVA español.");
+      .toBe("La factura saldrá con IVA del país de quien factura.");
     expect(regimeConsequence({ regime: "exportacion", vies: v(null, false) }))
       .toBe("La factura saldrá sin IVA: exportación fuera de la UE.");
+    // Si el régimen no es el mismo con todas las empresas, ninguna frase
+    // categórica es verdad: lo dice y remite a la lista.
+    expect(regimeConsequence({
+      regime: "nacional", vies: v(null, false),
+      regimes: [
+        { serie: 5, empresa: "Streamtec SL", pais_iso2: "ES",
+          regime: "nacional", regime_label: "Nacional (con IVA)",
+          regime_reason: "España → España (el mismo país) → nacional" },
+        { serie: 2, empresa: "MQ Europe BV", pais_iso2: "BE",
+          regime: "intracomunitario", regime_label: "Intracomunitario (exento)",
+          regime_reason: "Bélgica → España (UE) con NIF-IVA … → intracomunitario" },
+      ],
+    })).toBe("Depende de la empresa que facture (ver abajo).");
   });
 });

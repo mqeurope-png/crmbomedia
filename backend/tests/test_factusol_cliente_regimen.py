@@ -317,17 +317,40 @@ def test_regime_preview_muestra_actual_y_propuesto(client, session_factory) -> N
                        headers=auth_headers(client, "user"))
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["codcli"] == "3392" and body["regime"] == REGIME_INTRACOMUNITARIO
-    assert body["reason"] == "BE (UE) con NIF-IVA BE0812240188 → intracomunitario"
+    assert body["codcli"] == "3392"
+    # CAMBIO DELIBERADO (IVA por pareja): un cliente belga NO tiene un régimen,
+    # tiene uno por empresa que factura — intracomunitario desde España y
+    # nacional desde MQ Europe (BE), que es belga como él. La ficha F_CLI es
+    # una sola, así que BoHub NO toca sus columnas de régimen y lo explica;
+    # antes proponía «intracomunitario» dando España por supuesta.
+    assert "depende de la empresa que factura" in body["reason"]
+    assert [(e["pais_iso2"], e["regime"]) for e in body["regimes"]] == [
+        ("ES", REGIME_INTRACOMUNITARIO), ("BE", REGIME_NACIONAL),
+        ("ES", REGIME_INTRACOMUNITARIO),
+    ]
     assert body["current"]["regime"] == REGIME_NACIONAL
     assert body["current"]["IFICLI"] == 0 and body["current"]["PAICLI"] == "056"
-    assert body["proposed"] == {"IFICLI": 2, "IVACLI": 2, "TIVCLI": 4, "PAICLI": "056"}
-    assert [c["column"] for c in body["changes"]] == ["IFICLI", "IVACLI", "TIVCLI"]
-    assert body["changes"][0]["proposed_label"] == "2 · NIF/IVA operador intracomunitario"
-    assert body["coherent"] is False
+    # El país no está en disputa (y aquí ya es el correcto) → nada que cambiar.
+    assert body["proposed"] == {"PAICLI": "056"}
+    assert body["changes"] == [] and body["coherent"] is True
     assert fake.updates == [] and fake.writes == []          # solo lectura
 
-    # Preview de la lógica pura con la fila de Noruega.
+    # Un cliente alemán sí tiene UN régimen (intracomunitario para las dos
+    # empresas), y entonces la ficha se corrige como siempre.
+    preview = regime_preview(
+        {**INTRACOM_4279_OK, "IFICLI": 0, "IVACLI": 0, "TIVCLI": 1},
+        country_iso2="DE", nif="DE455128445",
+        emisores=[{"serie": 2, "nombre": "MQ Europe BV", "pais_iso2": "BE"},
+                  {"serie": 5, "nombre": "Streamtec SL", "pais_iso2": "ES"}],
+    )
+    assert preview["conflicto"] is None
+    assert preview["regime"] == REGIME_INTRACOMUNITARIO
+    assert [c["column"] for c in preview["changes"]] == ["IFICLI", "IVACLI", "TIVCLI"]
+    assert preview["changes"][0]["proposed_label"] == (
+        "2 · NIF/IVA operador intracomunitario")
+
+    # Preview de la lógica pura con la fila de Noruega (exportación para
+    # cualquier emisor: no hay nada que discutir).
     preview = regime_preview(EXPORT_525_MAL, country_iso2="NO")
     assert preview["regime"] == REGIME_EXPORTACION
     assert [c["column"] for c in preview["changes"]] == ["IVACLI", "TIVCLI", "PAICLI"]
@@ -374,9 +397,13 @@ def test_fix_regime_guards(client, session_factory) -> None:
                     headers=auth_headers(client, "pedidos"))
     assert r.status_code == 409 and r.json()["detail"]["code"] == "company_unlinked"
 
-    comp_id = _company(session_factory, country="BE", vat="BE0812240188",
-                       factusol_company_id="3392")
-    fake = RegimeFake([{**INTRACOM_3392_MAL, "IVACLI": "0"}])
+    # Cliente ALEMÁN a propósito: su régimen es el mismo para las dos empresas
+    # (intracomunitario desde España y desde Bélgica), así que hay columnas que
+    # proponer y el guard de esquema puede saltar. Con un cliente belga o
+    # español las empresas discrepan y BoHub ya no toca el régimen.
+    comp_id = _company(session_factory, country="DE", vat="DE455128445",
+                       factusol_company_id="4279")
+    fake = RegimeFake([{**INTRACOM_4279_OK, "IFICLI": 0, "IVACLI": "0", "TIVCLI": 1}])
     with _patch_client(fake):
         r = client.post("/api/erp/factusol/customers/fix-regime",
                         json={"company_id": comp_id},

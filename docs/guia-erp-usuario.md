@@ -429,6 +429,18 @@ sector**).
 CRM»**) y el **régimen de IVA** (**nacional · con IVA** / **intracomunitario ·
 exento** / **exportación · exento**).
 
+La fila **VIES** sale también en las empresas **españolas** que tengan NIF-IVA
+con prefijo (`ESB…`): si les factura MQ Europe, la exención depende de que ese
+NIF-IVA sea válido. En los pedidos que factura una empresa española no se avisa
+de un NIF-IVA no válido, porque ahí no cambia nada.
+
+La ficha dice «Depende de quién factura» con el régimen de cada empresa cuando
+no es el mismo para todas (p. ej. un cliente español: nacional para Streamtec,
+intracomunitario para MQ Europe). **«Régimen de IVA en FACTUSOL»** solo corrige
+la ficha del cliente cuando todas las empresas coinciden: la ficha de FACTUSOL
+es una sola y no puede decir las dos cosas; si no coinciden, el régimen se
+ajusta en FACTUSOL según la empresa con la que vayas a facturar.
+
 - **Panel «Datos fiscales»**: **NIF / VAT**, **Régimen IVA**, **VIES**,
   **Dirección**, **País** y **Web**. La fila **VIES** muestra si el NIF-IVA está
   **✓ verificado en VIES**, **no válido**, **pendiente** o **no disponible**, con
@@ -1792,9 +1804,14 @@ pastilla **«Muestra»**. Nada se escribe en FACTUSOL.
 **Quién puede crearla:** Comercial, ERP Pedidos, **ERP Taller (SAT)** y
 Administración — el taller también manda muestras, no solo las prepara.
 
-**Cliente intracomunitario (factura sin IVA).** Si la empresa es de otro país de
-la UE **con un NIF-IVA válido**, su régimen es **intracomunitario** y la factura
-sale **sin IVA**. La app lo valida en **VIES**:
+**Cliente intracomunitario (factura sin IVA).** El régimen depende de **quién
+factura y a quién**: BoHub emite desde Streamtec y Bomedia (España) y desde **MQ
+Europe (Bélgica)**, y cada serie es una de esas empresas. Si el cliente es de
+**otro país de la UE** que el de la empresa que factura y tiene un **NIF-IVA
+válido**, su régimen es **intracomunitario** y la factura sale **sin IVA**; si
+es del mismo país, lleva el IVA de ese país. Por eso un cliente español es
+**nacional** para Streamtec e **intracomunitario** para MQ Europe, y la app
+muestra el régimen de cada empresa cuando no coinciden. Lo valida en **VIES**:
 
 - Si VIES da el NIF-IVA como **válido** (**«✓ verificado en VIES»**), se aplica la
   exención.
@@ -1851,7 +1868,7 @@ Colores: **verde** = hecho · **ámbar** = pendiente · **gris** = no aplica ·
 a mano de la bandeja) · **Anulado**.
 
 **Régimen de IVA:** **nacional · con IVA** / **intracomunitario · exento** /
-**exportación · exento**.
+**exportación · exento** — según la pareja empresa que factura → cliente.
 
 ---
 

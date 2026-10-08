@@ -125,9 +125,13 @@ def _quote(customer: dict[str, Any]) -> dict[str, Any]:
 
 def test_emision_intracomunitario_sin_iva(session_factory, engine) -> None:
     """Cliente UE con NIF-IVA: la proforma que calcula BoHub sale con IVA 0 en
-    los importes (banda 1 a 0 %, total = base) y país real; el albarán manual
-    desde las líneas también, aunque la ficha F_CLI (mal configurada) diga
-    nacional — y avisa para corregirla."""
+    los importes (banda 1 a 0 %, total = base) y país real.
+
+    En el albarán, donde la pareja emisor → cliente permite elegir (los dos
+    países en la UE y distintos) **manda la ficha F_CLI**: es la decisión del
+    operador y lo que FACTUSOL aplica al facturar. Con la ficha del 3392 mal
+    configurada (nacional) el albarán sale con IVA y se avisa; con la ficha
+    bien, sale exento."""
     with session_factory() as s:
         customer = _customer_from_company(s, "be")
     assert customer["regime"] == REGIME_INTRACOMUNITARIO and customer["pais"] == "BE"
@@ -144,17 +148,35 @@ def test_emision_intracomunitario_sin_iva(session_factory, engine) -> None:
         s.commit()
     fake = _albaran_client()
     result = _run_job(engine, fake, "o-be")
-    assert result["status"] == "created" and result["regime"] == REGIME_INTRACOMUNITARIO
+    # CAMBIO DELIBERADO (IVA por pareja): manda la ficha, que dice nacional.
+    assert result["status"] == "created" and result["regime"] == REGIME_NACIONAL
     assert "está como Nacional (con IVA)" in result["regime_warning"]
+    assert "ficha de FACTUSOL" in result["regime_warning"]
     cab = _header(fake)
     assert cab["CLIALB"] == 3392 and cab["CPAALB"] == "056"
-    assert cab["NET1ALB"] == 200.0 and cab["PIVA1ALB"] == 0.0
-    assert cab["IIVA1ALB"] == 0.0 and cab["TOTALB"] == 200.0
+    assert cab["NET1ALB"] == 200.0 and cab["PIVA1ALB"] == 21.0
+    assert cab["IIVA1ALB"] == 42.0 and cab["TOTALB"] == 242.0
     assert fake.updated == []                          # F_CLI no se toca desde aquí
     with session_factory() as s:
         block = json.loads(s.get(Order, "o-be").packing_json)["factusol_albaran"]
-        assert block["regime"] == REGIME_INTRACOMUNITARIO
-        assert "Corrige la ficha" in block["regime_warning"]
+        assert block["regime"] == REGIME_NACIONAL
+        assert "Repásalo desde la empresa" in block["regime_warning"]
+
+    # Con la ficha F_CLI bien configurada (intracomunitaria), el mismo pedido
+    # sale exento y sin aviso.
+    with session_factory() as s:
+        _manual(s, "o-be2", "MANUAL-000022", [
+            {"sku": "Ink500mlCY", "desc": "Tinta", "qty": 2, "price": 100.0},
+        ], company_id="be")
+        s.commit()
+    tablas = _albaran_tables()
+    tablas["F_CLI"] = [{**CLI_3392_MAL, "IFICLI": 2, "IVACLI": 2, "TIVCLI": 4}]
+    fake2 = _client(tablas)
+    result2 = _run_job(engine, fake2, "o-be2")
+    assert result2["regime"] == REGIME_INTRACOMUNITARIO
+    assert result2["regime_warning"] is None
+    cab2 = _header(fake2)
+    assert cab2["PIVA1ALB"] == 0.0 and cab2["TOTALB"] == 200.0
 
 
 def test_emision_exportacion_sin_iva(session_factory, engine) -> None:

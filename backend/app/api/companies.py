@@ -291,6 +291,38 @@ def count_companies(
     return {"total": total}
 
 
+def _regimes_por_empresa(
+    session: Session, iso2: str | None, *, vat: Any = None, nif: Any = None,
+    vies_valid: bool | None = None, emisores: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """El régimen que le sale al cliente **con cada empresa que factura**.
+
+    El régimen no es del cliente, es de la PAREJA: CDCOPIADVD (ES) es nacional
+    para Streamtec y intracomunitario para MQ Europe (BE). El modal enseña las
+    dos filas para que nadie dé España por supuesta."""
+    from app.erp.factusol_pdf import issuer_companies  # noqa: PLC0415
+    from app.integrations.factusol.vat_regime import (  # noqa: PLC0415
+        REGIME_LABELS,
+        regime_for,
+        regime_reason,
+    )
+
+    out: list[dict[str, Any]] = []
+    for emisor in (emisores if emisores is not None else issuer_companies(session)):
+        pais = emisor["pais_iso2"]
+        regime = regime_for(iso2, issuer_iso2=pais, vat=vat, nif=nif,
+                            vies_valid=vies_valid)
+        out.append({
+            "serie": emisor["serie"], "empresa": emisor["nombre"],
+            "pais_iso2": pais,
+            "regime": regime, "regime_label": REGIME_LABELS[regime],
+            "regime_reason": regime_reason(
+                iso2, issuer_iso2=pais, vat=vat, nif=nif, vies_valid=vies_valid,
+            ),
+        })
+    return out
+
+
 @router.get("/fiscal-check")
 def fiscal_check(
     tax_id: str | None = Query(default=None, max_length=64),
@@ -328,6 +360,7 @@ def fiscal_check(
       (eso lo hace `vies-revalidate`) ni toca el barrido en segundo plano.
     """
     _ = current_user
+    from app.erp.factusol_pdf import issuer_companies  # noqa: PLC0415
     from app.erp.language import normalize_country  # noqa: PLC0415
     from app.integrations.factusol.vat_regime import (  # noqa: PLC0415
         EU_ISO2,
@@ -336,16 +369,30 @@ def fiscal_check(
         normalize_vat,
         regime_for,
         regime_reason,
+        vies_hace_falta,
     )
 
     tax = (tax_id or "").strip()
     vat_raw = (vat or "").strip()
     iso2 = normalize_country(country) if (country or "").strip() else None
+    emisores = issuer_companies(session)
 
-    # VIES: solo UE fuera de España y con NIF-IVA del país.
+    # VIES: solo donde la respuesta cambia la factura, o sea cuando ALGUNA de
+    # las empresas que facturan forma con el cliente una pareja que puede dar
+    # intracomunitario (`vies_hace_falta`). Antes se pedía «UE y no España»,
+    # que dejaba fuera justo el caso del fallo: un cliente español facturado
+    # por MQ Europe (BE), donde la exención depende de ese NIF-IVA.
+    # `or [None]`: sin ninguna empresa configurada se usa el emisor por
+    # defecto, para no quedarnos SIN consultar VIES (que es peor que
+    # consultarlo de más).
+    paises_emisores = [e["pais_iso2"] for e in emisores] or [None]
     eu_vat = (
         eu_vat_for(iso2, vat=vat_raw or None, nif=tax or None)
-        if iso2 and iso2 != "ES" and iso2 in EU_ISO2 else None
+        if any(
+            vies_hace_falta(iso2, issuer_iso2=pais,
+                            vat=vat_raw or None, nif=tax or None)
+            for pais in paises_emisores
+        ) else None
     )
     vies_block: dict[str, Any] = result_block(None, vat=eu_vat)
     if eu_vat:
@@ -394,6 +441,13 @@ def fiscal_check(
         "regime_label": REGIME_LABELS[regime],
         "regime_reason": regime_reason(
             iso2, vat=vat_raw or None, nif=tax or None, vies_valid=vies_valid,
+        ),
+        # El régimen con CADA empresa que factura: `regime` de arriba es el de
+        # la empresa española (lo que se escribe en la ficha F_CLI, que es una
+        # sola), y esta lista es la que impide dar España por supuesta.
+        "regimes": _regimes_por_empresa(
+            session, iso2, vat=vat_raw or None, nif=tax or None,
+            vies_valid=vies_valid, emisores=emisores,
         ),
         "vat_normalized": normalize_vat(vat_raw) if vat_raw else None,
         "duplicates": {
@@ -516,6 +570,9 @@ def revalidate_company_vies(
         "regime_label": REGIME_LABELS[regime],
         "regime_reason": regime_reason(
             iso2, vat=row.vat, nif=row.tax_id, vies_valid=state["valid"],
+        ),
+        "regimes": _regimes_por_empresa(
+            session, iso2, vat=row.vat, nif=row.tax_id, vies_valid=state["valid"],
         ),
         "company": _to_read(session, row).model_dump(mode="json"),
     }

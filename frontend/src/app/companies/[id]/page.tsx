@@ -299,6 +299,20 @@ export default function CompanyDetailPage() {
   const vies = company.vies?.applies ? company.vies : null;
   const viesChip = vies?.status ? VIES_CHIP[vies.status] : null;
   const viesInvalid = vies?.status === "no_valido";
+  // El régimen de IVA es de la PAREJA emisor → cliente: un mismo cliente tiene
+  // uno por empresa que factura (nacional para Streamtec, intracomunitario
+  // para MQ Europe). `regimenesPosibles` son todos los legítimos: la ficha
+  // F_CLI, que es una sola, solo puede guardar uno de ellos.
+  const regimenesPorEmpresa = fiscal?.regimes ?? [];
+  const regimenesPosibles = new Set<string>([
+    ...(fiscal ? [fiscal.regime] : []),
+    ...regimenesPorEmpresa.map((r) => r.regime),
+  ]);
+  // «Depende de quién factura» solo cuando DE VERDAD depende: con tres
+  // empresas y un cliente noruego el régimen es exportación para todas, y
+  // decir que depende sería ruido (y mentira).
+  const regimenesDistintos =
+    new Set(regimenesPorEmpresa.map((r) => r.regime)).size > 1;
   const syncLabel = !linked
     ? { text: "sin vincular", tone: "muted" }
     : sync === null || (sync.customer === null && diffs === null)
@@ -523,7 +537,23 @@ export default function CompanyDetailPage() {
                   <span className="muted small"> · {fiscal.regime_reason}</span>
                 </>
               ) : "—"}
-              {sync?.customer?.regime_label && fiscal && sync.customer.regime !== fiscal.regime ? (
+              {/* El régimen es de la PAREJA emisor → cliente: cuando no es el
+                  mismo para todas las empresas que facturan se dice, porque
+                  con «España» a secas una factura de MQ Europe (BE) parecía
+                  bien estando mal. */}
+              {regimenesDistintos ? (
+                <span className="muted small">
+                  {" · "}Depende de quién factura:{" "}
+                  {regimenesPorEmpresa
+                    .map((r) => `${r.empresa} (${r.pais_iso2 ?? "—"}) ${r.regime_label}`)
+                    .join(" · ")}
+                </span>
+              ) : null}
+              {/* La ficha F_CLI solo «no cuadra» si su régimen no le sirve a
+                  NINGUNA de las empresas: con dos países, un mismo cliente
+                  tiene dos regímenes legítimos y la ficha solo guarda uno. */}
+              {sync?.customer?.regime_label && fiscal
+               && !regimenesPosibles.has(sync.customer.regime ?? "") ? (
                 <span className="badge warn" title="La ficha F_CLI tiene otro régimen: usa «Comprobar régimen de IVA»">
                   FACTUSOL: {sync.customer.regime_label}
                 </span>
@@ -561,7 +591,7 @@ export default function CompanyDetailPage() {
               ) : (
                 <>
                   <span className="erp-flow-pill is-n">No aplica</span>
-                  <span className="muted">solo para NIF-IVA de la UE fuera de España</span>
+                  <span className="muted">solo para NIF-IVA intracomunitario</span>
                 </>
               )}
             </dd>
