@@ -156,9 +156,9 @@ def test_quien_no_viene_de_formulario_cuenta_como_otra_web(factory, comparador):
     tiene que decir lo mismo en SQL que en memoria: el camino en memoria es
     el de las reglas de asignación."""
     with factory() as s:
-        suelto = Contact(first_name="Ana", email="ana@woo.es", tags=[],
+        suelto = Contact(first_name="Ana", email="ana@woo.es",
                          origin="WooCommerce", origin_account_id="woocommerce:boprint")
-        sin_cuenta = Contact(first_name="Luis", email="luis@manual.es", tags=[],
+        sin_cuenta = Contact(first_name="Luis", email="luis@manual.es",
                              origin="Manual")
         s.add_all([suelto, sin_cuenta])
         s.commit()
@@ -279,7 +279,9 @@ def test_el_embed_por_web_sirve_el_idioma_de_la_pagina(http, factory):
     assert cfg("nl")["slug"] == "mbolasers-contacto-nl"
     assert cfg("nl-BE")["slug"] == "mbolasers-contacto-nl"       # nl-BE → nl
     assert cfg("fr")["slug"] == "mbolasers-contacto-en"          # sin francés → el de respaldo
-    assert cfg("")["slug"] == "mbolasers-contacto-es"            # sin idioma → el castellano
+    # Sin idioma NO es «página en castellano»: también se lleva el respaldo.
+    assert cfg("")["slug"] == "mbolasers-contacto-en"
+    assert cfg("es")["slug"] == "mbolasers-contacto-es"          # castellano de verdad
 
 
 def test_sin_respaldo_marcado_cae_al_castellano_y_luego_al_ingles(factory):
