@@ -77,7 +77,14 @@ jest.mock("../../lib/erpApi", () => ({
   comprobarCuadre: jest.fn(),
   exportCuadreXlsx: jest.fn(),
   saveBlob: jest.fn(),
+  // La pantalla monta «Colas · trabajos fallidos» al final (ver
+  // components/erp/ColasFallidasSection.test.tsx para su comportamiento).
+  getColasResumen: jest.fn(),
+  listColaFallidos: jest.fn(),
+  reencolarCola: jest.fn(),
+  vaciarCola: jest.fn(),
 }));
+jest.mock("../../lib/api", () => ({ getCurrentUser: jest.fn() }));
 
 function api() {
   return jest.requireMock("../../lib/erpApi") as Record<string, jest.Mock>;
@@ -86,6 +93,12 @@ function api() {
 beforeEach(() => {
   const m = api();
   m.getCuadreResumen.mockResolvedValue(RESUMEN);
+  m.getColasResumen.mockResolvedValue({
+    fallidos_por_cola: {}, fallidos_total: 0, bytes_por_trabajo_medio: 0,
+    bytes_estimados: 0, redis_usada_bytes: 0, muestra: 0,
+  });
+  (jest.requireMock("../../lib/api") as Record<string, jest.Mock>)
+    .getCurrentUser.mockResolvedValue({ id: "u1", role: "admin" });
   m.listCuadreHallazgos.mockResolvedValue({ items: ITEMS, total: ITEMS.length });
   m.revisarCuadreHallazgo.mockResolvedValue({ ...ITEMS[1], estado: "revisado" });
   m.reincluirCuadreHallazgo.mockResolvedValue({ ...ITEMS[1], estado: "abierto" });

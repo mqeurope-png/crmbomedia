@@ -70,6 +70,10 @@ class Hallazgo:
     arreglo_boton: str | None = None
     #: Valores que motivan el descuadre (→ huella). Sin días transcurridos.
     huella_datos: dict[str, Any] = field(default_factory=dict)
+    #: Severidad de ESTE hallazgo, cuando no la marca la comprobación sino el
+    #: propio dato: 1.687 fallos de ayer y 3 de hace un mes no son lo mismo
+    #: aunque salgan de la misma comprobación. `None` = la de la comprobación.
+    severidad: str | None = None
     #: Datos extra para la pantalla / el Excel (importe pendiente, días…).
     datos: dict[str, Any] = field(default_factory=dict)
     #: Parte de la fuente a la que pertenece (la tienda): si la pasada no

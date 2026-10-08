@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Generator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -54,12 +54,15 @@ def _hallazgos(s: Session) -> list[CuadreFinding]:
 
 
 def test_el_fallido_de_agosto_sale_en_el_cuadre_y_se_puede_revisar(factory, monkeypatch):
-    monkeypatch.setattr(checks_colas, "leer_fallidos", lambda *a, **k: [AGOSTO])
+    monkeypatch.setattr(checks_colas, "leer_fallidos",
+                        lambda *a, **k: ([AGOSTO], {AGOSTO.cola: 1}))
     with factory() as s:
         cuadre_engine.ejecutar(s, fuente="mysql", origen="manual")
         (h,) = _hallazgos(s)
-        assert h.estado == "abierto" and h.severidad == "media"
-        assert h.entidad_tipo == "trabajo_cola" and h.entidad_id == AGOSTO.id
+        # Baja: el último fallo del grupo es de hace meses, así que ya no está
+        # pasando y lo que queda es limpiar el registro.
+        assert h.estado == "abierto" and h.severidad == "baja"
+        assert h.entidad_tipo == "trabajo_cola"
         d = json.loads(h.detalle_json)
         texto = json.dumps(d, ensure_ascii=False)
         assert "sync_orders_backfill" in texto and "woocommerce:backfill" in texto
@@ -75,7 +78,8 @@ def test_el_fallido_de_agosto_sale_en_el_cuadre_y_se_puede_revisar(factory, monk
 
 def test_sin_redis_la_comprobacion_falla_y_no_da_por_resueltos_los_que_habia(factory,
                                                                              monkeypatch):
-    monkeypatch.setattr(checks_colas, "leer_fallidos", lambda *a, **k: [AGOSTO])
+    monkeypatch.setattr(checks_colas, "leer_fallidos",
+                        lambda *a, **k: ([AGOSTO], {AGOSTO.cola: 1}))
     with factory() as s:
         cuadre_engine.ejecutar(s, fuente="mysql", origen="manual")
 
@@ -112,23 +116,37 @@ def test_leer_fallidos_lee_todas_las_colas_los_mas_recientes_primero(monkeypatch
     class _Conn:
         def zrevrange(self, key, start, end):
             pedidos.append((key, start, end))
-            return ids[key]
+            return ids[key][start : end + 1]
+
+        def zcard(self, key):
+            return len(ids[key])
 
     monkeypatch.setattr(rq.Queue, "all", classmethod(lambda cls, connection=None: colas))
-    monkeypatch.setattr(rq.registry, "FailedJobRegistry",
-                        lambda queue: SimpleNamespace(key=f"rq:failed:{queue.name}"))
+    class _Registro:
+        def __init__(self, queue):
+            self.key = f"rq:failed:{queue.name}"
+            self.name = queue.name
+
+        def __len__(self):
+            # `len()` de rq pasa por `cleanup()` → `zremrangebyscore`: BORRA
+            # las entradas caducadas. En una comprobación de solo lectura eso
+            # es un borrado silencioso, así que aquí se prohíbe.
+            raise AssertionError("len(registro) escribe en Redis: usa ZCARD")
+
+    monkeypatch.setattr(rq.registry, "FailedJobRegistry", _Registro)
     monkeypatch.setattr(rq.job.Job, "fetch_many",
                         classmethod(lambda cls, js, connection=None: [trabajos[j] for j in js]))
-    out = leer_fallidos_real(conn=_Conn(), limite=2)
-    assert all(end == 1 for _k, _s, end in pedidos)          # solo los 2 más nuevos por cola
-    # Mezclados por fecha, el más nuevo primero, y con el tope total.
-    assert [t.id for t in out] == ["j3", "j1"]
-    j1 = out[1]
+    out, totales = leer_fallidos_real(conn=_Conn(), max_por_cola=2)
+    assert all(start == 0 for _k, start, _e in pedidos)       # los más nuevos primero
+    # Cada cola, de lo más nuevo a lo más viejo, y cuántos hay en su registro.
+    assert [t.id for t in out] == ["j1", "j3", "j2"]
+    assert totales == {"woocommerce:backfill": 1, "genei:shipments": 2}
+    j1 = out[0]
     assert j1.error == "WooError: GET /orders → 400"
     assert j1.argumentos == "'boprint', since='2026-07-04'"
     assert j1.fecha.tzinfo is not None
-    todos = leer_fallidos_real(conn=_Conn())
-    assert todos[-1].funcion.startswith("(datos")              # sin fecha, al final
+    # El que caducó se cuenta igual, diciendo que no tiene datos.
+    assert out[2].funcion.startswith("(datos")
 
 
 # --- «Poner al día estados Woo…» ---------------------------------------------------------------
@@ -262,3 +280,216 @@ def test_al_encolar_recuerda_la_ultima_pasada(monkeypatch):
     assert guardado["k"] == woo_jobs.ULTIMA_PUESTA_AL_DIA_KEY
     assert guardado["v"]["job_id"] == "job-1" and guardado["v"]["preview"] is True
     assert guardado["ex"] >= woo_jobs.RECONCILE_RESULT_TTL
+
+
+# --- agrupado por función y tipo de error -----------------------------------
+
+
+def test_mil_seiscientos_ochenta_y_siete_fallos_iguales_son_un_solo_hallazgo(
+    factory, monkeypatch
+):
+    """Con 149.603 fallidos el panel listaba 300 líneas de lo mismo y no se
+    podía leer. Un grupo por cola + función + tipo de error, con su recuento."""
+    ahora = datetime.now(UTC)
+    lote = [
+        TrabajoFallido(
+            id=f"j{i}", cola="brevo:webhook_process",
+            funcion="app.integrations.brevo.webhooks.process_brevo_webhook_batch",
+            argumentos=f"[{{'event': 'opened', 'id': {i}}}], 'default'",
+            fecha=ahora - timedelta(minutes=i),
+            # El id cambia en cada uno: si no se normaliza, 1.687 grupos.
+            error=f"IntegrityError: Duplicate entry 'brevo-default-{i}:soft_bounce' "
+                  "for key 'uq_activity_event_system_account_external_id'",
+        )
+        for i in range(1687)
+    ]
+    monkeypatch.setattr(checks_colas, "leer_fallidos",
+                        lambda *a, **k: (lote, {"brevo:webhook_process": 1687}))
+    with factory() as s:
+        cuadre_engine.ejecutar(s, fuente="mysql", origen="manual")
+        (h,) = _hallazgos(s)                     # UNA línea, no 1.687
+        d = json.loads(h.detalle_json)
+        # Sigue pasando y es un volumen de tormenta: alta.
+        assert h.severidad == "alta"
+        assert d["datos"]["cuantos"] == 1687
+        assert d["datos"]["sigue_pasando"] is True
+        assert "<ref>" in d["datos"]["tipo_error"]      # el id, normalizado
+        # Pero el nombre de la clave única NO: dos claves distintas son
+        # dos problemas distintos.
+        assert "uq_activity_event_system_account_external_id" in d["datos"]["tipo_error"]
+        assert "1687" in d["etiqueta"]
+        # Y el ejemplo lleva argumentos, que es lo que sirve para repetirlo.
+        assert "'event': 'opened'" in d["datos"]["ejemplo_argumentos"]
+
+
+def test_dos_errores_distintos_de_la_misma_funcion_son_dos_grupos(factory, monkeypatch):
+    ahora = datetime.now(UTC)
+    lote = [
+        TrabajoFallido(id="a1", cola="factusol:writes",
+                       funcion="app.x.create_quote_job", argumentos="1, 2",
+                       fecha=ahora, error="TypeError: takes 2 positional arguments"),
+        TrabajoFallido(id="b1", cola="factusol:writes",
+                       funcion="app.x.create_quote_job", argumentos="3, 4",
+                       fecha=ahora, error="FactusolError: cliente no existe"),
+    ]
+    monkeypatch.setattr(checks_colas, "leer_fallidos",
+                        lambda *a, **k: (lote, {"factusol:writes": 2}))
+    with factory() as s:
+        cuadre_engine.ejecutar(s, fuente="mysql", origen="manual")
+        hallazgos = _hallazgos(s)
+    # El de arity y el de negocio son problemas distintos: no se mezclan.
+    assert len(hallazgos) == 2
+    errores = {json.loads(h.detalle_json)["datos"]["tipo_error"] for h in hallazgos}
+    assert any("TypeError" in e for e in errores)
+    assert any("FactusolError" in e for e in errores)
+
+
+def test_el_recuento_dice_cuando_es_un_al_menos(factory, monkeypatch):
+    """Esto corre dentro de la petición web, así que hay tope. Un tope que no
+    se dice se lee como «ya está todo»."""
+    ahora = datetime.now(UTC)
+    lote = [TrabajoFallido(id=f"j{i}", cola="brevo:push_contact",
+                           funcion="app.x.push_contact_job", argumentos="'c'",
+                           fecha=ahora, error="400 from brevo/default")
+            for i in range(5)]
+    monkeypatch.setattr(checks_colas, "leer_fallidos",
+                        lambda *a, **k: (lote, {"brevo:push_contact": 146876}))
+    with factory() as s:
+        cuadre_engine.ejecutar(s, fuente="mysql", origen="manual")
+        (h,) = _hallazgos(s)
+        d = json.loads(h.detalle_json)
+    assert "al menos 5" in d["detalle"]
+    assert d["datos"]["recuento_recortado"] is True
+    assert d["datos"]["en_el_registro"] == 146876
+
+
+def test_un_fallo_nuevo_del_mismo_dia_no_reabre_lo_ya_revisado(factory, monkeypatch):
+    """Con el recuento en la huella, cada fallo nuevo reabriría un descuadre
+    ya revisado. Con el DÍA del último fallo, como mucho una vez al día."""
+    ahora = datetime.now(UTC)
+
+    def _lote(cuantos: int):
+        return [TrabajoFallido(id=f"j{i}", cola="gmail:process_history",
+                               funcion="app.x.process_history_job", argumentos="'u'",
+                               fecha=ahora, error="HttpError 404")
+                for i in range(cuantos)]
+
+    monkeypatch.setattr(checks_colas, "leer_fallidos",
+                        lambda *a, **k: (_lote(3), {"gmail:process_history": 3}))
+    with factory() as s:
+        cuadre_engine.ejecutar(s, fuente="mysql", origen="manual")
+        (h,) = _hallazgos(s)
+        cuadre_engine.revisar(s, h.id, motivo="Arreglado, pendiente de limpiar",
+                              user_id=None)
+        s.commit()
+
+    monkeypatch.setattr(checks_colas, "leer_fallidos",
+                        lambda *a, **k: (_lote(9), {"gmail:process_history": 9}))
+    with factory() as s:
+        cuadre_engine.ejecutar(s, fuente="mysql", origen="manual")
+        (h,) = _hallazgos(s)
+        assert h.estado == "revisado"
+        # Pero el recuento de la pantalla sí está al día.
+        assert json.loads(h.detalle_json)["datos"]["cuantos"] == 9
+
+
+def test_la_memoria_de_los_fallidos_se_estima_por_muestreo(monkeypatch):
+    """Medir 149.603 trabajos uno a uno costaría más que el dato."""
+    import rq
+    import rq.registry
+
+    colas = [SimpleNamespace(name="brevo:push_contact")]
+
+    class _Registro:
+        def __init__(self, queue):
+            self.key = f"rq:failed:{queue.name}"
+
+        def __len__(self):
+            raise AssertionError("len(registro) escribe en Redis: usa ZCARD")
+
+    class _Conn:
+        def zcard(self, _key):
+            return 146_876
+
+        def zrevrange(self, _key, _start, _end):
+            return [f"j{i}".encode() for i in range(25)]
+
+        def memory_usage(self, _clave):
+            return 1_024
+
+        def info(self, _seccion):
+            return {"used_memory": 500 * 1024 * 1024}
+
+    monkeypatch.setattr(rq.Queue, "all", classmethod(lambda cls, connection=None: colas))
+    monkeypatch.setattr(rq.registry, "FailedJobRegistry", _Registro)
+    out = checks_colas.memoria_de_colas(conn=_Conn())
+    assert out["fallidos_total"] == 146_876
+    assert out["bytes_por_trabajo_medio"] == 1_024
+    assert out["bytes_estimados"] == 146_876 * 1_024      # ~143 MB
+    assert out["redis_usada_bytes"] == 500 * 1024 * 1024
+    assert out["muestra"] == 25
+
+
+def test_un_id_numerico_suelto_no_parte_el_grupo(factory, monkeypatch):
+    """Un `KeyError: 12345` por pedido serían miles de grupos (y miles de
+    filas en `cuadre_findings`). Pero un 400 y un 404 sí son distintos."""
+    from app.erp.cuadre.checks_colas import tipo_de_error
+
+    assert tipo_de_error("KeyError: 12345") == tipo_de_error("KeyError: 998877")
+    assert tipo_de_error("WooError: GET /orders/12345 → 404") == \
+        tipo_de_error("WooError: GET /orders/998877 → 404")
+    # Tres cifras o menos se quedan: ahí están los estados y las aridades.
+    assert tipo_de_error("400 from brevo") != tipo_de_error("404 from brevo")
+    assert tipo_de_error("takes 2 arguments") != tipo_de_error("takes 3 arguments")
+
+    ahora = datetime.now(UTC)
+    lote = [TrabajoFallido(id=f"j{i}", cola="woocommerce:backfill",
+                           funcion="app.x.sync_order", argumentos=f"{10000 + i}",
+                           fecha=ahora, error=f"KeyError: {10000 + i}")
+            for i in range(40)]
+    monkeypatch.setattr(checks_colas, "leer_fallidos",
+                        lambda *a, **k: (lote, {"woocommerce:backfill": 40}))
+    with factory() as s:
+        cuadre_engine.ejecutar(s, fuente="mysql", origen="manual")
+        hallazgos = _hallazgos(s)
+    assert len(hallazgos) == 1                       # un grupo, no cuarenta
+    assert json.loads(hallazgos[0].detalle_json)["datos"]["cuantos"] == 40
+
+
+def test_con_muchisimos_grupos_se_sacan_los_gordos_y_se_dice_el_resto(
+    factory, monkeypatch
+):
+    """Cada grupo es una fila en `cuadre_findings`: no se meten miles en
+    silencio."""
+    ahora = datetime.now(UTC)
+    lote = [TrabajoFallido(id=f"j{i}", cola="woocommerce:backfill",
+                           funcion=f"app.x.job_{i}", argumentos="",
+                           fecha=ahora, error="BoomError: distinto cada vez")
+            for i in range(checks_colas.MAX_GRUPOS + 7)]
+    monkeypatch.setattr(checks_colas, "leer_fallidos",
+                        lambda *a, **k: (lote, {"woocommerce:backfill": len(lote)}))
+    with factory() as s:
+        cuadre_engine.ejecutar(s, fuente="mysql", origen="manual")
+        hallazgos = _hallazgos(s)
+    # Los 50 más gordos + UNA línea que dice cuántos quedan fuera.
+    assert len(hallazgos) == checks_colas.MAX_GRUPOS + 1
+    resto = [h for h in hallazgos if h.entidad_id == "otros-grupos-pequenos"]
+    assert len(resto) == 1
+    assert json.loads(resto[0].detalle_json)["datos"]["grupos"] == 7
+    assert resto[0].severidad == "baja"
+
+
+def test_una_funcion_sin_argumentos_tambien_tiene_ejemplo(factory, monkeypatch):
+    """La pista dice «mira el error del ejemplo»: si la función no lleva
+    argumentos, el ejemplo no puede faltar."""
+    ahora = datetime.now(UTC)
+    lote = [TrabajoFallido(id="j1", cola="genei:shipments",
+                           funcion="app.x.fetch_label_job", argumentos="",
+                           fecha=ahora, error="GeneiError: sin etiqueta")]
+    monkeypatch.setattr(checks_colas, "leer_fallidos",
+                        lambda *a, **k: (lote, {"genei:shipments": 1}))
+    with factory() as s:
+        cuadre_engine.ejecutar(s, fuente="mysql", origen="manual")
+        (h,) = _hallazgos(s)
+        d = json.loads(h.detalle_json)
+    assert d["datos"]["ejemplo_error"] == "GeneiError: sin etiqueta"
