@@ -35,6 +35,9 @@ traducción son 23 pegadas. El embed puede resolverse **por web**:
 - Sirve el formulario de esa web en ese idioma. Si no lo hay: el marcado como
   **respaldo de la web** (casilla en el editor), y si tampoco, el castellano,
   el inglés o el primero por idioma.
+- Una página **sin `lang`** —o en un idioma que no tenemos— no cuenta como
+  página en castellano: también se lleva el respaldo. Por eso conviene marcar
+  uno en cada web, normalmente el inglés en las de fuera de España.
 - Si la web no tiene **ningún** formulario activo, el script lo dice en la
   consola del navegador (`site_without_forms`) y marca el `<div>`.
 - El embed **por id sigue igual**: es lo que está pegado hoy.
@@ -108,6 +111,10 @@ idioma cae al castellano.
   Un sitio que no esté se enseña con su clave, nunca con un dominio
   inventado. Al publicar una web nueva, su dominio se escribe ahí y aparece
   en la ficha, en los filtros y en los avisos.
+- **El nombre del slug importa.** Un formulario cuyo slug no lleve
+  `<web>-contacto…` es su propio sitio: funciona y captura leads, pero se
+  queda fuera del código único de su web, del filtro por web y del dominio
+  en la ficha y en el aviso. El editor lo avisa debajo del campo.
 - Un contacto que **ya existía** conserva su origen: el de un formulario
   solo se pone al crearlo (como el resto de orígenes).
 - La migración 0127 reconstruyó los leads ya entrados (tenían
