@@ -1013,6 +1013,84 @@ def send_email(
     return message
 
 
+#: Días que se recuperan como MÍNIMO cuando el cursor ha caducado. Gmail
+#: conserva el historial algo más de una semana, así que un hueco «normal» no
+#: puede ser mayor.
+DIAS_DE_RECUPERACION = 10
+#: Tope del repaso. El hueco se mide desde la última vez que se renovó el
+#: watch: si el push estuvo tres semanas sin funcionar, recuperar solo diez
+#: días perdería once sin decirlo. Y sin tope, un watch viejísimo lanzaría un
+#: repaso de meses dentro de un trabajo de cola.
+MAX_DIAS_DE_RECUPERACION = 60
+
+
+def recolocar_cursor(
+    session: Session, client: Any, watch: GmailPubsubWatch, *, user_id: str
+) -> int:
+    """Qué hacer con un `404` de `history.list`.
+
+    Gmail contesta 404 cuando el `startHistoryId` guardado es más viejo de lo
+    que conserva. Reintentar con el mismo cursor falla **para siempre**: los
+    944 fallos de `gmail:process_history` son esto, un cursor caducado que se
+    reintentaba cada vez que llegaba un push.
+
+    La salida que documenta Google es una sincronización completa, y aquí se
+    hace en dos pasos para no perder correo:
+
+    1. El cursor salta al `historyId` de ahora, así el push en tiempo real
+       vuelve a funcionar en el acto y la cola deja de acumular fallos.
+    2. Se encola un repaso de los últimos `DIAS_DE_RECUPERACION` días, que es
+       el que trae lo de en medio. Es acotado (el hueco no puede ser mayor que
+       lo que Gmail guarda) e idempotente: el repaso salta lo que ya está.
+    """
+    anterior = watch.history_id
+    # El hueco no lo marca la retención de Gmail, sino cuánto lleva el cursor
+    # sin avanzar. `last_renewed_at` es la señal más cercana que hay.
+    desde = watch.last_renewed_at
+    if desde is not None and desde.tzinfo is None:
+        desde = desde.replace(tzinfo=UTC)
+    dias_hueco = (
+        (datetime.now(UTC) - desde).days + 1 if desde is not None else 0
+    )
+    dias = max(DIAS_DE_RECUPERACION, min(dias_hueco, MAX_DIAS_DE_RECUPERACION))
+    perfil = client.get_profile() or {}
+    ahora = int(perfil.get("historyId") or 0)
+    if ahora <= 0:
+        raise RuntimeError(
+            "Gmail no devolvió `historyId` en `getProfile`: sin él no se "
+            "puede recolocar el cursor caducado."
+        )
+    from app.core.audit import Action  # noqa: PLC0415
+    from app.core.audit import record_event as apuntar
+    from app.integrations.gmail.jobs import (  # noqa: PLC0415
+        enqueue_recuperar_hueco,
+    )
+
+    # El repaso se encola ANTES de mover el cursor. Al revés, un fallo al
+    # encolar dejaba el cursor adelantado y el hueco irrecuperable; así, si no
+    # se puede encolar, la excepción sube, el cursor se queda donde está y el
+    # próximo push vuelve a intentarlo.
+    enqueue_recuperar_hueco(user_id=user_id, dias=dias)
+    watch.history_id = ahora
+    session.flush()
+    apuntar(
+        session,
+        action=Action.GMAIL_HISTORY_CURSOR_RESET,
+        target_type="gmail_pubsub_watch",
+        target_id=watch.id,
+        metadata={"cursor_anterior": anterior, "cursor_nuevo": ahora,
+                  "dias_recuperados": dias, "dias_de_hueco": dias_hueco},
+    )
+    session.commit()
+    logger.warning(
+        "gmail.process_history.cursor_caducado user_id=%s cursor %s → %s; "
+        "repaso de los últimos %s días encolado para recuperar el hueco "
+        "(el cursor llevaba %s días sin avanzar)",
+        user_id, anterior, ahora, dias, dias_hueco,
+    )
+    return 0
+
+
 def process_history(
     session: Session,
     *,
@@ -1036,6 +1114,11 @@ def process_history(
         return 0
 
     client = _client_for(session, user_id)
+    # Late import: googleapiclient es pesado y los tests a veces sustituyen el
+    # cliente entero, así que importarlo arriba crearía una dependencia de
+    # orden de importación.
+    from googleapiclient.errors import HttpError  # noqa: PLC0415
+
     try:
         history = client.list_history(watch.history_id)
     except GoogleAuthExpiredError:
@@ -1049,6 +1132,14 @@ def process_history(
         mark_needs_reconnect(session, user_id=user_id, error="invalid_grant")
         session.commit()
         return 0
+    except HttpError as exc:
+        from app.integrations.gmail.backfill import (  # noqa: PLC0415
+            is_not_found_error,
+        )
+
+        if not is_not_found_error(exc):
+            raise
+        return recolocar_cursor(session, client, watch, user_id=user_id)
 
     # CRM-GMAIL — captura universal. Ya no filtramos por «thread que el CRM
     # ya conoce»: guardamos cualquier mail dirigido a un alias ACTIVO (sea o
@@ -1063,11 +1154,6 @@ def process_history(
             )
         )
     }
-
-    # Late import: googleapiclient is heavy and tests sometimes
-    # patch the whole gmail client out, so importing at module top
-    # would create an import-order dependency.
-    from googleapiclient.errors import HttpError  # noqa: PLC0415
 
     imported = 0
     for entry in history.get("history", []):

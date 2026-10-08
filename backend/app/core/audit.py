@@ -270,6 +270,10 @@ class Action:
 
     # Colas de RQ — operar sobre el registro de fallidos desde la aplicación.
     # Vaciarlo es irreversible, así que queda escrito quién y cuántos.
+    # Gmail — el cursor de `history.list` caducó y hubo que recolocarlo. Queda
+    # escrito el hueco, que es lo que luego se recupera.
+    GMAIL_HISTORY_CURSOR_RESET = "gmail.history_cursor_reset"
+
     QUEUE_FAILED_REQUEUED = "queue.failed_requeued"
     QUEUE_FAILED_CLEARED = "queue.failed_cleared"
 

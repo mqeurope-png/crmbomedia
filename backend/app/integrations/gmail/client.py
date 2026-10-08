@@ -424,6 +424,16 @@ class GmailClient:
         service = self._build_service()
         service.users().stop(userId="me").execute()
 
+    def get_profile(self) -> dict[str, Any]:
+        """`users.getProfile`: `{emailAddress, messagesTotal, historyId}`.
+
+        Hace falta para recolocar el cursor cuando Gmail contesta 404 a
+        `history.list`: el `startHistoryId` guardado es más viejo de lo que
+        Gmail conserva (una semana larga) y la única salida es volver al
+        `historyId` de ahora y recuperar lo de en medio por otra vía."""
+        service = self._build_service()
+        return service.users().getProfile(userId="me").execute()
+
     def list_history(
         self,
         start_history_id: int,
