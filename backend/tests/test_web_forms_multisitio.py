@@ -441,12 +441,18 @@ def test_tambien_al_comercial_asignado_y_sin_duplicar(factory):
 
 def test_un_fallo_de_correo_no_tumba_el_lead(factory, monkeypatch, caplog):
     from app.services import email as email_mod
+    from app.services.web_forms import aviso as aviso_mod
 
     class Roto:
         def send_notification(self, **kw):
             raise RuntimeError("SMTP caído")
 
     monkeypatch.setattr(email_mod, "get_email_service", lambda: Roto())
+    # Un test anterior puede haber ejecutado `env.py` de Alembic, cuyo
+    # `fileConfig()` apaga los loggers que ya existían; entonces `caplog` no
+    # vería nada. Lo que se comprueba aquí es que el aviso avisa, no la
+    # configuración de logging que dejó otro test.
+    monkeypatch.setattr(aviso_mod.logger, "disabled", False)
     with factory() as s, caplog.at_level(logging.WARNING):
         form = _form_completo(s)
         out = _enviar(s, form, PAYLOAD)
