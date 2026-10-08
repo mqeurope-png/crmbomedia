@@ -27,7 +27,7 @@ from app.db.session import get_session
 from app.models.web_forms import WebForm
 from app.services.web_forms import apariencia as aparien
 from app.services.web_forms.enlaces import texto_con_enlaces
-from app.services.web_forms.textos import texto_submit, textos
+from app.services.web_forms.textos import IDIOMA_BASE, TEXTOS, texto_submit, textos
 
 router = APIRouter(tags=["web-forms-embed"])
 
@@ -199,10 +199,16 @@ _UUID_RE = re.compile(
 
 
 def _widget_js(*, clave: str, sitio: str | None) -> str:
+    # «No se pudo cargar el formulario» se dice antes de saber qué formulario
+    # es (la propia configuración no llegó), así que sus traducciones viajan
+    # en el JS y el widget elige por el idioma de la página.
+    no_cargado = {codigo: TEXTOS[codigo]["no_cargado"] for codigo in TEXTOS}
     return _WIDGET_CORE_JS + "\n" + _WIDGET_BOOT_JS.replace(
         "__CLAVE__", json.dumps(clave)
     ).replace("__SITIO__", json.dumps(sitio)).replace(
         "__API_BASE__", json.dumps(_api_base())
+    ).replace("__NO_CARGADO__", json.dumps(no_cargado)).replace(
+        "__IDIOMA_BASE__", json.dumps(IDIOMA_BASE)
     )
 
 
@@ -510,7 +516,7 @@ window.__bhInit=function(cfg){
 
 _WIDGET_BOOT_JS = r"""
 (function(){
-  var CLAVE=__CLAVE__,API_BASE=__API_BASE__,SITIO=__SITIO__;
+  var CLAVE=__CLAVE__,API_BASE=__API_BASE__,SITIO=__SITIO__,NO_CARGADO=__NO_CARGADO__;
   // Embed por web: el idioma sale del `lang` del <html> y, si no lo trae,
   // del primer trozo de la URL (/de/kontakt). El servidor elige el
   // formulario de esa web en ese idioma, o el de respaldo.
@@ -553,6 +559,6 @@ _WIDGET_BOOT_JS = r"""
     if(formEl&&cfg.language)formEl.setAttribute("lang",cfg.language);
     function boot(){window.__bhInit({formId:cfg.id,apiBase:API_BASE,siteKey:cfg.recaptcha_site_key,texts:cfg.texts,formEl:formEl,msgEl:msgEl});}
     if(cfg.recaptcha_site_key&&!window.grecaptcha){var s=document.createElement("script");s.src="https://www.google.com/recaptcha/api.js?render="+cfg.recaptcha_site_key;s.onload=boot;document.head.appendChild(s);}else{boot();}
-  }).catch(function(e){var d=(e&&e.d)||{};if(d.code){mount.setAttribute("data-bohub-error",d.code);if(window.console)console.warn("BoHub ("+CLAVE+"): "+(d.message||d.code));if(d.code==="form_inactive")return;}mount.innerHTML='<p style="color:#991b1b">'+esc(d.loading_error||"No se pudo cargar el formulario.")+'</p>';});
+  }).catch(function(e){var d=(e&&e.d)||{};if(d.code){mount.setAttribute("data-bohub-error",d.code);if(window.console)console.warn("BoHub ("+CLAVE+"): "+(d.message||d.code));if(d.code==="form_inactive")return;}mount.innerHTML='<p style="color:#991b1b">'+esc(d.loading_error||NO_CARGADO[idiomaPagina()]||NO_CARGADO[__IDIOMA_BASE__])+'</p>';});
 })();
 """

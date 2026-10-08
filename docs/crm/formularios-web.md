@@ -14,7 +14,7 @@ Tres formas de insertar un formulario (pantalla «Código de embed»):
   pegados antes siguen funcionando con su altura fija.
 - **HTML puro**: fragmento sin estilos, para maquetar con el CSS del sitio.
 
-## Un solo código de inserción por web (marca + idioma)
+## Un solo código de inserción por web (web + idioma)
 
 Con 25 formularios en ocho webs y seis idiomas, pegar un código por
 traducción son 23 pegadas. El embed puede resolverse **por web**:

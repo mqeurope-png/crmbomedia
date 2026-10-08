@@ -279,6 +279,19 @@ def test_una_web_sin_formularios_activos_lo_dice_en_la_consola(http, factory):
     assert r.status_code == 404 and r.json()["detail"]["code"] == "site_without_forms"
 
 
+def test_si_no_llega_la_configuracion_el_aviso_va_en_el_idioma_de_la_pagina(http, factory):
+    """«No se pudo cargar el formulario» se dice antes de saber qué
+    formulario es, así que sus traducciones viajan en el propio JS."""
+    with factory() as s:
+        _form(s, slug="mboprinters-contacto-de", idioma="de")
+    js = http.get("/forms/embed/mboprinters.js").text
+    assert "Das Formular konnte nicht geladen werden." in js
+    assert "Het formulier kon niet worden geladen." in js
+    assert "NO_CARGADO[idiomaPagina()]" in js
+    # Y ya no queda el castellano fijo como única salida.
+    assert 'esc(d.loading_error||"No se pudo cargar' not in js
+
+
 def test_el_embed_por_id_sigue_funcionando(http, factory):
     """Es lo que está pegado hoy en las webs: no se toca."""
     with factory() as s:
