@@ -16,9 +16,27 @@ export function WebFormEmbedCode({ embed }: { embed: EmbedCode }) {
           se verá en la web hasta activarlo (Editar formulario → «Activo»).
         </p>
       ) : null}
+      {embed.brand_snippet ? (
+        <Snippet
+          title={`Un solo código para toda la web (${embed.brand})`}
+          description={
+            "Recomendado en webs con varios idiomas: el mismo código vale en todas " +
+            "las traducciones. Mira el idioma de la página (el «lang» del <html> o el " +
+            "prefijo de la URL) y sirve el formulario de esta marca en ese idioma; si no " +
+            "hay uno, el de respaldo. Se puede poner en la plantilla, no página por página. " +
+            "Pega LAS DOS LÍNEAS: sin el <div> el script carga y no pinta nada."
+          }
+          code={embed.brand_snippet}
+          inactivo={inactivo}
+        />
+      ) : null}
       <Snippet
-        title="Script JS (recomendado)"
-        description="Hereda el diseño de tu web. Pega esto donde quieras el formulario."
+        title="Script JS de este formulario"
+        description={
+          "Solo este formulario (" + "este idioma)." +
+          " Hereda el diseño de tu web. Pega LAS DOS LÍNEAS donde quieras el formulario: " +
+          "el <script> y el <div data-bohub-form>; sin el <div> el script carga y no pinta nada."
+        }
         code={embed.script_snippet}
         inactivo={inactivo}
       />

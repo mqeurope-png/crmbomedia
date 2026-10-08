@@ -101,6 +101,21 @@ describe("Editor de formularios — remates", () => {
   });
 });
 
+describe("Respaldo de la marca (embed por web)", () => {
+  it("solo se ofrece cuando el formulario tiene marca, y se guarda", async () => {
+    const user = userEvent.setup();
+    render(<WebFormEditor formId="new" />);
+    expect(screen.queryByLabelText(/Respaldo de/)).toBeNull();
+    await user.type(screen.getByLabelText("Marca"), "mbolasers");
+    const casilla = screen.getByLabelText(/Respaldo de «mbolasers»/);
+    await user.click(casilla);
+    await user.type(screen.getByLabelText("Slug"), "mbolasers-es");
+    await user.click(screen.getByRole("button", { name: /Guardar formulario/i }));
+    await waitFor(() => expect(cuerpoDe("/api/admin/forms")).not.toBeNull());
+    expect(cuerpoDe("/api/admin/forms").is_brand_default).toBe(true);
+  });
+});
+
 describe("Código de inserción de un formulario desactivado", () => {
   const embed = {
     script_snippet: "<script></script>",

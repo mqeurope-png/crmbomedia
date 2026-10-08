@@ -14,6 +14,45 @@ Tres formas de insertar un formulario (pantalla «Código de embed»):
   pegados antes siguen funcionando con su altura fija.
 - **HTML puro**: fragmento sin estilos, para maquetar con el CSS del sitio.
 
+## Un solo código de inserción por web (marca + idioma)
+
+Con 25 formularios en ocho webs y seis idiomas, pegar un código por
+traducción son 23 pegadas. El embed puede resolverse **por marca**:
+
+```html
+<script src="https://…/forms/embed/mbolasers.js" async></script>
+<div data-bohub-form="mbolasers"></div>
+```
+
+- Las **dos líneas** son necesarias: sin el `<div>` el script carga y no
+  pinta nada.
+- El widget mira el idioma de la página: el `lang` del `<html>` y, si no lo
+  trae, el primer trozo de la URL (`/de/kontakt`).
+- Sirve el formulario cuyo `brand` e `language` coinciden. Si esa marca no
+  tiene ese idioma: el formulario marcado como **respaldo de la marca**
+  (casilla en el editor), y si tampoco, el castellano, el inglés o el primero
+  por idioma.
+- Si la marca no tiene **ningún** formulario activo, el script lo dice en la
+  consola del navegador (`brand_without_forms`) y marca el `<div>`.
+- El embed **por id sigue igual**: es lo que está pegado hoy.
+- La pantalla de código ofrece los dos, con el `<div>` incluido.
+
+## El formulario, en su idioma
+
+`app/services/web_forms/textos.py` tiene, por idioma (es, en, fr, de, pt,
+nl), el texto del botón y todo lo que ve quien rellena: el acuse, los
+errores de envío, el aviso de que falta algo obligatorio. Lo que falte en un
+idioma cae al castellano.
+
+- El botón: el texto propio del formulario si lo tiene (Apariencia →
+  «Texto del botón»); si no, el de su idioma (Enviar / Send / Envoyer /
+  Senden / Versturen / Enviar).
+- Los mensajes viajan en `config.json` (`texts`) y van inlineados en el
+  iframe y en el fragmento: ya no hay castellano fijo en el JS.
+- Los mensajes de validación del navegador (campo obligatorio, correo mal
+  escrito) los pone el navegador en su propio idioma; no se pueden traducir
+  desde aquí. El `<form>` lleva su `lang` para los navegadores que lo miran.
+
 ## Qué hace un envío con el contacto
 
 - Crea o completa el contacto (solo rellena lo vacío), la empresa, el
@@ -30,6 +69,45 @@ Tres formas de insertar un formulario (pantalla «Código de embed»):
 - **Consentimiento comercial** (`contact.marketing_consent`): mapeable solo
   desde una casilla. Marcada → el contacto pasa a «granted» (queda en
   auditoría); sin marcar no se toca nada.
+
+## De dónde viene el lead
+
+- `contacts.origin` → «Formulario web · mboprinters.com (alemán)»: es lo que
+  se lee en **Origen del lead** de la ficha, sin traducir códigos.
+- `contacts.origin_account_id` → `web_form:<marca>:<idioma>`.
+- En los filtros de Contactos y en los segmentos hay dos campos nuevos,
+  **Web del formulario** e **Idioma del formulario**: así se listan «los
+  leads de mboprinters» o «los leads en alemán» sin tirar de la etiqueta
+  `form:<slug>` (que sigue existiendo).
+- La lista de webs está en `app/services/web_forms/marcas.py` (`WEBS`): una
+  marca que no esté se enseña tal cual, nunca un dominio inventado. Al
+  añadir una web nueva, su dominio se escribe ahí y aparece en la ficha, en
+  los filtros y en los avisos.
+- Un contacto que **ya existía** conserva su origen: el de un formulario
+  solo se pone al crearlo (como el resto de orígenes).
+- La migración 0127 reconstruyó los leads ya entrados (tenían
+  `web_form:<slug>`), por el slug del formulario o, si no cuadra, por el
+  envío guardado.
+
+## Aviso por correo de cada lead
+
+Lo gobierna el interruptor que ya existía, **«Notificar al owner de cada
+lead nuevo»**: apagarlo silencia el aviso entero.
+
+- **Asunto**: «Nuevo lead desde mboprinters.com (alemán)».
+- **Cuerpo**: nombre y apellidos, correo, teléfono, las etiquetas que marcó
+  (por su nombre, no el uuid), el resto de campos que rellenó, si aceptó
+  comunicaciones comerciales, su consulta entera y un enlace a la ficha.
+- **Destinatarios**: las direcciones fijas de `WEB_FORMS_NOTIFY_TO`
+  (`info@streamtec.es` por defecto, separadas por comas) y el comercial al
+  que se asignó el lead (la regla de asignación o el propietario fijo). Sin
+  duplicar si coinciden.
+- **Variante por marca sin tocar código**: si existe
+  `app/templates/email/lead_<marca>.html` (y/o `.txt`) se usa esa en lugar
+  de `lead_notification.html`, así una marca puede llevar su logotipo y su
+  firma.
+- Un fallo de correo **no tumba** la captura: el lead se guarda igual y el
+  fallo queda en el log (`web_forms.aviso_lead`).
 
 ## Textos con enlaces
 

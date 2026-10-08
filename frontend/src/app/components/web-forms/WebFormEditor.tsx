@@ -351,6 +351,14 @@ export function WebFormEditor({ formId }: { formId: string }) {
               onChange={(e) => patch({ is_active: e.target.checked })} />
             Activo (desactivado no se muestra en la web)
           </label>
+          {form.brand?.trim() ? (
+            <label className="checkbox-inline">
+              <input type="checkbox" checked={form.is_brand_default}
+                onChange={(e) => patch({ is_brand_default: e.target.checked })} />
+              Respaldo de «{form.brand}» (se sirve cuando la página está en un idioma
+              que no tiene su propio formulario)
+            </label>
+          ) : null}
           <label className="checkbox-inline">
             <input type="checkbox" checked={form.recaptcha_enabled}
               onChange={(e) => patch({ recaptcha_enabled: e.target.checked })} />

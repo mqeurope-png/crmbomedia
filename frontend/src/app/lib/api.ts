@@ -1668,6 +1668,8 @@ export type SegmentFieldDescriptor = {
   type: string;
   comparators: string[];
   enum_values: string[];
+  /** Texto por valor («mbolasers» → «mbolasers.com»), del backend. */
+  enum_labels?: Record<string, string>;
 };
 
 export type Segment = {

@@ -102,6 +102,8 @@ export type WebFormBase = {
   fixed_owner_user_id?: string | null;
   notify_owner_on_new: boolean;
   recaptcha_enabled: boolean;
+  /** Formulario de respaldo de su marca en el embed por marca. */
+  is_brand_default: boolean;
   appearance?: FormAppearance | null;
 };
 
@@ -150,6 +152,9 @@ export type EmbedCode = {
   iframe_snippet: string;
   // v3 Bug 3: HTML puro copiable (sin estilar) para pegar en cualquier web.
   html_snippet: string;
+  /** Un solo código por web (marca + idioma de la página). */
+  brand_snippet?: string | null;
+  brand?: string | null;
   /** Desactivado no se ve en la web: la pantalla avisa al copiar. */
   is_active?: boolean;
 };
@@ -293,6 +298,7 @@ export function blankForm(): WebFormBase & { fields: FormField[] } {
     assignment_mode: "rules",
     notify_owner_on_new: true,
     recaptcha_enabled: true,
+    is_brand_default: false,
     fields: [
       { ...blankField(0), field_key: "name", label: "Nombre", field_type: "text", maps_to_contact_field: "contact.first_name" },
       { ...blankField(1), field_key: "email", label: "Email", field_type: "email", is_required: true, maps_to_contact_field: "contact.email" },
