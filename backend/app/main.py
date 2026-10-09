@@ -144,6 +144,7 @@ from app.erp.api import cuadre_router as erp_cuadre_router  # noqa: E402
 from app.erp.api import exceptions_router as erp_exceptions_router  # noqa: E402
 from app.erp.api import factusol_router as erp_factusol_router  # noqa: E402
 from app.erp.api import genei_router as erp_genei_router  # noqa: E402
+from app.erp.api import leads_router as erp_leads_router  # noqa: E402
 from app.erp.api import order_timeline_router as erp_order_timeline_router  # noqa: E402
 from app.erp.api import orders_router as erp_orders_router  # noqa: E402
 from app.erp.api import sat_router as erp_sat_router  # noqa: E402
@@ -166,6 +167,8 @@ app.include_router(erp_bank_router)
 app.include_router(erp_catalogs_router)
 app.include_router(erp_seguimiento_router)
 app.include_router(erp_cuadre_router)
+# Respuesta a leads · Fase 1 (lista corregible, en seco, workflow).
+app.include_router(erp_leads_router)
 
 # Webhooks entrantes (fuera de `/api/*`; auth = firma HMAC, no sesión CRM).
 from app.webhooks.woocommerce import router as woocommerce_webhook_router  # noqa: E402

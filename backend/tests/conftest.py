@@ -15,6 +15,11 @@ os.environ.setdefault("INTEGRATION_SECRETS_KEY", Fernet.generate_key().decode())
 # Fase VIES: ningún test debe salir a ec.europa.eu. Los tests de VIES
 # (`test_vies.py`) activan la validación con un cliente simulado.
 os.environ.setdefault("VIES_ENABLED", "false")
+# Respuesta a leads: ningún test habla con Anthropic. Sin clave, el proveedor
+# por defecto es el de palabras clave; los tests del proveedor de IA ponen una
+# clave falsa y parchean `_invoke_claude`. Se VACÍA (no `setdefault`): una clave
+# real en el `.env` o en la shell de quien lanza la suite no debe colarse.
+os.environ["ANTHROPIC_API_KEY"] = ""
 
 
 @pytest.fixture(autouse=True)

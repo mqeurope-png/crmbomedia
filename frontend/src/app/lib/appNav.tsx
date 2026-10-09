@@ -21,6 +21,7 @@ import {
   Target,
   Users,
   UserCog,
+  UserPlus,
   Workflow,
   Wrench,
   type LucideIcon,
@@ -119,6 +120,16 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     icon: Scale,
     scope: "erp",
     requiredCapability: Cap.CUADRE,
+  },
+  {
+    // Respuesta a leads (Fase 1): los leads procesados con su clasificación
+    // corregible, el modo en seco y el workflow. Misma capacidad que la
+    // configuración, donde vive el interruptor.
+    href: "/erp/leads",
+    label: "ERP · Leads",
+    icon: UserPlus,
+    scope: "erp",
+    requiredCapability: Cap.CONFIG,
   },
   {
     // ERP-F4-A — conciliación bancaria (revisión humana de propuestas).

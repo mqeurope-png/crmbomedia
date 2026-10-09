@@ -101,3 +101,162 @@ def configuracion(session: Session) -> dict[str, Any]:
     from app.integrations.factusol.service import series_config  # noqa: PLC0415
 
     return normalizar(series_config(session).get(CONFIG_KEY))
+
+
+def _es_correo(valor: str) -> bool:
+    return "@" in valor and "." in valor.rsplit("@", 1)[-1] and " " not in valor
+
+
+def validar(
+    payload: Any, actual: Any = None, *, plantillas_validas: set[str] | None = None,
+) -> dict[str, Any]:
+    """Valida lo que llega del PATCH de Configuración ERP y lo FUNDE con lo
+    guardado: la clave que no viene se conserva; `mapa`, `remitentes.por_web`
+    y `remitentes.por_cuenta_agile` se sustituyen ENTEROS cuando vienen (la
+    pantalla manda siempre el bloque completo, y así se puede quitar una
+    entrada). `ValueError` con un mensaje legible si algo no vale."""
+    from app.services.leads.clasificador import IDIOMAS, INTERESES_COMERCIALES  # noqa: PLC0415
+    from app.services.web_forms.sitios import WEBS  # noqa: PLC0415
+    from app.workflows.ventana import _hora  # noqa: PLC0415
+
+    if not isinstance(payload, dict):
+        raise ValueError("La configuración de respuesta a leads no es válida.")
+    base = normalizar(actual)
+    if "activo" in payload:
+        if not isinstance(payload["activo"], bool):
+            raise ValueError("«Respuesta a leads activa» tiene que ser sí o no.")
+        base["activo"] = payload["activo"]
+    for clave, etiqueta, minimo, maximo in (
+        ("tope_diario", "Tope diario", 1, 1000),
+        ("antiguedad_horas", "Antigüedad máxima (horas)", 1, 24 * 90),
+    ):
+        if clave in payload:
+            try:
+                valor = int(payload[clave])
+            except (TypeError, ValueError):
+                raise ValueError(f"{etiqueta}: tiene que ser un número.") from None
+            if not minimo <= valor <= maximo:
+                raise ValueError(f"{etiqueta}: entre {minimo} y {maximo}.")
+            base[clave] = valor
+    if "umbral_confianza" in payload:
+        try:
+            umbral = float(payload["umbral_confianza"])
+        except (TypeError, ValueError):
+            raise ValueError("Umbral de confianza: tiene que ser un número entre 0 y 1.") from None
+        if not 0.0 <= umbral <= 1.0:
+            raise ValueError("Umbral de confianza: entre 0 y 1.")
+        base["umbral_confianza"] = umbral
+    if "ventana" in payload:
+        ventana = payload["ventana"]
+        if not isinstance(ventana, dict):
+            raise ValueError("La ventana horaria no es válida.")
+        nueva = {**base["ventana"], **{k: v for k, v in ventana.items() if k in VENTANA_DEFECTO}}
+        inicio, fin = _hora(nueva.get("start")), _hora(nueva.get("end"))
+        if inicio is None or fin is None:
+            raise ValueError("Ventana horaria: las horas van en formato HH:MM.")
+        if fin <= inicio:
+            raise ValueError(
+                "Ventana horaria: la hora de fin tiene que ser posterior a la de inicio."
+            )
+        if not isinstance(nueva.get("enabled", True), bool) or not isinstance(
+                nueva.get("weekdays_only", True), bool):
+            raise ValueError("Ventana horaria: «activa» y «solo laborables» son sí o no.")
+        base["ventana"] = {
+            "enabled": nueva.get("enabled", True), "start": inicio.strftime("%H:%M"),
+            "end": fin.strftime("%H:%M"), "weekdays_only": nueva.get("weekdays_only", True),
+        }
+    if "mapa" in payload:
+        mapa = payload["mapa"]
+        if not isinstance(mapa, dict):
+            raise ValueError("El mapa de plantillas no es válido.")
+        limpio: dict[str, str] = {}
+        for clave, valor in mapa.items():
+            interes, _, idioma = str(clave).partition(":")
+            if interes not in INTERESES_COMERCIALES or idioma not in IDIOMAS:
+                raise ValueError(f"Mapa de plantillas: la clave {clave!r} no es interés:idioma.")
+            template_id = str(valor or "").strip()
+            desconocida = plantillas_validas is not None and template_id not in plantillas_validas
+            if template_id and desconocida:
+                raise ValueError(
+                    f"Mapa de plantillas: la plantilla de {clave} no existe ({template_id})."
+                )
+            limpio[f"{interes}:{idioma}"] = template_id
+        base["mapa"] = limpio
+    if "remitentes" in payload:
+        remitentes = payload["remitentes"]
+        if not isinstance(remitentes, dict):
+            raise ValueError("Los remitentes no son válidos.")
+        if "por_web" in remitentes:
+            por_web = remitentes["por_web"]
+            if not isinstance(por_web, dict):
+                raise ValueError("Remitentes por web: no es válido.")
+            limpio_web: dict[str, str] = {}
+            for sitio, correo in por_web.items():
+                correo = str(correo or "").strip()
+                if correo and not _es_correo(correo):
+                    raise ValueError(f"Remitente de {sitio}: {correo!r} no es una dirección.")
+                if correo:
+                    limpio_web[str(sitio).strip()] = correo
+            base["remitentes"]["por_web"] = limpio_web
+        if "por_cuenta_agile" in remitentes:
+            por_cuenta = remitentes["por_cuenta_agile"]
+            if not isinstance(por_cuenta, dict):
+                raise ValueError("Webs por cuenta de AgileCRM: no es válido.")
+            conocidas = set(WEBS) | set(base["remitentes"]["por_web"])
+            limpio_cuenta: dict[str, str] = {}
+            for cuenta, sitio in por_cuenta.items():
+                sitio = str(sitio or "").strip()
+                if sitio and sitio not in conocidas:
+                    raise ValueError(
+                        f"Cuenta de AgileCRM {cuenta}: la web {sitio!r} no se conoce."
+                    )
+                if sitio:
+                    limpio_cuenta[str(cuenta).strip()] = sitio
+            base["remitentes"]["por_cuenta_agile"] = limpio_cuenta
+    return base
+
+
+def catalogo(session: Session) -> dict[str, Any]:
+    """Lo que la pantalla necesita para pintar la configuración: intereses,
+    idiomas, plantillas candidatas (y la que se resuelve por nombre), webs con
+    su remitente por defecto y cuentas de AgileCRM."""
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from app.email_templates.models import EmailTemplate  # noqa: PLC0415
+    from app.models.crm import ExternalSystem  # noqa: PLC0415
+    from app.models.integration_settings import IntegrationAccount  # noqa: PLC0415
+    from app.services.leads import plantillas  # noqa: PLC0415
+    from app.services.leads.clasificador import (  # noqa: PLC0415
+        ETIQUETAS_INTERES,
+        INTERESES,
+        INTERESES_COMERCIALES,
+    )
+    from app.services.web_forms.sitios import MARCAS, REMITENTES, WEBS  # noqa: PLC0415
+
+    candidatas = list(session.scalars(
+        select(EmailTemplate).where(EmailTemplate.name.like("Lead%"))
+        .order_by(EmailTemplate.name)
+    ))
+    por_nombre = plantillas.mapa_resuelto_por_nombre(session)
+    cuentas = list(session.scalars(
+        select(IntegrationAccount).where(IntegrationAccount.system == ExternalSystem.AGILECRM)
+        .order_by(IntegrationAccount.display_name)
+    ))
+    return {
+        "intereses": [
+            {"id": i, "label": ETIQUETAS_INTERES[i], "comercial": i in INTERESES_COMERCIALES}
+            for i in INTERESES
+        ],
+        "idiomas": list(plantillas.IDIOMAS_CON_PLANTILLA),
+        "plantillas": [{"id": t.id, "name": t.name} for t in candidatas],
+        "mapa_por_nombre": por_nombre,
+        "webs": [
+            {"clave": clave, "web": web, "marca": MARCAS.get(clave, clave),
+             "remitente_defecto": REMITENTES.get(clave)}
+            for clave, web in WEBS.items()
+        ],
+        "cuentas_agile": [
+            {"account_id": c.account_id, "display_name": c.display_name, "enabled": c.enabled}
+            for c in cuentas
+        ],
+    }

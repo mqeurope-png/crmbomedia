@@ -70,6 +70,8 @@ const TRIGGER_LABELS: Record<string, string> = {
   "opportunity.stage_changed": "Oportunidad cambia de stage",
   "opportunity.won": "Oportunidad ganada",
   "opportunity.lost": "Oportunidad perdida",
+  // Respuesta a leads (Fase 1).
+  "lead.received": "Lead recibido (formulario web o nota de AgileCRM)",
   // PR-Fixes #9: "Recurrente (preset)" era técnico. Le llamamos
   // "Horario fijo" en la UI del selector y en cualquier label
   // posterior.
@@ -92,6 +94,10 @@ const STEP_ICONS: Record<string, string> = {
   action_create_task: "📋",
   action_send_email: "✉️",
   action_move_opportunity_stage: "💼",
+  // Respuesta a leads (Fase 1).
+  action_classify_lead: "🔎",
+  action_prepare_email_draft: "📝",
+  action_add_to_pipeline: "➕",
   action_notify_owner: "🔔",
   action_notify_manager: "🔔",
   action_push_to_brevo: "🔗",
@@ -203,11 +209,28 @@ export function humanizeStepLabel(
       }`;
     }
     case "action_move_opportunity_stage": {
+      // El modelo real son contactos en pipelines, no oportunidades.
       const sid = cfg.stage_id as string | undefined;
       const name = sid ? lookups.pipelineStages?.[sid] : undefined;
-      if (name) return `Mover oportunidad a "${name}"`;
-      if (sid) return `Mover oportunidad a stage ${sid.slice(0, 8)}…`;
-      return "Mover oportunidad de stage";
+      if (name) return `Mover contacto a "${name}"`;
+      if (sid) return `Mover contacto a la etapa ${sid.slice(0, 8)}…`;
+      return "Mover contacto de etapa";
+    }
+    case "action_add_to_pipeline": {
+      const sid = cfg.stage_id as string | undefined;
+      const name = sid ? lookups.pipelineStages?.[sid] : undefined;
+      if (name) return `Añadir a pipeline: "${name}"`;
+      return "Añadir a pipeline";
+    }
+    case "action_classify_lead":
+      return "Clasificar lead";
+    case "action_prepare_email_draft": {
+      if ((cfg.template_mode as string) === "fija") {
+        const tid = cfg.template_id as string | undefined;
+        const name = tid ? lookups.templates?.[tid] : undefined;
+        return `Preparar borrador: ${name ?? "(plantilla sin elegir)"}`;
+      }
+      return "Preparar borrador (plantilla por interés e idioma)";
     }
     case "action_notify_owner":
       return "Notificar al propietario";
@@ -252,6 +275,15 @@ export function stepSummary(step: StepLike): string {
   if (step.type === "wait_for_event") {
     const timeout = cfg.timeout_minutes as number | undefined;
     return timeout ? `Timeout: ${humanizeDuration(timeout)}` : "";
+  }
+  if (step.type === "wait_time") {
+    // Respuesta a leads: la espera con ventana horaria (hora de Madrid).
+    const win = cfg.window as Record<string, unknown> | undefined;
+    if (win && win.enabled !== false) {
+      const dias = win.weekdays_only === false ? "todos los días" : "laborables";
+      return `Ventana ${win.start ?? "09:00"}–${win.end ?? "18:00"}, ${dias}`;
+    }
+    return "";
   }
   return "";
 }
@@ -313,6 +345,11 @@ const REQUIRED_FIELDS: Record<string, string[]> = {
   // PR-Fixes-Pase-2 Bug C: pasamos a pedir pipeline_id Y stage_id —
   // el dropdown cascade los rellena juntos.
   action_move_opportunity_stage: ["pipeline_id", "stage_id"],
+  // Respuesta a leads: clasificar no necesita nada; el borrador se valida a
+  // mano en `validateStepConfig` (depende del modo elegido).
+  action_classify_lead: [],
+  action_prepare_email_draft: [],
+  action_add_to_pipeline: ["pipeline_id", "stage_id"],
   action_notify_owner: [],
   action_notify_manager: [],
   action_push_to_brevo: [],
@@ -364,7 +401,20 @@ const HUMAN_MISSING_MESSAGES: Record<string, string> = {
   stage_id: "Falta seleccionar el stage destino",
   from_alias_display_name:
     "Falta elegir el display name del alias del propietario",
+  template_id: "Falta elegir la plantilla fija",
+  from_alias: "Falta el remitente fijo",
+  window: "Ventana horaria: la hora de fin tiene que ser posterior a la de inicio",
 };
+
+/** `"HH:MM"` → minutos desde medianoche; `null` si no es una hora. */
+function _minutos(valor: unknown): number | null {
+  const m = typeof valor === "string" ? valor.match(/^(\d{1,2}):(\d{2})$/) : null;
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (h > 23 || min > 59) return null;
+  return h * 60 + min;
+}
 
 /** PR-Fixes-Pase-4 Bug 4. Comparators del FilterBuilder que NO
  *  requieren valor — set membership (existe / no existe / vacío).
@@ -469,6 +519,35 @@ export function validateStepConfig(step: StepLike): StepValidationResult {
       const dn = cfg.from_alias_display_name as string | undefined;
       if (!dn || !dn.trim()) missing.push("from_alias_display_name");
     }
+    return { valid: missing.length === 0, missing };
+  }
+  // Respuesta a leads: una ventana horaria activa cuyo fin no es posterior
+  // al inicio la ignora el motor en silencio (`ventana_desde_config`); el
+  // editor la marca en rojo, como hace Configuración ERP con la suya.
+  if (step.type === "wait_time") {
+    const missing: string[] = [];
+    const d = cfg.duration_minutes;
+    if (d === undefined || d === null || d === "") missing.push("duration_minutes");
+    const win = cfg.window as Record<string, unknown> | undefined;
+    if (win && win.enabled !== false) {
+      const inicio = _minutos(win.start ?? "09:00");
+      const fin = _minutos(win.end ?? "18:00");
+      if (inicio === null || fin === null || fin <= inicio) missing.push("window");
+    }
+    return { valid: missing.length === 0, missing };
+  }
+  // Respuesta a leads: «Preparar borrador» solo pide lo del modo elegido
+  // (plantilla fija → plantilla; remitente fijo → dirección; usuario
+  // concreto → usuario). Por defecto todo sale de la clasificación del lead.
+  if (step.type === "action_prepare_email_draft") {
+    const missing: string[] = [];
+    const texto = (k: string) => {
+      const v = cfg[k];
+      return typeof v === "string" && v.trim() ? v : "";
+    };
+    if (cfg.template_mode === "fija" && !texto("template_id")) missing.push("template_id");
+    if (cfg.from_mode === "fijo" && !texto("from_alias")) missing.push("from_alias");
+    if (cfg.owner_mode === "usuario" && !texto("user_id")) missing.push("user_id");
     return { valid: missing.length === 0, missing };
   }
   // PR-Fixes-Pase-4 Bug 2: tags multi-select. Inválido si lista vacía

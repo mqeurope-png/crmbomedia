@@ -14995,6 +14995,12 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
 }
 .erp-cuadre-mas { display: flex; align-items: center; gap: 8px; margin: 8px 0 0; }
 
+/* ERP · Leads (respuesta a leads · Fase 1): lista corregible e informe en seco. */
+.erp-leads-informe { margin-top: 12px; }
+.erp-leads-tabla td { vertical-align: top; }
+.erp-leads-tabla select, .erp-leads-tabla input[type="text"] { max-width: 220px; }
+.erp-leads-tabla tr.is-corregida > td { background: var(--st-amber-bg); }
+
 /* Fotos del embalaje (ficha y Cola SAT): miniaturas pulsables. */
 .erp-fotos { display: flex; flex-direction: column; gap: var(--sp-1); margin-top: var(--sp-2); }
 .erp-fotos-lista { display: flex; flex-wrap: wrap; gap: var(--sp-1); list-style: none; margin: 0; padding: 0; }

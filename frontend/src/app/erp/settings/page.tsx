@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { CompanyLogoThumbnail } from "../../components/erp/CompanyLogoThumbnail";
 import { GeneiSettingsCard } from "../../components/erp/GeneiSettingsCard";
@@ -26,6 +27,9 @@ import {
   type ErpSettings,
   type FactusolCompany,
   type InvoiceEmailTemplatePreview,
+  type LeadResponseCatalogo,
+  type LeadResponseConfig,
+  type LeadResponseVentana,
 } from "../../lib/erpApi";
 import { getEmailAliases, getMyEmailAliases, type MyAlias } from "../../lib/emailsApi";
 
@@ -127,7 +131,7 @@ type SectionId =
   | "facturacion" | "tiendas" | "remitentes" | "plantillas" | "plantillas_presupuesto"
   | "aviso_envio" | "series"
   | "abreviaturas" | "sat" | "empresas" | "almacenes" | "contrapartidas"
-  | "origenes" | "drive" | "woo_pagados" | "cuadre";
+  | "origenes" | "drive" | "woo_pagados" | "cuadre" | "respuesta_leads";
 
 const SECTIONS: ReadonlyArray<{ id: SectionId; title: string; keys: (keyof ErpSettings)[] }> = [
   { id: "facturacion", title: "Facturación",
@@ -160,6 +164,7 @@ const SECTIONS: ReadonlyArray<{ id: SectionId; title: string; keys: (keyof ErpSe
   { id: "woo_pagados", title: "Pedidos web pagados que no llegan",
     keys: ["woo_missing_check_enabled", "woo_missing_check_interval_minutes", "woo_missing_days"] },
   { id: "cuadre", title: "Cuadre (descuadres)", keys: ["cuadre"] },
+  { id: "respuesta_leads", title: "Respuesta a leads", keys: ["lead_response"] },
 ];
 
 /** Estado de guardado de una sección: `saved` = el último guardado fue bien
@@ -1570,6 +1575,19 @@ export default function ErpSettingsPage() {
             onChange={(cuadre) => patch({ cuadre })}
           />
         </SettingsSection>
+        {/* Respuesta a leads (Fase 1): clasificar, dejar un borrador, colocar en
+            Ventas B2B y crear una tarea. NO envía nada al cliente. */}
+        <SettingsSection
+          {...sectionProps("respuesta_leads")}
+          lead="Cada lead que entra (formulario web o nota «form note» de AgileCRM) se clasifica, se le deja un borrador preparado, se coloca en Ventas B2B y se crea una tarea para una persona. Nada sale al cliente: la Fase 1 no envía."
+          note="El interruptor y el tope los aplica el paso «Clasificar lead» del workflow."
+        >
+          <LeadResponseSettings
+            value={cfg.lead_response}
+            catalogo={cfg.lead_response_catalogo}
+            onChange={(lead_response) => patch({ lead_response })}
+          />
+        </SettingsSection>
         {/* Genei (envíos): endpoint propio, tarjeta autónoma. */}
         <GeneiSettingsCard canEdit={canEdit} />
       </div>
@@ -1955,6 +1973,345 @@ function CuadreSettings({
           })}
         </tbody>
       </table>
+    </>
+  );
+}
+
+/** Campo numérico controlado que deja borrar y reescribir: el texto es
+ *  local y solo sube un número válido (dentro de min/max); al salir del campo
+ *  vuelve a enseñar el valor que manda. */
+function NumeroCampo({
+  value, onChange, min, max, step, ariaLabel,
+}: {
+  value: number;
+  onChange: (n: number) => void;
+  min?: number;
+  max?: number;
+  step?: number;
+  ariaLabel: string;
+}) {
+  const [texto, setTexto] = useState(String(value));
+  const [ultimo, setUltimo] = useState(value);
+  if (value !== ultimo) {
+    // Si el valor de fuera cambia (p. ej. normalizado por el servidor al
+    // guardar), se refleja; mientras se teclea un número equivalente, no.
+    setUltimo(value);
+    if (texto === "" || Number(texto) !== value) setTexto(String(value));
+  }
+  const fueraDeRango = (n: number) =>
+    (min !== undefined && n < min) || (max !== undefined && n > max);
+  const numero = Number(texto);
+  const invalido = texto !== "" && (!Number.isFinite(numero) || fueraDeRango(numero));
+  return (
+    <>
+      <input
+        type="number"
+        min={min}
+        max={max}
+        step={step}
+        aria-label={ariaLabel}
+        aria-invalid={invalido || undefined}
+        value={texto}
+        onChange={(e) => {
+          setTexto(e.target.value);
+          const n = Number(e.target.value);
+          if (e.target.value === "" || !Number.isFinite(n) || fueraDeRango(n)) return;
+          onChange(n);
+        }}
+        onBlur={() => setTexto(String(value))}
+      />
+      {invalido ? (
+        <span className="form-error small" role="alert">
+          Entre {min ?? "…"} y {max ?? "…"}: se guarda {value}.
+        </span>
+      ) : null}
+    </>
+  );
+}
+
+/** Mapa de plantillas: sin entrada = se resuelve por nombre; "" = sin
+ *  plantilla a propósito. Los dos valores especiales del desplegable. */
+const MAPA_POR_NOMBRE = "__por_nombre__";
+const MAPA_NINGUNA = "__ninguna__";
+const CATALOGO_VACIO: LeadResponseCatalogo = {
+  intereses: [], idiomas: [], plantillas: [], mapa_por_nombre: {}, webs: [], cuentas_agile: [],
+};
+/** Los valores de serie del backend (`app/services/leads/config.py`), para
+ *  pintar la sección antes de que se haya guardado nada. */
+const LEAD_RESPONSE_DEFECTOS: LeadResponseConfig = {
+  activo: false,
+  tope_diario: 20,
+  umbral_confianza: 0.7,
+  antiguedad_horas: 72,
+  ventana: { enabled: true, start: "09:00", end: "18:00", weekdays_only: true },
+  mapa: {},
+  remitentes: { por_web: {}, por_cuenta_agile: {} },
+};
+
+/** Respuesta a leads (Fase 1) — interruptor, tope diario, umbral, antigüedad,
+ *  ventana horaria, mapa interés × idioma → plantilla y remitentes. El PATCH
+ *  manda el bloque entero (`lead_response`); el servidor lo valida. */
+function LeadResponseSettings({
+  value, catalogo, onChange,
+}: {
+  value: LeadResponseConfig | undefined;
+  catalogo: LeadResponseCatalogo | undefined;
+  onChange: (next: LeadResponseConfig) => void;
+}) {
+  const cfg: LeadResponseConfig = value ?? LEAD_RESPONSE_DEFECTOS;
+  const cat = catalogo ?? CATALOGO_VACIO;
+  const comerciales = cat.intereses.filter((i) => i.comercial);
+  const nombrePlantilla = (id: string | null | undefined) =>
+    id ? (cat.plantillas.find((p) => p.id === id)?.name ?? id) : null;
+  const set = (p: Partial<LeadResponseConfig>) => onChange({ ...cfg, ...p });
+  const setVentana = (p: Partial<LeadResponseVentana>) =>
+    set({ ventana: { ...cfg.ventana, ...p } });
+  const valorMapa = (clave: string) => {
+    const v = cfg.mapa[clave];
+    return v === undefined ? MAPA_POR_NOMBRE : v === "" ? MAPA_NINGUNA : v;
+  };
+  const setMapa = (clave: string, valor: string) => {
+    const mapa = { ...cfg.mapa };
+    if (valor === MAPA_POR_NOMBRE) delete mapa[clave];
+    else mapa[clave] = valor === MAPA_NINGUNA ? "" : valor;
+    set({ mapa });
+  };
+  const setRemitente = (sub: "por_web" | "por_cuenta_agile", clave: string, valor: string) => {
+    const valores = { ...cfg.remitentes[sub] };
+    if (valor.trim()) valores[clave] = valor;
+    else delete valores[clave];
+    set({ remitentes: { ...cfg.remitentes, [sub]: valores } });
+  };
+  return (
+    <>
+      <label className="field erp-check-field">
+        <input
+          type="checkbox"
+          aria-label="Respuesta a leads activa"
+          checked={cfg.activo}
+          onChange={(e) => set({ activo: e.target.checked })}
+        />
+        <span>Clasificar y preparar los leads que entren</span>
+        <span className="muted small">
+          Apagado por defecto. Enciéndelo después de revisar el modo en seco con
+          Bart y de activar el workflow. Apagado, el paso «Clasificar lead» deja
+          pasar el lead sin tocarlo.
+        </span>
+      </label>
+      <p className="muted small">
+        La lista de leads procesados (con la clasificación corregible), el modo en
+        seco y la creación del workflow están en{" "}
+        <Link href="/erp/leads">ERP · Leads</Link>.
+      </p>
+      <label className="field">
+        <span>Tope diario de leads</span>
+        <NumeroCampo
+          ariaLabel="Tope diario de leads"
+          min={1}
+          max={1000}
+          value={cfg.tope_diario}
+          onChange={(n) => set({ tope_diario: Math.round(n) })}
+        />
+        <span className="muted small">
+          Al llegar, los siguientes leads del día se omiten y se avisa una vez por correo.
+        </span>
+      </label>
+      <label className="field">
+        <span>Umbral de confianza (0–1)</span>
+        <NumeroCampo
+          ariaLabel="Umbral de confianza"
+          min={0}
+          max={1}
+          step={0.05}
+          value={cfg.umbral_confianza}
+          onChange={(n) => set({ umbral_confianza: n })}
+        />
+        <span className="muted small">
+          Por debajo, la lista lo marca en rojo. En la Fase 1 no cambia nada más:
+          el borrador se prepara igual y una persona lo revisa.
+        </span>
+      </label>
+      <label className="field">
+        <span>Antigüedad máxima del lead (horas)</span>
+        <NumeroCampo
+          ariaLabel="Antigüedad máxima del lead en horas"
+          min={1}
+          max={2160}
+          value={cfg.antiguedad_horas}
+          onChange={(n) => set({ antiguedad_horas: Math.round(n) })}
+        />
+        <span className="muted small">
+          Por la fecha real del lead (una nota de Agile de julio sincronizada hoy
+          no cuenta). Nada de histórico: 72 por defecto.
+        </span>
+      </label>
+
+      <h3 className="erp-settings-sub">Ventana horaria de la espera</h3>
+      <p className="muted small">
+        Con lo que se siembra la espera del workflow: el borrador y la tarea se
+        preparan dentro de este horario (hora de Madrid). El paso guarda la suya;
+        cambiarla aquí no toca un workflow ya creado.
+      </p>
+      <label className="field erp-check-field">
+        <input
+          type="checkbox"
+          aria-label="Ventana horaria activa"
+          checked={cfg.ventana.enabled}
+          onChange={(e) => setVentana({ enabled: e.target.checked })}
+        />
+        <span>Respetar una ventana horaria</span>
+      </label>
+      <label className="field">
+        <span>Desde</span>
+        <input
+          type="time"
+          aria-label="Inicio de la ventana horaria"
+          value={cfg.ventana.start}
+          onChange={(e) => { if (e.target.value) setVentana({ start: e.target.value }); }}
+        />
+      </label>
+      <label className="field">
+        <span>Hasta</span>
+        <input
+          type="time"
+          aria-label="Fin de la ventana horaria"
+          value={cfg.ventana.end}
+          onChange={(e) => { if (e.target.value) setVentana({ end: e.target.value }); }}
+        />
+      </label>
+      <label className="field erp-check-field">
+        <input
+          type="checkbox"
+          aria-label="Solo días laborables"
+          checked={cfg.ventana.weekdays_only}
+          onChange={(e) => setVentana({ weekdays_only: e.target.checked })}
+        />
+        <span>Solo de lunes a viernes</span>
+      </label>
+
+      <h3 className="erp-settings-sub">Plantilla por interés e idioma</h3>
+      <p className="muted small">
+        Qué plantilla de las de autorespuesta lleva el borrador. «Por nombre» usa
+        la que se llama «Lead · &lt;contenido&gt; (&lt;IDIOMA&gt;)» si existe.
+        Consumibles, servicio técnico, repuestos y «otro» no llevan plantilla de
+        venta: el borrador queda vacío y la tarea lo dice.
+      </p>
+      {comerciales.length === 0 || cat.idiomas.length === 0 ? (
+        <p className="muted small">El catálogo de intereses e idiomas no ha llegado del servidor.</p>
+      ) : (
+        <table className="data-table data-table--responsive erp-settings-table">
+          <thead>
+            <tr>
+              <th>Interés</th>
+              {cat.idiomas.map((l) => <th key={l}>{l.toUpperCase()}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {comerciales.map((i) => (
+              <tr key={i.id}>
+                <td data-label="Interés"><strong>{i.label}</strong></td>
+                {cat.idiomas.map((l) => {
+                  const clave = `${i.id}:${l}`;
+                  const porNombre = nombrePlantilla(cat.mapa_por_nombre[clave]);
+                  const valor = valorMapa(clave);
+                  // Una plantilla guardada que ya no está en el catálogo (la
+                  // renombraron) se sigue viendo, no se queda en blanco.
+                  const fueraDeCatalogo = valor !== MAPA_POR_NOMBRE && valor !== MAPA_NINGUNA
+                    && !cat.plantillas.some((p) => p.id === valor);
+                  return (
+                    <td key={l} data-label={l.toUpperCase()}>
+                      <select
+                        aria-label={`Plantilla de ${i.label} en ${l.toUpperCase()}`}
+                        value={valor}
+                        onChange={(e) => setMapa(clave, e.target.value)}
+                      >
+                        <option value={MAPA_POR_NOMBRE}>
+                          {porNombre ? `Por nombre: ${porNombre}` : "Por nombre: (no hay)"}
+                        </option>
+                        <option value={MAPA_NINGUNA}>Sin plantilla (a propósito)</option>
+                        {cat.plantillas.map((p) => (
+                          <option key={p.id} value={p.id}>{p.name}</option>
+                        ))}
+                        {fueraDeCatalogo ? (
+                          <option value={valor}>Plantilla fuera del catálogo «Lead…» ({valor.slice(0, 8)}…)</option>
+                        ) : null}
+                      </select>
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      <h3 className="erp-settings-sub">Remitente por web</h3>
+      <p className="muted small">
+        Desde qué dirección sale el borrador según la web del lead (la del acuse
+        de recibo). Vacío = la de serie.
+      </p>
+      <table className="data-table data-table--responsive erp-settings-table">
+        <thead>
+          <tr><th>Web</th><th>Remitente</th></tr>
+        </thead>
+        <tbody>
+          {cat.webs.map((w) => (
+            <tr key={w.clave}>
+              <td data-label="Web">
+                <strong>{w.marca}</strong>{" "}
+                <span className="muted small">({w.web})</span>
+              </td>
+              <td data-label="Remitente">
+                <input
+                  type="email"
+                  aria-label={`Remitente de ${w.marca}`}
+                  placeholder={w.remitente_defecto ?? "sin remitente de serie"}
+                  value={cfg.remitentes.por_web[w.clave] ?? ""}
+                  onChange={(e) => setRemitente("por_web", w.clave, e.target.value)}
+                />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      <h3 className="erp-settings-sub">Web de cada cuenta de AgileCRM</h3>
+      <p className="muted small">
+        Los leads que llegan como nota de AgileCRM no traen web: aquí se dice a
+        qué web (y por tanto a qué remitente) pertenece cada cuenta. Sin web, el
+        borrador se queda sin remitente y la tarea lo avisa.
+      </p>
+      {cat.cuentas_agile.length === 0 ? (
+        <p className="muted small">No hay cuentas de AgileCRM dadas de alta.</p>
+      ) : (
+        <table className="data-table data-table--responsive erp-settings-table">
+          <thead>
+            <tr><th>Cuenta</th><th>Web</th></tr>
+          </thead>
+          <tbody>
+            {cat.cuentas_agile.map((c) => (
+              <tr key={c.account_id}>
+                <td data-label="Cuenta">
+                  <strong>{c.display_name}</strong>
+                  {!c.enabled ? <span className="muted small"> (desactivada)</span> : null}
+                </td>
+                <td data-label="Web">
+                  <select
+                    aria-label={`Web de la cuenta ${c.display_name}`}
+                    value={cfg.remitentes.por_cuenta_agile[c.account_id] ?? ""}
+                    onChange={(e) => setRemitente("por_cuenta_agile", c.account_id, e.target.value)}
+                  >
+                    <option value="">— Sin web —</option>
+                    {cat.webs.map((w) => (
+                      <option key={w.clave} value={w.clave}>{w.marca} ({w.web})</option>
+                    ))}
+                  </select>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </>
   );
 }

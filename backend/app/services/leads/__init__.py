@@ -12,3 +12,6 @@ La Fase 1 NO envía ni un correo al cliente: clasifica, deja un borrador, coloca
 en el pipeline y avisa a una persona. Todo lo demás es un workflow montado
 sobre el motor (`app/workflows`).
 """
+# El proveedor de IA se registra al importar el paquete: así
+# `clasificador.proveedor_por_defecto()` lo encuentra cuando hay clave.
+from app.services.leads import proveedor_anthropic as _proveedor_anthropic  # noqa: E402, F401

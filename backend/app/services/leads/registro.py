@@ -233,6 +233,34 @@ def registrar(
     return fila
 
 
+def correo_saliente_desde(session: Session, contact_id: str, desde: datetime | None) -> bool:
+    """¿Se le ha enviado al contacto algún correo desde `desde` que no sea el
+    acuse de recibo del formulario? El acuse sale solo al rellenar el
+    formulario y deja su marca en el timeline (`origen: acuse_formulario_web`);
+    lo que cuenta como contactar es cualquier otro correo saliente."""
+    from sqlalchemy import Text, cast  # noqa: PLC0415
+
+    from app.models.crm import ActivityEvent, EmailDirection, EmailMessage  # noqa: PLC0415
+
+    clauses = [
+        EmailMessage.contact_id == contact_id,
+        EmailMessage.direction == EmailDirection.OUTBOUND,
+    ]
+    if desde is not None:
+        clauses.append(EmailMessage.created_at >= desde)
+    salientes = list(session.scalars(select(EmailMessage.id).where(*clauses)))
+    if not salientes:
+        return False
+    acuses = set(session.scalars(
+        select(ActivityEvent.external_id).where(
+            ActivityEvent.contact_id == contact_id,
+            ActivityEvent.event_type == "email.sent_from_crm",
+            cast(ActivityEvent.metadata_json, Text).like('%"acuse_formulario_web"%'),
+        )
+    ))
+    return any(f"email:{mid}:email.sent_from_crm" not in acuses for mid in salientes)
+
+
 def _inicio_del_dia() -> datetime:
     """El inicio de HOY en hora de Madrid, en UTC: el tope es por día natural
     de la oficina, no por día UTC."""
@@ -321,4 +349,5 @@ def url_borrador(draft_id: str | None) -> str:
     if not draft_id:
         return ""
     base = (get_settings().frontend_base_url or "").rstrip("/")
-    return f"{base}/emails/drafts?draft={draft_id}"
+    # La página de Borradores abre el que llega por `?id=`.
+    return f"{base}/emails/drafts?id={draft_id}"

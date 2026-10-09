@@ -10,7 +10,7 @@ from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import false, or_, select
+from sqlalchemy import false, func, or_, select
 
 from app.erp.cuadre.contexto import Contexto
 from app.erp.cuadre.registry import (
@@ -757,4 +757,111 @@ def lead_web_sin_comercial(ctx: Contexto) -> Iterator[Hallazgo]:
             huella_datos={"origen": _s(f.origin_account_id),
                           "owner": _s(f.owner_user_id)},
             datos={"email": _s(f.email), "creado": f.created_at.isoformat()},
+        )
+
+
+#: Horas sin ningún correo a partir de las cuales un lead cuenta como «sin
+#: contactar». No es configurable: es la definición del descuadre.
+HORAS_SIN_CONTACTAR = 48
+
+
+def _aware(momento: datetime | None) -> datetime | None:
+    if momento is not None and momento.tzinfo is None:
+        return momento.replace(tzinfo=UTC)
+    return momento
+
+
+@comprobacion(
+    id="lead_sin_contactar", orden=19,
+    titulo="Lead sin contactar",
+    descripcion="Lead (formulario web o nota «form note» de AgileCRM) entrado hace más de "
+                f"{HORAS_SIN_CONTACTAR} horas, que no es spam y al que no se le ha enviado "
+                "ningún correo: el acuse de recibo del formulario no cuenta. Es la red de "
+                "seguridad de la respuesta a leads y mide el problema de partida.",
+    severidad="media", fuente=FUENTE_MYSQL, grupo="crm",
+    dias_defecto=30, dias_texto="Solo leads de los últimos N días",
+)
+def lead_sin_contactar(ctx: Contexto) -> Iterator[Hallazgo]:
+    """De los 20 últimos leads revisados en producción el 09/10/2026, siete no
+    tenían ni un solo correo. Esto los lista aunque falle todo lo demás (el
+    workflow apagado, el tope, la IA): lee los leads de sus fuentes, no de lo
+    que el workflow clasificó."""
+    from datetime import timedelta  # noqa: PLC0415
+
+    from app.models.crm import Contact  # noqa: PLC0415
+    from app.models.leads import FUENTE_AGILE, LeadClassification  # noqa: PLC0415
+    from app.services.leads.en_seco import LIMITE_MAXIMO, leads_recientes  # noqa: PLC0415
+    from app.services.leads.registro import correo_saliente_desde  # noqa: PLC0415
+    from app.services.web_forms.sitios import (  # noqa: PLC0415
+        ORIGEN_PREFIJO,
+        etiqueta_de_origen,
+        web_de_sitio,
+    )
+
+    ventana = ctx.dias("lead_sin_contactar", 30)
+    desde = ctx.ahora - timedelta(days=ventana)
+    tope = ctx.ahora - timedelta(hours=HORAS_SIN_CONTACTAR)
+    # La fecha real de cada lead, por contacto (manda la más reciente), de
+    # TODAS las fuentes, estén clasificados o no —es la red de seguridad y no
+    # puede depender del workflow—: los envíos de formulario que no son spam y
+    # las notas «form note» de Agile por su fecha real, los contactos web de
+    # antes de guardarse los envíos (por su alta) y lo que sí se clasificó.
+    leads: dict[str, tuple[datetime, str]] = {}
+
+    def anotar(contact_id: str | None, fecha: datetime | None, procedencia: str) -> None:
+        if not contact_id or fecha is None:
+            return
+        previa = leads.get(contact_id)
+        if previa is None or fecha > previa[0]:
+            leads[contact_id] = (fecha, procedencia)
+
+    for contact, entrada in leads_recientes(
+            ctx.session, dias=ventana, limite=LIMITE_MAXIMO, ahora=ctx.ahora):
+        if entrada.fuente == FUENTE_AGILE:
+            procedencia = "AgileCRM"
+        else:
+            web = web_de_sitio(entrada.sitio) if entrada.sitio else None
+            procedencia = f"formulario web · {web}" if web else "formulario web"
+        anotar(contact.id, entrada.lead_at, procedencia)
+    for c in ctx.session.execute(
+        select(Contact.id, Contact.created_at, Contact.origin, Contact.origin_account_id)
+        .where(Contact.origin_account_id.like(f"{ORIGEN_PREFIJO}:%"),
+               Contact.created_at >= desde, Contact.is_active.is_(True))
+    ).all():
+        anotar(c.id, _aware(c.created_at), etiqueta_de_origen(c.origin_account_id) or _s(c.origin))
+    for f in ctx.session.execute(
+        select(LeadClassification.contact_id, LeadClassification.lead_at,
+               LeadClassification.source, LeadClassification.created_at)
+        .where(func.coalesce(LeadClassification.lead_at, LeadClassification.created_at) >= desde)
+    ).all():
+        anotar(f.contact_id, _aware(f.lead_at or f.created_at),
+               "AgileCRM" if f.source == FUENTE_AGILE else "formulario web")
+    if not leads:
+        return
+    contactos = {
+        c.id: c for c in ctx.session.scalars(select(Contact).where(Contact.id.in_(list(leads))))
+    }
+    for contact_id, (lead_at, procedencia) in sorted(
+            leads.items(), key=lambda kv: kv[1][0], reverse=True):
+        c = contactos.get(contact_id)
+        if c is None or not c.is_active or c.lead_is_spam is True:
+            continue
+        if lead_at > tope:
+            continue                      # todavía no han pasado las 48 h
+        if correo_saliente_desde(ctx.session, contact_id, lead_at):
+            continue
+        nombre = " ".join(p for p in (c.first_name, c.last_name) if p).strip()
+        dias = ctx.dias_desde(lead_at)
+        yield Hallazgo(
+            entidad_tipo=ENTIDAD_CONTACTO, entidad_id=contact_id,
+            etiqueta=nombre or _s(c.email) or contact_id,
+            detalle=(f"Lead de {procedencia} entrado hace {dias} día(s): ningún correo "
+                     "enviado (el acuse de recibo no cuenta)."),
+            pista_de_arreglo="Contéstale desde su ficha. Si la respuesta a leads está "
+                             "encendida, el borrador preparado está en Bandeja → Borradores.",
+            enlace=f"/contacts/{contact_id}", arreglo_enlace=f"/contacts/{contact_id}",
+            arreglo_boton="Abrir la ficha",
+            huella_datos={"lead_at": lead_at.isoformat(), "interes": _s(c.lead_interest)},
+            datos={"email": _s(c.email), "interes": _s(c.lead_interest),
+                   "procedencia": procedencia},
         )

@@ -364,7 +364,7 @@ def test_formulario_pimpam_con_productos_marcados(session_factory, monkeypatch) 
         tarea = s.scalar(select(Task).where(Task.contact_id == contact_id))
         assert tarea is not None
         assert tarea.title == "Revisar lead: Vending (95%)"
-        assert f"draft={borrador.id}" in (tarea.description or "")
+        assert f"/emails/drafts?id={borrador.id}" in (tarea.description or "")
         assert fila.task_id == tarea.id
 
         s.refresh(run)

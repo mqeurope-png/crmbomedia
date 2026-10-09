@@ -27,6 +27,7 @@ dice qué se ve, qué se pulsa y qué pasa después.
   - [Seguimiento](#seguimiento)
   - [Excepciones](#excepciones)
   - [Cuadre (descuadres)](#cuadre-descuadres)
+  - [Respuesta a leads](#respuesta-a-leads)
   - [Ajustes del ERP](#ajustes-del-erp)
 - [Parte 2: el ciclo de un pedido, paso a paso](#parte-2-el-ciclo-de-un-pedido-paso-a-paso)
   - [A) Pedido web (WooCommerce), de principio a fin](#a-pedido-web-woocommerce-de-principio-a-fin)
@@ -85,6 +86,7 @@ roles**: su permiso es la **unión** de lo que permite cada uno.
 | Cola SAT: preparar / embalar / técnicos (serie, WhiteRIP) | ❌ | ✅ | ✅ | ✅ |
 | Seguimiento (hoja / Drive) | ❌ | ✅ | ❌ | ✅ |
 | Cuadre (descuadres) | ❌ | ✅ | ❌ | ✅ |
+| Respuesta a leads (leads procesados, modo en seco) | ❌ | ❌ | ❌ | ✅ |
 | Conciliación bancaria | ❌ | ❌ | ❌ | ✅ |
 | Configuración · Integraciones (Woo) | ❌ | ❌ | ❌ | ✅ |
 | **Asignar roles** a usuarios | ❌ | ❌ | ❌ | ✅ |
@@ -165,6 +167,7 @@ comillas):
 - **«ERP · Documentos»** → [Documentos de FACTUSOL](#documentos-de-factusol).
 - **«ERP · Seguimiento»** → [Seguimiento](#seguimiento).
 - **«ERP · Cuadre»** → [Cuadre (descuadres)](#cuadre-descuadres).
+- **«ERP · Leads»** → [Respuesta a leads](#respuesta-a-leads) (solo admin).
 - **«ERP · Conciliación»** → conciliación bancaria (cuadre de cobros).
 - **«ERP · Taller (SAT)»** → la [Cola SAT](#cola-sat-el-taller).
 - **«ERP · Configuración»** → [Ajustes del ERP](#ajustes-del-erp) (solo admin).
@@ -1510,6 +1513,38 @@ alguno de severidad alta o media. Lleva directamente al Cuadre.
   enciende después de revisar el primer lote con «Comprobar ahora».
 - Activar o desactivar cada comprobación.
 - Cambiar los días de aviso de cada comprobación.
+
+### Respuesta a leads
+
+**Menú: «ERP · Leads». Título: «Respuesta a leads».** Solo admin. Lo que la
+Fase 1 hace con cada lead que entra (formulario web o nota «form note» de
+AgileCRM): lo **clasifica** (idioma, interés, spam, confianza), le deja un
+**borrador preparado** en Bandeja → Borradores, lo **coloca en Ventas B2B**
+(«Nuevo lead», o «Descartado / spam») y **crea una tarea** para una persona.
+**Nada sale al cliente**: la Fase 1 no envía.
+
+- **Workflow «Respuesta a leads (Fase 1)»**: si no existe, **«Crear el
+  workflow»** lo crea en borrador (hace falta el pipeline «Ventas B2B» con las
+  etapas «Nuevo lead» y «Descartado / spam»); después se revisa y se activa en
+  Workflows. Hasta que esté activo y el interruptor encendido, no se procesa
+  ningún lead.
+- **Modo en seco**: elige los días y pulsa **«Simular en seco»**: clasifica
+  los leads de ese plazo y dice qué habría hecho con cada uno (etapa,
+  plantilla, remitente, tarea, avisos). **No escribe nada.** Es lo que se
+  revisa antes de encender el interruptor.
+- **Leads procesados**: los de los últimos N días con su clasificación. El
+  idioma, el interés y la marca de spam se **corrigen en la propia fila**
+  (**«Guardar corrección»**, con una nota opcional); la original se conserva
+  y queda quién corrigió qué. La confianza sale en **rojo** por debajo del
+  umbral. Cada fila enlaza a la ficha del contacto y al borrador.
+
+**Configuración** (en **«Configuración ERP → Respuesta a leads»**): el
+interruptor (viene **apagado**), el tope diario, el umbral de confianza, la
+antigüedad máxima del lead, la ventana horaria, la plantilla por interés e
+idioma, el remitente por web y la web de cada cuenta de AgileCRM.
+
+El Cuadre tiene la comprobación **«Lead sin contactar»** (media): lead de
+hace más de 48 horas sin ningún correo (el acuse de recibo no cuenta).
 
 ### Ajustes del ERP
 

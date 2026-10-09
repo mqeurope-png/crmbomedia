@@ -72,6 +72,10 @@ from app.integrations.woocommerce.missing import DAYS_KEY as WOO_MISSING_DAYS_KE
 from app.integrations.woocommerce.missing import ENABLED_KEY as WOO_MISSING_ENABLED_KEY
 from app.integrations.woocommerce.missing import INTERVAL_KEY as WOO_MISSING_INTERVAL_KEY
 from app.models.crm import User
+from app.services.leads.config import CONFIG_KEY as LEAD_CONFIG_KEY
+from app.services.leads.config import catalogo as lead_catalogo
+from app.services.leads.config import normalizar as normalizar_lead_response
+from app.services.leads.config import validar as validar_lead_response
 
 router = APIRouter(prefix="/api/erp", tags=["erp-exceptions"])
 
@@ -232,6 +236,10 @@ class SettingsIn(BaseModel):
     #: activa/inactiva y umbral en días: {"nocturno_activo", "hora", "checks":
     #: {id: {"activo", "dias"}}}. Ver `app/erp/cuadre/config.py`.
     cuadre: dict[str, Any] | None = None
+    #: Respuesta a leads (Fase 1): interruptor, tope diario, umbral de
+    #: confianza, antigüedad, ventana horaria, mapa interés × idioma →
+    #: plantilla y remitentes. Ver `app/services/leads/config.py`.
+    lead_response: dict[str, Any] | None = None
 
 
 # --- helpers -----------------------------------------------------------------
@@ -549,6 +557,10 @@ def _serialise_settings(cfg: ErpSettings, session: Session) -> dict[str, Any]:
         # por comprobación (con los defaults), y el catálogo para pintarlas.
         "cuadre": normalizar_cuadre(_series(cfg).get(CUADRE_CONFIG_KEY)),
         "cuadre_catalogo": cuadre_catalogo(),
+        # Respuesta a leads: la configuración (con defaults) y lo que la pantalla
+        # necesita para pintarla (intereses, idiomas, plantillas, webs, cuentas).
+        "lead_response": normalizar_lead_response(_series(cfg).get(LEAD_CONFIG_KEY)),
+        "lead_response_catalogo": lead_catalogo(session),
         "woocommerce_stores": _woocommerce_stores(session),
         "factusol_series_abbr_variants": {
             str(k): v
@@ -709,7 +721,8 @@ def update_settings(
             or payload.sat_email is not None
             or payload.factusol_series_email_from is not None
             or payload.factusol_store_email_from is not None
-            or payload.cuadre is not None):
+            or payload.cuadre is not None
+            or payload.lead_response is not None):
         series = _series(cfg)
         # ERP · Cuadre: se valida entero (hora HH:MM, días 1-3650, ids que
         # existen) y se guarda ya normalizado.
@@ -717,6 +730,19 @@ def update_settings(
             try:
                 series[CUADRE_CONFIG_KEY] = validar_cuadre(
                     payload.cuadre, series.get(CUADRE_CONFIG_KEY),
+                )
+            except ValueError as e:
+                raise HTTPException(400, str(e)) from e
+        # Respuesta a leads: igual, validado entero (las plantillas del mapa
+        # tienen que existir) y fundido con lo guardado.
+        if payload.lead_response is not None:
+            from app.email_templates.models import EmailTemplate  # noqa: PLC0415
+
+            plantillas_validas = set(session.scalars(select(EmailTemplate.id)))
+            try:
+                series[LEAD_CONFIG_KEY] = validar_lead_response(
+                    payload.lead_response, series.get(LEAD_CONFIG_KEY),
+                    plantillas_validas=plantillas_validas,
                 )
             except ValueError as e:
                 raise HTTPException(400, str(e)) from e

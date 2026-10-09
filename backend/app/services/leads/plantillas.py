@@ -77,6 +77,27 @@ def buscar_por_nombre(session: Session, nombre: str) -> Any | None:
     return None
 
 
+def mapa_resuelto_por_nombre(session: Session) -> dict[str, str | None]:
+    """Para la pantalla: `interes:idioma` → id de la plantilla que se resuelve
+    por nombre (o `None` si no hay), cargando las candidatas UNA sola vez."""
+    from app.email_templates.models import EmailTemplate  # noqa: PLC0415
+
+    candidatas = list(session.scalars(
+        select(EmailTemplate)
+        .where(EmailTemplate.name.like("%Lead%"))
+        .order_by(EmailTemplate.created_at.desc())
+    ))
+    por_plano: dict[str, str] = {}
+    for tpl in candidatas:
+        por_plano.setdefault(_plano(tpl.name), tpl.id)      # la más reciente manda
+    salida: dict[str, str | None] = {}
+    for interes in sorted(INTERESES_COMERCIALES):
+        for idioma in IDIOMAS_CON_PLANTILLA:
+            nombre = nombre_plantilla(interes, idioma)
+            salida[clave_mapa(interes, idioma)] = por_plano.get(_plano(nombre)) if nombre else None
+    return salida
+
+
 def plantilla_para(
     session: Session, interes: str | None, idioma: str | None,
     mapa: dict[str, Any] | None = None,
