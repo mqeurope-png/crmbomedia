@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from email.utils import getaddresses, parsedate_to_datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -29,6 +29,7 @@ from app.models.crm import (
     GmailPubsubWatch,
     SyncLog,
     UserEmailAlias,
+    UserEmailAliasPref,
 )
 from app.services.email_aliases import active_alias_map, resolve_delivered_to
 
@@ -1177,8 +1178,10 @@ def process_history(
                 and "SENT" not in stub_labels
             ):
                 continue
-            if not alias_map:
-                # Sin alias activos no hay nada que capturar; seguimos
+            if not alias_map and "SENT" not in stub_labels:
+                # Sin alias activos no hay correo ENTRANTE que capturar
+                # (el gate por `delivered_to` lo descartaría); lo ENVIADO
+                # se captura igual, no depende de los alias. Seguimos
                 # procesando labelsAdded/Removed más abajo.
                 continue
             try:
@@ -1651,6 +1654,93 @@ def primary_recipient(raw: dict[str, Any]) -> str | None:
     return None
 
 
+def es_mensaje_enviado(raw: dict[str, Any]) -> bool:
+    """Un mensaje de la carpeta SENT del buzón conectado es correo ESCRITO
+    por alguien de la casa, sea cual sea la dirección del From."""
+    return "SENT" in (raw.get("labelIds") or [])
+
+
+def outbound_owner_user_id(
+    session: Session,
+    *,
+    from_email: str,
+    sender_alias: str | None,
+    mailbox_user_id: str,
+) -> str:
+    """A quién se atribuye un mensaje enviado.
+
+    Los alias ya NO deciden si se guarda, solo a quién se atribuye y cómo se
+    presenta: el dueño del alias registrado (`user_email_aliases`); si no, el
+    usuario que tiene esa dirección entre sus «enviar como»
+    (`user_email_alias_prefs`, primero quien la tenga por defecto); y si no
+    hay alias registrado, el usuario de cuyo buzón salió. Del 20/07 al
+    09/10/2026 todo lo enviado desde una dirección sin registrar se descartó
+    en silencio, entre ello una oferta a un lead real.
+    """
+    if sender_alias:
+        owner = session.scalar(
+            select(UserEmailAlias.user_id).where(
+                UserEmailAlias.alias_email == sender_alias,
+                UserEmailAlias.active.is_(True),
+            )
+        )
+        if owner:
+            return owner
+    if from_email:
+        pref_owner = session.scalar(
+            select(UserEmailAliasPref.user_id)
+            .where(
+                func.lower(UserEmailAliasPref.alias_email) == from_email.lower(),
+                UserEmailAliasPref.is_allowed.is_(True),
+            )
+            .order_by(
+                UserEmailAliasPref.is_default.desc(),
+                UserEmailAliasPref.created_at.asc(),
+            )
+            .limit(1)
+        )
+        if pref_owner:
+            return pref_owner
+    return mailbox_user_id
+
+
+def firma_de_enviado(raw: dict[str, Any]) -> tuple[str, datetime, str | None, str]:
+    """`(from, fecha, asunto, destinatarios)`: lo que identifica un mensaje
+    enviado con independencia del buzón en el que esté (el id de Gmail es
+    distinto en cada buzón)."""
+    headers = _index_headers(raw.get("payload", {}).get("headers", []))
+    from_addresses = getaddresses([headers.get("from") or ""])
+    from_email = from_addresses[0][1] if from_addresses else ""
+    sent_at = _parse_date(headers.get("date")) or datetime.now(UTC)
+    to_emails = [addr for _, addr in getaddresses([headers.get("to") or ""]) if addr]
+    return from_email, sent_at, headers.get("subject"), json.dumps(to_emails)
+
+
+def enviado_duplicado_en_otra_cuenta(
+    session: Session, *, raw: dict[str, Any], mailbox_user_id: str
+) -> bool:
+    """El mismo mensaje enviado ya está guardado por haberse capturado desde
+    el buzón de OTRO usuario (misma firma: remitente, fecha, asunto y
+    destinatarios). En el mismo buzón lo dedupe el id de Gmail."""
+    from_email, sent_at, subject, to_json = firma_de_enviado(raw)
+    if not from_email:
+        return False
+    hit = session.scalar(
+        select(EmailMessage.id)
+        .where(
+            EmailMessage.gmail_account_user_id != mailbox_user_id,
+            EmailMessage.direction == EmailDirection.OUTBOUND,
+            func.lower(EmailMessage.from_email) == from_email.lower(),
+            EmailMessage.sent_at == sent_at,
+            EmailMessage.to_emails_json == to_json,
+            (EmailMessage.subject == subject) if subject is not None
+            else EmailMessage.subject.is_(None),
+        )
+        .limit(1)
+    )
+    return hit is not None
+
+
 def _persist_message(
     session: Session,
     *,
@@ -1668,7 +1758,14 @@ def _persist_message(
     Ahora, si el `From` es un alias activo del CRM, el mensaje se guarda
     como OUTBOUND (mail enviado desde Gmail directo, no desde el
     compositor): el dueño del alias es el propietario, `delivered_to` no
-    aplica y el contacto se casa por los destinatarios."""
+    aplica y el contacto se casa por los destinatarios.
+
+    Captura de SALIDA universal (10/10/2026): un mensaje de la carpeta SENT
+    del buzón conectado se guarda SIEMPRE, sea cual sea el From — igual que
+    la entrada, que guarda hasta los boletines. Los alias ya no son la
+    condición para guardar: solo deciden a quién se atribuye
+    (`outbound_owner_user_id`). El contacto se casa por los destinatarios
+    (To y Cc); sin contacto se guarda igual, sin `contact_id`."""
     headers = _index_headers(raw.get("payload", {}).get("headers", []))
     from_header = headers.get("from") or ""
     to_header = headers.get("to") or ""
@@ -1688,24 +1785,30 @@ def _persist_message(
     body_text, body_html = _extract_bodies(raw.get("payload", {}))
 
     labels = raw.get("labelIds") or []
-    # CRM-BACKFILL-SENT — detección de dirección. Si el From es un alias
-    # activo → OUTBOUND. Cubre también el auto-forward / CC a uno mismo
-    # (From alias Y To alias): outbound gana.
+    # Dirección. Lo que está en SENT lo envió alguien de la casa: OUTBOUND,
+    # sea cual sea el From. Y si el From es un alias activo también es
+    # outbound aunque no venga de SENT (auto-forward / CC a uno mismo: From
+    # alias Y To alias → outbound gana).
     sender_alias = (
         resolve_delivered_to([from_email], alias_map)
         if alias_map is not None
         else None
     )
-    is_outbound = sender_alias is not None
+    is_outbound = sender_alias is not None or "SENT" in labels
 
     delivered_to: str | None = None
     owner_user_id: str | None = None
     if is_outbound:
-        owner_user_id = session.scalar(
-            select(UserEmailAlias.user_id).where(
-                UserEmailAlias.alias_email == sender_alias,
-                UserEmailAlias.active.is_(True),
+        # Ya guardado desde el buzón de otro usuario del hilo: no se duplica.
+        if enviado_duplicado_en_otra_cuenta(session, raw=raw, mailbox_user_id=user_id):
+            logger.info(
+                "gmail.persist.outbound_duplicate_other_account user=%s msg=%s",
+                user_id, raw.get("id"),
             )
+            return None
+        owner_user_id = outbound_owner_user_id(
+            session, from_email=from_email, sender_alias=sender_alias,
+            mailbox_user_id=user_id,
         )
     else:
         # CRM-GMAIL — captura universal. `delivered_to` = alias del CRM al
@@ -1790,8 +1893,9 @@ def _persist_message(
         # depende del contacto.
         #
         # CRM-BACKFILL-SENT: en un thread nuevo iniciado por un mail
-        # enviado, el propietario es el DUEÑO del alias del From (así el
-        # comercial lo ve en su bandeja via initiated_by), no la cuenta org.
+        # enviado, el propietario es a quien se atribuye el envío (dueño del
+        # alias, «enviar como» o el buzón), así el comercial lo ve en su
+        # bandeja via initiated_by, no la cuenta org.
         thread = _get_or_create_thread(
             session,
             gmail_account_user_id=user_id,

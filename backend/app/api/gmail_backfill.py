@@ -49,6 +49,7 @@ from app.schemas.gmail_backfill import (
     BackfillEstimateRequest,
     BackfillExecuteRequest,
     BackfillJobRead,
+    BackfillUniversalRequest,
     PerContactBatchRequest,
     PerContactBatchResponse,
     PerContactCandidatesResponse,
@@ -190,6 +191,64 @@ def gmail_backfill_execute(
         enqueue_backfill(job.id)
     except Exception as exc:  # noqa: BLE001
         logger.warning("gmail.backfill.execute enqueue failed: %s", exc)
+    return _job_to_read(job)
+
+
+@router.post(
+    "/admin/gmail/backfill/universal",
+    response_model=BackfillJobRead,
+)
+def gmail_backfill_universal(
+    payload: BackfillUniversalRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_admin),
+) -> BackfillJobRead:
+    """Crea un job en modo `universal` (cola `gmail:backfill_historic`,
+    worker-gmail): el backfill universal acotado por fechas. Es el relleno de
+    los enviados perdidos del 20/07 al 10/10/2026 (captura de salida filtrada
+    por alias): con `dry_run` no escribe nada y el `result` dice cuántos
+    enviados recuperaría por remitente y por usuario; sin él, los guarda.
+    Relanzable sobre el mismo tramo sin duplicar (dedupe por id de Gmail)."""
+    hoy = datetime.now(UTC).date()
+    until = payload.until or hoy
+    if payload.since > until:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="La fecha de inicio no puede ser posterior a la de fin.",
+        )
+    if until > hoy:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="La fecha de fin no puede ser futura.",
+        )
+    config = {
+        "since": payload.since.isoformat(),
+        "until": until.isoformat(),
+        "labels": list(payload.labels),
+        "dry_run": payload.dry_run,
+        "dry_run_limit": payload.dry_run_limit,
+    }
+    job = _create_job(
+        session, mode=GmailBackfillMode.UNIVERSAL, config=config, user=current_user,
+    )
+    record_event(
+        session,
+        action=(
+            Action.GMAIL_BACKFILL_ESTIMATED if payload.dry_run
+            else Action.GMAIL_BACKFILL_TRIGGERED
+        ),
+        target_type="gmail_backfill_job",
+        target_id=job.id,
+        actor=current_user,
+        metadata={"mode": "universal", **config},
+        request=request,
+    )
+    session.commit()
+    try:
+        enqueue_backfill(job.id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("gmail.backfill.universal enqueue failed: %s", exc)
     return _job_to_read(job)
 
 

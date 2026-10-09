@@ -1,7 +1,7 @@
 """Sprint-Backfill-Gmail — schemas Pydantic para el flujo admin."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -25,6 +25,23 @@ class BackfillExecuteRequest(BaseModel):
 class BackfillEstimateRequest(BaseModel):
     months_back: int = Field(default=36, ge=1, le=120)
     aliases_scope: AliasesScope = "primary_only"
+
+
+GmailLabel = Literal["INBOX", "SPAM", "SENT"]
+
+
+class BackfillUniversalRequest(BaseModel):
+    """Body de `POST /api/admin/gmail/backfill/universal`: el backfill
+    universal (entrada Y salida, misma regla que el push) acotado por
+    fechas, sobre la cuenta Gmail de la organización. `dry_run` no escribe
+    nada y deja en el resultado cuántos enviados recuperaría por remitente
+    y por usuario. Relanzable sin duplicar."""
+
+    since: date
+    until: date | None = None
+    labels: list[GmailLabel] = Field(default_factory=lambda: ["INBOX", "SPAM", "SENT"])
+    dry_run: bool = False
+    dry_run_limit: int = Field(default=5000, ge=1, le=50000)
 
 
 # PR-Auto-Backfill-Gmail-Por-Contacto -----------------------------------
