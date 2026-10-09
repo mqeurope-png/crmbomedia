@@ -298,10 +298,18 @@ def _load_quote_data(
     return data
 
 
-def quote_attachment_filename(numero: str, variant: str | None) -> str:
-    """`Presupuesto-2-000075.pdf` o `Proforma-2-000075.pdf`, como pide el lote."""
-    label = "Proforma" if variant == "proforma" else "Presupuesto"
-    return f"{label}-{numero}.pdf"
+def quote_attachment_filename(
+    data: dict[str, Any], lang: str, variant: str | None,
+) -> str:
+    """Nombre del PDF adjunto: el mismo que el de las descargas y que los
+    adjuntos de pedido y de factura (`pdf_filename`, #531) — tipo traducido,
+    cliente y número: `Angebot MANUFAKTUR FUR GESTALTUNG UND DRUCK 2-000080.pdf`,
+    `Proforma invoice HUGIN GMBH 2-004365.pdf`. Antes iba siempre en
+    castellano y sin cliente (`Proforma-2-000075.pdf`), también cuando el PDF
+    y el correo salían en alemán."""
+    from app.erp.factusol_pdf import pdf_filename  # noqa: PLC0415
+
+    return pdf_filename("presupuestos", data, lang, variant)
 
 
 def _validez_text(lang: str) -> str:
@@ -430,7 +438,7 @@ def build_quote_email_preview(
         "from_alias_source": "serie" if serie_alias else "usuario",
         "from_alias_ok": alias_check.get("ok"),
         "from_alias_problem": alias_check.get("reason"),
-        "attachment_filename": quote_attachment_filename(data["numero"], variant),
+        "attachment_filename": quote_attachment_filename(data, lang, variant),
         "variant": variant, "currency": currency,
         "company_id": company.id if company is not None else None,
         "company_name": company.name if company is not None else None,
@@ -492,7 +500,7 @@ def send_quote_email(
         logo=logo if logo is not None else logo_path_for_serie(serie),
         variant=variant, bank=bank, currency=currency,
     )
-    filename = quote_attachment_filename(data["numero"], variant)
+    filename = quote_attachment_filename(data, lang, variant)
     recipients = list(to) + list(cc or [])
     message = gmail_service.send_email(
         session,

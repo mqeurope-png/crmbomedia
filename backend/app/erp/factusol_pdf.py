@@ -1796,12 +1796,16 @@ def pdf_filename(
         doc_label = lab[f"doc_{doc_type}"]
     doc_label = unicodedata.normalize("NFKD", doc_label)
     doc_label = doc_label.encode("ascii", "ignore").decode("ascii").strip()
-    cliente = data["cliente"]["nombre"] or data["cliente"]["codigo"] or ""
+    cli = data.get("cliente") or {}
+    cliente = cli.get("nombre") or cli.get("codigo") or ""
     cliente = unicodedata.normalize("NFKD", cliente)
     cliente = cliente.encode("ascii", "ignore").decode("ascii")
-    # Todo lo que no sea alfanumérico (puntos de «S.L.U.», comas, guiones) pasa
-    # a UN espacio; el recorte a 40 se limpia después para no dejar el nombre
-    # terminado en un hueco.
+    # Los puntos y los apóstrofos se quitan sin abrir hueco («S.L.U.» → SLU,
+    # «D'Angelo» → DANGELO); el resto de lo que no es alfanumérico (comas,
+    # guiones, barras) separa palabras de verdad y pasa a UN espacio. El
+    # recorte a 40 se limpia después para no dejar el nombre terminado en un
+    # hueco.
+    cliente = cliente.replace(".", "").replace("'", "")
     cliente = re.sub(r"[^A-Za-z0-9]+", " ", cliente).strip().upper()[:40].strip()
     parts = [doc_label] + ([cliente] if cliente else []) + [data["numero"]]
     return " ".join(p for p in parts if p) + ".pdf"
