@@ -296,9 +296,27 @@ export function geneiCreateShipment(
     agency_id: string; destination: GeneiDestination;
     packages: GeneiPackage[]; observations?: string | null;
   },
-): Promise<{ order_id: string; summary: GeneiShipmentSummary; state: GeneiState }> {
+): Promise<{
+  order_id: string; summary: GeneiShipmentSummary; state: GeneiState;
+  /** true = la referencia ya tenía envío en Genei y se ha VINCULADO el que
+   *  había (el taller lo creó a mano); no se ha creado uno nuevo. */
+  linked?: boolean;
+}> {
   return apiFetch(`${base(orderId)}/shipments`, {
     method: "POST", body: JSON.stringify(body),
+  });
+}
+
+/** «Vincular envío existente de Genei»: el taller lo creó a mano en el panel y
+ *  BoHub se lo apropia por su CÓDIGO (el de Genei, `5BXG6KAP`; la referencia
+ *  externa no vale, `GET /shipments/{ref}` la rechaza). No crea nada. */
+export function geneiLinkShipment(
+  orderId: string, shipmentCode: string,
+): Promise<{
+  order_id: string; summary: GeneiShipmentSummary; linked: boolean; state: GeneiState;
+}> {
+  return apiFetch(`${base(orderId)}/shipments/link`, {
+    method: "POST", body: JSON.stringify({ shipment_code: shipmentCode }),
   });
 }
 

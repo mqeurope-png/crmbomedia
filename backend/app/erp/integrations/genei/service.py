@@ -13,6 +13,8 @@ Genei devuelve, sin tocar red (el cliente HTTP se inyecta).
 """
 from __future__ import annotations
 
+import re
+import unicodedata
 from datetime import UTC, datetime
 from typing import Any
 
@@ -201,6 +203,94 @@ def build_shipment_payload(
     if observations:
         payload["note"] = observations
     return payload
+
+
+# --- la referencia externa ya tiene envío -----------------------------------
+
+#: Lo que dice Genei cuando el nº de pedido ya está usado por otro envío
+#: (HTTP 500, `errors[]`): «El envio externo ya corresponde a un envio
+#: existente ARTISJ-9694». El taller crea el envío a mano en el panel de Genei
+#: cuando BoHub falla, le pone la misma referencia, y a partir de ahí todos los
+#: reintentos chocan con esta regla (09/10/2026).
+_DUPLICATE_HINT = "ya corresponde a un envio existente"
+_REF_RE = re.compile(r"existente\s+([A-Za-z0-9][A-Za-z0-9._/-]{2,40})")
+
+
+def _sin_tildes(texto: str) -> str:
+    return "".join(
+        c for c in unicodedata.normalize("NFKD", texto) if not unicodedata.combining(c)
+    ).lower()
+
+
+def duplicate_external_reference(mensajes: Any) -> str | None:
+    """La referencia que Genei dice que ya tiene envío, o None si el error no
+    es ese. Acepta una cadena o una lista de mensajes (`GeneiError.errors`)."""
+    textos = [mensajes] if isinstance(mensajes, str) else list(mensajes or [])
+    for texto in textos:
+        plano = _sin_tildes(str(texto))
+        if _DUPLICATE_HINT not in plano:
+            continue
+        m = _REF_RE.search(str(texto))
+        return m.group(1).strip().rstrip("./-_,;") if m else ""
+    return None
+
+
+#: Dónde trae el listado (`GET /shipments`) la referencia externa y el código.
+_EXTERNAL_CODE_KEYS = ("codigo_envio_externo", "externalShippingCode",
+                       "external_shipping_code")
+
+
+def external_code_of(row: dict[str, Any]) -> str:
+    return _s(_pick(row, _EXTERNAL_CODE_KEYS))
+
+
+def _fecha_de(row: dict[str, Any]) -> str:
+    for key in ("fecha_creacion", "fecha", "created_at", "fechaCreacion"):
+        value = _s(row.get(key))
+        if value:
+            return value
+    return ""
+
+
+def find_shipment_by_external_code(
+    client: Any, external_code: str, *, max_pages: int = 6,
+    page_size: int | None = None,
+) -> dict[str, Any] | None:
+    """Envío de Genei cuya referencia externa es `external_code`, o None.
+
+    `GET /shipments/{x}` NO entiende la referencia externa —probado en vivo el
+    09/10/2026 con `ARTISJ-9694`, `ARTISJ9694` y `9694`: los tres dan 400—, así
+    que se recorre el LISTADO, que sí la trae (`codigo_envio_externo`). Se
+    miran las páginas más recientes (`max_pages`), que es donde está un envío
+    que el taller acaba de crear. Solo LEE: nunca crea nada.
+
+    Con VARIOS envíos para la misma referencia (el primer intento del taller
+    anulado y el bueno) se descartan los cerrados y se devuelve el más
+    reciente: vincular un envío cerrado dejaría el pedido bloqueado, sin
+    etiqueta y sin poder crear otro."""
+    from app.erp.integrations.genei.client import LIST_PAGE_SIZE  # noqa: PLC0415
+    from app.erp.integrations.genei.status import CLOSED, state_of  # noqa: PLC0415
+
+    por_pagina = page_size or LIST_PAGE_SIZE
+    buscado = _s(external_code).upper()
+    if not buscado:
+        return None
+    candidatos: list[dict[str, Any]] = []
+    for page in range(1, max_pages + 1):
+        try:
+            filas, _total = client.list_shipments(page=page)
+        except Exception:  # noqa: BLE001 — buscar es best-effort; el llamador decide
+            return candidatos[0] if candidatos else None
+        candidatos.extend(r for r in filas if external_code_of(r).upper() == buscado)
+        # Corte por página corta, no por aritmética con el total: Genei no
+        # siempre da `count` y con 50 de 50 se daba por terminada la primera.
+        if len(filas) < por_pagina:
+            break
+    vivos = [r for r in candidatos
+             if state_of(_pick(r, _STATE_KEYS)).bucket != CLOSED]
+    if not vivos:
+        return None
+    return max(vivos, key=_fecha_de)
 
 
 # --- normalización de la respuesta ------------------------------------------

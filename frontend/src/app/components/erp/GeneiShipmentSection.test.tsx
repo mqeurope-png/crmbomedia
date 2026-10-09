@@ -2,9 +2,11 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { customerEmailLine, GeneiShipmentSection } from "./GeneiShipmentSection";
 import { printShippingFile } from "../../lib/erpApi";
+import { ApiError } from "../../lib/api";
 import {
   geneiCreateShipment,
   geneiDeleteShipment,
+  geneiLinkShipment,
   geneiFetchLabel,
   geneiPay,
   geneiPrefill,
@@ -23,6 +25,7 @@ jest.mock("../../lib/geneiApi", () => ({
   geneiPrefill: jest.fn(),
   geneiPrices: jest.fn(),
   geneiCreateShipment: jest.fn(),
+  geneiLinkShipment: jest.fn(),
   geneiFetchLabel: jest.fn(),
   geneiRefresh: jest.fn(),
   geneiPay: jest.fn(),
@@ -38,6 +41,7 @@ const mockLabel = geneiFetchLabel as jest.Mock;
 const mockRefresh = geneiRefresh as jest.Mock;
 const mockPay = geneiPay as jest.Mock;
 const mockDelete = geneiDeleteShipment as jest.Mock;
+const mockLink = geneiLinkShipment as jest.Mock;
 
 const DEST = {
   name: "Alexandre", contact: "Alexandre", dni: "B1", email: "a@x.fr", phone: "+33",
@@ -54,8 +58,8 @@ function prefill(over = {}) {
 }
 
 beforeEach(() => {
-  [mockPrefill, mockPrices, mockCreate, mockLabel, mockRefresh, mockPay, mockDelete]
-    .forEach((m) => m.mockReset());
+  [mockPrefill, mockPrices, mockCreate, mockLabel, mockRefresh, mockPay, mockDelete,
+   mockLink].forEach((m) => m.mockReset());
 });
 
 it("sin configurar: invita a configurar Genei en Ajustes", async () => {
@@ -425,4 +429,81 @@ describe("estado de la etiqueta (se trae sola al tramitarse)", () => {
     await screen.findByText("3B9QGGHO");
     expect(screen.queryByLabelText("Estado de la etiqueta")).not.toBeInTheDocument();
   });
+});
+
+/** 09/10/2026 — el taller creó el envío a mano en el panel de Genei tras
+ *  fallar el primer intento, con la misma referencia. Desde entonces cada
+ *  reintento chocaba con la regla de duplicados y la pantalla decía «Genei no
+ *  responde ahora mismo: prueba en un momento: Internal error». */
+const ESTADO_VINCULADO = {
+  shipment_code: "5BXG6KAP", state_bucket: "ready", state_label: "Tramitado",
+  tracking: "TRK-9694", courier: "GLS",
+};
+
+it("la referencia ya tiene envío: enseña el error real y ofrece vincularlo", async () => {
+  mockPrefill.mockResolvedValue(prefill());
+  mockPrices.mockResolvedValue({
+    order_id: "o-1",
+    default: { agency_id: "2", name: "GLS Domicilio", price: 4.5, home_delivery: true },
+    home_options: [{ agency_id: "2", name: "GLS Domicilio", price: 4.5, home_delivery: true }],
+    all_options: [{ agency_id: "2", name: "GLS Domicilio", price: 4.5, home_delivery: true }],
+    preferred_couriers: ["GLS"],
+  });
+  mockCreate.mockRejectedValue(new ApiError(
+    "No se puede crear el envio. El envio externo ya corresponde a un envio "
+    + "existente ARTISJ-9694", 409,
+    {
+      code: "genei_shipment_exists",
+      detail: "No se puede crear el envio. El envio externo ya corresponde a "
+        + "un envio existente ARTISJ-9694",
+      external_reference: "ARTISJ-9694",
+    },
+  ));
+  const user = userEvent.setup();
+  render(<GeneiShipmentSection orderId="o-1" canManage />);
+  await user.click(await screen.findByRole("button", { name: "Crear envío con Genei" }));
+  const dialog = await screen.findByRole("dialog", { name: "Crear envío con Genei" });
+  await waitFor(() => expect(mockPrices).toHaveBeenCalled());
+  await user.click(within(dialog).getByRole("button", { name: "Crear envío" }));
+
+  // Ni «Internal error» ni «prueba en un momento»: el número del envío y el
+  // camino para arreglarlo.
+  const aviso = await screen.findByRole("alert");
+  expect(aviso).toHaveTextContent("ARTISJ-9694");
+  expect(aviso).not.toHaveTextContent(/prueba en un momento/);
+  // Y el formulario de vincular ya abierto, con la referencia como pista.
+  expect(await screen.findByLabelText("Código del envío en Genei")).toBeInTheDocument();
+  expect(screen.getByText(/Búscalo por la referencia ARTISJ-9694/)).toBeInTheDocument();
+});
+
+it("vincular por código trae transportista y seguimiento, y no crea nada", async () => {
+  mockPrefill.mockResolvedValue(prefill());
+  mockLink.mockResolvedValue({
+    order_id: "o-1", linked: true,
+    summary: { ...ESTADO_VINCULADO, payment_url: null, state_code: 1 },
+    state: ESTADO_VINCULADO,
+  });
+  const onChanged = jest.fn();
+  const user = userEvent.setup();
+  render(<GeneiShipmentSection orderId="o-1" canManage onChanged={onChanged} />);
+  await user.click(await screen.findByRole("button",
+                                           { name: "Vincular envío existente de Genei" }));
+  await user.type(screen.getByLabelText("Código del envío en Genei"), "5BXG6KAP");
+  await user.click(screen.getByRole("button", { name: "Vincular" }));
+
+  await waitFor(() => expect(mockLink).toHaveBeenCalledWith("o-1", "5BXG6KAP"));
+  expect(mockCreate).not.toHaveBeenCalled();
+  expect(await screen.findByText("Tramitado")).toBeInTheDocument();
+  expect(screen.getByText("TRK-9694")).toBeInTheDocument();
+  expect(screen.getByText("GLS")).toBeInTheDocument();
+  expect(onChanged).toHaveBeenCalled();
+});
+
+it("con envío vinculado no se ofrece crear ni vincular otro", async () => {
+  mockPrefill.mockResolvedValue(prefill({ state: ESTADO_VINCULADO }));
+  render(<GeneiShipmentSection orderId="o-1" canManage />);
+  expect(await screen.findByText("Tramitado")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Crear envío con Genei" })).toBeNull();
+  expect(screen.queryByRole("button",
+                            { name: "Vincular envío existente de Genei" })).toBeNull();
 });
