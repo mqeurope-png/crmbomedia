@@ -32,6 +32,48 @@ _NON_TRANSLATED_MARKERS = (
 # Mapping código → mensaje humano. Patrones con `{}` corresponden a
 # códigos que llevan un parámetro tras `:` (ej. `gmail_not_ready:bart@…`).
 _EXACT_MAP: dict[str, str] = {
+    # Respuesta a leads (clasificar, preparar borrador, pipelines).
+    "lead_sin_consulta": (
+        "El contacto no tiene ninguna consulta que clasificar (ni envío de "
+        "formulario ni nota «form note» de AgileCRM)."
+    ),
+    "lead_demasiado_antiguo": (
+        "El lead es más antiguo que el límite del paso: no se procesa el "
+        "histórico."
+    ),
+    "lead_spam": (
+        "El lead se clasificó como spam: ni borrador, ni tarea, ni correo."
+    ),
+    "borrador_ya_preparado": (
+        "Este lead ya tiene su borrador preparado: no se repite."
+    ),
+    "ya_contactado": (
+        "A este contacto ya se le envió un correo después del lead (aparte "
+        "del acuse de recibo): no se prepara otro."
+    ),
+    "no_user_for_draft": (
+        "No hay ningún usuario activo a cuyo nombre guardar el borrador."
+    ),
+    "no_pipeline_id": (
+        "El paso 'Añadir a pipeline' no tiene pipeline elegido."
+    ),
+    "pipeline_missing": (
+        "El pipeline del paso ya no existe o está desactivado."
+    ),
+    "stage_missing": (
+        "La etapa del paso ya no existe."
+    ),
+    "etapa_de_otro_pipeline": (
+        "La etapa elegida no pertenece al pipeline del paso."
+    ),
+    "ya_en_pipeline": (
+        "El contacto ya estaba en ese pipeline: no se mueve (para eso está "
+        "'Mover contacto de etapa')."
+    ),
+    "no_esta_en_pipeline": (
+        "El contacto no está en ese pipeline: añádelo antes con 'Añadir a "
+        "pipeline'."
+    ),
     # Configuración de step incompleta.
     "empty_tag": (
         "El paso no tiene tag configurado. Edita el workflow para "

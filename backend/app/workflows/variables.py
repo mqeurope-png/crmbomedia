@@ -121,6 +121,50 @@ def _last_opportunity_namespace(
     }
 
 
+def _lead_namespace(session: Session, contact: Contact) -> dict[str, Any]:
+    """Respuesta a leads: la última clasificación del contacto y lo que se
+    preparó, para la tarea («Revisar borrador: vending, 95 %») y los
+    avisos. Sin clasificación, cadenas vacías."""
+    vacio: dict[str, Any] = {
+        "interes": "", "interes_texto": "", "idioma": "", "es_spam": False,
+        "confianza": "", "confianza_num": 0, "motivo": "", "fuente": "", "web": "",
+        "plantilla": "", "remitente": "", "borrador_url": "", "estado": "",
+        "productos": "",
+    }
+    try:
+        from app.services.leads.clasificador import etiqueta_interes  # noqa: PLC0415
+        from app.services.leads.registro import (  # noqa: PLC0415
+            ultima_clasificacion,
+            url_borrador,
+        )
+        from app.services.web_forms.sitios import web_de_sitio  # noqa: PLC0415
+
+        fila = ultima_clasificacion(session, contact.id)
+    except Exception:  # noqa: BLE001 - una plantilla nunca rompe por esto
+        log.warning("workflows.variables lead namespace failed", exc_info=True)
+        return vacio
+    if fila is None:
+        return vacio
+    contexto = fila.contexto()
+    confianza = float(fila.confidence or 0.0)
+    return {
+        "interes": fila.interes_efectivo or "",
+        "interes_texto": etiqueta_interes(fila.interes_efectivo),
+        "idioma": fila.idioma_efectivo or "",
+        "es_spam": fila.es_spam_efectivo,
+        "confianza": f"{confianza:.0%}",
+        "confianza_num": confianza,
+        "motivo": fila.reason or "",
+        "fuente": fila.source or "",
+        "web": web_de_sitio(contexto.get("sitio")) if contexto.get("sitio") else "",
+        "plantilla": fila.template_name or "",
+        "remitente": fila.sender_email or "",
+        "borrador_url": url_borrador(fila.draft_id),
+        "estado": fila.status or "",
+        "productos": ", ".join(str(p) for p in (contexto.get("productos") or [])),
+    }
+
+
 def build_context(
     *,
     session: Session,
@@ -137,6 +181,7 @@ def build_context(
         "owner": _owner_namespace(session, contact.owner_user_id),
         "company": company_ns,
         "opportunity": _last_opportunity_namespace(session, contact.id),
+        "lead": _lead_namespace(session, contact),
         "trigger": trigger_payload or {},
     }
 
@@ -209,6 +254,17 @@ def available_variables() -> list[str]:
         # Última asignación a pipeline (oportunidad)
         "opportunity.pipeline",
         "opportunity.stage",
+        # Respuesta a leads (última clasificación del contacto)
+        "lead.interes",
+        "lead.interes_texto",
+        "lead.idioma",
+        "lead.confianza",
+        "lead.motivo",
+        "lead.web",
+        "lead.plantilla",
+        "lead.remitente",
+        "lead.borrador_url",
+        "lead.productos",
         # Payload del trigger (campos arbitrarios — el validador
         # solo avisa, no rechaza).
         "trigger.event_type",

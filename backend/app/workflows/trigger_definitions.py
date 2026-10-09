@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Callable
 
 from sqlalchemy import Text, cast, func, select
@@ -136,9 +136,78 @@ def _match_crm_clicked(cfg: dict[str, Any], payload: dict[str, Any]) -> bool:
     return True
 
 
+LEAD_MAX_AGE_HOURS_DEFECTO = 72
+
+
+def _lead_max_age_hours(cfg: dict[str, Any]) -> int:
+    try:
+        return int(cfg.get("max_age_hours", LEAD_MAX_AGE_HOURS_DEFECTO))
+    except (TypeError, ValueError):
+        return LEAD_MAX_AGE_HOURS_DEFECTO
+
+
+def _match_lead_received(cfg: dict[str, Any], payload: dict[str, Any]) -> bool:
+    """Respuesta a leads. `source` (web_form | agilecrm) y `site` (la clave
+    de la web) acotan; `max_age_hours` (72 por defecto, 0 = sin límite)
+    descarta el histórico por la fecha REAL del lead (`lead_at`): una nota de
+    Agile de julio sincronizada en septiembre no dispara nada."""
+    source = cfg.get("source")
+    if source and str(payload.get("source") or "") != str(source):
+        return False
+    site = cfg.get("site")
+    if site and str(payload.get("site") or "") != str(site):
+        return False
+    max_age = _lead_max_age_hours(cfg)
+    if max_age > 0:
+        raw = payload.get("lead_at")
+        lead_at: datetime | None = None
+        if isinstance(raw, datetime):
+            lead_at = raw
+        elif raw:
+            try:
+                lead_at = datetime.fromisoformat(str(raw))
+            except ValueError:
+                lead_at = None
+        if lead_at is not None:
+            if lead_at.tzinfo is None:
+                lead_at = lead_at.replace(tzinfo=UTC)
+            if lead_at < datetime.now(UTC) - timedelta(hours=max_age):
+                return False
+    return True
+
+
 # ---------------------------------------------------------------------
 # Estimators (fuentes reales 30d, con los MISMOS filtros que el matcher)
 # ---------------------------------------------------------------------
+
+
+def _est_lead_received(session: Session, cfg: dict, cutoff: datetime) -> int:
+    """Envíos de formulario que no son spam + notas «form note» de Agile por
+    su fecha real, con los mismos filtros de fuente y web que el matcher."""
+    from app.models.crm import Note  # noqa: PLC0415
+    from app.models.web_forms import FormSubmission, WebForm  # noqa: PLC0415
+
+    source = cfg.get("source")
+    total = 0
+    if source in (None, "", "web_form"):
+        stmt = select(func.count(FormSubmission.id)).where(
+            FormSubmission.is_spam.is_(False), FormSubmission.created_at >= cutoff,
+        )
+        site = cfg.get("site")
+        if site:
+            stmt = stmt.join(WebForm, WebForm.id == FormSubmission.form_id).where(
+                WebForm.slug.like(f"{site}-contacto%")
+            )
+        total += int(session.scalar(stmt) or 0)
+    if source in (None, "", "agilecrm") and not cfg.get("site"):
+        total += int(session.scalar(
+            select(func.count(Note.id)).where(
+                Note.external_system == "agilecrm",
+                func.lower(Note.body).like("form note%"),
+                Note.external_created_at >= cutoff,
+            )
+        ) or 0)
+    return total
 
 
 def _est_contact_created(session: Session, cfg: dict, cutoff: datetime) -> int:
@@ -370,6 +439,12 @@ TRIGGER_DEFS: dict[str, TriggerDef] = {
                    "Contacto pasa a cumplir condiciones", "state",
                    estimator=_est_matches_conditions,
                    config_keys=("filter",)),
+        # Respuesta a leads. Productores: el envío de un formulario web que no
+        # es spam (web_forms/submit.py) y las notas «form note» de AgileCRM
+        # (agilecrm/refresh.py).
+        TriggerDef("lead.received", "Lead recibido (formulario web o nota de AgileCRM)",
+                   "event", matcher=_match_lead_received, estimator=_est_lead_received,
+                   config_keys=("source", "site", "max_age_hours")),
     ]
 }
 
