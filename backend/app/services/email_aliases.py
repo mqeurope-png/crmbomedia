@@ -73,12 +73,19 @@ def personal_mailbox_filter(
     session: Session, user: User
 ) -> ColumnElement[bool]:
     """Predicado «mi bandeja»: threads que el usuario inició (para no ocultar
-    su propio correo enviado, sin `delivered_to`) o que tienen un mensaje
-    entregado a uno de sus alias activos. SIEMPRE se aplica — la bandeja
-    personal de un admin también es la SUYA (para ver todo usa scope=team)."""
+    su propio correo enviado, sin `delivered_to`), en los que ha ESCRITO
+    algún mensaje (su respuesta capturada en un hilo que abrió otro) o que
+    tienen un mensaje entregado a uno de sus alias activos. SIEMPRE se
+    aplica — la bandeja personal de un admin también es la SUYA (para ver
+    todo usa scope=team)."""
     aliases = user_active_aliases(session, user.id)
     conditions: list[ColumnElement[bool]] = [
-        EmailThread.initiated_by_user_id == user.id
+        EmailThread.initiated_by_user_id == user.id,
+        EmailThread.id.in_(
+            select(EmailMessage.thread_id).where(
+                EmailMessage.created_by_user_id == user.id
+            )
+        ),
     ]
     if aliases:
         conditions.append(
@@ -111,14 +118,12 @@ def thread_is_visible(
     if thread.initiated_by_user_id == user.id:
         return True
     aliases = user_active_aliases(session, user.id)
-    if not aliases:
-        return False
+    condiciones: list[ColumnElement[bool]] = [EmailMessage.created_by_user_id == user.id]
+    if aliases:
+        condiciones.append(EmailMessage.delivered_to.in_(aliases))
     hit = session.scalar(
         select(EmailMessage.id)
-        .where(
-            EmailMessage.thread_id == thread.id,
-            EmailMessage.delivered_to.in_(aliases),
-        )
+        .where(EmailMessage.thread_id == thread.id, or_(*condiciones))
         .limit(1)
     )
     return hit is not None

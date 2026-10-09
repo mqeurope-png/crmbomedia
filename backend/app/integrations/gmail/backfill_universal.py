@@ -53,6 +53,18 @@ LABELS_POR_DEFECTO: tuple[str, ...] = ("INBOX", "SPAM", "SENT")
 #: Tope del dry-run del job (el CLI tiene el suyo, 500): tres meses de
 #: enviados de una cuenta caben de sobra.
 DRY_RUN_LIMIT_JOB = 5000
+#: Entradas que se conservan en cada desglose del `result_json`.
+TOPE_DESGLOSE = 100
+
+
+def _recortar(desglose: dict[str, int], tope: int = TOPE_DESGLOSE) -> dict[str, int]:
+    if len(desglose) <= tope:
+        return dict(desglose)
+    orden = sorted(desglose.items(), key=lambda kv: kv[1], reverse=True)
+    recortado = dict(orden[:tope])
+    resto = orden[tope:]
+    recortado[f"(otras {len(resto)} direcciones)"] = sum(c for _, c in resto)
+    return recortado
 
 
 @dataclass
@@ -113,13 +125,18 @@ class BackfillReport:
         )
 
     def como_dict(self) -> dict[str, Any]:
-        """Para `gmail_backfill_jobs.result_json`."""
+        """Para `gmail_backfill_jobs.result_json` (columna TEXT): los
+        desgloses se recortan a las entradas con más mensajes y el resto se
+        agrupa, que un repaso de INBOX de un buzón «catch-all» puede
+        descartar a miles de direcciones distintas."""
         datos = asdict(self)
         datos["since"] = self.since.isoformat()
         datos["until"] = self.until.isoformat()
         datos["total_processed"] = self.total_processed
         datos["imported"] = self.imported
         datos["skipped"] = self.skipped
+        for clave in ("discard_by_alias", "enviados_por_remitente", "enviados_por_usuario"):
+            datos[clave] = _recortar(datos[clave])
         return datos
 
     def render(self) -> str:
@@ -185,16 +202,13 @@ class BackfillReport:
         return "\n".join(lines)
 
 
-def _load_seen(session: Session, user_id: str) -> set[str]:
-    """IDs de Gmail ya almacenados para la cuenta (dedupe barato pre-fetch)."""
-    return set(
-        session.scalars(
-            select(EmailMessage.gmail_message_id).where(
-                EmailMessage.gmail_account_user_id == user_id,
-                EmailMessage.gmail_message_id.is_not(None),
-            )
-        )
-    )
+def _load_seen(session: Session) -> set[str]:
+    """IDs de Gmail ya almacenados en CUALQUIER cuenta (dedupe barato
+    pre-fetch). Hay un solo buzón: un envío del compositor guardado bajo
+    otro usuario trae el mismo id que su copia en SENT."""
+    from app.integrations.gmail.service import ids_guardados_en_el_buzon  # noqa: PLC0415
+
+    return ids_guardados_en_el_buzon(session)
 
 
 def _build_query(since: date, until: date) -> str:
@@ -248,10 +262,12 @@ def run_backfill_universal(
     emit = progress or (lambda _msg: None)
     if alias_map is None:
         alias_map = active_alias_map(session)
-    if not alias_map:
+    if not alias_map and any(lbl != "SENT" for lbl in labels):
+        # Lo ENVIADO se captura sin alias; lo entrante no (su gate los
+        # necesita), así que un repaso de INBOX/SPAM sin alias no tiene sentido.
         raise ValueError(
             "Sin alias activos en user_email_aliases. Configura los alias en "
-            "/admin/users antes de reprocesar."
+            "/admin/users antes de reprocesar la entrada (solo SENT no los necesita)."
         )
     emails_por_usuario: dict[str, str] = {
         uid: email for uid, email in session.execute(select(User.id, User.email)).all()
@@ -261,7 +277,7 @@ def run_backfill_universal(
     report = BackfillReport(
         since=since, until=until, labels=list(labels), dry_run=dry_run
     )
-    seen = _load_seen(session, user_id)
+    seen = _load_seen(session)
     query = _build_query(since, until)
     started = time.monotonic()
     examined = 0  # mensajes a los que se les pidió get_message (post-dedupe)
@@ -329,11 +345,6 @@ def run_backfill_universal(
                     report.discard_by_alias[key] = (
                         report.discard_by_alias.get(key, 0) + 1
                     )
-                elif enviado and gmail_service.enviado_duplicado_en_otra_cuenta(
-                        session, raw=raw, mailbox_user_id=user_id):
-                    # Ya está guardado desde el buzón de otro usuario del hilo.
-                    report.skipped_dedupe += 1
-                    seen.add(mid)
                 else:
                     if enviado and "SENT" not in (raw.get("labelIds") or []):
                         # Listado bajo SENT pero el full no trae la label (raro):

@@ -158,17 +158,27 @@ dirección global).
 - **Los alias no deciden si se guarda, solo a quién se atribuye**
   (`outbound_owner_user_id`): el dueño del alias registrado
   (`user_email_aliases`); si no, el usuario que tiene esa dirección entre
-  sus «enviar como» (`user_email_alias_prefs`, primero quien la tenga por
-  defecto); y si no, el usuario de cuyo buzón salió (la cuenta de la
-  organización). En threads nuevos `initiated_by_user_id` = ese usuario
-  (así lo ve en su bandeja) y `created_by_user_id` se rellena en el
-  mensaje. La bandeja lo pinta con el chip 🟢 «Enviado desde CRM».
+  sus «enviar como» (`user_email_alias_prefs`), **solo si es uno** —una
+  dirección de marca que comparten varios comerciales (`info@…`) no es de
+  ninguno y se queda en la cuenta de la organización, como los acuses—; y
+  si no, el usuario de cuyo buzón salió (la cuenta de la organización). En
+  threads nuevos `initiated_by_user_id` = ese usuario y
+  `created_by_user_id` se rellena en el mensaje; la bandeja personal
+  incluye además los hilos en los que el usuario ha **escrito** algún
+  mensaje (su respuesta capturada en un hilo que abrió otro). La bandeja lo
+  pinta con el chip 🟢 «Enviado desde CRM».
+- **Correo interno** (un comercial escribe a un alias de la casa; Gmail lo
+  etiqueta SENT + INBOX): sigue siendo `outbound`, pero `delivered_to` se
+  rellena como en la entrada y el hilo queda como no leído, así el dueño
+  del alias lo ve en su bandeja.
 - **`From` externo en INBOX/SPAM → `inbound`.** Comportamiento de siempre:
   el gate por `delivered_to` (alias al que llegó) decide si se guarda; si no
   va a ningún alias configurado, se descarta.
-- **Un enviado ya guardado desde el buzón de otro usuario del hilo no se
-  duplica**: misma firma (remitente, fecha, asunto y destinatarios) →
-  dedupe, aunque el id de Gmail sea distinto en cada buzón.
+- **Un enviado ya guardado bajo otro usuario no se duplica.** Hay un solo
+  buzón: un envío desde el compositor o un acuse se guarda bajo el usuario
+  que lo envió con el id que devuelve Gmail, y la copia en SENT que ve el
+  push trae ese mismo id. La captura (push y relleno) mira los ids ya
+  guardados de **todas** las cuentas, no solo la del push.
 
 > Hasta el 10/10/2026 la salida estaba filtrada por `user_email_aliases`
 > (tabla del 07/08/2026): todo lo enviado desde una dirección sin registrar

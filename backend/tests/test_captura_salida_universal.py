@@ -49,7 +49,11 @@ from app.models.crm import (
     UserEmailAliasPref,
     UserRole,
 )
-from app.services.email_aliases import active_alias_map
+from app.services.email_aliases import (
+    active_alias_map,
+    personal_mailbox_filter,
+    thread_is_visible,
+)
 from tests._test_helpers import (
     auth_headers,
     seed_org_google_integration,
@@ -227,43 +231,152 @@ def test_el_contacto_tambien_se_casa_por_cc_y_sin_contacto_se_guarda_igual(
         assert _cuantos(s) == 2
 
 
-def test_un_enviado_ya_capturado_desde_otro_buzon_no_se_duplica(
-    session_factory: sessionmaker,
-) -> None:
-    """El mismo correo visto desde dos buzones conectados: el id de Gmail es
-    distinto en cada uno; manda la firma (remitente, fecha, asunto, para)."""
-    with session_factory() as s:
-        buzon_org = _uid(s, UserRole.ADMIN)
-        otro_buzon = _uid(s, UserRole.MANAGER)
-        primero = _persistir(s, user_id=buzon_org, raw=_raw(
-            "id-en-org", "t-org", from_addr=ENVIAR_COMO_DE_BART, to=MARC))
-        s.commit()
-        assert primero is not None
-        repetido = _persistir(s, user_id=otro_buzon, raw=_raw(
-            "id-en-otro", "t-otro", from_addr=ENVIAR_COMO_DE_BART, to=MARC))
-        assert repetido is None
-        # Otro correo del mismo remitente al mismo destinatario, un minuto
-        # después: no es el mismo mensaje y sí se guarda.
-        distinto = _persistir(s, user_id=otro_buzon, raw=_raw(
-            "id-otro-2", "t-otro-2", from_addr=ENVIAR_COMO_DE_BART, to=MARC,
-            date="Thu, 08 Oct 2026 11:33:00 +0200"))
-        s.commit()
-        assert distinto is not None
-        assert _cuantos(s) == 2
+def _watch(session: Session, user_id: str) -> None:
+    session.add(GmailPubsubWatch(
+        user_id=user_id, history_id=1, watch_expires_at=datetime.now(UTC) + timedelta(days=6),
+        last_renewed_at=datetime.now(UTC), topic_name="projects/x/topics/y",
+    ))
 
-    # El relleno desde ese otro buzón lo cuenta como dedupe, no lo escribe.
+
+def test_un_enviado_ya_guardado_bajo_otro_usuario_no_se_duplica(
+    session_factory: sessionmaker, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hay un solo buzón: un envío desde el compositor (o un acuse) se guarda
+    bajo el usuario que lo envió con el id que devuelve Gmail, y la copia en
+    SENT que ve el push (cuenta del admin) trae ese MISMO id. Ni el push ni
+    el relleno lo guardan otra vez."""
+    ahora = datetime(2026, 10, 8, 9, 32, tzinfo=UTC)
     with session_factory() as s:
-        otro_buzon = _uid(s, UserRole.MANAGER)
+        admin = _uid(s, UserRole.ADMIN)
+        manager = _uid(s, UserRole.MANAGER)
+        hilo = EmailThread(
+            contact_id=None, initiated_by_user_id=manager, gmail_thread_id="t-comp",
+            gmail_account_user_id=manager, subject=ASUNTO_MARC, participants_json="[]",
+            first_message_at=ahora, last_message_at=ahora, message_count=1,
+        )
+        s.add(hilo)
+        s.flush()
+        s.add(EmailMessage(
+            thread_id=hilo.id, gmail_message_id="gmsg-1", gmail_account_user_id=manager,
+            direction=EmailDirection.OUTBOUND, from_email=ENVIAR_COMO_DE_BART,
+            to_emails_json=json.dumps([MARC]), subject=ASUNTO_MARC, sent_at=ahora,
+            created_by_user_id=manager, imported_via="sent_from_crm",
+        ))
+        _watch(s, admin)
+        s.commit()
+
+    class _Falso:
+        def __init__(self, *_a: Any, **_k: Any) -> None:
+            pass
+
+        def list_history(self, _start: int) -> dict[str, Any]:
+            return {"history": [{"messagesAdded": [{"message": {
+                "id": "gmsg-1", "threadId": "t-comp", "labelIds": ["SENT"]}}]}]}
+
+        def get_message(self, _mid: str) -> dict[str, Any]:  # pragma: no cover
+            raise AssertionError("ya está guardado: no debía pedirse a Gmail")
+
+    monkeypatch.setattr("app.integrations.gmail.service.GmailClient", _Falso)
+    with session_factory() as s:
+        assert gmail_service.process_history(
+            s, user_id=_uid(s, UserRole.ADMIN), new_history_id=200) == 0
+        s.commit()
+        assert _cuantos(s) == 1
+
+    # El relleno desde la cuenta del admin lo cuenta como dedupe, no lo escribe.
+    with session_factory() as s:
         falso = _GmailFalso({"SENT": [_raw(
-            "id-en-otro-bis", "t-otro-bis", from_addr=ENVIAR_COMO_DE_BART, to=MARC)]})
+            "gmsg-1", "t-comp", from_addr=ENVIAR_COMO_DE_BART, to=MARC)]})
         with patch.object(gmail_service, "_client_for", return_value=falso):
             informe = run_backfill_universal(
-                s, user_id=otro_buzon, since=datetime(2026, 10, 1).date(),
+                s, user_id=_uid(s, UserRole.ADMIN), since=datetime(2026, 10, 1).date(),
                 until=datetime(2026, 10, 10).date(), labels=("SENT",),
             )
         s.commit()
         assert informe.skipped_dedupe == 1 and informe.outbound == 0
-        assert _cuantos(s) == 2
+        assert _cuantos(s) == 1
+
+
+def test_correo_interno_a_un_alias_de_la_casa_lo_ve_su_dueno(
+    session_factory: sessionmaker,
+) -> None:
+    """Bart (sin registrar) escribe a norma@bomedia.net (alias registrado):
+    Gmail lo etiqueta SENT + INBOX. Es un enviado, pero Norma tiene que verlo
+    en su bandeja, como correo nuevo."""
+    with session_factory() as s:
+        buzon = _uid(s, UserRole.ADMIN)
+        msg = _persistir(s, user_id=buzon, raw=_raw(
+            "m-int", "t-int", from_addr=ENVIAR_COMO_DE_BART, to=ALIAS_REGISTRADO,
+            labels=("SENT", "INBOX")))
+        s.commit()
+        assert msg is not None and msg.direction == EmailDirection.OUTBOUND
+        assert msg.delivered_to == ALIAS_REGISTRADO
+        assert msg.created_by_user_id == _uid(s, UserRole.MANAGER)
+        hilo = s.get(EmailThread, msg.thread_id)
+        assert hilo is not None and hilo.has_unread_replies is True
+        norma = s.get(User, _uid(s, UserRole.USER))
+        assert thread_is_visible(s, norma, hilo) is True
+
+
+def test_el_comercial_ve_su_respuesta_capturada_en_un_hilo_que_abrio_otro(
+    session_factory: sessionmaker,
+) -> None:
+    with session_factory() as s:
+        buzon = _uid(s, UserRole.ADMIN)
+        entrada = _persistir(s, user_id=buzon, raw=_raw(
+            "m-in", "t-hilo", from_addr=MARC, to=ALIAS_REGISTRADO, labels=("INBOX",),
+            subject="Anfrage UV-Drucker"))
+        assert entrada is not None and entrada.direction == EmailDirection.INBOUND
+        hilo = s.get(EmailThread, entrada.thread_id)
+        assert hilo is not None and hilo.initiated_by_user_id == buzon
+        # Bart contesta desde su «enviar como», en el mismo hilo (SENT).
+        respuesta = _persistir(s, user_id=buzon, raw=_raw(
+            "m-out", "t-hilo", from_addr=ENVIAR_COMO_DE_BART, to=MARC))
+        s.commit()
+        assert respuesta is not None
+        assert respuesta.created_by_user_id == _uid(s, UserRole.MANAGER)
+        bart = s.get(User, _uid(s, UserRole.MANAGER))
+        assert thread_is_visible(s, bart, hilo) is True
+        en_su_bandeja = set(s.scalars(
+            select(EmailThread.id).where(personal_mailbox_filter(s, bart))))
+        assert hilo.id in en_su_bandeja
+
+
+def test_una_direccion_enviar_como_compartida_se_queda_en_la_cuenta_de_la_organizacion(
+    session_factory: sessionmaker,
+) -> None:
+    with session_factory() as s:
+        buzon = _uid(s, UserRole.ADMIN)
+        for rol in (UserRole.USER, UserRole.MANAGER):
+            s.add(UserEmailAliasPref(user_id=_uid(s, rol), alias_email="info@mboprinters.com",
+                                     is_allowed=True))
+        s.commit()
+        msg = _persistir(s, user_id=buzon, raw=_raw(
+            "m-marca", "t-marca", from_addr="info@mboprinters.com", to=MARC))
+        s.commit()
+        assert msg is not None and msg.created_by_user_id == buzon
+
+
+def test_el_relleno_solo_de_sent_no_necesita_alias_registrados(
+    session_factory: sessionmaker,
+) -> None:
+    with session_factory() as s:
+        for fila in s.scalars(select(UserEmailAlias)):
+            s.delete(fila)
+        s.commit()
+        buzon = _uid(s, UserRole.ADMIN)
+        falso = _GmailFalso({"SENT": [_raw("s-1", "t-1", from_addr=SIN_REGISTRAR, to=MARC)]})
+        with patch.object(gmail_service, "_client_for", return_value=falso):
+            informe = run_backfill_universal(
+                s, user_id=buzon, since=datetime(2026, 10, 1).date(),
+                until=datetime(2026, 10, 10).date(), labels=("SENT",))
+            s.commit()
+            assert informe.outbound == 1
+            # La entrada sí los necesita: su gate no sabría qué es nuestro.
+            with pytest.raises(ValueError, match="alias"):
+                run_backfill_universal(
+                    s, user_id=buzon, since=datetime(2026, 10, 1).date(),
+                    until=datetime(2026, 10, 10).date())
 
 
 def test_el_relleno_lanzado_dos_veces_sobre_el_mismo_tramo_no_duplica(
@@ -318,10 +431,7 @@ def test_el_push_captura_sent_sin_alias_incluso_sin_ningun_alias_registrado(
 ) -> None:
     with session_factory() as s:
         buzon = _uid(s, UserRole.ADMIN)
-        s.add(GmailPubsubWatch(
-            user_id=buzon, history_id=1, watch_expires_at=datetime.now(UTC) + timedelta(days=6),
-            last_renewed_at=datetime.now(UTC), topic_name="projects/x/topics/y",
-        ))
+        _watch(s, buzon)
         # Sin alias registrados en absoluto: antes el push saltaba todo.
         for fila in s.scalars(select(UserEmailAlias)):
             s.delete(fila)

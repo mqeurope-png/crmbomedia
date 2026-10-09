@@ -1147,14 +1147,10 @@ def process_history(
     # no un contacto conocido; `contact_id=NULL` si no casa). Además
     # sincronizamos la label SPAM sobre los mensajes ya almacenados.
     alias_map = active_alias_map(session)
-    seen_messages = {
-        m.gmail_message_id
-        for m in session.scalars(
-            select(EmailMessage).where(
-                EmailMessage.gmail_account_user_id == user_id
-            )
-        )
-    }
+    # Ids ya guardados en CUALQUIER cuenta: un envío del compositor (o un
+    # acuse) vive bajo el usuario que lo envió y su copia en SENT trae el
+    # mismo id. Antes se miraba solo la cuenta del push y se duplicaba.
+    seen_messages = ids_guardados_en_el_buzon(session)
 
     imported = 0
     for entry in history.get("history", []):
@@ -1672,10 +1668,12 @@ def outbound_owner_user_id(
     Los alias ya NO deciden si se guarda, solo a quién se atribuye y cómo se
     presenta: el dueño del alias registrado (`user_email_aliases`); si no, el
     usuario que tiene esa dirección entre sus «enviar como»
-    (`user_email_alias_prefs`, primero quien la tenga por defecto); y si no
-    hay alias registrado, el usuario de cuyo buzón salió. Del 20/07 al
-    09/10/2026 todo lo enviado desde una dirección sin registrar se descartó
-    en silencio, entre ello una oferta a un lead real.
+    (`user_email_alias_prefs`), solo si es UNO —una dirección de marca que
+    comparten varios comerciales (`info@…`) no es de ninguno y se queda en
+    la cuenta de la organización, como hacen los acuses—; y si no, el
+    usuario de cuyo buzón salió. Del 20/07 al 09/10/2026 todo lo enviado
+    desde una dirección sin registrar se descartó en silencio, entre ello
+    una oferta a un lead real.
     """
     if sender_alias:
         owner = session.scalar(
@@ -1687,58 +1685,34 @@ def outbound_owner_user_id(
         if owner:
             return owner
     if from_email:
-        pref_owner = session.scalar(
+        duenos = list(session.scalars(
             select(UserEmailAliasPref.user_id)
             .where(
                 func.lower(UserEmailAliasPref.alias_email) == from_email.lower(),
                 UserEmailAliasPref.is_allowed.is_(True),
             )
-            .order_by(
-                UserEmailAliasPref.is_default.desc(),
-                UserEmailAliasPref.created_at.asc(),
-            )
-            .limit(1)
-        )
-        if pref_owner:
-            return pref_owner
+            .distinct()
+            .limit(2)
+        ))
+        if len(duenos) == 1:
+            return duenos[0]
     return mailbox_user_id
 
 
-def firma_de_enviado(raw: dict[str, Any]) -> tuple[str, datetime, str | None, str]:
-    """`(from, fecha, asunto, destinatarios)`: lo que identifica un mensaje
-    enviado con independencia del buzón en el que esté (el id de Gmail es
-    distinto en cada buzón)."""
-    headers = _index_headers(raw.get("payload", {}).get("headers", []))
-    from_addresses = getaddresses([headers.get("from") or ""])
-    from_email = from_addresses[0][1] if from_addresses else ""
-    sent_at = _parse_date(headers.get("date")) or datetime.now(UTC)
-    to_emails = [addr for _, addr in getaddresses([headers.get("to") or ""]) if addr]
-    return from_email, sent_at, headers.get("subject"), json.dumps(to_emails)
+def ids_guardados_en_el_buzon(session: Session) -> set[str]:
+    """Ids de Gmail ya guardados en CUALQUIER cuenta.
 
-
-def enviado_duplicado_en_otra_cuenta(
-    session: Session, *, raw: dict[str, Any], mailbox_user_id: str
-) -> bool:
-    """El mismo mensaje enviado ya está guardado por haberse capturado desde
-    el buzón de OTRO usuario (misma firma: remitente, fecha, asunto y
-    destinatarios). En el mismo buzón lo dedupe el id de Gmail."""
-    from_email, sent_at, subject, to_json = firma_de_enviado(raw)
-    if not from_email:
-        return False
-    hit = session.scalar(
-        select(EmailMessage.id)
-        .where(
-            EmailMessage.gmail_account_user_id != mailbox_user_id,
-            EmailMessage.direction == EmailDirection.OUTBOUND,
-            func.lower(EmailMessage.from_email) == from_email.lower(),
-            EmailMessage.sent_at == sent_at,
-            EmailMessage.to_emails_json == to_json,
-            (EmailMessage.subject == subject) if subject is not None
-            else EmailMessage.subject.is_(None),
+    Hay un solo buzón (la cuenta Google de la organización): un envío desde
+    el compositor o un acuse se guarda bajo el usuario que lo envió, con el
+    MISMO id de Gmail que luego trae la carpeta SENT al usuario del push.
+    Mirar solo la cuenta del push lo guardaba dos veces, en dos hilos."""
+    return set(
+        session.scalars(
+            select(EmailMessage.gmail_message_id).where(
+                EmailMessage.gmail_message_id.is_not(None)
+            )
         )
-        .limit(1)
     )
-    return hit is not None
 
 
 def _persist_message(
@@ -1799,16 +1773,16 @@ def _persist_message(
     delivered_to: str | None = None
     owner_user_id: str | None = None
     if is_outbound:
-        # Ya guardado desde el buzón de otro usuario del hilo: no se duplica.
-        if enviado_duplicado_en_otra_cuenta(session, raw=raw, mailbox_user_id=user_id):
-            logger.info(
-                "gmail.persist.outbound_duplicate_other_account user=%s msg=%s",
-                user_id, raw.get("id"),
-            )
-            return None
         owner_user_id = outbound_owner_user_id(
             session, from_email=from_email, sender_alias=sender_alias,
             mailbox_user_id=user_id,
+        )
+        # Correo interno (un comercial escribe a un alias de la casa, SENT +
+        # INBOX): sigue siendo enviado, pero el destinatario tiene que verlo
+        # en su bandeja, así que `delivered_to` se rellena igual que en la
+        # entrada. Hacia fuera queda NULL.
+        delivered_to = (
+            compute_delivered_to(raw, alias_map) if alias_map is not None else None
         )
     else:
         # CRM-GMAIL — captura universal. `delivered_to` = alias del CRM al
@@ -1940,8 +1914,10 @@ def _persist_message(
     session.add(message)
     thread.last_message_at = sent_at
     thread.message_count = (thread.message_count or 0) + 1
-    # Un mail ENVIADO por nosotros no marca el hilo como «no leído».
-    if not is_outbound:
+    # Un mail ENVIADO por nosotros no marca el hilo como «no leído», salvo
+    # que vaya a un alias de la casa (correo interno): para quien lo recibe
+    # es correo nuevo.
+    if not is_outbound or delivered_to is not None:
         thread.has_unread_replies = True
     session.flush()
     # CRM-ETIQUETAS-GMAIL-V2.3 — si el mensaje llega con labels

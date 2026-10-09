@@ -21,6 +21,7 @@ import json
 import logging
 from datetime import UTC, datetime, timedelta
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import FileResponse
@@ -210,7 +211,7 @@ def gmail_backfill_universal(
     por alias): con `dry_run` no escribe nada y el `result` dice cuántos
     enviados recuperaría por remitente y por usuario; sin él, los guarda.
     Relanzable sobre el mismo tramo sin duplicar (dedupe por id de Gmail)."""
-    hoy = datetime.now(UTC).date()
+    hoy = datetime.now(ZoneInfo("Europe/Madrid")).date()
     until = payload.until or hoy
     if payload.since > until:
         raise HTTPException(
