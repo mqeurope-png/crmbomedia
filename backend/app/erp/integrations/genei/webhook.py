@@ -166,10 +166,14 @@ def apply_shipment_state(
     applied = advance_transport(session, order, target, evidence=evidence,
                                 label_at=tramitado_at(stored_before))
     patch: dict[str, Any] = {
-        # Si el pedido aún no tenía envío (p. ej. uno creado a mano en el
-        # panel de Genei del que llega aviso), el código lo deja VINCULADO:
+        # SOLO si el pedido aún no tenía envío (p. ej. uno creado a mano en el
+        # panel de Genei del que llega aviso): el código lo deja VINCULADO, que
         # sin él la ficha seguiría diciendo «sin envío» con el estado puesto.
-        "shipment_code": summary["shipment_code"] or None,
+        # Si ya tenía, NO se pisa: el webhook empareja por referencia externa y
+        # un aviso tardío de un envío borrado dejaría el pedido apuntando a un
+        # código muerto (etiqueta y «Actualizar estado» fallando con 404).
+        "shipment_code": (summary["shipment_code"] or None)
+        if not stored_before.get("shipment_code") else None,
         "state_code": summary["state_code"],
         "state_bucket": summary["state_bucket"],
         "state_label": summary["state_label"],

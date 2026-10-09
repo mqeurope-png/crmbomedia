@@ -224,9 +224,8 @@ def test_referencia_duplicada_vincula_el_envio_que_ya_existe(client, session_fac
         assert estado["shipment_code"] == "5BXG6KAP"
         assert estado["linked_from"] == "duplicado"
         assert estado["external_reference"] == "ARTISJ-9694"
-        # El error de Genei queda EN EL PEDIDO, no solo en el log del
-        # contenedor (el del primer fallo se perdió al recrearse `api`).
-        assert "ARTISJ-9694" in estado["last_error"]["detail"]
+        # Resuelto: el error del intento ya no se queda colgado en la ficha.
+        assert "last_error" not in estado
         assert order.tracking_number == "TRK-9694"
 
 
@@ -247,8 +246,13 @@ def test_si_no_aparece_en_el_listado_devuelve_409_con_el_error_real(
     assert "ya corresponde a un envio existente" in detalle["detail"]
     assert "Internal error" not in detalle["detail"]
     with session_factory() as s:
-        assert "genei" not in json.loads(s.get(Order, oid).packing_json or "{}") or \
-            not json.loads(s.get(Order, oid).packing_json)["genei"].get("shipment_code")
+        estado = json.loads(s.get(Order, oid).packing_json or "{}").get("genei", {})
+        assert not estado.get("shipment_code")       # no se ha vinculado nada
+        # El error de Genei queda EN EL PEDIDO, no solo en el log del
+        # contenedor: el del primer fallo del 09/10 se perdió al recrearse
+        # `api` en el despliegue de las 07:19.
+        assert "ARTISJ-9694" in estado["last_error"]["detail"]
+        assert estado["last_error"]["status"] == 500
 
 
 def test_genei_sin_respuesta_sigue_siendo_502(client, session_factory, fake):
@@ -317,19 +321,138 @@ def test_un_pedido_con_envio_no_deja_crear_ni_vincular_otro(client, session_fact
     assert [c[0] for c in fake.calls].count("create") == 1
 
 
+def test_no_se_vincula_el_envio_de_otro_pedido(client, session_factory, fake):
+    """Lo contrario de arreglarlo: con la etiqueta y el seguimiento de otro
+    pedido, el bulto sale con la dirección equivocada y el cliente recibe un
+    seguimiento que no es el suyo."""
+    with session_factory() as s:
+        oid = _seed(s)
+    fake.shipment = {**ENVIO_EXISTENTE, "codigo_envio_externo": "ARTISJ-9693"}
+    r = client.post(f"/api/erp/orders/{oid}/genei/shipments/link",
+                    headers=auth_headers(client, "sat"),
+                    json={"shipment_code": "5BXG6KAP"})
+    assert r.status_code == 409, r.text
+    detalle = r.json()["detail"]
+    assert detalle["code"] == "genei_shipment_other_order"
+    assert "ARTISJ-9693" in detalle["detail"]
+    with session_factory() as s:
+        estado = json.loads(s.get(Order, oid).packing_json or "{}").get("genei", {})
+        assert not estado.get("shipment_code")
+
+
+def test_no_se_vincula_un_envio_que_ya_tiene_otro_pedido(client, session_factory, fake):
+    with session_factory() as s:
+        oid = _seed(s)
+        otro = Order(order_number="ARTISJ-9694", preparation_status="packed",
+                     payment_status="paid", transport_status="not_shipped",
+                     external_source="manual")
+        otro.packing_json = json.dumps({"genei": {"shipment_code": "5BXG6KAP"}})
+        s.add(otro)
+        s.commit()
+    r = client.post(f"/api/erp/orders/{oid}/genei/shipments/link",
+                    headers=auth_headers(client, "sat"),
+                    json={"shipment_code": "5BXG6KAP"})
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["code"] == "genei_shipment_other_order"
+
+
+def test_un_envio_cerrado_no_se_vincula_solo(client, session_factory, fake):
+    """Con dos envíos para la misma referencia (el primer intento anulado y el
+    bueno) se coge el VIVO y el más reciente; si el único que hay está
+    cerrado, no se vincula nada: dejaría el pedido bloqueado y sin etiqueta."""
+    with session_factory() as s:
+        oid = _seed(s)
+    fake.create_error = _error_duplicado()
+    fake.rows = [{**ENVIO_EXISTENTE, "codigo_envio": "CERRADO1", "estado": 77,
+                  "fecha_creacion": "2026-10-09"}]
+    r = _crear(client, oid)
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["code"] == "genei_shipment_exists"
+
+    # Con el cerrado y el bueno, se vincula el bueno.
+    fake.rows = [
+        {**ENVIO_EXISTENTE, "codigo_envio": "CERRADO1", "estado": 77,
+         "fecha_creacion": "2026-10-08"},
+        {**ENVIO_EXISTENTE, "fecha_creacion": "2026-10-09"},
+    ]
+    r = _crear(client, oid)
+    assert r.status_code == 201, r.text
+    assert r.json()["summary"]["shipment_code"] == "5BXG6KAP"
+
+
+def test_el_vinculo_guarda_lo_mismo_que_la_creacion(client, session_factory, fake):
+    """Sin `transaction_id`, la ficha ofrece «Pagar y tramitar» y su error
+    invita a ELIMINAR el envío que creó el taller."""
+    with session_factory() as s:
+        oid = _seed(s)
+    fake.shipment = {**ENVIO_EXISTENTE, "estado": 7, "transactionId": 777,
+                     "paymentUrl": "https://pay/9694",
+                     "fecha_creacion": "2026-10-09T07:21:00"}
+    r = client.post(f"/api/erp/orders/{oid}/genei/shipments/link",
+                    headers=auth_headers(client, "sat"),
+                    json={"shipment_code": "5BXG6KAP"})
+    assert r.status_code == 200, r.text
+    with session_factory() as s:
+        estado = json.loads(s.get(Order, oid).packing_json)["genei"]
+        assert estado["transaction_id"] == "777"
+        assert estado["payment_url"] == "https://pay/9694"
+        # La fecha es la del envío en Genei, no la del vínculo.
+        assert estado["created_at"] == "2026-10-09T07:21:00"
+
+
+def test_un_codigo_con_espacio_no_saca_el_volcado_tecnico(client, session_factory):
+    with session_factory() as s:
+        oid = _seed(s)
+    r = client.post(f"/api/erp/orders/{oid}/genei/shipments/link",
+                    headers=auth_headers(client, "sat"),
+                    json={"shipment_code": "5BXG6 KAP"})
+    assert r.status_code == 422, r.text        # ni siquiera se llama a Genei
+    assert "GET /shipments" not in r.text
+
+
+def test_el_webhook_no_pisa_el_envio_que_ya_tiene_el_pedido(session_factory) -> None:
+    """El webhook empareja por referencia externa: un aviso tardío de un envío
+    borrado dejaría el pedido apuntando a un código muerto."""
+    from app.erp.integrations.genei.webhook import apply_shipment_state
+
+    with session_factory() as s:
+        oid = _seed(s)
+        order = s.get(Order, oid)
+        order.packing_json = json.dumps({"genei": {"shipment_code": "BUENO1"}})
+        s.commit()
+        apply_shipment_state(s, order, {**ENVIO_EXISTENTE, "codigo_envio": "VIEJO9"})
+        s.commit()
+        estado = json.loads(s.get(Order, oid).packing_json)["genei"]
+        assert estado["shipment_code"] == "BUENO1"
+        # Y en un pedido SIN envío sí lo deja vinculado.
+        otro = Order(order_number="X-1", preparation_status="packed",
+                     payment_status="paid", transport_status="not_shipped",
+                     external_source="manual")
+        s.add(otro)
+        s.flush()
+        apply_shipment_state(s, otro, ENVIO_EXISTENTE)
+        s.commit()
+        assert json.loads(otro.packing_json)["genei"]["shipment_code"] == "5BXG6KAP"
+
+
 # --- la búsqueda por referencia externa --------------------------------------
 
 
 def test_busqueda_por_referencia_externa_recorre_paginas() -> None:
     class Paginado:
+        """Página llena = hay más; página corta = se acabó (Genei no siempre
+        manda `count`, así que el corte NO puede salir del total)."""
+
         def __init__(self) -> None:
             self.pages: list[int] = []
 
         def list_shipments(self, *, page=1, limit=50):
             self.pages.append(page)
+            llena = [{"codigo_envio": f"X{page}-{i}", "codigo_envio_externo": "OTRA"}
+                     for i in range(50)]
             if page == 2:
-                return [ENVIO_EXISTENTE], 60
-            return [{"codigo_envio": f"X{page}", "codigo_envio_externo": "OTRA"}], 60
+                return [*llena[:10], ENVIO_EXISTENTE], None
+            return llena, None
 
     cli = Paginado()
     row = find_shipment_by_external_code(cli, "artisj-9694")   # sin distinguir mayúsculas

@@ -35,8 +35,10 @@ _FIELDS = ["order_id", "order_number", "codigo_envio", "estado", "tracking",
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--paginas", type=int, default=20,
-                        help="páginas del listado de Genei a revisar (50 envíos cada una)")
+    parser.add_argument("--paginas", type=int, default=20, choices=range(1, 201),
+                        metavar="N",
+                        help="páginas del listado de Genei a revisar, 1-200 "
+                             "(50 envíos cada una)")
     parser.add_argument("--csv", default=DEFAULT_CSV)
     args = parser.parse_args(argv)
 
@@ -56,22 +58,33 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         client = GeneiClient.from_carrier(carrier)
 
-        envios: dict[str, dict] = {}
+        from app.erp.integrations.genei.client import LIST_PAGE_SIZE  # noqa: PLC0415
+
+        envios: dict[str, list[dict]] = {}
         for page in range(1, args.paginas + 1):
-            filas, total = client.list_shipments(page=page)
+            filas, _total = client.list_shipments(page=page)
             for row in filas:
                 ref = external_code_of(row).strip()
                 if ref:
-                    envios.setdefault(ref.upper(), row)
-            if not filas or page * len(filas) >= (total or 0):
+                    envios.setdefault(ref.upper(), []).append(row)
+            # Corte por página corta: Genei no siempre manda `count`.
+            if len(filas) < LIST_PAGE_SIZE:
                 break
-        print(f"Envíos leídos de Genei: {len(envios)} con referencia externa.")
+        print(f"Envíos leídos de Genei: {len(envios)} referencias externas.")
 
+        # Los pedidos se cruzan en Python (el `==` de SQL depende de la
+        # collation: en MySQL no distingue mayúsculas, en SQLite sí).
+        por_numero = {
+            (o.order_number or "").strip().upper(): o
+            for o in session.scalars(select(Order).where(Order.order_number.is_not(None)))
+            if (o.order_number or "").strip()
+        }
         sueltos: list[dict[str, str]] = []
-        for ref, row in sorted(envios.items()):
-            order = session.scalar(select(Order).where(Order.order_number == ref))
+        for ref, filas_ref in sorted(envios.items()):
+            order = por_numero.get(ref)
             if order is None:
                 continue                      # referencia que no es un pedido de BoHub
+            row = max(filas_ref, key=lambda r: str(r.get("fecha_creacion") or ""))
             codigo = str(row.get("codigo_envio") or "").strip()
             vinculado = shipment_code_of_order(order)
             if vinculado and vinculado.strip().upper() == codigo.upper():

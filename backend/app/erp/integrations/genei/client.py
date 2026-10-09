@@ -659,8 +659,9 @@ class GeneiClient:
 
     def list_shipments(
         self, *, page: int = 1, limit: int = LIST_PAGE_SIZE,
-    ) -> tuple[list[dict[str, Any]], int]:
-        """`GET /shipments` — página del listado: `(filas, total)`.
+    ) -> tuple[list[dict[str, Any]], int | None]:
+        """`GET /shipments` — página del listado: `(filas, total)`, con `total`
+        a None si Genei no lo da.
 
         Cada fila trae el código de Genei en `codigo_envio` y la referencia
         externa (el nº de pedido que mandó BoHub) en `codigo_envio_externo`.
@@ -674,9 +675,12 @@ class GeneiClient:
         total = scope.get("count") if isinstance(scope, dict) else None
         filas = [r for r in (rows or []) if isinstance(r, dict)]
         try:
+            # `None` cuando Genei no da un total fiable: quien pagina NO debe
+            # deducirlo de `len(filas)` (con 50 de 50 el corte daba la primera
+            # página por última y nunca se miraba la segunda).
             return filas, int(total)
         except (TypeError, ValueError):
-            return filas, len(filas)
+            return filas, None
 
     def get_tracking(self, shipment_code: str) -> dict[str, Any]:
         """`GET /shipments/{code}/tracking` — historial DETALLADO: los eventos

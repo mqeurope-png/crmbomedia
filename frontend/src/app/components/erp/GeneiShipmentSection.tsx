@@ -312,17 +312,16 @@ export function GeneiShipmentSection({
           orderId={orderId}
           prefill={prefill}
           onCancel={() => setCreating(false)}
-          onExists={(referencia) => {
+          onExists={(referencia, detalle) => {
             // Genei dice que esa referencia ya tiene envío y BoHub no lo ha
             // encontrado solo: se cierra el modal y se ofrece vincularlo con
             // el número como pista para buscarlo en el panel.
             setCreating(false);
             setLinkHint(referencia);
             setLinkOpen(true);
-            setError(
-              `Genei dice que la referencia ${referencia ?? "del pedido"} ya tiene `
-              + "un envío. Búscalo en el panel de Genei y vincúlalo aquí con su código.",
-            );
+            // El texto de Genei entero (dice el número del envío) + qué hacer.
+            setError(`${detalle} Búscalo en el panel de Genei y vincúlalo aquí `
+                     + "con su código.");
           }}
           onCreated={(newState, linked) => {
             setState(newState);
@@ -424,8 +423,9 @@ function CreateGeneiShipmentModal({
   /** `linked` = el envío ya existía en Genei y se ha vinculado, no creado. */
   onCreated: (state: GeneiState, linked: boolean) => void;
   /** Genei dice que esa referencia ya tiene envío y BoHub no ha podido
-   *  encontrarlo solo: lo resuelve una persona vinculándolo por su código. */
-  onExists: (referencia: string | null) => void;
+   *  encontrarlo solo: lo resuelve una persona vinculándolo por su código.
+   *  `detalle` es el texto de Genei tal cual (lleva el número del envío). */
+  onExists: (referencia: string | null, detalle: string) => void;
 }) {
   const [dest, setDest] = useState<GeneiDestination>(prefill.destination);
   // Bultos REALES del pedido (medidos por el SAT al embalar); si el pedido no
@@ -498,9 +498,12 @@ function CreateGeneiShipmentModal({
       // sirve de nada (cinco veces el 09/10/2026). Se sale del modal y se
       // ofrece vincular el que ya hay.
       if (e instanceof ApiError && e.code === "genei_shipment_exists") {
-        const ref = (e.detail as { external_reference?: string } | null)
-          ?.external_reference;
-        onExists(ref ?? null);
+        const detalle = e.detail as
+          { external_reference?: string; detail?: string } | null;
+        onExists(
+          detalle?.external_reference ?? null,
+          extractErrorMessage(e, "Esa referencia ya tiene envío en Genei."),
+        );
         return;
       }
       setError(extractErrorMessage(e, "No se pudo crear el envío en Genei."));

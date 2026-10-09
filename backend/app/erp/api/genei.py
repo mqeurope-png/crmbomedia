@@ -145,10 +145,10 @@ def _mensaje_del_cuerpo(cuerpo: str) -> str:
     if not texto:
         return ""
     try:
-        json.loads(texto)
+        data = json.loads(texto)
     except ValueError:
         return "" if texto.startswith("<") or len(texto) > 200 else texto
-    errores, mensaje = error_fields(texto)
+    errores, mensaje = error_fields(data)
     if errores:
         return "; ".join(errores[:3])[:300]
     return mensaje[:200]
@@ -169,16 +169,19 @@ def genei_user_message(exc: GeneiError) -> str:
                              "Genei ha respondido algo inesperado")[:400]
     codigo = int(m.group(1))
     detalle = exc.remote_detail or _mensaje_del_cuerpo(exc.body or m.group(2) or "")
-    if detalle and not exc.no_response:
-        # Genei respondió y dijo por qué: su explicación ES el mensaje; la
-        # cabecera genérica («no responde», «no ha aceptado») sobra y, en el
-        # 500, miente.
+    if detalle:
+        # Genei respondió y dijo algo: su explicación manda. «No responde» no
+        # cabe aquí ni con un 502 que trae cuerpo. Con un 5xx cuyo único texto
+        # es el `message` genérico («Internal error») se antepone qué pasó,
+        # que si no la persona lee dos palabras sin contexto.
         base = next((msg for rango, msg in _MENSAJE_POR_CODIGO
                      if codigo in rango and codigo < 500), None)
+        if base is None and codigo >= 500 and not exc.errors:
+            base = "Genei ha fallado al procesar la petición"
         return f"{base}: {detalle}" if base else detalle[:400]
     base = next((msg for rango, msg in _MENSAJE_POR_CODIGO if codigo in rango),
                 "Genei no ha podido completar la petición")
-    return f"{base}: {detalle}" if detalle else f"{base}."
+    return f"{base}."
 
 
 def _genei_error(exc: GeneiError) -> HTTPException:
@@ -544,11 +547,22 @@ def genei_create_shipment(
         if referencia is not None:
             externo = order.order_number or order.id
             existente = find_shipment_by_external_code(client, externo)
-            if existente:
-                logger.info("genei: la referencia %s ya tenía envío; se vincula "
-                            "en vez de crear (pedido %s)", externo, order.id)
+            codigo_existente = _s_or_none(existente.get("codigo_envio")) if existente else None
+            if codigo_existente:
+                logger.info("genei: la referencia %s ya tenía envío %s; se vincula "
+                            "en vez de crear (pedido %s)", externo, codigo_existente,
+                            order.id)
+                # Desde el DETALLE, no desde la fila del listado: trae la
+                # transacción de pago, el email del destinatario y la web de
+                # seguimiento. Si la lectura falla, se sigue con la fila.
+                try:
+                    detalle = client.get_shipment(codigo_existente) or existente
+                except GeneiError:
+                    logger.warning("genei: no se pudo leer el detalle de %s; se "
+                                   "vincula con lo que da el listado", codigo_existente)
+                    detalle = existente
                 return _link_existing_shipment(
-                    session, order, carrier, client, existente,
+                    session, order, carrier, client, detalle,
                     current_user=current_user, origen="duplicado",
                 )
         raise _genei_error(exc) from exc
@@ -599,6 +613,24 @@ def genei_create_shipment(
 # --- vincular un envío que ya existe en Genei --------------------------------
 
 
+def _s_or_none(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _clear_genei_error(order: Order) -> None:
+    """Quita el último error del pedido cuando la cosa acaba bien (`None` no
+    vale: `set_genei_state` descarta los nulos)."""
+    from app.erp.factusol_albaran import packing_of, save_packing  # noqa: PLC0415
+    from app.erp.integrations.genei.service import PACKING_KEY  # noqa: PLC0415
+
+    data = packing_of(order)
+    block = data.get(PACKING_KEY)
+    if isinstance(block, dict) and block.pop("last_error", None) is not None:
+        data[PACKING_KEY] = block
+        save_packing(order, data)
+
+
 def _record_genei_error(session: Session, order: Order, exc: GeneiError) -> None:
     """Deja el último error de Genei EN EL PEDIDO (`packing_json.genei`), no
     solo en el log del contenedor: el del primer fallo del 09/10/2026 se
@@ -616,6 +648,39 @@ def _record_genei_error(session: Session, order: Order, exc: GeneiError) -> None
         logger.warning("genei: no se pudo guardar el último error en el pedido %s",
                        order.id, exc_info=True)
         session.rollback()
+
+
+def _referencia_de(order: Order) -> str:
+    return str(order.order_number or order.id or "").strip().upper()
+
+
+def _guard_envio_de_otro(session: Session, order: Order, raw: dict[str, Any],
+                         code: str) -> None:
+    """Vincular el envío EQUIVOCADO sería peor que el fallo original: saldría
+    la etiqueta de otro pedido y el cliente recibiría el seguimiento de otro.
+    Dos comprobaciones antes de tocar nada:
+
+    1. la referencia externa del envío, si la trae, tiene que ser la de este
+       pedido (un envío creado en el panel puede no llevarla: eso sí pasa);
+    2. ese código no puede estar ya vinculado a OTRO pedido."""
+    referencia = external_code_of(raw).strip()
+    if referencia and referencia.upper() != _referencia_de(order):
+        raise HTTPException(409, {
+            "code": "genei_shipment_other_order",
+            "detail": (f"Ese envío de Genei va con la referencia {referencia}, "
+                       f"no con {order.order_number or order.id}. Comprueba el "
+                       "código en el panel de Genei."),
+            "external_reference": referencia,
+        })
+    for otro in session.scalars(select(Order).where(
+        Order.id != order.id, Order.packing_json.contains(code),
+    )):
+        if (shipment_code_of_order(otro) or "").strip() == code:
+            raise HTTPException(409, {
+                "code": "genei_shipment_other_order",
+                "detail": (f"El envío {code} ya está vinculado al pedido "
+                           f"{otro.order_number or otro.id}."),
+            })
 
 
 def _link_existing_shipment(
@@ -638,12 +703,21 @@ def _link_existing_shipment(
             "code": "genei_no_code",
             "detail": "Genei no ha devuelto el código de ese envío.",
         })
+    _guard_envio_de_otro(session, order, raw, code)
     cfg = _config_of(carrier)
     order.carrier_id = carrier.id
     set_genei_state(order, {
         "shipment_code": code,
-        "created_at": now_iso(),
+        # La fecha del envío es la de GENEI, no la del vínculo: con la de hoy,
+        # la «Fecha recogido» de la hoja de Seguimiento saldría cambiada.
+        "created_at": _s_or_none(raw.get("fecha_creacion")) or now_iso(),
         "linked_at": now_iso(),
+        # Lo mismo que guarda el camino de creación: sin la transacción, la
+        # ficha ofrece «Pagar y tramitar» y su 409 invita a ELIMINAR el envío
+        # que creó el taller para volver a crearlo.
+        "payment_url": summary["payment_url"],
+        "transaction_id": summary["transaction_id"],
+        "agency_id": _s_or_none(raw.get("id_agencia") or raw.get("agencyId")),
         # De dónde salió el vínculo: «manual» (el código a mano) o
         # «duplicado» (lo encontró BoHub al chocar con la regla de Genei).
         "linked_from": origen,
@@ -658,6 +732,7 @@ def _link_existing_shipment(
     summary, _applied = apply_shipment_state(
         session, order, raw, tracking=safe_tracking(client, code),
     )
+    _clear_genei_error(order)
     _audit(session, current_user, "erp.genei.shipment_linked", order.id, {
         "shipment_code": code, "origen": origen,
         "external_reference": external_code_of(raw) or None,
@@ -673,7 +748,10 @@ def _link_existing_shipment(
 class LinkShipmentIn(BaseModel):
     #: Código del envío EN GENEI (el del panel, p. ej. `5BXG6KAP`). No vale la
     #: referencia externa: `GET /shipments/{ref}` la rechaza con 400.
-    shipment_code: str = Field(min_length=3, max_length=40)
+    # Solo caracteres de código: con un espacio pegado de una tabla, el
+    # mensaje de error se saltaba el recorte y salía el volcado técnico.
+    shipment_code: str = Field(min_length=3, max_length=40,
+                               pattern=r"^[A-Za-z0-9._-]+$")
 
 
 @router.post("/orders/{order_id}/genei/shipments/link")

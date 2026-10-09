@@ -231,7 +231,7 @@ def duplicate_external_reference(mensajes: Any) -> str | None:
         if _DUPLICATE_HINT not in plano:
             continue
         m = _REF_RE.search(str(texto))
-        return m.group(1).strip() if m else ""
+        return m.group(1).strip().rstrip("./-_,;") if m else ""
     return None
 
 
@@ -244,8 +244,17 @@ def external_code_of(row: dict[str, Any]) -> str:
     return _s(_pick(row, _EXTERNAL_CODE_KEYS))
 
 
+def _fecha_de(row: dict[str, Any]) -> str:
+    for key in ("fecha_creacion", "fecha", "created_at", "fechaCreacion"):
+        value = _s(row.get(key))
+        if value:
+            return value
+    return ""
+
+
 def find_shipment_by_external_code(
     client: Any, external_code: str, *, max_pages: int = 6,
+    page_size: int | None = None,
 ) -> dict[str, Any] | None:
     """Envío de Genei cuya referencia externa es `external_code`, o None.
 
@@ -253,21 +262,35 @@ def find_shipment_by_external_code(
     09/10/2026 con `ARTISJ-9694`, `ARTISJ9694` y `9694`: los tres dan 400—, así
     que se recorre el LISTADO, que sí la trae (`codigo_envio_externo`). Se
     miran las páginas más recientes (`max_pages`), que es donde está un envío
-    que el taller acaba de crear. Solo LEE: nunca crea nada."""
+    que el taller acaba de crear. Solo LEE: nunca crea nada.
+
+    Con VARIOS envíos para la misma referencia (el primer intento del taller
+    anulado y el bueno) se descartan los cerrados y se devuelve el más
+    reciente: vincular un envío cerrado dejaría el pedido bloqueado, sin
+    etiqueta y sin poder crear otro."""
+    from app.erp.integrations.genei.client import LIST_PAGE_SIZE  # noqa: PLC0415
+    from app.erp.integrations.genei.status import CLOSED, state_of  # noqa: PLC0415
+
+    por_pagina = page_size or LIST_PAGE_SIZE
     buscado = _s(external_code).upper()
     if not buscado:
         return None
+    candidatos: list[dict[str, Any]] = []
     for page in range(1, max_pages + 1):
         try:
-            filas, total = client.list_shipments(page=page)
+            filas, _total = client.list_shipments(page=page)
         except Exception:  # noqa: BLE001 — buscar es best-effort; el llamador decide
-            return None
-        for row in filas:
-            if external_code_of(row).upper() == buscado:
-                return row
-        if not filas or (total and page * len(filas) >= total):
+            return candidatos[0] if candidatos else None
+        candidatos.extend(r for r in filas if external_code_of(r).upper() == buscado)
+        # Corte por página corta, no por aritmética con el total: Genei no
+        # siempre da `count` y con 50 de 50 se daba por terminada la primera.
+        if len(filas) < por_pagina:
             break
-    return None
+    vivos = [r for r in candidatos
+             if state_of(_pick(r, _STATE_KEYS)).bucket != CLOSED]
+    if not vivos:
+        return None
+    return max(vivos, key=_fecha_de)
 
 
 # --- normalización de la respuesta ------------------------------------------
