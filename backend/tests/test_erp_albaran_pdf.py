@@ -126,6 +126,11 @@ def test_descargar_pdf_albaran_factusol(http) -> None:
     disposition = r.headers["content-disposition"]
     assert "1-100327" in disposition and "DUPLICODER" in disposition
     assert "albar" in disposition.lower()
+    # Tipo · cliente · número, con espacios: la cabecera escribe el nombre
+    # entre comillas, así que los espacios no la rompen.
+    assert disposition.startswith('attachment; filename="')
+    assert disposition.endswith('.pdf"')
+    assert disposition.index("DUPLICODER") < disposition.index("1-100327")
     # Serie + número correctos contra FACTUSOL (cabecera y líneas por número,
     # serie casada en Python — el mismo criterio que el resto de los PDF).
     assert ("F_ALB", "CODALB=100327") in fake.calls

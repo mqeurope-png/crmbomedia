@@ -212,6 +212,9 @@ def test_pdf_pedido_desde_proforma_usa_presupuesto(http) -> None:
     assert r.content[:5] == b"%PDF-"
     disposition = r.headers["content-disposition"]
     assert "Presupuesto" in disposition and "1-004352" in disposition
+    # Tipo · cliente · número, con espacios y entre comillas en la cabecera.
+    assert disposition.startswith('attachment; filename="Presupuesto ')
+    assert disposition.endswith(' 1-004352.pdf"')
     assert ("F_PRE", "CODPRE=4352") in fake.calls
     assert ("F_LPS", "CODLPS=4352") in fake.calls
     assert not any(t == "F_PCL" for t, _ in fake.calls)      # ni un REFPCL
