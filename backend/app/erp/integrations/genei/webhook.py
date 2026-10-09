@@ -166,6 +166,10 @@ def apply_shipment_state(
     applied = advance_transport(session, order, target, evidence=evidence,
                                 label_at=tramitado_at(stored_before))
     patch: dict[str, Any] = {
+        # Si el pedido aún no tenía envío (p. ej. uno creado a mano en el
+        # panel de Genei del que llega aviso), el código lo deja VINCULADO:
+        # sin él la ficha seguiría diciendo «sin envío» con el estado puesto.
+        "shipment_code": summary["shipment_code"] or None,
         "state_code": summary["state_code"],
         "state_bucket": summary["state_bucket"],
         "state_label": summary["state_label"],

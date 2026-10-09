@@ -1,12 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ApiError } from "../../lib/api";
 import { extractErrorMessage } from "../../lib/errors";
 import { ModalCloseButton } from "../ModalCloseButton";
 import { useModalBehaviour } from "../useModalBehaviour";
 import { printShippingFile } from "../../lib/erpApi";
 import {
   geneiCreateShipment,
+  geneiLinkShipment,
   geneiDeleteShipment,
   geneiFetchLabel,
   geneiLabelStatus,
@@ -52,6 +54,11 @@ export function GeneiShipmentSection({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  /** Referencia que Genei dice que ya tiene envío: se usa como pista del
+   *  formulario de vincular (no es el código que hay que pegar, es el número
+   *  con el que buscarlo en el panel de Genei). */
+  const [linkHint, setLinkHint] = useState<string | null>(null);
+  const [linkOpen, setLinkOpen] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -279,6 +286,24 @@ export function GeneiShipmentSection({
               Embala el pedido primero (debe estar en «Embalados») para crear el envío.
             </p>
           ) : null}
+          {/* El taller crea envíos a mano en el panel de Genei cuando BoHub
+              falla; sin esto el pedido se queda sin envío, sin etiqueta y sin
+              aviso al cliente (09/10/2026). */}
+          {canManage ? (
+            <LinkExistingShipment
+              orderId={orderId}
+              hint={linkHint}
+              open={linkOpen}
+              onOpenChange={setLinkOpen}
+              onLinked={(newState) => {
+                setState(newState);
+                setLinkHint(null);
+                setLinkOpen(false);
+                setNotice("Envío de Genei vinculado al pedido.");
+                onChanged?.();
+              }}
+            />
+          ) : null}
         </div>
       )}
 
@@ -287,10 +312,24 @@ export function GeneiShipmentSection({
           orderId={orderId}
           prefill={prefill}
           onCancel={() => setCreating(false)}
-          onCreated={(newState) => {
+          onExists={(referencia) => {
+            // Genei dice que esa referencia ya tiene envío y BoHub no lo ha
+            // encontrado solo: se cierra el modal y se ofrece vincularlo con
+            // el número como pista para buscarlo en el panel.
+            setCreating(false);
+            setLinkHint(referencia);
+            setLinkOpen(true);
+            setError(
+              `Genei dice que la referencia ${referencia ?? "del pedido"} ya tiene `
+              + "un envío. Búscalo en el panel de Genei y vincúlalo aquí con su código.",
+            );
+          }}
+          onCreated={(newState, linked) => {
             setState(newState);
             setCreating(false);
-            setNotice("Envío creado en Genei (pendiente de pago).");
+            setNotice(linked
+              ? "Ese envío ya existía en Genei: se ha vinculado al pedido."
+              : "Envío creado en Genei (pendiente de pago).");
             onChanged?.();
           }}
         />
@@ -299,15 +338,94 @@ export function GeneiShipmentSection({
   );
 }
 
+/** «Vincular envío existente de Genei»: el taller crea envíos a mano en el
+ *  panel de Genei cuando BoHub falla —y hace bien, así no para la expedición—,
+ *  pero BoHub no se enteraba: el pedido se quedaba sin envío, sin etiqueta, sin
+ *  seguimiento y sin aviso al cliente.
+ *
+ *  Se pega el CÓDIGO del envío (el que se ve en el panel, `5BXG6KAP`); la
+ *  referencia externa no vale, `GET /shipments/{ref}` la rechaza. Vincular no
+ *  crea nada en Genei. */
+function LinkExistingShipment({
+  orderId, hint, open, onOpenChange, onLinked,
+}: {
+  orderId: string;
+  /** Referencia que Genei dio al rechazar la creación, como pista. */
+  hint: string | null;
+  /** Abierto/cerrado lo lleva la sección: cuando Genei dice que la referencia
+   *  ya tiene envío, el formulario se abre solo desde ese manejador. */
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onLinked: (state: GeneiState) => void;
+}) {
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function link() {
+    const value = code.trim();
+    if (!value) return;
+    setBusy(true); setError(null);
+    try {
+      const r = await geneiLinkShipment(orderId, value);
+      onLinked(r.state);
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudo vincular ese envío de Genei."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!open) {
+    return (
+      <button type="button" className="button small secondary"
+              onClick={() => onOpenChange(true)}>
+        Vincular envío existente de Genei
+      </button>
+    );
+  }
+  return (
+    <div className="erp-genei-link">
+      <p className="muted small">
+        Si el envío ya está creado en el panel de Genei, pega aquí su código
+        (p. ej. <code>5BXG6KAP</code>) y BoHub traerá transportista,
+        seguimiento y etiqueta.
+        {hint ? ` Búscalo por la referencia ${hint}.` : ""}
+      </p>
+      {error ? <p className="form-error" role="alert">{error}</p> : null}
+      <div className="erp-genei-link-row">
+        <input
+          type="text" value={code} disabled={busy}
+          aria-label="Código del envío en Genei"
+          placeholder="Código del envío en Genei"
+          onChange={(e) => setCode(e.target.value)}
+        />
+        <button type="button" className="button small" disabled={busy || !code.trim()}
+                onClick={() => void link()}>
+          {busy ? "Vinculando…" : "Vincular"}
+        </button>
+        <button type="button" className="button small secondary" disabled={busy}
+                onClick={() => { onOpenChange(false); setError(null); }}>
+          Cancelar
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /** Modal de creación: destino editable (prellenado), bulto y comparador de
  *  agencias (propone el preferido factible más barato del país, a domicilio). */
 function CreateGeneiShipmentModal({
-  orderId, prefill, onCancel, onCreated,
+  orderId, prefill, onCancel, onCreated, onExists,
 }: {
   orderId: string;
   prefill: GeneiPrefill;
   onCancel: () => void;
-  onCreated: (state: GeneiState) => void;
+  /** `linked` = el envío ya existía en Genei y se ha vinculado, no creado. */
+  onCreated: (state: GeneiState, linked: boolean) => void;
+  /** Genei dice que esa referencia ya tiene envío y BoHub no ha podido
+   *  encontrarlo solo: lo resuelve una persona vinculándolo por su código. */
+  onExists: (referencia: string | null) => void;
 }) {
   const [dest, setDest] = useState<GeneiDestination>(prefill.destination);
   // Bultos REALES del pedido (medidos por el SAT al embalar); si el pedido no
@@ -374,8 +492,17 @@ function CreateGeneiShipmentModal({
         agency_id: agencyId, destination: dest, packages: pkgs,
         observations: dest.observations || null,
       });
-      onCreated(r.state);
+      onCreated(r.state, Boolean(r.linked));
     } catch (e) {
+      // «La referencia ya corresponde a un envío existente»: reintentar no
+      // sirve de nada (cinco veces el 09/10/2026). Se sale del modal y se
+      // ofrece vincular el que ya hay.
+      if (e instanceof ApiError && e.code === "genei_shipment_exists") {
+        const ref = (e.detail as { external_reference?: string } | null)
+          ?.external_reference;
+        onExists(ref ?? null);
+        return;
+      }
       setError(extractErrorMessage(e, "No se pudo crear el envío en Genei."));
     } finally {
       setBusy(false);

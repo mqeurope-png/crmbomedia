@@ -97,12 +97,37 @@ _PAYMENT_URL_KEYS = ("paymentUrl", "payment_url", "url_pago", "urlPago")
 
 
 class GeneiError(RuntimeError):
-    """Error de la API de Genei con contexto (status + cuerpo recortado)."""
+    """Error de la API de Genei con contexto (status + cuerpo recortado).
 
-    def __init__(self, message: str, *, status: int | None = None, body: str | None = None):
+    `errors` y `remote_message` son lo que dijo Genei, ya separado: su
+    `errors[]` explica QUÉ pasa («El envio externo ya corresponde a un envio
+    existente ARTISJ-9694») y su `message` casi nunca («Internal error»). El
+    que va a la pantalla es `errors`.
+
+    `no_response` distingue «Genei no contestó» (tiempo de espera, error de
+    conexión, 502/503/504 de su servidor) de «Genei contestó que no»: solo en
+    el primero tiene sentido decir «prueba en un momento», que es lo que
+    provocó cinco reintentos de algo que nunca iba a funcionar (09/10/2026)."""
+
+    def __init__(
+        self, message: str, *, status: int | None = None, body: str | None = None,
+        errors: list[str] | None = None, remote_message: str | None = None,
+        no_response: bool = False,
+    ):
         super().__init__(message)
         self.status = status
         self.body = (body or "")[:2000]
+        self.errors = [str(e).strip() for e in (errors or []) if str(e).strip()]
+        self.remote_message = (remote_message or "").strip()
+        self.no_response = no_response
+
+    @property
+    def remote_detail(self) -> str:
+        """Lo que Genei dice, para la persona: su `errors[]` y, solo si viene
+        vacío, su `message`."""
+        if self.errors:
+            return "; ".join(self.errors)[:400]
+        return self.remote_message[:400]
 
 
 class GeneiConfigError(GeneiError):
@@ -302,6 +327,36 @@ def _package_query(packages: list[dict[str, Any]]) -> dict[str, Any]:
         for key, val in item.items():
             out[f"packages[{i}][{key}]"] = val
     return out
+
+
+#: Filas por página del listado de envíos (`GET /shipments`).
+LIST_PAGE_SIZE = 50
+
+#: HTTP de «no hay respuesta útil del otro lado» (pasarela), no «Genei dice
+#: que no». 500 NO está: un 500 con cuerpo es Genei contestando.
+_NO_RESPONSE_STATUSES = frozenset({502, 503, 504})
+
+
+def error_fields(body: Any) -> tuple[list[str], str]:
+    """`(errors[], message)` de un cuerpo de error de Genei. Acepta el texto
+    crudo o el dict ya parseado; lo que no sea JSON de objeto da `([], "")`."""
+    data = body
+    if isinstance(body, str):
+        try:
+            data = json.loads(body)
+        except ValueError:
+            return [], ""
+    if not isinstance(data, dict):
+        return [], ""
+    raw = data.get("errors")
+    errors = [str(e).strip() for e in raw if str(e).strip()] if isinstance(raw, list) else []
+    message = ""
+    for key in ("message", "error", "msg", "detail", "mensaje"):
+        val = data.get(key)
+        if isinstance(val, str) and val.strip():
+            message = val.strip()
+            break
+    return errors, message
 
 
 def _envelope_error(data: Any) -> str | None:
@@ -592,9 +647,36 @@ class GeneiClient:
         return _as_dict(data)
 
     def get_shipment(self, shipment_code: str) -> dict[str, Any]:
-        """`GET /shipments/{code}` — datos completos (estado, tracking…)."""
+        """`GET /shipments/{code}` — datos completos (estado, tracking…).
+
+        ⚠️ Solo entiende el CÓDIGO de Genei (`5BXG6KAP`). La referencia externa
+        (el nº de pedido, `ARTISJ-9694`) NO vale: probado en vivo el
+        09/10/2026 con las tres formas (`ARTISJ-9694`, `ARTISJ9694`, `9694`) y
+        las tres devuelven `400 {"errors":["No se ha encontrado el envío …"]}`.
+        Para buscar por referencia externa está `list_shipments`."""
         data = self._request("GET", f"/shipments/{shipment_code}")
         return _as_dict(data)
+
+    def list_shipments(
+        self, *, page: int = 1, limit: int = LIST_PAGE_SIZE,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """`GET /shipments` — página del listado: `(filas, total)`.
+
+        Cada fila trae el código de Genei en `codigo_envio` y la referencia
+        externa (el nº de pedido que mandó BoHub) en `codigo_envio_externo`.
+        Es el único camino para encontrar un envío por su referencia externa;
+        es de SOLO LECTURA y nunca crea nada."""
+        data = _as_dict(self._request(
+            "GET", "/shipments", params={"page": page, "limit": limit},
+        ))
+        scope = data.get("data") if isinstance(data.get("data"), dict) else data
+        rows = scope.get("rows") if isinstance(scope, dict) else None
+        total = scope.get("count") if isinstance(scope, dict) else None
+        filas = [r for r in (rows or []) if isinstance(r, dict)]
+        try:
+            return filas, int(total)
+        except (TypeError, ValueError):
+            return filas, len(filas)
 
     def get_tracking(self, shipment_code: str) -> dict[str, Any]:
         """`GET /shipments/{code}/tracking` — historial DETALLADO: los eventos
@@ -717,9 +799,15 @@ class GeneiClient:
         if resp.status_code >= 400:
             logger.warning("genei %s %s → HTTP %s: %s", method, path,
                            resp.status_code, resp.text[:300])
+            errors, remote = error_fields(resp.text)
             raise GeneiError(
                 f"{method} {path} → {resp.status_code}: {resp.text[:500]}",
                 status=resp.status_code, body=resp.text,
+                errors=errors, remote_message=remote,
+                # Un 500 CON cuerpo es Genei contestando que no, no una
+                # pasarela caída: solo 502/503/504 (o un cuerpo vacío) lo son.
+                no_response=resp.status_code in _NO_RESPONSE_STATUSES
+                or (resp.status_code >= 500 and not (errors or remote)),
             )
         if not resp.content:
             return {}
@@ -736,8 +824,10 @@ class GeneiClient:
         err = _envelope_error(data)
         if err is not None:
             logger.warning("genei %s %s → status:0 %s", method, path, err[:300])
+            errors, remote = error_fields(data)
             raise GeneiError(f"{method} {path} → Genei rechazó: {err}",
-                             status=resp.status_code, body=resp.text)
+                             status=resp.status_code, body=resp.text,
+                             errors=errors, remote_message=remote)
         return data
 
     def _raw_request(
@@ -757,12 +847,13 @@ class GeneiClient:
         except httpx.TimeoutException as exc:
             logger.warning("genei %s %s: timeout", method, path)
             raise GeneiError("Genei no responde ahora mismo (tiempo de espera agotado): "
-                             "prueba en un momento.") from exc
+                             "prueba en un momento.", no_response=True) from exc
         except httpx.HTTPError as exc:
             # Sin la URL completa (lleva query) ni cabeceras (llevan el token).
             logger.warning("genei %s %s: error de conexión (%s)", method, path,
                            type(exc).__name__)
-            raise GeneiError("No se pudo conectar con Genei: prueba en un momento.") from exc
+            raise GeneiError("No se pudo conectar con Genei: prueba en un momento.",
+                             no_response=True) from exc
 
 
 def _short_reason(data: Any) -> str:

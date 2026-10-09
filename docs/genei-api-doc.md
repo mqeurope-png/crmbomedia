@@ -123,6 +123,64 @@ Origen ≠ centro logístico de Genei (caso BoHub) → NO `box` ni `references`:
 - Seguimiento (rev 2026-10-01): **Envío** es solo el estado, de una lista cerrada (`seguimiento.envio_vocabulary()`): un envío con otro courier sale «Enviado» al marcar recogido («Entregado» / «Incidencia» si se marca en la ficha). El courier va en la columna aparte **«Courier»** (`seguimiento.courier_label`): el apuntado, o «otro courier» si salió sin él; en un envío Genei, su agencia (`packing_json.genei.courier`, tal cual: «Ctt Premium»). Los compuestos «Enviado · {courier}» ya no se escriben (solo se reconocen como valor antiguo de BoHub: `envio_vocabulary_antiguo()`). La Cola SAT («Enviados») sigue enseñando su propia etiqueta. «Fecha recogido» = primera transición a `in_transit`.
 - Aviso al cliente: al marcar recogido se deja `customer_email.status = pending` (o `disabled` con el interruptor apagado) y se intenta enviar si hay tracking; si no, al poner el tracking (PATCH). Una sola vez (mismo cerrojo y estados que Genei). Destinatario: email de envío del pedido → email del contacto → sin enviar (`error`, se ve en la ficha). Enlace de la tabla por courier; sin URL, «en la web de {courier}»; sin courier, solo el número. Los recogidos antes del cambio no tienen la marca → nunca solos. Reenvío manual: los mismos `GET/POST /api/erp/orders/{id}/genei/customer-email` (aceptan envío externo ya recogido).
 
+## Errores de Genei y el envío que ya existe (rev 2026-10-09)
+
+**Lo que pasó.** Al crear el envío del pedido `a1af40c0-…` el modal enseñó «Genei
+no responde ahora mismo: prueba en un momento: Internal error» y la API devolvió
+502. Genei había contestado —rápido, y con la sesión viva: `GET /agencies/prices`
+iba bien— esto:
+
+```
+HTTP 500 {"status":0,"message":"Internal error","data":{},
+          "errors":["No se puede crear el envio. El envio externo ya corresponde
+                     a un envio existente ARTISJ-9694"]}
+```
+
+El taller había creado el envío a mano en el panel de Genei tras el primer fallo,
+con la misma referencia externa; desde entonces cada reintento chocaba con la
+regla de duplicados. Hubo **cinco** reintentos porque el mensaje invitaba a ello.
+
+**Qué se enseña ahora.** `errors[]` manda sobre `message`: el primero dice qué
+pasa, el segundo casi siempre «Internal error». El texto «Genei no responde
+ahora mismo» queda **solo** para cuando de verdad no hay respuesta —tiempo de
+espera, error de conexión, 502/503/504— (`GeneiError.no_response`).
+
+**Qué código devuelve BoHub.** `409 genei_shipment_exists` (con
+`external_reference`) cuando la referencia ya tiene envío: Genei contestó, no es
+un fallo de pasarela. `502` se reserva para los fallos del otro lado.
+
+**Recuperar el envío.** `GET /shipments/{x}` **solo** entiende el código de Genei
+(`5BXG6KAP`): probado en vivo el 09/10/2026 con `ARTISJ-9694`, `ARTISJ9694` y
+`9694`, los tres dan `400 {"errors":["No se ha encontrado el envío …"]}`. El
+listado `GET /shipments` **sí** trae la referencia externa
+(`data.rows[].codigo_envio_externo`), así que:
+
+1. al chocar con el duplicado, BoHub busca ese envío en el listado por la
+   referencia del pedido (`find_shipment_by_external_code`, solo lectura,
+   páginas recientes) y, si aparece, **lo vincula en vez de crear otro**;
+2. si no aparece, el 409 lleva el error real y la referencia, y la ficha ofrece
+   **«Vincular envío existente de Genei»**: se pega el código del panel
+   (`POST /api/erp/orders/{id}/genei/shipments/link`) y BoHub trae
+   transportista, seguimiento y etiqueta, y el pedido entra en la cola de
+   seguimiento y en el aviso al cliente como cualquier otro.
+
+Vincular nunca crea nada en Genei, y un pedido que ya tiene envío no deja crear
+ni vincular otro.
+
+**Webhook.** Genei solo notifica a la `notificationUrl` que se le pasa **al
+crear**, y un envío creado desde su panel no la lleva: por ahí no llega aviso de
+los envíos manuales. Lo que sí se ha arreglado es que, si alguna vez llegara,
+deje el envío vinculado (`apply_shipment_state` guarda el `shipment_code`
+cuando el pedido no tenía).
+
+**Rastro que sobrevive al reinicio.** El último error de Genei se guarda en el
+pedido (`packing_json.genei.last_error`: fecha, texto y `errors[]`), no solo en
+el log del contenedor —el del primer fallo se perdió al recrearse `api`—.
+
+**Pedidos ya afectados:** `python -m scripts.genei_envios_sin_vincular` (solo
+lectura) cruza el listado de Genei con los pedidos de BoHub y lista los que
+tienen envío allí y no aquí.
+
 ## Seguridad
 - Pago solo por persona (botón «Pagar y tramitar»); nunca auto-pagar.
 - Webhook validado (secreto/token); no actuar por payloads no verificados.

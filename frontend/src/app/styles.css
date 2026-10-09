@@ -11463,6 +11463,16 @@ a.erp-ficha-customer-name:hover { text-decoration: underline; }
 .erp-genei-actions,
 .erp-genei-empty { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-2); }
 .erp-genei-empty { align-items: center; }
+/* «Vincular envío existente de Genei»: el código a mano cuando el taller creó
+   el envío en el panel. Ocupa su propia línea dentro del bloque «sin envío». */
+.erp-genei-link { flex: 1 0 100%; display: flex; flex-direction: column; gap: 6px; }
+.erp-genei-link-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.erp-genei-link-row input { flex: 1 1 18ch; min-width: 18ch; padding: 6px 8px; }
 .erp-genei-compare { margin-top: var(--sp-3); }
 .erp-genei-compare-head {
   display: flex;
