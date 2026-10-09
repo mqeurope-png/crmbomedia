@@ -1,3 +1,4 @@
+import { withServerFilename } from "./downloadName";
 import { extractErrorMessage, formatFastApiDetail } from "./errors";
 
 // BoHub ERP Fase A: roles operativos añadidos al backend (UserRole).
@@ -583,7 +584,11 @@ export async function apiDownloadBlob(
     }
     throw new DownloadError(message, response.status, code);
   }
-  return response.blob();
+  // El nombre que manda el servidor (`Content-Disposition`) viaja pegado al
+  // binario como `File`; `saveBlob` lo prefiere al que construye la pantalla.
+  return withServerFilename(
+    await response.blob(), response.headers.get("content-disposition"),
+  );
 }
 
 async function parseApiResponse<T>(response: Response): Promise<T> {
