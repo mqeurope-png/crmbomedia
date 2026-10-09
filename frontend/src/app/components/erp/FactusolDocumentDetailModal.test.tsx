@@ -1,6 +1,7 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { FactusolDocumentDetailModal } from "./FactusolDocumentDetailModal";
+import { SELECT_CHROME } from "./selectMinWidth";
 import {
   convertFactusolDocument,
   getFactusolConvertStatus,
@@ -676,6 +677,31 @@ describe("FactusolDocumentDetailModal (E4-fix1 — variantes + banco + idioma)",
         expect.objectContaining({ bank: 1 }),
       ),
     );
+  });
+
+  /** El pie del modal mete ocho cosas en una fila (tipo, divisa, idioma, la
+   *  nota del idioma y cuatro botones). Al no caber, el flex comprimía el
+   *  PRIMER selector —el que decide si sale «Presupuesto» o «Factura
+   *  proforma»— hasta dejarlo en un recuadro con la flechita y sin texto
+   *  (producción, 09/10/2026). El ancho mínimo defiende la opción más larga;
+   *  que la fila envuelva en vez de encogerse lo hace `.modal-actions`. */
+  it("el selector de tipo de documento no se queda sin ancho para «Factura proforma»", async () => {
+    render(
+      <FactusolDocumentDetailModal
+        docType="presupuestos" serie={2} codigo={4364} onClose={() => {}}
+      />,
+    );
+    const variante = await screen.findByLabelText("Variante del documento");
+    const larga = within(variante)
+      .getByRole("option", { name: "Factura proforma" }).textContent!;
+    expect(variante).toHaveStyle({
+      minWidth: `calc(${larga.length}ch + ${SELECT_CHROME})`,
+    });
+    // Y el valor se lee sin desplegar: el `select` muestra la opción elegida.
+    expect((variante as HTMLSelectElement).value).toBe("");
+    expect(
+      within(variante).getByRole("option", { name: "Presupuesto" }),
+    ).toBeInTheDocument();
   });
 
   it("la factura ofrece la variante «de anticipo» y viaja en la descarga", async () => {

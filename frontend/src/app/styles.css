@@ -11259,6 +11259,56 @@ tr.is-inactive {
   margin-top: 16px;
 }
 
+/* --- el pie del modal NO aplasta sus controles -------------------------
+   Visto en producción el 09/10/2026: el detalle del presupuesto 2-004364
+   mete ocho cosas en el pie (tipo de documento, divisa, idioma, la nota del
+   idioma y cuatro botones). Al no caber en una línea, el flex las comprimía
+   y el PRIMER selector —el que decide si sale «Presupuesto» o «Factura
+   proforma»— se quedaba en un recuadro con la flechita y sin texto: no se
+   sabía qué documento iba a salir sin desplegarlo. Los de divisa e idioma
+   aguantaban porque su contenido es «EUR» y «ES».
+
+   La regla: si no caben, SALTAN de línea; nunca se encogen por debajo de lo
+   legible. Va en `.modal-actions`, que es el pie de todos los modales (ERP y
+   CRM), no en la pantalla de presupuestos. Un pie corto (Cancelar +
+   Confirmar) no cambia: con sitio de sobra no hay nada que envolver. */
+.modal-actions {
+  flex-wrap: wrap;
+  align-items: center;
+  row-gap: 8px;
+}
+.modal-actions > *,
+.modal-actions .erp-doc-pdf > * {
+  flex-shrink: 0;
+}
+/* Los controles del PDF son un GRUPO dentro del pie. El grupo sí cede ancho
+   (`flex-shrink` + `min-width: 0`) para poder envolver por dentro; lo que no
+   se encogen son sus controles. Sin esto el grupo conservaba su ancho máximo
+   (~1000 px), no cabía en el diálogo (720 px) y, con el pie alineado a la
+   derecha, se salía por la IZQUIERDA: el primer selector se quedaba fuera del
+   modal y del siguiente solo se veía el final («Sabadell» por «Banco de
+   Sabadell»). Es el mismo síntoma que se ve en producción. */
+.modal-actions .erp-doc-pdf {
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-wrap: wrap;
+  row-gap: 8px;
+  justify-content: flex-end;
+}
+/* Suelo de legibilidad de cualquier `<select>` del pie. El ancho real lo
+   pone el contenido (y, en los que lo necesitan, un `min-width` calculado a
+   partir de la opción más larga: ver `selectMinWidth.ts`). */
+.modal-actions select {
+  min-width: 7ch;
+}
+/* La nota del idioma («ES · del país del cliente») es informativa, no una
+   acción: es la primera que cede espacio y la primera en saltar de línea. */
+.modal-actions .erp-doc-pdf-langsrc {
+  flex-shrink: 1;
+  min-width: 0;
+  white-space: normal;
+}
+
 /* =============================================================
    ERP · rediseño de flujo (Fase 1) — bandeja por colas + ficha
    «línea de vida». Tokens y componentes COMPARTIDOS por las dos

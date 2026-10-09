@@ -29,6 +29,7 @@ import { ModalCloseButton } from "../ModalCloseButton";
 import { useModalBehaviour } from "../useModalBehaviour";
 import { InvoiceEmailModal } from "./InvoiceEmailModal";
 import { QuoteEmailModal } from "./QuoteEmailModal";
+import { selectMinWidth } from "./selectMinWidth";
 
 const TYPE_LABELS: Record<FactusolDocType, string> = {
   pedidos: "Pedido de cliente",
@@ -658,6 +659,14 @@ export function FactusolDocumentDetailModal({
                 <select
                   value={pdfVariant}
                   aria-label="Variante del documento"
+                  // El selector que decide QUÉ documento sale no puede
+                  // quedarse sin texto cuando el pie va lleno: ancho mínimo
+                  // para su opción más larga («Factura proforma»).
+                  style={{
+                    minWidth: selectMinWidth(
+                      PDF_VARIANTS[current.docType]!.map((v) => v.label),
+                    ),
+                  }}
                   onChange={(e) => setPdfVariant(e.target.value)}
                 >
                   {PDF_VARIANTS[current.docType]!.map((v) => (
@@ -669,6 +678,11 @@ export function FactusolDocumentDetailModal({
                 <select
                   value={pdfBank}
                   aria-label="Cuenta bancaria"
+                  style={{
+                    minWidth: selectMinWidth(
+                      pdfBankOptions.map((b) => b.nombre || b.iban || ""),
+                    ),
+                  }}
                   onChange={(e) => setPdfBank(Number(e.target.value))}
                 >
                   {pdfBankOptions.map((b, i) => (
