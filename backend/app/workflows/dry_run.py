@@ -271,6 +271,43 @@ def _describe_step(
             {"stage_id": cfg.get("stage_id")},
         )
 
+    # Respuesta a leads. La simulación NO clasifica (ni gasta IA ni escribe):
+    # describe y toma la rama que tomaría con lo que ya se sabe del contacto.
+    if step.type == "action_classify_lead":
+        if contact.lead_is_spam is True:
+            rama, texto = "spam", "ya está clasificado como spam"
+        elif contact.lead_classified_at is not None:
+            rama = "ok"
+            texto = f"ya está clasificado ({contact.lead_interest or 'sin interés'})"
+        else:
+            rama, texto = "ok", "se clasificaría (idioma, interés, spam, confianza)"
+        return (
+            "Clasificar lead",
+            f"El lead {texto}; seguiría por la rama «{rama}».",
+            rama,
+            {"max_age_hours": cfg.get("max_age_hours"), "branch": rama},
+        )
+
+    if step.type == "action_prepare_email_draft":
+        modo = cfg.get("template_mode") or "por_interes"
+        plantilla = ("la plantilla del interés y el idioma del lead" if modo == "por_interes"
+                     else f"la plantilla fija {cfg.get('template_id') or '(sin elegir)'}")
+        return (
+            "Preparar borrador de email",
+            f"Dejaría un borrador (sin enviar) con {plantilla}, desde el remitente de "
+            "la web del lead.",
+            None,
+            {"template_mode": modo, "from_mode": cfg.get("from_mode") or "web_del_lead"},
+        )
+
+    if step.type == "action_add_to_pipeline":
+        return (
+            "Añadir a pipeline",
+            "Colocaría el contacto en el pipeline y la etapa elegidos (si no está ya).",
+            None,
+            {"pipeline_id": cfg.get("pipeline_id"), "stage_id": cfg.get("stage_id")},
+        )
+
     if step.type == "action_notify_owner":
         return (
             "Notificar al propietario",

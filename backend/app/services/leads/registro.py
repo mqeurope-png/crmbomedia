@@ -233,6 +233,70 @@ def registrar(
     return fila
 
 
+def _inicio_del_dia() -> datetime:
+    """El inicio de HOY en hora de Madrid, en UTC: el tope es por día natural
+    de la oficina, no por día UTC."""
+    from zoneinfo import ZoneInfo  # noqa: PLC0415
+
+    from app.workflows.ventana import ZONA  # noqa: PLC0415
+
+    local = datetime.now(ZoneInfo(ZONA)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return local.astimezone(UTC)
+
+
+def clasificados_hoy(session: Session) -> int:
+    """Leads clasificados hoy (lo que cuenta para el tope diario)."""
+    from sqlalchemy import func  # noqa: PLC0415
+
+    return int(session.scalar(
+        select(func.count(LeadClassification.id))
+        .where(LeadClassification.created_at >= _inicio_del_dia())
+    ) or 0)
+
+
+def avisar_tope_diario(session: Session, *, tope: int, procesados: int) -> bool:
+    """Al llegar al tope se avisa UNA vez al día, a las direcciones de aviso
+    de los formularios (`WEB_FORMS_NOTIFY_TO`). Queda en la auditoría, que es
+    lo que evita repetirlo. Best-effort."""
+    from app.core.audit import Action, record_event  # noqa: PLC0415
+    from app.models.crm import AuditLog  # noqa: PLC0415
+
+    ya_avisado = session.scalar(
+        select(AuditLog.id).where(
+            AuditLog.action == Action.LEAD_DAILY_CAP_REACHED,
+            AuditLog.created_at >= _inicio_del_dia(),
+        ).limit(1)
+    )
+    if ya_avisado is not None:
+        return False
+    record_event(
+        session, action=Action.LEAD_DAILY_CAP_REACHED, target_type="lead_response",
+        target_id="tope_diario", metadata={"tope": tope, "procesados": procesados},
+    )
+    session.flush()
+    try:
+        from app.core.config import get_settings  # noqa: PLC0415
+        from app.services.email import get_email_service  # noqa: PLC0415
+
+        destinos = [d.strip() for d in (get_settings().web_forms_notify_to or "").split(",")
+                    if d.strip()]
+        asunto = f"Respuesta a leads: tope diario alcanzado ({procesados}/{tope})"
+        texto = (
+            f"Hoy ya se han procesado {procesados} leads y el tope diario es {tope}. "
+            "Los que entren hasta mañana quedan sin clasificar ni borrador; se ven en "
+            "Configuración ERP → Respuesta a leads. Sube el tope si hace falta."
+        )
+        servicio = get_email_service()
+        for correo in destinos:
+            servicio.send_notification(
+                to_email=correo, to_name=correo, subject=asunto, text_body=texto,
+                html_body=f"<p>{texto}</p>",
+            )
+    except Exception:  # noqa: BLE001 — el aviso nunca bloquea el run
+        logger.warning("leads.tope_diario: no se pudo mandar el aviso", exc_info=True)
+    return True
+
+
 def vincular_tarea(session: Session, run_id: str | None, task_id: str) -> bool:
     """La tarea que creó el workflow queda enlazada a la clasificación de
     ese mismo run (la primera sin tarea)."""

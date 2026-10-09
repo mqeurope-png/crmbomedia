@@ -280,59 +280,60 @@ def texto_claramente_en(texto: str, idioma: str) -> bool:
 # --- interés ----------------------------------------------------------------
 
 #: Palabras clave por interés, sin acentos y en minúsculas (el texto se
-#: normaliza igual). Las cortas se casan por palabra entera.
+#: normaliza igual). Se casan por PALABRA ENTERA (o frase entera): «primer»
+#: no es «primera», «corte» no es «cortesía». Una clave acabada en `*` casa
+#: como prefijo («grabad*»: grabado, grabador, grabadora).
 _PALABRAS_INTERES: dict[str, tuple[str, ...]] = {
     INTERES_SERVICIO: (
-        "averia", "no funciona", "no imprime", "no enciende", "no arranca", "reparar",
-        "reparacion", "repair", "reparation", "reparatur", "soporte tecnico",
+        "averia", "averiad*", "no funciona", "no imprime", "no enciende", "no arranca",
+        "reparar", "reparacion", "repair", "reparation", "reparatur", "soporte tecnico",
         "asistencia tecnica", "technical support", "technischer support", "defekt", "kaputt",
-        "storing", "mantenimiento", "maintenance", "wartung", "onderhoud", "fallo", "error",
-        "garantia", "warranty", "garantie", "se ha roto", "broken", "incidencia",
+        "storing", "mantenimiento", "maintenance", "wartung", "onderhoud", "fallo", "fallos",
+        "error", "errores", "garantia", "warranty", "garantie", "se ha roto", "broken",
+        "incidencia", "estropead*",
     ),
     INTERES_REPUESTOS: (
-        "repuesto", "recambio", "spare part", "spare parts", "piece detachee",
-        "pieces detachees", "ersatzteil", "onderdeel", "onderdelen", "cabezal", "printhead",
-        "print head", "druckkopf", "tete d'impression", "peca", "peca de reposicao",
+        "repuesto*", "recambio*", "spare part*", "piece* detachee*", "ersatzteil*",
+        "onderdeel", "onderdelen", "cabezal*", "printhead*", "print head*", "druckkopf",
+        "druckkopfe", "tete d'impression", "peca de reposicao", "pecas de reposicao",
         "placa base", "lampara uv", "lampe uv", "uv lamp", "uv-lampe",
     ),
     INTERES_CONSUMIBLES: (
         "tinta", "tintas", "ink", "inks", "encre", "encres", "tinte", "tinten", "inkt",
-        "consumible", "consumibles", "consumable", "consumables", "verbrauchsmaterial",
-        "primer", "barniz", "varnish", "vernis", "pelicula de transferencia", "transfer film",
-        "transferfolie", "film de transfert", "folie", "lamina", "laminas", "cleaning",
-        "limpiador", "solucion de limpieza", "imprimacion",
+        "consumible*", "consumable*", "verbrauchsmaterial*", "primer", "primers", "barniz",
+        "barnices", "varnish", "vernis", "pelicula* de transferencia", "transfer film*",
+        "transferfolie*", "film* de transfert", "folie", "folien", "lamina", "laminas",
+        "cleaning", "limpiador*", "solucion de limpieza", "imprimacion",
     ),
     INTERES_DISTRIBUCION: (
-        "distribuidor", "distribuidores", "distribucion", "distributor", "distribution",
-        "reseller", "revendedor", "revendeur", "dealer", "handler", "vertrieb", "wholesale",
-        "mayorista", "partner", "representar", "representacion", "importar", "importador",
-        "importer", "exclusiv", "agente comercial", "distribuir",
+        "distribuidor*", "distribucion", "distributor*", "distribution", "reseller*",
+        "revendedor*", "revendeur*", "dealer*", "handler", "vertrieb*", "wholesale*",
+        "mayorista*", "partner*", "representar", "representacion", "importar", "importador*",
+        "importer*", "exclusiv*", "agente comercial", "distribuir",
     ),
     INTERES_VENDING: (
-        "vending", "expendedor", "expendedora", "expendedoras", "distributeur automatique",
-        "verkaufsautomat", "automaten", "snackautomaat", "automaat", "pimpam", "pim pam",
-        "maquina de snacks", "maquinas de snacks", "maquina expendedora",
+        "vending", "expendedor*", "distributeur* automatique*", "verkaufsautomat*",
+        "automaten", "snackautomaat", "automaat", "pimpam", "pim pam", "maquina* de snacks",
     ),
     INTERES_LASER: (
-        "laser", "cnc", "fresadora", "router", "co2", "fibra", "fiber", "grabado", "grabar",
-        "engrav", "lasergravur", "laserschneid", "gravure", "decoupe", "lasersnijd",
-        "graveer", "cutting", "corte", "flux", "mbolaser", "mbo laser",
+        "laser*", "cnc", "fresadora*", "router", "co2", "fibra", "fiber", "grabad*", "grabar",
+        "engrav*", "gravure*", "decoupe*", "graveer*", "graveren", "cutting", "corte",
+        "cortar", "flux", "mbolaser*", "mbo laser",
     ),
     INTERES_UV_GRANDE: (
-        "gran formato", "large format", "grand format", "grossformat", "groot formaat",
+        "gran formato", "large format", "grand format", "grossformat*", "groot formaat",
         "grande formato", "2513", "2030", "3020", "roll to roll", "roll-to-roll",
         "rollo a rollo", "industrial", "2,5 m", "2.5 m", "2,5m", "2.5m", "paneles", "panels",
         "tableros", "boards", "carteleria", "signage",
     ),
     INTERES_UV_PEQUENO: (
-        "uv", "flatbed", "a3", "a4", "a2", "6090", "3060", "4060", "artisjet", "boligrafo",
-        "boligrafos", "botella", "botellas", "bottle", "bottles", "bouteille", "bouteilles",
-        "flasche", "flaschen", "fles", "flessen", "funda", "fundas", "movil", "moviles",
-        "phone case", "regalo", "regalos", "gift", "cadeau", "geschenk", "merchandising",
-        "promocional", "personaliza", "personalis", "personalise", "personalize",
-        "objetos", "objets", "gegenstande", "pens", "glass", "vidrio", "verre", "glas",
-        "madera", "wood", "bois", "holz", "impresora uv", "uv printer", "imprimante uv",
-        "uv-drucker", "uv drucker", "uv-printer",
+        "uv", "flatbed", "a3", "a4", "a2", "6090", "3060", "4060", "artisjet", "boligrafo*",
+        "botella*", "bottle*", "bouteille*", "flasche*", "fles", "flessen", "funda*", "movil",
+        "moviles", "phone case*", "regalo*", "gift*", "cadeau*", "geschenk*", "merchandising",
+        "promocional*", "personaliza*", "personalis*", "personalize*", "objetos", "objets",
+        "gegenstande*", "pens", "glass", "vidrio", "verre", "glas", "madera", "wood", "bois",
+        "holz", "impresora* uv", "uv printer*", "imprimante* uv", "uv-drucker", "uv drucker",
+        "uv-printer*",
     ),
 }
 #: Orden de desempate: lo más específico primero; «uv» a secas, lo último.
@@ -342,10 +343,23 @@ _ORDEN_INTERES: tuple[str, ...] = (
 )
 
 
+def _patron(clave: str) -> re.Pattern[str]:
+    """Palabra (o frase) entera; `*` al final de una palabra = prefijo."""
+    trozos = [
+        re.escape(p[:-1]) + r"\w*" if p.endswith("*") else re.escape(p)
+        for p in clave.split(" ")
+    ]
+    return re.compile(r"(?<!\w)" + r"\s+".join(trozos) + r"(?!\w)")
+
+
+_PATRONES: dict[str, re.Pattern[str]] = {}
+
+
 def _casa(texto_normalizado: str, clave: str) -> int:
-    if len(clave) <= 4 and " " not in clave:
-        return len(re.findall(rf"\b{re.escape(clave)}\b", texto_normalizado))
-    return texto_normalizado.count(clave)
+    patron = _PATRONES.get(clave)
+    if patron is None:
+        patron = _PATRONES[clave] = _patron(clave)
+    return len(patron.findall(texto_normalizado))
 
 
 def puntuar_intereses(texto: str) -> dict[str, int]:
@@ -394,19 +408,31 @@ _PALABRAS_SPAM: tuple[str, ...] = (
     "promote your", "advertising services", "content writing", "copywriting services",
     "ai chatbot for your", "chatbot services", "unsubscribe here", "click here",
 )
-_DOMINIOS_SPAM: tuple[str, ...] = (
-    "leadgen", "leadgeneration", "lead-gen", "seo", "backlink", "linkbuilding",
-    "growthhack", "outreach",
+#: Trozos que delatan un dominio: los largos en cualquier parte
+#: («blastleadgeneration.com»); los cortos solo como etiqueta entera
+#: («seo-agency.com» sí; «seoane.es» o «museodelvidrio.com» no).
+_DOMINIOS_SPAM_DENTRO: tuple[str, ...] = (
+    "leadgen", "leadgeneration", "lead-gen", "linkbuilding", "backlink", "growthhack",
 )
+_DOMINIOS_SPAM_ETIQUETA: tuple[str, ...] = ("seo", "leads", "outreach")
+_ETIQUETA_DOMINIO_RE = re.compile(r"[a-z0-9]+")
+
+
+def dominio_sospechoso(dominio_email: str | None) -> bool:
+    dominio = _normalizar(dominio_email or "")
+    if not dominio:
+        return False
+    if any(trozo in dominio for trozo in _DOMINIOS_SPAM_DENTRO):
+        return True
+    etiquetas = set(_ETIQUETA_DOMINIO_RE.findall(dominio))
+    return any(token in etiquetas for token in _DOMINIOS_SPAM_ETIQUETA)
 
 
 def puntuar_spam(texto: str, dominio_email: str | None = None) -> tuple[int, bool]:
     """`(aciertos_en_texto, dominio_sospechoso)`."""
     normalizado = _normalizar(texto)
     aciertos = sum(_casa(normalizado, clave) for clave in _PALABRAS_SPAM)
-    dominio = _normalizar(dominio_email or "")
-    sospechoso = any(token in dominio for token in _DOMINIOS_SPAM)
-    return aciertos, sospechoso
+    return aciertos, dominio_sospechoso(dominio_email)
 
 
 def parece_spam(texto: str, dominio_email: str | None = None) -> tuple[bool, str]:
@@ -477,6 +503,14 @@ def proveedor_por_defecto() -> Clasificador:
 # --- las reglas que mandan sobre el proveedor -------------------------------
 
 
+def codigo_idioma(raw: str | None) -> str | None:
+    """`de-DE`, `DE`, `pt_BR` → `de` / `pt`; lo que no sea uno de los idiomas
+    que se reconocen → `None` (no se inventa ni se cuela un código largo en
+    una columna de cinco caracteres)."""
+    codigo = (raw or "").strip().lower().replace("_", "-").split("-")[0]
+    return codigo if codigo in IDIOMAS else None
+
+
 def clasificar_lead(
     entrada: EntradaLead, proveedor: Clasificador | None = None,
 ) -> Clasificacion:
@@ -517,7 +551,7 @@ def clasificar_lead(
     idioma = bruta.idioma if bruta.idioma in IDIOMAS else None
     idioma_fuente = bruta.idioma_fuente if idioma else FUENTE_DESCONOCIDA
     discrepancia = False
-    formulario = (entrada.idioma_formulario or "").strip().lower() or None
+    formulario = codigo_idioma(entrada.idioma_formulario)
     if formulario:
         detectado, _puntos, _ = detectar_idioma(texto)
         if (detectado and detectado != formulario

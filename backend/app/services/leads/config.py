@@ -15,12 +15,19 @@ Vive en el blob `factusol_series_json` de `ErpSettings`, bajo la clave
 - `activo`: el interruptor general. APAGADO por defecto: la Fase 1 se enciende
   después de revisar la clasificación en seco con Bart.
 - `tope_diario`: leads que se procesan al día; al llegar, se para y se avisa.
-- `umbral_confianza`: por debajo, la Fase 2 no enviará (en la Fase 1 solo se
-  enseña).
+- `umbral_confianza`: por debajo, la Fase 2 no enviará. En la Fase 1 solo lo
+  lee la pantalla (marca en rojo lo que está por debajo).
 - `antiguedad_horas`: solo se procesan leads más recientes que esto. Nada de
-  histórico.
+  histórico. Es el defecto del paso «Clasificar lead» cuando el paso no fija
+  el suyo; el trigger tiene el suyo propio (`max_age_hours`).
+- `ventana`: la ventana horaria con la que se siembra el paso de espera del
+  workflow (el paso guarda la suya).
 - `mapa`: interés × idioma → plantilla; sin entrada se busca por nombre.
 - `remitentes`: la web de cada lead → remitente; cuenta de Agile → web.
+
+El interruptor y el tope los aplica el paso «Clasificar lead»
+(`app.workflows.steps`): apagado, o con el tope del día alcanzado, el lead
+sale por la rama «omitido» sin clasificar, sin borrador y sin tarea.
 """
 from __future__ import annotations
 
@@ -28,10 +35,12 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.workflows.trigger_definitions import LEAD_MAX_AGE_HOURS_DEFECTO
+
 CONFIG_KEY = "lead_response"
 TOPE_DIARIO_DEFECTO = 20
 UMBRAL_DEFECTO = 0.7
-ANTIGUEDAD_HORAS_DEFECTO = 72
+ANTIGUEDAD_HORAS_DEFECTO = LEAD_MAX_AGE_HOURS_DEFECTO
 VENTANA_DEFECTO: dict[str, Any] = {
     "enabled": True, "start": "09:00", "end": "18:00", "weekdays_only": True,
 }

@@ -8,6 +8,7 @@ from app.email_templates import models as _email_templates  # noqa: F401
 from app.erp import models as _erp_models  # noqa: F401
 from app.models import brevo as _brevo  # noqa: F401
 from app.models import integration_settings as _integration_settings  # noqa: F401
+from app.models import leads as _leads  # noqa: F401
 from app.models import web_forms as _web_forms  # noqa: F401
 from app.models import workflows as _workflows  # noqa: F401
 from app.models.crm import Base

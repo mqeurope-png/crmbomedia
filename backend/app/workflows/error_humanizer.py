@@ -44,6 +44,18 @@ _EXACT_MAP: dict[str, str] = {
     "lead_spam": (
         "El lead se clasificó como spam: ni borrador, ni tarea, ni correo."
     ),
+    "lead_ya_procesado": (
+        "Este lead ya se procesó (tiene su clasificación y su borrador o "
+        "tarea): no se repite."
+    ),
+    "respuesta_leads_apagada": (
+        "La respuesta a leads está apagada en Configuración ERP: el lead no "
+        "se clasifica."
+    ),
+    "tope_diario_alcanzado": (
+        "Se alcanzó el tope diario de leads de Configuración ERP: el lead "
+        "queda sin clasificar hasta mañana."
+    ),
     "borrador_ya_preparado": (
         "Este lead ya tiene su borrador preparado: no se repite."
     ),
@@ -120,9 +132,6 @@ _EXACT_MAP: dict[str, str] = {
     ),
     "no_stage_id": (
         "El paso 'Mover oportunidad' no tiene stage destino."
-    ),
-    "no_opportunity": (
-        "El contacto no tiene oportunidad activa en el pipeline."
     ),
     "no_manager": (
         "El propietario del contacto no tiene manager asignado."

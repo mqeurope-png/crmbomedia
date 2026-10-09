@@ -6,6 +6,7 @@ from __future__ import annotations
 from app.services.leads.clasificador import (
     INTERES_CONSUMIBLES,
     INTERES_DISTRIBUCION,
+    INTERES_LASER,
     INTERES_OTRO,
     INTERES_UV_PEQUENO,
     INTERES_VENDING,
@@ -13,7 +14,9 @@ from app.services.leads.clasificador import (
     ClasificadorPalabrasClave,
     EntradaLead,
     clasificar_lead,
+    codigo_idioma,
     detectar_idioma,
+    dominio_sospechoso,
     interes_por_etiquetas,
     interes_por_texto,
     parece_spam,
@@ -109,6 +112,39 @@ def test_el_idioma_del_formulario_manda_salvo_contradiccion_clara() -> None:
     # Texto corto que no delata nada: se queda el del formulario.
     out = clasificar_lead(_entrada("ok", idioma_formulario="nl"), proveedor)
     assert (out.idioma, out.idioma_fuente) == ("nl", "formulario")
+
+
+def test_las_palabras_clave_casan_por_palabra_entera() -> None:
+    # «primera vez» no es el consumible «primer»; «cortesía» no es «corte».
+    assert interes_por_texto("Hola, es la primera vez que contacto, me interesa un laser")[0] \
+        == INTERES_LASER
+    assert interes_por_texto("Por cortesía, ¿me llamáis?") == (INTERES_OTRO, 0)
+    # Y los prefijos marcados sí: «grabadora», «personalización», «distribuidores».
+    assert interes_por_texto("Busco una grabadora láser")[0] == INTERES_LASER
+    assert interes_por_texto("Personalización de botellas")[0] == INTERES_UV_PEQUENO
+    assert interes_por_texto("Somos distribuidores")[0] == INTERES_DISTRIBUCION
+
+
+def test_el_dominio_solo_delata_con_etiquetas_enteras_o_trozos_largos() -> None:
+    assert not dominio_sospechoso("seoane.es")              # «seo» dentro de un apellido
+    assert not dominio_sospechoso("museodelvidrio.com")
+    assert dominio_sospechoso("seo-agency.com")
+    assert dominio_sospechoso("blastleadgeneration.com")
+    assert dominio_sospechoso("best-backlinks.io")
+    assert not parece_spam("Hola, quiero una impresora UV", "pedro@seoane.es")[0]
+
+
+def test_el_idioma_del_formulario_se_normaliza_a_dos_letras() -> None:
+    assert codigo_idioma("de-DE") == "de"
+    assert codigo_idioma("EN") == "en"
+    assert codigo_idioma("pt_BR") == "pt"
+    assert codigo_idioma("zh-Hant") is None
+    assert codigo_idioma(None) is None
+    out = clasificar_lead(_entrada("ok", idioma_formulario="en-GB"), ClasificadorPalabrasClave())
+    assert (out.idioma, out.idioma_fuente) == ("en", "formulario")
+    out = clasificar_lead(_entrada(ALEMAN, idioma_formulario="zh-Hant"),
+                          ClasificadorPalabrasClave())
+    assert (out.idioma, out.idioma_fuente) == ("de", "palabras_clave")
 
 
 def test_sin_formulario_el_idioma_sale_del_texto() -> None:

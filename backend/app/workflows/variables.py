@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable, Iterator, Mapping
 from typing import Any
 
 from jinja2 import StrictUndefined
@@ -121,6 +122,30 @@ def _last_opportunity_namespace(
     }
 
 
+class _LazyNamespace(Mapping[str, Any]):
+    """Un namespace que se calcula la primera vez que una plantilla lo toca:
+    `lead.*` cuesta una consulta y la mayoría de los emails y tareas de los
+    workflows no lo mencionan."""
+
+    def __init__(self, loader: Callable[[], dict[str, Any]]) -> None:
+        self._loader = loader
+        self._data: dict[str, Any] | None = None
+
+    def _load(self) -> dict[str, Any]:
+        if self._data is None:
+            self._data = self._loader()
+        return self._data
+
+    def __getitem__(self, key: str) -> Any:
+        return self._load()[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._load())
+
+    def __len__(self) -> int:
+        return len(self._load())
+
+
 def _lead_namespace(session: Session, contact: Contact) -> dict[str, Any]:
     """Respuesta a leads: la última clasificación del contacto y lo que se
     preparó, para la tarea («Revisar borrador: vending, 95 %») y los
@@ -181,7 +206,7 @@ def build_context(
         "owner": _owner_namespace(session, contact.owner_user_id),
         "company": company_ns,
         "opportunity": _last_opportunity_namespace(session, contact.id),
-        "lead": _lead_namespace(session, contact),
+        "lead": _LazyNamespace(lambda: _lead_namespace(session, contact)),
         "trigger": trigger_payload or {},
     }
 

@@ -100,6 +100,7 @@ class Action:
     LEAD_CLASSIFIED = "lead.classified"
     LEAD_DRAFT_PREPARED = "lead.draft_prepared"
     LEAD_CLASSIFICATION_CORRECTED = "lead.classification_corrected"
+    LEAD_DAILY_CAP_REACHED = "lead.daily_cap_reached"
     TASK_CREATED = "task.created"
     TASK_UPDATED = "task.updated"
     TASK_COMPLETED = "task.completed"

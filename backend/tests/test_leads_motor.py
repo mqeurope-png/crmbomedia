@@ -97,6 +97,30 @@ def _nadie_envia_correo(monkeypatch):
     monkeypatch.setattr(gmail_service, "send_email", _prohibido)
 
 
+def _configurar(session: Session, **valores) -> None:
+    """Configuración ERP → Respuesta a leads (el blob de `ErpSettings`)."""
+    from app.erp.models import ERP_SETTINGS_SINGLETON_ID, ErpSettings
+
+    cfg = session.get(ErpSettings, ERP_SETTINGS_SINGLETON_ID)
+    if cfg is None:
+        cfg = ErpSettings(id=ERP_SETTINGS_SINGLETON_ID)
+        session.add(cfg)
+    try:
+        series = json.loads(cfg.factusol_series_json or "{}")
+    except (TypeError, ValueError):
+        series = {}
+    series["lead_response"] = {**(series.get("lead_response") or {}), **valores}
+    cfg.factusol_series_json = json.dumps(series)
+    session.commit()
+
+
+@pytest.fixture(autouse=True)
+def _respuesta_encendida(session_factory):
+    """El interruptor está APAGADO por defecto: los tests lo encienden."""
+    with session_factory() as s:
+        _configurar(s, activo=True, tope_diario=20)
+
+
 # --- helpers ----------------------------------------------------------------
 
 
@@ -683,3 +707,103 @@ def test_ningun_correo_al_cliente_en_toda_la_fase_1(session_factory) -> None:
         run = _run(s, contact_id)
         assert run.state == WorkflowRunState.COMPLETED
         assert s.scalar(select(EmailDraft).where(EmailDraft.contact_id == contact_id)) is not None
+
+
+# --- interruptor, tope diario, simulación ------------------------------------
+
+
+def _clasificar_omitido(session: Session, run: WorkflowRun) -> WorkflowRunHistory:
+    fila = _historial_del_paso(session, run, "action_classify_lead")
+    assert fila.status == "skipped"
+    return fila
+
+
+def test_interruptor_apagado_no_clasifica_ni_prepara_nada(session_factory) -> None:
+    with session_factory() as s:
+        _configurar(s, activo=False)
+        etapas = _pipeline(s)
+        _workflow(s, etapas, con_espera=False)
+        form = _mk_form(s)
+        contact_id = _submit(s, form, {"name": "Ana", "email": "ana@ejemplo.es",
+                                       "message": "Quiero una impresora UV"})
+        run = _run(s, contact_id)
+        assert run.state == WorkflowRunState.COMPLETED
+        assert "apagada" in (_clasificar_omitido(s, run).error_summary or "")
+        assert s.scalar(select(LeadClassification)) is None
+        assert s.scalar(select(EmailDraft)) is None
+        assert s.scalar(select(Task)) is None
+        assert s.scalar(select(ContactPipelineStage)) is None
+
+
+def test_tope_diario_para_y_avisa_una_vez(session_factory, monkeypatch) -> None:
+    import app.services.email as email_service
+
+    avisos: list[tuple[str, str]] = []
+
+    class _Servicio:
+        def send_notification(self, *, to_email, to_name, subject, text_body, html_body=None):
+            avisos.append((to_email, subject))
+
+    monkeypatch.setattr(email_service, "get_email_service", lambda: _Servicio())
+    monkeypatch.setenv("WEB_FORMS_NOTIFY_TO", "info@streamtec.es")
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+    try:
+        with session_factory() as s:
+            _configurar(s, activo=True, tope_diario=1)
+            etapas = _pipeline(s)
+            _workflow(s, etapas, con_espera=False)
+            form = _mk_form(s)
+            primero = _submit(s, form, {"name": "Ana", "email": "ana@ejemplo.es",
+                                        "message": "Quiero una impresora UV"})
+            assert s.scalar(select(LeadClassification).where(
+                LeadClassification.contact_id == primero)) is not None
+            segundo = _submit(s, form, {"name": "Bea", "email": "bea@ejemplo.es",
+                                        "message": "Quiero una impresora UV"})
+            run = _run(s, segundo)
+            assert "tope diario" in (_clasificar_omitido(s, run).error_summary or "")
+            assert s.scalar(select(LeadClassification).where(
+                LeadClassification.contact_id == segundo)) is None
+            tercero = _submit(s, form, {"name": "Cris", "email": "cris@ejemplo.es",
+                                        "message": "Quiero una impresora UV"})
+            _clasificar_omitido(s, _run(s, tercero))
+            from app.core.audit import Action
+            from app.models.crm import AuditLog
+
+            assert len(list(s.scalars(select(AuditLog).where(
+                AuditLog.action == Action.LEAD_DAILY_CAP_REACHED)))) == 1
+        assert avisos == [("info@streamtec.es",
+                           "Respuesta a leads: tope diario alcanzado (1/1)")]
+    finally:
+        get_settings.cache_clear()
+
+
+def test_la_simulacion_recorre_el_flujo_sin_clasificar(session_factory) -> None:
+    from app.workflows.dry_run import simulate_workflow
+
+    with session_factory() as s:
+        etapas = _pipeline(s)
+        wf = _workflow(s, etapas)
+        contacto = _contacto(s, "lead@ejemplo.es")
+        out = simulate_workflow(s, wf.id, contacto.id)
+        tipos = [p.step_type for p in out.steps]
+        assert tipos[:2] == ["trigger", "action_classify_lead"]
+        assert {"wait_time", "action_prepare_email_draft", "action_add_to_pipeline",
+                "action_create_task", "exit_natural"} <= set(tipos)
+        assert s.scalar(select(LeadClassification)) is None      # no escribió nada
+        contacto.lead_is_spam = True
+        s.commit()
+        out = simulate_workflow(s, wf.id, contacto.id)
+        assert [p.step_type for p in out.steps][-2:] == ["action_add_to_pipeline", "exit_lost"]
+
+
+def test_anadir_a_pipeline_con_etapa_borrada(session_factory) -> None:
+    with session_factory() as s:
+        etapas = _pipeline(s)
+        contacto = _contacto(s, "lead@ejemplo.es")
+        run = _run_de_un_paso(s, contacto, "action_add_to_pipeline", {
+            "pipeline_id": etapas["_pipeline"].id, "stage_id": "ya-no-existe",
+        })
+        fila = _historial_del_paso(s, run, "action_add_to_pipeline")
+        assert fila.status == "skipped" and "ya no existe" in (fila.error_summary or "")

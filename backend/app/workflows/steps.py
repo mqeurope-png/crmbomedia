@@ -788,7 +788,9 @@ def _step_add_to_pipeline(session, run, step, contact) -> StepResult:
     if pipeline is None or not pipeline.is_active:
         return StepResult(status="skipped", error="pipeline_missing")
     stage = session.get(PipelineStage, stage_id) if stage_id else None
-    if stage_id and (stage is None or stage.pipeline_id != pipeline.id):
+    if stage_id and stage is None:
+        return StepResult(status="skipped", error="stage_missing")
+    if stage is not None and stage.pipeline_id != pipeline.id:
         return StepResult(status="skipped", error="etapa_de_otro_pipeline")
     existing = pipelines_repo.get_assignment_for_contact_pipeline(
         session, contact_id=contact.id, pipeline_id=pipeline.id
@@ -1171,18 +1173,36 @@ def _step_classify_lead(session, run, step, contact) -> StepResult:
     """
     from app.models.leads import ESTADO_CLASIFICADO  # noqa: PLC0415
     from app.services.leads import clasificador, registro  # noqa: PLC0415
+    from app.services.leads.config import configuracion  # noqa: PLC0415
+    from app.workflows.trigger_definitions import _lead_max_age_hours  # noqa: PLC0415
 
     cfg = _config(step)
+    conf = configuracion(session)
+    # El interruptor general y el tope diario (Configuración ERP → Respuesta
+    # a leads): apagado, o con el tope del día alcanzado, el lead sale por
+    # «omitido» sin clasificar, sin borrador y sin tarea.
+    if not conf.get("activo", False):
+        return StepResult(
+            status="skipped", error="respuesta_leads_apagada", branch_label="omitido",
+        )
+    procesados_hoy = registro.clasificados_hoy(session)
+    tope = int(conf.get("tope_diario") or 0)
+    if tope and procesados_hoy >= tope:
+        registro.avisar_tope_diario(session, tope=tope, procesados=procesados_hoy)
+        return StepResult(
+            status="skipped", error="tope_diario_alcanzado", branch_label="omitido",
+            result={"tope_diario": tope, "procesados_hoy": procesados_hoy},
+        )
     payload = _trigger_payload(run)
     entrada = registro.entrada_desde_payload(payload, contact)
     if entrada is None:
         entrada = registro.entrada_desde_contacto(session, contact)
     if entrada is None:
         return StepResult(status="skipped", error="lead_sin_consulta", branch_label="omitido")
-    try:
-        max_age_hours = int(cfg.get("max_age_hours", 72))
-    except (TypeError, ValueError):
-        max_age_hours = 72
+    # La antigüedad: la del paso si la fija; si no, la de la configuración.
+    max_age_hours = _lead_max_age_hours(
+        cfg if "max_age_hours" in cfg else {"max_age_hours": conf.get("antiguedad_horas")}
+    )
     if max_age_hours > 0 and entrada.lead_at is not None:
         limite = datetime.now(UTC) - timedelta(hours=max_age_hours)
         if entrada.lead_at < limite:
