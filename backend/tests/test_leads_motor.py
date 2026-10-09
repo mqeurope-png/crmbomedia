@@ -305,16 +305,23 @@ ALEMAN_EN_FORMULARIO_FRANCES = (
 
 
 def test_formulario_pimpam_con_productos_marcados(session_factory, monkeypatch) -> None:
-    """Vending sin llamar a la IA, idioma es, borrador con «Lead · Vending (ES)»
-    desde info@pimpam-vending.com, contacto en Ventas B2B → Nuevo lead, tarea
-    creada y NINGÚN correo enviado."""
+    """La IA lee la consulta (las etiquetas le llegan como contexto), vending,
+    idioma es, borrador con «Lead · Vending (ES)» desde info@pimpam-vending.com,
+    contacto en Ventas B2B → Nuevo lead, tarea creada y NINGÚN correo enviado."""
     import app.services.leads.clasificador as clasificador
+
+    llamadas: list[list[str]] = []
 
     class _IA:
         nombre = "ia_falsa"
 
-        def clasificar(self, entrada):  # pragma: no cover
-            raise AssertionError("con productos marcados la IA no clasifica")
+        def clasificar(self, entrada):
+            llamadas.append(list(entrada.productos))
+            return clasificador.Clasificacion(
+                idioma="es", interes="vending", es_spam=False, confianza=0.95,
+                motivo="pide una máquina de vending para eventos", idioma_fuente="ia",
+                interes_fuente="ia", proveedor=self.nombre, modelo="falso",
+            )
 
     monkeypatch.setattr(clasificador, "proveedor_por_defecto", lambda: _IA())
     with session_factory() as s:
@@ -339,7 +346,8 @@ def test_formulario_pimpam_con_productos_marcados(session_factory, monkeypatch) 
         fila = s.scalar(select(LeadClassification).where(
             LeadClassification.contact_id == contact_id))
         assert fila is not None
-        assert (fila.interest, fila.interest_source) == ("vending", "etiquetas")
+        assert llamadas == [["Máquina de vending"]]     # la IA leyó la consulta, con contexto
+        assert (fila.interest, fila.interest_source) == ("vending", "ia")
         assert (fila.language, fila.language_source) == ("es", "formulario")
         assert fila.is_spam is False and fila.confidence >= 0.9
         assert fila.source == "web_form" and fila.status == "preparado"

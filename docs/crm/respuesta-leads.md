@@ -64,8 +64,19 @@ idioma (es, en, fr, de, nl, pt; ca e it si aparecen), interés
 
 Dos reglas mandan sobre cualquier proveedor:
 
-- **Productos marcados en el formulario → el interés sale de las etiquetas**,
-  no de la IA (no se la llama para el interés).
+- **La consulta se lee siempre y lo que pide el texto manda.** Los productos
+  marcados en el formulario dicen qué máquina tiene o mira el cliente, no lo
+  que quiere: van al proveedor como contexto (diciéndole lo que son) y solo
+  deciden el interés cuando el texto no dice nada —consulta en blanco, o sin
+  una sola palabra clave con el proveedor sin IA—, y entonces con menos
+  confianza (0,6). Servicio técnico, consumibles, repuestos y «otro»
+  (gestiones) ganan a cualquier etiqueta: un cliente con la máquina averiada
+  no recibe el catálogo con precios. Etiquetas que coinciden con el texto
+  suben la confianza (mínimo 0,85); etiquetas que lo contradicen la bajan
+  (máximo 0,75) y el motivo lo cuenta. Hasta el 10/10/2026 había un atajo
+  («con etiquetas no se llama a la IA») que clasificó como venta a dos
+  clientes con averías; por eso `servicio_tecnico` no salió ni una vez en la
+  primera simulación.
 - **El idioma del formulario manda**; el texto solo gana si está claramente en
   otro idioma (un alemán que rellena el formulario francés), y la discrepancia
   queda anotada (`language_mismatch`).
