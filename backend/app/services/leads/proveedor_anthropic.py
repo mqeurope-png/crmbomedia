@@ -10,8 +10,11 @@ clasificación, en `lead_classifications`.
 
 Si la IA no está disponible (sin clave, cuota, caída o respuesta ilegible) se
 cae al proveedor de palabras clave y el motivo lo dice: un lead nunca se queda
-sin clasificar por la IA. Las dos reglas duras (etiquetas, idioma del
-formulario) las aplica `clasificar_lead`, no este módulo.
+sin clasificar por la IA. Las dos reglas duras (el texto manda sobre las
+etiquetas, el idioma del formulario manda sobre el texto salvo contradicción
+clara) las aplica `clasificar_lead`, no este módulo; aquí las etiquetas van
+al modelo como lo que son, contexto, y la instrucción de prioridad está
+escrita en el prompt.
 """
 from __future__ import annotations
 
@@ -55,14 +58,31 @@ SYSTEM_PROMPT = (
     "Reglas:\n"
     "- `idioma` es el idioma en que está ESCRITO el texto de la consulta (no el país ni "
     "el idioma del formulario). Si el texto es demasiado corto para saberlo, null.\n"
-    "- `consumibles` (tintas, barnices, película de transferencia), `servicio_tecnico` "
-    "(averías, reparaciones, soporte) y `repuestos` (cabezales, piezas) NO son leads "
-    "de venta de máquinas: úsalos cuando la consulta va de eso.\n"
+    "- `interes` sale de lo que PIDE EL TEXTO. Los «productos marcados en el "
+    "formulario» del contexto dicen qué máquina tiene o mira el cliente, no lo que "
+    "quiere: úsalos solo para afinar el modelo concreto (UV pequeño o gran formato, "
+    "láser, vending) cuando el texto pide una máquina o no dice cuál. Prioridad "
+    "escrita: lo que pide el texto manda sobre lo que marca el formulario.\n"
+    "- Hay intenciones que ganan a cualquier producto marcado. Si el texto indica una "
+    "de estas, el interés es esa aunque el formulario traiga tres máquinas marcadas:\n"
+    "  · `servicio_tecnico`: cliente que YA tiene la máquina y algo no va — averías, "
+    "piezas cambiadas (cabezal, dampers), calidad de impresión, calibración, errores, "
+    "«llevamos meses con problemas», «el cabezal», «no imprime bien».\n"
+    "  · `consumibles`: tintas, películas de transferencia, barnices, materiales.\n"
+    "  · `repuestos`: piezas sueltas, presupuesto de un cabezal.\n"
+    "  · `otro`: gestiones administrativas — facturas, datos de transferencia, correos "
+    "mal escritos, pedidos ya hechos.\n"
+    "  Ninguno de los cuatro es un lead de venta de máquinas.\n"
     "- `es_spam`: venta de bases de datos o de listas de correo, generación de leads, "
     "SEO y backlinks, agencias ofreciendo servicios (diseño web, apps, marketing, "
     "redes sociales), ofertas que no piden nada a la empresa. Un cliente que pide "
     "información o precio NUNCA es spam.\n"
-    "- Si dudas entre intereses, elige el más probable y baja la confianza.\n"
+    "- `confianza`: alta solo si el texto lo dice claramente y los productos marcados "
+    "no lo contradicen. Si el texto y los productos marcados se contradicen (máquina "
+    "marcada, texto de avería), clasifica por el texto y BAJA la confianza. Si dudas "
+    "entre intereses, elige el más probable y baja la confianza.\n"
+    "- `motivo`: di SIEMPRE qué pide el texto (qué quiere el cliente), no solo qué marcó "
+    "en el formulario.\n"
     "- No inventes datos que no estén en el texto."
 )
 
@@ -74,7 +94,11 @@ def _prompt(entrada: EntradaLead) -> str:
     if entrada.idioma_formulario:
         contexto.append(f"Idioma del formulario: {entrada.idioma_formulario}")
     if entrada.productos:
-        contexto.append("Productos marcados en el formulario: " + ", ".join(entrada.productos))
+        contexto.append(
+            "Productos marcados en el formulario (lo que el cliente marcó: la máquina que "
+            "tiene o mira, NO lo que pide; afina el modelo, no decide la intención): "
+            + ", ".join(entrada.productos)
+        )
     if entrada.pais:
         contexto.append(f"País del contacto: {entrada.pais}")
     if entrada.cuenta_agile:

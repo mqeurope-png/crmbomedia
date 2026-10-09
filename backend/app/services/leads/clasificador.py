@@ -8,12 +8,24 @@ Es un SERVICIO, no un workflow: aislado detrás de una interfaz
 
 Dos reglas mandan sobre cualquier proveedor (`clasificar_lead`):
 
-- Si el formulario trae **productos marcados**, el interés sale de las
-  etiquetas y no de la IA.
+- **La consulta se lee siempre y lo que pide el texto manda.** Los productos
+  marcados en el formulario dicen qué máquina tiene o mira el cliente, no lo
+  que quiere: entran como contexto (al proveedor se le dice lo que son) y
+  solo deciden el interés cuando el texto no dice nada (consulta en blanco, o
+  sin una sola palabra clave con el proveedor sin IA), y entonces con menos
+  confianza. Si el texto es de servicio técnico, consumibles, repuestos o
+  una gestión («otro»), ese es el interés aunque el formulario traiga tres
+  máquinas marcadas. El 09/10/2026 el atajo «con etiquetas no se lee el
+  texto» habría mandado el catálogo con precios a dos clientes con la máquina
+  averiada.
 - Si el lead viene de un formulario de BoHub, **el idioma del formulario
   manda** y el proveedor solo lo revisa: ya ha pasado que un alemán rellene
   el formulario francés, así que si el texto está claramente en otro idioma
   gana el texto y queda anotada la discrepancia.
+
+La confianza dice algo: etiquetas que coinciden con el texto la suben;
+etiquetas que lo contradicen (máquina marcada, texto de avería) la bajan y
+el motivo lo cuenta; etiquetas sin texto, baja.
 
 `ClasificadorPalabrasClave` es el proveedor sin IA: palabras clave por
 interés, vocabulario por idioma y señales de spam. Es el respaldo cuando no
@@ -75,6 +87,21 @@ FUENTE_PALABRAS = "palabras_clave"
 FUENTE_DESCONOCIDA = "desconocido"
 
 PROVEEDOR_PALABRAS = "palabras_clave"
+
+#: Intereses que no son una venta de máquina: si el texto dice uno de estos,
+#: gana a cualquier etiqueta marcada en el formulario.
+INTERESES_NO_COMERCIALES: frozenset[str] = frozenset({
+    INTERES_CONSUMIBLES, INTERES_SERVICIO, INTERES_REPUESTOS, INTERES_OTRO,
+})
+#: Confianza cuando deciden las etiquetas porque el texto no dice nada.
+CONFIANZA_SOLO_ETIQUETAS = 0.6
+#: Confianza mínima cuando el texto y las etiquetas coinciden.
+CONFIANZA_ETIQUETAS_COHERENTES = 0.85
+#: Confianza máxima cuando el texto contradice a las etiquetas: manda el
+#: texto, pero la contradicción se nota.
+CONFIANZA_CONTRADICCION = 0.75
+#: Sin consulta ni etiquetas reconocibles no hay nada que clasificar.
+CONFIANZA_SIN_NADA = 0.2
 
 
 @dataclass
@@ -291,6 +318,14 @@ _PALABRAS_INTERES: dict[str, tuple[str, ...]] = {
         "storing", "mantenimiento", "maintenance", "wartung", "onderhoud", "fallo", "fallos",
         "error", "errores", "garantia", "warranty", "garantie", "se ha roto", "broken",
         "incidencia", "estropead*",
+        # Cliente que ya tiene la máquina y algo no va: «llevamos meses con
+        # problemas», piezas cambiadas, calidad de impresión, calibración.
+        "problem*", "nothing but problems", "getauscht", "ausgetauscht", "replaced",
+        "print quality", "calidad de impresion", "druckqualitat", "qualite d'impression",
+        "calibra*", "kalibrier*", "banding", "clogged", "nozzle*", "dusen", "no imprime bien",
+        "imprime mal", "not printing", "doesn't print", "does not print", "druckt nicht",
+        "funktioniert nicht", "ne fonctionne pas", "ne marche pas", "werkt niet",
+        "nao funciona",
     ),
     INTERES_REPUESTOS: (
         "repuesto*", "recambio*", "spare part*", "piece* detachee*", "ersatzteil*",
@@ -327,7 +362,8 @@ _PALABRAS_INTERES: dict[str, tuple[str, ...]] = {
         "tableros", "boards", "carteleria", "signage",
     ),
     INTERES_UV_PEQUENO: (
-        "uv", "flatbed", "a3", "a4", "a2", "6090", "3060", "4060", "artisjet", "boligrafo*",
+        "uv", "flatbed", "a3", "a4", "a2", "6090", "3060", "4060", "artisjet", "pro v6",
+        "boligrafo*",
         "botella*", "bottle*", "bouteille*", "flasche*", "fles", "flessen", "funda*", "movil",
         "moviles", "phone case*", "regalo*", "gift*", "cadeau*", "geschenk*", "merchandising",
         "promocional*", "personaliza*", "personalis*", "personalize*", "objetos", "objets",
@@ -376,6 +412,19 @@ def interes_por_texto(texto: str) -> tuple[str, int]:
     mejor = max(_ORDEN_INTERES, key=lambda i: (puntos.get(i, 0), -_ORDEN_INTERES.index(i)))
     aciertos = puntos.get(mejor, 0)
     return (mejor, aciertos) if aciertos > 0 else (INTERES_OTRO, 0)
+
+
+def palabras_que_casan(texto: str, interes: str, maximo: int = 4) -> list[str]:
+    """Las palabras clave de `interes` que aparecen en el texto (para que el
+    motivo diga qué dice el texto, no solo cuántas veces)."""
+    normalizado = _normalizar(texto)
+    vistas: list[str] = []
+    for clave in _PALABRAS_INTERES.get(interes, ()):
+        if _casa(normalizado, clave):
+            vistas.append(clave.rstrip("*"))
+            if len(vistas) >= maximo:
+                break
+    return vistas
 
 
 def interes_por_etiquetas(productos: list[str] | None) -> str | None:
@@ -461,17 +510,22 @@ class ClasificadorPalabrasClave:
         es_spam, motivo_spam = parece_spam(texto, entrada.dominio_email)
         idioma, puntos_idioma, _ = detectar_idioma(texto)
         interes, aciertos = interes_por_texto(texto)
+        vistas = ", ".join(palabras_que_casan(texto, interes)) if aciertos else ""
         if es_spam:
             confianza = 0.85
             motivo = motivo_spam
         elif aciertos >= 3:
-            confianza, motivo = 0.8, f"{aciertos} palabras clave de {ETIQUETAS_INTERES[interes]}"
+            confianza = 0.8
+            motivo = (f"el texto dice {ETIQUETAS_INTERES[interes]}: {aciertos} palabras clave "
+                      f"({vistas})")
         elif aciertos == 2:
-            confianza, motivo = 0.7, f"2 palabras clave de {ETIQUETAS_INTERES[interes]}"
+            confianza = 0.7
+            motivo = f"el texto dice {ETIQUETAS_INTERES[interes]}: 2 palabras clave ({vistas})"
         elif aciertos == 1:
-            confianza, motivo = 0.55, f"1 palabra clave de {ETIQUETAS_INTERES[interes]}"
+            confianza = 0.55
+            motivo = f"el texto apunta a {ETIQUETAS_INTERES[interes]}: 1 palabra clave ({vistas})"
         else:
-            confianza, motivo = 0.3, "sin palabras clave reconocibles"
+            confianza, motivo = 0.3, "el texto no dice qué quiere (sin palabras clave reconocibles)"
         return Clasificacion(
             idioma=idioma, interes=interes, es_spam=es_spam, confianza=confianza,
             motivo=motivo,
@@ -516,35 +570,59 @@ def clasificar_lead(
 ) -> Clasificacion:
     """Clasifica aplicando las dos reglas duras encima del proveedor."""
     proveedor = proveedor or proveedor_por_defecto()
-    texto = entrada.texto or ""
+    texto = (entrada.texto or "").strip()
 
     # Spam claro por palabras clave: no hace falta IA (ni gastarla).
     spam_claro, motivo_spam = parece_spam(texto, entrada.dominio_email)
     por_etiquetas = interes_por_etiquetas(entrada.productos)
+    etiquetas = ", ".join(entrada.productos)
 
     if spam_claro:
         bruta = Clasificacion(
             idioma=None, interes=INTERES_OTRO, es_spam=True, confianza=0.9,
             motivo=motivo_spam, interes_fuente=FUENTE_PALABRAS, proveedor=PROVEEDOR_PALABRAS,
         )
-    elif por_etiquetas is not None and not isinstance(proveedor, ClasificadorPalabrasClave):
-        # Con productos marcados, la IA no decide el interés; solo haría
-        # falta para el idioma y el spam, y eso lo hace el vocabulario.
-        bruta = ClasificadorPalabrasClave().clasificar(entrada)
+    elif not texto:
+        # Consulta en blanco (pasa): no hay nada que leer, no se llama al
+        # proveedor. Decidirán las etiquetas, si las hay.
+        bruta = Clasificacion(
+            idioma=None, interes=INTERES_OTRO, es_spam=False, confianza=CONFIANZA_SIN_NADA,
+            motivo="formulario sin consulta", interes_fuente=FUENTE_DESCONOCIDA,
+            proveedor=PROVEEDOR_PALABRAS,
+        )
     else:
+        # La consulta se lee SIEMPRE, con etiquetas o sin ellas.
         bruta = proveedor.clasificar(entrada)
 
-    # 1. Interés: las etiquetas mandan.
-    if por_etiquetas is not None and not bruta.es_spam:
-        interes, interes_fuente, confianza = por_etiquetas, FUENTE_ETIQUETAS, 0.95
-        motivo = (f"productos marcados en el formulario: "
-                  f"{', '.join(entrada.productos)}")
-    else:
-        interes, interes_fuente, confianza, motivo = (
-            bruta.interes, bruta.interes_fuente, bruta.confianza, bruta.motivo,
-        )
+    # 1. Interés: lo que pide el texto. Las etiquetas solo deciden cuando el
+    #    texto no dice nada; si coinciden suben la confianza y si contradicen
+    #    al texto (máquina marcada, texto de avería) manda el texto y la
+    #    confianza baja. Las intenciones que no son venta (servicio técnico,
+    #    consumibles, repuestos, «otro») ganan a cualquier etiqueta.
+    interes, interes_fuente, confianza, motivo = (
+        bruta.interes, bruta.interes_fuente, bruta.confianza, bruta.motivo,
+    )
     if interes not in INTERESES:
         interes = INTERES_OTRO
+    if por_etiquetas is not None and not bruta.es_spam:
+        # «otro» de la IA es una decisión (gestión, factura, pedido hecho);
+        # «otro» del proveedor sin IA es «ni una palabra clave».
+        texto_sin_senal = not texto or (
+            interes == INTERES_OTRO and bruta.interes_fuente != FUENTE_IA
+        )
+        if texto_sin_senal:
+            interes, interes_fuente = por_etiquetas, FUENTE_ETIQUETAS
+            confianza = CONFIANZA_SOLO_ETIQUETAS
+            que_dice = ("sin consulta en el formulario" if not texto
+                        else "el texto no dice qué quiere")
+            motivo = f"{que_dice}; interés por los productos marcados ({etiquetas})"
+        elif por_etiquetas == interes:
+            confianza = max(confianza, CONFIANZA_ETIQUETAS_COHERENTES)
+            motivo = f"{motivo}; coincide con los productos marcados ({etiquetas})"
+        else:
+            confianza = min(confianza, CONFIANZA_CONTRADICCION)
+            motivo = (f"{motivo}; el formulario marcaba {ETIQUETAS_INTERES[por_etiquetas]} "
+                      f"({etiquetas}), pero manda lo que pide el texto")
 
     # 2. Idioma: el del formulario manda; el texto solo si lo contradice
     #    claramente.
