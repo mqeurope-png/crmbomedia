@@ -5397,10 +5397,12 @@ export async function corregirLeadClasificacion(
   );
 }
 
-/** Qué habría hecho la Fase 1 con los leads de los últimos N días. No escribe nada. */
-export async function simularLeadsEnSeco(dias = 15, limite = 200): Promise<LeadEnSecoInforme> {
+/** Qué habría hecho la Fase 1 con los leads de los últimos N días. No escribe
+ *  nada. Sin `limite` manda el tope de serie del servidor (100 leads; cada
+ *  uno es una llamada al proveedor dentro de la petición). */
+export async function simularLeadsEnSeco(dias = 15, limite?: number): Promise<LeadEnSecoInforme> {
   return apiFetch<LeadEnSecoInforme>("/api/erp/leads/en-seco", {
-    method: "POST", body: JSON.stringify({ dias, limite }),
+    method: "POST", body: JSON.stringify({ dias, ...(limite ? { limite } : {}) }),
   });
 }
 

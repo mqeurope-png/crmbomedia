@@ -48,6 +48,22 @@ describe("workflowsHumanize — respuesta a leads (Fase 1)", () => {
     expect(stepSummary({ type: "wait_time", config: { window: { enabled: false } } })).toBe("");
   });
 
+  it("marca en rojo la espera con una ventana cuyo fin no es posterior al inicio", () => {
+    const ok = { duration_minutes: 720, window: { enabled: true, start: "09:00", end: "18:00" } };
+    expect(validateStepConfig({ type: "wait_time", config: ok })).toEqual({ valid: true, missing: [] });
+    expect(validateStepConfig({
+      type: "wait_time", config: { duration_minutes: 720, window: { start: "18:00", end: "09:00" } },
+    }).missing).toEqual(["window"]);
+    expect(validateStepConfig({
+      type: "wait_time", config: { duration_minutes: 720, window: { start: "09:00", end: "09:00" } },
+    }).missing).toEqual(["window"]);
+    // Apagada, no se valida; sin duración, falta la duración.
+    expect(validateStepConfig({
+      type: "wait_time", config: { duration_minutes: 60, window: { enabled: false, start: "18:00", end: "09:00" } },
+    }).valid).toBe(true);
+    expect(validateStepConfig({ type: "wait_time", config: {} }).missing).toEqual(["duration_minutes"]);
+  });
+
   it("valida «Preparar borrador» según el modo elegido y «Añadir a pipeline» por sus ids", () => {
     expect(validateStepConfig({ type: "action_prepare_email_draft", config: {} }))
       .toEqual({ valid: true, missing: [] });

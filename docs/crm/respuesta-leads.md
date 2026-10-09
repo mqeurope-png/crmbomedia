@@ -217,3 +217,9 @@ Enviar. Mover el pipeline por hechos (Fase 3). Segundo y tercer toque
   clics a la vez podrían dejar dos borradores. Se ve en Workflows y se
   archiva uno.
 - `lead_classifications` y la lista no paginan (500 filas por consulta).
+- Los paneles nuevos del editor de workflows («Clasificar lead», «Preparar
+  borrador», «Añadir a pipeline», la ventana de la espera y el trigger «Lead
+  recibido») no tienen test de componente (el editor no tenía ninguno); los
+  cubre `tsc`, la validación de `workflowsHumanize` y el workflow de serie.
+- En el editor, la antigüedad del paso «Clasificar lead» a 0 significa «sin
+  límite en este paso» (el trigger conserva el suyo).

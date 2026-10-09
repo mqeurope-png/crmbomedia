@@ -972,22 +972,46 @@ function StepConfigPanel({
         </>
       ) : null}
 
-      {/* Respuesta a leads (Fase 1). */}
+      {/* Respuesta a leads (Fase 1). Sin `max_age_hours` el paso lee la
+          antigüedad de Configuración ERP en cada lead (es lo que siembra el
+          workflow de serie); con ella, la fija aquí. */}
       {node.data.stepType === "action_classify_lead" ? (
         <>
-          <label>
-            Antigüedad máxima del lead (horas)
+          <label className="workflow-checkbox">
             <input
-              type="number"
-              min={0}
-              value={(cfg.max_age_hours as number) ?? 72}
-              onChange={(e) => setField("max_age_hours", Number(e.target.value))}
+              type="checkbox"
+              checked={typeof cfg.max_age_hours !== "number"}
+              onChange={(e) => {
+                if (e.target.checked) {
+                  const rest = { ...cfg };
+                  delete rest.max_age_hours;
+                  onChange(rest);
+                } else {
+                  setField("max_age_hours", 72);
+                }
+              }}
             />
-            <span className="muted small">
-              Por la fecha real del lead. 0 = sin límite. Si el paso no lo
-              fija, vale lo de Configuración ERP → Respuesta a leads.
-            </span>
+            Antigüedad máxima: la de Configuración ERP → Respuesta a leads
+            (recomendado)
           </label>
+          {typeof cfg.max_age_hours === "number" ? (
+            <label>
+              Antigüedad máxima del lead en este paso (horas)
+              <input
+                type="number"
+                min={0}
+                value={cfg.max_age_hours as number}
+                onChange={(e) => {
+                  // Vacío: se deja como estaba (0 sería «sin límite»).
+                  if (e.target.value !== "") setField("max_age_hours", Number(e.target.value));
+                }}
+              />
+              <span className="muted small">
+                Por la fecha real del lead. 0 = sin límite en este paso (el
+                trigger sigue teniendo el suyo).
+              </span>
+            </label>
+          ) : null}
           <p className="muted small">
             Clasifica idioma, interés, spam y confianza una sola vez por lead
             y lo guarda en el contacto. Tres salidas: «Lead», «Spam» y
@@ -1442,6 +1466,8 @@ function WaitWindowConfig({
           <span className="muted small">
             Si la espera termina fuera de la ventana, el paso despierta en el
             siguiente hueco (p. ej. un sábado por la tarde → lunes a las 9).
+            La hora de fin tiene que ser posterior a la de inicio; si no, el
+            paso se marca en rojo y no se puede activar.
           </span>
         </>
       ) : null}

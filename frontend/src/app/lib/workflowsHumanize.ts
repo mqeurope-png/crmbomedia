@@ -403,7 +403,18 @@ const HUMAN_MISSING_MESSAGES: Record<string, string> = {
     "Falta elegir el display name del alias del propietario",
   template_id: "Falta elegir la plantilla fija",
   from_alias: "Falta el remitente fijo",
+  window: "Ventana horaria: la hora de fin tiene que ser posterior a la de inicio",
 };
+
+/** `"HH:MM"` → minutos desde medianoche; `null` si no es una hora. */
+function _minutos(valor: unknown): number | null {
+  const m = typeof valor === "string" ? valor.match(/^(\d{1,2}):(\d{2})$/) : null;
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (h > 23 || min > 59) return null;
+  return h * 60 + min;
+}
 
 /** PR-Fixes-Pase-4 Bug 4. Comparators del FilterBuilder que NO
  *  requieren valor — set membership (existe / no existe / vacío).
@@ -507,6 +518,21 @@ export function validateStepConfig(step: StepLike): StepValidationResult {
     if (aliasMode === "owner_specific") {
       const dn = cfg.from_alias_display_name as string | undefined;
       if (!dn || !dn.trim()) missing.push("from_alias_display_name");
+    }
+    return { valid: missing.length === 0, missing };
+  }
+  // Respuesta a leads: una ventana horaria activa cuyo fin no es posterior
+  // al inicio la ignora el motor en silencio (`ventana_desde_config`); el
+  // editor la marca en rojo, como hace Configuración ERP con la suya.
+  if (step.type === "wait_time") {
+    const missing: string[] = [];
+    const d = cfg.duration_minutes;
+    if (d === undefined || d === null || d === "") missing.push("duration_minutes");
+    const win = cfg.window as Record<string, unknown> | undefined;
+    if (win && win.enabled !== false) {
+      const inicio = _minutos(win.start ?? "09:00");
+      const fin = _minutos(win.end ?? "18:00");
+      if (inicio === null || fin === null || fin <= inicio) missing.push("window");
     }
     return { valid: missing.length === 0, missing };
   }

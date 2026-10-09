@@ -1998,23 +1998,34 @@ function NumeroCampo({
     setUltimo(value);
     if (texto === "" || Number(texto) !== value) setTexto(String(value));
   }
+  const fueraDeRango = (n: number) =>
+    (min !== undefined && n < min) || (max !== undefined && n > max);
+  const numero = Number(texto);
+  const invalido = texto !== "" && (!Number.isFinite(numero) || fueraDeRango(numero));
   return (
-    <input
-      type="number"
-      min={min}
-      max={max}
-      step={step}
-      aria-label={ariaLabel}
-      value={texto}
-      onChange={(e) => {
-        setTexto(e.target.value);
-        const n = Number(e.target.value);
-        if (e.target.value === "" || !Number.isFinite(n)) return;
-        if ((min !== undefined && n < min) || (max !== undefined && n > max)) return;
-        onChange(n);
-      }}
-      onBlur={() => setTexto(String(value))}
-    />
+    <>
+      <input
+        type="number"
+        min={min}
+        max={max}
+        step={step}
+        aria-label={ariaLabel}
+        aria-invalid={invalido || undefined}
+        value={texto}
+        onChange={(e) => {
+          setTexto(e.target.value);
+          const n = Number(e.target.value);
+          if (e.target.value === "" || !Number.isFinite(n) || fueraDeRango(n)) return;
+          onChange(n);
+        }}
+        onBlur={() => setTexto(String(value))}
+      />
+      {invalido ? (
+        <span className="form-error small" role="alert">
+          Entre {min ?? "…"} y {max ?? "…"}: se guarda {value}.
+        </span>
+      ) : null}
+    </>
   );
 }
 
@@ -2202,11 +2213,16 @@ function LeadResponseSettings({
                 {cat.idiomas.map((l) => {
                   const clave = `${i.id}:${l}`;
                   const porNombre = nombrePlantilla(cat.mapa_por_nombre[clave]);
+                  const valor = valorMapa(clave);
+                  // Una plantilla guardada que ya no está en el catálogo (la
+                  // renombraron) se sigue viendo, no se queda en blanco.
+                  const fueraDeCatalogo = valor !== MAPA_POR_NOMBRE && valor !== MAPA_NINGUNA
+                    && !cat.plantillas.some((p) => p.id === valor);
                   return (
                     <td key={l} data-label={l.toUpperCase()}>
                       <select
                         aria-label={`Plantilla de ${i.label} en ${l.toUpperCase()}`}
-                        value={valorMapa(clave)}
+                        value={valor}
                         onChange={(e) => setMapa(clave, e.target.value)}
                       >
                         <option value={MAPA_POR_NOMBRE}>
@@ -2216,6 +2232,9 @@ function LeadResponseSettings({
                         {cat.plantillas.map((p) => (
                           <option key={p.id} value={p.id}>{p.name}</option>
                         ))}
+                        {fueraDeCatalogo ? (
+                          <option value={valor}>Plantilla fuera del catálogo «Lead…» ({valor.slice(0, 8)}…)</option>
+                        ) : null}
                       </select>
                     </td>
                   );

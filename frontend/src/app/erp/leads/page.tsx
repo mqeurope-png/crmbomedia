@@ -118,6 +118,7 @@ export default function LeadsPage() {
       cargarWorkflow();
     } catch (e) {
       setWorkflowError(extractErrorMessage(e, "No se pudo crear el workflow."));
+      cargarWorkflow();     // p. ej. 409: lo acaba de crear otra persona
     } finally {
       setCreando(false);
     }

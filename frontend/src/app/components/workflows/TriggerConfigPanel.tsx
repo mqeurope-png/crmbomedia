@@ -684,12 +684,17 @@ function LeadReceivedSubConfig({
         <input
           type="number"
           min={0}
-          value={typeof maxAge === "number" ? maxAge : 72}
-          onChange={(e) => set("max_age_hours", Number(e.target.value))}
+          placeholder="72"
+          value={typeof maxAge === "number" ? maxAge : ""}
+          onChange={(e) =>
+            // Vacío = sin valor propio (72 por defecto), nunca 0 («sin límite»).
+            set("max_age_hours", e.target.value === "" ? undefined : Number(e.target.value))
+          }
         />
         <span className="muted small">
           Por la fecha real del lead (una nota de Agile de julio sincronizada
-          hoy no dispara). 72 por defecto; 0 = sin límite.
+          hoy no dispara). Vacío = 72; 0 = sin límite (dispararía por todo el
+          histórico de notas de Agile).
         </span>
       </label>
     </>
