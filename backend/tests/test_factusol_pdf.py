@@ -392,13 +392,34 @@ def test_pdf_filename_traducido_con_sus_espacios() -> None:
 def test_pdf_filename_cliente_sin_acentos_ni_puntos() -> None:
     # El paso a ASCII es a propósito: un byte fuera de ASCII en
     # `Content-Disposition` (el 0xE1 de «Albarán» en latin-1) lo rechaza el
-    # cliente HTTP. Los puntos y las comas pasan a UN espacio.
+    # cliente HTTP. Los puntos se quitan sin abrir hueco («S.L.U.» → SLU); la
+    # coma sí separa y pasa a UN espacio.
     name = _nombre("albaranes", "de", TIPALB="2", CODALB=80,
                    CNOALB="Manufaktur für Gestaltung und Druck")
     assert name == "Lieferschein MANUFAKTUR FUR GESTALTUNG UND DRUCK 2-000080.pdf"
     name = _nombre("facturas", "es", CNOFAC="  CDCOPIADVD, S.L.U.  ")
-    assert name == "Factura CDCOPIADVD S L U 5-260063.pdf"
+    assert name == "Factura CDCOPIADVD SLU 5-260063.pdf"
     assert "  " not in name and name == name.strip()
+
+
+def test_pdf_filename_puntos_y_apostrofos_no_abren_hueco() -> None:
+    # Punto y apóstrofo desaparecen; coma, guion y barra siguen separando.
+    assert _nombre("facturas", "es", CNOFAC="D'Angelo e Figli S.r.l.") == (
+        "Factura DANGELO E FIGLI SRL 5-260063.pdf"
+    )
+    assert _nombre("facturas", "es", CNOFAC="Müller-Thurgau/Weber, St. Gallen") == (
+        "Factura MULLER THURGAU WEBER ST GALLEN 5-260063.pdf"
+    )
+    # El apóstrofo tipográfico («’») tampoco deja hueco (lo tira el paso a ASCII).
+    assert _nombre("facturas", "es", CNOFAC="D’Angelo") == "Factura DANGELO 5-260063.pdf"
+    # Y los puntos ya no se comen caracteres del recorte a 40: con o sin ellos
+    # sale lo mismo.
+    con_puntos = _nombre("facturas", "es",
+                         CNOFAC="A.B.C.D.E.F.G.H.I.J. Manufaktur Gestaltung Druck GmbH")
+    sin_puntos = _nombre("facturas", "es",
+                         CNOFAC="ABCDEFGHIJ Manufaktur Gestaltung Druck GmbH")
+    assert con_puntos == sin_puntos
+    assert con_puntos == "Factura ABCDEFGHIJ MANUFAKTUR GESTALTUNG DRUCK G 5-260063.pdf"
 
 
 def test_pdf_filename_cliente_largo_se_recorta_sin_cola() -> None:
@@ -504,7 +525,7 @@ def test_pdf_endpoint_returns_pdf_with_filename(http, session_factory) -> None:
         )
     assert r.status_code == 200, r.text
     assert r.headers["content-type"] == "application/pdf"
-    assert ("filename=\"Invoice DUPLICODER S L 5-260063.pdf\""
+    assert ("filename=\"Invoice DUPLICODER SL 5-260063.pdf\""
             in r.headers["content-disposition"])
     assert "INVOICE" in _texto(r.content)
 
@@ -904,7 +925,7 @@ def test_pdf_endpoint_bank_and_variant_params(http, session_factory) -> None:
     assert "FACTURA DE ANTICIPO" in text
     assert "ES23 0073 0100 5404 4814 5865" in text   # Open Bank (índice 1)
     assert "Importes en SEK" in text
-    assert ("filename=\"Factura de anticipo DUPLICODER S L 5-260063.pdf\""
+    assert ("filename=\"Factura de anticipo DUPLICODER SL 5-260063.pdf\""
             in r.headers["content-disposition"])
 
 

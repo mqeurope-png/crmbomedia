@@ -198,7 +198,8 @@ def test_preview_idioma_por_cascada_contactos_premarcados_y_remitente_por_serie(
     # Remitente: el de la serie 2 (MQ Europe), utilizable (preferencia del usuario).
     assert (body["from_alias"], body["from_alias_source"]) == ("info@artisjet-printers.eu", "serie")
     assert body["from_alias_ok"] is True
-    assert body["attachment_filename"] == "Presupuesto-2-000075.pdf"
+    # Adjunto en el idioma del correo y con el cliente, como las descargas (#531).
+    assert body["attachment_filename"] == "Devis LA MAISON DE LA PLAQUE 2-000075.pdf"
     assert body["company_name"] == "La Maison de la Plaque"
 
 
@@ -212,7 +213,7 @@ def test_preview_idioma_por_selector_y_variante_proforma(http, session_factory) 
     body = r.json()
     assert (body["lang"], body["lang_source"]) == ("de", "selector")
     assert body["subject"] == "Angebot 2-000075"
-    assert body["attachment_filename"] == "Proforma-2-000075.pdf"
+    assert body["attachment_filename"] == "Proformarechnung LA MAISON DE LA PLAQUE 2-000075.pdf"
 
 
 def test_preview_sin_empresa_vinculada_cae_al_pais_del_documento(http, session_factory) -> None:
@@ -304,12 +305,12 @@ def test_send_adjunta_el_pdf_registra_el_evento_y_marca_el_listado(http, session
                       headers=auth_headers(http, "pedidos"))
     assert r.status_code == 201, r.text
     assert r.json()["sent"] is True
-    assert r.json()["attachment_filename"] == "Presupuesto-2-000075.pdf"
+    assert r.json()["attachment_filename"] == "Devis LA MAISON DE LA PLAQUE 2-000075.pdf"
     kwargs = mock_send.call_args.kwargs
     assert kwargs["from_alias"] == "info@artisjet-printers.eu"
     assert kwargs["to"] == ["marta@maison.example"]
     adjunto = kwargs["attachments"][0]
-    assert adjunto["filename"] == "Presupuesto-2-000075.pdf"
+    assert adjunto["filename"] == "Devis LA MAISON DE LA PLAQUE 2-000075.pdf"
     assert adjunto["content_type"] == "application/pdf"
     assert adjunto["data"][:4] == b"%PDF"
     assert kwargs["contact_id"] is not None                  # ligado al contacto Marta
@@ -623,3 +624,36 @@ def test_preview_contacto_del_crm_sin_nombre_saluda_a_la_empresa(http, session_f
     assert body["contacto_id"] == sin_nombre_id
     assert body["markers"]["contacto"] == "La Maison de la Plaque"
     assert "Marta Coll" not in body["body_text"]
+
+
+def test_adjunto_traducido_y_con_cliente(http, session_factory) -> None:
+    """El adjunto de la proforma por email lleva el mismo nombre que las
+    descargas (#531): tipo traducido, cliente y número. Antes iba siempre en
+    castellano y sin cliente, aunque el PDF y el correo salieran en alemán."""
+    with session_factory() as s:
+        _seed_company(s, language="de")
+
+    def adjunto(query: str) -> str:
+        with _patched_factusol():
+            r = http.get(f"/api/erp/factusol/quotes/75/email-preview?serie=2{query}",
+                         headers=auth_headers(http, "pedidos"))
+        assert r.status_code == 200, r.text
+        return r.json()["attachment_filename"]
+
+    # Cliente alemán: idioma de la empresa, sin variante.
+    assert adjunto("") == "Angebot LA MAISON DE LA PLAQUE 2-000075.pdf"
+    # En inglés: proforma y sin variante.
+    assert adjunto("&lang=en&variant=proforma") == (
+        "Proforma invoice LA MAISON DE LA PLAQUE 2-000075.pdf"
+    )
+    assert adjunto("&lang=en") == "Quotation LA MAISON DE LA PLAQUE 2-000075.pdf"
+
+
+def test_adjunto_sin_cliente_al_menos_va_traducido() -> None:
+    from app.erp.quote_email import quote_attachment_filename
+
+    data = {"numero": "2-000080", "cliente": {"nombre": None, "codigo": None}}
+    assert quote_attachment_filename(data, "de", None) == "Angebot 2-000080.pdf"
+    assert quote_attachment_filename(data, "en", "proforma") == "Proforma invoice 2-000080.pdf"
+    # Sin la clave `cliente` siquiera, tampoco revienta.
+    assert quote_attachment_filename({"numero": "2-000080"}, "fr", None) == "Devis 2-000080.pdf"
