@@ -274,6 +274,14 @@ del pedido de BoHub.
       medias se quedaron sin atender un caso de soporte y una petición de
       presupuesto reales. Esta comprobación lo habría cazado en horas.
 
+- **Lead sin contactar** (media). Lead —formulario web o nota «form note» de
+  AgileCRM, por su fecha real— entrado hace más de 48 horas, que no es spam y
+  al que no se le ha enviado ningún correo. El acuse de recibo del formulario
+  **no cuenta** (lo deja marcado el timeline). Es la red de seguridad de la
+  respuesta a leads (`docs/crm/respuesta-leads.md`) y mide el problema de
+  partida: de los 20 últimos leads revisados el 09/10/2026, siete no tenían ni
+  un solo correo. Ventana: N días (30). Enlaza a la ficha.
+
 ### Integraciones (severidad alta, fuente WooCommerce)
 
 14. `pedido_woo_pagado_sin_bohub` — **Pedido pagado en WooCommerce que no está

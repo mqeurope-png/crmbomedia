@@ -137,7 +137,8 @@ def test_comprobaciones_y_el_cuadre_no_toca_los_pedidos(http, factory):
     oid = _pedido_sin_aprobar(factory)
     h = auth_headers(http, "admin")
     cat = http.get("/api/erp/cuadre/comprobaciones", headers=h).json()["items"]
-    assert len(cat) == 18 and cat[0]["id"] == "factura_lineas_ajenas"
+    # 19 con «Lead sin contactar» (respuesta a leads · Fase 1).
+    assert len(cat) == 19 and cat[0]["id"] == "factura_lineas_ajenas"
     http.post("/api/erp/cuadre/comprobar", headers=h)
     with factory() as s:
         o = s.get(Order, oid)
@@ -153,7 +154,7 @@ def test_configuracion_del_cuadre_en_ajustes(http):
     cfg = http.get("/api/erp/settings", headers=h).json()
     assert cfg["cuadre"]["nocturno_activo"] is False and cfg["cuadre"]["hora"] == "03:00"
     assert cfg["cuadre"]["checks"]["pedido_sin_aprobar"] == {"activo": True, "dias": 7}
-    assert len(cfg["cuadre_catalogo"]) == 18
+    assert len(cfg["cuadre_catalogo"]) == 19
     r = http.patch("/api/erp/settings", headers=h, json={"cuadre": {
         "nocturno_activo": True, "hora": "02:15",
         "checks": {"pedido_sin_aprobar": {"activo": False, "dias": 10}},

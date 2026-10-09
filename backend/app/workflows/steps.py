@@ -1274,28 +1274,11 @@ def _usuario_del_borrador(session, contact, cfg: dict[str, Any]) -> str | None:
 
 def _ya_contactado(session, contact, desde: datetime | None) -> bool:
     """Un correo saliente al contacto desde la fecha del lead que no sea el
-    acuse de recibo del formulario (ese ya salió solo)."""
-    from sqlalchemy import Text, cast  # noqa: PLC0415
+    acuse de recibo del formulario (ese ya salió solo). La misma pregunta que
+    hace el Cuadre en «Lead sin contactar»."""
+    from app.services.leads.registro import correo_saliente_desde  # noqa: PLC0415
 
-    from app.models.crm import ActivityEvent  # noqa: PLC0415
-
-    clauses = [
-        EmailMessage.contact_id == contact.id,
-        EmailMessage.direction == EmailDirection.OUTBOUND,
-    ]
-    if desde is not None:
-        clauses.append(EmailMessage.created_at >= desde)
-    salientes = list(session.scalars(select(EmailMessage.id).where(*clauses)))
-    if not salientes:
-        return False
-    acuses = set(session.scalars(
-        select(ActivityEvent.external_id).where(
-            ActivityEvent.contact_id == contact.id,
-            ActivityEvent.event_type == "email.sent_from_crm",
-            cast(ActivityEvent.metadata_json, Text).like('%"acuse_formulario_web"%'),
-        )
-    ))
-    return any(f"email:{message_id}:email.sent_from_crm" not in acuses for message_id in salientes)
+    return correo_saliente_desde(session, contact.id, desde)
 
 
 def _cuenta_agile_del_contacto(contact) -> str | None:

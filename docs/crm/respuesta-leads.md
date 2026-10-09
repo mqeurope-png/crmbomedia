@@ -85,6 +85,86 @@ entra por la misma interfaz cuando `ANTHROPIC_API_KEY` está configurada
 - `contacts.lead_interest / lead_is_spam / lead_confidence /
   lead_classified_at`: copia de lo esencial para bifurcar sin JOIN.
 
+## El proveedor de IA
+
+`app/services/leads/proveedor_anthropic.py`: Anthropic, con el cliente que ya
+tiene BoHub (`ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`). Pide un JSON (idioma,
+interés, spam, confianza, motivo) y lo normaliza al catálogo; si la IA no
+está disponible (sin clave, cuota, caída, respuesta ilegible) cae al proveedor
+de palabras clave y el motivo lo dice. La consulta del cliente sí viaja al
+proveedor; ni el prompt ni la respuesta cruda se guardan. Sin clave, el
+proveedor por defecto es el de palabras clave.
+
+## Configuración (Configuración ERP → «Respuesta a leads»)
+
+Blob `lead_response` de `ErpSettings` (`app/services/leads/config.py`), por
+`GET/PATCH /api/erp/settings`:
+
+| Clave | Qué es | Defecto |
+|---|---|---|
+| `activo` | Interruptor general. Apagado, el paso «Clasificar lead» sale por `omitido`. | apagado |
+| `tope_diario` | Leads clasificados al día; al llegar, los siguientes salen por `omitido` y se avisa **una vez al día** a `WEB_FORMS_NOTIFY_TO`. | 20 |
+| `umbral_confianza` | Por debajo, la Fase 2 no enviará; en la Fase 1 la lista lo marca. | 0,7 |
+| `antiguedad_horas` | Solo leads más recientes. El paso la usa si no fija la suya; el trigger tiene `max_age_hours`. | 72 |
+| `ventana` | De 9 a 18, laborables: con lo que se siembra la espera del workflow. | 09:00–18:00, laborables |
+| `mapa` | `interes:idioma → template_id`. Vacío = sin plantilla a propósito; sin entrada se busca por nombre (`Lead · <contenido> (<IDIOMA>)`). | por nombre |
+| `remitentes.por_web` | Web → dirección; sin entrada, `sitios.REMITENTES`. | — |
+| `remitentes.por_cuenta_agile` | Cuenta de Agile → web (los leads de Agile no traen web). | — |
+
+El GET lleva además `lead_response_catalogo`: intereses, idiomas, plantillas
+candidatas, el mapa resuelto por nombre, las webs con su remitente por
+defecto y las cuentas de Agile.
+
+## El modo en seco y la lista corregible (`/api/erp/leads`)
+
+- `POST /en-seco {dias, limite}`: clasifica los leads de los últimos N días
+  (envíos no spam + notas «form note» por su fecha real) con el mismo
+  proveedor y la misma configuración que el workflow, y dice por lead qué
+  habría hecho: etapa (Nuevo lead / Descartado · spam), plantilla, remitente,
+  tarea y avisos. **No escribe nada.** Es lo que se usa para medir el acierto
+  antes de encender el interruptor (y, después, la Fase 2).
+- `GET /clasificaciones?dias=15`: los leads clasificados de verdad, con lo que
+  salió, de dónde salió cada dato, lo que se preparó y la corrección.
+- `POST /clasificaciones/{id}/corregir {idioma?, interes?, es_spam?, nota?}`:
+  la corrección a mano. Se guarda aparte (la original se conserva), manda en
+  la ficha del contacto y queda en la auditoría
+  (`lead.classification_corrected`).
+- `POST /workflow`: crea el workflow «Respuesta a leads (Fase 1)» en BORRADOR
+  resolviendo «Ventas B2B» → «Nuevo lead» / «Descartado / spam» por nombre;
+  409 si ya existe, 400 si falta el pipeline. `GET /workflow` dice si existe.
+
+## El workflow de la Fase 1
+
+```
+lead.received → clasificar
+   [spam]    → añadir a Ventas B2B · Descartado / spam → salida perdida
+   [omitido] → salida natural
+   [ok]      → esperar 12 h (9–18 laborables) → preparar borrador
+             → añadir a Ventas B2B · Nuevo lead → crear tarea → salida natural
+```
+
+La tarea sale como «Revisar lead: Vending (95%) · Isabella Cedillo» con la
+web, el idioma, el motivo, los productos marcados, la plantilla, el remitente
+y el enlace al borrador. Se asigna a quien creó el workflow (cámbialo en el
+editor). Ni un paso de enviar.
+
+## El Cuadre: «Lead sin contactar»
+
+Severidad media, fuente BoHub (`checks_mysql.lead_sin_contactar`): lead
+entrado hace más de 48 horas, no spam, sin ningún correo saliente — el acuse
+de recibo no cuenta. Es la red de seguridad por si falla todo lo demás y mide
+el problema de partida.
+
+## Después del deploy
+
+1. Configuración ERP → Respuesta a leads: comprobar el mapa (las 30
+   plantillas se resuelven por nombre) y los remitentes; mapear las cuentas de
+   Agile a su web.
+2. **Modo en seco sobre los últimos 15 días** y revisar la clasificación con
+   Bart.
+3. «Crear el workflow», revisarlo en Workflows y activarlo. Encender el
+   interruptor.
+
 ## Lo que no hace la Fase 1
 
 Enviar. Mover el pipeline por hechos (Fase 3). Segundo y tercer toque
