@@ -17,6 +17,7 @@ import logging
 import re
 import time
 from collections import defaultdict, deque
+from collections.abc import Sequence
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -378,13 +379,35 @@ def _invoke_claude(
     if not message.content:
         logger.warning("llm.empty_response model=%s", model)
         raise LLMUpstreamError("Empty response from provider")
-    chunk = message.content[0]
-    text = getattr(chunk, "text", None)
+    text, block_types = _response_text(message.content)
     if not text:
-        logger.warning("llm.non_text_response model=%s", model)
-        raise LLMUpstreamError("Provider returned non-text content")
+        tipos = ",".join(block_types)
+        logger.warning("llm.non_text_response model=%s blocks=%s", model, tipos)
+        raise LLMUpstreamError(f"Provider returned non-text content (blocks: {tipos})")
     logger.info("llm.response model=%s chars=%d", model, len(text))
     return text
+
+
+def _response_text(content: Sequence[Any]) -> tuple[str, list[str]]:
+    """The text of a response: every `text` block, in order, joined.
+
+    The Claude 5 generation reasons before answering and, on the hard
+    cases, returns a `thinking` block FIRST; the text comes after it. On
+    09/10/2026, switching to claude-sonnet-5-5, 6 of 12 lead
+    classifications fell back to keywords because this read
+    `content[0]` and assumed it was text. Every newer model will think,
+    so the reader skips to the text blocks. Returns the text and the
+    block types seen (for the log when there is no text at all).
+    """
+    parts: list[str] = []
+    types: list[str] = []
+    for block in content:
+        kind = getattr(block, "type", None)
+        types.append(str(kind) if kind is not None else type(block).__name__)
+        text = getattr(block, "text", None)
+        if (kind == "text" or kind is None) and isinstance(text, str) and text:
+            parts.append(text)
+    return "".join(parts), types
 
 
 def _normalize_proposal(raw_text: str) -> dict[str, Any]:
