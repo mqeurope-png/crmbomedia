@@ -265,10 +265,13 @@ def test_backfill_universal_sent_message_creates_outbound_row(
         assert msg.from_email == ALIAS
 
 
-def test_backfill_universal_sent_from_non_alias_discarded(
+def test_backfill_universal_sent_from_non_alias_saved_as_outbound(
     session_factory: sessionmaker,
 ) -> None:
-    """SENT cuyo From no es alias del CRM (forward raro) → descartado."""
+    """Captura de salida universal: SENT cuyo From NO es un alias registrado
+    se guarda igual (es correo escrito desde el buzón de la casa), atribuido al
+    usuario del buzón. Hasta el 10/10/2026 se descartaba, y así se perdieron
+    tres meses de correo enviado desde direcciones sin registrar."""
 
     class _Fake:
         def list_messages(
@@ -303,9 +306,16 @@ def test_backfill_universal_sent_from_non_alias_discarded(
                 until=datetime(2026, 8, 10).date(),
                 progress=lambda _line: None,
             )
-        assert report.skipped_no_alias == 1
-        assert report.outbound == 0
-        assert session.scalar(select(EmailMessage)) is None
+        session.commit()
+        assert report.skipped_no_alias == 0
+        assert report.outbound == 1
+        assert report.enviados_por_remitente == {"ajeno@fuera.com": 1}
+        assert report.enviados_por_usuario == {"user@example.com": 1}
+        msg = session.scalar(select(EmailMessage))
+        assert msg is not None
+        assert msg.direction == EmailDirection.OUTBOUND
+        assert msg.created_by_user_id == owner           # el usuario del buzón
+        assert msg.contact_id is None                    # destinatario desconocido
 
 
 # ---------------------------------------------------------------------------

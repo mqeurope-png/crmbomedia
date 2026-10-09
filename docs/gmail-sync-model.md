@@ -140,42 +140,86 @@ python -m app.integrations.gmail_watch backfill_universal \
 El report final resume totales + duración + los alias que descartaron mails
 (ordenados por número), con la sugerencia de añadirlos y re-ejecutar.
 
-## Direcciones — inbound vs outbound (CRM-BACKFILL-SENT)
+## Direcciones — inbound vs outbound (captura de salida universal)
 
 Cada `email_message` guarda su `direction` propia (el thread no tiene
-dirección global). El trigger es el **From contra los alias activos**
-(`user_email_aliases`):
+dirección global).
 
-- **`From` = alias activo del CRM → `outbound`.** Mail enviado desde Gmail
-  directo (no desde el compositor). El propietario es el **dueño del
-  alias**: en threads nuevos `initiated_by_user_id` = ese user (así lo ve
-  en su bandeja), `created_by_user_id` se rellena en el mensaje,
-  `delivered_to` queda NULL (no aplica) y el contacto se casa por los
-  **destinatarios** (To y luego Cc). No marca el hilo como no leído ni
-  emite `email.reply_received`/workflows. La bandeja lo pinta con el chip
-  🟢 «Enviado desde CRM» (mismo `direction=outbound` que los envíos del
-  compositor).
-- **`From` externo → `inbound`.** Comportamiento de siempre: el gate por
-  `delivered_to` (alias al que llegó) decide si se guarda; si no va a
-  ningún alias configurado, se descarta.
-- **Auto-forward / CC a uno mismo** (From alias Y To alias): outbound gana.
-- **SENT cuyo From no es un alias** (forward raro de Gmail): descartado con
-  warning `unexpected sent from non-alias` en el log del backfill.
+- **Lo que está en SENT → `outbound`, sea cual sea el From.** Lo que sale
+  del buzón conectado es, por definición, correo escrito por alguien de la
+  casa, y se guarda **siempre**, igual que la entrada guarda hasta los
+  boletines. El `From` que es un alias activo también es outbound aunque
+  no venga de SENT (auto-forward / CC a uno mismo: outbound gana).
+  `delivered_to` queda NULL (no aplica) y el **contacto se casa por los
+  destinatarios** (To y luego Cc): un correo a un lead se ve en la ficha
+  del lead, venga de la dirección que venga. Sin contacto se guarda igual,
+  sin `contact_id`. No marca el hilo como no leído ni emite
+  `email.reply_received`/workflows.
+- **Los alias no deciden si se guarda, solo a quién se atribuye**
+  (`outbound_owner_user_id`): el dueño del alias registrado
+  (`user_email_aliases`); si no, el usuario que tiene esa dirección entre
+  sus «enviar como» (`user_email_alias_prefs`), **solo si es uno** —una
+  dirección de marca que comparten varios comerciales (`info@…`) no es de
+  ninguno y se queda en la cuenta de la organización, como los acuses—; y
+  si no, el usuario de cuyo buzón salió (la cuenta de la organización). En
+  threads nuevos `initiated_by_user_id` = ese usuario y
+  `created_by_user_id` se rellena en el mensaje; la bandeja personal
+  incluye además los hilos en los que el usuario ha **escrito** algún
+  mensaje (su respuesta capturada en un hilo que abrió otro). La bandeja lo
+  pinta con el chip 🟢 «Enviado desde CRM».
+- **Correo interno** (un comercial escribe a un alias de la casa; Gmail lo
+  etiqueta SENT + INBOX): sigue siendo `outbound`, pero `delivered_to` se
+  rellena como en la entrada y el hilo queda como no leído, así el dueño
+  del alias lo ve en su bandeja.
+- **`From` externo en INBOX/SPAM → `inbound`.** Comportamiento de siempre:
+  el gate por `delivered_to` (alias al que llegó) decide si se guarda; si no
+  va a ningún alias configurado, se descarta.
+- **Un enviado ya guardado bajo otro usuario no se duplica.** Hay un solo
+  buzón: un envío desde el compositor o un acuse se guarda bajo el usuario
+  que lo envió con el id que devuelve Gmail, y la copia en SENT que ve el
+  push trae ese mismo id. La captura (push y relleno) mira los ids ya
+  guardados de **todas** las cuentas, no solo la del push.
+
+> Hasta el 10/10/2026 la salida estaba filtrada por `user_email_aliases`
+> (tabla del 07/08/2026): todo lo enviado desde una dirección sin registrar
+> —`bart@mqeurope.com`, `bart@artisjet-printers.eu`, `manel@…`— se
+> descartó en silencio durante casi tres meses, entre ello una oferta
+> completa a un lead real (Marc Moll, 08/10/2026). La entrada, en cambio,
+> era universal.
 
 Tanto el **push real-time** (Watch con `INBOX,SPAM,SENT` — re-registrar
 tras el deploy) como el **backfill universal** (labels default
 `INBOX,SPAM,SENT`) aplican esta misma lógica (`_persist_message`).
 
-### Traer los enviados retroactivos
+### Recuperar los enviados perdidos (relleno)
 
-Re-ejecutar el backfill con la **misma fecha** es idempotente: los mails
-INBOX/SPAM ya importados se saltan por dedupe y solo entran los SENT
-nuevos. El report los muestra en la línea «Enviados (outbound)».
+El relleno usa la maquinaria de siempre: el backfill universal, acotado por
+fechas e idempotente (dedupe por `(gmail_account_user_id, gmail_message_id)`:
+lanzarlo dos veces sobre el mismo tramo no duplica). Dos vías, con el mismo
+motor y el mismo informe:
+
+1. **Job `universal` de `gmail_backfill_jobs`** (lo atiende `worker-gmail`,
+   cola `gmail:backfill_historic`): `POST /api/admin/gmail/backfill/universal`
+   con `{"since": "2026-07-15", "until": "2026-10-10", "labels": ["SENT"],
+   "dry_run": true}`. En seco no escribe nada y el `result` del job
+   (`GET /api/admin/gmail/backfill/{id}`) trae `enviados_por_remitente` y
+   `enviados_por_usuario`: cuántos recuperaría y de quién. Repetirlo con
+   `"dry_run": false` los guarda. Se cancela como los demás jobs.
+2. **CLI**, en primer plano desde el contenedor `api`:
 
 ```bash
+# Primero en seco, un tramo corto, y mirar el informe por remitente.
+docker exec crmbo-api-1 python -m app.integrations.gmail_watch backfill_universal \
+  --since 2026-10-01 --until 2026-10-10 --labels SENT --dry-run --dry-run-limit 5000 --yes
+# Después el tramo entero, de verdad.
 nohup docker exec crmbo-api-1 python -m app.integrations.gmail_watch backfill_universal \
-  --since 2026-02-07 --yes > /root/backfill-sent-$(date +%Y%m%d).log 2>&1 &
+  --since 2026-07-15 --until 2026-10-10 --labels SENT --yes > /root/backfill-sent-$(date +%Y%m%d).log 2>&1 &
 ```
+
+El informe muestra «Enviados (outbound)» y, debajo, los enviados por
+remitente y por usuario atribuido. Los importados por el relleno llevan
+`imported_via='historic_backfill_universal'` y no disparan workflows ni
+actividad.
 
 ## Adjuntos — metadata-only + descarga on-demand (CRM-ADJUNTOS-BACKFILL)
 

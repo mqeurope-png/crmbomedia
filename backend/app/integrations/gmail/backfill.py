@@ -1182,6 +1182,12 @@ def run_backfill(job_id: str) -> None:
                 run_estimate(session, job)
             elif job.mode == GmailBackfillMode.EXECUTE.value:
                 run_execute(session, job)
+            elif job.mode == GmailBackfillMode.UNIVERSAL.value:
+                from app.integrations.gmail.backfill_universal import (  # noqa: PLC0415
+                    run_universal_job,
+                )
+
+                run_universal_job(session, job)
             else:
                 job.status = GmailBackfillStatus.FAILED.value
                 job.error_summary = f"Unknown mode: {job.mode}"

@@ -2329,10 +2329,16 @@ class Backup(Base):
 class GmailBackfillMode(StrEnum):
     """`estimate` no escribe nada — solo cuenta emails y suma tamaños
     de adjuntos para que el admin vea cuánto va a ocupar antes de
-    confirmar. `execute` corre el import real."""
+    confirmar. `execute` corre el import real.
+
+    `universal`: el backfill universal (captura de entrada Y salida, misma
+    regla que el push) acotado por fechas, con `dry_run` para ver qué
+    recuperaría —por remitente y por usuario— antes de escribir. Es el
+    relleno de los enviados perdidos del 20/07 al 10/10/2026."""
 
     ESTIMATE = "estimate"
     EXECUTE = "execute"
+    UNIVERSAL = "universal"
 
 
 class GmailBackfillStatus(StrEnum):
