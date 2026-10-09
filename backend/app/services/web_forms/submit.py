@@ -168,6 +168,15 @@ def process_submission(
     contact_email = email
 
     # 7. Efectos best-effort post-commit (no deben tumbar la respuesta).
+    # Respuesta a leads: el evento `lead.received` que dispara el workflow
+    # (clasificar, borrador, pipeline, tarea). Lleva la web, el idioma del
+    # formulario, los productos marcados y la consulta.
+    from app.services.leads.eventos import despachar_lead_de_formulario  # noqa: PLC0415
+
+    despachar_lead_de_formulario(
+        session, form=form, contact=contact, submission=submission, payload=payload,
+        etiquetas=etiquetas,
+    )
     if form.send_confirmation_email:
         _send_confirmation_email(session, form, contact_email, contact,
                                  payload, etiquetas)

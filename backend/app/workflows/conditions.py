@@ -128,6 +128,14 @@ _NATIVE_CONTACT_RESOLVERS: dict[str, Callable[[EvalContext], Any]] = {
     "address_country_name": _contact_field("address_country_name"),
     "created_at": _contact_field("created_at"),
     "updated_at": _contact_field("updated_at"),
+    # Respuesta a leads: el idioma del contacto y la última clasificación
+    # (copiada al contacto por `app.services.leads.registro`), para
+    # bifurcar («¿es spam?», «¿interés = vending?») sin JOIN.
+    "language": _contact_field("language"),
+    "lead_interest": _contact_field("lead_interest"),
+    "lead_is_spam": _contact_field("lead_is_spam"),
+    "lead_confidence": _contact_field("lead_confidence"),
+    "lead_classified_at": _contact_field("lead_classified_at"),
 }
 
 

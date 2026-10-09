@@ -22,7 +22,6 @@ from typing import Any
 from sqlalchemy import func, select
 
 from app.models.crm import (
-    ContactPipelineStage,
     EmailDirection,
     EmailMessage,
     Task,
@@ -37,6 +36,7 @@ from app.models.workflows import (
 )
 from app.workflows import conditions, variables
 from app.workflows.engine import StepResult, register_step
+from app.workflows.ventana import ajustar_a_ventana, ventana_desde_config
 
 log = logging.getLogger(__name__)
 
@@ -81,15 +81,25 @@ def _step_trigger(session, run, step, contact) -> StepResult:
 def _step_wait_time(session, run, step, contact) -> StepResult:
     """Espera una duración fija. Config:
       {"duration_minutes": 4320}   # 3 días
+
+    Con ventana horaria (respuesta a leads: de 9 a 18, laborables), el
+    despertar se mueve al siguiente hueco en vez de disparar a las tres de
+    la mañana (`app.workflows.ventana`):
+      {"duration_minutes": 720,
+       "window": {"enabled": true, "start": "09:00", "end": "18:00",
+                  "weekdays_only": true}}
     """
     _ = session, contact
     cfg = _config(step)
     minutes = int(cfg.get("duration_minutes") or 0)
     wake_at = datetime.now(UTC) + timedelta(minutes=max(minutes, 1))
-    return StepResult(
-        wake_at=wake_at,
-        result={"sleep_until": wake_at.isoformat()},
-    )
+    ventana = ventana_desde_config(cfg)
+    ajustado = ajustar_a_ventana(wake_at, ventana)
+    result: dict[str, Any] = {"sleep_until": ajustado.isoformat()}
+    if ventana is not None and ajustado != wake_at:
+        result["window"] = ventana.como_dict()
+        result["sleep_until_without_window"] = wake_at.isoformat()
+    return StepResult(wake_at=ajustado, result=result)
 
 
 @register_step("wait_until")
@@ -711,6 +721,14 @@ def _step_create_task(session, run, step, contact) -> StepResult:
     )
     session.add(task)
     session.flush()
+    # Respuesta a leads: la tarea queda enlazada a la clasificación de este
+    # run (para la pantalla y para no repetirla). Best-effort.
+    try:
+        from app.services.leads.registro import vincular_tarea  # noqa: PLC0415
+
+        vincular_tarea(session, run.id, task.id)
+    except Exception:  # noqa: BLE001 - nunca rompe la tarea
+        log.warning("workflows.create_task vincular_tarea failed", exc_info=True)
     # PR-Fixes-Pase-4 Bug 7. Sync best-effort con Google Calendar del
     # assignee. La función ya se traga errores y no-ops cuando el
     # usuario no está conectado — el workflow no se rompe.
@@ -730,27 +748,127 @@ def _step_create_task(session, run, step, contact) -> StepResult:
 # ---------------------------------------------------------------------
 
 
+def _audit_pipeline(
+    session, run: WorkflowRun, contact, *, action: str, metadata: dict[str, Any]
+) -> None:
+    try:
+        from app.core.audit import record_event  # noqa: PLC0415
+
+        record_event(
+            session, action=action, target_type="contact", target_id=contact.id,
+            metadata={
+                **metadata, "via": "workflow", "workflow_id": run.workflow_id,
+                "run_id": run.id, "actor_id": _trigger_payload(run).get("actor_id"),
+            },
+        )
+    except Exception:  # noqa: BLE001 - audit nunca bloquea el run
+        log.warning("workflows.audit pipeline change failed", exc_info=True)
+
+
+@register_step("action_add_to_pipeline")
+def _step_add_to_pipeline(session, run, step, contact) -> StepResult:
+    """Coloca el contacto en un pipeline y una etapa concretos (respuesta a
+    leads: Ventas B2B → Nuevo lead). Config:
+      {"pipeline_id": "...", "stage_id": "..."}   # sin stage: la primera
+
+    Escribe `contact_stage_history` (alta con origen NULL) a través del
+    repositorio, igual que la ficha. Si el contacto ya está en ese pipeline
+    no se mueve: eso es el paso «Mover contacto de etapa».
+    """
+    from app.core.audit import Action  # noqa: PLC0415
+    from app.models.crm import Pipeline, PipelineStage  # noqa: PLC0415
+    from app.repositories import pipelines as pipelines_repo  # noqa: PLC0415
+
+    cfg = _config(step)
+    pipeline_id = cfg.get("pipeline_id")
+    stage_id = cfg.get("stage_id") or None
+    if not pipeline_id:
+        return StepResult(status="skipped", error="no_pipeline_id")
+    pipeline = session.get(Pipeline, pipeline_id)
+    if pipeline is None or not pipeline.is_active:
+        return StepResult(status="skipped", error="pipeline_missing")
+    stage = session.get(PipelineStage, stage_id) if stage_id else None
+    if stage_id and stage is None:
+        return StepResult(status="skipped", error="stage_missing")
+    if stage is not None and stage.pipeline_id != pipeline.id:
+        return StepResult(status="skipped", error="etapa_de_otro_pipeline")
+    existing = pipelines_repo.get_assignment_for_contact_pipeline(
+        session, contact_id=contact.id, pipeline_id=pipeline.id
+    )
+    if existing is not None and not existing.is_archived:
+        return StepResult(
+            status="skipped", error="ya_en_pipeline",
+            result={"pipeline_id": pipeline.id, "stage_id": existing.stage_id},
+        )
+    assignment = pipelines_repo.add_contact_to_pipeline(
+        session, contact=contact, pipeline=pipeline,
+        stage_id=stage.id if stage is not None else None,
+        note="Añadido por workflow", moved_by_user_id=_trigger_payload(run).get("actor_id"),
+    )
+    _audit_pipeline(
+        session, run, contact, action=Action.CONTACT_PIPELINE_STAGE_ADDED,
+        metadata={"pipeline_id": pipeline.id, "stage_id": assignment.stage_id},
+    )
+    return StepResult(result={
+        "pipeline_id": pipeline.id, "pipeline": pipeline.name,
+        "stage_id": assignment.stage_id, "assignment_id": assignment.id,
+    })
+
+
 @register_step("action_move_opportunity_stage")
 def _step_move_opportunity_stage(
     session, run, step, contact
 ) -> StepResult:
-    _ = run
+    """Mueve el contacto de etapa en un pipeline concreto. Config:
+      {"pipeline_id": "...", "stage_id": "..."}
+
+    El modelo real son CONTACTOS en pipelines (`contact_pipeline_stages`),
+    no oportunidades: el tipo conserva su nombre por los workflows ya
+    guardados, pero elige pipeline y etapa explícitos y escribe
+    `contact_stage_history` (origen, destino, fecha) a través del
+    repositorio, igual que la ficha; antes cambiaba la fila más reciente
+    del contacto —fuera del pipeline que fuera— sin dejar rastro.
+
+    Si el contacto no está en ese pipeline, se salta: añadirlo es el paso
+    «Añadir a pipeline». Un config antiguo sin `pipeline_id` usa el de la
+    etapa.
+    """
+    from app.core.audit import Action  # noqa: PLC0415
+    from app.models.crm import PipelineStage  # noqa: PLC0415
+    from app.repositories import pipelines as pipelines_repo  # noqa: PLC0415
+
     cfg = _config(step)
     target_stage_id = cfg.get("stage_id")
     if not target_stage_id:
         return StepResult(status="skipped", error="no_stage_id")
-    row = session.scalar(
-        select(ContactPipelineStage)
-        .where(ContactPipelineStage.contact_id == contact.id)
-        .order_by(ContactPipelineStage.entered_stage_at.desc())
-        .limit(1)
+    stage = session.get(PipelineStage, target_stage_id)
+    if stage is None:
+        return StepResult(status="skipped", error="stage_missing")
+    pipeline_id = cfg.get("pipeline_id") or stage.pipeline_id
+    if stage.pipeline_id != pipeline_id:
+        return StepResult(status="skipped", error="etapa_de_otro_pipeline")
+    row = pipelines_repo.get_assignment_for_contact_pipeline(
+        session, contact_id=contact.id, pipeline_id=pipeline_id
     )
-    if row is None:
-        return StepResult(status="skipped", error="no_opportunity")
+    if row is None or row.is_archived:
+        return StepResult(status="skipped", error="no_esta_en_pipeline")
     old = row.stage_id
-    row.stage_id = target_stage_id
-    row.entered_stage_at = datetime.now(UTC)
-    return StepResult(result={"old_stage": old, "new_stage": target_stage_id})
+    if old == stage.id:
+        return StepResult(result={
+            "old_stage": old, "new_stage": stage.id, "pipeline_id": pipeline_id,
+            "unchanged": True,
+        })
+    pipelines_repo.move_contact_to_stage(
+        session, assignment=row, new_stage_id=stage.id, note="Movido por workflow",
+        moved_by_user_id=_trigger_payload(run).get("actor_id"),
+    )
+    _audit_pipeline(
+        session, run, contact, action=Action.CONTACT_PIPELINE_STAGE_CHANGED,
+        metadata={"pipeline_id": pipeline_id, "from_stage_id": old, "to_stage_id": stage.id},
+    )
+    return StepResult(result={
+        "old_stage": old, "new_stage": stage.id, "pipeline_id": pipeline_id,
+    })
 
 
 # ---------------------------------------------------------------------
@@ -1033,6 +1151,312 @@ def _step_send_email(session, run, step, contact) -> StepResult:
 
 
 # ---------------------------------------------------------------------
+# Action — Respuesta a leads (Fase 1: clasificar y preparar; NUNCA enviar)
+# ---------------------------------------------------------------------
+
+
+@register_step("action_classify_lead")
+def _step_classify_lead(session, run, step, contact) -> StepResult:
+    """Clasifica el lead (idioma, interés, spam, confianza) con el servicio
+    `app.services.leads.clasificador` y guarda el resultado en
+    `lead_classifications` y en el contacto (`lead_interest`,
+    `lead_is_spam`, `lead_confidence`): los pasos siguientes bifurcan por
+    ello (condición sobre `contact.lead_is_spam`, o directamente por las
+    ramas de este paso: `ok`, `spam`, `omitido`; sin ramas, `default`).
+
+    Config:
+      {"max_age_hours": 72}   # 0 = sin límite de antigüedad
+
+    Un lead se clasifica UNA vez: si ya tiene fila (mismo envío o nota) se
+    reutiliza. La entrada sale del evento `lead.received` que disparó el run
+    y, si el run se lanzó a mano, de lo último que entró del contacto.
+    """
+    from app.models.leads import ESTADO_CLASIFICADO  # noqa: PLC0415
+    from app.services.leads import clasificador, registro  # noqa: PLC0415
+    from app.services.leads.config import configuracion  # noqa: PLC0415
+    from app.workflows.trigger_definitions import _lead_max_age_hours  # noqa: PLC0415
+
+    cfg = _config(step)
+    conf = configuracion(session)
+    # El interruptor general y el tope diario (Configuración ERP → Respuesta
+    # a leads): apagado, o con el tope del día alcanzado, el lead sale por
+    # «omitido» sin clasificar, sin borrador y sin tarea.
+    if not conf.get("activo", False):
+        return StepResult(
+            status="skipped", error="respuesta_leads_apagada", branch_label="omitido",
+        )
+    procesados_hoy = registro.clasificados_hoy(session)
+    tope = int(conf.get("tope_diario") or 0)
+    if tope and procesados_hoy >= tope:
+        registro.avisar_tope_diario(session, tope=tope, procesados=procesados_hoy)
+        return StepResult(
+            status="skipped", error="tope_diario_alcanzado", branch_label="omitido",
+            result={"tope_diario": tope, "procesados_hoy": procesados_hoy},
+        )
+    payload = _trigger_payload(run)
+    entrada = registro.entrada_desde_payload(payload, contact)
+    if entrada is None:
+        entrada = registro.entrada_desde_contacto(session, contact)
+    if entrada is None:
+        return StepResult(status="skipped", error="lead_sin_consulta", branch_label="omitido")
+    # La antigüedad: la del paso si la fija; si no, la de la configuración.
+    max_age_hours = _lead_max_age_hours(
+        cfg if "max_age_hours" in cfg else {"max_age_hours": conf.get("antiguedad_horas")}
+    )
+    if max_age_hours > 0 and entrada.lead_at is not None:
+        limite = datetime.now(UTC) - timedelta(hours=max_age_hours)
+        if entrada.lead_at < limite:
+            return StepResult(
+                status="skipped", error="lead_demasiado_antiguo", branch_label="omitido",
+                result={"lead_at": entrada.lead_at.isoformat(), "max_age_hours": max_age_hours},
+            )
+    existente = registro.clasificacion_existente(session, entrada)
+    if existente is not None:
+        registro.copiar_al_contacto(contact, existente)
+        reutilizada = {
+            "reused": True, "lead_classification_id": existente.id,
+            "idioma": existente.idioma_efectivo, "interes": existente.interes_efectivo,
+            "es_spam": existente.es_spam_efectivo, "confianza": existente.confidence,
+            "status": existente.status,
+        }
+        # Una vez por lead: si ya se le preparó algo (o ya se descartó como
+        # spam) el segundo paso no repite nada: rama «omitido».
+        if existente.draft_id or existente.task_id or existente.status != ESTADO_CLASIFICADO:
+            return StepResult(
+                status="skipped", error="lead_ya_procesado", branch_label="omitido",
+                result=reutilizada,
+            )
+        return StepResult(
+            branch_label="spam" if existente.es_spam_efectivo else "ok", result=reutilizada,
+        )
+    clasificacion = clasificador.clasificar_lead(entrada, clasificador.proveedor_por_defecto())
+    fila = registro.registrar(session, contact, entrada, clasificacion, run_id=run.id)
+    return StepResult(
+        branch_label="spam" if clasificacion.es_spam else "ok",
+        result={
+            "lead_classification_id": fila.id, "source": entrada.fuente,
+            "source_ref": entrada.referencia, **clasificacion.como_dict(),
+        },
+    )
+
+
+def _primer_admin_activo(session) -> str | None:
+    from app.models.crm import UserRole  # noqa: PLC0415
+
+    user = session.scalar(
+        select(User)
+        .where(User.role == UserRole.ADMIN, User.is_active.is_(True))
+        .order_by(User.created_at.asc())
+        .limit(1)
+    )
+    return user.id if user is not None else None
+
+
+def _usuario_activo(session, user_id: str | None) -> str | None:
+    if not user_id:
+        return None
+    user = session.get(User, user_id)
+    return user.id if user is not None and user.is_active else None
+
+
+def _usuario_del_borrador(session, contact, cfg: dict[str, Any]) -> str | None:
+    """De quién es el borrador (`email_drafts.user_id` es obligatorio): el
+    comercial del lead; si no lo tiene (o está de baja), el usuario fijo del
+    paso; y si no, el primer administrador activo."""
+    modo = (cfg.get("owner_mode") or "propietario").lower()
+    fijo = _usuario_activo(session, cfg.get("user_id"))
+    if modo == "usuario" and fijo:
+        return fijo
+    return (
+        _usuario_activo(session, contact.owner_user_id) or fijo or _primer_admin_activo(session)
+    )
+
+
+def _ya_contactado(session, contact, desde: datetime | None) -> bool:
+    """Un correo saliente al contacto desde la fecha del lead que no sea el
+    acuse de recibo del formulario (ese ya salió solo)."""
+    from sqlalchemy import Text, cast  # noqa: PLC0415
+
+    from app.models.crm import ActivityEvent  # noqa: PLC0415
+
+    clauses = [
+        EmailMessage.contact_id == contact.id,
+        EmailMessage.direction == EmailDirection.OUTBOUND,
+    ]
+    if desde is not None:
+        clauses.append(EmailMessage.created_at >= desde)
+    salientes = list(session.scalars(select(EmailMessage.id).where(*clauses)))
+    if not salientes:
+        return False
+    acuses = set(session.scalars(
+        select(ActivityEvent.external_id).where(
+            ActivityEvent.contact_id == contact.id,
+            ActivityEvent.event_type == "email.sent_from_crm",
+            cast(ActivityEvent.metadata_json, Text).like('%"acuse_formulario_web"%'),
+        )
+    ))
+    return any(f"email:{message_id}:email.sent_from_crm" not in acuses for message_id in salientes)
+
+
+def _cuenta_agile_del_contacto(contact) -> str | None:
+    origen = contact.origin_account_id or ""
+    if origen.startswith("agilecrm:"):
+        return origen.split(":", 1)[1] or None
+    return None
+
+
+@register_step("action_prepare_email_draft")
+def _step_prepare_email_draft(session, run, step, contact) -> StepResult:
+    """Compone el correo con su plantilla y su remitente y lo deja GUARDADO
+    como borrador (`email_drafts`), sin mandarlo. Distinto de «Enviar email»:
+    en la Fase 1 nadie envía nada al cliente. Config:
+      {"template_mode": "por_interes" | "fija", "template_id": "...",
+       "from_mode": "web_del_lead" | "fijo", "from_alias": "...", "from_name": "...",
+       "owner_mode": "propietario" | "usuario", "user_id": "...",
+       "subject_override": "..."}
+
+    - `por_interes`: la plantilla del interés y el idioma de la última
+      clasificación (`app.services.leads.plantillas`). Sin plantilla —`otro`,
+      consumibles, servicio técnico, repuestos, o un interés sin contenido—
+      se deja un borrador vacío y queda el aviso.
+    - `web_del_lead`: el remitente de la web por la que entró el lead (la
+      misma dirección que firma el acuse de recibo).
+    - Una vez por lead: si el lead ya tiene borrador, o ya se le mandó algo
+      que no sea el acuse, no se repite.
+    """
+    from app.email_templates.models import EmailTemplate  # noqa: PLC0415
+    from app.email_templates.services import replace_merge_vars  # noqa: PLC0415
+    from app.models.crm import EmailDraft  # noqa: PLC0415
+    from app.models.leads import ESTADO_PREPARADO, ESTADO_SIN_PLANTILLA  # noqa: PLC0415
+    from app.services.leads import plantillas, registro, remitentes  # noqa: PLC0415
+    from app.services.leads.clasificador import (  # noqa: PLC0415
+        INTERESES_COMERCIALES,
+        etiqueta_interes,
+    )
+    from app.services.leads.config import configuracion  # noqa: PLC0415
+    from app.services.web_forms.sitios import partes_de_origen  # noqa: PLC0415
+
+    cfg = _config(step)
+    if not contact.email:
+        return StepResult(status="skipped", error="contact_no_email")
+    fila = registro.ultima_clasificacion(session, contact.id)
+    if fila is not None and fila.es_spam_efectivo:
+        return StepResult(status="skipped", error="lead_spam")
+    if fila is not None and fila.draft_id:
+        return StepResult(
+            status="skipped", error="borrador_ya_preparado", result={"draft_id": fila.draft_id},
+        )
+    desde = fila.lead_at if fila is not None and fila.lead_at else None
+    if _ya_contactado(session, contact, desde):
+        return StepResult(status="skipped", error="ya_contactado")
+
+    conf = configuracion(session)
+    interes = fila.interes_efectivo if fila is not None else None
+    idioma = ((fila.idioma_efectivo if fila is not None else None)
+              or contact.language or "es")
+    template = None
+    aviso: str | None = None
+    modo_plantilla = (cfg.get("template_mode") or "por_interes").lower()
+    if modo_plantilla == "fija":
+        template = session.get(EmailTemplate, str(cfg.get("template_id") or ""))
+        if template is None:
+            aviso = "la plantilla fija del paso ya no existe"
+    elif not interes:
+        aviso = "lead sin clasificar: sin plantilla"
+    elif interes not in INTERESES_COMERCIALES:
+        aviso = f"«{etiqueta_interes(interes)}» no es un lead comercial: sin plantilla de venta"
+    else:
+        template = plantillas.plantilla_para(session, interes, idioma, conf.get("mapa"))
+        if template is None:
+            aviso = f"sin plantilla para {etiqueta_interes(interes)} en {idioma}"
+
+    contexto = fila.contexto() if fila is not None else {}
+    sitio = contexto.get("sitio")
+    if not sitio:
+        partes = partes_de_origen(contact.origin_account_id)
+        sitio = partes[0] if partes else None
+    modo_from = (cfg.get("from_mode") or "web_del_lead").lower()
+    if modo_from == "fijo":
+        remitente = (cfg.get("from_alias") or "").strip() or None
+        marca = (cfg.get("from_name") or "").strip() or None
+    else:
+        remitente, marca = remitentes.remitente_para(
+            sitio=sitio,
+            cuenta_agile=contexto.get("cuenta_agile") or _cuenta_agile_del_contacto(contact),
+            config=conf.get("remitentes"),
+        )
+        if remitente is None:
+            aviso = f"{aviso}; " if aviso else ""
+            aviso += "sin remitente: la web del lead no se conoce"
+    user_id = _usuario_del_borrador(session, contact, cfg)
+    if not user_id:
+        return StepResult(status="failed", error="no_user_for_draft")
+
+    subject = body_html = ""
+    body_text: str | None = None
+    if template is not None:
+        ctx_vars = variables.build_context(
+            session=session, contact=contact, trigger_payload=_trigger_payload(run),
+        )
+        subject = variables.render(
+            replace_merge_vars(template.subject or "", contact) or "", ctx_vars, is_html=False,
+        )[:500]
+        body_html = variables.render(
+            replace_merge_vars(template.body_html or "", contact) or "", ctx_vars, is_html=True,
+        )
+        texto = replace_merge_vars(template.body_text or "", contact) or ""
+        body_text = variables.render(texto, ctx_vars, is_html=False) or None
+        override = (cfg.get("subject_override") or "").strip()
+        if override:
+            subject = variables.render(override, ctx_vars, is_html=False)[:500]
+
+    draft = EmailDraft(
+        user_id=user_id, contact_id=contact.id, from_alias=remitente, from_name=marca,
+        subject=subject or None, body_html=body_html or None, body_text=body_text,
+        to_emails_json=json.dumps([contact.email]),
+        metadata_json=json.dumps({
+            "origen": "respuesta_leads", "workflow_id": run.workflow_id, "run_id": run.id,
+            "lead_classification_id": fila.id if fila is not None else None,
+            "template_id": template.id if template is not None else None,
+            "sin_plantilla": template is None, "aviso": aviso,
+        }, default=str),
+    )
+    session.add(draft)
+    session.flush()
+    if fila is not None:
+        fila.draft_id = draft.id
+        fila.template_id = template.id if template is not None else None
+        fila.template_name = template.name if template is not None else None
+        fila.sender_email = remitente
+        fila.status = ESTADO_PREPARADO if template is not None else ESTADO_SIN_PLANTILLA
+        fila.status_detail = (aviso or "")[:200] or None
+        if not fila.workflow_run_id:
+            fila.workflow_run_id = run.id
+    try:
+        from app.core.audit import Action, record_event  # noqa: PLC0415
+
+        record_event(
+            session, action=Action.LEAD_DRAFT_PREPARED, target_type="contact",
+            target_id=contact.id,
+            metadata={
+                "draft_id": draft.id, "template_id": draft and (template.id if template else None),
+                "from": remitente, "to": contact.email, "sin_plantilla": template is None,
+                "aviso": aviso, "via": "workflow", "workflow_id": run.workflow_id,
+                "run_id": run.id,
+            },
+        )
+    except Exception:  # noqa: BLE001 - audit nunca bloquea el run
+        log.warning("workflows.audit lead draft failed", exc_info=True)
+    return StepResult(result={
+        "draft_id": draft.id, "draft_url": registro.url_borrador(draft.id),
+        "template_id": template.id if template is not None else None,
+        "template_name": template.name if template is not None else None,
+        "from": remitente, "to": contact.email, "subject": subject,
+        "sin_plantilla": template is None, "aviso": aviso,
+    })
+
+
+# ---------------------------------------------------------------------
 # Action — Notify
 # ---------------------------------------------------------------------
 
@@ -1234,11 +1658,27 @@ STEP_CATALOG: list[dict[str, Any]] = [
     {"type": "action_create_task", "category": "task", "label": "Crear tarea"},
     # Email
     {"type": "action_send_email", "category": "email", "label": "Enviar email"},
-    # Oportunidades
+    {
+        "type": "action_prepare_email_draft",
+        "category": "email",
+        "label": "Preparar borrador de email (sin enviar)",
+    },
+    # Respuesta a leads
+    {
+        "type": "action_classify_lead",
+        "category": "lead",
+        "label": "Clasificar lead (idioma, interés, spam)",
+    },
+    # Pipelines (el modelo real son contactos en pipelines, no oportunidades)
+    {
+        "type": "action_add_to_pipeline",
+        "category": "opportunity",
+        "label": "Añadir a pipeline",
+    },
     {
         "type": "action_move_opportunity_stage",
         "category": "opportunity",
-        "label": "Mover oportunidad a stage",
+        "label": "Mover contacto de etapa",
     },
     # Notificaciones
     {

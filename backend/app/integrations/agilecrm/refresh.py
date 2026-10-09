@@ -79,6 +79,9 @@ async def refresh_contact_external_data(
     """
     refreshed_at = datetime.now(UTC)
     result = RefreshResult(refreshed_at=refreshed_at)
+    # Respuesta a leads: las notas «form note» que se insertan en este
+    # refresco despachan `lead.received` después del commit.
+    nuevas_notas: list[Any] = []
 
     refs: list[ExternalReference] = list(contact.external_refs)
     for ref in refs:
@@ -97,6 +100,7 @@ async def refresh_contact_external_data(
             contact=contact,
             reference=ref,
             result=result,
+            nuevas=nuevas_notas,
         )
 
     contact.external_data_refreshed_at = refreshed_at
@@ -118,6 +122,10 @@ async def refresh_contact_external_data(
         },
     )
     session.commit()
+    if nuevas_notas:
+        from app.services.leads.eventos import despachar_leads_de_notas  # noqa: PLC0415
+
+        despachar_leads_de_notas(session, contact_id=contact.id, notas=nuevas_notas)
     return result
 
 
@@ -127,6 +135,7 @@ async def _refresh_agilecrm_account(
     contact: Contact,
     reference: ExternalReference,
     result: RefreshResult,
+    nuevas: list[Any] | None = None,
 ) -> None:
     """Refresh one AgileCRM account's payload for the contact.
 
@@ -198,6 +207,7 @@ async def _refresh_agilecrm_account(
             contact_id=contact.id,
             account_id=reference.account_id,
             payloads=note_payloads,
+            nuevas=nuevas,
         )
         result.tasks_count += _sync_contact_tasks(
             session,

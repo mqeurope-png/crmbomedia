@@ -574,7 +574,11 @@ def _sync_contact_notes(
     contact_id: str,
     account_id: str,
     payloads: list[dict[str, Any]],
+    nuevas: list[Note] | None = None,
 ) -> int:
+    """`nuevas`, si se pasa, recoge las notas que se INSERTAN (no las que ya
+    estaban): la respuesta a leads despacha `lead.received` por cada nota
+    «form note» nueva después del commit (`app.services.leads.eventos`)."""
     written = 0
     for payload in payloads:
         record = map_agilecrm_note_to_internal(
@@ -595,7 +599,10 @@ def _sync_contact_notes(
             for field, value in record.items():
                 setattr(existing, field, value)
         else:
-            session.add(Note(**record))
+            row = Note(**record)
+            session.add(row)
+            if nuevas is not None:
+                nuevas.append(row)
         written += 1
     if written:
         session.flush()

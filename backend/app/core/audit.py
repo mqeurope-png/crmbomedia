@@ -95,6 +95,12 @@ class Action:
     NOTE_CREATED = "note.created"
     # Sprint Workflows - runtime por fin auditado.
     WORKFLOW_RUN_STARTED = "workflow.run_started"
+    # Respuesta a leads · Fase 1: clasificación, borrador preparado (nunca
+    # enviado en esta fase) y corrección a mano de la clasificación.
+    LEAD_CLASSIFIED = "lead.classified"
+    LEAD_DRAFT_PREPARED = "lead.draft_prepared"
+    LEAD_CLASSIFICATION_CORRECTED = "lead.classification_corrected"
+    LEAD_DAILY_CAP_REACHED = "lead.daily_cap_reached"
     TASK_CREATED = "task.created"
     TASK_UPDATED = "task.updated"
     TASK_COMPLETED = "task.completed"

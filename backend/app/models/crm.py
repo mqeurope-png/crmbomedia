@@ -7,6 +7,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     Enum,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -304,6 +305,13 @@ class Contact(TimestampMixin, Base):
     # AgileCRM lead score. Other systems push their own scoring under
     # the same column for consistency.
     lead_score: Mapped[int | None] = mapped_column(Integer)
+    # Respuesta a leads · Fase 1 (migración 0132). Copia de lo esencial de la
+    # última clasificación del lead (`lead_classifications`), para que las
+    # condiciones de los workflows y los filtros bifurquen por ello sin JOIN.
+    lead_interest: Mapped[str | None] = mapped_column(String(40))
+    lead_is_spam: Mapped[bool | None] = mapped_column(Boolean)
+    lead_confidence: Mapped[float | None] = mapped_column(Float)
+    lead_classified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # PR-Consolidado — Star Rating. Réplica del "Star Value" nativo de
     # AgileCRM (1-5 estrellas). COMPLETAMENTE independiente de
     # `lead_score`. NULL o 0 = sin valorar (el frontend usa 0 cuando
