@@ -24,6 +24,7 @@ import app.main  # noqa: F401
 from app.core import crypto
 from app.db.session import get_session
 from app.integrations.gmail import backfill_attachments as ba_module
+from app.integrations.gmail import backfill_universal as bu_module
 from app.integrations.gmail import service as gmail_service
 from app.integrations.gmail.backfill import is_not_found_error
 from app.integrations.gmail.backfill_attachments import (
@@ -236,8 +237,11 @@ def test_backfill_attachments_no_flag_keeps_active(
 
 
 # ---------------------------------------------------------------------------
-# backfill_universal --purge-not-found (solo cubre la carrera list→get:
-# un mensaje YA en la BD de esta cuenta se dedupea antes de get_message)
+# backfill_universal --purge-not-found. Solo cubre la carrera list→get: lo
+# que YA está en la BD se dedupea antes de get_message sea cual sea la
+# cuenta (hay un solo buzón), así que para que el 404 alcance una fila hay
+# que simular que entró en BD DESPUÉS de cargar `seen` (la guardó el push
+# mientras corría el relleno y luego se borró en Gmail).
 # ---------------------------------------------------------------------------
 
 
@@ -253,12 +257,54 @@ def test_backfill_universal_purge_not_found_marks_deleted_gmail(
 
     with factory() as session:
         uid = _uid(session)
-        admin = _uid(session, UserRole.ADMIN)
-        # Fila en BD bajo OTRA cuenta (no entra en el dedupe `seen` del
-        # runner, así que el 404 la alcanza y el flag la marca).
         _seed_thread(
-            session, uid=admin, gid="t404",
+            session, uid=uid, gid="t404",
             messages=[{"gmail_message_id": "u404"}],
+        )
+        session.commit()
+        with (
+            patch.object(gmail_service, "_client_for", return_value=_Fake()),
+            # La fila no estaba al cargar `seen` → el runner pide el full,
+            # Gmail dice 404 y el flag la marca huérfana.
+            patch.object(bu_module, "_load_seen", return_value=set()),
+        ):
+            report = run_backfill_universal(
+                session,
+                user_id=uid,
+                since=datetime(2026, 2, 7).date(),
+                until=datetime(2026, 8, 11).date(),
+                purge_not_found=True,
+                progress=lambda _line: None,
+            )
+        assert report.purged_not_found == 1
+        assert report.errors == 0
+        msg = session.scalar(
+            select(EmailMessage).where(EmailMessage.gmail_message_id == "u404")
+        )
+        assert msg is not None
+        assert msg.gmail_status == "deleted_gmail"
+
+
+def test_backfill_universal_already_stored_is_dedupe_not_refetched(
+    factory: sessionmaker,
+) -> None:
+    """Una fila ya guardada —aunque sea bajo OTRA cuenta— es dedupe: no se
+    vuelve a pedir a Gmail ni se marca nada aunque Gmail la diera por
+    borrada. Hay un solo buzón: el envío del compositor guardado bajo su
+    autor es el mismo mensaje que trae SENT al usuario del push."""
+    class _Fake:
+        def list_messages(self, **_kw):  # noqa: ANN201
+            return {"messages": [{"id": "u406", "threadId": "t406"}]}
+
+        def get_message(self, _mid):  # noqa: ANN201
+            raise AssertionError("no debe pedir el full de un id ya guardado")
+
+    with factory() as session:
+        uid = _uid(session)
+        admin = _uid(session, UserRole.ADMIN)
+        _seed_thread(
+            session, uid=admin, gid="t406",
+            messages=[{"gmail_message_id": "u406"}],
         )
         session.commit()
         with patch.object(gmail_service, "_client_for", return_value=_Fake()):
@@ -270,12 +316,15 @@ def test_backfill_universal_purge_not_found_marks_deleted_gmail(
                 purge_not_found=True,
                 progress=lambda _line: None,
             )
-        assert report.purged_not_found == 1
+        # El falso lista el mismo id bajo cada etiqueta (INBOX, SPAM, SENT).
+        assert report.skipped_dedupe == 3
+        assert report.purged_not_found == 0
+        assert report.errors == 0
         msg = session.scalar(
-            select(EmailMessage).where(EmailMessage.gmail_message_id == "u404")
+            select(EmailMessage).where(EmailMessage.gmail_message_id == "u406")
         )
         assert msg is not None
-        assert msg.gmail_status == "deleted_gmail"
+        assert msg.gmail_status == "active"
 
 
 def test_backfill_universal_no_flag_keeps_active(
@@ -290,13 +339,15 @@ def test_backfill_universal_no_flag_keeps_active(
 
     with factory() as session:
         uid = _uid(session)
-        admin = _uid(session, UserRole.ADMIN)
         _seed_thread(
-            session, uid=admin, gid="t405",
+            session, uid=uid, gid="t405",
             messages=[{"gmail_message_id": "u405"}],
         )
         session.commit()
-        with patch.object(gmail_service, "_client_for", return_value=_Fake()):
+        with (
+            patch.object(gmail_service, "_client_for", return_value=_Fake()),
+            patch.object(bu_module, "_load_seen", return_value=set()),
+        ):
             report = run_backfill_universal(
                 session,
                 user_id=uid,
