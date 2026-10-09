@@ -10,6 +10,7 @@ import {
   type BrevoCampaign,
 } from "../../lib/brevoApi";
 import { getUsers, listTags, type Tag, type User } from "../../lib/api";
+import { getErpSettings } from "../../lib/erpApi";
 import { PipelineStageSelector } from "./PipelineStageSelector";
 
 type Props = {
@@ -130,6 +131,10 @@ export function TriggerConfigPanel({
 
   if (triggerType === "cron.recurring") {
     return <CronSubConfig config={config} set={set} />;
+  }
+
+  if (triggerType === "lead.received") {
+    return <LeadReceivedSubConfig config={config} set={set} />;
   }
 
   return (
@@ -615,6 +620,77 @@ function CronSubConfig({
           value={(config.hour as number) ?? 9}
           onChange={(e) => set("hour", Number(e.target.value))}
         />
+      </label>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------
+// Respuesta a leads (Fase 1) — lead.received
+// ---------------------------------------------------------------------
+
+function LeadReceivedSubConfig({
+  config,
+  set,
+}: {
+  config: Record<string, unknown>;
+  set: (k: string, v: unknown) => void;
+}) {
+  // Las webs conocidas, como sugerencia (best-effort: el catálogo viene con
+  // la configuración del ERP; sin él, el campo sigue siendo texto libre).
+  const [webs, setWebs] = useState<{ clave: string; marca: string }[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    getErpSettings()
+      .then((s) => {
+        if (!cancelled) setWebs(s.lead_response_catalogo?.webs ?? []);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const maxAge = config.max_age_hours;
+  return (
+    <>
+      <label>
+        Origen del lead
+        <select
+          value={(config.source as string) ?? ""}
+          onChange={(e) => set("source", e.target.value || undefined)}
+        >
+          <option value="">— Formularios web y notas de AgileCRM —</option>
+          <option value="web_form">Solo formularios web</option>
+          <option value="agilecrm">Solo notas «form note» de AgileCRM</option>
+        </select>
+      </label>
+      <label>
+        Web (opcional)
+        <input
+          type="text"
+          list="lead-received-webs"
+          value={(config.site as string) ?? ""}
+          onChange={(e) => set("site", e.target.value.trim() || undefined)}
+          placeholder="pimpam, artisjet-es… (vacío = cualquiera)"
+        />
+        <datalist id="lead-received-webs">
+          {webs.map((w) => (
+            <option key={w.clave} value={w.clave}>{w.marca}</option>
+          ))}
+        </datalist>
+      </label>
+      <label>
+        Antigüedad máxima del lead (horas)
+        <input
+          type="number"
+          min={0}
+          value={typeof maxAge === "number" ? maxAge : 72}
+          onChange={(e) => set("max_age_hours", Number(e.target.value))}
+        />
+        <span className="muted small">
+          Por la fecha real del lead (una nota de Agile de julio sincronizada
+          hoy no dispara). 72 por defecto; 0 = sin límite.
+        </span>
       </label>
     </>
   );

@@ -2167,6 +2167,12 @@ export type ErpSettings = {
   cuadre?: CuadreConfig;
   /** ERP · Cuadre — catálogo de comprobaciones (solo lectura; viene en el GET). */
   cuadre_catalogo?: CuadreComprobacion[];
+  /** Respuesta a leads (Fase 1) — interruptor, tope diario, umbral, antigüedad,
+   *  ventana, mapa interés × idioma → plantilla y remitentes. */
+  lead_response?: LeadResponseConfig;
+  /** Respuesta a leads — lo que la pantalla necesita para pintar la
+   *  configuración (solo lectura; viene en el GET). */
+  lead_response_catalogo?: LeadResponseCatalogo;
   /** ERP-F6-fix3 — tiendas Woo dadas de alta, para configurar la serie de
    *  cada una (solo lectura; se rellena en el GET). */
   woocommerce_stores?: {
@@ -5209,4 +5215,202 @@ export async function vaciarCola(
     method: "POST",
     body: JSON.stringify({ cola, probar: opts.probar }),
   });
+}
+
+// --- Respuesta a leads (Fase 1): clasificar, preparar el borrador, colocar ----
+// La Fase 1 NO envía ni un correo al cliente: clasifica, deja un borrador,
+// coloca en el pipeline y crea una tarea. Todo lo de aquí es leer, corregir a
+// mano y simular en seco; la configuración va en `ErpSettings.lead_response`.
+
+/** Ventana horaria de la espera del workflow (hora de Madrid). */
+export type LeadResponseVentana = {
+  enabled: boolean;
+  start: string;
+  end: string;
+  weekdays_only: boolean;
+};
+
+export type LeadResponseConfig = {
+  /** Interruptor general. Apagado, el paso «Clasificar lead» no hace nada. */
+  activo: boolean;
+  /** Leads que se procesan al día; al llegar se para y se avisa. */
+  tope_diario: number;
+  /** 0–1. Por debajo, la lista lo marca (la Fase 2 no enviará). */
+  umbral_confianza: number;
+  /** Solo se procesan leads más recientes que esto (horas). */
+  antiguedad_horas: number;
+  ventana: LeadResponseVentana;
+  /** `interes:idioma` → id de plantilla. "" = sin plantilla a propósito;
+   *  sin entrada = se busca por nombre («Lead · <contenido> (<IDIOMA>)»). */
+  mapa: Record<string, string>;
+  remitentes: {
+    /** Clave de la web → dirección desde la que sale el borrador. */
+    por_web: Record<string, string>;
+    /** Cuenta de AgileCRM → clave de la web (los leads de Agile no traen web). */
+    por_cuenta_agile: Record<string, string>;
+  };
+};
+
+export type LeadResponseCatalogo = {
+  intereses: { id: string; label: string; comercial: boolean }[];
+  idiomas: string[];
+  plantillas: { id: string; name: string }[];
+  /** Lo que se resuelve por nombre para cada `interes:idioma` (null = no hay). */
+  mapa_por_nombre: Record<string, string | null>;
+  webs: { clave: string; web: string; marca: string; remitente_defecto: string | null }[];
+  cuentas_agile: { account_id: string; display_name: string; enabled: boolean }[];
+};
+
+/** Un lead clasificado de verdad (fila de `lead_classifications`). */
+export type LeadClasificacion = {
+  id: string;
+  contacto: { id: string; nombre: string; email: string };
+  fuente: "web_form" | "agilecrm" | string;
+  referencia: string;
+  lead_at: string | null;
+  web: string | null;
+  cuenta_agile: string | null;
+  productos: string[];
+  texto: string;
+  idioma: string | null;
+  idioma_fuente: string | null;
+  idioma_formulario: string | null;
+  discrepancia_idioma: boolean;
+  interes: string | null;
+  interes_texto: string;
+  interes_fuente: string | null;
+  es_spam: boolean;
+  confianza: number;
+  bajo_umbral: boolean;
+  motivo: string | null;
+  proveedor: string | null;
+  modelo: string | null;
+  estado: "clasificado" | "spam" | "preparado" | "sin_plantilla" | "omitido" | string;
+  estado_detalle: string | null;
+  plantilla: string | null;
+  remitente: string | null;
+  borrador_id: string | null;
+  borrador_url: string | null;
+  tarea_id: string | null;
+  run_id: string | null;
+  /** La clasificación que manda: la corregida a mano si la hay. */
+  efectivo: { idioma: string | null; interes: string | null; interes_texto: string; es_spam: boolean };
+  correccion: {
+    corregida: boolean;
+    idioma: string | null;
+    interes: string | null;
+    es_spam: boolean | null;
+    nota: string | null;
+    por: string | null;
+    cuando: string | null;
+  };
+  creado: string | null;
+};
+
+export type LeadClasificaciones = {
+  dias: number;
+  umbral_confianza: number;
+  total: number;
+  corregidas: number;
+  items: LeadClasificacion[];
+  opciones: { idiomas: string[]; intereses: { id: string; label: string }[] };
+};
+
+export type LeadCorreccion = {
+  idioma?: string;
+  interes?: string;
+  es_spam?: boolean;
+  nota?: string;
+};
+
+/** Lo que el modo en seco dice de un lead: qué haría, sin hacerlo. */
+export type LeadEnSecoFila = {
+  contacto_id: string;
+  nombre: string;
+  email: string;
+  fuente: string;
+  referencia: string;
+  lead_at: string | null;
+  web: string | null;
+  idioma_formulario: string | null;
+  productos: string[];
+  texto: string;
+  clasificacion: {
+    idioma: string | null;
+    interes: string;
+    es_spam: boolean;
+    confianza: number;
+    motivo: string;
+    idioma_fuente?: string | null;
+    interes_fuente?: string | null;
+    discrepancia_idioma?: boolean;
+    proveedor?: string | null;
+    modelo?: string | null;
+  };
+  ya_clasificado: boolean;
+  haria: {
+    etapa: string;
+    plantilla: string | null;
+    remitente: string | null;
+    tarea: boolean;
+    aviso: string | null;
+  };
+};
+
+export type LeadEnSecoInforme = {
+  dias: number;
+  limite: number;
+  nada_escrito: boolean;
+  resumen: {
+    total: number;
+    spam: number;
+    sin_plantilla: number;
+    con_discrepancia_idioma: number;
+    ya_clasificados: number;
+    por_interes: Record<string, number>;
+    por_idioma: Record<string, number>;
+    proveedor: string;
+  };
+  items: LeadEnSecoFila[];
+};
+
+export type LeadWorkflowEstado = {
+  existe: boolean;
+  id: string | null;
+  status: string | null;
+  url: string | null;
+  pipeline_ok: boolean;
+  pipeline_aviso: string | null;
+};
+
+export async function listLeadClasificaciones(dias = 15): Promise<LeadClasificaciones> {
+  return apiFetch<LeadClasificaciones>(`/api/erp/leads/clasificaciones${qs({ dias })}`);
+}
+
+/** La corrección a mano: queda registrada y manda en la ficha del contacto. */
+export async function corregirLeadClasificacion(
+  id: string, payload: LeadCorreccion,
+): Promise<LeadClasificacion> {
+  return apiFetch<LeadClasificacion>(
+    `/api/erp/leads/clasificaciones/${encodeURIComponent(id)}/corregir`,
+    { method: "POST", body: JSON.stringify(payload) },
+  );
+}
+
+/** Qué habría hecho la Fase 1 con los leads de los últimos N días. No escribe nada. */
+export async function simularLeadsEnSeco(dias = 15, limite = 200): Promise<LeadEnSecoInforme> {
+  return apiFetch<LeadEnSecoInforme>("/api/erp/leads/en-seco", {
+    method: "POST", body: JSON.stringify({ dias, limite }),
+  });
+}
+
+export async function getLeadWorkflow(): Promise<LeadWorkflowEstado> {
+  return apiFetch<LeadWorkflowEstado>("/api/erp/leads/workflow");
+}
+
+/** Crea el workflow «Respuesta a leads (Fase 1)» en BORRADOR. 409 si ya existe. */
+export async function crearLeadWorkflow(): Promise<{
+  id: string; name: string; status: string; url: string;
+}> {
+  return apiFetch("/api/erp/leads/workflow", { method: "POST" });
 }

@@ -710,3 +710,85 @@ describe("ErpSettingsPage — Cuadre (descuadres)", () => {
     });
   });
 });
+
+describe("ErpSettingsPage — Respuesta a leads", () => {
+  const catalogo = {
+    intereses: [
+      { id: "vending", label: "Vending", comercial: true },
+      { id: "laser_cnc", label: "Láser y CNC", comercial: true },
+      { id: "consumibles", label: "Consumibles", comercial: false },
+    ],
+    idiomas: ["es", "en"],
+    plantillas: [
+      { id: "tpl-vending-es", name: "Lead · Vending (ES)" },
+      { id: "tpl-laser-en", name: "Lead · Láser y CNC (EN)" },
+    ],
+    mapa_por_nombre: {
+      "vending:es": "tpl-vending-es", "vending:en": null,
+      "laser_cnc:es": null, "laser_cnc:en": "tpl-laser-en",
+    },
+    webs: [
+      { clave: "pimpam", web: "pimpam-vending.com", marca: "Pimpam",
+        remitente_defecto: "info@pimpam-vending.com" },
+      { clave: "artisjet-es", web: "artisjet.es", marca: "ArtisJet ES", remitente_defecto: null },
+    ],
+    cuentas_agile: [{ account_id: "acc-1", display_name: "Agile Bomedia", enabled: true }],
+  };
+  const config = {
+    activo: false, tope_diario: 20, umbral_confianza: 0.7, antiguedad_horas: 72,
+    ventana: { enabled: true, start: "09:00", end: "18:00", weekdays_only: true },
+    mapa: {}, remitentes: { por_web: {}, por_cuenta_agile: {} },
+  };
+
+  it("apagado por defecto; interruptor, tope, mapa y remitentes viajan juntos en lead_response", async () => {
+    mockGet.mockResolvedValue(settings({
+      lead_response: config, lead_response_catalogo: catalogo,
+    }));
+    const user = userEvent.setup();
+    render(<ErpSettingsPage />);
+    const activo = await screen.findByLabelText("Respuesta a leads activa");
+    expect(activo).not.toBeChecked();
+    // Consumibles no es un interés comercial: no tiene plantilla de venta.
+    expect(screen.queryByLabelText("Plantilla de Consumibles en ES")).not.toBeInTheDocument();
+    // «Por nombre» enseña la plantilla que se resuelve (o que no hay).
+    const vendingEs = screen.getByLabelText("Plantilla de Vending en ES") as HTMLSelectElement;
+    expect(vendingEs.options[vendingEs.selectedIndex].textContent)
+      .toBe("Por nombre: Lead · Vending (ES)");
+    const vendingEn = screen.getByLabelText("Plantilla de Vending en EN") as HTMLSelectElement;
+    expect(vendingEn.options[vendingEn.selectedIndex].textContent).toBe("Por nombre: (no hay)");
+    // El remitente de serie va de pista.
+    expect(screen.getByLabelText("Remitente de Pimpam"))
+      .toHaveAttribute("placeholder", "info@pimpam-vending.com");
+
+    await user.click(activo);
+    const tope = screen.getByLabelText("Tope diario de leads");
+    await user.clear(tope);
+    await user.type(tope, "30");
+    await user.selectOptions(vendingEn, "tpl-laser-en");
+    await user.selectOptions(screen.getByLabelText("Plantilla de Láser y CNC en ES"), "__ninguna__");
+    await user.selectOptions(screen.getByLabelText("Web de la cuenta Agile Bomedia"), "pimpam");
+    await user.type(screen.getByLabelText("Remitente de ArtisJet ES"), "info@artisjet.es");
+    await user.click(screen.getByLabelText("Solo días laborables"));
+    await user.click(screen.getByRole("button", { name: "Guardar cambios · Respuesta a leads" }));
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
+    const patch = mockUpdate.mock.calls[0][0];
+    expect(Object.keys(patch)).toEqual(["lead_response"]);          // solo su sección
+    expect(patch.lead_response).toEqual({
+      activo: true, tope_diario: 30, umbral_confianza: 0.7, antiguedad_horas: 72,
+      ventana: { enabled: true, start: "09:00", end: "18:00", weekdays_only: false },
+      mapa: { "vending:en": "tpl-laser-en", "laser_cnc:es": "" },
+      remitentes: { por_web: { "artisjet-es": "info@artisjet.es" },
+                    por_cuenta_agile: { "acc-1": "pimpam" } },
+    });
+  });
+
+  it("sin configuración guardada pinta los valores de serie y enlaza a ERP · Leads", async () => {
+    mockGet.mockResolvedValue(settings({ lead_response_catalogo: catalogo }));
+    render(<ErpSettingsPage />);
+    expect(await screen.findByLabelText("Tope diario de leads")).toHaveValue(20);
+    expect(screen.getByLabelText("Umbral de confianza")).toHaveValue(0.7);
+    expect(screen.getByLabelText("Antigüedad máxima del lead en horas")).toHaveValue(72);
+    expect(screen.getByLabelText("Inicio de la ventana horaria")).toHaveValue("09:00");
+    expect(screen.getByRole("link", { name: "ERP · Leads" })).toHaveAttribute("href", "/erp/leads");
+  });
+});

@@ -113,6 +113,15 @@ function outgoingHandles(stepType: string, config: Record<string, unknown>): {
     out.push({ id: "default", label: "Otros", variant: "default" });
     return out;
   }
+  if (stepType === "action_classify_lead") {
+    // Respuesta a leads: tres salidas; el motor cae a `default` si una no
+    // está conectada.
+    return [
+      { id: "ok", label: "Lead", variant: "yes" },
+      { id: "spam", label: "Spam", variant: "no" },
+      { id: "omitido", label: "Omitido", variant: "default" },
+    ];
+  }
   if (stepType.startsWith("exit_")) {
     return [];
   }
@@ -240,6 +249,7 @@ const nodeTypes = { workflowStep: StepNode as any };
 /** PR-Fixes #4: triggers que NO admiten retroactivo. Mantener
  *  sincronizado con el backend `cost_estimate`. */
 const EVENT_TRIGGERS = new Set([
+  "lead.received",
   "contact.created",
   "contact.updated",
   "contact.lifecycle_changed",
@@ -863,7 +873,9 @@ function categoryLabel(c: string): string {
       contact: "Contacto",
       task: "Tareas",
       email: "Email",
-      opportunity: "Oportunidades",
+      // El modelo real son contactos en pipelines, no oportunidades.
+      opportunity: "Pipelines",
+      lead: "Leads",
       notify: "Notificaciones",
       sync: "Sincronización",
       exit: "Salidas",
@@ -943,18 +955,71 @@ function StepConfigPanel({
       ) : null}
 
       {node.data.stepType === "wait_time" ? (
-        <label>
-          Duración (minutos)
-          <input
-            type="number"
-            min={1}
-            value={(cfg.duration_minutes as number) ?? 60}
-            onChange={(e) => setField("duration_minutes", Number(e.target.value))}
+        <>
+          <label>
+            Duración (minutos)
+            <input
+              type="number"
+              min={1}
+              value={(cfg.duration_minutes as number) ?? 60}
+              onChange={(e) => setField("duration_minutes", Number(e.target.value))}
+            />
+            <span className="muted small">
+              60 min = 1 h · 1440 = 1 día · 10080 = 7 días.
+            </span>
+          </label>
+          <WaitWindowConfig cfg={cfg} setField={setField} />
+        </>
+      ) : null}
+
+      {/* Respuesta a leads (Fase 1). */}
+      {node.data.stepType === "action_classify_lead" ? (
+        <>
+          <label>
+            Antigüedad máxima del lead (horas)
+            <input
+              type="number"
+              min={0}
+              value={(cfg.max_age_hours as number) ?? 72}
+              onChange={(e) => setField("max_age_hours", Number(e.target.value))}
+            />
+            <span className="muted small">
+              Por la fecha real del lead. 0 = sin límite. Si el paso no lo
+              fija, vale lo de Configuración ERP → Respuesta a leads.
+            </span>
+          </label>
+          <p className="muted small">
+            Clasifica idioma, interés, spam y confianza una sola vez por lead
+            y lo guarda en el contacto. Tres salidas: «Lead», «Spam» y
+            «Omitido» (interruptor apagado, tope diario alcanzado, demasiado
+            antiguo, sin consulta o ya procesado). No envía nada.
+          </p>
+        </>
+      ) : null}
+
+      {node.data.stepType === "action_prepare_email_draft" ? (
+        <PrepareDraftConfig
+          cfg={cfg}
+          setConfig={onChange}
+          templates={node.data.templateLookup}
+        />
+      ) : null}
+
+      {node.data.stepType === "action_add_to_pipeline" ? (
+        <>
+          <PipelineStageSelector
+            pipelineId={cfg.pipeline_id as string | undefined}
+            stageId={cfg.stage_id as string | undefined}
+            onChange={(pid, sid) => {
+              onChange({ ...cfg, pipeline_id: pid, stage_id: sid });
+            }}
+            stageLabel="Etapa"
           />
-          <span className="muted small">
-            60 min = 1 h · 1440 = 1 día · 10080 = 7 días.
-          </span>
-        </label>
+          <p className="muted small">
+            Coloca el contacto en esa etapa (con historial). Si ya está en el
+            pipeline no lo mueve: para eso está «Mover contacto de etapa».
+          </p>
+        </>
       ) : null}
 
       {node.data.stepType === "action_send_email" ? (
@@ -1111,10 +1176,12 @@ function StepConfigPanel({
             onChange={(pid, sid) => {
               onChange({ ...cfg, pipeline_id: pid, stage_id: sid });
             }}
+            stageLabel="Etapa"
           />
           <p className="muted small">
-            El contacto debe tener una oportunidad activa en este
-            pipeline para que la acción funcione.
+            El contacto debe estar ya en este pipeline: se mueve a la etapa
+            elegida con historial (origen, destino y fecha). Si no está, el
+            paso se salta; para colocarlo está «Añadir a pipeline».
           </p>
         </>
       ) : null}
@@ -1317,6 +1384,208 @@ function StepConfigPanel({
         <Trash2 size={11} aria-hidden /> Borrar paso
       </button>
     </div>
+  );
+}
+
+/** Respuesta a leads: ventana horaria de la espera (hora de Madrid). Si la
+ *  espera termina fuera, el paso despierta en el siguiente hueco. Config:
+ *  `window: {enabled, start, end, weekdays_only}`; sin `window`, como siempre. */
+function WaitWindowConfig({
+  cfg,
+  setField,
+}: {
+  cfg: Record<string, unknown>;
+  setField: (key: string, value: unknown) => void;
+}) {
+  const win = (cfg.window as Record<string, unknown> | undefined) ?? {};
+  const enabled = Boolean(win.enabled);
+  const setWin = (p: Record<string, unknown>) =>
+    setField("window", {
+      enabled: true, start: "09:00", end: "18:00", weekdays_only: true, ...win, ...p,
+    });
+  return (
+    <>
+      <label className="workflow-checkbox">
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={(e) => setWin({ enabled: e.target.checked })}
+        />
+        Despertar solo en una ventana horaria (hora de Madrid)
+      </label>
+      {enabled ? (
+        <>
+          <label>
+            Desde
+            <input
+              type="time"
+              value={(win.start as string) ?? "09:00"}
+              onChange={(e) => { if (e.target.value) setWin({ start: e.target.value }); }}
+            />
+          </label>
+          <label>
+            Hasta
+            <input
+              type="time"
+              value={(win.end as string) ?? "18:00"}
+              onChange={(e) => { if (e.target.value) setWin({ end: e.target.value }); }}
+            />
+          </label>
+          <label className="workflow-checkbox">
+            <input
+              type="checkbox"
+              checked={win.weekdays_only !== false}
+              onChange={(e) => setWin({ weekdays_only: e.target.checked })}
+            />
+            Solo de lunes a viernes
+          </label>
+          <span className="muted small">
+            Si la espera termina fuera de la ventana, el paso despierta en el
+            siguiente hueco (p. ej. un sábado por la tarde → lunes a las 9).
+          </span>
+        </>
+      ) : null}
+    </>
+  );
+}
+
+/** Respuesta a leads: «Preparar borrador de email (sin enviar)». Plantilla
+ *  por interés e idioma del lead (mapa de Configuración ERP) o fija;
+ *  remitente de la web del lead o fijo; dueño del borrador el comercial del
+ *  lead o un usuario concreto. Nunca envía. */
+function PrepareDraftConfig({
+  cfg,
+  setConfig,
+  templates,
+}: {
+  cfg: Record<string, unknown>;
+  setConfig: (next: Record<string, unknown>) => void;
+  templates?: Record<string, string>;
+}) {
+  const templateMode = (cfg.template_mode as string) ?? "por_interes";
+  const fromMode = (cfg.from_mode as string) ?? "web_del_lead";
+  const ownerMode = (cfg.owner_mode as string) ?? "propietario";
+  const set = (p: Record<string, unknown>) => setConfig({ ...cfg, ...p });
+  const tpls = Object.entries(templates ?? {}).sort((a, b) => a[1].localeCompare(b[1]));
+  return (
+    <>
+      <p className="muted small">
+        Deja el correo <strong>guardado como borrador</strong> (Bandeja →
+        Borradores) con su plantilla y su remitente. No envía nada al cliente.
+        Una vez por lead: con borrador ya preparado, o si alguien ya le ha
+        escrito (el acuse no cuenta), se salta.
+      </p>
+      <h4 className="workflow-section-h">Plantilla</h4>
+      <label className="workflow-checkbox">
+        <input
+          type="radio"
+          name="lead_template_mode"
+          checked={templateMode === "por_interes"}
+          onChange={() => set({ template_mode: "por_interes" })}
+        />
+        La del interés y el idioma del lead (mapa de Configuración ERP)
+      </label>
+      <label className="workflow-checkbox">
+        <input
+          type="radio"
+          name="lead_template_mode"
+          checked={templateMode === "fija"}
+          onChange={() => set({ template_mode: "fija" })}
+        />
+        Una plantilla fija
+      </label>
+      {templateMode === "fija" ? (
+        <label>
+          Plantilla
+          <select
+            value={(cfg.template_id as string) ?? ""}
+            onChange={(e) => set({ template_id: e.target.value || undefined })}
+          >
+            <option value="">— Selecciona —</option>
+            {tpls.map(([id, name]) => (
+              <option key={id} value={id}>{name}</option>
+            ))}
+          </select>
+        </label>
+      ) : null}
+      <h4 className="workflow-section-h">Remitente</h4>
+      <label className="workflow-checkbox">
+        <input
+          type="radio"
+          name="lead_from_mode"
+          checked={fromMode === "web_del_lead"}
+          onChange={() => set({ from_mode: "web_del_lead" })}
+        />
+        El de la web del lead (el mismo del acuse de recibo)
+      </label>
+      <label className="workflow-checkbox">
+        <input
+          type="radio"
+          name="lead_from_mode"
+          checked={fromMode === "fijo"}
+          onChange={() => set({ from_mode: "fijo" })}
+        />
+        Una dirección fija
+      </label>
+      {fromMode === "fijo" ? (
+        <>
+          <label>
+            Dirección
+            <input
+              type="email"
+              value={(cfg.from_alias as string) ?? ""}
+              onChange={(e) => set({ from_alias: e.target.value || undefined })}
+              placeholder="info@pimpam-vending.com"
+            />
+          </label>
+          <label>
+            Nombre del remitente (opcional)
+            <input
+              type="text"
+              value={(cfg.from_name as string) ?? ""}
+              onChange={(e) => set({ from_name: e.target.value || undefined })}
+            />
+          </label>
+        </>
+      ) : null}
+      <h4 className="workflow-section-h">Dueño del borrador</h4>
+      <label className="workflow-checkbox">
+        <input
+          type="radio"
+          name="lead_owner_mode"
+          checked={ownerMode === "propietario"}
+          onChange={() => set({ owner_mode: "propietario" })}
+        />
+        El comercial del lead (si no tiene, el primer administrador)
+      </label>
+      <label className="workflow-checkbox">
+        <input
+          type="radio"
+          name="lead_owner_mode"
+          checked={ownerMode === "usuario"}
+          onChange={() => set({ owner_mode: "usuario" })}
+        />
+        Un usuario concreto
+      </label>
+      {ownerMode === "usuario" ? (
+        <label>
+          Usuario
+          <WorkflowUserPicker
+            value={(cfg.user_id as string) ?? ""}
+            onChange={(next) => set({ user_id: next || undefined })}
+          />
+        </label>
+      ) : null}
+      <label>
+        Asunto (opcional, sustituye al de la plantilla)
+        <input
+          type="text"
+          value={(cfg.subject_override as string) ?? ""}
+          onChange={(e) => set({ subject_override: e.target.value || undefined })}
+          placeholder="Sobre tu consulta a {{ lead.web }}"
+        />
+      </label>
+    </>
   );
 }
 
