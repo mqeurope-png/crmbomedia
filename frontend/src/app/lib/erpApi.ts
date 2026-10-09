@@ -1,4 +1,5 @@
 import { ApiError, apiDownloadBlob, apiFetch, apiUpload } from "./api";
+import { downloadName } from "./downloadName";
 import type { CustomerEmailStatus, GeneiLabelAuto } from "./geneiApi";
 import type { LinkedInvoice } from "./linkedInvoice";
 
@@ -3213,12 +3214,18 @@ export async function waitForInvoiceCollectionJob(
   return last;
 }
 
-/** Abre el diálogo «guardar» del navegador con el blob descargado. */
-export function saveBlob(blob: Blob, filename: string): void {
+/** Abre el diálogo «guardar» del navegador con el blob descargado.
+ *
+ *  El nombre lo pone el servidor: `apiDownloadBlob` lo trae pegado al binario
+ *  (`Content-Disposition`, ver `downloadName.ts`), así que `fallback` solo se
+ *  usa si la respuesta no traía ninguno — es el nombre que cada pantalla
+ *  construía hasta #531, y se mantiene para que ninguna descarga se quede
+ *  sin nombre. */
+export function saveBlob(blob: Blob, fallback: string): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = filename;
+  a.download = downloadName(blob, fallback);
   a.click();
   URL.revokeObjectURL(url);
 }
