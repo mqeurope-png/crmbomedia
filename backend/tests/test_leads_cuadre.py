@@ -21,9 +21,11 @@ from app.models.crm import (
     EmailDirection,
     EmailMessage,
     EmailThread,
+    Note,
     User,
 )
 from app.models.leads import LeadClassification
+from app.models.web_forms import FormSubmission, WebForm
 from tests._test_helpers import seed_test_users
 
 AHORA = datetime(2026, 10, 10, 10, 0, tzinfo=UTC)
@@ -127,3 +129,37 @@ def test_lead_de_agile_por_su_fecha_real(s: Session) -> None:
     _correo(s, klaus, cuando=AHORA - timedelta(days=2))
     s.commit()
     assert list(cm.lead_sin_contactar(_ctx(s))) == []
+
+
+def test_envios_y_notas_sin_clasificar_tambien_cuentan(s: Session) -> None:
+    """La red de seguridad no depende del workflow (apagado, tope, IA): un
+    envío de formulario de un contacto antiguo y una nota «form note» de Agile
+    sin clasificar se listan por su fecha real. Una nota que no es de
+    formulario, no."""
+    admin = s.scalar(select(User.id).where(User.email == "admin@example.com"))
+    form = WebForm(slug="pimpam-contacto-es", name="Pimpam ES", brand="pimpam", language="es",
+                   created_by_user_id=admin, assignment_mode="none")
+    s.add(form)
+    s.flush()
+    antiguo = _lead_web(s, "antiguo@ejemplo.es", hace=timedelta(days=200))   # fuera de ventana
+    s.add(FormSubmission(form_id=form.id, contact_id=antiguo.id,
+                         raw_payload_json=json.dumps({"message": "Quiero una máquina"}),
+                         is_spam=False, created_at=AHORA - timedelta(days=3)))
+    con_nota = Contact(first_name="Nota", email="nota@druck.de", origin_account_id="agilecrm:acc")
+    sin_formulario = Contact(first_name="Otra", email="otra@druck.de",
+                             origin_account_id="agilecrm:acc")
+    s.add_all([con_nota, sin_formulario])
+    s.flush()
+    s.add(Note(contact_id=con_nota.id, body="form note\n\nWir suchen einen UV-Drucker.",
+               external_system="agilecrm", external_account_id="acc",
+               external_created_at=AHORA - timedelta(days=4), source="agile:timeline"))
+    s.add(Note(contact_id=sin_formulario.id, body="Llamada: pide catálogo",
+               external_system="agilecrm", external_account_id="acc",
+               external_created_at=AHORA - timedelta(days=4), source="agile:timeline"))
+    s.commit()
+
+    hallazgos = {h.entidad_id: h for h in cm.lead_sin_contactar(_ctx(s))}
+    assert set(hallazgos) == {antiguo.id, con_nota.id}
+    assert "hace 3 día(s)" in hallazgos[antiguo.id].detalle
+    assert "pimpam-vending.com" in hallazgos[antiguo.id].detalle
+    assert "AgileCRM" in hallazgos[con_nota.id].detalle

@@ -10,7 +10,7 @@ from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import false, or_, select
+from sqlalchemy import false, func, or_, select
 
 from app.erp.cuadre.contexto import Contexto
 from app.erp.cuadre.registry import (
@@ -784,44 +784,58 @@ def _aware(momento: datetime | None) -> datetime | None:
 def lead_sin_contactar(ctx: Contexto) -> Iterator[Hallazgo]:
     """De los 20 últimos leads revisados en producción el 09/10/2026, siete no
     tenían ni un solo correo. Esto los lista aunque falle todo lo demás (el
-    workflow apagado, el tope, la IA)."""
+    workflow apagado, el tope, la IA): lee los leads de sus fuentes, no de lo
+    que el workflow clasificó."""
     from datetime import timedelta  # noqa: PLC0415
 
     from app.models.crm import Contact  # noqa: PLC0415
-    from app.models.leads import LeadClassification  # noqa: PLC0415
+    from app.models.leads import FUENTE_AGILE, LeadClassification  # noqa: PLC0415
+    from app.services.leads.en_seco import LIMITE_MAXIMO, leads_recientes  # noqa: PLC0415
     from app.services.leads.registro import correo_saliente_desde  # noqa: PLC0415
     from app.services.web_forms.sitios import (  # noqa: PLC0415
         ORIGEN_PREFIJO,
         etiqueta_de_origen,
+        web_de_sitio,
     )
 
     ventana = ctx.dias("lead_sin_contactar", 30)
     desde = ctx.ahora - timedelta(days=ventana)
     tope = ctx.ahora - timedelta(hours=HORAS_SIN_CONTACTAR)
-    # La fecha real del lead por contacto: la del alta del contacto web y la
-    # de su última clasificación (envío o nota de Agile); manda la más reciente.
+    # La fecha real de cada lead, por contacto (manda la más reciente), de
+    # TODAS las fuentes, estén clasificados o no —es la red de seguridad y no
+    # puede depender del workflow—: los envíos de formulario que no son spam y
+    # las notas «form note» de Agile por su fecha real, los contactos web de
+    # antes de guardarse los envíos (por su alta) y lo que sí se clasificó.
     leads: dict[str, tuple[datetime, str]] = {}
+
+    def anotar(contact_id: str | None, fecha: datetime | None, procedencia: str) -> None:
+        if not contact_id or fecha is None:
+            return
+        previa = leads.get(contact_id)
+        if previa is None or fecha > previa[0]:
+            leads[contact_id] = (fecha, procedencia)
+
+    for contact, entrada in leads_recientes(
+            ctx.session, dias=ventana, limite=LIMITE_MAXIMO, ahora=ctx.ahora):
+        if entrada.fuente == FUENTE_AGILE:
+            procedencia = "AgileCRM"
+        else:
+            web = web_de_sitio(entrada.sitio) if entrada.sitio else None
+            procedencia = f"formulario web · {web}" if web else "formulario web"
+        anotar(contact.id, entrada.lead_at, procedencia)
     for c in ctx.session.execute(
         select(Contact.id, Contact.created_at, Contact.origin, Contact.origin_account_id)
         .where(Contact.origin_account_id.like(f"{ORIGEN_PREFIJO}:%"),
                Contact.created_at >= desde, Contact.is_active.is_(True))
     ).all():
-        fecha = _aware(c.created_at)
-        if fecha is not None:
-            leads[c.id] = (fecha, etiqueta_de_origen(c.origin_account_id) or _s(c.origin))
+        anotar(c.id, _aware(c.created_at), etiqueta_de_origen(c.origin_account_id) or _s(c.origin))
     for f in ctx.session.execute(
         select(LeadClassification.contact_id, LeadClassification.lead_at,
                LeadClassification.source, LeadClassification.created_at)
-        .where(LeadClassification.created_at >= desde)
+        .where(func.coalesce(LeadClassification.lead_at, LeadClassification.created_at) >= desde)
     ).all():
-        fecha = _aware(f.lead_at or f.created_at)
-        if fecha is None:
-            continue
-        previa = leads.get(f.contact_id)
-        if previa is None or fecha > previa[0]:
-            procedencia = ("AgileCRM" if f.source == "agilecrm"
-                           else (previa[1] if previa else "formulario web"))
-            leads[f.contact_id] = (fecha, procedencia)
+        anotar(f.contact_id, _aware(f.lead_at or f.created_at),
+               "AgileCRM" if f.source == FUENTE_AGILE else "formulario web")
     if not leads:
         return
     contactos = {

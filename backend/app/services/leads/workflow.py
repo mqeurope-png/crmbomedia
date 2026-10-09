@@ -93,8 +93,10 @@ def definicion(session: Session, *, asignar_a: str | None) -> dict[str, Any]:
     pasos: list[dict[str, Any]] = [
         {"client_id": "trigger", "type": "trigger", "config": {}, "x": 120, "y": 60,
          "is_entry": True},
-        {"client_id": "clasificar", "type": "action_classify_lead",
-         "config": {"max_age_hours": conf["antiguedad_horas"]}, "x": 120, "y": 200},
+        # Sin `max_age_hours` propio: el paso lee `antiguedad_horas` de la
+        # configuración en cada lead (cambiarla en la pantalla vale al momento).
+        {"client_id": "clasificar", "type": "action_classify_lead", "config": {},
+         "x": 120, "y": 200},
         {"client_id": "descartar", "type": "action_add_to_pipeline",
          "config": {"pipeline_id": pipeline.id, "stage_id": etapas[ETAPA_SPAM].id},
          "x": 460, "y": 340},
@@ -141,7 +143,10 @@ def definicion(session: Session, *, asignar_a: str | None) -> dict[str, Any]:
         ("pipeline", "tarea", "default"),
         ("tarea", "salida", "default"),
     ]
-    return {"steps": pasos, "edges": aristas}
+    # El trigger no tiene sesión al casar el evento: su límite de antigüedad
+    # se siembra con el de la configuración y se cambia en el editor.
+    return {"steps": pasos, "edges": aristas,
+            "trigger_config": {"max_age_hours": conf["antiguedad_horas"]}}
 
 
 def crear_workflow(session: Session, *, actor_user_id: str | None) -> Workflow:
@@ -161,7 +166,7 @@ def crear_workflow(session: Session, *, actor_user_id: str | None) -> Workflow:
             "Ventas B2B y crea una tarea. No envía ningún correo al cliente."
         ),
         status=WorkflowStatus.DRAFT, trigger_type="lead.received",
-        trigger_config_json=json.dumps({}), allow_reentry=False,
+        trigger_config_json=json.dumps(d["trigger_config"]), allow_reentry=False,
         created_by_user_id=actor_user_id, owner_user_id=None,
     )
     session.add(wf)
@@ -190,10 +195,12 @@ def crear_workflow(session: Session, *, actor_user_id: str | None) -> Workflow:
     wf.definition_hash = compute_exact_hash(wf, filas, aristas)
     try:
         from app.core.audit import record_event  # noqa: PLC0415
+        from app.models.crm import User  # noqa: PLC0415
 
+        actor = session.get(User, actor_user_id) if actor_user_id else None
         record_event(
             session, action="workflow.created", target_type="workflow", target_id=wf.id,
-            metadata={"name": NOMBRE, "via": "respuesta_leads", "actor_id": actor_user_id},
+            actor=actor, metadata={"name": NOMBRE, "via": "respuesta_leads"},
         )
     except Exception:  # noqa: BLE001 — la auditoría nunca bloquea
         pass

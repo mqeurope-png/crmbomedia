@@ -280,7 +280,10 @@ del pedido de BoHub.
   **no cuenta** (lo deja marcado el timeline). Es la red de seguridad de la
   respuesta a leads (`docs/crm/respuesta-leads.md`) y mide el problema de
   partida: de los 20 últimos leads revisados el 09/10/2026, siete no tenían ni
-  un solo correo. Ventana: N días (30). Enlaza a la ficha.
+  un solo correo. Por eso no depende del workflow: lee los envíos de
+  formulario y las notas «form note» de sus tablas (estén clasificados o no),
+  los contactos web antiguos por su alta y lo clasificado. Ventana: N días
+  (30) por la fecha real del lead. Enlaza a la ficha.
 
 ### Integraciones (severidad alta, fuente WooCommerce)
 

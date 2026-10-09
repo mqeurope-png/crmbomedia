@@ -125,10 +125,31 @@ def test_el_proveedor_de_ia_cae_a_palabras_clave_si_falla(monkeypatch, con_clave
     out = ClasificadorAnthropic().clasificar(EntradaLead(texto="ok", fuente="agilecrm",
                                                          referencia="n2"))
     assert (out.idioma, out.interes, out.confianza) == (None, "otro", 1.0)
+    # «no» / «false» como texto NO es spam (un texto no vacío no es «sí»).
+    assert out.es_spam is False
+    monkeypatch.setattr(llm, "_invoke_claude", lambda **k: json.dumps(
+        {"idioma": "en", "interes": "otro", "es_spam": "false", "confianza": 0.9}))
+    assert ClasificadorAnthropic().clasificar(EntradaLead(
+        texto="ok", fuente="agilecrm", referencia="n3")).es_spam is False
+    monkeypatch.setattr(llm, "_invoke_claude", lambda **k: json.dumps(
+        {"idioma": "en", "interes": "otro", "es_spam": "true", "confianza": 0.9}))
+    assert ClasificadorAnthropic().clasificar(EntradaLead(
+        texto="ok", fuente="agilecrm", referencia="n4")).es_spam is True
 
 
 def test_sin_clave_el_proveedor_por_defecto_es_palabras_clave() -> None:
+    # `tests/conftest.py` vacía ANTHROPIC_API_KEY: la suite nunca llama a Anthropic.
     assert isinstance(proveedor_por_defecto(), ClasificadorPalabrasClave)
+
+
+def test_la_api_de_leads_exige_la_capacidad_de_configuracion(http) -> None:
+    cab = auth_headers(http, "user")
+    assert http.get("/api/erp/leads/clasificaciones", headers=cab).status_code == 403
+    assert http.post("/api/erp/leads/clasificaciones/x/corregir", headers=cab,
+                     json={"es_spam": True}).status_code == 403
+    assert http.post("/api/erp/leads/en-seco", headers=cab, json={"dias": 15}).status_code == 403
+    assert http.post("/api/erp/leads/workflow", headers=cab).status_code == 403
+    assert http.get("/api/erp/leads/workflow", headers=cab).status_code == 403
 
 
 # --- la configuración --------------------------------------------------------------
@@ -257,7 +278,8 @@ def test_en_seco_dice_que_haria_y_no_escribe_nada(session_factory) -> None:
         assert por_email["hello@blastleadgeneration.com"]["haria"]["etapa"] == "Descartado / spam"
         assert informe["resumen"]["total"] == 3 and informe["resumen"]["spam"] == 1
         assert informe["resumen"]["por_interes"]["vending"] == 1
-        # Nada escrito.
+        # Nada escrito: ni siquiera pendiente de flush (la sesión va sin autoflush).
+        assert not s.new and not s.dirty
         assert s.scalar(select(LeadClassification)) is None
         assert s.get(Contact, ana.id).lead_interest is None
 
@@ -353,11 +375,18 @@ def test_crear_el_workflow_de_la_fase_1(http, session_factory) -> None:
         espera = por_tipo["wait_time"][0]
         assert espera["duration_minutes"] == 720 and espera["window"]["start"] == "09:00"
         assert por_tipo["action_create_task"][0]["assign_to_user_id"] == _admin_id(s)
+        # El paso no fija su antigüedad (lee la configuración en cada lead); el
+        # trigger se siembra con la de la configuración.
+        assert por_tipo["action_classify_lead"][0] == {}
         aristas = list(s.scalars(
             select(WorkflowEdge).where(WorkflowEdge.workflow_id == creado["id"])))
         assert {e.branch_label for e in aristas} == {"default", "spam", "ok", "omitido"}
         wf = workflow_leads.existente(s)
         assert wf is not None and wf.definition_hash
+        assert json.loads(wf.trigger_config_json) == {"max_age_hours": 72}
+        auditoria = s.scalar(select(AuditLog).where(AuditLog.action == "workflow.created")
+                             .order_by(AuditLog.created_at.desc()))
+        assert auditoria is not None and auditoria.actor_user_id == _admin_id(s)
     r = http.post("/api/erp/leads/workflow", headers=auth_headers(http, "admin"))
     assert r.status_code == 409 and r.json()["detail"]["workflow_id"] == creado["id"]
     r = http.get("/api/erp/leads/workflow", headers=auth_headers(http, "admin"))

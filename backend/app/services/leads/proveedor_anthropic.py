@@ -3,9 +3,10 @@ el de palabras clave (`Clasificador`).
 
 Usa el cliente que ya tiene BoHub (`app.services.llm._invoke_claude`,
 `ANTHROPIC_API_KEY` y `ANTHROPIC_MODEL`). La consulta del cliente SÍ viaja al
-proveedor: es lo que se clasifica. No se registra ni el prompt ni la respuesta
-cruda (el `llm` solo apunta tamaños); lo que queda es la clasificación, en
-`lead_classifications`.
+proveedor: es lo que se clasifica. Ni el prompt ni la respuesta se guardan en
+la base de datos; en el log, el `llm` apunta tamaños y, si la respuesta no es
+JSON, sus primeros 200 caracteres (`_parse_segment_json`). Lo que queda es la
+clasificación, en `lead_classifications`.
 
 Si la IA no está disponible (sin clave, cuota, caída o respuesta ilegible) se
 cae al proveedor de palabras clave y el motivo lo dice: un lead nunca se queda
@@ -120,7 +121,7 @@ class ClasificadorAnthropic:
             interes = "otro"
         motivo = str(data.get("motivo") or "").strip()[:500] or "clasificado por IA"
         return Clasificacion(
-            idioma=idioma, interes=interes, es_spam=bool(data.get("es_spam")),
+            idioma=idioma, interes=interes, es_spam=_booleano(data.get("es_spam")),
             confianza=_confianza(data.get("confianza")), motivo=motivo,
             idioma_fuente=FUENTE_IA if idioma else FUENTE_DESCONOCIDA,
             interes_fuente=FUENTE_IA, proveedor=self.nombre, modelo=settings.anthropic_model,
@@ -131,6 +132,26 @@ class ClasificadorAnthropic:
         out = ClasificadorPalabrasClave().clasificar(entrada)
         out.motivo = f"{out.motivo} (respaldo por palabras clave: {motivo})"[:500]
         return out
+
+
+_SI = {"true", "yes", "si", "sí", "1", "spam"}
+_NO = {"false", "no", "0", "", "none", "null"}
+
+
+def _booleano(valor: Any) -> bool:
+    """`es_spam` como lo devuelva el modelo: un booleano, un número o un
+    texto («false», «no»). Un texto no vacío NO es «sí» por defecto: en caso
+    de duda, no es spam (el lead sigue su camino y una persona lo ve)."""
+    if isinstance(valor, bool):
+        return valor
+    if isinstance(valor, int | float):
+        return valor != 0
+    texto = str(valor or "").strip().lower()
+    if texto in _SI:
+        return True
+    if texto in _NO:
+        return False
+    return False
 
 
 def _json_de_prueba(clasificacion: dict[str, Any]) -> str:

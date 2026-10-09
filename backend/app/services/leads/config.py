@@ -111,8 +111,10 @@ def validar(
     payload: Any, actual: Any = None, *, plantillas_validas: set[str] | None = None,
 ) -> dict[str, Any]:
     """Valida lo que llega del PATCH de Configuración ERP y lo FUNDE con lo
-    guardado: lo que no viene se conserva. `ValueError` con un mensaje
-    legible si algo no vale."""
+    guardado: la clave que no viene se conserva; `mapa`, `remitentes.por_web`
+    y `remitentes.por_cuenta_agile` se sustituyen ENTEROS cuando vienen (la
+    pantalla manda siempre el bloque completo, y así se puede quitar una
+    entrada). `ValueError` con un mensaje legible si algo no vale."""
     from app.services.leads.clasificador import IDIOMAS, INTERESES_COMERCIALES  # noqa: PLC0415
     from app.services.web_forms.sitios import WEBS  # noqa: PLC0415
     from app.workflows.ventana import _hora  # noqa: PLC0415
@@ -235,11 +237,7 @@ def catalogo(session: Session) -> dict[str, Any]:
         select(EmailTemplate).where(EmailTemplate.name.like("Lead%"))
         .order_by(EmailTemplate.name)
     ))
-    por_nombre: dict[str, str | None] = {}
-    for interes in sorted(INTERESES_COMERCIALES):
-        for idioma in plantillas.IDIOMAS_CON_PLANTILLA:
-            tpl = plantillas.plantilla_para(session, interes, idioma)
-            por_nombre[plantillas.clave_mapa(interes, idioma)] = tpl.id if tpl else None
+    por_nombre = plantillas.mapa_resuelto_por_nombre(session)
     cuentas = list(session.scalars(
         select(IntegrationAccount).where(IntegrationAccount.system == ExternalSystem.AGILECRM)
         .order_by(IntegrationAccount.display_name)

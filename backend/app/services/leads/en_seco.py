@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.crm import Contact, Note
@@ -33,8 +33,12 @@ from app.services.leads.config import configuracion
 from app.services.leads.eventos import es_nota_de_formulario, texto_de_nota
 from app.services.web_forms.sitios import clave_de_sitio, web_de_sitio
 
-LIMITE_DEFECTO = 200
-LIMITE_MAXIMO = 500
+#: Leads por simulación. Cada uno es una llamada al proveedor (con IA, una
+#: llamada a Anthropic dentro de la petición): se acota a propósito.
+LIMITE_DEFECTO = 100
+LIMITE_MAXIMO = 200
+#: Filas de la lista de clasificaciones (la pantalla pide por días).
+LIMITE_LISTA = 500
 ETAPA_NUEVO = "Nuevo lead"
 ETAPA_SPAM = "Descartado / spam"
 
@@ -63,11 +67,12 @@ def _nombre(contact: Contact) -> str:
 
 def leads_recientes(
     session: Session, *, dias: int, limite: int = LIMITE_DEFECTO,
+    ahora: datetime | None = None,
 ) -> list[tuple[Contact, EntradaLead]]:
-    """Los leads de los últimos `dias`, por su fecha real: envíos de
-    formulario que no son spam y notas «form note» de Agile
+    """Los leads de los últimos `dias` (contados desde `ahora`), por su fecha
+    real: envíos de formulario que no son spam y notas «form note» de Agile
     (`external_created_at`). Los más recientes primero, hasta `limite`."""
-    desde = datetime.now(UTC) - timedelta(days=dias)
+    desde = (ahora or datetime.now(UTC)) - timedelta(days=dias)
     salida: list[tuple[datetime, Contact, EntradaLead]] = []
     envios = session.execute(
         select(FormSubmission, WebForm, Contact)
@@ -92,12 +97,15 @@ def leads_recientes(
             productos=registro.productos_de_envio(session, form, payload),
             pais=contact.address_country, email=contact.email,
         )))
+    # El prefijo «form note» se filtra ya en SQL: con el tope por fuera, un
+    # contacto con cientos de notas de llamadas taparía los formularios.
     notas = session.execute(
         select(Note, Contact)
         .join(Contact, Contact.id == Note.contact_id)
-        .where(Note.external_system == FUENTE_AGILE, Note.external_created_at >= desde)
+        .where(Note.external_system == FUENTE_AGILE, Note.external_created_at >= desde,
+               func.lower(Note.body).like("form note%"))
         .order_by(Note.external_created_at.desc())
-        .limit(limite * 3)
+        .limit(limite)
     ).all()
     for nota, contact in notas:
         if not es_nota_de_formulario(nota.body):
@@ -177,11 +185,15 @@ def simular(
     }
 
 
-def clasificaciones_de(session: Session, *, dias: int) -> list[LeadClassification]:
-    """Las clasificaciones reales de los últimos N días (para la lista)."""
+def clasificaciones_de(
+    session: Session, *, dias: int, limite: int = LIMITE_LISTA,
+) -> list[LeadClassification]:
+    """Las clasificaciones reales de los últimos N días (para la lista), las
+    más recientes primero, hasta `limite`."""
     desde = datetime.now(UTC) - timedelta(days=dias)
     return list(session.scalars(
         select(LeadClassification)
         .where(LeadClassification.created_at >= desde)
         .order_by(LeadClassification.created_at.desc())
+        .limit(limite)
     ))

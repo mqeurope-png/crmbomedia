@@ -98,7 +98,7 @@ def _item(session: Session, fila: LeadClassification, umbral: float) -> dict[str
 
 @router.get("/clasificaciones")
 def clasificaciones(
-    dias: int = Query(default=15, ge=1, le=365),
+    dias: int = Query(default=15, ge=1, le=90),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_config),
 ) -> dict[str, Any]:
@@ -146,8 +146,11 @@ def corregir(
     fila.corrected_by_user_id = current_user.id
     fila.corrected_at = datetime.now(UTC)
     fila.correction_note = (payload.nota or "").strip()[:500] or None
+    # A la ficha del contacto solo pasa la corrección de su ÚLTIMO lead: un
+    # lead de julio corregido no debe pisar lo que dijo el de octubre.
     contacto = session.get(Contact, fila.contact_id)
-    if contacto is not None:
+    ultima = registro.ultima_clasificacion(session, fila.contact_id)
+    if contacto is not None and (ultima is None or ultima.id == fila.id):
         registro.copiar_al_contacto(contacto, fila)
     record_event(
         session, action=Action.LEAD_CLASSIFICATION_CORRECTED, target_type="contact",

@@ -89,11 +89,15 @@ entra por la misma interfaz cuando `ANTHROPIC_API_KEY` está configurada
 
 `app/services/leads/proveedor_anthropic.py`: Anthropic, con el cliente que ya
 tiene BoHub (`ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`). Pide un JSON (idioma,
-interés, spam, confianza, motivo) y lo normaliza al catálogo; si la IA no
-está disponible (sin clave, cuota, caída, respuesta ilegible) cae al proveedor
-de palabras clave y el motivo lo dice. La consulta del cliente sí viaja al
-proveedor; ni el prompt ni la respuesta cruda se guardan. Sin clave, el
-proveedor por defecto es el de palabras clave.
+interés, spam, confianza, motivo) y lo normaliza al catálogo (`es_spam` como
+booleano, número o texto «false»/«no»: en caso de duda, no es spam); si la IA
+no está disponible (sin clave, cuota, caída, respuesta ilegible) cae al
+proveedor de palabras clave y el motivo lo dice. La consulta del cliente sí
+viaja al proveedor; ni el prompt ni la respuesta se guardan en la base de
+datos (en el log, el `llm` apunta tamaños y, si la respuesta no es JSON, sus
+primeros 200 caracteres). Sin clave, el proveedor por defecto es el de
+palabras clave. Los tests nunca llaman a Anthropic: `tests/conftest.py` vacía
+la clave y los del proveedor parchean `_invoke_claude`.
 
 ## Configuración (Configuración ERP → «Respuesta a leads»)
 
@@ -105,7 +109,7 @@ Blob `lead_response` de `ErpSettings` (`app/services/leads/config.py`), por
 | `activo` | Interruptor general. Apagado, el paso «Clasificar lead» sale por `omitido`. | apagado |
 | `tope_diario` | Leads clasificados al día; al llegar, los siguientes salen por `omitido` y se avisa **una vez al día** a `WEB_FORMS_NOTIFY_TO`. | 20 |
 | `umbral_confianza` | Por debajo, la Fase 2 no enviará; en la Fase 1 la lista lo marca. | 0,7 |
-| `antiguedad_horas` | Solo leads más recientes. El paso la usa si no fija la suya; el trigger tiene `max_age_hours`. | 72 |
+| `antiguedad_horas` | Solo leads más recientes, por su fecha real. El paso «Clasificar lead» la lee en cada lead (el workflow de serie no fija la suya, así que cambiarla aquí vale al momento). El trigger tiene su propio `max_age_hours`: al crear el workflow se siembra con este valor y después se cambia en el editor. | 72 |
 | `ventana` | De 9 a 18, laborables: con lo que se siembra la espera del workflow. | 09:00–18:00, laborables |
 | `mapa` | `interes:idioma → template_id`. Vacío = sin plantilla a propósito; sin entrada se busca por nombre (`Lead · <contenido> (<IDIOMA>)`). | por nombre |
 | `remitentes.por_web` | Web → dirección; sin entrada, `sitios.REMITENTES`. | — |
@@ -113,7 +117,9 @@ Blob `lead_response` de `ErpSettings` (`app/services/leads/config.py`), por
 
 El GET lleva además `lead_response_catalogo`: intereses, idiomas, plantillas
 candidatas, el mapa resuelto por nombre, las webs con su remitente por
-defecto y las cuentas de Agile.
+defecto y las cuentas de Agile. En el PATCH, `mapa`, `remitentes.por_web` y
+`remitentes.por_cuenta_agile` se sustituyen enteros cuando vienen (la
+pantalla manda siempre el bloque completo; así se puede quitar una entrada).
 
 ## El modo en seco y la lista corregible (`/api/erp/leads`)
 
@@ -122,13 +128,17 @@ defecto y las cuentas de Agile.
   proveedor y la misma configuración que el workflow, y dice por lead qué
   habría hecho: etapa (Nuevo lead / Descartado · spam), plantilla, remitente,
   tarea y avisos. **No escribe nada.** Es lo que se usa para medir el acierto
-  antes de encender el interruptor (y, después, la Fase 2).
-- `GET /clasificaciones?dias=15`: los leads clasificados de verdad, con lo que
-  salió, de dónde salió cada dato, lo que se preparó y la corrección.
+  antes de encender el interruptor (y, después, la Fase 2). Cada lead es una
+  llamada al proveedor dentro de la petición: 100 leads por defecto, 200 como
+  máximo (y 90 días).
+- `GET /clasificaciones?dias=15`: los leads clasificados de verdad (hasta 90
+  días, 500 filas), con lo que salió, de dónde salió cada dato, lo que se
+  preparó y la corrección.
 - `POST /clasificaciones/{id}/corregir {idioma?, interes?, es_spam?, nota?}`:
-  la corrección a mano. Se guarda aparte (la original se conserva), manda en
-  la ficha del contacto y queda en la auditoría
-  (`lead.classification_corrected`).
+  la corrección a mano. Se guarda aparte (la original se conserva), queda en
+  la auditoría (`lead.classification_corrected`) y pasa a la ficha del
+  contacto solo si es su último lead (uno de julio corregido no pisa el de
+  octubre).
 - `POST /workflow`: crea el workflow «Respuesta a leads (Fase 1)» en BORRADOR
   resolviendo «Ventas B2B» → «Nuevo lead» / «Descartado / spam» por nombre;
   409 si ya existe, 400 si falta el pipeline. `GET /workflow` dice si existe.
@@ -153,7 +163,34 @@ editor). Ni un paso de enviar.
 Severidad media, fuente BoHub (`checks_mysql.lead_sin_contactar`): lead
 entrado hace más de 48 horas, no spam, sin ningún correo saliente — el acuse
 de recibo no cuenta. Es la red de seguridad por si falla todo lo demás y mide
-el problema de partida.
+el problema de partida, así que lee los leads de sus fuentes y no de lo que
+el workflow clasificó: los envíos de formulario que no son spam y las notas
+«form note» de Agile por su fecha real (estén clasificados o no), los
+contactos web de antes de guardarse los envíos (por su alta) y lo que sí se
+clasificó. Ventana de N días por esa fecha real.
+
+## La pantalla (PR C)
+
+- **Configuración ERP → «Respuesta a leads»**: el interruptor, el tope
+  diario, el umbral, la antigüedad, la ventana horaria, el mapa interés ×
+  idioma → plantilla («Por nombre» enseña la que se resuelve; «Sin plantilla»
+  a propósito; o una concreta), el remitente por web y la web de cada cuenta
+  de AgileCRM. Se guarda como una sección más (el PATCH lleva solo
+  `lead_response`).
+- **ERP · Leads** (`/erp/leads`, misma capacidad que la configuración): el
+  estado del workflow de la Fase 1 con «Crear el workflow» (en borrador, con
+  el enlace al editor), el **modo en seco** (días, «Simular en seco», resumen
+  y tabla de qué haría con cada lead) y la **lista de leads procesados** de
+  los últimos N días con idioma, interés y spam corregibles en la propia fila
+  («Guardar corrección», con nota opcional), la confianza en rojo por debajo
+  del umbral, lo que se preparó (estado, plantilla, remitente, enlace al
+  borrador) y quién corrigió qué.
+- **Editor de workflows**: el trigger «Lead recibido» (origen, web,
+  antigüedad), los paneles de «Clasificar lead» (tres salidas: Lead / Spam /
+  Omitido), «Preparar borrador de email (sin enviar)» (plantilla por interés
+  o fija, remitente de la web o fijo, dueño del borrador) y «Añadir a
+  pipeline»; «Mover contacto de etapa» con su texto nuevo; la espera con
+  ventana horaria. La categoría «Oportunidades» pasa a llamarse «Pipelines».
 
 ## Después del deploy
 
@@ -169,3 +206,14 @@ el problema de partida.
 
 Enviar. Mover el pipeline por hechos (Fase 3). Segundo y tercer toque
 (Fase 3).
+
+## Pendientes (anotados en la revisión, severidad baja)
+
+- El modo en seco clasifica dentro de la petición (hasta 200 leads, una
+  llamada a Anthropic por lead con la clave puesta). Si Bart lo lanza con
+  cientos de leads y el proxy corta la respuesta, moverlo al worker con un
+  informe que se consulta después, como «Comprobar ahora» del Cuadre.
+- «Crear el workflow» comprueba que no exista por nombre sin bloqueo: dos
+  clics a la vez podrían dejar dos borradores. Se ve en Workflows y se
+  archiva uno.
+- `lead_classifications` y la lista no paginan (500 filas por consulta).
