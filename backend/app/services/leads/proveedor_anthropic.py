@@ -135,8 +135,12 @@ class ClasificadorAnthropic:
             )
             data = llm._parse_segment_json(raw)
         except llm.LLMError as exc:
-            logger.warning("leads.ia: respaldo por palabras clave (%s)", type(exc).__name__)
-            return self._respaldo(entrada, f"IA no disponible: {type(exc).__name__}")
+            # El mensaje, no solo la clase: `LLMUpstreamError` se lanza por
+            # seis motivos distintos y el 09/10/2026 hubo que ir al log del
+            # contenedor para saber cuál era.
+            logger.warning("leads.ia: respaldo por palabras clave (%s: %s)",
+                           type(exc).__name__, exc)
+            return self._respaldo(entrada, f"IA no disponible: {type(exc).__name__}: {exc}")
         idioma = codigo_idioma(data.get("idioma")) if data.get("idioma") else None
         if idioma not in IDIOMAS:
             idioma = None

@@ -3,6 +3,7 @@ seco, la lista corregible y el workflow de la Fase 1."""
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
 
@@ -110,15 +111,19 @@ def test_el_proveedor_de_ia_parsea_la_respuesta(monkeypatch, con_clave) -> None:
     assert "Dominio del correo: y.fr" in prompts[0][1] and "clave-de-prueba" not in prompts[0][1]
 
 
-def test_el_proveedor_de_ia_cae_a_palabras_clave_si_falla(monkeypatch, con_clave) -> None:
+def test_el_proveedor_de_ia_cae_a_palabras_clave_si_falla(monkeypatch, con_clave, caplog) -> None:
     def _roto(**kwargs):
-        raise llm.LLMUpstreamError("caída")
+        raise llm.LLMUpstreamError("Provider returned non-text content (blocks: thinking)")
 
     monkeypatch.setattr(llm, "_invoke_claude", _roto)
-    out = ClasificadorAnthropic().clasificar(EntradaLead(texto=ALEMAN, fuente="agilecrm",
-                                                         referencia="n1"))
+    with caplog.at_level(logging.WARNING, logger="app.services.leads.proveedor_anthropic"):
+        out = ClasificadorAnthropic().clasificar(EntradaLead(texto=ALEMAN, fuente="agilecrm",
+                                                             referencia="n1"))
     assert (out.idioma, out.interes, out.proveedor) == ("de", "consumibles", "palabras_clave")
-    assert "respaldo por palabras clave" in out.motivo
+    # El motivo y el log llevan el MENSAJE del error, no solo la clase.
+    assert ("respaldo por palabras clave: IA no disponible: LLMUpstreamError: Provider returned "
+            "non-text content (blocks: thinking)") in out.motivo
+    assert any("non-text content (blocks: thinking)" in r.getMessage() for r in caplog.records)
     # Valores fuera de catálogo: se normalizan, no revientan.
     monkeypatch.setattr(llm, "_invoke_claude", lambda **k: json.dumps(
         {"idioma": "zh-Hant", "interes": "cohetes", "es_spam": "no", "confianza": 7}))
