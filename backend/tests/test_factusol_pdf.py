@@ -360,13 +360,68 @@ def test_pdf_de_fr_nl_labels() -> None:
     assert "30 Tage" in _texto(pdf)
 
 
-def test_pdf_filename_is_readable_ascii() -> None:
+def _nombre(doc_type: str, lang: str = "es", *, variant: str | None = None,
+            **over: Any) -> str:
+    """Nombre del PDF de un documento, con la cabecera de prueba retocada."""
     data = extract_document_data(
-        _alb_resolver(), "facturas", _header("facturas"),
-        [], ejercicio="2026",
+        _alb_resolver(), doc_type, _header(doc_type, **over), [],
+        ejercicio="2026",
     )
-    assert pdf_filename("facturas", data, "es") == (
-        "Factura_5-260063_DUPLICODER_S_L.pdf"
+    return pdf_filename(doc_type, data, lang, variant)
+
+
+def test_pdf_filename_tipo_cliente_numero() -> None:
+    # Tipo de documento · cliente · número, separados por espacios.
+    assert _nombre("facturas", "es", TIPFAC="2", CODFAC=4364,
+                   CNOFAC="CDCOPIADVD SLU") == (
+        "Factura CDCOPIADVD SLU 2-004364.pdf"
+    )
+
+
+def test_pdf_filename_traducido_con_sus_espacios() -> None:
+    # La etiqueta sale de `labels_for(lang)` y conserva sus espacios: ya no
+    # se convierten en guiones («Delivery-note», «Proforma-invoice»).
+    assert _nombre("facturas", "de").startswith("Rechnung ")
+    assert _nombre("albaranes", "fr").startswith("Bon de livraison ")
+    assert _nombre("albaranes", "en").startswith("Delivery note ")
+    assert _nombre("presupuestos", "en", variant="proforma").startswith(
+        "Proforma invoice ",
+    )
+
+
+def test_pdf_filename_cliente_sin_acentos_ni_puntos() -> None:
+    # El paso a ASCII es a propósito: un byte fuera de ASCII en
+    # `Content-Disposition` (el 0xE1 de «Albarán» en latin-1) lo rechaza el
+    # cliente HTTP. Los puntos y las comas pasan a UN espacio.
+    name = _nombre("albaranes", "de", TIPALB="2", CODALB=80,
+                   CNOALB="Manufaktur für Gestaltung und Druck")
+    assert name == "Lieferschein MANUFAKTUR FUR GESTALTUNG UND DRUCK 2-000080.pdf"
+    name = _nombre("facturas", "es", CNOFAC="  CDCOPIADVD, S.L.U.  ")
+    assert name == "Factura CDCOPIADVD S L U 5-260063.pdf"
+    assert "  " not in name and name == name.strip()
+
+
+def test_pdf_filename_cliente_largo_se_recorta_sin_cola() -> None:
+    def cliente_de(nombre: str) -> str:
+        name = _nombre("facturas", "es", CNOFAC=nombre)
+        return name[len("Factura "):-len(" 5-260063.pdf")]
+
+    cliente = cliente_de(
+        "Manufaktur fur Gestaltung und Druck Deutschland GmbH & Co KG")
+    assert len(cliente) == 40
+    assert cliente == "MANUFAKTUR FUR GESTALTUNG UND DRUCK DEUT"
+    # Y cuando el corte cae justo en un espacio, no deja el nombre con hueco
+    # (ni un «  » doble al pegar el número detrás).
+    cliente = cliente_de("Manufaktur fur Gestaltung und Druck GmB Deutschland")
+    assert cliente == "MANUFAKTUR FUR GESTALTUNG UND DRUCK GMB"
+
+
+def test_pdf_filename_sin_nombre_de_cliente() -> None:
+    # Respaldo: el código de cliente de FACTUSOL.
+    assert _nombre("facturas", "es", CNOFAC=None) == "Factura 2458 5-260063.pdf"
+    # Sin nombre ni código: tipo + número, sin separadores sueltos.
+    assert _nombre("facturas", "es", CNOFAC=None, CLIFAC=None) == (
+        "Factura 5-260063.pdf"
     )
 
 
@@ -449,7 +504,8 @@ def test_pdf_endpoint_returns_pdf_with_filename(http, session_factory) -> None:
         )
     assert r.status_code == 200, r.text
     assert r.headers["content-type"] == "application/pdf"
-    assert "Invoice_5-260063" in r.headers["content-disposition"]
+    assert ("filename=\"Invoice DUPLICODER S L 5-260063.pdf\""
+            in r.headers["content-disposition"])
     assert "INVOICE" in _texto(r.content)
 
 
@@ -848,7 +904,8 @@ def test_pdf_endpoint_bank_and_variant_params(http, session_factory) -> None:
     assert "FACTURA DE ANTICIPO" in text
     assert "ES23 0073 0100 5404 4814 5865" in text   # Open Bank (índice 1)
     assert "Importes en SEK" in text
-    assert "Factura-de-anticipo" in r.headers["content-disposition"]
+    assert ("filename=\"Factura de anticipo DUPLICODER S L 5-260063.pdf\""
+            in r.headers["content-disposition"])
 
 
 # ---------------------------------------------------------------------------

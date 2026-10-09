@@ -1774,27 +1774,37 @@ def pdf_filename(
     doc_type: str, data: dict[str, Any], lang: str,
     variant: str | None = None,
 ) -> str:
-    """`Factura_5-260066_LABORATORIOS_PORTA.pdf` — legible y sin sorpresas
-    de encoding en cabeceras HTTP (ASCII, sin espacios). Las variantes
-    llevan su título («Factura-de-anticipo_…»). La etiqueta del documento
-    también se pasa a ASCII («Albarán» → `Albaran`): un byte fuera de ASCII
-    en `Content-Disposition` (latin-1 0xE1) lo rechaza el cliente HTTP."""
+    """`Factura LABORATORIOS PORTA 5-260066.pdf` — tipo de documento, cliente
+    y número, en ese orden y separados por espacios. Las variantes llevan su
+    título («Factura de anticipo …», «Proforma invoice …»). Los espacios son
+    seguros porque las cabeceras escriben el nombre entre comillas
+    (`filename="…"`) y los adjuntos de correo lo codifican igual.
+
+    Lo que sí se mantiene es el paso a ASCII del tipo y del cliente
+    («Albarán» → `Albaran`, «Manufaktur für» → `Manufaktur fur`): un byte
+    fuera de ASCII en `Content-Disposition` (latin-1 0xE1) lo rechaza el
+    cliente HTTP. El nombre del cliente se recorta a 40 caracteres y, si no
+    hay nombre, se usa su código de FACTUSOL; si no hay ninguno de los dos el
+    nombre se queda en tipo + número, sin separadores sueltos."""
     lab = labels_for(lang)
     if variant in ("anticipo", "proforma", "devolucion"):
         key = {"anticipo": "title_facturas_anticipo",
                "proforma": "title_presupuestos_proforma",
                "devolucion": "title_albaranes_devolucion"}[variant]
-        doc_label = lab[key].capitalize().replace(" ", "-")
+        doc_label = lab[key].capitalize()
     else:
-        doc_label = lab[f"doc_{doc_type}"].replace(" ", "-")
+        doc_label = lab[f"doc_{doc_type}"]
     doc_label = unicodedata.normalize("NFKD", doc_label)
-    doc_label = doc_label.encode("ascii", "ignore").decode("ascii")
+    doc_label = doc_label.encode("ascii", "ignore").decode("ascii").strip()
     cliente = data["cliente"]["nombre"] or data["cliente"]["codigo"] or ""
     cliente = unicodedata.normalize("NFKD", cliente)
     cliente = cliente.encode("ascii", "ignore").decode("ascii")
-    cliente = re.sub(r"[^A-Za-z0-9]+", "_", cliente).strip("_").upper()[:40]
-    parts = [doc_label, data["numero"]] + ([cliente] if cliente else [])
-    return "_".join(parts) + ".pdf"
+    # Todo lo que no sea alfanumérico (puntos de «S.L.U.», comas, guiones) pasa
+    # a UN espacio; el recorte a 40 se limpia después para no dejar el nombre
+    # terminado en un hueco.
+    cliente = re.sub(r"[^A-Za-z0-9]+", " ", cliente).strip().upper()[:40].strip()
+    parts = [doc_label] + ([cliente] if cliente else []) + [data["numero"]]
+    return " ".join(p for p in parts if p) + ".pdf"
 
 
 # --- cascada de idioma (E4-fix1 Parte I) ------------------------------------

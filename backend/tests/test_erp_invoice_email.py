@@ -215,7 +215,7 @@ def test_send_invoice_uses_resolved_language_for_pdf_and_body(http, session_fact
     # El PDF adjunto es application/pdf con nombre legible.
     att = kwargs["attachments"][0]
     assert att["content_type"] == "application/pdf"
-    assert "Facture_5-260063" in att["filename"]
+    assert att["filename"] == "Facture DUPLICODER S L 5-260063.pdf"
     assert att["data"].startswith(b"%PDF")
     # El cuerpo enviado es el francés.
     assert kwargs["subject"] == "Facture 5-260063"
@@ -300,7 +300,7 @@ def test_send_invoice_attaches_pdf_with_readable_name(http, session_factory) -> 
             headers=auth_headers(http, "pedidos"),
         )
     name = mock_send.call_args.kwargs["attachments"][0]["filename"]
-    assert name == "Factura_5-260063_DUPLICODER_S_L.pdf"
+    assert name == "Factura DUPLICODER S L 5-260063.pdf"
 
 
 def test_send_failure_does_not_mark_as_sent(http, session_factory) -> None:
