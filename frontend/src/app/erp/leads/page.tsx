@@ -15,7 +15,9 @@ import {
   type LeadEnSecoInforme,
   type LeadWorkflowEstado,
 } from "../../lib/erpApi";
+import { InteresesPicker } from "../../components/leads/InteresesPicker";
 import { extractErrorMessage } from "../../lib/errors";
+import { listaIntereses, listasIguales } from "../../lib/leadsMapa";
 import {
   estadoLabel,
   estadoTone,
@@ -245,7 +247,7 @@ export default function LeadsPage() {
           <table className="data-table data-table--responsive erp-leads-tabla">
             <thead>
               <tr>
-                <th>Lead</th><th>Consulta</th><th>Idioma</th><th>Interés</th><th>Spam</th>
+                <th>Lead</th><th>Consulta</th><th>Idioma</th><th>Intereses</th><th>Spam</th>
                 <th>Confianza</th><th>Resultado</th><th>Corrección</th>
               </tr>
             </thead>
@@ -319,8 +321,11 @@ function InformeEnSeco({
                   {f.clasificacion.es_spam ? (
                     <span className="badge bad">Spam</span>
                   ) : (
+                    // Todos los intereses («UV LED mediano formato + DTF»), el
+                    // principal primero.
                     <span className="badge active">
-                      {etiquetas[f.clasificacion.interes] ?? f.clasificacion.interes}
+                      {f.clasificacion.intereses_texto
+                        || etiquetas[f.clasificacion.interes] || f.clasificacion.interes}
                     </span>
                   )}{" "}
                   <span className="small">
@@ -357,9 +362,11 @@ function InformeEnSeco({
   );
 }
 
-/** Una fila de lead procesado. Idioma, interés y spam se corrigen a mano:
+/** Una fila de lead procesado. Idioma, intereses y spam se corrigen a mano:
  *  solo viaja lo que cambia respecto a lo que manda (lo corregido, si lo
- *  hay; si no, lo clasificado). La original se conserva en el servidor. */
+ *  hay; si no, lo clasificado). Los intereses van en lista y en el orden
+ *  elegido (el primero es el principal). La original se conserva en el
+ *  servidor. */
 function FilaLead({
   lead, opciones, onCorregir,
 }: {
@@ -368,8 +375,9 @@ function FilaLead({
   onCorregir: (id: string, payload: LeadCorreccion) => Promise<void>;
 }) {
   const nombre = lead.contacto.nombre || lead.contacto.email;
+  const efectivos = listaIntereses(lead.efectivo.intereses, lead.efectivo.interes);
   const [idioma, setIdioma] = useState(lead.efectivo.idioma ?? "");
-  const [interes, setInteres] = useState(lead.efectivo.interes ?? "");
+  const [intereses, setIntereses] = useState<string[]>(efectivos);
   const [esSpam, setEsSpam] = useState(lead.efectivo.es_spam);
   const [nota, setNota] = useState("");
   const [ocupada, setOcupada] = useState(false);
@@ -377,7 +385,7 @@ function FilaLead({
 
   const cambios: LeadCorreccion = {};
   if (idioma && idioma !== (lead.efectivo.idioma ?? "")) cambios.idioma = idioma;
-  if (interes && interes !== (lead.efectivo.interes ?? "")) cambios.interes = interes;
+  if (intereses.length > 0 && !listasIguales(intereses, efectivos)) cambios.intereses = intereses;
   if (esSpam !== lead.efectivo.es_spam) cambios.es_spam = esSpam;
   const hayCambios = Object.keys(cambios).length > 0;
 
@@ -423,16 +431,15 @@ function FilaLead({
         ) : null}
         {lead.idioma_fuente ? <><br /><span className="muted small">{origenDato(lead.idioma_fuente)}</span></> : null}
       </td>
-      <td data-label="Interés">
-        <select
-          aria-label={`Interés de ${nombre}`}
-          value={interes}
-          onChange={(e) => setInteres(e.target.value)}
-        >
-          {!interes ? <option value="">—</option> : null}
-          {opciones.intereses.map((i) => <option key={i.id} value={i.id}>{i.label}</option>)}
-        </select>
-        {lead.interes_fuente ? <><br /><span className="muted small">{origenDato(lead.interes_fuente)}</span></> : null}
+      <td data-label="Intereses">
+        <InteresesPicker
+          value={intereses}
+          onChange={setIntereses}
+          opciones={opciones.intereses}
+          labelPrincipal={`Interés de ${nombre}`}
+          sujeto={nombre}
+        />
+        {lead.interes_fuente ? <span className="muted small">{origenDato(lead.interes_fuente)}</span> : null}
       </td>
       <td data-label="Spam">
         <input
@@ -485,7 +492,7 @@ function FilaLead({
             </button>
           </>
         ) : (
-          <span className="muted small">Cambia idioma, interés o spam para corregir.</span>
+          <span className="muted small">Cambia idioma, intereses o spam para corregir.</span>
         )}
         {error ? <p className="form-error" role="alert">{error}</p> : null}
       </td>

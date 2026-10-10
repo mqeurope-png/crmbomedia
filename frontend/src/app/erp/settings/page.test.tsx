@@ -1,13 +1,16 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import ErpSettingsPage from "./page";
-import type { ContrapartidaRule } from "../../lib/erpApi";
+import type { ContrapartidaRule, LeadInteres, LeadInteresConUso } from "../../lib/erpApi";
 import {
+  createLeadInteres,
   getErpNextReferences,
   getErpSettings,
+  listLeadIntereses,
   previewInvoiceEmailTemplate,
   sendInvoiceEmailTemplateTest,
   updateErpSettings,
+  updateLeadInteres,
   type ErpSettings,
 } from "../../lib/erpApi";
 
@@ -36,6 +39,11 @@ jest.mock("../../lib/erpApi", () => ({
   sendQuoteEmailTemplateTest: jest.fn(),
   deleteFactusolCompanyLogo: jest.fn(),
   uploadFactusolCompanyLogo: jest.fn(),
+  // El catálogo de intereses del clasificador (Respuesta a leads).
+  listLeadIntereses: jest.fn(() => Promise.resolve({ items: [] })),
+  createLeadInteres: jest.fn(),
+  updateLeadInteres: jest.fn(),
+  deleteLeadInteres: jest.fn(),
 }));
 // Sugerencias de remitente (datalist): los «enviar como» del usuario.
 jest.mock("../../lib/emailsApi", () => ({
@@ -712,21 +720,30 @@ describe("ErpSettingsPage — Cuadre (descuadres)", () => {
 });
 
 describe("ErpSettingsPage — Respuesta a leads", () => {
+  const mockListIntereses = listLeadIntereses as jest.Mock;
+  const mockCreateInteres = createLeadInteres as jest.Mock;
+  const mockUpdateInteres = updateLeadInteres as jest.Mock;
+  const interes = (over: Partial<LeadInteres> & { id: string; label: string }): LeadInteres => ({
+    codigo: over.id, etiqueta: over.label, descripcion: "", comercial: true, orden: 0, activo: true,
+    ...over,
+  });
   const catalogo = {
     intereses: [
-      { id: "vending", label: "Vending", comercial: true },
-      { id: "laser_cnc", label: "Láser y CNC", comercial: true },
-      { id: "consumibles", label: "Consumibles", comercial: false },
+      interes({ id: "vending", label: "Vending", orden: 0 }),
+      interes({ id: "corte_laser", label: "Corte láser", orden: 1 }),
+      interes({ id: "soporte_postventa", label: "Soporte postventa", comercial: false, orden: 2 }),
+      interes({ id: "cnc", label: "CNC", orden: 3, activo: false }),
     ],
     idiomas: ["es", "en"],
     plantillas: [
       { id: "tpl-vending-es", name: "Lead · Vending (ES)" },
-      { id: "tpl-laser-en", name: "Lead · Láser y CNC (EN)" },
+      { id: "tpl-laser-en", name: "Lead · Corte láser (EN)" },
     ],
     mapa_por_nombre: {
       "vending:es": "tpl-vending-es", "vending:en": null,
-      "laser_cnc:es": null, "laser_cnc:en": "tpl-laser-en",
+      "corte_laser:es": null, "corte_laser:en": "tpl-laser-en",
     },
+    huecos: [],
     webs: [
       { clave: "pimpam", web: "pimpam-vending.com", marca: "Pimpam",
         remitente_defecto: "info@pimpam-vending.com" },
@@ -748,8 +765,10 @@ describe("ErpSettingsPage — Respuesta a leads", () => {
     render(<ErpSettingsPage />);
     const activo = await screen.findByLabelText("Respuesta a leads activa");
     expect(activo).not.toBeChecked();
-    // Consumibles no es un interés comercial: no tiene plantilla de venta.
-    expect(screen.queryByLabelText("Plantilla de Consumibles en ES")).not.toBeInTheDocument();
+    // Soporte postventa no es comercial (sin plantilla de venta) y CNC está
+    // desactivado: ninguno va en el mapa.
+    expect(screen.queryByLabelText("Plantilla de Soporte postventa en ES")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Plantilla de CNC en ES")).not.toBeInTheDocument();
     // «Por nombre» enseña la plantilla que se resuelve (o que no hay).
     const vendingEs = screen.getByLabelText("Plantilla de Vending en ES") as HTMLSelectElement;
     expect(vendingEs.options[vendingEs.selectedIndex].textContent)
@@ -765,7 +784,7 @@ describe("ErpSettingsPage — Respuesta a leads", () => {
     await user.clear(tope);
     await user.type(tope, "30");
     await user.selectOptions(vendingEn, "tpl-laser-en");
-    await user.selectOptions(screen.getByLabelText("Plantilla de Láser y CNC en ES"), "__ninguna__");
+    await user.selectOptions(screen.getByLabelText("Plantilla de Corte láser en ES"), "__ninguna__");
     await user.selectOptions(screen.getByLabelText("Web de la cuenta Agile Bomedia"), "pimpam");
     await user.type(screen.getByLabelText("Remitente de ArtisJet ES"), "info@artisjet.es");
     await user.click(screen.getByLabelText("Solo días laborables"));
@@ -776,10 +795,82 @@ describe("ErpSettingsPage — Respuesta a leads", () => {
     expect(patch.lead_response).toEqual({
       activo: true, tope_diario: 30, umbral_confianza: 0.7, antiguedad_horas: 72,
       ventana: { enabled: true, start: "09:00", end: "18:00", weekdays_only: false },
-      mapa: { "vending:en": "tpl-laser-en", "laser_cnc:es": "" },
+      mapa: { "vending:en": "tpl-laser-en", "corte_laser:es": "" },
       remitentes: { por_web: { "artisjet-es": "info@artisjet.es" },
                     por_cuenta_agile: { "acc-1": "pimpam" } },
     });
+  });
+
+  it("las combinaciones van al mapa con la clave ordenada y los huecos se ven", async () => {
+    mockGet.mockResolvedValue(settings({
+      lead_response: { ...config, mapa: { "corte_laser+vending:en": "tpl-laser-en", "vending:en": "" } },
+      lead_response_catalogo: catalogo,
+    }));
+    const user = userEvent.setup();
+    render(<ErpSettingsPage />);
+    await screen.findByLabelText("Respuesta a leads activa");
+    // La combinación guardada se enseña con sus etiquetas y su plantilla.
+    expect(screen.getByLabelText("Plantilla de Corte láser + Vending en EN")).toHaveValue("tpl-laser-en");
+    // Los huecos: Vending en EN a propósito; Corte láser en ES sin plantilla
+    // (ni en el mapa ni por nombre). Vending ES y Corte láser EN resuelven.
+    const huecos = screen.getByRole("list", { name: "Huecos del mapa de plantillas" });
+    expect(screen.getByText(/^2 huecos\./)).toBeInTheDocument();
+    expect(within(huecos).getByText("EN · a propósito")).not.toHaveClass("warn");
+    expect(within(huecos).getByText("ES")).toHaveClass("warn");
+    expect(within(huecos).getByText("Corte láser")).toBeInTheDocument();
+    // Una combinación nueva: el orden en que se eligen no importa, la clave va
+    // con los códigos ordenados (la misma que compone el servidor).
+    await user.selectOptions(screen.getByLabelText("Intereses de la combinación nueva"), "vending");
+    await user.selectOptions(screen.getByLabelText("Añadir interés a la combinación nueva"), "corte_laser");
+    await user.selectOptions(screen.getByLabelText("Idioma de la combinación nueva"), "es");
+    await user.selectOptions(screen.getByLabelText("Plantilla de la combinación nueva"), "tpl-vending-es");
+    await user.click(screen.getByRole("button", { name: "Añadir combinación" }));
+    expect(screen.getByLabelText("Plantilla de Corte láser + Vending en ES")).toHaveValue("tpl-vending-es");
+    // Quitar la combinación guardada la borra del mapa.
+    await user.click(screen.getByRole("button", { name: "Quitar la combinación Corte láser + Vending en EN" }));
+    await user.click(screen.getByRole("button", { name: "Guardar cambios · Respuesta a leads" }));
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
+    expect(mockUpdate.mock.calls[0][0].lead_response.mapa).toEqual({
+      "vending:en": "", "corte_laser+vending:es": "tpl-vending-es",
+    });
+  });
+
+  it("el catálogo de intereses se edita aquí y entra en el mapa sin recargar", async () => {
+    const conUso = (i: LeadInteres, clasificaciones = 0): LeadInteresConUso => ({
+      ...i, en_uso: { clasificaciones, en_mapa: 0 },
+    });
+    mockListIntereses.mockResolvedValue({
+      items: [conUso(catalogo.intereses[0], 4), conUso(catalogo.intereses[1]),
+              conUso(catalogo.intereses[2]), conUso(catalogo.intereses[3])],
+    });
+    mockCreateInteres.mockResolvedValue(conUso(interes({
+      id: "smartjet", label: "SmartJet", descripcion: "Objetos cilíndricos.", orden: 4,
+    })));
+    mockUpdateInteres.mockResolvedValue(conUso(interes({ id: "corte_laser", label: "Corte láser",
+                                                         orden: 1, activo: false })));
+    mockGet.mockResolvedValue(settings({ lead_response: config, lead_response_catalogo: catalogo }));
+    const user = userEvent.setup();
+    render(<ErpSettingsPage />);
+    expect(await screen.findByLabelText("Etiqueta de vending")).toHaveValue("Vending");
+    expect(screen.getByText("4 leads")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Borrar vending" })).not.toBeInTheDocument();
+    // Un interés nuevo aparece en el mapa (una fila más, sin plantilla: un hueco).
+    await user.type(screen.getByLabelText("Código del interés nuevo"), "smartjet");
+    await user.type(screen.getByLabelText("Etiqueta del interés nuevo"), "SmartJet");
+    await user.type(screen.getByLabelText("Descripción del interés nuevo"), "Objetos cilíndricos.");
+    await user.click(screen.getByRole("button", { name: "Añadir interés" }));
+    await waitFor(() => expect(mockCreateInteres).toHaveBeenCalledWith({
+      codigo: "smartjet", etiqueta: "SmartJet", descripcion: "Objetos cilíndricos.", comercial: true,
+    }));
+    expect(await screen.findByLabelText("Plantilla de SmartJet en ES")).toBeInTheDocument();
+    const huecos = screen.getByRole("list", { name: "Huecos del mapa de plantillas" });
+    expect(within(huecos).getByText("SmartJet")).toBeInTheDocument();
+    // Desactivar uno lo saca del mapa (lo clasificado sigue legible en las listas).
+    await user.click(screen.getByLabelText("Activo corte_laser"));
+    await waitFor(() => expect(mockUpdateInteres).toHaveBeenCalledWith("corte_laser", { activo: false }));
+    await waitFor(() => expect(screen.queryByLabelText("Plantilla de Corte láser en ES")).not.toBeInTheDocument());
+    // Nada de esto pasa por «Guardar cambios»: se guardó al momento.
+    expect(mockUpdate).not.toHaveBeenCalled();
   });
 
   it("sin configuración guardada pinta los valores de serie y enlaza a ERP · Leads", async () => {

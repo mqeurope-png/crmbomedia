@@ -1172,7 +1172,7 @@ def _step_classify_lead(session, run, step, contact) -> StepResult:
     y, si el run se lanzó a mano, de lo último que entró del contacto.
     """
     from app.models.leads import ESTADO_CLASIFICADO  # noqa: PLC0415
-    from app.services.leads import clasificador, registro  # noqa: PLC0415
+    from app.services.leads import clasificador, intereses, registro  # noqa: PLC0415
     from app.services.leads.config import configuracion  # noqa: PLC0415
     from app.workflows.trigger_definitions import _lead_max_age_hours  # noqa: PLC0415
 
@@ -1216,6 +1216,7 @@ def _step_classify_lead(session, run, step, contact) -> StepResult:
         reutilizada = {
             "reused": True, "lead_classification_id": existente.id,
             "idioma": existente.idioma_efectivo, "interes": existente.interes_efectivo,
+            "intereses": existente.intereses_efectivos,
             "es_spam": existente.es_spam_efectivo, "confianza": existente.confidence,
             "status": existente.status,
         }
@@ -1229,7 +1230,12 @@ def _step_classify_lead(session, run, step, contact) -> StepResult:
         return StepResult(
             branch_label="spam" if existente.es_spam_efectivo else "ok", result=reutilizada,
         )
-    clasificacion = clasificador.clasificar_lead(entrada, clasificador.proveedor_por_defecto())
+    # El catálogo de intereses (Configuración ERP) va al proveedor: un interés
+    # nuevo o una descripción afinada entran sin desplegar nada.
+    catalogo = intereses.cargar(session)
+    clasificacion = clasificador.clasificar_lead(
+        entrada, clasificador.proveedor_por_defecto(catalogo), catalogo,
+    )
     fila = registro.registrar(session, contact, entrada, clasificacion, run_id=run.id)
     return StepResult(
         branch_label="spam" if clasificacion.es_spam else "ok",
@@ -1298,10 +1304,11 @@ def _step_prepare_email_draft(session, run, step, contact) -> StepResult:
        "owner_mode": "propietario" | "usuario", "user_id": "...",
        "subject_override": "..."}
 
-    - `por_interes`: la plantilla del interés y el idioma de la última
-      clasificación (`app.services.leads.plantillas`). Sin plantilla —`otro`,
-      consumibles, servicio técnico, repuestos, o un interés sin contenido—
-      se deja un borrador vacío y queda el aviso.
+    - `por_interes`: la plantilla de los intereses y el idioma de la última
+      clasificación (`app.services.leads.plantillas`): la del conjunto exacto
+      si el mapa la tiene; si no, la del interés principal. Sin plantilla
+      —«otro», soporte postventa, o un interés sin contenido (DTF, packaging,
+      CNC, tienda…)— se deja un borrador vacío y queda el aviso.
     - `web_del_lead`: el remitente de la web por la que entró el lead (la
       misma dirección que firma el acuse de recibo).
     - Una vez por lead: si el lead ya tiene borrador, o ya se le mandó algo
@@ -1311,11 +1318,7 @@ def _step_prepare_email_draft(session, run, step, contact) -> StepResult:
     from app.email_templates.services import replace_merge_vars  # noqa: PLC0415
     from app.models.crm import EmailDraft  # noqa: PLC0415
     from app.models.leads import ESTADO_PREPARADO, ESTADO_SIN_PLANTILLA  # noqa: PLC0415
-    from app.services.leads import plantillas, registro, remitentes  # noqa: PLC0415
-    from app.services.leads.clasificador import (  # noqa: PLC0415
-        INTERESES_COMERCIALES,
-        etiqueta_interes,
-    )
+    from app.services.leads import intereses, plantillas, registro, remitentes  # noqa: PLC0415
     from app.services.leads.config import configuracion  # noqa: PLC0415
     from app.services.web_forms.sitios import partes_de_origen  # noqa: PLC0415
 
@@ -1334,7 +1337,9 @@ def _step_prepare_email_draft(session, run, step, contact) -> StepResult:
         return StepResult(status="skipped", error="ya_contactado")
 
     conf = configuracion(session)
-    interes = fila.interes_efectivo if fila is not None else None
+    catalogo = intereses.cargar(session)
+    lista = fila.intereses_efectivos if fila is not None else []
+    interes = lista[0] if lista else None
     idioma = ((fila.idioma_efectivo if fila is not None else None)
               or contact.language or "es")
     template = None
@@ -1346,12 +1351,12 @@ def _step_prepare_email_draft(session, run, step, contact) -> StepResult:
             aviso = "la plantilla fija del paso ya no existe"
     elif not interes:
         aviso = "lead sin clasificar: sin plantilla"
-    elif interes not in INTERESES_COMERCIALES:
-        aviso = f"«{etiqueta_interes(interes)}» no es un lead comercial: sin plantilla de venta"
+    elif not catalogo.comercial(interes):
+        aviso = f"«{catalogo.etiqueta(interes)}» no es un lead comercial: sin plantilla de venta"
     else:
-        template = plantillas.plantilla_para(session, interes, idioma, conf.get("mapa"))
+        template = plantillas.plantilla_para(session, lista, idioma, conf.get("mapa"), catalogo)
         if template is None:
-            aviso = f"sin plantilla para {etiqueta_interes(interes)} en {idioma}"
+            aviso = f"sin plantilla para {catalogo.texto(lista)} en {idioma}"
 
     contexto = fila.contexto() if fila is not None else {}
     sitio = contexto.get("sitio")

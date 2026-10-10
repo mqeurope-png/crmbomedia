@@ -12,6 +12,7 @@ export function leadClasificacion(over: Partial<LeadClasificacion> = {}): LeadCl
     texto: "Bonjour, je cherche un distributeur automatique…",
     idioma: "fr", idioma_fuente: "texto", idioma_formulario: "de", discrepancia_idioma: true,
     interes: "vending", interes_texto: "Vending", interes_fuente: "etiquetas",
+    intereses: ["vending"], intereses_texto: "Vending", intereses_etiquetas: ["Vending"],
     es_spam: false, confianza: 0.55, bajo_umbral: true,
     motivo: "Una sola palabra clave de vending en un texto largo; el formulario era alemán "
       + "pero el texto está en francés, así que la plantilla alemana no encaja.",
@@ -19,9 +20,11 @@ export function leadClasificacion(over: Partial<LeadClasificacion> = {}): LeadCl
     estado: "clasificado", estado_detalle: null,
     plantilla: null, remitente: null, borrador_id: null, borrador_url: null,
     tarea_id: null, run_id: "run-9",
-    efectivo: { idioma: "fr", interes: "vending", interes_texto: "Vending", es_spam: false },
-    correccion: { corregida: false, idioma: null, interes: null, es_spam: null, nota: null,
-                  por: null, cuando: null },
+    efectivo: { idioma: "fr", interes: "vending", interes_texto: "Vending",
+                intereses: ["vending"], intereses_texto: "Vending",
+                intereses_etiquetas: ["Vending"], es_spam: false },
+    correccion: { corregida: false, idioma: null, interes: null, intereses: [], es_spam: null,
+                  nota: null, por: null, cuando: null },
     creado: "2026-10-09T08:12:30Z",
     texto_completo: "Bonjour, je cherche un distributeur automatique pour notre bureau de 40 "
       + "personnes.\n\nMerci,\nTorra",

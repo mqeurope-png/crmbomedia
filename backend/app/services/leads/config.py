@@ -22,8 +22,13 @@ Vive en el blob `factusol_series_json` de `ErpSettings`, bajo la clave
   el suyo; el trigger tiene el suyo propio (`max_age_hours`).
 - `ventana`: la ventana horaria con la que se siembra el paso de espera del
   workflow (el paso guarda la suya).
-- `mapa`: interés × idioma → plantilla; sin entrada se busca por nombre.
+- `mapa`: intereses × idioma → plantilla. La clave es `codigo:idioma` o, para
+  una combinación, `codigo+codigo:idioma` (códigos ordenados; ver
+  `plantillas.clave_mapa`); sin entrada se busca por nombre.
 - `remitentes`: la web de cada lead → remitente; cuenta de Agile → web.
+
+La lista de intereses no está aquí: vive en `lead_interests`
+(`app.services.leads.intereses`) y se gestiona desde la misma pantalla.
 
 El interruptor y el tope los aplica el paso «Clasificar lead»
 (`app.workflows.steps`): apagado, o con el tope del día alcanzado, el lead
@@ -109,18 +114,25 @@ def _es_correo(valor: str) -> bool:
 
 def validar(
     payload: Any, actual: Any = None, *, plantillas_validas: set[str] | None = None,
+    catalogo: Any = None,
 ) -> dict[str, Any]:
     """Valida lo que llega del PATCH de Configuración ERP y lo FUNDE con lo
     guardado: la clave que no viene se conserva; `mapa`, `remitentes.por_web`
     y `remitentes.por_cuenta_agile` se sustituyen ENTEROS cuando vienen (la
     pantalla manda siempre el bloque completo, y así se puede quitar una
-    entrada). `ValueError` con un mensaje legible si algo no vale."""
-    from app.services.leads.clasificador import IDIOMAS, INTERESES_COMERCIALES  # noqa: PLC0415
+    entrada). `ValueError` con un mensaje legible si algo no vale.
+
+    `catalogo` (`intereses.cargar(session)`) dice qué códigos de interés
+    existen para las claves del mapa; sin él, la lista de partida."""
+    from app.services.leads import plantillas  # noqa: PLC0415
+    from app.services.leads.clasificador import IDIOMAS  # noqa: PLC0415
+    from app.services.leads.intereses import Catalogo  # noqa: PLC0415
     from app.services.web_forms.sitios import WEBS  # noqa: PLC0415
     from app.workflows.ventana import _hora  # noqa: PLC0415
 
     if not isinstance(payload, dict):
         raise ValueError("La configuración de respuesta a leads no es válida.")
+    catalogo = catalogo or Catalogo.de_partida()
     base = normalizar(actual)
     if "activo" in payload:
         if not isinstance(payload["activo"], bool):
@@ -171,16 +183,30 @@ def validar(
             raise ValueError("El mapa de plantillas no es válido.")
         limpio: dict[str, str] = {}
         for clave, valor in mapa.items():
-            interes, _, idioma = str(clave).partition(":")
-            if interes not in INTERESES_COMERCIALES or idioma not in IDIOMAS:
-                raise ValueError(f"Mapa de plantillas: la clave {clave!r} no es interés:idioma.")
+            codigos, idioma = plantillas.partes_clave(str(clave))
+            if not codigos or idioma not in IDIOMAS:
+                raise ValueError(
+                    f"Mapa de plantillas: la clave {clave!r} no es intereses:idioma."
+                )
+            desconocidos = [c for c in codigos if not catalogo.conoce(c)]
+            if desconocidos:
+                raise ValueError(
+                    f"Mapa de plantillas: la clave {clave!r} lleva un interés que no existe "
+                    f"({', '.join(desconocidos)})."
+                )
             template_id = str(valor or "").strip()
             desconocida = plantillas_validas is not None and template_id not in plantillas_validas
             if template_id and desconocida:
                 raise ValueError(
                     f"Mapa de plantillas: la plantilla de {clave} no existe ({template_id})."
                 )
-            limpio[f"{interes}:{idioma}"] = template_id
+            canonica = plantillas.clave_mapa(codigos, idioma)
+            if canonica in limpio and limpio[canonica] != template_id:
+                raise ValueError(
+                    f"Mapa de plantillas: la combinación {canonica} aparece dos veces con "
+                    "plantillas distintas."
+                )
+            limpio[canonica] = template_id
         base["mapa"] = limpio
     if "remitentes" in payload:
         remitentes = payload["remitentes"]
@@ -217,39 +243,37 @@ def validar(
 
 
 def catalogo(session: Session) -> dict[str, Any]:
-    """Lo que la pantalla necesita para pintar la configuración: intereses,
-    idiomas, plantillas candidatas (y la que se resuelve por nombre), webs con
+    """Lo que la pantalla necesita para pintar la configuración: los
+    intereses del catálogo (todos, con descripción, comercial, orden y
+    activo), idiomas, plantillas candidatas (y la que se resuelve por
+    nombre), los huecos (interés comercial × idioma sin plantilla), webs con
     su remitente por defecto y cuentas de AgileCRM."""
     from sqlalchemy import select  # noqa: PLC0415
 
     from app.email_templates.models import EmailTemplate  # noqa: PLC0415
     from app.models.crm import ExternalSystem  # noqa: PLC0415
     from app.models.integration_settings import IntegrationAccount  # noqa: PLC0415
-    from app.services.leads import plantillas  # noqa: PLC0415
-    from app.services.leads.clasificador import (  # noqa: PLC0415
-        ETIQUETAS_INTERES,
-        INTERESES,
-        INTERESES_COMERCIALES,
-    )
+    from app.services.leads import intereses, plantillas  # noqa: PLC0415
     from app.services.web_forms.sitios import MARCAS, REMITENTES, WEBS  # noqa: PLC0415
 
+    cat = intereses.cargar(session)
+    conf = configuracion(session)
     candidatas = list(session.scalars(
         select(EmailTemplate).where(EmailTemplate.name.like("Lead%"))
         .order_by(EmailTemplate.name)
     ))
-    por_nombre = plantillas.mapa_resuelto_por_nombre(session)
+    por_plano = plantillas.ids_por_nombre(session)
+    por_nombre = plantillas.mapa_resuelto_por_nombre(session, cat, por_plano)
     cuentas = list(session.scalars(
         select(IntegrationAccount).where(IntegrationAccount.system == ExternalSystem.AGILECRM)
         .order_by(IntegrationAccount.display_name)
     ))
     return {
-        "intereses": [
-            {"id": i, "label": ETIQUETAS_INTERES[i], "comercial": i in INTERESES_COMERCIALES}
-            for i in INTERESES
-        ],
+        "intereses": cat.como_lista(),
         "idiomas": list(plantillas.IDIOMAS_CON_PLANTILLA),
         "plantillas": [{"id": t.id, "name": t.name} for t in candidatas],
         "mapa_por_nombre": por_nombre,
+        "huecos": plantillas.huecos(session, conf.get("mapa"), cat, por_plano),
         "webs": [
             {"clave": clave, "web": web, "marca": MARCAS.get(clave, clave),
              "remitente_defecto": REMITENTES.get(clave)}

@@ -30,13 +30,15 @@ const VIEJA = lead({
   id: "vieja", lead_at: "2025-02-01T10:00:00Z", fuente: "agilecrm", web: null,
   cuenta_agile: "agile-bomedia", texto_completo: "Wir suchen einen UV-Drucker.", texto: "Wir suchen…",
   idioma: "de", idioma_formulario: null, discrepancia_idioma: false, idioma_discrepancia_texto: null,
-  interes: "otro", interes_texto: "Otro", confianza: 0.9, bajo_umbral: false, estado: "preparado",
+  interes: "otro", interes_texto: "Otro", intereses: ["otro"], intereses_texto: "Otro",
+  intereses_etiquetas: ["Otro"], confianza: 0.9, bajo_umbral: false, estado: "preparado",
   plantilla: "Lead · Otro (DE)", remitente: "info@bomedia.de", borrador_id: "d-2",
   borrador_url: "/emails/drafts?id=d-2", contexto: { fuente: "agilecrm", referencia: "nota-1",
   sitio: null, formulario: null, idioma_formulario: null, productos: [], pais: null,
   cuenta_agile: "agile-bomedia", dominio_email: "druck.de" },
-  efectivo: { idioma: "de", interes: "otro", interes_texto: "Otro", es_spam: false },
-  correccion: { corregida: true, idioma: null, interes: "otro", es_spam: null,
+  efectivo: { idioma: "de", interes: "otro", interes_texto: "Otro", intereses: ["otro"],
+              intereses_texto: "Otro", intereses_etiquetas: ["Otro"], es_spam: false },
+  correccion: { corregida: true, idioma: null, interes: "otro", intereses: ["otro"], es_spam: null,
                 nota: "era otra cosa", por: "Bart", cuando: "2025-02-02T09:00:00Z" },
 });
 
@@ -86,11 +88,13 @@ describe("ContactLeadClassificationTab (pestaña «Análisis IA»)", () => {
   it("corregir manda solo lo que cambia (la corrección de ERP · Leads) y el análisis se actualiza",
      async () => {
     mockList.mockResolvedValue(respuesta([lead()]));
-    mockCorregir.mockImplementation((id: string, payload: Record<string, unknown>) =>
+    mockCorregir.mockImplementation((id: string, payload: { intereses: string[]; nota?: string }) =>
       Promise.resolve(lead({
-        efectivo: { idioma: "fr", interes: String(payload.interes), interes_texto: "Distribución",
-                    es_spam: false },
-        correccion: { corregida: true, idioma: null, interes: String(payload.interes), es_spam: null,
+        efectivo: { idioma: "fr", interes: payload.intereses[0], interes_texto: "Distribución",
+                    intereses: payload.intereses, intereses_texto: "Distribución",
+                    intereses_etiquetas: ["Distribución"], es_spam: false },
+        correccion: { corregida: true, idioma: null, interes: payload.intereses[0],
+                      intereses: payload.intereses, es_spam: null,
                       nota: String(payload.nota ?? ""), por: "Bart", cuando: "2026-10-10T09:00:00Z" },
       })));
     const user = userEvent.setup();
@@ -101,9 +105,10 @@ describe("ContactLeadClassificationTab (pestaña «Análisis IA»)", () => {
     await user.type(within(item).getByLabelText(/^Nota de la corrección del lead del/),
       "quiere distribuir, no comprar");
     await user.click(within(item).getByRole("button", { name: "Guardar corrección" }));
+    // Los intereses viajan en lista (el primero es el principal).
     await waitFor(() => expect(mockCorregir).toHaveBeenCalledWith(
       "48cd85c8-9ae8-45df-a645-17d62bbb11bd",
-      { interes: "distribucion", nota: "quiere distribuir, no comprar" },
+      { intereses: ["distribucion"], nota: "quiere distribuir, no comprar" },
     ));
     expect(await screen.findByText(/Corregido por Bart el/)).toHaveTextContent("quiere distribuir, no comprar");
     // Lo que manda ahora es lo corregido (y se dice lo que había dicho la IA).

@@ -1,10 +1,17 @@
-"""Clasificador de leads: idioma, interés, spam y confianza.
+"""Clasificador de leads: idioma, intereses, spam y confianza.
 
 Entra la consulta con su contexto (web y formulario, idioma del formulario,
 productos marcados, país, cuenta de Agile, email) y sale una `Clasificacion`.
 Es un SERVICIO, no un workflow: aislado detrás de una interfaz
 (`Clasificador`), con el proveedor intercambiable y el resultado auditable
 (`lead_classifications`).
+
+Un lead puede querer VARIAS cosas: «placas de metal y camisetas» es UV y DTF a
+la vez (10/10/2026). El clasificador devuelve una **lista de intereses ordenada
+por relevancia** (`Clasificacion.intereses`); el primero es el principal
+(`interes`). La lista de intereses posibles vive en datos
+(`app.services.leads.intereses`, Configuración ERP), no aquí: este módulo
+solo conoce las palabras clave de los de partida para el proveedor sin IA.
 
 Dos reglas mandan sobre cualquier proveedor (`clasificar_lead`):
 
@@ -13,24 +20,25 @@ Dos reglas mandan sobre cualquier proveedor (`clasificar_lead`):
   que quiere: entran como contexto (al proveedor se le dice lo que son) y
   solo deciden el interés cuando el texto no dice nada (consulta en blanco, o
   sin una sola palabra clave con el proveedor sin IA), y entonces con menos
-  confianza. Si el texto es de servicio técnico, consumibles, repuestos o
-  una gestión («otro»), ese es el interés aunque el formulario traiga tres
-  máquinas marcadas. El 09/10/2026 el atajo «con etiquetas no se lee el
-  texto» habría mandado el catálogo con precios a dos clientes con la máquina
-  averiada.
+  confianza. Si el texto es de soporte postventa, de tienda (consumibles,
+  repuestos) o una gestión («otro»), ese es el interés aunque el formulario
+  traiga tres máquinas marcadas. El 09/10/2026 el atajo «con etiquetas no se
+  lee el texto» habría mandado el catálogo con precios a dos clientes con la
+  máquina averiada.
 - Si el lead viene de un formulario de BoHub, **el idioma del formulario
   manda** y el proveedor solo lo revisa: ya ha pasado que un alemán rellene
   el formulario francés, así que si el texto está claramente en otro idioma
   gana el texto y queda anotada la discrepancia.
 
-La confianza dice algo: etiquetas que coinciden con el texto la suben;
-etiquetas que lo contradicen (máquina marcada, texto de avería) la bajan y
-el motivo lo cuenta; etiquetas sin texto, baja.
+La confianza dice algo: etiquetas que coinciden con alguno de los intereses
+del texto la suben; etiquetas que lo contradicen (máquina marcada, texto de
+avería) la bajan y el motivo lo cuenta; etiquetas sin texto, baja.
 
 `ClasificadorPalabrasClave` es el proveedor sin IA: palabras clave por
 interés, vocabulario por idioma y señales de spam. Es el respaldo cuando no
 hay proveedor de IA configurado y lo que usan los tests. El de IA
-(`anthropic`) se registra aparte y entra por la misma interfaz.
+(`anthropic`) se registra aparte y entra por la misma interfaz, con el
+catálogo (códigos y descripciones) en sus instrucciones.
 """
 from __future__ import annotations
 
@@ -41,39 +49,33 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Protocol
 
-#: Intereses, alineados con las plantillas que existen (`plantillas.py`).
-INTERES_UV_PEQUENO = "uv_pequeno_mediano"
-INTERES_UV_GRANDE = "uv_gran_formato"
-INTERES_LASER = "laser_cnc"
+from app.services.leads.intereses import (
+    FAMILIA_UNICA,
+    OTRO,
+    Catalogo,
+)
+
+#: Códigos de los intereses de partida (los que tienen palabras clave aquí).
+INTERES_UV_PEQUENO = "uv_pequeno"
+INTERES_UV_MEDIANO = "uv_mediano"
+INTERES_UV_GRANDE = "uv_grande"
+INTERES_DTF = "dtf"
+INTERES_CORTE_LASER = "corte_laser"
+INTERES_GRABADO_LASER = "grabado_laser"
+INTERES_CNC = "cnc"
+INTERES_PACKAGING = "packaging"
 INTERES_VENDING = "vending"
 INTERES_DISTRIBUCION = "distribucion"
-INTERES_CONSUMIBLES = "consumibles"
-INTERES_SERVICIO = "servicio_tecnico"
-INTERES_REPUESTOS = "repuestos"
-INTERES_OTRO = "otro"
-INTERESES: tuple[str, ...] = (
-    INTERES_UV_PEQUENO, INTERES_UV_GRANDE, INTERES_LASER, INTERES_VENDING,
-    INTERES_DISTRIBUCION, INTERES_CONSUMIBLES, INTERES_SERVICIO, INTERES_REPUESTOS,
-    INTERES_OTRO,
-)
-#: Los que son un lead comercial: tienen plantilla de venta. Consumibles,
-#: servicio técnico y repuestos se clasifican, se marcan y se crea la tarea,
-#: pero no se les prepara plantilla de venta.
-INTERESES_COMERCIALES: frozenset[str] = frozenset({
-    INTERES_UV_PEQUENO, INTERES_UV_GRANDE, INTERES_LASER, INTERES_VENDING,
-    INTERES_DISTRIBUCION,
-})
-ETIQUETAS_INTERES: dict[str, str] = {
-    INTERES_UV_PEQUENO: "UV pequeño-mediano",
-    INTERES_UV_GRANDE: "UV gran formato",
-    INTERES_LASER: "Láser y CNC",
-    INTERES_VENDING: "Vending",
-    INTERES_DISTRIBUCION: "Distribución",
-    INTERES_CONSUMIBLES: "Consumibles",
-    INTERES_SERVICIO: "Servicio técnico",
-    INTERES_REPUESTOS: "Repuestos",
-    INTERES_OTRO: "Otro",
-}
+INTERES_SOPORTE = "soporte_postventa"
+INTERES_TIENDA = "tienda"
+INTERES_OTRO = OTRO
+
+_DE_PARTIDA = Catalogo.de_partida()
+#: Los códigos de partida, en orden de pantalla (compatibilidad: lo que manda
+#: es el catálogo de la base, `intereses.cargar`).
+INTERESES: tuple[str, ...] = _DE_PARTIDA.codigos
+INTERESES_COMERCIALES: frozenset[str] = _DE_PARTIDA.comerciales
+ETIQUETAS_INTERES: dict[str, str] = {i.codigo: i.etiqueta for i in _DE_PARTIDA.todos}
 
 #: Idiomas que se reconocen. Los seis primeros tienen plantilla.
 IDIOMAS: tuple[str, ...] = ("es", "en", "fr", "de", "nl", "pt", "ca", "it")
@@ -90,9 +92,7 @@ PROVEEDOR_PALABRAS = "palabras_clave"
 
 #: Intereses que no son una venta de máquina: si el texto dice uno de estos,
 #: gana a cualquier etiqueta marcada en el formulario.
-INTERESES_NO_COMERCIALES: frozenset[str] = frozenset({
-    INTERES_CONSUMIBLES, INTERES_SERVICIO, INTERES_REPUESTOS, INTERES_OTRO,
-})
+INTERESES_NO_COMERCIALES: frozenset[str] = frozenset({INTERES_SOPORTE, INTERES_TIENDA, OTRO})
 #: Confianza cuando deciden las etiquetas porque el texto no dice nada.
 CONFIANZA_SOLO_ETIQUETAS = 0.6
 #: Confianza mínima cuando el texto y las etiquetas coinciden.
@@ -143,25 +143,37 @@ class EntradaLead:
 
 @dataclass
 class Clasificacion:
-    """Lo que sale del clasificador."""
+    """Lo que sale del clasificador. `intereses` es la lista ordenada por
+    relevancia; `interes` es el principal (el primero). Se puede construir
+    con cualquiera de los dos: el otro se deduce."""
 
     idioma: str | None
-    interes: str
-    es_spam: bool
-    confianza: float
-    motivo: str
+    interes: str = OTRO
+    es_spam: bool = False
+    confianza: float = 0.0
+    motivo: str = ""
     idioma_fuente: str = FUENTE_DESCONOCIDA
     interes_fuente: str = FUENTE_PALABRAS
     #: El formulario decía un idioma y el texto, claramente, otro.
     discrepancia_idioma: bool = False
     proveedor: str = PROVEEDOR_PALABRAS
     modelo: str | None = None
+    intereses: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.intereses:
+            self.intereses = [str(i) for i in self.intereses]
+            self.interes = self.intereses[0]
+        else:
+            self.intereses = [self.interes or OTRO]
+            self.interes = self.intereses[0]
 
     def como_dict(self) -> dict[str, Any]:
         return {
-            "idioma": self.idioma, "interes": self.interes, "es_spam": self.es_spam,
-            "confianza": round(float(self.confianza), 2), "motivo": self.motivo,
-            "idioma_fuente": self.idioma_fuente, "interes_fuente": self.interes_fuente,
+            "idioma": self.idioma, "interes": self.interes, "intereses": list(self.intereses),
+            "es_spam": self.es_spam, "confianza": round(float(self.confianza), 2),
+            "motivo": self.motivo, "idioma_fuente": self.idioma_fuente,
+            "interes_fuente": self.interes_fuente,
             "discrepancia_idioma": self.discrepancia_idioma,
             "proveedor": self.proveedor, "modelo": self.modelo,
         }
@@ -229,6 +241,7 @@ _VOCABULARIO: dict[str, tuple[str, ...]] = {
         "preis", "angebot", "drucker", "maschine", "grüße", "grüsse", "möchte", "möchten",
         "bitte", "haben", "sind", "uns", "ihnen", "freundlichen", "sehr", "geehrte", "geehrter",
         "bin", "auch", "über", "unsere", "ihre", "wie", "können", "benötigen", "brauchen",
+        "auf", "sowie", "drucken",
     ),
     "nl": (
         "wij", "graag", "offerte", "prijs", "bedankt", "groeten", "willen", "hebben", "zijn",
@@ -304,14 +317,47 @@ def texto_claramente_en(texto: str, idioma: str) -> bool:
     return propio >= 2 * resto
 
 
-# --- interés ----------------------------------------------------------------
+# --- intereses --------------------------------------------------------------
 
 #: Palabras clave por interés, sin acentos y en minúsculas (el texto se
 #: normaliza igual). Se casan por PALABRA ENTERA (o frase entera): «primer»
 #: no es «primera», «corte» no es «cortesía». Una clave acabada en `*` casa
 #: como prefijo («grabad*»: grabado, grabador, grabadora).
+#:
+#: Hay palabras FUERTES (las dice solo quien quiere eso: «impresora UV»,
+#: «camisetas», «vending») y palabras DÉBILES (`_PALABRAS_DEBILES`: materiales
+#: como madera, metal o vidrio, «personalizar», «láser» a secas). Una débil
+#: REFUERZA un interés que ya está en el texto, pero no lo crea cuando el
+#: texto pide otra cosa: «grabar logos en madera y metal con láser» es grabado
+#: láser, no grabado láser + UV + corte. Si el texto solo tiene palabras
+#: débiles, decide la mejor y solo esa (una conjetura, no dos).
+#:
+#: Las tres tallas de UV comparten las palabras de la familia (`_UV_COMUN`):
+#: «impresora UV» puntúa para las tres y la talla la decide lo específico
+#: (A3, 3000U → pequeño; 6090, 5000U → mediano; 2,5 m, paneles → grande); a
+#: igualdad, la pequeña. Un lead lleva una sola talla (`FAMILIA_UNICA`).
+_UV_COMUN: tuple[str, ...] = (
+    "uv", "uv-led", "led uv", "impresora* uv", "uv printer*", "imprimante* uv", "uv-drucker",
+    "uv drucker", "uv-printer*", "uv-druck*", "artisjet",
+    # Soportes planos para imprimir encima (placas de metal, chapas, paneles):
+    # eso lo hace una UV, no un láser ni una DTF.
+    "placa*", "plate*", "platten", "metallplatte*", "holzplatte*", "glasplatte*",
+    "acrylplatte*", "chapa", "chapas",
+)
+#: Materiales y verbos genéricos: también los dice quien quiere grabar con
+#: láser o fresar. Refuerzan, no crean.
+_UV_DEBIL: tuple[str, ...] = (
+    "personaliza*", "personalis*", "personalize*", "glass", "vidrio", "verre", "glas", "madera",
+    "wood", "bois", "holz", "metal", "metall*", "acrilico", "metacrilato", "acrylic", "acryl",
+    "objetos", "objets", "gegenstande*",
+)
+#: «Láser» a secas vale para cortar y para grabar: refuerza a los dos; si el
+#: texto no dice ni cortar ni grabar, decide uno solo (el corte, lo más pedido).
+_LASER_COMUN: tuple[str, ...] = (
+    "laser*", "co2", "fibra", "fiber", "mbolaser*", "mbo laser", "flux",
+)
 _PALABRAS_INTERES: dict[str, tuple[str, ...]] = {
-    INTERES_SERVICIO: (
+    INTERES_SOPORTE: (
         "averia", "averiad*", "no funciona", "no imprime", "no enciende", "no arranca",
         "reparar", "reparacion", "repair", "reparation", "reparatur", "soporte tecnico",
         "asistencia tecnica", "technical support", "technischer support", "defekt", "kaputt",
@@ -327,13 +373,13 @@ _PALABRAS_INTERES: dict[str, tuple[str, ...]] = {
         "funktioniert nicht", "ne fonctionne pas", "ne marche pas", "werkt niet",
         "nao funciona",
     ),
-    INTERES_REPUESTOS: (
+    INTERES_TIENDA: (
+        # Repuestos.
         "repuesto*", "recambio*", "spare part*", "piece* detachee*", "ersatzteil*",
         "onderdeel", "onderdelen", "cabezal*", "printhead*", "print head*", "druckkopf",
         "druckkopfe", "tete d'impression", "peca de reposicao", "pecas de reposicao",
         "placa base", "lampara uv", "lampe uv", "uv lamp", "uv-lampe",
-    ),
-    INTERES_CONSUMIBLES: (
+        # Consumibles.
         "tinta", "tintas", "ink", "inks", "encre", "encres", "tinte", "tinten", "inkt",
         "consumible*", "consumable*", "verbrauchsmaterial*", "primer", "primers", "barniz",
         "barnices", "varnish", "vernis", "pelicula* de transferencia", "transfer film*",
@@ -350,32 +396,61 @@ _PALABRAS_INTERES: dict[str, tuple[str, ...]] = {
         "vending", "expendedor*", "distributeur* automatique*", "verkaufsautomat*",
         "automaten", "snackautomaat", "automaat", "pimpam", "pim pam", "maquina* de snacks",
     ),
-    INTERES_LASER: (
-        "laser*", "cnc", "fresadora*", "router", "co2", "fibra", "fiber", "grabad*", "grabar",
-        "engrav*", "gravure*", "decoupe*", "graveer*", "graveren", "cutting", "corte",
-        "cortar", "flux", "mbolaser*", "mbo laser",
+    INTERES_PACKAGING: (
+        "packaging", "embalaje*", "caja", "cajas", "estuche*", "boxes", "carton", "cartones",
+        "verpackung*", "emballage*", "verpakking*", "cardboard", "faltschachtel*",
     ),
-    INTERES_UV_GRANDE: (
+    INTERES_CNC: (
+        "cnc", "fresadora*", "fresado", "router", "mecanizado", "milling", "fraisage",
+        "frasen", "frase", "frasmaschine", "freesmachine",
+    ),
+    INTERES_CORTE_LASER: (
+        "decoupe*", "cutting", "corte", "cortar", "cut", "schneiden", "snijden", "corte laser",
+        "laser cutter*", "laser cut*", "cortadora* laser", "decoupeuse* laser", "laserschneid*",
+    ),
+    INTERES_GRABADO_LASER: (
+        "grabad*", "grabar", "engrav*", "gravure*", "graver", "graveer*", "graveren",
+        "gravier*", "marcaje", "marcado laser", "marquage",
+    ),
+    INTERES_DTF: (
+        # «shirt*» ya casa «t-shirts» y «tshirt*» («t-» no es letra): una
+        # palabra del texto cuenta una vez, no una por cada clave que la pille.
+        "dtf", "textil", "textile*", "camiseta*", "tshirt*", "shirt*",
+        "sudadera*", "hoodie*", "gorra*", "prenda*", "garment*", "ropa", "tela", "tejido*",
+        "tissu*", "stoff*", "kleidung", "sublimacion", "sublimation", "dtg", "polvo dtf",
+        "film dtf", "textildruck*",
+    ),
+    INTERES_UV_GRANDE: _UV_COMUN + (
         "gran formato", "large format", "grand format", "grossformat*", "groot formaat",
         "grande formato", "2513", "2030", "3020", "roll to roll", "roll-to-roll",
         "rollo a rollo", "industrial", "2,5 m", "2.5 m", "2,5m", "2.5m", "paneles", "panels",
         "tableros", "boards", "carteleria", "signage",
     ),
-    INTERES_UV_PEQUENO: (
-        "uv", "flatbed", "a3", "a4", "a2", "6090", "3060", "4060", "artisjet", "pro v6",
-        "boligrafo*",
-        "botella*", "bottle*", "bouteille*", "flasche*", "fles", "flessen", "funda*", "movil",
+    INTERES_UV_MEDIANO: _UV_COMUN + (
+        "a2", "a1", "6090", "4060", "5000u", "6000u", "flatbed", "mediano formato",
+        "medium format", "format moyen", "mittelformat", "60x90", "60 x 90",
+    ),
+    INTERES_UV_PEQUENO: _UV_COMUN + (
+        "a3", "a4", "3060", "3000u", "1500u", "pro v6", "boligrafo*", "funda*", "movil",
         "moviles", "phone case*", "regalo*", "gift*", "cadeau*", "geschenk*", "merchandising",
-        "promocional*", "personaliza*", "personalis*", "personalize*", "objetos", "objets",
-        "gegenstande*", "pens", "glass", "vidrio", "verre", "glas", "madera", "wood", "bois",
-        "holz", "impresora* uv", "uv printer*", "imprimante* uv", "uv-drucker", "uv drucker",
-        "uv-printer*",
+        "promocional*", "pens", "pequeno formato", "small format", "petit format",
+        "kleinformat", "botella*", "bottle*", "bouteille*", "flasche*", "fles", "flessen",
     ),
 }
-#: Orden de desempate: lo más específico primero; «uv» a secas, lo último.
+#: Las palabras débiles de cada interés (ver arriba). Los demás no tienen.
+_PALABRAS_DEBILES: dict[str, tuple[str, ...]] = {
+    INTERES_CORTE_LASER: _LASER_COMUN,
+    INTERES_GRABADO_LASER: _LASER_COMUN,
+    INTERES_UV_GRANDE: _UV_DEBIL,
+    INTERES_UV_MEDIANO: _UV_DEBIL,
+    INTERES_UV_PEQUENO: _UV_DEBIL,
+}
+#: Orden de desempate a igualdad de aciertos y de posición en el texto: lo
+#: más específico primero; las tallas de UV, de menor a mayor, lo último.
 _ORDEN_INTERES: tuple[str, ...] = (
-    INTERES_SERVICIO, INTERES_REPUESTOS, INTERES_CONSUMIBLES, INTERES_DISTRIBUCION,
-    INTERES_VENDING, INTERES_LASER, INTERES_UV_GRANDE, INTERES_UV_PEQUENO,
+    INTERES_SOPORTE, INTERES_TIENDA, INTERES_DISTRIBUCION, INTERES_VENDING, INTERES_PACKAGING,
+    INTERES_CNC, INTERES_CORTE_LASER, INTERES_GRABADO_LASER, INTERES_DTF, INTERES_UV_PEQUENO,
+    INTERES_UV_MEDIANO, INTERES_UV_GRANDE,
 )
 
 
@@ -391,27 +466,95 @@ def _patron(clave: str) -> re.Pattern[str]:
 _PATRONES: dict[str, re.Pattern[str]] = {}
 
 
-def _casa(texto_normalizado: str, clave: str) -> int:
+def _compilado(clave: str) -> re.Pattern[str]:
     patron = _PATRONES.get(clave)
     if patron is None:
         patron = _PATRONES[clave] = _patron(clave)
-    return len(patron.findall(texto_normalizado))
+    return patron
+
+
+def _casa(texto_normalizado: str, clave: str) -> int:
+    return sum(1 for _ in _compilado(clave).finditer(texto_normalizado))
+
+
+def _tramos(texto_normalizado: str, claves: tuple[str, ...]) -> list[tuple[int, int]]:
+    """Los trozos del texto que casan con alguna de las claves, fusionando
+    los que se solapan: «impresora uv» casa con `impresora* uv` y con `uv`,
+    y «uv-drucker» con `uv`, `uv-drucker` y `uv-druck*`, pero cada uno es UNA
+    cosa que dice el texto, no tres. Lo que cuenta son las cosas distintas
+    que pide."""
+    posiciones: list[tuple[int, int]] = []
+    for clave in claves:
+        posiciones.extend(
+            (m.start(), m.end()) for m in _compilado(clave).finditer(texto_normalizado)
+        )
+    fusionados: list[tuple[int, int]] = []
+    for inicio, fin in sorted(posiciones):
+        if fusionados and inicio < fusionados[-1][1]:
+            fusionados[-1] = (fusionados[-1][0], max(fin, fusionados[-1][1]))
+        else:
+            fusionados.append((inicio, fin))
+    return fusionados
+
+
+def _claves(interes: str) -> tuple[str, ...]:
+    """Fuertes y débiles de un interés."""
+    return _PALABRAS_INTERES.get(interes, ()) + _PALABRAS_DEBILES.get(interes, ())
 
 
 def puntuar_intereses(texto: str) -> dict[str, int]:
+    """Por interés, cuántas cosas distintas del texto lo dicen (fuertes y
+    débiles)."""
     normalizado = _normalizar(texto)
-    return {
-        interes: sum(_casa(normalizado, clave) for clave in claves)
-        for interes, claves in _PALABRAS_INTERES.items()
-    }
+    return {interes: len(_tramos(normalizado, _claves(interes))) for interes in _PALABRAS_INTERES}
+
+
+def intereses_por_texto(texto: str) -> list[tuple[str, int]]:
+    """Los intereses que dice el texto, de más a menos relevante:
+    `[(interes, aciertos), ...]`.
+
+    Entra en la lista el interés con alguna palabra FUERTE; las débiles
+    (materiales, «láser» a secas) refuerzan la cuenta pero no crean un
+    interés cuando el texto ya pide otra cosa. Si solo hay débiles, se queda
+    el mejor y solo ese. El soporte postventa va siempre primero si aparece
+    (quien cuenta una avería menciona la máquina que TIENE: nunca es una
+    venta). Después, más cosas distintas del texto primero; a igualdad, el
+    que aparece antes (lo que se pide primero es lo que más se quiere) y
+    luego el orden de desempate. Una sola talla de UV. Vacío si nada casa."""
+    normalizado = _normalizar(texto)
+    puntuados: list[tuple[int, int, int, int, str]] = []
+    solo_debiles: list[tuple[int, int, int, int, str]] = []
+    for interes, fuertes in _PALABRAS_INTERES.items():
+        tramos = _tramos(normalizado, _claves(interes))
+        if not tramos:
+            continue
+        entrada = (
+            0 if interes == INTERES_SOPORTE else 1, -len(tramos), tramos[0][0],
+            _ORDEN_INTERES.index(interes), interes,
+        )
+        if _tramos(normalizado, fuertes):
+            puntuados.append(entrada)
+        else:
+            solo_debiles.append(entrada)
+    if not puntuados and solo_debiles:
+        puntuados = [min(solo_debiles)]
+    puntuados.sort()
+    salida: list[tuple[str, int]] = []
+    familias: set[str] = set()
+    for _soporte, negativo, _primera, _orden, interes in puntuados:
+        familia = FAMILIA_UNICA.get(interes)
+        if familia and familia in familias:
+            continue
+        if familia:
+            familias.add(familia)
+        salida.append((interes, -negativo))
+    return salida
 
 
 def interes_por_texto(texto: str) -> tuple[str, int]:
-    """`(interes, aciertos)`; `otro` con 0 si nada casa."""
-    puntos = puntuar_intereses(texto)
-    mejor = max(_ORDEN_INTERES, key=lambda i: (puntos.get(i, 0), -_ORDEN_INTERES.index(i)))
-    aciertos = puntos.get(mejor, 0)
-    return (mejor, aciertos) if aciertos > 0 else (INTERES_OTRO, 0)
+    """`(interes principal, aciertos)`; `otro` con 0 si nada casa."""
+    lista = intereses_por_texto(texto)
+    return lista[0] if lista else (INTERES_OTRO, 0)
 
 
 def palabras_que_casan(texto: str, interes: str, maximo: int = 4) -> list[str]:
@@ -419,7 +562,7 @@ def palabras_que_casan(texto: str, interes: str, maximo: int = 4) -> list[str]:
     motivo diga qué dice el texto, no solo cuántas veces)."""
     normalizado = _normalizar(texto)
     vistas: list[str] = []
-    for clave in _PALABRAS_INTERES.get(interes, ()):
+    for clave in _claves(interes):
         if _casa(normalizado, clave):
             vistas.append(clave.rstrip("*"))
             if len(vistas) >= maximo:
@@ -508,26 +651,32 @@ class ClasificadorPalabrasClave:
     def clasificar(self, entrada: EntradaLead) -> Clasificacion:
         texto = entrada.texto or ""
         es_spam, motivo_spam = parece_spam(texto, entrada.dominio_email)
-        idioma, puntos_idioma, _ = detectar_idioma(texto)
-        interes, aciertos = interes_por_texto(texto)
-        vistas = ", ".join(palabras_que_casan(texto, interes)) if aciertos else ""
+        idioma, _puntos_idioma, _ = detectar_idioma(texto)
+        lista = intereses_por_texto(texto)
+        intereses = [i for i, _ in lista] or [INTERES_OTRO]
+        aciertos = lista[0][1] if lista else 0
+        principal = intereses[0]
+        vistas = ", ".join(palabras_que_casan(texto, principal)) if aciertos else ""
+        etiqueta = ETIQUETAS_INTERES.get(principal, principal)
         if es_spam:
             confianza = 0.85
             motivo = motivo_spam
         elif aciertos >= 3:
             confianza = 0.8
-            motivo = (f"el texto dice {ETIQUETAS_INTERES[interes]}: {aciertos} palabras clave "
-                      f"({vistas})")
+            motivo = f"el texto dice {etiqueta}: {aciertos} palabras clave ({vistas})"
         elif aciertos == 2:
             confianza = 0.7
-            motivo = f"el texto dice {ETIQUETAS_INTERES[interes]}: 2 palabras clave ({vistas})"
+            motivo = f"el texto dice {etiqueta}: 2 palabras clave ({vistas})"
         elif aciertos == 1:
             confianza = 0.55
-            motivo = f"el texto apunta a {ETIQUETAS_INTERES[interes]}: 1 palabra clave ({vistas})"
+            motivo = f"el texto apunta a {etiqueta}: 1 palabra clave ({vistas})"
         else:
             confianza, motivo = 0.3, "el texto no dice qué quiere (sin palabras clave reconocibles)"
+        if not es_spam and len(intereses) > 1:
+            otros = ", ".join(ETIQUETAS_INTERES.get(i, i) for i in intereses[1:])
+            motivo = f"{motivo}; además pide {otros}"
         return Clasificacion(
-            idioma=idioma, interes=interes, es_spam=es_spam, confianza=confianza,
+            idioma=idioma, intereses=intereses, es_spam=es_spam, confianza=confianza,
             motivo=motivo,
             idioma_fuente=FUENTE_PALABRAS if idioma else FUENTE_DESCONOCIDA,
             interes_fuente=FUENTE_PALABRAS, proveedor=self.nombre,
@@ -542,15 +691,15 @@ def registrar_proveedor(nombre: str, clase: type) -> None:
     _PROVEEDORES[nombre] = clase
 
 
-def proveedor_por_defecto() -> Clasificador:
-    """El proveedor de IA si está configurado; si no, palabras clave. La
-    elección vive aquí para que el paso del workflow y el modo en seco usen
-    el mismo."""
+def proveedor_por_defecto(catalogo: Catalogo | None = None) -> Clasificador:
+    """El proveedor de IA si está configurado (con el catálogo de intereses en
+    sus instrucciones); si no, palabras clave. La elección vive aquí para que
+    el paso del workflow y el modo en seco usen el mismo."""
     from app.core.config import get_settings  # noqa: PLC0415
 
     clase = _PROVEEDORES.get("anthropic")
     if clase is not None and get_settings().ai_features_enabled:
-        return clase()
+        return clase(catalogo=catalogo)
     return ClasificadorPalabrasClave()
 
 
@@ -567,14 +716,20 @@ def codigo_idioma(raw: str | None) -> str | None:
 
 def clasificar_lead(
     entrada: EntradaLead, proveedor: Clasificador | None = None,
+    catalogo: Catalogo | None = None,
 ) -> Clasificacion:
-    """Clasifica aplicando las dos reglas duras encima del proveedor."""
-    proveedor = proveedor or proveedor_por_defecto()
+    """Clasifica aplicando las dos reglas duras encima del proveedor. El
+    catálogo (`intereses.cargar(session)`) dice qué códigos existen; sin él,
+    el de partida."""
+    catalogo = catalogo or _DE_PARTIDA
+    proveedor = proveedor or proveedor_por_defecto(catalogo)
     texto = (entrada.texto or "").strip()
 
     # Spam claro por palabras clave: no hace falta IA (ni gastarla).
     spam_claro, motivo_spam = parece_spam(texto, entrada.dominio_email)
     por_etiquetas = interes_por_etiquetas(entrada.productos)
+    if por_etiquetas is not None and not catalogo.activo(por_etiquetas):
+        por_etiquetas = None
     etiquetas = ", ".join(entrada.productos)
 
     if spam_claro:
@@ -594,34 +749,32 @@ def clasificar_lead(
         # La consulta se lee SIEMPRE, con etiquetas o sin ellas.
         bruta = proveedor.clasificar(entrada)
 
-    # 1. Interés: lo que pide el texto. Las etiquetas solo deciden cuando el
-    #    texto no dice nada; si coinciden suben la confianza y si contradicen
-    #    al texto (máquina marcada, texto de avería) manda el texto y la
-    #    confianza baja. Las intenciones que no son venta (servicio técnico,
-    #    consumibles, repuestos, «otro») ganan a cualquier etiqueta.
-    interes, interes_fuente, confianza, motivo = (
-        bruta.interes, bruta.interes_fuente, bruta.confianza, bruta.motivo,
-    )
-    if interes not in INTERESES:
-        interes = INTERES_OTRO
+    # 1. Intereses: lo que pide el texto, en su orden. Las etiquetas solo
+    #    deciden cuando el texto no dice nada; si coinciden con alguno de los
+    #    intereses del texto suben la confianza y si lo contradicen (máquina
+    #    marcada, texto de avería) manda el texto y la confianza baja. Las
+    #    intenciones que no son venta (soporte, tienda, «otro») ganan a
+    #    cualquier etiqueta.
+    intereses = catalogo.limpiar(bruta.intereses)
+    interes_fuente, confianza, motivo = bruta.interes_fuente, bruta.confianza, bruta.motivo
     if por_etiquetas is not None and not bruta.es_spam:
         # «otro» de la IA es una decisión (gestión, factura, pedido hecho);
         # «otro» del proveedor sin IA es «ni una palabra clave».
         texto_sin_senal = not texto or (
-            interes == INTERES_OTRO and bruta.interes_fuente != FUENTE_IA
+            intereses == [INTERES_OTRO] and bruta.interes_fuente != FUENTE_IA
         )
         if texto_sin_senal:
-            interes, interes_fuente = por_etiquetas, FUENTE_ETIQUETAS
+            intereses, interes_fuente = [por_etiquetas], FUENTE_ETIQUETAS
             confianza = CONFIANZA_SOLO_ETIQUETAS
             que_dice = ("sin consulta en el formulario" if not texto
                         else "el texto no dice qué quiere")
             motivo = f"{que_dice}; interés por los productos marcados ({etiquetas})"
-        elif por_etiquetas == interes:
+        elif por_etiquetas in intereses:
             confianza = max(confianza, CONFIANZA_ETIQUETAS_COHERENTES)
             motivo = f"{motivo}; coincide con los productos marcados ({etiquetas})"
         else:
             confianza = min(confianza, CONFIANZA_CONTRADICCION)
-            motivo = (f"{motivo}; el formulario marcaba {ETIQUETAS_INTERES[por_etiquetas]} "
+            motivo = (f"{motivo}; el formulario marcaba {catalogo.etiqueta(por_etiquetas)} "
                       f"({etiquetas}), pero manda lo que pide el texto")
 
     # 2. Idioma: el del formulario manda; el texto solo si lo contradice
@@ -640,12 +793,16 @@ def clasificar_lead(
             idioma, idioma_fuente = formulario, FUENTE_FORMULARIO
 
     return Clasificacion(
-        idioma=idioma, interes=interes, es_spam=bruta.es_spam,
+        idioma=idioma, intereses=intereses, es_spam=bruta.es_spam,
         confianza=max(0.0, min(1.0, float(confianza))), motivo=motivo[:500],
         idioma_fuente=idioma_fuente, interes_fuente=interes_fuente,
         discrepancia_idioma=discrepancia, proveedor=bruta.proveedor, modelo=bruta.modelo,
     )
 
 
-def etiqueta_interes(interes: str | None) -> str:
+def etiqueta_interes(interes: str | None, catalogo: Catalogo | None = None) -> str:
+    """La etiqueta de un código; con el catálogo de la base si se pasa, si
+    no con la lista de partida."""
+    if catalogo is not None:
+        return catalogo.etiqueta(interes)
     return ETIQUETAS_INTERES.get(interes or "", interes or "—")

@@ -47,20 +47,65 @@ dispara nada. El estimador cuenta envíos no spam + notas «form note» de 30 d�
 | `wait_time` | Admite una **ventana horaria**: el despertar se mueve al siguiente hueco (hora de Madrid). | `window: {enabled, start, end, weekdays_only}` |
 
 Las condiciones y el `switch` ven los campos nuevos del contacto:
-`contact.language`, `contact.lead_interest`, `contact.lead_is_spam`,
-`contact.lead_confidence`, `contact.lead_classified_at`. Las plantillas de tarea
-y de correo tienen el namespace `lead.*`: `interes`, `interes_texto`, `idioma`,
-`confianza` («95%»), `motivo`, `web`, `plantilla`, `remitente`, `borrador_url`,
-`productos`.
+`contact.language`, `contact.lead_interest` (el interés PRINCIPAL),
+`contact.lead_is_spam`, `contact.lead_confidence`, `contact.lead_classified_at`.
+Las plantillas de tarea y de correo tienen el namespace `lead.*`: `interes` (el
+código del principal), `interes_texto` (TODAS las etiquetas: «UV LED mediano
+formato + DTF · impresión textil»), `intereses` (los códigos, separados por
+comas), `interes_principal_texto`, `idioma`, `confianza` («95%»), `motivo`,
+`consulta`, `web`, `plantilla`, `remitente`, `borrador_url`, `productos`.
 
 ## El clasificador
 
 Entrada: la consulta, el país del contacto, la web y el idioma del formulario,
 los productos marcados, la cuenta de Agile y el dominio del email. Salida:
-idioma (es, en, fr, de, nl, pt; ca e it si aparecen), interés
-(`uv_pequeno_mediano`, `uv_gran_formato`, `laser_cnc`, `vending`,
-`distribucion`, `consumibles`, `servicio_tecnico`, `repuestos`, `otro`),
-`es_spam`, confianza 0–1 y el motivo en una frase.
+idioma (es, en, fr, de, nl, pt; ca e it si aparecen), una **lista de
+intereses ordenada por relevancia** (el primero es el principal; «placas de
+metal y camisetas» es `[uv_mediano, dtf]`), `es_spam`, confianza 0–1 y el
+motivo en una frase. Pedir varias cosas no baja la confianza.
+
+### El catálogo de intereses (en datos, no en el código)
+
+La lista de intereses vive en `lead_interests` (migración `20261010_0134`;
+`app/services/leads/intereses.py`) y se gestiona desde Configuración ERP →
+Respuesta a leads: cada interés tiene **código** (estable; lo que se guarda),
+**etiqueta** (lo que se ve), **descripción** (lo que se le manda al modelo para
+distinguirlos; editable desde la pantalla), **comercial** (los que no lo son no
+llevan plantilla de venta), **orden** y **activo**. Un interés nuevo o una
+descripción afinada entra en el clasificador en la siguiente clasificación, sin
+desplegar nada (el prompt se compone con el catálogo). No se borra lo que está
+en uso (clasificaciones o filas del mapa): se desactiva, y lo clasificado sigue
+legible. «Otro» es fijo. Con la tabla vacía (una base recién creada, los tests)
+se usa la lista de partida, que es esta:
+
+| Código | Etiqueta | Comercial |
+|---|---|---|
+| `uv_pequeno` | UV LED pequeño formato | sí |
+| `uv_mediano` | UV LED mediano formato | sí |
+| `uv_grande` | UV LED gran formato | sí |
+| `dtf` | DTF · impresión textil | sí |
+| `corte_laser` | Corte láser | sí |
+| `grabado_laser` | Grabado láser | sí |
+| `cnc` | CNC | sí |
+| `packaging` | Packaging | sí |
+| `vending` | Vending | sí |
+| `distribucion` | Distribución | sí |
+| `soporte_postventa` | Soporte postventa | no |
+| `tienda` | Tienda · consumibles y repuestos | sí |
+| `otro` | Otro | no |
+
+La migración 0134 pasa los códigos de la primera lista (08/10/2026) a estos
+sin perder ninguna clasificación: `uv_gran_formato` → `uv_grande`, `laser_cnc`
+→ `corte_laser`, `consumibles` y `repuestos` → `tienda`, `servicio_tecnico` →
+`soporte_postventa`; `vending`, `distribucion` y `otro` no cambian. En el
+mapa, un contenido antiguo vale para todos los códigos que salieron de él:
+«UV pequeño-mediano» para las dos tallas y «Láser y CNC» para corte, grabado
+y CNC (esos leads siguen recibiendo la plantilla que recibían).
+`uv_pequeno_mediano` no se puede repartir sin adivinar: se queda en
+`uv_mediano` y el motivo lo anota («Migración 10/10/2026: era «UV
+pequeño-mediano»; talla por confirmar»); Bart los corrige a mano desde la
+lista. Lo mismo en `corrected_interest` y en `contacts.lead_interest`. Un lead
+lleva como mucho una talla de UV (`FAMILIA_UNICA`).
 
 Dos reglas mandan sobre cualquier proveedor:
 
@@ -69,14 +114,19 @@ Dos reglas mandan sobre cualquier proveedor:
   que quiere: van al proveedor como contexto (diciéndole lo que son) y solo
   deciden el interés cuando el texto no dice nada —consulta en blanco, o sin
   una sola palabra clave con el proveedor sin IA—, y entonces con menos
-  confianza (0,6). Servicio técnico, consumibles, repuestos y «otro»
-  (gestiones) ganan a cualquier etiqueta: un cliente con la máquina averiada
-  no recibe el catálogo con precios. Etiquetas que coinciden con el texto
+  confianza (0,6). Soporte postventa, tienda y «otro» (gestiones) ganan a
+  cualquier etiqueta: un cliente con la máquina averiada no recibe el catálogo
+  con precios. Etiquetas que coinciden con ALGUNO de los intereses del texto
   suben la confianza (mínimo 0,85); etiquetas que lo contradicen la bajan
   (máximo 0,75) y el motivo lo cuenta. Hasta el 10/10/2026 había un atajo
   («con etiquetas no se llama a la IA») que clasificó como venta a dos
-  clientes con averías; por eso `servicio_tecnico` no salió ni una vez en la
-  primera simulación.
+  clientes con averías; por eso el soporte postventa no salió ni una vez en
+  la primera simulación. En el proveedor sin IA, el soporte va siempre
+  primero si aparece (quien cuenta una avería menciona la máquina que TIENE),
+  y hay palabras fuertes y débiles: los materiales (madera, metal, vidrio) y
+  «láser» a secas refuerzan un interés que el texto ya pide pero no crean
+  otro («grabar madera y metal con láser» es grabado láser, no también UV y
+  corte); si solo hay débiles, decide una conjetura, no dos.
 - **El idioma del formulario manda**; el texto solo gana si está claramente en
   otro idioma (un alemán que rellena el formulario francés), y la discrepancia
   queda anotada (`language_mismatch`).
@@ -92,16 +142,24 @@ entra por la misma interfaz cuando `ANTHROPIC_API_KEY` está configurada
 - `lead_classifications` (migración `20261010_0132`): una fila por lead
   clasificado — lo que entró, lo que salió, de dónde salió cada dato, lo que se
   preparó (`draft_id`, `task_id`, `template_name`, `sender_email`, `status`) y
-  la corrección a mano. `(source, source_ref)` única.
+  la corrección a mano. `(source, source_ref)` única. Desde la 0134,
+  `interests_json` y `corrected_interests_json` llevan la lista entera,
+  ordenada; `interest` y `corrected_interest` siguen siendo el principal (para
+  filtrar y para la copia del contacto).
+- `lead_interests` (migración `20261010_0134`): el catálogo de intereses.
 - `contacts.lead_interest / lead_is_spam / lead_confidence /
-  lead_classified_at`: copia de lo esencial para bifurcar sin JOIN.
+  lead_classified_at`: copia de lo esencial (el interés principal) para
+  bifurcar sin JOIN.
 
 ## El proveedor de IA
 
 `app/services/leads/proveedor_anthropic.py`: Anthropic, con el cliente que ya
-tiene BoHub (`ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`). Pide un JSON (idioma,
-interés, spam, confianza, motivo) y lo normaliza al catálogo (`es_spam` como
-booleano, número o texto «false»/«no»: en caso de duda, no es spam); si la IA
+tiene BoHub (`ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`). Las instrucciones llevan
+el catálogo (código, etiqueta y descripción de cada interés activo) y piden un
+JSON (idioma, `intereses` —lista ordenada por relevancia—, spam, confianza,
+motivo) que se normaliza al catálogo (códigos desconocidos fuera, una talla de
+UV, «otro» si no queda nada; `es_spam` como booleano, número o texto
+«false»/«no»: en caso de duda, no es spam); si la IA
 no está disponible (sin clave, cuota, caída, respuesta ilegible) cae al
 proveedor de palabras clave y el motivo lo dice. La consulta del cliente sí
 viaja al proveedor; ni el prompt ni la respuesta se guardan en la base de
@@ -122,15 +180,22 @@ Blob `lead_response` de `ErpSettings` (`app/services/leads/config.py`), por
 | `umbral_confianza` | Por debajo, la Fase 2 no enviará; en la Fase 1 la lista lo marca. | 0,7 |
 | `antiguedad_horas` | Solo leads más recientes, por su fecha real. El paso «Clasificar lead» la lee en cada lead (el workflow de serie no fija la suya, así que cambiarla aquí vale al momento). El trigger tiene su propio `max_age_hours`: al crear el workflow se siembra con este valor y después se cambia en el editor. | 72 |
 | `ventana` | De 9 a 18, laborables: con lo que se siembra la espera del workflow. | 09:00–18:00, laborables |
-| `mapa` | `interes:idioma → template_id`. Vacío = sin plantilla a propósito; sin entrada se busca por nombre (`Lead · <contenido> (<IDIOMA>)`). | por nombre |
+| `mapa` | `intereses:idioma → template_id`. Cada fila es un CONJUNTO de uno o más intereses más un idioma: `vending:es` o `dtf+uv_mediano:de` (códigos ordenados, unidos con `+`). Vacío = sin plantilla a propósito; sin entrada se busca por nombre (`Lead · <etiqueta> (<IDIOMA>)`; los nombres antiguos «UV pequeño-mediano», «UV gran formato» y «Láser y CNC» siguen valiendo). Para un lead: la fila de su conjunto exacto; si no, la del principal solo; si no, ninguna (borrador vacío y la tarea lo dice). | por nombre |
 | `remitentes.por_web` | Web → dirección; sin entrada, `sitios.REMITENTES`. | — |
 | `remitentes.por_cuenta_agile` | Cuenta de Agile → web (los leads de Agile no traen web). | — |
 
-El GET lleva además `lead_response_catalogo`: intereses, idiomas, plantillas
-candidatas, el mapa resuelto por nombre, las webs con su remitente por
-defecto y las cuentas de Agile. En el PATCH, `mapa`, `remitentes.por_web` y
-`remitentes.por_cuenta_agile` se sustituyen enteros cuando vienen (la
-pantalla manda siempre el bloque completo; así se puede quitar una entrada).
+El GET lleva además `lead_response_catalogo`: el catálogo de intereses entero
+(con descripción, comercial, orden y activo), idiomas, plantillas candidatas,
+el mapa resuelto por nombre, los **huecos** (interés comercial activo × idioma
+sin plantilla, con `a_proposito` cuando la fila del mapa dice «sin
+plantilla»), las webs con su remitente por defecto y las cuentas de Agile. En
+el PATCH, `mapa`, `remitentes.por_web` y `remitentes.por_cuenta_agile` se
+sustituyen enteros cuando vienen (la pantalla manda siempre el bloque
+completo; así se puede quitar una entrada); las claves del mapa tienen que
+llevar códigos que existan en el catálogo. Los huecos son normales: no se
+inventan plantillas para DTF, packaging, CNC, corte o grabado por separado ni
+para la tienda; esos leads se clasifican, van al pipeline y crean su tarea con
+el aviso.
 
 ## El modo en seco y la lista corregible (`/api/erp/leads`)
 
@@ -145,11 +210,20 @@ pantalla manda siempre el bloque completo; así se puede quitar una entrada).
 - `GET /clasificaciones?dias=15`: los leads clasificados de verdad (hasta 90
   días, 500 filas), con lo que salió, de dónde salió cada dato, lo que se
   preparó y la corrección.
-- `POST /clasificaciones/{id}/corregir {idioma?, interes?, es_spam?, nota?}`:
-  la corrección a mano. Se guarda aparte (la original se conserva), queda en
-  la auditoría (`lead.classification_corrected`) y pasa a la ficha del
-  contacto solo si es su último lead (uno de julio corregido no pisa el de
-  octubre).
+- `POST /clasificaciones/{id}/corregir {idioma?, intereses?, es_spam?, nota?}`:
+  la corrección a mano; `intereses` es la lista entera en el orden elegido (el
+  primero es el principal; `interes` suelto sigue valiendo para uno). Se
+  guarda aparte (la original se conserva), queda en la auditoría
+  (`lead.classification_corrected`) y pasa a la ficha del contacto solo si es
+  su último lead (uno de julio corregido no pisa el de octubre). Cada
+  clasificación devuelve `interes`/`interes_texto` (el principal) e
+  `intereses`/`intereses_texto`/`intereses_etiquetas` (todos), también en
+  `efectivo` y `correccion`.
+- `GET/POST /intereses`, `PATCH/DELETE /intereses/{codigo}`: el catálogo de
+  intereses (con cuántas clasificaciones y filas del mapa usan cada uno). El
+  DELETE da 409 (`interes_en_uso`) si algo lo usa: lo suyo es `PATCH
+  {activo: false}`; «otro» es fijo (400). Queda en la auditoría
+  (`lead.interest_changed`).
 - `POST /workflow`: crea el workflow «Respuesta a leads (Fase 1)» en BORRADOR
   resolviendo «Ventas B2B» → «Nuevo lead» / «Descartado / spam» por nombre;
   409 si ya existe, 400 si falta el pipeline. `GET /workflow` dice si existe.
@@ -164,10 +238,11 @@ lead.received → clasificar
              → añadir a Ventas B2B · Nuevo lead → crear tarea → salida natural
 ```
 
-La tarea sale como «Revisar lead: Vending (95%) · Isabella Cedillo» con la
-web, el idioma, el motivo, los productos marcados, la plantilla, el remitente
-y el enlace al borrador. Se asigna a quien creó el workflow (cámbialo en el
-editor). Ni un paso de enviar.
+La tarea sale como «Revisar lead: Vending (95%) · Isabella Cedillo» (o «UV LED
+mediano formato + DTF · impresión textil (85%) · …» si pide varias cosas) con
+la web, el idioma, el motivo, los productos marcados, la plantilla, el
+remitente y el enlace al borrador. Se asigna a quien creó el workflow
+(cámbialo en el editor). Ni un paso de enviar.
 
 ## El Cuadre: «Lead sin contactar»
 
@@ -183,19 +258,30 @@ clasificó. Ventana de N días por esa fecha real.
 ## La pantalla (PR C)
 
 - **Configuración ERP → «Respuesta a leads»**: el interruptor, el tope
-  diario, el umbral, la antigüedad, la ventana horaria, el mapa interés ×
-  idioma → plantilla («Por nombre» enseña la que se resuelve; «Sin plantilla»
-  a propósito; o una concreta), el remitente por web y la web de cada cuenta
-  de AgileCRM. Se guarda como una sección más (el PATCH lleva solo
+  diario, el umbral, la antigüedad, la ventana horaria, el **catálogo de
+  intereses** (añadir, editar etiqueta/descripción/comercial/orden,
+  desactivar; borrar solo lo que nada usa; se guarda al momento, aparte del
+  «Guardar cambios»), el mapa interés × idioma → plantilla («Por nombre»
+  enseña la que se resuelve; «Sin plantilla» a propósito; o una concreta),
+  las **combinaciones** (un conjunto de dos o más intereses + idioma →
+  plantilla, para quien pide varias cosas a la vez), los **huecos** (interés
+  comercial × idioma sin plantilla, agrupados por interés, con los «a
+  propósito» aparte), el remitente por web y la web de cada cuenta de
+  AgileCRM. Se guarda como una sección más (el PATCH lleva solo
   `lead_response`).
 - **ERP · Leads** (`/erp/leads`, misma capacidad que la configuración): el
   estado del workflow de la Fase 1 con «Crear el workflow» (en borrador, con
   el enlace al editor), el **modo en seco** (días, «Simular en seco», resumen
   y tabla de qué haría con cada lead) y la **lista de leads procesados** de
-  los últimos N días con idioma, interés y spam corregibles en la propia fila
-  («Guardar corrección», con nota opcional), la confianza en rojo por debajo
-  del umbral, lo que se preparó (estado, plantilla, remitente, enlace al
-  borrador) y quién corrigió qué.
+  los últimos N días con idioma, intereses y spam corregibles en la propia
+  fila («Guardar corrección», con nota opcional), la confianza en rojo por
+  debajo del umbral, lo que se preparó (estado, plantilla, remitente, enlace
+  al borrador) y quién corrigió qué. Los intereses se corrigen con un
+  selector múltiple ordenado (`InteresesPicker`): el principal en un
+  desplegable (el caso de uno solo es el de siempre) y los demás como chips
+  con subir y quitar, más «otro interés…» para añadir. La ficha del contacto
+  (recuadro del Resumen y pestaña «Análisis IA») enseña el principal grande y
+  los demás en chips pequeños, y corrige con el mismo selector.
 - **Editor de workflows**: el trigger «Lead recibido» (origen, web,
   antigüedad), los paneles de «Clasificar lead» (tres salidas: Lead / Spam /
   Omitido), «Preparar borrador de email (sin enviar)» (plantilla por interés
@@ -206,11 +292,19 @@ clasificó. Ventana de N días por esa fecha real.
 ## Después del deploy
 
 1. Configuración ERP → Respuesta a leads: comprobar el mapa (las 30
-   plantillas se resuelven por nombre) y los remitentes; mapear las cuentas de
-   Agile a su web.
+   plantillas siguen resolviendo: la migración 0134 deja escritas en el mapa
+   las que se resolvían por su nombre antiguo, y los nombres antiguos siguen
+   valiendo por nombre) y los huecos (DTF, packaging, CNC, grabado, tienda:
+   normales), repasar las descripciones del catálogo de intereses y los
+   remitentes; mapear las cuentas de Agile a su web.
 2. **Modo en seco sobre los últimos 15 días** y revisar la clasificación con
-   Bart.
-3. «Crear el workflow», revisarlo en Workflows y activarlo. Encender el
+   Bart. El caso que tiene que acertar: `torracollons@elbarquito.net` («Ich
+   möchte auf Metallplatten sowie auf T-Shirts drucken», con la 3000U PRO y la
+   5000U marcadas) → dos intereses, UV (pequeño o mediano) principal y DTF
+   segundo, con la confianza más alta que antes.
+3. Revisar en ERP · Leads las clasificaciones anotadas «era «UV
+   pequeño-mediano»; talla por confirmar» y dejarlas en la talla que toque.
+4. «Crear el workflow», revisarlo en Workflows y activarlo. Encender el
    interruptor.
 
 ## Lo que no hace la Fase 1

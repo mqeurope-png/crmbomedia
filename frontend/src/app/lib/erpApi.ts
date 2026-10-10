@@ -5240,8 +5240,10 @@ export type LeadResponseConfig = {
   /** Solo se procesan leads más recientes que esto (horas). */
   antiguedad_horas: number;
   ventana: LeadResponseVentana;
-  /** `interes:idioma` → id de plantilla. "" = sin plantilla a propósito;
-   *  sin entrada = se busca por nombre («Lead · <contenido> (<IDIOMA>)»). */
+  /** `interes:idioma` (o `interes+interes:idioma` para una combinación, con
+   *  los códigos ordenados) → id de plantilla. "" = sin plantilla a
+   *  propósito; sin entrada = se busca por nombre («Lead · <etiqueta>
+   *  (<IDIOMA>)»). Ver `claveMapaLeads` en `lib/leadsMapa`. */
   mapa: Record<string, string>;
   remitentes: {
     /** Clave de la web → dirección desde la que sale el borrador. */
@@ -5251,15 +5253,44 @@ export type LeadResponseConfig = {
   };
 };
 
+/** Un interés del catálogo del clasificador (`lead_interests`): el código es
+ *  lo que se guarda, la etiqueta lo que se ve, la descripción lo que se le
+ *  manda al modelo; los no comerciales no llevan plantilla de venta. */
+export type LeadInteres = {
+  /** El código (igual que `codigo`; `id` por los desplegables). */
+  id: string;
+  codigo: string;
+  /** La etiqueta (igual que `etiqueta`; `label` por los desplegables). */
+  label: string;
+  etiqueta: string;
+  descripcion: string;
+  comercial: boolean;
+  orden: number;
+  activo: boolean;
+};
+
+export type LeadInteresConUso = LeadInteres & {
+  en_uso: { clasificaciones: number; en_mapa: number };
+};
+
+/** Un interés comercial × idioma sin plantilla (ni en el mapa ni por nombre). */
+export type LeadHueco = { interes: string; etiqueta: string; idioma: string; a_proposito: boolean };
+
 export type LeadResponseCatalogo = {
-  intereses: { id: string; label: string; comercial: boolean }[];
+  /** Todo el catálogo, activos e inactivos, en orden. */
+  intereses: LeadInteres[];
   idiomas: string[];
   plantillas: { id: string; name: string }[];
   /** Lo que se resuelve por nombre para cada `interes:idioma` (null = no hay). */
   mapa_por_nombre: Record<string, string | null>;
+  huecos?: LeadHueco[];
   webs: { clave: string; web: string; marca: string; remitente_defecto: string | null }[];
   cuentas_agile: { account_id: string; display_name: string; enabled: boolean }[];
 };
+
+/** Opción de un desplegable de intereses: los inactivos solo se enseñan si
+ *  la clasificación ya los lleva. */
+export type LeadInteresOpcion = { id: string; label: string; comercial?: boolean; activo?: boolean };
 
 /** Un lead clasificado de verdad (fila de `lead_classifications`). */
 export type LeadClasificacion = {
@@ -5276,8 +5307,14 @@ export type LeadClasificacion = {
   idioma_fuente: string | null;
   idioma_formulario: string | null;
   discrepancia_idioma: boolean;
+  /** El interés PRINCIPAL (el primero de `intereses`). */
   interes: string | null;
   interes_texto: string;
+  /** Todos los intereses que dijo el clasificador, por relevancia (códigos),
+   *  sus etiquetas y el texto «A + B». */
+  intereses: string[];
+  intereses_texto: string;
+  intereses_etiquetas?: string[];
   interes_fuente: string | null;
   es_spam: boolean;
   confianza: number;
@@ -5294,11 +5331,21 @@ export type LeadClasificacion = {
   tarea_id: string | null;
   run_id: string | null;
   /** La clasificación que manda: la corregida a mano si la hay. */
-  efectivo: { idioma: string | null; interes: string | null; interes_texto: string; es_spam: boolean };
+  efectivo: {
+    idioma: string | null;
+    interes: string | null;
+    interes_texto: string;
+    intereses: string[];
+    intereses_texto: string;
+    intereses_etiquetas?: string[];
+    es_spam: boolean;
+  };
   correccion: {
     corregida: boolean;
     idioma: string | null;
     interes: string | null;
+    /** La lista corregida entera, en el orden elegido a mano. */
+    intereses: string[];
     es_spam: boolean | null;
     nota: string | null;
     por: string | null;
@@ -5318,7 +5365,7 @@ export type LeadClasificacionesContacto = {
   umbral_confianza: number;
   total: number;
   items: LeadClasificacion[];
-  opciones: { idiomas: string[]; intereses: { id: string; label: string }[] };
+  opciones: { idiomas: string[]; intereses: LeadInteresOpcion[] };
 };
 
 export type LeadClasificaciones = {
@@ -5327,12 +5374,15 @@ export type LeadClasificaciones = {
   total: number;
   corregidas: number;
   items: LeadClasificacion[];
-  opciones: { idiomas: string[]; intereses: { id: string; label: string }[] };
+  opciones: { idiomas: string[]; intereses: LeadInteresOpcion[] };
 };
 
 export type LeadCorreccion = {
   idioma?: string;
+  /** Un solo interés (compatibilidad): equivale a `intereses: [interes]`. */
   interes?: string;
+  /** Todos los intereses, en el orden elegido; el primero es el principal. */
+  intereses?: string[];
   es_spam?: boolean;
   nota?: string;
 };
@@ -5352,6 +5402,9 @@ export type LeadEnSecoFila = {
   clasificacion: {
     idioma: string | null;
     interes: string;
+    interes_texto?: string;
+    intereses?: string[];
+    intereses_texto?: string;
     es_spam: boolean;
     confianza: number;
     motivo: string;
@@ -5439,4 +5492,48 @@ export async function crearLeadWorkflow(): Promise<{
   id: string; name: string; status: string; url: string;
 }> {
   return apiFetch("/api/erp/leads/workflow", { method: "POST" });
+}
+
+// --- el catálogo de intereses del clasificador (Configuración ERP) -----------
+// Un interés nuevo o una descripción afinada entran en el clasificador en la
+// siguiente clasificación, sin desplegar nada. No se borra lo que está en uso:
+// se desactiva (lo clasificado sigue legible).
+
+export type LeadInteresNuevo = {
+  codigo: string;
+  etiqueta: string;
+  descripcion?: string;
+  comercial?: boolean;
+  orden?: number;
+};
+
+export type LeadInteresCambios = Partial<{
+  etiqueta: string;
+  descripcion: string;
+  comercial: boolean;
+  orden: number;
+  activo: boolean;
+}>;
+
+export async function listLeadIntereses(): Promise<{ items: LeadInteresConUso[] }> {
+  return apiFetch<{ items: LeadInteresConUso[] }>("/api/erp/leads/intereses");
+}
+
+export async function createLeadInteres(payload: LeadInteresNuevo): Promise<LeadInteresConUso> {
+  return apiFetch<LeadInteresConUso>("/api/erp/leads/intereses", {
+    method: "POST", body: JSON.stringify(payload),
+  });
+}
+
+export async function updateLeadInteres(
+  codigo: string, cambios: LeadInteresCambios,
+): Promise<LeadInteresConUso> {
+  return apiFetch<LeadInteresConUso>(`/api/erp/leads/intereses/${encodeURIComponent(codigo)}`, {
+    method: "PATCH", body: JSON.stringify(cambios),
+  });
+}
+
+/** 409 si está en uso (clasificaciones o filas del mapa): desactívalo. */
+export async function deleteLeadInteres(codigo: string): Promise<void> {
+  await apiFetch(`/api/erp/leads/intereses/${encodeURIComponent(codigo)}`, { method: "DELETE" });
 }

@@ -28,6 +28,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -35,6 +36,22 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.crm import Base, TimestampMixin
+
+
+class LeadInterest(TimestampMixin, Base):
+    """El catálogo de intereses del clasificador (migración 0134): código
+    estable, etiqueta, descripción para el modelo, si es comercial, orden y
+    si está activo. Se gestiona desde Configuración ERP; no se borra si hay
+    clasificaciones que lo usan. Ver `app.services.leads.intereses`."""
+
+    __tablename__ = "lead_interests"
+
+    code: Mapped[str] = mapped_column(String(40), primary_key=True)
+    label: Mapped[str] = mapped_column(String(80), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    is_commercial: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
 #: De dónde viene el lead.
 FUENTE_FORMULARIO = "web_form"
@@ -86,7 +103,12 @@ class LeadClassification(TimestampMixin, Base):
     #: El formulario decía un idioma y el texto, claramente, otro.
     language_mismatch: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     form_language: Mapped[str | None] = mapped_column(String(5))
+    #: El interés PRINCIPAL (el primero de `interests_json`): se mantiene en
+    #: columna para filtrar y para la copia en el contacto.
     interest: Mapped[str | None] = mapped_column(String(40))
+    #: Todos los intereses, ordenados por relevancia (JSON: `["uv_mediano",
+    #: "dtf"]`). Un lead puede querer varias cosas (migración 0134).
+    interests_json: Mapped[str | None] = mapped_column(Text)
     #: etiquetas | ia | palabras_clave
     interest_source: Mapped[str | None] = mapped_column(String(16))
     is_spam: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -116,6 +138,8 @@ class LeadClassification(TimestampMixin, Base):
     # La corrección a mano (Configuración ERP → Respuesta a leads).
     corrected_language: Mapped[str | None] = mapped_column(String(5))
     corrected_interest: Mapped[str | None] = mapped_column(String(40))
+    #: La lista corregida entera, en el orden elegido a mano.
+    corrected_interests_json: Mapped[str | None] = mapped_column(Text)
     corrected_is_spam: Mapped[bool | None] = mapped_column(Boolean)
     corrected_by_user_id: Mapped[str | None] = mapped_column(String(36))
     corrected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -127,9 +151,45 @@ class LeadClassification(TimestampMixin, Base):
     def idioma_efectivo(self) -> str | None:
         return self.corrected_language or self.language
 
+    # --- varios intereses, ordenados (el primero es el principal) ----------
+
+    @property
+    def intereses(self) -> list[str]:
+        """Lo que dijo el clasificador, en orden; si solo hay columna
+        (filas anteriores a la 0134), una lista de uno."""
+        from app.services.leads.intereses import lista_desde_json  # noqa: PLC0415
+
+        lista = lista_desde_json(self.interests_json)
+        if lista:
+            return lista
+        return [self.interest] if self.interest else []
+
+    @property
+    def intereses_corregidos(self) -> list[str]:
+        from app.services.leads.intereses import lista_desde_json  # noqa: PLC0415
+
+        lista = lista_desde_json(self.corrected_interests_json)
+        if lista:
+            return lista
+        return [self.corrected_interest] if self.corrected_interest else []
+
+    @property
+    def intereses_efectivos(self) -> list[str]:
+        """La corrección a mano manda sobre la clasificación."""
+        return self.intereses_corregidos or self.intereses
+
     @property
     def interes_efectivo(self) -> str | None:
-        return self.corrected_interest or self.interest
+        efectivos = self.intereses_efectivos
+        return efectivos[0] if efectivos else None
+
+    def fijar_intereses(self, lista: list[str]) -> None:
+        self.interest = lista[0] if lista else None
+        self.interests_json = json.dumps(list(lista)) if lista else None
+
+    def fijar_intereses_corregidos(self, lista: list[str]) -> None:
+        self.corrected_interest = lista[0] if lista else None
+        self.corrected_interests_json = json.dumps(list(lista)) if lista else None
 
     @property
     def es_spam_efectivo(self) -> bool:

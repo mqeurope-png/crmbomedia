@@ -111,12 +111,12 @@ def test_lead_sin_ningun_correo_tras_48_horas(s: Session) -> None:
 
 def test_lead_de_agile_por_su_fecha_real(s: Session) -> None:
     klaus = Contact(first_name="Klaus", email="klaus@druck.de", origin_account_id="agilecrm:acc",
-                    lead_interest="consumibles", lead_is_spam=False)
+                    lead_interest="tienda", lead_is_spam=False)
     s.add(klaus)
     s.flush()
     fila = LeadClassification(contact_id=klaus.id, source="agilecrm", source_ref="nota-1",
                               lead_at=AHORA - timedelta(days=4), language="de",
-                              interest="consumibles", is_spam=False, confidence=0.7,
+                              interest="tienda", is_spam=False, confidence=0.7,
                               status="sin_plantilla")
     s.add(fila)
     s.flush()
@@ -124,7 +124,7 @@ def test_lead_de_agile_por_su_fecha_real(s: Session) -> None:
     s.commit()
     hallazgos = list(cm.lead_sin_contactar(_ctx(s)))
     assert _ids(hallazgos) == {klaus.id}
-    assert "AgileCRM" in hallazgos[0].detalle and hallazgos[0].datos["interes"] == "consumibles"
+    assert "AgileCRM" in hallazgos[0].detalle and hallazgos[0].datos["interes"] == "tienda"
     # Un correo de verdad después del lead lo quita.
     _correo(s, klaus, cuando=AHORA - timedelta(days=2))
     s.commit()

@@ -737,12 +737,14 @@ def update_settings(
         # tienen que existir) y fundido con lo guardado.
         if payload.lead_response is not None:
             from app.email_templates.models import EmailTemplate  # noqa: PLC0415
+            from app.services.leads.intereses import cargar as cargar_intereses  # noqa: PLC0415
 
             plantillas_validas = set(session.scalars(select(EmailTemplate.id)))
             try:
                 series[LEAD_CONFIG_KEY] = validar_lead_response(
                     payload.lead_response, series.get(LEAD_CONFIG_KEY),
                     plantillas_validas=plantillas_validas,
+                    catalogo=cargar_intereses(session),
                 )
             except ValueError as e:
                 raise HTTPException(400, str(e)) from e

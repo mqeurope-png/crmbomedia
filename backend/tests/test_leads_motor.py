@@ -323,7 +323,7 @@ def test_formulario_pimpam_con_productos_marcados(session_factory, monkeypatch) 
                 interes_fuente="ia", proveedor=self.nombre, modelo="falso",
             )
 
-    monkeypatch.setattr(clasificador, "proveedor_por_defecto", lambda: _IA())
+    monkeypatch.setattr(clasificador, "proveedor_por_defecto", lambda *a, **k: _IA())
     with session_factory() as s:
         etapas = _pipeline(s)
         _plantilla(s, "Lead · Vending (ES)", "Máquinas de vending personalizadas",
@@ -396,8 +396,8 @@ def _contacto(session: Session, email: str, **over) -> Contact:
 
 
 def test_nota_agile_en_aleman_sobre_pelicula_de_transferencia(session_factory) -> None:
-    """Idioma de, interés consumibles, sin plantilla de venta (borrador vacío
-    con el aviso), tarea creada."""
+    """Idioma de, interés tienda (consumibles), sin plantilla (la tienda no
+    tiene y no se inventa: borrador vacío con el aviso), tarea creada."""
     with session_factory() as s:
         etapas = _pipeline(s)
         _workflow(s, etapas, con_espera=False)
@@ -408,9 +408,10 @@ def test_nota_agile_en_aleman_sobre_pelicula_de_transferencia(session_factory) -
         fila = s.scalar(select(LeadClassification).where(
             LeadClassification.contact_id == contacto.id))
         assert (fila.source, fila.source_ref) == ("agilecrm", nota.id)
-        assert (fila.language, fila.interest) == ("de", "consumibles")
+        assert (fila.language, fila.interest) == ("de", "tienda")
+        assert fila.intereses[0] == "tienda"
         assert fila.status == "sin_plantilla"
-        assert "no es un lead comercial" in (fila.status_detail or "")
+        assert "sin plantilla para Tienda" in (fila.status_detail or "")
         borrador = s.get(EmailDraft, fila.draft_id)
         assert borrador is not None and not borrador.subject and not borrador.body_html
         assert s.scalar(select(Task).where(Task.contact_id == contacto.id)) is not None
@@ -429,12 +430,86 @@ def test_nota_en_frances_sobre_botellas_de_vidrio(session_factory) -> None:
 
         fila = s.scalar(select(LeadClassification).where(
             LeadClassification.contact_id == contacto.id))
-        assert (fila.language, fila.interest) == ("fr", "uv_pequeno_mediano")
+        assert (fila.language, fila.interest) == ("fr", "uv_pequeno")
+        assert fila.intereses == ["uv_pequeno"]
+        # La plantilla con el nombre antiguo («UV pequeño-mediano») sigue
+        # resolviendo para el código nuevo.
         assert fila.template_name == "Lead · UV pequeño-mediano (FR)"
         assert fila.status == "preparado"
         borrador = s.get(EmailDraft, fila.draft_id)
         assert borrador.subject == "Impression UV sur objets"
         assert "Bonjour Marie" in borrador.body_html
+
+
+#: torracollons@elbarquito.net (10/10/2026): placas de metal Y camisetas.
+ALEMAN_METAL_Y_CAMISETAS = "Ich möchte auf Metallplatten sowie auf T-Shirts drucken"
+
+
+def test_dos_intereses_sin_plantilla_mixta_usan_la_del_principal_y_la_tarea_dice_los_dos(
+    session_factory,
+) -> None:
+    with session_factory() as s:
+        etapas = _pipeline(s)
+        _plantilla(s, "Lead · UV pequeño-mediano (DE)", "UV-Druck", "<p>Hallo</p>")
+        _workflow(s, etapas, con_espera=False)
+        contacto = _contacto(s, "torracollons@elbarquito.net")
+        nota = _nota_agile(s, contacto, ALEMAN_METAL_Y_CAMISETAS, hace=timedelta(hours=1))
+        despachar_leads_de_notas(s, contact_id=contacto.id, notas=[nota])
+
+        fila = s.scalar(select(LeadClassification).where(
+            LeadClassification.contact_id == contacto.id))
+        assert (fila.language, fila.interest) == ("de", "uv_pequeno")
+        assert fila.intereses == ["uv_pequeno", "dtf"]
+        assert s.get(Contact, contacto.id).lead_interest == "uv_pequeno"
+        # Sin fila para el conjunto, la plantilla del principal (nombre antiguo).
+        assert fila.template_name == "Lead · UV pequeño-mediano (DE)"
+        assert fila.status == "preparado"
+        tarea = s.scalar(select(Task).where(Task.contact_id == contacto.id))
+        assert "UV LED pequeño formato + DTF · impresión textil" in tarea.title
+        assert _etapa_actual(s, contacto.id).name == "Nuevo lead"
+
+
+def test_la_plantilla_del_conjunto_exacto_gana_a_la_del_principal(session_factory) -> None:
+    with session_factory() as s:
+        etapas = _pipeline(s)
+        _plantilla(s, "Lead · UV pequeño-mediano (DE)", "UV-Druck", "<p>Hallo</p>")
+        mixta = _plantilla(s, "Lead · UV y Textil (DE)", "UV und DTF", "<p>Beides</p>")
+        _configurar(s, mapa={"dtf+uv_pequeno:de": mixta.id})
+        _workflow(s, etapas, con_espera=False)
+        contacto = _contacto(s, "torracollons@elbarquito.net")
+        nota = _nota_agile(s, contacto, ALEMAN_METAL_Y_CAMISETAS, hace=timedelta(hours=1))
+        despachar_leads_de_notas(s, contact_id=contacto.id, notas=[nota])
+
+        fila = s.scalar(select(LeadClassification).where(
+            LeadClassification.contact_id == contacto.id))
+        assert fila.intereses == ["uv_pequeno", "dtf"]
+        assert fila.template_name == "Lead · UV y Textil (DE)" and fila.status == "preparado"
+        assert s.get(EmailDraft, fila.draft_id).subject == "UV und DTF"
+
+
+def test_sin_plantilla_para_ningun_interes_borrador_vacio_y_tarea_con_aviso(
+    session_factory,
+) -> None:
+    """Packaging no tiene plantilla y no se inventa: el lead se clasifica, va
+    al pipeline y crea su tarea con el aviso."""
+    with session_factory() as s:
+        etapas = _pipeline(s)
+        _workflow(s, etapas, con_espera=False)
+        contacto = _contacto(s, "cajas@embalajes.es")
+        nota = _nota_agile(s, contacto, "Hola, quiero imprimir cajas de cartón y embalajes "
+                                        "para mi negocio. Gracias", hace=timedelta(hours=1))
+        despachar_leads_de_notas(s, contact_id=contacto.id, notas=[nota])
+
+        fila = s.scalar(select(LeadClassification).where(
+            LeadClassification.contact_id == contacto.id))
+        assert fila.interest == "packaging" and fila.status == "sin_plantilla"
+        assert fila.status_detail.startswith("sin plantilla para Packaging en es")
+        borrador = s.get(EmailDraft, fila.draft_id)
+        assert borrador is not None and not borrador.subject and not borrador.body_html
+        assert json.loads(borrador.metadata_json)["sin_plantilla"] is True
+        tarea = s.scalar(select(Task).where(Task.contact_id == contacto.id))
+        assert tarea is not None and "Packaging" in tarea.title
+        assert _etapa_actual(s, contacto.id).name == "Nuevo lead"
 
 
 def test_formulario_frances_pero_texto_en_aleman(session_factory) -> None:

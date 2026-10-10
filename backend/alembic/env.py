@@ -8,7 +8,10 @@ from app.db.base import Base
 
 config = context.config
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # Sin apagar los loggers que ya existen: los tests corren una revisión
+    # dentro del mismo proceso que la aplicación, y con el valor por defecto
+    # (True) los avisos de `app.*` posteriores desaparecían (caplog vacío).
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 
