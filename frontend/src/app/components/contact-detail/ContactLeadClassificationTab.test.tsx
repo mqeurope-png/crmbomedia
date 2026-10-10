@@ -107,7 +107,8 @@ describe("ContactLeadClassificationTab (pestaña «Análisis IA»)", () => {
     ));
     expect(await screen.findByText(/Corregido por Bart el/)).toHaveTextContent("quiere distribuir, no comprar");
     // Lo que manda ahora es lo corregido (y se dice lo que había dicho la IA).
-    expect(screen.getByText("Distribución", { selector: "strong" })).toBeInTheDocument();
+    expect(screen.getByText("Distribución", { selector: ".lead-ia-interes-valor" }))
+      .toBeInTheDocument();
     expect(screen.getByText(/corregido a mano \(la IA dijo Vending\)/)).toBeInTheDocument();
     // Tras guardar se arranca de lo corregido: sin cambios, sin botón.
     expect(screen.queryByRole("button", { name: "Guardar corrección" })).not.toBeInTheDocument();

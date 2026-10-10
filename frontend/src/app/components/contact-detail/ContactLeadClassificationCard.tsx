@@ -63,7 +63,7 @@ export function ContactLeadClassificationCard({ contactId, onSeeAll }: Props) {
             {fuenteTexto(ultima.fuente, ultima.web, ultima.cuenta_agile)}
             {total > 1 ? ` · ${total} análisis, este es el último` : ""}
           </p>
-          <LeadClasificacionResumen lead={ultima} umbral={umbral} />
+          <LeadClasificacionResumen lead={ultima} umbral={umbral} modo="resumen" />
         </>
       ) : null}
       {onSeeAll && ultima ? (

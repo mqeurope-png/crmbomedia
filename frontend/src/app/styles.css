@@ -7770,30 +7770,34 @@ tr.is-inactive {
   margin-bottom: 12px;
 }
 
+/* Una sola banda: nombre + estado + estrellas, la línea de propietario y
+   puesto, y los datos clave en fila. Compacta: lo que uno viene a ver
+   (actividad, análisis, tareas) tiene que quedar por encima del pliegue. */
 .contact-header-card {
   background: var(--color-bg);
   border: 1px solid var(--line);
-  border-radius: 18px;
-  padding: 20px 24px;
+  border-radius: 14px;
+  padding: 12px 18px;
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  gap: 16px;
-  margin-bottom: 14px;
+  gap: 12px 16px;
+  margin-bottom: 12px;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
   flex-wrap: wrap;
 }
 
 .contact-header-main {
   display: flex;
-  gap: 18px;
+  gap: 12px;
   align-items: flex-start;
   min-width: 0;
+  flex: 1 1 520px;
 }
 
 .contact-header-avatar {
-  width: 64px;
-  height: 64px;
+  width: 42px;
+  height: 42px;
   border-radius: 50%;
   background: linear-gradient(135deg, #c7d2fe 0%, #a5b4fc 100%);
   color: var(--color-dark);
@@ -7801,25 +7805,73 @@ tr.is-inactive {
   align-items: center;
   justify-content: center;
   font-weight: 800;
-  font-size: 1.25rem;
+  font-size: 0.95rem;
   flex-shrink: 0;
 }
 
-.contact-header-info { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.contact-header-avatar-mini { width: 28px; height: 28px; font-size: 0.72rem; }
+
+.contact-header-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
 
 .contact-header-name-row {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   flex-wrap: wrap;
 }
 
 .contact-header-name {
   margin: 0;
-  font-size: 1.5rem;
+  font-size: 1.25rem;
   font-weight: 800;
   color: var(--color-dark);
+  line-height: 1.25;
 }
+
+.contact-header-star-rating { display: inline-flex; align-items: center; }
+
+.contact-header-puesto-valor { color: var(--color-dark); font-weight: 600; }
+.contact-header-puesto-vacio { color: var(--color-gray); font-style: italic; }
+
+/* Versión reducida pegada arriba al bajar: ocupa 0 px mientras no se ve,
+   así no mueve nada; `is-visible` la enseña cuando la cabecera entera ya
+   ha salido por arriba (lo decide un IntersectionObserver). */
+.contact-header-sticky {
+  position: sticky;
+  top: 0;
+  height: 0;
+  z-index: 40;
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.contact-header-sticky.is-visible { visibility: visible; opacity: 1; }
+.contact-header-sticky-inner {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  background: var(--color-bg);
+  border: 1px solid var(--line);
+  border-top: 0;
+  border-radius: 0 0 12px 12px;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.1);
+  flex-wrap: wrap;
+}
+.contact-header-sticky-name {
+  font-weight: 800;
+  color: var(--color-dark);
+  font-size: 1rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 40%;
+}
+.contact-header-actions-mini { margin-left: auto; }
 
 .contact-status-chip {
   display: inline-flex;
@@ -7915,30 +7967,28 @@ tr.is-inactive {
 .contact-header-overflow-item:hover { background: var(--color-bg-light); }
 .contact-header-overflow-item.is-danger { color: #b91c1c; }
 
+/* Datos clave: una fila dentro de la cabecera (antes era una tarjeta aparte
+   de siete celdas que ocupaba otra franja entera). Cada dato va como
+   «ETIQUETA valor», en línea, y los vacíos no se pintan. */
 .contact-strip {
-  background: var(--color-bg);
-  border: 1px solid var(--line);
-  border-radius: 16px;
-  padding: 16px 20px;
-  display: grid;
-  /* PR-Ficha-Cleanup: 7 cells (Etiquetas se movió a su pestaña). El
-   * primer track es más ancho (2fr) para que la cell Email no se
-   * vea forzada a truncar emails largos tipo
-   * `ramon.maceira@macdianer-industria.com`. */
-  grid-template-columns: minmax(0, 2fr) repeat(6, minmax(0, 1fr));
-  gap: 18px;
-  margin-bottom: 14px;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 20px;
+  margin: 0;
+  flex-basis: 100%;
+  padding-left: 54px; /* alineada con el nombre (avatar 42 px + hueco 12 px) */
 }
 
-.contact-strip-cell { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.contact-strip-cell { display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; max-width: 100%; }
 
 .contact-strip-label {
-  font-size: 0.7rem;
+  font-size: 0.66rem;
   color: var(--color-gray);
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  font-weight: 600;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 .contact-strip-value {
@@ -7948,6 +7998,7 @@ tr.is-inactive {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  max-width: 380px;
 }
 
 .contact-strip-value-link { display: inline-flex; align-items: center; gap: 6px; }
@@ -8444,7 +8495,7 @@ tr.is-inactive {
   max-width: 440px;
 }
 
-.contact-summary-wrapper { display: flex; flex-direction: column; gap: 14px; }
+.contact-summary-wrapper { display: flex; flex-direction: column; gap: 0; }
 .contact-summary-extra { margin-top: 0; }
 
 .contact-tasks-pending { display: flex; flex-direction: column; gap: 14px; }
@@ -8503,7 +8554,11 @@ tr.is-inactive {
   line-height: 1.4;
 }
 
-.contact-summary { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; }
+/* Dos columnas en flujo de mampostería (CSS multicolumna): cada tarjeta
+   usa solo el alto que necesita y las cortas se apilan sin huecos. Antes
+   era una rejilla que igualaba alturas y «Tareas pendientes» vacía se
+   estiraba hasta la altura de «Análisis de la IA». */
+.contact-summary { column-count: 2; column-gap: 14px; }
 
 .contact-summary-card {
   padding: 16px;
@@ -8513,6 +8568,13 @@ tr.is-inactive {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.contact-summary > .contact-summary-card {
+  break-inside: avoid;
+  page-break-inside: avoid;
+  margin: 0 0 14px;
+  width: 100%;
 }
 
 .contact-summary-card-header h3 {
@@ -8722,8 +8784,7 @@ tr.is-inactive {
 
 @media (max-width: 1100px) {
   .contact-detail-grid-v2 { grid-template-columns: 1fr; }
-  .contact-strip { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-  .contact-summary { grid-template-columns: 1fr; }
+  .contact-summary { column-count: 1; }
 }
 
 @media (max-width: 720px) {
@@ -8734,34 +8795,6 @@ tr.is-inactive {
 /* Ficha del contacto · análisis de la IA (recuadro del Resumen y       */
 /* pestaña «Análisis IA») y recuadro «Pipelines vinculados».            */
 /* ------------------------------------------------------------------ */
-.contact-lead-ia-dl {
-  display: grid;
-  grid-template-columns: minmax(0, 7rem) minmax(0, 1fr);
-  gap: 6px 12px;
-  margin: 0;
-}
-.contact-lead-ia-dl-row { display: contents; }
-.contact-lead-ia-dl dt {
-  margin: 0;
-  font-size: 0.75rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.02em;
-  color: var(--muted);
-  padding-top: 2px;
-}
-.contact-lead-ia-dl dd {
-  margin: 0;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.contact-lead-ia-motivo,
-.contact-lead-ia-nota {
-  margin: 0;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.contact-lead-ia-nota + .contact-lead-ia-nota { margin-top: 2px; }
 .contact-lead-ia-consulta {
   margin: 0;
   padding: 10px 14px;
@@ -8795,12 +8828,10 @@ tr.is-inactive {
 }
 .contact-lead-ia-item-header h3 { margin: 0; font-size: 0.95rem; }
 .contact-lead-ia-item h4 {
-  margin: 0 0 6px;
-  font-size: 0.75rem;
+  margin: 0 0 8px;
+  font-size: 0.82rem;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.02em;
-  color: var(--muted);
+  color: var(--color-dark);
 }
 .contact-lead-ia-correccion {
   display: flex;
@@ -8845,6 +8876,127 @@ tr.is-inactive {
 
 /* Lista de contactos: «Creado en origen» sin fecha de origen enseña la de alta. */
 .contact-created-fallback { white-space: nowrap; }
+
+/* ------------------------------------------------------------------ */
+/* Análisis de la IA · jerarquía. De un vistazo: de qué va el lead (el   */
+/* interés, grande y con color) y si fiarse (confianza con semáforo).   */
+/* El motivo se lee de verdad; el modelo va pequeño al pie.             */
+/* ------------------------------------------------------------------ */
+.lead-ia { display: flex; flex-direction: column; gap: 10px; }
+.lead-ia-cabecera {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  flex-wrap: wrap;
+}
+.lead-ia-interes {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+}
+.lead-ia-interes-valor {
+  font-size: 1.35rem;
+  font-weight: 800;
+  color: var(--color-primary);
+  line-height: 1.2;
+}
+.lead-ia-completo .lead-ia-interes-valor { font-size: 1.5rem; }
+.lead-ia-origen { font-size: 0.8rem; color: var(--color-gray); }
+.lead-ia-spam {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: #fee2e2;
+  color: #b91c1c;
+  font-weight: 800;
+  font-size: 0.85rem;
+  letter-spacing: 0.04em;
+}
+.lead-ia-datos {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+}
+.lead-ia-datos li { display: inline-flex; align-items: center; gap: 6px; font-size: 0.9rem; flex-wrap: wrap; }
+.lead-ia-dato-etiqueta {
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-gray);
+}
+.lead-ia-confianza { font-weight: 800; }
+.lead-ia-confianza.is-baja { background: #fee2e2; color: #b91c1c; }
+.lead-ia-confianza.is-justa { background: #fef3c7; color: #92400e; }
+.lead-ia-confianza.is-alta { background: #dcfce7; color: #15803d; }
+.lead-ia-motivo-bloque { display: flex; flex-direction: column; gap: 4px; }
+.lead-ia-motivo {
+  margin: 0;
+  color: var(--color-dark);
+  font-size: 0.92rem;
+  line-height: 1.55;
+  max-width: 68ch;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.lead-ia-motivo.is-recortado {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  white-space: normal;
+}
+.lead-ia-mas {
+  align-self: flex-start;
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--color-primary);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.lead-ia-borrador {
+  margin: 0;
+  color: var(--color-dark);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+}
+.lead-ia-borrador a { color: var(--color-primary); font-weight: 600; }
+.lead-ia-pie { margin: 0; color: var(--color-gray); font-size: 0.75rem; }
+.lead-ia-chips {
+  margin: 8px 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.lead-ia-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--color-bg-light);
+  font-size: 0.78rem;
+  color: var(--color-dark);
+  max-width: 100%;
+}
+.lead-ia-chip-etiqueta { color: var(--color-gray); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.03em; }
+.lead-ia-chip-valor { overflow-wrap: anywhere; }
+
+/* Lateral de la ficha: un dato vacío es una línea discreta con su acción
+   al lado, no «Sin X.» + un botón en otra fila. */
+.contact-card-vacio { display: flex; align-items: center; gap: 8px; margin: 0; flex-wrap: wrap; }
+.contact-card-vacio .contact-summary-link { font-size: 0.8rem; }
 
 /* ------------------------------------------------------------------ */
 /* PR-C Rebranding — dashboard layout                                 */

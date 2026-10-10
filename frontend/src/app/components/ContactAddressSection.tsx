@@ -36,17 +36,29 @@ export function ContactAddressSection({ contact, onSaved }: Props) {
           <MapPin size={12} aria-hidden /> Dirección
         </h4>
         {display ? (
-          <p className="muted small">{display}</p>
+          <>
+            <p className="muted small">{display}</p>
+            <button
+              type="button"
+              className="button secondary small"
+              onClick={() => setEditing(true)}
+            >
+              Editar
+            </button>
+          </>
         ) : (
-          <p className="muted small">Sin dirección.</p>
+          // Vacío: una sola línea discreta con la acción al lado.
+          <p className="muted small contact-card-vacio">
+            Sin dirección.
+            <button
+              type="button"
+              className="contact-summary-link"
+              onClick={() => setEditing(true)}
+            >
+              Añadir
+            </button>
+          </p>
         )}
-        <button
-          type="button"
-          className="button secondary small"
-          onClick={() => setEditing(true)}
-        >
-          Editar
-        </button>
       </section>
     );
   }

@@ -140,7 +140,17 @@ export function ContactPhonesSection({ contactId, onChanged }: Props) {
       {loading ? (
         <p className="muted">Cargando…</p>
       ) : items.length === 0 && !adding ? (
-        <p className="muted small">Sin teléfonos.</p>
+        // Vacío: una sola línea discreta con la acción al lado.
+        <p className="muted small contact-card-vacio">
+          Sin teléfonos.
+          <button
+            type="button"
+            className="contact-summary-link"
+            onClick={() => setAdding(true)}
+          >
+            Añadir
+          </button>
+        </p>
       ) : (
         <ul className="contact-channel-list">
           {items.map((row) => (
@@ -211,7 +221,7 @@ export function ContactPhonesSection({ contactId, onChanged }: Props) {
             Cancelar
           </button>
         </form>
-      ) : (
+      ) : items.length > 0 ? (
         <button
           type="button"
           className="button secondary small"
@@ -219,7 +229,7 @@ export function ContactPhonesSection({ contactId, onChanged }: Props) {
         >
           <Plus size={11} aria-hidden /> Añadir teléfono
         </button>
-      )}
+      ) : null}
     </section>
   );
 }

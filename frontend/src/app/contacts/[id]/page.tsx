@@ -9,7 +9,6 @@ import { ContactAddressSection } from "../../components/ContactAddressSection";
 import { ContactCompanySection } from "../../components/ContactCompanySection";
 import { ContactCustomFieldsSection } from "../../components/ContactCustomFieldsSection";
 import { ContactDetailHeader } from "../../components/contact-detail/ContactDetailHeader";
-import { ContactKeyDataStrip } from "../../components/contact-detail/ContactKeyDataStrip";
 import { ContactBrevoEngagementCard } from "../../components/contact-detail/ContactBrevoEngagementCard";
 import { ContactNotesPreviewCard } from "../../components/contact-detail/ContactNotesPreviewCard";
 import { ContactLeadClassificationCard } from "../../components/contact-detail/ContactLeadClassificationCard";
@@ -354,6 +353,9 @@ export default function ContactDetailPage() {
         ownerName={ownerName}
         ownerInitials={ownerInitials}
         assignedSince={assignedSince}
+        companyName={companyName}
+        lastActivityAt={lastActivityAt}
+        primaryPhone={primaryPhone}
         onPatch={handlePatch}
         onSendEmail={() => setShowComposer(true)}
         onCreateTask={() => setShowTaskModal(true)}
@@ -401,18 +403,6 @@ export default function ContactDetailPage() {
             ) : null}
           </>
         }
-      />
-
-      {/* PR-Ficha-Cleanup: el strip ya no recibe tags ni handlers de
-          add/remove — los movimos a la pestaña Tags. Los callbacks
-          siguen colgando del page state porque la pestaña Tags los
-          usa via prop drilling. */}
-      <ContactKeyDataStrip
-        contact={contact}
-        companyName={companyName}
-        lastActivityAt={lastActivityAt}
-        primaryPhone={primaryPhone}
-        onPatch={handlePatch}
       />
 
       {refreshWarnings.length > 0 ? (

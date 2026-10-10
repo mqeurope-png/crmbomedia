@@ -1,14 +1,17 @@
 "use client";
 
 /**
- * Strip horizontal de datos clave del contacto. PR-D BoHub.
+ * Datos clave del contacto, en una fila compacta DENTRO de la cabecera:
+ * Email · Teléfono · Empresa · Origen del lead · Sincronizado con · Última
+ * actividad · Score.
  *
- * 7 cells: Email | Teléfono | Empresa | Origen | Última actividad |
- * Score | Estado del ciclo.
+ * Solo pinta lo que tiene valor (el score siempre, porque se edita aquí):
+ * «Sin empresa» o un «—» no merecen sitio en la cabecera. El estado del
+ * ciclo ya no va aquí: es el mismo dato que el chip de estado junto al
+ * nombre, que también se edita.
  *
- * PR-Ficha-Cleanup: la cell "Etiquetas" se movió a una pestaña
- * dedicada (`tags`) + card en Resumen — abarrotaba el strip y los
- * comerciales con > 5 tags acababan viendo "+N" inútil.
+ * PR-Ficha-Cleanup: la cell "Etiquetas" se movió a una pestaña dedicada
+ * (`tags`) + card en Resumen.
  */
 import { Copy, Phone as PhoneIcon } from "lucide-react";
 import type { Contact, ExternalReferenceSummary } from "../../lib/api";
@@ -33,22 +36,6 @@ const formatDate = (value?: string | null) =>
     hour: "2-digit",
     minute: "2-digit",
   });
-
-const STATUS_LABEL: Record<string, string> = {
-  new: "Lead nuevo",
-  qualified: "Calificado",
-  working: "Trabajando",
-  won: "Cliente",
-  lost: "Perdido",
-};
-
-const STATUS_OPTIONS: ReadonlyArray<[string, string]> = [
-  ["new", "Lead nuevo"],
-  ["qualified", "Calificado"],
-  ["working", "Trabajando"],
-  ["won", "Cliente"],
-  ["lost", "Perdido"],
-];
 
 // «Origen del lead» es `contacts.origin`: de DÓNDE vino el lead («Formulario
 // web · boprint.net (español)»). Los vínculos con las integraciones van
@@ -107,8 +94,7 @@ export function ContactKeyDataStrip({
         <span className="contact-strip-label">Email</span>
         {/* PR-Ficha-Cleanup: NO más mailto. El click en el email no
             debe abrir el cliente del SO (Bart's spec); solo el botón
-            Copiar dispara una acción. `break-all` evita overflow
-            horizontal en emails largos. */}
+            Copiar dispara una acción. */}
         <span className="contact-strip-value contact-strip-email">
           {contact.email ? (
             <>
@@ -128,60 +114,53 @@ export function ContactKeyDataStrip({
           )}
         </span>
       </div>
-      <div className="contact-strip-cell">
-        <span className="contact-strip-label">Teléfono</span>
-        <span className="contact-strip-value contact-strip-value-link">
-          {phone ? (
-            <>
-              <a href={`tel:${phone}`}>{phone}</a>
-              <button
-                type="button"
-                className="contact-strip-copy"
-                onClick={() => copyToClipboard(phone)}
-                aria-label="Copiar teléfono"
-                title="Copiar teléfono"
-              >
-                <PhoneIcon size={11} aria-hidden />
-              </button>
-            </>
-          ) : (
-            <span className="muted">—</span>
-          )}
-        </span>
-      </div>
-      <div className="contact-strip-cell">
-        <span className="contact-strip-label">Empresa</span>
-        <span className="contact-strip-value">
-          {companyName ?? <span className="muted">Sin empresa</span>}
-        </span>
-      </div>
-      <div className="contact-strip-cell">
-        <span className="contact-strip-label">Origen del lead</span>
-        <span className="contact-strip-value">
-          {originLabel ?? <span className="muted">—</span>}
-        </span>
-      </div>
+      {phone ? (
+        <div className="contact-strip-cell">
+          <span className="contact-strip-label">Teléfono</span>
+          <span className="contact-strip-value contact-strip-value-link">
+            <a href={`tel:${phone}`}>{phone}</a>
+            <button
+              type="button"
+              className="contact-strip-copy"
+              onClick={() => copyToClipboard(phone)}
+              aria-label="Copiar teléfono"
+              title="Copiar teléfono"
+            >
+              <PhoneIcon size={11} aria-hidden />
+            </button>
+          </span>
+        </div>
+      ) : null}
+      {companyName ? (
+        <div className="contact-strip-cell">
+          <span className="contact-strip-label">Empresa</span>
+          <span className="contact-strip-value" title={companyName}>{companyName}</span>
+        </div>
+      ) : null}
+      {originLabel ? (
+        <div className="contact-strip-cell">
+          <span className="contact-strip-label">Origen del lead</span>
+          <span className="contact-strip-value" title={originLabel}>{originLabel}</span>
+        </div>
+      ) : null}
       {vinculos ? (
         <div className="contact-strip-cell">
           <span className="contact-strip-label">Sincronizado con</span>
-          <span className="contact-strip-value">{vinculos}</span>
+          <span className="contact-strip-value" title={vinculos}>{vinculos}</span>
         </div>
       ) : null}
-      <div className="contact-strip-cell">
-        <span className="contact-strip-label">Última actividad</span>
-        <span className="contact-strip-value">
-          {lastActivityAt ? formatDate(lastActivityAt) : <span className="muted">—</span>}
-        </span>
-      </div>
+      {lastActivityAt ? (
+        <div className="contact-strip-cell">
+          <span className="contact-strip-label">Última actividad</span>
+          <span className="contact-strip-value">{formatDate(lastActivityAt)}</span>
+        </div>
+      ) : null}
       <div className="contact-strip-cell">
         <span className="contact-strip-label">Score</span>
         <span className="contact-strip-value">
           {/* Bart: editable por cualquier user — click → input numérico
               save-on-blur. Sin validación de rango (mantenemos el
-              lead_score libre como el modelo backend).
-              PR-Ficha-Fix: forzamos width=80px y spin buttons via la
-              clase compartida `lead-score-input` (también la usa el
-              modal Editar). */}
+              lead_score libre como el modelo backend). */}
           <InlineEdit
             kind="number"
             value={contact.lead_score ?? null}
@@ -196,25 +175,6 @@ export function ContactKeyDataStrip({
             }
             onSave={(next) => onPatch({ lead_score: next })}
             inputStyle={{ width: 80 }}
-          />
-        </span>
-      </div>
-      <div className="contact-strip-cell">
-        <span className="contact-strip-label">Estado del ciclo</span>
-        <span className="contact-strip-value">
-          <InlineEdit
-            kind="select"
-            value={contact.commercial_status ?? "new"}
-            options={STATUS_OPTIONS}
-            ariaLabel="Estado del ciclo"
-            display={
-              <span>
-                {STATUS_LABEL[contact.commercial_status ?? "new"] ??
-                  contact.commercial_status ??
-                  "—"}
-              </span>
-            }
-            onSave={(next) => onPatch({ commercial_status: next })}
           />
         </span>
       </div>

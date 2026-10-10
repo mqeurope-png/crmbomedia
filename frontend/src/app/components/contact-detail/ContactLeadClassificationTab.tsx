@@ -96,7 +96,8 @@ export function ContactLeadClassificationTab({ contactId, canCorrect }: Props) {
 }
 
 /** Etiquetas del contexto de entrada (`lead_classifications.input_json`).
- *  `fuente` ya va en la cabecera y `sitio` se enseña como la web. */
+ *  `fuente` ya va en la cabecera, `sitio` se enseña como la web y la
+ *  referencia va al pie (es un dato de rastreo, no de lectura). */
 const CONTEXTO_LABEL: Record<string, string> = {
   formulario: "Formulario",
   idioma_formulario: "Idioma del formulario",
@@ -104,9 +105,8 @@ const CONTEXTO_LABEL: Record<string, string> = {
   pais: "País",
   cuenta_agile: "Cuenta de AgileCRM",
   dominio_email: "Dominio del email",
-  referencia: "Referencia",
 };
-const CONTEXTO_OCULTO = new Set(["fuente", "sitio"]);
+const CONTEXTO_OCULTO = new Set(["fuente", "sitio", "referencia"]);
 
 function valorContexto(valor: unknown): string | null {
   if (valor == null || valor === "") return null;
@@ -156,25 +156,26 @@ function LeadClasificacionItem({
         ) : (
           <p className="muted small">(sin consulta: el lead llegó sin texto)</p>
         )}
-      </section>
-
-      {contexto.length > 0 ? (
-        <section>
-          <h4>Lo que entró con la consulta</h4>
-          <dl className="contact-lead-ia-dl">
+        {contexto.length > 0 ? (
+          // Lo que entró con la consulta, en una línea de etiquetas
+          // discretas: es contexto, no lectura.
+          <p className="lead-ia-chips" aria-label="Lo que entró con la consulta">
             {contexto.map(([etiqueta, valor]) => (
-              <div key={etiqueta} className="contact-lead-ia-dl-row">
-                <dt>{etiqueta}</dt>
-                <dd>{valor}</dd>
-              </div>
+              <span key={etiqueta} className="lead-ia-chip">
+                <span className="lead-ia-chip-etiqueta">{etiqueta}</span>
+                <span className="lead-ia-chip-valor">{valor}</span>
+              </span>
             ))}
-          </dl>
-        </section>
-      ) : null}
+          </p>
+        ) : null}
+      </section>
 
       <section>
         <h4>Lo que dijo la IA</h4>
-        <LeadClasificacionResumen lead={lead} umbral={umbral} />
+        <LeadClasificacionResumen lead={lead} umbral={umbral} modo="completo" />
+        {lead.referencia ? (
+          <p className="lead-ia-pie">ref. {lead.referencia}</p>
+        ) : null}
       </section>
 
       <section>

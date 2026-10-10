@@ -106,16 +106,17 @@ export function ContactCompanySection({
           </div>
         </div>
       ) : (
-        <div>
-          <p className="muted small">Sin empresa asignada.</p>
+        // Vacío: una sola línea discreta con la acción al lado.
+        <p className="muted small contact-card-vacio">
+          Sin empresa.
           <button
             type="button"
-            className="button secondary small"
+            className="contact-summary-link"
             onClick={() => setPickerOpen(true)}
           >
-            Asignar empresa
+            Asignar
           </button>
-        </div>
+        </p>
       )}
       <CompanyPickerModal
         open={pickerOpen}

@@ -17,52 +17,66 @@ type Props = {
  *  card stays compact when nothing's known. */
 export function ContactProfessionalSection({ contact, onSaved }: Props) {
   const [error, setError] = useState<string | null>(null);
+  // Los campos vacíos no gastan una fila cada uno con un «—»: se resumen en
+  // una línea discreta y «Añadir» los despliega para editarlos.
+  const [mostrarVacios, setMostrarVacios] = useState(false);
+
+  const campos = [
+    {
+      key: "job_title", icon: Briefcase, label: "Puesto", corto: "puesto",
+      value: contact.job_title ?? null,
+      href: undefined as ((v: string) => string) | undefined,
+    },
+    {
+      key: "linkedin_url", icon: Linkedin, label: "LinkedIn", corto: "LinkedIn",
+      value: contact.linkedin_url ?? null,
+      href: (v: string) => (v.startsWith("http") ? v : `https://${v}`),
+    },
+    {
+      key: "personal_website", icon: Globe, label: "Web personal", corto: "web personal",
+      value: contact.personal_website ?? null,
+      href: (v: string) => (v.startsWith("http") ? v : `https://${v}`),
+    },
+  ];
+  const vacios = campos.filter((c) => !c.value);
+
+  const guardar = (key: string) => async (v: string | null) => {
+    try {
+      await updateContact(contact.id, { [key]: v ?? null });
+      onSaved();
+    } catch (err) {
+      setError(extractErrorMessage(err, "No se pudo guardar."));
+    }
+  };
 
   return (
     <section className="contact-card">
       <h4>Información profesional</h4>
       {error ? <p className="form-error">{error}</p> : null}
-      <InlineField
-        icon={Briefcase}
-        label="Puesto"
-        value={contact.job_title ?? null}
-        onSave={async (v) => {
-          try {
-            await updateContact(contact.id, { job_title: v ?? null });
-            onSaved();
-          } catch (err) {
-            setError(extractErrorMessage(err, "No se pudo guardar."));
-          }
-        }}
-      />
-      <InlineField
-        icon={Linkedin}
-        label="LinkedIn"
-        value={contact.linkedin_url ?? null}
-        href={(v) => (v.startsWith("http") ? v : `https://${v}`)}
-        onSave={async (v) => {
-          try {
-            await updateContact(contact.id, { linkedin_url: v ?? null });
-            onSaved();
-          } catch (err) {
-            setError(extractErrorMessage(err, "No se pudo guardar."));
-          }
-        }}
-      />
-      <InlineField
-        icon={Globe}
-        label="Web personal"
-        value={contact.personal_website ?? null}
-        href={(v) => (v.startsWith("http") ? v : `https://${v}`)}
-        onSave={async (v) => {
-          try {
-            await updateContact(contact.id, { personal_website: v ?? null });
-            onSaved();
-          } catch (err) {
-            setError(extractErrorMessage(err, "No se pudo guardar."));
-          }
-        }}
-      />
+      {campos.map((c) =>
+        c.value || mostrarVacios ? (
+          <InlineField
+            key={c.key}
+            icon={c.icon}
+            label={c.label}
+            value={c.value}
+            href={c.href}
+            onSave={guardar(c.key)}
+          />
+        ) : null,
+      )}
+      {vacios.length > 0 && !mostrarVacios ? (
+        <p className="muted small contact-card-vacio">
+          Sin {vacios.map((c) => c.corto).join(", ").replace(/, ([^,]*)$/, " ni $1")}.
+          <button
+            type="button"
+            className="contact-summary-link"
+            onClick={() => setMostrarVacios(true)}
+          >
+            Añadir
+          </button>
+        </p>
+      ) : null}
     </section>
   );
 }
