@@ -148,7 +148,8 @@ def usuario_remitente(session: Session, alias: str) -> User | None:
     usuario), así que esto no decide con qué buzón se manda: decide de quién
     es el hilo en BoHub. Se prefiere un administrador, que es la cuenta que no
     desaparece cuando a un comercial se le da de baja; si no hay, el usuario
-    que tenga el alias entre sus preferencias de envío.
+    que tenga el alias ENCENDIDO entre sus preferencias de envío (el sync deja
+    una fila apagada por cada alias y usuario, y no cuenta).
     """
     admin = session.scalar(
         select(User)
@@ -161,7 +162,8 @@ def usuario_remitente(session: Session, alias: str) -> User | None:
     ids = list(
         session.scalars(
             select(UserEmailAliasPref.user_id).where(
-                func.lower(UserEmailAliasPref.alias_email) == alias.strip().lower()
+                func.lower(UserEmailAliasPref.alias_email) == alias.strip().lower(),
+                UserEmailAliasPref.is_allowed.is_(True),
             )
         )
     )

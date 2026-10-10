@@ -2073,13 +2073,19 @@ class GmailPubsubWatch(TimestampMixin, Base):
 class UserEmailAliasPref(TimestampMixin, Base):
     """Per-user Gmail "Send mail as" preference.
 
-    Operators routinely have 50+ aliases on their personal Gmail
-    (Bomedia, Norma, internal brands, …). The CRM stores only the
-    ones each user actively wants in the composer dropdown.
+    La cuenta Google es una sola para toda la empresa y Gmail devuelve los
+    50 y pico «enviar como» a cada usuario. Aquí vive, por usuario y alias,
+    si aparece en su desplegable de remitentes (`is_allowed`) y cuál es su
+    predeterminado (`is_default`, uno por usuario; lo garantizan el endpoint
+    de preferencias y el sync, no un índice parcial).
 
-    Unchecking = deleting the row. "At most one default per user"
-    is enforced inside the upsert endpoint — SQLite doesn't have
-    portable partial unique indices.
+    Las filas apagadas EXISTEN: el sync (`gmail/aliases.py`) crea una por
+    alias de Gmail y usuario, y desmarcar un alias en los ajustes lo deja
+    apagado sin borrarlo. `user_opted_in` guarda la elección del usuario:
+    NULL = no se ha pronunciado (manda la regla por defecto del sync: propio
+    visible, ajeno oculto salvo su predeterminado), 1 = lo quiere, 0 = lo
+    rechaza. Lo que el usuario eligió manda sobre esa regla en cada pasada,
+    sea el alias propio o ajeno; por eso un rechazo hay que recordarlo.
     """
 
     __tablename__ = "user_email_alias_prefs"
@@ -2106,6 +2112,10 @@ class UserEmailAliasPref(TimestampMixin, Base):
     is_default: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False
     )
+    # La elección deliberada del usuario en sus ajustes (10/10/2026): None =
+    # no se ha pronunciado, True = lo quiere como remitente, False = lo
+    # rechaza. El sync de alias la respeta por encima de su regla por defecto.
+    user_opted_in: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     # PR-DisplayName-Remitente. Snapshot del `displayName` que Gmail
     # tiene configurado en `users.settings.sendAs` para este alias.
     # Se sincroniza en cada GET /api/emails/aliases (refresh-on-read).

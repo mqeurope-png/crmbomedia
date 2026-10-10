@@ -56,6 +56,7 @@ from app.services.email_aliases import (
     personal_mailbox_filter,
     thread_is_visible,
     thread_visibility_filter,
+    user_active_aliases,
 )
 
 router = APIRouter(prefix="/api/emails", tags=["emails"])
@@ -247,6 +248,7 @@ def list_aliases(
                 verification_status=item.get("verification_status"),
                 user_pref_allowed=pref.is_allowed if pref else False,
                 user_pref_default=pref.is_default if pref else False,
+                user_pref_opted_in=pref.user_opted_in if pref else None,
                 gmail_display_name=gmail_name,
                 display_name_override=override,
                 resolved_display_name=_resolve_display_name(override, gmail_name),
@@ -316,9 +318,21 @@ def upsert_alias_preferences(
 ) -> list[EmailAlias]:
     """Upsert the user's alias preferences in one shot.
 
-    Semantics:
-    - `is_allowed=true` upserts the row.
-    - `is_allowed=false` deletes the row (keep the table clean).
+    Lo que el usuario marca o desmarca aquí es una elección deliberada y
+    queda registrada como tal (`user_opted_in`), para que el sync de alias
+    (`gmail/aliases.py`) la respete en cada pasada en vez de pisarla:
+
+    - `is_allowed=true`: la fila queda visible. Si estaba apagada, o el
+      usuario la acaba de elegir como predeterminada, se registra
+      `user_opted_in=true`. Una fila que ya estaba visible por la regla por
+      defecto (su alias propio) sigue «sin pronunciarse».
+    - `is_allowed=false`: la fila NO se borra. Queda apagada y, si estaba
+      encendida (o el usuario la había elegido), con `user_opted_in=false`:
+      un rechazo hay que recordarlo, también el del alias propio. Una fila
+      que ya estaba apagada no cambia, y no se crea fila para un alias
+      apagado que no tenía ninguna. (Hasta el 10/10/2026 este endpoint
+      borraba la fila mientras el sync creaba centenares apagadas: las dos
+      mitades no se ponían de acuerdo. Las filas apagadas existen.)
     - Setting `is_default=true` on one row demotes the other
       defaults to false inside the same transaction.
 
@@ -341,8 +355,26 @@ def upsert_alias_preferences(
     for item in payload.preferences:
         row = existing.get(item.alias_email)
         if not item.is_allowed:
-            if row is not None:
-                session.delete(row)
+            if row is not None and (row.is_allowed or row.is_default or row.user_opted_in):
+                # Desmarcar algo que estaba encendido (o elegido): rechazo.
+                row.is_allowed = False
+                row.is_default = False
+                row.user_opted_in = False
+            elif row is None and item.alias_email.strip().lower() == (
+                (current_user.email or "").strip().lower()
+            ):
+                # El alias propio aún sin fila (antes del primer sync) y
+                # desmarcado: el sync lo encendería por la regla por defecto,
+                # así que el rechazo se guarda ya.
+                row = UserEmailAliasPref(
+                    user_id=current_user.id,
+                    alias_email=item.alias_email,
+                    is_allowed=False,
+                    is_default=False,
+                    user_opted_in=False,
+                )
+                session.add(row)
+                existing[item.alias_email] = row
             continue
         if first_allowed is None:
             first_allowed = item.alias_email
@@ -364,11 +396,20 @@ def upsert_alias_preferences(
                 alias_email=item.alias_email,
                 is_allowed=True,
                 is_default=item.is_default,
+                user_opted_in=True,
             )
             if override_set:
                 row.display_name_override = override_value
             session.add(row)
+            existing[item.alias_email] = row
         else:
+            if (
+                not row.is_allowed
+                or row.user_opted_in is False
+                or (item.is_default and not row.is_default)
+            ):
+                # Encender algo apagado, o elegirlo como predeterminado: lo quiere.
+                row.user_opted_in = True
             row.is_allowed = True
             row.is_default = item.is_default
             if override_set:
@@ -1167,20 +1208,13 @@ def email_activity(
     if scope == "mine" or current_user.role != UserRole.ADMIN:
         from sqlalchemy import or_ as _or  # noqa: PLC0415
 
-        from app.services.email_aliases import (  # noqa: PLC0415
-            user_active_aliases,
-        )
-
-        conds = [
-            EmailThread.initiated_by_user_id == current_user.id,
+        # «Míos», la misma definición que la Bandeja (cuatro reglas en
+        # `personal_mailbox_filter`), más la cuenta Gmail propia de antes de
+        # la cuenta única de la organización.
+        stmt = stmt.where(_or(
+            personal_mailbox_filter(session, current_user),
             EmailThread.gmail_account_user_id == current_user.id,
-        ]
-        # CRM-GMAIL Parte E — incluir el correo entrante dirigido a los alias
-        # del comercial (que va bajo la cuenta org, no bajo su user).
-        _my_aliases = user_active_aliases(session, current_user.id)
-        if _my_aliases:
-            conds.append(EmailMessage.delivered_to.in_(_my_aliases))
-        stmt = stmt.where(_or(*conds))
+        ))
     stmt = stmt.order_by(EmailMessage.sent_at.desc()).limit(limit)
     rows = list(session.execute(stmt).all())
     out: list[dict[str, Any]] = []
@@ -1377,17 +1411,26 @@ def _looks_inline_summary(filename: str, size: object) -> bool:
 
 
 def _user_own_emails(session: Session, user: User) -> set[str]:
-    """Every address that belongs to the operator: their login email
-    plus every alias they've ever configured a preference for. Cheap
-    (one indexed query) and crucially does NOT hit Gmail, so it's safe
-    to call on every thread-detail open."""
+    """Every address that belongs to the operator: their login email, the
+    aliases they have marked as senders (`is_allowed`) and their registered
+    inbound aliases. Cheap (indexed queries) and crucially does NOT hit
+    Gmail, so it's safe to call on every thread-detail open.
+
+    Solo las filas ENCENDIDAS: el sync crea una fila apagada por cada alias
+    de la cuenta y usuario (y desde el 10/10/2026 desmarcar no la borra), así
+    que contar todas las filas haría «propia» la dirección de cualquier
+    compañero y rompería la sugerencia de «Responder»."""
     own = {user.email.lower()} if user.email else set()
     rows = session.scalars(
         select(UserEmailAliasPref.alias_email).where(
-            UserEmailAliasPref.user_id == user.id
+            UserEmailAliasPref.user_id == user.id,
+            UserEmailAliasPref.is_allowed.is_(True),
         )
     )
     for alias in rows:
+        if alias:
+            own.add(alias.lower())
+    for alias in user_active_aliases(session, user.id):
         if alias:
             own.add(alias.lower())
     return own

@@ -26,6 +26,53 @@ correo entrante*, distinto de `user_email_alias_prefs` (preferencias Send-As,
 outbound, no únicas). Se gestiona desde `/admin/users` (admin). Se sembró en la
 migración 0090 desde `users.email` de los usuarios activos.
 
+**Dar de baja a una persona no da de baja sus direcciones.** Son tres cosas
+distintas y van por separado:
+
+| Concepto | Qué gobierna | Dónde vive |
+|---|---|---|
+| El usuario está activo | Puede entrar en BoHub | `users.is_active` |
+| La dirección es nuestra | Su correo se captura y se enlaza al contacto | `user_email_aliases.active` |
+| El usuario puede enviar como ella | Aparece en su desplegable de remitentes | `user_email_alias_prefs.is_allowed` |
+
+Desactivar el primero **no** toca el segundo: la captura (`active_alias_map`)
+no mira `users.is_active`, así que el correo que llegue a `norma@…` tras su
+baja se sigue capturando y enlazando a la ficha del contacto. Su historial
+(correos enviados, actividad) se conserva y se sigue viendo en las fichas. El
+tercero deja de importar para esa persona, pero no se borra (el sync de alias
+solo recorre usuarios activos y no toca las preferencias de los demás).
+
+### Remitentes («enviar como») — la elección del usuario manda
+
+`user_email_alias_prefs` (`user_id`, `alias_email`, `is_allowed`, `is_default`,
+`user_opted_in`, `gmail_display_name`, `display_name_override`). Gmail devuelve
+los 50 y pico «enviar como» de la cuenta única a **cada** usuario; el sync
+(`gmail/aliases.py`, cron `gmail:sync_aliases`) crea una fila por alias y
+usuario y decide en cada pasada cuál aparece en su desplegable:
+
+- **Si el usuario se pronunció** en sus ajustes (`user_opted_in` = 1 lo
+  quiere, 0 lo rechaza) **manda eso**, sea el alias propio o ajeno. Un
+  comercial puede tener **una o varias** direcciones como remitente, y puede
+  ocultar su propia dirección si no quiere escribir desde ella.
+- **Si no se ha pronunciado** (`NULL`): alias propio (`users.email`) visible;
+  ajeno oculto, salvo que fuera ya su predeterminado usable. Por eso Norma no
+  ve los remitentes de Bart por defecto.
+- Marcar o desmarcar en los ajustes (`PUT /api/emails/aliases/preferences`)
+  registra la elección. Desmarcar **no borra la fila**: queda apagada y
+  recordada como rechazo (las filas apagadas existen; el sync las crea).
+- El predeterminado es **uno y está visible**: el default de Gmail solo se
+  siembra sobre un alias que le quede visible al usuario, un predeterminado
+  apagado deja de serlo, y si no queda ninguno pasa a serlo el alias propio o
+  el primero visible. Hasta el 10/10/2026 varios usuarios tenían
+  `info@bomedia.net` con `is_default=1` e `is_allowed=0` (lo sembraba el sync
+  y lo ocultaba en la misma pasada); la migración 0133 lo corrigió.
+- `display_name_override` nunca se toca; `gmail_display_name` se refresca; un
+  alias que desaparece de Gmail queda apagado sin borrar la fila.
+
+> Hasta el 10/10/2026 el sync solo podía mirar `is_default` (uno por
+> definición): las secundarias que Bart elegía a mano se apagaban solas en
+> cada pasada y su alias propio no se podía apagar.
+
 ## Cómo se marca el spam
 
 El Watch escucha las labels `INBOX` **y** `SPAM`. En cada `history.list`:
@@ -43,19 +90,39 @@ quiere ocultar; la UI no lo usa.
 
 ## Cómo se filtra por comercial
 
-Visibilidad (`app/services/email_aliases.py`):
+Visibilidad (`app/services/email_aliases.py`). **«Míos» es la unión de cuatro
+cosas** (definido el 10/10/2026):
+
+1. Los correos que ha escrito el usuario (`created_by_user_id`) y los hilos
+   que inició.
+2. Los hilos en los que ha participado, aunque los abriera otro (#538).
+3. Los correos **enviados desde o dirigidos a una dirección que el usuario
+   tiene marcada como remitente suyo** (`user_email_alias_prefs.is_allowed`),
+   más la entrada a sus alias registrados (`user_email_aliases`). Si Bart
+   marca `info@mboprinters.com` como suya, ve en «míos» lo que entra por ahí
+   (la entrada se captura solo si la dirección está registrada como alias
+   entrante, a nombre de quien sea; lo registrado al admin es de la
+   organización); Manel, con `info@mbolasers.com`, ve lo suyo. **Marcar una
+   dirección de otra persona no da visibilidad sobre ella**: el correo de
+   usuario de un compañero y los alias entrantes registrados a nombre de un
+   comercial quedan fuera de esta regla (`visibility_addresses`), porque el
+   endpoint de preferencias es de cada usuario y no está restringido.
+4. **Cualquier correo de un contacto cuyo propietario sea el usuario**, sea
+   cual sea el remitente y el destinatario: el comercial que lleva un lead ve
+   toda su correspondencia aunque la contestara un compañero desde otra
+   dirección. Es lo que da sentido al reparto de leads de los formularios
+   (`fixed_owner_user_id`).
 
 - **Admin**: ve todo (ficha de contacto, feeds agregados). Su bandeja personal
   (`scope=mine`) sigue siendo la suya; para verlo todo usa «Todo el equipo».
-- **No-admin**: ve un thread si (a) lo inició él (para no ocultar su propio
-  correo enviado, que no tiene `delivered_to`) o (b) tiene un mensaje
-  `delivered_to` ∈ sus alias activos.
+- **No-admin**: ve un thread si cumple alguna de las cuatro reglas.
 
 Se aplica en la bandeja general, la pestaña Emails de la **ficha de contacto**
-(decisión de Bart: filtrarla también), el detalle de hilo y el timeline. La
-vista «Todo el equipo» (manager/admin) es la escotilla privilegiada explícita y
-no aplica el filtro por alias. El comercial con >1 alias tiene un dropdown
-«Ver: [Todos mis alias ▾]» que acota por un alias concreto (`?delivered_to`).
+(decisión de Bart: filtrarla también), el detalle de hilo, el timeline y el
+widget de actividad del inicio. La vista «Todo el equipo» (manager/admin) es
+la escotilla privilegiada explícita y no aplica el filtro: «Todos» sigue siendo
+todo. El comercial con >1 alias tiene un dropdown «Ver: [Todos mis alias ▾]»
+que acota por un alias concreto (`?delivered_to`).
 
 ## Real-time: Watch + Pub/Sub + poller de respaldo
 

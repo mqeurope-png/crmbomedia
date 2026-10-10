@@ -1,19 +1,36 @@
-"""PR-OAuth-Permisos-Admin Item 13 — sincronización de Send-As aliases.
+"""Sincronización de los «enviar como» de Gmail con `user_email_alias_prefs`.
 
-La tabla `user_email_alias_prefs.is_default` controla qué alias procesa
-el handler del backfill. Antes NO se actualizaba desde Gmail al
-reconectar: si el user marcaba el ★ default en Gmail directamente (o en
-la UI del CRM que sí sincroniza), la BD local seguía con `is_default=0`
-y el handler skipeaba al user.
+La cuenta Google es una sola para toda la empresa: Gmail devuelve los 50 y
+pico «enviar como» a cada usuario. Para que Norma no vea los remitentes de
+Bart, el sync impone en cada pasada un valor por defecto:
 
-Este módulo refleja el estado real de Gmail Settings → "Send mail as"
-en la tabla local:
-  - Gmail `isDefault=true`         → `is_default=1` (y 0 en los demás)
-  - alias verificado (accepted)    → `is_allowed=1`
+  - alias **propio** (coincide con `users.email`) → visible;
+  - alias **ajeno** → oculto, salvo que fuera ya su predeterminado usable.
+
+Pero **la elección del usuario manda** (`user_opted_in`, 10/10/2026): lo que
+marcó o desmarcó en sus ajustes sobrevive a la pasada, sea el alias propio o
+ajeno. Hasta entonces el sync solo podía mirar `is_default`, que es uno por
+definición: las secundarias que Bart elegía a mano se apagaban solas en cada
+pasada y su alias propio no se podía apagar.
+
+Otros campos:
+  - `gmail_display_name` se refresca siempre desde Gmail.
+  - `is_default`: si el usuario no tiene predeterminado, se siembra el de Gmail
+    SOLO si ese alias le queda visible (sembrarlo sobre uno oculto creaba el
+    «predeterminado imposible»: `is_default=1` con `is_allowed=0`). Al final
+    de cada pasada el predeterminado es uno y está visible.
+  - `display_name_override` NUNCA se toca (preferencia del usuario).
+  - Alias que ya no existe en Gmail: la fila se conserva apagada (no se borra).
+
+Tres cosas distintas que aquí no se mezclan: que el usuario esté activo (puede
+entrar en BoHub), que una dirección sea nuestra (`user_email_aliases`: su correo
+se captura y se enlaza al contacto) y que el usuario pueda enviar como ella
+(esta tabla). Desactivar al usuario no toca ninguna de las otras dos.
 """
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -24,41 +41,66 @@ from app.models.crm import User, UserEmailAliasPref
 logger = logging.getLogger(__name__)
 
 
+def visibilidad_tras_sync(row: UserEmailAliasPref, *, es_propio: bool) -> bool:
+    """Si el usuario se pronunció (quiere o rechaza), manda eso. Si no, la
+    regla por defecto: propio visible; ajeno oculto salvo que fuera ya su
+    predeterminado usable (visible)."""
+    if row.user_opted_in is not None:
+        return bool(row.user_opted_in)
+    if es_propio:
+        return True
+    return bool(row.is_default and row.is_allowed)
+
+
+def normalizar_predeterminado(
+    rows: Iterable[UserEmailAliasPref], *, user_email: str,
+    predeterminado_de_gmail: str | None = None,
+) -> None:
+    """Invariante: el predeterminado es uno y está visible.
+
+    Un predeterminado apagado deja de serlo. Si quedan remitentes visibles y
+    ninguno es el predeterminado, pasa a serlo, por este orden: uno de los que
+    el usuario eligió; el que Gmail tiene como predeterminado de la cuenta, si
+    le queda visible; su alias propio; el primero por orden alfabético. Con
+    más de uno, se queda el primero por ese mismo orden. Un predeterminado
+    que el usuario ya tenía no se toca."""
+    filas = list(rows)
+    for row in filas:
+        if row.is_default and not row.is_allowed:
+            row.is_default = False
+    visibles = [row for row in filas if row.is_allowed]
+    if not visibles:
+        return
+    email = (user_email or "").strip().lower()
+    de_gmail = (predeterminado_de_gmail or "").strip().lower()
+
+    def _orden(row: UserEmailAliasPref) -> tuple[bool, bool, bool, str]:
+        alias = row.alias_email.strip().lower()
+        return (
+            row.user_opted_in is not True,
+            not de_gmail or alias != de_gmail,
+            alias != email,
+            alias,
+        )
+
+    predeterminados = sorted((r for r in visibles if r.is_default), key=_orden)
+    if len(predeterminados) == 1:
+        return
+    if predeterminados:
+        for sobrante in predeterminados[1:]:
+            sobrante.is_default = False
+        return
+    min(visibles, key=_orden).is_default = True
+
+
 def sync_send_as_aliases(session: Session, *, user_id: str) -> int:
     """Refleja los Send-As aliases de Gmail en `user_email_alias_prefs`
-    RESPETANDO las preferencias previas del user. Devuelve cuántos aliases
-    se procesaron.
+    respetando lo que el usuario eligió. Devuelve cuántos aliases se
+    procesaron.
 
-    PR-Hotfix-OAuth-Banner Bug 15 + PR-Hotfix-Sync-Aliases. La cuenta Google
-    es org-wide y compartida: Gmail devuelve los 50+ aliases de la cuenta
-    para CADA user. El sync naïve marcaba TODOS `is_allowed=1` por user, así
-    que Norma veía en su selector los emails de Bart, Manel, etc.
-
-    Invariante que este sync GARANTIZA para cada alias que descubre en Gmail:
-      - Alias propio (`alias_email == users.email`) → `is_allowed=1` (visible).
-      - Alias ajeno → `is_allowed=0` (oculto) POR DEFECTO.
-
-    Excepción "respeta la elección deliberada del user": un alias ajeno se
-    mantiene visible SOLO si el user lo tenía marcado como su `is_default`
-    (su identidad de envío elegida). Es la única señal de elección
-    deliberada disponible sin añadir columna: la contaminación del sync
-    viejo dejó `is_allowed=1` pero `is_default=0` en los aliases ajenos, así
-    que resetearlos limpia el desborde sin pisar un default legítimo. Un
-    alias ajeno que el user activó manualmente pero NO puso como default se
-    ocultará en el próximo sync (el user lo re-activa, o el admin lo
-    concede) — trade-off documentado, se prioriza que Norma no vea a Bart.
-
-    Otros campos:
-      - `gmail_display_name` se refresca siempre desde Gmail.
-      - `is_default` se siembra desde el default de Gmail solo si el user no
-        tiene ya uno propio.
-      - `display_name_override` NUNCA se toca (preferencia del user).
-      - Alias que ya no existe en Gmail: la fila se conserva pero
-        `is_allowed=0` (no se borra).
-
-    No commitea — el caller maneja la transacción. Best-effort a nivel
-    de caller: si Gmail no está conectado / falta scope, levanta la
-    excepción correspondiente y el caller la captura."""
+    No commitea — el caller maneja la transacción. Best-effort a nivel de
+    caller: si Gmail no está conectado / falta scope, levanta la excepción
+    correspondiente y el caller la captura."""
     from app.integrations.gmail.service import _client_for  # noqa: PLC0415
 
     client = _client_for(session, user_id)
@@ -72,66 +114,57 @@ def sync_send_as_aliases(session: Session, *, user_id: str) -> int:
             )
         )
     }
-    first_sync = len(existing) == 0
     user = session.get(User, user_id)
     user_email = (user.email or "").strip().lower() if user else ""
-    # ¿El user ya eligió un default propio? Si sí, NO lo sobreescribimos.
-    assigned_default = any(r.is_default for r in existing.values())
 
     now = datetime.now(UTC)
     processed = 0
     gmail_keys: set[str] = set()
+    nuevas: list[UserEmailAliasPref] = []
+    predeterminado_de_gmail: str | None = None
     for alias in gmail_aliases:
         email = (alias.get("send_as_email") or "").strip()
         if not email:
             continue
         key = email.lower()
         gmail_keys.add(key)
-        is_default_gmail = bool(alias.get("is_default"))
+        if alias.get("is_default"):
+            predeterminado_de_gmail = key
         display = alias.get("display_name") or None
-        is_self = key == user_email
+        es_propio = key == user_email
         row = existing.get(key)
         if row is not None:
-            # Snapshot ANTES de mutar: la preservación del alias ajeno se
-            # decide por el default que el user ya tenía, no por el que
-            # Gmail propague en esta pasada.
-            was_default = bool(row.is_default)
             if display:
                 row.gmail_display_name = display
-            if not assigned_default and is_default_gmail:
-                row.is_default = True
-                assigned_default = True
-            # Invariante de visibilidad: propio → visible; ajeno → oculto
-            # salvo que fuera el default deliberado del user.
-            if is_self:
-                row.is_allowed = True
-            elif not was_default:
-                row.is_allowed = False
+            row.is_allowed = visibilidad_tras_sync(row, es_propio=es_propio)
             row.updated_at = now
         else:
-            # Alias nuevo → oculto, salvo el alias propio del user.
-            new_default = (
-                first_sync and is_self and is_default_gmail and not assigned_default
+            # Alias nuevo: nadie se ha pronunciado → oculto, salvo el propio.
+            row = UserEmailAliasPref(
+                user_id=user_id,
+                alias_email=email,
+                is_allowed=es_propio,
+                is_default=False,
+                gmail_display_name=display,
             )
-            if new_default:
-                assigned_default = True
-            session.add(
-                UserEmailAliasPref(
-                    user_id=user_id,
-                    alias_email=email,
-                    is_allowed=is_self,
-                    is_default=new_default,
-                    gmail_display_name=display,
-                )
-            )
+            session.add(row)
+            nuevas.append(row)
         processed += 1
 
     # Aliases que ya no existen en Gmail: conservar la fila para histórico
-    # pero marcarla no-usable (is_allowed=0). NO se borra.
+    # pero marcarla no-usable (y, por tanto, no predeterminada). NO se borra.
     for key, row in existing.items():
-        if key not in gmail_keys and row.is_allowed:
+        if key not in gmail_keys and (row.is_allowed or row.is_default):
             row.is_allowed = False
+            row.is_default = False
             row.updated_at = now
+
+    # Predeterminado: uno y visible. El de Gmail solo cuenta si al usuario le
+    # queda visible, y por detrás de lo que él eligió.
+    normalizar_predeterminado(
+        [*existing.values(), *nuevas], user_email=user_email,
+        predeterminado_de_gmail=predeterminado_de_gmail,
+    )
 
     session.flush()
     return processed
@@ -139,10 +172,11 @@ def sync_send_as_aliases(session: Session, *, user_id: str) -> int:
 
 def sync_all_active_users(session: Session) -> int:
     """PR-OAuth-Google-Unificado. Cron `gmail:sync_aliases`. Gateado por
-    la integración ORG: si está activa, recorre TODOS los users del CRM
+    la integración ORG: si está activa, recorre los users ACTIVOS del CRM
     y sincroniza sus aliases Send-As (per-user, leídos de la cuenta
-    compartida). Devuelve cuántos users se procesaron con éxito. Un fallo
-    en un user (scope, token) NO aborta el resto."""
+    compartida). Las preferencias de un usuario dado de baja se quedan como
+    estaban: no se borran ni se tocan. Devuelve cuántos users se procesaron
+    con éxito. Un fallo en un user (scope, token) NO aborta el resto."""
     from app.core.audit import Action, record_event  # noqa: PLC0415
     from app.integrations.google_calendar.service import (  # noqa: PLC0415
         get_org_integration,
