@@ -178,15 +178,19 @@ class _FakeGmailClient:
 
 
 def test_sync_send_as_aliases_sets_default_from_gmail(factory):
+    """El default de Gmail se siembra si el user no tiene ninguno… y solo
+    sobre un alias que le quede VISIBLE. Sembrarlo sobre uno ajeno oculto
+    creaba el «predeterminado imposible» (`is_default=1`, `is_allowed=0`)."""
     from app.integrations.gmail.aliases import sync_send_as_aliases
 
     with factory() as session:
         uid = _uid(session, UserRole.USER)
+        user = session.get(User, uid)
         _seed_integration(session, uid)
-        # Estado local: dos aliases, ninguno default.
+        # Estado local: el alias propio y uno ajeno, ninguno default.
         session.add_all([
             UserEmailAliasPref(
-                user_id=uid, alias_email="bart@bomedia.net",
+                user_id=uid, alias_email=user.email,
                 is_allowed=True, is_default=False,
             ),
             UserEmailAliasPref(
@@ -196,8 +200,9 @@ def test_sync_send_as_aliases_sets_default_from_gmail(factory):
         ])
         session.commit()
 
+        # Gmail dice que el default es el alias propio → se siembra.
         fake = _FakeGmailClient([
-            {"send_as_email": "bart@bomedia.net", "display_name": "Bart",
+            {"send_as_email": user.email, "display_name": "Yo",
              "is_primary": True, "is_default": True},
             {"send_as_email": "info@bomedia.net", "display_name": "Info",
              "is_primary": False, "is_default": False},
@@ -216,8 +221,35 @@ def test_sync_send_as_aliases_sets_default_from_gmail(factory):
                 )
             )
         }
-        assert rows["bart@bomedia.net"].is_default is True
+        assert rows[user.email].is_default is True
         assert rows["info@bomedia.net"].is_default is False
+        assert rows["info@bomedia.net"].is_allowed is False     # ajeno → oculto
+
+    # Si el default de Gmail es un alias ajeno (info@, el de la cuenta), NO se
+    # siembra sobre él oculto: el predeterminado pasa a ser el alias propio.
+    with factory() as session:
+        uid = _uid(session, UserRole.MANAGER)
+        user = session.get(User, uid)
+        fake = _FakeGmailClient([
+            {"send_as_email": "info@bomedia.net", "display_name": "Info",
+             "is_primary": True, "is_default": True},
+            {"send_as_email": user.email, "display_name": "Yo",
+             "is_primary": False, "is_default": False},
+        ])
+        with patch(
+            "app.integrations.gmail.service._client_for", return_value=fake
+        ):
+            sync_send_as_aliases(session, user_id=uid)
+        session.commit()
+        rows = {
+            r.alias_email: r
+            for r in session.scalars(
+                select(UserEmailAliasPref).where(UserEmailAliasPref.user_id == uid)
+            )
+        }
+        assert (rows["info@bomedia.net"].is_allowed, rows["info@bomedia.net"].is_default) == (
+            False, False)
+        assert (rows[user.email].is_allowed, rows[user.email].is_default) == (True, True)
 
 
 def test_backfill_fallback_prefers_user_email_match(factory):

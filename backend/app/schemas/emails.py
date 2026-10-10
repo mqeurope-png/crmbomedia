@@ -324,6 +324,10 @@ class EmailAlias(BaseModel):
     verification_status: str | None = None
     user_pref_allowed: bool = False
     user_pref_default: bool = False
+    # La elección deliberada del usuario en sus ajustes: None = no se ha
+    # pronunciado (manda la regla por defecto del sync), True = lo quiere,
+    # False = lo rechaza. El sync de alias la respeta en cada pasada.
+    user_pref_opted_in: bool | None = None
     gmail_display_name: str | None = None
     display_name_override: str | None = None
     resolved_display_name: str = ""

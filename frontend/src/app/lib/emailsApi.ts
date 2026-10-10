@@ -28,6 +28,10 @@ export type EmailAlias = {
   verification_status: string | null;
   user_pref_allowed: boolean;
   user_pref_default: boolean;
+  /** La elección del usuario en sus ajustes: null = no se ha pronunciado
+   *  (manda la regla por defecto del sync), true = lo quiere, false = lo
+   *  rechaza. El sync de alias la respeta en cada pasada. */
+  user_pref_opted_in?: boolean | null;
   /** PR-DisplayName-Remitente. */
   gmail_display_name: string | null;
   display_name_override: string | null;

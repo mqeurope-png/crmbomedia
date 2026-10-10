@@ -748,19 +748,25 @@ def test_put_preferences_disallow_default_reassigns(
     )
     assert response.status_code == 200, response.text
     with session_factory() as session:
-        rows = list(session.scalars(select(UserEmailAliasPref)))
-        assert len(rows) == 1
-        assert rows[0].alias_email == "ventas@bomedia.net"
-        assert rows[0].is_default is True
+        rows = {r.alias_email: r for r in session.scalars(select(UserEmailAliasPref))}
+        # La fila desmarcada se conserva apagada (y rechazada); ventas hereda el default.
+        assert (rows["info@bomedia.net"].is_allowed, rows["info@bomedia.net"].is_default,
+                rows["info@bomedia.net"].user_opted_in) == (False, False, False)
+        assert (rows["ventas@bomedia.net"].is_allowed, rows["ventas@bomedia.net"].is_default) == (
+            True, True)
 
 
-def test_put_preferences_disallow_removes_row(
+def test_put_preferences_disallow_keeps_row_off_as_a_rejection(
     client: TestClient,
     session_factory: sessionmaker,
 ) -> None:
+    """Desmarcar NO borra la fila: queda apagada y con `user_opted_in=False`,
+    que es lo que el sync de alias respeta para no volver a encenderla. (Hasta
+    el 10/10/2026 este endpoint borraba la fila mientras el sync creaba
+    centenares apagadas.)"""
     from app.models.crm import UserEmailAliasPref  # noqa: PLC0415
 
-    # Seed.
+    # Seed: marcarlo es una elección → user_opted_in=True.
     client.put(
         "/api/emails/aliases/preferences",
         json={
@@ -774,6 +780,9 @@ def test_put_preferences_disallow_removes_row(
         },
         headers=auth_headers(client, "user"),
     )
+    with session_factory() as session:
+        fila = session.scalar(select(UserEmailAliasPref))
+        assert fila is not None and fila.is_allowed and fila.user_opted_in is True
     # Disallow.
     client.put(
         "/api/emails/aliases/preferences",
@@ -790,7 +799,9 @@ def test_put_preferences_disallow_removes_row(
     )
     with session_factory() as session:
         prefs = list(session.scalars(select(UserEmailAliasPref)))
-        assert prefs == []
+        assert len(prefs) == 1
+        assert (prefs[0].is_allowed, prefs[0].is_default, prefs[0].user_opted_in) == (
+            False, False, False)
 
 
 def test_my_aliases_intersects_gmail_and_prefs(
