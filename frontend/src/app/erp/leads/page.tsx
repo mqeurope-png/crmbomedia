@@ -16,6 +16,13 @@ import {
   type LeadWorkflowEstado,
 } from "../../lib/erpApi";
 import { extractErrorMessage } from "../../lib/errors";
+import {
+  ESTADO_LABEL,
+  ESTADO_TONE,
+  fuenteTexto,
+  origenDato,
+  porcentaje,
+} from "../../lib/leadsTextos";
 
 /** ERP · Leads — Respuesta a leads (Fase 1). Lo que la Fase 1 hace con cada
  *  lead: clasificar, dejar un borrador preparado, colocar en Ventas B2B y
@@ -25,19 +32,8 @@ import { extractErrorMessage } from "../../lib/errors";
  *  clasificación corregible a mano. La configuración está en Configuración
  *  ERP → Respuesta a leads. */
 
-const FUENTE_LABEL: Record<string, string> = { web_form: "Formulario web", agilecrm: "AgileCRM" };
-const ESTADO_LABEL: Record<string, string> = {
-  clasificado: "Clasificado", spam: "Spam", preparado: "Borrador preparado",
-  sin_plantilla: "Sin plantilla", omitido: "Omitido",
-};
-const ESTADO_TONE: Record<string, string> = {
-  clasificado: "muted", spam: "bad", preparado: "active", sin_plantilla: "warn", omitido: "muted",
-};
-const ORIGEN_DATO: Record<string, string> = {
-  etiquetas: "por los productos marcados", formulario: "por el formulario",
-  texto: "por el texto", ia: "por la IA", palabras_clave: "por palabras clave",
-  pais: "por el país", contacto: "por el contacto",
-};
+// Los textos de la clasificación (estados, origen del dato, fuente) viven en
+// `lib/leadsTextos` porque la ficha del contacto los enseña también.
 const WORKFLOW_STATUS: Record<string, string> = {
   draft: "en borrador", active: "activo", paused: "pausado", archived: "archivado",
 };
@@ -51,23 +47,8 @@ function fechaHora(iso: string | null | undefined): string {
   return d.toLocaleString("es-ES", { dateStyle: "short", timeStyle: "short" });
 }
 
-function porcentaje(c: number): string {
-  return `${Math.round(c * 100)}%`;
-}
-
 function recortar(texto: string): string {
   return texto.length > TEXTO_MAX ? `${texto.slice(0, TEXTO_MAX - 1)}…` : texto;
-}
-
-function fuenteTexto(fuente: string, web: string | null, cuenta: string | null): string {
-  const base = FUENTE_LABEL[fuente] ?? fuente;
-  if (web) return `${base} · ${web}`;
-  if (cuenta) return `${base} · ${cuenta}`;
-  return base;
-}
-
-function origenDato(valor: string | null | undefined): string {
-  return valor ? (ORIGEN_DATO[valor] ?? valor) : "";
 }
 
 export default function LeadsPage() {

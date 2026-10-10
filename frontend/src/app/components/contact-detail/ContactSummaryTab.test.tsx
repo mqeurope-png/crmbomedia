@@ -1,8 +1,5 @@
 import { render, screen } from "@testing-library/react";
-import {
-  ContactSummaryTab,
-  ContactSummaryPlaceholderCards,
-} from "./ContactSummaryTab";
+import { ContactSummaryTab } from "./ContactSummaryTab";
 import type { ActivityEvent } from "../../lib/api";
 
 function event(over: Partial<ActivityEvent> = {}): ActivityEvent {
@@ -36,12 +33,13 @@ describe("ContactSummaryTab · CRM-1 llamadas en actividad reciente", () => {
     render(<ContactSummaryTab contactId="c1" events={[]} />);
     expect(screen.getByText("Sin actividad reciente.")).toBeInTheDocument();
   });
-});
 
-describe("ContactSummaryPlaceholderCards · CRM-2 rename Pipelines", () => {
-  it("el placeholder se llama «Pipelines vinculados», no «Oportunidades»", () => {
-    render(<ContactSummaryPlaceholderCards />);
-    expect(screen.getByText("Pipelines vinculados")).toBeInTheDocument();
-    expect(screen.queryByText(/Oportunidades/)).not.toBeInTheDocument();
+  it("ya no lleva los placeholders «Pipelines vinculados» ni «Incidencias recientes»", () => {
+    // El primero es ahora un recuadro real (`ContactPipelinesSummaryCard`) y
+    // el segundo se quitó: solo decía «sin incidencias» sin integración detrás.
+    render(<ContactSummaryTab contactId="c1" events={[]} />);
+    expect(screen.queryByText("Pipelines vinculados")).not.toBeInTheDocument();
+    expect(screen.queryByText("Incidencias recientes")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Próximamente/)).not.toBeInTheDocument();
   });
 });

@@ -29,7 +29,11 @@ CONTACT_SORT_COLUMNS = {
     "phone": Contact.phone,
     "created_at": Contact.created_at,
     "updated_at": Contact.updated_at,
-    "created_at_external": Contact.created_at_external,
+    # «Creado en origen» cae a la fecha de alta en BoHub cuando no hay
+    # fecha de origen (contactos nacidos de un formulario web: 1.959 de
+    # 22.299 el 10/10/2026); si no, al ordenar de más nuevo a más viejo
+    # los leads más nuevos se iban al final de la lista.
+    "created_at_external": func.coalesce(Contact.created_at_external, Contact.created_at),
     "updated_at_external": Contact.updated_at_external,
     "lead_score": Contact.lead_score,
     "commercial_status": Contact.commercial_status,

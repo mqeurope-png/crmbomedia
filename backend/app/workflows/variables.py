@@ -154,7 +154,7 @@ def _lead_namespace(session: Session, contact: Contact) -> dict[str, Any]:
         "interes": "", "interes_texto": "", "idioma": "", "es_spam": False,
         "confianza": "", "confianza_num": 0, "motivo": "", "fuente": "", "web": "",
         "plantilla": "", "remitente": "", "borrador_url": "", "estado": "",
-        "productos": "",
+        "productos": "", "consulta": "",
     }
     try:
         from app.services.leads.clasificador import etiqueta_interes  # noqa: PLC0415
@@ -187,6 +187,9 @@ def _lead_namespace(session: Session, contact: Contact) -> dict[str, Any]:
         "borrador_url": url_borrador(fila.draft_id),
         "estado": fila.status or "",
         "productos": ", ".join(str(p) for p in (contexto.get("productos") or [])),
+        # La consulta literal del cliente: lo que lee quien revisa el
+        # borrador para decidir si la plantilla elegida pega o no.
+        "consulta": (fila.input_text or "").strip(),
     }
 
 
@@ -283,12 +286,17 @@ def available_variables() -> list[str]:
         "lead.interes",
         "lead.interes_texto",
         "lead.idioma",
+        "lead.es_spam",
         "lead.confianza",
+        "lead.confianza_num",
         "lead.motivo",
+        "lead.consulta",
+        "lead.fuente",
         "lead.web",
         "lead.plantilla",
         "lead.remitente",
         "lead.borrador_url",
+        "lead.estado",
         "lead.productos",
         # Payload del trigger (campos arbitrarios — el validador
         # solo avisa, no rechaza).

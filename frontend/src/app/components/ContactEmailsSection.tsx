@@ -3,7 +3,7 @@
 import { History, Mail, Plus } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { formatBackendDateTime } from "../lib/dates";
+import { formatBackendDateTimeCompact } from "../lib/dates";
 import {
   listEmailThreads,
   type EmailThread,
@@ -12,12 +12,8 @@ import { queuePerContactBackfill } from "../lib/gmailBackfillApi";
 import { extractErrorMessage } from "../lib/errors";
 
 function formatDateTime(value: string): string {
-  return formatBackendDateTime(value, {
-    day: "2-digit",
-    month: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  // Con el año cuando la fecha no es del año en curso (como en Tareas).
+  return formatBackendDateTimeCompact(value);
 }
 
 /** "Emails" tab inside the contact detail. Lists threads where the

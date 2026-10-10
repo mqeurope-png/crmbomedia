@@ -504,13 +504,21 @@ export default function WorkflowEditorPage() {
     setBusy(true);
     setError(null);
     try {
-      const stepsPayload: WorkflowStepWrite[] = nodes.map((n, idx) => ({
+      // Una sola entrada: el nodo marcado como tal; si no lo hay, el
+      // disparador; si no, el primero. Antes `isEntry || idx === 0` sumaba
+      // una entrada nueva cada vez que cambiaba el orden de los nodos y el
+      // editor acababa bloqueado («Solo puede haber un paso de entrada»).
+      const entryId =
+        nodes.find((n) => n.data.isEntry)?.id ??
+        nodes.find((n) => n.data.stepType === "trigger")?.id ??
+        nodes[0]?.id;
+      const stepsPayload: WorkflowStepWrite[] = nodes.map((n) => ({
         client_id: n.id,
         type: n.data.stepType,
         config: n.data.config,
         position_x: n.position.x,
         position_y: n.position.y,
-        is_entry: n.data.isEntry || idx === 0,
+        is_entry: n.id === entryId,
         display_name: n.data.displayName ?? null,
       }));
       const edgesPayload: WorkflowEdgeWrite[] = edges.map((e) => ({

@@ -9,7 +9,7 @@
 import { CheckCircle2, Plus } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { parseBackendDate } from "../../lib/dates";
+import { formatBackendDateCompact, parseBackendDate } from "../../lib/dates";
 import { extractErrorMessage } from "../../lib/errors";
 import {
   completeTask,
@@ -38,10 +38,8 @@ function fmtAyer(due: string | null): string {
   const yesterday = new Date();
   yesterday.setDate(yesterday.getDate() - 1);
   const isYesterday = d.toDateString() === yesterday.toDateString();
-  return `${isYesterday ? "Ayer" : d.toLocaleDateString("es-ES", {
-    day: "2-digit",
-    month: "short",
-  })} · ${fmtTime(due)}`;
+  // Con el año cuando la fecha no es del año en curso (como en Tareas).
+  return `${isYesterday ? "Ayer" : formatBackendDateCompact(due)} · ${fmtTime(due)}`;
 }
 
 function Bucket({

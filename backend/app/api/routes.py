@@ -4801,6 +4801,7 @@ def list_contact_pipelines(
         entered = assignment.entered_stage_at
         if entered.tzinfo is None:
             entered = entered.replace(tzinfo=UTC)
+        dias = max(0, (now - entered).days)
         out.append(
             ContactPipelineSummary(
                 assignment_id=assignment.id,
@@ -4813,7 +4814,9 @@ def list_contact_pipelines(
                 stage_position=stage.position,
                 is_won=stage.is_won,
                 is_lost=stage.is_lost,
-                days_in_stage=max(0, (now - entered).days),
+                days_in_stage=dias,
+                target_days=stage.target_days,
+                is_overdue=bool(stage.target_days) and dias > int(stage.target_days or 0),
                 entered_stage_at=assignment.entered_stage_at,
                 added_to_pipeline_at=assignment.added_to_pipeline_at,
             )

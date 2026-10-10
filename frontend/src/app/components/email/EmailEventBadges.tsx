@@ -7,15 +7,12 @@ import {
   MousePointerClick,
   Send,
 } from "lucide-react";
+import { formatBackendDateTimeCompact } from "../../lib/dates";
 import type { EmailEvent } from "../../lib/emailTrackingApi";
 
 function formatDateTime(value: string): string {
-  return new Date(value).toLocaleString("es-ES", {
-    day: "2-digit",
-    month: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  // Con el año cuando la fecha no es del año en curso (como en Tareas).
+  return formatBackendDateTimeCompact(value);
 }
 
 type BadgeSpec = {

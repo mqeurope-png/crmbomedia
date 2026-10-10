@@ -12,7 +12,10 @@ import { ContactDetailHeader } from "../../components/contact-detail/ContactDeta
 import { ContactKeyDataStrip } from "../../components/contact-detail/ContactKeyDataStrip";
 import { ContactBrevoEngagementCard } from "../../components/contact-detail/ContactBrevoEngagementCard";
 import { ContactNotesPreviewCard } from "../../components/contact-detail/ContactNotesPreviewCard";
-import { ContactSummaryTab, ContactSummaryPlaceholderCards } from "../../components/contact-detail/ContactSummaryTab";
+import { ContactLeadClassificationCard } from "../../components/contact-detail/ContactLeadClassificationCard";
+import { ContactLeadClassificationTab } from "../../components/contact-detail/ContactLeadClassificationTab";
+import { ContactPipelinesSummaryCard } from "../../components/contact-detail/ContactPipelinesSummaryCard";
+import { ContactSummaryTab } from "../../components/contact-detail/ContactSummaryTab";
 import { ContactSupportTab } from "../../components/contact-detail/ContactSupportTab";
 import { ContactWorkflowsTab } from "../../components/contact-detail/ContactWorkflowsTab";
 import { ContactTagsPreviewCard } from "../../components/contact-detail/ContactTagsPreviewCard";
@@ -38,6 +41,7 @@ import { PageHeader } from "../../components/PageHeader";
 import { RefreshExternalDataButton } from "../../components/RefreshExternalDataButton";
 import { TaskModal } from "../../components/TaskModal";
 import { useModalBehaviour } from "../../components/useModalBehaviour";
+import { Cap, can } from "../../lib/capabilities";
 import { getCompany } from "../../lib/companiesApi";
 import { ContactEditForm } from "./ContactEditForm";
 import { CONTACT_DETAIL_TABS, type ContactTab } from "./tabs";
@@ -451,16 +455,21 @@ export default function ContactDetailPage() {
                   events={contact.activity_events ?? []}
                   onSeeAllActivity={() => setActiveTab("history")}
                 />
-                {/* PR-Ficha-Cleanup: nuevo orden del extras grid:
+                {/* Orden del extras grid:
+                      Análisis de la IA (solo si el contacto entró como lead
+                        y tiene clasificación; si no, no se pinta) →
                       Tareas pendientes →
                       Notas recientes →
                       Engagement Brevo →
-                      Tags (nuevo) →
-                      Oportunidades vinculadas (placeholder) →
-                      Incidencias recientes (placeholder)
-                    Los dos placeholder van al final para no quitar
-                    espacio a los cards con datos reales. */}
+                      Tags →
+                      Pipelines vinculados (real: etapa, días, plazo).
+                    «Incidencias recientes» se quitó: era un placeholder sin
+                    integración detrás. */}
                 <div className="contact-summary contact-summary-extra">
+                  <ContactLeadClassificationCard
+                    contactId={contact.id}
+                    onSeeAll={() => setActiveTab("lead_ai")}
+                  />
                   <ContactTasksPendingCard
                     contactId={contact.id}
                     onSeeAll={() => setActiveTab("tasks")}
@@ -476,7 +485,10 @@ export default function ContactDetailPage() {
                     tags={tags}
                     onSeeAll={() => setActiveTab("tags")}
                   />
-                  <ContactSummaryPlaceholderCards />
+                  <ContactPipelinesSummaryCard
+                    contactId={contact.id}
+                    onSeeAll={() => setActiveTab("opportunities")}
+                  />
                 </div>
               </div>
             ) : null}
@@ -533,6 +545,14 @@ export default function ContactDetailPage() {
               <ContactWorkflowsTab
                 contactId={contact.id}
                 canManage={canHardDelete}
+              />
+            ) : null}
+            {activeTab === "lead_ai" ? (
+              <ContactLeadClassificationTab
+                key={contact.id}
+                contactId={contact.id}
+                // Corregir es la misma acción de ERP · Leads: exige `erp.config`.
+                canCorrect={can(currentUser, Cap.CONFIG)}
               />
             ) : null}
             {activeTab === "support" ? <ContactSupportTab /> : null}

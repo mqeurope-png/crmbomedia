@@ -872,13 +872,21 @@ def _replace_steps_and_edges(
     )
     session.flush()
 
+    # Exactamente UNA entrada, y es el disparador: si el editor marcó una
+    # sola se respeta; si marcó varias (o ninguna) se elige el trigger sin
+    # conexiones de entrada, y si no lo hay, el primer paso sin ellas. Así
+    # `advance_run` siempre encuentra el inicio y la marca no se desdobla
+    # con cada guardado (lo que dejó cinco entradas el 10/10/2026).
+    from app.workflows.entrada import elegir_entrada  # noqa: PLC0415
+
+    entrada = elegir_entrada(
+        [(s.client_id, s.type, bool(s.is_entry)) for s in steps],
+        {e.to_client_id for e in edges},
+    )
     id_map: dict[str, str] = {}
-    entry_seen = False
     for step in steps:
         new_id = str(uuid4())
         id_map[step.client_id] = new_id
-        if step.is_entry:
-            entry_seen = True
         session.add(
             WorkflowStep(
                 id=new_id,
@@ -887,19 +895,10 @@ def _replace_steps_and_edges(
                 config_json=json.dumps(step.config or {}, default=str),
                 position_x=step.position_x,
                 position_y=step.position_y,
-                is_entry=step.is_entry,
+                is_entry=step.client_id == entrada,
                 display_name=getattr(step, "display_name", None),
             )
         )
-    if not entry_seen and steps:
-        # El primer step pasa a entry por defecto si el editor no lo
-        # marcó. Garantiza que advance_run encuentre el inicio.
-        first_client = steps[0].client_id
-        first_db_id = id_map[first_client]
-        for s in session.scalars(
-            select(WorkflowStep).where(WorkflowStep.id == first_db_id)
-        ):
-            s.is_entry = True
     session.flush()
 
     for edge in edges:
@@ -1614,7 +1613,15 @@ def _validate_workflow_structure(
     if not entry:
         errors.append("El workflow no tiene paso de entrada (is_entry=True).")
     if len(entry) > 1:
-        errors.append("Solo puede haber un paso de entrada.")
+        # Nombrar los implicados: en el lienzo las conexiones se ven bien y
+        # el problema está en una marca que no se dibuja.
+        from app.workflows.entrada import describir_paso  # noqa: PLC0415
+
+        nombres = ", ".join(describir_paso(s.type, s.display_name, s.id) for s in entry)
+        errors.append(
+            f"Solo puede haber un paso de entrada y hay {len(entry)} marcados: "
+            f"{nombres}. Déjalo solo en el disparador (guardar lo corrige)."
+        )
     # Steps inválidos por tipo desconocido.
     from app.workflows.engine import get_step_handler  # noqa: PLC0415
 
