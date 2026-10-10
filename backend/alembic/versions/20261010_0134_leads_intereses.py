@@ -127,7 +127,12 @@ def _migrar_clasificaciones(conn: sa.Connection, ahora: datetime) -> dict[str, i
             cambios["interest"] = nuevo
             cuenta["renombradas"] += 1
             if interest == "uv_pequeno_mediano":
-                cambios["reason"] = ((reason or "") + NOTA_UV)[:500]
+                # La nota no se recorta nunca: si el motivo no cabe, se
+                # recorta el motivo (la nota es lo que Bart tiene que ver).
+                base = reason or ""
+                if len(base) + len(NOTA_UV) > 500:
+                    base = base[: 500 - len(NOTA_UV) - 1].rstrip() + "…"
+                cambios["reason"] = base + NOTA_UV
                 cuenta["uv_anotadas"] += 1
         nuevo_corregido = RENOMBRADOS.get(corrected or "", corrected)
         if nuevo_corregido != corrected:

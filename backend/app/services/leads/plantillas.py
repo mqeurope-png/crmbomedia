@@ -41,13 +41,17 @@ CARPETA = "plantillas autoresponse"
 #: Idiomas con plantilla.
 IDIOMAS_CON_PLANTILLA: tuple[str, ...] = ("es", "en", "fr", "de", "nl", "pt")
 #: Los contenidos con que se nombraron las 30 plantillas antes del catálogo
-#: (08/10/2026): siguen resolviendo por nombre para los códigos nuevos. La
-#: migración 0134 además los deja escritos en el mapa.
+#: (08/10/2026): siguen resolviendo por nombre para los códigos que salieron
+#: de cada uno («Láser y CNC» cubría corte, grabado y CNC; «UV
+#: pequeño-mediano», las dos tallas). La migración 0134 además los deja
+#: escritos en el mapa. Separar contenidos es cosa de Bart, cuando los haya.
 NOMBRES_ANTIGUOS: dict[str, tuple[str, ...]] = {
     "uv_pequeno": ("UV pequeño-mediano",),
     "uv_mediano": ("UV pequeño-mediano",),
     "uv_grande": ("UV gran formato",),
     "corte_laser": ("Láser y CNC",),
+    "grabado_laser": ("Láser y CNC",),
+    "cnc": ("Láser y CNC",),
 }
 
 
@@ -115,10 +119,12 @@ def buscar_por_nombre(session: Session, nombre: str) -> Any | None:
     return None
 
 
-def _ids_por_nombre(session: Session) -> dict[str, str]:
+def ids_por_nombre(session: Session) -> dict[str, str]:
+    """Nombre plano → id de la plantilla (la más reciente manda). Se carga
+    UNA vez y se pasa a `mapa_resuelto_por_nombre` y `huecos`."""
     por_plano: dict[str, str] = {}
     for tpl in _candidatas(session):
-        por_plano.setdefault(_plano(tpl.name), tpl.id)      # la más reciente manda
+        por_plano.setdefault(_plano(tpl.name), tpl.id)
     return por_plano
 
 
@@ -134,12 +140,14 @@ def _resolver_por_nombre(
 
 def mapa_resuelto_por_nombre(
     session: Session, catalogo: Catalogo | None = None,
+    por_plano: dict[str, str] | None = None,
 ) -> dict[str, str | None]:
     """Para la pantalla: `interes:idioma` → id de la plantilla que se resuelve
     por nombre (o `None` si no hay), para cada interés comercial del catálogo,
     cargando las candidatas UNA sola vez."""
     catalogo = catalogo or Catalogo.de_partida()
-    por_plano = _ids_por_nombre(session)
+    if por_plano is None:
+        por_plano = ids_por_nombre(session)
     salida: dict[str, str | None] = {}
     for interes in catalogo.todos:
         if not interes.comercial:
@@ -153,13 +161,17 @@ def mapa_resuelto_por_nombre(
 
 def huecos(
     session: Session, mapa: dict[str, Any] | None, catalogo: Catalogo | None = None,
+    por_plano: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Los intereses comerciales ACTIVOS sin plantilla en alguno de los
     idiomas con plantilla: ni fila en el mapa con plantilla ni plantilla por
-    nombre. `a_proposito` cuando la fila del mapa dice «sin plantilla»."""
+    nombre. `a_proposito` cuando la fila del mapa dice «sin plantilla». La
+    pantalla de Configuración ERP calcula lo mismo en local para que se vea
+    al editar el mapa sin guardar; esta es la lista de referencia."""
     catalogo = catalogo or Catalogo.de_partida()
     mapa = mapa or {}
-    por_plano = _ids_por_nombre(session)
+    if por_plano is None:
+        por_plano = ids_por_nombre(session)
     salida: list[dict[str, Any]] = []
     for interes in catalogo.activos:
         if not interes.comercial:

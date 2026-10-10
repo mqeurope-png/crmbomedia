@@ -262,7 +262,8 @@ def catalogo(session: Session) -> dict[str, Any]:
         select(EmailTemplate).where(EmailTemplate.name.like("Lead%"))
         .order_by(EmailTemplate.name)
     ))
-    por_nombre = plantillas.mapa_resuelto_por_nombre(session, cat)
+    por_plano = plantillas.ids_por_nombre(session)
+    por_nombre = plantillas.mapa_resuelto_por_nombre(session, cat, por_plano)
     cuentas = list(session.scalars(
         select(IntegrationAccount).where(IntegrationAccount.system == ExternalSystem.AGILECRM)
         .order_by(IntegrationAccount.display_name)
@@ -272,7 +273,7 @@ def catalogo(session: Session) -> dict[str, Any]:
         "idiomas": list(plantillas.IDIOMAS_CON_PLANTILLA),
         "plantillas": [{"id": t.id, "name": t.name} for t in candidatas],
         "mapa_por_nombre": por_nombre,
-        "huecos": plantillas.huecos(session, conf.get("mapa"), cat),
+        "huecos": plantillas.huecos(session, conf.get("mapa"), cat, por_plano),
         "webs": [
             {"clave": clave, "web": web, "marca": MARCAS.get(clave, clave),
              "remitente_defecto": REMITENTES.get(clave)}

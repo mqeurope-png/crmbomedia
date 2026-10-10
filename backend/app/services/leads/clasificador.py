@@ -324,16 +324,37 @@ def texto_claramente_en(texto: str, idioma: str) -> bool:
 #: no es «primera», «corte» no es «cortesía». Una clave acabada en `*` casa
 #: como prefijo («grabad*»: grabado, grabador, grabadora).
 #:
+#: Hay palabras FUERTES (las dice solo quien quiere eso: «impresora UV»,
+#: «camisetas», «vending») y palabras DÉBILES (`_PALABRAS_DEBILES`: materiales
+#: como madera, metal o vidrio, «personalizar», «láser» a secas). Una débil
+#: REFUERZA un interés que ya está en el texto, pero no lo crea cuando el
+#: texto pide otra cosa: «grabar logos en madera y metal con láser» es grabado
+#: láser, no grabado láser + UV + corte. Si el texto solo tiene palabras
+#: débiles, decide la mejor y solo esa (una conjetura, no dos).
+#:
 #: Las tres tallas de UV comparten las palabras de la familia (`_UV_COMUN`):
 #: «impresora UV» puntúa para las tres y la talla la decide lo específico
 #: (A3, 3000U → pequeño; 6090, 5000U → mediano; 2,5 m, paneles → grande); a
 #: igualdad, la pequeña. Un lead lleva una sola talla (`FAMILIA_UNICA`).
 _UV_COMUN: tuple[str, ...] = (
     "uv", "uv-led", "led uv", "impresora* uv", "uv printer*", "imprimante* uv", "uv-drucker",
-    "uv drucker", "uv-printer*", "uv-druck*", "artisjet", "personaliza*", "personalis*",
-    "personalize*", "glass", "vidrio", "verre", "glas", "madera", "wood", "bois", "holz",
-    "metal", "metall*", "placa*", "plate*", "platten", "acrilico", "metacrilato", "acrylic",
-    "acryl",
+    "uv drucker", "uv-printer*", "uv-druck*", "artisjet",
+    # Soportes planos para imprimir encima (placas de metal, chapas, paneles):
+    # eso lo hace una UV, no un láser ni una DTF.
+    "placa*", "plate*", "platten", "metallplatte*", "holzplatte*", "glasplatte*",
+    "acrylplatte*", "chapa", "chapas",
+)
+#: Materiales y verbos genéricos: también los dice quien quiere grabar con
+#: láser o fresar. Refuerzan, no crean.
+_UV_DEBIL: tuple[str, ...] = (
+    "personaliza*", "personalis*", "personalize*", "glass", "vidrio", "verre", "glas", "madera",
+    "wood", "bois", "holz", "metal", "metall*", "acrilico", "metacrilato", "acrylic", "acryl",
+    "objetos", "objets", "gegenstande*",
+)
+#: «Láser» a secas vale para cortar y para grabar: refuerza a los dos; si el
+#: texto no dice ni cortar ni grabar, decide uno solo (el corte, lo más pedido).
+_LASER_COMUN: tuple[str, ...] = (
+    "laser*", "co2", "fibra", "fiber", "mbolaser*", "mbo laser", "flux",
 )
 _PALABRAS_INTERES: dict[str, tuple[str, ...]] = {
     INTERES_SOPORTE: (
@@ -384,11 +405,11 @@ _PALABRAS_INTERES: dict[str, tuple[str, ...]] = {
         "frasen", "frase", "frasmaschine", "freesmachine",
     ),
     INTERES_CORTE_LASER: (
-        "laser*", "co2", "fibra", "fiber", "decoupe*", "cutting", "corte", "cortar", "cut",
-        "schneiden", "snijden", "flux", "mbolaser*", "mbo laser",
+        "decoupe*", "cutting", "corte", "cortar", "cut", "schneiden", "snijden", "corte laser",
+        "laser cutter*", "laser cut*", "cortadora* laser", "decoupeuse* laser", "laserschneid*",
     ),
     INTERES_GRABADO_LASER: (
-        "laser*", "grabad*", "grabar", "engrav*", "gravure*", "graver", "graveer*", "graveren",
+        "grabad*", "grabar", "engrav*", "gravure*", "graver", "graveer*", "graveren",
         "gravier*", "marcaje", "marcado laser", "marquage",
     ),
     INTERES_DTF: (
@@ -414,8 +435,15 @@ _PALABRAS_INTERES: dict[str, tuple[str, ...]] = {
         "moviles", "phone case*", "regalo*", "gift*", "cadeau*", "geschenk*", "merchandising",
         "promocional*", "pens", "pequeno formato", "small format", "petit format",
         "kleinformat", "botella*", "bottle*", "bouteille*", "flasche*", "fles", "flessen",
-        "objetos", "objets", "gegenstande*",
     ),
+}
+#: Las palabras débiles de cada interés (ver arriba). Los demás no tienen.
+_PALABRAS_DEBILES: dict[str, tuple[str, ...]] = {
+    INTERES_CORTE_LASER: _LASER_COMUN,
+    INTERES_GRABADO_LASER: _LASER_COMUN,
+    INTERES_UV_GRANDE: _UV_DEBIL,
+    INTERES_UV_MEDIANO: _UV_DEBIL,
+    INTERES_UV_PEQUENO: _UV_DEBIL,
 }
 #: Orden de desempate a igualdad de aciertos y de posición en el texto: lo
 #: más específico primero; las tallas de UV, de menor a mayor, lo último.
@@ -469,31 +497,47 @@ def _tramos(texto_normalizado: str, claves: tuple[str, ...]) -> list[tuple[int, 
     return fusionados
 
 
+def _claves(interes: str) -> tuple[str, ...]:
+    """Fuertes y débiles de un interés."""
+    return _PALABRAS_INTERES.get(interes, ()) + _PALABRAS_DEBILES.get(interes, ())
+
+
 def puntuar_intereses(texto: str) -> dict[str, int]:
-    """Por interés, cuántas cosas distintas del texto lo dicen."""
+    """Por interés, cuántas cosas distintas del texto lo dicen (fuertes y
+    débiles)."""
     normalizado = _normalizar(texto)
-    return {
-        interes: len(_tramos(normalizado, claves))
-        for interes, claves in _PALABRAS_INTERES.items()
-    }
+    return {interes: len(_tramos(normalizado, _claves(interes))) for interes in _PALABRAS_INTERES}
 
 
 def intereses_por_texto(texto: str) -> list[tuple[str, int]]:
     """Los intereses que dice el texto, de más a menos relevante:
-    `[(interes, aciertos), ...]`. El soporte postventa va siempre primero si
-    aparece (quien cuenta una avería menciona la máquina que TIENE: nunca es
-    una venta). Después, más cosas distintas del texto primero; a igualdad,
-    el que aparece antes (lo que se pide primero es lo que más se quiere) y
+    `[(interes, aciertos), ...]`.
+
+    Entra en la lista el interés con alguna palabra FUERTE; las débiles
+    (materiales, «láser» a secas) refuerzan la cuenta pero no crean un
+    interés cuando el texto ya pide otra cosa. Si solo hay débiles, se queda
+    el mejor y solo ese. El soporte postventa va siempre primero si aparece
+    (quien cuenta una avería menciona la máquina que TIENE: nunca es una
+    venta). Después, más cosas distintas del texto primero; a igualdad, el
+    que aparece antes (lo que se pide primero es lo que más se quiere) y
     luego el orden de desempate. Una sola talla de UV. Vacío si nada casa."""
     normalizado = _normalizar(texto)
     puntuados: list[tuple[int, int, int, int, str]] = []
-    for interes, claves in _PALABRAS_INTERES.items():
-        tramos = _tramos(normalizado, claves)
-        if tramos:
-            puntuados.append((
-                0 if interes == INTERES_SOPORTE else 1, -len(tramos), tramos[0][0],
-                _ORDEN_INTERES.index(interes), interes,
-            ))
+    solo_debiles: list[tuple[int, int, int, int, str]] = []
+    for interes, fuertes in _PALABRAS_INTERES.items():
+        tramos = _tramos(normalizado, _claves(interes))
+        if not tramos:
+            continue
+        entrada = (
+            0 if interes == INTERES_SOPORTE else 1, -len(tramos), tramos[0][0],
+            _ORDEN_INTERES.index(interes), interes,
+        )
+        if _tramos(normalizado, fuertes):
+            puntuados.append(entrada)
+        else:
+            solo_debiles.append(entrada)
+    if not puntuados and solo_debiles:
+        puntuados = [min(solo_debiles)]
     puntuados.sort()
     salida: list[tuple[str, int]] = []
     familias: set[str] = set()
@@ -518,7 +562,7 @@ def palabras_que_casan(texto: str, interes: str, maximo: int = 4) -> list[str]:
     motivo diga qué dice el texto, no solo cuántas veces)."""
     normalizado = _normalizar(texto)
     vistas: list[str] = []
-    for clave in _PALABRAS_INTERES.get(interes, ()):
+    for clave in _claves(interes):
         if _casa(normalizado, clave):
             vistas.append(clave.rstrip("*"))
             if len(vistas) >= maximo:

@@ -124,7 +124,12 @@ def test_los_codigos_antiguos_se_migran_a_los_nuevos() -> None:
     for igual in ("vending", "distribucion", "otro", None, ""):
         assert intereses.migrar_codigo(igual) == igual
     assert intereses.RENOMBRADOS_MAPA["uv_pequeno_mediano"] == ("uv_pequeno", "uv_mediano")
+    # «Láser y CNC» cubría corte, grabado y CNC: su plantilla sigue valiendo
+    # para los tres.
+    assert intereses.RENOMBRADOS_MAPA["laser_cnc"] == ("corte_laser", "grabado_laser", "cnc")
     assert intereses.RENOMBRADOS_MAPA["consumibles"] == ("tienda",)
+    assert plantillas.NOMBRES_ANTIGUOS["grabado_laser"] == ("Láser y CNC",)
+    assert plantillas.NOMBRES_ANTIGUOS["cnc"] == ("Láser y CNC",)
     # Todo lo renombrado existe en la lista de partida.
     cat = Catalogo.de_partida()
     assert all(cat.conoce(nuevo) for nuevo in intereses.RENOMBRADOS.values())
@@ -174,9 +179,13 @@ def test_plantilla_para_elige_el_conjunto_exacto_luego_el_principal_y_si_no_ning
         assert plantillas.plantilla_para(s, ["uv_mediano", "dtf"], "de", mapa, cat).id == mixta.id
         assert plantillas.plantilla_para(s, ["dtf", "uv_mediano"], "de", mapa, cat).id == mixta.id
         # 2. Sin fila para el conjunto, la del principal: por el nombre antiguo
-        #    (UV pequeño-mediano vale para uv_mediano) …
+        #    (UV pequeño-mediano vale para uv_mediano; Láser y CNC, para
+        #    corte, grabado y CNC) …
         assert plantillas.plantilla_para(s, ["uv_mediano", "cnc"], "de", mapa, cat).id \
             == uv_antigua.id
+        laser = _plantilla(s, "Lead · Láser y CNC (ES)")
+        for codigo in ("corte_laser", "grabado_laser", "cnc"):
+            assert plantillas.plantilla_para(s, [codigo], "es", mapa, cat).id == laser.id
         #    … o por el nombre nuevo; y un solo interés, como siempre.
         assert plantillas.plantilla_para(s, ["vending"], "es", mapa, cat).id == vending.id
         assert plantillas.plantilla_para(s, "vending", "es", mapa, cat).id == vending.id
@@ -373,10 +382,22 @@ def test_desactivar_un_interes_en_uso_no_lo_borra_y_lo_clasificado_sigue_legible
     en_uso = {i["id"]: i["en_uso"] for i in
               http.get("/api/erp/leads/intereses", headers=cab).json()["items"]}
     assert en_uso["vending"]["clasificaciones"] == 1
-    # «Otro» no se borra ni se desactiva nunca.
-    assert http.delete("/api/erp/leads/intereses/otro", headers=cab).status_code == 409
+    assert en_uso["uv_grande"]["clasificaciones"] == 0      # «uv_grande» no es «uv%grande»
+    with session_factory() as s:
+        # Una fila cuenta una vez por código aunque esté en la columna y en la lista.
+        assert intereses.usos(s)["vending"] == (1, 0)
+        assert intereses.en_uso(s, "cohetes") == (0, 0)
+    # «Otro» no se borra ni se desactiva nunca: es fijo (400 con el motivo).
+    r = http.delete("/api/erp/leads/intereses/otro", headers=cab)
+    assert r.status_code == 400 and "fijo" in r.json()["detail"]
     assert http.patch("/api/erp/leads/intereses/otro", headers=cab,
                       json={"activo": False}).status_code == 400
+    # Un `null` explícito no es «no»: se ignora (y solo nulos = nada que cambiar).
+    assert http.patch("/api/erp/leads/intereses/vending", headers=cab,
+                      json={"activo": None}).status_code == 400
+    r = http.patch("/api/erp/leads/intereses/vending", headers=cab,
+                   json={"activo": None, "etiqueta": "Vending"})
+    assert r.status_code == 200 and r.json()["activo"] is True
 
     r = http.patch("/api/erp/leads/intereses/vending", headers=cab, json={"activo": False})
     assert r.status_code == 200 and r.json()["activo"] is False

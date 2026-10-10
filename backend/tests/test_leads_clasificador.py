@@ -311,6 +311,27 @@ def test_un_lead_lleva_una_sola_talla_de_uv_y_lo_que_pide_primero_va_primero() -
         == [INTERES_UV_PEQUENO, INTERES_VENDING]
 
 
+def test_los_materiales_y_laser_a_secas_refuerzan_pero_no_crean_un_interes() -> None:
+    """«Grabar logos en madera y metal con láser» es grabado láser y nada
+    más: madera y metal no lo hacen UV, «láser» no lo hace también corte."""
+    assert [i for i, _ in intereses_por_texto("Quiero grabar logos en madera y metal con láser")] \
+        == [INTERES_GRABADO_LASER]
+    # Solo palabras débiles: una conjetura, no dos («láser» a secas es corte).
+    assert [i for i, _ in intereses_por_texto("Busco una máquina láser")] == [INTERES_CORTE_LASER]
+    assert [i for i, _ in intereses_por_texto("Impresión sobre madera y vidrio")] \
+        == [INTERES_UV_PEQUENO]
+    # Cortar Y grabar sí son dos cosas.
+    assert [i for i, _ in intereses_por_texto("Quiero cortar y grabar madera con láser")] \
+        == [INTERES_CORTE_LASER, INTERES_GRABADO_LASER]
+    # Con «Impresora UV» marcada y un texto de grabado, es contradicción (UV
+    # no es un secundario espurio por «madera»), no coherencia.
+    out = clasificar_lead(_entrada("Quiero grabar logos en madera y metal con láser",
+                                   idioma_formulario="es", productos=["Impresora UV A3"]),
+                          ClasificadorPalabrasClave())
+    assert out.intereses == [INTERES_GRABADO_LASER]
+    assert out.confianza <= CONFIANZA_CONTRADICCION and "manda lo que pide el texto" in out.motivo
+
+
 def test_la_clasificacion_se_construye_con_lista_o_con_un_solo_interes() -> None:
     una = Clasificacion(idioma="es", interes=INTERES_VENDING)
     assert una.intereses == [INTERES_VENDING]

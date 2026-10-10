@@ -86,11 +86,16 @@ RENOMBRADOS: dict[str, str] = {
     "repuestos": "tienda",
     "servicio_tecnico": "soporte_postventa",
 }
-#: Para el MAPA de plantillas, el contenido «UV pequeño-mediano» vale para los
-#: dos tamaños: la plantilla sigue resolviendo para los dos códigos nuevos.
+#: Para el MAPA de plantillas, un contenido antiguo vale para todos los códigos
+#: que salieron de él: «UV pequeño-mediano» para los dos tamaños y «Láser y
+#: CNC» para corte, grabado y CNC. La plantilla sigue resolviendo igual que
+#: antes para esos leads; separar contenidos es cosa de Bart, cuando los haya.
+_REPARTO: dict[str, tuple[str, ...]] = {
+    "uv_pequeno_mediano": ("uv_pequeno", "uv_mediano"),
+    "laser_cnc": ("corte_laser", "grabado_laser", "cnc"),
+}
 RENOMBRADOS_MAPA: dict[str, tuple[str, ...]] = {
-    codigo: (("uv_pequeno", "uv_mediano") if codigo == "uv_pequeno_mediano" else (nuevo,))
-    for codigo, nuevo in RENOMBRADOS.items()
+    codigo: _REPARTO.get(codigo, (nuevo,)) for codigo, nuevo in RENOMBRADOS.items()
 }
 
 #: Intereses que son tamaños del MISMO producto: un lead lleva como mucho uno
@@ -290,25 +295,40 @@ class InteresEnUso(Exception):
         self.codigo = codigo
 
 
-def en_uso(session: Session, codigo: str) -> tuple[int, int]:
-    """`(clasificaciones que lo llevan, filas del mapa que lo usan)`."""
-    from sqlalchemy import func, or_  # noqa: PLC0415
+def usos(session: Session) -> dict[str, tuple[int, int]]:
+    """Por código: `(clasificaciones que lo llevan, filas del mapa que lo
+    usan)`, en UNA pasada por las clasificaciones (una fila cuenta una vez
+    por código, esté en la columna o en la lista, clasificado o corregido) y
+    una lectura de la configuración."""
+    from collections import Counter  # noqa: PLC0415
 
     from app.models.leads import LeadClassification  # noqa: PLC0415
     from app.services.leads.config import configuracion  # noqa: PLC0415
 
-    marca = f'"{codigo}"'
-    clasificaciones = int(session.scalar(
-        select(func.count(LeadClassification.id)).where(or_(
-            LeadClassification.interest == codigo,
-            LeadClassification.corrected_interest == codigo,
-            LeadClassification.interests_json.like(f"%{marca}%"),
-            LeadClassification.corrected_interests_json.like(f"%{marca}%"),
-        ))
-    ) or 0)
-    mapa = configuracion(session).get("mapa") or {}
-    en_mapa = sum(1 for clave in mapa if codigo in clave.split(":", 1)[0].split("+"))
-    return clasificaciones, en_mapa
+    clasificaciones: Counter[str] = Counter()
+    filas = session.execute(select(
+        LeadClassification.interest, LeadClassification.corrected_interest,
+        LeadClassification.interests_json, LeadClassification.corrected_interests_json,
+    )).all()
+    for interest, corrected, lista_json, corregida_json in filas:
+        codigos = set(lista_desde_json(lista_json)) | set(lista_desde_json(corregida_json))
+        codigos |= {c for c in (interest, corrected) if c}
+        for codigo in codigos:
+            clasificaciones[codigo] += 1
+    en_mapa: Counter[str] = Counter()
+    for clave in configuracion(session).get("mapa") or {}:
+        for codigo in set(str(clave).split(":", 1)[0].split("+")):
+            if codigo:
+                en_mapa[codigo] += 1
+    return {
+        codigo: (clasificaciones.get(codigo, 0), en_mapa.get(codigo, 0))
+        for codigo in set(clasificaciones) | set(en_mapa)
+    }
+
+
+def en_uso(session: Session, codigo: str) -> tuple[int, int]:
+    """`(clasificaciones que lo llevan, filas del mapa que lo usan)`."""
+    return usos(session).get(codigo, (0, 0))
 
 
 def validar_codigo(codigo: str) -> str:
@@ -364,22 +384,27 @@ def actualizar(session: Session, codigo: str, cambios: dict[str, Any]) -> Any:
     if "descripcion" in cambios:
         fila.description = str(cambios["descripcion"] or "").strip() or None
     if "comercial" in cambios:
-        fila.is_commercial = bool(cambios["comercial"])
+        if not isinstance(cambios["comercial"], bool):
+            raise ValueError("«Comercial» tiene que ser sí o no.")
+        fila.is_commercial = cambios["comercial"]
     if "orden" in cambios:
         try:
             fila.position = int(cambios["orden"])
         except (TypeError, ValueError):
             raise ValueError("El orden tiene que ser un número.") from None
     if "activo" in cambios:
+        if not isinstance(cambios["activo"], bool):
+            raise ValueError("«Activo» tiene que ser sí o no.")
         if codigo == OTRO and not cambios["activo"]:
             raise ValueError("«Otro» no se puede desactivar: es a donde va lo que no encaja.")
-        fila.is_active = bool(cambios["activo"])
+        fila.is_active = cambios["activo"]
     session.flush()
     return fila
 
 
 def borrar(session: Session, codigo: str) -> None:
-    """Solo si nada lo usa; si no, `InteresEnUso` (desactivar es lo suyo)."""
+    """Solo si nada lo usa; si no, `InteresEnUso` (desactivar es lo suyo).
+    «Otro» es fijo: `ValueError`."""
     from app.models.leads import LeadInterest  # noqa: PLC0415
 
     sembrar_si_vacio(session)
@@ -387,7 +412,8 @@ def borrar(session: Session, codigo: str) -> None:
     if fila is None:
         raise LookupError(f"No hay ningún interés con el código «{codigo}».")
     if codigo == OTRO:
-        raise InteresEnUso(codigo, 0, 0)
+        raise ValueError("«Otro» es fijo: no se borra ni se desactiva (es a donde va lo que no "
+                         "encaja).")
     clasificaciones, en_mapa = en_uso(session, codigo)
     if clasificaciones or en_mapa:
         raise InteresEnUso(codigo, clasificaciones, en_mapa)

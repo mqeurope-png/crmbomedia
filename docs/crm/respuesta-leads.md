@@ -97,7 +97,10 @@ se usa la lista de partida, que es esta:
 La migración 0134 pasa los códigos de la primera lista (08/10/2026) a estos
 sin perder ninguna clasificación: `uv_gran_formato` → `uv_grande`, `laser_cnc`
 → `corte_laser`, `consumibles` y `repuestos` → `tienda`, `servicio_tecnico` →
-`soporte_postventa`; `vending`, `distribucion` y `otro` no cambian.
+`soporte_postventa`; `vending`, `distribucion` y `otro` no cambian. En el
+mapa, un contenido antiguo vale para todos los códigos que salieron de él:
+«UV pequeño-mediano» para las dos tallas y «Láser y CNC» para corte, grabado
+y CNC (esos leads siguen recibiendo la plantilla que recibían).
 `uv_pequeno_mediano` no se puede repartir sin adivinar: se queda en
 `uv_mediano` y el motivo lo anota («Migración 10/10/2026: era «UV
 pequeño-mediano»; talla por confirmar»); Bart los corrige a mano desde la
@@ -119,7 +122,11 @@ Dos reglas mandan sobre cualquier proveedor:
   («con etiquetas no se llama a la IA») que clasificó como venta a dos
   clientes con averías; por eso el soporte postventa no salió ni una vez en
   la primera simulación. En el proveedor sin IA, el soporte va siempre
-  primero si aparece (quien cuenta una avería menciona la máquina que TIENE).
+  primero si aparece (quien cuenta una avería menciona la máquina que TIENE),
+  y hay palabras fuertes y débiles: los materiales (madera, metal, vidrio) y
+  «láser» a secas refuerzan un interés que el texto ya pide pero no crean
+  otro («grabar madera y metal con láser» es grabado láser, no también UV y
+  corte); si solo hay débiles, decide una conjetura, no dos.
 - **El idioma del formulario manda**; el texto solo gana si está claramente en
   otro idioma (un alemán que rellena el formulario francés), y la discrepancia
   queda anotada (`language_mismatch`).
@@ -215,7 +222,8 @@ el aviso.
 - `GET/POST /intereses`, `PATCH/DELETE /intereses/{codigo}`: el catálogo de
   intereses (con cuántas clasificaciones y filas del mapa usan cada uno). El
   DELETE da 409 (`interes_en_uso`) si algo lo usa: lo suyo es `PATCH
-  {activo: false}`. Queda en la auditoría (`lead.interest_changed`).
+  {activo: false}`; «otro» es fijo (400). Queda en la auditoría
+  (`lead.interest_changed`).
 - `POST /workflow`: crea el workflow «Respuesta a leads (Fase 1)» en BORRADOR
   resolviendo «Ventas B2B» → «Nuevo lead» / «Descartado / spam» por nombre;
   409 si ya existe, 400 si falta el pipeline. `GET /workflow` dice si existe.

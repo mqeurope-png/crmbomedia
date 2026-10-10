@@ -65,6 +65,8 @@ def _preparar(engine) -> None:
         c.execute(text("INSERT INTO contacts VALUES ('c3', NULL)"))
         filas = [
             ("l1", "uv_pequeno_mediano", None, "el texto dice UV"),
+            # Motivo al tope de los 500: la nota no se recorta, se recorta el motivo.
+            ("l8", "uv_pequeno_mediano", None, "x" * 500),
             ("l2", "uv_gran_formato", None, "gran formato"),
             ("l3", "consumibles", None, "tintas"),
             ("l4", "repuestos", None, "cabezal"),
@@ -144,6 +146,9 @@ def test_subir_siembra_el_catalogo_migra_los_codigos_y_el_mapa_y_bajar_lo_deshac
     assert clasificaciones["l1"][0] == "uv_mediano"
     assert "UV pequeño-mediano" in clasificaciones["l1"][2]
     assert clasificaciones["l1"][2].startswith("el texto dice UV")
+    assert clasificaciones["l8"][0] == "uv_mediano"
+    assert clasificaciones["l8"][2].endswith("talla por confirmar (pequeño o mediano).")
+    assert len(clasificaciones["l8"][2]) <= 500 and "…" in clasificaciones["l8"][2]
     assert clasificaciones["l2"][0] == "uv_grande"
     assert clasificaciones["l3"][0] == "tienda" and clasificaciones["l4"][0] == "tienda"
     assert clasificaciones["l5"][0] == "soporte_postventa"
@@ -164,7 +169,9 @@ def test_subir_siembra_el_catalogo_migra_los_codigos_y_el_mapa_y_bajar_lo_deshac
     assert mapa["corte_laser:fr"] == ""
     assert mapa["vending:en"] == "tpl-v-en"
     assert mapa["uv_grande:de"] == "tpl-g-de"
-    assert mapa["corte_laser:es"] == "tpl-l-es"
+    # «Láser y CNC» cubría corte, grabado y CNC: queda escrita para los tres.
+    assert mapa["corte_laser:es"] == mapa["grabado_laser:es"] == mapa["cnc:es"] == "tpl-l-es"
+    assert mapa["grabado_laser:fr"] == "" and mapa["cnc:fr"] == ""
     assert mapa["uv_pequeno:pt"] == "tpl-uv-pt" and mapa["uv_mediano:pt"] == "tpl-uv-pt"
     assert "uv_pequeno_mediano:es" not in mapa and "laser_cnc:fr" not in mapa
     # Vending y Distribución no cambian de nombre: siguen por nombre, no se

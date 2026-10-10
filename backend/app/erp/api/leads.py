@@ -342,15 +342,24 @@ def estado_workflow(
 # --- el catálogo de intereses ------------------------------------------------
 
 
-def _interes_con_uso(session: Session, interes: intereses.Interes) -> dict[str, Any]:
-    clasificaciones, en_mapa = intereses.en_uso(session, interes.codigo)
+def _interes_con_uso(
+    interes: intereses.Interes, usos: dict[str, tuple[int, int]],
+) -> dict[str, Any]:
+    clasificaciones, en_mapa = usos.get(interes.codigo, (0, 0))
     return {**interes.como_dict(), "en_uso": {"clasificaciones": clasificaciones,
                                               "en_mapa": en_mapa}}
 
 
+def _interes_actual(session: Session, codigo: str) -> dict[str, Any]:
+    catalogo = intereses.cargar(session)
+    interes = next(i for i in catalogo.todos if i.codigo == codigo)
+    return _interes_con_uso(interes, intereses.usos(session))
+
+
 def _lista_intereses(session: Session) -> dict[str, Any]:
     catalogo = intereses.cargar(session)
-    return {"items": [_interes_con_uso(session, i) for i in catalogo.todos]}
+    usos = intereses.usos(session)       # una pasada para todos, no una por código
+    return {"items": [_interes_con_uso(i, usos) for i in catalogo.todos]}
 
 
 def _auditar_interes(
@@ -392,9 +401,7 @@ def crear_interes(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     _auditar_interes(session, current_user, fila.code, "alta", payload.model_dump())
     session.commit()
-    catalogo = intereses.cargar(session)
-    interes = next(i for i in catalogo.todos if i.codigo == fila.code)
-    return _interes_con_uso(session, interes)
+    return _interes_actual(session, fila.code)
 
 
 @router.patch("/intereses/{codigo}")
@@ -407,7 +414,8 @@ def editar_interes(
     """Etiqueta, descripción, comercial, orden y activo. El código no cambia:
     es lo que llevan las clasificaciones. Desactivar lo quita de la lista
     del clasificador y de los desplegables; lo clasificado sigue legible."""
-    cambios = payload.model_dump(exclude_unset=True)
+    # Un `null` explícito no es «no» ni «cero»: se ignora como si no viniera.
+    cambios = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
     if not cambios:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "No hay nada que cambiar.")
     try:
@@ -418,9 +426,7 @@ def editar_interes(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     _auditar_interes(session, current_user, fila.code, "cambio", cambios)
     session.commit()
-    catalogo = intereses.cargar(session)
-    interes = next(i for i in catalogo.todos if i.codigo == fila.code)
-    return _interes_con_uso(session, interes)
+    return _interes_actual(session, fila.code)
 
 
 @router.delete("/intereses/{codigo}", status_code=status.HTTP_204_NO_CONTENT)
@@ -430,11 +436,13 @@ def borrar_interes(
     current_user: User = Depends(require_config),
 ) -> Response:
     """Solo si nada lo usa; con clasificaciones o filas del mapa, 409 (lo
-    suyo es desactivarlo)."""
+    suyo es desactivarlo). «Otro» es fijo: 400."""
     try:
         intereses.borrar(session, codigo)
     except LookupError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     except intereses.InteresEnUso as exc:
         raise HTTPException(
             status.HTTP_409_CONFLICT, {"code": "interes_en_uso", "detail": str(exc)},
