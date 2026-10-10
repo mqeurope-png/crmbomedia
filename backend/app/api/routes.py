@@ -4816,7 +4816,11 @@ def list_contact_pipelines(
                 is_lost=stage.is_lost,
                 days_in_stage=dias,
                 target_days=stage.target_days,
-                is_overdue=bool(stage.target_days) and dias > int(stage.target_days or 0),
+                # Una etapa cerrada (ganada o perdida) nunca está fuera de plazo.
+                is_overdue=(
+                    not stage.is_won and not stage.is_lost
+                    and bool(stage.target_days) and dias > int(stage.target_days or 0)
+                ),
                 entered_stage_at=assignment.entered_stage_at,
                 added_to_pipeline_at=assignment.added_to_pipeline_at,
             )

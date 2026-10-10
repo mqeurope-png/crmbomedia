@@ -17,8 +17,8 @@ import {
 } from "../../lib/erpApi";
 import { extractErrorMessage } from "../../lib/errors";
 import {
-  ESTADO_LABEL,
-  ESTADO_TONE,
+  estadoLabel,
+  estadoTone,
   fuenteTexto,
   origenDato,
   porcentaje,
@@ -453,8 +453,8 @@ function FilaLead({
         {lead.proveedor ? <><br /><span className="muted small">{lead.proveedor}{lead.modelo ? ` · ${lead.modelo}` : ""}</span></> : null}
       </td>
       <td data-label="Resultado">
-        <span className={`badge ${ESTADO_TONE[lead.estado] ?? "muted"}`}>
-          {ESTADO_LABEL[lead.estado] ?? lead.estado}
+        <span className={`badge ${estadoTone(lead.estado)}`}>
+          {estadoLabel(lead.estado)}
         </span>
         {lead.estado_detalle ? <><br /><span className="muted small">{lead.estado_detalle}</span></> : null}
         {lead.plantilla ? <><br /><span className="small">Plantilla: {lead.plantilla}</span></> : null}

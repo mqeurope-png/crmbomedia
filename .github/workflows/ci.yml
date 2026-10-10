@@ -16,8 +16,9 @@ name: CI
 #     rama: pasa cuando todo lo que tenía que correr corrió bien; un trabajo
 #     saltado por los filtros no bloquea el PR.
 #
-# Un empujón nuevo a la misma rama cancela la ejecución anterior (solo en
-# PRs; en `main` se dejan terminar).
+# Un empujón nuevo al mismo PR cancela la ejecución anterior. En `main` cada
+# commit tiene su propio grupo (por SHA): ninguna ejecución se cancela ni se
+# queda en cola detrás de otra.
 
 on:
   pull_request:
@@ -25,11 +26,8 @@ on:
     branches: [main]
 
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
-env:
-  PYTEST_SHARDS: 8
 
 jobs:
   changes:
@@ -69,7 +67,9 @@ jobs:
               - 'frontend/**'
 
   backend:
-    name: backend (${{ matrix.shard }}/8)
+    # El número de trozos sale de la matriz (`strategy.job-total`): es el
+    # único sitio donde se cambia.
+    name: backend (${{ matrix.shard }}/${{ strategy.job-total }})
     needs: changes
     # Corre si no es un PR (push a main), si el filtro no pudo decidir, o si
     # el PR toca el backend o algo compartido.
@@ -98,10 +98,13 @@ jobs:
         run: ruff check .
       - if: matrix.shard == 1
         run: python -m compileall app tests
-      - name: pytest (trozo ${{ matrix.shard }} de ${{ env.PYTEST_SHARDS }})
+      - name: pytest (trozo ${{ matrix.shard }} de ${{ strategy.job-total }})
         run: |
-          python ../.github/scripts/pytest_shard.py --shards "$PYTEST_SHARDS" --index "${{ matrix.shard }}" > /tmp/trozo.txt
-          xargs -a /tmp/trozo.txt python -m pytest
+          python ../.github/scripts/pytest_shard.py --shards "${{ strategy.job-total }}" --index "${{ matrix.shard }}" > /tmp/trozo.txt
+          # Un trozo vacío es un error, no «corre toda la suite» (xargs sin
+          # argumentos llamaría a pytest a secas).
+          if [ ! -s /tmp/trozo.txt ]; then echo "El trozo ${{ matrix.shard }} no tiene ficheros" >&2; exit 1; fi
+          xargs -r -a /tmp/trozo.txt python -m pytest
 
   backend-mysql:
     # Catches MySQL-only schema bugs that SQLite happily accepts.

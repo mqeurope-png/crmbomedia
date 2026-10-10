@@ -74,6 +74,7 @@ from app.workflows.dispatcher import TRIGGER_CATALOG
 from app.workflows.engine import (
     cancel_run as engine_cancel_run,
 )
+from app.workflows.entrada import describir_paso, elegir_entrada
 from app.workflows.steps import STEP_CATALOG
 
 log = logging.getLogger(__name__)
@@ -633,6 +634,11 @@ def use_template_route(
     session.add(new_workflow)
     session.flush()
 
+    # Una sola entrada (la misma regla que al guardar desde el editor).
+    entrada = elegir_entrada(
+        [(s["client_id"], s["type"], bool(s.get("is_entry"))) for s in template["steps"]],
+        {e["to_client_id"] for e in template["edges"]},
+    )
     id_map: dict[str, str] = {}
     for s in template["steps"]:
         new_id = str(uuid4())
@@ -645,7 +651,7 @@ def use_template_route(
                 config_json=json.dumps(s.get("config") or {}, default=str),
                 position_x=s.get("position_x", 0.0),
                 position_y=s.get("position_y", 0.0),
-                is_entry=s.get("is_entry", False),
+                is_entry=s["client_id"] == entrada,
             )
         )
     session.flush()
@@ -873,12 +879,10 @@ def _replace_steps_and_edges(
     session.flush()
 
     # Exactamente UNA entrada, y es el disparador: si el editor marcó una
-    # sola se respeta; si marcó varias (o ninguna) se elige el trigger sin
-    # conexiones de entrada, y si no lo hay, el primer paso sin ellas. Así
-    # `advance_run` siempre encuentra el inicio y la marca no se desdobla
-    # con cada guardado (lo que dejó cinco entradas el 10/10/2026).
-    from app.workflows.entrada import elegir_entrada  # noqa: PLC0415
-
+    # sola (que pueda serlo) se respeta; si marcó varias (o ninguna) se elige
+    # el trigger sin conexiones de entrada, y si no lo hay, el primer paso
+    # sin ellas. Así `advance_run` siempre encuentra el inicio y la marca no
+    # se desdobla con cada guardado (lo que dejó cinco entradas el 10/10/2026).
     entrada = elegir_entrada(
         [(s.client_id, s.type, bool(s.is_entry)) for s in steps],
         {e.to_client_id for e in edges},
@@ -1216,6 +1220,13 @@ def duplicate_workflow_route(
             )
         )
     )
+    # Una sola entrada en la copia aunque el original venga desdoblado (el
+    # editor viejo dejó workflows con varias marcas): la misma regla que al
+    # guardar y al sembrar.
+    entrada = elegir_entrada(
+        [(st.id, st.type, bool(st.is_entry)) for st in original_steps],
+        {e.to_step_id for e in original_edges},
+    )
     id_map: dict[str, str] = {}
     for step in original_steps:
         new_id = str(uuid4())
@@ -1228,7 +1239,7 @@ def duplicate_workflow_route(
                 config_json=step.config_json or "{}",
                 position_x=step.position_x,
                 position_y=step.position_y,
-                is_entry=step.is_entry,
+                is_entry=step.id == entrada,
                 display_name=step.display_name,
             )
         )
@@ -1615,8 +1626,6 @@ def _validate_workflow_structure(
     if len(entry) > 1:
         # Nombrar los implicados: en el lienzo las conexiones se ven bien y
         # el problema está en una marca que no se dibuja.
-        from app.workflows.entrada import describir_paso  # noqa: PLC0415
-
         nombres = ", ".join(describir_paso(s.type, s.display_name, s.id) for s in entry)
         errors.append(
             f"Solo puede haber un paso de entrada y hay {len(entry)} marcados: "

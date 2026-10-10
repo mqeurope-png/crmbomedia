@@ -504,13 +504,17 @@ export default function WorkflowEditorPage() {
     setBusy(true);
     setError(null);
     try {
-      // Una sola entrada: el nodo marcado como tal; si no lo hay, el
-      // disparador; si no, el primero. Antes `isEntry || idx === 0` sumaba
-      // una entrada nueva cada vez que cambiaba el orden de los nodos y el
-      // editor acababa bloqueado («Solo puede haber un paso de entrada»).
+      // Una sola entrada: el único nodo marcado como tal; si hay varios
+      // marcados (un workflow ya desdoblado) o ninguno, el disparador; si
+      // no, el primero. Antes `isEntry || idx === 0` sumaba una entrada
+      // nueva cada vez que cambiaba el orden de los nodos y el editor
+      // acababa bloqueado («Solo puede haber un paso de entrada»). El
+      // servidor aplica la misma regla al guardar.
+      const marcados = nodes.filter((n) => n.data.isEntry);
       const entryId =
-        nodes.find((n) => n.data.isEntry)?.id ??
+        (marcados.length === 1 ? marcados[0].id : undefined) ??
         nodes.find((n) => n.data.stepType === "trigger")?.id ??
+        marcados[0]?.id ??
         nodes[0]?.id;
       const stepsPayload: WorkflowStepWrite[] = nodes.map((n) => ({
         client_id: n.id,

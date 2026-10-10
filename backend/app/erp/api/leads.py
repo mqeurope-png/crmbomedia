@@ -55,8 +55,11 @@ def _usuario(session: Session, user_id: str | None) -> str | None:
     return (u.full_name or u.email) if u is not None else None
 
 
-def _item(session: Session, fila: LeadClassification, umbral: float) -> dict[str, Any]:
-    contacto = session.get(Contact, fila.contact_id)
+def _item(
+    session: Session, fila: LeadClassification, umbral: float, *, contacto: Contact | None = None,
+) -> dict[str, Any]:
+    if contacto is None or contacto.id != fila.contact_id:
+        contacto = session.get(Contact, fila.contact_id)
     contexto = fila.contexto()
     confianza = float(fila.confidence or 0.0)
     return {
@@ -139,7 +142,8 @@ def clasificaciones_de_contacto(
     ficha (recuadro del Resumen y pestaña «Análisis IA»). Lo ve quien ve la
     ficha; corregir sigue siendo cosa de `erp.config`."""
     _ = current_user
-    if session.get(Contact, contact_id) is None:
+    contacto = session.get(Contact, contact_id)
+    if contacto is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Contacto no encontrado.")
     umbral = float(configuracion(session).get("umbral_confianza") or 0.0)
     filas = list(session.scalars(
@@ -152,7 +156,7 @@ def clasificaciones_de_contacto(
     ))
     return {
         "umbral_confianza": umbral, "total": len(filas),
-        "items": [_item(session, f, umbral) for f in filas],
+        "items": [_item(session, f, umbral, contacto=contacto) for f in filas],
         "opciones": {"idiomas": list(IDIOMAS),
                      "intereses": [{"id": i, "label": etiqueta_interes(i)} for i in INTERESES]},
     }

@@ -112,6 +112,16 @@ describe("ContactLeadClassificationTab (pestaña «Análisis IA»)", () => {
     // Tras guardar se arranca de lo corregido: sin cambios, sin botón.
     expect(screen.queryByRole("button", { name: "Guardar corrección" })).not.toBeInTheDocument();
     expect(screen.getByText("Corrección guardada.")).toBeInTheDocument();
+    // Una segunda corrección sin tocar la nota la conserva (el servidor
+    // sustituye la nota entera en cada corrección).
+    await user.click(screen.getByLabelText(/^Spam del lead del/));
+    expect(screen.getByLabelText(/^Nota de la corrección del lead del/))
+      .toHaveValue("quiere distribuir, no comprar");
+    await user.click(screen.getByRole("button", { name: "Guardar corrección" }));
+    await waitFor(() => expect(mockCorregir).toHaveBeenLastCalledWith(
+      "48cd85c8-9ae8-45df-a645-17d62bbb11bd",
+      { es_spam: true, nota: "quiere distribuir, no comprar" },
+    ));
   });
 
   it("el error del servidor al corregir se enseña en el análisis", async () => {

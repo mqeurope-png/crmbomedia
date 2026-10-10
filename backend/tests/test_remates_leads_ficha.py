@@ -98,7 +98,7 @@ def _ventas_b2b(session: Session, *, plazos: bool = False) -> Pipeline:
     session.flush()
     for pos, (nombre, dias) in enumerate([
         ("Nuevo lead", 1), ("Contactado", 3), ("Cualificado", 7), ("Propuesta enviada", 14),
-        ("Cerrado ganado", None), ("Cerrado perdido", None), ("Descartado / spam", None),
+        ("Cerrado ganado", 1), ("Cerrado perdido", None), ("Descartado / spam", None),
     ]):
         session.add(PipelineStage(
             pipeline_id=pipeline.id, name=nombre, position=pos,
@@ -118,8 +118,12 @@ def test_elegir_entrada_respeta_una_marca_y_si_no_elige_el_disparador() -> None:
              ("b", "wait_time", False)]
     aristas = {"a", "b"}
     assert elegir_entrada(pasos, aristas) == "t"
-    # Una sola marca, aunque no sea el disparador: se respeta (es lo que pidió el editor).
-    assert elegir_entrada([("t", "trigger", False), ("a", "wait_time", True)], {"a"}) == "a"
+    # Una sola marca en un paso que puede ser entrada (no recibe conexiones): se
+    # respeta aunque no sea el disparador (es lo que pidió el editor).
+    assert elegir_entrada([("t", "trigger", False), ("a", "wait_time", True)], set()) == "a"
+    # Una sola marca en un paso que RECIBE conexiones (el editor viejo la dejó en
+    # cualquier nodo): no puede ser la entrada; se la lleva el disparador.
+    assert elegir_entrada([("t", "trigger", False), ("a", "wait_time", True)], {"a"}) == "t"
     # Cinco marcadas (lo de producción): el disparador sin conexiones de entrada.
     cinco = [(pid, tipo, True) for pid, tipo, _m in pasos]
     cinco += [("c", "exit_natural", True), ("d", "action_create_task", True)]
@@ -220,6 +224,34 @@ def test_el_error_de_varias_entradas_nombra_los_pasos(session_factory) -> None:
     assert "trigger · aaaaaaaa" in mensaje and "Esperar 12 h (wait_time) · bbbbbbbb" in mensaje
     assert "cccccccc" not in mensaje
     assert "guardar lo corrige" in mensaje
+
+
+def test_duplicar_y_usar_plantilla_dejan_una_sola_entrada(http, session_factory) -> None:
+    cab = auth_headers(http, "admin")
+    wf = http.post("/api/workflows", json={"name": "Original", "trigger_type": "contact.created"},
+                   headers=cab)
+    wf_id = wf.json()["id"]
+    r = http.put(f"/api/workflows/{wf_id}", headers=cab, json=_definicion(
+        [_paso("s1", "trigger", is_entry=True),
+         _paso("s2", "wait_time", is_entry=False, config={"duration_minutes": 5}),
+         _paso("s3", "exit_natural", is_entry=False)],
+        [{"from_client_id": "s1", "to_client_id": "s2", "branch_label": "default"},
+         {"from_client_id": "s2", "to_client_id": "s3", "branch_label": "default"}],
+    ))
+    assert r.status_code == 200, r.text
+    with session_factory() as s:
+        # El original se desdobla por detrás (como los de producción).
+        for paso in s.scalars(select(WorkflowStep).where(WorkflowStep.workflow_id == wf_id)):
+            paso.is_entry = True
+        s.commit()
+    r = http.post(f"/api/workflows/{wf_id}/duplicate", headers=cab)
+    assert r.status_code == 201, r.text
+    entradas = [p for p in r.json()["steps"] if p["is_entry"]]
+    assert len(entradas) == 1 and entradas[0]["type"] == "trigger"
+    # Las plantillas también pasan por la regla.
+    r = http.post("/api/workflows/_templates/cumpleanos/use", headers=cab)
+    assert r.status_code == 201, r.text
+    assert sum(1 for p in r.json()["steps"] if p["is_entry"]) == 1
 
 
 # --- A2 · vencidas de más reciente a más antigua -----------------------------------
@@ -412,17 +444,20 @@ def test_los_pipelines_del_contacto_llevan_plazo_y_si_se_paso(http, session_fact
                   json={"pipeline_id": pipeline_id, "stage_id": ganado_id})
     assert r.status_code == 201, r.text
     with session_factory() as s:
-        # Ana lleva 5 días en «Contactado» (plazo 3): fuera de plazo.
-        fila = s.scalar(select(ContactPipelineStage)
-                        .where(ContactPipelineStage.contact_id == ana_id))
-        fila.entered_stage_at = datetime.now(UTC) - timedelta(days=5, hours=1)
+        # Ana lleva 5 días en «Contactado» (plazo 3): fuera de plazo. Bea lleva
+        # 10 en «Cerrado ganado» (plazo 1): una etapa cerrada nunca lo está.
+        atras = {ana_id: timedelta(days=5, hours=1), bea_id: timedelta(days=10)}
+        for contacto_id, hace in atras.items():
+            fila = s.scalar(select(ContactPipelineStage)
+                            .where(ContactPipelineStage.contact_id == contacto_id))
+            fila.entered_stage_at = datetime.now(UTC) - hace
         s.commit()
     r = http.get(f"/api/contacts/{ana_id}/pipelines", headers=cab)
     assert r.status_code == 200, r.text
     (ana_fila,) = r.json()
     assert ana_fila["stage_name"] == "Contactado" and ana_fila["days_in_stage"] == 5
     assert ana_fila["target_days"] == 3 and ana_fila["is_overdue"] is True
-    # Bea en «Cerrado ganado», sin plazo: nunca fuera de plazo.
+    # Bea en «Cerrado ganado» con plazo pasado: cerrada, nunca fuera de plazo.
     (bea_fila,) = http.get(f"/api/contacts/{bea_id}/pipelines", headers=cab).json()
-    assert bea_fila["target_days"] is None and bea_fila["is_overdue"] is False
-    assert bea_fila["is_won"] is True and bea_fila["days_in_stage"] == 0
+    assert bea_fila["target_days"] == 1 and bea_fila["days_in_stage"] == 10
+    assert bea_fila["is_won"] is True and bea_fila["is_overdue"] is False

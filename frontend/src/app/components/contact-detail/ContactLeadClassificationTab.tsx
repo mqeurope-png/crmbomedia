@@ -211,7 +211,10 @@ function CorreccionForm({
   const [idioma, setIdioma] = useState(lead.efectivo.idioma ?? "");
   const [interes, setInteres] = useState(lead.efectivo.interes ?? "");
   const [esSpam, setEsSpam] = useState(lead.efectivo.es_spam);
-  const [nota, setNota] = useState("");
+  // La nota arranca con la que ya hay: el servidor sustituye la nota entera
+  // en cada corrección, así que una segunda corrección sin tocarla la
+  // conserva (y borrarla a mano la quita de verdad).
+  const [nota, setNota] = useState(lead.correccion.nota ?? "");
   const [ocupada, setOcupada] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [guardado, setGuardado] = useState(false);
@@ -229,7 +232,6 @@ function CorreccionForm({
     setGuardado(false);
     try {
       await onCorregir(lead.id, { ...cambios, ...(nota.trim() ? { nota: nota.trim() } : {}) });
-      setNota("");
       setGuardado(true);
     } catch (e) {
       setError(extractErrorMessage(e, "No se pudo guardar la corrección."));
