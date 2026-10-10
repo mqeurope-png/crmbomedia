@@ -272,6 +272,37 @@ def test_no_queda_ningun_predeterminado_que_no_se_pueda_usar(
     c = UserEmailAliasPref(user_id="u", alias_email="z@b.net", is_allowed=True, is_default=True)
     normalizar_predeterminado([a, b, c], user_email="yo@b.net")
     assert (a.is_default, b.is_default, c.is_default) == (False, True, False)
+    # Sin predeterminado: lo que el usuario eligió gana al de Gmail, y el de
+    # Gmail (si está visible) gana al alias propio.
+    elegido = UserEmailAliasPref(user_id="u", alias_email="z@b.net", is_allowed=True,
+                                 is_default=False, user_opted_in=True)
+    propio = UserEmailAliasPref(user_id="u", alias_email="yo@b.net", is_allowed=True,
+                                is_default=False)
+    gmail = UserEmailAliasPref(user_id="u", alias_email="info@b.net", is_allowed=True,
+                               is_default=False)
+    normalizar_predeterminado([elegido, propio, gmail], user_email="yo@b.net",
+                              predeterminado_de_gmail="info@b.net")
+    assert (elegido.is_default, propio.is_default, gmail.is_default) == (True, False, False)
+    elegido.user_opted_in, elegido.is_default = None, False
+    normalizar_predeterminado([elegido, propio, gmail], user_email="yo@b.net",
+                              predeterminado_de_gmail="info@b.net")
+    assert (elegido.is_default, propio.is_default, gmail.is_default) == (False, False, True)
+
+
+def test_el_default_de_gmail_no_pisa_lo_que_bart_eligio(session_factory: sessionmaker) -> None:
+    """Bart tiene sus tres remitentes elegidos y ningún predeterminado (el
+    viejo desapareció); Gmail dice que el default de la cuenta es su alias
+    propio. El predeterminado pasa a uno de los elegidos, no al propio."""
+    with session_factory() as s:
+        bart = _uid(s, UserRole.MANAGER)
+        for alias in (STREAMTEC, ARTISJET, MQEUROPE):
+            _pref(s, bart, alias, allowed=True, opted=True)
+        s.commit()
+        _sync(s, bart, _gmail(*TODOS, default=BART))
+        filas = _prefs(s, bart)
+        assert filas[BART].is_allowed is True and filas[BART].is_default is False
+        assert [a for a in (STREAMTEC, ARTISJET, MQEUROPE) if filas[a].is_default] == [ARTISJET]
+        _sin_predeterminado_imposible(s)
 
 
 # --- la pantalla escribe la elección -----------------------------------------------
@@ -320,6 +351,52 @@ def test_la_api_registra_la_eleccion_y_el_sync_la_respeta(
             BART: False, STREAMTEC: True, ARTISJET: True, MQEUROPE: True}
         assert filas[STREAMTEC].is_default is True
         _sin_predeterminado_imposible(s)
+
+
+def test_desmarcar_el_alias_propio_antes_del_primer_sync_tambien_se_recuerda(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    with patch.object(gmail_service, "_client_for", return_value=_gmail(*TODOS)):
+        r = http.put("/api/emails/aliases/preferences",
+                     json={"preferences": [
+                         {"alias_email": BART, "is_allowed": False, "is_default": False},
+                         {"alias_email": NORMA, "is_allowed": False, "is_default": False},
+                     ]},
+                     headers=auth_headers(http, "manager"))
+    assert r.status_code == 200, r.text
+    with session_factory() as s:
+        bart = _uid(s, UserRole.MANAGER)
+        filas = _prefs(s, bart)
+        assert list(filas) == [BART]                      # el ajeno sin fila no crea nada
+        assert (filas[BART].is_allowed, filas[BART].user_opted_in) == (False, False)
+        _sync(s, bart)
+        assert _prefs(s, bart)[BART].is_allowed is False  # el sync no lo vuelve a encender
+
+
+def test_responder_y_el_acuse_solo_cuentan_los_remitentes_encendidos(
+    session_factory: sessionmaker,
+) -> None:
+    """Con las filas apagadas permanentes, ni «Responder» ni el remitente del
+    acuse pueden tratar como propia una dirección por tener fila."""
+    from app.api.emails import _user_own_emails
+    from app.services.web_forms.acuse import usuario_remitente
+
+    with session_factory() as s:
+        bart = _uid(s, UserRole.MANAGER)
+        norma = _uid(s, UserRole.USER)
+        _sync(s, bart)                  # una fila por alias; solo el propio encendido
+        s.add(UserEmailAlias(user_id=bart, alias_email=STREAMTEC, active=True))
+        s.commit()
+        propias = _user_own_emails(s, s.get(User, bart))
+        assert BART in propias and STREAMTEC in propias   # su correo, su remitente y su alias
+        assert NORMA not in propias and INFO_BOMEDIA not in propias
+        # Sin admin activo, el acuse busca quién tiene el alias ENCENDIDO (Bart
+        # tiene la fila de info@mboprinters.com apagada por el sync).
+        for admin in s.scalars(select(User).where(User.role == UserRole.ADMIN)):
+            admin.is_active = False
+        _pref(s, norma, INFO_MBO, allowed=True, opted=True)
+        s.commit()
+        assert usuario_remitente(s, INFO_MBO).id == norma
 
 
 def test_tres_remitentes_en_el_desplegable_y_siguen_los_tres_tras_el_sync(
@@ -487,6 +564,33 @@ def test_mios_incluye_lo_que_entra_por_una_direccion_marcada_como_mi_remitente(
     assert [t["subject"] for t in r.json()["items"]] == ["Hilo web-mbo"]
     r = http.get("/api/emails/threads", headers=auth_headers(http, "user"))
     assert r.json()["items"] == []
+
+
+def test_marcar_la_direccion_de_otro_no_da_visibilidad_sobre_su_correo(
+    session_factory: sessionmaker,
+) -> None:
+    """El endpoint de preferencias es de cada usuario y no está restringido:
+    Norma puede marcar el correo de Bart o su alias registrado como remitente
+    suyo, pero eso no le abre el correo de Bart en «míos»."""
+    with session_factory() as s:
+        admin = _uid(s, UserRole.ADMIN)
+        bart = _uid(s, UserRole.MANAGER)
+        norma = _uid(s, UserRole.USER)
+        s.add(UserEmailAlias(user_id=bart, alias_email=STREAMTEC, active=True))
+        _pref(s, norma, BART, allowed=True, opted=True)        # el correo de usuario de Bart
+        _pref(s, norma, STREAMTEC, allowed=True, opted=True)   # un alias registrado a Bart
+        _pref(s, norma, NORMA, allowed=True)
+        a_bart = _hilo(s, iniciado_por=admin, contacto=None, gid="a-bart", mensajes=[
+            {"from": "lead@kunde.de", "to": STREAMTEC, "delivered_to": STREAMTEC},
+        ])
+        de_bart = _hilo(s, iniciado_por=admin, contacto=None, gid="de-bart", mensajes=[
+            {"from": BART, "to": "lead@kunde.de", "direction": EmailDirection.OUTBOUND,
+             "created_by": bart},
+        ])
+        s.commit()
+        assert a_bart.id not in _mios(s, norma) and de_bart.id not in _mios(s, norma)
+        assert a_bart.id in _mios(s, bart) and de_bart.id in _mios(s, bart)
+        assert thread_is_visible(s, s.get(User, norma), a_bart) is False
 
 
 def test_mios_incluye_todo_el_correo_de_mis_contactos_aunque_lo_escribiera_otro(

@@ -197,12 +197,6 @@ export function GoogleCalendarSection() {
               equipo.
             </p>
           ) : null}
-          <p className="muted small">
-            Marca los remitentes con los que escribes; puedes tener varios. Lo
-            que marques o desmarques aquí se respeta en cada sincronización con
-            Gmail: tus remitentes secundarios ya no se apagan solos, y puedes
-            ocultar tu propia dirección si no quieres escribir desde ella.
-          </p>
           {aliasesLoading || aliases === null ? (
             <p className="muted small">Cargando aliases…</p>
           ) : aliases.length === 0 ? (
@@ -211,16 +205,25 @@ export function GoogleCalendarSection() {
               equipo.
             </p>
           ) : (
-            <GmailAliasMultiSelect
-              aliases={aliases}
-              onSave={async (prefs) => {
-                const next = await putEmailAliasPreferences(prefs);
-                setAliases(next);
-                return next;
-              }}
-              onRefresh={reloadAliases}
-              refreshing={aliasesLoading}
-            />
+            <>
+              <p className="muted small">
+                Marca los remitentes con los que escribes; puedes tener varios.
+                Lo que marques o desmarques aquí se respeta en cada
+                sincronización con Gmail: tus remitentes secundarios ya no se
+                apagan solos, y puedes ocultar tu propia dirección si no quieres
+                escribir desde ella.
+              </p>
+              <GmailAliasMultiSelect
+                aliases={aliases}
+                onSave={async (prefs) => {
+                  const next = await putEmailAliasPreferences(prefs);
+                  setAliases(next);
+                  return next;
+                }}
+                onRefresh={reloadAliases}
+                refreshing={aliasesLoading}
+              />
+            </>
           )}
         </>
       ) : (

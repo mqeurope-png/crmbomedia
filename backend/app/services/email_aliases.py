@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from sqlalchemy import ColumnElement, Select, func, or_, select
+from sqlalchemy import ColumnElement, Select, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.crm import (
@@ -75,6 +75,37 @@ def user_sender_addresses(session: Session, user_id: str) -> list[str]:
     return sorted({alias.strip().lower() for alias in rows if alias and alias.strip()})
 
 
+def addresses_of_others(session: Session, user_id: str) -> set[str]:
+    """Direcciones que son de OTRA persona: el correo de usuario de otro, o un
+    alias entrante registrado a nombre de otro comercial. Lo registrado a un
+    admin es de la organización (las bandejas de las webs y las marcas) y no
+    cuenta como de otro. En minúsculas."""
+    otros = {
+        email.strip().lower()
+        for email in session.scalars(select(User.email).where(User.id != user_id))
+        if email and email.strip()
+    }
+    registrados = session.scalars(
+        select(UserEmailAlias.alias_email)
+        .join(User, User.id == UserEmailAlias.user_id)
+        .where(UserEmailAlias.user_id != user_id, User.role != UserRole.ADMIN)
+    )
+    otros |= {alias.strip().lower() for alias in registrados if alias and alias.strip()}
+    return otros
+
+
+def visibility_addresses(session: Session, user: User) -> list[str]:
+    """Las direcciones por las que el usuario ve correo en «míos» (regla 3):
+    las que tiene marcadas como remitente suyo más su correo de usuario,
+    MENOS las que son de otra persona. El endpoint de preferencias es de cada
+    usuario y no está restringido; sin esta resta, marcar el alias de un
+    compañero daría lectura sobre todo su correo."""
+    propias = set(user_sender_addresses(session, user.id))
+    if user.email and user.email.strip():
+        propias.add(user.email.strip().lower())
+    return sorted(propias - addresses_of_others(session, user.id))
+
+
 def resolve_delivered_to(
     recipients: Iterable[str | None],
     alias_map: dict[str, str],
@@ -95,35 +126,66 @@ def resolve_delivered_to(
 #   1. Los correos que ha escrito el usuario (y los hilos que inició).
 #   2. Los hilos en los que ha participado, aunque los abriera otro (#538).
 #   3. Los correos enviados desde o dirigidos a una dirección que el usuario
-#      tiene marcada como remitente suyo (`user_email_alias_prefs.is_allowed`),
-#      más la entrada a sus alias registrados (`user_email_aliases`).
+#      tiene marcada como remitente suyo (`user_email_alias_prefs.is_allowed`,
+#      salvo que la dirección sea de otra persona), más la entrada a sus alias
+#      registrados (`user_email_aliases`).
 #   4. Cualquier correo de un contacto cuyo propietario sea el usuario, sea
 #      cual sea el remitente y el destinatario: el comercial que lleva un lead
 #      ve toda su correspondencia aunque la contestara un compañero desde otra
 #      dirección. Es lo que da sentido al reparto de leads de los formularios.
 # Admin ve TODO en la ficha y en «todos»; su bandeja personal también es la
 # SUYA (para ver todo usa scope=team).
+#
+# Las comparaciones van sin `lower()` en la columna, para que el planificador
+# pueda usar los índices: `from_email` se guarda en minúsculas al capturar y
+# `delivered_to` en la forma canónica del alias registrado, así que se
+# comparan contra esas formas.
 
 
 def _contactos_propios(user_id: str) -> Select[tuple[str]]:
     return select(Contact.id).where(Contact.owner_user_id == user_id)
 
 
-def my_messages_filter(session: Session, user: User) -> ColumnElement[bool]:
-    """Predicado a nivel de MENSAJE de las reglas 1, 3 y 4 (lo que el usuario
-    escribió, lo que entró o salió por sus direcciones, lo de sus contactos)."""
-    aliases = user_active_aliases(session, user.id)
-    remitentes = user_sender_addresses(session, user.id)
+def _formas_guardadas(session: Session, direcciones: list[str]) -> list[str]:
+    """Cómo pueden estar escritas esas direcciones en `from_email` y
+    `delivered_to`: en minúsculas, en la forma canónica del alias registrado
+    y tal cual están en las preferencias (el compositor guarda el alias tal
+    cual lo eligió)."""
+    if not direcciones:
+        return []
+    formas = set(direcciones)
+    alias_map = active_alias_map(session)
+    formas |= {alias_map[d] for d in direcciones if d in alias_map}
+    en_prefs = session.scalars(
+        select(UserEmailAliasPref.alias_email).where(
+            UserEmailAliasPref.alias_email.in_(direcciones)
+        )
+    )
+    formas |= {alias for alias in en_prefs if alias}
+    return sorted(formas)
+
+
+def _message_conditions(session: Session, user: User) -> list[ColumnElement[bool]]:
+    """Las condiciones a nivel de MENSAJE de las reglas 1, 3 y 4, una por
+    columna (así cada una puede ir por su índice)."""
     conditions: list[ColumnElement[bool]] = [
         EmailMessage.created_by_user_id == user.id,
         EmailMessage.contact_id.in_(_contactos_propios(user.id)),
     ]
+    aliases = user_active_aliases(session, user.id)
     if aliases:
         conditions.append(EmailMessage.delivered_to.in_(aliases))
-    if remitentes:
-        conditions.append(func.lower(EmailMessage.from_email).in_(remitentes))
-        conditions.append(func.lower(EmailMessage.delivered_to).in_(remitentes))
-    return or_(*conditions)
+    formas = _formas_guardadas(session, visibility_addresses(session, user))
+    if formas:
+        conditions.append(EmailMessage.from_email.in_(formas))
+        conditions.append(EmailMessage.delivered_to.in_(formas))
+    return conditions
+
+
+def my_messages_filter(session: Session, user: User) -> ColumnElement[bool]:
+    """Predicado a nivel de MENSAJE de las reglas 1, 3 y 4 (lo que el usuario
+    escribió, lo que entró o salió por sus direcciones, lo de sus contactos)."""
+    return or_(*_message_conditions(session, user))
 
 
 def personal_mailbox_filter(
@@ -131,15 +193,18 @@ def personal_mailbox_filter(
 ) -> ColumnElement[bool]:
     """Predicado «mi bandeja» a nivel de HILO: los hilos que el usuario
     inició, los de contactos de los que es propietario y los que tienen algún
-    mensaje suyo (`my_messages_filter`). SIEMPRE se aplica — la bandeja
-    personal de un admin también es la SUYA (para ver todo usa scope=team)."""
-    return or_(
+    mensaje suyo (una subconsulta por condición). SIEMPRE se aplica — la
+    bandeja personal de un admin también es la SUYA (para ver todo usa
+    scope=team)."""
+    conditions: list[ColumnElement[bool]] = [
         EmailThread.initiated_by_user_id == user.id,
         EmailThread.contact_id.in_(_contactos_propios(user.id)),
-        EmailThread.id.in_(
-            select(EmailMessage.thread_id).where(my_messages_filter(session, user))
-        ),
-    )
+    ]
+    for condicion in _message_conditions(session, user):
+        conditions.append(
+            EmailThread.id.in_(select(EmailMessage.thread_id).where(condicion))
+        )
+    return or_(*conditions)
 
 
 def thread_visibility_filter(

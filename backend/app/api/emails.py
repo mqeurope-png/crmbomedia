@@ -56,6 +56,7 @@ from app.services.email_aliases import (
     personal_mailbox_filter,
     thread_is_visible,
     thread_visibility_filter,
+    user_active_aliases,
 )
 
 router = APIRouter(prefix="/api/emails", tags=["emails"])
@@ -359,6 +360,21 @@ def upsert_alias_preferences(
                 row.is_allowed = False
                 row.is_default = False
                 row.user_opted_in = False
+            elif row is None and item.alias_email.strip().lower() == (
+                (current_user.email or "").strip().lower()
+            ):
+                # El alias propio aún sin fila (antes del primer sync) y
+                # desmarcado: el sync lo encendería por la regla por defecto,
+                # así que el rechazo se guarda ya.
+                row = UserEmailAliasPref(
+                    user_id=current_user.id,
+                    alias_email=item.alias_email,
+                    is_allowed=False,
+                    is_default=False,
+                    user_opted_in=False,
+                )
+                session.add(row)
+                existing[item.alias_email] = row
             continue
         if first_allowed is None:
             first_allowed = item.alias_email
@@ -1395,17 +1411,26 @@ def _looks_inline_summary(filename: str, size: object) -> bool:
 
 
 def _user_own_emails(session: Session, user: User) -> set[str]:
-    """Every address that belongs to the operator: their login email
-    plus every alias they've ever configured a preference for. Cheap
-    (one indexed query) and crucially does NOT hit Gmail, so it's safe
-    to call on every thread-detail open."""
+    """Every address that belongs to the operator: their login email, the
+    aliases they have marked as senders (`is_allowed`) and their registered
+    inbound aliases. Cheap (indexed queries) and crucially does NOT hit
+    Gmail, so it's safe to call on every thread-detail open.
+
+    Solo las filas ENCENDIDAS: el sync crea una fila apagada por cada alias
+    de la cuenta y usuario (y desde el 10/10/2026 desmarcar no la borra), así
+    que contar todas las filas haría «propia» la dirección de cualquier
+    compañero y rompería la sugerencia de «Responder»."""
     own = {user.email.lower()} if user.email else set()
     rows = session.scalars(
         select(UserEmailAliasPref.alias_email).where(
-            UserEmailAliasPref.user_id == user.id
+            UserEmailAliasPref.user_id == user.id,
+            UserEmailAliasPref.is_allowed.is_(True),
         )
     )
     for alias in rows:
+        if alias:
+            own.add(alias.lower())
+    for alias in user_active_aliases(session, user.id):
         if alias:
             own.add(alias.lower())
     return own

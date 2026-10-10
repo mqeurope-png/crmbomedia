@@ -99,8 +99,14 @@ cosas** (definido el 10/10/2026):
 3. Los correos **enviados desde o dirigidos a una dirección que el usuario
    tiene marcada como remitente suyo** (`user_email_alias_prefs.is_allowed`),
    más la entrada a sus alias registrados (`user_email_aliases`). Si Bart
-   marca `info@mboprinters.com` como suya, ve en «míos» lo que entra por ahí;
-   Manel, con `info@mbolasers.com`, ve lo suyo.
+   marca `info@mboprinters.com` como suya, ve en «míos» lo que entra por ahí
+   (la entrada se captura solo si la dirección está registrada como alias
+   entrante, a nombre de quien sea; lo registrado al admin es de la
+   organización); Manel, con `info@mbolasers.com`, ve lo suyo. **Marcar una
+   dirección de otra persona no da visibilidad sobre ella**: el correo de
+   usuario de un compañero y los alias entrantes registrados a nombre de un
+   comercial quedan fuera de esta regla (`visibility_addresses`), porque el
+   endpoint de preferencias es de cada usuario y no está restringido.
 4. **Cualquier correo de un contacto cuyo propietario sea el usuario**, sea
    cual sea el remitente y el destinatario: el comercial que lleva un lead ve
    toda su correspondencia aunque la contestara un compañero desde otra

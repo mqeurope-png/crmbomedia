@@ -54,14 +54,16 @@ def visibilidad_tras_sync(row: UserEmailAliasPref, *, es_propio: bool) -> bool:
 
 def normalizar_predeterminado(
     rows: Iterable[UserEmailAliasPref], *, user_email: str,
+    predeterminado_de_gmail: str | None = None,
 ) -> None:
     """Invariante: el predeterminado es uno y está visible.
 
     Un predeterminado apagado deja de serlo. Si quedan remitentes visibles y
-    ninguno es el predeterminado, pasa a serlo uno de los que el usuario
-    eligió; si no eligió ninguno, su alias propio si está visible; si no, el
-    primero por orden alfabético. Con más de uno, se queda el primero por ese
-    mismo orden."""
+    ninguno es el predeterminado, pasa a serlo, por este orden: uno de los que
+    el usuario eligió; el que Gmail tiene como predeterminado de la cuenta, si
+    le queda visible; su alias propio; el primero por orden alfabético. Con
+    más de uno, se queda el primero por ese mismo orden. Un predeterminado
+    que el usuario ya tenía no se toca."""
     filas = list(rows)
     for row in filas:
         if row.is_default and not row.is_allowed:
@@ -70,12 +72,15 @@ def normalizar_predeterminado(
     if not visibles:
         return
     email = (user_email or "").strip().lower()
+    de_gmail = (predeterminado_de_gmail or "").strip().lower()
 
-    def _orden(row: UserEmailAliasPref) -> tuple[bool, bool, str]:
+    def _orden(row: UserEmailAliasPref) -> tuple[bool, bool, bool, str]:
+        alias = row.alias_email.strip().lower()
         return (
             row.user_opted_in is not True,
-            row.alias_email.strip().lower() != email,
-            row.alias_email.lower(),
+            not de_gmail or alias != de_gmail,
+            alias != email,
+            alias,
         )
 
     predeterminados = sorted((r for r in visibles if r.is_default), key=_orden)
@@ -154,17 +159,12 @@ def sync_send_as_aliases(session: Session, *, user_id: str) -> int:
             row.is_default = False
             row.updated_at = now
 
-    todas = [*existing.values(), *nuevas]
-    # Sin predeterminado entre los visibles: el de Gmail, solo si le queda
-    # visible; si no, `normalizar_predeterminado` elige (propio o primero).
-    if predeterminado_de_gmail and not any(r.is_default and r.is_allowed for r in todas):
-        candidata = next(
-            (r for r in todas if r.alias_email.strip().lower() == predeterminado_de_gmail),
-            None,
-        )
-        if candidata is not None and candidata.is_allowed:
-            candidata.is_default = True
-    normalizar_predeterminado(todas, user_email=user_email)
+    # Predeterminado: uno y visible. El de Gmail solo cuenta si al usuario le
+    # queda visible, y por detrás de lo que él eligió.
+    normalizar_predeterminado(
+        [*existing.values(), *nuevas], user_email=user_email,
+        predeterminado_de_gmail=predeterminado_de_gmail,
+    )
 
     session.flush()
     return processed
