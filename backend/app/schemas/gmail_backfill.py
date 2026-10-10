@@ -42,6 +42,8 @@ class BackfillUniversalRequest(BaseModel):
     labels: list[GmailLabel] = Field(default_factory=lambda: ["INBOX", "SPAM", "SENT"])
     dry_run: bool = False
     dry_run_limit: int = Field(default=5000, ge=1, le=50000)
+    # Peticiones por segundo a Gmail para este job; sin él, GMAIL_BACKFILL_RPS.
+    rps: float | None = Field(default=None, gt=0, le=50)
 
 
 # PR-Auto-Backfill-Gmail-Por-Contacto -----------------------------------

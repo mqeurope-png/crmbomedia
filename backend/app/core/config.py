@@ -107,6 +107,16 @@ class Settings(BaseSettings):
     # (tokens ilimitados, no hace falta avisar).
     gmail_app_verified: bool = False
 
+    # Relleno de Gmail (backfill universal): ritmo y reintentos. La cuota de la
+    # Gmail API se cuenta por usuario y por minuto; a tope, el recorrido moría
+    # con «403 rateLimitExceeded» a los veinte segundos (09/10/2026). Dos
+    # peticiones por segundo (600 unidades/min con get/list a 5) dejan margen
+    # al push en tiempo real que comparte la cuota; 0 desactiva el paso. Si
+    # Google pide esperar, se reintenta con espera creciente hasta este número
+    # de veces antes de parar con informe y punto de reanudación.
+    gmail_backfill_rps: float = 2.0
+    gmail_backfill_max_retries: int = 7
+
     # Sprint Email v2.2b — Supabase backing composer.bomedia.net. When
     # unset, the "Composer" tab in the template picker shows a clear
     # "not configured" notice instead of breaking the picker. Both keys

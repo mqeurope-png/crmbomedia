@@ -12,8 +12,12 @@ Todos operan sobre la cuenta Google ORG única (`connected_by_user_id`).
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+import tempfile
 from datetime import date, timedelta
+from pathlib import Path
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -76,12 +80,46 @@ def unregister_watch() -> None:
         print("OK unregister_watch" if removed else "no había watch")
 
 
+def _ruta_checkpoint_por_defecto(
+    since: date, until: date, labels: list[str], dry_run: bool,
+) -> Path:
+    """Un fichero por rango, labels y modo en el directorio temporal: relanzar
+    el mismo comando encuentra su punto de reanudación sin más flags."""
+    nombre = (
+        f"gmail_backfill_universal_{since:%Y%m%d}_{until:%Y%m%d}_"
+        f"{'-'.join(labels)}_{'seco' if dry_run else 'real'}.json"
+    )
+    return Path(tempfile.gettempdir()) / nombre
+
+
+def _leer_checkpoint(ruta: Path) -> dict[str, Any] | None:
+    try:
+        datos = json.loads(ruta.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        print(f"⚠ No se pudo leer el punto de reanudación {ruta}; se empieza desde el principio.")
+        return None
+    return datos if isinstance(datos, dict) and datos.get("label") else None
+
+
+def _guardar_checkpoint(ruta: Path, punto: dict[str, Any]) -> None:
+    provisional = ruta.with_name(ruta.name + ".tmp")
+    provisional.write_text(json.dumps(punto, ensure_ascii=False), encoding="utf-8")
+    provisional.replace(ruta)
+
+
 def backfill_universal(argv: list[str]) -> None:
-    """CRM-GMAIL-BACKFILL — reprocesa el histórico con captura universal."""
+    """CRM-GMAIL-BACKFILL — reprocesa el histórico con captura universal.
+
+    Va al ritmo de `GMAIL_BACKFILL_RPS` (o `--rps`), reintenta cuando Gmail
+    pide parar y, si aun así se para antes de tiempo, imprime el informe de lo
+    procesado (INCOMPLETO, con el motivo y hasta dónde llegó), deja el punto de
+    reanudación en un fichero y sale con código 2: relanzar el MISMO comando
+    continúa donde se quedó."""
     parser = argparse.ArgumentParser(
         prog="python -m app.integrations.gmail_watch backfill_universal",
         description="Reprocesa el histórico Gmail capturando TODO mail a un "
-        "alias activo del CRM (no solo de contactos conocidos).",
+        "alias activo del CRM (no solo de contactos conocidos) y TODO lo "
+        "enviado (SENT).",
     )
     parser.add_argument(
         "--since", type=date.fromisoformat, default=None,
@@ -93,8 +131,9 @@ def backfill_universal(argv: list[str]) -> None:
     )
     parser.add_argument("--dry-run", action="store_true",
                         help="No escribe nada; solo cuenta.")
-    parser.add_argument("--dry-run-limit", type=int, default=500,
-                        help="Máx. mensajes a examinar en dry-run (default 500).")
+    parser.add_argument("--dry-run-limit", type=int, default=5000,
+                        help="Máx. mensajes a examinar en dry-run (default 5000). Al "
+                        "llegar se para con punto de reanudación.")
     parser.add_argument(
         "--labels", default="INBOX,SPAM,SENT",
         help="Labels de Gmail, coma-separadas (default INBOX,SPAM,SENT — "
@@ -111,6 +150,27 @@ def backfill_universal(argv: list[str]) -> None:
         "marcarlo gmail_status='deleted_gmail' (huérfano) en vez de "
         "contarlo como error.",
     )
+    parser.add_argument(
+        "--rps", type=float, default=None,
+        help="Peticiones por segundo a Gmail (default: GMAIL_BACKFILL_RPS, 2). "
+        "0 = sin marcar el paso.",
+    )
+    parser.add_argument(
+        "--max-reintentos", type=int, default=None,
+        help="Reintentos con espera creciente cuando Gmail pide parar (403 "
+        "rateLimitExceeded, 429, 5xx) antes de parar con informe (default: "
+        "GMAIL_BACKFILL_MAX_RETRIES, 7).",
+    )
+    parser.add_argument(
+        "--checkpoint", type=Path, default=None,
+        help="Fichero del punto de reanudación (default: uno en el directorio "
+        "temporal según rango, labels y modo). Si existe, se continúa desde él.",
+    )
+    parser.add_argument("--desde-cero", action="store_true",
+                        help="Ignora el punto de reanudación guardado y empieza "
+                        "por el principio.")
+    parser.add_argument("--sin-checkpoint", action="store_true",
+                        help="No lee ni guarda puntos de reanudación.")
     args = parser.parse_args(argv)
 
     since = args.since or (date.today() - timedelta(days=183))
@@ -118,30 +178,53 @@ def backfill_universal(argv: list[str]) -> None:
     labels = [lbl.strip().upper() for lbl in args.labels.split(",") if lbl.strip()]
 
     from app.integrations.gmail.backfill_universal import (  # noqa: PLC0415
+        describir_checkpoint,
         run_backfill_universal,
     )
+    from app.integrations.gmail.ritmo import ritmo_desde_ajustes  # noqa: PLC0415
     from app.services.email_aliases import active_alias_map  # noqa: PLC0415
+
+    ruta: Path | None = None
+    if not args.sin_checkpoint:
+        ruta = args.checkpoint or _ruta_checkpoint_por_defecto(
+            since, until, labels, args.dry_run,
+        )
+    reanudar: dict[str, Any] | None = None
+    if ruta is not None and ruta.exists() and not args.desde_cero:
+        reanudar = _leer_checkpoint(ruta)
 
     with Session(get_engine()) as session:
         user_id = _org_user_id(session)
         alias_map = active_alias_map(session)
-        if not alias_map:
+        solo_sent = all(lbl == "SENT" for lbl in labels)
+        if not alias_map and not solo_sent:
             print(
                 "Sin alias activos en user_email_aliases. Añádelos en "
-                "/admin/users antes de reprocesar. Aborta."
+                "/admin/users antes de reprocesar la entrada (solo SENT no los "
+                "necesita). Aborta."
             )
             raise SystemExit(1)
 
-        print(f"Alias activos ({len(alias_map)}): {', '.join(sorted(alias_map.values()))}")
-        print()
-        print(
-            "⚠️  Verifica que los alias en /admin/users están COMPLETOS antes de "
-            "continuar."
-        )
-        print(
-            "   Los mails dirigidos a un alias que NO esté configurado se "
-            "descartarán (se listan al final del report)."
-        )
+        if alias_map:
+            print(f"Alias activos ({len(alias_map)}): {', '.join(sorted(alias_map.values()))}")
+        else:
+            print("Sin alias registrados: solo SENT, que no los necesita.")
+        if not solo_sent:
+            print()
+            print(
+                "⚠️  Verifica que los alias en /admin/users están COMPLETOS antes de "
+                "continuar."
+            )
+            print(
+                "   Los mails dirigidos a un alias que NO esté configurado se "
+                "descartarán (se listan al final del report)."
+            )
+        if reanudar is not None:
+            print()
+            print(
+                f"↻ Se reanuda desde el punto guardado en {ruta}: "
+                f"{describir_checkpoint(reanudar)}."
+            )
         if not args.yes:
             try:
                 resp = input(
@@ -155,6 +238,16 @@ def backfill_universal(argv: list[str]) -> None:
                 print("Cancelado.")
                 return
 
+        ritmo = ritmo_desde_ajustes(args.rps, max_reintentos=args.max_reintentos)
+        print(
+            f"Ritmo: {ritmo.peticiones_por_segundo or 'sin límite'} peticiones/s, "
+            f"hasta {ritmo.max_reintentos} reintentos si Gmail pide esperar."
+        )
+
+        def _punto(cp: dict[str, Any], _informe: Any) -> None:
+            if ruta is not None:
+                _guardar_checkpoint(ruta, cp)
+
         report = run_backfill_universal(
             session,
             user_id=user_id,
@@ -166,11 +259,24 @@ def backfill_universal(argv: list[str]) -> None:
             labels=labels,
             batch_size=args.batch_size,
             alias_map=alias_map,
-            sleep_between_pages=0.0 if args.dry_run else 0.5,
             progress=print,
+            ritmo=ritmo,
+            reanudar=reanudar,
+            on_checkpoint=_punto if ruta is not None else None,
         )
         print()
         print(report.render())
+        if not report.terminado:
+            if ruta is not None:
+                print()
+                print(f"Punto de reanudación guardado en {ruta}.")
+                print(
+                    "Para continuar donde se quedó, relanza el MISMO comando (mismo "
+                    "rango, labels y modo); con --desde-cero empieza de nuevo."
+                )
+            raise SystemExit(2)
+        if ruta is not None and ruta.exists():
+            ruta.unlink()
 
 
 def backfill_attachments(argv: list[str]) -> None:

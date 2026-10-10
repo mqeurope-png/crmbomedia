@@ -231,6 +231,15 @@ def recuperar_hueco_job(user_id: str, dias: int) -> int:
                     )
                     continue
                 recuperados += informe.imported_linked + informe.imported_orphan
+                if getattr(informe, "incompleto", False):
+                    # El recorrido ya no sube la cuota agotada: devuelve el
+                    # informe parcial. Cuenta como día fallido (lo guardado se
+                    # queda; al relanzar, el dedupe lo salta).
+                    fallidos += 1
+                    logger.warning(
+                        "gmail.recuperar_hueco día %s incompleto user_id=%s: %s (%s)",
+                        dia, user_id, informe.motivo_parada, informe.hasta_donde,
+                    )
         logger.warning(
             "gmail.recuperar_hueco user_id=%s dias=%s recuperados=%s "
             "dias_fallidos=%s", user_id, dias, recuperados, fallidos,
