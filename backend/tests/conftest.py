@@ -20,6 +20,10 @@ os.environ.setdefault("VIES_ENABLED", "false")
 # clave falsa y parchean `_invoke_claude`. Se VACÍA (no `setdefault`): una clave
 # real en el `.env` o en la shell de quien lanza la suite no debe colarse.
 os.environ["ANTHROPIC_API_KEY"] = ""
+# Relleno de Gmail: sin marcar el paso en los tests (los falsos no gastan
+# cuota y 2 peticiones/s haría esperar medio segundo por mensaje). Los tests
+# del ritmo inyectan su propio `Ritmo` con reloj y «dormir» falsos.
+os.environ.setdefault("GMAIL_BACKFILL_RPS", "0")
 
 
 @pytest.fixture(autouse=True)

@@ -118,27 +118,51 @@ workflows ni ensucia timelines con correo viejo, y `imported_via =
 
 ```bash
 python -m app.integrations.gmail_watch backfill_universal \
-  --since 2026-02-07 [--until 2026-08-07] [--dry-run] [--dry-run-limit 500] \
-  [--labels INBOX,SPAM] [--yes] [--batch-size 100]
+  --since 2026-02-07 [--until 2026-08-07] [--dry-run] [--dry-run-limit 5000] \
+  [--labels INBOX,SPAM,SENT] [--yes] [--batch-size 100] \
+  [--rps 2] [--max-reintentos 7] [--checkpoint RUTA | --sin-checkpoint] [--desde-cero]
 ```
 
-- **Prerequisito**: los alias en `/admin/users` deben estar **completos**. Un
-  mail a un alias que no esté en la BD se descarta silenciosamente; el comando
-  los cuenta y los lista al final («Descartados por alias»). El comando pide
-  confirmación al arrancar (salta con `--yes`).
+- **Prerequisito** (si se repasa la entrada): los alias en `/admin/users` deben
+  estar **completos**. Un mail a un alias que no esté en la BD se descarta
+  silenciosamente; el comando los cuenta y los lista al final («Descartados por
+  alias»). Solo `--labels SENT` no los necesita. El comando pide confirmación al
+  arrancar (salta con `--yes`).
 - **`--dry-run`**: no escribe nada; solo cuenta cuántos mails caerían por rama
   (importable con contacto / huérfano / spam / dedupe / sin alias). `--dry-run-limit`
-  (default 500) acota los mensajes examinados por rendimiento.
-- **Idempotente**: dedupe por `(gmail_account_user_id, gmail_message_id)`.
+  (default 5000) acota los mensajes examinados; al llegar se para con punto de
+  reanudación, así que un seco largo puede hacerse a trozos.
+- **Idempotente**: dedupe por `gmail_message_id` en todas las cuentas.
   Re-ejecutar con la misma fecha solo importa lo que faltaba (el resto se salta).
+- **Ritmo y reintentos**: la cuota de la Gmail API es por usuario y por minuto, y
+  cada `messages.get` y `messages.list` gastan de ella. El recorrido marca el
+  paso (`--rps`, default `GMAIL_BACKFILL_RPS` = 2 peticiones/s; 0 lo quita) y, si
+  Google contesta `403 rateLimitExceeded`, `429` o `5xx`, espera (1 s, 2 s, 4 s…
+  con algo de azar, respetando `Retry-After`) y reintenta hasta
+  `--max-reintentos` (default `GMAIL_BACKFILL_MAX_RETRIES` = 7). Solo si sigue
+  negándose se para. A tope, sin esto, Google lo cortaba a los veinte segundos.
+- **Nunca se cae sin informe**: si se para antes de tiempo (cuota agotada, error
+  al listar, Ctrl+C, tope del seco) imprime igualmente lo procesado, marcado
+  **INCOMPLETO** con el motivo y hasta dónde llegó (etiqueta, página, día más
+  antiguo visto), y sale con código 2. Un mensaje suelto que falla se cuenta, se
+  lista en «Mensajes con error» y el recorrido sigue.
+- **Reanudable**: tras cada página guarda un punto de reanudación (etiqueta,
+  `pageToken`, ids ya hechos de esa página, día más antiguo visto y los
+  recuentos) en un fichero del directorio temporal, uno por rango, labels y modo
+  (`--checkpoint RUTA` para elegirlo). **Relanzar el mismo comando continúa
+  donde se quedó**, también en seco (que no escribe nada y antes volvía a
+  empezar); `--desde-cero` lo ignora. Si Gmail rechaza el token guardado, la
+  etiqueta sigue por fecha desde el día más antiguo visto (el solape lo absorbe
+  el dedupe). Al terminar entero, el fichero se borra.
 - **Spam**: los mails con label `SPAM` entran con `is_spam=true` (igual que el
   push); no se ocultan (chip «Spam», o `?exclude_spam=true` en la lista).
 - Corre en **foreground** en el proceso invocado (sin cola RQ). Para runs largos:
   `nohup docker exec crmbo-api-1 python -m app.integrations.gmail_watch \
   backfill_universal --since 2026-02-07 --yes > /root/backfill-$(date +%F).log 2>&1 &`.
 
-El report final resume totales + duración + los alias que descartaron mails
-(ordenados por número), con la sugerencia de añadirlos y re-ejecutar.
+El report final resume totales + duración + peticiones a Gmail y esperas por
+cuota + los alias que descartaron mails (ordenados por número), con la
+sugerencia de añadirlos y re-ejecutar.
 
 ## Direcciones — inbound vs outbound (captura de salida universal)
 
@@ -201,16 +225,27 @@ motor y el mismo informe:
 1. **Job `universal` de `gmail_backfill_jobs`** (lo atiende `worker-gmail`,
    cola `gmail:backfill_historic`): `POST /api/admin/gmail/backfill/universal`
    con `{"since": "2026-07-15", "until": "2026-10-10", "labels": ["SENT"],
-   "dry_run": true}`. En seco no escribe nada y el `result` del job
-   (`GET /api/admin/gmail/backfill/{id}`) trae `enviados_por_remitente` y
-   `enviados_por_usuario`: cuántos recuperaría y de quién. Repetirlo con
-   `"dry_run": false` los guarda. Se cancela como los demás jobs.
+   "dry_run": true}` (opcional `"rps"` para este job). En seco no escribe nada
+   y el `result` del job (`GET /api/admin/gmail/backfill/{id}`) trae
+   `enviados_por_remitente` y `enviados_por_usuario`: cuántos recuperaría y de
+   quién. Repetirlo con `"dry_run": false` los guarda. Se cancela como los
+   demás jobs. Si se para antes de tiempo (cuota de Gmail agotada tras los
+   reintentos, error al listar) queda `failed` con el motivo en
+   `error_summary` y el punto de reanudación en `result.checkpoint`;
+   **`POST /api/admin/gmail/backfill/{id}/resume`** lo vuelve a encolar y
+   continúa donde iba, acumulando los recuentos (el tope del seco,
+   `dry_run_limit` = 5000, también deja punto de reanudación, con el job
+   `completed` e `incompleto: true` en el `result`). Mientras corre, el
+   `result` lleva `en_curso` y el último punto guardado.
 2. **CLI**, en primer plano desde el contenedor `api`:
 
 ```bash
-# Primero en seco, un tramo corto, y mirar el informe por remitente.
+# Primero en seco, y mirar el informe por remitente. Va a 2 peticiones/s
+# (GMAIL_BACKFILL_RPS): unos minutos por cada mil mensajes.
 docker exec crmbo-api-1 python -m app.integrations.gmail_watch backfill_universal \
-  --since 2026-10-01 --until 2026-10-10 --labels SENT --dry-run --dry-run-limit 5000 --yes
+  --since 2026-07-15 --until 2026-10-10 --labels SENT --dry-run --yes
+# Si se para (cuota, Ctrl+C), imprime igual lo que lleva y relanzar el MISMO
+# comando continúa donde se quedó.
 # Después el tramo entero, de verdad.
 nohup docker exec crmbo-api-1 python -m app.integrations.gmail_watch backfill_universal \
   --since 2026-07-15 --until 2026-10-10 --labels SENT --yes > /root/backfill-sent-$(date +%Y%m%d).log 2>&1 &

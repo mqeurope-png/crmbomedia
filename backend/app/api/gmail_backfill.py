@@ -230,6 +230,8 @@ def gmail_backfill_universal(
         "dry_run": payload.dry_run,
         "dry_run_limit": payload.dry_run_limit,
     }
+    if payload.rps is not None:
+        config["rps"] = payload.rps
     job = _create_job(
         session, mode=GmailBackfillMode.UNIVERSAL, config=config, user=current_user,
     )
@@ -337,6 +339,77 @@ def gmail_backfill_cancel(
         request=request,
     )
     session.commit()
+    return _job_to_read(job)
+
+
+@router.post(
+    "/admin/gmail/backfill/{job_id}/resume",
+    response_model=BackfillJobRead,
+)
+def gmail_backfill_resume(
+    job_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_admin),
+) -> BackfillJobRead:
+    """Reanuda un job `universal` que se paró antes de tiempo (cuota de Gmail
+    agotada tras los reintentos, error al listar, cancelado, tope del seco):
+    vuelve a encolarlo y el runner continúa desde el punto de reanudación que
+    dejó en `result.checkpoint` (etiqueta, página, ids ya hechos). Los
+    recuentos siguen acumulando. 409 si el job sigue en marcha, no es
+    `universal` o terminó entero (no hay nada que reanudar)."""
+    from app.integrations.gmail.backfill_universal import (  # noqa: PLC0415
+        checkpoint_del_job,
+        describir_checkpoint,
+    )
+
+    job = session.get(GmailBackfillJob, job_id)
+    if job is None:
+        raise not_found("Gmail backfill job")
+    if job.mode != GmailBackfillMode.UNIVERSAL.value:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Solo los jobs de modo «universal» se reanudan.",
+        )
+    if job.status not in {
+        GmailBackfillStatus.COMPLETED.value,
+        GmailBackfillStatus.FAILED.value,
+        GmailBackfillStatus.CANCELLED.value,
+    }:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"El job sigue en marcha ({job.status}); no hay nada que reanudar.",
+        )
+    checkpoint = checkpoint_del_job(job)
+    if checkpoint is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="El job terminó entero: no dejó punto de reanudación.",
+        )
+    estado_previo = job.status
+    job.status = GmailBackfillStatus.QUEUED.value
+    job.error_summary = None
+    job.finished_at = None
+    job.updated_at = datetime.now(UTC)
+    record_event(
+        session,
+        action=Action.GMAIL_BACKFILL_TRIGGERED,
+        target_type="gmail_backfill_job",
+        target_id=job.id,
+        actor=current_user,
+        metadata={
+            "mode": "universal",
+            "resumed": True,
+            "previous_status": estado_previo,
+            "desde": describir_checkpoint(checkpoint),
+        },
+        request=request,
+    )
+    session.commit()
+    try:
+        enqueue_backfill(job.id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("gmail.backfill.universal resume enqueue failed: %s", exc)
     return _job_to_read(job)
 
 
