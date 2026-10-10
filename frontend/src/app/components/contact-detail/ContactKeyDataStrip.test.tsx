@@ -54,8 +54,14 @@ test("sin origen en el CRM, el vínculo sirve de respaldo", () => {
   expect(valorDe("Origen del lead")).toBe("AgileCRM · artisjet-europe");
 });
 
-test("sin origen y sin vínculos no se inventa nada", () => {
+test("sin origen y sin vínculos no se inventa nada, ni gasta sitio", () => {
   pinta({ origin: "   " });
-  expect(valorDe("Origen del lead")).toBe("—");
+  // La fila de datos clave omite lo vacío: ni «—» ni «Sin empresa».
+  expect(screen.queryByText("Origen del lead")).not.toBeInTheDocument();
   expect(screen.queryByText("Sincronizado con")).not.toBeInTheDocument();
+  expect(screen.queryByText("Empresa")).not.toBeInTheDocument();
+  expect(screen.queryByText("Teléfono")).not.toBeInTheDocument();
+  // El email y el score (editable) siempre están.
+  expect(valorDe("Email")).toContain("otrotest@otrotest.com");
+  expect(screen.getByText("Score")).toBeInTheDocument();
 });
