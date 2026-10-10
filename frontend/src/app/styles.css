@@ -8731,6 +8731,122 @@ tr.is-inactive {
 }
 
 /* ------------------------------------------------------------------ */
+/* Ficha del contacto · análisis de la IA (recuadro del Resumen y       */
+/* pestaña «Análisis IA») y recuadro «Pipelines vinculados».            */
+/* ------------------------------------------------------------------ */
+.contact-lead-ia-dl {
+  display: grid;
+  grid-template-columns: minmax(0, 7rem) minmax(0, 1fr);
+  gap: 6px 12px;
+  margin: 0;
+}
+.contact-lead-ia-dl-row { display: contents; }
+.contact-lead-ia-dl dt {
+  margin: 0;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+  padding-top: 2px;
+}
+.contact-lead-ia-dl dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.contact-lead-ia-motivo,
+.contact-lead-ia-nota {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.contact-lead-ia-nota + .contact-lead-ia-nota { margin-top: 2px; }
+.contact-lead-ia-consulta {
+  margin: 0;
+  padding: 10px 14px;
+  border-left: 3px solid var(--color-primary);
+  background: var(--color-bg-light);
+  border-radius: 0 8px 8px 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.contact-lead-ia-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.contact-lead-ia-item {
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.contact-lead-ia-item-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.contact-lead-ia-item-header h3 { margin: 0; font-size: 0.95rem; }
+.contact-lead-ia-item h4 {
+  margin: 0 0 6px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+}
+.contact-lead-ia-correccion {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+}
+.contact-lead-ia-correccion label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.82rem;
+}
+.contact-lead-ia-correccion label.is-check {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 6px;
+}
+.contact-lead-ia-correccion .form-error { flex-basis: 100%; margin: 0; }
+
+.contact-pipelines-summary {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.contact-pipelines-summary-row { display: flex; flex-direction: column; gap: 2px; }
+.contact-pipelines-summary-row p { margin: 0; }
+.contact-pipelines-summary-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+}
+.contact-pipelines-summary-row.is-overdue .contact-pipelines-summary-stage {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+/* Lista de contactos: «Creado en origen» sin fecha de origen enseña la de alta. */
+.contact-created-fallback { white-space: nowrap; }
+
+/* ------------------------------------------------------------------ */
 /* PR-C Rebranding — dashboard layout                                 */
 /* ------------------------------------------------------------------ */
 .dashboard-page {

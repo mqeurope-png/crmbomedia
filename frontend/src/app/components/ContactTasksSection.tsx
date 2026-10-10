@@ -8,17 +8,13 @@ import {
   listContactTasks,
   type Task,
 } from "../lib/tasksApi";
-import { formatBackendDateTime } from "../lib/dates";
+import { formatBackendDateTimeCompact } from "../lib/dates";
 import { extractErrorMessage } from "../lib/errors";
 import { TaskModal } from "./TaskModal";
 
+// Con el año cuando la fecha no es del año en curso (como en Tareas).
 const formatDateTime = (value: string | null | undefined) =>
-  formatBackendDateTime(value, {
-    day: "2-digit",
-    month: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  formatBackendDateTimeCompact(value);
 
 /** Tasks tied to a single contact. Replaces the static "Tareas
  * pendientes" card on the contact detail page with a real list

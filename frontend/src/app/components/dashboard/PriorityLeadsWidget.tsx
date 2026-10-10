@@ -34,7 +34,7 @@ import {
   type DashboardWindow,
   type PriorityLead,
 } from "../../lib/dashboardApi";
-import { parseBackendDate } from "../../lib/dates";
+import { formatBackendDateCompact, parseBackendDate } from "../../lib/dates";
 import { usePersistentState } from "../../lib/usePersistentState";
 import { PeriodSelector } from "./PeriodSelector";
 
@@ -56,10 +56,8 @@ function relative(value: string): string {
   if (day === 0) return "hoy";
   if (day === 1) return "ayer";
   if (day < 30) return `hace ${day}d`;
-  return target.toLocaleDateString("es-ES", {
-    day: "2-digit",
-    month: "short",
-  });
+  // Con el año cuando la fecha no es del año en curso (como en Tareas).
+  return formatBackendDateCompact(value);
 }
 
 export function PriorityLeadsWidget() {

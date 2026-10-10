@@ -5305,6 +5305,20 @@ export type LeadClasificacion = {
     cuando: string | null;
   };
   creado: string | null;
+  /** Para la ficha del contacto: la consulta entera (sin recortar), el
+   *  contexto de entrada (web, formulario, idioma del formulario, productos,
+   *  país…) y la discrepancia de idioma en palabras. */
+  texto_completo?: string;
+  contexto?: Record<string, unknown>;
+  idioma_discrepancia_texto?: string | null;
+};
+
+/** Las clasificaciones de un contacto, la última arriba (ficha del contacto). */
+export type LeadClasificacionesContacto = {
+  umbral_confianza: number;
+  total: number;
+  items: LeadClasificacion[];
+  opciones: { idiomas: string[]; intereses: { id: string; label: string }[] };
 };
 
 export type LeadClasificaciones = {
@@ -5385,6 +5399,16 @@ export type LeadWorkflowEstado = {
 
 export async function listLeadClasificaciones(dias = 15): Promise<LeadClasificaciones> {
   return apiFetch<LeadClasificaciones>(`/api/erp/leads/clasificaciones${qs({ dias })}`);
+}
+
+/** Todas las clasificaciones de un contacto, la última arriba. Lo ve quien ve
+ *  la ficha; corregir sigue exigiendo `erp.config`. */
+export async function listContactLeadClasificaciones(
+  contactId: string,
+): Promise<LeadClasificacionesContacto> {
+  return apiFetch<LeadClasificacionesContacto>(
+    `/api/erp/leads/contactos/${encodeURIComponent(contactId)}`,
+  );
 }
 
 /** La corrección a mano: queda registrada y manda en la ficha del contacto. */

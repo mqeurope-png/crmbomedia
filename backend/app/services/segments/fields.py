@@ -23,6 +23,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from sqlalchemy import func
+
 from app.models.crm import (
     Contact,
     ContactPipelineStage,
@@ -50,6 +52,10 @@ class FieldSpec:
     type: str  # string | int | bool | date | enum | reference | tag-multi | uuid-multi | json
     comparators: tuple[str, ...]
     column: Any | None = None
+    # Expresión por la que se ORDENA cuando no es la propia columna (p. ej.
+    # un COALESCE). Filtrar y serializar siguen usando `column`: así un
+    # «Creado en origen» vacío sigue siendo vacío al filtrar y en la fila.
+    sort_column: Any | None = None
     enum_values: tuple[str, ...] = ()
     # Texto que ve la persona para cada valor de la enum («mbolasers» →
     # «mbolasers.com»). Vacío = se enseña el valor tal cual.
@@ -595,6 +601,12 @@ FIELD_SPECS: dict[str, FieldSpec] = {
         type="date",
         comparators=_DATE,
         column=Contact.created_at_external,
+        # Sin fecha de origen (contacto nacido de un formulario web: 1.959 de
+        # 22.299 el 10/10/2026) se ordena por la fecha de alta en BoHub: así
+        # el lead más nuevo aparece donde le toca y no al final de la lista.
+        # La fila sigue llevando el valor real (NULL) y la celda enseña la de
+        # alta con una marca; filtrar «vacío» sigue encontrándolos.
+        sort_column=func.coalesce(Contact.created_at_external, Contact.created_at),
         sortable=True,
         default_visible=True,
         grouped_under="Origen",

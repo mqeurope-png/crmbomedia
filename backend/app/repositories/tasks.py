@@ -303,10 +303,12 @@ def buckets_for_user(
     if user_id is not None:
         base = base.where(Task.assigned_user_id == user_id)
 
+    # Vencidas de más reciente a más antigua: lo de la semana pasada arriba
+    # y la arqueología de hace dos años al final, no al revés.
     overdue = list(
         session.scalars(
             base.where(and_(Task.due_at.is_not(None), Task.due_at < now))
-            .order_by(Task.due_at.asc())
+            .order_by(Task.due_at.desc())
             .limit(limit_per_bucket)
         )
     )

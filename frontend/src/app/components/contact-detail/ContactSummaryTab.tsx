@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Pestaña "Resumen" de la ficha contacto BoHub (PR-D). 4 cards:
+ * Pestaña "Resumen" de la ficha contacto BoHub (PR-D). 2 cards:
  *
  *   - Actividad reciente: timeline último 5 con icono color por tipo.
  *   - Engagement por email (30 días): aperturas / clics / respuestas.
@@ -9,9 +9,11 @@
  *     `activity_events` (donde se quedaba en 0) a
  *     `GET /api/contacts/{id}/engagement-stats`, que lee de
  *     `email_message_events` igual que la lista global `/emails`.
- *   - Oportunidades vinculadas: mini-tabla. Placeholder hasta que
- *     ContactPipelinesSection se "headless-ifique".
- *   - Incidencias recientes: placeholder hasta integración Freshdesk.
+ *
+ * Los placeholders «Pipelines vinculados» e «Incidencias recientes» que
+ * vivían aquí ya no existen: el primero es un recuadro real
+ * (`ContactPipelinesSummaryCard`) y el segundo se quitó (la integración de
+ * soporte no está en el horizonte y el recuadro solo decía «sin incidencias»).
  */
 import {
   ArrowUpRight,
@@ -218,40 +220,6 @@ export function ContactSummaryTab({
           </div>
         </div>
       </article>
-
-      {/* PR-Ficha-Cleanup: Oportunidades vinculadas + Incidencias se
-          mueven a un componente independiente que el page renderiza al
-          FINAL del grid, después de los cards con datos reales. */}
     </div>
-  );
-}
-
-/** PR-Ficha-Cleanup. Cards placeholder que vivían inline en la pestaña
- *  Resumen. Bart pidió moverlas al final del grid porque ocupaban
- *  posición prime sin aportar datos. La página las monta tras los
- *  cards "Tags", "Notas recientes", etc. */
-export function ContactSummaryPlaceholderCards() {
-  return (
-    <>
-      <article className="card contact-summary-card">
-        <header className="contact-summary-card-header">
-          <h3>Pipelines vinculados</h3>
-        </header>
-        <p className="muted small">
-          Próximamente — vista resumida del pipeline. Consulta la pestaña{" "}
-          <em>Pipelines</em> para ver el detalle.
-        </p>
-      </article>
-
-      <article className="card contact-summary-card">
-        <header className="contact-summary-card-header">
-          <h3>Incidencias recientes</h3>
-        </header>
-        <p className="muted small">
-          Sin incidencias. Integración Freshdesk pendiente (módulo Soporte
-          en desarrollo).
-        </p>
-      </article>
-    </>
   );
 }

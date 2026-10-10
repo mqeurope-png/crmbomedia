@@ -13,18 +13,12 @@ import {
   listSegments,
   type Segment,
 } from "../lib/api";
+import { formatBackendDateTimeCompact } from "../lib/dates";
 import { extractErrorMessage } from "../lib/errors";
 
 function relativeDate(value: string | null | undefined): string {
-  if (!value) return "—";
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return "—";
-  return parsed.toLocaleString("es-ES", {
-    day: "2-digit",
-    month: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  // Con el año cuando la fecha no es del año en curso (como en Tareas).
+  return formatBackendDateTimeCompact(value);
 }
 
 export default function SegmentsListPage() {

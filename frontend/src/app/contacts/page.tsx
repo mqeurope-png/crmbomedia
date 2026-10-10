@@ -78,6 +78,7 @@ import {
   type User,
 } from "../lib/api";
 import { buildContactQuery } from "../lib/contactsRules";
+import { formatBackendDateTime } from "../lib/dates";
 import {
   loadColumnConfig,
   saveColumnConfig,
@@ -690,6 +691,34 @@ export default function ContactsListPage() {
             summary={[{ system: origin, account_id: "" }]}
           />
         );
+      }
+      // «Creado en origen» es NULL en los contactos nacidos de un formulario
+      // web (1.959 de 22.299). El backend ya ordena por COALESCE con la fecha
+      // de alta; la celda pinta esa misma fecha con una marca discreta para
+      // que la columna no quede en blanco ni parezca que falta el dato.
+      if (field.key === "created_at_external") {
+        const origen = row.created_at_external;
+        const alta = row.created_at;
+        const fecha: Intl.DateTimeFormatOptions = {
+          day: "2-digit",
+          month: "short",
+          year: "numeric",
+        };
+        if (typeof origen === "string" && origen) {
+          return <span>{formatBackendDateTime(origen, fecha)}</span>;
+        }
+        if (typeof alta === "string" && alta) {
+          return (
+            <span
+              className="contact-created-fallback"
+              title="Sin fecha de origen: es la fecha de alta en BoHub"
+            >
+              {formatBackendDateTime(alta, fecha)}{" "}
+              <span className="muted small">(alta)</span>
+            </span>
+          );
+        }
+        return <span className="muted">—</span>;
       }
       // PR-Consolidado — Star Rating. Click directo en la fila →
       // PATCH al instante sin abrir ficha. Actualización optimista

@@ -4,6 +4,7 @@ import { AlertTriangle } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { getCurrentUser } from "../lib/api";
+import { formatBackendDateTimeCompact } from "../lib/dates";
 import { getGoogleStatus } from "../lib/googleApi";
 
 /** PR-OAuth-Google-Unificado. Banner persistente del estado de la
@@ -78,14 +79,8 @@ export function GoogleConnectionBanner() {
   if (isAdmin !== true) return null;
   if (variant === "none") return null;
 
-  const expiresLabel = expiresAt
-    ? new Date(expiresAt).toLocaleString("es-ES", {
-        day: "2-digit",
-        month: "short",
-        hour: "2-digit",
-        minute: "2-digit",
-      })
-    : null;
+  // Con el año cuando la fecha no es del año en curso (como en Tareas).
+  const expiresLabel = expiresAt ? formatBackendDateTimeCompact(expiresAt) : null;
 
   const message =
     variant === "danger"

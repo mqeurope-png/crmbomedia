@@ -124,7 +124,8 @@ def definicion(session: Session, *, asignar_a: str | None) -> dict[str, Any]:
                  "Productos marcados: {{ lead.productos }}\n"
                  "Plantilla: {{ lead.plantilla }} · remitente: {{ lead.remitente }}\n"
                  "Borrador preparado (sin enviar): {{ lead.borrador_url }}\n"
-                 "Consulta: {{ contact.email }}"
+                 "Consulta del cliente: {{ lead.consulta }}\n"
+                 "Contacto: {{ contact.email }}"
              ),
              "priority": "high", "assign_to_user_id": asignar_a or "",
              "due_mode": "relative", "duration_amount": 1, "duration_unit": "days",
@@ -178,7 +179,9 @@ def crear_workflow(session: Session, *, actor_user_id: str | None) -> Workflow:
             id=str(uuid4()), workflow_id=wf.id, type=p["type"],
             config_json=json.dumps(p["config"], default=str),
             position_x=float(p["x"]), position_y=float(p["y"]),
-            is_entry=bool(p.get("is_entry")),
+            # La entrada es el disparador y solo él: el editor bloquea el
+            # guardado con más de una («Solo puede haber un paso de entrada»).
+            is_entry=p["type"] == "trigger",
         )
         step.created_at = ahora
         step.updated_at = ahora
@@ -191,6 +194,15 @@ def crear_workflow(session: Session, *, actor_user_id: str | None) -> Workflow:
         for a, b, rama in d["edges"]
     ]
     session.add_all(aristas)
+    session.flush()
+    # La misma regla que aplica el editor al guardar: una sola entrada.
+    from app.workflows.entrada import elegir_entrada  # noqa: PLC0415
+
+    entrada = elegir_entrada(
+        [(s.id, s.type, bool(s.is_entry)) for s in filas], {a.to_step_id for a in aristas},
+    )
+    for s in filas:
+        s.is_entry = s.id == entrada
     session.flush()
     wf.definition_hash = compute_exact_hash(wf, filas, aristas)
     try:

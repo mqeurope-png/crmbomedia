@@ -8,7 +8,7 @@
 import { CalendarClock } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { formatBackendDateTime } from "../../lib/dates";
+import { formatBackendDateTimeCompact } from "../../lib/dates";
 import { getDashboardUpcomingTasks } from "../../lib/dashboardApi";
 import type { Task } from "../../lib/tasksApi";
 
@@ -16,12 +16,8 @@ import type { Task } from "../../lib/tasksApi";
 // directo y se desplazaba 1-2 h en Madrid. La util centraliza el
 // fallback Z y el formateo locale.
 function formatWhen(due: string): string {
-  return formatBackendDateTime(due, {
-    day: "2-digit",
-    month: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  // Con el año cuando la fecha no es del año en curso (como en Tareas).
+  return formatBackendDateTimeCompact(due);
 }
 
 export function UpcomingTasksWidget() {

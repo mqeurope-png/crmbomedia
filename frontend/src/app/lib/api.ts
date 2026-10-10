@@ -1558,6 +1558,9 @@ export type ContactPipelineSummary = {
   is_won: boolean;
   is_lost: boolean;
   days_in_stage: number;
+  /** Plazo de la etapa (`pipeline_stages.target_days`) y si se ha pasado. */
+  target_days?: number | null;
+  is_overdue?: boolean;
   entered_stage_at: string;
   added_to_pipeline_at: string;
 };

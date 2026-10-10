@@ -39,6 +39,51 @@ export function formatBackendDateTime(
   return parseBackendDate(iso).toLocaleString("es-ES", options);
 }
 
+/** Las mismas opciones, añadiendo el año solo cuando la fecha no es del
+ *  año en curso: «30 mar, 09:00» si es de este año, «30 mar 2025, 09:00» si
+ *  no. En Tareas había 25 vencidas, varias de hace más de un año, y todas
+ *  se veían igual que las de la semana pasada. */
+export function withYearIfNotCurrent(
+  date: Date,
+  options: Intl.DateTimeFormatOptions,
+  now: Date = new Date(),
+): Intl.DateTimeFormatOptions {
+  if (date.getFullYear() === now.getFullYear()) return options;
+  return { ...options, year: "numeric" };
+}
+
+/** Fecha y hora compactas: «30 mar, 09:00», con el año si no es el actual. */
+export function formatBackendDateTimeCompact(
+  iso: string | null | undefined,
+  now: Date = new Date(),
+): string {
+  if (!iso) return "—";
+  const date = parseBackendDate(iso);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleString(
+    "es-ES",
+    withYearIfNotCurrent(
+      date,
+      { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" },
+      now,
+    ),
+  );
+}
+
+/** Solo la fecha, compacta: «30 mar», con el año si no es el actual. */
+export function formatBackendDateCompact(
+  iso: string | null | undefined,
+  now: Date = new Date(),
+): string {
+  if (!iso) return "—";
+  const date = parseBackendDate(iso);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleDateString(
+    "es-ES",
+    withYearIfNotCurrent(date, { day: "2-digit", month: "short" }, now),
+  );
+}
+
 /** Render "hace X" / "in X" relative to now. Tolerant input — null /
  *  undefined / empty string → "—". Future timestamps (clock skew or
  *  scheduled events) render as "en X". Buckets:

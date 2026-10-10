@@ -27,4 +27,11 @@ describe("CONTACT_DETAIL_TABS (CRM-2)", () => {
   it("la primera pestaña (default) es «Resumen»", () => {
     expect(CONTACT_DETAIL_TABS[0].label).toBe("Resumen");
   });
+
+  it("«Análisis IA» (respuesta a leads) va después de Workflows y antes de Soporte", () => {
+    expect(ids).toContain("lead_ai");
+    expect(labels).toContain("Análisis IA");
+    expect(ids.indexOf("lead_ai")).toBe(ids.indexOf("workflows") + 1);
+    expect(ids.indexOf("lead_ai")).toBe(ids.indexOf("support") - 1);
+  });
 });

@@ -58,7 +58,9 @@ class EntityDescriptor:
         spec = self.field_specs.get(key)
         if spec is None or not spec.sortable or spec.column is None:
             return None
-        return spec.column
+        # Un campo puede ordenarse por una expresión distinta de su columna
+        # (`created_at_external` → COALESCE con la fecha de alta).
+        return spec.sort_column if spec.sort_column is not None else spec.column
 
     def serialize_row(self, row: Any) -> dict[str, Any]:
         """Project a model row to a dict using the registered fields.

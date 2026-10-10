@@ -2,6 +2,7 @@
 Configuración ERP, donde vive la pantalla).
 
 - GET  /api/erp/leads/clasificaciones?dias=15     la lista corregible
+- GET  /api/erp/leads/contactos/{contact_id}       las de un contacto (ficha)
 - POST /api/erp/leads/clasificaciones/{id}/corregir
 - POST /api/erp/leads/en-seco {dias, limite}      qué habría hecho, sin escribir
 - POST /api/erp/leads/workflow                     crea el workflow en borrador
@@ -17,9 +18,11 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.audit import Action, record_event
+from app.core.auth import require_viewer
 from app.db.session import get_session
 from app.erp.api.deps import require_config
 from app.models.crm import Contact, User
@@ -52,8 +55,11 @@ def _usuario(session: Session, user_id: str | None) -> str | None:
     return (u.full_name or u.email) if u is not None else None
 
 
-def _item(session: Session, fila: LeadClassification, umbral: float) -> dict[str, Any]:
-    contacto = session.get(Contact, fila.contact_id)
+def _item(
+    session: Session, fila: LeadClassification, umbral: float, *, contacto: Contact | None = None,
+) -> dict[str, Any]:
+    if contacto is None or contacto.id != fila.contact_id:
+        contacto = session.get(Contact, fila.contact_id)
     contexto = fila.contexto()
     confianza = float(fila.confidence or 0.0)
     return {
@@ -80,6 +86,15 @@ def _item(session: Session, fila: LeadClassification, umbral: float) -> dict[str
         "plantilla": fila.template_name, "remitente": fila.sender_email,
         "borrador_id": fila.draft_id, "borrador_url": registro.url_borrador(fila.draft_id),
         "tarea_id": fila.task_id, "run_id": fila.workflow_run_id,
+        # Para la ficha del contacto: la consulta entera y el contexto de
+        # entrada (web, formulario, idioma del formulario, productos, país…).
+        "texto_completo": fila.input_text or "",
+        "contexto": contexto,
+        "idioma_discrepancia_texto": (
+            f"el formulario era {fila.form_language.upper()} pero el texto está en "
+            f"{(fila.language or '?').upper()}"
+            if fila.language_mismatch and fila.form_language else None
+        ),
         "efectivo": {
             "idioma": fila.idioma_efectivo, "interes": fila.interes_efectivo,
             "interes_texto": etiqueta_interes(fila.interes_efectivo),
@@ -112,6 +127,36 @@ def clasificaciones(
     return {
         "dias": dias, "umbral_confianza": umbral, "total": len(items),
         "corregidas": aciertos, "items": items,
+        "opciones": {"idiomas": list(IDIOMAS),
+                     "intereses": [{"id": i, "label": etiqueta_interes(i)} for i in INTERESES]},
+    }
+
+
+@router.get("/contactos/{contact_id}")
+def clasificaciones_de_contacto(
+    contact_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> dict[str, Any]:
+    """Todas las clasificaciones de un contacto, la última arriba, para la
+    ficha (recuadro del Resumen y pestaña «Análisis IA»). Lo ve quien ve la
+    ficha; corregir sigue siendo cosa de `erp.config`."""
+    _ = current_user
+    contacto = session.get(Contact, contact_id)
+    if contacto is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Contacto no encontrado.")
+    umbral = float(configuracion(session).get("umbral_confianza") or 0.0)
+    filas = list(session.scalars(
+        select(LeadClassification)
+        .where(LeadClassification.contact_id == contact_id)
+        .order_by(
+            func.coalesce(LeadClassification.lead_at, LeadClassification.created_at).desc(),
+            LeadClassification.created_at.desc(),
+        )
+    ))
+    return {
+        "umbral_confianza": umbral, "total": len(filas),
+        "items": [_item(session, f, umbral, contacto=contacto) for f in filas],
         "opciones": {"idiomas": list(IDIOMAS),
                      "intereses": [{"id": i, "label": etiqueta_interes(i)} for i in INTERESES]},
     }

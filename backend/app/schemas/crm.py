@@ -1456,6 +1456,10 @@ class ContactPipelineSummary(BaseModel):
     is_won: bool
     is_lost: bool
     days_in_stage: int
+    # Plazo de la etapa (`pipeline_stages.target_days`) y si se ha pasado,
+    # para el recuadro «Pipelines» del Resumen de la ficha.
+    target_days: int | None = None
+    is_overdue: bool = False
     entered_stage_at: datetime
     added_to_pipeline_at: datetime
 

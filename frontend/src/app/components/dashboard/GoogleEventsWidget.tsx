@@ -8,22 +8,28 @@ import {
   getDashboardGoogleEvents,
   type GoogleCalendarEventsResponse,
 } from "../../lib/dashboardApi";
+import { withYearIfNotCurrent } from "../../lib/dates";
 
 function formatStart(value: string | null, allDay: boolean): string {
   if (!value) return "—";
   const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "—";
+  // Con el año cuando la fecha no es del año en curso (como en Tareas).
   if (allDay) {
-    return d.toLocaleDateString("es-ES", {
+    return d.toLocaleDateString(
+      "es-ES",
+      withYearIfNotCurrent(d, { day: "2-digit", month: "short" }),
+    );
+  }
+  return d.toLocaleString(
+    "es-ES",
+    withYearIfNotCurrent(d, {
       day: "2-digit",
       month: "short",
-    });
-  }
-  return d.toLocaleString("es-ES", {
-    day: "2-digit",
-    month: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+      hour: "2-digit",
+      minute: "2-digit",
+    }),
+  );
 }
 
 export function GoogleEventsWidget() {

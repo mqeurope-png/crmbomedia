@@ -1,4 +1,5 @@
 import {
+  Brain,
   CheckSquare,
   History,
   Layers,
@@ -23,6 +24,7 @@ export type ContactTab =
   | "tags"
   | "opportunities"
   | "workflows"
+  | "lead_ai"
   | "support";
 
 export const CONTACT_DETAIL_TABS: Array<{
@@ -43,5 +45,8 @@ export const CONTACT_DETAIL_TABS: Array<{
   // `opportunities`; la entidad Opportunity no cambia).
   { id: "opportunities", label: "Pipelines", icon: Layers },
   { id: "workflows", label: "Workflows", icon: WorkflowIcon },
+  // Respuesta a leads: lo que la IA dijo de cada lead del contacto (consulta
+  // entera, contexto, clasificación corregible e historial).
+  { id: "lead_ai", label: "Análisis IA", icon: Brain },
   { id: "support", label: "Soporte", icon: LifeBuoy },
 ];

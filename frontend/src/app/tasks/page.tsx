@@ -25,16 +25,13 @@ import {
   type TaskBuckets,
 } from "../lib/tasksApi";
 import { getCurrentUser, getUsers, type User } from "../lib/api";
-import { formatBackendDateTime } from "../lib/dates";
+import { formatBackendDateTimeCompact } from "../lib/dates";
 import { usePersistentState } from "../lib/usePersistentState";
 
+// Con el año cuando la fecha no es del año en curso: una vencida de hace
+// dos años no puede verse igual que la de la semana pasada.
 const formatDateTime = (value: string | null | undefined) =>
-  formatBackendDateTime(value, {
-    day: "2-digit",
-    month: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  formatBackendDateTimeCompact(value);
 
 const BUCKET_LABELS: Array<[keyof Omit<TaskBuckets, "total_open">, string]> = [
   ["overdue", "Vencidas"],
