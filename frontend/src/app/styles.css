@@ -8839,7 +8839,8 @@ tr.is-inactive {
   align-items: flex-end;
   gap: 10px;
 }
-.contact-lead-ia-correccion label {
+.contact-lead-ia-correccion label,
+.contact-lead-ia-correccion-campo {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -8992,6 +8993,44 @@ tr.is-inactive {
 }
 .lead-ia-chip-etiqueta { color: var(--color-gray); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.03em; }
 .lead-ia-chip-valor { overflow-wrap: anywhere; }
+
+/* Varios intereses por lead: el principal manda (grande) y los demás van en
+   chips pequeños a su lado, en su orden. */
+.lead-ia-secundarios { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.lead-ia-secundario { font-weight: 600; color: var(--color-primary); }
+
+/* El selector de intereses (corrección a mano, combinaciones del mapa): el
+   principal en un desplegable, los demás como chips con subir/quitar y un
+   desplegable para añadir otro. */
+.lead-intereses { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+.lead-intereses-principal {
+  font-size: 0.66rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-gray);
+}
+.lead-intereses-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 4px 2px 10px;
+  border-radius: 999px;
+  background: var(--color-bg-light);
+  font-size: 0.8rem;
+  color: var(--color-dark);
+}
+.lead-intereses-chip button {
+  background: none;
+  border: 0;
+  padding: 0 5px;
+  cursor: pointer;
+  color: var(--color-gray);
+  font: inherit;
+  line-height: 1;
+}
+.lead-intereses-chip button:hover:not(:disabled) { color: var(--color-dark); }
+.lead-intereses-anadir { font-size: 0.8rem; color: var(--color-gray); max-width: 180px; }
 
 /* Lateral de la ficha: un dato vacío es una línea discreta con su acción
    al lado, no «Sin X.» + un botón en otra fila. */
@@ -15268,6 +15307,30 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
 .erp-leads-tabla td { vertical-align: top; }
 .erp-leads-tabla select, .erp-leads-tabla input[type="text"] { max-width: 220px; }
 .erp-leads-tabla tr.is-corregida > td { background: var(--st-amber-bg); }
+
+/* Configuración ERP → Respuesta a leads: combinaciones del mapa, huecos
+   (interés × idioma sin plantilla) y el catálogo de intereses. */
+.lead-combo-nueva { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 12px; margin-top: 8px; }
+.lead-combo-nueva .field { margin: 0; }
+.lead-huecos { margin: 0; padding-left: 18px; }
+.lead-huecos li { margin: 3px 0; }
+.lead-huecos .badge { margin-left: 4px; }
+.lead-intereses-tabla td { vertical-align: top; }
+.lead-intereses-tabla input[type="text"] { width: 100%; min-width: 140px; }
+.lead-intereses-tabla input[type="number"] { width: 64px; }
+.lead-intereses-tabla textarea { width: 100%; min-width: 220px; min-height: 58px; font: inherit; font-size: 0.85rem; }
+.lead-intereses-tabla tr.is-inactivo > td { color: var(--color-gray); }
+.lead-intereses-tabla tr.is-inactivo input[type="text"], .lead-intereses-tabla tr.is-inactivo textarea { color: var(--color-gray); }
+.lead-intereses-acciones { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.lead-interes-alta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px 12px;
+  align-items: end;
+  margin-top: 10px;
+}
+.lead-interes-alta .field { margin: 0; }
+.lead-interes-alta textarea { font: inherit; font-size: 0.85rem; min-height: 58px; }
 
 /* Fotos del embalaje (ficha y Cola SAT): miniaturas pulsables. */
 .erp-fotos { display: flex; flex-direction: column; gap: var(--sp-1); margin-top: var(--sp-2); }

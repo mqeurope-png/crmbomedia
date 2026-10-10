@@ -39,9 +39,10 @@ const mockCrear = crearLeadWorkflow as jest.Mock;
 const OPCIONES = {
   idiomas: ["es", "en", "fr", "de", "nl", "pt", "ca", "it"],
   intereses: [
-    { id: "vending", label: "Vending" },
-    { id: "uv_pequeno_mediano", label: "UV pequeño y mediano" },
-    { id: "otro", label: "Otro" },
+    { id: "vending", label: "Vending", comercial: true, activo: true },
+    { id: "uv_mediano", label: "UV LED mediano formato", comercial: true, activo: true },
+    { id: "dtf", label: "DTF · impresión textil", comercial: true, activo: true },
+    { id: "otro", label: "Otro", comercial: false, activo: true },
   ],
 };
 
@@ -54,19 +55,35 @@ function lead(over: Partial<LeadClasificacion> = {}): LeadClasificacion {
     texto: "Quiero información sobre máquinas de vending para oficinas en México.",
     idioma: "es", idioma_fuente: "formulario", idioma_formulario: "es", discrepancia_idioma: false,
     interes: "vending", interes_texto: "Vending", interes_fuente: "etiquetas",
+    intereses: ["vending"], intereses_texto: "Vending", intereses_etiquetas: ["Vending"],
     es_spam: false, confianza: 0.95, bajo_umbral: false,
     motivo: "Productos marcados: Vending.", proveedor: "palabras_clave", modelo: null,
     estado: "preparado", estado_detalle: null,
     plantilla: "Lead · Vending (ES)", remitente: "info@pimpam-vending.com",
     borrador_id: "d-1", borrador_url: "https://crm.example.com/emails/drafts?id=d-1",
     tarea_id: "t-1", run_id: "run-1",
-    efectivo: { idioma: "es", interes: "vending", interes_texto: "Vending", es_spam: false },
-    correccion: { corregida: false, idioma: null, interes: null, es_spam: null, nota: null,
-                  por: null, cuando: null },
+    efectivo: { idioma: "es", interes: "vending", interes_texto: "Vending",
+                intereses: ["vending"], intereses_texto: "Vending",
+                intereses_etiquetas: ["Vending"], es_spam: false },
+    correccion: { corregida: false, idioma: null, interes: null, intereses: [], es_spam: null,
+                  nota: null, por: null, cuando: null },
     creado: "2026-10-08T22:15:00Z",
     ...over,
   };
 }
+
+/** Klaus (10/10/2026): placas de metal Y camisetas → UV mediano y DTF. */
+const KLAUS_INTERESES = {
+  interes: "uv_mediano", interes_texto: "UV LED mediano formato", interes_fuente: "texto",
+  intereses: ["uv_mediano", "dtf"],
+  intereses_texto: "UV LED mediano formato + DTF · impresión textil",
+  intereses_etiquetas: ["UV LED mediano formato", "DTF · impresión textil"],
+  efectivo: { idioma: "de", interes: "uv_mediano", interes_texto: "UV LED mediano formato",
+              intereses: ["uv_mediano", "dtf"],
+              intereses_texto: "UV LED mediano formato + DTF · impresión textil",
+              intereses_etiquetas: ["UV LED mediano formato", "DTF · impresión textil"],
+              es_spam: false },
+};
 
 const SIN_WORKFLOW = {
   existe: false, id: null, status: null, url: null, pipeline_ok: true, pipeline_aviso: null,
@@ -85,14 +102,12 @@ beforeEach(() => {
       lead({
         id: "lc-2", contacto: { id: "c-klaus", nombre: "Klaus Druck", email: "klaus@druck.de" },
         fuente: "agilecrm", referencia: "nota-1", web: null, cuenta_agile: "agile-bomedia",
-        productos: [], texto: "Wir suchen einen UV-Drucker für kleine Serien.",
+        productos: [], texto: "Ich möchte auf Metallplatten sowie auf T-Shirts drucken.",
         idioma: "de", idioma_fuente: "texto", idioma_formulario: null,
-        interes: "uv_pequeno_mediano", interes_texto: "UV pequeño y mediano", interes_fuente: "texto",
+        ...KLAUS_INTERESES,
         confianza: 0.55, bajo_umbral: true, estado: "sin_plantilla",
-        estado_detalle: "sin plantilla para UV pequeño y mediano en de",
+        estado_detalle: "sin plantilla para UV LED mediano formato + DTF · impresión textil en de",
         plantilla: null, remitente: null, borrador_id: null, borrador_url: null,
-        efectivo: { idioma: "de", interes: "uv_pequeno_mediano", interes_texto: "UV pequeño y mediano",
-                    es_spam: false },
       }),
     ],
   });
@@ -110,7 +125,8 @@ beforeEach(() => {
         fuente: "web_form", referencia: "env-1", lead_at: "2026-10-08T10:15:00Z",
         web: "pimpam-vending.com", idioma_formulario: "es", productos: ["Vending"],
         texto: "Quiero información sobre máquinas de vending.",
-        clasificacion: { idioma: "es", interes: "vending", es_spam: false, confianza: 0.95,
+        clasificacion: { idioma: "es", interes: "vending", intereses: ["vending"],
+                         intereses_texto: "Vending", es_spam: false, confianza: 0.95,
                          motivo: "Productos marcados: Vending.", discrepancia_idioma: false },
         ya_clasificado: true,
         haria: { etapa: "Nuevo lead", plantilla: "Lead · Vending (ES)",
@@ -142,11 +158,16 @@ describe("ERP · Leads (respuesta a leads · Fase 1)", () => {
       .toHaveAttribute("href", "https://crm.example.com/emails/drafts?id=d-1");
     expect(within(isabella).getByText("Formulario web · pimpam-vending.com", { exact: false }))
       .toBeInTheDocument();
-    // Klaus: por debajo del umbral y sin plantilla.
+    // Klaus: por debajo del umbral y sin plantilla; dos intereses, el principal
+    // en el desplegable y el segundo como chip.
     const klaus = screen.getByRole("link", { name: "Klaus Druck" }).closest("tr")!;
     expect(within(klaus).getByText("55%")).toHaveClass("bad");
     expect(within(klaus).getByText("Sin plantilla")).toBeInTheDocument();
     expect(within(klaus).getByText("AgileCRM · agile-bomedia", { exact: false })).toBeInTheDocument();
+    expect(within(klaus).getByLabelText("Interés de Klaus Druck")).toHaveValue("uv_mediano");
+    expect(within(klaus).getByText("DTF · impresión textil")).toBeInTheDocument();
+    expect(within(klaus).getByRole("button", { name: "Quitar DTF · impresión textil de los intereses de Klaus Druck" }))
+      .toBeInTheDocument();
     expect(screen.getByText("2 procesados · 0 corregidos a mano · umbral de confianza 70%"))
       .toBeInTheDocument();
     // Sin workflow todavía: se ofrece crearlo.
@@ -154,11 +175,13 @@ describe("ERP · Leads (respuesta a leads · Fase 1)", () => {
   });
 
   it("corregir manda solo lo que cambia y la fila pasa a enseñar la corrección", async () => {
-    mockCorregir.mockImplementation((id: string, payload: Record<string, unknown>) =>
+    mockCorregir.mockImplementation((id: string, payload: { intereses: string[]; nota?: string }) =>
       Promise.resolve(lead({
-        efectivo: { idioma: "es", interes: String(payload.interes), interes_texto: "Otro",
-                    es_spam: false },
-        correccion: { corregida: true, idioma: null, interes: String(payload.interes), es_spam: null,
+        efectivo: { idioma: "es", interes: payload.intereses[0], interes_texto: "Otro",
+                    intereses: payload.intereses, intereses_texto: "Otro",
+                    intereses_etiquetas: ["Otro"], es_spam: false },
+        correccion: { corregida: true, idioma: null, interes: payload.intereses[0],
+                      intereses: payload.intereses, es_spam: null,
                       nota: String(payload.nota ?? ""), por: "Bart", cuando: "2026-10-09T09:00:00Z" },
       })));
     const user = userEvent.setup();
@@ -170,8 +193,9 @@ describe("ERP · Leads (respuesta a leads · Fase 1)", () => {
     await user.type(within(fila).getByLabelText("Nota de la corrección de Isabella Cedillo"),
       "era una consulta de distribución");
     await user.click(within(fila).getByRole("button", { name: "Guardar corrección" }));
+    // Los intereses viajan en lista, en el orden elegido.
     await waitFor(() => expect(mockCorregir).toHaveBeenCalledWith("lc-1", {
-      interes: "otro", nota: "era una consulta de distribución",
+      intereses: ["otro"], nota: "era una consulta de distribución",
     }));
     expect(await screen.findByText("Corregido por Bart el", { exact: false })).toBeInTheDocument();
     expect(screen.getByText("2 procesados · 1 corregidos a mano · umbral de confianza 70%"))
@@ -181,6 +205,28 @@ describe("ERP · Leads (respuesta a leads · Fase 1)", () => {
     expect(within(filaNueva).getByLabelText("Interés de Isabella Cedillo")).toHaveValue("otro");
     expect(within(filaNueva).queryByRole("button", { name: "Guardar corrección" }))
       .not.toBeInTheDocument();
+  });
+
+  it("varios intereses: añadir uno, subirlo o quitarlo viaja como la lista entera en su orden", async () => {
+    mockCorregir.mockImplementation((id: string, payload: { intereses: string[] }) =>
+      Promise.resolve(lead({ id, efectivo: { ...lead().efectivo, intereses: payload.intereses,
+                                             interes: payload.intereses[0] } })));
+    const user = userEvent.setup();
+    render(<LeadsPage />);
+    const isabella = (await screen.findByRole("link", { name: "Isabella Cedillo" })).closest("tr")!;
+    await user.selectOptions(within(isabella).getByLabelText("Añadir interés a Isabella Cedillo"), "dtf");
+    await user.click(within(isabella).getByRole("button", { name: "Guardar corrección" }));
+    await waitFor(() => expect(mockCorregir).toHaveBeenCalledWith("lc-1", {
+      intereses: ["vending", "dtf"],
+    }));
+    // Klaus: DTF pasa a principal con «subir».
+    const klaus = screen.getByRole("link", { name: "Klaus Druck" }).closest("tr")!;
+    await user.click(within(klaus).getByRole("button", { name: "Subir DTF · impresión textil en los intereses de Klaus Druck" }));
+    expect(within(klaus).getByLabelText("Interés de Klaus Druck")).toHaveValue("dtf");
+    await user.click(within(klaus).getByRole("button", { name: "Guardar corrección" }));
+    await waitFor(() => expect(mockCorregir).toHaveBeenLastCalledWith("lc-2", {
+      intereses: ["dtf", "uv_mediano"],
+    }));
   });
 
   it("marcar como spam viaja como es_spam y el error del servidor se enseña en la fila", async () => {

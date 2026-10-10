@@ -7,11 +7,15 @@ import { GeneiSettingsCard } from "../../components/erp/GeneiSettingsCard";
 import { ModalCloseButton } from "../../components/ModalCloseButton";
 import { PageHeader } from "../../components/PageHeader";
 import { useModalBehaviour } from "../../components/useModalBehaviour";
+import { LeadInteresesPanel } from "../../components/erp/LeadInteresesPanel";
+import { InteresesPicker } from "../../components/leads/InteresesPicker";
 import { extractErrorMessage } from "../../lib/errors";
+import { claveMapaLeads, partesClaveMapaLeads } from "../../lib/leadsMapa";
 import {
   deleteFactusolCompanyLogo,
   getErpNextReferences,
   getErpSettings,
+  listLeadIntereses,
   previewInvoiceEmailTemplate,
   previewQuoteEmailTemplate,
   previewShipmentEmailTemplate,
@@ -27,6 +31,8 @@ import {
   type ErpSettings,
   type FactusolCompany,
   type InvoiceEmailTemplatePreview,
+  type LeadInteres,
+  type LeadInteresConUso,
   type LeadResponseCatalogo,
   type LeadResponseConfig,
   type LeadResponseVentana,
@@ -2034,8 +2040,11 @@ function NumeroCampo({
 const MAPA_POR_NOMBRE = "__por_nombre__";
 const MAPA_NINGUNA = "__ninguna__";
 const CATALOGO_VACIO: LeadResponseCatalogo = {
-  intereses: [], idiomas: [], plantillas: [], mapa_por_nombre: {}, webs: [], cuentas_agile: [],
+  intereses: [], idiomas: [], plantillas: [], mapa_por_nombre: {}, huecos: [], webs: [],
+  cuentas_agile: [],
 };
+
+type Hueco = { interes: LeadInteres; idioma: string; aProposito: boolean };
 /** Los valores de serie del backend (`app/services/leads/config.py`), para
  *  pintar la sección antes de que se haya guardado nada. */
 const LEAD_RESPONSE_DEFECTOS: LeadResponseConfig = {
@@ -2049,8 +2058,10 @@ const LEAD_RESPONSE_DEFECTOS: LeadResponseConfig = {
 };
 
 /** Respuesta a leads (Fase 1) — interruptor, tope diario, umbral, antigüedad,
- *  ventana horaria, mapa interés × idioma → plantilla y remitentes. El PATCH
- *  manda el bloque entero (`lead_response`); el servidor lo valida. */
+ *  ventana horaria, el catálogo de intereses, el mapa intereses × idioma →
+ *  plantilla (con combinaciones y huecos) y remitentes. El PATCH manda el
+ *  bloque entero (`lead_response`); el servidor lo valida. El catálogo de
+ *  intereses se guarda aparte, al momento (`/api/erp/leads/intereses`). */
 function LeadResponseSettings({
   value, catalogo, onChange,
 }: {
@@ -2058,9 +2069,58 @@ function LeadResponseSettings({
   catalogo: LeadResponseCatalogo | undefined;
   onChange: (next: LeadResponseConfig) => void;
 }) {
+  // El catálogo vivo (el que se edita aquí mismo) manda sobre el que llegó
+  // con los ajustes: un interés nuevo aparece en el mapa sin recargar.
+  const [intereses, setIntereses] = useState<LeadInteresConUso[] | null>(null);
+  const [interesesError, setInteresesError] = useState<string | null>(null);
+  useEffect(() => {
+    let vivo = true;
+    listLeadIntereses()
+      .then((r) => {
+        if (!vivo) return;
+        setIntereses(r.items);
+        setInteresesError(null);
+      })
+      .catch((e) => {
+        if (vivo) {
+          setInteresesError(extractErrorMessage(e, "No se pudo cargar el catálogo de intereses."));
+        }
+      });
+    return () => { vivo = false; };
+  }, []);
+  const [nuevaCombo, setNuevaCombo] = useState<string[]>([]);
+  const [nuevaComboIdioma, setNuevaComboIdioma] = useState("");
+  const [nuevaComboPlantilla, setNuevaComboPlantilla] = useState("");
+
   const cfg: LeadResponseConfig = value ?? LEAD_RESPONSE_DEFECTOS;
   const cat = catalogo ?? CATALOGO_VACIO;
-  const comerciales = cat.intereses.filter((i) => i.comercial);
+  const catalogoIntereses: LeadInteres[] =
+    intereses && intereses.length > 0 ? intereses : cat.intereses;
+  const comerciales = catalogoIntereses.filter((i) => i.comercial && i.activo !== false);
+  const etiquetaInteres = (codigo: string) =>
+    catalogoIntereses.find((i) => i.id === codigo)?.label ?? codigo;
+  const opcionesPicker = catalogoIntereses.map((i) => ({
+    id: i.id, label: i.label, comercial: i.comercial, activo: i.activo !== false,
+  }));
+  // Las filas del mapa que son una combinación (dos intereses o más).
+  const combinaciones = Object.keys(cfg.mapa)
+    .map((clave) => ({ clave, ...partesClaveMapaLeads(clave) }))
+    .filter((c) => c.intereses.length > 1)
+    .sort((a, b) => a.clave.localeCompare(b.clave));
+  // Los huecos: interés comercial activo × idioma sin plantilla (ni fila con
+  // plantilla en el mapa ni plantilla por nombre). Se recalculan al editar.
+  const huecos: Hueco[] = comerciales.flatMap((i) => cat.idiomas.flatMap((l): Hueco[] => {
+    const clave = `${i.id}:${l}`;
+    const v = cfg.mapa[clave];
+    if (v === undefined) {
+      return cat.mapa_por_nombre[clave] ? [] : [{ interes: i, idioma: l, aProposito: false }];
+    }
+    return v === "" ? [{ interes: i, idioma: l, aProposito: true }] : [];
+  }));
+  const huecosPorInteres = comerciales
+    .map((i) => [i, huecos.filter((h) => h.interes.id === i.id)] as const)
+    .filter(([, hs]) => hs.length > 0);
+  const idiomaCombo = nuevaComboIdioma || cat.idiomas[0] || "es";
   const nombrePlantilla = (id: string | null | undefined) =>
     id ? (cat.plantillas.find((p) => p.id === id)?.name ?? id) : null;
   const set = (p: Partial<LeadResponseConfig>) => onChange({ ...cfg, ...p });
@@ -2082,6 +2142,13 @@ function LeadResponseSettings({
     else delete valores[clave];
     set({ remitentes: { ...cfg.remitentes, [sub]: valores } });
   };
+  const anadirCombinacion = () => {
+    if (nuevaCombo.length < 2) return;
+    setMapa(claveMapaLeads(nuevaCombo, idiomaCombo), nuevaComboPlantilla || MAPA_NINGUNA);
+    setNuevaCombo([]);
+    setNuevaComboPlantilla("");
+  };
+  const textoCombo = (codigos: string[]) => codigos.map(etiquetaInteres).join(" + ");
   return (
     <>
       <label className="field erp-check-field">
@@ -2189,12 +2256,25 @@ function LeadResponseSettings({
         <span>Solo de lunes a viernes</span>
       </label>
 
+      <h3 className="erp-settings-sub">Intereses del clasificador</h3>
+      <p className="muted small">
+        Lo que un lead puede querer, en datos: el código es lo que se guarda (no
+        cambia), la etiqueta lo que se ve y la descripción lo que lee el modelo para
+        distinguirlos. Un interés nuevo o una descripción afinada entran en el
+        clasificador en la siguiente clasificación, sin desplegar nada. Los que no son
+        comerciales no llevan plantilla de venta. Lo que está en uso no se borra: se
+        desactiva (lo ya clasificado sigue legible). Estos cambios se guardan al
+        momento, aparte del botón «Guardar cambios».
+      </p>
+      <LeadInteresesPanel items={intereses} error={interesesError} onChange={setIntereses} />
+
       <h3 className="erp-settings-sub">Plantilla por interés e idioma</h3>
       <p className="muted small">
-        Qué plantilla de las de autorespuesta lleva el borrador. «Por nombre» usa
-        la que se llama «Lead · &lt;contenido&gt; (&lt;IDIOMA&gt;)» si existe.
-        Consumibles, servicio técnico, repuestos y «otro» no llevan plantilla de
-        venta: el borrador queda vacío y la tarea lo dice.
+        Qué plantilla de las de autorespuesta lleva el borrador según el interés
+        principal del lead. «Por nombre» usa la que se llama «Lead · &lt;etiqueta&gt;
+        (&lt;IDIOMA&gt;)» si existe. Los intereses que no son comerciales (soporte
+        postventa, «otro») no llevan plantilla de venta: el borrador queda vacío y la
+        tarea lo dice. Un hueco es normal: no hace falta inventar plantillas.
       </p>
       {comerciales.length === 0 || cat.idiomas.length === 0 ? (
         <p className="muted small">El catálogo de intereses e idiomas no ha llegado del servidor.</p>
@@ -2243,6 +2323,140 @@ function LeadResponseSettings({
             ))}
           </tbody>
         </table>
+      )}
+
+      <h3 className="erp-settings-sub">Combinaciones de intereses</h3>
+      <p className="muted small">
+        Para quien pide varias cosas a la vez (placas de metal y camisetas: UV y DTF),
+        una plantilla para ese conjunto exacto. Sin fila para el conjunto, el borrador
+        lleva la del interés principal.
+      </p>
+      {combinaciones.length > 0 ? (
+        <table className="data-table data-table--responsive erp-settings-table">
+          <thead>
+            <tr><th>Intereses</th><th>Idioma</th><th>Plantilla</th><th /></tr>
+          </thead>
+          <tbody>
+            {combinaciones.map(({ clave, intereses: codigos, idioma }) => {
+              const texto = textoCombo(codigos);
+              const valor = cfg.mapa[clave] === "" ? MAPA_NINGUNA : cfg.mapa[clave];
+              const fueraDeCatalogo = valor !== MAPA_NINGUNA
+                && !cat.plantillas.some((p) => p.id === valor);
+              return (
+                <tr key={clave}>
+                  <td data-label="Intereses"><strong>{texto}</strong></td>
+                  <td data-label="Idioma">{idioma.toUpperCase()}</td>
+                  <td data-label="Plantilla">
+                    <select
+                      aria-label={`Plantilla de ${texto} en ${idioma.toUpperCase()}`}
+                      value={valor}
+                      onChange={(e) => setMapa(clave, e.target.value)}
+                    >
+                      <option value={MAPA_NINGUNA}>Sin plantilla (a propósito)</option>
+                      {cat.plantillas.map((p) => (
+                        <option key={p.id} value={p.id}>{p.name}</option>
+                      ))}
+                      {fueraDeCatalogo ? (
+                        <option value={valor}>Plantilla fuera del catálogo «Lead…» ({valor.slice(0, 8)}…)</option>
+                      ) : null}
+                    </select>
+                  </td>
+                  <td data-label="">
+                    <button
+                      type="button"
+                      className="button small secondary"
+                      aria-label={`Quitar la combinación ${texto} en ${idioma.toUpperCase()}`}
+                      onClick={() => setMapa(clave, MAPA_POR_NOMBRE)}
+                    >
+                      Quitar
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      ) : (
+        <p className="muted small">
+          Ninguna combinación: cada lead lleva la plantilla de su interés principal.
+        </p>
+      )}
+      <div className="lead-combo-nueva" aria-label="Combinación nueva">
+        <div className="field">
+          <span>Intereses (el primero, el principal)</span>
+          <InteresesPicker
+            value={nuevaCombo}
+            onChange={setNuevaCombo}
+            opciones={opcionesPicker}
+            labelPrincipal="Intereses de la combinación nueva"
+            sujeto="la combinación nueva"
+            permitirVacio
+          />
+        </div>
+        <label className="field">
+          <span>Idioma</span>
+          <select
+            aria-label="Idioma de la combinación nueva"
+            value={idiomaCombo}
+            onChange={(e) => setNuevaComboIdioma(e.target.value)}
+          >
+            {cat.idiomas.map((l) => <option key={l} value={l}>{l.toUpperCase()}</option>)}
+          </select>
+        </label>
+        <label className="field">
+          <span>Plantilla</span>
+          <select
+            aria-label="Plantilla de la combinación nueva"
+            value={nuevaComboPlantilla}
+            onChange={(e) => setNuevaComboPlantilla(e.target.value)}
+          >
+            <option value="">Sin plantilla (a propósito)</option>
+            {cat.plantillas.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+        </label>
+        <button
+          type="button"
+          className="button small"
+          disabled={nuevaCombo.length < 2}
+          title={nuevaCombo.length < 2 ? "Una combinación son dos intereses o más" : undefined}
+          onClick={anadirCombinacion}
+        >
+          Añadir combinación
+        </button>
+      </div>
+
+      <h3 className="erp-settings-sub">Huecos: interés × idioma sin plantilla</h3>
+      {comerciales.length === 0 || cat.idiomas.length === 0 ? null : huecos.length === 0 ? (
+        <p className="muted small">
+          Ningún hueco: todos los intereses comerciales activos tienen plantilla en los{" "}
+          {cat.idiomas.length} idiomas.
+        </p>
+      ) : (
+        <>
+          <p className="muted small">
+            {huecos.length === 1 ? "1 hueco" : `${huecos.length} huecos`}. Un lead de estos se
+            clasifica, va al pipeline y crea su tarea con el aviso «sin plantilla»; el
+            borrador queda vacío. Se rellenan cuando haya contenido, no antes.
+          </p>
+          <ul className="lead-huecos" aria-label="Huecos del mapa de plantillas">
+            {huecosPorInteres.map(([interes, hs]) => (
+              <li key={interes.id}>
+                <strong>{interes.label}</strong>:
+                {hs.map((h) => (
+                  <span
+                    key={h.idioma}
+                    className={`badge ${h.aProposito ? "" : "warn"}`}
+                    title={h.aProposito
+                      ? "Sin plantilla a propósito"
+                      : "Sin plantilla: ni en el mapa ni por nombre"}
+                  >
+                    {h.idioma.toUpperCase()}{h.aProposito ? " · a propósito" : ""}
+                  </span>
+                ))}
+              </li>
+            ))}
+          </ul>
+        </>
       )}
 
       <h3 className="erp-settings-sub">Remitente por web</h3>

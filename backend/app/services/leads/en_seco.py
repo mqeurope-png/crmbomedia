@@ -20,13 +20,11 @@ from sqlalchemy.orm import Session
 from app.models.crm import Contact, Note
 from app.models.leads import FUENTE_AGILE, FUENTE_FORMULARIO, LeadClassification
 from app.models.web_forms import FormSubmission, WebForm
-from app.services.leads import plantillas, registro, remitentes
+from app.services.leads import intereses, plantillas, registro, remitentes
 from app.services.leads.clasificador import (
-    INTERESES_COMERCIALES,
     Clasificador,
     EntradaLead,
     clasificar_lead,
-    etiqueta_interes,
     proveedor_por_defecto,
 )
 from app.services.leads.config import configuracion
@@ -126,14 +124,15 @@ def simular(
 ) -> dict[str, Any]:
     """El informe en seco. No escribe nada."""
     conf = configuracion(session)
-    proveedor = proveedor or proveedor_por_defecto()
+    catalogo = intereses.cargar(session)
+    proveedor = proveedor or proveedor_por_defecto(catalogo)
     filas: list[FilaEnSeco] = []
     resumen: dict[str, Any] = {
         "total": 0, "spam": 0, "sin_plantilla": 0, "con_discrepancia_idioma": 0,
         "ya_clasificados": 0, "por_interes": {}, "por_idioma": {}, "proveedor": proveedor.nombre,
     }
     for contact, entrada in leads_recientes(session, dias=dias, limite=limite):
-        clasificacion = clasificar_lead(entrada, proveedor)
+        clasificacion = clasificar_lead(entrada, proveedor, catalogo)
         existente = registro.clasificacion_existente(session, entrada)
         haria: dict[str, Any] = {"etapa": ETAPA_SPAM if clasificacion.es_spam else ETAPA_NUEVO,
                                  "plantilla": None, "remitente": None, "tarea": False,
@@ -141,17 +140,17 @@ def simular(
         if not clasificacion.es_spam:
             haria["tarea"] = True
             idioma = clasificacion.idioma or contact.language or "es"
-            if clasificacion.interes in INTERESES_COMERCIALES:
+            if catalogo.comercial(clasificacion.interes):
                 tpl = plantillas.plantilla_para(
-                    session, clasificacion.interes, idioma, conf.get("mapa"),
+                    session, clasificacion.intereses, idioma, conf.get("mapa"), catalogo,
                 )
                 if tpl is not None:
                     haria["plantilla"] = tpl.name
                 else:
                     haria["aviso"] = (f"sin plantilla para "
-                                      f"{etiqueta_interes(clasificacion.interes)} en {idioma}")
+                                      f"{catalogo.texto(clasificacion.intereses)} en {idioma}")
             else:
-                haria["aviso"] = (f"«{etiqueta_interes(clasificacion.interes)}» no es un lead "
+                haria["aviso"] = (f"«{catalogo.etiqueta(clasificacion.interes)}» no es un lead "
                                   "comercial: sin plantilla de venta")
             remitente, _marca = remitentes.remitente_para(
                 sitio=entrada.sitio, cuenta_agile=entrada.cuenta_agile,
@@ -167,7 +166,12 @@ def simular(
             lead_at=entrada.lead_at.isoformat() if entrada.lead_at else None,
             web=web_de_sitio(entrada.sitio) if entrada.sitio else None,
             idioma_formulario=entrada.idioma_formulario, productos=list(entrada.productos),
-            texto=(entrada.texto or "")[:400], clasificacion=clasificacion.como_dict(),
+            texto=(entrada.texto or "")[:400],
+            clasificacion={
+                **clasificacion.como_dict(),
+                "interes_texto": catalogo.etiqueta(clasificacion.interes),
+                "intereses_texto": catalogo.texto(clasificacion.intereses),
+            },
             ya_clasificado=existente is not None, haria=haria,
         ))
         resumen["total"] += 1

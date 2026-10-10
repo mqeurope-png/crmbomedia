@@ -6,17 +6,24 @@ Configuración ERP, donde vive la pantalla).
 - POST /api/erp/leads/clasificaciones/{id}/corregir
 - POST /api/erp/leads/en-seco {dias, limite}      qué habría hecho, sin escribir
 - POST /api/erp/leads/workflow                     crea el workflow en borrador
+- GET/POST /api/erp/leads/intereses                el catálogo de intereses
+- PATCH/DELETE /api/erp/leads/intereses/{codigo}   editar, desactivar, borrar
 
 La configuración (interruptor, tope, umbral, mapa, remitentes, antigüedad,
 ventana) va por `GET/PATCH /api/erp/settings` (`lead_response`), con el resto
 de ajustes del ERP.
+
+Un lead puede tener VARIOS intereses, ordenados (el primero es el principal):
+cada clasificación lleva `interes`/`interes_texto` (el principal, como hasta
+ahora) y `intereses`/`intereses_texto` (todos). La corrección a mano manda
+`intereses` (lista en el orden elegido) o, como antes, `interes`.
 """
 from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -27,10 +34,11 @@ from app.db.session import get_session
 from app.erp.api.deps import require_config
 from app.models.crm import Contact, User
 from app.models.leads import LeadClassification
-from app.services.leads import en_seco, registro
+from app.services.leads import en_seco, intereses, registro
 from app.services.leads import workflow as workflow_leads
-from app.services.leads.clasificador import IDIOMAS, INTERESES, etiqueta_interes
+from app.services.leads.clasificador import IDIOMAS
 from app.services.leads.config import configuracion
+from app.services.leads.intereses import Catalogo
 from app.services.web_forms.sitios import web_de_sitio
 
 router = APIRouter(prefix="/api/erp/leads", tags=["erp-leads"])
@@ -38,7 +46,10 @@ router = APIRouter(prefix="/api/erp/leads", tags=["erp-leads"])
 
 class CorregirIn(BaseModel):
     idioma: str | None = Field(default=None, max_length=5)
+    #: Compatibilidad: un solo interés (equivale a `intereses: [interes]`).
     interes: str | None = Field(default=None, max_length=40)
+    #: Todos los intereses, en el orden elegido; el primero es el principal.
+    intereses: list[str] | None = Field(default=None, max_length=20)
     es_spam: bool | None = None
     nota: str | None = Field(default=None, max_length=500)
 
@@ -48,6 +59,22 @@ class EnSecoIn(BaseModel):
     limite: int = Field(default=en_seco.LIMITE_DEFECTO, ge=1, le=en_seco.LIMITE_MAXIMO)
 
 
+class InteresIn(BaseModel):
+    codigo: str = Field(min_length=2, max_length=40)
+    etiqueta: str = Field(min_length=1, max_length=80)
+    descripcion: str | None = Field(default=None, max_length=2000)
+    comercial: bool = True
+    orden: int | None = Field(default=None, ge=0, le=10000)
+
+
+class InteresCambiosIn(BaseModel):
+    etiqueta: str | None = Field(default=None, max_length=80)
+    descripcion: str | None = Field(default=None, max_length=2000)
+    comercial: bool | None = None
+    orden: int | None = Field(default=None, ge=0, le=10000)
+    activo: bool | None = None
+
+
 def _usuario(session: Session, user_id: str | None) -> str | None:
     if not user_id:
         return None
@@ -55,13 +82,31 @@ def _usuario(session: Session, user_id: str | None) -> str | None:
     return (u.full_name or u.email) if u is not None else None
 
 
+def _opciones(catalogo: Catalogo) -> dict[str, Any]:
+    """Para los desplegables de corrección: todos los intereses (los
+    inactivos solo se enseñan si la clasificación ya los lleva)."""
+    return {
+        "idiomas": list(IDIOMAS),
+        "intereses": [
+            {"id": i.codigo, "label": i.etiqueta, "comercial": i.comercial, "activo": i.activo}
+            for i in catalogo.todos
+        ],
+    }
+
+
 def _item(
-    session: Session, fila: LeadClassification, umbral: float, *, contacto: Contact | None = None,
+    session: Session, fila: LeadClassification, umbral: float, *,
+    contacto: Contact | None = None, catalogo: Catalogo | None = None,
 ) -> dict[str, Any]:
     if contacto is None or contacto.id != fila.contact_id:
         contacto = session.get(Contact, fila.contact_id)
+    if catalogo is None:
+        catalogo = intereses.cargar(session)
     contexto = fila.contexto()
     confianza = float(fila.confidence or 0.0)
+    lista = fila.intereses
+    efectivos = fila.intereses_efectivos
+    corregidos = fila.intereses_corregidos
     return {
         "id": fila.id,
         "contacto": {
@@ -78,7 +123,10 @@ def _item(
         "texto": (fila.input_text or "")[:400],
         "idioma": fila.language, "idioma_fuente": fila.language_source,
         "idioma_formulario": fila.form_language, "discrepancia_idioma": fila.language_mismatch,
-        "interes": fila.interest, "interes_texto": etiqueta_interes(fila.interest),
+        # El principal (como siempre) y todos, en orden (códigos y etiquetas).
+        "interes": fila.interest, "interes_texto": catalogo.etiqueta(fila.interest),
+        "intereses": lista, "intereses_texto": catalogo.texto(lista),
+        "intereses_etiquetas": catalogo.etiquetas(lista),
         "interes_fuente": fila.interest_source,
         "es_spam": fila.is_spam, "confianza": confianza, "bajo_umbral": confianza < umbral,
         "motivo": fila.reason, "proveedor": fila.provider, "modelo": fila.model,
@@ -97,12 +145,15 @@ def _item(
         ),
         "efectivo": {
             "idioma": fila.idioma_efectivo, "interes": fila.interes_efectivo,
-            "interes_texto": etiqueta_interes(fila.interes_efectivo),
+            "interes_texto": catalogo.etiqueta(fila.interes_efectivo),
+            "intereses": efectivos, "intereses_texto": catalogo.texto(efectivos),
+            "intereses_etiquetas": catalogo.etiquetas(efectivos),
             "es_spam": fila.es_spam_efectivo,
         },
         "correccion": {
             "corregida": fila.corregida,
             "idioma": fila.corrected_language, "interes": fila.corrected_interest,
+            "intereses": corregidos,
             "es_spam": fila.corrected_is_spam, "nota": fila.correction_note,
             "por": _usuario(session, fila.corrected_by_user_id),
             "cuando": fila.corrected_at.isoformat() if fila.corrected_at else None,
@@ -120,15 +171,15 @@ def clasificaciones(
     """Los últimos leads clasificados, con su clasificación corregible."""
     _ = current_user
     conf = configuracion(session)
+    catalogo = intereses.cargar(session)
     umbral = float(conf.get("umbral_confianza") or 0.0)
     filas = en_seco.clasificaciones_de(session, dias=dias)
-    items = [_item(session, f, umbral) for f in filas]
+    items = [_item(session, f, umbral, catalogo=catalogo) for f in filas]
     aciertos = sum(1 for f in filas if f.corregida)
     return {
         "dias": dias, "umbral_confianza": umbral, "total": len(items),
         "corregidas": aciertos, "items": items,
-        "opciones": {"idiomas": list(IDIOMAS),
-                     "intereses": [{"id": i, "label": etiqueta_interes(i)} for i in INTERESES]},
+        "opciones": _opciones(catalogo),
     }
 
 
@@ -146,6 +197,7 @@ def clasificaciones_de_contacto(
     if contacto is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Contacto no encontrado.")
     umbral = float(configuracion(session).get("umbral_confianza") or 0.0)
+    catalogo = intereses.cargar(session)
     filas = list(session.scalars(
         select(LeadClassification)
         .where(LeadClassification.contact_id == contact_id)
@@ -156,10 +208,24 @@ def clasificaciones_de_contacto(
     ))
     return {
         "umbral_confianza": umbral, "total": len(filas),
-        "items": [_item(session, f, umbral, contacto=contacto) for f in filas],
-        "opciones": {"idiomas": list(IDIOMAS),
-                     "intereses": [{"id": i, "label": etiqueta_interes(i)} for i in INTERESES]},
+        "items": [_item(session, f, umbral, contacto=contacto, catalogo=catalogo) for f in filas],
+        "opciones": _opciones(catalogo),
     }
+
+
+def _intereses_corregidos(payload: CorregirIn, catalogo: Catalogo) -> list[str] | None:
+    """La lista corregida, limpia; `None` si la corrección no toca el
+    interés. 400 si trae un código que no existe o se queda vacía."""
+    if payload.intereses is None and payload.interes is None:
+        return None
+    crudos = list(payload.intereses) if payload.intereses is not None else [payload.interes]
+    lista = intereses.normalizar_lista(crudos)
+    desconocidos = [c for c in lista if not catalogo.conoce(c)]
+    if desconocidos:
+        raise HTTPException(400, f"Interés no válido: {', '.join(desconocidos)}.")
+    if not lista:
+        raise HTTPException(400, "La corrección necesita al menos un interés.")
+    return lista
 
 
 @router.post("/clasificaciones/{clasificacion_id}/corregir")
@@ -170,22 +236,23 @@ def corregir(
     current_user: User = Depends(require_config),
 ) -> dict[str, Any]:
     """La corrección a mano: queda registrada (quién, cuándo, qué) y manda
-    sobre la clasificación en la ficha del contacto."""
+    sobre la clasificación en la ficha del contacto. Los intereses van en
+    lista y en el orden elegido: el primero es el principal."""
     fila = session.get(LeadClassification, clasificacion_id)
     if fila is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Clasificación no encontrada.")
     if payload.idioma is not None and payload.idioma not in IDIOMAS:
         raise HTTPException(400, f"Idioma no válido: {payload.idioma!r}.")
-    if payload.interes is not None and payload.interes not in INTERESES:
-        raise HTTPException(400, f"Interés no válido: {payload.interes!r}.")
-    if payload.idioma is None and payload.interes is None and payload.es_spam is None:
+    catalogo = intereses.cargar(session)
+    lista = _intereses_corregidos(payload, catalogo)
+    if payload.idioma is None and lista is None and payload.es_spam is None:
         raise HTTPException(400, "No hay nada que corregir.")
     antes = {"idioma": fila.idioma_efectivo, "interes": fila.interes_efectivo,
-             "es_spam": fila.es_spam_efectivo}
+             "intereses": fila.intereses_efectivos, "es_spam": fila.es_spam_efectivo}
     if payload.idioma is not None:
         fila.corrected_language = payload.idioma
-    if payload.interes is not None:
-        fila.corrected_interest = payload.interes
+    if lista is not None:
+        fila.fijar_intereses_corregidos(lista)
     if payload.es_spam is not None:
         fila.corrected_is_spam = payload.es_spam
     fila.corrected_by_user_id = current_user.id
@@ -203,13 +270,17 @@ def corregir(
         metadata={
             "lead_classification_id": fila.id, "antes": antes,
             "despues": {"idioma": fila.idioma_efectivo, "interes": fila.interes_efectivo,
+                        "intereses": fila.intereses_efectivos,
                         "es_spam": fila.es_spam_efectivo},
             "nota": fila.correction_note,
         },
     )
     session.commit()
     session.refresh(fila)
-    return _item(session, fila, float(configuracion(session).get("umbral_confianza") or 0.0))
+    return _item(
+        session, fila, float(configuracion(session).get("umbral_confianza") or 0.0),
+        catalogo=catalogo,
+    )
 
 
 @router.post("/en-seco")
@@ -266,3 +337,108 @@ def estado_workflow(
         "url": f"/admin/workflows/{wf.id}" if wf else None,
         "pipeline_ok": pipeline_ok, "pipeline_aviso": pipeline_aviso,
     }
+
+
+# --- el catálogo de intereses ------------------------------------------------
+
+
+def _interes_con_uso(session: Session, interes: intereses.Interes) -> dict[str, Any]:
+    clasificaciones, en_mapa = intereses.en_uso(session, interes.codigo)
+    return {**interes.como_dict(), "en_uso": {"clasificaciones": clasificaciones,
+                                              "en_mapa": en_mapa}}
+
+
+def _lista_intereses(session: Session) -> dict[str, Any]:
+    catalogo = intereses.cargar(session)
+    return {"items": [_interes_con_uso(session, i) for i in catalogo.todos]}
+
+
+def _auditar_interes(
+    session: Session, actor: User, codigo: str, accion: str, cambios: dict[str, Any] | None,
+) -> None:
+    record_event(
+        session, action=Action.LEAD_INTEREST_CHANGED, target_type="lead_interest",
+        target_id=codigo, actor=actor, metadata={"accion": accion, "cambios": cambios or {}},
+    )
+
+
+@router.get("/intereses")
+def listar_intereses(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_config),
+) -> dict[str, Any]:
+    """El catálogo entero (activos e inactivos), con cuántas clasificaciones
+    y filas del mapa usan cada uno: la pantalla no ofrece borrar lo que está
+    en uso."""
+    _ = current_user
+    return _lista_intereses(session)
+
+
+@router.post("/intereses", status_code=status.HTTP_201_CREATED)
+def crear_interes(
+    payload: InteresIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_config),
+) -> dict[str, Any]:
+    """Un interés nuevo: entra en el clasificador (el prompt se compone con
+    el catálogo en cada clasificación) sin desplegar nada."""
+    try:
+        fila = intereses.crear(
+            session, codigo=payload.codigo, etiqueta=payload.etiqueta,
+            descripcion=payload.descripcion or "", comercial=payload.comercial,
+            orden=payload.orden,
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    _auditar_interes(session, current_user, fila.code, "alta", payload.model_dump())
+    session.commit()
+    catalogo = intereses.cargar(session)
+    interes = next(i for i in catalogo.todos if i.codigo == fila.code)
+    return _interes_con_uso(session, interes)
+
+
+@router.patch("/intereses/{codigo}")
+def editar_interes(
+    codigo: str,
+    payload: InteresCambiosIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_config),
+) -> dict[str, Any]:
+    """Etiqueta, descripción, comercial, orden y activo. El código no cambia:
+    es lo que llevan las clasificaciones. Desactivar lo quita de la lista
+    del clasificador y de los desplegables; lo clasificado sigue legible."""
+    cambios = payload.model_dump(exclude_unset=True)
+    if not cambios:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "No hay nada que cambiar.")
+    try:
+        fila = intereses.actualizar(session, codigo, cambios)
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    _auditar_interes(session, current_user, fila.code, "cambio", cambios)
+    session.commit()
+    catalogo = intereses.cargar(session)
+    interes = next(i for i in catalogo.todos if i.codigo == fila.code)
+    return _interes_con_uso(session, interes)
+
+
+@router.delete("/intereses/{codigo}", status_code=status.HTTP_204_NO_CONTENT)
+def borrar_interes(
+    codigo: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_config),
+) -> Response:
+    """Solo si nada lo usa; con clasificaciones o filas del mapa, 409 (lo
+    suyo es desactivarlo)."""
+    try:
+        intereses.borrar(session, codigo)
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except intereses.InteresEnUso as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, {"code": "interes_en_uso", "detail": str(exc)},
+        ) from exc
+    _auditar_interes(session, current_user, codigo, "baja", None)
+    session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

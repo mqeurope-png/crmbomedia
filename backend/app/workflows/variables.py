@@ -151,13 +151,14 @@ def _lead_namespace(session: Session, contact: Contact) -> dict[str, Any]:
     preparó, para la tarea («Revisar borrador: vending, 95 %») y los
     avisos. Sin clasificación, cadenas vacías."""
     vacio: dict[str, Any] = {
-        "interes": "", "interes_texto": "", "idioma": "", "es_spam": False,
+        "interes": "", "interes_texto": "", "intereses": "", "interes_principal_texto": "",
+        "idioma": "", "es_spam": False,
         "confianza": "", "confianza_num": 0, "motivo": "", "fuente": "", "web": "",
         "plantilla": "", "remitente": "", "borrador_url": "", "estado": "",
         "productos": "", "consulta": "",
     }
     try:
-        from app.services.leads.clasificador import etiqueta_interes  # noqa: PLC0415
+        from app.services.leads.intereses import cargar  # noqa: PLC0415
         from app.services.leads.registro import (  # noqa: PLC0415
             ultima_clasificacion,
             url_borrador,
@@ -165,16 +166,23 @@ def _lead_namespace(session: Session, contact: Contact) -> dict[str, Any]:
         from app.services.web_forms.sitios import web_de_sitio  # noqa: PLC0415
 
         fila = ultima_clasificacion(session, contact.id)
+        catalogo = cargar(session) if fila is not None else None
     except Exception:  # noqa: BLE001 - una plantilla nunca rompe por esto
         log.warning("workflows.variables lead namespace failed", exc_info=True)
         return vacio
-    if fila is None:
+    if fila is None or catalogo is None:
         return vacio
     contexto = fila.contexto()
     confianza = float(fila.confidence or 0.0)
+    # Un lead puede querer varias cosas: `interes` es el principal (código),
+    # `interes_texto` todas las etiquetas («UV LED mediano formato + DTF ·
+    # impresión textil») para la tarea y los avisos.
+    efectivos = fila.intereses_efectivos
     return {
-        "interes": fila.interes_efectivo or "",
-        "interes_texto": etiqueta_interes(fila.interes_efectivo),
+        "interes": efectivos[0] if efectivos else "",
+        "interes_texto": catalogo.texto(efectivos),
+        "intereses": ", ".join(efectivos),
+        "interes_principal_texto": catalogo.etiqueta(efectivos[0]) if efectivos else "",
         "idioma": fila.idioma_efectivo or "",
         "es_spam": fila.es_spam_efectivo,
         "confianza": f"{confianza:.0%}",
@@ -282,9 +290,12 @@ def available_variables() -> list[str]:
         # Última asignación a pipeline (oportunidad)
         "opportunity.pipeline",
         "opportunity.stage",
-        # Respuesta a leads (última clasificación del contacto)
+        # Respuesta a leads (última clasificación del contacto). `interes` es
+        # el código del principal; `interes_texto`, todas las etiquetas.
         "lead.interes",
         "lead.interes_texto",
+        "lead.intereses",
+        "lead.interes_principal_texto",
         "lead.idioma",
         "lead.es_spam",
         "lead.confianza",

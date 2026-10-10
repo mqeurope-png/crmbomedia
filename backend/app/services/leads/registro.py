@@ -181,6 +181,8 @@ def ultima_clasificacion(session: Session, contact_id: str) -> LeadClassificatio
 
 
 def copiar_al_contacto(contact: Contact, fila: LeadClassification) -> None:
+    """Al contacto va el interés PRINCIPAL (el primero de la lista): las
+    condiciones de los workflows y los filtros bifurcan por un código."""
     contact.lead_interest = fila.interes_efectivo
     contact.lead_is_spam = fila.es_spam_efectivo
     contact.lead_confidence = fila.confidence
@@ -204,6 +206,7 @@ def registrar(
         language=clasificacion.idioma, language_source=clasificacion.idioma_fuente,
         language_mismatch=clasificacion.discrepancia_idioma,
         form_language=entrada.idioma_formulario, interest=clasificacion.interes,
+        interests_json=json.dumps(list(clasificacion.intereses)),
         interest_source=clasificacion.interes_fuente, is_spam=clasificacion.es_spam,
         confidence=clasificacion.confianza, reason=(clasificacion.motivo or "")[:500],
         provider=clasificacion.proveedor, model=clasificacion.modelo,

@@ -92,6 +92,49 @@ describe("ContactLeadClassificationCard (recuadro del Resumen)", () => {
     expect(screen.getByText(/2 análisis, este es el último/)).toBeInTheDocument();
   });
 
+  it("con varios intereses el principal va grande y los demás en chips pequeños", async () => {
+    mockList.mockResolvedValue(respuesta([
+      lead({
+        interes: "uv_mediano", interes_texto: "UV LED mediano formato", interes_fuente: "ia",
+        intereses: ["uv_mediano", "dtf"],
+        intereses_texto: "UV LED mediano formato + DTF · impresión textil",
+        intereses_etiquetas: ["UV LED mediano formato", "DTF · impresión textil"],
+        efectivo: { idioma: "de", interes: "uv_mediano", interes_texto: "UV LED mediano formato",
+                    intereses: ["uv_mediano", "dtf"],
+                    intereses_texto: "UV LED mediano formato + DTF · impresión textil",
+                    intereses_etiquetas: ["UV LED mediano formato", "DTF · impresión textil"],
+                    es_spam: false },
+      }),
+    ]));
+    render(<ContactLeadClassificationCard contactId="c-torra" />);
+    expect(await screen.findByText("UV LED mediano formato")).toHaveClass("lead-ia-interes-valor");
+    expect(screen.getByText("+ DTF · impresión textil")).toHaveClass("lead-ia-secundario");
+    expect(screen.getByText("por la IA")).toBeInTheDocument();
+  });
+
+  it("corregido a mano a otra lista, se dice lo que había dicho la IA (todos sus intereses)", async () => {
+    mockList.mockResolvedValue(respuesta([
+      lead({
+        intereses: ["uv_mediano", "dtf"], interes: "uv_mediano", interes_texto: "UV LED mediano formato",
+        intereses_texto: "UV LED mediano formato + DTF · impresión textil",
+        intereses_etiquetas: ["UV LED mediano formato", "DTF · impresión textil"],
+        efectivo: { idioma: "fr", interes: "dtf", interes_texto: "DTF · impresión textil",
+                    intereses: ["dtf", "uv_mediano"],
+                    intereses_texto: "DTF · impresión textil + UV LED mediano formato",
+                    intereses_etiquetas: ["DTF · impresión textil", "UV LED mediano formato"],
+                    es_spam: false },
+        correccion: { corregida: true, idioma: null, interes: "dtf", intereses: ["dtf", "uv_mediano"],
+                      es_spam: null, nota: null, por: "Bart", cuando: "2026-10-10T09:00:00Z" },
+      }),
+    ]));
+    render(<ContactLeadClassificationCard contactId="c-torra" />);
+    expect(await screen.findByText("DTF · impresión textil")).toHaveClass("lead-ia-interes-valor");
+    expect(screen.getByText("+ UV LED mediano formato")).toHaveClass("lead-ia-secundario");
+    expect(screen.getByText(
+      "corregido a mano (la IA dijo UV LED mediano formato + DTF · impresión textil)",
+    )).toBeInTheDocument();
+  });
+
   it("si la carga falla el recuadro dice el error (no se esconde)", async () => {
     mockList.mockRejectedValue(new Error("Sin red"));
     render(<ContactLeadClassificationCard contactId="c-torra" />);
@@ -101,7 +144,8 @@ describe("ContactLeadClassificationCard (recuadro del Resumen)", () => {
   it("un motivo corto no ofrece «más», y el spam se ve desde lejos", async () => {
     mockList.mockResolvedValue(respuesta([
       lead({ motivo: "Oferta de generación de leads.", es_spam: true, confianza: 0.75,
-             efectivo: { idioma: "fr", interes: "otro", interes_texto: "Otro", es_spam: true } }),
+             efectivo: { idioma: "fr", interes: "otro", interes_texto: "Otro", intereses: ["otro"],
+                         intereses_texto: "Otro", es_spam: true } }),
     ]));
     render(<ContactLeadClassificationCard contactId="c-torra" />);
     expect(await screen.findByText("SPAM")).toHaveClass("lead-ia-spam");

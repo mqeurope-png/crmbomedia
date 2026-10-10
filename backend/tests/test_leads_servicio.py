@@ -96,7 +96,7 @@ def test_el_proveedor_de_ia_parsea_la_respuesta(monkeypatch, con_clave) -> None:
 
     def _falso(*, api_key, model, system_prompt, user_prompt):
         prompts.append((system_prompt, user_prompt))
-        return json.dumps({"idioma": "fr", "interes": "uv_gran_formato", "es_spam": False,
+        return json.dumps({"idioma": "fr", "intereses": ["uv_grande"], "es_spam": False,
                            "confianza": 0.83, "motivo": "Pregunta por paneles de 2,5 m"})
 
     monkeypatch.setattr(llm, "_invoke_claude", _falso)
@@ -104,11 +104,19 @@ def test_el_proveedor_de_ia_parsea_la_respuesta(monkeypatch, con_clave) -> None:
     entrada = EntradaLead(texto="Bonjour, des panneaux de 2,5 m", fuente="agilecrm",
                           referencia="n1", email="x@y.fr", cuenta_agile="acc", pais="FR")
     out = clasificar_lead(entrada, ClasificadorAnthropic())
-    assert (out.idioma, out.interes, out.es_spam) == ("fr", "uv_gran_formato", False)
+    assert (out.idioma, out.interes, out.es_spam) == ("fr", "uv_grande", False)
+    assert out.intereses == ["uv_grande"]
     assert out.confianza == 0.83 and out.proveedor == "anthropic" and out.modelo
     assert (out.idioma_fuente, out.interes_fuente) == ("ia", "ia")
-    # El contexto va en el prompt; la clave, no.
+    # El contexto va en el prompt; la clave, no. Los intereses del catálogo,
+    # con su descripción, van en las instrucciones.
     assert "Dominio del correo: y.fr" in prompts[0][1] and "clave-de-prueba" not in prompts[0][1]
+    assert "`uv_grande`: UV LED gran formato" in prompts[0][0]
+    assert "`soporte_postventa`: Soporte postventa (no es una venta)" in prompts[0][0]
+    # Una respuesta a la antigua (`interes` suelto) también se entiende.
+    monkeypatch.setattr(llm, "_invoke_claude", lambda **k: json.dumps(
+        {"idioma": "fr", "interes": "vending", "es_spam": False, "confianza": 0.7}))
+    assert ClasificadorAnthropic().clasificar(entrada).intereses == ["vending"]
 
 
 def test_el_proveedor_de_ia_cae_a_palabras_clave_si_falla(monkeypatch, con_clave, caplog) -> None:
@@ -119,7 +127,7 @@ def test_el_proveedor_de_ia_cae_a_palabras_clave_si_falla(monkeypatch, con_clave
     with caplog.at_level(logging.WARNING, logger="app.services.leads.proveedor_anthropic"):
         out = ClasificadorAnthropic().clasificar(EntradaLead(texto=ALEMAN, fuente="agilecrm",
                                                              referencia="n1"))
-    assert (out.idioma, out.interes, out.proveedor) == ("de", "consumibles", "palabras_clave")
+    assert (out.idioma, out.interes, out.proveedor) == ("de", "tienda", "palabras_clave")
     # El motivo y el log llevan el MENSAJE del error, no solo la clase.
     assert ("respaldo por palabras clave: IA no disponible: LLMUpstreamError: Provider returned "
             "non-text content (blocks: thinking)") in out.motivo
@@ -193,9 +201,14 @@ def test_la_configuracion_va_en_los_ajustes_del_erp(http, session_factory) -> No
     body = r.json()
     assert body["lead_response"]["activo"] is False
     catalogo = body["lead_response_catalogo"]
-    assert [i["id"] for i in catalogo["intereses"]][:2] == ["uv_pequeno_mediano", "uv_gran_formato"]
+    assert [i["id"] for i in catalogo["intereses"]][:2] == ["uv_pequeno", "uv_mediano"]
+    assert catalogo["intereses"][0]["descripcion"] and catalogo["intereses"][0]["activo"] is True
     assert catalogo["mapa_por_nombre"]["vending:es"] == catalogo["plantillas"][0]["id"]
     assert catalogo["mapa_por_nombre"]["vending:de"] is None
+    # Los huecos: interés comercial × idioma sin plantilla (vending:es no lo es).
+    huecos = {(h["interes"], h["idioma"]) for h in catalogo["huecos"]}
+    assert ("vending", "de") in huecos and ("dtf", "es") in huecos
+    assert ("vending", "es") not in huecos and ("soporte_postventa", "es") not in huecos
     assert any(w["clave"] == "pimpam" and w["remitente_defecto"] == "info@pimpam-vending.com"
                for w in catalogo["webs"])
 
@@ -276,9 +289,11 @@ def test_en_seco_dice_que_haria_y_no_escribe_nada(session_factory) -> None:
                                      "aviso": None}
         assert ana_fila["web"] == "pimpam-vending.com" and ana_fila["ya_clasificado"] is False
         klaus_fila = por_email["klaus@druck.de"]
-        assert klaus_fila["clasificacion"]["interes"] == "consumibles"
+        assert klaus_fila["clasificacion"]["interes"] == "tienda"
+        assert klaus_fila["clasificacion"]["intereses"][0] == "tienda"
         assert klaus_fila["haria"]["plantilla"] is None
-        assert "no es un lead comercial" in klaus_fila["haria"]["aviso"]
+        # La tienda es comercial pero no tiene plantilla (ni se inventa): hueco.
+        assert "sin plantilla para Tienda" in klaus_fila["haria"]["aviso"]
         assert "sin remitente" in klaus_fila["haria"]["aviso"]    # cuenta de Agile sin web
         assert por_email["hello@blastleadgeneration.com"]["haria"]["etapa"] == "Descartado / spam"
         assert informe["resumen"]["total"] == 3 and informe["resumen"]["spam"] == 1

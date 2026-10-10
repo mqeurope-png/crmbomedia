@@ -101,6 +101,8 @@ class Action:
     LEAD_DRAFT_PREPARED = "lead.draft_prepared"
     LEAD_CLASSIFICATION_CORRECTED = "lead.classification_corrected"
     LEAD_DAILY_CAP_REACHED = "lead.daily_cap_reached"
+    #: El catálogo de intereses del clasificador (alta, cambio, baja).
+    LEAD_INTEREST_CHANGED = "lead.interest_changed"
     TASK_CREATED = "task.created"
     TASK_UPDATED = "task.updated"
     TASK_COMPLETED = "task.completed"

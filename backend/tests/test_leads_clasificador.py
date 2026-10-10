@@ -8,11 +8,14 @@ from app.services.leads.clasificador import (
     CONFIANZA_CONTRADICCION,
     CONFIANZA_ETIQUETAS_COHERENTES,
     CONFIANZA_SOLO_ETIQUETAS,
-    INTERES_CONSUMIBLES,
+    INTERES_CORTE_LASER,
     INTERES_DISTRIBUCION,
-    INTERES_LASER,
+    INTERES_DTF,
+    INTERES_GRABADO_LASER,
     INTERES_OTRO,
-    INTERES_SERVICIO,
+    INTERES_SOPORTE,
+    INTERES_TIENDA,
+    INTERES_UV_MEDIANO,
     INTERES_UV_PEQUENO,
     INTERES_VENDING,
     INTERESES_COMERCIALES,
@@ -25,6 +28,7 @@ from app.services.leads.clasificador import (
     dominio_sospechoso,
     interes_por_etiquetas,
     interes_por_texto,
+    intereses_por_texto,
     parece_spam,
     texto_claramente_en,
 )
@@ -55,7 +59,7 @@ def test_detecta_el_idioma_por_vocabulario() -> None:
 
 def test_interes_por_palabras_clave() -> None:
     assert interes_por_texto(FRANCES)[0] == INTERES_UV_PEQUENO
-    assert interes_por_texto(ALEMAN)[0] == INTERES_CONSUMIBLES
+    assert interes_por_texto(ALEMAN)[0] == INTERES_TIENDA
     assert interes_por_texto(CASTELLANO)[0] == INTERES_VENDING
     assert interes_por_texto("Somos distribuidores en Portugal y queremos representar "
                              "vuestra marca")[0] == INTERES_DISTRIBUCION
@@ -133,27 +137,27 @@ def test_la_consulta_se_lee_siempre_aunque_haya_productos_marcados() -> None:
     assert (out.idioma, out.idioma_fuente, out.discrepancia_idioma) == ("es", "formulario", False)
 
 
-def test_jovica_servicio_tecnico_aunque_marcara_impresion_uv() -> None:
+def test_jovica_soporte_postventa_aunque_marcara_impresion_uv() -> None:
     """Cliente con la máquina averiada desde hace un año y «Impresión UV Led»
-    marcado: servicio técnico, sin plantilla de venta."""
+    marcado: soporte postventa, sin plantilla de venta."""
     out = clasificar_lead(_entrada(JOVICA, idioma_formulario="en", productos=JOVICA_PRODUCTOS),
                           ClasificadorPalabrasClave())
-    assert out.interes == INTERES_SERVICIO
+    assert out.interes == INTERES_SOPORTE
     assert out.interes not in INTERESES_COMERCIALES          # sin plantilla de venta
     assert out.idioma == "en"
     # La contradicción (máquina marcada, texto de avería) se nota en la
     # confianza y el motivo cuenta qué dice el texto y qué se marcó.
     assert out.confianza <= CONFIANZA_CONTRADICCION
-    assert "Servicio técnico" in out.motivo and "problem" in out.motivo
+    assert "Soporte postventa" in out.motivo and "problem" in out.motivo
     assert "Impresión UV Led" in out.motivo and "manda lo que pide el texto" in out.motivo
 
 
-def test_toni_servicio_tecnico_en_aleman_aunque_marcara_dos_artisjet() -> None:
+def test_toni_soporte_postventa_en_aleman_aunque_marcara_dos_artisjet() -> None:
     """Seis meses de problemas, cabezal y dampers cambiados, dos máquinas
-    marcadas: servicio técnico, idioma de (el formulario era francés)."""
+    marcadas: soporte postventa, idioma de (el formulario era francés)."""
     out = clasificar_lead(_entrada(TONI, idioma_formulario="fr", productos=TONI_PRODUCTOS),
                           ClasificadorPalabrasClave())
-    assert out.interes == INTERES_SERVICIO
+    assert out.interes == INTERES_SOPORTE
     assert out.interes not in INTERESES_COMERCIALES
     assert (out.idioma, out.idioma_fuente, out.discrepancia_idioma) == ("de", "texto", True)
     assert out.confianza <= CONFIANZA_CONTRADICCION
@@ -190,7 +194,7 @@ def test_el_texto_manda_tambien_entre_dos_maquinas_y_otro_de_la_ia_es_una_decisi
     # Texto de láser con etiqueta de vending: láser, con la contradicción anotada.
     out = clasificar_lead(_entrada("Busco una grabadora láser para madera", idioma_formulario="es",
                                    productos=["Máquina de vending"]), ClasificadorPalabrasClave())
-    assert out.interes == INTERES_LASER and out.confianza <= CONFIANZA_CONTRADICCION
+    assert out.interes == INTERES_GRABADO_LASER and out.confianza <= CONFIANZA_CONTRADICCION
     assert "Vending" in out.motivo
     # La IA dice «otro» (una gestión: factura, transferencia) con máquinas
     # marcadas: se queda en «otro», que gana a cualquier etiqueta.
@@ -231,11 +235,12 @@ def test_el_idioma_del_formulario_manda_salvo_contradiccion_clara() -> None:
 
 def test_las_palabras_clave_casan_por_palabra_entera() -> None:
     # «primera vez» no es el consumible «primer»; «cortesía» no es «corte».
+    # «un laser», sin más, es corte (el más pedido); «grabadora láser», grabado.
     assert interes_por_texto("Hola, es la primera vez que contacto, me interesa un laser")[0] \
-        == INTERES_LASER
+        == INTERES_CORTE_LASER
     assert interes_por_texto("Por cortesía, ¿me llamáis?") == (INTERES_OTRO, 0)
     # Y los prefijos marcados sí: «grabadora», «personalización», «distribuidores».
-    assert interes_por_texto("Busco una grabadora láser")[0] == INTERES_LASER
+    assert interes_por_texto("Busco una grabadora láser")[0] == INTERES_GRABADO_LASER
     assert interes_por_texto("Personalización de botellas")[0] == INTERES_UV_PEQUENO
     assert interes_por_texto("Somos distribuidores")[0] == INTERES_DISTRIBUCION
 
@@ -266,6 +271,64 @@ def test_sin_formulario_el_idioma_sale_del_texto() -> None:
     out = clasificar_lead(_entrada(ALEMAN, fuente="agilecrm", referencia="nota-1"),
                           ClasificadorPalabrasClave())
     assert (out.idioma, out.idioma_fuente) == ("de", "palabras_clave")
-    assert out.interes == INTERES_CONSUMIBLES
+    assert out.interes == INTERES_TIENDA
     assert out.proveedor == "palabras_clave"
     assert 0.0 < out.confianza < 1.0
+
+
+# --- varios intereses por lead (10/10/2026) -----------------------------------
+
+#: torracollons@elbarquito.net: placas de metal Y camisetas, con la 3000U PRO
+#: y la 5000U marcadas. Dos intereses: UV (principal) y DTF; las etiquetas
+#: coinciden con el principal, así que la confianza sube.
+TORRACOLLONS = "Ich möchte auf Metallplatten sowie auf T-Shirts drucken"
+TORRACOLLONS_PRODUCTOS = ["Artisjet 3000U PRO", "5000U UV Led"]
+
+
+def test_placas_de_metal_y_camisetas_son_uv_y_dtf_en_ese_orden() -> None:
+    lista = intereses_por_texto(TORRACOLLONS)
+    assert [i for i, _ in lista] == [INTERES_UV_PEQUENO, INTERES_DTF]
+    out = clasificar_lead(_entrada(TORRACOLLONS, idioma_formulario="de",
+                                   productos=TORRACOLLONS_PRODUCTOS), ClasificadorPalabrasClave())
+    assert out.intereses == [INTERES_UV_PEQUENO, INTERES_DTF]
+    assert out.interes == INTERES_UV_PEQUENO                 # el principal es el primero
+    assert out.idioma == "de"
+    # Las etiquetas (dos impresoras UV) coinciden con el principal: sube.
+    assert out.confianza >= CONFIANZA_ETIQUETAS_COHERENTES
+    assert "DTF" in out.motivo and "coincide con los productos marcados" in out.motivo
+    assert out.como_dict()["intereses"] == [INTERES_UV_PEQUENO, INTERES_DTF]
+
+
+def test_un_lead_lleva_una_sola_talla_de_uv_y_lo_que_pide_primero_va_primero() -> None:
+    # «impresora UV» puntúa para las tres tallas: se queda una (la pequeña, a
+    # igualdad); y «A2» la hace mediana.
+    assert [i for i, _ in intereses_por_texto("Quiero una impresora UV")] == [INTERES_UV_PEQUENO]
+    assert [i for i, _ in intereses_por_texto("Quiero una impresora UV A2")] == [INTERES_UV_MEDIANO]
+    # A igualdad de palabras clave, lo que se pide antes en el texto es lo principal.
+    assert [i for i, _ in intereses_por_texto("Busco una máquina de vending y una impresora UV")] \
+        == [INTERES_VENDING, INTERES_UV_PEQUENO]
+    assert [i for i, _ in intereses_por_texto("Busco una impresora UV y una máquina de vending")] \
+        == [INTERES_UV_PEQUENO, INTERES_VENDING]
+
+
+def test_la_clasificacion_se_construye_con_lista_o_con_un_solo_interes() -> None:
+    una = Clasificacion(idioma="es", interes=INTERES_VENDING)
+    assert una.intereses == [INTERES_VENDING]
+    varias = Clasificacion(idioma="es", intereses=[INTERES_UV_MEDIANO, INTERES_DTF])
+    assert varias.interes == INTERES_UV_MEDIANO
+    ninguna = Clasificacion(idioma=None)
+    assert (ninguna.interes, ninguna.intereses) == (INTERES_OTRO, [INTERES_OTRO])
+
+
+def test_un_proveedor_que_devuelve_varios_intereses_los_conserva_en_su_orden() -> None:
+    class _IA:
+        nombre = "ia_falsa"
+
+        def clasificar(self, entrada: EntradaLead) -> Clasificacion:
+            return Clasificacion(idioma="de", intereses=["dtf", "uv_mediano", "cohetes", "dtf"],
+                                 confianza=0.9, motivo="camisetas y placas", idioma_fuente="ia",
+                                 interes_fuente="ia", proveedor=self.nombre)
+
+    out = clasificar_lead(_entrada(TORRACOLLONS, idioma_formulario="de"), _IA())
+    # Lo que no está en el catálogo se tira, lo repetido una vez, el orden se respeta.
+    assert out.intereses == ["dtf", "uv_mediano"] and out.interes == "dtf"

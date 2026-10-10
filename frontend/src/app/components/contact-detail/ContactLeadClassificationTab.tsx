@@ -11,7 +11,9 @@ import {
   type LeadCorreccion,
 } from "../../lib/erpApi";
 import { extractErrorMessage } from "../../lib/errors";
+import { listaIntereses, listasIguales } from "../../lib/leadsMapa";
 import { estadoLabel, estadoTone, fuenteTexto, porcentaje } from "../../lib/leadsTextos";
+import { InteresesPicker } from "../leads/InteresesPicker";
 import { LeadClasificacionResumen } from "./LeadClasificacionResumen";
 
 type Props = {
@@ -201,7 +203,9 @@ function LeadClasificacionItem({
 }
 
 /** La corrección: solo viaja lo que cambia respecto a lo que manda hoy (lo
- *  corregido, si lo hay; si no, lo clasificado). La original se conserva. */
+ *  corregido, si lo hay; si no, lo clasificado). La original se conserva.
+ *  Los intereses van en lista y en el orden elegido: el primero es el
+ *  principal. */
 function CorreccionForm({
   lead, opciones, onCorregir,
 }: {
@@ -209,8 +213,9 @@ function CorreccionForm({
   opciones: LeadClasificacionesContacto["opciones"];
   onCorregir: (id: string, payload: LeadCorreccion) => Promise<void>;
 }) {
+  const efectivos = listaIntereses(lead.efectivo.intereses, lead.efectivo.interes);
   const [idioma, setIdioma] = useState(lead.efectivo.idioma ?? "");
-  const [interes, setInteres] = useState(lead.efectivo.interes ?? "");
+  const [intereses, setIntereses] = useState<string[]>(efectivos);
   const [esSpam, setEsSpam] = useState(lead.efectivo.es_spam);
   // La nota arranca con la que ya hay: el servidor sustituye la nota entera
   // en cada corrección, así que una segunda corrección sin tocarla la
@@ -222,7 +227,7 @@ function CorreccionForm({
 
   const cambios: LeadCorreccion = {};
   if (idioma && idioma !== (lead.efectivo.idioma ?? "")) cambios.idioma = idioma;
-  if (interes && interes !== (lead.efectivo.interes ?? "")) cambios.interes = interes;
+  if (intereses.length > 0 && !listasIguales(intereses, efectivos)) cambios.intereses = intereses;
   if (esSpam !== lead.efectivo.es_spam) cambios.es_spam = esSpam;
   const hayCambios = Object.keys(cambios).length > 0;
   const sufijo = formatBackendDateTimeCompact(lead.lead_at ?? lead.creado);
@@ -254,17 +259,16 @@ function CorreccionForm({
           {opciones.idiomas.map((i) => <option key={i} value={i}>{i.toUpperCase()}</option>)}
         </select>
       </label>
-      <label>
-        Interés
-        <select
-          aria-label={`Interés del lead del ${sufijo}`}
-          value={interes}
-          onChange={(e) => setInteres(e.target.value)}
-        >
-          {!interes ? <option value="">—</option> : null}
-          {opciones.intereses.map((i) => <option key={i.id} value={i.id}>{i.label}</option>)}
-        </select>
-      </label>
+      <div className="contact-lead-ia-correccion-campo">
+        <span>Intereses</span>
+        <InteresesPicker
+          value={intereses}
+          onChange={setIntereses}
+          opciones={opciones.intereses}
+          labelPrincipal={`Interés del lead del ${sufijo}`}
+          sujeto={`el lead del ${sufijo}`}
+        />
+      </div>
       <label className="is-check">
         <input
           type="checkbox"
@@ -293,7 +297,7 @@ function CorreccionForm({
         </>
       ) : (
         <span className="muted small">
-          {guardado ? "Corrección guardada." : "Cambia idioma, interés o spam para corregir."}
+          {guardado ? "Corrección guardada." : "Cambia idioma, intereses o spam para corregir."}
         </span>
       )}
       {error ? <p className="form-error" role="alert">{error}</p> : null}

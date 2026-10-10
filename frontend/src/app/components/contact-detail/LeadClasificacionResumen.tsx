@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { LeadClasificacion } from "../../lib/erpApi";
+import { listaIntereses, listasIguales } from "../../lib/leadsMapa";
 import { estadoLabel, estadoTone, origenDato, porcentaje } from "../../lib/leadsTextos";
 
 /** Semáforo de la confianza frente al umbral configurado (Configuración
@@ -39,8 +40,20 @@ type Props = {
 export function LeadClasificacionResumen({ lead, umbral, modo = "completo" }: Props) {
   const [desplegado, setDesplegado] = useState(false);
   const corregida = lead.correccion.corregida;
-  const interesCorregido = corregida && lead.correccion.interes != null
-    && lead.correccion.interes !== lead.interes;
+  // Un lead puede querer varias cosas: el principal manda (grande) y los
+  // demás van en chips pequeños, en su orden.
+  const efectivos = listaIntereses(lead.efectivo.intereses, lead.efectivo.interes);
+  const originales = listaIntereses(lead.intereses, lead.interes);
+  const etiquetasEfectivas = lead.efectivo.intereses_etiquetas?.length === efectivos.length
+    ? lead.efectivo.intereses_etiquetas
+    : efectivos;
+  const secundarios = etiquetasEfectivas.slice(1);
+  const interesCorregido = corregida && (
+    lead.correccion.intereses?.length
+      ? !listasIguales(lead.correccion.intereses, originales)
+      : lead.correccion.interes != null && lead.correccion.interes !== lead.interes
+  );
+  const dijoLaIa = lead.intereses_texto || lead.interes_texto || "—";
   const idiomaCorregido = corregida && lead.correccion.idioma != null
     && lead.correccion.idioma !== lead.idioma;
   const spamCorregido = corregida && lead.correccion.es_spam != null
@@ -74,9 +87,16 @@ export function LeadClasificacionResumen({ lead, umbral, modo = "completo" }: Pr
           <span className="lead-ia-interes-valor">
             {lead.efectivo.interes_texto || "Sin interés claro"}
           </span>
+          {secundarios.length > 0 ? (
+            <span className="lead-ia-secundarios" aria-label="También pide">
+              {secundarios.map((e) => (
+                <span key={e} className="lead-ia-chip lead-ia-secundario">+ {e}</span>
+              ))}
+            </span>
+          ) : null}
           {interesCorregido ? (
             <span className="lead-ia-origen">
-              corregido a mano (la IA dijo {lead.interes_texto || "—"})
+              corregido a mano (la IA dijo {dijoLaIa})
             </span>
           ) : lead.interes_fuente ? (
             <span className="lead-ia-origen">{origenDato(lead.interes_fuente)}</span>
