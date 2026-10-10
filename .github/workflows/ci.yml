@@ -1,13 +1,84 @@
 name: CI
 
+# Tres zonas y un solo check para la rama:
+#
+#   - `changes` mira qué toca el PR (dorny/paths-filter). Un PR solo de
+#     frontend no lanza el backend, y al revés; lo compartido (este fichero,
+#     docker-compose, Dockerfiles, dependencias) lo lanza todo. En `main`
+#     (push) no se filtra: corre todo. Si el filtro fallara, también.
+#   - `backend` corre la suite de pytest en 8 trozos en paralelo
+#     (`.github/scripts/pytest_shard.py`): la misma suite, repartida, en vez
+#     de un trabajo de media hora. ruff y compileall van en el trozo 1.
+#   - `backend-mysql` solo cuando el PR toca la base de datos (migraciones,
+#     modelos, dependencias) o algo compartido.
+#   - `frontend` con la caché de npm por el lock.
+#   - `ci-ok` es el único check que hay que exigir en la protección de la
+#     rama: pasa cuando todo lo que tenía que correr corrió bien; un trabajo
+#     saltado por los filtros no bloquea el PR.
+#
+# Un empujón nuevo a la misma rama cancela la ejecución anterior (solo en
+# PRs; en `main` se dejan terminar).
+
 on:
   pull_request:
   push:
     branches: [main]
 
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PYTEST_SHARDS: 8
+
 jobs:
-  backend:
+  changes:
+    name: qué cambia
     runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      pull-requests: read
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      db: ${{ steps.filter.outputs.db }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+    steps:
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            shared: &shared
+              - '.github/**'
+              - 'docker-compose*.yml'
+              - '**/Dockerfile*'
+              - '.dockerignore'
+              - 'nginx/**'
+            backend:
+              - *shared
+              - 'backend/**'
+            db:
+              - *shared
+              - 'backend/alembic/**'
+              - 'backend/alembic.ini'
+              - 'backend/app/models/**'
+              - 'backend/app/**/models.py'
+              - 'backend/app/db/**'
+              - 'backend/requirements*.txt'
+            frontend:
+              - *shared
+              - 'frontend/**'
+
+  backend:
+    name: backend (${{ matrix.shard }}/8)
+    needs: changes
+    # Corre si no es un PR (push a main), si el filtro no pudo decidir, o si
+    # el PR toca el backend o algo compartido.
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.backend == 'true') }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     defaults:
       run:
         working-directory: backend
@@ -23,9 +94,14 @@ jobs:
           cache: pip
           cache-dependency-path: backend/requirements-dev.txt
       - run: pip install -r requirements-dev.txt
-      - run: ruff check .
-      - run: python -m compileall app tests
-      - run: python -m pytest
+      - if: matrix.shard == 1
+        run: ruff check .
+      - if: matrix.shard == 1
+        run: python -m compileall app tests
+      - name: pytest (trozo ${{ matrix.shard }} de ${{ env.PYTEST_SHARDS }})
+        run: |
+          python ../.github/scripts/pytest_shard.py --shards "$PYTEST_SHARDS" --index "${{ matrix.shard }}" > /tmp/trozo.txt
+          xargs -a /tmp/trozo.txt python -m pytest
 
   backend-mysql:
     # Catches MySQL-only schema bugs that SQLite happily accepts.
@@ -33,6 +109,8 @@ jobs:
     # NULLS LAST, DEFAULT on TEXT) that passed CI on SQLite and
     # broke production. This job runs the full migration chain
     # against MySQL 8 plus a minimal insert sanity check.
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.db == 'true') }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -136,6 +214,8 @@ jobs:
           PY
 
   frontend:
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.frontend == 'true') }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -150,13 +230,33 @@ jobs:
           # SEC-1: Node 20 llegó a EOL en abril-2026; Next 16 exige >=20.9.
           # 22 = LTS activa, la misma major que la imagen Docker del frontend.
           node-version: "22"
-      - uses: actions/cache@v4
-        with:
-          path: ~/.npm
-          key: ${{ runner.os }}-npm-${{ hashFiles('frontend/package.json') }}
-          restore-keys: |
-            ${{ runner.os }}-npm-
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
       - run: npm ci
       - run: npm run build
       - run: npm run lint
       - run: npm test -- --ci --coverage=false
+
+  ci-ok:
+    # El único check que hay que exigir en la protección de la rama. En
+    # verde si todo lo que tenía que correr corrió bien; un trabajo saltado
+    # por los filtros de ruta no bloquea.
+    name: CI en verde
+    needs: [changes, backend, backend-mysql, frontend]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resultado de cada trabajo
+        env:
+          RESULTADOS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          needs = json.loads(os.environ["RESULTADOS"])
+          for nombre, datos in needs.items():
+              print(f"{nombre}: {datos['result']}")
+          malos = {n: d["result"] for n, d in needs.items() if d["result"] in ("failure", "cancelled")}
+          if malos:
+              sys.exit(f"Trabajos en rojo: {malos}")
+          print("CI en verde")
+          PY
