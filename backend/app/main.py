@@ -99,6 +99,10 @@ app.include_router(google_router)
 app.include_router(dashboard_router, dependencies=_CRM_SCOPE)
 app.include_router(bulk_router, dependencies=_CRM_SCOPE)
 app.include_router(emails_router, dependencies=_CRM_SCOPE)
+# «Ayúdame a contestar»: el borrador del asistente sobre un hilo (no envía).
+from app.api.asistente import router as asistente_router  # noqa: E402
+
+app.include_router(asistente_router, dependencies=_CRM_SCOPE)
 app.include_router(emails_mailbox_router, dependencies=_CRM_SCOPE)
 app.include_router(emails_scheduled_router, dependencies=_CRM_SCOPE)
 app.include_router(email_drafts_router, dependencies=_CRM_SCOPE)
@@ -140,10 +144,12 @@ app.include_router(web_forms_embed_router)
 # Cola SAT + reportar excepción + packing + adjuntos (PR 5).
 from app.erp.api import bank_router as erp_bank_router  # noqa: E402
 from app.erp.api import catalogs_router as erp_catalogs_router  # noqa: E402
+from app.erp.api import conocimiento_router as erp_conocimiento_router  # noqa: E402
 from app.erp.api import cuadre_router as erp_cuadre_router  # noqa: E402
 from app.erp.api import exceptions_router as erp_exceptions_router  # noqa: E402
 from app.erp.api import factusol_router as erp_factusol_router  # noqa: E402
 from app.erp.api import genei_router as erp_genei_router  # noqa: E402
+from app.erp.api import ia_router as erp_ia_router  # noqa: E402
 from app.erp.api import leads_router as erp_leads_router  # noqa: E402
 from app.erp.api import order_timeline_router as erp_order_timeline_router  # noqa: E402
 from app.erp.api import orders_router as erp_orders_router  # noqa: E402
@@ -169,6 +175,10 @@ app.include_router(erp_seguimiento_router)
 app.include_router(erp_cuadre_router)
 # Respuesta a leads · Fase 1 (lista corregible, en seco, workflow).
 app.include_router(erp_leads_router)
+# Base de conocimiento (sitios, rutas de soporte, páginas por interés, KB de FLUX).
+app.include_router(erp_conocimiento_router)
+# La IA en números (llamadas, tokens, coste, borradores del asistente).
+app.include_router(erp_ia_router)
 
 # Webhooks entrantes (fuera de `/api/*`; auth = firma HMAC, no sesión CRM).
 from app.webhooks.woocommerce import router as woocommerce_webhook_router  # noqa: E402
@@ -341,6 +351,23 @@ async def _arm_seguimiento_reconcile() -> None:
 
         logging.getLogger(__name__).warning(
             "seguimiento.reconcile arm failed at startup", exc_info=True
+        )
+
+
+@app.on_event("startup")
+async def _arm_kb_flux_sync() -> None:
+    """Base de conocimiento — sincronización diaria del índice de la KB de
+    FLUX (cola `kb:flux_sync`, la escucha `worker-sync`). Interruptor en
+    Configuración ERP, encendido por defecto (solo lectura)."""
+    try:
+        from app.services.conocimiento.flux_job import arm  # noqa: PLC0415
+
+        arm()
+    except Exception:  # noqa: BLE001
+        import logging  # noqa: PLC0415
+
+        logging.getLogger(__name__).warning(
+            "kb.flux arm failed at startup", exc_info=True
         )
 
 

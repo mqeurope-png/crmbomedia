@@ -103,6 +103,12 @@ class Action:
     LEAD_DAILY_CAP_REACHED = "lead.daily_cap_reached"
     #: El catálogo de intereses del clasificador (alta, cambio, baja).
     LEAD_INTEREST_CHANGED = "lead.interest_changed"
+    #: Base de conocimiento: sitios, rutas, categorías de FLUX, sincronización a mano.
+    KB_CHANGED = "kb.changed"
+    #: «Ayúdame a contestar»: quién pidió un borrador (hilo, modelo, coste) y
+    #: qué pasó con él (enviado tal cual, editado, descartado).
+    IA_BORRADOR_GENERADO = "ia.borrador_generado"
+    IA_BORRADOR_RESUELTO = "ia.borrador_resuelto"
     TASK_CREATED = "task.created"
     TASK_UPDATED = "task.updated"
     TASK_COMPLETED = "task.completed"

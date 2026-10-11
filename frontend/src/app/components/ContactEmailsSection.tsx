@@ -117,6 +117,16 @@ export function ContactEmailsSection({
                   <Link href={`/emails/${t.id}?from=ficha`}>
                     {t.subject || "(sin asunto)"}
                   </Link>
+                  {/* «Ayúdame a contestar»: abre el hilo y pide a la IA el
+                      borrador de respuesta. Lo envía la persona. */}
+                  {" "}
+                  <Link
+                    href={`/emails/${t.id}?from=ficha&asistente=1`}
+                    className="muted small"
+                    title="Abre el hilo y pide a la IA un borrador de respuesta. Lo revisas y lo envías tú."
+                  >
+                    · Ayúdame a contestar
+                  </Link>
                   {t.has_unread_replies ? (
                     <span className="badge ok"> Nuevo</span>
                   ) : null}

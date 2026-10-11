@@ -1143,10 +1143,15 @@ def process_history(
         return recolocar_cursor(session, client, watch, user_id=user_id)
 
     # CRM-GMAIL — captura universal. Ya no filtramos por «thread que el CRM
-    # ya conoce»: guardamos cualquier mail dirigido a un alias ACTIVO (sea o
-    # no un contacto conocido; `contact_id=NULL` si no casa). Además
-    # sincronizamos la label SPAM sobre los mensajes ya almacenados.
+    # ya conoce»: guardamos cualquier mail que toque un DOMINIO del grupo
+    # (tabla de sitios + alias registrados), sea o no un contacto conocido
+    # (`contact_id=NULL` si no casa). Los alias atribuyen (`delivered_to`
+    # canónico), no filtran. Además sincronizamos la label SPAM sobre los
+    # mensajes ya almacenados.
+    from app.services.web_forms.sitios import dominios_del_grupo  # noqa: PLC0415
+
     alias_map = active_alias_map(session)
+    dominios = dominios_del_grupo(session)
     # Ids ya guardados en CUALQUIER cuenta: un envío del compositor (o un
     # acuse) vive bajo el usuario que lo envió y su copia en SENT trae el
     # mismo id. Antes se miraba solo la cuenta del push y se duplicaba.
@@ -1159,7 +1164,12 @@ def process_history(
             mid = msg_meta.get("id")
             tid = msg_meta.get("threadId")
             stub_labels = msg_meta.get("labelIds") or []
-            if not mid or not tid or mid in seen_messages:
+            if not mid or not tid:
+                continue
+            if mid in seen_messages:
+                # Ya guardado (la copia en SENT de un envío del compositor,
+                # un reintento del push): no es un descarte.
+                logger.debug("gmail.captura.repetido msg=%s", mid)
                 continue
             # Pre-filtro barato: si el stub trae labels y NO es INBOX,
             # SPAM ni SENT (DRAFT/CHAT), lo ignoramos sin gastar un
@@ -1173,12 +1183,19 @@ def process_history(
                 and "SPAM" not in stub_labels
                 and "SENT" not in stub_labels
             ):
+                logger.info(
+                    "gmail.captura.descartado motivo=etiquetas_no_capturables msg=%s "
+                    "etiquetas=%s", mid, ",".join(stub_labels)[:120],
+                )
                 continue
-            if not alias_map and "SENT" not in stub_labels:
-                # Sin alias activos no hay correo ENTRANTE que capturar
-                # (el gate por `delivered_to` lo descartaría); lo ENVIADO
-                # se captura igual, no depende de los alias. Seguimos
-                # procesando labelsAdded/Removed más abajo.
+            if not dominios and "SENT" not in stub_labels:
+                # Sin dominios del grupo (imposible con la lista de partida,
+                # salvo que se desactive todo) no hay correo ENTRANTE que
+                # capturar; lo ENVIADO se captura igual. Seguimos procesando
+                # labelsAdded/Removed más abajo.
+                logger.info(
+                    "gmail.captura.descartado motivo=sin_dominios_del_grupo msg=%s", mid,
+                )
                 continue
             try:
                 full = client.get_message(mid)
@@ -1188,6 +1205,7 @@ def process_history(
                     raw=full,
                     gmail_thread_id=tid,
                     alias_map=alias_map,
+                    dominios=dominios,
                 )
                 seen_messages.add(mid)
                 if message is not None:
@@ -1715,6 +1733,47 @@ def ids_guardados_en_el_buzon(session: Session) -> set[str]:
     )
 
 
+def destinatario_del_grupo(raw: dict[str, Any], dominios: set[str]) -> str | None:
+    """Captura de ENTRADA universal (11/10/2026): la primera dirección de
+    Delivered-To / X-Original-To / To / Cc / Bcc que pertenece a un dominio
+    del grupo (`sitios.dominios_del_grupo`), en minúsculas, o None. Es el
+    criterio de captura cuando ningún alias registrado casa: lo que llega a
+    `ventas@fluxlasers.es` o `pedidos@bomedia.net` es nuestro aunque nadie
+    haya dado de alta esa dirección."""
+    from app.services.web_forms.sitios import es_del_grupo  # noqa: PLC0415
+
+    if not dominios:
+        return None
+    headers = _index_headers(raw.get("payload", {}).get("headers", []))
+    candidates = [
+        addr.strip()
+        for addr in (headers.get("delivered-to"), headers.get("x-original-to"))
+        if addr
+    ]
+    for key in ("to", "cc", "bcc"):
+        header_val = headers.get(key)
+        if header_val:
+            candidates += [a for _, a in getaddresses([header_val]) if a]
+    for addr in candidates:
+        if es_del_grupo(addr, dominios):
+            return addr.lower()
+    return None
+
+
+def _descartado(motivo: str, raw: dict[str, Any], **datos: Any) -> None:
+    """Nada se descarta en silencio: una línea de log con el motivo, el id y
+    el mensaje (sin el cuerpo). Del 20/07 al 11/10/2026 lo que llegaba a una
+    dirección sin registrar desaparecía sin rastro y se tardó semanas en
+    verlo."""
+    headers = _index_headers(raw.get("payload", {}).get("headers", []))
+    extra = " ".join(f"{k}={v}" for k, v in datos.items() if v is not None)
+    logger.info(
+        "gmail.captura.descartado motivo=%s msg=%s from=%s to=%s%s",
+        motivo, raw.get("id"), (headers.get("from") or "")[:120],
+        (headers.get("to") or "")[:200], f" {extra}" if extra else "",
+    )
+
+
 def _persist_message(
     session: Session,
     *,
@@ -1725,8 +1784,19 @@ def _persist_message(
     dry_run: bool = False,
     emit_activity: bool = True,
     imported_via: str = "incoming_realtime",
+    dominios: set[str] | None = None,
 ) -> EmailMessage | None:
     """Persiste un mensaje capturado de Gmail — inbound U outbound.
+
+    Captura de ENTRADA universal (11/10/2026): un mensaje entrante se guarda
+    si toca cualquier dominio del grupo (`dominios`, de la tabla de sitios y
+    de los alias registrados), no solo si va a un alias de
+    `user_email_aliases`. Los alias siguen diciendo a qué buzón llegó
+    (`delivered_to` canónico) y a quién se atribuye; cuando ninguno casa,
+    `delivered_to` es la dirección nuestra a la que llegó. Lo que no toca
+    ningún dominio nuestro no se guarda, y queda en el log con el motivo.
+    `dominios` se calcula si no se pasa (los llamadores en bucle lo pasan una
+    vez).
 
     CRM-BACKFILL-SENT: antes solo manejaba inbound (`_persist_inbound`).
     Ahora, si el `From` es un alias activo del CRM, el mensaje se guarda
@@ -1787,15 +1857,23 @@ def _persist_message(
     else:
         # CRM-GMAIL — captura universal. `delivered_to` = alias del CRM al
         # que llegó el mail (misma lógica compartida con el backfill vía
-        # `compute_delivered_to`). Si el mail no va a ninguno de nuestros
-        # alias, no es nuestro → no lo guardamos (solo cuando el caller pasa
-        # `alias_map`; un llamador legacy sin alias_map conserva el
-        # comportamiento anterior).
+        # `compute_delivered_to`). Si ningún alias casa, el criterio es el
+        # DOMINIO: cualquier dirección nuestra (tabla de sitios + alias) a la
+        # que haya llegado. Solo lo que no toca ningún dominio del grupo se
+        # deja fuera, con su línea de log. (Un llamador legacy sin
+        # `alias_map` conserva el comportamiento anterior.)
         delivered_to = (
             compute_delivered_to(raw, alias_map) if alias_map is not None else None
         )
         if alias_map is not None and delivered_to is None:
-            return None
+            if dominios is None:
+                from app.services.web_forms.sitios import dominios_del_grupo  # noqa: PLC0415
+
+                dominios = dominios_del_grupo(session)
+            delivered_to = destinatario_del_grupo(raw, dominios)
+            if delivered_to is None:
+                _descartado("fuera_del_grupo", raw)
+                return None
 
     # Sprint Email v2.3a — NDR detection. When this looks like a
     # bounce we attach the event to the ORIGINAL outbound message and
@@ -1804,6 +1882,7 @@ def _persist_message(
     # send still lives in the thread and now has a BOUNCE event next
     # to it, which is what the timeline UI surfaces.
     if not is_outbound and _is_ndr(from_email, headers):
+        _descartado("rebote_ndr", raw)
         # El backfill (emit_activity=False) y el dry-run NO adjuntan eventos
         # de bounce a mensajes históricos: solo señalan «nada que insertar».
         if emit_activity and not dry_run:

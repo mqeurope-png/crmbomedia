@@ -72,6 +72,12 @@ from app.integrations.woocommerce.missing import DAYS_KEY as WOO_MISSING_DAYS_KE
 from app.integrations.woocommerce.missing import ENABLED_KEY as WOO_MISSING_ENABLED_KEY
 from app.integrations.woocommerce.missing import INTERVAL_KEY as WOO_MISSING_INTERVAL_KEY
 from app.models.crm import User
+from app.services.asistente.config import CONFIG_KEY as ASISTENTE_CONFIG_KEY
+from app.services.asistente.config import normalizar as normalizar_asistente
+from app.services.asistente.config import validar as validar_asistente
+from app.services.conocimiento.config import CONFIG_KEY as KB_CONFIG_KEY
+from app.services.conocimiento.config import normalizar as normalizar_kb
+from app.services.conocimiento.config import validar as validar_kb
 from app.services.leads.config import CONFIG_KEY as LEAD_CONFIG_KEY
 from app.services.leads.config import catalogo as lead_catalogo
 from app.services.leads.config import normalizar as normalizar_lead_response
@@ -240,6 +246,16 @@ class SettingsIn(BaseModel):
     #: confianza, antigüedad, ventana horaria, mapa interés × idioma →
     #: plantilla y remitentes. Ver `app/services/leads/config.py`.
     lead_response: dict[str, Any] | None = None
+    #: Base de conocimiento: sincronización diaria del índice de la KB de FLUX
+    #: (interruptor + hora) y las palabras que separan «cómo se hace» (KB de
+    #: FLUX) de «averiada / repuesto» (nuestro soporte).
+    #: Ver `app/services/conocimiento/config.py`.
+    conocimiento: dict[str, Any] | None = None
+    #: Asistente de respuesta: presupuesto de tokens por generación, cuántos
+    #: correos viejos y asuntos entran, y los dominios de correo gratuitos (la
+    #: empresa se agrupa por su registro, nunca por uno de estos dominios).
+    #: Ver `app/services/asistente/config.py`.
+    asistente: dict[str, Any] | None = None
 
 
 # --- helpers -----------------------------------------------------------------
@@ -561,6 +577,11 @@ def _serialise_settings(cfg: ErpSettings, session: Session) -> dict[str, Any]:
         # necesita para pintarla (intereses, idiomas, plantillas, webs, cuentas).
         "lead_response": normalizar_lead_response(_series(cfg).get(LEAD_CONFIG_KEY)),
         "lead_response_catalogo": lead_catalogo(session),
+        # Base de conocimiento: la configuración (con defaults). Las tablas
+        # (sitios, rutas, FLUX) van por su API, `/api/erp/conocimiento`.
+        "conocimiento": normalizar_kb(_series(cfg).get(KB_CONFIG_KEY)),
+        # Asistente de respuesta: presupuesto, histórico y dominios gratuitos.
+        "asistente": normalizar_asistente(_series(cfg).get(ASISTENTE_CONFIG_KEY)),
         "woocommerce_stores": _woocommerce_stores(session),
         "factusol_series_abbr_variants": {
             str(k): v
@@ -722,8 +743,24 @@ def update_settings(
             or payload.factusol_series_email_from is not None
             or payload.factusol_store_email_from is not None
             or payload.cuadre is not None
-            or payload.lead_response is not None):
+            or payload.lead_response is not None
+            or payload.conocimiento is not None
+            or payload.asistente is not None):
         series = _series(cfg)
+        # Base de conocimiento: validado entero y fundido con lo guardado.
+        if payload.conocimiento is not None:
+            try:
+                series[KB_CONFIG_KEY] = validar_kb(
+                    payload.conocimiento, series.get(KB_CONFIG_KEY))
+            except ValueError as e:
+                raise HTTPException(400, str(e)) from e
+        # Asistente de respuesta: igual.
+        if payload.asistente is not None:
+            try:
+                series[ASISTENTE_CONFIG_KEY] = validar_asistente(
+                    payload.asistente, series.get(ASISTENTE_CONFIG_KEY))
+            except ValueError as e:
+                raise HTTPException(400, str(e)) from e
         # ERP · Cuadre: se valida entero (hora HH:MM, días 1-3650, ids que
         # existen) y se guarda ya normalizado.
         if payload.cuadre is not None:

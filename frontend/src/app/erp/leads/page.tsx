@@ -7,6 +7,7 @@ import {
   corregirLeadClasificacion,
   crearLeadWorkflow,
   getLeadWorkflow,
+  getUsoIA,
   listLeadClasificaciones,
   simularLeadsEnSeco,
   type LeadClasificacion,
@@ -14,6 +15,7 @@ import {
   type LeadCorreccion,
   type LeadEnSecoInforme,
   type LeadWorkflowEstado,
+  type UsoIA,
 } from "../../lib/erpApi";
 import { InteresesPicker } from "../../components/leads/InteresesPicker";
 import { extractErrorMessage } from "../../lib/errors";
@@ -58,6 +60,15 @@ export default function LeadsPage() {
   const [datos, setDatos] = useState<LeadClasificaciones | null>(null);
   const [errorCarga, setErrorCarga] = useState<string | null>(null);
   const [workflow, setWorkflow] = useState<LeadWorkflowEstado | null>(null);
+  // La IA en números: llamadas, tokens y coste reales (clasificador y
+  // asistente «Ayúdame a contestar») y qué pasó con los borradores.
+  const [uso, setUso] = useState<UsoIA | null>(null);
+  const [usoError, setUsoError] = useState<string | null>(null);
+  useEffect(() => {
+    getUsoIA(30)
+      .then(setUso)
+      .catch((e) => setUsoError(extractErrorMessage(e, "No se pudo cargar el uso de la IA.")));
+  }, []);
   const [workflowError, setWorkflowError] = useState<string | null>(null);
   const [creando, setCreando] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -213,6 +224,17 @@ export default function LeadsPage() {
         </div>
         {errorSeco ? <p className="form-error" role="alert">{errorSeco}</p> : null}
         {informe ? <InformeEnSeco informe={informe} etiquetas={etiquetas} /> : null}
+      </section>
+
+      <section className="form-card" aria-label="Uso de la IA">
+        <h2>Uso de la IA (últimos 30 días)</h2>
+        <p className="muted small">
+          Números reales de cada llamada a Claude, sin estimaciones: el clasificador de leads y
+          el asistente «Ayúdame a contestar». Lo que cuesta cada clic y qué pasa con los
+          borradores (enviados tal cual, editados o descartados).
+        </p>
+        {usoError ? <p className="form-error" role="alert">{usoError}</p> : null}
+        {uso ? <UsoIACard uso={uso} /> : !usoError ? <p className="muted">Consultando…</p> : null}
       </section>
 
       <section aria-label="Leads procesados">
@@ -497,5 +519,67 @@ function FilaLead({
         {error ? <p className="form-error" role="alert">{error}</p> : null}
       </td>
     </tr>
+  );
+}
+
+const PROPOSITO_TEXTO: Record<string, string> = {
+  asistente_borrador: "Asistente «Ayúdame a contestar»",
+  clasificador_leads: "Clasificador de leads",
+};
+
+function usd(n: number): string {
+  return `${n.toFixed(n < 1 ? 4 : 2)} $`;
+}
+
+/** La IA en números: totales, por propósito, y qué pasó con los borradores. */
+function UsoIACard({ uso }: { uso: UsoIA }) {
+  const b = uso.borradores;
+  return (
+    <div className="erp-leads-uso-ia">
+      <div className="erp-ia-uso" role="list" aria-label="Totales de la IA">
+        <div className="erp-ia-uso-dato" role="listitem">
+          <strong>{uso.llamadas}</strong><span>llamadas</span>
+        </div>
+        <div className="erp-ia-uso-dato" role="listitem">
+          <strong>{uso.tokens_entrada.toLocaleString("es-ES")}</strong><span>tokens de entrada</span>
+        </div>
+        <div className="erp-ia-uso-dato" role="listitem">
+          <strong>{uso.tokens_salida.toLocaleString("es-ES")}</strong><span>tokens de salida</span>
+        </div>
+        <div className="erp-ia-uso-dato" role="listitem">
+          <strong>{usd(uso.coste_usd)}</strong><span>coste</span>
+        </div>
+      </div>
+      {uso.por_proposito.length > 0 ? (
+        <table className="data-table data-table--responsive erp-settings-table">
+          <thead>
+            <tr><th>Para qué</th><th>Llamadas</th><th>Tokens (entrada / salida)</th><th>Coste</th></tr>
+          </thead>
+          <tbody>
+            {uso.por_proposito.map((p) => (
+              <tr key={p.clave}>
+                <td data-label="Para qué">{PROPOSITO_TEXTO[p.clave] ?? p.clave}</td>
+                <td data-label="Llamadas">{p.llamadas}</td>
+                <td data-label="Tokens">
+                  {p.tokens_entrada.toLocaleString("es-ES")} / {p.tokens_salida.toLocaleString("es-ES")}
+                </td>
+                <td data-label="Coste">{usd(p.coste_usd)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : (
+        <p className="muted small">Todavía no hay llamadas registradas.</p>
+      )}
+      <p className="muted small" aria-label="Resultado de los borradores">
+        Borradores del asistente: {b.total} ·{" "}
+        {b.enviados_tal_cual} enviado{b.enviados_tal_cual === 1 ? "" : "s"} tal cual ·{" "}
+        {b.enviados_editados} editado{b.enviados_editados === 1 ? "" : "s"} ·{" "}
+        {b.descartados} descartado{b.descartados === 1 ? "" : "s"} ·{" "}
+        {b.regenerados} regenerado{b.regenerados === 1 ? "" : "s"} ·{" "}
+        {b.generados} sin resolver
+        {uso.por_modelo.length > 0 ? ` · modelo: ${uso.por_modelo.map((m) => m.clave).join(", ")}` : ""}
+      </p>
+    </div>
   );
 }

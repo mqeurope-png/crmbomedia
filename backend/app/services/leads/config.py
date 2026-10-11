@@ -127,8 +127,10 @@ def validar(
     from app.services.leads import plantillas  # noqa: PLC0415
     from app.services.leads.clasificador import IDIOMAS  # noqa: PLC0415
     from app.services.leads.intereses import Catalogo  # noqa: PLC0415
-    from app.services.web_forms.sitios import WEBS  # noqa: PLC0415
+    from app.services.web_forms.sitios import webs_conocidas  # noqa: PLC0415
     from app.workflows.ventana import _hora  # noqa: PLC0415
+
+    WEBS = webs_conocidas()
 
     if not isinstance(payload, dict):
         raise ValueError("La configuración de respuesta a leads no es válida.")
@@ -254,7 +256,7 @@ def catalogo(session: Session) -> dict[str, Any]:
     from app.models.crm import ExternalSystem  # noqa: PLC0415
     from app.models.integration_settings import IntegrationAccount  # noqa: PLC0415
     from app.services.leads import intereses, plantillas  # noqa: PLC0415
-    from app.services.web_forms.sitios import MARCAS, REMITENTES, WEBS  # noqa: PLC0415
+    from app.services.web_forms import sitios as registro_sitios  # noqa: PLC0415
 
     cat = intereses.cargar(session)
     conf = configuracion(session)
@@ -274,10 +276,11 @@ def catalogo(session: Session) -> dict[str, Any]:
         "plantillas": [{"id": t.id, "name": t.name} for t in candidatas],
         "mapa_por_nombre": por_nombre,
         "huecos": plantillas.huecos(session, conf.get("mapa"), cat, por_plano),
+        # Las webs vivas (tabla de sitios), con su marca y su remitente por defecto.
         "webs": [
-            {"clave": clave, "web": web, "marca": MARCAS.get(clave, clave),
-             "remitente_defecto": REMITENTES.get(clave)}
-            for clave, web in WEBS.items()
+            {"clave": s.clave, "web": s.web, "marca": s.marca,
+             "remitente_defecto": s.remitente_defecto}
+            for s in registro_sitios.cargar(session).webs
         ],
         "cuentas_agile": [
             {"account_id": c.account_id, "display_name": c.display_name, "enabled": c.enabled}

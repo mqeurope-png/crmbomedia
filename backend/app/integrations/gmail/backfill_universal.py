@@ -163,7 +163,7 @@ class BackfillReport:
             f"  … {self.total_processed} procesados "
             f"(link {self.imported_linked} / orphan {self.imported_orphan} / "
             f"enviados {self.outbound} / dedupe {self.skipped_dedupe} / "
-            f"no-alias {self.skipped_no_alias})"
+            f"fuera-del-grupo {self.skipped_no_alias})"
         )
 
     def _como_datos(self, tope: int) -> dict[str, Any]:
@@ -236,8 +236,8 @@ class BackfillReport:
             f"├── Enviados (outbound):     {self.outbound:>8}",
             f"├── Marcados como spam:      {self.spam:>8}",
             f"├── Descartados por dedupe:  {self.skipped_dedupe:>8} (ya existían)",
-            f"└── Descartados por alias:   {self.skipped_no_alias:>8} "
-            f"(entrantes a alias no configurado)",
+            f"└── Fuera de los dominios:   {self.skipped_no_alias:>8} "
+            f"(entrantes a direcciones que no son del grupo)",
         ]
         if self.purged_not_found:
             lines.append(
@@ -289,19 +289,23 @@ class BackfillReport:
                 lines.append(f"  {usuario:<40} {count}")
         if self.discard_by_alias:
             lines.append("")
-            lines.append("Alias que descartaron mails entrantes (baja por número):")
+            lines.append(
+                "Direcciones de fuera del grupo que descartaron mails entrantes "
+                "(baja por número):"
+            )
             for alias, count in sorted(
                 self.discard_by_alias.items(), key=lambda kv: kv[1], reverse=True
             ):
                 lines.append(
                     f"  {alias:<32} {count} mails descartados "
-                    f"(no está en /admin/users)"
+                    f"(su dominio no es del grupo)"
                 )
             lines.append("")
             lines.append(
-                "→ Añade esos alias en /admin/users y vuelve a ejecutar con la "
-                "MISMA fecha para reprocesar solo esos (el resto se salta por "
-                "dedupe)."
+                "→ Si alguna es nuestra, añade su dominio en Configuración ERP → "
+                "Base de conocimiento → Sitios (o la dirección como alias en "
+                "/admin/users) y vuelve a ejecutar con la MISMA fecha para "
+                "reprocesar solo esos (el resto se salta por dedupe)."
             )
         return "\n".join(lines)
 
@@ -445,12 +449,18 @@ def run_backfill_universal(
     emit = progress or (lambda _msg: None)
     if alias_map is None:
         alias_map = active_alias_map(session)
-    if not alias_map and any(lbl != "SENT" for lbl in labels):
-        # Lo ENVIADO se captura sin alias; lo entrante no (su gate los
-        # necesita), así que un repaso de INBOX/SPAM sin alias no tiene sentido.
+    # Captura de ENTRADA universal (11/10/2026): el criterio es el dominio
+    # del grupo, no la tabla de alias; los alias atribuyen. Se calcula UNA
+    # vez para todo el recorrido.
+    from app.services.web_forms.sitios import dominios_del_grupo  # noqa: PLC0415
+
+    dominios = dominios_del_grupo(session)
+    if not dominios and any(lbl != "SENT" for lbl in labels):
+        # Lo ENVIADO se captura sin dominios; lo entrante no, así que un
+        # repaso de INBOX/SPAM sin ningún dominio del grupo no tiene sentido.
         raise ValueError(
-            "Sin alias activos en user_email_aliases. Configura los alias en "
-            "/admin/users antes de reprocesar la entrada (solo SENT no los necesita)."
+            "Sin dominios del grupo (tabla de sitios y alias). Da de alta las webs en "
+            "Configuración ERP antes de reprocesar la entrada (solo SENT no los necesita)."
         )
     emails_por_usuario: dict[str, str] = {
         uid: email for uid, email in session.execute(select(User.id, User.email)).all()
@@ -635,20 +645,26 @@ def run_backfill_universal(
 
                     examined += 1
                     pos.ver(_fecha_de(raw))
-                    # El mensaje «es nuestro» si llegó a un alias activo (inbound),
-                    # si lo envió un alias activo, o si está en SENT: lo que sale
+                    # El mensaje «es nuestro» si llegó a un alias activo o a
+                    # cualquier dirección de un dominio del grupo (inbound), si
+                    # lo envió un alias activo, o si está en SENT: lo que sale
                     # del buzón conectado es correo escrito por alguien de la
                     # casa, sea cual sea el From. Solo la ENTRADA pasa por el
-                    # gate de alias.
+                    # criterio del dominio (11/10/2026: antes, por alias).
                     delivered = gmail_service.compute_delivered_to(raw, alias_map)
+                    if delivered is None:
+                        delivered = gmail_service.destinatario_del_grupo(raw, dominios)
                     sender_alias = gmail_service.sender_alias_of(raw, alias_map)
                     enviado = label == "SENT" or gmail_service.es_mensaje_enviado(raw)
                     if delivered is None and sender_alias is None and not enviado:
+                        # Contadores con su nombre histórico («sin alias»):
+                        # hoy significan «fuera de los dominios del grupo».
                         report.skipped_no_alias += 1
                         key = gmail_service.primary_recipient(raw) or "(desconocido)"
                         report.discard_by_alias[key] = (
                             report.discard_by_alias.get(key, 0) + 1
                         )
+                        gmail_service._descartado("fuera_del_grupo", raw, origen="relleno")
                     else:
                         if enviado and "SENT" not in (raw.get("labelIds") or []):
                             # Listado bajo SENT pero el full no trae la label (raro):
@@ -665,6 +681,7 @@ def run_backfill_universal(
                                     dry_run=True,
                                     emit_activity=False,
                                     imported_via=BACKFILL_IMPORTED_VIA,
+                                    dominios=dominios,
                                 )
                             else:
                                 with session.begin_nested():
@@ -677,6 +694,7 @@ def run_backfill_universal(
                                         dry_run=False,
                                         emit_activity=False,
                                         imported_via=BACKFILL_IMPORTED_VIA,
+                                        dominios=dominios,
                                     )
                         except IntegrityError:
                             # Carrera con el unique → ya existía. El savepoint se

@@ -15350,3 +15350,47 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
 .wf-live-preview-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
 .wf-live-preview-toggle { display: inline-flex; gap: 4px; }
 .wf-live-preview-frame { width: 100%; max-width: 100%; min-height: 480px; border: 1px dashed var(--line, #e5e7eb); border-radius: 8px; background: transparent; align-self: center; }
+
+/* Configuración ERP → Base de conocimiento (sitios, rutas, FLUX, probar). */
+.kb-panel { display: flex; flex-direction: column; gap: var(--sp-4); }
+.kb-bloque { display: flex; flex-direction: column; gap: var(--sp-2); }
+.kb-bloque > h3 { margin: 0; font-size: 1rem; }
+.kb-bloque > p { margin: 0; }
+.kb-tabla td { vertical-align: top; }
+.kb-tabla tr.is-inactivo > td { color: var(--color-gray); }
+.kb-tabla input[type="text"], .kb-tabla input[type="url"], .kb-tabla input[type="email"] { width: 100%; min-width: 120px; font-size: 0.85rem; }
+.kb-inline { display: flex; gap: 4px; align-items: center; }
+.kb-inline-url input { min-width: 260px; }
+.kb-alta { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: flex-end; }
+.kb-alta .field { margin: 0; flex: 0 1 180px; }
+.kb-alta .kb-campo-url { flex: 1 1 320px; }
+.kb-alta .button { align-self: flex-end; }
+.kb-alta .form-error { flex: 1 1 100%; margin: 0; }
+.kb-acciones { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center; }
+.kb-estado { font-size: var(--fs-label); white-space: nowrap; }
+.kb-estado.is-ok { color: var(--st-green-ink, #166534); }
+.kb-estado.is-error { color: var(--st-red-ink, #991b1b); }
+.kb-flux-estado { display: flex; flex-direction: column; gap: 4px; padding: var(--sp-2); border: 1px solid var(--border); border-radius: 8px; }
+.kb-resultado { display: grid; grid-template-columns: max-content 1fr; gap: 4px var(--sp-3); margin: 0; font-size: 0.9rem; }
+.kb-resultado dt { font-weight: 600; }
+.kb-resultado dd { margin: 0; word-break: break-all; }
+.kb-articulos { margin: 4px 0 0; padding-left: 18px; }
+
+/* «Ayúdame a contestar»: botón en la toolbar del hilo y panel del borrador en el compositor. */
+.email-toolbar-asistente { border-color: var(--color-primary, #1d4ed8); color: var(--color-primary, #1d4ed8); }
+.email-toolbar-asistente:disabled { opacity: 0.7; }
+.asistente-panel { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; margin: 0 0 8px; border: 1px solid var(--border); border-left: 3px solid var(--color-primary, #1d4ed8); border-radius: 8px; background: var(--surface-2, #f8fafc); font-size: var(--fs-label); }
+.asistente-panel-head { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; justify-content: space-between; }
+.asistente-panel-titulo { display: inline-flex; align-items: center; gap: 6px; flex: 1 1 320px; }
+.asistente-panel-acciones { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.asistente-panel-pendiente { margin: 0; color: var(--st-amber-ink, #92400e); }
+.asistente-panel-detalle summary { cursor: pointer; color: var(--muted); }
+.asistente-panel-detalle p { margin: 4px 0; }
+.asistente-panel-lista { margin: 4px 0 0; padding-left: 18px; }
+.asistente-panel-lista li { word-break: break-all; }
+.asistente-error { margin: 0 0 8px; }
+.erp-ia-uso { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: var(--sp-2); }
+.erp-ia-uso-dato { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; }
+.erp-ia-uso-dato strong { display: block; font-size: 1.2rem; }
+.erp-ia-uso-dato span { color: var(--muted); font-size: var(--fs-label); }
+.email-toolbar-alcance { font-size: var(--fs-label); padding: 3px 6px; max-width: 220px; }

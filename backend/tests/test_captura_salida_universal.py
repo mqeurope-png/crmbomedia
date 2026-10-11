@@ -357,23 +357,42 @@ def test_una_direccion_enviar_como_compartida_se_queda_en_la_cuenta_de_la_organi
         assert msg is not None and msg.created_by_user_id == buzon
 
 
-def test_el_relleno_solo_de_sent_no_necesita_alias_registrados(
+def test_el_relleno_no_necesita_alias_registrados_ni_para_la_entrada(
     session_factory: sessionmaker,
 ) -> None:
+    """Captura de ENTRADA universal (11/10/2026): sin alias, la entrada se
+    captura por el dominio del grupo (la tabla de sitios). Solo sin ningún
+    dominio del grupo se niega, y dice por qué."""
     with session_factory() as s:
         for fila in s.scalars(select(UserEmailAlias)):
             s.delete(fila)
         s.commit()
         buzon = _uid(s, UserRole.ADMIN)
-        falso = _GmailFalso({"SENT": [_raw("s-1", "t-1", from_addr=SIN_REGISTRAR, to=MARC)]})
+        falso = _GmailFalso({
+            "SENT": [_raw("s-1", "t-1", from_addr=SIN_REGISTRAR, to=MARC)],
+            "INBOX": [_raw("i-1", "t-2", from_addr=MARC, to=SIN_REGISTRAR, labels=("INBOX",),
+                           date="Fri, 09 Oct 2026 09:00:00 +0200")],
+        })
         with patch.object(gmail_service, "_client_for", return_value=falso):
             informe = run_backfill_universal(
                 s, user_id=buzon, since=datetime(2026, 10, 1).date(),
                 until=datetime(2026, 10, 10).date(), labels=("SENT",))
             s.commit()
             assert informe.outbound == 1
-            # La entrada sí los necesita: su gate no sabría qué es nuestro.
-            with pytest.raises(ValueError, match="alias"):
+            informe = run_backfill_universal(
+                s, user_id=buzon, since=datetime(2026, 10, 1).date(),
+                until=datetime(2026, 10, 10).date(), labels=("INBOX",))
+            s.commit()
+            assert informe.imported_orphan == 1 and informe.skipped_no_alias == 0
+            entrante = s.scalar(
+                select(EmailMessage).where(EmailMessage.gmail_message_id == "i-1"))
+            assert entrante is not None and entrante.direction == EmailDirection.INBOUND
+            assert entrante.delivered_to == SIN_REGISTRAR
+            # Sin ningún dominio del grupo la entrada no sabría qué es nuestro.
+            with (
+                patch("app.services.web_forms.sitios.dominios_del_grupo", return_value=set()),
+                pytest.raises(ValueError, match="dominios del grupo"),
+            ):
                 run_backfill_universal(
                     s, user_id=buzon, since=datetime(2026, 10, 1).date(),
                     until=datetime(2026, 10, 10).date())

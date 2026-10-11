@@ -2173,6 +2173,16 @@ export type ErpSettings = {
   /** Respuesta a leads — lo que la pantalla necesita para pintar la
    *  configuración (solo lectura; viene en el GET). */
   lead_response_catalogo?: LeadResponseCatalogo;
+  /** Base de conocimiento — sincronización diaria del índice de la KB de FLUX
+   *  (interruptor + hora) y las palabras que separan «cómo se hace» (KB de
+   *  FLUX) de «averiada / repuesto» (nuestro soporte). Las tablas (sitios,
+   *  rutas, FLUX) van por su API (`getConocimiento`). */
+  conocimiento?: ConocimientoConfig;
+  /** Asistente de respuesta («Ayúdame a contestar») — presupuesto de tokens
+   *  por generación, cuántos correos viejos y asuntos entran, y los dominios
+   *  de correo gratuitos (la empresa se agrupa por su registro, nunca por uno
+   *  de estos dominios). */
+  asistente?: AsistenteConfig;
   /** ERP-F6-fix3 — tiendas Woo dadas de alta, para configurar la serie de
    *  cada una (solo lectura; se rellena en el GET). */
   woocommerce_stores?: {
@@ -5537,3 +5547,270 @@ export async function updateLeadInteres(
 export async function deleteLeadInteres(codigo: string): Promise<void> {
   await apiFetch(`/api/erp/leads/intereses/${encodeURIComponent(codigo)}`, { method: "DELETE" });
 }
+
+// --- Base de conocimiento (Configuración ERP → Base de conocimiento) -------------
+
+/** Una web o dominio de correo del grupo (`sitios_web`). */
+export type SitioWeb = {
+  clave: string;
+  dominio: string;
+  host: string;
+  dominios_extra: string[];
+  marca: string;
+  empresa: string;
+  tipo: "web" | "correo";
+  idioma_defecto: string;
+  idiomas: string[];
+  plugin_traduccion: "qtranslate" | "wpml" | null;
+  prefijo_idioma_defecto: boolean;
+  slugs_traducidos: boolean;
+  soporte_propio: boolean;
+  remitente_defecto: string | null;
+  posicion: number;
+  activo: boolean;
+};
+
+export type SitioWebNuevo = {
+  clave: string;
+  dominio: string;
+  marca: string;
+  empresa: string;
+  host?: string | null;
+  dominios_extra?: string[];
+  tipo?: "web" | "correo";
+  idioma_defecto?: string;
+  idiomas?: string[];
+  plugin_traduccion?: "qtranslate" | "wpml" | null;
+  prefijo_idioma_defecto?: boolean;
+  slugs_traducidos?: boolean;
+  soporte_propio?: boolean;
+  remitente_defecto?: string | null;
+};
+
+export type SitioWebCambios = Partial<Omit<SitioWebNuevo, "clave"> & { activo: boolean; posicion: number }>;
+
+/** Una ruta: de soporte (web × idioma → URL) o página de producto (interés → URL). */
+export type KbRuta = {
+  id: string;
+  tipo: "soporte" | "producto";
+  sitio: string;
+  idioma: string;
+  interes: string;
+  url: string;
+  nota: string | null;
+  activo: boolean;
+  posicion: number;
+  comprobado_en: string | null;
+  comprobado_http: number | null;
+  comprobado_error: string | null;
+};
+
+export type KbRutaNueva = {
+  tipo: "soporte" | "producto";
+  sitio: string;
+  url: string;
+  idioma?: string;
+  interes?: string;
+  nota?: string;
+};
+
+export type KbRutaCambios = Partial<{ url: string; nota: string; activo: boolean; posicion: number }>;
+
+/** Una categoría de la KB de FLUX (un modelo) y las palabras con las que se reconoce. */
+export type FluxCategoria = {
+  categoria_id: string;
+  modelo: string;
+  palabras: string[];
+  posicion: number;
+  activo: boolean;
+  enlace_es: string;
+};
+
+export type FluxSincronizacion = {
+  id: string;
+  origen: "programada" | "manual";
+  estado: "ok" | "parcial" | "error";
+  inicio: string | null;
+  fin: string | null;
+  articulos: number;
+  nuevos: number;
+  actualizados: number;
+  idos: number;
+  locales: Record<string, { articulos: number; nuevos: number; actualizados: number; idos: number; error: string | null }>;
+  detalle: string | null;
+};
+
+export type FluxEstado = {
+  categorias: FluxCategoria[];
+  locales: Record<string, string>;
+  articulos_por_idioma: Record<string, number>;
+  idos: number;
+  ultima_sincronizacion: FluxSincronizacion | null;
+};
+
+export type Conocimiento = {
+  sitios: SitioWeb[];
+  sitios_de_la_base: boolean;
+  rutas: KbRuta[];
+  flux: FluxEstado;
+  idiomas: string[];
+};
+
+/** Un enlace que el asistente puede poner en un borrador, con su procedencia. */
+export type KbEnlace = {
+  url: string;
+  origen: string;
+  sitio: string | null;
+  idioma: string | null;
+  etiqueta: string | null;
+};
+
+export type KbResolucion = {
+  soporte: KbEnlace | null;
+  producto: KbEnlace | null;
+  flux: {
+    modelo: string | null;
+    categoria_id: string | null;
+    intencion: "kb" | "soporte" | null;
+    enlace: KbEnlace | null;
+    kb: KbEnlace;
+    soporte: KbEnlace | null;
+    articulos: { titulo: string; url: string; outdated: boolean }[];
+  } | null;
+};
+
+/** La configuración del blob `conocimiento` (va con el resto de ajustes). */
+export type ConocimientoConfig = {
+  flux_sync_activa: boolean;
+  flux_sync_hora: string;
+  flux_palabras_kb: string[];
+  flux_palabras_soporte: string[];
+};
+
+export async function getConocimiento(): Promise<Conocimiento> {
+  return apiFetch<Conocimiento>("/api/erp/conocimiento");
+}
+
+export async function createSitioWeb(payload: SitioWebNuevo): Promise<Conocimiento> {
+  return apiFetch<Conocimiento>("/api/erp/conocimiento/sitios", {
+    method: "POST", body: JSON.stringify(payload),
+  });
+}
+
+export async function updateSitioWeb(clave: string, cambios: SitioWebCambios): Promise<Conocimiento> {
+  return apiFetch<Conocimiento>(`/api/erp/conocimiento/sitios/${encodeURIComponent(clave)}`, {
+    method: "PATCH", body: JSON.stringify(cambios),
+  });
+}
+
+export async function createKbRuta(payload: KbRutaNueva): Promise<Conocimiento> {
+  return apiFetch<Conocimiento>("/api/erp/conocimiento/rutas", {
+    method: "POST", body: JSON.stringify(payload),
+  });
+}
+
+export async function updateKbRuta(id: string, cambios: KbRutaCambios): Promise<Conocimiento> {
+  return apiFetch<Conocimiento>(`/api/erp/conocimiento/rutas/${encodeURIComponent(id)}`, {
+    method: "PATCH", body: JSON.stringify(cambios),
+  });
+}
+
+/** Pide cada URL activa y guarda el código que devuelve (tarda unos segundos). */
+export async function comprobarKbRutas(): Promise<{
+  resultados: { id: string; url: string; http: number | null; ok: boolean; error: string | null }[];
+  rutas: KbRuta[];
+}> {
+  return apiFetch("/api/erp/conocimiento/rutas/comprobar", { method: "POST" });
+}
+
+export async function createFluxCategoria(payload: {
+  categoria_id: string; modelo: string; palabras?: string[];
+}): Promise<Conocimiento> {
+  return apiFetch<Conocimiento>("/api/erp/conocimiento/flux/categorias", {
+    method: "POST", body: JSON.stringify(payload),
+  });
+}
+
+export async function updateFluxCategoria(
+  categoriaId: string,
+  cambios: Partial<{ modelo: string; palabras: string[]; activo: boolean; posicion: number }>,
+): Promise<Conocimiento> {
+  return apiFetch<Conocimiento>(
+    `/api/erp/conocimiento/flux/categorias/${encodeURIComponent(categoriaId)}`,
+    { method: "PATCH", body: JSON.stringify(cambios) },
+  );
+}
+
+/** «Sincronizar ahora»: una pasada completa del índice de la KB de FLUX. */
+export async function sincronizarFlux(): Promise<
+  { sincronizacion: FluxSincronizacion } & Omit<FluxEstado, "categorias" | "locales">
+> {
+  return apiFetch("/api/erp/conocimiento/flux/sincronizar", { method: "POST" });
+}
+
+/** Qué enlaces le saldrían al asistente para esa web, idioma, interés y texto. */
+export async function resolverConocimiento(payload: {
+  sitio?: string | null; idioma?: string | null; interes?: string | null;
+  texto?: string | null; modelo?: string | null;
+}): Promise<KbResolucion> {
+  return apiFetch<KbResolucion>("/api/erp/conocimiento/resolver", {
+    method: "POST", body: JSON.stringify(payload),
+  });
+}
+
+// --- La IA en números (ERP · Leads → «Uso de la IA») --------------------------------
+
+export type UsoIAGrupo = {
+  clave: string;
+  llamadas: number;
+  tokens_entrada: number;
+  tokens_salida: number;
+  coste_usd: number;
+};
+
+export type UsoIA = {
+  dias: number;
+  llamadas: number;
+  tokens_entrada: number;
+  tokens_salida: number;
+  coste_usd: number;
+  por_proposito: UsoIAGrupo[];
+  por_modelo: UsoIAGrupo[];
+  por_dia: { dia: string; llamadas: number; coste_usd: number }[];
+  borradores: {
+    generados: number;
+    regenerados: number;
+    descartados: number;
+    enviados_tal_cual: number;
+    enviados_editados: number;
+    total: number;
+  };
+  ultimas: {
+    id: string;
+    cuando: string | null;
+    proposito: string;
+    modelo: string;
+    tokens_entrada: number;
+    tokens_salida: number;
+    coste_usd: number;
+    duracion_ms: number | null;
+    usuario_id: string | null;
+    referencia_tipo: string | null;
+    referencia_id: string | null;
+    ok: boolean;
+    error: string | null;
+  }[];
+};
+
+/** Llamadas, tokens y coste reales de la IA en los últimos `dias` días. */
+export async function getUsoIA(dias = 30): Promise<UsoIA> {
+  return apiFetch<UsoIA>(`/api/erp/ia/uso${qs({ dias })}`);
+}
+
+/** La configuración del asistente de respuesta (blob `asistente`). */
+export type AsistenteConfig = {
+  presupuesto_tokens: number;
+  historico_max: number;
+  asuntos_max: number;
+  dominios_gratuitos: string[];
+};

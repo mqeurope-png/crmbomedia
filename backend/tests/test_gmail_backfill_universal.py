@@ -206,7 +206,13 @@ def test_backfill_links_when_sender_is_contact(session_factory, monkeypatch):
     assert report.imported_orphan == 0
 
 
-def test_backfill_skips_message_not_delivered_to_any_alias(session_factory, monkeypatch):
+def test_backfill_captura_la_entrada_a_una_direccion_del_grupo_sin_alias(
+    session_factory, monkeypatch
+):
+    """Captura de entrada universal (11/10/2026): `info@bomedia.net` no está en
+    la tabla de alias, pero es de un dominio del grupo. El relleno lo guarda
+    como huérfano con su `delivered_to`, igual que la sincronización; antes
+    se descartaba «por alias»."""
     owner = _seed(session_factory)
     fake = _make_fake_client(
         {"INBOX": [{"messages": [{"id": "n1", "threadId": "t1"}]}]},
@@ -214,9 +220,28 @@ def test_backfill_skips_message_not_delivered_to_any_alias(session_factory, monk
     )
     monkeypatch.setattr("app.integrations.gmail.service.GmailClient", fake)
     report = _run(session_factory, owner, labels=["INBOX"])
+    assert report.skipped_no_alias == 0
+    assert report.imported_orphan == 1
+    assert report.discard_by_alias == {}
+    with session_factory() as session:
+        msg = session.scalar(select(EmailMessage))
+        assert msg.contact_id is None
+        assert msg.delivered_to == "info@bomedia.net"
+
+
+def test_backfill_skips_message_outside_group_domains(session_factory, monkeypatch):
+    """Lo que no llega a ninguna dirección del grupo sí se descarta, y el
+    informe dice a qué dirección iba (contador con su nombre histórico)."""
+    owner = _seed(session_factory)
+    fake = _make_fake_client(
+        {"INBOX": [{"messages": [{"id": "n1", "threadId": "t1"}]}]},
+        {"n1": _raw("n1", "t1", "ajeno@otro.com")},
+    )
+    monkeypatch.setattr("app.integrations.gmail.service.GmailClient", fake)
+    report = _run(session_factory, owner, labels=["INBOX"])
     assert report.skipped_no_alias == 1
     assert report.imported_orphan == 0
-    assert report.discard_by_alias.get("info@bomedia.net") == 1
+    assert report.discard_by_alias.get("ajeno@otro.com") == 1
     assert _count_messages(session_factory) == 0
 
 

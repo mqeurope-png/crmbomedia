@@ -157,11 +157,13 @@ class ClasificadorAnthropic:
         settings = get_settings()
         if not settings.anthropic_api_key:
             return self._respaldo(entrada, "sin clave de API")
+        uso = None
         try:
             raw = llm._invoke_claude(
                 api_key=settings.anthropic_api_key, model=settings.anthropic_model,
                 system_prompt=prompt_sistema(self.catalogo), user_prompt=_prompt(entrada),
             )
+            uso = llm.tomar_ultimo_uso()
             data = llm._parse_segment_json(raw)
         except llm.LLMError as exc:
             # El mensaje, no solo la clase: `LLMUpstreamError` se lanza por
@@ -169,7 +171,17 @@ class ClasificadorAnthropic:
             # contenedor para saber cuál era.
             logger.warning("leads.ia: respaldo por palabras clave (%s: %s)",
                            type(exc).__name__, exc)
-            return self._respaldo(entrada, f"IA no disponible: {type(exc).__name__}: {exc}")
+            out = self._respaldo(entrada, f"IA no disponible: {type(exc).__name__}: {exc}")
+            # Si la API sí respondió (y cobró) pero la respuesta no se entendió,
+            # el gasto queda anotado igual: números reales.
+            if uso is None:
+                uso = llm.tomar_ultimo_uso()
+            if uso is not None:
+                out.modelo = uso.modelo or settings.anthropic_model
+                out.tokens_entrada = uso.tokens_entrada
+                out.tokens_salida = uso.tokens_salida
+                out.duracion_ms = uso.duracion_ms
+            return out
         idioma = codigo_idioma(data.get("idioma")) if data.get("idioma") else None
         if idioma not in IDIOMAS:
             idioma = None
@@ -180,7 +192,11 @@ class ClasificadorAnthropic:
             idioma=idioma, intereses=intereses, es_spam=_booleano(data.get("es_spam")),
             confianza=_confianza(data.get("confianza")), motivo=motivo,
             idioma_fuente=FUENTE_IA if idioma else FUENTE_DESCONOCIDA,
-            interes_fuente=FUENTE_IA, proveedor=self.nombre, modelo=settings.anthropic_model,
+            interes_fuente=FUENTE_IA, proveedor=self.nombre,
+            modelo=(uso.modelo if uso else None) or settings.anthropic_model,
+            tokens_entrada=uso.tokens_entrada if uso else None,
+            tokens_salida=uso.tokens_salida if uso else None,
+            duracion_ms=uso.duracion_ms if uso else None,
         )
 
     @staticmethod

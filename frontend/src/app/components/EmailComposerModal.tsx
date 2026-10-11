@@ -6,6 +6,7 @@ import {
   FolderOpen,
   Paperclip,
   PenLine,
+  RefreshCw,
   Save,
   Sparkles,
   Trash2,
@@ -31,12 +32,14 @@ import {
   getMyEmailAliases,
   sendEmail,
   sendEmailDraft,
+  type AsistenteAlcance,
   type EmailDraft,
   type EmailDraftWrite,
   type EmailMessage,
   type MyAlias,
   updateEmailDraft,
 } from "../lib/emailsApi";
+import { ALCANCES_ASISTENTE } from "./email/EmailThreadToolbar";
 import { extractErrorMessage } from "../lib/errors";
 import { SaveTemplateModal } from "./email/SaveTemplateModal";
 import { ScheduleSendDialog } from "./email/ScheduleSendDialog";
@@ -89,6 +92,24 @@ type Props = {
   /** CRM-BANDEJA — «Reenviar»: subject con prefijo Fwd: y cuerpo con el
    *  mensaje original citado. Mensaje nuevo, sin threading. */
   forwardOf?: { subject: string | null; bodyHtml: string } | null;
+  /** «Ayúdame a contestar»: el borrador de la IA con el que se abre el
+   *  compositor (cuerpo ya en HTML, sin firma: la añade el compositor). Al
+   *  enviar, el id del borrador viaja con el envío para anotar si salió tal
+   *  cual o editado. «Regenerar» y «Descartar» los resuelve el padre. */
+  asistente?: {
+    borradorId: string;
+    bodyHtml: string;
+    subject: string | null;
+    pendiente: string[];
+    enlaces: { url: string; etiqueta: string }[];
+    contexto: Record<string, unknown>;
+    ocupado: boolean;
+    /** Qué histórico mira la IA; se puede cambiar y regenerar sin escribir nada. */
+    alcance: AsistenteAlcance;
+    onAlcanceChange: (alcance: AsistenteAlcance) => void;
+    onRegenerar: (alcance?: AsistenteAlcance) => void;
+    onDescartar: () => void;
+  } | null;
   onClose: () => void;
   onSent?: (message: EmailMessage) => void;
 };
@@ -132,6 +153,7 @@ export function EmailComposerModal({
   initialDraft,
   initialCc,
   forwardOf,
+  asistente,
   onClose,
   onSent,
 }: Props) {
@@ -146,6 +168,7 @@ export function EmailComposerModal({
   );
   const [subject, setSubject] = useState(
     initialDraft?.subject ??
+      asistente?.subject ??
       (forwardOf
         ? forwardOf.subject
           ? forwardOf.subject.toLowerCase().startsWith("fwd:")
@@ -159,7 +182,7 @@ export function EmailComposerModal({
           : ""),
   );
   const [bodyHtml, setBodyHtml] = useState(
-    initialDraft?.body_html ?? forwardOf?.bodyHtml ?? "",
+    initialDraft?.body_html ?? asistente?.bodyHtml ?? forwardOf?.bodyHtml ?? "",
   );
   const [draftId, setDraftId] = useState<string | null>(
     initialDraft?.id ?? null,
@@ -477,7 +500,11 @@ export function EmailComposerModal({
           scheduled_for: scheduledFor,
         };
         await updateEmailDraft(id, payload);
-        message = await sendEmailDraft(id);
+        // Con adjuntos el envío sale del borrador guardado; el id del
+        // borrador de la IA viaja igual para anotar su resultado.
+        message = await sendEmailDraft(id, {
+          asistente_borrador_id: asistente?.borradorId ?? null,
+        });
         // sendEmailDraft borra la row en éxito → no llamar deleteEmailDraft.
         setDraftId(null);
         draftIdRef.current = null;
@@ -493,6 +520,9 @@ export function EmailComposerModal({
           in_reply_to_message_id: replyMessageId,
           include_unsubscribe: includeUnsubscribe,
           scheduled_for: scheduledFor,
+          // «Ayúdame a contestar»: solo para anotar el resultado del
+          // borrador (tal cual / editado). El envío es el de siempre.
+          asistente_borrador_id: asistente?.borradorId ?? null,
         });
         // v2.4d — the draft row only mirrored the in-flight compose;
         // once the message is actually sent (or scheduled), the
@@ -544,7 +574,13 @@ export function EmailComposerModal({
     >
       <div className="modal modal-wide email-compose-modal">
         <header className="composer-header">
-          <h2>{replyTo ? "Responder" : "Nuevo email"}</h2>
+          <h2>
+            {asistente
+              ? "Responder con el borrador de la IA"
+              : replyTo
+                ? "Responder"
+                : "Nuevo email"}
+          </h2>
           <ComposerDraftStatus
             savedAt={draftSavedAt}
             hasDraft={draftId !== null}
@@ -729,6 +765,10 @@ export function EmailComposerModal({
             </label>
           </div>
 
+          {asistente ? (
+            <AsistentePanel asistente={asistente} submitting={submitting} />
+          ) : null}
+
           <div
             className={`field email-compose-body${dragging ? " dragging" : ""}`}
             onDragOver={(e) => {
@@ -882,6 +922,120 @@ export function EmailComposerModal({
 /** "Guardado hace Xs" indicator in the composer header. Re-renders
  *  every 15 s so the relative timestamp stays current without the
  *  parent paying a full composer re-render. */
+/** «Ayúdame a contestar» — lo que acompaña al borrador de la IA en el
+ *  compositor: que es un borrador y lo revisa la persona, «Regenerar» y
+ *  «Descartar», lo que el modelo no pudo responder con los datos, y plegado,
+ *  lo que entró en el contexto y los enlaces que podía usar. */
+function AsistentePanel({
+  asistente, submitting,
+}: {
+  asistente: NonNullable<Props["asistente"]>;
+  submitting: boolean;
+}) {
+  const ctx = asistente.contexto ?? {};
+  const num = (k: string): number | null => (typeof ctx[k] === "number" ? (ctx[k] as number) : null);
+  const contacto = ctx["contacto"] as { nombre?: string; empresa?: string | null } | null | undefined;
+  const historico = Array.isArray(ctx["historico"]) ? (ctx["historico"] as Record<string, unknown>[]) : [];
+  const empresa = Array.isArray(ctx["empresa"]) ? (ctx["empresa"] as Record<string, unknown>[]) : [];
+  const alcance = typeof ctx["alcance"] === "string" ? (ctx["alcance"] as string) : null;
+  const recortes = Array.isArray(ctx["recortes"]) ? (ctx["recortes"] as string[]) : [];
+  const tokens = num("tokens_estimados");
+  const presupuesto = num("presupuesto_tokens");
+  const partes: string[] = [];
+  const hilo = num("mensajes_hilo");
+  if (hilo !== null) partes.push(`${hilo} mensaje${hilo === 1 ? "" : "s"} del hilo`);
+  partes.push(contacto ? `la ficha de ${contacto.nombre || "el contacto"}${contacto.empresa ? ` (${contacto.empresa})` : ""}` : "sin ficha (remitente desconocido)");
+  const pedidos = num("pedidos");
+  if (pedidos) partes.push(`${pedidos} pedido${pedidos === 1 ? "" : "s"}`);
+  if (typeof ctx["modelo_flux"] === "string" && ctx["modelo_flux"]) partes.push(`máquina FLUX ${ctx["modelo_flux"]}`);
+  if (historico.length > 0) partes.push(`${historico.length} correo${historico.length === 1 ? "" : "s"} anterior${historico.length === 1 ? "" : "es"} del contacto`);
+  if (empresa.length > 0) partes.push(`${empresa.length} asunto${empresa.length === 1 ? "" : "s"} de otras personas de la empresa`);
+  if (tokens !== null) partes.push(`~${tokens.toLocaleString("es-ES")} tokens de entrada${presupuesto ? ` de ${presupuesto.toLocaleString("es-ES")}` : ""}`);
+  if (recortes.length > 0) partes.push(`${recortes.length} correo${recortes.length === 1 ? "" : "s"} viejo${recortes.length === 1 ? "" : "s"} fuera por tamaño`);
+  return (
+    <div className="asistente-panel" role="note" aria-label="Borrador de la IA">
+      <div className="asistente-panel-head">
+        <span className="asistente-panel-titulo">
+          <Sparkles size={12} aria-hidden /> Borrador de la IA: revísalo y corrígelo antes de enviar. No sale nada hasta que pulses «Enviar ahora».
+        </span>
+        <span className="asistente-panel-acciones">
+          <select
+            className="email-toolbar-alcance"
+            aria-label="Qué histórico mira la IA al regenerar"
+            value={asistente.alcance}
+            disabled={asistente.ocupado || submitting}
+            onChange={(e) => asistente.onAlcanceChange(e.target.value as AsistenteAlcance)}
+          >
+            {ALCANCES_ASISTENTE.map((a) => (
+              <option key={a.id} value={a.id}>{a.label}</option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className="button secondary small"
+            onClick={() => asistente.onRegenerar(asistente.alcance)}
+            disabled={asistente.ocupado || submitting}
+            title="Pide otro borrador a la IA con el histórico elegido (el actual queda como regenerado)"
+          >
+            <RefreshCw size={11} aria-hidden /> {asistente.ocupado ? "Redactando…" : "Regenerar"}
+          </button>
+          <button
+            type="button"
+            className="button secondary small"
+            onClick={asistente.onDescartar}
+            disabled={asistente.ocupado || submitting}
+            title="Cierra el compositor y deja el borrador como descartado"
+          >
+            <Trash2 size={11} aria-hidden /> Descartar el borrador de la IA
+          </button>
+        </span>
+      </div>
+      {asistente.pendiente.length > 0 ? (
+        <p className="asistente-panel-pendiente">
+          <strong>No ha podido responder con los datos:</strong>{" "}
+          {asistente.pendiente.join(" · ")}
+        </p>
+      ) : null}
+      <details className="asistente-panel-detalle">
+        <summary>Lo que ha usado{alcance ? ` (alcance: ${alcance === "hilo" ? "solo este hilo" : alcance === "empresa" ? "todo lo de la empresa" : "todo lo de este contacto"})` : ""}</summary>
+        <p className="muted small">{partes.join(" · ")}.</p>
+        {historico.length > 0 ? (
+          <ul className="asistente-panel-lista">
+            {historico.map((h, i) => (
+              <li key={`h-${i}`}>
+                {String(h["fecha"] ?? "").slice(0, 10)} · {String(h["asunto"] ?? "(sin asunto)")}
+                {h["motivo"] ? <span className="muted small"> — {String(h["motivo"])}</span> : null}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        {empresa.length > 0 ? (
+          <ul className="asistente-panel-lista">
+            {empresa.map((e, i) => (
+              <li key={`e-${i}`}>
+                {String(e["fecha"] ?? "").slice(0, 10)} · {String(e["asunto"] ?? "(sin asunto)")}
+                <span className="muted small"> — lo escribió {String(e["quien"] ?? "otra persona de la empresa")}</span>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        {asistente.enlaces.length > 0 ? (
+          <ul className="asistente-panel-lista">
+            {asistente.enlaces.map((e) => (
+              <li key={e.url}>
+                <a href={e.url} target="_blank" rel="noreferrer">{e.url}</a>
+                <span className="muted small"> — {e.etiqueta}</span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="muted small">Sin enlaces disponibles para este caso.</p>
+        )}
+      </details>
+    </div>
+  );
+}
+
 function ComposerDraftStatus({
   savedAt,
   hasDraft,

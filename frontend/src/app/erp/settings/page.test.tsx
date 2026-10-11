@@ -44,6 +44,21 @@ jest.mock("../../lib/erpApi", () => ({
   createLeadInteres: jest.fn(),
   updateLeadInteres: jest.fn(),
   deleteLeadInteres: jest.fn(),
+  // Base de conocimiento: el panel tiene su propio endpoint; aquí, vacío.
+  getConocimiento: jest.fn(() => Promise.resolve({
+    sitios: [], sitios_de_la_base: true, rutas: [], idiomas: ["es"],
+    flux: { categorias: [], locales: {}, articulos_por_idioma: {}, idos: 0,
+      ultima_sincronizacion: null },
+  })),
+  createSitioWeb: jest.fn(),
+  updateSitioWeb: jest.fn(),
+  createKbRuta: jest.fn(),
+  updateKbRuta: jest.fn(),
+  comprobarKbRutas: jest.fn(),
+  createFluxCategoria: jest.fn(),
+  updateFluxCategoria: jest.fn(),
+  sincronizarFlux: jest.fn(),
+  resolverConocimiento: jest.fn(),
 }));
 // Sugerencias de remitente (datalist): los «enviar como» del usuario.
 jest.mock("../../lib/emailsApi", () => ({

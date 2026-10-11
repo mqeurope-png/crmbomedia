@@ -272,6 +272,9 @@ export type EmailSendPayload = {
   /** Sprint Email v2.4e — ISO date in the future routes the send
    *  through the pending queue instead of Gmail. NULL = send now. */
   scheduled_for?: string | null;
+  /** «Ayúdame a contestar»: el borrador del asistente del que sale este
+   *  envío, para anotar si salió tal cual o editado. No cambia el envío. */
+  asistente_borrador_id?: string | null;
 };
 
 export type ScheduledMessageUpdate = {
@@ -580,9 +583,13 @@ export async function deleteEmailDraft(id: string): Promise<void> {
   await apiFetch(`/api/email-drafts/${id}`, { method: "DELETE" });
 }
 
-export async function sendEmailDraft(id: string): Promise<EmailMessage> {
+export async function sendEmailDraft(
+  id: string,
+  extra: { asistente_borrador_id?: string | null } = {},
+): Promise<EmailMessage> {
   return apiFetch<EmailMessage>(`/api/email-drafts/${id}/send`, {
     method: "POST",
+    body: JSON.stringify(extra),
   });
 }
 
@@ -642,4 +649,66 @@ export async function getEmailActivity(
   return apiFetch<EmailActivityItem[]>(
     `/api/emails/activity?scope=${scope}&limit=${limit}`,
   );
+}
+
+// --- «Ayúdame a contestar»: el borrador del asistente sobre un hilo --------------
+
+/** Un enlace que el asistente pudo usar (de la base de conocimiento). */
+export type AsistenteEnlace = { url: string; etiqueta: string; origen: string | null };
+
+/** El borrador que devuelve el asistente. Nunca se envía solo: la persona lo
+ *  abre en el compositor, lo corrige si hace falta y lo envía. */
+export type BorradorAsistente = {
+  id: string;
+  thread_id: string;
+  message_id: string | null;
+  contact_id: string | null;
+  usuario_id: string;
+  idioma: string | null;
+  modelo: string;
+  tokens_entrada: number;
+  tokens_salida: number;
+  coste_usd: number;
+  destinatario: string | null;
+  remitente: string | null;
+  asunto: string | null;
+  /** El borrador en texto plano y ya pasado a HTML para el editor. */
+  texto: string;
+  html: string;
+  /** Lo que el modelo dijo no poder responder con los datos. */
+  pendiente: string[];
+  enlaces: AsistenteEnlace[];
+  /** Resumen de lo que entró en el contexto (hilo, ficha, pedidos, enlaces…). */
+  contexto: Record<string, unknown>;
+  alcance: "hilo" | "contacto" | "empresa";
+  mensajes_hilo: number;
+  mensajes_historico: number;
+  estado: "generado" | "regenerado" | "descartado" | "enviado_tal_cual" | "enviado_editado";
+  email_message_id: string | null;
+  creado: string | null;
+  resuelto_en: string | null;
+};
+
+export type AsistenteAlcance = BorradorAsistente["alcance"];
+
+export async function generarBorradorAsistente(
+  threadId: string,
+  opts: { alcance?: AsistenteAlcance; regenerar_de?: string | null } = {},
+): Promise<BorradorAsistente> {
+  const r = await apiFetch<{ borrador: BorradorAsistente }>(
+    `/api/emails/threads/${encodeURIComponent(threadId)}/asistente`,
+    { method: "POST", body: JSON.stringify(opts) },
+  );
+  return r.borrador;
+}
+
+export async function descartarBorradorAsistente(
+  threadId: string,
+  borradorId: string,
+): Promise<BorradorAsistente> {
+  const r = await apiFetch<{ borrador: BorradorAsistente }>(
+    `/api/emails/threads/${encodeURIComponent(threadId)}/asistente/${encodeURIComponent(borradorId)}/descartar`,
+    { method: "POST" },
+  );
+  return r.borrador;
 }

@@ -1,5 +1,6 @@
 """El remitente del correo preparado: la dirección de la web por la que entró
-el lead, la misma que firma el acuse de recibo (`sitios.REMITENTES`).
+el lead, la misma que firma el acuse de recibo (el remitente por defecto de
+la tabla de sitios, `sitios.remitente_de_sitio`).
 
 La web sale de la clave del slug del formulario, nunca del campo `brand`
 (`artisjet` es la marca de dos webs distintas). Para los leads de Agile, la
@@ -9,7 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.services.web_forms.sitios import REMITENTES, marca_de_sitio
+from app.services.web_forms import sitios as registro_sitios
+from app.services.web_forms.sitios import marca_de_sitio
 
 
 def sitio_de_lead(
@@ -27,12 +29,12 @@ def sitio_de_lead(
 
 def remitente_de_sitio(sitio: str | None, config: dict[str, Any] | None = None) -> str | None:
     """El remitente de una web: el de la configuración si lo hay, y si no el
-    de `sitios.REMITENTES`. `None` si la web no se conoce: inventarse un
-    `info@` de un dominio que no firma lo mandaría a spam."""
+    por defecto de la tabla de sitios. `None` si la web no se conoce:
+    inventarse un `info@` de un dominio que no firma lo mandaría a spam."""
     if not sitio:
         return None
     por_web = (config or {}).get("por_web") or {}
-    return (por_web.get(sitio) or REMITENTES.get(sitio) or "").strip() or None
+    return (por_web.get(sitio) or registro_sitios.remitente_de_sitio(sitio) or "").strip() or None
 
 
 def remitente_para(
