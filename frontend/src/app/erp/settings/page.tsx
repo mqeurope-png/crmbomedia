@@ -7,6 +7,7 @@ import { GeneiSettingsCard } from "../../components/erp/GeneiSettingsCard";
 import { ModalCloseButton } from "../../components/ModalCloseButton";
 import { PageHeader } from "../../components/PageHeader";
 import { useModalBehaviour } from "../../components/useModalBehaviour";
+import { ConocimientoPanel } from "../../components/erp/ConocimientoPanel";
 import { LeadInteresesPanel } from "../../components/erp/LeadInteresesPanel";
 import { InteresesPicker } from "../../components/leads/InteresesPicker";
 import { extractErrorMessage } from "../../lib/errors";
@@ -25,6 +26,7 @@ import {
   updateErpSettings,
   uploadFactusolCompanyLogo,
   type ErpNextReferences,
+  type ConocimientoConfig,
   type ContrapartidaRule,
   type CuadreComprobacion,
   type CuadreConfig,
@@ -137,7 +139,7 @@ type SectionId =
   | "facturacion" | "tiendas" | "remitentes" | "plantillas" | "plantillas_presupuesto"
   | "aviso_envio" | "series"
   | "abreviaturas" | "sat" | "empresas" | "almacenes" | "contrapartidas"
-  | "origenes" | "drive" | "woo_pagados" | "cuadre" | "respuesta_leads";
+  | "origenes" | "drive" | "woo_pagados" | "cuadre" | "respuesta_leads" | "conocimiento";
 
 const SECTIONS: ReadonlyArray<{ id: SectionId; title: string; keys: (keyof ErpSettings)[] }> = [
   { id: "facturacion", title: "Facturación",
@@ -171,6 +173,7 @@ const SECTIONS: ReadonlyArray<{ id: SectionId; title: string; keys: (keyof ErpSe
     keys: ["woo_missing_check_enabled", "woo_missing_check_interval_minutes", "woo_missing_days"] },
   { id: "cuadre", title: "Cuadre (descuadres)", keys: ["cuadre"] },
   { id: "respuesta_leads", title: "Respuesta a leads", keys: ["lead_response"] },
+  { id: "conocimiento", title: "Base de conocimiento", keys: ["conocimiento"] },
 ];
 
 /** Estado de guardado de una sección: `saved` = el último guardado fue bien
@@ -1594,6 +1597,21 @@ export default function ErpSettingsPage() {
             onChange={(lead_response) => patch({ lead_response })}
           />
         </SettingsSection>
+        {/* Base de conocimiento: lo que el asistente de respuesta puede ENLAZAR
+            (sitios, rutas de soporte, páginas por interés, KB de FLUX). Las
+            tablas se guardan al momento por su API; «Guardar cambios» lleva
+            solo la configuración (sincronización y palabras de FLUX). */}
+        <SettingsSection
+          {...sectionProps("conocimiento")}
+          lead="Lo que el asistente «Ayúdame a contestar» puede enlazar: la página de soporte de cada web en cada idioma, la página de producto de cada interés y el índice de la base de conocimiento de FLUX. El modelo redacta; los enlaces salen de aquí o no salen."
+          note="Las tablas se guardan al momento. «Guardar cambios» lleva la sincronización y las palabras de FLUX."
+        >
+          <ConocimientoSettings
+            value={cfg.conocimiento}
+            onChange={(conocimiento) => patch({ conocimiento })}
+          />
+          <ConocimientoPanel canEdit={canEdit} />
+        </SettingsSection>
         {/* Genei (envíos): endpoint propio, tarjeta autónoma. */}
         <GeneiSettingsCard canEdit={canEdit} />
       </div>
@@ -2062,6 +2080,84 @@ const LEAD_RESPONSE_DEFECTOS: LeadResponseConfig = {
  *  plantilla (con combinaciones y huecos) y remitentes. El PATCH manda el
  *  bloque entero (`lead_response`); el servidor lo valida. El catálogo de
  *  intereses se guarda aparte, al momento (`/api/erp/leads/intereses`). */
+const CONOCIMIENTO_DEFECTOS: ConocimientoConfig = {
+  flux_sync_activa: true, flux_sync_hora: "04:30", flux_palabras_kb: [], flux_palabras_soporte: [],
+};
+
+/** Base de conocimiento — la parte que viaja con «Guardar cambios»: la
+ *  sincronización diaria del índice de FLUX y las palabras que separan «cómo
+ *  se hace» (KB de FLUX) de «averiada / repuesto» (nuestro soporte). */
+function ConocimientoSettings({
+  value, onChange,
+}: {
+  value: ConocimientoConfig | undefined;
+  onChange: (next: ConocimientoConfig) => void;
+}) {
+  const cfg = value ?? CONOCIMIENTO_DEFECTOS;
+  // Las listas se editan como texto (comas) y se vuelcan al salir del campo.
+  // Cuando la lista guardada cambia (el servidor la normaliza: minúsculas,
+  // duplicados), el texto se vuelve a alinear con ella.
+  const [kbTexto, setKbTexto] = useState(cfg.flux_palabras_kb.join(", "));
+  const [kbBase, setKbBase] = useState(cfg.flux_palabras_kb);
+  if (kbBase !== cfg.flux_palabras_kb) {
+    setKbBase(cfg.flux_palabras_kb);
+    setKbTexto(cfg.flux_palabras_kb.join(", "));
+  }
+  const [soporteTexto, setSoporteTexto] = useState(cfg.flux_palabras_soporte.join(", "));
+  const [soporteBase, setSoporteBase] = useState(cfg.flux_palabras_soporte);
+  if (soporteBase !== cfg.flux_palabras_soporte) {
+    setSoporteBase(cfg.flux_palabras_soporte);
+    setSoporteTexto(cfg.flux_palabras_soporte.join(", "));
+  }
+  const lista = (texto: string) => texto.split(",").map((p) => p.trim()).filter(Boolean);
+  return (
+    <>
+      <label className="field erp-check-field">
+        <input
+          type="checkbox"
+          aria-label="Sincronizar la KB de FLUX cada día"
+          checked={cfg.flux_sync_activa}
+          onChange={(e) => onChange({ ...cfg, flux_sync_activa: e.target.checked })}
+        />
+        <span>Sincronizar la KB de FLUX cada día</span>
+        <span className="muted small">
+          Trae el título y el enlace de cada artículo de support.flux3dp.com en los seis idiomas
+          (solo lectura). Si FLUX no responde, el índice anterior se queda como está.
+        </span>
+      </label>
+      <label className="field">
+        <span>Hora (Madrid)</span>
+        <input
+          type="time"
+          aria-label="Hora de la sincronización de FLUX"
+          value={cfg.flux_sync_hora}
+          onChange={(e) => { if (e.target.value) onChange({ ...cfg, flux_sync_hora: e.target.value }); }}
+        />
+      </label>
+      <label className="field">
+        <span>Palabras de «cómo se hace» (→ KB de FLUX)</span>
+        <textarea
+          aria-label="Palabras que llevan a la KB de FLUX"
+          value={kbTexto}
+          onChange={(e) => setKbTexto(e.target.value)}
+          onBlur={() => onChange({ ...cfg, flux_palabras_kb: lista(kbTexto) })}
+        />
+        <span className="muted small">Separadas por comas. Software, calibración, materiales, ajustes…</span>
+      </label>
+      <label className="field">
+        <span>Palabras de «averiada / repuesto / garantía» (→ nuestro soporte)</span>
+        <textarea
+          aria-label="Palabras que llevan a nuestro soporte"
+          value={soporteTexto}
+          onChange={(e) => setSoporteTexto(e.target.value)}
+          onBlur={() => onChange({ ...cfg, flux_palabras_soporte: lista(soporteTexto) })}
+        />
+        <span className="muted small">Si hay señales de las dos, gana el soporte. Si no hay ninguna, también el nuestro.</span>
+      </label>
+    </>
+  );
+}
+
 function LeadResponseSettings({
   value, catalogo, onChange,
 }: {

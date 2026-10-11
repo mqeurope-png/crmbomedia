@@ -15350,3 +15350,28 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
 .wf-live-preview-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
 .wf-live-preview-toggle { display: inline-flex; gap: 4px; }
 .wf-live-preview-frame { width: 100%; max-width: 100%; min-height: 480px; border: 1px dashed var(--line, #e5e7eb); border-radius: 8px; background: transparent; align-self: center; }
+
+/* Configuración ERP → Base de conocimiento (sitios, rutas, FLUX, probar). */
+.kb-panel { display: flex; flex-direction: column; gap: var(--sp-4); }
+.kb-bloque { display: flex; flex-direction: column; gap: var(--sp-2); }
+.kb-bloque > h3 { margin: 0; font-size: 1rem; }
+.kb-bloque > p { margin: 0; }
+.kb-tabla td { vertical-align: top; }
+.kb-tabla tr.is-inactivo > td { color: var(--color-gray); }
+.kb-tabla input[type="text"], .kb-tabla input[type="url"], .kb-tabla input[type="email"] { width: 100%; min-width: 120px; font-size: 0.85rem; }
+.kb-inline { display: flex; gap: 4px; align-items: center; }
+.kb-inline-url input { min-width: 260px; }
+.kb-alta { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: flex-end; }
+.kb-alta .field { margin: 0; flex: 0 1 180px; }
+.kb-alta .kb-campo-url { flex: 1 1 320px; }
+.kb-alta .button { align-self: flex-end; }
+.kb-alta .form-error { flex: 1 1 100%; margin: 0; }
+.kb-acciones { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center; }
+.kb-estado { font-size: var(--fs-label); white-space: nowrap; }
+.kb-estado.is-ok { color: var(--st-green-ink, #166534); }
+.kb-estado.is-error { color: var(--st-red-ink, #991b1b); }
+.kb-flux-estado { display: flex; flex-direction: column; gap: 4px; padding: var(--sp-2); border: 1px solid var(--border); border-radius: 8px; }
+.kb-resultado { display: grid; grid-template-columns: max-content 1fr; gap: 4px var(--sp-3); margin: 0; font-size: 0.9rem; }
+.kb-resultado dt { font-weight: 600; }
+.kb-resultado dd { margin: 0; word-break: break-all; }
+.kb-articulos { margin: 4px 0 0; padding-left: 18px; }

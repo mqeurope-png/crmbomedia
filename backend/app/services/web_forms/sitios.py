@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -454,3 +455,172 @@ def es_del_grupo(direccion: str | None, dominios: Iterable[str]) -> bool:
             return False
         dominio = dominio.split(".", 1)[1]
     return False
+
+
+# --- alta y edición (Configuración ERP → Base de conocimiento) ----------------------
+
+_CLAVE_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,39}$")
+_DOMINIO_RE = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$")
+
+
+def sembrar_si_vacio(session: Any) -> int:
+    """Escribe la lista de partida si la tabla está vacía (antes de la primera
+    edición desde la pantalla). Devuelve cuántos sembró."""
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from app.models.sitios import SitioWeb  # noqa: PLC0415
+
+    if session.scalar(select(SitioWeb.clave).limit(1)) is not None:
+        return 0
+    for s in SITIOS_DE_PARTIDA:
+        session.add(SitioWeb(
+            clave=s.clave, dominio=_dominio_limpio(s.dominio), host=s.web,
+            dominios_extra_json=json.dumps(list(s.dominios_extra)), marca=s.marca,
+            empresa=s.empresa, tipo=s.tipo, idioma_defecto=s.idioma_defecto,
+            idiomas_json=json.dumps(list(s.idiomas)), plugin_traduccion=s.plugin,
+            prefijo_idioma_defecto=s.prefijo_idioma_defecto, slugs_traducidos=s.slugs_traducidos,
+            soporte_propio=s.soporte_propio, remitente_defecto=s.remitente_defecto,
+            posicion=s.posicion, activo=s.activo,
+        ))
+    session.flush()
+    invalidar()
+    return len(SITIOS_DE_PARTIDA)
+
+
+def _validar_dominio(valor: Any) -> str:
+    dominio = _dominio_limpio(str(valor or ""))
+    if not _DOMINIO_RE.match(dominio):
+        raise ValueError(f"Dominio no válido: {valor!r} (p. ej. fluxlasers.es).")
+    return dominio
+
+
+def _validar_idiomas(valores: Any, defecto: str) -> list[str]:
+    if not isinstance(valores, list):
+        raise ValueError("Los idiomas publicados tienen que ser una lista de códigos.")
+    salida: list[str] = []
+    for v in valores:
+        codigo = normalizar_idioma(str(v)) if str(v).strip() else ""
+        if not codigo:
+            raise ValueError(f"Idioma no válido: {v!r}.")
+        if codigo not in salida:
+            salida.append(codigo)
+    if defecto not in salida:
+        salida.insert(0, defecto)
+    return salida
+
+
+def _validar_plugin(valor: Any) -> str | None:
+    plugin = str(valor or "").strip().lower() or None
+    if plugin is not None and plugin not in (PLUGIN_QTRANSLATE, PLUGIN_WPML):
+        raise ValueError(f"Plugin de traducción desconocido: {valor!r} (qtranslate o wpml).")
+    return plugin
+
+
+def _validar_remitente(valor: Any) -> str | None:
+    texto = str(valor or "").strip().lower()
+    if texto and ("@" not in texto or " " in texto):
+        raise ValueError(f"Remitente no válido: {valor!r}.")
+    return texto or None
+
+
+def crear(
+    session: Any, *, clave: str, dominio: str, marca: str, empresa: str, host: str | None = None,
+    dominios_extra: list[str] | None = None, tipo: str = TIPO_WEB, idioma_defecto: str = "es",
+    idiomas: list[str] | None = None, plugin_traduccion: str | None = None,
+    prefijo_idioma_defecto: bool = False, slugs_traducidos: bool = False,
+    soporte_propio: bool = False, remitente_defecto: str | None = None,
+    posicion: int | None = None,
+) -> Any:
+    """Una web o dominio de correo nuevo. Desde ese momento su correo se
+    captura (dominio del grupo) y sus formularios y rutas la conocen."""
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from app.models.sitios import SitioWeb  # noqa: PLC0415
+
+    sembrar_si_vacio(session)
+    clave = str(clave or "").strip().lower()
+    if not _CLAVE_RE.match(clave):
+        raise ValueError(
+            f"Clave no válida: {clave!r} (minúsculas, números y guiones, p. ej. «mbolasers»).")
+    if session.get(SitioWeb, clave) is not None:
+        raise ValueError(f"Ya hay un sitio con la clave «{clave}».")
+    if tipo not in (TIPO_WEB, TIPO_CORREO):
+        raise ValueError(f"Tipo de sitio desconocido: {tipo!r} (web o correo).")
+    dominio_ok = _validar_dominio(dominio)
+    if session.scalar(select(SitioWeb.clave).where(SitioWeb.dominio == dominio_ok)) is not None:
+        raise ValueError(f"El dominio {dominio_ok} ya está dado de alta.")
+    defecto = normalizar_idioma(idioma_defecto)
+    fila = SitioWeb(
+        clave=clave, dominio=dominio_ok, host=_dominio_limpio(str(host or "")) or dominio_ok,
+        dominios_extra_json=json.dumps([_validar_dominio(d) for d in (dominios_extra or [])]),
+        marca=str(marca).strip(), empresa=str(empresa).strip(), tipo=tipo,
+        idioma_defecto=defecto, idiomas_json=json.dumps(_validar_idiomas(idiomas or [defecto],
+                                                                         defecto)),
+        plugin_traduccion=_validar_plugin(plugin_traduccion),
+        prefijo_idioma_defecto=bool(prefijo_idioma_defecto),
+        slugs_traducidos=bool(slugs_traducidos), soporte_propio=bool(soporte_propio),
+        remitente_defecto=_validar_remitente(remitente_defecto),
+        posicion=int(posicion) if posicion is not None else len(SITIOS_DE_PARTIDA) + 1,
+        activo=True,
+    )
+    if not fila.marca or not fila.empresa:
+        raise ValueError("El sitio necesita marca y empresa.")
+    # El host se guarda tal cual (con `www.` si lo lleva): sirve para construir URLs.
+    fila.host = str(host or "").strip().lower().rstrip("/") or dominio_ok
+    session.add(fila)
+    session.flush()
+    invalidar()
+    return fila
+
+
+def actualizar(session: Any, clave: str, cambios: dict[str, Any]) -> Any:
+    """Todo menos la clave (es lo que llevan los orígenes de los contactos y
+    las rutas). Desactivar saca el sitio de la captura y de los desplegables."""
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from app.models.sitios import SitioWeb  # noqa: PLC0415
+
+    sembrar_si_vacio(session)
+    fila = session.get(SitioWeb, (clave or "").strip().lower())
+    if fila is None:
+        raise LookupError("Ese sitio no existe.")
+    if "dominio" in cambios:
+        dominio_ok = _validar_dominio(cambios["dominio"])
+        otro = session.scalar(select(SitioWeb.clave).where(
+            SitioWeb.dominio == dominio_ok, SitioWeb.clave != fila.clave))
+        if otro is not None:
+            raise ValueError(f"El dominio {dominio_ok} ya es de «{otro}».")
+        fila.dominio = dominio_ok
+    if "host" in cambios:
+        fila.host = str(cambios["host"] or "").strip().lower().rstrip("/") or fila.dominio
+    if "dominios_extra" in cambios:
+        fila.dominios_extra_json = json.dumps(
+            [_validar_dominio(d) for d in (cambios["dominios_extra"] or [])])
+    for campo in ("marca", "empresa"):
+        if campo in cambios:
+            valor = str(cambios[campo] or "").strip()
+            if not valor:
+                raise ValueError(f"El sitio necesita {campo}.")
+            setattr(fila, campo, valor)
+    if "tipo" in cambios:
+        if cambios["tipo"] not in (TIPO_WEB, TIPO_CORREO):
+            raise ValueError(f"Tipo de sitio desconocido: {cambios['tipo']!r}.")
+        fila.tipo = cambios["tipo"]
+    if "idioma_defecto" in cambios:
+        fila.idioma_defecto = normalizar_idioma(str(cambios["idioma_defecto"]))
+    if "idiomas" in cambios or "idioma_defecto" in cambios:
+        actuales = json.loads(fila.idiomas_json or "[]")
+        fila.idiomas_json = json.dumps(
+            _validar_idiomas(cambios.get("idiomas", actuales), fila.idioma_defecto))
+    if "plugin_traduccion" in cambios:
+        fila.plugin_traduccion = _validar_plugin(cambios["plugin_traduccion"])
+    for campo in ("prefijo_idioma_defecto", "slugs_traducidos", "soporte_propio", "activo"):
+        if campo in cambios:
+            setattr(fila, campo, bool(cambios[campo]))
+    if "remitente_defecto" in cambios:
+        fila.remitente_defecto = _validar_remitente(cambios["remitente_defecto"])
+    if "posicion" in cambios and cambios["posicion"] is not None:
+        fila.posicion = int(cambios["posicion"])
+    session.flush()
+    invalidar()
+    return fila

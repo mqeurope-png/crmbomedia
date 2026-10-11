@@ -190,6 +190,10 @@ services:
       # Configuración ERP, apagado por defecto) y las de FACTUSOL de
       # «Comprobar ahora». Solo lectura.
       - cuadre:run
+      # Base de conocimiento: sincronización diaria del índice (título y
+      # enlace) de la KB de FLUX (support.flux3dp.com). Solo lectura de una
+      # API pública; interruptor y hora en Configuración ERP.
+      - kb:flux_sync
     volumes:
       # Sprint Backup-Hardening. El worker ejecuta
       # `scripts/backup-crmbo.sh` via subprocess: necesita el script

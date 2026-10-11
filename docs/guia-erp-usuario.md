@@ -1557,6 +1557,19 @@ lo que va a pasar. Secciones destacadas:
   tienda no avisó). Interruptor (**encendido** por defecto), **cada cuántos
   minutos** (60; mínimo 15) y **días hacia atrás** (90). Es la única ventana:
   la usan también «Poner al día estados Woo…» y el aviso del Cuadre.
+- **«Base de conocimiento»** — lo que el asistente de respuesta **puede
+  enlazar** (el modelo redacta; los enlaces salen de aquí o no salen): los
+  **sitios del grupo** (webs y dominios de correo, con sus idiomas, plugin de
+  traducción, remitente y si atienden su propio soporte; un sitio nuevo entra
+  en la captura de correo sin desplegar), las **rutas de soporte** web ×
+  idioma (castellano → Streamtec, otros → MQ Europe, salvo FLUX, MBO Lasers y
+  PimPam que tienen la suya; si el idioma no está, la del idioma por defecto
+  de la web), las **páginas de producto por interés** de mqeurope.com, y la
+  **KB de FLUX** (categoría por modelo, palabras que lo reconocen, índice de
+  títulos y enlaces por idioma con **«Sincronizar ahora»** y la pasada diaria).
+  **«Comprobar que las URL devuelven 200»** pide cada ruta y guarda el código.
+  **«Probar»** enseña qué enlaces saldrían para una web, idioma, interés y
+  texto. Ver [docs/base-conocimiento.md](base-conocimiento.md).
 - **«Series FACTUSOL»** — la **serie** es la empresa que emite la factura. Fijas
   la **serie por defecto** y la que usa cada origen de pedido. Las series
   disponibles son **1 · Bomedia**, **2 · MQ Europe**, **4 · Lambert** y **5 ·
