@@ -1,14 +1,16 @@
-# Base de conocimiento para la respuesta a leads (Fase 1)
+# Base de conocimiento para la respuesta a leads
 
-Lo que el asistente «Ayúdame a contestar» puede **enlazar**. La regla es la del
+Lo que el asistente «Ayúdame a contestar» puede **enlazar** (Fase 1) y los
+**precios que puede escribir** (Fase 2, el catálogo). La regla es la del
 diseño: **el modelo redacta, no aporta hechos**. Precios, plazos y enlaces
-salen de los datos de BoHub y de estas tablas, o no salen. Fase 1: sin
-embeddings, sin cuerpos de artículos; títulos, enlaces y reglas en datos.
+salen de los datos de BoHub y de estas tablas, o no salen. Sin embeddings, sin
+cuerpos de artículos; títulos, enlaces, precios tal cual y reglas en datos.
 
 Pantalla: **Configuración ERP → «Base de conocimiento»** (capacidad
 `erp.config`). Las tablas se guardan al momento por su API; el botón «Guardar
-cambios» de la sección lleva solo la configuración (sincronización y palabras
-de FLUX, blob `conocimiento` de `ErpSettings`).
+cambios» de la sección lleva solo la configuración (sincronizaciones, palabras
+de FLUX, meses hasta «orientativo», IVA por fuente; blob `conocimiento` de
+`ErpSettings`).
 
 ## Tablas (migraciones 0135 y 0136)
 
@@ -97,6 +99,92 @@ pantalla), `POST /sitios`, `PATCH /sitios/{clave}`, `POST /rutas`,
 `PATCH /rutas/{id}` (URL, nota, activo, orden; la clave no cambia),
 `POST /rutas/comprobar` (HEAD/GET a cada URL activa, guarda el código),
 `POST /flux/categorias`, `PATCH /flux/categorias/{id}`, `POST /flux/sincronizar`
-y `POST /resolver` (`{sitio, idioma, interes, texto, modelo}` → los enlaces que
-saldrían: es lo mismo que mira el asistente, `services/conocimiento/enlaces.py`).
+y `POST /resolver` (`{sitio, idioma, interes, texto, modelo, maquina}` → los
+enlaces que saldrían y el catálogo que entraría: es lo mismo que mira el
+asistente, `services/conocimiento/enlaces.py` y `catalogo.para_asistente`).
 Cada cambio queda en la auditoría (`kb.changed`).
+
+## Fase 2: el catálogo y los precios verificados (migración 0139)
+
+El asistente no podía escribir «estas son las máquinas que te encajan y esto
+cuestan» porque **no tenía los datos**, no porque la regla fallara. La regla
+sigue igual: ningún precio que no esté en los DATOS. Lo que entra ahora es el
+catálogo, con dos fuentes y nada más:
+
+| Fuente | Qué trae | De dónde | Módulo |
+|---|---|---|---|
+| `compositor` | Las **máquinas** (18 el 11/10/2026: artisJet, MBO, PimPam, SmartJet FLEX) en cinco idiomas (es raíz + fr, de, en, nl): nombre, descripción, área, dos características, imagen, **precio tal cual**, enlace, visible; y las marcas (logo, color, URL por idioma) | El JSON del compositor de correos de Bomedia (bomedia-v4), fila `main` de `composer_data` en Supabase. **BoHub solo lee**; la clave publicable va en `.env.production` (`SUPABASE_COMPOSER_KEY`, la misma que ya usa la pestaña «Composer» del selector de plantillas), nunca en el código | `services/conocimiento/catalogo_compositor.py` |
+| `woocommerce` | Los **consumibles y repuestos** (y las máquinas de tienda) de cada web con tienda: nombre, precio formateado como lo enseña la tienda, moneda, enlace, categorías, marca, web, idioma. El tipo (máquina / consumible / repuesto) sale de las categorías: es una heurística y se ve en la pantalla | La API pública de la tienda (`/wp-json/wc/store/products?per_page=100`, sin credenciales) de cada web activa de la tabla de sitios, en cada idioma publicado (prefijo de idioma, `lang=`). Una web sin tienda no es un error | `services/conocimiento/catalogo_tiendas.py` |
+
+Todo lo demás **no tiene precio**: un precio que aparece en un correo o pedido
+antiguo es histórico y el prompt lo dice (si se cita, con su fecha; nunca como
+vigente).
+
+### Tablas
+
+| Tabla | Qué guarda |
+|---|---|
+| `kb_catalogo` | Una fila por **producto × idioma**: fuente, tipo, marca, `origen_id` (el id del compositor o `{web}:{id de Woo}`), nombre, descripción, características (JSON), categoría/área, imagen, **`precio_texto`** (tal cual: «9.300 €», «9 300 €», «12,50 €»), `precio_num` (solo para ordenar), moneda, enlace, idioma, web, `actualizado_origen` (el `updated_at` de la fila del compositor; en una tienda, la pasada que confirmó el precio), visible, `visto_en`, `ido_en` |
+| `kb_catalogo_marcas` | Las marcas del compositor y su **idioma por defecto** (editable): el precio que se usa cuando el producto no lo tiene en el idioma del cliente |
+| `kb_catalogo_sincronizaciones` | El histórico de pasadas por fuente: estado (`ok` / `parcial` / `error`), recuentos, `origen_actualizado_en`, resumen por idioma o por tienda e idioma |
+| `kb_interes_productos` | **Interés → máquinas**: interés del clasificador, marca del compositor y patrón del nombre (vacío = toda la marca). Se resuelve contra `kb_catalogo` al montar cada borrador: una fila nueva o un producto nuevo del compositor se aplican sin desplegar |
+
+Lo que desaparece del origen se marca `ido_en`, no se borra. Las dos
+sincronizaciones descargan todo antes de escribir: **si Supabase o una tienda
+no responden, el catálogo anterior queda intacto** y la pasada lo dice; una
+tienda caída no para las demás.
+
+### Las reglas del precio
+
+- **Tal cual**: el correo copia `precio_texto` con su moneda. **Nunca se
+  convierte una divisa.** Sin precio en el idioma del cliente, el del idioma
+  por defecto de su marca, diciendo de qué idioma es y en qué moneda.
+- **Antigüedad**: un precio cuya fuente no se ha confirmado en más de
+  `precio_meses_orientativo` meses (6 por defecto) sale como «precio
+  orientativo, lo confirmamos al preparar la oferta» (en el idioma del correo).
+- **IVA, declarado por fuente**, nunca deducido del número
+  (`conocimiento.iva_por_fuente`: `con`, `sin` o sin declarar). El correo
+  siempre dice si el precio lleva IVA (o que está pendiente de confirmar),
+  avisa de la validación **VIES** para empresas de la UE y de que **un correo
+  no es una factura**. Los textos están en cinco idiomas (`catalogo.AVISOS`:
+  es, en, de, fr, nl; otro idioma → inglés) y son constantes del código.
+
+### Interés → máquinas (propuesta a revisar)
+
+La propuesta del 11/10/2026 (`catalogo.MAPA_DE_PARTIDA`, sembrada por la
+migración): `uv_pequeno` → artisJet Young, Proud · MBO 1015; `uv_mediano` →
+artisJet 3000Pro, 5000U · MBO 3050, 4060; `uv_grande` → artisJet 6090 Trust ·
+MBO 6090, UV1612G, UV1812, UV2513; `dtf` → SmartJet FLEX (toda la marca;
+confirmar); `vending` → PimPam CaseBox, Custom. **Hallazgo**: las láser (FLUX,
+MBO Lasers), el packaging y el CNC **no están en el compositor**; para esos
+intereses el asistente enlaza la página de producto del interés (`kb_rutas`) y
+no cita ningún precio ni inventa ninguna máquina. La pantalla enseña con qué
+casa cada fila, los huecos y, mientras no se marque «revisada» en los ajustes,
+el aviso de propuesta sin revisar.
+
+### Lo que entra en un borrador (`catalogo.para_asistente`)
+
+Nunca el catálogo entero: hasta **6 máquinas** de los intereses del lead (el
+principal primero) y hasta **8 consumibles o repuestos** de la máquina que tiene
+(lo que dicen sus pedidos, casado por palabras contra nombre, categoría y
+marca de los productos de las tiendas), en su idioma, con precio tal cual,
+enlace (en la lista de enlaces permitidos) y los avisos. El bloque CATÁLOGO del
+prompt es la única fuente de precios; si no hay producto, lo dice y el modelo no
+cita ninguno. Si el presupuesto de tokens no llega, el catálogo se recorta lo
+último (consumibles primero, luego máquinas hasta dejar dos) y queda anotado.
+
+### Sincronización y API
+
+- **Diaria**: job RQ `kb:catalogo_sync` (worker-sync), hora
+  `conocimiento.catalogo_sync_hora` (04:45 de Madrid), interruptor
+  `catalogo_sync_activa` (encendido). Compositor y tiendas, una tras otra.
+- **A mano**: «Sincronizar compositor» / «Sincronizar tiendas» en la pantalla
+  (en la petición), o `python -m app.services.conocimiento.catalogo_job` en el
+  contenedor `api`. **Tras el primer deploy hace falta una pasada a mano.**
+- API (`/api/erp/conocimiento`, capacidad `erp.config`): `GET` trae también
+  `catalogo` (estado por fuente, marcas, IVA) e `interes_productos` (filas con
+  sus coincidencias, huecos, hallazgo); `GET /catalogo/productos` (filtros
+  `fuente, tipo, idioma, marca, sitio, q, con_idos, limite`);
+  `POST /catalogo/sincronizar` (`{fuente}` o las dos);
+  `PATCH /catalogo/marcas/{nombre}` (idioma por defecto);
+  `POST|PATCH|DELETE /catalogo/intereses[/{id}]`.

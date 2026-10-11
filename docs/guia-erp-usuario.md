@@ -1568,8 +1568,23 @@ lo que va a pasar. Secciones destacadas:
   **KB de FLUX** (categoría por modelo, palabras que lo reconocen, índice de
   títulos y enlaces por idioma con **«Sincronizar ahora»** y la pasada diaria).
   **«Comprobar que las URL devuelven 200»** pide cada ruta y guarda el código.
-  **«Probar»** enseña qué enlaces saldrían para una web, idioma, interés y
-  texto. Ver [docs/base-conocimiento.md](base-conocimiento.md).
+  El **catálogo y los precios verificados**: las **máquinas** del compositor de
+  correos de Bomedia (su fila de Supabase, solo lectura) y los **consumibles y
+  repuestos** de las tiendas de las webs, con el **precio tal cual** está
+  escrito en el origen; «Sincronizar compositor» / «Sincronizar tiendas», el
+  estado por fuente, la tabla filtrable y el idioma por defecto de cada marca
+  (el precio de respaldo). La tabla **interés → máquinas** decide qué máquinas
+  se le enseñan a cada lead (marca + patrón del nombre; enseña con qué casa
+  cada fila y los **huecos**: láser, packaging y CNC no están en el
+  compositor, así que ahí se enlaza la página de producto y no se inventa
+  nada); es una propuesta a revisar hasta que se marque como revisada en los
+  ajustes. En los ajustes de la sección: la sincronización diaria del
+  catálogo, los **meses hasta que un precio es «orientativo»** (6) y el **IVA
+  por fuente** (con, sin o sin declarar: se declara, no se deduce; el correo
+  siempre dice si el precio lleva IVA, avisa del VIES y de que no es una
+  factura). **«Probar»** enseña qué enlaces y qué máquinas y consumibles
+  saldrían para una web, idioma, interés, texto y máquina del cliente. Ver
+  [docs/base-conocimiento.md](base-conocimiento.md).
 - **«Asistente de respuesta»** — qué **modelo** redacta cada cosa, por
   separado: el del **primer borrador** (lleva el contexto entero; vacío = el del
   servidor) y el de las **correcciones** («más corto», «en inglés»: trabajan

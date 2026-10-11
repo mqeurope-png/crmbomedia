@@ -16,8 +16,9 @@ prioridad, llenados hasta agotar un presupuesto de tokens.
    empresa» pueden traer cuerpo, con el mismo criterio del nivel 3.
 
 Si no cabe todo, se recorta por abajo: primero lo más viejo del nivel 4, luego
-lo más viejo del nivel 3. Lo que entró queda listado para enseñarlo debajo del
-borrador y guardarlo con él.
+lo más viejo del nivel 3 y, lo último, el catálogo (consumibles y después
+máquinas, hasta dejar dos). Lo que entró queda listado para enseñarlo debajo
+del borrador y guardarlo con él.
 """
 from __future__ import annotations
 
@@ -373,6 +374,14 @@ def ajustar_al_presupuesto(
             mas_viejo = min(ctx.historico, key=lambda h: h.get("fecha") or "")
             ctx.historico.remove(mas_viejo)
             ctx.recortes.append(f"histórico: «{mas_viejo.get('asunto')}»")
+        elif (getattr(ctx, "catalogo", None) or {}).get("consumibles"):
+            # 3. El catálogo, lo último: primero los consumibles (del final),
+            # luego las máquinas hasta dejar dos.
+            quitado = ctx.catalogo["consumibles"].pop()
+            ctx.recortes.append(f"catálogo: consumible «{quitado.get('nombre')}»")
+        elif len((getattr(ctx, "catalogo", None) or {}).get("maquinas") or []) > 2:
+            quitado = ctx.catalogo["maquinas"].pop()
+            ctx.recortes.append(f"catálogo: máquina «{quitado.get('nombre')}»")
         else:
             break                          # hilo + expediente: no se recorta más
         tokens = medir(ctx)

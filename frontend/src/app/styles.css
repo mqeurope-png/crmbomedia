@@ -15375,6 +15375,18 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
 .kb-resultado dt { font-weight: 600; }
 .kb-resultado dd { margin: 0; word-break: break-all; }
 .kb-articulos { margin: 4px 0 0; padding-left: 18px; }
+.kb-fuentes { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: var(--sp-2); }
+.kb-fuente { display: flex; flex-direction: column; gap: 4px; padding: var(--sp-2); border: 1px solid var(--border); border-radius: 8px; }
+.kb-fuente > h4 { margin: 0; font-size: 0.95rem; }
+.kb-aviso { padding: var(--sp-2); border-radius: 8px; background: var(--st-amber-bg, #fff7e6); border: 1px solid var(--st-amber-ink, #b45309); font-size: 0.9rem; }
+.kb-aviso p { margin: 0; }
+.kb-precio { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.kb-coincide { display: flex; flex-wrap: wrap; gap: 4px; }
+.kb-coincide span { padding: 0 6px; border-radius: 10px; background: var(--surface-2, #f1f5f9); font-size: var(--fs-label); }
+.kb-coincide .is-vacio { background: var(--st-red-bg, #fee2e2); color: var(--st-red-ink, #991b1b); }
+.kb-tabla-scroll { max-height: 480px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
+.kb-tabla-scroll table { margin: 0; }
+.kb-productos-asistente { margin: 4px 0 0; padding-left: 18px; }
 
 /* «Ayúdame a contestar»: botón en la toolbar del hilo y panel del borrador en el compositor. */
 .email-toolbar-asistente { border-color: var(--color-primary, #1d4ed8); color: var(--color-primary, #1d4ed8); }

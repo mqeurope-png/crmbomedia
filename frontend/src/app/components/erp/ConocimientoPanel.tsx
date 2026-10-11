@@ -4,16 +4,26 @@ import { useEffect, useState } from "react";
 import {
   comprobarKbRutas,
   createFluxCategoria,
+  createInteresProducto,
   createKbRuta,
   createSitioWeb,
+  deleteInteresProducto,
+  getCatalogoProductos,
   getConocimiento,
   resolverConocimiento,
+  sincronizarCatalogo,
   sincronizarFlux,
+  updateCatalogoMarca,
   updateFluxCategoria,
+  updateInteresProducto,
   updateKbRuta,
   updateSitioWeb,
+  type CatalogoProducto,
+  type CatalogoProductoAsistente,
+  type CatalogoSincronizacion,
   type Conocimiento,
   type FluxCategoria,
+  type InteresProducto,
   type KbResolucion,
   type KbRuta,
   type SitioWeb,
@@ -68,8 +78,462 @@ export function ConocimientoPanel({ canEdit }: Props) {
       <RutasTabla datos={datos} tipo="soporte" canEdit={canEdit} onDatos={setDatos} />
       <RutasTabla datos={datos} tipo="producto" canEdit={canEdit} onDatos={setDatos} />
       <FluxBloque datos={datos} canEdit={canEdit} onDatos={setDatos} />
+      {/* Una API anterior a la Fase 2 no trae el catálogo: la sección pinta sin él. */}
+      {datos.catalogo && datos.interes_productos ? (
+        <>
+          <CatalogoBloque datos={datos} canEdit={canEdit} onDatos={setDatos} />
+          <InteresProductosBloque datos={datos} canEdit={canEdit} onDatos={setDatos} />
+        </>
+      ) : null}
       <Probar datos={datos} />
     </div>
+  );
+}
+
+// --- catálogo y precios (Fase 2) --------------------------------------------------
+
+const FUENTE_TEXTO: Record<string, string> = {
+  compositor: "Compositor de correos (máquinas)", woocommerce: "Tiendas de las webs (consumibles y repuestos)",
+};
+const TIPO_TEXTO: Record<string, string> = { maquina: "máquina", consumible: "consumible", repuesto: "repuesto" };
+
+function ivaTexto(valor: "con" | "sin" | null | undefined): string {
+  if (valor === "con") return "con IVA incluido";
+  if (valor === "sin") return "sin IVA";
+  return "sin declarar (el correo dirá que está por confirmar)";
+}
+
+function resumenSincronizacion(s: CatalogoSincronizacion): string {
+  if (s.estado === "error") return `Sincronización en error: ${s.detalle ?? "sin detalle"}. El catálogo anterior sigue intacto.`;
+  const base = `Sincronizado ${FUENTE_TEXTO[s.fuente] ?? s.fuente}: ${s.productos} filas (${s.nuevos} nuevas, ${s.actualizados} cambiadas, ${s.idos} desaparecidas).`;
+  return s.estado === "parcial" ? `${base} Parcial: ${s.detalle ?? "algún origen no respondió"}.` : base;
+}
+
+function CatalogoBloque({
+  datos, canEdit, onDatos,
+}: { datos: Conocimiento; canEdit: boolean; onDatos: (d: Conocimiento) => void }) {
+  const cat = datos.catalogo;
+  const [sincronizando, setSincronizando] = useState<string | null>(null);
+  const [aviso, setAviso] = useState<string | null>(null);
+  const [filtros, setFiltros] = useState({ fuente: "", tipo: "", idioma: "", marca: "", q: "" });
+  const [productos, setProductos] = useState<{ lista: CatalogoProducto[]; total: number; limite: number } | null>(null);
+  const [cargando, setCargando] = useState(false);
+  const [errorLista, setErrorLista] = useState<string | null>(null);
+
+  async function sincronizar(fuente: "compositor" | "woocommerce") {
+    setSincronizando(fuente);
+    setAviso(null);
+    try {
+      const r = await sincronizarCatalogo(fuente);
+      onDatos({ ...datos, catalogo: r.catalogo, interes_productos: r.interes_productos });
+      setAviso(r.sincronizaciones.map(resumenSincronizacion).join(" "));
+    } catch (e) {
+      setAviso(extractErrorMessage(e, "No se pudo sincronizar el catálogo."));
+    } finally {
+      setSincronizando(null);
+    }
+  }
+
+  async function cargar() {
+    setCargando(true);
+    setErrorLista(null);
+    try {
+      const r = await getCatalogoProductos({
+        fuente: filtros.fuente || undefined, tipo: filtros.tipo || undefined,
+        idioma: filtros.idioma.trim() || undefined, marca: filtros.marca.trim() || undefined,
+        q: filtros.q.trim() || undefined,
+      });
+      setProductos({ lista: r.productos, total: r.total, limite: r.limite });
+    } catch (e) {
+      setErrorLista(extractErrorMessage(e, "No se pudo cargar el catálogo."));
+    } finally {
+      setCargando(false);
+    }
+  }
+
+  const compositor = cat.fuentes.compositor;
+  const tiendas = cat.fuentes.woocommerce;
+  const porIdioma = (m: Record<string, number>) => Object.entries(m).map(([i, n]) => `${nombreIdioma(i)} ${n}`).join(" · ");
+  const ultima = (s: CatalogoSincronizacion | null) => (s
+    ? `${fechaCorta(s.inicio)} · ${s.origen} · ${s.estado}${s.origen_actualizado_en ? ` · fila del compositor del ${fechaCorta(s.origen_actualizado_en)}` : ""}`
+    : "ninguna");
+  const ivaSinDeclarar = Object.values(cat.iva_por_fuente).some((v) => !v);
+
+  return (
+    <section className="kb-bloque" aria-labelledby="kb-catalogo-t">
+      <h3 id="kb-catalogo-t">Catálogo y precios verificados</h3>
+      <p className="muted small">
+        Los únicos precios que el asistente puede escribir. Las máquinas salen del compositor de
+        correos de Bomedia (su fila de Supabase, solo lectura); los consumibles y repuestos, de las
+        tiendas WooCommerce de las webs. El precio se enseña tal cual está escrito en el origen y
+        nunca se convierte de moneda; sin precio en el idioma del cliente, el del idioma por defecto
+        de la marca, diciéndolo. Todo lo demás no tiene precio: lo que aparece en un correo antiguo no
+        es un precio vigente.
+      </p>
+      {ivaSinDeclarar ? (
+        <div className="kb-aviso" role="note">
+          <p>
+            <strong>IVA sin declarar</strong> en {Object.entries(cat.iva_por_fuente).filter(([, v]) => !v).map(([f]) => FUENTE_TEXTO[f] ?? f).join(" y ")}:
+            mientras no se declare en los ajustes de esta sección, los correos dirán que está pendiente de
+            confirmar si los precios incluyen IVA. Se declara; no se deduce del número.
+          </p>
+        </div>
+      ) : null}
+      <div className="kb-fuentes">
+        <div className="kb-fuente" aria-label="Estado del compositor">
+          <h4>{FUENTE_TEXTO.compositor}</h4>
+          <div>
+            <strong>{compositor.productos}</strong> filas (producto × idioma)
+            {compositor.productos > 0 ? <span className="muted small"> · {porIdioma(compositor.por_idioma)}</span> : null}
+          </div>
+          <div className="muted small">Última sincronización: {ultima(compositor.ultima_sincronizacion)}</div>
+          <div className="muted small">
+            IVA: {ivaTexto(cat.iva_por_fuente.compositor)} · precios de más de {cat.precio_meses_orientativo} meses: orientativos
+          </div>
+          {compositor.clave_configurada === false ? (
+            <div className="kb-estado is-error">Sin clave del compositor en el servidor (SUPABASE_COMPOSER_KEY): no se puede sincronizar.</div>
+          ) : null}
+          <div className="kb-acciones">
+            <button type="button" className="button small" onClick={() => sincronizar("compositor")}
+              disabled={!canEdit || sincronizando !== null}>
+              {sincronizando === "compositor" ? "Sincronizando…" : "Sincronizar compositor"}
+            </button>
+          </div>
+        </div>
+        <div className="kb-fuente" aria-label="Estado de las tiendas">
+          <h4>{FUENTE_TEXTO.woocommerce}</h4>
+          <div>
+            <strong>{tiendas.productos}</strong> filas
+            {tiendas.por_tienda && Object.keys(tiendas.por_tienda).length > 0 ? (
+              <span className="muted small"> · {Object.entries(tiendas.por_tienda).map(([s, n]) => `${s} ${n}`).join(" · ")}</span>
+            ) : null}
+          </div>
+          {tiendas.productos > 0 ? (
+            <div className="muted small">
+              {Object.entries(tiendas.por_tipo).map(([t, n]) => `${n} ${TIPO_TEXTO[t] ?? t}${n === 1 ? "" : "s"}`).join(" · ")}
+              {" · "}{porIdioma(tiendas.por_idioma)}
+            </div>
+          ) : null}
+          <div className="muted small">Última sincronización: {ultima(tiendas.ultima_sincronizacion)}</div>
+          <div className="muted small">IVA: {ivaTexto(cat.iva_por_fuente.woocommerce)}</div>
+          <div className="kb-acciones">
+            <button type="button" className="button small" onClick={() => sincronizar("woocommerce")}
+              disabled={!canEdit || sincronizando !== null}>
+              {sincronizando === "woocommerce" ? "Sincronizando…" : "Sincronizar tiendas"}
+            </button>
+          </div>
+        </div>
+      </div>
+      {aviso ? <p className="muted small" role="status">{aviso}</p> : null}
+      {cat.marcas.length > 0 ? (
+        <table className="data-table data-table--responsive erp-settings-table kb-tabla" aria-label="Marcas del compositor">
+          <thead><tr><th>Marca</th><th>Idioma por defecto (precio de respaldo)</th><th>Webs</th></tr></thead>
+          <tbody>
+            {cat.marcas.map((m) => (
+              <FilaMarca key={m.nombre} marca={m} canEdit={canEdit} onDatos={onDatos} idiomas={datos.idiomas} />
+            ))}
+          </tbody>
+        </table>
+      ) : null}
+      <div className="kb-alta">
+        <label className="field"><span>Fuente</span>
+          <select aria-label="Fuente del catálogo" value={filtros.fuente}
+            onChange={(e) => setFiltros({ ...filtros, fuente: e.target.value })}>
+            <option value="">todas</option>
+            <option value="compositor">compositor</option>
+            <option value="woocommerce">tiendas</option>
+          </select>
+        </label>
+        <label className="field"><span>Tipo</span>
+          <select aria-label="Tipo de producto" value={filtros.tipo}
+            onChange={(e) => setFiltros({ ...filtros, tipo: e.target.value })}>
+            <option value="">todos</option>
+            {cat.tipos.map((t) => <option key={t} value={t}>{TIPO_TEXTO[t] ?? t}</option>)}
+          </select>
+        </label>
+        <label className="field"><span>Idioma</span>
+          <input type="text" aria-label="Idioma del catálogo" maxLength={5} value={filtros.idioma}
+            onChange={(e) => setFiltros({ ...filtros, idioma: e.target.value })} />
+        </label>
+        <label className="field"><span>Marca</span>
+          <input type="text" aria-label="Marca del catálogo" maxLength={80} value={filtros.marca}
+            onChange={(e) => setFiltros({ ...filtros, marca: e.target.value })} />
+        </label>
+        <label className="field kb-campo-url"><span>Buscar (nombre, categoría)</span>
+          <input type="text" aria-label="Buscar en el catálogo" maxLength={120} value={filtros.q}
+            onChange={(e) => setFiltros({ ...filtros, q: e.target.value })} />
+        </label>
+        <button type="button" className="button small" onClick={cargar} disabled={cargando}>
+          {cargando ? "Cargando…" : (productos ? "Volver a cargar" : "Ver el catálogo")}
+        </button>
+      </div>
+      {errorLista ? <p className="form-error" role="alert">{errorLista}</p> : null}
+      {productos ? (
+        <>
+          <p className="muted small" role="status">
+            {productos.total === 0 ? "Ningún producto con esos filtros." : `${productos.total} fila${productos.total === 1 ? "" : "s"}${productos.total >= productos.limite ? ` (se enseñan las primeras ${productos.limite}: afina los filtros)` : ""}.`}
+          </p>
+          {productos.total > 0 ? (
+            <div className="kb-tabla-scroll">
+              <table className="data-table erp-settings-table kb-tabla" aria-label="Productos del catálogo">
+                <thead>
+                  <tr>
+                    <th>Fuente</th><th>Tipo</th><th>Marca</th><th>Producto</th><th>Idioma</th>
+                    <th>Precio (tal cual)</th><th>Enlace</th><th>Web</th><th>Origen actualizado</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {productos.lista.map((p) => (
+                    <tr key={p.id} className={p.visible ? undefined : "is-inactivo"}>
+                      <td>{p.fuente === "compositor" ? "compositor" : "tienda"}</td>
+                      <td>{TIPO_TEXTO[p.tipo] ?? p.tipo}</td>
+                      <td>{p.marca}</td>
+                      <td>
+                        <strong>{p.nombre}</strong>
+                        {p.categoria ? <><br /><span className="muted small">{p.categoria}</span></> : null}
+                      </td>
+                      <td>{p.idioma}</td>
+                      <td className="kb-precio">
+                        {p.precio_texto ?? <span className="muted small">sin precio</span>}
+                        {p.moneda && p.precio_texto ? <span className="muted small"> {p.moneda}</span> : null}
+                      </td>
+                      <td>{p.enlace ? <a href={p.enlace} target="_blank" rel="noreferrer">abrir</a> : "—"}</td>
+                      <td>{p.sitio ?? "—"}</td>
+                      <td className="muted small">{fechaCorta(p.actualizado_origen)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+        </>
+      ) : null}
+    </section>
+  );
+}
+
+function FilaMarca({
+  marca, canEdit, onDatos, idiomas,
+}: { marca: Conocimiento["catalogo"]["marcas"][number]; canEdit: boolean; onDatos: (d: Conocimiento) => void; idiomas: string[] }) {
+  const [ocupada, setOcupada] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const opciones = Array.from(new Set([...idiomas, marca.idioma_defecto, "es", "fr", "de", "en", "nl"])).sort();
+
+  async function cambiar(idioma: string) {
+    setOcupada(true);
+    setError(null);
+    try {
+      onDatos(await updateCatalogoMarca(marca.nombre, { idioma_defecto: idioma }));
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudo guardar la marca."));
+    } finally {
+      setOcupada(false);
+    }
+  }
+
+  return (
+    <tr className={marca.ida ? "is-inactivo" : undefined}>
+      <td data-label="Marca"><strong>{marca.nombre}</strong>{marca.ida ? <span className="muted small"> (ya no está en el compositor)</span> : null}</td>
+      <td data-label="Idioma por defecto">
+        {canEdit ? (
+          <select aria-label={`Idioma por defecto de ${marca.nombre}`} value={marca.idioma_defecto}
+            disabled={ocupada} onChange={(e) => cambiar(e.target.value)}>
+            {opciones.map((i) => <option key={i} value={i}>{i} · {nombreIdioma(i)}</option>)}
+          </select>
+        ) : `${marca.idioma_defecto} · ${nombreIdioma(marca.idioma_defecto)}`}
+        {error ? <><br /><span className="form-error small" role="alert">{error}</span></> : null}
+      </td>
+      <td data-label="Webs" className="muted small">
+        {Object.entries(marca.urls).map(([i, u]) => <span key={i}>{i}: <a href={u} target="_blank" rel="noreferrer">{u}</a> </span>)}
+      </td>
+    </tr>
+  );
+}
+
+// --- interés → máquinas -----------------------------------------------------------
+
+function InteresProductosBloque({
+  datos, canEdit, onDatos,
+}: { datos: Conocimiento; canEdit: boolean; onDatos: (d: Conocimiento) => void }) {
+  const mapa = datos.interes_productos;
+  const [nueva, setNueva] = useState({ interes: "", marca: "", patron: "", nota: "" });
+  const [creando, setCreando] = useState(false);
+  const [errorAlta, setErrorAlta] = useState<string | null>(null);
+  const intereses = Array.from(new Set([
+    ...mapa.filas.map((f) => f.interes), ...mapa.huecos.map((h) => h.interes),
+  ])).sort();
+  const marcas = Array.from(new Set([
+    ...datos.catalogo.marcas.map((m) => m.nombre), ...mapa.filas.map((f) => f.marca).filter(Boolean),
+  ])).sort();
+
+  async function crear() {
+    setCreando(true);
+    setErrorAlta(null);
+    try {
+      onDatos(await createInteresProducto({
+        interes: nueva.interes.trim(), marca: nueva.marca.trim(), patron: nueva.patron.trim(),
+        nota: nueva.nota.trim() || null,
+      }));
+      setNueva({ interes: "", marca: "", patron: "", nota: "" });
+    } catch (e) {
+      setErrorAlta(extractErrorMessage(e, "No se pudo añadir la fila."));
+    } finally {
+      setCreando(false);
+    }
+  }
+
+  return (
+    <section className="kb-bloque" aria-labelledby="kb-intereses-t">
+      <h3 id="kb-intereses-t">Interés → máquinas: qué se le enseña a cada lead</h3>
+      <p className="muted small">
+        Por cada interés del clasificador, las máquinas del compositor que encajan, por marca y
+        patrón del nombre (vacío = toda la marca). El asistente mete en el borrador hasta seis
+        máquinas de los intereses del lead, en su idioma, con precio tal cual y enlace; un interés
+        sin fila o sin coincidencia es un hueco: se enlaza la página de producto del interés y no se
+        inventa ninguna máquina.
+      </p>
+      {!mapa.revisado ? (
+        <div className="kb-aviso" role="note">
+          <p>
+            <strong>Propuesta sin revisar</strong> (11/10/2026). Repásala y marca «La tabla
+            interés → máquinas está revisada» en los ajustes de esta sección. {mapa.hallazgo}
+          </p>
+        </div>
+      ) : null}
+      {mapa.catalogo_vacio ? (
+        <p className="muted small">El catálogo está vacío: sincroniza el compositor para ver con qué casa cada fila.</p>
+      ) : null}
+      <table className="data-table data-table--responsive erp-settings-table kb-tabla" aria-label="Interés a máquinas">
+        <thead>
+          <tr><th>Interés</th><th>Marca</th><th>Patrón del nombre</th><th>Coincide con</th><th>Nota</th><th>Activa</th><th></th></tr>
+        </thead>
+        <tbody>
+          {mapa.filas.map((f) => <FilaInteresProducto key={f.id} fila={f} canEdit={canEdit} onDatos={onDatos} catalogoVacio={mapa.catalogo_vacio} />)}
+        </tbody>
+      </table>
+      {mapa.huecos.length > 0 ? (
+        <div className="kb-aviso" role="note" aria-label="Intereses sin máquina">
+          <p><strong>Sin máquina:</strong> {mapa.huecos.map((h) => `${h.etiqueta} (${h.interes}): ${h.motivo}`).join(" · ")}.</p>
+        </div>
+      ) : null}
+      {canEdit ? (
+        <div className="kb-alta">
+          <label className="field"><span>Interés</span>
+            <input type="text" aria-label="Interés de la fila nueva" list="kb-intereses-lista" maxLength={40}
+              placeholder="p. ej. uv_mediano" value={nueva.interes}
+              onChange={(e) => setNueva({ ...nueva, interes: e.target.value })} />
+            <datalist id="kb-intereses-lista">{intereses.map((i) => <option key={i} value={i} />)}</datalist>
+          </label>
+          <label className="field"><span>Marca</span>
+            <input type="text" aria-label="Marca de la fila nueva" list="kb-marcas-lista" maxLength={80}
+              value={nueva.marca} onChange={(e) => setNueva({ ...nueva, marca: e.target.value })} />
+            <datalist id="kb-marcas-lista">{marcas.map((m) => <option key={m} value={m} />)}</datalist>
+          </label>
+          <label className="field"><span>Patrón del nombre</span>
+            <input type="text" aria-label="Patrón de la fila nueva" maxLength={80} placeholder="p. ej. 6090"
+              value={nueva.patron} onChange={(e) => setNueva({ ...nueva, patron: e.target.value })} />
+          </label>
+          <label className="field"><span>Nota</span>
+            <input type="text" aria-label="Nota de la fila nueva" maxLength={255}
+              value={nueva.nota} onChange={(e) => setNueva({ ...nueva, nota: e.target.value })} />
+          </label>
+          <button type="button" className="button small" onClick={crear}
+            disabled={creando || !nueva.interes.trim() || (!nueva.marca.trim() && !nueva.patron.trim())}>
+            {creando ? "Añadiendo…" : "Añadir fila"}
+          </button>
+          {errorAlta ? <p className="form-error" role="alert">{errorAlta}</p> : null}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function FilaInteresProducto({
+  fila, canEdit, onDatos, catalogoVacio,
+}: { fila: InteresProducto; canEdit: boolean; onDatos: (d: Conocimiento) => void; catalogoVacio: boolean }) {
+  const [patron, setPatron] = useState(fila.patron);
+  const [ocupada, setOcupada] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const clave = `${fila.interes} ${fila.marca} ${fila.patron}`.trim();
+
+  async function cambiar(cambios: Parameters<typeof updateInteresProducto>[1]) {
+    setOcupada(true);
+    setError(null);
+    try {
+      onDatos(await updateInteresProducto(fila.id, cambios));
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudo guardar la fila."));
+    } finally {
+      setOcupada(false);
+    }
+  }
+
+  async function borrar() {
+    if (!window.confirm(`¿Borrar la fila «${clave}»? El asistente dejará de enseñar esas máquinas para ese interés.`)) return;
+    setOcupada(true);
+    setError(null);
+    try {
+      onDatos(await deleteInteresProducto(fila.id));
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudo borrar la fila."));
+      setOcupada(false);
+    }
+  }
+
+  return (
+    <tr className={fila.activo ? undefined : "is-inactivo"}>
+      <td data-label="Interés">{fila.etiqueta}<br /><code>{fila.interes}</code></td>
+      <td data-label="Marca">{fila.marca || <span className="muted small">(cualquiera)</span>}</td>
+      <td data-label="Patrón">
+        {canEdit ? (
+          <span className="kb-inline">
+            <input type="text" aria-label={`Patrón de ${clave}`} value={patron} disabled={ocupada}
+              onChange={(e) => setPatron(e.target.value)} />
+            {patron.trim() !== fila.patron ? (
+              <button type="button" className="button small" disabled={ocupada}
+                onClick={() => cambiar({ patron: patron.trim() })}>Guardar</button>
+            ) : null}
+          </span>
+        ) : (fila.patron || <span className="muted small">(toda la marca)</span>)}
+      </td>
+      <td data-label="Coincide con">
+        <span className="kb-coincide">
+          {fila.coincide.length > 0
+            ? fila.coincide.map((c) => <span key={c.origen_id}>{c.nombre}</span>)
+            : <span className="is-vacio">{catalogoVacio ? "catálogo vacío" : "sin coincidencia"}</span>}
+        </span>
+      </td>
+      <td data-label="Nota" className="muted small">{fila.nota ?? ""}</td>
+      <td data-label="Activa">
+        <input type="checkbox" aria-label={`Activa ${clave}`} checked={fila.activo}
+          disabled={!canEdit || ocupada} onChange={(e) => cambiar({ activo: e.target.checked })} />
+      </td>
+      <td>
+        {canEdit ? (
+          <button type="button" className="button small ghost" aria-label={`Borrar ${clave}`}
+            disabled={ocupada} onClick={borrar}>Borrar</button>
+        ) : null}
+        {error ? <><br /><span className="form-error small" role="alert">{error}</span></> : null}
+      </td>
+    </tr>
+  );
+}
+
+function ProductoAsistente({ p }: { p: CatalogoProductoAsistente }) {
+  return (
+    <li>
+      <strong>{p.nombre}</strong> ({p.marca})
+      {" · "}
+      {p.precio_texto ? (
+        <>
+          <span className="kb-precio">{p.precio_texto}</span>
+          {p.moneda ? <span className="muted small"> {p.moneda}</span> : null}
+          {p.idioma_respaldo ? <span className="muted small"> · precio del idioma «{p.precio_idioma}» (no hay en el pedido)</span> : null}
+          {p.orientativo ? <span className="kb-estado is-error"> · orientativo</span> : null}
+        </>
+      ) : <span className="muted small">sin precio publicado</span>}
+      {p.enlace ? <> · <a href={p.enlace} target="_blank" rel="noreferrer">enlace{p.idioma_enlace ? ` (${p.idioma_enlace})` : ""}</a></> : null}
+    </li>
   );
 }
 
@@ -608,6 +1072,7 @@ function Probar({ datos }: { datos: Conocimiento }) {
   const [idioma, setIdioma] = useState("de");
   const [interes, setInteres] = useState("");
   const [texto, setTexto] = useState("");
+  const [maquina, setMaquina] = useState("");
   const [resultado, setResultado] = useState<KbResolucion | null>(null);
   const [ocupado, setOcupado] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -618,7 +1083,7 @@ function Probar({ datos }: { datos: Conocimiento }) {
     try {
       setResultado(await resolverConocimiento({
         sitio: sitio || null, idioma: idioma.trim() || null, interes: interes.trim() || null,
-        texto: texto.trim() || null,
+        texto: texto.trim() || null, ...(maquina.trim() ? { maquina: maquina.trim() } : {}),
       }));
     } catch (e) {
       setError(extractErrorMessage(e, "No se pudo resolver."));
@@ -656,6 +1121,10 @@ function Probar({ datos }: { datos: Conocimiento }) {
           <input type="text" aria-label="Texto para probar" maxLength={4000} value={texto}
             onChange={(e) => setTexto(e.target.value)} />
         </label>
+        <label className="field"><span>Máquina que tiene (sus pedidos)</span>
+          <input type="text" aria-label="Máquina para probar" maxLength={200} placeholder="p. ej. FLUX Beambox II"
+            value={maquina} onChange={(e) => setMaquina(e.target.value)} />
+        </label>
         <button type="button" className="button small" onClick={probar} disabled={ocupado}>
           {ocupado ? "Resolviendo…" : "Probar"}
         </button>
@@ -665,6 +1134,35 @@ function Probar({ datos }: { datos: Conocimiento }) {
         <dl className="kb-resultado" aria-label="Enlaces que saldrían">
           <dt>Soporte</dt><dd>{enlace(resultado.soporte, "ninguno (sin web ni idioma)")}</dd>
           <dt>Página de producto</dt><dd>{enlace(resultado.producto, "ninguna (sin interés o sin página)")}</dd>
+          {resultado.catalogo ? (
+            <>
+              <dt>Máquinas del catálogo</dt>
+              <dd>
+                {resultado.catalogo.maquinas.length > 0 ? (
+                  <ul className="kb-productos-asistente" aria-label="Máquinas que saldrían">
+                    {resultado.catalogo.maquinas.map((p) => <ProductoAsistente key={p.origen_id} p={p} />)}
+                  </ul>
+                ) : (
+                  <span className="muted small">
+                    ninguna{resultado.catalogo.sin_maquina.length > 0 ? ` (sin máquina para ${resultado.catalogo.sin_maquina.join(", ")}: se enlaza la página de producto, no se inventa)` : ""}
+                  </span>
+                )}
+              </dd>
+              <dt>Consumibles de su máquina</dt>
+              <dd>
+                {resultado.catalogo.consumibles.length > 0 ? (
+                  <ul className="kb-productos-asistente" aria-label="Consumibles que saldrían">
+                    {resultado.catalogo.consumibles.map((p) => <ProductoAsistente key={p.origen_id} p={p} />)}
+                  </ul>
+                ) : <span className="muted small">ninguno (sin máquina o sin productos que casen)</span>}
+              </dd>
+              <dt>Avisos ({nombreIdioma(idioma.trim() || "es")})</dt>
+              <dd className="muted small">
+                IVA: {ivaTexto(resultado.catalogo.iva_por_fuente.compositor)} (compositor) · {ivaTexto(resultado.catalogo.iva_por_fuente.woocommerce)} (tiendas).
+                {" "}«{resultado.catalogo.avisos.vies}» «{resultado.catalogo.avisos.no_factura}»
+              </dd>
+            </>
+          ) : null}
           {resultado.flux ? (
             <>
               <dt>FLUX</dt>

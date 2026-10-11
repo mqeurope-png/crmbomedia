@@ -375,6 +375,24 @@ async def _arm_kb_flux_sync() -> None:
 
 
 @app.on_event("startup")
+async def _arm_kb_catalogo_sync() -> None:
+    """Base de conocimiento — sincronización diaria del catálogo (máquinas del
+    compositor y consumibles de las tiendas; cola `kb:catalogo_sync`, la
+    escucha `worker-sync`). Interruptor en Configuración ERP, encendido por
+    defecto (solo lectura)."""
+    try:
+        from app.services.conocimiento.catalogo_job import arm  # noqa: PLC0415
+
+        arm()
+    except Exception:  # noqa: BLE001
+        import logging  # noqa: PLC0415
+
+        logging.getLogger(__name__).warning(
+            "kb.catalogo arm failed at startup", exc_info=True
+        )
+
+
+@app.on_event("startup")
 async def _arm_cuadre_nightly() -> None:
     """ERP · Cuadre — arma el job nocturno de comprobaciones (cola `cuadre:run`,
     worker-sync). Con el interruptor apagado (por defecto) el tic no hace nada.

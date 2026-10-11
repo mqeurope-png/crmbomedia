@@ -5648,11 +5648,137 @@ export type FluxEstado = {
   ultima_sincronizacion: FluxSincronizacion | null;
 };
 
+/** Un producto del catálogo en UN idioma (`kb_catalogo`). El precio se enseña
+ *  tal cual está escrito en el origen (`precio_texto`); `precio_num` solo ordena. */
+export type CatalogoProducto = {
+  id: string;
+  fuente: "compositor" | "woocommerce";
+  tipo: "maquina" | "consumible" | "repuesto";
+  marca: string;
+  origen_id: string;
+  nombre: string;
+  descripcion: string | null;
+  caracteristicas: string[];
+  categoria: string | null;
+  imagen: string | null;
+  precio_texto: string | null;
+  precio_num: number | null;
+  moneda: string | null;
+  enlace: string | null;
+  idioma: string;
+  sitio: string | null;
+  actualizado_origen: string | null;
+  visible: boolean;
+  datos: Record<string, unknown>;
+  visto_en: string | null;
+  ido_en: string | null;
+};
+
+export type CatalogoSincronizacion = {
+  id: string;
+  fuente: "compositor" | "woocommerce";
+  origen: "programada" | "manual";
+  estado: "ok" | "parcial" | "error";
+  inicio: string | null;
+  fin: string | null;
+  productos: number;
+  nuevos: number;
+  actualizados: number;
+  idos: number;
+  origen_actualizado_en: string | null;
+  resumen: Record<string, { productos: number; nuevos: number; actualizados: number; idos: number;
+    error: string | null; sin_tienda?: boolean; marcas?: number; por_idioma?: Record<string, number>;
+    con_precio?: number }>;
+  detalle: string | null;
+};
+
+export type CatalogoFuenteEstado = {
+  productos: number;
+  por_tipo: Record<string, number>;
+  por_idioma: Record<string, number>;
+  por_tienda?: Record<string, number>;
+  clave_configurada?: boolean;
+  ultima_sincronizacion: CatalogoSincronizacion | null;
+};
+
+export type CatalogoMarca = {
+  nombre: string;
+  logo: string | null;
+  color: string | null;
+  urls: Record<string, string>;
+  idioma_defecto: string;
+  ida: boolean;
+};
+
+export type CatalogoEstado = {
+  fuentes: { compositor: CatalogoFuenteEstado; woocommerce: CatalogoFuenteEstado };
+  idos: number;
+  con_precio: number;
+  marcas: CatalogoMarca[];
+  iva_por_fuente: Record<string, "con" | "sin" | null>;
+  precio_meses_orientativo: number;
+  tipos: string[];
+};
+
+/** Una fila interés → máquinas (marca + patrón del nombre) y lo que casa hoy. */
+export type InteresProducto = {
+  id: string;
+  interes: string;
+  etiqueta: string;
+  marca: string;
+  patron: string;
+  nota: string | null;
+  posicion: number;
+  activo: boolean;
+  coincide: { origen_id: string; nombre: string; marca: string }[];
+};
+
+export type InteresProductosResuelto = {
+  filas: InteresProducto[];
+  de_la_base: boolean;
+  huecos: { interes: string; etiqueta: string; motivo: string }[];
+  revisado: boolean;
+  hallazgo: string;
+  catalogo_vacio: boolean;
+};
+
+/** Un producto como lo ve el asistente: precio tal cual (y de qué idioma es),
+ *  orientativo o no, enlace en su idioma. */
+export type CatalogoProductoAsistente = {
+  origen_id: string;
+  fuente: string;
+  tipo: string;
+  nombre: string;
+  marca: string;
+  categoria: string | null;
+  caracteristicas: string[];
+  precio_texto: string | null;
+  moneda: string | null;
+  precio_idioma: string | null;
+  idioma_respaldo: boolean;
+  orientativo: boolean;
+  actualizado_origen: string | null;
+  enlace: string | null;
+  idioma_enlace: string | null;
+  interes: string | null;
+};
+
+export type CatalogoAsistente = {
+  maquinas: CatalogoProductoAsistente[];
+  consumibles: CatalogoProductoAsistente[];
+  sin_maquina: string[];
+  avisos: Record<string, string>;
+  iva_por_fuente: Record<string, "con" | "sin" | null>;
+  precio_meses_orientativo: number;
+};
+
 export type Conocimiento = {
   sitios: SitioWeb[];
   sitios_de_la_base: boolean;
   rutas: KbRuta[];
   flux: FluxEstado;
+  catalogo: CatalogoEstado;
+  interes_productos: InteresProductosResuelto;
   idiomas: string[];
 };
 
@@ -5677,6 +5803,7 @@ export type KbResolucion = {
     soporte: KbEnlace | null;
     articulos: { titulo: string; url: string; outdated: boolean }[];
   } | null;
+  catalogo?: CatalogoAsistente;
 };
 
 /** La configuración del blob `conocimiento` (va con el resto de ajustes). */
@@ -5685,6 +5812,14 @@ export type ConocimientoConfig = {
   flux_sync_hora: string;
   flux_palabras_kb: string[];
   flux_palabras_soporte: string[];
+  catalogo_sync_activa: boolean;
+  catalogo_sync_hora: string;
+  /** Un precio sin confirmar en más de estos meses es «orientativo». */
+  precio_meses_orientativo: number;
+  /** Declarado por fuente, nunca deducido: `con`, `sin` o null (sin declarar). */
+  iva_por_fuente: { compositor: "con" | "sin" | null; woocommerce: "con" | "sin" | null };
+  /** Bart ha dado por revisada la propuesta interés → máquinas. */
+  interes_productos_revisado: boolean;
 };
 
 export async function getConocimiento(): Promise<Conocimiento> {
@@ -5748,14 +5883,81 @@ export async function sincronizarFlux(): Promise<
   return apiFetch("/api/erp/conocimiento/flux/sincronizar", { method: "POST" });
 }
 
-/** Qué enlaces le saldrían al asistente para esa web, idioma, interés y texto. */
+/** Qué enlaces (y qué máquinas y consumibles del catálogo) le saldrían al
+ *  asistente para esa web, idioma, interés, texto y máquina del cliente. */
 export async function resolverConocimiento(payload: {
   sitio?: string | null; idioma?: string | null; interes?: string | null;
-  texto?: string | null; modelo?: string | null;
+  texto?: string | null; modelo?: string | null; maquina?: string | null;
 }): Promise<KbResolucion> {
   return apiFetch<KbResolucion>("/api/erp/conocimiento/resolver", {
     method: "POST", body: JSON.stringify(payload),
   });
+}
+
+// --- el catálogo (Fase 2) --------------------------------------------------------------
+
+export type CatalogoFiltros = {
+  fuente?: string; tipo?: string; idioma?: string; marca?: string; sitio?: string; q?: string;
+  con_idos?: boolean; limite?: number;
+};
+
+/** La tabla del catálogo, filtrada (los idos solo si se piden). */
+export async function getCatalogoProductos(filtros: CatalogoFiltros = {}): Promise<{
+  productos: CatalogoProducto[]; total: number; limite: number;
+}> {
+  const params = new URLSearchParams();
+  for (const [k, v] of Object.entries(filtros)) {
+    if (v === undefined || v === null || v === "" || v === false) continue;
+    params.set(k, String(v));
+  }
+  const q = params.toString();
+  return apiFetch(`/api/erp/conocimiento/catalogo/productos${q ? `?${q}` : ""}`);
+}
+
+/** «Sincronizar ahora» el compositor, las tiendas o las dos (en la petición). */
+export async function sincronizarCatalogo(fuente: "compositor" | "woocommerce" | null): Promise<{
+  sincronizaciones: CatalogoSincronizacion[];
+  catalogo: CatalogoEstado;
+  interes_productos: InteresProductosResuelto;
+}> {
+  return apiFetch("/api/erp/conocimiento/catalogo/sincronizar", {
+    method: "POST", body: JSON.stringify({ fuente }),
+  });
+}
+
+export async function updateCatalogoMarca(
+  nombre: string, cambios: { idioma_defecto: string },
+): Promise<Conocimiento> {
+  return apiFetch<Conocimiento>(
+    `/api/erp/conocimiento/catalogo/marcas/${encodeURIComponent(nombre)}`,
+    { method: "PATCH", body: JSON.stringify(cambios) },
+  );
+}
+
+export async function createInteresProducto(payload: {
+  interes: string; marca: string; patron?: string; nota?: string | null;
+}): Promise<Conocimiento> {
+  return apiFetch<Conocimiento>("/api/erp/conocimiento/catalogo/intereses", {
+    method: "POST", body: JSON.stringify(payload),
+  });
+}
+
+export async function updateInteresProducto(
+  id: string,
+  cambios: Partial<{ interes: string; marca: string; patron: string; nota: string; activo: boolean;
+    posicion: number }>,
+): Promise<Conocimiento> {
+  return apiFetch<Conocimiento>(
+    `/api/erp/conocimiento/catalogo/intereses/${encodeURIComponent(id)}`,
+    { method: "PATCH", body: JSON.stringify(cambios) },
+  );
+}
+
+export async function deleteInteresProducto(id: string): Promise<Conocimiento> {
+  return apiFetch<Conocimiento>(
+    `/api/erp/conocimiento/catalogo/intereses/${encodeURIComponent(id)}`,
+    { method: "DELETE" },
+  );
 }
 
 // --- La IA en números (ERP · Leads → «Uso de la IA») --------------------------------
