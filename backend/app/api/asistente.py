@@ -1,16 +1,31 @@
 """«Ayúdame a contestar» — API del asistente de respuesta.
 
-- POST /api/emails/threads/{thread_id}/asistente              genera un borrador
+Sobre un hilo:
+- POST /api/emails/threads/{thread_id}/asistente          el primer borrador (turno 0):
+                                                            `alcance`, `instruccion`
+                                                            (opcional), `destinatario`
 - POST /api/emails/threads/{thread_id}/asistente/{id}/descartar
 
+Sin hilo (un correo nuevo desde Redactar o desde la ficha) y la conversación:
+- POST /api/emails/asistente                              el primer borrador de un correo
+                                                            nuevo: `destinatario`,
+                                                            `instruccion` (obligatoria),
+                                                            `alcance` (contacto | empresa)
+- POST /api/emails/asistente/{id}/turno                   una corrección («más corto»):
+                                                            un turno más, con el contexto ya
+                                                            montado
+- POST /api/emails/asistente/{id}/descartar               descarta la conversación entera
+
 Puede pedirlo cualquier usuario que pueda ver el hilo (la misma regla que el
-detalle del hilo). El borrador vuelve con destinatario, asunto y texto para
-abrir el compositor; el envío lo hace la persona desde el compositor
+detalle del hilo); un borrador sin hilo solo lo toca quien lo pidió (o
+admin/manager). El borrador vuelve con destinatario, asunto, texto y aviso
+para la franja del compositor; el envío lo hace la persona desde el compositor
 (`POST /api/emails/send` con `asistente_borrador_id`, que anota el resultado).
 No hay aquí ningún camino que envíe correo.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -23,18 +38,46 @@ from app.core.auth import require_user
 from app.core.errors import not_found
 from app.db.session import get_session
 from app.models.crm import EmailMessage, EmailThread, User, UserRole
-from app.models.ia import ALCANCE_CONTACTO, ALCANCES, ESTADO_GENERADO, BorradorAsistente
+from app.models.ia import (
+    ALCANCE_CONTACTO,
+    ALCANCES,
+    ALCANCES_SIN_HILO,
+    ESTADO_GENERADO,
+    ESTADO_REGENERADO,
+    BorradorAsistente,
+)
 from app.services import llm
 from app.services.asistente import borradores, redactor
 from app.services.email_aliases import thread_is_visible
 
 router = APIRouter(prefix="/api/emails/threads/{thread_id}/asistente", tags=["asistente"])
+router_conversacion = APIRouter(prefix="/api/emails/asistente", tags=["asistente"])
 
 
 class GenerarIn(BaseModel):
     alcance: str = Field(default=ALCANCE_CONTACTO, max_length=10)
-    #: El borrador anterior, al pulsar «Regenerar»: queda como regenerado.
+    #: Qué quiere decirle la persona; vacío = la IA deduce del hilo.
+    instruccion: str | None = Field(default=None, max_length=redactor.MAX_INSTRUCCION)
+    #: La dirección de «Para» si la persona la cambió; vacío = la que sugiere el hilo.
+    destinatario: str | None = Field(default=None, max_length=255)
+    #: El borrador anterior, al empezar de nuevo o cambiar de alcance: queda regenerado.
     regenerar_de: str | None = Field(default=None, max_length=36)
+
+
+class GenerarNuevoIn(BaseModel):
+    destinatario: str = Field(min_length=3, max_length=255)
+    instruccion: str = Field(min_length=1, max_length=redactor.MAX_INSTRUCCION)
+    alcance: str = Field(default=ALCANCE_CONTACTO, max_length=10)
+    contact_id: str | None = Field(default=None, max_length=36)
+    regenerar_de: str | None = Field(default=None, max_length=36)
+
+
+class TurnoIn(BaseModel):
+    instruccion: str = Field(min_length=1, max_length=redactor.MAX_INSTRUCCION)
+
+
+def _privilegiado(user: User) -> bool:
+    return user.role in (UserRole.ADMIN, UserRole.MANAGER)
 
 
 def _hilo_visible(session: Session, thread_id: str, user: User) -> EmailThread:
@@ -44,32 +87,33 @@ def _hilo_visible(session: Session, thread_id: str, user: User) -> EmailThread:
     )
     if thread is None:
         raise not_found("EmailThread")
-    privileged = user.role in (UserRole.ADMIN, UserRole.MANAGER)
-    if not privileged and not thread_is_visible(session, user, thread):
+    if not _privilegiado(user) and not thread_is_visible(session, user, thread):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "No tienes permiso para ver este hilo.")
     return thread
 
 
-@router.post("", status_code=status.HTTP_201_CREATED)
-def generar(
-    thread_id: str,
-    payload: GenerarIn,
-    request: Request,
-    session: Session = Depends(get_session),
-    current_user: User = Depends(require_user),
-) -> dict[str, Any]:
-    """Genera el borrador y lo devuelve con lo que entró en el contexto. No
-    envía nada: la persona lo revisa en el compositor."""
-    if payload.alcance not in ALCANCES:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Alcance desconocido: {payload.alcance}.")
-    thread = _hilo_visible(session, thread_id, current_user)
-    if not thread.messages:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "El hilo no tiene mensajes.")
+def _borrador_accesible(session: Session, borrador_id: str, user: User) -> BorradorAsistente:
+    """El borrador si la persona puede tocarlo: quien lo pidió, admin/manager
+    o, con hilo, quien pueda ver el hilo."""
+    borrador = session.get(BorradorAsistente, borrador_id)
+    if borrador is None:
+        raise not_found("BorradorAsistente")
+    if borrador.usuario_id == user.id or _privilegiado(user):
+        return borrador
+    if borrador.thread_id:
+        _hilo_visible(session, borrador.thread_id, user)
+        return borrador
+    raise HTTPException(status.HTTP_403_FORBIDDEN, "Ese borrador lo pidió otra persona.")
+
+
+def _redactar(session: Session, trabajo: Callable[[], BorradorAsistente]) -> BorradorAsistente:
+    """Llama al modelo y traduce lo que puede salir mal a HTTP; la llamada
+    fallida queda anotada."""
     try:
-        borrador = redactor.generar(
-            session, thread=thread, usuario=current_user, alcance=payload.alcance,
-            regenerar_de=payload.regenerar_de,
-        )
+        return trabajo()
+    except ValueError as exc:
+        session.rollback()
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     except llm.LLMNotConfiguredError as exc:
         session.rollback()
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
@@ -82,20 +126,81 @@ def generar(
         session.commit()
         raise HTTPException(
             status.HTTP_502_BAD_GATEWAY, f"La IA no ha podido redactar: {exc}") from exc
+
+
+def _anotar_y_devolver(
+    session: Session, request: Request, borrador: BorradorAsistente, actor: User,
+    extra: dict[str, Any],
+) -> dict[str, Any]:
     record_event(
-        session, action=Action.IA_BORRADOR_GENERADO, target_type="email_thread",
-        target_id=thread.id, actor=current_user,
+        session, action=Action.IA_BORRADOR_GENERADO,
+        target_type="email_thread" if borrador.thread_id else "ia_borrador",
+        target_id=borrador.thread_id or borrador.id, actor=actor,
         metadata={
-            "borrador_id": borrador.id, "modelo": borrador.modelo,
+            "borrador_id": borrador.id, "conversacion_id": borrador.conversacion_id,
+            "turno": borrador.turno, "modelo": borrador.modelo,
             "tokens_entrada": borrador.tokens_entrada, "tokens_salida": borrador.tokens_salida,
-            "coste_usd": borrador.coste_usd, "idioma": borrador.idioma, "alcance": borrador.alcance,
-            "contact_id": borrador.contact_id, "regenerar_de": payload.regenerar_de,
+            "tokens_cache_lectura": borrador.tokens_cache_lectura,
+            "coste_usd": borrador.coste_usd, "idioma": borrador.idioma,
+            "alcance": borrador.alcance, "contact_id": borrador.contact_id,
+            "con_instruccion": bool(borrador.instruccion), "cuerpo_vacio": not borrador.texto,
+            **extra,
         },
         request=request,
     )
     session.commit()
     session.refresh(borrador)
     return {"borrador": borradores.como_dict(borrador)}
+
+
+def _descartar(
+    session: Session, request: Request, borrador: BorradorAsistente, actor: User,
+) -> dict[str, Any]:
+    if borrador.estado not in (ESTADO_GENERADO, ESTADO_REGENERADO):
+        return {"borrador": borradores.como_dict(borrador)}     # ya resuelto: nada que anotar
+    pendientes = [t for t in borradores.turnos_de(session, borrador) if t.estado == ESTADO_GENERADO]
+    if not pendientes:
+        return {"borrador": borradores.como_dict(borrador)}
+    borradores.marcar_descartado(session, borrador)
+    record_event(
+        session, action=Action.IA_BORRADOR_RESUELTO, target_type="ia_borrador",
+        target_id=borrador.id, actor=actor,
+        metadata={"estado": "descartado", "thread_id": borrador.thread_id,
+                  "conversacion_id": borrador.conversacion_id, "turnos": len(pendientes)},
+        request=request,
+    )
+    session.commit()
+    session.refresh(borrador)
+    return {"borrador": borradores.como_dict(borrador)}
+
+
+# --- sobre un hilo --------------------------------------------------------------------
+
+
+@router.post("", status_code=status.HTTP_201_CREATED)
+def generar(
+    thread_id: str,
+    payload: GenerarIn,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> dict[str, Any]:
+    """El primer borrador de la respuesta a un hilo. Con `instruccion`, el
+    correo que pide la persona; sin ella, la IA deduce del hilo, y si el
+    cliente no ha escrito nada nuevo no se llama al modelo: cuerpo vacío y el
+    motivo en `aviso`. No envía nada: la persona lo revisa en el compositor."""
+    if payload.alcance not in ALCANCES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Alcance desconocido: {payload.alcance}.")
+    thread = _hilo_visible(session, thread_id, current_user)
+    if not thread.messages:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "El hilo no tiene mensajes.")
+    borrador = _redactar(session, lambda: redactor.generar(
+        session, thread=thread, usuario=current_user, alcance=payload.alcance,
+        instruccion=payload.instruccion, destinatario=payload.destinatario,
+        regenerar_de=payload.regenerar_de,
+    ))
+    return _anotar_y_devolver(session, request, borrador, current_user,
+                              {"regenerar_de": payload.regenerar_de})
 
 
 @router.post("/{borrador_id}/descartar")
@@ -112,16 +217,72 @@ def descartar(
         raise not_found("BorradorAsistente")
     # Solo quien lo pidió (o admin/manager) lo descarta: un compañero que abre
     # el mismo hilo no puede resolver el borrador de otro.
-    privileged = current_user.role in (UserRole.ADMIN, UserRole.MANAGER)
-    if borrador.usuario_id != current_user.id and not privileged:
+    if borrador.usuario_id != current_user.id and not _privilegiado(current_user):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Ese borrador lo pidió otra persona.")
-    if borrador.estado != ESTADO_GENERADO:
-        return {"borrador": borradores.como_dict(borrador)}     # ya resuelto: nada que anotar
-    borradores.marcar_descartado(session, borrador)
-    record_event(
-        session, action=Action.IA_BORRADOR_RESUELTO, target_type="ia_borrador",
-        target_id=borrador.id, actor=current_user,
-        metadata={"estado": borrador.estado, "thread_id": thread_id}, request=request,
-    )
-    session.commit()
-    return {"borrador": borradores.como_dict(borrador)}
+    return _descartar(session, request, borrador, current_user)
+
+
+# --- sin hilo, y la conversación --------------------------------------------------------
+
+
+@router_conversacion.post("", status_code=status.HTTP_201_CREATED)
+def generar_nuevo(
+    payload: GenerarNuevoIn,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> dict[str, Any]:
+    """El primer borrador de un correo NUEVO, sin hilo: el contexto lo dispara
+    el destinatario (su ficha, si es un contacto) y la instrucción es
+    obligatoria, porque no hay nada de lo que deducir la intención."""
+    if payload.alcance not in ALCANCES_SIN_HILO:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Sin hilo el alcance tiene que ser {' o '.join(ALCANCES_SIN_HILO)}.")
+    if not payload.instruccion.strip():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Dime qué quieres decirle.")
+    contacto = None
+    if payload.contact_id:
+        from app.models.crm import Contact  # noqa: PLC0415
+
+        contacto = session.get(Contact, payload.contact_id)
+    borrador = _redactar(session, lambda: redactor.generar(
+        session, thread=None, usuario=current_user, alcance=payload.alcance,
+        instruccion=payload.instruccion, destinatario=payload.destinatario.strip(),
+        contacto=contacto, regenerar_de=payload.regenerar_de,
+    ))
+    return _anotar_y_devolver(session, request, borrador, current_user,
+                              {"sin_hilo": True, "regenerar_de": payload.regenerar_de})
+
+
+@router_conversacion.post("/{borrador_id}/turno", status_code=status.HTTP_201_CREATED)
+def turno(
+    borrador_id: str,
+    payload: TurnoIn,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> dict[str, Any]:
+    """Una corrección sobre el borrador: un turno más de la conversación, con
+    el contexto ya montado (y en caché), el borrador actual y la instrucción.
+    El borrador corregido queda como regenerado."""
+    borrador = _borrador_accesible(session, borrador_id, current_user)
+    if borrador.estado not in (ESTADO_GENERADO, ESTADO_REGENERADO):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "Ese borrador ya se resolvió (enviado o descartado).")
+    nuevo = _redactar(session, lambda: redactor.corregir(
+        session, borrador=borrador, instruccion=payload.instruccion, usuario=current_user))
+    return _anotar_y_devolver(session, request, nuevo, current_user, {"padre_id": borrador.id})
+
+
+@router_conversacion.post("/{borrador_id}/descartar")
+def descartar_conversacion(
+    borrador_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> dict[str, Any]:
+    borrador = _borrador_accesible(session, borrador_id, current_user)
+    if borrador.usuario_id != current_user.id and not _privilegiado(current_user):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Ese borrador lo pidió otra persona.")
+    return _descartar(session, request, borrador, current_user)

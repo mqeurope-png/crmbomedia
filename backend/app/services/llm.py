@@ -32,12 +32,16 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class Uso:
     """Lo que la API devuelve de una llamada y lo que cuesta anotar: el
-    modelo real, los tokens de entrada y salida y cuánto tardó."""
+    modelo real, los tokens de entrada y salida, los leídos y escritos en la
+    caché de prompts (la entrada es solo lo que fue a precio entero) y cuánto
+    tardó."""
 
     modelo: str
     tokens_entrada: int
     tokens_salida: int
     duracion_ms: int | None = None
+    tokens_cache_lectura: int = 0
+    tokens_cache_escritura: int = 0
 
 
 #: La última llamada hecha en ESTE contexto (petición o job). Quien llama a
@@ -65,7 +69,16 @@ def _uso_de(message: Any, model: str, inicio: float) -> Uso:
     return Uso(
         modelo=str(getattr(message, "model", None) or model), tokens_entrada=entrada,
         tokens_salida=salida, duracion_ms=int((time.monotonic() - inicio) * 1000),
+        tokens_cache_lectura=int(getattr(usage, "cache_read_input_tokens", 0) or 0),
+        tokens_cache_escritura=int(getattr(usage, "cache_creation_input_tokens", 0) or 0),
     )
+
+
+def _caracteres(contenido: str | Sequence[Any]) -> int:
+    """Tamaño de un prompt que puede ser texto o una lista de bloques."""
+    if isinstance(contenido, str):
+        return len(contenido)
+    return sum(len(str(b.get("text", ""))) for b in contenido if isinstance(b, dict))
 
 
 SYSTEM_PROMPT = (
@@ -374,20 +387,29 @@ def _invoke_claude(
     *,
     api_key: str,
     model: str,
-    system_prompt: str,
-    user_prompt: str,
+    system_prompt: str | Sequence[dict[str, Any]],
+    user_prompt: str | Sequence[dict[str, Any]],
     max_tokens: int | None = None,
+    parametros: dict[str, Any] | None = None,
 ) -> str:
     """Wrapper isolated so tests can monkeypatch it without touching
     the high-level `generate_pipeline_proposal` flow.
+
+    `system_prompt` y `user_prompt` pueden ser texto o una lista de bloques
+    `{"type": "text", "text": …}`: así el asistente marca el bloque grande que
+    no cambia (hilo, expediente, base de conocimiento) con
+    `cache_control: ephemeral` y deja fuera la instrucción, que sí cambia; la
+    API cobra lo leído de caché a una décima parte. `parametros` son los
+    ajustes de la petición que el SDK fijado (0.40) no conoce como argumentos
+    (`thinking`, `output_config`): viajan como `extra_body`.
 
     Diagnostic logging is metadata-only: model + prompt sizes + response
     length. The API key never leaves this scope; raw user prompts and
     raw responses are NOT logged so an enabled DEBUG level doesn't leak
     PII to the application log.
 
-    The usage the API reports (model, input/output tokens, duration) is
-    left in this context for the caller to pick up with
+    The usage the API reports (model, input/output tokens, cache reads and
+    writes, duration) is left in this context for the caller to pick up with
     `tomar_ultimo_uso()` and write to `ia_llamadas`.
     """
     try:
@@ -398,21 +420,27 @@ def _invoke_claude(
         ) from exc
 
     logger.info(
-        "llm.request model=%s system_chars=%d user_chars=%d",
+        "llm.request model=%s system_chars=%d user_chars=%d parametros=%s",
         model,
-        len(system_prompt),
-        len(user_prompt),
+        _caracteres(system_prompt),
+        _caracteres(user_prompt),
+        ",".join(sorted(parametros)) if parametros else "-",
     )
 
     registrar_uso(None)
     inicio = time.monotonic()
     client = anthropic.Anthropic(api_key=api_key)
+    extra: dict[str, Any] = {"extra_body": dict(parametros)} if parametros else {}
     try:
         message = client.messages.create(
             model=model,
             max_tokens=max_tokens or MAX_TOKENS_OUTPUT,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
+            system=system_prompt if isinstance(system_prompt, str) else list(system_prompt),
+            messages=[{
+                "role": "user",
+                "content": user_prompt if isinstance(user_prompt, str) else list(user_prompt),
+            }],
+            **extra,
         )
     except getattr(anthropic, "RateLimitError", Exception) as exc:
         logger.warning("llm.rate_limit model=%s", model)
@@ -435,8 +463,10 @@ def _invoke_claude(
         logger.warning("llm.non_text_response model=%s blocks=%s", model, tipos)
         raise LLMUpstreamError(f"Provider returned non-text content (blocks: {tipos})")
     logger.info(
-        "llm.response model=%s chars=%d tokens_in=%d tokens_out=%d ms=%s",
-        uso.modelo, len(text), uso.tokens_entrada, uso.tokens_salida, uso.duracion_ms,
+        "llm.response model=%s chars=%d tokens_in=%d tokens_out=%d cache_read=%d "
+        "cache_write=%d ms=%s",
+        uso.modelo, len(text), uso.tokens_entrada, uso.tokens_salida, uso.tokens_cache_lectura,
+        uso.tokens_cache_escritura, uso.duracion_ms,
     )
     return text
 

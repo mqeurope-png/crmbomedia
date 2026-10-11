@@ -1,0 +1,404 @@
+"use client";
+
+import {
+  ChevronDown,
+  ChevronRight,
+  RotateCcw,
+  Sparkles,
+  Trash2,
+} from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { getCurrentUser } from "../../lib/api";
+import {
+  ALCANCES_ASISTENTE,
+  ALCANCES_SIN_HILO,
+  etiquetaAlcance,
+  guardarAlcance,
+  leerAlcance,
+} from "../../lib/asistenteAlcance";
+import {
+  type AsistenteAlcance,
+  type BorradorAsistente,
+  descartarBorradorAsistente,
+  generarBorradorAsistente,
+  generarBorradorNuevo,
+  turnoAsistente,
+} from "../../lib/emailsApi";
+import { extractErrorMessage } from "../../lib/errors";
+
+/** «Ayúdame a contestar» dentro del compositor: una franja propia entre la
+ *  cabecera del correo y el cuerpo, que empuja el contenido hacia abajo en vez
+ *  de taparlo. De arriba abajo: la caja de instrucción con el selector de
+ *  alcance y el botón de redactar; la conversación (lo dicho hasta ahora, con
+ *  vuelta atrás); el aviso de la IA; «Lo que ha usado», plegado; y descartar.
+ *  Se pliega entera a una sola línea. Lo que llega al editor es siempre un
+ *  correo: lo que la IA quiera decirle a la persona va aquí, en el aviso. */
+export type AsistenteFranjaProps = {
+  /** Con hilo se responde; sin él es un correo nuevo (la instrucción es obligatoria). */
+  threadId: string | null;
+  contactId: string | null;
+  /** La dirección de «Para» del compositor (la primera si hay varias). */
+  destinatario: string;
+  /** El hilo dice que la sugerencia de «Responder» es un compañero. */
+  destinatarioInterno?: boolean;
+  abiertaInicial?: boolean;
+  /** El compositor está enviando: nada se toca. */
+  bloqueada?: boolean;
+  /** Llega un turno: el compositor pone su cuerpo (y su asunto) en el editor. */
+  onBorrador: (borrador: BorradorAsistente) => void;
+  /** La conversación se vacía: el editor vuelve a como estaba antes del asistente. */
+  onVaciar: () => void;
+  /** El turno que está en el editor (para anotar el resultado al enviar), o null. */
+  onBorradorActual: (id: string | null) => void;
+};
+
+function primera(direcciones: string): string {
+  return direcciones.split(/[,\n;]/).map((s) => s.trim()).filter(Boolean)[0] ?? "";
+}
+
+function usd(n: number): string {
+  return `${n.toFixed(4)} $`;
+}
+
+export function AsistenteFranja({
+  threadId,
+  contactId,
+  destinatario,
+  destinatarioInterno = false,
+  abiertaInicial = false,
+  bloqueada = false,
+  onBorrador,
+  onVaciar,
+  onBorradorActual,
+}: AsistenteFranjaProps) {
+  const modo: "respuesta" | "nuevo" = threadId ? "respuesta" : "nuevo";
+  const [abierta, setAbierta] = useState(abiertaInicial);
+  const [instruccion, setInstruccion] = useState("");
+  const [alcance, setAlcance] = useState<AsistenteAlcance>("contacto");
+  const [usuarioId, setUsuarioId] = useState<string | null>(null);
+  const [turnos, setTurnos] = useState<BorradorAsistente[]>([]);
+  const [actual, setActual] = useState(0);
+  const [ocupado, setOcupado] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const cajaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Qué histórico mira la IA: se recuerda por usuario (en este navegador).
+  useEffect(() => {
+    getCurrentUser()
+      .then((u) => {
+        setUsuarioId(u.id);
+        const guardado = leerAlcance(u.id);
+        if (guardado) setAlcance(guardado);
+      })
+      .catch(() => undefined);
+  }, []);
+
+  // Sin hilo, «solo este hilo» no significa nada.
+  const alcanceEfectivo: AsistenteAlcance =
+    modo === "nuevo" && !ALCANCES_SIN_HILO.includes(alcance) ? "contacto" : alcance;
+  const opciones = modo === "nuevo"
+    ? ALCANCES_ASISTENTE.filter((a) => ALCANCES_SIN_HILO.includes(a.id))
+    : ALCANCES_ASISTENTE;
+  const borrador = turnos[actual] ?? null;
+  const hayConversacion = turnos.length > 0;
+  const interno = destinatarioInterno || Boolean(borrador?.destinatario_interno);
+  const costeTotal = turnos.reduce((s, t) => s + (t.coste_usd || 0), 0);
+
+  function aplicar(b: BorradorAsistente, lista: BorradorAsistente[], idx: number) {
+    setTurnos(lista);
+    setActual(idx);
+    onBorradorActual(b.id);
+    onBorrador(b);
+  }
+
+  async function redactar() {
+    if (ocupado || bloqueada) return;
+    const texto = instruccion.trim();
+    const para = primera(destinatario);
+    if (modo === "nuevo" && !para) {
+      setError("Pon un destinatario en «Para»: es lo que dispara el expediente del cliente.");
+      return;
+    }
+    if (modo === "nuevo" && !hayConversacion && !texto) {
+      setError("Dime qué quieres decirle: en un correo nuevo no hay nada de lo que deducir la intención.");
+      return;
+    }
+    if (hayConversacion && !texto) {
+      setError("Escribe qué quieres cambiar («más corto», «en inglés», «quita el precio»…).");
+      return;
+    }
+    setOcupado(true);
+    setError(null);
+    try {
+      if (hayConversacion && borrador) {
+        // Una corrección: un turno más, con el contexto ya montado. Si se
+        // corrige un turno anterior, los posteriores se dejan atrás.
+        const nuevo = await turnoAsistente(borrador.id, texto);
+        const lista = [...turnos.slice(0, actual + 1), nuevo];
+        aplicar(nuevo, lista, lista.length - 1);
+      } else if (modo === "nuevo") {
+        const nuevo = await generarBorradorNuevo({
+          destinatario: para, instruccion: texto, alcance: alcanceEfectivo,
+          contact_id: contactId,
+        });
+        aplicar(nuevo, [nuevo], 0);
+      } else {
+        const nuevo = await generarBorradorAsistente(threadId as string, {
+          alcance: alcanceEfectivo, instruccion: texto || null, destinatario: para || null,
+        });
+        aplicar(nuevo, [nuevo], 0);
+      }
+      setInstruccion("");
+    } catch (err) {
+      setError(extractErrorMessage(err, "La IA no ha podido redactar el borrador."));
+    } finally {
+      setOcupado(false);
+    }
+  }
+
+  async function cambiarAlcance(nuevo: AsistenteAlcance) {
+    setAlcance(nuevo);
+    guardarAlcance(usuarioId, nuevo);
+    const raiz = turnos[0];
+    if (!raiz || ocupado || bloqueada) return;
+    // Cambiar el alcance rearma el contexto: es un borrador nuevo, con la
+    // instrucción con la que empezó la conversación (la anterior queda regenerada).
+    setOcupado(true);
+    setError(null);
+    try {
+      const para = primera(destinatario);
+      const b = modo === "nuevo"
+        ? await generarBorradorNuevo({
+          destinatario: para, instruccion: raiz.instruccion ?? "", alcance: nuevo,
+          contact_id: contactId, regenerar_de: raiz.id,
+        })
+        : await generarBorradorAsistente(threadId as string, {
+          alcance: nuevo, instruccion: raiz.instruccion, destinatario: para || null,
+          regenerar_de: raiz.id,
+        });
+      aplicar(b, [b], 0);
+    } catch (err) {
+      setError(extractErrorMessage(err, "La IA no ha podido redactar el borrador."));
+    } finally {
+      setOcupado(false);
+    }
+  }
+
+  function irA(idx: number) {
+    const b = turnos[idx];
+    if (!b || ocupado || bloqueada) return;
+    setActual(idx);
+    onBorradorActual(b.id);
+    onBorrador(b);
+  }
+
+  function vaciar(plegar: boolean) {
+    const ultimo = turnos[turnos.length - 1];
+    if (ultimo) void descartarBorradorAsistente(ultimo.id).catch(() => undefined);
+    setTurnos([]);
+    setActual(0);
+    setInstruccion("");
+    setError(null);
+    onBorradorActual(null);
+    onVaciar();
+    if (plegar) setAbierta(false);
+    else cajaRef.current?.focus();
+  }
+
+  const resumen = !hayConversacion
+    ? (modo === "respuesta" ? "la IA redacta la respuesta; tú la revisas y la envías" : "la IA redacta el correo; tú lo revisas y lo envías")
+    : `${turnos.length} ${turnos.length === 1 ? "borrador" : "turnos"} · ${usd(costeTotal)}`;
+  const placeholder = hayConversacion
+    ? "Corrige el borrador: «más corto», «en inglés», «no menciones el precio», «añade que el plazo son tres semanas»…"
+    : modo === "respuesta"
+      ? "¿Qué quieres decirle? Si lo dejas vacío, la IA contesta al último mensaje del cliente."
+      : "¿Qué quieres decirle? Por ejemplo: «han pasado tres semanas desde el presupuesto, escríbele un seguimiento»";
+
+  return (
+    <section className={`asistente-franja${abierta ? " is-abierta" : ""}`} aria-label="Asistente de redacción">
+      <button
+        type="button"
+        className="asistente-franja-cabecera"
+        aria-expanded={abierta}
+        onClick={() => setAbierta((v) => !v)}
+      >
+        <Sparkles size={13} aria-hidden />
+        <strong>Ayúdame a {modo === "respuesta" ? "contestar" : "redactar"}</strong>
+        <span className="muted small asistente-franja-resumen">{resumen}</span>
+        {abierta ? <ChevronDown size={14} aria-hidden /> : <ChevronRight size={14} aria-hidden />}
+      </button>
+      {abierta ? (
+        <div className="asistente-franja-cuerpo">
+          {interno ? (
+            <p className="asistente-franja-aviso" role="status">
+              <strong>Vas a escribir a un compañero</strong> (una dirección del grupo): el tono y el
+              contenido no son los de un correo a cliente.
+            </p>
+          ) : null}
+          <div className="asistente-franja-caja">
+            <textarea
+              ref={cajaRef}
+              aria-label="Qué quieres decirle"
+              placeholder={placeholder}
+              value={instruccion}
+              rows={2}
+              disabled={ocupado || bloqueada}
+              onChange={(e) => setInstruccion(e.target.value)}
+              onKeyDown={(e) => {
+                if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+                  e.preventDefault();
+                  void redactar();
+                }
+              }}
+            />
+            <div className="asistente-franja-controles">
+              <select
+                className="email-toolbar-alcance"
+                aria-label="Qué histórico mira la IA"
+                title="Qué histórico mira la IA al redactar. Se recuerda para ti. Cambiarlo rearma el contexto: es un borrador nuevo."
+                value={alcanceEfectivo}
+                disabled={ocupado || bloqueada}
+                onChange={(e) => void cambiarAlcance(e.target.value as AsistenteAlcance)}
+              >
+                {opciones.map((a) => (
+                  <option key={a.id} value={a.id}>{a.label}</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="button small"
+                onClick={() => void redactar()}
+                disabled={ocupado || bloqueada}
+                title={hayConversacion ? "Reescribe el borrador con esa corrección (Ctrl+Intro)" : "Pide el borrador a la IA (Ctrl+Intro)"}
+              >
+                <Sparkles size={12} aria-hidden /> {ocupado ? "Redactando…" : hayConversacion ? "Aplicar" : "Redactar"}
+              </button>
+            </div>
+          </div>
+          {error ? <p className="form-error asistente-franja-error" role="alert">{error}</p> : null}
+          {hayConversacion ? (
+            <div className="asistente-franja-conversacion">
+              <ol className="asistente-franja-turnos" aria-label="Lo dicho hasta ahora">
+                {turnos.map((t, i) => (
+                  <li key={t.id} className={i === actual ? "is-actual" : undefined}>
+                    <button
+                      type="button"
+                      className="asistente-franja-turno"
+                      aria-current={i === actual ? "true" : undefined}
+                      onClick={() => irA(i)}
+                      disabled={ocupado || bloqueada}
+                      title={i === actual ? "Es el borrador que está en el editor" : "Volver a este borrador"}
+                    >
+                      {t.turno === 0
+                        ? (t.instruccion ? `«${t.instruccion}»` : "Borrador inicial, deducido del hilo")
+                        : `«${t.instruccion ?? ""}»`}
+                      {!t.texto ? <span className="muted small"> — sin cuerpo</span> : null}
+                    </button>
+                  </li>
+                ))}
+              </ol>
+              {turnos.length > 1 ? (
+                <div className="asistente-franja-navegacion">
+                  <button type="button" className="button secondary small" onClick={() => irA(actual - 1)} disabled={actual === 0 || ocupado || bloqueada}>
+                    Volver al borrador anterior
+                  </button>
+                  <button type="button" className="button secondary small" onClick={() => irA(actual + 1)} disabled={actual >= turnos.length - 1 || ocupado || bloqueada}>
+                    Siguiente
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          {borrador?.aviso ? (
+            <p className="asistente-franja-aviso" role="status">
+              <strong>La IA no ha redactado el correo:</strong> {borrador.aviso}
+            </p>
+          ) : null}
+          {borrador && borrador.pendiente.length > 0 ? (
+            <p className="asistente-franja-aviso" role="status">
+              <strong>No ha podido responder con los datos:</strong> {borrador.pendiente.join(" · ")}
+            </p>
+          ) : null}
+          {borrador ? <LoQueHaUsado borrador={borrador} /> : null}
+          {hayConversacion ? (
+            <div className="asistente-franja-acciones">
+              <button type="button" className="button secondary small" onClick={() => vaciar(false)} disabled={ocupado || bloqueada} title="Vacía la conversación y el editor para pedir otro borrador">
+                <RotateCcw size={11} aria-hidden /> Empezar de nuevo
+              </button>
+              <button type="button" className="button secondary small" onClick={() => vaciar(true)} disabled={ocupado || bloqueada} title="Deja la conversación como descartada y vacía el editor">
+                <Trash2 size={11} aria-hidden /> Descartar el borrador de la IA
+              </button>
+              <span className="muted small">
+                {borrador ? `${borrador.modelo} · ` : ""}esta conversación: {usd(costeTotal)}
+              </span>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+/** Plegado: lo que entró en el contexto (hilo, ficha, correos viejos con fecha,
+ *  asunto y motivo, empresa, tokens, lo dejado fuera) y los enlaces que podía usar. */
+export function LoQueHaUsado({ borrador }: { borrador: BorradorAsistente }) {
+  const ctx = borrador.contexto ?? {};
+  const num = (k: string): number | null => (typeof ctx[k] === "number" ? (ctx[k] as number) : null);
+  const contacto = ctx["contacto"] as { nombre?: string; empresa?: string | null } | null | undefined;
+  const historico = Array.isArray(ctx["historico"]) ? (ctx["historico"] as Record<string, unknown>[]) : [];
+  const empresa = Array.isArray(ctx["empresa"]) ? (ctx["empresa"] as Record<string, unknown>[]) : [];
+  const recortes = Array.isArray(ctx["recortes"]) ? (ctx["recortes"] as string[]) : [];
+  const tokens = num("tokens_estimados");
+  const presupuesto = num("presupuesto_tokens");
+  const partes: string[] = [];
+  const hilo = num("mensajes_hilo");
+  if (ctx["sin_hilo"] === true) partes.push("sin hilo (correo nuevo)");
+  else if (hilo !== null) partes.push(`${hilo} mensaje${hilo === 1 ? "" : "s"} del hilo`);
+  partes.push(contacto ? `la ficha de ${contacto.nombre || "el contacto"}${contacto.empresa ? ` (${contacto.empresa})` : ""}` : "sin ficha (destinatario desconocido)");
+  const pedidos = num("pedidos");
+  if (pedidos) partes.push(`${pedidos} pedido${pedidos === 1 ? "" : "s"}`);
+  if (typeof ctx["modelo_flux"] === "string" && ctx["modelo_flux"]) partes.push(`máquina FLUX ${ctx["modelo_flux"]}`);
+  if (historico.length > 0) partes.push(`${historico.length} correo${historico.length === 1 ? "" : "s"} anterior${historico.length === 1 ? "" : "es"} del contacto`);
+  if (empresa.length > 0) partes.push(`${empresa.length} asunto${empresa.length === 1 ? "" : "s"} de otras personas de la empresa`);
+  if (tokens !== null) partes.push(`~${tokens.toLocaleString("es-ES")} tokens de entrada${presupuesto ? ` de ${presupuesto.toLocaleString("es-ES")}` : ""}`);
+  if (recortes.length > 0) partes.push(`${recortes.length} correo${recortes.length === 1 ? "" : "s"} viejo${recortes.length === 1 ? "" : "s"} fuera por tamaño`);
+  if (borrador.turno > 0) partes.push(`turno ${borrador.turno}: el contexto no se volvió a montar (${borrador.tokens_cache_lectura.toLocaleString("es-ES")} tokens leídos de caché)`);
+  return (
+    <details className="asistente-panel-detalle">
+      <summary>Lo que ha usado (alcance: {etiquetaAlcance(borrador.alcance)})</summary>
+      <p className="muted small">{partes.join(" · ")}.</p>
+      {historico.length > 0 ? (
+        <ul className="asistente-panel-lista">
+          {historico.map((h, i) => (
+            <li key={`h-${i}`}>
+              {String(h["fecha"] ?? "").slice(0, 10)} · {String(h["asunto"] ?? "(sin asunto)")}
+              {h["motivo"] ? <span className="muted small"> — {String(h["motivo"])}</span> : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {empresa.length > 0 ? (
+        <ul className="asistente-panel-lista">
+          {empresa.map((e, i) => (
+            <li key={`e-${i}`}>
+              {String(e["fecha"] ?? "").slice(0, 10)} · {String(e["asunto"] ?? "(sin asunto)")}
+              <span className="muted small"> — lo escribió {String(e["quien"] ?? "otra persona de la empresa")}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {borrador.enlaces.length > 0 ? (
+        <ul className="asistente-panel-lista">
+          {borrador.enlaces.map((e) => (
+            <li key={e.url}>
+              <a href={e.url} target="_blank" rel="noreferrer">{e.url}</a>
+              <span className="muted small"> — {e.etiqueta}</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="muted small">Sin enlaces disponibles para este caso.</p>
+      )}
+    </details>
+  );
+}

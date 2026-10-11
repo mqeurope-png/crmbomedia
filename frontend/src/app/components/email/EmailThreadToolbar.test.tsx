@@ -151,28 +151,9 @@ describe("EmailThreadToolbar — «Ayúdame a contestar»", () => {
         {...handlers()} onAsistente={onAsistente} asistenteOcupado
       />,
     );
-    expect(screen.getByRole("button", { name: "Redactando…" })).toBeDisabled();
-  });
-});
-
-describe("EmailThreadToolbar — qué histórico mira la IA", () => {
-  it("con el selector, enseña las tres opciones y avisa del cambio", async () => {
-    const onAlcanceChange = jest.fn();
-    render(
-      <EmailThreadToolbar
-        thread={makeThread()} folders={[]} labels={[]} appliedLabelIds={new Set()}
-        onStarToggle={jest.fn()} onArchiveOrRestore={jest.fn()} onTrash={jest.fn()}
-        onMarkUnread={jest.fn()} onSpam={jest.fn()} onMove={jest.fn()} onToggleLabel={jest.fn()}
-        onReply={jest.fn()} onReplyAll={jest.fn()} onForward={jest.fn()}
-        onAsistente={jest.fn()} alcance="contacto" onAlcanceChange={onAlcanceChange}
-      />,
-    );
-    const selector = screen.getByLabelText("Qué histórico mira la IA") as HTMLSelectElement;
-    expect(Array.from(selector.options).map((o) => o.textContent)).toEqual([
-      "Solo este hilo", "Todo lo de este contacto", "Todo lo de la empresa",
-    ]);
-    expect(selector.value).toBe("contacto");
-    await userEvent.setup().selectOptions(selector, "empresa");
-    expect(onAlcanceChange).toHaveBeenCalledWith("empresa");
+    expect(screen.getByRole("button", { name: "Ayúdame a contestar (abierto)" })).toBeDisabled();
+    // El selector de histórico ya no va en la toolbar: vive en la franja del
+    // asistente, dentro del compositor.
+    expect(screen.queryByLabelText("Qué histórico mira la IA")).not.toBeInTheDocument();
   });
 });

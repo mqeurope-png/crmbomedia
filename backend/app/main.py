@@ -101,8 +101,11 @@ app.include_router(bulk_router, dependencies=_CRM_SCOPE)
 app.include_router(emails_router, dependencies=_CRM_SCOPE)
 # «Ayúdame a contestar»: el borrador del asistente sobre un hilo (no envía).
 from app.api.asistente import router as asistente_router  # noqa: E402
+from app.api.asistente import router_conversacion as asistente_conversacion_router  # noqa: E402
 
 app.include_router(asistente_router, dependencies=_CRM_SCOPE)
+# La conversación (correcciones) y el correo nuevo sin hilo (tampoco envía).
+app.include_router(asistente_conversacion_router, dependencies=_CRM_SCOPE)
 app.include_router(emails_mailbox_router, dependencies=_CRM_SCOPE)
 app.include_router(emails_scheduled_router, dependencies=_CRM_SCOPE)
 app.include_router(email_drafts_router, dependencies=_CRM_SCOPE)

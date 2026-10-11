@@ -246,6 +246,8 @@ export type EmailThreadDetail = EmailThread & {
    *  Trustworthy where `direction` isn't (a comercial replying from
    *  Gmail surfaces as inbound). */
   reply_to_suggestion?: string | null;
+  /** La sugerencia es una dirección del grupo: se va a escribir a un compañero. */
+  reply_to_interno?: boolean;
 };
 
 export type EmailThreadList = {
@@ -657,10 +659,13 @@ export async function getEmailActivity(
 export type AsistenteEnlace = { url: string; etiqueta: string; origen: string | null };
 
 /** El borrador que devuelve el asistente. Nunca se envía solo: la persona lo
- *  abre en el compositor, lo corrige si hace falta y lo envía. */
+ *  revisa en el compositor, lo corrige si hace falta y lo envía. Es un TURNO
+ *  de una conversación: el primero (turno 0) monta el contexto; cada
+ *  corrección («más corto») es un turno más con el mismo contexto. */
 export type BorradorAsistente = {
   id: string;
-  thread_id: string;
+  /** Null en un correo nuevo, sin hilo. */
+  thread_id: string | null;
   message_id: string | null;
   contact_id: string | null;
   usuario_id: string;
@@ -668,13 +673,26 @@ export type BorradorAsistente = {
   modelo: string;
   tokens_entrada: number;
   tokens_salida: number;
+  tokens_cache_lectura: number;
+  tokens_cache_escritura: number;
   coste_usd: number;
   destinatario: string | null;
   remitente: string | null;
   asunto: string | null;
-  /** El borrador en texto plano y ya pasado a HTML para el editor. */
+  /** El destinatario es una dirección del grupo: un compañero, no un cliente. */
+  destinatario_interno: boolean;
+  sin_hilo: boolean;
+  /** El borrador en texto plano y ya pasado a HTML para el editor. Vacío
+   *  cuando no había con qué redactar: entonces `aviso` lo explica. */
   texto: string;
   html: string;
+  /** Lo que la IA le dice a la PERSONA (nunca va en el cuerpo). */
+  aviso: string | null;
+  /** Lo que la persona escribió en la caja para este turno. */
+  instruccion: string | null;
+  conversacion_id: string;
+  turno: number;
+  padre_id: string | null;
   /** Lo que el modelo dijo no poder responder con los datos. */
   pendiente: string[];
   enlaces: AsistenteEnlace[];
@@ -691,9 +709,17 @@ export type BorradorAsistente = {
 
 export type AsistenteAlcance = BorradorAsistente["alcance"];
 
+/** El primer borrador de la respuesta a un hilo. `instruccion` vacía = la IA
+ *  deduce del hilo (y si el cliente no ha escrito nada nuevo, cuerpo vacío y
+ *  el motivo en `aviso`, sin llamar al modelo). */
 export async function generarBorradorAsistente(
   threadId: string,
-  opts: { alcance?: AsistenteAlcance; regenerar_de?: string | null } = {},
+  opts: {
+    alcance?: AsistenteAlcance;
+    instruccion?: string | null;
+    destinatario?: string | null;
+    regenerar_de?: string | null;
+  } = {},
 ): Promise<BorradorAsistente> {
   const r = await apiFetch<{ borrador: BorradorAsistente }>(
     `/api/emails/threads/${encodeURIComponent(threadId)}/asistente`,
@@ -702,12 +728,40 @@ export async function generarBorradorAsistente(
   return r.borrador;
 }
 
+/** El primer borrador de un correo NUEVO, sin hilo: el destinatario dispara
+ *  el expediente y la instrucción es obligatoria. */
+export async function generarBorradorNuevo(payload: {
+  destinatario: string;
+  instruccion: string;
+  alcance?: AsistenteAlcance;
+  contact_id?: string | null;
+  regenerar_de?: string | null;
+}): Promise<BorradorAsistente> {
+  const r = await apiFetch<{ borrador: BorradorAsistente }>("/api/emails/asistente", {
+    method: "POST", body: JSON.stringify(payload),
+  });
+  return r.borrador;
+}
+
+/** Una corrección («más corto», «en inglés»): un turno más de la conversación,
+ *  con el contexto ya montado. Devuelve el turno nuevo. */
+export async function turnoAsistente(
+  borradorId: string,
+  instruccion: string,
+): Promise<BorradorAsistente> {
+  const r = await apiFetch<{ borrador: BorradorAsistente }>(
+    `/api/emails/asistente/${encodeURIComponent(borradorId)}/turno`,
+    { method: "POST", body: JSON.stringify({ instruccion }) },
+  );
+  return r.borrador;
+}
+
+/** Descarta la conversación entera a la que pertenece el borrador. */
 export async function descartarBorradorAsistente(
-  threadId: string,
   borradorId: string,
 ): Promise<BorradorAsistente> {
   const r = await apiFetch<{ borrador: BorradorAsistente }>(
-    `/api/emails/threads/${encodeURIComponent(threadId)}/asistente/${encodeURIComponent(borradorId)}/descartar`,
+    `/api/emails/asistente/${encodeURIComponent(borradorId)}/descartar`,
     { method: "POST" },
   );
   return r.borrador;

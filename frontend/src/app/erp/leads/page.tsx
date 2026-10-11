@@ -523,7 +523,8 @@ function FilaLead({
 }
 
 const PROPOSITO_TEXTO: Record<string, string> = {
-  asistente_borrador: "Asistente «Ayúdame a contestar»",
+  asistente_borrador: "Asistente «Ayúdame a contestar» · primer borrador",
+  asistente_correccion: "Asistente · correcciones («más corto», «en inglés»…)",
   clasificador_leads: "Clasificador de leads",
 };
 
@@ -531,9 +532,12 @@ function usd(n: number): string {
   return `${n.toFixed(n < 1 ? 4 : 2)} $`;
 }
 
-/** La IA en números: totales, por propósito, y qué pasó con los borradores. */
+/** La IA en números: totales, por propósito, por modelo (para comparar), lo
+ *  que cuesta un borrador TERMINADO (el primero más sus retoques) y qué pasó
+ *  con los borradores. */
 function UsoIACard({ uso }: { uso: UsoIA }) {
   const b = uso.borradores;
+  const conv = uso.conversaciones;
   return (
     <div className="erp-leads-uso-ia">
       <div className="erp-ia-uso" role="list" aria-label="Totales de la IA">
@@ -571,6 +575,35 @@ function UsoIACard({ uso }: { uso: UsoIA }) {
       ) : (
         <p className="muted small">Todavía no hay llamadas registradas.</p>
       )}
+      {uso.por_modelo.length > 0 ? (
+        <table className="data-table data-table--responsive erp-settings-table" aria-label="Coste por modelo">
+          <thead>
+            <tr><th>Modelo</th><th>Llamadas</th><th>Tokens (entrada / salida / de caché)</th><th>Coste</th></tr>
+          </thead>
+          <tbody>
+            {uso.por_modelo.map((m) => (
+              <tr key={m.clave}>
+                <td data-label="Modelo">{m.clave}</td>
+                <td data-label="Llamadas">{m.llamadas}</td>
+                <td data-label="Tokens">
+                  {m.tokens_entrada.toLocaleString("es-ES")} / {m.tokens_salida.toLocaleString("es-ES")} /{" "}
+                  {(m.tokens_cache_lectura ?? 0).toLocaleString("es-ES")}
+                </td>
+                <td data-label="Coste">{usd(m.coste_usd)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : null}
+      {conv ? (
+        <p className="muted small" aria-label="Coste del borrador terminado">
+          Borradores terminados (enviados): {conv.terminadas} de {conv.total} conversaci
+          {conv.total === 1 ? "ón" : "ones"} · coste medio de un borrador terminado, con sus
+          retoques: {usd(conv.coste_medio_terminada_usd)} ({conv.turnos_medios_terminada} turno
+          {conv.turnos_medios_terminada === 1 ? "" : "s"} de media) · {conv.correcciones} correcci
+          {conv.correcciones === 1 ? "ón" : "ones"} en total
+        </p>
+      ) : null}
       <p className="muted small" aria-label="Resultado de los borradores">
         Borradores del asistente: {b.total} ·{" "}
         {b.enviados_tal_cual} enviado{b.enviados_tal_cual === 1 ? "" : "s"} tal cual ·{" "}
@@ -578,7 +611,6 @@ function UsoIACard({ uso }: { uso: UsoIA }) {
         {b.descartados} descartado{b.descartados === 1 ? "" : "s"} ·{" "}
         {b.regenerados} regenerado{b.regenerados === 1 ? "" : "s"} ·{" "}
         {b.generados} sin resolver
-        {uso.por_modelo.length > 0 ? ` · modelo: ${uso.por_modelo.map((m) => m.clave).join(", ")}` : ""}
       </p>
     </div>
   );

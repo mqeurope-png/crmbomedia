@@ -321,17 +321,26 @@ describe("ERP · Leads — «Uso de la IA»", () => {
       por_dia: [],
       borradores: { generados: 1, regenerados: 2, descartados: 1, enviados_tal_cual: 3,
         enviados_editados: 2, total: 9 },
+      conversaciones: { total: 6, terminadas: 5, correcciones: 3, coste_terminadas_usd: 0.12,
+        coste_medio_terminada_usd: 0.024, turnos_medios_terminada: 1.6 },
       ultimas: [],
     });
     render(<LeadsPage />);
     const totales = await screen.findByRole("list", { name: "Totales de la IA" });
     expect(within(totales).getByText("14")).toBeInTheDocument();
     expect(within(totales).getByText("0.1845 $")).toBeInTheDocument();
-    expect(screen.getByText("Asistente «Ayúdame a contestar»")).toBeInTheDocument();
+    expect(screen.getByText("Asistente «Ayúdame a contestar» · primer borrador")).toBeInTheDocument();
     expect(screen.getByText("Clasificador de leads")).toBeInTheDocument();
     expect(screen.getByLabelText("Resultado de los borradores")).toHaveTextContent(
       "Borradores del asistente: 9 · 3 enviados tal cual · 2 editados · 1 descartado · "
-      + "2 regenerados · 1 sin resolver · modelo: claude-sonnet-4-6",
+      + "2 regenerados · 1 sin resolver",
+    );
+    // El coste por modelo, para comparar, y lo que cuesta un borrador terminado
+    // de verdad: el primero más sus retoques.
+    expect(screen.getByRole("table", { name: "Coste por modelo" })).toHaveTextContent("claude-sonnet-4-6");
+    expect(screen.getByLabelText("Coste del borrador terminado")).toHaveTextContent(
+      "Borradores terminados (enviados): 5 de 6 conversaciones · coste medio de un borrador "
+      + "terminado, con sus retoques: 0.0240 $ (1.6 turnos de media) · 3 correcciones en total",
     );
   });
 });

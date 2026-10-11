@@ -138,14 +138,127 @@ Para verificar que el endpoint AI está activo:
 **Lo pide una persona, lo revisa una persona, lo envía una persona.** En
 cualquier hilo de la Bandeja (y desde la pestaña de emails de la ficha, enlace
 «Ayúdame a contestar» que abre el hilo con `?asistente=1`) el botón **«Ayúdame
-a contestar»** pide a la IA un **borrador** de respuesta y abre el compositor
-con el texto, el destinatario y el asunto rellenos. En el compositor hay
-**«Regenerar»** y **«Descartar el borrador de la IA»**; cerrar sin enviar lo
-deja como descartado. El envío es el de siempre (`POST /api/emails/send`), con
-`asistente_borrador_id` solo para anotar si salió **tal cual** o **editado**.
-**No existe ningún camino en el código que envíe un borrador solo**
+a contestar»** abre el compositor con la **franja del asistente** desplegada
+(`components/email/AsistenteFranja.tsx`), entre la cabecera del correo y el
+cuerpo: empuja el contenido, no tapa nada, y se pliega a una línea. Lo primero
+es la caja **«¿Qué quieres decirle?»** con el selector de histórico y
+**«Redactar»**; el borrador llega al editor con la firma del compositor detrás
+y el asunto propuesto. El envío es el de siempre (`POST /api/emails/send`), con
+`asistente_borrador_id` solo para anotar si salió **tal cual** o **editado**;
+cerrar sin enviar deja la conversación como descartada. **No existe ningún
+camino en el código que envíe un borrador solo**
 (`tests/test_asistente.py::test_ningun_camino_del_asistente_envia_correo` lo
-comprueba, también escaneando el código del paquete).
+comprueba, también escaneando el código del paquete, turnos incluidos).
+
+### Decirle qué quieres decir (remates del 11/10/2026)
+
+El asistente ya no tiene que adivinar la intención a partir del hilo. Si la
+persona escribe en la caja («pregúntale si recibió el presupuesto y dile que el
+plato PT5 ya está disponible»), esa **instrucción manda** sobre lo que se
+deduzca del hilo (`INSTRUCCIÓN DE QUIEN ENVÍA` en el prompt). Si la deja vacía,
+se comporta como antes: deduce del último mensaje del cliente. Y si el cliente
+**no ha escrito nada nuevo** (el último mensaje del hilo es nuestro, o de un
+compañero) y no hay instrucción, **no se llama al modelo**: el cuerpo queda
+vacío y el aviso lo explica («dime qué quieres decirle y lo redacto»). El
+contexto queda guardado igual, para la instrucción que venga después.
+
+**Regla primera, verificable en el código y en los tests**: el cuerpo del
+borrador es **siempre un correo que se puede enviar tal cual al destinatario,
+o está vacío**. Nunca contiene nada dirigido a la persona de BoHub («he
+revisado el hilo…», «dímelo y lo redacto»). Todo eso va en el campo `aviso`
+del JSON, que se enseña en la franja. El prompt lo exige y, por si el modelo se
+despista, `texto.parece_informe_al_usuario` (frases de informe en seis idiomas
+y el saludo a quien pulsa por su nombre) vacía el cuerpo y pasa el texto al
+aviso (`redactor._regla_primera`).
+
+### La conversación, y por qué no cuesta otro borrador
+
+Tras el primer borrador, la caja sigue ahí y acepta correcciones en lenguaje
+normal («más corto», «en inglés», «no menciones el precio»). Cada una es un
+**turno** más de la misma conversación (`POST /api/emails/asistente/{id}/turno`):
+el borrador que se corrige queda como `regenerado` y el nuevo lleva
+`conversacion_id`, `turno`, `padre_id` e `instruccion` (migración 0138). La
+lista de lo dicho se ve en la franja, con vuelta al borrador anterior; se puede
+enviar un turno anterior (los posteriores quedan regenerados) y **«Empezar de
+nuevo»** vacía la conversación. **Cambiar el alcance** sí rearma el contexto:
+es un borrador nuevo y la conversación anterior queda regenerada.
+
+El contexto (hilo, expediente, base de conocimiento) se monta **una vez**, en el
+turno 0, y se guarda tal cual en `contexto_texto`; los turnos siguientes mandan
+ese mismo bloque **byte a byte**, el borrador actual y la instrucción nueva, sin
+volver a montarlo (`redactor.corregir`; el test lo comprueba contando lo que se
+manda). El bloque va como primer bloque del mensaje de usuario con
+`cache_control: ephemeral` (la **caché de prompts** de la API de Anthropic) y
+la petición, que cambia, fuera: la API cobra lo leído de caché a una décima
+parte del precio de entrada (una vigésima en Opus 5.5), y `ia_llamadas` e
+`ia_borradores` guardan `tokens_cache_lectura` y `tokens_cache_escritura`, que
+`coste.py` cobra a su precio. El SDK fijado (`anthropic==0.40.0`) recibe los
+bloques tal cual y los parámetros nuevos (`thinking`, `output_config`) viajan
+en `extra_body`.
+
+### El modelo, configurable y por tarea
+
+Configuración ERP → «Asistente de respuesta» tiene dos ajustes separados:
+**modelo del primer borrador** (vacío = `ANTHROPIC_MODEL`) y **modelo de las
+correcciones** (`claude-haiku-5-5` por defecto: trabajan sobre un texto ya
+escrito con el contexto leído de caché). La **lista de modelos** del desplegable
+también sale de la configuración, para probar uno nuevo sin desplegar. El
+**pensamiento extendido** va apagado por defecto (se factura como salida):
+`services/ia/modelos.py` sabe cómo apagarlo en cada familia (`disabled` en
+Haiku 5.5, Opus 5, Sonnet 5 y 4.6; `between_tools` en Sonnet 5.5, donde
+`disabled` da 400) y dónde no se puede apagar baja el esfuerzo (`effort: low`
+en Opus 5.5 y Fable); una familia desconocida se queda con su defecto. La
+extracción del texto (los bloques de razonamiento de #537) sigue igual con o
+sin pensamiento (test con el cliente simulado).
+
+En **«Uso de la IA»** (ERP · Leads) el primer borrador y las correcciones se
+anotan con propósitos distintos (`asistente_borrador` /
+`asistente_correccion`), hay una tabla de **coste por modelo** para comparar y
+el número que importa: **lo que cuesta un borrador terminado** (una
+conversación con algún turno enviado: el primero más sus retoques, coste medio
+y turnos de media).
+
+### Un correo nuevo, sin hilo, con el pasado del cliente
+
+La franja está también plegada en **Redactar** y en el botón de escribir de la
+ficha. Sin hilo, el Nivel 1 desaparece y los otros tres funcionan igual
+(`contexto.construir(thread=None, destinatario=…, instruccion=…)`):
+
+- **El contexto lo dispara el destinatario**: en cuanto hay una dirección en
+  «Para» que corresponde a un contacto, se monta su expediente; si no es nadie
+  conocido, funciona solo con la instrucción.
+- **La instrucción es obligatoria** (`POST /api/emails/asistente`): sin ella no
+  se llama al modelo y la franja lo dice.
+- **Los correos viejos del Nivel 3 se eligen comparando con la instrucción**
+  (asunto, referencia, máquina, solape de palabras), porque no hay mensaje del
+  cliente con el que compararlos; sin esto el nivel saldría siempre vacío.
+- El selector pierde «Solo este hilo»: quedan «todo lo de este contacto» (por
+  defecto) y «todo lo de la empresa».
+- **El idioma sale de la ficha**; si no lo tiene, del último correo que
+  escribió esa persona; y si no, castellano.
+- **El asunto lo propone la IA** (editable, como todo lo demás).
+
+Es el caso del seguimiento: «han pasado tres semanas desde el presupuesto,
+escríbele un seguimiento» y la IA sabe, por el expediente, qué presupuesto, de
+cuándo y de qué.
+
+### El destinatario por defecto es el cliente
+
+En un hilo de cliente con un compañero en copia, «Responder» (y el asistente)
+proponían al último que escribió, aunque fuera `manel@bomedia.net`. Ahora
+`_reply_to_suggestion` prefiere el **último remitente de fuera del grupo**; solo
+si no hay nadie de fuera (un hilo interno) cae al último que no es el propio
+operador. El detalle del hilo trae `reply_to_interno` y la franja avisa
+(«vas a escribir a un compañero») antes de redactar; el prompt lo sabe también
+(`DESTINATARIO … COMPAÑERO`, tono interno). La persona puede cambiar «Para» en
+el compositor sin que el asistente se reinicie: el destinatario viaja con la
+petición.
+
+### La firma
+
+El borrador llega sin firma y el compositor pone la activa detrás
+(`buildBodyWithSignature`), también en cada turno. Si el usuario no tiene
+ninguna firma marcada como predeterminada pero sí una sola, se usa esa.
 
 ### Lo que se le pone delante (`services/asistente/contexto.py`)
 
@@ -168,14 +281,19 @@ comprueba, también escaneando el código del paquete).
 
 ### Reglas del prompt (`services/asistente/redactor.py`)
 
-Redacta, no aporta hechos: precios, plazos y disponibilidad solo de los datos,
-y un precio viejo no se da como actual; sin promesas; **enlaces solo de la
-lista** (los de la base de conocimiento), tal cual; en el idioma del mensaje;
-tono y longitud de las plantillas del equipo (60–180 palabras); sin firma (la
-pone el compositor); si no puede responder algo, lo dice y lo lista en
-«pendiente» (se enseña encima del editor). Responde en JSON
-(`asunto`, `cuerpo`, `idioma`, `pendiente`, `enlaces_usados`); si no, el texto
-entero es el cuerpo. Reutiliza `llm._invoke_claude` (salta los bloques de
+Regla primera: el cuerpo es un correo enviable o está vacío, y lo que haya que
+decirle a la persona va en `aviso`. Después: redacta, no aporta hechos (precios,
+plazos y disponibilidad solo de los datos, y un precio viejo no se da como
+actual); la instrucción de quien envía manda sobre el hilo; sin promesas;
+**enlaces solo de la lista** (los de la base de conocimiento), tal cual; en el
+idioma del mensaje; tono y longitud de las plantillas del equipo (60–180
+palabras; tono interno si el destinatario es un compañero); sin firma (la pone
+el compositor); si no puede responder algo, lo dice y lo lista en «pendiente»
+(se enseña en la franja); una corrección reescribe el borrador conservando lo
+demás. Responde en JSON (`asunto`, `cuerpo`, `idioma`, `aviso`, `pendiente`,
+`enlaces_usados`); si no, el texto entero es el cuerpo (y la regla primera
+decide si es un correo). El mensaje de usuario va en dos bloques: el contexto,
+cacheable, y la petición. Reutiliza `llm._invoke_claude` (salta los bloques de
 razonamiento, #537) y `llm._parse_segment_json`.
 
 ### Registro (`ia_llamadas`, `ia_borradores`; migración 0137)
@@ -227,11 +345,13 @@ por arriba.
    repetir precios, descuentos o condiciones dadas a otra persona. Solo con
    «todo lo de la empresa» pueden traer cuerpo (mismo criterio del nivel 3).
 
-**Lo elige quien pulsa**: un selector junto al botón (y en el compositor, para
-regenerar sin volver a escribir): «Solo este hilo» (nivel 1), «Todo lo de este
-contacto» (1, 2 y 3; el defecto) y «Todo lo de la empresa» (los cuatro). La
-elección se recuerda por usuario en el navegador. Un remitente desconocido va
-siempre solo con el hilo.
+**Lo elige quien pulsa**: el selector de la franja del asistente, junto a la
+caja: «Solo este hilo» (nivel 1), «Todo lo de este contacto» (1, 2 y 3; el
+defecto) y «Todo lo de la empresa» (los cuatro). Cambiarlo con un borrador ya
+hecho rearma el contexto: es un borrador nuevo. La elección se recuerda por
+usuario en el navegador (`lib/asistenteAlcance.ts`). Un remitente desconocido
+va siempre solo con el hilo; sin hilo (correo nuevo) no existe «Solo este
+hilo» y los correos viejos se eligen comparando con la instrucción.
 
 **Se ve lo que ha usado**: debajo del borrador, plegado, cuántos mensajes del
 hilo, qué correos viejos entraron (fecha, asunto y por qué), si hubo contexto

@@ -281,14 +281,15 @@ def _candidatos_de_hilos(
 
 
 def candidatos_del_contacto(
-    session: Session, contacto: Contact, *, excluir_thread_id: str,
+    session: Session, contacto: Contact, *, excluir_thread_id: str | None,
 ) -> list[Candidato]:
-    """Los mensajes de los demás hilos del contacto, los más recientes primero."""
+    """Los mensajes de los demás hilos del contacto, los más recientes primero.
+    Sin hilo actual (un correo nuevo) no se excluye ninguno."""
+    consulta = select(EmailThread.id).where(EmailThread.contact_id == contacto.id)
+    if excluir_thread_id:
+        consulta = consulta.where(EmailThread.id != excluir_thread_id)
     ids = list(session.scalars(
-        select(EmailThread.id).where(
-            EmailThread.contact_id == contacto.id, EmailThread.id != excluir_thread_id,
-        ).order_by(EmailThread.last_message_at.desc()).limit(HILOS_MAX)
-    ))
+        consulta.order_by(EmailThread.last_message_at.desc()).limit(HILOS_MAX)))
     return _candidatos_de_hilos(session, ids)
 
 
@@ -308,7 +309,7 @@ def empresa_agrupable(contacto: Contact, dominios_gratuitos: Iterable[str]) -> C
 
 
 def hilos_de_la_empresa(
-    session: Session, contacto: Contact, empresa: Company, *, excluir_thread_id: str,
+    session: Session, contacto: Contact, empresa: Company, *, excluir_thread_id: str | None,
     limite: int = 15,
 ) -> tuple[list[dict[str, Any]], list[Candidato]]:
     """`(asuntos etiquetados, candidatos con cuerpo)` de las OTRAS personas de
@@ -325,12 +326,12 @@ def hilos_de_la_empresa(
         cid: (" ".join(p for p in (nombre, apellido) if p).strip() or email or "otra persona")
         for cid, nombre, apellido, email in companeros
     }
+    consulta = select(EmailThread.id, EmailThread.subject, EmailThread.last_message_at,
+                      EmailThread.contact_id).where(EmailThread.contact_id.in_(list(nombres)))
+    if excluir_thread_id:
+        consulta = consulta.where(EmailThread.id != excluir_thread_id)
     hilos = session.execute(
-        select(EmailThread.id, EmailThread.subject, EmailThread.last_message_at,
-               EmailThread.contact_id)
-        .where(EmailThread.contact_id.in_(list(nombres)), EmailThread.id != excluir_thread_id)
-        .order_by(EmailThread.last_message_at.desc()).limit(limite)
-    ).all()
+        consulta.order_by(EmailThread.last_message_at.desc()).limit(limite)).all()
     asuntos = [
         {"thread_id": tid, "fecha": fecha.isoformat() if fecha else None,
          "asunto": asunto or "(sin asunto)", "quien": nombres.get(cid, "otra persona"),

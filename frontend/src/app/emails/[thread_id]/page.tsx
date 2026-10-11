@@ -7,18 +7,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EmailComposerModal } from "../../components/EmailComposerModal";
 import { EmailThreadDetail } from "../../components/email/EmailThreadDetail";
 import { EmailThreadToolbar } from "../../components/email/EmailThreadToolbar";
-import { getCurrentUser } from "../../lib/api";
 import {
-  type AsistenteAlcance,
-  type BorradorAsistente,
   type EmailFolder,
   type EmailLabel,
   type EmailMessage,
   type EmailThreadDetail as EmailThreadDetailType,
   addThreadLabel,
   archiveThread,
-  descartarBorradorAsistente,
-  generarBorradorAsistente,
   getEmailThread,
   getMyEmailAliases,
   listEmailFolders,
@@ -43,32 +38,10 @@ import { extractErrorMessage } from "../../lib/errors";
 type ComposeState =
   | { mode: "reply" | "replyAll"; parent: EmailMessage }
   | { mode: "forward"; parent: EmailMessage }
-  /** «Ayúdame a contestar»: responder con el borrador de la IA. */
-  | { mode: "asistente"; parent: EmailMessage; borrador: BorradorAsistente }
+  /** «Ayúdame a contestar»: el compositor con la franja del asistente
+   *  desplegada; lo primero que se ve es la caja de instrucción. */
+  | { mode: "asistente"; parent: EmailMessage }
   | null;
-
-const ALCANCE_CLAVE = "bohub.asistente.alcance";
-const ALCANCES: ReadonlyArray<AsistenteAlcance> = ["hilo", "contacto", "empresa"];
-
-/** El histórico elegido por este usuario en este navegador (por id de usuario,
- *  así dos personas en el mismo navegador no se pisan). */
-function leerAlcance(usuarioId: string): AsistenteAlcance | null {
-  try {
-    const v = window.localStorage.getItem(`${ALCANCE_CLAVE}.${usuarioId}`);
-    return v && (ALCANCES as readonly string[]).includes(v) ? (v as AsistenteAlcance) : null;
-  } catch {
-    return null;
-  }
-}
-
-function guardarAlcance(usuarioId: string | null, alcance: AsistenteAlcance): void {
-  if (!usuarioId) return;
-  try {
-    window.localStorage.setItem(`${ALCANCE_CLAVE}.${usuarioId}`, alcance);
-  } catch {
-    /* sin almacenamiento local no pasa nada: se recuerda mientras dure la página */
-  }
-}
 
 function escapeHtml(value: string): string {
   return value
@@ -94,30 +67,10 @@ export default function EmailThreadPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [compose, setCompose] = useState<ComposeState>(null);
-  // «Ayúdame a contestar»: la IA redacta un borrador y se abre el compositor
-  // con él. Lo revisa y lo envía la persona; aquí no se envía nada.
-  const [asistenteOcupado, setAsistenteOcupado] = useState(false);
-  const [asistenteError, setAsistenteError] = useState<string | null>(null);
+  // «Ayúdame a contestar»: abre el compositor con la franja del asistente
+  // desplegada. La IA no redacta hasta que la persona pulsa «Redactar»; lo
+  // revisa y lo envía la persona; aquí no se envía nada.
   const asistenteAuto = useRef(false);
-  // Qué histórico mira la IA: se recuerda por usuario (en este navegador).
-  const [alcance, setAlcance] = useState<AsistenteAlcance>("contacto");
-  const [usuarioId, setUsuarioId] = useState<string | null>(null);
-  useEffect(() => {
-    getCurrentUser()
-      .then((u) => {
-        setUsuarioId(u.id);
-        const guardado = leerAlcance(u.id);
-        if (guardado) setAlcance(guardado);
-      })
-      .catch(() => undefined);
-  }, []);
-  const cambiarAlcance = useCallback(
-    (nuevo: AsistenteAlcance) => {
-      setAlcance(nuevo);
-      guardarAlcance(usuarioId, nuevo);
-    },
-    [usuarioId],
-  );
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -186,40 +139,23 @@ export default function EmailThreadPage() {
     [load],
   );
 
-  const pedirAsistente = useCallback(
-    async (regenerarDe?: string | null, alcanceElegido?: AsistenteAlcance) => {
-      if (!thread || asistenteOcupado) return;
-      const parent = lastInbound ?? thread.messages[thread.messages.length - 1];
-      if (!parent) return;
-      setAsistenteOcupado(true);
-      setAsistenteError(null);
-      try {
-        const borrador = await generarBorradorAsistente(thread.id, {
-          alcance: alcanceElegido ?? alcance,
-          regenerar_de: regenerarDe ?? null,
-        });
-        setCompose({ mode: "asistente", parent, borrador });
-      } catch (err) {
-        setAsistenteError(
-          extractErrorMessage(err, "La IA no ha podido redactar el borrador."),
-        );
-      } finally {
-        setAsistenteOcupado(false);
-      }
-    },
-    [thread, lastInbound, asistenteOcupado, alcance],
-  );
+  const abrirAsistente = useCallback(() => {
+    if (!thread) return;
+    const parent = lastInbound ?? thread.messages[thread.messages.length - 1];
+    if (!parent) return;
+    setCompose({ mode: "asistente", parent });
+  }, [thread, lastInbound]);
 
-  // Abierto desde la ficha con `?asistente=1`: se pide el borrador al cargar
-  // (una vez; regenerar es el botón del compositor).
+  // Abierto desde la ficha con `?asistente=1`: el compositor se abre con la
+  // franja desplegada al cargar (una vez).
   useEffect(() => {
     if (!thread || asistenteAuto.current) return;
     if (searchParams.get("asistente") !== "1") return;
     asistenteAuto.current = true;
-    // Fuera del cuerpo del efecto: la petición (y su estado) arranca en el
-    // siguiente tick, como si la persona hubiera pulsado el botón.
-    queueMicrotask(() => void pedirAsistente());
-  }, [thread, searchParams, pedirAsistente]);
+    // Fuera del cuerpo del efecto: el estado cambia en el siguiente tick,
+    // como si la persona hubiera pulsado el botón.
+    queueMicrotask(() => abrirAsistente());
+  }, [thread, searchParams, abrirAsistente]);
 
   if (loading) return <p className="muted">Cargando…</p>;
   if (error || !thread) return <p className="form-error">{error}</p>;
@@ -231,6 +167,12 @@ export default function EmailThreadPage() {
     lastInbound?.from_email ??
     thread.messages[0]?.to_emails?.[0] ??
     null;
+  // La franja del asistente, dentro del compositor: con el hilo (responde) y
+  // avisando si la sugerencia de destinatario es un compañero.
+  const asistenteDelHilo = {
+    threadId: thread.id,
+    destinatarioInterno: Boolean(thread.reply_to_interno),
+  };
 
   // «Responder a todos»: el resto de participantes del mensaje de
   // referencia van en Cc — quitando al destinatario principal y los
@@ -359,10 +301,6 @@ export default function EmailThreadPage() {
         </div>
       </header>
 
-      {asistenteError ? (
-        <p className="form-error asistente-error" role="alert">{asistenteError}</p>
-      ) : null}
-
       <EmailThreadToolbar
         thread={thread}
         folders={folders}
@@ -413,10 +351,8 @@ export default function EmailThreadPage() {
           setCompose({ mode: "replyAll", parent: replyParent })
         }
         onForward={() => setCompose({ mode: "forward", parent: last })}
-        onAsistente={() => void pedirAsistente()}
-        asistenteOcupado={asistenteOcupado}
-        alcance={alcance}
-        onAlcanceChange={cambiarAlcance}
+        onAsistente={abrirAsistente}
+        asistenteOcupado={compose?.mode === "asistente"}
       />
 
       <EmailThreadDetail
@@ -435,45 +371,8 @@ export default function EmailThreadPage() {
               subject: thread.subject,
               bodyHtml: forwardBody(compose.parent),
             }}
+            asistente={null}
             onClose={() => setCompose(null)}
-            onSent={async () => {
-              setCompose(null);
-              await load();
-            }}
-          />
-        ) : compose.mode === "asistente" ? (
-          <EmailComposerModal
-            // Otro borrador (regenerar) = otro compositor con su cuerpo.
-            key={compose.borrador.id}
-            contactId={thread.contact_id}
-            contactEmail={compose.borrador.destinatario ?? replyTarget}
-            replyTo={{
-              messageId: compose.parent.id,
-              subject: thread.subject,
-            }}
-            asistente={{
-              borradorId: compose.borrador.id,
-              bodyHtml: compose.borrador.html,
-              subject: compose.borrador.asunto,
-              pendiente: compose.borrador.pendiente,
-              enlaces: compose.borrador.enlaces,
-              contexto: compose.borrador.contexto,
-              ocupado: asistenteOcupado,
-              alcance,
-              onAlcanceChange: cambiarAlcance,
-              onRegenerar: (nuevo) => void pedirAsistente(compose.borrador.id, nuevo),
-              onDescartar: () => {
-                void descartarBorradorAsistente(thread.id, compose.borrador.id)
-                  .catch(() => undefined);
-                setCompose(null);
-              },
-            }}
-            onClose={() => {
-              // Cerrar sin enviar deja el borrador como descartado.
-              void descartarBorradorAsistente(thread.id, compose.borrador.id)
-                .catch(() => undefined);
-              setCompose(null);
-            }}
             onSent={async () => {
               setCompose(null);
               await load();
@@ -492,6 +391,9 @@ export default function EmailThreadPage() {
               messageId: compose.parent.id,
               subject: thread.subject,
             }}
+            // La franja del asistente va dentro del compositor: desplegada si
+            // se pulsó «Ayúdame a contestar», plegada a una línea si no.
+            asistente={{ ...asistenteDelHilo, abierto: compose.mode === "asistente" }}
             onClose={() => setCompose(null)}
             onSent={async () => {
               setCompose(null);

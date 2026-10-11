@@ -5765,7 +5765,19 @@ export type UsoIAGrupo = {
   llamadas: number;
   tokens_entrada: number;
   tokens_salida: number;
+  /** Tokens leídos de la caché de prompts (a una décima parte del precio). */
+  tokens_cache_lectura?: number;
   coste_usd: number;
+};
+
+/** Lo que cuesta un borrador TERMINADO de verdad: el primero más sus retoques. */
+export type UsoIAConversaciones = {
+  total: number;
+  terminadas: number;
+  correcciones: number;
+  coste_terminadas_usd: number;
+  coste_medio_terminada_usd: number;
+  turnos_medios_terminada: number;
 };
 
 export type UsoIA = {
@@ -5785,6 +5797,7 @@ export type UsoIA = {
     enviados_editados: number;
     total: number;
   };
+  conversaciones?: UsoIAConversaciones;
   ultimas: {
     id: string;
     cuando: string | null;
@@ -5792,6 +5805,8 @@ export type UsoIA = {
     modelo: string;
     tokens_entrada: number;
     tokens_salida: number;
+    tokens_cache_lectura?: number;
+    tokens_cache_escritura?: number;
     coste_usd: number;
     duracion_ms: number | null;
     usuario_id: string | null;
@@ -5813,4 +5828,12 @@ export type AsistenteConfig = {
   historico_max: number;
   asuntos_max: number;
   dominios_gratuitos: string[];
+  /** El modelo del primer borrador; null = el de ANTHROPIC_MODEL. */
+  modelo_borrador: string | null;
+  /** El modelo de las correcciones («más corto», «en inglés»): Haiku por defecto. */
+  modelo_correccion: string;
+  /** Los modelos que se ofrecen en el desplegable; se edita aquí, sin desplegar. */
+  modelos: string[];
+  /** Apagado por defecto: el pensamiento se factura como salida y redactar no lo necesita. */
+  pensamiento_extendido: boolean;
 };

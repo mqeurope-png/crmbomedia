@@ -53,9 +53,24 @@ podían leer asuntos largos.
 |---|---|
 | **Estado** | ⭐ Estrella · 📥 Archivar/Restaurar · 🗑 Papelera · ✉ Marcar no leído |
 | **Clasificar** | 🚫 Spam · 🏷 Etiquetar (dropdown) · 📁 Mover a carpeta |
-| **Acciones** | **Responder** (primario) · Responder a todos · Reenviar · **Ayúdame a contestar** (la IA redacta un borrador; lo revisas y lo envías tú; ver [docs/ai-features.md](ai-features.md)) |
+| **Acciones** | **Responder** (primario) · Responder a todos · Reenviar · **Ayúdame a contestar** (abre el compositor con la franja del asistente: dices qué quieres decir, la IA redacta, lo corriges en lenguaje normal y lo envías tú; ver [docs/ai-features.md](ai-features.md)) |
 
 - Todos los iconos llevan tooltip descriptivo.
+- **Ayúdame a contestar** abre el compositor con la **franja del asistente**
+  desplegada, entre la cabecera (De, Para, Cc, Asunto y la fila de
+  herramientas) y el cuerpo: empuja el contenido, no tapa nada, y se pliega a
+  una línea. Lo primero es la caja **«¿Qué quieres decirle?»**: si escribes,
+  eso manda; si la dejas vacía, la IA contesta al último mensaje del cliente, y
+  si el cliente no ha escrito nada nuevo lo dice en la franja y el cuerpo queda
+  vacío (nunca mete en el correo nada dirigido a ti). Después, la misma caja
+  acepta correcciones («más corto», «en inglés», «quita el precio»): cada una
+  reescribe el borrador, se apila en la lista de lo dicho y se puede volver al
+  anterior; el envío anota qué turno salió. La franja está también plegada en
+  **Redactar** y en la ficha del contacto: un correo nuevo, sin hilo, con el
+  pasado de esa persona (ahí decir qué quieres es obligatorio y el asunto lo
+  propone la IA). Si el destinatario es un compañero (una dirección del grupo),
+  la franja lo avisa antes de redactar; en un hilo de cliente con un compañero
+  en copia, **Responder** propone al cliente, no al último que escribió.
 - **Marcar no leído** vuelve a la bandeja tras aplicarse (abrir el hilo lo
   re-marcaría como leído — mismo patrón que Gmail).
 - **Responder a todos** pre-rellena Cc con el resto de destinatarios del

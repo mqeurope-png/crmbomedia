@@ -64,6 +64,57 @@ def normalizado(texto: str | None) -> str:
     return _ESPACIOS_RE.sub(" ", plano).strip()
 
 
+#: Frases con las que la IA, en vez de redactar el correo, le habla a la persona
+#: de BoHub: «he revisado el hilo», «no tengo una pregunta a la que contestar»,
+#: «dímelo y lo redacto». Si el cuerpo las trae, no es un correo.
+_INFORME_RE = re.compile(
+    r"\bhe revisado (el|la|los|las|tu|su|este|esta)\b"
+    r"|\bno (tengo|hay|encuentro) (una |ninguna |ningún |nada )?(pregunta|mensaje|consulta|nada)"
+    r"[^.\n]{0,60}\b(contestar|responder)\b"
+    r"|\bd[ií]melo\b|\bdime (qué|si|cómo)\b|\bsi (quieres|prefieres|me dices) que (te )?"
+    r"(prepare|redacte|escriba)\b|\b(te |se )?lo (redacto|preparo|escribo)\b"
+    r"|\bya (lo |la )?(respondiste|contestaste|contestó|respondió)\b|\bno me ha llegado\b"
+    r"|\b(no|nada) (hay |tiene |suyo )?posterior\b"
+    r"|\bI('ve| have) (reviewed|checked|looked at) (the|this|your)\b"
+    r"|\bthere('s| is) (nothing|no) (new )?(to|I can) (reply|respond|answer)\b"
+    r"|\blet me know (and|if|whether|what)\b|\bwould you like me to\b|\bI can draft\b"
+    r"|\bich habe (den|die|das|ihren|deinen) (Verlauf|Thread|Konversation|Nachrichten)\b"
+    r"|\bsag(en Sie)? mir\b|\bsoll ich (ihnen |dir )?(einen |eine )?(Entwurf|Nachfass)"
+    r"|\bj'ai (relu|vérifié|examiné) (le fil|l'échange|la conversation)\b|\bdites-moi\b"
+    r"|\bik heb (de|het) (thread|conversatie|gesprek) (bekeken|nagelezen|gecontroleerd)\b"
+    r"|\blaat (het )?me weten\b",
+    re.IGNORECASE,
+)
+_SALUDO_RE = re.compile(
+    r"^\W*(hola|hi|hello|hey|hallo|bonjour|salut|hoi|dag|buenos d[ií]as|buenas( tardes)?|"
+    r"guten (tag|morgen)|good (morning|afternoon))\W+(?P<nombre>[^\W\d_]+)",
+    re.IGNORECASE,
+)
+
+
+def parece_informe_al_usuario(
+    cuerpo: str, *, nombre_usuario: str | None = None, nombre_destinatario: str | None = None,
+) -> str | None:
+    """Por qué el cuerpo NO es un correo al destinatario sino un informe para la
+    persona de BoHub, o None si parece un correo. Dos señales: frases de
+    informe («he revisado el hilo», «dímelo y lo redacto») y un saludo al
+    usuario de BoHub por su nombre cuando el destinatario se llama de otra
+    manera."""
+    texto = (cuerpo or "").strip()
+    if not texto:
+        return None
+    m = _INFORME_RE.search(texto)
+    if m:
+        return f"habla a quien lo pide, no al cliente («{m.group(0).strip()}»)"
+    pila = (nombre_usuario or "").strip().split(" ")[0].lower()
+    saludo = _SALUDO_RE.match(texto)
+    if pila and saludo and saludo.group("nombre").lower() == pila:
+        destino = (nombre_destinatario or "").strip().split(" ")[0].lower()
+        if destino != pila:
+            return f"saluda a {saludo.group('nombre')}, que es quien lo pide, no el destinatario"
+    return None
+
+
 def a_html(texto: str, enlaces: Iterable[str] = ()) -> str:
     """Párrafos (separados por línea en blanco) → `<p>`; saltos simples →
     `<br>`; las URL que están en la lista de enlaces, como `<a>`."""

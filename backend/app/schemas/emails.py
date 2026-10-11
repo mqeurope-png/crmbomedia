@@ -290,6 +290,9 @@ class EmailThreadDetail(EmailThreadRead):
     # own outbound. Null only when the thread has no resolvable other
     # party (shouldn't happen in practice).
     reply_to_suggestion: str | None = None
+    #: La sugerencia es una dirección del grupo (un compañero, no un cliente):
+    #: el asistente lo avisa antes de redactar.
+    reply_to_interno: bool = False
 
 
 class EmailThreadList(BaseModel):

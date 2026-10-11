@@ -111,27 +111,41 @@ def _ia_configurada(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, No
     get_settings.cache_clear()
 
 
+def _texto_de(prompt: Any) -> str:
+    """Un prompt puede ser texto o una lista de bloques: su texto, junto."""
+    if isinstance(prompt, str):
+        return prompt
+    return "\n".join(str(b.get("text", "")) for b in prompt if isinstance(b, dict))
+
+
 class _ClaudeFalso:
-    """Sustituye a `llm._invoke_claude`: guarda los prompts y devuelve la
-    respuesta dada, dejando el uso (tokens) como lo dejaría la API."""
+    """Sustituye a `llm._invoke_claude`: guarda los prompts (texto y bloques) y
+    devuelve la respuesta dada, dejando el uso (tokens) como lo dejaría la API."""
 
     def __init__(self, respuesta: dict[str, Any] | str = RESPUESTA_IA, *,
-                 tokens: tuple[int, int] = (1200, 250), fallo: Exception | None = None) -> None:
+                 tokens: tuple[int, int] = (1200, 250), fallo: Exception | None = None,
+                 cache: tuple[int, int] = (0, 0)) -> None:
         self.respuesta = respuesta
         self.tokens = tokens
+        self.cache = cache
         self.fallo = fallo
         self.llamadas: list[dict[str, Any]] = []
 
-    def __call__(self, *, api_key: str, model: str, system_prompt: str, user_prompt: str,
-                 max_tokens: int | None = None) -> str:
+    def __call__(self, *, api_key: str, model: str, system_prompt: Any, user_prompt: Any,
+                 max_tokens: int | None = None, parametros: dict[str, Any] | None = None) -> str:
         assert api_key == "clave-de-prueba"
-        self.llamadas.append({"model": model, "system": system_prompt, "user": user_prompt,
-                              "max_tokens": max_tokens})
+        self.llamadas.append({
+            "model": model, "system": _texto_de(system_prompt), "user": _texto_de(user_prompt),
+            "bloques": list(user_prompt) if isinstance(user_prompt, list) else None,
+            "max_tokens": max_tokens, "parametros": parametros,
+        })
         if self.fallo is not None:
             llm.registrar_uso(None)
             raise self.fallo
         llm.registrar_uso(llm.Uso(modelo=model, tokens_entrada=self.tokens[0],
-                                  tokens_salida=self.tokens[1], duracion_ms=900))
+                                  tokens_salida=self.tokens[1], duracion_ms=900,
+                                  tokens_cache_lectura=self.cache[0],
+                                  tokens_cache_escritura=self.cache[1]))
         return self.respuesta if isinstance(self.respuesta, str) else json.dumps(self.respuesta)
 
     @property
@@ -510,7 +524,7 @@ def test_ningun_camino_del_asistente_envia_correo(
     raiz = Path(__file__).resolve().parents[1] / "app"
     ficheros = list((raiz / "services" / "asistente").glob("*.py")) + [
         raiz / "api" / "asistente.py", raiz / "services" / "ia" / "uso.py",
-        raiz / "services" / "ia" / "coste.py",
+        raiz / "services" / "ia" / "coste.py", raiz / "services" / "ia" / "modelos.py",
     ]
     prohibido = re.compile(r"send_email|send_message|GmailClient|gmail_service|smtplib|\.send\(")
     for f in ficheros:
