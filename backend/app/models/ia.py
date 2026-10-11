@@ -24,6 +24,7 @@ from datetime import datetime
 from uuid import uuid4
 
 from sqlalchemy import Boolean, DateTime, Float, Index, Integer, String, Text
+from sqlalchemy.dialects import mysql
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.crm import Base, TimestampMixin
@@ -123,8 +124,14 @@ class BorradorAsistente(TimestampMixin, Base):
     destinatario: Mapped[str | None] = mapped_column(String(255))
     remitente: Mapped[str | None] = mapped_column(String(255))
     asunto: Mapped[str | None] = mapped_column(String(500))
-    #: El borrador en texto plano (párrafos separados por línea en blanco).
+    #: El borrador en texto plano (párrafos separados por línea en blanco): lo
+    #: que mira la guardia del cuerpo y con lo que se compara lo enviado.
     texto: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    #: El borrador en HTML sencillo (las etiquetas que admite el editor:
+    #: listas, negritas, enlaces, encabezados, tabla simple), desde 0141. None
+    #: en los anteriores: entonces el HTML se deriva de `texto`. LONGTEXT en
+    #: MySQL, como los cuerpos de los correos.
+    html: Mapped[str | None] = mapped_column(Text().with_variant(mysql.LONGTEXT(), "mysql"))
     #: Lo que el modelo dijo no poder responder con los datos (JSON de lista).
     pendiente_json: Mapped[str | None] = mapped_column(Text)
     #: Los enlaces que se le ofrecieron (JSON de lista de dicts).

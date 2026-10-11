@@ -533,6 +533,9 @@ export type EmailDraft = {
   signature_id: string | null;
   include_unsubscribe: boolean;
   scheduled_for: string | null;
+  /** «Ayúdame a contestar»: el turno del asistente que estaba en el editor al
+   *  guardar; al reabrir, la franja recupera la conversación. */
+  asistente_borrador_id?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -552,6 +555,7 @@ export type EmailDraftWrite = {
   signature_id?: string | null;
   include_unsubscribe?: boolean;
   scheduled_for?: string | null;
+  asistente_borrador_id?: string | null;
 };
 
 export async function listEmailDrafts(): Promise<EmailDraft[]> {
@@ -682,10 +686,26 @@ export type BorradorAsistente = {
   /** El destinatario es una dirección del grupo: un compañero, no un cliente. */
   destinatario_interno: boolean;
   sin_hilo: boolean;
-  /** El borrador en texto plano y ya pasado a HTML para el editor. Vacío
-   *  cuando no había con qué redactar: entonces `aviso` lo explica. */
+  /** El borrador en texto plano y en HTML sencillo (las etiquetas que admite
+   *  el editor: listas, negritas, enlaces, encabezados). Vacío cuando no
+   *  había con qué redactar: entonces `aviso` lo explica. */
   texto: string;
   html: string;
+  /** La corrección partió de lo que había en el editor: el compositor lo
+   *  pone sin preguntar (es el texto de la persona, corregido). */
+  sobre_editor: boolean;
+  /** El turno reescribió solo una selección del editor: el fragmento
+   *  reescrito y si pudo empalmarse en el texto entero (`html`). Si no
+   *  (`fragmento`), `html` ES el fragmento y va donde esté la selección. */
+  seleccion: {
+    original: string;
+    /** La selección tal cual la mandó el compositor (null si era muy larga o
+     *  el turno es anterior a guardarla): solo se sustituye ESA selección. */
+    original_html?: string | null;
+    fragmento_html: string;
+    empalmado: boolean;
+  } | null;
+  fragmento: boolean;
   /** Lo que la IA le dice a la PERSONA (nunca va en el cuerpo). */
   aviso: string | null;
   /** Lo que la persona escribió en la caja para este turno. */
@@ -709,12 +729,21 @@ export type BorradorAsistente = {
 
 export type AsistenteAlcance = BorradorAsistente["alcance"];
 
+/** Lo que hay ahora mismo en el editor viaja con la petición: la IA corrige
+ *  ESO (el borrador retocado, un correo a mano, un borrador reabierto) y, con
+ *  una selección, solo ese fragmento. Sin texto, la IA redacta de cero. */
+export type SobreElEditor = {
+  texto_actual_html?: string | null;
+  seleccion_html?: string | null;
+};
+
 /** El primer borrador de la respuesta a un hilo. `instruccion` vacía = la IA
  *  deduce del hilo (y si el cliente no ha escrito nada nuevo, cuerpo vacío y
- *  el motivo en `aviso`, sin llamar al modelo). */
+ *  el motivo en `aviso`, sin llamar al modelo). Con `texto_actual_html`, el
+ *  turno 0 es ya una corrección de ese texto (hace falta instrucción). */
 export async function generarBorradorAsistente(
   threadId: string,
-  opts: {
+  opts: SobreElEditor & {
     alcance?: AsistenteAlcance;
     instruccion?: string | null;
     destinatario?: string | null;
@@ -730,7 +759,7 @@ export async function generarBorradorAsistente(
 
 /** El primer borrador de un correo NUEVO, sin hilo: el destinatario dispara
  *  el expediente y la instrucción es obligatoria. */
-export async function generarBorradorNuevo(payload: {
+export async function generarBorradorNuevo(payload: SobreElEditor & {
   destinatario: string;
   instruccion: string;
   alcance?: AsistenteAlcance;
@@ -744,14 +773,16 @@ export async function generarBorradorNuevo(payload: {
 }
 
 /** Una corrección («más corto», «en inglés»): un turno más de la conversación,
- *  con el contexto ya montado. Devuelve el turno nuevo. */
+ *  con el contexto ya montado, sobre lo que hay ahora en el editor (si se
+ *  manda) o sobre el borrador. Devuelve el turno nuevo. */
 export async function turnoAsistente(
   borradorId: string,
   instruccion: string,
+  editor: SobreElEditor = {},
 ): Promise<BorradorAsistente> {
   const r = await apiFetch<{ borrador: BorradorAsistente }>(
     `/api/emails/asistente/${encodeURIComponent(borradorId)}/turno`,
-    { method: "POST", body: JSON.stringify({ instruccion }) },
+    { method: "POST", body: JSON.stringify({ instruccion, ...editor }) },
   );
   return r.borrador;
 }
@@ -765,4 +796,20 @@ export async function descartarBorradorAsistente(
     { method: "POST" },
   );
   return r.borrador;
+}
+
+/** Los turnos de la conversación a la que pertenece el borrador (para reabrir
+ *  un borrador guardado con su franja). Descartada → lista vacía. */
+export async function conversacionAsistente(
+  borradorId: string,
+): Promise<{ turnos: BorradorAsistente[]; actual: string | null }> {
+  return apiFetch(`/api/emails/asistente/${encodeURIComponent(borradorId)}/conversacion`);
+}
+
+/** Si una dirección es del grupo (un compañero): el aviso de la franja se
+ *  recalcula cada vez que cambia «Para». */
+export async function esDestinatarioInterno(
+  direccion: string,
+): Promise<{ direccion: string; interno: boolean }> {
+  return apiFetch(`/api/emails/asistente/interno?direccion=${encodeURIComponent(direccion)}`);
 }

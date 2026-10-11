@@ -13,8 +13,17 @@ Sin hilo (un correo nuevo desde Redactar o desde la ficha) y la conversación:
                                                             `alcance` (contacto | empresa)
 - POST /api/emails/asistente/{id}/turno                   una corrección («más corto»):
                                                             un turno más, con el contexto ya
-                                                            montado
+                                                            montado, sobre lo que hay AHORA
+                                                            en el editor (`texto_actual_html`)
+                                                            o solo sobre la selección
+                                                            (`seleccion_html`)
 - POST /api/emails/asistente/{id}/descartar               descarta la conversación entera
+- GET  /api/emails/asistente/{id}/conversacion            los turnos de la conversación (para
+                                                            reabrir un borrador guardado con
+                                                            su franja)
+- GET  /api/emails/asistente/interno?direccion=           si una dirección es del grupo (el
+                                                            aviso «vas a escribir a un
+                                                            compañero» al cambiar «Para»)
 
 Puede pedirlo cualquier usuario que pueda ver el hilo (la misma regla que el
 detalle del hilo); un borrador sin hilo solo lo toca quien lo pidió (o
@@ -28,7 +37,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
@@ -42,6 +51,7 @@ from app.models.ia import (
     ALCANCE_CONTACTO,
     ALCANCES,
     ALCANCES_SIN_HILO,
+    ESTADO_DESCARTADO,
     ESTADO_GENERADO,
     ESTADO_REGENERADO,
     BorradorAsistente,
@@ -49,12 +59,23 @@ from app.models.ia import (
 from app.services import llm
 from app.services.asistente import borradores, redactor
 from app.services.email_aliases import thread_is_visible
+from app.services.web_forms import sitios as registro_sitios
 
 router = APIRouter(prefix="/api/emails/threads/{thread_id}/asistente", tags=["asistente"])
 router_conversacion = APIRouter(prefix="/api/emails/asistente", tags=["asistente"])
 
 
-class GenerarIn(BaseModel):
+class _SobreElEditor(BaseModel):
+    """Lo que hay ahora mismo en el editor viaja con cada petición: la IA
+    corrige ESO (el borrador retocado, un correo escrito a mano, un borrador
+    guardado reabierto), y con una selección, solo ese fragmento."""
+    #: El HTML del editor (sin la firma del compositor), si hay algo escrito.
+    texto_actual_html: str | None = Field(default=None, max_length=redactor.MAX_TEXTO_EDITOR)
+    #: El fragmento seleccionado en el editor: la corrección se aplica solo a él.
+    seleccion_html: str | None = Field(default=None, max_length=redactor.MAX_TEXTO_EDITOR)
+
+
+class GenerarIn(_SobreElEditor):
     alcance: str = Field(default=ALCANCE_CONTACTO, max_length=10)
     #: Qué quiere decirle la persona; vacío = la IA deduce del hilo.
     instruccion: str | None = Field(default=None, max_length=redactor.MAX_INSTRUCCION)
@@ -64,7 +85,7 @@ class GenerarIn(BaseModel):
     regenerar_de: str | None = Field(default=None, max_length=36)
 
 
-class GenerarNuevoIn(BaseModel):
+class GenerarNuevoIn(_SobreElEditor):
     destinatario: str = Field(min_length=3, max_length=255)
     instruccion: str = Field(min_length=1, max_length=redactor.MAX_INSTRUCCION)
     alcance: str = Field(default=ALCANCE_CONTACTO, max_length=10)
@@ -72,7 +93,7 @@ class GenerarNuevoIn(BaseModel):
     regenerar_de: str | None = Field(default=None, max_length=36)
 
 
-class TurnoIn(BaseModel):
+class TurnoIn(_SobreElEditor):
     instruccion: str = Field(min_length=1, max_length=redactor.MAX_INSTRUCCION)
 
 
@@ -130,6 +151,7 @@ def _anotar_y_devolver(
     session: Session, request: Request, borrador: BorradorAsistente, actor: User,
     extra: dict[str, Any],
 ) -> dict[str, Any]:
+    resumen = borradores.como_dict(borrador)
     record_event(
         session, action=Action.IA_BORRADOR_GENERADO,
         target_type="email_thread" if borrador.thread_id else "ia_borrador",
@@ -142,6 +164,8 @@ def _anotar_y_devolver(
             "coste_usd": borrador.coste_usd, "idioma": borrador.idioma,
             "alcance": borrador.alcance, "contact_id": borrador.contact_id,
             "con_instruccion": bool(borrador.instruccion), "cuerpo_vacio": not borrador.texto,
+            "sobre_editor": bool(resumen.get("sobre_editor")),
+            "con_seleccion": bool(resumen.get("seleccion")),
             **extra,
         },
         request=request,
@@ -195,7 +219,8 @@ def generar(
     borrador = _redactar(session, lambda: redactor.generar(
         session, thread=thread, usuario=current_user, alcance=payload.alcance,
         instruccion=payload.instruccion, destinatario=payload.destinatario,
-        regenerar_de=payload.regenerar_de,
+        regenerar_de=payload.regenerar_de, texto_actual_html=payload.texto_actual_html,
+        seleccion_html=payload.seleccion_html,
     ))
     return _anotar_y_devolver(session, request, borrador, current_user,
                               {"regenerar_de": payload.regenerar_de})
@@ -248,6 +273,7 @@ def generar_nuevo(
         session, thread=None, usuario=current_user, alcance=payload.alcance,
         instruccion=payload.instruccion, destinatario=payload.destinatario.strip(),
         contacto=contacto, regenerar_de=payload.regenerar_de,
+        texto_actual_html=payload.texto_actual_html, seleccion_html=payload.seleccion_html,
     ))
     return _anotar_y_devolver(session, request, borrador, current_user,
                               {"sin_hilo": True, "regenerar_de": payload.regenerar_de})
@@ -261,15 +287,18 @@ def turno(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_user),
 ) -> dict[str, Any]:
-    """Una corrección sobre el borrador: un turno más de la conversación, con
-    el contexto ya montado (y en caché), el borrador actual y la instrucción.
-    El borrador corregido queda como regenerado."""
+    """Una corrección: un turno más de la conversación, con el contexto ya
+    montado (y en caché), lo que hay ahora en el editor (`texto_actual_html`;
+    si no llega, el borrador) y la instrucción. Con `seleccion_html` solo se
+    reescribe ese fragmento. El borrador corregido queda como regenerado."""
     borrador = _borrador_accesible(session, borrador_id, current_user)
-    if borrador.estado not in (ESTADO_GENERADO, ESTADO_REGENERADO):
+    if borrador.estado not in (ESTADO_GENERADO, ESTADO_REGENERADO) or (
+            borradores.conversacion_descartada(session, borrador)):
         raise HTTPException(
             status.HTTP_409_CONFLICT, "Ese borrador ya se resolvió (enviado o descartado).")
     nuevo = _redactar(session, lambda: redactor.corregir(
-        session, borrador=borrador, instruccion=payload.instruccion, usuario=current_user))
+        session, borrador=borrador, instruccion=payload.instruccion, usuario=current_user,
+        texto_actual_html=payload.texto_actual_html, seleccion_html=payload.seleccion_html))
     return _anotar_y_devolver(session, request, nuevo, current_user, {"padre_id": borrador.id})
 
 
@@ -282,3 +311,39 @@ def descartar_conversacion(
 ) -> dict[str, Any]:
     borrador = _borrador_accesible(session, borrador_id, current_user)
     return _descartar(session, request, borrador, current_user)
+
+
+@router_conversacion.get("/interno")
+def destinatario_interno(
+    direccion: str = Query(default="", max_length=255),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> dict[str, Any]:
+    """Si la dirección de «Para» es del grupo (un compañero, no un cliente):
+    la franja lo pregunta cada vez que cambia el destinatario, con borrador o
+    sin él."""
+    _ = current_user
+    limpia = direccion.strip()
+    interno = bool(limpia) and registro_sitios.es_del_grupo(
+        limpia, registro_sitios.dominios_del_grupo(session))
+    return {"direccion": limpia, "interno": interno}
+
+
+@router_conversacion.get("/{borrador_id}/conversacion")
+def conversacion(
+    borrador_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> dict[str, Any]:
+    """Los turnos de la conversación a la que pertenece el borrador, para que
+    un borrador guardado vuelva a abrirse con su franja (turnos, coste). Una
+    conversación descartada no vuelve: lista vacía."""
+    borrador = _borrador_accesible(session, borrador_id, current_user)
+    turnos = borradores.turnos_de(session, borrador)
+    # Descartar es descartar la conversación: con un turno descartado no
+    # vuelve, ni por un turno anterior (regenerado) que guardara un borrador.
+    if borrador.estado == ESTADO_DESCARTADO or any(t.estado == ESTADO_DESCARTADO for t in turnos):
+        return {"turnos": [], "actual": None}
+    vivos = [t for t in turnos if t.estado != ESTADO_DESCARTADO]
+    actual = borrador.id if any(t.id == borrador.id for t in vivos) else vivos[-1].id
+    return {"turnos": [borradores.como_dict(t) for t in vivos], "actual": actual}

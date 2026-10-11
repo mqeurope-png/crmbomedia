@@ -187,7 +187,8 @@ class Contexto:
             "catalogo": None if self.catalogo is None else {
                 "maquinas": [
                     {k: p.get(k) for k in ("nombre", "marca", "precio_texto", "moneda",
-                                           "precio_idioma", "orientativo", "enlace", "interes")}
+                                           "precio_idioma", "orientativo", "enlace", "interes",
+                                           "eleccion", "precio_publico")}
                     for p in self.catalogo.get("maquinas") or []
                 ],
                 "consumibles": [
@@ -196,6 +197,8 @@ class Contexto:
                     for p in self.catalogo.get("consumibles") or []
                 ],
                 "sin_maquina": list(self.catalogo.get("sin_maquina") or []),
+                "intereses_instruccion": list(self.catalogo.get("intereses_instruccion") or []),
+                "menciones": dict(self.catalogo.get("menciones") or {}),
                 "iva_por_fuente": dict(self.catalogo.get("iva_por_fuente") or {}),
             },
             "niveles": list(self.niveles),
@@ -633,13 +636,17 @@ def construir(
         session, sitio=ctx.sitio, idioma=idioma, interes=ctx.interes, texto=texto_comparar,
         modelo=ctx.modelo_flux,
     )
-    # El catálogo: no entero, sino lo que toca a este lead (las máquinas de su
-    # interés y los consumibles de la máquina que tiene). Sin ficha no hay
-    # interés ni máquina, y el bloque dice que no hay precios que citar.
+    # El catálogo: no entero, sino lo que toca a este correo, por este orden: las
+    # máquinas que el cliente nombra en el hilo, las que pide la instrucción de
+    # quien envía, los consumibles de la máquina que tiene y las de su interés
+    # clasificado. Sin ficha ni mención ni instrucción, el bloque dice que no
+    # hay precios que citar.
+    texto_hilo = "\n".join(m.texto or "" for m in mensajes if m.lado == "cliente")
     try:
         ctx.catalogo = kb_catalogo.para_asistente(
             session, intereses=ctx.intereses, idioma=idioma, maquina=ctx.maquina,
-            modelo_flux=ctx.modelo_flux, ahora=ahora,
+            modelo_flux=ctx.modelo_flux, ahora=ahora, texto_hilo=texto_hilo,
+            instruccion=ctx.instruccion,
         )
     except Exception:  # noqa: BLE001 — sin catálogo el asistente sigue (sin precios)
         logger.warning("asistente: el catálogo no responde; el borrador va sin precios",

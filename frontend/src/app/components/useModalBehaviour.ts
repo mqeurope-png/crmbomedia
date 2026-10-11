@@ -69,6 +69,10 @@ export type ModalBehaviourOptions = {
   disabled?: boolean;
   /** Devuelve `false` para no cerrar (p. ej. cambios sin guardar). */
   confirmClose?: () => boolean;
+  /** Por defecto `true`. Con `false`, pulsar en la capa no hace nada: el fondo
+   *  no es un botón (el compositor de correo, donde un clic fuera destruiría
+   *  un borrador que costó dinero). Esc y el ✕ siguen igual. */
+  closeOnOverlayClick?: boolean;
 };
 
 export function useModalBehaviour<T extends HTMLElement = HTMLDivElement>({
@@ -76,15 +80,18 @@ export function useModalBehaviour<T extends HTMLElement = HTMLDivElement>({
   onClose,
   disabled = false,
   confirmClose,
+  closeOnOverlayClick = true,
 }: ModalBehaviourOptions) {
   const overlayRef = useRef<T>(null);
   const onCloseRef = useRef(onClose);
   const disabledRef = useRef(disabled);
   const confirmCloseRef = useRef(confirmClose);
+  const overlayClickRef = useRef(closeOnOverlayClick);
   useEffect(() => {
     onCloseRef.current = onClose;
     disabledRef.current = disabled;
     confirmCloseRef.current = confirmClose;
+    overlayClickRef.current = closeOnOverlayClick;
   });
 
   // Quién tenía el foco ANTES de abrir: se lee al renderizar la apertura,
@@ -137,6 +144,7 @@ export function useModalBehaviour<T extends HTMLElement = HTMLDivElement>({
     (event: React.MouseEvent<HTMLElement>) => {
       // Solo la capa misma: no un clic dentro del diálogo ni en un modal anidado.
       if (event.target !== event.currentTarget || event.button !== 0) return;
+      if (!overlayClickRef.current) return;
       requestClose();
     },
     [requestClose],

@@ -229,6 +229,7 @@ export default function EmailsLayout({
           }}
         >
           <EmailComposerModal
+            presentacion="panel"
             onClose={() => setComposeOpen(false)}
             onSent={() => {
               setComposeOpen(false);

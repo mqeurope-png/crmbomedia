@@ -165,11 +165,27 @@ contexto queda guardado igual, para la instrucción que venga después.
 **Regla primera, verificable en el código y en los tests**: el cuerpo del
 borrador es **siempre un correo que se puede enviar tal cual al destinatario,
 o está vacío**. Nunca contiene nada dirigido a la persona de BoHub («he
-revisado el hilo…», «dímelo y lo redacto»). Todo eso va en el campo `aviso`
+revisado el hilo…», «no tengo datos para…»). Todo eso va en el campo `aviso`
 del JSON, que se enseña en la franja. El prompt lo exige y, por si el modelo se
-despista, `texto.parece_informe_al_usuario` (frases de informe en seis idiomas
-y el saludo a quien pulsa por su nombre) vacía el cuerpo y pasa el texto al
-aviso (`redactor._regla_primera`).
+despista, la guardia `texto.evaluar_cuerpo` (`redactor._regla_primera`) mira el
+texto plano del borrador y decide en **tres niveles**: **informe** (se vacía el
+cuerpo y el texto pasa al aviso) cuando está claro que habla a quien pide —el
+hilo revisado, «no hay nada que contestar», no poder hacer algo por falta de
+datos, preguntarle qué quiere decirle, hablar del cliente en tercera persona
+cuando se sabe cómo se llama («te paso el presupuesto que pidió Marny»), contar
+lo que quien pide ya hizo («Manel ya le envió») o saludarle por su nombre—;
+**dudoso** (se queda en el editor y la franja pide revisarlo) con «el cliente» o
+«el hilo» como objeto, el nombre de quien pide fuera de la despedida o el del
+destinatario fuera del saludo sin que esté claro que se habla de él; y
+**correo** si nada lo delata. **Una oferta de hacer algo («dímelo y te lo
+preparo», «dime si te va bien el jueves») no delata nada**: el primer día de
+uso real (11/10/2026) la guardia vació un correo válido por eso. Ante la duda,
+avisa; borra solo cuando está claro. El nombre del destinatario solo cuenta
+escrito con mayúscula («Will» no es «we will send»; «Rosa» no es «la tinta
+rosa»), un cierre con el nombre («Gracias, Marny.», «…con calma, Marny.») es
+un vocativo, y a principio de frase la mayúscula no distingue el nombre de la
+palabra: ahí, como mucho, dudoso. Con cuerpo, la franja titula el aviso
+«Revisa antes de enviar»; sin él, «La IA no ha redactado el correo».
 
 ### La conversación, y por qué no cuesta otro borrador
 
@@ -263,6 +279,80 @@ petición.
 El borrador llega sin firma y el compositor pone la activa detrás
 (`buildBodyWithSignature`), también en cada turno. Si el usuario no tiene
 ninguna firma marcada como predeterminada pero sí una sola, se usa esa.
+
+### Tras el primer día de uso real (11/10/2026)
+
+El hilo `administracion@talentosdiversos.org` enseñó cuatro cosas, y de él
+salen los tests de cada bloque (`tests/test_asistente_conversacion.py`,
+`tests/test_catalogo.py`, `EmailComposerModal.test.tsx`,
+`AsistenteFranja.test.tsx`).
+
+**El compositor no destruye trabajo.** En el hilo es un **diálogo de verdad**
+(la capa y la tarjeta comunes de los modales, con velo; `useModalBehaviour` con
+`closeOnOverlayClick: false`): pulsar en el fondo **no cierra**, ni con
+confirmación. Escape, la X y «Cancelar» preguntan si hay algo escrito —cuerpo
+sin la firma, asunto cambiado, instrucción a medias o conversación con la IA—:
+**«Guardar en Borradores»** (por defecto), **«Seguir editando»** o
+**«Descartar»**; en blanco cierran sin más. Al guardar, el borrador se lleva el
+turno del asistente que estaba en el editor (`email_drafts.asistente_borrador_id`,
+migración 0140) y al reabrirlo desde Borradores la franja vuelve con sus turnos
+y su coste (`GET /api/emails/asistente/{id}/conversacion`); «Descartar» borra el
+borrador y descarta la conversación. En el panel derecho (Redactar, ficha,
+Borradores) sigue siendo la tarjeta de siempre (`presentacion="panel"`). La
+franja **se pliega sola** en cuanto hay borrador («Ayúdame a contestar · 1
+borrador · 0,0049 $») y antes del primero va desplegada; el **cuerpo tiene alto
+mínimo** (unas doce líneas, también a 768 px de alto) y el diálogo usa el alto de
+la ventana: si algo encoge, es la franja. Cc y Cco solo ocupan fila si se usan
+(enlaces junto a Para; abiertos si traen contenido); plantillas, adjuntos y
+opciones van a iconos en la línea del asunto; el aviso en ámbar va a dos líneas
+con un «más»; el aviso de compañero se recalcula cada vez que cambia «Para»
+(`GET /api/emails/asistente/interno`).
+
+**La IA corrige lo que hay en el editor.** Siempre el texto que hay ahora
+mismo: el borrador tal cual lo dejó la persona después de retocarlo a mano, un
+correo escrito enteramente a mano («ponlo más formal»), un borrador guardado
+reabierto sin conversación o lo que quede tras «Empezar de nuevo». El compositor
+manda `texto_actual_html` (sin la firma) con cada petición
+(`redactor.texto_del_editor`); con texto y sin conversación, el turno 0 ya es
+una **corrección** con el modelo de las correcciones (el contexto se monta y se
+guarda igual, para que los turnos siguientes lo lean de caché). Con texto
+seleccionado al pedirlo (`seleccion_html`, `RichEditorHandle.getSelectionHtml`),
+se reescribe **solo ese fragmento** y el resto no se toca ni un carácter: el
+fragmento se empalma en el texto si aparece tal cual (`texto.empalmar`) y, si
+no, el compositor lo pone donde está la selección (`replaceSelection`); la
+franja lo dice antes de aplicar («Se aplicará solo a la selección: …»). El estado
+de la caja lo decide si hay texto en el cuerpo: con cuerpo va en modo corrección
+y «Redactar» pasa a «Aplicar»; con texto nunca pregunta «¿Qué quieres decirle?».
+Una selección dentro de un párrafo vuelve como texto corrido, sin `<p>`
+alrededor (`texto.encajar_fragmento`), para no anidar párrafos. El turno guarda
+la selección tal cual (`seleccion.original_html`) y el compositor solo
+sustituye **esa**: si la que hay entonces es otra (otro turno elegido después,
+la persona seleccionó otra cosa), ofrece el cuerpo entero y pregunta antes de
+pisar lo escrito a mano. Una corrección que la guardia deja vacía no toca el
+editor (el aviso lo explica), y si la persona sigue escribiendo mientras la IA
+corrige, el compositor pregunta antes de pisarlo. Un cuerpo empalmado de más de
+30.000 caracteres se guarda solo como fragmento (`MAX_HTML_EMPALMADO`; la
+columna `texto` es TEXT en MySQL; `html` es LONGTEXT desde 0141). Descartar es
+descartar la conversación entera: tampoco vuelve, ni admite un turno más, por
+un turno anterior que quedó como regenerado.
+
+**Formato sencillo.** El borrador sale en **HTML con las etiquetas que admite
+el editor** (párrafos, negrita, cursiva, subrayado, encabezados, listas,
+enlaces, tabla simple), limpiado con bleach (`texto.limpiar_html`): lo que no
+está en la lista se quita conservando el contenido, los enlaces solo de la
+lista permitida (más los que la persona ya tenía) y nunca se pierde texto. Una
+lista de máquinas va **como lista**, con el nombre en negrita y el enlace sobre
+el nombre; sobrio, sin estilos ni imágenes; «maquetado» o «con imágenes de
+producto» va al aviso, no al cuerpo; las correcciones conservan el formato.
+`ia_borradores.html` (migración 0141) guarda el HTML; `texto` sigue siendo el
+texto plano (la guardia y la comparación de lo enviado, que pasa los dos lados
+por el mismo conversor).
+
+**El catálogo contra los datos reales** está en
+[docs/base-conocimiento.md](base-conocimiento.md): de dónde se eligen las
+máquinas (lo que nombra el cliente, lo que pide la instrucción, la máquina que
+tiene, el interés), «Consultar», los premios descartados y la escritura por
+lotes.
 
 ### Lo que se le pone delante (`services/asistente/contexto.py`)
 

@@ -12,6 +12,8 @@ type ModalProps = {
   children: React.ReactNode;
   /** Width preset; the modal defaults to ~600px which fits a tall form. */
   size?: "small" | "default";
+  /** Por defecto `true`; con `false` el fondo no cierra (ver `useModalBehaviour`). */
+  closeOnOverlayClick?: boolean;
 };
 
 /**
@@ -20,8 +22,10 @@ type ModalProps = {
  * whatever had it before opening (see `useModalBehaviour`). Locks body
  * scroll while open so the underlying page can't be scrolled behind it.
  */
-export function Modal({ open, onClose, title, children, size = "default" }: ModalProps) {
-  const { overlayProps, requestClose } = useModalBehaviour({ open, onClose });
+export function Modal({
+  open, onClose, title, children, size = "default", closeOnOverlayClick = true,
+}: ModalProps) {
+  const { overlayProps, requestClose } = useModalBehaviour({ open, onClose, closeOnOverlayClick });
 
   // Body scroll lock while open.
   useEffect(() => {

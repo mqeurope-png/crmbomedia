@@ -397,15 +397,18 @@ def productos_catalogo(
     sitio: str | None = Query(default=None, max_length=40),
     q: str | None = Query(default=None, max_length=120),
     con_idos: bool = Query(default=False),
+    con_descartados: bool = Query(default=False),
     limite: int = Query(default=500, ge=1, le=5000),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_config),
 ) -> dict[str, Any]:
-    """La tabla del catálogo, filtrada (los idos solo si se piden)."""
+    """La tabla del catálogo, filtrada (los idos y los descartados solo si se
+    piden)."""
     _ = current_user
     filas = catalogo.listar(
         session, fuente=fuente or None, tipo=tipo or None, idioma=idioma or None,
-        marca=marca or None, sitio=sitio or None, texto=q, con_idos=con_idos, limite=limite,
+        marca=marca or None, sitio=sitio or None, texto=q, con_idos=con_idos,
+        con_descartados=con_descartados, limite=limite,
     )
     return {"productos": [catalogo.producto_como_dict(p) for p in filas], "total": len(filas),
             "limite": limite}

@@ -153,6 +153,12 @@ class _ClaudeFalso:
         return self.llamadas[-1]
 
 
+def redactor_max_tokens() -> int:
+    from app.services.asistente import redactor  # noqa: PLC0415
+
+    return redactor.MAX_TOKENS_RESPUESTA
+
+
 def _admin(session: Session) -> User:
     return session.scalar(select(User).where(User.role == UserRole.ADMIN))
 
@@ -259,7 +265,7 @@ def test_remitente_desconocido_tambien_tiene_borrador(
     # Sin ficha no hay interés: ni página de producto; sí la ruta de soporte por idioma.
     assert "página de producto" not in prompt
     assert "https://artisjet-printers.eu/de/technical-support/" in prompt
-    assert falso.ultimo["max_tokens"] == 1500
+    assert falso.ultimo["max_tokens"] == redactor_max_tokens()
     with session_factory() as s:
         assert s.scalar(select(EmailMessage).where(EmailMessage.thread_id == thread_id,
                                                    EmailMessage.direction == "outbound")) is None

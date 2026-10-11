@@ -114,6 +114,24 @@ def test_create_list_update_delete_draft_round_trip(
     assert res.json()["subject"] == "Borrador renombrado"
     assert res.json()["cc_emails"] is None  # snapshot overwrites
 
+    # «Ayúdame a contestar»: el turno que está en el editor se guarda con el
+    # borrador (y, como el resto, es una foto: sin él en el PUT, queda vacío).
+    res = client.put(
+        f"/api/email-drafts/{draft_id}",
+        json={"subject": "Con IA", "to_emails": ["lead2@example.com"],
+              "asistente_borrador_id": "b-123", "thread_id": None},
+        headers=headers,
+    )
+    assert res.status_code == 200 and res.json()["asistente_borrador_id"] == "b-123"
+    assert client.get(f"/api/email-drafts/{draft_id}", headers=headers).json()[
+        "asistente_borrador_id"] == "b-123"
+    res = client.put(
+        f"/api/email-drafts/{draft_id}",
+        json={"subject": "Sin IA", "to_emails": ["lead2@example.com"]},
+        headers=headers,
+    )
+    assert res.json()["asistente_borrador_id"] is None
+
     # Delete.
     res = client.delete(f"/api/email-drafts/{draft_id}", headers=headers)
     assert res.status_code == 204

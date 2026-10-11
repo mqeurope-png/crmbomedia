@@ -7,6 +7,7 @@ import {
   Paperclip,
   PenLine,
   Save,
+  SlidersHorizontal,
   Sparkles,
   Trash2,
   X,
@@ -41,6 +42,8 @@ import {
 } from "../lib/emailsApi";
 import { AsistenteFranja } from "./email/AsistenteFranja";
 import { extractErrorMessage } from "../lib/errors";
+import { Modal } from "./Modal";
+import { ModalCloseButton } from "./ModalCloseButton";
 import { SaveTemplateModal } from "./email/SaveTemplateModal";
 import { ScheduleSendDialog } from "./email/ScheduleSendDialog";
 import { useModalBehaviour } from "./useModalBehaviour";
@@ -61,12 +64,21 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function splitEmails(raw: string): string[] {
+  return raw
+    .split(/[,\n;]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 // TinyMCE touches `window` the moment its module loads, so the editor
 // must never render on the server. `ssr: false` keeps it in a
 // client-only chunk and shows a lightweight placeholder while the
 // (~200 KB) editor bundle streams in.
 type RichEditorHandle = {
   clearDraft: () => void;
+  getSelectionHtml: () => string;
+  replaceSelection: (html: string) => string | null;
 };
 const RichEditor = dynamic(
   () => import("./email/RichEditor").then((m) => m.RichEditor),
@@ -96,15 +108,21 @@ type Props = {
    *  entre la cabecera y el cuerpo. Siempre está, plegada a una línea; con
    *  `abierto` arranca desplegada con la caja de instrucción. `threadId` es
    *  el hilo al que se responde (sin él, la IA redacta un correo nuevo con el
-   *  pasado del destinatario). Al enviar, el id del turno que está en el
-   *  editor viaja con el envío para anotar si salió tal cual o editado; cerrar
-   *  sin enviar lo deja como descartado. `null` quita la franja (reenviar). */
+   *  pasado del destinatario). `borradorId` es el turno que estaba en el editor
+   *  cuando se guardó un borrador: la franja recupera su conversación. Al
+   *  enviar, el id del turno que está en el editor viaja con el envío para
+   *  anotar si salió tal cual o editado. `null` quita la franja (reenviar). */
   asistente?: {
     abierto?: boolean;
     threadId?: string | null;
     /** El hilo dice que la sugerencia de destinatario es un compañero. */
     destinatarioInterno?: boolean;
+    borradorId?: string | null;
   } | null;
+  /** `dialogo` (por defecto): un diálogo de verdad, centrado, con el velo y
+   *  la elevación de los demás modales. `panel`: la tarjeta que llena el panel
+   *  derecho de la bandeja, la ficha y Borradores (el padre pone el panel). */
+  presentacion?: "dialogo" | "panel";
   onClose: () => void;
   onSent?: (message: EmailMessage) => void;
 };
@@ -141,6 +159,20 @@ function buildBodyWithSignature(
   return `${stripped}<p></p>${block}`;
 }
 
+/** El cuerpo sin la firma ni los párrafos vacíos del editor: lo que de verdad
+ *  ha escrito alguien (la persona o la IA). */
+export function cuerpoEscrito(html: string | null | undefined): string {
+  return sinFirma(html)
+    .replace(/<p>(?:&nbsp;|\s|&mdash;|—|<br\s*\/?>)*<\/p>/g, "")
+    .trim();
+}
+
+/** El HTML del editor sin el bloque de firma que puso el compositor: lo que
+ *  viaja al asistente como «texto actual» (la firma la vuelve a poner él). */
+export function sinFirma(html: string | null | undefined): string {
+  return (html || "").replace(SIG_BLOCK_RE, "");
+}
+
 export function EmailComposerModal({
   contactId,
   contactEmail,
@@ -149,6 +181,7 @@ export function EmailComposerModal({
   initialCc,
   forwardOf,
   asistente,
+  presentacion = "dialogo",
   onClose,
   onSent,
 }: Props) {
@@ -161,6 +194,11 @@ export function EmailComposerModal({
   const [cc, setCc] = useState(
     initialDraft?.cc_emails?.join(", ") ?? initialCc?.join(", ") ?? "",
   );
+  const [bcc, setBcc] = useState(initialDraft?.bcc_emails?.join(", ") ?? "");
+  // Cc y Cco solo ocupan fila si se usan: si vienen con contenido, abiertos.
+  const [mostrarCc, setMostrarCc] = useState(() => cc.trim().length > 0);
+  const [mostrarCco, setMostrarCco] = useState(() => bcc.trim().length > 0);
+  const [mostrarOpciones, setMostrarOpciones] = useState(false);
   const [subject, setSubject] = useState(
     initialDraft?.subject ??
       (forwardOf
@@ -191,6 +229,9 @@ export function EmailComposerModal({
   const [showPicker, setShowPicker] = useState(false);
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [showScheduleDialog, setShowScheduleDialog] = useState(false);
+  // La pregunta de cierre: guardar en Borradores, descartar o seguir editando.
+  const [preguntaCierre, setPreguntaCierre] = useState<{ conConversacion: boolean } | null>(null);
+  const [cerrando, setCerrando] = useState(false);
   const [signatures, setSignatures] = useState<EmailSignature[]>([]);
   const [activeSignatureId, setActiveSignatureId] = useState<string>(
     initialDraft?.signature_id ?? "",
@@ -202,12 +243,36 @@ export function EmailComposerModal({
   const [uploading, setUploading] = useState(false);
   const [dragging, setDragging] = useState(false);
   // El turno del asistente que está en el editor: viaja con el envío para
-  // anotar si salió tal cual o editado y, si se cierra sin enviar, se descarta.
-  const asistenteIdRef = useRef<string | null>(null);
+  // anotar si salió tal cual o editado, se guarda con el borrador y, si se
+  // descarta, se descarta.
+  const asistenteIdRef = useRef<string | null>(asistente?.borradorId ?? null);
+  // Lo que la franja tiene entre manos: cuenta como contenido al cerrar.
+  const franjaEstadoRef = useRef({ instruccion: "", turnos: 0 });
   // El asunto que puso la IA (para no pisar uno escrito a mano) y el de partida.
   const asuntoIaRef = useRef<string | null>(null);
   const asuntoInicialRef = useRef(subject);
-  const cerrar = useCallback(() => {
+  const subjectRef = useRef(subject);
+  const bodyHtmlRef = useRef(bodyHtml);
+  const draftIdRef = useRef<string | null>(initialDraft?.id ?? null);
+  useEffect(() => {
+    subjectRef.current = subject;
+    bodyHtmlRef.current = bodyHtml;
+    draftIdRef.current = draftId;
+  });
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const editorRef = useRef<RichEditorHandle | null>(null);
+
+  // ¿Hay algo que perder? Cuerpo escrito (sin la firma), asunto cambiado, una
+  // instrucción a medias en la franja o una conversación con la IA.
+  const hayContenido = useCallback((): boolean => {
+    if (cuerpoEscrito(bodyHtmlRef.current).length > 0) return true;
+    if ((subjectRef.current || "").trim() !== asuntoInicialRef.current.trim()) return true;
+    const franja = franjaEstadoRef.current;
+    return franja.instruccion.trim().length > 0 || franja.turnos > 0;
+  }, []);
+  // Cerrar sin nada que guardar: una conversación sin cuerpo (no había con qué
+  // redactar) queda descartada; nada más que hacer.
+  const cerrarDirecto = useCallback(() => {
     if (asistenteIdRef.current) {
       void descartarBorradorAsistente(asistenteIdRef.current).catch(() => undefined);
       asistenteIdRef.current = null;
@@ -215,17 +280,25 @@ export function EmailComposerModal({
     onClose();
   }, [onClose]);
   // Esc (solo si el composer es el modal de arriba: no con «Programar
-  // envío», «Cargar plantilla»… abiertos encima), foco de vuelta al cerrar
-  // y clic fuera cuando el composer hace de capa (ver el `onMouseDown` de la raíz).
+  // envío», «Cargar plantilla»… abiertos encima) y foco de vuelta al cerrar.
+  // El fondo NO cierra: un clic fuera no puede destruir un borrador que costó
+  // dinero. Esc, el ✕ y «Cancelar» preguntan si hay algo escrito.
   const {
     overlayRef: rootRef,
     overlayProps,
     requestClose,
-  } = useModalBehaviour({ onClose: cerrar, disabled: submitting });
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const editorRef = useRef<RichEditorHandle | null>(null);
-  const draftIdRef = useRef<string | null>(initialDraft?.id ?? null);
-  draftIdRef.current = draftId;
+  } = useModalBehaviour({
+    onClose: cerrarDirecto,
+    disabled: submitting || cerrando,
+    confirmClose: () => {
+      if (hayContenido()) {
+        setPreguntaCierre({ conConversacion: franjaEstadoRef.current.turnos > 0 });
+        return false;
+      }
+      return true;
+    },
+    closeOnOverlayClick: false,
+  });
 
   const firmaActiva = useCallback(
     (): EmailSignature | null => signatures.find((s) => s.id === activeSignatureId) ?? null,
@@ -236,24 +309,49 @@ export function EmailComposerModal({
   // persona escribió o editó algo a mano, que no se pisa sin preguntar).
   const cuerpoAntesRef = useRef<string | null>(null);
   const cuerpoIaRef = useRef<string | null>(null);
-  const bodyHtmlRef = useRef(bodyHtml);
-  bodyHtmlRef.current = bodyHtml;
   const escritoAMano = useCallback((): boolean => {
     const actual = bodyHtmlRef.current || "";
-    const sinFirma = actual.replace(SIG_BLOCK_RE, "").replace(/<p>(?:&nbsp;|\s|&mdash;|—)*<\/p>/g, "").trim();
-    return sinFirma.length > 0 && actual !== cuerpoIaRef.current;
+    return cuerpoEscrito(actual).length > 0 && actual !== cuerpoIaRef.current;
   }, []);
   // Llega un turno del asistente: su cuerpo sustituye al del editor, con la
   // firma activa detrás (la IA no firma; la firma la pone el compositor). Un
   // cuerpo vacío (no había con qué redactar) deja solo la firma. Si en el
-  // editor hay algo escrito a mano, se pregunta antes de pisarlo. El asunto
+  // editor hay algo escrito a mano que la IA no ha corregido, se pregunta
+  // antes de pisarlo; una corrección de lo que había (`sobre_editor`) entra
+  // sin preguntar si el editor sigue como cuando se pidió (si cambió mientras
+  // la IA trabajaba, o es un turno anterior que se vuelve a elegir, se
+  // pregunta), y una corrección VACÍA (la guardia la vació) no toca el editor.
+  // Un turno sobre una selección va donde está la selección, si es LA MISMA
+  // sobre la que se reescribió, y el resto no se toca; si no, y el turno trae
+  // el cuerpo entero, va entero; si no, no se puede poner (false). El asunto
   // de la IA solo pisa el que está vacío o el que puso ella misma.
   const aplicarBorrador = useCallback(
-    (b: BorradorAsistente) => {
-      if (escritoAMano() && !window.confirm(
+    (b: BorradorAsistente, opciones?: { editorCambiado?: boolean }): boolean => {
+      if (b.seleccion) {
+        // Un fragmento vacío (la guardia lo vació): el editor no se toca, el aviso lo explica.
+        if (!b.seleccion.fragmento_html) return false;
+        // Solo sobre la MISMA selección (si no se guardó, por larga, la que haya).
+        const viva = editorRef.current?.getSelectionHtml() ?? "";
+        const original = b.seleccion.original_html;
+        const misma = Boolean(viva) && (original == null || viva === original);
+        const html = misma
+          ? (editorRef.current?.replaceSelection(b.seleccion.fragmento_html) ?? null)
+          : null;
+        if (html !== null) {
+          if (cuerpoAntesRef.current === null) cuerpoAntesRef.current = bodyHtmlRef.current || "";
+          cuerpoIaRef.current = html;
+          setBodyHtml(html);
+          dirtyRef.current = true;
+          return true;
+        }
+      }
+      if (b.fragmento) return false;
+      if (b.sobre_editor && !cuerpoEscrito(b.html)) return false;
+      const sinPreguntar = b.sobre_editor && !b.seleccion && !opciones?.editorCambiado;
+      if (!sinPreguntar && escritoAMano() && !window.confirm(
         "Ya hay texto en el editor. ¿Reemplazarlo con el borrador de la IA?",
       )) {
-        return;
+        return false;
       }
       if (cuerpoAntesRef.current === null) cuerpoAntesRef.current = bodyHtmlRef.current || "";
       const siguiente = buildBodyWithSignature(b.html || "", "", firmaActiva());
@@ -265,9 +363,20 @@ export function EmailComposerModal({
         asuntoIaRef.current = asunto;
       }
       dirtyRef.current = true;
+      return true;
     },
     [firmaActiva, escritoAMano],
   );
+  // Lo que la franja manda al asistente como «texto actual»: el cuerpo sin la
+  // firma, y la selección del editor si la hay.
+  const cuerpoParaAsistente = useCallback(
+    () => ({
+      html: sinFirma(bodyHtmlRef.current),
+      seleccion: editorRef.current?.getSelectionHtml() ?? "",
+    }),
+    [],
+  );
+  const hayTexto = cuerpoEscrito(bodyHtml).length > 0;
   const vaciarBorrador = useCallback(() => {
     // Vuelve a lo que había antes del asistente (o solo la firma).
     const antes = cuerpoAntesRef.current;
@@ -280,7 +389,30 @@ export function EmailComposerModal({
       setSubject((prev) => (prev === asuntoIaRef.current ? inicial : prev));
       asuntoIaRef.current = null;
     }
+    dirtyRef.current = true;
   }, [firmaActiva]);
+
+  // Lo que se guarda en Borradores: una foto del compositor, incluido el
+  // turno del asistente que está en el editor (la conversación vuelve al
+  // reabrir) y el hilo al que se responde.
+  const threadId = asistente?.threadId ?? initialDraft?.thread_id ?? null;
+  const payloadBorrador = useCallback((): EmailDraftWrite => ({
+    thread_id: threadId,
+    contact_id: contactId ?? null,
+    from_alias: fromAlias || null,
+    subject: subject || null,
+    body_html: bodyHtml || null,
+    to_emails: splitEmails(to),
+    cc_emails: cc.trim() ? splitEmails(cc) : null,
+    bcc_emails: bcc.trim() ? splitEmails(bcc) : null,
+    in_reply_to_message_id: replyTo?.messageId ?? null,
+    signature_id: activeSignatureId || null,
+    include_unsubscribe: includeUnsubscribe,
+    asistente_borrador_id: asistenteIdRef.current,
+  }), [
+    threadId, contactId, fromAlias, subject, bodyHtml, to, cc, bcc, replyTo?.messageId,
+    activeSignatureId, includeUnsubscribe,
+  ]);
 
   // Auto-save every 5s when the operator has changed something.
   // The dirty flag is a ref so typing doesn't re-render the
@@ -289,18 +421,7 @@ export function EmailComposerModal({
   useEffect(() => {
     const timer = window.setInterval(async () => {
       if (!dirtyRef.current) return;
-      const payload = {
-        thread_id: null,
-        contact_id: contactId ?? null,
-        from_alias: fromAlias || null,
-        subject: subject || null,
-        body_html: bodyHtml || null,
-        to_emails: splitEmails(to),
-        cc_emails: cc.trim() ? splitEmails(cc) : null,
-        in_reply_to_message_id: replyTo?.messageId ?? null,
-        signature_id: activeSignatureId || null,
-        include_unsubscribe: includeUnsubscribe,
-      };
+      const payload = payloadBorrador();
       try {
         if (draftId) {
           const fresh = await updateEmailDraft(draftId, payload);
@@ -316,18 +437,7 @@ export function EmailComposerModal({
       }
     }, 5000);
     return () => window.clearInterval(timer);
-  }, [
-    contactId,
-    fromAlias,
-    subject,
-    bodyHtml,
-    to,
-    cc,
-    replyTo?.messageId,
-    activeSignatureId,
-    includeUnsubscribe,
-    draftId,
-  ]);
+  }, [payloadBorrador, draftId]);
 
   // draftKey isolates the autosave entries per conversation. Replies
   // carry the parent gmail message id (one per thread by construction);
@@ -338,18 +448,6 @@ export function EmailComposerModal({
   const draftKey = replyTo
     ? `reply-${replyTo.messageId}`
     : `compose-${contactId ?? "new"}`;
-
-  // The composer is rendered inline at the bottom of the thread page
-  // (the `.modal-backdrop` class isn't an overlay), so on "Responder"
-  // it lands below the fold. Pull it into view on mount — a short
-  // delay lets the lazily-loaded editor begin laying out first.
-  useEffect(() => {
-    const handle = window.setTimeout(() => {
-      rootRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-    }, 100);
-    return () => window.clearTimeout(handle);
-    // `rootRef` es una ref estable (de useModalBehaviour): corre solo al montar.
-  }, [rootRef]);
 
   useEffect(() => {
     getMyEmailAliases()
@@ -407,32 +505,13 @@ export function EmailComposerModal({
       });
   }, []);
 
-  function splitEmails(raw: string): string[] {
-    return raw
-      .split(/[,\n;]/)
-      .map((s) => s.trim())
-      .filter(Boolean);
-  }
-
   // The draft row is needed before we can attach a binary (the
   // attachment FK points at email_drafts.id). Auto-save normally
   // creates it on the 5 s tick; uploading a file forces it now so
   // the operator doesn't lose the binary while typing.
   async function ensureDraft(): Promise<string> {
     if (draftIdRef.current) return draftIdRef.current;
-    const payload: EmailDraftWrite = {
-      thread_id: null,
-      contact_id: contactId ?? null,
-      from_alias: fromAlias || null,
-      subject: subject || null,
-      body_html: bodyHtml || null,
-      to_emails: splitEmails(to),
-      cc_emails: cc.trim() ? splitEmails(cc) : null,
-      in_reply_to_message_id: replyTo?.messageId ?? null,
-      signature_id: activeSignatureId || null,
-      include_unsubscribe: includeUnsubscribe,
-    };
-    const created = await createEmailDraft(payload);
+    const created = await createEmailDraft(payloadBorrador());
     setDraftId(created.id);
     setDraftSavedAt(new Date(created.updated_at));
     draftIdRef.current = created.id;
@@ -500,6 +579,7 @@ export function EmailComposerModal({
     }
     setShowPicker(false);
     setBodyHtml(selection.body_html);
+    dirtyRef.current = true;
     if (selection.subject) {
       setSubject((prev) => prev || selection.subject || "");
     }
@@ -549,17 +629,13 @@ export function EmailComposerModal({
       if (attachments.length > 0) {
         const id = await ensureDraft();
         const payload: EmailDraftWrite = {
-          thread_id: null,
-          contact_id: contactId ?? null,
+          ...payloadBorrador(),
           from_alias: fromAlias,
           subject,
           body_html: bodyHtml.trim() || null,
           body_text: null,
           to_emails: toList,
-          cc_emails: cc.trim() ? splitEmails(cc) : null,
           in_reply_to_message_id: replyMessageId,
-          signature_id: activeSignatureId || null,
-          include_unsubscribe: includeUnsubscribe,
           scheduled_for: scheduledFor,
         };
         await updateEmailDraft(id, payload);
@@ -576,6 +652,7 @@ export function EmailComposerModal({
           from_alias: fromAlias,
           to: toList,
           cc: cc.trim() ? splitEmails(cc) : null,
+          bcc: bcc.trim() ? splitEmails(bcc) : null,
           subject,
           body_html: bodyHtml.trim() || null,
           body_text: null,
@@ -611,99 +688,115 @@ export function EmailComposerModal({
     }
   }
 
-  async function handleDiscard() {
-    if (!confirm("¿Descartar el borrador? Se perderá el contenido.")) return;
-    if (draftId) {
-      await deleteEmailDraft(draftId).catch(() => undefined);
+  // «Guardar en Borradores»: una foto del compositor ahora mismo, con el
+  // turno del asistente; la conversación sigue viva y vuelve al reabrir.
+  async function guardarYCerrar() {
+    setCerrando(true);
+    setError(null);
+    try {
+      const payload = payloadBorrador();
+      if (draftIdRef.current) await updateEmailDraft(draftIdRef.current, payload);
+      else await createEmailDraft(payload);
+      dirtyRef.current = false;
+      setPreguntaCierre(null);
+      asistenteIdRef.current = null;
+      onClose();
+    } catch (err) {
+      setError(extractErrorMessage(err, "No se pudo guardar el borrador."));
+      setCerrando(false);
+    }
+  }
+
+  // «Descartar»: fuera el borrador guardado, la conversación con la IA y el
+  // autoguardado del editor.
+  async function descartarYCerrar() {
+    setCerrando(true);
+    if (draftIdRef.current) {
+      await deleteEmailDraft(draftIdRef.current).catch(() => undefined);
+      draftIdRef.current = null;
+    }
+    if (asistenteIdRef.current) {
+      void descartarBorradorAsistente(asistenteIdRef.current).catch(() => undefined);
+      asistenteIdRef.current = null;
     }
     editorRef.current?.clearDraft();
-    cerrar();
+    setPreguntaCierre(null);
+    onClose();
+  }
+
+  async function handleDiscard() {
+    if (!confirm("¿Descartar el borrador? Se perderá el contenido.")) return;
+    await descartarYCerrar();
   }
 
   const hasMerge =
     hasMergeTokens(bodyHtml) || hasMergeTokens(subject);
+  const dialogo = presentacion === "dialogo";
+  const ocupado = submitting || cerrando;
 
-  return (
+  const tarjeta = (
     <div
-      className="modal-backdrop"
+      className={dialogo ? "modal-dialog email-compose-modal" : "modal modal-wide email-compose-modal"}
       role="dialog"
       aria-modal="true"
-      ref={rootRef}
-      onMouseDown={(event) => {
-        // Dentro del panel derecho / la capa de «Redactar», esta raíz ES la
-        // tarjeta blanca: pulsar en su borde no es «fuera». Solo cuando el
-        // composer hace él mismo de capa (respuesta desde el hilo).
-        if (event.currentTarget.parentElement?.matches(".email-compose-panel, .email-compose-overlay")) return;
-        overlayProps.onMouseDown(event);
-      }}
+      aria-labelledby="composer-title"
     >
-      <div className="modal modal-wide email-compose-modal">
-        <header className="composer-header">
-          <h2>
-            {asistente?.abierto
-              ? (replyTo ? "Responder con ayuda de la IA" : "Nuevo email con ayuda de la IA")
-              : replyTo
-                ? "Responder"
-                : "Nuevo email"}
-          </h2>
-          <ComposerDraftStatus
-            savedAt={draftSavedAt}
-            hasDraft={draftId !== null}
-          />
-          {/* PR-Fix-Modal-Nuevo-Email-Layout. Botón X visible para
-              cerrar el panel — antes solo se podía cancelar con el
-              botón "Cancelar" a pie del form. */}
-          <button
-            type="button"
-            className="composer-header-close"
-            aria-label="Cerrar"
-            onClick={requestClose}
-            disabled={submitting}
-          >
-            <X size={18} aria-hidden />
-          </button>
-        </header>
-        {error ? <p className="form-error">{error}</p> : null}
-        {!loadingAliases && aliases.length === 0 ? (
-          <p className="form-warning">
-            No has marcado ningún alias en{" "}
-            <Link href="/account">/account</Link>. Marca al menos uno para
-            enviar emails desde el CRM.
+      <header className="composer-header">
+        <h2 id="composer-title">
+          {asistente?.abierto
+            ? (replyTo ? "Responder con ayuda de la IA" : "Nuevo email con ayuda de la IA")
+            : replyTo
+              ? "Responder"
+              : "Nuevo email"}
+        </h2>
+        <ComposerDraftStatus
+          savedAt={draftSavedAt}
+          hasDraft={draftId !== null}
+        />
+        <ModalCloseButton onClose={requestClose} disabled={ocupado} placement="header" />
+      </header>
+      {error ? <p className="form-error">{error}</p> : null}
+      {!loadingAliases && aliases.length === 0 ? (
+        <p className="form-warning">
+          No has marcado ningún alias en{" "}
+          <Link href="/account">/account</Link>. Marca al menos uno para
+          enviar emails desde el CRM.
+        </p>
+      ) : null}
+      <form onSubmit={handleSubmit}>
+        {aliases.length === 1 ? (
+          <p className="muted small email-compose-de">
+            Enviando desde:{" "}
+            <strong>
+              {aliases[0].resolved_display_name
+                ? `${aliases[0].resolved_display_name} <${aliases[0].send_as_email}>`
+                : aliases[0].send_as_email}
+            </strong>
           </p>
-        ) : null}
-        <form onSubmit={handleSubmit}>
-          {aliases.length === 1 ? (
-            <p className="muted small">
-              Enviando desde:{" "}
-              <strong>
-                {aliases[0].resolved_display_name
-                  ? `${aliases[0].resolved_display_name} <${aliases[0].send_as_email}>`
-                  : aliases[0].send_as_email}
-              </strong>
-            </p>
-          ) : (
-            <label className="field">
-              De
-              <select
-                value={fromAlias}
-                onChange={(e) => {
-                  setFromAlias(e.target.value);
-                  dirtyRef.current = true;
-                }}
-                disabled={loadingAliases || aliases.length === 0}
-              >
-                {aliases.map((a) => (
-                  <option key={a.send_as_email} value={a.send_as_email}>
-                    {a.resolved_display_name
-                      ? `${a.resolved_display_name} <${a.send_as_email}>`
-                      : a.send_as_email}
-                    {a.is_default ? " (por defecto)" : ""}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
+        ) : (
           <label className="field">
+            De
+            <select
+              value={fromAlias}
+              onChange={(e) => {
+                setFromAlias(e.target.value);
+                dirtyRef.current = true;
+              }}
+              disabled={loadingAliases || aliases.length === 0}
+            >
+              {aliases.map((a) => (
+                <option key={a.send_as_email} value={a.send_as_email}>
+                  {a.resolved_display_name
+                    ? `${a.resolved_display_name} <${a.send_as_email}>`
+                    : a.send_as_email}
+                  {a.is_default ? " (por defecto)" : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        <div className="email-compose-para">
+          <label className="field email-compose-para-campo">
             Para
             <input
               type="text"
@@ -715,6 +808,18 @@ export function EmailComposerModal({
               placeholder="email@dominio.com, otro@dominio.com"
             />
           </label>
+          {!mostrarCc || !mostrarCco ? (
+            <span className="email-compose-cc-toggles">
+              {!mostrarCc ? (
+                <button type="button" onClick={() => setMostrarCc(true)} title="Añadir Cc">Cc</button>
+              ) : null}
+              {!mostrarCco ? (
+                <button type="button" onClick={() => setMostrarCco(true)} title="Añadir Cco">Cco</button>
+              ) : null}
+            </span>
+          ) : null}
+        </div>
+        {mostrarCc ? (
           <label className="field">
             Cc
             <input
@@ -727,7 +832,23 @@ export function EmailComposerModal({
               placeholder="opcional"
             />
           </label>
+        ) : null}
+        {mostrarCco ? (
           <label className="field">
+            Cco
+            <input
+              type="text"
+              value={bcc}
+              onChange={(e) => {
+                setBcc(e.target.value);
+                dirtyRef.current = true;
+              }}
+              placeholder="opcional"
+            />
+          </label>
+        ) : null}
+        <div className="email-compose-asunto-fila">
+          <label className="field email-compose-asunto">
             Asunto
             <input
               type="text"
@@ -739,52 +860,69 @@ export function EmailComposerModal({
               maxLength={500}
             />
           </label>
-
-          <div className="email-compose-tools">
+          <div className="email-compose-iconos" role="group" aria-label="Herramientas del correo">
             <button
               type="button"
-              className="button secondary small"
+              className="icon-button"
+              aria-label="Cargar plantilla"
+              title="Cargar plantilla"
               onClick={() => setShowPicker(true)}
             >
-              <FolderOpen size={12} aria-hidden /> Cargar plantilla
+              <FolderOpen size={15} aria-hidden />
             </button>
             <button
               type="button"
-              className="button secondary small"
+              className="icon-button"
+              aria-label="Guardar como plantilla"
               onClick={() => setShowSaveModal(true)}
               disabled={!bodyHtml.trim()}
               title={
                 bodyHtml.trim()
-                  ? undefined
+                  ? "Guardar como plantilla"
                   : "Escribe algo antes de guardar la plantilla."
               }
             >
-              <Save size={12} aria-hidden /> Guardar como plantilla
+              <Save size={15} aria-hidden />
             </button>
             <button
               type="button"
-              className="button secondary small"
+              className="icon-button"
+              aria-label="Adjuntar archivo"
               onClick={() => fileInputRef.current?.click()}
               disabled={uploading}
-              title="Adjuntar archivo (máx. 25 MB en total)"
+              title={uploading ? "Subiendo…" : "Adjuntar archivo (máx. 25 MB en total)"}
             >
-              <Paperclip size={12} aria-hidden />{" "}
-              {uploading ? "Subiendo…" : "Adjuntar"}
+              <Paperclip size={15} aria-hidden />
             </button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              hidden
-              onChange={(e) => {
-                if (e.target.files) void handleFilesPicked(e.target.files);
-              }}
-            />
+            <button
+              type="button"
+              className={`icon-button${mostrarOpciones ? " is-activo" : ""}`}
+              aria-label="Más opciones"
+              aria-expanded={mostrarOpciones}
+              title="Firma y opción de baja"
+              onClick={() => setMostrarOpciones((v) => !v)}
+            >
+              <SlidersHorizontal size={15} aria-hidden />
+            </button>
+          </div>
+        </div>
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          hidden
+          onChange={(e) => {
+            if (e.target.files) void handleFilesPicked(e.target.files);
+          }}
+        />
+        {mostrarOpciones ? (
+          <div className="email-compose-opciones">
             <label className="email-compose-signature">
               <span className="email-compose-signature-label">
                 <PenLine size={12} aria-hidden /> Firma
               </span>
               <select
+                aria-label="Firma"
                 value={activeSignatureId}
                 onChange={(e) => {
                   const nextId = e.target.value;
@@ -794,6 +932,7 @@ export function EmailComposerModal({
                   setBodyHtml((prev) =>
                     buildBodyWithSignature(prev, activeSignatureId, next),
                   );
+                  dirtyRef.current = true;
                 }}
                 disabled={signatures.length === 0}
                 title={
@@ -822,146 +961,162 @@ export function EmailComposerModal({
               <input
                 type="checkbox"
                 checked={includeUnsubscribe}
-                onChange={(e) => setIncludeUnsubscribe(e.target.checked)}
+                onChange={(e) => {
+                  setIncludeUnsubscribe(e.target.checked);
+                  dirtyRef.current = true;
+                }}
               />
               <span className="email-compose-unsubscribe-label">
                 <Ban size={12} aria-hidden /> Incluir opción de baja
               </span>
             </label>
           </div>
+        ) : null}
 
-          {asistente !== null ? (
-            <AsistenteFranja
-              threadId={asistente?.threadId ?? null}
-              contactId={contactId ?? null}
-              destinatario={to}
-              destinatarioInterno={asistente?.destinatarioInterno}
-              abiertaInicial={Boolean(asistente?.abierto)}
-              bloqueada={submitting}
-              onBorrador={aplicarBorrador}
-              onVaciar={vaciarBorrador}
-              onBorradorActual={(id) => {
-                asistenteIdRef.current = id;
+        {asistente !== null ? (
+          <AsistenteFranja
+            threadId={asistente?.threadId ?? null}
+            contactId={contactId ?? null}
+            destinatario={to}
+            destinatarioInterno={asistente?.destinatarioInterno}
+            abiertaInicial={Boolean(asistente?.abierto)}
+            bloqueada={ocupado}
+            borradorInicialId={asistente?.borradorId ?? null}
+            hayTexto={hayTexto}
+            obtenerCuerpo={cuerpoParaAsistente}
+            onBorrador={aplicarBorrador}
+            onVaciar={vaciarBorrador}
+            onBorradorActual={(id) => {
+              asistenteIdRef.current = id;
+              dirtyRef.current = true;
+            }}
+            onEstado={(estado) => {
+              franjaEstadoRef.current = estado;
+            }}
+          />
+        ) : null}
+
+        <div
+          className={`field email-compose-body${dragging ? " dragging" : ""}`}
+          onDragOver={(e) => {
+            e.preventDefault();
+            setDragging(true);
+          }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDragging(false);
+            if (e.dataTransfer.files.length > 0) {
+              void handleFilesPicked(e.dataTransfer.files);
+            }
+          }}
+        >
+          <label>
+            Cuerpo
+            <RichEditor
+              ref={editorRef}
+              value={bodyHtml}
+              onChange={(html) => {
+                setBodyHtml(html);
+                dirtyRef.current = true;
               }}
+              placeholder="Escribe tu email. Usa {nombre}, {empresa}, {email} para personalizar."
+              minHeight={376}
+              fill
+              draftKey={draftKey}
             />
-          ) : null}
-
-          <div
-            className={`field email-compose-body${dragging ? " dragging" : ""}`}
-            onDragOver={(e) => {
-              e.preventDefault();
-              setDragging(true);
-            }}
-            onDragLeave={() => setDragging(false)}
-            onDrop={(e) => {
-              e.preventDefault();
-              setDragging(false);
-              if (e.dataTransfer.files.length > 0) {
-                void handleFilesPicked(e.dataTransfer.files);
-              }
-            }}
-          >
-            <label>
-              Cuerpo
-              <RichEditor
-                ref={editorRef}
-                value={bodyHtml}
-                onChange={(html) => {
-                  setBodyHtml(html);
-                  dirtyRef.current = true;
-                }}
-                placeholder="Escribe tu email. Usa {nombre}, {empresa}, {email} para personalizar."
-                minHeight={460}
-                draftKey={draftKey}
-              />
-            </label>
-            {dragging ? (
-              <div className="email-compose-dropzone" aria-hidden>
-                Suelta para adjuntar
-              </div>
-            ) : null}
-          </div>
-
-          {attachments.length > 0 ? (
-            <div className="email-compose-attachments">
-              <p className="muted small">
-                Adjuntos ({attachments.length}) ·{" "}
-                {formatBytes(
-                  attachments.reduce((s, a) => s + a.size_bytes, 0),
-                )}{" "}
-                de 25 MB
-              </p>
-              <ul className="email-compose-attachments-list">
-                {attachments.map((a) => (
-                  <li key={a.id}>
-                    <Paperclip size={11} aria-hidden />
-                    <span className="email-compose-attachment-name">
-                      {a.filename}
-                    </span>
-                    <span className="muted small">
-                      {formatBytes(a.size_bytes)}
-                    </span>
-                    <button
-                      type="button"
-                      className="icon-button"
-                      onClick={() => handleRemoveAttachment(a.id)}
-                      title="Quitar adjunto"
-                      aria-label={`Quitar ${a.filename}`}
-                    >
-                      <X size={12} aria-hidden />
-                    </button>
-                  </li>
-                ))}
-              </ul>
+          </label>
+          {dragging ? (
+            <div className="email-compose-dropzone" aria-hidden>
+              Suelta para adjuntar
             </div>
           ) : null}
+        </div>
 
-          {hasMerge ? (
-            <p className="email-merge-hint">
-              <Sparkles size={12} aria-hidden /> El email contiene{" "}
-              <code>{"{nombre}"}</code>/<code>{"{empresa}"}</code>/
-              <code>{"{email}"}</code>. Se reemplazarán al enviar con los
-              datos del contacto destinatario.
+        {attachments.length > 0 ? (
+          <div className="email-compose-attachments">
+            <p className="muted small">
+              Adjuntos ({attachments.length}) ·{" "}
+              {formatBytes(
+                attachments.reduce((s, a) => s + a.size_bytes, 0),
+              )}{" "}
+              de 25 MB
             </p>
-          ) : null}
-
-          <div className="actions">
-            <button
-              type="button"
-              className="button secondary"
-              onClick={cerrar}
-              disabled={submitting}
-            >
-              Cancelar
-            </button>
-            {draftId ? (
-              <button
-                type="button"
-                className="button secondary"
-                onClick={handleDiscard}
-                disabled={submitting}
-              >
-                <Trash2 size={11} aria-hidden /> Descartar borrador
-              </button>
-            ) : null}
-            <button
-              type="button"
-              className="button secondary"
-              onClick={() => setShowScheduleDialog(true)}
-              disabled={submitting || !fromAlias}
-            >
-              <CalendarClock size={11} aria-hidden /> Programar envío
-            </button>
-            <button
-              type="submit"
-              className="button"
-              disabled={submitting || !fromAlias}
-            >
-              {submitting ? "Enviando…" : "Enviar ahora"}
-            </button>
+            <ul className="email-compose-attachments-list">
+              {attachments.map((a) => (
+                <li key={a.id}>
+                  <Paperclip size={11} aria-hidden />
+                  <span className="email-compose-attachment-name">
+                    {a.filename}
+                  </span>
+                  <span className="muted small">
+                    {formatBytes(a.size_bytes)}
+                  </span>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    onClick={() => handleRemoveAttachment(a.id)}
+                    title="Quitar adjunto"
+                    aria-label={`Quitar ${a.filename}`}
+                  >
+                    <X size={12} aria-hidden />
+                  </button>
+                </li>
+              ))}
+            </ul>
           </div>
-        </form>
-      </div>
+        ) : null}
+
+        {hasMerge ? (
+          <p className="email-merge-hint">
+            <Sparkles size={12} aria-hidden /> El email contiene{" "}
+            <code>{"{nombre}"}</code>/<code>{"{empresa}"}</code>/
+            <code>{"{email}"}</code>. Se reemplazarán al enviar con los
+            datos del contacto destinatario.
+          </p>
+        ) : null}
+
+        <div className="actions">
+          <button
+            type="button"
+            className="button secondary"
+            onClick={requestClose}
+            disabled={ocupado}
+          >
+            Cancelar
+          </button>
+          {draftId ? (
+            <button
+              type="button"
+              className="button secondary"
+              onClick={handleDiscard}
+              disabled={ocupado}
+            >
+              <Trash2 size={11} aria-hidden /> Descartar borrador
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="button secondary"
+            onClick={() => setShowScheduleDialog(true)}
+            disabled={ocupado || !fromAlias}
+          >
+            <CalendarClock size={11} aria-hidden /> Programar envío
+          </button>
+          <button
+            type="submit"
+            className="button"
+            disabled={ocupado || !fromAlias}
+          >
+            {submitting ? "Enviando…" : "Enviar ahora"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+
+  const anidados = (
+    <>
       {showPicker ? (
         <TemplatePicker
           onSelect={applyTemplate}
@@ -992,7 +1147,66 @@ export function EmailComposerModal({
           );
         }}
       />
+      <CerrarDialogo
+        abierto={preguntaCierre !== null}
+        ocupado={cerrando}
+        conConversacion={preguntaCierre?.conConversacion ?? false}
+        onGuardar={() => void guardarYCerrar()}
+        onDescartar={() => void descartarYCerrar()}
+        onSeguir={() => setPreguntaCierre(null)}
+      />
+    </>
+  );
+
+  // Como diálogo: la capa común de los modales (velo, elevación) y la tarjeta
+  // común. Como panel: la tarjeta que llena el panel derecho que pone el padre.
+  if (dialogo) {
+    return (
+      <div className="modal-overlay email-compose-capa" role="presentation" {...overlayProps}>
+        {tarjeta}
+        {anidados}
+      </div>
+    );
+  }
+  return (
+    <div className="modal-backdrop" role="presentation" ref={rootRef}>
+      {tarjeta}
+      {anidados}
     </div>
+  );
+}
+
+/** Al cerrar con algo escrito: guardar en Borradores (lo que menos daño
+ *  hace, y por eso es lo primero), descartar o seguir editando. Esc o el ✕ de
+ *  esta pregunta es «seguir editando». */
+function CerrarDialogo({
+  abierto, ocupado, conConversacion, onGuardar, onDescartar, onSeguir,
+}: {
+  abierto: boolean;
+  ocupado: boolean;
+  conConversacion: boolean;
+  onGuardar: () => void;
+  onDescartar: () => void;
+  onSeguir: () => void;
+}) {
+  return (
+    <Modal open={abierto} onClose={onSeguir} title="Tienes un borrador sin enviar" size="small">
+      <p>
+        ¿Guardarlo en Borradores, descartarlo o seguir editando?
+        {conConversacion ? " Si lo guardas, la conversación con la IA se guarda con él." : ""}
+      </p>
+      <div className="modal-actions">
+        <button type="button" className="button" onClick={onGuardar} disabled={ocupado} autoFocus>
+          {ocupado ? "Guardando…" : "Guardar en Borradores"}
+        </button>
+        <button type="button" className="button secondary" onClick={onSeguir} disabled={ocupado}>
+          Seguir editando
+        </button>
+        <button type="button" className="button secondary is-danger" onClick={onDescartar} disabled={ocupado}>
+          Descartar
+        </button>
+      </div>
+    </Modal>
   );
 }
 

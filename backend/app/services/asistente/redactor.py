@@ -5,18 +5,28 @@ borrador es SIEMPRE un correo que se puede enviar tal cual al destinatario, o
 está vacío. Todo lo que la IA quiera decirle a la persona de BoHub (que no hay
 nada que contestar, que falta un dato, que no puede confirmar un precio) va en
 `aviso`, que se enseña en la franja del asistente y nunca en el editor. El
-prompt lo exige, y por si el modelo se despista, `parece_informe_al_usuario`
-vacía el cuerpo y pasa el texto al aviso.
+prompt lo exige, y por si el modelo se despista, la guardia
+(`texto.evaluar_cuerpo`) vacía el cuerpo cuando está claro que habla a la
+persona de BoHub y, ante la duda, lo deja y avisa (no borra).
 
 Es una conversación: el primer borrador (turno 0) monta el contexto entero
 (hilo, expediente, base de conocimiento) y lo guarda tal cual en
 `contexto_texto`; cada corrección («más corto», «en inglés») es un turno más
 que manda ese mismo bloque —byte a byte, marcado como cacheable para la API—
-más el borrador actual y la instrucción nueva. Así una corrección cuesta
+más el texto actual y la instrucción nueva. Así una corrección cuesta
 céntimos y no otro borrador. El primer borrador usa el modelo grande; las
 correcciones, el de Configuración ERP (Haiku por defecto). Si la persona
 escribe qué quiere decir, esa instrucción manda sobre lo que se deduzca del
 hilo; si no hay nada nuevo del cliente y no dice nada, no se llama al modelo.
+
+La IA corrige siempre lo que hay AHORA en el editor (`texto_actual_html`):
+el borrador tal cual lo dejó la persona después de retocarlo, un correo
+escrito enteramente a mano (entonces el turno 0 ya es una corrección, con el
+modelo de las correcciones) o un borrador guardado reabierto. Con una
+selección (`seleccion_html`) la corrección se aplica solo a ese fragmento y el
+resto no se toca ni un carácter. El borrador sale en HTML sencillo (las
+etiquetas que admite el editor; `texto.limpiar_html`), y `texto` guarda su
+texto plano para la guardia del cuerpo y la comparación de lo enviado.
 
 Las demás reglas van en el prompt de sistema: redacta, no aporta hechos;
 precios y plazos solo de los datos; sin promesas; enlaces solo de la lista; en
@@ -46,20 +56,42 @@ from app.models.ia import (
     BorradorAsistente,
 )
 from app.services import llm
+from app.services.asistente import borradores
 from app.services.asistente import contexto as ctx_mod
 from app.services.asistente.config import configuracion as config_asistente
 from app.services.asistente.config import estimar_tokens
 from app.services.asistente.contexto import Contexto
 from app.services.asistente.historico import ajustar_al_presupuesto
-from app.services.asistente.texto import parece_informe_al_usuario
+from app.services.asistente.texto import (
+    NIVEL_CORREO,
+    NIVEL_DUDOSO,
+    cuerpo_a_html,
+    empalmar,
+    encajar_fragmento,
+    enlaces_de,
+    evaluar_cuerpo,
+    html_a_texto,
+    limpiar_html,
+    parece_html,
+    sin_firma,
+)
 from app.services.ia.coste import coste_usd
 from app.services.ia.modelos import parametros_de_llamada
 from app.services.ia.uso import registrar_llamada
 
 logger = logging.getLogger(__name__)
 
-MAX_TOKENS_RESPUESTA = 1500
+MAX_TOKENS_RESPUESTA = 2500
 MAX_INSTRUCCION = 2000
+#: Lo que hay en el editor viaja con la petición de corrección; un correo
+#: normal son unos pocos KB, esto es un tope contra un pegado monstruoso.
+MAX_TEXTO_EDITOR = 200_000
+#: Un turno sobre una selección guarda el cuerpo entero con el fragmento
+#: empalmado (para volver a ese turno); más largo que esto, solo el fragmento
+#: (el compositor lo pone en la selección). `texto` es TEXT (64 KB) en MySQL.
+MAX_HTML_EMPALMADO = 30_000
+#: La selección tal cual, para que el compositor solo sustituya ESA selección.
+MAX_SELECCION_GUARDADA = 10_000
 
 NOMBRES_IDIOMA = {
     "es": "español", "en": "inglés", "de": "alemán", "fr": "francés", "nl": "neerlandés",
@@ -112,11 +144,26 @@ PROMPT_SISTEMA = (
     "compruebo y te lo confirmo») y anótalo en «pendiente». No rellenes huecos.\n"
     "9. No repitas lo que el cliente ya sabe, no resumas el histórico, no te disculpes de "
     "más.\n"
-    "10. Si te dan una CORRECCIÓN sobre un BORRADOR ACTUAL, reescríbelo aplicando solo esa "
-    "corrección y conservando todo lo demás.\n\n"
+    "10. Si te dan una CORRECCIÓN sobre un BORRADOR ACTUAL o sobre el TEXTO ACTUAL DEL EDITOR, "
+    "reescríbelo aplicando solo esa corrección y conservando todo lo demás, incluido el formato "
+    "(listas, negritas, enlaces). Si te dan una SELECCIÓN, reescribe solo ese fragmento y "
+    "devuelve en «cuerpo» únicamente el fragmento reescrito, con el mismo tipo de etiquetas que "
+    "tenía; el resto del correo no se toca.\n\n"
+    "FORMATO del «cuerpo»: HTML sencillo con SOLO estas etiquetas: <p>, <br>, <strong>, <em>, "
+    "<u>, <h2>, <h3>, <ul>, <ol>, <li>, <a href='…'> y, solo si hace falta comparar datos, una "
+    "<table> simple (<tr>, <th>, <td>). Nada de estilos, colores, fuentes, imágenes, <div> ni "
+    "<span>. Sobrio: la negrita solo para lo que importa (nombres de producto, importes, "
+    "fechas); un encabezado solo si el correo tiene varias partes. Una lista de máquinas, "
+    "productos o consumibles va SIEMPRE como lista (<ul>), cada elemento con el nombre en "
+    "negrita y, si el producto tiene enlace en CATÁLOGO o ENLACES, el enlace puesto sobre el "
+    "nombre: <li><strong><a href='…'>Nombre</a></strong> — precio y lo esencial</li>. En los "
+    "atributos usa comillas simples, para no romper el JSON. Si te piden algo que no cabe en "
+    "ese formato (un correo «maquetado», «con imágenes de producto», banners, colores), no lo "
+    "hagas en el cuerpo: redacta el correo sencillo y di en «aviso» que el correo va con "
+    "formato sencillo y que las imágenes no se insertan.\n\n"
     "Devuelve SOLO un JSON válido, sin texto alrededor ni markdown:\n"
-    '{"asunto": "asunto del correo", "cuerpo": "el correo en texto plano, párrafos separados '
-    'por una línea en blanco, o \\"\\" si no hay nada que enviar", "idioma": "código de dos '
+    '{"asunto": "asunto del correo", "cuerpo": "el correo en HTML sencillo (las etiquetas de '
+    'FORMATO), o \\"\\" si no hay nada que enviar", "idioma": "código de dos '
     'letras del idioma del cuerpo", "aviso": "lo que tengas que decirle a la persona de BoHub, '
     'o \\"\\"", "pendiente": ["lo que no has podido responder con los datos"], '
     '"enlaces_usados": ["las URL de la lista que has puesto en el cuerpo"]}'
@@ -231,6 +278,9 @@ def _linea_producto(p: dict[str, Any], avisos: dict[str, str], idioma: str) -> s
         if p.get("orientativo"):
             precio += f" · ORIENTATIVO: añade «{avisos['orientativo']}»"
         partes.append(precio)
+    elif p.get("precio_publico") is False:
+        partes.append("PRECIO: no tiene precio público — di que el precio se prepara a medida en "
+                      "la oferta; NO escribas «Consultar» ni ningún importe")
     else:
         partes.append("sin precio publicado: no inventes uno")
     if p.get("enlace"):
@@ -258,11 +308,34 @@ def _bloque_catalogo(ctx: Contexto) -> str:
     lineas = ["CATÁLOGO (los ÚNICOS productos y precios que puedes citar; el precio se copia TAL "
               "CUAL, con su moneda, sin convertir; cada producto con su enlace):"]
     if maquinas:
-        intereses = sorted({m.get("interes") for m in maquinas if m.get("interes")})
-        lineas.append(
-            f"Máquinas que encajan con su interés ({', '.join(intereses) or '—'}); precios "
-            f"{_iva_texto(iva.get('compositor'), avisos)}:")
-        lineas.extend(_linea_producto(m, avisos, ctx.idioma) for m in maquinas)
+        # Por de dónde salió cada máquina: lo que nombra el cliente, lo que pide
+        # la instrucción, el interés clasificado.
+        por_eleccion: dict[str, list[dict[str, Any]]] = {}
+        for m in maquinas:
+            por_eleccion.setdefault(str(m.get("eleccion") or "interes"), []).append(m)
+        precios = f"precios {_iva_texto(iva.get('compositor'), avisos)}"
+        if por_eleccion.get("hilo"):
+            lineas.append(
+                f"Máquinas que el cliente NOMBRA en el hilo (empieza por estas); {precios}:")
+            lineas.extend(_linea_producto(m, avisos, ctx.idioma) for m in por_eleccion["hilo"])
+        if por_eleccion.get("instruccion"):
+            lineas.append(f"Máquinas que pide la INSTRUCCIÓN de quien envía; {precios}:")
+            lineas.extend(_linea_producto(m, avisos, ctx.idioma)
+                          for m in por_eleccion["instruccion"])
+        posibles = por_eleccion.get("hilo_posible", []) + por_eleccion.get(
+            "instruccion_posible", [])
+        if posibles:
+            lineas.append(
+                "Máquinas que PUEDE que nombren el hilo o la instrucción (solo una palabra del "
+                "nombre, o un código que sale en su descripción): ofrécelas solo si el hilo lo "
+                f"confirma; {precios}:")
+            lineas.extend(_linea_producto(m, avisos, ctx.idioma) for m in posibles)
+        if por_eleccion.get("interes"):
+            intereses = sorted(
+                {m.get("interes") for m in por_eleccion["interes"] if m.get("interes")})
+            lineas.append(
+                f"Máquinas que encajan con su interés ({', '.join(intereses) or '—'}); {precios}:")
+            lineas.extend(_linea_producto(m, avisos, ctx.idioma) for m in por_eleccion["interes"])
     if cat.get("sin_maquina"):
         lineas.append(
             f"Sin máquina en el catálogo para: {', '.join(cat['sin_maquina'])}. No inventes "
@@ -397,17 +470,50 @@ def peticion_inicial(instruccion: str | None, *, sin_hilo: bool) -> str:
     )
 
 
-def peticion_correccion(*, texto_actual: str, asunto_actual: str | None, instruccion: str) -> str:
-    """La parte que cambia de un turno de corrección: el borrador actual y lo
-    que hay que cambiarle. El contexto NO se repite aquí: va en el bloque
-    cacheado."""
-    return (
-        f"BORRADOR ACTUAL (asunto: {asunto_actual or '—'}):\n{texto_actual}\n\n"
-        f"CORRECCIÓN DE QUIEN ENVÍA: «{instruccion}»\n\n"
-        "Reescribe el borrador aplicando SOLO esa corrección y conservando todo lo demás "
-        "(hechos, enlaces, idioma salvo que la corrección lo cambie). Devuelve el JSON completo "
-        "con el borrador entero, no solo el cambio."
+def peticion_correccion(
+    *, texto_actual: str, asunto_actual: str | None, instruccion: str,
+    seleccion: str | None = None, sobre_editor: bool = False,
+) -> str:
+    """La parte que cambia de un turno de corrección: el texto actual (el
+    borrador, o lo que hay ahora mismo en el editor, con los retoques de la
+    persona) y lo que hay que cambiarle. Con `seleccion`, solo ese fragmento se
+    reescribe y se devuelve solo. El contexto NO se repite aquí: va en el
+    bloque cacheado."""
+    titulo = (
+        "TEXTO ACTUAL DEL EDITOR (tal y como está ahora, con los cambios de quien envía; es lo "
+        "que hay que corregir)" if sobre_editor else "BORRADOR ACTUAL"
     )
+    if seleccion:
+        return (
+            f"{titulo} (asunto: {asunto_actual or '—'}); es el contexto, NO lo reescribas "
+            f"entero:\n{texto_actual}\n\n"
+            f"SELECCIÓN (el único fragmento que tienes que reescribir):\n{seleccion}\n\n"
+            f"CORRECCIÓN DE QUIEN ENVÍA: «{instruccion}»\n\n"
+            "Reescribe SOLO la selección aplicando esa corrección. Devuelve en «cuerpo» "
+            "únicamente el fragmento reescrito, con el mismo tipo de etiquetas que tenía (si "
+            "era texto suelto dentro de un párrafo, texto suelto sin <p>), listo para "
+            "sustituir a la selección; el resto del correo no se toca. «asunto»: el actual."
+        )
+    return (
+        f"{titulo} (asunto: {asunto_actual or '—'}):\n{texto_actual}\n\n"
+        f"CORRECCIÓN DE QUIEN ENVÍA: «{instruccion}»\n\n"
+        "Reescribe el texto aplicando SOLO esa corrección y conservando todo lo demás "
+        "(hechos, enlaces, formato, idioma salvo que la corrección lo cambie). Devuelve el JSON "
+        "completo con el correo entero, no solo el cambio."
+    )
+
+
+def texto_del_editor(texto_actual_html: str | None, seleccion_html: str | None) -> tuple[str, str]:
+    """`(texto actual, selección)` limpios para el prompt: lo que hay ahora en
+    el editor sin la firma del compositor y reducido a las etiquetas del
+    borrador, y la selección igual. Los dos vacíos si no hay nada escrito."""
+    actual = limpiar_html(sin_firma(texto_actual_html))
+    if not html_a_texto(actual).strip():
+        return "", ""
+    sel = limpiar_html(seleccion_html) if seleccion_html else ""
+    if sel and not html_a_texto(sel).strip():
+        sel = ""
+    return actual, sel
 
 
 def prompt_usuario(ctx: Contexto) -> str:
@@ -456,15 +562,23 @@ def _parsear(raw: str, *, asunto_defecto: str | None, idioma_defecto: str | None
 
 def _regla_primera(data: dict[str, Any], *, nombre_usuario: str | None,
                    nombre_destinatario: str | None) -> None:
-    """El cuerpo es un correo o está vacío. Si lo que salió habla a la persona
-    de BoHub, pasa al aviso y el cuerpo se queda vacío."""
-    motivo = parece_informe_al_usuario(
-        data["cuerpo"], nombre_usuario=nombre_usuario, nombre_destinatario=nombre_destinatario)
-    if motivo is None:
+    """El cuerpo es un correo o está vacío. Si lo que salió habla claramente a
+    la persona de BoHub (informe), pasa al aviso y el cuerpo se queda vacío;
+    si solo es dudoso, se queda en el editor y la franja pide que se revise
+    (ante la duda, avisar y no borrar). La guardia mira el texto plano (el
+    cuerpo viene en HTML sencillo)."""
+    cuerpo = data["cuerpo"]
+    plano = html_a_texto(cuerpo) if parece_html(cuerpo) else cuerpo
+    veredicto = evaluar_cuerpo(
+        plano, nombre_usuario=nombre_usuario, nombre_destinatario=nombre_destinatario)
+    if veredicto.nivel == NIVEL_CORREO:
         return
-    informe = data["cuerpo"]
-    data["cuerpo"] = ""
-    nota = f"La IA no ha redactado un correo ({motivo}). Lo que dijo: «{informe}»"
+    if veredicto.nivel == NIVEL_DUDOSO:
+        nota = (f"Revisa el cuerpo antes de enviar: {veredicto.motivo}. Lo he dejado en el "
+                "editor por si es un correo válido.")
+    else:
+        data["cuerpo"] = ""
+        nota = f"La IA no ha redactado un correo ({veredicto.motivo}). Lo que dijo: «{plano}»"
     data["aviso"] = f"{data['aviso']} {nota}".strip() if data["aviso"] else nota
 
 
@@ -476,14 +590,52 @@ def _json(raw: str | None) -> dict[str, Any]:
     return datos if isinstance(datos, dict) else {}
 
 
-def _rellenar(b: BorradorAsistente, data: dict[str, Any], uso: llm.Uso | None,
-              modelo_pedido: str) -> None:
-    b.texto = data["cuerpo"]
+def _rellenar(
+    b: BorradorAsistente, data: dict[str, Any], uso: llm.Uso | None, modelo_pedido: str, *,
+    enlaces: list[str], editor_html: str | None = None, seleccion_html: str | None = None,
+    sobre_editor: bool = False,
+) -> None:
+    """Lo que devolvió el modelo, al borrador: el cuerpo en HTML sencillo
+    (limpiado; enlaces solo de `enlaces`) y su texto plano. En modo selección
+    lo devuelto es el fragmento: se empalma en el texto del editor
+    (`editor_html`, tal cual, sin tocar el resto) si la selección aparece en
+    él; si no, el turno guarda el fragmento y el compositor lo sustituye en el
+    editor. `sobre_editor`: la corrección partió de lo que había en el editor
+    (el compositor no pregunta antes de ponerlo)."""
+    html, plano = cuerpo_a_html(data["cuerpo"], enlaces)
+    contexto = _json(b.contexto_json)
+    contexto.pop("seleccion", None)
+    contexto.pop("sobre_editor", None)
+    if seleccion_html:
+        # El turno es sobre la selección aunque el modelo (o la guardia) no
+        # devolviera nada: el compositor no debe tomar un cuerpo vacío por
+        # «sustituir todo por nada». Un fragmento de texto corrido va sin
+        # `<p>` si la selección era texto dentro de un párrafo.
+        html = encajar_fragmento(html, seleccion_html) if html else ""
+        entero = empalmar(editor_html or "", seleccion_html, html) if html else None
+        if entero is not None and len(entero) > MAX_HTML_EMPALMADO:
+            entero = None                       # demasiado largo: solo el fragmento
+        contexto["seleccion"] = {
+            "original": html_a_texto(seleccion_html)[:300],
+            # Tal cual la mandó el compositor, para que al volver a elegir el
+            # turno solo sustituya ESA selección (no otra que haya entonces).
+            "original_html": seleccion_html if len(seleccion_html) <= MAX_SELECCION_GUARDADA
+            else None,
+            "fragmento_html": html,
+            "empalmado": entero is not None,
+        }
+        if entero is not None:
+            html, plano = entero, html_a_texto(entero)
+        elif html:
+            plano = html_a_texto(html)
+    if sobre_editor:
+        contexto["sobre_editor"] = True
+    b.html = html
+    b.texto = plano
     b.asunto = (data["asunto"] or b.asunto or "")[:500] or None
     b.idioma = data["idioma"]
     b.aviso = data["aviso"] or None
     b.pendiente_json = json.dumps(data["pendiente"], ensure_ascii=False)
-    contexto = _json(b.contexto_json)
     contexto["enlaces_usados"] = data["enlaces_usados"]
     b.contexto_json = json.dumps(contexto, ensure_ascii=False, default=str)
     nombre = (uso.modelo if uso else None) or modelo_pedido
@@ -539,17 +691,28 @@ def generar(
     alcance: str = ALCANCE_CONTACTO, instruccion: str | None = None,
     destinatario: str | None = None, contacto: Contact | None = None,
     regenerar_de: str | None = None, ahora: datetime | None = None,
+    texto_actual_html: str | None = None, seleccion_html: str | None = None,
 ) -> BorradorAsistente:
     """El primer turno: monta el contexto, pide el borrador (si hay con qué),
     lo guarda con su coste y lo devuelve (ya en la sesión, sin commit). Sin
     hilo (`thread=None`) es un correo nuevo: hace falta `destinatario` e
-    `instruccion`. Lanza `llm.LLMError` si la IA no está configurada o no
-    responde, y `ValueError` si falta algo. `ahora` solo lo fijan los tests
-    (la antigüedad de los precios del catálogo)."""
+    `instruccion`. Con `texto_actual_html` (hay algo escrito en el editor: un
+    correo a mano, un borrador guardado reabierto) el turno 0 es ya una
+    CORRECCIÓN de ese texto —con el modelo de las correcciones— y hace falta
+    instrucción; con `seleccion_html`, solo de ese fragmento. Lanza
+    `llm.LLMError` si la IA no está configurada o no responde, y `ValueError`
+    si falta algo. `ahora` solo lo fijan los tests (la antigüedad de los
+    precios del catálogo)."""
     settings = get_settings()
     if not settings.anthropic_api_key:
         raise llm.LLMNotConfiguredError("La IA no está configurada (ANTHROPIC_API_KEY).")
     instruccion = (instruccion or "").strip()[:MAX_INSTRUCCION] or None
+    editor_html = sin_firma(texto_actual_html).strip()
+    actual, seleccion = texto_del_editor(texto_actual_html, seleccion_html)
+    if actual and not instruccion:
+        raise ValueError(
+            "Escribe qué quieres cambiar del texto que hay en el editor («más corto», «más "
+            "formal», «en inglés»…).")
     if thread is None:
         if alcance not in ALCANCES_SIN_HILO:
             raise ValueError(
@@ -567,8 +730,18 @@ def generar(
         contacto=contacto, instruccion=instruccion, ahora=ahora,
     )
     cfg = config_asistente(session)
-    modelo_borrador, _ = _modelos(cfg, settings)
-    peticion_texto = peticion_inicial(instruccion, sin_hilo=thread is None)
+    modelo_borrador, modelo_correccion = _modelos(cfg, settings)
+    if actual:
+        # Hay texto en el editor: la IA corrige ESO (regla del 11/10/2026), con
+        # el modelo de las correcciones; el contexto se monta igual, para que
+        # los turnos siguientes lo reutilicen de caché.
+        modelo, proposito = modelo_correccion, PROPOSITO_CORRECCION
+        peticion_texto = peticion_correccion(
+            texto_actual=actual, asunto_actual=ctx.asunto_respuesta, instruccion=instruccion or "",
+            seleccion=seleccion or None, sobre_editor=True)
+    else:
+        modelo, proposito = modelo_borrador, PROPOSITO_ASISTENTE
+        peticion_texto = peticion_inicial(instruccion, sin_hilo=thread is None)
     # El presupuesto de tokens de entrada: se recorta por abajo (empresa y
     # correos viejos, lo más antiguo primero) hasta que el prompt cabe. El
     # hilo y el expediente no se tocan.
@@ -585,7 +758,7 @@ def generar(
         thread_id=thread.id if thread is not None else None,
         message_id=ctx.ultimo_del_cliente.id if ctx.ultimo_del_cliente else None,
         contact_id=(ctx.contacto or {}).get("id") or (thread.contact_id if thread else None),
-        usuario_id=usuario.id, idioma=ctx.idioma, modelo=modelo_borrador[:80],
+        usuario_id=usuario.id, idioma=ctx.idioma, modelo=modelo[:80],
         destinatario=ctx.destinatario, remitente=ctx.usuario.get("remitente"),
         asunto=ctx.asunto_respuesta or None, texto="",
         pendiente_json="[]", enlaces_json=json.dumps(ctx.enlaces_lista(), ensure_ascii=False),
@@ -610,12 +783,12 @@ def generar(
                     thread.id, usuario.id)
         return borrador
     try:
-        raw = _llamar(settings, modelo=modelo_borrador, contexto_texto=contexto_texto,
+        raw = _llamar(settings, modelo=modelo, contexto_texto=contexto_texto,
                       peticion_texto=peticion_texto, cfg=cfg)
     except llm.LLMError as exc:
         uso = llm.tomar_ultimo_uso()
         registrar_llamada(
-            session, proposito=PROPOSITO_ASISTENTE, modelo=modelo_borrador, uso=uso,
+            session, proposito=proposito, modelo=modelo, uso=uso,
             usuario_id=usuario.id,
             referencia_tipo="email_thread" if thread is not None else "destinatario",
             referencia_id=thread.id if thread is not None else ctx.destinatario,
@@ -626,11 +799,16 @@ def generar(
     data = _parsear(raw, asunto_defecto=ctx.asunto_respuesta, idioma_defecto=ctx.idioma)
     _regla_primera(data, nombre_usuario=ctx.usuario.get("nombre_pila"),
                    nombre_destinatario=(ctx.contacto or {}).get("nombre"))
-    _rellenar(borrador, data, uso, modelo_borrador)
+    # Enlaces que pueden ir en el cuerpo: los de la base de conocimiento y el
+    # catálogo, más los que la persona ya tenía puestos en su texto.
+    enlaces = [e["url"] for e in ctx.enlaces_lista()] + enlaces_de(actual)
+    _rellenar(borrador, data, uso, modelo, enlaces=enlaces, editor_html=editor_html,
+              seleccion_html=(seleccion_html or "").strip() if seleccion else None,
+              sobre_editor=bool(actual))
     session.add(borrador)
     session.flush()
     llamada = registrar_llamada(
-        session, proposito=PROPOSITO_ASISTENTE, modelo=borrador.modelo, uso=uso,
+        session, proposito=proposito, modelo=borrador.modelo, uso=uso,
         usuario_id=usuario.id, referencia_tipo="ia_borrador", referencia_id=borrador.id,
     )
     borrador.llamada_id = llamada.id
@@ -648,13 +826,16 @@ def generar(
 
 def corregir(
     session: Session, *, borrador: BorradorAsistente, instruccion: str, usuario: User,
+    texto_actual_html: str | None = None, seleccion_html: str | None = None,
 ) -> BorradorAsistente:
     """Un turno más de la conversación: el mismo bloque de contexto guardado
-    (cacheable), el borrador actual y la instrucción nueva. Si el borrador
-    actual está vacío (no había nada que contestar), la instrucción es el
-    primer borrador de verdad y va con el modelo del primer borrador; si no,
-    es una corrección y va con el modelo de las correcciones. El borrador que
-    se corrige queda como regenerado."""
+    (cacheable), el texto actual y la instrucción nueva. El texto actual es lo
+    que hay AHORA en el editor (`texto_actual_html`, con los retoques de la
+    persona) y, si no llega, el último borrador; con `seleccion_html` solo se
+    reescribe ese fragmento. Si no hay texto ninguno (no había nada que
+    contestar), la instrucción es el primer borrador de verdad y va con el
+    modelo del primer borrador; si no, es una corrección y va con el modelo de
+    las correcciones. El borrador que se corrige queda como regenerado."""
     settings = get_settings()
     if not settings.anthropic_api_key:
         raise llm.LLMNotConfiguredError("La IA no está configurada (ANTHROPIC_API_KEY).")
@@ -670,14 +851,21 @@ def corregir(
             "Este borrador no guarda su contexto (es anterior a la conversación): pide uno nuevo.")
     cfg = config_asistente(session)
     modelo_borrador, modelo_correccion = _modelos(cfg, settings)
-    primera_redaccion = not (borrador.texto or "").strip()
+    editor_html = sin_firma(texto_actual_html).strip()
+    actual, seleccion = texto_del_editor(texto_actual_html, seleccion_html)
+    sobre_editor = bool(actual)
+    if not sobre_editor:
+        actual = borradores.html_de(borrador) if (borrador.texto or "").strip() else ""
+        editor_html, seleccion = actual, ""
+    primera_redaccion = not actual
     if primera_redaccion:
         modelo, proposito = modelo_borrador, PROPOSITO_ASISTENTE
         peticion_texto = peticion_inicial(instruccion, sin_hilo=borrador.thread_id is None)
     else:
         modelo, proposito = modelo_correccion, PROPOSITO_CORRECCION
         peticion_texto = peticion_correccion(
-            texto_actual=borrador.texto, asunto_actual=borrador.asunto, instruccion=instruccion)
+            texto_actual=actual, asunto_actual=borrador.asunto, instruccion=instruccion,
+            seleccion=seleccion or None, sobre_editor=sobre_editor)
     try:
         raw = _llamar(settings, modelo=modelo, contexto_texto=contexto_texto,
                       peticion_texto=peticion_texto, cfg=cfg)
@@ -706,7 +894,10 @@ def corregir(
         mensajes_hilo=borrador.mensajes_hilo, mensajes_historico=borrador.mensajes_historico,
         estado=ESTADO_GENERADO,
     )
-    _rellenar(nuevo, data, uso, modelo)
+    enlaces = borradores.enlaces_del_borrador(borrador) + enlaces_de(actual)
+    _rellenar(nuevo, data, uso, modelo, enlaces=enlaces, editor_html=editor_html,
+              seleccion_html=(seleccion_html or "").strip() if seleccion else None,
+              sobre_editor=sobre_editor)
     session.add(nuevo)
     session.flush()
     llamada = registrar_llamada(

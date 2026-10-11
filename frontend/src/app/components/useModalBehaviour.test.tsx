@@ -12,15 +12,19 @@ function TestModal({
   onClose,
   disabled = false,
   confirmClose,
+  closeOnOverlayClick,
   children,
 }: {
   label: string;
   onClose: () => void;
   disabled?: boolean;
   confirmClose?: () => boolean;
+  closeOnOverlayClick?: boolean;
   children?: React.ReactNode;
 }) {
-  const { overlayProps, requestClose } = useModalBehaviour({ onClose, disabled, confirmClose });
+  const { overlayProps, requestClose } = useModalBehaviour({
+    onClose, disabled, confirmClose, closeOnOverlayClick,
+  });
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={label} {...overlayProps}>
       <div className="modal-dialog erp-modal">
@@ -170,6 +174,18 @@ describe("useModalBehaviour", () => {
     expect(screen.getByLabelText("Nombre")).toHaveFocus();
     await user.click(screen.getByRole("button", { name: "Cerrar" }));
     expect(nueva).toHaveFocus();
+  });
+
+  it("con closeOnOverlayClick=false la capa no cierra; Esc y ✕ sí", async () => {
+    const user = userEvent.setup();
+    const onClose = jest.fn();
+    render(<TestModal label="Compositor" onClose={onClose} closeOnOverlayClick={false} />);
+    fireEvent.mouseDown(screen.getByRole("dialog", { name: "Compositor" }));
+    expect(onClose).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Cerrar" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    await user.keyboard("{Escape}");
+    expect(onClose).toHaveBeenCalledTimes(2);
   });
 
   it("confirmClose que devuelve false impide cerrar (Esc, capa y ✕)", async () => {

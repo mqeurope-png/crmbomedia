@@ -126,6 +126,10 @@ type RichEditorProps = {
   onChange: (html: string) => void;
   placeholder?: string;
   minHeight?: number;
+  /** El editor se queda con todo el alto que le deje su contenedor (flex),
+   *  sin bajar de `minHeight` y sin asa de redimensionar: el compositor usa
+   *  el alto de la ventana y lo que encoge es la franja, nunca el cuerpo. */
+  fill?: boolean;
   /** Unique key for the built-in autosave plugin. The draft survives
    *  a refresh / accidental close and TinyMCE surfaces a "restore"
    *  toolbar button when one exists. Pass something stable per
@@ -135,14 +139,21 @@ type RichEditorProps = {
 
 /** Imperative surface so the send-modal can call `clearDraft()` after
  *  a successful send — the autosave entry survives a soft close and
- *  would otherwise leak into the next conversation. */
+ *  would otherwise leak into the next conversation. `getSelectionHtml` y
+ *  `replaceSelection` son para el asistente: corregir solo lo seleccionado y
+ *  poner el fragmento reescrito donde estaba, sin tocar el resto. */
 export type RichEditorHandle = {
   clearDraft: () => void;
+  /** El HTML de la selección actual del editor, o "" si no hay nada seleccionado. */
+  getSelectionHtml: () => string;
+  /** Sustituye la selección por `html` y devuelve el cuerpo entero resultante,
+   *  o null si no había selección (entonces no toca nada). */
+  replaceSelection: (html: string) => string | null;
 };
 
 export const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
   function RichEditor(
-    { value, onChange, placeholder, minHeight = 400, draftKey = "default" },
+    { value, onChange, placeholder, minHeight = 400, fill = false, draftKey = "default" },
     ref,
   ) {
   const editorRef = useRef<TinyMCEEditor | null>(null);
@@ -174,8 +185,21 @@ export const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
         }
         for (const key of remove) window.localStorage.removeItem(key);
       },
+      getSelectionHtml() {
+        const editor = editorRef.current;
+        if (!editor || editor.selection.isCollapsed()) return "";
+        return editor.selection.getContent({ format: "html" }).trim();
+      },
+      replaceSelection(html: string) {
+        const editor = editorRef.current;
+        if (!editor || editor.selection.isCollapsed()) return null;
+        editor.selection.setContent(html);
+        const content = editor.getContent();
+        onChange(content);
+        return content;
+      },
     }),
-    [draftKey],
+    [draftKey, onChange],
   );
 
   return (
@@ -193,7 +217,12 @@ export const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
       value={value}
       onEditorChange={(content) => onChange(content)}
       init={{
-        height: minHeight,
+        height: fill ? "100%" : minHeight,
+        min_height: fill ? minHeight : undefined,
+        resize: fill ? false : true,
+        // Sin asa de redimensionar, la barra de estado (ruta «p » strong» y
+        // contador) solo quita líneas al cuerpo en pantallas bajas.
+        statusbar: !fill,
         menubar: false,
         branding: false,
         promotion: false,

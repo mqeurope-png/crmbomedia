@@ -22,11 +22,22 @@ datos. Aquí viven:
 - **Interés → máquinas** (`kb_interes_productos`): qué máquinas se le enseñan
   a un lead según su interés, por marca y patrón del nombre, editable en
   Configuración ERP. La propuesta de partida (`MAPA_DE_PARTIDA`) la revisa
-  Bart; los intereses sin máquina en el compositor (láser, packaging, CNC)
-  quedan como huecos y se enlaza la página de producto del interés.
+  Bart; el único interés comercial sin máquina en el compositor es el CNC:
+  queda como hueco y se enlaza la página de producto del interés.
+- **De dónde se eligen las máquinas** (`para_asistente`), por este orden: lo
+  que el cliente nombra en el hilo (por el nombre y, más flojo, por la
+  descripción, las características y el texto alternativo), lo que pide la
+  instrucción de quien envía («las máquinas de DTF» manda), los consumibles
+  de la máquina que ya tiene y, por último, el interés clasificado.
 - Los **consumibles y repuestos de la máquina que tiene el cliente**: se
   casan por las palabras de sus pedidos contra el nombre y la categoría de
   los productos de las tiendas.
+- **Contra los datos reales** (11/10/2026): «Consultar» no es un precio sino la
+  marca de que no hay precio público (`precio_publico`); una entrada sin
+  precio y sin área de impresión no es una máquina (`descartado`, visible en
+  la pantalla); ningún valor del origen desborda su columna (se recorta antes
+  de escribir) y la escritura va por lotes con captura de error por fila: lo
+  que no entra se salta, se cuenta y la pasada termina.
 """
 from __future__ import annotations
 
@@ -38,7 +49,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, select
-from sqlalchemy.exc import OperationalError, ProgrammingError
+from sqlalchemy.exc import OperationalError, ProgrammingError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.models.conocimiento import (
@@ -126,33 +137,54 @@ AVISOS: dict[str, dict[str, str]] = {
     },
 }
 
-#: La propuesta de interés → máquinas del 11/10/2026 (a revisar por Bart):
-#: (interés, marca del compositor, patrón del nombre; vacío = toda la marca).
+#: La propuesta de interés → máquinas (a revisar por Bart): (interés, marca del
+#: compositor, patrón del nombre; vacío = toda la marca). Las marcas son los
+#: ids del compositor (`artisjet`, `mbo`, `mbo_dtf`, `flux`, `smartjet`,
+#: `pimpam`); se casan sin distinguir mayúsculas ni separadores. Reparto del
+#: 11/10/2026 contra los datos reales: dtf → mbo_dtf; packaging → smartjet (los
+#: overprinters single-pass sobre cajas y bolsas); corte_laser y grabado_laser
+#: → flux; uv_* → artisjet y mbo; vending → pimpam. Es la propuesta que se
+#: enseña mientras la tabla está vacía; la tabla ya sembrada no se toca desde
+#: aquí (se edita en Configuración ERP).
 MAPA_DE_PARTIDA: tuple[tuple[str, str, str, str | None], ...] = (
-    ("uv_pequeno", "artisJet", "Young", None),
-    ("uv_pequeno", "artisJet", "Proud", None),
-    ("uv_pequeno", "MBO", "1015", None),
-    ("uv_mediano", "artisJet", "3000Pro", None),
-    ("uv_mediano", "artisJet", "5000U", None),
-    ("uv_mediano", "MBO", "3050", None),
-    ("uv_mediano", "MBO", "4060", None),
-    ("uv_grande", "artisJet", "6090 Trust", None),
-    ("uv_grande", "MBO", "6090", None),
-    ("uv_grande", "MBO", "UV1612G", None),
-    ("uv_grande", "MBO", "UV1812", None),
-    ("uv_grande", "MBO", "UV2513", None),
-    ("dtf", "SmartJet FLEX", "", "Las cuatro SmartJet FLEX; confirmar cuáles van a DTF."),
-    ("vending", "PimPam", "CaseBox", None),
-    ("vending", "PimPam", "Custom", None),
+    ("uv_pequeno", "artisjet", "Young", None),
+    ("uv_pequeno", "artisjet", "Proud", None),
+    ("uv_pequeno", "mbo", "1015", None),
+    ("uv_mediano", "artisjet", "3000Pro", None),
+    ("uv_mediano", "artisjet", "5000U", None),
+    ("uv_mediano", "mbo", "3050", None),
+    ("uv_mediano", "mbo", "4060", None),
+    ("uv_grande", "artisjet", "6090 Trust", None),
+    ("uv_grande", "mbo", "6090", None),
+    ("uv_grande", "mbo", "UV1612G", None),
+    ("uv_grande", "mbo", "UV1812", None),
+    ("uv_grande", "mbo", "UV2513", None),
+    ("dtf", "mbo_dtf", "", "Las máquinas DTF de MBO (Orion, Lyra, Astra, Vega y sus hornos)."),
+    ("corte_laser", "flux", "", "Las láser de FLUX."),
+    ("grabado_laser", "flux", "", "Las láser de FLUX."),
+    ("packaging", "smartjet", "", "SmartJet: overprinters single-pass sobre cajas y bolsas."),
+    ("vending", "pimpam", "", None),
 )
-#: Intereses comerciales sin máquina en el compositor (hallazgo del 11/10/2026:
-#: las láser de FLUX y MBO Lasers, el packaging y el CNC no están en él). Se
-#: enlaza la página de producto del interés (`kb_rutas`) y no se inventa nada.
+#: Intereses comerciales sin máquina en el compositor (hallazgo del 11/10/2026
+#: contra los datos reales: solo el CNC). Se enlaza la página de producto del
+#: interés (`kb_rutas`) y no se inventa nada.
 HALLAZGO_SIN_PRODUCTO = (
-    "Las máquinas láser (FLUX, MBO Lasers), el packaging y el CNC no están en el compositor de "
-    "correos: para esos intereses el asistente enlaza la página de producto del interés y no cita "
-    "ningún precio."
+    "El único interés comercial sin máquina en el compositor de correos es el CNC: para él el "
+    "asistente enlaza la página de producto del interés y no cita ningún precio. Láser (FLUX), "
+    "DTF (MBO DTF), packaging (SmartJet), UV (artisJet y MBO) y vending (PimPam) sí tienen "
+    "máquinas."
 )
+#: Lo que el origen escribe cuando NO hay precio público («Consultar», «on request»).
+_SIN_PRECIO_PUBLICO_RE = re.compile(
+    r"^\W*(consultar|a consultar|precio a consultar|cons[uú]ltanos|cons[uú]ltenos|bajo consulta|"
+    r"on request|price on request|upon request|poa|ask( us)?|auf anfrage|preis auf anfrage|"
+    r"sur demande|prix sur demande|op aanvraag|prijs op aanvraag|n/?a|tba|tbd|-+)\W*$",
+    re.IGNORECASE,
+)
+#: Cuántas filas se escriben por lote (un lote que falla se reintenta fila a fila).
+LOTE_ESCRITURA = 200
+#: Cuántos errores por fila se guardan en el resumen de la pasada.
+MAX_ERRORES_RESUMEN = 25
 
 _INTERES_RE = re.compile(r"^[a-z][a-z0-9_]{1,39}$")
 _NUMERO_RE = re.compile(r"\d(?:[\d .,  ]*\d)?")
@@ -177,11 +209,20 @@ def moneda_de(texto: str | None) -> str | None:
     return None
 
 
+def sin_precio_publico(texto: str | None) -> bool:
+    """True si lo que el origen escribe en el precio es la marca de que NO hay
+    precio público («Consultar», «on request»). Un precio con importe («desde
+    21.500 €») no lo es."""
+    plano = (texto or "").strip()
+    return bool(plano) and bool(_SIN_PRECIO_PUBLICO_RE.match(plano))
+
+
 def numero_de(texto: str | None) -> float | None:
     """El primer número del texto, entendiendo los separadores europeos y
     anglosajones: «9.300 €» → 9300; «9 300 €» → 9300; «9.300,50» → 9300.5;
-    «9,300.50» → 9300.5; «12,50» → 12.5; «ab 2.990 €» → 2990. Sin número, None.
-    Es solo para ordenar: lo que se enseña es el texto."""
+    «9,300.50» → 9300.5; «12,50» → 12.5; «ab 2.990 €» → 2990; «desde 21.500 €»
+    → 21500. Sin importe («Consultar»), None, nunca cero. Es solo para ordenar:
+    lo que se enseña es el texto."""
     m = _NUMERO_RE.search(texto or "")
     if not m:
         return None
@@ -249,19 +290,39 @@ def _json_dict(raw: str | None) -> dict[str, Any]:
 CAMPOS_FILA = (
     "tipo", "marca", "nombre", "descripcion", "caracteristicas_json", "categoria", "imagen",
     "precio_texto", "precio_num", "moneda", "enlace", "sitio", "actualizado_origen", "visible",
-    "datos_json",
+    "datos_json", "precio_publico", "descartado", "motivo_descarte",
 )
+_LARGOS: dict[str, int] = {
+    c.name: int(c.type.length) for c in ProductoCatalogo.__table__.columns
+    if getattr(c.type, "length", None)
+}
+
+
+def recortar_a_columna(campo: str, valor: Any) -> Any:
+    """Ningún valor del origen desborda su columna: un texto más largo que la
+    columna se recorta antes de escribir (el 11/10/2026 una categoría de 290
+    caracteres, nueve categorías de una tienda, tiró la pasada entera)."""
+    largo = _LARGOS.get(campo)
+    if largo and isinstance(valor, str) and len(valor) > largo:
+        return valor[:largo]
+    return valor
 
 
 def _aplicar(fila: ProductoCatalogo, datos: dict[str, Any]) -> bool:
-    """Copia lo indexado del producto. True si algo cambió (sin contar la
-    fecha de origen, que en las tiendas es la propia pasada)."""
+    """Copia lo indexado del producto (recortado a su columna). True si algo
+    cambió (sin contar la fecha de origen, que en las tiendas es la propia
+    pasada)."""
     antes = tuple(getattr(fila, c) for c in CAMPOS_FILA if c != "actualizado_origen")
     for campo in CAMPOS_FILA:
         if campo in datos:
-            setattr(fila, campo, datos[campo])
+            setattr(fila, campo, recortar_a_columna(campo, datos[campo]))
     despues = tuple(getattr(fila, c) for c in CAMPOS_FILA if c != "actualizado_origen")
     return antes != despues
+
+
+def _lotes(elementos: list[Any], tamano: int) -> Iterable[list[Any]]:
+    for i in range(0, len(elementos), max(1, tamano)):
+        yield elementos[i:i + tamano]
 
 
 def escribir_filas(
@@ -270,7 +331,10 @@ def escribir_filas(
 ) -> dict[str, Any]:
     """Vuelca lo descargado de UNA fuente (y, en las tiendas, de una web e
     idioma): altas, cambios y los que ya no están (`ido_en`). Cada fila es un
-    dict con `origen_id`, `idioma` y los `CAMPOS_FILA`."""
+    dict con `origen_id`, `idioma` y los `CAMPOS_FILA`. Se escribe por lotes
+    dentro de un SAVEPOINT; un lote que la base rechaza se reintenta fila a
+    fila y la que no entra se salta (contada en `saltadas`, el motivo en
+    `errores`): la pasada termina siempre."""
     consulta = select(ProductoCatalogo).where(ProductoCatalogo.fuente == fuente)
     if sitio is not None:
         consulta = consulta.where(ProductoCatalogo.sitio == sitio)
@@ -278,32 +342,73 @@ def escribir_filas(
         consulta = consulta.where(ProductoCatalogo.idioma == idioma)
     existentes = {(f.origen_id, f.idioma): f for f in session.scalars(consulta)}
     vistos: set[tuple[str, str]] = set()
-    nuevos = actualizados = 0
+    pendientes: list[tuple[tuple[str, str], dict[str, Any]]] = []
     for datos in filas:
-        clave = (str(datos["origen_id"]), str(datos["idioma"]))
+        clave = (str(datos.get("origen_id") or ""), str(datos.get("idioma") or ""))
         if clave in vistos:
             continue
         vistos.add(clave)
+        pendientes.append((clave, datos))
+
+    def _una(clave: tuple[str, str], datos: dict[str, Any]) -> tuple[int, int]:
+        """`(nuevos, actualizados)` de escribir una fila (0 o 1 cada uno)."""
         fila = existentes.get(clave)
         if fila is None:
             fila = ProductoCatalogo(fuente=fuente, origen_id=clave[0], idioma=clave[1],
                                     nombre="", visto_en=ahora)
             _aplicar(fila, datos)
             session.add(fila)
-            nuevos += 1
-        else:
-            if _aplicar(fila, datos) or fila.ido_en is not None:
-                actualizados += 1
-            fila.ido_en = None
+            fila.visto_en = ahora
+            return 1, 0
+        cambio = _aplicar(fila, datos) or fila.ido_en is not None
+        fila.ido_en = None
         fila.visto_en = ahora
+        return 0, 1 if cambio else 0
+
+    def _lote(lote: list[tuple[tuple[str, str], dict[str, Any]]]) -> tuple[int, int]:
+        n = a = 0
+        with session.begin_nested():
+            for clave, datos in lote:
+                dn, da = _una(clave, datos)
+                n += dn
+                a += da
+        return n, a
+
+    nuevos = actualizados = saltadas = 0
+    errores: list[str] = []
+    escritas: set[tuple[str, str]] = set()
+    for lote in _lotes(pendientes, LOTE_ESCRITURA):
+        try:
+            n, a = _lote(lote)
+            nuevos += n
+            actualizados += a
+            escritas.update(clave for clave, _ in lote)
+            continue
+        except SQLAlchemyError as exc:
+            logger.warning("kb.catalogo: un lote de %d filas (%s) no entró (%s); fila a fila",
+                           len(lote), fuente, type(exc).__name__)
+        # El SAVEPOINT deshizo el lote entero: ahora una a una, y la que no
+        # entra se salta con su motivo.
+        for clave, datos in lote:
+            try:
+                n, a = _lote([(clave, datos)])
+                nuevos += n
+                actualizados += a
+                escritas.add(clave)
+            except SQLAlchemyError as exc:
+                saltadas += 1
+                motivo = str(getattr(exc, "orig", None) or exc).replace("\n", " ")[:160]
+                if len(errores) < MAX_ERRORES_RESUMEN:
+                    errores.append(f"{clave[0]} ({clave[1]}): {type(exc).__name__}: {motivo}")
+                logger.warning("kb.catalogo: fila %s (%s) saltada: %s", clave[0], clave[1], motivo)
     idos = 0
     for clave, fila in existentes.items():
-        if clave not in vistos and fila.ido_en is None:
+        if clave not in escritas and fila.ido_en is None and clave not in vistos:
             fila.ido_en = ahora
             idos += 1
     session.flush()
-    return {"productos": len(vistos), "nuevos": nuevos, "actualizados": actualizados,
-            "idos": idos, "error": None}
+    return {"productos": len(escritas), "nuevos": nuevos, "actualizados": actualizados,
+            "idos": idos, "saltadas": saltadas, "errores": errores, "error": None}
 
 
 def marcar_idos_fuera_de(
@@ -343,14 +448,20 @@ def cerrar_pasada(
     pasada.nuevos = sum(int(r.get("nuevos") or 0) for r in resumen.values())
     pasada.actualizados = sum(int(r.get("actualizados") or 0) for r in resumen.values())
     pasada.idos = sum(int(r.get("idos") or 0) for r in resumen.values())
+    saltadas = sum(int(r.get("saltadas") or 0) for r in resumen.values())
+    por_fila = [e for r in resumen.values() for e in (r.get("errores") or [])]
     pasada.resumen_json = json.dumps(resumen, ensure_ascii=False, default=str)
     if errores and (total == 0 or len(errores) >= total):
         pasada.estado = SYNC_ERROR
-    elif errores:
+    elif errores or saltadas:
         pasada.estado = SYNC_PARCIAL
     else:
         pasada.estado = SYNC_OK
-    pasada.detalle = "\n".join(errores) or None
+    lineas = list(errores)
+    if saltadas:
+        lineas.append(f"{saltadas} fila(s) no entraron y se saltaron:")
+        lineas.extend(f"  - {e}" for e in por_fila[:MAX_ERRORES_RESUMEN])
+    pasada.detalle = "\n".join(lineas) or None
     pasada.fin = datetime.now(UTC)
 
 
@@ -429,6 +540,8 @@ def producto_como_dict(p: ProductoCatalogo) -> dict[str, Any]:
         "caracteristicas": [str(c) for c in _json_lista(p.caracteristicas_json)],
         "categoria": p.categoria, "imagen": p.imagen, "precio_texto": p.precio_texto,
         "precio_num": p.precio_num, "moneda": p.moneda, "enlace": p.enlace, "idioma": p.idioma,
+        "precio_publico": p.precio_publico is not False,
+        "descartado": bool(p.descartado), "motivo_descarte": p.motivo_descarte,
         "sitio": p.sitio or None,
         "actualizado_origen": p.actualizado_origen.isoformat() if p.actualizado_origen else None,
         "visible": bool(p.visible), "datos": _json_dict(p.datos_json),
@@ -440,12 +553,16 @@ def producto_como_dict(p: ProductoCatalogo) -> dict[str, Any]:
 def listar(
     session: Session, *, fuente: str | None = None, tipo: str | None = None,
     idioma: str | None = None, marca: str | None = None, sitio: str | None = None,
-    texto: str | None = None, con_idos: bool = False, limite: int = 500,
+    texto: str | None = None, con_idos: bool = False, con_descartados: bool = False,
+    limite: int = 500,
 ) -> list[ProductoCatalogo]:
-    """Los productos de la pantalla, filtrados. Los idos no salen salvo que se pidan."""
+    """Los productos de la pantalla, filtrados. Los idos y los descartados no
+    salen salvo que se pidan."""
     consulta = select(ProductoCatalogo)
     if not con_idos:
         consulta = consulta.where(ProductoCatalogo.ido_en.is_(None))
+    if not con_descartados:
+        consulta = consulta.where(ProductoCatalogo.descartado.is_(False))
     if fuente:
         consulta = consulta.where(ProductoCatalogo.fuente == fuente)
     if tipo:
@@ -481,29 +598,34 @@ def estado(session: Session, config: dict[str, Any] | None = None) -> dict[str, 
     from app.services.conocimiento.config import configuracion  # noqa: PLC0415
 
     cfg = config or configuracion(session)
+    vigente = (ProductoCatalogo.ido_en.is_(None), ProductoCatalogo.descartado.is_(False))
     try:
         por_fuente_tipo = session.execute(
             select(ProductoCatalogo.fuente, ProductoCatalogo.tipo, func.count())
-            .where(ProductoCatalogo.ido_en.is_(None))
-            .group_by(ProductoCatalogo.fuente, ProductoCatalogo.tipo)
+            .where(*vigente).group_by(ProductoCatalogo.fuente, ProductoCatalogo.tipo)
         ).all()
         por_fuente_idioma = session.execute(
             select(ProductoCatalogo.fuente, ProductoCatalogo.idioma, func.count())
-            .where(ProductoCatalogo.ido_en.is_(None))
-            .group_by(ProductoCatalogo.fuente, ProductoCatalogo.idioma)
+            .where(*vigente).group_by(ProductoCatalogo.fuente, ProductoCatalogo.idioma)
         ).all()
         por_sitio = session.execute(
             select(ProductoCatalogo.sitio, func.count())
-            .where(ProductoCatalogo.ido_en.is_(None),
-                   ProductoCatalogo.fuente == FUENTE_WOOCOMMERCE)
+            .where(*vigente, ProductoCatalogo.fuente == FUENTE_WOOCOMMERCE)
             .group_by(ProductoCatalogo.sitio)
         ).all()
         idos = session.scalar(select(func.count()).select_from(ProductoCatalogo)
                               .where(ProductoCatalogo.ido_en.is_not(None))) or 0
         con_precio = session.scalar(select(func.count()).select_from(ProductoCatalogo).where(
-            ProductoCatalogo.ido_en.is_(None), ProductoCatalogo.precio_texto.is_not(None))) or 0
+            *vigente, ProductoCatalogo.precio_texto.is_not(None))) or 0
+        descartados = session.scalar(select(func.count()).select_from(ProductoCatalogo).where(
+            ProductoCatalogo.ido_en.is_(None), ProductoCatalogo.descartado.is_(True))) or 0
+        sin_precio_publico = session.scalar(
+            select(func.count(func.distinct(ProductoCatalogo.origen_id)))
+            .select_from(ProductoCatalogo)
+            .where(*vigente, ProductoCatalogo.precio_publico.is_(False))) or 0
     except (OperationalError, ProgrammingError):
         por_fuente_tipo, por_fuente_idioma, por_sitio, idos, con_precio = [], [], [], 0, 0
+        descartados = sin_precio_publico = 0
     fuentes: dict[str, dict[str, Any]] = {
         f: {"productos": 0, "por_tipo": {}, "por_idioma": {}, "ultima_sincronizacion": None}
         for f in FUENTES
@@ -523,6 +645,8 @@ def estado(session: Session, config: dict[str, Any] | None = None) -> dict[str, 
         "fuentes": fuentes,
         "idos": int(idos),
         "con_precio": int(con_precio),
+        "descartados": int(descartados),
+        "sin_precio_publico": int(sin_precio_publico),
         "marcas": [marca_como_dict(m) for m in marcas(session)],
         "iva_por_fuente": dict(cfg.get("iva_por_fuente") or {}),
         "precio_meses_orientativo": int(cfg.get("precio_meses_orientativo") or 6),
@@ -649,12 +773,13 @@ def borrar_mapa(session: Session, fila_id: str) -> None:
 
 
 def _maquinas_por_producto(session: Session) -> dict[str, list[ProductoCatalogo]]:
-    """Las máquinas vigentes del compositor, agrupadas por producto (todas sus
-    filas de idioma)."""
+    """Las máquinas vigentes del compositor (sin las descartadas: un premio no
+    es una máquina), agrupadas por producto (todas sus filas de idioma)."""
     try:
         filas = session.scalars(select(ProductoCatalogo).where(
             ProductoCatalogo.fuente == FUENTE_COMPOSITOR, ProductoCatalogo.tipo == TIPO_MAQUINA,
             ProductoCatalogo.ido_en.is_(None), ProductoCatalogo.visible.is_(True),
+            ProductoCatalogo.descartado.is_(False),
         ).order_by(ProductoCatalogo.marca, ProductoCatalogo.nombre, ProductoCatalogo.idioma))
     except (OperationalError, ProgrammingError):
         return {}
@@ -698,6 +823,9 @@ def producto_para_correo(
     idioma_enlace = (propia.idioma if propia is not None and propia.enlace else
                      (respaldo.idioma if respaldo.enlace else None))
     actualizado = con_precio.actualizado_origen if con_precio is not None else None
+    # Sin importe en ningún idioma y el origen dice «Consultar» en alguno: no
+    # tiene precio público (el correo dice que se prepara a medida).
+    sin_publico = con_precio is None and any(v.precio_publico is False for v in variantes)
     return {
         "origen_id": base.origen_id, "fuente": base.fuente, "tipo": base.tipo,
         "nombre": base.nombre, "marca": base.marca,
@@ -707,6 +835,7 @@ def producto_para_correo(
         "categoria": base.categoria or respaldo.categoria,
         "imagen": base.imagen or respaldo.imagen,
         "precio_texto": con_precio.precio_texto if con_precio is not None else None,
+        "precio_publico": not sin_publico,
         "moneda": con_precio.moneda if con_precio is not None else None,
         "precio_idioma": con_precio.idioma if con_precio is not None else None,
         "idioma_respaldo": bool(con_precio is not None and con_precio.idioma != idioma),
@@ -862,33 +991,288 @@ def mapa_resuelto(session: Session, config: dict[str, Any] | None = None) -> dic
     }
 
 
+# --- de dónde se eligen las máquinas: el hilo, la instrucción, el interés --------------------
+
+#: Lo que NO identifica un producto aunque esté en su nombre («impresora UV
+#: LED», «pro», «max»): se ignora al buscar menciones.
+_PALABRAS_SIN_PESO: frozenset[str] = frozenset({
+    "pro", "max", "plus", "mini", "ii", "iii", "uv", "led", "dtf", "laser", "láser", "flex", "new",
+    "nuevo", "nueva", "impresora", "impresoras", "printer", "printers", "drucker", "imprimante",
+    "machine", "máquina", "maquina", "horno", "oven", "secadora", "shaker", "serie", "series",
+    "model", "modelo", "kit", "set", "pack", "with", "con", "para", "the", "and", "for", "von",
+    "und", "mit", "der", "die", "das", "les", "des", "pour", "avec", "van", "met", "voor",
+})
+#: Palabras que, en la instrucción o en el hilo, señalan un interés aunque no
+#: se nombre ninguna máquina («las máquinas de DTF»).
+_UV_GENERICO: tuple[str, ...] = ("uv", "uv-led", "ultravioleta", "ultraviolet")
+#: Los tres tamaños de UV solo con «UV» delante («una UV grande»); «UV» a secas
+#: son los tres, el mediano primero.
+_UV_TAMANO: dict[str, tuple[str, ...]] = {
+    "uv_pequeno": ("pequeño", "pequeña", "pequeña", "small", "klein", "petit", "a3", "a4"),
+    "uv_mediano": ("mediano", "mediana", "medium", "mittel", "moyen", "a2"),
+    "uv_grande": ("grande", "gran", "large", "groß", "gross", "flatbed", "industrial"),
+}
+_PALABRAS_DE_INTERES: dict[str, tuple[str, ...]] = {
+    "dtf": ("dtf", "textil", "textile", "textiel", "camiseta", "camisetas", "t-shirt", "tshirt",
+            "shirts", "sudadera", "prenda", "prendas", "transfer"),
+    "corte_laser": ("láser", "laser", "corte", "cortar", "cortadora", "cutting", "cutter",
+                    "schneiden", "découpe", "snijden"),
+    "grabado_laser": ("láser", "laser", "grabado", "grabar", "grabadora", "engraving", "engraver",
+                      "gravur", "gravieren", "gravure", "graveren"),
+    "packaging": ("packaging", "cajas", "caja", "bolsas", "bolsa", "embalaje", "overprint",
+                  "overprinter", "sobreimpresión", "boxes", "bags", "verpackung", "emballage",
+                  "verpakking"),
+    "vending": ("vending", "expendedora", "expendedoras", "máquina expendedora",
+                "vendingautomat", "distributeur"),
+    "cnc": ("cnc", "fresadora", "fresado", "router", "milling", "fräse"),
+}
+
+
+def _tokens(texto: str | None) -> set[str]:
+    return {t.strip("-_.").lower() for t in re.findall(r"[\w][\w\-\.]*", texto or "")} - {""}
+
+
+def _es_codigo(token: str) -> bool:
+    """Un código de modelo: letras y cifras mezcladas (DM3H, PT5, 5000U) o un
+    número de cuatro cifras o más (6090). Un «20» o un «35» sueltos, no."""
+    tiene_cifra = any(ch.isdigit() for ch in token)
+    tiene_letra = any(ch.isalpha() for ch in token)
+    return tiene_cifra and (tiene_letra or len(token) >= 4)
+
+
+def _tokens_con_peso(texto: str | None) -> set[str]:
+    """Los tokens que pueden identificar una máquina: códigos de modelo (DM3H,
+    PT5, 6090) o palabras de cuatro letras o más que no sean genéricas (Orion,
+    Lyra, Beambox)."""
+    return {
+        t for t in _tokens(texto)
+        if t not in _PALABRAS_SIN_PESO and (_es_codigo(t) or (len(t) >= 4 and t.isalpha()))
+    }
+
+
+FUERZA_NOMBRE = "nombre"
+FUERZA_PALABRA = "palabra"
+FUERZA_DESCRIPCION = "descripcion"
+
+
+def _nombres_propios(texto: str | None) -> set[str]:
+    """Las palabras que el texto escribe con mayúscula A MEDIA FRASE («la
+    Beambox», «el horno Vega»): ahí una sola palabra del nombre de una máquina
+    sí la señala. En minúscula («I trust you») o a principio de frase la
+    mayúscula no dice nada."""
+    texto = texto or ""
+    salida: set[str] = set()
+    for m in re.finditer(r"[\w][\w\-\.]*", texto):
+        palabra = m.group(0)
+        if not palabra[:1].isupper():
+            continue
+        previo = texto[:m.start()].rstrip(" \t")
+        if not previo or previo[-1] in ".!?¡¿:;\n\"«(":
+            continue
+        salida.add(palabra.strip("-_.").lower())
+    return salida
+
+
+def menciones_en(texto: str | None, grupos: dict[str, list[ProductoCatalogo]],
+                 ) -> list[tuple[str, str]]:
+    """Los productos que un texto nombra, por orden de fuerza: `(origen_id,
+    "nombre")` si el NOMBRE del producto está en el texto (entero, dos de sus
+    palabras con peso, un código como «6090», o una palabra escrita como
+    nombre propio a media frase: «la Beambox»); `(origen_id, "palabra")` si
+    solo está UNA palabra de un nombre más largo y nada dice que sea el nombre
+    («I trust you» y la «6090 Trust»: posible, no seguro);
+    `(origen_id, "descripcion")` si un código del texto (un token con cifras:
+    DM3H, PT5) aparece en la descripción, las características, el texto
+    alternativo o el id del producto. Lo que no esté en ningún sitio no se
+    encuentra: si el cliente usa otros nombres, haría falta una lista de
+    nombres alternativos por producto (en el compositor)."""
+    palabras = _tokens_con_peso(texto)
+    if not palabras or not grupos:
+        return []
+    todas = _tokens(texto)
+    propias = _nombres_propios(texto)
+    codigos = {p for p in palabras if _es_codigo(p)}
+    fuertes: list[tuple[float, str, str]] = []
+    posibles: list[tuple[float, str, str]] = []
+    flojas: list[str] = []
+    for origen_id, variantes in grupos.items():
+        base = variantes[0]
+        marca = _tokens(base.marca)
+        nombre = _tokens_con_peso(base.nombre) - marca
+        acierto = nombre & palabras
+        if acierto:
+            # Cuanto más del nombre está en el texto, antes va («Orion 20» entero
+            # por delante de una «Vega 60 Pro» de la que solo se dijo «Vega»).
+            completo = _tokens(base.nombre) - marca
+            parte = len(completo & todas) / len(completo) if completo else 0.0
+            seguro = (parte >= 1.0 or len(acierto) >= 2 or bool(acierto & propias)
+                      or any(_es_codigo(t) for t in acierto))
+            (fuertes if seguro else posibles).append((-parte, base.nombre.lower(), origen_id))
+            continue
+        if not codigos:
+            continue
+        otros: set[str] = set()
+        for v in variantes:
+            otros |= _tokens(v.descripcion)
+            otros |= _tokens(" ".join(str(c) for c in _json_lista(v.caracteristicas_json)))
+            otros |= _tokens(str(_json_dict(v.datos_json).get("alt") or ""))
+        otros |= _tokens(base.origen_id)
+        if codigos & otros:
+            flojas.append(origen_id)
+    return ([(o, FUERZA_NOMBRE) for _, _, o in sorted(fuertes)]
+            + [(o, FUERZA_PALABRA) for _, _, o in sorted(posibles)]
+            + [(o, FUERZA_DESCRIPCION) for o in flojas])
+
+
+def _intereses_con_maquina(codigos: Iterable[str], filas: list[InteresProducto],
+                           grupos: dict[str, list[ProductoCatalogo]]) -> set[str]:
+    """Los intereses (de `codigos`) que tienen alguna máquina en el catálogo
+    por el mapa interés → máquinas, se haya llegado o no al tope de máquinas
+    del borrador."""
+    pedidos = set(codigos)
+    return {
+        fila.interes for fila in filas
+        if fila.activo and fila.interes in pedidos
+        and any(_casa(fila, variantes[0]) for variantes in grupos.values())
+    }
+
+
+def intereses_de_texto(texto: str | None, codigos_validos: Iterable[str] | None = None,
+                       ) -> list[str]:
+    """Los intereses que nombra un texto («las máquinas de DTF» → dtf; «una
+    láser para cortar» → corte_laser, grabado_laser), en el orden en que
+    aparecen sus palabras. Solo los códigos que existen en el catálogo de
+    intereses, si se pasa."""
+    tokens = _tokens(texto)
+    if not tokens:
+        return []
+    validos = set(codigos_validos) if codigos_validos is not None else None
+
+    def _vale(codigo: str) -> bool:
+        return validos is None or codigo in validos
+
+    salida: list[str] = []
+    # UV: con tamaño («una UV grande»), ese; «UV» a secas, los tres (el mediano primero).
+    if any(p in tokens for p in _UV_GENERICO) or any(c in tokens for c in _UV_TAMANO):
+        con_tamano = [c for c, palabras in _UV_TAMANO.items()
+                      if _vale(c) and (any(p in tokens for p in palabras) or c in tokens)]
+        if con_tamano:
+            salida.extend(con_tamano)
+        elif any(p in tokens for p in _UV_GENERICO):
+            salida.extend(c for c in ("uv_mediano", "uv_pequeno", "uv_grande") if _vale(c))
+    for codigo, palabras in _PALABRAS_DE_INTERES.items():
+        if _vale(codigo) and (any(p in tokens for p in palabras) or codigo in tokens):
+            salida.append(codigo)
+    return salida
+
+
+def maquinas_por_origen(
+    session: Session, origen_ids: Iterable[str], *, idioma: str, ahora: datetime,
+    config: dict[str, Any], grupos: dict[str, list[ProductoCatalogo]] | None = None,
+    interes: str | None = None,
+) -> list[dict[str, Any]]:
+    """Productos concretos (por `origen_id`) como los ve el asistente."""
+    grupos = grupos if grupos is not None else _maquinas_por_producto(session)
+    meses = int(config.get("precio_meses_orientativo") or 6)
+    iva = (config.get("iva_por_fuente") or {}).get(FUENTE_COMPOSITOR)
+    idiomas_marca = {_clave(m.nombre): (m.idioma_defecto or IDIOMA_RAIZ) for m in marcas(session)}
+    salida: list[dict[str, Any]] = []
+    for origen_id in origen_ids:
+        variantes = grupos.get(origen_id)
+        if not variantes:
+            continue
+        salida.append(producto_para_correo(
+            variantes, idioma=idioma,
+            idioma_marca=idiomas_marca.get(_clave(variantes[0].marca), IDIOMA_RAIZ),
+            ahora=ahora, meses=meses, iva=iva, interes=interes,
+        ))
+    return salida
+
+
 # --- lo que ve el asistente ----------------------------------------------------------------
 
 
 def para_asistente(
     session: Session, *, intereses: Iterable[str] | None, idioma: str, maquina: str | None,
     modelo_flux: str | None, ahora: datetime | None = None, config: dict[str, Any] | None = None,
+    texto_hilo: str | None = None, instruccion: str | None = None,
 ) -> dict[str, Any]:
-    """El bloque CATÁLOGO de un borrador: máquinas de su interés, consumibles de
-    su máquina, los avisos en su idioma y la declaración del IVA por fuente.
-    Nunca el catálogo entero."""
+    """El bloque CATÁLOGO de un borrador. Las máquinas se eligen por este
+    orden: (1) las que el cliente nombra en el hilo, (2) las que pide la
+    instrucción de quien envía (una máquina concreta o un interés: «las
+    máquinas de DTF» manda), (4) las que PUEDE que nombren el hilo o la
+    instrucción (una sola palabra del nombre, o un código de su descripción:
+    `hilo_posible`, `instruccion_posible`), (5) las del interés clasificado;
+    entre medias (3) van los consumibles de la máquina que ya tiene. Cada
+    máquina lleva de dónde salió (`eleccion`). Los avisos en su idioma y la
+    declaración del IVA por fuente. Nunca el catálogo entero."""
     from app.services.conocimiento.config import configuracion  # noqa: PLC0415
 
     cfg = config or configuracion(session)
     ahora = ahora or datetime.now(UTC)
     filas, _ = cargar_mapa(session)
-    maquinas = maquinas_para(session, intereses, idioma=idioma, ahora=ahora, config=cfg,
-                             filas=filas)
+    grupos = _maquinas_por_producto(session)
+    codigos = [str(c).strip().lower() for c in (intereses or []) if str(c or "").strip()]
+    codigos_validos = {f.interes for f in filas} | set(_PALABRAS_DE_INTERES) | set(codigos)
+    intereses_instruccion = intereses_de_texto(instruccion, codigos_validos)
+    maquinas: list[dict[str, Any]] = []
+    vistos: set[str] = set()
+
+    def _añadir(lista: list[dict[str, Any]], eleccion: str) -> None:
+        for m in lista:
+            if m["origen_id"] in vistos or len(maquinas) >= MAQUINAS_MAX:
+                continue
+            vistos.add(m["origen_id"])
+            maquinas.append({**m, "eleccion": eleccion})
+
+    def _por_origen(origenes: list[str]) -> list[dict[str, Any]]:
+        return maquinas_por_origen(session, origenes, idioma=idioma, ahora=ahora, config=cfg,
+                                   grupos=grupos)
+
+    def _partir(menciones: list[tuple[str, str]]) -> tuple[list[str], list[str]]:
+        """Seguras (por el nombre) y posibles (una palabra, la descripción)."""
+        return ([o for o, fuerza in menciones if fuerza == FUERZA_NOMBRE],
+                [o for o, fuerza in menciones if fuerza != FUERZA_NOMBRE])
+
+    # 1. Lo que nombra el cliente en el hilo.
+    menciones_hilo = menciones_en(texto_hilo, grupos)
+    hilo_seguras, hilo_posibles = _partir(menciones_hilo)
+    _añadir(_por_origen(hilo_seguras), "hilo")
+    # 2. Lo que pide quien envía: una máquina concreta, o un interés entero.
+    menciones_instruccion = menciones_en(instruccion, grupos)
+    instruccion_seguras, instruccion_posibles = _partir(menciones_instruccion)
+    _añadir(_por_origen(instruccion_seguras), "instruccion")
+    if intereses_instruccion:
+        _añadir(maquinas_para(session, intereses_instruccion, idioma=idioma, ahora=ahora,
+                              config=cfg, filas=filas), "instruccion")
+    # 3. Los consumibles de la máquina que ya tiene (lista aparte).
     consumibles = consumibles_para(session, maquina=maquina, modelo_flux=modelo_flux,
                                    idioma=idioma, ahora=ahora, config=cfg)
-    codigos = [str(c).strip().lower() for c in (intereses or []) if str(c or "").strip()]
-    sin_maquina = [c for c in codigos if not any(m["interes"] == c for m in maquinas)]
+    # 4. Lo que PUEDE que nombren (una palabra suelta del nombre, un código de
+    # la descripción): detrás de lo seguro, delante del interés.
+    _añadir(_por_origen(hilo_posibles), "hilo_posible")
+    _añadir(_por_origen(instruccion_posibles), "instruccion_posible")
+    # 5. El interés clasificado.
+    _añadir(maquinas_para(session, codigos, idioma=idioma, ahora=ahora, config=cfg, filas=filas),
+            "interes")
+    pedidos = list(dict.fromkeys(intereses_instruccion + codigos))
+    # Sin máquina de verdad (ninguna fila del mapa con producto), no porque el
+    # tope del borrador ya estuviera lleno con lo que nombra el hilo.
+    con_maquina = _intereses_con_maquina(pedidos, filas, grupos)
+    sin_maquina = [c for c in pedidos if c not in con_maquina]
     codigo_avisos = (idioma or "").strip().lower()[:2]
     return {
         "maquinas": maquinas,
         "consumibles": consumibles,
         "sin_maquina": sin_maquina,
         "con_filas": sorted({f.interes for f in filas if f.activo}),
+        "intereses_instruccion": intereses_instruccion,
+        "menciones": {
+            "hilo": [grupos[o][0].nombre for o, _ in menciones_hilo if o in grupos],
+            "instruccion": [grupos[o][0].nombre for o, _ in menciones_instruccion if o in grupos],
+            "flojas": [grupos[o][0].nombre for o, fuerza in menciones_hilo + menciones_instruccion
+                       if fuerza != FUERZA_NOMBRE and o in grupos],
+        },
         "avisos": avisos_en(idioma),
         "idioma_avisos": codigo_avisos if codigo_avisos in AVISOS else IDIOMA_AVISO_RESPALDO,
         "iva_por_fuente": dict(cfg.get("iva_por_fuente") or {}),

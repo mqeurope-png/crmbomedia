@@ -105,7 +105,19 @@ function ivaTexto(valor: "con" | "sin" | null | undefined): string {
 
 function resumenSincronizacion(s: CatalogoSincronizacion): string {
   if (s.estado === "error") return `Sincronización en error: ${s.detalle ?? "sin detalle"}. El catálogo anterior sigue intacto.`;
-  const base = `Sincronizado ${FUENTE_TEXTO[s.fuente] ?? s.fuente}: ${s.productos} filas (${s.nuevos} nuevas, ${s.actualizados} cambiadas, ${s.idos} desaparecidas).`;
+  const partes = Object.values(s.resumen ?? {});
+  const saltadas = partes.reduce((n, r) => n + (r.saltadas ?? 0), 0);
+  const compositor = partes.find((r) => r.marcas !== undefined);
+  let base = `Sincronizado ${FUENTE_TEXTO[s.fuente] ?? s.fuente}: ${s.productos} filas (${s.nuevos} nuevas, ${s.actualizados} cambiadas, ${s.idos} desaparecidas${saltadas > 0 ? `, ${saltadas} saltadas por no entrar en la base` : ""}).`;
+  if (compositor) {
+    const extra: string[] = [];
+    if (compositor.marcas !== undefined) {
+      extra.push(`${compositor.marcas} marcas con producto${compositor.marcas_sin_producto?.length ? ` (sin producto, fuera: ${compositor.marcas_sin_producto.join(", ")})` : ""}`);
+    }
+    if (compositor.descartados?.length) extra.push(`descartadas por no ser máquinas: ${compositor.descartados.join(", ")}`);
+    if (compositor.sin_precio_publico?.length) extra.push(`sin precio público: ${compositor.sin_precio_publico.join(", ")}`);
+    if (extra.length > 0) base = `${base} ${extra.join(" · ")}.`;
+  }
   return s.estado === "parcial" ? `${base} Parcial: ${s.detalle ?? "algún origen no respondió"}.` : base;
 }
 
@@ -115,7 +127,7 @@ function CatalogoBloque({
   const cat = datos.catalogo;
   const [sincronizando, setSincronizando] = useState<string | null>(null);
   const [aviso, setAviso] = useState<string | null>(null);
-  const [filtros, setFiltros] = useState({ fuente: "", tipo: "", idioma: "", marca: "", q: "" });
+  const [filtros, setFiltros] = useState({ fuente: "", tipo: "", idioma: "", marca: "", q: "", descartados: false });
   const [productos, setProductos] = useState<{ lista: CatalogoProducto[]; total: number; limite: number } | null>(null);
   const [cargando, setCargando] = useState(false);
   const [errorLista, setErrorLista] = useState<string | null>(null);
@@ -141,7 +153,7 @@ function CatalogoBloque({
       const r = await getCatalogoProductos({
         fuente: filtros.fuente || undefined, tipo: filtros.tipo || undefined,
         idioma: filtros.idioma.trim() || undefined, marca: filtros.marca.trim() || undefined,
-        q: filtros.q.trim() || undefined,
+        q: filtros.q.trim() || undefined, con_descartados: filtros.descartados || undefined,
       });
       setProductos({ lista: r.productos, total: r.total, limite: r.limite });
     } catch (e) {
@@ -187,6 +199,13 @@ function CatalogoBloque({
             {compositor.productos > 0 ? <span className="muted small"> · {porIdioma(compositor.por_idioma)}</span> : null}
           </div>
           <div className="muted small">Última sincronización: {ultima(compositor.ultima_sincronizacion)}</div>
+          {(cat.descartados ?? 0) > 0 || (cat.sin_precio_publico ?? 0) > 0 ? (
+            <div className="muted small" data-testid="kb-descartes">
+              {(cat.descartados ?? 0) > 0 ? `${cat.descartados} entrada${cat.descartados === 1 ? "" : "s"} descartada${cat.descartados === 1 ? "" : "s"} (sin precio ni área: premios, menciones; se ven con «Ver descartados»)` : null}
+              {(cat.descartados ?? 0) > 0 && (cat.sin_precio_publico ?? 0) > 0 ? " · " : null}
+              {(cat.sin_precio_publico ?? 0) > 0 ? `${cat.sin_precio_publico} producto${cat.sin_precio_publico === 1 ? "" : "s"} sin precio público («Consultar» en el origen: el correo dice que se prepara a medida)` : null}
+            </div>
+          ) : null}
           <div className="muted small">
             IVA: {ivaTexto(cat.iva_por_fuente.compositor)} · precios de más de {cat.precio_meses_orientativo} meses: orientativos
           </div>
@@ -263,6 +282,11 @@ function CatalogoBloque({
           <input type="text" aria-label="Buscar en el catálogo" maxLength={120} value={filtros.q}
             onChange={(e) => setFiltros({ ...filtros, q: e.target.value })} />
         </label>
+        <label className="field kb-check">
+          <input type="checkbox" aria-label="Ver descartados" checked={filtros.descartados}
+            onChange={(e) => setFiltros({ ...filtros, descartados: e.target.checked })} />
+          <span>Ver descartados</span>
+        </label>
         <button type="button" className="button small" onClick={cargar} disabled={cargando}>
           {cargando ? "Cargando…" : (productos ? "Volver a cargar" : "Ver el catálogo")}
         </button>
@@ -284,17 +308,20 @@ function CatalogoBloque({
                 </thead>
                 <tbody>
                   {productos.lista.map((p) => (
-                    <tr key={p.id} className={p.visible ? undefined : "is-inactivo"}>
+                    <tr key={p.id} className={p.visible && !p.descartado ? undefined : "is-inactivo"}>
                       <td>{p.fuente === "compositor" ? "compositor" : "tienda"}</td>
                       <td>{TIPO_TEXTO[p.tipo] ?? p.tipo}</td>
                       <td>{p.marca}</td>
                       <td>
                         <strong>{p.nombre}</strong>
+                        {p.descartado ? <><br /><span className="kb-estado is-error">descartado: {p.motivo_descarte ?? "no es un producto"}</span></> : null}
                         {p.categoria ? <><br /><span className="muted small">{p.categoria}</span></> : null}
                       </td>
                       <td>{p.idioma}</td>
                       <td className="kb-precio">
-                        {p.precio_texto ?? <span className="muted small">sin precio</span>}
+                        {p.precio_texto ?? (
+                          <span className="muted small">{p.precio_publico === false ? "sin precio público (el origen dice «Consultar»)" : "sin precio"}</span>
+                        )}
                         {p.moneda && p.precio_texto ? <span className="muted small"> {p.moneda}</span> : null}
                       </td>
                       <td>{p.enlace ? <a href={p.enlace} target="_blank" rel="noreferrer">abrir</a> : "—"}</td>

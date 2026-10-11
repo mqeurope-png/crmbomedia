@@ -5664,6 +5664,13 @@ export type CatalogoProducto = {
   precio_texto: string | null;
   precio_num: number | null;
   moneda: string | null;
+  /** False cuando el origen dice «Consultar»: no hay precio público (el
+   *  asistente dice que el precio se prepara a medida, nunca «Consultar»). */
+  precio_publico: boolean;
+  /** Una entrada del origen que no es un producto (un premio, sin precio ni
+   *  área): se guarda para verla, no entra en el catálogo del asistente. */
+  descartado: boolean;
+  motivo_descarte: string | null;
   enlace: string | null;
   idioma: string;
   sitio: string | null;
@@ -5688,7 +5695,13 @@ export type CatalogoSincronizacion = {
   origen_actualizado_en: string | null;
   resumen: Record<string, { productos: number; nuevos: number; actualizados: number; idos: number;
     error: string | null; sin_tienda?: boolean; marcas?: number; por_idioma?: Record<string, number>;
-    con_precio?: number }>;
+    con_precio?: number;
+    /** Filas que la base rechazó y se saltaron (la pasada termina igual), con el motivo. */
+    saltadas?: number; errores?: string[];
+    /** Compositor: marcas sin ningún producto (no cuentan), entradas descartadas
+     *  (premios) y productos sin precio público («Consultar»). */
+    marcas_sin_producto?: string[]; descartados?: string[]; sin_precio_publico?: string[];
+    filas?: number }>;
   detalle: string | null;
 };
 
@@ -5714,6 +5727,9 @@ export type CatalogoEstado = {
   fuentes: { compositor: CatalogoFuenteEstado; woocommerce: CatalogoFuenteEstado };
   idos: number;
   con_precio: number;
+  /** Entradas descartadas (no son productos) y productos sin precio público. */
+  descartados: number;
+  sin_precio_publico: number;
   marcas: CatalogoMarca[];
   iva_por_fuente: Record<string, "con" | "sin" | null>;
   precio_meses_orientativo: number;
@@ -5761,12 +5777,19 @@ export type CatalogoProductoAsistente = {
   enlace: string | null;
   idioma_enlace: string | null;
   interes: string | null;
+  /** False: el origen dice «Consultar» (sin precio público). */
+  precio_publico?: boolean;
+  /** De dónde salió: lo que nombra el cliente en el hilo, lo que pide la
+   *  instrucción de quien envía, o el interés clasificado. */
+  eleccion?: "hilo" | "instruccion" | "interes";
 };
 
 export type CatalogoAsistente = {
   maquinas: CatalogoProductoAsistente[];
   consumibles: CatalogoProductoAsistente[];
   sin_maquina: string[];
+  intereses_instruccion?: string[];
+  menciones?: { hilo: string[]; instruccion: string[]; flojas: string[] };
   avisos: Record<string, string>;
   iva_por_fuente: Record<string, "con" | "sin" | null>;
   precio_meses_orientativo: number;
@@ -5898,7 +5921,7 @@ export async function resolverConocimiento(payload: {
 
 export type CatalogoFiltros = {
   fuente?: string; tipo?: string; idioma?: string; marca?: string; sitio?: string; q?: string;
-  con_idos?: boolean; limite?: number;
+  con_idos?: boolean; con_descartados?: boolean; limite?: number;
 };
 
 /** La tabla del catálogo, filtrada (los idos solo si se piden). */

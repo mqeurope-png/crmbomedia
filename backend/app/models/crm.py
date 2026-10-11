@@ -1863,6 +1863,9 @@ class EmailDraft(TimestampMixin, Base):
         DateTime(timezone=True)
     )
     metadata_json: Mapped[str | None] = mapped_column(Text)
+    #: «Ayúdame a contestar»: el turno del asistente que estaba en el editor
+    #: al guardar. Al reabrir el borrador, la franja recupera la conversación.
+    asistente_borrador_id: Mapped[str | None] = mapped_column(String(36))
 
 
 class EmailDraftAttachment(Base):

@@ -113,7 +113,7 @@ catálogo, con dos fuentes y nada más:
 
 | Fuente | Qué trae | De dónde | Módulo |
 |---|---|---|---|
-| `compositor` | Las **máquinas** (18 el 11/10/2026: artisJet, MBO, PimPam, SmartJet FLEX) en cinco idiomas (es raíz + fr, de, en, nl): nombre, descripción, área, dos características, imagen, **precio tal cual**, enlace, visible; y las marcas (logo, color, URL por idioma) | El JSON del compositor de correos de Bomedia (bomedia-v4), fila `main` de `composer_data` en Supabase. **BoHub solo lee**; la clave publicable va en `.env.production` (`SUPABASE_COMPOSER_KEY`, la misma que ya usa la pestaña «Composer» del selector de plantillas), nunca en el código | `services/conocimiento/catalogo_compositor.py` |
+| `compositor` | Las **máquinas** (el 11/10/2026, contra los datos reales: 42 entradas = 202 filas, 10 marcas; **seis con producto**: flux 14, mbo_dtf 9, artisjet 7, mbo 7, smartjet 3, pimpam 2; las cuatro sin producto —bomedia y las muestras— no cuentan como marcas de catálogo) en cinco idiomas (es raíz + fr, de, en, nl): nombre, descripción, área, dos características, imagen, **precio tal cual**, enlace, visible; y las marcas (logo, color, URL por idioma). **«Consultar» no es un precio**: es la marca de que no hay precio público (`precio_publico=False`, sin texto ni número; el correo dice que se prepara a medida y nunca escribe «Consultar»); «desde 21.500 €» se guarda tal cual. Una entrada **sin precio y sin área de impresión** (los premios de artisJet) no es una máquina: queda `descartada` con su motivo, visible en la pantalla con «Ver descartados», fuera del catálogo del asistente | El JSON del compositor de correos de Bomedia (bomedia-v4), fila `main` de `composer_data` en Supabase. **BoHub solo lee**; la clave publicable va en `.env.production` (`SUPABASE_COMPOSER_KEY`, la misma que ya usa la pestaña «Composer» del selector de plantillas), nunca en el código | `services/conocimiento/catalogo_compositor.py` |
 | `woocommerce` | Los **consumibles y repuestos** (y las máquinas de tienda) de cada web con tienda: nombre, precio formateado como lo enseña la tienda, moneda, enlace, categorías, marca, web, idioma. El tipo (máquina / consumible / repuesto) sale de las categorías: es una heurística y se ve en la pantalla | La API pública de la tienda (`/wp-json/wc/store/products?per_page=100`, sin credenciales) de cada web activa de la tabla de sitios, en cada idioma publicado (prefijo de idioma, `lang=`). Una web sin tienda no es un error | `services/conocimiento/catalogo_tiendas.py` |
 
 Todo lo demás **no tiene precio**: un precio que aparece en un correo o pedido
@@ -124,15 +124,19 @@ vigente).
 
 | Tabla | Qué guarda |
 |---|---|
-| `kb_catalogo` | Una fila por **producto × idioma**: fuente, tipo, marca, `origen_id` (el id del compositor o `{web}:{id de Woo}`), nombre, descripción, características (JSON), categoría/área, imagen, **`precio_texto`** (tal cual: «9.300 €», «9 300 €», «12,50 €»), `precio_num` (solo para ordenar), moneda, enlace, idioma, web, `actualizado_origen` (el `updated_at` de la fila del compositor; en una tienda, la pasada que confirmó el precio), visible, `visto_en`, `ido_en` |
-| `kb_catalogo_marcas` | Las marcas del compositor y su **idioma por defecto** (editable): el precio que se usa cuando el producto no lo tiene en el idioma del cliente |
+| `kb_catalogo` | Una fila por **producto × idioma**: fuente, tipo, marca, `origen_id` (el id del compositor o `{web}:{id de Woo}`), nombre, descripción, características (JSON), **categoría principal** (la primera de la tienda; la lista entera en `datos_json.categorias_nombres`: una de 290 caracteres tiró la primera pasada) o área, imagen, **`precio_texto`** (tal cual: «9.300 €», «9 300 €», «12,50 €», «desde 21.500 €»), `precio_num` (solo para ordenar; vacío sin importe, nunca cero), moneda, `precio_publico` (False = «Consultar»), `descartado` + `motivo_descarte` (0142), enlace, idioma, web, `actualizado_origen` (el `updated_at` de la fila del compositor; en una tienda, la pasada que confirmó el precio), visible, `visto_en`, `ido_en`. **Ningún valor del origen desborda su columna**: se recorta antes de escribir (`catalogo.recortar_a_columna`) |
+| `kb_catalogo_marcas` | Las marcas del compositor y su **idioma por defecto** (editable): el precio que se usa cuando el producto no lo tiene en el idioma del cliente. La sincronización casa las filas que ya estaban por su clave (minúsculas, solo letras y cifras) contra el id o el nombre de la marca: «artisJet» y «artisjet» son la misma fila y conserva su idioma |
 | `kb_catalogo_sincronizaciones` | El histórico de pasadas por fuente: estado (`ok` / `parcial` / `error`), recuentos, `origen_actualizado_en`, resumen por idioma o por tienda e idioma |
 | `kb_interes_productos` | **Interés → máquinas**: interés del clasificador, marca del compositor y patrón del nombre (vacío = toda la marca). Se resuelve contra `kb_catalogo` al montar cada borrador: una fila nueva o un producto nuevo del compositor se aplican sin desplegar |
 
 Lo que desaparece del origen se marca `ido_en`, no se borra. Las dos
 sincronizaciones descargan todo antes de escribir: **si Supabase o una tienda
 no responden, el catálogo anterior queda intacto** y la pasada lo dice; una
-tienda caída no para las demás.
+tienda caída no para las demás. La escritura va **por lotes dentro de un
+SAVEPOINT** (`catalogo.escribir_filas`): un lote que la base rechaza se
+reintenta fila a fila, la que no entra **se salta** con su motivo (`saltadas`,
+`errores` en el resumen; estado `parcial`) y la pasada termina siempre,
+informando de cuántas filas entraron y cuántas no.
 
 ### Las reglas del precio
 
@@ -151,27 +155,61 @@ tienda caída no para las demás.
 
 ### Interés → máquinas (propuesta a revisar)
 
-La propuesta del 11/10/2026 (`catalogo.MAPA_DE_PARTIDA`, sembrada por la
-migración): `uv_pequeno` → artisJet Young, Proud · MBO 1015; `uv_mediano` →
-artisJet 3000Pro, 5000U · MBO 3050, 4060; `uv_grande` → artisJet 6090 Trust ·
-MBO 6090, UV1612G, UV1812, UV2513; `dtf` → SmartJet FLEX (toda la marca;
-confirmar); `vending` → PimPam CaseBox, Custom. **Hallazgo**: las láser (FLUX,
-MBO Lasers), el packaging y el CNC **no están en el compositor**; para esos
-intereses el asistente enlaza la página de producto del interés (`kb_rutas`) y
-no cita ningún precio ni inventa ninguna máquina. La pantalla enseña con qué
-casa cada fila, los huecos y, mientras no se marque «revisada» en los ajustes,
-el aviso de propuesta sin revisar.
+La propuesta (`catalogo.MAPA_DE_PARTIDA`, lo que se enseña mientras la tabla
+está vacía; la tabla ya sembrada **no se re-siembra**: se edita en
+Configuración ERP), con el reparto corregido el 11/10/2026 contra los datos
+reales y las marcas como ids del compositor: `uv_pequeno` → artisjet Young,
+Proud · mbo 1015; `uv_mediano` → artisjet 3000Pro, 5000U · mbo 3050, 4060;
+`uv_grande` → artisjet 6090 Trust · mbo 6090, UV1612G, UV1812, UV2513; `dtf` →
+**mbo_dtf** (Orion, Lyra, Astra, Vega y sus hornos); `corte_laser` y
+`grabado_laser` → **flux**; `packaging` → **smartjet** (overprinters single-pass
+sobre cajas y bolsas); `vending` → pimpam. **Hallazgo**: el único interés
+comercial sin máquina en el compositor es el **CNC**; para él el asistente
+enlaza la página de producto del interés (`kb_rutas`) y no cita ningún precio
+ni inventa ninguna máquina. La pantalla enseña con qué casa cada fila, los
+huecos y, mientras no se marque «revisada» en los ajustes, el aviso de
+propuesta sin revisar; editar una fila que hoy es un hueco hasta que tenga
+productos funciona (test).
 
 ### Lo que entra en un borrador (`catalogo.para_asistente`)
 
-Nunca el catálogo entero: hasta **6 máquinas** de los intereses del lead (el
-principal primero) y hasta **8 consumibles o repuestos** de la máquina que tiene
-(lo que dicen sus pedidos, casado por palabras contra nombre, categoría y
-marca de los productos de las tiendas), en su idioma, con precio tal cual,
-enlace (en la lista de enlaces permitidos) y los avisos. El bloque CATÁLOGO del
-prompt es la única fuente de precios; si no hay producto, lo dice y el modelo no
-cita ninguno. Si el presupuesto de tokens no llega, el catálogo se recorta lo
-último (consumibles primero, luego máquinas hasta dejar dos) y queda anotado.
+Nunca el catálogo entero: hasta **6 máquinas** y hasta **8 consumibles o
+repuestos**, en su idioma, con precio tal cual, enlace (en la lista de enlaces
+permitidos) y los avisos. Las máquinas se eligen **por este orden** (cada una
+lleva de dónde salió, `eleccion`, y el bloque del prompt las agrupa así):
+
+1. **Lo que el cliente nombra en el hilo** (`catalogo.menciones_en`): por el
+   nombre del producto (entero, dos de sus palabras con peso, un código como
+   «5000U», o una palabra escrita como nombre propio a media frase: «la
+   Beambox», «el horno Vega»; lo más completo primero). Una sola palabra
+   corriente de un nombre sin nada más («I trust you» y la «6090 Trust») y
+   los códigos de modelo (DM3H, PT5) que solo están en la descripción, las
+   características, el texto alternativo o el id del producto son menciones
+   **posibles**: van detrás de las seguras y de la instrucción, delante del
+   interés, con su propio rótulo en el prompt («ofrécelas solo si el hilo lo
+   confirma»; `eleccion` = `hilo_posible` / `instruccion_posible`). Lo que no
+   esté en ningún sitio no se encuentra: los nombres que usa el cliente de
+   talentosdiversos (DM3H, SM3, SwapPress PT5) no están en el compositor y
+   solo entrarían con una lista de nombres alternativos por producto, que
+   sería cosa del compositor.
+2. **Lo que pide la instrucción de quien envía**: una máquina concreta, o un
+   interés por sus palabras («las máquinas de DTF» → `dtf`; «una láser para
+   cortar» → `corte_laser`, `grabado_laser`; «UV grande» → `uv_grande`; «UV» a
+   secas → los tres tamaños; `catalogo.intereses_de_texto`). Eso manda.
+3. **Los consumibles de la máquina que ya tiene** (lo que dicen sus pedidos,
+   casado por palabras contra nombre, categoría y marca de los productos de las
+   tiendas), en su lista aparte.
+4. **El interés clasificado**, como hasta ahora.
+
+«Sin máquina en el catálogo para X» solo sale cuando X no tiene ninguna máquina
+por el mapa interés → máquinas, no porque las seis plazas ya estén llenas con lo
+que nombra el hilo.
+
+El bloque CATÁLOGO del prompt es la única fuente de precios; un producto sin
+precio público lleva la orden de decir que se prepara a medida y no escribir
+«Consultar»; si no hay producto, lo dice y el modelo no cita ninguno. Si el
+presupuesto de tokens no llega, el catálogo se recorta lo último (consumibles
+primero, luego máquinas hasta dejar dos) y queda anotado.
 
 ### Sincronización y API
 
@@ -182,9 +220,10 @@ cita ninguno. Si el presupuesto de tokens no llega, el catálogo se recorta lo
   (en la petición), o `python -m app.services.conocimiento.catalogo_job` en el
   contenedor `api`. **Tras el primer deploy hace falta una pasada a mano.**
 - API (`/api/erp/conocimiento`, capacidad `erp.config`): `GET` trae también
-  `catalogo` (estado por fuente, marcas, IVA) e `interes_productos` (filas con
-  sus coincidencias, huecos, hallazgo); `GET /catalogo/productos` (filtros
-  `fuente, tipo, idioma, marca, sitio, q, con_idos, limite`);
+  `catalogo` (estado por fuente, marcas con producto, IVA, `descartados`,
+  `sin_precio_publico`) e `interes_productos` (filas con sus coincidencias,
+  huecos, hallazgo); `GET /catalogo/productos` (filtros `fuente, tipo, idioma,
+  marca, sitio, q, con_idos, con_descartados, limite`);
   `POST /catalogo/sincronizar` (`{fuente}` o las dos);
   `PATCH /catalogo/marcas/{nombre}` (idioma por defecto);
   `POST|PATCH|DELETE /catalogo/intereses[/{id}]`.

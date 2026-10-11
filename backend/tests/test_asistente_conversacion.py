@@ -134,9 +134,10 @@ def _mensajes_largos(n: int) -> list[dict[str, Any]]:
     return salida
 
 
-def _turno(http: TestClient, borrador_id: str, instruccion: str, rol: str = "admin") -> Any:
+def _turno(http: TestClient, borrador_id: str, instruccion: str, rol: str = "admin",
+           **extra: Any) -> Any:
     return http.post(f"/api/emails/asistente/{borrador_id}/turno",
-                     headers=auth_headers(http, rol), json={"instruccion": instruccion})
+                     headers=auth_headers(http, rol), json={"instruccion": instruccion, **extra})
 
 
 def _nuevo(http: TestClient, rol: str = "admin", **payload: Any) -> Any:
@@ -240,12 +241,17 @@ def test_la_guardia_reconoce_informes_y_saludos_a_quien_pulsa() -> None:
     assert texto.parece_informe_al_usuario("", nombre_usuario="Bart") is None
     # Cierres normales de un correo a un cliente: NO son informes (la revisión
     # del 11/10/2026 encontró que una lista más larga se cargaba borradores).
+    # Una OFERTA de hacer algo («dímelo y te lo preparo») tampoco: el primer
+    # día de uso real se vació un correo válido por eso.
     for correo in (
         "Hola Marny,\n\nte adjunto el presupuesto. Dime si te va bien el jueves para la "
         "demostración.\n\nUn saludo",
+        "Hola Marny,\n\nsi quieres que te prepare también la oferta del rotary, dímelo y te "
+        "lo preparo.\n\nUn saludo,\nManel",
         "Buenos días,\n\nse lo preparo esta semana y le aviso. Si quiere que le prepare "
         "también la oferta del rotary, dígamelo.\n\nSaludos",
         "Hola,\n\nel pedido no me ha llegado todavía, ¿podéis mirarlo?",
+        "Estimada Marny:\n\nMarny, te adjunto la oferta que me pediste.\n\nSaludos",
         "Hi John,\n\nplease find the quote attached. Let me know if you have any questions, "
         "and would you like me to reserve the unit?\n\nBest regards",
         "Hallo Herr Torra,\n\nsagen Sie mir bitte Bescheid, ob das Angebot passt. Soll ich "
@@ -253,8 +259,97 @@ def test_la_guardia_reconoce_informes_y_saludos_a_quien_pulsa() -> None:
         "Bonjour,\n\ndites-moi si vous souhaitez un devis pour le rotary.\n\nCordialement",
         "Hoi Klaas,\n\nlaat het me weten als je vragen hebt.\n\nGroeten",
     ):
-        assert texto.parece_informe_al_usuario(correo, nombre_usuario="Manel",
-                                               nombre_destinatario="Marny") is None, correo
+        veredicto = texto.evaluar_cuerpo(correo, nombre_usuario="Manel",
+                                         nombre_destinatario="Marny")
+        assert veredicto.nivel == texto.NIVEL_CORREO, (correo, veredicto)
+    # Lo que SÍ delata un texto para la persona de BoHub: el hilo revisado,
+    # falta de datos, hablar del cliente o de quien pide en tercera persona,
+    # preguntarle qué quiere decirle.
+    for informe, trozo in (
+        ("He revisado el hilo con Marny y no hay nada que contestar.", "He revisado el hilo"),
+        ("No tengo datos para confirmar el plazo de entrega.", "No tengo datos para"),
+        ("Hola Marny,\n\nManel ya le envió el presupuesto el día 26.\n\nUn saludo",
+         "Manel ya le envió"),
+        ("Hola,\n\nte paso el presupuesto que pidió Marny.\n\nUn saludo", "Marny"),
+        ("Dime qué quieres decirle y lo redacto.", "Dime qué quieres decirle"),
+        ("I don't have enough information to confirm the delivery date.", "I don't have enough"),
+        ("Ich habe keine Daten zur Lieferzeit.", "Ich habe keine Daten"),
+    ):
+        veredicto = texto.evaluar_cuerpo(informe, nombre_usuario="Manel",
+                                         nombre_destinatario="Marny")
+        assert veredicto.nivel == texto.NIVEL_INFORME and trozo in (veredicto.motivo or ""), (
+            informe, veredicto)
+    # Dudoso: se queda, con aviso. «El cliente» o «el hilo» como objeto, el
+    # nombre de quien pide fuera de la despedida.
+    for dudoso, trozo in (
+        ("Hola Marny,\n\ncomo le comenté al cliente, el plazo son tres semanas.\n\nUn saludo",
+         "al cliente"),
+        ("Hola,\n\nen el hilo veo que pediste el plato PT5.\n\nUn saludo", "el hilo"),
+        ("Hola Marny,\n\nManel os atenderá el jueves.\n\nUn saludo,\nBart", "nombra a Manel"),
+    ):
+        veredicto = texto.evaluar_cuerpo(dudoso, nombre_usuario="Manel",
+                                         nombre_destinatario="Marny")
+        assert veredicto.nivel == texto.NIVEL_DUDOSO and trozo in (veredicto.motivo or ""), (
+            dudoso, veredicto)
+        assert texto.parece_informe_al_usuario(dudoso, nombre_usuario="Manel",
+                                               nombre_destinatario="Marny") is None
+    # Si los dos se llaman igual, el nombre no distingue nada.
+    assert texto.evaluar_cuerpo("Hola Manel,\n\nManel ya le envió todo.", nombre_usuario="Manel",
+                                nombre_destinatario="Manel Soler").nivel == texto.NIVEL_CORREO
+    # Revisión del PR: un nombre que también es palabra corriente no se carga
+    # un correo (solo cuenta con mayúscula), un cierre con el nombre es un
+    # vocativo, y a principio de frase la mayúscula no distingue: como mucho, dudoso.
+    for correo, destinatario in (
+        ("Hi Will,\n\nWe will send the quote tomorrow.\n\nBest regards", "Will Smith"),
+        ("Hola Rosa,\n\nla tinta rosa llega el lunes.\n\nUn saludo", "Rosa Pérez"),
+        ("Hola Marny,\n\nte adjunto la oferta.\n\nGracias, Marny.", "Marny"),
+        ("Hola Marny,\n\nlo vemos con calma el jueves, Marny.\n\nUn saludo", "Marny"),
+    ):
+        veredicto = texto.evaluar_cuerpo(correo, nombre_usuario="Manel",
+                                         nombre_destinatario=destinatario)
+        assert veredicto.nivel == texto.NIVEL_CORREO, (correo, veredicto)
+    for cuerpo, destinatario, nivel in (
+        ("Hola,\n\nte confirmo que Marny ya tiene el presupuesto.", "Marny", texto.NIVEL_INFORME),
+        ("Hola,\n\nhe hablado con Marny del plazo.", "Marny", texto.NIVEL_INFORME),
+        ("Hola,\n\nMarny López ha pedido la reserva.", "Marny", texto.NIVEL_DUDOSO),
+        ("Hola,\n\nRosa es el color que elegimos para la caja.", "Rosa", texto.NIVEL_DUDOSO),
+    ):
+        veredicto = texto.evaluar_cuerpo(cuerpo, nombre_usuario="Manel",
+                                         nombre_destinatario=destinatario)
+        assert veredicto.nivel == nivel and destinatario in (veredicto.motivo or ""), (
+            cuerpo, veredicto)
+
+
+def test_ante_la_duda_el_cuerpo_se_queda_y_la_franja_avisa(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    """Un correo con una oferta («dímelo y te lo preparo») no se vacía. Uno
+    dudoso («al cliente») se queda en el editor con un aviso para revisarlo.
+    Uno que dice que no tiene datos sí se vacía, con el motivo."""
+    with session_factory() as s:
+        hilo = _hilo(s, contacto=_contacto(s), mensajes=[{"de": KLAUS, "texto": MENSAJE_KLAUS}])
+        s.commit()
+        thread_id = hilo.id
+    oferta = {**RESPUESTA_IA, "cuerpo": (
+        "<p>Hola Klaus,</p><p>te paso el presupuesto del UV. Si quieres que te prepare también "
+        "la oferta del DTF, dímelo y te lo preparo.</p><p>Un saludo</p>"), "aviso": ""}
+    with patch.object(llm, "_invoke_claude", _ClaudeFalso(oferta)):
+        b = _pedir(http, thread_id).json()["borrador"]
+    assert b["texto"].startswith("Hola Klaus,") and "dímelo y te lo preparo" in b["texto"]
+    assert b["aviso"] is None
+    dudoso = {**RESPUESTA_IA, "cuerpo": (
+        "<p>Hola Klaus,</p><p>como le comenté al cliente, el plazo son tres semanas.</p>"
+        "<p>Un saludo</p>"), "aviso": ""}
+    with patch.object(llm, "_invoke_claude", _ClaudeFalso(dudoso)):
+        b = _pedir(http, thread_id, instruccion="confirma el plazo").json()["borrador"]
+    assert "como le comenté al cliente" in b["texto"] and "<p>" in b["html"]      # se queda
+    assert b["aviso"].startswith("Revisa el cuerpo antes de enviar: menciona «al cliente»")
+    sin_datos = {**RESPUESTA_IA, "cuerpo": "No tengo datos para confirmar el plazo de entrega.",
+                 "aviso": ""}
+    with patch.object(llm, "_invoke_claude", _ClaudeFalso(sin_datos)):
+        b = _pedir(http, thread_id, instruccion="confirma el plazo").json()["borrador"]
+    assert b["texto"] == "" and b["html"] == ""
+    assert "No tengo datos para" in b["aviso"] and b["aviso"].startswith("La IA no ha redactado")
 
 
 def test_sin_cuerpo_ni_aviso_la_franja_dice_algo() -> None:
@@ -353,7 +448,8 @@ def test_una_correccion_no_vuelve_a_montar_el_contexto_y_manda_mucho_menos(
     assert peticion_chars < 0.3 * primero_chars
     assert contexto_chars / (contexto_chars + peticion_chars) > 0.75   # casi todo, de caché
     assert "BORRADOR ACTUAL" in correccion["user"] and "CORRECCIÓN DE QUIEN ENVÍA: «más corto»"
-    assert primero["texto"] in correccion["bloques"][1]["text"]
+    # El borrador actual viaja en HTML (el formato se conserva en la corrección).
+    assert primero["html"] in correccion["bloques"][1]["text"]
     assert correccion["model"] == "claude-haiku-5-5"                   # el de las correcciones
     assert primera["model"] == get_settings().anthropic_model           # el del primer borrador
     assert segundo["turno"] == 1 and segundo["padre_id"] == primero["id"]
@@ -780,3 +876,370 @@ def test_un_hilo_sin_mensajes_del_cliente_tampoco_rompe(session_factory: session
         assert ctx.ultimo_del_cliente is None and ctx.destinatario == KLAUS
         assert "No hay ningún mensaje del cliente" in redactor.prompt_usuario(ctx)
         assert ctx.resumen()["sin_hilo"] is False and ctx.resumen()["destinatario"] == KLAUS
+
+
+# --- el borrador guardado arrastra la conversación; el aviso de compañero al cambiar «Para» ----
+
+
+def test_la_conversacion_vuelve_para_un_borrador_guardado_y_descartada_no(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    """Un borrador guardado en Borradores lleva el turno que estaba en el
+    editor; al reabrirlo, la franja pide la conversación entera (turnos y
+    coste). Descartada, no vuelve nada."""
+    falso = _ClaudeFalso()
+    with session_factory() as s:
+        hilo = _hilo(s, contacto=_contacto(s), mensajes=[{"de": KLAUS, "texto": MENSAJE_KLAUS}])
+        s.commit()
+        thread_id = hilo.id
+    with patch.object(llm, "_invoke_claude", falso):
+        primero = _pedir(http, thread_id).json()["borrador"]
+        falso.respuesta = CORREO_CORTO
+        segundo = _turno(http, primero["id"], "más corto").json()["borrador"]
+    # El borrador guardado apunta al turno que estaba en el editor (el 2.º).
+    headers = auth_headers(http, "admin")
+    guardado = http.post("/api/email-drafts", headers=headers, json={
+        "subject": "Re: Metallplatten", "to_emails": [KLAUS], "body_html": "<p>Hallo</p>",
+        "thread_id": thread_id, "asistente_borrador_id": segundo["id"],
+    })
+    assert guardado.status_code == 201 and guardado.json()["asistente_borrador_id"] == segundo["id"]
+    r = http.get(f"/api/emails/asistente/{segundo['id']}/conversacion", headers=headers)
+    assert r.status_code == 200, r.text
+    assert [t["id"] for t in r.json()["turnos"]] == [primero["id"], segundo["id"]]
+    assert r.json()["actual"] == segundo["id"]
+    assert [t["estado"] for t in r.json()["turnos"]] == [ESTADO_REGENERADO, ESTADO_GENERADO]
+    # Pidiendo la conversación por el primero, el actual es el último vivo.
+    r1 = http.get(f"/api/emails/asistente/{primero['id']}/conversacion", headers=headers)
+    assert r1.json()["actual"] == primero["id"] and len(r1.json()["turnos"]) == 2
+    # Otra persona no la ve; descartada, no vuelve.
+    assert http.get(f"/api/emails/asistente/{segundo['id']}/conversacion",
+                    headers=auth_headers(http, "user")).status_code == 403
+    http.post(f"/api/emails/asistente/{segundo['id']}/descartar", headers=headers)
+    assert http.get(f"/api/emails/asistente/{segundo['id']}/conversacion",
+                    headers=headers).json() == {"turnos": [], "actual": None}
+    # Tampoco vuelve por el turno anterior (quedó regenerado, no descartado),
+    # ni admite un turno más desde él.
+    assert http.get(f"/api/emails/asistente/{primero['id']}/conversacion",
+                    headers=headers).json() == {"turnos": [], "actual": None}
+    assert _turno(http, primero["id"], "otra vez").status_code == 409
+
+
+def test_interno_dice_si_la_direccion_es_del_grupo(http: TestClient) -> None:
+    headers = auth_headers(http, "user")
+    assert http.get("/api/emails/asistente/interno", headers=headers,
+                    params={"direccion": MANEL}).json() == {"direccion": MANEL, "interno": True}
+    assert http.get("/api/emails/asistente/interno", headers=headers,
+                    params={"direccion": " Info@Fluxlasers.eu "}).json()["interno"] is True
+    assert http.get("/api/emails/asistente/interno", headers=headers,
+                    params={"direccion": KLAUS}).json()["interno"] is False
+    assert http.get("/api/emails/asistente/interno", headers=headers).json()["interno"] is False
+
+
+# --- bloque B (11/10/2026): la IA corrige lo que hay en el editor; formato sencillo ---------
+
+
+LISTA_DTF = {
+    "asunto": "Re: Equipos DTF",
+    "cuerpo": (
+        "<p>Hola Marny,</p><p>Estas son las máquinas de <b>DTF</b> que te encajan:</p>"
+        "<ul><li><strong><a href='https://mbo.example/orion-20'>Orion 20</a></strong> — 4.990 € "
+        "+ IVA</li><li><strong><a href='https://sitio-no-permitido.example/lyra'>Lyra 35</a>"
+        "</strong> — <span style='color:red'>desde 7.900 €</span></li></ul>"
+        "<img src='https://mbo.example/foto.png'><p>Un saludo<br>Admin</p>"
+    ),
+    "idioma": "es", "aviso": "", "pendiente": [],
+    "enlaces_usados": ["https://mbo.example/orion-20"],
+}
+A_MANO = ("<p>hola klaus, te paso lo de las máquinas que me pediste. "
+          "<a href=\"https://mbo.example/orion-20\">esta</a> es la buena.</p><p>saludos</p>"
+          "<!--crmbo:signature--><p>&mdash;</p><p>Admin</p><!--/crmbo:signature-->")
+FORMAL = {
+    "asunto": "Re: Metallplatten und T-Shirts",
+    "cuerpo": ("<p>Estimado Klaus,</p><p>Le adjunto la información de las máquinas que nos "
+               "solicitó. <a href='https://mbo.example/orion-20'>Esta</a> es la que le "
+               "recomendamos.</p><p>Un cordial saludo,<br>Admin</p>"),
+    "idioma": "es", "aviso": "", "pendiente": [], "enlaces_usados": [],
+}
+
+
+def test_el_borrador_sale_en_html_sencillo_limpio_y_con_la_lista_como_lista(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    """Una lista de máquinas es una lista: nombre en negrita con el enlace
+    encima. Lo que el editor no entiende se limpia sin perder contenido (el
+    span deja su texto, la imagen se va) y un enlace que no está en la lista
+    deja su texto sin enlace. `texto` es el texto plano, legible."""
+    falso = _ClaudeFalso(LISTA_DTF)
+    with session_factory() as s:
+        hilo = _hilo(s, contacto=_contacto(s, TALENTOS), mensajes=[
+            {"de": TALENTOS, "texto": "¿Qué máquinas de DTF tenéis y a qué precio?"}])
+        s.commit()
+        thread_id = hilo.id
+    with patch.object(llm, "_invoke_claude", falso):
+        r = _pedir(http, thread_id, instruccion="prepara un correo con las máquinas de DTF",
+                   texto_actual_html="<p>Hola Marny,</p><p>Te paso las máquinas de DTF: "
+                                     "<a href='https://mbo.example/orion-20'>Orion 20</a></p>")
+    assert r.status_code == 201, r.text
+    b = r.json()["borrador"]
+    assert b["html"] == (
+        "<p>Hola Marny,</p><p>Estas son las máquinas de <strong>DTF</strong> que te encajan:</p>"
+        '<ul><li><strong><a href="https://mbo.example/orion-20">Orion 20</a></strong> — 4.990 € '
+        "+ IVA</li><li><strong>Lyra 35</strong> — desde 7.900 €</li></ul>"
+        "<p>Un saludo<br>Admin</p>"
+    )
+    assert b["texto"] == (
+        "Hola Marny,\n\nEstas son las máquinas de DTF que te encajan:\n"
+        "- Orion 20 (https://mbo.example/orion-20) — 4.990 € + IVA\n- Lyra 35 — desde 7.900 €\n\n"
+        "Un saludo\nAdmin"
+    )
+    # El prompt pide ese formato, la lista como lista y que lo «maquetado» o
+    # «con imágenes» vaya al aviso, no al cuerpo.
+    assert "<ul>" in redactor.PROMPT_SISTEMA and "SIEMPRE como lista" in redactor.PROMPT_SISTEMA
+    assert "«maquetado»" in redactor.PROMPT_SISTEMA and "imágenes no se insertan" in (
+        redactor.PROMPT_SISTEMA)
+    assert "incluido el formato" in redactor.PROMPT_SISTEMA
+    with session_factory() as s:
+        fila = s.get(BorradorAsistente, b["id"])
+        assert fila.html == b["html"] and fila.texto == b["texto"]
+
+
+def test_lo_que_el_editor_no_soporta_se_limpia_conservando_el_contenido() -> None:
+    sucio = ("<div style='font:12px'>Hola <span style='color:red'>Marny</span>,</div>"
+             "<script>alert(1)</script><p>Mira <i>esto</i> y <b>esto</b>.</p>"
+             "<img src='x.png' alt='foto'><p>&nbsp;</p><h5>Detalles</h5>"
+             "<table border='1'><tr><th>Modelo</th><td>Ancho</td></tr></table><!-- nota -->"
+             "<p>Enlace <a href='javascript:alert(1)'>malo</a> y <a href='mailto:a@b.c'>correo"
+             "</a>.</p>")
+    limpio = texto.limpiar_html(sucio)
+    assert limpio == (
+        "<p>Hola Marny,</p><p>Mira <em>esto</em> y <strong>esto</strong>.</p><h5>Detalles</h5>"
+        "<table><tbody><tr><th>Modelo</th><td>Ancho</td></tr></tbody></table>"
+        '<p>Enlace malo y <a href="mailto:a@b.c">correo</a>.</p>'
+    )
+    assert "alert" not in limpio and "style" not in limpio and "<img" not in limpio
+    # Con lista de enlaces, solo los de la lista llevan enlace; el resto, texto.
+    assert texto.limpiar_html("<p><a href='https://a.b/'>A</a> <a href='https://c.d/'>C</a></p>",
+                              ["https://c.d/"]) == '<p>A <a href="https://c.d/">C</a></p>'
+    # Texto plano (sin etiquetas) sigue yendo por el camino de siempre.
+    assert texto.cuerpo_a_html("Hola\n\nAdiós", []) == ("<p>Hola</p><p>Adiós</p>", "Hola\n\nAdiós")
+    assert texto.html_a_texto("<ol><li>uno</li><li>dos</li></ol><p>fin<br>otra</p>") == (
+        "1. uno\n2. dos\n\nfin\notra")
+    # La guardia mira el texto plano aunque el cuerpo venga en HTML.
+    data = {"cuerpo": "<p>Hola Manel, he revisado el hilo con Marny y no hay nada nuevo.</p>",
+            "aviso": "", "asunto": "x", "idioma": "es", "pendiente": [], "enlaces_usados": []}
+    redactor._regla_primera(data, nombre_usuario="Manel", nombre_destinatario="Marny")
+    assert data["cuerpo"] == "" and "he revisado el hilo" in data["aviso"] and "<p>" not in (
+        data["aviso"])
+
+
+def test_un_correo_escrito_a_mano_se_corrige_como_turno_cero_con_el_modelo_de_correcciones(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    """Hay texto en el editor (escrito a mano, con firma) y la persona pide
+    «ponlo más formal»: la IA corrige ESE texto. Es el turno 0 de la
+    conversación (el contexto se monta y se guarda para los siguientes), pero
+    va con el modelo de las correcciones y se anota como corrección. Sin
+    instrucción no hay nada que hacer."""
+    falso = _ClaudeFalso(FORMAL)
+    with session_factory() as s:
+        hilo = _hilo(s, contacto=_contacto(s), mensajes=[{"de": KLAUS, "texto": MENSAJE_KLAUS}])
+        s.commit()
+        thread_id = hilo.id
+    assert _pedir(http, thread_id, texto_actual_html=A_MANO).status_code == 400
+    with patch.object(llm, "_invoke_claude", falso):
+        r = _pedir(http, thread_id, instruccion="ponlo más formal", texto_actual_html=A_MANO)
+    assert r.status_code == 201, r.text
+    b = r.json()["borrador"]
+    peticion = falso.ultimo["bloques"][1]["text"]
+    assert "TEXTO ACTUAL DEL EDITOR" in peticion and "hola klaus, te paso lo de las máquinas" in (
+        peticion)
+    assert "CORRECCIÓN DE QUIEN ENVÍA: «ponlo más formal»" in peticion
+    assert "crmbo:signature" not in peticion and "Admin</p>" not in peticion   # sin la firma
+    assert "HILO (1 mensajes" in falso.ultimo["bloques"][0]["text"]            # con contexto
+    assert falso.ultimo["model"] == "claude-haiku-5-5"
+    assert b["turno"] == 0 and b["sobre_editor"] is True and b["fragmento"] is False
+    assert b["html"].startswith("<p>Estimado Klaus,</p>")
+    assert 'href="https://mbo.example/orion-20"' in b["html"]      # su enlace se conserva
+    assert b["texto"].startswith("Estimado Klaus,\n\nLe adjunto")
+    with session_factory() as s:
+        fila = s.get(BorradorAsistente, b["id"])
+        assert fila.contexto_texto and "HILO" in fila.contexto_texto
+        assert s.scalar(select(LlamadaIA)).proposito == "asistente_correccion"
+    # Y el siguiente turno reutiliza ese contexto de caché, sin montarlo.
+    falso.respuesta = CORREO_CORTO
+    with patch.object(llm, "_invoke_claude", falso), \
+            patch.object(contexto_mod, "construir", wraps=contexto_mod.construir) as construir:
+        r2 = _turno(http, b["id"], "más corto", texto_actual_html=b["html"])
+    assert r2.status_code == 201 and construir.call_count == 0
+    assert r2.json()["borrador"]["turno"] == 1
+
+
+def test_una_correccion_parte_de_lo_que_hay_ahora_en_el_editor_no_del_borrador(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    """La persona retocó a mano el borrador de la IA y pide «más corto»: la
+    corrección parte de lo editado (lo que manda el compositor), no del
+    borrador guardado. Sin texto del editor, del borrador."""
+    falso = _ClaudeFalso()
+    with session_factory() as s:
+        hilo = _hilo(s, contacto=_contacto(s), mensajes=[{"de": KLAUS, "texto": MENSAJE_KLAUS}])
+        s.commit()
+        thread_id = hilo.id
+    with patch.object(llm, "_invoke_claude", falso):
+        primero = _pedir(http, thread_id).json()["borrador"]
+    editado = ("<p>Hallo Klaus,</p><p>EDITADO A MANO: UV-LED für Metall, DTF für Shirts.</p>"
+               "<p>Viele Grüße<br>Admin</p>")
+    falso.respuesta = CORREO_CORTO
+    with patch.object(llm, "_invoke_claude", falso):
+        r = _turno(http, primero["id"], "más corto", texto_actual_html=editado)
+    assert r.status_code == 201, r.text
+    peticion = falso.ultimo["bloques"][1]["text"]
+    assert "EDITADO A MANO" in peticion and "TEXTO ACTUAL DEL EDITOR" in peticion
+    assert "vielen Dank für Ihre Nachricht" not in peticion         # el borrador viejo, no
+    assert r.json()["borrador"]["sobre_editor"] is True
+    # Sin texto del editor (la franja de siempre), el borrador actual, en HTML.
+    with patch.object(llm, "_invoke_claude", falso):
+        r2 = _turno(http, r.json()["borrador"]["id"], "en alemán formal")
+    peticion2 = falso.ultimo["bloques"][1]["text"]
+    assert "BORRADOR ACTUAL" in peticion2 and "<p>Hallo Klaus,</p>" in peticion2
+    assert r2.json()["borrador"]["sobre_editor"] is False
+
+
+def test_sobre_una_seleccion_solo_cambia_ese_fragmento_y_el_resto_ni_un_caracter(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    editor = ("<p>Hola Marny,</p><p>Te paso los precios.</p>"
+              "<p>Un saludo,<br><strong>Admin</strong></p>")
+    falso = _ClaudeFalso({**FORMAL, "cuerpo": "<p>Te adjunto los precios de las máquinas de "
+                                              "DTF que me pediste.</p>"})
+    with session_factory() as s:
+        hilo = _hilo(s, contacto=_contacto(s, TALENTOS), mensajes=[
+            {"de": TALENTOS, "texto": "¿Precios de DTF?"}])
+        s.commit()
+        thread_id = hilo.id
+    with patch.object(llm, "_invoke_claude", falso):
+        r = _pedir(http, thread_id, instruccion="desarrolla esta frase", texto_actual_html=editor,
+                   seleccion_html="<p>Te paso los precios.</p>")
+    assert r.status_code == 201, r.text
+    b = r.json()["borrador"]
+    peticion = falso.ultimo["bloques"][1]["text"]
+    assert "SELECCIÓN (el único fragmento" in peticion and "NO lo reescribas entero" in peticion
+    assert "<p>Te paso los precios.</p>" in peticion
+    assert b["html"] == ("<p>Hola Marny,</p><p>Te adjunto los precios de las máquinas de DTF que "
+                         "me pediste.</p><p>Un saludo,<br><strong>Admin</strong></p>")
+    assert b["fragmento"] is False and b["seleccion"]["empalmado"] is True
+    assert b["seleccion"]["original"] == "Te paso los precios."
+    assert b["texto"].startswith("Hola Marny,\n\nTe adjunto los precios")
+    # Una selección que no aparece tal cual en el texto (cortó una etiqueta):
+    # el turno guarda el fragmento y el compositor lo sustituye en el editor.
+    with patch.object(llm, "_invoke_claude", falso):
+        r2 = _turno(http, b["id"], "más corto", texto_actual_html=editor,
+                    seleccion_html="<strong>Adm</strong>")
+    b2 = r2.json()["borrador"]
+    assert b2["fragmento"] is True and b2["seleccion"]["empalmado"] is False
+    assert b2["html"] == b2["seleccion"]["fragmento_html"]
+    # La selección era texto dentro de un párrafo: el fragmento va sin `<p>`.
+    assert b2["html"].startswith("Te adjunto") and "<p>" not in b2["html"]
+    # La comparación al enviar: el fragmento está en lo enviado → tal cual.
+    with session_factory() as s:
+        fila = s.get(BorradorAsistente, b2["id"])
+        from app.services.asistente import borradores  # noqa: PLC0415
+        enviado = ("<p>Hola Marny,</p><p>Te adjunto los precios de las máquinas de DTF que me "
+                   "pediste.</p><p>Adiós</p><!--crmbo:signature--><p>Admin</p><!--/crmbo:signature-->")
+        assert borradores.resultado_del_envio(fila, body_html=enviado, body_text=None) == (
+            ESTADO_ENVIADO_TAL_CUAL)
+        assert borradores.resultado_del_envio(fila, body_html="<p>Otra cosa</p>",
+                                              body_text=None) == ESTADO_ENVIADO_EDITADO
+        entero = s.get(BorradorAsistente, b["id"])
+        assert borradores.resultado_del_envio(
+            entero, body_html=b["html"] + "<!--crmbo:signature--><p>A</p><!--/crmbo:signature-->",
+            body_text=None) == ESTADO_ENVIADO_TAL_CUAL
+        assert borradores.resultado_del_envio(entero, body_html=b["html"] + "<p>PD: más</p>",
+                                              body_text=None) == ESTADO_ENVIADO_EDITADO
+
+
+def test_una_correccion_conserva_el_formato_y_la_peticion_lleva_el_html(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    """El borrador con lista se corrige («más corto») y el modelo recibe el
+    HTML con la lista (la regla 10 le pide conservar el formato); lo que
+    devuelve en HTML se guarda tal cual, limpio."""
+    falso = _ClaudeFalso(LISTA_DTF)
+    with session_factory() as s:
+        hilo = _hilo(s, contacto=_contacto(s, TALENTOS), mensajes=[
+            {"de": TALENTOS, "texto": "¿Qué máquinas de DTF tenéis?"}])
+        s.commit()
+        thread_id = hilo.id
+    with patch.object(llm, "_invoke_claude", falso):
+        primero = _pedir(http, thread_id).json()["borrador"]
+    # Sin catálogo ni texto de la persona, el enlace de la máquina no está en
+    # la lista de ENLACES: queda como texto (regla 4); la lista, como lista.
+    assert "<ul><li><strong>Orion 20</strong>" in primero["html"] and "<a " not in primero["html"]
+    corto = {**LISTA_DTF, "cuerpo": (
+        "<p>Hola Marny,</p><ul><li><strong><a href='https://mbo.example/orion-20'>Orion 20"
+        "</a></strong> — 4.990 € + IVA</li></ul><p>Un saludo</p>")}
+    falso.respuesta = corto
+    with patch.object(llm, "_invoke_claude", falso):
+        r = _turno(http, primero["id"], "más corto")
+    peticion = falso.ultimo["bloques"][1]["text"]
+    assert "BORRADOR ACTUAL" in peticion and "<ul><li><strong>" in peticion
+    b = r.json()["borrador"]
+    assert b["html"] == ("<p>Hola Marny,</p><ul><li><strong>Orion 20</strong> — 4.990 € + IVA</li>"
+                         "</ul><p>Un saludo</p>")
+    assert b["texto"] == "Hola Marny,\n- Orion 20 — 4.990 € + IVA\n\nUn saludo"
+    # Un pedido de maquetación no cambia el formato: la instrucción viaja y
+    # el prompt manda la respuesta al aviso.
+    falso.respuesta = {**corto, "aviso": "El correo va con formato sencillo; las imágenes de "
+                                         "producto no se insertan."}
+    with patch.object(llm, "_invoke_claude", falso):
+        r3 = _turno(http, b["id"], "hazlo maquetado con imágenes de producto")
+    assert "maquetado con imágenes de producto" in falso.ultimo["bloques"][1]["text"]
+    assert r3.json()["borrador"]["aviso"].startswith("El correo va con formato sencillo")
+    assert "<img" not in r3.json()["borrador"]["html"]
+
+
+def test_un_fragmento_dentro_de_un_parrafo_no_anida_parrafos_y_uno_vacio_no_borra_nada(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    """Revisión del PR: el fragmento de una selección DENTRO de un párrafo
+    vuelve como texto corrido (sin `<p>` alrededor) para no anidar párrafos al
+    empalmarlo; la selección se guarda tal cual (el compositor solo sustituye
+    ESA); una selección que la guardia deja vacía sigue siendo un turno sobre
+    la selección (el compositor no toma «vacío» por «borrarlo todo»); y un
+    cuerpo empalmado demasiado largo se guarda solo como fragmento."""
+    editor = "<p>Hola Klaus, te paso los precios hoy. Un saludo</p>"
+    falso = _ClaudeFalso({**FORMAL, "cuerpo": "te adjunto los precios de hoy"})
+    with session_factory() as s:
+        hilo = _hilo(s, contacto=_contacto(s, TALENTOS), mensajes=[
+            {"de": TALENTOS, "texto": "¿Precios de DTF?"}])
+        s.commit()
+        thread_id = hilo.id
+    with patch.object(llm, "_invoke_claude", falso):
+        r = _pedir(http, thread_id, instruccion="más formal", texto_actual_html=editor,
+                   seleccion_html="te paso los precios hoy")
+    assert r.status_code == 201, r.text
+    b = r.json()["borrador"]
+    assert b["html"] == "<p>Hola Klaus, te adjunto los precios de hoy. Un saludo</p>"
+    assert b["texto"] == "Hola Klaus, te adjunto los precios de hoy. Un saludo"
+    assert b["seleccion"]["fragmento_html"] == "te adjunto los precios de hoy"
+    assert b["seleccion"]["original_html"] == "te paso los precios hoy"
+    assert b["fragmento"] is False and b["seleccion"]["empalmado"] is True
+    # La guardia vacía el fragmento: sigue siendo un turno sobre la selección.
+    falso.respuesta = {**FORMAL, "cuerpo": INFORME}
+    with patch.object(llm, "_invoke_claude", falso):
+        r2 = _turno(http, b["id"], "más corto", texto_actual_html=b["html"],
+                    seleccion_html="te adjunto los precios de hoy")
+    assert r2.status_code == 201, r2.text
+    b2 = r2.json()["borrador"]
+    assert b2["html"] == "" and b2["texto"] == "" and b2["sobre_editor"] is True
+    assert b2["seleccion"]["fragmento_html"] == "" and b2["fragmento"] is True
+    assert "La IA no ha redactado un correo" in b2["aviso"]
+    # Más largo que el tope, el turno guarda solo el fragmento (el compositor
+    # lo pone en la selección).
+    falso.respuesta = {**FORMAL, "cuerpo": "te adjunto los precios de hoy"}
+    with patch.object(llm, "_invoke_claude", falso), \
+            patch.object(redactor, "MAX_HTML_EMPALMADO", 20):
+        r3 = _turno(http, b["id"], "más formal", texto_actual_html=editor,
+                    seleccion_html="te paso los precios hoy")
+    b3 = r3.json()["borrador"]
+    assert b3["fragmento"] is True and b3["html"] == "te adjunto los precios de hoy"
