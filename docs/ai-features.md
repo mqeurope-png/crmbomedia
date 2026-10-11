@@ -278,6 +278,16 @@ ninguna firma marcada como predeterminada pero sí una sola, se usa esa.
   por web e idioma, página de producto del interés, categoría de la KB de
   FLUX por modelo (o nuestro soporte si es avería), con los artículos
   indexados del modelo.
+- El **catálogo** (bloque CATÁLOGO, la única fuente de precios): hasta seis
+  **máquinas** del compositor de correos que encajan con los intereses del
+  lead y hasta ocho **consumibles y repuestos** de las tiendas para la
+  máquina que tiene, en su idioma, con el **precio tal cual** está escrito en
+  el origen (sin convertir moneda; sin precio en su idioma, el del idioma por
+  defecto de la marca, dicho), su enlace y la marca «ORIENTATIVO» si la fuente
+  lleva más de seis meses sin confirmarse. El bloque trae también la
+  declaración del IVA por fuente y las frases que el correo tiene que llevar
+  (IVA, VIES, «no es una factura») en el idioma del correo. Sin producto para
+  lo que piden, lo dice y el modelo no cita ningún precio.
 - El **idioma del mensaje** (detectado en el último mensaje del cliente; la
   ficha solo si el texto no lo delata), **quién pulsa** (nombre y remitente)
   y, como ejemplo de tono, la plantilla del interés × idioma si la hay.
@@ -286,9 +296,11 @@ ninguna firma marcada como predeterminada pero sí una sola, se usa esa.
 ### Reglas del prompt (`services/asistente/redactor.py`)
 
 Regla primera: el cuerpo es un correo enviable o está vacío, y lo que haya que
-decirle a la persona va en `aviso`. Después: redacta, no aporta hechos (precios,
-plazos y disponibilidad solo de los datos, y un precio viejo no se da como
-actual); la instrucción de quien envía manda sobre el hilo; sin promesas;
+decirle a la persona va en `aviso`. Después: redacta, no aporta hechos (precios
+de productos **solo del bloque CATÁLOGO**, copiados tal cual con su moneda y
+con las frases de IVA, VIES y «no es una factura»; plazos y disponibilidad solo
+de los datos; un precio de un correo o pedido viejo es histórico y no se da
+como vigente); la instrucción de quien envía manda sobre el hilo; sin promesas;
 **enlaces solo de la lista** (los de la base de conocimiento), tal cual; en el
 idioma del mensaje; tono y longitud de las plantillas del equipo (60–180
 palabras; tono interno si el destinatario es un compañero); sin firma (la pone

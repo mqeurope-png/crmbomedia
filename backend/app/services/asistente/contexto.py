@@ -42,6 +42,7 @@ from app.models.leads import LeadClassification
 from app.services.asistente import historico as hist
 from app.services.asistente.config import configuracion as config_asistente
 from app.services.asistente.texto import recortar, sin_cita, texto_de_mensaje
+from app.services.conocimiento import catalogo as kb_catalogo
 from app.services.conocimiento import enlaces as kb_enlaces
 from app.services.conocimiento import flux
 from app.services.leads.clasificador import detectar_idioma
@@ -99,7 +100,13 @@ class Contexto:
     asuntos_recientes: list[dict[str, Any]] = field(default_factory=list)
     sitio: str | None = None
     interes: str | None = None
+    #: Todos los intereses del lead (el principal primero): deciden las máquinas.
+    intereses: list[str] = field(default_factory=list)
     enlaces: dict[str, Any] = field(default_factory=dict)
+    #: El catálogo que entra: máquinas de su interés, consumibles de su máquina,
+    #: avisos de IVA (`conocimiento.catalogo.para_asistente`). Los precios del
+    #: borrador salen de aquí o no salen.
+    catalogo: dict[str, Any] | None = None
     usuario: dict[str, Any] = field(default_factory=dict)
     destinatario: str | None = None
     asunto_respuesta: str = ""
@@ -141,7 +148,18 @@ class Contexto:
             for a in bloque.get("articulos") or []:
                 _añadir({"url": a["url"], "origen": "flux_articulo"},
                         f"artículo FLUX: {a['titulo']}")
+        for p in self.productos_catalogo():
+            if p.get("enlace"):
+                _añadir({"url": p["enlace"], "origen": f"catalogo_{p.get('fuente') or ''}"},
+                        f"{p.get('nombre')} ({p.get('marca')})"
+                        + (f", en {p['idioma_enlace']}" if p.get("idioma_enlace") else ""))
         return salida
+
+    def productos_catalogo(self) -> list[dict[str, Any]]:
+        """Máquinas y consumibles del catálogo que entran, en orden."""
+        if not self.catalogo:
+            return []
+        return [*(self.catalogo.get("maquinas") or []), *(self.catalogo.get("consumibles") or [])]
 
     def resumen(self) -> dict[str, Any]:
         """Lo que se guarda con el borrador y se enseña debajo: qué entró."""
@@ -162,8 +180,24 @@ class Contexto:
             "maquina": self.maquina, "modelo_flux": self.modelo_flux,
             "clasificacion": self.clasificacion, "etapa": self.etapa,
             "asuntos_recientes": len(self.asuntos_recientes),
-            "sitio": self.sitio, "interes": self.interes,
+            "sitio": self.sitio, "interes": self.interes, "intereses": list(self.intereses),
             "enlaces": self.enlaces_lista(),
+            # None cuando el catálogo no respondió (la franja lo distingue de
+            # «sin productos para este caso»).
+            "catalogo": None if self.catalogo is None else {
+                "maquinas": [
+                    {k: p.get(k) for k in ("nombre", "marca", "precio_texto", "moneda",
+                                           "precio_idioma", "orientativo", "enlace", "interes")}
+                    for p in self.catalogo.get("maquinas") or []
+                ],
+                "consumibles": [
+                    {k: p.get(k) for k in ("nombre", "marca", "precio_texto", "moneda",
+                                           "precio_idioma", "orientativo", "enlace", "sitio")}
+                    for p in self.catalogo.get("consumibles") or []
+                ],
+                "sin_maquina": list(self.catalogo.get("sin_maquina") or []),
+                "iva_por_fuente": dict(self.catalogo.get("iva_por_fuente") or {}),
+            },
             "niveles": list(self.niveles),
             "historico": [
                 {k: v for k, v in h.items() if k != "texto"} | {"con_cuerpo": bool(h.get("texto"))}
@@ -497,10 +531,13 @@ def construir(
     session: Session, *, thread: EmailThread | None, usuario: User,
     alcance: str = ALCANCE_CONTACTO, destinatario: str | None = None,
     contacto: Contact | None = None, instruccion: str | None = None,
+    ahora: datetime | None = None,
 ) -> Contexto:
     """El contexto de un borrador. Con `thread`, la respuesta a un hilo; sin
     él, un correo nuevo: entonces `destinatario` (la dirección de «Para») es
-    lo que dispara el expediente y `instruccion` lo que dice de qué va."""
+    lo que dispara el expediente y `instruccion` lo que dice de qué va.
+    `ahora` fija la fecha con la que se mide la antigüedad de los precios
+    (los tests); por defecto, la de hoy."""
     dominios = registro_sitios.dominios_del_grupo(session)
     mensajes = mensajes_del_hilo(thread, dominios) if thread is not None else []
     if contacto is None and thread is not None:
@@ -553,7 +590,8 @@ def construir(
             session, contacto, excluir_thread_id=excluir, limite=int(cfg["asuntos_max"]))
         intereses = (ctx.clasificacion or {}).get("intereses") or (
             [contacto.lead_interest] if contacto.lead_interest else [])
-        ctx.interes = intereses[0] if intereses else None
+        ctx.intereses = [str(i) for i in intereses if i]
+        ctx.interes = ctx.intereses[0] if ctx.intereses else None
         ctx.ejemplo_estilo = ejemplo_estilo_de(session, intereses, idioma)
         # Nivel 3: los correos viejos del contacto que vienen a cuento.
         productos = hist.palabras_de_producto(
@@ -595,4 +633,16 @@ def construir(
         session, sitio=ctx.sitio, idioma=idioma, interes=ctx.interes, texto=texto_comparar,
         modelo=ctx.modelo_flux,
     )
+    # El catálogo: no entero, sino lo que toca a este lead (las máquinas de su
+    # interés y los consumibles de la máquina que tiene). Sin ficha no hay
+    # interés ni máquina, y el bloque dice que no hay precios que citar.
+    try:
+        ctx.catalogo = kb_catalogo.para_asistente(
+            session, intereses=ctx.intereses, idioma=idioma, maquina=ctx.maquina,
+            modelo_flux=ctx.modelo_flux, ahora=ahora,
+        )
+    except Exception:  # noqa: BLE001 — sin catálogo el asistente sigue (sin precios)
+        logger.warning("asistente: el catálogo no responde; el borrador va sin precios",
+                       exc_info=True)
+        ctx.catalogo = None
     return ctx

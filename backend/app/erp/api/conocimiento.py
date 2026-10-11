@@ -10,25 +10,46 @@ Configuración ERP, donde vive la pantalla).
 - POST  /api/erp/conocimiento/flux/categorias       una categoría de la KB de FLUX
 - PATCH /api/erp/conocimiento/flux/categorias/{id}  modelo, palabras, activo
 - POST  /api/erp/conocimiento/flux/sincronizar      «Sincronizar ahora» (en la petición)
-- POST  /api/erp/conocimiento/resolver              qué enlaces saldrían (web, idioma, texto)
+- POST  /api/erp/conocimiento/resolver              qué enlaces (y qué catálogo) saldrían
 
-La configuración (sincronización diaria, palabras de FLUX) va por
-`GET/PATCH /api/erp/settings` (`conocimiento`), con el resto de ajustes.
+Fase 2, el catálogo y los precios:
+
+- GET    /api/erp/conocimiento/catalogo/productos         la tabla, con filtros
+- POST   /api/erp/conocimiento/catalogo/sincronizar       {fuente} → una pasada (en la petición)
+- PATCH  /api/erp/conocimiento/catalogo/marcas/{nombre}   idioma por defecto de la marca
+- POST   /api/erp/conocimiento/catalogo/intereses         una fila interés → máquinas
+- PATCH  /api/erp/conocimiento/catalogo/intereses/{id}    marca, patrón, nota, activo, orden
+- DELETE /api/erp/conocimiento/catalogo/intereses/{id}
+
+La configuración (sincronizaciones diarias, palabras de FLUX, meses hasta
+«orientativo», IVA por fuente) va por `GET/PATCH /api/erp/settings`
+(`conocimiento`), con el resto de ajustes.
 """
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.audit import Action, record_event
 from app.db.session import get_session
 from app.erp.api.deps import require_config
-from app.models.conocimiento import SYNC_MANUAL
+from app.models.conocimiento import FUENTE_COMPOSITOR, FUENTE_WOOCOMMERCE, FUENTES, SYNC_MANUAL
 from app.models.crm import User
-from app.services.conocimiento import comprobar, enlaces, flux, rutas, zendesk
+from app.services.conocimiento import (
+    catalogo,
+    catalogo_compositor,
+    catalogo_tiendas,
+    comprobar,
+    enlaces,
+    flux,
+    rutas,
+    zendesk,
+)
+from app.services.conocimiento.config import configuracion as config_kb
 from app.services.web_forms import sitios as registro_sitios
 
 router = APIRouter(prefix="/api/erp/conocimiento", tags=["erp-conocimiento"])
@@ -107,6 +128,35 @@ class ResolverIn(BaseModel):
     interes: str | None = Field(default=None, max_length=40)
     texto: str | None = Field(default=None, max_length=4000)
     modelo: str | None = Field(default=None, max_length=200)
+    #: La máquina que tiene el cliente (lo que dicen sus pedidos): para probar
+    #: qué consumibles le saldrían.
+    maquina: str | None = Field(default=None, max_length=200)
+
+
+class SincronizarCatalogoIn(BaseModel):
+    #: `compositor`, `woocommerce` o vacío (las dos).
+    fuente: str | None = Field(default=None, max_length=12)
+
+
+class MarcaCambiosIn(BaseModel):
+    idioma_defecto: str = Field(min_length=2, max_length=5)
+
+
+class InteresProductoIn(BaseModel):
+    interes: str = Field(min_length=2, max_length=40)
+    marca: str = Field(default="", max_length=80)
+    patron: str = Field(default="", max_length=80)
+    nota: str | None = Field(default=None, max_length=255)
+    posicion: int | None = Field(default=None, ge=0, le=10000)
+
+
+class InteresProductoCambiosIn(BaseModel):
+    interes: str | None = Field(default=None, max_length=40)
+    marca: str | None = Field(default=None, max_length=80)
+    patron: str | None = Field(default=None, max_length=80)
+    nota: str | None = Field(default=None, max_length=255)
+    activo: bool | None = None
+    posicion: int | None = Field(default=None, ge=0, le=10000)
 
 
 def _auditar(
@@ -129,6 +179,7 @@ def _todo(session: Session) -> dict[str, Any]:
     idiomas: set[str] = set()
     for s in reg.sitios:
         idiomas.update(s.idiomas)
+    cfg = config_kb(session)
     return {
         "sitios": reg.como_lista(),
         "sitios_de_la_base": reg.de_la_base,
@@ -138,6 +189,8 @@ def _todo(session: Session) -> dict[str, Any]:
             "locales": dict(flux.LOCALES),
             **flux.estado_indice(session),
         },
+        "catalogo": catalogo.estado(session, cfg),
+        "interes_productos": catalogo.mapa_resuelto(session, cfg),
         "idiomas": sorted(idiomas),
     }
 
@@ -317,9 +370,149 @@ def resolver(
     current_user: User = Depends(require_config),
 ) -> dict[str, Any]:
     """Qué enlaces le saldrían al asistente para esa web, idioma, interés y
-    texto: para probar una ruta nueva sin esperar a un lead."""
+    texto, y qué máquinas y consumibles del catálogo: para probar una ruta o
+    una fila nueva sin esperar a un lead."""
     _ = current_user
-    return enlaces.enlaces_para(
+    salida = enlaces.enlaces_para(
         session, sitio=payload.sitio, idioma=payload.idioma, interes=payload.interes,
         texto=payload.texto, modelo=payload.modelo,
     )
+    salida["catalogo"] = catalogo.para_asistente(
+        session, intereses=[payload.interes] if payload.interes else [],
+        idioma=(payload.idioma or "es").strip().lower()[:2], maquina=payload.maquina,
+        modelo_flux=payload.modelo,
+    )
+    return salida
+
+
+# --- catálogo (Fase 2) ------------------------------------------------------------------
+
+
+@router.get("/catalogo/productos")
+def productos_catalogo(
+    fuente: str | None = Query(default=None, max_length=12),
+    tipo: str | None = Query(default=None, max_length=12),
+    idioma: str | None = Query(default=None, max_length=5),
+    marca: str | None = Query(default=None, max_length=80),
+    sitio: str | None = Query(default=None, max_length=40),
+    q: str | None = Query(default=None, max_length=120),
+    con_idos: bool = Query(default=False),
+    limite: int = Query(default=500, ge=1, le=5000),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_config),
+) -> dict[str, Any]:
+    """La tabla del catálogo, filtrada (los idos solo si se piden)."""
+    _ = current_user
+    filas = catalogo.listar(
+        session, fuente=fuente or None, tipo=tipo or None, idioma=idioma or None,
+        marca=marca or None, sitio=sitio or None, texto=q, con_idos=con_idos, limite=limite,
+    )
+    return {"productos": [catalogo.producto_como_dict(p) for p in filas], "total": len(filas),
+            "limite": limite}
+
+
+@router.post("/catalogo/sincronizar")
+def sincronizar_catalogo(
+    payload: SincronizarCatalogoIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_config),
+) -> dict[str, Any]:
+    """«Sincronizar ahora»: el compositor (una petición a Supabase), las
+    tiendas (unas decenas de páginas) o las dos, en la petición. Un origen
+    caído deja el catálogo anterior y lo dice en el resultado."""
+    fuente = (payload.fuente or "").strip().lower() or None
+    if fuente is not None and fuente not in FUENTES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            f"Fuente desconocida: {fuente!r} ({' o '.join(FUENTES)}).")
+    ahora = datetime.now(UTC)
+    pasadas = []
+    if fuente in (None, FUENTE_COMPOSITOR):
+        pasadas.append(catalogo_compositor.sincronizar(session, origen=SYNC_MANUAL, ahora=ahora))
+    if fuente in (None, FUENTE_WOOCOMMERCE):
+        pasadas.append(catalogo_tiendas.sincronizar(session, origen=SYNC_MANUAL, ahora=ahora))
+    for pasada in pasadas:
+        _auditar(session, current_user, tipo="catalogo_sync", clave=pasada.id, accion="manual",
+                 cambios={"fuente": pasada.fuente, "estado": pasada.estado,
+                          "productos": pasada.productos})
+    session.commit()
+    cfg = config_kb(session)
+    return {
+        "sincronizaciones": [catalogo.sincronizacion_como_dict(p) for p in pasadas],
+        "catalogo": catalogo.estado(session, cfg),
+        "interes_productos": catalogo.mapa_resuelto(session, cfg),
+    }
+
+
+@router.patch("/catalogo/marcas/{nombre}")
+def editar_marca(
+    nombre: str,
+    payload: MarcaCambiosIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_config),
+) -> dict[str, Any]:
+    try:
+        catalogo.actualizar_marca(session, nombre, payload.model_dump())
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    _auditar(session, current_user, tipo="catalogo_marca", clave=nombre, accion="cambio",
+             cambios=payload.model_dump())
+    session.commit()
+    return _todo(session)
+
+
+@router.post("/catalogo/intereses", status_code=status.HTTP_201_CREATED)
+def crear_interes_producto(
+    payload: InteresProductoIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_config),
+) -> dict[str, Any]:
+    """Una fila interés → máquinas nueva: el asistente la usa en el siguiente
+    borrador, sin desplegar."""
+    try:
+        fila = catalogo.crear_mapa(session, **payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    _auditar(session, current_user, tipo="interes_producto", clave=fila.id, accion="alta",
+             cambios=payload.model_dump())
+    session.commit()
+    return _todo(session)
+
+
+@router.patch("/catalogo/intereses/{fila_id}")
+def editar_interes_producto(
+    fila_id: str,
+    payload: InteresProductoCambiosIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_config),
+) -> dict[str, Any]:
+    cambios = _cambios(payload)
+    if not cambios:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "No hay nada que cambiar.")
+    try:
+        catalogo.actualizar_mapa(session, fila_id, cambios)
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    _auditar(session, current_user, tipo="interes_producto", clave=fila_id, accion="cambio",
+             cambios=cambios)
+    session.commit()
+    return _todo(session)
+
+
+@router.delete("/catalogo/intereses/{fila_id}")
+def borrar_interes_producto(
+    fila_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_config),
+) -> dict[str, Any]:
+    try:
+        catalogo.borrar_mapa(session, fila_id)
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    _auditar(session, current_user, tipo="interes_producto", clave=fila_id, accion="baja",
+             cambios=None)
+    session.commit()
+    return _todo(session)

@@ -2253,7 +2253,15 @@ function AsistenteSettings({
 
 const CONOCIMIENTO_DEFECTOS: ConocimientoConfig = {
   flux_sync_activa: true, flux_sync_hora: "04:30", flux_palabras_kb: [], flux_palabras_soporte: [],
+  catalogo_sync_activa: true, catalogo_sync_hora: "04:45", precio_meses_orientativo: 6,
+  iva_por_fuente: { compositor: null, woocommerce: null }, interes_productos_revisado: false,
 };
+
+const IVA_OPCIONES: { value: "" | "con" | "sin"; label: string }[] = [
+  { value: "", label: "sin declarar (el correo dice que está por confirmar)" },
+  { value: "sin", label: "sin IVA" },
+  { value: "con", label: "con IVA incluido" },
+];
 
 /** Base de conocimiento — la parte que viaja con «Guardar cambios»: la
  *  sincronización diaria del índice de FLUX y las palabras que separan «cómo
@@ -2264,7 +2272,12 @@ function ConocimientoSettings({
   value: ConocimientoConfig | undefined;
   onChange: (next: ConocimientoConfig) => void;
 }) {
-  const cfg = value ?? CONOCIMIENTO_DEFECTOS;
+  // Una respuesta anterior a la Fase 2 (sin los campos del catálogo) pinta con
+  // los valores por defecto en vez de romper la sección.
+  const cfg: ConocimientoConfig = {
+    ...CONOCIMIENTO_DEFECTOS, ...(value ?? {}),
+    iva_por_fuente: { ...CONOCIMIENTO_DEFECTOS.iva_por_fuente, ...(value?.iva_por_fuente ?? {}) },
+  };
   // Las listas se editan como texto (comas) y se vuelcan al salir del campo.
   // Cuando la lista guardada cambia (el servidor la normaliza: minúsculas,
   // duplicados), el texto se vuelve a alinear con ella.
@@ -2324,6 +2337,86 @@ function ConocimientoSettings({
           onBlur={() => onChange({ ...cfg, flux_palabras_soporte: lista(soporteTexto) })}
         />
         <span className="muted small">Si hay señales de las dos, gana el soporte. Si no hay ninguna, también el nuestro.</span>
+      </label>
+      <h4 className="erp-settings-subtitle">Catálogo y precios</h4>
+      <label className="field erp-check-field">
+        <input
+          type="checkbox"
+          aria-label="Sincronizar el catálogo cada día"
+          checked={cfg.catalogo_sync_activa}
+          onChange={(e) => onChange({ ...cfg, catalogo_sync_activa: e.target.checked })}
+        />
+        <span>Sincronizar el catálogo cada día</span>
+        <span className="muted small">
+          Las máquinas del compositor de correos (Supabase, solo lectura) y los consumibles y
+          repuestos de las tiendas de las webs (API pública de WooCommerce). Un origen caído deja
+          el catálogo anterior como está.
+        </span>
+      </label>
+      <label className="field">
+        <span>Hora del catálogo (Madrid)</span>
+        <input
+          type="time"
+          aria-label="Hora de la sincronización del catálogo"
+          value={cfg.catalogo_sync_hora}
+          onChange={(e) => { if (e.target.value) onChange({ ...cfg, catalogo_sync_hora: e.target.value }); }}
+        />
+      </label>
+      <label className="field">
+        <span>Meses hasta que un precio es «orientativo»</span>
+        <input
+          type="number"
+          min={1}
+          max={36}
+          aria-label="Meses hasta que un precio es orientativo"
+          value={cfg.precio_meses_orientativo}
+          onChange={(e) => {
+            const n = Number(e.target.value);
+            if (Number.isFinite(n) && n >= 1 && n <= 36) onChange({ ...cfg, precio_meses_orientativo: n });
+          }}
+        />
+        <span className="muted small">
+          Un precio cuya fuente no se ha confirmado en más de estos meses sale como «precio
+          orientativo, lo confirmamos al preparar la oferta».
+        </span>
+      </label>
+      <label className="field">
+        <span>IVA de los precios del compositor (máquinas)</span>
+        <select
+          aria-label="IVA de los precios del compositor"
+          value={cfg.iva_por_fuente.compositor ?? ""}
+          onChange={(e) => onChange({ ...cfg, iva_por_fuente: { ...cfg.iva_por_fuente,
+            compositor: (e.target.value || null) as "con" | "sin" | null } })}
+        >
+          {IVA_OPCIONES.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+      </label>
+      <label className="field">
+        <span>IVA de los precios de las tiendas (consumibles y repuestos)</span>
+        <select
+          aria-label="IVA de los precios de las tiendas"
+          value={cfg.iva_por_fuente.woocommerce ?? ""}
+          onChange={(e) => onChange({ ...cfg, iva_por_fuente: { ...cfg.iva_por_fuente,
+            woocommerce: (e.target.value || null) as "con" | "sin" | null } })}
+        >
+          {IVA_OPCIONES.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+        <span className="muted small">
+          Se declara, nunca se deduce del número. El correo siempre dice si el precio lleva IVA,
+          avisa de la validación VIES para empresas de la UE y de que un correo no es una factura.
+        </span>
+      </label>
+      <label className="field erp-check-field">
+        <input
+          type="checkbox"
+          aria-label="Propuesta de interés a máquinas revisada"
+          checked={cfg.interes_productos_revisado}
+          onChange={(e) => onChange({ ...cfg, interes_productos_revisado: e.target.checked })}
+        />
+        <span>La tabla «interés → máquinas» está revisada</span>
+        <span className="muted small">
+          Mientras no lo esté, la pantalla avisa de que es la propuesta del 11/10/2026 sin revisar.
+        </span>
       </label>
     </>
   );

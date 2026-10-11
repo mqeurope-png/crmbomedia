@@ -348,6 +348,13 @@ export function LoQueHaUsado({ borrador }: { borrador: BorradorAsistente }) {
   const historico = Array.isArray(ctx["historico"]) ? (ctx["historico"] as Record<string, unknown>[]) : [];
   const empresa = Array.isArray(ctx["empresa"]) ? (ctx["empresa"] as Record<string, unknown>[]) : [];
   const recortes = Array.isArray(ctx["recortes"]) ? (ctx["recortes"] as string[]) : [];
+  const catalogo = (ctx["catalogo"] ?? null) as {
+    maquinas?: { nombre?: string; marca?: string; precio_texto?: string | null; orientativo?: boolean }[];
+    consumibles?: { nombre?: string; precio_texto?: string | null; orientativo?: boolean }[];
+    sin_maquina?: string[];
+  } | null;
+  const maquinas = catalogo?.maquinas ?? [];
+  const consumibles = catalogo?.consumibles ?? [];
   const tokens = num("tokens_estimados");
   const presupuesto = num("presupuesto_tokens");
   const partes: string[] = [];
@@ -360,8 +367,16 @@ export function LoQueHaUsado({ borrador }: { borrador: BorradorAsistente }) {
   if (typeof ctx["modelo_flux"] === "string" && ctx["modelo_flux"]) partes.push(`máquina FLUX ${ctx["modelo_flux"]}`);
   if (historico.length > 0) partes.push(`${historico.length} correo${historico.length === 1 ? "" : "s"} anterior${historico.length === 1 ? "" : "es"} del contacto`);
   if (empresa.length > 0) partes.push(`${empresa.length} asunto${empresa.length === 1 ? "" : "s"} de otras personas de la empresa`);
+  if (maquinas.length > 0 || consumibles.length > 0) {
+    const trozos: string[] = [];
+    if (maquinas.length > 0) trozos.push(`${maquinas.length} máquina${maquinas.length === 1 ? "" : "s"} del catálogo con precio`);
+    if (consumibles.length > 0) trozos.push(`${consumibles.length} consumible${consumibles.length === 1 ? "" : "s"} de la tienda`);
+    partes.push(trozos.join(" y "));
+  } else if (catalogo) {
+    partes.push("sin productos del catálogo para este caso (ningún precio)");
+  }
   if (tokens !== null) partes.push(`~${tokens.toLocaleString("es-ES")} tokens de entrada${presupuesto ? ` de ${presupuesto.toLocaleString("es-ES")}` : ""}`);
-  if (recortes.length > 0) partes.push(`${recortes.length} correo${recortes.length === 1 ? "" : "s"} viejo${recortes.length === 1 ? "" : "s"} fuera por tamaño`);
+  if (recortes.length > 0) partes.push(`${recortes.length} elemento${recortes.length === 1 ? "" : "s"} fuera por tamaño`);
   if (borrador.turno > 0) {
     // La caché de prompts es por modelo: con un modelo distinto para las
     // correcciones, la primera escribe su propia caché y las siguientes leen.
@@ -387,6 +402,16 @@ export function LoQueHaUsado({ borrador }: { borrador: BorradorAsistente }) {
             <li key={`e-${i}`}>
               {String(e["fecha"] ?? "").slice(0, 10)} · {String(e["asunto"] ?? "(sin asunto)")}
               <span className="muted small"> — lo escribió {String(e["quien"] ?? "otra persona de la empresa")}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {maquinas.length > 0 || consumibles.length > 0 ? (
+        <ul className="asistente-panel-lista" aria-label="Productos del catálogo que entraron">
+          {[...maquinas, ...consumibles].map((p, i) => (
+            <li key={`p-${i}`}>
+              {String(p.nombre ?? "")}{"marca" in p && p.marca ? ` (${String(p.marca)})` : ""}
+              <span className="muted small"> — {p.precio_texto ? `${p.precio_texto}${p.orientativo ? " · orientativo" : ""}` : "sin precio publicado"}</span>
             </li>
           ))}
         </ul>

@@ -194,6 +194,10 @@ services:
       # enlace) de la KB de FLUX (support.flux3dp.com). Solo lectura de una
       # API pública; interruptor y hora en Configuración ERP.
       - kb:flux_sync
+      # Base de conocimiento, Fase 2: el catálogo (máquinas del compositor de
+      # correos vía Supabase, consumibles de las tiendas WooCommerce vía la
+      # Store API pública). Solo lectura; interruptor y hora en Configuración ERP.
+      - kb:catalogo_sync
     volumes:
       # Sprint Backup-Hardening. El worker ejecuta
       # `scripts/backup-crmbo.sh` via subprocess: necesita el script

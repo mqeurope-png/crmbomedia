@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
@@ -86,8 +87,13 @@ PROMPT_SISTEMA = (
     "Reglas, por este orden:\n"
     "1. Redactas; no aportas hechos. Precios, plazos, disponibilidad, condiciones y datos "
     "técnicos solo si están en los DATOS que te paso. Nunca de memoria ni por sentido común. "
-    "Un precio o plazo que aparezca en un pedido o correo antiguo es histórico: si lo citas, "
-    "di de cuándo es; no lo des como vigente.\n"
+    "Los precios de productos salen SOLO del bloque CATÁLOGO: copiados tal cual están escritos "
+    "(mismo texto y misma moneda, nunca convertidos), cada producto con su enlace, y el correo "
+    "lleva las frases de IVA, VIES y «no es una factura» que indica el bloque, en el idioma del "
+    "correo; un precio marcado ORIENTATIVO lleva además su frase. Si el CATÁLOGO no tiene "
+    "producto para lo que piden, no cites ningún precio ni nombres máquinas que no estén: di que "
+    "se lo preparas en una oferta. Un precio o plazo que aparezca en un pedido o correo antiguo "
+    "es histórico: si lo citas, di de cuándo es; no lo des como vigente.\n"
     "2. Si hay INSTRUCCIÓN DE QUIEN ENVÍA, manda sobre lo que deduzcas del hilo: el correo "
     "dice lo que la instrucción pide, con los datos del contexto, y nada más.\n"
     "3. Sin promesas: ni fechas de entrega, ni descuentos, ni compromisos que no estén en los "
@@ -198,6 +204,84 @@ def _bloque_enlaces(ctx: Contexto) -> str:
     return "\n".join(lineas) + "\n"
 
 
+def _iva_texto(iva: str | None, avisos: dict[str, str]) -> str:
+    if iva == "con":
+        return f"con IVA («{avisos['con']}»)"
+    if iva == "sin":
+        return f"sin IVA («{avisos['sin']}»)"
+    return f"IVA sin declarar («{avisos['sin_declarar']}»)"
+
+
+def _linea_producto(p: dict[str, Any], avisos: dict[str, str], idioma: str) -> str:
+    partes = [f"{p.get('nombre')} · {p.get('marca') or '—'}"]
+    if p.get("categoria"):
+        partes.append(f"área/categoría: {p['categoria']}")
+    caracteristicas = [c for c in (p.get("caracteristicas") or []) if c][:2]
+    if caracteristicas:
+        partes.append("; ".join(caracteristicas))
+    if p.get("precio_texto"):
+        precio = f"PRECIO: {p['precio_texto']}"
+        if p.get("moneda"):
+            precio += f" (moneda {p['moneda']})"
+        if p.get("idioma_respaldo"):
+            precio += (f" — es el precio publicado en «{p.get('precio_idioma')}», no hay precio "
+                       f"en «{idioma}»: dilo y no conviertas la moneda")
+        if p.get("actualizado_origen"):
+            precio += f" · fuente confirmada el {_fecha(p['actualizado_origen'])[:10]}"
+        if p.get("orientativo"):
+            precio += f" · ORIENTATIVO: añade «{avisos['orientativo']}»"
+        partes.append(precio)
+    else:
+        partes.append("sin precio publicado: no inventes uno")
+    if p.get("enlace"):
+        partes.append(f"enlace: {p['enlace']}"
+                      + (f" (en {p['idioma_enlace']})" if p.get("idioma_enlace") else ""))
+    return "- " + " · ".join(partes)
+
+
+def _bloque_catalogo(ctx: Contexto) -> str:
+    """Las máquinas de su interés y los consumibles de su máquina, con el
+    precio tal cual y los avisos. Es la única fuente de precios del borrador."""
+    cat = ctx.catalogo or {}
+    maquinas = cat.get("maquinas") or []
+    consumibles = cat.get("consumibles") or []
+    avisos = cat.get("avisos") or {}
+    iva = cat.get("iva_por_fuente") or {}
+    if not maquinas and not consumibles:
+        lineas = ["CATÁLOGO: no hay ningún producto ni precio verificado para este caso. No cites "
+                  "ningún precio ni nombres máquinas concretas; si piden precios, di que se lo "
+                  "preparas en una oferta."]
+        if cat.get("sin_maquina"):
+            lineas.append(f"  (Sin máquina en el catálogo para: {', '.join(cat['sin_maquina'])}. "
+                          "Si ayuda, enlaza la página de producto del interés de ENLACES.)")
+        return "\n".join(lineas) + "\n"
+    lineas = ["CATÁLOGO (los ÚNICOS productos y precios que puedes citar; el precio se copia TAL "
+              "CUAL, con su moneda, sin convertir; cada producto con su enlace):"]
+    if maquinas:
+        intereses = sorted({m.get("interes") for m in maquinas if m.get("interes")})
+        lineas.append(
+            f"Máquinas que encajan con su interés ({', '.join(intereses) or '—'}); precios "
+            f"{_iva_texto(iva.get('compositor'), avisos)}:")
+        lineas.extend(_linea_producto(m, avisos, ctx.idioma) for m in maquinas)
+    if cat.get("sin_maquina"):
+        lineas.append(
+            f"Sin máquina en el catálogo para: {', '.join(cat['sin_maquina'])}. No inventes "
+            "ninguna; si ayuda, enlaza la página de producto del interés de ENLACES.")
+    if consumibles:
+        lineas.append(
+            f"Consumibles y repuestos de la tienda para su máquina ({ctx.maquina or '—'}); "
+            f"precios {_iva_texto(iva.get('woocommerce'), avisos)}:")
+        lineas.extend(_linea_producto(c, avisos, ctx.idioma) for c in consumibles)
+    if avisos:
+        lineas.append(
+            "Si citas algún precio, el correo lleva tal cual, en el idioma del correo, la frase "
+            f"del IVA de arriba y estas dos: «{avisos.get('vies')}» «{avisos.get('no_factura')}»")
+    recortes = [r for r in ctx.recortes if r.startswith("catálogo")]
+    if recortes:
+        lineas.append(f"(Por tamaño se dejaron fuera {len(recortes)} productos; no están aquí.)")
+    return "\n".join(lineas) + "\n"
+
+
 def _bloque_hilo(ctx: Contexto) -> str:
     if ctx.thread is None:
         return (
@@ -284,7 +368,7 @@ def bloque_contexto(ctx: Contexto) -> str:
     ficha, enlaces, ejemplo de tono, correos viejos y el hilo. Es el bloque que
     se marca como cacheable para la API y el que se guarda con el turno 0 para
     que las correcciones lo manden byte a byte, sin volver a montarlo."""
-    partes = [*_cabecera(ctx), "", _bloque_ficha(ctx), _bloque_enlaces(ctx)]
+    partes = [*_cabecera(ctx), "", _bloque_ficha(ctx), _bloque_catalogo(ctx), _bloque_enlaces(ctx)]
     if ctx.ejemplo_estilo:
         partes.append("EJEMPLO DEL TONO Y LA LONGITUD DEL EQUIPO (una plantilla; no la copies, "
                       "no uses sus datos):\n" + ctx.ejemplo_estilo + "\n")
@@ -454,13 +538,14 @@ def generar(
     session: Session, *, thread: EmailThread | None, usuario: User,
     alcance: str = ALCANCE_CONTACTO, instruccion: str | None = None,
     destinatario: str | None = None, contacto: Contact | None = None,
-    regenerar_de: str | None = None,
+    regenerar_de: str | None = None, ahora: datetime | None = None,
 ) -> BorradorAsistente:
     """El primer turno: monta el contexto, pide el borrador (si hay con qué),
     lo guarda con su coste y lo devuelve (ya en la sesión, sin commit). Sin
     hilo (`thread=None`) es un correo nuevo: hace falta `destinatario` e
     `instruccion`. Lanza `llm.LLMError` si la IA no está configurada o no
-    responde, y `ValueError` si falta algo."""
+    responde, y `ValueError` si falta algo. `ahora` solo lo fijan los tests
+    (la antigüedad de los precios del catálogo)."""
     settings = get_settings()
     if not settings.anthropic_api_key:
         raise llm.LLMNotConfiguredError("La IA no está configurada (ANTHROPIC_API_KEY).")
@@ -479,7 +564,7 @@ def generar(
         raise ValueError(f"Alcance desconocido: {alcance!r}.")
     ctx = ctx_mod.construir(
         session, thread=thread, usuario=usuario, alcance=alcance, destinatario=destinatario,
-        contacto=contacto, instruccion=instruccion,
+        contacto=contacto, instruccion=instruccion, ahora=ahora,
     )
     cfg = config_asistente(session)
     modelo_borrador, _ = _modelos(cfg, settings)
