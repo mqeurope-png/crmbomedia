@@ -533,6 +533,9 @@ export type EmailDraft = {
   signature_id: string | null;
   include_unsubscribe: boolean;
   scheduled_for: string | null;
+  /** «Ayúdame a contestar»: el turno del asistente que estaba en el editor al
+   *  guardar; al reabrir, la franja recupera la conversación. */
+  asistente_borrador_id?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -552,6 +555,7 @@ export type EmailDraftWrite = {
   signature_id?: string | null;
   include_unsubscribe?: boolean;
   scheduled_for?: string | null;
+  asistente_borrador_id?: string | null;
 };
 
 export async function listEmailDrafts(): Promise<EmailDraft[]> {
@@ -765,4 +769,20 @@ export async function descartarBorradorAsistente(
     { method: "POST" },
   );
   return r.borrador;
+}
+
+/** Los turnos de la conversación a la que pertenece el borrador (para reabrir
+ *  un borrador guardado con su franja). Descartada → lista vacía. */
+export async function conversacionAsistente(
+  borradorId: string,
+): Promise<{ turnos: BorradorAsistente[]; actual: string | null }> {
+  return apiFetch(`/api/emails/asistente/${encodeURIComponent(borradorId)}/conversacion`);
+}
+
+/** Si una dirección es del grupo (un compañero): el aviso de la franja se
+ *  recalcula cada vez que cambia «Para». */
+export async function esDestinatarioInterno(
+  direccion: string,
+): Promise<{ direccion: string; interno: boolean }> {
+  return apiFetch(`/api/emails/asistente/interno?direccion=${encodeURIComponent(direccion)}`);
 }

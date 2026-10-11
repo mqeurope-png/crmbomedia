@@ -608,6 +608,7 @@ export default function ContactDetailPage() {
         <EmailComposerModal
           contactId={contact.id}
           contactEmail={contact.email}
+          presentacion="panel"
           onClose={() => setShowComposer(false)}
           onSent={async () => {
             setShowComposer(false);

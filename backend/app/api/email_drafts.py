@@ -80,6 +80,7 @@ def _apply(draft: EmailDraft, payload: EmailDraftWrite, *, now: datetime) -> Non
     draft.signature_id = payload.signature_id
     draft.include_unsubscribe = payload.include_unsubscribe
     draft.scheduled_for = payload.scheduled_for
+    draft.asistente_borrador_id = payload.asistente_borrador_id
     draft.updated_at = now
 
 

@@ -780,3 +780,55 @@ def test_un_hilo_sin_mensajes_del_cliente_tampoco_rompe(session_factory: session
         assert ctx.ultimo_del_cliente is None and ctx.destinatario == KLAUS
         assert "No hay ningún mensaje del cliente" in redactor.prompt_usuario(ctx)
         assert ctx.resumen()["sin_hilo"] is False and ctx.resumen()["destinatario"] == KLAUS
+
+
+# --- el borrador guardado arrastra la conversación; el aviso de compañero al cambiar «Para» ----
+
+
+def test_la_conversacion_vuelve_para_un_borrador_guardado_y_descartada_no(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    """Un borrador guardado en Borradores lleva el turno que estaba en el
+    editor; al reabrirlo, la franja pide la conversación entera (turnos y
+    coste). Descartada, no vuelve nada."""
+    falso = _ClaudeFalso()
+    with session_factory() as s:
+        hilo = _hilo(s, contacto=_contacto(s), mensajes=[{"de": KLAUS, "texto": MENSAJE_KLAUS}])
+        s.commit()
+        thread_id = hilo.id
+    with patch.object(llm, "_invoke_claude", falso):
+        primero = _pedir(http, thread_id).json()["borrador"]
+        falso.respuesta = CORREO_CORTO
+        segundo = _turno(http, primero["id"], "más corto").json()["borrador"]
+    # El borrador guardado apunta al turno que estaba en el editor (el 2.º).
+    headers = auth_headers(http, "admin")
+    guardado = http.post("/api/email-drafts", headers=headers, json={
+        "subject": "Re: Metallplatten", "to_emails": [KLAUS], "body_html": "<p>Hallo</p>",
+        "thread_id": thread_id, "asistente_borrador_id": segundo["id"],
+    })
+    assert guardado.status_code == 201 and guardado.json()["asistente_borrador_id"] == segundo["id"]
+    r = http.get(f"/api/emails/asistente/{segundo['id']}/conversacion", headers=headers)
+    assert r.status_code == 200, r.text
+    assert [t["id"] for t in r.json()["turnos"]] == [primero["id"], segundo["id"]]
+    assert r.json()["actual"] == segundo["id"]
+    assert [t["estado"] for t in r.json()["turnos"]] == [ESTADO_REGENERADO, ESTADO_GENERADO]
+    # Pidiendo la conversación por el primero, el actual es el último vivo.
+    r1 = http.get(f"/api/emails/asistente/{primero['id']}/conversacion", headers=headers)
+    assert r1.json()["actual"] == primero["id"] and len(r1.json()["turnos"]) == 2
+    # Otra persona no la ve; descartada, no vuelve.
+    assert http.get(f"/api/emails/asistente/{segundo['id']}/conversacion",
+                    headers=auth_headers(http, "user")).status_code == 403
+    http.post(f"/api/emails/asistente/{segundo['id']}/descartar", headers=headers)
+    assert http.get(f"/api/emails/asistente/{segundo['id']}/conversacion",
+                    headers=headers).json() == {"turnos": [], "actual": None}
+
+
+def test_interno_dice_si_la_direccion_es_del_grupo(http: TestClient) -> None:
+    headers = auth_headers(http, "user")
+    assert http.get("/api/emails/asistente/interno", headers=headers,
+                    params={"direccion": MANEL}).json() == {"direccion": MANEL, "interno": True}
+    assert http.get("/api/emails/asistente/interno", headers=headers,
+                    params={"direccion": " Info@Fluxlasers.eu "}).json()["interno"] is True
+    assert http.get("/api/emails/asistente/interno", headers=headers,
+                    params={"direccion": KLAUS}).json()["interno"] is False
+    assert http.get("/api/emails/asistente/interno", headers=headers).json()["interno"] is False

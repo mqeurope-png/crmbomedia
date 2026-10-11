@@ -19,7 +19,9 @@ import {
 import {
   type AsistenteAlcance,
   type BorradorAsistente,
+  conversacionAsistente,
   descartarBorradorAsistente,
+  esDestinatarioInterno,
   generarBorradorAsistente,
   generarBorradorNuevo,
   turnoAsistente,
@@ -31,8 +33,10 @@ import { extractErrorMessage } from "../../lib/errors";
  *  de taparlo. De arriba abajo: la caja de instrucción con el selector de
  *  alcance y el botón de redactar; la conversación (lo dicho hasta ahora, con
  *  vuelta atrás); el aviso de la IA; «Lo que ha usado», plegado; y descartar.
- *  Se pliega entera a una sola línea. Lo que llega al editor es siempre un
- *  correo: lo que la IA quiera decirle a la persona va aquí, en el aviso. */
+ *  En cuanto hay borrador se pliega sola a una línea («1 borrador · 0,0164 $»)
+ *  para que el cuerpo tenga el sitio: se despliega al pulsarla. Lo que llega al
+ *  editor es siempre un correo: lo que la IA quiera decirle a la persona va
+ *  aquí, en el aviso. Un borrador guardado vuelve con su conversación. */
 export type AsistenteFranjaProps = {
   /** Con hilo se responde; sin él es un correo nuevo (la instrucción es obligatoria). */
   threadId: string | null;
@@ -44,12 +48,17 @@ export type AsistenteFranjaProps = {
   abiertaInicial?: boolean;
   /** El compositor está enviando: nada se toca. */
   bloqueada?: boolean;
+  /** Un borrador guardado que arrastra su conversación: el turno que estaba en
+   *  el editor al guardar. La franja la recupera (turnos y coste). */
+  borradorInicialId?: string | null;
   /** Llega un turno: el compositor pone su cuerpo (y su asunto) en el editor. */
   onBorrador: (borrador: BorradorAsistente) => void;
   /** La conversación se vacía: el editor vuelve a como estaba antes del asistente. */
   onVaciar: () => void;
   /** El turno que está en el editor (para anotar el resultado al enviar), o null. */
   onBorradorActual: (id: string | null) => void;
+  /** Lo que la franja tiene entre manos: el compositor lo mira antes de cerrar. */
+  onEstado?: (estado: { instruccion: string; turnos: number }) => void;
 };
 
 function primera(direcciones: string): string {
@@ -60,6 +69,30 @@ function usd(n: number): string {
   return `${n.toFixed(4)} $`;
 }
 
+/** Un aviso en ámbar: a dos líneas con un «más» si es largo. Está bien escrito,
+ *  pero no puede comerse el sitio del cuerpo. */
+export function AvisoPlegable({ titulo, texto }: { titulo: string; texto: string }) {
+  const [abierto, setAbierto] = useState(false);
+  const largo = texto.length > 140;
+  return (
+    <div className="asistente-franja-aviso" role="status">
+      <p className={`asistente-franja-aviso-texto${largo && !abierto ? " is-plegado" : ""}`}>
+        <strong>{titulo}</strong> {texto}
+      </p>
+      {largo ? (
+        <button
+          type="button"
+          className="asistente-franja-aviso-mas"
+          aria-expanded={abierto}
+          onClick={() => setAbierto((v) => !v)}
+        >
+          {abierto ? "menos" : "más"}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 export function AsistenteFranja({
   threadId,
   contactId,
@@ -67,9 +100,11 @@ export function AsistenteFranja({
   destinatarioInterno = false,
   abiertaInicial = false,
   bloqueada = false,
+  borradorInicialId = null,
   onBorrador,
   onVaciar,
   onBorradorActual,
+  onEstado,
 }: AsistenteFranjaProps) {
   const modo: "respuesta" | "nuevo" = threadId ? "respuesta" : "nuevo";
   const [abierta, setAbierta] = useState(abiertaInicial);
@@ -80,7 +115,15 @@ export function AsistenteFranja({
   const [actual, setActual] = useState(0);
   const [ocupado, setOcupado] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Lo que dice la API de la dirección de «Para» (null = todavía no se ha preguntado).
+  const [internoApi, setInternoApi] = useState<boolean | null>(null);
   const cajaRef = useRef<HTMLTextAreaElement>(null);
+  const onBorradorActualRef = useRef(onBorradorActual);
+  const onEstadoRef = useRef(onEstado);
+  useEffect(() => {
+    onBorradorActualRef.current = onBorradorActual;
+    onEstadoRef.current = onEstado;
+  });
 
   // Qué histórico mira la IA: se recuerda por usuario (en este navegador).
   useEffect(() => {
@@ -93,6 +136,45 @@ export function AsistenteFranja({
       .catch(() => undefined);
   }, []);
 
+  // Un borrador guardado con conversación: la franja vuelve con sus turnos y
+  // su coste. El editor ya tiene el cuerpo (viene del borrador): no se repone.
+  useEffect(() => {
+    if (!borradorInicialId) return;
+    let vivo = true;
+    conversacionAsistente(borradorInicialId)
+      .then(({ turnos: lista, actual: id }) => {
+        if (!vivo || lista.length === 0) return;
+        const idx = Math.max(0, lista.findIndex((t) => t.id === id));
+        setTurnos(lista);
+        setActual(idx);
+        onBorradorActualRef.current(lista[idx].id);
+      })
+      .catch(() => undefined);
+    return () => { vivo = false; };
+  }, [borradorInicialId]);
+
+  // El compositor sabe si hay algo que perder al cerrar (una instrucción a
+  // medias, una conversación).
+  useEffect(() => {
+    onEstadoRef.current?.({ instruccion, turnos: turnos.length });
+  }, [instruccion, turnos.length]);
+
+  // «Vas a escribir a un compañero»: se recalcula cada vez que cambia «Para»,
+  // con borrador o sin él (antes solo salía con el primer borrador).
+  useEffect(() => {
+    const para = primera(destinatario);
+    if (!para.includes("@")) {
+      const t = window.setTimeout(() => setInternoApi(null), 0);
+      return () => window.clearTimeout(t);
+    }
+    const t = window.setTimeout(() => {
+      esDestinatarioInterno(para)
+        .then((r) => setInternoApi(r.interno))
+        .catch(() => undefined);
+    }, 350);
+    return () => window.clearTimeout(t);
+  }, [destinatario]);
+
   // Sin hilo, «solo este hilo» no significa nada.
   const alcanceEfectivo: AsistenteAlcance =
     modo === "nuevo" && !ALCANCES_SIN_HILO.includes(alcance) ? "contacto" : alcance;
@@ -101,7 +183,9 @@ export function AsistenteFranja({
     : ALCANCES_ASISTENTE;
   const borrador = turnos[actual] ?? null;
   const hayConversacion = turnos.length > 0;
-  const interno = destinatarioInterno || Boolean(borrador?.destinatario_interno);
+  const interno = internoApi !== null
+    ? internoApi
+    : destinatarioInterno || Boolean(borrador?.destinatario_interno);
   const costeTotal = turnos.reduce((s, t) => s + (t.coste_usd || 0), 0);
 
   function aplicar(b: BorradorAsistente, lista: BorradorAsistente[], idx: number) {
@@ -109,6 +193,9 @@ export function AsistenteFranja({
     setActual(idx);
     onBorradorActual(b.id);
     onBorrador(b);
+    // Con borrador, la franja se pliega sola: lo que hay que leer antes de
+    // enviar es el correo, y es lo que más sitio necesita.
+    if (b.texto) setAbierta(false);
   }
 
   async function redactar() {
@@ -202,7 +289,10 @@ export function AsistenteFranja({
     onBorradorActual(null);
     onVaciar();
     if (plegar) setAbierta(false);
-    else cajaRef.current?.focus();
+    else {
+      setAbierta(true);
+      cajaRef.current?.focus();
+    }
   }
 
   const resumen = !hayConversacion
@@ -221,6 +311,7 @@ export function AsistenteFranja({
         className="asistente-franja-cabecera"
         aria-expanded={abierta}
         onClick={() => setAbierta((v) => !v)}
+        title={abierta ? "Plegar el asistente" : (hayConversacion ? "Desplegar para corregir el borrador" : "Desplegar el asistente")}
       >
         <Sparkles size={13} aria-hidden />
         <strong>Ayúdame a {modo === "respuesta" ? "contestar" : "redactar"}</strong>
@@ -230,10 +321,10 @@ export function AsistenteFranja({
       {abierta ? (
         <div className="asistente-franja-cuerpo">
           {interno ? (
-            <p className="asistente-franja-aviso" role="status">
-              <strong>Vas a escribir a un compañero</strong> (una dirección del grupo): el tono y el
-              contenido no son los de un correo a cliente.
-            </p>
+            <AvisoPlegable
+              titulo="Vas a escribir a un compañero"
+              texto="(una dirección del grupo): el tono y el contenido no son los de un correo a cliente."
+            />
           ) : null}
           <div className="asistente-franja-caja">
             <textarea
@@ -310,14 +401,10 @@ export function AsistenteFranja({
             </div>
           ) : null}
           {borrador?.aviso ? (
-            <p className="asistente-franja-aviso" role="status">
-              <strong>La IA no ha redactado el correo:</strong> {borrador.aviso}
-            </p>
+            <AvisoPlegable titulo="La IA no ha redactado el correo:" texto={borrador.aviso} />
           ) : null}
           {borrador && borrador.pendiente.length > 0 ? (
-            <p className="asistente-franja-aviso" role="status">
-              <strong>No ha podido responder con los datos:</strong> {borrador.pendiente.join(" · ")}
-            </p>
+            <AvisoPlegable titulo="No ha podido responder con los datos:" texto={borrador.pendiente.join(" · ")} />
           ) : null}
           {borrador ? <LoQueHaUsado borrador={borrador} /> : null}
           {hayConversacion ? (

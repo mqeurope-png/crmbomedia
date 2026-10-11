@@ -11,6 +11,8 @@ jest.mock("../../lib/emailsApi", () => ({
   generarBorradorNuevo: jest.fn(),
   turnoAsistente: jest.fn(),
   descartarBorradorAsistente: jest.fn(() => Promise.resolve({})),
+  conversacionAsistente: jest.fn(() => Promise.resolve({ turnos: [], actual: null })),
+  esDestinatarioInterno: jest.fn(() => Promise.resolve({ direccion: "", interno: false })),
 }));
 
 const api = jest.requireMock("../../lib/emailsApi") as {
@@ -18,6 +20,8 @@ const api = jest.requireMock("../../lib/emailsApi") as {
   generarBorradorNuevo: jest.Mock;
   turnoAsistente: jest.Mock;
   descartarBorradorAsistente: jest.Mock;
+  conversacionAsistente: jest.Mock;
+  esDestinatarioInterno: jest.Mock;
 };
 
 function borrador(over: Partial<BorradorAsistente> = {}): BorradorAsistente {
@@ -49,13 +53,21 @@ function montar(over: Partial<React.ComponentProps<typeof AsistenteFranja>> = {}
   return { ...utils, onBorrador, onVaciar, onBorradorActual };
 }
 
+/** Con borrador la franja se pliega sola: para corregir hay que desplegarla. */
+async function desplegar(user: ReturnType<typeof userEvent.setup>) {
+  const cabecera = screen.getByRole("button", { name: /Ayúdame a/ });
+  if (cabecera.getAttribute("aria-expanded") === "false") await user.click(cabecera);
+}
+
 beforeEach(() => {
   jest.clearAllMocks();
+  api.conversacionAsistente.mockResolvedValue({ turnos: [], actual: null });
+  api.esDestinatarioInterno.mockResolvedValue({ direccion: "", interno: false });
   window.localStorage.clear();
 });
 
 describe("AsistenteFranja — lo primero es la caja", () => {
-  it("respondiendo, «Redactar» con la caja vacía pide el borrador deducido del hilo y lo pone en el editor", async () => {
+  it("respondiendo, «Redactar» con la caja vacía pide el borrador deducido del hilo, lo pone en el editor y se pliega", async () => {
     api.generarBorradorAsistente.mockResolvedValueOnce(borrador());
     const { onBorrador, onBorradorActual } = montar();
     const user = userEvent.setup();
@@ -66,8 +78,14 @@ describe("AsistenteFranja — lo primero es la caja", () => {
       alcance: "contacto", instruccion: null, destinatario: "klaus@elbarquito.net",
     });
     expect(onBorradorActual).toHaveBeenCalledWith("b-0");
+    // Con borrador, la franja se pliega sola a una línea con lo esencial.
+    const cabecera = screen.getByRole("button", { name: /Ayúdame a contestar/ });
+    expect(cabecera).toHaveAttribute("aria-expanded", "false");
+    expect(cabecera).toHaveTextContent("1 borrador · 0.0049 $");
+    expect(screen.queryByLabelText("Qué quieres decirle")).not.toBeInTheDocument();
+    // Desplegada: el botón pasa a «Aplicar» y la caja pide correcciones.
+    await desplegar(user);
     expect(screen.getByText("Borrador inicial, deducido del hilo")).toBeInTheDocument();
-    // Con borrador, el botón pasa a «Aplicar» y la caja pide correcciones.
     expect(screen.getByRole("button", { name: /Aplicar/ })).toBeInTheDocument();
   });
 
@@ -83,6 +101,7 @@ describe("AsistenteFranja — lo primero es la caja", () => {
     expect(api.generarBorradorAsistente.mock.calls[0][1].instruccion).toBe(
       "pregúntale si recibió el presupuesto",
     );
+    await desplegar(user);
     expect(await screen.findByText("«pregúntale si recibió el presupuesto»")).toBeInTheDocument();
   });
 
@@ -122,12 +141,14 @@ describe("AsistenteFranja — la conversación", () => {
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: /Redactar/ }));
     await waitFor(() => expect(onBorrador).toHaveBeenCalledTimes(1));
+    await desplegar(user);
     await user.type(screen.getByLabelText("Qué quieres decirle"), "más corto");
     await user.click(screen.getByRole("button", { name: /Aplicar/ }));
     await waitFor(() => expect(api.turnoAsistente).toHaveBeenCalledWith("b-0", "más corto"));
     await waitFor(() => expect(onBorrador).toHaveBeenCalledTimes(2));
     expect(onBorrador.mock.calls[1][0].id).toBe("b-1");
     expect(onBorradorActual).toHaveBeenLastCalledWith("b-1");
+    await desplegar(user);
     const lista = screen.getByRole("list", { name: "Lo dicho hasta ahora" });
     expect(lista).toHaveTextContent("Borrador inicial, deducido del hilo");
     expect(lista).toHaveTextContent("«más corto»");
@@ -144,7 +165,7 @@ describe("AsistenteFranja — la conversación", () => {
     expect(api.turnoAsistente).toHaveBeenCalledTimes(1);
   });
 
-  it("lo que la IA le dice a la persona va en la franja, nunca al cuerpo", async () => {
+  it("lo que la IA le dice a la persona va en la franja, nunca al cuerpo; sin cuerpo no se pliega", async () => {
     api.generarBorradorAsistente.mockResolvedValueOnce(borrador({
       texto: "", html: "",
       aviso: "El último mensaje del hilo es nuestro: no hay nada nuevo del cliente que contestar.",
@@ -154,6 +175,7 @@ describe("AsistenteFranja — la conversación", () => {
     await user.click(screen.getByRole("button", { name: /Redactar/ }));
     await waitFor(() => expect(onBorrador).toHaveBeenCalledTimes(1));
     expect(onBorrador.mock.calls[0][0].html).toBe("");
+    expect(screen.getByRole("button", { name: /Ayúdame a contestar/ })).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("status")).toHaveTextContent(
       "La IA no ha redactado el correo: El último mensaje del hilo es nuestro",
     );
@@ -165,12 +187,30 @@ describe("AsistenteFranja — la conversación", () => {
     const { onVaciar, onBorradorActual } = montar();
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: /Redactar/ }));
+    await desplegar(user);
     await screen.findByText("Borrador inicial, deducido del hilo");
     await user.click(screen.getByRole("button", { name: "Descartar el borrador de la IA" }));
     expect(api.descartarBorradorAsistente).toHaveBeenCalledWith("b-0");
     expect(onVaciar).toHaveBeenCalledTimes(1);
     expect(onBorradorActual).toHaveBeenLastCalledWith(null);
     expect(screen.queryByLabelText("Qué quieres decirle")).not.toBeInTheDocument();
+  });
+
+  it("un borrador guardado vuelve con su conversación (turnos y coste) sin tocar el editor", async () => {
+    api.conversacionAsistente.mockResolvedValueOnce({
+      turnos: [borrador(), borrador({ id: "b-1", turno: 1, padre_id: "b-0", instruccion: "más corto",
+        coste_usd: 0.0003 })],
+      actual: "b-1",
+    });
+    const { onBorrador, onBorradorActual } = montar({ abiertaInicial: false, borradorInicialId: "b-1" });
+    await waitFor(() => expect(onBorradorActual).toHaveBeenCalledWith("b-1"));
+    expect(api.conversacionAsistente).toHaveBeenCalledWith("b-1");
+    expect(onBorrador).not.toHaveBeenCalled();          // el editor ya tiene el cuerpo del borrador
+    const cabecera = screen.getByRole("button", { name: /Ayúdame a contestar/ });
+    expect(cabecera).toHaveTextContent("2 turnos · 0.0052 $");
+    await userEvent.setup().click(cabecera);
+    expect(screen.getByRole("list", { name: "Lo dicho hasta ahora" })).toHaveTextContent("«más corto»");
+    expect(screen.getByRole("button", { name: /Aplicar/ })).toBeInTheDocument();
   });
 });
 
@@ -186,10 +226,47 @@ describe("AsistenteFranja — plegado y avisos", () => {
   });
 
   it("si el destinatario es un compañero lo dice antes de redactar, y sin hilo se llama «redactar»", () => {
+    api.esDestinatarioInterno.mockResolvedValue({ direccion: "klaus@elbarquito.net", interno: true });
     montar({ destinatarioInterno: true });
     expect(screen.getByRole("status")).toHaveTextContent("Vas a escribir a un compañero");
     montar({ threadId: null, abiertaInicial: false });
     expect(screen.getByRole("button", { name: /Ayúdame a redactar/ })).toBeInTheDocument();
+  });
+
+  it("el aviso de compañero se recalcula al cambiar «Para», con borrador o sin él", async () => {
+    api.esDestinatarioInterno.mockImplementation((direccion: string) =>
+      Promise.resolve({ direccion, interno: direccion.endsWith("@bomedia.net") }));
+    const { rerender } = montar();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    rerender(
+      <AsistenteFranja threadId="t-1" contactId="c-1" destinatario="manel@bomedia.net" abiertaInicial
+        onBorrador={jest.fn()} onVaciar={jest.fn()} onBorradorActual={jest.fn()} />,
+    );
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Vas a escribir a un compañero"));
+    expect(api.generarBorradorAsistente).not.toHaveBeenCalled();
+    // Y al revés: de compañero a cliente, el aviso se va.
+    rerender(
+      <AsistenteFranja threadId="t-1" contactId="c-1" destinatario="klaus@elbarquito.net" abiertaInicial
+        destinatarioInterno
+        onBorrador={jest.fn()} onVaciar={jest.fn()} onBorradorActual={jest.fn()} />,
+    );
+    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
+  });
+
+  it("un aviso largo va a dos líneas con un «más»", async () => {
+    api.generarBorradorAsistente.mockResolvedValueOnce(borrador({
+      texto: "", html: "",
+      aviso: "He revisado el hilo y el último mensaje es nuestro, así que no hay nada nuevo del "
+        + "cliente que contestar ahora mismo. Dime qué quieres decirle (un seguimiento, una "
+        + "pregunta, un aviso) y lo redacto con todo el histórico delante.",
+    }));
+    montar();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /Redactar/ }));
+    const mas = await screen.findByRole("button", { name: "más" });
+    expect(mas).toHaveAttribute("aria-expanded", "false");
+    await user.click(mas);
+    expect(screen.getByRole("button", { name: "menos" })).toHaveAttribute("aria-expanded", "true");
   });
 
   it("el alcance elegido se recuerda por usuario", async () => {

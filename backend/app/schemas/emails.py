@@ -70,6 +70,9 @@ class EmailDraftWrite(BaseModel):
     signature_id: str | None = None
     include_unsubscribe: bool = False
     scheduled_for: datetime | None = None
+    #: «Ayúdame a contestar»: el turno del asistente que está en el editor,
+    #: para que el borrador guardado arrastre la conversación.
+    asistente_borrador_id: str | None = Field(default=None, max_length=36)
 
 
 class EmailDraftRead(BaseModel):
@@ -98,6 +101,7 @@ class EmailDraftRead(BaseModel):
     signature_id: str | None
     include_unsubscribe: bool
     scheduled_for: datetime | None
+    asistente_borrador_id: str | None = None
     created_at: datetime
     updated_at: datetime
 

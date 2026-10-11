@@ -89,9 +89,15 @@ export default function DraftsPage() {
           <EmailComposerModal
             initialDraft={draft}
             contactId={draft.contact_id}
-            // Un borrador guardado se edita a mano: aquí la IA no entra, para
-            // que ningún turno pueda pisar lo escrito.
-            asistente={null}
+            presentacion="panel"
+            // Un borrador guardado vuelve con su conversación con la IA (el
+            // turno que estaba en el editor al guardar) y con el hilo al que
+            // respondía: la franja recupera turnos y coste, plegada.
+            asistente={{
+              threadId: draft.thread_id,
+              borradorId: draft.asistente_borrador_id ?? null,
+              abierto: false,
+            }}
             onClose={clearSelection}
             onSent={clearSelection}
           />

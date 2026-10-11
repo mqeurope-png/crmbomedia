@@ -126,6 +126,10 @@ type RichEditorProps = {
   onChange: (html: string) => void;
   placeholder?: string;
   minHeight?: number;
+  /** El editor se queda con todo el alto que le deje su contenedor (flex),
+   *  sin bajar de `minHeight` y sin asa de redimensionar: el compositor usa
+   *  el alto de la ventana y lo que encoge es la franja, nunca el cuerpo. */
+  fill?: boolean;
   /** Unique key for the built-in autosave plugin. The draft survives
    *  a refresh / accidental close and TinyMCE surfaces a "restore"
    *  toolbar button when one exists. Pass something stable per
@@ -142,7 +146,7 @@ export type RichEditorHandle = {
 
 export const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
   function RichEditor(
-    { value, onChange, placeholder, minHeight = 400, draftKey = "default" },
+    { value, onChange, placeholder, minHeight = 400, fill = false, draftKey = "default" },
     ref,
   ) {
   const editorRef = useRef<TinyMCEEditor | null>(null);
@@ -193,7 +197,9 @@ export const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
       value={value}
       onEditorChange={(content) => onChange(content)}
       init={{
-        height: minHeight,
+        height: fill ? "100%" : minHeight,
+        min_height: fill ? minHeight : undefined,
+        resize: fill ? false : true,
         menubar: false,
         branding: false,
         promotion: false,

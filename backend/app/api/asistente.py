@@ -15,6 +15,12 @@ Sin hilo (un correo nuevo desde Redactar o desde la ficha) y la conversación:
                                                             un turno más, con el contexto ya
                                                             montado
 - POST /api/emails/asistente/{id}/descartar               descarta la conversación entera
+- GET  /api/emails/asistente/{id}/conversacion            los turnos de la conversación (para
+                                                            reabrir un borrador guardado con
+                                                            su franja)
+- GET  /api/emails/asistente/interno?direccion=           si una dirección es del grupo (el
+                                                            aviso «vas a escribir a un
+                                                            compañero» al cambiar «Para»)
 
 Puede pedirlo cualquier usuario que pueda ver el hilo (la misma regla que el
 detalle del hilo); un borrador sin hilo solo lo toca quien lo pidió (o
@@ -28,7 +34,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
@@ -42,6 +48,7 @@ from app.models.ia import (
     ALCANCE_CONTACTO,
     ALCANCES,
     ALCANCES_SIN_HILO,
+    ESTADO_DESCARTADO,
     ESTADO_GENERADO,
     ESTADO_REGENERADO,
     BorradorAsistente,
@@ -49,6 +56,7 @@ from app.models.ia import (
 from app.services import llm
 from app.services.asistente import borradores, redactor
 from app.services.email_aliases import thread_is_visible
+from app.services.web_forms import sitios as registro_sitios
 
 router = APIRouter(prefix="/api/emails/threads/{thread_id}/asistente", tags=["asistente"])
 router_conversacion = APIRouter(prefix="/api/emails/asistente", tags=["asistente"])
@@ -282,3 +290,37 @@ def descartar_conversacion(
 ) -> dict[str, Any]:
     borrador = _borrador_accesible(session, borrador_id, current_user)
     return _descartar(session, request, borrador, current_user)
+
+
+@router_conversacion.get("/interno")
+def destinatario_interno(
+    direccion: str = Query(default="", max_length=255),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> dict[str, Any]:
+    """Si la dirección de «Para» es del grupo (un compañero, no un cliente):
+    la franja lo pregunta cada vez que cambia el destinatario, con borrador o
+    sin él."""
+    _ = current_user
+    limpia = direccion.strip()
+    interno = bool(limpia) and registro_sitios.es_del_grupo(
+        limpia, registro_sitios.dominios_del_grupo(session))
+    return {"direccion": limpia, "interno": interno}
+
+
+@router_conversacion.get("/{borrador_id}/conversacion")
+def conversacion(
+    borrador_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> dict[str, Any]:
+    """Los turnos de la conversación a la que pertenece el borrador, para que
+    un borrador guardado vuelva a abrirse con su franja (turnos, coste). Una
+    conversación descartada no vuelve: lista vacía."""
+    borrador = _borrador_accesible(session, borrador_id, current_user)
+    turnos = borradores.turnos_de(session, borrador)
+    if borrador.estado == ESTADO_DESCARTADO or all(t.estado == ESTADO_DESCARTADO for t in turnos):
+        return {"turnos": [], "actual": None}
+    vivos = [t for t in turnos if t.estado != ESTADO_DESCARTADO]
+    actual = borrador.id if any(t.id == borrador.id for t in vivos) else vivos[-1].id
+    return {"turnos": [borradores.como_dict(t) for t in vivos], "actual": actual}
