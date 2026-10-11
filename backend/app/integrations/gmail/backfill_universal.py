@@ -445,12 +445,18 @@ def run_backfill_universal(
     emit = progress or (lambda _msg: None)
     if alias_map is None:
         alias_map = active_alias_map(session)
-    if not alias_map and any(lbl != "SENT" for lbl in labels):
-        # Lo ENVIADO se captura sin alias; lo entrante no (su gate los
-        # necesita), así que un repaso de INBOX/SPAM sin alias no tiene sentido.
+    # Captura de ENTRADA universal (11/10/2026): el criterio es el dominio
+    # del grupo, no la tabla de alias; los alias atribuyen. Se calcula UNA
+    # vez para todo el recorrido.
+    from app.services.web_forms.sitios import dominios_del_grupo  # noqa: PLC0415
+
+    dominios = dominios_del_grupo(session)
+    if not dominios and any(lbl != "SENT" for lbl in labels):
+        # Lo ENVIADO se captura sin dominios; lo entrante no, así que un
+        # repaso de INBOX/SPAM sin ningún dominio del grupo no tiene sentido.
         raise ValueError(
-            "Sin alias activos en user_email_aliases. Configura los alias en "
-            "/admin/users antes de reprocesar la entrada (solo SENT no los necesita)."
+            "Sin dominios del grupo (tabla de sitios y alias). Da de alta las webs en "
+            "Configuración ERP antes de reprocesar la entrada (solo SENT no los necesita)."
         )
     emails_por_usuario: dict[str, str] = {
         uid: email for uid, email in session.execute(select(User.id, User.email)).all()
@@ -635,20 +641,26 @@ def run_backfill_universal(
 
                     examined += 1
                     pos.ver(_fecha_de(raw))
-                    # El mensaje «es nuestro» si llegó a un alias activo (inbound),
-                    # si lo envió un alias activo, o si está en SENT: lo que sale
+                    # El mensaje «es nuestro» si llegó a un alias activo o a
+                    # cualquier dirección de un dominio del grupo (inbound), si
+                    # lo envió un alias activo, o si está en SENT: lo que sale
                     # del buzón conectado es correo escrito por alguien de la
                     # casa, sea cual sea el From. Solo la ENTRADA pasa por el
-                    # gate de alias.
+                    # criterio del dominio (11/10/2026: antes, por alias).
                     delivered = gmail_service.compute_delivered_to(raw, alias_map)
+                    if delivered is None:
+                        delivered = gmail_service.destinatario_del_grupo(raw, dominios)
                     sender_alias = gmail_service.sender_alias_of(raw, alias_map)
                     enviado = label == "SENT" or gmail_service.es_mensaje_enviado(raw)
                     if delivered is None and sender_alias is None and not enviado:
+                        # Contadores con su nombre histórico («sin alias»):
+                        # hoy significan «fuera de los dominios del grupo».
                         report.skipped_no_alias += 1
                         key = gmail_service.primary_recipient(raw) or "(desconocido)"
                         report.discard_by_alias[key] = (
                             report.discard_by_alias.get(key, 0) + 1
                         )
+                        gmail_service._descartado("fuera_del_grupo", raw, origen="relleno")
                     else:
                         if enviado and "SENT" not in (raw.get("labelIds") or []):
                             # Listado bajo SENT pero el full no trae la label (raro):
@@ -665,6 +677,7 @@ def run_backfill_universal(
                                     dry_run=True,
                                     emit_activity=False,
                                     imported_via=BACKFILL_IMPORTED_VIA,
+                                    dominios=dominios,
                                 )
                             else:
                                 with session.begin_nested():
@@ -677,6 +690,7 @@ def run_backfill_universal(
                                         dry_run=False,
                                         emit_activity=False,
                                         imported_via=BACKFILL_IMPORTED_VIA,
+                                        dominios=dominios,
                                     )
                         except IntegrityError:
                             # Carrera con el unique → ya existía. El savepoint se

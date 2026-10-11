@@ -5,12 +5,26 @@ sprint CRM-GMAIL (captura universal + real-time + spam + filtro por alias).
 
 ## Qué se captura ahora
 
-**Todo el correo dirigido a un alias ACTIVO del CRM**, sea quien sea el
-remitente. Antes el sync incremental sólo guardaba mensajes que caían en un
-*thread que el CRM ya conocía*; ahora la decisión de guardar es:
+**Todo el correo dirigido a una dirección de un dominio del grupo**, sea quien
+sea el remitente (captura de entrada universal, 11/10/2026). Antes el sync
+incremental sólo guardaba mensajes que caían en un *thread que el CRM ya
+conocía*, y hasta el 11/10 solo los dirigidos a un alias registrado; ahora la
+decisión de guardar es:
 
 > guardar si algún destinatario (`Delivered-To` / `X-Original-To`, y en su
-> defecto `To`/`Cc`/`Bcc`) coincide con un alias activo en `user_email_aliases`.
+> defecto `To`/`Cc`/`Bcc`) es de un **dominio del grupo**: los de la tabla de
+> sitios (`sitios_web`: webs y dominios de correo, con sus subdominios) más
+> los dominios de los alias registrados en `user_email_aliases`.
+
+- La tabla de alias **ya no es una puerta**: solo atribuye (`delivered_to`
+  canónico cuando la dirección está registrada; si no, la dirección del grupo
+  a la que llegó, en minúsculas). El criterio es simétrico al de la salida
+  (#538): lo que entra a una dirección nuestra se guarda, esté registrada o no.
+- **Nada se descarta en silencio**: cada mensaje que no se guarda deja una
+  línea `gmail.captura.descartado motivo=… msg=…` (`fuera_del_grupo`,
+  `rebote_ndr`, `etiquetas_no_capturables`, `sin_dominios_del_grupo`).
+- La lista de dominios sale de la tabla de sitios (Configuración ERP), no de
+  una constante: dar de alta una web nueva basta para que su correo entre.
 
 - Si el remitente **no** es un contacto conocido, el email se guarda igual con
   `contact_id = NULL` (huérfano). El comercial decide luego si lo convierte en
@@ -190,10 +204,13 @@ python -m app.integrations.gmail_watch backfill_universal \
   [--rps 2] [--max-reintentos 7] [--checkpoint RUTA | --sin-checkpoint] [--desde-cero]
 ```
 
-- **Prerequisito** (si se repasa la entrada): los alias en `/admin/users` deben
-  estar **completos**. Un mail a un alias que no esté en la BD se descarta
-  silenciosamente; el comando los cuenta y los lista al final («Descartados por
-  alias»). Solo `--labels SENT` no los necesita. El comando pide confirmación al
+- **Prerequisito** (si se repasa la entrada): la tabla de sitios debe tener
+  las webs y dominios de correo del grupo (desde el 11/10/2026 el criterio es
+  el dominio, no el alias; los alias registrados solo atribuyen). Un mail a una
+  dirección fuera del grupo se descarta **con una línea de log**
+  (`motivo=fuera_del_grupo origen=relleno`); el comando los cuenta y los lista
+  al final («Descartados por alias», nombre histórico del contador). Solo
+  `--labels SENT` no necesita dominios. El comando pide confirmación al
   arrancar (salta con `--yes`).
 - **`--dry-run`**: no escribe nada; solo cuenta cuántos mails caerían por rama
   (importable con contacto / huérfano / spam / dedupe / sin alias). `--dry-run-limit`
@@ -262,9 +279,11 @@ dirección global).
   etiqueta SENT + INBOX): sigue siendo `outbound`, pero `delivered_to` se
   rellena como en la entrada y el hilo queda como no leído, así el dueño
   del alias lo ve en su bandeja.
-- **`From` externo en INBOX/SPAM → `inbound`.** Comportamiento de siempre:
-  el gate por `delivered_to` (alias al que llegó) decide si se guarda; si no
-  va a ningún alias configurado, se descarta.
+- **`From` externo en INBOX/SPAM → `inbound`.** Se guarda si va a alguna
+  dirección de un dominio del grupo (tabla de sitios + alias registrados);
+  `delivered_to` es el alias canónico si está registrado y, si no, la
+  dirección a la que llegó. Si no va a ninguna dirección nuestra se descarta
+  con log (`motivo=fuera_del_grupo`).
 - **Un enviado ya guardado bajo otro usuario no se duplica.** Hay un solo
   buzón: un envío desde el compositor o un acuse se guarda bajo el usuario
   que lo envió con el id que devuelve Gmail, y la copia en SENT que ve el
