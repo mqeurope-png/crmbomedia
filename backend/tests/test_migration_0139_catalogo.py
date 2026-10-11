@@ -48,11 +48,15 @@ def test_subir_crea_el_catalogo_vacio_y_siembra_la_propuesta_y_bajar_lo_quita(al
             "SELECT interes, marca, patron, nota, activo FROM kb_interes_productos "
             "ORDER BY posicion")).fetchall()
     assert productos == 0 and marcas == 0            # lo llena la primera sincronización
-    assert len(mapa) == len(MAPA_DE_PARTIDA) == 15
+    # La propuesta corregida el 11/10/2026 (smartjet es packaging, no DTF):
+    # vale para una instalación nueva; la tabla ya sembrada en producción no
+    # se vuelve a sembrar, se corrige a mano desde la pantalla.
+    assert len(mapa) == len(MAPA_DE_PARTIDA) == 17
     assert [(m[0], m[1], m[2], m[3]) for m in mapa] == list(MAPA_DE_PARTIDA)
     assert all(bool(m[4]) for m in mapa)
     assert [m[0] for m in mapa].count("uv_grande") == 5
-    assert ("dtf", "SmartJet FLEX", "") == tuple(mapa[12][:3])      # toda la marca, a confirmar
+    assert ("dtf", "mbo_dtf", "") == tuple(mapa[12][:3])            # toda la marca
+    assert ("packaging", "smartjet", "") == tuple(mapa[15][:3])
     indices = {i["name"] for i in inspect(engine).get_indexes("kb_catalogo")}
     assert {"ix_kb_catalogo_tipo_marca", "ix_kb_catalogo_idioma", "ix_kb_catalogo_sitio"} <= indices
     unicos = {u["name"] for u in inspect(engine).get_unique_constraints("kb_catalogo")}
