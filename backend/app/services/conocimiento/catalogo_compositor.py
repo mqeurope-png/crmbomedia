@@ -92,6 +92,11 @@ def descargar(http: httpx.Client, *, url_base: str, clave: str) -> tuple[dict[st
     data = fila.get("data") if isinstance(fila.get("data"), dict) else fila
     if not isinstance(data, dict):
         raise CompositorError("Supabase: la fila no trae «data»")
+    # Sin lista de productos no hay nada que sincronizar: es un error (y el
+    # catálogo anterior se queda), no «el compositor se ha quedado sin máquinas».
+    productos = data.get("products")
+    if not isinstance(productos, list) or not any(isinstance(p, dict) for p in productos):
+        raise CompositorError("Supabase: la fila no trae «data.products» (ningún producto)")
     return data, _fecha(fila.get("updated_at"))
 
 
@@ -165,6 +170,7 @@ def escribir_marcas(session: Session, data: dict[str, Any], *, ahora: datetime) 
         if not isinstance(b, dict):
             continue
         nombre = _texto(b.get("name") or b.get("id") or b.get("brand"))
+        nombre = nombre[:80] if nombre else None          # la clave de la tabla
         if not nombre or nombre in vistas:
             continue
         vistas.add(nombre)
@@ -177,7 +183,7 @@ def escribir_marcas(session: Session, data: dict[str, Any], *, ahora: datetime) 
                 urls.setdefault(catalogo.IDIOMA_RAIZ, valor.strip())
         fila = existentes.get(nombre)
         if fila is None:
-            fila = MarcaCatalogo(nombre=nombre[:80], idioma_defecto=idioma_de(
+            fila = MarcaCatalogo(nombre=nombre, idioma_defecto=idioma_de(
                 str(b.get("idioma_defecto") or b.get("default_lang") or b.get("lang") or ""))
                 or catalogo.IDIOMA_RAIZ)
             session.add(fila)

@@ -485,6 +485,14 @@ def test_supabase_caido_o_sin_clave_deja_el_catalogo_anterior(
                                                ahora=AHORA, clave="otra")
         s.commit()
         assert mala.estado == SYNC_ERROR and "HTTP 401" in mala.detalle
+        # Una fila sin lista de productos (data a medias) es un error, no «el
+        # compositor se ha quedado sin máquinas»: nada se marca ido.
+        for data in (None, {}, {"products": None}, {"products": [], "brands": []}):
+            rota = catalogo_compositor.sincronizar(s, http=_supabase_falso(data), ahora=AHORA)
+            s.commit()
+            assert rota.estado == SYNC_ERROR and "products" in (rota.detalle or "")
+        assert {(f.origen_id, f.idioma): (f.precio_texto, f.ido_en)
+                for f in s.scalars(select(ProductoCatalogo))} == antes
         # Sin clave en el entorno: error con el motivo (y la clave nunca va en el código).
         monkeypatch.delenv("SUPABASE_COMPOSER_KEY")
         get_settings.cache_clear()
@@ -622,6 +630,11 @@ def test_corte_laser_sin_maquina_enlaza_la_pagina_del_interes_y_no_inventa(
         s.commit()
         ctx = contexto.construir(s, thread=hilo, usuario=_admin(s), ahora=AHORA)
         assert ctx.catalogo["maquinas"] == [] and ctx.catalogo["sin_maquina"] == ["corte_laser"]
+        # Si el catálogo no respondiera, el resumen lo dice con None (no «sin productos»).
+        with patch.object(catalogo, "para_asistente", side_effect=RuntimeError("tabla caída")):
+            sin = contexto.construir(s, thread=hilo, usuario=_admin(s), ahora=AHORA)
+        assert sin.catalogo is None and sin.resumen()["catalogo"] is None
+        assert "CATÁLOGO: no hay ningún producto" in redactor.bloque_contexto(sin)
         bloque = redactor.bloque_contexto(ctx)
         assert "CATÁLOGO: no hay ningún producto ni precio verificado para este caso" in bloque
         assert "Sin máquina en el catálogo para: corte_laser" in bloque
@@ -734,6 +747,35 @@ def test_indexa_los_386_productos_de_fluxlasers_y_una_tienda_caida_no_para_las_d
                                   idiomas_sin_variante=frozenset({"nl"})), ahora=AHORA)
         s.commit()
         assert segunda.estado == SYNC_OK and segunda.nuevos == 0 and segunda.idos == 4
+        # Una tienda que responde 200 con cero productos no marca ido lo indexado
+        # (se anota «sin productos»); una variante de idioma que desaparece
+        # (404) sí: ya no está en ninguna tienda.
+        tercera = catalogo_tiendas.sincronizar(
+            s, http=_tienda_falsa(productos_por_sitio={"fluxlasers.es": 0},
+                                  idiomas_sin_variante=frozenset({"nl", "fr"})), ahora=AHORA)
+        s.commit()
+        resumen3 = json.loads(tercera.resumen_json)
+        assert resumen3["fluxlasers:es"]["sin_productos"] is True
+        assert resumen3["fluxlasers:es"]["idos"] == 0
+        assert resumen3["fluxlasers:fr"]["sin_tienda"] is True
+        assert resumen3["fluxlasers:fr"]["idos"] == 385
+        vigentes = {f.idioma for f in s.scalars(select(ProductoCatalogo).where(
+            ProductoCatalogo.fuente == FUENTE_WOOCOMMERCE, ProductoCatalogo.ido_en.is_(None)))}
+        assert vigentes == {"es", "en", "de"}
+        # Una web desactivada (o quitada de la tabla) deja de ser vigente en la
+        # siguiente pasada completa.
+        fijar_para_tests(Registro(sitios=tuple(
+            s_ for s_ in SITIOS_DE_PARTIDA if s_.clave != "fluxlasers")))
+        with patch("app.services.conocimiento.catalogo_tiendas.registro_sitios.cargar",
+                   lambda _s: Registro(sitios=tuple(
+                       s_ for s_ in SITIOS_DE_PARTIDA if s_.clave != "fluxlasers"))):
+            cuarta = catalogo_tiendas.sincronizar(
+                s, http=_tienda_falsa(productos_por_sitio={}), ahora=AHORA)
+        s.commit()
+        assert json.loads(cuarta.resumen_json)["webs_inactivas"]["idos"] == 385 * 3
+        assert s.scalar(select(ProductoCatalogo).where(
+            ProductoCatalogo.fuente == FUENTE_WOOCOMMERCE,
+            ProductoCatalogo.ido_en.is_(None))) is None
     # El formato del precio sigue a la tienda: separadores, prefijo y sufijo.
     precios = {"currency_minor_unit": 2, "currency_decimal_separator": ".",
                "currency_thousand_separator": ",", "currency_prefix": "$", "currency_suffix": ""}
@@ -863,6 +905,20 @@ def test_api_catalogo_sincronizar_listar_y_la_tabla_de_interes_a_maquinas(
     assert todo["catalogo"]["fuentes"]["compositor"]["clave_configurada"] is True
     assert todo["interes_productos"]["catalogo_vacio"] is True
     assert len(todo["interes_productos"]["filas"]) == 15
+    # Con la tabla vacía la pantalla ve la propuesta (ids `partida-N`), y un
+    # cambio sobre una de esas filas siembra la tabla y se aplica a esa fila.
+    assert todo["interes_productos"]["de_la_base"] is False
+    partida = todo["interes_productos"]["filas"][2]
+    assert partida["id"] == "partida-2" and partida["patron"] == "1015"
+    cambio = http.patch("/api/erp/conocimiento/catalogo/intereses/partida-2", headers=headers,
+                        json={"activo": False})
+    assert cambio.status_code == 200, cambio.text
+    sembradas = cambio.json()["interes_productos"]
+    assert sembradas["de_la_base"] is True and len(sembradas["filas"]) == 15
+    assert next(f for f in sembradas["filas"] if f["patron"] == "1015")["activo"] is False
+    http.patch(f"/api/erp/conocimiento/catalogo/intereses/"
+               f"{next(f for f in sembradas['filas'] if f['patron'] == '1015')['id']}",
+               headers=headers, json={"activo": True})
     with patch.object(catalogo_compositor, "_cliente",
                       lambda: _supabase_falso(_compositor_data())), \
             patch.object(catalogo_tiendas, "_cliente", lambda: _tienda_falsa(
@@ -906,11 +962,17 @@ def test_api_catalogo_sincronizar_listar_y_la_tabla_de_interes_a_maquinas(
         nombres = [m["nombre"] for m in catalogo.maquinas_para(
             s, ["uv_mediano"], idioma="es", ahora=AHORA, config=config_defectos())]
         assert nombres == ["artisJet 3000Pro", "artisJet 5000U", "MBO 3050", "MBO 4060", "MBO 6090"]
-    # Repetida → 400; sin marca ni patrón → 400; desactivar → deja de casar; borrar.
+    # Repetida → 400 (al crear y al editar); sin marca ni patrón → 400;
+    # desactivar → deja de casar; borrar.
     assert http.post("/api/erp/conocimiento/catalogo/intereses", headers=headers, json={
         "interes": "uv_mediano", "marca": "MBO", "patron": "6090"}).status_code == 400
     assert http.post("/api/erp/conocimiento/catalogo/intereses", headers=headers, json={
         "interes": "uv_mediano", "marca": "", "patron": ""}).status_code == 400
+    otra = next(f for f in alta.json()["interes_productos"]["filas"]
+                if f["interes"] == "uv_mediano" and f["patron"] == "4060")
+    choque = http.patch(f"/api/erp/conocimiento/catalogo/intereses/{otra['id']}", headers=headers,
+                        json={"patron": "6090"})
+    assert choque.status_code == 400 and "otra fila igual" in choque.json()["detail"]
     baja = http.patch(f"/api/erp/conocimiento/catalogo/intereses/{fila['id']}", headers=headers,
                       json={"activo": False})
     assert baja.status_code == 200
@@ -934,12 +996,17 @@ def test_api_catalogo_sincronizar_listar_y_la_tabla_de_interes_a_maquinas(
         assert mbo_3050["precio_idioma"] == "en" and mbo_3050["idioma_respaldo"] is True
     assert http.patch("/api/erp/conocimiento/catalogo/marcas/Nadie", headers=headers,
                       json={"idioma_defecto": "en"}).status_code == 404
-    # «Probar» devuelve también el catálogo que saldría.
+    # «Probar» devuelve también el catálogo que saldría (y el idioma de los
+    # avisos normalizado: «de-DE» son los textos alemanes).
     probar = http.post("/api/erp/conocimiento/resolver", headers=headers, json={
         "sitio": "mboprinters", "idioma": "de", "interes": "uv_pequeno"}).json()
     assert [m["nombre"] for m in probar["catalogo"]["maquinas"]] == [
         "artisJet Young", "artisJet Proud", "MBO 1015"]
     assert probar["catalogo"]["avisos"]["sin"] == "Preise zzgl. MwSt."
+    with session_factory() as s:
+        bloque = catalogo.para_asistente(s, intereses=[], idioma="de-DE", maquina=None,
+                                         modelo_flux=None, ahora=AHORA)
+        assert bloque["idioma_avisos"] == "de" and bloque["avisos"]["sin"] == "Preise zzgl. MwSt."
     # Fuente desconocida → 400; solo quien configura el ERP.
     assert http.post("/api/erp/conocimiento/catalogo/sincronizar", headers=headers,
                      json={"fuente": "otra"}).status_code == 400

@@ -182,19 +182,21 @@ class Contexto:
             "asuntos_recientes": len(self.asuntos_recientes),
             "sitio": self.sitio, "interes": self.interes, "intereses": list(self.intereses),
             "enlaces": self.enlaces_lista(),
-            "catalogo": {
+            # None cuando el catálogo no respondió (la franja lo distingue de
+            # «sin productos para este caso»).
+            "catalogo": None if self.catalogo is None else {
                 "maquinas": [
                     {k: p.get(k) for k in ("nombre", "marca", "precio_texto", "moneda",
                                            "precio_idioma", "orientativo", "enlace", "interes")}
-                    for p in (self.catalogo or {}).get("maquinas") or []
+                    for p in self.catalogo.get("maquinas") or []
                 ],
                 "consumibles": [
                     {k: p.get(k) for k in ("nombre", "marca", "precio_texto", "moneda",
                                            "precio_idioma", "orientativo", "enlace", "sitio")}
-                    for p in (self.catalogo or {}).get("consumibles") or []
+                    for p in self.catalogo.get("consumibles") or []
                 ],
-                "sin_maquina": list((self.catalogo or {}).get("sin_maquina") or []),
-                "iva_por_fuente": dict((self.catalogo or {}).get("iva_por_fuente") or {}),
+                "sin_maquina": list(self.catalogo.get("sin_maquina") or []),
+                "iva_por_fuente": dict(self.catalogo.get("iva_por_fuente") or {}),
             },
             "niveles": list(self.niveles),
             "historico": [

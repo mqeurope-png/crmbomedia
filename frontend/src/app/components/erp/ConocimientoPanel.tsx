@@ -403,6 +403,9 @@ function InteresProductosBloque({
       {mapa.catalogo_vacio ? (
         <p className="muted small">El catálogo está vacío: sincroniza el compositor para ver con qué casa cada fila.</p>
       ) : null}
+      {!mapa.de_la_base ? (
+        <p className="muted small">Ahora mismo se usa la propuesta de partida: el primer cambio la guarda en la base.</p>
+      ) : null}
       <table className="data-table data-table--responsive erp-settings-table kb-tabla" aria-label="Interés a máquinas">
         <thead>
           <tr><th>Interés</th><th>Marca</th><th>Patrón del nombre</th><th>Coincide con</th><th>Nota</th><th>Activa</th><th></th></tr>

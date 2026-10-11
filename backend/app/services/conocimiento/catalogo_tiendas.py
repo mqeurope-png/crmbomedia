@@ -279,7 +279,11 @@ def sincronizar(
         clave = f"{sitio.clave}:{idioma}"
         if isinstance(bajada, SinTienda):
             # No es un error: esa web (o esa variante de idioma) no tiene tienda.
-            resumen[clave] = {"productos": 0, "nuevos": 0, "actualizados": 0, "idos": 0,
+            # Lo que hubiera indexado de ahí ya no está en ninguna tienda: ido.
+            idos = catalogo.escribir_filas(
+                session, [], fuente=FUENTE_WOOCOMMERCE, ahora=ahora, sitio=sitio.clave,
+                idioma=idioma)["idos"]
+            resumen[clave] = {"productos": 0, "nuevos": 0, "actualizados": 0, "idos": idos,
                               "error": None, "sin_tienda": True}
             sin_tienda.append(clave)
             continue
@@ -291,9 +295,23 @@ def sincronizar(
             errores.append(f"{clave}: {str(bajada)[:200]}")
             continue
         filas = [f for p in bajada if (f := fila_de(p, sitio=sitio, idioma=idioma, ahora=ahora))]
+        if not filas:
+            # Una tienda que responde 200 con cero productos es rara (un plugin a
+            # medias, un filtro): se anota y no se marca ido lo indexado.
+            resumen[clave] = {"productos": 0, "nuevos": 0, "actualizados": 0, "idos": 0,
+                              "error": None, "sin_productos": True}
+            continue
         resumen[clave] = catalogo.escribir_filas(
             session, filas, fuente=FUENTE_WOOCOMMERCE, ahora=ahora, sitio=sitio.clave,
             idioma=idioma)
+    if sitios is None:
+        # Una pasada completa: lo indexado de webs que ya no están activas (o
+        # ya no están en la tabla) deja de ser vigente.
+        idos_webs = catalogo.marcar_idos_fuera_de(
+            session, fuente=FUENTE_WOOCOMMERCE, sitios={s.clave for s, _ in pares}, ahora=ahora)
+        if idos_webs:
+            resumen["webs_inactivas"] = {"productos": 0, "nuevos": 0, "actualizados": 0,
+                                         "idos": idos_webs, "error": None}
     # El estado se mide sobre las tiendas e idiomas que SÍ tienen tienda: todas
     # caídas → error; alguna → parcial; ninguna → ok.
     intentados = len(pares) - len(sin_tienda)

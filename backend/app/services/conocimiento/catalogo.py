@@ -306,6 +306,24 @@ def escribir_filas(
             "idos": idos, "error": None}
 
 
+def marcar_idos_fuera_de(
+    session: Session, *, fuente: str, sitios: set[str], ahora: datetime,
+) -> int:
+    """Marca idas las filas vigentes de la fuente cuya web no está entre las
+    dadas (una web desactivada o quitada de la tabla). Devuelve cuántas."""
+    consulta = select(ProductoCatalogo).where(
+        ProductoCatalogo.fuente == fuente, ProductoCatalogo.ido_en.is_(None))
+    if sitios:
+        consulta = consulta.where(ProductoCatalogo.sitio.not_in(sorted(sitios)))
+    idos = 0
+    for fila in session.scalars(consulta):
+        fila.ido_en = ahora
+        idos += 1
+    if idos:
+        session.flush()
+    return idos
+
+
 def abrir_pasada(session: Session, *, fuente: str, origen: str, ahora: datetime,
                  ) -> CatalogoSincronizacion:
     pasada = CatalogoSincronizacion(fuente=fuente, origen=origen, inicio=ahora)
@@ -586,11 +604,21 @@ def crear_mapa(
     return fila
 
 
-def actualizar_mapa(session: Session, fila_id: str, cambios: dict[str, Any]) -> InteresProducto:
+def _fila_del_mapa(session: Session, fila_id: str) -> InteresProducto:
+    """La fila por id. Con la tabla recién sembrada desde la propuesta, un id
+    `partida-N` de la pantalla es la fila sembrada en esa posición."""
     sembrar_mapa_si_vacio(session)
     fila = session.get(InteresProducto, fila_id)
+    if fila is None and fila_id.startswith("partida-") and fila_id[8:].isdigit():
+        fila = session.scalar(select(InteresProducto).where(
+            InteresProducto.posicion == int(fila_id[8:])).order_by(InteresProducto.created_at))
     if fila is None:
         raise LookupError("Esa fila no existe.")
+    return fila
+
+
+def actualizar_mapa(session: Session, fila_id: str, cambios: dict[str, Any]) -> InteresProducto:
+    fila = _fila_del_mapa(session, fila_id)
     if "interes" in cambios:
         fila.interes = _validar_interes(cambios["interes"])
     if "marca" in cambios:
@@ -599,6 +627,11 @@ def actualizar_mapa(session: Session, fila_id: str, cambios: dict[str, Any]) -> 
         fila.patron = str(cambios["patron"] or "").strip()
     if not fila.marca and not fila.patron:
         raise ValueError("Hace falta la marca o un patrón del nombre.")
+    repetida = session.scalar(select(InteresProducto.id).where(
+        InteresProducto.interes == fila.interes, InteresProducto.marca == fila.marca,
+        InteresProducto.patron == fila.patron, InteresProducto.id != fila.id))
+    if repetida is not None:
+        raise ValueError("Ya hay otra fila igual para ese interés, marca y patrón.")
     if "nota" in cambios:
         fila.nota = str(cambios["nota"] or "").strip() or None
     if "activo" in cambios:
@@ -610,10 +643,7 @@ def actualizar_mapa(session: Session, fila_id: str, cambios: dict[str, Any]) -> 
 
 
 def borrar_mapa(session: Session, fila_id: str) -> None:
-    sembrar_mapa_si_vacio(session)
-    fila = session.get(InteresProducto, fila_id)
-    if fila is None:
-        raise LookupError("Esa fila no existe.")
+    fila = _fila_del_mapa(session, fila_id)
     session.delete(fila)
     session.flush()
 
@@ -691,13 +721,16 @@ def producto_para_correo(
 def maquinas_para(
     session: Session, intereses: Iterable[str] | None, *, idioma: str, ahora: datetime,
     config: dict[str, Any], maximo: int = MAQUINAS_MAX,
+    filas: list[InteresProducto] | None = None,
 ) -> list[dict[str, Any]]:
     """Las máquinas que encajan con los intereses del lead (el principal
-    primero), en su idioma, con precio tal cual y enlace. Como mucho `maximo`."""
+    primero), en su idioma, con precio tal cual y enlace. Como mucho `maximo`.
+    `filas` es el mapa ya cargado, si quien llama lo tiene."""
     codigos = [str(c).strip().lower() for c in (intereses or []) if str(c or "").strip()]
     if not codigos:
         return []
-    filas, _ = cargar_mapa(session)
+    if filas is None:
+        filas, _ = cargar_mapa(session)
     grupos = _maquinas_por_producto(session)
     if not grupos:
         return []
@@ -843,19 +876,21 @@ def para_asistente(
 
     cfg = config or configuracion(session)
     ahora = ahora or datetime.now(UTC)
-    maquinas = maquinas_para(session, intereses, idioma=idioma, ahora=ahora, config=cfg)
+    filas, _ = cargar_mapa(session)
+    maquinas = maquinas_para(session, intereses, idioma=idioma, ahora=ahora, config=cfg,
+                             filas=filas)
     consumibles = consumibles_para(session, maquina=maquina, modelo_flux=modelo_flux,
                                    idioma=idioma, ahora=ahora, config=cfg)
     codigos = [str(c).strip().lower() for c in (intereses or []) if str(c or "").strip()]
-    filas, _ = cargar_mapa(session)
     sin_maquina = [c for c in codigos if not any(m["interes"] == c for m in maquinas)]
+    codigo_avisos = (idioma or "").strip().lower()[:2]
     return {
         "maquinas": maquinas,
         "consumibles": consumibles,
         "sin_maquina": sin_maquina,
         "con_filas": sorted({f.interes for f in filas if f.activo}),
         "avisos": avisos_en(idioma),
-        "idioma_avisos": idioma if idioma in AVISOS else IDIOMA_AVISO_RESPALDO,
+        "idioma_avisos": codigo_avisos if codigo_avisos in AVISOS else IDIOMA_AVISO_RESPALDO,
         "iva_por_fuente": dict(cfg.get("iva_por_fuente") or {}),
         "precio_meses_orientativo": int(cfg.get("precio_meses_orientativo") or 6),
     }

@@ -184,12 +184,11 @@ def validar(payload: Any, actual: Any = None) -> dict[str, Any]:
                 f"Meses hasta «orientativo»: entre {PRECIO_MESES_MIN} y {PRECIO_MESES_MAX}.")
         base["precio_meses_orientativo"] = meses
     if "iva_por_fuente" in payload:
-        nuevo = _iva(payload["iva_por_fuente"], estricto=True)
-        actual = dict(base["iva_por_fuente"])
-        for fuente in FUENTES_IVA:
-            if isinstance(payload["iva_por_fuente"], dict) and fuente in payload["iva_por_fuente"]:
-                actual[fuente] = nuevo[fuente]
-        base["iva_por_fuente"] = actual
+        # Solo cambian las fuentes que vienen en el PATCH; las demás se conservan.
+        crudo = payload["iva_por_fuente"]
+        nuevo = _iva(crudo, estricto=True)
+        if isinstance(crudo, dict):
+            base["iva_por_fuente"].update({f: nuevo[f] for f in FUENTES_IVA if f in crudo})
     if "interes_productos_revisado" in payload:
         if not isinstance(payload["interes_productos_revisado"], bool):
             raise ValueError("«Propuesta revisada» tiene que ser sí o no.")
