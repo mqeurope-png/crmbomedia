@@ -218,6 +218,25 @@ def registrar(
     session.add(fila)
     session.flush()
     copiar_al_contacto(contact, fila)
+    if clasificacion.tokens_entrada is not None:
+        # Lo que costó la llamada a la IA, con el resto de llamadas (la
+        # pantalla de la IA enseña números reales, no estimaciones).
+        from app.models.ia import PROPOSITO_CLASIFICADOR  # noqa: PLC0415
+        from app.services.ia.uso import registrar_llamada  # noqa: PLC0415
+        from app.services.llm import Uso  # noqa: PLC0415
+
+        try:
+            registrar_llamada(
+                session, proposito=PROPOSITO_CLASIFICADOR, modelo=clasificacion.modelo,
+                uso=Uso(
+                    modelo=clasificacion.modelo or "", tokens_entrada=clasificacion.tokens_entrada,
+                    tokens_salida=clasificacion.tokens_salida or 0,
+                    duracion_ms=clasificacion.duracion_ms,
+                ),
+                referencia_tipo="lead_classification", referencia_id=fila.id,
+            )
+        except Exception:  # noqa: BLE001 — el registro de coste nunca bloquea
+            logger.warning("leads.ia: llamada no registrada en ia_llamadas", exc_info=True)
     try:
         from app.core.audit import Action, record_event  # noqa: PLC0415
 

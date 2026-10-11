@@ -53,7 +53,7 @@ podían leer asuntos largos.
 |---|---|
 | **Estado** | ⭐ Estrella · 📥 Archivar/Restaurar · 🗑 Papelera · ✉ Marcar no leído |
 | **Clasificar** | 🚫 Spam · 🏷 Etiquetar (dropdown) · 📁 Mover a carpeta |
-| **Acciones** | **Responder** (primario) · Responder a todos · Reenviar |
+| **Acciones** | **Responder** (primario) · Responder a todos · Reenviar · **Ayúdame a contestar** (la IA redacta un borrador; lo revisas y lo envías tú; ver [docs/ai-features.md](ai-features.md)) |
 
 - Todos los iconos llevan tooltip descriptivo.
 - **Marcar no leído** vuelve a la bandeja tras aplicarse (abrir el hilo lo

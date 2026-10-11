@@ -99,6 +99,10 @@ app.include_router(google_router)
 app.include_router(dashboard_router, dependencies=_CRM_SCOPE)
 app.include_router(bulk_router, dependencies=_CRM_SCOPE)
 app.include_router(emails_router, dependencies=_CRM_SCOPE)
+# «Ayúdame a contestar»: el borrador del asistente sobre un hilo (no envía).
+from app.api.asistente import router as asistente_router  # noqa: E402
+
+app.include_router(asistente_router, dependencies=_CRM_SCOPE)
 app.include_router(emails_mailbox_router, dependencies=_CRM_SCOPE)
 app.include_router(emails_scheduled_router, dependencies=_CRM_SCOPE)
 app.include_router(email_drafts_router, dependencies=_CRM_SCOPE)
@@ -145,6 +149,7 @@ from app.erp.api import cuadre_router as erp_cuadre_router  # noqa: E402
 from app.erp.api import exceptions_router as erp_exceptions_router  # noqa: E402
 from app.erp.api import factusol_router as erp_factusol_router  # noqa: E402
 from app.erp.api import genei_router as erp_genei_router  # noqa: E402
+from app.erp.api import ia_router as erp_ia_router  # noqa: E402
 from app.erp.api import leads_router as erp_leads_router  # noqa: E402
 from app.erp.api import order_timeline_router as erp_order_timeline_router  # noqa: E402
 from app.erp.api import orders_router as erp_orders_router  # noqa: E402
@@ -172,6 +177,8 @@ app.include_router(erp_cuadre_router)
 app.include_router(erp_leads_router)
 # Base de conocimiento (sitios, rutas de soporte, páginas por interés, KB de FLUX).
 app.include_router(erp_conocimiento_router)
+# La IA en números (llamadas, tokens, coste, borradores del asistente).
+app.include_router(erp_ia_router)
 
 # Webhooks entrantes (fuera de `/api/*`; auth = firma HMAC, no sesión CRM).
 from app.webhooks.woocommerce import router as woocommerce_webhook_router  # noqa: E402

@@ -605,6 +605,8 @@ def _send_email_core(
             contact_id=payload.contact_id,
             in_reply_to_message_id=payload.in_reply_to_message_id,
         )
+        _resolver_borrador_asistente(
+            session, payload, current_user, scheduled_msg.id, body_html, body_text, request)
         session.commit()
         session.refresh(scheduled_msg)
         return _message_read(scheduled_msg)
@@ -661,12 +663,48 @@ def _send_email_core(
             "to": list(payload.to),
             "thread_id": message.thread_id,
             "contact_id": payload.contact_id,
+            "asistente_borrador_id": payload.asistente_borrador_id,
         },
         request=request,
     )
+    _resolver_borrador_asistente(
+        session, payload, current_user, message.id, body_html, body_text, request)
     session.commit()
     session.refresh(message)
     return _message_read(message)
+
+
+def _resolver_borrador_asistente(
+    session: Session,
+    payload: EmailSendRequest,
+    current_user: User,
+    email_message_id: str | None,
+    body_html: str | None,
+    body_text: str | None,
+    request: Request,
+) -> None:
+    """«Ayúdame a contestar»: si el envío salió de un borrador del asistente,
+    anota si fue tal cual o editado. Nunca hace fallar el envío."""
+    if not payload.asistente_borrador_id:
+        return
+    from app.services.asistente import borradores  # noqa: PLC0415
+
+    try:
+        borrador = borradores.marcar_enviado(
+            session, payload.asistente_borrador_id, usuario_id=current_user.id,
+            email_message_id=email_message_id, body_html=body_html, body_text=body_text,
+        )
+    except Exception:  # noqa: BLE001 — anotar el resultado nunca rompe el envío
+        logger.warning("asistente: resultado del borrador no anotado", exc_info=True)
+        return
+    if borrador is not None:
+        record_event(
+            session, action=Action.IA_BORRADOR_RESUELTO, target_type="ia_borrador",
+            target_id=borrador.id, actor=current_user,
+            metadata={"estado": borrador.estado, "email_message_id": email_message_id,
+                      "thread_id": borrador.thread_id},
+            request=request,
+        )
 
 
 @router.get("/threads", response_model=EmailThreadList)

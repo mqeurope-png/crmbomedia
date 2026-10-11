@@ -8,6 +8,7 @@ import {
   MailX,
   Reply,
   ReplyAll,
+  Sparkles,
   Star,
   Tag,
   Trash2,
@@ -42,6 +43,11 @@ type Props = {
   onReply: () => void;
   onReplyAll: () => void;
   onForward: () => void;
+  /** «Ayúdame a contestar»: pide a la IA un borrador de respuesta y abre el
+   *  compositor con él. Lo envía la persona. Sin el handler, el botón no
+   *  se pinta (la IA no está configurada). */
+  onAsistente?: () => void;
+  asistenteOcupado?: boolean;
 };
 
 export function EmailThreadToolbar({
@@ -59,6 +65,8 @@ export function EmailThreadToolbar({
   onReply,
   onReplyAll,
   onForward,
+  onAsistente,
+  asistenteOcupado = false,
 }: Props) {
   const [moveOpen, setMoveOpen] = useState(false);
   const [labelOpen, setLabelOpen] = useState(false);
@@ -233,6 +241,18 @@ export function EmailThreadToolbar({
         >
           <Forward size={12} aria-hidden /> Reenviar
         </button>
+        {onAsistente ? (
+          <button
+            type="button"
+            className="button secondary small email-toolbar-asistente"
+            title="La IA redacta un borrador de respuesta con el hilo, la ficha y la base de conocimiento. Lo revisas y lo envías tú."
+            onClick={onAsistente}
+            disabled={asistenteOcupado}
+          >
+            <Sparkles size={12} aria-hidden />{" "}
+            {asistenteOcupado ? "Redactando…" : "Ayúdame a contestar"}
+          </button>
+        ) : null}
       </div>
     </div>
   );

@@ -121,3 +121,36 @@ describe("EmailThreadToolbar — CRM-BANDEJA", () => {
     expect(handlers.onMarkUnread).toHaveBeenCalled();
   });
 });
+
+describe("EmailThreadToolbar — «Ayúdame a contestar»", () => {
+  const handlers = () => ({
+    onStarToggle: jest.fn(), onArchiveOrRestore: jest.fn(), onTrash: jest.fn(),
+    onMarkUnread: jest.fn(), onSpam: jest.fn(), onMove: jest.fn(), onToggleLabel: jest.fn(),
+    onReply: jest.fn(), onReplyAll: jest.fn(), onForward: jest.fn(),
+  });
+
+  it("sin handler (la IA no está configurada) no pinta el botón", () => {
+    setupToolbar();
+    expect(screen.queryByRole("button", { name: /Ayúdame a contestar/ })).not.toBeInTheDocument();
+  });
+
+  it("con handler lo pinta junto a Responder y lo llama; mientras redacta, desactivado", async () => {
+    const onAsistente = jest.fn();
+    const { rerender } = render(
+      <EmailThreadToolbar
+        thread={makeThread()} folders={[]} labels={[]} appliedLabelIds={new Set()}
+        {...handlers()} onAsistente={onAsistente}
+      />,
+    );
+    const boton = screen.getByRole("button", { name: "Ayúdame a contestar" });
+    await userEvent.setup().click(boton);
+    expect(onAsistente).toHaveBeenCalledTimes(1);
+    rerender(
+      <EmailThreadToolbar
+        thread={makeThread()} folders={[]} labels={[]} appliedLabelIds={new Set()}
+        {...handlers()} onAsistente={onAsistente} asistenteOcupado
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Redactando…" })).toBeDisabled();
+  });
+});

@@ -132,3 +132,64 @@ Para verificar que el endpoint AI está activo:
    - **No parseable**: cuando ocurra (raro con prompts cortos), la
      UI muestra el mensaje accionable y el log graba
      `llm.parse_failure` con el preview.
+
+## «Ayúdame a contestar» (asistente de respuesta, 11/10/2026)
+
+**Lo pide una persona, lo revisa una persona, lo envía una persona.** En
+cualquier hilo de la Bandeja (y desde la pestaña de emails de la ficha, enlace
+«Ayúdame a contestar» que abre el hilo con `?asistente=1`) el botón **«Ayúdame
+a contestar»** pide a la IA un **borrador** de respuesta y abre el compositor
+con el texto, el destinatario y el asunto rellenos. En el compositor hay
+**«Regenerar»** y **«Descartar el borrador de la IA»**; cerrar sin enviar lo
+deja como descartado. El envío es el de siempre (`POST /api/emails/send`), con
+`asistente_borrador_id` solo para anotar si salió **tal cual** o **editado**.
+**No existe ningún camino en el código que envíe un borrador solo**
+(`tests/test_asistente.py::test_ningun_camino_del_asistente_envia_correo` lo
+comprueba, también escaneando el código del paquete).
+
+### Lo que se le pone delante (`services/asistente/contexto.py`)
+
+- El **hilo entero**, en orden, con lo que contestamos nosotros (nuestro lado
+  = cualquier dirección de un dominio del grupo), sin las citas del mensaje
+  anterior y con un tope por mensaje.
+- La **ficha**: empresa, idioma, propietario, etapa del pipeline, **pedidos**
+  con fechas y líneas (y de ahí la **máquina** y, si es de FLUX, el modelo),
+  **pendiente de cobro** (BoHub no tiene facturas: son los pedidos con pago sin
+  completar), la **clasificación de la IA** y los **últimos 15 asuntos**
+  tratados (títulos, no cuerpos).
+- La **base de conocimiento** (`docs/base-conocimiento.md`): ruta de soporte
+  por web e idioma, página de producto del interés, categoría de la KB de
+  FLUX por modelo (o nuestro soporte si es avería), con los artículos
+  indexados del modelo.
+- El **idioma del mensaje** (detectado en el último mensaje del cliente; la
+  ficha solo si el texto no lo delata), **quién pulsa** (nombre y remitente)
+  y, como ejemplo de tono, la plantilla del interés × idioma si la hay.
+- Un **remitente desconocido** (sin ficha) funciona con menos: solo el hilo.
+
+### Reglas del prompt (`services/asistente/redactor.py`)
+
+Redacta, no aporta hechos: precios, plazos y disponibilidad solo de los datos,
+y un precio viejo no se da como actual; sin promesas; **enlaces solo de la
+lista** (los de la base de conocimiento), tal cual; en el idioma del mensaje;
+tono y longitud de las plantillas del equipo (60–180 palabras); sin firma (la
+pone el compositor); si no puede responder algo, lo dice y lo lista en
+«pendiente» (se enseña encima del editor). Responde en JSON
+(`asunto`, `cuerpo`, `idioma`, `pendiente`, `enlaces_usados`); si no, el texto
+entero es el cuerpo. Reutiliza `llm._invoke_claude` (salta los bloques de
+razonamiento, #537) y `llm._parse_segment_json`.
+
+### Registro (`ia_llamadas`, `ia_borradores`; migración 0137)
+
+Cada llamada a Claude, del clasificador o del asistente, deja una fila en
+`ia_llamadas` con **modelo, tokens de entrada y salida, coste en USD**
+(`services/ia/coste.py`, precios por millón de tokens), quién y a qué se
+refiere. Cada borrador queda en `ia_borradores` con su contexto, enlaces,
+idioma, coste y **resultado** (`generado`, `regenerado`, `descartado`,
+`enviado_tal_cual`, `enviado_editado`). Auditoría: `ia.borrador_generado` y
+`ia.borrador_resuelto`. La pantalla **ERP · Leads → «Uso de la IA»**
+(`GET /api/erp/ia/uso`) enseña los números reales: nada de estimaciones.
+
+Errores: sin `ANTHROPIC_API_KEY` → 503; FLUX/Anthropic saturados → 429; otro
+fallo del proveedor → 502 con el motivo, y la llamada fallida queda anotada.
+Puede pedirlo cualquier usuario que pueda ver el hilo (misma regla que el
+detalle del hilo).

@@ -28,6 +28,14 @@ jest.mock("../../lib/erpApi", () => ({
   simularLeadsEnSeco: jest.fn(),
   getLeadWorkflow: jest.fn(),
   crearLeadWorkflow: jest.fn(),
+  // La IA en números («Uso de la IA»): vacío salvo que el test diga otra cosa.
+  getUsoIA: jest.fn(() => Promise.resolve({
+    dias: 30, llamadas: 0, tokens_entrada: 0, tokens_salida: 0, coste_usd: 0,
+    por_proposito: [], por_modelo: [], por_dia: [],
+    borradores: { generados: 0, regenerados: 0, descartados: 0, enviados_tal_cual: 0,
+      enviados_editados: 0, total: 0 },
+    ultimas: [],
+  })),
 }));
 
 const mockList = listLeadClasificaciones as jest.Mock;
@@ -294,5 +302,36 @@ describe("ERP · Leads (respuesta a leads · Fase 1)", () => {
     render(<LeadsPage />);
     expect(await screen.findByRole("button", { name: "Crear el workflow" })).toBeDisabled();
     expect(screen.getByRole("alert")).toHaveTextContent("No existe el pipeline «Ventas B2B»");
+  });
+});
+
+describe("ERP · Leads — «Uso de la IA»", () => {
+  it("enseña llamadas, tokens y coste reales por propósito, y qué pasó con los borradores", async () => {
+    const mockUso = jest.requireMock("../../lib/erpApi").getUsoIA as jest.Mock;
+    mockUso.mockResolvedValueOnce({
+      dias: 30, llamadas: 14, tokens_entrada: 42000, tokens_salida: 3900, coste_usd: 0.1845,
+      por_proposito: [
+        { clave: "asistente_borrador", llamadas: 9, tokens_entrada: 30000, tokens_salida: 2700,
+          coste_usd: 0.1305 },
+        { clave: "clasificador_leads", llamadas: 5, tokens_entrada: 12000, tokens_salida: 1200,
+          coste_usd: 0.054 },
+      ],
+      por_modelo: [{ clave: "claude-sonnet-4-6", llamadas: 14, tokens_entrada: 42000,
+        tokens_salida: 3900, coste_usd: 0.1845 }],
+      por_dia: [],
+      borradores: { generados: 1, regenerados: 2, descartados: 1, enviados_tal_cual: 3,
+        enviados_editados: 2, total: 9 },
+      ultimas: [],
+    });
+    render(<LeadsPage />);
+    const totales = await screen.findByRole("list", { name: "Totales de la IA" });
+    expect(within(totales).getByText("14")).toBeInTheDocument();
+    expect(within(totales).getByText("0.1845 $")).toBeInTheDocument();
+    expect(screen.getByText("Asistente «Ayúdame a contestar»")).toBeInTheDocument();
+    expect(screen.getByText("Clasificador de leads")).toBeInTheDocument();
+    expect(screen.getByLabelText("Resultado de los borradores")).toHaveTextContent(
+      "Borradores del asistente: 9 · 3 enviados tal cual · 2 editados · 1 descartado · "
+      + "2 regenerados · 1 sin resolver · modelo: claude-sonnet-4-6",
+    );
   });
 });

@@ -159,6 +159,10 @@ class Clasificacion:
     proveedor: str = PROVEEDOR_PALABRAS
     modelo: str | None = None
     intereses: list[str] = field(default_factory=list)
+    #: Lo que costó la llamada a la IA (None si no la hubo: palabras clave).
+    tokens_entrada: int | None = None
+    tokens_salida: int | None = None
+    duracion_ms: int | None = None
 
     def __post_init__(self) -> None:
         if self.intereses:

@@ -5752,3 +5752,52 @@ export async function resolverConocimiento(payload: {
     method: "POST", body: JSON.stringify(payload),
   });
 }
+
+// --- La IA en números (ERP · Leads → «Uso de la IA») --------------------------------
+
+export type UsoIAGrupo = {
+  clave: string;
+  llamadas: number;
+  tokens_entrada: number;
+  tokens_salida: number;
+  coste_usd: number;
+};
+
+export type UsoIA = {
+  dias: number;
+  llamadas: number;
+  tokens_entrada: number;
+  tokens_salida: number;
+  coste_usd: number;
+  por_proposito: UsoIAGrupo[];
+  por_modelo: UsoIAGrupo[];
+  por_dia: { dia: string; llamadas: number; coste_usd: number }[];
+  borradores: {
+    generados: number;
+    regenerados: number;
+    descartados: number;
+    enviados_tal_cual: number;
+    enviados_editados: number;
+    total: number;
+  };
+  ultimas: {
+    id: string;
+    cuando: string | null;
+    proposito: string;
+    modelo: string;
+    tokens_entrada: number;
+    tokens_salida: number;
+    coste_usd: number;
+    duracion_ms: number | null;
+    usuario_id: string | null;
+    referencia_tipo: string | null;
+    referencia_id: string | null;
+    ok: boolean;
+    error: string | null;
+  }[];
+};
+
+/** Llamadas, tokens y coste reales de la IA en los últimos `dias` días. */
+export async function getUsoIA(dias = 30): Promise<UsoIA> {
+  return apiFetch<UsoIA>(`/api/erp/ia/uso${qs({ dias })}`);
+}

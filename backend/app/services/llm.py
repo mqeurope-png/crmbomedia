@@ -18,6 +18,8 @@ import re
 import time
 from collections import defaultdict, deque
 from collections.abc import Sequence
+from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -25,6 +27,45 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class Uso:
+    """Lo que la API devuelve de una llamada y lo que cuesta anotar: el
+    modelo real, los tokens de entrada y salida y cuánto tardó."""
+
+    modelo: str
+    tokens_entrada: int
+    tokens_salida: int
+    duracion_ms: int | None = None
+
+
+#: La última llamada hecha en ESTE contexto (petición o job). Quien llama a
+#: `_invoke_claude` la recoge con `tomar_ultimo_uso()` para anotarla en
+#: `ia_llamadas`; recogerla la vacía, así una clasificación que cayó al
+#: respaldo por palabras clave no hereda los tokens de la llamada anterior.
+_ultimo_uso: ContextVar[Uso | None] = ContextVar("llm_ultimo_uso", default=None)
+
+
+def registrar_uso(uso: Uso | None) -> None:
+    _ultimo_uso.set(uso)
+
+
+def tomar_ultimo_uso() -> Uso | None:
+    """El uso de la última llamada en este contexto, y lo vacía."""
+    uso = _ultimo_uso.get()
+    _ultimo_uso.set(None)
+    return uso
+
+
+def _uso_de(message: Any, model: str, inicio: float) -> Uso:
+    usage = getattr(message, "usage", None)
+    entrada = int(getattr(usage, "input_tokens", 0) or 0)
+    salida = int(getattr(usage, "output_tokens", 0) or 0)
+    return Uso(
+        modelo=str(getattr(message, "model", None) or model), tokens_entrada=entrada,
+        tokens_salida=salida, duracion_ms=int((time.monotonic() - inicio) * 1000),
+    )
 
 
 SYSTEM_PROMPT = (
@@ -335,6 +376,7 @@ def _invoke_claude(
     model: str,
     system_prompt: str,
     user_prompt: str,
+    max_tokens: int | None = None,
 ) -> str:
     """Wrapper isolated so tests can monkeypatch it without touching
     the high-level `generate_pipeline_proposal` flow.
@@ -343,6 +385,10 @@ def _invoke_claude(
     length. The API key never leaves this scope; raw user prompts and
     raw responses are NOT logged so an enabled DEBUG level doesn't leak
     PII to the application log.
+
+    The usage the API reports (model, input/output tokens, duration) is
+    left in this context for the caller to pick up with
+    `tomar_ultimo_uso()` and write to `ia_llamadas`.
     """
     try:
         import anthropic
@@ -358,11 +404,13 @@ def _invoke_claude(
         len(user_prompt),
     )
 
+    registrar_uso(None)
+    inicio = time.monotonic()
     client = anthropic.Anthropic(api_key=api_key)
     try:
         message = client.messages.create(
             model=model,
-            max_tokens=MAX_TOKENS_OUTPUT,
+            max_tokens=max_tokens or MAX_TOKENS_OUTPUT,
             system=system_prompt,
             messages=[{"role": "user", "content": user_prompt}],
         )
@@ -376,6 +424,8 @@ def _invoke_claude(
         logger.exception("llm.unexpected_failure model=%s", model)
         raise LLMUpstreamError("Unexpected provider failure") from exc
 
+    uso = _uso_de(message, model, inicio)
+    registrar_uso(uso)
     if not message.content:
         logger.warning("llm.empty_response model=%s", model)
         raise LLMUpstreamError("Empty response from provider")
@@ -384,7 +434,10 @@ def _invoke_claude(
         tipos = ",".join(block_types)
         logger.warning("llm.non_text_response model=%s blocks=%s", model, tipos)
         raise LLMUpstreamError(f"Provider returned non-text content (blocks: {tipos})")
-    logger.info("llm.response model=%s chars=%d", model, len(text))
+    logger.info(
+        "llm.response model=%s chars=%d tokens_in=%d tokens_out=%d ms=%s",
+        uso.modelo, len(text), uso.tokens_entrada, uso.tokens_salida, uso.duracion_ms,
+    )
     return text
 
 

@@ -35,6 +35,10 @@ class EmailSendRequest(BaseModel):
     # to Gmail; the periodic worker sweeps it out at the right time.
     # NULL keeps the legacy "send immediately" path.
     scheduled_for: datetime | None = None
+    # «Ayúdame a contestar»: el borrador del asistente del que sale este
+    # envío. Solo sirve para anotar el resultado (tal cual / editado); el
+    # envío es el de siempre, lo decide y lo hace la persona.
+    asistente_borrador_id: str | None = Field(default=None, max_length=36)
 
 
 class EmailDraftWrite(BaseModel):
