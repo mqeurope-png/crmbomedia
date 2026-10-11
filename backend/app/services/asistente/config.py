@@ -3,7 +3,9 @@ de respuesta»). Vive en el blob `factusol_series_json` de `ErpSettings`, bajo
 la clave `asistente` (sin migración):
 
     {"presupuesto_tokens": 12000, "historico_max": 5, "asuntos_max": 15,
-     "dominios_gratuitos": ["gmail.com", ...]}
+     "dominios_gratuitos": ["gmail.com", ...],
+     "modelo_borrador": null, "modelo_correccion": "claude-haiku-5-5",
+     "modelos": ["claude-haiku-5-5", ...], "pensamiento_extendido": false}
 
 - `presupuesto_tokens`: tokens de entrada por generación. Los niveles se
   llenan por orden (hilo, expediente, correos viejos, empresa) y se corta
@@ -13,6 +15,13 @@ la clave `asistente` (sin migración):
 - `dominios_gratuitos`: la empresa se agrupa por el registro de empresa, nunca
   por el dominio del correo; esta lista evita que una «empresa» que sea en
   realidad un dominio gratuito (gmail.com) junte a desconocidos.
+- `modelo_borrador`: el modelo del primer borrador; vacío = el de
+  `ANTHROPIC_MODEL`. `modelo_correccion`: el de las correcciones («más
+  corto», «en inglés»), que trabajan sobre un texto ya escrito y no necesitan
+  el modelo grande. `modelos`: la lista que se ofrece en el desplegable, para
+  probar uno nuevo sin desplegar. `pensamiento_extendido`: apagado por
+  defecto; el pensamiento se factura como salida y redactar con el contexto
+  delante no lo necesita (`services/ia/modelos.py`).
 """
 from __future__ import annotations
 
@@ -22,6 +31,13 @@ from collections.abc import Iterable
 from typing import Any
 
 from sqlalchemy.orm import Session
+
+from app.services.ia.modelos import (
+    MODELO_CORRECCION_DEFECTO,
+    MODELOS_DE_PARTIDA,
+    es_nombre_valido,
+    normalizar_lista,
+)
 
 CONFIG_KEY = "asistente"
 PRESUPUESTO_DEFECTO = 12000
@@ -71,12 +87,22 @@ def _dominios(raw: Any, defecto: Iterable[str]) -> list[str]:
     return salida
 
 
+def _modelo(raw: Any) -> str | None:
+    """Un nombre de modelo válido en minúsculas, o None (vacío o basura)."""
+    nombre = str(raw or "").strip().lower()
+    return nombre if es_nombre_valido(nombre) else None
+
+
 def defectos() -> dict[str, Any]:
     return {
         "presupuesto_tokens": PRESUPUESTO_DEFECTO,
         "historico_max": HISTORICO_MAX_DEFECTO,
         "asuntos_max": ASUNTOS_MAX_DEFECTO,
         "dominios_gratuitos": list(DOMINIOS_GRATUITOS_DEFECTO),
+        "modelo_borrador": None,
+        "modelo_correccion": MODELO_CORRECCION_DEFECTO,
+        "modelos": list(MODELOS_DE_PARTIDA),
+        "pensamiento_extendido": False,
     }
 
 
@@ -91,6 +117,11 @@ def normalizar(raw: Any) -> dict[str, Any]:
     if "dominios_gratuitos" in data:
         base["dominios_gratuitos"] = _dominios(data["dominios_gratuitos"],
                                                DOMINIOS_GRATUITOS_DEFECTO)
+    base["modelo_borrador"] = _modelo(data.get("modelo_borrador"))
+    base["modelo_correccion"] = _modelo(data.get("modelo_correccion")) or MODELO_CORRECCION_DEFECTO
+    if "modelos" in data:
+        base["modelos"] = normalizar_lista(data["modelos"])
+    base["pensamiento_extendido"] = bool(data.get("pensamiento_extendido", False))
     return base
 
 
@@ -119,6 +150,24 @@ def validar(payload: Any, actual: Any = None) -> dict[str, Any]:
         if not isinstance(payload["dominios_gratuitos"], list):
             raise ValueError("Los dominios gratuitos tienen que ser una lista.")
         base["dominios_gratuitos"] = _dominios(payload["dominios_gratuitos"], ())
+    if "modelos" in payload:
+        if not isinstance(payload["modelos"], list):
+            raise ValueError("La lista de modelos tiene que ser una lista.")
+        malos = [m for m in payload["modelos"] if str(m or "").strip() and not _modelo(m)]
+        if malos:
+            raise ValueError(f"Nombre de modelo no válido: {malos[0]!r}.")
+        base["modelos"] = normalizar_lista(payload["modelos"])
+    for clave in ("modelo_borrador", "modelo_correccion"):
+        if clave in payload:
+            crudo = str(payload[clave] or "").strip()
+            if crudo and not _modelo(crudo):
+                raise ValueError(f"Nombre de modelo no válido: {crudo!r}.")
+            if clave == "modelo_correccion":
+                base[clave] = _modelo(crudo) or MODELO_CORRECCION_DEFECTO
+            else:
+                base[clave] = _modelo(crudo)
+    if "pensamiento_extendido" in payload:
+        base["pensamiento_extendido"] = bool(payload["pensamiento_extendido"])
     return base
 
 

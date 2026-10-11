@@ -6,6 +6,12 @@ máquina que sale de sus pedidos (clave para la KB de FLUX); los enlaces de la
 base de conocimiento; el idioma del mensaje (no el de la ficha); y quién
 pulsa (su nombre y su remitente). Un remitente desconocido funciona con
 menos: solo el hilo.
+
+Sin hilo (un correo nuevo desde Redactar o desde la ficha) el Nivel 1 queda
+vacío y los otros tres funcionan igual: el contexto lo dispara el
+destinatario (su ficha, si es un contacto), el idioma sale de la ficha o de lo
+último que escribió esa persona, y los correos viejos se eligen comparando con
+la instrucción de quien envía, que es lo único que dice de qué va el correo.
 """
 from __future__ import annotations
 
@@ -72,12 +78,17 @@ class Mensaje:
 
 @dataclass
 class Contexto:
-    thread: EmailThread
+    #: None en un correo nuevo, sin hilo.
+    thread: EmailThread | None
     mensajes: list[Mensaje]
     ultimo_del_cliente: Mensaje | None
     idioma: str
     idioma_fuente: str
     alcance: str = ALCANCE_CONTACTO
+    #: Lo que la persona escribió en la caja; manda sobre lo que se deduzca del hilo.
+    instruccion: str | None = None
+    #: El destinatario es una dirección del grupo: un compañero, no un cliente.
+    destinatario_interno: bool = False
     contacto: dict[str, Any] | None = None
     pedidos: list[dict[str, Any]] = field(default_factory=list)
     facturas_pendientes: list[dict[str, Any]] = field(default_factory=list)
@@ -136,6 +147,10 @@ class Contexto:
         """Lo que se guarda con el borrador y se enseña debajo: qué entró."""
         return {
             "alcance": self.alcance,
+            "sin_hilo": self.thread is None,
+            "instruccion": self.instruccion,
+            "destinatario": self.destinatario,
+            "destinatario_interno": self.destinatario_interno,
             "idioma": self.idioma, "idioma_fuente": self.idioma_fuente,
             "mensajes_hilo": len(self.mensajes),
             "hilo": [m.como_dict() for m in self.mensajes],
@@ -208,6 +223,46 @@ def idioma_del_mensaje(mensajes: list[Mensaje], contacto: Contact | None) -> tup
     if contacto is not None and contacto.language:
         return contacto.language.lower()[:2], "ficha"
     return "es", "defecto"
+
+
+def idioma_sin_hilo(session: Session, contacto: Contact | None) -> tuple[str, str]:
+    """Sin hilo no hay mensaje del cliente del que sacar el idioma: el de la
+    ficha; si no lo tiene, el de lo último que escribió esa persona en su
+    histórico; y si no, castellano. Sin esto a un lead alemán se le escribiría
+    en castellano."""
+    if contacto is None:
+        return "es", "defecto"
+    if contacto.language:
+        return contacto.language.lower()[:2], "ficha"
+    # Lo último que escribió ESA persona (por su dirección, no por la
+    # dirección de captura: una respuesta nuestra desde Gmail entra como
+    # entrada y la escribió un compañero).
+    direccion = (contacto.email or "").strip().lower()
+    if not direccion:
+        return "es", "defecto"
+    ultimo = session.execute(
+        select(EmailMessage.subject, EmailMessage.body_text, EmailMessage.body_html)
+        .where(EmailMessage.contact_id == contacto.id,
+               func.lower(EmailMessage.from_email) == direccion,
+               EmailMessage.sent_at.is_not(None))
+        .order_by(EmailMessage.sent_at.desc()).limit(1)
+    ).first()
+    if ultimo is not None:
+        asunto, body_text, body_html = ultimo
+        texto = sin_cita(texto_de_mensaje(body_text, body_html))
+        idioma, puntos, _ = detectar_idioma(f"{asunto or ''}\n{texto}")
+        if idioma and puntos >= 2:
+            return idioma, "historico"
+    return "es", "defecto"
+
+
+def contacto_por_email(session: Session, email: str | None) -> Contact | None:
+    """La ficha de esa dirección, si la hay (sin distinguir mayúsculas)."""
+    direccion = (email or "").strip().lower()
+    if not direccion or "@" not in direccion:
+        return None
+    return session.scalars(
+        select(Contact).where(func.lower(Contact.email) == direccion).limit(1)).first()
 
 
 def _usuario_nombre(session: Session, user_id: str | None) -> str | None:
@@ -319,15 +374,18 @@ def etapa_de(session: Session, contacto: Contact) -> str | None:
 
 
 def asuntos_recientes_de(
-    session: Session, contacto: Contact, *, excluir_thread_id: str, limite: int = ASUNTOS_RECIENTES,
+    session: Session, contacto: Contact, *, excluir_thread_id: str | None,
+    limite: int = ASUNTOS_RECIENTES,
 ) -> list[dict[str, Any]]:
     """Los últimos asuntos tratados con el contacto: fecha, lado y asunto.
-    Títulos, no cuerpos (igual que el índice de FLUX)."""
+    Títulos, no cuerpos (igual que el índice de FLUX). Sin hilo actual no se
+    excluye ninguno."""
+    consulta = select(EmailThread.id, EmailThread.subject, EmailThread.last_message_at).where(
+        EmailThread.contact_id == contacto.id)
+    if excluir_thread_id:
+        consulta = consulta.where(EmailThread.id != excluir_thread_id)
     hilos = session.execute(
-        select(EmailThread.id, EmailThread.subject, EmailThread.last_message_at)
-        .where(EmailThread.contact_id == contacto.id, EmailThread.id != excluir_thread_id)
-        .order_by(EmailThread.last_message_at.desc()).limit(limite)
-    ).all()
+        consulta.order_by(EmailThread.last_message_at.desc()).limit(limite)).all()
     if not hilos:
         return []
     ids = [h[0] for h in hilos]
@@ -347,11 +405,12 @@ def asuntos_recientes_de(
     ]
 
 
-def sitio_de(contacto: Contact | None, mensajes: list[Mensaje], thread: EmailThread) -> str | None:
+def sitio_de(contacto: Contact | None, mensajes: list[Mensaje],
+             thread: EmailThread | None) -> str | None:
     """La web por la que llegó: la dirección nuestra a la que escribió (su
     dominio) y, si no, el formulario de origen de la ficha."""
     reg = registro_sitios.registro()
-    for m in reversed(thread.messages):
+    for m in reversed(thread.messages if thread is not None else []):
         if m.delivered_to:
             sitio = reg.por_dominio(m.delivered_to)
             if sitio is not None and sitio.tipo == registro_sitios.TIPO_WEB:
@@ -435,31 +494,52 @@ def ejemplo_estilo_de(session: Session, intereses: list[str], idioma: str) -> st
 
 
 def construir(
-    session: Session, *, thread: EmailThread, usuario: User, alcance: str = ALCANCE_CONTACTO,
+    session: Session, *, thread: EmailThread | None, usuario: User,
+    alcance: str = ALCANCE_CONTACTO, destinatario: str | None = None,
+    contacto: Contact | None = None, instruccion: str | None = None,
 ) -> Contexto:
+    """El contexto de un borrador. Con `thread`, la respuesta a un hilo; sin
+    él, un correo nuevo: entonces `destinatario` (la dirección de «Para») es
+    lo que dispara el expediente y `instruccion` lo que dice de qué va."""
     dominios = registro_sitios.dominios_del_grupo(session)
-    mensajes = mensajes_del_hilo(thread, dominios)
-    contacto = session.get(Contact, thread.contact_id) if thread.contact_id else None
-    if contacto is None:
-        # Remitente desconocido: lo que la captura casó por dirección.
-        for m in thread.messages:
-            if m.contact_id:
-                contacto = session.get(Contact, m.contact_id)
-                break
-    idioma, fuente = idioma_del_mensaje(mensajes, contacto)
+    mensajes = mensajes_del_hilo(thread, dominios) if thread is not None else []
+    if contacto is None and thread is not None:
+        contacto = session.get(Contact, thread.contact_id) if thread.contact_id else None
+        if contacto is None:
+            # Remitente desconocido: lo que la captura casó por dirección.
+            for m in thread.messages:
+                if m.contact_id:
+                    contacto = session.get(Contact, m.contact_id)
+                    break
+    if contacto is None and destinatario:
+        contacto = contacto_por_email(session, destinatario)
     ultimo = next((m for m in reversed(mensajes) if m.lado == "cliente"), None)
+    if thread is not None:
+        idioma, fuente = idioma_del_mensaje(mensajes, contacto)
+    else:
+        idioma, fuente = idioma_sin_hilo(session, contacto)
     ctx = Contexto(
         thread=thread, mensajes=mensajes, ultimo_del_cliente=ultimo, idioma=idioma,
-        idioma_fuente=fuente, alcance=alcance,
+        idioma_fuente=fuente, alcance=alcance, instruccion=(instruccion or "").strip() or None,
+        niveles=[1] if thread is not None else [],
     )
     ctx.usuario = quien_pulsa(session, usuario)
-    ctx.destinatario = destinatario_de(session, thread, usuario, mensajes)
-    ctx.asunto_respuesta = asunto_respuesta(thread)
+    ctx.destinatario = (
+        (destinatario or "").strip()
+        or (destinatario_de(session, thread, usuario, mensajes) if thread is not None else None)
+        or (contacto.email if contacto is not None else None)
+    )
+    ctx.destinatario_interno = es_del_grupo(ctx.destinatario, dominios)
+    ctx.asunto_respuesta = asunto_respuesta(thread) if thread is not None else ""
     ctx.sitio = sitio_de(contacto, mensajes, thread)
     categorias = flux.cargar_categorias(session)
     cfg = config_asistente(session)
     ctx.presupuesto_tokens = int(cfg["presupuesto_tokens"])
     texto_cliente = ultimo.texto if ultimo else ""
+    # Lo que decide qué correos viejos vienen a cuento: el mensaje del cliente
+    # y, sin hilo, la instrucción de quien envía (lo único que dice de qué va).
+    texto_comparar = texto_cliente if thread is not None else (ctx.instruccion or "")
+    excluir = thread.id if thread is not None else None
     # Nivel 2 (el expediente) solo si hay ficha y el alcance pasa del hilo.
     if contacto is not None and alcance != ALCANCE_HILO:
         ctx.niveles.append(2)
@@ -470,7 +550,7 @@ def construir(
         ctx.clasificacion = clasificacion_de(session, contacto)
         ctx.etapa = etapa_de(session, contacto)
         ctx.asuntos_recientes = asuntos_recientes_de(
-            session, contacto, excluir_thread_id=thread.id, limite=int(cfg["asuntos_max"]))
+            session, contacto, excluir_thread_id=excluir, limite=int(cfg["asuntos_max"]))
         intereses = (ctx.clasificacion or {}).get("intereses") or (
             [contacto.lead_interest] if contacto.lead_interest else [])
         ctx.interes = intereses[0] if intereses else None
@@ -480,10 +560,10 @@ def construir(
             (ln["descripcion"] for p in ctx.pedidos for ln in p["lineas"]),
             extra=[ctx.modelo_flux] if ctx.modelo_flux else (),
         )
-        asunto_hoy = ultimo.asunto if ultimo else thread.subject
+        asunto_hoy = (ultimo.asunto if ultimo else thread.subject) if thread is not None else None
         elegidos = hist.elegir(
-            hist.candidatos_del_contacto(session, contacto, excluir_thread_id=thread.id),
-            asunto_actual=asunto_hoy, texto_actual=texto_cliente, productos=productos,
+            hist.candidatos_del_contacto(session, contacto, excluir_thread_id=excluir),
+            asunto_actual=asunto_hoy, texto_actual=texto_comparar, productos=productos,
             maximo=int(cfg["historico_max"]),
         )
         ctx.niveles.append(3)
@@ -495,11 +575,11 @@ def construir(
                 ctx.niveles.append(4)
                 ctx.empresa = empresa.name
                 asuntos, candidatos = hist.hilos_de_la_empresa(
-                    session, contacto, empresa, excluir_thread_id=thread.id,
+                    session, contacto, empresa, excluir_thread_id=excluir,
                     limite=int(cfg["asuntos_max"]))
                 con_cuerpo = {
                     c.thread_id: (c, motivo) for c, motivo in hist.elegir(
-                        candidatos, asunto_actual=asunto_hoy, texto_actual=texto_cliente,
+                        candidatos, asunto_actual=asunto_hoy, texto_actual=texto_comparar,
                         productos=productos, maximo=int(cfg["historico_max"]))
                 }
                 ctx.empresa_asuntos = []
@@ -512,7 +592,7 @@ def construir(
                         entrada["lado"] = cand.lado
                     ctx.empresa_asuntos.append(entrada)
     ctx.enlaces = kb_enlaces.enlaces_para(
-        session, sitio=ctx.sitio, idioma=idioma, interes=ctx.interes, texto=texto_cliente,
+        session, sitio=ctx.sitio, idioma=idioma, interes=ctx.interes, texto=texto_comparar,
         modelo=ctx.modelo_flux,
     )
     return ctx

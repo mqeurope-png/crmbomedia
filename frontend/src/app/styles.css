@@ -15394,3 +15394,97 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
 .erp-ia-uso-dato strong { display: block; font-size: 1.2rem; }
 .erp-ia-uso-dato span { color: var(--muted); font-size: var(--fs-label); }
 .email-toolbar-alcance { font-size: var(--fs-label); padding: 3px 6px; max-width: 220px; }
+
+/* --- El asistente DENTRO del compositor (11/10/2026) -----------------------------
+ * La franja va entre la cabecera del correo (De, Para, Cc, Asunto y la fila de
+ * herramientas) y el cuerpo, y EMPUJA el contenido en vez de taparlo. El
+ * compositor se acota a la ventana y es el cuerpo el que hace scroll: nada del
+ * compositor queda oculto en ningún momento. La franja se pliega a una línea. */
+.email-compose-modal {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: calc(100vh - 32px);
+}
+.email-compose-modal > form {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.email-compose-modal .email-compose-body {
+  flex: 1 1 auto;
+  min-height: 140px;
+  overflow: auto;
+}
+.email-compose-panel > .modal-backdrop .email-compose-modal {
+  height: 100%;
+  max-height: 100%;
+}
+.asistente-franja {
+  flex: 0 0 auto;
+  max-height: 45vh;
+  overflow: auto;
+  margin: 0 0 8px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--color-primary, #1d4ed8);
+  border-radius: 8px;
+  background: var(--surface-2, #f8fafc);
+  font-size: var(--fs-label);
+}
+.asistente-franja-cabecera {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  background: none;
+  border: 0;
+  font: inherit;
+  font-size: var(--fs-label);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.asistente-franja-cabecera strong { white-space: nowrap; }
+.asistente-franja-resumen { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.asistente-franja-cuerpo { display: flex; flex-direction: column; gap: 6px; padding: 0 10px 8px; }
+.asistente-franja-caja { display: flex; flex-direction: column; gap: 6px; }
+.asistente-franja-caja textarea {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 44px;
+  resize: vertical;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: inherit;
+  font-size: var(--fs-label);
+}
+.asistente-franja-controles { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.asistente-franja-error { margin: 0; }
+.asistente-franja-aviso {
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px solid #fde68a;
+  border-radius: 6px;
+  background: #fef3c7;
+  color: #92400e;
+}
+.asistente-franja-conversacion { display: flex; flex-direction: column; gap: 4px; }
+.asistente-franja-turnos { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 2px; }
+.asistente-franja-turno {
+  background: none;
+  border: 0;
+  padding: 2px 4px;
+  border-radius: 4px;
+  font: inherit;
+  font-size: var(--fs-label);
+  color: var(--muted);
+  text-align: left;
+  cursor: pointer;
+}
+.asistente-franja-turnos li.is-actual .asistente-franja-turno { color: inherit; font-weight: 600; background: rgba(29, 78, 216, 0.08); }
+.asistente-franja-turno:disabled { cursor: default; }
+.asistente-franja-navegacion { display: flex; gap: 6px; }
+.asistente-franja-acciones { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }

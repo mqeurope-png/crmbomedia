@@ -6,7 +6,6 @@ import {
   FolderOpen,
   Paperclip,
   PenLine,
-  RefreshCw,
   Save,
   Sparkles,
   Trash2,
@@ -14,7 +13,7 @@ import {
 } from "lucide-react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getCurrentUser } from "../lib/api";
 import {
   deleteEmailDraftAttachment,
@@ -29,17 +28,18 @@ import {
 import {
   createEmailDraft,
   deleteEmailDraft,
+  descartarBorradorAsistente,
   getMyEmailAliases,
   sendEmail,
   sendEmailDraft,
-  type AsistenteAlcance,
+  type BorradorAsistente,
   type EmailDraft,
   type EmailDraftWrite,
   type EmailMessage,
   type MyAlias,
   updateEmailDraft,
 } from "../lib/emailsApi";
-import { ALCANCES_ASISTENTE } from "./email/EmailThreadToolbar";
+import { AsistenteFranja } from "./email/AsistenteFranja";
 import { extractErrorMessage } from "../lib/errors";
 import { SaveTemplateModal } from "./email/SaveTemplateModal";
 import { ScheduleSendDialog } from "./email/ScheduleSendDialog";
@@ -92,23 +92,18 @@ type Props = {
   /** CRM-BANDEJA — «Reenviar»: subject con prefijo Fwd: y cuerpo con el
    *  mensaje original citado. Mensaje nuevo, sin threading. */
   forwardOf?: { subject: string | null; bodyHtml: string } | null;
-  /** «Ayúdame a contestar»: el borrador de la IA con el que se abre el
-   *  compositor (cuerpo ya en HTML, sin firma: la añade el compositor). Al
-   *  enviar, el id del borrador viaja con el envío para anotar si salió tal
-   *  cual o editado. «Regenerar» y «Descartar» los resuelve el padre. */
+  /** «Ayúdame a contestar»: la franja del asistente va DENTRO del compositor,
+   *  entre la cabecera y el cuerpo. Siempre está, plegada a una línea; con
+   *  `abierto` arranca desplegada con la caja de instrucción. `threadId` es
+   *  el hilo al que se responde (sin él, la IA redacta un correo nuevo con el
+   *  pasado del destinatario). Al enviar, el id del turno que está en el
+   *  editor viaja con el envío para anotar si salió tal cual o editado; cerrar
+   *  sin enviar lo deja como descartado. `null` quita la franja (reenviar). */
   asistente?: {
-    borradorId: string;
-    bodyHtml: string;
-    subject: string | null;
-    pendiente: string[];
-    enlaces: { url: string; etiqueta: string }[];
-    contexto: Record<string, unknown>;
-    ocupado: boolean;
-    /** Qué histórico mira la IA; se puede cambiar y regenerar sin escribir nada. */
-    alcance: AsistenteAlcance;
-    onAlcanceChange: (alcance: AsistenteAlcance) => void;
-    onRegenerar: (alcance?: AsistenteAlcance) => void;
-    onDescartar: () => void;
+    abierto?: boolean;
+    threadId?: string | null;
+    /** El hilo dice que la sugerencia de destinatario es un compañero. */
+    destinatarioInterno?: boolean;
   } | null;
   onClose: () => void;
   onSent?: (message: EmailMessage) => void;
@@ -168,7 +163,6 @@ export function EmailComposerModal({
   );
   const [subject, setSubject] = useState(
     initialDraft?.subject ??
-      asistente?.subject ??
       (forwardOf
         ? forwardOf.subject
           ? forwardOf.subject.toLowerCase().startsWith("fwd:")
@@ -182,7 +176,7 @@ export function EmailComposerModal({
           : ""),
   );
   const [bodyHtml, setBodyHtml] = useState(
-    initialDraft?.body_html ?? asistente?.bodyHtml ?? forwardOf?.bodyHtml ?? "",
+    initialDraft?.body_html ?? forwardOf?.bodyHtml ?? "",
   );
   const [draftId, setDraftId] = useState<string | null>(
     initialDraft?.id ?? null,
@@ -207,6 +201,19 @@ export function EmailComposerModal({
   const [attachments, setAttachments] = useState<EmailDraftAttachment[]>([]);
   const [uploading, setUploading] = useState(false);
   const [dragging, setDragging] = useState(false);
+  // El turno del asistente que está en el editor: viaja con el envío para
+  // anotar si salió tal cual o editado y, si se cierra sin enviar, se descarta.
+  const asistenteIdRef = useRef<string | null>(null);
+  // El asunto que puso la IA (para no pisar uno escrito a mano) y el de partida.
+  const asuntoIaRef = useRef<string | null>(null);
+  const asuntoInicialRef = useRef(subject);
+  const cerrar = useCallback(() => {
+    if (asistenteIdRef.current) {
+      void descartarBorradorAsistente(asistenteIdRef.current).catch(() => undefined);
+      asistenteIdRef.current = null;
+    }
+    onClose();
+  }, [onClose]);
   // Esc (solo si el composer es el modal de arriba: no con «Programar
   // envío», «Cargar plantilla»… abiertos encima), foco de vuelta al cerrar
   // y clic fuera cuando el composer hace de capa (ver el `onMouseDown` de la raíz).
@@ -214,11 +221,66 @@ export function EmailComposerModal({
     overlayRef: rootRef,
     overlayProps,
     requestClose,
-  } = useModalBehaviour({ onClose, disabled: submitting });
+  } = useModalBehaviour({ onClose: cerrar, disabled: submitting });
   const fileInputRef = useRef<HTMLInputElement>(null);
   const editorRef = useRef<RichEditorHandle | null>(null);
   const draftIdRef = useRef<string | null>(initialDraft?.id ?? null);
   draftIdRef.current = draftId;
+
+  const firmaActiva = useCallback(
+    (): EmailSignature | null => signatures.find((s) => s.id === activeSignatureId) ?? null,
+    [signatures, activeSignatureId],
+  );
+  // Lo que había en el editor antes del asistente (para volver a ello al
+  // empezar de nuevo o descartar) y lo último que puso la IA (para saber si la
+  // persona escribió o editó algo a mano, que no se pisa sin preguntar).
+  const cuerpoAntesRef = useRef<string | null>(null);
+  const cuerpoIaRef = useRef<string | null>(null);
+  const bodyHtmlRef = useRef(bodyHtml);
+  bodyHtmlRef.current = bodyHtml;
+  const escritoAMano = useCallback((): boolean => {
+    const actual = bodyHtmlRef.current || "";
+    const sinFirma = actual.replace(SIG_BLOCK_RE, "").replace(/<p>(?:&nbsp;|\s|&mdash;|—)*<\/p>/g, "").trim();
+    return sinFirma.length > 0 && actual !== cuerpoIaRef.current;
+  }, []);
+  // Llega un turno del asistente: su cuerpo sustituye al del editor, con la
+  // firma activa detrás (la IA no firma; la firma la pone el compositor). Un
+  // cuerpo vacío (no había con qué redactar) deja solo la firma. Si en el
+  // editor hay algo escrito a mano, se pregunta antes de pisarlo. El asunto
+  // de la IA solo pisa el que está vacío o el que puso ella misma.
+  const aplicarBorrador = useCallback(
+    (b: BorradorAsistente) => {
+      if (escritoAMano() && !window.confirm(
+        "Ya hay texto en el editor. ¿Reemplazarlo con el borrador de la IA?",
+      )) {
+        return;
+      }
+      if (cuerpoAntesRef.current === null) cuerpoAntesRef.current = bodyHtmlRef.current || "";
+      const siguiente = buildBodyWithSignature(b.html || "", "", firmaActiva());
+      cuerpoIaRef.current = siguiente;
+      setBodyHtml(siguiente);
+      if (b.asunto) {
+        const asunto = b.asunto;
+        setSubject((prev) => (!prev.trim() || prev === asuntoIaRef.current ? asunto : prev));
+        asuntoIaRef.current = asunto;
+      }
+      dirtyRef.current = true;
+    },
+    [firmaActiva, escritoAMano],
+  );
+  const vaciarBorrador = useCallback(() => {
+    // Vuelve a lo que había antes del asistente (o solo la firma).
+    const antes = cuerpoAntesRef.current;
+    const siguiente = antes !== null ? antes : buildBodyWithSignature("", "", firmaActiva());
+    cuerpoAntesRef.current = null;
+    cuerpoIaRef.current = null;
+    setBodyHtml(siguiente);
+    if (asuntoIaRef.current) {
+      const inicial = asuntoInicialRef.current;
+      setSubject((prev) => (prev === asuntoIaRef.current ? inicial : prev));
+      asuntoIaRef.current = null;
+    }
+  }, [firmaActiva]);
 
   // Auto-save every 5s when the operator has changed something.
   // The dirty flag is a ref so typing doesn't re-render the
@@ -302,13 +364,14 @@ export function EmailComposerModal({
 
   // Load signatures + auto-insert the default at mount. Guarded with
   // `inserted` so a re-render (the body state mutating) doesn't keep
-  // re-inserting the signature on every keystroke.
+  // re-inserting the signature on every keystroke. Sin predeterminada pero con
+  // una sola firma, esa: que el borrador salga firmado con quien lo pide.
   useEffect(() => {
     let inserted = false;
     listEmailSignatures()
       .then((rows) => {
         setSignatures(rows);
-        const def = rows.find((s) => s.is_default);
+        const def = rows.find((s) => s.is_default) ?? (rows.length === 1 ? rows[0] : undefined);
         if (def && !inserted) {
           inserted = true;
           setActiveSignatureId(def.id);
@@ -503,7 +566,7 @@ export function EmailComposerModal({
         // Con adjuntos el envío sale del borrador guardado; el id del
         // borrador de la IA viaja igual para anotar su resultado.
         message = await sendEmailDraft(id, {
-          asistente_borrador_id: asistente?.borradorId ?? null,
+          asistente_borrador_id: asistenteIdRef.current,
         });
         // sendEmailDraft borra la row en éxito → no llamar deleteEmailDraft.
         setDraftId(null);
@@ -522,7 +585,7 @@ export function EmailComposerModal({
           scheduled_for: scheduledFor,
           // «Ayúdame a contestar»: solo para anotar el resultado del
           // borrador (tal cual / editado). El envío es el de siempre.
-          asistente_borrador_id: asistente?.borradorId ?? null,
+          asistente_borrador_id: asistenteIdRef.current,
         });
         // v2.4d — the draft row only mirrored the in-flight compose;
         // once the message is actually sent (or scheduled), the
@@ -533,6 +596,8 @@ export function EmailComposerModal({
           draftIdRef.current = null;
         }
       }
+      // El envío resolvió el borrador de la IA: ya no hay nada que descartar.
+      asistenteIdRef.current = null;
       // Wipe the autosave entry for this conversation BEFORE handing
       // control back to the parent so a quick "compose another"
       // doesn't restore the just-sent body. We deliberately do NOT
@@ -552,7 +617,7 @@ export function EmailComposerModal({
       await deleteEmailDraft(draftId).catch(() => undefined);
     }
     editorRef.current?.clearDraft();
-    onClose();
+    cerrar();
   }
 
   const hasMerge =
@@ -575,8 +640,8 @@ export function EmailComposerModal({
       <div className="modal modal-wide email-compose-modal">
         <header className="composer-header">
           <h2>
-            {asistente
-              ? "Responder con el borrador de la IA"
+            {asistente?.abierto
+              ? (replyTo ? "Responder con ayuda de la IA" : "Nuevo email con ayuda de la IA")
               : replyTo
                 ? "Responder"
                 : "Nuevo email"}
@@ -765,8 +830,20 @@ export function EmailComposerModal({
             </label>
           </div>
 
-          {asistente ? (
-            <AsistentePanel asistente={asistente} submitting={submitting} />
+          {asistente !== null ? (
+            <AsistenteFranja
+              threadId={asistente?.threadId ?? null}
+              contactId={contactId ?? null}
+              destinatario={to}
+              destinatarioInterno={asistente?.destinatarioInterno}
+              abiertaInicial={Boolean(asistente?.abierto)}
+              bloqueada={submitting}
+              onBorrador={aplicarBorrador}
+              onVaciar={vaciarBorrador}
+              onBorradorActual={(id) => {
+                asistenteIdRef.current = id;
+              }}
+            />
           ) : null}
 
           <div
@@ -852,7 +929,7 @@ export function EmailComposerModal({
             <button
               type="button"
               className="button secondary"
-              onClick={onClose}
+              onClick={cerrar}
               disabled={submitting}
             >
               Cancelar
@@ -922,120 +999,6 @@ export function EmailComposerModal({
 /** "Guardado hace Xs" indicator in the composer header. Re-renders
  *  every 15 s so the relative timestamp stays current without the
  *  parent paying a full composer re-render. */
-/** «Ayúdame a contestar» — lo que acompaña al borrador de la IA en el
- *  compositor: que es un borrador y lo revisa la persona, «Regenerar» y
- *  «Descartar», lo que el modelo no pudo responder con los datos, y plegado,
- *  lo que entró en el contexto y los enlaces que podía usar. */
-function AsistentePanel({
-  asistente, submitting,
-}: {
-  asistente: NonNullable<Props["asistente"]>;
-  submitting: boolean;
-}) {
-  const ctx = asistente.contexto ?? {};
-  const num = (k: string): number | null => (typeof ctx[k] === "number" ? (ctx[k] as number) : null);
-  const contacto = ctx["contacto"] as { nombre?: string; empresa?: string | null } | null | undefined;
-  const historico = Array.isArray(ctx["historico"]) ? (ctx["historico"] as Record<string, unknown>[]) : [];
-  const empresa = Array.isArray(ctx["empresa"]) ? (ctx["empresa"] as Record<string, unknown>[]) : [];
-  const alcance = typeof ctx["alcance"] === "string" ? (ctx["alcance"] as string) : null;
-  const recortes = Array.isArray(ctx["recortes"]) ? (ctx["recortes"] as string[]) : [];
-  const tokens = num("tokens_estimados");
-  const presupuesto = num("presupuesto_tokens");
-  const partes: string[] = [];
-  const hilo = num("mensajes_hilo");
-  if (hilo !== null) partes.push(`${hilo} mensaje${hilo === 1 ? "" : "s"} del hilo`);
-  partes.push(contacto ? `la ficha de ${contacto.nombre || "el contacto"}${contacto.empresa ? ` (${contacto.empresa})` : ""}` : "sin ficha (remitente desconocido)");
-  const pedidos = num("pedidos");
-  if (pedidos) partes.push(`${pedidos} pedido${pedidos === 1 ? "" : "s"}`);
-  if (typeof ctx["modelo_flux"] === "string" && ctx["modelo_flux"]) partes.push(`máquina FLUX ${ctx["modelo_flux"]}`);
-  if (historico.length > 0) partes.push(`${historico.length} correo${historico.length === 1 ? "" : "s"} anterior${historico.length === 1 ? "" : "es"} del contacto`);
-  if (empresa.length > 0) partes.push(`${empresa.length} asunto${empresa.length === 1 ? "" : "s"} de otras personas de la empresa`);
-  if (tokens !== null) partes.push(`~${tokens.toLocaleString("es-ES")} tokens de entrada${presupuesto ? ` de ${presupuesto.toLocaleString("es-ES")}` : ""}`);
-  if (recortes.length > 0) partes.push(`${recortes.length} correo${recortes.length === 1 ? "" : "s"} viejo${recortes.length === 1 ? "" : "s"} fuera por tamaño`);
-  return (
-    <div className="asistente-panel" role="note" aria-label="Borrador de la IA">
-      <div className="asistente-panel-head">
-        <span className="asistente-panel-titulo">
-          <Sparkles size={12} aria-hidden /> Borrador de la IA: revísalo y corrígelo antes de enviar. No sale nada hasta que pulses «Enviar ahora».
-        </span>
-        <span className="asistente-panel-acciones">
-          <select
-            className="email-toolbar-alcance"
-            aria-label="Qué histórico mira la IA al regenerar"
-            value={asistente.alcance}
-            disabled={asistente.ocupado || submitting}
-            onChange={(e) => asistente.onAlcanceChange(e.target.value as AsistenteAlcance)}
-          >
-            {ALCANCES_ASISTENTE.map((a) => (
-              <option key={a.id} value={a.id}>{a.label}</option>
-            ))}
-          </select>
-          <button
-            type="button"
-            className="button secondary small"
-            onClick={() => asistente.onRegenerar(asistente.alcance)}
-            disabled={asistente.ocupado || submitting}
-            title="Pide otro borrador a la IA con el histórico elegido (el actual queda como regenerado)"
-          >
-            <RefreshCw size={11} aria-hidden /> {asistente.ocupado ? "Redactando…" : "Regenerar"}
-          </button>
-          <button
-            type="button"
-            className="button secondary small"
-            onClick={asistente.onDescartar}
-            disabled={asistente.ocupado || submitting}
-            title="Cierra el compositor y deja el borrador como descartado"
-          >
-            <Trash2 size={11} aria-hidden /> Descartar el borrador de la IA
-          </button>
-        </span>
-      </div>
-      {asistente.pendiente.length > 0 ? (
-        <p className="asistente-panel-pendiente">
-          <strong>No ha podido responder con los datos:</strong>{" "}
-          {asistente.pendiente.join(" · ")}
-        </p>
-      ) : null}
-      <details className="asistente-panel-detalle">
-        <summary>Lo que ha usado{alcance ? ` (alcance: ${alcance === "hilo" ? "solo este hilo" : alcance === "empresa" ? "todo lo de la empresa" : "todo lo de este contacto"})` : ""}</summary>
-        <p className="muted small">{partes.join(" · ")}.</p>
-        {historico.length > 0 ? (
-          <ul className="asistente-panel-lista">
-            {historico.map((h, i) => (
-              <li key={`h-${i}`}>
-                {String(h["fecha"] ?? "").slice(0, 10)} · {String(h["asunto"] ?? "(sin asunto)")}
-                {h["motivo"] ? <span className="muted small"> — {String(h["motivo"])}</span> : null}
-              </li>
-            ))}
-          </ul>
-        ) : null}
-        {empresa.length > 0 ? (
-          <ul className="asistente-panel-lista">
-            {empresa.map((e, i) => (
-              <li key={`e-${i}`}>
-                {String(e["fecha"] ?? "").slice(0, 10)} · {String(e["asunto"] ?? "(sin asunto)")}
-                <span className="muted small"> — lo escribió {String(e["quien"] ?? "otra persona de la empresa")}</span>
-              </li>
-            ))}
-          </ul>
-        ) : null}
-        {asistente.enlaces.length > 0 ? (
-          <ul className="asistente-panel-lista">
-            {asistente.enlaces.map((e) => (
-              <li key={e.url}>
-                <a href={e.url} target="_blank" rel="noreferrer">{e.url}</a>
-                <span className="muted small"> — {e.etiqueta}</span>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="muted small">Sin enlaces disponibles para este caso.</p>
-        )}
-      </details>
-    </div>
-  );
-}
-
 function ComposerDraftStatus({
   savedAt,
   hasDraft,

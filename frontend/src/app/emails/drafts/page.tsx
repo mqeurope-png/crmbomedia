@@ -89,6 +89,9 @@ export default function DraftsPage() {
           <EmailComposerModal
             initialDraft={draft}
             contactId={draft.contact_id}
+            // Un borrador guardado se edita a mano: aquí la IA no entra, para
+            // que ningún turno pueda pisar lo escrito.
+            asistente={null}
             onClose={clearSelection}
             onSent={clearSelection}
           />

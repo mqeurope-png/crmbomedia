@@ -1570,12 +1570,19 @@ lo que va a pasar. Secciones destacadas:
   **«Comprobar que las URL devuelven 200»** pide cada ruta y guarda el código.
   **«Probar»** enseña qué enlaces saldrían para una web, idioma, interés y
   texto. Ver [docs/base-conocimiento.md](base-conocimiento.md).
-- **«Asistente de respuesta»** — cuánto histórico mira «Ayúdame a contestar» y
-  cuánto puede costar cada clic: el **presupuesto de tokens** de entrada por
-  borrador (12.000), cuántos **correos viejos con cuerpo** entran como mucho
-  (5), cuántos **asuntos recientes** lleva el expediente (15) y los **dominios
-  de correo gratuitos** que nunca se toman por una empresa. Ver
-  [docs/ai-features.md](ai-features.md).
+- **«Asistente de respuesta»** — qué **modelo** redacta cada cosa, por
+  separado: el del **primer borrador** (lleva el contexto entero; vacío = el del
+  servidor) y el de las **correcciones** («más corto», «en inglés»: trabajan
+  sobre un texto ya escrito y van con Haiku por defecto); la **lista de
+  modelos** del desplegable, que se edita aquí para probar uno sin desplegar;
+  el **pensamiento extendido** (apagado: se factura como salida y redactar no lo
+  necesita); y cuánto histórico mira «Ayúdame a contestar» y cuánto puede
+  costar cada clic: el **presupuesto de tokens** de entrada por borrador
+  (12.000), cuántos **correos viejos con cuerpo** entran como mucho (5),
+  cuántos **asuntos recientes** lleva el expediente (15) y los **dominios de
+  correo gratuitos** que nunca se toman por una empresa. Lo que cuesta de
+  verdad un borrador terminado (el primero más sus retoques) se ve en ERP ·
+  Leads → «Uso de la IA». Ver [docs/ai-features.md](ai-features.md).
 - **«Series FACTUSOL»** — la **serie** es la empresa que emite la factura. Fijas
   la **serie por defecto** y la que usa cada origen de pedido. Las series
   disponibles son **1 · Bomedia**, **2 · MQ Europe**, **4 · Lambert** y **5 ·

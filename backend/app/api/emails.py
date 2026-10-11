@@ -1139,15 +1139,15 @@ def thread_detail(
         )
         for row in rows:
             attachments_by_message.setdefault(row.message_id, []).append(row)
+    sugerido = _reply_to_suggestion(session, thread, current_user)
     return EmailThreadDetail(
         **EmailThreadRead.model_validate(thread).model_dump(),
         messages=[
             _message_read(m, attachments_by_message.get(m.id))
             for m in thread.messages
         ],
-        reply_to_suggestion=_reply_to_suggestion(
-            session, thread, current_user
-        ),
+        reply_to_suggestion=sugerido,
+        reply_to_interno=_reply_to_interno(session, sugerido),
     )
 
 
@@ -1486,14 +1486,27 @@ def _reply_to_suggestion(
     address set fixes it — pick the most recent message whose sender
     is NOT the operator. Fallback: the first outbound's first
     recipient, which is the lead by construction.
+
+    Y en un hilo de cliente con un compañero en copia (11/10/2026: el
+    último que escribió era `manel@bomedia.net`), el destinatario natural
+    es el cliente, no el compañero: primero el último remitente de FUERA
+    del grupo; solo si no hay nadie de fuera (un hilo interno), el último
+    que no sea el propio operador.
     """
+    from app.services.web_forms.sitios import dominios_del_grupo, es_del_grupo  # noqa: PLC0415
+
     own = _user_own_emails(session, user)
+    dominios = dominios_del_grupo(session)
     # Pending scheduled messages have `sent_at IS NULL`; they
     # haven't reached anyone yet so they don't influence the
     # reply-to suggestion. Drop them BEFORE sorting so the
     # `<` comparison doesn't blow up on None.
     actual = [m for m in thread.messages if m.sent_at is not None]
     msgs = sorted(actual, key=lambda m: m.sent_at)
+    for m in reversed(msgs):
+        sender = (m.from_email or "").lower()
+        if sender and sender not in own and not es_del_grupo(sender, dominios):
+            return m.from_email
     for m in reversed(msgs):
         sender = (m.from_email or "").lower()
         if sender and sender not in own:
@@ -1508,6 +1521,14 @@ def _reply_to_suggestion(
         if to_list:
             return str(to_list[0])
     return None
+
+
+def _reply_to_interno(session: Session, sugerido: str | None) -> bool:
+    """La sugerencia de «Responder» es una dirección del grupo: se va a
+    escribir a un compañero, no a un cliente (el asistente lo avisa)."""
+    from app.services.web_forms.sitios import dominios_del_grupo, es_del_grupo  # noqa: PLC0415
+
+    return bool(sugerido) and es_del_grupo(sugerido, dominios_del_grupo(session))
 
 
 def _latest_messages(

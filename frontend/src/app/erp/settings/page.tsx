@@ -1619,7 +1619,7 @@ export default function ErpSettingsPage() {
             cada clic. La empresa se agrupa por su registro, nunca por dominio. */}
         <SettingsSection
           {...sectionProps("asistente")}
-          lead="Qué histórico mira el asistente «Ayúdame a contestar» y cuánto puede costar cada clic: el presupuesto de tokens de entrada por borrador, cuántos correos viejos con cuerpo entran como mucho y los dominios de correo gratuitos (gmail.com, hotmail.com…) que nunca se toman por una empresa."
+          lead="Qué modelo redacta cada cosa (el primer borrador y las correcciones, por separado), qué histórico mira el asistente «Ayúdame a contestar» y cuánto puede costar cada clic: el presupuesto de tokens de entrada por borrador, cuántos correos viejos con cuerpo entran como mucho y los dominios de correo gratuitos (gmail.com, hotmail.com…) que nunca se toman por una empresa. El coste real de cada borrador, con sus retoques, está en ERP · Leads → «Uso de la IA»."
         >
           <AsistenteSettings
             value={cfg.asistente}
@@ -2096,9 +2096,14 @@ const LEAD_RESPONSE_DEFECTOS: LeadResponseConfig = {
  *  intereses se guarda aparte, al momento (`/api/erp/leads/intereses`). */
 const ASISTENTE_DEFECTOS: AsistenteConfig = {
   presupuesto_tokens: 12000, historico_max: 5, asuntos_max: 15, dominios_gratuitos: [],
+  modelo_borrador: null, modelo_correccion: "claude-haiku-5-5",
+  modelos: ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5", "claude-sonnet-4-6", "claude-haiku-4-5"],
+  pensamiento_extendido: false,
 };
 
-/** «Ayúdame a contestar» — presupuesto de tokens, histórico y dominios gratuitos. */
+/** «Ayúdame a contestar» — el modelo por tarea (primer borrador y
+ *  correcciones), la lista de modelos, el pensamiento extendido, el
+ *  presupuesto de tokens, el histórico y los dominios gratuitos. */
 function AsistenteSettings({
   value, onChange,
 }: {
@@ -2112,6 +2117,17 @@ function AsistenteSettings({
     setDominiosBase(cfg.dominios_gratuitos);
     setDominiosTexto(cfg.dominios_gratuitos.join(", "));
   }
+  const modelos = cfg.modelos ?? ASISTENTE_DEFECTOS.modelos;
+  const [modelosTexto, setModelosTexto] = useState(modelos.join(", "));
+  const [modelosBase, setModelosBase] = useState(modelos);
+  if (modelosBase !== modelos) {
+    setModelosBase(modelos);
+    setModelosTexto(modelos.join(", "));
+  }
+  // El desplegable ofrece la lista configurada y, si el elegido no está en
+  // ella (se quitó después), también el elegido: no se pierde en silencio.
+  const opciones = (elegido: string | null) =>
+    elegido && !modelos.includes(elegido) ? [...modelos, elegido] : modelos;
   const numero = (campo: keyof AsistenteConfig, raw: string, min: number, max: number) => {
     const n = Number(raw);
     if (raw === "" || Number.isNaN(n)) return;
@@ -2119,6 +2135,71 @@ function AsistenteSettings({
   };
   return (
     <>
+      <label className="field">
+        <span>Modelo del primer borrador</span>
+        <select
+          aria-label="Modelo del primer borrador"
+          value={cfg.modelo_borrador ?? ""}
+          onChange={(e) => onChange({ ...cfg, modelo_borrador: e.target.value || null })}
+        >
+          <option value="">El de ANTHROPIC_MODEL (el actual del servidor)</option>
+          {opciones(cfg.modelo_borrador).map((m) => (
+            <option key={m} value={m}>{m}</option>
+          ))}
+        </select>
+        <span className="muted small">
+          El primer borrador lleva el contexto entero (hilo, expediente, base de conocimiento) y
+          quiere el modelo grande.
+        </span>
+      </label>
+      <label className="field">
+        <span>Modelo de las correcciones</span>
+        <select
+          aria-label="Modelo de las correcciones"
+          value={cfg.modelo_correccion}
+          onChange={(e) => onChange({ ...cfg, modelo_correccion: e.target.value })}
+        >
+          {opciones(cfg.modelo_correccion).map((m) => (
+            <option key={m} value={m}>{m}</option>
+          ))}
+        </select>
+        <span className="muted small">
+          «Más corto», «en inglés», «quita el precio» trabajan sobre un texto ya escrito: Haiku
+          basta y cuesta veinte veces menos. La caché de prompts es por modelo: con un modelo
+          distinto, la primera corrección escribe su propia caché (céntimos) y las siguientes la
+          leen; con el mismo modelo que el primer borrador, ya la primera lee de caché.
+        </span>
+      </label>
+      <label className="field">
+        <span>Modelos disponibles</span>
+        <textarea
+          aria-label="Modelos disponibles"
+          value={modelosTexto}
+          onChange={(e) => setModelosTexto(e.target.value)}
+          onBlur={() => onChange({
+            ...cfg,
+            modelos: modelosTexto.split(/[\s,]+/).map((m) => m.trim().toLowerCase()).filter(Boolean),
+          })}
+        />
+        <span className="muted small">
+          Separados por comas, con el nombre exacto de la API de Anthropic (claude-haiku-5-5,
+          claude-sonnet-5-5…). Para probar un modelo nuevo sin desplegar.
+        </span>
+      </label>
+      <label className="field erp-check-field">
+        <input
+          type="checkbox"
+          aria-label="Pensamiento extendido al redactar"
+          checked={cfg.pensamiento_extendido}
+          onChange={(e) => onChange({ ...cfg, pensamiento_extendido: e.target.checked })}
+        />
+        <span>Pensamiento extendido al redactar</span>
+        <span className="muted small">
+          Apagado por defecto: el pensamiento se factura como salida, que es lo caro, y redactar un
+          correo con todo el contexto delante no lo necesita. Donde el modelo no deja apagarlo
+          (Opus 5.5, Fable) se baja el esfuerzo.
+        </span>
+      </label>
       <label className="field">
         <span>Presupuesto de tokens de entrada por borrador</span>
         <input
