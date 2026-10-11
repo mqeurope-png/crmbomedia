@@ -26,6 +26,7 @@ import {
   updateErpSettings,
   uploadFactusolCompanyLogo,
   type ErpNextReferences,
+  type AsistenteConfig,
   type ConocimientoConfig,
   type ContrapartidaRule,
   type CuadreComprobacion,
@@ -139,7 +140,8 @@ type SectionId =
   | "facturacion" | "tiendas" | "remitentes" | "plantillas" | "plantillas_presupuesto"
   | "aviso_envio" | "series"
   | "abreviaturas" | "sat" | "empresas" | "almacenes" | "contrapartidas"
-  | "origenes" | "drive" | "woo_pagados" | "cuadre" | "respuesta_leads" | "conocimiento";
+  | "origenes" | "drive" | "woo_pagados" | "cuadre" | "respuesta_leads" | "conocimiento"
+  | "asistente";
 
 const SECTIONS: ReadonlyArray<{ id: SectionId; title: string; keys: (keyof ErpSettings)[] }> = [
   { id: "facturacion", title: "Facturación",
@@ -174,6 +176,7 @@ const SECTIONS: ReadonlyArray<{ id: SectionId; title: string; keys: (keyof ErpSe
   { id: "cuadre", title: "Cuadre (descuadres)", keys: ["cuadre"] },
   { id: "respuesta_leads", title: "Respuesta a leads", keys: ["lead_response"] },
   { id: "conocimiento", title: "Base de conocimiento", keys: ["conocimiento"] },
+  { id: "asistente", title: "Asistente de respuesta", keys: ["asistente"] },
 ];
 
 /** Estado de guardado de una sección: `saved` = el último guardado fue bien
@@ -1612,6 +1615,17 @@ export default function ErpSettingsPage() {
           />
           <ConocimientoPanel canEdit={canEdit} />
         </SettingsSection>
+        {/* «Ayúdame a contestar»: cuánto histórico mira la IA y cuánto cuesta
+            cada clic. La empresa se agrupa por su registro, nunca por dominio. */}
+        <SettingsSection
+          {...sectionProps("asistente")}
+          lead="Qué histórico mira el asistente «Ayúdame a contestar» y cuánto puede costar cada clic: el presupuesto de tokens de entrada por borrador, cuántos correos viejos con cuerpo entran como mucho y los dominios de correo gratuitos (gmail.com, hotmail.com…) que nunca se toman por una empresa."
+        >
+          <AsistenteSettings
+            value={cfg.asistente}
+            onChange={(asistente) => patch({ asistente })}
+          />
+        </SettingsSection>
         {/* Genei (envíos): endpoint propio, tarjeta autónoma. */}
         <GeneiSettingsCard canEdit={canEdit} />
       </div>
@@ -2080,6 +2094,82 @@ const LEAD_RESPONSE_DEFECTOS: LeadResponseConfig = {
  *  plantilla (con combinaciones y huecos) y remitentes. El PATCH manda el
  *  bloque entero (`lead_response`); el servidor lo valida. El catálogo de
  *  intereses se guarda aparte, al momento (`/api/erp/leads/intereses`). */
+const ASISTENTE_DEFECTOS: AsistenteConfig = {
+  presupuesto_tokens: 12000, historico_max: 5, asuntos_max: 15, dominios_gratuitos: [],
+};
+
+/** «Ayúdame a contestar» — presupuesto de tokens, histórico y dominios gratuitos. */
+function AsistenteSettings({
+  value, onChange,
+}: {
+  value: AsistenteConfig | undefined;
+  onChange: (next: AsistenteConfig) => void;
+}) {
+  const cfg = value ?? ASISTENTE_DEFECTOS;
+  const [dominiosTexto, setDominiosTexto] = useState(cfg.dominios_gratuitos.join(", "));
+  const [dominiosBase, setDominiosBase] = useState(cfg.dominios_gratuitos);
+  if (dominiosBase !== cfg.dominios_gratuitos) {
+    setDominiosBase(cfg.dominios_gratuitos);
+    setDominiosTexto(cfg.dominios_gratuitos.join(", "));
+  }
+  const numero = (campo: keyof AsistenteConfig, raw: string, min: number, max: number) => {
+    const n = Number(raw);
+    if (raw === "" || Number.isNaN(n)) return;
+    onChange({ ...cfg, [campo]: Math.min(max, Math.max(min, Math.round(n))) });
+  };
+  return (
+    <>
+      <label className="field">
+        <span>Presupuesto de tokens de entrada por borrador</span>
+        <input
+          type="number" min={2000} max={150000} step={500}
+          aria-label="Presupuesto de tokens del asistente"
+          value={cfg.presupuesto_tokens}
+          onChange={(e) => numero("presupuesto_tokens", e.target.value, 2000, 150000)}
+        />
+        <span className="muted small">
+          Los niveles se llenan por orden (hilo, expediente, correos viejos, empresa) y se corta
+          cuando se agota, soltando primero lo más viejo. El hilo no se recorta nunca. Con el
+          modelo actual, 12.000 tokens de entrada son unos 0,04 $ por clic.
+        </span>
+      </label>
+      <label className="field">
+        <span>Correos viejos con cuerpo, como mucho</span>
+        <input
+          type="number" min={0} max={20} aria-label="Correos viejos como mucho"
+          value={cfg.historico_max}
+          onChange={(e) => numero("historico_max", e.target.value, 0, 20)}
+        />
+      </label>
+      <label className="field">
+        <span>Asuntos recientes del expediente</span>
+        <input
+          type="number" min={0} max={50} aria-label="Asuntos recientes del expediente"
+          value={cfg.asuntos_max}
+          onChange={(e) => numero("asuntos_max", e.target.value, 0, 50)}
+        />
+      </label>
+      <label className="field">
+        <span>Dominios de correo gratuitos</span>
+        <textarea
+          aria-label="Dominios de correo gratuitos"
+          value={dominiosTexto}
+          onChange={(e) => setDominiosTexto(e.target.value)}
+          onBlur={() => onChange({
+            ...cfg,
+            dominios_gratuitos: dominiosTexto.split(/[\s,]+/).map((d) => d.trim()).filter(Boolean),
+          })}
+        />
+        <span className="muted small">
+          Separados por comas. La empresa se agrupa por el registro de empresa de BoHub, nunca
+          por el dominio del correo; si una «empresa» tiene uno de estos dominios, no se agrupa
+          (todos los clientes de gmail.com no son una empresa).
+        </span>
+      </label>
+    </>
+  );
+}
+
 const CONOCIMIENTO_DEFECTOS: ConocimientoConfig = {
   flux_sync_activa: true, flux_sync_hora: "04:30", flux_palabras_kb: [], flux_palabras_soporte: [],
 };

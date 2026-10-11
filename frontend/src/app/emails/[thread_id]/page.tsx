@@ -7,7 +7,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EmailComposerModal } from "../../components/EmailComposerModal";
 import { EmailThreadDetail } from "../../components/email/EmailThreadDetail";
 import { EmailThreadToolbar } from "../../components/email/EmailThreadToolbar";
+import { getCurrentUser } from "../../lib/api";
 import {
+  type AsistenteAlcance,
   type BorradorAsistente,
   type EmailFolder,
   type EmailLabel,
@@ -45,6 +47,29 @@ type ComposeState =
   | { mode: "asistente"; parent: EmailMessage; borrador: BorradorAsistente }
   | null;
 
+const ALCANCE_CLAVE = "bohub.asistente.alcance";
+const ALCANCES: ReadonlyArray<AsistenteAlcance> = ["hilo", "contacto", "empresa"];
+
+/** El histórico elegido por este usuario en este navegador (por id de usuario,
+ *  así dos personas en el mismo navegador no se pisan). */
+function leerAlcance(usuarioId: string): AsistenteAlcance | null {
+  try {
+    const v = window.localStorage.getItem(`${ALCANCE_CLAVE}.${usuarioId}`);
+    return v && (ALCANCES as readonly string[]).includes(v) ? (v as AsistenteAlcance) : null;
+  } catch {
+    return null;
+  }
+}
+
+function guardarAlcance(usuarioId: string | null, alcance: AsistenteAlcance): void {
+  if (!usuarioId) return;
+  try {
+    window.localStorage.setItem(`${ALCANCE_CLAVE}.${usuarioId}`, alcance);
+  } catch {
+    /* sin almacenamiento local no pasa nada: se recuerda mientras dure la página */
+  }
+}
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, "&amp;")
@@ -74,6 +99,25 @@ export default function EmailThreadPage() {
   const [asistenteOcupado, setAsistenteOcupado] = useState(false);
   const [asistenteError, setAsistenteError] = useState<string | null>(null);
   const asistenteAuto = useRef(false);
+  // Qué histórico mira la IA: se recuerda por usuario (en este navegador).
+  const [alcance, setAlcance] = useState<AsistenteAlcance>("contacto");
+  const [usuarioId, setUsuarioId] = useState<string | null>(null);
+  useEffect(() => {
+    getCurrentUser()
+      .then((u) => {
+        setUsuarioId(u.id);
+        const guardado = leerAlcance(u.id);
+        if (guardado) setAlcance(guardado);
+      })
+      .catch(() => undefined);
+  }, []);
+  const cambiarAlcance = useCallback(
+    (nuevo: AsistenteAlcance) => {
+      setAlcance(nuevo);
+      guardarAlcance(usuarioId, nuevo);
+    },
+    [usuarioId],
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -143,7 +187,7 @@ export default function EmailThreadPage() {
   );
 
   const pedirAsistente = useCallback(
-    async (regenerarDe?: string | null) => {
+    async (regenerarDe?: string | null, alcanceElegido?: AsistenteAlcance) => {
       if (!thread || asistenteOcupado) return;
       const parent = lastInbound ?? thread.messages[thread.messages.length - 1];
       if (!parent) return;
@@ -151,6 +195,7 @@ export default function EmailThreadPage() {
       setAsistenteError(null);
       try {
         const borrador = await generarBorradorAsistente(thread.id, {
+          alcance: alcanceElegido ?? alcance,
           regenerar_de: regenerarDe ?? null,
         });
         setCompose({ mode: "asistente", parent, borrador });
@@ -162,7 +207,7 @@ export default function EmailThreadPage() {
         setAsistenteOcupado(false);
       }
     },
-    [thread, lastInbound, asistenteOcupado],
+    [thread, lastInbound, asistenteOcupado, alcance],
   );
 
   // Abierto desde la ficha con `?asistente=1`: se pide el borrador al cargar
@@ -370,6 +415,8 @@ export default function EmailThreadPage() {
         onForward={() => setCompose({ mode: "forward", parent: last })}
         onAsistente={() => void pedirAsistente()}
         asistenteOcupado={asistenteOcupado}
+        alcance={alcance}
+        onAlcanceChange={cambiarAlcance}
       />
 
       <EmailThreadDetail
@@ -412,7 +459,9 @@ export default function EmailThreadPage() {
               enlaces: compose.borrador.enlaces,
               contexto: compose.borrador.contexto,
               ocupado: asistenteOcupado,
-              onRegenerar: () => void pedirAsistente(compose.borrador.id),
+              alcance,
+              onAlcanceChange: cambiarAlcance,
+              onRegenerar: (nuevo) => void pedirAsistente(compose.borrador.id, nuevo),
               onDescartar: () => {
                 void descartarBorradorAsistente(thread.id, compose.borrador.id)
                   .catch(() => undefined);

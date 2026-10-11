@@ -2178,6 +2178,11 @@ export type ErpSettings = {
    *  FLUX) de «averiada / repuesto» (nuestro soporte). Las tablas (sitios,
    *  rutas, FLUX) van por su API (`getConocimiento`). */
   conocimiento?: ConocimientoConfig;
+  /** Asistente de respuesta («Ayúdame a contestar») — presupuesto de tokens
+   *  por generación, cuántos correos viejos y asuntos entran, y los dominios
+   *  de correo gratuitos (la empresa se agrupa por su registro, nunca por uno
+   *  de estos dominios). */
+  asistente?: AsistenteConfig;
   /** ERP-F6-fix3 — tiendas Woo dadas de alta, para configurar la serie de
    *  cada una (solo lectura; se rellena en el GET). */
   woocommerce_stores?: {
@@ -5801,3 +5806,11 @@ export type UsoIA = {
 export async function getUsoIA(dias = 30): Promise<UsoIA> {
   return apiFetch<UsoIA>(`/api/erp/ia/uso${qs({ dias })}`);
 }
+
+/** La configuración del asistente de respuesta (blob `asistente`). */
+export type AsistenteConfig = {
+  presupuesto_tokens: number;
+  historico_max: number;
+  asuntos_max: number;
+  dominios_gratuitos: string[];
+};

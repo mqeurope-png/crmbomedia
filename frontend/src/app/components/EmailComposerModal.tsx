@@ -32,12 +32,14 @@ import {
   getMyEmailAliases,
   sendEmail,
   sendEmailDraft,
+  type AsistenteAlcance,
   type EmailDraft,
   type EmailDraftWrite,
   type EmailMessage,
   type MyAlias,
   updateEmailDraft,
 } from "../lib/emailsApi";
+import { ALCANCES_ASISTENTE } from "./email/EmailThreadToolbar";
 import { extractErrorMessage } from "../lib/errors";
 import { SaveTemplateModal } from "./email/SaveTemplateModal";
 import { ScheduleSendDialog } from "./email/ScheduleSendDialog";
@@ -102,7 +104,10 @@ type Props = {
     enlaces: { url: string; etiqueta: string }[];
     contexto: Record<string, unknown>;
     ocupado: boolean;
-    onRegenerar: () => void;
+    /** Qué histórico mira la IA; se puede cambiar y regenerar sin escribir nada. */
+    alcance: AsistenteAlcance;
+    onAlcanceChange: (alcance: AsistenteAlcance) => void;
+    onRegenerar: (alcance?: AsistenteAlcance) => void;
     onDescartar: () => void;
   } | null;
   onClose: () => void;
@@ -929,6 +934,9 @@ function AsistentePanel({
   const historico = Array.isArray(ctx["historico"]) ? (ctx["historico"] as Record<string, unknown>[]) : [];
   const empresa = Array.isArray(ctx["empresa"]) ? (ctx["empresa"] as Record<string, unknown>[]) : [];
   const alcance = typeof ctx["alcance"] === "string" ? (ctx["alcance"] as string) : null;
+  const recortes = Array.isArray(ctx["recortes"]) ? (ctx["recortes"] as string[]) : [];
+  const tokens = num("tokens_estimados");
+  const presupuesto = num("presupuesto_tokens");
   const partes: string[] = [];
   const hilo = num("mensajes_hilo");
   if (hilo !== null) partes.push(`${hilo} mensaje${hilo === 1 ? "" : "s"} del hilo`);
@@ -938,6 +946,8 @@ function AsistentePanel({
   if (typeof ctx["modelo_flux"] === "string" && ctx["modelo_flux"]) partes.push(`máquina FLUX ${ctx["modelo_flux"]}`);
   if (historico.length > 0) partes.push(`${historico.length} correo${historico.length === 1 ? "" : "s"} anterior${historico.length === 1 ? "" : "es"} del contacto`);
   if (empresa.length > 0) partes.push(`${empresa.length} asunto${empresa.length === 1 ? "" : "s"} de otras personas de la empresa`);
+  if (tokens !== null) partes.push(`~${tokens.toLocaleString("es-ES")} tokens de entrada${presupuesto ? ` de ${presupuesto.toLocaleString("es-ES")}` : ""}`);
+  if (recortes.length > 0) partes.push(`${recortes.length} correo${recortes.length === 1 ? "" : "s"} viejo${recortes.length === 1 ? "" : "s"} fuera por tamaño`);
   return (
     <div className="asistente-panel" role="note" aria-label="Borrador de la IA">
       <div className="asistente-panel-head">
@@ -945,12 +955,23 @@ function AsistentePanel({
           <Sparkles size={12} aria-hidden /> Borrador de la IA: revísalo y corrígelo antes de enviar. No sale nada hasta que pulses «Enviar ahora».
         </span>
         <span className="asistente-panel-acciones">
+          <select
+            className="email-toolbar-alcance"
+            aria-label="Qué histórico mira la IA al regenerar"
+            value={asistente.alcance}
+            disabled={asistente.ocupado || submitting}
+            onChange={(e) => asistente.onAlcanceChange(e.target.value as AsistenteAlcance)}
+          >
+            {ALCANCES_ASISTENTE.map((a) => (
+              <option key={a.id} value={a.id}>{a.label}</option>
+            ))}
+          </select>
           <button
             type="button"
             className="button secondary small"
-            onClick={asistente.onRegenerar}
+            onClick={() => asistente.onRegenerar(asistente.alcance)}
             disabled={asistente.ocupado || submitting}
-            title="Pide otro borrador a la IA (el actual queda como regenerado)"
+            title="Pide otro borrador a la IA con el histórico elegido (el actual queda como regenerado)"
           >
             <RefreshCw size={11} aria-hidden /> {asistente.ocupado ? "Redactando…" : "Regenerar"}
           </button>

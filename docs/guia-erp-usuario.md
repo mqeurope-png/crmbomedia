@@ -1570,6 +1570,12 @@ lo que va a pasar. Secciones destacadas:
   **«Comprobar que las URL devuelven 200»** pide cada ruta y guarda el código.
   **«Probar»** enseña qué enlaces saldrían para una web, idioma, interés y
   texto. Ver [docs/base-conocimiento.md](base-conocimiento.md).
+- **«Asistente de respuesta»** — cuánto histórico mira «Ayúdame a contestar» y
+  cuánto puede costar cada clic: el **presupuesto de tokens** de entrada por
+  borrador (12.000), cuántos **correos viejos con cuerpo** entran como mucho
+  (5), cuántos **asuntos recientes** lleva el expediente (15) y los **dominios
+  de correo gratuitos** que nunca se toman por una empresa. Ver
+  [docs/ai-features.md](ai-features.md).
 - **«Series FACTUSOL»** — la **serie** es la empresa que emite la factura. Fijas
   la **serie por defecto** y la que usa cada origen de pedido. Las series
   disponibles son **1 · Bomedia**, **2 · MQ Europe**, **4 · Lambert** y **5 ·

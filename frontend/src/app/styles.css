@@ -15393,3 +15393,4 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
 .erp-ia-uso-dato { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; }
 .erp-ia-uso-dato strong { display: block; font-size: 1.2rem; }
 .erp-ia-uso-dato span { color: var(--muted); font-size: var(--fs-label); }
+.email-toolbar-alcance { font-size: var(--fs-label); padding: 3px 6px; max-width: 220px; }

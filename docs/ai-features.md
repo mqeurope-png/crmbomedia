@@ -193,3 +193,50 @@ Errores: sin `ANTHROPIC_API_KEY` → 503; FLUX/Anthropic saturados → 429; otro
 fallo del proveedor → 502 con el motivo, y la llamada fallida queda anotada.
 Puede pedirlo cualquier usuario que pueda ver el hilo (misma regla que el
 detalle del hilo).
+
+### Qué histórico mira y cuánto (`services/asistente/historico.py`)
+
+Pasarle al modelo los cuarenta correos de un cliente es un error por tres
+motivos: la respuesta sale peor (se agarra a un asunto cerrado), el coste y la
+espera se multiplican, y hay cosas que no debe repetir (un precio dado a otro
+comprador de la misma empresa). La solución es traer poco y que sea lo que
+toca: **cuatro niveles por orden de prioridad**, llenados hasta agotar un
+**presupuesto de tokens** configurable (Configuración ERP → «Asistente de
+respuesta», 12.000 por defecto). Si no cabe todo, se recorta por abajo, nunca
+por arriba.
+
+1. **El hilo actual, entero y literal.** Nunca se recorta: si no cabe, no cabe
+   nada más.
+2. **El expediente: hechos, no mensajes.** Los últimos asuntos tratados (15,
+   título y fecha), qué compró y cuándo, la máquina, pendiente de cobro, etapa
+   del pipeline, clasificación de la IA.
+3. **Los correos viejos que vienen a cuento, con su cuerpo.** Como mucho 5, el
+   más reciente primero (uno por hilo). Entra uno si el asunto coincide al
+   normalizarlo (fuera `Re:`, `RE:`, `Fwd:`, `AW:`, `RV:` y los corchetes), si
+   el mensaje de hoy menciona una referencia (pedido, factura, albarán, número
+   de serie) que aparece en él, si habla de la misma máquina o producto (por
+   las líneas de sus pedidos), o si hay solape fuerte de palabras con la
+   pregunta de hoy, descontando las vacías y las genéricas. Si ninguno cumple,
+   el nivel queda vacío y no pasa nada.
+4. **La empresa, marcada como tal.** Correos de **otras personas de la misma
+   empresa**, agrupada por el **registro de empresa de BoHub, nunca por el
+   dominio del correo** (los clientes de gmail.com no son una empresa; la
+   lista de dominios gratuitos está en la configuración). Si el contacto no
+   tiene empresa asignada, el nivel queda vacío. Entran como asunto y fecha,
+   etiquetados «lo escribió Fulano, de la misma empresa», y el prompt prohíbe
+   repetir precios, descuentos o condiciones dadas a otra persona. Solo con
+   «todo lo de la empresa» pueden traer cuerpo (mismo criterio del nivel 3).
+
+**Lo elige quien pulsa**: un selector junto al botón (y en el compositor, para
+regenerar sin volver a escribir): «Solo este hilo» (nivel 1), «Todo lo de este
+contacto» (1, 2 y 3; el defecto) y «Todo lo de la empresa» (los cuatro). La
+elección se recuerda por usuario en el navegador. Un remitente desconocido va
+siempre solo con el hilo.
+
+**Se ve lo que ha usado**: debajo del borrador, plegado, cuántos mensajes del
+hilo, qué correos viejos entraron (fecha, asunto y por qué), si hubo contexto
+de la empresa, los tokens estimados y lo que se dejó fuera por tamaño. Es la
+misma lista que se guarda con el borrador (`contexto_json`), y el registro
+guarda además el **alcance** y el **número de mensajes** (`alcance`,
+`mensajes_hilo`, `mensajes_historico`) para cruzar después si los borradores
+con más histórico salen mejores o solo más caros.

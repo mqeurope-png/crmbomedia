@@ -16,10 +16,20 @@ import {
 } from "lucide-react";
 import { useRef, useState } from "react";
 import {
+  type AsistenteAlcance,
   type EmailFolder,
   type EmailLabel,
   type EmailThreadDetail,
 } from "../../lib/emailsApi";
+
+/** Qué histórico mira la IA al redactar: solo el hilo (nivel 1), todo lo del
+ *  contacto (hilo + expediente + correos viejos que vienen a cuento, el
+ *  defecto) o todo lo de la empresa (también lo de sus compañeros, etiquetado). */
+export const ALCANCES_ASISTENTE: ReadonlyArray<{ id: AsistenteAlcance; label: string }> = [
+  { id: "hilo", label: "Solo este hilo" },
+  { id: "contacto", label: "Todo lo de este contacto" },
+  { id: "empresa", label: "Todo lo de la empresa" },
+];
 
 /** CRM-BANDEJA — toolbar del hilo agrupada en 3 secciones con divisores
  *  verticales:
@@ -48,6 +58,10 @@ type Props = {
    *  se pinta (la IA no está configurada). */
   onAsistente?: () => void;
   asistenteOcupado?: boolean;
+  /** El histórico que mira la IA (selector junto al botón; se recuerda por
+   *  usuario). Sin `onAlcanceChange`, el selector no se pinta. */
+  alcance?: AsistenteAlcance;
+  onAlcanceChange?: (alcance: AsistenteAlcance) => void;
 };
 
 export function EmailThreadToolbar({
@@ -67,6 +81,8 @@ export function EmailThreadToolbar({
   onForward,
   onAsistente,
   asistenteOcupado = false,
+  alcance = "contacto",
+  onAlcanceChange,
 }: Props) {
   const [moveOpen, setMoveOpen] = useState(false);
   const [labelOpen, setLabelOpen] = useState(false);
@@ -252,6 +268,20 @@ export function EmailThreadToolbar({
             <Sparkles size={12} aria-hidden />{" "}
             {asistenteOcupado ? "Redactando…" : "Ayúdame a contestar"}
           </button>
+        ) : null}
+        {onAsistente && onAlcanceChange ? (
+          <select
+            className="email-toolbar-alcance"
+            aria-label="Qué histórico mira la IA"
+            title="Qué histórico mira la IA al redactar. Se recuerda para ti."
+            value={alcance}
+            disabled={asistenteOcupado}
+            onChange={(e) => onAlcanceChange(e.target.value as AsistenteAlcance)}
+          >
+            {ALCANCES_ASISTENTE.map((a) => (
+              <option key={a.id} value={a.id}>{a.label}</option>
+            ))}
+          </select>
         ) : null}
       </div>
     </div>

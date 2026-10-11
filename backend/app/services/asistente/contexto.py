@@ -31,8 +31,10 @@ from app.models.crm import (
     User,
     UserEmailAliasPref,
 )
-from app.models.ia import ALCANCE_CONTACTO
+from app.models.ia import ALCANCE_CONTACTO, ALCANCE_EMPRESA, ALCANCE_HILO
 from app.models.leads import LeadClassification
+from app.services.asistente import historico as hist
+from app.services.asistente.config import configuracion as config_asistente
 from app.services.asistente.texto import recortar, sin_cita, texto_de_mensaje
 from app.services.conocimiento import enlaces as kb_enlaces
 from app.services.conocimiento import flux
@@ -91,11 +93,17 @@ class Contexto:
     destinatario: str | None = None
     asunto_respuesta: str = ""
     ejemplo_estilo: str | None = None
-    #: C bis: correos viejos del contacto que vienen a cuento (con cuerpo) y
-    #: los de la empresa (asunto y fecha, etiquetados).
+    #: Nivel 3: correos viejos del contacto que vienen a cuento (con cuerpo).
     historico: list[dict[str, Any]] = field(default_factory=list)
+    #: Nivel 4: otras personas de la misma empresa (asunto y fecha, etiquetados;
+    #: con cuerpo solo en «toda la empresa»).
     empresa_asuntos: list[dict[str, Any]] = field(default_factory=list)
+    empresa: str | None = None
+    #: Lo que se dejó fuera por el presupuesto, y los tokens estimados finales.
     recortes: list[str] = field(default_factory=list)
+    presupuesto_tokens: int = 0
+    tokens_estimados: int = 0
+    niveles: list[int] = field(default_factory=lambda: [1])
 
     def enlaces_lista(self) -> list[dict[str, Any]]:
         """Todos los enlaces que el modelo puede usar, con su etiqueta."""
@@ -141,8 +149,21 @@ class Contexto:
             "asuntos_recientes": len(self.asuntos_recientes),
             "sitio": self.sitio, "interes": self.interes,
             "enlaces": self.enlaces_lista(),
-            "historico": self.historico, "empresa": self.empresa_asuntos,
+            "niveles": list(self.niveles),
+            "historico": [
+                {k: v for k, v in h.items() if k != "texto"} | {"con_cuerpo": bool(h.get("texto"))}
+                for h in self.historico
+            ],
+            "empresa": [
+                {k: v for k, v in e.items() if k != "texto"} | {"con_cuerpo": bool(e.get("texto"))}
+                for e in self.empresa_asuntos
+            ],
+            "empresa_nombre": self.empresa,
             "recortes": self.recortes,
+            "presupuesto_tokens": self.presupuesto_tokens,
+            "tokens_estimados": self.tokens_estimados,
+            "mensajes_historico": len(self.historico) + sum(
+                1 for e in self.empresa_asuntos if e.get("texto")),
             "ejemplo_estilo": bool(self.ejemplo_estilo),
         }
 
@@ -436,19 +457,60 @@ def construir(
     ctx.asunto_respuesta = asunto_respuesta(thread)
     ctx.sitio = sitio_de(contacto, mensajes, thread)
     categorias = flux.cargar_categorias(session)
-    if contacto is not None:
+    cfg = config_asistente(session)
+    ctx.presupuesto_tokens = int(cfg["presupuesto_tokens"])
+    texto_cliente = ultimo.texto if ultimo else ""
+    # Nivel 2 (el expediente) solo si hay ficha y el alcance pasa del hilo.
+    if contacto is not None and alcance != ALCANCE_HILO:
+        ctx.niveles.append(2)
         ctx.contacto = ficha(session, contacto)
         ctx.pedidos = pedidos_de(session, contacto)
         ctx.facturas_pendientes = facturas_pendientes_de(ctx.pedidos)
         ctx.maquina, ctx.modelo_flux = maquina_de(ctx.pedidos, categorias)
         ctx.clasificacion = clasificacion_de(session, contacto)
         ctx.etapa = etapa_de(session, contacto)
-        ctx.asuntos_recientes = asuntos_recientes_de(session, contacto, excluir_thread_id=thread.id)
+        ctx.asuntos_recientes = asuntos_recientes_de(
+            session, contacto, excluir_thread_id=thread.id, limite=int(cfg["asuntos_max"]))
         intereses = (ctx.clasificacion or {}).get("intereses") or (
             [contacto.lead_interest] if contacto.lead_interest else [])
         ctx.interes = intereses[0] if intereses else None
         ctx.ejemplo_estilo = ejemplo_estilo_de(session, intereses, idioma)
-    texto_cliente = ultimo.texto if ultimo else ""
+        # Nivel 3: los correos viejos del contacto que vienen a cuento.
+        productos = hist.palabras_de_producto(
+            (ln["descripcion"] for p in ctx.pedidos for ln in p["lineas"]),
+            extra=[ctx.modelo_flux] if ctx.modelo_flux else (),
+        )
+        asunto_hoy = ultimo.asunto if ultimo else thread.subject
+        elegidos = hist.elegir(
+            hist.candidatos_del_contacto(session, contacto, excluir_thread_id=thread.id),
+            asunto_actual=asunto_hoy, texto_actual=texto_cliente, productos=productos,
+            maximo=int(cfg["historico_max"]),
+        )
+        ctx.niveles.append(3)
+        ctx.historico = [c.como_dict(motivo, con_texto=True) for c, motivo in elegidos]
+        # Nivel 4: la empresa, por su registro, solo con «toda la empresa».
+        if alcance == ALCANCE_EMPRESA:
+            empresa = hist.empresa_agrupable(contacto, cfg["dominios_gratuitos"])
+            if empresa is not None:
+                ctx.niveles.append(4)
+                ctx.empresa = empresa.name
+                asuntos, candidatos = hist.hilos_de_la_empresa(
+                    session, contacto, empresa, excluir_thread_id=thread.id,
+                    limite=int(cfg["asuntos_max"]))
+                con_cuerpo = {
+                    c.thread_id: (c, motivo) for c, motivo in hist.elegir(
+                        candidatos, asunto_actual=asunto_hoy, texto_actual=texto_cliente,
+                        productos=productos, maximo=int(cfg["historico_max"]))
+                }
+                ctx.empresa_asuntos = []
+                for a in asuntos:
+                    entrada = dict(a)
+                    if a["thread_id"] in con_cuerpo:
+                        cand, motivo = con_cuerpo[a["thread_id"]]
+                        entrada["texto"] = cand.texto
+                        entrada["motivo"] = motivo
+                        entrada["lado"] = cand.lado
+                    ctx.empresa_asuntos.append(entrada)
     ctx.enlaces = kb_enlaces.enlaces_para(
         session, sitio=ctx.sitio, idioma=idioma, interes=ctx.interes, texto=texto_cliente,
         modelo=ctx.modelo_flux,

@@ -28,7 +28,9 @@ from app.models.ia import (
 )
 from app.services import llm
 from app.services.asistente import contexto as ctx_mod
+from app.services.asistente.config import estimar_tokens
 from app.services.asistente.contexto import Contexto
+from app.services.asistente.historico import ajustar_al_presupuesto
 from app.services.ia.coste import coste_usd
 from app.services.ia.uso import registrar_llamada
 
@@ -185,15 +187,20 @@ def _bloque_historico(ctx: Contexto) -> str:
             lineas.append(h.get("texto") or "(sin texto)")
     if ctx.empresa_asuntos:
         lineas.append(
-            "CORREOS DE OTRAS PERSONAS DE LA MISMA EMPRESA (no de quien te escribe hoy; no les "
-            "atribuyas nada de esto, y no repitas precios ni condiciones dadas a otra persona):")
+            f"CORREOS DE OTRAS PERSONAS DE LA MISMA EMPRESA ({ctx.empresa or 'la empresa'}; no "
+            "de quien te escribe hoy: no les atribuyas nada de esto, y no repitas precios, "
+            "descuentos ni condiciones dadas a otra persona):")
         for e in ctx.empresa_asuntos:
             quien = e.get("quien") or "otra persona de la empresa"
             lineas.append(
                 f"- {_fecha(e.get('fecha'))} · lo escribió {quien} · asunto: "
                 f"{e.get('asunto') or '(sin asunto)'}")
             if e.get("texto"):
+                lineas.append(f"  ({str(e.get('lado', '')).upper()} · {e.get('motivo')})")
                 lineas.append(e["texto"])
+    if ctx.recortes:
+        lineas.append(
+            f"(Por tamaño se dejaron fuera {len(ctx.recortes)} correos antiguos; no están aquí.)")
     return "\n".join(lineas) + "\n"
 
 
@@ -259,6 +266,13 @@ def generar(
         raise ValueError(f"Alcance desconocido: {alcance!r}.")
     ctx = ctx_mod.construir(session, thread=thread, usuario=usuario, alcance=alcance)
     sistema = PROMPT_SISTEMA
+    # El presupuesto de tokens de entrada: se recorta por abajo (empresa y
+    # correos viejos, lo más antiguo primero) hasta que el prompt cabe. El
+    # hilo y el expediente no se tocan.
+    ctx.tokens_estimados = ajustar_al_presupuesto(
+        ctx, presupuesto=ctx.presupuesto_tokens,
+        medir=lambda c: estimar_tokens(sistema) + estimar_tokens(prompt_usuario(c)),
+    )
     prompt = prompt_usuario(ctx)
     try:
         raw = llm._invoke_claude(
@@ -290,7 +304,9 @@ def generar(
         contexto_json=json.dumps(
             {**ctx.resumen(), "enlaces_usados": data["enlaces_usados"]}, ensure_ascii=False,
             default=str),
-        alcance=alcance, mensajes_hilo=len(ctx.mensajes), mensajes_historico=len(ctx.historico),
+        alcance=alcance, mensajes_hilo=len(ctx.mensajes),
+        mensajes_historico=len(ctx.historico) + sum(
+            1 for e in ctx.empresa_asuntos if e.get("texto")),
         estado=ESTADO_GENERADO,
     )
     session.add(borrador)
