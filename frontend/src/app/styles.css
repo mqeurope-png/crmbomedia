@@ -15520,18 +15520,21 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
   border-bottom: 1px solid var(--line);
   flex: 0 0 auto;
 }
-.modal-dialog.email-compose-modal > .composer-header h2 { margin: 0; font-size: 17px; }
+.modal-dialog.email-compose-modal > .composer-header h2 { margin: 0; font-size: var(--fs-subtitle); }
 .modal-dialog.email-compose-modal > .form-error,
 .modal-dialog.email-compose-modal > .form-warning { margin: 8px 20px 0; }
 .modal-dialog.email-compose-modal > form { padding: 8px 20px 14px; }
 .email-compose-modal > form { gap: 4px; }
 .email-compose-modal > form > .field { margin: 0; }
 .email-compose-modal .email-compose-de { margin: 0 0 4px; }
+/* El cuerpo nunca baja de unas doce líneas: 376 px = etiqueta (30) + barra de
+ * herramientas del editor (48) + 13 líneas de 22,4 px (el editor del compositor
+ * va sin barra de estado). Lo que encoge cuando no hay sitio es la franja. */
 .email-compose-modal .email-compose-body {
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;
-  min-height: 330px;
+  min-height: 376px;
   overflow: hidden;
 }
 .email-compose-modal .email-compose-body > label {
@@ -15545,7 +15548,11 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
   min-height: 0;
 }
 .email-compose-modal .email-compose-body .re-loading { flex: 1 1 auto; }
-.email-compose-modal .asistente-franja { max-height: 38vh; }
+.email-compose-modal .asistente-franja {
+  flex: 0 1 auto;
+  min-height: 40px;
+  max-height: 38vh;
+}
 .email-compose-modal .actions { flex: 0 0 auto; margin-top: 8px; }
 /* Para, con los enlaces de Cc y Cco al lado (solo si no están abiertos). */
 .email-compose-para { display: flex; align-items: flex-end; gap: 8px; }
@@ -15556,7 +15563,7 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
   border: 0;
   color: var(--primary, #1d4ed8);
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--fs-label);
   padding: 2px 6px;
   border-radius: 6px;
 }
@@ -15584,7 +15591,7 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
   color: inherit;
   text-decoration: underline;
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--fs-label);
   padding: 0;
   flex: 0 0 auto;
 }
@@ -15592,4 +15599,22 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
 /* La franja del asistente: «se aplicará solo a la selección». */
 .asistente-franja-seleccion {
   margin: 4px 0 0;
+}
+
+/* Desplegada, la franja conserva al menos su cabecera y la caja de
+ * instrucción aunque el cuerpo se quede con su mínimo. */
+.email-compose-modal .asistente-franja.is-abierta { min-height: 96px; }
+
+/* Pantallas bajas (768 px): el diálogo apura el alto de la ventana (la capa
+ * baja su relleno de 24 a 8 px, si no el diálogo nace ya fuera) y recorta su
+ * cromo para que quepan el cuerpo (doce líneas) y la franja desplegada. */
+@media (max-height: 820px) {
+  .modal-overlay.email-compose-capa { padding: 8px; }
+  .modal-dialog.email-compose-modal {
+    height: calc(100dvh - 16px);
+    max-height: calc(100dvh - 16px);
+  }
+  .modal-dialog.email-compose-modal > .composer-header { padding: 8px 20px 6px; }
+  .modal-dialog.email-compose-modal > form { padding: 6px 16px 10px; }
+  .email-compose-modal .actions { margin-top: 4px; }
 }

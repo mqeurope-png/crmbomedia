@@ -220,6 +220,9 @@ export const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
         height: fill ? "100%" : minHeight,
         min_height: fill ? minHeight : undefined,
         resize: fill ? false : true,
+        // Sin asa de redimensionar, la barra de estado (ruta «p » strong» y
+        // contador) solo quita líneas al cuerpo en pantallas bajas.
+        statusbar: !fill,
         menubar: false,
         branding: false,
         promotion: false,

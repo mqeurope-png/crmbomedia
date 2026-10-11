@@ -1008,7 +1008,7 @@ export function EmailComposerModal({
                 dirtyRef.current = true;
               }}
               placeholder="Escribe tu email. Usa {nombre}, {empresa}, {email} para personalizar."
-              minHeight={320}
+              minHeight={376}
               fill
               draftKey={draftKey}
             />

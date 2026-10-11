@@ -57,20 +57,33 @@ podían leer asuntos largos.
 
 - Todos los iconos llevan tooltip descriptivo.
 - **Ayúdame a contestar** abre el compositor con la **franja del asistente**
-  desplegada, entre la cabecera (De, Para, Cc, Asunto y la fila de
-  herramientas) y el cuerpo: empuja el contenido, no tapa nada, y se pliega a
-  una línea. Lo primero es la caja **«¿Qué quieres decirle?»**: si escribes,
-  eso manda; si la dejas vacía, la IA contesta al último mensaje del cliente, y
-  si el cliente no ha escrito nada nuevo lo dice en la franja y el cuerpo queda
-  vacío (nunca mete en el correo nada dirigido a ti). Después, la misma caja
-  acepta correcciones («más corto», «en inglés», «quita el precio»): cada una
-  reescribe el borrador, se apila en la lista de lo dicho y se puede volver al
-  anterior; el envío anota qué turno salió. La franja está también plegada en
-  **Redactar** y en la ficha del contacto: un correo nuevo, sin hilo, con el
-  pasado de esa persona (ahí decir qué quieres es obligatorio y el asunto lo
-  propone la IA). Si el destinatario es un compañero (una dirección del grupo),
-  la franja lo avisa antes de redactar; en un hilo de cliente con un compañero
-  en copia, **Responder** propone al cliente, no al último que escribió.
+  desplegada, entre la cabecera (De, Para, Asunto con los iconos de plantillas,
+  adjuntos y opciones; Cc y Cco solo si se usan, con un enlace junto a Para) y
+  el cuerpo: empuja el contenido, no tapa nada, y **se pliega sola a una línea
+  en cuanto hay borrador** («Ayúdame a contestar · 1 borrador · 0,0049 $»).
+  Lo primero es la caja **«¿Qué quieres decirle?»**: si escribes, eso manda; si
+  la dejas vacía, la IA contesta al último mensaje del cliente, y si el cliente
+  no ha escrito nada nuevo lo dice en la franja y el cuerpo queda vacío (nunca
+  mete en el correo nada dirigido a ti; si algo es dudoso, lo deja y te pide
+  que lo revises). **Con texto en el cuerpo la caja va en modo corrección**
+  («Aplicar»): la IA corrige siempre lo que hay ahora mismo en el editor —el
+  borrador que has retocado a mano, un correo escrito a mano, un borrador
+  reabierto— y, si tienes texto seleccionado, solo ese trozo (la franja lo
+  dice). El borrador llega con formato sencillo (listas, negritas, enlaces sobre
+  el nombre de la máquina); cada corrección se apila en la lista de lo dicho y
+  se puede volver al anterior; el envío anota qué turno salió. La franja está
+  también plegada en **Redactar** y en la ficha del contacto: un correo nuevo,
+  sin hilo, con el pasado de esa persona (ahí decir qué quieres es obligatorio
+  y el asunto lo propone la IA). Si el destinatario es un compañero (una
+  dirección del grupo), la franja lo avisa en cuanto cambias «Para»; en un hilo
+  de cliente con un compañero en copia, **Responder** propone al cliente, no al
+  último que escribió.
+- **El compositor del hilo es un diálogo con velo que no destruye trabajo**:
+  pulsar en el fondo no lo cierra. Escape, la X y «Cancelar» preguntan si hay
+  algo escrito (cuerpo, asunto, instrucción o conversación con la IA): **Guardar
+  en Borradores** (por defecto), **Seguir editando** o **Descartar**; en blanco
+  cierran sin más. Un borrador guardado se lleva la conversación con la IA y
+  vuelve con ella al reabrirlo desde **Borradores**.
 - **Marcar no leído** vuelve a la bandeja tras aplicarse (abrir el hilo lo
   re-marcaría como leído — mismo patrón que Gmail).
 - **Responder a todos** pre-rellena Cc con el resto de destinatarios del

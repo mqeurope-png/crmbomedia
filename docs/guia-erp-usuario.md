@@ -1572,13 +1572,19 @@ lo que va a pasar. Secciones destacadas:
   correos de Bomedia (su fila de Supabase, solo lectura) y los **consumibles y
   repuestos** de las tiendas de las webs, con el **precio tal cual** está
   escrito en el origen; «Sincronizar compositor» / «Sincronizar tiendas», el
-  estado por fuente, la tabla filtrable y el idioma por defecto de cada marca
-  (el precio de respaldo). La tabla **interés → máquinas** decide qué máquinas
-  se le enseñan a cada lead (marca + patrón del nombre; enseña con qué casa
-  cada fila y los **huecos**: láser, packaging y CNC no están en el
-  compositor, así que ahí se enlaza la página de producto y no se inventa
-  nada); es una propuesta a revisar hasta que se marque como revisada en los
-  ajustes. En los ajustes de la sección: la sincronización diaria del
+  estado por fuente, la tabla filtrable (con «Ver descartados» para las
+  entradas del compositor que no son máquinas: premios sin precio ni área) y
+  el idioma por defecto de cada marca (el precio de respaldo). «Consultar» en
+  el origen es «sin precio público»: el correo dice que el precio se prepara a
+  medida, nunca escribe «Consultar». La tabla **interés → máquinas** decide
+  qué máquinas se le enseñan a cada lead (marca + patrón del nombre; enseña con
+  qué casa cada fila y los **huecos**: el único interés sin máquina en el
+  compositor es el CNC, así que ahí se enlaza la página de producto y no se
+  inventa nada); es una propuesta a revisar hasta que se marque como revisada
+  en los ajustes, y se edita fila a fila. El asistente elige las máquinas por
+  este orden: las que el cliente nombra en el hilo, las que pides en la caja
+  («las máquinas de DTF»), los consumibles de la máquina que ya tiene y su
+  interés clasificado. En los ajustes de la sección: la sincronización diaria del
   catálogo, los **meses hasta que un precio es «orientativo»** (6) y el **IVA
   por fuente** (con, sin o sin declarar: se declara, no se deduce; el correo
   siempre dice si el precio lleva IVA, avisa del VIES y de que no es una
