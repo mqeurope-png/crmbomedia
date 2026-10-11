@@ -223,10 +223,14 @@ def test_la_guardia_reconoce_informes_y_saludos_a_quien_pulsa() -> None:
     assert texto.parece_informe_al_usuario(
         "Hola Manel, aquí tienes el borrador.", nombre_usuario="Manel Puig",
         nombre_destinatario="Marny López") is not None
-    # El destinatario se llama como quien pulsa: no es un informe.
+    # El destinatario se llama como quien pulsa, o no se sabe cómo se llama
+    # (sin ficha): no es un informe.
     assert texto.parece_informe_al_usuario(
         "Hola Manel, gracias por tu mensaje.", nombre_usuario="Manel",
         nombre_destinatario="Manel Soler") is None
+    assert texto.parece_informe_al_usuario(
+        "Hola Manel, gracias por tu consulta.", nombre_usuario="Manel",
+        nombre_destinatario=None) is None
     assert texto.parece_informe_al_usuario(
         "Hola Marny,\n\nte escribo por el presupuesto del 26.", nombre_usuario="Manel",
         nombre_destinatario="Marny") is None
@@ -234,6 +238,34 @@ def test_la_guardia_reconoce_informes_y_saludos_a_quien_pulsa() -> None:
         "I have reviewed the thread and there is nothing new to reply to. Let me know if you "
         "want a follow-up.", nombre_usuario="Bart") is not None
     assert texto.parece_informe_al_usuario("", nombre_usuario="Bart") is None
+    # Cierres normales de un correo a un cliente: NO son informes (la revisión
+    # del 11/10/2026 encontró que una lista más larga se cargaba borradores).
+    for correo in (
+        "Hola Marny,\n\nte adjunto el presupuesto. Dime si te va bien el jueves para la "
+        "demostración.\n\nUn saludo",
+        "Buenos días,\n\nse lo preparo esta semana y le aviso. Si quiere que le prepare "
+        "también la oferta del rotary, dígamelo.\n\nSaludos",
+        "Hola,\n\nel pedido no me ha llegado todavía, ¿podéis mirarlo?",
+        "Hi John,\n\nplease find the quote attached. Let me know if you have any questions, "
+        "and would you like me to reserve the unit?\n\nBest regards",
+        "Hallo Herr Torra,\n\nsagen Sie mir bitte Bescheid, ob das Angebot passt. Soll ich "
+        "Ihnen einen Termin vorschlagen?\n\nViele Grüße",
+        "Bonjour,\n\ndites-moi si vous souhaitez un devis pour le rotary.\n\nCordialement",
+        "Hoi Klaas,\n\nlaat het me weten als je vragen hebt.\n\nGroeten",
+    ):
+        assert texto.parece_informe_al_usuario(correo, nombre_usuario="Manel",
+                                               nombre_destinatario="Marny") is None, correo
+
+
+def test_sin_cuerpo_ni_aviso_la_franja_dice_algo() -> None:
+    """Las dos vacías es JSON válido para el prompt, pero la persona vería un
+    editor vacío sin saber por qué."""
+    data = redactor._parsear('{"asunto": "Re: x", "cuerpo": "", "aviso": ""}',
+                             asunto_defecto="Re: x", idioma_defecto="es")
+    assert data["cuerpo"] == "" and "no ha devuelto ningún correo" in data["aviso"]
+    data = redactor._parsear('{"cuerpo": "Hola", "aviso": ""}', asunto_defecto="Re: x",
+                             idioma_defecto="es")
+    assert data["cuerpo"] == "Hola" and data["aviso"] == ""
 
 
 # --- 2. la instrucción manda; sin instrucción, como #544 ----------------------------------

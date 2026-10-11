@@ -2164,8 +2164,10 @@ function AsistenteSettings({
           ))}
         </select>
         <span className="muted small">
-          «Más corto», «en inglés», «quita el precio» trabajan sobre un texto ya escrito, con el
-          contexto leído de caché: Haiku basta y cuesta veinte veces menos.
+          «Más corto», «en inglés», «quita el precio» trabajan sobre un texto ya escrito: Haiku
+          basta y cuesta veinte veces menos. La caché de prompts es por modelo: con un modelo
+          distinto, la primera corrección escribe su propia caché (céntimos) y las siguientes la
+          leen; con el mismo modelo que el primer borrador, ya la primera lee de caché.
         </span>
       </label>
       <label className="field">

@@ -192,9 +192,13 @@ manda). El bloque va como primer bloque del mensaje de usuario con
 la petición, que cambia, fuera: la API cobra lo leído de caché a una décima
 parte del precio de entrada (una vigésima en Opus 5.5), y `ia_llamadas` e
 `ia_borradores` guardan `tokens_cache_lectura` y `tokens_cache_escritura`, que
-`coste.py` cobra a su precio. El SDK fijado (`anthropic==0.40.0`) recibe los
-bloques tal cual y los parámetros nuevos (`thinking`, `output_config`) viajan
-en `extra_body`.
+`coste.py` cobra a su precio. La caché es **por modelo**: con el modelo de las
+correcciones distinto del primer borrador (Haiku por defecto), la primera
+corrección escribe su propia caché (12.000 tokens × 1,25 × 0,10 $/M ≈ 0,0015 $)
+y las siguientes la leen; con el mismo modelo, ya la primera lee. «Lo que ha
+usado» enseña los tokens leídos y escritos de verdad. El SDK fijado
+(`anthropic==0.40.0`) recibe los bloques tal cual y los parámetros nuevos
+(`thinking`, `output_config`) viajan en `extra_body`.
 
 ### El modelo, configurable y por tarea
 

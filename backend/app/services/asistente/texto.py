@@ -65,24 +65,32 @@ def normalizado(texto: str | None) -> str:
 
 
 #: Frases con las que la IA, en vez de redactar el correo, le habla a la persona
-#: de BoHub: «he revisado el hilo», «no tengo una pregunta a la que contestar»,
-#: «dímelo y lo redacto». Si el cuerpo las trae, no es un correo.
+#: de BoHub: «he revisado el hilo», «no tengo una pregunta del cliente a la que
+#: contestar», «dímelo y lo redacto». Solo las inequívocas: un cierre normal de
+#: un correo a un cliente («dime si te va bien el jueves», «let me know if you
+#: have any questions», «se lo preparo esta semana», «el pedido no me ha
+#: llegado») NO es un informe, y la revisión del 11/10/2026 encontró que una
+#: lista más larga se cargaba borradores buenos.
 _INFORME_RE = re.compile(
-    r"\bhe revisado (el|la|los|las|tu|su|este|esta)\b"
-    r"|\bno (tengo|hay|encuentro) (una |ninguna |ningún |nada )?(pregunta|mensaje|consulta|nada)"
-    r"[^.\n]{0,60}\b(contestar|responder)\b"
-    r"|\bd[ií]melo\b|\bdime (qué|si|cómo)\b|\bsi (quieres|prefieres|me dices) que (te )?"
-    r"(prepare|redacte|escriba)\b|\b(te |se )?lo (redacto|preparo|escribo)\b"
-    r"|\bya (lo |la )?(respondiste|contestaste|contestó|respondió)\b|\bno me ha llegado\b"
-    r"|\b(no|nada) (hay |tiene |suyo )?posterior\b"
-    r"|\bI('ve| have) (reviewed|checked|looked at) (the|this|your)\b"
-    r"|\bthere('s| is) (nothing|no) (new )?(to|I can) (reply|respond|answer)\b"
-    r"|\blet me know (and|if|whether|what)\b|\bwould you like me to\b|\bI can draft\b"
-    r"|\bich habe (den|die|das|ihren|deinen) (Verlauf|Thread|Konversation|Nachrichten)\b"
-    r"|\bsag(en Sie)? mir\b|\bsoll ich (ihnen |dir )?(einen |eine )?(Entwurf|Nachfass)"
-    r"|\bj'ai (relu|vérifié|examiné) (le fil|l'échange|la conversation)\b|\bdites-moi\b"
-    r"|\bik heb (de|het) (thread|conversatie|gesprek) (bekeken|nagelezen|gecontroleerd)\b"
-    r"|\blaat (het )?me weten\b",
+    r"\bhe (revisado|repasado|le[ií]do) (el|la|este|esta|tu|su) (hilo|conversaci[oó]n|"
+    r"intercambio|expediente|correo del cliente|mensaje del cliente)\b"
+    r"|\bno (tengo|hay|encuentro|veo) (una |ninguna |ningún |nada )?(pregunta|mensaje|consulta|"
+    r"nada)[^.\n]{0,60}\b(contestar|responder)\b"
+    r"|\bno hay (ningún |nada |ningún mensaje |ningún correo )?(mensaje |correo )?"
+    r"nuevo del cliente\b"
+    r"|\bd[ií]melo y (te )?lo (redacto|preparo|escribo)\b"
+    r"|\bdime (qu[eé]|si|c[oó]mo)[^.\n]{0,60}\by (te )?lo (redacto|preparo|escribo)\b"
+    r"|\bsi (quieres|prefieres) que (te )?(prepare|redacte|escriba) (un |el )?(seguimiento|"
+    r"borrador|correo)\b"
+    r"|\bI('ve| have) (reviewed|checked|looked at|gone through) (the|this) (thread|conversation|"
+    r"exchange|email thread)\b"
+    r"|\bthere('s| is) (nothing|no (new )?(message|question)) (new )?(from the (client|customer) )?"
+    r"to (reply|respond|answer)\b"
+    r"|\bich habe (den|die|das|diesen|diese) (Verlauf|Thread|Konversation|E-Mail-Verlauf)\b"
+    r"[^.\n]{0,40}\b(geprüft|durchgesehen|gelesen|angesehen)\b"
+    r"|\bj'ai (relu|vérifié|examiné|parcouru) (le fil|l'échange|la conversation)\b"
+    r"|\bik heb (de|het|deze) (thread|conversatie|gesprek|e-mailwisseling) (bekeken|nagelezen|"
+    r"gecontroleerd|doorgenomen)\b",
     re.IGNORECASE,
 )
 _SALUDO_RE = re.compile(
@@ -97,9 +105,10 @@ def parece_informe_al_usuario(
 ) -> str | None:
     """Por qué el cuerpo NO es un correo al destinatario sino un informe para la
     persona de BoHub, o None si parece un correo. Dos señales: frases de
-    informe («he revisado el hilo», «dímelo y lo redacto») y un saludo al
-    usuario de BoHub por su nombre cuando el destinatario se llama de otra
-    manera."""
+    informe inequívocas («he revisado el hilo», «dímelo y lo redacto») y un
+    saludo al usuario de BoHub por su nombre cuando se SABE que el destinatario
+    se llama de otra manera (sin ficha no se sabe, y un cliente puede llamarse
+    como quien pulsa)."""
     texto = (cuerpo or "").strip()
     if not texto:
         return None
@@ -107,11 +116,10 @@ def parece_informe_al_usuario(
     if m:
         return f"habla a quien lo pide, no al cliente («{m.group(0).strip()}»)"
     pila = (nombre_usuario or "").strip().split(" ")[0].lower()
+    destino = (nombre_destinatario or "").strip().split(" ")[0].lower()
     saludo = _SALUDO_RE.match(texto)
-    if pila and saludo and saludo.group("nombre").lower() == pila:
-        destino = (nombre_destinatario or "").strip().split(" ")[0].lower()
-        if destino != pila:
-            return f"saluda a {saludo.group('nombre')}, que es quien lo pide, no el destinatario"
+    if pila and destino and destino != pila and saludo and saludo.group("nombre").lower() == pila:
+        return f"saluda a {saludo.group('nombre')}, que es quien lo pide, no el destinatario"
     return None
 
 

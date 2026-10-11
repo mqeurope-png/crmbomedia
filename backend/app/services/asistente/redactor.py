@@ -363,6 +363,10 @@ def _parsear(raw: str, *, asunto_defecto: str | None, idioma_defecto: str | None
     data["idioma"] = idioma or idioma_defecto
     data["cuerpo"] = str(data.get("cuerpo") or "").strip()
     data["aviso"] = str(data.get("aviso") or "").strip()
+    if not data["cuerpo"] and not data["aviso"]:
+        # Las dos vacías: la persona vería un editor vacío sin saber por qué.
+        data["aviso"] = ("La IA no ha devuelto ningún correo ni ha dicho por qué. Dime qué "
+                         "quieres decirle o vuelve a intentarlo.")
     return data
 
 

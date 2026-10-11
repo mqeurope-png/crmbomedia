@@ -1139,16 +1139,15 @@ def thread_detail(
         )
         for row in rows:
             attachments_by_message.setdefault(row.message_id, []).append(row)
+    sugerido = _reply_to_suggestion(session, thread, current_user)
     return EmailThreadDetail(
         **EmailThreadRead.model_validate(thread).model_dump(),
         messages=[
             _message_read(m, attachments_by_message.get(m.id))
             for m in thread.messages
         ],
-        reply_to_suggestion=_reply_to_suggestion(
-            session, thread, current_user
-        ),
-        reply_to_interno=_reply_to_interno(session, thread, current_user),
+        reply_to_suggestion=sugerido,
+        reply_to_interno=_reply_to_interno(session, sugerido),
     )
 
 
@@ -1524,12 +1523,11 @@ def _reply_to_suggestion(
     return None
 
 
-def _reply_to_interno(session: Session, thread: EmailThread, user: User) -> bool:
+def _reply_to_interno(session: Session, sugerido: str | None) -> bool:
     """La sugerencia de «Responder» es una dirección del grupo: se va a
     escribir a un compañero, no a un cliente (el asistente lo avisa)."""
     from app.services.web_forms.sitios import dominios_del_grupo, es_del_grupo  # noqa: PLC0415
 
-    sugerido = _reply_to_suggestion(session, thread, user)
     return bool(sugerido) and es_del_grupo(sugerido, dominios_del_grupo(session))
 
 

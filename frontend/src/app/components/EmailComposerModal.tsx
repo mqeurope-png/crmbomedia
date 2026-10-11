@@ -231,13 +231,34 @@ export function EmailComposerModal({
     (): EmailSignature | null => signatures.find((s) => s.id === activeSignatureId) ?? null,
     [signatures, activeSignatureId],
   );
+  // Lo que había en el editor antes del asistente (para volver a ello al
+  // empezar de nuevo o descartar) y lo último que puso la IA (para saber si la
+  // persona escribió o editó algo a mano, que no se pisa sin preguntar).
+  const cuerpoAntesRef = useRef<string | null>(null);
+  const cuerpoIaRef = useRef<string | null>(null);
+  const bodyHtmlRef = useRef(bodyHtml);
+  bodyHtmlRef.current = bodyHtml;
+  const escritoAMano = useCallback((): boolean => {
+    const actual = bodyHtmlRef.current || "";
+    const sinFirma = actual.replace(SIG_BLOCK_RE, "").replace(/<p>(?:&nbsp;|\s|&mdash;|—)*<\/p>/g, "").trim();
+    return sinFirma.length > 0 && actual !== cuerpoIaRef.current;
+  }, []);
   // Llega un turno del asistente: su cuerpo sustituye al del editor, con la
   // firma activa detrás (la IA no firma; la firma la pone el compositor). Un
-  // cuerpo vacío (no había con qué redactar) deja solo la firma. El asunto de
-  // la IA solo pisa el que está vacío o el que puso ella misma.
+  // cuerpo vacío (no había con qué redactar) deja solo la firma. Si en el
+  // editor hay algo escrito a mano, se pregunta antes de pisarlo. El asunto
+  // de la IA solo pisa el que está vacío o el que puso ella misma.
   const aplicarBorrador = useCallback(
     (b: BorradorAsistente) => {
-      setBodyHtml(buildBodyWithSignature(b.html || "", "", firmaActiva()));
+      if (escritoAMano() && !window.confirm(
+        "Ya hay texto en el editor. ¿Reemplazarlo con el borrador de la IA?",
+      )) {
+        return;
+      }
+      if (cuerpoAntesRef.current === null) cuerpoAntesRef.current = bodyHtmlRef.current || "";
+      const siguiente = buildBodyWithSignature(b.html || "", "", firmaActiva());
+      cuerpoIaRef.current = siguiente;
+      setBodyHtml(siguiente);
       if (b.asunto) {
         const asunto = b.asunto;
         setSubject((prev) => (!prev.trim() || prev === asuntoIaRef.current ? asunto : prev));
@@ -245,10 +266,15 @@ export function EmailComposerModal({
       }
       dirtyRef.current = true;
     },
-    [firmaActiva],
+    [firmaActiva, escritoAMano],
   );
   const vaciarBorrador = useCallback(() => {
-    setBodyHtml(buildBodyWithSignature("", "", firmaActiva()));
+    // Vuelve a lo que había antes del asistente (o solo la firma).
+    const antes = cuerpoAntesRef.current;
+    const siguiente = antes !== null ? antes : buildBodyWithSignature("", "", firmaActiva());
+    cuerpoAntesRef.current = null;
+    cuerpoIaRef.current = null;
+    setBodyHtml(siguiente);
     if (asuntoIaRef.current) {
       const inicial = asuntoInicialRef.current;
       setSubject((prev) => (prev === asuntoIaRef.current ? inicial : prev));

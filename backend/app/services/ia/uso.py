@@ -10,9 +10,17 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models.ia import BorradorAsistente, LlamadaIA
+from app.models.ia import (
+    ESTADO_ENVIADO_EDITADO,
+    ESTADO_ENVIADO_TAL_CUAL,
+    PROPOSITO_CORRECCION,
+    BorradorAsistente,
+    LlamadaIA,
+)
 from app.services.ia.coste import coste_usd
 from app.services.llm import Uso
+
+ESTADOS_ENVIADO = (ESTADO_ENVIADO_TAL_CUAL, ESTADO_ENVIADO_EDITADO)
 
 
 def registrar_llamada(
@@ -61,23 +69,29 @@ def conversaciones(session: Session, desde: datetime) -> dict[str, Any]:
     retoques. Se agrupan los turnos por conversación; una conversación está
     terminada cuando alguno de sus turnos se envió."""
     filas = session.execute(
-        select(BorradorAsistente.id, BorradorAsistente.conversacion_id, BorradorAsistente.turno,
-               BorradorAsistente.estado, BorradorAsistente.coste_usd)
+        select(BorradorAsistente.id, BorradorAsistente.conversacion_id, BorradorAsistente.estado,
+               BorradorAsistente.coste_usd)
         .where(BorradorAsistente.created_at >= desde)
     ).all()
     por_conversacion: dict[str, dict[str, Any]] = {}
-    for bid, cid, _turno, estado, coste in filas:
+    for bid, cid, estado, coste in filas:
         c = por_conversacion.setdefault(cid or bid, {"turnos": 0, "coste": 0.0, "enviada": False})
         c["turnos"] += 1
         c["coste"] += float(coste or 0)
-        if estado in ("enviado_tal_cual", "enviado_editado"):
+        if estado in ESTADOS_ENVIADO:
             c["enviada"] = True
     terminadas = [c for c in por_conversacion.values() if c["enviada"]]
     coste_terminadas = sum(c["coste"] for c in terminadas)
+    # Correcciones de verdad: las llamadas anotadas como tales (la instrucción
+    # que llega tras un turno sin nada que contestar es un primer borrador).
+    correcciones = session.scalar(
+        select(func.count()).select_from(LlamadaIA).where(
+            LlamadaIA.created_at >= desde, LlamadaIA.proposito == PROPOSITO_CORRECCION)
+    ) or 0
     return {
         "total": len(por_conversacion),
         "terminadas": len(terminadas),
-        "correcciones": sum(1 for _, _, turno, _, _ in filas if (turno or 0) > 0),
+        "correcciones": int(correcciones),
         "coste_terminadas_usd": round(coste_terminadas, 4),
         "coste_medio_terminada_usd": (
             round(coste_terminadas / len(terminadas), 4) if terminadas else 0.0),

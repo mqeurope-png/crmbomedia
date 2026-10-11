@@ -93,15 +93,13 @@ def _hilo_visible(session: Session, thread_id: str, user: User) -> EmailThread:
 
 
 def _borrador_accesible(session: Session, borrador_id: str, user: User) -> BorradorAsistente:
-    """El borrador si la persona puede tocarlo: quien lo pidió, admin/manager
-    o, con hilo, quien pueda ver el hilo."""
+    """El borrador si la persona puede tocarlo: solo quien lo pidió (o
+    admin/manager). Corregir o descartar resuelve el turno anterior; un
+    compañero que ve el mismo hilo no puede resolver la conversación de otro."""
     borrador = session.get(BorradorAsistente, borrador_id)
     if borrador is None:
         raise not_found("BorradorAsistente")
     if borrador.usuario_id == user.id or _privilegiado(user):
-        return borrador
-    if borrador.thread_id:
-        _hilo_visible(session, borrador.thread_id, user)
         return borrador
     raise HTTPException(status.HTTP_403_FORBIDDEN, "Ese borrador lo pidió otra persona.")
 
@@ -283,6 +281,4 @@ def descartar_conversacion(
     current_user: User = Depends(require_user),
 ) -> dict[str, Any]:
     borrador = _borrador_accesible(session, borrador_id, current_user)
-    if borrador.usuario_id != current_user.id and not _privilegiado(current_user):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Ese borrador lo pidió otra persona.")
     return _descartar(session, request, borrador, current_user)

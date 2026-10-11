@@ -234,10 +234,17 @@ def idioma_sin_hilo(session: Session, contacto: Contact | None) -> tuple[str, st
         return "es", "defecto"
     if contacto.language:
         return contacto.language.lower()[:2], "ficha"
+    # Lo último que escribió ESA persona (por su dirección, no por la
+    # dirección de captura: una respuesta nuestra desde Gmail entra como
+    # entrada y la escribió un compañero).
+    direccion = (contacto.email or "").strip().lower()
+    if not direccion:
+        return "es", "defecto"
     ultimo = session.execute(
         select(EmailMessage.subject, EmailMessage.body_text, EmailMessage.body_html)
         .where(EmailMessage.contact_id == contacto.id,
-               EmailMessage.direction == EmailDirection.INBOUND)
+               func.lower(EmailMessage.from_email) == direccion,
+               EmailMessage.sent_at.is_not(None))
         .order_by(EmailMessage.sent_at.desc()).limit(1)
     ).first()
     if ultimo is not None:

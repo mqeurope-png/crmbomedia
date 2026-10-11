@@ -362,7 +362,11 @@ export function LoQueHaUsado({ borrador }: { borrador: BorradorAsistente }) {
   if (empresa.length > 0) partes.push(`${empresa.length} asunto${empresa.length === 1 ? "" : "s"} de otras personas de la empresa`);
   if (tokens !== null) partes.push(`~${tokens.toLocaleString("es-ES")} tokens de entrada${presupuesto ? ` de ${presupuesto.toLocaleString("es-ES")}` : ""}`);
   if (recortes.length > 0) partes.push(`${recortes.length} correo${recortes.length === 1 ? "" : "s"} viejo${recortes.length === 1 ? "" : "s"} fuera por tamaño`);
-  if (borrador.turno > 0) partes.push(`turno ${borrador.turno}: el contexto no se volvió a montar (${borrador.tokens_cache_lectura.toLocaleString("es-ES")} tokens leídos de caché)`);
+  if (borrador.turno > 0) {
+    // La caché de prompts es por modelo: con un modelo distinto para las
+    // correcciones, la primera escribe su propia caché y las siguientes leen.
+    partes.push(`turno ${borrador.turno}: el contexto no se volvió a montar (${borrador.tokens_cache_lectura.toLocaleString("es-ES")} tokens leídos de caché, ${borrador.tokens_cache_escritura.toLocaleString("es-ES")} escritos)`);
+  }
   return (
     <details className="asistente-panel-detalle">
       <summary>Lo que ha usado (alcance: {etiquetaAlcance(borrador.alcance)})</summary>
