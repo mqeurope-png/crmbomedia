@@ -163,7 +163,7 @@ class BackfillReport:
             f"  … {self.total_processed} procesados "
             f"(link {self.imported_linked} / orphan {self.imported_orphan} / "
             f"enviados {self.outbound} / dedupe {self.skipped_dedupe} / "
-            f"no-alias {self.skipped_no_alias})"
+            f"fuera-del-grupo {self.skipped_no_alias})"
         )
 
     def _como_datos(self, tope: int) -> dict[str, Any]:
@@ -236,8 +236,8 @@ class BackfillReport:
             f"├── Enviados (outbound):     {self.outbound:>8}",
             f"├── Marcados como spam:      {self.spam:>8}",
             f"├── Descartados por dedupe:  {self.skipped_dedupe:>8} (ya existían)",
-            f"└── Descartados por alias:   {self.skipped_no_alias:>8} "
-            f"(entrantes a alias no configurado)",
+            f"└── Fuera de los dominios:   {self.skipped_no_alias:>8} "
+            f"(entrantes a direcciones que no son del grupo)",
         ]
         if self.purged_not_found:
             lines.append(
@@ -289,19 +289,23 @@ class BackfillReport:
                 lines.append(f"  {usuario:<40} {count}")
         if self.discard_by_alias:
             lines.append("")
-            lines.append("Alias que descartaron mails entrantes (baja por número):")
+            lines.append(
+                "Direcciones de fuera del grupo que descartaron mails entrantes "
+                "(baja por número):"
+            )
             for alias, count in sorted(
                 self.discard_by_alias.items(), key=lambda kv: kv[1], reverse=True
             ):
                 lines.append(
                     f"  {alias:<32} {count} mails descartados "
-                    f"(no está en /admin/users)"
+                    f"(su dominio no es del grupo)"
                 )
             lines.append("")
             lines.append(
-                "→ Añade esos alias en /admin/users y vuelve a ejecutar con la "
-                "MISMA fecha para reprocesar solo esos (el resto se salta por "
-                "dedupe)."
+                "→ Si alguna es nuestra, añade su dominio en Configuración ERP → "
+                "Base de conocimiento → Sitios (o la dirección como alias en "
+                "/admin/users) y vuelve a ejecutar con la MISMA fecha para "
+                "reprocesar solo esos (el resto se salta por dedupe)."
             )
         return "\n".join(lines)
 

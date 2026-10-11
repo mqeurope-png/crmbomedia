@@ -209,11 +209,11 @@ python -m app.integrations.gmail_watch backfill_universal \
   el dominio, no el alias; los alias registrados solo atribuyen). Un mail a una
   dirección fuera del grupo se descarta **con una línea de log**
   (`motivo=fuera_del_grupo origen=relleno`); el comando los cuenta y los lista
-  al final («Descartados por alias», nombre histórico del contador). Solo
-  `--labels SENT` no necesita dominios. El comando pide confirmación al
+  al final («Fuera de los dominios»; el contador conserva su nombre histórico,
+  `skipped_no_alias`). Solo `--labels SENT` no necesita dominios. El comando pide confirmación al
   arrancar (salta con `--yes`).
 - **`--dry-run`**: no escribe nada; solo cuenta cuántos mails caerían por rama
-  (importable con contacto / huérfano / spam / dedupe / sin alias). `--dry-run-limit`
+  (importable con contacto / huérfano / spam / dedupe / fuera del grupo). `--dry-run-limit`
   (default 5000) acota los mensajes examinados; al llegar se para con punto de
   reanudación, así que un seco largo puede hacerse a trozos.
 - **Idempotente**: dedupe por `gmail_message_id` en todas las cuentas.
