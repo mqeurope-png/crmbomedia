@@ -423,3 +423,26 @@ def test_la_configuracion_del_asistente_en_ajustes(http: TestClient) -> None:
     assert r.json()["asistente"]["historico_max"] == 5
     assert http.patch("/api/erp/settings", headers=headers, json={"asistente": {
         "presupuesto_tokens": 10}}).status_code == 400
+
+
+def test_las_referencias_de_firma_no_cuentan() -> None:
+    """Teléfonos, fechas y lo que está en todas las firmas (CP, NIF) no son
+    referencias: dos correos no vienen a cuento por compartir el pie."""
+    assert historico.referencias("Tel. 612345678 · 28001 Madrid · 11/10/2026 · pedido 4411") == {
+        "28001", "4411"}
+    firma = "\n--\nAcme SL · NIF B12345678 · 28001 Madrid"
+    candidatos = [
+        historico.Candidato(id=f"c{i}", thread_id=f"t{i}", fecha=HOY - timedelta(days=i),
+                            lado="cliente", de=KLAUS, asunto=f"Tema {i}",
+                            texto=f"Cosas varias {i}." + firma)
+        for i in range(5)
+    ]
+    hoy = "¿Qué pasa con el pedido 4411?" + firma
+    refs = historico.referencias_de_hoy(hoy, candidatos)
+    assert refs == {"4411"}                      # el CP y el NIF del pie, fuera
+    assert historico.elegir(candidatos, asunto_actual="Hoy", texto_actual=hoy) == []
+    con_pedido = candidatos + [historico.Candidato(
+        id="c9", thread_id="t9", fecha=HOY - timedelta(days=300), lado="nosotros", de=ALIAS,
+        asunto="Envío", texto="El pedido 4411 sale el lunes." + firma)]
+    elegidos = historico.elegir(con_pedido, asunto_actual="Hoy", texto_actual=hoy)
+    assert [(c.id, m) for c, m in elegidos] == [("c9", "menciona la referencia 4411")]

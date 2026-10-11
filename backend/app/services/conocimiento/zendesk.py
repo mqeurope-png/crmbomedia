@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import Any
 
@@ -42,6 +43,8 @@ POR_PAGINA = 100
 #: artículos no es la de FLUX; si se llega, se corta y se avisa.
 MAX_PAGINAS = 100
 TIMEOUT_SEGUNDOS = 20.0
+#: Locales que se descargan a la vez.
+EN_PARALELO = 3
 
 
 class ZendeskError(RuntimeError):
@@ -194,16 +197,27 @@ def sincronizar(
     propio = http is None
     cliente = http or _cliente()
     try:
-        for idioma, locale in objetivo.items():
+        # La red, en paralelo por locale (el cliente de httpx admite hilos);
+        # la base, después y en orden, desde este hilo.
+        def _bajar(locale: str) -> Any:
             try:
-                secciones, articulos = descargar_locale(cliente, locale)
+                return descargar_locale(cliente, locale)
             except Exception as exc:  # noqa: BLE001 — un locale caído no tira los demás
+                return exc
+
+        with ThreadPoolExecutor(max_workers=EN_PARALELO) as pool:
+            descargas = dict(zip(objetivo.values(), pool.map(_bajar, objetivo.values()),
+                                 strict=True))
+        for idioma, locale in objetivo.items():
+            bajada = descargas[locale]
+            if isinstance(bajada, Exception):
                 logger.warning("kb.flux: %s sin sincronizar, índice anterior intacto: %s",
-                               locale, exc)
+                               locale, bajada)
                 resumen[locale] = {"articulos": 0, "nuevos": 0, "actualizados": 0, "idos": 0,
-                                   "error": str(exc)[:300]}
-                errores.append(f"{locale}: {str(exc)[:200]}")
+                                   "error": str(bajada)[:300]}
+                errores.append(f"{locale}: {str(bajada)[:200]}")
                 continue
+            secciones, articulos = bajada
             resumen[locale] = escribir_locale(
                 session, idioma=idioma, locale=locale, secciones=secciones,
                 articulos=articulos, ahora=ahora)

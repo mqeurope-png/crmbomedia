@@ -41,6 +41,13 @@ class EmailSendRequest(BaseModel):
     asistente_borrador_id: str | None = Field(default=None, max_length=36)
 
 
+class EmailDraftSend(BaseModel):
+    """Lo que acompaña a «enviar el borrador guardado» (con adjuntos): solo
+    el id del borrador del asistente, si el texto salió de él."""
+
+    asistente_borrador_id: str | None = Field(default=None, max_length=36)
+
+
 class EmailDraftWrite(BaseModel):
     """Create / update payload for an email draft. Every field is
     optional — the auto-save endpoint accepts whatever the modal

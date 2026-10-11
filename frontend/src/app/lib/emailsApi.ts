@@ -583,9 +583,13 @@ export async function deleteEmailDraft(id: string): Promise<void> {
   await apiFetch(`/api/email-drafts/${id}`, { method: "DELETE" });
 }
 
-export async function sendEmailDraft(id: string): Promise<EmailMessage> {
+export async function sendEmailDraft(
+  id: string,
+  extra: { asistente_borrador_id?: string | null } = {},
+): Promise<EmailMessage> {
   return apiFetch<EmailMessage>(`/api/email-drafts/${id}/send`, {
     method: "POST",
+    body: JSON.stringify(extra),
   });
 }
 

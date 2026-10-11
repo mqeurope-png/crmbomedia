@@ -500,7 +500,11 @@ export function EmailComposerModal({
           scheduled_for: scheduledFor,
         };
         await updateEmailDraft(id, payload);
-        message = await sendEmailDraft(id);
+        // Con adjuntos el envío sale del borrador guardado; el id del
+        // borrador de la IA viaja igual para anotar su resultado.
+        message = await sendEmailDraft(id, {
+          asistente_borrador_id: asistente?.borradorId ?? null,
+        });
         // sendEmailDraft borra la row en éxito → no llamar deleteEmailDraft.
         setDraftId(null);
         draftIdRef.current = null;

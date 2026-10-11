@@ -32,10 +32,15 @@ def enlaces_para(
     soporte = tabla.soporte(sitio, idioma)
     producto = tabla.producto(interes, idioma) if interes else None
 
+    clave_sitio = (sitio or "").strip()
+    # El modelo de FLUX sale de sus pedidos (`modelo`) o del texto; pero el
+    # texto solo cuenta si escribe por la web de FLUX o no se sabe por dónde:
+    # «el chiller hace ruido» de un cliente de mqeurope no lo convierte en
+    # cliente de FLUX.
     categoria = flux.modelo_en_texto(modelo, categorias) if modelo else None
-    if categoria is None:
+    if categoria is None and clave_sitio in (WEB_FLUX, ""):
         categoria = flux.modelo_en_texto(texto, categorias)
-    es_flux = (sitio or "").strip() == WEB_FLUX or categoria is not None
+    es_flux = clave_sitio == WEB_FLUX or categoria is not None
     bloque_flux: dict[str, Any] | None = None
     if es_flux:
         intencion = flux.intencion(texto, configuracion(session))

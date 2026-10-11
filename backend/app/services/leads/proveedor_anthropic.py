@@ -157,6 +157,7 @@ class ClasificadorAnthropic:
         settings = get_settings()
         if not settings.anthropic_api_key:
             return self._respaldo(entrada, "sin clave de API")
+        uso = None
         try:
             raw = llm._invoke_claude(
                 api_key=settings.anthropic_api_key, model=settings.anthropic_model,
@@ -170,7 +171,17 @@ class ClasificadorAnthropic:
             # contenedor para saber cuál era.
             logger.warning("leads.ia: respaldo por palabras clave (%s: %s)",
                            type(exc).__name__, exc)
-            return self._respaldo(entrada, f"IA no disponible: {type(exc).__name__}: {exc}")
+            out = self._respaldo(entrada, f"IA no disponible: {type(exc).__name__}: {exc}")
+            # Si la API sí respondió (y cobró) pero la respuesta no se entendió,
+            # el gasto queda anotado igual: números reales.
+            if uso is None:
+                uso = llm.tomar_ultimo_uso()
+            if uso is not None:
+                out.modelo = uso.modelo or settings.anthropic_model
+                out.tokens_entrada = uso.tokens_entrada
+                out.tokens_salida = uso.tokens_salida
+                out.duracion_ms = uso.duracion_ms
+            return out
         idioma = codigo_idioma(data.get("idioma")) if data.get("idioma") else None
         if idioma not in IDIOMAS:
             idioma = None

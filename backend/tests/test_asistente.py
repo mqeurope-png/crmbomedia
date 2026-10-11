@@ -557,3 +557,81 @@ def test_texto_a_html_y_comparacion_de_lo_enviado() -> None:
     assert texto.sin_cita("Gracias\n\nOn Fri, Oct 10, 2026 Admin wrote:\n> catálogo") == "Gracias"
     assert texto.sin_cita("Danke!\n\nAm 10.10.2026 schrieb Admin:\n> Katalog") == "Danke!"
     assert texto.recortar("abcdef", 4) == "abc…"
+
+
+def test_la_cita_solo_se_quita_si_es_una_cabecera_de_respuesta() -> None:
+    """Una frase normal con «escribió esto: …» no es una cita: el mensaje del
+    cliente llega entero al modelo."""
+    frase = ("Hola,\nEl técnico que vino el lunes nos escribió esto: la fuente está rota.\n"
+             "¿Cuánto tarda el repuesto?")
+    assert texto.sin_cita(frase) == frase
+    con_cita = "Gracias, ¿y el precio?\n\nEl 10/10/2026, Admin escribió:\n> Te paso el catálogo."
+    assert texto.sin_cita(con_cita) == "Gracias, ¿y el precio?"
+    assert texto.sin_cita("Ok\n\nOn 10 Oct 2026, at 09:12, Bart <b@x.io> wrote:\n> hola") == "Ok"
+
+
+def test_descartar_el_borrador_de_otro_no_se_puede_y_el_resuelto_no_se_vuelve_a_anotar(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    with session_factory() as s:
+        hilo = _hilo(s, contacto=None, mensajes=[{"de": KLAUS, "texto": MENSAJE_KLAUS}])
+        s.commit()
+        thread_id = hilo.id
+    with patch.object(llm, "_invoke_claude", _ClaudeFalso()):
+        b = _pedir(http, thread_id, rol="manager").json()["borrador"]
+    # El manager lo pidió; el admin (privilegiado) puede descartarlo, otro usuario no.
+    url = f"/api/emails/threads/{thread_id}/asistente/{b['id']}/descartar"
+    assert http.post(url, headers=auth_headers(http, "user")).status_code == 403
+    r = http.post(url, headers=auth_headers(http, "admin"))
+    assert r.status_code == 200 and r.json()["borrador"]["estado"] == ESTADO_DESCARTADO
+    # Ya resuelto: devolverlo tal cual, sin cambiar el estado.
+    r = http.post(url, headers=auth_headers(http, "manager"))
+    assert r.status_code == 200 and r.json()["borrador"]["estado"] == ESTADO_DESCARTADO
+
+
+def test_el_clasificador_anota_el_gasto_aunque_la_respuesta_no_se_entienda(
+    session_factory: sessionmaker,
+) -> None:
+    """La API cobra la llamada aunque devuelva algo que no es JSON: el respaldo
+    por palabras clave se queda con los tokens para que `ia_llamadas` cuadre."""
+    from app.services.leads.clasificador import EntradaLead  # noqa: PLC0415
+    from app.services.leads.proveedor_anthropic import ClasificadorAnthropic  # noqa: PLC0415
+
+    falso = _ClaudeFalso("esto no es json", tokens=(700, 40))
+    with patch.object(llm, "_invoke_claude", falso):
+        out = ClasificadorAnthropic().clasificar(EntradaLead(
+            texto="Quiero una impresora UV para placas de metal", fuente="web_form",
+            referencia="env-1"))
+    assert out.proveedor != "anthropic" or "respaldo" in out.motivo
+    assert (out.tokens_entrada, out.tokens_salida) == (700, 40)
+    assert out.modelo == get_settings().anthropic_model
+
+
+def test_con_adjuntos_el_envio_sale_del_borrador_guardado_y_el_resultado_se_anota(
+    session_factory: sessionmaker, http: TestClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    headers = auth_headers(http, "admin")
+    with session_factory() as s:
+        hilo = _hilo(s, contacto=None, mensajes=[{"de": KLAUS, "texto": MENSAJE_KLAUS}])
+        s.commit()
+        thread_id = hilo.id
+    with patch.object(llm, "_invoke_claude", _ClaudeFalso()):
+        b = _pedir(http, thread_id).json()["borrador"]
+
+    class _GmailFalso:
+        def __init__(self, *_a: Any, **_k: Any) -> None:
+            pass
+
+        def send_message(self, **_kw: Any) -> dict[str, Any]:
+            return {"id": "gmail-adj-1", "threadId": "gmail-thr-adj"}
+
+    monkeypatch.setattr("app.integrations.gmail.service.GmailClient", _GmailFalso)
+    draft = http.post("/api/email-drafts", headers=headers, json={
+        "from_alias": ALIAS, "subject": b["asunto"], "body_html": b["html"], "to_emails": [KLAUS],
+    })
+    assert draft.status_code in (200, 201), draft.text
+    r = http.post(f"/api/email-drafts/{draft.json()['id']}/send", headers=headers,
+                  json={"asistente_borrador_id": b["id"]})
+    assert r.status_code == 201, r.text
+    with session_factory() as s:
+        assert s.get(BorradorAsistente, b["id"]).estado == ESTADO_ENVIADO_TAL_CUAL

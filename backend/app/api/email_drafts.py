@@ -32,6 +32,7 @@ from app.models.crm import EmailDraft, EmailDraftAttachment, User
 from app.schemas.emails import (
     EmailDraftAttachmentRead,
     EmailDraftRead,
+    EmailDraftSend,
     EmailDraftWrite,
     EmailMessageRead,
     EmailSendRequest,
@@ -248,6 +249,7 @@ def delete_attachment(
 def send_draft(
     draft_id: str,
     request: Request,
+    extra: EmailDraftSend | None = None,
     session: Session = Depends(get_session),
     current_user: User = Depends(require_user),
 ) -> EmailMessageRead:
@@ -307,6 +309,10 @@ def send_draft(
             "scheduled_for": (
                 draft.scheduled_for.isoformat() if draft.scheduled_for else None
             ),
+            # «Ayúdame a contestar»: con adjuntos el envío sale del borrador
+            # guardado; el id del borrador de la IA viaja aparte para anotar
+            # si salió tal cual o editado.
+            "asistente_borrador_id": extra.asistente_borrador_id if extra else None,
         }
     )
     result = _send_email_core(

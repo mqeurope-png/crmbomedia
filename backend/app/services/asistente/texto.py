@@ -13,9 +13,12 @@ _ESPACIOS_RE = re.compile(r"\s+")
 _URL_RE = re.compile(r"https?://[^\s<>\"')]+")
 #: Cabeceras de respuesta citada («El 3/10/2026, Fulano escribió:», «On … wrote:»,
 #: «Am … schrieb:», «Le … a écrit :», «Op … schreef:») y las líneas con `>`.
+#: La cabecera de la cita lleva una fecha (cifras), el verbo y acaba en dos
+#: puntos AL FINAL de la línea («El 10/10/2026, Admin escribió:»); una frase
+#: normal con «escribió esto: …» no cumple y no se toca.
 _CITA_RE = re.compile(
-    r"(^|\n)\s*(el|on|am|le|op)\s[^\n]{5,160}(escribi[óo]|wrote|schrieb|a [ée]crit|schreef)"
-    r"[^\n]{0,80}:[\s\S]*$",
+    r"(^|\n)\s*(el|on|am|le|op)\s[^\n]*\d[^\n]*(escribi[óo]|wrote|schrieb|a [ée]crit|schreef)"
+    r"[^\n]{0,80}:[ \t]*(\n[\s\S]*)?$",
     re.IGNORECASE,
 )
 _LINEAS_CITADAS_RE = re.compile(r"(^|\n)\s*>[^\n]*", re.MULTILINE)

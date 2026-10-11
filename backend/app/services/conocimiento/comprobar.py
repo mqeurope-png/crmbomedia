@@ -8,6 +8,7 @@ a salir en un borrador sigue vivo.
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import Any
 
@@ -20,7 +21,10 @@ from app.services.conocimiento.rutas import sembrar_si_vacio
 
 logger = logging.getLogger(__name__)
 
-TIMEOUT_SEGUNDOS = 10.0
+TIMEOUT_SEGUNDOS = 6.0
+#: Peticiones a la vez: 29 rutas con tres webs caídas tardan un par de
+#: tiempos de espera, no treinta.
+EN_PARALELO = 8
 
 
 def _cliente() -> httpx.Client:
@@ -31,19 +35,15 @@ def _cliente() -> httpx.Client:
 
 
 def comprobar_url(http: httpx.Client, url: str) -> tuple[int | None, str | None]:
-    """`(código HTTP final, error)`. HEAD primero; si la web lo rechaza
-    (405/403/501) o no responde, GET."""
+    """`(código HTTP final, error)`. HEAD primero; si la web no lo admite
+    (405/403/501), GET. Si no responde, se anota el error sin insistir."""
     try:
         r = http.head(url)
         if r.status_code in (403, 405, 501):
             r = http.get(url)
         return r.status_code, None
     except httpx.HTTPError as exc:
-        try:
-            r = http.get(url)
-            return r.status_code, None
-        except httpx.HTTPError as exc2:
-            return None, f"{type(exc2).__name__}: {str(exc2)[:200]}" or type(exc).__name__
+        return None, f"{type(exc).__name__}: {str(exc)[:200]}".strip(": ")
 
 
 def comprobar(
@@ -62,8 +62,10 @@ def comprobar(
     cliente = http or _cliente()
     salida: list[dict[str, Any]] = []
     try:
-        for fila in filas:
-            codigo, error = comprobar_url(cliente, fila.url)
+        # La red, en paralelo (el cliente de httpx admite hilos); la base, aquí.
+        with ThreadPoolExecutor(max_workers=EN_PARALELO) as pool:
+            resultados = list(pool.map(lambda f: comprobar_url(cliente, f.url), filas))
+        for fila, (codigo, error) in zip(filas, resultados, strict=True):
             fila.comprobado_en = ahora
             fila.comprobado_http = codigo
             fila.comprobado_error = error

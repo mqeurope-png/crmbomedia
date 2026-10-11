@@ -176,8 +176,14 @@ def enlace_kb(categoria: Categoria | None, idioma: str | None) -> Enlace:
 
 
 def _palabras_en(texto: str, palabras: Iterable[str]) -> list[str]:
+    """Las palabras (o raíces: «calibr», «einstell») que aparecen al principio
+    de una palabra del texto: «importe» no es «import», «recommend» no es
+    «comment»."""
     plano = texto.lower()
-    return [p for p in palabras if p and p.lower() in plano]
+    return [
+        p for p in palabras
+        if p and re.search(rf"(?<![^\W\d_]){re.escape(p.lower())}", plano)
+    ]
 
 
 def intencion(texto: str | None, config: dict[str, Any]) -> str | None:

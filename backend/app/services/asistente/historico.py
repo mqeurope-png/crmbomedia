@@ -22,12 +22,13 @@ borrador y guardarlo con él.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.crm import Company, Contact, EmailDirection, EmailMessage, EmailThread
@@ -46,8 +47,9 @@ _REFERENCIA_RE = re.compile(
     r"(?<![\w/])(?:[A-Za-z]{1,6}[-/]?)?\d[\d\-/.]{2,}\d(?![\w/])|(?<![\w/])\d{4,}(?![\w/])")
 #: Un correo viejo entra entero salvo que sea enorme.
 MAX_CHARS_HISTORICO = 4000
-#: Cuántos mensajes del contacto se miran como candidatos (los más recientes).
-CANDIDATOS_MAX = 300
+#: Cuántos hilos del contacto se miran como candidatos (los más recientes); de
+#: cada hilo, solo su mensaje más reciente (un hilo aporta uno como mucho).
+HILOS_MAX = 60
 #: Solape fuerte: al menos tantas palabras de contenido compartidas…
 SOLAPE_MIN_PALABRAS = 4
 #: …y al menos esta fracción de las palabras de contenido del mensaje de hoy.
@@ -123,15 +125,41 @@ def asunto_normalizado(asunto: str | None) -> str:
     return _ESPACIOS_RE.sub(" ", texto).strip().lower()
 
 
+_FECHA_RE = re.compile(r"^\d{1,2}[./-]\d{1,2}([./-]\d{2,4})?$|^\d{4}[./-]\d{1,2}[./-]\d{1,2}$")
+
+
 def referencias(texto: str | None) -> set[str]:
-    """Pedidos, facturas, albaranes, números de serie mencionados."""
+    """Pedidos, facturas, albaranes, números de serie mencionados. Fuera las
+    fechas, los años sueltos y los teléfonos (nueve cifras o más): lo que
+    está en todas las firmas no identifica nada."""
     salida: set[str] = set()
     for m in _REFERENCIA_RE.finditer(texto or ""):
         ref = m.group(0).upper().strip(".-/")
-        if sum(ch.isdigit() for ch in ref) >= 3:
-            salida.add(ref)
-    # Años sueltos (2024, 2026) no son referencias.
-    return {r for r in salida if not (len(r) == 4 and r.isdigit() and r.startswith(("19", "20")))}
+        cifras = sum(ch.isdigit() for ch in ref)
+        if cifras < 3 or cifras >= 9 or _FECHA_RE.match(ref):
+            continue
+        if len(ref) == 4 and ref.isdigit() and ref.startswith(("19", "20")):
+            continue                                   # un año suelto
+        salida.add(ref)
+    return salida
+
+
+def referencias_de_hoy(texto_actual: str, candidatos: Iterable[Candidato]) -> set[str]:
+    """Las referencias del mensaje de hoy sin el ruido de firma: un número que
+    aparece en casi todos los correos del contacto (CP, NIF, teléfono corto) no
+    identifica ninguno."""
+    refs = referencias(texto_actual)
+    if not refs:
+        return refs
+    lista = list(candidatos)
+    if len(lista) < 3:
+        return refs
+    frecuencia: Counter[str] = Counter()
+    for c in lista:
+        frecuencia.update(referencias(f"{c.asunto}\n{c.texto}"))
+    umbral = max(2, int(len(lista) * 0.4))
+    ruido = {r for r, n in frecuencia.items() if n >= umbral}
+    return refs - ruido
 
 
 def palabras_contenido(texto: str | None) -> set[str]:
@@ -191,13 +219,13 @@ def elegir(
     Un hilo aporta como mucho su mensaje más reciente que case: el resto del
     hilo repetiría lo mismo."""
     asunto_norm = asunto_normalizado(asunto_actual)
-    refs = referencias(texto_actual)
+    ordenados = sorted(candidatos, key=lambda c: c.fecha or datetime.min.replace(tzinfo=None),
+                       reverse=True)
+    refs = referencias_de_hoy(texto_actual, ordenados)
     palabras = palabras_contenido(texto_actual)
     prods = set(productos)
     elegidos: list[tuple[Candidato, str]] = []
     hilos_vistos: set[str] = set()
-    ordenados = sorted(candidatos, key=lambda c: c.fecha or datetime.min.replace(tzinfo=None),
-                       reverse=True)
     for cand in ordenados:
         if len(elegidos) >= maximo:
             break
@@ -219,18 +247,26 @@ def elegir(
 
 def _candidatos_de_hilos(
     session: Session, thread_ids: list[str], *, quien_por_hilo: dict[str, str] | None = None,
-    contacto_por_hilo: dict[str, str] | None = None, limite: int = CANDIDATOS_MAX,
+    contacto_por_hilo: dict[str, str] | None = None,
 ) -> list[Candidato]:
+    """El mensaje más reciente de cada hilo (solo ese: así se traen pocos
+    cuerpos, no cientos, por cada clic)."""
     if not thread_ids:
         return []
+    ultimo = (
+        select(EmailMessage.thread_id.label("tid"), func.max(EmailMessage.sent_at).label("m"))
+        .where(EmailMessage.thread_id.in_(thread_ids), EmailMessage.sent_at.is_not(None))
+        .group_by(EmailMessage.thread_id).subquery()
+    )
     filas = session.execute(
         select(
             EmailMessage.id, EmailMessage.thread_id, EmailMessage.sent_at,
             EmailMessage.direction, EmailMessage.from_email, EmailMessage.subject,
             EmailMessage.body_text, EmailMessage.body_html, EmailThread.subject,
         ).join(EmailThread, EmailThread.id == EmailMessage.thread_id)
-        .where(EmailMessage.thread_id.in_(thread_ids), EmailMessage.sent_at.is_not(None))
-        .order_by(EmailMessage.sent_at.desc()).limit(limite)
+        .join(ultimo, (EmailMessage.thread_id == ultimo.c.tid)
+              & (EmailMessage.sent_at == ultimo.c.m))
+        .order_by(EmailMessage.sent_at.desc())
     ).all()
     salida: list[Candidato] = []
     for mid, tid, sent_at, direccion, de, asunto, body_text, body_html, asunto_hilo in filas:
@@ -251,7 +287,7 @@ def candidatos_del_contacto(
     ids = list(session.scalars(
         select(EmailThread.id).where(
             EmailThread.contact_id == contacto.id, EmailThread.id != excluir_thread_id,
-        ).order_by(EmailThread.last_message_at.desc()).limit(200)
+        ).order_by(EmailThread.last_message_at.desc()).limit(HILOS_MAX)
     ))
     return _candidatos_de_hilos(session, ids)
 

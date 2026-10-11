@@ -23,7 +23,7 @@ from app.core.auth import require_user
 from app.core.errors import not_found
 from app.db.session import get_session
 from app.models.crm import EmailMessage, EmailThread, User, UserRole
-from app.models.ia import ALCANCE_CONTACTO, ALCANCES, BorradorAsistente
+from app.models.ia import ALCANCE_CONTACTO, ALCANCES, ESTADO_GENERADO, BorradorAsistente
 from app.services import llm
 from app.services.asistente import borradores, redactor
 from app.services.email_aliases import thread_is_visible
@@ -110,6 +110,13 @@ def descartar(
     borrador = session.get(BorradorAsistente, borrador_id)
     if borrador is None or borrador.thread_id != thread_id:
         raise not_found("BorradorAsistente")
+    # Solo quien lo pidió (o admin/manager) lo descarta: un compañero que abre
+    # el mismo hilo no puede resolver el borrador de otro.
+    privileged = current_user.role in (UserRole.ADMIN, UserRole.MANAGER)
+    if borrador.usuario_id != current_user.id and not privileged:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Ese borrador lo pidió otra persona.")
+    if borrador.estado != ESTADO_GENERADO:
+        return {"borrador": borradores.como_dict(borrador)}     # ya resuelto: nada que anotar
     borradores.marcar_descartado(session, borrador)
     record_event(
         session, action=Action.IA_BORRADOR_RESUELTO, target_type="ia_borrador",

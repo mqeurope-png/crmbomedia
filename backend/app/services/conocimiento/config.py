@@ -29,8 +29,8 @@ PALABRAS_KB_DEFECTO: tuple[str, ...] = (
     "software", "beam studio", "firmware", "calibr", "kalibr", "enfoque", "focus", "fokus",
     "cámara", "camera", "kamera", "material", "ajuste", "ajustar", "setting", "einstell",
     "paramèt", "instelling", "configur", "wifi", "conectar", "connect", "verbind", "driver",
-    "import", "svg", "dxf", "potencia", "power", "leistung", "puissance", "velocidad",
-    "speed", "geschwindigkeit", "vitesse",
+    "svg", "dxf", "potencia", "power", "leistung", "puissance", "velocidad", "speed",
+    "geschwindigkeit", "vitesse",
 )
 PALABRAS_SOPORTE_DEFECTO: tuple[str, ...] = (
     "averi", "no funciona", "no enciende", "no arranca", "roto", "rota", "repuesto",

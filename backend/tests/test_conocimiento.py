@@ -538,3 +538,24 @@ def test_configuracion_en_ajustes_del_erp(session_factory: sessionmaker, http: T
 
         assert configuracion(s)["flux_sync_hora"] == "05:15"
         assert configuracion(s)["flux_sync_activa"] is False
+
+
+def test_un_cliente_de_otra_web_no_es_de_flux_por_una_palabra(
+    session_factory: sessionmaker,
+) -> None:
+    """«El chiller hace ruido» de un cliente de mqeurope no lo manda a la KB
+    de FLUX: el texto solo cuenta en la web de FLUX o sin web conocida; en las
+    demás, el modelo sale de sus pedidos."""
+    with session_factory() as s:
+        mq = enlaces.enlaces_para(s, sitio="mqeurope", idioma="en", texto="The chiller is noisy")
+        assert mq["flux"] is None and mq["soporte"]["url"] == SOPORTE_MQ_EN
+        con_pedido = enlaces.enlaces_para(s, sitio="mqeurope", idioma="en",
+                                          texto="The chiller is noisy", modelo="FLUX Beambox II")
+        assert con_pedido["flux"]["modelo"] == "Beambox II"
+        sin_web = enlaces.enlaces_para(s, sitio=None, idioma="es", texto="Mi Beambox II no corta")
+        assert sin_web["flux"]["modelo"] == "Beambox II"
+    # Y las palabras de intención casan al principio de palabra, no dentro.
+    cfg = config_defectos()
+    assert flux.intencion("Necesito la factura con el importe total", cfg) is None
+    assert flux.intencion("Can you recommend a material?", cfg) == flux.INTENCION_KB  # material
+    assert flux.intencion("I recommend nothing", cfg) is None                        # no «comment»
