@@ -8,6 +8,7 @@ from __future__ import annotations
 import html as html_mod
 import re
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 
 import bleach
 
@@ -97,13 +98,18 @@ def normalizado(texto: str | None) -> str:
     return _ESPACIOS_RE.sub(" ", plano).strip()
 
 
-#: Frases con las que la IA, en vez de redactar el correo, le habla a la persona
-#: de BoHub: «he revisado el hilo», «no tengo una pregunta del cliente a la que
-#: contestar», «dímelo y lo redacto». Solo las inequívocas: un cierre normal de
-#: un correo a un cliente («dime si te va bien el jueves», «let me know if you
-#: have any questions», «se lo preparo esta semana», «el pedido no me ha
-#: llegado») NO es un informe, y la revisión del 11/10/2026 encontró que una
-#: lista más larga se cargaba borradores buenos.
+#: La guardia del cuerpo (regla primera) en dos niveles. INFORME, lo que delata
+#: sin duda un texto dirigido a la persona de BoHub y no al cliente: hablar del
+#: hilo como quien lo ha revisado («he revisado el hilo con Marny»), decir que
+#: no hay nada que contestar, decir que no puede hacer algo por falta de datos
+#: («no tengo datos para…»), preguntarle qué quiere decirle, hablar del
+#: cliente o de quien pide en tercera persona cuando se saben sus nombres
+#: («Manel ya le envió»), o saludar a quien pide por su nombre. DUDOSO, lo que
+#: puede ser las dos cosas: «el cliente» o «el hilo» como objeto, el nombre de
+#: quien pide fuera de la despedida. Ante la duda se avisa y no se borra. NO
+#: delata una oferta de hacer algo («dímelo y te lo preparo», «dime si te va
+#: bien el jueves», «let me know if you have any questions»): el primer día de
+#: uso real (11/10/2026) se vació un correo válido por eso.
 _INFORME_RE = re.compile(
     r"\bhe (revisado|repasado|le[ií]do) (el|la|este|esta|tu|su) (hilo|conversaci[oó]n|"
     r"intercambio|expediente|correo del cliente|mensaje del cliente)\b"
@@ -111,19 +117,36 @@ _INFORME_RE = re.compile(
     r"nada)[^.\n]{0,60}\b(contestar|responder)\b"
     r"|\bno hay (ningún |nada |ningún mensaje |ningún correo )?(mensaje |correo )?"
     r"nuevo del cliente\b"
-    r"|\bd[ií]melo y (te )?lo (redacto|preparo|escribo)\b"
-    r"|\bdime (qu[eé]|si|c[oó]mo)[^.\n]{0,60}\by (te )?lo (redacto|preparo|escribo)\b"
-    r"|\bsi (quieres|prefieres) que (te )?(prepare|redacte|escriba) (un |el )?(seguimiento|"
-    r"borrador|correo)\b"
+    r"|\bno (tengo|dispongo de|cuento con) (los |suficientes |más |bastantes |la )?(datos|"
+    r"informaci[oó]n|detalles|elementos)( suficientes| necesarios)? (para|como para|sobre|de)\b"
+    r"|\bsin (esos |los |m[aá]s |esa |la )?(datos|informaci[oó]n) no puedo\b"
+    r"|\bno puedo (confirmar|redactar|preparar|responder|contestar|calcular|dar|indicar)"
+    r"[^.\n]{0,60}\b(sin (los |esos |m[aá]s )?datos|porque no (tengo|hay|dispongo)|porque falta)\b"
+    r"|\b(dime|d[ií]game|cu[eé]ntame|ind[ií]came) qu[eé] quieres (decirle|que le diga|contarle)\b"
     r"|\bI('ve| have) (reviewed|checked|looked at|gone through) (the|this) (thread|conversation|"
     r"exchange|email thread)\b"
     r"|\bthere('s| is) (nothing|no (new )?(message|question)) (new )?(from the (client|customer) )?"
     r"to (reply|respond|answer)\b"
+    r"|\bI (don't|do not) have (the |enough |any |sufficient )?(data|information|details)"
+    r"( needed| required)? (to|for|about|on)\b"
     r"|\bich habe (den|die|das|diesen|diese) (Verlauf|Thread|Konversation|E-Mail-Verlauf)\b"
     r"[^.\n]{0,40}\b(geprüft|durchgesehen|gelesen|angesehen)\b"
+    r"|\bich habe (keine|nicht genug|nicht genügend) (Daten|Informationen|Angaben)\b"
     r"|\bj'ai (relu|vérifié|examiné|parcouru) (le fil|l'échange|la conversation)\b"
+    r"|\bje n'ai pas (les |de |assez de |suffisamment d['e] ?)?(données|informations)\b"
     r"|\bik heb (de|het|deze) (thread|conversatie|gesprek|e-mailwisseling) (bekeken|nagelezen|"
-    r"gecontroleerd|doorgenomen)\b",
+    r"gecontroleerd|doorgenomen)\b"
+    r"|\bik heb (geen|niet genoeg|onvoldoende) (gegevens|informatie)\b",
+    re.IGNORECASE,
+)
+_DUDOSO_RE = re.compile(
+    r"\b(el|la|al|del|este|esta) client[ea]\b"
+    r"|\bthe (client|customer)\b"
+    r"|\b(der|die|dem|den) (Kunde|Kundin|Kunden)\b"
+    r"|\b(le|la|au|du) cliente?\b"
+    r"|\bde klant\b"
+    r"|\b(en|del|este|el|al) (hilo|expediente)\b"
+    r"|\b(in|the) (this )?thread\b",
     re.IGNORECASE,
 )
 _SALUDO_RE = re.compile(
@@ -131,29 +154,110 @@ _SALUDO_RE = re.compile(
     r"guten (tag|morgen)|good (morning|afternoon))\W+(?P<nombre>[^\W\d_]+)",
     re.IGNORECASE,
 )
+#: Lo que precede a un nombre cuando se le está hablando («Hola Marny», «Estimada
+#: Marny»): esa mención no es tercera persona.
+_VOCATIVO_PREVIO_RE = re.compile(
+    r"(hola|hi|hello|hey|hallo|bonjour|salut|hoi|dag|dear|estimad[oa]|querid[oa]|apreciad[oa]|"
+    r"lieber?|ch[eè]re?|beste|buenos d[ií]as|buenas( tardes| noches)?|guten (tag|morgen)|"
+    r"good (morning|afternoon|evening))\W*$",
+    re.IGNORECASE,
+)
+
+NIVEL_CORREO = "correo"
+NIVEL_DUDOSO = "dudoso"
+NIVEL_INFORME = "informe"
+
+
+@dataclass(frozen=True)
+class Veredicto:
+    """Lo que la guardia dice del cuerpo: `correo` (se envía tal cual),
+    `dudoso` (se queda en el editor, con aviso) o `informe` (se vacía)."""
+    nivel: str
+    motivo: str | None = None
+
+
+def _pila(nombre: str | None) -> str:
+    return (nombre or "").strip().split(" ")[0]
+
+
+def _tercera_persona(texto: str, nombre: str) -> str | None:
+    """El trozo donde el texto habla DE `nombre` en vez de dirigirse a él: «con
+    Marny», «a Marny», «Marny ya tiene». Un saludo («Hola Marny,») o un
+    vocativo («Marny, te adjunto…») no cuentan."""
+    for m in re.finditer(rf"\b{re.escape(nombre)}\b", texto, re.IGNORECASE):
+        antes = texto[max(0, m.start() - 30):m.start()]
+        despues = texto[m.end():m.end() + 3]
+        if _VOCATIVO_PREVIO_RE.search(antes) or re.match(r"^\s*[,:!]", despues):
+            continue
+        return texto[max(0, m.start() - 25):m.end() + 25].replace("\n", " ").strip()
+    return None
+
+
+def _sin_despedida(texto: str) -> str:
+    """El cuerpo sin las dos últimas líneas con texto (la despedida y la firma
+    con el nombre de pila de quien envía, que es normal que esté ahí)."""
+    lineas = [ln for ln in texto.split("\n") if ln.strip()]
+    return "\n".join(lineas[:-2]) if len(lineas) > 2 else ""
+
+
+def evaluar_cuerpo(
+    cuerpo: str, *, nombre_usuario: str | None = None, nombre_destinatario: str | None = None,
+) -> Veredicto:
+    """La guardia del cuerpo. INFORME (se vacía) solo cuando está claro que el
+    texto va dirigido a la persona de BoHub; DUDOSO (se queda, con aviso) cuando
+    puede ser las dos cosas; CORREO si nada lo delata. Los nombres: el de pila
+    de quien pide y el del destinatario, si se saben (sin ficha no se sabe, y
+    si los dos se llaman igual no se puede distinguir por el nombre)."""
+    texto = (cuerpo or "").strip()
+    if not texto:
+        return Veredicto(NIVEL_CORREO)
+    m = _INFORME_RE.search(texto)
+    if m:
+        return Veredicto(
+            NIVEL_INFORME, f"habla a quien lo pide, no al cliente («{m.group(0).strip()}»)")
+    pila, destino = _pila(nombre_usuario), _pila(nombre_destinatario)
+    mismo_nombre = bool(pila) and pila.lower() == destino.lower()
+    if pila and destino and not mismo_nombre:
+        saludo = _SALUDO_RE.match(texto)
+        if saludo and saludo.group("nombre").lower() == pila.lower():
+            return Veredicto(
+                NIVEL_INFORME,
+                f"saluda a {saludo.group('nombre')}, que es quien lo pide, no el destinatario")
+    if destino and not mismo_nombre:
+        trozo = _tercera_persona(texto, destino)
+        if trozo:
+            return Veredicto(NIVEL_INFORME, f"habla de {destino} en tercera persona («{trozo}»)")
+    if pila and not mismo_nombre:
+        # «Manel ya le envió el presupuesto»: le cuenta a quien pide lo que él
+        # mismo hizo. («Manel os atenderá el jueves» puede ser un correo
+        # válido: eso queda en dudoso, más abajo.)
+        m = re.search(
+            rf"\b{re.escape(pila)}\b (ya )?((le|te|os|les|nos|lo|la) )?(envi[oó]|mand[oó]|pas[oó]|"
+            r"respondi[oó]|contest[oó]|dijo|coment[oó]|adjunt[oó]|escribi[oó]|llam[oó])\b",
+            texto, re.IGNORECASE)
+        if m:
+            return Veredicto(
+                NIVEL_INFORME,
+                f"habla de {pila} (quien lo pide) en tercera persona («{m.group(0)}»)")
+    m = _DUDOSO_RE.search(texto)
+    if m:
+        return Veredicto(
+            NIVEL_DUDOSO,
+            f"menciona «{m.group(0).strip()}»: puede estar hablándote a ti y no al destinatario")
+    if pila and not mismo_nombre and re.search(rf"\b{re.escape(pila)}\b", _sin_despedida(texto),
+                                               re.IGNORECASE):
+        return Veredicto(NIVEL_DUDOSO, f"nombra a {pila} (quien lo pide) fuera de la despedida")
+    return Veredicto(NIVEL_CORREO)
 
 
 def parece_informe_al_usuario(
     cuerpo: str, *, nombre_usuario: str | None = None, nombre_destinatario: str | None = None,
 ) -> str | None:
     """Por qué el cuerpo NO es un correo al destinatario sino un informe para la
-    persona de BoHub, o None si parece un correo. Dos señales: frases de
-    informe inequívocas («he revisado el hilo», «dímelo y lo redacto») y un
-    saludo al usuario de BoHub por su nombre cuando se SABE que el destinatario
-    se llama de otra manera (sin ficha no se sabe, y un cliente puede llamarse
-    como quien pulsa)."""
-    texto = (cuerpo or "").strip()
-    if not texto:
-        return None
-    m = _INFORME_RE.search(texto)
-    if m:
-        return f"habla a quien lo pide, no al cliente («{m.group(0).strip()}»)"
-    pila = (nombre_usuario or "").strip().split(" ")[0].lower()
-    destino = (nombre_destinatario or "").strip().split(" ")[0].lower()
-    saludo = _SALUDO_RE.match(texto)
-    if pila and destino and destino != pila and saludo and saludo.group("nombre").lower() == pila:
-        return f"saluda a {saludo.group('nombre')}, que es quien lo pide, no el destinatario"
-    return None
+    persona de BoHub (se vacía), o None si parece un correo o solo es dudoso."""
+    veredicto = evaluar_cuerpo(
+        cuerpo, nombre_usuario=nombre_usuario, nombre_destinatario=nombre_destinatario)
+    return veredicto.motivo if veredicto.nivel == NIVEL_INFORME else None
 
 
 def a_html(texto: str, enlaces: Iterable[str] = ()) -> str:

@@ -5,8 +5,9 @@ borrador es SIEMPRE un correo que se puede enviar tal cual al destinatario, o
 está vacío. Todo lo que la IA quiera decirle a la persona de BoHub (que no hay
 nada que contestar, que falta un dato, que no puede confirmar un precio) va en
 `aviso`, que se enseña en la franja del asistente y nunca en el editor. El
-prompt lo exige, y por si el modelo se despista, `parece_informe_al_usuario`
-vacía el cuerpo y pasa el texto al aviso.
+prompt lo exige, y por si el modelo se despista, la guardia
+(`texto.evaluar_cuerpo`) vacía el cuerpo cuando está claro que habla a la
+persona de BoHub y, ante la duda, lo deja y avisa (no borra).
 
 Es una conversación: el primer borrador (turno 0) monta el contexto entero
 (hilo, expediente, base de conocimiento) y lo guarda tal cual en
@@ -61,14 +62,16 @@ from app.services.asistente.config import estimar_tokens
 from app.services.asistente.contexto import Contexto
 from app.services.asistente.historico import ajustar_al_presupuesto
 from app.services.asistente.texto import (
+    NIVEL_CORREO,
+    NIVEL_DUDOSO,
     a_html,
     cuerpo_a_html,
     empalmar,
     enlaces_de,
+    evaluar_cuerpo,
     html_a_texto,
     limpiar_html,
     parece_html,
-    parece_informe_al_usuario,
     sin_firma,
 )
 from app.services.ia.coste import coste_usd
@@ -526,17 +529,23 @@ def _parsear(raw: str, *, asunto_defecto: str | None, idioma_defecto: str | None
 
 def _regla_primera(data: dict[str, Any], *, nombre_usuario: str | None,
                    nombre_destinatario: str | None) -> None:
-    """El cuerpo es un correo o está vacío. Si lo que salió habla a la persona
-    de BoHub, pasa al aviso y el cuerpo se queda vacío. La guardia mira el
-    texto plano (el cuerpo viene en HTML sencillo)."""
+    """El cuerpo es un correo o está vacío. Si lo que salió habla claramente a
+    la persona de BoHub (informe), pasa al aviso y el cuerpo se queda vacío;
+    si solo es dudoso, se queda en el editor y la franja pide que se revise
+    (ante la duda, avisar y no borrar). La guardia mira el texto plano (el
+    cuerpo viene en HTML sencillo)."""
     cuerpo = data["cuerpo"]
     plano = html_a_texto(cuerpo) if parece_html(cuerpo) else cuerpo
-    motivo = parece_informe_al_usuario(
+    veredicto = evaluar_cuerpo(
         plano, nombre_usuario=nombre_usuario, nombre_destinatario=nombre_destinatario)
-    if motivo is None:
+    if veredicto.nivel == NIVEL_CORREO:
         return
-    data["cuerpo"] = ""
-    nota = f"La IA no ha redactado un correo ({motivo}). Lo que dijo: «{plano}»"
+    if veredicto.nivel == NIVEL_DUDOSO:
+        nota = (f"Revisa el cuerpo antes de enviar: {veredicto.motivo}. Lo he dejado en el "
+                "editor por si es un correo válido.")
+    else:
+        data["cuerpo"] = ""
+        nota = f"La IA no ha redactado un correo ({veredicto.motivo}). Lo que dijo: «{plano}»"
     data["aviso"] = f"{data['aviso']} {nota}".strip() if data["aviso"] else nota
 
 

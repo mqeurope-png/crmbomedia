@@ -241,12 +241,17 @@ def test_la_guardia_reconoce_informes_y_saludos_a_quien_pulsa() -> None:
     assert texto.parece_informe_al_usuario("", nombre_usuario="Bart") is None
     # Cierres normales de un correo a un cliente: NO son informes (la revisión
     # del 11/10/2026 encontró que una lista más larga se cargaba borradores).
+    # Una OFERTA de hacer algo («dímelo y te lo preparo») tampoco: el primer
+    # día de uso real se vació un correo válido por eso.
     for correo in (
         "Hola Marny,\n\nte adjunto el presupuesto. Dime si te va bien el jueves para la "
         "demostración.\n\nUn saludo",
+        "Hola Marny,\n\nsi quieres que te prepare también la oferta del rotary, dímelo y te "
+        "lo preparo.\n\nUn saludo,\nManel",
         "Buenos días,\n\nse lo preparo esta semana y le aviso. Si quiere que le prepare "
         "también la oferta del rotary, dígamelo.\n\nSaludos",
         "Hola,\n\nel pedido no me ha llegado todavía, ¿podéis mirarlo?",
+        "Estimada Marny:\n\nMarny, te adjunto la oferta que me pediste.\n\nSaludos",
         "Hi John,\n\nplease find the quote attached. Let me know if you have any questions, "
         "and would you like me to reserve the unit?\n\nBest regards",
         "Hallo Herr Torra,\n\nsagen Sie mir bitte Bescheid, ob das Angebot passt. Soll ich "
@@ -254,8 +259,75 @@ def test_la_guardia_reconoce_informes_y_saludos_a_quien_pulsa() -> None:
         "Bonjour,\n\ndites-moi si vous souhaitez un devis pour le rotary.\n\nCordialement",
         "Hoi Klaas,\n\nlaat het me weten als je vragen hebt.\n\nGroeten",
     ):
-        assert texto.parece_informe_al_usuario(correo, nombre_usuario="Manel",
-                                               nombre_destinatario="Marny") is None, correo
+        veredicto = texto.evaluar_cuerpo(correo, nombre_usuario="Manel",
+                                         nombre_destinatario="Marny")
+        assert veredicto.nivel == texto.NIVEL_CORREO, (correo, veredicto)
+    # Lo que SÍ delata un texto para la persona de BoHub: el hilo revisado,
+    # falta de datos, hablar del cliente o de quien pide en tercera persona,
+    # preguntarle qué quiere decirle.
+    for informe, trozo in (
+        ("He revisado el hilo con Marny y no hay nada que contestar.", "He revisado el hilo"),
+        ("No tengo datos para confirmar el plazo de entrega.", "No tengo datos para"),
+        ("Hola Marny,\n\nManel ya le envió el presupuesto el día 26.\n\nUn saludo",
+         "Manel ya le envió"),
+        ("Hola,\n\nte paso el presupuesto que pidió Marny.\n\nUn saludo", "Marny"),
+        ("Dime qué quieres decirle y lo redacto.", "Dime qué quieres decirle"),
+        ("I don't have enough information to confirm the delivery date.", "I don't have enough"),
+        ("Ich habe keine Daten zur Lieferzeit.", "Ich habe keine Daten"),
+    ):
+        veredicto = texto.evaluar_cuerpo(informe, nombre_usuario="Manel",
+                                         nombre_destinatario="Marny")
+        assert veredicto.nivel == texto.NIVEL_INFORME and trozo in (veredicto.motivo or ""), (
+            informe, veredicto)
+    # Dudoso: se queda, con aviso. «El cliente» o «el hilo» como objeto, el
+    # nombre de quien pide fuera de la despedida.
+    for dudoso, trozo in (
+        ("Hola Marny,\n\ncomo le comenté al cliente, el plazo son tres semanas.\n\nUn saludo",
+         "al cliente"),
+        ("Hola,\n\nen el hilo veo que pediste el plato PT5.\n\nUn saludo", "el hilo"),
+        ("Hola Marny,\n\nManel os atenderá el jueves.\n\nUn saludo,\nBart", "nombra a Manel"),
+    ):
+        veredicto = texto.evaluar_cuerpo(dudoso, nombre_usuario="Manel",
+                                         nombre_destinatario="Marny")
+        assert veredicto.nivel == texto.NIVEL_DUDOSO and trozo in (veredicto.motivo or ""), (
+            dudoso, veredicto)
+        assert texto.parece_informe_al_usuario(dudoso, nombre_usuario="Manel",
+                                               nombre_destinatario="Marny") is None
+    # Si los dos se llaman igual, el nombre no distingue nada.
+    assert texto.evaluar_cuerpo("Hola Manel,\n\nManel ya le envió todo.", nombre_usuario="Manel",
+                                nombre_destinatario="Manel Soler").nivel == texto.NIVEL_CORREO
+
+
+def test_ante_la_duda_el_cuerpo_se_queda_y_la_franja_avisa(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    """Un correo con una oferta («dímelo y te lo preparo») no se vacía. Uno
+    dudoso («al cliente») se queda en el editor con un aviso para revisarlo.
+    Uno que dice que no tiene datos sí se vacía, con el motivo."""
+    with session_factory() as s:
+        hilo = _hilo(s, contacto=_contacto(s), mensajes=[{"de": KLAUS, "texto": MENSAJE_KLAUS}])
+        s.commit()
+        thread_id = hilo.id
+    oferta = {**RESPUESTA_IA, "cuerpo": (
+        "<p>Hola Klaus,</p><p>te paso el presupuesto del UV. Si quieres que te prepare también "
+        "la oferta del DTF, dímelo y te lo preparo.</p><p>Un saludo</p>"), "aviso": ""}
+    with patch.object(llm, "_invoke_claude", _ClaudeFalso(oferta)):
+        b = _pedir(http, thread_id).json()["borrador"]
+    assert b["texto"].startswith("Hola Klaus,") and "dímelo y te lo preparo" in b["texto"]
+    assert b["aviso"] is None
+    dudoso = {**RESPUESTA_IA, "cuerpo": (
+        "<p>Hola Klaus,</p><p>como le comenté al cliente, el plazo son tres semanas.</p>"
+        "<p>Un saludo</p>"), "aviso": ""}
+    with patch.object(llm, "_invoke_claude", _ClaudeFalso(dudoso)):
+        b = _pedir(http, thread_id, instruccion="confirma el plazo").json()["borrador"]
+    assert "como le comenté al cliente" in b["texto"] and "<p>" in b["html"]      # se queda
+    assert b["aviso"].startswith("Revisa el cuerpo antes de enviar: menciona «al cliente»")
+    sin_datos = {**RESPUESTA_IA, "cuerpo": "No tengo datos para confirmar el plazo de entrega.",
+                 "aviso": ""}
+    with patch.object(llm, "_invoke_claude", _ClaudeFalso(sin_datos)):
+        b = _pedir(http, thread_id, instruccion="confirma el plazo").json()["borrador"]
+    assert b["texto"] == "" and b["html"] == ""
+    assert "No tengo datos para" in b["aviso"] and b["aviso"].startswith("La IA no ha redactado")
 
 
 def test_sin_cuerpo_ni_aviso_la_franja_dice_algo() -> None:
