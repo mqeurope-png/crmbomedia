@@ -32,6 +32,7 @@ function borrador(over: Partial<BorradorAsistente> = {}): BorradorAsistente {
     destinatario: "klaus@elbarquito.net", remitente: "info@bomedia.net",
     asunto: "Re: Metallplatten", destinatario_interno: false, sin_hilo: false,
     texto: "Hallo Klaus,\n\nvielen Dank.", html: "<p>Hallo Klaus,</p><p>vielen Dank.</p>",
+    sobre_editor: false, seleccion: null, fragmento: false,
     aviso: null, instruccion: null, conversacion_id: "b-0", turno: 0, padre_id: null,
     pendiente: [], enlaces: [], contexto: { mensajes_hilo: 2, contacto: { nombre: "Klaus" } },
     alcance: "contacto", mensajes_hilo: 2, mensajes_historico: 0, estado: "generado",
@@ -211,6 +212,108 @@ describe("AsistenteFranja — la conversación", () => {
     await userEvent.setup().click(cabecera);
     expect(screen.getByRole("list", { name: "Lo dicho hasta ahora" })).toHaveTextContent("«más corto»");
     expect(screen.getByRole("button", { name: /Aplicar/ })).toBeInTheDocument();
+  });
+});
+
+describe("AsistenteFranja — corrige lo que hay en el editor", () => {
+  it("con texto en el cuerpo la caja va en modo corrección y manda el texto del editor, nunca «¿Qué quieres decirle?»", async () => {
+    const obtenerCuerpo = jest.fn(() => ({ html: "<p>hola klaus, te paso lo de las máquinas</p>", seleccion: "" }));
+    api.generarBorradorAsistente.mockResolvedValueOnce(borrador({
+      instruccion: "ponlo más formal", sobre_editor: true,
+      html: "<p>Estimado Klaus,</p>", texto: "Estimado Klaus,",
+    }));
+    const { onBorrador } = montar({ hayTexto: true, obtenerCuerpo });
+    const user = userEvent.setup();
+    expect(screen.getByRole("button", { name: /Ayúdame a contestar/ })).toHaveTextContent(
+      "la IA corrige lo que hay en el editor");
+    const caja = screen.getByLabelText("Qué quieres decirle") as HTMLTextAreaElement;
+    expect(caja.placeholder).toMatch(/^Corrige el texto/);
+    expect(caja.placeholder).not.toContain("¿Qué quieres decirle?");
+    expect(screen.queryByRole("button", { name: /Redactar/ })).not.toBeInTheDocument();
+    // Sin decir qué cambiar no hay nada que aplicar.
+    await user.click(screen.getByRole("button", { name: /Aplicar/ }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Escribe qué quieres cambiar");
+    expect(api.generarBorradorAsistente).not.toHaveBeenCalled();
+    await user.type(caja, "ponlo más formal");
+    await user.click(screen.getByRole("button", { name: /Aplicar/ }));
+    await waitFor(() => expect(api.generarBorradorAsistente).toHaveBeenCalledWith("t-1", {
+      alcance: "contacto", instruccion: "ponlo más formal", destinatario: "klaus@elbarquito.net",
+      texto_actual_html: "<p>hola klaus, te paso lo de las máquinas</p>", seleccion_html: null,
+    }));
+    await waitFor(() => expect(onBorrador).toHaveBeenCalledTimes(1));
+    expect(onBorrador.mock.calls[0][0].sobre_editor).toBe(true);
+    await desplegar(user);
+    expect(screen.getByRole("list", { name: "Lo dicho hasta ahora" })).toHaveTextContent("sobre tu texto");
+  });
+
+  it("sin hilo, con un correo a mano, «Aplicar» manda el texto como correo nuevo", async () => {
+    api.generarBorradorNuevo.mockResolvedValueOnce(borrador({ thread_id: null, sin_hilo: true, sobre_editor: true }));
+    montar({
+      threadId: null, destinatario: "nuevo@cliente.io", hayTexto: true,
+      obtenerCuerpo: () => ({ html: "<p>hola, te escribo por el presupuesto</p>", seleccion: "" }),
+    });
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText("Qué quieres decirle"), "más formal");
+    await user.click(screen.getByRole("button", { name: /Aplicar/ }));
+    await waitFor(() => expect(api.generarBorradorNuevo).toHaveBeenCalledWith({
+      destinatario: "nuevo@cliente.io", instruccion: "más formal", alcance: "contacto", contact_id: "c-1",
+      texto_actual_html: "<p>hola, te escribo por el presupuesto</p>", seleccion_html: null,
+    }));
+  });
+
+  it("con una selección lo dice, la corrección va solo a ella y una corrección con conversación parte del editor", async () => {
+    api.generarBorradorAsistente.mockResolvedValueOnce(borrador());
+    const seleccion = { current: "" };
+    const obtenerCuerpo = () => ({
+      html: "<p>Hola Marny,</p><p>Te paso los precios.</p><p>Un saludo</p>", seleccion: seleccion.current,
+    });
+    const { rerender, onBorrador } = montar({ obtenerCuerpo });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /Redactar/ }));
+    await waitFor(() => expect(onBorrador).toHaveBeenCalledTimes(1));
+    // Ya hay texto en el editor (el borrador): la persona selecciona una frase.
+    seleccion.current = "<p>Te paso los precios.</p>";
+    rerender(
+      <AsistenteFranja threadId="t-1" contactId="c-1" destinatario="klaus@elbarquito.net" abiertaInicial
+        hayTexto obtenerCuerpo={obtenerCuerpo}
+        onBorrador={onBorrador} onVaciar={jest.fn()} onBorradorActual={jest.fn()} />,
+    );
+    await desplegar(user);
+    const caja = screen.getByLabelText("Qué quieres decirle") as HTMLTextAreaElement;
+    await user.click(caja);
+    expect(screen.getByRole("note")).toHaveTextContent("Se aplicará solo a la selección: «Te paso los precios.»");
+    expect(caja.placeholder).toMatch(/^Qué cambiar en la selección/);
+    api.turnoAsistente.mockResolvedValueOnce(borrador({
+      id: "b-1", turno: 1, padre_id: "b-0", instruccion: "desarróllala", sobre_editor: true,
+      seleccion: { original: "Te paso los precios.", fragmento_html: "<p>Te adjunto los precios.</p>", empalmado: true },
+      html: "<p>Hola Marny,</p><p>Te adjunto los precios.</p><p>Un saludo</p>",
+    }));
+    await user.type(caja, "desarróllala");
+    await user.click(screen.getByRole("button", { name: /Aplicar/ }));
+    await waitFor(() => expect(api.turnoAsistente).toHaveBeenCalledWith("b-0", "desarróllala", {
+      texto_actual_html: "<p>Hola Marny,</p><p>Te paso los precios.</p><p>Un saludo</p>",
+      seleccion_html: "<p>Te paso los precios.</p>",
+    }));
+    await waitFor(() => expect(onBorrador).toHaveBeenCalledTimes(2));
+    await desplegar(user);
+    expect(screen.getByRole("list", { name: "Lo dicho hasta ahora" })).toHaveTextContent(
+      "«desarróllala» — sobre la selección «Te paso los precios.»");
+  });
+
+  it("si el compositor no puede poner el fragmento (la selección ya no está), la franja lo dice y no se pliega", async () => {
+    api.generarBorradorAsistente.mockResolvedValueOnce(borrador({
+      sobre_editor: true, fragmento: true, html: "<p>Te adjunto los precios.</p>",
+      seleccion: { original: "Te paso los precios.", fragmento_html: "<p>Te adjunto los precios.</p>", empalmado: false },
+    }));
+    montar({
+      hayTexto: true, onBorrador: jest.fn(() => false),
+      obtenerCuerpo: () => ({ html: "<p>Te paso los precios.</p>", seleccion: "<p>Te paso los precios.</p>" }),
+    });
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText("Qué quieres decirle"), "desarróllala");
+    await user.click(screen.getByRole("button", { name: /Aplicar/ }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("El editor ya no tiene la selección");
+    expect(screen.getByRole("button", { name: /Ayúdame a contestar/ })).toHaveAttribute("aria-expanded", "true");
   });
 });
 

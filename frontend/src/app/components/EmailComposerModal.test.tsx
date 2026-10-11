@@ -2,21 +2,37 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { EmailComposerModal, cuerpoEscrito } from "./EmailComposerModal";
 import {
+  type BorradorAsistente,
   createEmailDraft,
   deleteEmailDraft,
   descartarBorradorAsistente,
   type EmailDraft,
+  generarBorradorAsistente,
+  turnoAsistente,
   updateEmailDraft,
 } from "../lib/emailsApi";
 
-// El editor (TinyMCE) va por `next/dynamic`: aquí es un textarea.
+// El editor (TinyMCE) va por `next/dynamic`: aquí es un textarea. La
+// «selección» del editor se simula con `globalThis.__seleccion`.
+type ConSeleccion = { __seleccion?: string };
 jest.mock("next/dynamic", () => {
   const React = jest.requireActual("react");
   const FakeEditor = React.forwardRef(function FakeEditor(
     props: { value: string; onChange: (html: string) => void },
-    ref: React.Ref<{ clearDraft: () => void }>,
+    ref: React.Ref<{ clearDraft: () => void; getSelectionHtml: () => string; replaceSelection: (h: string) => string | null }>,
   ) {
-    React.useImperativeHandle(ref, () => ({ clearDraft: () => undefined }));
+    const { value, onChange } = props;
+    React.useImperativeHandle(ref, () => ({
+      clearDraft: () => undefined,
+      getSelectionHtml: () => (globalThis as { __seleccion?: string }).__seleccion ?? "",
+      replaceSelection: (html: string) => {
+        const sel = (globalThis as { __seleccion?: string }).__seleccion ?? "";
+        if (!sel) return null;
+        const nuevo = value.replace(sel, html);
+        onChange(nuevo);
+        return nuevo;
+      },
+    }), [value, onChange]);
     return React.createElement("textarea", {
       "aria-label": "Cuerpo", value: props.value,
       onChange: (e: { target: { value: string } }) => props.onChange(e.target.value),
@@ -61,6 +77,22 @@ const mockCreate = createEmailDraft as jest.Mock;
 const mockUpdate = updateEmailDraft as jest.Mock;
 const mockDelete = deleteEmailDraft as jest.Mock;
 const mockDescartar = descartarBorradorAsistente as jest.Mock;
+const mockGenerar = generarBorradorAsistente as jest.Mock;
+const mockTurno = turnoAsistente as jest.Mock;
+
+function turno(over: Partial<BorradorAsistente> = {}): BorradorAsistente {
+  return {
+    id: "b-9", thread_id: "t-1", message_id: null, contact_id: "c-1", usuario_id: "u-1",
+    idioma: "es", modelo: "claude-haiku-5-5", tokens_entrada: 300, tokens_salida: 80,
+    tokens_cache_lectura: 1000, tokens_cache_escritura: 0, coste_usd: 0.0003,
+    destinatario: "cliente@ejemplo.com", remitente: "info@bomedia.net", asunto: null,
+    destinatario_interno: false, sin_hilo: false, texto: "Hola", html: "<p>Hola</p>",
+    sobre_editor: true, seleccion: null, fragmento: false, aviso: null, instruccion: "más formal",
+    conversacion_id: "b-9", turno: 0, padre_id: null, pendiente: [], enlaces: [], contexto: {},
+    alcance: "contacto", mensajes_hilo: 1, mensajes_historico: 0, estado: "generado",
+    email_message_id: null, creado: null, resuelto_en: null, ...over,
+  };
+}
 
 function borradorGuardado(over: Partial<EmailDraft> = {}): EmailDraft {
   return {
@@ -198,6 +230,52 @@ describe("EmailComposerModal — que no destruya trabajo", () => {
     unmount();
     render(<EmailComposerModal initialDraft={borradorGuardado({ id: "d-2", cc_emails: ["jefe@ejemplo.com"] })} presentacion="panel" asistente={null} onClose={jest.fn()} />);
     expect(await screen.findByLabelText("Cc")).toHaveValue("jefe@ejemplo.com");
+  });
+
+  it("una corrección de lo que hay en el editor entra sin preguntar; sobre una selección, va donde estaba y el resto no se toca", async () => {
+    const cuerpo = "<p>Hola Marny,</p><p>Te paso los precios.</p><p>Un saludo</p>";
+    render(
+      <EmailComposerModal
+        initialDraft={borradorGuardado({ body_html: cuerpo, asistente_borrador_id: null })} presentacion="panel"
+        asistente={{ threadId: "t-1", abierto: true }} onClose={jest.fn()}
+      />,
+    );
+    const user = userEvent.setup();
+    const editor = await screen.findByLabelText("Cuerpo");
+    expect(editor).toHaveValue(cuerpo);
+    // Hay texto: la franja está en modo corrección y manda el texto del editor.
+    expect(screen.getByRole("button", { name: /Aplicar/ })).toBeInTheDocument();
+    window.confirm = jest.fn(() => false);
+    mockGenerar.mockResolvedValueOnce(turno({ html: "<p>Estimada Marny,</p><p>Le paso los precios.</p>" }));
+    await user.type(screen.getByLabelText("Qué quieres decirle"), "más formal");
+    await user.click(screen.getByRole("button", { name: /Aplicar/ }));
+    await waitFor(() => expect(mockGenerar).toHaveBeenCalledTimes(1));
+    expect(mockGenerar.mock.calls[0][1]).toMatchObject({ texto_actual_html: cuerpo, seleccion_html: null });
+    await waitFor(() => expect(editor).toHaveValue("<p>Estimada Marny,</p><p>Le paso los precios.</p>"));
+    expect(window.confirm).not.toHaveBeenCalled();
+    // Con una selección en el editor, el fragmento reescrito va donde estaba la selección.
+    (globalThis as ConSeleccion).__seleccion = "<p>Le paso los precios.</p>";
+    try {
+      // Ya hay conversación: la corrección es un turno más, con el texto del editor.
+      mockTurno.mockResolvedValueOnce(turno({
+        id: "b-10", turno: 1, padre_id: "b-9", instruccion: "desarróllala",
+        html: "<p>Estimada Marny,</p><p>Le adjunto los precios de las máquinas de DTF.</p>",
+        seleccion: { original: "Le paso los precios.", fragmento_html: "<p>Le adjunto los precios de las máquinas de DTF.</p>", empalmado: true },
+      }));
+      // La franja se plegó al llegar el borrador: se despliega para corregir.
+      await user.click(screen.getByRole("button", { name: /Ayúdame a contestar/ }));
+      await user.type(screen.getByLabelText("Qué quieres decirle"), "desarróllala");
+      expect(screen.getByRole("note")).toHaveTextContent("Se aplicará solo a la selección: «Le paso los precios.»");
+      await user.click(screen.getByRole("button", { name: /Aplicar/ }));
+      await waitFor(() => expect(mockTurno).toHaveBeenCalledWith("b-9", "desarróllala", {
+        texto_actual_html: "<p>Estimada Marny,</p><p>Le paso los precios.</p>",
+        seleccion_html: "<p>Le paso los precios.</p>",
+      }));
+      await waitFor(() => expect(editor).toHaveValue(
+        "<p>Estimada Marny,</p><p>Le adjunto los precios de las máquinas de DTF.</p>"));
+    } finally {
+      delete (globalThis as ConSeleccion).__seleccion;
+    }
   });
 
   it("cuerpoEscrito ignora la firma y los párrafos vacíos del editor", () => {

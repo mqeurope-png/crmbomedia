@@ -139,9 +139,16 @@ type RichEditorProps = {
 
 /** Imperative surface so the send-modal can call `clearDraft()` after
  *  a successful send — the autosave entry survives a soft close and
- *  would otherwise leak into the next conversation. */
+ *  would otherwise leak into the next conversation. `getSelectionHtml` y
+ *  `replaceSelection` son para el asistente: corregir solo lo seleccionado y
+ *  poner el fragmento reescrito donde estaba, sin tocar el resto. */
 export type RichEditorHandle = {
   clearDraft: () => void;
+  /** El HTML de la selección actual del editor, o "" si no hay nada seleccionado. */
+  getSelectionHtml: () => string;
+  /** Sustituye la selección por `html` y devuelve el cuerpo entero resultante,
+   *  o null si no había selección (entonces no toca nada). */
+  replaceSelection: (html: string) => string | null;
 };
 
 export const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
@@ -178,8 +185,21 @@ export const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
         }
         for (const key of remove) window.localStorage.removeItem(key);
       },
+      getSelectionHtml() {
+        const editor = editorRef.current;
+        if (!editor || editor.selection.isCollapsed()) return "";
+        return editor.selection.getContent({ format: "html" }).trim();
+      },
+      replaceSelection(html: string) {
+        const editor = editorRef.current;
+        if (!editor || editor.selection.isCollapsed()) return null;
+        editor.selection.setContent(html);
+        const content = editor.getContent();
+        onChange(content);
+        return content;
+      },
     }),
-    [draftKey],
+    [draftKey, onChange],
   );
 
   return (

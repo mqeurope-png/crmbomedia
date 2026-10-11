@@ -51,8 +51,15 @@ export type AsistenteFranjaProps = {
   /** Un borrador guardado que arrastra su conversación: el turno que estaba en
    *  el editor al guardar. La franja la recupera (turnos y coste). */
   borradorInicialId?: string | null;
-  /** Llega un turno: el compositor pone su cuerpo (y su asunto) en el editor. */
-  onBorrador: (borrador: BorradorAsistente) => void;
+  /** Hay texto escrito en el cuerpo (sin contar la firma): la caja va en modo
+   *  corrección («Aplicar»), haya conversación o no, y la IA corrige ESE texto. */
+  hayTexto?: boolean;
+  /** Lo que hay ahora mismo en el editor (sin la firma) y su selección, si la
+   *  hay: viaja con cada petición para que la IA corrija eso y no el borrador. */
+  obtenerCuerpo?: () => { html: string; seleccion: string };
+  /** Llega un turno: el compositor pone su cuerpo (y su asunto) en el editor.
+   *  `false` si no pudo (un fragmento para una selección que ya no está). */
+  onBorrador: (borrador: BorradorAsistente) => boolean | void;
   /** La conversación se vacía: el editor vuelve a como estaba antes del asistente. */
   onVaciar: () => void;
   /** El turno que está en el editor (para anotar el resultado al enviar), o null. */
@@ -67,6 +74,13 @@ function primera(direcciones: string): string {
 
 function usd(n: number): string {
   return `${n.toFixed(4)} $`;
+}
+
+/** El texto de un fragmento de HTML, recortado, para enseñar qué hay seleccionado. */
+function resumenDe(html: string, max = 70): string {
+  const texto = (new DOMParser().parseFromString(html, "text/html").body.textContent ?? "")
+    .replace(/\s+/g, " ").trim();
+  return texto.length > max ? `${texto.slice(0, max - 1).trimEnd()}…` : texto;
 }
 
 /** Un aviso en ámbar: a dos líneas con un «más» si es largo. Está bien escrito,
@@ -101,6 +115,8 @@ export function AsistenteFranja({
   abiertaInicial = false,
   bloqueada = false,
   borradorInicialId = null,
+  hayTexto = false,
+  obtenerCuerpo,
   onBorrador,
   onVaciar,
   onBorradorActual,
@@ -109,6 +125,9 @@ export function AsistenteFranja({
   const modo: "respuesta" | "nuevo" = threadId ? "respuesta" : "nuevo";
   const [abierta, setAbierta] = useState(abiertaInicial);
   const [instruccion, setInstruccion] = useState("");
+  // Lo que hay seleccionado en el editor cuando la persona viene a la caja:
+  // la corrección se aplicará solo a eso, y se dice.
+  const [seleccion, setSeleccion] = useState("");
   const [alcance, setAlcance] = useState<AsistenteAlcance>("contacto");
   const [usuarioId, setUsuarioId] = useState<string | null>(null);
   const [turnos, setTurnos] = useState<BorradorAsistente[]>([]);
@@ -183,19 +202,39 @@ export function AsistenteFranja({
     : ALCANCES_ASISTENTE;
   const borrador = turnos[actual] ?? null;
   const hayConversacion = turnos.length > 0;
+  // El estado de la caja lo decide si hay texto en el cuerpo: con texto (de la
+  // IA, a mano, o un borrador reabierto) se corrige; sin él, se redacta.
+  const modoCorreccion = hayConversacion || hayTexto;
   const interno = internoApi !== null
     ? internoApi
     : destinatarioInterno || Boolean(borrador?.destinatario_interno);
   const costeTotal = turnos.reduce((s, t) => s + (t.coste_usd || 0), 0);
 
+  function refrescarSeleccion() {
+    const sel = hayTexto ? (obtenerCuerpo?.().seleccion ?? "") : "";
+    setSeleccion(sel ? resumenDe(sel) : "");
+  }
+
+  function poner(b: BorradorAsistente): boolean {
+    const ok = onBorrador(b);
+    if (ok === false) {
+      setError(
+        "El editor ya no tiene la selección sobre la que se reescribió este fragmento: "
+        + "selecciona otra vez ese texto y pulsa el turno en la lista para ponerlo.",
+      );
+      return false;
+    }
+    return true;
+  }
+
   function aplicar(b: BorradorAsistente, lista: BorradorAsistente[], idx: number) {
     setTurnos(lista);
     setActual(idx);
     onBorradorActual(b.id);
-    onBorrador(b);
+    const puesto = poner(b);
     // Con borrador, la franja se pliega sola: lo que hay que leer antes de
     // enviar es el correo, y es lo que más sitio necesita.
-    if (b.texto) setAbierta(false);
+    if (b.texto && puesto) setAbierta(false);
   }
 
   async function redactar() {
@@ -206,36 +245,45 @@ export function AsistenteFranja({
       setError("Pon un destinatario en «Para»: es lo que dispara el expediente del cliente.");
       return;
     }
-    if (modo === "nuevo" && !hayConversacion && !texto) {
+    if (modoCorreccion && !texto) {
+      setError("Escribe qué quieres cambiar («más corto», «más formal», «en inglés», «quita el precio»…).");
+      return;
+    }
+    if (modo === "nuevo" && !texto) {
       setError("Dime qué quieres decirle: en un correo nuevo no hay nada de lo que deducir la intención.");
       return;
     }
-    if (hayConversacion && !texto) {
-      setError("Escribe qué quieres cambiar («más corto», «en inglés», «quita el precio»…).");
-      return;
-    }
+    // Lo que hay ahora en el editor: la IA corrige ESO, y solo la selección si la hay.
+    const cuerpo = hayTexto ? obtenerCuerpo?.() : undefined;
+    const editor = cuerpo?.html
+      ? { texto_actual_html: cuerpo.html, seleccion_html: cuerpo.seleccion || null }
+      : null;
     setOcupado(true);
     setError(null);
     try {
       if (hayConversacion && borrador) {
         // Una corrección: un turno más, con el contexto ya montado. Si se
         // corrige un turno anterior, los posteriores se dejan atrás.
-        const nuevo = await turnoAsistente(borrador.id, texto);
+        const nuevo = editor
+          ? await turnoAsistente(borrador.id, texto, editor)
+          : await turnoAsistente(borrador.id, texto);
         const lista = [...turnos.slice(0, actual + 1), nuevo];
         aplicar(nuevo, lista, lista.length - 1);
       } else if (modo === "nuevo") {
         const nuevo = await generarBorradorNuevo({
           destinatario: para, instruccion: texto, alcance: alcanceEfectivo,
-          contact_id: contactId,
+          contact_id: contactId, ...(editor ?? {}),
         });
         aplicar(nuevo, [nuevo], 0);
       } else {
         const nuevo = await generarBorradorAsistente(threadId as string, {
           alcance: alcanceEfectivo, instruccion: texto || null, destinatario: para || null,
+          ...(editor ?? {}),
         });
         aplicar(nuevo, [nuevo], 0);
       }
       setInstruccion("");
+      setSeleccion("");
     } catch (err) {
       setError(extractErrorMessage(err, "La IA no ha podido redactar el borrador."));
     } finally {
@@ -276,7 +324,8 @@ export function AsistenteFranja({
     if (!b || ocupado || bloqueada) return;
     setActual(idx);
     onBorradorActual(b.id);
-    onBorrador(b);
+    setError(null);
+    poner(b);
   }
 
   function vaciar(plegar: boolean) {
@@ -295,14 +344,20 @@ export function AsistenteFranja({
     }
   }
 
-  const resumen = !hayConversacion
-    ? (modo === "respuesta" ? "la IA redacta la respuesta; tú la revisas y la envías" : "la IA redacta el correo; tú lo revisas y lo envías")
-    : `${turnos.length} ${turnos.length === 1 ? "borrador" : "turnos"} · ${usd(costeTotal)}`;
-  const placeholder = hayConversacion
-    ? "Corrige el borrador: «más corto», «en inglés», «no menciones el precio», «añade que el plazo son tres semanas»…"
-    : modo === "respuesta"
-      ? "¿Qué quieres decirle? Si lo dejas vacío, la IA contesta al último mensaje del cliente."
-      : "¿Qué quieres decirle? Por ejemplo: «han pasado tres semanas desde el presupuesto, escríbele un seguimiento»";
+  const resumen = hayConversacion
+    ? `${turnos.length} ${turnos.length === 1 ? "borrador" : "turnos"} · ${usd(costeTotal)}`
+    : hayTexto
+      ? "la IA corrige lo que hay en el editor; tú lo revisas y lo envías"
+      : modo === "respuesta"
+        ? "la IA redacta la respuesta; tú la revisas y la envías"
+        : "la IA redacta el correo; tú lo revisas y lo envías";
+  const placeholder = seleccion
+    ? "Qué cambiar en la selección: «más corto», «más formal», «en inglés», «quita el precio»…"
+    : modoCorreccion
+      ? "Corrige el texto: «más corto», «más formal», «en inglés», «no menciones el precio», «añade que el plazo son tres semanas»…"
+      : modo === "respuesta"
+        ? "¿Qué quieres decirle? Si lo dejas vacío, la IA contesta al último mensaje del cliente."
+        : "¿Qué quieres decirle? Por ejemplo: «han pasado tres semanas desde el presupuesto, escríbele un seguimiento»";
 
   return (
     <section className={`asistente-franja${abierta ? " is-abierta" : ""}`} aria-label="Asistente de redacción">
@@ -334,7 +389,11 @@ export function AsistenteFranja({
               value={instruccion}
               rows={2}
               disabled={ocupado || bloqueada}
-              onChange={(e) => setInstruccion(e.target.value)}
+              onFocus={refrescarSeleccion}
+              onChange={(e) => {
+                setInstruccion(e.target.value);
+                refrescarSeleccion();
+              }}
               onKeyDown={(e) => {
                 if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
                   e.preventDefault();
@@ -342,6 +401,11 @@ export function AsistenteFranja({
                 }
               }}
             />
+            {seleccion ? (
+              <p className="muted small asistente-franja-seleccion" role="note">
+                Se aplicará solo a la selección: «{seleccion}». El resto no se toca.
+              </p>
+            ) : null}
             <div className="asistente-franja-controles">
               <select
                 className="email-toolbar-alcance"
@@ -360,9 +424,9 @@ export function AsistenteFranja({
                 className="button small"
                 onClick={() => void redactar()}
                 disabled={ocupado || bloqueada}
-                title={hayConversacion ? "Reescribe el borrador con esa corrección (Ctrl+Intro)" : "Pide el borrador a la IA (Ctrl+Intro)"}
+                title={modoCorreccion ? "Reescribe el texto del editor con esa corrección (Ctrl+Intro)" : "Pide el borrador a la IA (Ctrl+Intro)"}
               >
-                <Sparkles size={12} aria-hidden /> {ocupado ? "Redactando…" : hayConversacion ? "Aplicar" : "Redactar"}
+                <Sparkles size={12} aria-hidden /> {ocupado ? "Redactando…" : modoCorreccion ? "Aplicar" : "Redactar"}
               </button>
             </div>
           </div>
@@ -383,6 +447,11 @@ export function AsistenteFranja({
                       {t.turno === 0
                         ? (t.instruccion ? `«${t.instruccion}»` : "Borrador inicial, deducido del hilo")
                         : `«${t.instruccion ?? ""}»`}
+                      {t.seleccion ? (
+                        <span className="muted small"> — sobre la selección «{resumenDe(t.seleccion.original, 40)}»</span>
+                      ) : t.sobre_editor && t.turno === 0 ? (
+                        <span className="muted small"> — sobre tu texto</span>
+                      ) : null}
                       {!t.texto ? <span className="muted small"> — sin cuerpo</span> : null}
                     </button>
                   </li>

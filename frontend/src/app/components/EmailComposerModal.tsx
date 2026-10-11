@@ -77,6 +77,8 @@ function splitEmails(raw: string): string[] {
 // (~200 KB) editor bundle streams in.
 type RichEditorHandle = {
   clearDraft: () => void;
+  getSelectionHtml: () => string;
+  replaceSelection: (html: string) => string | null;
 };
 const RichEditor = dynamic(
   () => import("./email/RichEditor").then((m) => m.RichEditor),
@@ -160,10 +162,15 @@ function buildBodyWithSignature(
 /** El cuerpo sin la firma ni los párrafos vacíos del editor: lo que de verdad
  *  ha escrito alguien (la persona o la IA). */
 export function cuerpoEscrito(html: string | null | undefined): string {
-  return (html || "")
-    .replace(SIG_BLOCK_RE, "")
+  return sinFirma(html)
     .replace(/<p>(?:&nbsp;|\s|&mdash;|—|<br\s*\/?>)*<\/p>/g, "")
     .trim();
+}
+
+/** El HTML del editor sin el bloque de firma que puso el compositor: lo que
+ *  viaja al asistente como «texto actual» (la firma la vuelve a poner él). */
+export function sinFirma(html: string | null | undefined): string {
+  return (html || "").replace(SIG_BLOCK_RE, "");
 }
 
 export function EmailComposerModal({
@@ -309,14 +316,29 @@ export function EmailComposerModal({
   // Llega un turno del asistente: su cuerpo sustituye al del editor, con la
   // firma activa detrás (la IA no firma; la firma la pone el compositor). Un
   // cuerpo vacío (no había con qué redactar) deja solo la firma. Si en el
-  // editor hay algo escrito a mano, se pregunta antes de pisarlo. El asunto
-  // de la IA solo pisa el que está vacío o el que puso ella misma.
+  // editor hay algo escrito a mano que la IA no ha corregido, se pregunta
+  // antes de pisarlo; una corrección de lo que había (`sobre_editor`) entra
+  // sin preguntar. Un turno sobre una selección va donde está la selección y
+  // el resto no se toca; si el editor ya no la tiene y el turno trae el
+  // cuerpo entero, va entero; si no, no se puede poner (false). El asunto de
+  // la IA solo pisa el que está vacío o el que puso ella misma.
   const aplicarBorrador = useCallback(
-    (b: BorradorAsistente) => {
-      if (escritoAMano() && !window.confirm(
+    (b: BorradorAsistente): boolean => {
+      if (b.seleccion && editorRef.current?.getSelectionHtml()) {
+        const html = editorRef.current.replaceSelection(b.seleccion.fragmento_html);
+        if (html !== null) {
+          if (cuerpoAntesRef.current === null) cuerpoAntesRef.current = bodyHtmlRef.current || "";
+          cuerpoIaRef.current = html;
+          setBodyHtml(html);
+          dirtyRef.current = true;
+          return true;
+        }
+      }
+      if (b.fragmento) return false;
+      if (!b.sobre_editor && escritoAMano() && !window.confirm(
         "Ya hay texto en el editor. ¿Reemplazarlo con el borrador de la IA?",
       )) {
-        return;
+        return false;
       }
       if (cuerpoAntesRef.current === null) cuerpoAntesRef.current = bodyHtmlRef.current || "";
       const siguiente = buildBodyWithSignature(b.html || "", "", firmaActiva());
@@ -328,9 +350,20 @@ export function EmailComposerModal({
         asuntoIaRef.current = asunto;
       }
       dirtyRef.current = true;
+      return true;
     },
     [firmaActiva, escritoAMano],
   );
+  // Lo que la franja manda al asistente como «texto actual»: el cuerpo sin la
+  // firma, y la selección del editor si la hay.
+  const cuerpoParaAsistente = useCallback(
+    () => ({
+      html: sinFirma(bodyHtmlRef.current),
+      seleccion: editorRef.current?.getSelectionHtml() ?? "",
+    }),
+    [],
+  );
+  const hayTexto = cuerpoEscrito(bodyHtml).length > 0;
   const vaciarBorrador = useCallback(() => {
     // Vuelve a lo que había antes del asistente (o solo la firma).
     const antes = cuerpoAntesRef.current;
@@ -936,6 +969,8 @@ export function EmailComposerModal({
             abiertaInicial={Boolean(asistente?.abierto)}
             bloqueada={ocupado}
             borradorInicialId={asistente?.borradorId ?? null}
+            hayTexto={hayTexto}
+            obtenerCuerpo={cuerpoParaAsistente}
             onBorrador={aplicarBorrador}
             onVaciar={vaciarBorrador}
             onBorradorActual={(id) => {

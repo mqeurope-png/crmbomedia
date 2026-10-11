@@ -15588,3 +15588,8 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
   padding: 0;
   flex: 0 0 auto;
 }
+
+/* La franja del asistente: «se aplicará solo a la selección». */
+.asistente-franja-seleccion {
+  margin: 4px 0 0;
+}
