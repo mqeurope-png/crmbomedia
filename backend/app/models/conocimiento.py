@@ -191,11 +191,21 @@ class ProductoCatalogo(TimestampMixin, Base):
     #: Categorías de la tienda («Consumibles / Tintas»), o el área de impresión.
     categoria: Mapped[str | None] = mapped_column(String(255))
     imagen: Mapped[str | None] = mapped_column(String(500))
-    #: El precio TAL CUAL está escrito en el origen («9.300 €», «9 300 €»). Se
-    #: enseña así; `precio_num` es un número derivado solo para ordenar.
+    #: El precio TAL CUAL está escrito en el origen («9.300 €», «9 300 €»,
+    #: «desde 21.500 €»). Se enseña así; `precio_num` es un número derivado
+    #: solo para ordenar (vacío cuando no hay importe, nunca cero).
     precio_texto: Mapped[str | None] = mapped_column(String(80))
     precio_num: Mapped[float | None] = mapped_column(Float)
     moneda: Mapped[str | None] = mapped_column(String(3))
+    #: False cuando el origen dice «Consultar» (o «on request»): el producto no
+    #: tiene precio público y el correo dice que se prepara a medida, nunca
+    #: escribe «Consultar». True si hay precio o si no se sabe (0142).
+    precio_publico: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    #: Una entrada del origen que no es un producto (un premio del compositor,
+    #: sin precio ni área de impresión): se guarda para que la pantalla la
+    #: enseñe, pero no entra en el catálogo del asistente (0142).
+    descartado: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    motivo_descarte: Mapped[str | None] = mapped_column(String(120))
     enlace: Mapped[str | None] = mapped_column(String(500))
     #: Nuestro código de idioma (`es`, `en`, …) de ESTA fila.
     idioma: Mapped[str] = mapped_column(String(5), nullable=False)

@@ -505,12 +505,15 @@ export function LoQueHaUsado({ borrador }: { borrador: BorradorAsistente }) {
   const empresa = Array.isArray(ctx["empresa"]) ? (ctx["empresa"] as Record<string, unknown>[]) : [];
   const recortes = Array.isArray(ctx["recortes"]) ? (ctx["recortes"] as string[]) : [];
   const catalogo = (ctx["catalogo"] ?? null) as {
-    maquinas?: { nombre?: string; marca?: string; precio_texto?: string | null; orientativo?: boolean }[];
+    maquinas?: { nombre?: string; marca?: string; precio_texto?: string | null; orientativo?: boolean;
+      precio_publico?: boolean; eleccion?: string }[];
     consumibles?: { nombre?: string; precio_texto?: string | null; orientativo?: boolean }[];
     sin_maquina?: string[];
   } | null;
   const maquinas = catalogo?.maquinas ?? [];
   const consumibles = catalogo?.consumibles ?? [];
+  const nombradas = maquinas.filter((m) => m.eleccion === "hilo").length;
+  const pedidas = maquinas.filter((m) => m.eleccion === "instruccion").length;
   const tokens = num("tokens_estimados");
   const presupuesto = num("presupuesto_tokens");
   const partes: string[] = [];
@@ -525,7 +528,12 @@ export function LoQueHaUsado({ borrador }: { borrador: BorradorAsistente }) {
   if (empresa.length > 0) partes.push(`${empresa.length} asunto${empresa.length === 1 ? "" : "s"} de otras personas de la empresa`);
   if (maquinas.length > 0 || consumibles.length > 0) {
     const trozos: string[] = [];
-    if (maquinas.length > 0) trozos.push(`${maquinas.length} máquina${maquinas.length === 1 ? "" : "s"} del catálogo con precio`);
+    if (maquinas.length > 0) {
+      const origen: string[] = [];
+      if (nombradas > 0) origen.push(`${nombradas} que nombra el cliente`);
+      if (pedidas > 0) origen.push(`${pedidas} que pide la instrucción`);
+      trozos.push(`${maquinas.length} máquina${maquinas.length === 1 ? "" : "s"} del catálogo${origen.length > 0 ? ` (${origen.join(", ")})` : ""}`);
+    }
     if (consumibles.length > 0) trozos.push(`${consumibles.length} consumible${consumibles.length === 1 ? "" : "s"} de la tienda`);
     partes.push(trozos.join(" y "));
   } else if (catalogo) {
@@ -567,7 +575,7 @@ export function LoQueHaUsado({ borrador }: { borrador: BorradorAsistente }) {
           {[...maquinas, ...consumibles].map((p, i) => (
             <li key={`p-${i}`}>
               {String(p.nombre ?? "")}{"marca" in p && p.marca ? ` (${String(p.marca)})` : ""}
-              <span className="muted small"> — {p.precio_texto ? `${p.precio_texto}${p.orientativo ? " · orientativo" : ""}` : "sin precio publicado"}</span>
+              <span className="muted small"> — {p.precio_texto ? `${p.precio_texto}${p.orientativo ? " · orientativo" : ""}` : ("precio_publico" in p && p.precio_publico === false ? "sin precio público (a medida)" : "sin precio publicado")}</span>
             </li>
           ))}
         </ul>

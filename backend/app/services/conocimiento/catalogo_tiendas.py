@@ -211,13 +211,19 @@ def fila_de(p: dict[str, Any], *, sitio: Sitio, idioma: str, ahora: datetime,
     imagen = imagenes[0].get("src") if imagenes and isinstance(imagenes[0], dict) else None
     descripcion = html_to_text(str(p.get("short_description") or "")).strip()[:MAX_DESCRIPCION]
     marca = marcas[0] if marcas else sitio.marca
+    # La columna lleva la categoría principal (la primera): un producto en nueve
+    # categorías (290 caracteres, 11/10/2026) desbordaba la columna y tiraba la
+    # pasada. La lista entera va en `datos_json.categorias_nombres`.
     return {
         "origen_id": f"{sitio.clave}:{pid}", "idioma": idioma,
         "tipo": clasificar(nombre, categorias), "marca": marca[:80],
         "nombre": nombre[:255], "descripcion": descripcion or None,
-        "caracteristicas_json": "[]", "categoria": (" / ".join(categorias) or None),
+        "caracteristicas_json": "[]",
+        "categoria": (catalogo.recortar_a_columna("categoria", categorias[0])
+                      if categorias else None),
         "imagen": str(imagen)[:500] if imagen else None,
         "precio_texto": precio_texto, "precio_num": precio_num, "moneda": moneda,
+        "precio_publico": True, "descartado": False, "motivo_descarte": None,
         "enlace": str(p.get("permalink") or "").strip()[:500] or None,
         "sitio": sitio.clave, "actualizado_origen": ahora,
         "visible": p.get("is_purchasable") is not False,
@@ -226,6 +232,7 @@ def fila_de(p: dict[str, Any], *, sitio: Sitio, idioma: str, ahora: datetime,
             "oferta": bool(p.get("on_sale")), "tipo_woo": p.get("type"),
             "categorias": [str(c.get("slug")) for c in (p.get("categories") or [])
                            if isinstance(c, dict) and c.get("slug")],
+            "categorias_nombres": categorias,
         }, ensure_ascii=False),
     }
 
@@ -317,9 +324,12 @@ def sincronizar(
     intentados = len(pares) - len(sin_tienda)
     catalogo.cerrar_pasada(pasada, resumen, errores, total=intentados)
     session.flush()
+    saltadas = sum(int(r.get("saltadas") or 0) for r in resumen.values())
     logger.info(
-        "kb.catalogo: tiendas %s — %d productos, %d nuevos, %d actualizados, %d idos%s%s",
+        "kb.catalogo: tiendas %s — %d productos, %d nuevos, %d actualizados, %d idos, "
+        "%d saltados%s%s",
         pasada.estado, pasada.productos, pasada.nuevos, pasada.actualizados, pasada.idos,
+        saltadas,
         f", {len(errores)} tiendas/idiomas con error" if errores else "",
         f", sin tienda: {len(sin_tienda)} webs/idiomas" if sin_tienda else "",
     )

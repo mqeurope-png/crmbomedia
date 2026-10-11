@@ -271,6 +271,9 @@ def _linea_producto(p: dict[str, Any], avisos: dict[str, str], idioma: str) -> s
         if p.get("orientativo"):
             precio += f" · ORIENTATIVO: añade «{avisos['orientativo']}»"
         partes.append(precio)
+    elif p.get("precio_publico") is False:
+        partes.append("PRECIO: no tiene precio público — di que el precio se prepara a medida en "
+                      "la oferta; NO escribas «Consultar» ni ningún importe")
     else:
         partes.append("sin precio publicado: no inventes uno")
     if p.get("enlace"):
@@ -298,11 +301,26 @@ def _bloque_catalogo(ctx: Contexto) -> str:
     lineas = ["CATÁLOGO (los ÚNICOS productos y precios que puedes citar; el precio se copia TAL "
               "CUAL, con su moneda, sin convertir; cada producto con su enlace):"]
     if maquinas:
-        intereses = sorted({m.get("interes") for m in maquinas if m.get("interes")})
-        lineas.append(
-            f"Máquinas que encajan con su interés ({', '.join(intereses) or '—'}); precios "
-            f"{_iva_texto(iva.get('compositor'), avisos)}:")
-        lineas.extend(_linea_producto(m, avisos, ctx.idioma) for m in maquinas)
+        # Por de dónde salió cada máquina: lo que nombra el cliente, lo que pide
+        # la instrucción, el interés clasificado.
+        por_eleccion: dict[str, list[dict[str, Any]]] = {}
+        for m in maquinas:
+            por_eleccion.setdefault(str(m.get("eleccion") or "interes"), []).append(m)
+        precios = f"precios {_iva_texto(iva.get('compositor'), avisos)}"
+        if por_eleccion.get("hilo"):
+            lineas.append(
+                f"Máquinas que el cliente NOMBRA en el hilo (empieza por estas); {precios}:")
+            lineas.extend(_linea_producto(m, avisos, ctx.idioma) for m in por_eleccion["hilo"])
+        if por_eleccion.get("instruccion"):
+            lineas.append(f"Máquinas que pide la INSTRUCCIÓN de quien envía; {precios}:")
+            lineas.extend(_linea_producto(m, avisos, ctx.idioma)
+                          for m in por_eleccion["instruccion"])
+        if por_eleccion.get("interes"):
+            intereses = sorted(
+                {m.get("interes") for m in por_eleccion["interes"] if m.get("interes")})
+            lineas.append(
+                f"Máquinas que encajan con su interés ({', '.join(intereses) or '—'}); {precios}:")
+            lineas.extend(_linea_producto(m, avisos, ctx.idioma) for m in por_eleccion["interes"])
     if cat.get("sin_maquina"):
         lineas.append(
             f"Sin máquina en el catálogo para: {', '.join(cat['sin_maquina'])}. No inventes "

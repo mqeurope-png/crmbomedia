@@ -126,6 +126,8 @@ const DATOS: Conocimiento = {
     },
     idos: 0,
     con_precio: 82 + 1544,
+    descartados: 2,
+    sin_precio_publico: 1,
     marcas: [
       { nombre: "MBO", logo: null, color: null, urls: { es: "https://mboprinters.com/" }, idioma_defecto: "es", ida: false },
       { nombre: "artisJet", logo: null, color: null, urls: {}, idioma_defecto: "es", ida: false },
@@ -157,7 +159,8 @@ function producto(over: Partial<CatalogoProducto> & { id: string; nombre: string
   return {
     fuente: "compositor", tipo: "maquina", marca: "artisJet", origen_id: over.id, descripcion: null,
     caracteristicas: [], categoria: null, imagen: null, precio_texto: "9.300 €", precio_num: 9300,
-    moneda: "EUR", enlace: "https://artisjet-printers.eu/x/", idioma: "es", sitio: "artisjet-eu",
+    moneda: "EUR", precio_publico: true, descartado: false, motivo_descarte: null,
+    enlace: "https://artisjet-printers.eu/x/", idioma: "es", sitio: "artisjet-eu",
     actualizado_origen: "2026-09-20T08:00:00Z", visible: true, datos: {}, visto_en: null, ido_en: null,
     ...over,
   };
@@ -336,6 +339,7 @@ describe("ConocimientoPanel (Configuración ERP → Base de conocimiento)", () =
     await user.click(screen.getByRole("button", { name: "Ver el catálogo" }));
     await waitFor(() => expect(mockProductos).toHaveBeenCalledWith({
       fuente: "compositor", tipo: undefined, idioma: undefined, marca: undefined, q: "5000",
+      con_descartados: undefined,
     }));
     const tabla = await screen.findByLabelText("Productos del catálogo");
     expect(within(tabla).getByText("9.300 €")).toBeInTheDocument();
@@ -344,6 +348,33 @@ describe("ConocimientoPanel (Configuración ERP → Base de conocimiento)", () =
     expect(within(tabla).getAllByRole("link", { name: "abrir" })[2]).toHaveAttribute(
       "href", "https://fluxlasers.es/producto/lente/");
     expect(screen.getByText("3 filas.")).toBeInTheDocument();
+  });
+
+  it("los descartados se ven si se piden, con su motivo; «Consultar» es «sin precio público»", async () => {
+    mockProductos.mockResolvedValue({
+      productos: [
+        producto({ id: "edison", nombre: "Edison Gold Award", precio_texto: null, precio_num: null,
+          descartado: true, motivo_descarte: "sin precio ni área de impresión: no es una máquina" }),
+        producto({ id: "mbo-uv2513", nombre: "MBO UV2513", marca: "mbo", precio_texto: null, precio_num: null,
+          precio_publico: false }),
+        producto({ id: "mbo-uv1812", nombre: "MBO UV1812", marca: "mbo", precio_texto: "desde 21.500 €",
+          precio_num: 21500 }),
+      ],
+      total: 3, limite: 500,
+    });
+    const user = userEvent.setup();
+    render(<ConocimientoPanel canEdit />);
+    await screen.findByRole("cell", { name: "www.mqeurope.com" });
+    expect(screen.getByTestId("kb-descartes")).toHaveTextContent("2 entradas descartadas");
+    expect(screen.getByTestId("kb-descartes")).toHaveTextContent("1 producto sin precio público");
+    await user.click(screen.getByLabelText("Ver descartados"));
+    await user.click(screen.getByRole("button", { name: "Ver el catálogo" }));
+    await waitFor(() => expect(mockProductos).toHaveBeenCalledWith(expect.objectContaining({ con_descartados: true })));
+    const tabla = await screen.findByLabelText("Productos del catálogo");
+    expect(within(tabla).getByText(/descartado: sin precio ni área de impresión/)).toBeInTheDocument();
+    expect(within(tabla).getByText("sin precio público (el origen dice «Consultar»)")).toBeInTheDocument();
+    expect(within(tabla).getByText("desde 21.500 €")).toBeInTheDocument();
+    expect(within(tabla).queryByText("Consultar")).not.toBeInTheDocument();
   });
 
   it("«Sincronizar compositor» resume la pasada y refresca el estado y las coincidencias", async () => {
