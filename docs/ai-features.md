@@ -175,11 +175,17 @@ datos, preguntarle qué quiere decirle, hablar del cliente en tercera persona
 cuando se sabe cómo se llama («te paso el presupuesto que pidió Marny»), contar
 lo que quien pide ya hizo («Manel ya le envió») o saludarle por su nombre—;
 **dudoso** (se queda en el editor y la franja pide revisarlo) con «el cliente» o
-«el hilo» como objeto, o el nombre de quien pide fuera de la despedida; y
+«el hilo» como objeto, el nombre de quien pide fuera de la despedida o el del
+destinatario fuera del saludo sin que esté claro que se habla de él; y
 **correo** si nada lo delata. **Una oferta de hacer algo («dímelo y te lo
 preparo», «dime si te va bien el jueves») no delata nada**: el primer día de
 uso real (11/10/2026) la guardia vació un correo válido por eso. Ante la duda,
-avisa; borra solo cuando está claro.
+avisa; borra solo cuando está claro. El nombre del destinatario solo cuenta
+escrito con mayúscula («Will» no es «we will send»; «Rosa» no es «la tinta
+rosa»), un cierre con el nombre («Gracias, Marny.», «…con calma, Marny.») es
+un vocativo, y a principio de frase la mayúscula no distingue el nombre de la
+palabra: ahí, como mucho, dudoso. Con cuerpo, la franja titula el aviso
+«Revisa antes de enviar»; sin él, «La IA no ha redactado el correo».
 
 ### La conversación, y por qué no cuesta otro borrador
 
@@ -317,6 +323,18 @@ no, el compositor lo pone donde está la selección (`replaceSelection`); la
 franja lo dice antes de aplicar («Se aplicará solo a la selección: …»). El estado
 de la caja lo decide si hay texto en el cuerpo: con cuerpo va en modo corrección
 y «Redactar» pasa a «Aplicar»; con texto nunca pregunta «¿Qué quieres decirle?».
+Una selección dentro de un párrafo vuelve como texto corrido, sin `<p>`
+alrededor (`texto.encajar_fragmento`), para no anidar párrafos. El turno guarda
+la selección tal cual (`seleccion.original_html`) y el compositor solo
+sustituye **esa**: si la que hay entonces es otra (otro turno elegido después,
+la persona seleccionó otra cosa), ofrece el cuerpo entero y pregunta antes de
+pisar lo escrito a mano. Una corrección que la guardia deja vacía no toca el
+editor (el aviso lo explica), y si la persona sigue escribiendo mientras la IA
+corrige, el compositor pregunta antes de pisarlo. Un cuerpo empalmado de más de
+30.000 caracteres se guarda solo como fragmento (`MAX_HTML_EMPALMADO`; la
+columna `texto` es TEXT en MySQL; `html` es LONGTEXT desde 0141). Descartar es
+descartar la conversación entera: tampoco vuelve, ni admite un turno más, por
+un turno anterior que quedó como regenerado.
 
 **Formato sencillo.** El borrador sale en **HTML con las etiquetas que admite
 el editor** (párrafos, negrita, cursiva, subrayado, encabezados, listas,

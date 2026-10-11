@@ -204,21 +204,25 @@ def escribir_marcas(session: Session, data: dict[str, Any], *, ahora: datetime,
     if not isinstance(marcas, list):
         return 0, []
     con_producto = marcas_con_producto(data)
-    existentes = {m.nombre: m for m in session.scalars(select(MarcaCatalogo))}
-    vistas: set[str] = set()
+    # Las filas de antes se casan por la clave (minúsculas, solo letras y
+    # cifras) del id O del nombre del compositor: una marca que ya estaba se
+    # conserva con su idioma por defecto, se llamara como se llamara.
+    existentes = {catalogo._clave(m.nombre): m for m in session.scalars(select(MarcaCatalogo))}
+    vistas: set[str] = set()                              # claves de las filas tocadas
+    escritas = 0
     sin_producto: list[str] = []
     for b in marcas:
         if not isinstance(b, dict):
             continue
         nombre = _texto(b.get("id") or b.get("name") or b.get("brand"))
-        nombre = nombre[:80] if nombre else None          # la clave de la tabla
-        if not nombre or nombre in vistas:
+        nombre = nombre[:80] if nombre else None          # la clave de la tabla (filas nuevas)
+        claves = [c for c in (catalogo._clave(nombre), catalogo._clave(str(b.get("name") or "")))
+                  if c]
+        if not nombre or not claves or claves[0] in vistas:
             continue
-        if catalogo._clave(nombre) not in con_producto and catalogo._clave(
-                str(b.get("name") or "")) not in con_producto:
+        if not any(c in con_producto for c in claves):
             sin_producto.append(nombre)
             continue
-        vistas.add(nombre)
         urls: dict[str, str] = {}
         for clave in ("urls", "url", "links", "link", "site", "sites"):
             valor = b.get(clave)
@@ -226,22 +230,26 @@ def escribir_marcas(session: Session, data: dict[str, Any], *, ahora: datetime,
                 urls.update({idioma_de(str(k)) or str(k): str(v) for k, v in valor.items() if v})
             elif isinstance(valor, str) and valor.strip():
                 urls.setdefault(catalogo.IDIOMA_RAIZ, valor.strip())
-        fila = existentes.get(nombre)
+        clave = next((c for c in claves if c in existentes), claves[0])
+        fila = existentes.get(clave)
         if fila is None:
             fila = MarcaCatalogo(nombre=nombre, idioma_defecto=idioma_de(
                 str(b.get("idioma_defecto") or b.get("default_lang") or b.get("lang") or ""))
                 or catalogo.IDIOMA_RAIZ)
             session.add(fila)
+            existentes[clave] = fila
+        vistas.add(clave)
+        escritas += 1
         fila.logo = _texto(b.get("logo"))
         fila.color = _texto(b.get("color"))
         fila.urls_json = json.dumps(urls, ensure_ascii=False)
         fila.visto_en = ahora
         fila.ido_en = None
-    for nombre, fila in existentes.items():
-        if nombre not in vistas and fila.ido_en is None:
+    for clave, fila in existentes.items():
+        if clave not in vistas and fila.ido_en is None:
             fila.ido_en = ahora
     session.flush()
-    return len(vistas), sin_producto
+    return escritas, sin_producto
 
 
 def sincronizar(

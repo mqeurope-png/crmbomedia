@@ -125,7 +125,7 @@ vigente).
 | Tabla | Qué guarda |
 |---|---|
 | `kb_catalogo` | Una fila por **producto × idioma**: fuente, tipo, marca, `origen_id` (el id del compositor o `{web}:{id de Woo}`), nombre, descripción, características (JSON), **categoría principal** (la primera de la tienda; la lista entera en `datos_json.categorias_nombres`: una de 290 caracteres tiró la primera pasada) o área, imagen, **`precio_texto`** (tal cual: «9.300 €», «9 300 €», «12,50 €», «desde 21.500 €»), `precio_num` (solo para ordenar; vacío sin importe, nunca cero), moneda, `precio_publico` (False = «Consultar»), `descartado` + `motivo_descarte` (0142), enlace, idioma, web, `actualizado_origen` (el `updated_at` de la fila del compositor; en una tienda, la pasada que confirmó el precio), visible, `visto_en`, `ido_en`. **Ningún valor del origen desborda su columna**: se recorta antes de escribir (`catalogo.recortar_a_columna`) |
-| `kb_catalogo_marcas` | Las marcas del compositor y su **idioma por defecto** (editable): el precio que se usa cuando el producto no lo tiene en el idioma del cliente |
+| `kb_catalogo_marcas` | Las marcas del compositor y su **idioma por defecto** (editable): el precio que se usa cuando el producto no lo tiene en el idioma del cliente. La sincronización casa las filas que ya estaban por su clave (minúsculas, solo letras y cifras) contra el id o el nombre de la marca: «artisJet» y «artisjet» son la misma fila y conserva su idioma |
 | `kb_catalogo_sincronizaciones` | El histórico de pasadas por fuente: estado (`ok` / `parcial` / `error`), recuentos, `origen_actualizado_en`, resumen por idioma o por tienda e idioma |
 | `kb_interes_productos` | **Interés → máquinas**: interés del clasificador, marca del compositor y patrón del nombre (vacío = toda la marca). Se resuelve contra `kb_catalogo` al montar cada borrador: una fila nueva o un producto nuevo del compositor se aplican sin desplegar |
 
@@ -179,13 +179,19 @@ permitidos) y los avisos. Las máquinas se eligen **por este orden** (cada una
 lleva de dónde salió, `eleccion`, y el bloque del prompt las agrupa así):
 
 1. **Lo que el cliente nombra en el hilo** (`catalogo.menciones_en`): por el
-   nombre del producto (palabras con peso: «Orion», «Beambox», códigos como
-   «5000U»; lo más completo primero) y, más flojo, por códigos de modelo
-   (DM3H, PT5) que estén en la descripción, las características, el texto
-   alternativo o el id del producto. Lo que no esté en ningún sitio no se
-   encuentra: los nombres que usa el cliente de talentosdiversos (DM3H, SM3,
-   SwapPress PT5) no están en el compositor y solo entrarían con una lista de
-   nombres alternativos por producto, que sería cosa del compositor.
+   nombre del producto (entero, dos de sus palabras con peso, un código como
+   «5000U», o una palabra escrita como nombre propio a media frase: «la
+   Beambox», «el horno Vega»; lo más completo primero). Una sola palabra
+   corriente de un nombre sin nada más («I trust you» y la «6090 Trust») y
+   los códigos de modelo (DM3H, PT5) que solo están en la descripción, las
+   características, el texto alternativo o el id del producto son menciones
+   **posibles**: van detrás de las seguras y de la instrucción, delante del
+   interés, con su propio rótulo en el prompt («ofrécelas solo si el hilo lo
+   confirma»; `eleccion` = `hilo_posible` / `instruccion_posible`). Lo que no
+   esté en ningún sitio no se encuentra: los nombres que usa el cliente de
+   talentosdiversos (DM3H, SM3, SwapPress PT5) no están en el compositor y
+   solo entrarían con una lista de nombres alternativos por producto, que
+   sería cosa del compositor.
 2. **Lo que pide la instrucción de quien envía**: una máquina concreta, o un
    interés por sus palabras («las máquinas de DTF» → `dtf`; «una láser para
    cortar» → `corte_laser`, `grabado_laser`; «UV grande» → `uv_grande`; «UV» a
@@ -194,6 +200,10 @@ lleva de dónde salió, `eleccion`, y el bloque del prompt las agrupa así):
    casado por palabras contra nombre, categoría y marca de los productos de las
    tiendas), en su lista aparte.
 4. **El interés clasificado**, como hasta ahora.
+
+«Sin máquina en el catálogo para X» solo sale cuando X no tiene ninguna máquina
+por el mapa interés → máquinas, no porque las seis plazas ya estén llenas con lo
+que nombra el hilo.
 
 El bloque CATÁLOGO del prompt es la única fuente de precios; un producto sin
 precio público lleva la orden de decir que se prepara a medida y no escribir

@@ -292,7 +292,8 @@ def turno(
     si no llega, el borrador) y la instrucción. Con `seleccion_html` solo se
     reescribe ese fragmento. El borrador corregido queda como regenerado."""
     borrador = _borrador_accesible(session, borrador_id, current_user)
-    if borrador.estado not in (ESTADO_GENERADO, ESTADO_REGENERADO):
+    if borrador.estado not in (ESTADO_GENERADO, ESTADO_REGENERADO) or (
+            borradores.conversacion_descartada(session, borrador)):
         raise HTTPException(
             status.HTTP_409_CONFLICT, "Ese borrador ya se resolvió (enviado o descartado).")
     nuevo = _redactar(session, lambda: redactor.corregir(
@@ -339,7 +340,9 @@ def conversacion(
     conversación descartada no vuelve: lista vacía."""
     borrador = _borrador_accesible(session, borrador_id, current_user)
     turnos = borradores.turnos_de(session, borrador)
-    if borrador.estado == ESTADO_DESCARTADO or all(t.estado == ESTADO_DESCARTADO for t in turnos):
+    # Descartar es descartar la conversación: con un turno descartado no
+    # vuelve, ni por un turno anterior (regenerado) que guardara un borrador.
+    if borrador.estado == ESTADO_DESCARTADO or any(t.estado == ESTADO_DESCARTADO for t in turnos):
         return {"turnos": [], "actual": None}
     vivos = [t for t in turnos if t.estado != ESTADO_DESCARTADO]
     actual = borrador.id if any(t.id == borrador.id for t in vivos) else vivos[-1].id

@@ -697,7 +697,14 @@ export type BorradorAsistente = {
   /** El turno reescribió solo una selección del editor: el fragmento
    *  reescrito y si pudo empalmarse en el texto entero (`html`). Si no
    *  (`fragmento`), `html` ES el fragmento y va donde esté la selección. */
-  seleccion: { original: string; fragmento_html: string; empalmado: boolean } | null;
+  seleccion: {
+    original: string;
+    /** La selección tal cual la mandó el compositor (null si era muy larga o
+     *  el turno es anterior a guardarla): solo se sustituye ESA selección. */
+    original_html?: string | null;
+    fragmento_html: string;
+    empalmado: boolean;
+  } | null;
   fragmento: boolean;
   /** Lo que la IA le dice a la PERSONA (nunca va en el cuerpo). */
   aviso: string | null;

@@ -1302,11 +1302,14 @@ def test_las_maquinas_se_eligen_por_el_hilo_la_instruccion_y_el_interes(
         assert nombres[:3] == ["Horno Orion", "Horno Vega", "Orion 20"]
         assert set(nombres[3:5]) == {"Secadora Vega", "Vega 60 Pro"}
         assert nombres[-1] == "Lyra 35"                                          # por DM3H
-        assert all(m["eleccion"] == "hilo" for m in maquinas)
+        # Por la descripción es una mención posible, no segura: va detrás y
+        # con su propio rótulo en el prompt.
+        assert [m["eleccion"] for m in maquinas] == ["hilo"] * 5 + ["hilo_posible"]
         assert ctx.catalogo["menciones"]["hilo"][:3] == ["Horno Orion", "Horno Vega", "Orion 20"]
         assert ctx.catalogo["menciones"]["flojas"] == ["Lyra 35"]
         bloque = redactor.bloque_contexto(ctx)
         assert "Máquinas que el cliente NOMBRA en el hilo (empieza por estas)" in bloque
+        assert "Máquinas que PUEDE que nombren el hilo o la instrucción" in bloque
         assert "Máquinas que encajan con su interés" not in bloque
         assert ctx.resumen()["catalogo"]["maquinas"][0]["eleccion"] == "hilo"
         # Lo que el cliente de talentosdiversos escribe de verdad (DM3H, SM3,
@@ -1358,3 +1361,57 @@ def test_las_maquinas_se_eligen_por_el_hilo_la_instruccion_y_el_interes(
         assert catalogo.intereses_de_texto("quiero una impresora UV") == [
             "uv_mediano", "uv_pequeno", "uv_grande"]
         assert catalogo.intereses_de_texto("gracias por todo") == []
+
+
+def test_una_palabra_corriente_no_es_una_maquina_nombrada_y_el_tope_no_inventa_huecos(
+    session_factory: sessionmaker,
+) -> None:
+    """Revisión del PR. (1) Una palabra corriente de un nombre («I trust you» y
+    la 6090 Trust) no es una máquina que el cliente nombra: va como posible,
+    con su propio rótulo en el prompt; escrita como nombre propio a media
+    frase («la Trust»), sí. (2) «Sin máquina para X» solo cuando X no tiene
+    máquinas, no porque el tope ya estuviera lleno con lo que nombra el hilo.
+    (3) Una marca que ya estaba con otro nombre en mayúsculas se conserva, con
+    el idioma que se le puso en la pantalla."""
+    with session_factory() as s:
+        s.add(MarcaCatalogo(nombre="artisJet", idioma_defecto="en"))
+        s.commit()
+        _sincronizar_compositor(s)
+        marcas = list(s.scalars(select(MarcaCatalogo)))
+        artisjet = [m for m in marcas if catalogo._clave(m.nombre) == "artisjet"]
+        assert len(artisjet) == 1 and artisjet[0].idioma_defecto == "en"
+        assert artisjet[0].ido_en is None
+        assert len(marcas) == len(MARCAS_CON_PRODUCTO)
+        # (1) Por el texto solo.
+        grupos = catalogo._maquinas_por_producto(s)
+        nombre = {o: v[0].nombre for o, v in grupos.items()}
+        sueltas = catalogo.menciones_en("I trust you can ship fast.", grupos)
+        assert [(nombre[o], fuerza) for o, fuerza in sueltas] == [
+            ("artisJet 6090 Trust", catalogo.FUERZA_PALABRA)]
+        propias = catalogo.menciones_en("Nos interesa la Trust para el taller.", grupos)
+        assert [(nombre[o], fuerza) for o, fuerza in propias] == [
+            ("artisJet 6090 Trust", catalogo.FUERZA_NOMBRE)]
+        # En el borrador: la posible va detrás de lo seguro, con su rótulo, y
+        # el interés clasificado sigue entrando.
+        contacto = _contacto(s, idioma="es", intereses=["vending"], email="trust@ejemplo.com")
+        hilo = _hilo(s, contacto, [{"de": "trust@ejemplo.com",
+                                    "texto": "I trust you can ship fast."}], asunto="Trust me")
+        s.commit()
+        ctx = contexto.construir(s, thread=hilo, usuario=_admin(s), ahora=AHORA)
+        assert [(m["nombre"], m["eleccion"]) for m in ctx.catalogo["maquinas"]] == [
+            ("artisJet 6090 Trust", "hilo_posible"), ("PimPam CaseBox", "interes"),
+            ("PimPam Custom", "interes")]
+        bloque = redactor.bloque_contexto(ctx)
+        assert "Máquinas que PUEDE que nombren el hilo o la instrucción" in bloque
+        assert "Máquinas que el cliente NOMBRA en el hilo" not in bloque
+        # (2) Seis máquinas nombradas llenan el tope: el interés (vending) tiene
+        # máquinas aunque no quepan, así que no es un hueco del catálogo.
+        lleno = _hilo(s, contacto, [{"de": "trust@ejemplo.com", "texto": (
+            "Precio de la Orion 20, la Lyra 35, la Vega 60 Pro, el Horno Orion, el Horno Vega "
+            "y la Secadora Vega, por favor.")}], asunto="Seis maquinas")
+        s.commit()
+        ctx2 = contexto.construir(s, thread=lleno, usuario=_admin(s), ahora=AHORA)
+        assert len(ctx2.catalogo["maquinas"]) == catalogo.MAQUINAS_MAX
+        assert all(m["eleccion"] == "hilo" for m in ctx2.catalogo["maquinas"])
+        assert ctx2.catalogo["sin_maquina"] == []
+        assert "Sin máquina en el catálogo" not in redactor.bloque_contexto(ctx2)

@@ -242,8 +242,55 @@ describe("AsistenteFranja — corrige lo que hay en el editor", () => {
     }));
     await waitFor(() => expect(onBorrador).toHaveBeenCalledTimes(1));
     expect(onBorrador.mock.calls[0][0].sobre_editor).toBe(true);
+    // El editor no cambió mientras la IA trabajaba: el compositor la pone sin preguntar.
+    expect(onBorrador.mock.calls[0][1]).toEqual({ editorCambiado: false });
     await desplegar(user);
     expect(screen.getByRole("list", { name: "Lo dicho hasta ahora" })).toHaveTextContent("sobre tu texto");
+  });
+
+  it("si el editor cambia mientras la IA trabaja, se lo dice al compositor (que pregunta antes de pisarlo)", async () => {
+    let soltar: (b: BorradorAsistente) => void = () => undefined;
+    api.generarBorradorAsistente.mockReturnValueOnce(new Promise<BorradorAsistente>((r) => { soltar = r; }));
+    const cuerpo = { html: "<p>hola klaus</p>" };
+    const { onBorrador } = montar({ hayTexto: true, obtenerCuerpo: () => ({ html: cuerpo.html, seleccion: "" }) });
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText("Qué quieres decirle"), "más formal");
+    await user.click(screen.getByRole("button", { name: /Aplicar/ }));
+    await waitFor(() => expect(api.generarBorradorAsistente).toHaveBeenCalledTimes(1));
+    cuerpo.html = "<p>hola klaus, y una cosa más que escribí mientras tanto</p>";
+    soltar(borrador({ sobre_editor: true }));
+    await waitFor(() => expect(onBorrador).toHaveBeenCalledTimes(1));
+    expect(onBorrador.mock.calls[0][1]).toEqual({ editorCambiado: true });
+  });
+
+  it("un fragmento vacío (la guardia lo vació) no es «selección perdida»: queda el aviso y el editor no se toca", async () => {
+    api.generarBorradorAsistente.mockResolvedValueOnce(borrador({
+      sobre_editor: true, fragmento: true, html: "", texto: "",
+      aviso: "La IA no ha redactado un correo (habla de Marny en tercera persona).",
+      seleccion: { original: "Te paso los precios.", original_html: "<p>Te paso los precios.</p>", fragmento_html: "", empalmado: false },
+    }));
+    montar({
+      hayTexto: true, onBorrador: jest.fn(() => false),
+      obtenerCuerpo: () => ({ html: "<p>Te paso los precios.</p>", seleccion: "<p>Te paso los precios.</p>" }),
+    });
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText("Qué quieres decirle"), "desarróllala");
+    await user.click(screen.getByRole("button", { name: /Aplicar/ }));
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "La IA no ha redactado el correo: La IA no ha redactado un correo (habla de Marny");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("ante la duda el cuerpo se queda: el aviso pide revisarlo, no dice que no hay correo", async () => {
+    api.generarBorradorAsistente.mockResolvedValueOnce(borrador({
+      aviso: "Revisa el cuerpo antes de enviar: menciona «al cliente». Lo he dejado en el editor por si es un correo válido.",
+    }));
+    montar();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /Redactar/ }));
+    await desplegar(user);
+    expect(await screen.findByRole("status")).toHaveTextContent("Revisa antes de enviar: Revisa el cuerpo");
+    expect(screen.getByRole("status")).not.toHaveTextContent("La IA no ha redactado el correo");
   });
 
   it("sin hilo, con un correo a mano, «Aplicar» manda el texto como correo nuevo", async () => {

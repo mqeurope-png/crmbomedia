@@ -260,7 +260,10 @@ describe("EmailComposerModal — que no destruya trabajo", () => {
       mockTurno.mockResolvedValueOnce(turno({
         id: "b-10", turno: 1, padre_id: "b-9", instruccion: "desarróllala",
         html: "<p>Estimada Marny,</p><p>Le adjunto los precios de las máquinas de DTF.</p>",
-        seleccion: { original: "Le paso los precios.", fragmento_html: "<p>Le adjunto los precios de las máquinas de DTF.</p>", empalmado: true },
+        seleccion: {
+          original: "Le paso los precios.", original_html: "<p>Le paso los precios.</p>",
+          fragmento_html: "<p>Le adjunto los precios de las máquinas de DTF.</p>", empalmado: true,
+        },
       }));
       // La franja se plegó al llegar el borrador: se despliega para corregir.
       await user.click(screen.getByRole("button", { name: /Ayúdame a contestar/ }));
@@ -276,6 +279,58 @@ describe("EmailComposerModal — que no destruya trabajo", () => {
     } finally {
       delete (globalThis as ConSeleccion).__seleccion;
     }
+  });
+
+  it("una corrección vacía no toca el editor; con otra selección o con el editor cambiado, pregunta antes de pisar", async () => {
+    const cuerpo = "<p>Hola Marny,</p><p>Te paso los precios.</p><p>Un saludo</p>";
+    render(
+      <EmailComposerModal
+        initialDraft={borradorGuardado({ body_html: cuerpo, asistente_borrador_id: null })} presentacion="panel"
+        asistente={{ threadId: "t-1", abierto: true }} onClose={jest.fn()}
+      />,
+    );
+    const user = userEvent.setup();
+    const editor = await screen.findByLabelText("Cuerpo");
+    window.confirm = jest.fn(() => false);
+    // 1. La guardia vació la corrección: el texto escrito a mano se queda.
+    mockGenerar.mockResolvedValueOnce(turno({
+      html: "", texto: "", aviso: "La IA no ha redactado un correo (habla de Marny en tercera persona).",
+    }));
+    await user.type(screen.getByLabelText("Qué quieres decirle"), "más formal");
+    await user.click(screen.getByRole("button", { name: /Aplicar/ }));
+    expect(await screen.findByText(/habla de Marny en tercera persona/)).toBeInTheDocument();
+    expect(editor).toHaveValue(cuerpo);
+    expect(window.confirm).not.toHaveBeenCalled();
+    // 2. El turno se reescribió sobre OTRA selección: no va a la que hay ahora;
+    // el cuerpo entero pisaría lo escrito a mano, así que pregunta (y se dice que no).
+    (globalThis as ConSeleccion).__seleccion = "<p>Un saludo</p>";
+    try {
+      mockTurno.mockResolvedValueOnce(turno({
+        id: "b-10", turno: 1, padre_id: "b-9", instruccion: "desarróllala",
+        html: "<p>Hola Marny,</p><p>Le adjunto los precios.</p><p>Un saludo</p>",
+        seleccion: {
+          original: "Te paso los precios.", original_html: "<p>Te paso los precios.</p>",
+          fragmento_html: "<p>Le adjunto los precios.</p>", empalmado: true,
+        },
+      }));
+      await user.type(screen.getByLabelText("Qué quieres decirle"), "desarróllala");
+      await user.click(screen.getByRole("button", { name: /Aplicar/ }));
+      await waitFor(() => expect(mockTurno).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(window.confirm).toHaveBeenCalledTimes(1));
+      expect(editor).toHaveValue(cuerpo);
+    } finally {
+      delete (globalThis as ConSeleccion).__seleccion;
+    }
+    // 3. La persona sigue escribiendo mientras la IA corrige: no se pisa sin preguntar.
+    let soltar: (b: BorradorAsistente) => void = () => undefined;
+    mockTurno.mockReturnValueOnce(new Promise<BorradorAsistente>((r) => { soltar = r; }));
+    await user.type(screen.getByLabelText("Qué quieres decirle"), "más corto");
+    await user.click(screen.getByRole("button", { name: /Aplicar/ }));
+    await waitFor(() => expect(mockTurno).toHaveBeenCalledTimes(2));
+    fireEvent.change(editor, { target: { value: `${cuerpo}<p>Posdata escrita mientras tanto.</p>` } });
+    soltar(turno({ id: "b-11", turno: 2, padre_id: "b-10", instruccion: "más corto", html: "<p>Hola Marny, precios adjuntos.</p>" }));
+    await waitFor(() => expect(window.confirm).toHaveBeenCalledTimes(2));
+    expect(editor).toHaveValue(`${cuerpo}<p>Posdata escrita mientras tanto.</p>`);
   });
 
   it("cuerpoEscrito ignora la firma y los párrafos vacíos del editor", () => {

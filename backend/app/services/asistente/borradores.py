@@ -30,13 +30,27 @@ def _json(raw: str | None, defecto: Any) -> Any:
         return defecto
 
 
+def enlaces_del_borrador(b: BorradorAsistente) -> list[str]:
+    """Las URL de los enlaces que llevó el borrador (`enlaces_json`)."""
+    enlaces = _json(b.enlaces_json, [])
+    if not isinstance(enlaces, list):
+        return []
+    return [str(e.get("url")) for e in enlaces if isinstance(e, dict) and e.get("url")]
+
+
 def html_de(b: BorradorAsistente) -> str:
     """El HTML del borrador: el guardado (HTML sencillo, desde 0141) o, en los
     de antes, el derivado de su texto plano."""
     if b.html is not None:
         return b.html
-    enlaces = _json(b.enlaces_json, [])
-    return a_html(b.texto, [e.get("url", "") for e in enlaces if isinstance(e, dict)])
+    return a_html(b.texto, enlaces_del_borrador(b))
+
+
+def conversacion_descartada(session: Session, borrador: BorradorAsistente) -> bool:
+    """Descartar es descartar la conversación entera: si alguno de sus turnos
+    quedó descartado, no vuelve (tampoco por un turno anterior, que quedó
+    como regenerado y no se tocó al descartar)."""
+    return any(t.estado == ESTADO_DESCARTADO for t in turnos_de(session, borrador))
 
 
 def como_dict(b: BorradorAsistente) -> dict[str, Any]:

@@ -59,7 +59,13 @@ export type AsistenteFranjaProps = {
   obtenerCuerpo?: () => { html: string; seleccion: string };
   /** Llega un turno: el compositor pone su cuerpo (y su asunto) en el editor.
    *  `false` si no pudo (un fragmento para una selección que ya no está). */
-  onBorrador: (borrador: BorradorAsistente) => boolean | void;
+  onBorrador: (
+    borrador: BorradorAsistente,
+    /** `editorCambiado`: el texto del editor ya no es el que se mandó a corregir
+     *  (la persona siguió escribiendo, o es un turno anterior): el compositor
+     *  pregunta antes de pisarlo. */
+    opciones?: { editorCambiado?: boolean },
+  ) => boolean | void;
   /** La conversación se vacía: el editor vuelve a como estaba antes del asistente. */
   onVaciar: () => void;
   /** El turno que está en el editor (para anotar el resultado al enviar), o null. */
@@ -215,23 +221,25 @@ export function AsistenteFranja({
     setSeleccion(sel ? resumenDe(sel) : "");
   }
 
-  function poner(b: BorradorAsistente): boolean {
-    const ok = onBorrador(b);
-    if (ok === false) {
+  function poner(b: BorradorAsistente, opciones?: { editorCambiado?: boolean }): boolean {
+    const ok = onBorrador(b, opciones);
+    if (ok === false && b.fragmento && b.seleccion?.fragmento_html) {
+      // Solo un fragmento sin sitio no se puede poner; un cuerpo vacío (la
+      // guardia) ya lo explica el aviso, y «no reemplazar» es una decisión.
       setError(
         "El editor ya no tiene la selección sobre la que se reescribió este fragmento: "
         + "selecciona otra vez ese texto y pulsa el turno en la lista para ponerlo.",
       );
-      return false;
     }
-    return true;
+    return ok !== false;
   }
 
-  function aplicar(b: BorradorAsistente, lista: BorradorAsistente[], idx: number) {
+  function aplicar(b: BorradorAsistente, lista: BorradorAsistente[], idx: number,
+                   opciones?: { editorCambiado?: boolean }) {
     setTurnos(lista);
     setActual(idx);
     onBorradorActual(b.id);
-    const puesto = poner(b);
+    const puesto = poner(b, opciones);
     // Con borrador, la franja se pliega sola: lo que hay que leer antes de
     // enviar es el correo, y es lo que más sitio necesita.
     if (b.texto && puesto) setAbierta(false);
@@ -258,6 +266,11 @@ export function AsistenteFranja({
     const editor = cuerpo?.html
       ? { texto_actual_html: cuerpo.html, seleccion_html: cuerpo.seleccion || null }
       : null;
+    // Si mientras la IA trabaja la persona sigue escribiendo, lo que vuelve ya
+    // no es una corrección de lo que hay: el compositor pregunta antes de pisarlo.
+    const cambiado = () => ({
+      editorCambiado: editor !== null && (obtenerCuerpo?.().html ?? "") !== editor.texto_actual_html,
+    });
     setOcupado(true);
     setError(null);
     try {
@@ -268,19 +281,19 @@ export function AsistenteFranja({
           ? await turnoAsistente(borrador.id, texto, editor)
           : await turnoAsistente(borrador.id, texto);
         const lista = [...turnos.slice(0, actual + 1), nuevo];
-        aplicar(nuevo, lista, lista.length - 1);
+        aplicar(nuevo, lista, lista.length - 1, cambiado());
       } else if (modo === "nuevo") {
         const nuevo = await generarBorradorNuevo({
           destinatario: para, instruccion: texto, alcance: alcanceEfectivo,
           contact_id: contactId, ...(editor ?? {}),
         });
-        aplicar(nuevo, [nuevo], 0);
+        aplicar(nuevo, [nuevo], 0, cambiado());
       } else {
         const nuevo = await generarBorradorAsistente(threadId as string, {
           alcance: alcanceEfectivo, instruccion: texto || null, destinatario: para || null,
           ...(editor ?? {}),
         });
-        aplicar(nuevo, [nuevo], 0);
+        aplicar(nuevo, [nuevo], 0, cambiado());
       }
       setInstruccion("");
       setSeleccion("");
@@ -325,7 +338,9 @@ export function AsistenteFranja({
     setActual(idx);
     onBorradorActual(b.id);
     setError(null);
-    poner(b);
+    // Un turno anterior se calculó sobre otro texto: si hay algo escrito a
+    // mano, el compositor pregunta antes de pisarlo.
+    poner(b, { editorCambiado: true });
   }
 
   function vaciar(plegar: boolean) {
@@ -470,7 +485,12 @@ export function AsistenteFranja({
             </div>
           ) : null}
           {borrador?.aviso ? (
-            <AvisoPlegable titulo="La IA no ha redactado el correo:" texto={borrador.aviso} />
+            // Con cuerpo (ante la duda se queda en el editor) es un aviso para
+            // revisarlo; sin cuerpo, la IA no redactó nada.
+            <AvisoPlegable
+              titulo={borrador.texto ? "Revisa antes de enviar:" : "La IA no ha redactado el correo:"}
+              texto={borrador.aviso}
+            />
           ) : null}
           {borrador && borrador.pendiente.length > 0 ? (
             <AvisoPlegable titulo="No ha podido responder con los datos:" texto={borrador.pendiente.join(" · ")} />
@@ -514,6 +534,8 @@ export function LoQueHaUsado({ borrador }: { borrador: BorradorAsistente }) {
   const consumibles = catalogo?.consumibles ?? [];
   const nombradas = maquinas.filter((m) => m.eleccion === "hilo").length;
   const pedidas = maquinas.filter((m) => m.eleccion === "instruccion").length;
+  const posibles = maquinas.filter(
+    (m) => m.eleccion === "hilo_posible" || m.eleccion === "instruccion_posible").length;
   const tokens = num("tokens_estimados");
   const presupuesto = num("presupuesto_tokens");
   const partes: string[] = [];
@@ -532,6 +554,7 @@ export function LoQueHaUsado({ borrador }: { borrador: BorradorAsistente }) {
       const origen: string[] = [];
       if (nombradas > 0) origen.push(`${nombradas} que nombra el cliente`);
       if (pedidas > 0) origen.push(`${pedidas} que pide la instrucción`);
+      if (posibles > 0) origen.push(`${posibles} que puede que nombren`);
       trozos.push(`${maquinas.length} máquina${maquinas.length === 1 ? "" : "s"} del catálogo${origen.length > 0 ? ` (${origen.join(", ")})` : ""}`);
     }
     if (consumibles.length > 0) trozos.push(`${consumibles.length} consumible${consumibles.length === 1 ? "" : "s"} de la tienda`);

@@ -318,14 +318,25 @@ export function EmailComposerModal({
   // cuerpo vacío (no había con qué redactar) deja solo la firma. Si en el
   // editor hay algo escrito a mano que la IA no ha corregido, se pregunta
   // antes de pisarlo; una corrección de lo que había (`sobre_editor`) entra
-  // sin preguntar. Un turno sobre una selección va donde está la selección y
-  // el resto no se toca; si el editor ya no la tiene y el turno trae el
-  // cuerpo entero, va entero; si no, no se puede poner (false). El asunto de
-  // la IA solo pisa el que está vacío o el que puso ella misma.
+  // sin preguntar si el editor sigue como cuando se pidió (si cambió mientras
+  // la IA trabajaba, o es un turno anterior que se vuelve a elegir, se
+  // pregunta), y una corrección VACÍA (la guardia la vació) no toca el editor.
+  // Un turno sobre una selección va donde está la selección, si es LA MISMA
+  // sobre la que se reescribió, y el resto no se toca; si no, y el turno trae
+  // el cuerpo entero, va entero; si no, no se puede poner (false). El asunto
+  // de la IA solo pisa el que está vacío o el que puso ella misma.
   const aplicarBorrador = useCallback(
-    (b: BorradorAsistente): boolean => {
-      if (b.seleccion && editorRef.current?.getSelectionHtml()) {
-        const html = editorRef.current.replaceSelection(b.seleccion.fragmento_html);
+    (b: BorradorAsistente, opciones?: { editorCambiado?: boolean }): boolean => {
+      if (b.seleccion) {
+        // Un fragmento vacío (la guardia lo vació): el editor no se toca, el aviso lo explica.
+        if (!b.seleccion.fragmento_html) return false;
+        // Solo sobre la MISMA selección (si no se guardó, por larga, la que haya).
+        const viva = editorRef.current?.getSelectionHtml() ?? "";
+        const original = b.seleccion.original_html;
+        const misma = Boolean(viva) && (original == null || viva === original);
+        const html = misma
+          ? (editorRef.current?.replaceSelection(b.seleccion.fragmento_html) ?? null)
+          : null;
         if (html !== null) {
           if (cuerpoAntesRef.current === null) cuerpoAntesRef.current = bodyHtmlRef.current || "";
           cuerpoIaRef.current = html;
@@ -335,7 +346,9 @@ export function EmailComposerModal({
         }
       }
       if (b.fragmento) return false;
-      if (!b.sobre_editor && escritoAMano() && !window.confirm(
+      if (b.sobre_editor && !cuerpoEscrito(b.html)) return false;
+      const sinPreguntar = b.sobre_editor && !b.seleccion && !opciones?.editorCambiado;
+      if (!sinPreguntar && escritoAMano() && !window.confirm(
         "Ya hay texto en el editor. ¿Reemplazarlo con el borrador de la IA?",
       )) {
         return false;

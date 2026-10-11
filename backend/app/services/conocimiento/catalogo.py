@@ -1050,32 +1050,64 @@ def _tokens_con_peso(texto: str | None) -> set[str]:
     }
 
 
+FUERZA_NOMBRE = "nombre"
+FUERZA_PALABRA = "palabra"
+FUERZA_DESCRIPCION = "descripcion"
+
+
+def _nombres_propios(texto: str | None) -> set[str]:
+    """Las palabras que el texto escribe con mayúscula A MEDIA FRASE («la
+    Beambox», «el horno Vega»): ahí una sola palabra del nombre de una máquina
+    sí la señala. En minúscula («I trust you») o a principio de frase la
+    mayúscula no dice nada."""
+    texto = texto or ""
+    salida: set[str] = set()
+    for m in re.finditer(r"[\w][\w\-\.]*", texto):
+        palabra = m.group(0)
+        if not palabra[:1].isupper():
+            continue
+        previo = texto[:m.start()].rstrip(" \t")
+        if not previo or previo[-1] in ".!?¡¿:;\n\"«(":
+            continue
+        salida.add(palabra.strip("-_.").lower())
+    return salida
+
+
 def menciones_en(texto: str | None, grupos: dict[str, list[ProductoCatalogo]],
                  ) -> list[tuple[str, str]]:
     """Los productos que un texto nombra, por orden de fuerza: `(origen_id,
-    "nombre")` si una palabra con peso del NOMBRE del producto está en el
-    texto; `(origen_id, "descripcion")` si un código del texto (un token con
-    cifras: DM3H, PT5) aparece en la descripción, las características, el
-    texto alternativo o el id del producto. Lo que no esté en ningún sitio no
-    se encuentra: si el cliente usa otros nombres, haría falta una lista de
+    "nombre")` si el NOMBRE del producto está en el texto (entero, dos de sus
+    palabras con peso, un código como «6090», o una palabra escrita como
+    nombre propio a media frase: «la Beambox»); `(origen_id, "palabra")` si
+    solo está UNA palabra de un nombre más largo y nada dice que sea el nombre
+    («I trust you» y la «6090 Trust»: posible, no seguro);
+    `(origen_id, "descripcion")` si un código del texto (un token con cifras:
+    DM3H, PT5) aparece en la descripción, las características, el texto
+    alternativo o el id del producto. Lo que no esté en ningún sitio no se
+    encuentra: si el cliente usa otros nombres, haría falta una lista de
     nombres alternativos por producto (en el compositor)."""
     palabras = _tokens_con_peso(texto)
     if not palabras or not grupos:
         return []
     todas = _tokens(texto)
+    propias = _nombres_propios(texto)
     codigos = {p for p in palabras if _es_codigo(p)}
     fuertes: list[tuple[float, str, str]] = []
+    posibles: list[tuple[float, str, str]] = []
     flojas: list[str] = []
     for origen_id, variantes in grupos.items():
         base = variantes[0]
         marca = _tokens(base.marca)
         nombre = _tokens_con_peso(base.nombre) - marca
-        if nombre & palabras:
+        acierto = nombre & palabras
+        if acierto:
             # Cuanto más del nombre está en el texto, antes va («Orion 20» entero
             # por delante de una «Vega 60 Pro» de la que solo se dijo «Vega»).
             completo = _tokens(base.nombre) - marca
             parte = len(completo & todas) / len(completo) if completo else 0.0
-            fuertes.append((-parte, base.nombre.lower(), origen_id))
+            seguro = (parte >= 1.0 or len(acierto) >= 2 or bool(acierto & propias)
+                      or any(_es_codigo(t) for t in acierto))
+            (fuertes if seguro else posibles).append((-parte, base.nombre.lower(), origen_id))
             continue
         if not codigos:
             continue
@@ -1087,8 +1119,22 @@ def menciones_en(texto: str | None, grupos: dict[str, list[ProductoCatalogo]],
         otros |= _tokens(base.origen_id)
         if codigos & otros:
             flojas.append(origen_id)
-    return ([(o, "nombre") for _, _, o in sorted(fuertes)]
-            + [(o, "descripcion") for o in flojas])
+    return ([(o, FUERZA_NOMBRE) for _, _, o in sorted(fuertes)]
+            + [(o, FUERZA_PALABRA) for _, _, o in sorted(posibles)]
+            + [(o, FUERZA_DESCRIPCION) for o in flojas])
+
+
+def _intereses_con_maquina(codigos: Iterable[str], filas: list[InteresProducto],
+                           grupos: dict[str, list[ProductoCatalogo]]) -> set[str]:
+    """Los intereses (de `codigos`) que tienen alguna máquina en el catálogo
+    por el mapa interés → máquinas, se haya llegado o no al tope de máquinas
+    del borrador."""
+    pedidos = set(codigos)
+    return {
+        fila.interes for fila in filas
+        if fila.activo and fila.interes in pedidos
+        and any(_casa(fila, variantes[0]) for variantes in grupos.values())
+    }
 
 
 def intereses_de_texto(texto: str | None, codigos_validos: Iterable[str] | None = None,
@@ -1154,10 +1200,12 @@ def para_asistente(
     """El bloque CATÁLOGO de un borrador. Las máquinas se eligen por este
     orden: (1) las que el cliente nombra en el hilo, (2) las que pide la
     instrucción de quien envía (una máquina concreta o un interés: «las
-    máquinas de DTF» manda), (4) las del interés clasificado; entre medias
-    (3) van los consumibles de la máquina que ya tiene. Cada máquina lleva de
-    dónde salió (`eleccion`). Los avisos en su idioma y la declaración del IVA
-    por fuente. Nunca el catálogo entero."""
+    máquinas de DTF» manda), (4) las que PUEDE que nombren el hilo o la
+    instrucción (una sola palabra del nombre, o un código de su descripción:
+    `hilo_posible`, `instruccion_posible`), (5) las del interés clasificado;
+    entre medias (3) van los consumibles de la máquina que ya tiene. Cada
+    máquina lleva de dónde salió (`eleccion`). Los avisos en su idioma y la
+    declaración del IVA por fuente. Nunca el catálogo entero."""
     from app.services.conocimiento.config import configuracion  # noqa: PLC0415
 
     cfg = config or configuracion(session)
@@ -1177,25 +1225,41 @@ def para_asistente(
             vistos.add(m["origen_id"])
             maquinas.append({**m, "eleccion": eleccion})
 
+    def _por_origen(origenes: list[str]) -> list[dict[str, Any]]:
+        return maquinas_por_origen(session, origenes, idioma=idioma, ahora=ahora, config=cfg,
+                                   grupos=grupos)
+
+    def _partir(menciones: list[tuple[str, str]]) -> tuple[list[str], list[str]]:
+        """Seguras (por el nombre) y posibles (una palabra, la descripción)."""
+        return ([o for o, fuerza in menciones if fuerza == FUERZA_NOMBRE],
+                [o for o, fuerza in menciones if fuerza != FUERZA_NOMBRE])
+
     # 1. Lo que nombra el cliente en el hilo.
     menciones_hilo = menciones_en(texto_hilo, grupos)
-    _añadir(maquinas_por_origen(session, [o for o, _ in menciones_hilo], idioma=idioma,
-                                ahora=ahora, config=cfg, grupos=grupos), "hilo")
+    hilo_seguras, hilo_posibles = _partir(menciones_hilo)
+    _añadir(_por_origen(hilo_seguras), "hilo")
     # 2. Lo que pide quien envía: una máquina concreta, o un interés entero.
     menciones_instruccion = menciones_en(instruccion, grupos)
-    _añadir(maquinas_por_origen(session, [o for o, _ in menciones_instruccion], idioma=idioma,
-                                ahora=ahora, config=cfg, grupos=grupos), "instruccion")
+    instruccion_seguras, instruccion_posibles = _partir(menciones_instruccion)
+    _añadir(_por_origen(instruccion_seguras), "instruccion")
     if intereses_instruccion:
         _añadir(maquinas_para(session, intereses_instruccion, idioma=idioma, ahora=ahora,
                               config=cfg, filas=filas), "instruccion")
     # 3. Los consumibles de la máquina que ya tiene (lista aparte).
     consumibles = consumibles_para(session, maquina=maquina, modelo_flux=modelo_flux,
                                    idioma=idioma, ahora=ahora, config=cfg)
-    # 4. El interés clasificado.
+    # 4. Lo que PUEDE que nombren (una palabra suelta del nombre, un código de
+    # la descripción): detrás de lo seguro, delante del interés.
+    _añadir(_por_origen(hilo_posibles), "hilo_posible")
+    _añadir(_por_origen(instruccion_posibles), "instruccion_posible")
+    # 5. El interés clasificado.
     _añadir(maquinas_para(session, codigos, idioma=idioma, ahora=ahora, config=cfg, filas=filas),
             "interes")
     pedidos = list(dict.fromkeys(intereses_instruccion + codigos))
-    sin_maquina = [c for c in pedidos if not any(m.get("interes") == c for m in maquinas)]
+    # Sin máquina de verdad (ninguna fila del mapa con producto), no porque el
+    # tope del borrador ya estuviera lleno con lo que nombra el hilo.
+    con_maquina = _intereses_con_maquina(pedidos, filas, grupos)
+    sin_maquina = [c for c in pedidos if c not in con_maquina]
     codigo_avisos = (idioma or "").strip().lower()[:2]
     return {
         "maquinas": maquinas,
@@ -1207,7 +1271,7 @@ def para_asistente(
             "hilo": [grupos[o][0].nombre for o, _ in menciones_hilo if o in grupos],
             "instruccion": [grupos[o][0].nombre for o, _ in menciones_instruccion if o in grupos],
             "flojas": [grupos[o][0].nombre for o, fuerza in menciones_hilo + menciones_instruccion
-                       if fuerza == "descripcion" and o in grupos],
+                       if fuerza != FUERZA_NOMBRE and o in grupos],
         },
         "avisos": avisos_en(idioma),
         "idioma_avisos": codigo_avisos if codigo_avisos in AVISOS else IDIOMA_AVISO_RESPALDO,

@@ -155,11 +155,13 @@ _SALUDO_RE = re.compile(
     re.IGNORECASE,
 )
 #: Lo que precede a un nombre cuando se le está hablando («Hola Marny», «Estimada
-#: Marny»): esa mención no es tercera persona.
+#: Marny», «Gracias, Marny»): esa mención no es tercera persona.
 _VOCATIVO_PREVIO_RE = re.compile(
-    r"(hola|hi|hello|hey|hallo|bonjour|salut|hoi|dag|dear|estimad[oa]|querid[oa]|apreciad[oa]|"
+    r"\b(hola|hi|hello|hey|hallo|bonjour|salut|hoi|dag|dear|estimad[oa]|querid[oa]|apreciad[oa]|"
     r"lieber?|ch[eè]re?|beste|buenos d[ií]as|buenas( tardes| noches)?|guten (tag|morgen)|"
-    r"good (morning|afternoon|evening))\W*$",
+    r"good (morning|afternoon|evening)|gracias|thanks|thank you|danke|merci|bedankt|saludos|"
+    r"un saludo|abrazos?|regards|cheers|hasta (pronto|luego|el \w+)|see you|bis bald|"
+    r"à bientôt|tot ziens)[^\w\n]*$",            # en la misma línea que el nombre
     re.IGNORECASE,
 )
 
@@ -180,17 +182,57 @@ def _pila(nombre: str | None) -> str:
     return (nombre or "").strip().split(" ")[0]
 
 
-def _tercera_persona(texto: str, nombre: str) -> str | None:
-    """El trozo donde el texto habla DE `nombre` en vez de dirigirse a él: «con
-    Marny», «a Marny», «Marny ya tiene». Un saludo («Hola Marny,») o un
-    vocativo («Marny, te adjunto…») no cuentan."""
+#: Lo que precede a un nombre cuando se habla DE esa persona, no con ella: una
+#: preposición («a Marny», «con Marny», «with John») o un verbo del que es
+#: sujeto pospuesto («que pidió Marny»).
+_TERCERA_PREVIO_RE = re.compile(
+    r"\b(a|al|con|para|de|sobre|seg[uú]n|to|with|for|about|from|von|mit|f[uü]r|an|à|avec|pour|"
+    r"chez|aan|met|voor|bij"
+    r"|pidi[oó]|dijo|pregunt[oó]|quiere|quer[ií]a|llam[oó]|escribi[oó]|coment[oó]|envi[oó]|"
+    r"mand[oó]|tiene|necesita|asked|said|wants|needs|told|called|emailed)\W*$",
+    re.IGNORECASE,
+)
+#: Lo que sigue a un nombre cuando es el sujeto de una frase sobre él («Marny
+#: ya tiene», «Marny pidió», «John wants», «Marny está interesada»).
+_TERCERA_SIGUIENTE_RE = re.compile(
+    r"^\s+((ya|no|también|nos|me|les|os|le|lo|la) )*(tiene|ten[ií]a|quiere|quer[ií]a|pide|"
+    r"pidi[oó]|necesita|dice|dijo|pregunta|pregunt[oó]|est[aá]|estaba|ha |hab[ií]a |es |era |"
+    r"has |had |is |was |wants|needs|asked|asks|said|says|hat |ist |will |möchte|braucht|a |"
+    r"est |veut|demande|heeft|wil |vraagt)",
+    re.IGNORECASE,
+)
+
+
+def _tercera_persona(texto: str, nombre: str) -> tuple[str, bool] | None:
+    """El trozo donde el texto nombra a `nombre` sin dirigirse a él, y si está
+    claro que habla DE esa persona (a media frase, tras una preposición o un
+    verbo, «con Marny», «que pidió Marny», o como sujeto, «que Marny ya
+    tiene») o solo la nombra. No cuentan un saludo («Hola Marny,»), un
+    vocativo («Marny, te adjunto…», «…con calma, Marny.») ni la palabra en
+    minúscula: un nombre que también es palabra corriente («Will» en «we will
+    send», «Rosa» en «la tinta rosa») no puede cargarse un correo válido. A
+    principio de frase la mayúscula no distingue el nombre de la palabra
+    («Rosa es el color…»): ahí, como mucho, dudoso. Si alguna mención está
+    clara, esa; si no, la primera."""
+    primera: tuple[str, bool] | None = None
     for m in re.finditer(rf"\b{re.escape(nombre)}\b", texto, re.IGNORECASE):
+        if not m.group(0)[:1].isupper():
+            continue
         antes = texto[max(0, m.start() - 30):m.start()]
-        despues = texto[m.end():m.end() + 3]
+        despues = texto[m.end():m.end() + 24]
         if _VOCATIVO_PREVIO_RE.search(antes) or re.match(r"^\s*[,:!]", despues):
             continue
-        return texto[max(0, m.start() - 25):m.end() + 25].replace("\n", " ").strip()
-    return None
+        if re.search(r",\s*$", antes) and re.match(r"^\s*([.!?…]|$)", despues):
+            continue                                   # «…con calma, Marny.»
+        previo = texto[:m.start()].rstrip(" \t")
+        inicio_de_frase = not previo or previo[-1] in ".!?¡¿:;\n"
+        trozo = texto[max(0, m.start() - 25):m.end() + 25].replace("\n", " ").strip()
+        if not inicio_de_frase and (
+                _TERCERA_PREVIO_RE.search(antes) or _TERCERA_SIGUIENTE_RE.match(despues)):
+            return trozo, True
+        if primera is None:
+            primera = (trozo, False)
+    return primera
 
 
 def _sin_despedida(texto: str) -> str:
@@ -223,10 +265,9 @@ def evaluar_cuerpo(
             return Veredicto(
                 NIVEL_INFORME,
                 f"saluda a {saludo.group('nombre')}, que es quien lo pide, no el destinatario")
-    if destino and not mismo_nombre:
-        trozo = _tercera_persona(texto, destino)
-        if trozo:
-            return Veredicto(NIVEL_INFORME, f"habla de {destino} en tercera persona («{trozo}»)")
+    hallado = _tercera_persona(texto, destino) if destino and not mismo_nombre else None
+    if hallado and hallado[1]:
+        return Veredicto(NIVEL_INFORME, f"habla de {destino} en tercera persona («{hallado[0]}»)")
     if pila and not mismo_nombre:
         # «Manel ya le envió el presupuesto»: le cuenta a quien pide lo que él
         # mismo hizo. («Manel os atenderá el jueves» puede ser un correo
@@ -247,6 +288,12 @@ def evaluar_cuerpo(
     if pila and not mismo_nombre and re.search(rf"\b{re.escape(pila)}\b", _sin_despedida(texto),
                                                re.IGNORECASE):
         return Veredicto(NIVEL_DUDOSO, f"nombra a {pila} (quien lo pide) fuera de la despedida")
+    if hallado:
+        # Nombra al destinatario fuera del saludo y sin hablarle: puede que
+        # hable de esa persona (ante la duda, se queda en el editor con aviso).
+        return Veredicto(
+            NIVEL_DUDOSO, f"nombra a {destino} fuera del saludo («{hallado[0]}»): puede estar "
+                          "hablando de esa persona en vez de hablarle a ella")
     return Veredicto(NIVEL_CORREO)
 
 
@@ -380,6 +427,21 @@ def cuerpo_a_html(cuerpo: str, enlaces: Iterable[str] = ()) -> tuple[str, str]:
         html = limpiar_html(cuerpo, lista)
         return html, html_a_texto(html)
     return a_html(cuerpo, lista), cuerpo
+
+
+_BLOQUE_RE = re.compile(r"<(p|div|ul|ol|li|h[1-6]|table|tr|td|th|blockquote|pre)\b", re.IGNORECASE)
+
+
+def encajar_fragmento(fragmento_html: str, seleccion_html: str) -> str:
+    """Un fragmento devuelto como un solo párrafo cuando la selección era texto
+    DENTRO de un párrafo (sin bloques): sin el `<p>`, para no anidar párrafos
+    al empalmarlo ni partir el párrafo al sustituir la selección en el editor."""
+    if _BLOQUE_RE.search(seleccion_html or ""):
+        return fragmento_html
+    m = re.fullmatch(r"\s*<p>(.*)</p>\s*", fragmento_html or "", re.DOTALL)
+    if not m or _BLOQUE_RE.search(m.group(1)):
+        return fragmento_html
+    return m.group(1).strip()
 
 
 def empalmar(html_actual: str, seleccion_html: str, fragmento_html: str) -> str | None:

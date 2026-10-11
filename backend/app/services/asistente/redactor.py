@@ -56,6 +56,7 @@ from app.models.ia import (
     BorradorAsistente,
 )
 from app.services import llm
+from app.services.asistente import borradores
 from app.services.asistente import contexto as ctx_mod
 from app.services.asistente.config import configuracion as config_asistente
 from app.services.asistente.config import estimar_tokens
@@ -64,9 +65,9 @@ from app.services.asistente.historico import ajustar_al_presupuesto
 from app.services.asistente.texto import (
     NIVEL_CORREO,
     NIVEL_DUDOSO,
-    a_html,
     cuerpo_a_html,
     empalmar,
+    encajar_fragmento,
     enlaces_de,
     evaluar_cuerpo,
     html_a_texto,
@@ -85,6 +86,12 @@ MAX_INSTRUCCION = 2000
 #: Lo que hay en el editor viaja con la petición de corrección; un correo
 #: normal son unos pocos KB, esto es un tope contra un pegado monstruoso.
 MAX_TEXTO_EDITOR = 200_000
+#: Un turno sobre una selección guarda el cuerpo entero con el fragmento
+#: empalmado (para volver a ese turno); más largo que esto, solo el fragmento
+#: (el compositor lo pone en la selección). `texto` es TEXT (64 KB) en MySQL.
+MAX_HTML_EMPALMADO = 30_000
+#: La selección tal cual, para que el compositor solo sustituya ESA selección.
+MAX_SELECCION_GUARDADA = 10_000
 
 NOMBRES_IDIOMA = {
     "es": "español", "en": "inglés", "de": "alemán", "fr": "francés", "nl": "neerlandés",
@@ -315,6 +322,14 @@ def _bloque_catalogo(ctx: Contexto) -> str:
             lineas.append(f"Máquinas que pide la INSTRUCCIÓN de quien envía; {precios}:")
             lineas.extend(_linea_producto(m, avisos, ctx.idioma)
                           for m in por_eleccion["instruccion"])
+        posibles = por_eleccion.get("hilo_posible", []) + por_eleccion.get(
+            "instruccion_posible", [])
+        if posibles:
+            lineas.append(
+                "Máquinas que PUEDE que nombren el hilo o la instrucción (solo una palabra del "
+                "nombre, o un código que sale en su descripción): ofrécelas solo si el hilo lo "
+                f"confirma; {precios}:")
+            lineas.extend(_linea_producto(m, avisos, ctx.idioma) for m in posibles)
         if por_eleccion.get("interes"):
             intereses = sorted(
                 {m.get("interes") for m in por_eleccion["interes"] if m.get("interes")})
@@ -591,14 +606,28 @@ def _rellenar(
     contexto = _json(b.contexto_json)
     contexto.pop("seleccion", None)
     contexto.pop("sobre_editor", None)
-    if seleccion_html and html:
-        entero = empalmar(editor_html or "", seleccion_html, html)
+    if seleccion_html:
+        # El turno es sobre la selección aunque el modelo (o la guardia) no
+        # devolviera nada: el compositor no debe tomar un cuerpo vacío por
+        # «sustituir todo por nada». Un fragmento de texto corrido va sin
+        # `<p>` si la selección era texto dentro de un párrafo.
+        html = encajar_fragmento(html, seleccion_html) if html else ""
+        entero = empalmar(editor_html or "", seleccion_html, html) if html else None
+        if entero is not None and len(entero) > MAX_HTML_EMPALMADO:
+            entero = None                       # demasiado largo: solo el fragmento
         contexto["seleccion"] = {
-            "original": html_a_texto(seleccion_html)[:300], "fragmento_html": html,
+            "original": html_a_texto(seleccion_html)[:300],
+            # Tal cual la mandó el compositor, para que al volver a elegir el
+            # turno solo sustituya ESA selección (no otra que haya entonces).
+            "original_html": seleccion_html if len(seleccion_html) <= MAX_SELECCION_GUARDADA
+            else None,
+            "fragmento_html": html,
             "empalmado": entero is not None,
         }
         if entero is not None:
             html, plano = entero, html_a_texto(entero)
+        elif html:
+            plano = html_a_texto(html)
     if sobre_editor:
         contexto["sobre_editor"] = True
     b.html = html
@@ -795,22 +824,6 @@ def generar(
     return borrador
 
 
-def _html_del_borrador(borrador: BorradorAsistente) -> str:
-    """El HTML del borrador guardado (o derivado de su texto, en los de antes)."""
-    if borrador.html is not None:
-        return borrador.html
-    enlaces = [e.get("url", "") for e in _lista(borrador.enlaces_json)]
-    return a_html(borrador.texto or "", enlaces)
-
-
-def _lista(raw: str | None) -> list[dict[str, Any]]:
-    try:
-        datos = json.loads(raw) if raw else []
-    except (TypeError, ValueError):
-        datos = []
-    return [d for d in datos if isinstance(d, dict)] if isinstance(datos, list) else []
-
-
 def corregir(
     session: Session, *, borrador: BorradorAsistente, instruccion: str, usuario: User,
     texto_actual_html: str | None = None, seleccion_html: str | None = None,
@@ -842,7 +855,7 @@ def corregir(
     actual, seleccion = texto_del_editor(texto_actual_html, seleccion_html)
     sobre_editor = bool(actual)
     if not sobre_editor:
-        actual = _html_del_borrador(borrador) if (borrador.texto or "").strip() else ""
+        actual = borradores.html_de(borrador) if (borrador.texto or "").strip() else ""
         editor_html, seleccion = actual, ""
     primera_redaccion = not actual
     if primera_redaccion:
@@ -881,7 +894,7 @@ def corregir(
         mensajes_hilo=borrador.mensajes_hilo, mensajes_historico=borrador.mensajes_historico,
         estado=ESTADO_GENERADO,
     )
-    enlaces = [e.get("url", "") for e in _lista(borrador.enlaces_json)] + enlaces_de(actual)
+    enlaces = borradores.enlaces_del_borrador(borrador) + enlaces_de(actual)
     _rellenar(nuevo, data, uso, modelo, enlaces=enlaces, editor_html=editor_html,
               seleccion_html=(seleccion_html or "").strip() if seleccion else None,
               sobre_editor=sobre_editor)
