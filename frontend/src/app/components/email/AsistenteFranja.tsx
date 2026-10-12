@@ -605,6 +605,16 @@ export function LoQueHaUsado({ borrador }: { borrador: BorradorAsistente }) {
     partes.push(`la consulta de ${de}${dia ? ` (${dia})` : ""}`);
   }
   partes.push(contacto ? `la ficha de ${contacto.nombre || "el contacto"}${contacto.empresa ? ` (${contacto.empresa})` : ""}` : "sin ficha (destinatario desconocido)");
+  // La oferta que va adjunta (el modal de enviar una oferta): número, líneas
+  // y total, tal como la IA los leyó.
+  const oferta = ctx["oferta"] as { numero?: string; lineas?: number; total?: number } | null | undefined;
+  if (oferta && oferta.numero) {
+    const n = typeof oferta.lineas === "number" ? oferta.lineas : 0;
+    const total = typeof oferta.total === "number"
+      ? `${new Intl.NumberFormat("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(oferta.total)} €`
+      : null;
+    partes.push(`Oferta ${oferta.numero} adjunta (${n} línea${n === 1 ? "" : "s"}${total ? `, total ${total}` : ""})`);
+  }
   // El resto de la ficha que entró: notas internas, campos personalizados,
   // etiquetas y teléfonos.
   const deLaFicha = (
