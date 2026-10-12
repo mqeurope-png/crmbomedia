@@ -8,6 +8,7 @@ import {
 } from "react";
 import type { Editor as TinyMCEEditor } from "tinymce";
 import { getStoredToken } from "../../lib/api";
+import { miniaturaYoutube } from "../../lib/miniaturaYoutube";
 import { EDITOR_INVALID_ELEMENTS } from "./editorConfig";
 
 // Self-host every TinyMCE asset — never the cloud build (no API key,
@@ -425,10 +426,10 @@ export const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
                   let thumb = customThumb;
                   if (!thumb) {
                     thumb = yt
-                      ? // YouTube serves predictable JPEGs without an
-                        // API call — hqdefault is the universal one
-                        // (480x360, always present on every video).
-                        `https://img.youtube.com/vi/${yt[1]}/hqdefault.jpg`
+                      ? // La de YouTube, sin su API y siempre en 16:9:
+                        // maxresdefault si existe, si no mqdefault (nunca
+                        // hqdefault, que es 4:3 y pone bandas negras).
+                        await miniaturaYoutube(yt[1])
                       : await fetchVimeoThumbnail(vm![1]);
                   }
                   if (!thumb) {
@@ -440,7 +441,10 @@ export const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
                   const html =
                     `<a href="${escapeAttr(link)}" target="_blank" rel="noopener" ` +
                     `style="display:inline-block;text-decoration:none;">` +
-                    `<img src="${escapeAttr(thumb)}" alt="Ver vídeo" ` +
+                    // `width` para Outlook, que no mira el CSS: la miniatura va
+                    // al ancho de la columna y escala (la de 1280 no se desborda
+                    // ni la de 320 se queda pequeña).
+                    `<img src="${escapeAttr(thumb)}" alt="Ver vídeo" width="560" ` +
                     `style="max-width:560px;width:100%;height:auto;border-radius:6px;" />` +
                     `</a>`;
                   editor.insertContent(html);
