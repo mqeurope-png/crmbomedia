@@ -426,6 +426,21 @@ desde el `_apply_update` de cada conector:
 | `contacts.origin` | Primer sistema que importó; no se sobrescribe | Es un marcador legacy de un único valor; los orígenes reales viven en `external_references`. Sobrescribir hacía que la ficha "cambiara de origen" en cada sync. |
 | `contacts.created_at_external` | La fecha **más antigua** | El sistema más viejo es la creación real del contacto. |
 | `contacts.updated_at_external` | La fecha **más reciente** | La última actividad en cualquier sistema. |
+| `contacts.custom_fields` | **Clave a clave**: cada sync escribe solo las claves que trae con valor; nunca borra una clave | Antes se sustituía el JSON entero y el último sync en pasar borraba lo del otro (el «Horario» de Agile al pasar Brevo y al revés) y lo que escriben los formularios web y los workflows. Lo aplica `contact_sync_protection.merge_custom_fields`. |
+
+Las claves de `custom_fields` editadas a mano se protegen **una a una**: el
+PATCH de la ficha marca `custom_fields.<clave>` (y el modal manda solo las
+claves que cambian) y el sync no toca esa clave, pero sigue trayendo las
+demás. Con valor `null` en el PATCH la clave se quita, y su marca impide que
+el sync la devuelva. La marca antigua `custom_fields` a secas (de antes de
+fusionar por clave) sigue protegiendo el JSON entero hasta pulsar «Volver al
+valor de Agile/Brevo». Si una misma clave llega de dos cuentas con valores
+distintos, gana la última que sincroniza, como en cualquier otro campo.
+
+Para recuperar lo que ya se perdió (ver `integrations.md` § «Campos
+personalizados»): una sincronización completa repone lo de Brevo y Agile, y
+`scripts.reponer_campos_personalizados` lo que escribieron formularios y
+workflows.
 
 Ambos helpers (`keep_first_origin`, `merge_external_dates`) **extraen
 (pop) sus claves** del `record` antes del bucle genérico de `setattr`,

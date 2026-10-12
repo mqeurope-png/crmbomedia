@@ -21,6 +21,15 @@ Separamos los campos en dos capas + tags merge:
   manualmente desde la UI y no vuelven a aparecer aunque el sistema
   externo las tenga. El operador es la fuente de verdad.
 
+- **`custom_fields`** (el JSON de campos personalizados): se fusiona
+  **clave a clave**, nunca se sustituye entero. Cada sync escribe solo
+  las claves que trae con valor; las demás —las de la otra integración
+  o de otra cuenta, las de un formulario web, un workflow o la ficha—
+  se quedan. El sync nunca borra una clave. Cada clave editada a mano
+  se marca por separado (`custom_fields.<clave>`) y el sync no la toca;
+  la marca `custom_fields` a secas (la de antes de fusionar por clave)
+  sigue protegiendo el JSON entero hasta que se quite.
+
 - **Eventos Brevo** (opens/clicks/bounces/unsubscribes): siempre se
   importan a `email_message_events` sin tocar el contacto. No entran
   en esta política.
@@ -34,10 +43,13 @@ El helper `mark_manually_edited` se llama desde el PATCH del contacto;
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
+import logging
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from app.models.crm import Contact
+
+logger = logging.getLogger(__name__)
 
 
 #: Campos del Contact que viven en sistemas externos y que el sync
@@ -60,11 +72,17 @@ LAYER_A_FIELDS: frozenset[str] = frozenset({
     "address_country",
     "address_country_name",
     "address_region",
-    # `custom_fields` es JSON serializado — el helper compara dict-vs-dict
-    # antes de marcar, así que no se marca por re-serializaciones
-    # del mismo contenido.
+    # `custom_fields` es JSON serializado y NO se sustituye entero: el
+    # sync lo fusiona clave a clave (`merge_custom_fields`) y el PATCH
+    # marca cada clave editada por separado (`custom_fields.<clave>`).
     "custom_fields",
 })
+
+#: El JSON de campos personalizados y el prefijo de la marca de UNA de sus
+#: claves editada a mano (`custom_fields.Horario`). La marca `custom_fields`
+#: a secas es la de antes de fusionar por clave: protege el JSON entero.
+CUSTOM_FIELDS = "custom_fields"
+CUSTOM_FIELD_MARK_PREFIX = f"{CUSTOM_FIELDS}."
 
 #: Campos del Contact que SOLO viven en el CRM. El sync NUNCA los
 #: actualiza. No hace falta marcarlos manualmente — la protección es
@@ -89,6 +107,18 @@ LAYER_B_FIELDS: frozenset[str] = frozenset({
 #: Capa B (donde la marca es solo trazabilidad — el sync nunca toca
 #: Capa B por diseño). El banner muestra los dos tipos.
 MARKABLE_FIELDS: frozenset[str] = LAYER_A_FIELDS | LAYER_B_FIELDS
+
+
+def custom_field_mark(key: str) -> str:
+    """La marca de una clave de `custom_fields` editada a mano."""
+    return f"{CUSTOM_FIELD_MARK_PREFIX}{key}"
+
+
+def _is_markable(name: str) -> bool:
+    return name in MARKABLE_FIELDS or (
+        name.startswith(CUSTOM_FIELD_MARK_PREFIX)
+        and len(name) > len(CUSTOM_FIELD_MARK_PREFIX)
+    )
 
 
 def _load(contact: Contact) -> list[str]:
@@ -127,10 +157,13 @@ def mark_manually_edited(contact: Contact, field_names: list[str]) -> None:
     editado manualmente aunque su protección sea incondicional. El
     sync sigue tratando Capa B como siempre protegida sin importar
     el array, así que marcarlos no cambia el comportamiento, solo
-    el badge."""
+    el badge.
+
+    Las claves de `custom_fields` se marcan una a una
+    (`custom_field_mark(clave)`)."""
     if not field_names:
         return
-    relevant = [f for f in field_names if f in MARKABLE_FIELDS]
+    relevant = [f for f in field_names if _is_markable(f)]
     if not relevant:
         return
     existing = _load(contact)
@@ -143,12 +176,19 @@ def reset_manual_edits(
 ) -> None:
     """Quita marcas del array. `None` o lista vacía → vacía todo el
     array (el próximo sync sobrescribirá cualquier campo de Capa A).
-    Lista concreta → quita solo esos."""
+    Lista concreta → quita solo esos; `custom_fields` quita también las
+    marcas de cada una de sus claves."""
     if not field_names:
         contact.manually_edited_fields_json = None
         return
+    quitar = set(field_names)
+    todo_el_json = CUSTOM_FIELDS in quitar
     existing = _load(contact)
-    remaining = [f for f in existing if f not in set(field_names)]
+    remaining = [
+        f for f in existing
+        if f not in quitar
+        and not (todo_el_json and f.startswith(CUSTOM_FIELD_MARK_PREFIX))
+    ]
     _store(contact, remaining)
 
 
@@ -164,6 +204,125 @@ def is_field_protected(contact: Contact, field_name: str) -> bool:
     return False
 
 
+def decode_custom_fields(raw: Any) -> dict[str, Any] | None:
+    """El JSON de `custom_fields` como dict: `{}` si está vacío (NULL,
+    cadena vacía, `null`) y None si guarda algo que no es un objeto JSON
+    (no se puede fusionar con nada sin destruirlo)."""
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        return dict(raw)
+    texto = str(raw).strip()
+    if not texto:
+        return {}
+    try:
+        valor = json.loads(texto)
+    except (TypeError, ValueError):
+        return None
+    if valor is None:
+        return {}
+    return valor if isinstance(valor, dict) else None
+
+
+def _como_texto(valor: Any) -> str:
+    """Un valor tal como lo enseña —y lo devuelve— el modal de la ficha
+    (`String(v)` en el navegador, `""` para null)."""
+    if valor is None:
+        return ""
+    if isinstance(valor, bool):
+        return "true" if valor else "false"
+    if isinstance(valor, float) and valor.is_integer():
+        return str(int(valor))
+    return str(valor)
+
+
+def _mismo_valor(guardado: Any, nuevo: Any) -> bool:
+    if guardado == nuevo:
+        return True
+    if isinstance(guardado, (dict, list)) or isinstance(nuevo, (dict, list)):
+        return False
+    return _como_texto(guardado) == _como_texto(nuevo)
+
+
+def merge_custom_fields(contact: Contact, incoming: Any) -> str | None:
+    """Las claves que trae un sync, fusionadas en el JSON del contacto:
+    el JSON resultante, o None si no cambia nada.
+
+    Solo se escriben las claves que trae, con valor; las demás se quedan
+    (las de la otra integración o de otra cuenta, las de un formulario,
+    un workflow o la ficha): el sync nunca borra una clave. Las claves
+    editadas a mano (`custom_fields.<clave>`) no se tocan. Si lo guardado
+    no es un objeto JSON no se pisa: se deja y se avisa en el log."""
+    nuevos = decode_custom_fields(incoming)
+    if not nuevos:
+        return None
+    actuales = decode_custom_fields(contact.custom_fields)
+    if actuales is None:
+        logger.warning(
+            "contact_sync_protection: custom_fields del contacto %s no es un "
+            "objeto JSON; el sync no lo fusiona",
+            getattr(contact, "id", "?"),
+        )
+        return None
+    marcas = set(_load(contact))
+    resultado = dict(actuales)
+    for clave, valor in nuevos.items():
+        vacio = valor is None or (isinstance(valor, str) and not valor.strip())
+        if vacio or custom_field_mark(clave) in marcas:
+            continue
+        resultado[clave] = valor
+    if resultado == actuales:
+        return None
+    return json.dumps(resultado, default=str)
+
+
+def apply_manual_custom_fields(contact: Contact, payload: Any) -> list[str]:
+    """Aplica lo que manda la ficha (PATCH) en `custom_fields` y devuelve
+    las marcas de las claves que cambian de verdad, para
+    `mark_manually_edited`.
+
+    Clave a clave, como el sync: solo se tocan las claves que vienen; una
+    clave con valor `None` se quita; las que no vienen se quedan (una
+    sincronización pudo añadir alguna con el modal abierto). `None` (o
+    cadena vacía) en lugar del objeto vacía el JSON entero y marca cada
+    clave quitada, para que el sync no las vuelva a traer. Un valor igual
+    al guardado no cuenta como cambio: el modal lo manda como texto (`5`
+    y `"5"` son lo mismo). ValueError si llega algo que no es un objeto."""
+    if isinstance(payload, str):
+        if payload.strip():
+            payload = decode_custom_fields(payload)
+            if payload is None:
+                raise ValueError("custom_fields tiene que ser un objeto JSON.")
+        else:
+            payload = None
+    actuales = decode_custom_fields(contact.custom_fields)
+    if payload is None:
+        contact.custom_fields = None
+        return [custom_field_mark(str(k)) for k in actuales or {}]
+    if not isinstance(payload, dict):
+        raise ValueError("custom_fields tiene que ser un objeto JSON.")
+    # Lo guardado no era un objeto JSON (legado): la ficha lo sustituye.
+    sustituye = actuales is None
+    resultado = dict(actuales or {})
+    marcas: list[str] = []
+    for clave_cruda, valor in payload.items():
+        clave = str(clave_cruda)
+        if valor is None:
+            if clave in resultado:
+                del resultado[clave]
+                marcas.append(custom_field_mark(clave))
+            continue
+        if clave in resultado and _mismo_valor(resultado[clave], valor):
+            continue
+        resultado[clave] = valor
+        marcas.append(custom_field_mark(clave))
+    if marcas or sustituye:
+        contact.custom_fields = (
+            json.dumps(resultado, default=str) if resultado else None
+        )
+    return marcas
+
+
 def apply_sync_update(
     contact: Contact,
     record: dict,
@@ -176,7 +335,10 @@ def apply_sync_update(
 
     Centraliza la lógica para que el sync de Agile y el de Brevo no
     dupliquen el patrón. Antes existía `_apply_update` por integración;
-    este wrapper reemplaza esas funciones."""
+    este wrapper reemplaza esas funciones.
+
+    `custom_fields` no se sustituye: se fusiona clave a clave
+    (`merge_custom_fields`)."""
     changes: dict[str, object] = {}
     for field, value in record.items():
         if field in LAYER_B_FIELDS:
@@ -187,6 +349,12 @@ def apply_sync_update(
             # no pisa el email del contacto existente.
             continue
         if is_field_protected(contact, field):
+            continue
+        if field == CUSTOM_FIELDS:
+            merged = merge_custom_fields(contact, value)
+            if merged is not None:
+                contact.custom_fields = merged
+                changes[field] = merged
             continue
         current = getattr(contact, field, None)
         if current != value:

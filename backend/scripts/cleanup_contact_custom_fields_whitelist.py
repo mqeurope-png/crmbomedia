@@ -1,51 +1,72 @@
-"""Purge non-whitelist keys from `contacts.custom_fields`.
+"""Quitar de `contacts.custom_fields` el ruido conocido de Brevo.
 
-Sprint Empresas — sub-PR 2 fix. The Brevo + Agile mappers used to
-copy every unknown attribute into the contact's `custom_fields`
-JSON, surfacing internal housekeeping (sib_contact_owner,
-EXT_ID, TELEFONO_2..6, ETIQUETA, EMAILABLE_UNSUBSCRIBED, …) on
-the ficha. The mapper now enforces a business-curated whitelist
-(`brevo.mapper.CUSTOM_FIELDS_WHITELIST`); this script does the
-same cleanup for historic rows.
+Sprint Empresas — sub-PR 2 lo hizo con una lista blanca: borraba toda
+clave que no estuviera en la de Brevo (`CUSTOM_FIELDS_WHITELIST`). Vuelto
+a ejecutar hoy, se llevaría por delante claves buenas que no son de
+Brevo: «CONTACTO Persona» de Agile, las de los formularios web, las de
+los workflows o las de la ficha. Ahora va al revés: solo quita lo que se
+sabe que es ruido, y lo demás lo deja (y lo cuenta en el informe):
 
-Idempotent: a row whose JSON already only contains whitelist
-keys is skipped, so re-running is cheap. NULL `custom_fields`
-stay NULL.
+- `RUIDO`: atributos internos de Brevo que no son de nadie
+  (`sib_contact_owner`, `EXT_ID`).
+- Un teléfono secundario (`TELEFONO_2`…) que ya está entre los teléfonos
+  del contacto (el sync de Brevo los pasa ahí). Si no está, se queda.
 
-Usage:
-    INTEGRATION_SECRETS_KEY=…  python -m scripts.cleanup_contact_custom_fields_whitelist
-    INTEGRATION_SECRETS_KEY=…  python -m scripts.cleanup_contact_custom_fields_whitelist --dry-run
-    INTEGRATION_SECRETS_KEY=…  python -m scripts.cleanup_contact_custom_fields_whitelist --limit 100
+Uso:
+    # 1) Informe, SIN escribir (por defecto).
+    python -m scripts.cleanup_contact_custom_fields_whitelist --probar
 
-Commits in batches of 200 so a partial run still makes progress.
+    # 2) Quitar el ruido de la lista.
+    python -m scripts.cleanup_contact_custom_fields_whitelist --apply
+
+Idempotente: una fila sin ruido no se toca. Una fila que se queda sin
+claves pasa a NULL. Escribe en lotes de 200.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import logging
-from collections import Counter
+from collections import Counter, defaultdict
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.session import get_engine
-from app.integrations.brevo.mapper import CUSTOM_FIELDS_WHITELIST
-from app.models.crm import Contact
+from app.integrations.brevo.mapper import SECONDARY_PHONE_ATTRS, _normalise_attr_key
+from app.models.crm import Contact, ContactPhone
+from app.services.contact_sync_protection import decode_custom_fields
 
 log = logging.getLogger("cleanup_custom_fields")
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
+#: Atributos internos de Brevo, en la forma de `_normalise_attr_key`.
+RUIDO: frozenset[str] = frozenset({"SIB_CONTACT_OWNER", "EXT_ID"})
 
-def _decode(raw: str | None) -> dict[str, Any]:
-    if not raw:
-        return {}
-    try:
-        decoded = json.loads(raw)
-    except (TypeError, ValueError):
-        return {}
-    return decoded if isinstance(decoded, dict) else {}
+_TELEFONOS: frozenset[str] = frozenset(
+    _normalise_attr_key(k) for k in SECONDARY_PHONE_ATTRS
+)
+
+
+def _digitos(valor: Any) -> str:
+    return "".join(c for c in str(valor) if c.isdigit() or c == "+")
+
+
+def claves_de_ruido(campos: dict[str, Any], telefonos: set[str]) -> list[str]:
+    """Las claves de `campos` que se pueden quitar sin perder nada:
+    `RUIDO` y los teléfonos secundarios que ya están en `telefonos` (sus
+    dígitos)."""
+    quitar: list[str] = []
+    for clave, valor in campos.items():
+        normal = _normalise_attr_key(clave)
+        if normal in RUIDO:
+            quitar.append(clave)
+        elif normal in _TELEFONOS and valor is not None:
+            digitos = _digitos(valor)
+            if digitos and digitos in telefonos:
+                quitar.append(clave)
+    return quitar
 
 
 def cleanup(
@@ -56,7 +77,9 @@ def cleanup(
         "contacts_touched": 0,
         "keys_removed": 0,
         "rows_cleared_to_null": 0,
+        "not_json_object": 0,
         "removed_key_freq": Counter(),
+        "kept_key_freq": Counter(),
     }
     engine = get_engine()
     with Session(engine) as session:
@@ -65,33 +88,37 @@ def cleanup(
             stmt = stmt.limit(limit)
         contacts = list(session.scalars(stmt))
         counts["scanned"] = len(contacts)
+        telefonos: dict[str, set[str]] = defaultdict(set)
+        for contact_id, number in session.execute(
+            select(ContactPhone.contact_id, ContactPhone.number)
+        ):
+            digitos = _digitos(number or "")
+            if digitos:
+                telefonos[contact_id].add(digitos)
         pending = 0
         for contact in contacts:
-            decoded = _decode(contact.custom_fields)
-            if not decoded:
+            campos = decode_custom_fields(contact.custom_fields)
+            if campos is None:
+                # No es un objeto JSON: no se toca.
+                counts["not_json_object"] += 1
                 continue
-            kept = {
-                k: v
-                for k, v in decoded.items()
-                if str(k).upper() in CUSTOM_FIELDS_WHITELIST
-                and v not in (None, "")
-            }
-            removed = {
-                k: v for k, v in decoded.items() if k not in kept
-            }
-            if not removed:
+            quitar = claves_de_ruido(campos, telefonos.get(contact.id, set()))
+            for clave in campos:
+                if clave not in quitar:
+                    counts["kept_key_freq"][clave] += 1
+            if not quitar:
                 continue
             counts["contacts_touched"] += 1
-            counts["keys_removed"] += len(removed)
-            for k in removed:
-                counts["removed_key_freq"][k] += 1
-            if not kept:
-                new_value: str | None = None
+            counts["keys_removed"] += len(quitar)
+            for clave in quitar:
+                counts["removed_key_freq"][clave] += 1
+            quedan = {k: v for k, v in campos.items() if k not in quitar}
+            if not quedan:
                 counts["rows_cleared_to_null"] += 1
-            else:
-                new_value = json.dumps(kept, default=str)
             if not dry_run:
-                contact.custom_fields = new_value
+                contact.custom_fields = (
+                    json.dumps(quedan, default=str) if quedan else None
+                )
                 pending += 1
                 if pending >= batch:
                     session.commit()
@@ -100,30 +127,37 @@ def cleanup(
             session.commit()
         if dry_run:
             session.rollback()
-    # Cap the per-key frequency in the JSON output to the noisiest
-    # 20 — a 7k-contact run with hundreds of stray keys is enough
-    # signal without flooding the operator's terminal.
-    top_removed = dict(counts["removed_key_freq"].most_common(20))
-    counts["removed_key_freq"] = top_removed
+    # Las 20 más frecuentes de cada lista bastan para ver qué hay.
+    counts["removed_key_freq"] = dict(counts["removed_key_freq"].most_common(20))
+    counts["kept_key_freq"] = dict(counts["kept_key_freq"].most_common(20))
     return counts
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dry-run", action="store_true")
+    modo = parser.add_mutually_exclusive_group()
+    modo.add_argument("--probar", action="store_true",
+                      help="solo informa (por defecto): no escribe nada")
+    modo.add_argument("--dry-run", action="store_true",
+                      help="lo mismo que --probar")
+    modo.add_argument("--apply", action="store_true",
+                      help="quita el ruido de la lista")
     parser.add_argument("--limit", type=int, default=None)
     args = parser.parse_args()
-    summary = cleanup(dry_run=args.dry_run, limit=args.limit)
+    summary = cleanup(dry_run=not args.apply, limit=args.limit)
     log.info(
         "cleanup summary scanned=%d touched=%d keys_removed=%d "
-        "rows_cleared_to_null=%d dry_run=%s",
+        "rows_cleared_to_null=%d not_json_object=%d escrito=%s",
         summary["scanned"],
         summary["contacts_touched"],
         summary["keys_removed"],
         summary["rows_cleared_to_null"],
-        args.dry_run,
+        summary["not_json_object"],
+        bool(args.apply),
     )
-    print(json.dumps(summary, default=str))
+    print(json.dumps(summary, default=str, ensure_ascii=False))
+    if not args.apply:
+        print("Nada escrito. Para quitar el ruido de la lista: --apply.")
 
 
 if __name__ == "__main__":
