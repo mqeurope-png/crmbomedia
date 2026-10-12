@@ -27,10 +27,19 @@ import {
   type EmailSignature,
 } from "../lib/emailSignaturesApi";
 import {
+  type CorreoGenerado,
+  type EstructuraCompuesta,
+  esEstructura,
+  estructuraVacia,
+  htmlFinalDeVista,
+  textoAHtml,
+} from "../lib/correoCompuesto";
+import {
   createEmailDraft,
   deleteEmailDraft,
   descartarBorradorAsistente,
   getMyEmailAliases,
+  renderCorreoCompuesto,
   sendEmail,
   sendEmailDraft,
   type BorradorAsistente,
@@ -41,6 +50,7 @@ import {
   updateEmailDraft,
 } from "../lib/emailsApi";
 import { AsistenteFranja } from "./email/AsistenteFranja";
+import { CorreoCompuestoVista } from "./email/CorreoCompuestoVista";
 import { extractErrorMessage } from "../lib/errors";
 import { Modal } from "./Modal";
 import { ModalCloseButton } from "./ModalCloseButton";
@@ -216,6 +226,16 @@ export function EmailComposerModal({
   const [bodyHtml, setBodyHtml] = useState(
     initialDraft?.body_html ?? forwardOf?.bodyHtml ?? "",
   );
+  // Un correo compuesto (fichas de producto, tira de marca, vídeo, botones):
+  // su estructura va en la vista previa en lugar del editor; el HTML lo genera
+  // BoHub. null = el correo normal de siempre. `versionVista` sube cuando la
+  // estructura cambia por fuera de la vista (un turno de la IA, un bloque
+  // movido) y la vista se vuelve a generar.
+  const [estructura, setEstructura] = useState<EstructuraCompuesta | null>(() => {
+    const guardada = initialDraft?.estructura;
+    return esEstructura(guardada) && !estructuraVacia(guardada) ? guardada : null;
+  });
+  const [versionVista, setVersionVista] = useState(0);
   const [draftId, setDraftId] = useState<string | null>(
     initialDraft?.id ?? null,
   );
@@ -253,10 +273,14 @@ export function EmailComposerModal({
   const asuntoInicialRef = useRef(subject);
   const subjectRef = useRef(subject);
   const bodyHtmlRef = useRef(bodyHtml);
+  const estructuraRef = useRef(estructura);
+  // El último correo compuesto generado por la vista (para el autoguardado).
+  const generadoRef = useRef<CorreoGenerado | null>(null);
   const draftIdRef = useRef<string | null>(initialDraft?.id ?? null);
   useEffect(() => {
     subjectRef.current = subject;
     bodyHtmlRef.current = bodyHtml;
+    estructuraRef.current = estructura;
     draftIdRef.current = draftId;
   });
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -265,6 +289,7 @@ export function EmailComposerModal({
   // ¿Hay algo que perder? Cuerpo escrito (sin la firma), asunto cambiado, una
   // instrucción a medias en la franja o una conversación con la IA.
   const hayContenido = useCallback((): boolean => {
+    if (!estructuraVacia(estructuraRef.current)) return true;
     if (cuerpoEscrito(bodyHtmlRef.current).length > 0) return true;
     if ((subjectRef.current || "").trim() !== asuntoInicialRef.current.trim()) return true;
     const franja = franjaEstadoRef.current;
@@ -306,12 +331,30 @@ export function EmailComposerModal({
   );
   // Lo que había en el editor antes del asistente (para volver a ello al
   // empezar de nuevo o descartar) y lo último que puso la IA (para saber si la
-  // persona escribió o editó algo a mano, que no se pisa sin preguntar).
+  // persona escribió o editó algo a mano, que no se pisa sin preguntar). Con
+  // un correo compuesto, lo mismo con su estructura.
   const cuerpoAntesRef = useRef<string | null>(null);
+  const estructuraAntesRef = useRef<EstructuraCompuesta | null>(null);
   const cuerpoIaRef = useRef<string | null>(null);
+  const estructuraIaRef = useRef<string | null>(null);
   const escritoAMano = useCallback((): boolean => {
+    if (estructuraRef.current !== null) {
+      return JSON.stringify(estructuraRef.current) !== estructuraIaRef.current;
+    }
     const actual = bodyHtmlRef.current || "";
     return cuerpoEscrito(actual).length > 0 && actual !== cuerpoIaRef.current;
+  }, []);
+  const guardarAntes = useCallback(() => {
+    if (cuerpoAntesRef.current !== null) return;
+    cuerpoAntesRef.current = bodyHtmlRef.current || "";
+    estructuraAntesRef.current = estructuraRef.current;
+  }, []);
+  // Pone (o quita, con null) un correo compuesto en el compositor.
+  const ponerEstructura = useCallback((e: EstructuraCompuesta | null) => {
+    estructuraRef.current = e;
+    setEstructura(e);
+    if (e) setVersionVista((v) => v + 1);
+    else generadoRef.current = null;
   }, []);
   // Llega un turno del asistente: su cuerpo sustituye al del editor, con la
   // firma activa detrás (la IA no firma; la firma la pone el compositor). Un
@@ -327,7 +370,29 @@ export function EmailComposerModal({
   // de la IA solo pisa el que está vacío o el que puso ella misma.
   const aplicarBorrador = useCallback(
     (b: BorradorAsistente, opciones?: { editorCambiado?: boolean }): boolean => {
-      if (b.seleccion) {
+      if (b.modo === "compuesto") {
+        // Un correo compuesto va a la vista previa. Sin bloques (la guardia o
+        // el interruptor lo dejaron vacío) no se toca nada: el aviso lo explica.
+        if (estructuraVacia(b.estructura)) return false;
+        const sinPreguntar = b.sobre_editor && !opciones?.editorCambiado;
+        if (!sinPreguntar && escritoAMano() && !window.confirm(
+          "Ya hay un correo escrito o retocado en el editor. ¿Reemplazarlo con el de la IA?",
+        )) {
+          return false;
+        }
+        guardarAntes();
+        const nueva = b.estructura as EstructuraCompuesta;
+        estructuraIaRef.current = JSON.stringify(nueva);
+        ponerEstructura(nueva);
+        if (b.asunto) {
+          const asunto = b.asunto;
+          setSubject((prev) => (!prev.trim() || prev === asuntoIaRef.current ? asunto : prev));
+          asuntoIaRef.current = asunto;
+        }
+        dirtyRef.current = true;
+        return true;
+      }
+      if (b.seleccion && estructuraRef.current === null) {
         // Un fragmento vacío (la guardia lo vació): el editor no se toca, el aviso lo explica.
         if (!b.seleccion.fragmento_html) return false;
         // Solo sobre la MISMA selección (si no se guardó, por larga, la que haya).
@@ -338,7 +403,7 @@ export function EmailComposerModal({
           ? (editorRef.current?.replaceSelection(b.seleccion.fragmento_html) ?? null)
           : null;
         if (html !== null) {
-          if (cuerpoAntesRef.current === null) cuerpoAntesRef.current = bodyHtmlRef.current || "";
+          guardarAntes();
           cuerpoIaRef.current = html;
           setBodyHtml(html);
           dirtyRef.current = true;
@@ -353,10 +418,12 @@ export function EmailComposerModal({
       )) {
         return false;
       }
-      if (cuerpoAntesRef.current === null) cuerpoAntesRef.current = bodyHtmlRef.current || "";
+      guardarAntes();
       const siguiente = buildBodyWithSignature(b.html || "", "", firmaActiva());
       cuerpoIaRef.current = siguiente;
       setBodyHtml(siguiente);
+      // Un correo normal: si había un compuesto en la vista previa, se va.
+      if (estructuraRef.current !== null) ponerEstructura(null);
       if (b.asunto) {
         const asunto = b.asunto;
         setSubject((prev) => (!prev.trim() || prev === asuntoIaRef.current ? asunto : prev));
@@ -365,24 +432,30 @@ export function EmailComposerModal({
       dirtyRef.current = true;
       return true;
     },
-    [firmaActiva, escritoAMano],
+    [firmaActiva, escritoAMano, guardarAntes, ponerEstructura],
   );
   // Lo que la franja manda al asistente como «texto actual»: el cuerpo sin la
-  // firma, y la selección del editor si la hay.
+  // firma, y la selección del editor si la hay (con un compuesto, nada: va su
+  // estructura).
   const cuerpoParaAsistente = useCallback(
-    () => ({
+    () => (estructuraRef.current !== null ? { html: "", seleccion: "" } : {
       html: sinFirma(bodyHtmlRef.current),
       seleccion: editorRef.current?.getSelectionHtml() ?? "",
     }),
     [],
   );
-  const hayTexto = cuerpoEscrito(bodyHtml).length > 0;
+  const estructuraParaAsistente = useCallback(() => estructuraRef.current, []);
+  const hayTexto = cuerpoEscrito(bodyHtml).length > 0 || !estructuraVacia(estructura);
   const vaciarBorrador = useCallback(() => {
     // Vuelve a lo que había antes del asistente (o solo la firma).
     const antes = cuerpoAntesRef.current;
     const siguiente = antes !== null ? antes : buildBodyWithSignature("", "", firmaActiva());
+    const estructuraAntes = antes !== null ? estructuraAntesRef.current : null;
     cuerpoAntesRef.current = null;
+    estructuraAntesRef.current = null;
     cuerpoIaRef.current = null;
+    estructuraIaRef.current = null;
+    ponerEstructura(estructuraAntes);
     setBodyHtml(siguiente);
     if (asuntoIaRef.current) {
       const inicial = asuntoInicialRef.current;
@@ -390,18 +463,61 @@ export function EmailComposerModal({
       asuntoIaRef.current = null;
     }
     dirtyRef.current = true;
+  }, [firmaActiva, ponerEstructura]);
+
+  // «Pasar a texto»: el compuesto sale de la vista previa y su texto plano
+  // (sin fichas, vídeo ni botones) va al editor normal, con la firma.
+  const pasarATexto = useCallback((texto: string) => {
+    if (!window.confirm(
+      "El correo pasa a texto normal en el editor: se quitan las fichas, la tira de marca, "
+      + "el vídeo y los botones. ¿Seguir?",
+    )) {
+      return;
+    }
+    const siguiente = buildBodyWithSignature(textoAHtml(texto), "", firmaActiva());
+    cuerpoIaRef.current = siguiente;
+    ponerEstructura(null);
+    setBodyHtml(siguiente);
+    dirtyRef.current = true;
+  }, [firmaActiva, ponerEstructura]);
+
+  // El correo final de un compuesto (el que se envía y se guarda): lo genera
+  // el servidor a partir de la estructura, el asunto y la firma; se reutiliza
+  // mientras nada de eso cambie.
+  const finalRef = useRef<{ clave: string; correo: CorreoGenerado } | null>(null);
+  const correoFinal = useCallback(async (): Promise<CorreoGenerado | null> => {
+    const e = estructuraRef.current;
+    if (e === null) return null;
+    const firma = firmaActiva()?.html_content ?? null;
+    const clave = JSON.stringify([e, subjectRef.current, firma]);
+    if (finalRef.current?.clave === clave) return finalRef.current.correo;
+    const correo = await renderCorreoCompuesto({
+      estructura: e, asunto: subjectRef.current, firma_html: firma,
+    });
+    finalRef.current = { clave, correo };
+    return correo;
   }, [firmaActiva]);
 
   // Lo que se guarda en Borradores: una foto del compositor, incluido el
   // turno del asistente que está en el editor (la conversación vuelve al
-  // reabrir) y el hilo al que se responde.
+  // reabrir) y el hilo al que se responde. Un compuesto se guarda con su
+  // estructura y su correo final (`final`; si no lo hay, el último generado).
   const threadId = asistente?.threadId ?? initialDraft?.thread_id ?? null;
-  const payloadBorrador = useCallback((): EmailDraftWrite => ({
+  const payloadBorrador = useCallback((final: CorreoGenerado | null = null): EmailDraftWrite => ({
     thread_id: threadId,
     contact_id: contactId ?? null,
     from_alias: fromAlias || null,
     subject: subject || null,
-    body_html: bodyHtml || null,
+    // Un compuesto: su estructura y su correo (lo que enseña la lista de
+    // Borradores); al reabrir vuelve a la vista previa.
+    ...(estructura !== null
+      ? {
+        body_html: final?.html
+          ?? (generadoRef.current ? htmlFinalDeVista(generadoRef.current.html) : null),
+        body_text: final?.texto ?? generadoRef.current?.texto ?? null,
+        estructura,
+      }
+      : { body_html: bodyHtml || null }),
     to_emails: splitEmails(to),
     cc_emails: cc.trim() ? splitEmails(cc) : null,
     bcc_emails: bcc.trim() ? splitEmails(bcc) : null,
@@ -410,8 +526,8 @@ export function EmailComposerModal({
     include_unsubscribe: includeUnsubscribe,
     asistente_borrador_id: asistenteIdRef.current,
   }), [
-    threadId, contactId, fromAlias, subject, bodyHtml, to, cc, bcc, replyTo?.messageId,
-    activeSignatureId, includeUnsubscribe,
+    threadId, contactId, fromAlias, subject, bodyHtml, estructura, to, cc, bcc,
+    replyTo?.messageId, activeSignatureId, includeUnsubscribe,
   ]);
 
   // Auto-save every 5s when the operator has changed something.
@@ -421,8 +537,8 @@ export function EmailComposerModal({
   useEffect(() => {
     const timer = window.setInterval(async () => {
       if (!dirtyRef.current) return;
-      const payload = payloadBorrador();
       try {
+        const payload = payloadBorrador(await correoFinal().catch(() => null));
         if (draftId) {
           const fresh = await updateEmailDraft(draftId, payload);
           setDraftSavedAt(new Date(fresh.updated_at));
@@ -437,7 +553,7 @@ export function EmailComposerModal({
       }
     }, 5000);
     return () => window.clearInterval(timer);
-  }, [payloadBorrador, draftId]);
+  }, [payloadBorrador, draftId, correoFinal]);
 
   // draftKey isolates the autosave entries per conversation. Replies
   // carry the parent gmail message id (one per thread by construction);
@@ -511,7 +627,7 @@ export function EmailComposerModal({
   // the operator doesn't lose the binary while typing.
   async function ensureDraft(): Promise<string> {
     if (draftIdRef.current) return draftIdRef.current;
-    const created = await createEmailDraft(payloadBorrador());
+    const created = await createEmailDraft(payloadBorrador(await correoFinal().catch(() => null)));
     setDraftId(created.id);
     setDraftSavedAt(new Date(created.updated_at));
     draftIdRef.current = created.id;
@@ -570,7 +686,7 @@ export function EmailComposerModal({
       .replace(/<p>(?:&nbsp;|\s)*<\/p>/g, "")
       .trim();
     if (
-      stripped.length > 0 &&
+      (stripped.length > 0 || estructura !== null) &&
       !window.confirm(
         "Ya hay contenido en el editor. ¿Reemplazar con la plantilla seleccionada?",
       )
@@ -578,6 +694,8 @@ export function EmailComposerModal({
       return;
     }
     setShowPicker(false);
+    // Una plantilla es un correo normal: un compuesto en la vista previa se va.
+    ponerEstructura(null);
     setBodyHtml(selection.body_html);
     dirtyRef.current = true;
     if (selection.subject) {
@@ -602,6 +720,10 @@ export function EmailComposerModal({
       setError("Añade al menos un destinatario en el campo Para.");
       return;
     }
+    if (estructuraRef.current !== null && estructuraVacia(estructuraRef.current)) {
+      setError("El correo no tiene ningún bloque: pide otro a la IA o pásalo a texto.");
+      return;
+    }
     setSubmitting(true);
     setError(null);
     try {
@@ -618,6 +740,16 @@ export function EmailComposerModal({
         ? null
         : (replyTo?.messageId ?? null);
 
+      // Un correo compuesto sale con el correo que genera BoHub a partir de su
+      // estructura (el mismo de la vista previa, con la firma) y su texto
+      // plano; uno normal, con el HTML del editor, como siempre.
+      let cuerpoHtml: string | null = bodyHtml.trim() || null;
+      let cuerpoTexto: string | null = null;
+      const final = await correoFinal();
+      if (final !== null) {
+        cuerpoHtml = final.html;
+        cuerpoTexto = final.texto;
+      }
       let message: EmailMessage;
       // Sprint Email v2.5 — A. Cuando hay adjuntos, el binario vive
       // en email_draft_attachments y solo lo materializa el send
@@ -632,8 +764,8 @@ export function EmailComposerModal({
           ...payloadBorrador(),
           from_alias: fromAlias,
           subject,
-          body_html: bodyHtml.trim() || null,
-          body_text: null,
+          body_html: cuerpoHtml,
+          body_text: cuerpoTexto,
           to_emails: toList,
           in_reply_to_message_id: replyMessageId,
           scheduled_for: scheduledFor,
@@ -654,8 +786,8 @@ export function EmailComposerModal({
           cc: cc.trim() ? splitEmails(cc) : null,
           bcc: bcc.trim() ? splitEmails(bcc) : null,
           subject,
-          body_html: bodyHtml.trim() || null,
-          body_text: null,
+          body_html: cuerpoHtml,
+          body_text: cuerpoTexto,
           contact_id: contactId ?? null,
           in_reply_to_message_id: replyMessageId,
           include_unsubscribe: includeUnsubscribe,
@@ -694,7 +826,7 @@ export function EmailComposerModal({
     setCerrando(true);
     setError(null);
     try {
-      const payload = payloadBorrador();
+      const payload = payloadBorrador(await correoFinal().catch(() => null));
       if (draftIdRef.current) await updateEmailDraft(draftIdRef.current, payload);
       else await createEmailDraft(payload);
       dirtyRef.current = false;
@@ -730,7 +862,9 @@ export function EmailComposerModal({
   }
 
   const hasMerge =
-    hasMergeTokens(bodyHtml) || hasMergeTokens(subject);
+    hasMergeTokens(estructura !== null ? JSON.stringify(estructura) : bodyHtml)
+    || hasMergeTokens(subject);
+  const firmaHtml = firmaActiva()?.html_content ?? null;
   const dialogo = presentacion === "dialogo";
   const ocupado = submitting || cerrando;
 
@@ -875,11 +1009,13 @@ export function EmailComposerModal({
               className="icon-button"
               aria-label="Guardar como plantilla"
               onClick={() => setShowSaveModal(true)}
-              disabled={!bodyHtml.trim()}
+              disabled={!bodyHtml.trim() || estructura !== null}
               title={
-                bodyHtml.trim()
-                  ? "Guardar como plantilla"
-                  : "Escribe algo antes de guardar la plantilla."
+                estructura !== null
+                  ? "Las plantillas son de correo normal: pasa el correo a texto para guardarlo."
+                  : bodyHtml.trim()
+                    ? "Guardar como plantilla"
+                    : "Escribe algo antes de guardar la plantilla."
               }
             >
               <Save size={15} aria-hidden />
@@ -984,6 +1120,7 @@ export function EmailComposerModal({
             borradorInicialId={asistente?.borradorId ?? null}
             hayTexto={hayTexto}
             obtenerCuerpo={cuerpoParaAsistente}
+            obtenerEstructura={estructuraParaAsistente}
             onBorrador={aplicarBorrador}
             onVaciar={vaciarBorrador}
             onBorradorActual={(id) => {
@@ -1011,21 +1148,44 @@ export function EmailComposerModal({
             }
           }}
         >
-          <label>
-            Cuerpo
-            <RichEditor
-              ref={editorRef}
-              value={bodyHtml}
-              onChange={(html) => {
-                setBodyHtml(html);
+          {estructura !== null ? (
+            <CorreoCompuestoVista
+              estructura={estructura}
+              version={versionVista}
+              asunto={subject}
+              firmaHtml={firmaHtml}
+              bloqueada={ocupado}
+              onEditar={(e) => {
+                estructuraRef.current = e;
+                setEstructura(e);
                 dirtyRef.current = true;
               }}
-              placeholder="Escribe tu email. Usa {nombre}, {empresa}, {email} para personalizar."
-              minHeight={376}
-              fill
-              draftKey={draftKey}
+              onCambiar={(e) => {
+                ponerEstructura(e);
+                dirtyRef.current = true;
+              }}
+              onPasarATexto={pasarATexto}
+              onGenerado={(correo) => {
+                generadoRef.current = correo;
+              }}
             />
-          </label>
+          ) : (
+            <label>
+              Cuerpo
+              <RichEditor
+                ref={editorRef}
+                value={bodyHtml}
+                onChange={(html) => {
+                  setBodyHtml(html);
+                  dirtyRef.current = true;
+                }}
+                placeholder="Escribe tu email. Usa {nombre}, {empresa}, {email} para personalizar."
+                minHeight={376}
+                fill
+                draftKey={draftKey}
+              />
+            </label>
+          )}
           {dragging ? (
             <div className="email-compose-dropzone" aria-hidden>
               Suelta para adjuntar

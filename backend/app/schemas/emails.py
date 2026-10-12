@@ -73,6 +73,9 @@ class EmailDraftWrite(BaseModel):
     #: «Ayúdame a contestar»: el turno del asistente que está en el editor,
     #: para que el borrador guardado arrastre la conversación.
     asistente_borrador_id: str | None = Field(default=None, max_length=36)
+    #: Un correo compuesto: su estructura de bloques (vuelve a la vista
+    #: previa al reabrir el borrador); `body_html` es el correo generado.
+    estructura: dict[str, Any] | None = None
 
 
 class EmailDraftRead(BaseModel):
@@ -102,10 +105,24 @@ class EmailDraftRead(BaseModel):
     include_unsubscribe: bool
     scheduled_for: datetime | None
     asistente_borrador_id: str | None = None
+    estructura: dict[str, Any] | None = Field(
+        default=None,
+        validation_alias=AliasChoices("estructura", "estructura_json"),
+    )
     created_at: datetime
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    @field_validator("estructura", mode="before")
+    @classmethod
+    def _decode_estructura(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except (TypeError, ValueError):
+                return None
+        return value if isinstance(value, dict) else None
 
     @field_validator("to_emails", mode="before")
     @classmethod

@@ -1866,6 +1866,11 @@ class EmailDraft(TimestampMixin, Base):
     #: «Ayúdame a contestar»: el turno del asistente que estaba en el editor
     #: al guardar. Al reabrir el borrador, la franja recupera la conversación.
     asistente_borrador_id: Mapped[str | None] = mapped_column(String(36))
+    # Correo compuesto (0144): la estructura de bloques del correo. Con ella el
+    # borrador vuelve a la vista previa; `body_html` es el correo generado.
+    estructura_json: Mapped[str | None] = mapped_column(
+        Text().with_variant(mysql.LONGTEXT(), "mysql")
+    )
 
 
 class EmailDraftAttachment(Base):

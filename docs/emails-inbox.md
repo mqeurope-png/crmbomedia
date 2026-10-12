@@ -78,6 +78,17 @@ podían leer asuntos largos.
   dirección del grupo), la franja lo avisa en cuanto cambias «Para»; en un hilo
   de cliente con un compañero en copia, **Responder** propone al cliente, no al
   último que escribió.
+- **Correos con fichas** («mándale la gama DTF», o el interruptor **Con
+  fichas** de la franja; **Auto** por defecto, **Texto** para forzar el de
+  siempre): la IA prepara un correo compuesto —entrada, tira de la marca,
+  fichas de producto con su imagen y su precio del catálogo («Precio a medida»
+  si no tiene precio público), vídeo, botones y cierre— y en lugar del editor
+  sale la **vista previa**, tal cual llegará, en **Escritorio** o **Móvil**
+  (las fichas se apilan). Pulsa un texto para cambiarlo; pulsa un bloque para
+  subirlo, bajarlo, duplicarlo o quitarlo; o pídeselo a la IA («quita el
+  vídeo», «deja solo dos máquinas»). **Copiar HTML** y **Descargar .html** dan
+  el correo entero; **Pasar a texto** lo convierte en un correo normal. Se
+  envía como siempre, con tu firma y su versión en texto plano.
 - **El compositor del hilo es un diálogo con velo que no destruye trabajo**:
   pulsar en el fondo no lo cierra. Escape, la X y «Cancelar» preguntan si hay
   algo escrito (cuerpo, asunto, instrucción o conversación con la IA): **Guardar

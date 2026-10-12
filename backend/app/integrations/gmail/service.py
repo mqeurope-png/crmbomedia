@@ -916,7 +916,13 @@ def send_email(
             outbound_html, token=track_token, base_url=base_url
         )
         if include_unsubscribe:
-            outbound_html += unsub_html
+            # Un documento entero (un correo compuesto) lo lleva dentro del
+            # <body>, al final; un cuerpo del editor, detrás.
+            if re.search(r"</body\s*>", outbound_html, re.IGNORECASE):
+                outbound_html = re.sub(r"</body\s*>", lambda m: unsub_html + m.group(0),
+                                       outbound_html, count=1, flags=re.IGNORECASE)
+            else:
+                outbound_html += unsub_html
 
     # Sustituye los `src="/api/email-templates/.../by-cid/X"` que las
     # plantillas Gmail importadas dejan en el body por `src="cid:X"`,

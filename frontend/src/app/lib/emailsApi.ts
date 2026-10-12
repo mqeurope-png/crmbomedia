@@ -1,4 +1,5 @@
 import { apiFetch, apiFetchBlob } from "./api";
+import type { CorreoGenerado, EstructuraCompuesta } from "./correoCompuesto";
 
 /** CRM-BANDEJA — descarga el binario de un adjunto y dispara el guardado
  *  en el navegador. El endpoint audita cada descarga en el backend. */
@@ -536,6 +537,8 @@ export type EmailDraft = {
   /** «Ayúdame a contestar»: el turno del asistente que estaba en el editor al
    *  guardar; al reabrir, la franja recupera la conversación. */
   asistente_borrador_id?: string | null;
+  /** Un correo compuesto: su estructura (vuelve a la vista previa al reabrir). */
+  estructura?: EstructuraCompuesta | null;
   created_at: string;
   updated_at: string;
 };
@@ -556,6 +559,7 @@ export type EmailDraftWrite = {
   include_unsubscribe?: boolean;
   scheduled_for?: string | null;
   asistente_borrador_id?: string | null;
+  estructura?: EstructuraCompuesta | null;
 };
 
 export async function listEmailDrafts(): Promise<EmailDraft[]> {
@@ -691,6 +695,10 @@ export type BorradorAsistente = {
    *  había con qué redactar: entonces `aviso` lo explica. */
   texto: string;
   html: string;
+  /** `compuesto`: el turno es un correo compuesto; `estructura` son sus
+   *  bloques y `html` el correo que genera BoHub (la IA nunca escribe HTML). */
+  modo?: "normal" | "compuesto";
+  estructura?: EstructuraCompuesta | null;
   /** La corrección partió de lo que había en el editor: el compositor lo
    *  pone sin preguntar (es el texto de la persona, corregido). */
   sobre_editor: boolean;
@@ -735,7 +743,14 @@ export type AsistenteAlcance = BorradorAsistente["alcance"];
 export type SobreElEditor = {
   texto_actual_html?: string | null;
   seleccion_html?: string | null;
+  /** El interruptor de la franja: `auto` (por defecto, no se manda), `normal`
+   *  (texto) o `compuesto` (con fichas). */
+  formato?: FormatoAsistente;
+  /** Un correo compuesto en la vista previa, con lo retocado: la IA corrige ESO. */
+  estructura_actual?: EstructuraCompuesta | null;
 };
+
+export type FormatoAsistente = "auto" | "normal" | "compuesto";
 
 /** El primer borrador de la respuesta a un hilo. `instruccion` vacía = la IA
  *  deduce del hilo (y si el cliente no ha escrito nada nuevo, cuerpo vacío y
@@ -812,4 +827,20 @@ export async function esDestinatarioInterno(
   direccion: string,
 ): Promise<{ direccion: string; interno: boolean }> {
   return apiFetch(`/api/emails/asistente/interno?direccion=${encodeURIComponent(direccion)}`);
+}
+
+// --- Correos compuestos: el HTML lo genera BoHub a partir de la estructura ----
+
+/** El correo de una estructura: el documento HTML entero y su texto plano.
+ *  Con `preview` lleva los atributos con los que la vista previa edita; sin
+ *  él es exactamente lo que se envía, se copia o se descarga. No envía nada. */
+export async function renderCorreoCompuesto(payload: {
+  estructura: EstructuraCompuesta;
+  asunto?: string | null;
+  firma_html?: string | null;
+  preview?: boolean;
+}): Promise<CorreoGenerado> {
+  return apiFetch<CorreoGenerado>("/api/emails/compuesto/render", {
+    method: "POST", body: JSON.stringify(payload),
+  });
 }

@@ -132,6 +132,13 @@ class BorradorAsistente(TimestampMixin, Base):
     #: en los anteriores: entonces el HTML se deriva de `texto`. LONGTEXT en
     #: MySQL, como los cuerpos de los correos.
     html: Mapped[str | None] = mapped_column(Text().with_variant(mysql.LONGTEXT(), "mysql"))
+    #: `normal` (el cuerpo es texto para el editor) o `compuesto` (el turno es la
+    #: estructura de un correo compuesto y `html` el correo generado), desde 0144.
+    modo: Mapped[str] = mapped_column(String(12), nullable=False, default="normal",
+                                      server_default="normal")
+    #: La estructura del correo compuesto (JSON de bloques), desde 0144.
+    estructura_json: Mapped[str | None] = mapped_column(
+        Text().with_variant(mysql.LONGTEXT(), "mysql"))
     #: Lo que el modelo dijo no poder responder con los datos (JSON de lista).
     pendiente_json: Mapped[str | None] = mapped_column(Text)
     #: Los enlaces que se le ofrecieron (JSON de lista de dicts).

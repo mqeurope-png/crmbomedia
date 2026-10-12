@@ -72,6 +72,9 @@ def como_dict(b: BorradorAsistente) -> dict[str, Any]:
         "destinatario_interno": bool(contexto.get("destinatario_interno")),
         "sin_hilo": b.thread_id is None,
         "texto": b.texto, "html": html_de(b),
+        # `compuesto`: el turno es un correo compuesto; `estructura` son sus
+        # bloques (la vista previa la genera con el HTML de BoHub, nunca de la IA).
+        "modo": b.modo or "normal", "estructura": _json(b.estructura_json, None),
         # La corrección partió de lo que había en el editor (el compositor lo
         # pone sin preguntar) y, si fue sobre una selección, el fragmento
         # reescrito y si pudo empalmarse en el texto (si no, `html` ES el
@@ -111,13 +114,25 @@ def marcar_descartado(session: Session, borrador: BorradorAsistente) -> Borrador
     return borrador
 
 
+#: El separador de la firma en el texto plano de un correo compuesto.
+_FIRMA_EN_TEXTO = "\n\n-- \n"
+
+
 def resultado_del_envio(borrador: BorradorAsistente, *, body_html: str | None,
                         body_text: str | None) -> str:
     """`enviado_tal_cual` si lo que se envió es el borrador (sin contar la
     firma que añade el compositor); si no, `enviado_editado`. Un borrador en
     HTML se compara pasando los dos lados por el mismo conversor a texto; un
     turno que solo reescribió una selección cuenta como tal cual si el
-    fragmento está en lo enviado."""
+    fragmento está en lo enviado. Un correo compuesto se compara por su texto
+    plano (el que genera BoHub con el HTML), sin la firma."""
+    if borrador.modo == "compuesto":
+        enviado = body_text.rsplit(_FIRMA_EN_TEXTO, 1)[0] if body_text else (
+            html_to_text(sin_firma(body_html)) if body_html else "")
+        return (
+            ESTADO_ENVIADO_TAL_CUAL if normalizado(enviado) == normalizado(borrador.texto)
+            else ESTADO_ENVIADO_EDITADO
+        )
     enviado = html_to_text(sin_firma(body_html)) if body_html else (body_text or "")
     contexto = _json(borrador.contexto_json, {})
     seleccion = contexto.get("seleccion") if isinstance(contexto, dict) else None

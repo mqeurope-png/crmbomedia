@@ -109,9 +109,34 @@ def _campos(p: dict[str, Any], raiz: bool) -> dict[str, Any]:
     return {
         "desc": _texto(p.get("desc")), "feat1": _texto(p.get("feat1")),
         "feat2": _texto(p.get("feat2")), "price": _texto(p.get("price")),
-        "link": _texto(p.get("link")),
+        "link": _texto(p.get("link")), "badge": _texto(p.get("badge")),
         **({"area": _texto(p.get("area")), "alt": _texto(p.get("alt"))} if raiz else {}),
     }
+
+
+#: Lo que el compositor guarda para pintar la ficha de un producto (colores
+#: del precio, del botón y de la insignia) y la tira de una marca (etiqueta,
+#: texto del enlace, medidas y fondo del logo, divisoria). Se guarda tal cual
+#: en `datos_json`: el correo compuesto lo usa para salir con la misma calidad
+#: que los correos que se mandan hoy.
+CAMPOS_DISENO_PRODUCTO = {"accent": "acento", "badgeBg": "badge_fondo",
+                          "badgeColor": "badge_color"}
+CAMPOS_DISENO_MARCA = {"label": "etiqueta", "urlLabel": "texto_enlace",
+                       "logoHeight": "logo_alto", "logoMaxWidth": "logo_ancho_max",
+                       "logoBg": "logo_fondo", "divider": "divisoria"}
+
+
+def _diseno(origen: dict[str, Any], campos: dict[str, str]) -> dict[str, Any]:
+    salida: dict[str, Any] = {}
+    for clave, nombre in campos.items():
+        valor = origen.get(clave)
+        if isinstance(valor, dict):
+            valor = {str(k): str(v).strip() for k, v in valor.items() if str(v or "").strip()}
+            if valor:
+                salida[nombre] = valor
+        elif valor is not None and str(valor).strip():
+            salida[nombre] = str(valor).strip()[:200]
+    return salida
 
 
 MOTIVO_SIN_PRECIO_NI_AREA = (
@@ -174,8 +199,10 @@ def filas_de(data: dict[str, Any], *, actualizado_origen: datetime | None) -> li
                 "actualizado_origen": actualizado_origen,
                 "visible": p.get("visible") is not False,
                 "datos_json": json.dumps({
-                    "badge": _texto(p.get("badge")), "alt": _texto(p.get("alt")),
+                    "badge": campos.get("badge") or _texto(p.get("badge")),
+                    "alt": _texto(p.get("alt")),
                     "precio_origen": _texto(campos.get("price")) if sin_publico else None,
+                    **_diseno(p, CAMPOS_DISENO_PRODUCTO),
                 }, ensure_ascii=False),
             })
     return salida
@@ -243,6 +270,7 @@ def escribir_marcas(session: Session, data: dict[str, Any], *, ahora: datetime,
         fila.logo = _texto(b.get("logo"))
         fila.color = _texto(b.get("color"))
         fila.urls_json = json.dumps(urls, ensure_ascii=False)
+        fila.datos_json = json.dumps(_diseno(b, CAMPOS_DISENO_MARCA), ensure_ascii=False)
         fila.visto_en = ahora
         fila.ido_en = None
     for clave, fila in existentes.items():

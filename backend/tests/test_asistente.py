@@ -528,8 +528,10 @@ def test_ningun_camino_del_asistente_envia_correo(
     paquete del asistente no toca Gmail ni el envío, y generar un borrador no
     crea ningún mensaje ni llama a enviar."""
     raiz = Path(__file__).resolve().parents[1] / "app"
-    ficheros = list((raiz / "services" / "asistente").glob("*.py")) + [
-        raiz / "api" / "asistente.py", raiz / "services" / "ia" / "uso.py",
+    ficheros = list((raiz / "services" / "asistente").glob("*.py")) + list(
+        (raiz / "services" / "correo_compuesto").glob("*.py")) + [
+        raiz / "api" / "asistente.py", raiz / "api" / "correo_compuesto.py",
+        raiz / "services" / "ia" / "uso.py",
         raiz / "services" / "ia" / "coste.py", raiz / "services" / "ia" / "modelos.py",
     ]
     prohibido = re.compile(r"send_email|send_message|GmailClient|gmail_service|smtplib|\.send\(")

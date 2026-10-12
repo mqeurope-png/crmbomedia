@@ -25,6 +25,7 @@ from fastapi import (
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.api.correo_compuesto import MAX_ESTRUCTURA
 from app.core.auth import require_user
 from app.core.errors import not_found
 from app.db.session import get_session
@@ -37,6 +38,7 @@ from app.schemas.emails import (
     EmailMessageRead,
     EmailSendRequest,
 )
+from app.services.correo_compuesto import bloques as bq
 
 # Sprint Email v2.5 — A. Gmail limit total por mensaje = 25 MB. Lo
 # enforce-amos en el endpoint de upload: el draft no puede acumular
@@ -81,7 +83,19 @@ def _apply(draft: EmailDraft, payload: EmailDraftWrite, *, now: datetime) -> Non
     draft.include_unsubscribe = payload.include_unsubscribe
     draft.scheduled_for = payload.scheduled_for
     draft.asistente_borrador_id = payload.asistente_borrador_id
+    draft.estructura_json = _estructura_json(payload.estructura)
     draft.updated_at = now
+
+
+def _estructura_json(estructura: dict[str, Any] | None) -> str | None:
+    """La estructura de un correo compuesto, limpia, como JSON (o None)."""
+    if not estructura:
+        return None
+    texto = json.dumps(estructura, ensure_ascii=False)
+    if len(texto) > MAX_ESTRUCTURA:
+        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                            "La estructura del correo es demasiado grande.")
+    return json.dumps(bq.normalizar(estructura), ensure_ascii=False)
 
 
 @router.get("", response_model=list[EmailDraftRead])

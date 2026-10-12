@@ -975,12 +975,17 @@ def test_el_borrador_sale_en_html_sencillo_limpio_y_con_la_lista_como_lista(
             {"de": TALENTOS, "texto": "¿Qué máquinas de DTF tenéis y a qué precio?"}])
         s.commit()
         thread_id = hilo.id
+    # Con el interruptor en «Texto»: es el correo normal de siempre (sin él,
+    # «prepara un correo con las máquinas» pide un correo compuesto).
     with patch.object(llm, "_invoke_claude", falso):
         r = _pedir(http, thread_id, instruccion="prepara un correo con las máquinas de DTF",
                    texto_actual_html="<p>Hola Marny,</p><p>Te paso las máquinas de DTF: "
-                                     "<a href='https://mbo.example/orion-20'>Orion 20</a></p>")
+                                     "<a href='https://mbo.example/orion-20'>Orion 20</a></p>",
+                   formato="normal")
     assert r.status_code == 201, r.text
     b = r.json()["borrador"]
+    assert b["modo"] == "normal" and b["estructura"] is None
+    assert "FORMATO DE ESTE TURNO" not in falso.ultimo["bloques"][1]["text"]
     assert b["html"] == (
         "<p>Hola Marny,</p><p>Estas son las máquinas de <strong>DTF</strong> que te encajan:</p>"
         '<ul><li><strong><a href="https://mbo.example/orion-20">Orion 20</a></strong> — 4.990 € '
@@ -993,10 +998,10 @@ def test_el_borrador_sale_en_html_sencillo_limpio_y_con_la_lista_como_lista(
         "Un saludo\nAdmin"
     )
     # El prompt pide ese formato, la lista como lista y que lo «maquetado» o
-    # «con imágenes» vaya al aviso, no al cuerpo.
+    # «con imágenes», en un turno de texto, vaya al aviso (con fichas, se pide
+    # como correo compuesto), no al cuerpo.
     assert "<ul>" in redactor.PROMPT_SISTEMA and "SIEMPRE como lista" in redactor.PROMPT_SISTEMA
-    assert "«maquetado»" in redactor.PROMPT_SISTEMA and "imágenes no se insertan" in (
-        redactor.PROMPT_SISTEMA)
+    assert "«maquetado»" in redactor.PROMPT_SISTEMA and "«Con fichas»" in redactor.PROMPT_SISTEMA
     assert "incluido el formato" in redactor.PROMPT_SISTEMA
     with session_factory() as s:
         fila = s.get(BorradorAsistente, b["id"])

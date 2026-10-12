@@ -8,9 +8,12 @@ import {
   descartarBorradorAsistente,
   type EmailDraft,
   generarBorradorAsistente,
+  renderCorreoCompuesto,
+  sendEmail,
   turnoAsistente,
   updateEmailDraft,
 } from "../lib/emailsApi";
+import type { EstructuraCompuesta } from "../lib/correoCompuesto";
 
 // El editor (TinyMCE) va por `next/dynamic`: aquí es un textarea. La
 // «selección» del editor se simula con `globalThis.__seleccion`.
@@ -68,6 +71,7 @@ jest.mock("../lib/emailsApi", () => ({
   generarBorradorAsistente: jest.fn(),
   generarBorradorNuevo: jest.fn(),
   turnoAsistente: jest.fn(),
+  renderCorreoCompuesto: jest.fn(),
 }));
 jest.mock("./email/TemplatePicker", () => ({ TemplatePicker: () => null }));
 jest.mock("./email/SaveTemplateModal", () => ({ SaveTemplateModal: () => null }));
@@ -79,6 +83,29 @@ const mockDelete = deleteEmailDraft as jest.Mock;
 const mockDescartar = descartarBorradorAsistente as jest.Mock;
 const mockGenerar = generarBorradorAsistente as jest.Mock;
 const mockTurno = turnoAsistente as jest.Mock;
+const mockRender = renderCorreoCompuesto as jest.Mock;
+const mockSend = sendEmail as jest.Mock;
+
+const COMPUESTO: EstructuraCompuesta = {
+  version: 1, idioma: "es", marca: "mbo_dtf", pie: null,
+  bloques: [
+    { id: "b1", tipo: "texto", html: "<p>Hola Marny,</p><p>te paso la gama DTF:</p>" },
+    { id: "b2", tipo: "productos_fila", productos: [{ fuente: "compositor", origen_id: "orion-20" }] },
+  ],
+};
+
+/** El servidor de mentira: el correo de una estructura (con `preview`, con
+ *  los atributos de edición) y su texto plano. */
+function correoDe(e: EstructuraCompuesta, preview: boolean) {
+  const filas = e.bloques.map((b) => (b.tipo === "texto"
+    ? `<tr${preview ? ` data-bh-bloque="${b.id}"` : ""}><td${preview ? ` data-bh-campo="${b.id}:html"` : ""} style="padding:0;">${b.html}</td></tr>`
+    : `<tr${preview ? ` data-bh-bloque="${b.id}"` : ""}><td class="bh-col bh-ficha" style="padding:0;">Orion 20 · 4.990 €</td></tr>`)).join("");
+  return {
+    estructura: e, avisos: [], precios: ["4.990 €"],
+    html: `<!DOCTYPE html><html lang="es"><head><meta name="generator" content="BoHub correo compuesto"><style>@media only screen and (max-width: 600px) {}</style></head><body><table role="presentation">${filas}</table></body></html>`,
+    texto: e.bloques.map((b) => (b.tipo === "texto" ? (b.html ?? "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim() : "Orion 20 — 4.990 €")).join("\n\n"),
+  };
+}
 
 function turno(over: Partial<BorradorAsistente> = {}): BorradorAsistente {
   return {
@@ -109,6 +136,8 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockCreate.mockResolvedValue({ id: "d-nuevo", updated_at: "2026-10-11T12:00:00Z" });
   mockUpdate.mockResolvedValue({ id: "d-1", updated_at: "2026-10-11T12:00:00Z" });
+  mockRender.mockImplementation(({ estructura, preview }) => Promise.resolve(correoDe(estructura, Boolean(preview))));
+  mockSend.mockResolvedValue({ id: "m-9" });
 });
 
 describe("EmailComposerModal — que no destruya trabajo", () => {
@@ -337,5 +366,126 @@ describe("EmailComposerModal — que no destruya trabajo", () => {
     expect(cuerpoEscrito("<p></p><p>&nbsp;</p>")).toBe("");
     expect(cuerpoEscrito("<p></p><!--crmbo:signature--><p>&mdash;</p><p>Bart</p><!--/crmbo:signature-->")).toBe("");
     expect(cuerpoEscrito("<p>Hola</p><!--crmbo:signature--><p>Bart</p><!--/crmbo:signature-->")).toBe("<p>Hola</p>");
+  });
+});
+
+describe("EmailComposerModal — correos compuestos", () => {
+  function vista(): HTMLIFrameElement {
+    return screen.getByTitle("Vista previa del correo") as HTMLIFrameElement;
+  }
+
+  it("un turno compuesto va a la vista previa y se envía con el HTML y el texto plano que genera BoHub", async () => {
+    const onSent = jest.fn();
+    render(
+      <EmailComposerModal
+        contactEmail="cliente@ejemplo.com" replyTo={{ messageId: "m-1", subject: "Equipos DTF" }}
+        asistente={{ threadId: "t-1", abierto: true }} onClose={jest.fn()} onSent={onSent}
+      />,
+    );
+    const user = userEvent.setup();
+    await screen.findByLabelText("Cuerpo");
+    mockGenerar.mockResolvedValueOnce(turno({
+      modo: "compuesto", estructura: COMPUESTO, sobre_editor: false, instruccion: "mándale la gama DTF",
+      html: correoDe(COMPUESTO, false).html, texto: correoDe(COMPUESTO, false).texto,
+      asunto: "Re: Equipos DTF",
+    }));
+    await user.type(screen.getByLabelText("Qué quieres decirle"), "mándale la gama DTF");
+    await user.click(screen.getByRole("button", { name: /Redactar/ }));
+    await waitFor(() => expect(vista().contentDocument?.querySelector("[data-bh-campo]")).not.toBeNull());
+    expect(screen.queryByLabelText("Cuerpo")).not.toBeInTheDocument();     // la vista, en lugar del editor
+    expect(mockRender).toHaveBeenCalledWith(expect.objectContaining({ estructura: COMPUESTO, preview: true }));
+    // El interruptor en «Auto» no viaja: la petición es la de siempre.
+    expect(mockGenerar.mock.calls[0][1]).not.toHaveProperty("formato");
+    await user.click(screen.getByRole("button", { name: "Enviar ahora" }));
+    await waitFor(() => expect(mockSend).toHaveBeenCalledTimes(1));
+    const final = mockRender.mock.calls.at(-1)?.[0];
+    expect(final.preview).toBeUndefined();
+    expect(final.asunto).toBe("Re: Equipos DTF");
+    expect(mockSend.mock.calls[0][0]).toMatchObject({
+      to: ["cliente@ejemplo.com"], subject: "Re: Equipos DTF", asistente_borrador_id: "b-9",
+      body_html: correoDe(COMPUESTO, false).html, body_text: correoDe(COMPUESTO, false).texto,
+      in_reply_to_message_id: "m-1",
+    });
+    expect(mockSend.mock.calls[0][0].body_html).not.toContain("data-bh-");
+    expect(onSent).toHaveBeenCalledWith({ id: "m-9" });
+  });
+
+  it("un borrador guardado con estructura vuelve a la vista previa y se guarda con ella", async () => {
+    const onClose = jest.fn();
+    render(
+      <EmailComposerModal
+        initialDraft={borradorGuardado({ estructura: COMPUESTO, body_html: correoDe(COMPUESTO, false).html })}
+        presentacion="panel" asistente={{ threadId: "t-1", borradorId: "b-7", abierto: false }}
+        onClose={onClose}
+      />,
+    );
+    const user = userEvent.setup();
+    await waitFor(() => expect(vista().contentDocument?.querySelector("[data-bh-campo]")).not.toBeNull());
+    // Un texto retocado en la vista va a la estructura que se guarda.
+    const doc = vista().contentDocument as Document;
+    const texto = doc.querySelector('[data-bh-campo="b1:html"]') as HTMLElement;
+    texto.innerHTML = "<p>Hola Marny,</p><p>lo que hablamos:</p>";
+    fireEvent.input(texto);
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", { name: "Guardar en Borradores" }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    const payload = mockUpdate.mock.calls[0][1];
+    expect(payload.estructura.bloques.map((b: { id: string }) => b.id)).toEqual(["b1", "b2"]);
+    expect(payload.estructura.bloques[0].html).toBe("<p>Hola Marny,</p><p>lo que hablamos:</p>");
+    // El cuerpo guardado es el correo de ESA estructura, con lo editado.
+    expect(payload.body_text).toContain("lo que hablamos");
+    expect(payload.body_html).not.toContain("data-bh-");
+    expect(payload.asistente_borrador_id).toBe("b-7");
+  });
+
+  it("con un compuesto en la vista, la franja manda su estructura (y el interruptor si no es «Auto»); «Pasar a texto» lo lleva al editor", async () => {
+    render(
+      <EmailComposerModal
+        initialDraft={borradorGuardado({ estructura: COMPUESTO, asistente_borrador_id: null })}
+        presentacion="panel" asistente={{ threadId: "t-1", abierto: true }} onClose={jest.fn()}
+      />,
+    );
+    const user = userEvent.setup();
+    await waitFor(() => expect(vista().contentDocument?.querySelector("[data-bh-campo]")).not.toBeNull());
+    expect(screen.getByLabelText("Qué quieres decirle")).toHaveAttribute(
+      "placeholder", expect.stringContaining("quita el vídeo"));
+    mockGenerar.mockResolvedValueOnce(turno({
+      modo: "compuesto", estructura: { ...COMPUESTO, bloques: [COMPUESTO.bloques[0]] }, sobre_editor: true,
+      texto: "Hola Marny", html: "<!DOCTYPE html>",
+    }));
+    await user.click(screen.getByRole("radio", { name: "Con fichas" }));
+    await user.type(screen.getByLabelText("Qué quieres decirle"), "quita las fichas");
+    await user.click(screen.getByRole("button", { name: /Aplicar/ }));
+    await waitFor(() => expect(mockGenerar).toHaveBeenCalledTimes(1));
+    expect(mockGenerar.mock.calls[0][1]).toMatchObject({ estructura_actual: COMPUESTO, formato: "compuesto" });
+    expect(mockGenerar.mock.calls[0][1]).not.toHaveProperty("texto_actual_html");
+    // Entra sin preguntar (es la corrección de lo que había) y la vista se regenera.
+    await waitFor(() => expect(mockRender).toHaveBeenLastCalledWith(expect.objectContaining({
+      estructura: { ...COMPUESTO, bloques: [COMPUESTO.bloques[0]] }, preview: true })));
+    window.confirm = jest.fn(() => true);
+    await user.click(screen.getByRole("button", { name: /Pasar a texto/ }));
+    const editor = await screen.findByLabelText("Cuerpo");
+    expect(window.confirm).toHaveBeenCalledTimes(1);
+    expect(editor).toHaveValue("<p>Hola Marny, te paso la gama DTF:</p>");
+    expect(screen.queryByTitle("Vista previa del correo")).not.toBeInTheDocument();
+  });
+
+  it("un compuesto sin bloques no se envía", async () => {
+    render(
+      <EmailComposerModal
+        initialDraft={borradorGuardado({ estructura: COMPUESTO, asistente_borrador_id: null })}
+        presentacion="panel" asistente={null} onClose={jest.fn()}
+      />,
+    );
+    const user = userEvent.setup();
+    await waitFor(() => expect(vista().contentDocument?.querySelector("[data-bh-campo]")).not.toBeNull());
+    for (const id of ["b1", "b2"]) {
+      fireEvent.change(screen.getByLabelText("Bloque"), { target: { value: id } });
+      await user.click(screen.getByRole("button", { name: "Quitar el bloque" }));
+    }
+    expect(await screen.findByText(/se ha quedado sin bloques/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Enviar ahora" }));
+    expect(await screen.findByText(/no tiene ningún bloque/)).toBeInTheDocument();
+    expect(mockSend).not.toHaveBeenCalled();
   });
 });
