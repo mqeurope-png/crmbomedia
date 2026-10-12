@@ -29,6 +29,7 @@ import {
   type SitioWeb,
 } from "../../lib/erpApi";
 import { extractErrorMessage } from "../../lib/errors";
+import { ImagenesBloque, VideosBloque } from "./MediosBloques";
 
 type Props = {
   canEdit: boolean;
@@ -83,6 +84,13 @@ export function ConocimientoPanel({ canEdit }: Props) {
         <>
           <CatalogoBloque datos={datos} canEdit={canEdit} onDatos={setDatos} />
           <InteresProductosBloque datos={datos} canEdit={canEdit} onDatos={setDatos} />
+        </>
+      ) : null}
+      {/* Las imágenes de las webs y los vídeos de los correos compuestos (Fase 3). */}
+      {datos.medios ? (
+        <>
+          <ImagenesBloque datos={datos} canEdit={canEdit} onDatos={setDatos} />
+          <VideosBloque datos={datos} canEdit={canEdit} onDatos={setDatos} />
         </>
       ) : null}
       <Probar datos={datos} />

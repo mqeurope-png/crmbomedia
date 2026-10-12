@@ -48,6 +48,32 @@ describe("correoCompuesto — editar un texto cambia ese campo y nada más", () 
     expect(aplicarEdicion(e, "b2:productos", "x")).toBe(e);
   });
 
+  it("el hero y las muestras: subtítulo, cada punto y cada pie, sin tocar sus imágenes", () => {
+    const e: EstructuraCompuesta = {
+      version: 1, idioma: "es", marca: "mbo_dtf", pie: null,
+      bloques: [
+        { id: "h1", tipo: "hero", imagen: { id: "img-1" }, titulo: "La gama DTF",
+          subtitulo: "En un día", puntos: ["Sin pretratamiento", { es: "Colores vivos", en: "Vivid colours" }],
+          disposicion: "arriba" },
+        { id: "m1", tipo: "muestras", imagenes: [{ id: "img-2" }, { id: "img-3" }], pies: ["Camisetas", ""] },
+      ],
+    };
+    const copia = JSON.parse(JSON.stringify(e));
+    const a = aplicarEdicion(e, "h1:subtitulo", "De la pantalla a la prenda");
+    expect(a.bloques[0]).toEqual({ ...copia.bloques[0], subtitulo: "De la pantalla a la prenda" });
+    const b = aplicarEdicion(e, "h1:puntos.1", "Colores que no se lavan");
+    expect(b.bloques[0].puntos).toEqual(["Sin pretratamiento", { es: "Colores que no se lavan", en: "Vivid colours" }]);
+    expect(b.bloques[0].imagen).toEqual({ id: "img-1" });
+    const c = aplicarEdicion(e, "m1:pies.1", "Sudaderas");
+    expect(c.bloques[1]).toEqual({ ...copia.bloques[1], pies: ["Camisetas", "Sudaderas"] });
+    expect(e).toEqual(copia);
+    // Un punto o un pie que no existe, o el mismo texto, no cambian nada.
+    expect(aplicarEdicion(e, "h1:puntos.5", "x")).toBe(e);
+    expect(aplicarEdicion(e, "m1:pies.0", "Camisetas")).toBe(e);
+    expect(etiquetaBloque(e.bloques[0], "es")).toBe("Hero · «La gama DTF»");
+    expect(etiquetaBloque(e.bloques[1], "es")).toBe("Muestras · «2 imágenes»");
+  });
+
   it("subir, bajar, quitar y duplicar mueven bloques enteros, con sus id", () => {
     const e = estructura();
     expect(moverBloque(e, "b3", -1).bloques.map((b) => b.id)).toEqual(["b1", "b3", "b2", "b4"]);

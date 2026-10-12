@@ -355,12 +355,13 @@ máquinas (lo que nombra el cliente, lo que pide la instrucción, la máquina qu
 tiene, el interés), «Consultar», los premios descartados y la escritura por
 lotes.
 
-### Correos compuestos: fichas, marca, vídeo y botones (12/10/2026)
+### Correos compuestos: fichas, marca, hero, muestras, vídeo y botones (12/10/2026)
 
 Además del correo de texto de siempre, el asistente puede preparar un **correo
-compuesto**: la entrada, la tira de la marca, las fichas de producto (una sola,
-o dos o tres en fila), el vídeo, los botones, un destacado, separadores y el
-cierre. **La IA elige la estructura y escribe los textos; el HTML lo genera
+compuesto**: la entrada, la tira de la marca, un **hero** con una imagen de las
+webs, las fichas de producto (una sola, o dos o tres en fila), una **galería de
+muestras** de trabajos impresos, el vídeo, los botones, un destacado,
+separadores y el cierre. **La IA elige la estructura y escribe los textos; el HTML lo genera
 BoHub** con código determinista (`services/correo_compuesto/`). Es un modo más:
 la respuesta en texto sigue siendo la de siempre y la opción por defecto.
 
@@ -370,11 +371,15 @@ la respuesta en texto sigue siendo la de siempre y la opción por defecto.
   es texto), **Texto** o **Con fichas** (`formato`; solo viaja si no es Auto).
   Una conversación compuesta sigue compuesta salvo que se pida texto
   (`correo_compuesto/ia.modo_del_turno`).
-- **Sin inventar nada.** La IA nombra productos, enlaces, vídeos y marcas por
-  **referencia**: `P1`/`C1` (líneas del CATÁLOGO), `L1` (ENLACES), `V1` (los
-  vídeos que tiene a mano: hoy, los de YouTube o Vimeo del hilo o de la
-  instrucción) y `M:mbo_dtf` (la web de la marca). Una referencia que no existe no entra y se avisa: ni productos, ni
-  enlaces, ni vídeos inventados. Las fichas toman del **catálogo vivo** el
+- **Sin inventar nada.** La IA nombra productos, enlaces, vídeos, imágenes y
+  marcas por **referencia**: `P1`/`C1` (líneas del CATÁLOGO), `L1` (ENLACES),
+  `V1` (VÍDEOS: los de YouTube o Vimeo del hilo o de la instrucción y los de la
+  tabla de vídeos que van con las máquinas del correo o con lo que pide la
+  instrucción, en el idioma del cliente), `I1` (IMÁGENES: las del índice de las
+  webs que casan con la instrucción, las máquinas y el interés del lead; las
+  favoritas delante, nunca las ocultas) y `M:mbo_dtf` (la web de la marca). Una
+  referencia que no existe no entra y se avisa: ni productos, ni enlaces, ni
+  vídeos, ni imágenes inventados. Las fichas toman del **catálogo vivo** el
   nombre, la imagen, el área, dos características, el **precio tal cual** (con
   «+ IVA» si la fuente va sin IVA) y el enlace en el idioma del cliente; un
   producto sin precio público dice «Precio a medida» y **no lleva cifra**. Un
@@ -410,13 +415,27 @@ la respuesta en texto sigue siendo la de siempre y la opción por defecto.
   comprobará la tabla, que guarda cuál usó para volver a probarla si el vídeo
   se resube en HD. Un vídeo de Vimeo suelto sale sin imagen (su miniatura
   pediría su API, que no se consulta), con su título y su botón.
-  La **tabla de vídeos** (siguiente PR: los vídeos de los cuatro canales de
-  YouTube y los añadidos a mano pegando una URL, con idioma, tema —el mismo
-  vídeo en varios idiomas, para elegir la versión del idioma del cliente—,
-  marca y productos) será otro origen que manda sobre la URL, sin cambiar la
-  forma del bloque ni el generador. El título, el texto y el botón que escriba el bloque mandan sobre
-  los del origen; la duración, si se sabe, va junto al botón («Ver vídeo ·
-  2:31»).
+  La **tabla de vídeos** (`kb_videos`, ver
+  [base-conocimiento.md](base-conocimiento.md) § Fase 3) es el otro origen y
+  manda sobre la URL: su miniatura comprobada (`maxresdefault` si existe), su
+  título y su duración; y si el vídeo es de un **tema** con versión en el
+  idioma del correo, sale esa (un correo en alemán con el vídeo castellano de
+  FREEBIRD lleva el alemán). El título, el texto y el botón que escriba el
+  bloque mandan sobre los del origen; la duración, si se sabe, va junto al
+  botón («Ver vídeo · 2:31»).
+- **El hero y las muestras** (`generador.hero`, `generador.muestras`) llevan
+  imágenes del índice de las webs (`kb_imagenes`), por su id: la URL y el
+  tamaño salen de la fila viva, y se pide el tamaño de la misma imagen que
+  cubre el doble de su ancho en el correo (pantallas de alta densidad), nunca
+  la original de varios megas. El hero va con la imagen **arriba** (a todo el
+  ancho), **al lado** del texto (dos columnas que se apilan en el móvil) o **de
+  fondo** (atributo `background` y estilo para Gmail y Apple Mail; Outlook, que
+  no pinta imágenes de fondo, enseña el color oscuro de respaldo y el texto en
+  blanco se sigue leyendo); título, subtítulo, hasta cinco puntos y hasta tres
+  botones. Las muestras, de 2 a 6 imágenes en filas de dos o tres que se apilan
+  en el móvil, cada una con su pie si lo hay. Una imagen que ya no está en la
+  web no sale y se avisa. «Pon el hero de DTF» en una corrección añade el
+  bloque con una imagen de las que casan con «DTF» y deja lo demás igual.
 - **La vista previa** sustituye al editor: el correo tal cual sale, en
   escritorio o en móvil; los textos se editan pulsando encima (cambia ese
   campo de la estructura y nada más) y el bloque elegido se sube, se baja, se

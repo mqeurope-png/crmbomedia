@@ -9,12 +9,14 @@ productos salen del catálogo vivo. Los orígenes posibles:
   De YouTube se deriva la miniatura de su dirección estática (ver
   `MINIATURAS_YOUTUBE`); un vídeo de Vimeo suelto sale sin imagen (su
   miniatura pediría su API, que no se consulta), con su título y su botón.
-- La tabla de vídeos de BoHub (siguiente fase): los vídeos de los canales de
-  YouTube o añadidos a mano pegando una URL, con título, miniatura, duración,
-  idioma, tema (el mismo vídeo en varios idiomas: así se elige la versión del
-  idioma del cliente), marca y productos. Cuando un vídeo esté en la tabla,
-  sus datos mandan sobre lo derivado de la URL; la forma del bloque y el
-  generador no cambian.
+- La tabla de vídeos de BoHub (`kb_videos`, ver
+  `services/conocimiento/videos.py`): los vídeos de los canales de YouTube,
+  los enlazados en las webs y los añadidos a mano pegando una URL, con título,
+  miniatura (la buena si existe, y cuál), duración, idioma, tema (el mismo
+  vídeo en varios idiomas: así se elige la versión del idioma del cliente),
+  marca y productos. Cuando un vídeo está en la tabla, sus datos mandan sobre
+  lo derivado de la URL, y si es de un tema que tiene versión en el idioma
+  del correo, sale esa; la forma del bloque y el generador no cambian.
 
 El título, el texto y el botón que lleve el propio bloque (los escribe la IA o
 la persona en la vista previa) mandan sobre los del origen.
@@ -31,6 +33,7 @@ PLATAFORMAS: tuple[str, ...] = (PLATAFORMA_YOUTUBE, PLATAFORMA_VIMEO)
 
 #: De dónde salieron los datos de un vídeo resuelto.
 ORIGEN_URL = "url"
+ORIGEN_TABLA = "tabla"
 
 #: Las miniaturas de YouTube que valen para un correo, de mejor a peor: las
 #: dos en 16:9, sin bandas negras (`sddefault` y `hqdefault` son 4:3 y a un
@@ -115,14 +118,35 @@ def desde_url(video: dict[str, str]) -> dict[str, Any]:
     }
 
 
+def desde_tabla(fila: Any) -> dict[str, Any]:
+    """Los datos de un vídeo de la tabla (`kb_videos`): su URL, la miniatura
+    que se comprobó (o la segura si aún no), título, duración e idioma."""
+    calidad = fila.miniatura_calidad or MINIATURA_YOUTUBE_SEGURA
+    miniatura = fila.miniatura or (miniatura_youtube(fila.video_id, calidad)
+                                   if fila.plataforma == PLATAFORMA_YOUTUBE else None)
+    return {
+        "plataforma": fila.plataforma, "id": fila.video_id, "url": fila.url,
+        "miniatura": miniatura, "miniatura_calidad": calidad if miniatura else None,
+        "titulo": fila.titulo or None, "duracion": fila.duracion, "idioma": fila.idioma,
+        "origen": ORIGEN_TABLA,
+    }
+
+
 def resolver(session: Any, identidades: list[dict[str, str]], *, idioma: str,
              ) -> dict[str, dict[str, Any]]:
-    """Los datos de cada vídeo de un correo, por su clave. Hoy, lo que da su
-    URL; cuando exista la tabla de vídeos, primero la tabla (por plataforma e
-    id, y la versión del mismo vídeo en `idioma` si la hay) y lo derivado de la
-    URL solo para lo que no esté. `session` es la de la base de datos."""
-    _ = session, idioma
-    return {clave(v): desde_url(v) for v in identidades}
+    """Los datos de cada vídeo de un correo, por su clave: primero la tabla de
+    vídeos (por plataforma e id, y la versión del mismo vídeo en `idioma` si
+    es de un tema que la tiene) y lo derivado de la URL solo para lo que no
+    esté. `session` es la de la base de datos (sin ella, solo la URL)."""
+    salida = {clave(v): desde_url(v) for v in identidades}
+    if session is None or not identidades:
+        return salida
+    from app.services.conocimiento import videos as videos_kb  # noqa: PLC0415
+
+    for clave_video, fila in videos_kb.por_identidades(session, identidades,
+                                                       idioma=idioma).items():
+        salida[clave_video] = desde_tabla(fila)
+    return salida
 
 
 def duracion_texto(segundos: Any) -> str:

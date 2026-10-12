@@ -227,3 +227,87 @@ primero, luego máquinas hasta dejar dos) y queda anotado.
   `POST /catalogo/sincronizar` (`{fuente}` o las dos);
   `PATCH /catalogo/marcas/{nombre}` (idioma por defecto);
   `POST|PATCH|DELETE /catalogo/intereses[/{id}]`.
+
+## Fase 3: las imágenes de las webs y la tabla de vídeos (migración 0145)
+
+Para los correos compuestos (hero, muestras y vídeo; ver
+[ai-features.md](ai-features.md) § Correos compuestos). Pantalla: Configuración
+ERP → Base de conocimiento → «Imágenes de las webs» y «Vídeos».
+
+### El índice de imágenes (`kb_imagenes`, `services/conocimiento/imagenes.py`)
+
+La biblioteca de medios de cada web activa del grupo, por la API REST pública
+de WordPress (`/wp-json/wp/v2/media?media_type=image`), paginada por
+`X-WP-TotalPages` (WordPress devuelve páginas cortas a mitad de la lista: una
+página de menos de 100 **no** es la última). Solo entra lo que vale para un
+hero o una galería de muestras; medido el 12/10/2026 sobre las ocho webs, de
+4.697 imágenes pasan **331**:
+
+1. ancho ≥ 1200 px;
+2. apaisada, ancho / alto entre 1,3 y 3,2;
+3. el título no es de un logo, icono, favicon, recorte (`cropped`), captura,
+   firma, sello o QR, ni un código de artículo («AB-1234», «MCO-21005_2»,
+   «B100617»); un número de modelo («artis 3000U pro», «6090») sí vale;
+4. no está adjunta a un producto de la tienda (su imagen ya está en el
+   catálogo): los productos se leen de la web (`/wp-json/wp/v2/product`) y de
+   las tiendas del catálogo;
+5. JPEG, PNG o GIF: **Outlook no enseña WebP** (302 imágenes anchas de las
+   webs son WebP, casi todas fotos de recambios de fluxlasers.es).
+
+Las webs **no tienen texto alternativo**: el título es lo único por lo que se
+busca y el `alt` de la imagen en el correo. De cada imagen se guardan sus
+tamaños con las **mismas proporciones** (los recortes cuadrados del tema, fuera)
+y el correo pide el que le toca. Favoritas (se le ofrecen a la IA primero) y
+ocultas (nunca) se marcan a mano; la sincronización no las toca. Una web caída
+deja su índice como estaba; lo que desaparece de la web queda `ido_en`.
+
+### La tabla de vídeos (`kb_videos`, `services/conocimiento/videos.py` y `youtube.py`)
+
+Solo YouTube. Tres orígenes: los **canales** del grupo (configuración
+`youtube_canales`, de partida @MQEuropebvba, @artisjeteurope, @fluxinc y
+@artisJet, cada uno con la marca que se le supone), los vídeos **enlazados**
+en las páginas y entradas de las webs que no son de esos canales y los
+**pegados a mano** (una URL suelta; no se van nunca).
+
+- **La API de datos v3** con la clave `YOUTUBE_API_KEY` de `.env.production`,
+  en la cabecera `X-Goog-Api-Key` (nunca en la URL ni en un log):
+  `channels.list?forHandle=@canal` → la lista de subidas →
+  `playlistItems.list` → `videos.list` (título, descripción, duración, idiomas),
+  de 50 en 50. Una pasada gasta unas decenas de unidades de las 10.000 diarias.
+  Ni RSS ni raspar la página. Sin clave, la pasada queda en error y lo dice.
+- **El idioma**, el del título cuando sus palabras lo dicen claro; si no, el
+  de los metadatos del vídeo (`defaultLanguage`) y, por último, el del audio
+  (`defaultAudioLanguage`). Medido el 12/10/2026: el del audio dice «en» en los
+  veinte vídeos de FREEBIRD en neerlandés, alemán, francés, castellano y
+  portugués, y «de-DE» en quince vídeos en castellano de mqeurope.
+- **El tema** agrupa el mismo vídeo en varios idiomas: se detecta solo cuando
+  un canal sube el mismo día varios vídeos de la misma duración, cada uno en un
+  idioma (así llegaron los cuatro de FREEBIRD, cada uno en cinco idiomas); el
+  resto se etiqueta a mano. Los vídeos de un tema comparten máquinas. Para un
+  correo sale la versión del idioma del cliente; si no la hay, la inglesa; si
+  tampoco, ninguna.
+- **La marca y las máquinas**, por el título: el nombre de la máquina del
+  catálogo o su número de modelo dentro de la marca del vídeo («artis 3000U
+  Pro» es la «artisJet 3000Pro»), y la marca del canal si el título no la dice.
+- **La miniatura**: `maxresdefault` (1280×720) si existe, comprobada en
+  img.youtube.com; si no, `mqdefault` (320×180), y se guarda cuál se usó: la
+  segura se vuelve a probar en cada pasada por si el vídeo se resube en HD.
+- **Los «shorts»** (#shorts) se guardan pero no se le ofrecen a la IA.
+- Lo corregido a mano (idioma, tema, marca, máquinas) queda fijado
+  (`manual_json`) y la sincronización no lo pisa; «↺ automático» lo devuelve.
+  Lo que desaparece del canal o de las webs queda `ido_en`.
+
+### Sincronización y API
+
+- **Diaria**, detrás del catálogo en el mismo job (`kb:catalogo_sync`,
+  worker-sync), si `conocimiento.medios_sync_activa` (encendido: solo lectura).
+  Las pasadas van al histórico del catálogo con fuente `imagenes` o `videos`.
+- **A mano**: «Sincronizar imágenes» / «Sincronizar vídeos» en la pantalla (en
+  la petición, medio minuto cada una).
+- API (`/api/erp/conocimiento`, capacidad `erp.config`): el `GET` trae
+  `medios` (recuentos, última pasada, canales, si hay clave de YouTube);
+  `GET /imagenes` (`sitio, q, favoritas, con_ocultas, limite`),
+  `PATCH /imagenes/{id}` (`favorita`, `oculta`), `POST /imagenes/sincronizar`;
+  `GET /videos` (`q, idioma, canal, origen, tema, con_ocultos, con_cortos,
+  limite`), `POST /videos` (`{url}`), `PATCH /videos/{id}` (`idioma, tema,
+  marca, productos, visible, automatico`), `POST /videos/sincronizar`.

@@ -30,6 +30,7 @@ from app.models.conocimiento import (
     FUENTE_WOOCOMMERCE,
     TIPO_CONSUMIBLE,
     TIPO_MAQUINA,
+    ImagenWeb,
     MarcaCatalogo,
     ProductoCatalogo,
 )
@@ -41,6 +42,10 @@ from tests._test_helpers import auth_headers, seed_test_users
 
 AHORA = datetime(2026, 10, 12, 9, 0, tzinfo=UTC)
 YOUTUBE = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+#: Tres imágenes del índice de las webs (hero y muestras).
+IMG_A = "0a0a0a0a-0000-4000-8000-00000000000a"
+IMG_B = "0b0b0b0b-0000-4000-8000-00000000000b"
+IMG_C = "0c0c0c0c-0000-4000-8000-00000000000c"
 #: Los precios del compositor sin IVA, los de las tiendas con IVA.
 CONFIG = {"iva_por_fuente": {"compositor": "sin", "woocommerce": "con"},
           "precio_meses_orientativo": 6}
@@ -85,9 +90,24 @@ def _maquina(s: Session, origen_id: str, idioma: str, nombre: str, *, precio: st
     ))
 
 
+def _imagen(s: Session, iid: str, titulo: str, *, media_id: int, ancho: int = 1920,
+            alto: int = 1072) -> None:
+    base = f"https://boprint.net/wp-content/uploads/2026/05/{titulo.replace(' ', '-')}"
+    tamanos = [{"url": f"{base}-768x429.jpg", "ancho": 768, "alto": 429},
+               {"url": f"{base}-1536x858.jpg", "ancho": 1536, "alto": 858},
+               {"url": f"{base}.jpg", "ancho": ancho, "alto": alto}]
+    s.add(ImagenWeb(id=iid, sitio="boprint", media_id=media_id, titulo=titulo,
+                    url=f"{base}.jpg", tamanos_json=json.dumps(tamanos), ancho=ancho, alto=alto,
+                    mime="image/jpeg", visto_en=AHORA))
+
+
 def _catalogo(s: Session) -> None:
     """Cuatro máquinas DTF (una sin precio público) en es y en, un consumible
-    de tienda y la marca con su logo, color y webs."""
+    de tienda, la marca con su logo, color y webs, y tres imágenes del índice
+    de las webs."""
+    _imagen(s, IMG_A, "dtf printer at work", media_id=101)
+    _imagen(s, IMG_B, "custom t-shirts", media_id=102)
+    _imagen(s, IMG_C, "printed hoodies", media_id=103)
     for oid, nombre, precio_es, precio_en in (
             ("o20", "Orion 20", "4.990 €", "4,990 €"), ("l35", "Lyra 35", "7.900 €", "7,900 €"),
             ("v60", "Vega 60 Pro", "desde 21.500 €", "from 21,500 €")):
@@ -128,6 +148,12 @@ def _un_bloque_de_cada() -> list[dict[str, Any]]:
         {"tipo": "destacado", "titulo": "Formación incluida", "estilo": "promo",
          "texto": "Con cada máquina, una sesión de puesta en marcha."},
         {"tipo": "separador", "estilo": "linea"},
+        {"tipo": "hero", "imagen": {"id": IMG_A}, "titulo": "La gama DTF",
+         "subtitulo": "Del diseño a la prenda en un día", "puntos": ["Sin pretratamiento",
+                                                                     "Colores vivos"],
+         "botones": [{"texto": "Ver la gama", "url": "https://mboprinters.com/dtf/"}]},
+        {"tipo": "muestras", "titulo": "Trabajos hechos con DTF",
+         "imagenes": [{"id": IMG_B}, {"id": IMG_C}], "pies": ["Camisetas", "Sudaderas"]},
     ]
 
 
@@ -272,9 +298,12 @@ def test_la_vista_previa_es_el_correo_mas_los_atributos_para_editar(
     ids = [b["id"] for b in estructura["bloques"]]
     assert re.findall(r'data-bh-bloque="([^"]+)"', vista.html) == ids
     campos = set(re.findall(r'data-bh-campo="([^"]+)"', vista.html))
-    texto, marca, fila, _, video, cta, destacado, _ = ids
+    texto, marca, fila, _, video, cta, destacado, _, hero, muestras = ids
     assert {f"{texto}:html", f"{marca}:texto", f"{fila}:boton", f"{video}:titulo",
-            f"{cta}:botones.0.texto", f"{destacado}:titulo", f"{destacado}:texto", ":pie"} <= campos
+            f"{cta}:botones.0.texto", f"{destacado}:titulo", f"{destacado}:texto", ":pie",
+            f"{hero}:titulo", f"{hero}:subtitulo", f"{hero}:puntos.0", f"{hero}:puntos.1",
+            f"{hero}:botones.0.texto", f"{muestras}:titulo", f"{muestras}:pies.0",
+            f"{muestras}:pies.1"} <= campos
     assert "data-bh-" not in final.html
     # Quitando los atributos, la vista previa es exactamente el correo que se envía.
     assert re.sub(r' data-bh-[a-z]+="[^"]*"', "", vista.html) == sin_vista.html

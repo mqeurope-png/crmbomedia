@@ -87,7 +87,8 @@ ATTRS_COMPUESTO = {
     "img": [*ALLOWED_ATTRS["img"], "border"],
     "table": [*ALLOWED_ATTRS["table"], "role", "bgcolor"],
     "tr": ["align", "valign", "bgcolor"],
-    "td": [*ALLOWED_ATTRS["td"], "width", "height", "bgcolor"],
+    # `background`: la imagen de fondo del hero (Outlook enseña `bgcolor`).
+    "td": [*ALLOWED_ATTRS["td"], "width", "height", "bgcolor", "background"],
     "th": [*ALLOWED_ATTRS["th"], "width", "height", "bgcolor"],
 }
 STYLES_COMPUESTO = [
@@ -96,7 +97,8 @@ STYLES_COMPUESTO = [
     "border-color", "border-style", "border-width", "border-spacing", "letter-spacing",
     "text-transform", "white-space", "overflow", "opacity", "max-height", "min-width",
     "outline", "box-sizing", "word-break", "table-layout", "mso-table-lspace",
-    "mso-table-rspace", "mso-line-height-rule",
+    "mso-table-rspace", "mso-line-height-rule", "background-image", "background-size",
+    "background-position", "background-repeat",
 ]
 _css_compuesto = CSSSanitizer(allowed_css_properties=STYLES_COMPUESTO)
 

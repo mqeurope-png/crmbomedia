@@ -2255,7 +2255,23 @@ const CONOCIMIENTO_DEFECTOS: ConocimientoConfig = {
   flux_sync_activa: true, flux_sync_hora: "04:30", flux_palabras_kb: [], flux_palabras_soporte: [],
   catalogo_sync_activa: true, catalogo_sync_hora: "04:45", precio_meses_orientativo: 6,
   iva_por_fuente: { compositor: null, woocommerce: null }, interes_productos_revisado: false,
+  medios_sync_activa: true, youtube_canales: [],
 };
+
+/** Sin canales: la misma lista siempre (comparar por referencia no la da por cambiada). */
+const SIN_CANALES: { handle: string; marca: string }[] = [];
+
+/** «@fluxinc flux» por línea ↔ `[{handle, marca}]` (la marca, opcional). */
+function canalesATexto(canales: { handle: string; marca: string }[]): string {
+  return canales.map((c) => (c.marca ? `${c.handle} ${c.marca}` : c.handle)).join("\n");
+}
+
+function textoACanales(texto: string): { handle: string; marca: string }[] {
+  return texto.split("\n").map((l) => l.trim()).filter(Boolean).map((l) => {
+    const [handle, ...resto] = l.split(/\s+/);
+    return { handle, marca: resto.join(" ") };
+  });
+}
 
 const IVA_OPCIONES: { value: "" | "con" | "sin"; label: string }[] = [
   { value: "", label: "sin declarar (el correo dice que está por confirmar)" },
@@ -2294,6 +2310,13 @@ function ConocimientoSettings({
     setSoporteTexto(cfg.flux_palabras_soporte.join(", "));
   }
   const lista = (texto: string) => texto.split(",").map((p) => p.trim()).filter(Boolean);
+  const canales = cfg.youtube_canales ?? SIN_CANALES;
+  const [canalesTexto, setCanalesTexto] = useState(canalesATexto(canales));
+  const [canalesBase, setCanalesBase] = useState(canales);
+  if (canalesBase !== canales) {
+    setCanalesBase(canales);
+    setCanalesTexto(canalesATexto(canales));
+  }
   return (
     <>
       <label className="field erp-check-field">
@@ -2416,6 +2439,34 @@ function ConocimientoSettings({
         <span>La tabla «interés → máquinas» está revisada</span>
         <span className="muted small">
           Mientras no lo esté, la pantalla avisa de que es la propuesta del 11/10/2026 sin revisar.
+        </span>
+      </label>
+      <h4 className="erp-settings-subtitle">Imágenes y vídeos de los correos compuestos</h4>
+      <label className="field erp-check-field">
+        <input
+          type="checkbox"
+          aria-label="Sincronizar imágenes y vídeos cada día"
+          checked={cfg.medios_sync_activa ?? true}
+          onChange={(e) => onChange({ ...cfg, medios_sync_activa: e.target.checked })}
+        />
+        <span>Sincronizar imágenes y vídeos cada día</span>
+        <span className="muted small">
+          Detrás del catálogo: la biblioteca de medios de las webs y los vídeos de los canales de
+          YouTube (solo lectura). Una web o YouTube caídos dejan lo anterior como está.
+        </span>
+      </label>
+      <label className="field">
+        <span>Canales de YouTube (uno por línea, con su marca del catálogo si la tiene)</span>
+        <textarea
+          aria-label="Canales de YouTube"
+          value={canalesTexto}
+          onChange={(e) => setCanalesTexto(e.target.value)}
+          onBlur={() => onChange({ ...cfg, youtube_canales: textoACanales(canalesTexto) })}
+        />
+        <span className="muted small">
+          Por ejemplo «@fluxinc flux». La marca es la que se le supone a un vídeo cuando su título
+          no la dice; un canal de varias marcas va sin ella. La clave de la API va en
+          .env.production (YOUTUBE_API_KEY), nunca aquí.
         </span>
       </label>
     </>

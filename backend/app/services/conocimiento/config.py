@@ -7,7 +7,9 @@ la clave `conocimiento` (sin migración):
      "catalogo_sync_activa": true, "catalogo_sync_hora": "04:45",
      "precio_meses_orientativo": 6,
      "iva_por_fuente": {"compositor": null, "woocommerce": null},
-     "interes_productos_revisado": false}
+     "interes_productos_revisado": false,
+     "medios_sync_activa": true,
+     "youtube_canales": [{"handle": "@fluxinc", "marca": "flux"}, ...]}
 
 - `flux_sync_activa` / `flux_sync_hora`: la sincronización diaria del índice
   de la KB de FLUX (worker-sync). Encendida por defecto: es solo lectura.
@@ -24,6 +26,12 @@ la clave `conocimiento` (sin migración):
   del número. Sin declarar, el correo dice que está pendiente de confirmar.
 - `interes_productos_revisado`: Bart ha dado por revisada la propuesta de
   interés → máquinas (la pantalla avisa mientras no lo esté).
+- `medios_sync_activa`: la sincronización diaria de las imágenes de las webs y
+  de la tabla de vídeos, detrás de la del catálogo. Encendida por defecto: es
+  solo lectura.
+- `youtube_canales`: los canales de YouTube cuyos vídeos van a la tabla, con
+  la marca del catálogo que se les supone cuando el título no la dice (vacía
+  en un canal de varias marcas).
 """
 from __future__ import annotations
 
@@ -42,6 +50,16 @@ PRECIO_MESES_MAX = 36
 FUENTES_IVA: tuple[str, ...] = ("compositor", "woocommerce")
 IVA_VALORES: tuple[str, ...] = ("con", "sin")
 _HORA_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
+_HANDLE_RE = re.compile(r"^@[A-Za-z0-9._-]{3,100}$")
+MAX_CANALES = 20
+
+#: Los canales de YouTube del grupo (12/10/2026) y su marca del catálogo.
+CANALES_DE_PARTIDA: tuple[dict[str, str], ...] = (
+    {"handle": "@MQEuropebvba", "marca": ""},
+    {"handle": "@artisjeteurope", "marca": "artisjet"},
+    {"handle": "@fluxinc", "marca": "flux"},
+    {"handle": "@artisJet", "marca": "artisjet"},
+)
 
 PALABRAS_KB_DEFECTO: tuple[str, ...] = (
     "cómo", "como se", "how to", "how do", "wie kann", "wie man", "comment", "hoe",
@@ -108,6 +126,32 @@ def _iva(raw: Any, *, estricto: bool = False) -> dict[str, str | None]:
     return salida
 
 
+def _canales(raw: Any, *, estricto: bool = False) -> list[dict[str, str]] | None:
+    """La lista de canales limpia (`{"handle": "@…", "marca": "…"}`), sin
+    repetir. None si no es una lista; con `estricto`, `ValueError` por un
+    canal que no vale."""
+    if not isinstance(raw, list):
+        if estricto:
+            raise ValueError("Los canales de YouTube tienen que ser una lista.")
+        return None
+    salida: list[dict[str, str]] = []
+    for c in raw:
+        handle = str((c.get("handle") if isinstance(c, dict) else c) or "").strip()
+        if handle and not handle.startswith("@"):
+            handle = f"@{handle}"
+        if not _HANDLE_RE.match(handle):
+            if estricto:
+                raise ValueError(f"Canal de YouTube no válido: {handle or c!r} (p. ej. @fluxinc).")
+            continue
+        if any(x["handle"].lower() == handle.lower() for x in salida):
+            continue
+        marca = str((c.get("marca") if isinstance(c, dict) else "") or "").strip()[:80]
+        salida.append({"handle": handle, "marca": marca})
+    if estricto and len(salida) > MAX_CANALES:
+        raise ValueError(f"Como mucho {MAX_CANALES} canales de YouTube.")
+    return salida[:MAX_CANALES]
+
+
 def defectos() -> dict[str, Any]:
     return {
         "flux_sync_activa": True,
@@ -119,6 +163,8 @@ def defectos() -> dict[str, Any]:
         "precio_meses_orientativo": PRECIO_MESES_DEFECTO,
         "iva_por_fuente": dict.fromkeys(FUENTES_IVA),
         "interes_productos_revisado": False,
+        "medios_sync_activa": True,
+        "youtube_canales": [dict(c) for c in CANALES_DE_PARTIDA],
     }
 
 
@@ -141,6 +187,11 @@ def normalizar(raw: Any) -> dict[str, Any]:
         _meses(data.get("precio_meses_orientativo")) or PRECIO_MESES_DEFECTO)
     base["iva_por_fuente"] = _iva(data.get("iva_por_fuente"))
     base["interes_productos_revisado"] = bool(data.get("interes_productos_revisado", False))
+    if "medios_sync_activa" in data:
+        base["medios_sync_activa"] = bool(data["medios_sync_activa"])
+    canales = _canales(data.get("youtube_canales"))
+    if canales is not None:
+        base["youtube_canales"] = canales
     return base
 
 
@@ -193,6 +244,12 @@ def validar(payload: Any, actual: Any = None) -> dict[str, Any]:
         if not isinstance(payload["interes_productos_revisado"], bool):
             raise ValueError("«Propuesta revisada» tiene que ser sí o no.")
         base["interes_productos_revisado"] = payload["interes_productos_revisado"]
+    if "medios_sync_activa" in payload:
+        if not isinstance(payload["medios_sync_activa"], bool):
+            raise ValueError("«Sincronizar imágenes y vídeos cada día» tiene que ser sí o no.")
+        base["medios_sync_activa"] = payload["medios_sync_activa"]
+    if "youtube_canales" in payload:
+        base["youtube_canales"] = _canales(payload["youtube_canales"], estricto=True) or []
     return base
 
 

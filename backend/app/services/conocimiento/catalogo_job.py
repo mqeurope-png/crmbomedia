@@ -1,5 +1,7 @@
 """Sincronización diaria del catálogo (worker-sync): el compositor y las
-tiendas, una tras otra.
+tiendas, una tras otra; y detrás, si está encendido
+(`conocimiento.medios_sync_activa`), las imágenes de las webs y la tabla de
+vídeos de los correos compuestos.
 
 Job RQ self-rescheduling en la cola `kb:catalogo_sync`, armado a la hora de
 Configuración ERP (`conocimiento.catalogo_sync_hora`, 04:45 de Madrid por
@@ -20,7 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.erp.cuadre.job import proxima_ejecucion
-from app.models.conocimiento import SYNC_ERROR, SYNC_PROGRAMADA, CatalogoSincronizacion
+from app.models.conocimiento import FUENTES, SYNC_ERROR, SYNC_PROGRAMADA, CatalogoSincronizacion
 from app.services.conocimiento.config import HORA_CATALOGO_DEFECTO, configuracion
 from app.workers.queues import queue_name
 
@@ -34,7 +36,10 @@ SIN_REPETIR_HORAS = 12
 
 def _ya_corrio(session: Session, ahora: datetime) -> bool:
     desde = ahora - timedelta(hours=SIN_REPETIR_HORAS)
+    # Solo las pasadas del catálogo: las de imágenes y vídeos van al mismo
+    # histórico y no cuentan como que el catálogo ya corrió.
     return session.scalars(select(CatalogoSincronizacion.id).where(
+        CatalogoSincronizacion.fuente.in_(FUENTES),
         CatalogoSincronizacion.origen == SYNC_PROGRAMADA,
         CatalogoSincronizacion.estado != SYNC_ERROR,
         CatalogoSincronizacion.inicio >= desde,
@@ -43,8 +48,14 @@ def _ya_corrio(session: Session, ahora: datetime) -> bool:
 
 def run_daily(session: Session, *, ahora: datetime | None = None, force: bool = False) -> bool:
     """Las dos pasadas si toca (interruptor encendido y sin otra pasada
-    programada en las últimas 12 h, o `force`). True si han corrido."""
-    from app.services.conocimiento import catalogo_compositor, catalogo_tiendas  # noqa: PLC0415
+    programada en las últimas 12 h, o `force`), y las de imágenes y vídeos si
+    su interruptor está encendido. True si han corrido."""
+    from app.services.conocimiento import (  # noqa: PLC0415
+        catalogo_compositor,
+        catalogo_tiendas,
+        imagenes,
+        videos,
+    )
 
     ahora = ahora or datetime.now(UTC)
     config = configuracion(session)
@@ -59,6 +70,16 @@ def run_daily(session: Session, *, ahora: datetime | None = None, force: bool = 
     session.commit()
     catalogo_tiendas.sincronizar(session, origen=SYNC_PROGRAMADA, ahora=ahora)
     session.commit()
+    if config.get("medios_sync_activa", True):
+        # Detrás del catálogo: las imágenes de un producto de la tienda se
+        # descartan con los productos que acaba de leer.
+        for sincronizar in (imagenes.sincronizar, videos.sincronizar):
+            try:
+                sincronizar(session, origen=SYNC_PROGRAMADA, ahora=ahora)
+                session.commit()
+            except Exception:  # noqa: BLE001 — una pasada que falla no corta la otra
+                session.rollback()
+                logger.exception("kb.medios: %s falló", sincronizar.__module__)
     return True
 
 

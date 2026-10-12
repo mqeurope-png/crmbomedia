@@ -5683,7 +5683,9 @@ export type CatalogoProducto = {
 
 export type CatalogoSincronizacion = {
   id: string;
-  fuente: "compositor" | "woocommerce";
+  /** El catálogo (compositor, tiendas) y, en el mismo histórico, las imágenes
+   *  de las webs y la tabla de vídeos. */
+  fuente: "compositor" | "woocommerce" | "imagenes" | "videos";
   origen: "programada" | "manual";
   estado: "ok" | "parcial" | "error";
   inicio: string | null;
@@ -5802,8 +5804,141 @@ export type Conocimiento = {
   flux: FluxEstado;
   catalogo: CatalogoEstado;
   interes_productos: InteresProductosResuelto;
+  /** Las imágenes de las webs y la tabla de vídeos (Fase 3; una API anterior no lo trae). */
+  medios?: MediosEstado;
   idiomas: string[];
 };
+
+// --- Imágenes de las webs y vídeos (correos compuestos) -------------------------------
+
+export type MediosEstado = {
+  imagenes: {
+    total: number; por_sitio: Record<string, number>; favoritas: number; ocultas: number;
+    ultima_sincronizacion: CatalogoSincronizacion | null;
+  };
+  videos: {
+    total: number; por_idioma: Record<string, number>; por_canal: Record<string, number>;
+    temas: number; ocultos: number; cortos: number;
+    /** Si el servidor tiene `YOUTUBE_API_KEY`. */
+    clave_configurada: boolean;
+    ultima_sincronizacion: CatalogoSincronizacion | null;
+  };
+  canales: { handle: string; marca: string }[];
+  sincronizacion_diaria: boolean;
+};
+
+/** Una imagen del índice de la biblioteca de medios de las webs. */
+export type KbImagen = {
+  id: string;
+  sitio: string;
+  media_id: number;
+  /** El título del adjunto: lo único por lo que se busca (las webs no tienen texto alternativo). */
+  titulo: string;
+  url: string;
+  /** Un tamaño pequeño de la misma imagen, para la pantalla. */
+  miniatura: string;
+  ancho: number;
+  alto: number;
+  mime: string | null;
+  pagina: string | null;
+  publicado_en: string | null;
+  favorita: boolean;
+  oculta: boolean;
+  ido_en: string | null;
+};
+
+/** Un vídeo de la tabla (solo YouTube). */
+export type KbVideo = {
+  id: string;
+  plataforma: "youtube";
+  video_id: string;
+  url: string;
+  titulo: string;
+  descripcion: string | null;
+  idioma: string | null;
+  /** De dónde salió el idioma: `manual`, `titulo`, `metadatos` o `audio`. */
+  idioma_fuente: string | null;
+  idioma_metadatos: string | null;
+  idioma_audio: string | null;
+  /** El mismo vídeo en varios idiomas comparte tema. */
+  tema: string | null;
+  marca: string;
+  productos: { fuente: string; origen_id: string; nombre: string }[];
+  /** Los campos fijados a mano (la sincronización no los pisa). */
+  manual: string[];
+  miniatura: string | null;
+  miniatura_calidad: "maxresdefault" | "mqdefault" | null;
+  duracion: number | null;
+  corto: boolean;
+  canal: string | null;
+  origen: "canal" | "web" | "manual";
+  webs: string[];
+  visible: boolean;
+  publicado_en: string | null;
+  ido_en: string | null;
+};
+
+export type KbVideoCambios = Partial<{
+  idioma: string; tema: string; marca: string; productos: { origen_id: string }[];
+  visible: boolean; automatico: ("idioma" | "tema" | "marca" | "productos")[];
+}>;
+
+function consulta(params: Record<string, string | number | boolean | undefined | null>): string {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v === undefined || v === null || v === "") continue;
+    q.set(k, String(v));
+  }
+  const texto = q.toString();
+  return texto ? `?${texto}` : "";
+}
+
+export async function getKbImagenes(filtros: {
+  sitio?: string; q?: string; favoritas?: boolean; con_ocultas?: boolean; limite?: number;
+} = {}): Promise<{ imagenes: KbImagen[]; total: number; limite: number }> {
+  return apiFetch(`/api/erp/conocimiento/imagenes${consulta(filtros)}`);
+}
+
+export async function updateKbImagen(
+  id: string, cambios: { favorita?: boolean; oculta?: boolean },
+): Promise<{ imagen: KbImagen; estado: MediosEstado["imagenes"] }> {
+  return apiFetch(`/api/erp/conocimiento/imagenes/${encodeURIComponent(id)}`, {
+    method: "PATCH", body: JSON.stringify(cambios),
+  });
+}
+
+export async function sincronizarKbImagenes(): Promise<{
+  sincronizacion: CatalogoSincronizacion; estado: MediosEstado["imagenes"];
+}> {
+  return apiFetch("/api/erp/conocimiento/imagenes/sincronizar", { method: "POST" });
+}
+
+export async function getKbVideos(filtros: {
+  q?: string; idioma?: string; canal?: string; origen?: string; tema?: string;
+  con_ocultos?: boolean; con_cortos?: boolean; limite?: number;
+} = {}): Promise<{ videos: KbVideo[]; total: number; limite: number }> {
+  return apiFetch(`/api/erp/conocimiento/videos${consulta(filtros)}`);
+}
+
+export async function createKbVideo(url: string): Promise<{
+  video: KbVideo; estado: MediosEstado["videos"];
+}> {
+  return apiFetch("/api/erp/conocimiento/videos", { method: "POST", body: JSON.stringify({ url }) });
+}
+
+export async function updateKbVideo(id: string, cambios: KbVideoCambios): Promise<{
+  video: KbVideo; estado: MediosEstado["videos"];
+}> {
+  return apiFetch(`/api/erp/conocimiento/videos/${encodeURIComponent(id)}`, {
+    method: "PATCH", body: JSON.stringify(cambios),
+  });
+}
+
+export async function sincronizarKbVideos(): Promise<{
+  sincronizacion: CatalogoSincronizacion; estado: MediosEstado["videos"];
+}> {
+  return apiFetch("/api/erp/conocimiento/videos/sincronizar", { method: "POST" });
+}
 
 /** Un enlace que el asistente puede poner en un borrador, con su procedencia. */
 export type KbEnlace = {
@@ -5843,6 +5978,10 @@ export type ConocimientoConfig = {
   iva_por_fuente: { compositor: "con" | "sin" | null; woocommerce: "con" | "sin" | null };
   /** Bart ha dado por revisada la propuesta interés → máquinas. */
   interes_productos_revisado: boolean;
+  /** Sincronizar cada día las imágenes de las webs y la tabla de vídeos (detrás del catálogo). */
+  medios_sync_activa?: boolean;
+  /** Los canales de YouTube cuyos vídeos van a la tabla, con su marca del catálogo. */
+  youtube_canales?: { handle: string; marca: string }[];
 };
 
 export async function getConocimiento(): Promise<Conocimiento> {

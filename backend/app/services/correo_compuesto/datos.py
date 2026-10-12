@@ -1,9 +1,11 @@
 """Los datos de un correo compuesto, leídos de la fila viva del catálogo.
 
 Lo único que va a la base de datos: los productos que nombra la estructura
-(en el idioma del correo), las marcas (logo, color, web por idioma) y los
+(en el idioma del correo), las marcas (logo, color, web por idioma), los
 avisos de IVA, VIES y «no es una factura» con la declaración de IVA de cada
-fuente. Con eso `generador.generar` monta el correo sin tocar nada más.
+fuente, los vídeos (de la tabla de vídeos, y si no de su URL) y las imágenes
+del hero y de las muestras (del índice de imágenes de las webs). Con eso
+`generador.generar` monta el correo sin tocar nada más.
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.services.conocimiento import catalogo
+from app.services.conocimiento import imagenes as imagenes_kb
 from app.services.correo_compuesto import bloques as bq
 from app.services.correo_compuesto import videos as videos_mod
 from app.services.correo_compuesto.generador import Datos, clave_marca
@@ -59,4 +62,5 @@ def resolver(session: Session, estructura: dict[str, Any], *, ahora: datetime | 
         productos=productos, marcas=marcas(session), avisos=catalogo.avisos_en(idioma),
         iva_por_fuente=dict(cfg.get("iva_por_fuente") or {}),
         videos=videos_mod.resolver(session, bq.videos_de(estructura), idioma=idioma),
+        imagenes=imagenes_kb.por_ids(session, bq.imagenes_de(estructura)),
     )

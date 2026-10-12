@@ -124,6 +124,12 @@ class Settings(BaseSettings):
     supabase_composer_url: str | None = None
     supabase_composer_key: str | None = None
 
+    # Base de conocimiento — la API de datos de YouTube, solo para listar los
+    # vídeos de los canales del grupo (`services/conocimiento/youtube.py`).
+    # Va en `.env.production`; se manda en la cabecera `X-Goog-Api-Key`, nunca
+    # en la URL. Sin ella, la tabla de vídeos no se sincroniza y lo dice.
+    youtube_api_key: str | None = None
+
     # Sprint Email v2.2b — local disk path for images uploaded from the
     # Tiptap editor in the send-email modal. Files are content-addressed
     # (sha256) and partitioned by year/month so a single directory never

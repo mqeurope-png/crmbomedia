@@ -21,9 +21,19 @@ Fase 2, el catálogo y los precios:
 - PATCH  /api/erp/conocimiento/catalogo/intereses/{id}    marca, patrón, nota, activo, orden
 - DELETE /api/erp/conocimiento/catalogo/intereses/{id}
 
+Fase 3, las imágenes y los vídeos de los correos compuestos:
+
+- GET    /api/erp/conocimiento/imagenes                 el índice, con filtros
+- PATCH  /api/erp/conocimiento/imagenes/{id}            favorita, oculta
+- POST   /api/erp/conocimiento/imagenes/sincronizar     una pasada (en la petición)
+- GET    /api/erp/conocimiento/videos                   la tabla, con filtros
+- POST   /api/erp/conocimiento/videos                   {url} → un vídeo pegado a mano
+- PATCH  /api/erp/conocimiento/videos/{id}              idioma, tema, marca, productos, visible
+- POST   /api/erp/conocimiento/videos/sincronizar       una pasada (en la petición)
+
 La configuración (sincronizaciones diarias, palabras de FLUX, meses hasta
-«orientativo», IVA por fuente) va por `GET/PATCH /api/erp/settings`
-(`conocimiento`), con el resto de ajustes.
+«orientativo», IVA por fuente, canales de YouTube) va por `GET/PATCH
+/api/erp/settings` (`conocimiento`), con el resto de ajustes.
 """
 from __future__ import annotations
 
@@ -46,7 +56,9 @@ from app.services.conocimiento import (
     comprobar,
     enlaces,
     flux,
+    imagenes,
     rutas,
+    videos,
     zendesk,
 )
 from app.services.conocimiento.config import configuracion as config_kb
@@ -150,6 +162,29 @@ class InteresProductoIn(BaseModel):
     posicion: int | None = Field(default=None, ge=0, le=10000)
 
 
+class ImagenCambiosIn(BaseModel):
+    favorita: bool | None = None
+    oculta: bool | None = None
+
+
+class VideoIn(BaseModel):
+    url: str = Field(min_length=10, max_length=500)
+
+
+class ProductoRefIn(BaseModel):
+    origen_id: str = Field(min_length=1, max_length=80)
+
+
+class VideoCambiosIn(BaseModel):
+    idioma: str | None = Field(default=None, max_length=5)
+    tema: str | None = Field(default=None, max_length=80)
+    marca: str | None = Field(default=None, max_length=80)
+    productos: list[ProductoRefIn] | None = Field(default=None, max_length=20)
+    visible: bool | None = None
+    #: Los campos que vuelven a lo automático (idioma, tema, marca, productos).
+    automatico: list[str] | None = Field(default=None, max_length=4)
+
+
 class InteresProductoCambiosIn(BaseModel):
     interes: str | None = Field(default=None, max_length=40)
     marca: str | None = Field(default=None, max_length=80)
@@ -191,7 +226,16 @@ def _todo(session: Session) -> dict[str, Any]:
         },
         "catalogo": catalogo.estado(session, cfg),
         "interes_productos": catalogo.mapa_resuelto(session, cfg),
+        "medios": _medios(session, cfg),
         "idiomas": sorted(idiomas),
+    }
+
+
+def _medios(session: Session, cfg: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "imagenes": imagenes.estado(session), "videos": videos.estado(session),
+        "canales": list(cfg.get("youtube_canales") or []),
+        "sincronizacion_diaria": bool(cfg.get("medios_sync_activa", True)),
     }
 
 
@@ -519,3 +563,148 @@ def borrar_interes_producto(
              cambios=None)
     session.commit()
     return _todo(session)
+
+
+# --- imágenes y vídeos (Fase 3) ---------------------------------------------------------------
+
+
+@router.get("/imagenes")
+def listar_imagenes(
+    sitio: str | None = Query(default=None, max_length=40),
+    q: str | None = Query(default=None, max_length=120),
+    favoritas: bool = Query(default=False),
+    con_ocultas: bool = Query(default=True),
+    limite: int = Query(default=600, ge=1, le=5000),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_config),
+) -> dict[str, Any]:
+    """El índice de imágenes de las webs (favoritas primero), buscando por el título."""
+    _ = current_user
+    filas = imagenes.listar(session, sitio=sitio or None, texto=q, favoritas=favoritas,
+                            con_ocultas=con_ocultas, limite=limite)
+    return {"imagenes": [imagenes.como_dict(f) for f in filas], "total": len(filas),
+            "limite": limite}
+
+
+@router.patch("/imagenes/{imagen_id}")
+def editar_imagen(
+    imagen_id: str,
+    payload: ImagenCambiosIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_config),
+) -> dict[str, Any]:
+    """Favorita (va primero en lo que se le ofrece a la IA) u oculta (no se le
+    ofrece nunca)."""
+    cambios = _cambios(payload)
+    if not cambios:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "No hay nada que cambiar.")
+    try:
+        fila = imagenes.actualizar(session, imagen_id, cambios)
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    _auditar(session, current_user, tipo="imagen", clave=imagen_id, accion="cambio",
+             cambios=cambios)
+    session.commit()
+    return {"imagen": imagenes.como_dict(fila), "estado": imagenes.estado(session)}
+
+
+@router.post("/imagenes/sincronizar")
+def sincronizar_imagenes(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_config),
+) -> dict[str, Any]:
+    """«Sincronizar ahora»: la biblioteca de medios de las ocho webs, en la
+    petición (medio minuto). Una web caída deja su índice como estaba."""
+    pasada = imagenes.sincronizar(session, origen=SYNC_MANUAL)
+    _auditar(session, current_user, tipo="imagenes_sync", clave=pasada.id, accion="manual",
+             cambios={"estado": pasada.estado, "imagenes": pasada.productos})
+    session.commit()
+    return {"sincronizacion": catalogo.sincronizacion_como_dict(pasada),
+            "estado": imagenes.estado(session)}
+
+
+@router.get("/videos")
+def listar_videos(
+    q: str | None = Query(default=None, max_length=120),
+    idioma: str | None = Query(default=None, max_length=5),
+    canal: str | None = Query(default=None, max_length=120),
+    origen: str | None = Query(default=None, max_length=10),
+    tema: str | None = Query(default=None, max_length=80),
+    con_ocultos: bool = Query(default=True),
+    con_cortos: bool = Query(default=True),
+    limite: int = Query(default=1000, ge=1, le=5000),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_config),
+) -> dict[str, Any]:
+    """La tabla de vídeos, los más recientes primero."""
+    _ = current_user
+    filas = videos.listar(session, texto=q, idioma=idioma or None, canal=canal or None,
+                          origen=origen or None, tema=tema or None, con_ocultos=con_ocultos,
+                          con_cortos=con_cortos, limite=limite)
+    return {"videos": [videos.como_dict(f) for f in filas], "total": len(filas),
+            "limite": limite}
+
+
+@router.post("/videos", status_code=status.HTTP_201_CREATED)
+def anadir_video(
+    payload: VideoIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_config),
+) -> dict[str, Any]:
+    """Un vídeo de YouTube pegado a mano: entra en la tabla (con sus datos de
+    YouTube si hay clave) y no se va aunque no esté en ningún canal."""
+    try:
+        fila = videos.anadir_por_url(session, payload.url)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    _auditar(session, current_user, tipo="video", clave=fila.id, accion="alta",
+             cambios={"url": payload.url})
+    session.commit()
+    return {"video": videos.como_dict(fila), "estado": videos.estado(session)}
+
+
+@router.patch("/videos/{fila_id}")
+def editar_video(
+    fila_id: str,
+    payload: VideoCambiosIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_config),
+) -> dict[str, Any]:
+    """Idioma, tema, marca, productos y si es visible. Lo corregido queda
+    fijado: la sincronización no lo pisa (salvo «volver a lo automático»).
+    Un texto vacío en idioma, tema o marca lo deja sin valor."""
+    cambios = payload.model_dump(exclude_unset=True)
+    if "productos" in cambios and cambios["productos"] is not None:
+        cambios["productos"] = [p["origen_id"] for p in cambios["productos"]]
+    cambios = {k: v for k, v in cambios.items()
+               if v is not None or k in ("idioma", "tema", "marca")}
+    if not cambios:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "No hay nada que cambiar.")
+    try:
+        fila = videos.actualizar(session, fila_id, cambios)
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    _auditar(session, current_user, tipo="video", clave=fila_id, accion="cambio",
+             cambios=cambios)
+    session.commit()
+    return {"video": videos.como_dict(fila), "estado": videos.estado(session)}
+
+
+@router.post("/videos/sincronizar")
+def sincronizar_videos(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_config),
+) -> dict[str, Any]:
+    """«Sincronizar ahora»: los canales de YouTube, los vídeos enlazados en las
+    webs y las miniaturas, en la petición (medio minuto). Sin clave o con la
+    API caída, la tabla anterior queda intacta y lo dice."""
+    pasada = videos.sincronizar(session, origen=SYNC_MANUAL)
+    _auditar(session, current_user, tipo="videos_sync", clave=pasada.id, accion="manual",
+             cambios={"estado": pasada.estado, "videos": pasada.productos})
+    session.commit()
+    return {"sincronizacion": catalogo.sincronizacion_como_dict(pasada),
+            "estado": videos.estado(session)}

@@ -15365,6 +15365,7 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
 .kb-alta .field { margin: 0; flex: 0 1 180px; }
 .kb-alta .kb-campo-url { flex: 1 1 320px; }
 .kb-alta .button { align-self: flex-end; }
+.kb-alta .kb-check { flex: 0 0 auto; flex-direction: row; align-items: center; gap: 6px; min-height: 32px; }
 .kb-alta .form-error { flex: 1 1 100%; margin: 0; }
 .kb-acciones { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center; }
 .kb-estado { font-size: var(--fs-label); white-space: nowrap; }
@@ -15387,6 +15388,17 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
 .kb-tabla-scroll { max-height: 480px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
 .kb-tabla-scroll table { margin: 0; }
 .kb-productos-asistente { margin: 4px 0 0; padding-left: 18px; }
+/* Imágenes de las webs y vídeos (correos compuestos). */
+.kb-imagenes { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: var(--sp-2); max-height: 640px; overflow: auto; }
+.kb-imagenes > li { display: flex; flex-direction: column; gap: 4px; padding: var(--sp-2); border: 1px solid var(--border); border-radius: 8px; min-width: 0; }
+.kb-imagenes > li.is-inactivo { opacity: 0.55; }
+.kb-imagenes img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 6px; background: var(--surface-2, #f1f5f9); }
+.kb-imagen-titulo { font-size: 0.85rem; font-weight: 600; overflow-wrap: anywhere; }
+.kb-video { display: flex; gap: var(--sp-2); align-items: flex-start; min-width: 280px; }
+.kb-video img { width: 120px; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 6px; flex: 0 0 auto; }
+.kb-tabla .kb-coincide { margin-top: 4px; }
+.kb-tabla .kb-coincide .link-button { margin-left: 4px; text-decoration: none; }
+.kb-tabla input.kb-tema { min-width: 230px; }
 
 /* «Ayúdame a contestar»: botón en la toolbar del hilo y panel del borrador en el compositor. */
 .email-toolbar-asistente { border-color: var(--color-primary, #1d4ed8); color: var(--color-primary, #1d4ed8); }

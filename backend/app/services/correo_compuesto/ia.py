@@ -6,10 +6,11 @@
   normal). El interruptor de la franja manda sobre todo esto.
 - `Referencias`: lo que la IA puede nombrar, siempre por referencia: los
   productos del CATÁLOGO (`P1`, `C1`), los ENLACES (`L1`), los vídeos (`V1`:
-  hoy, los de YouTube o Vimeo que salen en el hilo o en la instrucción; con la
-  tabla de vídeos, también los suyos) y la web de cada marca (`M:mbo_dtf`).
-  Una referencia que no existe no entra: así no hay productos, precios,
-  enlaces ni vídeos inventados.
+  los de YouTube o Vimeo que salen en el hilo o en la instrucción, y los de la
+  tabla de vídeos que van con las máquinas del correo), las imágenes de las
+  webs para el hero y las muestras (`I1`, del índice de imágenes) y la web de
+  cada marca (`M:mbo_dtf`). Una referencia que no existe no entra: así no hay
+  productos, precios, enlaces, vídeos ni imágenes inventados.
 - `estructura_desde_ia` convierte la lista de bloques que devuelve la IA (sus
   textos en markdown sencillo) en una estructura (`bloques.normalizar`). Si un
   texto trae etiquetas HTML, se quitan, se cuenta y se registra.
@@ -149,11 +150,13 @@ class Referencias:
     enlaces: dict[str, str] = field(default_factory=dict)                # L1 → URL
     videos: dict[str, dict[str, str]] = field(default_factory=dict)      # V1 → vídeo
     marcas: dict[str, dict[str, Any]] = field(default_factory=dict)      # clave → marca
+    imagenes: dict[str, dict[str, Any]] = field(default_factory=dict)    # I1 → imagen
 
     @classmethod
     def desde(cls, *, maquinas: list[dict[str, Any]], consumibles: list[dict[str, Any]],
               enlaces: list[dict[str, Any]], videos: list[Any],
-              marcas: dict[str, dict[str, Any]]) -> Referencias:
+              marcas: dict[str, dict[str, Any]],
+              imagenes: list[dict[str, Any]] | None = None) -> Referencias:
         refs = cls(marcas=dict(marcas))
         for prefijo, lista in (("P", maquinas), ("C", consumibles)):
             for i, p in enumerate(lista, 1):
@@ -168,15 +171,18 @@ class Referencias:
                 refs.enlaces[f"L{i}"] = str(e["url"])
         for valor in videos:
             refs.anadir_video(valor)
+        for valor in imagenes or []:
+            refs.anadir_imagen(valor)
         return refs
 
     def como_dict(self) -> dict[str, Any]:
         return {"productos": self.productos, "enlaces_producto": self.enlaces_producto,
-                "enlaces": self.enlaces, "videos": self.videos}
+                "enlaces": self.enlaces, "videos": self.videos, "imagenes": self.imagenes}
 
     @classmethod
     def de_dict(cls, datos: dict[str, Any] | None, *, marcas: dict[str, dict[str, Any]],
-                videos: list[Any] | None = None) -> Referencias:
+                videos: list[Any] | None = None,
+                imagenes: list[dict[str, Any]] | None = None) -> Referencias:
         datos = datos if isinstance(datos, dict) else {}
         refs = cls(productos=dict(datos.get("productos") or {}),
                    enlaces_producto=dict(datos.get("enlaces_producto") or {}),
@@ -188,7 +194,39 @@ class Referencias:
                 refs.videos[str(ref)] = video
         for valor in videos or []:
             refs.anadir_video(valor)
+        guardadas = datos.get("imagenes") if isinstance(datos.get("imagenes"), dict) else {}
+        for ref, valor in guardadas.items():
+            if isinstance(valor, dict) and bq.clave_imagen(valor):
+                refs.imagenes[str(ref)] = dict(valor)
+        for valor in imagenes or []:
+            refs.anadir_imagen(valor)
         return refs
+
+    def anadir_imagen(self, valor: Any) -> str | None:
+        """Añade una imagen del índice (`{"id", "titulo", …}`) con la siguiente
+        `I#`, si no estaba; devuelve su referencia."""
+        clave_img = bq.clave_imagen(valor)
+        if clave_img is None:
+            return None
+        ya = self.ref_de_imagen(clave_img["id"])
+        if ya:
+            return ya
+        ref = f"I{len(self.imagenes) + 1}"
+        extra = {k: valor[k] for k in ("titulo", "sitio", "ancho", "alto")
+                 if isinstance(valor, dict) and valor.get(k) is not None}
+        self.imagenes[ref] = {**clave_img, **extra}
+        return ref
+
+    def imagen(self, ref: Any) -> dict[str, str] | None:
+        """La imagen de una referencia `I#` (o del id de una de ellas)."""
+        s = str(ref or "").strip()
+        if s in self.imagenes:
+            return {"id": str(self.imagenes[s]["id"])}
+        ya = self.ref_de_imagen(s)
+        return {"id": s} if ya else None
+
+    def ref_de_imagen(self, imagen_id: str) -> str | None:
+        return next((ref for ref, v in self.imagenes.items() if v.get("id") == imagen_id), None)
 
     def anadir_video(self, valor: Any) -> str | None:
         """Añade un vídeo (dict o URL) con la siguiente `V#`, si no estaba;
@@ -292,6 +330,7 @@ class _Conversor:
         self.conocidas: set[str] = set()
         self.productos_conocidos: dict[str, dict[str, str]] = {}
         self.videos_conocidos: dict[str, dict[str, str]] = {}
+        self.imagenes_conocidas: set[str] = set()
 
     def _url(self, destino: Any) -> str | None:
         url = self.refs.url(destino, self.idioma)
@@ -317,6 +356,30 @@ class _Conversor:
             if identidad is not None:
                 video = self.videos_conocidos.get(videos_mod.clave(identidad))
         return {"plataforma": video["plataforma"], "id": video["id"]} if video else None
+
+    def _imagen(self, valor: Any) -> dict[str, str] | None:
+        """Qué imagen pone un bloque: una `I#` de las IMÁGENES o una que el
+        bloque ya tenía (`?<id>`); nunca una inventada."""
+        imagen = self.refs.imagen(valor)
+        if imagen is None:
+            s = str(valor.get("id") if isinstance(valor, dict) else valor or "").strip()
+            s = s[1:] if s.startswith("?") else s
+            if s in self.imagenes_conocidas:
+                imagen = {"id": s}
+        return imagen
+
+    def _botones_de(self, valor: Any) -> list[dict[str, Any]]:
+        botones = []
+        for bt in valor if isinstance(valor, list) else []:
+            if not isinstance(bt, dict):
+                continue
+            url = self._url(bt.get("enlace") or bt.get("url"))
+            if not url:
+                self.avisos.append(f"Un botón con un enlace que no está en la lista "
+                                   f"(«{bt.get('enlace') or bt.get('url')}»): no sale.")
+                continue
+            botones.append({"texto": self._sin_html(bt.get("texto")), "url": url})
+        return botones
 
     def _producto(self, ref: Any) -> dict[str, str] | None:
         r = str(ref or "").strip()
@@ -344,18 +407,36 @@ class _Conversor:
                                                 else [])]}
         propio = videos_mod.identidad(bloque.get("video")) if bloque.get("video") else None
         self.videos_conocidos = {videos_mod.clave(propio): propio} if propio else {}
+        self.imagenes_conocidas = set(bq.imagenes_de({"bloques": [bloque]}))
         try:
             return self._campo(bloque.get("tipo"), campo, valor)
         finally:
             self.conocidas, self.productos_conocidos, self.videos_conocidos = set(), {}, {}
+            self.imagenes_conocidas = set()
 
     def _campo(self, tipo: Any, campo: str, valor: Any) -> dict[str, Any] | None:
         if tipo == bq.TIPO_TEXTO and campo in ("texto", "html"):
             return {"html": bq.markdown_a_html(self._sin_html(valor), self._enlace_texto)}
-        if campo in ("titulo", "texto", "boton") and tipo != bq.TIPO_TEXTO:
+        if campo in ("titulo", "texto", "boton", "subtitulo") and tipo != bq.TIPO_TEXTO:
             return {campo: self._sin_html(valor)}
         if campo == "estilo" and tipo in (bq.TIPO_DESTACADO, bq.TIPO_SEPARADOR):
             return {"estilo": str(valor or "")}
+        if campo == "disposicion" and tipo == bq.TIPO_HERO:
+            return {"disposicion": str(valor or "")}
+        if (campo == "puntos" and tipo == bq.TIPO_HERO) or (
+                campo == "pies" and tipo == bq.TIPO_MUESTRAS):
+            lista = valor if isinstance(valor, list) else [valor]
+            return {campo: [self._sin_html(v) for v in lista if v]}
+        if campo == "botones" and tipo in (bq.TIPO_CTA, bq.TIPO_HERO):
+            botones = self._botones_de(valor)
+            return {"botones": botones} if botones else None
+        if campo == "imagen" and tipo == bq.TIPO_HERO:
+            imagen = self._imagen(valor)
+            return {"imagen": imagen} if imagen else None
+        if campo == "imagenes" and tipo == bq.TIPO_MUESTRAS:
+            imagenes = [i for i in (self._imagen(v) for v in (valor if isinstance(valor, list)
+                                                               else [])) if i]
+            return {"imagenes": imagenes} if imagenes else None
         if campo in ("productos", "producto", "video", "url", "botones", "marca"):
             parcial = self.bloque({"tipo": tipo, campo: valor})
             if parcial is None:
@@ -403,17 +484,44 @@ class _Conversor:
                 if b.get(campo):
                     salida[campo] = self._sin_html(b[campo])
         elif tipo == bq.TIPO_CTA:
-            botones = []
-            for bt in b.get("botones") or []:
-                if not isinstance(bt, dict):
+            salida["botones"] = self._botones_de(b.get("botones"))
+        elif tipo == bq.TIPO_HERO:
+            imagen = self._imagen(b.get("imagen"))
+            if imagen is None:
+                self.avisos.append("La IA puso un hero con una imagen que no está entre las "
+                                   "IMÁGENES de las webs: no sale.")
+                return None
+            salida["imagen"] = imagen
+            for campo in ("titulo", "subtitulo"):
+                if b.get(campo):
+                    salida[campo] = self._sin_html(b[campo])
+            if isinstance(b.get("puntos"), list):
+                salida["puntos"] = [self._sin_html(p) for p in b["puntos"] if p]
+            botones = self._botones_de(b.get("botones"))
+            if botones:
+                salida["botones"] = botones
+            if b.get("disposicion"):
+                salida["disposicion"] = str(b["disposicion"])
+        elif tipo == bq.TIPO_MUESTRAS:
+            pies_ia = b.get("pies") if isinstance(b.get("pies"), list) else []
+            imagenes: list[dict[str, str]] = []
+            pies: list[str] = []
+            fuera = 0
+            for i, r in enumerate(b.get("imagenes") or []):
+                imagen = self._imagen(r)
+                if imagen is None:
+                    fuera += 1
                     continue
-                url = self._url(bt.get("enlace") or bt.get("url"))
-                if not url:
-                    self.avisos.append(f"Un botón con un enlace que no está en la lista "
-                                       f"(«{bt.get('enlace') or bt.get('url')}»): no sale.")
-                    continue
-                botones.append({"texto": self._sin_html(bt.get("texto")), "url": url})
-            salida["botones"] = botones
+                imagenes.append(imagen)
+                pies.append(self._sin_html(pies_ia[i]) if i < len(pies_ia) and pies_ia[i] else "")
+            if fuera:
+                self.avisos.append(f"La IA puso {fuera} imagen(es) en las muestras que no están "
+                                   "entre las IMÁGENES de las webs: no salen.")
+            salida["imagenes"] = imagenes
+            if any(pies):
+                salida["pies"] = pies
+            if b.get("titulo"):
+                salida["titulo"] = self._sin_html(b["titulo"])
         elif tipo == bq.TIPO_DESTACADO:
             for campo in ("titulo", "texto", "estilo"):
                 if b.get(campo):
@@ -502,13 +610,24 @@ def bloque_para_ia(b: dict[str, Any], refs: Referencias) -> dict[str, Any]:
     elif tipo == bq.TIPO_VIDEO:
         video = videos_mod.identidad(b.get("video"))
         salida["video"] = (refs.ref_de_video(video) or videos_mod.url_de(video)) if video else ""
-    elif tipo == bq.TIPO_CTA:
+    elif tipo == bq.TIPO_HERO:
+        imagen = bq.clave_imagen(b.get("imagen"))
+        salida["imagen"] = (refs.ref_de_imagen(imagen["id"]) or f"?{imagen['id']}") if imagen \
+            else ""
+        if b.get("puntos"):
+            salida["puntos"] = [bq.en_idioma(p, None) for p in b["puntos"]]
+    elif tipo == bq.TIPO_MUESTRAS:
+        salida["imagenes"] = [refs.ref_de_imagen(i["id"]) or f"?{i['id']}"
+                              for i in (bq.clave_imagen(r) for r in b.get("imagenes") or []) if i]
+        if b.get("pies"):
+            salida["pies"] = [bq.en_idioma(p, None) for p in b["pies"]]
+    if tipo in (bq.TIPO_CTA, bq.TIPO_HERO) and b.get("botones"):
         salida["botones"] = [{"texto": bq.en_idioma(bt.get("texto"), None),
                               "enlace": refs.ref_de_url(bq.en_idioma(bt.get("url"), None))}
                              for bt in b.get("botones") or []]
-    for campo in ("marca", "titulo", "boton", "estilo"):
+    for campo in ("marca", "titulo", "subtitulo", "boton", "estilo", "disposicion"):
         if b.get(campo):
-            salida[campo] = (b[campo] if campo in ("marca", "estilo")
+            salida[campo] = (b[campo] if campo in ("marca", "estilo", "disposicion")
                              else bq.en_idioma(b[campo], None))
     if tipo in (bq.TIPO_DESTACADO, bq.TIPO_VIDEO, bq.TIPO_MARCA) and b.get("texto"):
         salida["texto"] = bq.en_idioma(b["texto"], None)
@@ -613,14 +732,17 @@ def texto_libre(estructura: dict[str, Any]) -> str:
     from app.services.asistente.texto import html_a_texto  # noqa: PLC0415
 
     partes: list[str] = []
+    idioma = estructura.get("idioma")
     for b in estructura.get("bloques") or []:
         if b["tipo"] == bq.TIPO_TEXTO:
             partes.append(html_a_texto(b.get("html") or ""))
-        for campo in ("titulo", "texto", "boton"):
+        for campo in ("titulo", "subtitulo", "texto", "boton"):
             if b["tipo"] != bq.TIPO_TEXTO and b.get(campo):
-                partes.append(bq.en_idioma(b[campo], estructura.get("idioma")))
+                partes.append(bq.en_idioma(b[campo], idioma))
+        for campo in ("puntos", "pies"):
+            partes.extend(bq.en_idioma(p, idioma) for p in b.get(campo) or [])
         for bt in b.get("botones") or []:
-            partes.append(bq.en_idioma(bt.get("texto"), estructura.get("idioma")))
+            partes.append(bq.en_idioma(bt.get("texto"), idioma))
     return "\n\n".join(p for p in partes if p)
 
 
