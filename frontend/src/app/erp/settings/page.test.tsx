@@ -689,6 +689,50 @@ describe("ErpSettingsPage — Lote 2 · PR-2", () => {
   });
 });
 
+// Ofertas — prefijo de numeración (mayúsculas, 6 como mucho) y validez por
+// defecto (1–365 días); viajan juntos en `ofertas`, solo su sección.
+describe("ErpSettingsPage — Ofertas", () => {
+  const anio = new Date().getFullYear();
+
+  it("precarga prefijo y validez; el prefijo va en mayúsculas y enseña la numeración", async () => {
+    mockGet.mockResolvedValue(settings({ ofertas: { prefijo: "OF", validez_dias: 30 } }));
+    const user = userEvent.setup();
+    render(<ErpSettingsPage />);
+    const prefijo = await screen.findByLabelText("Prefijo de numeración de las ofertas");
+    expect(prefijo).toHaveValue("OF");
+    const validez = screen.getByLabelText("Validez por defecto de las ofertas en días");
+    expect(validez).toHaveValue(30);
+    const region = screen.getByRole("region", { name: "Ofertas" });
+    expect(region).toHaveTextContent(`Las ofertas se numeran OF-${anio}-0001, OF-${anio}-0002…`);
+    expect(region).toHaveTextContent("Una oferta creada hoy vale hasta dentro de 30 días");
+    await user.type(prefijo, "x");
+    expect(prefijo).toHaveValue("OFX");                       // se guarda en mayúsculas
+    expect(region).toHaveTextContent(`OFX-${anio}-0001`);
+    await user.clear(validez);
+    await user.type(validez, "45");
+    await user.click(within(region).getByRole("button", { name: "Guardar cambios · Ofertas" }));
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
+    expect(mockUpdate.mock.calls[0][0]).toEqual({ ofertas: { prefijo: "OFX", validez_dias: 45 } });
+  });
+
+  it("la validez se encaja en 1–365 al salir del campo y el prefijo vacío avisa", async () => {
+    const user = userEvent.setup();
+    render(<ErpSettingsPage />);
+    // Sin bloque guardado pinta los valores de serie (OF, 30).
+    const prefijo = await screen.findByLabelText("Prefijo de numeración de las ofertas");
+    expect(prefijo).toHaveValue("OF");
+    const validez = screen.getByLabelText("Validez por defecto de las ofertas en días");
+    await user.clear(validez);
+    await user.type(validez, "400");
+    await user.tab();                                         // al salir se ajusta
+    expect(validez).toHaveValue(365);
+    await user.clear(prefijo);
+    expect(prefijo).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByRole("region", { name: "Ofertas" }))
+      .toHaveTextContent("Prefijo: 1–6 letras o dígitos.");
+  });
+});
+
 describe("ErpSettingsPage — Cuadre (descuadres)", () => {
   const catalogo = [
     { id: "factura_lineas_ajenas", titulo: "Factura con líneas que no son suyas",

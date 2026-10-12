@@ -773,13 +773,17 @@ export async function generarBorradorAsistente(
 }
 
 /** El primer borrador de un correo NUEVO, sin hilo: el destinatario dispara
- *  el expediente y la instrucción es obligatoria. */
+ *  el expediente y la instrucción es obligatoria. Con `oferta_id`, la oferta
+ *  que va adjunta entra en el contexto de la IA (número, fechas, líneas e
+ *  importes) y su contacto es el destinatario si no se dice otro. */
 export async function generarBorradorNuevo(payload: SobreElEditor & {
   destinatario: string;
   instruccion: string;
   alcance?: AsistenteAlcance;
   contact_id?: string | null;
   regenerar_de?: string | null;
+  /** La oferta adjunta (modal «Enviar oferta por email»). */
+  oferta_id?: string | null;
 }): Promise<BorradorAsistente> {
   const r = await apiFetch<{ borrador: BorradorAsistente }>("/api/emails/asistente", {
     method: "POST", body: JSON.stringify(payload),
