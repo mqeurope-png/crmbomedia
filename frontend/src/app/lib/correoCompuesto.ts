@@ -29,7 +29,9 @@ export type BloqueCompuesto = {
   producto?: { fuente: string; origen_id: string };
   productos?: { fuente: string; origen_id: string }[];
   marca?: string;
-  url?: string;
+  /** «vídeo»: QUÉ vídeo es; su URL, miniatura, título y duración los
+   *  resuelve el servidor desde su origen (la URL pegada, la tabla de vídeos). */
+  video?: { plataforma: "youtube" | "vimeo"; id: string };
   estilo?: string;
   [campo: string]: unknown;
 };

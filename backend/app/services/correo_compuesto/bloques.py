@@ -10,7 +10,9 @@ usan) y los campos de su tipo. Los textos y los enlaces de un bloque pueden
 ser un texto o un dict por idioma (`{"es": …, "en": …}`): el generador coge
 el del idioma del correo. Los productos van por su clave del catálogo
 (`{"fuente", "origen_id"}`): nombre, imagen, precio y enlace salen siempre de
-la fila viva de `kb_catalogo`, nunca de la estructura.
+la fila viva de `kb_catalogo`, nunca de la estructura. Los vídeos, igual, por
+QUÉ vídeo son (`{"plataforma", "id"}`, ver `videos.py`): su URL, miniatura,
+título y duración los resuelve BoHub al generar.
 
 `normalizar` deja cualquier estructura (de la IA, de la vista previa, de un
 borrador guardado) en esta forma: tipos conocidos, campos limpios, textos sin
@@ -26,6 +28,8 @@ import uuid
 from typing import Any
 
 import bleach
+
+from app.services.correo_compuesto import videos as videos_mod
 
 VERSION = 1
 
@@ -170,23 +174,6 @@ def _url_por_idioma(valor: Any, *, mailto: bool = False) -> Any:
     return url_valida(valor, mailto=mailto)
 
 
-_YOUTUBE_RE = re.compile(
-    r"^https?://(?:www\.|m\.)?(?:youtube\.com/(?:watch\?(?:[^#\s]*&)?v=|shorts/|embed/|live/)|"
-    r"youtu\.be/)([A-Za-z0-9_-]{11})(?:[?&#/].*)?$",
-)
-
-
-def video_youtube(url: Any) -> str | None:
-    """El id de un vídeo de YouTube a partir de su URL (watch, youtu.be,
-    shorts, embed), o None si no es de YouTube."""
-    m = _YOUTUBE_RE.match(str(url or "").strip())
-    return m.group(1) if m else None
-
-
-def miniatura_youtube(video_id: str) -> str:
-    return f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
-
-
 # --- el texto rico de un bloque «texto» -----------------------------------------------------
 
 ETIQUETAS_TEXTO: tuple[str, ...] = ("p", "br", "strong", "em", "u", "ul", "ol", "li", "a")
@@ -316,6 +303,18 @@ def clave_de(producto: dict[str, str]) -> str:
     return f"{producto['fuente']}|{producto['origen_id']}"
 
 
+def videos_de(estructura: dict[str, Any]) -> list[dict[str, str]]:
+    """Los vídeos que nombra la estructura, sin repetir, en orden."""
+    vistos: set[str] = set()
+    salida: list[dict[str, str]] = []
+    for b in estructura.get("bloques") or []:
+        video = videos_mod.identidad(b.get("video")) if b.get("tipo") == TIPO_VIDEO else None
+        if video and videos_mod.clave(video) not in vistos:
+            vistos.add(videos_mod.clave(video))
+            salida.append(video)
+    return salida
+
+
 def productos_de(estructura: dict[str, Any]) -> list[dict[str, str]]:
     """Los productos que nombra la estructura, sin repetir, en orden."""
     vistos: set[str] = set()
@@ -416,11 +415,13 @@ def _normalizar_bloque(b: Any, avisos: list[str]) -> list[dict[str, Any]]:
             salida["enlace"] = enlace
         return [salida]
     if tipo == TIPO_VIDEO:
-        url = url_valida(b.get("url"))
-        if not url or not video_youtube(url):
-            avisos.append("un vídeo sin URL de YouTube válida: fuera")
+        # Qué vídeo es (de un bloque guardado o de la tabla de vídeos), o una
+        # URL pegada de YouTube o Vimeo; sus datos se resuelven al generar.
+        video = videos_mod.identidad(b.get("video") or b.get("url"))
+        if video is None:
+            avisos.append("un vídeo que no es de YouTube ni de Vimeo: fuera")
             return []
-        salida = {"id": bid, "tipo": tipo, "url": url}
+        salida = {"id": bid, "tipo": tipo, "video": video}
         for campo, maximo in (("titulo", MAX_TITULO), ("texto", MAX_TEXTO_CORTO),
                               ("boton", MAX_BOTON)):
             valor = _texto_por_idioma(b.get(campo), maximo)

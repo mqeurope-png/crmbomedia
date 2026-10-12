@@ -30,6 +30,7 @@ from urllib.parse import urlparse
 
 from app.services.asistente.texto import html_a_texto
 from app.services.correo_compuesto import bloques as bq
+from app.services.correo_compuesto import videos as videos_mod
 
 ANCHO = 600
 #: Por debajo de este ancho las columnas se apilan (todo lo que no es un
@@ -95,6 +96,9 @@ class Datos:
     #: Los avisos del catálogo en el idioma del correo (IVA, VIES, «no es una
     #: factura», precio orientativo).
     avisos: dict[str, str] = field(default_factory=dict)
+    #: `videos.clave(video)` → los datos del vídeo (URL, miniatura, título,
+    #: duración), de su origen (`videos.resolver`).
+    videos: dict[str, dict[str, Any]] = field(default_factory=dict)
     #: Si los precios de cada fuente llevan IVA (`con`, `sin` o nada).
     iva_por_fuente: dict[str, str | None] = field(default_factory=dict)
 
@@ -471,42 +475,52 @@ class _Render:
         return _fila(tira, bloque=b, preview=self.preview, padding="16px 8px 8px"), plano
 
     def video(self, b: dict[str, Any]) -> tuple[str, str]:
-        url = bq.url_valida(b.get("url"))
-        video_id = bq.video_youtube(url)
-        if not url or not video_id:
+        # El bloque dice QUÉ vídeo es; sus datos (URL, miniatura, título,
+        # duración) vienen de su origen (`videos.resolver`): hoy la URL pegada,
+        # luego la tabla de vídeos. Lo que escriba el bloque manda.
+        video = videos_mod.identidad(b.get("video"))
+        if video is None:
             return "", ""
-        titulo = bq.en_idioma(b.get("titulo"), self.idioma)
+        datos = self.datos.videos.get(videos_mod.clave(video)) or videos_mod.desde_url(video)
+        url = bq.url_valida(datos.get("url")) or videos_mod.url_de(video)
+        miniatura = bq.url_valida(datos.get("miniatura"))
+        titulo = bq.en_idioma(b.get("titulo"), self.idioma) or str(datos.get("titulo") or "")
         texto = bq.en_idioma(b.get("texto"), self.idioma)
         boton = bq.en_idioma(b.get("boton"), self.idioma) or self.t("ver_video")
+        duracion = videos_mod.duracion_texto(datos.get("duracion"))
         partes: list[str] = []
         if titulo:
             partes.append(_p(_lineas(titulo), f"font-size:16px;font-weight:700;color:{TINTA};"
                                               "margin:0 0 10px;line-height:1.3;",
                              _campo(self.preview, b["id"] + ":titulo")))
-        img = (f'<img src="{_e(bq.miniatura_youtube(video_id))}" '
-               f'alt="{_e(titulo or self.t("video"))}" width="{ANCHO_MINIATURA_VIDEO}" '
-               'class="bh-img" '
-               f'style="display:block;width:100%;max-width:{ANCHO_MINIATURA_VIDEO}px;height:auto;'
-               'margin:0 auto;border:0;opacity:0.85;">')
-        panel = _tabla(
-            f'<tr><td align="center" style="padding:0;text-align:center;">'
-            f'<a href="{_e(url)}" target="_blank" style="text-decoration:none;display:block;">'
-            f"{img}</a>"
-            "</td></tr>"
+        filas_panel: list[str] = []
+        if miniatura:
+            img = (f'<img src="{_e(miniatura)}" '
+                   f'alt="{_e(titulo or self.t("video"))}" width="{ANCHO_MINIATURA_VIDEO}" '
+                   'class="bh-img" '
+                   f'style="display:block;width:100%;max-width:{ANCHO_MINIATURA_VIDEO}px;'
+                   'height:auto;margin:0 auto;border:0;opacity:0.85;">')
+            filas_panel.append(
+                f'<tr><td align="center" style="padding:0;text-align:center;">'
+                f'<a href="{_e(url)}" target="_blank" style="text-decoration:none;display:block;">'
+                f"{img}</a></td></tr>")
+        # Sin miniatura (un vídeo de Vimeo pegado): el panel con su botón.
+        filas_panel.append(
             f'<tr><td align="center" bgcolor="{PANEL_VIDEO}" style="padding:12px 16px;'
             f'background-color:{PANEL_VIDEO};text-align:center;">'
             f'<a href="{_e(url)}" target="_blank" '
             f'style="color:{ENLACE_VIDEO};font-family:{FUENTE};font-size:14px;font-weight:700;'
             f'text-decoration:none;">▶ <span{_campo(self.preview, b["id"] + ":boton")}>'
-            f"{_e(boton)}</span></a></td></tr>",
-            atributos=f' bgcolor="{PANEL_VIDEO}"',
-            estilo=f"border-radius:12px;overflow:hidden;background-color:{PANEL_VIDEO};")
-        partes.append(panel)
+            f"{_e(boton)}</span>{_e(f' · {duracion}') if duracion else ''}</a></td></tr>")
+        partes.append(_tabla(
+            "".join(filas_panel), atributos=f' bgcolor="{PANEL_VIDEO}"',
+            estilo=f"border-radius:12px;overflow:hidden;background-color:{PANEL_VIDEO};"))
         if texto:
             partes.append(_p(_lineas(texto), f"font-size:13px;color:{APAGADO};margin:10px 0 0;"
                                              "line-height:1.5;",
                              _campo(self.preview, b["id"] + ":texto")))
-        plano = "\n".join(t for t in (titulo, f"▶ {boton}: {url}", texto) if t)
+        boton_plano = f"▶ {boton} ({duracion})" if duracion else f"▶ {boton}"
+        plano = "\n".join(t for t in (titulo, f"{boton_plano}: {url}", texto) if t)
         return _fila("".join(partes), bloque=b, preview=self.preview, padding="8px 8px 16px"), plano
 
     def cta(self, b: dict[str, Any]) -> tuple[str, str]:

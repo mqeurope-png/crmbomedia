@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.services.conocimiento import catalogo
 from app.services.correo_compuesto import bloques as bq
+from app.services.correo_compuesto import videos as videos_mod
 from app.services.correo_compuesto.generador import Datos, clave_marca
 
 
@@ -57,4 +58,5 @@ def resolver(session: Session, estructura: dict[str, Any], *, ahora: datetime | 
     return Datos(
         productos=productos, marcas=marcas(session), avisos=catalogo.avisos_en(idioma),
         iva_por_fuente=dict(cfg.get("iva_por_fuente") or {}),
+        videos=videos_mod.resolver(session, bq.videos_de(estructura), idioma=idioma),
     )

@@ -5,10 +5,11 @@
   pedido sale el martes») o no lo dice (entonces elige la IA, por defecto
   normal). El interruptor de la franja manda sobre todo esto.
 - `Referencias`: lo que la IA puede nombrar, siempre por referencia: los
-  productos del CATÁLOGO (`P1`, `C1`), los ENLACES (`L1`), los vídeos de
-  YouTube que salen en el hilo o en la instrucción (`V1`) y la web de cada
-  marca (`M:mbo_dtf`). Una referencia que no existe no entra: así no hay
-  productos, precios ni enlaces inventados.
+  productos del CATÁLOGO (`P1`, `C1`), los ENLACES (`L1`), los vídeos (`V1`:
+  hoy, los de YouTube o Vimeo que salen en el hilo o en la instrucción; con la
+  tabla de vídeos, también los suyos) y la web de cada marca (`M:mbo_dtf`).
+  Una referencia que no existe no entra: así no hay productos, precios,
+  enlaces ni vídeos inventados.
 - `estructura_desde_ia` convierte la lista de bloques que devuelve la IA (sus
   textos en markdown sencillo) en una estructura (`bloques.normalizar`). Si un
   texto trae etiquetas HTML, se quitan, se cuenta y se registra.
@@ -28,6 +29,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.services.correo_compuesto import bloques as bq
+from app.services.correo_compuesto import videos as videos_mod
 from app.services.correo_compuesto.generador import clave_marca
 
 logger = logging.getLogger(__name__)
@@ -107,20 +109,35 @@ def modo_del_turno(*, formato: str | None, instruccion: str | None,
     return pedido
 
 
-_YOUTUBE_EN_TEXTO_RE = re.compile(
-    r"https?://(?:www\.|m\.)?(?:youtube\.com/(?:watch\?[^\s<>\"']*v=|shorts/|embed/|live/)|"
-    r"youtu\.be/)[A-Za-z0-9_-]{11}[^\s<>\"')\]]*")
+_VIDEO_EN_TEXTO_RE = re.compile(
+    r"https?://(?:(?:www\.|m\.)?(?:youtube\.com/(?:watch\?[^\s<>\"']*v=|shorts/|embed/|live/)|"
+    r"youtu\.be/)[A-Za-z0-9_-]{11}|(?:www\.|player\.)?vimeo\.com/(?:video/|channels/[\w-]+/|"
+    r"groups/[\w-]+/videos/)?\d{5,12})[^\s<>\"')\]]*")
 
 
-def videos_de(*textos: str | None) -> list[str]:
-    """Las URL de YouTube que aparecen en los textos, sin repetir."""
-    salida: list[str] = []
+def videos_de(*textos: str | None) -> list[dict[str, str]]:
+    """Los vídeos de YouTube o Vimeo cuyas URL aparecen en los textos, sin
+    repetir: qué vídeo es (`plataforma`, `id`) y su URL."""
+    salida: list[dict[str, str]] = []
+    vistos: set[str] = set()
     for texto in textos:
-        for url in _YOUTUBE_EN_TEXTO_RE.findall(texto or ""):
-            url = url.rstrip(".,;:")
-            if bq.video_youtube(url) and url not in salida:
-                salida.append(url)
+        for url in _VIDEO_EN_TEXTO_RE.findall(texto or ""):
+            video = videos_mod.de_url(url.rstrip(".,;:"))
+            if video and videos_mod.clave(video) not in vistos:
+                vistos.add(videos_mod.clave(video))
+                salida.append({**video, "url": videos_mod.url_de(video)})
     return salida
+
+
+def _video_ref(valor: Any) -> dict[str, str] | None:
+    """Un vídeo de las referencias: `{"plataforma", "id", "url"}` (y lo que
+    traiga su origen, como el título), de un dict o de una URL."""
+    video = videos_mod.identidad(valor)
+    if video is None:
+        return None
+    extra = {k: str(v) for k, v in valor.items()
+             if k in ("titulo", "idioma") and v} if isinstance(valor, dict) else {}
+    return {**video, "url": videos_mod.url_de(video), **extra}
 
 
 @dataclass
@@ -130,12 +147,12 @@ class Referencias:
     productos: dict[str, dict[str, str]] = field(default_factory=dict)   # P1 → clave
     enlaces_producto: dict[str, str] = field(default_factory=dict)       # P1 → URL
     enlaces: dict[str, str] = field(default_factory=dict)                # L1 → URL
-    videos: dict[str, str] = field(default_factory=dict)                 # V1 → URL
+    videos: dict[str, dict[str, str]] = field(default_factory=dict)      # V1 → vídeo
     marcas: dict[str, dict[str, Any]] = field(default_factory=dict)      # clave → marca
 
     @classmethod
     def desde(cls, *, maquinas: list[dict[str, Any]], consumibles: list[dict[str, Any]],
-              enlaces: list[dict[str, Any]], videos: list[str],
+              enlaces: list[dict[str, Any]], videos: list[Any],
               marcas: dict[str, dict[str, Any]]) -> Referencias:
         refs = cls(marcas=dict(marcas))
         for prefijo, lista in (("P", maquinas), ("C", consumibles)):
@@ -149,8 +166,8 @@ class Referencias:
         for i, e in enumerate(enlaces, 1):
             if bq.url_valida(e.get("url")):
                 refs.enlaces[f"L{i}"] = str(e["url"])
-        for i, url in enumerate(videos, 1):
-            refs.videos[f"V{i}"] = url
+        for valor in videos:
+            refs.anadir_video(valor)
         return refs
 
     def como_dict(self) -> dict[str, Any]:
@@ -159,16 +176,32 @@ class Referencias:
 
     @classmethod
     def de_dict(cls, datos: dict[str, Any] | None, *, marcas: dict[str, dict[str, Any]],
-                videos: list[str] | None = None) -> Referencias:
+                videos: list[Any] | None = None) -> Referencias:
         datos = datos if isinstance(datos, dict) else {}
         refs = cls(productos=dict(datos.get("productos") or {}),
                    enlaces_producto=dict(datos.get("enlaces_producto") or {}),
-                   enlaces=dict(datos.get("enlaces") or {}),
-                   videos=dict(datos.get("videos") or {}), marcas=dict(marcas))
-        for url in videos or []:
-            if url not in refs.videos.values():
-                refs.videos[f"V{len(refs.videos) + 1}"] = url
+                   enlaces=dict(datos.get("enlaces") or {}), marcas=dict(marcas))
+        guardados = datos.get("videos") if isinstance(datos.get("videos"), dict) else {}
+        for ref, valor in guardados.items():
+            video = _video_ref(valor)
+            if video is not None:
+                refs.videos[str(ref)] = video
+        for valor in videos or []:
+            refs.anadir_video(valor)
         return refs
+
+    def anadir_video(self, valor: Any) -> str | None:
+        """Añade un vídeo (dict o URL) con la siguiente `V#`, si no estaba;
+        devuelve su referencia."""
+        video = _video_ref(valor)
+        if video is None:
+            return None
+        ya = self.ref_de_video(video)
+        if ya:
+            return ya
+        ref = f"V{len(self.videos) + 1}"
+        self.videos[ref] = video
+        return ref
 
     # -- de referencia a valor, y vuelta ---------------------------------------------------
 
@@ -177,8 +210,8 @@ class Referencias:
         return bq.url_valida(bq.en_idioma((m or {}).get("urls") or {}, idioma)) if m else None
 
     def permitidas(self, idioma: str) -> set[str]:
-        urls = set(self.enlaces.values()) | set(self.enlaces_producto.values()) | set(
-            self.videos.values())
+        urls = set(self.enlaces.values()) | set(self.enlaces_producto.values()) | {
+            v["url"] for v in self.videos.values()}
         for clave in self.marcas:
             url = self.url_marca(clave, idioma)
             if url:
@@ -196,19 +229,40 @@ class Referencias:
         if s in self.enlaces_producto:
             return self.enlaces_producto[s]
         if s in self.videos:
-            return self.videos[s]
+            return self.videos[s]["url"]
         if s.upper().startswith("M:"):
             return self.url_marca(s[2:], idioma)
         if s.lower().startswith("mailto:") and "@" in s:
             return s
-        return s if s in self.permitidas(idioma) else None
+        if s in self.permitidas(idioma):
+            return s
+        # La URL de un vídeo de la lista escrita de otra forma (youtu.be…).
+        video = self.video(s)
+        return video["url"] if video else None
+
+    def video(self, ref: Any) -> dict[str, str] | None:
+        """El vídeo de una referencia `V#`, o de una URL que es uno de ellos."""
+        s = str(ref or "").strip()
+        if s in self.videos:
+            return self.videos[s]
+        identidad = videos_mod.de_url(s)
+        if identidad is None:
+            return None
+        ya = self.ref_de_video(identidad)
+        return self.videos[ya] if ya else None
+
+    def ref_de_video(self, video: dict[str, str]) -> str | None:
+        clave = videos_mod.clave(video)
+        return next((ref for ref, v in self.videos.items() if videos_mod.clave(v) == clave),
+                    None)
 
     def ref_de_url(self, url: str) -> str:
-        for mapa in (self.enlaces, self.enlaces_producto, self.videos):
+        for mapa in (self.enlaces, self.enlaces_producto):
             for ref, u in mapa.items():
                 if u == url:
                     return ref
-        return url
+        video = self.video(url)
+        return (self.ref_de_video(video) or url) if video else url
 
     def ref_de_producto(self, clave: dict[str, str]) -> str | None:
         for ref, c in self.productos.items():
@@ -237,6 +291,7 @@ class _Conversor:
         # (pueden no estar entre las referencias de este turno).
         self.conocidas: set[str] = set()
         self.productos_conocidos: dict[str, dict[str, str]] = {}
+        self.videos_conocidos: dict[str, dict[str, str]] = {}
 
     def _url(self, destino: Any) -> str | None:
         url = self.refs.url(destino, self.idioma)
@@ -252,6 +307,16 @@ class _Conversor:
             texto = re.sub(r"</\s*(p|li|div|h[1-6]|tr)\s*>", "\n", texto, flags=re.IGNORECASE)
             texto = bq.texto_plano(texto, bq.MAX_TEXTO_RICO)
         return texto
+
+    def _video(self, valor: Any) -> dict[str, str] | None:
+        """Qué vídeo pone un bloque: una `V#` (o la URL de uno de ellos) o el
+        que el bloque ya tenía; nunca uno inventado."""
+        video = self.refs.video(valor)
+        if video is None:
+            identidad = videos_mod.identidad(valor)
+            if identidad is not None:
+                video = self.videos_conocidos.get(videos_mod.clave(identidad))
+        return {"plataforma": video["plataforma"], "id": video["id"]} if video else None
 
     def _producto(self, ref: Any) -> dict[str, str] | None:
         r = str(ref or "").strip()
@@ -277,10 +342,12 @@ class _Conversor:
             f"?{p['origen_id']}": p for p in [*(bloque.get("productos") or []),
                                               *([bloque["producto"]] if bloque.get("producto")
                                                 else [])]}
+        propio = videos_mod.identidad(bloque.get("video")) if bloque.get("video") else None
+        self.videos_conocidos = {videos_mod.clave(propio): propio} if propio else {}
         try:
             return self._campo(bloque.get("tipo"), campo, valor)
         finally:
-            self.conocidas, self.productos_conocidos = set(), {}
+            self.conocidas, self.productos_conocidos, self.videos_conocidos = set(), {}, {}
 
     def _campo(self, tipo: Any, campo: str, valor: Any) -> dict[str, Any] | None:
         if tipo == bq.TIPO_TEXTO and campo in ("texto", "html"):
@@ -293,7 +360,7 @@ class _Conversor:
             parcial = self.bloque({"tipo": tipo, campo: valor})
             if parcial is None:
                 return None
-            clave = {"video": "url"}.get(campo, campo)
+            clave = {"url": "video"}.get(campo, campo)
             return {clave: parcial[clave]} if clave in parcial else None
         return None
 
@@ -326,12 +393,12 @@ class _Conversor:
             if b.get("texto"):
                 salida["texto"] = self._sin_html(b["texto"])
         elif tipo == bq.TIPO_VIDEO:
-            url = self._url(b.get("video") or b.get("url"))
-            if not url or not bq.video_youtube(url):
-                self.avisos.append("La IA puso un vídeo que no está en el hilo ni en la "
-                                   "instrucción: no sale.")
+            video = self._video(b.get("video") or b.get("url"))
+            if video is None:
+                self.avisos.append("La IA puso un vídeo que no está entre los que tiene a mano "
+                                   "(los del hilo y la instrucción): no sale.")
                 return None
-            salida["url"] = url
+            salida["video"] = video
             for campo in ("titulo", "texto", "boton"):
                 if b.get(campo):
                     salida[campo] = self._sin_html(b[campo])
@@ -365,8 +432,9 @@ def _urls_de(bloque: dict[str, Any]) -> set[str]:
     """Las URL que ya lleva un bloque guardado: las de sus enlaces de texto,
     su vídeo y sus botones."""
     urls = {html_mod.unescape(u) for u in re.findall(r'href="([^"]*)"', bloque.get("html") or "")}
-    if bloque.get("url"):
-        urls.add(str(bloque["url"]))
+    video = videos_mod.identidad(bloque.get("video")) if bloque.get("video") else None
+    if video:
+        urls.add(videos_mod.url_de(video))
     for bt in bloque.get("botones") or []:
         valor = bt.get("url")
         urls.update(valor.values() if isinstance(valor, dict) else [valor] if valor else [])
@@ -432,7 +500,8 @@ def bloque_para_ia(b: dict[str, Any], refs: Referencias) -> dict[str, Any]:
         salida["productos"] = [refs.ref_de_producto(p) or f"?{p['origen_id']}"
                                for p in b.get("productos") or []]
     elif tipo == bq.TIPO_VIDEO:
-        salida["video"] = refs.ref_de_url(b.get("url") or "")
+        video = videos_mod.identidad(b.get("video"))
+        salida["video"] = (refs.ref_de_video(video) or videos_mod.url_de(video)) if video else ""
     elif tipo == bq.TIPO_CTA:
         salida["botones"] = [{"texto": bq.en_idioma(bt.get("texto"), None),
                               "enlace": refs.ref_de_url(bq.en_idioma(bt.get("url"), None))}

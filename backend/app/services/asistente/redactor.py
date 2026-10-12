@@ -756,7 +756,9 @@ def formato_del_turno(modo: str | None, refs: ia_compuesto.Referencias, idioma: 
                     "con «cuerpo»). Solo si lo que hay que mandar es presentar productos o "
                     "máquinas del CATÁLOGO (la gama, varias opciones con su precio), devuelve un "
                     "CORREO COMPUESTO.")
-    videos = "; ".join(f"[{ref}] {url}" for ref, url in refs.videos.items())
+    videos = "; ".join(
+        f"[{ref}] {v['url']}" + (f" ({v['titulo']})" if v.get("titulo") else "")
+        for ref, v in refs.videos.items())
     return (f"{cabecera}\n"
             f"VÍDEOS que puedes poner: {videos or 'ninguno (no pongas bloque de vídeo)'}.\n"
             f"MARCAS para la tira: {_marcas_para_ia(refs, idioma)}.\n\n")

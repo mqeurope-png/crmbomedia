@@ -36,6 +36,7 @@ from app.models.conocimiento import (
 from app.services.correo_compuesto import bloques as bq
 from app.services.correo_compuesto import datos as datos_mod
 from app.services.correo_compuesto import generador
+from app.services.correo_compuesto import videos as videos_mod
 from tests._test_helpers import auth_headers, seed_test_users
 
 AHORA = datetime(2026, 10, 12, 9, 0, tzinfo=UTC)
@@ -321,9 +322,19 @@ def test_normalizar_limpia_lo_que_llegue_y_el_markdown_de_la_ia_se_vuelve_html()
     recortado = bq.limpiar_texto_rico(largo, 6000)
     assert len(recortado) <= 6000 and recortado.endswith("</p>")
     assert recortado.count("<p>") == recortado.count("</p>") and "<a href" not in recortado
-    assert bq.video_youtube("https://youtu.be/dQw4w9WgXcQ?t=3") == "dQw4w9WgXcQ"
-    assert bq.video_youtube("https://www.youtube.com/shorts/dQw4w9WgXcQ") == "dQw4w9WgXcQ"
-    assert bq.video_youtube("https://vimeo.com/1") is None
+    yt = {"plataforma": "youtube", "id": "dQw4w9WgXcQ"}
+    assert videos_mod.de_url("https://youtu.be/dQw4w9WgXcQ?t=3") == yt
+    assert videos_mod.de_url("https://www.youtube.com/shorts/dQw4w9WgXcQ") == yt
+    assert videos_mod.de_url("https://vimeo.com/1112093555") == {"plataforma": "vimeo",
+                                                                "id": "1112093555"}
+    assert videos_mod.de_url("https://player.vimeo.com/video/1112093555?h=x")["id"] == "1112093555"
+    assert videos_mod.de_url("https://vimeo.com/1") is None
+    assert videos_mod.de_url("https://example.com/v.mp4") is None
+    # Un bloque guardado (o la tabla de vídeos) dice qué vídeo es; una URL pegada, también.
+    assert videos_mod.identidad({"plataforma": "vimeo", "id": "1112093555"})["id"] == "1112093555"
+    assert videos_mod.identidad({"plataforma": "dailymotion", "id": "x"}) is None
+    assert videos_mod.duracion_texto(151) == "2:31" and videos_mod.duracion_texto(3723) == "1:02:03"
+    assert videos_mod.duracion_texto(None) == ""
 
 
 def test_la_ruta_de_render_limpia_genera_y_no_envia(
@@ -402,3 +413,40 @@ def test_el_catalogo_guarda_el_diseno_del_compositor_y_la_tira_de_marca_lo_usa(
     assert re.search(r"background-color:#fee2e2;[^>]*color:#b91c1c;\">Nuevo</td>", html)
     assert re.search(r">Alt\. máx\.</td><td[^>]*>10 cm</td>", html)
     assert re.search(r"color:#e30613;margin:10px 0 0;text-align:center;\">4\.990 €", html)
+
+
+def test_el_video_toma_sus_datos_de_su_origen_y_no_de_la_url_pegada(
+    session_factory: sessionmaker,
+) -> None:
+    """El bloque «vídeo» dice QUÉ vídeo es. Sus datos (URL, miniatura, título,
+    duración) vienen de su origen: hoy la URL pegada; mañana la tabla de vídeos,
+    que se enchufa en `Datos.videos` sin cambiar el bloque ni el generador."""
+    yt = {"plataforma": "youtube", "id": "dQw4w9WgXcQ"}
+    vimeo = {"plataforma": "vimeo", "id": "1112093555"}
+    estructura = bq.normalizar({"idioma": "es", "bloques": [
+        {"id": "v1", "tipo": "video", "url": YOUTUBE},
+        {"id": "v2", "tipo": "video", "video": vimeo},
+        {"id": "v3", "tipo": "video", "video": yt, "titulo": "El título de quien envía"},
+    ]})
+    assert [b["video"] for b in estructura["bloques"]] == [yt, vimeo, yt]
+    with session_factory() as s:
+        datos = datos_mod.resolver(s, estructura, ahora=AHORA, config=CONFIG)
+    # De la URL: YouTube con su miniatura; Vimeo sin ella (no se pregunta a su API al vuelo).
+    assert datos.videos["youtube:dQw4w9WgXcQ"]["miniatura"].startswith("https://img.youtube.com/")
+    assert datos.videos["vimeo:1112093555"]["miniatura"] is None
+    html = generador.generar({**estructura, "bloques": estructura["bloques"][1:2]}, datos).html
+    assert "<img" not in html and 'href="https://vimeo.com/1112093555"' in html
+    assert "Ver vídeo</span></a>" in html
+    # Con los datos de otro origen (lo que pondrá la tabla de vídeos): título,
+    # miniatura y duración de ahí; lo que escriba el bloque manda.
+    datos.videos["youtube:dQw4w9WgXcQ"] = {
+        **videos_mod.desde_url(yt), "titulo": "La Orion 20 imprimiendo camisetas",
+        "miniatura": "https://cdn.example/orion-video.jpg", "duracion": 151, "origen": "tabla"}
+    correo = generador.generar({**estructura, "bloques": [estructura["bloques"][0],
+                                                          estructura["bloques"][2]]}, datos)
+    assert correo.html.count('src="https://cdn.example/orion-video.jpg"') == 2
+    assert "La Orion 20 imprimiendo camisetas" in correo.html          # el título de la tabla
+    assert "El título de quien envía" in correo.html                   # el del bloque manda
+    assert correo.html.count("Ver vídeo</span> · 2:31</a>") == 2
+    assert "▶ Ver vídeo (2:31): https://www.youtube.com/watch?v=dQw4w9WgXcQ" in correo.texto
+    _comprobar_html_de_correo(correo.html)

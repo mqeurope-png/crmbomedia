@@ -180,7 +180,9 @@ def test_la_gama_dtf_sale_compuesta_y_el_aviso_de_un_pedido_sale_en_texto(
     assert [p["origen_id"] for p in fila["productos"]] == [
         {"Orion 20": "orion-20", "Lyra 35": "lyra-35", "Astra 35 Pro": "astra-35"}[por_ref[ref]]
         for ref in ("P1", "P2", "P3")]
-    assert estructura["bloques"][3]["url"] == VIDEO
+    # El bloque guarda QUÉ vídeo es; su URL y su miniatura las resuelve BoHub.
+    assert estructura["bloques"][3]["video"] == {"plataforma": "youtube", "id": "dQw4w9WgXcQ"}
+    assert "img.youtube.com/vi/dQw4w9WgXcQ/" in b["html"] and VIDEO in b["texto"]
     assert estructura["bloques"][4]["botones"] == [
         {"texto": "Ver toda la gama", "url": "https://mboprinters.com/es/"}]
     assert estructura["bloques"][0]["html"].startswith("<p>Hola Marny,</p><p>para el taller")
@@ -191,7 +193,8 @@ def test_la_gama_dtf_sale_compuesta_y_el_aviso_de_un_pedido_sale_en_texto(
     with session_factory() as s:
         fila_bd = s.get(BorradorAsistente, b["id"])
         assert fila_bd.modo == "compuesto" and json.loads(fila_bd.estructura_json) == estructura
-        assert json.loads(fila_bd.contexto_json)["refs"]["videos"] == {"V1": VIDEO}
+        assert json.loads(fila_bd.contexto_json)["refs"]["videos"] == {
+            "V1": {"plataforma": "youtube", "id": "dQw4w9WgXcQ", "url": VIDEO}}
     # «Dile que el pedido sale el martes»: un correo normal, como siempre.
     falso_normal = _ClaudeFalso({"asunto": "Re: Pedido", "cuerpo": "<p>Hola Marny,</p><p>Tu "
                                  "pedido sale el martes.</p>", "idioma": "es", "aviso": "",
@@ -532,7 +535,8 @@ def test_editar_un_campo_no_pierde_los_productos_ni_los_enlaces_que_el_bloque_ya
     assert f["productos"] == [p, q] and f["boton"] == "Ver ficha"
     assert t["html"] == '<p>Hola Marny, mira <a href="https://mboprinters.com/es/">la web</a>.</p>'
     assert c["botones"] == [{"texto": "Ver toda la gama", "url": "https://mboprinters.com/es/dtf/"}]
-    assert v["url"] == VIDEO and v["titulo"] == "La Orion 20 en marcha"
+    assert v["video"] == {"plataforma": "youtube", "id": "dQw4w9WgXcQ"}
+    assert v["titulo"] == "La Orion 20 en marcha"
     assert res.avisos == []
     # Un producto o un enlace NUEVOS siguen necesitando su referencia.
     res2 = ia.aplicar_operaciones(estructura, [
@@ -564,3 +568,28 @@ def test_un_compuesto_pasado_a_texto_por_la_ia_conserva_sus_enlaces(
     assert texto["modo"] == "normal"
     for url in ("https://mboprinters.com/es/dtf/orion-20/", VIDEO, "https://mboprinters.com/es/"):
         assert f'href="{url}"' in texto["html"], url
+
+
+def test_un_video_de_vimeo_pegado_en_el_hilo_tambien_vale_y_no_se_inventa_ninguno() -> None:
+    """El vídeo no está atado a YouTube ni a la URL pegada: es una referencia
+    (`V#`) a QUÉ vídeo es, venga de donde venga."""
+    vimeo = "https://vimeo.com/1112093555"
+    assert ia.videos_de(f"Mira este: {vimeo}. Y este: https://youtu.be/dQw4w9WgXcQ?t=3") == [
+        {"plataforma": "vimeo", "id": "1112093555", "url": vimeo},
+        {"plataforma": "youtube", "id": "dQw4w9WgXcQ", "url": VIDEO}]
+    refs = ia.Referencias.desde(maquinas=[], consumibles=[], enlaces=[], marcas={},
+                                videos=ia.videos_de(vimeo, VIDEO))
+    res = ia.estructura_desde_ia([
+        {"tipo": "video", "video": "V1", "titulo": "artis 3000U Pro con FREEBIRD"},
+        {"tipo": "video", "video": "https://youtu.be/dQw4w9WgXcQ"},   # el V2, escrito de otra forma
+        {"tipo": "video", "video": "https://vimeo.com/99999999"},     # no está: fuera
+        {"tipo": "texto", "texto": "Aquí lo tienes: [el vídeo](V1)."},
+    ], refs, idioma="es")
+    bloques = res.estructura["bloques"]
+    assert [b.get("video") for b in bloques[:2]] == [
+        {"plataforma": "vimeo", "id": "1112093555"}, {"plataforma": "youtube", "id": "dQw4w9WgXcQ"}]
+    assert len(bloques) == 3 and any("vídeo" in a for a in res.avisos)
+    assert f'<a href="{vimeo}">el vídeo</a>' in bloques[2]["html"]
+    # Y vuelve a la IA por su referencia.
+    para_ia = json.loads(ia.estructura_para_ia(res.estructura, refs))["bloques"]
+    assert [b["video"] for b in para_ia[:2]] == ["V1", "V2"]

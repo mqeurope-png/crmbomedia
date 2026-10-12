@@ -372,8 +372,8 @@ la respuesta en texto sigue siendo la de siempre y la opción por defecto.
   (`correo_compuesto/ia.modo_del_turno`).
 - **Sin inventar nada.** La IA nombra productos, enlaces, vídeos y marcas por
   **referencia**: `P1`/`C1` (líneas del CATÁLOGO), `L1` (ENLACES), `V1` (los
-  vídeos de YouTube del hilo o de la instrucción) y `M:mbo_dtf` (la web de la
-  marca). Una referencia que no existe no entra y se avisa: ni productos, ni
+  vídeos que tiene a mano: hoy, los de YouTube o Vimeo del hilo o de la
+  instrucción) y `M:mbo_dtf` (la web de la marca). Una referencia que no existe no entra y se avisa: ni productos, ni
   enlaces, ni vídeos inventados. Las fichas toman del **catálogo vivo** el
   nombre, la imagen, el área, dos características, el **precio tal cual** (con
   «+ IVA» si la fuente va sin IVA) y el enlace en el idioma del cliente; un
@@ -398,6 +398,19 @@ la respuesta en texto sigue siendo la de siempre y la opción por defecto.
   ancho), con código propio. Genera a la vez el **texto plano**. Los datos de
   diseño de cada marca y producto salen de la fila viva del compositor
   (`kb_catalogo_marcas.datos_json`, migración 0143).
+- **El vídeo no está atado a una URL pegada** (`correo_compuesto/videos.py`).
+  El bloque guarda solo **qué vídeo es** (`{"plataforma": "youtube" | "vimeo",
+  "id": …}`); su URL, miniatura, título y duración los resuelve BoHub al
+  generar desde su **origen**, como los productos salen del catálogo
+  (`videos.resolver`, en `Datos.videos`). Hoy el único origen es la URL pegada:
+  de YouTube se deriva la miniatura; de Vimeo no hay miniatura sin preguntar a
+  su API, que no se consulta al vuelo, y el bloque sale con su título y su
+  botón. La **tabla de vídeos** (siguiente PR: canales de YouTube, oEmbed de
+  Vimeo, alta a mano pegando una URL, con idioma, marca y productos) será otro
+  origen que manda sobre la URL, sin cambiar la forma del bloque ni el
+  generador. El título, el texto y el botón que escriba el bloque mandan sobre
+  los del origen; la duración, si se sabe, va junto al botón («Ver vídeo ·
+  2:31»).
 - **La vista previa** sustituye al editor: el correo tal cual sale, en
   escritorio o en móvil; los textos se editan pulsando encima (cambia ese
   campo de la estructura y nada más) y el bloque elegido se sube, se baja, se
