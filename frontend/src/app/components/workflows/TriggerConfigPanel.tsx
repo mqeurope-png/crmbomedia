@@ -137,6 +137,10 @@ export function TriggerConfigPanel({
     return <LeadReceivedSubConfig config={config} set={set} />;
   }
 
+  if (triggerType === "oferta.enviada" || triggerType === "oferta.caducada") {
+    return <OfertaSubConfig config={config} set={set} caducada={triggerType === "oferta.caducada"} />;
+  }
+
   return (
     <p className="muted small">
       Este trigger no requiere configuración adicional. Aplica a
@@ -697,6 +701,52 @@ function LeadReceivedSubConfig({
           histórico de notas de Agile).
         </span>
       </label>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------
+// Ofertas — oferta.enviada / oferta.caducada
+// ---------------------------------------------------------------------
+
+const OFERTA_SERIES: { serie: string; nombre: string }[] = [
+  { serie: "1", nombre: "Bomedia" },
+  { serie: "2", nombre: "MQ Europe" },
+  { serie: "4", nombre: "Lambert" },
+  { serie: "5", nombre: "Streamtec" },
+];
+
+function OfertaSubConfig({
+  config,
+  set,
+  caducada,
+}: {
+  config: Record<string, unknown>;
+  set: (k: string, v: unknown) => void;
+  caducada: boolean;
+}) {
+  const serie = config.serie == null ? "" : String(config.serie);
+  return (
+    <>
+      <label>
+        Empresa emisora (opcional)
+        <select
+          value={serie}
+          onChange={(e) => set("serie", e.target.value || undefined)}
+        >
+          <option value="">— Cualquiera —</option>
+          {OFERTA_SERIES.map((s) => (
+            <option key={s.serie} value={s.serie}>
+              {s.serie} · {s.nombre}
+            </option>
+          ))}
+        </select>
+      </label>
+      <span className="muted small">
+        {caducada
+          ? "Se dispara cuando una oferta enviada pasa su fecha de validez sin respuesta (el repaso diario). La oferta solo emite el hecho: mover el contacto a «Cerrado perdido» es cosa de este workflow."
+          : "Se dispara al enviar una oferta por correo. El contacto ya pasa a «Propuesta enviada» si está en un pipeline con esa etapa."}
+      </span>
     </>
   );
 }
