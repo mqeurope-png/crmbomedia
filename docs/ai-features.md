@@ -342,8 +342,9 @@ enlaces, tabla simple), limpiado con bleach (`texto.limpiar_html`): lo que no
 está en la lista se quita conservando el contenido, los enlaces solo de la
 lista permitida (más los que la persona ya tenía) y nunca se pierde texto. Una
 lista de máquinas va **como lista**, con el nombre en negrita y el enlace sobre
-el nombre; sobrio, sin estilos ni imágenes; «maquetado» o «con imágenes de
-producto» va al aviso, no al cuerpo; las correcciones conservan el formato.
+el nombre; sobrio, sin estilos ni imágenes; un correo con fichas e imágenes
+es un **correo compuesto** (abajo), no un cuerpo maquetado; las correcciones
+conservan el formato.
 `ia_borradores.html` (migración 0141) guarda el HTML; `texto` sigue siendo el
 texto plano (la guardia y la comparación de lo enviado, que pasa los dos lados
 por el mismo conversor).
@@ -353,6 +354,65 @@ por el mismo conversor).
 máquinas (lo que nombra el cliente, lo que pide la instrucción, la máquina que
 tiene, el interés), «Consultar», los premios descartados y la escritura por
 lotes.
+
+### Correos compuestos: fichas, marca, vídeo y botones (12/10/2026)
+
+Además del correo de texto de siempre, el asistente puede preparar un **correo
+compuesto**: la entrada, la tira de la marca, las fichas de producto (una sola,
+o dos o tres en fila), el vídeo, los botones, un destacado, separadores y el
+cierre. **La IA elige la estructura y escribe los textos; el HTML lo genera
+BoHub** con código determinista (`services/correo_compuesto/`). Es un modo más:
+la respuesta en texto sigue siendo la de siempre y la opción por defecto.
+
+- **Cuándo.** El interruptor de la franja: **Auto** (por defecto: texto, salvo
+  que la instrucción pida presentar productos —«mándale la gama DTF»,
+  «prepárale un correo con las máquinas»—; «dile que el pedido sale el martes»
+  es texto), **Texto** o **Con fichas** (`formato`; solo viaja si no es Auto).
+  Una conversación compuesta sigue compuesta salvo que se pida texto
+  (`correo_compuesto/ia.modo_del_turno`).
+- **Sin inventar nada.** La IA nombra productos, enlaces, vídeos y marcas por
+  **referencia**: `P1`/`C1` (líneas del CATÁLOGO), `L1` (ENLACES), `V1` (los
+  vídeos de YouTube del hilo o de la instrucción) y `M:mbo_dtf` (la web de la
+  marca). Una referencia que no existe no entra y se avisa: ni productos, ni
+  enlaces, ni vídeos inventados. Las fichas toman del **catálogo vivo** el
+  nombre, la imagen, el área, dos características, el **precio tal cual** (con
+  «+ IVA» si la fuente va sin IVA) y el enlace en el idioma del cliente; un
+  producto sin precio público dice «Precio a medida» y **no lleva cifra**. Un
+  importe en los textos que no es un precio de las fichas se avisa
+  (`ia.importes_ajenos`).
+- **Nunca HTML de la IA.** Sus textos van en markdown sencillo (negrita,
+  cursiva, listas, enlaces por referencia). Si un texto trae etiquetas, se
+  quitan, se cuenta (`contexto.html_descartado`) y se registra; con «Con
+  fichas» forzado, un cuerpo en HTML se descarta entero y se avisa.
+- **Las correcciones son operaciones** sobre la estructura que hay en la vista
+  previa, con los retoques de la persona: quitar, editar, añadir, mover,
+  duplicar, reemplazar, idioma. «Quita el vídeo» quita ese bloque y lo demás
+  queda igual, byte a byte (`ia.aplicar_operaciones`). Lo que hay en el
+  compositor manda: un compuesto pasado a texto se corrige como texto.
+- **El generador** (`correo_compuesto/generador.py`): tablas con estilos en
+  línea, 600 px centrado, una sola hoja de estilo (la consulta de medio que
+  apila las columnas por debajo de 600 px), imágenes con `alt`, ancho y URL
+  absoluta, sin JavaScript, fuentes externas, SVG ni `<div>` de maquetación;
+  el aspecto de los correos que manda hoy el compositor de Bomedia (paleta
+  pizarra, insignia, área, ✓, precio en el acento del producto, botón a lo
+  ancho), con código propio. Genera a la vez el **texto plano**. Los datos de
+  diseño de cada marca y producto salen de la fila viva del compositor
+  (`kb_catalogo_marcas.datos_json`, migración 0143).
+- **La vista previa** sustituye al editor: el correo tal cual sale, en
+  escritorio o en móvil; los textos se editan pulsando encima (cambia ese
+  campo de la estructura y nada más) y el bloque elegido se sube, se baja, se
+  duplica o se quita. **«Copiar HTML»** y **«Descargar .html»** dan el
+  documento final, autocontenido; **«Pasar a texto»** lo lleva al editor
+  normal. `POST /api/emails/compuesto/render` genera el correo de una
+  estructura (con `preview`, con los atributos de edición; no envía nada).
+- **El envío** es el de siempre (registro, seguimiento, firma, baja, texto
+  plano): el compositor manda el HTML y el texto plano que genera BoHub. El
+  saneado reconoce el correo compuesto por su marca y le aplica su propia lista
+  blanca (ver [emails-compositor.md](emails-compositor.md)). Tal cual o editado
+  se compara por el texto plano. Nunca se envía solo.
+- **Registro.** `ia_borradores.modo` (`normal` o `compuesto`) y
+  `estructura_json`; los borradores guardados, `email_drafts.estructura_json`
+  (migración 0144). Las plantillas de autorrespuesta no cambian.
 
 ### Lo que se le pone delante (`services/asistente/contexto.py`)
 

@@ -35,6 +35,19 @@
   `on*`, URLs `javascript:`.
 - Los comentarios se conservan (los delimitadores de la firma los usan).
 
+**El correo compuesto** (fichas, marca, vídeo y botones; ver
+[ai-features.md](ai-features.md)) es un documento entero que con esa lista
+saldría deshecho. Se reconoce por su marca (`<meta name="generator"
+content="BoHub correo compuesto">`) y pasa por `sanitize_correo_compuesto`: la
+misma lista más lo que usa el generador (`role`, `bgcolor`, anchos de celda,
+`display`, bordes redondeados…). La cabecera y la **única hoja de estilo** (la
+de las columnas en el móvil) las vuelve a poner el generador, nunca las del
+HTML que llega: forjar la marca no da más que esa lista, que tampoco deja
+scripts, manejadores, `javascript:` ni comentarios condicionales de Outlook
+(solo los delimitadores de la firma). Aplicarlo dos veces da lo mismo. La baja
+(«Anular suscripción») va dentro del `<body>` y el píxel de apertura antes de
+`</body>`.
+
 ## Fallback text/plain
 
 Si el caller solo manda `body_html`, el backend genera el `text/plain` con
