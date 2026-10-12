@@ -745,8 +745,8 @@ def test_un_precio_de_un_correo_antiguo_no_es_vigente(session_factory: sessionma
         s.commit()
         sistema, prompt = falso.ultimo["system"], falso.ultimo["user"]
         assert "Los precios de productos salen SOLO del bloque CATÁLOGO" in sistema
-        assert "Un precio o plazo que aparezca en un pedido o correo antiguo es histórico" in (
-            sistema)
+        assert ("Un precio o plazo que aparezca en un pedido, una nota interna o un correo "
+                "antiguo es histórico") in sistema
         assert "PRECIO: 4.300 €" in prompt
         catalogo_txt = prompt.split("CATÁLOGO (")[1].split("ENLACES (")[0]
         assert "3.900" not in catalogo_txt                   # el viejo no está en el catálogo

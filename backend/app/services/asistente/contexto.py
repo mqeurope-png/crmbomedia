@@ -1,6 +1,7 @@
 """Lo que se le pone delante al modelo para redactar: el hilo entero, en
-orden, con lo que contestamos nosotros; la ficha del contacto (empresa,
-idioma, propietario, etapa del pipeline, pedidos con fechas y máquina,
+orden, con lo que contestamos nosotros; la ficha del contacto entera (empresa,
+idioma, propietario, teléfonos, etiquetas, campos personalizados, las notas
+internas del equipo, etapa del pipeline, pedidos con fechas y máquina,
 facturas pendientes, clasificación de la IA, últimos asuntos tratados); la
 máquina que sale de sus pedidos (clave para la KB de FLUX); los enlaces de la
 base de conocimiento; el idioma del mensaje (no el de la ficha); y quién
@@ -27,13 +28,17 @@ from sqlalchemy.orm import Session, selectinload
 from app.erp.models.orders import Order, PaymentStatus
 from app.models.crm import (
     Contact,
+    ContactPhone,
     ContactPipelineStage,
+    ContactTag,
     EmailDirection,
     EmailMessage,
     EmailSignature,
     EmailThread,
+    Note,
     Pipeline,
     PipelineStage,
+    Tag,
     User,
     UserEmailAliasPref,
 )
@@ -41,10 +46,17 @@ from app.models.ia import ALCANCE_CONTACTO, ALCANCE_EMPRESA, ALCANCE_HILO
 from app.models.leads import LeadClassification
 from app.services.asistente import historico as hist
 from app.services.asistente.config import configuracion as config_asistente
-from app.services.asistente.texto import recortar, sin_cita, texto_de_mensaje
+from app.services.asistente.texto import (
+    html_a_texto,
+    parece_html,
+    recortar,
+    sin_cita,
+    texto_de_mensaje,
+)
 from app.services.conocimiento import catalogo as kb_catalogo
 from app.services.conocimiento import enlaces as kb_enlaces
 from app.services.conocimiento import flux
+from app.services.contact_sync_protection import custom_value_is_empty, decode_custom_fields
 from app.services.leads.clasificador import detectar_idioma
 from app.services.web_forms import sitios as registro_sitios
 from app.services.web_forms.sitios import ORIGEN_PREFIJO, clave_de_sitio, es_del_grupo
@@ -57,6 +69,14 @@ MAX_CHARS_MENSAJE = 6000
 ASUNTOS_RECIENTES = 15
 PEDIDOS_MAX = 10
 PAGO_PENDIENTE = (PaymentStatus.PENDING, PaymentStatus.PARTIAL_PAID, PaymentStatus.FAILED)
+#: Las notas internas que entran (las fijadas primero, luego las más
+#: recientes) y lo que entra de cada una; el presupuesto quita las más viejas.
+NOTAS_MAX = 10
+NOTA_MAX_CHARS = 800
+#: Campos personalizados y etiquetas: cuántos y cuánto de cada valor.
+CAMPOS_MAX = 40
+CAMPO_MAX_CHARS = 300
+ETIQUETAS_MAX = 40
 
 
 @dataclass
@@ -91,6 +111,13 @@ class Contexto:
     #: El destinatario es una dirección del grupo: un compañero, no un cliente.
     destinatario_interno: bool = False
     contacto: dict[str, Any] | None = None
+    #: El resto de la ficha: teléfonos (`{numero, etiqueta}`), etiquetas,
+    #: campos personalizados con valor (`{clave, valor}`) y las notas internas
+    #: del equipo (`{fecha, autor, fijada, origen, texto}`).
+    telefonos: list[dict[str, Any]] = field(default_factory=list)
+    etiquetas: list[str] = field(default_factory=list)
+    campos: list[dict[str, str]] = field(default_factory=list)
+    notas: list[dict[str, Any]] = field(default_factory=list)
     pedidos: list[dict[str, Any]] = field(default_factory=list)
     facturas_pendientes: list[dict[str, Any]] = field(default_factory=list)
     maquina: str | None = None
@@ -176,6 +203,8 @@ class Contexto:
                 {k: self.contacto.get(k) for k in ("id", "nombre", "email", "empresa", "idioma")}
                 if self.contacto else None
             ),
+            "telefonos": len(self.telefonos), "etiquetas": len(self.etiquetas),
+            "campos_personalizados": len(self.campos), "notas": len(self.notas),
             "pedidos": len(self.pedidos), "facturas_pendientes": len(self.facturas_pendientes),
             "maquina": self.maquina, "modelo_flux": self.modelo_flux,
             "clasificacion": self.clasificacion, "etapa": self.etapa,
@@ -321,6 +350,100 @@ def ficha(session: Session, contacto: Contact) -> dict[str, Any]:
         "propietario": _usuario_nombre(session, contacto.owner_user_id),
         "estado_comercial": contacto.commercial_status,
     }
+
+
+def _digitos(numero: str | None) -> str:
+    return "".join(c for c in (numero or "") if c.isdigit() or c == "+")
+
+
+def telefonos_de(session: Session, contacto: Contact) -> list[dict[str, Any]]:
+    """Todos sus teléfonos: el principal de la ficha y los de `contact_phones`
+    (con su etiqueta: «Móvil», «TELEFONO_2»…), sin repetir el mismo número."""
+    salida: list[dict[str, Any]] = []
+    vistos: set[str] = set()
+
+    def _añadir(numero: str | None, etiqueta: str | None) -> None:
+        digitos = _digitos(numero)
+        if not digitos or digitos in vistos:
+            return
+        vistos.add(digitos)
+        salida.append({"numero": (numero or "").strip(), "etiqueta": etiqueta or None})
+
+    filas = session.scalars(
+        select(ContactPhone).where(ContactPhone.contact_id == contacto.id)
+        .order_by(ContactPhone.is_primary.desc(), ContactPhone.label)
+    ).all()
+    for fila in filas:
+        if fila.is_primary:
+            _añadir(fila.number, fila.label or "principal")
+    _añadir(contacto.phone, "principal")
+    for fila in filas:
+        _añadir(fila.number, fila.label)
+    return salida
+
+
+def etiquetas_de(session: Session, contacto: Contact) -> list[str]:
+    """Sus etiquetas, por orden alfabético (las primeras `ETIQUETAS_MAX`)."""
+    nombres = session.scalars(
+        select(Tag.name).join(ContactTag, ContactTag.tag_id == Tag.id)
+        .where(ContactTag.contact_id == contacto.id)
+    ).all()
+    return sorted({n for n in nombres if n}, key=str.lower)[:ETIQUETAS_MAX]
+
+
+def _valor_campo(valor: Any) -> str:
+    if isinstance(valor, bool):
+        return "sí" if valor else "no"
+    if isinstance(valor, (dict, list)):
+        return json.dumps(valor, ensure_ascii=False)
+    return " ".join(str(valor).split())
+
+
+def campos_de(contacto: Contact) -> list[dict[str, str]]:
+    """Los campos personalizados con valor, tal como están guardados (de
+    Brevo, Agile, los formularios, los workflows o la ficha)."""
+    campos = decode_custom_fields(contacto.custom_fields) or {}
+    return [
+        {"clave": str(clave), "valor": recortar(_valor_campo(valor), CAMPO_MAX_CHARS)}
+        for clave, valor in campos.items()
+        if not custom_value_is_empty(valor)
+    ][:CAMPOS_MAX]
+
+
+def _texto_de_nota(cuerpo: str | None) -> str:
+    crudo = cuerpo or ""
+    texto = html_a_texto(crudo) if parece_html(crudo) else crudo
+    return " ".join(texto.split())
+
+
+def notas_de(session: Session, contacto: Contact) -> list[dict[str, Any]]:
+    """Las notas internas del contacto: las fijadas primero y luego de la más
+    reciente a la más antigua (las primeras `NOTAS_MAX`), cada una recortada.
+    Son del equipo, no del cliente: el prompt dice que no se citan."""
+    filas = session.scalars(
+        select(Note).where(Note.contact_id == contacto.id)
+        .order_by(Note.pinned.desc(),
+                  func.coalesce(Note.external_created_at, Note.created_at).desc())
+        .limit(NOTAS_MAX)
+    ).all()
+    salida: list[dict[str, Any]] = []
+    for nota in filas:
+        texto = _texto_de_nota(nota.body)
+        if not texto:
+            continue
+        fecha = nota.external_created_at or nota.created_at
+        autor = (
+            _usuario_nombre(session, nota.author_user_id or nota.created_by_user_id)
+            or nota.external_author_name or nota.external_author_email
+        )
+        salida.append({
+            "fecha": fecha.isoformat() if fecha else None,
+            "autor": autor,
+            "fijada": bool(nota.pinned),
+            "origen": nota.source,
+            "texto": recortar(texto, NOTA_MAX_CHARS),
+        })
+    return salida
 
 
 def pedidos_de(session: Session, contacto: Contact) -> list[dict[str, Any]]:
@@ -584,6 +707,10 @@ def construir(
     if contacto is not None and alcance != ALCANCE_HILO:
         ctx.niveles.append(2)
         ctx.contacto = ficha(session, contacto)
+        ctx.telefonos = telefonos_de(session, contacto)
+        ctx.etiquetas = etiquetas_de(session, contacto)
+        ctx.campos = campos_de(contacto)
+        ctx.notas = notas_de(session, contacto)
         ctx.pedidos = pedidos_de(session, contacto)
         ctx.facturas_pendientes = facturas_pendientes_de(ctx.pedidos)
         ctx.maquina, ctx.modelo_flux = maquina_de(ctx.pedidos, categorias)

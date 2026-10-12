@@ -657,3 +657,121 @@ def test_con_adjuntos_el_envio_sale_del_borrador_guardado_y_el_resultado_se_anot
     assert r.status_code == 201, r.text
     with session_factory() as s:
         assert s.get(BorradorAsistente, b["id"]).estado == ESTADO_ENVIADO_TAL_CUAL
+
+
+# --- la ficha entera: teléfonos, etiquetas, campos personalizados y notas ----------
+
+
+def test_la_ficha_entera_entra_telefonos_etiquetas_campos_y_notas(
+    session_factory: sessionmaker,
+) -> None:
+    from app.models.crm import ContactPhone, ContactTag, Note, Tag  # noqa: PLC0415
+    from app.models.ia import ALCANCE_HILO  # noqa: PLC0415
+    from app.services.asistente.redactor import prompt_usuario  # noqa: PLC0415
+
+    ahora = datetime.now(UTC)
+    with session_factory() as s:
+        admin = _admin(s)
+        klaus = _contacto(s)
+        klaus.phone = "+34 600 111 222"
+        klaus.custom_fields = json.dumps({
+            "Horario": "L-V 9-14", "GRADO_DE_INTERES": "alto", "VACIO": "  ",
+            "INTERESADO_EN_DEMO": True,
+        })
+        s.add_all([
+            ContactPhone(contact_id=klaus.id, number="+34600111222", label="Móvil",
+                         is_primary=True),
+            ContactPhone(contact_id=klaus.id, number="+34 93 000 00 00", label="Fijo"),
+        ])
+        for nombre in ("VIP", "brevo-list:Clientes DTF"):
+            tag = Tag(name=nombre, name_normalized=nombre.lower())
+            s.add(tag)
+            s.flush()
+            s.add(ContactTag(contact_id=klaus.id, tag_id=tag.id))
+        s.add_all([
+            Note(contact_id=klaus.id, body="Cliente de confianza: pago a 30 días.",
+                 pinned=True, source="manual", created_by_user_id=admin.id,
+                 created_at=ahora - timedelta(days=400)),
+            Note(contact_id=klaus.id, body="Le ofrecimos la Ador a 3.500 € en marzo.",
+                 source="agile:timeline", external_author_name="Manel",
+                 external_created_at=ahora - timedelta(days=200)),
+            Note(contact_id=klaus.id,
+                 body="<p>Llamó: quiere la <b>Ador</b> antes de fin de mes.</p>",
+                 source="call_log", created_by_user_id=admin.id,
+                 created_at=ahora - timedelta(days=2)),
+            Note(contact_id=klaus.id, body="   ", source="manual", created_at=ahora),
+        ])
+        hilo = _hilo(s, contacto=klaus, mensajes=[{"de": KLAUS, "texto": MENSAJE_KLAUS}])
+        s.commit()
+
+        ctx = contexto.construir(s, thread=hilo, usuario=admin)
+        # El mismo número (con o sin espacios) no se repite.
+        assert ctx.telefonos == [
+            {"numero": "+34600111222", "etiqueta": "Móvil"},
+            {"numero": "+34 93 000 00 00", "etiqueta": "Fijo"},
+        ]
+        assert ctx.etiquetas == ["brevo-list:Clientes DTF", "VIP"]
+        assert ctx.campos == [
+            {"clave": "Horario", "valor": "L-V 9-14"},
+            {"clave": "GRADO_DE_INTERES", "valor": "alto"},
+            {"clave": "INTERESADO_EN_DEMO", "valor": "sí"},
+        ]
+        # La fijada primero; luego de la más reciente a la más antigua; sin HTML;
+        # la vacía no entra.
+        assert [n["texto"] for n in ctx.notas] == [
+            "Cliente de confianza: pago a 30 días.",
+            "Llamó: quiere la Ador antes de fin de mes.",
+            "Le ofrecimos la Ador a 3.500 € en marzo.",
+        ]
+        assert ctx.notas[0]["fijada"] and ctx.notas[0]["autor"]
+        assert ctx.notas[2]["autor"] == "Manel"
+
+        prompt = prompt_usuario(ctx)
+        assert "- Teléfonos: +34600111222 (Móvil) · +34 93 000 00 00 (Fijo)" in prompt
+        assert "- Etiquetas: brevo-list:Clientes DTF, VIP" in prompt
+        assert "  · Horario: L-V 9-14" in prompt and "INTERESADO_EN_DEMO: sí" in prompt
+        assert "Notas internas del equipo" in prompt and "no las cites" in prompt
+        assert "no es vigente" in prompt and "FIJADA" in prompt
+        assert "Llamó: quiere la Ador antes de fin de mes." in prompt
+
+        resumen = ctx.resumen()
+        assert (resumen["telefonos"], resumen["etiquetas"],
+                resumen["campos_personalizados"], resumen["notas"]) == (2, 2, 3, 3)
+
+        # Solo el hilo: la ficha no entra (ni sus notas).
+        solo_hilo = contexto.construir(s, thread=hilo, usuario=admin, alcance=ALCANCE_HILO)
+        assert solo_hilo.notas == [] and solo_hilo.campos == [] and solo_hilo.contacto is None
+
+
+def test_las_notas_se_recortan_tras_los_correos_viejos_y_antes_que_el_catalogo() -> None:
+    from app.services.asistente import historico  # noqa: PLC0415
+
+    ctx = SimpleNamespace(
+        empresa_asuntos=[],
+        historico=[{"asunto": "Antiguo", "fecha": "2026-01-01"}],
+        notas=[
+            {"fecha": "2025-01-01", "fijada": True, "texto": "fijada vieja"},
+            {"fecha": "2026-09-01", "fijada": False, "texto": "reciente"},
+            {"fecha": "2026-03-01", "fijada": False, "texto": "de marzo"},
+        ],
+        catalogo={"consumibles": [{"nombre": "Tinta"}], "maquinas": []},
+        recortes=[],
+    )
+
+    def medir(c: Any) -> int:
+        return 10 * (len(c.historico) + len(c.notas) + len(c.catalogo["consumibles"]))
+
+    historico.ajustar_al_presupuesto(ctx, presupuesto=0, medir=medir)
+    assert ctx.recortes == [
+        "histórico: «Antiguo»",
+        "nota interna del 2026-03-01",
+        "nota interna del 2026-09-01",
+        "nota interna del 2025-01-01",
+        "catálogo: consumible «Tinta»",
+    ]
+
+
+def test_un_precio_de_una_nota_no_es_vigente() -> None:
+    from app.services.asistente.redactor import PROMPT_SISTEMA  # noqa: PLC0415
+
+    assert "una nota interna o un correo antiguo es histórico" in PROMPT_SISTEMA

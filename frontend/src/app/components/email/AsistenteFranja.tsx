@@ -590,6 +590,20 @@ export function LoQueHaUsado({ borrador }: { borrador: BorradorAsistente }) {
   if (ctx["sin_hilo"] === true) partes.push("sin hilo (correo nuevo)");
   else if (hilo !== null) partes.push(`${hilo} mensaje${hilo === 1 ? "" : "s"} del hilo`);
   partes.push(contacto ? `la ficha de ${contacto.nombre || "el contacto"}${contacto.empresa ? ` (${contacto.empresa})` : ""}` : "sin ficha (destinatario desconocido)");
+  // El resto de la ficha que entró: notas internas, campos personalizados,
+  // etiquetas y teléfonos.
+  const deLaFicha = (
+    [
+      ["notas", "nota interna", "notas internas"],
+      ["campos_personalizados", "campo personalizado", "campos personalizados"],
+      ["etiquetas", "etiqueta", "etiquetas"],
+      ["telefonos", "teléfono", "teléfonos"],
+    ] as const
+  ).flatMap(([clave, una, varias]) => {
+    const n = num(clave);
+    return n ? [`${n} ${n === 1 ? una : varias}`] : [];
+  });
+  if (deLaFicha.length > 0) partes.push(deLaFicha.join(", "));
   const pedidos = num("pedidos");
   if (pedidos) partes.push(`${pedidos} pedido${pedidos === 1 ? "" : "s"}`);
   if (typeof ctx["modelo_flux"] === "string" && ctx["modelo_flux"]) partes.push(`máquina FLUX ${ctx["modelo_flux"]}`);

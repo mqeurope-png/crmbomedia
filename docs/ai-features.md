@@ -438,11 +438,19 @@ la respuesta en texto sigue siendo la de siempre y la opción por defecto.
 - El **hilo entero**, en orden, con lo que contestamos nosotros (nuestro lado
   = cualquier dirección de un dominio del grupo), sin las citas del mensaje
   anterior y con un tope por mensaje.
-- La **ficha**: empresa, idioma, propietario, etapa del pipeline, **pedidos**
-  con fechas y líneas (y de ahí la **máquina** y, si es de FLUX, el modelo),
-  **pendiente de cobro** (BoHub no tiene facturas: son los pedidos con pago sin
-  completar), la **clasificación de la IA** y los **últimos 15 asuntos**
-  tratados (títulos, no cuerpos).
+- La **ficha entera**: empresa, idioma, propietario, **teléfonos** (el
+  principal y los de `contact_phones`, sin repetir número), **etiquetas** (hasta
+  40), **campos personalizados** con valor (hasta 40, cada uno hasta 300
+  caracteres: los de Brevo, Agile, formularios, workflows y la ficha), las
+  **notas internas** del equipo (hasta 10: las fijadas primero y luego de la
+  más reciente, cada una hasta 800 caracteres y sin HTML), etapa del pipeline,
+  **pedidos** con fechas y líneas (y de ahí la **máquina** y, si es de FLUX, el
+  modelo), **pendiente de cobro** (BoHub no tiene facturas: son los pedidos con
+  pago sin completar), la **clasificación de la IA** y los **últimos 15
+  asuntos** tratados (títulos, no cuerpos). El prompt dice que las notas y los
+  campos son internos: sirven para entender el caso, pero no se citan, no se
+  dice que existen y un precio, plazo o condición de una nota no es vigente
+  (la regla de los precios sigue: solo los del CATÁLOGO).
 - La **base de conocimiento** (`docs/base-conocimiento.md`): ruta de soporte
   por web e idioma, página de producto del interés, categoría de la KB de
   FLUX por modelo (o nuestro soporte si es avería), con los artículos
@@ -513,9 +521,12 @@ por arriba.
 
 1. **El hilo actual, entero y literal.** Nunca se recorta: si no cabe, no cabe
    nada más.
-2. **El expediente: hechos, no mensajes.** Los últimos asuntos tratados (15,
-   título y fecha), qué compró y cuándo, la máquina, pendiente de cobro, etapa
-   del pipeline, clasificación de la IA.
+2. **El expediente: hechos, no mensajes.** La ficha entera (teléfonos,
+   etiquetas, campos personalizados, notas internas), los últimos asuntos
+   tratados (15, título y fecha), qué compró y cuándo, la máquina, pendiente de
+   cobro, etapa del pipeline, clasificación de la IA. Si no cabe, de aquí solo
+   se recortan las notas internas, después de los correos viejos y antes que
+   el catálogo (la más antigua de las no fijadas primero).
 3. **Los correos viejos que vienen a cuento, con su cuerpo.** Como mucho 5, el
    más reciente primero (uno por hilo). Entra uno si el asunto coincide al
    normalizarlo (fuera `Re:`, `RE:`, `Fwd:`, `AW:`, `RV:` y los corchetes), si
