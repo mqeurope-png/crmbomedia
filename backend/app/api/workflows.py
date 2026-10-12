@@ -1396,10 +1396,26 @@ def cost_estimate(
 
         from app.workflows.conditions import (  # noqa: PLC0415
             EvalContext,
+            clausula_sql,
             evaluate,
         )
 
-        if trigger_cfg.get("filter"):
+        clausula = (
+            clausula_sql(trigger_cfg["filter"], session)
+            if trigger_cfg.get("filter") else None
+        )
+        if clausula is not None:
+            # Un filtro con campos de otras tablas: una sola consulta, no
+            # una por contacto.
+            matching = int(
+                session.scalar(
+                    select(_func.count(Contact.id)).where(
+                        Contact.is_active.is_(True), clausula
+                    )
+                )
+                or 0
+            )
+        elif trigger_cfg.get("filter"):
             contacts = list(
                 session.scalars(
                     select(Contact).where(Contact.is_active.is_(True))
@@ -1643,7 +1659,7 @@ def _validate_workflow_structure(
                 json.dumps(_safe_json(s.config_json).get("condition", {}))
             )
             errors.extend(
-                conditions.validate_tree(tree) or []
+                conditions.validate_tree(tree, session=session) or []
             )
 
     # PR-Fixes-Pase-3 Bug 1+4: nodos con múltiples ramas deben tener

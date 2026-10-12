@@ -160,20 +160,9 @@ def _segment_resolver_for(session: Session):
     concepto de contactos), pero pasarlo a cualquier entidad es
     inocuo porque sólo se invoca cuando una rule lo necesita.
     """
-    import json as _json  # noqa: PLC0415
+    from app.services.segments.engine import session_segment_resolver  # noqa: PLC0415
 
-    from app.models.crm import Segment  # noqa: PLC0415
-
-    def _resolver(segment_id: str, _visited: set[str]) -> dict[str, Any] | None:
-        seg = session.get(Segment, segment_id)
-        if seg is None or not seg.rules_json:
-            return None
-        try:
-            return _json.loads(seg.rules_json)
-        except (TypeError, ValueError):
-            return None
-
-    return _resolver
+    return session_segment_resolver(session)
 
 
 @router.post("/{entity}/search")

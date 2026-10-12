@@ -194,6 +194,7 @@ def _step_condition(session, run, step, contact) -> StepResult:
         session=session,
         contact=contact,
         trigger_payload=_trigger_payload(run),
+        run_id=run.id,
     )
     matched = conditions.evaluate(cfg.get("condition"), ctx)
     return StepResult(

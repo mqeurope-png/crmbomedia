@@ -1872,17 +1872,10 @@ def search_contacts_endpoint(
     from app.services.segments.engine import (  # noqa: PLC0415
         SegmentRuleError,
         build_filter,
+        session_segment_resolver,
     )
-    from app.models.crm import Segment as _Segment  # noqa: PLC0415
 
-    def _segment_resolver(segment_id: str, _visited: set[str]) -> dict[str, Any] | None:
-        seg = session.get(_Segment, segment_id)
-        if seg is None or not seg.rules_json:
-            return None
-        try:
-            return json.loads(seg.rules_json)
-        except (TypeError, ValueError):
-            return None
+    _segment_resolver = session_segment_resolver(session)
 
     try:
         filter_clause = build_filter(
@@ -1944,17 +1937,10 @@ def search_contact_ids_endpoint(
     from app.services.segments.engine import (  # noqa: PLC0415
         SegmentRuleError,
         build_filter,
+        session_segment_resolver,
     )
-    from app.models.crm import Segment as _Segment  # noqa: PLC0415
 
-    def _segment_resolver(segment_id: str, _visited: set[str]) -> dict[str, Any] | None:
-        seg = session.get(_Segment, segment_id)
-        if seg is None or not seg.rules_json:
-            return None
-        try:
-            return json.loads(seg.rules_json)
-        except (TypeError, ValueError):
-            return None
+    _segment_resolver = session_segment_resolver(session)
 
     try:
         filter_clause = build_filter(

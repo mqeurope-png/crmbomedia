@@ -219,10 +219,15 @@ class EvalContext:
         session: Session,
         contact: Contact,
         trigger_payload: dict[str, Any] | None = None,
+        run_id: str | None = None,
     ) -> None:
         self.session = session
         self.contact = contact
         self.trigger_payload = trigger_payload or {}
+        #: La ejecución que evalúa la condición (un paso «Condición»): «En
+        #: workflow» no la cuenta, para que «¿ya pasó por este workflow?» no
+        #: sea siempre «sí» por la ejecución en curso.
+        self.run_id = run_id
 
 
 # ---------------------------------------------------------------------
@@ -471,18 +476,43 @@ def evaluate(
     field = tree.get("field")
     if not field:
         return False
-    resolved, actual = _resolve_field(field, ctx)
-    if not resolved:
-        if _campo_del_motor(field) is not None:
-            return _cumple_en_bd(tree, ctx)
+    via = _via(tree)
+    if via == VIA_MOTOR:
+        return _cumple_en_bd(tree, ctx)
+    if via is None:
         log.warning("workflows.condition unknown field: %s", field)
         return False
+    _, actual = _resolve_field(field, ctx)
     raw_value = tree.get("value")
     expected = _coerce_value(field, raw_value)
     # `op` puede ser workflow legacy o segments. Para hojas viene en
     # `tree.get("op")` (workflow) o `tree.get("comparator")` (segments).
     leaf_op = tree.get("op") or tree.get("comparator")
     return _compare(actual, _normalize_leaf_op(leaf_op), expected)
+
+
+#: Cómo se evalúa una hoja (`_via`): en memoria (la whitelist de Python),
+#: un campo personalizado del JSON, o con el motor de segmentos contra la base
+#: de datos.
+VIA_MEMORIA = "memoria"
+VIA_CUSTOM = "custom"
+VIA_MOTOR = "motor"
+
+_CUSTOM_PREFIJOS = ("custom_fields.", "cf.", "contact.custom_fields.")
+
+#: Los operadores que `_compare` sabe evaluar en memoria (ya normalizados). Un
+#: campo del editor con otro operador (`older_than_n_days`,
+#: `not_in_last_n_days`, `tag_name_contains`…) va al motor de segmentos.
+_OPS_EN_MEMORIA = frozenset({
+    "empty", "not_empty", "eq", "ne", "gt", "gte", "lt", "lte", "between",
+    "contains", "not_contains", "starts_with", "ends_with", "in", "not_in",
+    "in_list", "contains_any", "contains_all", "contains_none", "before", "after",
+    "in_last_n_days", "in_next_n_days",
+})
+
+#: El vocabulario antiguo de los workflows (`op`) en el del motor.
+_OP_AL_MOTOR = {"ne": "neq", "empty": "is_null", "not_empty": "is_not_null",
+                "in_list": "in"}
 
 
 def _campo_del_motor(field: str) -> Any:
@@ -493,57 +523,122 @@ def _campo_del_motor(field: str) -> Any:
     return FIELD_SPECS.get(field)
 
 
+def _via(hoja: dict[str, Any]) -> str | None:
+    """Por dónde se evalúa una hoja; None si el campo no lo conoce nadie.
+    Lo usan `evaluate` y `validate_tree`, así que activar y ejecutar no
+    pueden discrepar. Los campos de la ficha van en memoria salvo con un
+    operador que `_compare` no sabe (o un «entre» de fechas): esos, y los de
+    otras tablas, al motor."""
+    field = str(hoja.get("field") or "")
+    spec = _campo_del_motor(field)
+    if field in _FIELD_RESOLVERS:
+        op = _normalize_leaf_op(hoja.get("op") or hoja.get("comparator"))
+        fecha = spec is not None and "date" in str(getattr(spec, "type", ""))
+        if spec is not None and (op not in _OPS_EN_MEMORIA or (op == "between" and fecha)):
+            return VIA_MOTOR
+        return VIA_MEMORIA
+    if any(field.startswith(p) and len(field) > len(p) for p in _CUSTOM_PREFIJOS):
+        return VIA_CUSTOM
+    return VIA_MOTOR if spec is not None else None
+
+
 def _regla_del_motor(hoja: dict[str, Any]) -> dict[str, Any]:
-    """La hoja tal como la entiende el motor de segmentos (el editor la
-    guarda así: `comparator`; las antiguas con `op` se pasan igual)."""
-    return {
-        "type": "rule",
-        "field": hoja.get("field"),
-        "comparator": hoja.get("comparator") or hoja.get("op"),
-        "value": hoja.get("value"),
-    }
+    """La hoja tal como la entiende el motor de segmentos: el editor la
+    guarda así (`comparator`); las antiguas (`op`) se traducen."""
+    comparador = hoja.get("comparator")
+    if not comparador:
+        op = hoja.get("op")
+        comparador = _OP_AL_MOTOR.get(op, op)
+    return {"type": "rule", "field": hoja.get("field"), "comparator": comparador,
+            "value": hoja.get("value")}
 
 
-def _resolutor_de_segmentos(session: Session | None) -> Callable[[str, set[str]], Any]:
-    """Para «En segmento»: las reglas del segmento por su id (sin sesión, o
-    si no existe, ninguna: el motor lo trata como un segmento vacío)."""
-    from app.models.crm import Segment  # noqa: PLC0415
+def _clausula_de_hoja(hoja: dict[str, Any], ctx: EvalContext) -> Any:
+    """La hoja como filtro SQL. «En workflow» sin la ejecución en curso."""
+    from app.services.segments.engine import (  # noqa: PLC0415
+        build_filter,
+        session_segment_resolver,
+    )
 
-    def _resolver(segment_id: str, _visitados: set[str]) -> dict[str, Any] | None:
-        if session is None:
-            return None
-        segmento = session.get(Segment, segment_id)
-        if segmento is None or not segmento.rules_json:
-            return None
-        try:
-            reglas = json.loads(segmento.rules_json)
-        except (TypeError, ValueError):
-            return None
-        return reglas if isinstance(reglas, dict) else None
+    regla = _regla_del_motor(hoja)
+    if regla["field"] == "in_workflow" and ctx.run_id and regla["comparator"] in ("in", "not_in"):
+        from app.models.workflows import WorkflowRun  # noqa: PLC0415
 
-    return _resolver
+        valor = regla["value"]
+        ids = [str(v) for v in (valor if isinstance(valor, list) else [valor]) if v]
+        otras = select(WorkflowRun.contact_id).where(
+            WorkflowRun.workflow_id.in_(ids), WorkflowRun.id != ctx.run_id)
+        return Contact.id.in_(otras) if regla["comparator"] == "in" else ~Contact.id.in_(otras)
+    return build_filter(regla, segment_resolver=session_segment_resolver(ctx.session))
 
 
 def _cumple_en_bd(hoja: dict[str, Any], ctx: EvalContext) -> bool:
-    """Una condición sobre un campo de otras tablas: la regla se compila con
-    el motor de segmentos y se pregunta a la base de datos si ESTE contacto
-    la cumple. Una regla que el motor rechaza no se cumple (y se avisa)."""
+    """Una condición que se evalúa con el motor de segmentos: la regla se
+    compila y se pregunta a la base de datos si ESTE contacto la cumple. Lo
+    que los pasos anteriores cambiaron en la transacción cuenta (flush). Una
+    regla que el motor rechaza, sin sesión o con un error de la base de datos,
+    no se cumple (y se avisa en el log): la evaluación nunca lanza."""
+    from sqlalchemy.exc import SQLAlchemyError  # noqa: PLC0415
+
+    from app.services.segments.engine import SegmentRuleError  # noqa: PLC0415
+
+    field = hoja.get("field")
+    if ctx.session is None:
+        log.warning("workflows.condition %s: sin sesión no se puede evaluar", field)
+        return False
+    try:
+        clausula = _clausula_de_hoja(hoja, ctx)
+    except SegmentRuleError as exc:
+        log.warning("workflows.condition %s no evaluable: %s", field, exc)
+        return False
+    try:
+        ctx.session.flush()
+        encontrado = ctx.session.scalar(
+            select(Contact.id).where(Contact.id == ctx.contact.id, clausula).limit(1))
+    except SQLAlchemyError:
+        log.exception("workflows.condition %s: error de la base de datos al evaluar", field)
+        return False
+    return encontrado is not None
+
+
+def _solo_ir_del_motor(nodo: Any, *, depth: int = 0) -> tuple[bool, bool]:
+    """(el árbol está entero en el formato del motor —el del editor—, y
+    alguna hoja necesita el motor)."""
+    if depth > MAX_DEPTH or not isinstance(nodo, dict):
+        return (False, False)
+    if nodo.get("operator"):
+        hijos = nodo.get("children") or []
+        partes = [_solo_ir_del_motor(h, depth=depth + 1) for h in hijos]
+        return (all(p[0] for p in partes), any(p[1] for p in partes))
+    if nodo.get("type") != "rule" or not nodo.get("comparator"):
+        return (False, False)
+    via = _via(nodo)
+    if via == VIA_MOTOR:
+        return (True, True)
+    return (via == VIA_MEMORIA and _campo_del_motor(str(nodo.get("field"))) is not None, False)
+
+
+def clausula_sql(tree: dict[str, Any] | None, session: Session | None) -> Any:
+    """El árbol entero como un filtro SQL del motor de segmentos, para contar
+    o recorrer contactos con UNA consulta (el estimador, el cron) en lugar de
+    evaluar contacto a contacto. Solo si todo el árbol está en el formato del
+    editor y alguna hoja necesita el motor (los árboles de siempre siguen
+    evaluándose como hasta ahora); si no, None."""
     from app.services.segments.engine import (  # noqa: PLC0415
         SegmentRuleError,
         build_filter,
+        session_segment_resolver,
     )
 
+    if not tree:
+        return None
+    entero, necesita = _solo_ir_del_motor(tree)
+    if not (entero and necesita):
+        return None
     try:
-        clausula = build_filter(
-            _regla_del_motor(hoja), segment_resolver=_resolutor_de_segmentos(ctx.session))
-    except SegmentRuleError as exc:
-        log.warning("workflows.condition %s no evaluable: %s", hoja.get("field"), exc)
-        return False
-    # Lo que los pasos anteriores cambiaron en esta transacción también cuenta.
-    ctx.session.flush()
-    encontrado = ctx.session.scalar(
-        select(Contact.id).where(Contact.id == ctx.contact.id, clausula).limit(1))
-    return encontrado is not None
+        return build_filter(tree, segment_resolver=session_segment_resolver(session))
+    except SegmentRuleError:
+        return None
 
 
 def parse_tree(raw: str | None) -> dict[str, Any]:
@@ -561,11 +656,13 @@ def parse_tree(raw: str | None) -> dict[str, Any]:
 
 
 def validate_tree(
-    tree: dict[str, Any], *, depth: int = 0
+    tree: dict[str, Any], *, depth: int = 0, session: Session | None = None,
 ) -> list[str]:
     """Recorre el árbol y devuelve la lista de errores estructurales.
     Llamado al `activate` del workflow para rechazar workflows con
-    condiciones rotas."""
+    condiciones rotas. Las hojas que se evalúan con el motor de segmentos se
+    compilan aquí igual que al ejecutar: con `session`, también las reglas de
+    los segmentos que nombra «En segmento» (un campo borrado, un ciclo…)."""
     errors: list[str] = []
     if depth > MAX_DEPTH:
         errors.append("max depth exceeded")
@@ -581,22 +678,22 @@ def validate_tree(
     if op in _LOGICAL:
         children = tree.get("children") or []
         for child in children:
-            errors.extend(validate_tree(child, depth=depth + 1))
+            errors.extend(validate_tree(child, depth=depth + 1, session=session))
         return errors
     field = tree.get("field")
     leaf_op = tree.get("op") or tree.get("comparator")
-    if field and not _is_known_field(field):
+    via = _via(tree) if field else None
+    if field and via is None:
         errors.append(f"unknown field: {field}")
-    elif field and leaf_op and field not in _FIELD_RESOLVERS and _campo_del_motor(field):
-        # Un campo de otras tablas: que el motor de segmentos la acepte (el
-        # comparador y el valor), igual que la aceptará al evaluarla.
+    elif field and leaf_op and via == VIA_MOTOR:
         from app.services.segments.engine import (  # noqa: PLC0415
             SegmentRuleError,
             build_filter,
+            session_segment_resolver,
         )
 
         try:
-            build_filter(_regla_del_motor(tree), segment_resolver=_resolutor_de_segmentos(None))
+            build_filter(_regla_del_motor(tree), segment_resolver=session_segment_resolver(session))
         except SegmentRuleError as exc:
             errors.append(f"condición no válida en «{field}»: {exc}")
     if not leaf_op:
@@ -607,12 +704,7 @@ def validate_tree(
 def _is_known_field(field: str) -> bool:
     """Espejo de la lógica del evaluador para `validate_tree`: la whitelist,
     los campos personalizados y los del motor de segmentos."""
-    if field in _FIELD_RESOLVERS:
-        return True
-    for prefix in ("custom_fields.", "cf.", "contact.custom_fields."):
-        if field.startswith(prefix) and len(field) > len(prefix):
-            return True
-    return _campo_del_motor(field) is not None
+    return _via({"field": field}) is not None
 
 
 def available_fields() -> list[str]:
