@@ -101,7 +101,9 @@ pantalla), `POST /sitios`, `PATCH /sitios/{clave}`, `POST /rutas`,
 `POST /flux/categorias`, `PATCH /flux/categorias/{id}`, `POST /flux/sincronizar`
 y `POST /resolver` (`{sitio, idioma, interes, texto, modelo, maquina}` → los
 enlaces que saldrían y el catálogo que entraría: es lo mismo que mira el
-asistente, `services/conocimiento/enlaces.py` y `catalogo.para_asistente`).
+asistente, `services/conocimiento/enlaces.py` y `catalogo.para_asistente`; el
+`texto` —«Lo que escribe el cliente» en «Probar»— cuenta también para el
+catálogo: las máquinas que nombra y los intereses que tocan sus palabras).
 Cada cambio queda en la auditoría (`kb.changed`).
 
 ## Fase 2: el catálogo y los precios verificados (migración 0139)
@@ -177,9 +179,29 @@ Nunca el catálogo entero: hasta **6 máquinas** (dos más por cada interés de
 más cuando hay varios a la vez, hasta 10) y hasta **8 consumibles o
 repuestos**, en su idioma, con precio tal cual, enlace (en la lista de enlaces
 permitidos) y los avisos. Las máquinas se eligen **por este orden** (cada una
-lleva de dónde salió, `eleccion`, y el bloque del prompt las agrupa así):
+lleva de dónde salió, `eleccion`, y el bloque del prompt las agrupa así).
 
-1. **Lo que el cliente nombra en el hilo** (`catalogo.menciones_en`): por el
+**Lo que escribe el cliente** son sus correos del hilo y la **consulta de su
+último lead**: el texto del último envío de formulario (o de la nota «form
+note» de Agile) con los productos que marcó, o, si no hay ninguno, el que se
+clasificó (`contexto.consulta_del_lead`). En la respuesta a un lead el hilo
+suele ser solo nuestro acuse de recibo, que cita la consulta pero es nuestro:
+hasta el 12/10/2026 solo se miraban los correos del cliente, y el contacto de
+prueba «acuserecibo test» (Metallplatten y T-Shirts) se quedaba sin las DTF.
+
+- Cuenta si el lead es de los **últimos 30 días** (`CONSULTA_LEAD_DIAS`) o si el
+  hilo que se contesta **empezó con él** (su acuse, o una respuesta a él, aunque
+  sea meses después). Un lead de hace un año no entra en un hilo nuevo de otro
+  asunto.
+- No cuenta si ese lead se clasificó (o se corrigió) como spam, ni con «solo el
+  hilo» (no entra la ficha).
+- Va también a la FICHA del prompt («Consulta de su último lead (formulario de
+  la web, fecha; la escribió el cliente, es lo que pide): «…»», hasta 1.500
+  caracteres): las palabras que se le citan a la IA, las puede leer.
+- «Lo que ha usado» lo dice: «la consulta de su formulario (fecha)», con el día
+  de Madrid.
+
+1. **Lo que nombra el cliente** (`catalogo.menciones_en`): por el
    nombre del producto (entero, dos de sus palabras con peso, un código como
    «5000U», o una palabra escrita como nombre propio a media frase: «la
    Beambox», «el horno Vega»; lo más completo primero). Una sola palabra
@@ -200,8 +222,8 @@ lleva de dónde salió, `eleccion`, y el bloque del prompt las agrupa así):
 3. **Los consumibles de la máquina que ya tiene** (lo que dicen sus pedidos,
    casado por palabras contra nombre, categoría y marca de los productos de las
    tiendas), en su lista aparte.
-4. **Los intereses que toca la consulta del cliente por sus palabras**
-   (12/10/2026) y **el interés clasificado**. Una consulta en alemán pedía
+4. **Los intereses que tocan las palabras del cliente** (12/10/2026) y **el
+   interés clasificado**. Una consulta en alemán pedía
    imprimir sobre placas de metal y camisetas; el contacto estaba clasificado
    solo como UV y al borrador solo llegaron las máquinas UV, y el aviso dijo que
    no había DTF. Ahora «T-Shirts» o «Textilien» meten las de DTF aunque el
@@ -209,7 +231,7 @@ lleva de dónde salió, `eleccion`, y el bloque del prompt las agrupa así):
    palabras que casaron en el prompt), y si la consulta toca varios intereses
    entran las de todos, por turnos (una de cada, el interés clasificado primero)
    y con el tope subido. «UV» a secas en la consulta de un contacto ya
-   clasificado en una talla es esa talla. En la consulta (el hilo entero) las
+   clasificado en una talla es esa talla. En lo que escribe el cliente las
    palabras de talla no cuentan: «un gran saludo» no es una UV grande. El prompt
    presenta esas máquinas como lo que *puede* que pida también la consulta: si
    las palabras no hablan de eso, la IA las ignora.

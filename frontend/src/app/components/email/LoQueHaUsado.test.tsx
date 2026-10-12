@@ -43,6 +43,14 @@ describe("Lo que ha usado", () => {
       .toBeInTheDocument();
   });
 
+  it("dice que leyó la consulta del formulario del lead, con el día de Madrid", () => {
+    // Las 00:30 del 13/10 en Madrid son las 22:30 del 12/10 en UTC.
+    render(<LoQueHaUsado borrador={borrador({ mensajes_hilo: 1, contacto: { nombre: "Ana" },
+      consulta_lead: { fuente: "web_form", fecha: "2026-10-12T22:30:00+00:00", caracteres: 120 } })} />);
+    expect(screen.getByText(/1 mensaje del hilo · la consulta de su formulario \(13\/10\/2026\) · la ficha de Ana/))
+      .toBeInTheDocument();
+  });
+
   it("en una corrección explica la caché: leída, o guardada en la de otro modelo", () => {
     const leida = { ...borrador({ contacto: { nombre: "Ana" } }), turno: 2,
       tokens_cache_lectura: 6446, modelo: "claude-haiku-5-5" };

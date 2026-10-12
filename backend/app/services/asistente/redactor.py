@@ -76,6 +76,7 @@ from app.services.asistente.texto import (
     html_a_texto,
     limpiar_html,
     parece_html,
+    recortar,
     sin_firma,
 )
 from app.services.correo_compuesto import bloques as bq
@@ -238,6 +239,13 @@ def _fecha(valor: str | None) -> str:
     return (valor or "")[:16].replace("T", " ") or "sin fecha"
 
 
+#: La consulta del lead en la ficha: hasta aquí (para elegir las máquinas se
+#: lee entera).
+CONSULTA_LEAD_PROMPT_MAX = 1500
+#: De dónde salió la consulta del lead, para la ficha.
+FUENTES_CONSULTA_LEAD = {"web_form": "formulario de la web", "agilecrm": "nota de Agile"}
+
+
 def _bloque_ficha(ctx: Contexto) -> str:
     if ctx.contacto is None:
         return (
@@ -296,6 +304,13 @@ def _bloque_ficha(ctx: Contexto) -> str:
             f"- Clasificación de la IA del lead: interés {intereses}"
             f" · idioma {cl.get('idioma') or '—'} · confianza {cl.get('confianza')}"
         )
+    if ctx.consulta_lead and ctx.consulta_lead.get("texto"):
+        consulta = ctx.consulta_lead
+        de = FUENTES_CONSULTA_LEAD.get(str(consulta.get("fuente") or ""), "lead")
+        texto = recortar(" ".join(str(consulta["texto"]).split()), CONSULTA_LEAD_PROMPT_MAX)
+        lineas.append(
+            f"- Consulta de su último lead ({de}, {_fecha(consulta.get('fecha'))[:10]}; la "
+            f"escribió el cliente, es lo que pide): «{texto}»")
     if ctx.pedidos:
         lineas.append("- Pedidos (del más reciente al más antiguo):")
         for p in ctx.pedidos:
@@ -435,7 +450,8 @@ def _bloque_catalogo(ctx: Contexto) -> str:
         precios = f"precios {_iva_texto(iva.get('compositor'), avisos)}"
         if por_eleccion.get("hilo"):
             lineas.append(
-                f"Máquinas que el cliente NOMBRA en el hilo (empieza por estas); {precios}:")
+                "Máquinas que el cliente NOMBRA, en sus correos o en la consulta de su lead "
+                f"(empieza por estas); {precios}:")
             lineas.extend(_linea_producto(m, avisos, ctx.idioma, refs.get(_clave_ref(m)))
                           for m in por_eleccion["hilo"])
         if por_eleccion.get("instruccion"):
@@ -459,9 +475,9 @@ def _bloque_catalogo(ctx: Contexto) -> str:
             "instruccion_posible", [])
         if posibles:
             lineas.append(
-                "Máquinas que PUEDE que nombren el hilo o la instrucción (solo una palabra del "
-                "nombre, o un código que sale en su descripción): ofrécelas solo si el hilo lo "
-                f"confirma; {precios}:")
+                "Máquinas que PUEDE que nombren el cliente o la instrucción (solo una palabra del "
+                "nombre, o un código que sale en su descripción): ofrécelas solo si sus correos, "
+                f"su consulta o la instrucción lo confirman; {precios}:")
             lineas.extend(_linea_producto(m, avisos, ctx.idioma, refs.get(_clave_ref(m)))
                           for m in posibles)
         if por_eleccion.get("interes"):
