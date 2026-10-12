@@ -309,23 +309,34 @@ def custom_fields_from_reference(ref: Any) -> dict[str, Any] | None:
     return campos if isinstance(campos, dict) else None
 
 
+def _con_valor(campos: dict[str, Any]) -> set[str]:
+    return {k for k, v in campos.items() if not custom_value_is_empty(v)}
+
+
 def drop_released_custom_fields(
-    contact: Contact, previous: dict[str, Any] | None, current: dict[str, Any],
+    contact: Contact,
+    previous: dict[str, Any] | None,
+    current: dict[str, Any],
+    others: list[dict[str, Any] | None] | tuple[()] = (),
 ) -> list[str]:
     """Quita las claves que ese origen trajo la última vez (`previous`) y ya
-    no trae (`current`), si siguen con el valor que él puso: las borraron
-    allí y nadie las ha tocado aquí. Una clave que cambió otro (otra cuenta,
-    un formulario, un workflow, la ficha) o que está protegida a mano se
-    queda. Sin `previous` no se quita nada. Devuelve las claves quitadas."""
-    if not previous:
+    no trae con valor (`current`; un valor vacío es como no traerlo), si
+    siguen con el valor que él puso: las borraron allí y nadie las ha
+    tocado aquí. Se quedan una clave que cambió otro (otra cuenta, un
+    formulario, un workflow, la ficha), una protegida a mano y una que otra
+    cuenta del contacto sigue trayendo (`others`: lo que trajo cada una; si
+    de alguna no consta, no se quita nada). Sin `previous` no se quita nada.
+    Devuelve las claves quitadas."""
+    if not previous or any(otra is None for otra in others):
         return []
     actuales = decode_custom_fields(contact.custom_fields)
     if not actuales:
         return []
+    sigue = _con_valor(current).union(*(_con_valor(otra) for otra in others if otra))
     marcas = set(_load(contact))
     quitar = [
         clave for clave, valor in previous.items()
-        if clave not in current
+        if clave not in sigue
         and clave in actuales
         and actuales[clave] == valor
         and not _clave_protegida(clave, marcas, actuales)
@@ -337,21 +348,38 @@ def drop_released_custom_fields(
     return quitar
 
 
-def release_dropped_custom_fields(
-    contact: Contact, ref: Any, extras: dict[str, Any] | None,
-) -> list[str]:
-    """`drop_released_custom_fields` para el upsert de un sync: lo de la
-    última vez sale de los metadatos de la referencia (`ref`) y lo de
-    ahora, de los que trae el mapper (`extras["metadata"]["custom_fields"]`).
-    Hay que llamarlo ANTES de guardar los extras nuevos en la referencia."""
+#: Los sistemas cuyo sync escribe `custom_fields` (y guarda en cada
+#: referencia lo que trajo).
+_SISTEMAS_CON_CAMPOS = frozenset({"brevo", "agilecrm"})
+
+
+def _sistema(ref: Any) -> str:
+    sistema = getattr(ref, "system", None)
+    return str(getattr(sistema, "value", sistema) or "")
+
+
+def release_dropped_custom_fields(ref: Any, extras: dict[str, Any] | None) -> list[str]:
+    """`drop_released_custom_fields` al guardar los extras de un sync en su
+    referencia (`_apply_ref_extras` de cada conector, JUSTO ANTES de pisar
+    sus metadatos): lo de la última vez sale de los metadatos que aún tiene
+    la referencia, y lo de ahora, de `extras["metadata"]["custom_fields"]`.
+    Una referencia nueva (sin contacto cargado ni nada guardado) no quita
+    nada."""
     metadata = (extras or {}).get("metadata") or {}
     actual = metadata.get(CUSTOM_FIELDS) if isinstance(metadata, dict) else None
     if not isinstance(actual, dict):
         # El mapper no dice qué trae: no se quita nada.
         return []
-    return drop_released_custom_fields(
-        contact, custom_fields_from_reference(ref), actual
-    )
+    previo = custom_fields_from_reference(ref)
+    contact = getattr(ref, "contact", None) if previo else None
+    if contact is None:
+        return []
+    otras = [
+        custom_fields_from_reference(otra)
+        for otra in getattr(contact, "external_refs", None) or []
+        if otra is not ref and _sistema(otra) in _SISTEMAS_CON_CAMPOS
+    ]
+    return drop_released_custom_fields(contact, previo, actual, otras)
 
 
 def apply_manual_custom_fields(contact: Contact, payload: Any) -> list[str]:

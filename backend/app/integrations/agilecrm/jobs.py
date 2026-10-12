@@ -192,17 +192,12 @@ def _upsert_contact_for_payload(
     if ref is not None:
         contact = session.get(Contact, ref.contact_id)
         if contact is not None:
-            from app.services import contact_sync_protection as _protection  # noqa: PLC0415
-
             _apply_update(contact, record)
             if label and ref.account_label != label:
                 ref.account_label = label
             if ref.external_status == "deleted_in_origin":
                 # Remote brought it back — clear the marker.
                 ref.external_status = None
-            # Antes de guardar los extras nuevos: lo que esta cuenta trajo
-            # la última vez está en la referencia.
-            _protection.release_dropped_custom_fields(contact, ref, ref_extras)
             _apply_ref_extras(ref, ref_extras)
             _sync_tag_delta(
                 session,
@@ -472,6 +467,11 @@ def _apply_ref_extras(ref: ExternalReference, extras: dict[str, Any]) -> None:
         ref.origin_detail = origin_detail
     metadata = extras.get("metadata")
     if metadata:
+        from app.services import contact_sync_protection as _protection  # noqa: PLC0415
+
+        # Justo antes de pisar lo que esta cuenta trajo la última vez: quitar
+        # del contacto lo que ya no trae (si nadie lo tocó).
+        _protection.release_dropped_custom_fields(ref, extras)
         ref.metadata_json = json.dumps(metadata, default=str)
 
 

@@ -34,35 +34,34 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.session import get_engine
-from app.integrations.brevo.mapper import _SECONDARY_PHONE_KEYS, _normalise_attr_key
+from app.integrations.brevo.mapper import (
+    SECONDARY_PHONE_KEYS,
+    normalise_attr_key,
+    phone_digits,
+)
 from app.models.crm import Contact, ContactPhone
 from app.services.contact_sync_protection import decode_custom_fields
 
 log = logging.getLogger("cleanup_custom_fields")
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-#: Atributos internos de Brevo, en la forma de `_normalise_attr_key`.
+#: Atributos internos de Brevo, en la forma de `normalise_attr_key`.
 RUIDO: frozenset[str] = frozenset({"SIB_CONTACT_OWNER", "EXT_ID"})
-
-
-def _digitos(valor: Any) -> str:
-    """Los dígitos (y el `+`) de un número: la misma comparación con la que
-    el sync de Brevo decide si un teléfono secundario ya está
-    (`reconcile_brevo_channels`)."""
-    return "".join(c for c in str(valor) if c.isdigit() or c == "+")
+#: Teléfonos por consulta, al cargar los de los contactos revisados.
+_LOTE_TELEFONOS = 500
 
 
 def claves_de_ruido(campos: dict[str, Any], telefonos: set[str]) -> list[str]:
     """Las claves de `campos` que se pueden quitar sin perder nada:
     `RUIDO` y los teléfonos secundarios que ya están en `telefonos` (sus
-    dígitos)."""
+    dígitos, con la misma comparación que el sync de Brevo)."""
     quitar: list[str] = []
     for clave, valor in campos.items():
-        normal = _normalise_attr_key(clave)
+        normal = normalise_attr_key(clave)
         if normal in RUIDO:
             quitar.append(clave)
-        elif normal in _SECONDARY_PHONE_KEYS and valor is not None:
-            digitos = _digitos(valor)
+        elif normal in SECONDARY_PHONE_KEYS and valor is not None:
+            digitos = phone_digits(valor)
             if digitos and digitos in telefonos:
                 quitar.append(clave)
     return quitar
@@ -88,12 +87,16 @@ def cleanup(
         contacts = list(session.scalars(stmt))
         counts["scanned"] = len(contacts)
         telefonos: dict[str, set[str]] = defaultdict(set)
-        for contact_id, number in session.execute(
-            select(ContactPhone.contact_id, ContactPhone.number)
-        ):
-            digitos = _digitos(number or "")
-            if digitos:
-                telefonos[contact_id].add(digitos)
+        ids = [c.id for c in contacts]
+        for i in range(0, len(ids), _LOTE_TELEFONOS):
+            for contact_id, number in session.execute(
+                select(ContactPhone.contact_id, ContactPhone.number).where(
+                    ContactPhone.contact_id.in_(ids[i:i + _LOTE_TELEFONOS])
+                )
+            ):
+                digitos = phone_digits(number or "")
+                if digitos:
+                    telefonos[contact_id].add(digitos)
         pending = 0
         for contact in contacts:
             campos = decode_custom_fields(contact.custom_fields)

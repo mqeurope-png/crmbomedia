@@ -430,11 +430,14 @@ desde el `_apply_update` de cada conector:
 
 Para saber qué quitar, cada referencia (`external_references.metadata`)
 guarda lo que su cuenta trajo en `custom_fields` en el último sync. Si una
-clave deja de venir (la borraron en Brevo o en Agile) y el contacto sigue
-teniendo el valor que puso esa cuenta, se quita; si lo cambió otro (otra
-cuenta, un formulario, un workflow, la ficha) se queda. Las referencias de
-antes de este cambio no tienen ese dato: su primer sync no quita nada y lo
-apunta.
+clave deja de venir o viene vacía (la borraron en Brevo o en Agile) y el
+contacto sigue teniendo el valor que puso esa cuenta, se quita; si lo cambió
+otro (otra cuenta, un formulario, un workflow, la ficha) o si otra cuenta
+del contacto la sigue trayendo, se queda. Lo hace el `_apply_ref_extras` de
+cada conector justo antes de guardar los metadatos nuevos. Las referencias
+de antes de este cambio no tienen ese dato: su primer sync no quita nada y
+lo apunta, y mientras alguna referencia del contacto no lo tenga, no se
+quita nada de ese contacto.
 
 Las claves de `custom_fields` editadas a mano se protegen **una a una**: el
 PATCH de la ficha marca `custom_fields.<clave>` (y el modal manda solo las

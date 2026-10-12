@@ -224,7 +224,10 @@ después de desplegar:
    ```
 
    No pisa ningún valor ni una clave quitada a mano, y deja rastro en la
-   auditoría (`contact.custom_fields_restored`).
+   auditoría (`contact.custom_fields_restored`). Las respuestas de formulario
+   en claves que también trae un sync («Horario», «GRADO_DE_INTERES»…) no las
+   repone: esas vuelven con el paso 1. Los formularios se leen con su mapeo
+   de hoy: revisa la lista de claves del informe antes de `--apply`.
 
 El script de limpieza `scripts.cleanup_contact_custom_fields_whitelist` ya
 no va por lista blanca (borraba «CONTACTO Persona» y lo de formularios y

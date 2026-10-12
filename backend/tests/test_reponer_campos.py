@@ -81,6 +81,10 @@ def _formulario(s: Session) -> WebForm:
         WebFormField(form_id=form.id, field_key="producto", label="Producto",
                      field_type="text", position=1,
                      maps_to_contact_field="contact.custom.product_interest"),
+        # Una clave que también trae un sync (Brevo y Agile): no se repone.
+        WebFormField(form_id=form.id, field_key="horario", label="Horario",
+                     field_type="text", position=2,
+                     maps_to_contact_field="contact.custom.Horario"),
     ])
     s.flush()
     return form
@@ -92,7 +96,9 @@ def _respuesta(
 ) -> None:
     s.add(FormSubmission(
         form_id=form.id, contact_id=contacto.id, is_spam=spam, created_at=cuando,
-        raw_payload_json=json.dumps({"email": contacto.email, "producto": producto}),
+        raw_payload_json=json.dumps(
+            {"email": contacto.email, "producto": producto, "horario": "L-V"}
+        ),
     ))
 
 
@@ -182,6 +188,9 @@ def test_repone_lo_que_escribieron_formularios_y_workflows_y_solo_lo_que_falta(
     assert por_contacto[carla.id].claves == {"product_interest": "DTF"}
     assert por_contacto[dani.id].claves == {"product_interest": "DTF"}
     assert plan.no_es_objeto == 1
+    # «Horario» de los formularios no se repone: lo trae un sync (les falta a
+    # berta y a carla; las demás lo tienen).
+    assert plan.de_sync == 2
     assert plan.en_brevo_y_agile == 1
 
     # Entre el informe y el --apply, una sincronización trae INTERES. La

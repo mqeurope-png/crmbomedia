@@ -21,7 +21,11 @@ entonces no podía quitar claves, así que lo que falta lo quitó un sync.
 Las respuestas de los formularios se leen con el mapeo de HOY de cada
 formulario (no se guardó el de entonces): si un campo se remapeó a otra
 clave, saldrá con la nueva. El informe (`--probar`) lista las claves por
-nombre para revisarlas antes de `--apply`.
+nombre para revisarlas antes de `--apply`. Una respuesta de formulario en
+una clave que también trae un sync (`is_kept_custom_field`: «Horario»,
+«GRADO_DE_INTERES»…) no se repone: el formulario solo rellenaba claves
+vacías y no se sabe si entonces ya tenía la del sync; esas vuelven con la
+sincronización completa.
 """
 
 from __future__ import annotations
@@ -67,6 +71,9 @@ class Plan:
     reposiciones: list[Reposicion] = field(default_factory=list)
     #: Contactos cuyo JSON no es un objeto: no se tocan.
     no_es_objeto: int = 0
+    #: Respuestas de formulario en claves que trae un sync: no se reponen
+    #: (vuelven con la sincronización completa).
+    de_sync: int = 0
     #: Contactos que están a la vez en Brevo y en Agile (lo suyo vuelve
     #: con una sincronización completa).
     en_brevo_y_agile: int = 0
@@ -166,6 +173,10 @@ def _faltan(contact: Contact, valores: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def planificar(session: Session) -> Plan:
+    from app.integrations.agilecrm.custom_field_rules import (  # noqa: PLC0415
+        is_kept_custom_field,
+    )
+
     plan = Plan()
     escrituras = _escrituras(session)
     ids = sorted(escrituras)
@@ -184,6 +195,9 @@ def planificar(session: Session) -> Plan:
         if faltan is None:
             plan.no_es_objeto += 1
             continue
+        for clave in [c for c in faltan if origen[c] == FORMULARIO and is_kept_custom_field(c)]:
+            del faltan[clave]
+            plan.de_sync += 1
         if faltan:
             plan.reposiciones.append(
                 Reposicion(

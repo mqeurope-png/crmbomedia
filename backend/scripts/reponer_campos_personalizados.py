@@ -65,6 +65,8 @@ def main() -> int:
         print("(Las respuestas de los formularios se leen con el mapeo de hoy de cada "
               "formulario: si alguna clave no te suena, revísala antes de --apply.)")
         print(f"\nNo se tocan (lo guardado no es un objeto JSON): {plan.no_es_objeto}")
+        print(f"No se reponen (respuestas de formulario en claves que trae un sync; "
+              f"vuelven con la sincronización completa): {plan.de_sync}")
         print(f"\nContactos que están en Brevo y en Agile: {plan.en_brevo_y_agile}. "
               "Lo suyo vuelve con «Sync completa» → «Re-fetch completo (full sync)» "
               "en Administración → Cuentas de integración.")

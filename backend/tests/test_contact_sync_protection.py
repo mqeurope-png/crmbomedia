@@ -1009,3 +1009,53 @@ def test_reset_de_custom_fields_quita_tambien_las_marcas_por_clave(
         ]
         protection.reset_manual_edits(contact, ["custom_fields"])
         assert protection.get_manually_edited_fields(contact) == ["phone"]
+
+
+def test_un_valor_vaciado_en_agile_se_vacia_aqui(session_factory: sessionmaker):
+    """Agile manda el campo vaciado ("") en vez de quitarlo: cuenta como que
+    ya no lo trae."""
+    _sync_agile(session_factory, _agile_con_campos(Horario="9-14"))
+    with session_factory() as session:
+        contact_id = session.scalar(select(Contact.id))
+    _sync_agile(session_factory, _agile_con_campos(Horario=""))
+    assert _campos(session_factory, contact_id) == {}
+
+
+def test_no_se_quita_lo_que_otra_cuenta_sigue_trayendo(
+    session_factory: sessionmaker,
+):
+    """El contacto está en dos cuentas de Agile con el mismo «Horario». Si
+    una lo borra, se queda: la otra lo sigue trayendo. Y si de otra cuenta
+    no consta qué trae (referencia de antes del cambio), no se quita nada."""
+    from app.models.crm import ExternalReference  # noqa: PLC0415
+
+    _sync_agile(session_factory, _agile_con_campos(Horario="9-14"))
+    with session_factory() as session:
+        contact_id = session.scalar(select(Contact.id))
+        _upsert_contact_for_payload(
+            session, account_id="segunda",
+            payload=_agile_con_campos(external_id=2, Horario="9-14"),
+        )
+        session.commit()
+    _sync_agile(session_factory, _agile_payload(external_id=1, email="ana@example.com"))
+    assert _campos(session_factory, contact_id) == {"Horario": "9-14"}
+
+    # La segunda cuenta también lo borra: ahora sí se quita.
+    with session_factory() as session:
+        _upsert_contact_for_payload(
+            session, account_id="segunda",
+            payload=_agile_payload(external_id=2, email="ana@example.com"),
+        )
+        session.commit()
+    assert _campos(session_factory, contact_id) == {}
+
+    # De vuelta: las dos lo traen, pero de la segunda no consta qué trajo.
+    _sync_agile(session_factory, _agile_con_campos(Horario="9-14"))
+    with session_factory() as session:
+        segunda = session.scalar(
+            select(ExternalReference).where(ExternalReference.account_id == "segunda")
+        )
+        segunda.metadata_json = json.dumps({"owner": {"id": "1"}})
+        session.commit()
+    _sync_agile(session_factory, _agile_payload(external_id=1, email="ana@example.com"))
+    assert _campos(session_factory, contact_id) == {"Horario": "9-14"}
