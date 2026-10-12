@@ -78,14 +78,19 @@ PROPORCION_MAX = 3.2
 TOLERANCIA_PROPORCION = 0.03
 MIMES_CORREO: tuple[str, ...] = ("image/jpeg", "image/png", "image/gif")
 
-#: Lo que el título dice que no es una foto para un correo.
+#: Lo que el título dice que no es una foto para un correo, como palabra entera
+#: («logo-mbo», «Captura de pantalla»; no «silicone», «catálogo» ni «confirma»).
 _RUIDO_RE = re.compile(
-    r"logo|loguito|icon|favicon|cropped|screenshot|captura|firma|sello|(?<![a-z])qr(?![a-z])",
+    r"(?<![^\W\d_])(?:logos?|logotipos?|loguitos?|icons?|iconos?|favicons?|cropped"
+    r"|screenshots?|capturas?|firmas?|sellos?|qr|qrcode)(?![^\W\d_])",
     re.IGNORECASE)
-#: Un código de artículo: letras, guion y cifras («AB-1234», «MCO-21005_2»,
-#: «PSTY-007») o una letra y cinco o seis cifras («B100617», recambios de FLUX).
+#: Un código de artículo: de dos a cuatro letras, guion y cifras («AB-1234»,
+#: «MCO-21005_2», «PSTY-007») o una letra y cinco o seis cifras («B100617»,
+#: recambios de FLUX). Con cinco letras o más es un nombre de modelo
+#: («artis-2100», «ultra-1600»), y con las de una marca del catálogo también
+#: («MBO-3050»).
 _CODIGO_RE = re.compile(
-    r"(?<![A-Za-z0-9])(?:[A-Za-z]{1,5}-\d{3,6}|[A-Za-z]\d{5,6})(?![0-9])")
+    r"(?<![A-Za-z0-9])(?:([A-Za-z]{2,4})-\d{3,6}|[A-Za-z]\d{5,6})(?![0-9])")
 
 #: Por qué no se indexó una imagen (los recuentos de la pasada).
 DESCARTE_SIN_MEDIDAS = "sin_medidas"
@@ -224,7 +229,16 @@ def _medidas(item: dict[str, Any]) -> tuple[int, int]:
         return 0, 0
 
 
-def motivo_descarte(item: dict[str, Any], productos: set[int]) -> str | None:
+def es_codigo(titulo: str, marcas: Iterable[str] = ()) -> bool:
+    """Si el título lleva un código de artículo (`marcas`: las claves de las
+    marcas del catálogo, cuyas letras no hacen código)."""
+    de_marca = {str(m).lower() for m in marcas}
+    return any(not (m.group(1) and m.group(1).lower() in de_marca)
+               for m in _CODIGO_RE.finditer(titulo))
+
+
+def motivo_descarte(item: dict[str, Any], productos: set[int],
+                    marcas: Iterable[str] = ()) -> str | None:
     """Por qué una imagen de la biblioteca no vale para un correo (o None si
     vale): los cinco filtros, en ese orden."""
     ancho, alto = _medidas(item)
@@ -237,7 +251,7 @@ def motivo_descarte(item: dict[str, Any], productos: set[int]) -> str | None:
     titulo = titulo_de(item)
     if _RUIDO_RE.search(titulo):
         return DESCARTE_TITULO
-    if _CODIGO_RE.search(titulo):
+    if es_codigo(titulo, marcas):
         return DESCARTE_CODIGO
     padre = item.get("post")
     if isinstance(padre, int) and padre in productos:
@@ -313,7 +327,7 @@ def _bajar(http: httpx.Client, sitio: Sitio) -> tuple[list[dict[str, Any]], set[
 
 
 def _escribir(session: Session, sitio: Sitio, medios: list[dict[str, Any]], productos: set[int],
-              *, ahora: datetime) -> dict[str, Any]:
+              *, ahora: datetime, marcas: frozenset[str] = frozenset()) -> dict[str, Any]:
     existentes = {f.media_id: f for f in session.scalars(
         select(ImagenWeb).where(ImagenWeb.sitio == sitio.clave))}
     descartes: dict[str, int] = {}
@@ -323,7 +337,7 @@ def _escribir(session: Session, sitio: Sitio, medios: list[dict[str, Any]], prod
         mid = item.get("id")
         if not isinstance(mid, int) or mid in vistas:
             continue
-        motivo = motivo_descarte(item, productos)
+        motivo = motivo_descarte(item, productos, marcas)
         if motivo is not None:
             descartes[motivo] = descartes.get(motivo, 0) + 1
             continue
@@ -379,6 +393,7 @@ def sincronizar(
             cliente.close()
     resumen: dict[str, dict[str, Any]] = {}
     errores: list[str] = []
+    marcas = frozenset(catalogo._clave(m.nombre) for m in catalogo.marcas(session))
     for sitio, bajada in zip(webs, bajadas, strict=True):
         if isinstance(bajada, Exception):
             logger.warning("kb.imagenes: %s sin sincronizar, índice anterior intacto: %s",
@@ -389,7 +404,8 @@ def sincronizar(
             continue
         medios, productos_web, aviso = bajada
         productos = productos_web | ids_de_productos_catalogo(session, sitio.clave)
-        resumen[sitio.clave] = _escribir(session, sitio, medios, productos, ahora=ahora)
+        resumen[sitio.clave] = _escribir(session, sitio, medios, productos, ahora=ahora,
+                                         marcas=marcas)
         if aviso:
             resumen[sitio.clave]["aviso"] = aviso
     if sitios is None:

@@ -831,14 +831,25 @@ def anadir_medios(
     `P#`), con lo que pide la instrucción y con el interés del lead. Las
     palabras de la marca de una máquina no cuentan (todas las fotos de
     artisJet no son de esa máquina); las de la instrucción, sí."""
+    from app.services.conocimiento import catalogo as catalogo_kb  # noqa: PLC0415
     from app.services.conocimiento import imagenes as imagenes_kb  # noqa: PLC0415
     from app.services.conocimiento import videos as videos_kb  # noqa: PLC0415
 
     origenes = [p["origen_id"] for ref, p in refs.productos.items()
                 if ref.startswith("P") and p.get("origen_id")]
-    marcas = set(refs.marcas)
-    modelos = [" ".join(t for t in re.split(r"[-_\s]+", o.lower()) if t and t not in marcas)
-               for o in origenes]
+    # Las palabras del NOMBRE de cada máquina («artisJet 3000Pro» → «3000pro»), no
+    # las de su clave interna, y sin las de ninguna marca (ni su clave ni su nombre).
+    de_marca = set(imagenes_kb.palabras_de(*(
+        f"{clave.replace('_', ' ')} {m.get('nombre') or ''}" for clave, m in refs.marcas.items())))
+    grupos = catalogo_kb._maquinas_por_producto(session) if origenes else {}
+    modelos: list[str] = []
+    for origen in origenes:
+        base = (grupos.get(origen) or [None])[0]
+        if base is None:
+            continue
+        propias = de_marca | set(imagenes_kb.palabras_de(base.marca))
+        modelos.append(" ".join(p for p in imagenes_kb.palabras_de(base.nombre)
+                                if p not in propias))
     de_interes = [i.replace("_", " ") for i in intereses or []]
     palabras = imagenes_kb.palabras_de(instruccion, *de_interes, *modelos)
     for imagen in imagenes_kb.para_correo(session, palabras=palabras, sitio=sitio):

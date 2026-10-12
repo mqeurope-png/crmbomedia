@@ -331,6 +331,9 @@ class _Conversor:
         self.productos_conocidos: dict[str, dict[str, str]] = {}
         self.videos_conocidos: dict[str, dict[str, str]] = {}
         self.imagenes_conocidas: set[str] = set()
+        # Las imágenes que ya lleva el correo (la IA las ve como `?<id>`): valen
+        # al reemplazar o añadir un bloque aunque no estén entre las del turno.
+        self.imagenes_del_correo: set[str] = set()
 
     def _url(self, destino: Any) -> str | None:
         url = self.refs.url(destino, self.idioma)
@@ -364,7 +367,7 @@ class _Conversor:
         if imagen is None:
             s = str(valor.get("id") if isinstance(valor, dict) else valor or "").strip()
             s = s[1:] if s.startswith("?") else s
-            if s in self.imagenes_conocidas:
+            if s in self.imagenes_conocidas or s in self.imagenes_del_correo:
                 imagen = {"id": s}
         return imagen
 
@@ -409,10 +412,18 @@ class _Conversor:
         self.videos_conocidos = {videos_mod.clave(propio): propio} if propio else {}
         self.imagenes_conocidas = set(bq.imagenes_de({"bloques": [bloque]}))
         try:
-            return self._campo(bloque.get("tipo"), campo, valor)
+            cambio = self._campo(bloque.get("tipo"), campo, valor)
         finally:
             self.conocidas, self.productos_conocidos, self.videos_conocidos = set(), {}, {}
             self.imagenes_conocidas = set()
+        if cambio and "imagenes" in cambio and "pies" not in cambio:
+            # Cada pie sigue a su imagen: la que se queda conserva el suyo y la
+            # nueva entra sin pie.
+            antes = {img["id"]: pie for img, pie in zip(
+                [bq.clave_imagen(r) for r in bloque.get("imagenes") or []],
+                bloque.get("pies") or [], strict=False) if img}
+            cambio["pies"] = [antes.get(img["id"], "") for img in cambio["imagenes"]]
+        return cambio
 
     def _campo(self, tipo: Any, campo: str, valor: Any) -> dict[str, Any] | None:
         if tipo == bq.TIPO_TEXTO and campo in ("texto", "html"):
@@ -423,10 +434,14 @@ class _Conversor:
             return {"estilo": str(valor or "")}
         if campo == "disposicion" and tipo == bq.TIPO_HERO:
             return {"disposicion": str(valor or "")}
-        if (campo == "puntos" and tipo == bq.TIPO_HERO) or (
-                campo == "pies" and tipo == bq.TIPO_MUESTRAS):
+        if campo == "puntos" and tipo == bq.TIPO_HERO:
             lista = valor if isinstance(valor, list) else [valor]
             return {campo: [self._sin_html(v) for v in lista if v]}
+        if campo == "pies" and tipo == bq.TIPO_MUESTRAS:
+            # Un pie por imagen, en su sitio: uno vacío se queda vacío y no
+            # corre los demás a la imagen de al lado.
+            lista = valor if isinstance(valor, list) else [valor]
+            return {"pies": [self._sin_html(v) if v else "" for v in lista]}
         if campo == "botones" and tipo in (bq.TIPO_CTA, bq.TIPO_HERO):
             botones = self._botones_de(valor)
             return {"botones": botones} if botones else None
@@ -663,6 +678,7 @@ def aplicar_operaciones(estructura: dict[str, Any], operaciones: Any, refs: Refe
     e = copy.deepcopy(bq.normalizar(estructura))
     idioma = e["idioma"]
     conv = _Conversor(refs, idioma)
+    conv.imagenes_del_correo = set(bq.imagenes_de(e))
     avisos: list[str] = []
     bloques: list[dict[str, Any]] = e["bloques"]
 

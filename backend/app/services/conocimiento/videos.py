@@ -90,22 +90,6 @@ _YOUTUBE_EN_HTML_RE = re.compile(
 _CORTO_RE = re.compile(r"#\s*(?:youtube)?shorts?\b", re.IGNORECASE)
 
 
-def _json_lista(raw: str | None) -> list[Any]:
-    try:
-        datos = json.loads(raw) if raw else []
-    except (TypeError, ValueError):
-        return []
-    return datos if isinstance(datos, list) else []
-
-
-def _json_dict(raw: str | None) -> dict[str, Any]:
-    try:
-        datos = json.loads(raw) if raw else {}
-    except (TypeError, ValueError):
-        return {}
-    return datos if isinstance(datos, dict) else {}
-
-
 # --- el idioma ------------------------------------------------------------------------------
 
 #: Palabras que solo (o casi solo) se escriben en un idioma. Las que comparten
@@ -235,10 +219,6 @@ def temas_detectados(videos: list[VideoKb]) -> dict[str, str]:
 # --- marca y productos --------------------------------------------------------------------------
 
 
-def _clave(texto: Any) -> str:
-    return re.sub(r"[^a-z0-9]", "", str(texto or "").lower())
-
-
 def _nucleo(token: str) -> str | None:
     """Las cifras de un número de modelo de tres o más («3000U» → «3000»,
     «UV2512G» → «2512»); None si no tiene."""
@@ -249,9 +229,9 @@ def _nucleo(token: str) -> str | None:
 def marca_en_titulo(titulo: str | None, marcas: Iterable[str]) -> str | None:
     """La marca del catálogo que nombra el título (por su clave: «artisJet»,
     «FLUX», «MBO3020»)."""
-    texto = _clave(titulo)
-    for marca in sorted(marcas, key=lambda m: -len(_clave(m))):
-        clave = _clave(marca)
+    texto = catalogo._clave(titulo)
+    for marca in sorted(marcas, key=lambda m: -len(catalogo._clave(m))):
+        clave = catalogo._clave(marca)
         if len(clave) >= 3 and re.search(rf"(?<![a-z]){re.escape(clave)}", " ".join(
                 re.findall(r"[a-z0-9]+", str(titulo or "").lower()))):
             return marca
@@ -265,13 +245,14 @@ def productos_en_titulo(titulo: str | None, grupos: dict[str, list[ProductoCatal
     """Las máquinas del catálogo que nombra el título: por su nombre (el de
     `catalogo.menciones_en`; con una sola palabra del nombre, solo si la marca
     del vídeo es la de la máquina) o por su número de modelo dentro de la
-    marca del vídeo («artis 3000U Pro» → «artisJet 3000Pro»)."""
+    marca del vídeo («artis 3000U Pro» → «artisJet 3000Pro»). Sin marca, el
+    número solo no basta («stand 3000» no es ninguna máquina)."""
     salida: list[dict[str, str]] = []
     vistos: set[str] = set()
-    clave_marca = _clave(marca) if marca else ""
+    clave_marca = catalogo._clave(marca) if marca else ""
 
     def _misma_marca(producto: ProductoCatalogo) -> bool:
-        return not clave_marca or _clave(producto.marca) == clave_marca
+        return not clave_marca or catalogo._clave(producto.marca) == clave_marca
 
     # En minúsculas: en un título de YouTube Todas Las Palabras Van En Mayúscula,
     # y una palabra suelta no es un nombre propio por eso.
@@ -285,7 +266,7 @@ def productos_en_titulo(titulo: str | None, grupos: dict[str, list[ProductoCatal
         salida.append({"fuente": base.fuente, "origen_id": origen_id, "nombre": base.nombre})
     nucleos_titulo = {n for t in re.findall(r"[a-z0-9]+", str(titulo or "").lower())
                       if (n := _nucleo(t))}
-    if nucleos_titulo:
+    if nucleos_titulo and clave_marca:
         for origen_id, variantes in grupos.items():
             base = variantes[0]
             if origen_id in vistos or not _misma_marca(base):
@@ -301,7 +282,7 @@ def productos_en_titulo(titulo: str | None, grupos: dict[str, list[ProductoCatal
 
 def _es_corto(titulo: str | None, descripcion: str | None, etiquetas: Iterable[str]) -> bool:
     return bool(_CORTO_RE.search(f"{titulo or ''}\n{descripcion or ''}")) or any(
-        _clave(e) in ("shorts", "short", "youtubeshorts") for e in etiquetas)
+        catalogo._clave(e) in ("shorts", "short", "youtubeshorts") for e in etiquetas)
 
 
 # --- la configuración de los canales ------------------------------------------------------------
@@ -321,28 +302,39 @@ def _marcas_catalogo(session: Session) -> list[str]:
 
 
 def _manuales(fila: VideoKb) -> set[str]:
-    return {str(c) for c in _json_lista(fila.manual_json)}
+    return {str(c) for c in catalogo._json_lista(fila.manual_json)}
 
 
-def _aplicar_detalles(fila: VideoKb, item: dict[str, Any]) -> bool:
+def _aplicar_detalles(fila: VideoKb, item: dict[str, Any], *,
+                      marca_de_canal: dict[str, str] | None = None,
+                      canales_leidos: Iterable[str] = ()) -> bool:
     """Los datos de YouTube en la fila; True si algo cambió. El idioma no se
-    toca si se fijó a mano."""
+    toca si se fijó a mano. La marca del canal (la de la configuración) se
+    guarda con la fila, y lo que se deduce luego fuera de la pasada (volver a
+    lo automático, un vídeo pegado) la sigue teniendo; si su canal no se leyó
+    en esta pasada, se queda la que tenía."""
     sn = item.get("snippet") if isinstance(item.get("snippet"), dict) else {}
     cd = item.get("contentDetails") if isinstance(item.get("contentDetails"), dict) else {}
     titulo = str(sn.get("title") or "").strip()[:255]
     descripcion = str(sn.get("description") or "").strip()[:MAX_DESCRIPCION] or None
     etiquetas = [str(t) for t in sn.get("tags") or [] if t][:30]
     publicado = imagenes._fecha(sn.get("publishedAt"))
+    canal_id = str(sn.get("channelId") or "")[:40] or None
+    if canal_id and canal_id in set(canales_leidos):
+        marca_canal = (marca_de_canal or {}).get(canal_id) or None
+    else:
+        marca_canal = catalogo._json_dict(fila.datos_json).get("marca_canal") or None
     datos = {
         "titulo": titulo, "descripcion": descripcion,
         "duracion": youtube.duracion_segundos(cd.get("duration")),
         "publicado_en": publicado,
         "canal": str(sn.get("channelTitle") or "")[:120] or None,
-        "canal_id": str(sn.get("channelId") or "")[:40] or None,
+        "canal_id": canal_id,
         "corto": _es_corto(titulo, descripcion, etiquetas),
         "datos_json": json.dumps({
             "idioma_metadatos": sn.get("defaultLanguage"),
             "idioma_audio": sn.get("defaultAudioLanguage"), "etiquetas": etiquetas,
+            "marca_canal": marca_canal,
         }, ensure_ascii=False),
     }
     if "idioma" not in _manuales(fila):
@@ -424,17 +416,17 @@ def comprobar_miniaturas(filas: list[VideoKb], http: httpx.Client, *, ahora: dat
     return recuento
 
 
-def deducir(session: Session, filas: list[VideoKb], *, marca_de_canal: dict[str, str]) -> None:
+def deducir(session: Session, filas: list[VideoKb]) -> None:
     """Marca, productos y tema de cada vídeo (lo fijado a mano se queda): la
-    marca por el título o el canal; las máquinas por el título; los temas por
-    los grupos que se reconocen solos, y los vídeos de un tema comparten
-    productos."""
+    marca por el título o por la de su canal (la guardada en la fila); las
+    máquinas por el título; los temas por los grupos que se reconocen solos, y
+    los vídeos de un tema comparten productos."""
     grupos = catalogo._maquinas_por_producto(session)
     marcas = _marcas_catalogo(session)
     for f in filas:
         manuales = _manuales(f)
         marca = (f.marca if "marca" in manuales else None) or marca_en_titulo(f.titulo, marcas) \
-            or marca_de_canal.get(f.canal_id or "") or ""
+            or catalogo._json_dict(f.datos_json).get("marca_canal") or ""
         if "productos" not in manuales:
             productos = productos_en_titulo(f.titulo, grupos, marca or None)
             f.productos_json = json.dumps(productos, ensure_ascii=False)
@@ -457,7 +449,7 @@ def deducir(session: Session, filas: list[VideoKb], *, marca_de_canal: dict[str,
     for miembros in por_tema.values():
         union: dict[str, dict[str, str]] = {}
         for m in miembros:
-            for p in _json_lista(m.productos_json):
+            for p in catalogo._json_lista(m.productos_json):
                 if isinstance(p, dict) and p.get("origen_id"):
                     union.setdefault(str(p["origen_id"]), p)
         if not union:
@@ -522,10 +514,12 @@ def sincronizar(
         existentes = {f.video_id: f for f in session.scalars(
             select(VideoKb).where(VideoKb.plataforma == PLATAFORMA))}
         de_canales = {vid for ids in por_canal.values() for vid in ids}
+        webs_leidas = con_webs and not caidas
         pedir = list(dict.fromkeys(
             [vid for ids in por_canal.values() for vid in ids] + sorted(enlazados)
             + [vid for vid, f in existentes.items()
-               if f.origen in (VIDEO_ORIGEN_MANUAL, VIDEO_ORIGEN_WEB)]))
+               if f.origen == VIDEO_ORIGEN_MANUAL
+               or (f.origen == VIDEO_ORIGEN_WEB and not webs_leidas)]))
         try:
             detalles = youtube.detalles(yt, pedir) if pedir else {}
         except youtube.YoutubeError as exc:
@@ -553,9 +547,11 @@ def sincronizar(
                 session.add(fila)
                 existentes[vid] = fila
                 nuevos += 1
-                _aplicar_detalles(fila, item)
+                _aplicar_detalles(fila, item, marca_de_canal=marca_de_canal,
+                                  canales_leidos=por_canal)
             else:
-                cambio = _aplicar_detalles(fila, item) or fila.ido_en is not None
+                cambio = _aplicar_detalles(fila, item, marca_de_canal=marca_de_canal,
+                                           canales_leidos=por_canal) or fila.ido_en is not None
                 if fila.origen == VIDEO_ORIGEN_WEB and vid in de_canales:
                     fila.origen = VIDEO_ORIGEN_CANAL
                     cambio = True
@@ -574,14 +570,14 @@ def sincronizar(
             if fila.origen == VIDEO_ORIGEN_CANAL and fila.canal_id in canales_leidos:
                 fila.ido_en = ahora
                 idos += 1
-            elif fila.origen == VIDEO_ORIGEN_WEB and con_webs and not caidas:
+            elif fila.origen == VIDEO_ORIGEN_WEB and webs_leidas:
                 fila.ido_en = ahora
                 idos += 1
         session.flush()
         miniaturas = comprobar_miniaturas(tocados, webs_http, ahora=ahora)
         vigentes = list(session.scalars(select(VideoKb).where(
             VideoKb.plataforma == PLATAFORMA, VideoKb.ido_en.is_(None))))
-        deducir(session, vigentes, marca_de_canal=marca_de_canal)
+        deducir(session, vigentes)
     finally:
         if propio:
             yt.close()
@@ -657,7 +653,7 @@ def anadir_por_url(
         if propio_img:
             img.close()
     session.flush()
-    deducir(session, [fila], marca_de_canal={})
+    deducir(session, [fila])
     session.flush()
     return fila
 
@@ -696,11 +692,11 @@ def actualizar(session: Session, fila_id: str, cambios: dict[str, Any]) -> Video
     fila.manual_json = json.dumps(sorted(manuales)) if manuales else None
     if automatico:
         if "idioma" in automatico:
-            datos = _json_dict(fila.datos_json)
+            datos = catalogo._json_dict(fila.datos_json)
             fila.idioma, fila.idioma_fuente = idioma_efectivo(
                 fila.titulo, datos.get("idioma_metadatos"), datos.get("idioma_audio"))
         vigentes = list(session.scalars(select(VideoKb).where(VideoKb.ido_en.is_(None))))
-        deducir(session, vigentes, marca_de_canal={})
+        deducir(session, vigentes)
     session.flush()
     return fila
 
@@ -725,11 +721,11 @@ def _validar_productos(session: Session, valor: Any) -> list[dict[str, str]]:
 
 
 def productos(fila: VideoKb) -> list[dict[str, str]]:
-    return [p for p in _json_lista(fila.productos_json) if isinstance(p, dict)]
+    return [p for p in catalogo._json_lista(fila.productos_json) if isinstance(p, dict)]
 
 
 def como_dict(fila: VideoKb) -> dict[str, Any]:
-    datos = _json_dict(fila.datos_json)
+    datos = catalogo._json_dict(fila.datos_json)
     return {
         "id": fila.id, "plataforma": fila.plataforma, "video_id": fila.video_id, "url": fila.url,
         "titulo": fila.titulo, "descripcion": fila.descripcion, "idioma": fila.idioma,
@@ -738,7 +734,7 @@ def como_dict(fila: VideoKb) -> dict[str, Any]:
         "productos": productos(fila), "manual": sorted(_manuales(fila)),
         "miniatura": fila.miniatura, "miniatura_calidad": fila.miniatura_calidad,
         "duracion": fila.duracion, "corto": bool(fila.corto), "canal": fila.canal,
-        "origen": fila.origen, "webs": [str(w) for w in _json_lista(fila.webs_json)],
+        "origen": fila.origen, "webs": [str(w) for w in catalogo._json_lista(fila.webs_json)],
         "visible": bool(fila.visible),
         "publicado_en": fila.publicado_en.isoformat() if fila.publicado_en else None,
         "ido_en": fila.ido_en.isoformat() if fila.ido_en else None,

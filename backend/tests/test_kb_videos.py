@@ -118,8 +118,9 @@ def _detalles() -> dict[str, dict[str, Any]]:
 
 
 def _youtube(*, quitar: set[str] = frozenset(), peticiones: list[httpx.Request] | None = None,
-             caida: bool = False) -> httpx.Client:
-    detalles = _detalles()
+             caida: bool = False, extra: dict[str, dict[str, Any]] | None = None,
+             ) -> httpx.Client:
+    detalles = {**_detalles(), **(extra or {})}
     subidas = {"UU" + CANAL_ARTISJET[2:]: [vid for vid, *_ in FREEBIRD]
                + ["zN3a88uSbsA", "h9oLaSQVItk"],
                "UU" + CANAL_MQ[2:]: ["gcFdoImbmGQ", "UwTpV_hCLyI"]}
@@ -158,7 +159,7 @@ def _youtube(*, quitar: set[str] = frozenset(), peticiones: list[httpx.Request] 
     return httpx.Client(transport=httpx.MockTransport(handler), headers={"X-Goog-Api-Key": CLAVE})
 
 
-def _webs(enlaces: dict[str, list[str]] | None = None) -> httpx.Client:
+def _webs(enlaces: dict[str, list[str]] | None = None, *, caida: bool = False) -> httpx.Client:
     """Las páginas de las webs (para los vídeos enlazados) e img.youtube.com."""
     enlaces = enlaces or {}
 
@@ -166,6 +167,8 @@ def _webs(enlaces: dict[str, list[str]] | None = None) -> httpx.Client:
         if request.url.host == "img.youtube.com":
             vid = request.url.path.split("/")[2]
             return httpx.Response(404 if vid in SIN_HD else 200)
+        if "/wp/v2/" in request.url.path and caida:
+            return httpx.Response(503, text="mantenimiento")
         if "/wp/v2/" in request.url.path:
             vids = enlaces.get(request.url.host, []) if request.url.path.endswith("/pages") else []
             contenido = "".join(f'<iframe src="https://www.youtube.com/embed/{v}?rel=0">'
@@ -432,6 +435,37 @@ def test_productos_por_el_titulo_dentro_de_la_marca(session_factory: sessionmake
         assert nombres("Be Proud of the Next Card You Print", "artisjet") == ["artisJet Proud"]
         assert nombres("Be Proud of the Next Card You Print", "flux") == []
         assert sorted(nombres("ARTIS YOUNG PROUD", None)) == ["artisJet Proud", "artisJet Young"]
+        # Sin marca, un número solo no es ninguna máquina.
+        assert nombres("Novedades FESPA 2025 – stand 3000", None) == []
+        assert nombres("Novedades FESPA 2025 – stand 3000", "artisjet") == ["artisJet 3000Pro"]
         assert videos.marca_en_titulo("IMPRESORAS UV LED ARTISJET A3000 PRO", ["artisjet",
                                                                               "flux"]) == (
             "artisjet")
+
+
+def test_lo_enlazado_en_las_webs_se_va_cuando_ya_no_esta_y_la_marca_del_canal_se_queda(
+    session_factory: sessionmaker,
+) -> None:
+    # Un vídeo de otro canal enlazado en boprint.net.
+    taller = {"Wb0nly00001": _item("Wb0nly00001", canal="UCotroCanal000000000000a",
+                                   titulo="Taller de personalización", duracion="PT2M",
+                                   metadatos="es")}
+    with session_factory() as s:
+        _sincronizar(s, yt=_youtube(extra=taller), webs=_webs({"boprint.net": ["Wb0nly00001"]}))
+        s.commit()
+        assert _por_id(s)["Wb0nly00001"].origen == "web"
+        # La marca de FREEBIRD sale del canal (el título no la dice).
+        assert _por_id(s)["keIJei91HnU"].marca == "artisjet"
+        # Volver a lo automático en OTRO vídeo no se la quita (la del canal va en la fila).
+        videos.actualizar(s, _por_id(s)["UwTpV_hCLyI"].id, {"automatico": ["idioma"]})
+        s.commit()
+        assert _por_id(s)["keIJei91HnU"].marca == "artisjet"
+        # Al día siguiente una web no responde: no se sabe si sigue enlazado, se queda.
+        pasada = _sincronizar(s, ahora=LUEGO, yt=_youtube(extra=taller), webs=_webs(caida=True))
+        s.commit()
+        assert pasada.estado == "parcial" and _por_id(s)["Wb0nly00001"].ido_en is None
+        # Con todas las webs leídas y sin el enlace, se va (ido, no borrado).
+        pasada = _sincronizar(s, ahora=LUEGO, yt=_youtube(extra=taller), webs=_webs())
+        s.commit()
+        assert pasada.idos == 1 and _por_id(s)["Wb0nly00001"].ido_en is not None
+        assert _por_id(s)["keIJei91HnU"].marca == "artisjet"

@@ -174,10 +174,21 @@ def test_los_cinco_filtros_y_los_tamanos_con_sus_proporciones() -> None:
     }
     assert imagenes.motivo_descarte({"id": 1, "media_details": {}}, set()) == (
         imagenes.DESCARTE_SIN_MEDIDAS)
-    # Títulos de verdad que SÍ valen: un número de modelo no es un código de artículo.
+    # Títulos de verdad que SÍ valen: un número de modelo no es un código de artículo
+    # (con cinco letras o más es un nombre) y el ruido va por palabras enteras.
     for titulo in ("10. artis 3000U pro flatbed", "artisJet YOUNG front view", "mbo600",
-                   "lab510sII-solIII-etikettiermaschine", "6090", "MBO 2530 A4 BLACK"):
+                   "lab510sII-solIII-etikettiermaschine", "6090", "MBO 2530 A4 BLACK",
+                   "artis-2100-open", "7.-artis-3000U-pro-vacuum-table",
+                   "flex-ultra-1600×1184-1.png", "Silicone phone case UV print",
+                   "Catálogo 2025 portada", "confirmación de pedido"):
         assert imagenes.motivo_descarte(_medio(1, titulo), set()) is None, titulo
+    for titulo in ("AB-1234", "cbl-12012_02", "SPU-ISTY-006-2_04"):
+        assert imagenes.motivo_descarte(_medio(1, titulo), set()) == imagenes.DESCARTE_CODIGO
+    for titulo in ("logo-mbo-white", "Captura de pantalla 2026", "favicon_32", "QR code"):
+        assert imagenes.motivo_descarte(_medio(1, titulo), set()) == imagenes.DESCARTE_TITULO
+    # Las letras de una marca del catálogo no hacen código: «MBO-3050» es un modelo.
+    assert imagenes.motivo_descarte(_medio(1, "MBO-3050 front"), set()) == imagenes.DESCARTE_CODIGO
+    assert imagenes.motivo_descarte(_medio(1, "MBO-3050 front"), set(), {"mbo"}) is None
     # Los tamaños: solo los de las mismas proporciones (fuera el cuadrado y el
     # «featured» recortado), de menor a mayor y con la original.
     tamanos = imagenes.tamanos_de(_medio(1, "custom coasters"))

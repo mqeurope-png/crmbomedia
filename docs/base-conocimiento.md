@@ -241,13 +241,18 @@ de WordPress (`/wp-json/wp/v2/media?media_type=image`), paginada por
 `X-WP-TotalPages` (WordPress devuelve páginas cortas a mitad de la lista: una
 página de menos de 100 **no** es la última). Solo entra lo que vale para un
 hero o una galería de muestras; medido el 12/10/2026 sobre las ocho webs, de
-4.697 imágenes pasan **331**:
+4.697 imágenes pasan **346**:
 
 1. ancho ≥ 1200 px;
 2. apaisada, ancho / alto entre 1,3 y 3,2;
 3. el título no es de un logo, icono, favicon, recorte (`cropped`), captura,
-   firma, sello o QR, ni un código de artículo («AB-1234», «MCO-21005_2»,
-   «B100617»); un número de modelo («artis 3000U pro», «6090») sí vale;
+   firma, sello o QR (como palabra entera: «silicone», «catálogo» o «confirma»
+   no cuentan), ni un código de artículo: de dos a cuatro letras, guion y
+   cifras («AB-1234», «MCO-21005_2», «PSTY-007») o una letra y cinco o seis
+   cifras («B100617»). Un número de modelo sí vale: suelto («artis 3000U pro»,
+   «6090»), con cinco letras o más delante («artis-2100-open»,
+   «flex-ultra-1600», que el filtro de antes tiraba: unas quince fotos de
+   máquinas) o con las letras de una marca del catálogo («MBO-3050»);
 4. no está adjunta a un producto de la tienda (su imagen ya está en el
    catálogo): los productos se leen de la web (`/wp-json/wp/v2/product`) y de
    las tiendas del catálogo;
@@ -288,20 +293,27 @@ en las páginas y entradas de las webs que no son de esos canales y los
   tampoco, ninguna.
 - **La marca y las máquinas**, por el título: el nombre de la máquina del
   catálogo o su número de modelo dentro de la marca del vídeo («artis 3000U
-  Pro» es la «artisJet 3000Pro»), y la marca del canal si el título no la dice.
+  Pro» es la «artisJet 3000Pro»; sin marca, un número solo no es ninguna
+  máquina), y la marca del canal si el título no la dice. La marca del canal
+  se guarda con cada vídeo: volver a lo automático uno no se la quita a los
+  demás.
 - **La miniatura**: `maxresdefault` (1280×720) si existe, comprobada en
   img.youtube.com; si no, `mqdefault` (320×180), y se guarda cuál se usó: la
   segura se vuelve a probar en cada pasada por si el vídeo se resube en HD.
 - **Los «shorts»** (#shorts) se guardan pero no se le ofrecen a la IA.
 - Lo corregido a mano (idioma, tema, marca, máquinas) queda fijado
   (`manual_json`) y la sincronización no lo pisa; «↺ automático» lo devuelve.
-  Lo que desaparece del canal o de las webs queda `ido_en`.
+  Lo que desaparece del canal (si se leyó) o ya no está enlazado en ninguna web
+  (si se leyeron todas; con una caída se queda) queda `ido_en`.
 
 ### Sincronización y API
 
 - **Diaria**, detrás del catálogo en el mismo job (`kb:catalogo_sync`,
-  worker-sync), si `conocimiento.medios_sync_activa` (encendido: solo lectura).
-  Las pasadas van al histórico del catálogo con fuente `imagenes` o `videos`.
+  worker-sync), con su propio interruptor `conocimiento.medios_sync_activa`
+  (encendido: solo lectura): apagar el del catálogo no la apaga, y cada grupo
+  mira sus propias pasadas para no repetir en 12 h. Una pasada que falla (el
+  compositor caído, por ejemplo) no corta las demás. Las pasadas van al
+  histórico del catálogo con fuente `imagenes` o `videos`.
 - **A mano**: «Sincronizar imágenes» / «Sincronizar vídeos» en la pantalla (en
   la petición, medio minuto cada una).
 - API (`/api/erp/conocimiento`, capacidad `erp.config`): el `GET` trae

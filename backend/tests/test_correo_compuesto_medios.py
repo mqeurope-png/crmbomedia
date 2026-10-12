@@ -31,7 +31,13 @@ from app.core.config import get_settings
 from app.db.base import Base
 from app.db.session import get_session
 from app.main import app
-from app.models.conocimiento import ImagenWeb, VideoKb
+from app.models.conocimiento import (
+    FUENTE_COMPOSITOR,
+    TIPO_MAQUINA,
+    ImagenWeb,
+    ProductoCatalogo,
+    VideoKb,
+)
 from app.models.crm import User, UserEmailAliasPref, UserRole
 from app.models.ia import BorradorAsistente
 from app.services import llm
@@ -334,3 +340,60 @@ def test_los_videos_de_la_tabla_van_con_las_maquinas_en_el_idioma_del_cliente(
                                        consumibles=[], enlaces=[], videos=[], marcas={})
         redactor.anadir_medios(s, refs_it, instruccion=None, idioma="it")
         assert [v["id"] for v in refs_it.videos.values()] == ["aaaaaaaaaa3"]
+
+
+def test_los_pies_siguen_a_su_imagen_y_el_hero_reemplazado_conserva_la_suya() -> None:
+    refs = ia.Referencias.desde(maquinas=[], consumibles=[], enlaces=[], videos=[], marcas={},
+                                imagenes=[{"id": IMG["camisetas"], "titulo": "custom t-shirts"}])
+    base = bq.normalizar({"idioma": "es", "bloques": [
+        {"id": "h1", "tipo": "hero", "imagen": {"id": IMG["taller"]}, "titulo": "DTF"},
+        {"id": "m1", "tipo": "muestras", "pies": ["Sudaderas", "Gorras", "Bodas"],
+         "imagenes": [{"id": IMG["sudaderas"]}, {"id": IMG["gorras"]}, {"id": IMG["bodas"]}]}]})
+    # Un pie vacío se queda vacío: los demás no se corren a la imagen de al lado.
+    pies = ["", "Gorras bordadas", "Regalos de boda"]
+    res = ia.aplicar_operaciones(base, [{"op": "editar", "id": "m1", "campo": "pies",
+                                         "valor": pies}], refs)
+    assert res.estructura["bloques"][1]["pies"] == ["", "Gorras bordadas", "Regalos de boda"]
+    # Cambiar las imágenes: la que se queda conserva su pie y la nueva entra sin él.
+    res = ia.aplicar_operaciones(base, [{"op": "editar", "id": "m1", "campo": "imagenes", "valor": [
+        f"?{IMG['bodas']}", "I1", f"?{IMG['sudaderas']}"]}], refs)
+    assert res.estructura["bloques"][1]["pies"] == ["Bodas", "", "Sudaderas"]
+    # Reemplazar el hero con la imagen que ya tenía (la IA la ve como «?id» porque no
+    # está entre las de este turno): vale, y cambia lo que se pidió.
+    res = ia.aplicar_operaciones(base, [{"op": "reemplazar", "id": "h1", "bloque": {
+        "tipo": "hero", "imagen": f"?{IMG['taller']}", "disposicion": "fondo",
+        "titulo": "DTF"}}], refs)
+    assert res.estructura["bloques"][0]["imagen"] == {"id": IMG["taller"]}
+    assert res.estructura["bloques"][0]["disposicion"] == "fondo" and not res.avisos
+    # Una que no está ni en el correo ni en la lista, no.
+    ajena = "9f9f9f9f-0000-4000-8000-000000000099"
+    res = ia.aplicar_operaciones(base, [{"op": "reemplazar", "id": "h1", "bloque": {
+        "tipo": "hero", "imagen": f"?{ajena}", "titulo": "DTF"}}], refs)
+    assert res.estructura["bloques"][0]["imagen"] == {"id": IMG["taller"]}
+    assert any("no está entre las IMÁGENES" in a for a in res.avisos)
+
+
+def test_las_imagenes_de_una_maquina_salen_de_su_nombre_sin_las_palabras_de_la_marca(
+    session_factory: sessionmaker,
+) -> None:
+    with session_factory() as s:
+        for origen_id, nombre in (("mbo-dtf-a3", "MBO DTF A3"),
+                                  ("mbo-dtf-prensa", "MBO DTF Hoodie Press")):
+            s.add(ProductoCatalogo(fuente=FUENTE_COMPOSITOR, tipo=TIPO_MAQUINA, marca="MBO DTF",
+                                   origen_id=origen_id, nombre=nombre, idioma="es", sitio="",
+                                   visible=True, visto_en=AHORA))
+        s.commit()
+        marcas = {"mbo_dtf": {"nombre": "MBO DTF"}}
+
+        def ofrecidas(origen_id: str) -> set[str]:
+            refs = ia.Referencias.desde(
+                maquinas=[{"fuente": "compositor", "origen_id": origen_id}], consumibles=[],
+                enlaces=[], videos=[], marcas=marcas)
+            redactor.anadir_medios(s, refs, instruccion=None, idioma="es")
+            return {i["titulo"] for i in refs.imagenes.values()}
+
+        # «MBO DTF A3»: las palabras de la marca (también las de su clave «mbo_dtf») no
+        # cuentan, así que no se le ofrecen todas las fotos de DTF.
+        assert ofrecidas("mbo-dtf-a3") == set()
+        # «Hoodie Press»: la de las sudaderas.
+        assert ofrecidas("mbo-dtf-prensa") == {"dtf hoodies"}
