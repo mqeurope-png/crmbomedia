@@ -235,6 +235,10 @@ class MarcaCatalogo(TimestampMixin, Base):
     urls_json: Mapped[str | None] = mapped_column(Text)
     #: El idioma cuyo precio se usa cuando el pedido no lo tiene (editable).
     idioma_defecto: Mapped[str] = mapped_column(String(5), nullable=False, default="es")
+    #: Los datos de diseño del compositor para la tira de marca de un correo
+    #: (JSON): etiqueta, texto del enlace por idioma, alto y ancho máximo del
+    #: logo, fondo del logo y color de la divisoria (0143).
+    datos_json: Mapped[str | None] = mapped_column(Text)
     visto_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     ido_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 

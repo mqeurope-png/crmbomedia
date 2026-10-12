@@ -106,6 +106,10 @@ from app.api.asistente import router_conversacion as asistente_conversacion_rout
 app.include_router(asistente_router, dependencies=_CRM_SCOPE)
 # La conversación (correcciones) y el correo nuevo sin hilo (tampoco envía).
 app.include_router(asistente_conversacion_router, dependencies=_CRM_SCOPE)
+# Correos compuestos: el HTML de una estructura de bloques (tampoco envía).
+from app.api.correo_compuesto import router as correo_compuesto_router  # noqa: E402
+
+app.include_router(correo_compuesto_router, dependencies=_CRM_SCOPE)
 app.include_router(emails_mailbox_router, dependencies=_CRM_SCOPE)
 app.include_router(emails_scheduled_router, dependencies=_CRM_SCOPE)
 app.include_router(email_drafts_router, dependencies=_CRM_SCOPE)

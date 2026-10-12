@@ -504,6 +504,7 @@ def marca_como_dict(m: MarcaCatalogo) -> dict[str, Any]:
     return {
         "nombre": m.nombre, "logo": m.logo, "color": m.color, "urls": _json_dict(m.urls_json),
         "idioma_defecto": m.idioma_defecto, "ida": m.ido_en is not None,
+        "diseno": _json_dict(m.datos_json),
     }
 
 
@@ -826,6 +827,10 @@ def producto_para_correo(
     # Sin importe en ningún idioma y el origen dice «Consultar» en alguno: no
     # tiene precio público (el correo dice que se prepara a medida).
     sin_publico = con_precio is None and any(v.precio_publico is False for v in variantes)
+    # Lo que el compositor guarda para pintar la ficha (insignia, alto máximo,
+    # colores): de la fila del idioma, y si no, de la de respaldo.
+    diseno = {**_json_dict(respaldo.datos_json), **{
+        k: v for k, v in _json_dict(base.datos_json).items() if v}}
     return {
         "origen_id": base.origen_id, "fuente": base.fuente, "tipo": base.tipo,
         "nombre": base.nombre, "marca": base.marca,
@@ -844,6 +849,9 @@ def producto_para_correo(
         "actualizado_origen": actualizado.isoformat() if actualizado else None,
         "enlace": enlace, "idioma_enlace": idioma_enlace, "idioma": idioma,
         "sitio": base.sitio or None, "iva": iva, "interes": interes,
+        "badge": diseno.get("badge") or None, "alto_max": diseno.get("alt") or None,
+        "acento": diseno.get("acento") or None, "badge_fondo": diseno.get("badge_fondo") or None,
+        "badge_color": diseno.get("badge_color") or None,
     }
 
 
@@ -1186,6 +1194,47 @@ def maquinas_por_origen(
             idioma_marca=idiomas_marca.get(_clave(variantes[0].marca), IDIOMA_RAIZ),
             ahora=ahora, meses=meses, iva=iva, interes=interes,
         ))
+    return salida
+
+
+def productos_por_clave(
+    session: Session, refs: Iterable[dict[str, str]], *, idioma: str, ahora: datetime | None,
+    config: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """Productos concretos de cualquier fuente por su clave (`{"fuente",
+    "origen_id"}`), leídos de la fila viva del catálogo y en el idioma pedido,
+    como los ve un correo compuesto: `"{fuente}|{origen_id}"` → el producto de
+    `producto_para_correo`. Solo los vigentes, visibles y no descartados; lo que
+    ya no esté no sale."""
+    por_fuente: dict[str, list[str]] = {}
+    for r in refs:
+        fuente, origen_id = str(r.get("fuente") or ""), str(r.get("origen_id") or "")
+        if fuente and origen_id and origen_id not in por_fuente.setdefault(fuente, []):
+            por_fuente[fuente].append(origen_id)
+    if not por_fuente:
+        return {}
+    ahora = ahora or datetime.now(UTC)
+    meses = int(config.get("precio_meses_orientativo") or 6)
+    iva_por_fuente = config.get("iva_por_fuente") or {}
+    idiomas_marca = {_clave(m.nombre): (m.idioma_defecto or IDIOMA_RAIZ) for m in marcas(session)}
+    salida: dict[str, dict[str, Any]] = {}
+    for fuente, ids in por_fuente.items():
+        try:
+            filas = list(session.scalars(select(ProductoCatalogo).where(
+                ProductoCatalogo.fuente == fuente, ProductoCatalogo.origen_id.in_(ids),
+                ProductoCatalogo.ido_en.is_(None), ProductoCatalogo.visible.is_(True),
+                ProductoCatalogo.descartado.is_(False),
+            ).order_by(ProductoCatalogo.origen_id, ProductoCatalogo.idioma)))
+        except (OperationalError, ProgrammingError):
+            continue
+        grupos: dict[str, list[ProductoCatalogo]] = {}
+        for f in filas:
+            grupos.setdefault(f.origen_id, []).append(f)
+        for origen_id, variantes in grupos.items():
+            salida[f"{fuente}|{origen_id}"] = producto_para_correo(
+                variantes, idioma=idioma,
+                idioma_marca=idiomas_marca.get(_clave(variantes[0].marca), IDIOMA_RAIZ),
+                ahora=ahora, meses=meses, iva=iva_por_fuente.get(fuente))
     return salida
 
 
