@@ -485,20 +485,26 @@ la respuesta en texto sigue siendo la de siempre y la opción por defecto.
   productos de la misma marca van en «productos_fila»; «producto» es solo para
   cuando de esa marca va exactamente uno. Lo dice el prompt y, si aun así llegan
   fichas sueltas seguidas de la misma marca, el código las junta en filas
-  (`bloques.juntar_fichas_sueltas`, con aviso). Las filas se reparten parejas:
-  cuatro son dos y dos, cinco tres y dos (`bloques.filas_parejas`), nunca una
-  suelta al final. La **ficha sola** va centrada (en el móvil, a todo el ancho).
+  (`bloques.juntar_fichas_sueltas`, con aviso; la misma ficha dos veces seguidas
+  se queda en una). Las filas se reparten parejas: cuatro son dos y dos, cinco
+  tres y dos (`bloques.filas_parejas`), nunca una suelta al final; también
+  cuando una corrección amplía una fila. La **ficha sola** va centrada (en el
+  móvil, a todo el ancho).
 - **El aviso de IVA, VIES y «no es una factura» va solo en el pie** (12/10/2026:
-  salía también en el texto de cierre). El prompt lo dice y, si la IA copia esas
-  frases en un texto, se quitan de ahí (`bloques.quitar_frases`, con aviso).
+  salía también en el texto de cierre). El prompt lo dice y, si la IA copia en
+  un texto alguna de las frases que el pie imprime de verdad, se quita de ahí
+  (`bloques.quitar_frases`, con aviso; un párrafo que solo trae esas frases se
+  va entero aunque lleven negritas). Sin ningún precio en el correo, o con un
+  pie puesto a mano, el pie no lleva los avisos y el texto no se toca.
 - **Un modelo que el cliente llama de otra forma** (12/10/2026: marcó «Artisjet
   3000U PRO» en el formulario; el catálogo lo llama «artisJet 3000Pro
   Freebird»; el correo enseñaba la ficha y además decía «Den artisJet 3000U PRO
   prüfe ich noch»): el prompt le dice a la IA que es el mismo, con el nombre del
   catálogo, y que no lo dé por pendiente si ya enseña su ficha. Si el texto
   nombra un código de modelo con el número de una ficha del correo pero escrito
-  distinto, se avisa a la persona (`ia.modelos_con_otro_nombre`); el texto no se
-  toca. La solución de fondo son los alias por producto en el compositor.
+  distinto (y no es el de ninguna otra ficha ni una medida como «1200mm»), se
+  avisa a la persona (`ia.modelos_con_otro_nombre`); el texto no se toca. La
+  solución de fondo son los alias por producto en el compositor.
 - Estos arreglos solo tocan lo que ha puesto o cambiado el turno
   (`bloques.bloques_tocados`): lo que la persona dejó así en la vista previa se
   respeta en las correcciones.

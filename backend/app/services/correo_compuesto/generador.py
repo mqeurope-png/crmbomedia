@@ -121,6 +121,8 @@ class Correo:
     avisos: list[str] = field(default_factory=list)
     #: Los precios que salen en el correo, tal cual.
     precios: list[str] = field(default_factory=list)
+    #: El pie que lleva el correo: el de la persona o los avisos del catálogo.
+    pie: str = ""
 
 
 def clave_marca(nombre: Any) -> str:
@@ -835,7 +837,7 @@ def generar(estructura: dict[str, Any], datos: Datos, *, asunto: str | None = No
         atributos=' bgcolor="#ffffff"', estilo="width:100%;background-color:#ffffff;")
     texto = "\n\n".join(t.strip() for t in textos if t.strip())
     return Correo(html=documento(cuerpo, idioma=e["idioma"], asunto=asunto), texto=texto,
-                  avisos=r.avisos, precios=r.precios)
+                  avisos=r.avisos, precios=r.precios, pie=pie or "")
 
 
 #: La marca del documento: al enviar, el saneado reconoce por ella un correo

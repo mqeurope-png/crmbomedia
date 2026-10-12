@@ -991,6 +991,10 @@ def _rellenar_compuesto(
         res = ia_compuesto.estructura_desde_ia(data.get("bloques"), refs, idioma=idioma_correo)
     estructura = res.estructura
     avisos.extend(res.avisos)
+    # Lo que ha puesto o cambiado este turno, antes de los arreglos automáticos:
+    # los de después solo tocan eso (lo que la persona dejó así en la vista
+    # previa se respeta).
+    tocados = bq.bloques_tocados(estructura, base)
     # En una respuesta (o en un correo a alguien con quien ya hay conversación)
     # el correo empieza por el saludo y la entrada; el hero de apertura es de un
     # correo frío. Si la estructura que se corrige ya empezaba por otra cosa, es
@@ -1004,27 +1008,6 @@ def _rellenar_compuesto(
     if repetidos:
         avisos.append(f"Un mismo enlace iba en dos botones: se queda el primero y se quita "
                       f"{', '.join(f'«{t}»' for t in repetidos)}.")
-    # Lo que se arregla solo, en lo que ha puesto o cambiado este turno (lo que la
-    # persona dejó así en la vista previa se respeta).
-    tocados = bq.bloques_tocados(estructura, base)
-    # El aviso de IVA, VIES y «no es una factura» lo pone el pie (12/10/2026:
-    # salía también en el texto de cierre).
-    if bq.quitar_frases(estructura, catalogo_kb.avisos_en(estructura["idioma"]).values(),
-                        tocados=tocados):
-        avisos.append("El aviso de IVA, VIES y «no es una factura» va en el pie del correo: "
-                      "se ha quitado del texto, donde salía repetido.")
-    datos = datos_compuesto.resolver(session, estructura) if estructura["bloques"] else None
-    if datos is not None:
-        # Dos o tres fichas de la misma marca, en fila (12/10/2026: «añade más
-        # modelos» dio tres fichas sueltas, cada una a 320 px).
-        def _marca(producto: dict[str, str]) -> str | None:
-            fila = datos.productos.get(bq.clave_de(producto)) or {}
-            return str(fila.get("marca") or "").strip().lower() or None
-
-        juntadas = bq.juntar_fichas_sueltas(estructura, _marca, tocados=tocados)
-        if juntadas:
-            avisos.append(f"Iban {juntadas} fichas sueltas seguidas de la misma marca: van en "
-                          "fila.")
     html_descartado += res.html_descartado
     if res.html_descartado:
         avisos.append(f"La IA metió HTML en {res.html_descartado} texto(s) del correo y se ha "
@@ -1039,8 +1022,32 @@ def _rellenar_compuesto(
         avisos.append(f"La IA no ha redactado un correo ({veredicto.motivo}). "
                       f"Lo que dijo: «{libre}»")
     asunto = (str(data.get("asunto") or "").strip() or b.asunto or "")[:500] or None
-    if estructura["bloques"] and datos is not None:
+    if estructura["bloques"]:
+        datos = datos_compuesto.resolver(session, estructura)
+
+        def _marca(producto: dict[str, str]) -> str | None:
+            fila = datos.productos.get(bq.clave_de(producto)) or {}
+            return str(fila.get("marca") or "").strip().lower() or None
+
+        # Dos o tres fichas de la misma marca, en fila (12/10/2026: «añade más
+        # modelos» dio tres fichas sueltas, cada una a 320 px).
+        juntadas, repetidas = bq.juntar_fichas_sueltas(estructura, _marca, tocados=tocados)
+        if juntadas:
+            avisos.append(f"Iban {juntadas} fichas sueltas seguidas de la misma marca: van en "
+                          "fila.")
+        if repetidas:
+            avisos.append("La misma ficha iba dos veces seguidas: se queda una.")
         correo = generador_correo.generar(estructura, datos, asunto=asunto)
+        # El aviso de IVA, VIES y «no es una factura» lo imprime el pie; lo que de
+        # él la IA haya copiado también en un texto, se quita de ahí (12/10/2026:
+        # salía dos veces). Solo lo que el pie lleva de verdad.
+        en_pie = [f for f in catalogo_kb.avisos_en(estructura["idioma"]).values()
+                  if f and f in correo.pie]
+        if en_pie and bq.quitar_frases(estructura, en_pie, tocados=tocados):
+            avisos.append("El aviso de IVA, VIES y «no es una factura» va en el pie del "
+                          "correo: se ha quitado del texto, donde salía repetido.")
+            correo = generador_correo.generar(estructura, datos, asunto=asunto)
+            libre = ia_compuesto.texto_libre(estructura)
         ajenos = ia_compuesto.importes_ajenos(libre, correo.precios)
         if ajenos:
             avisos.append(f"Un texto del correo menciona {', '.join(f'«{a}»' for a in ajenos)}, "

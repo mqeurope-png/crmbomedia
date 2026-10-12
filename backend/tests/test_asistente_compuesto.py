@@ -424,6 +424,30 @@ def test_varias_fichas_de_una_marca_van_en_fila_y_una_sola_va_centrada(
     nuevos = r2.json()["borrador"]["estructura"]["bloques"]
     assert [x["tipo"] for x in nuevos] == ["texto", "producto", "producto", "texto"]
     assert "fichas sueltas" not in (r2.json()["borrador"]["aviso"] or "")
+    # «Añade más modelos» ampliando la fila a cuatro: dos filas de dos, sin perder ninguno.
+    with session_factory() as s:
+        s.add(ProductoCatalogo(
+            fuente=FUENTE_COMPOSITOR, tipo=TIPO_MAQUINA, marca="mbo_dtf", origen_id="vega-60",
+            nombre="Vega 60", descripcion="Vega 60: impresora DTF.", categoria="60 cm",
+            imagen="https://cdn.example/vega.jpg", precio_texto="21.500 €", precio_publico=True,
+            moneda="EUR", enlace="https://mboprinters.com/es/dtf/vega-60/", idioma="es",
+            sitio="mboprinters", actualizado_origen=AHORA, visto_en=AHORA))
+        s.commit()
+    fila_id = b["estructura"]["bloques"][1]["id"]
+    ampliar = _FalsoQueMira(lambda refs: {
+        "modo": "compuesto", "asunto": "Re: Equipos DTF", "aviso": "", "pendiente": [],
+        "operaciones": [{"op": "editar", "id": fila_id, "campo": "productos",
+                         "valor": [refs[n] for n in ("Orion 20", "Lyra 35", "Astra 35 Pro",
+                                                     "Vega 60")]}]})
+    with patch.object(llm, "_invoke_claude", ampliar):
+        r3 = _pedir(http, thread_id, instruccion="añade más modelos", formato="compuesto",
+                    estructura_actual=b["estructura"])
+    assert r3.status_code == 201, r3.text
+    filas = [x for x in r3.json()["borrador"]["estructura"]["bloques"]
+             if x["tipo"] == "productos_fila"]
+    assert [len(x["productos"]) for x in filas] == [2, 2]
+    assert {p["origen_id"] for x in filas for p in x["productos"]} == {
+        "orion-20", "lyra-35", "astra-35", "vega-60"}
 
 
 def test_el_aviso_de_iva_y_vies_sale_solo_en_el_pie(
@@ -455,6 +479,20 @@ def test_el_aviso_de_iva_y_vies_sale_solo_en_el_pie(
     assert "se ha quitado del texto" in b["aviso"]
     # Las reglas lo dicen también: el pie las pone, el texto no.
     assert "las pone el pie del correo: no las escribas" in redactor.PROMPT_SISTEMA
+    # Sin ningún precio en el correo el pie no lleva los avisos: el texto se queda como está.
+    sin_precio = {**COMPUESTO_DTF, "bloques": [
+        {"tipo": "texto", "texto": "Hola Marny,\n\nesta va a medida:"},
+        {"tipo": "producto", "producto": "P3"},
+        {"tipo": "texto", "texto": f"{avisos['vies']}\n\nUn saludo,\nAdmin"},
+    ]}
+    falso = _FalsoQueMira(lambda refs: {**sin_precio, "bloques": [
+        sin_precio["bloques"][0], {"tipo": "producto", "producto": refs["Astra 35 Pro"]},
+        sin_precio["bloques"][2]]})
+    with patch.object(llm, "_invoke_claude", falso):
+        b2 = _pedir(http, thread_id, instruccion="solo la que va a medida",
+                    formato="compuesto").json()["borrador"]
+    assert b2["html"].count(avisos["vies"]) == 1
+    assert "se ha quitado del texto" not in (b2["aviso"] or "")
 
 
 def test_un_modelo_que_el_cliente_llama_de_otra_forma_no_sale_como_otro_sin_avisar(
