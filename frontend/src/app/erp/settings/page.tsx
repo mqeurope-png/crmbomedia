@@ -138,7 +138,7 @@ const REF_PREFIX_RE = /^[A-Z0-9]{1,6}$/;
  *  pantalla. */
 type SectionId =
   | "facturacion" | "tiendas" | "remitentes" | "plantillas" | "plantillas_presupuesto"
-  | "aviso_envio" | "series"
+  | "ofertas" | "aviso_envio" | "series"
   | "abreviaturas" | "sat" | "empresas" | "almacenes" | "contrapartidas"
   | "origenes" | "drive" | "woo_pagados" | "cuadre" | "respuesta_leads" | "conocimiento"
   | "asistente";
@@ -154,6 +154,7 @@ const SECTIONS: ReadonlyArray<{ id: SectionId; title: string; keys: (keyof ErpSe
     keys: ["factusol_invoice_email_templates"] },
   { id: "plantillas_presupuesto", title: "Plantillas del email de presupuesto",
     keys: ["factusol_quote_email_templates"] },
+  { id: "ofertas", title: "Ofertas", keys: ["ofertas"] },
   { id: "aviso_envio", title: "Aviso de envío al cliente",
     keys: ["shipment_email_templates", "shipment_email_from"] },
   { id: "series", title: "Series FACTUSOL",
@@ -677,6 +678,20 @@ export default function ErpSettingsPage() {
               />
             );
           })}
+        </SettingsSection>
+
+        {/* Ofertas: la propuesta que se manda a un contacto ANTES de que exista
+            cliente en FACTUSOL. Solo numeración y validez; las plantillas de
+            líneas se gestionan en ERP · Ofertas. */}
+        <SettingsSection
+          {...sectionProps("ofertas")}
+          lead="Las ofertas son las propuestas que se mandan a un contacto antes de que exista cliente en FACTUSOL: aquí se decide con qué prefijo se numeran y cuántos días valen si no se indica otra cosa al crearlas."
+          note="Cambiar el prefijo no renumera las ofertas ya creadas."
+        >
+          <OfertasSettings
+            value={cfg.ofertas}
+            onChange={(ofertas) => patch({ ofertas })}
+          />
         </SettingsSection>
 
         {/* ---------------------------------------------------------------- */}
@@ -2245,6 +2260,102 @@ function AsistenteSettings({
           Separados por comas. La empresa se agrupa por el registro de empresa de BoHub, nunca
           por el dominio del correo; si una «empresa» tiene uno de estos dominios, no se agrupa
           (todos los clientes de gmail.com no son una empresa).
+        </span>
+      </label>
+    </>
+  );
+}
+
+type OfertasConfig = NonNullable<ErpSettings["ofertas"]>;
+
+/** Mismos defaults que el backend (`app/erp/ofertas.py`). */
+const OFERTAS_DEFECTOS: OfertasConfig = { prefijo: "OF", validez_dias: 30 };
+const OFERTAS_VALIDEZ_MIN = 1;
+const OFERTAS_VALIDEZ_MAX = 365;
+/** Prefijo válido: letras o dígitos (y guiones por dentro), 6 como mucho. */
+const OFERTA_PREFIJO_RE = /^[A-Z0-9][A-Z0-9-]{0,5}$/;
+
+/** Ofertas — prefijo de la numeración (`OF` → `OF-2026-0001`) y validez por
+ *  defecto en días. El PATCH manda el bloque `ofertas`; el servidor lo valida
+ *  (400 con el motivo si no vale). */
+function OfertasSettings({
+  value, onChange,
+}: {
+  value: OfertasConfig | undefined;
+  onChange: (next: OfertasConfig) => void;
+}) {
+  const cfg = value ?? OFERTAS_DEFECTOS;
+  // La validez se deja escribir libre (también vacía); al salir del campo se
+  // encaja en 1–365, como el intervalo del espejo de Drive.
+  const [validezTexto, setValidezTexto] = useState(String(cfg.validez_dias));
+  const [validezBase, setValidezBase] = useState(cfg.validez_dias);
+  if (validezBase !== cfg.validez_dias) {
+    setValidezBase(cfg.validez_dias);
+    setValidezTexto(String(cfg.validez_dias));
+  }
+  const prefijo = cfg.prefijo ?? "";
+  const prefijoOk = OFERTA_PREFIJO_RE.test(prefijo);
+  const anio = new Date().getFullYear();
+  const encajar = (raw: string): number => {
+    const n = Math.round(Number(raw));
+    if (raw.trim() === "" || Number.isNaN(n)) return cfg.validez_dias;
+    return Math.min(OFERTAS_VALIDEZ_MAX, Math.max(OFERTAS_VALIDEZ_MIN, n));
+  };
+  return (
+    <>
+      <div className="erp-settings-row">
+        <span className="erp-settings-row-name">Prefijo de numeración</span>
+        <input
+          type="text" maxLength={6} className="mono erp-settings-prefix"
+          aria-label="Prefijo de numeración de las ofertas"
+          aria-invalid={!prefijoOk || undefined}
+          placeholder={OFERTAS_DEFECTOS.prefijo}
+          value={prefijo}
+          onChange={(e) => onChange({ ...cfg, prefijo: e.target.value.toUpperCase() })}
+        />
+        <span className="erp-settings-result" aria-live="polite">
+          {prefijoOk ? (
+            <>
+              Las ofertas se numeran <span className="mono">{prefijo}-{anio}-0001</span>,{" "}
+              <span className="mono">{prefijo}-{anio}-0002</span>… (la secuencia empieza de
+              nuevo cada año).
+            </>
+          ) : (
+            <span className="erp-settings-status is-error">
+              Prefijo: 1–6 letras o dígitos.
+            </span>
+          )}
+        </span>
+      </div>
+      <label className="field">
+        <span>Validez por defecto (días)</span>
+        <input
+          type="number" inputMode="numeric"
+          min={OFERTAS_VALIDEZ_MIN} max={OFERTAS_VALIDEZ_MAX}
+          aria-label="Validez por defecto de las ofertas en días"
+          value={validezTexto}
+          onChange={(e) => {
+            setValidezTexto(e.target.value);
+            const n = Math.round(Number(e.target.value));
+            if (e.target.value !== "" && !Number.isNaN(n)
+                && n >= OFERTAS_VALIDEZ_MIN && n <= OFERTAS_VALIDEZ_MAX) {
+              onChange({ ...cfg, validez_dias: n });
+            }
+          }}
+          onBlur={(e) => {
+            const n = encajar(e.target.value);
+            setValidezTexto(String(n));
+            if (n !== cfg.validez_dias) onChange({ ...cfg, validez_dias: n });
+          }}
+        />
+        <span className="erp-settings-result" aria-live="polite">
+          Una oferta creada hoy vale hasta dentro de {cfg.validez_dias}{" "}
+          {cfg.validez_dias === 1 ? "día" : "días"}; al crearla se puede cambiar.
+        </span>
+        <span className="muted small">
+          Entre {OFERTAS_VALIDEZ_MIN} y {OFERTAS_VALIDEZ_MAX}. Por defecto, {OFERTAS_DEFECTOS.validez_dias}.
+          Pasada la fecha, la oferta enviada sale como «caducada» (se puede
+          editar y reenviar: la fecha vuelve a hoy).
         </span>
       </label>
     </>

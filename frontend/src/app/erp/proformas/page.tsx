@@ -7,6 +7,7 @@ import { PageHeader } from "../../components/PageHeader";
 import { CompanyPickerModal } from "../../components/CompanyPickerModal";
 import { ConvertQuoteDialog } from "../../components/erp/ConvertQuoteDialog";
 import { CreateQuoteModal } from "../../components/erp/CreateQuoteModal";
+import { GuardarPlantillaOfertaModal } from "../../components/erp/GuardarPlantillaOfertaModal";
 import { QuoteEmailModal, emailedMark } from "../../components/erp/QuoteEmailModal";
 import { ActionsMenu } from "../../components/erp/flow/ActionsMenu";
 import { RegimePill } from "../../components/erp/flow/RegimePill";
@@ -25,6 +26,7 @@ import {
   type FactusolPdfLang,
   type FactusolQuote,
   type FactusolQuoteLine,
+  type OfertaPlantilla,
   type PaymentIntentInput,
   type QuoteEstado,
   type QuoteQueue,
@@ -296,6 +298,11 @@ export default function ProformasPage() {
   const [duplicating, setDuplicating] = useState<FactusolQuote | null>(null);
   // Punto A: proforma que se envía por email (previsualización en el modal).
   const [emailing, setEmailing] = useState<FactusolQuote | null>(null);
+  // Ofertas: «⋯ → Guardar como plantilla de oferta» copia las líneas de la
+  // proforma a una plantilla de BoHub (solo lee de FACTUSOL). Al guardar,
+  // aviso con enlace a la pestaña de plantillas.
+  const [plantillaFrom, setPlantillaFrom] = useState<FactusolQuote | null>(null);
+  const [plantillaSaved, setPlantillaSaved] = useState<OfertaPlantilla | null>(null);
   const [picking, setPicking] = useState(false);
   const [creatingFor, setCreatingFor] = useState<Company | null>(null);
   // «Ahora» para la antigüedad en palabras: el momento de la última carga (no
@@ -631,6 +638,12 @@ export default function ProformasPage() {
 
       {error ? <p className="form-error" role="alert">{error}</p> : null}
       {notice ? <p className="form-info" role="status">{notice}</p> : null}
+      {plantillaSaved ? (
+        <p className="form-info" role="status">
+          Plantilla «{plantillaSaved.nombre}» guardada.{" "}
+          <Link href="/erp/ofertas?tab=plantillas">Ver las plantillas de oferta</Link>
+        </p>
+      ) : null}
       {truncation ? (
         <p className="form-info" role="status">
           Mostrando {truncation.limit} de {truncation.total} proformas{serverText ? " que casan con la búsqueda" : " del periodo"}:
@@ -721,13 +734,19 @@ export default function ProformasPage() {
             const codpre = q.codpre ?? "";
             const company = companyOf(q);
             // «⋯» solo con lo que no está ya como botón en la fila (nada
-            // repetido): Duplicar (punto C), Editar, Convertir de todas
-            // formas, Ver empresa.
+            // repetido): Duplicar (punto C), Guardar como plantilla de
+            // oferta, Editar, Convertir de todas formas, Ver empresa.
             const menu = [
               canEdit ? (
                 <button key="duplicar" type="button" disabled={busy}
                         onClick={() => setDuplicating(q)}>
                   Duplicar
+                </button>
+              ) : null,
+              canEdit ? (
+                <button key="plantilla" type="button" disabled={busy}
+                        onClick={() => setPlantillaFrom(q)}>
+                  Guardar como plantilla de oferta
                 </button>
               ) : null,
               canEdit && company ? (
@@ -902,6 +921,22 @@ export default function ProformasPage() {
           numero={emailing.numero}
           onClose={() => setEmailing(null)}
           onSent={() => { void load(); }}
+        />
+      ) : null}
+
+      {/* Ofertas: la plantilla se crea en BoHub copiando las líneas de la
+          proforma (serie + nº). No escribe en FACTUSOL. */}
+      {plantillaFrom ? (
+        <GuardarPlantillaOfertaModal
+          serie={serieOf(plantillaFrom) || PRESUPUESTO_SERIE}
+          codpre={codpreOf(plantillaFrom)}
+          numero={plantillaFrom.numero}
+          referencia={plantillaFrom.referencia}
+          onClose={() => setPlantillaFrom(null)}
+          onSaved={(p) => {
+            setPlantillaFrom(null);
+            setPlantillaSaved(p);
+          }}
         />
       ) : null}
     </main>

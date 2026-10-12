@@ -13,6 +13,7 @@ import { ContactBrevoEngagementCard } from "../../components/contact-detail/Cont
 import { ContactNotesPreviewCard } from "../../components/contact-detail/ContactNotesPreviewCard";
 import { ContactLeadClassificationCard } from "../../components/contact-detail/ContactLeadClassificationCard";
 import { ContactLeadClassificationTab } from "../../components/contact-detail/ContactLeadClassificationTab";
+import { ContactOfertasCard } from "../../components/contact-detail/ContactOfertasCard";
 import { ContactPipelinesSummaryCard } from "../../components/contact-detail/ContactPipelinesSummaryCard";
 import { ContactSummaryTab } from "../../components/contact-detail/ContactSummaryTab";
 import { ContactSupportTab } from "../../components/contact-detail/ContactSupportTab";
@@ -452,7 +453,9 @@ export default function ContactDetailPage() {
                       Notas recientes →
                       Engagement Brevo →
                       Tags →
-                      Pipelines vinculados (real: etapa, días, plazo).
+                      Pipelines vinculados (real: etapa, días, plazo) →
+                      Ofertas (las del contacto + «Nueva oferta» con
+                        Cap.PROFORMAS).
                     «Incidencias recientes» se quitó: era un placeholder sin
                     integración detrás. */}
                 <div className="contact-summary contact-summary-extra">
@@ -478,6 +481,13 @@ export default function ContactDetailPage() {
                   <ContactPipelinesSummaryCard
                     contactId={contact.id}
                     onSeeAll={() => setActiveTab("opportunities")}
+                  />
+                  <ContactOfertasCard
+                    contactId={contact.id}
+                    contactName={
+                      [contact.first_name, contact.last_name].filter(Boolean).join(" ") || null
+                    }
+                    canCreate={can(currentUser, Cap.PROFORMAS)}
                   />
                 </div>
               </div>

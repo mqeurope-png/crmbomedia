@@ -2183,6 +2183,9 @@ export type ErpSettings = {
    *  de correo gratuitos (la empresa se agrupa por su registro, nunca por uno
    *  de estos dominios). */
   asistente?: AsistenteConfig;
+  /** Ofertas — prefijo de la numeración (`OF` → `OF-2026-0001`) y validez por
+   *  defecto en días (1–365). El PATCH acepta cualquiera de los dos. */
+  ofertas?: { prefijo: string; validez_dias: number };
   /** ERP-F6-fix3 — tiendas Woo dadas de alta, para configurar la serie de
    *  cada una (solo lectura; se rellena en el GET). */
   woocommerce_stores?: {
@@ -3341,12 +3344,19 @@ export type CrmContactHit = {
 
 /** Remates · punto 3: busca CUALQUIER contacto del CRM con email (nombre,
  *  email o empresa). Vive en el ERP: los perfiles de pedidos no tienen
- *  acceso a `/api/contacts`. */
-export async function searchCrmContacts(q: string, limit = 8): Promise<CrmContactHit[]> {
-  const r = await apiFetch<{ items: CrmContactHit[] }>(
-    `/api/erp/contacts/search${qs({ q, limit })}`,
+ *  acceso a `/api/contacts`. Con `conEmail: false` (elegir el contacto de una
+ *  oferta) también los que no tienen email o lo tienen sin validar: un lead
+ *  que llegó por teléfono puede recibir una oferta; el email solo hace falta
+ *  para enviarla. Sin email, `email` llega como cadena vacía. */
+export async function searchCrmContacts(
+  q: string, limit = 8, opts: { conEmail?: boolean } = {},
+): Promise<CrmContactHit[]> {
+  const r = await apiFetch<{ items: (Omit<CrmContactHit, "email"> & { email: string | null })[] }>(
+    `/api/erp/contacts/search${qs({
+      q, limit, ...(opts.conEmail === false ? { con_email: "false" } : {}),
+    })}`,
   );
-  return r.items;
+  return r.items.map((i) => ({ ...i, email: i.email ?? "" }));
 }
 
 export async function sendQuoteEmail(
@@ -6227,3 +6237,421 @@ export type AsistenteConfig = {
   /** Apagado por defecto: el pensamiento se factura como salida y redactar no lo necesita. */
   pensamiento_extendido: boolean;
 };
+
+// --- Ofertas · propuestas comerciales ANTES del presupuesto de FACTUSOL -------
+//
+// Viven en BoHub (`/api/erp/ofertas`): se crean para un contacto del CRM sin
+// cliente de FACTUSOL ni datos fiscales, se envían por email con el PDF y,
+// cuando el cliente dice que sí, «Convertir en presupuesto» (`convertOferta`)
+// es el ÚNICO camino que escribe en FACTUSOL. Todo lo demás es lectura o
+// escritura en BoHub.
+
+export type OfertaEstado = "borrador" | "enviada" | "caducada" | "convertida";
+
+/** Texto de cada estado tal como se enseña (pill y filtros). */
+export const OFERTA_ESTADO_LABELS: Record<OfertaEstado, string> = {
+  borrador: "Borrador",
+  enviada: "Enviada",
+  caducada: "Caducada",
+  convertida: "Convertida",
+};
+
+export type OfertaIdioma = FactusolPdfLang;
+
+/** Una línea tal como la devuelve la API (`total` lo calcula el servidor). */
+export type OfertaLinea = {
+  id?: string;
+  posicion: number;
+  codart: string | null;
+  sku: string | null;
+  descripcion: string;
+  cantidad: number;
+  precio: number;
+  descuento_pct: number;
+  iva_pct: number;
+  total?: number;
+  /** Línea solo de texto (sin artículo): vale para la oferta, pero bloquea
+   *  la conversión (`lineas_sin_articulo`). */
+  text_only: boolean;
+};
+
+/** Una línea para ENVIAR (POST / PATCH de ofertas y plantillas). */
+export type OfertaLineaIn = {
+  codart?: string | null;
+  sku?: string | null;
+  descripcion: string;
+  cantidad: number;
+  precio: number;
+  descuento_pct: number;
+  iva_pct: number;
+};
+
+/** Un envío por email de la oferta (historial). */
+export type OfertaEnvio = {
+  id: string;
+  enviado_en: string;
+  usuario_id: string | null;
+  version: number;
+  fecha_oferta: string | null;
+  total: number | null;
+  idioma: string | null;
+  para: string[];
+  cc: string[];
+  asunto: string | null;
+  from_alias: string | null;
+  adjunto: string | null;
+  message_id: string | null;
+  thread_id: string | null;
+};
+
+export type Oferta = {
+  id: string;
+  /** `OF-2026-0001` (prefijo de Configuración ERP · Ofertas). */
+  numero: string;
+  anio: number;
+  secuencia: number;
+  /** Estado EFECTIVO: una enviada ya vencida sale `caducada`. */
+  estado: OfertaEstado;
+  estado_guardado: OfertaEstado;
+  vencida: boolean;
+  contact_id: string | null;
+  contacto: { id: string; nombre: string; email: string | null; company_id: string | null } | null;
+  company_id: string | null;
+  empresa: { id: string; nombre: string; factusol_company_id: string | null } | null;
+  plantilla_id: string | null;
+  /** Empresa emisora: 1 Bomedia · 2 MQ Europe · 4 Lambert · 5 Streamtec. */
+  serie: number;
+  emisora: string;
+  idioma: OfertaIdioma;
+  con_iva: boolean;
+  /** ISO yyyy-mm-dd. */
+  fecha: string;
+  validez_dias: number;
+  valida_hasta: string;
+  referencia: string | null;
+  notas: string | null;
+  base: number;
+  iva_pct: number;
+  iva: number;
+  total: number;
+  version: number;
+  /** El presupuesto de FACTUSOL en que se convirtió (null hasta entonces). */
+  factusol: { serie: number; codpre: number; numero: string; ejercicio: string | null } | null;
+  convertida_en: string | null;
+  enviada_en: string | null;
+  caducada_en: string | null;
+  num_envios: number;
+  ultimo_envio: OfertaEnvio | null;
+  /** Se cambió después del último envío: el cliente tiene una versión vieja. */
+  pendiente_de_envio: boolean;
+  created_by_user_id: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  /** Solo en `getOferta`, `createOferta` y `updateOferta`. */
+  lineas?: OfertaLinea[];
+  envios?: OfertaEnvio[];
+};
+
+export type OfertaPlantilla = {
+  id: string;
+  nombre: string;
+  descripcion: string | null;
+  activa: boolean;
+  /** Presupuesto de FACTUSOL del que se copiaron las líneas (si fue así). */
+  origen_serie: number | null;
+  origen_codpre: number | null;
+  origen_numero: string | null;
+  num_lineas: number;
+  created_at: string | null;
+  updated_at: string | null;
+  /** Solo en `getOfertaPlantilla`, `createOfertaPlantilla` y `updateOfertaPlantilla`. */
+  lineas?: OfertaLinea[];
+};
+
+export type OfertasMeta = {
+  prefijo: string;
+  validez_dias: number;
+  series: { serie: number; nombre: string }[];
+  idiomas: string[];
+  estados: OfertaEstado[];
+};
+
+/** Contacto de la empresa de la oferta, candidato a destinatario (misma forma
+ *  que `PickContact` de `CompanyContactsPicker`). */
+export type OfertaEmailContact = {
+  id: string;
+  name: string;
+  email: string | null;
+  has_email: boolean;
+  /** Premarcado en «Para»: el contacto de la oferta o, si no, el principal con email. */
+  is_primary: boolean;
+};
+
+export type OfertaEmailPreview = {
+  oferta_id: string;
+  numero: string;
+  /** Email del contacto de la oferta, por si no hay contactos de empresa. */
+  to: string;
+  lang: string;
+  lang_source: string;
+  subject: string;
+  body_text: string;
+  /** Remitente: el de la EMPRESA EMISORA de la serie; si no, el del usuario. */
+  from_alias: string;
+  from_alias_source: "serie" | "usuario";
+  from_alias_ok: boolean | null;
+  from_alias_problem: string | null;
+  attachment_filename: string;
+  company_id: string | null;
+  company_name: string | null;
+  contact_id: string | null;
+  company_contacts: OfertaEmailContact[];
+  /** A quién saluda `{contacto}` en el cuerpo (null = a la empresa). */
+  contacto_id: string | null;
+  markers: Record<string, string>;
+  version: number;
+  pendiente_de_envio: boolean;
+};
+
+export type OfertaEmailSendPayload = {
+  /** OBLIGATORIO `true`: nada se envía sin un clic con confirmación. */
+  confirm: boolean;
+  to: string[];
+  cc?: string[];
+  bcc?: string[];
+  subject: string;
+  body_text: string;
+  /** El HTML del borrador (asistente o editor); sin él, va el texto. */
+  body_html?: string | null;
+  lang: OfertaIdioma;
+  from_alias: string;
+  /** Índice de la cuenta bancaria de la emisora para el PDF (default: la marcada). */
+  bank?: number | null;
+};
+
+export type OfertaEmailResult = {
+  sent: boolean;
+  message_id: string;
+  thread_id: string;
+  to: string[];
+  cc: string[];
+  bcc: string[];
+  lang: string;
+  numero: string;
+  attachment_filename: string;
+  /** Tras enviar: `enviada` y su fecha. */
+  estado: OfertaEstado;
+  enviada_en: string | null;
+  /** Etapas del pipeline a las que se movió el contacto («Propuesta enviada»). */
+  etapas_movidas: string[];
+};
+
+/** Lo que devuelve el job de conversión cuando termina. */
+export type OfertaConvertResult = {
+  oferta_id: string;
+  numero: string;
+  codpre: number;
+  serie: number;
+  ejercicio: string | null;
+  /** Nº del presupuesto en FACTUSOL (`2-000075`). */
+  factusol_numero: string;
+  lines: number;
+  total: number;
+  warning?: string | null;
+};
+
+/** Estado del job de conversión (mismo contrato que `pollQuoteJob`). */
+export type OfertaConvertJobStatus =
+  | { status: "pending" }
+  | { status: "finished"; result: OfertaConvertResult }
+  /** `company_not_linked` / `lineas_sin_articulo` / `oferta_convertida` se
+   *  rechazan ANTES de encolar (409/422 en `convertOferta`); aquí llegan
+   *  los fallos del propio worker. */
+  | { status: "failed"; error?: string; code?: string };
+
+export type OfertaListParams = {
+  contact_id?: string;
+  company_id?: string;
+  estado?: OfertaEstado;
+  q?: string;
+  /** Hasta 500 (200 por defecto en el servidor). */
+  limit?: number;
+};
+
+/** Plantilla nueva desde un presupuesto de FACTUSOL (copia sus líneas) o
+ *  desde líneas escritas a mano. */
+export type OfertaPlantillaCreatePayload =
+  | { nombre: string; descripcion?: string | null; serie: number; codpre: number }
+  | { nombre: string; descripcion?: string | null; lineas: OfertaLineaIn[]; activa?: boolean };
+
+export type OfertaPlantillaPatch = {
+  nombre?: string;
+  descripcion?: string | null;
+  activa?: boolean;
+  lineas?: OfertaLineaIn[];
+};
+
+export type OfertaCreatePayload = {
+  contact_id: string;
+  serie: number;
+  plantilla_id?: string | null;
+  /** Sin `lineas`, las de la plantilla. */
+  lineas?: OfertaLineaIn[];
+  /** Por defecto: el del contacto → empresa → país → emisora. */
+  idioma?: OfertaIdioma;
+  con_iva?: boolean;
+  validez_dias?: number;
+  /** ISO yyyy-mm-dd; por defecto hoy. */
+  fecha?: string;
+  referencia?: string | null;
+  notas?: string | null;
+};
+
+/** Al editar, la fecha pasa a HOY y `valida_hasta` se recalcula, salvo que
+ *  se mande `fecha` a mano. 409 `oferta_convertida` si ya está convertida. */
+export type OfertaPatchPayload = {
+  serie?: number;
+  lineas?: OfertaLineaIn[];
+  idioma?: OfertaIdioma;
+  con_iva?: boolean;
+  validez_dias?: number;
+  fecha?: string;
+  referencia?: string | null;
+  notas?: string | null;
+};
+
+export async function getOfertasMeta(): Promise<OfertasMeta> {
+  return apiFetch<OfertasMeta>("/api/erp/ofertas/meta");
+}
+
+/** Plantillas (sin líneas). `activas=true` deja fuera las desactivadas. */
+export async function listOfertaPlantillas(activas = false): Promise<OfertaPlantilla[]> {
+  const r = await apiFetch<{ items: OfertaPlantilla[] }>(
+    `/api/erp/ofertas/plantillas${qs({ activas: activas ? "true" : undefined })}`,
+  );
+  return r.items;
+}
+
+/** Una plantilla con sus líneas. */
+export async function getOfertaPlantilla(id: string): Promise<OfertaPlantilla> {
+  return apiFetch<OfertaPlantilla>(`/api/erp/ofertas/plantillas/${encodeURIComponent(id)}`);
+}
+
+export async function createOfertaPlantilla(
+  payload: OfertaPlantillaCreatePayload,
+): Promise<OfertaPlantilla> {
+  return apiFetch<OfertaPlantilla>("/api/erp/ofertas/plantillas", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateOfertaPlantilla(
+  id: string, patch: OfertaPlantillaPatch,
+): Promise<OfertaPlantilla> {
+  return apiFetch<OfertaPlantilla>(`/api/erp/ofertas/plantillas/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+}
+
+/** Ofertas (sin líneas) por contacto, empresa, estado o texto. */
+export async function listOfertas(params: OfertaListParams = {}): Promise<Oferta[]> {
+  const r = await apiFetch<{ items: Oferta[] }>(
+    `/api/erp/ofertas${qs({
+      contact_id: params.contact_id, company_id: params.company_id,
+      estado: params.estado, q: params.q, limit: params.limit,
+    })}`,
+  );
+  return r.items;
+}
+
+/** La oferta con sus líneas y su historial de envíos. */
+export async function getOferta(id: string): Promise<Oferta> {
+  return apiFetch<Oferta>(`/api/erp/ofertas/${encodeURIComponent(id)}`);
+}
+
+export async function createOferta(payload: OfertaCreatePayload): Promise<Oferta> {
+  return apiFetch<Oferta>("/api/erp/ofertas", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateOferta(id: string, patch: OfertaPatchPayload): Promise<Oferta> {
+  return apiFetch<Oferta>(`/api/erp/ofertas/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+}
+
+/** Ruta (relativa a la API) del PDF de la oferta. Va con auth, así que para
+ *  verlo hay que pasar por `openOfertaPdf` / `downloadOfertaPdf`. */
+export function ofertaPdfUrl(
+  id: string, lang?: OfertaIdioma, opts: { bank?: number } = {},
+): string {
+  return `/api/erp/ofertas/${encodeURIComponent(id)}/pdf${qs({ lang, bank: opts.bank })}`;
+}
+
+/** El PDF como blob (para `saveBlob` o adjuntarlo). */
+export async function downloadOfertaPdf(
+  id: string, lang?: OfertaIdioma, opts: { bank?: number } = {},
+): Promise<Blob> {
+  return apiDownloadBlob(ofertaPdfUrl(id, lang, opts));
+}
+
+/** Descarga el PDF con auth y lo abre en una pestaña nueva (la misma
+ *  mecánica que `openShippingFile`: el navegador no manda el token en un
+ *  enlace directo). */
+export async function openOfertaPdf(
+  id: string, lang?: OfertaIdioma, opts: { bank?: number } = {},
+): Promise<void> {
+  const blob = await downloadOfertaPdf(id, lang, opts);
+  const url = URL.createObjectURL(blob);
+  window.open(url, "_blank", "noopener");
+  // El navegador retiene el blob mientras la pestaña lo usa; lo liberamos
+  // tras un margen para no cortar la apertura.
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+/** Previsualización OBLIGATORIA antes de enviar (asunto, cuerpo, remitente,
+ *  contactos de la empresa). `lang` fuerza el idioma; sin él, el de la oferta. */
+export async function getOfertaEmailPreview(
+  id: string, lang?: OfertaIdioma,
+): Promise<OfertaEmailPreview> {
+  return apiFetch<OfertaEmailPreview>(
+    `/api/erp/ofertas/${encodeURIComponent(id)}/email-preview${qs({ lang })}`,
+  );
+}
+
+/** Envía la oferta con el PDF adjunto. Exige `confirm: true`. Errores: 400
+ *  `confirmation_required` / `gmail_unavailable`, 422 `no_recipient`, 409
+ *  `oferta_convertida`, 403 si el alias no está permitido. No toca FACTUSOL. */
+export async function sendOfertaEmail(
+  id: string, payload: OfertaEmailSendPayload,
+): Promise<OfertaEmailResult> {
+  return apiFetch<OfertaEmailResult>(`/api/erp/ofertas/${encodeURIComponent(id)}/email`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+/** «Convertir en presupuesto»: el ÚNICO camino de las ofertas que ESCRIBE en
+ *  FACTUSOL (encola el job en `factusol:writes`). Antes de encolar rechaza:
+ *  409 `company_not_linked` (`detail.company_id` → ficha de la empresa para
+ *  vincular / crear el cliente; null → ficha del contacto, `detail.contact_id`),
+ *  422 `lineas_sin_articulo` (`detail.posiciones`) y 409 `oferta_convertida`.
+ *  Se sondea con `getOfertaConvertStatus(job_id)`. */
+export async function convertOferta(
+  id: string,
+): Promise<{ job_id: string; oferta_id: string; numero: string }> {
+  return apiFetch(`/api/erp/ofertas/${encodeURIComponent(id)}/convertir`, {
+    method: "POST",
+  });
+}
+
+export async function getOfertaConvertStatus(jobId: string): Promise<OfertaConvertJobStatus> {
+  return apiFetch<OfertaConvertJobStatus>(
+    `/api/erp/ofertas/convertir/status/${encodeURIComponent(jobId)}`,
+  );
+}

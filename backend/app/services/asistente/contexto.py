@@ -139,6 +139,9 @@ class Contexto:
     #: avisos de IVA (`conocimiento.catalogo.para_asistente`). Los precios del
     #: borrador salen de aquí o no salen.
     catalogo: dict[str, Any] | None = None
+    #: La OFERTA que va adjunta al correo (el modal de enviar una oferta): sus
+    #: importes sí se citan, porque son los que recibe el cliente.
+    oferta: dict[str, Any] | None = None
     usuario: dict[str, Any] = field(default_factory=dict)
     destinatario: str | None = None
     asunto_respuesta: str = ""
@@ -243,6 +246,10 @@ class Contexto:
                 "menciones": dict(self.catalogo.get("menciones") or {}),
                 "iva_por_fuente": dict(self.catalogo.get("iva_por_fuente") or {}),
             },
+            "oferta": None if self.oferta is None else {
+                k: self.oferta.get(k) for k in ("id", "numero", "fecha", "valida_hasta",
+                                                "total", "con_iva", "estado", "emisora")
+            } | {"lineas": len(self.oferta.get("lineas") or [])},
             "niveles": list(self.niveles),
             "historico": [
                 {k: v for k, v in h.items() if k != "texto"} | {"con_cuerpo": bool(h.get("texto"))}
@@ -772,15 +779,22 @@ def construir(
     session: Session, *, thread: EmailThread | None, usuario: User,
     alcance: str = ALCANCE_CONTACTO, destinatario: str | None = None,
     contacto: Contact | None = None, instruccion: str | None = None,
-    ahora: datetime | None = None,
+    ahora: datetime | None = None, oferta_id: str | None = None,
 ) -> Contexto:
     """El contexto de un borrador. Con `thread`, la respuesta a un hilo; sin
     él, un correo nuevo: entonces `destinatario` (la dirección de «Para») es
     lo que dispara el expediente y `instruccion` lo que dice de qué va.
     `ahora` fija la fecha con la que se mide la antigüedad de los precios
-    (los tests); por defecto, la de hoy."""
+    (los tests); por defecto, la de hoy. `oferta_id`: la oferta que va
+    adjunta (entra en el contexto como entra el catálogo; sin contacto, el de
+    la oferta)."""
+    from app.erp.ofertas import oferta_para_asistente  # noqa: PLC0415
+
     dominios = registro_sitios.dominios_del_grupo(session)
     mensajes = mensajes_del_hilo(thread, dominios) if thread is not None else []
+    oferta = oferta_para_asistente(session, oferta_id)
+    if contacto is None and oferta is not None and oferta.get("contact_id"):
+        contacto = session.get(Contact, oferta["contact_id"])
     if contacto is None and thread is not None:
         contacto = session.get(Contact, thread.contact_id) if thread.contact_id else None
         if contacto is None:
@@ -801,6 +815,7 @@ def construir(
         idioma_fuente=fuente, alcance=alcance, instruccion=(instruccion or "").strip() or None,
         niveles=[1] if thread is not None else [],
     )
+    ctx.oferta = oferta
     ctx.usuario = quien_pulsa(session, usuario)
     ctx.destinatario = (
         (destinatario or "").strip()

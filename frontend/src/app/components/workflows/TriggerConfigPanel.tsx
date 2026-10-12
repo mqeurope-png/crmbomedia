@@ -10,7 +10,7 @@ import {
   type BrevoCampaign,
 } from "../../lib/brevoApi";
 import { getUsers, listTags, type Tag, type User } from "../../lib/api";
-import { getErpSettings } from "../../lib/erpApi";
+import { FACTUSOL_SERIES, getErpSettings } from "../../lib/erpApi";
 import { PipelineStageSelector } from "./PipelineStageSelector";
 
 type Props = {
@@ -135,6 +135,10 @@ export function TriggerConfigPanel({
 
   if (triggerType === "lead.received") {
     return <LeadReceivedSubConfig config={config} set={set} />;
+  }
+
+  if (triggerType === "oferta.enviada" || triggerType === "oferta.caducada") {
+    return <OfertaSubConfig config={config} set={set} caducada={triggerType === "oferta.caducada"} />;
   }
 
   return (
@@ -697,6 +701,45 @@ function LeadReceivedSubConfig({
           histórico de notas de Agile).
         </span>
       </label>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------
+// Ofertas — oferta.enviada / oferta.caducada
+// ---------------------------------------------------------------------
+
+function OfertaSubConfig({
+  config,
+  set,
+  caducada,
+}: {
+  config: Record<string, unknown>;
+  set: (k: string, v: unknown) => void;
+  caducada: boolean;
+}) {
+  const serie = config.serie == null ? "" : String(config.serie);
+  return (
+    <>
+      <label>
+        Empresa emisora (opcional)
+        <select
+          value={serie}
+          onChange={(e) => set("serie", e.target.value || undefined)}
+        >
+          <option value="">— Cualquiera —</option>
+          {FACTUSOL_SERIES.map((s) => (
+            <option key={s.value} value={String(s.value)}>
+              {s.value} · {s.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <span className="muted small">
+        {caducada
+          ? "Se dispara cuando una oferta enviada pasa su fecha de validez sin respuesta (el repaso diario). La oferta solo emite el hecho: mover el contacto a «Cerrado perdido» es cosa de este workflow."
+          : "Se dispara al enviar una oferta por correo. El contacto ya pasa a «Propuesta enviada» si está en un pipeline con esa etapa."}
+      </span>
     </>
   );
 }

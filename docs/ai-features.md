@@ -565,6 +565,19 @@ la respuesta en texto sigue siendo la de siempre y la opción por defecto.
   y, como ejemplo de tono, la plantilla del interés × idioma si la hay.
 - Un **remitente desconocido** (sin ficha) funciona con menos: solo el hilo.
 
+### La oferta adjunta (12/10/2026)
+
+Al enviar una **oferta** (`docs/erp/ofertas.md`) el modal pide el cuerpo al
+asistente con `oferta_id` (`POST /api/emails/asistente`, correo nuevo). La
+oferta entra en el contexto como entra el catálogo: un bloque «OFERTA
+ADJUNTA» con número, fecha, validez, emisora, con/sin IVA, líneas e importes.
+Es la única excepción a «los precios salen solo del CATÁLOGO»: esos importes
+sí se citan tal cual, porque son los del PDF que recibe el cliente; para esos
+productos no se usan precios del catálogo, y no se afirma el régimen de IVA
+definitivo (se fija al convertir, según VIES). Sin contacto explícito, el de
+la oferta. «Lo que ha usado» enseña «Oferta OF-2026-0001 adjunta (N líneas,
+total …)» (`contexto.oferta`).
+
 ### Reglas del prompt (`services/asistente/redactor.py`)
 
 Regla primera: el cuerpo es un correo enviable o está vacío, y lo que haya que

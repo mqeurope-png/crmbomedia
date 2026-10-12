@@ -250,6 +250,8 @@ const nodeTypes = { workflowStep: StepNode as any };
  *  sincronizado con el backend `cost_estimate`. */
 const EVENT_TRIGGERS = new Set([
   "lead.received",
+  "oferta.enviada",
+  "oferta.caducada",
   "contact.created",
   "contact.updated",
   "contact.lifecycle_changed",

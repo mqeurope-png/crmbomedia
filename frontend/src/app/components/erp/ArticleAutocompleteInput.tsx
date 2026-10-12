@@ -27,6 +27,7 @@ export function ArticleAutocompleteInput({
   onChange,
   onPick,
   enabled = true,
+  disabled = false,
   ariaLabel,
   placeholder,
   multiline = false,
@@ -35,6 +36,9 @@ export function ArticleAutocompleteInput({
   onChange: (v: string) => void;
   onPick: (article: FactusolArticle) => void;
   enabled?: boolean;
+  /** Campo deshabilitado del todo (solo lectura o guardando): ni se escribe
+   *  ni se busca. `enabled=false` solo apaga la búsqueda. */
+  disabled?: boolean;
   ariaLabel: string;
   placeholder?: string;
   /** Área de texto en vez de input: la descripción de una línea de proforma
@@ -51,7 +55,7 @@ export function ArticleAutocompleteInput({
   const searchable = !multiline
     || (!value.includes("\n") && value.length <= MULTILINE_SEARCH_MAX);
   useEffect(() => {
-    if (!enabled || !searchable || value.trim().length < MIN_CHARS) {
+    if (!enabled || disabled || !searchable || value.trim().length < MIN_CHARS) {
       setHits([]);
       setOpen(false);
       return;
@@ -73,7 +77,7 @@ export function ArticleAutocompleteInput({
         .finally(() => { if (alive) setLoading(false); });
     }, DEBOUNCE_MS);
     return () => { alive = false; window.clearTimeout(handle); };
-  }, [enabled, searchable, value]);
+  }, [enabled, disabled, searchable, value]);
 
   function pick(article: FactusolArticle) {
     skipNext.current = true;
@@ -90,6 +94,7 @@ export function ArticleAutocompleteInput({
           aria-label={ariaLabel}
           placeholder={placeholder}
           autoComplete="off"
+          disabled={disabled}
           // Crece con el texto (hasta 8 renglones; luego, barra de desplazamiento).
           rows={Math.min(8, Math.max(1, value.split("\n").reduce(
             (n, line) => n + Math.max(1, Math.ceil(line.length / CHARS_PER_ROW)), 0,
@@ -105,6 +110,7 @@ export function ArticleAutocompleteInput({
           aria-label={ariaLabel}
           placeholder={placeholder}
           autoComplete="off"
+          disabled={disabled}
           onChange={(e) => onChange(e.target.value)}
           // El blur se retrasa: si no, el input se cierra antes de que el clic
           // en la sugerencia llegue a dispararse.

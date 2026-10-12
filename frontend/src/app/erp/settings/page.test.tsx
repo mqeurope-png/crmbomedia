@@ -14,6 +14,14 @@ import {
   type ErpSettings,
 } from "../../lib/erpApi";
 
+// La página de Configuración ERP es muy grande y varios tests teclean con
+// user-event campo a campo (cada pulsación re-renderiza toda la página): en
+// una máquina de 4 núcleos tardan 4–5 s solos y más con la suite entera en
+// paralelo, así que con el tope de 5 s por defecto fallaban por tiempo. Y un
+// timeout aquí arrastra al test siguiente: el `user.type` del test cortado
+// sigue tecleando en el elemento enfocado del DOM nuevo.
+jest.setTimeout(20_000);
+
 // La tarjeta de Genei tiene su propio endpoint; aquí se prueba aparte.
 jest.mock("../../components/erp/GeneiSettingsCard", () => ({
   GeneiSettingsCard: () => null,
@@ -686,6 +694,50 @@ describe("ErpSettingsPage — Lote 2 · PR-2", () => {
     expect(screen.getByRole("button", { name: "Enviarme una prueba es" })).toBeDisabled();
     // Ver el ejemplo sí se puede.
     expect(screen.getByRole("button", { name: "Ver ejemplo es" })).toBeEnabled();
+  });
+});
+
+// Ofertas — prefijo de numeración (mayúsculas, 6 como mucho) y validez por
+// defecto (1–365 días); viajan juntos en `ofertas`, solo su sección.
+describe("ErpSettingsPage — Ofertas", () => {
+  const anio = new Date().getFullYear();
+
+  it("precarga prefijo y validez; el prefijo va en mayúsculas y enseña la numeración", async () => {
+    mockGet.mockResolvedValue(settings({ ofertas: { prefijo: "OF", validez_dias: 30 } }));
+    const user = userEvent.setup();
+    render(<ErpSettingsPage />);
+    const prefijo = await screen.findByLabelText("Prefijo de numeración de las ofertas");
+    expect(prefijo).toHaveValue("OF");
+    const validez = screen.getByLabelText("Validez por defecto de las ofertas en días");
+    expect(validez).toHaveValue(30);
+    const region = screen.getByRole("region", { name: "Ofertas" });
+    expect(region).toHaveTextContent(`Las ofertas se numeran OF-${anio}-0001, OF-${anio}-0002…`);
+    expect(region).toHaveTextContent("Una oferta creada hoy vale hasta dentro de 30 días");
+    await user.type(prefijo, "x");
+    expect(prefijo).toHaveValue("OFX");                       // se guarda en mayúsculas
+    expect(region).toHaveTextContent(`OFX-${anio}-0001`);
+    await user.clear(validez);
+    await user.type(validez, "45");
+    await user.click(within(region).getByRole("button", { name: "Guardar cambios · Ofertas" }));
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
+    expect(mockUpdate.mock.calls[0][0]).toEqual({ ofertas: { prefijo: "OFX", validez_dias: 45 } });
+  });
+
+  it("la validez se encaja en 1–365 al salir del campo y el prefijo vacío avisa", async () => {
+    const user = userEvent.setup();
+    render(<ErpSettingsPage />);
+    // Sin bloque guardado pinta los valores de serie (OF, 30).
+    const prefijo = await screen.findByLabelText("Prefijo de numeración de las ofertas");
+    expect(prefijo).toHaveValue("OF");
+    const validez = screen.getByLabelText("Validez por defecto de las ofertas en días");
+    await user.clear(validez);
+    await user.type(validez, "400");
+    await user.tab();                                         // al salir se ajusta
+    expect(validez).toHaveValue(365);
+    await user.clear(prefijo);
+    expect(prefijo).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByRole("region", { name: "Ofertas" }))
+      .toHaveTextContent("Prefijo: 1–6 letras o dígitos.");
   });
 });
 

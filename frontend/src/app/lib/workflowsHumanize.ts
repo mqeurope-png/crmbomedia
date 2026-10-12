@@ -72,6 +72,9 @@ const TRIGGER_LABELS: Record<string, string> = {
   "opportunity.lost": "Oportunidad perdida",
   // Respuesta a leads (Fase 1).
   "lead.received": "Lead recibido (formulario web o nota de AgileCRM)",
+  // Ofertas (los hechos que consumirá la Fase 3).
+  "oferta.enviada": "Oferta enviada al contacto",
+  "oferta.caducada": "Oferta caducada sin respuesta",
   // PR-Fixes #9: "Recurrente (preset)" era técnico. Le llamamos
   // "Horario fijo" en la UI del selector y en cualquier label
   // posterior.

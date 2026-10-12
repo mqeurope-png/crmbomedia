@@ -210,6 +210,32 @@ def _est_lead_received(session: Session, cfg: dict, cutoff: datetime) -> int:
     return total
 
 
+def _match_oferta(cfg: dict[str, Any], payload: dict[str, Any]) -> bool:
+    """Ofertas: `serie` (empresa emisora) acota; sin ella, todas."""
+    serie = _as_int(cfg.get("serie")) if cfg.get("serie") not in (None, "") else None
+    if serie is not None and _as_int(payload.get("serie")) != serie:
+        return False
+    return True
+
+
+def _est_oferta(action: str) -> Estimator:
+    """Eventos de auditoría de las ofertas (`erp.oferta_emailed` /
+    `erp.oferta_expired` sobre la propia oferta) en la ventana."""
+    def _fn(session: Session, cfg: dict, cutoff: datetime) -> int:
+        from app.models.crm import AuditLog  # noqa: PLC0415
+
+        clauses = [
+            AuditLog.action == action, AuditLog.target_type == "oferta",
+            AuditLog.created_at >= cutoff,
+        ]
+        serie = _as_int(cfg.get("serie")) if cfg.get("serie") not in (None, "") else None
+        if serie is not None:
+            clauses.append(cast(AuditLog.metadata_json, Text).like(f'%"serie": {serie}%'))
+        return int(session.scalar(select(func.count(AuditLog.id)).where(*clauses)) or 0)
+
+    return _fn
+
+
 def _est_contact_created(session: Session, cfg: dict, cutoff: datetime) -> int:
     from app.models.crm import Contact  # noqa: PLC0415
 
@@ -445,6 +471,16 @@ TRIGGER_DEFS: dict[str, TriggerDef] = {
         TriggerDef("lead.received", "Lead recibido (formulario web o nota de AgileCRM)",
                    "event", matcher=_match_lead_received, estimator=_est_lead_received,
                    config_keys=("source", "site", "max_age_hours")),
+        # Ofertas (presupuesto de BoHub a un lead). Productores: el envío de la
+        # oferta por correo (`app/erp/ofertas.py::enviar`) y la caducidad diaria
+        # (`caducar_pendientes`). Son los hechos que consume la Fase 3 de la
+        # respuesta a leads («mover el pipeline por hechos»).
+        TriggerDef("oferta.enviada", "Oferta enviada al contacto", "event",
+                   matcher=_match_oferta, estimator=_est_oferta("erp.oferta_emailed"),
+                   config_keys=("serie",)),
+        TriggerDef("oferta.caducada", "Oferta caducada sin respuesta", "event",
+                   matcher=_match_oferta, estimator=_est_oferta("erp.oferta_expired"),
+                   config_keys=("serie",)),
     ]
 }
 

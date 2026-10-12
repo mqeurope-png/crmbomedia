@@ -61,6 +61,9 @@ from app.erp.models import (
     ExceptionStatus,
     InvoiceMode,
 )
+from app.erp.ofertas import CONFIG_KEY as OFERTAS_CONFIG_KEY
+from app.erp.ofertas import normalizar_config as normalizar_ofertas
+from app.erp.ofertas import validar_config as validar_ofertas
 from app.erp.seguimiento import (
     abbr_variants_config,
     series_abbreviations_config,
@@ -256,6 +259,9 @@ class SettingsIn(BaseModel):
     #: empresa se agrupa por su registro, nunca por uno de estos dominios).
     #: Ver `app/services/asistente/config.py`.
     asistente: dict[str, Any] | None = None
+    #: Ofertas: prefijo de la numeración (`OF` → `OF-2026-0001`) y validez por
+    #: defecto en días. Ver `app/erp/ofertas.py`.
+    ofertas: dict[str, Any] | None = None
 
 
 # --- helpers -----------------------------------------------------------------
@@ -582,6 +588,8 @@ def _serialise_settings(cfg: ErpSettings, session: Session) -> dict[str, Any]:
         "conocimiento": normalizar_kb(_series(cfg).get(KB_CONFIG_KEY)),
         # Asistente de respuesta: presupuesto, histórico y dominios gratuitos.
         "asistente": normalizar_asistente(_series(cfg).get(ASISTENTE_CONFIG_KEY)),
+        # Ofertas: prefijo de la numeración y validez por defecto.
+        "ofertas": normalizar_ofertas(_series(cfg).get(OFERTAS_CONFIG_KEY)),
         "woocommerce_stores": _woocommerce_stores(session),
         "factusol_series_abbr_variants": {
             str(k): v
@@ -745,8 +753,16 @@ def update_settings(
             or payload.cuadre is not None
             or payload.lead_response is not None
             or payload.conocimiento is not None
-            or payload.asistente is not None):
+            or payload.asistente is not None
+            or payload.ofertas is not None):
         series = _series(cfg)
+        # Ofertas: prefijo y validez, validados y fundidos con lo guardado.
+        if payload.ofertas is not None:
+            try:
+                series[OFERTAS_CONFIG_KEY] = validar_ofertas(
+                    payload.ofertas, series.get(OFERTAS_CONFIG_KEY))
+            except ValueError as e:
+                raise HTTPException(400, str(e)) from e
         # Base de conocimiento: validado entero y fundido con lo guardado.
         if payload.conocimiento is not None:
             try:
@@ -1124,6 +1140,7 @@ def preview_quote_email_template(
 def search_crm_contacts(
     q: str = Query(min_length=2, max_length=100),
     limit: int = Query(default=10, ge=1, le=25),
+    con_email: bool = Query(default=True),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_email_client),
 ) -> dict[str, Any]:
@@ -1133,7 +1150,11 @@ def search_crm_contacts(
     Los perfiles de solo-ERP no pueden usar `/api/contacts` (ámbito CRM), así
     que esta búsqueda vive en el ERP y devuelve lo justo: id, nombre, email y
     empresa. Cada palabra tiene que aparecer en el nombre, los apellidos, el
-    email o la empresa; solo contactos activos con un email utilizable."""
+    email o la empresa; solo contactos activos con un email utilizable.
+
+    `con_email=false` (elegir el contacto de una OFERTA): también los que no
+    tienen email o lo tienen sin validar — un lead que llegó por teléfono
+    puede recibir una oferta; el email solo hace falta para enviarla."""
     from sqlalchemy import or_  # noqa: PLC0415
 
     from app.models.crm import Company, Contact  # noqa: PLC0415
@@ -1149,13 +1170,14 @@ def search_crm_contacts(
     stmt = (
         select(Contact, Company.name)
         .outerjoin(Company, Company.id == Contact.company_id)
-        .where(
-            Contact.is_active.is_(True),
+        .where(Contact.is_active.is_(True))
+    )
+    if con_email:
+        stmt = stmt.where(
             Contact.is_email_valid.is_(True),
             Contact.email.isnot(None),
             Contact.email != "",
         )
-    )
     for token in tokens:
         like = "%" + token.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
         stmt = stmt.where(or_(
@@ -1172,7 +1194,7 @@ def search_crm_contacts(
         name = " ".join(p for p in (contact.first_name, contact.last_name) if p).strip()
         items.append({
             "id": contact.id,
-            "name": name or contact.email,
+            "name": name or contact.email or "—",
             "email": contact.email,
             "company_name": company_name,
         })

@@ -198,6 +198,9 @@ services:
       # correos vía Supabase, consumibles de las tiendas WooCommerce vía la
       # Store API pública). Solo lectura; interruptor y hora en Configuración ERP.
       - kb:catalogo_sync
+      # Ofertas: caducidad diaria (las enviadas con la validez pasada quedan
+      # caducadas y emiten `oferta.caducada`). No toca FACTUSOL ni envía nada.
+      - ofertas:caducar
     volumes:
       # Sprint Backup-Hardening. El worker ejecuta
       # `scripts/backup-crmbo.sh` via subprocess: necesita el script

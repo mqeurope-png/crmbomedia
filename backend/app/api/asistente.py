@@ -89,6 +89,8 @@ class GenerarIn(_SobreElEditor):
     destinatario: str | None = Field(default=None, max_length=255)
     #: El borrador anterior, al empezar de nuevo o cambiar de alcance: queda regenerado.
     regenerar_de: str | None = Field(default=None, max_length=36)
+    #: La oferta que va adjunta (el modal de enviar una oferta): entra en el contexto.
+    oferta_id: str | None = Field(default=None, max_length=36)
 
 
 class GenerarNuevoIn(_SobreElEditor):
@@ -97,6 +99,8 @@ class GenerarNuevoIn(_SobreElEditor):
     alcance: str = Field(default=ALCANCE_CONTACTO, max_length=10)
     contact_id: str | None = Field(default=None, max_length=36)
     regenerar_de: str | None = Field(default=None, max_length=36)
+    #: La oferta que va adjunta: su contacto es el destinatario si no se dice otro.
+    oferta_id: str | None = Field(default=None, max_length=36)
 
 
 class TurnoIn(_SobreElEditor):
@@ -227,7 +231,7 @@ def generar(
         instruccion=payload.instruccion, destinatario=payload.destinatario,
         regenerar_de=payload.regenerar_de, texto_actual_html=payload.texto_actual_html,
         seleccion_html=payload.seleccion_html, formato=payload.formato,
-        estructura_actual=payload.estructura_actual,
+        estructura_actual=payload.estructura_actual, oferta_id=payload.oferta_id,
     ))
     return _anotar_y_devolver(session, request, borrador, current_user,
                               {"regenerar_de": payload.regenerar_de})
@@ -282,6 +286,7 @@ def generar_nuevo(
         contacto=contacto, regenerar_de=payload.regenerar_de,
         texto_actual_html=payload.texto_actual_html, seleccion_html=payload.seleccion_html,
         formato=payload.formato, estructura_actual=payload.estructura_actual,
+        oferta_id=payload.oferta_id,
     ))
     return _anotar_y_devolver(session, request, borrador, current_user,
                               {"sin_hilo": True, "regenerar_de": payload.regenerar_de})

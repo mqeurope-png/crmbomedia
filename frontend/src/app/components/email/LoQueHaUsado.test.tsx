@@ -68,6 +68,25 @@ describe("Lo que ha usado", () => {
   it("sin nada de eso, no dice nada de más", () => {
     render(<LoQueHaUsado borrador={borrador({ mensajes_hilo: 1, contacto: { nombre: "Ana" } })} />);
     const texto = screen.getByText(/la ficha de Ana/).textContent ?? "";
-    expect(texto).not.toMatch(/nota|campo|etiqueta|teléfono/);
+    expect(texto).not.toMatch(/nota|campo|etiqueta|teléfono|Oferta/);
+  });
+
+  it("con una oferta adjunta la nombra, con sus líneas y su total", () => {
+    render(<LoQueHaUsado borrador={borrador({
+      sin_hilo: true, contacto: { nombre: "Ana", empresa: "Rótulos Ana SL" },
+      oferta: { id: "o-1", numero: "OF-2026-0001", fecha: "12/10/2026", valida_hasta: "11/11/2026",
+        total: 1318.9, con_iva: true, estado: "borrador", emisora: "Bomedia", lineas: 3 },
+    })} />);
+    expect(screen.getByText(
+      /sin hilo \(correo nuevo\) · la ficha de Ana \(Rótulos Ana SL\) · Oferta OF-2026-0001 adjunta \(3 líneas, total 1\.?318,90 €\)/,
+    )).toBeInTheDocument();
+  });
+
+  it("una oferta de una sola línea va en singular", () => {
+    render(<LoQueHaUsado borrador={borrador({
+      contacto: { nombre: "Ana" },
+      oferta: { id: "o-2", numero: "OF-2026-0002", total: 250, lineas: 1 },
+    })} />);
+    expect(screen.getByText(/Oferta OF-2026-0002 adjunta \(1 línea, total 250,00 €\)/)).toBeInTheDocument();
   });
 });

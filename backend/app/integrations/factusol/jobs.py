@@ -883,6 +883,49 @@ def enqueue_convert_quote_to_order(
     )
 
 
+# --- Ofertas: «Convertir en presupuesto» (el ÚNICO camino de las ofertas que
+# escribe en FACTUSOL; lo pulsa una persona) ------------------------------------
+
+
+def convert_oferta_job(oferta_id: str, actor_user_id: str | None = None) -> dict[str, Any]:
+    """Crea el presupuesto `F_PRE` (+ `F_LPS`) a partir de la oferta de BoHub,
+    en la serie de su emisora, con sus líneas y artículos — como uno hecho a
+    mano. Corre en `factusol:writes` (serial: el CODPRE es un MAX+1). Los
+    prechequeos (empresa vinculada, líneas con artículo) se repiten aquí: un
+    rechazo llega al frontend como job failed con el mensaje."""
+    from sqlalchemy.orm import Session  # noqa: PLC0415
+
+    from app.db.session import get_engine  # noqa: PLC0415
+    from app.erp import ofertas  # noqa: PLC0415
+    from app.erp.models import Oferta  # noqa: PLC0415
+    from app.integrations.factusol.service import ejercicio_for  # noqa: PLC0415
+    from app.models.crm import User  # noqa: PLC0415
+
+    with Session(get_engine()) as session:
+        oferta = session.get(Oferta, oferta_id)
+        if oferta is None:
+            raise FactusolError(f"La oferta {oferta_id!r} no existe")
+        actor = session.get(User, actor_user_id) if actor_user_id else None
+        client = FactusolClient.from_settings()
+        try:
+            result = ofertas.convertir(
+                session, client, oferta, ejercicio=ejercicio_for(session), actor=actor,
+            )
+        except ofertas.OfertaError as exc:
+            raise FactusolError(str(exc)) from exc
+    logger.info("factusol: oferta %s → presupuesto %s", result.get("numero"),
+                result.get("factusol_numero"))
+    return result
+
+
+def enqueue_convert_oferta(oferta_id: str, actor_user_id: str | None = None) -> str:
+    """Encola `convert_oferta_job` en `factusol:writes`; devuelve el job_id."""
+    return _enqueue(
+        "app.integrations.factusol.jobs.convert_oferta_job",
+        oferta_id=oferta_id, actor_user_id=actor_user_id,
+    )
+
+
 # --- Reconciliación FACTUSOL → pedidos (vincular facturas manuales) ----------
 #: Cola INTERACTIVA (la consume `worker-factusol` con prioridad, igual que la
 #: reconciliación de estados Woo). NO va por `worker-sync` (saturado de batch).

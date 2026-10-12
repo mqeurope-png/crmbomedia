@@ -9,6 +9,8 @@ describe("workflowsHumanize — respuesta a leads (Fase 1)", () => {
   it("etiqueta el trigger y los pasos nuevos en lenguaje humano", () => {
     expect(humanizeTrigger("lead.received"))
       .toBe("Lead recibido (formulario web o nota de AgileCRM)");
+    expect(humanizeTrigger("oferta.enviada")).toBe("Oferta enviada al contacto");
+    expect(humanizeTrigger("oferta.caducada")).toBe("Oferta caducada sin respuesta");
     expect(humanizeStepLabel({ type: "action_classify_lead" })).toBe("Clasificar lead");
     expect(humanizeStepLabel({ type: "action_prepare_email_draft", config: {} }))
       .toBe("Preparar borrador (plantilla por interés e idioma)");
