@@ -119,6 +119,10 @@ class Contexto:
     maquina: str | None = None
     modelo_flux: str | None = None
     clasificacion: dict[str, Any] | None = None
+    #: Lo que escribió el cliente en su último lead (`{fuente, fecha, texto}`):
+    #: cuenta como su consulta, con sus correos del hilo, para elegir las
+    #: máquinas del catálogo. El texto no va al prompt.
+    consulta_lead: dict[str, Any] | None = None
     etapa: str | None = None
     asuntos_recientes: list[dict[str, Any]] = field(default_factory=list)
     sitio: str | None = None
@@ -204,6 +208,12 @@ class Contexto:
             "pedidos": len(self.pedidos), "facturas_pendientes": len(self.facturas_pendientes),
             "maquina": self.maquina, "modelo_flux": self.modelo_flux,
             "clasificacion": self.clasificacion, "etapa": self.etapa,
+            "consulta_lead": (
+                {"fuente": self.consulta_lead.get("fuente"),
+                 "fecha": self.consulta_lead.get("fecha"),
+                 "caracteres": len(self.consulta_lead.get("texto") or "")}
+                if self.consulta_lead else None
+            ),
             "asuntos_recientes": len(self.asuntos_recientes),
             "sitio": self.sitio, "interes": self.interes, "intereses": list(self.intereses),
             "enlaces": self.enlaces_lista(),
@@ -557,6 +567,38 @@ def clasificacion_de(session: Session, contacto: Contact) -> dict[str, Any] | No
     }
 
 
+def consulta_del_lead(session: Session, contacto: Contact) -> dict[str, Any] | None:
+    """Lo que escribió el cliente en su último lead: la consulta del último
+    envío de formulario (o de la nota «form note» de Agile) con los productos
+    que marcó; sin ninguno, el texto de su última clasificación. En la
+    respuesta a un lead el hilo suele ser solo nuestro acuse de recibo, que
+    cita la consulta pero es nuestro (12/10/2026: «Metallplatten und T-Shirts»
+    no metía las DTF porque solo se miraban los correos del cliente)."""
+    from app.services.leads import registro  # noqa: PLC0415
+
+    try:
+        entrada = registro.entrada_desde_contacto(session, contacto)
+    except Exception:  # noqa: BLE001 — sin la consulta, el borrador sigue
+        logger.warning("asistente: no se pudo leer el último lead del contacto %s",
+                       contacto.id, exc_info=True)
+        entrada = None
+    if entrada is not None:
+        texto = "\n".join(p for p in (entrada.texto, ", ".join(entrada.productos)) if p.strip())
+        fuente, fecha = entrada.fuente, entrada.lead_at
+    else:
+        fila = session.scalars(
+            select(LeadClassification).where(LeadClassification.contact_id == contacto.id)
+            .order_by(LeadClassification.created_at.desc()).limit(1)
+        ).first()
+        if fila is None:
+            return None
+        texto, fuente, fecha = fila.input_text or "", fila.source, fila.lead_at or fila.created_at
+    texto = recortar(texto.strip(), MAX_CHARS_MENSAJE)
+    if not texto:
+        return None
+    return {"fuente": fuente, "fecha": fecha.isoformat() if fecha else None, "texto": texto}
+
+
 def etapa_de(session: Session, contacto: Contact) -> str | None:
     filas = session.execute(
         select(Pipeline.name, PipelineStage.name, ContactPipelineStage.entered_stage_at)
@@ -756,6 +798,7 @@ def construir(
         ctx.facturas_pendientes = facturas_pendientes_de(ctx.pedidos)
         ctx.maquina, ctx.modelo_flux = maquina_de(ctx.pedidos, categorias)
         ctx.clasificacion = clasificacion_de(session, contacto)
+        ctx.consulta_lead = consulta_del_lead(session, contacto)
         ctx.etapa = etapa_de(session, contacto)
         ctx.asuntos_recientes = asuntos_recientes_de(
             session, contacto, excluir_thread_id=excluir, limite=int(cfg["asuntos_max"]))
@@ -805,15 +848,20 @@ def construir(
         modelo=ctx.modelo_flux,
     )
     # El catálogo: no entero, sino lo que toca a este correo, por este orden: las
-    # máquinas que el cliente nombra en el hilo, las que pide la instrucción de
-    # quien envía, los consumibles de la máquina que tiene y las de su interés
-    # clasificado. Sin ficha ni mención ni instrucción, el bloque dice que no
-    # hay precios que citar.
-    texto_hilo = "\n".join(m.texto or "" for m in mensajes if m.lado == "cliente")
+    # máquinas que nombra el cliente, las que pide la instrucción de quien envía,
+    # los consumibles de la máquina que tiene y las de los intereses que tocan
+    # sus palabras y el clasificado. Lo que escribe el cliente son sus correos
+    # del hilo y la consulta de su último lead: en la respuesta a un lead el
+    # hilo suele ser solo nuestro acuse, que la cita pero es nuestro. Sin ficha
+    # ni mención ni instrucción, el bloque dice que no hay precios que citar.
+    escrito_por_el_cliente = "\n".join(t for t in (
+        *(m.texto or "" for m in mensajes if m.lado == "cliente"),
+        (ctx.consulta_lead or {}).get("texto") or "",
+    ) if t)
     try:
         ctx.catalogo = kb_catalogo.para_asistente(
             session, intereses=ctx.intereses, idioma=idioma, maquina=ctx.maquina,
-            modelo_flux=ctx.modelo_flux, ahora=ahora, texto_hilo=texto_hilo,
+            modelo_flux=ctx.modelo_flux, ahora=ahora, texto_cliente=escrito_por_el_cliente,
             instruccion=ctx.instruccion,
         )
     except Exception:  # noqa: BLE001 — sin catálogo el asistente sigue (sin precios)

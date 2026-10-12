@@ -435,7 +435,8 @@ def _bloque_catalogo(ctx: Contexto) -> str:
         precios = f"precios {_iva_texto(iva.get('compositor'), avisos)}"
         if por_eleccion.get("hilo"):
             lineas.append(
-                f"Máquinas que el cliente NOMBRA en el hilo (empieza por estas); {precios}:")
+                "Máquinas que el cliente NOMBRA, en sus correos o en la consulta de su formulario "
+                f"(empieza por estas); {precios}:")
             lineas.extend(_linea_producto(m, avisos, ctx.idioma, refs.get(_clave_ref(m)))
                           for m in por_eleccion["hilo"])
         if por_eleccion.get("instruccion"):

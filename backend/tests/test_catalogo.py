@@ -48,6 +48,7 @@ from app.models.crm import (
 )
 from app.models.ia import BorradorAsistente
 from app.models.leads import LeadClassification
+from app.models.web_forms import FormSubmission, WebForm, WebFormField
 from app.services import llm
 from app.services.asistente import contexto, redactor
 from app.services.asistente.config import estimar_tokens
@@ -1037,6 +1038,68 @@ def test_la_consulta_toca_varios_intereses_por_sus_palabras_y_entran_los_de_todo
         assert {m["interes"] for m in ctx3.catalogo["maquinas"]} == {"uv_mediano"}
 
 
+def test_la_consulta_del_formulario_cuenta_aunque_el_hilo_sea_solo_nuestro_acuse(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    """12/10/2026, en producción («acuserecibo test»): el lead rellenó el
+    formulario en alemán (Metallplatten y T-Shirts) y el hilo que se contesta es
+    su acuse de recibo, que CITA la consulta pero lo mandamos nosotros. Las
+    palabras y los nombres se buscaban solo en los correos del cliente —ninguno—
+    y no entraba ninguna DTF. Lo que escribió en el formulario es su consulta,
+    igual que un correo suyo."""
+    consulta = ("Guten Tag, wir möchten Metallplatten und T-Shirts bedrucken, auch andere "
+                "Textilien. Welche Maschinen empfehlen Sie?")
+    with session_factory() as s:
+        _sincronizar_compositor(s)
+        contacto = _contacto(s, idioma="de", intereses=["uv_mediano"])
+        form = WebForm(slug="mboprinters-contacto-de", name="MBO Printers DE", brand="mbo",
+                       language="de", created_by_user_id=_admin(s).id, assignment_mode="none")
+        s.add(form)
+        s.flush()
+        s.add(WebFormField(form_id=form.id, field_key="message", label="Ihre Nachricht",
+                           field_type="textarea", position=0))
+        s.add(FormSubmission(form_id=form.id, contact_id=contacto.id, is_spam=False,
+                             raw_payload_json=json.dumps({"message": consulta})))
+        acuse = _hilo(s, contacto, [{"de": "info@mboprinters.com", "lado": "nosotros", "texto": (
+            "Hallo Klaus,\n\nvielen Dank für Ihre Nachricht über mboprinters.com.\n\n"
+            f"Ihre Nachricht:\n{consulta}\n\nMBO Printers")}],
+            asunto="Wir haben Ihre Anfrage erhalten · MBO Printers")
+        s.commit()
+        ctx = contexto.construir(s, thread=acuse, usuario=_admin(s), ahora=AHORA)
+        assert [m.lado for m in ctx.mensajes] == ["nosotros"]
+        cat = ctx.catalogo
+        assert cat["intereses_consulta"] == ["dtf"]
+        assert [m["interes"] for m in cat["maquinas"]] == ["uv_mediano", "dtf"] * 4
+        assert {m["eleccion"] for m in cat["maquinas"] if m["interes"] == "dtf"} == {"consulta"}
+        assert "dtf" not in cat["sin_maquina"]
+        resumen = ctx.resumen()["consulta_lead"]
+        assert resumen["fuente"] == "web_form" and resumen["caracteres"] == len(consulta)
+        assert "texto" not in resumen
+        # Con «solo el hilo» no entra la ficha, y su consulta tampoco.
+        solo_hilo = contexto.construir(s, thread=acuse, usuario=_admin(s), ahora=AHORA,
+                                       alcance="hilo")
+        assert solo_hilo.consulta_lead is None
+        assert solo_hilo.catalogo["intereses_consulta"] == []
+        # Un lead sin envío de formulario (de Agile, a mano): el texto que se clasificó.
+        otro = _contacto(s, idioma="de", intereses=["uv_mediano"], email="otro@druck.de")
+        clasificacion = s.scalar(select(LeadClassification).where(
+            LeadClassification.contact_id == otro.id))
+        clasificacion.input_text = "Wir suchen einen Drucker für Hoodies."
+        hilo_otro = _hilo(s, otro, [{"de": "info@mboprinters.com", "lado": "nosotros",
+                                     "texto": "Danke für Ihre Anfrage."}], asunto="Anfrage")
+        s.commit()
+        ctx_otro = contexto.construir(s, thread=hilo_otro, usuario=_admin(s), ahora=AHORA)
+        assert ctx_otro.catalogo["intereses_consulta"] == ["dtf"]
+        assert ctx_otro.resumen()["consulta_lead"]["fuente"] == "test"
+    # «Probar» en Configuración ERP mira lo mismo que el asistente: lo que
+    # escribe el cliente cuenta también para el catálogo.
+    probar = http.post("/api/erp/conocimiento/resolver", headers=auth_headers(http, "admin"),
+                       json={"sitio": "mboprinters", "idioma": "de", "interes": "uv_mediano",
+                             "texto": consulta}).json()
+    assert {m["interes"] for m in probar["catalogo"]["maquinas"]} == {"uv_mediano", "dtf"}
+    assert probar["catalogo"]["intereses_consulta"] == ["dtf"]
+
+
 def test_las_palabras_por_interes_se_editan_en_la_pantalla_y_se_usan_al_momento(
     session_factory: sessionmaker, http: TestClient,
 ) -> None:
@@ -1431,7 +1494,8 @@ def test_las_maquinas_se_eligen_por_el_hilo_la_instruccion_y_el_interes(
         assert ctx.catalogo["menciones"]["hilo"][:3] == ["Horno Orion", "Horno Vega", "Orion 20"]
         assert ctx.catalogo["menciones"]["flojas"] == ["Lyra 35"]
         bloque = redactor.bloque_contexto(ctx)
-        assert "Máquinas que el cliente NOMBRA en el hilo (empieza por estas)" in bloque
+        assert ("Máquinas que el cliente NOMBRA, en sus correos o en la consulta de su "
+                "formulario (empieza por estas)") in bloque
         assert "Máquinas que PUEDE que nombren el hilo o la instrucción" in bloque
         assert "Máquinas que encajan con su interés" not in bloque
         assert ctx.resumen()["catalogo"]["maquinas"][0]["eleccion"] == "hilo"
@@ -1526,7 +1590,7 @@ def test_una_palabra_corriente_no_es_una_maquina_nombrada_y_el_tope_no_inventa_h
             ("PimPam Custom", "interes")]
         bloque = redactor.bloque_contexto(ctx)
         assert "Máquinas que PUEDE que nombren el hilo o la instrucción" in bloque
-        assert "Máquinas que el cliente NOMBRA en el hilo" not in bloque
+        assert "Máquinas que el cliente NOMBRA" not in bloque
         # (2) Seis máquinas nombradas llenan el tope: el interés (vending) tiene
         # máquinas aunque no quepan, así que no es un hueco del catálogo.
         lleno = _hilo(s, contacto, [{"de": "trust@ejemplo.com", "texto": (

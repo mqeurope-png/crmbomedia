@@ -590,6 +590,15 @@ export function LoQueHaUsado({ borrador }: { borrador: BorradorAsistente }) {
   const hilo = num("mensajes_hilo");
   if (ctx["sin_hilo"] === true) partes.push("sin hilo (correo nuevo)");
   else if (hilo !== null) partes.push(`${hilo} mensaje${hilo === 1 ? "" : "s"} del hilo`);
+  // La consulta de su último lead (el formulario o la nota de Agile): cuenta,
+  // con sus correos, para elegir las máquinas del catálogo.
+  const consultaLead = ctx["consulta_lead"] as { fuente?: string; fecha?: string | null } | null | undefined;
+  if (consultaLead) {
+    const de = consultaLead.fuente === "web_form" ? "su formulario"
+      : consultaLead.fuente === "agilecrm" ? "su nota de Agile" : "su lead";
+    const dia = typeof consultaLead.fecha === "string" ? consultaLead.fecha.slice(0, 10) : "";
+    partes.push(`la consulta de ${de}${dia ? ` (${dia.split("-").reverse().join("/")})` : ""}`);
+  }
   partes.push(contacto ? `la ficha de ${contacto.nombre || "el contacto"}${contacto.empresa ? ` (${contacto.empresa})` : ""}` : "sin ficha (destinatario desconocido)");
   // El resto de la ficha que entró: notas internas, campos personalizados,
   // etiquetas y teléfonos.

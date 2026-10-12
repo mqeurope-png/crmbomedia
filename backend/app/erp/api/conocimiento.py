@@ -430,7 +430,7 @@ def resolver(
     salida["catalogo"] = catalogo.para_asistente(
         session, intereses=[payload.interes] if payload.interes else [],
         idioma=(payload.idioma or "es").strip().lower()[:2], maquina=payload.maquina,
-        modelo_flux=payload.modelo,
+        modelo_flux=payload.modelo, texto_cliente=payload.texto,
     )
     return salida
 

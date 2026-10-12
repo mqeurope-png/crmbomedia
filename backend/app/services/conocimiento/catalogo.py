@@ -25,10 +25,11 @@ datos. Aquí viven:
   Bart; el único interés comercial sin máquina en el compositor es el CNC:
   queda como hueco y se enlaza la página de producto del interés.
 - **De dónde se eligen las máquinas** (`para_asistente`), por este orden: lo
-  que el cliente nombra en el hilo (por el nombre y, más flojo, por la
-  descripción, las características y el texto alternativo), lo que pide la
-  instrucción de quien envía («las máquinas de DTF» manda), los consumibles
-  de la máquina que ya tiene y, por último, el interés clasificado.
+  que nombra el cliente en sus correos o en la consulta de su lead (por el
+  nombre y, más flojo, por la descripción, las características y el texto
+  alternativo), lo que pide la instrucción de quien envía («las máquinas de
+  DTF» manda), los consumibles de la máquina que ya tiene y, por último, los
+  intereses que tocan sus palabras («T-Shirts» → dtf) y el clasificado.
 - Los **consumibles y repuestos de la máquina que tiene el cliente**: se
   casan por las palabras de sus pedidos contra el nombre y la categoría de
   los productos de las tiendas.
@@ -1371,10 +1372,13 @@ def productos_por_clave(
 def para_asistente(
     session: Session, *, intereses: Iterable[str] | None, idioma: str, maquina: str | None,
     modelo_flux: str | None, ahora: datetime | None = None, config: dict[str, Any] | None = None,
-    texto_hilo: str | None = None, instruccion: str | None = None,
+    texto_cliente: str | None = None, instruccion: str | None = None,
 ) -> dict[str, Any]:
-    """El bloque CATÁLOGO de un borrador. Las máquinas se eligen por este
-    orden: (1) las que el cliente nombra en el hilo, (2) las que pide la
+    """El bloque CATÁLOGO de un borrador. `texto_cliente` es lo que ha escrito
+    el cliente: sus correos del hilo y la consulta de su último lead (el
+    formulario o la nota de Agile), que en la respuesta a un lead suele ser lo
+    único suyo, porque el hilo es nuestro acuse de recibo. Las máquinas se
+    eligen por este orden: (1) las que nombra el cliente, (2) las que pide la
     instrucción de quien envía (una máquina concreta o un interés: «las
     máquinas de DTF» manda), (4) las que PUEDE que nombren el hilo o la
     instrucción (una sola palabra del nombre, o un código de su descripción:
@@ -1401,7 +1405,7 @@ def para_asistente(
     # Lo que la consulta añade: intereses que no pide la instrucción ni tiene ya
     # clasificados el contacto.
     consulta = [(c, ps) for c, ps in intereses_y_palabras(
-        texto_hilo, codigos_validos, palabras=tabla,
+        texto_cliente, codigos_validos, palabras=tabla,
         tallas_uv=[c for c in codigos if c in TALLAS_UV], con_tallas=False)
         if c not in intereses_instruccion and c not in codigos]
     intereses_consulta = [c for c, _ in consulta]
@@ -1437,8 +1441,8 @@ def para_asistente(
         """Uno de cada lista, por turnos: [a1, b1, a2, b2, a3…]."""
         return [x for ronda in zip_longest(*listas) for x in ronda if x is not None]
 
-    # 1. Lo que nombra el cliente en el hilo.
-    menciones_hilo = menciones_en(texto_hilo, grupos)
+    # 1. Lo que nombra el cliente (en sus correos o en su consulta).
+    menciones_hilo = menciones_en(texto_cliente, grupos)
     hilo_seguras, hilo_posibles = _partir(menciones_hilo)
     _añadir(_por_origen(hilo_seguras), "hilo")
     # 2. Lo que pide quien envía: una máquina concreta, o un interés entero.

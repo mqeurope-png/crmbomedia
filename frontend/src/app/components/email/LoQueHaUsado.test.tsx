@@ -43,6 +43,13 @@ describe("Lo que ha usado", () => {
       .toBeInTheDocument();
   });
 
+  it("dice que leyó la consulta del formulario del lead, que cuenta para las máquinas", () => {
+    render(<LoQueHaUsado borrador={borrador({ mensajes_hilo: 1, contacto: { nombre: "Ana" },
+      consulta_lead: { fuente: "web_form", fecha: "2026-10-12T09:30:00+00:00", caracteres: 120 } })} />);
+    expect(screen.getByText(/1 mensaje del hilo · la consulta de su formulario \(12\/10\/2026\) · la ficha de Ana/))
+      .toBeInTheDocument();
+  });
+
   it("en una corrección explica la caché: leída, o guardada en la de otro modelo", () => {
     const leida = { ...borrador({ contacto: { nombre: "Ana" } }), turno: 2,
       tokens_cache_lectura: 6446, modelo: "claude-haiku-5-5" };
