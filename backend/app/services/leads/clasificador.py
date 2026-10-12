@@ -481,6 +481,21 @@ def _casa(texto_normalizado: str, clave: str) -> int:
     return sum(1 for _ in _compilado(clave).finditer(texto_normalizado))
 
 
+def normalizar_texto(texto: str | None) -> str:
+    """El texto como se casan las palabras clave: minúsculas, sin acentos y con
+    espacios simples. Sirve también para normalizar las propias claves (el
+    `*` del prefijo se conserva)."""
+    return _normalizar(texto or "")
+
+
+def posicion_de_clave(texto_normalizado: str, clave: str) -> int | None:
+    """Dónde casa por primera vez una palabra clave (palabra o frase entera;
+    `*` al final de una palabra = prefijo) en un texto ya normalizado; None si
+    no casa. La usan también las palabras por interés del catálogo."""
+    m = _compilado(clave).search(texto_normalizado)
+    return m.start() if m else None
+
+
 def _tramos(texto_normalizado: str, claves: tuple[str, ...]) -> list[tuple[int, int]]:
     """Los trozos del texto que casan con alguna de las claves, fusionando
     los que se solapan: «impresora uv» casa con `impresora* uv` y con `uv`,

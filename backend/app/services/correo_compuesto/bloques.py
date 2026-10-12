@@ -556,3 +556,58 @@ def normalizar(estructura: Any, avisos: list[str] | None = None) -> dict[str, An
 
 def vacia(estructura: dict[str, Any] | None) -> bool:
     return not (estructura or {}).get("bloques")
+
+
+def primero_es_texto(estructura: dict[str, Any] | None) -> bool:
+    """Si el correo empieza por un bloque de texto (el saludo)."""
+    bloques = (estructura or {}).get("bloques") or []
+    return bool(bloques) and bloques[0].get("tipo") == TIPO_TEXTO
+
+
+def abrir_con_saludo(estructura: dict[str, Any]) -> bool:
+    """En una respuesta (o en un correo a alguien con quien ya hay
+    conversación) el correo empieza por el saludo y la entrada: si delante del
+    primer bloque de texto va otro (un hero, una tira de marca, unas fichas),
+    ese texto pasa al principio. El hero de apertura es de un correo frío.
+    True si ha movido algo."""
+    bloques = estructura.get("bloques") or []
+    primero = next((i for i, b in enumerate(bloques) if b.get("tipo") == TIPO_TEXTO), None)
+    if not primero:
+        return False
+    bloques.insert(0, bloques.pop(primero))
+    return True
+
+
+def _clave_url(url: Any) -> str:
+    if isinstance(url, dict):
+        return "|".join(f"{k}={str(v).strip().rstrip('/')}" for k, v in sorted(url.items()))
+    return str(url or "").strip().rstrip("/")
+
+
+def quitar_botones_repetidos(estructura: dict[str, Any]) -> list[str]:
+    """Un mismo enlace va en un solo botón del correo (12/10/2026: «Ver la gama
+    DTF» salía en el hero y otra vez al final): se queda el primero y los de
+    después se quitan; un bloque de botones que se queda sin ninguno, fuera.
+    Devuelve los textos quitados."""
+    vistos: set[str] = set()
+    quitados: list[str] = []
+    bloques: list[dict[str, Any]] = []
+    for b in estructura.get("bloques") or []:
+        if b.get("tipo") in (TIPO_HERO, TIPO_CTA) and b.get("botones"):
+            botones = []
+            for bt in b["botones"]:
+                clave = _clave_url(bt.get("url"))
+                if clave and clave in vistos:
+                    quitados.append(str(en_idioma(bt.get("texto"), None) or ""))
+                    continue
+                vistos.add(clave)
+                botones.append(bt)
+            if not botones and b["tipo"] == TIPO_CTA:
+                continue
+            if botones:
+                b["botones"] = botones
+            else:
+                b.pop("botones", None)
+        bloques.append(b)
+    estructura["bloques"] = bloques
+    return quitados

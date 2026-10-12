@@ -46,6 +46,7 @@ import logging
 import re
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
+from itertools import zip_longest
 from typing import Any
 
 from sqlalchemy import func, select
@@ -63,6 +64,7 @@ from app.models.conocimiento import (
     MarcaCatalogo,
     ProductoCatalogo,
 )
+from app.services.leads import clasificador
 from app.services.web_forms import sitios as registro_sitios
 
 logger = logging.getLogger(__name__)
@@ -859,16 +861,19 @@ def maquinas_para(
     session: Session, intereses: Iterable[str] | None, *, idioma: str, ahora: datetime,
     config: dict[str, Any], maximo: int = MAQUINAS_MAX,
     filas: list[InteresProducto] | None = None,
+    grupos: dict[str, list[ProductoCatalogo]] | None = None,
 ) -> list[dict[str, Any]]:
     """Las máquinas que encajan con los intereses del lead (el principal
     primero), en su idioma, con precio tal cual y enlace. Como mucho `maximo`.
-    `filas` es el mapa ya cargado, si quien llama lo tiene."""
+    `filas` (el mapa) y `grupos` (las máquinas), ya cargados si quien llama
+    los tiene."""
     codigos = [str(c).strip().lower() for c in (intereses or []) if str(c or "").strip()]
     if not codigos:
         return []
     if filas is None:
         filas, _ = cargar_mapa(session)
-    grupos = _maquinas_por_producto(session)
+    if grupos is None:
+        grupos = _maquinas_por_producto(session)
     if not grupos:
         return []
     meses = int(config.get("precio_meses_orientativo") or 6)
@@ -992,10 +997,24 @@ def mapa_resuelto(session: Session, config: dict[str, Any] | None = None) -> dic
             if grupos else "el catálogo está vacío: sincroniza el compositor"
         )
         huecos.append({"interes": interes.codigo, "etiqueta": interes.etiqueta, "motivo": motivo})
+    # Las palabras de cada interés (las de partida y las cambiadas), para la
+    # pantalla: la UV de cualquier tamaño primero, luego sus tallas y el resto,
+    # y también los intereses del mapa que aún no tienen ninguna.
+    tabla = palabras_por_interes(cfg)
+    propias = set((cfg.get("interes_palabras") or {}).keys())
+    for f in filas:
+        tabla.setdefault(f.interes, [])
+    palabras = [
+        {"interes": codigo,
+         "etiqueta": ETIQUETA_UV if codigo == CLAVE_UV else catalogo.etiqueta(codigo),
+         "palabras": lista, "propias": codigo in propias}
+        for codigo, lista in tabla.items()
+    ]
     return {
         "filas": salida_filas, "de_la_base": de_la_base, "huecos": huecos,
         "revisado": bool(cfg.get("interes_productos_revisado")),
         "hallazgo": HALLAZGO_SIN_PRODUCTO, "catalogo_vacio": not grupos,
+        "palabras": palabras,
     }
 
 
@@ -1010,30 +1029,102 @@ _PALABRAS_SIN_PESO: frozenset[str] = frozenset({
     "model", "modelo", "kit", "set", "pack", "with", "con", "para", "the", "and", "for", "von",
     "und", "mit", "der", "die", "das", "les", "des", "pour", "avec", "van", "met", "voor",
 })
-#: Palabras que, en la instrucción o en el hilo, señalan un interés aunque no
-#: se nombre ninguna máquina («las máquinas de DTF»).
-_UV_GENERICO: tuple[str, ...] = ("uv", "uv-led", "ultravioleta", "ultraviolet")
-#: Los tres tamaños de UV solo con «UV» delante («una UV grande»); «UV» a secas
-#: son los tres, el mediano primero.
-_UV_TAMANO: dict[str, tuple[str, ...]] = {
-    "uv_pequeno": ("pequeño", "pequeña", "pequeña", "small", "klein", "petit", "a3", "a4"),
-    "uv_mediano": ("mediano", "mediana", "medium", "mittel", "moyen", "a2"),
-    "uv_grande": ("grande", "gran", "large", "groß", "gross", "flatbed", "industrial"),
+#: Las palabras por interés (12/10/2026): si la consulta del cliente o la
+#: instrucción de quien envía dicen alguna, las máquinas de ese interés entran
+#: como candidatas aunque el contacto esté clasificado de otra forma, y si
+#: tocan varios intereses entran las de todos («placas de metal y camisetas»:
+#: UV y DTF). Se casan como las palabras clave del clasificador: palabra o
+#: frase entera, sin acentos ni mayúsculas, `*` al final = prefijo. Esto es lo
+#: de partida; lo que se cambia en la pantalla interés → máquinas va en
+#: `conocimiento.interes_palabras` (solo los intereses cambiados).
+#: `uv` no es un interés: es la UV de cualquier tamaño. Las palabras de cada
+#: talla («grande», «A3») solo cuentan si el texto dice también UV; sin talla,
+#: entran las tres, la mediana primero.
+CLAVE_UV = "uv"
+ETIQUETA_UV = "UV de cualquier tamaño"
+TALLAS_UV: tuple[str, ...] = ("uv_mediano", "uv_pequeno", "uv_grande")
+PALABRAS_DE_PARTIDA: dict[str, tuple[str, ...]] = {
+    CLAVE_UV: (
+        "uv", "uv-led", "led uv", "ultravioleta", "ultraviolet*", "impresora* uv", "uv printer*",
+        "uv-printer*", "uv-drucker", "uv drucker", "uv-druck*", "imprimante* uv", "artisjet",
+        # Soportes planos para imprimir encima: placas y chapas de metal.
+        "placa* metal*", "placa* de metal", "metal plate*", "metallplatte*", "metallschild*",
+        "plaque* metal*", "plaque* en metal", "metalen plat*",
+    ),
+    "uv_pequeno": ("pequeno", "pequena", "pequenos", "pequenas", "small", "klein*", "petit*",
+                   "a3", "a4"),
+    "uv_mediano": ("mediano", "mediana", "medium", "mittel*", "moyen*", "a2"),
+    "uv_grande": ("grande", "gran", "large", "gross", "groß", "flatbed", "industrial",
+                  "gran formato", "large format", "grossformat*", "großformat*"),
+    "dtf": (
+        "dtf", "textil*", "textile*", "textiel*", "camiseta*", "camisa*", "t-shirt*", "tshirt*",
+        "shirt*", "sudadera*", "hoodie*", "ropa", "prenda*", "garment*", "kleidung",
+        "bekleidung", "vetement*", "kleding", "transfer", "transfert", "transferdruck*",
+        "gorra*", "polo", "polos", "tejido*", "tissu*", "sublimacion", "sublimation", "dtg",
+    ),
+    "corte_laser": (
+        "laser*", "corte", "cortar", "cortadora*", "cutting", "cutter*", "laser cut*",
+        "schneid*", "laserschneid*", "decoupe*", "snijden", "grabar", "metacrilato",
+        "acrilico", "acryl*", "plexi*", "madera", "wood", "holz", "bois", "hout", "mdf", "co2",
+    ),
+    "grabado_laser": (
+        "laser*", "grabar", "grabado*", "grabador*", "engrav*", "gravur*", "gravier*", "graver",
+        "gravure*", "graveer*", "graveren", "marcaje", "marcado laser", "marquage",
+    ),
+    "packaging": (
+        "packaging", "embalaje*", "cajas", "estuche*", "boxes", "carton", "cardboard",
+        "verpackung*", "faltschachtel*", "emballage*", "verpakking*", "overprint*",
+        "sobreimpresion",
+    ),
+    "vending": (
+        "vending", "expendedor*", "verkaufsautomat*", "automaten", "distributeur* automatique*",
+        "snackautomaat", "pimpam", "pim pam",
+    ),
+    "cnc": (
+        "cnc", "fresadora*", "fresado", "router", "mecanizado", "milling", "fraisage", "frasen",
+        "fräsen", "frasmaschine", "freesmachine",
+    ),
 }
-_PALABRAS_DE_INTERES: dict[str, tuple[str, ...]] = {
-    "dtf": ("dtf", "textil", "textile", "textiel", "camiseta", "camisetas", "t-shirt", "tshirt",
-            "shirts", "sudadera", "prenda", "prendas", "transfer"),
-    "corte_laser": ("láser", "laser", "corte", "cortar", "cortadora", "cutting", "cutter",
-                    "schneiden", "découpe", "snijden"),
-    "grabado_laser": ("láser", "laser", "grabado", "grabar", "grabadora", "engraving", "engraver",
-                      "gravur", "gravieren", "gravure", "graveren"),
-    "packaging": ("packaging", "cajas", "caja", "bolsas", "bolsa", "embalaje", "overprint",
-                  "overprinter", "sobreimpresión", "boxes", "bags", "verpackung", "emballage",
-                  "verpakking"),
-    "vending": ("vending", "expendedora", "expendedoras", "máquina expendedora",
-                "vendingautomat", "distributeur"),
-    "cnc": ("cnc", "fresadora", "fresado", "router", "milling", "fräse"),
-}
+#: Como mucho estas palabras por interés, de este largo.
+MAX_PALABRAS_INTERES = 80
+MAX_LARGO_PALABRA = 60
+#: Con varios intereses a la vez, el tope de máquinas del borrador sube esto
+#: por cada interés de más, hasta `MAQUINAS_MAX_VARIOS`.
+MAQUINAS_EXTRA_POR_INTERES = 2
+MAQUINAS_MAX_VARIOS = 10
+
+
+def palabras_por_interes(config: dict[str, Any] | None) -> dict[str, list[str]]:
+    """Las palabras de cada interés que valen ahora: las de partida y, encima,
+    las cambiadas en la pantalla (`conocimiento.interes_palabras`)."""
+    salida = {codigo: list(palabras) for codigo, palabras in PALABRAS_DE_PARTIDA.items()}
+    propias = (config or {}).get("interes_palabras") or {}
+    if isinstance(propias, dict):
+        for codigo, palabras in propias.items():
+            if isinstance(palabras, list):
+                salida[str(codigo)] = [str(p) for p in palabras]
+    return salida
+
+
+def normalizar_palabras(palabras: Iterable[Any]) -> list[str]:
+    """Las palabras de un interés limpias: como se casan (minúsculas, sin
+    acentos), sin vacías ni repetidas; `ValueError` si alguna no vale."""
+    salida: list[str] = []
+    for p in palabras:
+        texto = clasificador.normalizar_texto(str(p or "")).strip(" ,;")
+        if not texto:
+            continue
+        if len(texto) > MAX_LARGO_PALABRA:
+            raise ValueError(f"«{texto[:30]}…» es demasiado larga (como mucho "
+                             f"{MAX_LARGO_PALABRA} letras).")
+        if not any(ch.isalnum() for ch in texto) or "*" in texto.replace("* ", "").rstrip("*"):
+            raise ValueError(f"«{texto}» no vale: una palabra o una frase, y el * solo al "
+                             "final de una palabra (prefijo).")
+        if texto not in salida:
+            salida.append(texto)
+    if len(salida) > MAX_PALABRAS_INTERES:
+        raise ValueError(f"Como mucho {MAX_PALABRAS_INTERES} palabras por interés.")
+    return salida
 
 
 def _tokens(texto: str | None) -> set[str]:
@@ -1145,33 +1236,58 @@ def _intereses_con_maquina(codigos: Iterable[str], filas: list[InteresProducto],
     }
 
 
-def intereses_de_texto(texto: str | None, codigos_validos: Iterable[str] | None = None,
-                       ) -> list[str]:
-    """Los intereses que nombra un texto («las máquinas de DTF» → dtf; «una
-    láser para cortar» → corte_laser, grabado_laser), en el orden en que
-    aparecen sus palabras. Solo los códigos que existen en el catálogo de
-    intereses, si se pasa."""
-    tokens = _tokens(texto)
-    if not tokens:
+def intereses_y_palabras(
+    texto: str | None, codigos_validos: Iterable[str] | None = None, *,
+    palabras: dict[str, list[str]] | None = None, tallas_uv: Iterable[str] | None = None,
+) -> list[tuple[str, list[str]]]:
+    """Los intereses que toca un texto por sus palabras, con las palabras que
+    casaron, en el orden en que aparecen en el texto («las máquinas de DTF» →
+    dtf; «una láser para cortar» → corte_laser, grabado_laser; «una UV
+    grande» → uv_grande; «UV» a secas → las tres tallas, la mediana primero,
+    o las de `tallas_uv` si se pasan: la talla en la que ya está clasificado
+    el contacto). Solo los códigos de `codigos_validos`, si se pasa."""
+    tabla = palabras if palabras is not None else palabras_por_interes(None)
+    normalizado = clasificador.normalizar_texto(texto)
+    if not normalizado:
         return []
     validos = set(codigos_validos) if codigos_validos is not None else None
 
     def _vale(codigo: str) -> bool:
         return validos is None or codigo in validos
 
-    salida: list[str] = []
-    # UV: con tamaño («una UV grande»), ese; «UV» a secas, los tres (el mediano primero).
-    if any(p in tokens for p in _UV_GENERICO) or any(c in tokens for c in _UV_TAMANO):
-        con_tamano = [c for c, palabras in _UV_TAMANO.items()
-                      if _vale(c) and (any(p in tokens for p in palabras) or c in tokens)]
-        if con_tamano:
-            salida.extend(con_tamano)
-        elif any(p in tokens for p in _UV_GENERICO):
-            salida.extend(c for c in ("uv_mediano", "uv_pequeno", "uv_grande") if _vale(c))
-    for codigo, palabras in _PALABRAS_DE_INTERES.items():
-        if _vale(codigo) and (any(p in tokens for p in palabras) or codigo in tokens):
-            salida.append(codigo)
-    return salida
+    def _aciertos(claves: Iterable[str]) -> list[tuple[int, str]]:
+        salida: list[tuple[int, str]] = []
+        for clave in claves:
+            posicion = clasificador.posicion_de_clave(normalizado, clave)
+            if posicion is not None:
+                salida.append((posicion, clave.rstrip("*")))
+        return sorted(salida)
+
+    tocados: list[tuple[int, str, list[str]]] = []
+    uv = _aciertos(tabla.get(CLAVE_UV, ()))
+    if uv:
+        tallas = [(t, a) for t in TALLAS_UV if _vale(t) and (a := _aciertos(tabla.get(t, ())))]
+        if tallas:
+            tocados.extend((a[0][0], t, [w for _, w in uv + a]) for t, a in tallas)
+        else:
+            por_defecto = [t for t in (tallas_uv or ()) if t in TALLAS_UV] or list(TALLAS_UV)
+            tocados.extend((uv[0][0], t, [w for _, w in uv]) for t in por_defecto if _vale(t))
+    for codigo, claves in tabla.items():
+        if codigo == CLAVE_UV or codigo in TALLAS_UV or not _vale(codigo):
+            continue
+        aciertos = _aciertos(claves)
+        if aciertos:
+            tocados.append((aciertos[0][0], codigo, [w for _, w in aciertos]))
+    # Por dónde aparecen en el texto; a igualdad, en el orden de la tabla.
+    tocados.sort(key=lambda t: t[0])
+    return [(codigo, list(dict.fromkeys(casadas))) for _, codigo, casadas in tocados]
+
+
+def intereses_de_texto(texto: str | None, codigos_validos: Iterable[str] | None = None, *,
+                       palabras: dict[str, list[str]] | None = None) -> list[str]:
+    """Los códigos de `intereses_y_palabras`, sin las palabras."""
+    return [codigo for codigo, _ in intereses_y_palabras(texto, codigos_validos,
+                                                         palabras=palabras)]
 
 
 def maquinas_por_origen(
@@ -1251,25 +1367,48 @@ def para_asistente(
     instrucción de quien envía (una máquina concreta o un interés: «las
     máquinas de DTF» manda), (4) las que PUEDE que nombren el hilo o la
     instrucción (una sola palabra del nombre, o un código de su descripción:
-    `hilo_posible`, `instruccion_posible`), (5) las del interés clasificado;
-    entre medias (3) van los consumibles de la máquina que ya tiene. Cada
-    máquina lleva de dónde salió (`eleccion`). Los avisos en su idioma y la
-    declaración del IVA por fuente. Nunca el catálogo entero."""
+    `hilo_posible`, `instruccion_posible`) y (5) las de los intereses que toca
+    la consulta por sus palabras («T-Shirts» → dtf; `consulta`) y las del
+    interés clasificado; entre medias (3) van los consumibles de la máquina
+    que ya tiene. Con varios intereses en (5) entran las de todos, por turnos
+    (una de cada), y el tope sube un poco. Cada máquina lleva de dónde salió
+    (`eleccion`). Los avisos en su idioma y la declaración del IVA por fuente.
+    Nunca el catálogo entero."""
     from app.services.conocimiento.config import configuracion  # noqa: PLC0415
 
     cfg = config or configuracion(session)
     ahora = ahora or datetime.now(UTC)
     filas, _ = cargar_mapa(session)
     grupos = _maquinas_por_producto(session)
+    tabla = palabras_por_interes(cfg)
     codigos = [str(c).strip().lower() for c in (intereses or []) if str(c or "").strip()]
-    codigos_validos = {f.interes for f in filas} | set(_PALABRAS_DE_INTERES) | set(codigos)
-    intereses_instruccion = intereses_de_texto(instruccion, codigos_validos)
+    codigos_validos = ({f.interes for f in filas} | (set(tabla) - {CLAVE_UV}) | set(TALLAS_UV)
+                       | set(codigos))
+    intereses_instruccion = intereses_de_texto(instruccion, codigos_validos, palabras=tabla)
+    # «UV» a secas en la consulta de un contacto ya clasificado en una talla:
+    # esa talla, no las tres.
+    # Lo que la consulta añade: intereses que no pide la instrucción ni tiene ya
+    # clasificados el contacto.
+    consulta = [(c, ps) for c, ps in intereses_y_palabras(
+        texto_hilo, codigos_validos, palabras=tabla,
+        tallas_uv=[c for c in codigos if c in TALLAS_UV])
+        if c not in intereses_instruccion and c not in codigos]
+    intereses_consulta = [c for c, _ in consulta]
+    pedidos = list(dict.fromkeys(intereses_instruccion + intereses_consulta + codigos))
+    # Sin máquina de verdad (ninguna fila del mapa con producto), no porque el
+    # tope del borrador ya estuviera lleno con lo que nombra el hilo.
+    con_maquina = _intereses_con_maquina(pedidos, filas, grupos)
+    # El tope: seis; con varios intereses a la vez, dos más por cada uno de más
+    # (la UV en sus tres tallas cuenta como uno), hasta diez.
+    familias = {CLAVE_UV if c in TALLAS_UV else c for c in con_maquina}
+    tope = min(MAQUINAS_MAX_VARIOS,
+               MAQUINAS_MAX + MAQUINAS_EXTRA_POR_INTERES * max(0, len(familias) - 1))
     maquinas: list[dict[str, Any]] = []
     vistos: set[str] = set()
 
-    def _añadir(lista: list[dict[str, Any]], eleccion: str) -> None:
+    def _añadir(lista: list[dict[str, Any]], eleccion: str, maximo: int = MAQUINAS_MAX) -> None:
         for m in lista:
-            if m["origen_id"] in vistos or len(maquinas) >= MAQUINAS_MAX:
+            if m["origen_id"] in vistos or len(maquinas) >= maximo:
                 continue
             vistos.add(m["origen_id"])
             maquinas.append({**m, "eleccion": eleccion})
@@ -1283,6 +1422,10 @@ def para_asistente(
         return ([o for o, fuerza in menciones if fuerza == FUERZA_NOMBRE],
                 [o for o, fuerza in menciones if fuerza != FUERZA_NOMBRE])
 
+    def _por_turnos(listas: list[list[Any]]) -> list[Any]:
+        """Uno de cada lista, por turnos: [a1, b1, a2, b2, a3…]."""
+        return [x for ronda in zip_longest(*listas) for x in ronda if x is not None]
+
     # 1. Lo que nombra el cliente en el hilo.
     menciones_hilo = menciones_en(texto_hilo, grupos)
     hilo_seguras, hilo_posibles = _partir(menciones_hilo)
@@ -1293,22 +1436,32 @@ def para_asistente(
     _añadir(_por_origen(instruccion_seguras), "instruccion")
     if intereses_instruccion:
         _añadir(maquinas_para(session, intereses_instruccion, idioma=idioma, ahora=ahora,
-                              config=cfg, filas=filas), "instruccion")
+                              config=cfg, filas=filas, grupos=grupos), "instruccion")
     # 3. Los consumibles de la máquina que ya tiene (lista aparte).
     consumibles = consumibles_para(session, maquina=maquina, modelo_flux=modelo_flux,
                                    idioma=idioma, ahora=ahora, config=cfg)
     # 4. Lo que PUEDE que nombren (una palabra suelta del nombre, un código de
-    # la descripción): detrás de lo seguro, delante del interés.
+    # la descripción): detrás de lo seguro, delante de los intereses.
     _añadir(_por_origen(hilo_posibles), "hilo_posible")
     _añadir(_por_origen(instruccion_posibles), "instruccion_posible")
-    # 5. El interés clasificado.
-    _añadir(maquinas_para(session, codigos, idioma=idioma, ahora=ahora, config=cfg, filas=filas),
-            "interes")
-    pedidos = list(dict.fromkeys(intereses_instruccion + codigos))
-    # Sin máquina de verdad (ninguna fila del mapa con producto), no porque el
-    # tope del borrador ya estuviera lleno con lo que nombra el hilo.
-    con_maquina = _intereses_con_maquina(pedidos, filas, grupos)
-    sin_maquina = [c for c in pedidos if c not in con_maquina]
+    # 5. Los intereses que toca la consulta y el clasificado: por turnos entre
+    # intereses (y la UV, por turnos entre sus tallas), hasta el tope.
+    eleccion_de = dict.fromkeys(intereses_consulta, "consulta")
+    for c in codigos:
+        eleccion_de.setdefault(c, "interes")
+    colas: dict[str, list[list[tuple[str, dict[str, Any]]]]] = {}
+    for c, eleccion in eleccion_de.items():
+        de_interes = maquinas_para(session, [c], idioma=idioma, ahora=ahora, config=cfg,
+                                   maximo=MAQUINAS_MAX_VARIOS, filas=filas, grupos=grupos)
+        colas.setdefault(CLAVE_UV if c in TALLAS_UV else c, []).append(
+            [(eleccion, m) for m in de_interes])
+    for eleccion, m in _por_turnos([_por_turnos(listas) for listas in colas.values()]):
+        _añadir([m], eleccion, maximo=tope)
+    # «Sin máquina» solo de lo que pide la instrucción o tiene clasificado: lo
+    # que solo toca la consulta y no tiene máquina no se le dice a la IA (no
+    # tiene página de producto en ENLACES a la que mandar).
+    sin_maquina = [c for c in dict.fromkeys(intereses_instruccion + codigos)
+                   if c not in con_maquina]
     codigo_avisos = (idioma or "").strip().lower()[:2]
     return {
         "maquinas": maquinas,
@@ -1316,6 +1469,8 @@ def para_asistente(
         "sin_maquina": sin_maquina,
         "con_filas": sorted({f.interes for f in filas if f.activo}),
         "intereses_instruccion": intereses_instruccion,
+        "intereses_consulta": intereses_consulta,
+        "palabras_consulta": {c: ps[:5] for c, ps in consulta},
         "menciones": {
             "hilo": [grupos[o][0].nombre for o, _ in menciones_hilo if o in grupos],
             "instruccion": [grupos[o][0].nombre for o, _ in menciones_instruccion if o in grupos],

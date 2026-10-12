@@ -208,11 +208,18 @@ manda). El bloque va como primer bloque del mensaje de usuario con
 la petición, que cambia, fuera: la API cobra lo leído de caché a una décima
 parte del precio de entrada (una vigésima en Opus 5.5), y `ia_llamadas` e
 `ia_borradores` guardan `tokens_cache_lectura` y `tokens_cache_escritura`, que
-`coste.py` cobra a su precio. La caché es **por modelo**: con el modelo de las
-correcciones distinto del primer borrador (Haiku por defecto), la primera
-corrección escribe su propia caché (12.000 tokens × 1,25 × 0,10 $/M ≈ 0,0015 $)
-y las siguientes la leen; con el mismo modelo, ya la primera lee. «Lo que ha
-usado» enseña los tokens leídos y escritos de verdad. El SDK fijado
+`coste.py` cobra a su precio. La caché es **por modelo** y dura 5 minutos: con
+el modelo de las correcciones distinto del primer borrador (Haiku por defecto),
+la primera corrección escribe su propia caché (12.000 tokens × 1,25 × 0,10 $/M
+≈ 0,0015 $) y las siguientes la leen si llegan antes de 5 minutos; con el mismo
+modelo, ya la primera lee. Comprobado el 12/10/2026 a raíz de un «0 leídos,
+6.446 escritos» en la primera corrección: era eso, y las correcciones seguidas
+mandan el mismo prefijo byte a byte (sistema, contexto, modelo y parámetros;
+lo prueba un test). Lo que sí se tiraba era la caché que escribía el primer
+borrador con su modelo, que no lee nadie: ahora el contexto solo se marca como
+cacheable cuando el turno va con el modelo de las correcciones
+(`redactor._llamar`). «Lo que ha usado» enseña los tokens leídos y escritos de
+verdad y, cuando un turno escribe sin leer, por qué. El SDK fijado
 (`anthropic==0.40.0`) recibe los bloques tal cual y los parámetros nuevos
 (`thinking`, `output_config`) viajan en `extra_body`.
 
@@ -436,6 +443,16 @@ la respuesta en texto sigue siendo la de siempre y la opción por defecto.
   en el móvil, cada una con su pie si lo hay. Una imagen que ya no está en la
   web no sale y se avisa. «Pon el hero de DTF» en una corrección añade el
   bloque con una imagen de las que casan con «DTF» y deja lo demás igual.
+- **El orden y los botones** (12/10/2026, el hilo de talentosdiversos abría con
+  un hero a toda página y el «Hola Marny» venía después): en una **respuesta**
+  —hay hilo, o hay correos anteriores con el contacto— el correo empieza por el
+  saludo y la entrada, y el hero va detrás; el hero de apertura queda para un
+  correo nuevo a alguien con quien no hay conversación. Lo dice el prompt y lo
+  asegura el código (`bloques.abrir_con_saludo`); si la persona deja el hero
+  arriba en la vista previa, una corrección lo respeta. Y **un mismo enlace va
+  en un solo botón** («Ver la gama DTF» salía en el hero y otra vez al final):
+  se queda el primero, el repetido se quita y se avisa
+  (`bloques.quitar_botones_repetidos`).
 - **La vista previa** sustituye al editor: el correo tal cual sale, en
   escritorio o en móvil; los textos se editan pulsando encima (cambia ese
   campo de la estructura y nada más) y el bloque elegido se sube, se baja, se

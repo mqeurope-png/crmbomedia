@@ -200,7 +200,10 @@ PROMPT_SISTEMA = (
     "el idioma del correo si lo hay; si es de otro idioma, dilo en el texto del bloque).\n"
     '- {"tipo":"hero","imagen":"I1","titulo":"…","subtitulo":"…","puntos":["…"],"botones":'
     '[{"texto":"…","enlace":"L2"}],"disposicion":"arriba|lateral|fondo"}: la cabecera con una '
-    "imagen de la lista IMÁGENES; como mucho uno, al principio o justo después del saludo. "
+    "imagen de la lista IMÁGENES; como mucho uno. En una RESPUESTA (hay HILO, o correos "
+    "anteriores con el contacto) el correo empieza por el saludo y la entrada, y el hero va "
+    "DESPUÉS; solo en un correo nuevo a alguien con quien no hay conversación puede abrir el "
+    "correo. "
     "«arriba» (la imagen encima del texto) por defecto; «lateral», imagen y texto lado a lado; "
     "«fondo», el texto sobre la imagen. Puntos y botones, opcionales.\n"
     '- {"tipo":"muestras","imagenes":["I2","I3","I4"],"titulo":"…","pies":["…","…","…"]}: '
@@ -215,7 +218,9 @@ PROMPT_SISTEMA = (
     '- {"tipo":"separador"}.\n'
     "Reglas del compuesto: los productos SOLO por su referencia del CATÁLOGO; ningún precio, "
     "importe, plazo ni enlace escrito en los textos (los ponen las fichas y los botones); sin "
-    "firma (se añade después); entre 3 y 8 bloques; lo que más le encaja, primero.\n"
+    "firma (se añade después); entre 3 y 8 bloques; lo que más le encaja, primero; un mismo "
+    "enlace va en un solo botón del correo (si el hero lleva «Ver la gama», no lo repitas en "
+    "un «cta» al final).\n"
     'Un correo compuesto nuevo: {"modo":"compuesto","asunto":"…","idioma":"es","aviso":"",'
     '"pendiente":[],"bloques":[…]}.\n'
     "Para CORREGIR un compuesto te paso su ESTRUCTURA ACTUAL, con el «id» de cada bloque, y "
@@ -416,7 +421,10 @@ def _bloque_catalogo(ctx: Contexto) -> str:
         return "\n".join(lineas) + "\n"
     lineas = ["CATÁLOGO (los ÚNICOS productos y precios que puedes citar; el precio se copia TAL "
               "CUAL, con su moneda, sin convertir; cada producto con su enlace; entre corchetes, "
-              "su referencia para un correo compuesto):"]
+              "su referencia para un correo compuesto). Es una PRESELECCIÓN por lo que nombran el "
+              "hilo y la instrucción y por los intereses del cliente, no el catálogo entero: si "
+              "pide algo que no está aquí, no digas que no lo tenemos; di que se lo preparas "
+              "aparte y anótalo en «pendiente»:"]
     refs = referencias_catalogo(cat)
     if maquinas:
         # Por de dónde salió cada máquina: lo que nombra el cliente, lo que pide
@@ -434,6 +442,18 @@ def _bloque_catalogo(ctx: Contexto) -> str:
             lineas.append(f"Máquinas que pide la INSTRUCCIÓN de quien envía; {precios}:")
             lineas.extend(_linea_producto(m, avisos, ctx.idioma, refs.get(_clave_ref(m)))
                           for m in por_eleccion["instruccion"])
+        if por_eleccion.get("consulta"):
+            palabras = cat.get("palabras_consulta") or {}
+            de_consulta = dict.fromkeys(
+                str(m.get("interes") or "") for m in por_eleccion["consulta"])
+            por_que = "; ".join(
+                f"{', '.join(f'«{p}»' for p in palabras.get(i) or [])} → {i}"
+                for i in de_consulta if i)
+            lineas.append(
+                "Máquinas de lo que pide la CONSULTA del cliente, por sus palabras "
+                f"({por_que or '—'}); si pide varias cosas, contesta a todas; {precios}:")
+            lineas.extend(_linea_producto(m, avisos, ctx.idioma, refs.get(_clave_ref(m)))
+                          for m in por_eleccion["consulta"])
         posibles = por_eleccion.get("hilo_posible", []) + por_eleccion.get(
             "instruccion_posible", [])
         if posibles:
@@ -638,14 +658,17 @@ def prompt_usuario(ctx: Contexto) -> str:
     return bloque_contexto(ctx) + "\n" + peticion
 
 
-def mensaje_usuario(contexto_texto: str, peticion_texto: str) -> list[dict[str, Any]]:
-    """El mensaje de usuario en dos bloques: el contexto, marcado como cacheable
-    (la API lo cobra a una décima parte cuando vuelve igual), y la petición,
-    que cambia en cada turno y se queda fuera de la caché."""
-    return [
-        {"type": "text", "text": contexto_texto, "cache_control": {"type": "ephemeral"}},
-        {"type": "text", "text": peticion_texto},
-    ]
+def mensaje_usuario(contexto_texto: str, peticion_texto: str, *,
+                    cachear: bool = True) -> list[dict[str, Any]]:
+    """El mensaje de usuario en dos bloques: el contexto y la petición, que
+    cambia en cada turno y se queda fuera de la caché. El contexto se marca
+    como cacheable (la API lo cobra a una décima parte cuando vuelve igual)
+    solo si hay quien lo lea (`cachear`): la caché es de cada modelo, y
+    escribirla cuesta un 25 % más que no hacerlo."""
+    contexto: dict[str, Any] = {"type": "text", "text": contexto_texto}
+    if cachear:
+        contexto["cache_control"] = {"type": "ephemeral"}
+    return [contexto, {"type": "text", "text": peticion_texto}]
 
 
 def _parsear(raw: str, *, asunto_defecto: str | None, idioma_defecto: str | None) -> dict[str, Any]:
@@ -939,6 +962,19 @@ def _rellenar_compuesto(
         res = ia_compuesto.estructura_desde_ia(data.get("bloques"), refs, idioma=idioma_correo)
     estructura = res.estructura
     avisos.extend(res.avisos)
+    # En una respuesta (o en un correo a alguien con quien ya hay conversación)
+    # el correo empieza por el saludo y la entrada; el hero de apertura es de un
+    # correo frío. Si la estructura que se corrige ya empezaba por otra cosa, es
+    # que la persona lo dejó así en la vista previa: se respeta.
+    respuesta = b.thread_id is not None or bool(b.mensajes_historico)
+    if respuesta and (base is None or bq.primero_es_texto(base)) and bq.abrir_con_saludo(
+            estructura):
+        logger.info("asistente: el saludo pasa delante del hero (conversación %s)",
+                    b.conversacion_id or b.id)
+    repetidos = bq.quitar_botones_repetidos(estructura)
+    if repetidos:
+        avisos.append(f"Un mismo enlace iba en dos botones: se queda el primero y se quita "
+                      f"{', '.join(f'«{t}»' for t in repetidos)}.")
     html_descartado += res.html_descartado
     if res.html_descartado:
         avisos.append(f"La IA metió HTML en {res.html_descartado} texto(s) del correo y se ha "
@@ -1038,12 +1074,18 @@ def _modelos(cfg: dict[str, Any], settings: Any) -> tuple[str, str]:
 
 
 def _llamar(settings: Any, *, modelo: str, contexto_texto: str, peticion_texto: str,
-            cfg: dict[str, Any]) -> str:
+            cfg: dict[str, Any], modelo_correccion: str) -> str:
+    """Una llamada de un turno. El contexto va a la caché solo si el turno va
+    con el modelo de las correcciones, que es el que lo leerá en los turnos
+    siguientes: la caché es de cada modelo, así que la que escribe un primer
+    borrador con otro modelo no la lee nadie (12/10/2026: «0 leídos, 6.446
+    escritos» en la primera corrección)."""
     parametros = parametros_de_llamada(
         modelo, pensamiento_extendido=bool(cfg.get("pensamiento_extendido")))
     return llm._invoke_claude(
         api_key=settings.anthropic_api_key, model=modelo, system_prompt=PROMPT_SISTEMA,
-        user_prompt=mensaje_usuario(contexto_texto, peticion_texto),
+        user_prompt=mensaje_usuario(contexto_texto, peticion_texto,
+                                    cachear=modelo == modelo_correccion),
         max_tokens=MAX_TOKENS_RESPUESTA, parametros=parametros or None,
     )
 
@@ -1203,7 +1245,8 @@ def generar(
         return borrador
     try:
         raw = _llamar(settings, modelo=modelo, contexto_texto=contexto_texto,
-                      peticion_texto=peticion_texto, cfg=cfg)
+                      peticion_texto=peticion_texto, cfg=cfg,
+                      modelo_correccion=modelo_correccion)
     except llm.LLMError as exc:
         uso = llm.tomar_ultimo_uso()
         registrar_llamada(
@@ -1349,7 +1392,8 @@ def corregir(
             seleccion=seleccion or None, sobre_editor=sobre_editor)
     try:
         raw = _llamar(settings, modelo=modelo, contexto_texto=contexto_texto,
-                      peticion_texto=peticion_texto, cfg=cfg)
+                      peticion_texto=peticion_texto, cfg=cfg,
+                      modelo_correccion=modelo_correccion)
     except llm.LLMError as exc:
         uso = llm.tomar_ultimo_uso()
         registrar_llamada(

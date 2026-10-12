@@ -35,6 +35,28 @@ describe("Lo que ha usado", () => {
     ).toBeInTheDocument();
   });
 
+  it("cuenta las máquinas que entran por las palabras de la consulta", () => {
+    render(<LoQueHaUsado borrador={borrador({ mensajes_hilo: 1, contacto: { nombre: "Ana" },
+      catalogo: { maquinas: [{ nombre: "Orion 20", eleccion: "consulta" },
+        { nombre: "artisJet 5000U", eleccion: "interes" }], consumibles: [], sin_maquina: [] } })} />);
+    expect(screen.getByText(/2 máquinas del catálogo \(1 por las palabras de la consulta\)/))
+      .toBeInTheDocument();
+  });
+
+  it("en una corrección explica la caché: leída, o guardada en la de otro modelo", () => {
+    const leida = { ...borrador({ contacto: { nombre: "Ana" } }), turno: 2,
+      tokens_cache_lectura: 6446, modelo: "claude-haiku-5-5" };
+    const { unmount } = render(<LoQueHaUsado borrador={leida} />);
+    expect(screen.getByText(/turno 2: el contexto no se volvió a montar \(6\.?446 tokens leídos de la caché\)/))
+      .toBeInTheDocument();
+    unmount();
+    const escrita = { ...borrador({ contacto: { nombre: "Ana" } }), turno: 1,
+      tokens_cache_escritura: 6446, modelo: "claude-haiku-5-5" };
+    render(<LoQueHaUsado borrador={escrita} />);
+    expect(screen.getByText(/6\.?446 tokens guardados en la caché de claude-haiku-5-5: la caché es de cada modelo/))
+      .toBeInTheDocument();
+  });
+
   it("sin nada de eso, no dice nada de más", () => {
     render(<LoQueHaUsado borrador={borrador({ mensajes_hilo: 1, contacto: { nombre: "Ana" } })} />);
     const texto = screen.getByText(/la ficha de Ana/).textContent ?? "";

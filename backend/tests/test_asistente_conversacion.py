@@ -383,7 +383,9 @@ def test_con_instruccion_el_prompt_la_lleva_y_manda_sobre_el_hilo(
     assert b["instruccion"].startswith("dile que el plato PT5")
     bloques = falso.ultimo["bloques"]
     assert len(bloques) == 2
-    assert bloques[0]["cache_control"] == {"type": "ephemeral"}       # el contexto
+    # El primer borrador va con otro modelo que las correcciones y la caché es de
+    # cada modelo: la suya no la leería nadie, así que no se escribe (cuesta un 25 %).
+    assert "cache_control" not in bloques[0]                            # el contexto
     assert "cache_control" not in bloques[1]                            # la instrucción
     peticion = bloques[1]["text"]
     assert "INSTRUCCIÓN DE QUIEN ENVÍA (manda sobre lo que deduzcas del hilo)" in peticion
@@ -452,6 +454,15 @@ def test_una_correccion_no_vuelve_a_montar_el_contexto_y_manda_mucho_menos(
     assert primero["html"] in correccion["bloques"][1]["text"]
     assert correccion["model"] == "claude-haiku-5-5"                   # el de las correcciones
     assert primera["model"] == get_settings().anthropic_model           # el del primer borrador
+    assert "cache_control" not in primera["bloques"][0]                 # otro modelo: nadie la lee
+    # La corrección siguiente manda el MISMO prefijo, byte a byte (sistema, contexto
+    # marcado, modelo y parámetros): la API lee de caché lo que escribió la anterior.
+    with patch.object(llm, "_invoke_claude", falso):
+        assert _turno(http, segundo["id"], "más formal").status_code == 201
+    tercera = falso.ultimo
+    assert tercera["bloques"][0] == correccion["bloques"][0]
+    assert (tercera["system"], tercera["model"], tercera["parametros"]) == (
+        correccion["system"], correccion["model"], correccion["parametros"])
     assert segundo["turno"] == 1 and segundo["padre_id"] == primero["id"]
     assert segundo["conversacion_id"] == primero["id"]
     assert segundo["texto"].startswith("Hallo Klaus,\n\nkurz")
@@ -459,7 +470,8 @@ def test_una_correccion_no_vuelve_a_montar_el_contexto_y_manda_mucho_menos(
     with session_factory() as s:
         assert s.get(BorradorAsistente, primero["id"]).estado == ESTADO_REGENERADO
         llamadas = list(s.scalars(select(LlamadaIA).order_by(LlamadaIA.created_at)))
-        assert [ll.proposito for ll in llamadas] == ["asistente_borrador", "asistente_correccion"]
+        assert [ll.proposito for ll in llamadas] == [
+            "asistente_borrador", "asistente_correccion", "asistente_correccion"]
 
 
 def test_tres_correcciones_mantienen_la_conversacion_y_se_puede_volver_atras(
@@ -738,10 +750,19 @@ def test_cambiar_el_modelo_en_configuracion_cambia_el_que_se_llama(
         t0 = _pedir(http, thread_id).json()["borrador"]
         _turno(http, t0["id"], "más corto")
     assert [ll["model"] for ll in falso.llamadas] == ["claude-opus-5-5", "claude-haiku-4-5"]
+    # Con modelos distintos, el primer borrador no escribe caché; la corrección, sí.
+    assert ["cache_control" in ll["bloques"][0] for ll in falso.llamadas] == [False, True]
     # Pensamiento apagado: Opus 5.5 no se puede apagar (esfuerzo bajo); Haiku 4.5 no piensa.
     assert falso.llamadas[0]["parametros"] == {"output_config": {"effort": "low"}}
     assert falso.llamadas[1]["parametros"] is None
     assert t0["modelo"] == "claude-opus-5-5"
+    # El mismo modelo para todo: el primer borrador ya escribe la caché que leen
+    # las correcciones.
+    http.patch("/api/erp/settings", headers=headers, json={"asistente": {
+        "modelo_borrador": "claude-haiku-4-5"}})
+    with patch.object(llm, "_invoke_claude", falso):
+        _pedir(http, thread_id)
+    assert falso.ultimo["bloques"][0]["cache_control"] == {"type": "ephemeral"}
     # Con el pensamiento extendido encendido no se añade nada: manda el modelo.
     http.patch("/api/erp/settings", headers=headers, json={"asistente": {
         "pensamiento_extendido": True}})

@@ -223,6 +223,8 @@ class Contexto:
                 ],
                 "sin_maquina": list(self.catalogo.get("sin_maquina") or []),
                 "intereses_instruccion": list(self.catalogo.get("intereses_instruccion") or []),
+                "intereses_consulta": list(self.catalogo.get("intereses_consulta") or []),
+                "palabras_consulta": dict(self.catalogo.get("palabras_consulta") or {}),
                 "menciones": dict(self.catalogo.get("menciones") or {}),
                 "iva_por_fuente": dict(self.catalogo.get("iva_por_fuente") or {}),
             },

@@ -15399,6 +15399,8 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
 .kb-tabla .kb-coincide { margin-top: 4px; }
 .kb-tabla .kb-coincide .link-button { margin-left: 4px; text-decoration: none; }
 .kb-tabla input.kb-tema { min-width: 230px; }
+.kb-subtitulo { margin: var(--sp-3) 0 4px; font-size: 0.95rem; }
+.kb-tabla textarea { width: 100%; min-width: 260px; font: inherit; font-size: 0.85rem; }
 
 /* «Ayúdame a contestar»: botón en la toolbar del hilo y panel del borrador en el compositor. */
 .email-toolbar-asistente { border-color: var(--color-primary, #1d4ed8); color: var(--color-primary, #1d4ed8); }
