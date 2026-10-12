@@ -72,6 +72,9 @@ def como_dict(b: BorradorAsistente) -> dict[str, Any]:
         "destinatario_interno": bool(contexto.get("destinatario_interno")),
         "sin_hilo": b.thread_id is None,
         "texto": b.texto, "html": html_de(b),
+        # `compuesto`: el turno es un correo compuesto; `estructura` son sus
+        # bloques (la vista previa la genera con el HTML de BoHub, nunca de la IA).
+        "modo": b.modo or "normal", "estructura": _json(b.estructura_json, None),
         # La corrección partió de lo que había en el editor (el compositor lo
         # pone sin preguntar) y, si fue sobre una selección, el fragmento
         # reescrito y si pudo empalmarse en el texto (si no, `html` ES el

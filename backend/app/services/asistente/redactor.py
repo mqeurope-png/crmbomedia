@@ -65,6 +65,7 @@ from app.services.asistente.historico import ajustar_al_presupuesto
 from app.services.asistente.texto import (
     NIVEL_CORREO,
     NIVEL_DUDOSO,
+    a_html,
     cuerpo_a_html,
     empalmar,
     encajar_fragmento,
@@ -75,6 +76,10 @@ from app.services.asistente.texto import (
     parece_html,
     sin_firma,
 )
+from app.services.correo_compuesto import bloques as bq
+from app.services.correo_compuesto import datos as datos_compuesto
+from app.services.correo_compuesto import generador as generador_correo
+from app.services.correo_compuesto import ia as ia_compuesto
 from app.services.ia.coste import coste_usd
 from app.services.ia.modelos import parametros_de_llamada
 from app.services.ia.uso import registrar_llamada
@@ -158,15 +163,51 @@ PROMPT_SISTEMA = (
     "negrita y, si el producto tiene enlace en CATÁLOGO o ENLACES, el enlace puesto sobre el "
     "nombre: <li><strong><a href='…'>Nombre</a></strong> — precio y lo esencial</li>. En los "
     "atributos usa comillas simples, para no romper el JSON. Si te piden algo que no cabe en "
-    "ese formato (un correo «maquetado», «con imágenes de producto», banners, colores), no lo "
-    "hagas en el cuerpo: redacta el correo sencillo y di en «aviso» que el correo va con "
-    "formato sencillo y que las imágenes no se insertan.\n\n"
+    "ese formato (un correo «maquetado», «con imágenes de producto», banners, colores) y el "
+    "FORMATO DE ESTE TURNO no es un correo compuesto, no lo hagas en el cuerpo: redacta el "
+    "correo sencillo y di en «aviso» que va en texto y que, con fichas e imágenes, se pide "
+    "como correo compuesto («Con fichas» en la franja).\n\n"
     "Devuelve SOLO un JSON válido, sin texto alrededor ni markdown:\n"
     '{"asunto": "asunto del correo", "cuerpo": "el correo en HTML sencillo (las etiquetas de '
     'FORMATO), o \\"\\" si no hay nada que enviar", "idioma": "código de dos '
     'letras del idioma del cuerpo", "aviso": "lo que tengas que decirle a la persona de BoHub, '
     'o \\"\\"", "pendiente": ["lo que no has podido responder con los datos"], '
     '"enlaces_usados": ["las URL de la lista que has puesto en el cuerpo"]}'
+    "\n\n"
+    "CORREO COMPUESTO (solo cuando el FORMATO DE ESTE TURNO lo pida o te deje elegirlo). Es el "
+    "correo con fichas de producto, tira de marca, vídeo y botones con el que presentamos "
+    "máquinas o productos. Tú NO escribes su HTML: devuelves su ESTRUCTURA y BoHub genera el "
+    "correo. Nunca pongas etiquetas HTML en ningún campo: los textos van en markdown sencillo "
+    "(**negrita**, *cursiva*, «- » al principio de línea para listas, [texto](L2) para un "
+    "enlace, párrafos separados por una línea en blanco).\n"
+    "Bloques:\n"
+    '- {"tipo":"texto","texto":"…"}: el saludo y la entrada (qué le mandas y por qué, a partir '
+    "de lo que preguntó) y, al final, el siguiente paso y la despedida. Breve.\n"
+    '- {"tipo":"marca","marca":"<una de MARCAS>"}: la tira de la marca (logo y web), antes de '
+    "sus fichas.\n"
+    '- {"tipo":"productos_fila","productos":["P1","P2","P3"]}: dos o tres fichas en fila; '
+    '{"tipo":"producto","producto":"P4"}: una ficha sola. La ficha (imagen, nombre, área, '
+    "características, precio con su IVA y botón) sale del CATÁLOGO: tú solo eliges qué "
+    "productos, por su referencia [P#] o [C#].\n"
+    '- {"tipo":"video","video":"V1","titulo":"…"}: solo un vídeo de la lista VÍDEOS.\n'
+    '- {"tipo":"cta","botones":[{"texto":"…","enlace":"L2"}]}: de uno a tres botones; el '
+    "enlace es una referencia: L# (ENLACES), P# (la página de ese producto) o M:<marca> (la "
+    "web de la marca).\n"
+    '- {"tipo":"destacado","titulo":"…","texto":"…","estilo":"aviso|promo|condicion"}: una '
+    "condición o un aviso que esté en los datos (nunca una promoción que no esté).\n"
+    '- {"tipo":"separador"}.\n'
+    "Reglas del compuesto: los productos SOLO por su referencia del CATÁLOGO; ningún precio, "
+    "importe, plazo ni enlace escrito en los textos (los ponen las fichas y los botones); sin "
+    "firma (se añade después); entre 3 y 8 bloques; lo que más le encaja, primero.\n"
+    'Un correo compuesto nuevo: {"modo":"compuesto","asunto":"…","idioma":"es","aviso":"",'
+    '"pendiente":[],"bloques":[…]}.\n'
+    "Para CORREGIR un compuesto te paso su ESTRUCTURA ACTUAL, con el «id» de cada bloque, y "
+    'devuelves SOLO lo que cambia: {"modo":"compuesto","asunto":"…","aviso":"","pendiente":[],'
+    '"operaciones":[…]}, con {"op":"quitar","id":"…"}, {"op":"editar","id":"…","campo":'
+    '"texto|titulo|boton|productos|botones|estilo","valor":…}, {"op":"añadir","despues_de":'
+    '"<id o inicio>","bloque":{…}}, {"op":"mover","id":"…","despues_de":"<id o inicio>"}, '
+    '{"op":"duplicar","id":"…"}, {"op":"reemplazar","id":"…","bloque":{…}} y '
+    '{"op":"idioma","valor":"en"}. Lo que no toques se queda igual.'
 )
 
 
@@ -233,9 +274,10 @@ def _bloque_enlaces(ctx: Contexto) -> str:
     lista = ctx.enlaces_lista()
     if not lista:
         return "ENLACES: ninguno disponible. No pongas ningún enlace.\n"
-    lineas = ["ENLACES (los únicos que puedes usar, tal cual):"]
-    for e in lista:
-        lineas.append(f"- {e['url']} — {e['etiqueta']}")
+    lineas = ["ENLACES (los únicos que puedes usar, tal cual; entre corchetes, su referencia "
+              "para un correo compuesto):"]
+    for i, e in enumerate(lista, 1):
+        lineas.append(f"- [L{i}] {e['url']} — {e['etiqueta']}")
     bloque = ctx.enlaces.get("flux") or {}
     if bloque:
         intencion = bloque.get("intencion")
@@ -259,8 +301,9 @@ def _iva_texto(iva: str | None, avisos: dict[str, str]) -> str:
     return f"IVA sin declarar («{avisos['sin_declarar']}»)"
 
 
-def _linea_producto(p: dict[str, Any], avisos: dict[str, str], idioma: str) -> str:
-    partes = [f"{p.get('nombre')} · {p.get('marca') or '—'}"]
+def _linea_producto(p: dict[str, Any], avisos: dict[str, str], idioma: str,
+                    ref: str | None = None) -> str:
+    partes = [(f"[{ref}] " if ref else "") + f"{p.get('nombre')} · {p.get('marca') or '—'}"]
     if p.get("categoria"):
         partes.append(f"área/categoría: {p['categoria']}")
     caracteristicas = [c for c in (p.get("caracteristicas") or []) if c][:2]
@@ -289,6 +332,21 @@ def _linea_producto(p: dict[str, Any], avisos: dict[str, str], idioma: str) -> s
     return "- " + " · ".join(partes)
 
 
+def _clave_ref(p: dict[str, Any]) -> str:
+    return f"{p.get('fuente')}|{p.get('origen_id')}"
+
+
+def referencias_catalogo(cat: dict[str, Any]) -> dict[str, str]:
+    """Las referencias de los productos del bloque CATÁLOGO, por su orden en la
+    lista (no en el texto): las máquinas `P1…`, los consumibles `C1…`. Son las
+    mismas que guarda el turno 0 (`ia.Referencias.desde`)."""
+    salida: dict[str, str] = {}
+    for prefijo, clave in (("P", "maquinas"), ("C", "consumibles")):
+        for i, p in enumerate(cat.get(clave) or [], 1):
+            salida[_clave_ref(p)] = f"{prefijo}{i}"
+    return salida
+
+
 def _bloque_catalogo(ctx: Contexto) -> str:
     """Las máquinas de su interés y los consumibles de su máquina, con el
     precio tal cual y los avisos. Es la única fuente de precios del borrador."""
@@ -306,7 +364,9 @@ def _bloque_catalogo(ctx: Contexto) -> str:
                           "Si ayuda, enlaza la página de producto del interés de ENLACES.)")
         return "\n".join(lineas) + "\n"
     lineas = ["CATÁLOGO (los ÚNICOS productos y precios que puedes citar; el precio se copia TAL "
-              "CUAL, con su moneda, sin convertir; cada producto con su enlace):"]
+              "CUAL, con su moneda, sin convertir; cada producto con su enlace; entre corchetes, "
+              "su referencia para un correo compuesto):"]
+    refs = referencias_catalogo(cat)
     if maquinas:
         # Por de dónde salió cada máquina: lo que nombra el cliente, lo que pide
         # la instrucción, el interés clasificado.
@@ -317,10 +377,11 @@ def _bloque_catalogo(ctx: Contexto) -> str:
         if por_eleccion.get("hilo"):
             lineas.append(
                 f"Máquinas que el cliente NOMBRA en el hilo (empieza por estas); {precios}:")
-            lineas.extend(_linea_producto(m, avisos, ctx.idioma) for m in por_eleccion["hilo"])
+            lineas.extend(_linea_producto(m, avisos, ctx.idioma, refs.get(_clave_ref(m)))
+                          for m in por_eleccion["hilo"])
         if por_eleccion.get("instruccion"):
             lineas.append(f"Máquinas que pide la INSTRUCCIÓN de quien envía; {precios}:")
-            lineas.extend(_linea_producto(m, avisos, ctx.idioma)
+            lineas.extend(_linea_producto(m, avisos, ctx.idioma, refs.get(_clave_ref(m)))
                           for m in por_eleccion["instruccion"])
         posibles = por_eleccion.get("hilo_posible", []) + por_eleccion.get(
             "instruccion_posible", [])
@@ -329,13 +390,15 @@ def _bloque_catalogo(ctx: Contexto) -> str:
                 "Máquinas que PUEDE que nombren el hilo o la instrucción (solo una palabra del "
                 "nombre, o un código que sale en su descripción): ofrécelas solo si el hilo lo "
                 f"confirma; {precios}:")
-            lineas.extend(_linea_producto(m, avisos, ctx.idioma) for m in posibles)
+            lineas.extend(_linea_producto(m, avisos, ctx.idioma, refs.get(_clave_ref(m)))
+                          for m in posibles)
         if por_eleccion.get("interes"):
             intereses = sorted(
                 {m.get("interes") for m in por_eleccion["interes"] if m.get("interes")})
             lineas.append(
                 f"Máquinas que encajan con su interés ({', '.join(intereses) or '—'}); {precios}:")
-            lineas.extend(_linea_producto(m, avisos, ctx.idioma) for m in por_eleccion["interes"])
+            lineas.extend(_linea_producto(m, avisos, ctx.idioma, refs.get(_clave_ref(m)))
+                          for m in por_eleccion["interes"])
     if cat.get("sin_maquina"):
         lineas.append(
             f"Sin máquina en el catálogo para: {', '.join(cat['sin_maquina'])}. No inventes "
@@ -344,7 +407,8 @@ def _bloque_catalogo(ctx: Contexto) -> str:
         lineas.append(
             f"Consumibles y repuestos de la tienda para su máquina ({ctx.maquina or '—'}); "
             f"precios {_iva_texto(iva.get('woocommerce'), avisos)}:")
-        lineas.extend(_linea_producto(c, avisos, ctx.idioma) for c in consumibles)
+        lineas.extend(_linea_producto(c, avisos, ctx.idioma, refs.get(_clave_ref(c)))
+                      for c in consumibles)
     if avisos:
         lineas.append(
             "Si citas algún precio, el correo lleva tal cual, en el idioma del correo, la frase "
@@ -638,6 +702,12 @@ def _rellenar(
     b.pendiente_json = json.dumps(data["pendiente"], ensure_ascii=False)
     contexto["enlaces_usados"] = data["enlaces_usados"]
     b.contexto_json = json.dumps(contexto, ensure_ascii=False, default=str)
+    b.modo = ia_compuesto.MODO_NORMAL
+    b.estructura_json = None
+    _uso_y_coste(b, uso, modelo_pedido)
+
+
+def _uso_y_coste(b: BorradorAsistente, uso: llm.Uso | None, modelo_pedido: str) -> None:
     nombre = (uso.modelo if uso else None) or modelo_pedido
     b.modelo = nombre[:80]
     b.tokens_entrada = uso.tokens_entrada if uso else 0
@@ -646,6 +716,209 @@ def _rellenar(
     b.tokens_cache_escritura = uso.tokens_cache_escritura if uso else 0
     b.coste_usd = coste_usd(nombre, b.tokens_entrada, b.tokens_salida, b.tokens_cache_lectura,
                             b.tokens_cache_escritura)
+
+
+# --- correo compuesto ----------------------------------------------------------------------
+
+AVISO_HTML_DESCARTADO = (
+    "La IA devolvió el correo en HTML en lugar de su estructura y se ha descartado: el HTML de "
+    "un correo compuesto lo genera BoHub. Vuelve a pedirlo.")
+AVISO_COMPUESTO_NO_PEDIDO = (
+    "La IA devolvió un correo compuesto cuando se pedía texto y no se ha usado. Vuelve a "
+    "pedirlo o cambia el formato a «Con fichas».")
+AVISO_CONTESTO_EN_TEXTO = (
+    "La IA ha contestado con un correo de texto. Si lo quieres con fichas de producto, pide "
+    "«Con fichas».")
+
+
+def _marcas_para_ia(refs: ia_compuesto.Referencias, idioma: str) -> str:
+    partes: list[str] = []
+    for clave in sorted(refs.marcas):
+        nombre = str(refs.marcas[clave].get("nombre") or clave)
+        url = refs.url_marca(clave, idioma)
+        partes.append(nombre + (f" (web {url})" if url else ""))
+    return ", ".join(partes) or "ninguna (no pongas tira de marca)"
+
+
+def formato_del_turno(modo: str | None, refs: ia_compuesto.Referencias, idioma: str) -> str:
+    """La cabecera de la petición de un turno compuesto o en el que elige la
+    IA: el formato, los vídeos y las marcas que puede usar. Un turno normal no
+    lleva nada (la petición es la de siempre)."""
+    if modo == ia_compuesto.MODO_NORMAL:
+        return ""
+    if modo == ia_compuesto.MODO_COMPUESTO:
+        cabecera = ("FORMATO DE ESTE TURNO: CORREO COMPUESTO. Devuelve su estructura (ver «CORREO "
+                    "COMPUESTO» en las instrucciones), no un «cuerpo».")
+    else:
+        cabecera = ("FORMATO DE ESTE TURNO: elige tú. Por defecto, el correo de siempre (el JSON "
+                    "con «cuerpo»). Solo si lo que hay que mandar es presentar productos o "
+                    "máquinas del CATÁLOGO (la gama, varias opciones con su precio), devuelve un "
+                    "CORREO COMPUESTO.")
+    videos = "; ".join(f"[{ref}] {url}" for ref, url in refs.videos.items())
+    return (f"{cabecera}\n"
+            f"VÍDEOS que puedes poner: {videos or 'ninguno (no pongas bloque de vídeo)'}.\n"
+            f"MARCAS para la tira: {_marcas_para_ia(refs, idioma)}.\n\n")
+
+
+def peticion_compuesta_correccion(*, estructura_texto: str, asunto_actual: str | None,
+                                  instruccion: str) -> str:
+    return (
+        f"ESTRUCTURA ACTUAL del correo compuesto (asunto: {asunto_actual or '—'}); es lo que hay "
+        f"ahora en la vista previa, con los retoques de quien envía:\n{estructura_texto}\n\n"
+        f"CORRECCIÓN DE QUIEN ENVÍA: «{instruccion}»\n\n"
+        "Aplica SOLO esa corrección con «operaciones» sobre los id de la estructura; lo demás se "
+        "queda igual. «asunto»: el actual, salvo que la corrección lo cambie."
+    )
+
+
+def peticion_compuesta_desde_texto(*, texto_actual: str, asunto_actual: str | None,
+                                   instruccion: str) -> str:
+    return (
+        f"TEXTO ACTUAL (asunto: {asunto_actual or '—'}):\n{texto_actual}\n\n"
+        f"CORRECCIÓN DE QUIEN ENVÍA: «{instruccion}»\n\n"
+        "Rehazlo como CORREO COMPUESTO, con «bloques» nuevos: lo que dice el texto (su entrada, "
+        "sus productos como fichas del CATÁLOGO por su referencia, su cierre), aplicando la "
+        "corrección."
+    )
+
+
+def _texto_de_estructura(session: Session, estructura: dict[str, Any]) -> str:
+    """El texto plano del correo compuesto (para pasarlo a un correo normal)."""
+    return generador_correo.generar(
+        estructura, datos_compuesto.resolver(session, estructura)).texto
+
+
+def _json_de(raw: str) -> dict[str, Any] | None:
+    try:
+        data = llm._parse_segment_json(raw)
+    except (ValueError, llm.LLMError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _es_compuesta(data: dict[str, Any] | None) -> bool:
+    return isinstance(data, dict) and (
+        "bloques" in data or "operaciones" in data
+        or str(data.get("modo") or "").strip().lower() == ia_compuesto.MODO_COMPUESTO)
+
+
+def _referencias_turno0(session: Session, ctx: Contexto, instruccion: str | None,
+                        estructura_actual: dict[str, Any] | None) -> ia_compuesto.Referencias:
+    cat = ctx.catalogo or {}
+    return ia_compuesto.Referencias.desde(
+        maquinas=list(cat.get("maquinas") or []), consumibles=list(cat.get("consumibles") or []),
+        enlaces=ctx.enlaces_lista(),
+        videos=ia_compuesto.videos_de(*(m.texto for m in ctx.mensajes), instruccion,
+                                      json.dumps(estructura_actual or {}, ensure_ascii=False)),
+        marcas=datos_compuesto.marcas(session),
+    )
+
+
+def _rellenar_compuesto(
+    session: Session, b: BorradorAsistente, data: dict[str, Any], uso: llm.Uso | None,
+    modelo_pedido: str, *, refs: ia_compuesto.Referencias, idioma: str,
+    base: dict[str, Any] | None, nombre_usuario: str | None, nombre_destinatario: str | None,
+    html_descartado: int = 0,
+) -> None:
+    """Un turno compuesto: la estructura (nueva, o la actual con las
+    operaciones de la corrección), la guardia sobre los textos que escribe la
+    IA, el correo generado (HTML y texto plano, para comparar lo enviado) y
+    los avisos."""
+    aviso = str(data.get("aviso") or "").strip()
+    avisos: list[str] = []
+    idioma_correo = str(data.get("idioma") or idioma or "").strip().lower()[:2] or idioma
+    if base is not None and "operaciones" in data:
+        res = ia_compuesto.aplicar_operaciones(base, data.get("operaciones"), refs)
+    else:
+        res = ia_compuesto.estructura_desde_ia(data.get("bloques"), refs, idioma=idioma_correo)
+    estructura = res.estructura
+    avisos.extend(res.avisos)
+    html_descartado += res.html_descartado
+    if res.html_descartado:
+        avisos.append(f"La IA metió HTML en {res.html_descartado} texto(s) del correo y se ha "
+                      "descartado: el HTML del correo lo genera BoHub.")
+    libre = ia_compuesto.texto_libre(estructura)
+    veredicto = evaluar_cuerpo(libre, nombre_usuario=nombre_usuario,
+                               nombre_destinatario=nombre_destinatario)
+    if veredicto.nivel == NIVEL_DUDOSO:
+        avisos.append(f"Revisa el correo antes de enviar: {veredicto.motivo}.")
+    elif veredicto.nivel != NIVEL_CORREO:
+        estructura = {**estructura, "bloques": []}
+        avisos.append(f"La IA no ha redactado un correo ({veredicto.motivo}). "
+                      f"Lo que dijo: «{libre}»")
+    asunto = (str(data.get("asunto") or "").strip() or b.asunto or "")[:500] or None
+    if estructura["bloques"]:
+        correo = generador_correo.generar(
+            estructura, datos_compuesto.resolver(session, estructura), asunto=asunto)
+        ajenos = ia_compuesto.importes_ajenos(libre, correo.precios)
+        if ajenos:
+            avisos.append(f"Un texto del correo menciona {', '.join(f'«{a}»' for a in ajenos)}, "
+                          "que no sale del catálogo: los precios van en las fichas. Revísalo.")
+        avisos.extend(correo.avisos)
+        b.html, b.texto = correo.html, correo.texto
+    else:
+        b.html, b.texto = "", ""
+        if not aviso and not avisos:
+            avisos.append("La IA no ha devuelto ningún bloque del correo ni ha dicho por qué. "
+                          "Vuelve a pedirlo.")
+    pendiente = data.get("pendiente")
+    contexto = _json(b.contexto_json)
+    for clave in ("seleccion", "sobre_editor", "enlaces_usados"):
+        contexto.pop(clave, None)
+    if html_descartado:
+        contexto["html_descartado"] = html_descartado
+    else:
+        contexto.pop("html_descartado", None)
+    b.contexto_json = json.dumps(contexto, ensure_ascii=False, default=str)
+    b.modo = ia_compuesto.MODO_COMPUESTO
+    b.estructura_json = json.dumps(estructura, ensure_ascii=False)
+    b.asunto = asunto
+    b.idioma = estructura["idioma"]
+    b.aviso = " ".join(t for t in [aviso, *avisos] if t).strip() or None
+    b.pendiente_json = json.dumps(
+        [str(x).strip() for x in pendiente if str(x or "").strip()]
+        if isinstance(pendiente, list) else [], ensure_ascii=False)
+    _uso_y_coste(b, uso, modelo_pedido)
+
+
+def _interpretar(
+    session: Session, b: BorradorAsistente, raw: str, uso: llm.Uso | None, modelo: str, *,
+    modo: str | None, forzado: bool, refs: ia_compuesto.Referencias, base: dict[str, Any] | None,
+    asunto_defecto: str | None, idioma_defecto: str | None, nombre_usuario: str | None,
+    nombre_destinatario: str | None, enlaces: list[str], editor_html: str | None = None,
+    seleccion_html: str | None = None, sobre_editor: bool = False,
+) -> None:
+    """Lo que devolvió el modelo, al turno: un correo compuesto (estructura) o
+    uno normal (cuerpo), según el formato del turno. La IA nunca devuelve el
+    HTML de un compuesto: si lo intenta, se descarta y se registra."""
+    data_json = _json_de(raw)
+    if modo != ia_compuesto.MODO_NORMAL and _es_compuesta(data_json):
+        _rellenar_compuesto(session, b, data_json or {}, uso, modelo, refs=refs,
+                            idioma=idioma_defecto or "es", base=base,
+                            nombre_usuario=nombre_usuario,
+                            nombre_destinatario=nombre_destinatario)
+        return
+    if modo == ia_compuesto.MODO_COMPUESTO and forzado:
+        logger.warning("asistente: la IA devolvió un cuerpo (HTML) en vez de la estructura de un "
+                       "correo compuesto (conversación %s); descartado",
+                       b.conversacion_id or b.id)
+        _rellenar_compuesto(session, b, {"bloques": [], "aviso": AVISO_HTML_DESCARTADO,
+                                         "asunto": asunto_defecto}, uso, modelo, refs=refs,
+                            idioma=idioma_defecto or "es", base=None,
+                            nombre_usuario=nombre_usuario,
+                            nombre_destinatario=nombre_destinatario, html_descartado=1)
+        return
+    if modo == ia_compuesto.MODO_NORMAL and _es_compuesta(data_json):
+        data: dict[str, Any] = {"cuerpo": "", "asunto": asunto_defecto or "",
+                                "idioma": idioma_defecto, "aviso": AVISO_COMPUESTO_NO_PEDIDO,
+                                "pendiente": [], "enlaces_usados": []}
+    else:
+        data = _parsear(raw, asunto_defecto=asunto_defecto, idioma_defecto=idioma_defecto)
+        if modo == ia_compuesto.MODO_COMPUESTO and data["cuerpo"]:
+            data["aviso"] = f"{data['aviso']} {AVISO_CONTESTO_EN_TEXTO}".strip()
+    _regla_primera(data, nombre_usuario=nombre_usuario, nombre_destinatario=nombre_destinatario)
+    _rellenar(b, data, uso, modelo, enlaces=enlaces, editor_html=editor_html,
+              seleccion_html=seleccion_html, sobre_editor=sobre_editor)
 
 
 def _modelos(cfg: dict[str, Any], settings: Any) -> tuple[str, str]:
@@ -692,6 +965,7 @@ def generar(
     destinatario: str | None = None, contacto: Contact | None = None,
     regenerar_de: str | None = None, ahora: datetime | None = None,
     texto_actual_html: str | None = None, seleccion_html: str | None = None,
+    formato: str = ia_compuesto.FORMATO_AUTO, estructura_actual: dict[str, Any] | None = None,
 ) -> BorradorAsistente:
     """El primer turno: monta el contexto, pide el borrador (si hay con qué),
     lo guarda con su coste y lo devuelve (ya en la sesión, sin commit). Sin
@@ -702,14 +976,22 @@ def generar(
     instrucción; con `seleccion_html`, solo de ese fragmento. Lanza
     `llm.LLMError` si la IA no está configurada o no responde, y `ValueError`
     si falta algo. `ahora` solo lo fijan los tests (la antigüedad de los
-    precios del catálogo)."""
+    precios del catálogo). `formato` (el interruptor de la franja: `auto`,
+    `normal`, `compuesto`) y la instrucción deciden si el turno es un correo
+    normal o uno compuesto; con `estructura_actual` (un compuesto en la vista
+    previa) el turno 0 es una corrección de ESE compuesto."""
     settings = get_settings()
     if not settings.anthropic_api_key:
         raise llm.LLMNotConfiguredError("La IA no está configurada (ANTHROPIC_API_KEY).")
     instruccion = (instruccion or "").strip()[:MAX_INSTRUCCION] or None
     editor_html = sin_firma(texto_actual_html).strip()
     actual, seleccion = texto_del_editor(texto_actual_html, seleccion_html)
-    if actual and not instruccion:
+    base = bq.normalizar(estructura_actual) if estructura_actual else None
+    if base is not None and bq.vacia(base):
+        base = None
+    if base is not None:
+        actual, seleccion, editor_html = "", "", ""
+    if (actual or base is not None) and not instruccion:
         raise ValueError(
             "Escribe qué quieres cambiar del texto que hay en el editor («más corto», «más "
             "formal», «en inglés»…).")
@@ -731,7 +1013,29 @@ def generar(
     )
     cfg = config_asistente(session)
     modelo_borrador, modelo_correccion = _modelos(cfg, settings)
-    if actual:
+    modo_actual = (ia_compuesto.MODO_COMPUESTO if base is not None
+                   else ia_compuesto.MODO_NORMAL if actual else None)
+    modo = ia_compuesto.modo_del_turno(formato=formato, instruccion=instruccion,
+                                       modo_actual=modo_actual)
+    refs = _referencias_turno0(session, ctx, instruccion, base)
+    cabecera = formato_del_turno(modo, refs, ctx.idioma)
+    if base is not None and modo == ia_compuesto.MODO_COMPUESTO:
+        # Un compuesto en la vista previa (un borrador reabierto): se corrige ESE.
+        modelo, proposito = modelo_correccion, PROPOSITO_CORRECCION
+        peticion_texto = cabecera + peticion_compuesta_correccion(
+            estructura_texto=ia_compuesto.estructura_para_ia(base, refs),
+            asunto_actual=ctx.asunto_respuesta, instruccion=instruccion or "")
+    elif base is not None:
+        # Un compuesto que pasa a texto: su texto plano es el borrador actual.
+        modelo, proposito = modelo_correccion, PROPOSITO_CORRECCION
+        peticion_texto = peticion_correccion(
+            texto_actual=a_html(_texto_de_estructura(session, base)),
+            asunto_actual=ctx.asunto_respuesta, instruccion=instruccion or "")
+    elif actual and modo == ia_compuesto.MODO_COMPUESTO:
+        modelo, proposito = modelo_correccion, PROPOSITO_CORRECCION
+        peticion_texto = cabecera + peticion_compuesta_desde_texto(
+            texto_actual=actual, asunto_actual=ctx.asunto_respuesta, instruccion=instruccion or "")
+    elif actual:
         # Hay texto en el editor: la IA corrige ESO (regla del 11/10/2026), con
         # el modelo de las correcciones; el contexto se monta igual, para que
         # los turnos siguientes lo reutilicen de caché.
@@ -741,7 +1045,7 @@ def generar(
             seleccion=seleccion or None, sobre_editor=True)
     else:
         modelo, proposito = modelo_borrador, PROPOSITO_ASISTENTE
-        peticion_texto = peticion_inicial(instruccion, sin_hilo=thread is None)
+        peticion_texto = cabecera + peticion_inicial(instruccion, sin_hilo=thread is None)
     # El presupuesto de tokens de entrada: se recorta por abajo (empresa y
     # correos viejos, lo más antiguo primero) hasta que el prompt cabe. El
     # hilo y el expediente no se tocan.
@@ -751,6 +1055,8 @@ def generar(
                          + estimar_tokens(peticion_texto)),
     )
     contexto_texto = bloque_contexto(ctx)
+    resumen = ctx.resumen()
+    resumen["refs"] = refs.como_dict()
     borrador_id = str(uuid4())
     borrador = BorradorAsistente(
         id=borrador_id, conversacion_id=borrador_id, turno=0, instruccion=instruccion,
@@ -762,7 +1068,7 @@ def generar(
         destinatario=ctx.destinatario, remitente=ctx.usuario.get("remitente"),
         asunto=ctx.asunto_respuesta or None, texto="",
         pendiente_json="[]", enlaces_json=json.dumps(ctx.enlaces_lista(), ensure_ascii=False),
-        contexto_json=json.dumps(ctx.resumen(), ensure_ascii=False, default=str),
+        contexto_json=json.dumps(resumen, ensure_ascii=False, default=str),
         alcance=alcance, mensajes_hilo=len(ctx.mensajes),
         mensajes_historico=len(ctx.historico) + sum(
             1 for e in ctx.empresa_asuntos if e.get("texto")),
@@ -796,15 +1102,18 @@ def generar(
         )
         raise
     uso = llm.tomar_ultimo_uso()
-    data = _parsear(raw, asunto_defecto=ctx.asunto_respuesta, idioma_defecto=ctx.idioma)
-    _regla_primera(data, nombre_usuario=ctx.usuario.get("nombre_pila"),
-                   nombre_destinatario=(ctx.contacto or {}).get("nombre"))
     # Enlaces que pueden ir en el cuerpo: los de la base de conocimiento y el
     # catálogo, más los que la persona ya tenía puestos en su texto.
     enlaces = [e["url"] for e in ctx.enlaces_lista()] + enlaces_de(actual)
-    _rellenar(borrador, data, uso, modelo, enlaces=enlaces, editor_html=editor_html,
-              seleccion_html=(seleccion_html or "").strip() if seleccion else None,
-              sobre_editor=bool(actual))
+    _interpretar(
+        session, borrador, raw, uso, modelo, modo=modo,
+        forzado=formato in (ia_compuesto.MODO_NORMAL, ia_compuesto.MODO_COMPUESTO), refs=refs,
+        base=base, asunto_defecto=ctx.asunto_respuesta, idioma_defecto=ctx.idioma,
+        nombre_usuario=ctx.usuario.get("nombre_pila"),
+        nombre_destinatario=(ctx.contacto or {}).get("nombre"), enlaces=enlaces,
+        editor_html=editor_html,
+        seleccion_html=(seleccion_html or "").strip() if seleccion else None,
+        sobre_editor=bool(actual))
     session.add(borrador)
     session.flush()
     llamada = registrar_llamada(
@@ -824,9 +1133,21 @@ def generar(
     return borrador
 
 
+def estructura_de(b: BorradorAsistente) -> dict[str, Any] | None:
+    """La estructura guardada de un turno compuesto (o None)."""
+    if not b.estructura_json:
+        return None
+    try:
+        datos = json.loads(b.estructura_json)
+    except (TypeError, ValueError):
+        return None
+    return datos if isinstance(datos, dict) else None
+
+
 def corregir(
     session: Session, *, borrador: BorradorAsistente, instruccion: str, usuario: User,
     texto_actual_html: str | None = None, seleccion_html: str | None = None,
+    formato: str = ia_compuesto.FORMATO_AUTO, estructura_actual: dict[str, Any] | None = None,
 ) -> BorradorAsistente:
     """Un turno más de la conversación: el mismo bloque de contexto guardado
     (cacheable), el texto actual y la instrucción nueva. El texto actual es lo
@@ -835,7 +1156,10 @@ def corregir(
     reescribe ese fragmento. Si no hay texto ninguno (no había nada que
     contestar), la instrucción es el primer borrador de verdad y va con el
     modelo del primer borrador; si no, es una corrección y va con el modelo de
-    las correcciones. El borrador que se corrige queda como regenerado."""
+    las correcciones. El borrador que se corrige queda como regenerado. Un
+    compuesto se corrige sobre su estructura (`estructura_actual`, la de la
+    vista previa con los textos retocados; si no llega, la del turno) con
+    operaciones; el interruptor (`formato`) puede pasarlo a texto o al revés."""
     settings = get_settings()
     if not settings.anthropic_api_key:
         raise llm.LLMNotConfiguredError("La IA no está configurada (ANTHROPIC_API_KEY).")
@@ -853,14 +1177,46 @@ def corregir(
     modelo_borrador, modelo_correccion = _modelos(cfg, settings)
     editor_html = sin_firma(texto_actual_html).strip()
     actual, seleccion = texto_del_editor(texto_actual_html, seleccion_html)
-    sobre_editor = bool(actual)
-    if not sobre_editor:
+    base = bq.normalizar(estructura_actual) if estructura_actual else estructura_de(borrador)
+    if base is not None:
+        base = bq.normalizar(base)
+        if bq.vacia(base):
+            base = None
+    sobre_editor = bool(actual) and base is None
+    if base is not None:
+        actual, seleccion, editor_html = "", "", ""
+    elif not sobre_editor:
         actual = borradores.html_de(borrador) if (borrador.texto or "").strip() else ""
         editor_html, seleccion = actual, ""
-    primera_redaccion = not actual
-    if primera_redaccion:
+    modo_actual = (ia_compuesto.MODO_COMPUESTO
+                   if base is not None or borrador.modo == ia_compuesto.MODO_COMPUESTO
+                   else ia_compuesto.MODO_NORMAL)
+    modo = ia_compuesto.modo_del_turno(formato=formato, instruccion=instruccion,
+                                       modo_actual=modo_actual)
+    refs = ia_compuesto.Referencias.de_dict(
+        _json(raiz.contexto_json).get("refs"), marcas=datos_compuesto.marcas(session),
+        videos=ia_compuesto.videos_de(contexto_texto, instruccion,
+                                      json.dumps(base or {}, ensure_ascii=False)))
+    cabecera = formato_del_turno(modo, refs, borrador.idioma or "es")
+    primera_redaccion = not actual and base is None
+    if base is not None and modo == ia_compuesto.MODO_COMPUESTO:
+        modelo, proposito = modelo_correccion, PROPOSITO_CORRECCION
+        peticion_texto = cabecera + peticion_compuesta_correccion(
+            estructura_texto=ia_compuesto.estructura_para_ia(base, refs),
+            asunto_actual=borrador.asunto, instruccion=instruccion)
+    elif base is not None:
+        modelo, proposito = modelo_correccion, PROPOSITO_CORRECCION
+        peticion_texto = peticion_correccion(
+            texto_actual=a_html(_texto_de_estructura(session, base)),
+            asunto_actual=borrador.asunto, instruccion=instruccion)
+    elif primera_redaccion:
         modelo, proposito = modelo_borrador, PROPOSITO_ASISTENTE
-        peticion_texto = peticion_inicial(instruccion, sin_hilo=borrador.thread_id is None)
+        peticion_texto = cabecera + peticion_inicial(
+            instruccion, sin_hilo=borrador.thread_id is None)
+    elif modo == ia_compuesto.MODO_COMPUESTO:
+        modelo, proposito = modelo_correccion, PROPOSITO_CORRECCION
+        peticion_texto = cabecera + peticion_compuesta_desde_texto(
+            texto_actual=actual, asunto_actual=borrador.asunto, instruccion=instruccion)
     else:
         modelo, proposito = modelo_correccion, PROPOSITO_CORRECCION
         peticion_texto = peticion_correccion(
@@ -878,11 +1234,8 @@ def corregir(
         )
         raise
     uso = llm.tomar_ultimo_uso()
-    data = _parsear(raw, asunto_defecto=borrador.asunto, idioma_defecto=borrador.idioma)
     contexto = _json(borrador.contexto_json)
     nombre_usuario = (usuario.full_name or usuario.email or "").strip()
-    _regla_primera(data, nombre_usuario=nombre_usuario,
-                   nombre_destinatario=(contexto.get("contacto") or {}).get("nombre"))
     nuevo = BorradorAsistente(
         id=str(uuid4()), conversacion_id=borrador.conversacion_id or borrador.id,
         turno=(borrador.turno or 0) + 1, padre_id=borrador.id, instruccion=instruccion,
@@ -895,9 +1248,15 @@ def corregir(
         estado=ESTADO_GENERADO,
     )
     enlaces = borradores.enlaces_del_borrador(borrador) + enlaces_de(actual)
-    _rellenar(nuevo, data, uso, modelo, enlaces=enlaces, editor_html=editor_html,
-              seleccion_html=(seleccion_html or "").strip() if seleccion else None,
-              sobre_editor=sobre_editor)
+    _interpretar(
+        session, nuevo, raw, uso, modelo, modo=modo,
+        forzado=formato in (ia_compuesto.MODO_NORMAL, ia_compuesto.MODO_COMPUESTO), refs=refs,
+        base=base, asunto_defecto=borrador.asunto, idioma_defecto=borrador.idioma,
+        nombre_usuario=nombre_usuario,
+        nombre_destinatario=(contexto.get("contacto") or {}).get("nombre"), enlaces=enlaces,
+        editor_html=editor_html,
+        seleccion_html=(seleccion_html or "").strip() if seleccion else None,
+        sobre_editor=sobre_editor)
     session.add(nuevo)
     session.flush()
     llamada = registrar_llamada(

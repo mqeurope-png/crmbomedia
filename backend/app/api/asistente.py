@@ -35,7 +35,7 @@ No hay aquí ningún camino que envíe correo.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
@@ -73,6 +73,12 @@ class _SobreElEditor(BaseModel):
     texto_actual_html: str | None = Field(default=None, max_length=redactor.MAX_TEXTO_EDITOR)
     #: El fragmento seleccionado en el editor: la corrección se aplica solo a él.
     seleccion_html: str | None = Field(default=None, max_length=redactor.MAX_TEXTO_EDITOR)
+    #: El interruptor de la franja: `auto` (decide la instrucción o la IA; por
+    #: defecto, texto), `normal` (texto) o `compuesto` (correo con fichas).
+    formato: Literal["auto", "normal", "compuesto"] = "auto"
+    #: El correo compuesto que hay ahora en la vista previa (con los textos
+    #: retocados): la corrección se aplica sobre ESA estructura.
+    estructura_actual: dict[str, Any] | None = None
 
 
 class GenerarIn(_SobreElEditor):
@@ -220,7 +226,8 @@ def generar(
         session, thread=thread, usuario=current_user, alcance=payload.alcance,
         instruccion=payload.instruccion, destinatario=payload.destinatario,
         regenerar_de=payload.regenerar_de, texto_actual_html=payload.texto_actual_html,
-        seleccion_html=payload.seleccion_html,
+        seleccion_html=payload.seleccion_html, formato=payload.formato,
+        estructura_actual=payload.estructura_actual,
     ))
     return _anotar_y_devolver(session, request, borrador, current_user,
                               {"regenerar_de": payload.regenerar_de})
@@ -274,6 +281,7 @@ def generar_nuevo(
         instruccion=payload.instruccion, destinatario=payload.destinatario.strip(),
         contacto=contacto, regenerar_de=payload.regenerar_de,
         texto_actual_html=payload.texto_actual_html, seleccion_html=payload.seleccion_html,
+        formato=payload.formato, estructura_actual=payload.estructura_actual,
     ))
     return _anotar_y_devolver(session, request, borrador, current_user,
                               {"sin_hilo": True, "regenerar_de": payload.regenerar_de})
@@ -298,7 +306,8 @@ def turno(
             status.HTTP_409_CONFLICT, "Ese borrador ya se resolvió (enviado o descartado).")
     nuevo = _redactar(session, lambda: redactor.corregir(
         session, borrador=borrador, instruccion=payload.instruccion, usuario=current_user,
-        texto_actual_html=payload.texto_actual_html, seleccion_html=payload.seleccion_html))
+        texto_actual_html=payload.texto_actual_html, seleccion_html=payload.seleccion_html,
+        formato=payload.formato, estructura_actual=payload.estructura_actual))
     return _anotar_y_devolver(session, request, nuevo, current_user, {"padre_id": borrador.id})
 
 
