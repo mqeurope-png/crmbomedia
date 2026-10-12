@@ -1046,24 +1046,31 @@ def test_la_consulta_del_formulario_cuenta_aunque_el_hilo_sea_solo_nuestro_acuse
     su acuse de recibo, que CITA la consulta pero lo mandamos nosotros. Las
     palabras y los nombres se buscaban solo en los correos del cliente —ninguno—
     y no entraba ninguna DTF. Lo que escribió en el formulario es su consulta,
-    igual que un correo suyo."""
+    igual que un correo suyo, si es reciente o el hilo empezó con ella."""
     consulta = ("Guten Tag, wir möchten Metallplatten und T-Shirts bedrucken, auch andere "
                 "Textilien. Welche Maschinen empfehlen Sie?")
+    base = datetime(2026, 10, 10, 9, 0, tzinfo=UTC)          # el primer mensaje de `_hilo`
     with session_factory() as s:
         _sincronizar_compositor(s)
-        contacto = _contacto(s, idioma="de", intereses=["uv_mediano"])
         form = WebForm(slug="mboprinters-contacto-de", name="MBO Printers DE", brand="mbo",
                        language="de", created_by_user_id=_admin(s).id, assignment_mode="none")
         s.add(form)
         s.flush()
         s.add(WebFormField(form_id=form.id, field_key="message", label="Ihre Nachricht",
                            field_type="textarea", position=0))
-        s.add(FormSubmission(form_id=form.id, contact_id=contacto.id, is_spam=False,
-                             raw_payload_json=json.dumps({"message": consulta})))
-        acuse = _hilo(s, contacto, [{"de": "info@mboprinters.com", "lado": "nosotros", "texto": (
-            "Hallo Klaus,\n\nvielen Dank für Ihre Nachricht über mboprinters.com.\n\n"
-            f"Ihre Nachricht:\n{consulta}\n\nMBO Printers")}],
-            asunto="Wir haben Ihre Anfrage erhalten · MBO Printers")
+
+        def _lead(email: str, cuando: datetime) -> tuple[Contact, EmailThread]:
+            contacto = _contacto(s, idioma="de", intereses=["uv_mediano"], email=email)
+            s.add(FormSubmission(form_id=form.id, contact_id=contacto.id, is_spam=False,
+                                 raw_payload_json=json.dumps({"message": consulta}),
+                                 created_at=cuando))
+            acuse = _hilo(s, contacto, [{"de": "info@mboprinters.com", "lado": "nosotros",
+                                         "texto": "Hallo,\n\nvielen Dank für Ihre Nachricht.\n\n"
+                                                  f"Ihre Nachricht:\n{consulta}\n\nMBO Printers"}],
+                          asunto=f"{email[:4]}: Ihre Anfrage bei MBO Printers")
+            return contacto, acuse
+
+        contacto, acuse = _lead(KLAUS, base - timedelta(minutes=1))
         s.commit()
         ctx = contexto.construir(s, thread=acuse, usuario=_admin(s), ahora=AHORA)
         assert [m.lado for m in ctx.mensajes] == ["nosotros"]
@@ -1075,22 +1082,47 @@ def test_la_consulta_del_formulario_cuenta_aunque_el_hilo_sea_solo_nuestro_acuse
         resumen = ctx.resumen()["consulta_lead"]
         assert resumen["fuente"] == "web_form" and resumen["caracteres"] == len(consulta)
         assert "texto" not in resumen
+        # La IA lee la consulta en la ficha: las palabras que se le citan, las ve.
+        bloque = redactor.bloque_contexto(ctx)
+        assert ("- Consulta de su último lead (formulario de la web, 2026-10-10; la escribió el "
+                f"cliente, es lo que pide): «{consulta}»") in bloque
         # Con «solo el hilo» no entra la ficha, y su consulta tampoco.
         solo_hilo = contexto.construir(s, thread=acuse, usuario=_admin(s), ahora=AHORA,
                                        alcance="hilo")
         assert solo_hilo.consulta_lead is None
         assert solo_hilo.catalogo["intereses_consulta"] == []
+        # Medio año después, el hilo de ese lead (su acuse) sigue hablando de ella...
+        despues = AHORA + timedelta(days=200)
+        assert contexto.construir(s, thread=acuse, usuario=_admin(s),
+                                  ahora=despues).catalogo["intereses_consulta"] == ["dtf"]
+        # ...pero un hilo nuevo de otro asunto, no: es vieja.
+        otro_hilo = _hilo(s, contacto, [{"de": KLAUS, "texto": "Wo finde ich die Rechnung?",
+                                         "fecha": despues}], asunto="Rechnung")
+        otro_hilo.first_message_at = despues
+        s.commit()
+        viejo = contexto.construir(s, thread=otro_hilo, usuario=_admin(s), ahora=despues)
+        assert viejo.consulta_lead is None and viejo.catalogo["intereses_consulta"] == []
+        # Un lead que la IA clasificó como spam no cuenta.
+        spam, acuse_spam = _lead("spam@druck.de", base - timedelta(minutes=1))
+        fila = s.scalar(select(LeadClassification).where(LeadClassification.contact_id == spam.id))
+        envio = s.scalar(select(FormSubmission).where(FormSubmission.contact_id == spam.id))
+        fila.source, fila.source_ref, fila.corrected_is_spam = "web_form", envio.id, True
+        s.commit()
+        assert contexto.construir(s, thread=acuse_spam, usuario=_admin(s),
+                                  ahora=AHORA).consulta_lead is None
         # Un lead sin envío de formulario (de Agile, a mano): el texto que se clasificó.
         otro = _contacto(s, idioma="de", intereses=["uv_mediano"], email="otro@druck.de")
         clasificacion = s.scalar(select(LeadClassification).where(
             LeadClassification.contact_id == otro.id))
         clasificacion.input_text = "Wir suchen einen Drucker für Hoodies."
+        clasificacion.lead_at = AHORA - timedelta(days=2)
         hilo_otro = _hilo(s, otro, [{"de": "info@mboprinters.com", "lado": "nosotros",
                                      "texto": "Danke für Ihre Anfrage."}], asunto="Anfrage")
         s.commit()
         ctx_otro = contexto.construir(s, thread=hilo_otro, usuario=_admin(s), ahora=AHORA)
         assert ctx_otro.catalogo["intereses_consulta"] == ["dtf"]
         assert ctx_otro.resumen()["consulta_lead"]["fuente"] == "test"
+        assert "- Consulta de su último lead (lead, " in redactor.bloque_contexto(ctx_otro)
     # «Probar» en Configuración ERP mira lo mismo que el asistente: lo que
     # escribe el cliente cuenta también para el catálogo.
     probar = http.post("/api/erp/conocimiento/resolver", headers=auth_headers(http, "admin"),
@@ -1495,8 +1527,8 @@ def test_las_maquinas_se_eligen_por_el_hilo_la_instruccion_y_el_interes(
         assert ctx.catalogo["menciones"]["flojas"] == ["Lyra 35"]
         bloque = redactor.bloque_contexto(ctx)
         assert ("Máquinas que el cliente NOMBRA, en sus correos o en la consulta de su "
-                "formulario (empieza por estas)") in bloque
-        assert "Máquinas que PUEDE que nombren el hilo o la instrucción" in bloque
+                "lead (empieza por estas)") in bloque
+        assert "Máquinas que PUEDE que nombren el cliente o la instrucción" in bloque
         assert "Máquinas que encajan con su interés" not in bloque
         assert ctx.resumen()["catalogo"]["maquinas"][0]["eleccion"] == "hilo"
         # Lo que el cliente de talentosdiversos escribe de verdad (DM3H, SM3,
@@ -1589,7 +1621,7 @@ def test_una_palabra_corriente_no_es_una_maquina_nombrada_y_el_tope_no_inventa_h
             ("artisJet 6090 Trust", "hilo_posible"), ("PimPam CaseBox", "interes"),
             ("PimPam Custom", "interes")]
         bloque = redactor.bloque_contexto(ctx)
-        assert "Máquinas que PUEDE que nombren el hilo o la instrucción" in bloque
+        assert "Máquinas que PUEDE que nombren el cliente o la instrucción" in bloque
         assert "Máquinas que el cliente NOMBRA" not in bloque
         # (2) Seis máquinas nombradas llenan el tope: el interés (vending) tiene
         # máquinas aunque no quepan, así que no es un hueco del catálogo.

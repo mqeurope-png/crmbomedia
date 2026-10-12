@@ -21,7 +21,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, select
@@ -62,6 +62,11 @@ logger = logging.getLogger(__name__)
 #: Un mensaje del hilo entra entero salvo que sea enorme (boletines, HTML
 #: con todo citado): a partir de aquí se recorta por el final.
 MAX_CHARS_MENSAJE = 6000
+#: La consulta del último lead cuenta como algo que escribe el cliente si es
+#: de estos días antes del borrador, o si el hilo que se contesta empezó con
+#: ella (su acuse de recibo o una respuesta a él): la de hace un año no habla
+#: de lo que pregunta hoy.
+CONSULTA_LEAD_DIAS = 30
 ASUNTOS_RECIENTES = 15
 PEDIDOS_MAX = 10
 PAGO_PENDIENTE = (PaymentStatus.PENDING, PaymentStatus.PARTIAL_PAID, PaymentStatus.FAILED)
@@ -567,32 +572,59 @@ def clasificacion_de(session: Session, contacto: Contact) -> dict[str, Any] | No
     }
 
 
-def consulta_del_lead(session: Session, contacto: Contact) -> dict[str, Any] | None:
+def _utc(valor: datetime | None) -> datetime | None:
+    return valor if valor is None or valor.tzinfo else valor.replace(tzinfo=UTC)
+
+
+def _consulta_vigente(fecha: datetime | None, thread: EmailThread | None,
+                      ahora: datetime | None) -> bool:
+    """¿Habla la consulta del lead de esta conversación? Sí si es de los
+    últimos `CONSULTA_LEAD_DIAS` días, o si el hilo que se contesta empezó con
+    ella (de una hora antes a esos días después: su acuse, o una respuesta)."""
+    fecha = _utc(fecha)
+    if fecha is None:
+        return False
+    plazo = timedelta(days=CONSULTA_LEAD_DIAS)
+    if (_utc(ahora) or datetime.now(UTC)) - fecha <= plazo:
+        return True
+    inicio = _utc(thread.first_message_at) if thread is not None else None
+    return inicio is not None and fecha - timedelta(hours=1) <= inicio <= fecha + plazo
+
+
+def consulta_del_lead(
+    session: Session, contacto: Contact, *, thread: EmailThread | None = None,
+    ahora: datetime | None = None,
+) -> dict[str, Any] | None:
     """Lo que escribió el cliente en su último lead: la consulta del último
     envío de formulario (o de la nota «form note» de Agile) con los productos
     que marcó; sin ninguno, el texto de su última clasificación. En la
     respuesta a un lead el hilo suele ser solo nuestro acuse de recibo, que
     cita la consulta pero es nuestro (12/10/2026: «Metallplatten und T-Shirts»
-    no metía las DTF porque solo se miraban los correos del cliente)."""
+    no metía las DTF porque solo se miraban los correos del cliente). No
+    cuenta si es vieja (`_consulta_vigente`) ni si se clasificó como spam."""
     from app.services.leads import registro  # noqa: PLC0415
 
     try:
         entrada = registro.entrada_desde_contacto(session, contacto)
+        if entrada is not None:
+            fila = registro.clasificacion_existente(session, entrada)
+            texto = "\n".join(
+                p for p in (entrada.texto, ", ".join(entrada.productos)) if p.strip())
+            fuente, fecha = entrada.fuente, entrada.lead_at
+        else:
+            fila = registro.ultima_clasificacion(session, contacto.id)
+            if fila is None:
+                return None
+            texto, fuente = fila.input_text or "", fila.source
+            fecha = fila.lead_at or fila.created_at
     except Exception:  # noqa: BLE001 — sin la consulta, el borrador sigue
         logger.warning("asistente: no se pudo leer el último lead del contacto %s",
                        contacto.id, exc_info=True)
-        entrada = None
-    if entrada is not None:
-        texto = "\n".join(p for p in (entrada.texto, ", ".join(entrada.productos)) if p.strip())
-        fuente, fecha = entrada.fuente, entrada.lead_at
-    else:
-        fila = session.scalars(
-            select(LeadClassification).where(LeadClassification.contact_id == contacto.id)
-            .order_by(LeadClassification.created_at.desc()).limit(1)
-        ).first()
-        if fila is None:
-            return None
-        texto, fuente, fecha = fila.input_text or "", fila.source, fila.lead_at or fila.created_at
+        return None
+    if fila is not None and fila.es_spam_efectivo:
+        return None
+    if not _consulta_vigente(fecha, thread, ahora):
+        return None
     texto = recortar(texto.strip(), MAX_CHARS_MENSAJE)
     if not texto:
         return None
@@ -781,10 +813,10 @@ def construir(
     categorias = flux.cargar_categorias(session)
     cfg = config_asistente(session)
     ctx.presupuesto_tokens = int(cfg["presupuesto_tokens"])
-    texto_cliente = ultimo.texto if ultimo else ""
+    ultimo_texto_cliente = ultimo.texto if ultimo else ""
     # Lo que decide qué correos viejos vienen a cuento: el mensaje del cliente
     # y, sin hilo, la instrucción de quien envía (lo único que dice de qué va).
-    texto_comparar = texto_cliente if thread is not None else (ctx.instruccion or "")
+    texto_comparar = ultimo_texto_cliente if thread is not None else (ctx.instruccion or "")
     excluir = thread.id if thread is not None else None
     # Nivel 2 (el expediente) solo si hay ficha y el alcance pasa del hilo.
     if contacto is not None and alcance != ALCANCE_HILO:
@@ -798,7 +830,7 @@ def construir(
         ctx.facturas_pendientes = facturas_pendientes_de(ctx.pedidos)
         ctx.maquina, ctx.modelo_flux = maquina_de(ctx.pedidos, categorias)
         ctx.clasificacion = clasificacion_de(session, contacto)
-        ctx.consulta_lead = consulta_del_lead(session, contacto)
+        ctx.consulta_lead = consulta_del_lead(session, contacto, thread=thread, ahora=ahora)
         ctx.etapa = etapa_de(session, contacto)
         ctx.asuntos_recientes = asuntos_recientes_de(
             session, contacto, excluir_thread_id=excluir, limite=int(cfg["asuntos_max"]))

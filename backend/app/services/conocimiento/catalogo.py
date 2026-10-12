@@ -1380,7 +1380,7 @@ def para_asistente(
     único suyo, porque el hilo es nuestro acuse de recibo. Las máquinas se
     eligen por este orden: (1) las que nombra el cliente, (2) las que pide la
     instrucción de quien envía (una máquina concreta o un interés: «las
-    máquinas de DTF» manda), (4) las que PUEDE que nombren el hilo o la
+    máquinas de DTF» manda), (4) las que PUEDE que nombren el cliente o la
     instrucción (una sola palabra del nombre, o un código de su descripción:
     `hilo_posible`, `instruccion_posible`) y (5) las de los intereses que toca
     la consulta por sus palabras («T-Shirts» → dtf; `consulta`) y las del

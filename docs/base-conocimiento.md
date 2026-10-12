@@ -188,10 +188,18 @@ clasificó (`contexto.consulta_del_lead`). En la respuesta a un lead el hilo
 suele ser solo nuestro acuse de recibo, que cita la consulta pero es nuestro:
 hasta el 12/10/2026 solo se miraban los correos del cliente, y el contacto de
 prueba «acuserecibo test» (Metallplatten y T-Shirts) se quedaba sin las DTF.
-Con «solo el hilo» no entra la ficha y su consulta tampoco. «Lo que ha usado»
-lo dice («la consulta de su formulario (fecha)»). El texto en sí no se añade
-al prompt: sirve para elegir las máquinas (en la respuesta a un lead la IA lo
-lee en el acuse, que lo cita).
+
+- Cuenta si el lead es de los **últimos 30 días** (`CONSULTA_LEAD_DIAS`) o si el
+  hilo que se contesta **empezó con él** (su acuse, o una respuesta a él, aunque
+  sea meses después). Un lead de hace un año no entra en un hilo nuevo de otro
+  asunto.
+- No cuenta si ese lead se clasificó (o se corrigió) como spam, ni con «solo el
+  hilo» (no entra la ficha).
+- Va también a la FICHA del prompt («Consulta de su último lead (formulario de
+  la web, fecha; la escribió el cliente, es lo que pide): «…»», hasta 1.500
+  caracteres): las palabras que se le citan a la IA, las puede leer.
+- «Lo que ha usado» lo dice: «la consulta de su formulario (fecha)», con el día
+  de Madrid.
 
 1. **Lo que nombra el cliente** (`catalogo.menciones_en`): por el
    nombre del producto (entero, dos de sus palabras con peso, un código como
