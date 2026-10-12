@@ -182,11 +182,11 @@ PROMPT_SISTEMA = (
     '"enlaces_usados": ["las URL de la lista que has puesto en el cuerpo"]}'
     "\n\n"
     "CORREO COMPUESTO (solo cuando el FORMATO DE ESTE TURNO lo pida o te deje elegirlo). Es el "
-    "correo con fichas de producto, tira de marca, vídeo y botones con el que presentamos "
-    "máquinas o productos. Tú NO escribes su HTML: devuelves su ESTRUCTURA y BoHub genera el "
-    "correo. Nunca pongas etiquetas HTML en ningún campo: los textos van en markdown sencillo "
-    "(**negrita**, *cursiva*, «- » al principio de línea para listas, [texto](L2) para un "
-    "enlace, párrafos separados por una línea en blanco).\n"
+    "correo con fichas de producto, tira de marca, hero con imagen, galería de muestras, vídeo y "
+    "botones con el que presentamos máquinas o productos. Tú NO escribes su HTML: devuelves su "
+    "ESTRUCTURA y BoHub genera el correo. Nunca pongas etiquetas HTML en ningún campo: los "
+    "textos van en markdown sencillo (**negrita**, *cursiva*, «- » al principio de línea para "
+    "listas, [texto](L2) para un enlace, párrafos separados por una línea en blanco).\n"
     "Bloques:\n"
     '- {"tipo":"texto","texto":"…"}: el saludo y la entrada (qué le mandas y por qué, a partir '
     "de lo que preguntó) y, al final, el siguiente paso y la despedida. Breve.\n"
@@ -196,7 +196,17 @@ PROMPT_SISTEMA = (
     '{"tipo":"producto","producto":"P4"}: una ficha sola. La ficha (imagen, nombre, área, '
     "características, precio con su IVA y botón) sale del CATÁLOGO: tú solo eliges qué "
     "productos, por su referencia [P#] o [C#].\n"
-    '- {"tipo":"video","video":"V1","titulo":"…"}: solo un vídeo de la lista VÍDEOS.\n'
+    '- {"tipo":"video","video":"V1","titulo":"…"}: solo un vídeo de la lista VÍDEOS (va en '
+    "el idioma del correo si lo hay; si es de otro idioma, dilo en el texto del bloque).\n"
+    '- {"tipo":"hero","imagen":"I1","titulo":"…","subtitulo":"…","puntos":["…"],"botones":'
+    '[{"texto":"…","enlace":"L2"}],"disposicion":"arriba|lateral|fondo"}: la cabecera con una '
+    "imagen de la lista IMÁGENES; como mucho uno, al principio o justo después del saludo. "
+    "«arriba» (la imagen encima del texto) por defecto; «lateral», imagen y texto lado a lado; "
+    "«fondo», el texto sobre la imagen. Puntos y botones, opcionales.\n"
+    '- {"tipo":"muestras","imagenes":["I2","I3","I4"],"titulo":"…","pies":["…","…","…"]}: '
+    "una galería de 2 a 6 imágenes de trabajos impresos de la lista IMÁGENES, con un pie corto "
+    "por imagen si ayuda. El título de una imagen solo dice qué es (suele estar en inglés): no "
+    "lo copies en el correo.\n"
     '- {"tipo":"cta","botones":[{"texto":"…","enlace":"L2"}]}: de uno a tres botones; el '
     "enlace es una referencia: L# (ENLACES), P# (la página de ese producto) o M:<marca> (la "
     "web de la marca).\n"
@@ -211,8 +221,9 @@ PROMPT_SISTEMA = (
     "Para CORREGIR un compuesto te paso su ESTRUCTURA ACTUAL, con el «id» de cada bloque, y "
     'devuelves SOLO lo que cambia: {"modo":"compuesto","asunto":"…","aviso":"","pendiente":[],'
     '"operaciones":[…]}, con {"op":"quitar","id":"…"}, {"op":"editar","id":"…","campo":'
-    '"texto|titulo|boton|productos|botones|estilo","valor":…}, {"op":"añadir","despues_de":'
-    '"<id o inicio>","bloque":{…}}, {"op":"mover","id":"…","despues_de":"<id o inicio>"}, '
+    '"texto|titulo|subtitulo|boton|productos|botones|estilo|puntos|pies|imagen|imagenes|'
+    'disposicion","valor":…}, {"op":"añadir","despues_de":"<id o inicio>","bloque":{…}}, '
+    '{"op":"mover","id":"…","despues_de":"<id o inicio>"}, '
     '{"op":"duplicar","id":"…"}, {"op":"reemplazar","id":"…","bloque":{…}} y '
     '{"op":"idioma","valor":"en"}. Lo que no toques se queda igual.'
 )
@@ -795,12 +806,57 @@ def formato_del_turno(modo: str | None, refs: ia_compuesto.Referencias, idioma: 
                     "con «cuerpo»). Solo si lo que hay que mandar es presentar productos o "
                     "máquinas del CATÁLOGO (la gama, varias opciones con su precio), devuelve un "
                     "CORREO COMPUESTO.")
-    videos = "; ".join(
-        f"[{ref}] {v['url']}" + (f" ({v['titulo']})" if v.get("titulo") else "")
-        for ref, v in refs.videos.items())
+    def _video(ref: str, v: dict[str, Any]) -> str:
+        datos = " · ".join(str(x) for x in (v.get("titulo"), v.get("idioma")) if x)
+        return f"[{ref}] {v['url']}" + (f" ({datos})" if datos else "")
+
+    videos = "; ".join(_video(ref, v) for ref, v in refs.videos.items())
+    imagenes = "; ".join(
+        f"[{ref}] {v.get('titulo') or 'sin título'} ({v.get('sitio') or '—'}"
+        + (f", {v['ancho']}×{v['alto']}" if v.get("ancho") and v.get("alto") else "") + ")"
+        for ref, v in refs.imagenes.items())
     return (f"{cabecera}\n"
             f"VÍDEOS que puedes poner: {videos or 'ninguno (no pongas bloque de vídeo)'}.\n"
+            "IMÁGENES de las webs para el hero y las muestras (el título solo dice qué es; no lo "
+            f"copies): {imagenes or 'ninguna (no pongas hero ni muestras)'}.\n"
             f"MARCAS para la tira: {_marcas_para_ia(refs, idioma)}.\n\n")
+
+
+def anadir_medios(
+    session: Session, refs: ia_compuesto.Referencias, *, instruccion: str | None, idioma: str,
+    intereses: list[str] | None = None, sitio: str | None = None,
+) -> None:
+    """Las imágenes de las webs y los vídeos de la tabla que se le ofrecen a la
+    IA en un turno compuesto: los que van con las máquinas del correo (sus
+    `P#`), con lo que pide la instrucción y con el interés del lead. Las
+    palabras de la marca de una máquina no cuentan (todas las fotos de
+    artisJet no son de esa máquina); las de la instrucción, sí."""
+    from app.services.conocimiento import catalogo as catalogo_kb  # noqa: PLC0415
+    from app.services.conocimiento import imagenes as imagenes_kb  # noqa: PLC0415
+    from app.services.conocimiento import videos as videos_kb  # noqa: PLC0415
+
+    origenes = [p["origen_id"] for ref, p in refs.productos.items()
+                if ref.startswith("P") and p.get("origen_id")]
+    # Las palabras del NOMBRE de cada máquina («artisJet 3000Pro» → «3000pro»), no
+    # las de su clave interna, y sin las de ninguna marca (ni su clave ni su nombre).
+    de_marca = set(imagenes_kb.palabras_de(*(
+        f"{clave.replace('_', ' ')} {m.get('nombre') or ''}" for clave, m in refs.marcas.items())))
+    grupos = catalogo_kb._maquinas_por_producto(session) if origenes else {}
+    modelos: list[str] = []
+    for origen in origenes:
+        base = (grupos.get(origen) or [None])[0]
+        if base is None:
+            continue
+        propias = de_marca | set(imagenes_kb.palabras_de(base.marca))
+        modelos.append(" ".join(p for p in imagenes_kb.palabras_de(base.nombre)
+                                if p not in propias))
+    de_interes = [i.replace("_", " ") for i in intereses or []]
+    palabras = imagenes_kb.palabras_de(instruccion, *de_interes, *modelos)
+    for imagen in imagenes_kb.para_correo(session, palabras=palabras, sitio=sitio):
+        refs.anadir_imagen(imagen)
+    for video in videos_kb.para_correo(session, idioma=idioma, productos=origenes,
+                                       palabras=imagenes_kb.palabras_de(instruccion)):
+        refs.anadir_video(video)
 
 
 def peticion_compuesta_correccion(*, estructura_texto: str, asunto_actual: str | None,
@@ -1070,6 +1126,9 @@ def generar(
     modo = ia_compuesto.modo_del_turno(formato=formato, instruccion=instruccion,
                                        modo_actual=modo_actual)
     refs = _referencias_turno0(session, ctx, instruccion, base)
+    if modo != ia_compuesto.MODO_NORMAL:
+        anadir_medios(session, refs, instruccion=instruccion, idioma=ctx.idioma,
+                      intereses=ctx.intereses, sitio=ctx.sitio)
     cabecera = formato_del_turno(modo, refs, ctx.idioma)
     enlaces_compuesto: list[str] = []
     if base is not None and modo == ia_compuesto.MODO_COMPUESTO:
@@ -1260,6 +1319,8 @@ def corregir(
         _json(raiz.contexto_json).get("refs"), marcas=datos_compuesto.marcas(session),
         videos=ia_compuesto.videos_de(contexto_texto, instruccion,
                                       json.dumps(base or {}, ensure_ascii=False)))
+    if modo != ia_compuesto.MODO_NORMAL:
+        anadir_medios(session, refs, instruccion=instruccion, idioma=borrador.idioma or "es")
     cabecera = formato_del_turno(modo, refs, borrador.idioma or "es")
     primera_redaccion = not actual and base is None
     enlaces_compuesto: list[str] = []

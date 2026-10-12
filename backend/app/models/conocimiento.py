@@ -31,6 +31,18 @@ Fase 2 (migración 0139), el catálogo y los precios verificados:
 - `kb_catalogo_sincronizaciones`: el histórico de pasadas, por fuente.
 - `kb_interes_productos`: interés del clasificador → máquinas (marca y patrón
   del nombre), la tabla que decide qué máquinas se le enseñan a un lead.
+
+Fase 3 (migración 0145), las imágenes y los vídeos de los correos compuestos:
+
+- `kb_imagenes`: el índice de la biblioteca de medios de las webs (WordPress,
+  `/wp-json/wp/v2/media`), solo lo que vale para un hero o una galería de
+  muestras: anchas, apaisadas, sin logos ni fotos de producto. Sin texto
+  alternativo en las webs: se busca por el título. Favoritas y ocultas, a
+  mano desde la pantalla; lo que desaparece de la web se marca `ido_en`.
+- `kb_videos`: los vídeos de YouTube de los canales del grupo, los enlazados
+  en las webs y los pegados a mano, con su idioma, su tema (el mismo vídeo en
+  varios idiomas), marca, productos del catálogo, miniatura (y cuál se usó) y
+  duración. Lo editado a mano no lo pisa la sincronización.
 """
 from __future__ import annotations
 
@@ -283,3 +295,115 @@ class InteresProducto(TimestampMixin, Base):
     nota: Mapped[str | None] = mapped_column(String(255))
     posicion: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     activo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
+# --- Fase 3: imágenes y vídeos de los correos compuestos ------------------------------
+
+#: Las pasadas de medios van al mismo histórico que las del catálogo
+#: (`kb_catalogo_sincronizaciones`), con su propia fuente.
+FUENTE_IMAGENES = "imagenes"
+FUENTE_VIDEOS = "videos"
+FUENTES_MEDIOS: tuple[str, ...] = (FUENTE_IMAGENES, FUENTE_VIDEOS)
+
+#: De dónde salió un vídeo de la tabla.
+VIDEO_ORIGEN_CANAL = "canal"
+VIDEO_ORIGEN_WEB = "web"
+VIDEO_ORIGEN_MANUAL = "manual"
+VIDEO_ORIGENES: tuple[str, ...] = (VIDEO_ORIGEN_CANAL, VIDEO_ORIGEN_WEB, VIDEO_ORIGEN_MANUAL)
+
+
+class ImagenWeb(TimestampMixin, Base):
+    """Una imagen de la biblioteca de medios de una web que vale para un hero o
+    una galería de muestras. La clave de origen es `(sitio, media_id)`."""
+
+    __tablename__ = "kb_imagenes"
+    __table_args__ = (
+        UniqueConstraint("sitio", "media_id", name="uq_kb_imagenes_clave"),
+        Index("ix_kb_imagenes_sitio", "sitio"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    #: La web (`sitios_web.clave`).
+    sitio: Mapped[str] = mapped_column(String(40), nullable=False)
+    #: El id del adjunto en WordPress.
+    media_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    #: El título del adjunto: lo único por lo que se puede buscar (las webs no
+    #: tienen texto alternativo) y el `alt` de la imagen en el correo.
+    titulo: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    #: La imagen original y sus tamaños con las MISMAS proporciones (lista JSON
+    #: de `{"url", "ancho", "alto"}`, de menor a mayor): el correo pide el que
+    #: le toca a su ancho, nunca un recorte cuadrado del tema.
+    url: Mapped[str] = mapped_column(String(500), nullable=False)
+    tamanos_json: Mapped[str | None] = mapped_column(Text)
+    ancho: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    alto: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    mime: Mapped[str | None] = mapped_column(String(40))
+    #: La página del adjunto en la web.
+    pagina: Mapped[str | None] = mapped_column(String(500))
+    #: La entrada o página a la que está adjunta (un producto no entra).
+    padre_id: Mapped[int | None] = mapped_column(BigInteger)
+    publicado_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: A mano, desde la pantalla: las favoritas van primero en lo que se le
+    #: ofrece a la IA; las ocultas no se le ofrecen nunca.
+    favorita: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    oculta: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    visto_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ido_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class VideoKb(TimestampMixin, Base):
+    """Un vídeo que un correo compuesto puede llevar. La clave es
+    `(plataforma, video_id)`; el bloque «vídeo» del correo guarda solo eso y
+    sus datos salen de aquí al generar el correo."""
+
+    __tablename__ = "kb_videos"
+    __table_args__ = (
+        UniqueConstraint("plataforma", "video_id", name="uq_kb_videos_clave"),
+        Index("ix_kb_videos_tema", "tema"),
+        Index("ix_kb_videos_idioma", "idioma"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    plataforma: Mapped[str] = mapped_column(String(10), nullable=False, default="youtube")
+    video_id: Mapped[str] = mapped_column(String(20), nullable=False)
+    url: Mapped[str] = mapped_column(String(500), nullable=False)
+    titulo: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    descripcion: Mapped[str | None] = mapped_column(Text)
+    #: Nuestro código de idioma (`es`, `en`…) y de dónde salió: `manual`,
+    #: `titulo` (las palabras del título), `metadatos` (el idioma del título y
+    #: la descripción en YouTube) o `audio` (el del audio en YouTube).
+    idioma: Mapped[str | None] = mapped_column(String(5))
+    idioma_fuente: Mapped[str | None] = mapped_column(String(12))
+    #: Agrupa el mismo vídeo en varios idiomas: así se elige la versión del
+    #: idioma del cliente.
+    tema: Mapped[str | None] = mapped_column(String(80))
+    #: La marca del catálogo (su clave del compositor: `artisjet`, `flux`…).
+    marca: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    #: Los productos del catálogo que nombra (lista JSON de `{"fuente",
+    #: "origen_id", "nombre"}`).
+    productos_json: Mapped[str | None] = mapped_column(Text)
+    #: Lo que se cambió a mano (lista JSON: `idioma`, `tema`, `marca`,
+    #: `productos`): la sincronización no lo pisa.
+    manual_json: Mapped[str | None] = mapped_column(Text)
+    #: La miniatura y cuál se usó (`maxresdefault`, 1280×720, o `mqdefault`,
+    #: 320×180; las dos en 16:9): con `mqdefault` se vuelve a probar la buena
+    #: en cada pasada, por si el vídeo se resube en HD.
+    miniatura: Mapped[str | None] = mapped_column(String(500))
+    miniatura_calidad: Mapped[str | None] = mapped_column(String(20))
+    miniatura_comprobada_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Segundos.
+    duracion: Mapped[int | None] = mapped_column(Integer)
+    #: Un «short» de YouTube (vertical): no se le ofrece a la IA.
+    corto: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    canal: Mapped[str | None] = mapped_column(String(120))
+    canal_id: Mapped[str | None] = mapped_column(String(40))
+    origen: Mapped[str] = mapped_column(String(10), nullable=False, default=VIDEO_ORIGEN_CANAL)
+    #: Las webs (`sitios_web.clave`) que lo enlazan (lista JSON).
+    webs_json: Mapped[str | None] = mapped_column(Text)
+    visible: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    publicado_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Lo demás de YouTube (JSON): el idioma del audio y de los metadatos tal
+    #: cual, las etiquetas.
+    datos_json: Mapped[str | None] = mapped_column(Text)
+    visto_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ido_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

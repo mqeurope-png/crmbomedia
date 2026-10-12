@@ -12,7 +12,9 @@ el del idioma del correo. Los productos van por su clave del catálogo
 (`{"fuente", "origen_id"}`): nombre, imagen, precio y enlace salen siempre de
 la fila viva de `kb_catalogo`, nunca de la estructura. Los vídeos, igual, por
 QUÉ vídeo son (`{"plataforma", "id"}`, ver `videos.py`): su URL, miniatura,
-título y duración los resuelve BoHub al generar.
+título y duración los resuelve BoHub al generar. Y las imágenes del hero y de
+las muestras, por su id del índice de imágenes de las webs (`{"id"}`,
+`kb_imagenes`): su URL y su tamaño salen de la fila viva.
 
 `normalizar` deja cualquier estructura (de la IA, de la vista previa, de un
 borrador guardado) en esta forma: tipos conocidos, campos limpios, textos sin
@@ -41,16 +43,22 @@ TIPO_VIDEO = "video"
 TIPO_CTA = "cta"
 TIPO_DESTACADO = "destacado"
 TIPO_SEPARADOR = "separador"
+TIPO_HERO = "hero"
+TIPO_MUESTRAS = "muestras"
 
-#: Los bloques de este PR. El hero y la galería de muestras llegan con el
-#: índice de la biblioteca de medios de las webs.
 TIPOS: tuple[str, ...] = (
     TIPO_TEXTO, TIPO_PRODUCTO, TIPO_PRODUCTOS_FILA, TIPO_MARCA, TIPO_VIDEO, TIPO_CTA,
-    TIPO_DESTACADO, TIPO_SEPARADOR,
+    TIPO_DESTACADO, TIPO_SEPARADOR, TIPO_HERO, TIPO_MUESTRAS,
 )
 
 ESTILOS_DESTACADO: tuple[str, ...] = ("aviso", "promo", "condicion")
 ESTILOS_SEPARADOR: tuple[str, ...] = ("linea", "corta", "puntos", "aire")
+#: Dónde va la imagen del hero: encima del texto, al lado (en el móvil, encima)
+#: o de fondo, con el texto encima (Outlook enseña el color de fondo).
+DISPOSICIONES_HERO: tuple[str, ...] = ("arriba", "lateral", "fondo")
+PUNTOS_MAX = 5
+MUESTRAS_MIN = 2
+MUESTRAS_MAX = 6
 
 FILA_MIN = 2
 FILA_MAX = 3
@@ -303,6 +311,31 @@ def clave_de(producto: dict[str, str]) -> str:
     return f"{producto['fuente']}|{producto['origen_id']}"
 
 
+def clave_imagen(valor: Any) -> dict[str, str] | None:
+    """La referencia de una imagen del índice: `{"id"}` (o el id tal cual)."""
+    vid = valor.get("id") if isinstance(valor, dict) else valor
+    texto = str(vid or "").strip()
+    return {"id": texto} if re.fullmatch(r"[A-Za-z0-9-]{8,40}", texto) else None
+
+
+def imagenes_de(estructura: dict[str, Any]) -> list[str]:
+    """Los ids de las imágenes que nombra la estructura (hero y muestras), sin
+    repetir, en orden."""
+    salida: list[str] = []
+    for b in estructura.get("bloques") or []:
+        if b.get("tipo") == TIPO_HERO:
+            refs = [b.get("imagen")]
+        elif b.get("tipo") == TIPO_MUESTRAS:
+            refs = list(b.get("imagenes") or [])
+        else:
+            refs = []
+        for r in refs:
+            img = clave_imagen(r)
+            if img and img["id"] not in salida:
+                salida.append(img["id"])
+    return salida
+
+
 def videos_de(estructura: dict[str, Any]) -> list[dict[str, str]]:
     """Los vídeos que nombra la estructura, sin repetir, en orden."""
     vistos: set[str] = set()
@@ -433,6 +466,50 @@ def _normalizar_bloque(b: Any, avisos: list[str]) -> list[dict[str, Any]]:
         if not botones:
             return []
         return [{"id": bid, "tipo": tipo, "botones": botones[:BOTONES_MAX]}]
+    if tipo == TIPO_HERO:
+        imagen = clave_imagen(b.get("imagen"))
+        if imagen is None:
+            avisos.append("un hero sin imagen del índice: fuera")
+            return []
+        disposicion = str(b.get("disposicion") or "arriba").strip().lower()
+        salida = {"id": bid, "tipo": tipo, "imagen": imagen,
+                  "disposicion": disposicion if disposicion in DISPOSICIONES_HERO else "arriba"}
+        for campo, maximo in (("titulo", MAX_TITULO), ("subtitulo", MAX_TEXTO_CORTO)):
+            valor = _texto_por_idioma(b.get(campo), maximo)
+            if valor:
+                salida[campo] = valor
+        crudos = b.get("puntos") if isinstance(b.get("puntos"), list) else []
+        puntos = [p for p in (_texto_por_idioma(v, MAX_TITULO) for v in crudos) if p]
+        if puntos:
+            salida["puntos"] = puntos[:PUNTOS_MAX]
+        botones = [bt for bt in (_boton(v) for v in (b.get("botones") or [])) if bt]
+        if botones:
+            salida["botones"] = botones[:BOTONES_MAX]
+        return [salida]
+    if tipo == TIPO_MUESTRAS:
+        imagenes: list[dict[str, str]] = []
+        pies: list[Any] = []
+        crudos_pies = b.get("pies") if isinstance(b.get("pies"), list) else []
+        for i, r in enumerate(b.get("imagenes") or []):
+            img = clave_imagen(r)
+            if img and all(img["id"] != x["id"] for x in imagenes):
+                imagenes.append(img)
+                pies.append(_texto_por_idioma(crudos_pies[i], MAX_TITULO)
+                            if i < len(crudos_pies) else "")
+        if len(imagenes) < MUESTRAS_MIN:
+            avisos.append(f"una galería de muestras necesita al menos {MUESTRAS_MIN} imágenes: "
+                          "fuera")
+            return []
+        if len(imagenes) > MUESTRAS_MAX:
+            avisos.append(f"una galería de muestras lleva como mucho {MUESTRAS_MAX} imágenes: "
+                          "se quedan las primeras")
+        salida = {"id": bid, "tipo": tipo, "imagenes": imagenes[:MUESTRAS_MAX]}
+        titulo = _texto_por_idioma(b.get("titulo"), MAX_TITULO)
+        if titulo:
+            salida["titulo"] = titulo
+        if any(pies[:MUESTRAS_MAX]):
+            salida["pies"] = pies[:MUESTRAS_MAX]
+        return [salida]
     if tipo == TIPO_DESTACADO:
         texto = _texto_por_idioma(b.get("texto"), MAX_TEXTO_CORTO)
         titulo = _texto_por_idioma(b.get("titulo"), MAX_TITULO)

@@ -56,6 +56,8 @@ from app.services.conocimiento import (
     catalogo_compositor,
     catalogo_job,
     catalogo_tiendas,
+    imagenes,
+    videos,
 )
 from app.services.conocimiento.config import defectos as config_defectos
 from app.services.web_forms.sitios import SITIOS_DE_PARTIDA, Registro, fijar_para_tests
@@ -934,10 +936,12 @@ def test_el_job_diario_corre_las_dos_fuentes_y_respeta_el_interruptor(
 ) -> None:
     llamadas: list[str] = []
 
-    def _falsa(fuente: str) -> Any:
+    def _falsa(fuente: str, *, falla: bool = False) -> Any:
         def _sinc(session: Session, *, origen: str, ahora: datetime, **_: Any
                   ) -> CatalogoSincronizacion:
             llamadas.append(fuente)
+            if falla:
+                raise RuntimeError("Supabase caído")
             fila = CatalogoSincronizacion(fuente=fuente, origen=origen, inicio=ahora, fin=ahora,
                                           estado=SYNC_OK)
             session.add(fila)
@@ -945,19 +949,45 @@ def test_el_job_diario_corre_las_dos_fuentes_y_respeta_el_interruptor(
             return fila
         return _sinc
 
+    def _config(**cambios: Any) -> Any:
+        return patch.object(catalogo_job, "configuracion",
+                            return_value={**config_defectos(), **cambios})
+
     ahora = datetime(2026, 10, 12, 4, 45, tzinfo=UTC)
+    todas = ["compositor", "woocommerce", "imagenes", "videos"]
     with session_factory() as s, \
             patch.object(catalogo_compositor, "sincronizar", _falsa("compositor")), \
-            patch.object(catalogo_tiendas, "sincronizar", _falsa("woocommerce")):
+            patch.object(catalogo_tiendas, "sincronizar", _falsa("woocommerce")), \
+            patch.object(imagenes, "sincronizar", _falsa("imagenes")), \
+            patch.object(videos, "sincronizar", _falsa("videos")):
         assert catalogo_job.run_daily(s, ahora=ahora) is True
-        assert llamadas == ["compositor", "woocommerce"]
+        assert llamadas == todas
         assert catalogo_job.run_daily(s, ahora=ahora + timedelta(hours=1)) is False   # ya corrió
         assert catalogo_job.run_daily(s, ahora=ahora + timedelta(hours=13)) is True
-        with patch.object(catalogo_job, "configuracion",
-                          return_value={**config_defectos(), "catalogo_sync_activa": False}):
-            assert catalogo_job.run_daily(s, ahora=ahora + timedelta(days=2)) is False
-            assert catalogo_job.run_daily(s, ahora=ahora + timedelta(days=2), force=True) is True
-    assert len(llamadas) == 6
+        assert llamadas == todas * 2
+        # Cada grupo con su interruptor: el catálogo apagado no apaga los medios.
+        llamadas.clear()
+        with _config(catalogo_sync_activa=False):
+            assert catalogo_job.run_daily(s, ahora=ahora + timedelta(days=2)) is True
+        assert llamadas == ["imagenes", "videos"]
+        llamadas.clear()
+        with _config(medios_sync_activa=False):
+            assert catalogo_job.run_daily(s, ahora=ahora + timedelta(days=3)) is True
+        assert llamadas == ["compositor", "woocommerce"]
+        llamadas.clear()
+        with _config(catalogo_sync_activa=False, medios_sync_activa=False):
+            assert catalogo_job.run_daily(s, ahora=ahora + timedelta(days=4)) is False
+            assert catalogo_job.run_daily(s, ahora=ahora + timedelta(days=4), force=True) is True
+        assert llamadas == todas
+    # Una pasada que falla no corta las demás.
+    llamadas.clear()
+    with session_factory() as s, \
+            patch.object(catalogo_compositor, "sincronizar", _falsa("compositor", falla=True)), \
+            patch.object(catalogo_tiendas, "sincronizar", _falsa("woocommerce")), \
+            patch.object(imagenes, "sincronizar", _falsa("imagenes")), \
+            patch.object(videos, "sincronizar", _falsa("videos")):
+        assert catalogo_job.run_daily(s, ahora=ahora + timedelta(days=10)) is True
+    assert llamadas == todas
     assert catalogo_job.CATALOGO_QUEUE == "kb:catalogo_sync"
 
 

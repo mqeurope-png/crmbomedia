@@ -1,5 +1,5 @@
 /** Correos compuestos: la estructura de bloques que elige la IA (fichas de
- *  producto, tira de marca, vídeo, botones…) y que la persona retoca en la
+ *  producto, tira de marca, hero, muestras, vídeo, botones…) y que la persona retoca en la
  *  vista previa. El HTML del correo lo genera BoHub en el servidor, siempre a
  *  partir de la estructura (`renderCorreoCompuesto`): aquí solo se cambia la
  *  estructura (un texto, el orden de los bloques) y se lee lo editado. */
@@ -12,7 +12,9 @@ export type TipoBloque =
   | "video"
   | "cta"
   | "destacado"
-  | "separador";
+  | "separador"
+  | "hero"
+  | "muestras";
 
 /** Un texto de bloque: un texto o un texto por idioma (`{es: …, en: …}`). */
 export type TextoBloque = string | Record<string, string>;
@@ -32,6 +34,15 @@ export type BloqueCompuesto = {
   /** «vídeo»: QUÉ vídeo es; su URL, miniatura, título y duración los
    *  resuelve el servidor desde su origen (la URL pegada, la tabla de vídeos). */
   video?: { plataforma: "youtube" | "vimeo"; id: string };
+  /** «hero»: la imagen del índice de imágenes de las webs (su URL la pone el
+   *  servidor), subtítulo, puntos y disposición (`arriba`, `lateral`, `fondo`). */
+  imagen?: { id: string };
+  subtitulo?: TextoBloque;
+  puntos?: TextoBloque[];
+  disposicion?: "arriba" | "lateral" | "fondo";
+  /** «muestras»: de 2 a 6 imágenes del índice, con su pie. */
+  imagenes?: { id: string }[];
+  pies?: TextoBloque[];
   estilo?: string;
   [campo: string]: unknown;
 };
@@ -63,6 +74,8 @@ export const NOMBRE_BLOQUE: Record<TipoBloque, string> = {
   cta: "Botones",
   destacado: "Destacado",
   separador: "Separador",
+  hero: "Hero",
+  muestras: "Muestras",
 };
 
 export function esEstructura(valor: unknown): valor is EstructuraCompuesta {
@@ -92,6 +105,9 @@ export function etiquetaBloque(b: BloqueCompuesto, idioma: string, max = 48): st
   if (b.tipo === "texto") resumen = textoPlano(b.html ?? "");
   else if (b.tipo === "productos_fila") resumen = `${b.productos?.length ?? 0} productos`;
   else if (b.tipo === "cta") resumen = (b.botones ?? []).map((x) => enIdioma(x.texto, idioma)).join(" · ");
+  else if (b.tipo === "muestras") {
+    resumen = enIdioma(b.titulo, idioma) || `${b.imagenes?.length ?? 0} imágenes`;
+  }
   else resumen = enIdioma(b.titulo, idioma) || enIdioma(b.texto, idioma) || (b.marca ?? "");
   if (!resumen) return nombre;
   const corto = resumen.length > max ? `${resumen.slice(0, max - 1).trimEnd()}…` : resumen;
@@ -107,9 +123,10 @@ function conTexto(actual: unknown, valor: string, idioma: string): TextoBloque {
 }
 
 /** La estructura con UN campo editado en la vista previa; todo lo demás (los
- *  bloques, su orden, sus id, sus productos) queda igual. `campo` es el de
- *  `data-bh-campo`: `"{id}:html"`, `"{id}:titulo"`, `"{id}:botones.0.texto"`,
- *  `":pie"`… Un campo que no existe deja la estructura como estaba. */
+ *  bloques, su orden, sus id, sus productos, sus imágenes) queda igual. `campo`
+ *  es el de `data-bh-campo`: `"{id}:html"`, `"{id}:titulo"`, `"{id}:subtitulo"`,
+ *  `"{id}:botones.0.texto"`, `"{id}:puntos.1"`, `"{id}:pies.0"`, `":pie"`… Un
+ *  campo que no existe deja la estructura como estaba. */
 export function aplicarEdicion(
   e: EstructuraCompuesta, campo: string, valor: string,
 ): EstructuraCompuesta {
@@ -121,7 +138,16 @@ export function aplicarEdicion(
   const bloque = e.bloques[i];
   let nuevo: BloqueCompuesto;
   const boton = /^botones\.(\d+)\.texto$/.exec(nombre);
-  if (boton) {
+  const deLista = /^(puntos|pies)\.(\d+)$/.exec(nombre);
+  if (deLista) {
+    const clave = deLista[1] as "puntos" | "pies";
+    const n = Number(deLista[2]);
+    const lista = [...(bloque[clave] ?? [])];
+    if (n >= lista.length) return e;
+    if (enIdioma(lista[n], e.idioma) === valor) return e;
+    lista[n] = conTexto(lista[n], valor, e.idioma);
+    nuevo = { ...bloque, [clave]: lista };
+  } else if (boton) {
     const n = Number(boton[1]);
     const botones = [...(bloque.botones ?? [])];
     if (!botones[n]) return e;
@@ -131,7 +157,7 @@ export function aplicarEdicion(
   } else if (nombre === "html") {
     if (bloque.html === valor) return e;
     nuevo = { ...bloque, html: valor };
-  } else if (["titulo", "texto", "boton"].includes(nombre)) {
+  } else if (["titulo", "subtitulo", "texto", "boton"].includes(nombre)) {
     if (enIdioma(bloque[nombre] as TextoBloque | undefined, e.idioma) === valor) return e;
     nuevo = { ...bloque, [nombre]: conTexto(bloque[nombre], valor, e.idioma) };
   } else {

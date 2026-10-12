@@ -11,7 +11,9 @@ la gama pizarra, fichas con la imagen arriba, insignia, el área en una tabla
 de etiqueta y valor, las características con ✓, el precio centrado en el color
 de acento del producto con «+ IVA» y el botón a lo ancho en mayúsculas con su
 flecha; fichas compactas cuando van tres en fila; el vídeo en un panel oscuro;
-la tira de marca con el logo y el enlace a su web. El código es de BoHub.
+la tira de marca con el logo y el enlace a su web; el hero con su imagen de
+las webs encima, al lado o de fondo, y la galería de muestras en columnas. El
+código es de BoHub.
 
 `generar` es determinista y no toca la base de datos: recibe la estructura y
 los datos ya resueltos (`Datos`: los productos del catálogo en el idioma del
@@ -55,6 +57,11 @@ ENLACE_VIDEO = "#93c5fd"
 
 ANCHO_FICHA_SOLA = 320
 ANCHO_MINIATURA_VIDEO = 480
+#: El ancho útil de una fila (600 menos el relleno de 8 px a cada lado).
+ANCHO_UTIL = ANCHO - 16
+#: El fondo del hero «fondo» cuando la imagen no carga (Outlook no pinta
+#: imágenes de fondo): el texto, en blanco, se sigue leyendo.
+FONDO_HERO = "#0f172a"
 LOGO_ALTO = 28
 LOGO_ANCHO_MAX = 180
 
@@ -99,6 +106,9 @@ class Datos:
     #: `videos.clave(video)` → los datos del vídeo (URL, miniatura, título,
     #: duración), de su origen (`videos.resolver`).
     videos: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: id del índice de imágenes → título, medidas y tamaños (`{"url", "ancho",
+    #: "alto"}`, de las mismas proporciones), de la fila viva.
+    imagenes: dict[str, dict[str, Any]] = field(default_factory=dict)
     #: Si los precios de cada fuente llevan IVA (`con`, `sin` o nada).
     iva_por_fuente: dict[str, str | None] = field(default_factory=dict)
 
@@ -180,6 +190,23 @@ def _p(contenido: str, estilo: str, atributos: str = "") -> str:
 
 def _lineas(texto: str) -> str:
     return "<br>".join(_e(ln) for ln in texto.split("\n"))
+
+
+def _tamano(img: dict[str, Any], ancho: int) -> str | None:
+    """La URL del tamaño de la imagen que cubre `ancho` px en el correo al doble
+    de densidad (pantallas retina), o el mayor si ninguno llega; nunca la
+    original de varios megas si hay uno que basta."""
+    objetivo = ancho * 2
+    tamanos = sorted((t for t in img.get("tamanos") or [] if isinstance(t, dict)),
+                     key=lambda t: int(t.get("ancho") or 0))
+    elegido = next((t for t in tamanos if int(t.get("ancho") or 0) >= objetivo),
+                   tamanos[-1] if tamanos else None)
+    return bq.url_valida((elegido or {}).get("url")) or bq.url_valida(img.get("url"))
+
+
+def _url_css(url: str) -> str:
+    """Una URL dentro de `url('…')` de una hoja de estilo en línea."""
+    return url.replace("'", "%27").replace("(", "%28").replace(")", "%29")
 
 
 class _Render:
@@ -526,7 +553,8 @@ class _Render:
         plano = "\n".join(t for t in (titulo, f"{boton_plano}: {url}", texto) if t)
         return _fila("".join(partes), bloque=b, preview=self.preview, padding="8px 8px 16px"), plano
 
-    def cta(self, b: dict[str, Any]) -> tuple[str, str]:
+    def _botones(self, b: dict[str, Any], *, alinear: str = "center") -> tuple[str, list[str]]:
+        """Los botones de un bloque (cta, hero) y sus líneas de texto plano."""
         celdas: list[str] = []
         textos: list[str] = []
         color = self.acento if self.e.get("marca") else BOTON
@@ -548,11 +576,153 @@ class _Render:
                 f'text-decoration:none;white-space:nowrap;">{_e(texto)}</a></td>')
             textos.append(f"{texto}: {url}")
         if not celdas:
+            return "", []
+        margen = "margin:0 auto;" if alinear == "center" else "margin:0;"
+        return (_tabla(f'<tr>{"".join(celdas)}</tr>', ancho="", atributos=f' align="{alinear}"',
+                       estilo=margen), textos)
+
+    def cta(self, b: dict[str, Any]) -> tuple[str, str]:
+        botones, textos = self._botones(b)
+        if not botones:
             return "", ""
-        botones = _tabla(f'<tr>{"".join(celdas)}</tr>', ancho="", atributos=' align="center"',
-                         estilo="margin:0 auto;")
         return (_fila(botones, bloque=b, preview=self.preview, padding="8px 20px 16px",
                       alinear="center"), "\n".join(textos))
+
+    # -- imágenes de las webs: hero y muestras ----------------------------------------------
+
+    def _imagen(self, ref: Any) -> dict[str, Any] | None:
+        img = bq.clave_imagen(ref)
+        datos = self.datos.imagenes.get(img["id"]) if img else None
+        if datos is None:
+            self.avisos.append("Una imagen del correo ya no está en el índice de imágenes de "
+                               "las webs: no sale.")
+        return datos
+
+    def _img(self, img: dict[str, Any], *, ancho: int, alt: str, radio: int = 10) -> str:
+        src = _tamano(img, ancho) or ""
+        return (f'<img src="{_e(src)}" alt="{_e(alt)}" width="{ancho}" class="bh-img" '
+                f'style="display:block;width:100%;max-width:{ancho}px;height:auto;border:0;'
+                f'outline:none;text-decoration:none;margin:0 auto;border-radius:{radio}px;">')
+
+    def _textos_hero(self, b: dict[str, Any], *, claro: bool,
+                     alinear: str) -> tuple[str, list[str]]:
+        titulo = bq.en_idioma(b.get("titulo"), self.idioma)
+        subtitulo = bq.en_idioma(b.get("subtitulo"), self.idioma)
+        tinta = "#ffffff" if claro else TINTA
+        suave = "#e2e8f0" if claro else SECUNDARIO
+        partes: list[str] = []
+        plano: list[str] = []
+        if titulo:
+            partes.append(_p(_lineas(titulo), f"font-size:24px;font-weight:800;color:{tinta};"
+                                              f"line-height:1.25;margin:0 0 8px;"
+                                              f"text-align:{alinear};",
+                             _campo(self.preview, b["id"] + ":titulo")))
+            plano.append(titulo)
+        if subtitulo:
+            partes.append(_p(_lineas(subtitulo), f"font-size:15px;color:{suave};"
+                                                 f"line-height:1.5;margin:0 0 10px;"
+                                                 f"text-align:{alinear};",
+                             _campo(self.preview, b["id"] + ":subtitulo")))
+            plano.append(subtitulo)
+        puntos = [(i, bq.en_idioma(p, self.idioma)) for i, p in enumerate(b.get("puntos") or [])]
+        puntos = [(i, p) for i, p in puntos if p]
+        if puntos:
+            # La tabla de puntos se centra entera; dentro, cada punto va a la izquierda (si no,
+            # hereda el centrado de la celda del hero y las marcas ✓ quedan en zigzag).
+            filas = "".join(
+                f'<tr><td valign="top" style="font-family:{FUENTE};font-size:14px;'
+                f'color:{tinta};padding:2px 8px 2px 0;text-align:left;">✓</td>'
+                f"<td{_campo(self.preview, b['id'] + f':puntos.{i}')} "
+                f'style="font-family:{FUENTE};font-size:14px;color:{suave};line-height:1.45;'
+                f'padding:2px 0;text-align:left;">{_e(p)}</td></tr>'
+                for i, p in puntos)
+            margen = "margin:4px auto 12px;" if alinear == "center" else "margin:4px 0 12px;"
+            partes.append(_tabla(filas, ancho="", atributos=f' align="{alinear}"', estilo=margen))
+            plano.extend(f"✓ {p}" for _, p in puntos)
+        botones, textos_botones = self._botones(b, alinear=alinear)
+        if botones:
+            partes.append(botones)
+            plano.extend(textos_botones)
+        return "".join(partes), plano
+
+    def hero(self, b: dict[str, Any]) -> tuple[str, str]:
+        img = self._imagen(b.get("imagen"))
+        if img is None:
+            return "", ""
+        disposicion = b.get("disposicion") or "arriba"
+        alt = (bq.en_idioma(b.get("titulo"), self.idioma) or str(img.get("titulo") or "")).strip()
+        if disposicion == "fondo":
+            src = _tamano(img, ANCHO_UTIL) or ""
+            textos, plano = self._textos_hero(b, claro=True, alinear="center")
+            capa = _tabla(f'<tr><td style="background-color:rgba(15,23,42,0.55);'
+                          f'padding:20px 22px;border-radius:10px;font-family:{FUENTE};">'
+                          f"{textos}</td></tr>")
+            contenido = _tabla(
+                f'<tr><td background="{_e(src)}" bgcolor="{FONDO_HERO}" valign="middle" '
+                f'style="background-color:{FONDO_HERO};'
+                f"background-image:url('{_e(_url_css(src))}');background-size:cover;"
+                f'background-position:center;background-repeat:no-repeat;padding:44px 28px;'
+                f'border-radius:12px;font-family:{FUENTE};">{capa}</td></tr>')
+        elif disposicion == "lateral":
+            mitad = ANCHO_UTIL // 2
+            textos, plano = self._textos_hero(b, claro=False, alinear="left")
+            contenido = _tabla(
+                f'<tr><td class="bh-col bh-ficha" width="{mitad}" valign="middle" '
+                f'style="width:50%;padding:0 10px 0 0;">'
+                f"{self._img(img, ancho=mitad - 10, alt=alt)}</td>"
+                f'<td class="bh-col" width="{mitad}" valign="middle" '
+                f'style="width:50%;padding:0 0 0 10px;font-family:{FUENTE};">{textos}</td></tr>')
+        else:
+            textos, plano = self._textos_hero(b, claro=False, alinear="center")
+            contenido = _tabla(
+                f'<tr><td style="padding:0;">{self._img(img, ancho=ANCHO_UTIL, alt=alt)}</td></tr>'
+                + (f'<tr><td align="center" style="padding:16px 12px 0;text-align:center;'
+                   f'font-family:{FUENTE};">{textos}</td></tr>' if textos else ""))
+        return (_fila(contenido, bloque=b, preview=self.preview, padding="8px 8px 16px"),
+                "\n".join(plano))
+
+    def muestras(self, b: dict[str, Any]) -> tuple[str, str]:
+        celdas: list[tuple[int, dict[str, Any]]] = []
+        for i, ref in enumerate(b.get("imagenes") or []):
+            img = self._imagen(ref)
+            if img is not None:
+                celdas.append((i, img))
+        if not celdas:
+            return "", ""
+        pies = b.get("pies") or []
+        titulo = bq.en_idioma(b.get("titulo"), self.idioma)
+        n = len(celdas)
+        # De 2 en 2 o de 3 en 3: 4 → 2 + 2, 5 → 3 + 2, 6 → 3 + 3.
+        por_fila = 2 if n in (2, 4) else 3
+        filas_html: list[str] = []
+        plano: list[str] = [titulo] if titulo else []
+        for inicio in range(0, n, por_fila):
+            grupo = celdas[inicio:inicio + por_fila]
+            ancho_col = ANCHO_UTIL // por_fila
+            tds: list[str] = []
+            for j, (i, img) in enumerate(grupo):
+                pie = bq.en_idioma(pies[i], self.idioma) if i < len(pies) else ""
+                relleno = ("0 6px 12px 0" if j == 0 else
+                           "0 0 12px 6px" if j == len(grupo) - 1 else "0 3px 12px")
+                alt = pie or str(img.get("titulo") or "")
+                pie_html = _p(_e(pie), f"font-size:12px;color:{APAGADO};margin:6px 0 0;"
+                                       "text-align:center;line-height:1.4;",
+                              _campo(self.preview, f"{b['id']}:pies.{i}")) if pie else ""
+                tds.append(f'<td class="bh-col bh-ficha" width="{ancho_col}" valign="top" '
+                           f'style="width:{round(100 / por_fila, 2)}%;padding:{relleno};">'
+                           f"{self._img(img, ancho=ancho_col - 12, alt=alt, radio=8)}{pie_html}"
+                           "</td>")
+                if pie:
+                    plano.append(pie)
+            if len(grupo) < por_fila:
+                tds.append(f'<td class="bh-col" width="{ancho_col * (por_fila - len(grupo))}" '
+                           'style="font-size:0;line-height:0;">&nbsp;</td>')
+            filas_html.append(f"<tr>{''.join(tds)}</tr>")
+        cabecera = (_p(_lineas(titulo), f"font-size:16px;font-weight:700;color:{TINTA};"
+                                        "margin:0 0 10px;line-height:1.3;",
+                       _campo(self.preview, b["id"] + ":titulo")) if titulo else "")
+        return (_fila(cabecera + _tabla("".join(filas_html)), bloque=b, preview=self.preview,
+                      padding="8px 8px 8px"), "\n".join(plano))
 
     def destacado(self, b: dict[str, Any]) -> tuple[str, str]:
         estilo = b.get("estilo") or "aviso"
@@ -622,6 +792,7 @@ _RENDER = {
     bq.TIPO_PRODUCTOS_FILA: _Render.productos_fila, bq.TIPO_MARCA: _Render.marca,
     bq.TIPO_VIDEO: _Render.video, bq.TIPO_CTA: _Render.cta,
     bq.TIPO_DESTACADO: _Render.destacado, bq.TIPO_SEPARADOR: _Render.separador,
+    bq.TIPO_HERO: _Render.hero, bq.TIPO_MUESTRAS: _Render.muestras,
 }
 
 

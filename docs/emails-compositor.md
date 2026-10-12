@@ -35,12 +35,14 @@
   `on*`, URLs `javascript:`.
 - Los comentarios se conservan (los delimitadores de la firma los usan).
 
-**El correo compuesto** (fichas, marca, vídeo y botones; ver
+**El correo compuesto** (fichas, marca, hero, muestras, vídeo y botones; ver
 [ai-features.md](ai-features.md)) es un documento entero que con esa lista
 saldría deshecho. Se reconoce por su marca (`<meta name="generator"
 content="BoHub correo compuesto">`) y pasa por `sanitize_correo_compuesto`: la
 misma lista más lo que usa el generador (`role`, `bgcolor`, anchos de celda,
-`display`, bordes redondeados…). La cabecera y la **única hoja de estilo** (la
+`display`, bordes redondeados, y la imagen de fondo del hero: el atributo
+`background` y `background-image`/`-size`/`-position`/`-repeat`, solo con URL
+`http(s)`; una `javascript:` se quita). La cabecera y la **única hoja de estilo** (la
 de las columnas en el móvil) las vuelve a poner el generador, nunca las del
 HTML que llega: forjar la marca no da más que esa lista, que tampoco deja
 scripts, manejadores, `javascript:` ni comentarios condicionales de Outlook
