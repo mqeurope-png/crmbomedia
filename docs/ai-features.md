@@ -403,12 +403,13 @@ la respuesta en texto sigue siendo la de siempre y la opción por defecto.
   "id": …}`); su URL, miniatura, título y duración los resuelve BoHub al
   generar desde su **origen**, como los productos salen del catálogo
   (`videos.resolver`, en `Datos.videos`). Hoy el único origen es la URL pegada:
-  de YouTube se deriva la miniatura; de Vimeo no hay miniatura sin preguntar a
-  su API, que no se consulta al vuelo, y el bloque sale con su título y su
-  botón. La **tabla de vídeos** (siguiente PR: canales de YouTube, oEmbed de
-  Vimeo, alta a mano pegando una URL, con idioma, marca y productos) será otro
-  origen que manda sobre la URL, sin cambiar la forma del bloque ni el
-  generador. El título, el texto y el botón que escriba el bloque mandan sobre
+  de YouTube se deriva la miniatura; un vídeo de Vimeo suelto sale sin imagen
+  (su miniatura pediría su API, que no se consulta), con su título y su botón.
+  La **tabla de vídeos** (siguiente PR: los vídeos de los cuatro canales de
+  YouTube y los añadidos a mano pegando una URL, con idioma, tema —el mismo
+  vídeo en varios idiomas, para elegir la versión del idioma del cliente—,
+  marca y productos) será otro origen que manda sobre la URL, sin cambiar la
+  forma del bloque ni el generador. El título, el texto y el botón que escriba el bloque mandan sobre
   los del origen; la duración, si se sabe, va junto al botón («Ver vídeo ·
   2:31»).
 - **La vista previa** sustituye al editor: el correo tal cual sale, en

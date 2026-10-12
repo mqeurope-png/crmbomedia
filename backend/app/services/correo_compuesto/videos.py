@@ -6,14 +6,15 @@ resuelve BoHub al generar el correo (`resolver`), como los datos de los
 productos salen del catálogo vivo. Los orígenes posibles:
 
 - `url`: una URL pegada (en el hilo, en la instrucción, en la vista previa).
-  De YouTube se deriva la miniatura de su dirección estática; de Vimeo no hay
-  miniatura sin preguntar a su API, y no se le pregunta al vuelo (limita por
-  ritmo): el bloque sale sin imagen, con su título y su botón.
-- La tabla de vídeos de BoHub (siguiente fase): vídeos sincronizados de los
-  canales de YouTube y del oEmbed de Vimeo, o añadidos a mano pegando una URL,
-  con título, miniatura, duración, idioma, marca y productos. Cuando un vídeo
-  esté en la tabla, sus datos mandan sobre lo derivado de la URL; la forma
-  del bloque y el generador no cambian.
+  De YouTube se deriva la miniatura de su dirección estática; un vídeo de
+  Vimeo suelto sale sin imagen (su miniatura pediría su API, que no se
+  consulta), con su título y su botón.
+- La tabla de vídeos de BoHub (siguiente fase): los vídeos de los canales de
+  YouTube o añadidos a mano pegando una URL, con título, miniatura, duración,
+  idioma, tema (el mismo vídeo en varios idiomas: así se elige la versión del
+  idioma del cliente), marca y productos. Cuando un vídeo esté en la tabla,
+  sus datos mandan sobre lo derivado de la URL; la forma del bloque y el
+  generador no cambian.
 
 El título, el texto y el botón que lleve el propio bloque (los escribe la IA o
 la persona en la vista previa) mandan sobre los del origen.
@@ -81,7 +82,7 @@ def url_de(video: dict[str, str]) -> str:
 
 def miniatura_derivada(video: dict[str, str]) -> str | None:
     """La miniatura que se puede sacar de la propia URL, sin preguntar a nadie:
-    la de YouTube; la de Vimeo necesita su API (la pondrá la tabla)."""
+    la de YouTube; la de un vídeo de Vimeo pediría su API (no se consulta)."""
     if video["plataforma"] == PLATAFORMA_YOUTUBE:
         return f"https://img.youtube.com/vi/{video['id']}/hqdefault.jpg"
     return None
