@@ -115,6 +115,9 @@ MOVABLE_TABLES: dict[str, str] = {
     "contacts": "contacts_moved",
     "orders": "orders_moved",
     "tasks": "tasks_moved",
+    # Ofertas (presupuestos de BoHub a un lead): la empresa de la oferta es la
+    # del contacto; al fusionar pasa a la principal como el resto.
+    "ofertas": "ofertas_moved",
 }
 
 
@@ -315,11 +318,12 @@ def _merge_into(
 ) -> dict[str, Any]:
     """Mueve todo lo que cuelga de `merges` a `keep` y las ARCHIVA (reversible)."""
     from app.core.audit import record_event  # noqa: PLC0415
+    from app.erp.models.ofertas import Oferta  # noqa: PLC0415
     from app.erp.models.orders import Order  # noqa: PLC0415
     from app.models.crm import AuditLog, Contact, Task  # noqa: PLC0415
 
     moved = {"contacts_moved": 0, "orders_moved": 0, "tasks_moved": 0,
-             "timeline_moved": 0}
+             "ofertas_moved": 0, "timeline_moved": 0}
     discarded_codclis: list[str] = []
     snapshots: list[dict[str, Any]] = []
     filled: dict[str, str] = {}
@@ -331,7 +335,7 @@ def _merge_into(
     for other in merges:
         snapshots.append(_snapshot(other))
         for model, key in ((Contact, "contacts_moved"), (Order, "orders_moved"),
-                           (Task, "tasks_moved")):
+                           (Task, "tasks_moved"), (Oferta, "ofertas_moved")):
             result = session.execute(
                 update(model.__table__)
                 .where(model.company_id == other.id)

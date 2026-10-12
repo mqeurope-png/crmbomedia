@@ -765,6 +765,26 @@ def test_buscador_de_contactos_sin_email_para_elegir_el_de_la_oferta(http, sessi
     assert next(c for c in todos.json()["items"] if c["name"] == "Pau Sin Correo")["email"] is None
 
 
+def test_fusionar_empresas_mueve_las_ofertas_a_la_principal(session_factory) -> None:
+    """`ofertas.company_id` es una FK a `companies.id` (ON DELETE SET NULL): el
+    fusionador de empresas la reapunta como contactos, pedidos y tareas."""
+    from app.services.company_dedupe import merge_companies_into
+
+    with session_factory() as s:
+        principal = _empresa(s, linked=True)
+        absorbida = Company(name="Manufaktur GmbH (dup)", source="manual", country="DE",
+                            tax_id="DE123456789")
+        s.add(absorbida)
+        s.commit()
+        contacto = _contacto(s, company=absorbida)
+        o = _oferta(s, contacto, hoy=date(2026, 10, 12))
+        assert o.company_id == absorbida.id
+        resultado = merge_companies_into(s, principal, [absorbida])
+        s.commit()
+        assert resultado["ofertas_moved"] == 1
+        assert s.get(Oferta, o.id).company_id == principal.id
+
+
 def test_configuracion_de_ofertas_prefijo_y_validez(http, session_factory) -> None:
     headers = auth_headers(http)
     r = http.get("/api/erp/settings", headers=headers)
