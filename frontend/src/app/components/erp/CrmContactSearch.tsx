@@ -15,6 +15,7 @@ export function CrmContactSearch({
   disabled = false,
   exclude = [],
   pickLabel,
+  conEmail = true,
 }: {
   onAdd: (contact: CrmContactHit, channel: ContactChannel) => void;
   disabled?: boolean;
@@ -23,6 +24,9 @@ export function CrmContactSearch({
   /** Modo «elegir UN contacto» (el de una oferta): un solo botón con este
    *  texto en vez de Para / CC; `onAdd` recibe el canal "to". */
   pickLabel?: string;
+  /** `false`: también los contactos sin email (o sin validar) — para elegir
+   *  el contacto de una oferta; para un envío por correo, siempre `true`. */
+  conEmail?: boolean;
 }) {
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<CrmContactHit[]>([]);
@@ -35,7 +39,7 @@ export function CrmContactSearch({
     if (q.length < MIN_CHARS) return undefined;
     let alive = true;
     const handle = window.setTimeout(() => {
-      searchCrmContacts(q)
+      (conEmail ? searchCrmContacts(q) : searchCrmContacts(q, 8, { conEmail: false }))
         .then((items) => {
           if (!alive) return;
           setHits(items);
@@ -50,7 +54,7 @@ export function CrmContactSearch({
         });
     }, DEBOUNCE_MS);
     return () => { alive = false; window.clearTimeout(handle); };
-  }, [query]);
+  }, [query, conEmail]);
 
   const excluded = new Set(exclude.map((e) => e.trim().toLowerCase()));
   const current = query.trim().length >= MIN_CHARS && searched === query.trim();
@@ -85,7 +89,7 @@ export function CrmContactSearch({
                   {h.name}
                   {h.company_name ? <span className="muted small"> · {h.company_name}</span> : null}
                 </span>
-                <span className="erp-contact-email muted small">{h.email}</span>
+                <span className="erp-contact-email muted small">{h.email || "sin email"}</span>
               </span>
               {pickLabel ? (
                 <button type="button" className="button small" disabled={disabled}
@@ -114,7 +118,9 @@ export function CrmContactSearch({
       {allChosen ? (
         <span className="muted small">Los contactos que coinciden ya están entre los destinatarios.</span>
       ) : current && hits.length === 0 && !error ? (
-        <span className="muted small">Ningún contacto del CRM con email coincide.</span>
+        <span className="muted small">
+          {conEmail ? "Ningún contacto del CRM con email coincide." : "Ningún contacto del CRM coincide."}
+        </span>
       ) : null}
     </div>
   );

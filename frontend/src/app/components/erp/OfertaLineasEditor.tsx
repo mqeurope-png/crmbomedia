@@ -222,6 +222,7 @@ export function OfertaLineasEditor({
                   <ArticleAutocompleteInput
                     value={l.sku}
                     enabled={isAc(i, "sku")}
+                    disabled={disabled}
                     ariaLabel={`SKU línea ${pos}`}
                     placeholder="Buscar en el catálogo…"
                     // Reescribir el SKU a mano deja la línea sin artículo:
@@ -242,6 +243,7 @@ export function OfertaLineasEditor({
                   <ArticleAutocompleteInput
                     value={l.descripcion}
                     enabled={isAc(i, "descripcion")}
+                    disabled={disabled}
                     ariaLabel={`Descripción línea ${pos}`}
                     placeholder="Descripción del artículo o concepto"
                     multiline

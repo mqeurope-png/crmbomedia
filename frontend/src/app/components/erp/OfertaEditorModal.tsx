@@ -64,6 +64,7 @@ export function OfertaEditorModal({
   onClose,
   onSaved,
   marcarPosiciones,
+  readOnly = false,
 }: {
   contactId?: string | null;
   contactName?: string | null;
@@ -73,6 +74,9 @@ export function OfertaEditorModal({
   /** Posiciones (1-based) de las líneas que «Convertir en presupuesto»
    *  rechazó por no tener artículo: se abren resaltadas. */
   marcarPosiciones?: number[];
+  /** Solo ver (el usuario no tiene `erp.proformas`): campos deshabilitados y
+   *  sin botón de guardar, como una convertida. */
+  readOnly?: boolean;
 }) {
   const editing = Boolean(oferta);
   const ofertaId = oferta?.id ?? null;
@@ -80,6 +84,7 @@ export function OfertaEditorModal({
   const needsLines = Boolean(oferta && !oferta.lineas);
   const fixedContact = editing || Boolean(contactId);
   const convertida = oferta?.estado === "convertida";
+  const soloLectura = convertida || readOnly;
 
   const [contact, setContact] = useState<Contacto | null>(
     () => contactoInicial(oferta, contactId, contactName),
@@ -174,7 +179,7 @@ export function OfertaEditorModal({
   const validezOk = Number.isInteger(validezNum) && validezNum >= VALIDEZ_MIN && validezNum <= VALIDEZ_MAX;
   const vivas = rows.filter((r) => !isRowBlank(r));
   const lineasOk = vivas.length > 0 && vivas.every((r) => r.descripcion.trim() || r.codart);
-  const valid = Boolean(contact) && lineasOk && validezOk && !convertida && !loadingOferta;
+  const valid = Boolean(contact) && lineasOk && validezOk && !soloLectura && !loadingOferta;
   const series = meta?.series ?? FACTUSOL_SERIES.map((s) => ({ serie: s.value, nombre: s.label }));
 
   async function save() {
@@ -240,6 +245,9 @@ export function OfertaEditorModal({
           </p>
           <CrmContactSearch
             pickLabel="Elegir"
+            // También los contactos sin email: una oferta no lo necesita
+            // (solo para enviarla).
+            conEmail={false}
             disabled={saving}
             onAdd={(c) => setContact({ id: c.id, nombre: c.name })}
           />
@@ -251,13 +259,17 @@ export function OfertaEditorModal({
           Esta oferta ya se convirtió en el presupuesto{" "}
           <strong>{oferta?.factusol?.numero ?? ""}</strong>: se puede ver, pero no editar.
         </p>
+      ) : readOnly ? (
+        <p className="form-info" role="status">
+          Solo lectura: tu perfil no edita ofertas.
+        </p>
       ) : null}
 
       <div className="form-row">
         <label className="field">
           <span>Plantilla</span>
           <select value={plantillaId} aria-label="Plantilla"
-                  disabled={saving || loadingPlantilla || convertida}
+                  disabled={saving || loadingPlantilla || soloLectura}
                   onChange={(e) => void choosePlantilla(e.target.value)}>
             <option value="">— Sin plantilla —</option>
             {plantillas.map((p) => (
@@ -271,7 +283,7 @@ export function OfertaEditorModal({
           <span>Empresa emisora (serie)</span>
           <select value={serie} aria-label="Empresa emisora (serie)"
                   title="Desde qué empresa de la casa sale la oferta (y, al convertir, el presupuesto)."
-                  disabled={saving || convertida}
+                  disabled={saving || soloLectura}
                   onChange={(e) => setSerie(Number(e.target.value))}>
             {series.map((s) => (
               <option key={s.serie} value={s.serie}>{s.serie} · {s.nombre}</option>
@@ -283,7 +295,7 @@ export function OfertaEditorModal({
       <div className="form-row">
         <label className="field">
           <span>Idioma</span>
-          <select value={idioma} aria-label="Idioma" disabled={saving || convertida}
+          <select value={idioma} aria-label="Idioma" disabled={saving || soloLectura}
                   onChange={(e) => setIdioma(e.target.value as OfertaIdioma | "")}>
             {!editing ? <option value="">Automático (según el contacto)</option> : null}
             {IDIOMAS.map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
@@ -293,7 +305,7 @@ export function OfertaEditorModal({
           <span>Validez (días)</span>
           <input type="number" min={VALIDEZ_MIN} max={VALIDEZ_MAX} step="1" value={validez}
                  aria-label="Validez en días" aria-invalid={!validezOk}
-                 disabled={saving || convertida}
+                 disabled={saving || soloLectura}
                  onChange={(e) => setValidez(e.target.value)} />
           {!validezOk ? (
             <span className="form-error small">Entre {VALIDEZ_MIN} y {VALIDEZ_MAX} días.</span>
@@ -301,7 +313,7 @@ export function OfertaEditorModal({
         </label>
         <label className="field-toggle">
           <input type="checkbox" checked={conIva} aria-label="Con IVA"
-                 disabled={saving || convertida}
+                 disabled={saving || soloLectura}
                  onChange={(e) => setConIva(e.target.checked)} />
           <span>Con IVA</span>
         </label>
@@ -311,7 +323,7 @@ export function OfertaEditorModal({
         <label className="field">
           <span>Fecha (opcional)</span>
           <input type="date" value={fecha} aria-label="Fecha de la oferta"
-                 disabled={saving || convertida}
+                 disabled={saving || soloLectura}
                  onChange={(e) => setFecha(e.target.value)} />
           <span className="muted small">
             Si la cambias a mano, manda; si no, al guardar pasa a hoy y la fecha
@@ -324,14 +336,14 @@ export function OfertaEditorModal({
         <span>Referencia (opcional)</span>
         <input type="text" value={referencia} maxLength={250} aria-label="Referencia"
                placeholder="Ej: nº de consulta, proyecto, obra…"
-               disabled={saving || convertida}
+               disabled={saving || soloLectura}
                onChange={(e) => setReferencia(e.target.value)} />
       </label>
       <label className="field">
         <span>Notas (opcional)</span>
         <textarea value={notas} rows={3} aria-label="Notas" maxLength={2000}
                   placeholder="Condiciones, plazos, lo que el cliente debe saber…"
-                  disabled={saving || convertida}
+                  disabled={saving || soloLectura}
                   onChange={(e) => setNotas(e.target.value)} />
       </label>
 
@@ -344,7 +356,7 @@ export function OfertaEditorModal({
         <OfertaLineasEditor
           rows={rows}
           onChange={setRows}
-          disabled={saving || convertida}
+          disabled={saving || soloLectura}
           marcadas={marcarPosiciones}
         />
       )}
@@ -363,9 +375,9 @@ export function OfertaEditorModal({
 
       <div className="modal-actions">
         <button type="button" className="button secondary" onClick={onClose} disabled={saving}>
-          {convertida ? "Cerrar" : "Cancelar"}
+          {soloLectura ? "Cerrar" : "Cancelar"}
         </button>
-        {!convertida ? (
+        {!soloLectura ? (
           <button type="button" className="button" onClick={() => void save()}
                   disabled={!valid || saving}>
             {saving ? "Guardando…" : editing ? "Guardar cambios" : "Crear oferta"}

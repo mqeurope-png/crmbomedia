@@ -722,6 +722,23 @@ def test_asistente_recibe_la_oferta_en_su_contexto(session_factory) -> None:
         assert sin.oferta is None and "OFERTA ADJUNTA" not in redactor.bloque_contexto(sin)
 
 
+def test_buscador_de_contactos_sin_email_para_elegir_el_de_la_oferta(http, session_factory) -> None:
+    """Un lead que llegó por teléfono (sin email) puede recibir una oferta: el
+    buscador del editor lo encuentra con `con_email=false`; el de los envíos
+    por correo sigue sin listarlo."""
+    with session_factory() as s:
+        s.add(Contact(first_name="Pau", last_name="Sin Correo", email=None))
+        s.add(Contact(first_name="Pau", last_name="Con Correo", email="pau@example.com"))
+        s.commit()
+    headers = auth_headers(http, "comercial")
+    con = http.get("/api/erp/contacts/search?q=pau", headers=headers).json()["items"]
+    assert [c["name"] for c in con] == ["Pau Con Correo"]
+    todos = http.get("/api/erp/contacts/search?q=pau&con_email=false", headers=headers)
+    assert todos.status_code == 200, todos.text
+    assert sorted(c["name"] for c in todos.json()["items"]) == ["Pau Con Correo", "Pau Sin Correo"]
+    assert next(c for c in todos.json()["items"] if c["name"] == "Pau Sin Correo")["email"] is None
+
+
 def test_configuracion_de_ofertas_prefijo_y_validez(http, session_factory) -> None:
     headers = auth_headers(http)
     r = http.get("/api/erp/settings", headers=headers)

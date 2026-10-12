@@ -14515,6 +14515,9 @@ table.erp-doc-lines { width: 100%; table-layout: fixed; }
 .erp-doc-lines td.num input { font-family: var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; }
 .erp-doc-lines td.erp-doc-total { font-family: var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .erp-doc-lines td.erp-doc-del { text-align: right; }
+/* Ofertas: la línea que «Convertir en presupuesto» rechazó por no tener
+   artículo se resalta entera, no solo el aviso bajo el SKU. */
+.erp-doc-lines tr.is-marked td { background: #fff7ed; box-shadow: inset 3px 0 0 #b54708; }
 .erp-doc-col-sku { width: 16%; }
 .erp-doc-col-qty { width: 9%; }
 .erp-doc-col-price { width: 13%; }

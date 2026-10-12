@@ -1,6 +1,7 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import OfertasPage from "./page";
+import { getCurrentUser } from "../../lib/api";
 import {
   listOfertaPlantillas,
   listOfertas,
@@ -14,6 +15,11 @@ import {
  *  «Plantillas» (editar, activar / desactivar, nueva). Los modales se prueban
  *  en sus propios tests; aquí basta con ver que se abren con la fila. */
 
+// Los parámetros de la URL (`?tab=`, `?contact_id=`): cada test fija los suyos.
+let mockSearchParams = new URLSearchParams("");
+jest.mock("next/navigation", () => ({
+  useSearchParams: () => mockSearchParams,
+}));
 jest.mock("next/link", () => ({
   __esModule: true,
   default: ({ children, href, className }: { children: React.ReactNode; href: string; className?: string }) => (
@@ -37,12 +43,13 @@ jest.mock("../../lib/erpApi", () => ({
   updateOfertaPlantilla: jest.fn(),
 }));
 jest.mock("../../components/erp/OfertaEditorModal", () => ({
-  OfertaEditorModal: ({ oferta, marcarPosiciones, onClose, onSaved }: {
-    oferta?: { numero: string } | null; marcarPosiciones?: number[];
+  OfertaEditorModal: ({ oferta, marcarPosiciones, readOnly, onClose, onSaved }: {
+    oferta?: { numero: string } | null; marcarPosiciones?: number[]; readOnly?: boolean;
     onClose: () => void; onSaved: (o: { numero: string }) => void;
   }) => (
     <div>
       EDITOR {oferta?.numero ?? "nueva"} marcadas:{(marcarPosiciones ?? []).join(",") || "—"}
+      {readOnly ? " SOLO LECTURA" : ""}
       <button type="button"
               onClick={() => onSaved({ ...(oferta ?? {}), numero: oferta?.numero ?? "OF-2026-0009" })}>
         GUARDAR EDITOR
@@ -122,6 +129,8 @@ const PL1 = {
 };
 
 beforeEach(() => {
+  mockSearchParams = new URLSearchParams("");
+  (getCurrentUser as jest.Mock).mockImplementation(() => Promise.resolve({ role: "admin" }));
   mockList.mockReset();
   mockList.mockResolvedValue([OF1, OF2]);
   mockPlantillas.mockReset();
@@ -233,6 +242,36 @@ describe("ERP · Ofertas", () => {
     expect(mockList.mock.calls.filter((c) => c[0].q !== undefined)).toHaveLength(1);
     await user.click(screen.getByRole("button", { name: "Limpiar filtros" }));
     await waitFor(() => expect(mockList).toHaveBeenLastCalledWith({ limit: 500 }));
+  });
+
+  it("por la URL: ?tab=plantillas abre esa pestaña y ?contact_id= filtra por el contacto (chip y «Limpiar filtros»)", async () => {
+    mockSearchParams = new URLSearchParams("tab=plantillas");
+    const { unmount } = render(<OfertasPage />);
+    await screen.findByRole("table", { name: "Plantillas de oferta" });
+    expect(screen.getByRole("tab", { name: "Plantillas" })).toHaveAttribute("aria-selected", "true");
+    unmount();
+
+    mockSearchParams = new URLSearchParams("contact_id=c1");
+    const user = userEvent.setup();
+    render(<OfertasPage />);
+    await screen.findByRole("table", { name: "Ofertas" });
+    await waitFor(() => expect(mockList).toHaveBeenCalledWith({ limit: 500, contact_id: "c1" }));
+    expect(screen.getByText("Contacto: Ana Pérez")).toHaveClass("badge");
+    await user.click(screen.getByRole("button", { name: "Limpiar filtros" }));
+    await waitFor(() => expect(mockList).toHaveBeenLastCalledWith({ limit: 500 }));
+    expect(screen.queryByText(/Contacto: /)).toBeNull();
+  });
+
+  it("sin permiso de proformas no hay «+ Nueva oferta» y «Ver» abre el editor en solo lectura", async () => {
+    (getCurrentUser as jest.Mock).mockImplementation(() => Promise.resolve({ role: "sat" }));
+    const user = userEvent.setup();
+    render(<OfertasPage />);
+    await screen.findByRole("table", { name: "Ofertas" });
+    expect(screen.queryByRole("button", { name: "+ Nueva oferta" })).toBeNull();
+    await user.click(within(row("OF-2026-0001")).getByRole("button", { name: "Acciones OF-2026-0001" }));
+    expect(within(row("OF-2026-0001")).queryByRole("button", { name: "Convertir en presupuesto" })).toBeNull();
+    await user.click(within(row("OF-2026-0001")).getByRole("button", { name: "Ver" }));
+    expect(await screen.findByText(/EDITOR OF-2026-0001 .*SOLO LECTURA/)).toBeInTheDocument();
   });
 
   it("pestaña Plantillas: lista (nombre, origen, líneas, activa), Editar, Desactivar y Nueva plantilla", async () => {

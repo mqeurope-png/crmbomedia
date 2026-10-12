@@ -198,6 +198,8 @@ describe("OfertaEditorModal", () => {
     expect(screen.getByRole("dialog", { name: "Nueva oferta" })).toHaveTextContent("— sin contacto —");
     await user.type(screen.getByLabelText("Buscar contacto del CRM"), "lu");
     await user.click(await screen.findByRole("button", { name: "Elegir a Luis Gómez" }));
+    // También los contactos sin email: la oferta no lo necesita para existir.
+    expect(mockContacts).toHaveBeenCalledWith("lu", 8, { conEmail: false });
     expect(screen.getByRole("dialog")).toHaveTextContent("Contacto: Luis Gómez");
     expect(screen.queryByLabelText("Buscar contacto del CRM")).toBeNull();
     await user.type(screen.getByLabelText("Descripción línea 1"), "Consultoría");
@@ -212,6 +214,21 @@ describe("OfertaEditorModal", () => {
       onClose={jest.fn()} onSaved={jest.fn()} />);
     expect(screen.getByRole("status")).toHaveTextContent("ya se convirtió en el presupuesto 2-000575");
     expect(screen.queryByRole("button", { name: "Guardar cambios" })).toBeNull();
-    expect(within(screen.getByRole("dialog")).getByLabelText("Precio línea 1")).toBeDisabled();
+    const dialogo = within(screen.getByRole("dialog"));
+    expect(dialogo.getByLabelText("Precio línea 1")).toBeDisabled();
+    expect(dialogo.getByLabelText("SKU línea 1")).toBeDisabled();
+    expect(dialogo.getByLabelText("Descripción línea 1")).toBeDisabled();
+    expect(dialogo.queryByRole("button", { name: "Cancelar" })).toBeNull();   // «Cerrar»
+  });
+
+  it("readOnly (sin permiso de proformas): se ve, pero ni se edita ni se guarda", () => {
+    render(<OfertaEditorModal oferta={{ ...OFERTA, lineas: [LINEA] }} readOnly
+                              onClose={jest.fn()} onSaved={jest.fn()} />);
+    expect(screen.getByRole("status")).toHaveTextContent("Solo lectura");
+    expect(screen.queryByRole("button", { name: "Guardar cambios" })).toBeNull();
+    const dialogo = within(screen.getByRole("dialog"));
+    expect(dialogo.getByLabelText("SKU línea 1")).toBeDisabled();
+    expect(dialogo.getByLabelText("Idioma")).toBeDisabled();
+    expect(dialogo.queryByRole("button", { name: "Cancelar" })).toBeNull();   // «Cerrar»
   });
 });

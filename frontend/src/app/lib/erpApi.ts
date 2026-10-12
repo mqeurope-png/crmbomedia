@@ -3344,12 +3344,19 @@ export type CrmContactHit = {
 
 /** Remates · punto 3: busca CUALQUIER contacto del CRM con email (nombre,
  *  email o empresa). Vive en el ERP: los perfiles de pedidos no tienen
- *  acceso a `/api/contacts`. */
-export async function searchCrmContacts(q: string, limit = 8): Promise<CrmContactHit[]> {
-  const r = await apiFetch<{ items: CrmContactHit[] }>(
-    `/api/erp/contacts/search${qs({ q, limit })}`,
+ *  acceso a `/api/contacts`. Con `conEmail: false` (elegir el contacto de una
+ *  oferta) también los que no tienen email o lo tienen sin validar: un lead
+ *  que llegó por teléfono puede recibir una oferta; el email solo hace falta
+ *  para enviarla. Sin email, `email` llega como cadena vacía. */
+export async function searchCrmContacts(
+  q: string, limit = 8, opts: { conEmail?: boolean } = {},
+): Promise<CrmContactHit[]> {
+  const r = await apiFetch<{ items: (Omit<CrmContactHit, "email"> & { email: string | null })[] }>(
+    `/api/erp/contacts/search${qs({
+      q, limit, ...(opts.conEmail === false ? { con_email: "false" } : {}),
+    })}`,
   );
-  return r.items;
+  return r.items.map((i) => ({ ...i, email: i.email ?? "" }));
 }
 
 export async function sendQuoteEmail(

@@ -1140,6 +1140,7 @@ def preview_quote_email_template(
 def search_crm_contacts(
     q: str = Query(min_length=2, max_length=100),
     limit: int = Query(default=10, ge=1, le=25),
+    con_email: bool = Query(default=True),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_email_client),
 ) -> dict[str, Any]:
@@ -1149,7 +1150,11 @@ def search_crm_contacts(
     Los perfiles de solo-ERP no pueden usar `/api/contacts` (ámbito CRM), así
     que esta búsqueda vive en el ERP y devuelve lo justo: id, nombre, email y
     empresa. Cada palabra tiene que aparecer en el nombre, los apellidos, el
-    email o la empresa; solo contactos activos con un email utilizable."""
+    email o la empresa; solo contactos activos con un email utilizable.
+
+    `con_email=false` (elegir el contacto de una OFERTA): también los que no
+    tienen email o lo tienen sin validar — un lead que llegó por teléfono
+    puede recibir una oferta; el email solo hace falta para enviarla."""
     from sqlalchemy import or_  # noqa: PLC0415
 
     from app.models.crm import Company, Contact  # noqa: PLC0415
@@ -1165,13 +1170,14 @@ def search_crm_contacts(
     stmt = (
         select(Contact, Company.name)
         .outerjoin(Company, Company.id == Contact.company_id)
-        .where(
-            Contact.is_active.is_(True),
+        .where(Contact.is_active.is_(True))
+    )
+    if con_email:
+        stmt = stmt.where(
             Contact.is_email_valid.is_(True),
             Contact.email.isnot(None),
             Contact.email != "",
         )
-    )
     for token in tokens:
         like = "%" + token.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
         stmt = stmt.where(or_(
@@ -1188,7 +1194,7 @@ def search_crm_contacts(
         name = " ".join(p for p in (contact.first_name, contact.last_name) if p).strip()
         items.append({
             "id": contact.id,
-            "name": name or contact.email,
+            "name": name or contact.email or "—",
             "email": contact.email,
             "company_name": company_name,
         })

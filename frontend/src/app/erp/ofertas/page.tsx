@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { PageHeader } from "../../components/PageHeader";
 import { ConvertOfertaDialog } from "../../components/erp/ConvertOfertaDialog";
 import { ActionsMenu } from "../../components/erp/flow/ActionsMenu";
@@ -46,9 +47,19 @@ type EditorState = { oferta: Oferta | null; marcadas?: number[] };
  *  y buscador en el servidor) y, por fila, el menú «⋯» con Ver / editar, PDF,
  *  Enviar por correo y Convertir en presupuesto (la única acción que escribe en
  *  FACTUSOL, con su diálogo de confirmación). Pestaña «Plantillas»: las
- *  plantillas de líneas, con editar y activar / desactivar. */
-export default function OfertasPage() {
-  const [tab, setTab] = useState<Tab>("ofertas");
+ *  plantillas de líneas, con editar y activar / desactivar. Por la URL:
+ *  `?tab=plantillas` (desde Proformas, tras guardar una plantilla) y
+ *  `?contact_id=` (desde «Ver todas» de la ficha del contacto). */
+function OfertasPageInner() {
+  const searchParams = useSearchParams();
+  const [tab, setTab] = useState<Tab>(
+    searchParams.get("tab") === "plantillas" ? "plantillas" : "ofertas",
+  );
+  // Solo las ofertas de un contacto (el enlace de su ficha); se quita con
+  // «Limpiar filtros».
+  const [contactFilter, setContactFilter] = useState<string | null>(
+    searchParams.get("contact_id") || null,
+  );
   const [canEdit, setCanEdit] = useState(false);
   const [canEmail, setCanEmail] = useState(false);
   const [ofertas, setOfertas] = useState<Oferta[]>([]);
@@ -89,13 +100,14 @@ export default function OfertasPage() {
     return () => window.clearTimeout(handle);
   }, [text]);
 
-  const filtersKey = `${estado}\u0000${serverText}`;
+  const filtersKey = `${estado}\u0000${serverText}\u0000${contactFilter ?? ""}`;
   const loading = loadedKey !== filtersKey;
 
   const load = useCallback(() => {
     const id = ++reqId.current;
     return listOfertas({
       limit: LIST_LIMIT,
+      ...(contactFilter ? { contact_id: contactFilter } : {}),
       ...(estado ? { estado } : {}),
       ...(serverText ? { q: serverText } : {}),
     })
@@ -111,7 +123,7 @@ export default function OfertasPage() {
         setError(extractErrorMessage(e, "No se pudieron cargar las ofertas."));
         setLoadedKey(filtersKey);
       });
-  }, [estado, serverText, filtersKey]);
+  }, [estado, serverText, contactFilter, filtersKey]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -196,7 +208,10 @@ export default function OfertasPage() {
     ].filter(Boolean);
   }
 
-  const hasFilters = Boolean(text.trim() || estado);
+  const hasFilters = Boolean(text.trim() || estado || contactFilter);
+  const contactoFiltrado = contactFilter
+    ? ofertas.find((o) => o.contact_id === contactFilter)?.contacto?.nombre ?? null
+    : null;
 
   return (
     <main className="shell shell-wide erp-flow">
@@ -253,9 +268,14 @@ export default function OfertasPage() {
                 ))}
               </select>
             </label>
+            {contactFilter ? (
+              <span className="badge info" title="Solo las ofertas de este contacto (desde su ficha).">
+                Contacto: {contactoFiltrado ?? "filtrado"}
+              </span>
+            ) : null}
             {hasFilters ? (
               <button type="button" className="button small secondary"
-                      onClick={() => { setText(""); setEstado(""); }}>
+                      onClick={() => { setText(""); setEstado(""); setContactFilter(null); }}>
                 Limpiar filtros
               </button>
             ) : null}
@@ -403,6 +423,7 @@ export default function OfertasPage() {
         <OfertaEditorModal
           oferta={editor.oferta}
           marcarPosiciones={editor.marcadas}
+          readOnly={!canEdit}
           onClose={() => setEditor(null)}
           onSaved={onSaved}
         />
@@ -442,5 +463,14 @@ export default function OfertasPage() {
         />
       ) : null}
     </main>
+  );
+}
+
+/** `useSearchParams` exige Suspense en el app router (`?tab=`, `?contact_id=`). */
+export default function OfertasPage() {
+  return (
+    <Suspense fallback={<main className="shell shell-wide erp-flow"><p className="muted">Cargando…</p></main>}>
+      <OfertasPageInner />
+    </Suspense>
   );
 }

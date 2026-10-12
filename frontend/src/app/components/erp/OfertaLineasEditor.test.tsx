@@ -56,6 +56,18 @@ describe("OfertaLineasEditor — cálculo", () => {
   });
 });
 
+describe("OfertaLineasEditor — solo lectura", () => {
+  it("con disabled también se deshabilitan SKU y descripción, y no se busca en el catálogo", () => {
+    render(<OfertaLineasEditor
+      rows={[emptyOfertaLineaRow({ sku: "SKU-1", descripcion: "Placa", cantidad: "1", precio: "10" })]}
+      onChange={jest.fn()} disabled />);
+    expect(screen.getByLabelText("SKU línea 1")).toBeDisabled();
+    expect(screen.getByLabelText("Descripción línea 1")).toBeDisabled();
+    expect(screen.getByLabelText("Precio línea 1")).toBeDisabled();
+    expect(mockArticles).not.toHaveBeenCalled();
+  });
+});
+
 describe("OfertaLineasEditor — edición", () => {
   it("añade, reordena y quita líneas; elegir un artículo del catálogo rellena SKU, descripción, precio e IVA", async () => {
     mockArticles.mockResolvedValue([{
