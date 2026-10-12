@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Generator
 from datetime import UTC, datetime
 from typing import Any
@@ -26,10 +27,12 @@ from app.db.base import Base
 from app.db.session import get_session
 from app.main import app
 from app.models.conocimiento import FUENTE_COMPOSITOR, TIPO_MAQUINA, MarcaCatalogo, ProductoCatalogo
-from app.models.crm import User, UserEmailAliasPref, UserRole
+from app.models.crm import EmailMessage, EmailMessageToken, User, UserEmailAliasPref, UserRole
 from app.models.ia import BorradorAsistente
 from app.services import llm
 from app.services.correo_compuesto import ia
+from app.services.correo_compuesto.generador import ESTILO_MOVIL
+from app.services.html_sanitizer import es_correo_compuesto, sanitize_email_html
 from app.services.web_forms.sitios import SITIOS_DE_PARTIDA, Registro, fijar_para_tests
 from tests._test_helpers import auth_headers, seed_org_google_integration, seed_test_users
 from tests.test_asistente import ALIAS, _ClaudeFalso, _contacto, _hilo, _pedir
@@ -305,3 +308,188 @@ def test_ni_productos_ni_enlaces_ni_precios_inventados(
     aviso = b["aviso"]
     assert "P99" in aviso and "vídeo" in aviso and "«inventada»" in aviso
     assert "«3.990 €»" in aviso and "7.900 €»" not in aviso              # solo el que no es
+
+
+class _GmailFalso:
+    """Gmail de mentira: guarda lo que se le pide enviar."""
+
+    enviados: list[dict[str, Any]] = []
+
+    def __init__(self, *_a: Any, **_k: Any) -> None:
+        pass
+
+    def send_message(self, **kwargs: Any) -> dict[str, Any]:
+        _GmailFalso.enviados.append(kwargs)
+        return {"id": f"gmail-{len(_GmailFalso.enviados)}", "threadId": "gmail-thr-1"}
+
+
+FIRMA = "<p>Un saludo,<br><strong>Admin</strong> · <a href=\"https://bomedia.example/\">bomedia</a></p>"
+
+
+def _final(http: TestClient, estructura: dict[str, Any], asunto: str) -> dict[str, Any]:
+    """Lo que hace el compositor antes de enviar, copiar o descargar: el correo
+    generado por BoHub a partir de la estructura, con la firma y sin nada de
+    la vista previa."""
+    r = http.post("/api/emails/compuesto/render", headers=auth_headers(http, "admin"),
+                  json={"estructura": estructura, "asunto": asunto, "firma_html": FIRMA})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_enviar_un_compuesto_deja_registro_texto_plano_y_seguimiento(
+    session_factory: sessionmaker, http: TestClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with session_factory() as s:
+        thread_id = _hilo_talentos(s)
+    with patch.object(llm, "_invoke_claude", _ClaudeFalso(COMPUESTO_DTF)):
+        b = _pedir(http, thread_id, instruccion="mándale la gama DTF").json()["borrador"]
+    final = _final(http, b["estructura"], b["asunto"])
+    assert "data-bh-" not in final["html"] and "Admin" in final["html"]
+    _GmailFalso.enviados = []
+    monkeypatch.setattr("app.integrations.gmail.service.GmailClient", _GmailFalso)
+    r = http.post("/api/emails/send", headers=auth_headers(http, "admin"), json={
+        "from_alias": ALIAS, "to": [TALENTOS], "subject": b["asunto"],
+        "body_html": final["html"], "body_text": final["texto"], "include_unsubscribe": True,
+        "asistente_borrador_id": b["id"],
+    })
+    assert r.status_code == 201, r.text
+    [enviado] = _GmailFalso.enviados
+    saliente = enviado["body_html"]
+    # El correo sale con su maquetación: la hoja de estilo del móvil, las
+    # tablas con sus atributos y las fichas, sin un <div> de BoHub.
+    assert saliente.startswith("<!DOCTYPE html>") and "@media only screen" in saliente
+    assert 'role="presentation"' in saliente and 'bgcolor="#ffffff"' in saliente
+    assert saliente.count('class="bh-col bh-ficha"') == 3 and "4.990 €" in saliente
+    # Seguimiento: enlaces envueltos, píxel de apertura y baja dentro del <body>.
+    hrefs = re.findall(r'href="([^"]*)"', saliente)
+    assert len(hrefs) > 3 and all(
+        "/api/email-track/click/" in h or "/api/unsubscribe/" in h for h in hrefs), hrefs
+    cierre = saliente.rindex("</body>")
+    assert saliente.index("/api/email-track/open/") < cierre
+    assert saliente.index("Anular suscripción") < cierre
+    # Texto plano: el que genera BoHub, con la firma.
+    assert enviado["body_text"] == final["texto"] and "Hola Marny," in enviado["body_text"]
+    with session_factory() as s:
+        mensaje = s.get(EmailMessage, r.json()["id"])
+        assert mensaje.body_text == final["texto"]                       # registro
+        assert "@media only screen" in mensaje.body_html and "email-track" not in mensaje.body_html
+        assert s.scalar(select(EmailMessageToken).where(
+            EmailMessageToken.message_id == mensaje.id)) is not None     # seguimiento
+        assert s.get(BorradorAsistente, b["id"]).estado == "enviado_tal_cual"
+    # Otro, retocado en la vista previa antes de enviar: «enviado editado».
+    with patch.object(llm, "_invoke_claude", _ClaudeFalso(COMPUESTO_DTF)):
+        b2 = _pedir(http, thread_id, instruccion="mándale la gama DTF").json()["borrador"]
+    retocada = json.loads(json.dumps(b2["estructura"]))
+    retocada["bloques"][0]["html"] = "<p>Hola Marny,</p><p>lo que hablamos por teléfono:</p>"
+    final2 = _final(http, retocada, b2["asunto"])
+    r2 = http.post("/api/emails/send", headers=auth_headers(http, "admin"), json={
+        "from_alias": ALIAS, "to": [TALENTOS], "subject": b2["asunto"],
+        "body_html": final2["html"], "body_text": final2["texto"],
+        "asistente_borrador_id": b2["id"],
+    })
+    assert r2.status_code == 201, r2.text
+    with session_factory() as s:
+        assert s.get(BorradorAsistente, b2["id"]).estado == "enviado_editado"
+
+
+def test_el_saneado_conserva_el_compuesto_y_no_deja_pasar_nada_mas(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    with session_factory() as s:
+        thread_id = _hilo_talentos(s)
+    with patch.object(llm, "_invoke_claude", _ClaudeFalso(COMPUESTO_DTF)):
+        b = _pedir(http, thread_id, instruccion="mándale la gama DTF").json()["borrador"]
+    html = _final(http, b["estructura"], b["asunto"])["html"]
+    limpio = sanitize_email_html(html)
+
+    def _igual(h: str) -> str:
+        # Lo único que cambia al sanear es cómo se escribe, no qué hay: el
+        # <tbody> implícito y las comillas del nombre de la fuente.
+        h = re.sub(r"</?tbody>", "", h)
+        return re.sub(r"style='([^']*)'",
+                      lambda m: 'style="' + m.group(1).replace('"', "'") + '"', h)
+
+    assert es_correo_compuesto(html) and _igual(limpio) == _igual(html)
+    assert sanitize_email_html(limpio) == limpio
+    # Forjar la marca no da más que la lista del compuesto: ni scripts, ni
+    # manejadores, ni javascript:, ni hojas de estilo, ni comentarios de Outlook.
+    forjado = (
+        '<html lang="es"><head><meta name="generator" content="BoHub correo compuesto">'
+        "<style>body{background:url(https://evil.example/x)}</style><title>x</title></head>"
+        '<body><table role="presentation" bgcolor="#ffffff"><tr><td width="300">'
+        '<a href="javascript:alert(1)" onclick="alert(2)">a</a>'
+        '<img src="https://cdn.example/a.jpg" onerror="alert(3)" alt="a" width="10">'
+        "<script>alert(4)</script><iframe src=\"https://evil.example/\"></iframe>"
+        '<!--[if mso]><v:rect href="https://evil.example/"></v:rect><![endif]-->'
+        '<p style="position:fixed;color:#1e293b">hola</p>'
+        "<!--crmbo:signature--><p>Admin</p><!--/crmbo:signature-->"
+        "</td></tr></table></body></html>")
+    salida = sanitize_email_html(forjado)
+    bajo = salida.lower()
+    for prohibido in ("javascript:", "onclick", "onerror", "<script", "alert(4)", "<iframe",
+                      "evil.example", "[if mso]", "position:fixed"):
+        assert prohibido not in bajo, prohibido
+    assert re.findall(r"<style[^>]*>(.*?)</style>", salida, re.DOTALL) == [ESTILO_MOVIL]
+    assert 'role="presentation"' in salida and 'width="300"' in salida and "hola" in salida
+    assert "<!--crmbo:signature--><p>Admin</p><!--/crmbo:signature-->" in salida
+    # Un cuerpo del editor sigue con la lista de siempre.
+    normal = sanitize_email_html('<table role="presentation" bgcolor="#fff"><tr><td>x</td></tr>'
+                                 "</table><style>.a{}</style>")
+    assert "role=" not in normal and "bgcolor" not in normal and "<style" not in normal
+
+
+def test_un_borrador_guardado_arrastra_la_estructura(http: TestClient) -> None:
+    headers = auth_headers(http, "admin")
+    estructura = {"idioma": "es", "bloques": [
+        {"tipo": "texto", "html": "<p>Hola Marny,</p><script>x</script>"},
+        {"tipo": "cta", "botones": [{"texto": "Ver la gama", "url": "https://mboprinters.com/es/"}]},
+    ]}
+    r = http.post("/api/email-drafts", headers=headers, json={
+        "subject": "Re: Equipos DTF", "body_html": "<!DOCTYPE html><html></html>",
+        "body_text": "Hola Marny,", "to_emails": [TALENTOS], "estructura": estructura})
+    assert r.status_code == 201, r.text
+    guardado = r.json()
+    assert [b["tipo"] for b in guardado["estructura"]["bloques"]] == ["texto", "cta"]
+    assert "<script" not in guardado["estructura"]["bloques"][0]["html"]
+    ids = [b["id"] for b in guardado["estructura"]["bloques"]]
+    leido = http.get(f"/api/email-drafts/{guardado['id']}", headers=headers).json()
+    assert [b["id"] for b in leido["estructura"]["bloques"]] == ids      # los mismos bloques
+    # Pasado a texto normal: sin estructura.
+    r = http.put(f"/api/email-drafts/{guardado['id']}", headers=headers, json={
+        "subject": "Re: Equipos DTF", "body_html": "<p>Hola</p>", "to_emails": [TALENTOS]})
+    assert r.status_code == 200 and r.json()["estructura"] is None
+    enorme = {"bloques": [{"tipo": "texto", "html": "x" * 250_000}]}
+    assert http.post("/api/email-drafts", headers=headers,
+                     json={"estructura": enorme}).status_code == 413
+
+
+def test_lo_que_hay_en_el_compositor_manda_la_vista_previa_o_el_texto_al_que_se_paso(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    with session_factory() as s:
+        thread_id = _hilo_talentos(s)
+    falso = _ClaudeFalso(COMPUESTO_DTF)
+    with patch.object(llm, "_invoke_claude", falso):
+        primero = _pedir(http, thread_id, instruccion="mándale la gama DTF").json()["borrador"]
+    assert primero["sobre_editor"] is False
+    # Una corrección sobre la vista previa: se pone sin preguntar.
+    falso.respuesta = {"modo": "compuesto", "asunto": "Re: Equipos DTF", "aviso": "",
+                       "pendiente": [], "operaciones": []}
+    with patch.object(llm, "_invoke_claude", falso):
+        segundo = _turno(http, primero["id"], "no cambies nada",
+                         estructura_actual=primero["estructura"]).json()["borrador"]
+    assert segundo["modo"] == "compuesto" and segundo["sobre_editor"] is True
+    # La persona lo pasó a texto («Pasar a texto») y pide una corrección: la
+    # IA corrige ESE texto, en un correo normal, no la estructura de antes.
+    falso.respuesta = {"asunto": "Re: Equipos DTF", "idioma": "es", "aviso": "", "pendiente": [],
+                       "cuerpo": "<p>Hola Marny,</p><p>te paso la gama DTF.</p>",
+                       "enlaces_usados": []}
+    with patch.object(llm, "_invoke_claude", falso):
+        tercero = _turno(http, segundo["id"], "más corto",
+                         texto_actual_html="<p>Hola Marny,</p><p>para el taller textil te "
+                                           "encajan estas máquinas de DTF: Orion 20…</p>"
+                         ).json()["borrador"]
+    peticion = falso.ultimo["bloques"][1]["text"]
+    assert "ESTRUCTURA ACTUAL" not in peticion and "para el taller textil" in peticion
+    assert tercero["modo"] == "normal" and tercero["estructura"] is None
+    assert tercero["html"] == "<p>Hola Marny,</p><p>te paso la gama DTF.</p>"

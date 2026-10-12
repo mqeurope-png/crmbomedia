@@ -16,9 +16,12 @@ import {
   guardarAlcance,
   leerAlcance,
 } from "../../lib/asistenteAlcance";
+import type { EstructuraCompuesta } from "../../lib/correoCompuesto";
 import {
   type AsistenteAlcance,
   type BorradorAsistente,
+  type FormatoAsistente,
+  type SobreElEditor,
   conversacionAsistente,
   descartarBorradorAsistente,
   esDestinatarioInterno,
@@ -57,6 +60,9 @@ export type AsistenteFranjaProps = {
   /** Lo que hay ahora mismo en el editor (sin la firma) y su selección, si la
    *  hay: viaja con cada petición para que la IA corrija eso y no el borrador. */
   obtenerCuerpo?: () => { html: string; seleccion: string };
+  /** El correo compuesto que hay en la vista previa (con lo retocado), o null:
+   *  si lo hay, la IA corrige ESE (con operaciones sobre sus bloques). */
+  obtenerEstructura?: () => EstructuraCompuesta | null;
   /** Llega un turno: el compositor pone su cuerpo (y su asunto) en el editor.
    *  `false` si no pudo (un fragmento para una selección que ya no está). */
   onBorrador: (
@@ -73,6 +79,14 @@ export type AsistenteFranjaProps = {
   /** Lo que la franja tiene entre manos: el compositor lo mira antes de cerrar. */
   onEstado?: (estado: { instruccion: string; turnos: number }) => void;
 };
+
+/** El interruptor de la franja: qué correo pide la persona. «Auto» es lo de
+ *  siempre (texto, salvo que la instrucción pida presentar productos). */
+const FORMATOS: { id: FormatoAsistente; label: string; titulo: string }[] = [
+  { id: "auto", label: "Auto", titulo: "La IA elige: con fichas si pides presentar productos («mándale la gama DTF»); si no, texto" },
+  { id: "normal", label: "Texto", titulo: "Un correo de texto, como siempre" },
+  { id: "compuesto", label: "Con fichas", titulo: "Un correo con fichas de producto, tira de marca, vídeo y botones; el HTML lo genera BoHub" },
+];
 
 function primera(direcciones: string): string {
   return direcciones.split(/[,\n;]/).map((s) => s.trim()).filter(Boolean)[0] ?? "";
@@ -123,6 +137,7 @@ export function AsistenteFranja({
   borradorInicialId = null,
   hayTexto = false,
   obtenerCuerpo,
+  obtenerEstructura,
   onBorrador,
   onVaciar,
   onBorradorActual,
@@ -135,6 +150,7 @@ export function AsistenteFranja({
   // la corrección se aplicará solo a eso, y se dice.
   const [seleccion, setSeleccion] = useState("");
   const [alcance, setAlcance] = useState<AsistenteAlcance>("contacto");
+  const [formato, setFormato] = useState<FormatoAsistente>("auto");
   const [usuarioId, setUsuarioId] = useState<string | null>(null);
   const [turnos, setTurnos] = useState<BorradorAsistente[]>([]);
   const [actual, setActual] = useState(0);
@@ -261,15 +277,25 @@ export function AsistenteFranja({
       setError("Dime qué quieres decirle: en un correo nuevo no hay nada de lo que deducir la intención.");
       return;
     }
-    // Lo que hay ahora en el editor: la IA corrige ESO, y solo la selección si la hay.
-    const cuerpo = hayTexto ? obtenerCuerpo?.() : undefined;
-    const editor = cuerpo?.html
-      ? { texto_actual_html: cuerpo.html, seleccion_html: cuerpo.seleccion || null }
-      : null;
+    // Lo que hay ahora en el compositor: un correo compuesto (su estructura,
+    // con lo retocado en la vista previa) o el texto del editor (y solo la
+    // selección si la hay). La IA corrige ESO.
+    const compuesto = obtenerEstructura?.() ?? null;
+    const fotoCompuesto = compuesto && compuesto.bloques.length > 0 ? JSON.stringify(compuesto) : null;
+    const cuerpo = hayTexto && fotoCompuesto === null ? obtenerCuerpo?.() : undefined;
+    const editor: SobreElEditor | null = fotoCompuesto !== null
+      ? { estructura_actual: compuesto }
+      : cuerpo?.html
+        ? { texto_actual_html: cuerpo.html, seleccion_html: cuerpo.seleccion || null }
+        : null;
+    // El interruptor solo viaja si no es «Auto» (lo de siempre).
+    const peticion: SobreElEditor | null = formato !== "auto" ? { ...(editor ?? {}), formato } : editor;
     // Si mientras la IA trabaja la persona sigue escribiendo, lo que vuelve ya
     // no es una corrección de lo que hay: el compositor pregunta antes de pisarlo.
     const cambiado = () => ({
-      editorCambiado: editor !== null && (obtenerCuerpo?.().html ?? "") !== editor.texto_actual_html,
+      editorCambiado: fotoCompuesto !== null
+        ? JSON.stringify(obtenerEstructura?.() ?? null) !== fotoCompuesto
+        : editor !== null && (obtenerCuerpo?.().html ?? "") !== editor.texto_actual_html,
     });
     setOcupado(true);
     setError(null);
@@ -277,21 +303,21 @@ export function AsistenteFranja({
       if (hayConversacion && borrador) {
         // Una corrección: un turno más, con el contexto ya montado. Si se
         // corrige un turno anterior, los posteriores se dejan atrás.
-        const nuevo = editor
-          ? await turnoAsistente(borrador.id, texto, editor)
+        const nuevo = peticion
+          ? await turnoAsistente(borrador.id, texto, peticion)
           : await turnoAsistente(borrador.id, texto);
         const lista = [...turnos.slice(0, actual + 1), nuevo];
         aplicar(nuevo, lista, lista.length - 1, cambiado());
       } else if (modo === "nuevo") {
         const nuevo = await generarBorradorNuevo({
           destinatario: para, instruccion: texto, alcance: alcanceEfectivo,
-          contact_id: contactId, ...(editor ?? {}),
+          contact_id: contactId, ...(peticion ?? {}),
         });
         aplicar(nuevo, [nuevo], 0, cambiado());
       } else {
         const nuevo = await generarBorradorAsistente(threadId as string, {
           alcance: alcanceEfectivo, instruccion: texto || null, destinatario: para || null,
-          ...(editor ?? {}),
+          ...(peticion ?? {}),
         });
         aplicar(nuevo, [nuevo], 0, cambiado());
       }
@@ -315,14 +341,15 @@ export function AsistenteFranja({
     setError(null);
     try {
       const para = primera(destinatario);
+      const conFormato = formato !== "auto" ? { formato } : {};
       const b = modo === "nuevo"
         ? await generarBorradorNuevo({
           destinatario: para, instruccion: raiz.instruccion ?? "", alcance: nuevo,
-          contact_id: contactId, regenerar_de: raiz.id,
+          contact_id: contactId, regenerar_de: raiz.id, ...conFormato,
         })
         : await generarBorradorAsistente(threadId as string, {
           alcance: nuevo, instruccion: raiz.instruccion, destinatario: para || null,
-          regenerar_de: raiz.id,
+          regenerar_de: raiz.id, ...conFormato,
         });
       aplicar(b, [b], 0);
     } catch (err) {
@@ -366,9 +393,12 @@ export function AsistenteFranja({
       : modo === "respuesta"
         ? "la IA redacta la respuesta; tú la revisas y la envías"
         : "la IA redacta el correo; tú lo revisas y lo envías";
+  const enVistaPrevia = Boolean(obtenerEstructura?.()?.bloques.length);
   const placeholder = seleccion
     ? "Qué cambiar en la selección: «más corto», «más formal», «en inglés», «quita el precio»…"
-    : modoCorreccion
+    : enVistaPrevia
+      ? "Corrige el correo: «quita el vídeo», «deja solo dos máquinas», «añade un botón a la tienda», «pásalo a texto»…"
+      : modoCorreccion
       ? "Corrige el texto: «más corto», «más formal», «en inglés», «no menciones el precio», «añade que el plazo son tres semanas»…"
       : modo === "respuesta"
         ? "¿Qué quieres decirle? Si lo dejas vacío, la IA contesta al último mensaje del cliente."
@@ -422,6 +452,22 @@ export function AsistenteFranja({
               </p>
             ) : null}
             <div className="asistente-franja-controles">
+              <span className="asistente-franja-formato" role="radiogroup" aria-label="Formato del correo">
+                {FORMATOS.map((f) => (
+                  <button
+                    key={f.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={formato === f.id}
+                    className={formato === f.id ? "is-activo" : undefined}
+                    title={f.titulo}
+                    disabled={ocupado || bloqueada}
+                    onClick={() => setFormato(f.id)}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </span>
               <select
                 className="email-toolbar-alcance"
                 aria-label="Qué histórico mira la IA"
@@ -467,6 +513,7 @@ export function AsistenteFranja({
                       ) : t.sobre_editor && t.turno === 0 ? (
                         <span className="muted small"> — sobre tu texto</span>
                       ) : null}
+                      {t.modo === "compuesto" && t.texto ? <span className="muted small"> — con fichas</span> : null}
                       {!t.texto ? <span className="muted small"> — sin cuerpo</span> : null}
                     </button>
                   </li>

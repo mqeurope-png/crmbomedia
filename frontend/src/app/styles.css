@@ -15618,3 +15618,101 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
   .modal-dialog.email-compose-modal > form { padding: 6px 16px 10px; }
   .email-compose-modal .actions { margin-top: 4px; }
 }
+
+/* --- Correos compuestos (12/10/2026) ---------------------------------------------
+ * La vista previa ocupa el sitio del editor: arriba la barra (escritorio o
+ * móvil, el bloque elegido con sus controles, copiar y descargar), debajo el
+ * correo tal cual sale, en un marco de 640 px (más de los 600 del correo, para
+ * que no salte la versión móvil) o de 375 px (un teléfono: las fichas se
+ * apilan). El marco hace scroll por dentro. */
+.correo-compuesto-vista {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  gap: 6px;
+}
+.correo-compuesto-barra {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  font-size: var(--fs-label);
+}
+.correo-compuesto-dispositivos,
+.correo-compuesto-bloque,
+.correo-compuesto-salidas { display: flex; align-items: center; gap: 4px; }
+.correo-compuesto-bloque { flex: 1 1 260px; min-width: 0; }
+.correo-compuesto-bloque select {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 340px;
+  font-size: var(--fs-label);
+  padding: 3px 6px;
+}
+.correo-compuesto-barra .icon-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  color: var(--muted, #6b7280);
+  font-size: var(--fs-label);
+}
+.correo-compuesto-barra .icon-button:hover:not(:disabled) { background: var(--line); color: var(--ink); }
+.correo-compuesto-barra .icon-button.is-activo { background: rgba(29, 78, 216, 0.1); color: var(--primary, #1d4ed8); }
+.correo-compuesto-salidas .button { display: inline-flex; align-items: center; gap: 4px; }
+.correo-compuesto-error { margin: 0; }
+.correo-compuesto-avisos {
+  margin: 0;
+  padding: 4px 8px;
+  border: 1px solid #fde68a;
+  border-radius: 6px;
+  background: #fef3c7;
+  color: #92400e;
+  font-size: var(--fs-label);
+}
+.correo-compuesto-marco {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  justify-content: center;
+  padding: 10px 8px;
+  overflow: auto;
+  background: #f1f5f9;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.correo-compuesto-marco iframe {
+  flex: 0 0 auto;
+  align-self: stretch;
+  min-height: 320px;
+  border: 0;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
+}
+.correo-compuesto-marco.is-movil iframe { border-radius: 14px; box-shadow: 0 0 0 6px #0f172a; }
+.correo-compuesto-cargando { position: absolute; top: 16px; }
+.correo-compuesto-ayuda { margin: 0; }
+
+/* El interruptor de la franja: Auto · Texto · Con fichas. */
+.asistente-franja-formato {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  margin-right: auto;
+}
+.asistente-franja-formato button {
+  background: none;
+  border: 0;
+  padding: 3px 8px;
+  font: inherit;
+  font-size: var(--fs-label);
+  color: var(--muted, #6b7280);
+  cursor: pointer;
+}
+.asistente-franja-formato button + button { border-left: 1px solid var(--border); }
+.asistente-franja-formato button.is-activo { background: rgba(29, 78, 216, 0.1); color: var(--primary, #1d4ed8); font-weight: 600; }
+.asistente-franja-formato button:disabled { cursor: default; }

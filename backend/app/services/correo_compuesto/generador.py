@@ -632,26 +632,42 @@ def generar(estructura: dict[str, Any], datos: Datos, *, asunto: str | None = No
         firma_texto = html_a_texto(firma_html)
         if firma_texto:
             textos.append("-- \n" + firma_texto)
-    documento = (
+    cuerpo = _tabla(
+        '<tr><td align="center" style="padding:0;">'
+        + _tabla("".join(filas), ancho=str(ANCHO), atributos=' class="bh-wrap"',
+                 estilo=f"width:{ANCHO}px;max-width:{ANCHO}px;margin:0 auto;"
+                        "background-color:#ffffff;")
+        + "</td></tr>",
+        atributos=' bgcolor="#ffffff"', estilo="width:100%;background-color:#ffffff;")
+    texto = "\n\n".join(t.strip() for t in textos if t.strip())
+    return Correo(html=documento(cuerpo, idioma=e["idioma"], asunto=asunto), texto=texto,
+                  avisos=r.avisos, precios=r.precios)
+
+
+#: La marca del documento: al enviar, el saneado reconoce por ella un correo
+#: compuesto y le aplica su propia lista blanca (`html_sanitizer`), que
+#: conserva la maquetación; la cabecera y la hoja de estilo las vuelve a poner
+#: esta función, nunca las del HTML que llega.
+MARCA_DOCUMENTO = '<meta name="generator" content="BoHub correo compuesto">'
+
+
+def documento(cuerpo: str, *, idioma: str, asunto: str | None = None) -> str:
+    """El documento de correo alrededor del cuerpo: la cabecera (con la marca
+    y la única hoja de estilo, la de las columnas en el móvil) y el `<body>`."""
+    idioma = idioma if re.fullmatch(r"[a-z]{2}", idioma or "") else bq.IDIOMA_RAIZ
+    return (
         "<!DOCTYPE html>"
-        f'<html lang="{_e(e["idioma"])}" xmlns="http://www.w3.org/1999/xhtml">'
+        f'<html lang="{idioma}" xmlns="http://www.w3.org/1999/xhtml">'
         "<head>"
         '<meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         '<meta name="x-apple-disable-message-reformatting">'
+        f"{MARCA_DOCUMENTO}"
         f"<title>{_e(asunto)}</title>"
         f'<style type="text/css">{ESTILO_MOVIL}</style>'
         "</head>"
         f'<body style="margin:0;padding:0;background-color:#ffffff;color:{TEXTO};'
         '-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%;">'
-        + _tabla(
-            '<tr><td align="center" style="padding:0;">'
-            + _tabla("".join(filas), ancho=str(ANCHO), atributos=' class="bh-wrap"',
-                     estilo=f"width:{ANCHO}px;max-width:{ANCHO}px;margin:0 auto;"
-                            "background-color:#ffffff;")
-            + "</td></tr>",
-            atributos=' bgcolor="#ffffff"', estilo="width:100%;background-color:#ffffff;")
-        + "</body></html>"
+        f"{cuerpo}"
+        "</body></html>"
     )
-    texto = "\n\n".join(t.strip() for t in textos if t.strip())
-    return Correo(html=documento, texto=texto, avisos=r.avisos, precios=r.precios)

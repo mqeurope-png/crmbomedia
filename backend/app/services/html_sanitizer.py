@@ -12,6 +12,7 @@ recortar, legible en clientes de texto).
 """
 from __future__ import annotations
 
+import html as html_mod
 import re
 
 import bleach
@@ -61,6 +62,74 @@ ALLOWED_PROTOCOLS = ["http", "https", "mailto", "tel", "cid", "data"]
 
 _css_sanitizer = CSSSanitizer(allowed_css_properties=ALLOWED_STYLES)
 
+# --- El correo compuesto de BoHub (`correo_compuesto.generador`) -----------
+# Un documento entero maquetado con tablas, con los atributos de maquetación
+# de correo (`role`, `bgcolor`, anchos de celda) y una hoja de estilo: la de
+# las columnas que se apilan en el móvil. Con la lista de arriba saldría
+# deshecho, así que se reconoce por su marca y pasa por su propia lista: la
+# de siempre más lo que el generador usa. La cabecera y la hoja de estilo las
+# vuelve a poner el generador (nunca las del HTML que llega): forjar la marca
+# no da más que esta lista, que tampoco deja scripts, manejadores ni URL
+# `javascript:`.
+_COMPUESTO_RE = re.compile(
+    r'<meta\s+name="generator"\s+content="BoHub correo compuesto"\s*/?>', re.IGNORECASE)
+_IDIOMA_DOC_RE = re.compile(r'<html\b[^>]*\blang="([a-z]{2})"', re.IGNORECASE)
+_CUERPO_DOC_RE = re.compile(r"<body\b[^>]*>(.*)</body\s*>", re.IGNORECASE | re.DOTALL)
+_CABECERA_DOC_RE = re.compile(r"<(head|title)\b[^>]*>.*?</\1\s*>", re.IGNORECASE | re.DOTALL)
+_TITULO_DOC_RE = re.compile(r"<title\b[^>]*>(.*?)</title\s*>", re.IGNORECASE | re.DOTALL)
+# Los comentarios, fuera, salvo las marcas de la firma (un comentario
+# condicional de Outlook podría llevar cualquier cosa).
+_COMENTARIO_AJENO_RE = re.compile(
+    r"<!--(?!crmbo:signature-->|/crmbo:signature-->).*?-->", re.DOTALL)
+
+ATTRS_COMPUESTO = {
+    **ALLOWED_ATTRS,
+    "img": [*ALLOWED_ATTRS["img"], "border"],
+    "table": [*ALLOWED_ATTRS["table"], "role", "bgcolor"],
+    "tr": ["align", "valign", "bgcolor"],
+    "td": [*ALLOWED_ATTRS["td"], "width", "height", "bgcolor"],
+    "th": [*ALLOWED_ATTRS["th"], "width", "height", "bgcolor"],
+}
+STYLES_COMPUESTO = [
+    *ALLOWED_STYLES,
+    "display", "border-radius", "border-top", "border-bottom", "border-left", "border-right",
+    "border-color", "border-style", "border-width", "border-spacing", "letter-spacing",
+    "text-transform", "white-space", "overflow", "opacity", "max-height", "min-width",
+    "outline", "box-sizing", "word-break", "table-layout", "mso-table-lspace",
+    "mso-table-rspace", "mso-line-height-rule",
+]
+_css_compuesto = CSSSanitizer(allowed_css_properties=STYLES_COMPUESTO)
+
+
+def es_correo_compuesto(html: str | None) -> bool:
+    """El HTML es un correo compuesto de BoHub (lleva su marca)."""
+    return bool(html) and bool(_COMPUESTO_RE.search(html or ""))
+
+
+def sanitize_correo_compuesto(html: str) -> str:
+    """El correo compuesto con su lista blanca: el cuerpo limpio dentro del
+    documento que pone el generador (cabecera, marca y hoja de estilo
+    propias). Aplicarlo dos veces da lo mismo que una."""
+    from app.services.correo_compuesto.generador import documento  # noqa: PLC0415
+
+    idioma = _IDIOMA_DOC_RE.search(html)
+    titulo = _TITULO_DOC_RE.search(html)
+    cuerpo = _CUERPO_DOC_RE.search(html)
+    contenido = cuerpo.group(1) if cuerpo else html
+    contenido = _CABECERA_DOC_RE.sub("", _DROP_WITH_CONTENT.sub("", contenido))
+    limpio = bleach.clean(
+        contenido,
+        tags=ALLOWED_TAGS,
+        attributes=ATTRS_COMPUESTO,
+        protocols=ALLOWED_PROTOCOLS,
+        css_sanitizer=_css_compuesto,
+        strip=True,
+        strip_comments=False,
+    )
+    limpio = _COMENTARIO_AJENO_RE.sub("", limpio)
+    return documento(limpio, idioma=(idioma.group(1).lower() if idioma else ""),
+                     asunto=html_mod.unescape(titulo.group(1)).strip() if titulo else None)
+
 
 def sanitize_email_html(html: str | None) -> str | None:
     """Devuelve el HTML con la whitelist aplicada. None/"" pasan tal cual.
@@ -68,9 +137,12 @@ def sanitize_email_html(html: str | None) -> str | None:
     `strip=True`: los tags no permitidos se eliminan pero su TEXTO se
     conserva (un paste con `<script>alert(1)</script>hola` deja `hola`,
     aunque el contenido del script sí se descarta por bleach al ser
-    contenido ejecutable)."""
+    contenido ejecutable). Un correo compuesto de BoHub pasa por la suya
+    (`sanitize_correo_compuesto`)."""
     if not html:
         return html
+    if es_correo_compuesto(html):
+        return sanitize_correo_compuesto(html)
     html = _DROP_WITH_CONTENT.sub("", html)
     return bleach.clean(
         html,

@@ -23,6 +23,7 @@ from app.models.crm import User
 from app.services.correo_compuesto import bloques as bq
 from app.services.correo_compuesto import datos as datos_mod
 from app.services.correo_compuesto import generador
+from app.services.html_sanitizer import sanitize_email_html
 
 router = APIRouter(prefix="/api/emails/compuesto", tags=["correo-compuesto"])
 
@@ -43,8 +44,10 @@ def render_estructura(session: Session, estructura: dict[str, Any], *, asunto: s
     """La estructura limpia, su HTML y su texto plano, con lo que se quitó."""
     avisos: list[str] = []
     limpia = bq.normalizar(estructura, avisos)
+    # La firma es HTML de la persona: pasa por el saneado de siempre (lo que
+    # se ve, se copia y se envía es lo mismo).
     correo = generador.generar(limpia, datos_mod.resolver(session, limpia), asunto=asunto,
-                               preview=preview, firma_html=firma_html)
+                               preview=preview, firma_html=sanitize_email_html(firma_html))
     return {"estructura": limpia, "html": correo.html, "texto": correo.texto,
             "avisos": avisos + correo.avisos, "precios": correo.precios}
 

@@ -818,12 +818,14 @@ def _rellenar_compuesto(
     session: Session, b: BorradorAsistente, data: dict[str, Any], uso: llm.Uso | None,
     modelo_pedido: str, *, refs: ia_compuesto.Referencias, idioma: str,
     base: dict[str, Any] | None, nombre_usuario: str | None, nombre_destinatario: str | None,
-    html_descartado: int = 0,
+    html_descartado: int = 0, sobre_editor: bool = False,
 ) -> None:
     """Un turno compuesto: la estructura (nueva, o la actual con las
     operaciones de la corrección), la guardia sobre los textos que escribe la
     IA, el correo generado (HTML y texto plano, para comparar lo enviado) y
-    los avisos."""
+    los avisos. `sobre_editor`: partió de lo que había en el compositor (la
+    vista previa con sus retoques, o el texto del editor): se pone sin
+    preguntar."""
     aviso = str(data.get("aviso") or "").strip()
     avisos: list[str] = []
     idioma_correo = str(data.get("idioma") or idioma or "").strip().lower()[:2] or idioma
@@ -869,6 +871,8 @@ def _rellenar_compuesto(
         contexto["html_descartado"] = html_descartado
     else:
         contexto.pop("html_descartado", None)
+    if sobre_editor:
+        contexto["sobre_editor"] = True
     b.contexto_json = json.dumps(contexto, ensure_ascii=False, default=str)
     b.modo = ia_compuesto.MODO_COMPUESTO
     b.estructura_json = json.dumps(estructura, ensure_ascii=False)
@@ -896,7 +900,7 @@ def _interpretar(
         _rellenar_compuesto(session, b, data_json or {}, uso, modelo, refs=refs,
                             idioma=idioma_defecto or "es", base=base,
                             nombre_usuario=nombre_usuario,
-                            nombre_destinatario=nombre_destinatario)
+                            nombre_destinatario=nombre_destinatario, sobre_editor=sobre_editor)
         return
     if modo == ia_compuesto.MODO_COMPUESTO and forzado:
         logger.warning("asistente: la IA devolvió un cuerpo (HTML) en vez de la estructura de un "
@@ -1113,7 +1117,7 @@ def generar(
         nombre_destinatario=(ctx.contacto or {}).get("nombre"), enlaces=enlaces,
         editor_html=editor_html,
         seleccion_html=(seleccion_html or "").strip() if seleccion else None,
-        sobre_editor=bool(actual))
+        sobre_editor=bool(actual) or base is not None)
     session.add(borrador)
     session.flush()
     llamada = registrar_llamada(
@@ -1177,19 +1181,28 @@ def corregir(
     modelo_borrador, modelo_correccion = _modelos(cfg, settings)
     editor_html = sin_firma(texto_actual_html).strip()
     actual, seleccion = texto_del_editor(texto_actual_html, seleccion_html)
-    base = bq.normalizar(estructura_actual) if estructura_actual else estructura_de(borrador)
+    # Lo que hay en el compositor manda: la vista previa (con sus retoques) o
+    # el texto del editor (un compuesto que se pasó a texto es ya texto); sin
+    # nada de eso, el turno que se corrige.
+    if estructura_actual:
+        base: dict[str, Any] | None = bq.normalizar(estructura_actual)
+    elif actual:
+        base = None
+    else:
+        base = estructura_de(borrador)
     if base is not None:
         base = bq.normalizar(base)
         if bq.vacia(base):
             base = None
+    desde_vista = bool(estructura_actual) and base is not None
     sobre_editor = bool(actual) and base is None
     if base is not None:
         actual, seleccion, editor_html = "", "", ""
     elif not sobre_editor:
         actual = borradores.html_de(borrador) if (borrador.texto or "").strip() else ""
         editor_html, seleccion = actual, ""
-    modo_actual = (ia_compuesto.MODO_COMPUESTO
-                   if base is not None or borrador.modo == ia_compuesto.MODO_COMPUESTO
+    era_compuesto = borrador.modo == ia_compuesto.MODO_COMPUESTO and not actual
+    modo_actual = (ia_compuesto.MODO_COMPUESTO if base is not None or era_compuesto
                    else ia_compuesto.MODO_NORMAL)
     modo = ia_compuesto.modo_del_turno(formato=formato, instruccion=instruccion,
                                        modo_actual=modo_actual)
@@ -1256,7 +1269,7 @@ def corregir(
         nombre_destinatario=(contexto.get("contacto") or {}).get("nombre"), enlaces=enlaces,
         editor_html=editor_html,
         seleccion_html=(seleccion_html or "").strip() if seleccion else None,
-        sobre_editor=sobre_editor)
+        sobre_editor=sobre_editor or desde_vista)
     session.add(nuevo)
     session.flush()
     llamada = registrar_llamada(
