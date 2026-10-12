@@ -1,4 +1,5 @@
 import {
+  BadgePercent,
   BarChart3,
   BookOpen,
   Building2,
@@ -94,6 +95,16 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     href: "/erp/proformas",
     label: "ERP · Proformas",
     icon: FileCheck,
+    scope: "erp",
+    requiredCapability: Cap.PROFORMAS,
+  },
+  {
+    // Ofertas: propuestas comerciales a un contacto del CRM ANTES del
+    // presupuesto de FACTUSOL (solo «Convertir en presupuesto» escribe allí).
+    // Misma capacidad que Proformas: quien hace presupuestos hace ofertas.
+    href: "/erp/ofertas",
+    label: "ERP · Ofertas",
+    icon: BadgePercent,
     scope: "erp",
     requiredCapability: Cap.PROFORMAS,
   },

@@ -26,6 +26,22 @@ describe("Formularios en el menú", () => {
   });
 });
 
+describe("ERP · Ofertas en el menú", () => {
+  it("va justo después de ERP · Proformas y lo ven quienes hacen proformas (admin, comercial)", () => {
+    for (const rol of ["admin", "comercial"] as const) {
+      const l = labels(rol, "erp");
+      expect(l).toContain("ERP · Ofertas");
+      expect(l.indexOf("ERP · Ofertas")).toBe(l.indexOf("ERP · Proformas") + 1);
+    }
+    expect(resolveVisibleNav(user("admin"), "erp").find((i) => i.label === "ERP · Ofertas")?.href)
+      .toBe("/erp/ofertas");
+  });
+
+  it("el SAT no lo ve (no tiene la capacidad de proformas)", () => {
+    expect(labels("sat", "erp")).not.toContain("ERP · Ofertas");
+  });
+});
+
 describe("resolveVisibleNav — menú por ámbito de rol", () => {
   it("un usuario solo-ERP (pedidos) ve SOLO secciones de ERP", () => {
     const l = labels("pedidos", "erp");

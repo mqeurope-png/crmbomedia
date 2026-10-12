@@ -14,6 +14,14 @@ import {
   type ErpSettings,
 } from "../../lib/erpApi";
 
+// La página de Configuración ERP es muy grande y varios tests teclean con
+// user-event campo a campo (cada pulsación re-renderiza toda la página): en
+// una máquina de 4 núcleos tardan 4–5 s solos y más con la suite entera en
+// paralelo, así que con el tope de 5 s por defecto fallaban por tiempo. Y un
+// timeout aquí arrastra al test siguiente: el `user.type` del test cortado
+// sigue tecleando en el elemento enfocado del DOM nuevo.
+jest.setTimeout(20_000);
+
 // La tarjeta de Genei tiene su propio endpoint; aquí se prueba aparte.
 jest.mock("../../components/erp/GeneiSettingsCard", () => ({
   GeneiSettingsCard: () => null,

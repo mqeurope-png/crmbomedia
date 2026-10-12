@@ -8875,6 +8875,34 @@ tr.is-inactive {
   font-weight: 600;
 }
 
+/* Resumen · «Ofertas»: nº, estado y total en una línea; fecha y validez
+   debajo. El pie reparte «Ver todas» y «+ Nueva oferta». */
+.contact-ofertas-summary {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.contact-ofertas-row { display: flex; flex-direction: column; gap: 2px; }
+.contact-ofertas-row p { margin: 0; }
+.contact-ofertas-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+}
+.contact-ofertas-total { margin-left: auto; font-weight: 600; white-space: nowrap; }
+.contact-ofertas-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.contact-ofertas-footer:empty { display: none; }
+
 /* Lista de contactos: «Creado en origen» sin fecha de origen enseña la de alta. */
 .contact-created-fallback { white-space: nowrap; }
 

@@ -1,9 +1,11 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import ProformasPage from "./page";
+import { getCurrentUser } from "../../lib/api";
 import { getCompany } from "../../lib/companiesApi";
 import {
   convertFactusolQuoteToOrder,
+  createOfertaPlantilla,
   downloadFactusolDocumentPdf,
   duplicateFactusolQuote,
   getFactusolQuote,
@@ -50,6 +52,8 @@ jest.mock("../../lib/erpApi", () => ({
   getQuoteJobStatus: jest.fn(),
   downloadFactusolDocumentPdf: jest.fn(),
   saveBlob: jest.fn(),
+  // Ofertas: «Guardar como plantilla de oferta» (copia las líneas en BoHub).
+  createOfertaPlantilla: jest.fn(),
   // Paso de pago (Fase 2): catálogos.
   getContrapartidas: jest.fn(() => Promise.resolve([{ codigo: "6", nombre: "Bomedia Sabadell" }])),
   getFactusolFormasPago: jest.fn(() => Promise.resolve([{ codigo: "002", nombre: "Transferencia" }])),
@@ -95,6 +99,7 @@ const mockStatus = getQuoteJobStatus as jest.Mock;
 const mockPdf = downloadFactusolDocumentPdf as jest.Mock;
 const mockCompany = getCompany as jest.Mock;
 const mockGetQuote = getFactusolQuote as jest.Mock;
+const mockCreatePlantilla = createOfertaPlantilla as jest.Mock;
 
 const BRAILLE = {
   codpre: "39", referencia: "Placas braille", fecha: "2026-09-04", clipre: "3392",
@@ -164,6 +169,7 @@ beforeEach(() => {
   mockPdf.mockReset();
   mockCompany.mockReset();
   mockGetQuote.mockReset();
+  mockCreatePlantilla.mockReset();
   (saveBlob as jest.Mock).mockReset();
 });
 
@@ -791,5 +797,58 @@ describe("Pantalla Proformas (rediseño de flujo, Fase 4)", () => {
     expect(screen.getByText("EDUARD RIERA")).toBeInTheDocument();
     expect(screen.queryByText("MARTA COLL")).toBeNull();
     expect(screen.getAllByRole("listitem")).toHaveLength(1);
+  });
+
+  // --- Ofertas: «⋯ → Guardar como plantilla de oferta» --------------------
+
+  it("«⋯ → Guardar como plantilla de oferta» pide el nombre y crea la plantilla con la serie y el nº del presupuesto; avisa con enlace a las plantillas", async () => {
+    mockCreatePlantilla.mockResolvedValue({
+      id: "pl1", nombre: "Kit braille", descripcion: null, activa: true,
+      origen_serie: 5, origen_codpre: 39, origen_numero: "5-000039", num_lineas: 3,
+      created_at: null, updated_at: null,
+    });
+    const user = userEvent.setup();
+    render(<ProformasPage />);
+    await screen.findByRole("list", { name: "Proformas" });
+    await user.click(within(row("39")).getByRole("button", { name: "Más acciones 39" }));
+    // El resto del menú sigue igual.
+    expect(within(row("39")).getByRole("button", { name: "Duplicar" })).toBeInTheDocument();
+    expect(within(row("39")).getByRole("button", { name: "Editar" })).toBeInTheDocument();
+    expect(within(row("39")).getByRole("link", { name: "Ver empresa" })).toBeInTheDocument();
+    await user.click(within(row("39")).getByRole("button", { name: "Guardar como plantilla de oferta" }));
+
+    const modal = within(screen.getByRole("dialog", {
+      name: "Guardar el presupuesto 5-000039 como plantilla de oferta",
+    }));
+    // La referencia de la proforma se propone como nombre; se cambia.
+    const nombre = modal.getByRole("textbox", { name: "Nombre de la plantilla" });
+    expect(nombre).toHaveValue("Placas braille");
+    await user.clear(nombre);
+    await user.type(nombre, "Kit braille");
+    await user.click(modal.getByRole("button", { name: "Guardar plantilla" }));
+    await waitFor(() => expect(mockCreatePlantilla).toHaveBeenCalledWith({
+      nombre: "Kit braille", descripcion: null, serie: 5, codpre: 39,
+    }));
+    // Nada de FACTUSOL: ni conversión ni duplicado.
+    expect(mockConvert).not.toHaveBeenCalled();
+    expect(mockDuplicate).not.toHaveBeenCalled();
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    const aviso = screen.getByRole("status");
+    expect(aviso).toHaveTextContent("Plantilla «Kit braille» guardada.");
+    expect(within(aviso).getByRole("link", { name: "Ver las plantillas de oferta" }))
+      .toHaveAttribute("href", "/erp/ofertas?tab=plantillas");
+  });
+
+  it("sin permiso de proformas no sale «Guardar como plantilla de oferta»", async () => {
+    (getCurrentUser as jest.Mock).mockResolvedValueOnce({ role: "user" });
+    render(<ProformasPage />);
+    await screen.findByRole("list", { name: "Proformas" });
+    // Sin Cap.PROFORMAS el menú «⋯» de la 39 solo tiene «Ver empresa» (enlace).
+    const user = userEvent.setup();
+    await user.click(within(row("39")).getByRole("button", { name: "Más acciones 39" }));
+    expect(within(row("39")).queryByRole("button", { name: "Guardar como plantilla de oferta" })).toBeNull();
+    expect(within(row("39")).queryByRole("button", { name: "Duplicar" })).toBeNull();
+    expect(within(row("39")).getByRole("link", { name: "Ver empresa" })).toBeInTheDocument();
   });
 });
