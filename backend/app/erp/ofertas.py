@@ -203,12 +203,22 @@ def siguiente_numero(session: Session, *, fecha: date, prefijo: str) -> tuple[st
     """`("OF-2026-0001", 2026, 1)`: el contador del año, bloqueado hasta el
     commit (en MySQL; SQLite lo ignora) para que dos altas a la vez no se
     pisen. Si Bart prefiere otro formato, es un ajuste de aquí."""
+    from sqlalchemy.exc import IntegrityError  # noqa: PLC0415
+
     anio = fecha.year
     fila = session.get(OfertaContador, anio, with_for_update=True)
     if fila is None:
-        fila = OfertaContador(anio=anio, ultimo=0)
-        session.add(fila)
-        session.flush()
+        # La primera del año: dos altas a la vez insertan las dos el contador
+        # y una pierde en la clave primaria. En un SAVEPOINT, para que la que
+        # pierde vuelva a leer (ya bloqueado) en vez de morir con un 500.
+        try:
+            with session.begin_nested():
+                session.add(OfertaContador(anio=anio, ultimo=0))
+        except IntegrityError:
+            pass
+        fila = session.get(OfertaContador, anio, with_for_update=True)
+        if fila is None:  # pragma: no cover — solo si la BD miente
+            raise OfertaError("contador", "No se pudo abrir el contador de ofertas del año.")
     fila.ultimo = int(fila.ultimo or 0) + 1
     session.flush()
     return f"{prefijo}-{anio}-{fila.ultimo:04d}", anio, fila.ultimo
@@ -636,13 +646,22 @@ def _envio_dict(e: OfertaEnvio) -> dict[str, Any]:
     }
 
 
+def nombres_emisoras(session: Session) -> dict[int, str]:
+    """`{serie: nombre}` de las series de oferta, una sola lectura de la
+    configuración (el listado lo pasa a `oferta_como_dict` fila a fila)."""
+    return {s: nombre_emisora(session, s) for s in SERIES_OFERTA}
+
+
 def oferta_como_dict(
     session: Session, oferta: Oferta, *, con_lineas: bool = True, hoy: date | None = None,
+    emisoras: dict[int, str] | None = None,
 ) -> dict[str, Any]:
     hoy = hoy or _hoy()
     contacto = oferta.contact
     company = oferta.company
     ultimo = oferta.envios[-1] if oferta.envios else None
+    emisora = ((emisoras or {}).get(int(oferta.serie))
+               or nombre_emisora(session, oferta.serie))
     out: dict[str, Any] = {
         "id": oferta.id, "numero": oferta.numero, "anio": oferta.anio,
         "secuencia": oferta.secuencia, "estado": estado_efectivo(oferta, hoy),
@@ -657,7 +676,7 @@ def oferta_como_dict(
                      "factusol_company_id": company.factusol_company_id}
                     if company is not None else None),
         "plantilla_id": oferta.plantilla_id,
-        "serie": oferta.serie, "emisora": nombre_emisora(session, oferta.serie),
+        "serie": oferta.serie, "emisora": emisora,
         "idioma": oferta.idioma, "con_iva": bool(oferta.con_iva),
         "fecha": _iso(oferta.fecha), "validez_dias": oferta.validez_dias,
         "valida_hasta": _iso(oferta.valida_hasta),
@@ -686,12 +705,33 @@ def oferta_como_dict(
 def listar_ofertas(
     session: Session, *, contact_id: str | None = None, company_id: str | None = None,
     estado: str | None = None, q: str | None = None, limit: int = 200,
+    hoy: date | None = None,
 ) -> list[Oferta]:
-    stmt = select(Oferta).order_by(Oferta.fecha.desc(), Oferta.secuencia.desc())
+    """El listado. `estado` es el EFECTIVO (una enviada vencida es caducada)
+    y se filtra en SQL, antes del `limit`; las relaciones que pinta la
+    lista (contacto, empresa, envíos) se cargan de una vez."""
+    from sqlalchemy.orm import selectinload  # noqa: PLC0415
+
+    hoy = hoy or _hoy()
+    stmt = (
+        select(Oferta)
+        .options(selectinload(Oferta.contact), selectinload(Oferta.company),
+                 selectinload(Oferta.envios))
+        .order_by(Oferta.fecha.desc(), Oferta.secuencia.desc())
+    )
     if contact_id:
         stmt = stmt.where(Oferta.contact_id == contact_id)
     if company_id:
         stmt = stmt.where(Oferta.company_id == company_id)
+    if estado == ESTADO_ENVIADA:
+        stmt = stmt.where(Oferta.estado == ESTADO_ENVIADA, Oferta.valida_hasta >= hoy)
+    elif estado == ESTADO_CADUCADA:
+        stmt = stmt.where(
+            (Oferta.estado == ESTADO_CADUCADA)
+            | ((Oferta.estado == ESTADO_ENVIADA) & (Oferta.valida_hasta < hoy))
+        )
+    elif estado:
+        stmt = stmt.where(Oferta.estado == estado)
     if q:
         patron = f"%{q.strip().lower()}%"
         stmt = stmt.outerjoin(Contact, Contact.id == Oferta.contact_id).outerjoin(
@@ -703,11 +743,7 @@ def listar_ofertas(
             | func.lower(func.coalesce(Contact.email, "")).like(patron)
             | func.lower(func.coalesce(Company.name, "")).like(patron)
         )
-    filas = list(session.scalars(stmt.limit(limit)))
-    if estado:
-        hoy = _hoy()
-        filas = [o for o in filas if estado_efectivo(o, hoy) == estado]
-    return filas
+    return list(session.scalars(stmt.limit(limit)))
 
 
 # --- PDF --------------------------------------------------------------------------
@@ -878,9 +914,14 @@ def preview_envio(
     from_alias = serie_alias or default_from_alias(session, current_user)
     alias_check = (check_sender_alias(session, current_user, from_alias)
                    if from_alias else {"ok": False, "reason": "sin_alias"})
+    # La dirección precargada: la del contacto solo si es utilizable (una que
+    # rebotó, `is_email_valid=False`, no se ofrece).
+    contacto = oferta.contact
+    to = ((contacto.email or "").strip()
+          if contacto is not None and contacto.is_email_valid else "")
     return {
         "oferta_id": oferta.id, "numero": oferta.numero,
-        "to": (oferta.contact.email or "") if oferta.contact is not None else "",
+        "to": to,
         "lang": lang, "lang_source": "selector" if lang_override in SUPPORTED_LANGS else "oferta",
         "subject": subject, "body_text": body_text,
         "from_alias": from_alias, "from_alias_source": "serie" if serie_alias else "usuario",
@@ -1169,8 +1210,10 @@ def _evento(session: Session, oferta: Oferta, action: str, actor: User | None, m
     """Un evento sobre la oferta y, si tiene contacto, otro en su timeline."""
     from app.core.audit import record_event  # noqa: PLC0415
 
+    # `serie` va siempre: el estimador de los disparadores de los workflows
+    # filtra por ella (`trigger_definitions._est_oferta`).
     meta = {"numero": oferta.numero, "oferta_id": oferta.id, "estado": oferta.estado,
-            "total": _f(oferta.total), **(metadata or {})}
+            "serie": int(oferta.serie), "total": _f(oferta.total), **(metadata or {})}
     record_event(session, action=action, target_type=TARGET_OFERTA, target_id=oferta.id,
                  actor=actor, message=message, metadata=meta)
     if oferta.contact_id:

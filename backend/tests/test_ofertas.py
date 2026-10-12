@@ -594,12 +594,38 @@ def test_caducidad_marca_caducada_y_emite_el_hecho(session_factory) -> None:
         with patch("app.workflows.dispatcher.dispatch_event") as hecho2:
             assert svc.caducar_pendientes(s, hoy=date(2026, 10, 12)) == []
         assert hecho2.call_count == 0
-    # Los hechos existen en el catálogo de disparadores de los workflows.
-    from app.workflows.trigger_definitions import TRIGGER_DEFS, config_matches
+    # Los hechos existen en el catálogo de disparadores de los workflows, y el
+    # estimador cuenta por serie lo mismo que el matcher dispara.
+    from app.workflows.trigger_definitions import (
+        TRIGGER_DEFS,
+        config_matches,
+        estimate_runs_30d,
+    )
 
     assert TRIGGER_DEFS["oferta.enviada"].available and TRIGGER_DEFS["oferta.caducada"].available
     assert config_matches("oferta.enviada", {"serie": "2"}, {"serie": 2})
     assert not config_matches("oferta.enviada", {"serie": "1"}, {"serie": 2})
+    with session_factory() as s:
+        hace_un_mes = datetime.now(UTC) - timedelta(days=30)
+        assert estimate_runs_30d(s, "oferta.caducada", {}, hace_un_mes) == 1
+        assert estimate_runs_30d(s, "oferta.caducada", {"serie": "2"}, hace_un_mes) == 1
+        assert estimate_runs_30d(s, "oferta.caducada", {"serie": "1"}, hace_un_mes) == 0
+
+
+def test_listado_filtra_por_estado_efectivo_antes_del_limite(session_factory) -> None:
+    with session_factory() as s:
+        contacto = _contacto(s)
+        vieja = _oferta(s, contacto, hoy=date(2026, 1, 10))        # enviada y vencida → caducada
+        vieja.estado = "enviada"
+        for i in range(3):                                            # tres recientes, borrador
+            _oferta(s, contacto, hoy=date(2026, 10, 1 + i))
+        s.commit()
+        hoy = date(2026, 10, 12)
+        caducadas = svc.listar_ofertas(s, estado="caducada", limit=1, hoy=hoy)
+        assert [o.id for o in caducadas] == [vieja.id]
+        assert svc.listar_ofertas(s, estado="enviada", limit=10, hoy=hoy) == []
+        assert len(svc.listar_ofertas(s, estado="borrador", limit=2, hoy=hoy)) == 2
+        assert len(svc.listar_ofertas(s, limit=10, hoy=hoy)) == 4
 
 
 # ---------------------------------------------------------------------------

@@ -236,7 +236,9 @@ def listar_ofertas_endpoint(
     _ = current_user
     filas = svc.listar_ofertas(session, contact_id=contact_id, company_id=company_id,
                                estado=estado, q=q, limit=limit)
-    return {"items": [svc.oferta_como_dict(session, o, con_lineas=False) for o in filas]}
+    emisoras = svc.nombres_emisoras(session)
+    return {"items": [svc.oferta_como_dict(session, o, con_lineas=False, emisoras=emisoras)
+                      for o in filas]}
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)

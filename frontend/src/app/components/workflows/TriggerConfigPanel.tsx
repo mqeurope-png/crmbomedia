@@ -10,7 +10,7 @@ import {
   type BrevoCampaign,
 } from "../../lib/brevoApi";
 import { getUsers, listTags, type Tag, type User } from "../../lib/api";
-import { getErpSettings } from "../../lib/erpApi";
+import { FACTUSOL_SERIES, getErpSettings } from "../../lib/erpApi";
 import { PipelineStageSelector } from "./PipelineStageSelector";
 
 type Props = {
@@ -709,13 +709,6 @@ function LeadReceivedSubConfig({
 // Ofertas — oferta.enviada / oferta.caducada
 // ---------------------------------------------------------------------
 
-const OFERTA_SERIES: { serie: string; nombre: string }[] = [
-  { serie: "1", nombre: "Bomedia" },
-  { serie: "2", nombre: "MQ Europe" },
-  { serie: "4", nombre: "Lambert" },
-  { serie: "5", nombre: "Streamtec" },
-];
-
 function OfertaSubConfig({
   config,
   set,
@@ -735,9 +728,9 @@ function OfertaSubConfig({
           onChange={(e) => set("serie", e.target.value || undefined)}
         >
           <option value="">— Cualquiera —</option>
-          {OFERTA_SERIES.map((s) => (
-            <option key={s.serie} value={s.serie}>
-              {s.serie} · {s.nombre}
+          {FACTUSOL_SERIES.map((s) => (
+            <option key={s.value} value={String(s.value)}>
+              {s.value} · {s.label}
             </option>
           ))}
         </select>

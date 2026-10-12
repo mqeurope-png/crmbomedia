@@ -104,6 +104,8 @@ export function OfertaEditorModal({
   const [notas, setNotas] = useState(oferta?.notas ?? "");
   const [rows, setRows] = useState<OfertaLineaRow[]>(() => rowsFromOfertaLineas(oferta?.lineas));
   const [loadingOferta, setLoadingOferta] = useState(needsLines);
+  // Las líneas no se pudieron cargar: no se guarda (se pisarían las reales).
+  const [lineasFallidas, setLineasFallidas] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -116,7 +118,8 @@ export function OfertaEditorModal({
         if (!alive) return;
         setMeta(m);
         if (!editing) {
-          setValidez(String(m.validez_dias));
+          // La validez configurada, solo si nadie la ha tocado mientras llegaba.
+          setValidez((cur) => (cur === String(DEFAULT_VALIDEZ) ? String(m.validez_dias) : cur));
           setSerie((cur) => (m.series.some((s) => s.serie === cur) ? cur : (m.series[0]?.serie ?? cur)));
         }
       })
@@ -143,7 +146,11 @@ export function OfertaEditorModal({
         setRows(rowsFromOfertaLineas(full.lineas));
       })
       .catch((e) => {
-        if (alive) setError(extractErrorMessage(e, "No se pudieron cargar las líneas de la oferta."));
+        if (!alive) return;
+        setLineasFallidas(true);
+        setError(extractErrorMessage(
+          e, "No se pudieron cargar las líneas de la oferta. Cierra y vuelve a abrirla.",
+        ));
       })
       .finally(() => { if (alive) setLoadingOferta(false); });
     return () => { alive = false; };
@@ -179,7 +186,8 @@ export function OfertaEditorModal({
   const validezOk = Number.isInteger(validezNum) && validezNum >= VALIDEZ_MIN && validezNum <= VALIDEZ_MAX;
   const vivas = rows.filter((r) => !isRowBlank(r));
   const lineasOk = vivas.length > 0 && vivas.every((r) => r.descripcion.trim() || r.codart);
-  const valid = Boolean(contact) && lineasOk && validezOk && !soloLectura && !loadingOferta;
+  const valid = Boolean(contact) && lineasOk && validezOk && !soloLectura && !loadingOferta
+    && !lineasFallidas;
   const series = meta?.series ?? FACTUSOL_SERIES.map((s) => ({ serie: s.value, nombre: s.label }));
 
   async function save() {

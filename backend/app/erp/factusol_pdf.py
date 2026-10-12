@@ -1214,7 +1214,7 @@ def generate_document_pdf(
         intracom = ""
         validez = (lab["validez_oferta"].format(fecha=data.get("valida_hasta") or "")
                    if data.get("valida_hasta") else "")
-        aviso = oferta_aviso_texto(lab, data)
+        aviso = oferta_aviso_texto(lab, data, lang)
 
     footer_lines = _footer_lines(bank, lab, legal, intracom, pie,
                                  validez=validez, aviso=aviso)
@@ -1483,13 +1483,13 @@ def _fit(text: str, size: float, max_mm: float) -> str:
     return text + "…"
 
 
-def oferta_aviso_texto(lab: dict[str, str], data: dict[str, Any]) -> str:
+def oferta_aviso_texto(lab: dict[str, str], data: dict[str, Any], lang: str = "es") -> str:
     """El aviso fijo de la OFERTA en el idioma del PDF: «importes con IVA
     (21 %)» o «sin IVA» según se eligió, y detrás la frase de que es una
     oferta, no una factura, y de que el IVA definitivo depende de VIES."""
     if data.get("con_iva", True):
         piva = next((b.get("piva") for b in data.get("bands") or [] if b.get("piva")), 0)
-        iva_txt = lab["oferta_iva_con"].format(piva=_fmt_qty(float(piva or 0), "es"))
+        iva_txt = lab["oferta_iva_con"].format(piva=_fmt_qty(float(piva or 0), lang))
     else:
         iva_txt = lab["oferta_iva_sin"]
     return f"{iva_txt} {lab['oferta_aviso']}"
