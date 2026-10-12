@@ -481,21 +481,40 @@ export function EmailComposerModal({
     dirtyRef.current = true;
   }, [firmaActiva, ponerEstructura]);
 
+  // El correo final de un compuesto (el que se envía y se guarda): lo genera
+  // el servidor a partir de la estructura, el asunto y la firma; se reutiliza
+  // mientras nada de eso cambie.
+  const finalRef = useRef<{ clave: string; correo: CorreoGenerado } | null>(null);
+  const correoFinal = useCallback(async (): Promise<CorreoGenerado | null> => {
+    const e = estructuraRef.current;
+    if (e === null) return null;
+    const firma = firmaActiva()?.html_content ?? null;
+    const clave = JSON.stringify([e, subjectRef.current, firma]);
+    if (finalRef.current?.clave === clave) return finalRef.current.correo;
+    const correo = await renderCorreoCompuesto({
+      estructura: e, asunto: subjectRef.current, firma_html: firma,
+    });
+    finalRef.current = { clave, correo };
+    return correo;
+  }, [firmaActiva]);
+
   // Lo que se guarda en Borradores: una foto del compositor, incluido el
   // turno del asistente que está en el editor (la conversación vuelve al
-  // reabrir) y el hilo al que se responde.
+  // reabrir) y el hilo al que se responde. Un compuesto se guarda con su
+  // estructura y su correo final (`final`; si no lo hay, el último generado).
   const threadId = asistente?.threadId ?? initialDraft?.thread_id ?? null;
-  const payloadBorrador = useCallback((): EmailDraftWrite => ({
+  const payloadBorrador = useCallback((final: CorreoGenerado | null = null): EmailDraftWrite => ({
     thread_id: threadId,
     contact_id: contactId ?? null,
     from_alias: fromAlias || null,
     subject: subject || null,
-    // Un compuesto: su estructura y el último correo generado (lo que enseña
-    // la lista de Borradores); al reabrir vuelve a la vista previa.
+    // Un compuesto: su estructura y su correo (lo que enseña la lista de
+    // Borradores); al reabrir vuelve a la vista previa.
     ...(estructura !== null
       ? {
-        body_html: generadoRef.current ? htmlFinalDeVista(generadoRef.current.html) : null,
-        body_text: generadoRef.current?.texto ?? null,
+        body_html: final?.html
+          ?? (generadoRef.current ? htmlFinalDeVista(generadoRef.current.html) : null),
+        body_text: final?.texto ?? generadoRef.current?.texto ?? null,
         estructura,
       }
       : { body_html: bodyHtml || null }),
@@ -518,8 +537,8 @@ export function EmailComposerModal({
   useEffect(() => {
     const timer = window.setInterval(async () => {
       if (!dirtyRef.current) return;
-      const payload = payloadBorrador();
       try {
+        const payload = payloadBorrador(await correoFinal().catch(() => null));
         if (draftId) {
           const fresh = await updateEmailDraft(draftId, payload);
           setDraftSavedAt(new Date(fresh.updated_at));
@@ -534,7 +553,7 @@ export function EmailComposerModal({
       }
     }, 5000);
     return () => window.clearInterval(timer);
-  }, [payloadBorrador, draftId]);
+  }, [payloadBorrador, draftId, correoFinal]);
 
   // draftKey isolates the autosave entries per conversation. Replies
   // carry the parent gmail message id (one per thread by construction);
@@ -608,7 +627,7 @@ export function EmailComposerModal({
   // the operator doesn't lose the binary while typing.
   async function ensureDraft(): Promise<string> {
     if (draftIdRef.current) return draftIdRef.current;
-    const created = await createEmailDraft(payloadBorrador());
+    const created = await createEmailDraft(payloadBorrador(await correoFinal().catch(() => null)));
     setDraftId(created.id);
     setDraftSavedAt(new Date(created.updated_at));
     draftIdRef.current = created.id;
@@ -701,6 +720,10 @@ export function EmailComposerModal({
       setError("Añade al menos un destinatario en el campo Para.");
       return;
     }
+    if (estructuraRef.current !== null && estructuraVacia(estructuraRef.current)) {
+      setError("El correo no tiene ningún bloque: pide otro a la IA o pásalo a texto.");
+      return;
+    }
     setSubmitting(true);
     setError(null);
     try {
@@ -722,11 +745,8 @@ export function EmailComposerModal({
       // plano; uno normal, con el HTML del editor, como siempre.
       let cuerpoHtml: string | null = bodyHtml.trim() || null;
       let cuerpoTexto: string | null = null;
-      if (estructuraRef.current !== null) {
-        const final = await renderCorreoCompuesto({
-          estructura: estructuraRef.current, asunto: subject,
-          firma_html: firmaActiva()?.html_content ?? null,
-        });
+      const final = await correoFinal();
+      if (final !== null) {
         cuerpoHtml = final.html;
         cuerpoTexto = final.texto;
       }
@@ -806,7 +826,7 @@ export function EmailComposerModal({
     setCerrando(true);
     setError(null);
     try {
-      const payload = payloadBorrador();
+      const payload = payloadBorrador(await correoFinal().catch(() => null));
       if (draftIdRef.current) await updateEmailDraft(draftIdRef.current, payload);
       else await createEmailDraft(payload);
       dirtyRef.current = false;

@@ -113,6 +113,26 @@ describe("CorreoCompuestoVista", () => {
     expect(mockRender).toHaveBeenCalledTimes(1);
   });
 
+  it("entrar en un texto y salir sin escribir no es una edición; «Pasar a texto» va sin la firma", async () => {
+    const onPasarATexto = jest.fn();
+    const props = {
+      estructura: ESTRUCTURA, version: 0, asunto: "Re: Equipos DTF", firmaHtml: "<p>Admin</p>",
+      onEditar: jest.fn(), onCambiar: jest.fn(), onPasarATexto,
+    };
+    render(<CorreoCompuestoVista {...props} />);
+    await waitFor(() => expect(marco().querySelector("[data-bh-campo]")).not.toBeNull());
+    const texto = marco().querySelector('[data-bh-campo="b1:html"]') as HTMLElement;
+    act(() => {
+      texto.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+      texto.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+    expect(props.onEditar).not.toHaveBeenCalled();
+    await userEvent.setup().click(screen.getByRole("button", { name: /Pasar a texto/ }));
+    await waitFor(() => expect(onPasarATexto).toHaveBeenCalledWith("Hola Marny,\n\nte paso la gama DTF:"));
+    expect(mockRender.mock.calls.at(-1)?.[0]).toMatchObject({ firma_html: null });
+    expect(mockRender.mock.calls.at(-1)?.[0].preview).toBeUndefined();
+  });
+
   it("un enlace de la vista no navega; pulsar un bloque lo elige y se puede subir, bajar, duplicar o quitar", async () => {
     const alCambiar = jest.fn();
     render(<ConEstado alCambiar={alCambiar} />);

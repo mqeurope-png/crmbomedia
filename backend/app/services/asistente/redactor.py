@@ -35,8 +35,10 @@ nada.
 """
 from __future__ import annotations
 
+import html as html_mod
 import json
 import logging
+import re
 from datetime import datetime
 from typing import Any
 from uuid import uuid4
@@ -782,10 +784,15 @@ def peticion_compuesta_desde_texto(*, texto_actual: str, asunto_actual: str | No
     )
 
 
-def _texto_de_estructura(session: Session, estructura: dict[str, Any]) -> str:
-    """El texto plano del correo compuesto (para pasarlo a un correo normal)."""
-    return generador_correo.generar(
-        estructura, datos_compuesto.resolver(session, estructura)).texto
+def _compuesto_como_texto(session: Session, estructura: dict[str, Any],
+                          ) -> tuple[str, list[str]]:
+    """Un correo compuesto pasado a un correo normal: su texto plano (en
+    párrafos, con sus URL como enlaces) y esas URL, que el correo de texto
+    puede llevar (el vídeo, la web de la marca, las fichas, los botones)."""
+    correo = generador_correo.generar(estructura, datos_compuesto.resolver(session, estructura))
+    urls = list(dict.fromkeys(
+        html_mod.unescape(u) for u in re.findall(r'href="([^"]+)"', correo.html)))
+    return a_html(correo.texto, urls), urls
 
 
 def _json_de(raw: str) -> dict[str, Any] | None:
@@ -1023,6 +1030,7 @@ def generar(
                                        modo_actual=modo_actual)
     refs = _referencias_turno0(session, ctx, instruccion, base)
     cabecera = formato_del_turno(modo, refs, ctx.idioma)
+    enlaces_compuesto: list[str] = []
     if base is not None and modo == ia_compuesto.MODO_COMPUESTO:
         # Un compuesto en la vista previa (un borrador reabierto): se corrige ESE.
         modelo, proposito = modelo_correccion, PROPOSITO_CORRECCION
@@ -1032,9 +1040,10 @@ def generar(
     elif base is not None:
         # Un compuesto que pasa a texto: su texto plano es el borrador actual.
         modelo, proposito = modelo_correccion, PROPOSITO_CORRECCION
+        texto_compuesto, enlaces_compuesto = _compuesto_como_texto(session, base)
         peticion_texto = peticion_correccion(
-            texto_actual=a_html(_texto_de_estructura(session, base)),
-            asunto_actual=ctx.asunto_respuesta, instruccion=instruccion or "")
+            texto_actual=texto_compuesto, asunto_actual=ctx.asunto_respuesta,
+            instruccion=instruccion or "")
     elif actual and modo == ia_compuesto.MODO_COMPUESTO:
         modelo, proposito = modelo_correccion, PROPOSITO_CORRECCION
         peticion_texto = cabecera + peticion_compuesta_desde_texto(
@@ -1108,7 +1117,7 @@ def generar(
     uso = llm.tomar_ultimo_uso()
     # Enlaces que pueden ir en el cuerpo: los de la base de conocimiento y el
     # catálogo, más los que la persona ya tenía puestos en su texto.
-    enlaces = [e["url"] for e in ctx.enlaces_lista()] + enlaces_de(actual)
+    enlaces = [e["url"] for e in ctx.enlaces_lista()] + enlaces_de(actual) + enlaces_compuesto
     _interpretar(
         session, borrador, raw, uso, modelo, modo=modo,
         forzado=formato in (ia_compuesto.MODO_NORMAL, ia_compuesto.MODO_COMPUESTO), refs=refs,
@@ -1212,6 +1221,7 @@ def corregir(
                                       json.dumps(base or {}, ensure_ascii=False)))
     cabecera = formato_del_turno(modo, refs, borrador.idioma or "es")
     primera_redaccion = not actual and base is None
+    enlaces_compuesto: list[str] = []
     if base is not None and modo == ia_compuesto.MODO_COMPUESTO:
         modelo, proposito = modelo_correccion, PROPOSITO_CORRECCION
         peticion_texto = cabecera + peticion_compuesta_correccion(
@@ -1219,9 +1229,9 @@ def corregir(
             asunto_actual=borrador.asunto, instruccion=instruccion)
     elif base is not None:
         modelo, proposito = modelo_correccion, PROPOSITO_CORRECCION
+        texto_compuesto, enlaces_compuesto = _compuesto_como_texto(session, base)
         peticion_texto = peticion_correccion(
-            texto_actual=a_html(_texto_de_estructura(session, base)),
-            asunto_actual=borrador.asunto, instruccion=instruccion)
+            texto_actual=texto_compuesto, asunto_actual=borrador.asunto, instruccion=instruccion)
     elif primera_redaccion:
         modelo, proposito = modelo_borrador, PROPOSITO_ASISTENTE
         peticion_texto = cabecera + peticion_inicial(
@@ -1260,7 +1270,8 @@ def corregir(
         mensajes_hilo=borrador.mensajes_hilo, mensajes_historico=borrador.mensajes_historico,
         estado=ESTADO_GENERADO,
     )
-    enlaces = borradores.enlaces_del_borrador(borrador) + enlaces_de(actual)
+    enlaces = (borradores.enlaces_del_borrador(borrador) + enlaces_de(actual)
+               + enlaces_compuesto)
     _interpretar(
         session, nuevo, raw, uso, modelo, modo=modo,
         forzado=formato in (ia_compuesto.MODO_NORMAL, ia_compuesto.MODO_COMPUESTO), refs=refs,

@@ -349,12 +349,14 @@ class _Render:
                 f'<tr><td align="center" bgcolor="{acento}" style="background-color:{acento};'
                 f'border-radius:{radio_boton}px;">'
                 f'<a href="{_e(enlace)}" target="_blank"'
-                f'{_campo(self.preview, bloque["id"] + ":boton")}'
                 f' style="display:block;text-align:center;font-family:{FUENTE};'
                 f'font-size:{10 if compacta else 12}px;font-weight:700;text-decoration:none;'
                 f'padding:{"7px 8px" if compacta else "8px 10px"};text-transform:uppercase;'
                 f'letter-spacing:{0.3 if compacta else 0.4}px;color:{fg};'
-                f'border-radius:{radio_boton}px;">{_e(etiqueta)} →</a></td></tr>',
+                f'border-radius:{radio_boton}px;">'
+                # Lo editable es la etiqueta; la flecha es del diseño.
+                f'<span{_campo(self.preview, bloque["id"] + ":boton")}>{_e(etiqueta)}</span>'
+                " →</a></td></tr>",
                 estilo=f"margin:{6 if compacta else 8}px 0 0;"))
             texto.append(f"{etiqueta}: {enlace}")
         filas.append(f'<tr><td style="padding:{10 if compacta else 14}px;{fondo_cuerpo}'
@@ -493,9 +495,10 @@ class _Render:
             "</td></tr>"
             f'<tr><td align="center" bgcolor="{PANEL_VIDEO}" style="padding:12px 16px;'
             f'background-color:{PANEL_VIDEO};text-align:center;">'
-            f'<a href="{_e(url)}" target="_blank"{_campo(self.preview, b["id"] + ":boton")} '
+            f'<a href="{_e(url)}" target="_blank" '
             f'style="color:{ENLACE_VIDEO};font-family:{FUENTE};font-size:14px;font-weight:700;'
-            f'text-decoration:none;">▶ {_e(boton)}</a></td></tr>',
+            f'text-decoration:none;">▶ <span{_campo(self.preview, b["id"] + ":boton")}>'
+            f"{_e(boton)}</span></a></td></tr>",
             atributos=f' bgcolor="{PANEL_VIDEO}"',
             estilo=f"border-radius:12px;overflow:hidden;background-color:{PANEL_VIDEO};")
         partes.append(panel)

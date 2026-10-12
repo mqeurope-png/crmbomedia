@@ -42,15 +42,18 @@ _VERBO_PRESENTAR = (
     r"pres[eé]nt|send|prepar|show|offer|present|schick|sende|zeig|envoie|montre|propose|stuur|"
     r"toon)\w*"
 )
+# Productos, no «opciones» ni «condiciones»: «le mando las opciones de pago»
+# es un correo de texto.
 _OBJETO_GAMA = (
-    r"(gama|cat[aá]logo|fichas?|m[aá]quinas|modelos|equipos|impresoras|productos|opciones|"
-    r"range|lineup|line-up|catalog(ue)?|machines|models|products|printers|options|"
+    r"(gama|cat[aá]logo|fichas?|m[aá]quinas|modelos|equipos|impresoras|productos|"
+    r"range|lineup|line-up|catalog(ue)?|machines|models|products|printers|"
     r"maschinen|modelle|produkte|drucker|gamme|machines|mod[eè]les|produits|imprimantes|"
     r"machines|modellen|producten|printers)"
 )
-_PIDE_COMPUESTO_RE = re.compile(
-    rf"\b{_VERBO_PRESENTAR}\b[^.?!\n]{{0,60}}\b{_OBJETO_GAMA}\b"
-    r"|\b(maquetad[oa]|con im[aá]genes|con fotos|con fichas|fichas de producto|newsletter|"
+_PIDE_GAMA_RE = re.compile(
+    rf"\b{_VERBO_PRESENTAR}\b[^.?!\n]{{0,60}}\b{_OBJETO_GAMA}\b", re.IGNORECASE)
+_PIDE_FICHAS_RE = re.compile(
+    r"\b(maquetad[oa]|con im[aá]genes|con fotos|con fichas|fichas de producto|newsletter|"
     r"with (images|pictures|photos)|product cards?|mit bildern|avec (images|photos))\b",
     re.IGNORECASE,
 )
@@ -61,8 +64,8 @@ _PIDE_NORMAL_RE = re.compile(
     re.IGNORECASE,
 )
 _PIDE_TEXTO_RE = re.compile(
-    r"\b(solo texto|en texto|como texto|texto normal|texto plano|sin fichas|sin im[aá]genes|"
-    r"sin maquetar|correo normal|plain text|text only|no images)\b",
+    r"\b(solo texto|en texto|a texto|como texto|texto normal|texto plano|sin fichas|"
+    r"sin im[aá]genes|sin maquetar|correo normal|plain text|text only|no images)\b",
     re.IGNORECASE,
 )
 
@@ -76,10 +79,14 @@ def modo_pedido(instruccion: str | None) -> str | None:
         return None
     if _PIDE_TEXTO_RE.search(texto):
         return MODO_NORMAL
-    if _PIDE_COMPUESTO_RE.search(texto):
+    if _PIDE_FICHAS_RE.search(texto):
         return MODO_COMPUESTO
+    # «Dile que…», «contéstale…»: un mensaje concreto, en texto, aunque hable
+    # de máquinas («dile que le mando la gama la semana que viene»).
     if _PIDE_NORMAL_RE.search(texto):
         return MODO_NORMAL
+    if _PIDE_GAMA_RE.search(texto):
+        return MODO_COMPUESTO
     return None
 
 
@@ -226,6 +233,16 @@ class _Conversor:
         self.idioma = idioma
         self.avisos: list[str] = []
         self.html_descartado = 0
+        # Al editar un bloque guardado: las URL y los productos que ya tenía
+        # (pueden no estar entre las referencias de este turno).
+        self.conocidas: set[str] = set()
+        self.productos_conocidos: dict[str, dict[str, str]] = {}
+
+    def _url(self, destino: Any) -> str | None:
+        url = self.refs.url(destino, self.idioma)
+        if url is None and str(destino or "").strip() in self.conocidas:
+            url = str(destino).strip()
+        return url
 
     def _sin_html(self, valor: Any) -> str:
         texto = "" if valor is None else str(valor)
@@ -237,17 +254,48 @@ class _Conversor:
         return texto
 
     def _producto(self, ref: Any) -> dict[str, str] | None:
-        clave = self.refs.productos.get(str(ref or "").strip())
+        r = str(ref or "").strip()
+        clave = self.refs.productos.get(r) or self.productos_conocidos.get(r)
         if clave is None:
             self.avisos.append(f"La IA nombró un producto que no está en el catálogo («{ref}»): "
                                "no sale.")
         return clave
 
     def _enlace_texto(self, destino: str) -> str | None:
-        url = self.refs.url(destino, self.idioma)
+        url = self._url(destino)
         if url is None:
             logger.warning("correo compuesto: enlace fuera de la lista descartado: %s", destino)
         return url
+
+    def campo(self, bloque: dict[str, Any], campo: str, valor: Any) -> dict[str, Any] | None:
+        """Lo que cambia en un bloque guardado al editar UN campo (en el
+        formato de la IA: referencias y markdown), o None si no vale. Solo se
+        convierte ese campo: los productos, botones y enlaces que el bloque ya
+        tenía no vuelven a pasar por las referencias del turno."""
+        self.conocidas = _urls_de(bloque)
+        self.productos_conocidos = {
+            f"?{p['origen_id']}": p for p in [*(bloque.get("productos") or []),
+                                              *([bloque["producto"]] if bloque.get("producto")
+                                                else [])]}
+        try:
+            return self._campo(bloque.get("tipo"), campo, valor)
+        finally:
+            self.conocidas, self.productos_conocidos = set(), {}
+
+    def _campo(self, tipo: Any, campo: str, valor: Any) -> dict[str, Any] | None:
+        if tipo == bq.TIPO_TEXTO and campo in ("texto", "html"):
+            return {"html": bq.markdown_a_html(self._sin_html(valor), self._enlace_texto)}
+        if campo in ("titulo", "texto", "boton") and tipo != bq.TIPO_TEXTO:
+            return {campo: self._sin_html(valor)}
+        if campo == "estilo" and tipo in (bq.TIPO_DESTACADO, bq.TIPO_SEPARADOR):
+            return {"estilo": str(valor or "")}
+        if campo in ("productos", "producto", "video", "url", "botones", "marca"):
+            parcial = self.bloque({"tipo": tipo, campo: valor})
+            if parcial is None:
+                return None
+            clave = {"video": "url"}.get(campo, campo)
+            return {clave: parcial[clave]} if clave in parcial else None
+        return None
 
     def bloque(self, b: Any) -> dict[str, Any] | None:
         if not isinstance(b, dict):
@@ -278,7 +326,7 @@ class _Conversor:
             if b.get("texto"):
                 salida["texto"] = self._sin_html(b["texto"])
         elif tipo == bq.TIPO_VIDEO:
-            url = self.refs.url(b.get("video") or b.get("url"), self.idioma)
+            url = self._url(b.get("video") or b.get("url"))
             if not url or not bq.video_youtube(url):
                 self.avisos.append("La IA puso un vídeo que no está en el hilo ni en la "
                                    "instrucción: no sale.")
@@ -292,7 +340,7 @@ class _Conversor:
             for bt in b.get("botones") or []:
                 if not isinstance(bt, dict):
                     continue
-                url = self.refs.url(bt.get("enlace") or bt.get("url"), self.idioma)
+                url = self._url(bt.get("enlace") or bt.get("url"))
                 if not url:
                     self.avisos.append(f"Un botón con un enlace que no está en la lista "
                                        f"(«{bt.get('enlace') or bt.get('url')}»): no sale.")
@@ -311,6 +359,18 @@ class _Conversor:
                                "no sale.")
             return None
         return salida
+
+
+def _urls_de(bloque: dict[str, Any]) -> set[str]:
+    """Las URL que ya lleva un bloque guardado: las de sus enlaces de texto,
+    su vídeo y sus botones."""
+    urls = {html_mod.unescape(u) for u in re.findall(r'href="([^"]*)"', bloque.get("html") or "")}
+    if bloque.get("url"):
+        urls.add(str(bloque["url"]))
+    for bt in bloque.get("botones") or []:
+        valor = bt.get("url")
+        urls.update(valor.values() if isinstance(valor, dict) else [valor] if valor else [])
+    return {str(u) for u in urls if u}
 
 
 def _registrar_html(n: int, contexto: str) -> None:
@@ -433,14 +493,15 @@ def aplicar_operaciones(estructura: dict[str, Any], operaciones: Any, refs: Refe
             bloques.pop(i)
         elif tipo == "editar":
             campo = str(op.get("campo") or "").strip()
-            actual = bloque_para_ia(bloques[i], refs)
-            actual[campo] = op.get("valor")
-            nuevo = conv.bloque(actual)
-            if nuevo is not None:
-                limpio = bq.normalizar({"bloques": [nuevo]}, avisos)["bloques"]
-                if limpio:
-                    limpio[0]["id"] = bloques[i]["id"]
-                    bloques[i:i + 1] = limpio[:1]
+            cambio = conv.campo(bloques[i], campo, op.get("valor"))
+            limpio = (bq.normalizar({"bloques": [{**bloques[i], **cambio}]}, avisos)["bloques"]
+                      if cambio else [])
+            if not limpio:
+                avisos.append(f"La corrección quería cambiar «{campo or '—'}» de un bloque y "
+                              "no se ha podido: el bloque se queda como estaba.")
+                continue
+            limpio[0]["id"] = bloques[i]["id"]
+            bloques[i:i + 1] = limpio[:1]
         elif tipo in ("añadir", "anadir", "add"):
             nuevo = conv.bloque(op.get("bloque"))
             limpio = bq.normalizar({"bloques": [nuevo]}, avisos)["bloques"] if nuevo else []

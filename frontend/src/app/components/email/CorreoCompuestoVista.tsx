@@ -163,10 +163,16 @@ export function CorreoCompuestoVista({
       el.setAttribute("spellcheck", "true");
     });
 
+    // Lo último leído de cada campo (al entrar en él, y tras cada cambio):
+    // entrar y salir sin escribir no es una edición.
+    const leido = new WeakMap<HTMLElement, string>();
+    const valorDe = (el: HTMLElement) => (
+      (el.getAttribute("data-bh-campo") ?? "").endsWith(":html") ? textoRicoDe(el) : textoDeCampo(el));
     const leer = (el: HTMLElement) => {
-      const campo = el.getAttribute("data-bh-campo") ?? "";
-      const valor = campo.endsWith(":html") ? textoRicoDe(el) : textoDeCampo(el);
-      const nueva = aplicarEdicion(estructuraRef.current, campo, valor);
+      const valor = valorDe(el);
+      if (leido.get(el) === valor) return;
+      leido.set(el, valor);
+      const nueva = aplicarEdicion(estructuraRef.current, el.getAttribute("data-bh-campo") ?? "", valor);
       if (nueva !== estructuraRef.current) {
         estructuraRef.current = nueva;
         onEditarRef.current(nueva);
@@ -183,6 +189,10 @@ export function CorreoCompuestoVista({
       if (objetivo?.closest?.("a")) ev.preventDefault();
       const bloque = objetivo?.closest?.("[data-bh-bloque]");
       setElegido(bloque ? bloque.getAttribute("data-bh-bloque") : null);
+    };
+    const alEntrar = (ev: Event) => {
+      const el = campoDe(ev.target);
+      if (el && !leido.has(el)) leido.set(el, valorDe(el));
     };
     const alEscribir = (ev: Event) => {
       const el = campoDe(ev.target);
@@ -217,12 +227,14 @@ export function CorreoCompuestoVista({
       if (typeof doc.execCommand === "function") doc.execCommand("insertText", false, texto);
     };
     doc.addEventListener("click", alPulsar);
+    doc.addEventListener("focusin", alEntrar);
     doc.addEventListener("input", alEscribir);
     doc.addEventListener("focusout", alSalir);
     doc.addEventListener("keydown", alTeclear);
     doc.addEventListener("paste", alPegar);
     return () => {
       doc.removeEventListener("click", alPulsar);
+      doc.removeEventListener("focusin", alEntrar);
       doc.removeEventListener("input", alEscribir);
       doc.removeEventListener("focusout", alSalir);
       doc.removeEventListener("keydown", alTeclear);
@@ -250,18 +262,23 @@ export function CorreoCompuestoVista({
   const indice = elegido ? bloques.findIndex((b) => b.id === elegido) : -1;
   const actual = indice >= 0 ? bloques[indice] : null;
 
-  async function correoFinal(): Promise<CorreoGenerado> {
+  // El correo final (el que se envía): con la firma para copiarlo o
+  // descargarlo; sin ella para pasarlo a texto (el editor pone la suya).
+  async function correoFinal(conFirma: boolean): Promise<CorreoGenerado> {
     return renderCorreoCompuesto({
-      estructura: estructuraRef.current, asunto: asuntoRef.current, firma_html: firmaHtml,
+      estructura: estructuraRef.current, asunto: asuntoRef.current,
+      firma_html: conFirma ? firmaHtml : null,
     });
   }
 
-  async function conFinal(accion: (c: CorreoGenerado) => Promise<void> | void, listo: string) {
+  async function conFinal(
+    accion: (c: CorreoGenerado) => Promise<void> | void, listo: string, conFirma = true,
+  ) {
     if (ocupado) return;
     setOcupado(true);
     setError(null);
     try {
-      await accion(await correoFinal());
+      await accion(await correoFinal(conFirma));
       setHecho(listo);
       window.setTimeout(() => setHecho(null), 2500);
     } catch (err) {
@@ -282,7 +299,7 @@ export function CorreoCompuestoVista({
     enlace.remove();
     URL.revokeObjectURL(url);
   }, "Descargado");
-  const pasarATexto = () => conFinal((c) => onPasarATexto?.(c.texto), "");
+  const pasarATexto = () => conFinal((c) => onPasarATexto?.(c.texto), "", false);
 
   function cambiar(nueva: EstructuraCompuesta, siguiente: string | null = elegido) {
     estructuraRef.current = nueva;
@@ -388,6 +405,11 @@ export function CorreoCompuestoVista({
       {error ? <p className="form-error correo-compuesto-error" role="alert">{error}</p> : null}
       {avisos.length > 0 ? (
         <p className="correo-compuesto-avisos" role="status">{avisos.join(" ")}</p>
+      ) : null}
+      {bloques.length === 0 ? (
+        <p className="correo-compuesto-avisos" role="status">
+          El correo se ha quedado sin bloques: pide otro a la IA o pásalo a texto.
+        </p>
       ) : null}
       <div className={`correo-compuesto-marco is-${dispositivo}`}>
         {html === null && !error ? (

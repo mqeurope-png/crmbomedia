@@ -215,7 +215,13 @@ def limpiar_texto_rico(valor: Any, maximo: int = MAX_TEXTO_RICO) -> str:
     s = _P_VACIO_RE.sub("", s).strip()
     if s and not _EMPIEZA_BLOQUE_RE.match(s):
         s = f"<p>{s}</p>"
-    return s[:maximo]
+    if len(s) > maximo:
+        # Recortado sin dejar una etiqueta a medias: lo que quede de una
+        # etiqueta o una entidad al final se quita y bleach cierra lo abierto.
+        corte = re.sub(r"<[^>]*$|&[#\w]*$", "", s[:maximo])
+        s = bleach.clean(corte, tags=list(ETIQUETAS_TEXTO), attributes={"a": ["href"]},
+                         protocols=["http", "https", "mailto"], strip=True, strip_comments=True)
+    return s
 
 
 _LISTA_RE = re.compile(r"^\s*(?:[-*•]\s+|(\d+)[.)]\s+)(.*)$")

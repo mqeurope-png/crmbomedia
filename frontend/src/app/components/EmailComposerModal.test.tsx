@@ -432,7 +432,8 @@ describe("EmailComposerModal — correos compuestos", () => {
     const payload = mockUpdate.mock.calls[0][1];
     expect(payload.estructura.bloques.map((b: { id: string }) => b.id)).toEqual(["b1", "b2"]);
     expect(payload.estructura.bloques[0].html).toBe("<p>Hola Marny,</p><p>lo que hablamos:</p>");
-    expect(payload.body_text).toContain("Hola Marny");
+    // El cuerpo guardado es el correo de ESA estructura, con lo editado.
+    expect(payload.body_text).toContain("lo que hablamos");
     expect(payload.body_html).not.toContain("data-bh-");
     expect(payload.asistente_borrador_id).toBe("b-7");
   });
@@ -467,5 +468,24 @@ describe("EmailComposerModal — correos compuestos", () => {
     expect(window.confirm).toHaveBeenCalledTimes(1);
     expect(editor).toHaveValue("<p>Hola Marny, te paso la gama DTF:</p>");
     expect(screen.queryByTitle("Vista previa del correo")).not.toBeInTheDocument();
+  });
+
+  it("un compuesto sin bloques no se envía", async () => {
+    render(
+      <EmailComposerModal
+        initialDraft={borradorGuardado({ estructura: COMPUESTO, asistente_borrador_id: null })}
+        presentacion="panel" asistente={null} onClose={jest.fn()}
+      />,
+    );
+    const user = userEvent.setup();
+    await waitFor(() => expect(vista().contentDocument?.querySelector("[data-bh-campo]")).not.toBeNull());
+    for (const id of ["b1", "b2"]) {
+      fireEvent.change(screen.getByLabelText("Bloque"), { target: { value: id } });
+      await user.click(screen.getByRole("button", { name: "Quitar el bloque" }));
+    }
+    expect(await screen.findByText(/se ha quedado sin bloques/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Enviar ahora" }));
+    expect(await screen.findByText(/no tiene ningún bloque/)).toBeInTheDocument();
+    expect(mockSend).not.toHaveBeenCalled();
   });
 });

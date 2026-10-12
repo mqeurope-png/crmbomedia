@@ -113,7 +113,7 @@ export function aplicarEdicion(
 ): EstructuraCompuesta {
   const [id, nombre] = [campo.slice(0, campo.indexOf(":")), campo.slice(campo.indexOf(":") + 1)];
   if (campo.indexOf(":") < 0 || !nombre) return e;
-  if (!id) return nombre === "pie" ? { ...e, pie: valor } : e;
+  if (!id) return nombre === "pie" && (e.pie ?? "") !== valor ? { ...e, pie: valor } : e;
   const i = e.bloques.findIndex((b) => b.id === id);
   if (i < 0) return e;
   const bloque = e.bloques[i];
@@ -123,11 +123,14 @@ export function aplicarEdicion(
     const n = Number(boton[1]);
     const botones = [...(bloque.botones ?? [])];
     if (!botones[n]) return e;
+    if (enIdioma(botones[n].texto, e.idioma) === valor) return e;
     botones[n] = { ...botones[n], texto: conTexto(botones[n].texto, valor, e.idioma) };
     nuevo = { ...bloque, botones };
   } else if (nombre === "html") {
+    if (bloque.html === valor) return e;
     nuevo = { ...bloque, html: valor };
   } else if (["titulo", "texto", "boton"].includes(nombre)) {
+    if (enIdioma(bloque[nombre] as TextoBloque | undefined, e.idioma) === valor) return e;
     nuevo = { ...bloque, [nombre]: conTexto(bloque[nombre], valor, e.idioma) };
   } else {
     return e;
@@ -182,8 +185,11 @@ const ETIQUETAS_RICAS: Record<string, string> = {
 };
 
 function escapar(texto: string): string {
-  return texto.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+  return texto.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function escaparAtributo(texto: string): string {
+  return escapar(texto).replace(/"/g, "&quot;");
 }
 
 function nodoRico(nodo: Node): string {
@@ -197,7 +203,7 @@ function nodoRico(nodo: Node): string {
   if (etiqueta === "a") {
     const href = el.getAttribute("href") ?? "";
     return /^(https?:|mailto:)/i.test(href)
-      ? `<a href="${escapar(href)}">${hijos}</a>`
+      ? `<a href="${escaparAtributo(href)}">${hijos}</a>`
       : hijos;
   }
   return `<${etiqueta}>${hijos}</${etiqueta}>`;

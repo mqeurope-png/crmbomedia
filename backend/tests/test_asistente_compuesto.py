@@ -30,6 +30,7 @@ from app.models.conocimiento import FUENTE_COMPOSITOR, TIPO_MAQUINA, MarcaCatalo
 from app.models.crm import EmailMessage, EmailMessageToken, User, UserEmailAliasPref, UserRole
 from app.models.ia import BorradorAsistente
 from app.services import llm
+from app.services.correo_compuesto import bloques as bq
 from app.services.correo_compuesto import ia
 from app.services.correo_compuesto.generador import ESTILO_MOVIL
 from app.services.html_sanitizer import es_correo_compuesto, sanitize_email_html
@@ -148,6 +149,15 @@ def test_la_gama_dtf_sale_compuesta_y_el_aviso_de_un_pedido_sale_en_texto(
     assert ia.modo_pedido("Dile que el pedido sale el martes") == ia.MODO_NORMAL
     assert ia.modo_pedido("contéstale que el pedido sale el martes") == ia.MODO_NORMAL
     assert ia.modo_pedido("más corto") is None and ia.modo_pedido("") is None
+    # «Dile que…» es un mensaje concreto aunque nombre algo que se envía; las
+    # «opciones de pago» no son productos; «pásalo a texto» saca de las fichas.
+    assert ia.modo_pedido("Dile que le mando las opciones de pago la semana que viene") == (
+        ia.MODO_NORMAL)
+    assert ia.modo_pedido("añade que le envío las opciones de financiación") is None
+    assert ia.modo_del_turno(formato="auto", instruccion="pásalo a texto",
+                             modo_actual=ia.MODO_COMPUESTO) == ia.MODO_NORMAL
+    assert ia.modo_del_turno(formato="auto", instruccion="quita el vídeo",
+                             modo_actual=ia.MODO_COMPUESTO) == ia.MODO_COMPUESTO
     with session_factory() as s:
         thread_id = _hilo_talentos(s)
     falso = _ClaudeFalso(COMPUESTO_DTF)
@@ -493,3 +503,64 @@ def test_lo_que_hay_en_el_compositor_manda_la_vista_previa_o_el_texto_al_que_se_
     assert "ESTRUCTURA ACTUAL" not in peticion and "para el taller textil" in peticion
     assert tercero["modo"] == "normal" and tercero["estructura"] is None
     assert tercero["html"] == "<p>Hola Marny,</p><p>te paso la gama DTF.</p>"
+
+
+def test_editar_un_campo_no_pierde_los_productos_ni_los_enlaces_que_el_bloque_ya_tenia() -> None:
+    """Un borrador reabierto: las referencias del turno pueden no incluir los
+    productos ni las URL del correo. Editar UN campo deja lo demás intacto."""
+    p = {"fuente": "compositor", "origen_id": "orion-20"}
+    q = {"fuente": "compositor", "origen_id": "lyra-35"}
+    estructura = bq.normalizar({"idioma": "es", "bloques": [
+        {"id": "t1", "tipo": "texto",
+         "html": '<p>Hola, mira <a href="https://mboprinters.com/es/">la web</a>.</p>'},
+        {"id": "f1", "tipo": "productos_fila", "productos": [p, q]},
+        {"id": "c1", "tipo": "cta", "botones": [{"texto": "Ver", "url": "https://mboprinters.com/es/dtf/"}]},
+        {"id": "v1", "tipo": "video", "url": VIDEO, "titulo": "La Orion"},
+    ]})
+    refs = ia.Referencias()                                   # nada de este turno
+    para_ia = json.loads(ia.estructura_para_ia(estructura, refs))["bloques"]
+    res = ia.aplicar_operaciones(estructura, [
+        {"op": "editar", "id": "f1", "campo": "boton", "valor": "Ver ficha"},
+        {"op": "editar", "id": "t1", "campo": "texto",
+         "valor": para_ia[0]["texto"].replace("Hola", "Hola Marny")},
+        {"op": "editar", "id": "c1", "campo": "botones",
+         "valor": [{"texto": "Ver toda la gama", "enlace": para_ia[2]["botones"][0]["enlace"]}]},
+        {"op": "editar", "id": "v1", "campo": "titulo", "valor": "La Orion 20 en marcha"},
+        {"op": "editar", "id": "f1", "campo": "productos", "valor": ["?orion-20", "?lyra-35"]},
+    ], refs)
+    t, f, c, v = res.estructura["bloques"]
+    assert f["productos"] == [p, q] and f["boton"] == "Ver ficha"
+    assert t["html"] == '<p>Hola Marny, mira <a href="https://mboprinters.com/es/">la web</a>.</p>'
+    assert c["botones"] == [{"texto": "Ver toda la gama", "url": "https://mboprinters.com/es/dtf/"}]
+    assert v["url"] == VIDEO and v["titulo"] == "La Orion 20 en marcha"
+    assert res.avisos == []
+    # Un producto o un enlace NUEVOS siguen necesitando su referencia.
+    res2 = ia.aplicar_operaciones(estructura, [
+        {"op": "editar", "id": "c1", "campo": "botones",
+         "valor": [{"texto": "Comprar", "enlace": "https://inventado.example/"}]},
+    ], refs)
+    assert "inventado.example" not in json.dumps(res2.estructura)
+
+
+def test_un_compuesto_pasado_a_texto_por_la_ia_conserva_sus_enlaces(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    with session_factory() as s:
+        thread_id = _hilo_talentos(s)
+    falso = _ClaudeFalso(COMPUESTO_DTF)
+    with patch.object(llm, "_invoke_claude", falso):
+        primero = _pedir(http, thread_id, instruccion="mándale la gama DTF").json()["borrador"]
+    falso.respuesta = {
+        "asunto": "Re: Equipos DTF", "idioma": "es", "aviso": "", "pendiente": [],
+        "enlaces_usados": [],
+        "cuerpo": f'<p>Hola Marny,</p><p>la <a href="https://mboprinters.com/es/dtf/orion-20/">'
+                  f'Orion 20</a> y el <a href="{VIDEO}">vídeo</a>; toda la gama en '
+                  '<a href="https://mboprinters.com/es/">la web</a>.</p>'}
+    with patch.object(llm, "_invoke_claude", falso):
+        texto = _turno(http, primero["id"], "pásalo a texto",
+                       estructura_actual=primero["estructura"]).json()["borrador"]
+    peticion = falso.ultimo["bloques"][1]["text"]
+    assert "ESTRUCTURA ACTUAL" not in peticion and VIDEO in peticion
+    assert texto["modo"] == "normal"
+    for url in ("https://mboprinters.com/es/dtf/orion-20/", VIDEO, "https://mboprinters.com/es/"):
+        assert f'href="{url}"' in texto["html"], url

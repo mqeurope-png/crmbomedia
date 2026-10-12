@@ -190,7 +190,7 @@ def test_tres_fichas_en_fila_se_apilan_en_una_columna_por_debajo_de_480_px(
     # tríos), con la clase que la consulta de medio convierte en bloque a todo
     # el ancho; el corte, en 600 px, cubre todo lo que baja de 480.
     assert len(re.findall(r'<td class="bh-col bh-ficha" width="\d+" valign="top"', html)) == 3
-    assert html.count(">Info →</a>") == 3
+    assert html.count(">Info</span> →</a>") == 3
     hoja = re.search(r"<style[^>]*>(.*?)</style>", html, re.DOTALL).group(1)
     corte = int(re.search(r"@media only screen and \(max-width: (\d+)px\)", hoja).group(1))
     assert corte >= 480
@@ -235,10 +235,11 @@ def test_una_ficha_de_maquina_va_en_el_idioma_del_cliente_con_el_enlace_de_ese_i
     assert "✓ 20 cm wide" in ficha and "✓ i3200 head" in ficha        # dos características
     assert en.precios == ["4,990 €"]                                  # el precio tal cual
     assert re.search(r"4,990 € <span[^>]*>\+ VAT</span>", ficha)       # con su IVA, en inglés
-    assert ">More info →</a>" in ficha                                # el botón, en inglés
+    assert ">More info</span> →</a>" in ficha                          # el botón, en inglés
     assert 'href="https://mboprinters.com/en/dtf/o20/"' in ficha      # el enlace en inglés
     assert "mboprinters.com/es/" not in ficha
-    assert ">Más info →</a>" in es.html and 'href="https://mboprinters.com/es/dtf/o20/"' in es.html
+    assert ">Más info</span> →</a>" in es.html
+    assert 'href="https://mboprinters.com/es/dtf/o20/"' in es.html
     assert re.search(r">Área</td><td[^>]*>A3</td>", es.html) and "4.990 €" in es.html
 
 
@@ -276,6 +277,10 @@ def test_la_vista_previa_es_el_correo_mas_los_atributos_para_editar(
     assert "data-bh-" not in final.html
     # Quitando los atributos, la vista previa es exactamente el correo que se envía.
     assert re.sub(r' data-bh-[a-z]+="[^"]*"', "", vista.html) == sin_vista.html
+    # Lo editable de un botón es su etiqueta: la flecha y el ▶ son del diseño y
+    # no vuelven a la estructura al editar.
+    assert f'<span data-bh-campo="{fila}:boton">Info</span> →</a>' in vista.html
+    assert f'▶ <span data-bh-campo="{video}:boton">Ver vídeo</span></a>' in vista.html
 
 
 def test_normalizar_limpia_lo_que_llegue_y_el_markdown_de_la_ia_se_vuelve_html() -> None:
@@ -311,6 +316,11 @@ def test_normalizar_limpia_lo_que_llegue_y_el_markdown_de_la_ia_se_vuelve_html()
                     '<ul><li><a href="https://mbo.example/o20">Orion 20</a></li>'
                     "<li>Lyra 35</li></ul>"
                     "<ol><li>uno</li><li>dos</li></ol><p>&lt;table&gt;no&lt;/table&gt;</p>")
+    # Un texto demasiado largo se recorta sin dejar una etiqueta a medias.
+    largo = "<p>" + "aaa " * 1490 + '<a href="https://mboprinters.com/es/">la web</a> fin</p>'
+    recortado = bq.limpiar_texto_rico(largo, 6000)
+    assert len(recortado) <= 6000 and recortado.endswith("</p>")
+    assert recortado.count("<p>") == recortado.count("</p>") and "<a href" not in recortado
     assert bq.video_youtube("https://youtu.be/dQw4w9WgXcQ?t=3") == "dQw4w9WgXcQ"
     assert bq.video_youtube("https://www.youtube.com/shorts/dQw4w9WgXcQ") == "dQw4w9WgXcQ"
     assert bq.video_youtube("https://vimeo.com/1") is None
