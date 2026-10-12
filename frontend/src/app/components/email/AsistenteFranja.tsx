@@ -581,6 +581,7 @@ export function LoQueHaUsado({ borrador }: { borrador: BorradorAsistente }) {
   const consumibles = catalogo?.consumibles ?? [];
   const nombradas = maquinas.filter((m) => m.eleccion === "hilo").length;
   const pedidas = maquinas.filter((m) => m.eleccion === "instruccion").length;
+  const porPalabras = maquinas.filter((m) => m.eleccion === "consulta").length;
   const posibles = maquinas.filter(
     (m) => m.eleccion === "hilo_posible" || m.eleccion === "instruccion_posible").length;
   const tokens = num("tokens_estimados");
@@ -615,6 +616,7 @@ export function LoQueHaUsado({ borrador }: { borrador: BorradorAsistente }) {
       const origen: string[] = [];
       if (nombradas > 0) origen.push(`${nombradas} que nombra el cliente`);
       if (pedidas > 0) origen.push(`${pedidas} que pide la instrucción`);
+      if (porPalabras > 0) origen.push(`${porPalabras} por las palabras de la consulta`);
       if (posibles > 0) origen.push(`${posibles} que puede que nombren`);
       trozos.push(`${maquinas.length} máquina${maquinas.length === 1 ? "" : "s"} del catálogo${origen.length > 0 ? ` (${origen.join(", ")})` : ""}`);
     }
@@ -626,9 +628,17 @@ export function LoQueHaUsado({ borrador }: { borrador: BorradorAsistente }) {
   if (tokens !== null) partes.push(`~${tokens.toLocaleString("es-ES")} tokens de entrada${presupuesto ? ` de ${presupuesto.toLocaleString("es-ES")}` : ""}`);
   if (recortes.length > 0) partes.push(`${recortes.length} elemento${recortes.length === 1 ? "" : "s"} fuera por tamaño`);
   if (borrador.turno > 0) {
-    // La caché de prompts es por modelo: con un modelo distinto para las
-    // correcciones, la primera escribe su propia caché y las siguientes leen.
-    partes.push(`turno ${borrador.turno}: el contexto no se volvió a montar (${borrador.tokens_cache_lectura.toLocaleString("es-ES")} tokens leídos de caché, ${borrador.tokens_cache_escritura.toLocaleString("es-ES")} escritos)`);
+    // La caché de prompts es de cada modelo y dura 5 minutos: la primera
+    // corrección con un modelo distinto del primer borrador escribe la suya y
+    // las siguientes, si llegan a tiempo, la leen.
+    const leidos = borrador.tokens_cache_lectura;
+    const escritos = borrador.tokens_cache_escritura;
+    const cache = leidos > 0
+      ? `${leidos.toLocaleString("es-ES")} tokens leídos de la caché`
+      : escritos > 0
+        ? `${escritos.toLocaleString("es-ES")} tokens guardados en la caché de ${borrador.modelo}: la caché es de cada modelo, y la leen las correcciones siguientes que lleguen antes de 5 minutos`
+        : "sin caché en este turno";
+    partes.push(`turno ${borrador.turno}: el contexto no se volvió a montar (${cache})`);
   }
   return (
     <details className="asistente-panel-detalle">

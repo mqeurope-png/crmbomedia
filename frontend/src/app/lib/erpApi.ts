@@ -5751,6 +5751,16 @@ export type InteresProducto = {
   coincide: { origen_id: string; nombre: string; marca: string }[];
 };
 
+/** Las palabras que señalan un interés en la consulta o en la instrucción
+ *  (`uv` = la UV de cualquier tamaño). `propias`: cambiadas en la pantalla
+ *  (si no, las de partida). */
+export type PalabrasInteres = {
+  interes: string;
+  etiqueta: string;
+  palabras: string[];
+  propias: boolean;
+};
+
 export type InteresProductosResuelto = {
   filas: InteresProducto[];
   de_la_base: boolean;
@@ -5758,6 +5768,8 @@ export type InteresProductosResuelto = {
   revisado: boolean;
   hallazgo: string;
   catalogo_vacio: boolean;
+  /** Ausente en una API anterior a las palabras por interés. */
+  palabras?: PalabrasInteres[];
 };
 
 /** Un producto como lo ve el asistente: precio tal cual (y de qué idioma es),
@@ -5783,7 +5795,8 @@ export type CatalogoProductoAsistente = {
   precio_publico?: boolean;
   /** De dónde salió: lo que nombra el cliente en el hilo, lo que pide la
    *  instrucción de quien envía, o el interés clasificado. */
-  eleccion?: "hilo" | "instruccion" | "interes";
+  eleccion?: "hilo" | "instruccion" | "consulta" | "interes" | "hilo_posible"
+    | "instruccion_posible";
 };
 
 export type CatalogoAsistente = {
@@ -5791,6 +5804,9 @@ export type CatalogoAsistente = {
   consumibles: CatalogoProductoAsistente[];
   sin_maquina: string[];
   intereses_instruccion?: string[];
+  /** Los intereses que añade la consulta del cliente por sus palabras. */
+  intereses_consulta?: string[];
+  palabras_consulta?: Record<string, string[]>;
   menciones?: { hilo: string[]; instruccion: string[]; flojas: string[] };
   avisos: Record<string, string>;
   iva_por_fuente: Record<string, "con" | "sin" | null>;
@@ -6119,6 +6135,16 @@ export async function deleteInteresProducto(id: string): Promise<Conocimiento> {
   return apiFetch<Conocimiento>(
     `/api/erp/conocimiento/catalogo/intereses/${encodeURIComponent(id)}`,
     { method: "DELETE" },
+  );
+}
+
+/** Las palabras de un interés; `null` vuelve a las de partida. */
+export async function updatePalabrasInteres(
+  interes: string, palabras: string[] | null,
+): Promise<Conocimiento> {
+  return apiFetch<Conocimiento>(
+    `/api/erp/conocimiento/catalogo/intereses/palabras/${encodeURIComponent(interes)}`,
+    { method: "PUT", body: JSON.stringify({ palabras }) },
   );
 }
 

@@ -17,6 +17,7 @@ import {
   updateFluxCategoria,
   updateInteresProducto,
   updateKbRuta,
+  updatePalabrasInteres,
   updateSitioWeb,
   type CatalogoProducto,
   type CatalogoProductoAsistente,
@@ -26,6 +27,7 @@ import {
   type InteresProducto,
   type KbResolucion,
   type KbRuta,
+  type PalabrasInteres,
   type SitioWeb,
 } from "../../lib/erpApi";
 import { extractErrorMessage } from "../../lib/errors";
@@ -449,6 +451,28 @@ function InteresProductosBloque({
           {mapa.filas.map((f) => <FilaInteresProducto key={f.id} fila={f} canEdit={canEdit} onDatos={onDatos} catalogoVacio={mapa.catalogo_vacio} />)}
         </tbody>
       </table>
+      {mapa.palabras ? (
+        <>
+          <h4 className="kb-subtitulo">Palabras que señalan cada interés</h4>
+          <p className="muted small">
+            Si la consulta del cliente o la instrucción dicen alguna, las máquinas de ese interés
+            entran en el borrador aunque el contacto esté clasificado de otra forma, y si toca
+            varios intereses entran las de todos («placas de metal y camisetas»: UV y DTF). Sin
+            acentos ni mayúsculas, separadas por comas; una palabra o una frase entera, y un * al
+            final vale de prefijo (<code>textil*</code>: textil, textiles, Textilien). Las de cada
+            talla de UV solo cuentan si el texto dice también UV.
+          </p>
+          <table className="data-table data-table--responsive erp-settings-table kb-tabla" aria-label="Palabras por interés">
+            <thead><tr><th>Interés</th><th>Palabras</th><th></th></tr></thead>
+            <tbody>
+              {mapa.palabras.map((p) => (
+                <FilaPalabrasInteres key={`${p.interes}:${p.propias}:${p.palabras.join(",")}`} fila={p}
+                  canEdit={canEdit} onDatos={onDatos} />
+              ))}
+            </tbody>
+          </table>
+        </>
+      ) : null}
       {mapa.huecos.length > 0 ? (
         <div className="kb-aviso" role="note" aria-label="Intereses sin máquina">
           <p><strong>Sin máquina:</strong> {mapa.huecos.map((h) => `${h.etiqueta} (${h.interes}): ${h.motivo}`).join(" · ")}.</p>
@@ -552,6 +576,64 @@ function FilaInteresProducto({
             disabled={ocupada} onClick={borrar}>Borrar</button>
         ) : null}
         {error ? <><br /><span className="form-error small" role="alert">{error}</span></> : null}
+      </td>
+    </tr>
+  );
+}
+
+function normalizarPalabra(palabra: string): string {
+  return palabra.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/\s+/g, " ");
+}
+
+function FilaPalabrasInteres({
+  fila, canEdit, onDatos,
+}: { fila: PalabrasInteres; canEdit: boolean; onDatos: (d: Conocimiento) => void }) {
+  const [texto, setTexto] = useState(fila.palabras.join(", "));
+  const [ocupada, setOcupada] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const palabras = texto.split(",").map((p) => p.trim()).filter(Boolean);
+  // El servidor las guarda en minúsculas y sin acentos: «Textil» es la misma palabra que «textil».
+  const cambiada = palabras.map(normalizarPalabra).join(",") !== fila.palabras.join(",");
+
+  async function guardar(lista: string[] | null) {
+    setOcupada(true);
+    setError(null);
+    try {
+      const datos = await updatePalabrasInteres(fila.interes, lista);
+      // Si la lista guardada es la misma, la fila no se vuelve a montar: el texto queda como lo
+      // ha guardado el servidor.
+      const guardada = datos.interes_productos.palabras?.find((p) => p.interes === fila.interes);
+      if (guardada) setTexto(guardada.palabras.join(", "));
+      onDatos(datos);
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudieron guardar las palabras."));
+    } finally {
+      setOcupada(false);
+    }
+  }
+
+  return (
+    <tr>
+      <td data-label="Interés">
+        {fila.etiqueta}<br /><code>{fila.interes}</code>
+        {fila.propias ? <><br /><span className="muted small">cambiadas</span></> : null}
+      </td>
+      <td data-label="Palabras">
+        {canEdit ? (
+          <textarea aria-label={`Palabras de ${fila.interes}`} rows={2} value={texto}
+            disabled={ocupada} onChange={(e) => setTexto(e.target.value)} />
+        ) : (fila.palabras.join(", ") || <span className="muted small">(ninguna)</span>)}
+        {error ? <span className="form-error small" role="alert">{error}</span> : null}
+      </td>
+      <td>
+        {canEdit && cambiada ? (
+          <button type="button" className="button small" disabled={ocupada}
+            onClick={() => guardar(palabras)}>Guardar</button>
+        ) : null}
+        {canEdit && fila.propias ? (
+          <button type="button" className="link-button small" disabled={ocupada}
+            onClick={() => guardar(null)}>↺ las de partida</button>
+        ) : null}
       </td>
     </tr>
   );

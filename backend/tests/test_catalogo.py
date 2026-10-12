@@ -903,13 +903,14 @@ def test_el_presupuesto_de_tokens_se_respeta_con_el_catalogo_cargado(
                                                            "lentes para la Beambox."}])
         s.commit()
         ctx = contexto.construir(s, thread=hilo, usuario=_admin(s), ahora=AHORA)
-        # Hasta seis máquinas: primero las que NOMBRA el cliente (las cuatro
-        # Beambox del compositor), luego las de su interés (dos de uv_grande);
-        # y hasta ocho consumibles.
-        assert len(ctx.catalogo["maquinas"]) == catalogo.MAQUINAS_MAX == 6
-        assert [m["eleccion"] for m in ctx.catalogo["maquinas"]] == ["hilo"] * 4 + ["interes"] * 2
+        # Seis máquinas y dos más por tener dos intereses (UV grande y DTF):
+        # primero las que NOMBRA el cliente (las cuatro Beambox del compositor),
+        # luego las de sus dos intereses, por turnos; y hasta ocho consumibles.
+        assert len(ctx.catalogo["maquinas"]) == catalogo.MAQUINAS_MAX + 2 == 8
+        assert [m["eleccion"] for m in ctx.catalogo["maquinas"]] == ["hilo"] * 4 + ["interes"] * 4
         assert all("Beambox" in m["nombre"] for m in ctx.catalogo["maquinas"][:4])
-        assert [m["interes"] for m in ctx.catalogo["maquinas"][4:]] == ["uv_grande", "uv_grande"]
+        assert [m["interes"] for m in ctx.catalogo["maquinas"][4:]] == [
+            "uv_grande", "dtf", "uv_grande", "dtf"]
         assert len(ctx.catalogo["consumibles"]) <= catalogo.CONSUMIBLES_MAX
         completo = estimar_tokens(redactor.bloque_contexto(ctx))
         # Un presupuesto más pequeño que el bloque recorta el catálogo (consumibles
@@ -989,6 +990,98 @@ def test_el_job_diario_corre_las_dos_fuentes_y_respeta_el_interruptor(
         assert catalogo_job.run_daily(s, ahora=ahora + timedelta(days=10)) is True
     assert llamadas == todas
     assert catalogo_job.CATALOGO_QUEUE == "kb:catalogo_sync"
+
+
+def test_la_consulta_toca_varios_intereses_por_sus_palabras_y_entran_los_de_todos(
+    session_factory: sessionmaker,
+) -> None:
+    """12/10/2026: una consulta en alemán pedía imprimir sobre placas de metal y
+    camisetas; el contacto estaba clasificado solo como UV y al borrador solo
+    llegaron máquinas UV, y el aviso dijo que no había DTF. Las palabras de la
+    consulta («T-Shirts», «Textilien») meten las de DTF aunque el contacto esté
+    clasificado de otra forma, y entran las de los dos intereses."""
+    with session_factory() as s:
+        _sincronizar_compositor(s)
+        contacto = _contacto(s, idioma="de", intereses=["uv_mediano"])
+        hilo = _hilo(s, contacto, [{"de": KLAUS, "texto": (
+            "Guten Tag, wir möchten Metallplatten und T-Shirts bedrucken, auch andere Textilien. "
+            "Welche Maschinen empfehlen Sie?")}])
+        s.commit()
+        ctx = contexto.construir(s, thread=hilo, usuario=_admin(s), ahora=AHORA)
+        cat = ctx.catalogo
+        maquinas = cat["maquinas"]
+        assert cat["intereses_consulta"] == ["dtf"]
+        assert cat["palabras_consulta"]["dtf"][:2] == ["t-shirt", "shirt"]
+        # Dos intereses: hasta ocho, por turnos (la UV clasificada primero; DTF, por la consulta).
+        assert len(maquinas) == catalogo.MAQUINAS_MAX + 2
+        assert [m["interes"] for m in maquinas] == ["uv_mediano", "dtf"] * 4
+        assert {m["eleccion"] for m in maquinas if m["interes"] == "dtf"} == {"consulta"}
+        assert {m["marca"] for m in maquinas if m["interes"] == "dtf"} == {"mbo_dtf"}
+        assert "dtf" not in cat["sin_maquina"]
+        bloque = redactor.bloque_contexto(ctx)
+        assert ("Máquinas de lo que PUEDE que pida también la CONSULTA del cliente, por sus "
+                "palabras («t-shirt»") in (
+            bloque)
+        assert "Es una PRESELECCIÓN" in bloque and "no digas que no lo tenemos" in bloque
+        # Lo que pide la instrucción sigue mandando: con «las de DTF», son de la instrucción.
+        ctx2 = contexto.construir(s, thread=hilo, usuario=_admin(s), ahora=AHORA,
+                                  instruccion="ofrécele las de DTF")
+        assert ctx2.catalogo["intereses_consulta"] == []
+        assert {m["eleccion"] for m in ctx2.catalogo["maquinas"] if m["interes"] == "dtf"} == {
+            "instruccion"}
+        # «UV» a secas en la consulta de un contacto clasificado en una talla: esa talla.
+        hilo3 = _hilo(s, contacto, [{"de": KLAUS, "texto": "Welche UV-Drucker haben Sie?"}],
+                      asunto="UV")
+        s.commit()
+        ctx3 = contexto.construir(s, thread=hilo3, usuario=_admin(s), ahora=AHORA)
+        assert {m["interes"] for m in ctx3.catalogo["maquinas"]} == {"uv_mediano"}
+
+
+def test_las_palabras_por_interes_se_editan_en_la_pantalla_y_se_usan_al_momento(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    headers = auth_headers(http, "admin")
+    todo = http.get("/api/erp/conocimiento", headers=headers).json()
+    palabras = {p["interes"]: p for p in todo["interes_productos"]["palabras"]}
+    assert palabras["uv"]["etiqueta"] == "UV de cualquier tamaño"
+    assert "t-shirt*" in palabras["dtf"]["palabras"] and palabras["dtf"]["propias"] is False
+    # Una palabra nueva (sin acentos ni mayúsculas al guardarse) cuenta desde ya.
+    r = http.put("/api/erp/conocimiento/catalogo/intereses/palabras/dtf", headers=headers,
+                 json={"palabras": ["Trikot*", "camiseta*", " camiseta* ", "Bordado"]})
+    assert r.status_code == 200, r.text
+    dtf = next(p for p in r.json()["interes_productos"]["palabras"] if p["interes"] == "dtf")
+    assert dtf == {**dtf, "palabras": ["trikot*", "camiseta*", "bordado"], "propias": True}
+    with session_factory() as s:
+        _sincronizar_compositor(s)
+        contacto = _contacto(s, idioma="de", intereses=["vending"])
+        hilo = _hilo(s, contacto, [{"de": KLAUS, "texto": "Wir bedrucken Trikots für Vereine."}])
+        s.commit()
+        ctx = contexto.construir(s, thread=hilo, usuario=_admin(s), ahora=AHORA)
+        assert ctx.catalogo["intereses_consulta"] == ["dtf"]
+        # «T-Shirt» ya no está entre las de DTF (se cambiaron): no cuenta.
+        hilo2 = _hilo(s, contacto, [{"de": KLAUS, "texto": "T-Shirts bitte."}], asunto="T")
+        s.commit()
+        assert contexto.construir(s, thread=hilo2, usuario=_admin(s),
+                                  ahora=AHORA).catalogo["intereses_consulta"] == []
+    # Guardar los ajustes de la sección con una copia vieja no las pisa.
+    viejo = todo["interes_productos"]["palabras"]
+    ajustes = http.get("/api/erp/settings", headers=headers).json()["conocimiento"]
+    assert http.patch("/api/erp/settings", headers=headers, json={"conocimiento": {
+        **ajustes, "interes_palabras": {"dtf": ["otra"]}}}).status_code == 200
+    despues = http.get("/api/erp/conocimiento", headers=headers).json()
+    dtf = next(p for p in despues["interes_productos"]["palabras"] if p["interes"] == "dtf")
+    assert dtf["palabras"] == ["trikot*", "camiseta*", "bordado"] and viejo
+    # Volver a las de partida; una palabra que no vale, 400; sin permiso, 403.
+    r = http.put("/api/erp/conocimiento/catalogo/intereses/palabras/dtf", headers=headers,
+                 json={"palabras": None})
+    dtf = next(p for p in r.json()["interes_productos"]["palabras"] if p["interes"] == "dtf")
+    assert dtf["propias"] is False and "t-shirt*" in dtf["palabras"]
+    assert http.put("/api/erp/conocimiento/catalogo/intereses/palabras/dtf", headers=headers,
+                    json={"palabras": ["pal*abra"]}).status_code == 400
+    assert http.put("/api/erp/conocimiento/catalogo/intereses/palabras/No Vale",
+                    headers=headers, json={"palabras": ["x"]}).status_code == 400
+    assert http.put("/api/erp/conocimiento/catalogo/intereses/palabras/dtf",
+                    headers=auth_headers(http, "user"), json={"palabras": ["x"]}).status_code == 403
 
 
 # --- la pantalla (API) y la configuración ---------------------------------------------------------
@@ -1445,3 +1538,18 @@ def test_una_palabra_corriente_no_es_una_maquina_nombrada_y_el_tope_no_inventa_h
         assert all(m["eleccion"] == "hilo" for m in ctx2.catalogo["maquinas"])
         assert ctx2.catalogo["sin_maquina"] == []
         assert "Sin máquina en el catálogo" not in redactor.bloque_contexto(ctx2)
+
+
+def test_las_tallas_de_la_uv_por_su_codigo_por_sus_palabras_y_en_el_hilo_no() -> None:
+    """Una talla de UV entra por su código («uv_grande») o por sus palabras si
+    el texto dice también UV; en el hilo entero las palabras de talla no
+    cuentan («un gran saludo» no es una UV grande)."""
+    assert catalogo.intereses_de_texto("Prepárale la uv_grande, sin más") == ["uv_grande"]
+    assert catalogo.intereses_de_texto("Ofrécele una UV grande") == ["uv_grande"]
+    assert catalogo.intereses_de_texto("Ofrécele una UV") == list(catalogo.TALLAS_UV)
+    assert catalogo.intereses_de_texto("Un gran saludo") == []
+    hilo = "Queremos imprimir con una impresora UV. Un gran saludo"
+    assert [c for c, _ in catalogo.intereses_y_palabras(hilo, con_tallas=False)] == list(
+        catalogo.TALLAS_UV)
+    assert [c for c, _ in catalogo.intereses_y_palabras(
+        hilo, con_tallas=False, tallas_uv=["uv_pequeno"])] == ["uv_pequeno"]

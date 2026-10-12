@@ -62,6 +62,7 @@ from app.services.conocimiento import (
     zendesk,
 )
 from app.services.conocimiento.config import configuracion as config_kb
+from app.services.conocimiento.config import guardar_palabras_interes as config_kb_palabras
 from app.services.web_forms import sitios as registro_sitios
 
 router = APIRouter(prefix="/api/erp/conocimiento", tags=["erp-conocimiento"])
@@ -160,6 +161,11 @@ class InteresProductoIn(BaseModel):
     patron: str = Field(default="", max_length=80)
     nota: str | None = Field(default=None, max_length=255)
     posicion: int | None = Field(default=None, ge=0, le=10000)
+
+
+class PalabrasInteresIn(BaseModel):
+    #: Las palabras del interés; `null` vuelve a las de partida.
+    palabras: list[str] | None = Field(default=None, max_length=200)
 
 
 class ImagenCambiosIn(BaseModel):
@@ -561,6 +567,26 @@ def borrar_interes_producto(
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     _auditar(session, current_user, tipo="interes_producto", clave=fila_id, accion="baja",
              cambios=None)
+    session.commit()
+    return _todo(session)
+
+
+@router.put("/catalogo/intereses/palabras/{interes}")
+def guardar_palabras_interes(
+    interes: str,
+    payload: PalabrasInteresIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_config),
+) -> dict[str, Any]:
+    """Las palabras que señalan un interés en la consulta o en la instrucción
+    (`uv` = la UV de cualquier tamaño). `palabras: null` vuelve a las de
+    partida. Se usan desde el siguiente borrador, sin desplegar."""
+    try:
+        guardadas = config_kb_palabras(session, interes, payload.palabras)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    _auditar(session, current_user, tipo="interes_palabras", clave=interes.strip().lower(),
+             accion="cambio", cambios={"palabras": guardadas})
     session.commit()
     return _todo(session)
 

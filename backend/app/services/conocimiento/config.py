@@ -9,7 +9,8 @@ la clave `conocimiento` (sin migración):
      "iva_por_fuente": {"compositor": null, "woocommerce": null},
      "interes_productos_revisado": false,
      "medios_sync_activa": true,
-     "youtube_canales": [{"handle": "@fluxinc", "marca": "flux"}, ...]}
+     "youtube_canales": [{"handle": "@fluxinc", "marca": "flux"}, ...],
+     "interes_palabras": {"dtf": ["textil*", "t-shirt*", ...]}}
 
 - `flux_sync_activa` / `flux_sync_hora`: la sincronización diaria del índice
   de la KB de FLUX (worker-sync). Encendida por defecto: es solo lectura.
@@ -32,9 +33,15 @@ la clave `conocimiento` (sin migración):
 - `youtube_canales`: los canales de YouTube cuyos vídeos van a la tabla, con
   la marca del catálogo que se les supone cuando el título no la dice (vacía
   en un canal de varias marcas).
+- `interes_palabras`: las palabras por interés CAMBIADAS en la pantalla
+  interés → máquinas (solo esas; las demás, las de partida de
+  `catalogo.PALABRAS_DE_PARTIDA`). Se guardan por su API
+  (`guardar_palabras_interes`): el «Guardar cambios» de Configuración ERP no
+  las toca, para que una pestaña abierta de antes no las pise.
 """
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterable
 from typing import Any
@@ -152,6 +159,26 @@ def _canales(raw: Any, *, estricto: bool = False) -> list[dict[str, str]] | None
     return salida[:MAX_CANALES]
 
 
+def _interes_palabras(raw: Any) -> dict[str, list[str]]:
+    """Las palabras por interés cambiadas (código → palabras), limpias. Lo que
+    no vale se descarta: esto lee lo guardado, no valida una entrada."""
+    from app.services.conocimiento.catalogo import normalizar_palabras  # noqa: PLC0415
+    from app.services.leads.intereses import CODIGO_RE  # noqa: PLC0415
+
+    if not isinstance(raw, dict):
+        return {}
+    salida: dict[str, list[str]] = {}
+    for codigo, palabras in raw.items():
+        clave = str(codigo or "").strip().lower()
+        if not CODIGO_RE.match(clave) or not isinstance(palabras, list):
+            continue
+        try:
+            salida[clave] = normalizar_palabras(palabras)
+        except ValueError:
+            continue
+    return salida
+
+
 def defectos() -> dict[str, Any]:
     return {
         "flux_sync_activa": True,
@@ -165,6 +192,7 @@ def defectos() -> dict[str, Any]:
         "interes_productos_revisado": False,
         "medios_sync_activa": True,
         "youtube_canales": [dict(c) for c in CANALES_DE_PARTIDA],
+        "interes_palabras": {},
     }
 
 
@@ -192,6 +220,7 @@ def normalizar(raw: Any) -> dict[str, Any]:
     canales = _canales(data.get("youtube_canales"))
     if canales is not None:
         base["youtube_canales"] = canales
+    base["interes_palabras"] = _interes_palabras(data.get("interes_palabras"))
     return base
 
 
@@ -250,7 +279,51 @@ def validar(payload: Any, actual: Any = None) -> dict[str, Any]:
         base["medios_sync_activa"] = payload["medios_sync_activa"]
     if "youtube_canales" in payload:
         base["youtube_canales"] = _canales(payload["youtube_canales"], estricto=True) or []
+    # `interes_palabras` no se toca aquí: va por `guardar_palabras_interes`.
     return base
+
+
+def guardar_palabras_interes(session: Session, interes: Any,
+                              palabras: list[Any] | None) -> list[str] | None:
+    """Las palabras de un interés en la pantalla interés → máquinas (sin
+    commit). `None` vuelve a las de partida. Devuelve las guardadas (o None).
+    `ValueError` legible si el interés o alguna palabra no vale."""
+    from app.erp.models import ERP_SETTINGS_SINGLETON_ID, ErpSettings  # noqa: PLC0415
+    from app.services.conocimiento.catalogo import (  # noqa: PLC0415
+        PALABRAS_DE_PARTIDA,
+        cargar_mapa,
+        normalizar_palabras,
+    )
+    from app.services.leads import intereses as cat_intereses  # noqa: PLC0415
+
+    clave = str(interes or "").strip().lower()
+    filas, _ = cargar_mapa(session)
+    conocidos = (set(PALABRAS_DE_PARTIDA) | set(cat_intereses.cargar(session).codigos)
+                 | {f.interes for f in filas})
+    if clave not in conocidos:
+        raise ValueError(f"«{interes}» no es ningún interés (p. ej. dtf, corte_laser o uv).")
+    limpias = None if palabras is None else normalizar_palabras(palabras)
+    # Bloqueada hasta el commit: dos guardados a la vez no se pisan.
+    fila = session.get(ErpSettings, ERP_SETTINGS_SINGLETON_ID, with_for_update=True)
+    if fila is None:
+        fila = ErpSettings(id=ERP_SETTINGS_SINGLETON_ID)
+        session.add(fila)
+    try:
+        blob = json.loads(fila.factusol_series_json or "{}")
+    except (TypeError, ValueError):
+        blob = {}
+    blob = blob if isinstance(blob, dict) else {}
+    actual = normalizar(blob.get(CONFIG_KEY))
+    propias = dict(actual["interes_palabras"])
+    if limpias is None:
+        propias.pop(clave, None)
+    else:
+        propias[clave] = limpias
+    actual["interes_palabras"] = propias
+    blob[CONFIG_KEY] = actual
+    fila.factusol_series_json = json.dumps(blob, ensure_ascii=False)
+    session.flush()
+    return limpias
 
 
 def configuracion(session: Session) -> dict[str, Any]:

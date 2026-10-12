@@ -173,7 +173,8 @@ productos funciona (test).
 
 ### Lo que entra en un borrador (`catalogo.para_asistente`)
 
-Nunca el catálogo entero: hasta **6 máquinas** y hasta **8 consumibles o
+Nunca el catálogo entero: hasta **6 máquinas** (dos más por cada interés de
+más cuando hay varios a la vez, hasta 10) y hasta **8 consumibles o
 repuestos**, en su idioma, con precio tal cual, enlace (en la lista de enlaces
 permitidos) y los avisos. Las máquinas se eligen **por este orden** (cada una
 lleva de dónde salió, `eleccion`, y el bloque del prompt las agrupa así):
@@ -199,11 +200,45 @@ lleva de dónde salió, `eleccion`, y el bloque del prompt las agrupa así):
 3. **Los consumibles de la máquina que ya tiene** (lo que dicen sus pedidos,
    casado por palabras contra nombre, categoría y marca de los productos de las
    tiendas), en su lista aparte.
-4. **El interés clasificado**, como hasta ahora.
+4. **Los intereses que toca la consulta del cliente por sus palabras**
+   (12/10/2026) y **el interés clasificado**. Una consulta en alemán pedía
+   imprimir sobre placas de metal y camisetas; el contacto estaba clasificado
+   solo como UV y al borrador solo llegaron las máquinas UV, y el aviso dijo que
+   no había DTF. Ahora «T-Shirts» o «Textilien» meten las de DTF aunque el
+   contacto esté clasificado de otra forma (`eleccion` = `consulta`, con las
+   palabras que casaron en el prompt), y si la consulta toca varios intereses
+   entran las de todos, por turnos (una de cada, el interés clasificado primero)
+   y con el tope subido. «UV» a secas en la consulta de un contacto ya
+   clasificado en una talla es esa talla. En la consulta (el hilo entero) las
+   palabras de talla no cuentan: «un gran saludo» no es una UV grande. El prompt
+   presenta esas máquinas como lo que *puede* que pida también la consulta: si
+   las palabras no hablan de eso, la IA las ignora.
 
-«Sin máquina en el catálogo para X» solo sale cuando X no tiene ninguna máquina
-por el mapa interés → máquinas, no porque las seis plazas ya estén llenas con lo
-que nombra el hilo.
+«Sin máquina en el catálogo para X» solo sale cuando X —pedido por la
+instrucción o clasificado— no tiene ninguna máquina por el mapa interés →
+máquinas, no porque las plazas ya estén llenas con lo que nombra el hilo. El
+bloque CATÁLOGO dice además que es una preselección y no el catálogo entero: si
+el cliente pide algo que no está, la IA no dice que no lo tenemos.
+
+### Las palabras por interés (`catalogo.PALABRAS_DE_PARTIDA`)
+
+Las palabras que señalan cada interés en la consulta o en la instrucción, en
+varios idiomas: `dtf` ← textil*, camiseta*, t-shirt*, shirt*, sudadera*,
+hoodie*, ropa, prenda*, kleidung, transfer…; `corte_laser` ← laser*, cortar,
+grabar, metacrilato, madera, holz…; `uv` (la UV de cualquier tamaño) ← uv,
+uv-drucker, impresora* uv, metallplatte*, placa* metal*…; y cada talla de UV sus
+palabras de tamaño, que solo cuentan en la instrucción y si dice también UV (el
+código de la talla, «uv_grande», vale solo). Se casan
+como las palabras clave del clasificador de leads: palabra o frase entera, sin
+acentos ni mayúsculas, `*` al final = prefijo. **Se editan** en Configuración
+ERP → Base de conocimiento → interés → máquinas («Palabras que señalan cada
+interés»), al momento y sin desplegar; lo cambiado va en
+`conocimiento.interes_palabras` (solo los intereses cambiados) y «↺ las de
+partida» lo devuelve. Solo se aceptan intereses que existen (los de partida,
+los del catálogo de intereses o los del mapa). El «Guardar cambios» de
+Configuración ERP no las toca.
+API: `PUT /api/erp/conocimiento/catalogo/intereses/palabras/{interes}`
+(`{"palabras": [...]}`; `null` = las de partida), con auditoría.
 
 El bloque CATÁLOGO del prompt es la única fuente de precios; un producto sin
 precio público lleva la orden de decir que se prepara a medida y no escribir

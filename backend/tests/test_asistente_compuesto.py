@@ -247,7 +247,7 @@ def test_quita_el_video_y_lo_demas_queda_igual_tambien_lo_retocado_en_la_vista_p
                             "valor": ["P1", "P2"]},
                            {"op": "añadir", "despues_de": fila["id"], "bloque": {
                                "tipo": "cta", "botones": [{"texto": "Ir a la tienda",
-                                                           "enlace": "M:mbo_dtf"}]}}]}
+                                                           "enlace": "P1"}]}}]}
     with patch.object(llm, "_invoke_claude", falso):
         tercero = _turno(http, nuevo["id"], "deja solo dos máquinas y añade un botón a la tienda",
                          estructura_actual=nuevo["estructura"]).json()["borrador"]

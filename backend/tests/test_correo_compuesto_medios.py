@@ -46,7 +46,7 @@ from app.services.correo_compuesto import bloques as bq
 from app.services.correo_compuesto import generador, ia
 from app.services.html_sanitizer import sanitize_email_html
 from app.services.web_forms.sitios import SITIOS_DE_PARTIDA, Registro, fijar_para_tests
-from tests._test_helpers import seed_org_google_integration, seed_test_users
+from tests._test_helpers import auth_headers, seed_org_google_integration, seed_test_users
 from tests.test_asistente import ALIAS, _ClaudeFalso, _pedir
 from tests.test_asistente_compuesto import COMPUESTO_DTF, _hilo_talentos, _turno
 from tests.test_correo_compuesto import _comprobar_html_de_correo
@@ -397,3 +397,58 @@ def test_las_imagenes_de_una_maquina_salen_de_su_nombre_sin_las_palabras_de_la_m
         assert ofrecidas("mbo-dtf-a3") == set()
         # «Hoodie Press»: la de las sudaderas.
         assert ofrecidas("mbo-dtf-prensa") == {"dtf hoodies"}
+
+
+def test_en_una_respuesta_el_saludo_va_delante_del_hero_y_un_mismo_boton_sale_una_vez(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    """12/10/2026, el hilo de talentosdiversos: el correo abría con un hero a toda
+    página y el «Hola Marny» venía después (maquetación de correo frío), y «Ver la
+    gama DTF» salía en el hero y otra vez al final."""
+    with session_factory() as s:
+        thread_id = _hilo_talentos(s)
+    hero = {"tipo": "hero", "imagen": "I1", "titulo": "La gama DTF",
+            "botones": [{"texto": "Ver la gama DTF", "enlace": "M:mbo_dtf"}]}
+    respuesta = {**COMPUESTO_DTF, "bloques": [hero, *COMPUESTO_DTF["bloques"]]}
+    falso = _ClaudeFalso(respuesta)
+    with patch.object(llm, "_invoke_claude", falso):
+        r = _pedir(http, thread_id, instruccion="mándale la gama DTF con fotos de trabajos")
+    assert r.status_code == 201, r.text
+    b = r.json()["borrador"]
+    bloques = b["estructura"]["bloques"]
+    # El saludo primero; el «cta» del final llevaba el mismo enlace que el hero: fuera.
+    assert [x["tipo"] for x in bloques] == [
+        "texto", "hero", "marca", "productos_fila", "video", "texto"]
+    assert "Hola Marny" in bloques[0]["html"]
+    assert b["html"].count("Ver la gama DTF") == 1 and "Ver toda la gama" not in b["html"]
+    assert b["html"].index("Hola Marny") < b["html"].index("La gama DTF")
+    assert "se quita «Ver toda la gama»" in b["aviso"]
+    sistema = falso.ultimo["system"]
+    assert "el hero va DESPUÉS" in sistema and "un mismo enlace va en un solo botón" in sistema
+    # Si la persona deja el hero arriba en la vista previa, una corrección lo respeta.
+    a_mano = {**b["estructura"], "bloques": [bloques[1], bloques[0], *bloques[2:]]}
+    correccion = {"modo": "compuesto", "asunto": "Re: Equipos DTF", "aviso": "", "pendiente": [],
+                  "operaciones": [{"op": "editar", "id": bloques[-1]["id"], "campo": "texto",
+                                   "valor": "Un saludo,\nAdmin"}]}
+    with patch.object(llm, "_invoke_claude", _ClaudeFalso(correccion)):
+        r2 = _turno(http, b["id"], "acorta la despedida", estructura_actual=a_mano)
+    assert r2.status_code == 201, r2.text
+    assert [x["tipo"] for x in r2.json()["borrador"]["estructura"]["bloques"]][:2] == [
+        "hero", "texto"]
+
+
+def test_en_un_correo_nuevo_sin_conversacion_el_hero_puede_abrir(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    """Un correo frío: sin hilo y sin correos anteriores con esa dirección."""
+    respuesta = {"modo": "compuesto", "asunto": "La gama DTF", "idioma": "es", "aviso": "",
+                 "pendiente": [], "bloques": [
+                     {"tipo": "hero", "imagen": "I1", "titulo": "La gama DTF"},
+                     {"tipo": "texto", "texto": "Hola,\n\nte presento la gama DTF."}]}
+    with patch.object(llm, "_invoke_claude", _ClaudeFalso(respuesta)):
+        r = http.post("/api/emails/asistente", headers=auth_headers(http, "admin"), json={
+            "destinatario": "nadie@nuevo.example", "formato": "compuesto",
+            "instruccion": "preséntale la gama DTF con una foto de cabecera"})
+    assert r.status_code == 201, r.text
+    assert [x["tipo"] for x in r.json()["borrador"]["estructura"]["bloques"]] == [
+        "hero", "texto"]

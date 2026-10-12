@@ -12,6 +12,7 @@ import {
   sincronizarCatalogo,
   sincronizarFlux,
   updateInteresProducto,
+  updatePalabrasInteres,
   updateKbRuta,
   updateSitioWeb,
   type CatalogoProducto,
@@ -37,6 +38,7 @@ jest.mock("../../lib/erpApi", () => ({
   createInteresProducto: jest.fn(),
   updateInteresProducto: jest.fn(),
   deleteInteresProducto: jest.fn(),
+  updatePalabrasInteres: jest.fn(),
 }));
 
 const mockGet = getConocimiento as jest.Mock;
@@ -51,6 +53,7 @@ const mockSincronizarCatalogo = sincronizarCatalogo as jest.Mock;
 const mockCreateInteres = createInteresProducto as jest.Mock;
 const mockUpdateInteres = updateInteresProducto as jest.Mock;
 const mockDeleteInteres = deleteInteresProducto as jest.Mock;
+const mockPalabras = updatePalabrasInteres as jest.Mock;
 
 function sitio(over: Partial<SitioWeb> & { clave: string; dominio: string }): SitioWeb {
   return {
@@ -151,6 +154,10 @@ const DATOS: Conocimiento = {
     revisado: false,
     hallazgo: "Las máquinas láser (FLUX, MBO Lasers), el packaging y el CNC no están en el compositor de correos.",
     catalogo_vacio: false,
+    palabras: [
+      { interes: "uv", etiqueta: "UV de cualquier tamaño", palabras: ["uv", "uv-drucker"], propias: false },
+      { interes: "dtf", etiqueta: "DTF · impresión textil", palabras: ["textil*", "t-shirt*"], propias: false },
+    ],
   },
   idiomas: ["de", "en", "es", "fr", "nl"],
 };
@@ -400,6 +407,45 @@ describe("ConocimientoPanel (Configuración ERP → Base de conocimiento)", () =
     expect(within(screen.getByLabelText("Estado del compositor")).getByText("95")).toBeInTheDocument();
     expect(screen.getByText("SmartJet FLEX 30")).toBeInTheDocument();
     expect(screen.queryByText("sin coincidencia")).not.toBeInTheDocument();
+  });
+
+  it("las palabras de cada interés se cambian y se vuelven a las de partida", async () => {
+    const conPropias = { ...DATOS, interes_productos: { ...DATOS.interes_productos, palabras: [
+      DATOS.interes_productos.palabras![0],
+      { interes: "dtf", etiqueta: "DTF · impresión textil", palabras: ["textil*", "t-shirt*", "trikot*"],
+        propias: true },
+    ] } };
+    mockPalabras.mockResolvedValueOnce(conPropias).mockResolvedValueOnce(DATOS);
+    const user = userEvent.setup();
+    render(<ConocimientoPanel canEdit />);
+    const tabla = await screen.findByLabelText("Palabras por interés");
+    expect(within(tabla).getByText("UV de cualquier tamaño")).toBeInTheDocument();
+    const dtf = within(tabla).getByLabelText("Palabras de dtf");
+    expect(dtf).toHaveValue("textil*, t-shirt*");
+    await user.type(dtf, ", Trikot*");
+    await user.click(within(tabla).getByRole("button", { name: "Guardar" }));
+    await waitFor(() => expect(mockPalabras).toHaveBeenCalledWith("dtf", ["textil*", "t-shirt*", "Trikot*"]));
+    expect(await within(tabla).findByText("cambiadas")).toBeInTheDocument();
+    await user.click(within(tabla).getByRole("button", { name: "↺ las de partida" }));
+    await waitFor(() => expect(mockPalabras).toHaveBeenLastCalledWith("dtf", null));
+    await waitFor(() => expect(within(tabla).queryByText("cambiadas")).not.toBeInTheDocument());
+  });
+
+  it("si el servidor deja las palabras como estaban, la fila se queda con su lista y se puede seguir editando", async () => {
+    mockPalabras.mockResolvedValueOnce(DATOS);
+    const user = userEvent.setup();
+    render(<ConocimientoPanel canEdit />);
+    const tabla = await screen.findByLabelText("Palabras por interés");
+    const dtf = within(tabla).getByLabelText("Palabras de dtf");
+    await user.clear(dtf);
+    await user.type(dtf, "Téxtil*, T-Shirt*");
+    expect(within(tabla).queryByRole("button", { name: "Guardar" })).not.toBeInTheDocument();
+    await user.type(dtf, ", textil*");
+    await user.click(within(tabla).getByRole("button", { name: "Guardar" }));
+    await waitFor(() => expect(mockPalabras).toHaveBeenCalledWith("dtf", ["Téxtil*", "T-Shirt*", "textil*"]));
+    await waitFor(() => expect(dtf).toHaveValue("textil*, t-shirt*"));
+    expect(dtf).toBeEnabled();
+    expect(within(tabla).queryByRole("button", { name: "Guardar" })).not.toBeInTheDocument();
   });
 
   it("interés → máquinas: propuesta sin revisar, huecos, alta de una fila, desactivar y borrar", async () => {
