@@ -128,7 +128,7 @@ function formatOriginLabel(origin: string): string {
   return raw;
 }
 
-function draftFromContact(contact: Contact, phones: ContactPhone[]): DraftState {
+export function draftFromContact(contact: Contact, phones: ContactPhone[]): DraftState {
   const customRaw =
     contact.custom_fields && typeof contact.custom_fields === "object"
       ? contact.custom_fields
@@ -175,7 +175,7 @@ function draftFromContact(contact: Contact, phones: ContactPhone[]): DraftState 
   };
 }
 
-function buildPayload(
+export function buildPayload(
   initial: DraftState,
   current: DraftState,
 ): Record<string, unknown> {
@@ -234,10 +234,15 @@ function buildPayload(
         is_primary: p.is_primary,
       }));
   }
-  const initialJson = JSON.stringify(initial.custom_fields);
-  const currentJson = JSON.stringify(current.custom_fields);
-  if (initialJson !== currentJson) {
-    out.custom_fields = current.custom_fields;
+  // Solo las claves que cambian: el servidor las fusiona en el JSON y deja
+  // las demás como estén (una sincronización pudo traer alguna nueva con
+  // el modal abierto; mandarlas todas la pisaría con lo de antes).
+  const customChanges: Record<string, string> = {};
+  for (const [key, value] of Object.entries(current.custom_fields)) {
+    if (initial.custom_fields[key] !== value) customChanges[key] = value;
+  }
+  if (Object.keys(customChanges).length > 0) {
+    out.custom_fields = customChanges;
   }
   if (current.resubscribe) {
     out.unsubscribe_action = "resubscribe";
@@ -988,6 +993,19 @@ export function ContactEditForm({
   );
 }
 
+/** El nombre de un campo «editado a mano» para el aviso: cada clave de
+ *  los campos personalizados se marca por separado (`custom_fields.<clave>`). */
+export function etiquetaCampoEditado(
+  marca: string,
+  etiquetas: Record<string, string>,
+): string {
+  const prefijo = "custom_fields.";
+  if (marca.startsWith(prefijo) && marca.length > prefijo.length) {
+    return `Campo personalizado «${marca.slice(prefijo.length)}»`;
+  }
+  return etiquetas[marca] ?? marca;
+}
+
 /**
  * PR-Fix-Sync-No-Sobreescribe-Cambios-CRM. Banner que se muestra en
  * el modal Editar cuando el contacto tiene campos editados
@@ -1026,7 +1044,8 @@ function ManuallyEditedBanner({
     address_country_name: "País (nombre)",
     address_region: "Región",
     company_id: "Empresa",
-    custom_fields: "Campos personalizados",
+    // La marca antigua, de antes de marcar cada clave por separado.
+    custom_fields: "Campos personalizados (todos)",
   };
 
   async function handleReset() {
@@ -1051,7 +1070,7 @@ function ManuallyEditedBanner({
       </p>
       <ul className="manual-edits-banner-fields">
         {fields.map((f) => (
-          <li key={f}>{HUMAN_LABEL[f] ?? f}</li>
+          <li key={f}>{etiquetaCampoEditado(f, HUMAN_LABEL)}</li>
         ))}
       </ul>
       <button

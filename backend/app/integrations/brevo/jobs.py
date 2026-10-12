@@ -29,6 +29,7 @@ from app.integrations.brevo.mapper import (
     brevo_external_id,
     extract_brevo_secondary_phones,
     map_brevo_contact_to_internal,
+    phone_digits,
 )
 from app.integrations.contact_merge import keep_first_origin, merge_external_dates
 from app.integrations.errors import IntegrationSkipped
@@ -228,16 +229,14 @@ def reconcile_brevo_channels(
 
     now = datetime.now(UTC)
     existing_numbers = {
-        "".join(c for c in (p.number or "") if c.isdigit() or c == "+")
+        phone_digits(p.number or "")
         for p in session.scalars(
             select(ContactPhone).where(ContactPhone.contact_id == contact_id)
         )
     }
     phones_added = 0
     for entry in phones:
-        digits = "".join(
-            c for c in entry["number"] if c.isdigit() or c == "+"
-        )
+        digits = phone_digits(entry["number"])
         if not digits or digits in existing_numbers:
             continue
         row = ContactPhone(
@@ -490,6 +489,11 @@ def _apply_ref_extras(ref: ExternalReference, extras: dict[str, Any]) -> None:
     if extras.get("origin_detail"):
         ref.origin_detail = extras["origin_detail"]
     if extras.get("metadata"):
+        from app.services import contact_sync_protection as _protection  # noqa: PLC0415
+
+        # Justo antes de pisar lo que esta cuenta trajo la última vez: quitar
+        # del contacto lo que ya no trae (si nadie lo tocó).
+        _protection.release_dropped_custom_fields(ref, extras)
         ref.metadata_json = json.dumps(extras["metadata"], default=str)
 
 

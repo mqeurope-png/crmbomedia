@@ -194,6 +194,47 @@ muestran **todos** los orígenes como chips. El endpoint los expone así:
   un array compacto `[{system, account_id}]` para pintar los chips por
   fila sin inflar la respuesta.
 
+### Campos personalizados
+
+El JSON `contacts.custom_fields` («Datos adicionales» en la ficha) lo
+escriben varios: el sync de Brevo (su lista blanca de atributos), el de
+AgileCRM («Horario», «CONTACTO Persona»), los formularios web
+(`contact.custom.<clave>`), el paso «Modificar campo» de los workflows y la
+ficha. **Cada sync fusiona clave a clave**: escribe lo que trae y solo
+quita lo que esa misma cuenta deja de traer, si nadie lo ha tocado; las
+claves editadas a mano no las toca (detalle en
+`integrations-architecture.md` § «Merge de campos multi-sistema»).
+
+Hasta el arreglo del 12/10/2026 cada sync sustituía el JSON entero, así que
+un contacto de Brevo y de Agile pudo perder lo de uno de los dos, y lo de
+formularios y workflows se perdía con cualquier sync. Para recuperarlo,
+después de desplegar:
+
+1. **Lo de Brevo y Agile**: en Administración → Cuentas de integración,
+   marcar «Sync completa» y pulsar «Re-fetch completo (full sync)». Vuelve a
+   leer todos los contactos de cada cuenta habilitada (tarda) y, como ya
+   fusiona, añade lo que falta sin quitar nada. Una cuenta deshabilitada no
+   se lee: habilitarla para esa pasada si hace falta.
+2. **Lo de formularios y workflows**, desde su rastro (respuestas guardadas e
+   historial de los workflows), solo las claves que faltan:
+
+   ```bash
+   python -m scripts.reponer_campos_personalizados --probar   # informe
+   python -m scripts.reponer_campos_personalizados --apply    # reponer
+   ```
+
+   No pisa ningún valor ni una clave quitada a mano, y deja rastro en la
+   auditoría (`contact.custom_fields_restored`). Las respuestas de formulario
+   en claves que también trae un sync («Horario», «GRADO_DE_INTERES»…) no las
+   repone: esas vuelven con el paso 1. Los formularios se leen con su mapeo
+   de hoy: revisa la lista de claves del informe antes de `--apply`.
+
+El script de limpieza `scripts.cleanup_contact_custom_fields_whitelist` ya
+no va por lista blanca (borraba «CONTACTO Persona» y lo de formularios y
+workflows): solo quita atributos internos de Brevo (`sib_contact_owner`,
+`EXT_ID`) y teléfonos secundarios que ya están en los teléfonos del
+contacto, y por defecto solo informa (`--apply` para escribir).
+
 ### Fechas reales del sistema de origen
 
 Dos columnas en `contacts` guardan la fecha real en el sistema fuente,

@@ -2567,11 +2567,24 @@ def update_contact(
         data["email"] = email
     if data.get("company_id") and not crm_repository.get_company(session, data["company_id"]):
         raise not_found("Company")
-    # `custom_fields` viene como dict en el modal "Editar"; lo
-    # serializamos a JSON antes de pegárselo a la columna Text. Si el
-    # caller manda un string ya hecho (legacy), lo respetamos.
-    if "custom_fields" in data and isinstance(data["custom_fields"], dict):
-        data["custom_fields"] = json.dumps(data["custom_fields"])
+    from app.services import contact_sync_protection as _sync_protection  # noqa: PLC0415
+
+    # `custom_fields` no se pega entero: se fusiona clave a clave (el
+    # modal manda solo las claves que cambian; las demás, quizá recién
+    # traídas por una sincronización, se quedan) y cada clave que cambia
+    # se marca por separado (`custom_fields.<clave>`), para que el sync
+    # no la pise sin dejar de traer las demás.
+    custom_marks: list[str] = []
+    if "custom_fields" in data:
+        try:
+            custom_marks = _sync_protection.apply_manual_custom_fields(
+                contact, data["custom_fields"]
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            ) from exc
     # PR-Consolidado — Star Rating. Capturamos el valor previo ANTES
     # del setattr loop para emitir el audit `star_rating_changed` con
     # metadata {old, new} cuando el campo cambia (no cuando se manda
@@ -2597,10 +2610,11 @@ def update_contact(
     #    `phones_payload`; aquí solo marcamos la intención.
     #  - `owner_id` → `owner_user_id`. El bloque de owner más abajo
     #    cambia `contact.owner_user_id`; aquí marcamos la intención.
-    from app.services import contact_sync_protection as _sync_protection  # noqa: PLC0415
-
-    fields_to_mark: list[str] = []
+    #  - `custom_fields` ya se aplicó arriba, clave a clave.
+    fields_to_mark: list[str] = list(custom_marks)
     for field, value in data.items():
+        if field == "custom_fields":
+            continue
         if field in _sync_protection.MARKABLE_FIELDS:
             current = getattr(contact, field, None)
             if current != value:

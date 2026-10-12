@@ -712,3 +712,350 @@ def test_reset_clears_specific_field_only(
     assert response.status_code == 200
     marks = set(response.json()["manually_edited_fields"])
     assert marks == {"first_name", "lead_score"}
+
+
+# ---------------------------------------------------------------------
+# custom_fields: se fusiona clave a clave, no se sustituye entero
+# ---------------------------------------------------------------------
+
+
+def _agile_con_campos(
+    *, external_id: int = 1, email: str = "ana@example.com", **campos: str
+) -> dict[str, Any]:
+    payload = _agile_payload(external_id=external_id, email=email)
+    payload["properties"].extend(
+        {"type": "CUSTOM", "name": nombre.replace("_", " "), "value": valor}
+        for nombre, valor in campos.items()
+    )
+    return payload
+
+
+def _sync_agile(session_factory: sessionmaker, payload: dict[str, Any]) -> None:
+    with session_factory() as session:
+        _upsert_contact_for_payload(session, account_id="default", payload=payload)
+        session.commit()
+
+
+def _sync_brevo(
+    session_factory: sessionmaker, attributes: dict[str, Any],
+    *, email: str = "ana@example.com",
+) -> None:
+    from app.integrations.brevo.jobs import upsert_brevo_contact  # noqa: PLC0415
+
+    with session_factory() as session:
+        upsert_brevo_contact(
+            session,
+            account_id="main",
+            payload={
+                "id": 9, "email": email, "emailBlacklisted": False,
+                "attributes": {"NOMBRE": "Ana", **attributes}, "listIds": [],
+            },
+        )
+        session.commit()
+
+
+def _campos(session_factory: sessionmaker, contact_id: str) -> dict[str, Any]:
+    with session_factory() as session:
+        raw = session.get(Contact, contact_id).custom_fields
+        return json.loads(raw) if raw else {}
+
+
+def test_sync_de_brevo_no_borra_el_horario_que_trajo_agile(
+    session_factory: sessionmaker,
+):
+    """El caso del backlog: un contacto en Agile (con «Horario») y en Brevo
+    (con otros campos). Antes cada sync sustituía el JSON entero y el último
+    en pasar borraba lo del otro; ahora conviven, y en cualquier orden."""
+    _sync_agile(
+        session_factory,
+        _agile_con_campos(Horario="L-V 9-14", CONTACTO_Persona="Marta"),
+    )
+    with session_factory() as session:
+        contact_id = session.scalar(select(Contact.id))
+    _sync_brevo(session_factory, {"GRADO_DE_INTERES": "alto"})
+    assert _campos(session_factory, contact_id) == {
+        "Horario": "L-V 9-14",
+        "CONTACTO Persona": "Marta",
+        "GRADO_DE_INTERES": "alto",
+    }
+    # Y la vuelta: el siguiente sync de Agile no borra lo de Brevo.
+    _sync_agile(
+        session_factory,
+        _agile_con_campos(Horario="L-V 9-15", CONTACTO_Persona="Marta"),
+    )
+    assert _campos(session_factory, contact_id) == {
+        "Horario": "L-V 9-15",
+        "CONTACTO Persona": "Marta",
+        "GRADO_DE_INTERES": "alto",
+    }
+
+
+def test_sync_no_borra_lo_de_formularios_ni_workflows(
+    session_factory: sessionmaker,
+):
+    contact_id = _create_contact_via_sync(session_factory)
+    with session_factory() as session:
+        c = session.get(Contact, contact_id)
+        c.custom_fields = json.dumps({"product_interest": "DTF", "INTERES": "UV"})
+        session.commit()
+    _sync_agile(session_factory, _agile_con_campos(Horario="9-14"))
+    assert _campos(session_factory, contact_id) == {
+        "product_interest": "DTF", "INTERES": "UV", "Horario": "9-14",
+    }
+
+
+def test_sync_no_vacia_una_clave_con_un_valor_vacio(session_factory: sessionmaker):
+    from app.services.contact_sync_protection import merge_custom_fields  # noqa: PLC0415
+
+    contact = Contact(first_name="X", custom_fields=json.dumps({"Horario": "9-14"}))
+    assert merge_custom_fields(contact, json.dumps({"Horario": "  "})) is None
+    assert merge_custom_fields(contact, json.dumps({"Horario": None})) is None
+    assert merge_custom_fields(contact, None) is None
+    # Lo mismo que ya hay: nada que escribir.
+    assert merge_custom_fields(contact, json.dumps({"Horario": "9-14"})) is None
+
+
+def test_sync_no_pisa_un_json_que_no_es_un_objeto(session_factory: sessionmaker):
+    from app.services.contact_sync_protection import merge_custom_fields  # noqa: PLC0415
+
+    contact = Contact(first_name="X", custom_fields="texto suelto de una importación")
+    assert merge_custom_fields(contact, json.dumps({"Horario": "9-14"})) is None
+    vacio = Contact(first_name="Y", custom_fields="null")
+    assert json.loads(
+        merge_custom_fields(vacio, json.dumps({"Horario": "9-14"}))
+    ) == {"Horario": "9-14"}
+
+
+def test_sync_respeta_la_clave_editada_a_mano_y_trae_las_demas(
+    client: TestClient, session_factory: sessionmaker
+):
+    _sync_agile(session_factory, _agile_con_campos(Horario="9-14"))
+    with session_factory() as session:
+        contact_id = session.scalar(select(Contact.id))
+    response = client.patch(
+        f"/api/contacts/{contact_id}",
+        json={"custom_fields": {"Horario": "Solo mañanas"}},
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["manually_edited_fields"] == ["custom_fields.Horario"]
+    _sync_agile(
+        session_factory, _agile_con_campos(Horario="9-18", CONTACTO_Persona="Marta"),
+    )
+    assert _campos(session_factory, contact_id) == {
+        "Horario": "Solo mañanas", "CONTACTO Persona": "Marta",
+    }
+
+
+def test_marca_antigua_protege_las_claves_que_hay_y_deja_anadir(
+    session_factory: sessionmaker,
+):
+    """La marca `custom_fields` de antes (el modal entero) protege lo que ya
+    tiene el contacto, pero deja que vuelvan las claves que le faltan."""
+    _sync_agile(session_factory, _agile_con_campos(Horario="9-14"))
+    with session_factory() as session:
+        c = session.scalar(select(Contact))
+        contact_id = c.id
+        protection.mark_manually_edited(c, ["custom_fields"])
+        session.commit()
+    _sync_brevo(session_factory, {"GRADO_DE_INTERES": "alto"})
+    _sync_agile(session_factory, _agile_con_campos(Horario="9-18"))
+    assert _campos(session_factory, contact_id) == {
+        "Horario": "9-14", "GRADO_DE_INTERES": "alto",
+    }
+    # Tampoco se quita una clave protegida aunque su cuenta deje de traerla.
+    _sync_agile(session_factory, _agile_payload(external_id=1, email="ana@example.com"))
+    assert _campos(session_factory, contact_id)["Horario"] == "9-14"
+
+
+def test_lo_que_una_cuenta_deja_de_traer_se_quita_si_nadie_lo_toco(
+    session_factory: sessionmaker,
+):
+    """Si lo borran en Agile o en Brevo, se borra aquí: pero solo lo que esa
+    cuenta puso y nadie ha cambiado después."""
+    _sync_agile(
+        session_factory,
+        _agile_con_campos(Horario="9-14", CONTACTO_Persona="Marta"),
+    )
+    with session_factory() as session:
+        contact_id = session.scalar(select(Contact.id))
+    _sync_brevo(session_factory, {"GRADO_DE_INTERES": "alto", "INTERES": "UV"})
+    # Un workflow cambia el INTERES que trajo Brevo.
+    with session_factory() as session:
+        c = session.get(Contact, contact_id)
+        campos = json.loads(c.custom_fields)
+        campos["INTERES"] = "DTF"
+        c.custom_fields = json.dumps(campos)
+        session.commit()
+    # En Agile quitan «CONTACTO Persona»; en Brevo, los dos atributos.
+    _sync_agile(session_factory, _agile_con_campos(Horario="9-14"))
+    _sync_brevo(session_factory, {})
+    assert _campos(session_factory, contact_id) == {
+        "Horario": "9-14",
+        # Lo cambió el workflow: no es ya lo que puso Brevo, se queda.
+        "INTERES": "DTF",
+    }
+
+
+def test_referencia_antigua_sin_lo_que_trajo_no_quita_nada(
+    session_factory: sessionmaker,
+):
+    """Las referencias de antes del cambio no guardan qué trajo su cuenta:
+    su primer sync no quita nada (y lo apunta para el siguiente)."""
+    from app.models.crm import ExternalReference  # noqa: PLC0415
+
+    _sync_agile(
+        session_factory,
+        _agile_con_campos(Horario="9-14", CONTACTO_Persona="Marta"),
+    )
+    with session_factory() as session:
+        ref = session.scalar(select(ExternalReference))
+        contact_id = ref.contact_id
+        metadata = json.loads(ref.metadata_json)
+        assert metadata["custom_fields"] == {
+            "Horario": "9-14", "CONTACTO Persona": "Marta",
+        }
+        del metadata["custom_fields"]
+        ref.metadata_json = json.dumps(metadata)
+        session.commit()
+    _sync_agile(session_factory, _agile_con_campos(Horario="9-14"))
+    assert _campos(session_factory, contact_id) == {
+        "Horario": "9-14", "CONTACTO Persona": "Marta",
+    }
+    # El siguiente ya sabe lo que trajo: si vuelve a faltar, nada que quitar
+    # (no lo trajo la vez anterior).
+    _sync_agile(session_factory, _agile_con_campos(Horario="9-14"))
+    assert _campos(session_factory, contact_id)["CONTACTO Persona"] == "Marta"
+
+
+def test_patch_custom_fields_fusiona_y_marca_solo_lo_que_cambia(
+    client: TestClient, session_factory: sessionmaker
+):
+    contact_id = _create_contact_via_sync(session_factory)
+    with session_factory() as session:
+        c = session.get(Contact, contact_id)
+        c.custom_fields = json.dumps(
+            {"Horario": "9-14", "NIVEL": 5, "GRADO_DE_INTERES": "alto"}
+        )
+        session.commit()
+    # Un modal viejo manda el JSON entero, con todo como texto: solo cuenta
+    # lo que cambia de verdad; `5` y `"5"` son lo mismo.
+    response = client.patch(
+        f"/api/contacts/{contact_id}",
+        json={"custom_fields": {"Horario": "10-18", "NIVEL": "5"}},
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["manually_edited_fields"] == ["custom_fields.Horario"]
+    assert _campos(session_factory, contact_id) == {
+        "Horario": "10-18", "NIVEL": 5, "GRADO_DE_INTERES": "alto",
+    }
+
+
+def test_patch_custom_fields_null_quita_la_clave_y_el_sync_no_la_devuelve(
+    client: TestClient, session_factory: sessionmaker
+):
+    _sync_agile(session_factory, _agile_con_campos(Horario="9-14"))
+    with session_factory() as session:
+        contact_id = session.scalar(select(Contact.id))
+    response = client.patch(
+        f"/api/contacts/{contact_id}",
+        json={"custom_fields": {"Horario": None}},
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["manually_edited_fields"] == ["custom_fields.Horario"]
+    assert _campos(session_factory, contact_id) == {}
+    _sync_agile(
+        session_factory, _agile_con_campos(Horario="9-14", CONTACTO_Persona="Marta"),
+    )
+    assert _campos(session_factory, contact_id) == {"CONTACTO Persona": "Marta"}
+
+
+def test_patch_custom_fields_que_no_es_un_objeto_da_422(
+    client: TestClient, session_factory: sessionmaker
+):
+    contact_id = _create_contact_via_sync(session_factory)
+    response = client.patch(
+        f"/api/contacts/{contact_id}",
+        json={"custom_fields": "esto no es un objeto"},
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 422
+    # Un objeto JSON en texto (legado) sigue valiendo.
+    response = client.patch(
+        f"/api/contacts/{contact_id}",
+        json={"custom_fields": '{"Horario": "9-14"}'},
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 200, response.text
+    assert _campos(session_factory, contact_id) == {"Horario": "9-14"}
+
+
+def test_reset_de_custom_fields_quita_tambien_las_marcas_por_clave(
+    session_factory: sessionmaker,
+):
+    with session_factory() as session:
+        contact = Contact(first_name="X", email="x@x.com")
+        session.add(contact)
+        session.flush()
+        protection.mark_manually_edited(
+            contact,
+            ["phone", protection.custom_field_mark("Horario"), "custom_fields."],
+        )
+        # La marca vacía `custom_fields.` no vale; las demás sí.
+        assert protection.get_manually_edited_fields(contact) == [
+            "custom_fields.Horario", "phone",
+        ]
+        protection.reset_manual_edits(contact, ["custom_fields"])
+        assert protection.get_manually_edited_fields(contact) == ["phone"]
+
+
+def test_un_valor_vaciado_en_agile_se_vacia_aqui(session_factory: sessionmaker):
+    """Agile manda el campo vaciado ("") en vez de quitarlo: cuenta como que
+    ya no lo trae."""
+    _sync_agile(session_factory, _agile_con_campos(Horario="9-14"))
+    with session_factory() as session:
+        contact_id = session.scalar(select(Contact.id))
+    _sync_agile(session_factory, _agile_con_campos(Horario=""))
+    assert _campos(session_factory, contact_id) == {}
+
+
+def test_no_se_quita_lo_que_otra_cuenta_sigue_trayendo(
+    session_factory: sessionmaker,
+):
+    """El contacto está en dos cuentas de Agile con el mismo «Horario». Si
+    una lo borra, se queda: la otra lo sigue trayendo. Y si de otra cuenta
+    no consta qué trae (referencia de antes del cambio), no se quita nada."""
+    from app.models.crm import ExternalReference  # noqa: PLC0415
+
+    _sync_agile(session_factory, _agile_con_campos(Horario="9-14"))
+    with session_factory() as session:
+        contact_id = session.scalar(select(Contact.id))
+        _upsert_contact_for_payload(
+            session, account_id="segunda",
+            payload=_agile_con_campos(external_id=2, Horario="9-14"),
+        )
+        session.commit()
+    _sync_agile(session_factory, _agile_payload(external_id=1, email="ana@example.com"))
+    assert _campos(session_factory, contact_id) == {"Horario": "9-14"}
+
+    # La segunda cuenta también lo borra: ahora sí se quita.
+    with session_factory() as session:
+        _upsert_contact_for_payload(
+            session, account_id="segunda",
+            payload=_agile_payload(external_id=2, email="ana@example.com"),
+        )
+        session.commit()
+    assert _campos(session_factory, contact_id) == {}
+
+    # De vuelta: las dos lo traen, pero de la segunda no consta qué trajo.
+    _sync_agile(session_factory, _agile_con_campos(Horario="9-14"))
+    with session_factory() as session:
+        segunda = session.scalar(
+            select(ExternalReference).where(ExternalReference.account_id == "segunda")
+        )
+        segunda.metadata_json = json.dumps({"owner": {"id": "1"}})
+        session.commit()
+    _sync_agile(session_factory, _agile_payload(external_id=1, email="ana@example.com"))
+    assert _campos(session_factory, contact_id) == {"Horario": "9-14"}

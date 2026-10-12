@@ -168,6 +168,17 @@ _SECONDARY_PHONE_KEYS: frozenset[str] = frozenset(
     _normalise_attr_key(k) for k in SECONDARY_PHONE_ATTRS
 )
 
+#: Nombres públicos para quien compare atributos fuera del mapper (el
+#: script de limpieza de `custom_fields`).
+normalise_attr_key = _normalise_attr_key
+SECONDARY_PHONE_KEYS = _SECONDARY_PHONE_KEYS
+
+
+def phone_digits(value: Any) -> str:
+    """Los dígitos (y el `+`) de un teléfono: con esto se decide si un
+    teléfono secundario ya está entre los del contacto."""
+    return "".join(c for c in str(value) if c.isdigit() or c == "+")
+
 
 def extract_brevo_secondary_phones(
     payload: dict[str, Any],
@@ -207,7 +218,7 @@ def extract_brevo_secondary_phones(
         text = str(value).strip()
         if not text:
             continue
-        digits = "".join(c for c in text if c.isdigit() or c == "+")
+        digits = phone_digits(text)
         if not digits or digits in seen_phones:
             continue
         seen_phones.add(digits)
@@ -355,6 +366,9 @@ def map_brevo_contact_to_internal(
             "list_ids": list_ids,
             "email_blacklisted": bool(payload.get("emailBlacklisted", False)),
             "sms_blacklisted": bool(payload.get("smsBlacklisted", False)),
+            # Lo que esta cuenta trae en `custom_fields`: el siguiente sync
+            # quita del contacto lo que deje de traer (si nadie lo tocó).
+            "custom_fields": custom,
         },
     }
     # Promote the source-system dates onto the contact record. The

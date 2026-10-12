@@ -77,6 +77,10 @@ class Action:
     # se había opt-eado out vía la página pública de unsubscribe.
     # Metadata incluye los scopes borrados (marketing/all/etc.).
     CONTACT_RESUBSCRIBED = "contact.resubscribed"
+    # Campos personalizados que la sincronización borraba al sustituir el
+    # JSON entero, repuestos por `scripts.reponer_campos_personalizados`
+    # (metadata: las claves repuestas y de dónde salen).
+    CONTACT_CUSTOM_FIELDS_RESTORED = "contact.custom_fields_restored"
     # Sprint Reglas-Assign PR-B — multi-asignación de comerciales.
     CONTACT_ASSIGNMENT_ADDED = "contact.assignment_added"
     CONTACT_ASSIGNMENT_REMOVED = "contact.assignment_removed"
