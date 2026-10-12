@@ -495,6 +495,9 @@ class _Render:
                              _campo(self.preview, b["id"] + ":titulo")))
         filas_panel: list[str] = []
         if miniatura:
+            # Siempre al ancho de la ficha (480, o todo el ancho en el móvil):
+            # una miniatura pequeña (la 320×180 de YouTube) se escala antes que
+            # poner una 4:3 con bandas negras.
             img = (f'<img src="{_e(miniatura)}" '
                    f'alt="{_e(titulo or self.t("video"))}" width="{ANCHO_MINIATURA_VIDEO}" '
                    'class="bh-img" '

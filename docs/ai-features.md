@@ -403,8 +403,13 @@ la respuesta en texto sigue siendo la de siempre y la opción por defecto.
   "id": …}`); su URL, miniatura, título y duración los resuelve BoHub al
   generar desde su **origen**, como los productos salen del catálogo
   (`videos.resolver`, en `Datos.videos`). Hoy el único origen es la URL pegada:
-  de YouTube se deriva la miniatura; un vídeo de Vimeo suelto sale sin imagen
-  (su miniatura pediría su API, que no se consulta), con su título y su botón.
+  de YouTube se deriva la miniatura, siempre en 16:9 (`hqdefault` y
+  `sddefault` son 4:3 y ponen bandas negras a un vídeo apaisado): la que
+  existe siempre, `mqdefault` (320×180), escalada al ancho de la ficha; la de
+  1280×720, `maxresdefault`, solo existe si el vídeo se subió en HD, y la
+  comprobará la tabla, que guarda cuál usó para volver a probarla si el vídeo
+  se resube en HD. Un vídeo de Vimeo suelto sale sin imagen (su miniatura
+  pediría su API, que no se consulta), con su título y su botón.
   La **tabla de vídeos** (siguiente PR: los vídeos de los cuatro canales de
   YouTube y los añadidos a mano pegando una URL, con idioma, tema —el mismo
   vídeo en varios idiomas, para elegir la versión del idioma del cliente—,

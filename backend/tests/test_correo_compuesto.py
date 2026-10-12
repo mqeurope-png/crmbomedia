@@ -431,9 +431,18 @@ def test_el_video_toma_sus_datos_de_su_origen_y_no_de_la_url_pegada(
     assert [b["video"] for b in estructura["bloques"]] == [yt, vimeo, yt]
     with session_factory() as s:
         datos = datos_mod.resolver(s, estructura, ahora=AHORA, config=CONFIG)
-    # De la URL: YouTube con su miniatura; Vimeo sin ella (no se pregunta a su API al vuelo).
-    assert datos.videos["youtube:dQw4w9WgXcQ"]["miniatura"].startswith("https://img.youtube.com/")
+    # De la URL: YouTube con su miniatura 16:9 que existe siempre (mqdefault;
+    # hqdefault es 4:3 y pone bandas negras); Vimeo sin ella (no se pregunta a su API).
+    assert videos_mod.MINIATURAS_YOUTUBE == ("maxresdefault", "mqdefault")
+    yt_datos = datos.videos["youtube:dQw4w9WgXcQ"]
+    assert yt_datos["miniatura"] == "https://img.youtube.com/vi/dQw4w9WgXcQ/mqdefault.jpg"
+    assert yt_datos["miniatura_calidad"] == "mqdefault"
     assert datos.videos["vimeo:1112093555"]["miniatura"] is None
+    # Se escala al ancho de la ficha (480; en el móvil, todo el ancho).
+    html_yt = generador.generar({**estructura, "bloques": estructura["bloques"][:1]}, datos).html
+    img = re.search(r'<img src="https://img\.youtube\.com/[^>]*>', html_yt).group(0)
+    assert 'width="480"' in img and "width:100%" in img and "height:auto" in img
+    assert 'class="bh-img"' in img and "hqdefault" not in html_yt
     html = generador.generar({**estructura, "bloques": estructura["bloques"][1:2]}, datos).html
     assert "<img" not in html and 'href="https://vimeo.com/1112093555"' in html
     assert "Ver vídeo</span></a>" in html

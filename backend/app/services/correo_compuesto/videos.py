@@ -6,9 +6,9 @@ resuelve BoHub al generar el correo (`resolver`), como los datos de los
 productos salen del catálogo vivo. Los orígenes posibles:
 
 - `url`: una URL pegada (en el hilo, en la instrucción, en la vista previa).
-  De YouTube se deriva la miniatura de su dirección estática; un vídeo de
-  Vimeo suelto sale sin imagen (su miniatura pediría su API, que no se
-  consulta), con su título y su botón.
+  De YouTube se deriva la miniatura de su dirección estática (ver
+  `MINIATURAS_YOUTUBE`); un vídeo de Vimeo suelto sale sin imagen (su
+  miniatura pediría su API, que no se consulta), con su título y su botón.
 - La tabla de vídeos de BoHub (siguiente fase): los vídeos de los canales de
   YouTube o añadidos a mano pegando una URL, con título, miniatura, duración,
   idioma, tema (el mismo vídeo en varios idiomas: así se elige la versión del
@@ -31,6 +31,16 @@ PLATAFORMAS: tuple[str, ...] = (PLATAFORMA_YOUTUBE, PLATAFORMA_VIMEO)
 
 #: De dónde salieron los datos de un vídeo resuelto.
 ORIGEN_URL = "url"
+
+#: Las miniaturas de YouTube que valen para un correo, de mejor a peor: las
+#: dos en 16:9, sin bandas negras (`sddefault` y `hqdefault` son 4:3 y a un
+#: vídeo apaisado le ponen bandas arriba y abajo). `maxresdefault` (1280×720)
+#: solo existe si el vídeo se subió en HD; `mqdefault` (320×180) existe
+#: siempre y la ficha la escala a su ancho. Sin comprobar nada, la segura;
+#: la tabla de vídeos comprobará la buena y guardará cuál usó (para volver a
+#: probar `maxresdefault` si el vídeo se resube en HD).
+MINIATURAS_YOUTUBE: tuple[str, ...] = ("maxresdefault", "mqdefault")
+MINIATURA_YOUTUBE_SEGURA = "mqdefault"
 
 _ID_RE = {
     PLATAFORMA_YOUTUBE: re.compile(r"^[A-Za-z0-9_-]{11}$"),
@@ -80,20 +90,28 @@ def url_de(video: dict[str, str]) -> str:
     return f"https://www.youtube.com/watch?v={video['id']}"
 
 
+def miniatura_youtube(video_id: str, calidad: str = MINIATURA_YOUTUBE_SEGURA) -> str:
+    """La dirección de una miniatura de YouTube (`MINIATURAS_YOUTUBE`)."""
+    return f"https://img.youtube.com/vi/{video_id}/{calidad}.jpg"
+
+
 def miniatura_derivada(video: dict[str, str]) -> str | None:
     """La miniatura que se puede sacar de la propia URL, sin preguntar a nadie:
-    la de YouTube; la de un vídeo de Vimeo pediría su API (no se consulta)."""
+    la de YouTube que existe siempre en 16:9; la de un vídeo de Vimeo pediría
+    su API (no se consulta)."""
     if video["plataforma"] == PLATAFORMA_YOUTUBE:
-        return f"https://img.youtube.com/vi/{video['id']}/hqdefault.jpg"
+        return miniatura_youtube(video["id"])
     return None
 
 
 def desde_url(video: dict[str, str]) -> dict[str, Any]:
     """Los datos de un vídeo con lo que da su URL (sin título ni duración)."""
+    miniatura = miniatura_derivada(video)
     return {
         "plataforma": video["plataforma"], "id": video["id"], "url": url_de(video),
-        "miniatura": miniatura_derivada(video), "titulo": None, "duracion": None,
-        "idioma": None, "origen": ORIGEN_URL,
+        "miniatura": miniatura,
+        "miniatura_calidad": MINIATURA_YOUTUBE_SEGURA if miniatura else None,
+        "titulo": None, "duracion": None, "idioma": None, "origen": ORIGEN_URL,
     }
 
 
