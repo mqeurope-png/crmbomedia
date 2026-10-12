@@ -1003,6 +1003,11 @@ def test_el_borrador_sale_en_html_sencillo_limpio_y_con_la_lista_como_lista(
     assert "<ul>" in redactor.PROMPT_SISTEMA and "SIEMPRE como lista" in redactor.PROMPT_SISTEMA
     assert "«maquetado»" in redactor.PROMPT_SISTEMA and "«Con fichas»" in redactor.PROMPT_SISTEMA
     assert "incluido el formato" in redactor.PROMPT_SISTEMA
+    # Al destinatario, siempre en segunda persona y con el mismo trato (visto el
+    # 12/10: «el presupuesto que ya le envió Manel» en un correo de tú a Marny).
+    assert "SIEMPRE al destinatario en segunda persona" in redactor.PROMPT_SISTEMA
+    assert "«el presupuesto que ya te envió Manel», no «que ya le envió Manel»" in (
+        redactor.PROMPT_SISTEMA)
     with session_factory() as s:
         fila = s.get(BorradorAsistente, b["id"])
         assert fila.html == b["html"] and fila.texto == b["texto"]
