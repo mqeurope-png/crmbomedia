@@ -785,6 +785,19 @@ def test_los_parametros_de_pensamiento_por_modelo() -> None:
     assert modelos.parametros_de_llamada("claude-haiku-4-5", pensamiento_extendido=False) == {}
     assert modelos.parametros_de_llamada("otro-modelo", pensamiento_extendido=False) == {}
     assert modelos.parametros_de_llamada("claude-opus-5-5", pensamiento_extendido=True) == {}
+    # El tope de salida deja sitio para pensar donde el modelo piensa: lo pensado
+    # cuenta dentro de `max_tokens`.
+    margen = modelos.MARGEN_PENSAMIENTO
+    assert modelos.tope_de_salida("claude-haiku-5-5", pensamiento_extendido=True,
+                                  respuesta=2500) == 2500 + margen
+    assert modelos.tope_de_salida("claude-haiku-5-5", pensamiento_extendido=False,
+                                  respuesta=2500) == 2500
+    assert modelos.tope_de_salida("claude-sonnet-5-5", pensamiento_extendido=False,
+                                  respuesta=2500) == 2500
+    # Opus 5.5 no se puede apagar (piensa poco) y uno que no conocemos va con su defecto.
+    assert modelos.tope_de_salida("claude-opus-5-5", pensamiento_extendido=False,
+                                  respuesta=2500) == 2500 + margen
+    assert modelos.puede_pensar("otro-modelo", pensamiento_extendido=False) is True
     assert modelos.es_nombre_valido("claude-haiku-5-5") and not modelos.es_nombre_valido("x y")
     assert modelos.normalizar_lista(["Claude-Opus-5-5", "", "mal nombre"]) == ["claude-opus-5-5"]
 

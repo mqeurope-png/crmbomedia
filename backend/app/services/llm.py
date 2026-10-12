@@ -458,15 +458,24 @@ def _invoke_claude(
         logger.warning("llm.empty_response model=%s", model)
         raise LLMUpstreamError("Empty response from provider")
     text, block_types = _response_text(message.content)
+    stop_reason = getattr(message, "stop_reason", None)
     if not text:
         tipos = ",".join(block_types)
-        logger.warning("llm.non_text_response model=%s blocks=%s", model, tipos)
+        logger.warning("llm.non_text_response model=%s blocks=%s stop_reason=%s",
+                       model, tipos, stop_reason)
+        if stop_reason == "max_tokens":
+            # Lo pensado cuenta dentro del tope: se lo comió entero antes de escribir.
+            raise LLMUpstreamError(
+                "se acabó el tope de salida pensando, antes de escribir nada "
+                f"(max_tokens; blocks: {tipos})")
         raise LLMUpstreamError(f"Provider returned non-text content (blocks: {tipos})")
+    if stop_reason == "max_tokens":
+        logger.warning("llm.truncated_response model=%s chars=%d", model, len(text))
     logger.info(
         "llm.response model=%s chars=%d tokens_in=%d tokens_out=%d cache_read=%d "
-        "cache_write=%d ms=%s",
+        "cache_write=%d ms=%s stop_reason=%s",
         uso.modelo, len(text), uso.tokens_entrada, uso.tokens_salida, uso.tokens_cache_lectura,
-        uso.tokens_cache_escritura, uso.duracion_ms,
+        uso.tokens_cache_escritura, uso.duracion_ms, stop_reason,
     )
     return text
 

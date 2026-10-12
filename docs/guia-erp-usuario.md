@@ -1596,9 +1596,11 @@ lo que va a pasar. Secciones destacadas:
   servidor) y el de las **correcciones** («más corto», «en inglés»: trabajan
   sobre un texto ya escrito y van con Haiku por defecto); la **lista de
   modelos** del desplegable, que se edita aquí para probar uno sin desplegar;
-  el **pensamiento extendido** (apagado: se factura como salida y redactar no lo
-  necesita); y cuánto histórico mira «Ayúdame a contestar» y cuánto puede
-  costar cada clic: el **presupuesto de tokens** de entrada por borrador
+  el **pensamiento extendido** (apagado por defecto: se factura como salida; con
+  Haiku es casi gratis y ayuda a montar los correos «Con fichas», y el tope de
+  salida ya deja sitio para pensar); y cuánto histórico mira «Ayúdame a
+  contestar» y cuánto puede costar cada clic: el **presupuesto de tokens** de
+  entrada por borrador
   (12.000), cuántos **correos viejos con cuerpo** entran como mucho (5),
   cuántos **asuntos recientes** lleva el expediente (15) y los **dominios de
   correo gratuitos** que nunca se toman por una empresa. Lo que cuesta de

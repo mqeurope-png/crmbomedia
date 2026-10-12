@@ -67,6 +67,14 @@ def normalizar_lista(raw: Any, defecto: tuple[str, ...] = MODELOS_DE_PARTIDA) ->
     return salida or list(defecto)
 
 
+#: Lo que el pensamiento puede gastar encima de la respuesta. Lo pensado cuenta
+#: dentro de `max_tokens`: sin este margen, un correo compuesto con el
+#: pensamiento encendido se quedaba sin sitio para escribir y la API devolvía
+#: solo el bloque de pensamiento (12/10/2026: «Provider returned non-text
+#: content (blocks: thinking)»). Es un tope: se cobra lo que se piensa de verdad.
+MARGEN_PENSAMIENTO = 8000
+
+
 def parametros_de_llamada(modelo: str | None, *, pensamiento_extendido: bool) -> dict[str, Any]:
     """Lo que se añade a la petición para ese modelo y esa elección. Con el
     pensamiento extendido encendido no se añade nada: manda el defecto del
@@ -78,3 +86,22 @@ def parametros_de_llamada(modelo: str | None, *, pensamiento_extendido: bool) ->
         if nombre.startswith(prefijo):
             return copy.deepcopy(parametros)
     return {}
+
+
+def puede_pensar(modelo: str | None, *, pensamiento_extendido: bool) -> bool:
+    """¿Puede pensar el modelo en esta llamada? Con el pensamiento extendido,
+    sí. Sin él, salvo que se haya apagado (`disabled`, o `between_tools` sin
+    herramientas): donde no se puede apagar se piensa poco (esfuerzo bajo:
+    Opus 5.5, Fable) y un modelo que no conocemos va con su defecto."""
+    if pensamiento_extendido:
+        return True
+    pensamiento = parametros_de_llamada(modelo, pensamiento_extendido=False).get("thinking") or {}
+    return pensamiento.get("type") not in ("disabled", "between_tools")
+
+
+def tope_de_salida(modelo: str | None, *, pensamiento_extendido: bool, respuesta: int) -> int:
+    """El `max_tokens` de una llamada: lo que ocupa la respuesta y, si el
+    modelo puede pensar, el margen para pensar antes de escribirla."""
+    if puede_pensar(modelo, pensamiento_extendido=pensamiento_extendido):
+        return respuesta + MARGEN_PENSAMIENTO
+    return respuesta

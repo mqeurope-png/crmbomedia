@@ -45,7 +45,8 @@ def respuesta(monkeypatch) -> Callable[[list[SimpleNamespace]], dict]:
 
         def _create(**kwargs):
             estado["kwargs"] = kwargs
-            return SimpleNamespace(content=estado["contenido"])
+            return SimpleNamespace(content=estado["contenido"],
+                                   stop_reason=estado.get("stop_reason"))
 
         return SimpleNamespace(messages=SimpleNamespace(create=_create))
 
@@ -55,8 +56,9 @@ def respuesta(monkeypatch) -> Callable[[list[SimpleNamespace]], dict]:
     modulo.APIError = _APIError  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "anthropic", modulo)
 
-    def _con(contenido: list[SimpleNamespace]) -> dict:
+    def _con(contenido: list[SimpleNamespace], stop_reason: str | None = None) -> dict:
         estado["contenido"] = contenido
+        estado["stop_reason"] = stop_reason
         return estado
 
     return _con
@@ -108,3 +110,24 @@ def test_sin_contenido_sigue_siendo_respuesta_vacia(respuesta) -> None:
     respuesta([])
     with pytest.raises(llm.LLMUpstreamError, match="Empty response"):
         _llamar()
+
+
+def test_si_el_pensamiento_se_come_el_tope_el_error_lo_dice(respuesta, caplog) -> None:
+    """Lo pensado cuenta dentro de `max_tokens`: si se lo come entero, la API
+    devuelve solo el bloque de pensamiento con `stop_reason: max_tokens`
+    (12/10/2026, correo compuesto con el pensamiento extendido). El error dice
+    eso, no un «contenido que no es texto» que hace buscar otra cosa."""
+    respuesta([_pensamiento("")], stop_reason="max_tokens")
+    with caplog.at_level(logging.WARNING, logger="app.services.llm"), \
+            pytest.raises(llm.LLMUpstreamError) as info:
+        _llamar()
+    assert "tope de salida pensando" in str(info.value)
+    assert "max_tokens; blocks: thinking" in str(info.value)
+    aviso = [r for r in caplog.records if "llm.non_text_response" in r.getMessage()]
+    assert aviso and "stop_reason=max_tokens" in aviso[0].getMessage()
+    # Con texto, aunque se cortara, el texto llega (y el log avisa del corte).
+    caplog.clear()
+    respuesta([_pensamiento(), _texto('{"idioma": "es"')], stop_reason="max_tokens")
+    with caplog.at_level(logging.WARNING, logger="app.services.llm"):
+        assert _llamar() == '{"idioma": "es"'
+    assert [r for r in caplog.records if "llm.truncated_response" in r.getMessage()]

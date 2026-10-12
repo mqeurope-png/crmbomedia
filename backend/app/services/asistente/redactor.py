@@ -84,7 +84,7 @@ from app.services.correo_compuesto import datos as datos_compuesto
 from app.services.correo_compuesto import generador as generador_correo
 from app.services.correo_compuesto import ia as ia_compuesto
 from app.services.ia.coste import coste_usd
-from app.services.ia.modelos import parametros_de_llamada
+from app.services.ia.modelos import parametros_de_llamada, tope_de_salida
 from app.services.ia.uso import registrar_llamada
 
 logger = logging.getLogger(__name__)
@@ -1097,13 +1097,17 @@ def _llamar(settings: Any, *, modelo: str, contexto_texto: str, peticion_texto: 
     siguientes: la caché es de cada modelo, así que la que escribe un primer
     borrador con otro modelo no la lee nadie (12/10/2026: «0 leídos, 6.446
     escritos» en la primera corrección)."""
-    parametros = parametros_de_llamada(
-        modelo, pensamiento_extendido=bool(cfg.get("pensamiento_extendido")))
+    pensamiento = bool(cfg.get("pensamiento_extendido"))
+    parametros = parametros_de_llamada(modelo, pensamiento_extendido=pensamiento)
     return llm._invoke_claude(
         api_key=settings.anthropic_api_key, model=modelo, system_prompt=PROMPT_SISTEMA,
         user_prompt=mensaje_usuario(contexto_texto, peticion_texto,
                                     cachear=modelo == modelo_correccion),
-        max_tokens=MAX_TOKENS_RESPUESTA, parametros=parametros or None,
+        # Lo pensado cuenta dentro del tope: si el modelo piensa, el tope deja
+        # sitio para pensar y para escribir (12/10/2026, compuesto «Con fichas»).
+        max_tokens=tope_de_salida(modelo, pensamiento_extendido=pensamiento,
+                                  respuesta=MAX_TOKENS_RESPUESTA),
+        parametros=parametros or None,
     )
 
 
