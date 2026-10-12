@@ -472,7 +472,10 @@ de los datos; un precio de un correo o pedido viejo es histórico y no se da
 como vigente); la instrucción de quien envía manda sobre el hilo; sin promesas;
 **enlaces solo de la lista** (los de la base de conocimiento), tal cual; en el
 idioma del mensaje; tono y longitud de las plantillas del equipo (60–180
-palabras; tono interno si el destinatario es un compañero); sin firma (la pone
+palabras; tono interno si el destinatario es un compañero); al destinatario
+**siempre en segunda persona** y con el mismo trato de principio a fin, nunca
+en tercera (en castellano, de tú: «el presupuesto que ya **te** envió Manel», no
+«que ya le envió»; visto en producción el 12/10); sin firma (la pone
 el compositor); si no puede responder algo, lo dice y lo lista en «pendiente»
 (se enseña en la franja); una corrección reescribe el borrador conservando lo
 demás. Responde en JSON (`asunto`, `cuerpo`, `idioma`, `aviso`, `pendiente`,
