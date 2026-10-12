@@ -97,6 +97,30 @@ def _contact_ctx(resolver: SegmentResolver | None) -> _EntityCtx:
 SegmentResolver = Any  # Callable[[str, set[str]], dict | None]
 
 
+def session_segment_resolver(session: Any) -> SegmentResolver:
+    """The usual resolver: each referenced segment's `rules_json`, read
+    from the database (None when the id doesn't exist, has no rules or
+    they aren't a JSON object — the engine then treats it as an empty
+    segment). With no session nothing resolves."""
+    import json  # noqa: PLC0415
+
+    from app.models.crm import Segment  # noqa: PLC0415
+
+    def _resolver(segment_id: str, _visited: set[str]) -> dict[str, Any] | None:
+        if session is None:
+            return None
+        seg = session.get(Segment, segment_id)
+        if seg is None or not seg.rules_json:
+            return None
+        try:
+            rules = json.loads(seg.rules_json)
+        except (TypeError, ValueError):
+            return None
+        return rules if isinstance(rules, dict) else None
+
+    return _resolver
+
+
 class SegmentRuleError(ValueError):
     """Operator-supplied tree failed validation. The route maps it to
     400 so the UI can highlight the offending node."""

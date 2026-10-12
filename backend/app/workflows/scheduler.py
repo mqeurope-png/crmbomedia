@@ -195,8 +195,16 @@ def _evaluate_cron_workflows(session: Session, now: datetime) -> int:
         # permite (best-effort, igual que antes).
         if not _claim_cron_slot(workflow.id, preset, now):
             continue
-        from app.workflows.conditions import EvalContext, evaluate  # noqa: PLC0415
+        from app.workflows.conditions import (  # noqa: PLC0415
+            EvalContext,
+            clausula_sql,
+            evaluate,
+        )
 
+        # Un filtro con campos de otras tablas se aplica en la consulta de
+        # cada tanda (una consulta, no una por contacto).
+        clausula = clausula_sql(cfg.get("filter"), session)
+        filtro_sql = [clausula] if clausula is not None else []
         # Iteracion COMPLETA por chunks (antes `.limit(200)` sin orden
         # truncaba el universo: contactos 201+ jamas entraban). Cap
         # explicito por workflow/tick con log - nada de silencios.
@@ -206,7 +214,7 @@ def _evaluate_cron_workflows(session: Session, now: datetime) -> int:
             chunk = list(
                 session.scalars(
                     select(Contact)
-                    .where(Contact.is_active.is_(True), Contact.id > last_id)
+                    .where(Contact.is_active.is_(True), Contact.id > last_id, *filtro_sql)
                     .order_by(Contact.id)
                     .limit(200)
                 )
@@ -222,7 +230,8 @@ def _evaluate_cron_workflows(session: Session, now: datetime) -> int:
                         "event_type": "cron.recurring", "preset": preset,
                     },
                 )
-                if cfg.get("filter") and not evaluate(cfg.get("filter"), ctx):
+                if (clausula is None and cfg.get("filter")
+                        and not evaluate(cfg.get("filter"), ctx)):
                     continue
                 run = start_run(
                     session,
