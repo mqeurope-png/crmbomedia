@@ -58,7 +58,6 @@ FUENTES_IVA: tuple[str, ...] = ("compositor", "woocommerce")
 IVA_VALORES: tuple[str, ...] = ("con", "sin")
 _HORA_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
 _HANDLE_RE = re.compile(r"^@[A-Za-z0-9._-]{3,100}$")
-_INTERES_RE = re.compile(r"^[a-z][a-z0-9_]{1,39}$")
 MAX_CANALES = 20
 
 #: Los canales de YouTube del grupo (12/10/2026) y su marca del catálogo.
@@ -164,13 +163,14 @@ def _interes_palabras(raw: Any) -> dict[str, list[str]]:
     """Las palabras por interés cambiadas (código → palabras), limpias. Lo que
     no vale se descarta: esto lee lo guardado, no valida una entrada."""
     from app.services.conocimiento.catalogo import normalizar_palabras  # noqa: PLC0415
+    from app.services.leads.intereses import CODIGO_RE  # noqa: PLC0415
 
     if not isinstance(raw, dict):
         return {}
     salida: dict[str, list[str]] = {}
     for codigo, palabras in raw.items():
         clave = str(codigo or "").strip().lower()
-        if not _INTERES_RE.match(clave) or not isinstance(palabras, list):
+        if not CODIGO_RE.match(clave) or not isinstance(palabras, list):
             continue
         try:
             salida[clave] = normalizar_palabras(palabras)
@@ -289,13 +289,22 @@ def guardar_palabras_interes(session: Session, interes: Any,
     commit). `None` vuelve a las de partida. Devuelve las guardadas (o None).
     `ValueError` legible si el interés o alguna palabra no vale."""
     from app.erp.models import ERP_SETTINGS_SINGLETON_ID, ErpSettings  # noqa: PLC0415
-    from app.services.conocimiento.catalogo import normalizar_palabras  # noqa: PLC0415
+    from app.services.conocimiento.catalogo import (  # noqa: PLC0415
+        PALABRAS_DE_PARTIDA,
+        cargar_mapa,
+        normalizar_palabras,
+    )
+    from app.services.leads import intereses as cat_intereses  # noqa: PLC0415
 
     clave = str(interes or "").strip().lower()
-    if not _INTERES_RE.match(clave):
-        raise ValueError("El interés es su código (p. ej. dtf o uv).")
+    filas, _ = cargar_mapa(session)
+    conocidos = (set(PALABRAS_DE_PARTIDA) | set(cat_intereses.cargar(session).codigos)
+                 | {f.interes for f in filas})
+    if clave not in conocidos:
+        raise ValueError(f"«{interes}» no es ningún interés (p. ej. dtf, corte_laser o uv).")
     limpias = None if palabras is None else normalizar_palabras(palabras)
-    fila = session.get(ErpSettings, ERP_SETTINGS_SINGLETON_ID)
+    # Bloqueada hasta el commit: dos guardados a la vez no se pisan.
+    fila = session.get(ErpSettings, ERP_SETTINGS_SINGLETON_ID, with_for_update=True)
     if fila is None:
         fila = ErpSettings(id=ERP_SETTINGS_SINGLETON_ID)
         session.add(fila)

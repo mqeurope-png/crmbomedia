@@ -466,7 +466,7 @@ function InteresProductosBloque({
             <thead><tr><th>Interés</th><th>Palabras</th><th></th></tr></thead>
             <tbody>
               {mapa.palabras.map((p) => (
-                <FilaPalabrasInteres key={`${p.interes}:${p.palabras.join(",")}`} fila={p}
+                <FilaPalabrasInteres key={`${p.interes}:${p.propias}:${p.palabras.join(",")}`} fila={p}
                   canEdit={canEdit} onDatos={onDatos} />
               ))}
             </tbody>
@@ -581,6 +581,10 @@ function FilaInteresProducto({
   );
 }
 
+function normalizarPalabra(palabra: string): string {
+  return palabra.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/\s+/g, " ");
+}
+
 function FilaPalabrasInteres({
   fila, canEdit, onDatos,
 }: { fila: PalabrasInteres; canEdit: boolean; onDatos: (d: Conocimiento) => void }) {
@@ -588,15 +592,22 @@ function FilaPalabrasInteres({
   const [ocupada, setOcupada] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const palabras = texto.split(",").map((p) => p.trim()).filter(Boolean);
-  const cambiada = palabras.join(",") !== fila.palabras.join(",");
+  // El servidor las guarda en minúsculas y sin acentos: «Textil» es la misma palabra que «textil».
+  const cambiada = palabras.map(normalizarPalabra).join(",") !== fila.palabras.join(",");
 
   async function guardar(lista: string[] | null) {
     setOcupada(true);
     setError(null);
     try {
-      onDatos(await updatePalabrasInteres(fila.interes, lista));
+      const datos = await updatePalabrasInteres(fila.interes, lista);
+      // Si la lista guardada es la misma, la fila no se vuelve a montar: el texto queda como lo
+      // ha guardado el servidor.
+      const guardada = datos.interes_productos.palabras?.find((p) => p.interes === fila.interes);
+      if (guardada) setTexto(guardada.palabras.join(", "));
+      onDatos(datos);
     } catch (e) {
       setError(extractErrorMessage(e, "No se pudieron guardar las palabras."));
+    } finally {
       setOcupada(false);
     }
   }

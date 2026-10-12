@@ -448,8 +448,9 @@ la respuesta en texto sigue siendo la de siempre y la opción por defecto.
   —hay hilo, o hay correos anteriores con el contacto— el correo empieza por el
   saludo y la entrada, y el hero va detrás; el hero de apertura queda para un
   correo nuevo a alguien con quien no hay conversación. Lo dice el prompt y lo
-  asegura el código (`bloques.abrir_con_saludo`); si la persona deja el hero
-  arriba en la vista previa, una corrección lo respeta. Y **un mismo enlace va
+  asegura el código (`bloques.abrir_con_saludo`, con un aviso de que se ha
+  movido); si la persona deja el hero arriba en la vista previa, una corrección
+  lo respeta. Y **un mismo enlace va
   en un solo botón** («Ver la gama DTF» salía en el hero y otra vez al final):
   se queda el primero, el repetido se quita y se avisa
   (`bloques.quitar_botones_repetidos`).

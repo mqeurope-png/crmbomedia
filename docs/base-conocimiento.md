@@ -207,8 +207,12 @@ lleva de dónde salió, `eleccion`, y el bloque del prompt las agrupa así):
    no había DTF. Ahora «T-Shirts» o «Textilien» meten las de DTF aunque el
    contacto esté clasificado de otra forma (`eleccion` = `consulta`, con las
    palabras que casaron en el prompt), y si la consulta toca varios intereses
-   entran las de todos, por turnos (una de cada) y con el tope subido. «UV» a
-   secas en la consulta de un contacto ya clasificado en una talla es esa talla.
+   entran las de todos, por turnos (una de cada, el interés clasificado primero)
+   y con el tope subido. «UV» a secas en la consulta de un contacto ya
+   clasificado en una talla es esa talla. En la consulta (el hilo entero) las
+   palabras de talla no cuentan: «un gran saludo» no es una UV grande. El prompt
+   presenta esas máquinas como lo que *puede* que pida también la consulta: si
+   las palabras no hablan de eso, la IA las ignora.
 
 «Sin máquina en el catálogo para X» solo sale cuando X —pedido por la
 instrucción o clasificado— no tiene ninguna máquina por el mapa interés →
@@ -223,13 +227,16 @@ varios idiomas: `dtf` ← textil*, camiseta*, t-shirt*, shirt*, sudadera*,
 hoodie*, ropa, prenda*, kleidung, transfer…; `corte_laser` ← laser*, cortar,
 grabar, metacrilato, madera, holz…; `uv` (la UV de cualquier tamaño) ← uv,
 uv-drucker, impresora* uv, metallplatte*, placa* metal*…; y cada talla de UV sus
-palabras de tamaño, que solo cuentan si el texto dice también UV. Se casan
+palabras de tamaño, que solo cuentan en la instrucción y si dice también UV (el
+código de la talla, «uv_grande», vale solo). Se casan
 como las palabras clave del clasificador de leads: palabra o frase entera, sin
 acentos ni mayúsculas, `*` al final = prefijo. **Se editan** en Configuración
 ERP → Base de conocimiento → interés → máquinas («Palabras que señalan cada
 interés»), al momento y sin desplegar; lo cambiado va en
 `conocimiento.interes_palabras` (solo los intereses cambiados) y «↺ las de
-partida» lo devuelve. El «Guardar cambios» de Configuración ERP no las toca.
+partida» lo devuelve. Solo se aceptan intereses que existen (los de partida,
+los del catálogo de intereses o los del mapa). El «Guardar cambios» de
+Configuración ERP no las toca.
 API: `PUT /api/erp/conocimiento/catalogo/intereses/palabras/{interes}`
 (`{"palabras": [...]}`; `null` = las de partida), con auditoría.
 

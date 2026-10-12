@@ -862,6 +862,7 @@ def maquinas_para(
     config: dict[str, Any], maximo: int = MAQUINAS_MAX,
     filas: list[InteresProducto] | None = None,
     grupos: dict[str, list[ProductoCatalogo]] | None = None,
+    idiomas_marca: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Las máquinas que encajan con los intereses del lead (el principal
     primero), en su idioma, con precio tal cual y enlace. Como mucho `maximo`.
@@ -878,7 +879,9 @@ def maquinas_para(
         return []
     meses = int(config.get("precio_meses_orientativo") or 6)
     iva = (config.get("iva_por_fuente") or {}).get(FUENTE_COMPOSITOR)
-    idiomas_marca = {_clave(m.nombre): (m.idioma_defecto or IDIOMA_RAIZ) for m in marcas(session)}
+    if idiomas_marca is None:
+        idiomas_marca = {_clave(m.nombre): (m.idioma_defecto or IDIOMA_RAIZ)
+                         for m in marcas(session)}
     salida: list[dict[str, Any]] = []
     vistos: set[str] = set()
     for codigo in codigos:
@@ -1060,12 +1063,12 @@ PALABRAS_DE_PARTIDA: dict[str, tuple[str, ...]] = {
         "dtf", "textil*", "textile*", "textiel*", "camiseta*", "camisa*", "t-shirt*", "tshirt*",
         "shirt*", "sudadera*", "hoodie*", "ropa", "prenda*", "garment*", "kleidung",
         "bekleidung", "vetement*", "kleding", "transfer", "transfert", "transferdruck*",
-        "gorra*", "polo", "polos", "tejido*", "tissu*", "sublimacion", "sublimation", "dtg",
+        "gorra*", "tejido*", "tissu*", "sublimacion", "sublimation", "dtg",
     ),
     "corte_laser": (
-        "laser*", "corte", "cortar", "cortadora*", "cutting", "cutter*", "laser cut*",
-        "schneid*", "laserschneid*", "decoupe*", "snijden", "grabar", "metacrilato",
-        "acrilico", "acryl*", "plexi*", "madera", "wood", "holz", "bois", "hout", "mdf", "co2",
+        "laser*", "cortar", "corte laser", "corte por laser", "cortadora*", "laser cut*",
+        "laserschneid*", "decoupe*", "snijden", "grabar", "metacrilato", "acrilico", "acryl*",
+        "plexi*", "madera", "wood", "holz", "bois", "hout", "mdf",
     ),
     "grabado_laser": (
         "laser*", "grabar", "grabado*", "grabador*", "engrav*", "gravur*", "gravier*", "graver",
@@ -1081,8 +1084,8 @@ PALABRAS_DE_PARTIDA: dict[str, tuple[str, ...]] = {
         "snackautomaat", "pimpam", "pim pam",
     ),
     "cnc": (
-        "cnc", "fresadora*", "fresado", "router", "mecanizado", "milling", "fraisage", "frasen",
-        "fräsen", "frasmaschine", "freesmachine",
+        "cnc", "fresadora*", "fresado", "router cnc", "cnc router*", "mecanizado", "milling",
+        "fraisage", "frasen", "fräsen", "frasmaschine", "freesmachine",
     ),
 }
 #: Como mucho estas palabras por interés, de este largo.
@@ -1239,13 +1242,16 @@ def _intereses_con_maquina(codigos: Iterable[str], filas: list[InteresProducto],
 def intereses_y_palabras(
     texto: str | None, codigos_validos: Iterable[str] | None = None, *,
     palabras: dict[str, list[str]] | None = None, tallas_uv: Iterable[str] | None = None,
+    con_tallas: bool = True,
 ) -> list[tuple[str, list[str]]]:
-    """Los intereses que toca un texto por sus palabras, con las palabras que
-    casaron, en el orden en que aparecen en el texto («las máquinas de DTF» →
-    dtf; «una láser para cortar» → corte_laser, grabado_laser; «una UV
-    grande» → uv_grande; «UV» a secas → las tres tallas, la mediana primero,
-    o las de `tallas_uv` si se pasan: la talla en la que ya está clasificado
-    el contacto). Solo los códigos de `codigos_validos`, si se pasa."""
+    """Los intereses que toca un texto por sus palabras (o por su código:
+    «uv_grande»), con las palabras que casaron, en el orden en que aparecen en
+    el texto («las máquinas de DTF» → dtf; «una láser para cortar» →
+    corte_laser, grabado_laser; «una UV grande» → uv_grande; «UV» a secas → las
+    tres tallas, la mediana primero, o las de `tallas_uv` si se pasan: la talla
+    en la que ya está clasificado el contacto). Sin `con_tallas` las palabras de
+    talla no cuentan: en un hilo entero, «un gran saludo» no es una UV grande.
+    Solo los códigos de `codigos_validos`, si se pasa."""
     tabla = palabras if palabras is not None else palabras_por_interes(None)
     normalizado = clasificador.normalizar_texto(texto)
     if not normalizado:
@@ -1265,8 +1271,13 @@ def intereses_y_palabras(
 
     tocados: list[tuple[int, str, list[str]]] = []
     uv = _aciertos(tabla.get(CLAVE_UV, ()))
-    if uv:
-        tallas = [(t, a) for t in TALLAS_UV if _vale(t) and (a := _aciertos(tabla.get(t, ())))]
+    # Una talla nombrada por su código («uv_grande») vale sola, sin más UV.
+    por_codigo = [(t, a) for t in TALLAS_UV if _vale(t) and (a := _aciertos([t]))]
+    if por_codigo:
+        tocados.extend((a[0][0], t, [w for _, w in a]) for t, a in por_codigo)
+    elif uv:
+        tallas = [(t, a) for t in TALLAS_UV if con_tallas and _vale(t)
+                  and (a := _aciertos(tabla.get(t, ())))]
         if tallas:
             tocados.extend((a[0][0], t, [w for _, w in uv + a]) for t, a in tallas)
         else:
@@ -1275,7 +1286,7 @@ def intereses_y_palabras(
     for codigo, claves in tabla.items():
         if codigo == CLAVE_UV or codigo in TALLAS_UV or not _vale(codigo):
             continue
-        aciertos = _aciertos(claves)
+        aciertos = _aciertos([*claves, codigo])
         if aciertos:
             tocados.append((aciertos[0][0], codigo, [w for _, w in aciertos]))
     # Por dónde aparecen en el texto; a igualdad, en el orden de la tabla.
@@ -1391,7 +1402,7 @@ def para_asistente(
     # clasificados el contacto.
     consulta = [(c, ps) for c, ps in intereses_y_palabras(
         texto_hilo, codigos_validos, palabras=tabla,
-        tallas_uv=[c for c in codigos if c in TALLAS_UV])
+        tallas_uv=[c for c in codigos if c in TALLAS_UV], con_tallas=False)
         if c not in intereses_instruccion and c not in codigos]
     intereses_consulta = [c for c, _ in consulta]
     pedidos = list(dict.fromkeys(intereses_instruccion + intereses_consulta + codigos))
@@ -1446,13 +1457,16 @@ def para_asistente(
     _añadir(_por_origen(instruccion_posibles), "instruccion_posible")
     # 5. Los intereses que toca la consulta y el clasificado: por turnos entre
     # intereses (y la UV, por turnos entre sus tallas), hasta el tope.
-    eleccion_de = dict.fromkeys(intereses_consulta, "consulta")
-    for c in codigos:
-        eleccion_de.setdefault(c, "interes")
+    # El clasificado primero (la señal más firme); detrás, lo que añade la consulta.
+    eleccion_de = dict.fromkeys(codigos, "interes")
+    for c in intereses_consulta:
+        eleccion_de.setdefault(c, "consulta")
     colas: dict[str, list[list[tuple[str, dict[str, Any]]]]] = {}
+    idiomas_marca = {_clave(m.nombre): (m.idioma_defecto or IDIOMA_RAIZ) for m in marcas(session)}
     for c, eleccion in eleccion_de.items():
         de_interes = maquinas_para(session, [c], idioma=idioma, ahora=ahora, config=cfg,
-                                   maximo=MAQUINAS_MAX_VARIOS, filas=filas, grupos=grupos)
+                                   maximo=MAQUINAS_MAX_VARIOS, filas=filas, grupos=grupos,
+                                   idiomas_marca=idiomas_marca)
         colas.setdefault(CLAVE_UV if c in TALLAS_UV else c, []).append(
             [(eleccion, m) for m in de_interes])
     for eleccion, m in _por_turnos([_por_turnos(listas) for listas in colas.values()]):

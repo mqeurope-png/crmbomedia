@@ -431,6 +431,23 @@ describe("ConocimientoPanel (Configuración ERP → Base de conocimiento)", () =
     await waitFor(() => expect(within(tabla).queryByText("cambiadas")).not.toBeInTheDocument());
   });
 
+  it("si el servidor deja las palabras como estaban, la fila se queda con su lista y se puede seguir editando", async () => {
+    mockPalabras.mockResolvedValueOnce(DATOS);
+    const user = userEvent.setup();
+    render(<ConocimientoPanel canEdit />);
+    const tabla = await screen.findByLabelText("Palabras por interés");
+    const dtf = within(tabla).getByLabelText("Palabras de dtf");
+    await user.clear(dtf);
+    await user.type(dtf, "Téxtil*, T-Shirt*");
+    expect(within(tabla).queryByRole("button", { name: "Guardar" })).not.toBeInTheDocument();
+    await user.type(dtf, ", textil*");
+    await user.click(within(tabla).getByRole("button", { name: "Guardar" }));
+    await waitFor(() => expect(mockPalabras).toHaveBeenCalledWith("dtf", ["Téxtil*", "T-Shirt*", "textil*"]));
+    await waitFor(() => expect(dtf).toHaveValue("textil*, t-shirt*"));
+    expect(dtf).toBeEnabled();
+    expect(within(tabla).queryByRole("button", { name: "Guardar" })).not.toBeInTheDocument();
+  });
+
   it("interés → máquinas: propuesta sin revisar, huecos, alta de una fila, desactivar y borrar", async () => {
     const nueva = { id: "m3", interes: "uv_mediano", etiqueta: "UV LED mediano formato", marca: "MBO", patron: "6090",
       nota: null, posicion: 2, activo: true,

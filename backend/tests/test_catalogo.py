@@ -1012,14 +1012,15 @@ def test_la_consulta_toca_varios_intereses_por_sus_palabras_y_entran_los_de_todo
         maquinas = cat["maquinas"]
         assert cat["intereses_consulta"] == ["dtf"]
         assert cat["palabras_consulta"]["dtf"][:2] == ["t-shirt", "shirt"]
-        # Dos intereses: hasta ocho, por turnos (UV clasificada, DTF por la consulta).
+        # Dos intereses: hasta ocho, por turnos (la UV clasificada primero; DTF, por la consulta).
         assert len(maquinas) == catalogo.MAQUINAS_MAX + 2
-        assert [m["interes"] for m in maquinas] == ["dtf", "uv_mediano"] * 4
+        assert [m["interes"] for m in maquinas] == ["uv_mediano", "dtf"] * 4
         assert {m["eleccion"] for m in maquinas if m["interes"] == "dtf"} == {"consulta"}
         assert {m["marca"] for m in maquinas if m["interes"] == "dtf"} == {"mbo_dtf"}
         assert "dtf" not in cat["sin_maquina"]
         bloque = redactor.bloque_contexto(ctx)
-        assert "Máquinas de lo que pide la CONSULTA del cliente, por sus palabras («t-shirt»" in (
+        assert ("Máquinas de lo que PUEDE que pida también la CONSULTA del cliente, por sus "
+                "palabras («t-shirt»") in (
             bloque)
         assert "Es una PRESELECCIÓN" in bloque and "no digas que no lo tenemos" in bloque
         # Lo que pide la instrucción sigue mandando: con «las de DTF», son de la instrucción.
@@ -1537,3 +1538,18 @@ def test_una_palabra_corriente_no_es_una_maquina_nombrada_y_el_tope_no_inventa_h
         assert all(m["eleccion"] == "hilo" for m in ctx2.catalogo["maquinas"])
         assert ctx2.catalogo["sin_maquina"] == []
         assert "Sin máquina en el catálogo" not in redactor.bloque_contexto(ctx2)
+
+
+def test_las_tallas_de_la_uv_por_su_codigo_por_sus_palabras_y_en_el_hilo_no() -> None:
+    """Una talla de UV entra por su código («uv_grande») o por sus palabras si
+    el texto dice también UV; en el hilo entero las palabras de talla no
+    cuentan («un gran saludo» no es una UV grande)."""
+    assert catalogo.intereses_de_texto("Prepárale la uv_grande, sin más") == ["uv_grande"]
+    assert catalogo.intereses_de_texto("Ofrécele una UV grande") == ["uv_grande"]
+    assert catalogo.intereses_de_texto("Ofrécele una UV") == list(catalogo.TALLAS_UV)
+    assert catalogo.intereses_de_texto("Un gran saludo") == []
+    hilo = "Queremos imprimir con una impresora UV. Un gran saludo"
+    assert [c for c, _ in catalogo.intereses_y_palabras(hilo, con_tallas=False)] == list(
+        catalogo.TALLAS_UV)
+    assert [c for c, _ in catalogo.intereses_y_palabras(
+        hilo, con_tallas=False, tallas_uv=["uv_pequeno"])] == ["uv_pequeno"]

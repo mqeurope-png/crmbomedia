@@ -450,8 +450,9 @@ def _bloque_catalogo(ctx: Contexto) -> str:
                 f"{', '.join(f'«{p}»' for p in palabras.get(i) or [])} → {i}"
                 for i in de_consulta if i)
             lineas.append(
-                "Máquinas de lo que pide la CONSULTA del cliente, por sus palabras "
-                f"({por_que or '—'}); si pide varias cosas, contesta a todas; {precios}:")
+                "Máquinas de lo que PUEDE que pida también la CONSULTA del cliente, por sus "
+                f"palabras ({por_que or '—'}): si de verdad pide eso, contéstalo también; si "
+                f"esas palabras no hablan de eso, ignóralas; {precios}:")
             lineas.extend(_linea_producto(m, avisos, ctx.idioma, refs.get(_clave_ref(m)))
                           for m in por_eleccion["consulta"])
         posibles = por_eleccion.get("hilo_posible", []) + por_eleccion.get(
@@ -966,11 +967,11 @@ def _rellenar_compuesto(
     # el correo empieza por el saludo y la entrada; el hero de apertura es de un
     # correo frío. Si la estructura que se corrige ya empezaba por otra cosa, es
     # que la persona lo dejó así en la vista previa: se respeta.
-    respuesta = b.thread_id is not None or bool(b.mensajes_historico)
+    respuesta = b.thread_id is not None or bool(_json(b.contexto_json).get("historico"))
     if respuesta and (base is None or bq.primero_es_texto(base)) and bq.abrir_con_saludo(
             estructura):
-        logger.info("asistente: el saludo pasa delante del hero (conversación %s)",
-                    b.conversacion_id or b.id)
+        avisos.append("Es una respuesta: el correo empieza por el saludo y el hero va detrás. "
+                      "Si lo quieres arriba, muévelo en la vista previa.")
     repetidos = bq.quitar_botones_repetidos(estructura)
     if repetidos:
         avisos.append(f"Un mismo enlace iba en dos botones: se queda el primero y se quita "
