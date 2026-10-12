@@ -238,6 +238,32 @@ en Opus 5.5 y Fable); una familia desconocida se queda con su defecto. La
 extracción del texto (los bloques de razonamiento de #537) sigue igual con o
 sin pensamiento (test con el cliente simulado).
 
+**Lo pensado cuenta dentro del tope de salida** (`max_tokens`). Hasta el
+12/10/2026 el tope era el de la respuesta (2.500) y, con el pensamiento
+encendido y «Con fichas», el modelo se lo comía entero pensando la estructura:
+la API devolvía solo el bloque de pensamiento y salía «Provider returned
+non-text content (blocks: thinking)». El lector no tenía culpa (ya se saltaba
+ese bloque). Ahora `llm._invoke_claude` recibe en `max_tokens` lo que ocupa la
+respuesta y le suma el sitio para pensar según lo que se manda de verdad
+(`modelos.tope_de_salida`), para todas las llamadas (asistente, clasificador
+de leads, segmentos, pipeline):
+
+- pensamiento apagado (`disabled`, `between_tools`) o familia que no piensa
+  sola (Haiku 4.5, Sonnet 4.5 y anteriores): sin margen;
+- esfuerzo bajo (Opus 5.5 y Fable, que no se pueden apagar): **+3.000**;
+- el resto (pensamiento encendido, o el defecto de los modelos actuales):
+  **+8.000**.
+
+Es un tope: se cobra lo que se piensa de verdad. Una respuesta que llega al
+tope es un error que lo dice («se acabó el tope de salida pensando, antes de
+escribir nada» o «la respuesta se cortó en el tope de salida»), nunca media
+respuesta, y el log anota el `stop_reason`. Con Haiku 5.5 la salida cuesta
+0,50 $ por millón: pensar es casi gratis y ayuda justo donde Haiku flojea
+(decidir la estructura, agrupar fichas, las tiras de marca). Pensar alarga la
+petición: en los ejemplos de nginx (`deploy/nginx`, y las directivas de Plesk de
+`deployment-ionos.md`) `/api/` espera hasta 180 s; en un servidor ya montado hay
+que cambiarlo a mano.
+
 En **«Uso de la IA»** (ERP · Leads) el primer borrador y las correcciones se
 anotan con propósitos distintos (`asistente_borrador` /
 `asistente_correccion`), hay una tabla de **coste por modelo** para comparar y

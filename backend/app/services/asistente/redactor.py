@@ -1099,6 +1099,8 @@ def _llamar(settings: Any, *, modelo: str, contexto_texto: str, peticion_texto: 
     escritos» en la primera corrección)."""
     parametros = parametros_de_llamada(
         modelo, pensamiento_extendido=bool(cfg.get("pensamiento_extendido")))
+    # `max_tokens` es lo que ocupa la respuesta: `_invoke_claude` le suma el
+    # sitio para pensar si el modelo va a pensar (12/10/2026, «Con fichas»).
     return llm._invoke_claude(
         api_key=settings.anthropic_api_key, model=modelo, system_prompt=PROMPT_SISTEMA,
         user_prompt=mensaje_usuario(contexto_texto, peticion_texto,

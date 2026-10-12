@@ -47,7 +47,9 @@ server {
         proxy_set_header X-Real-IP         $remote_addr;
         proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $forwarded_proto;
-        proxy_read_timeout 60s;
+        # El asistente con el pensamiento extendido piensa antes de escribir:
+        # un borrador puede pasar del minuto.
+        proxy_read_timeout 180s;
         proxy_send_timeout 60s;
         # Composer asset uploads can exceed the default 1 MB.
         client_max_body_size 16m;

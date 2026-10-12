@@ -318,7 +318,8 @@ sudo ss -tlnp | grep :8080 || echo "8080 libre"
          proxy_set_header X-Forwarded-Proto $scheme;
          proxy_set_header Upgrade $http_upgrade;
          proxy_set_header Connection "upgrade";
-         proxy_read_timeout 60s;
+         # El asistente con el pensamiento extendido puede pasar del minuto.
+         proxy_read_timeout 180s;
      }
      ```
 

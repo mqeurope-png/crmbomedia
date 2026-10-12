@@ -13,6 +13,7 @@ import logging
 import re
 from collections.abc import Generator
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -30,6 +31,7 @@ from app.models.conocimiento import FUENTE_COMPOSITOR, TIPO_MAQUINA, MarcaCatalo
 from app.models.crm import EmailMessage, EmailMessageToken, User, UserEmailAliasPref, UserRole
 from app.models.ia import BorradorAsistente
 from app.services import llm
+from app.services.asistente import redactor
 from app.services.correo_compuesto import bloques as bq
 from app.services.correo_compuesto import ia
 from app.services.correo_compuesto.generador import ESTILO_MOVIL
@@ -258,6 +260,97 @@ def test_quita_el_video_y_lo_demas_queda_igual_tambien_lo_retocado_en_la_vista_p
         "Ir a la tienda")
     assert [b for b in bloques if b["id"] not in (fila["id"], bloques[i + 1]["id"])] == [
         b for b in nuevo["estructura"]["bloques"] if b["id"] != fila["id"]]
+
+
+class _ApiQuePiensa:
+    """El cliente de la API, de mentira, portándose como el de verdad con el
+    pensamiento adaptativo de los modelos actuales: piensa antes de contestar,
+    lo pensado cuenta dentro de `max_tokens` y su texto no se devuelve (el
+    bloque `thinking` llega vacío). Si no le queda sitio para contestar,
+    devuelve SOLO el bloque de pensamiento con `stop_reason: max_tokens`: lo
+    que vio producción con «Pensamiento extendido» y «Con fichas»."""
+
+    #: Lo que piensa decidiendo la estructura, agrupando fichas, poniendo las
+    #: tiras de marca; y lo que ocupa la respuesta.
+    PIENSA = 6000
+    ESCRIBE = 900
+
+    def __init__(self, *respuestas: dict[str, Any]) -> None:
+        self.respuestas = list(respuestas)
+        self.llamadas: list[dict[str, Any]] = []
+
+    def __call__(self, api_key: str) -> Any:            # anthropic.Anthropic(api_key=…)
+        assert api_key == "clave-de-prueba"
+        return SimpleNamespace(messages=SimpleNamespace(create=self._crear))
+
+    def _crear(self, **kw: Any) -> Any:
+        self.llamadas.append(kw)
+        pensamiento = ((kw.get("extra_body") or {}).get("thinking") or {}).get("type")
+        piensa = 0 if pensamiento in ("disabled", "between_tools") else self.PIENSA
+        bloques = ([SimpleNamespace(type="thinking", thinking="", signature="firma")]
+                   if piensa else [])
+
+        def _uso(salida: int) -> SimpleNamespace:
+            return SimpleNamespace(input_tokens=5000, output_tokens=salida,
+                                   cache_read_input_tokens=0, cache_creation_input_tokens=0)
+
+        if kw["max_tokens"] < piensa + self.ESCRIBE:
+            return SimpleNamespace(content=bloques, stop_reason="max_tokens", model=kw["model"],
+                                   usage=_uso(kw["max_tokens"]))
+        texto = SimpleNamespace(type="text", text=json.dumps(self.respuestas.pop(0)))
+        return SimpleNamespace(content=[*bloques, texto], stop_reason="end_turn",
+                               model=kw["model"], usage=_uso(piensa + self.ESCRIBE))
+
+
+def test_con_el_pensamiento_encendido_el_compuesto_y_su_correccion_salen_bien(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    """12/10/2026: con «Pensamiento extendido al redactar» y «Con fichas» salía
+    «La IA no ha podido redactar: Provider returned non-text content (blocks:
+    thinking)». El lector ya se saltaba el bloque de pensamiento (#537): lo
+    que faltaba era sitio, porque lo pensado cuenta dentro del tope de salida y
+    se lo comía entero antes de escribir. Con Haiku pensar es casi gratis, y es
+    justo lo que le hace falta para decidir la estructura."""
+    headers = auth_headers(http, "admin")
+    r = http.patch("/api/erp/settings", headers=headers, json={"asistente": {
+        "pensamiento_extendido": True, "modelo_borrador": "claude-haiku-5-5"}})
+    assert r.status_code == 200, r.text
+    with session_factory() as s:
+        thread_id = _hilo_talentos(s)
+    api = _ApiQuePiensa(COMPUESTO_DTF)
+    with patch("anthropic.Anthropic", api):
+        r = _pedir(http, thread_id, instruccion="mándale la gama DTF", formato="compuesto")
+    assert r.status_code == 201, r.text
+    b = r.json()["borrador"]
+    assert b["modo"] == "compuesto"
+    assert [x["tipo"] for x in b["estructura"]["bloques"]] == [
+        "texto", "marca", "productos_fila", "video", "cta", "texto"]
+    assert "4.990 €" in b["html"] and "Hola Marny," in b["texto"]
+    primera = api.llamadas[0]
+    # Piensa (manda el defecto del modelo) y el tope deja sitio para pensar y escribir.
+    assert primera["model"] == "claude-haiku-5-5" and "extra_body" not in primera
+    assert primera["max_tokens"] >= _ApiQuePiensa.PIENSA + _ApiQuePiensa.ESCRIBE
+    # Lo pensado se factura como salida.
+    assert b["tokens_salida"] == _ApiQuePiensa.PIENSA + _ApiQuePiensa.ESCRIBE
+    # La corrección, con Haiku y pensando también, sale igual.
+    video = next(x for x in b["estructura"]["bloques"] if x["tipo"] == "video")
+    api.respuestas.append({"modo": "compuesto", "asunto": "Re: Equipos DTF", "aviso": "",
+                           "pendiente": [], "operaciones": [{"op": "quitar", "id": video["id"]}]})
+    with patch("anthropic.Anthropic", api):
+        r2 = _turno(http, b["id"], "quita el vídeo", estructura_actual=b["estructura"])
+    assert r2.status_code == 201, r2.text
+    assert "video" not in [x["tipo"] for x in r2.json()["borrador"]["estructura"]["bloques"]]
+    assert api.llamadas[1]["max_tokens"] >= _ApiQuePiensa.PIENSA + _ApiQuePiensa.ESCRIBE
+    # Apagado, el pensamiento se apaga y basta el tope de siempre.
+    r = http.patch("/api/erp/settings", headers=headers, json={"asistente": {
+        "pensamiento_extendido": False}})
+    assert r.status_code == 200, r.text
+    api.respuestas.append(COMPUESTO_DTF)
+    with patch("anthropic.Anthropic", api):
+        r3 = _pedir(http, thread_id, instruccion="mándale la gama DTF", formato="compuesto")
+    assert r3.status_code == 201, r3.text
+    assert api.llamadas[2]["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert api.llamadas[2]["max_tokens"] == redactor.MAX_TOKENS_RESPUESTA
 
 
 def test_la_ia_nunca_devuelve_html_si_lo_intenta_se_descarta_y_se_registra(

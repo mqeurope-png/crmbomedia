@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.services import llm
+from app.services.ia import modelos
 
 
 def _texto(t: str) -> SimpleNamespace:
@@ -45,7 +46,8 @@ def respuesta(monkeypatch) -> Callable[[list[SimpleNamespace]], dict]:
 
         def _create(**kwargs):
             estado["kwargs"] = kwargs
-            return SimpleNamespace(content=estado["contenido"])
+            return SimpleNamespace(content=estado["contenido"],
+                                   stop_reason=estado.get("stop_reason"))
 
         return SimpleNamespace(messages=SimpleNamespace(create=_create))
 
@@ -55,8 +57,9 @@ def respuesta(monkeypatch) -> Callable[[list[SimpleNamespace]], dict]:
     modulo.APIError = _APIError  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "anthropic", modulo)
 
-    def _con(contenido: list[SimpleNamespace]) -> dict:
+    def _con(contenido: list[SimpleNamespace], stop_reason: str | None = None) -> dict:
         estado["contenido"] = contenido
+        estado["stop_reason"] = stop_reason
         return estado
 
     return _con
@@ -72,7 +75,26 @@ def test_un_solo_bloque_de_texto_se_lee_igual_que_antes(respuesta) -> None:
     assert _llamar() == '{"idioma": "es"}'
     assert estado["api_key"] == "clave-de-prueba"
     assert estado["kwargs"]["model"] == "claude-sonnet-5-5"
-    assert estado["kwargs"]["max_tokens"] == llm.MAX_TOKENS_OUTPUT
+    # Sonnet 5.5 piensa por defecto: el tope deja sitio para pensar y escribir.
+    assert estado["kwargs"]["max_tokens"] == llm.MAX_TOKENS_OUTPUT + modelos.MARGEN_PENSAMIENTO
+
+
+def test_el_tope_de_salida_sigue_a_lo_que_se_manda(respuesta) -> None:
+    """El margen para pensar lo decide lo que viaja en la petición: el
+    clasificador de leads, los segmentos y el pipeline lo tienen igual que el
+    asistente."""
+    estado = respuesta([_texto("ok")])
+    llm._invoke_claude(api_key="k", model="claude-haiku-5-5", system_prompt="s",
+                       user_prompt="u", max_tokens=500,
+                       parametros={"thinking": {"type": "disabled"}})
+    assert estado["kwargs"]["max_tokens"] == 500
+    llm._invoke_claude(api_key="k", model="claude-opus-5-5", system_prompt="s",
+                       user_prompt="u", max_tokens=500,
+                       parametros={"output_config": {"effort": "low"}})
+    assert estado["kwargs"]["max_tokens"] == 500 + modelos.MARGEN_PENSAMIENTO_BAJO
+    llm._invoke_claude(api_key="k", model="claude-haiku-4-5", system_prompt="s",
+                       user_prompt="u", max_tokens=500)
+    assert estado["kwargs"]["max_tokens"] == 500
 
 
 def test_el_bloque_de_pensamiento_delante_no_rompe(respuesta, caplog) -> None:
@@ -108,3 +130,26 @@ def test_sin_contenido_sigue_siendo_respuesta_vacia(respuesta) -> None:
     respuesta([])
     with pytest.raises(llm.LLMUpstreamError, match="Empty response"):
         _llamar()
+
+
+def test_si_el_pensamiento_se_come_el_tope_el_error_lo_dice(respuesta, caplog) -> None:
+    """Lo pensado cuenta dentro de `max_tokens`: si se lo come entero, la API
+    devuelve solo el bloque de pensamiento con `stop_reason: max_tokens`
+    (12/10/2026, correo compuesto con el pensamiento extendido). El error dice
+    eso, no un «contenido que no es texto» que hace buscar otra cosa."""
+    respuesta([_pensamiento("")], stop_reason="max_tokens")
+    with caplog.at_level(logging.WARNING, logger="app.services.llm"), \
+            pytest.raises(llm.LLMUpstreamError) as info:
+        _llamar()
+    assert "tope de salida pensando" in str(info.value)
+    assert "; blocks: thinking)" in str(info.value) and "max_tokens=" in str(info.value)
+    aviso = [r for r in caplog.records if "llm.non_text_response" in r.getMessage()]
+    assert aviso and "stop_reason=max_tokens" in aviso[0].getMessage()
+    # Con texto cortado en el tope tampoco: media respuesta no sirve, y un JSON
+    # cortado fallaría después con un error que esconde la causa.
+    caplog.clear()
+    respuesta([_pensamiento(), _texto('{"idioma": "es"')], stop_reason="max_tokens")
+    with caplog.at_level(logging.WARNING, logger="app.services.llm"), \
+            pytest.raises(llm.LLMUpstreamError, match="se cortó en el tope de salida"):
+        _llamar()
+    assert [r for r in caplog.records if "llm.truncated_response" in r.getMessage()]
