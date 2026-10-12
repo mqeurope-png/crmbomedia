@@ -131,8 +131,9 @@ PROMPT_SISTEMA = (
     "lleva las frases de IVA, VIES y «no es una factura» que indica el bloque, en el idioma del "
     "correo; un precio marcado ORIENTATIVO lleva además su frase. Si el CATÁLOGO no tiene "
     "producto para lo que piden, no cites ningún precio ni nombres máquinas que no estén: di que "
-    "se lo preparas en una oferta. Un precio o plazo que aparezca en un pedido, una nota interna "
-    "o un correo antiguo es histórico: si lo citas, di de cuándo es; no lo des como vigente.\n"
+    "se lo preparas en una oferta. Un precio o plazo que aparezca en un pedido, una nota interna, "
+    "un campo de la ficha o un correo antiguo es histórico: si lo citas, di de cuándo es; no lo "
+    "des como vigente.\n"
     "2. Si hay INSTRUCCIÓN DE QUIEN ENVÍA, manda sobre lo que deduzcas del hilo: el correo "
     "dice lo que la instrucción pide, con los datos del contexto, y nada más.\n"
     "3. Sin promesas: ni fechas de entrega, ni descuentos, ni compromisos que no estén en los "
@@ -242,10 +243,12 @@ def _bloque_ficha(ctx: Contexto) -> str:
             t["numero"] + (f" ({t['etiqueta']})" if t.get("etiqueta") else "")
             for t in ctx.telefonos))
     if ctx.etiquetas:
-        lineas.append("- Etiquetas: " + ", ".join(ctx.etiquetas))
+        lineas.append("- Etiquetas (internas; no las menciones en el correo): "
+                      + ", ".join(ctx.etiquetas))
     if ctx.campos:
         lineas.append("- Campos personalizados de la ficha (datos internos; úsalos para "
-                      "entender el caso, no los menciones como tales):")
+                      "entender el caso, no los menciones como tales; un precio, plazo o "
+                      "condición que aparezca aquí no es vigente):")
         lineas.extend(f"  · {campo['clave']}: {campo['valor']}" for campo in ctx.campos)
     if ctx.notas:
         lineas.append(
@@ -258,10 +261,16 @@ def _bloque_ficha(ctx: Contexto) -> str:
                 _fecha(nota.get("fecha"))[:10], nota.get("autor") or "",
                 "FIJADA" if nota.get("fijada") else "") if p)
             lineas.append(f"  · {cabecera}: {nota['texto']}")
-    notas_fuera = [r for r in ctx.recortes if r.startswith("nota interna")]
-    if notas_fuera:
-        lineas.append(f"  (Por tamaño se dejaron fuera {len(notas_fuera)} notas internas "
-                      "antiguas; no están aquí.)")
+    fuera = sum(1 for r in ctx.recortes if r.startswith("nota interna"))
+    if fuera and ctx.notas:
+        lineas.append("  (Por tamaño se dejó fuera otra nota interna; no está aquí.)" if fuera == 1
+                      else f"  (Por tamaño se dejaron fuera otras {fuera} notas internas; no "
+                           "están aquí.)")
+    elif fuera:
+        lineas.append("- Notas internas: por tamaño se dejó fuera la que había; no está aquí."
+                      if fuera == 1 else
+                      f"- Notas internas: por tamaño se dejaron fuera las {fuera} que había; no "
+                      "están aquí.")
     if ctx.etapa:
         lineas.append(f"- Pipeline: {ctx.etapa}")
     if ctx.clasificacion:

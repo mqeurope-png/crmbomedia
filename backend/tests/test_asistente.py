@@ -681,6 +681,8 @@ def test_la_ficha_entera_entra_telefonos_etiquetas_campos_y_notas(
         s.add_all([
             ContactPhone(contact_id=klaus.id, number="+34600111222", label="Móvil",
                          is_primary=True),
+            # El mismo móvil, con el prefijo escrito de otra manera.
+            ContactPhone(contact_id=klaus.id, number="0034 600 111 222", label="TELEFONO_2"),
             ContactPhone(contact_id=klaus.id, number="+34 93 000 00 00", label="Fijo"),
         ])
         for nombre in ("VIP", "brevo-list:Clientes DTF"):
@@ -696,18 +698,28 @@ def test_la_ficha_entera_entra_telefonos_etiquetas_campos_y_notas(
                  source="agile:timeline", external_author_name="Manel",
                  external_created_at=ahora - timedelta(days=200)),
             Note(contact_id=klaus.id,
-                 body="<p>Llamó: quiere la <b>Ador</b> antes de fin de mes.</p>",
+                 body="<style>p{margin:0}</style><p>Llamó: quiere la <b>Ador</b> antes de "
+                      "fin de mes &amp; pide la factura.</p>",
                  source="call_log", created_by_user_id=admin.id,
                  created_at=ahora - timedelta(days=2)),
-            Note(contact_id=klaus.id, body="   ", source="manual", created_at=ahora),
+            # Note1 de la ficha de Agile: dos versiones importadas, sin fecha real.
+            Note(contact_id=klaus.id, body="Interesado en la Ador (versión vieja).",
+                 source="agile:Note1", created_at=ahora - timedelta(days=30)),
+            Note(contact_id=klaus.id, body="Interesado en la Ador y en la Beambox.",
+                 source="agile:Note1", created_at=ahora - timedelta(hours=1)),
         ])
+        # Notas vacías más recientes que todas: no ocupan ningún hueco.
+        s.add_all(Note(contact_id=klaus.id, body=vacia, source="call_log",
+                       created_at=ahora - timedelta(minutes=i))
+                  for i, vacia in enumerate(["   ", "<p></p>", "<p> </p>"] * 4))
         hilo = _hilo(s, contacto=klaus, mensajes=[{"de": KLAUS, "texto": MENSAJE_KLAUS}])
         s.commit()
 
         ctx = contexto.construir(s, thread=hilo, usuario=admin)
-        # El mismo número (con o sin espacios) no se repite.
+        # El mismo número (con o sin espacios, con o sin prefijo) no se repite;
+        # el de la ficha es el principal, con la etiqueta de su fila.
         assert ctx.telefonos == [
-            {"numero": "+34600111222", "etiqueta": "Móvil"},
+            {"numero": "+34 600 111 222", "etiqueta": "Móvil, principal"},
             {"numero": "+34 93 000 00 00", "etiqueta": "Fijo"},
         ]
         assert ctx.etiquetas == ["brevo-list:Clientes DTF", "VIP"]
@@ -716,27 +728,41 @@ def test_la_ficha_entera_entra_telefonos_etiquetas_campos_y_notas(
             {"clave": "GRADO_DE_INTERES", "valor": "alto"},
             {"clave": "INTERESADO_EN_DEMO", "valor": "sí"},
         ]
-        # La fijada primero; luego de la más reciente a la más antigua; sin HTML;
-        # la vacía no entra.
+        # La fijada primero; luego de la más reciente a la más antigua; al final
+        # la Note1 de Agile (sin fecha, solo su última versión); sin HTML ni CSS.
         assert [n["texto"] for n in ctx.notas] == [
             "Cliente de confianza: pago a 30 días.",
-            "Llamó: quiere la Ador antes de fin de mes.",
+            "Llamó: quiere la Ador antes de fin de mes & pide la factura.",
             "Le ofrecimos la Ador a 3.500 € en marzo.",
+            "Interesado en la Ador y en la Beambox.",
         ]
         assert ctx.notas[0]["fijada"] and ctx.notas[0]["autor"]
         assert ctx.notas[2]["autor"] == "Manel"
+        assert ctx.notas[3]["fecha"] is None and ctx.notas[3]["origen"] == "agile:Note1"
 
         prompt = prompt_usuario(ctx)
-        assert "- Teléfonos: +34600111222 (Móvil) · +34 93 000 00 00 (Fijo)" in prompt
-        assert "- Etiquetas: brevo-list:Clientes DTF, VIP" in prompt
+        assert ("- Teléfonos: +34 600 111 222 (Móvil, principal) · +34 93 000 00 00 (Fijo)"
+                in prompt)
+        assert ("- Etiquetas (internas; no las menciones en el correo): "
+                "brevo-list:Clientes DTF, VIP") in prompt
         assert "  · Horario: L-V 9-14" in prompt and "INTERESADO_EN_DEMO: sí" in prompt
+        assert "aparezca aquí no es vigente" in prompt
         assert "Notas internas del equipo" in prompt and "no las cites" in prompt
-        assert "no es vigente" in prompt and "FIJADA" in prompt
-        assert "Llamó: quiere la Ador antes de fin de mes." in prompt
+        assert "FIJADA" in prompt and "sin fecha" in prompt
+        assert "Llamó: quiere la Ador antes de fin de mes & pide la factura." in prompt
 
         resumen = ctx.resumen()
         assert (resumen["telefonos"], resumen["etiquetas"],
-                resumen["campos_personalizados"], resumen["notas"]) == (2, 2, 3, 3)
+                resumen["campos_personalizados"], resumen["notas"]) == (2, 2, 3, 4)
+
+        # Lo que se deja fuera por tamaño se dice, con o sin notas que queden.
+        ctx.recortes = ["nota interna del 2026-01-01"]
+        assert "(Por tamaño se dejó fuera otra nota interna; no está aquí.)" in prompt_usuario(ctx)
+        ctx.recortes.append("nota interna del 2026-02-01")
+        assert "(Por tamaño se dejaron fuera otras 2 notas internas" in prompt_usuario(ctx)
+        ctx.notas = []
+        assert ("- Notas internas: por tamaño se dejaron fuera las 2 que había"
+                in prompt_usuario(ctx))
 
         # Solo el hilo: la ficha no entra (ni sus notas).
         solo_hilo = contexto.construir(s, thread=hilo, usuario=admin, alcance=ALCANCE_HILO)
@@ -774,4 +800,5 @@ def test_las_notas_se_recortan_tras_los_correos_viejos_y_antes_que_el_catalogo()
 def test_un_precio_de_una_nota_no_es_vigente() -> None:
     from app.services.asistente.redactor import PROMPT_SISTEMA  # noqa: PLC0415
 
-    assert "una nota interna o un correo antiguo es histórico" in PROMPT_SISTEMA
+    assert "una nota interna, un campo de la ficha o un correo antiguo es histórico" in (
+        PROMPT_SISTEMA)

@@ -16,8 +16,10 @@ la instrucción de quien envía, que es lo único que dice de qué va el correo.
 """
 from __future__ import annotations
 
+import html as html_mod
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -46,13 +48,7 @@ from app.models.ia import ALCANCE_CONTACTO, ALCANCE_EMPRESA, ALCANCE_HILO
 from app.models.leads import LeadClassification
 from app.services.asistente import historico as hist
 from app.services.asistente.config import configuracion as config_asistente
-from app.services.asistente.texto import (
-    html_a_texto,
-    parece_html,
-    recortar,
-    sin_cita,
-    texto_de_mensaje,
-)
+from app.services.asistente.texto import recortar, sin_cita, texto_de_mensaje
 from app.services.conocimiento import catalogo as kb_catalogo
 from app.services.conocimiento import enlaces as kb_enlaces
 from app.services.conocimiento import flux
@@ -352,31 +348,44 @@ def ficha(session: Session, contacto: Contact) -> dict[str, Any]:
     }
 
 
-def _digitos(numero: str | None) -> str:
-    return "".join(c for c in (numero or "") if c.isdigit() or c == "+")
+def _clave_telefono(numero: str | None) -> str:
+    """Para no repetir un número: sus dígitos y, si tiene nueve o más, los
+    nueve últimos (el mismo móvil con y sin prefijo: «600 111 222»,
+    «+34600111222», «0034 600 111 222»)."""
+    digitos = "".join(c for c in (numero or "") if c.isdigit())
+    return digitos[-9:] if len(digitos) >= 9 else digitos
 
 
 def telefonos_de(session: Session, contacto: Contact) -> list[dict[str, Any]]:
-    """Todos sus teléfonos: el principal de la ficha y los de `contact_phones`
-    (con su etiqueta: «Móvil», «TELEFONO_2»…), sin repetir el mismo número."""
+    """Todos sus teléfonos sin repetir número: el de la ficha («principal»,
+    con la etiqueta de su fila en `contact_phones` si la tiene) y los demás de
+    `contact_phones` con la suya («Móvil», «TELEFONO_2»…). Sin teléfono en la
+    ficha, el principal es la fila marcada como tal."""
     salida: list[dict[str, Any]] = []
     vistos: set[str] = set()
 
     def _añadir(numero: str | None, etiqueta: str | None) -> None:
-        digitos = _digitos(numero)
-        if not digitos or digitos in vistos:
+        clave = _clave_telefono(numero)
+        if not clave or clave in vistos:
             return
-        vistos.add(digitos)
+        vistos.add(clave)
         salida.append({"numero": (numero or "").strip(), "etiqueta": etiqueta or None})
+
+    def _con_principal(etiqueta: str | None) -> str:
+        return f"{etiqueta}, principal" if etiqueta else "principal"
 
     filas = session.scalars(
         select(ContactPhone).where(ContactPhone.contact_id == contacto.id)
         .order_by(ContactPhone.is_primary.desc(), ContactPhone.label)
     ).all()
-    for fila in filas:
-        if fila.is_primary:
-            _añadir(fila.number, fila.label or "principal")
-    _añadir(contacto.phone, "principal")
+    if _clave_telefono(contacto.phone):
+        suya = next((f for f in filas
+                     if _clave_telefono(f.number) == _clave_telefono(contacto.phone)), None)
+        _añadir(contacto.phone, _con_principal(suya.label if suya else None))
+    else:
+        for fila in filas:
+            if fila.is_primary:
+                _añadir(fila.number, _con_principal(fila.label))
     for fila in filas:
         _añadir(fila.number, fila.label)
     return salida
@@ -410,35 +419,65 @@ def campos_de(contacto: Contact) -> list[dict[str, str]]:
     ][:CAMPOS_MAX]
 
 
+_SIN_CONTENIDO_RE = re.compile(r"<(script|style)\b[^>]*>.*?</\1\s*>", re.IGNORECASE | re.DOTALL)
+_ETIQUETA_BLOQUE_RE = re.compile(
+    r"</?(?:p|div|br|li|ul|ol|tr|td|th|table|h[1-6]|blockquote)\b[^>]*>", re.IGNORECASE)
+_ETIQUETA_RE = re.compile(r"</?[a-zA-Z][\w:.-]*\b[^>]*>")
+#: Las notas que se miran como mucho para elegir las `NOTAS_MAX` que entran.
+_NOTAS_CANDIDATAS = 200
+
+
 def _texto_de_nota(cuerpo: str | None) -> str:
-    crudo = cuerpo or ""
-    texto = html_a_texto(crudo) if parece_html(crudo) else crudo
-    return " ".join(texto.split())
+    """El texto de una nota en una línea: sin HTML (ni el contenido de
+    `<style>`/`<script>`), con las entidades resueltas."""
+    texto = _SIN_CONTENIDO_RE.sub(" ", cuerpo or "")
+    texto = _ETIQUETA_BLOQUE_RE.sub(" ", texto)
+    texto = _ETIQUETA_RE.sub("", texto)
+    return " ".join(html_mod.unescape(texto).split())
+
+
+def _es_campo_de_agile(nota: Note) -> bool:
+    """Las notas Note1..Note10 de la ficha de Agile: no tienen fecha (la
+    suya es la de la importación) y cada cambio de su texto añade otra fila."""
+    return (nota.source or "").startswith("agile:Note")
 
 
 def notas_de(session: Session, contacto: Contact) -> list[dict[str, Any]]:
-    """Las notas internas del contacto: las fijadas primero y luego de la más
-    reciente a la más antigua (las primeras `NOTAS_MAX`), cada una recortada.
-    Son del equipo, no del cliente: el prompt dice que no se citan."""
+    """Las notas internas del contacto: las fijadas primero, luego las demás
+    de la más reciente a la más antigua y al final las Note1..Note10 de Agile
+    (sin fecha; de cada una, solo su última versión). Las vacías no cuentan;
+    entran las primeras `NOTAS_MAX`, cada una recortada. Son del equipo, no
+    del cliente: el prompt dice que no se citan."""
     filas = session.scalars(
         select(Note).where(Note.contact_id == contacto.id)
-        .order_by(Note.pinned.desc(),
-                  func.coalesce(Note.external_created_at, Note.created_at).desc())
-        .limit(NOTAS_MAX)
+        .order_by(func.coalesce(Note.external_created_at, Note.created_at).desc())
+        .limit(_NOTAS_CANDIDATAS)
     ).all()
-    salida: list[dict[str, Any]] = []
+    elegidas: list[tuple[Note, str]] = []
+    ranuras_de_agile: set[str] = set()
     for nota in filas:
+        if _es_campo_de_agile(nota):
+            if nota.source in ranuras_de_agile:
+                continue                      # una versión anterior de la misma nota
+            ranuras_de_agile.add(nota.source)
         texto = _texto_de_nota(nota.body)
-        if not texto:
-            continue
-        fecha = nota.external_created_at or nota.created_at
-        autor = (
-            _usuario_nombre(session, nota.author_user_id or nota.created_by_user_id)
-            or nota.external_author_name or nota.external_author_email
-        )
+        if texto:
+            elegidas.append((nota, texto))
+    # Orden estable: fijadas, con fecha (ya de la más reciente) y las de Agile.
+    elegidas.sort(key=lambda par: (not par[0].pinned, _es_campo_de_agile(par[0])))
+    elegidas = elegidas[:NOTAS_MAX]
+    ids = {n.author_user_id or n.created_by_user_id for n, _ in elegidas} - {None}
+    nombres = {
+        u.id: (u.full_name or u.email)
+        for u in session.scalars(select(User).where(User.id.in_(ids)))
+    } if ids else {}
+    salida: list[dict[str, Any]] = []
+    for nota, texto in elegidas:
+        fecha = None if _es_campo_de_agile(nota) else (nota.external_created_at or nota.created_at)
         salida.append({
             "fecha": fecha.isoformat() if fecha else None,
-            "autor": autor,
+            "autor": (nombres.get(nota.author_user_id or nota.created_by_user_id or "")
+                      or nota.external_author_name or nota.external_author_email),
             "fijada": bool(nota.pinned),
             "origen": nota.source,
             "texto": recortar(texto, NOTA_MAX_CHARS),
