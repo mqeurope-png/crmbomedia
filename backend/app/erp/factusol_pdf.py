@@ -108,7 +108,9 @@ CURRENCIES: dict[str, dict[str, str]] = {
 #: de IMPRIMIR un documento existente — nunca crean nada en FACTUSOL.
 VARIANTS_BY_TYPE: dict[str, tuple[str, ...]] = {
     "facturas": ("anticipo",),
-    "presupuestos": ("proforma",),
+    # `oferta`: el presupuesto de BoHub a un lead (sin cliente de FACTUSOL);
+    # mismo maquetador, título propio y aviso de IVA/VIES en el pie.
+    "presupuestos": ("proforma", "oferta"),
     "albaranes": ("valorado", "devolucion"),
     "pedidos": (),
 }
@@ -179,6 +181,18 @@ LABELS: dict[str, dict[str, str]] = {
         # se factura, en pequeño bajo el bloque de entrega.
         "facturar_a": "Facturar a:",
         "cambio_label": "Tipo de cambio: {rate}",
+        # Ofertas (presupuesto de BoHub a un lead): título, validez con fecha
+        # y el aviso fijo de IVA / VIES / «no es una factura».
+        "title_presupuestos_oferta": "OFERTA",
+        "doc_presupuestos_oferta": "Oferta",
+        "validez_oferta": "Oferta válida hasta el {fecha}.",
+        "oferta_iva_con": "Importes con IVA ({piva} %).",
+        "oferta_iva_sin": "Importes sin IVA.",
+        "oferta_aviso":
+            "Este documento es una oferta comercial, no una factura. El régimen de "
+            "IVA definitivo se fijará al emitir el presupuesto o la factura, según el "
+            "país del cliente y la validación de su NIF-IVA en VIES (operaciones "
+            "intracomunitarias).",
     },
     "en": {
         "title_facturas": "INVOICE",
@@ -239,6 +253,16 @@ LABELS: dict[str, dict[str, str]] = {
         "divisa_nota": "Amounts in {code} — no conversion applied",
         "facturar_a": "Bill to:",
         "cambio_label": "Exchange rate: {rate}",
+        "title_presupuestos_oferta": "OFFER",
+        "doc_presupuestos_oferta": "Offer",
+        "validez_oferta": "Offer valid until {fecha}.",
+        "oferta_iva_con": "Amounts include VAT ({piva} %).",
+        "oferta_iva_sin": "Amounts exclude VAT.",
+        "oferta_aviso":
+            "This document is a commercial offer, not an invoice. The final VAT "
+            "treatment will be determined when the quotation or invoice is issued, "
+            "according to the customer's country and the VIES validation of its VAT "
+            "number (intra-Community transactions).",
     },
     "de": {
         "title_facturas": "RECHNUNG",
@@ -299,6 +323,17 @@ LABELS: dict[str, dict[str, str]] = {
         "divisa_nota": "Beträge in {code} — ohne Umrechnung",
         "facturar_a": "Rechnung an:",
         "cambio_label": "Wechselkurs: {rate}",
+        "title_presupuestos_oferta": "ANGEBOT",
+        "doc_presupuestos_oferta": "Angebot",
+        "validez_oferta": "Angebot gültig bis {fecha}.",
+        "oferta_iva_con": "Beträge inkl. MwSt. ({piva} %).",
+        "oferta_iva_sin": "Beträge ohne MwSt.",
+        "oferta_aviso":
+            "Dieses Dokument ist ein kommerzielles Angebot, keine Rechnung. Die "
+            "endgültige mehrwertsteuerliche Behandlung wird bei Ausstellung des "
+            "Angebots bzw. der Rechnung nach dem Land des Kunden und der "
+            "VIES-Prüfung seiner USt-IdNr. (innergemeinschaftliche Lieferungen) "
+            "festgelegt.",
     },
     "fr": {
         "title_facturas": "FACTURE",
@@ -359,6 +394,16 @@ LABELS: dict[str, dict[str, str]] = {
         "divisa_nota": "Montants en {code} — sans conversion",
         "facturar_a": "Facturer à :",
         "cambio_label": "Taux de change : {rate}",
+        "title_presupuestos_oferta": "OFFRE",
+        "doc_presupuestos_oferta": "Offre",
+        "validez_oferta": "Offre valable jusqu'au {fecha}.",
+        "oferta_iva_con": "Montants TVA incluse ({piva} %).",
+        "oferta_iva_sin": "Montants hors TVA.",
+        "oferta_aviso":
+            "Ce document est une offre commerciale, et non une facture. Le régime "
+            "de TVA définitif sera fixé lors de l'émission du devis ou de la "
+            "facture, selon le pays du client et la validation de son numéro de "
+            "TVA dans VIES (opérations intracommunautaires).",
     },
     "nl": {
         "title_facturas": "FACTUUR",
@@ -419,6 +464,16 @@ LABELS: dict[str, dict[str, str]] = {
         "divisa_nota": "Bedragen in {code} — zonder omrekening",
         "facturar_a": "Factuur aan:",
         "cambio_label": "Wisselkoers: {rate}",
+        "title_presupuestos_oferta": "OFFERTE",
+        "doc_presupuestos_oferta": "Offerte",
+        "validez_oferta": "Offerte geldig tot {fecha}.",
+        "oferta_iva_con": "Bedragen inclusief btw ({piva} %).",
+        "oferta_iva_sin": "Bedragen exclusief btw.",
+        "oferta_aviso":
+            "Dit document is een commerciële offerte, geen factuur. De definitieve "
+            "btw-regeling wordt bepaald bij het opstellen van de offerte of de "
+            "factuur, op basis van het land van de klant en de VIES-validatie van "
+            "zijn btw-nummer (intracommunautaire leveringen).",
     },
 }
 
@@ -1123,6 +1178,9 @@ def generate_document_pdf(
         valued = False
     title = _title_for(doc_type, variant, lab, company, lang)
     doc_label = lab[f"doc_{doc_type}"]
+    # Ofertas: la casilla DOCUMENTO dice «Oferta», no «Presupuesto».
+    if variant == "oferta":
+        doc_label = lab["doc_presupuestos_oferta"]
     # País del cliente con su NOMBRE en el idioma del documento: FACTUSOL
     # guarda el código numérico (CPA* = 276) y el PDF imprimía «Bavière 276».
     data = {**data, "cliente": {
@@ -1146,9 +1204,20 @@ def generate_document_pdf(
     legal = _lang_text(company, "legal", lang)
     pie = _lang_text(company, "pie", lang)
 
+    validez = (doc_type == "presupuestos" and lab["validez_presupuesto"]) or ""
+    aviso = ""
+    if variant == "oferta":
+        # La oferta no afirma ningún régimen de IVA: ni el texto
+        # intracomunitario de la emisora (el régimen se fija al convertir) ni
+        # la validez genérica de 30 días (lleva su fecha). En su lugar, el
+        # aviso fijo: con/sin IVA, VIES y «no es una factura».
+        intracom = ""
+        validez = (lab["validez_oferta"].format(fecha=data.get("valida_hasta") or "")
+                   if data.get("valida_hasta") else "")
+        aviso = oferta_aviso_texto(lab, data)
+
     footer_lines = _footer_lines(bank, lab, legal, intracom, pie,
-                                 validez=(doc_type == "presupuestos"
-                                          and lab["validez_presupuesto"]) or "")
+                                 validez=validez, aviso=aviso)
     footer_h_mm = 6 + 4.2 * len(footer_lines)
 
     frame = Frame(
@@ -1391,6 +1460,8 @@ def _title_for(
         return lab["title_facturas_anticipo"]
     if variant == "proforma":
         return lab["title_presupuestos_proforma"]
+    if variant == "oferta":
+        return lab["title_presupuestos_oferta"]
     if variant == "devolucion":
         return lab["title_albaranes_devolucion"]
     if variant == "valorado":
@@ -1412,6 +1483,18 @@ def _fit(text: str, size: float, max_mm: float) -> str:
     return text + "…"
 
 
+def oferta_aviso_texto(lab: dict[str, str], data: dict[str, Any]) -> str:
+    """El aviso fijo de la OFERTA en el idioma del PDF: «importes con IVA
+    (21 %)» o «sin IVA» según se eligió, y detrás la frase de que es una
+    oferta, no una factura, y de que el IVA definitivo depende de VIES."""
+    if data.get("con_iva", True):
+        piva = next((b.get("piva") for b in data.get("bands") or [] if b.get("piva")), 0)
+        iva_txt = lab["oferta_iva_con"].format(piva=_fmt_qty(float(piva or 0), "es"))
+    else:
+        iva_txt = lab["oferta_iva_sin"]
+    return f"{iva_txt} {lab['oferta_aviso']}"
+
+
 def _footer_lines(
     bank: dict[str, Any] | None,
     lab: dict[str, str],
@@ -1420,16 +1503,20 @@ def _footer_lines(
     pie: str,
     *,
     validez: str,
+    aviso: str = "",
 ) -> list[tuple[str, bool]]:
     """(texto, destacado) del pie fijo: validez del presupuesto, texto
     intracomunitario, la CUENTA BANCARIA elegida (E4-fix1: el banco ya no
     es fijo por empresa), reserva de dominio y pie de condiciones — en
-    TODAS las páginas, como los modelos."""
+    TODAS las páginas, como los modelos. `aviso` es el texto fijo de la
+    oferta (IVA / VIES / «no es una factura»), destacado."""
     out: list[tuple[str, bool]] = []
     if validez:
         out.append((validez, False))
     if intracom:
         out.append((intracom, True))
+    if aviso:
+        out.append((aviso, True))
     bank = bank or {}
     banco = " ".join(x for x in (
         str(bank.get("nombre") or "").strip(),
@@ -1787,10 +1874,11 @@ def pdf_filename(
     hay nombre, se usa su código de FACTUSOL; si no hay ninguno de los dos el
     nombre se queda en tipo + número, sin separadores sueltos."""
     lab = labels_for(lang)
-    if variant in ("anticipo", "proforma", "devolucion"):
+    if variant in ("anticipo", "proforma", "devolucion", "oferta"):
         key = {"anticipo": "title_facturas_anticipo",
                "proforma": "title_presupuestos_proforma",
-               "devolucion": "title_albaranes_devolucion"}[variant]
+               "devolucion": "title_albaranes_devolucion",
+               "oferta": "title_presupuestos_oferta"}[variant]
         doc_label = lab[key].capitalize()
     else:
         doc_label = lab[f"doc_{doc_type}"]

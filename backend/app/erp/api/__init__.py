@@ -8,6 +8,7 @@ from app.erp.api.factusol import router as factusol_router
 from app.erp.api.genei import router as genei_router
 from app.erp.api.ia import router as ia_router
 from app.erp.api.leads import router as leads_router
+from app.erp.api.ofertas import router as ofertas_router
 from app.erp.api.order_timeline import router as order_timeline_router
 from app.erp.api.orders import router as orders_router
 from app.erp.api.sat import router as sat_router
@@ -26,6 +27,7 @@ __all__ = [
     "genei_router",
     "ia_router",
     "leads_router",
+    "ofertas_router",
     "order_timeline_router",
     "orders_router",
     "sat_router",

@@ -312,6 +312,13 @@ clasificó. Ventana de N días por esa fecha real.
 Enviar. Mover el pipeline por hechos (Fase 3). Segundo y tercer toque
 (Fase 3).
 
+Las **ofertas** (`docs/erp/ofertas.md`, 12/10/2026) ya emiten los hechos que
+la Fase 3 consumirá: `oferta.enviada` (al enviar la oferta por correo; además
+el contacto pasa a «Propuesta enviada» si está en un pipeline con esa etapa) y
+`oferta.caducada` (el job diario, cuando una enviada pasa su validez; el
+candidato a «Cerrado perdido» lo decidirá el motor con el mismo criterio de
+días que los leads). Están en el catálogo de disparadores de los workflows.
+
 ## Pendientes (anotados en la revisión, severidad baja)
 
 - El modo en seco clasifica dentro de la petición (hasta 200 leads, una

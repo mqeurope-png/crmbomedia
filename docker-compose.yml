@@ -116,6 +116,8 @@ services:
       # Configuración ERP, apagado por defecto) y las de FACTUSOL de
       # «Comprobar ahora». Solo lectura.
       - cuadre:run
+      # Ofertas: caducidad diaria (solo BoHub; no toca FACTUSOL ni envía nada).
+      - ofertas:caducar
     volumes:
       # Sprint-Backfill-Gmail. El worker baja los adjuntos a este volume;
       # api los sirve via FileResponse desde el mismo volume.

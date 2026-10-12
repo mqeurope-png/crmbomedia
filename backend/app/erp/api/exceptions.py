@@ -61,6 +61,9 @@ from app.erp.models import (
     ExceptionStatus,
     InvoiceMode,
 )
+from app.erp.ofertas import CONFIG_KEY as OFERTAS_CONFIG_KEY
+from app.erp.ofertas import normalizar_config as normalizar_ofertas
+from app.erp.ofertas import validar_config as validar_ofertas
 from app.erp.seguimiento import (
     abbr_variants_config,
     series_abbreviations_config,
@@ -256,6 +259,9 @@ class SettingsIn(BaseModel):
     #: empresa se agrupa por su registro, nunca por uno de estos dominios).
     #: Ver `app/services/asistente/config.py`.
     asistente: dict[str, Any] | None = None
+    #: Ofertas: prefijo de la numeración (`OF` → `OF-2026-0001`) y validez por
+    #: defecto en días. Ver `app/erp/ofertas.py`.
+    ofertas: dict[str, Any] | None = None
 
 
 # --- helpers -----------------------------------------------------------------
@@ -582,6 +588,8 @@ def _serialise_settings(cfg: ErpSettings, session: Session) -> dict[str, Any]:
         "conocimiento": normalizar_kb(_series(cfg).get(KB_CONFIG_KEY)),
         # Asistente de respuesta: presupuesto, histórico y dominios gratuitos.
         "asistente": normalizar_asistente(_series(cfg).get(ASISTENTE_CONFIG_KEY)),
+        # Ofertas: prefijo de la numeración y validez por defecto.
+        "ofertas": normalizar_ofertas(_series(cfg).get(OFERTAS_CONFIG_KEY)),
         "woocommerce_stores": _woocommerce_stores(session),
         "factusol_series_abbr_variants": {
             str(k): v
@@ -745,8 +753,16 @@ def update_settings(
             or payload.cuadre is not None
             or payload.lead_response is not None
             or payload.conocimiento is not None
-            or payload.asistente is not None):
+            or payload.asistente is not None
+            or payload.ofertas is not None):
         series = _series(cfg)
+        # Ofertas: prefijo y validez, validados y fundidos con lo guardado.
+        if payload.ofertas is not None:
+            try:
+                series[OFERTAS_CONFIG_KEY] = validar_ofertas(
+                    payload.ofertas, series.get(OFERTAS_CONFIG_KEY))
+            except ValueError as e:
+                raise HTTPException(400, str(e)) from e
         # Base de conocimiento: validado entero y fundido con lo guardado.
         if payload.conocimiento is not None:
             try:

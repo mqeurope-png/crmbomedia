@@ -520,6 +520,57 @@ def _bloque_catalogo(ctx: Contexto) -> str:
     return "\n".join(lineas) + "\n"
 
 
+def _bloque_oferta(ctx: Contexto) -> str:
+    """La oferta que va adjunta al correo: número, fechas, líneas e importes.
+    Es la excepción a «los precios salen solo del CATÁLOGO»: estos son los de
+    la oferta que recibe el cliente, y se citan tal cual."""
+    of = ctx.oferta
+    if not of:
+        return ""
+    from app.erp.factusol_pdf import _fmt_money  # noqa: PLC0415
+
+    idioma = ctx.idioma
+    moneda = of.get("moneda") or "EUR"
+
+    def _m(v: Any) -> str:
+        return f"{_fmt_money(float(v or 0), idioma, moneda)} €"
+
+    iva = (f"importes CON IVA ({_fmt(of.get('iva_pct'))} %)" if of.get("con_iva")
+           else "importes SIN IVA")
+    lineas = [
+        "OFERTA ADJUNTA (va como PDF en este correo). SUS importes SÍ se pueden citar, tal "
+        "cual: son los de la oferta que recibe el cliente. Para estos productos no uses "
+        "precios del CATÁLOGO ni otros. Di que la oferta va adjunta, qué incluye y hasta cuándo "
+        "es válida; no afirmes el régimen de IVA definitivo (se fija al emitir el presupuesto, "
+        "según VIES).",
+        f"  Nº {of.get('numero')} · fecha {of.get('fecha')} · válida hasta "
+        f"{of.get('valida_hasta')} · emisora {of.get('emisora') or '—'} · {iva}"
+        + (f" · su referencia: {of['referencia']}" if of.get("referencia") else ""),
+    ]
+    for ln in of.get("lineas") or []:
+        if ln.get("text_only"):
+            lineas.append(f"  - {ln.get('descripcion')}")
+            continue
+        dto = f" (dto {_fmt(ln.get('descuento_pct'))} %)" if ln.get("descuento_pct") else ""
+        lineas.append(
+            f"  - {_fmt(ln.get('cantidad'))} × {ln.get('descripcion') or ln.get('sku') or '—'}"
+            f" a {_m(ln.get('precio'))}{dto} = {_m(ln.get('total'))}")
+    if of.get("con_iva"):
+        lineas.append(f"  Base {_m(of.get('base'))} · IVA {_fmt(of.get('iva_pct'))} % "
+                      f"{_m(of.get('iva'))} · TOTAL {_m(of.get('total'))}")
+    else:
+        lineas.append(f"  TOTAL {_m(of.get('total'))} (sin IVA)")
+    return "\n".join(lineas) + "\n"
+
+
+def _fmt(v: Any) -> str:
+    try:
+        n = float(v or 0)
+    except (TypeError, ValueError):
+        return str(v or "")
+    return f"{n:g}"
+
+
 def _bloque_hilo(ctx: Contexto) -> str:
     if ctx.thread is None:
         return (
@@ -607,7 +658,11 @@ def bloque_contexto(ctx: Contexto) -> str:
     ficha, enlaces, ejemplo de tono, correos viejos y el hilo. Es el bloque que
     se marca como cacheable para la API y el que se guarda con el turno 0 para
     que las correcciones lo manden byte a byte, sin volver a montarlo."""
-    partes = [*_cabecera(ctx), "", _bloque_ficha(ctx), _bloque_catalogo(ctx), _bloque_enlaces(ctx)]
+    partes = [*_cabecera(ctx), "", _bloque_ficha(ctx), _bloque_catalogo(ctx)]
+    oferta = _bloque_oferta(ctx)
+    if oferta:
+        partes.append(oferta)
+    partes.append(_bloque_enlaces(ctx))
     if ctx.ejemplo_estilo:
         partes.append("EJEMPLO DEL TONO Y LA LONGITUD DEL EQUIPO (una plantilla; no la copies, "
                       "no uses sus datos):\n" + ctx.ejemplo_estilo + "\n")
@@ -1181,6 +1236,7 @@ def generar(
     regenerar_de: str | None = None, ahora: datetime | None = None,
     texto_actual_html: str | None = None, seleccion_html: str | None = None,
     formato: str = ia_compuesto.FORMATO_AUTO, estructura_actual: dict[str, Any] | None = None,
+    oferta_id: str | None = None,
 ) -> BorradorAsistente:
     """El primer turno: monta el contexto, pide el borrador (si hay con qué),
     lo guarda con su coste y lo devuelve (ya en la sesión, sin commit). Sin
@@ -1224,7 +1280,7 @@ def generar(
         raise ValueError(f"Alcance desconocido: {alcance!r}.")
     ctx = ctx_mod.construir(
         session, thread=thread, usuario=usuario, alcance=alcance, destinatario=destinatario,
-        contacto=contacto, instruccion=instruccion, ahora=ahora,
+        contacto=contacto, instruccion=instruccion, ahora=ahora, oferta_id=oferta_id,
     )
     cfg = config_asistente(session)
     modelo_borrador, modelo_correccion = _modelos(cfg, settings)
