@@ -353,11 +353,12 @@ def hilos_de_la_empresa(
 def ajustar_al_presupuesto(
     ctx: Any, *, presupuesto: int, medir: Callable[[Any], int],
 ) -> int:
-    """Quita lo más viejo del nivel 4 (cuerpos primero, luego asuntos) y del
-    nivel 3 hasta que lo que se le pasa al modelo cabe en el presupuesto. El
-    hilo y el expediente no se tocan: si no caben, no cabe nada más. Devuelve
-    los tokens estimados finales y anota en `ctx.recortes` lo que se dejó
-    fuera."""
+    """Quita lo más viejo del nivel 4 (cuerpos primero, luego asuntos), del
+    nivel 3 y de las notas internas de la ficha (las no fijadas primero) hasta
+    que lo que se le pasa al modelo cabe en el presupuesto; luego, parte del
+    catálogo. El hilo y el resto del expediente no se tocan: si no caben, no
+    cabe nada más. Devuelve los tokens estimados finales y anota en
+    `ctx.recortes` lo que se dejó fuera."""
     tokens = medir(ctx)
     while tokens > presupuesto:
         # 1. Cuerpos del nivel 4, el más viejo primero.
@@ -374,6 +375,12 @@ def ajustar_al_presupuesto(
             mas_viejo = min(ctx.historico, key=lambda h: h.get("fecha") or "")
             ctx.historico.remove(mas_viejo)
             ctx.recortes.append(f"histórico: «{mas_viejo.get('asunto')}»")
+        elif getattr(ctx, "notas", None):
+            # 2. Las notas internas: la más vieja de las no fijadas primero.
+            mas_vieja = min(
+                ctx.notas, key=lambda n: (bool(n.get("fijada")), n.get("fecha") or ""))
+            ctx.notas.remove(mas_vieja)
+            ctx.recortes.append(f"nota interna del {(mas_vieja.get('fecha') or '')[:10] or '?'}")
         elif (getattr(ctx, "catalogo", None) or {}).get("consumibles"):
             # 3. El catálogo, lo último: primero los consumibles (del final),
             # luego las máquinas hasta dejar dos.
