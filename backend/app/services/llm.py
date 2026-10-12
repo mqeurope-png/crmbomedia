@@ -25,6 +25,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.services.ia.modelos import tope_de_salida
 
 logger = logging.getLogger(__name__)
 
@@ -411,6 +412,13 @@ def _invoke_claude(
     The usage the API reports (model, input/output tokens, cache reads and
     writes, duration) is left in this context for the caller to pick up with
     `tomar_ultimo_uso()` and write to `ia_llamadas`.
+
+    `max_tokens` is the room for the ANSWER. Thinking counts inside the
+    request's `max_tokens`, so when the model is going to think with these
+    `parametros` the request adds room for it (`modelos.tope_de_salida`): on
+    12/10/2026 a composed email with extended thinking spent the whole 2,500
+    thinking and came back with only a `thinking` block. A response cut at
+    the limit is an error, never half an answer.
     """
     try:
         import anthropic
@@ -419,12 +427,14 @@ def _invoke_claude(
             "anthropic package not installed"
         ) from exc
 
+    tope = tope_de_salida(model, parametros, max_tokens or MAX_TOKENS_OUTPUT)
     logger.info(
-        "llm.request model=%s system_chars=%d user_chars=%d parametros=%s",
+        "llm.request model=%s system_chars=%d user_chars=%d parametros=%s max_tokens=%d",
         model,
         _caracteres(system_prompt),
         _caracteres(user_prompt),
         ",".join(sorted(parametros)) if parametros else "-",
+        tope,
     )
 
     registrar_uso(None)
@@ -434,7 +444,7 @@ def _invoke_claude(
     try:
         message = client.messages.create(
             model=model,
-            max_tokens=max_tokens or MAX_TOKENS_OUTPUT,
+            max_tokens=tope,
             system=system_prompt if isinstance(system_prompt, str) else list(system_prompt),
             messages=[{
                 "role": "user",
@@ -467,10 +477,15 @@ def _invoke_claude(
             # Lo pensado cuenta dentro del tope: se lo comió entero antes de escribir.
             raise LLMUpstreamError(
                 "se acabó el tope de salida pensando, antes de escribir nada "
-                f"(max_tokens; blocks: {tipos})")
+                f"(max_tokens={tope}; blocks: {tipos})")
         raise LLMUpstreamError(f"Provider returned non-text content (blocks: {tipos})")
     if stop_reason == "max_tokens":
-        logger.warning("llm.truncated_response model=%s chars=%d", model, len(text))
+        # Media respuesta no sirve (un JSON cortado falla después con un error
+        # que esconde la causa): se dice aquí.
+        logger.warning("llm.truncated_response model=%s chars=%d max_tokens=%d",
+                       model, len(text), tope)
+        raise LLMUpstreamError(
+            f"la respuesta se cortó en el tope de salida (max_tokens={tope})")
     logger.info(
         "llm.response model=%s chars=%d tokens_in=%d tokens_out=%d cache_read=%d "
         "cache_write=%d ms=%s stop_reason=%s",

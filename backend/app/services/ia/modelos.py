@@ -73,6 +73,16 @@ def normalizar_lista(raw: Any, defecto: tuple[str, ...] = MODELOS_DE_PARTIDA) ->
 #: solo el bloque de pensamiento (12/10/2026: «Provider returned non-text
 #: content (blocks: thinking)»). Es un tope: se cobra lo que se piensa de verdad.
 MARGEN_PENSAMIENTO = 8000
+#: Con el esfuerzo bajo (donde el pensamiento no se puede apagar: Opus 5.5,
+#: Fable) se piensa poco: menos margen, menos gasto en el peor caso.
+MARGEN_PENSAMIENTO_BAJO = 3000
+#: Las familias que no piensan si no se les pide: sin margen (alguna tiene un
+#: tope de salida pequeño, y pasarse da 400). Una familia que no está aquí ni
+#: lleva el pensamiento apagado cuenta como que piensa (las nuevas lo hacen).
+_NO_PIENSAN_SOLAS: tuple[str, ...] = (
+    "claude-haiku-4-5", "claude-sonnet-4-5", "claude-opus-4-5", "claude-opus-4-1",
+    "claude-opus-4-2", "claude-sonnet-4-2", "claude-3",
+)
 
 
 def parametros_de_llamada(modelo: str | None, *, pensamiento_extendido: bool) -> dict[str, Any]:
@@ -88,20 +98,20 @@ def parametros_de_llamada(modelo: str | None, *, pensamiento_extendido: bool) ->
     return {}
 
 
-def puede_pensar(modelo: str | None, *, pensamiento_extendido: bool) -> bool:
-    """¿Puede pensar el modelo en esta llamada? Con el pensamiento extendido,
-    sí. Sin él, salvo que se haya apagado (`disabled`, o `between_tools` sin
-    herramientas): donde no se puede apagar se piensa poco (esfuerzo bajo:
-    Opus 5.5, Fable) y un modelo que no conocemos va con su defecto."""
-    if pensamiento_extendido:
-        return True
-    pensamiento = parametros_de_llamada(modelo, pensamiento_extendido=False).get("thinking") or {}
-    return pensamiento.get("type") not in ("disabled", "between_tools")
-
-
-def tope_de_salida(modelo: str | None, *, pensamiento_extendido: bool, respuesta: int) -> int:
+def tope_de_salida(modelo: str | None, parametros: dict[str, Any] | None,
+                   respuesta: int) -> int:
     """El `max_tokens` de una llamada: lo que ocupa la respuesta y, si el
-    modelo puede pensar, el margen para pensar antes de escribirla."""
-    if puede_pensar(modelo, pensamiento_extendido=pensamiento_extendido):
-        return respuesta + MARGEN_PENSAMIENTO
-    return respuesta
+    modelo va a pensar con los `parametros` que se le mandan, sitio para pensar
+    antes de escribirla. Sin margen si el pensamiento va apagado (`disabled`, o
+    `between_tools` sin herramientas) o si la familia no piensa sola; margen
+    pequeño con el esfuerzo bajo; el entero en el resto (el defecto de los
+    modelos actuales es pensar)."""
+    p = parametros or {}
+    tipo = (p.get("thinking") or {}).get("type")
+    if tipo in ("disabled", "between_tools"):
+        return respuesta
+    if (p.get("output_config") or {}).get("effort") == "low":
+        return respuesta + MARGEN_PENSAMIENTO_BAJO
+    if tipo is None and (modelo or "").strip().lower().startswith(_NO_PIENSAN_SOLAS):
+        return respuesta
+    return respuesta + MARGEN_PENSAMIENTO

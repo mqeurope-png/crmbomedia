@@ -342,8 +342,9 @@ def test_con_el_pensamiento_encendido_el_compuesto_y_su_correccion_salen_bien(
     assert "video" not in [x["tipo"] for x in r2.json()["borrador"]["estructura"]["bloques"]]
     assert api.llamadas[1]["max_tokens"] >= _ApiQuePiensa.PIENSA + _ApiQuePiensa.ESCRIBE
     # Apagado, el pensamiento se apaga y basta el tope de siempre.
-    http.patch("/api/erp/settings", headers=headers, json={"asistente": {
+    r = http.patch("/api/erp/settings", headers=headers, json={"asistente": {
         "pensamiento_extendido": False}})
+    assert r.status_code == 200, r.text
     api.respuestas.append(COMPUESTO_DTF)
     with patch("anthropic.Anthropic", api):
         r3 = _pedir(http, thread_id, instruccion="mándale la gama DTF", formato="compuesto")

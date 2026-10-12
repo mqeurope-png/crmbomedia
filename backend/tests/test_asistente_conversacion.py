@@ -785,19 +785,24 @@ def test_los_parametros_de_pensamiento_por_modelo() -> None:
     assert modelos.parametros_de_llamada("claude-haiku-4-5", pensamiento_extendido=False) == {}
     assert modelos.parametros_de_llamada("otro-modelo", pensamiento_extendido=False) == {}
     assert modelos.parametros_de_llamada("claude-opus-5-5", pensamiento_extendido=True) == {}
-    # El tope de salida deja sitio para pensar donde el modelo piensa: lo pensado
-    # cuenta dentro de `max_tokens`.
-    margen = modelos.MARGEN_PENSAMIENTO
-    assert modelos.tope_de_salida("claude-haiku-5-5", pensamiento_extendido=True,
-                                  respuesta=2500) == 2500 + margen
-    assert modelos.tope_de_salida("claude-haiku-5-5", pensamiento_extendido=False,
-                                  respuesta=2500) == 2500
-    assert modelos.tope_de_salida("claude-sonnet-5-5", pensamiento_extendido=False,
-                                  respuesta=2500) == 2500
-    # Opus 5.5 no se puede apagar (piensa poco) y uno que no conocemos va con su defecto.
-    assert modelos.tope_de_salida("claude-opus-5-5", pensamiento_extendido=False,
-                                  respuesta=2500) == 2500 + margen
-    assert modelos.puede_pensar("otro-modelo", pensamiento_extendido=False) is True
+    # El tope de salida deja sitio para pensar donde el modelo va a pensar con lo
+    # que se le manda: lo pensado cuenta dentro de `max_tokens`.
+    margen, bajo_margen = modelos.MARGEN_PENSAMIENTO, modelos.MARGEN_PENSAMIENTO_BAJO
+
+    def tope(modelo: str, pensamiento: bool) -> int:
+        parametros = modelos.parametros_de_llamada(modelo, pensamiento_extendido=pensamiento)
+        return modelos.tope_de_salida(modelo, parametros, 2500)
+
+    assert tope("claude-haiku-5-5", True) == 2500 + margen          # piensa: su defecto
+    assert tope("claude-haiku-5-5", False) == 2500                  # disabled
+    assert tope("claude-sonnet-5-5", False) == 2500                 # between_tools
+    assert tope("claude-opus-5-5", False) == 2500 + bajo_margen     # no se apaga: esfuerzo bajo
+    assert tope("claude-opus-5-5", True) == 2500 + margen
+    # Las familias que no piensan solas, sin margen (alguna tiene un tope pequeño).
+    assert tope("claude-haiku-4-5", True) == 2500
+    assert tope("claude-3-5-haiku-20241022", False) == 2500
+    # Una que no conocemos va con su defecto, que en las nuevas es pensar.
+    assert tope("claude-sonnet-6", False) == 2500 + margen
     assert modelos.es_nombre_valido("claude-haiku-5-5") and not modelos.es_nombre_valido("x y")
     assert modelos.normalizar_lista(["Claude-Opus-5-5", "", "mal nombre"]) == ["claude-opus-5-5"]
 
