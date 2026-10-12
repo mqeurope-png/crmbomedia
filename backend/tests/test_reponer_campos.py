@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, update
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -138,9 +138,11 @@ def test_repone_lo_que_escribieron_formularios_y_workflows_y_solo_lo_que_falta(
     _respuesta(s, form, ana, "DTF", T0)
     _paso(s, ana, {"field": "INTERES", "value": "UV"}, T0 + timedelta(days=1))
     _paso(s, ana, {"field": "INTERES", "value": "Láser"}, T0 + timedelta(days=2))
-    # Un campo nativo va a su columna, no al JSON; un paso fallido no cuenta.
+    # Un campo nativo va a su columna, no al JSON (también en los pasos de
+    # antes de la marca `native`); un paso fallido no cuenta.
     _paso(s, ana, {"field": "job_title", "old": None, "new": "CEO", "native": True},
           T0 + timedelta(days=3))
+    _paso(s, ana, {"field": "job_title", "value": "CEO"}, T0 + timedelta(days=3))
     _paso(s, ana, {"field": "OTRO", "value": "x"}, T0 + timedelta(days=4), estado="failed")
     # La clave sigue ahí (con otro valor): no se pisa.
     berta = _contacto(s, "Berta", {"product_interest": "Otra"})
@@ -151,7 +153,8 @@ def test_repone_lo_que_escribieron_formularios_y_workflows_y_solo_lo_que_falta(
     _respuesta(s, form, carla, "UV", T0 + timedelta(days=1))
     # Spam: no escribió nada.
     _respuesta(s, form, _contacto(s, "Spam"), "DTF", T0, spam=True)
-    # Protegido entero a mano (marca antigua): no se toca.
+    # Con la marca antigua (el modal entero): lo que tiene se queda, lo que
+    # falta se repone (aquel modal no podía quitar claves).
     dani = _contacto(s, "Dani", {"Horario": "9-14"})
     protection.mark_manually_edited(dani, ["custom_fields"])
     _respuesta(s, form, dani, "DTF", T0)
@@ -173,21 +176,26 @@ def test_repone_lo_que_escribieron_formularios_y_workflows_y_solo_lo_que_falta(
 
     plan = planificar(s)
     por_contacto = {r.contact_id: r for r in plan.reposiciones}
-    assert set(por_contacto) == {ana.id, carla.id}
+    assert set(por_contacto) == {ana.id, carla.id, dani.id}
     assert por_contacto[ana.id].claves == {"product_interest": "DTF", "INTERES": "Láser"}
     assert por_contacto[ana.id].origen == {"product_interest": FORMULARIO, "INTERES": WORKFLOW}
     assert por_contacto[carla.id].claves == {"product_interest": "DTF"}
-    assert plan.protegidos == 1
+    assert por_contacto[dani.id].claves == {"product_interest": "DTF"}
     assert plan.no_es_objeto == 1
     assert plan.en_brevo_y_agile == 1
 
-    # Entre el informe y el --apply, una sincronización trae INTERES: se queda.
-    c = s.get(Contact, ana.id)
-    c.custom_fields = json.dumps({"Horario": "9-14", "INTERES": "Impresoras"})
-    s.commit()
+    # Entre el informe y el --apply, una sincronización trae INTERES. La
+    # sesión del informe aún tiene la copia vieja de Ana: `aplicar` tiene que
+    # releerla, o escribiría el JSON viejo y borraría lo del sync.
+    assert s.get(Contact, ana.id).custom_fields == json.dumps({"Horario": "9-14"})
+    s.execute(
+        update(Contact).where(Contact.id == ana.id)
+        .values(custom_fields=json.dumps({"Horario": "9-14", "INTERES": "Impresoras"}))
+        .execution_options(synchronize_session=False)
+    )
 
-    assert aplicar(s, plan, actor_email="script:test") == 2
-    s.commit()
+    assert aplicar(s, plan, actor_email="script:test", lote=1) == 3
+    assert _campos(s, dani) == {"Horario": "9-14", "product_interest": "DTF"}
     assert _campos(s, ana) == {
         "Horario": "9-14", "INTERES": "Impresoras", "product_interest": "DTF",
     }

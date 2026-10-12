@@ -34,7 +34,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.session import get_engine
-from app.integrations.brevo.mapper import SECONDARY_PHONE_ATTRS, _normalise_attr_key
+from app.integrations.brevo.mapper import _SECONDARY_PHONE_KEYS, _normalise_attr_key
 from app.models.crm import Contact, ContactPhone
 from app.services.contact_sync_protection import decode_custom_fields
 
@@ -44,12 +44,11 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 #: Atributos internos de Brevo, en la forma de `_normalise_attr_key`.
 RUIDO: frozenset[str] = frozenset({"SIB_CONTACT_OWNER", "EXT_ID"})
 
-_TELEFONOS: frozenset[str] = frozenset(
-    _normalise_attr_key(k) for k in SECONDARY_PHONE_ATTRS
-)
-
 
 def _digitos(valor: Any) -> str:
+    """Los dígitos (y el `+`) de un número: la misma comparación con la que
+    el sync de Brevo decide si un teléfono secundario ya está
+    (`reconcile_brevo_channels`)."""
     return "".join(c for c in str(valor) if c.isdigit() or c == "+")
 
 
@@ -62,7 +61,7 @@ def claves_de_ruido(campos: dict[str, Any], telefonos: set[str]) -> list[str]:
         normal = _normalise_attr_key(clave)
         if normal in RUIDO:
             quitar.append(clave)
-        elif normal in _TELEFONOS and valor is not None:
+        elif normal in _SECONDARY_PHONE_KEYS and valor is not None:
             digitos = _digitos(valor)
             if digitos and digitos in telefonos:
                 quitar.append(clave)

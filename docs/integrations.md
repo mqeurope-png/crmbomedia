@@ -200,9 +200,10 @@ El JSON `contacts.custom_fields` («Datos adicionales» en la ficha) lo
 escriben varios: el sync de Brevo (su lista blanca de atributos), el de
 AgileCRM («Horario», «CONTACTO Persona»), los formularios web
 (`contact.custom.<clave>`), el paso «Modificar campo» de los workflows y la
-ficha. **Cada sync fusiona clave a clave** y nunca borra una clave; las
-editadas a mano no las toca (detalle en `integrations-architecture.md` §
-«Merge de campos multi-sistema»).
+ficha. **Cada sync fusiona clave a clave**: escribe lo que trae y solo
+quita lo que esa misma cuenta deja de traer, si nadie lo ha tocado; las
+claves editadas a mano no las toca (detalle en
+`integrations-architecture.md` § «Merge de campos multi-sistema»).
 
 Hasta el arreglo del 12/10/2026 cada sync sustituía el JSON entero, así que
 un contacto de Brevo y de Agile pudo perder lo de uno de los dos, y lo de

@@ -14,8 +14,14 @@ historial de los workflows (`workflow_run_history`). Aquí se rehace, por
 contacto y por orden de fecha, lo que dejaron —el formulario solo rellena
 claves vacías; el workflow escribe— y se reponen las claves que FALTAN hoy.
 Nunca se pisa una clave que exista, ni una quitada a mano (su marca
-`custom_fields.<clave>`), ni un contacto con el JSON entero protegido (la
-marca antigua `custom_fields`), ni un JSON que no sea un objeto.
+`custom_fields.<clave>`), ni un JSON que no sea un objeto. La marca antigua
+`custom_fields` (de antes de marcar por clave) no lo impide: el modal de
+entonces no podía quitar claves, así que lo que falta lo quitó un sync.
+
+Las respuestas de los formularios se leen con el mapeo de HOY de cada
+formulario (no se guardó el de entonces): si un campo se remapeó a otra
+clave, saldrá con la nueva. El informe (`--probar`) lista las claves por
+nombre para revisarlas antes de `--apply`.
 """
 
 from __future__ import annotations
@@ -34,8 +40,8 @@ from app.models.crm import Contact, ExternalReference, ExternalSystem
 from app.models.web_forms import FormSubmission, WebForm
 from app.models.workflows import WorkflowRunHistory
 from app.services.contact_sync_protection import (
-    CUSTOM_FIELDS,
     custom_field_mark,
+    custom_value_is_empty,
     decode_custom_fields,
     get_manually_edited_fields,
 )
@@ -43,6 +49,8 @@ from app.services.contact_sync_protection import (
 FORMULARIO = "formulario"
 WORKFLOW = "workflow"
 _PASO_MODIFICAR_CAMPO = "action_set_custom_field"
+#: Contactos por consulta al cargarlos, y por commit al reponer.
+_LOTE = 200
 
 
 @dataclass
@@ -57,8 +65,6 @@ class Reposicion:
 @dataclass
 class Plan:
     reposiciones: list[Reposicion] = field(default_factory=list)
-    #: Contactos con el JSON entero protegido a mano: no se tocan.
-    protegidos: int = 0
     #: Contactos cuyo JSON no es un objeto: no se tocan.
     no_es_objeto: int = 0
     #: Contactos que están a la vez en Brevo y en Agile (lo suyo vuelve
@@ -72,14 +78,11 @@ def _utc(fecha: datetime | None) -> datetime:
     return fecha if fecha.tzinfo else fecha.replace(tzinfo=UTC)
 
 
-def _vacio(valor: Any) -> bool:
-    return valor is None or (isinstance(valor, str) and not valor.strip())
-
-
 def _escrituras(session: Session) -> dict[str, list[tuple[datetime, str, dict[str, Any]]]]:
     """Por contacto, lo que escribieron en `custom_fields` los formularios
     y los workflows: `(fecha, origen, {clave: valor})`."""
     from app.services.web_forms.submit import _extract_contact_data  # noqa: PLC0415
+    from app.workflows.steps import _CONTACT_NATIVE_FIELDS  # noqa: PLC0415
 
     por_contacto: dict[str, list[tuple[datetime, str, dict[str, Any]]]] = defaultdict(list)
     formularios: dict[str, WebForm | None] = {}
@@ -117,11 +120,13 @@ def _escrituras(session: Session) -> dict[str, list[tuple[datetime, str, dict[st
             resultado = json.loads(paso.result_json or "{}")
         except (TypeError, ValueError):
             continue
-        # Los campos nativos (`native`) van a su columna, no al JSON.
+        # Los campos nativos van a su columna, no al JSON: los marca
+        # `native`, y los pasos de antes de esa marca se reconocen por el
+        # nombre (entonces se colaban en el JSON por error).
         if not isinstance(resultado, dict) or resultado.get("native"):
             continue
         clave = str(resultado.get("field") or "").strip()
-        if clave:
+        if clave and clave not in _CONTACT_NATIVE_FIELDS:
             por_contacto[paso.contact_id].append(
                 (_utc(paso.executed_at), WORKFLOW, {clave: resultado.get("value")})
             )
@@ -146,35 +151,38 @@ def _rehacer(
 
 def _faltan(contact: Contact, valores: dict[str, Any]) -> dict[str, Any] | None:
     """Las claves de `valores` que faltan en el contacto y se pueden
-    reponer; None si el contacto no se puede tocar."""
+    reponer; None si lo guardado no es un objeto JSON (no se toca)."""
     actuales = decode_custom_fields(contact.custom_fields)
     if actuales is None:
         return None
     marcas = set(get_manually_edited_fields(contact))
-    if CUSTOM_FIELDS in marcas:
-        return None
     return {
         clave: valor
         for clave, valor in valores.items()
         if clave not in actuales
         and custom_field_mark(clave) not in marcas
-        and not _vacio(valor)
+        and not custom_value_is_empty(valor)
     }
 
 
 def planificar(session: Session) -> Plan:
     plan = Plan()
-    for contact_id, escrituras in _escrituras(session).items():
-        contact = session.get(Contact, contact_id)
+    escrituras = _escrituras(session)
+    ids = sorted(escrituras)
+    contactos: dict[str, Contact] = {}
+    for i in range(0, len(ids), _LOTE):
+        lote = ids[i:i + _LOTE]
+        contactos.update(
+            (c.id, c) for c in session.scalars(select(Contact).where(Contact.id.in_(lote)))
+        )
+    for contact_id in ids:
+        contact = contactos.get(contact_id)
         if contact is None:
             continue
-        valores, origen = _rehacer(escrituras)
+        valores, origen = _rehacer(escrituras[contact_id])
         faltan = _faltan(contact, valores)
         if faltan is None:
-            if decode_custom_fields(contact.custom_fields) is None:
-                plan.no_es_objeto += 1
-            else:
-                plan.protegidos += 1
+            plan.no_es_objeto += 1
             continue
         if faltan:
             plan.reposiciones.append(
@@ -195,17 +203,24 @@ def planificar(session: Session) -> Plan:
             Contact.id.in_(en_brevo), Contact.id.in_(en_agile)
         )
     ) or 0
-    plan.reposiciones.sort(key=lambda r: r.contact_id)
     return plan
 
 
-def aplicar(session: Session, plan: Plan, *, actor_email: str) -> int:
-    """Repone las claves del plan que sigan faltando (se vuelve a mirar
-    cada contacto: entre el informe y esto pudo cambiar), con rastro en la
-    auditoría. Devuelve cuántos contactos se tocaron. No hace commit."""
+def aplicar(session: Session, plan: Plan, *, actor_email: str, lote: int = _LOTE) -> int:
+    """Repone las claves del plan que sigan faltando, con rastro en la
+    auditoría, y devuelve cuántos contactos se tocaron.
+
+    Cada contacto se vuelve a leer de la base de datos y bloqueado
+    (`SELECT … FOR UPDATE`): entre el informe y esto un sync pudo fusionar
+    claves nuevas, y escribir el JSON leído antes las borraría. Hace commit
+    cada `lote` contactos, para no tener bloqueados los de los syncs."""
     hechos = 0
+    pendientes = 0
     for reposicion in plan.reposiciones:
-        contact = session.get(Contact, reposicion.contact_id)
+        contact = session.get(
+            Contact, reposicion.contact_id,
+            with_for_update=True, populate_existing=True,
+        )
         if contact is None:
             continue
         faltan = _faltan(contact, reposicion.claves)
@@ -225,5 +240,9 @@ def aplicar(session: Session, plan: Plan, *, actor_email: str) -> int:
             },
         )
         hechos += 1
-    session.flush()
+        pendientes += 1
+        if pendientes >= lote:
+            session.commit()
+            pendientes = 0
+    session.commit()
     return hechos

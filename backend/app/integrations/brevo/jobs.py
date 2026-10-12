@@ -380,7 +380,12 @@ def upsert_brevo_contact(
             session.delete(ref)
             session.flush()
         else:
+            from app.services import contact_sync_protection as _protection  # noqa: PLC0415
+
             _apply_update(contact, record)
+            # Antes de guardar los extras nuevos: lo que esta cuenta trajo
+            # la última vez está en la referencia.
+            _protection.release_dropped_custom_fields(contact, ref, ref_extras)
             _apply_ref_extras(ref, ref_extras)
             _sync_list_tag_delta(
                 session,

@@ -198,7 +198,9 @@ def test_minimal_payload_does_not_raise_and_extras_are_empty():
     assert extras["external_created_at"] is None
     assert extras["external_updated_at"] is None
     assert extras["origin_detail"] is None
-    assert extras["metadata"] is None
+    # Siempre consta lo que trae en `custom_fields` (aquí, nada): el
+    # siguiente sync quita lo que la cuenta deje de traer.
+    assert extras["metadata"] == {"custom_fields": {}}
 
 
 def test_external_timestamps_parsed_from_unix_seconds():

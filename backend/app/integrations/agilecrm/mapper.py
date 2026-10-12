@@ -606,6 +606,9 @@ def map_agilecrm_contact_to_internal(
     raw_tags = _raw_tags(payload.get("tags"))
     if raw_tags is not None:
         metadata["tags_raw"] = raw_tags
+    # Lo que esta cuenta trae en `custom_fields`: el siguiente sync quita
+    # del contacto lo que deje de traer (si nadie lo tocó).
+    metadata["custom_fields"] = custom_fields
     source = _clean_str(payload.get("source"))
 
     external_created_at = _to_datetime(payload.get("created_time"))

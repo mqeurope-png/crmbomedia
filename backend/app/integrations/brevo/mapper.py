@@ -355,6 +355,9 @@ def map_brevo_contact_to_internal(
             "list_ids": list_ids,
             "email_blacklisted": bool(payload.get("emailBlacklisted", False)),
             "sms_blacklisted": bool(payload.get("smsBlacklisted", False)),
+            # Lo que esta cuenta trae en `custom_fields`: el siguiente sync
+            # quita del contacto lo que deje de traer (si nadie lo tocó).
+            "custom_fields": custom,
         },
     }
     # Promote the source-system dates onto the contact record. The

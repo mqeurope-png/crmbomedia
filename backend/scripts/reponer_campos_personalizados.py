@@ -4,9 +4,10 @@ Hasta el arreglo de octubre de 2026, cada sincronización de Brevo o de
 Agile sustituía entero el JSON de campos personalizados del contacto y se
 llevaba lo demás. Este script repone lo que escribió BoHub mismo —los
 formularios web y el paso «Modificar campo» de los workflows— a partir de
-su rastro, y SOLO las claves que faltan hoy: nunca pisa un valor, ni una
-clave quitada a mano, ni un contacto protegido a mano entero
-(`app.services.reponer_campos`).
+su rastro, y SOLO las claves que faltan hoy: nunca pisa un valor ni una
+clave quitada a mano (`app.services.reponer_campos`). Las respuestas de los
+formularios se leen con el mapeo de hoy de cada formulario: revisa los
+nombres de la lista antes de --apply.
 
     # 1) Informe, SIN escribir (por defecto).
     python -m scripts.reponer_campos_personalizados --probar
@@ -61,9 +62,9 @@ def main() -> int:
             print(f"\nLos primeros {min(_MUESTRA, len(plan.reposiciones))} contactos:")
             for r in plan.reposiciones[:_MUESTRA]:
                 print(f"  {r.contact_id}: {', '.join(sorted(r.claves))}")
-        print(f"\nNo se tocan (campos personalizados protegidos a mano enteros): "
-              f"{plan.protegidos}")
-        print(f"No se tocan (lo guardado no es un objeto JSON): {plan.no_es_objeto}")
+        print("(Las respuestas de los formularios se leen con el mapeo de hoy de cada "
+              "formulario: si alguna clave no te suena, revísala antes de --apply.)")
+        print(f"\nNo se tocan (lo guardado no es un objeto JSON): {plan.no_es_objeto}")
         print(f"\nContactos que están en Brevo y en Agile: {plan.en_brevo_y_agile}. "
               "Lo suyo vuelve con «Sync completa» → «Re-fetch completo (full sync)» "
               "en Administración → Cuentas de integración.")
@@ -71,12 +72,15 @@ def main() -> int:
         if not args.apply:
             print("\nNada escrito. Para reponerlas: --apply.")
             return 0
+        # Se cierra la lectura del informe: `aplicar` vuelve a leer cada
+        # contacto, bloqueado, y escribe por lotes.
+        session.rollback()
         try:
             hechos = aplicar(session, plan, actor_email="script:reponer_campos_personalizados")
-            session.commit()
-        except Exception as exc:  # noqa: BLE001 — se informa y no queda nada a medias
+        except Exception as exc:  # noqa: BLE001 — lo escrito por lotes se queda; se puede relanzar
             session.rollback()
-            print(f"ERROR: {exc}", file=sys.stderr)
+            print(f"ERROR: {exc}. Lo ya repuesto se queda; relanza --apply para "
+                  "seguir (solo repone lo que siga faltando).", file=sys.stderr)
             return 1
     print(f"\n✔ Campos personalizados repuestos en {hechos} contactos "
           "(con rastro en la auditoría).")

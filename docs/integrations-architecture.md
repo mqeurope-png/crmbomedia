@@ -426,15 +426,25 @@ desde el `_apply_update` de cada conector:
 | `contacts.origin` | Primer sistema que importó; no se sobrescribe | Es un marcador legacy de un único valor; los orígenes reales viven en `external_references`. Sobrescribir hacía que la ficha "cambiara de origen" en cada sync. |
 | `contacts.created_at_external` | La fecha **más antigua** | El sistema más viejo es la creación real del contacto. |
 | `contacts.updated_at_external` | La fecha **más reciente** | La última actividad en cualquier sistema. |
-| `contacts.custom_fields` | **Clave a clave**: cada sync escribe solo las claves que trae con valor; nunca borra una clave | Antes se sustituía el JSON entero y el último sync en pasar borraba lo del otro (el «Horario» de Agile al pasar Brevo y al revés) y lo que escriben los formularios web y los workflows. Lo aplica `contact_sync_protection.merge_custom_fields`. |
+| `contacts.custom_fields` | **Clave a clave**: cada sync escribe solo las claves que trae con valor, y solo quita las que ESE origen trajo la última vez y ya no trae, si nadie las ha tocado | Antes se sustituía el JSON entero y el último sync en pasar borraba lo del otro (el «Horario» de Agile al pasar Brevo y al revés) y lo que escriben los formularios web y los workflows. Lo aplican `contact_sync_protection.merge_custom_fields` y `release_dropped_custom_fields`. |
+
+Para saber qué quitar, cada referencia (`external_references.metadata`)
+guarda lo que su cuenta trajo en `custom_fields` en el último sync. Si una
+clave deja de venir (la borraron en Brevo o en Agile) y el contacto sigue
+teniendo el valor que puso esa cuenta, se quita; si lo cambió otro (otra
+cuenta, un formulario, un workflow, la ficha) se queda. Las referencias de
+antes de este cambio no tienen ese dato: su primer sync no quita nada y lo
+apunta.
 
 Las claves de `custom_fields` editadas a mano se protegen **una a una**: el
 PATCH de la ficha marca `custom_fields.<clave>` (y el modal manda solo las
 claves que cambian) y el sync no toca esa clave, pero sigue trayendo las
-demás. Con valor `null` en el PATCH la clave se quita, y su marca impide que
-el sync la devuelva. La marca antigua `custom_fields` a secas (de antes de
-fusionar por clave) sigue protegiendo el JSON entero hasta pulsar «Volver al
-valor de Agile/Brevo». Si una misma clave llega de dos cuentas con valores
+demás. El PATCH fusiona: las claves que no vienen se quedan; con valor
+`null` una clave se quita (y su marca impide que el sync la devuelva), y
+`"custom_fields": null` vacía el JSON entero. Un valor que no es un objeto
+JSON da 422. La marca antigua `custom_fields` a secas (de antes de marcar
+por clave) protege todas las claves que ya tiene el contacto y deja que se
+añadan las que falten. Si una misma clave llega de dos cuentas con valores
 distintos, gana la última que sincroniza, como en cualquier otro campo.
 
 Para recuperar lo que ya se perdió (ver `integrations.md` § «Campos

@@ -25,10 +25,13 @@ Separamos los campos en dos capas + tags merge:
   **clave a clave**, nunca se sustituye entero. Cada sync escribe solo
   las claves que trae con valor; las demás —las de la otra integración
   o de otra cuenta, las de un formulario web, un workflow o la ficha—
-  se quedan. El sync nunca borra una clave. Cada clave editada a mano
-  se marca por separado (`custom_fields.<clave>`) y el sync no la toca;
-  la marca `custom_fields` a secas (la de antes de fusionar por clave)
-  sigue protegiendo el JSON entero hasta que se quite.
+  se quedan. Solo quita una clave que ESE origen trajo la última vez y
+  ya no trae, si sigue con el valor que él puso (lo borraron allí y
+  nadie lo ha tocado aquí: `drop_released_custom_fields`). Cada clave
+  editada a mano se marca por separado (`custom_fields.<clave>`) y el
+  sync no la toca; la marca `custom_fields` a secas (la de antes de
+  fusionar por clave) protege todas las claves que ya tiene el contacto,
+  y deja añadir las que falten.
 
 - **Eventos Brevo** (opens/clicks/bounces/unsubscribes): siempre se
   importan a `email_message_events` sin tocar el contacto. No entran
@@ -244,15 +247,29 @@ def _mismo_valor(guardado: Any, nuevo: Any) -> bool:
     return _como_texto(guardado) == _como_texto(nuevo)
 
 
+def custom_value_is_empty(valor: Any) -> bool:
+    """Un valor que no cuenta como dato: ni lo escribe un sync ni se
+    repone (`None`, texto vacío o solo espacios)."""
+    return valor is None or (isinstance(valor, str) and not valor.strip())
+
+
+def _clave_protegida(clave: str, marcas: set[str], actuales: dict[str, Any]) -> bool:
+    """La clave editada a mano (`custom_fields.<clave>`), o cualquier clave
+    que ya tenga el contacto si lleva la marca antigua `custom_fields`."""
+    return custom_field_mark(clave) in marcas or (
+        CUSTOM_FIELDS in marcas and clave in actuales
+    )
+
+
 def merge_custom_fields(contact: Contact, incoming: Any) -> str | None:
     """Las claves que trae un sync, fusionadas en el JSON del contacto:
     el JSON resultante, o None si no cambia nada.
 
     Solo se escriben las claves que trae, con valor; las demás se quedan
     (las de la otra integración o de otra cuenta, las de un formulario,
-    un workflow o la ficha): el sync nunca borra una clave. Las claves
-    editadas a mano (`custom_fields.<clave>`) no se tocan. Si lo guardado
-    no es un objeto JSON no se pisa: se deja y se avisa en el log."""
+    un workflow o la ficha). Las claves protegidas a mano no se tocan
+    (`_clave_protegida`). Si lo guardado no es un objeto JSON no se pisa:
+    se deja y se avisa en el log."""
     nuevos = decode_custom_fields(incoming)
     if not nuevos:
         return None
@@ -267,13 +284,74 @@ def merge_custom_fields(contact: Contact, incoming: Any) -> str | None:
     marcas = set(_load(contact))
     resultado = dict(actuales)
     for clave, valor in nuevos.items():
-        vacio = valor is None or (isinstance(valor, str) and not valor.strip())
-        if vacio or custom_field_mark(clave) in marcas:
+        if custom_value_is_empty(valor) or _clave_protegida(clave, marcas, actuales):
             continue
         resultado[clave] = valor
     if resultado == actuales:
         return None
     return json.dumps(resultado, default=str)
+
+
+def custom_fields_from_reference(ref: Any) -> dict[str, Any] | None:
+    """Lo que un origen (una `ExternalReference`) trajo en `custom_fields`
+    la última vez que se sincronizó, o None si no consta (referencias de
+    antes de guardarlo: entonces no se quita nada)."""
+    raw = getattr(ref, "metadata_json", None)
+    if not raw:
+        return None
+    try:
+        metadata = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(metadata, dict):
+        return None
+    campos = metadata.get(CUSTOM_FIELDS)
+    return campos if isinstance(campos, dict) else None
+
+
+def drop_released_custom_fields(
+    contact: Contact, previous: dict[str, Any] | None, current: dict[str, Any],
+) -> list[str]:
+    """Quita las claves que ese origen trajo la última vez (`previous`) y ya
+    no trae (`current`), si siguen con el valor que él puso: las borraron
+    allí y nadie las ha tocado aquí. Una clave que cambió otro (otra cuenta,
+    un formulario, un workflow, la ficha) o que está protegida a mano se
+    queda. Sin `previous` no se quita nada. Devuelve las claves quitadas."""
+    if not previous:
+        return []
+    actuales = decode_custom_fields(contact.custom_fields)
+    if not actuales:
+        return []
+    marcas = set(_load(contact))
+    quitar = [
+        clave for clave, valor in previous.items()
+        if clave not in current
+        and clave in actuales
+        and actuales[clave] == valor
+        and not _clave_protegida(clave, marcas, actuales)
+    ]
+    if quitar:
+        for clave in quitar:
+            del actuales[clave]
+        contact.custom_fields = json.dumps(actuales, default=str) if actuales else None
+    return quitar
+
+
+def release_dropped_custom_fields(
+    contact: Contact, ref: Any, extras: dict[str, Any] | None,
+) -> list[str]:
+    """`drop_released_custom_fields` para el upsert de un sync: lo de la
+    última vez sale de los metadatos de la referencia (`ref`) y lo de
+    ahora, de los que trae el mapper (`extras["metadata"]["custom_fields"]`).
+    Hay que llamarlo ANTES de guardar los extras nuevos en la referencia."""
+    metadata = (extras or {}).get("metadata") or {}
+    actual = metadata.get(CUSTOM_FIELDS) if isinstance(metadata, dict) else None
+    if not isinstance(actual, dict):
+        # El mapper no dice qué trae: no se quita nada.
+        return []
+    return drop_released_custom_fields(
+        contact, custom_fields_from_reference(ref), actual
+    )
 
 
 def apply_manual_custom_fields(contact: Contact, payload: Any) -> list[str]:
@@ -338,7 +416,7 @@ def apply_sync_update(
     este wrapper reemplaza esas funciones.
 
     `custom_fields` no se sustituye: se fusiona clave a clave
-    (`merge_custom_fields`)."""
+    (`merge_custom_fields`, que mira las marcas de cada clave)."""
     changes: dict[str, object] = {}
     for field, value in record.items():
         if field in LAYER_B_FIELDS:
@@ -348,13 +426,13 @@ def apply_sync_update(
             # Política específica de Brevo cuando consolida por email:
             # no pisa el email del contacto existente.
             continue
-        if is_field_protected(contact, field):
-            continue
         if field == CUSTOM_FIELDS:
             merged = merge_custom_fields(contact, value)
             if merged is not None:
                 contact.custom_fields = merged
                 changes[field] = merged
+            continue
+        if is_field_protected(contact, field):
             continue
         current = getattr(contact, field, None)
         if current != value:
