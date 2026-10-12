@@ -705,7 +705,8 @@ def aplicar_operaciones(estructura: dict[str, Any], operaciones: Any, refs: Refe
                               "no se ha podido: el bloque se queda como estaba.")
                 continue
             limpio[0]["id"] = bloques[i]["id"]
-            bloques[i:i + 1] = limpio[:1]
+            # Una fila que pasa de tres se parte en varias (filas parejas): van todas.
+            bloques[i:i + 1] = limpio
         elif tipo in ("añadir", "anadir", "add"):
             nuevo = conv.bloque(op.get("bloque"))
             limpio = bq.normalizar({"bloques": [nuevo]}, avisos)["bloques"] if nuevo else []
@@ -729,7 +730,7 @@ def aplicar_operaciones(estructura: dict[str, Any], operaciones: Any, refs: Refe
             limpio = bq.normalizar({"bloques": [nuevo]}, avisos)["bloques"] if nuevo else []
             if limpio:
                 limpio[0]["id"] = bloques[i]["id"]
-                bloques[i:i + 1] = limpio[:1]
+                bloques[i:i + 1] = limpio
         elif tipo == "idioma":
             e["idioma"] = str(op.get("valor") or idioma).strip().lower()[:2] or idioma
         else:
@@ -765,6 +766,47 @@ def texto_libre(estructura: dict[str, Any]) -> str:
 _IMPORTE_RE = re.compile(
     r"(?:(?:€|\$|£|EUR|USD|GBP)\s?\d[\d.,\s]*\d|\d[\d.,\s]*\d?\s?(?:€|\$|£|EUR|USD|GBP)\b|"
     r"\d[\d.,\s]*\d?\s?(?:€|\$|£))")
+
+
+#: Un código de modelo en un texto: letras y al menos tres cifras seguidas
+#: («3000U», «5000U», «i3200»); un número solo («3000 Stück») no lo es.
+_CODIGO_TEXTO_RE = re.compile(r"\b(?=[A-Za-z0-9]*\d{3})(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{4,}\b")
+#: Ni una medida con su unidad («1200mm», «2000W», «230V», «1000ml», «60x90»).
+_MEDIDA_RE = re.compile(
+    r"^\d+(?:[.,]\d+)?(?:mm|cm|m|km|w|kw|v|kv|a|ma|mah|ml|cl|l|g|kg|dpi|ppp|rpm|hz|khz|s|ms|"
+    r"h|min|gb|mb|tb|°c|x\d+)$", re.IGNORECASE)
+#: En el nombre de una ficha también vale el número solo («MBO 3050»).
+_CODIGO_FICHA_RE = re.compile(r"\b(?=[A-Za-z0-9]*\d{3})[A-Za-z0-9]{3,}\b")
+
+
+def modelos_con_otro_nombre(texto: str, nombres: list[str]) -> list[tuple[str, str]]:
+    """Los códigos de modelo del texto («3000U») con el número de una máquina
+    que el correo enseña en ficha con otro código («artisJet 3000Pro
+    Freebird»): puede que el texto hable de ella como si fuera otra. El
+    12/10/2026 el correo enseñaba la ficha del 3000Pro y decía «Den artisJet
+    3000U PRO prüfe ich noch»: el cliente lo había marcado con el nombre de
+    su formulario. Hasta que el compositor tenga alias por producto, se avisa
+    para que la persona lo revise; el texto no se toca."""
+    def _numero(codigo: str) -> str:
+        m = re.search(r"\d{3,}", codigo)
+        return m.group(0) if m else ""
+
+    fichas = []
+    for nombre in nombres:
+        codigos = {m.group(0).lower() for m in _CODIGO_FICHA_RE.finditer(nombre or "")}
+        fichas.append((nombre, codigos, {_numero(c) for c in codigos} - {""}))
+    todos = set().union(*(codigos for _, codigos, _ in fichas)) if fichas else set()
+    salida: list[tuple[str, str]] = []
+    for m in _CODIGO_TEXTO_RE.finditer(texto or ""):
+        codigo = m.group(0)
+        # Si es el código de alguna ficha del correo, nombra esa; una medida, nada.
+        if codigo.lower() in todos or _MEDIDA_RE.match(codigo):
+            continue
+        for nombre, codigos, numeros in fichas:
+            if (_numero(codigo) in numeros and codigo.lower() not in codigos
+                    and (codigo, nombre) not in salida):
+                salida.append((codigo, nombre))
+    return salida
 
 
 def importes_ajenos(texto: str, precios: list[str]) -> list[str]:

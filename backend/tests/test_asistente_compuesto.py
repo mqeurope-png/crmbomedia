@@ -353,6 +353,189 @@ def test_con_el_pensamiento_encendido_el_compuesto_y_su_correccion_salen_bien(
     assert api.llamadas[2]["max_tokens"] == redactor.MAX_TOKENS_RESPUESTA
 
 
+class _FalsoQueMira(_ClaudeFalso):
+    """El falso de siempre, pero la respuesta se arma con las referencias del
+    CATÁLOGO que lleva el contexto de esa llamada (el orden P1, P2… no se sabe
+    antes)."""
+
+    def __init__(self, construir: Any) -> None:
+        super().__init__()
+        self.construir = construir
+
+    def __call__(self, **kw: Any) -> str:
+        contexto = kw["user_prompt"][0]["text"] if isinstance(kw["user_prompt"], list) else ""
+        self.respuesta = self.construir(_refs_de_peticion(contexto))
+        return super().__call__(**kw)
+
+
+def test_varias_fichas_de_una_marca_van_en_fila_y_una_sola_va_centrada(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    """12/10/2026, con Haiku: «añade más modelos» dio tres fichas sueltas
+    seguidas, cada una en su tabla de 320 px pegada a la izquierda de un correo
+    de 600. Dos o tres de la misma marca van en fila; una sola, centrada."""
+    with session_factory() as s:
+        thread_id = _hilo_talentos(s)
+    sueltas = {**COMPUESTO_DTF, "bloques": [
+        {"tipo": "texto", "texto": "Hola Marny,\n\nestos modelos de **DTF** te encajan:"},
+        {"tipo": "producto", "producto": "P1"},
+        {"tipo": "producto", "producto": "P2"},
+        {"tipo": "producto", "producto": "P3"},
+        {"tipo": "texto", "texto": "Un saludo,\nAdmin"},
+    ]}
+    with patch.object(llm, "_invoke_claude", _ClaudeFalso(sueltas)):
+        r = _pedir(http, thread_id, instruccion="añade más modelos", formato="compuesto")
+    assert r.status_code == 201, r.text
+    b = r.json()["borrador"]
+    bloques = b["estructura"]["bloques"]
+    assert [x["tipo"] for x in bloques] == ["texto", "productos_fila", "texto"]
+    assert len(bloques[1]["productos"]) == 3
+    assert "Iban 3 fichas sueltas seguidas de la misma marca: van en fila." in b["aviso"]
+    assert 'class="bh-sola"' not in b["html"]
+    # Una sola: centrada en el correo (en el móvil, a todo el ancho), no pegada a la izquierda.
+    una = {**COMPUESTO_DTF, "bloques": [
+        {"tipo": "texto", "texto": "Hola Marny,\n\nla que te encaja:"},
+        {"tipo": "producto", "producto": "P1"},
+        {"tipo": "texto", "texto": "Un saludo,\nAdmin"},
+    ]}
+    with patch.object(llm, "_invoke_claude", _ClaudeFalso(una)):
+        sola = _pedir(http, thread_id, instruccion="solo la primera",
+                      formato="compuesto").json()["borrador"]
+    assert [x["tipo"] for x in sola["estructura"]["bloques"]] == ["texto", "producto", "texto"]
+    assert re.search(r'<td align="center" style="padding:8px 8px 16px;[^"]*">'
+                     r'<table role="presentation" width="320"[^>]* class="bh-sola" align="center"'
+                     r' style="[^"]*margin:0 auto;', sola["html"])
+    # Dos fichas sueltas que la persona dejó así en la vista previa se respetan: la
+    # corrección solo cambia el saludo.
+    retocada = json.loads(json.dumps(b["estructura"]))
+    fila = retocada["bloques"][1]
+    retocada["bloques"][1:2] = [
+        {"id": fila["id"], "tipo": "producto", "producto": fila["productos"][0]},
+        {"id": "b2suelta", "tipo": "producto", "producto": fila["productos"][1]},
+    ]
+    saludo = retocada["bloques"][0]["id"]
+    cambio = _ClaudeFalso({"modo": "compuesto", "asunto": "Re: Equipos DTF", "aviso": "",
+                           "pendiente": [], "operaciones": [
+                               {"op": "editar", "id": saludo, "campo": "texto",
+                                "valor": "Hola de nuevo, Marny:"}]})
+    with patch.object(llm, "_invoke_claude", cambio):
+        r2 = _turno(http, b["id"], "cambia el saludo", estructura_actual=retocada)
+    assert r2.status_code == 201, r2.text
+    nuevos = r2.json()["borrador"]["estructura"]["bloques"]
+    assert [x["tipo"] for x in nuevos] == ["texto", "producto", "producto", "texto"]
+    assert "fichas sueltas" not in (r2.json()["borrador"]["aviso"] or "")
+    # «Añade más modelos» ampliando la fila a cuatro: dos filas de dos, sin perder ninguno.
+    with session_factory() as s:
+        s.add(ProductoCatalogo(
+            fuente=FUENTE_COMPOSITOR, tipo=TIPO_MAQUINA, marca="mbo_dtf", origen_id="vega-60",
+            nombre="Vega 60", descripcion="Vega 60: impresora DTF.", categoria="60 cm",
+            imagen="https://cdn.example/vega.jpg", precio_texto="21.500 €", precio_publico=True,
+            moneda="EUR", enlace="https://mboprinters.com/es/dtf/vega-60/", idioma="es",
+            sitio="mboprinters", actualizado_origen=AHORA, visto_en=AHORA))
+        s.commit()
+    fila_id = b["estructura"]["bloques"][1]["id"]
+    ampliar = _FalsoQueMira(lambda refs: {
+        "modo": "compuesto", "asunto": "Re: Equipos DTF", "aviso": "", "pendiente": [],
+        "operaciones": [{"op": "editar", "id": fila_id, "campo": "productos",
+                         "valor": [refs[n] for n in ("Orion 20", "Lyra 35", "Astra 35 Pro",
+                                                     "Vega 60")]}]})
+    with patch.object(llm, "_invoke_claude", ampliar):
+        r3 = _pedir(http, thread_id, instruccion="añade más modelos", formato="compuesto",
+                    estructura_actual=b["estructura"])
+    assert r3.status_code == 201, r3.text
+    filas = [x for x in r3.json()["borrador"]["estructura"]["bloques"]
+             if x["tipo"] == "productos_fila"]
+    assert [len(x["productos"]) for x in filas] == [2, 2]
+    assert {p["origen_id"] for x in filas for p in x["productos"]} == {
+        "orion-20", "lyra-35", "astra-35", "vega-60"}
+
+
+def test_el_aviso_de_iva_y_vies_sale_solo_en_el_pie(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    """12/10/2026: el aviso de IVA y VIES salía dos veces, en el texto de
+    cierre y en el pie. Va solo en el pie: si la IA lo copia en un texto, se
+    quita de ahí."""
+    from app.services.conocimiento.catalogo import avisos_en  # noqa: PLC0415
+
+    avisos = avisos_en("es")
+    with session_factory() as s:
+        thread_id = _hilo_talentos(s)
+    con_avisos = {**COMPUESTO_DTF, "bloques": [
+        {"tipo": "texto", "texto": "Hola Marny,\n\npara el taller textil:"},
+        {"tipo": "productos_fila", "productos": ["P1", "P2"]},
+        {"tipo": "texto", "texto": f"{avisos['vies']} {avisos['no_factura']}\n\n"
+                                   "¿Cuántas camisetas al día hacéis?\n\nUn saludo,\nAdmin"},
+    ]}
+    with patch.object(llm, "_invoke_claude", _ClaudeFalso(con_avisos)):
+        r = _pedir(http, thread_id, instruccion="mándale la gama DTF", formato="compuesto")
+    assert r.status_code == 201, r.text
+    b = r.json()["borrador"]
+    cierre = b["estructura"]["bloques"][-1]["html"]
+    assert "VIES" not in cierre and "no una factura" not in cierre
+    assert cierre.startswith("<p>¿Cuántas camisetas al día hacéis?</p>")
+    assert b["html"].count(avisos["vies"]) == 1 and b["texto"].count(avisos["vies"]) == 1
+    assert b["html"].count(avisos["no_factura"]) == 1
+    assert "se ha quitado del texto" in b["aviso"]
+    # Las reglas lo dicen también: el pie las pone, el texto no.
+    assert "las pone el pie del correo: no las escribas" in redactor.PROMPT_SISTEMA
+    # Sin ningún precio en el correo el pie no lleva los avisos: el texto se queda como está.
+    sin_precio = {**COMPUESTO_DTF, "bloques": [
+        {"tipo": "texto", "texto": "Hola Marny,\n\nesta va a medida:"},
+        {"tipo": "producto", "producto": "P3"},
+        {"tipo": "texto", "texto": f"{avisos['vies']}\n\nUn saludo,\nAdmin"},
+    ]}
+    falso = _FalsoQueMira(lambda refs: {**sin_precio, "bloques": [
+        sin_precio["bloques"][0], {"tipo": "producto", "producto": refs["Astra 35 Pro"]},
+        sin_precio["bloques"][2]]})
+    with patch.object(llm, "_invoke_claude", falso):
+        b2 = _pedir(http, thread_id, instruccion="solo la que va a medida",
+                    formato="compuesto").json()["borrador"]
+    assert b2["html"].count(avisos["vies"]) == 1
+    assert "se ha quitado del texto" not in (b2["aviso"] or "")
+
+
+def test_un_modelo_que_el_cliente_llama_de_otra_forma_no_sale_como_otro_sin_avisar(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    """12/10/2026: el cliente marcó «Artisjet 3000U PRO» en el formulario; el
+    catálogo lo llama «artisJet 3000Pro Freebird». El correo enseñaba la ficha
+    del 3000Pro y además decía «Den artisJet 3000U PRO prüfe ich noch», como si
+    fueran dos. Las reglas le dicen a la IA que es la misma; y si aun así el
+    texto nombra el modelo con otro código, se avisa (sin alias en el
+    compositor, el texto no se toca)."""
+    with session_factory() as s:
+        _catalogo(s)
+        s.add(ProductoCatalogo(
+            fuente=FUENTE_COMPOSITOR, tipo=TIPO_MAQUINA, marca="mbo_dtf", origen_id="vega-3000",
+            nombre="Vega 3000Pro Freebird", descripcion="Vega 3000Pro: impresora DTF.",
+            categoria="60 cm", imagen="https://cdn.example/vega.jpg", precio_texto="9.900 €",
+            precio_publico=True, moneda="EUR", enlace="https://mboprinters.com/es/dtf/vega/",
+            idioma="es", sitio="mboprinters", actualizado_origen=AHORA, visto_en=AHORA))
+        hilo = _hilo(s, contacto=_contacto(s, TALENTOS, interes="dtf"), mensajes=[
+            {"de": TALENTOS, "texto": "Hola, me interesa la Vega 3000U PRO DTF. ¿Precio?"}])
+        s.commit()
+        thread_id = hilo.id
+
+    def _respuesta(refs: dict[str, str]) -> dict[str, Any]:
+        return {**COMPUESTO_DTF, "bloques": [
+            {"tipo": "texto", "texto": "Hola Marny,\n\nesta es la que te encaja:"},
+            {"tipo": "producto", "producto": refs["Vega 3000Pro Freebird"]},
+            {"tipo": "texto", "texto": "La Vega 3000U PRO la compruebo y te confirmo modelo y "
+                                       "precio.\n\nUn saludo,\nAdmin"},
+        ]}
+
+    with patch.object(llm, "_invoke_claude", _FalsoQueMira(_respuesta)):
+        r = _pedir(http, thread_id, instruccion="contéstale", formato="compuesto")
+    assert r.status_code == 201, r.text
+    b = r.json()["borrador"]
+    assert ("El texto nombra «3000U» y el correo enseña la ficha de «Vega 3000Pro Freebird»: "
+            "si es la misma máquina, que el texto no la dé por pendiente ni por otra "
+            "distinta.") in b["aviso"]
+    assert "no está tal cual en el CATÁLOGO" in redactor.PROMPT_SISTEMA
+    assert "no hables de ella como de otra máquina" in redactor.PROMPT_SISTEMA
+
+
 def test_la_ia_nunca_devuelve_html_si_lo_intenta_se_descarta_y_se_registra(
     session_factory: sessionmaker, http: TestClient, caplog: pytest.LogCaptureFixture,
 ) -> None:

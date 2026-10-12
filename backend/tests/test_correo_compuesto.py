@@ -224,11 +224,16 @@ def test_tres_fichas_en_fila_se_apilan_en_una_columna_por_debajo_de_480_px(
     regla = re.search(r"\.bh-col \{([^}]*)\}", hoja).group(1)
     assert "display: block !important" in regla and "width: 100% !important" in regla
     assert re.search(r"\.bh-img \{[^}]*width: 100% !important", hoja)
-    # Una fila de cuatro se parte: tres en fila y la cuarta como ficha sola.
+    # Una fila de cuatro se parte en dos filas de dos: nunca queda una ficha
+    # suelta al final (12/10/2026); cinco, tres y dos.
     partida = bq.normalizar({"bloques": [{"tipo": "productos_fila", "productos": [
         _p("a"), _p("b"), _p("c"), _p("d")]}]})["bloques"]
-    assert [b["tipo"] for b in partida] == ["productos_fila", "producto"]
+    assert [(b["tipo"], len(b["productos"])) for b in partida] == [
+        ("productos_fila", 2), ("productos_fila", 2)]
     assert len({b["id"] for b in partida}) == 2
+    cinco = bq.normalizar({"bloques": [{"tipo": "productos_fila", "productos": [
+        _p(x) for x in "abcde"]}]})["bloques"]
+    assert [len(b["productos"]) for b in cinco] == [3, 2]
 
 
 def test_cada_correo_compuesto_trae_su_texto_plano(session_factory: sessionmaker) -> None:
@@ -488,3 +493,46 @@ def test_el_video_toma_sus_datos_de_su_origen_y_no_de_la_url_pegada(
     assert correo.html.count("Ver vídeo</span> · 2:31</a>") == 2
     assert "▶ Ver vídeo (2:31): https://www.youtube.com/watch?v=dQw4w9WgXcQ" in correo.texto
     _comprobar_html_de_correo(correo.html)
+
+
+def test_quitar_frases_y_juntar_fichas_sin_tocar_de_mas() -> None:
+    """Las redes del 12/10/2026 sobre la estructura, sin catálogo: el aviso con
+    negritas se va entero, el apóstrofo tipográfico casa, un texto ajeno se
+    queda; fichas sueltas de una marca se juntan, de otra no, y una repetida se
+    queda en una."""
+    from app.services.conocimiento.catalogo import avisos_en  # noqa: PLC0415
+
+    fr = avisos_en("fr")
+    e = {"idioma": "fr", "bloques": [
+        {"id": "t1", "tipo": "texto", "html": "<p>Bonjour,</p><p><strong>"
+            + fr["no_factura"] + "</strong></p>"},
+        {"id": "t2", "tipo": "texto", "html": "<p>Merci. " + fr["vies"].replace("'", "\u2019")
+            + " À bientôt.</p>"},
+        {"id": "t3", "tipo": "texto", "html": "<p>" + fr["vies"] + "</p>"},
+    ]}
+    assert bq.quitar_frases(e, [fr["no_factura"], fr["vies"]], tocados={"t1", "t2"}) == 2
+    assert [b["html"] for b in e["bloques"]] == [
+        "<p>Bonjour,</p>", "<p>Merci. À bientôt.</p>", "<p>" + fr["vies"] + "</p>"]
+    f = {"bloques": [
+        {"id": "a", "tipo": "producto", "producto": _p("x1")},
+        {"id": "b", "tipo": "producto", "producto": _p("x1")},
+        {"id": "c", "tipo": "producto", "producto": _p("x2")},
+        {"id": "d", "tipo": "producto", "producto": _p("y1")},
+    ]}
+    marcas = {"x1": "artisjet", "x2": "artisjet", "y1": "mbo"}
+    assert bq.juntar_fichas_sueltas(f, lambda p: marcas.get(p["origen_id"])) == (2, 1)
+    assert [(b["tipo"], [p["origen_id"] for p in b.get("productos") or []] or
+             [b["producto"]["origen_id"]]) for b in f["bloques"]] == [
+        ("productos_fila", ["x1", "x2"]), ("producto", ["y1"])]
+
+
+def test_un_codigo_de_otra_ficha_o_una_medida_no_avisan() -> None:
+    from app.services.correo_compuesto import ia  # noqa: PLC0415
+
+    nombres = ["Vega 3000Pro", "artisJet 3000U", "XYZ 1200 Pro"]
+    # El texto nombra una ficha que sale: nada que avisar, aunque otra comparta el número.
+    assert ia.modelos_con_otro_nombre("La Vega 3000Pro y la 3000U.", nombres) == []
+    # Una medida con su unidad no es un modelo.
+    assert ia.modelos_con_otro_nombre("Ancho de 1200mm, 230V y 2000W.", nombres) == []
+    assert ia.modelos_con_otro_nombre("La 3000X te la confirmo.", nombres) == [
+        ("3000X", "Vega 3000Pro"), ("3000X", "artisJet 3000U")]

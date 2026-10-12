@@ -480,6 +480,34 @@ la respuesta en texto sigue siendo la de siempre y la opción por defecto.
   en un solo botón** («Ver la gama DTF» salía en el hero y otra vez al final):
   se queda el primero, el repetido se quita y se avisa
   (`bloques.quitar_botones_repetidos`).
+- **Fichas en fila** (12/10/2026, con Haiku: «añade más modelos» dio tres
+  fichas sueltas seguidas, cada una a 320 px pegada a la izquierda): dos o tres
+  productos de la misma marca van en «productos_fila»; «producto» es solo para
+  cuando de esa marca va exactamente uno. Lo dice el prompt y, si aun así llegan
+  fichas sueltas seguidas de la misma marca, el código las junta en filas
+  (`bloques.juntar_fichas_sueltas`, con aviso; la misma ficha dos veces seguidas
+  se queda en una). Las filas se reparten parejas: cuatro son dos y dos, cinco
+  tres y dos (`bloques.filas_parejas`), nunca una suelta al final; también
+  cuando una corrección amplía una fila. La **ficha sola** va centrada (en el
+  móvil, a todo el ancho).
+- **El aviso de IVA, VIES y «no es una factura» va solo en el pie** (12/10/2026:
+  salía también en el texto de cierre). El prompt lo dice y, si la IA copia en
+  un texto alguna de las frases que el pie imprime de verdad, se quita de ahí
+  (`bloques.quitar_frases`, con aviso; un párrafo que solo trae esas frases se
+  va entero aunque lleven negritas). Sin ningún precio en el correo, o con un
+  pie puesto a mano, el pie no lleva los avisos y el texto no se toca.
+- **Un modelo que el cliente llama de otra forma** (12/10/2026: marcó «Artisjet
+  3000U PRO» en el formulario; el catálogo lo llama «artisJet 3000Pro
+  Freebird»; el correo enseñaba la ficha y además decía «Den artisJet 3000U PRO
+  prüfe ich noch»): el prompt le dice a la IA que es el mismo, con el nombre del
+  catálogo, y que no lo dé por pendiente si ya enseña su ficha. Si el texto
+  nombra un código de modelo con el número de una ficha del correo pero escrito
+  distinto (y no es el de ninguna otra ficha ni una medida como «1200mm»), se
+  avisa a la persona (`ia.modelos_con_otro_nombre`); el texto no se toca. La
+  solución de fondo son los alias por producto en el compositor.
+- Estos arreglos solo tocan lo que ha puesto o cambiado el turno
+  (`bloques.bloques_tocados`): lo que la persona dejó así en la vista previa se
+  respeta en las correcciones.
 - **La vista previa** sustituye al editor: el correo tal cual sale, en
   escritorio o en móvil; los textos se editan pulsando encima (cambia ese
   campo de la estructura y nada más) y el bloque elegido se sube, se baja, se
