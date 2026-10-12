@@ -25,8 +25,10 @@ enlaces, URL absolutas y filas de 2 o 3 fichas.
 from __future__ import annotations
 
 import html as html_mod
+import json
 import re
 import uuid
+from collections.abc import Callable, Iterable
 from typing import Any
 
 import bleach
@@ -422,7 +424,9 @@ def _normalizar_bloque(b: Any, avisos: list[str]) -> list[dict[str, Any]]:
         boton = _texto_por_idioma(b.get("boton"), MAX_BOTON)
         if not productos:
             return []
-        trozos = [productos[i:i + FILA_MAX] for i in range(0, len(productos), FILA_MAX)]
+        trozos: list[list[dict[str, str]]] = []
+        for n in filas_parejas(len(productos)):
+            trozos.append(productos[sum(len(x) for x in trozos):][:n])
         salida_fila: list[dict[str, Any]] = []
         for i, trozo in enumerate(trozos):
             nuevo: dict[str, Any]
@@ -576,6 +580,111 @@ def abrir_con_saludo(estructura: dict[str, Any]) -> bool:
         return False
     bloques.insert(0, bloques.pop(primero))
     return True
+
+
+def filas_parejas(n: int) -> list[int]:
+    """Cuántas fichas por fila para `n` productos: de dos o tres, lo más
+    parejas posible (4 → 2+2, 5 → 3+2, 7 → 3+2+2), para que no quede una
+    ficha suelta al final; uno, solo."""
+    if n <= FILA_MAX:
+        return [n] if n > 0 else []
+    filas = -(-n // FILA_MAX)
+    base, resto = divmod(n, filas)
+    return [base + 1] * resto + [base] * (filas - resto)
+
+
+def bloques_tocados(estructura: dict[str, Any], base: dict[str, Any] | None) -> set[str]:
+    """Los ids de los bloques que ha puesto o cambiado este turno: todos en un
+    correo nuevo; en una corrección, los nuevos y los que no son iguales a los
+    de la base. Los arreglos de después no tocan lo que la persona dejó así en
+    la vista previa."""
+    actuales = {b["id"]: b for b in estructura.get("bloques") or []}
+    if base is None:
+        return set(actuales)
+    previos = {b.get("id"): b for b in base.get("bloques") or []}
+    return {i for i, b in actuales.items() if previos.get(i) != b}
+
+
+def juntar_fichas_sueltas(
+    estructura: dict[str, Any], marca_de: Callable[[dict[str, str]], str | None], *,
+    tocados: set[str] | None = None,
+) -> int:
+    """Dos o más fichas sueltas («producto») seguidas de la misma marca van
+    en fila (12/10/2026: «añade más modelos» dio tres fichas sueltas, cada una
+    en su tabla de 320 px): se juntan en «productos_fila» de dos o tres, lo
+    más parejas posible. Solo los tramos con algún bloque de este turno
+    (`tocados`); una ficha de marca desconocida no se junta. Devuelve cuántas
+    fichas sueltas se han juntado."""
+    bloques = estructura.get("bloques") or []
+    salida: list[dict[str, Any]] = []
+    juntadas = 0
+    i = 0
+    while i < len(bloques):
+        b = bloques[i]
+        marca = marca_de(b["producto"]) if b.get("tipo") == TIPO_PRODUCTO else None
+        j = i + 1
+        while (marca and j < len(bloques) and bloques[j].get("tipo") == TIPO_PRODUCTO
+               and marca_de(bloques[j]["producto"]) == marca):
+            j += 1
+        tramo = bloques[i:j]
+        if len(tramo) < 2 or (tocados is not None and not any(
+                x["id"] in tocados for x in tramo)):
+            salida.extend(tramo)
+            i = j
+            continue
+        unicos: list[dict[str, Any]] = []
+        for x in tramo:
+            if all(clave_de(x["producto"]) != clave_de(u["producto"]) for u in unicos):
+                unicos.append(x)
+        k = 0
+        for n in filas_parejas(len(unicos)):
+            trozo = unicos[k:k + n]
+            k += n
+            if n == 1:
+                salida.append(trozo[0])
+                continue
+            nuevo: dict[str, Any] = {"id": trozo[0]["id"], "tipo": TIPO_PRODUCTOS_FILA,
+                                     "productos": [x["producto"] for x in trozo]}
+            botones = {json.dumps(x.get("boton"), sort_keys=True) for x in trozo}
+            if len(botones) == 1 and trozo[0].get("boton"):
+                nuevo["boton"] = trozo[0]["boton"]
+            salida.append(nuevo)
+        juntadas += len(tramo)
+        i = j
+    estructura["bloques"] = salida
+    return juntadas
+
+
+_BR_RE = r"(?:\s|&nbsp;|<br\s*/?>)+"
+
+
+def quitar_frases(estructura: dict[str, Any], frases: Iterable[str], *,
+                  tocados: set[str] | None = None) -> int:
+    """Quita de los textos del correo estas frases tal cual (los avisos de
+    IVA, VIES y «no es una factura», que ya pone el pie: el 12/10/2026 salían
+    dos veces). Un párrafo que se queda vacío, fuera; un texto vacío, fuera.
+    Solo en los textos de este turno (`tocados`). Devuelve cuántas quitó."""
+    patrones = [re.compile(_BR_RE.join(re.escape(html_mod.escape(w, quote=False))
+                                       for w in f.split()), re.IGNORECASE)
+                for f in frases if f and f.strip()]
+    quitadas = 0
+    bloques: list[dict[str, Any]] = []
+    for b in estructura.get("bloques") or []:
+        if b.get("tipo") != TIPO_TEXTO or (tocados is not None and b["id"] not in tocados):
+            bloques.append(b)
+            continue
+        html = b.get("html") or ""
+        for patron in patrones:
+            html, n = patron.subn("", html)
+            quitadas += n
+        html = re.sub(r"<p>(?:\s|&nbsp;|<br\s*/?>)*</p>", "", html)
+        html = re.sub(r"(<p>)(?:\s|<br\s*/?>)+|(?:\s|<br\s*/?>)+(</p>)",
+                      lambda m: m.group(1) or m.group(2), html)
+        html = re.sub(r"[ \t]{2,}", " ", html)
+        if html.strip():
+            bloques.append({**b, "html": html})
+    estructura["bloques"] = bloques
+    return quitadas
 
 
 def _clave_url(url: Any) -> str:

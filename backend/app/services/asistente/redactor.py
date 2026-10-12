@@ -79,6 +79,7 @@ from app.services.asistente.texto import (
     recortar,
     sin_firma,
 )
+from app.services.conocimiento import catalogo as catalogo_kb
 from app.services.correo_compuesto import bloques as bq
 from app.services.correo_compuesto import datos as datos_compuesto
 from app.services.correo_compuesto import generador as generador_correo
@@ -154,7 +155,9 @@ PROMPT_SISTEMA = (
     "7. Sin bloque de firma (se añade después). Cierra con el nombre de pila de quien envía "
     "si te lo doy.\n"
     "8. Si algo no se puede responder con los datos, dilo con naturalidad en el texto («lo "
-    "compruebo y te lo confirmo») y anótalo en «pendiente». No rellenes huecos.\n"
+    "compruebo y te lo confirmo») y anótalo en «pendiente». No rellenes huecos. Pero un "
+    "producto que el cliente nombra de otra forma y que está claramente en el CATÁLOGO (misma "
+    "marca y modelo, otro nombre) no es un hueco: es ese, con el nombre del catálogo.\n"
     "9. No repitas lo que el cliente ya sabe, no resumas el histórico, no te disculpes de "
     "más.\n"
     "10. Si te dan una CORRECCIÓN sobre un BORRADOR ACTUAL o sobre el TEXTO ACTUAL DEL EDITOR, "
@@ -194,9 +197,12 @@ PROMPT_SISTEMA = (
     '- {"tipo":"marca","marca":"<una de MARCAS>"}: la tira de la marca (logo y web), antes de '
     "sus fichas.\n"
     '- {"tipo":"productos_fila","productos":["P1","P2","P3"]}: dos o tres fichas en fila; '
-    '{"tipo":"producto","producto":"P4"}: una ficha sola. La ficha (imagen, nombre, área, '
-    "características, precio con su IVA y botón) sale del CATÁLOGO: tú solo eliges qué "
-    "productos, por su referencia [P#] o [C#].\n"
+    '{"tipo":"producto","producto":"P4"}: una ficha sola, SOLO cuando de esa marca va '
+    "exactamente un producto. Dos o tres productos de la misma marca van SIEMPRE juntos en un "
+    "«productos_fila» (cuatro, dos filas de dos); nunca dos «producto» seguidos. Para «añade "
+    "más modelos», amplía la fila que ya hay o añade otra fila, no fichas sueltas. La ficha "
+    "(imagen, nombre, área, características, precio con su IVA y botón) sale del CATÁLOGO: tú "
+    "solo eliges qué productos, por su referencia [P#] o [C#].\n"
     '- {"tipo":"video","video":"V1","titulo":"…"}: solo un vídeo de la lista VÍDEOS (va en '
     "el idioma del correo si lo hay; si es de otro idioma, dilo en el texto del bloque).\n"
     '- {"tipo":"hero","imagen":"I1","titulo":"…","subtitulo":"…","puntos":["…"],"botones":'
@@ -218,10 +224,16 @@ PROMPT_SISTEMA = (
     "condición o un aviso que esté en los datos (nunca una promoción que no esté).\n"
     '- {"tipo":"separador"}.\n'
     "Reglas del compuesto: los productos SOLO por su referencia del CATÁLOGO; ningún precio, "
-    "importe, plazo ni enlace escrito en los textos (los ponen las fichas y los botones); sin "
-    "firma (se añade después); entre 3 y 8 bloques; lo que más le encaja, primero; un mismo "
-    "enlace va en un solo botón del correo (si el hero lleva «Ver la gama», no lo repitas en "
-    "un «cta» al final).\n"
+    "importe, plazo ni enlace escrito en los textos (los ponen las fichas y los botones); las "
+    "frases de IVA, VIES y «no es una factura» las pone el pie del correo: no las escribas en "
+    "ningún texto; sin firma (se añade después); entre 3 y 8 bloques; lo que más le encaja, "
+    "primero; un mismo enlace va en un solo botón del correo (si el hero lleva «Ver la gama», "
+    "no lo repitas en un «cta» al final). Si el cliente llama a una máquina con un nombre que "
+    "no está tal cual en el CATÁLOGO (el de su formulario: «3000U PRO») y una del CATÁLOGO es "
+    "claramente esa misma (misma marca y modelo: «3000Pro Freebird»), es esa: preséntala con "
+    "el nombre del catálogo y no hables de ella como de otra máquina ni la des por pendiente "
+    "de confirmar si ya enseñas su ficha (ni en el texto ni en «pendiente»). Si dudas de que "
+    "sea la misma, pregúntaselo en una frase, sin enseñarla como si fuera otra.\n"
     'Un correo compuesto nuevo: {"modo":"compuesto","asunto":"…","idioma":"es","aviso":"",'
     '"pendiente":[],"bloques":[…]}.\n'
     "Para CORREGIR un compuesto te paso su ESTRUCTURA ACTUAL, con el «id» de cada bloque, y "
@@ -500,7 +512,8 @@ def _bloque_catalogo(ctx: Contexto) -> str:
     if avisos:
         lineas.append(
             "Si citas algún precio, el correo lleva tal cual, en el idioma del correo, la frase "
-            f"del IVA de arriba y estas dos: «{avisos.get('vies')}» «{avisos.get('no_factura')}»")
+            f"del IVA de arriba y estas dos: «{avisos.get('vies')}» «{avisos.get('no_factura')}» "
+            "(en un correo compuesto no: las pone su pie)")
     recortes = [r for r in ctx.recortes if r.startswith("catálogo")]
     if recortes:
         lineas.append(f"(Por tamaño se dejaron fuera {len(recortes)} productos; no están aquí.)")
@@ -871,7 +884,6 @@ def anadir_medios(
     `P#`), con lo que pide la instrucción y con el interés del lead. Las
     palabras de la marca de una máquina no cuentan (todas las fotos de
     artisJet no son de esa máquina); las de la instrucción, sí."""
-    from app.services.conocimiento import catalogo as catalogo_kb  # noqa: PLC0415
     from app.services.conocimiento import imagenes as imagenes_kb  # noqa: PLC0415
     from app.services.conocimiento import videos as videos_kb  # noqa: PLC0415
 
@@ -992,6 +1004,27 @@ def _rellenar_compuesto(
     if repetidos:
         avisos.append(f"Un mismo enlace iba en dos botones: se queda el primero y se quita "
                       f"{', '.join(f'«{t}»' for t in repetidos)}.")
+    # Lo que se arregla solo, en lo que ha puesto o cambiado este turno (lo que la
+    # persona dejó así en la vista previa se respeta).
+    tocados = bq.bloques_tocados(estructura, base)
+    # El aviso de IVA, VIES y «no es una factura» lo pone el pie (12/10/2026:
+    # salía también en el texto de cierre).
+    if bq.quitar_frases(estructura, catalogo_kb.avisos_en(estructura["idioma"]).values(),
+                        tocados=tocados):
+        avisos.append("El aviso de IVA, VIES y «no es una factura» va en el pie del correo: "
+                      "se ha quitado del texto, donde salía repetido.")
+    datos = datos_compuesto.resolver(session, estructura) if estructura["bloques"] else None
+    if datos is not None:
+        # Dos o tres fichas de la misma marca, en fila (12/10/2026: «añade más
+        # modelos» dio tres fichas sueltas, cada una a 320 px).
+        def _marca(producto: dict[str, str]) -> str | None:
+            fila = datos.productos.get(bq.clave_de(producto)) or {}
+            return str(fila.get("marca") or "").strip().lower() or None
+
+        juntadas = bq.juntar_fichas_sueltas(estructura, _marca, tocados=tocados)
+        if juntadas:
+            avisos.append(f"Iban {juntadas} fichas sueltas seguidas de la misma marca: van en "
+                          "fila.")
     html_descartado += res.html_descartado
     if res.html_descartado:
         avisos.append(f"La IA metió HTML en {res.html_descartado} texto(s) del correo y se ha "
@@ -1006,13 +1039,19 @@ def _rellenar_compuesto(
         avisos.append(f"La IA no ha redactado un correo ({veredicto.motivo}). "
                       f"Lo que dijo: «{libre}»")
     asunto = (str(data.get("asunto") or "").strip() or b.asunto or "")[:500] or None
-    if estructura["bloques"]:
-        correo = generador_correo.generar(
-            estructura, datos_compuesto.resolver(session, estructura), asunto=asunto)
+    if estructura["bloques"] and datos is not None:
+        correo = generador_correo.generar(estructura, datos, asunto=asunto)
         ajenos = ia_compuesto.importes_ajenos(libre, correo.precios)
         if ajenos:
             avisos.append(f"Un texto del correo menciona {', '.join(f'«{a}»' for a in ajenos)}, "
                           "que no sale del catálogo: los precios van en las fichas. Revísalo.")
+        # Un modelo que el cliente llama de otra forma (sin alias en el compositor):
+        # que el texto no hable como de otra máquina de la que ya enseña la ficha.
+        nombres = [str(p.get("nombre") or "") for p in datos.productos.values()]
+        for codigo, nombre in ia_compuesto.modelos_con_otro_nombre(libre, nombres):
+            avisos.append(f"El texto nombra «{codigo}» y el correo enseña la ficha de «{nombre}»: "
+                          "si es la misma máquina, que el texto no la dé por pendiente ni por "
+                          "otra distinta.")
         avisos.extend(correo.avisos)
         b.html, b.texto = correo.html, correo.texto
     else:

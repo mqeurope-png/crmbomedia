@@ -767,6 +767,39 @@ _IMPORTE_RE = re.compile(
     r"\d[\d.,\s]*\d?\s?(?:€|\$|£))")
 
 
+#: Un código de modelo en un texto: letras y al menos tres cifras seguidas
+#: («3000U», «5000U», «i3200»); un número solo («3000 Stück») no lo es.
+_CODIGO_TEXTO_RE = re.compile(r"\b(?=[A-Za-z0-9]*\d{3})(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{4,}\b")
+#: En el nombre de una ficha también vale el número solo («MBO 3050»).
+_CODIGO_FICHA_RE = re.compile(r"\b(?=[A-Za-z0-9]*\d{3})[A-Za-z0-9]{3,}\b")
+
+
+def modelos_con_otro_nombre(texto: str, nombres: list[str]) -> list[tuple[str, str]]:
+    """Los códigos de modelo del texto («3000U») con el número de una máquina
+    que el correo enseña en ficha con otro código («artisJet 3000Pro
+    Freebird»): puede que el texto hable de ella como si fuera otra. El
+    12/10/2026 el correo enseñaba la ficha del 3000Pro y decía «Den artisJet
+    3000U PRO prüfe ich noch»: el cliente lo había marcado con el nombre de
+    su formulario. Hasta que el compositor tenga alias por producto, se avisa
+    para que la persona lo revise; el texto no se toca."""
+    def _numero(codigo: str) -> str:
+        m = re.search(r"\d{3,}", codigo)
+        return m.group(0) if m else ""
+
+    fichas = []
+    for nombre in nombres:
+        codigos = {m.group(0).lower() for m in _CODIGO_FICHA_RE.finditer(nombre or "")}
+        fichas.append((nombre, codigos, {_numero(c) for c in codigos} - {""}))
+    salida: list[tuple[str, str]] = []
+    for m in _CODIGO_TEXTO_RE.finditer(texto or ""):
+        codigo = m.group(0)
+        for nombre, codigos, numeros in fichas:
+            if (_numero(codigo) in numeros and codigo.lower() not in codigos
+                    and (codigo, nombre) not in salida):
+                salida.append((codigo, nombre))
+    return salida
+
+
 def importes_ajenos(texto: str, precios: list[str]) -> list[str]:
     """Los importes de los textos de la IA que no son ninguno de los precios
     del catálogo que salen en el correo (la regla: ningún precio que no venga

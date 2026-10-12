@@ -422,10 +422,13 @@ class _Render:
         if p is None:
             return "", ""
         ficha, texto = self._ficha(p, bloque=b, compacta=False, ancho_img=ANCHO_FICHA_SOLA - 16)
+        # Centrada (12/10/2026: a 320 px pegada a la izquierda dejaba medio correo
+        # vacío); en el móvil, a todo el ancho (`.bh-sola`).
         sola = _tabla(f'<tr><td style="padding:0;">{ficha}</td></tr>', ancho=str(ANCHO_FICHA_SOLA),
-                      atributos=' class="bh-sola"',
-                      estilo=f"width:{ANCHO_FICHA_SOLA}px;margin:0;")
-        return _fila(sola, bloque=b, preview=self.preview, padding="8px 8px 16px"), texto
+                      atributos=' class="bh-sola" align="center"',
+                      estilo=f"width:{ANCHO_FICHA_SOLA}px;margin:0 auto;")
+        return (_fila(sola, bloque=b, preview=self.preview, padding="8px 8px 16px",
+                      alinear="center"), texto)
 
     def productos_fila(self, b: dict[str, Any]) -> tuple[str, str]:
         productos = [p for p in (self._producto(r) for r in b.get("productos") or []) if p]

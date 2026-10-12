@@ -224,11 +224,16 @@ def test_tres_fichas_en_fila_se_apilan_en_una_columna_por_debajo_de_480_px(
     regla = re.search(r"\.bh-col \{([^}]*)\}", hoja).group(1)
     assert "display: block !important" in regla and "width: 100% !important" in regla
     assert re.search(r"\.bh-img \{[^}]*width: 100% !important", hoja)
-    # Una fila de cuatro se parte: tres en fila y la cuarta como ficha sola.
+    # Una fila de cuatro se parte en dos filas de dos: nunca queda una ficha
+    # suelta al final (12/10/2026); cinco, tres y dos.
     partida = bq.normalizar({"bloques": [{"tipo": "productos_fila", "productos": [
         _p("a"), _p("b"), _p("c"), _p("d")]}]})["bloques"]
-    assert [b["tipo"] for b in partida] == ["productos_fila", "producto"]
+    assert [(b["tipo"], len(b["productos"])) for b in partida] == [
+        ("productos_fila", 2), ("productos_fila", 2)]
     assert len({b["id"] for b in partida}) == 2
+    cinco = bq.normalizar({"bloques": [{"tipo": "productos_fila", "productos": [
+        _p(x) for x in "abcde"]}]})["bloques"]
+    assert [len(b["productos"]) for b in cinco] == [3, 2]
 
 
 def test_cada_correo_compuesto_trae_su_texto_plano(session_factory: sessionmaker) -> None:
