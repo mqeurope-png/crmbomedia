@@ -52,6 +52,16 @@ El **editor de «En workflow»** es un desplegable de los workflows **activos**
 > Esta capa es genérica del `EntityFilterBuilder`, así que las demás entidades
 > que lo usan (empresas, condiciones de workflow) ganan la misma UX.
 
+**En las condiciones de los workflows** vale cualquier campo de este filtro.
+Los de la ficha (nombre, estado, lead score, etiquetas…) los evalúa el motor
+de workflows directamente; los que viven en otras tablas —«En segmento», «En
+pipeline», «Etapa», «En workflow», llamadas, tareas, notas, emails, pedidos,
+listas de Brevo…— se compilan con este mismo motor de filtros y se pregunta a
+la base de datos si el contacto cumple la regla
+(`app/workflows/conditions.py`, `_cumple_en_bd`). Antes daban **400 al
+activar** («unknown field: in_segment») y en ejecución salían siempre «No». Al
+activar se comprueba que el motor acepta cada regla (comparador y valor).
+
 ---
 
 ## Qué se retiró del panel (y por qué)

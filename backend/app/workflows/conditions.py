@@ -22,6 +22,13 @@ Operadores soportados por tipo de campo:
 Los campos accesibles vienen del whitelist de `_FIELD_RESOLVERS` —
 declarado en código, no en config. Un workflow nunca puede leer
 columnas no expuestas (passwords, tokens, etc.).
+
+Los campos del editor que viven en otras tablas («En segmento», «En
+pipeline», «Etapa», «En workflow», llamadas, tareas, pedidos, listas de
+Brevo…) no tienen resolutor aquí: esas hojas se compilan con el motor de
+segmentos —el mismo `FIELD_SPECS` que usan el editor y el filtro de
+contactos— y se pregunta a la base de datos si el contacto cumple la regla
+(`_cumple_en_bd`). Así todo lo que el editor ofrece se puede evaluar.
 """
 from __future__ import annotations
 
@@ -31,6 +38,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.crm import Contact
@@ -465,6 +473,8 @@ def evaluate(
         return False
     resolved, actual = _resolve_field(field, ctx)
     if not resolved:
+        if _campo_del_motor(field) is not None:
+            return _cumple_en_bd(tree, ctx)
         log.warning("workflows.condition unknown field: %s", field)
         return False
     raw_value = tree.get("value")
@@ -473,6 +483,67 @@ def evaluate(
     # `tree.get("op")` (workflow) o `tree.get("comparator")` (segments).
     leaf_op = tree.get("op") or tree.get("comparator")
     return _compare(actual, _normalize_leaf_op(leaf_op), expected)
+
+
+def _campo_del_motor(field: str) -> Any:
+    """El campo del motor de segmentos (el del editor y el filtro de
+    contactos), o None si no lo es."""
+    from app.services.segments.fields import FIELD_SPECS  # noqa: PLC0415
+
+    return FIELD_SPECS.get(field)
+
+
+def _regla_del_motor(hoja: dict[str, Any]) -> dict[str, Any]:
+    """La hoja tal como la entiende el motor de segmentos (el editor la
+    guarda así: `comparator`; las antiguas con `op` se pasan igual)."""
+    return {
+        "type": "rule",
+        "field": hoja.get("field"),
+        "comparator": hoja.get("comparator") or hoja.get("op"),
+        "value": hoja.get("value"),
+    }
+
+
+def _resolutor_de_segmentos(session: Session | None) -> Callable[[str, set[str]], Any]:
+    """Para «En segmento»: las reglas del segmento por su id (sin sesión, o
+    si no existe, ninguna: el motor lo trata como un segmento vacío)."""
+    from app.models.crm import Segment  # noqa: PLC0415
+
+    def _resolver(segment_id: str, _visitados: set[str]) -> dict[str, Any] | None:
+        if session is None:
+            return None
+        segmento = session.get(Segment, segment_id)
+        if segmento is None or not segmento.rules_json:
+            return None
+        try:
+            reglas = json.loads(segmento.rules_json)
+        except (TypeError, ValueError):
+            return None
+        return reglas if isinstance(reglas, dict) else None
+
+    return _resolver
+
+
+def _cumple_en_bd(hoja: dict[str, Any], ctx: EvalContext) -> bool:
+    """Una condición sobre un campo de otras tablas: la regla se compila con
+    el motor de segmentos y se pregunta a la base de datos si ESTE contacto
+    la cumple. Una regla que el motor rechaza no se cumple (y se avisa)."""
+    from app.services.segments.engine import (  # noqa: PLC0415
+        SegmentRuleError,
+        build_filter,
+    )
+
+    try:
+        clausula = build_filter(
+            _regla_del_motor(hoja), segment_resolver=_resolutor_de_segmentos(ctx.session))
+    except SegmentRuleError as exc:
+        log.warning("workflows.condition %s no evaluable: %s", hoja.get("field"), exc)
+        return False
+    # Lo que los pasos anteriores cambiaron en esta transacción también cuenta.
+    ctx.session.flush()
+    encontrado = ctx.session.scalar(
+        select(Contact.id).where(Contact.id == ctx.contact.id, clausula).limit(1))
+    return encontrado is not None
 
 
 def parse_tree(raw: str | None) -> dict[str, Any]:
@@ -513,22 +584,35 @@ def validate_tree(
             errors.extend(validate_tree(child, depth=depth + 1))
         return errors
     field = tree.get("field")
+    leaf_op = tree.get("op") or tree.get("comparator")
     if field and not _is_known_field(field):
         errors.append(f"unknown field: {field}")
-    leaf_op = tree.get("op") or tree.get("comparator")
+    elif field and leaf_op and field not in _FIELD_RESOLVERS and _campo_del_motor(field):
+        # Un campo de otras tablas: que el motor de segmentos la acepte (el
+        # comparador y el valor), igual que la aceptará al evaluarla.
+        from app.services.segments.engine import (  # noqa: PLC0415
+            SegmentRuleError,
+            build_filter,
+        )
+
+        try:
+            build_filter(_regla_del_motor(tree), segment_resolver=_resolutor_de_segmentos(None))
+        except SegmentRuleError as exc:
+            errors.append(f"condición no válida en «{field}»: {exc}")
     if not leaf_op:
         errors.append(f"leaf without op (field={field})")
     return errors
 
 
 def _is_known_field(field: str) -> bool:
-    """Espejo de la lógica del evaluador para `validate_tree`."""
+    """Espejo de la lógica del evaluador para `validate_tree`: la whitelist,
+    los campos personalizados y los del motor de segmentos."""
     if field in _FIELD_RESOLVERS:
         return True
     for prefix in ("custom_fields.", "cf.", "contact.custom_fields."):
         if field.startswith(prefix) and len(field) > len(prefix):
             return True
-    return False
+    return _campo_del_motor(field) is not None
 
 
 def available_fields() -> list[str]:
