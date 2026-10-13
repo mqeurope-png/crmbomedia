@@ -443,7 +443,7 @@ describe("AsistenteFranja — plegado y avisos", () => {
     expect(aviso).toHaveTextContent("He cambiado «Bomedia» por «Streamtec» en estas 2 frases.");
     expect(aviso).toHaveTextContent("Antes: «Ya trabajaste con Bomedia en 2019.»");
     expect(aviso).toHaveTextContent("Ahora: «Ya trabajaste con Streamtec en 2019.»");
-    expect(aviso).toHaveTextContent("En el asunto");
+    expect(aviso).toHaveTextContent("En el asunto propuesto");
     // Sin «más»: no se pliega.
     expect(screen.queryByRole("button", { name: "más" })).not.toBeInTheDocument();
   });

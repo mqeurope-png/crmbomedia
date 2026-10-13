@@ -868,16 +868,25 @@ ACCION_BOMEDIA = "asistente.bomedia_sustituido"
 CAMPOS_TEXTO_COMPUESTO = ("html", "titulo", "subtitulo", "texto", "boton", "puntos", "pies")
 
 
-def _guardia_bomedia(data: dict[str, Any], *, empresa: str) -> list[eg.Cambio]:
+def _asunto_propio(asunto: str | None, heredado: str | None) -> bool:
+    """Si el asunto lo ha escrito la IA en este turno. El que hereda (el del
+    hilo, «Re: …», o el del turno anterior) no es suyo: cambiarlo partiría el
+    hilo y la culparía de algo que no escribió."""
+    return bool((asunto or "").strip()) and (asunto or "").strip() != (heredado or "").strip()
+
+
+def _guardia_bomedia(data: dict[str, Any], *, empresa: str,
+                     asunto_heredado: str | None = None) -> list[eg.Cambio]:
     """Regla de la marca: «Bomedia» no llega nunca al editor, aunque el hilo,
     una plantilla vieja o la ficha la nombren. Se sustituye por la empresa del
-    correo en el asunto y en el cuerpo, y se devuelve cada frase tocada (antes
-    y después) para que la franja la enseñe: cambiar el nombre puede reescribir
-    un hecho («ya trabajaste con Bomedia en 2019») y quien revisa tiene que
-    poder releer esa frase. Las direcciones (`bart@bomedia.net`) no se tocan."""
+    correo en el cuerpo y en el asunto que proponga la IA (no en el heredado
+    del hilo), y se devuelve cada frase tocada (antes y después) para que la
+    franja la enseñe: cambiar el nombre puede reescribir un hecho («ya
+    trabajaste con Bomedia en 2019») y quien revisa tiene que poder releer esa
+    frase. Las direcciones (`bart@bomedia.net`) no se tocan."""
     cambios: list[eg.Cambio] = []
     asunto = str(data.get("asunto") or "")
-    if eg.hay_bomedia(asunto):
+    if eg.hay_bomedia(asunto) and _asunto_propio(asunto, asunto_heredado):
         cambios.extend(eg.cambios_en(asunto, empresa, campo="asunto"))
         data["asunto"] = eg.sustituir(asunto, empresa)[0][:500]
     cuerpo = str(data.get("cuerpo") or "")
@@ -1209,7 +1218,7 @@ def _rellenar_compuesto(
         avisos.append(f"La IA no ha redactado un correo ({veredicto.motivo}). "
                       f"Lo que dijo: «{libre}»")
     asunto = (str(data.get("asunto") or "").strip() or b.asunto or "")[:500] or None
-    if asunto and eg.hay_bomedia(asunto):
+    if asunto and eg.hay_bomedia(asunto) and _asunto_propio(asunto, b.asunto):
         cambios_bomedia = [*eg.cambios_en(asunto, empresa, campo="asunto"), *cambios_bomedia]
         asunto = eg.sustituir(asunto, empresa)[0][:500] or None
     if not estructura["bloques"]:
@@ -1323,7 +1332,7 @@ def _interpretar(
         if modo == ia_compuesto.MODO_COMPUESTO and data["cuerpo"]:
             data["aviso"] = f"{data['aviso']} {AVISO_CONTESTO_EN_TEXTO}".strip()
     empresa = empresa_documento or eg.empresa_por_idioma(data.get("idioma") or idioma_defecto)
-    cambios = _guardia_bomedia(data, empresa=empresa)
+    cambios = _guardia_bomedia(data, empresa=empresa, asunto_heredado=asunto_defecto)
     _regla_primera(data, nombre_usuario=nombre_usuario, nombre_destinatario=nombre_destinatario)
     if not data["cuerpo"]:
         # La guardia del cuerpo lo vació: no hay frases que releer en el cuerpo.

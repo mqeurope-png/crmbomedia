@@ -15640,8 +15640,12 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
   padding: 0;
   flex: 0 0 auto;
 }
-/* «He cambiado Bomedia por…»: más marcado que el aviso normal y nunca plegado. */
+/* «He cambiado Bomedia por…»: más marcado que el aviso normal y nunca plegado.
+ * En el compositor la franja no se encoge por debajo de él (en pantallas bajas
+ * se encogía y su propio scroll escondía la lista de frases). */
 .asistente-franja-aviso-bomedia { border-color: #f59e0b; border-left-width: 4px; }
+.email-compose-modal .asistente-franja:has(> .asistente-franja-aviso-bomedia) { flex-shrink: 0; }
+.asistente-franja-aviso-bomedia .asistente-franja-bomedia-lista { max-height: 24vh; overflow-y: auto; }
 .asistente-franja-bomedia-titulo { margin: 0 0 4px; }
 .asistente-franja-bomedia-lista { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
 .asistente-franja-bomedia-lista li { display: flex; flex-direction: column; gap: 1px; }

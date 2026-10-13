@@ -348,7 +348,9 @@ def test_el_cuadre_encuentra_lo_sembrado_y_no_marca_los_alias(
         hallados = list(bomedia_en_textos_cliente(Contexto(s, ahora=datetime.now(UTC),
                                                            config={})))
     por_etiqueta = {h.etiqueta: h for h in hallados}
-    assert set(por_etiqueta) == {
+    remitentes = [e for e in por_etiqueta if e.startswith("Remitente «bart@bomedia.net» de ")]
+    assert len(remitentes) == 1
+    assert set(por_etiqueta) - set(remitentes) == {
         "Plantilla «2025 TEXTIL BOMEDIA»",
         "Firma «Vieja»",
         "Marca de la base de conocimiento «bomedia»",
@@ -356,7 +358,6 @@ def test_el_cuadre_encuentra_lo_sembrado_y_no_marca_los_alias(
         "Workflow «Bienvenida vieja» · preparar borrador",
         "Formulario web «Viejo»",
         "Formulario web «Contacto Bomedia»",
-        "Remitente «bart@bomedia.net»",
         "Web «boprint.net»",
         "Producto del catálogo «Muestras Bomedia»",
         "Correo programado «Novedades Bomedia»",
@@ -375,7 +376,66 @@ def test_el_cuadre_encuentra_lo_sembrado_y_no_marca_los_alias(
     # nombre), ni el dominio de correo bomedia.net de sitios_web.
     assert "Plantilla «Contacto»" not in por_etiqueta and "Firma «Manel»" not in por_etiqueta
     assert not any(h.entidad_id in ("emisora:1", "serie:1", "sitio:bomedia") for h in hallados)
-    assert "Remitente «info@bomedia.net»" not in por_etiqueta     # sin nombre visible
+    assert not any("info@bomedia.net" in e for e in por_etiqueta)   # sin nombre visible
+
+
+def test_el_cuadre_ve_la_cursiva_y_el_logo_pero_no_los_parametros_de_un_enlace(
+    session_factory: sessionmaker,
+) -> None:
+    """html2text marca la cursiva con «_» y la palabra no se veía; un logo
+    «Bomedia» sin texto es su alt; un `?utm_source=bomedia` no lo lee nadie."""
+    with session_factory() as s:
+        admin = _admin(s)
+        s.add_all([
+            EmailSignature(user_id=admin.id, name="Cursiva",
+                           html_content="<p>Saludos,<br><i>Bomedia S.L.</i></p>"),
+            EmailSignature(user_id=admin.id, name="Logo",
+                           html_content="<p><img src='https://x/logo.png' alt='Bomedia'></p>"),
+            EmailTemplate(name="Con UTM", subject="Hola", body_html=(
+                "<p>Mira <a href='https://www.streamtec.es/?utm_source=bomedia'>la web</a>.</p>")),
+        ])
+        s.commit()
+        etiquetas = {i["nombre"] for i in agrupar(textos_cliente(s))}
+    assert etiquetas == {"Firma «Cursiva»", "Firma «Logo»"}
+
+
+def test_la_guardia_no_rompe_enlaces_ni_pone_puntos_de_mas_en_el_html() -> None:
+    S = eg.STREAMTEC
+    assert eg.sustituir("<p>Le escribe <strong>Bomedia S.L.</strong> para confirmarle.</p>",
+                        S)[0] == "<p>Le escribe <strong>Streamtec</strong> para confirmarle.</p>"
+    assert eg.sustituir("<p>Un saludo,<br>Admin<br>Bomedia, S.L.</p>", S)[0] == (
+        "<p>Un saludo,<br>Admin<br>Streamtec</p>")
+    assert eg.sustituir("Le escribe Bomedia S.L. ¿Le interesa?", S)[0] == (
+        "Le escribe Streamtec. ¿Le interesa?")
+    enlace = "<a href='https://www.streamtec.es/?utm_source=bomedia#bomedia'>web</a>"
+    assert eg.sustituir(enlace, S) == (enlace, 0)
+    assert not eg.hay_bomedia("/static/bomedia-v4/logo.png")
+    # Una mención pegada a una barra o un guion sí cuenta.
+    assert eg.sustituir("el grupo Streamtec/Bomedia", S)[0] == "el grupo Streamtec/Streamtec"
+    # Dos menciones en una frase: una frase, no un trozo repetido.
+    assert eg.frases("Somos Bomedia S.L. y Bomedia otra vez.") == [
+        "Somos Bomedia S.L. y Bomedia otra vez."]
+
+
+def test_el_asunto_heredado_del_hilo_no_se_toca_ni_se_achaca_a_la_ia(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    """En una respuesta el asunto es el del hilo («Re: …»): cambiarlo partiría
+    el hilo, y la IA no lo ha escrito. Solo se corrige el que propone ella."""
+    with session_factory() as s:
+        contacto = _contacto(s, idioma="es")
+        hilo = _hilo(s, contacto=contacto, asunto="Pedido de Bomedia",
+                     mensajes=[{"de": contacto.email, "texto": MENSAJE_ES}])
+        s.commit()
+        thread_id = hilo.id
+    respuesta = {"asunto": "Re: Pedido de Bomedia", "idioma": "es", "pendiente": [],
+                 "enlaces_usados": [], "cuerpo": "Hola Klaus,\n\nte lo preparo hoy.\n\nAdmin"}
+    with patch.object(llm, "_invoke_claude", _ClaudeFalso(respuesta)):
+        b = _pedir(http, thread_id).json()["borrador"]
+    assert b["asunto"] == "Re: Pedido de Bomedia"
+    assert b["bomedia"] is None
+    with session_factory() as s:
+        assert s.scalar(select(AuditLog).where(AuditLog.action == redactor.ACCION_BOMEDIA)) is None
 
 
 def test_un_id_largo_no_choca_en_los_64_caracteres() -> None:

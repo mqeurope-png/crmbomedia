@@ -53,7 +53,6 @@ from app.erp.cuadre.registry import (
     comprobacion,
 )
 from app.services import empresas_grupo as eg
-from app.services.html_sanitizer import html_to_text
 
 #: Ajustes ERP (bloque `series_config`) con plantillas de correo a clientes.
 CLAVES_PLANTILLAS_AJUSTES: dict[str, str] = {
@@ -94,7 +93,20 @@ class Texto:
 
 
 def _plano(html: str | None) -> str:
-    return html_to_text(html) if html and "<" in html else (html or "")
+    """El texto que ve el cliente, para buscar en él: sin marcas de énfasis
+    (html2text pone `_Bomedia_` para la cursiva y la palabra no se vería), con
+    el texto alternativo de las imágenes (una firma que es solo un logo «Bomedia»)
+    y sin las URL de los enlaces (un `?utm_source=bomedia` no lo lee nadie)."""
+    if not html or "<" not in html:
+        return html or ""
+    import html2text  # noqa: PLC0415
+
+    conversor = html2text.HTML2Text()
+    conversor.body_width = 0
+    conversor.ignore_emphasis = True
+    conversor.ignore_links = True
+    conversor.images_to_alt = True
+    return conversor.handle(html).strip()
 
 
 def _cadenas(valor: Any, ruta: str = "") -> Iterator[tuple[str, str]]:
@@ -148,14 +160,24 @@ def _textos_plantillas(session: Any) -> Iterator[Texto]:
 def _textos_remitentes(session: Any) -> Iterator[Texto]:
     """El nombre visible del «De:» de cada alias: con él salen todos los
     correos del ERP (factura, presupuesto, oferta, aviso de envío)."""
-    from app.models.crm import UserEmailAliasPref  # noqa: PLC0415
+    from app.models.crm import User, UserEmailAliasPref  # noqa: PLC0415
 
-    for p in session.scalars(select(UserEmailAliasPref)):
-        nombre = f"Remitente «{p.alias_email}»"
-        yield Texto("remitente", p.id, nombre, "nombre visible (BoHub)",
-                    p.display_name_override or "", CUENTA)
-        yield Texto("remitente", p.id, nombre, "nombre visible (Gmail)",
-                    p.gmail_display_name or "", CUENTA)
+    filas = session.execute(
+        select(UserEmailAliasPref, User.full_name, User.email)
+        .join(User, User.id == UserEmailAliasPref.user_id)
+        .where(User.is_active.is_(True)))
+    vistos_gmail: set[str] = set()
+    for p, nombre_usuario, email_usuario in filas:
+        alias = (p.alias_email or "").strip().lower()
+        # El nombre que pone Gmail es del alias, el mismo para todos: una vez.
+        if alias and alias not in vistos_gmail:
+            vistos_gmail.add(alias)
+            yield Texto("remitente_gmail", alias, f"Remitente «{alias}» (Gmail)",
+                        "nombre visible", p.gmail_display_name or "", CUENTA)
+        # El de BoHub lo elige cada usuario para su alias.
+        yield Texto("remitente", p.id,
+                    f"Remitente «{alias}» de {nombre_usuario or email_usuario}",
+                    "nombre visible", p.display_name_override or "", CUENTA)
 
 
 def _textos_workflows(session: Any) -> Iterator[Texto]:
@@ -280,7 +302,8 @@ def _textos_conocimiento(session: Any) -> Iterator[Texto]:
         for ruta, texto in _cadenas(_json(m.datos_json), "diseño"):
             yield Texto("marca", m.nombre, etiqueta, ruta, texto, AJUSTES_ERP)
     productos = session.scalars(select(ProductoCatalogo).where(
-        ProductoCatalogo.ido_en.is_(None), ProductoCatalogo.descartado.is_(False)))
+        ProductoCatalogo.ido_en.is_(None), ProductoCatalogo.descartado.is_(False),
+        ProductoCatalogo.visible.is_(True)))
     for p in productos:
         clave = f"{p.fuente}:{p.origen_id}"
         etiqueta = f"Producto del catálogo «{p.nombre}»"
@@ -293,9 +316,8 @@ def _textos_conocimiento(session: Any) -> Iterator[Texto]:
                                                      ImagenWeb.oculta.is_(False))):
         yield Texto("imagen", i.id, f"Imagen de la web «{i.titulo or i.id}»", "título",
                     i.titulo or "", AJUSTES_ERP)
-    for v in session.scalars(select(VideoKb)):
-        if getattr(v, "visible", True) is False:
-            continue
+    for v in session.scalars(select(VideoKb).where(VideoKb.ido_en.is_(None),
+                                                   VideoKb.visible.is_(True))):
         yield Texto("video", v.id, f"Vídeo «{v.titulo or v.video_id}»", "título", v.titulo or "",
                     AJUSTES_ERP)
 

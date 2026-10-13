@@ -147,7 +147,7 @@ export function AvisoBomedia({ empresa, cambios }: BomediaSustituida) {
         <ul className="asistente-franja-bomedia-lista">
           {cambios.map((c, i) => (
             <li key={`${c.campo}-${i}`}>
-              {c.campo === "asunto" ? <span className="asistente-franja-bomedia-campo">En el asunto</span> : null}
+              {c.campo === "asunto" ? <span className="asistente-franja-bomedia-campo">En el asunto propuesto</span> : null}
               <span className="asistente-franja-bomedia-antes">Antes: «{c.antes}»</span>
               <span className="asistente-franja-bomedia-ahora">Ahora: «{c.despues}»</span>
             </li>

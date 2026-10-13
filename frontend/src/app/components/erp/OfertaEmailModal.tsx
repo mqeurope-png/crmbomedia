@@ -219,9 +219,10 @@ export function OfertaEmailModal({
         setBody(b.texto);
         setBodyHtml(b.html || null);
         setTextDirty(true);
+        // El aviso va con el cuerpo que describe: solo cambia si cambia el cuerpo.
+        setIaBomedia(b.bomedia && b.bomedia.cambios.length > 0 ? b.bomedia : null);
       }
       setIaAviso(b.aviso ?? null);
-      setIaBomedia(b.bomedia && b.bomedia.cambios.length > 0 ? b.bomedia : null);
       if (!b.texto && !b.aviso) {
         setIaError("La IA no ha redactado el correo: revisa la instrucción e inténtalo otra vez.");
       }

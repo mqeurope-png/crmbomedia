@@ -75,14 +75,21 @@ def empresa_para(idioma: str | None, emisora: Any = None) -> tuple[str, str]:
 
 # --- «Bomedia» ------------------------------------------------------------------------------
 
-#: La palabra suelta: no pegada a otra (`mbomedia`), ni detrás de una arroba,
-#: un punto, una barra o un guion (`bart@bomedia.net`, `www.bomedia.net`,
-#: `https://bomedia.es`, `…/bomedia-v4/…`), ni delante de una arroba
-#: (`bomedia@bomedia.net`).
-_BOMEDIA_RE = re.compile(r"(?<![\w@./\-])bomedia(?![\w@])", re.IGNORECASE)
+#: La palabra suelta: no pegada a otra (`mbomedia`), ni detrás de una arroba o
+#: un punto (`bart@bomedia.net`, `www.bomedia.net`), ni dentro de los
+#: parámetros de un enlace (`?utm_source=bomedia`, `#bomedia`, `cid:bomedia`),
+#: ni delante de una arroba (`bomedia@bomedia.net`). Detrás de una barra o un
+#: guion SÍ cuenta («Streamtec/Bomedia»); las rutas y URL se descartan aparte,
+#: mirando la palabra entera (`_es_direccion`).
+_BOMEDIA_RE = re.compile(r"(?<![\w@.=?&#%:])bomedia(?![\w@])", re.IGNORECASE)
 #: Detrás, un dominio (`bomedia.net`, `bomedia.es`): es una dirección, no una
-#: mención. «Bomedia. Saludos» no lo es (tras el punto va un espacio).
-_DOMINIO_RE = re.compile(r"\.[a-z]{2,}\b", re.IGNORECASE)
+#: mención. En minúsculas: «Bomedia.Gracias» (sin espacio) es una mención, y
+#: «Bomedia. Saludos» también (tras el punto va un espacio).
+_DOMINIO_RE = re.compile(r"\.[a-z]{2,}\b")
+#: La palabra entera (hasta un espacio, comilla o etiqueta) donde está la mención.
+_PALABRA_RE = re.compile(r"[^\s\"'<>]+")
+#: Una ruta con fichero al final (`/static/bomedia-v4/logo.png`).
+_RUTA_RE = re.compile(r"/[^\s\"'<>]*\.[A-Za-z0-9]{2,4}$")
 #: La forma jurídica que a veces la acompaña («Bomedia, S.L.», «Bomedia SL»):
 #: se sustituye junto con el nombre (MQ Europe no es una S.L.).
 _FORMA_JURIDICA_RE = re.compile(r"\s*,?\s*s\.?\s?l\.?(?:u\.?)?(?!\w)", re.IGNORECASE)
@@ -100,7 +107,7 @@ def menciones(texto: str | None) -> list[tuple[int, int]]:
     texto = texto or ""
     salida: list[tuple[int, int]] = []
     for m in _BOMEDIA_RE.finditer(texto):
-        if _DOMINIO_RE.match(texto, m.end()):
+        if _DOMINIO_RE.match(texto, m.end()) or _es_direccion(texto, m.start()):
             continue
         fin = m.end()
         forma = _FORMA_JURIDICA_RE.match(texto, fin)
@@ -110,24 +117,45 @@ def menciones(texto: str | None) -> list[tuple[int, int]]:
     return salida
 
 
+def _es_direccion(texto: str, posicion: int) -> bool:
+    """Si la palabra entera donde cae `posicion` es una URL, una dirección o
+    una ruta de fichero, no un nombre («https://…?ref=x», «…/bomedia-v4/logo.png»)."""
+    for m in _PALABRA_RE.finditer(texto, max(0, posicion - 300), posicion + 300):
+        if m.start() <= posicion < m.end():
+            palabra = m.group(0)
+            return ("://" in palabra or "www." in palabra.lower() or "@" in palabra
+                    or bool(_RUTA_RE.search(palabra)))
+    return False
+
+
 def hay_bomedia(texto: str | None) -> bool:
     """Si `texto` menciona «Bomedia» (sin contar direcciones ni dominios)."""
     return bool(menciones(texto))
 
 
 _ETIQUETA_RE = re.compile(r"<[^>]+>")
+#: Lo que corta una línea en el HTML sencillo del borrador (o en texto plano).
+_CORTE_LINEA_RE = re.compile(
+    r"\n|<(?:br|/?p|/?li|/?div|/?h[1-6]|/?ul|/?ol|/?tr|/?td|/?th|/?table)\b[^>]*>",
+    re.IGNORECASE)
+#: Lo que se salta para ver qué sigue: espacios y etiquetas en línea.
+_EN_LINEA_RE = re.compile(r"^(?:[ \t]|&nbsp;|</?(?:strong|b|em|i|u|a|span)\b[^>]*>)*",
+                          re.IGNORECASE)
 
 
 def _cierra_frase(texto: str, inicio: int, fin: int) -> bool:
     """Tras «… Bomedia S.L.» el punto de «S.L.» cerraba también la frase si lo
-    que sigue es el final, un salto, una etiqueta o una frase nueva. Sola en su
-    línea (la firma: «Admin\\nBomedia, S.L.») no hay frase que cerrar."""
-    resto = texto[fin:].lstrip(" \t")
-    fin_de_linea = not resto or resto[0] == "\n" or resto.startswith("<")
-    antes = _ETIQUETA_RE.sub("", texto[texto.rfind("\n", 0, inicio) + 1:inicio]).strip()
-    if fin_de_linea and not antes:
-        return False
-    return fin_de_linea or resto[0].isupper()
+    que sigue es el final de la línea o una frase nueva (mayúscula, también
+    tras «¿», «¡» o «»). Sola en su línea (la firma: «Admin\\nBomedia, S.L.»,
+    o «<br>Bomedia, S.L.</p>») no hay frase que cerrar. Las etiquetas en línea
+    (`<strong>`, `<em>`) no cuentan como corte."""
+    resto = _EN_LINEA_RE.sub("", texto[fin:], count=1)
+    fin_de_linea = not resto or bool(_CORTE_LINEA_RE.match(resto))
+    antes = _ETIQUETA_RE.sub("", _CORTE_LINEA_RE.split(texto[:inicio])[-1])
+    antes = antes.replace("&nbsp;", " ").strip()
+    if fin_de_linea:
+        return bool(antes)
+    return resto.lstrip("¿¡«\"'(")[:1].isupper()
 
 
 def sustituir(texto: str | None, empresa: str) -> tuple[str, int]:
@@ -167,10 +195,13 @@ def frases(texto: str | None, *, maximo: int = MAX_FRASE) -> list[str]:
     """Cada frase de `texto` (texto plano) que menciona «Bomedia», sin
     repetir, recortada alrededor de la mención si es muy larga."""
     texto = texto or ""
-    limites = list(_LIMITE_FRASE_RE.finditer(texto))
+    tramos = menciones(texto)
+    # El punto de «S.L.» es parte de la mención, no el final de la frase.
+    limites = [m for m in _LIMITE_FRASE_RE.finditer(texto)
+               if not any(i <= m.start() < f for i, f in tramos)]
     vistas: set[str] = set()
     salida: list[str] = []
-    for inicio, fin in menciones(texto):
+    for inicio, fin in tramos:
         desde = max((m.end() for m in limites if m.end() <= inicio), default=0)
         hasta = min((m.end() for m in limites if m.start() >= fin), default=len(texto))
         crudo = texto[desde:hasta]
