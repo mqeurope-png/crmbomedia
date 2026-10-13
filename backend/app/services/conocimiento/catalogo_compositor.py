@@ -139,6 +139,12 @@ def _diseno(origen: dict[str, Any], campos: dict[str, str]) -> dict[str, Any]:
     return salida
 
 
+#: Marcas del compositor que no se escriben nunca en la base de conocimiento,
+#: tengan o no producto (por su clave: minúsculas, solo letras y cifras).
+#: «bomedia» salió del ecosistema el 13/10/2026: se borró a mano de
+#: `kb_catalogo_marcas` y la pasada diaria no puede volver a plantarla.
+MARCAS_RETIRADAS: frozenset[str] = frozenset({"bomedia"})
+
 MOTIVO_SIN_PRECIO_NI_AREA = (
     "sin precio ni área de impresión: no es una máquina (un premio, una mención)")
 
@@ -223,10 +229,11 @@ def marcas_con_producto(data: dict[str, Any]) -> set[str]:
 def escribir_marcas(session: Session, data: dict[str, Any], *, ahora: datetime,
                     ) -> tuple[int, list[str]]:
     """`data.brands[]` → `kb_catalogo_marcas`: solo las marcas que tienen algún
-    producto (una marca del compositor sin producto —«bomedia», las muestras—
-    no es una marca de catálogo: no se escribe, y si estaba, se marca ida). El
-    idioma por defecto editado desde la pantalla se conserva. Devuelve
-    `(escritas, sin producto)`."""
+    producto (una marca del compositor sin producto —las muestras— no es una
+    marca de catálogo: no se escribe, y si estaba, se marca ida). Las de
+    `MARCAS_RETIRADAS` («bomedia») no se escriben nunca, aunque un día tengan
+    producto. El idioma por defecto editado desde la pantalla se conserva.
+    Devuelve `(escritas, sin producto)`."""
     marcas = data.get("brands")
     if not isinstance(marcas, list):
         return 0, []
@@ -249,6 +256,11 @@ def escribir_marcas(session: Session, data: dict[str, Any], *, ahora: datetime,
             continue
         if not any(c in con_producto for c in claves):
             sin_producto.append(nombre)
+            continue
+        if any(c in MARCAS_RETIRADAS for c in claves):
+            # Retirada: no se escribe aunque tenga producto, y la fila que
+            # hubiera queda como ida (no está en `vistas`).
+            logger.info("kb.catalogo: marca retirada «%s» del compositor: no se escribe", nombre)
             continue
         urls: dict[str, str] = {}
         for clave in ("urls", "url", "links", "link", "site", "sites"):

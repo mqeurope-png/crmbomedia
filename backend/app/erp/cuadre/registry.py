@@ -49,6 +49,9 @@ ENTIDAD_PEDIDO_WOO = "pedido_woo"
 ENTIDAD_TRABAJO_COLA = "trabajo_cola"
 #: Un contacto del CRM (su id): un lead de formulario, por ejemplo.
 ENTIDAD_CONTACTO = "contacto"
+#: Un texto guardado de cara al cliente (`<almacén>:<id>`): una plantilla, una
+#: firma, una marca de la base de conocimiento, un paso de workflow…
+ENTIDAD_TEXTO_CLIENTE = "texto_cliente"
 
 
 @dataclass
@@ -163,6 +166,7 @@ def registro() -> dict[str, Comprobacion]:
         checks_colas,
         checks_factusol,
         checks_mysql,
+        checks_textos,
         checks_woocommerce,
     )
 

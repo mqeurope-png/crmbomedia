@@ -19,6 +19,7 @@ import {
 import type { EstructuraCompuesta } from "../../lib/correoCompuesto";
 import {
   type AsistenteAlcance,
+  type BomediaSustituida,
   type BorradorAsistente,
   type FormatoAsistente,
   type SobreElEditor,
@@ -123,6 +124,36 @@ export function AvisoPlegable({ titulo, texto }: { titulo: string; texto: string
           {abierto ? "menos" : "más"}
         </button>
       ) : null}
+    </div>
+  );
+}
+
+/** La guardia de la marca cambió «Bomedia» por la empresa del correo. Va sin
+ *  plegar y con cada frase antes y ahora: cambiar un nombre puede reescribir
+ *  un hecho («ya trabajaste con Bomedia en 2019»), y quien revisa tiene que
+ *  enterarse y poder releer esa frase, no solo saber que se tocó algo. */
+export function AvisoBomedia({ empresa, cambios }: BomediaSustituida) {
+  const una = cambios.length === 1;
+  return (
+    <div className="asistente-franja-aviso asistente-franja-aviso-bomedia" role="alert" aria-label="Bomedia sustituida">
+      <div className="asistente-franja-aviso-texto">
+        <p className="asistente-franja-bomedia-titulo">
+          <strong>
+            He cambiado «Bomedia» por «{empresa}» en {una ? "esta frase" : `estas ${cambios.length} frases`}.
+          </strong>{" "}
+          {una ? "Reléela" : "Reléelas"} antes de enviar: si cuenta{una ? "" : "n"} un hecho (con quién trabajó, quién
+          le facturó), el nombre nuevo puede no ser cierto; reescríbe{una ? "la" : "las"} como toque.
+        </p>
+        <ul className="asistente-franja-bomedia-lista">
+          {cambios.map((c, i) => (
+            <li key={`${c.campo}-${i}`}>
+              {c.campo === "asunto" ? <span className="asistente-franja-bomedia-campo">En el asunto propuesto</span> : null}
+              <span className="asistente-franja-bomedia-antes">Antes: «{c.antes}»</span>
+              <span className="asistente-franja-bomedia-ahora">Ahora: «{c.despues}»</span>
+            </li>
+          ))}
+        </ul>
+      </div>
     </div>
   );
 }
@@ -418,6 +449,11 @@ export function AsistenteFranja({
         <span className="muted small asistente-franja-resumen">{resumen}</span>
         {abierta ? <ChevronDown size={14} aria-hidden /> : <ChevronRight size={14} aria-hidden />}
       </button>
+      {borrador?.bomedia && borrador.bomedia.cambios.length > 0 ? (
+        // FUERA de lo que se pliega: con borrador la franja se pliega sola, y
+        // este aviso no puede quedar escondido ni detrás de un «más».
+        <AvisoBomedia empresa={borrador.bomedia.empresa} cambios={borrador.bomedia.cambios} />
+      ) : null}
       {abierta ? (
         <div className="asistente-franja-cuerpo">
           {interno ? (

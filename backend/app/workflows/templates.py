@@ -13,6 +13,10 @@ Tres casos básicos pedidos por Bart:
 
 Cuando Bart pida más plantillas las añadimos aquí — son data, no
 código.
+
+Los textos van en castellano y a nombre de Streamtec (13/10/2026: Bomedia
+salió del ecosistema; castellano → Streamtec, resto → MQ Europe). Un test
+recorre la galería para que ninguna plantilla vuelva a plantar «Bomedia».
 """
 from __future__ import annotations
 
@@ -40,7 +44,7 @@ TEMPLATES: dict[str, dict[str, Any]] = {
                 "client_id": "step-2",
                 "type": "action_send_email",
                 "config": {
-                    "subject": "Bienvenido/a a Bomedia, {{ contact.first_name }}",
+                    "subject": "Bienvenido/a a Streamtec, {{ contact.first_name }}",
                     "body_html": (
                         "<p>Hola {{ contact.first_name }},</p>"
                         "<p>Gracias por ponerte en contacto. Aquí va una "
@@ -146,7 +150,7 @@ TEMPLATES: dict[str, dict[str, Any]] = {
                     "body_html": (
                         "<p>Hola {{ contact.first_name }},</p>"
                         "<p>Que pases un gran día. Un abrazo del equipo "
-                        "Bomedia.</p>"
+                        "Streamtec.</p>"
                     ),
                     "from_alias": "",
                 },

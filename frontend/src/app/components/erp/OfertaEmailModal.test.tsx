@@ -165,6 +165,25 @@ describe("OfertaEmailModal", () => {
     expect(await screen.findByText(/No tengo el plazo de entrega/)).toBeInTheDocument();
   });
 
+  it("si la guardia cambió «Bomedia», el modal enseña qué frase se tocó, antes y ahora", async () => {
+    mockIa.mockResolvedValue({
+      ...borradorIa,
+      bomedia: {
+        empresa: "MQ Europe",
+        cambios: [{ campo: "cuerpo", antes: "Vous avez déjà travaillé avec Bomedia.",
+                    despues: "Vous avez déjà travaillé avec MQ Europe." }],
+      },
+    });
+    const user = userEvent.setup();
+    render(<OfertaEmailModal oferta={oferta()} onClose={jest.fn()} onSent={jest.fn()} />);
+    await screen.findByLabelText("Enviar a Marta Coll (marta@maison.example)");
+    await user.click(screen.getByRole("button", { name: "Redactar con la IA" }));
+    const aviso = await screen.findByRole("alert", { name: "Bomedia sustituida" });
+    expect(aviso).toHaveTextContent("He cambiado «Bomedia» por «MQ Europe» en esta frase.");
+    expect(aviso).toHaveTextContent("Antes: «Vous avez déjà travaillé avec Bomedia.»");
+    expect(aviso).toHaveTextContent("Ahora: «Vous avez déjà travaillé avec MQ Europe.»");
+  });
+
   it("si la IA falla lo dice y deja el texto de la plantilla", async () => {
     mockIa.mockRejectedValue(new Error("Sin crédito de IA"));
     const user = userEvent.setup();

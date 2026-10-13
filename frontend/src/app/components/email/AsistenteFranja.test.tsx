@@ -419,6 +419,43 @@ describe("AsistenteFranja — plegado y avisos", () => {
     expect(screen.getByRole("button", { name: "menos" })).toHaveAttribute("aria-expanded", "true");
   });
 
+  it("«Bomedia» sustituida: el aviso dice qué frase se tocó y se ve aunque la franja se pliegue", async () => {
+    api.generarBorradorAsistente.mockResolvedValueOnce(borrador({
+      idioma: "es",
+      texto: "Hola Klaus,\n\nYa trabajaste con Streamtec en 2019.",
+      html: "<p>Hola Klaus,</p><p>Ya trabajaste con Streamtec en 2019.</p>",
+      bomedia: {
+        empresa: "Streamtec",
+        cambios: [
+          { campo: "asunto", antes: "Re: Tintas de Bomedia", despues: "Re: Tintas de Streamtec" },
+          { campo: "cuerpo", antes: "Ya trabajaste con Bomedia en 2019.", despues: "Ya trabajaste con Streamtec en 2019." },
+        ],
+      },
+    }));
+    montar();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /Redactar/ }));
+    const aviso = await screen.findByRole("alert", { name: "Bomedia sustituida" });
+    // Con cuerpo la franja se pliega sola… y el aviso sigue a la vista.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /Ayúdame a/ })).toHaveAttribute("aria-expanded", "false"));
+    expect(aviso).toBeVisible();
+    expect(aviso).toHaveTextContent("He cambiado «Bomedia» por «Streamtec» en estas 2 frases.");
+    expect(aviso).toHaveTextContent("Antes: «Ya trabajaste con Bomedia en 2019.»");
+    expect(aviso).toHaveTextContent("Ahora: «Ya trabajaste con Streamtec en 2019.»");
+    expect(aviso).toHaveTextContent("En el asunto propuesto");
+    // Sin «más»: no se pliega.
+    expect(screen.queryByRole("button", { name: "más" })).not.toBeInTheDocument();
+  });
+
+  it("sin sustitución no hay aviso de Bomedia", async () => {
+    api.generarBorradorAsistente.mockResolvedValueOnce(borrador({ bomedia: null }));
+    montar();
+    await userEvent.setup().click(screen.getByRole("button", { name: /Redactar/ }));
+    await waitFor(() => expect(api.generarBorradorAsistente).toHaveBeenCalled());
+    expect(screen.queryByRole("alert", { name: "Bomedia sustituida" })).not.toBeInTheDocument();
+  });
+
   it("el alcance elegido se recuerda por usuario", async () => {
     window.localStorage.setItem("bohub.asistente.alcance.u-1", "empresa");
     montar();

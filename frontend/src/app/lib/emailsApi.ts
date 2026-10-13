@@ -670,6 +670,11 @@ export type AsistenteEnlace = { url: string; etiqueta: string; origen: string | 
  *  revisa en el compositor, lo corrige si hace falta y lo envía. Es un TURNO
  *  de una conversación: el primero (turno 0) monta el contexto; cada
  *  corrección («más corto») es un turno más con el mismo contexto. */
+export type BomediaSustituida = {
+  empresa: string;
+  cambios: { campo: string; antes: string; despues: string }[];
+};
+
 export type BorradorAsistente = {
   id: string;
   /** Null en un correo nuevo, sin hilo. */
@@ -716,6 +721,11 @@ export type BorradorAsistente = {
   fragmento: boolean;
   /** Lo que la IA le dice a la PERSONA (nunca va en el cuerpo). */
   aviso: string | null;
+  /** La guardia de la marca cambió «Bomedia» en este turno: por qué empresa y
+   *  cada frase antes y después (`campo`: asunto o cuerpo). La franja lo
+   *  enseña sin plegar: cambiar un nombre puede reescribir un hecho, y quien
+   *  revisa tiene que poder releer esa frase. */
+  bomedia?: BomediaSustituida | null;
   /** Lo que la persona escribió en la caja para este turno. */
   instruccion: string | null;
   conversacion_id: string;
