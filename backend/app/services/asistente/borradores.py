@@ -53,6 +53,20 @@ def conversacion_descartada(session: Session, borrador: BorradorAsistente) -> bo
     return any(t.estado == ESTADO_DESCARTADO for t in turnos_de(session, borrador))
 
 
+def _bomedia_de(contexto: dict[str, Any]) -> dict[str, Any] | None:
+    """`{empresa, cambios: [{campo, antes, despues}]}` si la guardia de la
+    marca tocó algo en el turno; si no, None."""
+    dato = contexto.get("bomedia")
+    if not isinstance(dato, dict) or not isinstance(dato.get("cambios"), list):
+        return None
+    cambios = [
+        {"campo": str(c.get("campo") or ""), "antes": str(c.get("antes") or ""),
+         "despues": str(c.get("despues") or "")}
+        for c in dato["cambios"] if isinstance(c, dict)
+    ]
+    return {"empresa": str(dato.get("empresa") or ""), "cambios": cambios} if cambios else None
+
+
 def como_dict(b: BorradorAsistente) -> dict[str, Any]:
     enlaces = _json(b.enlaces_json, [])
     contexto = _json(b.contexto_json, {})
@@ -83,6 +97,9 @@ def como_dict(b: BorradorAsistente) -> dict[str, Any]:
         "seleccion": seleccion,
         "fragmento": bool(seleccion) and not seleccion.get("empalmado", True),
         "aviso": b.aviso, "instruccion": b.instruccion,
+        # La guardia de la marca cambió «Bomedia» en este turno: por qué empresa
+        # y cada frase antes y después (la franja la enseña sin plegar).
+        "bomedia": _bomedia_de(contexto),
         "conversacion_id": b.conversacion_id or b.id, "turno": b.turno or 0,
         "padre_id": b.padre_id,
         "pendiente": _json(b.pendiente_json, []), "enlaces": enlaces,

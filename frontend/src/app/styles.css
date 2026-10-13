@@ -15640,6 +15640,14 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
   padding: 0;
   flex: 0 0 auto;
 }
+/* «He cambiado Bomedia por…»: más marcado que el aviso normal y nunca plegado. */
+.asistente-franja-aviso-bomedia { border-color: #f59e0b; border-left-width: 4px; }
+.asistente-franja-bomedia-titulo { margin: 0 0 4px; }
+.asistente-franja-bomedia-lista { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
+.asistente-franja-bomedia-lista li { display: flex; flex-direction: column; gap: 1px; }
+.asistente-franja-bomedia-campo { font-size: var(--fs-label); font-weight: 600; }
+.asistente-franja-bomedia-antes { text-decoration: line-through; opacity: 0.8; }
+.asistente-franja-bomedia-ahora { font-weight: 600; }
 
 /* La franja del asistente: «se aplicará solo a la selección». */
 .asistente-franja-seleccion {

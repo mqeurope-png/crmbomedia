@@ -600,6 +600,39 @@ decide si es un correo). El mensaje de usuario va en dos bloques: el contexto,
 cacheable, y la petición. Reutiliza `llm._invoke_claude` (salta los bloques de
 razonamiento, #537) y `llm._parse_segment_json`.
 
+### La empresa, y la marca que ya no existe (13/10/2026)
+
+Bomedia salió del ecosistema: lo que lee un cliente va a nombre de **Streamtec
+(castellano) o MQ Europe (resto de idiomas)**, el mismo criterio que las rutas
+de soporte (`services/empresas_grupo.py`). Tres capas:
+
+- **Lo que le pone delante.** El prompt de sistema se presenta como el equipo
+  de Streamtec y MQ Europe, y la **regla 11** dice que la empresa es la de
+  EMPRESA y que nunca escriba «Bomedia», aunque salga en el hilo, en correos
+  antiguos, en una plantilla, en una nota o en la ficha (los hilos viejos están
+  firmados como Bomedia y el modelo copia el tono y la firma de lo que lee). La
+  cabecera lleva la línea **EMPRESA**: la emisora de la oferta adjunta si es
+  Streamtec o MQ Europe; si no, la regla del idioma (dicha como regla, para que
+  una corrección «en inglés» la cambie sola). Una oferta de la serie 1 (que
+  emite «Bomedia S.L.») le llega al modelo como «serie 1», sin el nombre.
+- **La guardia de la marca** (`redactor._guardia_bomedia`, también en el
+  compuesto): si el borrador nombra «Bomedia» en el cuerpo o el asunto, se
+  **sustituye** por la empresa del correo (no se reintenta: la sustitución es
+  determinista y no cuesta otra llamada). Las direcciones y dominios de
+  bomedia.net **no** cuentan. Cambiar un nombre puede reescribir un hecho («ya
+  trabajaste con Bomedia en 2019»), así que la franja enseña un aviso **propio,
+  sin plegar y fuera de lo que se pliega**, con **cada frase antes y ahora**,
+  para releerla. Queda registrado: `logger.warning`, la marca `bomedia` en el
+  turno (`contexto_json`, sale como `bomedia` en la API) y la auditoría
+  `asistente.bomedia_sustituido` (cuántas frases, por qué empresa, modelo):
+  así se sabe si sigue pasando.
+- **El Cuadre** (`bomedia_en_textos_cliente`, ver `docs/erp/cuadre.md`) vigila
+  los textos guardados de cara al cliente.
+
+La serie 1 de FACTUSOL sigue siendo «Bomedia S.L.» (decisión de Bart): sus
+facturas, proformas y albaranes, y la firma del correo de presupuesto de esa
+serie (`quote_email._firma_for_serie`, coherente con el PDF que lleva adjunto).
+
 ### Registro (`ia_llamadas`, `ia_borradores`; migración 0137)
 
 Cada llamada a Claude, del clasificador o del asistente, deja una fila en

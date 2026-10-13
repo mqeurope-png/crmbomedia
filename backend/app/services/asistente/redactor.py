@@ -46,7 +46,7 @@ from uuid import uuid4
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.models.crm import Contact, EmailThread, User
+from app.models.crm import AuditLog, Contact, EmailThread, User
 from app.models.ia import (
     ALCANCE_CONTACTO,
     ALCANCES,
@@ -57,6 +57,7 @@ from app.models.ia import (
     PROPOSITO_CORRECCION,
     BorradorAsistente,
 )
+from app.services import empresas_grupo as eg
 from app.services import llm
 from app.services.asistente import borradores
 from app.services.asistente import contexto as ctx_mod
@@ -87,6 +88,7 @@ from app.services.correo_compuesto import ia as ia_compuesto
 from app.services.ia.coste import coste_usd
 from app.services.ia.modelos import parametros_de_llamada
 from app.services.ia.uso import registrar_llamada
+from app.services.web_forms import sitios as registro_sitios
 
 logger = logging.getLogger(__name__)
 
@@ -114,8 +116,8 @@ AVISO_SIN_NADA_QUE_CONTESTAR = (
 )
 
 PROMPT_SISTEMA = (
-    "Eres el asistente de respuesta del equipo comercial de BoHub (Bomedia, MQ Europe, "
-    "Streamtec: impresoras UV, DTF, láser FLUX, vending y sus consumibles). Redactas el "
+    "Eres el asistente de respuesta del equipo comercial de BoHub (Streamtec y MQ Europe: "
+    "impresoras UV, DTF, láser FLUX, vending y sus consumibles). Redactas el "
     "BORRADOR de un correo al cliente: la respuesta a su último mensaje o, si te dan una "
     "INSTRUCCIÓN DE QUIEN ENVÍA, el correo que te piden (una pregunta, un seguimiento, un "
     "aviso). Una persona lo revisa, lo corrige si hace falta y lo envía; tú no envías nada.\n\n"
@@ -164,7 +166,12 @@ PROMPT_SISTEMA = (
     "reescríbelo aplicando solo esa corrección y conservando todo lo demás, incluido el formato "
     "(listas, negritas, enlaces). Si te dan una SELECCIÓN, reescribe solo ese fragmento y "
     "devuelve en «cuerpo» únicamente el fragmento reescrito, con el mismo tipo de etiquetas que "
-    "tenía; el resto del correo no se toca.\n\n"
+    "tenía; el resto del correo no se toca.\n"
+    "11. La empresa es la que te indico en EMPRESA. Si el correo nombra a nuestra empresa (al "
+    "presentarte, en la despedida, «el equipo de…»), usa esa y ninguna otra. NUNCA escribas "
+    "«Bomedia» ni en el cuerpo ni en el asunto: esa marca ya no existe. Aunque aparezca en el "
+    "hilo, en correos antiguos, en una plantilla, en una nota o en la ficha, no la copies, ni "
+    "su firma ni su nombre de empresa.\n\n"
     "FORMATO del «cuerpo»: HTML sencillo con SOLO estas etiquetas: <p>, <br>, <strong>, <em>, "
     "<u>, <h2>, <h3>, <ul>, <ol>, <li>, <a href='…'> y, solo si hace falta comparar datos, una "
     "<table> simple (<tr>, <th>, <td>). Nada de estilos, colores, fuentes, imágenes, <div> ni "
@@ -520,6 +527,18 @@ def _bloque_catalogo(ctx: Contexto) -> str:
     return "\n".join(lineas) + "\n"
 
 
+def _emisora_para_ia(of: dict[str, Any]) -> str:
+    """La emisora de la oferta tal como la lee el modelo. Una oferta de la
+    serie 1 la emite «Bomedia S.L.» (sigue así en FACTUSOL), pero ese nombre
+    no puede llegar al correo: el modelo lee solo la serie."""
+    emisora = str(of.get("emisora") or "").strip()
+    if not emisora:
+        return "—"
+    if eg.hay_bomedia(emisora):
+        return f"serie {of.get('serie') or '1'} (no la nombres en el correo)"
+    return emisora
+
+
 def _bloque_oferta(ctx: Contexto) -> str:
     """La oferta que va adjunta al correo: número, fechas, líneas e importes.
     Es la excepción a «los precios salen solo del CATÁLOGO»: estos son los de
@@ -544,7 +563,7 @@ def _bloque_oferta(ctx: Contexto) -> str:
         "es válida; no afirmes el régimen de IVA definitivo (se fija al emitir el presupuesto, "
         "según VIES).",
         f"  Nº {of.get('numero')} · fecha {of.get('fecha')} · válida hasta "
-        f"{of.get('valida_hasta')} · emisora {of.get('emisora') or '—'} · {iva}"
+        f"{of.get('valida_hasta')} · emisora {_emisora_para_ia(of)} · {iva}"
         + (f" · su referencia: {of['referencia']}" if of.get("referencia") else ""),
     ]
     for ln in of.get("lineas") or []:
@@ -649,8 +668,41 @@ def _cabecera(ctx: Contexto) -> list[str]:
         f"{ctx.usuario.get('nombre_pila') or '—'}), desde "
         f"{ctx.usuario.get('remitente') or '—'}.",
         f"DESTINATARIO: {destinatario}. {asunto}",
-        f"WEB POR LA QUE LLEGÓ: {ctx.sitio or 'desconocida'}.",
+        f"WEB POR LA QUE LLEGÓ: {_web_de_llegada(ctx.sitio)}.",
+        _linea_empresa(ctx),
     ]
+
+
+def _web_de_llegada(sitio: str | None) -> str:
+    """El sitio por el que llegó, si es una web. `contexto.sitio_de` ya
+    descarta los dominios solo de correo (bomedia.net, streamtec.es) al mirar a
+    quién escribió el cliente; queda el origen de la ficha (`web_form:<sitio>`),
+    que podría nombrar uno. Un dominio de correo no es una web, y el modelo no
+    debe leer «bomedia» como la web del cliente."""
+    if not sitio:
+        return "desconocida"
+    reg = registro_sitios.registro().sitio(sitio)
+    if reg is not None and reg.tipo == registro_sitios.TIPO_CORREO:
+        return "ninguna (llegó por correo directo)"
+    return sitio
+
+
+def empresa_documento(ctx: Contexto) -> str | None:
+    """La empresa del documento que va con el correo (la oferta adjunta), si
+    es Streamtec o MQ Europe; si no hay o es otra (serie 1), None."""
+    return eg.empresa_de_emisora((ctx.oferta or {}).get("serie"))
+
+
+def _linea_empresa(ctx: Contexto) -> str:
+    """Cómo se llama nuestra empresa en este correo (regla 11). Con oferta
+    adjunta de Streamtec o MQ Europe, su emisora; si no, el idioma del correo,
+    dicho como regla para que una corrección «en inglés» la cambie sola."""
+    del_documento = empresa_documento(ctx)
+    if del_documento:
+        return f"EMPRESA: {del_documento} (la emisora de la oferta adjunta)."
+    return (f"EMPRESA: {eg.STREAMTEC} si el correo va en castellano; {eg.MQ_EUROPE} si va en "
+            f"cualquier otro idioma (en {NOMBRES_IDIOMA.get(ctx.idioma, ctx.idioma)}: "
+            f"{eg.empresa_por_idioma(ctx.idioma)}).")
 
 
 def bloque_contexto(ctx: Contexto) -> str:
@@ -804,6 +856,83 @@ def _regla_primera(data: dict[str, Any], *, nombre_usuario: str | None,
         data["cuerpo"] = ""
         nota = f"La IA no ha redactado un correo ({veredicto.motivo}). Lo que dijo: «{plano}»"
     data["aviso"] = f"{data['aviso']} {nota}".strip() if data["aviso"] else nota
+
+
+#: Dónde guarda el turno lo que hizo la guardia de la marca (lo enseña la
+#: franja y lo cuenta quien quiera saber si sigue pasando).
+CLAVE_BOMEDIA = "bomedia"
+#: La entrada de auditoría de cada vez que pasa.
+ACCION_BOMEDIA = "asistente.bomedia_sustituido"
+#: Los textos de un correo compuesto que escribe la IA (los mismos que mira
+#: `ia_compuesto.texto_libre`): ahí es donde la guardia de la marca sustituye.
+CAMPOS_TEXTO_COMPUESTO = ("html", "titulo", "subtitulo", "texto", "boton", "puntos", "pies")
+
+
+def _guardia_bomedia(data: dict[str, Any], *, empresa: str) -> list[eg.Cambio]:
+    """Regla de la marca: «Bomedia» no llega nunca al editor, aunque el hilo,
+    una plantilla vieja o la ficha la nombren. Se sustituye por la empresa del
+    correo en el asunto y en el cuerpo, y se devuelve cada frase tocada (antes
+    y después) para que la franja la enseñe: cambiar el nombre puede reescribir
+    un hecho («ya trabajaste con Bomedia en 2019») y quien revisa tiene que
+    poder releer esa frase. Las direcciones (`bart@bomedia.net`) no se tocan."""
+    cambios: list[eg.Cambio] = []
+    asunto = str(data.get("asunto") or "")
+    if eg.hay_bomedia(asunto):
+        cambios.extend(eg.cambios_en(asunto, empresa, campo="asunto"))
+        data["asunto"] = eg.sustituir(asunto, empresa)[0][:500]
+    cuerpo = str(data.get("cuerpo") or "")
+    if eg.hay_bomedia(cuerpo):
+        plano = html_a_texto(cuerpo) if parece_html(cuerpo) else cuerpo
+        cambios.extend(eg.cambios_en(plano, empresa, campo="cuerpo"))
+        data["cuerpo"] = eg.sustituir(cuerpo, empresa)[0]
+    return cambios
+
+
+def _guardia_bomedia_compuesto(estructura: dict[str, Any], *, empresa: str,
+                               ) -> tuple[dict[str, Any], list[eg.Cambio]]:
+    """La misma regla en un correo compuesto: en los textos que escribe la IA
+    (no en las fichas del catálogo, que vienen de la base de conocimiento)."""
+    libre = ia_compuesto.texto_libre(estructura)
+    if not eg.hay_bomedia(libre):
+        return estructura, []
+    cambios = eg.cambios_en(libre, empresa, campo="cuerpo")
+    bloques: list[dict[str, Any]] = []
+    for b in estructura.get("bloques") or []:
+        nuevo = dict(b)
+        for campo in CAMPOS_TEXTO_COMPUESTO:
+            if campo in nuevo:
+                nuevo[campo] = eg.sustituir_en(nuevo[campo], empresa)[0]
+        if isinstance(nuevo.get("botones"), list):
+            nuevo["botones"] = [
+                {**bt, "texto": eg.sustituir_en(bt.get("texto"), empresa)[0]}
+                if isinstance(bt, dict) else bt for bt in nuevo["botones"]]
+        bloques.append(nuevo)
+    return {**estructura, "bloques": bloques}, cambios
+
+
+def _anotar_bomedia(session: Session, b: BorradorAsistente, cambios: list[eg.Cambio], *,
+                    empresa: str) -> None:
+    """Lo que hizo la guardia de la marca en ESTE turno, en el turno (la
+    franja lo enseña frase a frase), en el log y en la auditoría, para saber
+    si sigue pasando. Cada turno empieza limpio: copia el contexto del
+    anterior, y lo de un turno no puede salir como si hubiera pasado en otro."""
+    contexto = _json(b.contexto_json)
+    contexto.pop(CLAVE_BOMEDIA, None)
+    if cambios:
+        detalle = {"empresa": empresa, "cambios": [c.como_dict() for c in cambios]}
+        contexto[CLAVE_BOMEDIA] = detalle
+        logger.warning(
+            "asistente: la IA escribió «Bomedia» en el borrador %s (conversación %s, turno %d): "
+            "%d frase(s) cambiadas por %s", b.id, b.conversacion_id or b.id, b.turno or 0,
+            len(cambios), empresa)
+        session.add(AuditLog(
+            actor_user_id=b.usuario_id, action=ACCION_BOMEDIA, target_type="ia_borrador",
+            target_id=b.id, message=f"«Bomedia» sustituida por «{empresa}» en el borrador de la IA",
+            metadata_json=json.dumps({**detalle, "conversacion_id": b.conversacion_id or b.id,
+                                      "turno": b.turno or 0, "modelo": b.modelo},
+                                     ensure_ascii=False),
+        ))
+    b.contexto_json = json.dumps(contexto, ensure_ascii=False, default=str)
 
 
 def _json(raw: str | None) -> dict[str, Any]:
@@ -1029,14 +1158,15 @@ def _rellenar_compuesto(
     session: Session, b: BorradorAsistente, data: dict[str, Any], uso: llm.Uso | None,
     modelo_pedido: str, *, refs: ia_compuesto.Referencias, idioma: str,
     base: dict[str, Any] | None, nombre_usuario: str | None, nombre_destinatario: str | None,
-    html_descartado: int = 0, sobre_editor: bool = False,
+    html_descartado: int = 0, sobre_editor: bool = False, empresa_documento: str | None = None,
 ) -> None:
     """Un turno compuesto: la estructura (nueva, o la actual con las
     operaciones de la corrección), la guardia sobre los textos que escribe la
-    IA, el correo generado (HTML y texto plano, para comparar lo enviado) y
-    los avisos. `sobre_editor`: partió de lo que había en el compositor (la
-    vista previa con sus retoques, o el texto del editor): se pone sin
-    preguntar."""
+    IA (la del cuerpo y la de la marca), el correo generado (HTML y texto
+    plano, para comparar lo enviado) y los avisos. `sobre_editor`: partió de
+    lo que había en el compositor (la vista previa con sus retoques, o el
+    texto del editor): se pone sin preguntar. `empresa_documento`: la de la
+    oferta adjunta, si la hay; si no, la del idioma del correo."""
     aviso = str(data.get("aviso") or "").strip()
     avisos: list[str] = []
     idioma_correo = str(data.get("idioma") or idioma or "").strip().lower()[:2] or idioma
@@ -1067,6 +1197,8 @@ def _rellenar_compuesto(
     if res.html_descartado:
         avisos.append(f"La IA metió HTML en {res.html_descartado} texto(s) del correo y se ha "
                       "descartado: el HTML del correo lo genera BoHub.")
+    empresa = empresa_documento or eg.empresa_por_idioma(estructura.get("idioma") or idioma_correo)
+    estructura, cambios_bomedia = _guardia_bomedia_compuesto(estructura, empresa=empresa)
     libre = ia_compuesto.texto_libre(estructura)
     veredicto = evaluar_cuerpo(libre, nombre_usuario=nombre_usuario,
                                nombre_destinatario=nombre_destinatario)
@@ -1077,6 +1209,12 @@ def _rellenar_compuesto(
         avisos.append(f"La IA no ha redactado un correo ({veredicto.motivo}). "
                       f"Lo que dijo: «{libre}»")
     asunto = (str(data.get("asunto") or "").strip() or b.asunto or "")[:500] or None
+    if asunto and eg.hay_bomedia(asunto):
+        cambios_bomedia = [*eg.cambios_en(asunto, empresa, campo="asunto"), *cambios_bomedia]
+        asunto = eg.sustituir(asunto, empresa)[0][:500] or None
+    if not estructura["bloques"]:
+        # La guardia del cuerpo lo vació: no hay frases que releer en el cuerpo.
+        cambios_bomedia = [c for c in cambios_bomedia if c.campo == "asunto"]
     if estructura["bloques"]:
         datos = datos_compuesto.resolver(session, estructura)
 
@@ -1132,6 +1270,7 @@ def _rellenar_compuesto(
     if sobre_editor:
         contexto["sobre_editor"] = True
     b.contexto_json = json.dumps(contexto, ensure_ascii=False, default=str)
+    _anotar_bomedia(session, b, cambios_bomedia, empresa=empresa)
     b.modo = ia_compuesto.MODO_COMPUESTO
     b.estructura_json = json.dumps(estructura, ensure_ascii=False)
     b.asunto = asunto
@@ -1149,16 +1288,20 @@ def _interpretar(
     asunto_defecto: str | None, idioma_defecto: str | None, nombre_usuario: str | None,
     nombre_destinatario: str | None, enlaces: list[str], editor_html: str | None = None,
     seleccion_html: str | None = None, sobre_editor: bool = False,
+    empresa_documento: str | None = None,
 ) -> None:
     """Lo que devolvió el modelo, al turno: un correo compuesto (estructura) o
     uno normal (cuerpo), según el formato del turno. La IA nunca devuelve el
-    HTML de un compuesto: si lo intenta, se descarta y se registra."""
+    HTML de un compuesto: si lo intenta, se descarta y se registra. En los
+    dos, la guardia de la marca: «Bomedia» sale cambiada por la empresa del
+    correo (`empresa_documento` o la del idioma) y la franja enseña la frase."""
     data_json = _json_de(raw)
     if modo != ia_compuesto.MODO_NORMAL and _es_compuesta(data_json):
         _rellenar_compuesto(session, b, data_json or {}, uso, modelo, refs=refs,
                             idioma=idioma_defecto or "es", base=base,
                             nombre_usuario=nombre_usuario,
-                            nombre_destinatario=nombre_destinatario, sobre_editor=sobre_editor)
+                            nombre_destinatario=nombre_destinatario, sobre_editor=sobre_editor,
+                            empresa_documento=empresa_documento)
         return
     if modo == ia_compuesto.MODO_COMPUESTO and forzado:
         logger.warning("asistente: la IA devolvió un cuerpo (HTML) en vez de la estructura de un "
@@ -1168,7 +1311,8 @@ def _interpretar(
                                          "asunto": asunto_defecto}, uso, modelo, refs=refs,
                             idioma=idioma_defecto or "es", base=None,
                             nombre_usuario=nombre_usuario,
-                            nombre_destinatario=nombre_destinatario, html_descartado=1)
+                            nombre_destinatario=nombre_destinatario, html_descartado=1,
+                            empresa_documento=empresa_documento)
         return
     if modo == ia_compuesto.MODO_NORMAL and _es_compuesta(data_json):
         data: dict[str, Any] = {"cuerpo": "", "asunto": asunto_defecto or "",
@@ -1178,9 +1322,15 @@ def _interpretar(
         data = _parsear(raw, asunto_defecto=asunto_defecto, idioma_defecto=idioma_defecto)
         if modo == ia_compuesto.MODO_COMPUESTO and data["cuerpo"]:
             data["aviso"] = f"{data['aviso']} {AVISO_CONTESTO_EN_TEXTO}".strip()
+    empresa = empresa_documento or eg.empresa_por_idioma(data.get("idioma") or idioma_defecto)
+    cambios = _guardia_bomedia(data, empresa=empresa)
     _regla_primera(data, nombre_usuario=nombre_usuario, nombre_destinatario=nombre_destinatario)
+    if not data["cuerpo"]:
+        # La guardia del cuerpo lo vació: no hay frases que releer en el cuerpo.
+        cambios = [c for c in cambios if c.campo == "asunto"]
     _rellenar(b, data, uso, modelo, enlaces=enlaces, editor_html=editor_html,
               seleccion_html=seleccion_html, sobre_editor=sobre_editor)
+    _anotar_bomedia(session, b, cambios, empresa=empresa)
 
 
 def _modelos(cfg: dict[str, Any], settings: Any) -> tuple[str, str]:
@@ -1333,6 +1483,10 @@ def generar(
     contexto_texto = bloque_contexto(ctx)
     resumen = ctx.resumen()
     resumen["refs"] = refs.como_dict()
+    # La empresa del documento adjunto (si es Streamtec o MQ Europe): la heredan
+    # las correcciones, que no vuelven a montar el contexto.
+    empresa_doc = empresa_documento(ctx)
+    resumen["empresa_documento"] = empresa_doc
     borrador_id = str(uuid4())
     borrador = BorradorAsistente(
         id=borrador_id, conversacion_id=borrador_id, turno=0, instruccion=instruccion,
@@ -1390,7 +1544,7 @@ def generar(
         nombre_destinatario=(ctx.contacto or {}).get("nombre"), enlaces=enlaces,
         editor_html=editor_html,
         seleccion_html=(seleccion_html or "").strip() if seleccion else None,
-        sobre_editor=bool(actual) or base is not None)
+        sobre_editor=bool(actual) or base is not None, empresa_documento=empresa_doc)
     session.add(borrador)
     session.flush()
     llamada = registrar_llamada(
@@ -1547,7 +1701,9 @@ def corregir(
         nombre_destinatario=(contexto.get("contacto") or {}).get("nombre"), enlaces=enlaces,
         editor_html=editor_html,
         seleccion_html=(seleccion_html or "").strip() if seleccion else None,
-        sobre_editor=sobre_editor or desde_vista)
+        sobre_editor=sobre_editor or desde_vista,
+        empresa_documento=eg.empresa_de_emisora(
+            _json(raiz.contexto_json).get("empresa_documento")))
     session.add(nuevo)
     session.flush()
     llamada = registrar_llamada(

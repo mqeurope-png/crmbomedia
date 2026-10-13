@@ -20,6 +20,7 @@ Código: `backend/app/erp/cuadre/`. API: `backend/app/erp/api/cuadre.py`
 |---|---|---|
 | Registro | `cuadre/registry.py` | Decorador `@comprobacion(...)`, `Hallazgo`, catálogo. |
 | Comprobaciones de BoHub | `cuadre/checks_mysql.py` | Leen solo la BD de BoHub (fuente `mysql`). |
+| Textos de cara al cliente | `cuadre/checks_textos.py` | «Bomedia» en plantillas, firmas, marcas, workflows, avisos y formularios (fuente `mysql`). |
 | Comprobaciones de FACTUSOL | `cuadre/checks_factusol.py` | Leen FACTUSOL (fuente `factusol`). |
 | Comprobaciones de WooCommerce | `cuadre/checks_woocommerce.py` | Preguntan a las tiendas (fuente `woocommerce`). |
 | Contexto | `cuadre/contexto.py` | Sesión, «ahora», umbrales y lecturas compartidas. Cada tabla de FACTUSOL se lee una vez por pasada, del ejercicio en curso. |
@@ -284,6 +285,27 @@ del pedido de BoHub.
   formulario y las notas «form note» de sus tablas (estén clasificados o no),
   los contactos web antiguos por su alta y lo clasificado. Ventana: N días
   (30) por la fecha real del lead. Enlaza a la ficha.
+
+- `bomedia_en_textos_cliente` (media) — **«Bomedia» en textos que lee el
+  cliente** (`cuadre/checks_textos.py`, 13/10/2026). Bomedia salió del
+  ecosistema: lo de cara al cliente va a nombre de Streamtec (castellano) o MQ
+  Europe (resto de idiomas). Recorre los textos **guardados** —plantillas de
+  correo (asunto y cuerpo), firmas, marcas vivas de la base de conocimiento,
+  pasos «enviar correo» de los workflows, las plantillas del aviso de envío,
+  del correo de presupuesto y del de factura (Configuración ERP), los textos
+  públicos de los formularios web, las líneas de las plantillas de oferta (van
+  en el PDF) y el asunto y el remitente de las plantillas de Brevo— y saca **un
+  descuadre por texto**, con el campo y la frase. Es la alarma del día que
+  alguien copie una plantilla vieja y, a la vez, **el inventario** de lo que hay
+  que repasar a mano (las plantillas comerciales antiguas son datos: las repasa
+  Bart, aquí no se corrige nada).
+    - **No** marca las direcciones ni los dominios de `bomedia.net`
+      (`bart@bomedia.net` es una dirección viva, no una mención), ni las
+      emisoras de `erp_settings` —la 1 sigue siendo «Bomedia S.L.» para la serie
+      1 de FACTUSOL, por decisión de Bart—, ni la tabla `sitios_web`, ni los
+      correos ya enviados ni las ofertas emitidas (histórico).
+    - La detección es la misma que usa la guardia del asistente
+      (`services/empresas_grupo.py`).
 
 ### Integraciones (severidad alta, fuente WooCommerce)
 
