@@ -14,10 +14,16 @@ from app.erp.integrations.genei.service import (
     summarize_shipment,
 )
 from app.erp.integrations.genei.status import (
+    CANCELLED,
     CREATED,
     DELIVERED,
     IN_TRANSIT,
     INCIDENT,
+    OTHER,
+    UNKNOWN_STATE,
+    is_cancelled,
+    is_tramitado,
+    is_unknown_state,
     state_of,
     transport_status_for,
 )
@@ -32,9 +38,23 @@ def test_state_of_maps_codes_and_buckets():
     assert state_of("3").bucket == DELIVERED
     assert state_of(10).bucket == INCIDENT
     assert state_of(9).bucket == INCIDENT and state_of(14).bucket == INCIDENT
-    # Desconocido → OTHER con el código.
-    assert state_of(999).code == 999 and state_of(999).bucket == "other"
-    assert state_of(None).bucket == "other"
+    # 11/12: anulación con devolución (el envío no saldrá).
+    assert state_of(11).bucket == CANCELLED and state_of(12).bucket == CANCELLED
+    # 8 rectificativo: informativo, no es etiqueta viva ni anulado.
+    assert state_of(8).bucket == OTHER
+    # Un código no contemplado NO se traga: bucket «unknown», con el número.
+    assert state_of(999).code == 999 and state_of(999).bucket == UNKNOWN_STATE
+    assert "999" in state_of(999).label
+    assert state_of(None).bucket == UNKNOWN_STATE
+
+
+def test_anulado_y_desconocido_no_son_entregables():
+    # Un anulado o un desconocido NUNCA cuentan como tramitados (sin etiqueta
+    # viva), y se reconocen con sus helpers.
+    assert not is_tramitado(CANCELLED) and not is_tramitado(UNKNOWN_STATE)
+    assert is_cancelled(state_of(11).bucket) and is_cancelled(state_of(12).bucket)
+    assert is_unknown_state(state_of(777).bucket)
+    assert not is_cancelled(IN_TRANSIT) and not is_unknown_state(DELIVERED)
 
 
 def test_transport_status_for_buckets():
@@ -42,6 +62,9 @@ def test_transport_status_for_buckets():
     assert transport_status_for(DELIVERED) == "delivered"
     assert transport_status_for(INCIDENT) == "incident"
     assert transport_status_for(CREATED) is None  # no mueve el estado
+    # Anulado y desconocido no mueven el transporte por los arcos normales.
+    assert transport_status_for(CANCELLED) is None
+    assert transport_status_for(UNKNOWN_STATE) is None
 
 
 # --- destino / payload ------------------------------------------------------

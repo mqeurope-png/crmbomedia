@@ -64,6 +64,32 @@ export type GeneiState = {
   label_attached_at?: string | null;
   /** Descarga automática de la etiqueta al tramitarse el envío. */
   label_auto?: GeneiLabelAuto | null;
+  /** La referencia externa que BoHub MANDÓ al crear (para comparar con la que
+   *  vuelve en el webhook, `codigo_envio_externo`). */
+  external_sent?: string | null;
+  /** Desajuste entre lo que se mandó y lo que devolvió el webhook. */
+  external_mismatch?: { enviado: string; devuelto: string; visto_en: string } | null;
+  /** Último envío ANULADO en Genei (11/12): el envío no saldrá. Se deja aquí el
+   *  rastro aunque ya no haya envío activo, para que la ficha lo diga y ofrezca
+   *  crear/vincular otro. */
+  ultimo_anulado?: GeneiAnulado | null;
+  /** Historial de envíos anulados del pedido (los más recientes). */
+  anulados?: GeneiAnulado[];
+  /** Estado de Genei no contemplado por BoHub: se marca como «desconocido». */
+  estado_desconocido_en?: string | null;
+};
+
+/** Un envío anulado en Genei (estado 11 «pendiente de abono» / 12 «abonado»):
+ *  devolución del importe, el envío no saldrá. */
+export type GeneiAnulado = {
+  shipment_code?: string | null;
+  tracking?: string | null;
+  state_code?: number | null;
+  state_label?: string | null;
+  courier?: string | null;
+  external_reference?: string | null;
+  anulado_en?: string | null;
+  motivo?: string | null;
 };
 
 /** Descarga automática de la etiqueta: se pide sola al tramitarse y, si Genei
@@ -245,7 +271,7 @@ export type GeneiConfig = {
   default_address_id: string | null;
   preferred_couriers: Record<string, string[]>;
   default_package: GeneiPackage;
-  origin: { iso_country: string; postal_code: string; town: string };
+  origin: { iso_country: string; postal_code: string; town: string; vat: string };
   is_warehouse: boolean;
   /** PR-2: base pública del backend para el webhook de estados. */
   webhook_base_url: string;
@@ -356,7 +382,7 @@ export function saveGeneiConfig(body: {
   default_address_id?: string | null;
   preferred_couriers?: Record<string, string[]>;
   default_package?: GeneiPackage;
-  origin?: { iso_country: string; postal_code: string; town: string };
+  origin?: { iso_country: string; postal_code: string; town: string; vat?: string };
   is_warehouse?: boolean;
   webhook_base_url?: string;
   tracking_poll_enabled?: boolean;

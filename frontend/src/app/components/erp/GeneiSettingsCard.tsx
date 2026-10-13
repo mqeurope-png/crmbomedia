@@ -272,6 +272,18 @@ export function GeneiSettingsCard({ canEdit }: { canEdit: boolean }) {
                    onChange={(e) => set("origin", { ...cfg.origin, town: e.target.value })} />
           </label>
         </div>
+        <div className="form-row">
+          <label className="field">
+            <span>NIF/CIF del remitente</span>
+            <input value={cfg.origin.vat ?? ""} aria-label="NIF del remitente"
+                   onChange={(e) => set("origin", { ...cfg.origin, vat: e.target.value.trim() })} />
+          </label>
+          <p className="muted small" style={{ flex: 2, alignSelf: "center" }}>
+            Va en el envío como NIF del remitente. La dirección registrada en Genei lo
+            devuelve vacío y <strong>DHL anula el envío sin él</strong> (los demás couriers lo
+            aceptan). Pon aquí el NIF de la empresa.
+          </p>
+        </div>
 
         <h3 className="erp-settings-sub">Bulto por defecto</h3>
         <div className="form-row">

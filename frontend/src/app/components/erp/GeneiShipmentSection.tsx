@@ -274,7 +274,21 @@ export function GeneiShipmentSection({
         </div>
       ) : (
         <div className="erp-genei-empty">
-          <p className="muted small">Aún no hay envío en Genei para este pedido.</p>
+          {/* Un envío anterior se anuló en Genei (11/12: devolución del importe,
+              no saldrá): se dice aquí y se ofrece crear/vincular otro —el mismo
+              empujón que el aviso, pero solo cuando de verdad ha pasado. */}
+          {state.ultimo_anulado ? (
+            <p className="form-error" role="alert" aria-label="Envío anulado en Genei">
+              El envío {state.ultimo_anulado.shipment_code ? (
+                <code>{state.ultimo_anulado.shipment_code}</code>
+              ) : "anterior"} se anuló en Genei
+              {state.ultimo_anulado.state_label ? ` («${state.ultimo_anulado.state_label}»)` : ""}
+              : devolución del importe, no saldrá. Créalo en el panel de Genei y vincúlalo aquí
+              con su código, o créalo de nuevo.
+            </p>
+          ) : (
+            <p className="muted small">Aún no hay envío en Genei para este pedido.</p>
+          )}
           {canManage && prefill.is_packed ? (
             <button type="button" className="button small" disabled={busy}
                     onClick={() => void onOpenCreate()}>

@@ -66,11 +66,20 @@ class DefaultPackage:
 class OriginAddress:
     """Origen (remitente) para la consulta de tarifas: el almacén SAT. El
     `default_address_id` de Genei (id del remitente registrado) va aparte, en la
-    fila del carrier; esto es solo el país/CP/población para pedir precios."""
+    fila del carrier; esto es solo el país/CP/población para pedir precios.
+
+    `vat` es el NIF/CIF del remitente para el bloque `origin` del envío
+    (`dni_salida`). La dirección registrada en Genei lo devuelve VACÍO por API
+    (`GET /addresses` → `vat_number: null`, verificado el 13/10/2026), así que
+    sin esto BoHub manda el remitente sin NIF. Los envíos de DHL así se anulaban
+    solos (estado 11) mientras CTT/UPS los aceptaban; el envío bueno creado en el
+    panel sí llevaba el NIF. Configurable en Ajustes → Envíos (no se fija por
+    código: NIF real de la empresa)."""
 
     iso_country: str = ""
     postal_code: str = ""
     town: str = ""
+    vat: str = ""
 
     @classmethod
     def from_dict(cls, data: Any) -> OriginAddress:
@@ -80,6 +89,7 @@ class OriginAddress:
             iso_country=str(data.get("iso_country") or data.get("country") or "").strip().upper(),
             postal_code=str(data.get("postal_code") or "").strip(),
             town=str(data.get("town") or data.get("city") or "").strip(),
+            vat=str(data.get("vat") or data.get("nif") or data.get("cif") or "").strip(),
         )
 
 

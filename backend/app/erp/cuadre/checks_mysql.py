@@ -662,6 +662,74 @@ def envio_tramitado_sin_etiqueta(ctx: Contexto) -> Iterator[Hallazgo]:
         )
 
 
+@comprobacion(
+    id="envio_anulado_sin_reponer", orden=17,
+    titulo="Envío Genei anulado sin reponer",
+    descripcion="Un envío de Genei se anuló (pendiente de abono / abonado: devolución del "
+                "importe, no saldrá) y el pedido sigue sin un envío nuevo. Hay que crearlo "
+                "en el panel de Genei y vincularlo, o crearlo de nuevo.",
+    severidad="media", fuente=FUENTE_MYSQL, grupo="envios",
+)
+def envio_anulado_sin_reponer(ctx: Contexto) -> Iterator[Hallazgo]:
+    for o in ctx.pedidos():
+        if o.cancelled_at is not None or o.shipping_not_required:
+            continue
+        g = _genei(o)
+        # Suelto el vínculo al anularse: sin envío activo pero con rastro.
+        if g.get("shipment_code"):
+            continue
+        ultimo = g.get("ultimo_anulado") if isinstance(g.get("ultimo_anulado"), dict) else None
+        if not ultimo:
+            continue
+        # Solo mientras el pedido sigue sin salir (si ya se repuso y recogió, no).
+        if _v(o.transport_status) not in ("not_shipped",):
+            continue
+        yield Hallazgo(
+            entidad_tipo=ENTIDAD_PEDIDO, entidad_id=o.id, etiqueta=_etiqueta(o),
+            detalle=(f"El envío {ultimo.get('shipment_code') or ''} se anuló en Genei "
+                     f"(«{ultimo.get('state_label') or 'pendiente de abono'}»): devolución del "
+                     "importe, no saldrá. El pedido se quedó sin envío."),
+            pista_de_arreglo="En la ficha, «Vincular envío existente de Genei» (créalo antes en "
+                             "el panel) o «Crear envío con Genei» de nuevo.",
+            enlace=enlace_pedido(o.id), arreglo_enlace=enlace_pedido(o.id),
+            arreglo_boton="Abrir el pedido",
+            huella_datos={"shipment_code": ultimo.get("shipment_code"),
+                          "state_code": ultimo.get("state_code")},
+            datos={"anulado_en": ultimo.get("anulado_en")},
+        )
+
+
+@comprobacion(
+    id="envio_estado_desconocido", orden=18,
+    titulo="Envío Genei en estado desconocido",
+    descripcion="Genei ha mandado un código de estado que BoHub no tiene mapeado: el envío queda "
+                "marcado como «estado desconocido» en vez de tragárselo. Hay que mirar qué es y "
+                "mapearlo.",
+    severidad="media", fuente=FUENTE_MYSQL, grupo="envios",
+)
+def envio_estado_desconocido(ctx: Contexto) -> Iterator[Hallazgo]:
+    from app.erp.integrations.genei.status import is_unknown_state  # noqa: PLC0415
+
+    for o in ctx.pedidos():
+        if o.cancelled_at is not None:
+            continue
+        g = _genei(o)
+        if not g.get("shipment_code") or not is_unknown_state(g.get("state_bucket")):
+            continue
+        yield Hallazgo(
+            entidad_tipo=ENTIDAD_PEDIDO, entidad_id=o.id, etiqueta=_etiqueta(o),
+            detalle=(f"Envío {g.get('shipment_code')} con estado Genei {g.get('state_code')} "
+                     f"(«{g.get('state_label') or 'desconocido'}»), que BoHub no mapea."),
+            pista_de_arreglo="Mira ese estado en el panel de Genei y mapéalo en "
+                             "`app/erp/integrations/genei/status.py`.",
+            enlace=enlace_pedido(o.id), arreglo_enlace=enlace_pedido(o.id),
+            arreglo_boton="Abrir el pedido",
+            huella_datos={"shipment_code": g.get("shipment_code"),
+                          "state_code": g.get("state_code")},
+            datos={"state_label": g.get("state_label")},
+        )
+
+
 def _formularios_sin_asignar(ctx: Contexto) -> set[str]:
     """Los contactos que vienen de un formulario con el modo «Sin asignar»:
     ahí NO tener comercial es la configuración elegida, no un descuadre."""
