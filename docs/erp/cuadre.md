@@ -289,21 +289,29 @@ del pedido de BoHub.
 - `bomedia_en_textos_cliente` (media) — **«Bomedia» en textos que lee el
   cliente** (`cuadre/checks_textos.py`, 13/10/2026). Bomedia salió del
   ecosistema: lo de cara al cliente va a nombre de Streamtec (castellano) o MQ
-  Europe (resto de idiomas). Recorre los textos **guardados** —plantillas de
-  correo (asunto y cuerpo), firmas, marcas vivas de la base de conocimiento,
-  pasos «enviar correo» de los workflows, las plantillas del aviso de envío,
-  del correo de presupuesto y del de factura (Configuración ERP), los textos
-  públicos de los formularios web, las líneas de las plantillas de oferta (van
-  en el PDF) y el asunto y el remitente de las plantillas de Brevo— y saca **un
-  descuadre por texto**, con el campo y la frase. Es la alarma del día que
-  alguien copie una plantilla vieja y, a la vez, **el inventario** de lo que hay
-  que repasar a mano (las plantillas comerciales antiguas son datos: las repasa
-  Bart, aquí no se corrige nada).
+  Europe (resto de idiomas). Recorre los textos **guardados** que salen hacia
+  un cliente sin pasar por la guardia del asistente —plantillas de correo
+  (asunto, cuerpo HTML y de texto) y firmas; el nombre visible del «De:» de cada
+  alias; los pasos de workflow que mandan o preparan correo; en Configuración
+  ERP, las plantillas del aviso de envío, del presupuesto y de la factura, la
+  identidad, textos legales y bancos de las emisoras **salvo la serie 1**, los
+  nombres de serie y los almacenes de recogida; los formularios web (nombre
+  —título de la página pública—, marca, mensaje de gracias, aspecto y campos);
+  las líneas de las plantillas de oferta; las plantillas de Brevo; los correos
+  programados aún pendientes; las marcas, productos, imágenes y vídeos de la
+  base de conocimiento (pintan los correos compuestos) y la marca de las webs
+  de `sitios_web`— y saca **un descuadre por texto**, con el campo y la frase.
+  Es la alarma del día que alguien copie una plantilla vieja y, a la vez, **el
+  inventario** de lo que hay que repasar a mano (las plantillas comerciales
+  antiguas son datos: las repasa Bart, aquí no se corrige nada). El mismo
+  listado, para pegarlo donde haga falta: `python -m scripts.inventario_bomedia
+  [--markdown]` (solo lee).
     - **No** marca las direcciones ni los dominios de `bomedia.net`
-      (`bart@bomedia.net` es una dirección viva, no una mención), ni las
-      emisoras de `erp_settings` —la 1 sigue siendo «Bomedia S.L.» para la serie
-      1 de FACTUSOL, por decisión de Bart—, ni la tabla `sitios_web`, ni los
-      correos ya enviados ni las ofertas emitidas (histórico).
+      (`bart@bomedia.net` es una dirección viva, no una mención), ni la serie 1
+      —emisora «Bomedia S.L.» y su nombre de serie, que siguen así en FACTUSOL
+      por decisión de Bart—, ni los dominios solo de correo de `sitios_web`, ni
+      las cuentas de contrapartida («Bomedia Sabadell»…: nunca salen en un
+      documento), ni el histórico (correos ya enviados, ofertas emitidas).
     - La detección es la misma que usa la guardia del asistente
       (`services/empresas_grupo.py`).
 

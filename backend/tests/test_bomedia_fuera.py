@@ -35,8 +35,9 @@ from app.erp.cuadre.contexto import Contexto
 from app.erp.factusol_pdf import company_for_serie
 from app.erp.models.settings import ERP_SETTINGS_SINGLETON_ID, ErpSettings
 from app.main import app
-from app.models.conocimiento import MarcaCatalogo
+from app.models.conocimiento import MarcaCatalogo, ProductoCatalogo
 from app.models.crm import AuditLog, EmailSignature, User, UserEmailAliasPref, UserRole
+from app.models.sitios import SitioWeb
 from app.models.web_forms import WebForm
 from app.models.workflows import Workflow, WorkflowStep
 from app.services import empresas_grupo as eg
@@ -316,12 +317,32 @@ def test_el_cuadre_encuentra_lo_sembrado_y_no_marca_los_alias(
         s.add(WorkflowStep(workflow_id=wf.id, type="action_send_email", config_json=json.dumps(
             {"subject": "Bienvenido a Bomedia", "body_html": "<p>Hola</p>",
              "from_alias": "info@bomedia.net"})))
+        # El borrador de respuesta a leads: remitente con nombre visible.
+        s.add(WorkflowStep(workflow_id=wf.id, type="action_prepare_email_draft",
+                           config_json=json.dumps({"from_name": "Equipo Bomedia"})))
         s.add(WebForm(slug="viejo-contacto", name="Viejo", created_by_user_id=admin.id,
                       submit_success_message="Gracias por escribir a Bomedia."))
+        s.add(WebForm(slug="otro-contacto", name="Contacto Bomedia", created_by_user_id=admin.id))
+        # El «De:» visible de un alias; el alias en sí (bomedia.net) no cuenta.
+        s.add(UserEmailAliasPref(user_id=admin.id, alias_email="bart@bomedia.net",
+                                 is_allowed=True, display_name_override="Bart · Bomedia"))
+        s.add_all([
+            SitioWeb(clave="boprint", dominio="boprint.net", host="boprint.net",
+                     marca="Boprint by Bomedia", empresa="Streamtec", tipo="web"),
+            SitioWeb(clave="bomedia", dominio="bomedia.net", host="bomedia.net",
+                     marca="Bomedia", empresa="Bomedia", tipo="correo"),
+            ProductoCatalogo(fuente="compositor", origen_id="m1", nombre="Muestras Bomedia",
+                             idioma="es", visto_en=datetime.now(UTC)),
+        ])
+        programado = _hilo(s, contacto=None, asunto="Novedades Bomedia", mensajes=[
+            {"de": "bart@bomedia.net", "lado": "nosotros", "texto": "Hola"}]).messages[0]
+        programado.scheduled_status = "pending"
         # La serie 1 sigue siendo «Bomedia S.L.» (emisora de erp_settings): no es
-        # un texto que se repase aquí. El aviso de envío sí.
-        _ajustes(s, {"companies": {"1": {"nombre": "Bomedia S.L."}},
-                     "names": {"1": "Bomedia"},
+        # un texto que se repase aquí. Las demás series sí, y el aviso de envío.
+        _ajustes(s, {"companies": {
+                         "1": {"nombre": "Bomedia S.L."},
+                         "5": {"bancos": [{"nombre": "Bomedia Sabadell", "iban": "ES00"}]}},
+                     "names": {"1": "Bomedia", "5": "Streamtec"},
                      "shipment_email_templates": {"es": {"asunto": "Tu pedido de Bomedia"}}})
         s.commit()
         hallados = list(bomedia_en_textos_cliente(Contexto(s, ahora=datetime.now(UTC),
@@ -332,18 +353,37 @@ def test_el_cuadre_encuentra_lo_sembrado_y_no_marca_los_alias(
         "Firma «Vieja»",
         "Marca de la base de conocimiento «bomedia»",
         "Workflow «Bienvenida vieja» · enviar correo",
+        "Workflow «Bienvenida vieja» · preparar borrador",
         "Formulario web «Viejo»",
+        "Formulario web «Contacto Bomedia»",
+        "Remitente «bart@bomedia.net»",
+        "Web «boprint.net»",
+        "Producto del catálogo «Muestras Bomedia»",
+        "Correo programado «Novedades Bomedia»",
+        "Configuración ERP · Empresa emisora serie 5",
         "Configuración ERP · Plantillas del aviso de envío",
     }
+    # Un banco con «Bomedia» en una serie que no es la 1 saldría en su PDF.
+    assert "Bomedia Sabadell" in por_etiqueta["Configuración ERP · Empresa emisora serie 5"].detalle
     # Cada uno dice dónde y con qué frase: es el inventario que se repasa a mano.
     plantilla = por_etiqueta["Plantilla «2025 TEXTIL BOMEDIA»"]
     assert "Un saludo del equipo Bomedia." in plantilla.detalle
     assert plantilla.datos["campos"] == ["cuerpo"]
     assert plantilla.enlace == "/emails/plantillas"
     assert all(h.entidad_tipo == "texto_cliente" and len(h.entidad_id) <= 64 for h in hallados)
-    # Ni los alias de bomedia.net, ni la firma buena, ni la emisora de la serie 1.
+    # Ni los alias de bomedia.net, ni la firma buena, ni la serie 1 (emisora y
+    # nombre), ni el dominio de correo bomedia.net de sitios_web.
     assert "Plantilla «Contacto»" not in por_etiqueta and "Firma «Manel»" not in por_etiqueta
-    assert not any("companies" in h.entidad_id or "names" in h.entidad_id for h in hallados)
+    assert not any(h.entidad_id in ("emisora:1", "serie:1", "sitio:bomedia") for h in hallados)
+    assert "Remitente «info@bomedia.net»" not in por_etiqueta     # sin nombre visible
+
+
+def test_un_id_largo_no_choca_en_los_64_caracteres() -> None:
+    from app.erp.cuadre.checks_textos import entidad_id  # noqa: PLC0415
+
+    a, b = entidad_id("marca", "x" * 80), entidad_id("marca", "x" * 79 + "y")
+    assert len(a) <= 64 and len(b) <= 64 and a != b
+    assert entidad_id("plantilla", "abc") == "plantilla:abc"
 
 
 # --- 5 · una resiembra en limpio no planta «Bomedia» ---------------------------------------
@@ -397,3 +437,25 @@ def test_la_serie_1_sigue_siendo_bomedia_sl(session_factory: sessionmaker) -> No
     with session_factory() as s:
         assert company_for_serie(s, 1)["nombre"] == "Bomedia S.L."
         assert company_for_serie(s, 5)["nombre"] != "Bomedia S.L."
+
+
+def test_el_script_de_inventario_saca_el_listado_para_el_pr(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    from app.db import session as db_session  # noqa: PLC0415
+    from scripts import inventario_bomedia  # noqa: PLC0415
+
+    engine = create_engine("sqlite+pysqlite:///:memory:",
+                           connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    with Session(engine) as s:
+        s.add(EmailTemplate(name="FESPA 2024", subject="Nos vemos en FESPA",
+                            body_html="<p>Visita el stand de Bomedia.</p>"))
+        s.add(EmailTemplate(name="Limpia", subject="Hola", body_html="<p>bart@bomedia.net</p>"))
+        s.commit()
+    monkeypatch.setattr(db_session, "get_engine", lambda: engine)
+    assert inventario_bomedia.main(["--markdown"]) == 0
+    salida = capsys.readouterr()
+    assert "| 1 | Plantilla «FESPA 2024» | cuerpo | «Visita el stand de Bomedia.» |" in salida.out
+    assert "Limpia" not in salida.out
+    assert "1 texto(s)" in salida.err

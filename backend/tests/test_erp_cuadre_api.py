@@ -137,7 +137,7 @@ def test_comprobaciones_y_el_cuadre_no_toca_los_pedidos(http, factory):
     oid = _pedido_sin_aprobar(factory)
     h = auth_headers(http, "admin")
     cat = http.get("/api/erp/cuadre/comprobaciones", headers=h).json()["items"]
-    # 21 con «Envío Genei anulado sin reponer» y «estado desconocido».
+    # 22 con «Envío Genei anulado sin reponer», «estado desconocido» y «Bomedia en textos».
     assert len(cat) == 22 and cat[0]["id"] == "factura_lineas_ajenas"
     http.post("/api/erp/cuadre/comprobar", headers=h)
     with factory() as s:

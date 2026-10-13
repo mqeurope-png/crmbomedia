@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { generarBorradorNuevo } from "../../lib/emailsApi";
+import { type BomediaSustituida, generarBorradorNuevo } from "../../lib/emailsApi";
 import {
   getOfertaEmailPreview,
   sendOfertaEmail,
@@ -12,6 +12,7 @@ import {
   type OfertaIdioma,
 } from "../../lib/erpApi";
 import { extractErrorMessage } from "../../lib/errors";
+import { AvisoBomedia } from "../email/AsistenteFranja";
 import { ModalCloseButton } from "../ModalCloseButton";
 import { UNSAVED_CHANGES_MESSAGE, useModalBehaviour } from "../useModalBehaviour";
 import {
@@ -119,6 +120,8 @@ export function OfertaEmailModal({
   const [redactando, setRedactando] = useState(false);
   const [iaError, setIaError] = useState<string | null>(null);
   const [iaAviso, setIaAviso] = useState<string | null>(null);
+  // La guardia de la marca cambió «Bomedia» en el borrador: qué frases, antes y ahora.
+  const [iaBomedia, setIaBomedia] = useState<BomediaSustituida | null>(null);
   const [confirmado, setConfirmado] = useState(false);
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -140,6 +143,7 @@ export function OfertaEmailModal({
           setBodyHtml(null);
           setTextDirty(false);
           setIaAviso(null);
+          setIaBomedia(null);
           if (!keepRecipients) {
             setFromAlias(p.from_alias);
             const contacts = p.company_contacts ?? [];
@@ -217,6 +221,7 @@ export function OfertaEmailModal({
         setTextDirty(true);
       }
       setIaAviso(b.aviso ?? null);
+      setIaBomedia(b.bomedia && b.bomedia.cambios.length > 0 ? b.bomedia : null);
       if (!b.texto && !b.aviso) {
         setIaError("La IA no ha redactado el correo: revisa la instrucción e inténtalo otra vez.");
       }
@@ -405,6 +410,7 @@ export function OfertaEmailModal({
                 {redactando ? "Redactando…" : "Redactar con la IA"}
               </button>
               {iaError ? <p className="form-error small" role="alert">{iaError}</p> : null}
+              {iaBomedia ? <AvisoBomedia empresa={iaBomedia.empresa} cambios={iaBomedia.cambios} /> : null}
               {iaAviso ? (
                 <p className="muted small" role="status">
                   <strong>Revisa antes de enviar:</strong> {iaAviso}
