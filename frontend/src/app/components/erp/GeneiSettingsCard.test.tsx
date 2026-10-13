@@ -20,7 +20,7 @@ const CONFIG = {
   default_address_id: "1304422",
   preferred_couriers: { ES: ["GLS", "Correos"] },
   default_package: { weight: 1, height: 20, width: 20, length: 20 },
-  origin: { iso_country: "ES", postal_code: "08201", town: "Sabadell" },
+  origin: { iso_country: "ES", postal_code: "08201", town: "Sabadell", vat: "B64154263" },
   is_warehouse: true,
   webhook_base_url: "",
   webhook_configured: false,
@@ -60,6 +60,18 @@ it("edita y guarda: la password en blanco no viaja, los couriers salen de las fi
     ES: ["GLS", "Correos"], FR: ["Chronopost", "GLS"],
   });
   expect(await screen.findByText("Guardado.")).toBeInTheDocument();
+});
+
+it("el NIF del remitente se edita y viaja en el guardado (Fallo DHL)", async () => {
+  const user = userEvent.setup();
+  render(<GeneiSettingsCard canEdit />);
+  const nif = await screen.findByLabelText("NIF del remitente");
+  expect(nif).toHaveValue("B64154263");
+  await user.clear(nif);
+  await user.type(nif, "A11111111");
+  await user.click(screen.getByRole("button", { name: /Guardar cambios/ }));
+  await waitFor(() => expect(mockSave).toHaveBeenCalled());
+  expect(mockSave.mock.calls[0][0].origin.vat).toBe("A11111111");
 });
 
 it("la password escrita sí viaja", async () => {

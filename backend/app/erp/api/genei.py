@@ -508,9 +508,23 @@ def genei_create_shipment(
             "detail": "Falta la dirección de origen (remitente) en los Ajustes de Genei.",
         })
     packages = [p.as_dict() for p in payload.packages] or [cfg.default_package.as_package()]
+    # La referencia externa (= nº de pedido) es OBLIGATORIA: el webhook empareja
+    # por ella y, sin ella, nadie puede reconciliar el envío (fue el caso de
+    # EEAI1XXM, creado en el panel sin referencia). order.id siempre existe; esto
+    # es la red por si algún día no.
+    external_ref = str(order.order_number or order.id or "").strip()
+    if not external_ref:
+        raise HTTPException(422, {
+            "code": "sin_referencia_externa",
+            "detail": ("El pedido no tiene un número con el que enlazar el envío en Genei; "
+                       "no se crea (un envío sin referencia no se puede reconciliar)."),
+        })
     client = _client_or_400(carrier)
     try:
-        origin = build_origin(client.get_address(carrier.default_address_id))
+        # NIF del remitente de Ajustes (`cfg.origin.vat`): la dirección
+        # registrada lo devuelve vacío por API, y DHL anula el envío sin él.
+        origin = build_origin(client.get_address(carrier.default_address_id),
+                              vat_override=cfg.origin.vat)
     except GeneiError as exc:
         raise _genei_error(exc) from exc
     origin_missing = address_missing_fields(origin)
@@ -525,7 +539,7 @@ def genei_create_shipment(
         origin=origin,
         destination=dest,
         packages=packages,
-        external_shipping_code=order.order_number or order.id,
+        external_shipping_code=external_ref,
         # PR-2: webhook de estados. `notificationUrl` = base pública +
         # `?token=<secreto>` (secreto cifrado en las credenciales). Si falta la
         # base o el secreto, va None y el webhook queda apagado (el resto sirve).
@@ -593,6 +607,10 @@ def genei_create_shipment(
         "payment_url": summary["payment_url"],
         # PR-2: id de la transacción, para pagar por API con token fresco.
         "transaction_id": summary["transaction_id"],
+        # La referencia externa que BoHub MANDÓ (Fallo 2): se guarda para poder
+        # comparar con la que devuelve el webhook (`codigo_envio_externo`) y ver
+        # un desajuste desde el primer momento, no solo lo que vuelve.
+        "external_sent": external_ref,
         "created_at": now_iso(),
         # Aviso de envío al cliente (BoHub, en su idioma): a quién va y si se
         # mandará solo en cuanto haya nº de seguimiento.
@@ -722,6 +740,10 @@ def _link_existing_shipment(
         # «duplicado» (lo encontró BoHub al chocar con la regla de Genei).
         "linked_from": origen,
         "external_reference": external_code_of(raw) or None,
+        # La referencia «esperada» de un envío vinculado es la del propio envío
+        # (o, si no la trae, el nº de pedido): así la comprobación del webhook
+        # (Fallo 2) también vale para los vinculados, no solo para los creados.
+        "external_sent": external_code_of(raw) or _referencia_de(order) or None,
         **mark_pending_on_create(
             order, enabled=cfg.customer_email_enabled,
             user_id=getattr(current_user, "id", None), destination={},
@@ -1106,7 +1128,11 @@ def genei_config_get(
         "preferred_couriers": cfg.preferred_couriers,
         "default_package": cfg.default_package.as_package(),
         "origin": {"iso_country": cfg.origin.iso_country,
-                   "postal_code": cfg.origin.postal_code, "town": cfg.origin.town},
+                   "postal_code": cfg.origin.postal_code, "town": cfg.origin.town,
+                   # NIF/CIF del remitente para el bloque `origin` del envío
+                   # (`dni_salida`): la dirección registrada lo da vacío y DHL lo
+                   # exige. Se configura aquí (no se devuelve ningún secreto).
+                   "vat": cfg.origin.vat},
         "is_warehouse": cfg.is_warehouse,
         # PR-2 webhook: la base pública (sin secreto) y si ya está operativo
         # (base + secreto + credenciales). El secreto NUNCA se devuelve.

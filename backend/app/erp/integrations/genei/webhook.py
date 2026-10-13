@@ -37,9 +37,11 @@ from sqlalchemy.orm import Session
 from app.erp.integrations.genei.service import (
     genei_state_of,
     now_iso,
+    record_cancelled_and_unlink,
     set_genei_state,
     summarize_shipment,
 )
+from app.erp.integrations.genei.status import is_cancelled, is_unknown_state
 from app.erp.integrations.genei.tracking import (
     UNKNOWN,
     carrier_step_label,
@@ -152,11 +154,41 @@ def apply_shipment_state(
     el pedido de pestaña. Idempotente."""
     summary = summarize_shipment(shipment)
     incidencia = str(_pick(shipment, _INCIDENCIA_KEYS) or "").strip()
+    stored_before = genei_state_of(order)
+
+    # Evento TARDÍO o repetido de un envío ya ANULADO y archivado: se ignora. Si
+    # no, un aviso fuera de orden (p. ej. un estado 5 que llega después del 11)
+    # volvería a vincular el envío muerto y a moverle el transporte: justo el
+    # zombi que esto evita. Un envío nuevo (otro código) no se toca.
+    code_in = summary["shipment_code"]
+    anulados = {a.get("shipment_code") for a in (stored_before.get("anulados") or [])
+                if isinstance(a, dict) and a.get("shipment_code")}
+    if code_in and code_in in anulados:
+        logger.info("genei: evento de un envío ya anulado (%s) en el pedido %s: ignorado",
+                    code_in, order.id)
+        return summary, False
+
+    # Anulado con devolución (Genei 11/12): el envío NO saldrá. Se suelta el
+    # vínculo (la referencia queda libre), se archiva el rastro y el pedido
+    # vuelve a «sin enviar» para crear/vincular otro. Nunca queda «entregable».
+    if is_cancelled(summary["state_bucket"]):
+        aplicado = _apply_cancelled(session, order, summary, incidencia)
+        return summary, aplicado
+
+    # Estado que la tabla no contempla: NO se traga. Se guarda como «estado
+    # desconocido» (rastro en la ficha + lo ve el Cuadre) y no se toca el
+    # transporte (no sabemos qué significa; no vamos a darlo por entregable).
+    if is_unknown_state(summary["state_bucket"]):
+        _apply_unknown_state(order, summary, stored_before=stored_before)
+        logger.warning("genei: estado desconocido %s en el envío %s (pedido %s): se marca y se "
+                       "avisa, no se mueve el transporte", summary["state_code"],
+                       summary["shipment_code"], order.id)
+        return summary, False
+
     if summary["tracking"]:
         order.tracking_number = summary["tracking"]
     carrier = summarize_tracking(tracking) if tracking is not None else None
     target = transport_target(summary["state_bucket"], _transport_value(order))
-    stored_before = genei_state_of(order)
     evidence = {
         "tracking_number": summary["tracking"] or order.tracking_number or "",
         "description": incidencia or summary["state_label"] or "Incidencia de transporte",
@@ -183,6 +215,17 @@ def apply_shipment_state(
         "desc_incidencia": incidencia or None,
         "refreshed_at": now_iso(),
     }
+    # Fallo 2: la referencia externa que vuelve (`codigo_envio_externo`) tiene
+    # que ser la que BoHub mandó al crear (`external_sent`). Si no casan, se deja
+    # el desajuste anotado (la ficha/Cuadre lo ven): un envío mal enlazado no se
+    # reconcilia. Solo informa; no se toca el vínculo por un dato que vuelve.
+    externo_in = str(_pick(shipment, _EXTERNAL_KEYS) or "").strip()
+    enviado = str(stored_before.get("external_sent") or "").strip()
+    if externo_in and enviado and externo_in.upper() != enviado.upper():
+        patch["external_mismatch"] = {"enviado": enviado, "devuelto": externo_in,
+                                      "visto_en": now_iso()}
+        logger.warning("genei: referencia externa distinta en el pedido %s: mandó %s, el webhook "
+                       "trae %s", order.id, enviado, externo_in)
     # Destinatario y web de seguimiento que ya trae el objeto de Genei (para el
     # aviso de envío al cliente, sobre todo en envíos creados antes de guardarlos).
     stored = genei_state_of(order)
@@ -206,6 +249,91 @@ def apply_shipment_state(
         })
     set_genei_state(order, patch)
     return summary, applied
+
+
+#: Estados de transporte desde los que un envío anulado vuelve a «sin enviar»
+#: (aún no había salido de verdad). Si ya estaba recogido/entregado, no se toca
+#: (contradicción rara: se archiva el anulado pero se deja el transporte).
+_TRANSPORTE_SIN_SALIR = ("not_shipped", "label_created")
+
+
+def _apply_cancelled(
+    session: Session, order: Order, summary: dict[str, Any], incidencia: str,
+) -> bool:
+    """Archiva el envío anulado y suelta el vínculo; si el pedido no había
+    salido, el transporte vuelve a «sin enviar» (corrección de SYSTEM, auditada
+    e idempotente)."""
+    motivo = incidencia or summary.get("state_label") or "Envío anulado en Genei"
+    cambiado = record_cancelled_and_unlink(order, summary, reason=motivo, when=now_iso())
+    if not cambiado:
+        return False
+    # El nº de seguimiento del envío muerto deja de ser el del pedido.
+    if summary.get("tracking") and order.tracking_number == summary["tracking"]:
+        order.tracking_number = None
+    actual = _transport_value(order)
+    if actual in _TRANSPORTE_SIN_SALIR:
+        _reset_transport_not_shipped(session, order, actual, summary, motivo)
+    _audit_cancelled(session, order, summary, motivo)
+    logger.info("genei: envío %s anulado (%s) en el pedido %s: vínculo suelto, referencia libre",
+                summary.get("shipment_code"), summary.get("state_label"), order.id)
+    return True
+
+
+def _reset_transport_not_shipped(
+    session: Session, order: Order, desde: str, summary: dict[str, Any], motivo: str,
+) -> None:
+    """El envío anulado no saldrá: el pedido vuelve a «sin enviar». Es una
+    corrección hacia atrás (no un arco de la máquina de estados), así que se
+    escribe la columna y el historial a mano, como SYSTEM."""
+    import json  # noqa: PLC0415
+
+    from app.erp.models.orders import OrderStatusHistory, TransportStatus  # noqa: PLC0415
+
+    if desde == TransportStatus.NOT_SHIPPED.value:
+        return
+    order.transport_status = TransportStatus.NOT_SHIPPED.value
+    session.add(OrderStatusHistory(
+        order_id=order.id, domain=StatusDomain.TRANSPORT,
+        from_status=desde, to_status=TransportStatus.NOT_SHIPPED.value,
+        changed_at=datetime.now(UTC), changed_by_user_id=None,
+        reason=f"Envío Genei anulado ({summary.get('state_label') or motivo}): no saldrá",
+        metadata_json=json.dumps({"shipment_code": summary.get("shipment_code"),
+                                  "state_code": summary.get("state_code")}, default=str),
+    ))
+
+
+def _audit_cancelled(session: Session, order: Order, summary: dict[str, Any], motivo: str) -> None:
+    import json  # noqa: PLC0415
+
+    from app.models.crm import AuditLog  # noqa: PLC0415
+
+    session.add(AuditLog(
+        actor_user_id=None, actor_email=None, action="erp.genei.shipment_cancelled",
+        target_type="order", target_id=order.id,
+        metadata_json=json.dumps({"shipment_code": summary.get("shipment_code"),
+                                  "state_code": summary.get("state_code"),
+                                  "motivo": motivo}, default=str),
+    ))
+
+
+def _apply_unknown_state(
+    order: Order, summary: dict[str, Any], *, stored_before: dict[str, Any],
+) -> None:
+    """Un código de estado no contemplado: se guarda tal cual (bucket
+    `unknown`, etiqueta «Estado desconocido (N)») para que la ficha lo enseñe y
+    el Cuadre lo cace. No se toca el transporte. Si el pedido aún no tenía envío
+    (p. ej. uno del panel del que llega el primer aviso en un estado raro), se
+    vincula el código: si no, el Cuadre —que exige `shipment_code`— no lo vería."""
+    patch: dict[str, Any] = {
+        "state_code": summary.get("state_code"),
+        "state_bucket": summary.get("state_bucket"),
+        "state_label": summary.get("state_label"),
+        "estado_desconocido_en": now_iso(),
+        "refreshed_at": now_iso(),
+    }
+    if not stored_before.get("shipment_code") and summary.get("shipment_code"):
+        patch["shipment_code"] = summary["shipment_code"]
+    set_genei_state(order, patch)
 
 
 def _aware(dt: datetime) -> datetime:

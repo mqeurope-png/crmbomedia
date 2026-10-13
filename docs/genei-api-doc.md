@@ -100,9 +100,9 @@ Origen ≠ centro logístico de Genei (caso BoHub) → NO `box` ni `references`:
 14 Devuelto → incidencia
 15 Gestionando siniestro → incidencia
 78 Incidencia gestionada → incidencia (resuelta)
-8 Rectificativo → —
-11 Pendiente de abono → —
-12 Abonado → —
+8 Rectificativo → bucket `other` (informativo: Genei ha emitido un envío corregido; no es etiqueta viva ni anulado)
+11 Pendiente de abono → bucket `cancelled` (ANULACIÓN con devolución: el envío NO saldrá)
+12 Abonado → bucket `cancelled` (igual que 11; la devolución ya está hecha)
 77 Cerrado → cerrado
 79 Destruido/abandonado → cerrado
 86 En el centro logístico → tránsito
@@ -180,6 +180,78 @@ el log del contenedor —el del primer fallo se perdió al recrearse `api`—.
 **Pedidos ya afectados:** `python -m scripts.genei_envios_sin_vincular` (solo
 lectura) cruza el listado de Genei con los pedidos de BoHub y lista los que
 tienen envío allí y no aquí.
+
+## El estado 11 que dejaba envíos zombis + el NIF del remitente de DHL (rev 2026-10-13)
+
+**Lo que pasó (verificado EN VIVO con la API real).** Dos envíos de DHL
+(`GKMFZKOI` = ARTISJ-9694, `EEAI1XXM`) cayeron `7 → 6 → 1 → 11` («PENDIENTE DE
+ABONO») ellos solos en ~3 minutos y se quedaron con etiqueta y tracking vivos
+pero sin recoger jamás. BoHub no mapeaba el 11 y los seguía dando por
+entregables (`label_created`). El taller creó uno a mano en el panel
+(`DHC2L70W`) que sí funcionó.
+
+**Fallo 1 — estados sin mapear (11/12, y el desconocido).**
+- `11 pendiente de abono` / `12 abonado` = **anulación con devolución del
+  importe**: el envío no saldrá. Caen en el bucket `cancelled`
+  (`status.py`): dejan de ser entregables, BoHub **suelta el vínculo** (la
+  referencia externa queda libre), archiva el rastro
+  (`packing_json.genei.ultimo_anulado` / `anulados`) y el pedido vuelve a «sin
+  enviar» para crear/vincular otro. La ficha lo dice y ofrece «Vincular envío
+  existente» (crear en el panel). Cuadre: «Envío Genei anulado sin reponer».
+- `8 rectificativo` → bucket `other` (informativo; no hay ninguno hoy).
+- **Ningún código sin mapear se traga en silencio**: un estado que la tabla no
+  contempla cae en el bucket `unknown` («Estado desconocido (N)»), deja rastro
+  en la ficha, NO mueve el transporte y lo caza el Cuadre («Envío Genei en
+  estado desconocido»). La tabla entera (7,6,1,5,80,85,2,13,86,3,9,10,14,15,78,
+  8,11,12,77,79) está mapeada; solo faltaban 8/11/12.
+
+**Fallo 2 — `externalShippingCode` obligatorio.** `EEAI1XXM` tenía
+`codigo_envio_externo = null` en vivo (lo crearon en el panel sin referencia; el
+camino de BoHub siempre la manda). Ahora es **obligatorio al crear**
+(`build_shipment_payload` lo exige; sin él no se compone el envío), se guarda lo
+que se MANDÓ (`external_sent`) y el webhook lo **compara** con
+`codigo_envio_externo`: si no casan, `external_mismatch` queda anotado.
+
+**Fallo 3 — borrar/anular libera la referencia.** Al borrar desde BoHub se
+suelta el `shipment_code` (conservando el historial de anulados) y se puede
+crear otro; un webhook de anulación (11/12) hace lo mismo. La regla de
+duplicados de Genei usa `codigo_envio_externo`, que Genei libera al anular/borrar
+el envío.
+
+**Fallo 4 — DHL (la hipótesis de domicilio/oficina se cae).** DHL es una
+agencia AGRUPADA en Genei (grupo «DHL Recogida Domicilio»): `102` Dom-Dom, `103`
+Dom-Ofi, `226` Ofi-Dom. **Pero los dos atascados y el bueno son todos la 102
+(Dom-Dom), al mismo destino**: el domicilio-vs-oficina NO es la causa. Lo que
+sale de los datos: **todos los DHL creados por API mueren en 11; CTT y UPS por
+API van bien**. Comparando el envío bueno del panel con los atascados, la única
+diferencia es **`dni_salida`** (NIF del remitente): el bueno lo lleva
+(`B64154263`), los de BoHub lo llevan **vacío** porque `GET /addresses` devuelve
+`vat_number: null`. Arreglo: el NIF del remitente es configurable en Ajustes →
+Envíos (`origin.vat`) y se manda en `origin.dni`.
+
+**Campos que el envío trae y BoHub no manda (origen de cada uno):**
+- `origin.dni` (= `dni_salida`): **deducido** de comparar las peticiones (el
+  bueno lo lleva, los rotos no) → **el arreglo lo manda**.
+- `goodsValue`, `contentsArray`/declaración de contenido, `insurance`,
+  `cashOnDelivery`, `priority`, `destinationOffice`/`originOffice`: **doc**
+  (listados en el Swagger como opcionales de `POST /shipments`). El envío bueno
+  del panel NO los lleva tampoco, así que **no son la diferencia**; quedan como
+  los siguientes candidatos si el NIF no bastara.
+- El Swagger (`/api-doc/v2`) da **403 «Token not found or expired»** incluso con
+  la sesión viva, así que el esquema completo se infiere del detalle real de los
+  envíos, no del Swagger.
+
+**La prueba, sin gastar un euro.** Un envío nace en **7 (pendiente de pago)** y
+solo se cobra al pagarlo. `scripts/genei_probar_dhl.py --pedido ARTISJ-9700`
+enseña el payload (con el NIF); `--crear` crea el envío de DHL (nace en 7, sin
+coste) y mira su estado: si se queda en 7/6/1 el NIF era lo que faltaba (y
+entonces Bart paga UNO para confirmar tramitado); si cae a 11, no era, y se
+prueba el siguiente campo. El script no paga, no borra y no vincula nada.
+
+**Envíos encontrados en estado 11/12/8 (listado de Genei, 13/10/2026):** solo
+los dos de DHL en 11 (`GKMFZKOI`, `EEAI1XXM`); ninguno en 8 ni en 12. El resto
+del listado va en estados normales (1/3/5/80). El sondeo de `worker-sync`
+re-lee el 11 y los deja bien solo tras desplegar.
 
 ## Seguridad
 - Pago solo por persona (botón «Pagar y tramitar»); nunca auto-pagar.

@@ -73,11 +73,79 @@ def set_genei_state(order: Order, patch: dict[str, Any]) -> dict[str, Any]:
 
 
 def clear_genei_state(order: Order) -> None:
-    """Quita el bloque Genei (al eliminar/cancelar el envío)."""
+    """Quita el bloque Genei (al eliminar/cancelar el envío), CONSERVANDO el
+    historial de envíos anulados (`anulados`/`ultimo_anulado`): un envío borrado
+    a mano no debe borrar el rastro de por qué el anterior no salió."""
     data = packing_of(order)
+    block = data.get(PACKING_KEY)
+    historial = {}
+    if isinstance(block, dict):
+        historial = {k: block[k] for k in (CANCELLED_HISTORY_KEY, LAST_CANCELLED_KEY)
+                     if block.get(k)}
     if PACKING_KEY in data:
-        data.pop(PACKING_KEY, None)
+        if historial:
+            data[PACKING_KEY] = historial
+        else:
+            data.pop(PACKING_KEY, None)
         save_packing(order, data)
+
+
+#: Historial de envíos anulados (Genei 11/12) del pedido y el último, para que
+#: la ficha diga «el envío X se anuló» aunque ya no haya vínculo activo.
+CANCELLED_HISTORY_KEY = "anulados"
+LAST_CANCELLED_KEY = "ultimo_anulado"
+#: Cuántos envíos anulados se guardan (los más recientes).
+MAX_CANCELLED_HISTORY = 20
+
+
+def record_cancelled_and_unlink(
+    order: Order, summary: dict[str, Any], *, reason: str, when: str,
+) -> bool:
+    """Un envío Genei ha caído a ANULADO (11/12): devolución del importe, no
+    saldrá. Se archiva en el historial y se SUELTA el vínculo activo —el pedido
+    queda sin envío Genei, listo para crear o vincular otro (la referencia
+    externa queda libre en Genei al anularse)—. Deja `ultimo_anulado` para que
+    la ficha lo diga. Idempotente: un segundo aviso del mismo envío no duplica.
+
+    Devuelve si ha cambiado algo (False = ya estaba archivado)."""
+    data = packing_of(order)
+    block = data.get(PACKING_KEY)
+    block = block if isinstance(block, dict) else {}
+    code = summary.get("shipment_code") or block.get("shipment_code") or None
+    # Nada que soltar ni código que archivar: ya se desvinculó antes (aviso de
+    # anulación repetido sin código). Idempotente de verdad.
+    if not code and not block.get("shipment_code"):
+        return False
+    historial = block.get(CANCELLED_HISTORY_KEY)
+    historial = list(historial) if isinstance(historial, list) else []
+    if code and any(isinstance(a, dict) and a.get("shipment_code") == code for a in historial):
+        return False  # ya archivado
+    entry = {
+        "shipment_code": code,
+        "tracking": summary.get("tracking") or block.get("tracking"),
+        "state_code": summary.get("state_code"),
+        "state_label": summary.get("state_label"),
+        "courier": summary.get("courier") or block.get("courier"),
+        "external_reference": (block.get("external_sent")
+                               or block.get("external_reference") or None),
+        "anulado_en": when,
+        "motivo": reason,
+    }
+    historial.append(entry)
+    # El bloque queda SOLO con el historial: sin shipment_code, la ficha vuelve
+    # a ofrecer «Crear»/«Vincular» y la Cola SAT deja de darlo por entregable.
+    data[PACKING_KEY] = {
+        CANCELLED_HISTORY_KEY: historial[-MAX_CANCELLED_HISTORY:],
+        LAST_CANCELLED_KEY: entry,
+    }
+    save_packing(order, data)
+    return True
+
+
+def ultimo_anulado(order: Order) -> dict[str, Any] | None:
+    """El último envío anulado del pedido (para el aviso de la ficha), o None."""
+    block = genei_state_of(order).get(LAST_CANCELLED_KEY)
+    return block if isinstance(block, dict) else None
 
 
 def shipment_code_of_order(order: Order) -> str | None:
@@ -133,20 +201,24 @@ def destination_is_complete(dest: dict[str, Any]) -> list[str]:
 PAYMENT_METHOD_BALANCE = 4
 
 
-def build_origin(raw: dict[str, Any]) -> dict[str, Any]:
+def build_origin(raw: dict[str, Any], *, vat_override: str | None = None) -> dict[str, Any]:
     """Dirección registrada en Genei (`GET /addresses/{id}`) → bloque `origin`
     del envío (misma forma que `destination`). El remitente por defecto de la
     cuenta ya trae nombre, dirección, email y teléfono con prefijo (E.164).
 
     Genei EXIGE el bloque `origin` completo al crear (todos los campos del
     ejemplo son obligatorios, incluido el prefijo internacional del teléfono).
-    """
+
+    `vat_override` = NIF/CIF del remitente configurado en Ajustes (config
+    `origin.vat`). Se usa cuando la dirección registrada devuelve el VAT vacío
+    (`vat_number: null` por API, verificado en vivo): sin NIF, DHL anulaba el
+    envío solo (ver `OriginAddress`)."""
     if not isinstance(raw, dict):
         raw = {}
     iso = _s(raw.get("country_code") or raw.get("country_code_unico"))
     if not iso:
         iso2, _name = normalize_country(_s(raw.get("nombre_pais")))
-        iso = iso2
+        iso = iso2 or ""   # país no reconocido: cadena vacía (Genei lo validará)
     name = _s(raw.get("nombre"))
     # El teléfono DEBE llevar prefijo internacional; Genei lo da ya en E.164.
     phone = _s(raw.get("telefono_e164"))
@@ -157,7 +229,9 @@ def build_origin(raw: dict[str, Any]) -> dict[str, Any]:
     return {
         "name": name,
         "contact": _s(raw.get("contact")) or name,
-        "dni": _s(raw.get("vat_number") or raw.get("dni")),
+        # El NIF de la dirección registrada manda; si viene vacío (lo normal por
+        # API), el configurado en Ajustes (no se manda el remitente sin NIF).
+        "dni": _s(raw.get("vat_number") or raw.get("dni")) or _s(vat_override),
         "email": _s(raw.get("mail") or raw.get("email")),
         "phone": phone,
         "address": _s(raw.get("direccion") or raw.get("address")),
@@ -184,10 +258,16 @@ def build_shipment_payload(
     """Body de `POST /shipments`. Genei exige `origin` (bloque de dirección
     completo del remitente, resuelto desde el `originAddressId` de la cuenta),
     `destination` (el del pedido), `packagesArray` y `paymentMethodShipping`.
-    `externalShippingCode` enlaza con el nº de pedido de BoHub."""
+    `externalShippingCode` enlaza con el nº de pedido de BoHub y es OBLIGATORIO:
+    un envío sin referencia externa es uno que después nadie puede reconciliar
+    (el webhook empareja por `codigo_envio_externo`). Si falta, no se compone el
+    envío (`ValueError`), nunca se manda vacío ni con un valor por defecto."""
+    if not str(external_shipping_code or "").strip():
+        raise ValueError("Genei: falta la referencia externa del pedido "
+                         "(externalShippingCode); el envío no se crea sin ella.")
     payload: dict[str, Any] = {
         "agencyId": agency_id,
-        "externalShippingCode": external_shipping_code,
+        "externalShippingCode": str(external_shipping_code).strip(),
         "origin": origin,
         "destination": destination,
         "packagesArray": packages,

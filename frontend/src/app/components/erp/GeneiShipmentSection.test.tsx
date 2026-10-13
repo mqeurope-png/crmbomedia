@@ -507,3 +507,24 @@ it("con envío vinculado no se ofrece crear ni vincular otro", async () => {
   expect(screen.queryByRole("button",
                             { name: "Vincular envío existente de Genei" })).toBeNull();
 });
+
+it("un envío anulado (estado 11/12): lo dice y ofrece crear/vincular otro", async () => {
+  // El envío se anuló en Genei (devolución): el bloque ya no trae shipment_code,
+  // solo el rastro en `ultimo_anulado`. La ficha avisa y ofrece reponerlo.
+  mockPrefill.mockResolvedValue(prefill({
+    is_packed: true,
+    state: {
+      ultimo_anulado: {
+        shipment_code: "GKMFZKOI", state_code: 11, state_label: "Pendiente de abono",
+      },
+    },
+  }));
+  render(<GeneiShipmentSection orderId="o-1" canManage />);
+  const aviso = await screen.findByLabelText("Envío anulado en Genei");
+  expect(aviso).toHaveTextContent("GKMFZKOI");
+  expect(aviso).toHaveTextContent(/no saldrá/);
+  // Y se puede reponer: crear o vincular el del panel.
+  expect(screen.getByRole("button", { name: "Crear envío con Genei" })).toBeInTheDocument();
+  expect(screen.getByRole("button",
+                          { name: "Vincular envío existente de Genei" })).toBeInTheDocument();
+});
