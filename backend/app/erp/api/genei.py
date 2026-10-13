@@ -740,6 +740,10 @@ def _link_existing_shipment(
         # «duplicado» (lo encontró BoHub al chocar con la regla de Genei).
         "linked_from": origen,
         "external_reference": external_code_of(raw) or None,
+        # La referencia «esperada» de un envío vinculado es la del propio envío
+        # (o, si no la trae, el nº de pedido): así la comprobación del webhook
+        # (Fallo 2) también vale para los vinculados, no solo para los creados.
+        "external_sent": external_code_of(raw) or _referencia_de(order) or None,
         **mark_pending_on_create(
             order, enabled=cfg.customer_email_enabled,
             user_id=getattr(current_user, "id", None), destination={},

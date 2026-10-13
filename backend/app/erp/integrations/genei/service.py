@@ -112,6 +112,10 @@ def record_cancelled_and_unlink(
     block = data.get(PACKING_KEY)
     block = block if isinstance(block, dict) else {}
     code = summary.get("shipment_code") or block.get("shipment_code") or None
+    # Nada que soltar ni código que archivar: ya se desvinculó antes (aviso de
+    # anulación repetido sin código). Idempotente de verdad.
+    if not code and not block.get("shipment_code"):
+        return False
     historial = block.get(CANCELLED_HISTORY_KEY)
     historial = list(historial) if isinstance(historial, list) else []
     if code and any(isinstance(a, dict) and a.get("shipment_code") == code for a in historial):

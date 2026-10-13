@@ -154,6 +154,19 @@ def apply_shipment_state(
     el pedido de pestaña. Idempotente."""
     summary = summarize_shipment(shipment)
     incidencia = str(_pick(shipment, _INCIDENCIA_KEYS) or "").strip()
+    stored_before = genei_state_of(order)
+
+    # Evento TARDÍO o repetido de un envío ya ANULADO y archivado: se ignora. Si
+    # no, un aviso fuera de orden (p. ej. un estado 5 que llega después del 11)
+    # volvería a vincular el envío muerto y a moverle el transporte: justo el
+    # zombi que esto evita. Un envío nuevo (otro código) no se toca.
+    code_in = summary["shipment_code"]
+    anulados = {a.get("shipment_code") for a in (stored_before.get("anulados") or [])
+                if isinstance(a, dict) and a.get("shipment_code")}
+    if code_in and code_in in anulados:
+        logger.info("genei: evento de un envío ya anulado (%s) en el pedido %s: ignorado",
+                    code_in, order.id)
+        return summary, False
 
     # Anulado con devolución (Genei 11/12): el envío NO saldrá. Se suelta el
     # vínculo (la referencia queda libre), se archiva el rastro y el pedido
@@ -166,7 +179,7 @@ def apply_shipment_state(
     # desconocido» (rastro en la ficha + lo ve el Cuadre) y no se toca el
     # transporte (no sabemos qué significa; no vamos a darlo por entregable).
     if is_unknown_state(summary["state_bucket"]):
-        _apply_unknown_state(order, summary)
+        _apply_unknown_state(order, summary, stored_before=stored_before)
         logger.warning("genei: estado desconocido %s en el envío %s (pedido %s): se marca y se "
                        "avisa, no se mueve el transporte", summary["state_code"],
                        summary["shipment_code"], order.id)
@@ -176,7 +189,6 @@ def apply_shipment_state(
         order.tracking_number = summary["tracking"]
     carrier = summarize_tracking(tracking) if tracking is not None else None
     target = transport_target(summary["state_bucket"], _transport_value(order))
-    stored_before = genei_state_of(order)
     evidence = {
         "tracking_number": summary["tracking"] or order.tracking_number or "",
         "description": incidencia or summary["state_label"] or "Incidencia de transporte",
@@ -304,17 +316,24 @@ def _audit_cancelled(session: Session, order: Order, summary: dict[str, Any], mo
     ))
 
 
-def _apply_unknown_state(order: Order, summary: dict[str, Any]) -> None:
+def _apply_unknown_state(
+    order: Order, summary: dict[str, Any], *, stored_before: dict[str, Any],
+) -> None:
     """Un código de estado no contemplado: se guarda tal cual (bucket
     `unknown`, etiqueta «Estado desconocido (N)») para que la ficha lo enseñe y
-    el Cuadre lo cace. No se toca el transporte."""
-    set_genei_state(order, {
+    el Cuadre lo cace. No se toca el transporte. Si el pedido aún no tenía envío
+    (p. ej. uno del panel del que llega el primer aviso en un estado raro), se
+    vincula el código: si no, el Cuadre —que exige `shipment_code`— no lo vería."""
+    patch: dict[str, Any] = {
         "state_code": summary.get("state_code"),
         "state_bucket": summary.get("state_bucket"),
         "state_label": summary.get("state_label"),
         "estado_desconocido_en": now_iso(),
         "refreshed_at": now_iso(),
-    })
+    }
+    if not stored_before.get("shipment_code") and summary.get("shipment_code"):
+        patch["shipment_code"] = summary["shipment_code"]
+    set_genei_state(order, patch)
 
 
 def _aware(dt: datetime) -> datetime:

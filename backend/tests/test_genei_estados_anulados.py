@@ -192,6 +192,26 @@ def test_webhook_12_queda_registrado_como_abonado(client, session_factory):
         assert any(a["shipment_code"] == "GKMFZKOI" for a in g["anulados"])
 
 
+def test_un_aviso_tardio_no_resucita_el_envio_anulado(client, session_factory):
+    """Tras el 11, un aviso fuera de orden (estado 5) del MISMO envío no vuelve a
+    vincular el muerto ni mueve el transporte: el zombi no renace."""
+    with session_factory() as s:
+        _carrier(s)
+        oid = _order(s, transport="label_created")
+        s.commit()
+    assert _post(client, _anulado_payload(estado=11)).status_code == 200
+    # Llega, tarde, un «recogida efectuada / en tránsito» (5) del mismo envío.
+    r = _post(client, {"status": 1, "data": {
+        "codigo_envio": "GKMFZKOI", "codigo_envio_externo": "ARTISJ-9694", "estado": 5,
+        "codigo_seguimiento": "JJD-999", "nombre_agencia": "DHL Parcel B2C"}})
+    assert r.status_code == 200
+    with session_factory() as s:
+        o = s.get(Order, oid)
+        g = genei_state_of(o)
+        assert not g.get("shipment_code")                 # sigue sin envío activo
+        assert o.transport_status.value == "not_shipped"  # no se movió
+
+
 def test_webhook_11_es_idempotente(client, session_factory):
     with session_factory() as s:
         _carrier(s)
