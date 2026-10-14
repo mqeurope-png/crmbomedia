@@ -87,7 +87,7 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     children: [
       { href: "/erp/orders", label: "Bandeja" },
       // Las excepciones son trabajo de oficina (el taller resuelve las de sus
-      // muestras desde la ficha).
+      // muestras en la Cola SAT, pestaña «Incidencias»).
       { href: "/erp/exceptions", label: "Excepciones", requiredCapability: Cap.OFFICE_VIEW },
     ],
   },

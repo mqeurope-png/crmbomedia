@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import ErpOrderDetailPage from "./page";
 import { getFactusolStatus, getOrder, getOrderFactusolCobro } from "../../../lib/erpApi";
@@ -153,7 +153,9 @@ describe("Ficha del pedido · rol SAT", () => {
     expect(screen.queryByRole("button", { name: /Más acciones del pedido/ })).not.toBeInTheDocument();
     // Ni el panel de cliente FACTUSOL ni el enlace a la ficha de la empresa.
     expect(screen.queryByText("panel cliente FACTUSOL")).not.toBeInTheDocument();
-    expect(screen.getByTestId("header-subtitle").querySelector("a")).toBeNull();
+    const subtitulo = screen.getByTestId("header-subtitle");
+    expect(subtitulo).toHaveTextContent("Duplicoder");
+    expect(within(subtitulo).queryByRole("link")).not.toBeInTheDocument();
     // Y no pide datos de oficina (le darían 403).
     await waitFor(() => expect(getOrder).toHaveBeenCalled());
     expect(getFactusolStatus).not.toHaveBeenCalled();
@@ -183,5 +185,23 @@ describe("Ficha del pedido · rol SAT", () => {
     expect(screen.getAllByRole("button", { name: "Enviar factura al cliente" }).length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "PDF de la factura" })).toBeInTheDocument();
     await waitFor(() => expect(getFactusolStatus).toHaveBeenCalledWith("o-1"));
+  });
+
+  it("muestra con incidencia: «Siguiente paso» lleva a la Cola SAT (Incidencias), no a la bandeja de oficina", async () => {
+    const m = muestra();
+    (getOrder as jest.Mock).mockResolvedValue({
+      ...m,
+      exceptions: [{ id: "e-1", type: "sat_issue", subtype: null, status: "open" }],
+      workflow: {
+        ...m.workflow, blocked: true,
+        next_action: "revisar_incidencia", next_action_label: "Revisar incidencia",
+        next_action_hint: "Excepción abierta.",
+      },
+    });
+    render(<ErpOrderDetailPage />);
+    const ir = await screen.findAllByRole("link", { name: /Incidencias \(Cola SAT\)|Cola SAT \(Incidencias\)/ });
+    expect(ir.length).toBeGreaterThan(0);
+    for (const a of ir) expect(a).toHaveAttribute("href", "/erp/sat?tab=incidencias");
+    expect(screen.queryByRole("link", { name: /excepciones/i })).not.toBeInTheDocument();
   });
 });

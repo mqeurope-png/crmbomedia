@@ -208,6 +208,9 @@ function orderLinesToProformaLines(lines: OrderLine[]): DocumentLine[] {
   return rows.length > 0 ? rows : [emptyDocumentLine()];
 }
 
+/** Cola SAT → «Incidencias»: donde el taller resuelve las de sus muestras. */
+const SAT_INCIDENCIAS = "/erp/sat?tab=incidencias";
+
 /** `useSearchParams` exige Suspense en el app router (`?from=`). */
 export default function ErpOrderDetailPage() {
   return (
@@ -612,9 +615,13 @@ function ErpOrderDetailScreen() {
           </Link>
         ) : null;
       case "revisar_incidencia":
+        // El taller resuelve las incidencias de sus muestras en la Cola SAT
+        // (pestaña «Incidencias»); la bandeja de excepciones es de oficina.
         return canOffice
           ? <Link href="/erp/exceptions" className="button small">Ver excepciones</Link>
-          : null;
+          : canManage
+            ? <Link href={SAT_INCIDENCIAS} className="button small">Ir a Incidencias (Cola SAT)</Link>
+            : null;
       default:
         return null;
     }
@@ -623,8 +630,14 @@ function ErpOrderDetailScreen() {
   /** Botón que resuelve cada alerta de la barra (la alerta dice QUÉ pasa;
    *  esto lleva a dónde se arregla). */
   function alertAction(a: WorkflowAlert): ReactNode {
-    // Ficha de empresa y bandeja de excepciones: pantallas de oficina.
-    if (!order || !canOffice) return null;
+    if (!order) return null;
+    // Ficha de empresa y bandeja de excepciones: pantallas de oficina. El
+    // taller, en sus muestras, resuelve la incidencia en la Cola SAT.
+    if (!canOffice) {
+      return a.code === "excepcion_abierta" && canManage
+        ? <Link href={SAT_INCIDENCIAS} className="button small secondary">Ir a Incidencias (Cola SAT)</Link>
+        : null;
+    }
     if (
       a.code === "empresa_sin_vincular" || a.code === "cliente_intracomunitario"
       || a.code === "cliente_exportacion" || a.code === "vat_no_valido_vies"
@@ -961,7 +974,9 @@ function ErpOrderDetailScreen() {
                       >
                         Restaurar pedido
                       </button>
-                    ) : (
+                    ) : canEditOrder || (order.linked_documents ?? []).length === 0 ? (
+                      // El taller anula muestras sin documentos de FACTUSOL;
+                      // con documentos, lo hace la oficina (el backend igual).
                       <button
                         type="button"
                         className="button small danger"
@@ -970,7 +985,7 @@ function ErpOrderDetailScreen() {
                       >
                         Anular pedido
                       </button>
-                    )
+                    ) : null
                   )}
                   {esMuestra && canEditOrder && !order.cancelled ? (
                     <button
@@ -1205,6 +1220,8 @@ function ErpOrderDetailScreen() {
           </ul>
           {canOffice ? (
             <Link href="/erp/exceptions" className="link-button small">Ver bandeja de excepciones</Link>
+          ) : canManage ? (
+            <Link href={SAT_INCIDENCIAS} className="link-button small">Resolver en la Cola SAT (Incidencias)</Link>
           ) : null}
         </section>
       ) : null}

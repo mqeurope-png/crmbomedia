@@ -464,3 +464,22 @@ def test_muestra_sin_cobrar_no_sale_por_cobrar_ni_en_el_cuadre(http, session_fac
                 continue
         assert muestra not in {h.entidad_id for h in hallazgos}
         assert cf.factura_sin_vincular  # la comprobación existe y se ha corrido
+
+
+def test_sat_no_anula_una_muestra_con_documentos_y_el_aviso_lo_dice_antes(http, session_factory):
+    """Una muestra que apunta a un documento de FACTUSOL (vínculo a medias) la
+    anula la oficina: el aviso previo ya lo dice y el botón no confirma."""
+    with session_factory() as s:
+        o = Order(order_number="MUESTRA-000950", order_kind="sample",
+                  preparation_status="in_queue", payment_status="pending",
+                  transport_status="not_shipped", factusol_albaran_number="2-100950")
+        s.add(o)
+        s.commit()
+        oid = o.id
+    h = _sat(http)
+    prev = http.post(f"/api/erp/orders/{oid}/cancel-preview", headers=h)
+    assert prev.status_code == 200, prev.text
+    assert prev.json()["can_cancel"] is False
+    assert any("lo anula la oficina" in b for b in prev.json()["blockers"])
+    r = http.post(f"/api/erp/orders/{oid}/cancel", headers=h, json={"confirm": True})
+    assert r.status_code == 403

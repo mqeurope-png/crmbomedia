@@ -125,7 +125,10 @@ export function SatPrepModal({
           </section>
         ) : null}
         {prep === "blocked" ? (
-          <p className="muted">Pedido bloqueado — se resuelve desde la bandeja de excepciones.</p>
+          <p className="muted">
+            Pedido bloqueado — resuelve la incidencia en la pestaña «Incidencias» y
+            desbloquéalo desde su ficha.
+          </p>
         ) : null}
 
         {/* Foto (o documento) del embalaje: se ve aquí y en la card, y no se

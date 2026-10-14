@@ -2206,6 +2206,9 @@ def cancel_order_preview(
     order = _get_order(session, order_id, current_user)
     _require_manage(current_user, order)
     blockers = cancel_blockers(order)
+    if not _is_office(current_user) and cancel_warnings(order):
+        # Lo mismo que rechazará `/cancel`: que el modal lo diga antes.
+        blockers = [*blockers, "Este pedido tiene documentos de FACTUSOL: lo anula la oficina."]
     warnings: list[str] = []
     if order.cancelled_at is not None:
         warnings.append("El pedido ya está anulado.")
