@@ -34,8 +34,9 @@ from app.erp.api.deps import (
     ERP_ADMIN_ROLES,
     require_config,
     require_email_client,
-    require_erp_edit,
     require_erp_view,
+    require_office_view,
+    require_order_manage,
 )
 from app.erp.contrapartidas import (
     contrapartida_rules_config,
@@ -60,6 +61,7 @@ from app.erp.models import (
     ErpSettings,
     ExceptionStatus,
     InvoiceMode,
+    Order,
 )
 from app.erp.ofertas import CONFIG_KEY as OFERTAS_CONFIG_KEY
 from app.erp.ofertas import normalizar_config as normalizar_ofertas
@@ -365,14 +367,30 @@ def list_exceptions(
     return {"items": [_serialise(e, info.get(e.order_id)) for e in rows]}
 
 
+def _require_manage_exception(session: Session, user: User, exc: ErpException) -> None:
+    """La incidencia la gestiona quien gestiona su pedido: la oficina, todas;
+    el taller (14/10/2026), solo las de sus muestras (`can_manage_order`)."""
+    from app.erp.capabilities import Cap, can_manage_order, has_capability  # noqa: PLC0415
+
+    if has_capability(user, Cap.ORDERS_CREATE):
+        return
+    order = session.get(Order, exc.order_id) if exc.order_id else None
+    if order is None or not can_manage_order(user, order):
+        raise HTTPException(403, {
+            "code": "order_not_manageable",
+            "detail": "Solo puedes gestionar incidencias de pedidos de muestra.",
+        })
+
+
 @router.post("/exceptions/{exc_id}/assign")
 def assign_exception(
     exc_id: str,
     payload: AssignIn,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_edit),
+    current_user: User = Depends(require_order_manage),
 ) -> dict[str, Any]:
     exc = _get(session, exc_id)
+    _require_manage_exception(session, current_user, exc)
     if payload.assigned_to_user_id and not session.get(User, payload.assigned_to_user_id):
         raise HTTPException(400, "assigned_to_user_id no existe")
     exc.assigned_to_user_id = payload.assigned_to_user_id
@@ -387,10 +405,11 @@ def update_status(
     exc_id: str,
     payload: StatusIn,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_edit),
+    current_user: User = Depends(require_order_manage),
 ) -> dict[str, Any]:
     """«Marcar como vista» (in_progress) / descartar (dismissed) / reabrir."""
     exc = _get(session, exc_id)
+    _require_manage_exception(session, current_user, exc)
     try:
         new_status = ExceptionStatus(payload.status)
     except ValueError as e:
@@ -408,9 +427,10 @@ def resolve_exception(
     exc_id: str,
     payload: ResolveIn,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_edit),
+    current_user: User = Depends(require_order_manage),
 ) -> dict[str, Any]:
     exc = _get(session, exc_id)
+    _require_manage_exception(session, current_user, exc)
     exc.status = ExceptionStatus.RESOLVED
     exc.resolution_note = payload.resolution_note
     exc.resolved_at = datetime.now(UTC)
@@ -1084,7 +1104,7 @@ def _sample_sender(session: Session, user: User) -> tuple[str, str, str | None]:
 def preview_invoice_email_template(
     payload: TemplatePreviewIn,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_office_view),
 ) -> dict[str, Any]:
     """Plantilla del idioma rellena con datos de MUESTRA (cliente, nº de
     factura, nº de pedido y referencia ficticios), con la misma sustitución
@@ -1114,7 +1134,7 @@ def preview_invoice_email_template(
 def preview_quote_email_template(
     payload: TemplatePreviewIn,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_office_view),
 ) -> dict[str, Any]:
     """Punto A: plantilla del email de PRESUPUESTO rellena con datos de
     muestra (misma sustitución que el envío real). No envía nada."""
@@ -1380,7 +1400,7 @@ def _store_next_number(session: Session, store_id: str) -> int | None:
 @router.get("/settings/next-references")
 def next_references(
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_office_view),
 ) -> dict[str, Any]:
     """Lo que se compondrá con los ajustes actuales: el siguiente nº de
     pedido manual y, por tienda Woo, el prefijo efectivo (metadata de la
@@ -1438,7 +1458,7 @@ def next_references(
 def preview_shipment_email_template(
     payload: TemplatePreviewIn,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_office_view),
 ) -> dict[str, Any]:
     """Plantilla del aviso de envío rellena con datos de MUESTRA (cliente, nº
     de pedido, tracking, enlace y agencia ficticios). No envía nada. El

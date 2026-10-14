@@ -46,11 +46,10 @@ export type NavItem = {
   allowedRoles?: ReadonlyArray<User["role"]>;
   /** Roles y permisos — capacidad requerida para ver la entrada. Cuando está,
    *  MANDA sobre `allowedRoles`: la entrada se muestra si el usuario tiene la
-   *  capacidad (unión de sus roles). Las secciones de ERP se gatean así; la
-   *  bandeja de pedidos usa `allowedRoles` porque su conjunto de roles no se
-   *  corresponde con una sola capacidad. */
+   *  capacidad (unión de sus roles). Las secciones de ERP se gatean así. */
   requiredCapability?: Capability;
-  children?: ReadonlyArray<{ href: string; label: string }>;
+  /** Subentradas; cada una puede pedir además su propia capacidad. */
+  children?: ReadonlyArray<{ href: string; label: string; requiredCapability?: Capability }>;
 };
 
 export const NAV_ITEMS: ReadonlyArray<NavItem> = [
@@ -78,15 +77,18 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     label: "ERP · Pedidos",
     icon: Package,
     scope: "erp",
-    // Bandeja de pedidos: oficina (admin/pedidos/comercial) + legacy view-only
-    // (manager/user). El SAT (taller) NO la ve; trabaja la Cola SAT. No hay una
-    // sola capacidad que case este conjunto, así que se lista por rol.
-    allowedRoles: ["admin", "manager", "pedidos", "user", "comercial"],
+    // Bandeja de pedidos: todo el que entra en el ERP. El taller (SAT) también
+    // (14/10/2026): ve la bandeja y la ficha de cualquier pedido y lleva sus
+    // muestras. Antes se gateaba por el ROL PRINCIPAL y dejaba fuera al SAT
+    // aunque tuviera roles adicionales (`erp_roles`).
+    requiredCapability: Cap.ACCESS,
     // Lote 2 D: la Cola PEDIDOS ya no es pantalla aparte — es la cola «Por
     // revisar» de la bandeja (`/erp/orders?queue=por_revisar`).
     children: [
       { href: "/erp/orders", label: "Bandeja" },
-      { href: "/erp/exceptions", label: "Excepciones" },
+      // Las excepciones son trabajo de oficina (el taller resuelve las de sus
+      // muestras en la Cola SAT, pestaña «Incidencias»).
+      { href: "/erp/exceptions", label: "Excepciones", requiredCapability: Cap.OFFICE_VIEW },
     ],
   },
   {
@@ -282,5 +284,14 @@ export function resolveVisibleNav(
     // (unión de los roles del usuario); si no, el listado de roles de siempre.
     if (item.requiredCapability) return can(user, item.requiredCapability);
     return item.allowedRoles?.includes(user.role) ?? false;
+  }).map((item) => {
+    // Subentradas con su propia capacidad: fuera las que darían 403.
+    if (!item.children?.some((c) => c.requiredCapability)) return item;
+    return {
+      ...item,
+      children: item.children.filter(
+        (c) => !c.requiredCapability || can(user, c.requiredCapability),
+      ),
+    };
   });
 }

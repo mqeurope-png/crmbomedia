@@ -28,6 +28,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.erp.models.orders import Order, PaymentStatus
+from app.erp.sample_orders import is_sample_order
 from app.models.crm import (
     Contact,
     ContactPhone,
@@ -533,6 +534,8 @@ def pedidos_de(session: Session, contacto: Contact) -> list[dict[str, Any]]:
             "origen": o.external_source.value if o.external_source else None,
             "cancelado": o.cancelled_at is not None, "lineas": lineas,
             "serie": o.serial_number,
+            # Una muestra no se cobra: nunca es «pendiente de cobro».
+            "muestra": is_sample_order(o),
         })
     return salida
 
@@ -544,7 +547,8 @@ def facturas_pendientes_de(pedidos: list[dict[str, Any]]) -> list[dict[str, Any]
     return [
         {"numero": p["numero"], "fecha": p["fecha"], "total": p["total"], "moneda": p["moneda"],
          "pago": p["pago"]}
-        for p in pedidos if p["pago"] in pendientes and not p["cancelado"]
+        for p in pedidos
+        if p["pago"] in pendientes and not p["cancelado"] and not p.get("muestra")
     ]
 
 

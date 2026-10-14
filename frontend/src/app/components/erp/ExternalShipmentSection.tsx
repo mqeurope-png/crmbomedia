@@ -20,10 +20,12 @@ export function externalShipmentLabel(info: Pick<OrderShipmentInfo, "courier" | 
  *  salió con OTRO courier (UPS, MRW… apuntado a mano), su bloque propio — y
  *  entonces sin «Envío con Genei», que no lo hay. */
 export function OrderShipmentSections({
-  orderId, canManage, onChanged,
+  orderId, canManage, canNotify = canManage, onChanged,
 }: {
   orderId: string;
   canManage: boolean;
+  /** Puede mandar a mano el aviso de envío al cliente (`erp.email.client`). */
+  canNotify?: boolean;
   onChanged?: () => void;
 }) {
   const [info, setInfo] = useState<OrderShipmentInfo | null>(null);
@@ -51,12 +53,13 @@ export function OrderShipmentSections({
       {info && external ? (
         <ExternalShipmentSection
           orderId={orderId} info={info} canManage={canManage}
-          onChanged={reload}
+          canNotify={canNotify} onChanged={reload}
         />
       ) : null}
       {/* Genei, salvo que el paquete ya saliera con otro courier. */}
       {shippedExternally ? null : (
-        <GeneiShipmentSection orderId={orderId} canManage={canManage} onChanged={reload} />
+        <GeneiShipmentSection orderId={orderId} canManage={canManage} canNotify={canNotify}
+                              onChanged={reload} />
       )}
     </>
   );
@@ -66,11 +69,13 @@ export function OrderShipmentSections({
  *  web del courier (si se conoce), fecha de recogida y el aviso al cliente.
  *  Courier y seguimiento se corrigen aquí (✎) sin volver a «Marcar recogido». */
 export function ExternalShipmentSection({
-  orderId, info, canManage, onChanged,
+  orderId, info, canManage, canNotify = canManage, onChanged,
 }: {
   orderId: string;
   info: OrderShipmentInfo;
   canManage: boolean;
+  /** Puede mandar a mano el aviso de envío al cliente (`erp.email.client`). */
+  canNotify?: boolean;
   onChanged: () => void;
 }) {
   const [editing, setEditing] = useState(false);
@@ -121,7 +126,7 @@ export function ExternalShipmentSection({
             orderId={orderId}
             status={info.customer_email ?? null}
             hasTracking={Boolean(info.tracking)}
-            canManage={canManage}
+            canManage={canNotify}
             onSent={() => onChanged()}
           />
         ) : null}

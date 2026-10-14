@@ -170,6 +170,8 @@ export function OrderEmailModal({
   }
 
   const label = preview?.order_number ?? orderNumber ?? "";
+  // El taller solo manda el pedido al taller: destinatario fijo, sin copias.
+  const locked = !!preview?.recipients_locked;
   const alb = preview?.attachments.albaran;
   const ped = preview?.attachments.pedido;
   const fac = preview?.attachments.factura;
@@ -217,10 +219,17 @@ export function OrderEmailModal({
                 type="text" value={to} aria-label="Destinatarios"
                 placeholder="taller@ejemplo.com, otro@ejemplo.com"
                 disabled={sending}
+                readOnly={locked}
                 onChange={(e) => setTo(e.target.value)}
               />
             </label>
-            {preview.sat_configured ? (
+            {locked ? (
+              <span className="muted small" role="note">
+                {preview.sat_configured
+                  ? `Solo al taller (${preview.sat_email}): es «enviar al taller por email», no un correo al cliente.`
+                  : "No hay email del taller configurado en Ajustes ERP: pídeselo a la oficina."}
+              </span>
+            ) : preview.sat_configured ? (
               <span className="muted small">
                 Precargado el SAT de Ajustes ERP ({preview.sat_email}). Puedes
                 añadir más separándolos por comas.
@@ -232,14 +241,16 @@ export function OrderEmailModal({
               </span>
             )}
 
-            <p>
-              <button type="button" className="button small secondary"
-                      aria-expanded={showCopies}
-                      onClick={() => setShowCopies((v) => !v)}>
-                {showCopies ? "▾" : "▸"} CC / CCO
-              </button>
-            </p>
-            {showCopies ? (
+            {locked ? null : (
+              <p>
+                <button type="button" className="button small secondary"
+                        aria-expanded={showCopies}
+                        onClick={() => setShowCopies((v) => !v)}>
+                  {showCopies ? "▾" : "▸"} CC / CCO
+                </button>
+              </p>
+            )}
+            {showCopies && !locked ? (
               <>
                 <label className="field">
                   <span>CC</span>

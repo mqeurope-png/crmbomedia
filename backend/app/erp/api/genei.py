@@ -23,7 +23,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.session import get_session
-from app.erp.api.deps import require_config, require_sat_shipping, require_sat_tracking
+from app.erp.api.deps import (
+    require_capabilities,
+    require_config,
+    require_sat_shipping,
+    require_sat_tracking,
+)
+from app.erp.capabilities import Cap
 from app.erp.integrations.genei.client import (
     SHARED_TOKEN_CACHE,
     GeneiAuthError,
@@ -1043,6 +1049,13 @@ def _require_any_shipment(order: Order) -> None:
                                   "detail": "El pedido aún no tiene envío."})
 
 
+#: El aviso de envío a mano es un CORREO AL CLIENTE: además del permiso de
+#: envío exige `erp.email.client`. El taller (14/10/2026) no lo tiene: no manda
+#: ni reenvía avisos (el automático, que es del sistema, sigue saliendo).
+_require_notice_preview = require_capabilities(Cap.SAT_TRACKING, Cap.EMAIL_CLIENT)
+_require_notice_send = require_capabilities(Cap.SAT_SHIPPING, Cap.EMAIL_CLIENT)
+
+
 class CustomerEmailIn(BaseModel):
     #: Destinatario (vacío = el del envío Genei / el contacto del pedido).
     to: str | None = Field(default=None, max_length=255)
@@ -1055,7 +1068,7 @@ def genei_customer_email_preview(
     order_id: str,
     lang: str | None = Query(default=None, max_length=5),
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_sat_tracking),
+    current_user: User = Depends(_require_notice_preview),
 ) -> dict[str, Any]:
     """El aviso de envío tal como saldría (a quién, desde dónde, idioma,
     asunto, cuerpo) y su estado (enviado / pendiente / error). No envía."""
@@ -1070,7 +1083,7 @@ def genei_customer_email_send(
     order_id: str,
     payload: CustomerEmailIn | None = None,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_sat_shipping),
+    current_user: User = Depends(_require_notice_send),
 ) -> dict[str, Any]:
     """Enviar (o REENVIAR) a mano el aviso de envío al cliente, con el nº de
     seguimiento y el enlace, en su idioma. Queda en el timeline del pedido."""

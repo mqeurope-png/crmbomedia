@@ -62,6 +62,12 @@ class TransitionError(ValueError):
 
 
 def _guard_payment_ok(order: Order, _evidence: dict[str, Any]) -> str | None:
+    from app.erp.sample_orders import payment_not_required  # noqa: PLC0415
+
+    if payment_not_required(order):
+        # Una muestra no se cobra: su preparación no espera ningún pago
+        # (14/10/2026; hasta entonces TODAS se quedaban en «Por embalar»).
+        return None
     status = getattr(order.payment_status, "value", order.payment_status)
     if status not in PAYMENT_OK_FOR_PREPARATION:
         return (
@@ -154,6 +160,24 @@ def _actor_roles(actor: User | None) -> set[str]:
     return effective_roles(actor)
 
 
+#: Dominios que no existen para una muestra: no se cobra ni se factura.
+_DOMINIOS_FISCALES = (StatusDomain.PAYMENT, StatusDomain.INVOICE)
+
+
+def _es_muestra(order: Order) -> bool:
+    from app.erp.sample_orders import is_sample_order  # noqa: PLC0415
+
+    return is_sample_order(order)
+
+
+def _roles_del_arco(transition: TransitionDef, order: Order) -> frozenset[str]:
+    """Los roles que pueden disparar el arco EN ESTE pedido: los de siempre y,
+    si es una muestra, los que el arco abre además a las muestras."""
+    if transition.sample_roles and _es_muestra(order):
+        return transition.allowed_roles | transition.sample_roles
+    return transition.allowed_roles
+
+
 def apply_transition(
     session: Session,
     *,
@@ -169,6 +193,11 @@ def apply_transition(
     current = getattr(order, column)
     current_value = getattr(current, "value", current)
 
+    if domain in _DOMINIOS_FISCALES and _es_muestra(order):
+        raise TransitionError(
+            "invalid_transition",
+            f"una muestra no se cobra ni se factura: «{domain.value}» no aplica",
+        )
     transition = find_transition(domain, current_value, to_status)
     if transition is None:
         raise TransitionError(
@@ -177,7 +206,7 @@ def apply_transition(
         )
 
     role = _actor_role(actor)
-    if not (_actor_roles(actor) & transition.allowed_roles):
+    if not (_actor_roles(actor) & _roles_del_arco(transition, order)):
         raise TransitionError(
             "role_forbidden",
             f"rol {role!r} no puede «{transition.label}» "
@@ -225,12 +254,14 @@ def available_transitions(
 ) -> list[TransitionDef]:
     """Arcos que el actor puede disparar desde el estado actual — la UI
     pinta exactamente esto como botones (sin duplicar la matriz)."""
+    if domain in _DOMINIOS_FISCALES and _es_muestra(order):
+        return []        # una muestra no ofrece cobrar ni facturar
     current = getattr(order, DOMAIN_COLUMN[domain])
     current_value = getattr(current, "value", current)
     roles = _actor_roles(actor)
     return [
         t for t in transitions_from(domain, current_value)
-        if roles & t.allowed_roles
+        if roles & _roles_del_arco(t, order)
     ]
 
 

@@ -28,8 +28,21 @@ export function roleLabel(role: Role): string {
   return ROLE_LABELS[role] ?? role;
 }
 
+/** Lo que hace de verdad el taller (14/10/2026): lo mismo que dicen
+ *  `ROLE_CAPABILITIES` (backend) y `SAT_CAPS` (aquí). Si cambia el rol, cambia
+ *  esta frase. */
+export const SAT_ROLE_NOTE =
+  "Taller: la Cola SAT completa (preparar, embalar, enviar, etiqueta y "
+  + "seguimiento) y los pedidos de muestra de punta a punta (darlos de alta, "
+  + "prepararlos, enviarlos, completarlos o anularlos). Ve la bandeja y la "
+  + "ficha de cualquier pedido, pero en un pedido normal solo mira. No cobra, "
+  + "no factura ni manda correos —salvo «Enviar a SAT», solo a la dirección "
+  + "del taller y sin factura— y no ve contactos, documentos, proformas ni "
+  + "ofertas.";
+
 /** Nota breve del ámbito del rol elegido, para el selector. */
 export function roleScopeNote(role: Role): string {
+  if (role === "sat") return SAT_ROLE_NOTE;
   return roleScope(role) === "erp"
     ? "Solo verá el ERP (pedidos, documentos, taller). No tendrá acceso a "
       + "contactos, emails ni marketing."

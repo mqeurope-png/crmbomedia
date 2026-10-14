@@ -996,8 +996,11 @@ _TRANSPORTE_YA_SALIO = frozenset({
 
 def _cobro_state(order: Order) -> str:
     """`cobrado` / `pendiente` / `na` (sin factura → no aplica). Lee el estado
-    CONTABLE ya persistido (`factusol_cobro_status`); NO toca FACTUSOL en vivo."""
-    if not order.factusol_invoice_number:
+    CONTABLE ya persistido (`factusol_cobro_status`); NO toca FACTUSOL en vivo.
+    Una muestra no se cobra: «no aplica» siempre, como su factura."""
+    from app.erp.sample_orders import is_sample_order  # noqa: PLC0415
+
+    if not order.factusol_invoice_number or is_sample_order(order):
         return "na"
     return "cobrado" if (order.factusol_cobro_status or "") == "cobrada" else "pendiente"
 

@@ -49,6 +49,29 @@ def require_capability(cap: str):
     return dependency
 
 
+def require_capabilities(*caps: str):
+    """Guard que exige TODAS las capacidades (p.ej. una acción de envío que
+    además manda un correo al cliente)."""
+
+    def dependency(current_user: User = Depends(get_current_user)) -> User:
+        if not all(has_capability(current_user, cap) for cap in caps):
+            raise forbidden()
+        return current_user
+
+    return dependency
+
+
+def require_any_capability(*caps: str):
+    """Guard que exige AL MENOS UNA de las capacidades."""
+
+    def dependency(current_user: User = Depends(get_current_user)) -> User:
+        if not any(has_capability(current_user, cap) for cap in caps):
+            raise forbidden()
+        return current_user
+
+    return dependency
+
+
 # --- guards por capacidad (los que usan los endpoints) ------------------------
 require_erp_view = require_capability(Cap.ACCESS)          # ver el ERP
 require_orders_create = require_capability(Cap.ORDERS_CREATE)
@@ -73,6 +96,13 @@ require_cuadre = require_capability(Cap.CUADRE)
 require_conciliacion = require_capability(Cap.CONCILIACION)
 require_config = require_capability(Cap.CONFIG)
 require_integraciones = require_capability(Cap.INTEGRACIONES)
+#: Cobros, facturas, documentos, proformas, ofertas y datos de clientes:
+#: todos los roles con ERP salvo el taller.
+require_office_view = require_capability(Cap.OFFICE_VIEW)
+#: Gestionar un pedido (completar, anular, resolver incidencias): la oficina,
+#: cualquiera; el taller, sus muestras. La comprobación por pedido la hace
+#: `can_manage_order` en el endpoint.
+require_order_manage = require_any_capability(Cap.ORDERS_CREATE, Cap.SAMPLES_CREATE)
 
 # --- legacy (respaldo): «edición de oficina» = quien puede crear pedidos
 # (admin, pedidos, comercial), seguro para multi-rol. Los endpoints sensibles

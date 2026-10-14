@@ -36,6 +36,7 @@ from app.erp.api.deps import (
     require_erp_admin,
     require_erp_edit,
     require_erp_view,
+    require_office_view,
 )
 from app.erp.factusol_albaran import MANUAL_SERIES, PaymentIn
 from app.models.crm import User
@@ -228,7 +229,7 @@ def list_factusol_documents(
     limit: int = Query(default=100, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_office_view),
 ) -> dict[str, Any]:
     """Listado EN VIVO de pedidos/presupuestos/albaranes/facturas de
     FACTUSOL, filtrable. Solo lectura — este endpoint no escribe nada.
@@ -470,7 +471,7 @@ def document_link_candidates(
     codigo: int,
     q: str | None = Query(default=None, max_length=64),
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_office_view),
 ) -> dict[str, Any]:
     """Pedidos de BoHub a los que podría vincularse el albarán / la factura
     (Lote 2 · PR-2). Solo lectura.
@@ -695,7 +696,7 @@ def link_document_to_order(
 def invoice_payment_status(
     job_id: str,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_office_view),
 ) -> dict[str, Any]:
     """Polling del job de marcado de cobro (mismo contrato: pending / finished
     (+result) / failed (+error))."""
@@ -707,7 +708,7 @@ def invoice_payment_status(
 def invoice_collection_status(
     job_id: str,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_office_view),
 ) -> dict[str, Any]:
     """Polling del job de registro de cobro (pending / finished (+result) /
     failed (+error))."""
@@ -722,7 +723,7 @@ def get_factusol_document(
     codigo: int,
     fresh_ciclo: bool = Query(default=False),
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_office_view),
 ) -> dict[str, Any]:
     """Detalle read-only de un documento con sus líneas. La clave es
     COMPUESTA (serie, código): el código solo es único por serie.
@@ -835,7 +836,7 @@ def download_document_pdf(
     currency: str = Query(default="EUR", pattern="^[A-Z]{3}$"),
     warehouse: int = Query(default=0, ge=0, le=20),
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_office_view),
 ) -> Response:
     """ERP-E4 — PDF del documento (A4), generado por BoHub: la API de DELSOL
     no imprime. Identidad fiscal = la de la EMPRESA de la serie del documento
@@ -981,7 +982,7 @@ def _factura_pdf_bytes(
 def download_facturas_pdf_zip(
     payload: InvoicePdfZipIn,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_office_view),
 ) -> Response:
     """ZIP con los PDF de varias facturas (selección múltiple), por serie+número.
     Mismo motor E4 que la descarga individual; solo lectura (no marca, no envía,
@@ -1509,7 +1510,7 @@ def factura_cobro_info(
     serie: int,
     codigo: int,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_office_view),
 ) -> dict[str, Any]:
     """Estado de cobro EN VIVO de UNA factura de FACTUSOL por serie+número, SIN
     pedido de BoHub: total, cobrado, saldo, ESTFAC, forma de pago, cuenta de
@@ -1678,7 +1679,7 @@ class ConvertDocumentPayload(BaseModel):
 def convert_document_status(
     job_id: str,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_office_view),
 ) -> dict[str, Any]:
     """Polling del job de conversión — mismo contrato que el de proformas:
     `pending` / `finished` (+result con el nº creado) / `failed` (+error)."""
@@ -1797,7 +1798,7 @@ def convert_factusol_document(
 @router.get("/formas-pago")
 def formas_pago(
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_office_view),
 ) -> dict[str, Any]:
     """Catálogo de formas de pago para el desplegable del modal de emisión.
     ERP-F5: se lee de **F_FPA** (`CODFPA` → `DESFPA`, 77 filas); F_FOP, la
@@ -1842,7 +1843,7 @@ def search_customers_endpoint(
     q: str = Query(..., min_length=1),
     by: str = Query(default="nif", pattern="^(nif|email|name|codcli)$"),
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_office_view),
 ) -> dict[str, Any]:
     """Busca clientes en F_CLI (NIF normalizado y tolerante ES/CIF, email
     exacto o nombre LIKE) y marca cuáles ya están vinculados a una
@@ -1969,7 +1970,7 @@ def pull_into_crm_endpoint(
 def customer_addresses_endpoint(
     codcli: str,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_office_view),
 ) -> dict[str, Any]:
     """Direcciones del cliente F_CLI: la principal (`codigo: 0`) más las
     adicionales configuradas (`ACO1CLI`…`ACO4CLI`) — las que el escritorio
@@ -1995,7 +1996,7 @@ def customer_addresses_endpoint(
 def customer_payment_method_endpoint(
     codcli: str,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_office_view),
 ) -> dict[str, Any]:
     """Forma de pago por defecto del cliente en FACTUSOL (`F_CLI.FPACLI`) con
     su nombre de F_FPA. Punto E: «Nueva proforma» y el modal de duplicar la
@@ -2436,7 +2437,7 @@ def _regime_context(session: Session, company_id: str):
 def regime_preview_endpoint(
     company_id: str = Query(min_length=1, max_length=36),
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_office_view),
 ) -> dict[str, Any]:
     """Régimen de IVA que le corresponde al cliente por el país + NIF-IVA del
     CRM, lo que codifica hoy su ficha F_CLI (`IFICLI`/`IVACLI`/`TIVCLI`/
@@ -2702,7 +2703,7 @@ def list_quotes_endpoint(
     # recientes, las antiguas (1-000014 entre 716 del año) no aparecían nunca.
     q: str | None = Query(default=None, max_length=120),
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_office_view),
 ) -> dict[str, Any]:
     """Proformas de una empresa del CRM (por su CODCLI vinculado).
 
@@ -2767,7 +2768,7 @@ def search_quotes_endpoint(
     days_back: int = Query(default=365, ge=0, le=1825),
     limit: int = Query(default=50, ge=1, le=200),
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_office_view),
 ) -> dict[str, Any]:
     """Busca proformas de **cualquier cliente** para usarlas como plantilla.
 
@@ -2861,7 +2862,7 @@ def get_quote_endpoint(
     codpre: str,
     serie: int | None = Query(default=None, ge=1, le=9),
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_office_view),
 ) -> dict[str, Any]:
     """Una proforma con su desglose real de F_LPS (`line_source: "F_LPS"`).
 

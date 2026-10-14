@@ -26,6 +26,8 @@ from app.erp.api.deps import (
     require_erp_approve,
     require_erp_edit,
     require_erp_view,
+    require_office_view,
+    require_order_manage,
     require_samples_create,
     require_sat_tracking,
 )
@@ -42,7 +44,13 @@ from app.erp.models import (
     StatusDomain,
 )
 from app.erp.order_documents import linked_documents, sample_pending_link
-from app.erp.sample_orders import born_as_sample
+from app.erp.sample_orders import (
+    ORDER_KIND_SAMPLE,
+    born_as_sample,
+    is_sample_order,
+    payment_not_required,
+    reject_if_sample,
+)
 from app.erp.state_machine import TransitionError, apply_transition, available_transitions
 from app.erp.woo_status import is_refunded
 from app.erp.workflow import order_workflow
@@ -884,7 +892,7 @@ def create_sample_order(
     Lo pueden crear Comercial, ERP Pedidos, ERP SAT y Admin — el taller también
     manda muestras, no solo las prepara."""
     from app.core.audit import record_event  # noqa: PLC0415
-    from app.erp.sample_orders import ORDER_KIND_SAMPLE, next_sample_number  # noqa: PLC0415
+    from app.erp.sample_orders import next_sample_number  # noqa: PLC0415
 
     number = next_sample_number(session)
     if session.scalar(select(Order.id).where(Order.order_number == number)):
@@ -1059,7 +1067,12 @@ def list_orders(
             placed_to + timedelta(days=1), time.min, tzinfo=UTC,
         ))
     if payment:
-        stmt = stmt.where(Order.payment_status == payment)
+        # Una muestra no se cobra: no sale en ningún filtro de pago (ni como
+        # «Pendiente», que es como nace).
+        stmt = stmt.where(
+            Order.payment_status == payment,
+            or_(Order.order_kind.is_(None), Order.order_kind != ORDER_KIND_SAMPLE),
+        )
     if cobro == "sin_comprobar":
         stmt = stmt.where(
             Order.factusol_invoice_number.isnot(None),
@@ -1145,7 +1158,8 @@ def list_orders(
     # (orden estable: dentro de cada grupo, el pedido). Antes del recorte, para
     # que los no pagados no dejen fuera a los pagados.
     if paid_first:
-        rows.sort(key=lambda o: not is_paid(o))
+        # Una muestra no espera cobro: va con los que pueden avanzar.
+        rows.sort(key=lambda o: not (is_paid(o) or payment_not_required(o)))
     rows = rows[:limit]
     names = customer_names(session, rows)
     # «Factura enviada» de la bandeja: fecha del último envío por email (dato ya
@@ -1536,6 +1550,7 @@ def record_order_payment(
     from app.erp.factusol_albaran import record_payment_intent  # noqa: PLC0415
 
     order = _get_order(session, order_id, current_user)
+    reject_if_sample(order)          # una muestra no se cobra
     resolved = _resolve_payment_or_400(session, payload.payment)
     if resolved is not None:
         record_payment_intent(session, order, resolved, actor_user_id=current_user.id)
@@ -1621,7 +1636,7 @@ def _resolve_factusol_customer(session: Session, order: Order) -> dict[str, Any]
 def order_factusol_customer(
     order_id: str,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_office_view),
 ) -> dict[str, Any]:
     """Cliente FACTUSOL (F_CLI) del pedido, resuelto por su CODCLI: la empresa
     CRM vinculada, o el CLIFAC de su factura, o el CLIALB de su albarán (el
@@ -1907,7 +1922,8 @@ def completion_avisos(order: Order) -> list[str]:
     Transporte esté «enviado» en BoHub (el envío puede tramitarse fuera) ni que
     haya factura; solo se avisa para que no sea por error."""
     avisos: list[str] = []
-    if not (
+    # Una muestra no se factura: «aún sin facturar» no es un aviso para ella.
+    if not is_sample_order(order) and not (
         _status_value(order.invoice_status) in _COMPLETION_INVOICED
         or order.factusol_invoice_number
     ):
@@ -1932,11 +1948,32 @@ def mark_order_completed(session: Session, order: Order, actor: User) -> bool:
     return False
 
 
+def _require_manage(user: User, order: Order) -> None:
+    """403 si `user` no puede gestionar ESTE pedido: el taller (14/10/2026)
+    lleva sus muestras de punta a punta, pero en un pedido normal mira y no
+    actúa (`can_manage_order`)."""
+    from app.erp.capabilities import can_manage_order  # noqa: PLC0415
+
+    if not can_manage_order(user, order):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, {
+            "code": "order_not_manageable",
+            "detail": "Solo puedes gestionar pedidos de muestra; este lo lleva la oficina.",
+        })
+
+
+def _is_office(user: User) -> bool:
+    """¿Es de oficina (`erp.orders.create`)? El taller gestiona muestras pero
+    no toca sus documentos de FACTUSOL (ni los mira, ni los borra)."""
+    from app.erp.capabilities import Cap, has_capability  # noqa: PLC0415
+
+    return has_capability(user, Cap.ORDERS_CREATE)
+
+
 @router.post("/{order_id}/complete")
 def complete_order(
     order_id: str,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_edit),
+    current_user: User = Depends(require_order_manage),
 ) -> dict[str, Any]:
     """«Marcar completado»: estado FINAL del pedido (ya facturado y enviado,
     aunque el envío se tramite fuera de BoHub). SOLO BoHub: no toca WooCommerce
@@ -1944,6 +1981,7 @@ def complete_order(
     idempotente: el ya completado conserva fecha y quién. Devuelve la ficha +
     `completion_avisos` (no bloqueantes)."""
     order = _get_order(session, order_id, current_user)
+    _require_manage(current_user, order)
     already = mark_order_completed(session, order, current_user)
     if not already:
         from app.core.audit import record_event  # noqa: PLC0415
@@ -1969,7 +2007,7 @@ class BulkCompleteIn(BaseModel):
 def bulk_complete_orders(
     payload: BulkCompleteIn,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_edit),
+    current_user: User = Depends(require_order_manage),
 ) -> dict[str, Any]:
     """«Completar seleccionados» de la bandeja: la MISMA lógica que
     `/complete` (`mark_order_completed`) aplicada a cada pedido seleccionado.
@@ -1992,6 +2030,13 @@ def bulk_complete_orders(
             order = session.get(Order, order_id)
             if order is None:
                 failed.append({"order_id": order_id, "error": "El pedido no existe."})
+                continue
+            from app.erp.capabilities import can_manage_order  # noqa: PLC0415
+
+            if not can_manage_order(current_user, order):
+                failed.append({"order_id": order_id, "error": (
+                    f"{order.order_number}: solo puedes completar pedidos de muestra."
+                )})
                 continue
             was_already = mark_order_completed(session, order, current_user)
             session.commit()
@@ -2148,7 +2193,7 @@ def _factusol_docs_for_cancel_safe(
 def cancel_order_preview(
     order_id: str,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_edit),
+    current_user: User = Depends(require_order_manage),
 ) -> dict[str, Any]:
     """Aviso previo a «Anular»: qué documentos FACTUSOL se DESVINCULARÁN
     (factura, albarán, proforma: siguen en FACTUSOL) y, en un pedido sin
@@ -2158,15 +2203,19 @@ def cancel_order_preview(
     from app.erp.order_cancel import cancel_blockers, is_invoiced_order  # noqa: PLC0415
     from app.erp.order_documents import cancel_warnings  # noqa: PLC0415
 
-    _ = current_user
     order = _get_order(session, order_id, current_user)
+    _require_manage(current_user, order)
     blockers = cancel_blockers(order)
+    if not _is_office(current_user) and cancel_warnings(order):
+        # Lo mismo que rechazará `/cancel`: que el modal lo diga antes.
+        blockers = [*blockers, "Este pedido tiene documentos de FACTUSOL: lo anula la oficina."]
     warnings: list[str] = []
     if order.cancelled_at is not None:
         warnings.append("El pedido ya está anulado.")
     docs: list[dict[str, Any]] = []
-    # Con factura no se borra nada en FACTUSOL: solo se desvincula.
-    if not blockers and not is_invoiced_order(order):
+    # Con factura no se borra nada en FACTUSOL: solo se desvincula. El taller
+    # no consulta FACTUSOL (una muestra no tiene documentos).
+    if not blockers and not is_invoiced_order(order) and _is_office(current_user):
         docs, _ejercicio = _factusol_docs_for_cancel_safe(session, order, warnings)
     return {
         "can_cancel": not blockers and order.cancelled_at is None,
@@ -2182,7 +2231,7 @@ def cancel_order(
     order_id: str,
     payload: CancelOrderIn,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_edit),
+    current_user: User = Depends(require_order_manage),
 ) -> dict[str, Any]:
     """«Anular pedido»: estado FINAL reversible, distinto de «quitar».
     Rev. 30/09/2026: se puede anular aunque tenga factura (web, manual o
@@ -2211,6 +2260,14 @@ def cancel_order(
             "detail": "Anular requiere confirmación explícita.",
         })
     order = _get_order(session, order_id, current_user)
+    _require_manage(current_user, order)
+    office = _is_office(current_user)
+    if not office and cancel_warnings(order):
+        # El taller anula muestras, no pedidos con documentos de FACTUSOL.
+        raise HTTPException(status.HTTP_403_FORBIDDEN, {
+            "code": "order_not_manageable",
+            "detail": "Este pedido tiene documentos de FACTUSOL: lo anula la oficina.",
+        })
     blockers = cancel_blockers(order)
     if blockers:
         raise HTTPException(status.HTTP_409_CONFLICT, {
@@ -2228,7 +2285,7 @@ def cancel_order(
     # Borrar en FACTUSOL solo en un pedido SIN factura y si se pide: con
     # factura, todo se desvincula y sigue allí. Se decide ANTES de
     # desvincular (el borrado localiza los documentos por el pedido).
-    if (payload.delete_factusol_docs and order.cancelled_at is None
+    if (payload.delete_factusol_docs and office and order.cancelled_at is None
             and not is_invoiced_order(order)):
         docs, ejercicio = _factusol_docs_for_cancel_safe(session, order, warnings)
         to_delete = [d for d in docs if d.get("deletable")]
@@ -2293,16 +2350,27 @@ def cancel_order(
 def uncancel_order(
     order_id: str,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_edit),
+    current_user: User = Depends(require_order_manage),
 ) -> dict[str, Any]:
     """«Restaurar»: revierte `/cancel` en BoHub (lo borrado en FACTUSOL no se
     recrea: se avisa) y vuelve a vincular los documentos que se desvincularon
     al anular, salvo los que ya tenga otro pedido. Idempotente."""
     from app.core.audit import record_event  # noqa: PLC0415
     from app.erp.order_cancel import UNCANCELLED_EVENT, unmark_cancelled  # noqa: PLC0415
-    from app.erp.order_documents import restore_after_uncancel  # noqa: PLC0415
+    from app.erp.order_documents import (  # noqa: PLC0415
+        CANCEL_UNLINKED_KEY,
+        packing_of,
+        restore_after_uncancel,
+    )
 
     order = _get_order(session, order_id, current_user)
+    _require_manage(current_user, order)
+    if not _is_office(current_user) and packing_of(order).get(CANCEL_UNLINKED_KEY):
+        # Restaurarlo volvería a vincular documentos de FACTUSOL: oficina.
+        raise HTTPException(status.HTTP_403_FORBIDDEN, {
+            "code": "order_not_manageable",
+            "detail": "Restaurarlo vuelve a vincular documentos de FACTUSOL: lo hace la oficina.",
+        })
     already = unmark_cancelled(session, order)
     relinked: dict[str, Any] = {"restored": [], "skipped": []}
     if not already:
@@ -2398,7 +2466,6 @@ def preview_link_document(
     tiene empresa en el CRM), líneas, base / IVA / total, serie y forma de
     pago; y si otro pedido ya lo tiene. Solo lectura (BoHub y FACTUSOL)."""
     from app.erp.order_documents import document_holder  # noqa: PLC0415
-    from app.erp.sample_orders import is_sample_order  # noqa: PLC0415
 
     order = _get_order(session, order_id, current_user)
     preview = _read_document_for_link(session, doc_type, serie, codigo)
@@ -2571,10 +2638,11 @@ def change_order_factusol_serie(
 def uncomplete_order(
     order_id: str,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_edit),
+    current_user: User = Depends(require_order_manage),
 ) -> dict[str, Any]:
     """«Desmarcar completado»: revierte `/complete`. Idempotente. Solo BoHub."""
     order = _get_order(session, order_id, current_user)
+    _require_manage(current_user, order)
     already = order.completed_at is None
     if not already:
         order.completed_at = None
@@ -2708,7 +2776,6 @@ def emit_factusol_invoice(
     """Encola la emisión REAL de la factura en FACTUSOL (cola serializada
     `factusol:writes`). Rechaza doble facturación. El cuerpo es opcional: sin
     él se emite con las opciones por defecto (tipo '1', fecha de hoy)."""
-    from app.erp.sample_orders import reject_if_sample  # noqa: PLC0415
 
     order = _get_order(session, order_id, current_user)
     # Una muestra no se factura (no pasa por FACTUSOL).
@@ -2765,7 +2832,7 @@ def _factusol_cobro_client(session: Session):  # noqa: ANN202
 def refresh_factusol_cobros(
     payload: CobrosRefreshIn,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_office_view),
 ) -> dict[str, Any]:
     """Comprueba EN VIVO el estado de cobro FACTUSOL (ESTFAC / saldo en F_LCO)
     de los pedidos con factura y lo deja persistido para la bandeja
@@ -2809,7 +2876,7 @@ def refresh_factusol_cobros(
 def order_factusol_cobro(
     order_id: str,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_office_view),
 ) -> dict[str, Any]:
     """Estado de cobro EN VIVO de la factura del pedido, para la ficha y el
     modal «Registrar cobro en FACTUSOL»: clave compuesta de la factura,
@@ -2993,7 +3060,7 @@ def correct_order_factusol_cobro(
 def factusol_status(
     order_id: str,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_office_view),
 ) -> dict[str, Any]:
     """Estado del pedido frente a FACTUSOL (C-2-fix2): ¿ya tiene factura o
     albarán? Consulta EN VIVO F_FAC (por REFFAC) y F_ALB (por REFALB). Si la
@@ -3006,6 +3073,10 @@ def factusol_status(
     if order.factusol_invoice_number:
         return {"status": "invoiced", "codfac": order.factusol_invoice_number,
                 "auto_linked": False}
+    if is_sample_order(order):
+        # Una muestra no se factura: ni se consulta FACTUSOL ni se le engancha
+        # una factura (eso la volvía medio facturable sin que nadie lo pidiera).
+        return {"status": "unknown", "reason": "order_is_sample"}
     inv = _status_value(order.invoice_status)
     if inv == InvoiceStatus.ALREADY_INVOICED_EXTERNALLY.value:
         return {"status": "already_invoiced_externally"}
@@ -3222,7 +3293,7 @@ def update_order_tracking(
 def order_factusol_invoice_ref(
     order_id: str,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_office_view),
 ) -> dict[str, Any]:
     """ERP-F1 — clave compuesta `{serie, codigo}` de la factura del pedido,
     para que la ficha / Seguimiento usen el MISMO flujo de PDF y de email que
@@ -3590,6 +3661,16 @@ def send_order_email_endpoint(
                 "ERP o escribe uno."
             ),
         })
+    from app.erp.order_email import taller_only_problem  # noqa: PLC0415
+
+    problem = taller_only_problem(
+        session, current_user, to=to, cc=cc, bcc=bcc,
+        include_factura=payload.include_factura,
+    )
+    if problem:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, {
+            "code": "taller_only", "detail": problem,
+        })
     # El alias: entre los permitidos del usuario o un remitente configurado en
     # Ajustes ERP verificado en Gmail (mismo criterio que la factura; no se
     # suplanta un alias ajeno).
@@ -3630,7 +3711,7 @@ def factusol_invoice_status(
     order_id: str,
     job_id: str | None = Query(default=None),
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_office_view),
 ) -> dict[str, Any]:
     """Estado de la facturación del pedido para el polling del frontend."""
     _ = current_user
@@ -3649,7 +3730,7 @@ def factusol_invoice_status(
 def factusol_pedido_check(
     order_id: str,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_office_view),
 ) -> dict[str, Any]:
     """«Volver a comprobar» tras «aún no está en FACTUSOL»: ¿ya se puede
     emitir la factura? Sigue el mismo camino que la emisión: con albarán,

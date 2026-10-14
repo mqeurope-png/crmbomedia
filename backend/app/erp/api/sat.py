@@ -485,6 +485,8 @@ def sat_items(session: Session, rows: list[Order]) -> list[dict[str, Any]]:
             "preparation_status": _prep(o),
             "transport_status": getattr(o.transport_status, "value", o.transport_status),
             "payment_status": getattr(o.payment_status, "value", o.payment_status),
+            # Una muestra no se cobra: la tarjeta no la marca «sin cobrar».
+            "order_kind": o.order_kind,
             "total_amount": float(o.total_amount or 0),
             "currency": o.currency,
             "lines": [
@@ -985,6 +987,8 @@ def sat_incidencias(
             "tracking_number": _clean(o.tracking_number),
             "store_slug": _store_slug(stores, o),
             "placed_at": _iso(o.placed_at),
+            # Muestra: el taller resuelve también sus incidencias de pedido.
+            "order_kind": o.order_kind,
         }
 
     items: list[dict[str, Any]] = []

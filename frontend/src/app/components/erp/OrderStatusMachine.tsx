@@ -7,6 +7,7 @@ import {
   type StatusDomain,
 } from "../../lib/erpApi";
 import { OrderStatusBadge } from "./OrderStatusBadge";
+import { isSampleOrder } from "./OrderStatusGrid";
 
 const DOMAINS: StatusDomain[] = ["payment", "preparation", "transport", "invoice"];
 
@@ -42,6 +43,8 @@ export function OrderStatusMachine({
     transport: order.transport_status,
     invoice: order.invoice_status,
   };
+  // Una muestra no se cobra ni se factura: esos dos estados «no aplican».
+  const fiscalNA = (d: StatusDomain) => isSampleOrder(order) && (d === "payment" || d === "invoice");
   return (
     <section className="erp-flow-states" aria-labelledby="erp-flow-states-title">
       <span className="erp-flow-states-title" id="erp-flow-states-title">
@@ -50,7 +53,11 @@ export function OrderStatusMachine({
       {DOMAINS.map((d) => (
         <div className="erp-flow-state" key={d}>
           <span className="erp-flow-state-dom">{DOMAIN_LABELS[d]}</span>
-          <OrderStatusBadge status={statusOf[d]} />
+          {fiscalNA(d) ? (
+            <span className="badge muted" title="Muestra / envío no facturable">No aplica</span>
+          ) : (
+            <OrderStatusBadge status={statusOf[d]} />
+          )}
           {order.available_transitions[d]?.filter(
             (t) => !(omit && omit.domain === d && omit.to_status === t.to_status)
               && !hide.some((h) => h.domain === d && h.to_status === t.to_status),

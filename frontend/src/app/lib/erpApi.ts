@@ -1614,6 +1614,8 @@ export type SatAlbaranSource = "factusol" | "file" | "woo";
 export type SatQueueItem = {
   id: string;
   order_number: string;
+  /** «sample» = muestra / envío no facturable: no se cobra ni lleva albarán. */
+  order_kind?: string | null;
   /** D-2: cliente visible en la card del taller. */
   contact_name: string | null;
   company_name: string | null;
@@ -1849,6 +1851,8 @@ export type SatIncidenciaRow = {
   tracking_number: string | null;
   store_slug: string | null;
   placed_at: string | null;
+  /** «sample» = muestra: el taller también la resuelve (14/10/2026). */
+  order_kind?: string | null;
 };
 
 export async function getSatIncidencias(
@@ -3542,6 +3546,9 @@ export type OrderEmailPreview = {
   defaults: { albaran: boolean; pedido: boolean; factura: boolean };
   /** Contactos de la empresa del pedido para el selector de destinatarios. */
   company_contacts?: EmailContact[];
+  /** Destinatarios fijos (la dirección del taller): quien no escribe a
+   *  clientes (el taller, 14/10/2026) solo manda el pedido al taller. */
+  recipients_locked?: boolean;
 };
 
 export type OrderEmailSendPayload = {

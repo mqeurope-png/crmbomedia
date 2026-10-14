@@ -46,7 +46,7 @@ export default function SatLayout({ children }: { children: ReactNode }) {
           {onOrderView ? (
             <Link href="/erp/sat" className="sat-topbar-back">← Volver a la Cola SAT</Link>
           ) : null}
-          {/* El rol «ERP · Taller (SAT)» no tiene CRM ni bandeja: vuelve al inicio
+          {/* El rol «ERP · Taller (SAT)» no tiene CRM: vuelve al inicio
               del ERP (la de «Hola, …» con los accesos). Los demás, como siempre. */}
           {user.role === "sat" ? (
             <Link href="/erp" className="sat-topbar-back">Volver al ERP</Link>

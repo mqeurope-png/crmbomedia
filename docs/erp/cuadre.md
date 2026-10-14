@@ -159,6 +159,8 @@ del pedido de BoHub.
      (`disabled`) ni de los envíos de Genei anteriores al aviso de BoHub (sin
      bloque `customer_email`, porque ya los avisó Genei).
    - Solo mira los envíos de los últimos N días (30 por defecto).
+   - No avisa de una **muestra sin email del destinatario** (un prospecto sin
+     correo): no hay a quién mandar el aviso (14/10/2026).
    - Enlaza a la Cola SAT → «Enviados», donde está «Enviar aviso».
 6. `envio_sin_entregar` — En tránsito desde hace más de N días (10 por
    defecto) sin entrega ni incidencia.
@@ -197,6 +199,8 @@ del pedido de BoHub.
    - El vínculo roto solo se juzga si el código cae **dentro del rango** de su
      serie en el ejercicio leído. Fuera del rango es de otro ejercicio y no se
      ha leído.
+   - Las **muestras** no se miran: no se facturan, así que ni les falta factura
+     ni pueden tenerla (14/10/2026).
 10. `factura_sin_enviar` (media) — Factura de hace más de N días (7 por
     defecto) sin enviar al cliente.
     - Cuenta como enviada el evento `erp.invoice_emailed` o «Factura enviada»

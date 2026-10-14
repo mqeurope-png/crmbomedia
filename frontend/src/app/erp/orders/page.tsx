@@ -68,9 +68,11 @@ const QUEUE_ORDER: Record<WorkflowQueue, number> = Object.fromEntries(
   WORKFLOW_QUEUES.map((q, i) => [q, i]),
 ) as Record<WorkflowQueue, number>;
 
-/** ¿Pagado (o crédito aprobado)? Los que no, van detrás dentro de la cola. */
+/** ¿Pagado (o crédito aprobado)? Los que no, van detrás dentro de la cola.
+ *  Una muestra no se cobra: nunca espera un pago, cuenta como «al día». */
 function isPagado(o: OrderSummary): boolean {
-  return o.payment_status === "paid" || o.payment_status === "credit_approved";
+  return isSampleOrder(o)
+    || o.payment_status === "paid" || o.payment_status === "credit_approved";
 }
 
 /** Orden de la bandeja (Tarjetas y Lista comparten la misma lista ya
@@ -337,6 +339,10 @@ function ErpOrdersScreen() {
   // llegan al Comercial: el backend los filtra de la lista.
   const canEdit = can(user, Cap.ORDERS_CREATE);
   const canCobro = can(user, Cap.COBRO_REGISTER);
+  // El taller (SAT, 14/10/2026) lleva sus MUESTRAS de punta a punta; en un
+  // pedido normal mira y no actúa. Espejo de `can_manage_order` del backend.
+  const canSamples = can(user, Cap.SAMPLES_CREATE);
+  const canManage = (o: OrderSummary) => canEdit || (canSamples && isSampleOrder(o));
   // En «Ver anulados» no hay acciones de bloque (se reactivan desde la ficha).
   const selectable = canEdit && !showCancelled;
   // Vista lista: el Nº es la última columna fija por la izquierda (tras la casilla).
@@ -595,7 +601,8 @@ function ErpOrdersScreen() {
   // WooCommerce.
   async function onToggleComplete(o: OrderSummary) {
     if (
-      !o.completed && !isInvoiced(o)
+      // Una muestra no se factura: completarla no merece el aviso.
+      !o.completed && !isInvoiced(o) && !isSampleOrder(o)
       && !window.confirm(`${o.order_number} aún no está facturado. ¿Marcarlo completado igualmente?`)
     ) {
       return;
@@ -775,7 +782,9 @@ function ErpOrdersScreen() {
    *  MISMO en tarjetas y en la vista lista. */
   function primaryAction(o: OrderSummary): ReactNode {
     const wf = o.workflow;
-    if (!wf || wf.next_action === "ninguna") {
+    // Quien no puede actuar sobre este pedido no ve «Emitir factura» ni
+    // «Registrar cobro» como botón: solo abrir la ficha.
+    if (!wf || wf.next_action === "ninguna" || !canManage(o)) {
       return (
         <Link href={fichaHref(o)} className="button small secondary">
           Abrir
@@ -805,7 +814,7 @@ function ErpOrdersScreen() {
         </button>
       );
     }
-    if (canEdit && wf.next_action === "marcar_completado") {
+    if (canManage(o) && wf.next_action === "marcar_completado") {
       return (
         <button
           type="button" className="button small" disabled={busy}
@@ -921,7 +930,9 @@ function ErpOrdersScreen() {
     const wf = o.workflow;
     return (
       <>
-        {o.payment_status !== "paid" ? <OrderStatusBadge status={o.payment_status} /> : null}
+        {o.payment_status !== "paid" && !isSampleOrder(o) ? (
+          <OrderStatusBadge status={o.payment_status} />
+        ) : null}
         {o.factusol_invoice_number && o.factusol_cobro_status !== "cobrada" ? (
           <CobroFactusolBadge
             hasInvoice
@@ -1019,9 +1030,11 @@ function ErpOrdersScreen() {
         crumbs={[{ label: "ERP" }, { label: "Pedidos" }]}
         actions={
           <>
-            <Link href="/erp/orders/new" className="button small">
-              + Nuevo pedido manual
-            </Link>
+            {canEdit ? (
+              <Link href="/erp/orders/new" className="button small">
+                + Nuevo pedido manual
+              </Link>
+            ) : null}
             {/* Muestra / envío no facturable: alta propia y corta (sin empresa
                 ni FACTUSOL). También la crea el taller, no solo la oficina. */}
             {can(user, Cap.SAMPLES_CREATE) ? (
@@ -1112,13 +1125,15 @@ function ErpOrdersScreen() {
         >
           {filtros.sortDir === "desc" ? "↓ desc" : "↑ asc"}
         </button>
-        <button
-          type="button" className="button small secondary" disabled={busy || refreshingCobros || loading}
-          title="Comprueba en FACTUSOL (solo lectura) el estado de cobro de los pedidos con factura y lo deja guardado en cada fila"
-          onClick={() => void onRefreshCobros()}
-        >
-          {refreshingCobros ? "Comprobando cobros…" : "Actualizar cobros FACTUSOL"}
-        </button>
+        {can(user, Cap.OFFICE_VIEW) ? (
+          <button
+            type="button" className="button small secondary" disabled={busy || refreshingCobros || loading}
+            title="Comprueba en FACTUSOL (solo lectura) el estado de cobro de los pedidos con factura y lo deja guardado en cada fila"
+            onClick={() => void onRefreshCobros()}
+          >
+            {refreshingCobros ? "Comprobando cobros…" : "Actualizar cobros FACTUSOL"}
+          </button>
+        ) : null}
         <label className="checkbox-inline" style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <input
             type="checkbox"

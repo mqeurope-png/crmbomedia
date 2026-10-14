@@ -57,11 +57,11 @@ describe("resolveVisibleNav — menú por ámbito de rol", () => {
     expect(l.every((label) => label.startsWith("ERP · "))).toBe(true);
   });
 
-  it("SAT (solo-ERP) ve su taller, no el CRM", () => {
+  it("SAT (solo-ERP) ve su taller y los pedidos, no el CRM", () => {
     const l = labels("sat", "erp");
     expect(l).toContain("ERP · Taller (SAT)");
+    expect(l).toContain("ERP · Pedidos");
     expect(l).not.toContain("Contactos");
-    expect(l).not.toContain("ERP · Pedidos"); // su rol no lo permite
   });
 
   it("el admin en modo CRM ve CRM y ERP; en modo ERP solo ERP", () => {
@@ -79,5 +79,33 @@ describe("resolveVisibleNav — menú por ámbito de rol", () => {
     expect(l).toContain("ERP · Pedidos");
     // pero no lo que su rol no permite.
     expect(l).not.toContain("Usuarios");
+  });
+});
+
+describe("El taller (SAT) — 14/10/2026", () => {
+  it("ve solo Cola SAT y Pedidos, en los dos modos", () => {
+    expect(labels("sat", "erp").sort()).toEqual(["ERP · Pedidos", "ERP · Taller (SAT)"]);
+    // En modo CRM no hay nada más: el CRM es público pero el SAT vive en ERP
+    // (appMode lo fuerza); aun así, ninguna entrada de ERP extra.
+    expect(labels("sat", "crm").filter((l) => l.startsWith("ERP · ")).sort())
+      .toEqual(["ERP · Pedidos", "ERP · Taller (SAT)"]);
+  });
+
+  it("dentro de Pedidos, solo la Bandeja (Excepciones es de oficina)", () => {
+    const pedidos = resolveVisibleNav(user("sat"), "erp").find((i) => i.label === "ERP · Pedidos");
+    expect(pedidos?.children?.map((c) => c.label)).toEqual(["Bandeja"]);
+    const oficina = resolveVisibleNav(user("pedidos"), "erp").find((i) => i.label === "ERP · Pedidos");
+    expect(oficina?.children?.map((c) => c.label)).toEqual(["Bandeja", "Excepciones"]);
+  });
+
+  it("la capacidad sale del rol SAT, sin roles adicionales; y los añadidos suman", () => {
+    const solo = { ...user("sat"), erp_roles: [] } as User;
+    expect(resolveVisibleNav(solo, "erp").map((i) => i.label)).toContain("ERP · Pedidos");
+    const conPedidos = { ...user("sat"), erp_roles: ["pedidos"] } as User;
+    expect(resolveVisibleNav(conPedidos, "erp").map((i) => i.label)).toContain("ERP · Documentos");
+  });
+
+  it("el viewer (sin ERP) sigue sin ver Pedidos", () => {
+    expect(labels("viewer", "crm")).not.toContain("ERP · Pedidos");
   });
 });

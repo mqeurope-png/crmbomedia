@@ -12,9 +12,14 @@ Roles operativos del ERP:
     conciliación. En la Cola SAT solo ve y sube etiqueta.
   - `pedidos`     — ERP Pedidos: todo en pedidos (web y no web) + Cola SAT
     completa + cobros FACTUSOL + seguimiento. No config/integ/conciliación.
-  - `sat`         — taller: Cola SAT (preparación/embalado) + envío completo
-    (etiqueta/tracking/nº serie/WhiteRIP) + enviar al SAT por email. No
-    factura/cobra/crea pedidos; ve pedidos (incl. web) en solo lectura.
+  - `sat`         — taller (14/10/2026): la Cola SAT completa (preparación,
+    embalado, envío, etiqueta, tracking) y los pedidos de MUESTRA de punta a
+    punta (darlos de alta, completarlos, anularlos, resolver sus incidencias).
+    Ve la bandeja y la ficha de cualquier pedido, pero en un pedido normal
+    mira y no actúa. NO cobra, NO factura (ni descarga facturas), NO manda
+    correos —salvo «enviar al taller por email», solo a la dirección del
+    taller y sin factura— y NO ve contactos, documentos, proformas ni ofertas
+    (no tiene `erp.office.view`).
   - `admin`       — acceso total + asignar roles.
 
 Reconciliación con lo anterior (documentado en el PR): antes solo había guards
@@ -56,6 +61,10 @@ class Cap:
     CONCILIACION = "erp.conciliacion"        # conciliación bancaria
     CONFIG = "erp.config"                    # configuración ERP
     INTEGRACIONES = "erp.integraciones"      # integraciones (Woo, etc.)
+    #: Lo de oficina que no es del taller: estado de cobro y facturas (y sus
+    #: PDF), documentos FACTUSOL, proformas, ofertas y datos de clientes. Lo
+    #: tienen todos los roles con ERP MENOS `sat` (14/10/2026).
+    OFFICE_VIEW = "erp.office.view"
     ROLES_ASSIGN = "admin.roles"             # asignar roles a usuarios
 
 
@@ -70,7 +79,7 @@ _COMERCIAL_CAPS: frozenset[str] = frozenset({
     Cap.ACCESS, Cap.ORDERS_CREATE, Cap.ORDERS_APPROVE, Cap.ORDERS_CANCEL,
     Cap.ALBARAN_CREATE, Cap.INVOICE_EMIT, Cap.EMAIL_SAT, Cap.EMAIL_CLIENT,
     Cap.PROFORMAS, Cap.DOCUMENTS, Cap.COMPANIES, Cap.SAT_VIEW, Cap.SAT_SHIPPING,
-    Cap.SAMPLES_CREATE,
+    Cap.SAMPLES_CREATE, Cap.OFFICE_VIEW,
 })
 #: ERP Pedidos = comercial + web + cobro + Cola SAT completa + seguimiento.
 _PEDIDOS_CAPS: frozenset[str] = _COMERCIAL_CAPS | frozenset({
@@ -80,6 +89,7 @@ _PEDIDOS_CAPS: frozenset[str] = _COMERCIAL_CAPS | frozenset({
 #: ERP SAT = taller + envío/técnicos + enviar al SAT + ver pedidos (incl. web).
 #: El taller también DA DE ALTA muestras (además de prepararlas y enviarlas):
 #: una muestra no es facturable, así que crearla no requiere ser «oficina».
+#: Sin `OFFICE_VIEW`: ni cobros, ni facturas, ni documentos, ni clientes.
 _SAT_CAPS: frozenset[str] = frozenset({
     Cap.ACCESS, Cap.ORDERS_VIEW_WEB, Cap.SAT_VIEW, Cap.SAT_PREPARE,
     Cap.SAT_SHIPPING, Cap.SAT_TRACKING, Cap.SAT_NO_SHIPPING, Cap.EMAIL_SAT,
@@ -87,7 +97,7 @@ _SAT_CAPS: frozenset[str] = frozenset({
 })
 #: Legacy `user`: solo lectura del ERP (sin edición). Reasignar a `comercial`.
 _USER_CAPS: frozenset[str] = frozenset({
-    Cap.ACCESS, Cap.ORDERS_VIEW_WEB, Cap.SAT_VIEW,
+    Cap.ACCESS, Cap.ORDERS_VIEW_WEB, Cap.SAT_VIEW, Cap.OFFICE_VIEW,
 })
 
 #: Rol → capacidades. `admin` va aparte (ALL_CAPS).
@@ -159,3 +169,15 @@ def has_capability(user: Any, cap: str) -> bool:
 def can_view_web_orders(user: Any) -> bool:
     """¿Puede ver pedidos de origen web? (Los que no, no ven ni tocan web.)"""
     return has_capability(user, Cap.ORDERS_VIEW_WEB)
+
+
+def can_manage_order(user: Any, order: Any) -> bool:
+    """¿Puede gestionar ESTE pedido (completarlo, anularlo, resolver sus
+    incidencias)? La oficina (`erp.orders.create`), cualquiera; quien solo da
+    de alta muestras (el taller), únicamente las muestras: las lleva de punta
+    a punta, y en un pedido normal mira pero no actúa (14/10/2026)."""
+    if has_capability(user, Cap.ORDERS_CREATE):
+        return True
+    from app.erp.sample_orders import is_sample_order  # noqa: PLC0415
+
+    return is_sample_order(order) and has_capability(user, Cap.SAMPLES_CREATE)

@@ -208,6 +208,9 @@ function orderLinesToProformaLines(lines: OrderLine[]): DocumentLine[] {
   return rows.length > 0 ? rows : [emptyDocumentLine()];
 }
 
+/** Cola SAT → «Incidencias»: donde el taller resuelve las de sus muestras. */
+const SAT_INCIDENCIAS = "/erp/sat?tab=incidencias";
+
 /** `useSearchParams` exige Suspense en el app router (`?from=`). */
 export default function ErpOrderDetailPage() {
   return (
@@ -283,6 +286,8 @@ function ErpOrderDetailScreen() {
   const [cobroLive, setCobroLive] = useState<OrderCobroInfo | null>(null);
   const [cobroOpen, setCobroOpen] = useState(false);
   const [anularCobroOpen, setAnularCobroOpen] = useState(false);
+  // Sube en cada `load()`: vuelve a pedir el cobro y el estado FACTUSOL.
+  const [officeTick, setOfficeTick] = useState(0);
 
   const load = useCallback(() => {
     getOrder(id)
@@ -290,28 +295,12 @@ function ErpOrderDetailScreen() {
         setOrder(o);
         // E4-fix1: el idioma del PDF arranca en el del pedido si se conoce.
         if (o.language) setPdfLang(o.language as FactusolPdfLang);
-        // Cobro FACTUSOL en vivo solo si hay factura (best-effort: sin
-        // FACTUSOL se queda el estado persistido del pedido).
-        if (o.factusol_invoice_number) {
-          Promise.resolve()
-            .then(() => getOrderFactusolCobro(o.id))
-            .then(setCobroLive)
-            .catch(() => undefined);
-        }
       })
       .catch((e) => setError(extractErrorMessage(e, "No se pudo cargar el pedido.")));
     getOrderTimeline(id).then((r) => setTimeline(r.items)).catch(() => undefined);
-    // C-2-fix2: consulta en vivo si ya hay factura/albarán en FACTUSOL. Si el
-    // backend auto-vincula una factura existente, releemos el pedido para que
-    // el badge de facturación quede al día.
-    getFactusolStatus(id)
-      .then((st) => {
-        setFactusolStatus(st);
-        if (st.status === "invoiced") {
-          getOrder(id).then(setOrder).catch(() => undefined);
-        }
-      })
-      .catch(() => setFactusolStatus(null));
+    // Cobro y facturación EN VIVO (FACTUSOL): los pide el efecto de abajo,
+    // que sabe si el usuario es de oficina.
+    setOfficeTick((n) => n + 1);
   }, [id]);
 
   useEffect(() => {
@@ -338,6 +327,44 @@ function ErpOrderDetailScreen() {
   const canSat = can(user, Cap.SAT_VIEW);
   // Fotos del embalaje: las sube quien gestiona envíos (como en la Cola SAT).
   const canShipFotos = can(user, Cap.SAT_SHIPPING);
+  // El taller (SAT, 14/10/2026): sin `erp.office.view` no ve cobros, facturas
+  // ni datos de cliente; manda el pedido al taller por email pero no escribe
+  // a clientes; y gestiona solo sus MUESTRAS (en un pedido normal mira y no
+  // actúa). Espejo de `can_manage_order` del backend.
+  const canOffice = can(user, Cap.OFFICE_VIEW);
+  const canEmailClient = can(user, Cap.EMAIL_CLIENT);
+  const canEmailSat = can(user, Cap.EMAIL_SAT);
+  const canManage = canEditOrder || (esMuestra && can(user, Cap.SAMPLES_CREATE));
+  // «Marcar completado»: la oficina en un pedido normal; en una muestra,
+  // quien la lleva (también el taller).
+  const canComplete = esMuestra ? canManage : canEmit;
+
+  // Cobro FACTUSOL en vivo (solo con factura) y estado de la facturación:
+  // datos de oficina. El taller no los pide (le darían 403); se piden con el
+  // usuario y el pedido ya cargados, y otra vez en cada `load()`.
+  const orderId = order?.id ?? null;
+  const orderHasInvoice = !!order?.factusol_invoice_number;
+  useEffect(() => {
+    if (!orderId || !canOffice) return;
+    if (orderHasInvoice) {
+      // Best-effort: sin FACTUSOL se queda el estado persistido del pedido.
+      Promise.resolve()
+        .then(() => getOrderFactusolCobro(orderId))
+        .then(setCobroLive)
+        .catch(() => undefined);
+    }
+    // C-2-fix2: consulta en vivo si ya hay factura/albarán en FACTUSOL. Si el
+    // backend auto-vincula una factura existente, releemos el pedido para que
+    // el badge de facturación quede al día.
+    getFactusolStatus(orderId)
+      .then((st) => {
+        setFactusolStatus(st);
+        if (st.status === "invoiced") {
+          getOrder(orderId).then(setOrder).catch(() => undefined);
+        }
+      })
+      .catch(() => setFactusolStatus(null));
+  }, [orderId, orderHasInvoice, canOffice, officeTick]);
   // Señal para abrir el modal de emisión desde «Siguiente paso» / «Solicitar
   // factura», y fase de la emisión (para no ofrecer dos veces «Emitir»).
   const [emitSignal, setEmitSignal] = useState(0);
@@ -392,7 +419,8 @@ function ErpOrderDetailScreen() {
   async function onToggleComplete() {
     if (!order) return;
     if (
-      !order.completed && !isInvoiced(order)
+      // Una muestra no se factura: completarla no merece el aviso.
+      !order.completed && !isInvoiced(order) && !esMuestra
       && !window.confirm("Este pedido aún no está facturado. ¿Marcarlo completado igualmente?")
     ) {
       return;
@@ -549,7 +577,7 @@ function ErpOrderDetailScreen() {
         ) : null;
       }
       case "marcar_completado":
-        return canEmit ? (
+        return canComplete ? (
           <button type="button" className="button small" disabled={completeBusy}
                   onClick={() => void onToggleComplete()}>
             {label}
@@ -564,7 +592,7 @@ function ErpOrderDetailScreen() {
       case "enviar_sat":
         // El «Enviar a SAT» de la cabecera se esconde: es este. Enviar el
         // correo al taller mete el pedido en la Cola SAT (idempotente).
-        return canEmit ? (
+        return canEmailSat ? (
           <button type="button" className="button small" onClick={() => setOrderEmailOpen(true)}>
             Enviar a SAT
           </button>
@@ -575,19 +603,25 @@ function ErpOrderDetailScreen() {
                   onClick={() => void onApprove()}>
             {label}
           </button>
-        ) : (
+        ) : !canOffice ? null : (
           <Link href="/erp/orders/pending-approval" className="button small">
             Ir a la Cola PEDIDOS
           </Link>
         );
       case "vincular_empresa":
-        return order.company_id ? (
+        return order.company_id && canOffice ? (
           <Link href={`/companies/${order.company_id}`} className="button small">
             Abrir ficha de empresa
           </Link>
         ) : null;
       case "revisar_incidencia":
-        return <Link href="/erp/exceptions" className="button small">Ver excepciones</Link>;
+        // El taller resuelve las incidencias de sus muestras en la Cola SAT
+        // (pestaña «Incidencias»); la bandeja de excepciones es de oficina.
+        return canOffice
+          ? <Link href="/erp/exceptions" className="button small">Ver excepciones</Link>
+          : canManage
+            ? <Link href={SAT_INCIDENCIAS} className="button small">Ir a Incidencias (Cola SAT)</Link>
+            : null;
       default:
         return null;
     }
@@ -597,6 +631,13 @@ function ErpOrderDetailScreen() {
    *  esto lleva a dónde se arregla). */
   function alertAction(a: WorkflowAlert): ReactNode {
     if (!order) return null;
+    // Ficha de empresa y bandeja de excepciones: pantallas de oficina. El
+    // taller, en sus muestras, resuelve la incidencia en la Cola SAT.
+    if (!canOffice) {
+      return a.code === "excepcion_abierta" && canManage
+        ? <Link href={SAT_INCIDENCIAS} className="button small secondary">Ir a Incidencias (Cola SAT)</Link>
+        : null;
+    }
     if (
       a.code === "empresa_sin_vincular" || a.code === "cliente_intracomunitario"
       || a.code === "cliente_exportacion" || a.code === "vat_no_valido_vies"
@@ -697,7 +738,7 @@ function ErpOrderDetailScreen() {
         title={`Pedido ${order.order_number}`}
         // El cliente, al nivel del título (empresa · persona) y enlazado a su
         // ficha: se lee antes que el número de pedido.
-        subtitle={order.company_id ? (
+        subtitle={order.company_id && canOffice ? (
           <Link href={`/companies/${order.company_id}`} className="erp-ficha-customer-name"
                 title="Abrir la ficha del cliente">
             {customerHeadline(order) || "Sin cliente"}
@@ -757,7 +798,9 @@ function ErpOrderDetailScreen() {
             </button>
             {/* Bloque 2a: el PDF de la FACTURA desde la ficha (además del
                 pedido y del albarán). Se localiza la factura del pedido en
-                FACTUSOL y se descarga en el idioma elegido. */}
+                FACTUSOL y se descarga en el idioma elegido. Papel de oficina:
+                el taller no lo ve. */}
+            {canOffice ? (
             <button
               type="button"
               className="button small secondary"
@@ -783,6 +826,7 @@ function ErpOrderDetailScreen() {
             >
               {invoicePdfBusy ? "Generando…" : "PDF de la factura"}
             </button>
+            ) : null}
             {/* E3 — «PDF del albarán» en la cabecera, junto al del pedido y la
                 factura, cuando el pedido ya tiene albarán en FACTUSOL. */}
             {order.factusol_albaran_number ? (
@@ -793,20 +837,23 @@ function ErpOrderDetailScreen() {
                 onError={setError}
               />
             ) : null}
-            {canEmit ? (
+            {/* ERP · enviar el PEDIDO al SAT / taller (y a quien haga falta)
+                con el albarán adjunto por defecto. El taller también («enviar
+                al taller por email», 14/10/2026), pero solo a la dirección del
+                taller y sin factura. Una muestra no tiene albarán ni PDF que
+                mandar. */}
+            {canEmailSat && !esMuestra && wf?.next_action !== "enviar_sat" ? (
+              <button
+                type="button"
+                className="button small secondary"
+                title="Envía el pedido al taller (SAT) por email (Gmail) con el albarán adjunto y lo mete en la Cola SAT; el PDF del pedido y la factura son opcionales"
+                onClick={() => setOrderEmailOpen(true)}
+              >
+                Enviar a SAT
+              </button>
+            ) : null}
+            {canEmit && canEmailClient ? (
               <>
-                {/* ERP · enviar el PEDIDO al SAT / taller (y a quien haga
-                    falta) con el albarán adjunto por defecto. */}
-                {wf?.next_action === "enviar_sat" ? null : (
-                  <button
-                    type="button"
-                    className="button small secondary"
-                    title="Envía el pedido al taller (SAT) por email (Gmail) con el albarán adjunto y lo mete en la Cola SAT; el PDF del pedido y la factura son opcionales"
-                    onClick={() => setOrderEmailOpen(true)}
-                  >
-                    Enviar a SAT
-                  </button>
-                )}
                 {/* «Enviar factura al cliente»: la factura de FACTUSOL en PDF,
                     desde el alias de la TIENDA del pedido (o de la serie), en
                     el idioma del pedido/cliente, con previsualización
@@ -823,6 +870,10 @@ function ErpOrderDetailScreen() {
                 >
                   {emailBusy ? "Localizando…" : "Enviar factura al cliente"}
                 </button>
+              </>
+            ) : null}
+            {canComplete ? (
+              <>
                 {/* «Marcar completado»: estado final del pedido, solo en BoHub.
                     Si ya es el «Siguiente paso», el botón está allí (no se repite). */}
                 {wf?.next_action === "marcar_completado" ? null : (
@@ -842,11 +893,12 @@ function ErpOrderDetailScreen() {
                 )}
               </>
             ) : null}
-            {canEmit || (esMuestra && canEditOrder) ? (
+            {canEmit || (esMuestra && canManage) ? (
                 <ActionsMenu label="Más acciones del pedido">
                   {/* E4-fix1 — idioma del pedido: dato persistente (detectado
                       en la importación Woo) editable a mano; alimenta la
-                      cascada de los PDF. */}
+                      cascada de los PDF. Edición de oficina. */}
+                  {canEditOrder ? (
                   <label className="erp-flow-menu-field">
                     <span>Idioma del pedido</span>
                     <select
@@ -872,6 +924,7 @@ function ErpOrderDetailScreen() {
                       ))}
                     </select>
                   </label>
+                  ) : null}
                   {/* «No requiere envío»: el pedido NO se envía (recogida en
                       tienda, licencia, servicio…). Sale de los pendientes de la
                       Cola SAT y pasa a «Sin envío» (nunca a «Enviados»); no
@@ -921,7 +974,9 @@ function ErpOrderDetailScreen() {
                       >
                         Restaurar pedido
                       </button>
-                    ) : (
+                    ) : canEditOrder || (order.linked_documents ?? []).length === 0 ? (
+                      // El taller anula muestras sin documentos de FACTUSOL;
+                      // con documentos, lo hace la oficina (el backend igual).
                       <button
                         type="button"
                         className="button small danger"
@@ -930,7 +985,7 @@ function ErpOrderDetailScreen() {
                       >
                         Anular pedido
                       </button>
-                    )
+                    ) : null
                   )}
                   {esMuestra && canEditOrder && !order.cancelled ? (
                     <button
@@ -1120,7 +1175,8 @@ function ErpOrderDetailScreen() {
               const enviada = s.key === "factura_enviada" ? (
                 <InvoiceEmailedHito
                   order={order} hasInvoice={hasInvoice}
-                  emailBusy={emailBusy} onSend={openInvoiceEmail}
+                  emailBusy={emailBusy}
+                  onSend={canEmit && canEmailClient ? openInvoiceEmail : undefined}
                 />
               ) : null;
               if (!nowBar && !enviada) return null;
@@ -1162,7 +1218,11 @@ function ErpOrderDetailScreen() {
               </li>
             ))}
           </ul>
-          <Link href="/erp/exceptions" className="link-button small">Ver bandeja de excepciones</Link>
+          {canOffice ? (
+            <Link href="/erp/exceptions" className="link-button small">Ver bandeja de excepciones</Link>
+          ) : canManage ? (
+            <Link href={SAT_INCIDENCIAS} className="link-button small">Resolver en la Cola SAT (Incidencias)</Link>
+          ) : null}
         </section>
       ) : null}
 
@@ -1281,6 +1341,7 @@ function ErpOrderDetailScreen() {
             key={`${order.transport_status}|${order.tracking_number ?? ""}`}
             orderId={order.id}
             canManage={canSat || canEmit}
+            canNotify={canEmailClient}
             onChanged={() => load()}
           />
         </div>
@@ -1335,7 +1396,7 @@ function ErpOrderDetailScreen() {
             <span className="v">
               {/* F2 — nombre del cliente + enlace a su ficha; el nº de FACTUSOL
                   queda como detalle, no como único dato. */}
-              {order.company_id ? (
+              {order.company_id && canOffice ? (
                 <Link href={`/companies/${order.company_id}`}>
                   {wf?.company?.name || order.company_name || customerLabel(order) || "cliente"}
                 </Link>
@@ -1498,7 +1559,7 @@ function ErpOrderDetailScreen() {
             mismo panel de la ficha de empresa (ver el nº F_CLI, «Traer datos»,
             completar el NIF que falte…) resuelto por `company_id`. Sin empresa
             vinculada (raro) avisa discreto; nunca inventa datos del cliente. */}
-        {isWeb ? (
+        {isWeb && canOffice ? (
           <OrderFactusolClientPanel
             orderId={order.id}
             companyId={order.company_id}
@@ -1643,7 +1704,9 @@ function ErpOrderDetailScreen() {
           orderNumber={order.order_number}
           onClose={() => setOrderEmailOpen(false)}
           onSent={() => load()}
-          onCreateAlbaran={() => { setOrderEmailOpen(false); setAlbaranSignal((n) => n + 1); }}
+          onCreateAlbaran={canEmit
+            ? () => { setOrderEmailOpen(false); setAlbaranSignal((n) => n + 1); }
+            : undefined}
         />
       ) : null}
       {embalarOpen ? (
@@ -1681,7 +1744,8 @@ function InvoiceEmailedHito({
   order: OrderDetail;
   hasInvoice: boolean;
   emailBusy: boolean;
-  onSend: () => void;
+  /** Sin él (quien no manda facturas al cliente) no hay botón. */
+  onSend?: () => void;
 }) {
   const at = order.invoice_emailed_at ?? null;
   const to = order.invoice_emailed_to ?? [];
@@ -1705,14 +1769,16 @@ function InvoiceEmailedHito({
   return (
     <div className="erp-flow-emailed is-unsent">
       <span>Factura sin enviar al cliente</span>
-      <button
-        type="button"
-        className="button small secondary"
-        disabled={emailBusy}
-        onClick={() => void onSend()}
-      >
-        {emailBusy ? "Localizando…" : "Enviar factura al cliente"}
-      </button>
+      {onSend ? (
+        <button
+          type="button"
+          className="button small secondary"
+          disabled={emailBusy}
+          onClick={() => void onSend()}
+        >
+          {emailBusy ? "Localizando…" : "Enviar factura al cliente"}
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -1792,7 +1858,9 @@ function EconomicSummary({
   const pago = order.factusol_payment ?? null;
   const eur = (n: number) => `${n.toFixed(2)} ${order.currency}`;
   const cobrada = cobroStatus === "cobrada";
-  const cobroTone = !hasInvoice ? "na" : cobrada ? "done" : "pending";
+  // Una muestra no se cobra (14/10/2026): nada queda «pendiente de cobro».
+  const muestra = isSampleOrder(order);
+  const cobroTone = muestra || !hasInvoice ? "na" : cobrada ? "done" : "pending";
   const pendiente = !hasInvoice
     ? null
     : saldoPendiente ?? (cobrada ? 0 : null);
@@ -1871,9 +1939,13 @@ function EconomicSummary({
         aria-label="Pendiente de cobro"
       >
         <span className="erp-flow-cobro-k">Pendiente de cobro</span>
-        <span className="erp-flow-cobro-n">{pendiente != null ? eur(pendiente) : "—"}</span>
+        <span className="erp-flow-cobro-n">
+          {muestra ? "No aplica" : pendiente != null ? eur(pendiente) : "—"}
+        </span>
         <span className="erp-flow-cobro-s">
-          {!hasInvoice
+          {muestra
+            ? "una muestra no se cobra"
+            : !hasInvoice
             ? "sin factura emitida"
             : cobrada
               ? "factura cobrada en FACTUSOL"

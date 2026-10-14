@@ -28,6 +28,7 @@ export function SatIncidenciasTab({
   filters,
   canResolveEnvio,
   canResolvePedido,
+  canResolveSample = false,
   reloadKey = 0,
   onCount,
   onResolved,
@@ -37,6 +38,8 @@ export function SatIncidenciasTab({
   canResolveEnvio: boolean;
   /** `erp.orders.create` (oficina): cerrar la excepción de PEDIDO. */
   canResolvePedido: boolean;
+  /** `erp.samples.create`: el taller cierra la excepción de sus MUESTRAS. */
+  canResolveSample?: boolean;
   /** Cambia (p. ej. al pulsar «Actualizar») para forzar recarga. */
   reloadKey?: number;
   /** Nº de incidencias tras cargar (para el contador de la pestaña). */
@@ -102,7 +105,9 @@ export function SatIncidenciasTab({
   }
 
   function canResolve(row: SatIncidenciaRow): boolean {
-    return row.tipo === "envio" ? canResolveEnvio : canResolvePedido && !!row.exception_id;
+    if (row.tipo === "envio") return canResolveEnvio;
+    const puede = canResolvePedido || (canResolveSample && row.order_kind === "sample");
+    return puede && !!row.exception_id;
   }
 
   return (

@@ -189,10 +189,14 @@ def order_alerts(
     # Empresa archivada (limpieza): no genera alertas ni incidencias («sin
     # vincular a FACTUSOL» incluido). El pedido sigue su ciclo por su estado.
     archived = bool(company is not None and getattr(company, "is_archived", False))
+    # Una muestra no se factura (14/10/2026): las alertas fiscales (empresa sin
+    # vincular a FACTUSOL, VIES, régimen de IVA) no le aplican y no pueden
+    # mandarla a «Por revisar».
+    sin_fiscal = archived or is_sample_order(order)
 
     # 1) Empresa sin vincular a cliente de F_CLI: sin CODCLI no hay albarán ni
     #    factura posibles para ese cliente.
-    if company is not None and not archived and not (company.factusol_company_id or ""):
+    if company is not None and not sin_fiscal and not (company.factusol_company_id or ""):
         alerts.append(_alert(
             "empresa_sin_vincular",
             f"«{company.name}» no está vinculada a un cliente de FACTUSOL.",
@@ -208,9 +212,9 @@ def order_alerts(
     # La serie del pedido decide quién emite, y con ello el régimen: lo que
     # para Streamtec (ES) es nacional, para MQ Europe (BE) puede ser
     # intracomunitario.
-    emisor = _issuer_of_order(session, order) if not archived else None
-    regime = company_regime(company, issuer_iso2=emisor) if not archived else None
-    vies = _vies_of(company) if not archived else {"vat": None, "status": None}
+    emisor = _issuer_of_order(session, order) if not sin_fiscal else None
+    regime = company_regime(company, issuer_iso2=emisor) if not sin_fiscal else None
+    vies = _vies_of(company) if not sin_fiscal else {"vat": None, "status": None}
     # El aviso de «NIF-IVA no válido» solo donde VIES cambia la factura (la
     # pareja puede dar intracomunitario). Un cliente español facturado por
     # Streamtec es nacional pase lo que pase: su NIF-IVA puede no estar en el

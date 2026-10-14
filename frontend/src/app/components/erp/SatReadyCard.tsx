@@ -349,6 +349,7 @@ export function SatReadyCard({
   onChanged,
   canEdit = false,
   canShip = false,
+  canNotify = canShip,
 }: {
   order: SatQueueItem;
   onChanged: () => void;
@@ -357,6 +358,9 @@ export function SatReadyCard({
   /** Genei (envíos): `Cap.SAT_SHIPPING`. Muestra «Crear envío con Genei» en la
    *  propia card (el pedido «Listo» ya está embalado, así que puede crearse). */
   canShip?: boolean;
+  /** Mandar a mano el aviso de envío al cliente (`erp.email.client`): el
+   *  taller gestiona el envío pero no escribe a clientes (14/10/2026). */
+  canNotify?: boolean;
 }) {
   const actions = useSatReadyActions(order, onChanged);
   // Lote 3: actualización optimista de los campos de seguimiento tras editar.
@@ -406,7 +410,7 @@ export function SatReadyCard({
       {/* Aún sin recoger, el aviso solo se puede mandar con un envío Genei (el
           de OTRO courier sale al «📤 Marcar recogido»). */}
       {pendienteRecogida && hasGenei && (order.tracking_number || order.genei?.tracking) ? (
-        <SatAvisoCliente order={order} canShip={canShip} onChanged={onChanged} />
+        <SatAvisoCliente order={order} canShip={canShip && canNotify} onChanged={onChanged} />
       ) : null}
       {customerLabel(order) ? (
         <div className="sat-card-customer">{customerLabel(order)}</div>
@@ -441,7 +445,8 @@ export function SatReadyCard({
                 : hasGenei ? "Ver envío Genei" : "Crear envío con Genei"}
             </button>
             {showGenei ? (
-              <GeneiShipmentSection orderId={order.id} canManage={canShip} onChanged={onChanged} />
+              <GeneiShipmentSection orderId={order.id} canManage={canShip}
+                                    canNotify={canShip && canNotify} onChanged={onChanged} />
             ) : null}
           </div>
         ) : null}

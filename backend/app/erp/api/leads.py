@@ -29,7 +29,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.audit import Action, record_event
-from app.core.auth import require_viewer
+from app.core.auth import require_client_data_access, require_viewer
 from app.db.session import get_session
 from app.erp.api.deps import require_config
 from app.models.crm import Contact, User
@@ -183,7 +183,11 @@ def clasificaciones(
     }
 
 
-@router.get("/contactos/{contact_id}")
+@router.get(
+    "/contactos/{contact_id}",
+    # Dato de cliente: el taller no lo ve (14/10/2026).
+    dependencies=[Depends(require_client_data_access)],
+)
 def clasificaciones_de_contacto(
     contact_id: str,
     session: Session = Depends(get_session),

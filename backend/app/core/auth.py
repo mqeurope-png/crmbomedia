@@ -163,6 +163,41 @@ def _block_erp_only(
         raise forbidden()
 
 
+def _block_erp_without_office(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None,
+    session: Session,
+) -> None:
+    """Dato de CLIENTE (empresas, sus contactos, los de un lead): lo ve el ERP
+    de oficina, no el taller. Un rol solo-ERP SIN `erp.office.view` (el taller,
+    14/10/2026) recibe 403; los demás —CRM incluido— pasan como siempre. Mismo
+    bearer OPCIONAL que el ámbito CRM: sin token responde el guard del
+    endpoint."""
+    if credentials is None:
+        return
+    payload = decode_access_token(credentials.credentials)
+    if not payload or not payload.get("sub"):
+        return
+    user = session.get(User, payload["sub"])
+    if user is None or not is_erp_only_role(user.role):
+        return
+    from app.erp.capabilities import Cap, has_capability  # noqa: PLC0415
+
+    if not has_capability(user, Cap.OFFICE_VIEW):
+        _audit_forbidden(request, session, user, UserRole.USER)
+        raise forbidden()
+
+
+def require_client_data_access(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    session: Session = Depends(get_session),
+) -> None:
+    """Ámbito de DATO DE CLIENTE: empresas y contactos. El ERP de oficina
+    (comercial/pedidos) los necesita para dar de alta pedidos; el taller no."""
+    _block_erp_without_office(request, credentials, session)
+
+
 def require_crm_access(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
@@ -214,6 +249,9 @@ def crm_scope_monolith(
     endpoint responda 401. El rol se comprueba contra la BD (autoritativo, no
     el claim del token que podría estar desactualizado tras un cambio de rol)."""
     if _monolith_path_exempt(request.url.path):
+        if request.url.path.startswith("/api/companies"):
+            # El shadow legacy de empresas: dato de cliente, no del taller.
+            _block_erp_without_office(request, credentials, session)
         return
     _block_erp_only(request, credentials, session)
 

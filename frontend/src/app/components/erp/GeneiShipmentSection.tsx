@@ -39,11 +39,15 @@ import {
 export function GeneiShipmentSection({
   orderId,
   canManage,
+  canNotify = canManage,
   onChanged,
 }: {
   orderId: string;
   /** Rol de taller/oficina puede crear/gestionar el envío. */
   canManage: boolean;
+  /** Puede mandar a mano el aviso de envío al cliente (`erp.email.client`).
+   *  El taller gestiona el envío pero no escribe a clientes (14/10/2026). */
+  canNotify?: boolean;
   /** Tras crear / etiqueta / eliminar, la ficha recarga el pedido. */
   onChanged?: () => void;
 }) {
@@ -230,7 +234,7 @@ export function GeneiShipmentSection({
             orderId={orderId}
             status={state.customer_email ?? null}
             hasTracking={Boolean(state.tracking)}
-            canManage={canManage}
+            canManage={canNotify}
             onSent={(next) => { setState(next); onChanged?.(); }}
           />
           {canManage && state.state_bucket === "created" ? (
