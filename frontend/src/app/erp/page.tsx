@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { PageHeader } from "../components/PageHeader";
 import { getCurrentUser, type User } from "../lib/api";
 import { resolveVisibleNav } from "../lib/appNav";
+import { Cap, can } from "../lib/capabilities";
 import { getCuadreResumen, getSatQueue, listOrders } from "../lib/erpApi";
 
 /** ERP-F2 — INICIO del ERP (`/erp`). Es la pantalla de entrada del perfil de
@@ -23,7 +24,16 @@ export default function ErpHome() {
   const [blockedFrom, setBlockedFrom] = useState<string | null>(null);
 
   useEffect(() => {
-    getCurrentUser().then(setUser).catch(() => undefined);
+    getCurrentUser()
+      .then((u) => {
+        setUser(u);
+        // El Cuadre solo lo pide quien lo ve (al taller le daría 403).
+        if (!can(u, Cap.CUADRE)) return;
+        getCuadreResumen()
+          .then((r) => setDescuadres((r.contadores.alta ?? 0) + (r.contadores.media ?? 0)))
+          .catch(() => setDescuadres(null));
+      })
+      .catch(() => undefined);
     // Contadores best-effort: si el rol no puede o falla, se ocultan.
     // «Pendientes de aprobación» = lo que enseña la cola «Por revisar» de la
     // bandeja POR DEFECTO (todos los pagos, sin completar, sin procesados
@@ -34,9 +44,6 @@ export default function ErpHome() {
     getSatQueue()
       .then((q) => setSatCount(q.preparing.length + q.ready_for_pickup.length))
       .catch(() => setSatCount(null));
-    getCuadreResumen()
-      .then((r) => setDescuadres((r.contadores.alta ?? 0) + (r.contadores.media ?? 0)))
-      .catch(() => setDescuadres(null));
     try {
       const params = new URLSearchParams(window.location.search);
       const desde = params.get("desde");
