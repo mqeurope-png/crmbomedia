@@ -58,8 +58,9 @@ según tu **rol**. Lo tienes en detalle en [Roles y permisos](#roles-y-permisos)
 en resumen: el **Comercial** trabaja sus pedidos (no web) de punta a punta pero
 **no cobra en FACTUSOL** ni ve los pedidos web; **ERP Pedidos** hace todo lo de
 pedidos (web y no web) más la Cola SAT y los cobros; **ERP SAT** (taller) prepara,
-embala y gestiona el envío; y el **Administrador** puede todo, incluido asignar
-roles.
+embala y gestiona el envío y lleva las **muestras** de punta a punta (ve cualquier
+pedido, pero no cobra, no factura ni escribe a clientes); y el **Administrador**
+puede todo, incluido asignar roles.
 
 ---
 
@@ -75,12 +76,15 @@ roles**: su permiso es la **unión** de lo que permite cada uno.
 |---|:---:|:---:|:---:|:---:|
 | Ver el ERP | ✅ | ✅ | ✅ | ✅ |
 | **Pedidos web** (WooCommerce): verlos y actuar | ❌ | ✅ | ✅ (solo lectura) | ✅ |
+| Bandeja y ficha de **cualquier** pedido: ver | ✅ (no web) | ✅ | ✅ | ✅ |
 | Pedidos **no web**: crear / aprobar / anular | ✅ | ✅ | ❌ | ✅ |
+| **Muestras**: dar de alta, completar, anular, resolver sus incidencias | ✅ | ✅ | ✅ | ✅ |
 | Crear albarán / emitir factura (FACTUSOL) | ✅ | ✅ | ❌ | ✅ |
 | **Registrar cobro** (FACTUSOL) | ❌ | ✅ | ❌ | ✅ |
-| Enviar al cliente por email (factura/pedido) | ✅ | ✅ | ❌ | ✅ |
-| Enviar al taller (SAT) por email | ✅ | ✅ | ✅ | ✅ |
-| Proformas · Empresas · Documentos FACTUSOL | ✅ | ✅ | ❌ | ✅ |
+| Enviar al cliente por email (factura/pedido, aviso de envío a mano) | ✅ | ✅ | ❌ | ✅ |
+| Enviar al taller (SAT) por email | ✅ | ✅ | ✅ (solo a la dirección del taller, sin factura) | ✅ |
+| Ver cobros y facturas (estado, PDF de la factura) | ✅ | ✅ | ❌ | ✅ |
+| Proformas · Ofertas · Empresas · Documentos FACTUSOL | ✅ | ✅ | ❌ | ✅ |
 | **Cola SAT**: ver | ✅ | ✅ | ✅ | ✅ |
 | Cola SAT: subir etiqueta | ✅ | ✅ | ✅ | ✅ |
 | Cola SAT: preparar / embalar / técnicos (serie, WhiteRIP) | ❌ | ✅ | ✅ | ✅ |
@@ -94,6 +98,15 @@ roles**: su permiso es la **unión** de lo que permite cada uno.
 **Regla dura de los pedidos web:** el **Comercial no ve los pedidos web** en
 ninguna lista (bandeja, Cola SAT, seguimiento) ni puede abrir su ficha —
 la app los filtra y el acceso directo por enlace se rechaza.
+
+**El taller (ERP SAT), en detalle** (14/10/2026). Su menú es **«ERP · Taller
+(SAT)»** y **«ERP · Pedidos»** (solo la bandeja). En un pedido normal **mira y no
+actúa**: ni cobrar, ni facturar, ni completar o anular, ni correos al cliente. Lo
+suyo es la Cola SAT completa y las **muestras**: las da de alta, las prepara, las
+envía y las completa o anula. La capacidad sale del propio rol: no hace falta
+marcarle roles adicionales. El **aviso de envío automático** al cliente sigue
+saliendo cuando el taller tramita el envío (es del sistema); lo que no puede es
+mandarlo o reenviarlo a mano.
 
 **Enviar al taller (SAT) por email** también **mete el pedido en la Cola SAT**
 (si aún no estaba): así el taller siempre lo ve. Un pedido con una excepción
@@ -162,7 +175,7 @@ En el menú lateral, en modo ERP, verás estas entradas (el nombre exacto entre
 comillas):
 
 - **«ERP · Pedidos»** → la [Bandeja de pedidos](#bandeja-de-pedidos) (y dentro,
-  **«Excepciones»**).
+  **«Excepciones»**, salvo para el taller).
 - **«ERP · Proformas»** → [Proformas](#proformas).
 - **«ERP · Documentos»** → [Documentos de FACTUSOL](#documentos-de-factusol).
 - **«ERP · Seguimiento»** → [Seguimiento](#seguimiento).
@@ -1854,6 +1867,13 @@ Bandeja → **«+ Nuevo envío / muestra»**. El formulario es corto a propósit
 FACTUSOL**, y **entra directa a la Cola SAT** (no hay que aprobarla ni esperar
 a ningún pago). El taller la prepara, embala, sube etiqueta y marca recogido
 igual que cualquier otro pedido; luego se **marca completada**.
+
+**Una muestra no se cobra** (14/10/2026): **«Empezar preparación»** no espera
+ningún pago (antes se quedaban todas paradas en «Por embalar»); su **Pago**
+sale **«No aplica»**; no aparece en **«Pendiente de pago»**, ni con **«⚠ SIN
+COBRAR»** en la Cola SAT, ni como descuadre de cobro o factura en el **Cuadre**.
+Si la muestra se convierte en pedido facturable (vinculándole un documento),
+vuelve a cobrarse como cualquier pedido.
 
 En qué se nota que es distinta:
 

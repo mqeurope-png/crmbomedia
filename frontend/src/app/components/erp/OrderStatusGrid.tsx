@@ -78,6 +78,13 @@ function pago(o: OrderStatusGridInput): StatusCell {
   const base = { key: "pago" as const, label: "Pago" };
   const st = o.payment_status;
   const legacyLabel = `Pagado: ${st === "paid" ? "sí" : "no"}`;
+  if (isSampleOrder(o)) {
+    // Una muestra no se cobra: no espera ningún pago (14/10/2026).
+    return {
+      ...base, state: "na", value: "No aplica",
+      title: "Muestra / envío no facturable: no se cobra.", legacyLabel,
+    };
+  }
   if (st === "paid") {
     return { ...base, state: "done", value: "Pagado", title: "El cliente ha pagado (estado del CRM).", legacyLabel };
   }

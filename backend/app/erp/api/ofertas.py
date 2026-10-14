@@ -23,7 +23,11 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_session
 from app.erp import ofertas as svc
-from app.erp.api.deps import require_email_client, require_erp_view, require_proformas
+from app.erp.api.deps import (
+    require_email_client,
+    require_office_view,
+    require_proformas,
+)
 from app.erp.models import Oferta, OfertaPlantilla
 from app.models.crm import Contact, User
 
@@ -79,7 +83,7 @@ def _lineas(items: list[LineaIn] | None) -> list[dict[str, Any]] | None:
 @router.get("/meta")
 def meta_endpoint(
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_office_view),
 ) -> dict[str, Any]:
     """Lo que el editor necesita: prefijo y validez por defecto, series
     emisoras con su nombre, idiomas y estados."""
@@ -119,7 +123,7 @@ class PlantillaPatch(BaseModel):
 def listar_plantillas_endpoint(
     activas: bool = Query(default=False),
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_office_view),
 ) -> dict[str, Any]:
     _ = current_user
     filas = svc.listar_plantillas(session, solo_activas=activas)
@@ -168,7 +172,7 @@ def crear_plantilla_endpoint(
 def get_plantilla_endpoint(
     plantilla_id: str,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_office_view),
 ) -> dict[str, Any]:
     _ = current_user
     return svc.plantilla_como_dict(_plantilla_o_404(session, plantilla_id))
@@ -231,7 +235,7 @@ def listar_ofertas_endpoint(
     q: str | None = Query(default=None, max_length=120),
     limit: int = Query(default=200, ge=1, le=500),
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_office_view),
 ) -> dict[str, Any]:
     _ = current_user
     filas = svc.listar_ofertas(session, contact_id=contact_id, company_id=company_id,
@@ -273,7 +277,7 @@ def crear_oferta_endpoint(
 @router.get("/convertir/status/{job_id}")
 def convertir_status_endpoint(
     job_id: str,
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_office_view),
 ) -> dict[str, Any]:
     """Estado del job de conversión (mismo contrato que las proformas)."""
     _ = current_user
@@ -286,7 +290,7 @@ def convertir_status_endpoint(
 def get_oferta_endpoint(
     oferta_id: str,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_office_view),
 ) -> dict[str, Any]:
     _ = current_user
     return svc.oferta_como_dict(session, _oferta_o_404(session, oferta_id))
@@ -321,7 +325,7 @@ def pdf_oferta_endpoint(
     lang: str | None = Query(default=None, pattern="^(es|en|de|fr|nl)$"),
     bank: int | None = Query(default=None, ge=0, le=20),
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_office_view),
 ) -> Response:
     _ = current_user
     from app.erp.factusol_pdf import bank_accounts, company_for_serie  # noqa: PLC0415

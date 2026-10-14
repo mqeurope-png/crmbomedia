@@ -48,3 +48,22 @@ describe("roles — metadatos", () => {
     expect(scopeChangeWarning("sat", "admin")).toMatch(/ERP → CRM/);
   });
 });
+
+describe("descripción del rol SAT (14/10/2026)", () => {
+  it("dice lo que el rol hace de verdad: Cola SAT, muestras y nada de cobro/factura/correo", () => {
+    const note = roleScopeNote("sat");
+    expect(note).toMatch(/Cola SAT/);
+    expect(note).toMatch(/muestra/);
+    expect(note).toMatch(/solo mira/);
+    expect(note).toMatch(/No cobra, no factura ni manda correos/);
+    expect(note).toMatch(/«Enviar a SAT», solo a la dirección del taller/);
+    expect(note).toMatch(/no ve contactos, documentos, proformas ni ofertas/);
+    // Ya no promete «documentos» como algo que verá.
+    expect(note).not.toMatch(/Solo verá el ERP \(pedidos, documentos, taller\)/);
+  });
+
+  it("los demás roles de ERP mantienen su nota", () => {
+    expect(roleScopeNote("pedidos")).toMatch(/solo verá el erp/i);
+    expect(roleScopeNote("comercial")).toMatch(/solo verá el erp/i);
+  });
+});

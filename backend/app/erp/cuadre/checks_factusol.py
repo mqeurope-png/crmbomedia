@@ -24,6 +24,7 @@ from app.erp.cuadre.registry import (
     Hallazgo,
     comprobacion,
 )
+from app.erp.sample_orders import is_sample_order
 
 DOCUMENTOS = "/erp/documentos"
 PROFORMAS = "/erp/proformas"
@@ -397,7 +398,8 @@ def factura_sin_vincular(ctx: Contexto) -> Iterator[Hallazgo]:
         lo, hi = rango.get(serie_f, (codigo_f, codigo_f))
         rango[serie_f] = (min(lo, codigo_f), max(hi, codigo_f))
     for o in ctx.pedidos():
-        if o.cancelled_at is not None:
+        # Una muestra no se factura: ni le falta factura ni puede tenerla.
+        if o.cancelled_at is not None or is_sample_order(o):
             continue
         # a) La factura existe en FACTUSOL (misma referencia) y el pedido no la tiene.
         if not _is_invoiced(o) and o.order_number:

@@ -28,6 +28,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.erp.models import InvoiceStatus, Order
+from app.erp.sample_orders import is_sample_order
 from app.integrations.factusol.documents import visible_number
 from app.integrations.factusol.service import (
     _auto_link_factura,
@@ -94,6 +95,8 @@ def reconcile_factusol_invoices(
     for o in candidates:
         if _is_invoiced(o):
             continue  # ya facturado por otro estado; no se toca
+        if is_sample_order(o):
+            continue  # una muestra no se factura: no se le engancha factura
         scanned += 1
         ref = _compose_ref(o.order_number, _store_ref_prefix(session, o))
         matches = by_ref.get(ref.upper(), [])

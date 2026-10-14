@@ -14,6 +14,7 @@ import {
   type SatQueueItem,
   type SeguimientoFieldsPatch,
 } from "../../lib/erpApi";
+import { isSampleOrder } from "./OrderStatusGrid";
 import { satShortDate } from "./SatQueueTable";
 import { SatObservaciones, SatTechData, type SatTechEdit } from "./SatTechData";
 import { FotosEmbalaje } from "./FotosEmbalaje";
@@ -32,8 +33,9 @@ export type SatAlbaranState = {
   source: SatAlbaranSource | null;
   /** Hay albarán que imprimir o descargar. */
   hasAlbaran: boolean;
-  /** Por qué no lo hay: pedido manual sin albarán, o web sin descarga posible. */
-  missing: "manual" | "woo_unavailable" | null;
+  /** Por qué no lo hay: pedido manual sin albarán, web sin descarga posible o
+   *  una muestra (que no lleva albarán: no se factura). */
+  missing: "manual" | "woo_unavailable" | "sample" | null;
   /** Motivo del backend cuando es web y la descarga de Woo no es posible. */
   reason: string | null;
   label: string;
@@ -69,6 +71,14 @@ export function satAlbaranState(order: SatQueueItem): SatAlbaranState {
       source, hasAlbaran: true, missing: null, reason: null, tone: "info",
       label: "📄 Descargar albarán",
       title: `Descarga el albarán generado por WooCommerce${tienda} y lo abre`,
+    };
+  }
+  if (isSampleOrder(order)) {
+    // Una muestra no se factura: no hay albarán que falte.
+    return {
+      source: null, hasAlbaran: false, missing: "sample", reason: null, tone: "info",
+      label: "📄 Muestra: sin albarán",
+      title: "Una muestra no lleva albarán: se prepara con sus líneas",
     };
   }
   if (order.is_web_order) {
@@ -147,7 +157,9 @@ export function useSatAlbaranAction(order: SatQueueItem, onChanged: () => void) 
     setError(
       state.missing === "woo_unavailable"
         ? `Albarán de WooCommerce no disponible: ${state.reason}`
-        : "Este pedido no tiene albarán: créalo en FACTUSOL o súbelo a mano desde la ficha.",
+        : state.missing === "sample"
+          ? "Es una muestra: no lleva albarán. Prepárala con sus líneas."
+          : "Este pedido no tiene albarán: créalo en FACTUSOL o súbelo a mano desde la ficha.",
     );
   }
 
@@ -264,7 +276,8 @@ export function SatPreparingCard({
         {customerLabel(order) ? (
           <div className="sat-card-customer">{customerLabel(order)}</div>
         ) : null}
-        {order.payment_status !== "paid" ? (
+        {/* Una muestra no se cobra: nunca «sin cobrar». */}
+        {order.payment_status !== "paid" && !isSampleOrder(order) ? (
           <div className="sat-card-warn">⚠ SIN COBRAR</div>
         ) : null}
         <SatObservaciones notes={order.notes} />

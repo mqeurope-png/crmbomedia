@@ -147,6 +147,15 @@ def _aviso_no_toca(order: Any) -> bool:
     return is_genei_shipment(order)
 
 
+def _muestra_sin_destinatario(ctx: Contexto, order: Any) -> bool:
+    """Una muestra sin email de destinatario (es opcional al darla de alta) no
+    tiene a quién avisar: no es un descuadre, no hay nada que arreglar."""
+    from app.erp.sample_orders import is_sample_order  # noqa: PLC0415
+    from app.erp.shipment_email import recipient_of  # noqa: PLC0415
+
+    return is_sample_order(order) and not recipient_of(ctx.session, order)
+
+
 def _tracking(order: Any) -> str:
     from app.erp.integrations.genei.service import genei_state_of  # noqa: PLC0415
 
@@ -171,6 +180,8 @@ def enviado_sin_aviso(ctx: Contexto) -> Iterator[Hallazgo]:
             continue
         tracking = _tracking(o)
         if not tracking or o.id in avisados or _aviso_no_toca(o):
+            continue
+        if _muestra_sin_destinatario(ctx, o):
             continue
         salida = fecha_real(o, "transport", {"in_transit", "delivered"})
         dias = ctx.dias_desde(salida)

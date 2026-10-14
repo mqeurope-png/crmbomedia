@@ -53,6 +53,10 @@ class TransitionDef:
     allowed_roles: frozenset[str]
     guards: tuple[str, ...] = field(default=())
     required_evidence: tuple[str, ...] = field(default=())
+    #: Roles que ADEMÁS pueden dispararlo cuando el pedido es una muestra pura
+    #: (`order_kind == "sample"`): el taller lleva sus muestras de punta a punta
+    #: (14/10/2026), aunque en un pedido normal ese arco sea de oficina.
+    sample_roles: frozenset[str] = field(default=frozenset())
 
 
 # --- guards (claves; la implementación vive en engine.py) --------------------
@@ -144,6 +148,8 @@ TRANSITIONS: tuple[TransitionDef, ...] = (
         StatusDomain.PREPARATION, PreparationStatus.BLOCKED.value,
         PreparationStatus.PREPARING.value,
         "Desbloquear", frozenset({_ADMIN, _PEDIDOS}),
+        # Una muestra que el taller bloqueó la desbloquea el propio taller.
+        sample_roles=frozenset({_SAT}),
     ),
     TransitionDef(
         StatusDomain.PREPARATION, PreparationStatus.PACKED.value,

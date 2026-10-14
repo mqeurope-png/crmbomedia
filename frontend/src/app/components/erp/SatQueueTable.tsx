@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { customerLabel, STATUS_LABELS, type SatQueueItem } from "../../lib/erpApi";
 import { ScrollTable } from "../ScrollTable";
+import { isSampleOrder } from "./OrderStatusGrid";
 import { SatAlbaranChip, useSatAlbaranAction } from "./SatPreparingCard";
 import {
   geneiPendienteDeEntrada, PENDIENTE_ENTRADA_RED, SatCarrierStatus, satCourier,
@@ -122,7 +123,7 @@ function SatPreparingRow(
         <SelectCell order={order} {...sel} />
         <td className={numClass(sel.selectable)}>
           <Link href={`/erp/orders/${order.id}`}>{order.order_number}</Link>
-          {order.payment_status !== "paid" ? (
+          {order.payment_status !== "paid" && !isSampleOrder(order) ? (
             <span className="sat-row-warn" title="Sin cobrar">⚠ SIN COBRAR</span>
           ) : null}
         </td>

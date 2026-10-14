@@ -35,6 +35,10 @@ export const Cap = {
   CONCILIACION: "erp.conciliacion",
   CONFIG: "erp.config",
   INTEGRACIONES: "erp.integraciones",
+  /** Lo de oficina que no es del taller: cobros y facturas (y sus PDF),
+   *  documentos FACTUSOL, proformas, ofertas y datos de clientes. Todos los
+   *  roles con ERP lo tienen MENOS `sat` (14/10/2026). */
+  OFFICE_VIEW: "erp.office.view",
   ROLES_ASSIGN: "admin.roles",
 } as const;
 
@@ -49,7 +53,7 @@ const COMERCIAL_CAPS: ReadonlyArray<string> = [
   Cap.ACCESS, Cap.ORDERS_CREATE, Cap.ORDERS_APPROVE, Cap.ORDERS_CANCEL,
   Cap.ALBARAN_CREATE, Cap.INVOICE_EMIT, Cap.EMAIL_SAT, Cap.EMAIL_CLIENT,
   Cap.PROFORMAS, Cap.DOCUMENTS, Cap.COMPANIES, Cap.SAT_VIEW, Cap.SAT_SHIPPING,
-  Cap.SAMPLES_CREATE,
+  Cap.SAMPLES_CREATE, Cap.OFFICE_VIEW,
 ];
 const PEDIDOS_CAPS: ReadonlyArray<string> = [
   ...COMERCIAL_CAPS,
@@ -59,12 +63,13 @@ const PEDIDOS_CAPS: ReadonlyArray<string> = [
 const SAT_CAPS: ReadonlyArray<string> = [
   Cap.ACCESS, Cap.ORDERS_VIEW_WEB, Cap.SAT_VIEW, Cap.SAT_PREPARE,
   Cap.SAT_SHIPPING, Cap.SAT_TRACKING, Cap.SAT_NO_SHIPPING, Cap.EMAIL_SAT,
-  // El taller también DA DE ALTA muestras, no solo las prepara.
+  // El taller también DA DE ALTA muestras, no solo las prepara. Sin
+  // OFFICE_VIEW: ni cobros, ni facturas, ni documentos, ni clientes.
   Cap.SAMPLES_CREATE,
 ];
 /** Legacy `manager`/`user`: solo lectura del ERP (reasignar a `comercial`). */
 const USER_CAPS: ReadonlyArray<string> = [
-  Cap.ACCESS, Cap.ORDERS_VIEW_WEB, Cap.SAT_VIEW,
+  Cap.ACCESS, Cap.ORDERS_VIEW_WEB, Cap.SAT_VIEW, Cap.OFFICE_VIEW,
 ];
 
 const ROLE_CAPABILITIES: Record<Role, ReadonlyArray<string>> = {

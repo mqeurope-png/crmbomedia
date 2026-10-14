@@ -96,11 +96,15 @@ def test_erp_only_user_can_read_client_data_needed_by_erp(http) -> None:
     assert r_orders.status_code == 200, r_orders.text
 
 
-def test_sat_can_read_client_data_and_sat_queue(http) -> None:
+def test_sat_reads_sat_queue_but_not_client_data(http) -> None:
+    """14/10/2026: el taller trabaja la Cola SAT y sus muestras; el dato de
+    cliente (empresas) es de la oficina."""
     headers = auth_headers(http, "sat")
-    assert http.get("/api/companies", headers=headers).status_code == 200
+    assert http.get("/api/companies", headers=headers).status_code == 403
     # La cola SAT es su pantalla de trabajo — accesible.
     assert http.get("/api/erp/sat/queue", headers=headers).status_code == 200
+    # El ERP de oficina (pedidos) sigue viendo empresas.
+    assert http.get("/api/companies", headers=auth_headers(http, "pedidos")).status_code == 200
 
 
 def test_crm_only_user_gets_403_on_erp_endpoints(http) -> None:

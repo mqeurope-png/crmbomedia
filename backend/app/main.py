@@ -26,7 +26,11 @@ from app.api.routes import router
 from app.api.tasks import router as tasks_router
 from app.api.user_aliases import router as user_aliases_router
 from app.api.workflows import router as workflows_router
-from app.core.auth import crm_scope_monolith, require_crm_access
+from app.core.auth import (
+    crm_scope_monolith,
+    require_client_data_access,
+    require_crm_access,
+)
 from app.core.config import get_settings
 from app.core.observability import setup_sentry
 from app.email_signatures.router import router as email_signatures_router
@@ -82,7 +86,8 @@ app.add_middleware(
 # lleva su propio guard de ámbito (`crm_scope_monolith`, deny-by-default).
 _CRM_SCOPE = [Depends(require_crm_access)]
 
-app.include_router(companies_router)
+# Empresas: dato de CLIENTE que el ERP de oficina necesita (no el taller).
+app.include_router(companies_router, dependencies=[Depends(require_client_data_access)])
 app.include_router(contacts_assign_router, dependencies=_CRM_SCOPE)
 app.include_router(contact_channels_router, dependencies=_CRM_SCOPE)
 app.include_router(contact_notes_router, dependencies=_CRM_SCOPE)

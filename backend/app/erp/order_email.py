@@ -20,6 +20,7 @@ Nada de esto escribe en FACTUSOL: los PDF se componen leyendo los documentos.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -91,6 +92,53 @@ def order_sat_email(session: Session) -> str:
     from app.integrations.factusol.service import series_config  # noqa: PLC0415
 
     return sat_email_config(series_config(session).get(SAT_EMAIL_KEY))
+
+
+def sat_email_addresses(session: Session) -> set[str]:
+    """Las direcciones del taller configuradas (en minúsculas; el ajuste admite
+    varias separadas por coma, punto y coma o espacio)."""
+    raw = order_sat_email(session)
+    return {a.strip().lower() for a in re.split(r"[,;\s]+", raw) if a.strip()}
+
+
+def can_email_anyone(user: Any) -> bool:
+    """¿Puede mandar el pedido a cualquier destinatario? Quien tiene
+    `erp.email.client` (la oficina), sí; el taller (14/10/2026), solo «enviar
+    al taller por email»: a la dirección del taller y sin factura."""
+    from app.erp.capabilities import Cap, has_capability  # noqa: PLC0415
+
+    return has_capability(user, Cap.EMAIL_CLIENT)
+
+
+def can_attach_invoice(user: Any) -> bool:
+    """¿Puede adjuntar la factura? Es papel de oficina (`erp.office.view`)."""
+    from app.erp.capabilities import Cap, has_capability  # noqa: PLC0415
+
+    return has_capability(user, Cap.OFFICE_VIEW)
+
+
+def taller_only_problem(
+    session: Session, user: Any, *, to: list[str], cc: list[str],
+    bcc: list[str], include_factura: bool,
+) -> str | None:
+    """Por qué este envío no le está permitido a `user` (o None si lo está).
+
+    Sin `erp.email.client` el correo solo puede ir a la dirección del taller
+    —es «enviar al taller por email», no un correo al cliente— y sin
+    `erp.office.view` no puede llevar la factura."""
+    if include_factura and not can_attach_invoice(user):
+        return "No puedes adjuntar la factura: es documentación de oficina."
+    if can_email_anyone(user):
+        return None
+    taller = sat_email_addresses(session)
+    if not taller:
+        return ("No hay dirección del taller configurada en Ajustes ERP: no "
+                "puedes enviar el pedido a otra dirección.")
+    otras = [a for a in (*to, *cc, *bcc) if a.strip().lower() not in taller]
+    if otras:
+        return ("Solo puedes enviar el pedido a la dirección del taller; no a "
+                + ", ".join(otras) + ".")
+    return None
 
 
 def render_order_email(
@@ -382,6 +430,14 @@ def build_order_email_preview(
     )
     sat = order_sat_email(session)
     attachments = available_attachments(session, client, order, ejercicio)
+    if not can_attach_invoice(current_user):
+        # El taller no ve facturas: no se le ofrece adjuntarla.
+        attachments["factura"] = {
+            "available": False, "numero": None,
+            "reason": "La factura es documentación de oficina.",
+            "code": "factura_not_allowed",
+        }
+    taller_only = not can_email_anyone(current_user)
     return {
         "order_id": order.id,
         "order_number": order.order_number,
@@ -397,7 +453,13 @@ def build_order_email_preview(
         # Contactos de la empresa del pedido para el selector de destinatarios
         # (enviar el pedido/proforma/factura a los contactos del cliente, no
         # solo al taller). Los sin email salen deshabilitados.
-        "company_contacts": company_contacts_for_order(session, order),
+        # El taller solo lo manda al taller: sin contactos del cliente.
+        "company_contacts": (
+            [] if taller_only else company_contacts_for_order(session, order)
+        ),
+        #: Destinatarios fijos (la dirección del taller): la pantalla no deja
+        #: cambiarlos.
+        "recipients_locked": taller_only,
         # El albarán va SIEMPRE por defecto (es el envío típico al taller);
         # los otros dos, solo si el operador los marca.
         "defaults": {

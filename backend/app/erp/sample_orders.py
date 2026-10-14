@@ -71,6 +71,14 @@ def is_billable(order: Any) -> bool:
     return not is_sample_order(order)
 
 
+def payment_not_required(order: Any) -> bool:
+    """¿Este pedido sale sin cobro? Una muestra no se cobra (14/10/2026): nada
+    puede esperar su pago, ningún aviso la da por «pendiente de cobro» y no
+    cuenta en lo que mide dinero. Una muestra convertida (con documento) ya es
+    un pedido normal y se cobra como tal."""
+    return is_sample_order(order)
+
+
 def next_sample_number(session: Session) -> str:
     """Siguiente `MUESTRA-000001` libre: max(secuencial) + 1 sobre los que ya
     siguen el patrón. El choque real lo corta el 409 del endpoint (misma

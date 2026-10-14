@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.db.session import get_session
-from app.erp.api.deps import require_erp_view
+from app.erp.api.deps import require_erp_view, require_office_view
 from app.erp.contrapartidas import (
     contrapartida_rules,
     contrapartidas,
@@ -50,7 +50,7 @@ def list_catalogs(current_user: User = Depends(require_erp_view)) -> dict[str, A
 @router.get("/contrapartidas")
 def contrapartidas_endpoint(
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
+    current_user: User = Depends(require_office_view),
 ) -> dict[str, Any]:
     _ = current_user
     from app.integrations.factusol.service import series_config  # noqa: PLC0415

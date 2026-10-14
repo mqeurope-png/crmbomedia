@@ -58,15 +58,18 @@ const ALL_TABS: Tab[] = ["pendientes", ...PENDING_TABS, "enviados", "sin_envio",
 
 /** La card que toca según el paso del pedido. */
 function SatCard({
-  order, onChanged, onPrepare, canEdit, canShip,
+  order, onChanged, onPrepare, canEdit, canShip, canNotify,
 }: {
   order: SatQueueItem; onChanged: () => void;
   onPrepare: (order: SatQueueItem, start: boolean) => void;
-  canEdit: boolean; canShip: boolean;
+  canEdit: boolean; canShip: boolean; canNotify: boolean;
 }) {
   const t = order.sat_tab;
   if (t === "embalados" || t === "pendiente_recogida") {
-    return <SatReadyCard order={order} onChanged={onChanged} canEdit={canEdit} canShip={canShip} />;
+    return (
+      <SatReadyCard order={order} onChanged={onChanged} canEdit={canEdit} canShip={canShip}
+                    canNotify={canNotify} />
+    );
   }
   if (t === "enviados" || t === "sin_envio") {
     return <SatShippedCard order={order} onChanged={onChanged} />;
@@ -83,12 +86,15 @@ function SatCard({
  *  corrige courier y seguimiento en línea. */
 function SatShippedTable({
   items, ariaLabel, onChanged, selectable = false, selected, onToggle, aviso = false, canShip = false,
+  canNotify = false,
 }: {
   items: SatQueueItem[]; ariaLabel: string; onChanged: () => void;
   selectable?: boolean; selected?: Set<string>; onToggle?: (id: string) => void;
   /** «Enviados»: columna «Aviso» (aviso de envío al cliente) con Enviar / Reenviar. */
   aviso?: boolean;
   canShip?: boolean;
+  /** Puede mandar a mano el aviso al cliente (`erp.email.client`). */
+  canNotify?: boolean;
 }) {
   return (
     <div className="table-wrapper sat-history-wrap">
@@ -127,7 +133,7 @@ function SatShippedTable({
               </td>
               {aviso ? (
                 <td data-label="Aviso">
-                  <SatAvisoCliente order={o} canShip={canShip} onChanged={onChanged} />
+                  <SatAvisoCliente order={o} canShip={canShip && canNotify} onChanged={onChanged} />
                 </td>
               ) : null}
             </tr>
@@ -242,8 +248,13 @@ export default function SatQueuePage() {
   const [canEnqueue, setCanEnqueue] = useState(false);
   // Genei (crear/ver envío) y «Resolver» una incidencia de ENVÍO.
   const [canShip, setCanShip] = useState(false);
-  // Resolver una incidencia de PEDIDO (cerrar la excepción) es de oficina.
+  // Resolver una incidencia de PEDIDO (cerrar la excepción) es de oficina;
+  // las de una MUESTRA, también del taller (14/10/2026).
   const [canResolvePedido, setCanResolvePedido] = useState(false);
+  const [canResolveSample, setCanResolveSample] = useState(false);
+  // Aviso de envío al cliente a mano: correo al cliente (`erp.email.client`).
+  // El taller lo ve pero no lo manda (el automático sale igual).
+  const [canNotify, setCanNotify] = useState(false);
 
   useEffect(() => {
     getCurrentUser()
@@ -252,12 +263,16 @@ export default function SatQueuePage() {
         setCanEnqueue(can(u, Cap.ORDERS_APPROVE));
         setCanShip(can(u, Cap.SAT_SHIPPING));
         setCanResolvePedido(can(u, Cap.ORDERS_CREATE));
+        setCanResolveSample(can(u, Cap.SAMPLES_CREATE));
+        setCanNotify(can(u, Cap.EMAIL_CLIENT));
       })
       .catch(() => {
         setCanEdit(false);
         setCanEnqueue(false);
         setCanShip(false);
         setCanResolvePedido(false);
+        setCanResolveSample(false);
+        setCanNotify(false);
       });
     // Tiendas (filtro) best-effort: sin ellas el filtro no sale.
     getErpSettings()
@@ -411,7 +426,7 @@ export default function SatQueuePage() {
   function card(o: SatQueueItem): React.ReactNode {
     return (
       <SatCard order={o} onChanged={refreshQuiet} onPrepare={openPrep}
-               canEdit={canEdit} canShip={canShip} />
+               canEdit={canEdit} canShip={canShip} canNotify={canNotify} />
     );
   }
 
@@ -739,7 +754,7 @@ export default function SatQueuePage() {
                   onChanged={refreshQuiet}
                   selectable={selectable && tab === "sin_envio"}
                   selected={selected} onToggle={toggleSel}
-                  aviso={tab === "enviados"} canShip={canShip}
+                  aviso={tab === "enviados"} canShip={canShip} canNotify={canNotify}
                 />
               </>
             )}
@@ -752,6 +767,7 @@ export default function SatQueuePage() {
           filters={filters}
           canResolveEnvio={canShip}
           canResolvePedido={canResolvePedido}
+          canResolveSample={canResolveSample}
           reloadKey={incidenciasReload}
           onCount={setIncidenciasCount}
           onResolved={refreshQuiet}
