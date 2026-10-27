@@ -6,6 +6,7 @@ Sin red: toda petición va por un `MockTransport` y un DNS falso
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Callable, Generator
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -19,6 +20,7 @@ from sqlalchemy.pool import StaticPool
 from app.db.base import Base
 from app.models.fuentes_externas import SoporteCache, SoporteFuente
 from app.services import soporte
+from app.services.soporte import adaptadores
 from app.services.soporte import fuentes as lista_blanca
 from app.services.soporte.tipos import SoporteError
 
@@ -221,10 +223,37 @@ def test_con_varias_fuentes_la_que_falla_va_a_avisos(session):
 
     res = soporte.buscar(session, "cabezal")
 
-    assert res.fuentes == ["flux", "artisjet"]   # ni la inactiva ni la que no tiene búsqueda
+    # Ni la inactiva, ni la que no tiene búsqueda, ni la que ha fallado.
+    assert res.fuentes == ["flux"]
     assert [r.fuente for r in res.resultados] == ["flux"]
     assert any("artisJet" in a and "HTTP 500" in a for a in res.avisos), res.avisos
     assert {p.host for p in red.peticiones} == {FLUX, "help.artisjet.com"}
+
+
+def test_si_una_falla_y_la_otra_no_encuentra_nada_la_que_fallo_no_cuenta(session):
+    """«Sin resultados» con `fuentes` deja al redactor decir que no hay
+    procedimiento: la fuente que no ha respondido no está en `fuentes` (no se
+    ha mirado), solo en `avisos`."""
+    session.add(SoporteFuente(clave="artisjet", nombre="artisJet", dominio="help.artisjet.com",
+                              tipo="zendesk", base_url="https://help.artisjet.com",
+                              locales_json="{}", activo=True, posicion=1))
+    session.commit()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "help.artisjet.com":
+            raise httpx.ConnectTimeout("lento", request=request)
+        return zendesk({})(request)        # FLUX responde, sin nada
+    Red(handler)
+
+    res = soporte.buscar(session, "cabezal artisjet")
+
+    assert res.resultados == []
+    assert res.fuentes == ["flux"]
+    # Y se dice cuál no se ha podido mirar: con ella, el frontend no ofrece
+    # «no hay procedimiento».
+    assert res.fallidas == ["artisjet"]
+    assert any(a.startswith("artisJet:") for a in res.avisos), res.avisos
+    assert any("No se ha encontrado nada" in a for a in res.avisos), res.avisos
 
 
 def test_una_fuente_html_no_tiene_busqueda_y_se_dice(session):
@@ -283,6 +312,22 @@ def test_articulo_zendesk_texto_limpio_y_html_saneado(session):
     assert f'href="https://{FLUX}/hc/es-419/articles/2-otro"' in art.html
     assert '<img src="https://support.flux3dp.com/hc/article_attachments/1.png"' in art.html
     assert [p.path for p in red.peticiones] == ["/api/v2/help_center/es-419/articles/111.json"]
+
+
+def test_sanear_html_con_miles_de_bloques_sin_cerrar_no_se_atasca():
+    """Un artículo roto u hostil con miles de `<svg>` sin cerrar: antes, cada
+    uno recorría el resto del documento (200 KB, ~30 s; 2 MB, ~45 min). Los
+    bloques bien cerrados se siguen quitando enteros."""
+    roto ="<svg>" * (200 * 1024 // 5) + "<p>Usa el líquido CL-50.</p><script>alert(1)</script>"
+    inicio = time.perf_counter()
+    sin_bloques = adaptadores._quitar_fuera(roto)
+    assert time.perf_counter() - inicio < 1.0         # lineal: centésimas
+    assert sin_bloques.endswith("<p>Usa el líquido CL-50.</p>")
+    inicio = time.perf_counter()
+    limpio = adaptadores.sanear_html(roto, f"https://{FLUX}/hc/es-419/articles/1")
+    # Casi todo es bleach (unas décimas); margen amplio para CI lentos.
+    assert time.perf_counter() - inicio < 3.0
+    assert limpio == "<p>Usa el líquido CL-50.</p>"
 
 
 def test_articulo_por_su_enlace_y_en_ingles_si_no_esta_en_espanol(session):

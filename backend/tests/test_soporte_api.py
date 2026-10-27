@@ -25,7 +25,7 @@ from tests._test_helpers import auth_headers, seed_test_users
 FLUX = "support.flux3dp.com"
 
 #: Las claves de cada tipo de `frontend/src/app/lib/soporteApi.ts`.
-CLAVES_BUSQUEDA = {"consulta", "resultados", "avisos", "fuentes"}
+CLAVES_BUSQUEDA = {"consulta", "resultados", "avisos", "fuentes", "fallidas"}
 CLAVES_RESULTADO = {"fuente", "fuente_nombre", "articulo_id", "titulo", "extracto", "url",
                     "idioma"}
 CLAVES_ARTICULO = {"fuente", "fuente_nombre", "articulo_id", "titulo", "url", "idioma", "texto",

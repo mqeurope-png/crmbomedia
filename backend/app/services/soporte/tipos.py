@@ -29,8 +29,12 @@ class Busqueda:
     #: Lo que conviene saber: una fuente no respondió, no había nada en el
     #: idioma pedido y se buscó en inglés, una fuente solo admite enlaces…
     avisos: list[str] = field(default_factory=list)
-    #: Las fuentes que se han consultado (clave).
+    #: Las fuentes que han respondido (clave): en ellas se ha mirado.
     fuentes: list[str] = field(default_factory=list)
+    #: Las que no se han podido consultar (fallaron o no dio tiempo). Con
+    #: alguna aquí, «no hay procedimiento» no se puede afirmar: no se ha
+    #: mirado en todas.
+    fallidas: list[str] = field(default_factory=list)
 
 
 @dataclass

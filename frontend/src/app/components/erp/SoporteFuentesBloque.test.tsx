@@ -151,6 +151,24 @@ describe("SoporteFuentesBloque (lista blanca del soporte de terceros)", () => {
     expect(await screen.findByLabelText("Activa artisJet Help")).toBeChecked();
   });
 
+  it("desactivarla en la fila con el formulario abierto: guardar el formulario no la vuelve a activar", async () => {
+    mockActualizar.mockImplementation(async (_clave, cambios) => fuente({ activo: false, ...cambios }));
+    const user = userEvent.setup();
+    render(<SoporteFuentesBloque canEdit />);
+    await user.click(await screen.findByRole("button", { name: "Editar FLUX Support" }));
+    const form = screen.getByRole("group", { name: "Editar FLUX Support" });
+    // «Comprobar» dio cáscara vacía: se desactiva en la fila, con el formulario abierto.
+    await user.click(screen.getByLabelText("Activa FLUX Support"));
+    await waitFor(() => expect(mockActualizar).toHaveBeenCalledWith("flux", { activo: false }));
+    expect(await screen.findByLabelText("Activa FLUX Support")).not.toBeChecked();
+    // Y luego se corrige el nombre en el formulario y se guarda: solo va el nombre.
+    await user.type(within(form).getByLabelText("Nombre (flux)"), " (oficial)");
+    await user.click(within(form).getByRole("button", { name: "Guardar cambios de la fuente" }));
+    await waitFor(() => expect(mockActualizar).toHaveBeenCalledTimes(2));
+    expect(mockActualizar).toHaveBeenLastCalledWith("flux", { nombre: "FLUX Support (oficial)" });
+    expect(await screen.findByLabelText("Activa FLUX Support (oficial)")).not.toBeChecked();
+  });
+
   it("sin permiso de edición: la tabla se ve, sin alta, sin editar y sin comprobar", async () => {
     render(<SoporteFuentesBloque canEdit={false} />);
     await screen.findByRole("table", { name: "Centros de soporte de la lista blanca" });

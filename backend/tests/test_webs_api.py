@@ -299,6 +299,46 @@ def test_reglas_crud_y_validacion(http: TestClient, factory: sessionmaker) -> No
                     headers=auth_headers(http, "user")).status_code == 403
 
 
+def test_las_reglas_por_id_necesitan_su_web(http: TestClient, factory: sessionmaker) -> None:
+    """Los ids de WordPress son de cada web: una regla por id sin web valdría
+    para todas. Ni se crea ni se deja sin web al editarla."""
+    cabeceras = auth_headers(http, "admin")
+    for tipo in ("pagina_excluir_id", "producto_excluir_id", "producto_incluir_id"):
+        for sin_web in ({}, {"sitio": None}, {"sitio": ""}, {"sitio": "  "}):
+            r = http.post("/api/erp/webs/reglas", headers=cabeceras,
+                          json={"tipo": tipo, "patron": "1234", **sin_web})
+            assert r.status_code == 422, (tipo, sin_web, r.text)
+            assert r.json()["detail"]["code"] == "sitio_obligatorio"
+            assert "web" in r.json()["detail"]["detail"]
+    por_id = http.post("/api/erp/webs/reglas", headers=cabeceras, json={
+        "tipo": "producto_incluir_id", "patron": "1234", "sitio": "boprint"}).json()
+    r = http.patch(f"/api/erp/webs/reglas/{por_id['id']}", headers=cabeceras,
+                   json={"sitio": None})
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "sitio_obligatorio"
+    # Una de todas las webs que pasa a ser por id, tampoco sin web.
+    categoria = http.post("/api/erp/webs/reglas", headers=cabeceras, json={
+        "tipo": "categoria_fuera", "patron": "Ersatzteile"}).json()
+    r = http.patch(f"/api/erp/webs/reglas/{categoria['id']}", headers=cabeceras,
+                   json={"tipo": "producto_excluir_id", "patron": "55"})
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "sitio_obligatorio"
+    with factory() as s:
+        assert s.get(WebIndiceRegla, por_id["id"]).sitio == "boprint"
+        fila = s.get(WebIndiceRegla, categoria["id"])
+        assert (fila.tipo, fila.patron) == ("categoria_fuera", "Ersatzteile")
+        assert not s.query(WebIndiceRegla).filter(
+            WebIndiceRegla.tipo.in_(("pagina_excluir_id", "producto_excluir_id",
+                                     "producto_incluir_id")),
+            WebIndiceRegla.sitio.is_(None)).count()
+    # Con su web, sí; y las demás reglas siguen pudiendo ser de todas.
+    r = http.patch(f"/api/erp/webs/reglas/{categoria['id']}", headers=cabeceras,
+                   json={"tipo": "producto_excluir_id", "patron": "55", "sitio": "fluxlasers"})
+    assert r.status_code == 200, r.text
+    assert (r.json()["tipo"], r.json()["sitio"]) == ("producto_excluir_id", "fluxlasers")
+    r = http.patch(f"/api/erp/webs/reglas/{por_id['id']}", headers=cabeceras,
+                   json={"nota": "molde"})
+    assert r.status_code == 200 and r.json()["sitio"] == "boprint"
+
+
 def test_la_maquina_sale_antes_que_sus_accesorios(factory: sessionmaker) -> None:
     """Buscar «Beambox II» trae primero la máquina, no el accesorio que la
     nombra ni la página de tienda que la repite veinte veces."""

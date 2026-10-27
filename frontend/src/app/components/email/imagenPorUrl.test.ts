@@ -4,6 +4,7 @@ import {
   type DatosDialogo,
   MOTIVO_NO_HTTPS,
   abrirDialogoImagenUrl,
+  especDialogoImagenUrl,
   htmlImagenUrl,
   pesoLegible,
   validarImagenUrl,
@@ -205,5 +206,68 @@ describe("Imagen por URL — el diálogo", () => {
     await d.comprobar();
     expect(d.avisos("error")).toEqual(["No se pudo conectar con el servidor."]);
     expect(d.insertarHabilitado()).toBe(false);
+  });
+});
+
+describe("Imagen por URL — lo que viene de fuera entra escapado (TinyMCE lo pinta como HTML)", () => {
+  // El alertbanner y el htmlpanel de TinyMCE meten su texto con innerHTML:
+  // así lo vería Bart.
+  const pintado = (html: string) => {
+    const div = document.createElement("div");
+    div.innerHTML = html;
+    return div;
+  };
+  const ATAQUE = "<img src=x onerror=alert(1)>";
+
+  it("el motivo del backend (con el Content-Type de la web ajena) no se pinta como HTML", async () => {
+    const motivo = `El enlace no es una imagen (es text/x${ATAQUE}): usa el enlace de la imagen.`;
+    const d = abrir(jest.fn(() => Promise.resolve({
+      ok: false, url: URL_OK, codigo: "no_es_imagen", motivo,
+    } as ComprobacionImagenUrl)));
+    d.escribir(URL_OK);
+    await d.comprobar();
+    const [texto] = d.avisos("error");
+    expect(texto).toContain("&lt;img src=x onerror=alert(1)&gt;");
+    expect(texto).not.toContain("<img");
+    expect(pintado(texto).querySelector("img")).toBeNull();
+    expect(pintado(texto).textContent).toBe(motivo);
+  });
+
+  it("el error de la llamada y el aviso de peso tampoco", async () => {
+    const d = abrir(jest.fn(() => Promise.reject(new Error(ATAQUE))));
+    d.escribir(URL_OK);
+    await d.comprobar();
+    expect(d.avisos("error")).toEqual(["&lt;img src=x onerror=alert(1)&gt;"]);
+
+    const conAviso = abrir(jest.fn(() => Promise.resolve(ok({
+      content_type: `image/x${ATAQUE}`, aviso: "<b>x</b>",
+    }))));
+    conAviso.escribir(URL_OK);
+    await conAviso.comprobar();
+    expect(conAviso.avisos("warn")).toEqual(["&lt;b&gt;x&lt;/b&gt;"]);
+    expect(pintado(conAviso.avisos("warn")[0]).querySelector("b")).toBeNull();
+    // En la vista previa solo está la imagen comprobada; el Content-Type, como texto.
+    const previa = conAviso.previa();
+    expect(previa?.querySelectorAll("img")).toHaveLength(1);
+    expect(previa?.querySelector("img")?.getAttribute("src")).toBe(URL_OK);
+    expect(previa?.textContent).toContain(`image/x${ATAQUE}`);
+  });
+
+  it("la vista previa solo pinta una URL https:// y con el atributo escapado", () => {
+    const sinAcciones = {};
+    const items = (s: Spec): Componente[] => (s.body.type === "panel" ? s.body.items : []);
+    const html = (s: Spec) => items(s).flatMap((i) => (i.type === "htmlpanel" ? [i.html] : [])).join("");
+    const conUrl = (url: string) => especDialogoImagenUrl(url, ok({ url }), sinAcciones);
+
+    const rara = `${URL_OK}?a="><script>alert(1)</script>`;
+    const buena = pintado(html(conUrl(rara)));
+    expect(buena.querySelector("script")).toBeNull();
+    expect(buena.querySelector("img")?.getAttribute("src")).toBe(rara);
+
+    for (const mala of ["javascript:alert(1)", "data:image/svg+xml,<svg onload=alert(1)>", "http://x.com/a.jpg"]) {
+      const div = pintado(html(conUrl(mala)));
+      expect(div.querySelector("img")).toBeNull();
+      expect(div.querySelector("svg")).toBeNull();
+    }
   });
 });

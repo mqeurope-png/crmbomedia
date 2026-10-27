@@ -112,6 +112,15 @@ def _sitio_valido(session: Session, sitio: str | None) -> str | None:
     return clave
 
 
+def _exigir_sitio(tipo: str, sitio: str | None) -> None:
+    """Las reglas por id llevan su web: los ids de WordPress son de cada web, y
+    sin web la regla valdría para todas (tocaría lo que no es)."""
+    if tipo in reglas_mod.TIPOS_ID and not sitio:
+        raise _error("sitio_obligatorio",
+                     "Una regla por id necesita su web: los ids de WordPress son de cada web.",
+                     status.HTTP_422_UNPROCESSABLE_ENTITY)
+
+
 def _regla(session: Session, regla_id: int) -> WebIndiceRegla:
     fila = session.get(WebIndiceRegla, regla_id)
     if fila is None:
@@ -148,6 +157,7 @@ def crear_regla(
     except ValueError as exc:
         raise _error("patron_no_valido", str(exc)) from exc
     sitio = _sitio_valido(session, payload.sitio)
+    _exigir_sitio(tipo, sitio)
     # Con la tabla vacía valían las de partida: se siembran antes, para que la
     # regla nueva no las deje sin efecto.
     reglas_mod.asegurar_sembradas(session)
@@ -174,6 +184,9 @@ def actualizar_regla(
     if tipo not in REGLA_TIPOS:
         raise _error("tipo_no_valido",
                      f"Tipo de regla no válido: {tipo} ({', '.join(REGLA_TIPOS)}).")
+    # Lo que quedaría tras el cambio: una regla por id no se queda sin web.
+    sitio = _sitio_valido(session, cambios["sitio"]) if "sitio" in cambios else fila.sitio
+    _exigir_sitio(tipo, sitio)
     if "tipo" in cambios or "patron" in cambios:
         try:
             fila.patron = reglas_mod.validar_patron(tipo, cambios.get("patron", fila.patron))
@@ -181,7 +194,7 @@ def actualizar_regla(
             raise _error("patron_no_valido", str(exc)) from exc
         fila.tipo = tipo
     if "sitio" in cambios:
-        fila.sitio = _sitio_valido(session, cambios["sitio"])
+        fila.sitio = sitio
     if cambios.get("activo") is not None:
         fila.activo = bool(cambios["activo"])
     if "nota" in cambios:

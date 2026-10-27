@@ -57,7 +57,9 @@ _PAGINAS_FUERA = (
      r"|compra-finalizada|orders)$", "pago"),
     (r"^(mi-cuenta|my-account|mein-account|mon-compte|mijn-account|account)$", "mi cuenta"),
     (r"^(enviado|sent|gesendet|envoye|verstuurd)$", "aviso de formulario enviado"),
-    (r"^test|-test$|test-form|testagile|sample-page|pagina-ejemplo", "páginas de prueba"),
+    # `^test` sin «testimonios», «testimonials», «testimonianze» ni «testemunhos».
+    (r"^test(?!imon|emun)|-test$|test-form|testagile|sample-page|pagina-ejemplo",
+     "páginas de prueba"),
     (r"^dpd-|^app-posts|^app-crea|cowork", "páginas internas"),
     (r"accesibilidad|accessibility", "declaración de accesibilidad"),
 )

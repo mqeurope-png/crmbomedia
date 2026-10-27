@@ -27,8 +27,11 @@ from app.models.fuentes_externas import (
     PASADA_OK,
     PASADA_PARCIAL,
     REGLA_CATEGORIA_FUERA,
+    REGLA_PAGINA_ID,
     REGLA_PAGINA_SLUG,
+    REGLA_PRODUCTO_EXCLUIR,
     REGLA_PRODUCTO_INCLUIR,
+    WEB_ENTRADA,
     WEB_PAGINA,
     WEB_PRODUCTO,
     WebIndiceEntrada,
@@ -416,6 +419,27 @@ def test_una_web_sin_tienda_se_queda_sin_productos(factory: sessionmaker,
         assert filas(s, tipo=WEB_PAGINA)                # las páginas siguen
 
 
+def test_una_web_que_da_404_a_todo_no_se_queda_sin_productos(factory: sessionmaker,
+                                                             internet: Internet, usar) -> None:
+    """Un 404 de la Store API solo es «sin tienda» si en esa misma lectura la
+    REST de la web respondió bien. Si da 404 a todo (REST rota, vhost mal
+    apuntado), la lectura ha fallado: no se marca nada ido."""
+    usar("fluxlasers")
+    web = web_flux()
+    internet.poner(web)
+    indexar(factory)
+    with factory() as s:
+        antes = {(f.tipo, f.wp_id, f.idioma) for f in filas(s)}
+    assert {t for t, _, _ in antes} == {WEB_PAGINA, WEB_ENTRADA, WEB_PRODUCTO}
+    web.rota = True
+    pasada = indexar(factory)
+    assert pasada["resumen"]["fluxlasers"]["estado"] == PASADA_ERROR
+    assert pasada["resumen"]["fluxlasers"]["idos"] == 0
+    with factory() as s:
+        assert {(f.tipo, f.wp_id, f.idioma) for f in filas(s)} == antes
+        assert all(f.ido_en is None for f in filas(s, vivas=False))
+
+
 def test_una_web_desactivada_deja_lo_suyo_ido(factory: sessionmaker,
                                               internet: Internet, usar) -> None:
     usar("fluxlasers", "artisjet-eu")
@@ -482,6 +506,46 @@ def test_con_la_tabla_vacia_valen_las_de_partida(factory: sessionmaker) -> None:
         assert reglas_mod.asegurar_sembradas(s)
         assert not reglas_mod.asegurar_sembradas(s)             # ya sembradas
         assert reglas_mod.cargar(s).de_la_base
+
+
+@pytest.mark.parametrize(("slug", "fuera"), [
+    ("testimonios", False), ("testimonials", False), ("testimonianze", False),
+    ("testemunhos", False), ("temoignages", False),
+    ("test", True), ("test-form", True), ("prueba-test", True), ("test-2", True),
+    ("testagile", True),
+])
+def test_las_paginas_de_prueba_fuera_y_los_testimonios_dentro(slug: str, fuera: bool) -> None:
+    reglas = reglas_mod.Reglas(reglas=reglas_mod._de_partida()).para("x")  # noqa: SLF001
+    assert reglas.pagina_fuera(slug, 1) is fuera
+
+
+def test_una_regla_por_id_sin_web_no_vale_para_ninguna(
+        factory: sessionmaker, caplog: pytest.LogCaptureFixture) -> None:
+    """Los ids de WordPress son de cada web: una regla por id sin web (metida a
+    mano en la base: la API no la deja guardar) se salta, no vale para todas."""
+    with factory() as s:
+        reglas_mod.asegurar_sembradas(s)
+        s.add_all([
+            WebIndiceRegla(tipo=REGLA_PRODUCTO_INCLUIR, patron="5001", sitio=None, activo=True,
+                           posicion=0),
+            WebIndiceRegla(tipo=REGLA_PRODUCTO_EXCLUIR, patron="3949", sitio="", activo=True,
+                           posicion=0),
+            WebIndiceRegla(tipo=REGLA_PAGINA_ID, patron="3950", sitio=None, activo=True,
+                           posicion=0),
+            WebIndiceRegla(tipo=REGLA_PRODUCTO_INCLUIR, patron="77", sitio="boprint",
+                           activo=True, posicion=0),
+        ])
+        s.commit()
+        with caplog.at_level("WARNING", logger=reglas_mod.__name__):
+            flux, boprint = reglas_mod.cargar(s).para("fluxlasers"), \
+                reglas_mod.cargar(s).para("boprint")
+    assert (flux.incluir, flux.excluir, flux.paginas_id) == (set(), set(), set())
+    assert (boprint.incluir, boprint.excluir, boprint.paginas_id) == ({77}, set(), set())
+    assert not flux.pagina_fuera("beambox-ii", 3950)
+    assert lector.producto_dentro(
+        {"id": 5001, "categories": [{"id": 21, "name": "Repuestos"}]}, flux, set()) == (
+        False, "categoria")
+    assert "sin web" in caplog.text
 
 
 def test_categorias_fuera_heredan_a_las_hijas() -> None:
@@ -615,6 +679,24 @@ def test_el_tic_diario_solo_lanza_la_pasada_una_vez_al_mes(factory: sessionmaker
             assert not job.toca(s)
         _pasada(s, "manual", PASADA_EN_COLA, 0)                # una en marcha
         assert not job.toca(s)
+
+
+@pytest.mark.parametrize("dias", [1, 30])
+def test_el_tic_lanza_la_pasada_el_dia_n_y_no_el_n_mas_uno(factory: sessionmaker,
+                                                           dias: int) -> None:
+    """El `inicio` de la pasada cae algo después del tic que la lanzó: el tic
+    de N días después, a la misma hora, ya la lanza (y una sola vez)."""
+    tic = datetime(2026, 10, 1, 4, 20, tzinfo=UTC)
+    config = {**config_kb.defectos(), "webs_indice_dias": dias}
+    with factory() as s, patch.object(pasadas, "_config", return_value=config):
+        s.add(WebIndicePasada(origen="programada", estado=PASADA_OK,
+                              inicio=tic + timedelta(seconds=0.5),
+                              fin=tic + timedelta(minutes=5), created_at=tic, updated_at=tic))
+        s.commit()
+        assert job.toca(s, ahora=tic + timedelta(days=dias))
+        # Ni un día antes, ni otro tic el mismo día de la pasada.
+        assert not job.toca(s, ahora=tic + timedelta(days=dias - 1))
+        assert not job.toca(s, ahora=tic + timedelta(hours=6))
 
 
 def test_run_daily_encola_la_programada(factory: sessionmaker,

@@ -123,6 +123,25 @@ def test_una_pagina_web_no_es_una_imagen() -> None:
     assert "text/html" in r["motivo"]
 
 
+@pytest.mark.parametrize("metodo_tipo", ["HEAD", "GET"])
+@pytest.mark.parametrize("tipo", ['text/html<img src=x onerror="alert(1)">',
+                                  "application/" + "x" * 80])
+def test_el_tipo_que_dice_la_web_solo_se_ensena_si_es_un_tipo_normal(
+    metodo_tipo: str, tipo: str,
+) -> None:
+    """El `Content-Type` es de la web de fuera (DATO): una cabecera rara no
+    llega tal cual al motivo que pinta el editor."""
+    def manejador(request: httpx.Request) -> httpx.Response:
+        if request.method == "HEAD" and metodo_tipo == "GET":
+            return httpx.Response(405)
+        return httpx.Response(200, headers={"content-type": tipo}, content=b"<html></html>")
+
+    r = _comprobar("https://boprint.net/ador/", _Web(manejador))
+    assert r["ok"] is False and r["codigo"] == "no_es_imagen"
+    assert "(es otro tipo)" in r["motivo"], r["motivo"]
+    assert "<" not in r["motivo"] and "xxxx" not in r["motivo"]
+
+
 def test_mas_de_un_mega_se_inserta_pero_se_avisa() -> None:
     peso = 2_400_000
     r = _comprobar(FOTO, _Web(_imagen(peso)))
@@ -172,10 +191,25 @@ def test_si_tarda_demasiado_se_dice() -> None:
     ("cdn.boprint.net/foto.jpg", "url_invalida"),
     ("https://cdn.boprint.net:8443/foto.jpg", "puerto_no_permitido"),
     ("https://" + "a" * 2100 + ".com/foto.jpg", "url_invalida"),
+    ("https://cdn.boprint\t.net/foto.jpg", "url_invalida"),     # un tabulador en medio
 ])
 def test_lo_que_no_es_un_enlace_valido(url: str, codigo: str) -> None:
     r = _comprobar(url, _Web(_nunca))
     assert r["ok"] is False and r["codigo"] == codigo
+
+
+def test_un_dominio_con_tildes_se_comprueba_como_lo_pide_httpx() -> None:
+    """`straße` se resuelve como `xn--strae-oqa` (lo que pide httpx), no como
+    `strasse` (lo que haría el DNS de Python): si esa forma apunta dentro, no."""
+    def hostil(host, port, **_kw):  # noqa: ANN001, ANN202
+        ip = "127.0.0.1" if host.startswith("xn--") else PUBLICA
+        return [(2, 1, 6, "", (ip, port))]
+
+    web = _Web(_nunca)
+    r = imagen_url.comprobar("https://straße.example.com/foto.jpg", cliente=web.cliente(),
+                             resolver=hostil)
+    assert r["ok"] is False and r["codigo"] == "red_interna"
+    assert web.peticiones == []
 
 
 def test_un_dominio_que_no_existe() -> None:
@@ -230,6 +264,21 @@ def test_la_api_responde_siempre_200_con_el_veredicto(
                         {"cliente": _Web(_nunca).cliente(), "resolver": _resolver("172.17.0.2")})
     r = http.post("/api/emails/imagen-url/comprobar", headers=cabeceras, json={"url": FOTO})
     assert r.status_code == 200 and r.json()["codigo"] == "red_interna"
+
+
+def test_la_api_responde_200_tambien_con_lo_que_httpx_no_acepta(
+    http: TestClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Un tabulador copiado en medio del enlace: `urlsplit` lo quita y httpx lo
+    rechaza. Es `url_invalida` (200), no un 500."""
+    monkeypatch.setattr(imagen_url, "_RED_PRUEBAS",
+                        {"cliente": _Web(_nunca).cliente(), "resolver": _resolver(PUBLICA)})
+    url = "https://exa\tmple.com/a.png"
+    r = http.post("/api/emails/imagen-url/comprobar", headers=auth_headers(http, "admin"),
+                  json={"url": url})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": False, "url": url, "codigo": "url_invalida",
+                        "motivo": "La dirección no es válida."}
 
 
 def test_la_api_es_del_crm_el_taller_no_la_usa(http: TestClient) -> None:

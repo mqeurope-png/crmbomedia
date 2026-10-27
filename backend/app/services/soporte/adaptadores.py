@@ -178,9 +178,9 @@ def _base(fuente: SoporteFuente) -> str:
 
 #: Bloques cuyo contenido es código o maquinaria, no texto: fuera enteros
 #: (bleach con `strip=True` quitaría la etiqueta y dejaría su «texto»).
-_FUERA_RE = re.compile(
-    r"<(script|style|iframe|object|embed|noscript|template|svg)\b[^>]*>"
-    r".*?</\1\s*>", re.IGNORECASE | re.DOTALL)
+_FUERA = ("script", "style", "iframe", "object", "embed", "noscript", "template", "svg")
+_FUERA_ABRE_RE = re.compile(rf"<({'|'.join(_FUERA)})\b", re.IGNORECASE)
+_FUERA_CIERRA_RE = {nombre: re.compile(rf"</{nombre}\s*>", re.IGNORECASE) for nombre in _FUERA}
 _CSS = CSSSanitizer(allowed_css_properties=ALLOWED_STYLES)
 #: Para leer, enlaces e imágenes de la web; nada de `data:`, `cid:` ni
 #: `javascript:`.
@@ -201,13 +201,43 @@ def _absolutas(html: str, base: str) -> str:
     return _ATRIBUTO_URL_RE.sub(cambiar, html)
 
 
+def _quitar_fuera(html: str) -> str:
+    """Quita los bloques de `_FUERA` enteros, de la etiqueta que abre a la
+    primera que la cierra. Uno sin cierre se deja (bleach quita la etiqueta),
+    como siempre. En tiempo lineal: una expresión con `.*?` y referencia hacia
+    atrás recorría desde cada `<svg>` sin cerrar hasta el final (minutos con
+    un artículo roto u hostil de 2 MB). Aquí cada búsqueda sigue donde se
+    quedó la anterior: el próximo `>` y el próximo cierre de cada etiqueta se
+    recuerdan, y si una etiqueta ya no tiene cierre, no se vuelve a buscar."""
+    trozos: list[str] = []
+    copiado = pos = 0
+    mayor = -1                               # el próximo `>` ya encontrado
+    cierres: dict[str, re.Match[str] | None] = {}   # None: ya no hay más cierres
+    while (abre := _FUERA_ABRE_RE.search(html, pos)) is not None:
+        if mayor < abre.end():
+            mayor = html.find(">", abre.end())
+            if mayor < 0:
+                break                        # sin `>` no queda ninguna etiqueta entera
+        nombre = abre.group(1).lower()
+        cierre = cierres.get(nombre)
+        if nombre not in cierres or (cierre is not None and cierre.start() <= mayor):
+            cierre = cierres[nombre] = _FUERA_CIERRA_RE[nombre].search(html, mayor + 1)
+        if cierre is None:
+            pos = abre.start() + 1           # sin cierre: se deja y se sigue
+            continue
+        trozos.append(html[copiado:abre.start()])
+        copiado = pos = cierre.end()
+    trozos.append(html[copiado:])
+    return "".join(trozos)
+
+
 def sanear_html(html: str, base: str) -> str:
     """HTML para leer: la lista blanca del compositor (etiquetas, atributos y
     estilos), sin comentarios, sin scripts ni manejadores y con las rutas
     absolutas. El texto se conserva tal cual (también lo que parezca una
     orden: es contenido de la página)."""
     limpio = bleach.clean(
-        _FUERA_RE.sub("", html or ""), tags=ALLOWED_TAGS, attributes=ALLOWED_ATTRS,
+        _quitar_fuera(html or ""), tags=ALLOWED_TAGS, attributes=ALLOWED_ATTRS,
         protocols=_PROTOCOLOS, css_sanitizer=_CSS, strip=True, strip_comments=True,
     )
     return _absolutas(limpio, base).strip()

@@ -239,6 +239,33 @@ describe("WebsIndiceBloque · reglas", () => {
     await waitFor(() => expect(screen.queryByLabelText("Patrón de la regla «4320» (boprint)")).not.toBeInTheDocument());
     confirmar.mockRestore();
   });
+
+  it("(des)activar una regla no se lleva lo que se está escribiendo en su fila sin guardar", async () => {
+    mockActualizar.mockImplementation(async (id, cambios) => ({ ...REGLAS.find((r) => r.id === id), ...cambios }));
+    const user = userEvent.setup();
+    render(<WebsIndiceBloque canEdit />);
+    const patron = await screen.findByLabelText("Patrón de la regla «cooki»");
+    const fila = patron.closest("tr") as HTMLElement;
+    await user.clear(patron);
+    await user.type(patron, "cooki|checkout");
+    await user.type(within(fila).getByLabelText("Web de la regla «cooki»"), "boprint");
+    await user.type(within(fila).getByLabelText("Nota de la regla «cooki»"), " y pago");
+    // Se desactiva y se vuelve a activar sin haber pulsado «Guardar».
+    await user.click(within(fila).getByLabelText("Activa la regla «cooki»"));
+    await waitFor(() => expect(mockActualizar).toHaveBeenCalledWith(1, { activo: false }));
+    expect(await within(fila).findByLabelText("Activa la regla «cooki»")).not.toBeChecked();
+    await user.click(within(fila).getByLabelText("Activa la regla «cooki»"));
+    await waitFor(() => expect(mockActualizar).toHaveBeenCalledWith(1, { activo: true }));
+    expect(await within(fila).findByLabelText("Activa la regla «cooki»")).toBeChecked();
+    // Lo escrito sigue ahí, y «Guardar» también.
+    expect(patron).toHaveValue("cooki|checkout");
+    expect(within(fila).getByLabelText("Web de la regla «cooki»")).toHaveValue("boprint");
+    expect(within(fila).getByLabelText("Nota de la regla «cooki»")).toHaveValue("cookies y pago");
+    await user.click(within(fila).getByRole("button", { name: "Guardar" }));
+    await waitFor(() => expect(mockActualizar).toHaveBeenLastCalledWith(1, {
+      patron: "cooki|checkout", sitio: "boprint", nota: "cookies y pago",
+    }));
+  });
 });
 
 describe("WebsIndiceBloque · búsqueda de prueba", () => {

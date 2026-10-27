@@ -357,14 +357,20 @@ def parrafo_enlace(url: str, idioma: str | None) -> str:
     return f'<p>{etiqueta_procedimiento(idioma)} <a href="{seguro}">{seguro}</a></p>'
 
 
-_PASO_RE = re.compile(r"^\s*(?:\d{1,2}\s*[.)]|[-•·*])\s+\S", re.MULTILINE)
+#: Una línea que empieza un paso: «1.», «2)», un guion o la palabra «Paso 1:»
+#: en los idiomas de los correos («Step 1:», «Schritt 1:», «Étape 1 :»,
+#: «Stap 1:», «Passo 1:»; también con punto, paréntesis o guion).
+_PASO_RE = re.compile(
+    r"^\s*(?:(?:paso|step|schritt|[ée]tape|stap|passo)\s*\d{1,2}\s*[:.)\-–](?!\d)\s*"
+    r"|(?:\d{1,2}\s*[.)]|[-•·*])\s+)\S",
+    re.MULTILINE | re.IGNORECASE)
 _LI_RE = re.compile(r"<li\b", re.IGNORECASE)
 _LISTA_RE = re.compile(r"<(ol|ul)\b[^>]*>([\s\S]*?)</\1\s*>", re.IGNORECASE)
 
 
 def trae_pasos(cuerpo_html: str | None, texto: str | None = None) -> bool:
     """¿El correo trae pasos? Una lista (`ol`/`ul`) con dos elementos o más,
-    o dos líneas o más que empiezan por «1.», «2.» o un guion."""
+    o dos líneas o más que empiezan por «1.», «2.», un guion o «Paso 1:»."""
     for m in _LISTA_RE.finditer(cuerpo_html or ""):
         if len(_LI_RE.findall(m.group(2))) >= 2:
             return True

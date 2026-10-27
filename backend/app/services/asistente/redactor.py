@@ -1007,7 +1007,9 @@ def _rellenar(
             html, faltan = restaurar_imagenes(html, imagenes.etiquetas, esperadas,
                                               en_bloque=not seleccion_html)
             plano = sin_marcas_de_imagen(html_a_texto(html))
-        nota = _avisos_imagenes(faltan, imagenes.descartadas if html else 0)
+        # En una selección solo cuentan las suyas: las de fuera no se tocan.
+        descartadas = imagenes.descartadas_seleccion if seleccion_html else imagenes.descartadas
+        nota = _avisos_imagenes(faltan, descartadas if html else 0)
         if nota:
             data["aviso"] = f"{data['aviso']} {nota}".strip() if data["aviso"] else nota
     contexto = _json(b.contexto_json)

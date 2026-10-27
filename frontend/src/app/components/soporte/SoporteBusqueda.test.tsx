@@ -26,8 +26,14 @@ const ENFOQUE: SoporteResultado = {
   url: "https://support.flux3dp.com/hc/es-419/articles/360002",
 };
 
-function respuesta(resultados: SoporteResultado[], extra: { avisos?: string[]; fuentes?: string[] } = {}) {
-  return { consulta: "beambox camara", resultados, avisos: extra.avisos ?? [], fuentes: extra.fuentes ?? ["flux"] };
+function respuesta(
+  resultados: SoporteResultado[],
+  extra: { avisos?: string[]; fuentes?: string[]; fallidas?: string[] } = {},
+) {
+  return {
+    consulta: "beambox camara", resultados, avisos: extra.avisos ?? [], fuentes: extra.fuentes ?? ["flux"],
+    ...(extra.fallidas ? { fallidas: extra.fallidas } : {}),
+  };
 }
 
 const ARTICULO: SoporteArticulo = {
@@ -150,6 +156,18 @@ describe("SoporteBusqueda", () => {
     expect(await screen.findByRole("status")).toHaveTextContent("No hay ningún artículo");
     expect(screen.getByRole("list", { name: "Avisos de la búsqueda" })).toHaveTextContent(
       "No hay ningún centro de soporte activo en la lista.");
+    expect(screen.queryByRole("button", { name: /no hay procedimiento/ })).not.toBeInTheDocument();
+  });
+
+  it("si una fuente falló, aunque otra respondiera sin nada, no se ofrece decir que no hay procedimiento", async () => {
+    mockBuscar.mockResolvedValue(respuesta([], {
+      fuentes: ["flux"], fallidas: ["artisjet"], avisos: ["artisJet: no responde."],
+    }));
+    const user = userEvent.setup();
+    render(<SoporteBusqueda onSinResultados={jest.fn()} />);
+    await buscar(user);
+    expect(await screen.findByRole("status")).toHaveTextContent("No hay ningún artículo");
+    expect(screen.getByRole("list", { name: "Avisos de la búsqueda" })).toHaveTextContent("artisJet: no responde.");
     expect(screen.queryByRole("button", { name: /no hay procedimiento/ })).not.toBeInTheDocument();
   });
 

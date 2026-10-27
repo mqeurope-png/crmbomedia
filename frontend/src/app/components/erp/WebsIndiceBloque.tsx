@@ -493,14 +493,19 @@ function FilaRegla({
   const cambiada = patron.trim() !== regla.patron || sitio.trim() !== (regla.sitio ?? "")
     || nota.trim() !== (regla.nota ?? "");
 
-  async function cambiar(cambios: Parameters<typeof actualizarReglaWebs>[1]) {
+  /** `campos`: tras «Guardar», el patrón, la web y la nota pasan a ser los del
+   *  servidor. (Des)activar no los toca: no se lleva lo que se esté escribiendo
+   *  en la fila sin guardar (ni el botón «Guardar»). */
+  async function cambiar(cambios: Parameters<typeof actualizarReglaWebs>[1], campos: boolean) {
     setOcupada(true);
     setError(null);
     try {
       const r = await actualizarReglaWebs(regla.id, cambios);
-      setPatron(r.patron);
-      setSitio(r.sitio ?? "");
-      setNota(r.nota ?? "");
+      if (campos) {
+        setPatron(r.patron);
+        setSitio(r.sitio ?? "");
+        setNota(r.nota ?? "");
+      }
       onCambio(r);
     } catch (e) {
       setError(extractErrorMessage(e, "No se pudo guardar la regla."));
@@ -515,7 +520,7 @@ function FilaRegla({
       setError(fallo);
       return;
     }
-    void cambiar({ patron: patron.trim(), sitio: sitio.trim() || null, nota: nota.trim() || null });
+    void cambiar({ patron: patron.trim(), sitio: sitio.trim() || null, nota: nota.trim() || null }, true);
   }
 
   async function borrar() {
@@ -553,7 +558,7 @@ function FilaRegla({
       </td>
       <td data-label="Activa">
         <input type="checkbox" aria-label={`Activa la regla ${nombre}`} checked={regla.activo}
-          disabled={!canEdit || ocupada} onChange={(e) => void cambiar({ activo: e.target.checked })} />
+          disabled={!canEdit || ocupada} onChange={(e) => void cambiar({ activo: e.target.checked }, false)} />
       </td>
       <td>
         {canEdit ? (

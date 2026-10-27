@@ -14,6 +14,11 @@ nuestras propias webs. Las reglas:
   multidifusión, reservadas, sus equivalentes IPv6 y las IPv4 metidas en
   IPv6. También los nombres sin punto (los servicios de Docker: `api`,
   `redis`, `db`) y los `.local` / `.internal` / `.localhost`.
+- **Se comprueba lo mismo que pide httpx**: la URL se lee con `httpx.URL` y
+  se resuelve su host en ASCII (`raw_host`). Un dominio con «ß» o tildes
+  tiene dos formas (IDNA2003 de Python: `strasse`; IDNA2008 de httpx:
+  `xn--strae-oqa`) y un DNS hostil puede dar a cada una una IP distinta; lo
+  que httpx no acepta (un tabulador en medio…) es `url_invalida`, no un 500.
 - **Las redirecciones se siguen a mano** y cada salto se vuelve a comprobar:
   una URL pública que redirige a `http://127.0.0.1/` se para ahí.
 - **Tiempo máximo** por petición y **tamaño máximo**: el cuerpo se lee a
@@ -34,7 +39,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urljoin
 
 import httpx
 
@@ -120,9 +125,13 @@ def ip_prohibida(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
 
 
 def _host_de(url: str, *, permitir_http: bool) -> tuple[str, int, str]:
+    """`(host, puerto, esquema)` tal como los va a usar httpx: el host en
+    ASCII y en minúsculas (`xn--…` si el dominio lleva tildes), con su punto
+    final si lo trae (es el nombre que httpx resuelve al conectar)."""
     try:
-        partes = urlsplit(url.strip())
-    except ValueError as exc:
+        partes = httpx.URL(url.strip())
+        host = partes.raw_host.decode("ascii").lower()
+    except (httpx.InvalidURL, UnicodeError) as exc:
         raise UrlNoPermitida("url_invalida", "La dirección no es válida.") from exc
     esquema = (partes.scheme or "").lower()
     if esquema not in ("https", "http") or (esquema == "http" and not permitir_http):
@@ -132,15 +141,12 @@ def _host_de(url: str, *, permitir_http: bool) -> tuple[str, int, str]:
                 "Solo se admiten direcciones https://: una imagen en http:// la bloquean "
                 "los clientes de correo.")
         raise UrlNoPermitida("url_invalida", "La dirección tiene que empezar por https://.")
-    if partes.username or partes.password:
+    if partes.userinfo:
         raise UrlNoPermitida("url_invalida", "La dirección no puede llevar usuario ni contraseña.")
-    host = (partes.hostname or "").strip().rstrip(".").lower()
-    if not host:
+    if not host.rstrip("."):
         raise UrlNoPermitida("url_invalida", "La dirección no tiene dominio.")
-    try:
-        puerto = partes.port or (443 if esquema == "https" else 80)
-    except ValueError as exc:
-        raise UrlNoPermitida("url_invalida", "El puerto de la dirección no es válido.") from exc
+    # httpx da `None` con el puerto de siempre del esquema (443, 80).
+    puerto = partes.port if partes.port is not None else (443 if esquema == "https" else 80)
     if puerto not in ((443, 80) if permitir_http else (443,)):
         raise UrlNoPermitida("puerto_no_permitido",
                              f"No se admiten direcciones con el puerto {puerto}.")
@@ -149,10 +155,12 @@ def _host_de(url: str, *, permitir_http: bool) -> tuple[str, int, str]:
 
 def comprobar_url(url: str, *, permitir_http: bool = False,
                   resolver: Resolutor | None = None) -> str:
-    """Comprueba que la URL se puede pedir y devuelve su host. Lanza
+    """Comprueba que la URL se puede pedir y devuelve su host (en ASCII, sin
+    punto final: el que se compara con las listas blancas). Lanza
     `UrlNoPermitida` si no: esquema, puerto, nombre interno o alguna de sus
     direcciones en una red privada."""
-    host, puerto, _ = _host_de(url, permitir_http=permitir_http)
+    nombre, puerto, _ = _host_de(url, permitir_http=permitir_http)
+    host = nombre.rstrip(".")
     if host == "localhost" or host.endswith(_SUFIJOS_INTERNOS):
         raise UrlNoPermitida("red_interna", "No se admiten direcciones de la red interna.")
     try:
@@ -167,7 +175,8 @@ def comprobar_url(url: str, *, permitir_http: bool = False,
         # `api`, `redis`, `db`: los nombres de los servicios de Docker.
         raise UrlNoPermitida("red_interna", "No se admiten direcciones de la red interna.")
     try:
-        direcciones = (resolver or socket.getaddrinfo)(host, puerto, proto=socket.IPPROTO_TCP)
+        # El mismo nombre (ASCII) al que conectará httpx, no el de `urlsplit`.
+        direcciones = (resolver or socket.getaddrinfo)(nombre, puerto, proto=socket.IPPROTO_TCP)
     except (socket.gaierror, UnicodeError, OSError) as exc:
         raise UrlNoPermitida("no_resuelve", f"No se encuentra el dominio {host}.") from exc
     ips = {info[4][0] for info in direcciones if info and len(info) > 4 and info[4]}
@@ -223,13 +232,17 @@ def obtener(
             restante = limite - time.monotonic()
             if restante <= 0:
                 raise RedError("tiempo_agotado", "La web ha tardado demasiado en responder.")
-            peticion = http.build_request(
-                metodo, actual, headers=cabeceras or {},
-                extensions={"timeout": httpx.Timeout(restante, connect=min(restante, 10.0))
-                            .as_dict()},
-            )
             try:
+                peticion = http.build_request(
+                    metodo, actual, headers=cabeceras or {},
+                    extensions={"timeout": httpx.Timeout(restante, connect=min(restante, 10.0))
+                                .as_dict()},
+                )
                 respuesta = http.send(peticion, stream=True)
+            except httpx.InvalidURL as exc:
+                # `comprobar_url` ya lee la URL con httpx: esto es por si acaso,
+                # para que nunca salga un 500 en vez del motivo.
+                raise UrlNoPermitida("url_invalida", "La dirección no es válida.") from exc
             except httpx.TimeoutException as exc:
                 raise RedError("tiempo_agotado", "La web ha tardado demasiado en responder.") \
                     from exc
@@ -239,7 +252,11 @@ def obtener(
             try:
                 if respuesta.is_redirect and respuesta.headers.get("location"):
                     saltos.append(actual)
-                    actual = urljoin(actual, respuesta.headers["location"])
+                    try:
+                        actual = urljoin(actual, respuesta.headers["location"])
+                    except ValueError as exc:     # `https://a]b.com/`: httpx sí, urljoin no
+                        raise UrlNoPermitida("url_invalida",
+                                             "La web redirige a una dirección no válida.") from exc
                     continue
                 return _leer(respuesta, actual, max_bytes=max_bytes, limite=limite,
                              aceptar_truncado=aceptar_truncado, saltos=saltos,

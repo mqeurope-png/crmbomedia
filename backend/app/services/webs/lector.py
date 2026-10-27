@@ -690,6 +690,13 @@ class _LectorWeb:
 
     # -- productos --
 
+    def _rest_responde(self) -> bool:
+        """¿La REST de la web respondió bien en esta misma lectura (páginas o
+        entradas del idioma por defecto sin error)? Solo entonces un 404 de la
+        Store API quiere decir «web sin tienda»."""
+        return any(g.error is None and g.idioma == self.sitio.idioma_defecto
+                   and g.tipo in _RUTAS for g in self.lectura.grupos)
+
     def _categorias(self, idi: _Idioma) -> list[dict[str, Any]]:
         return paginar(self.http, idi.base, _RUTA_CATEGORIAS, dict(idi.params), hosts=self.hosts)
 
@@ -743,11 +750,12 @@ class _LectorWeb:
                 fuera = fuera_compartido
             productos = self._productos(idi, fuera)
         except SinRuta as exc:
-            if idi.defecto:
+            if idi.defecto and self._rest_responde():
                 # Sin WooCommerce (pimpam): no hay productos; lo que hubiera se va.
                 self.lectura.sin_tienda = True
                 return grupo, None
-            # La tienda existe pero ese idioma no responde: se queda lo anterior.
+            # La tienda existe pero ese idioma no responde, o la web da 404 a
+            # todo (REST rota, vhost mal apuntado): se queda lo anterior.
             grupo.error = str(exc)[:300]
             return grupo, None
         except LecturaError as exc:

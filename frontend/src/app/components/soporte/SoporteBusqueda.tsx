@@ -189,8 +189,10 @@ export function SoporteBusqueda({
   const avisos = (busqueda?.avisos ?? []).filter(
     (a) => !(vacia && a.startsWith("No se ha encontrado nada")),
   );
-  // Solo se puede decir «no hay procedimiento» si se ha mirado en algún sitio.
-  const sePuedeDecirQueNoHay = vacia && (busqueda?.fuentes.length ?? 0) > 0;
+  // Solo se puede decir «no hay procedimiento» si se ha mirado en algún sitio
+  // y en ninguno ha fallado la consulta (en el que falló no se ha mirado).
+  const sePuedeDecirQueNoHay = vacia && (busqueda?.fuentes.length ?? 0) > 0
+    && (busqueda?.fallidas?.length ?? 0) === 0;
   const opcionesIdioma = IDIOMAS.some((i) => i.codigo === idiomaSel)
     ? IDIOMAS : [...IDIOMAS, { codigo: idiomaSel, nombre: idiomaSel }];
 

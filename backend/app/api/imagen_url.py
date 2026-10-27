@@ -21,6 +21,7 @@ para cambiarla, no se guarda nada.
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import httpx
@@ -66,6 +67,19 @@ class ComprobarIn(BaseModel):
 
 def _no(url: str, codigo: str, motivo: str) -> dict[str, Any]:
     return {"ok": False, "url": url, "codigo": codigo, "motivo": motivo}
+
+
+#: Lo que se enseña del `Content-Type` en el motivo. Viene de la web de fuera
+#: (es DATO): solo si parece un tipo de verdad (`text/html`, `application/pdf`).
+_TIPO_ENSENABLE_RE = re.compile(r"[a-z0-9.+/-]{1,60}")
+
+
+def _tipo_para_motivo(tipo: str) -> str:
+    """El tipo que dijo la web, si es un tipo normal; si no, «otro tipo» (una
+    cabecera rara o hostil no llega tal cual a la pantalla)."""
+    if not tipo:
+        return "de un tipo desconocido"
+    return tipo if _TIPO_ENSENABLE_RE.fullmatch(tipo) else "otro tipo"
 
 
 def _megas(n: int) -> str:
@@ -130,8 +144,8 @@ def comprobar(url: str, *, cliente: httpx.Client | None = None,
     if cabeza is not None and cabeza.status == 200 and cabeza.tipo:
         if not cabeza.tipo.startswith("image/"):
             return _no(limpia, "no_es_imagen",
-                       f"El enlace no es una imagen (es {cabeza.tipo}): copia la dirección de la "
-                       "imagen, no la de la página.")
+                       f"El enlace no es una imagen (es {_tipo_para_motivo(cabeza.tipo)}): copia "
+                       "la dirección de la imagen, no la de la página.")
         if cabeza.longitud_anunciada is not None:
             return _si(limpia, cabeza.tipo, cabeza.longitud_anunciada)
     # HEAD no vale (405/501, sin tipo, otro estado) o no dijo cuánto pesa: GET
@@ -146,7 +160,7 @@ def comprobar(url: str, *, cliente: httpx.Client | None = None,
                    f"La dirección no devuelve la imagen (HTTP {cuerpo.status}).")
     if not cuerpo.tipo.startswith("image/"):
         return _no(limpia, "no_es_imagen",
-                   f"El enlace no es una imagen (es {cuerpo.tipo or 'de un tipo desconocido'}): "
+                   f"El enlace no es una imagen (es {_tipo_para_motivo(cuerpo.tipo)}): "
                    "copia la dirección de la imagen, no la de la página.")
     if cuerpo.truncado:
         return _si(limpia, cuerpo.tipo, cuerpo.longitud_anunciada, truncado=True)

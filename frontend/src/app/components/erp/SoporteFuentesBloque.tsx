@@ -159,12 +159,13 @@ export function SoporteFuentesBloque({ canEdit }: { canEdit: boolean }) {
     }
   }
 
-  async function guardar(original: SoporteFuente, b: Borrador): Promise<string | null> {
+  async function guardar(clave: string, b: Borrador, antes: Borrador): Promise<string | null> {
     const { locales, malos } = leerLocales(b.locales);
     if (malos.length > 0) return `«${malos.join(" ")}» no es idioma=locale (p. ej. es=es-419, en=en-us).`;
     // Solo lo que cambia: tocar el dominio, el tipo, la dirección o los idiomas
     // borra la comprobación (ya no diría la verdad); el nombre o la nota, no.
-    const antes = borradorDe(original);
+    // `antes` es lo que tenía el formulario al abrirlo: si mientras tanto se ha
+    // (des)activado desde la fila, un «activo» que no se ha tocado aquí no lo deshace.
     const cambios: SoporteFuenteIn = {};
     if (b.nombre.trim() !== antes.nombre) cambios.nombre = b.nombre.trim();
     if (b.dominio.trim() !== antes.dominio) cambios.dominio = b.dominio.trim();
@@ -179,7 +180,7 @@ export function SoporteFuentesBloque({ canEdit }: { canEdit: boolean }) {
       return null;
     }
     try {
-      sustituir(await actualizarFuenteSoporte(original.clave, cambios));
+      sustituir(await actualizarFuenteSoporte(clave, cambios));
       setEditando(null);
       return null;
     } catch (e) {
@@ -239,7 +240,7 @@ export function SoporteFuentesBloque({ canEdit }: { canEdit: boolean }) {
       {canEdit && fuentes !== null ? (
         enEdicion ? (
           <FuenteFormulario key={`editar-${enEdicion.clave}`} modo="edicion" inicial={borradorDe(enEdicion)}
-            onGuardar={(b) => guardar(enEdicion, b)} onCancelar={() => setEditando(null)} />
+            onGuardar={(b, antes) => guardar(enEdicion.clave, b, antes)} onCancelar={() => setEditando(null)} />
         ) : (
           <FuenteFormulario key={`alta-${altas}`} modo="alta" inicial={NUEVA} onGuardar={crear} />
         )
@@ -322,10 +323,12 @@ function FuenteFormulario({
 }: {
   modo: "alta" | "edicion";
   inicial: Borrador;
-  /** Devuelve el error que enseñar, o `null` si ha ido bien. */
-  onGuardar: (b: Borrador) => Promise<string | null>;
+  /** Devuelve el error que enseñar, o `null` si ha ido bien. `antes`: con lo
+   *  que se abrió el formulario (para mandar solo lo que se ha cambiado en él). */
+  onGuardar: (b: Borrador, antes: Borrador) => Promise<string | null>;
   onCancelar?: () => void;
 }) {
+  const [antes] = useState<Borrador>(inicial);
   const [b, setB] = useState<Borrador>(inicial);
   const [ocupado, setOcupado] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -337,7 +340,7 @@ function FuenteFormulario({
   async function guardar() {
     setOcupado(true);
     setError(null);
-    const fallo = await onGuardar(b);
+    const fallo = await onGuardar(b, antes);
     // Si ha ido bien, el formulario se desmonta (alta nueva o fin de la edición).
     if (fallo) {
       setError(fallo);

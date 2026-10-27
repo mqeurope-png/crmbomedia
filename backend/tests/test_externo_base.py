@@ -117,6 +117,98 @@ def test_sigue_redirecciones_publicas_y_lee_la_respuesta():
     assert r.url == "https://boprint.net/nuevo" and r.saltos == ["https://boprint.net/viejo"]
 
 
+def _nunca(request: httpx.Request) -> httpx.Response:
+    raise AssertionError(f"no debía salir ninguna petición: {request.url}")
+
+
+def test_un_dominio_con_tildes_se_comprueba_con_el_nombre_al_que_va_httpx():
+    """`straße` es `strasse` para el DNS de Python (IDNA2003) y
+    `xn--strae-oqa` para httpx (IDNA2008): se resuelve el de httpx. Si no, un
+    DNS hostil da una IP pública a uno y la red interna al otro."""
+    pedidos: list[str] = []
+
+    def hostil(host, port, **_kw):  # noqa: ANN001, ANN202
+        pedidos.append(host)
+        ip = "172.17.0.1" if host == "xn--strae-oqa.example.com" else PUBLICA
+        return [(2, 1, 6, "", (ip, port))]
+
+    with pytest.raises(red.UrlNoPermitida) as exc:
+        red.comprobar_url("https://straße.example.com/a.png", resolver=hostil)
+    assert exc.value.codigo == "red_interna"
+    assert pedidos == ["xn--strae-oqa.example.com"]
+
+    # Con un DNS normal pasa, y el host que se devuelve (el que se compara con
+    # las listas blancas) es el mismo al que llega la petición.
+    pedidos.clear()
+    assert red.comprobar_url("https://STRASSE.example.com./a.png",
+                             resolver=_resolver(PUBLICA)) == "strasse.example.com"
+    llegadas: list[bytes] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        llegadas.append(request.url.raw_host)
+        return httpx.Response(200, content=b"ok")
+
+    def apuntar(host, port, **_kw):  # noqa: ANN001, ANN202
+        pedidos.append(host)
+        return [(2, 1, 6, "", (PUBLICA, port))]
+
+    r = red.obtener("https://straße.example.com/a.png", max_bytes=1000,
+                    hosts_permitidos={"xn--strae-oqa.example.com"}, resolver=apuntar,
+                    cliente=_cliente(handler))
+    assert r.status == 200
+    assert pedidos == ["xn--strae-oqa.example.com"]
+    assert llegadas == [b"xn--strae-oqa.example.com"]
+
+
+@pytest.mark.parametrize("url", [
+    "https://exa\tmple.com/a.png",          # un tabulador copiado en medio del enlace
+    "https://boprint.net\n/a.png",
+    "https://exa​mple.com/a.png",     # un carácter invisible en el dominio
+])
+def test_lo_que_httpx_no_acepta_es_url_invalida_y_no_un_error(url):
+    with pytest.raises(red.UrlNoPermitida) as exc:
+        red.comprobar_url(url, resolver=_resolver(PUBLICA))
+    assert exc.value.codigo == "url_invalida"
+    with pytest.raises(red.UrlNoPermitida) as exc:
+        red.obtener(url, max_bytes=1000, resolver=_resolver(PUBLICA), cliente=_cliente(_nunca))
+    assert exc.value.codigo == "url_invalida"
+
+
+def test_una_redireccion_a_un_dominio_con_tildes_se_comprueba_igual():
+    """La cabecera `Location` (con una «ß» en latin-1) pasa por la misma
+    comprobación: se resuelve el nombre al que iría httpx."""
+    def hostil(host, port, **_kw):  # noqa: ANN001, ANN202
+        ip = "127.0.0.1" if host == "xn--strae-oqa.example.com" else PUBLICA
+        return [(2, 1, 6, "", (ip, port))]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "boprint.net":
+            return httpx.Response(302, headers={"location": b"https://stra\xdfe.example.com/x"})
+        return httpx.Response(200, content=b"de dentro")
+
+    with pytest.raises(red.UrlNoPermitida) as exc:
+        red.obtener("https://boprint.net/a.png", max_bytes=1000, resolver=hostil,
+                    cliente=_cliente(handler))
+    assert exc.value.codigo == "red_interna"
+
+
+@pytest.mark.parametrize("destino", ["https://[::1/x", "https://exa\tmple.com/x",
+                                     "https://a]b.com/x"])
+def test_una_redireccion_a_una_direccion_rota_es_un_error_de_red(destino):
+    """Nunca sale una excepción que no sea `RedError` (sería un 500). La
+    última la acepta httpx y `urljoin` no (`ValueError`)."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "boprint.net":
+            return httpx.Response(302, headers={"location": destino})
+        return httpx.Response(200, content=b"no")
+
+    with pytest.raises(red.RedError) as exc:
+        red.obtener("https://boprint.net/a.png", max_bytes=1000, resolver=_resolver(PUBLICA),
+                    cliente=_cliente(handler))
+    if "]" in destino and "[" not in destino:
+        assert exc.value.codigo == "url_invalida"
+
+
 # ---------------------------------------------------------------------------
 # Del HTML al texto que importa
 # ---------------------------------------------------------------------------

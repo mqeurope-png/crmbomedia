@@ -21,8 +21,10 @@ export type SoporteBusqueda = {
   resultados: SoporteResultado[];
   /** Lo que conviene saber (una fuente no respondió, sin resultados…). */
   avisos: string[];
-  /** Las fuentes que se han consultado (clave). */
+  /** Las fuentes que han respondido (clave): en ellas se ha mirado. */
   fuentes: string[];
+  /** Las que no se han podido consultar (fallaron o no dio tiempo). */
+  fallidas?: string[];
 };
 
 export type SoporteArticulo = {

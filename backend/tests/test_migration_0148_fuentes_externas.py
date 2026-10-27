@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -60,8 +61,13 @@ def test_crea_las_tablas_siembra_flux_y_las_reglas_y_baja_limpia(alembic_setup):
         # Las mismas que las de partida del código (la migración lleva su foto).
         assert [r.patron for r in reglas if r.tipo == "categoria_fuera"] == \
             [p for p, _ in reglas_partida.CATEGORIAS_FUERA]
-        assert [r.patron for r in reglas if r.tipo == "pagina_excluir_slug"] == \
-            [p for p, _ in reglas_partida.PAGINAS_FUERA]
+        slugs = [r.patron for r in reglas if r.tipo == "pagina_excluir_slug"]
+        assert slugs == [p for p, _ in reglas_partida.PAGINAS_FUERA]
+        # «Páginas de prueba» no se lleva las de testimonios de clientes.
+        compiladas = [re.compile(p, re.IGNORECASE) for p in slugs]
+        for slug, fuera in (("testimonios", False), ("testimonials", False), ("test", True),
+                            ("test-form", True), ("prueba-test", True)):
+            assert any(p.search(slug) for p in compiladas) is fuera, slug
         excepciones = c.execute(text(
             "SELECT tipo, sitio, patron FROM web_indice_reglas "
             "WHERE tipo IN ('producto_excluir_id', 'producto_incluir_id') "

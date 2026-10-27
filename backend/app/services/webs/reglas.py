@@ -17,7 +17,8 @@ editar.
   producto. Si un id está en las dos, gana excluir (lo prudente: no ofrecer
   un repuesto como máquina).
 
-Cada regla vale para una web (`sitio`) o para todas (`sitio` vacío).
+Cada regla vale para una web (`sitio`) o para todas (`sitio` vacío). Las de
+id, siempre para una: los ids de WordPress son de cada web.
 """
 from __future__ import annotations
 
@@ -130,6 +131,12 @@ class Reglas:
                 if prefijo:
                     salida.categorias.append(prefijo)
             elif regla.tipo in TIPOS_ID:
+                if not regla.sitio:
+                    # Los ids de WordPress son de cada web: sin web valdría para
+                    # todas. La API no deja guardarla; si alguien la metió a mano
+                    # en la base, se salta y se avisa.
+                    logger.warning("webs: regla %s %r sin web; se salta", regla.tipo, patron)
+                    continue
                 try:
                     valor = int(patron)
                 except ValueError:

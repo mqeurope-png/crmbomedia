@@ -5,8 +5,9 @@ con SETNX + `enqueue_in` a la hora de Configuración ERP, re-armado en
 `finally`, armado desde `app/main.py` al arrancar. Cada día, a
 `conocimiento.webs_indice_hora` (05:20 de Madrid de partida: fuera de las de
 FLUX, 04:30, y del catálogo, 04:45), mira si toca: solo lanza una pasada
-programada si la última programada correcta o parcial tiene más de
-`conocimiento.webs_indice_dias` días (30 de partida) y no hay otra en marcha.
+programada si la última programada correcta o parcial es de hace
+`conocimiento.webs_indice_dias` días o más (30 de partida; el tic de ese día
+ya la lanza) y no hay otra en marcha.
 
 ¿Por qué un tic diario y no un `enqueue_in` de 30 días? Un trabajo programado
 que se pierde (Redis vaciado, despliegue) dejaría la cadena muerta un mes, y un
@@ -33,6 +34,11 @@ logger = logging.getLogger(__name__)
 HEARTBEAT_KEY = "webs:indice:heartbeat"
 #: El tic solo mira y encola: corto.
 JOB_TIMEOUT_SECONDS = 300
+#: Margen al contar los días: el `inicio` de la pasada cae siempre algo
+#: después del tic que la lanzó (y MySQL lo redondea al segundo), así que el
+#: tic de N días después se quedaba corto por nada y la pasada salía cada
+#: N+1 días. Menos de un día: no adelanta ninguna.
+MARGEN_DIAS = timedelta(hours=2)
 
 
 def _config(session: Session) -> dict:
@@ -41,8 +47,8 @@ def _config(session: Session) -> dict:
 
 def toca(session: Session, *, ahora: datetime | None = None) -> bool:
     """¿Toca una pasada programada? Interruptor encendido, ninguna en marcha y
-    la última programada correcta o parcial de hace más de N días (o
-    ninguna)."""
+    la última programada correcta o parcial de hace N días o más, con el
+    margen de `MARGEN_DIAS` (o ninguna)."""
     ahora = ahora or datetime.now(UTC)
     config = _config(session)
     if not config.get("webs_indice_activo", True):
@@ -55,7 +61,7 @@ def toca(session: Session, *, ahora: datetime | None = None) -> bool:
     if ultima is None:
         return True
     referencia = pasadas._con_zona(ultima.inicio or ultima.created_at)  # noqa: SLF001
-    return referencia is None or ahora - referencia >= timedelta(days=dias)
+    return referencia is None or ahora - referencia >= timedelta(days=dias) - MARGEN_DIAS
 
 
 def run_daily(session: Session, *, ahora: datetime | None = None, force: bool = False) -> bool:

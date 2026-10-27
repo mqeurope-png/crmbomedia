@@ -757,9 +757,15 @@ asistente.
 - **Las imágenes del editor sobreviven a una corrección.** El editor tiene
   ahora **«Imagen por URL»** (comprobada antes de insertarla y enlazada tal
   cual). Antes, «más corto» sobre un cuerpo con imágenes las perdía en
-  silencio (el borrador no admite `<img>`). Ahora cada imagen va al modelo como
-  «[IMAGEN 1]» y vuelve a su sitio con su etiqueta original
-  (`texto.apartar_imagenes` / `restaurar_imagenes`; se acepta el marcador
-  traducido). Si el modelo lo quitó, la imagen vuelve al final con aviso; las
-  que no son https no se conservan y se dice cuántas. Un compuesto rehecho
-  desde el texto va sin imágenes, y se avisa.
+  silencio (el borrador no admite `<img>`). Ahora cada imagen **de fuera**
+  (la de «Imagen por URL») va al modelo como «[IMAGEN 1]» y vuelve a su sitio
+  con su etiqueta saneada, con el `max-width:100%;height:auto` que le pone el
+  diálogo y ningún otro estilo (`texto.apartar_imagenes` /
+  `restaurar_imagenes`; se acepta el marcador traducido). Si el modelo lo
+  quitó, la imagen vuelve al final con aviso; las que no son https no se
+  conservan y se dice cuántas (en una corrección sobre una selección, solo las
+  de la selección). **Las subidas desde el PC** (`/assets/email-templates/…`
+  y los adjuntos de plantilla `…/attachments/by-cid/…`) siguen **exactamente
+  como antes**: un editor que solo tiene de esas da la misma petición que
+  antes de este cambio. Un compuesto rehecho desde el texto va sin imágenes, y
+  se avisa.

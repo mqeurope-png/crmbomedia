@@ -88,7 +88,12 @@ const NO_SE_VE =
 
 /** El diálogo según lo comprobado: sin comprobar, la nota; con error, el
  *  motivo; bien, la vista previa (y el aviso de peso si lo hay). «Insertar»
- *  solo se habilita con una comprobación buena. */
+ *  solo se habilita con una comprobación buena.
+ *
+ *  TinyMCE pinta como HTML el texto del `alertbanner` y el del `htmlpanel`, y
+ *  el motivo y el aviso pueden traer texto de la web ajena (su Content-Type, el
+ *  host de una redirección) o de un error: todo lo que no es nuestro entra
+ *  escapado, y la vista previa solo se pinta con una URL https://. */
 export function especDialogoImagenUrl(
   url: string,
   comprobada: ComprobacionImagenUrl | null,
@@ -106,17 +111,19 @@ export function especDialogoImagenUrl(
   if (comprobada === null) {
     items.push({ type: "htmlpanel", html: `<p class="imagen-url-nota">${escaparTexto(NOTA_INICIAL)}</p>` });
   } else if (!comprobada.ok) {
-    items.push({ type: "alertbanner", level: "error", icon: "warning", text: comprobada.motivo });
+    items.push({ type: "alertbanner", level: "error", icon: "warning", text: escaparTexto(comprobada.motivo) });
   } else {
     const peso = pesoLegible(comprobada.bytes);
     const datos = [comprobada.content_type, peso ?? "peso desconocido", "enlazada tal cual, sin subirla"]
       .filter(Boolean).join(" · ");
+    // Sin https:// no hay vista previa (ni `javascript:` ni `data:` en el src).
+    const previa = validarImagenUrl(comprobada.url).ok
+      ? `<img src="${escaparAtributo(comprobada.url)}" alt="Vista previa de la imagen" referrerpolicy="no-referrer">`
+      : `<p class="imagen-url-nota imagen-url-nota-error">${escaparTexto(NO_SE_VE)}</p>`;
     items.push({
       type: "htmlpanel",
       html:
-        `<div class="imagen-url-previa">`
-        + `<img src="${escaparAtributo(comprobada.url)}" alt="Vista previa de la imagen" referrerpolicy="no-referrer">`
-        + `</div>`
+        `<div class="imagen-url-previa">${previa}</div>`
         + `<p class="imagen-url-dato">${escaparTexto(datos)}</p>`,
       // Si la web no deja enseñarla fuera (protección contra el enlazado),
       // aquí se ve rota: se dice, en vez de dejar un icono roto sin más.
@@ -131,7 +138,7 @@ export function especDialogoImagenUrl(
       },
     });
     if (comprobada.aviso) {
-      items.push({ type: "alertbanner", level: "warn", icon: "warning", text: comprobada.aviso });
+      items.push({ type: "alertbanner", level: "warn", icon: "warning", text: escaparTexto(comprobada.aviso) });
     }
   }
   return {

@@ -111,6 +111,8 @@ class WebFalsa:
     codigos: dict[str, str] = field(default_factory=dict)
     #: Rutas que dan 500 (p. ej. "/wp/v2/product").
     rutas_500: set[str] = field(default_factory=set)
+    #: La web da 404 a todo (REST rota por un plugin, vhost mal apuntado).
+    rota: bool = False
     peticiones: list[str] = field(default_factory=list)
 
     def _idioma(self, request: httpx.Request, qs: dict[str, list[str]]) -> str:
@@ -130,6 +132,8 @@ class WebFalsa:
 
     def responder(self, request: httpx.Request) -> httpx.Response:
         self.peticiones.append(str(request.url))
+        if self.rota:
+            return httpx.Response(404, text="<html><body>404</body></html>")
         qs = parse_qs(request.url.query.decode())
         ruta = qs.get("rest_route", [None])[0]
         if ruta is None:

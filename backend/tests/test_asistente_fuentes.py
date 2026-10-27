@@ -355,6 +355,26 @@ def test_los_pasos_se_reconocen_en_listas_y_en_lineas_numeradas() -> None:
     assert not material_fuera.trae_pasos("<p>Lo consultamos con el fabricante.</p>")
 
 
+def test_los_pasos_escritos_como_paso_1_se_reconocen_en_cada_idioma() -> None:
+    """«Paso 1: …» es como más se escriben los pasos en un correo: en párrafos
+    o en líneas, en los idiomas de los correos, con cualquier caja."""
+    for cuerpo in (
+        "<p>Paso 1: abre Beam Studio.</p><p>Paso 2: ve a Menú &gt; Máquina.</p>",
+        "<p>Paso 1. Abre Beam Studio.</p><p>paso 2. Ve a Menú.</p>",
+        "<p>Step 1: Open Beam Studio.<br>STEP 2: Go to Menu.</p>",
+        "<p>Schritt 1: Beam Studio öffnen.</p><p>Schritt 2: Menü öffnen.</p>",
+        "<p>Étape 1 : ouvrez Beam Studio.</p><p>ÉTAPE 2 : allez dans Menu.</p>",
+        "<p>Stap 1: open Beam Studio.</p><p>Stap 2: ga naar Menu.</p>",
+        "<p>Passo 1: apri Beam Studio.</p><p>Passo 2: vai su Menu.</p>",
+    ):
+        assert material_fuera.trae_pasos(cuerpo), cuerpo
+    # La palabra en medio de la frase, o sin número y signo, no es un paso.
+    assert not material_fuera.trae_pasos(
+        "<p>Hola, el paso 1: lo hacemos nosotros.</p><p>Y el paso 2: también.</p>")
+    assert not material_fuera.trae_pasos("<p>Step by step.</p><p>Stap 1,5 mm is genoeg.</p>")
+    assert not material_fuera.trae_pasos("<p>Paso 1: lo miramos nosotros.</p>")
+
+
 def test_lo_que_dice_la_pagina_es_dato_no_orden_y_las_guardias_siguen_igual(
     session_factory: sessionmaker, http: TestClient, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -699,6 +719,112 @@ def test_apartar_y_restaurar_imagenes() -> None:
     assert texto.img_segura('<img src="javascript:alert(1)">') is None
     assert texto.img_segura('<img src="https://x.example/a.png" onload="x()">') == (
         '<img src="https://x.example/a.png">')
+
+
+#: Lo que inserta «Imagen por URL» (`htmlImagenUrl` en imagenPorUrl.ts).
+IMAGEN_POR_URL = f'<img src="{FOTO}" alt="" style="max-width:100%;height:auto">'
+HEX = "0123456789abcdef" * 4
+#: Imágenes nuestras: subida desde el PC (con origen o desde la raíz) y una de
+#: plantilla importada. Son las que el envío incrusta (gmail/service.py).
+SUBIDAS = (
+    f'<img src="https://crm.bomedia.net/assets/email-templates/2026/10/{HEX}.png" alt="">',
+    f'<img src="/assets/email-templates/2026/10/{HEX}.jpg">',
+    '<img src="/api/email-templates/42/attachments/by-cid/logo-1@crm" alt="logo">',
+)
+
+
+def test_las_imagenes_subidas_desde_el_pc_dejan_la_correccion_como_antes(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    """Un editor que solo lleva imágenes nuestras: la corrección (en el primer
+    turno y en uno siguiente) es byte a byte la de antes de los marcadores
+    (la misma que sin `apartar_imagenes`): sin marcadores, sin el párrafo de
+    IMÁGENES y sin avisos."""
+    editor = (f"<p>Hola Klaus,</p><p>Te paso las fotos.</p><p>{''.join(SUBIDAS)}</p>"
+              "<p>Un saludo,<br>Admin</p>")
+    assert texto.apartar_imagenes(editor) is None
+    assert texto.apartar_imagenes(editor, f"<p>{SUBIDAS[1]}</p>") is None
+    falso = _ClaudeFalso(CORREO_ANA)
+    with session_factory() as s:
+        thread_id = _hilo_ana(s)
+    borradores = []
+    for antes in (False, True):
+        with patch.object(llm, "_invoke_claude", falso), patch.object(
+                redactor, "apartar_imagenes",
+                (lambda *a, **k: None) if antes else redactor.apartar_imagenes):
+            r = _pedir(http, thread_id, instruccion="más corto", texto_actual_html=editor)
+            assert r.status_code == 201, r.text
+            b = r.json()["borrador"]
+            r2 = _turno(http, b["id"], "más formal", texto_actual_html=editor)
+            assert r2.status_code == 201, r2.text
+        borradores.append((b, r2.json()["borrador"]))
+    for i, j in ((0, 2), (1, 3)):
+        assert falso.llamadas[i]["system"] == falso.llamadas[j]["system"]
+        assert falso.llamadas[i]["bloques"] == falso.llamadas[j]["bloques"]
+        peticion = _partes(falso, i)[2]
+        assert "[IMAGEN" not in peticion and "IMÁGENES" not in peticion
+    for ahora, antes in zip(borradores[0], borradores[1], strict=True):
+        assert (ahora["html"], ahora["texto"], ahora["aviso"]) == (
+            antes["html"], antes["texto"], antes["aviso"])
+        assert not ahora["aviso"]
+
+
+def test_la_imagen_por_url_vuelve_con_su_estilo_y_la_subida_sigue_como_antes(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    """La imagen de «Imagen por URL» sí va como marcador y vuelve a su sitio
+    con el estilo que la ajusta al ancho del correo; la subida del mismo
+    editor no lleva marcador (como antes)."""
+    editor = (f"<p>Hola Klaus,</p><p>La foto:</p><p>{IMAGEN_POR_URL}</p><p>{SUBIDAS[0]}</p>"
+              "<p>Un saludo,<br>Admin</p>")
+    corto = {**CORREO_ANA, "cuerpo": "<p>Hola Klaus,</p><p>[IMAGEN 1]</p><p>Un saludo,</p>"}
+    falso = _ClaudeFalso(corto)
+    with session_factory() as s:
+        thread_id = _hilo_ana(s)
+    with patch.object(llm, "_invoke_claude", falso):
+        r = _pedir(http, thread_id, instruccion="más corto", texto_actual_html=editor)
+    assert r.status_code == 201, r.text
+    peticion = _partes(falso)[2]
+    assert "[IMAGEN 1]" in peticion and "[IMAGEN 2]" not in peticion
+    assert "marcadas como [IMAGEN 1]." in peticion and "email-templates" not in peticion
+    b = r.json()["borrador"]
+    assert _img(b["html"]) == [IMAGEN_POR_URL] and not b["aviso"]
+
+
+def test_la_imagen_por_url_conserva_su_estilo_y_ningun_otro() -> None:
+    """El estilo de «Imagen por URL» vuelve tal cual; como lo guarda el editor
+    (con espacios, en otro orden) vuelve igual; otro CSS, nunca."""
+    assert texto.img_segura(IMAGEN_POR_URL) == IMAGEN_POR_URL
+    assert texto.img_segura(
+        f'<img src="{FOTO}" alt="" style="max-width: 100%; height: auto;">') == IMAGEN_POR_URL
+    assert texto.img_segura(
+        f'<img src="{FOTO}" alt="" style="height:auto; max-width:100%; '
+        'background:url(https://x.example/t.gif); position:fixed">') == IMAGEN_POR_URL
+    assert texto.img_segura(f'<img src="{FOTO}" style="width: 320px">') == f'<img src="{FOTO}">'
+
+
+def test_en_una_seleccion_solo_avisa_de_las_imagenes_no_https_de_la_seleccion(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    """La imagen http de fuera de la selección se queda donde estaba: no se
+    avisa de que «no se ha conservado». La de dentro, sí."""
+    fuera = '<p><img src="http://viejo.example/logo.png"></p>'
+    seleccion = "<p>Mira la foto, es del taller.</p>"
+    editor = f"<p>Hola</p>{fuera}{seleccion}"
+    fragmento = {**CORREO_ANA, "cuerpo": "<p>Aquí tienes la foto del taller.</p>"}
+    with session_factory() as s:
+        thread_id = _hilo_ana(s)
+    with patch.object(llm, "_invoke_claude", _ClaudeFalso(fragmento)):
+        r = _pedir(http, thread_id, instruccion="más natural", texto_actual_html=editor,
+                   seleccion_html=seleccion)
+    b = r.json()["borrador"]
+    assert b["seleccion"]["empalmado"] is True and fuera in b["html"]
+    assert "no son https" not in (b["aviso"] or "")
+    dentro = '<p>Mira la foto <img src="http://viejo.example/a.jpg">, es del taller.</p>'
+    with patch.object(llm, "_invoke_claude", _ClaudeFalso(fragmento)):
+        r = _pedir(http, thread_id, instruccion="más natural",
+                   texto_actual_html=f"<p>Hola</p>{fuera}{dentro}", seleccion_html=dentro)
+    assert "1 imagen(es) del editor no son https" in r.json()["borrador"]["aviso"]
 
 
 def test_el_pedido_de_material_vacio_es_none() -> None:

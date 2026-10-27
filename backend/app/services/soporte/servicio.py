@@ -92,7 +92,8 @@ def _buscar_en(session: Session, fuente: SoporteFuente, consulta: str, idioma: s
 def buscar(session: Session, consulta: str, *, idioma: str | None = None,
            fuente: str | None = None, limite: int = LIMITE_DEFECTO) -> Busqueda:
     """Busca en una fuente (`fuente`) o en todas las activas que tienen
-    búsqueda. Lo que no sale bien en una fuente va a `avisos` y se sigue con
+    búsqueda. Lo que no sale bien en una fuente va a `avisos` (y la fuente no
+    entra en `fuentes`, que son solo las que han respondido) y se sigue con
     las demás; si NINGUNA ha respondido, es un error (no «sin resultados»: el
     redactor diría que no hay procedimiento cuando no se ha podido mirar)."""
     consulta = _consulta(consulta)
@@ -118,14 +119,18 @@ def buscar(session: Session, consulta: str, *, idioma: str | None = None,
         if time.monotonic() > hasta:
             busqueda.avisos.append(f"{f.nombre}: no se ha consultado (las anteriores han "
                                    "tardado demasiado).")
+            busqueda.fallidas.append(f.clave)
             continue
-        busqueda.fuentes.append(f.clave)
         try:
             resultados, avisos = _buscar_en(session, f, consulta, idioma_pedido, limite)
         except SoporteError as exc:
             fallos.append(exc)
             busqueda.avisos.append(str(exc))
+            busqueda.fallidas.append(f.clave)
             continue
+        # Solo las que han respondido: con «sin resultados», el redactor ofrece
+        # decir que no hay procedimiento, y en la que falló no se ha mirado.
+        busqueda.fuentes.append(f.clave)
         busqueda.avisos.extend(avisos)
         por_fuente.append(resultados)
     if fallos and not por_fuente:

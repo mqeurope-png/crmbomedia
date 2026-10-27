@@ -34,6 +34,12 @@ no puede usarse para que el servidor pregunte a la red de dentro (SSRF):
   (mapeadas, 6to4; Teredo, fuera siempre). También los nombres sin punto (los
   servicios de Docker: `api`, `redis`, `db`) y los `.local`, `.localhost`,
   `.internal`, `.lan`, `.home`, `.corp`, `.localdomain`.
+- **Se comprueba el nombre al que va httpx**, no otro: la URL se lee con
+  `httpx.URL` y se resuelve su host ASCII (`straße.example.com` →
+  `xn--strae-oqa.example.com`, IDNA2008), no el que `getaddrinfo` sacaría del
+  nombre con tildes (IDNA2003, `strasse…`). Lo que httpx no acepta (un
+  tabulador o un salto de línea pegados en medio) es `url_invalida`, nunca un
+  500.
 - **Las redirecciones se siguen a mano** (`follow_redirects=False`), como
   mucho 4, y **cada salto se vuelve a comprobar** entero: una URL pública que
   redirige a `http://127.0.0.1/` se para ahí.
@@ -202,7 +208,10 @@ texto) o **`error`** (con el detalle). La pantalla avisa si una fuente **activa*
 - **«No he podido mirar» no es «no hay nada».** Si **todas** las fuentes
   consultadas fallan, la búsqueda da error (la de la fuente, o
   `sin_respuesta` 502 con varias), no una lista vacía: el redactor no dirá
-  nunca «no hay procedimiento» sin haber mirado. Un 404 en una búsqueda es
+  nunca «no hay procedimiento» sin haber mirado. Con varias, `fuentes` lleva
+  solo las que **han respondido** y `fallidas` las que no (fallaron o no dio
+  tiempo); con alguna en `fallidas`, la pantalla no ofrece «no hay
+  procedimiento» aunque las demás no encuentren nada. Un 404 en una búsqueda es
   `respuesta_fuente` 502 («revisa el tipo y la dirección base»), no «no
   encontrado». Errores como `{"detail": {"code", "detail"}}`: 400 datos, 403
   dominio o red interna, 404 fuente desconocida o inactiva, 409 ya existe, 422
@@ -309,7 +318,10 @@ defecto, sus idiomas publicados y su plugin de traducción.
   id** (si un id está en las dos, gana excluir: no ofrecer un repuesto como
   máquina). Los «incluir» se piden aparte con `include=`, porque el `not_in`
   del servidor los quitaría. Una web **sin tienda** (`rest_no_route`) no es un
-  error: hay webs **solo de páginas** (pimpam).
+  error: hay webs **solo de páginas** (pimpam). Pero solo cuenta como «sin
+  tienda» si en esa misma lectura la REST de la web **sí** respondió (páginas o
+  entradas del idioma por defecto): una web que da 404 a todo es un error y no
+  marca ningún producto como ido.
 - **Imágenes**: la principal y la galería del producto, como URL https
   **enlazadas en caliente** (nunca la biblioteca de medios: esa es
   `kb_imagenes`).
@@ -370,9 +382,10 @@ NO es precio de oferta».
   SETNX + `enqueue_in`, re-armado en `finally`, armado al arrancar el API):
   cada día a `conocimiento.webs_indice_hora` (**05:20 de Madrid**, fuera de
   FLUX a las 04:30 y del catálogo a las 04:45) mira si toca, y solo lanza la
-  pasada programada si la última programada `ok` o `parcial` tiene más de
-  `conocimiento.webs_indice_dias` días (**30**, de 1 a 365) y no hay otra en
-  marcha. Por qué un tic diario y no un `enqueue_in` de 30 días: un trabajo
+  pasada programada si la última programada `ok` o `parcial` empezó hace
+  `conocimiento.webs_indice_dias` días o más (**30**, de 1 a 365; con un
+  margen de 2 horas, porque la pasada empieza unos instantes después del tic y
+  sin él caería el día N+1) y no hay otra en marcha. Por qué un tic diario y no un `enqueue_in` de 30 días: un trabajo
   programado que se pierde (Redis vaciado, un despliegue) dejaría la cadena
   muerta un mes; así se pierde como mucho un día. Interruptor
   `conocimiento.webs_indice_activo` (encendido: solo lee webs públicas).
@@ -392,7 +405,9 @@ pantalla.
 
 Qué entra y qué no, **editable** en el panel («Reglas: qué entra en el índice y
 qué no»): las webs crecen. Cinco tipos; cada regla vale para una web o para
-todas (web vacía). Se aplican en el siguiente recorrido.
+todas (web vacía), salvo las **de id, que siempre son de una web** (los ids de
+WordPress son de cada instalación: la API rechaza una sin web, y una metida a
+mano sin web se salta con aviso). Se aplican en el siguiente recorrido.
 
 | Tipo | Patrón |
 |---|---|
@@ -419,7 +434,9 @@ una, se desactiva.
   `orders`); mi cuenta (`mi-cuenta`, `my-account`, `mein-account`,
   `mon-compte`, `mijn-account`, `account`); aviso de formulario enviado
   (`enviado`, `sent`, `gesendet`, `envoye`, `verstuurd`); páginas de prueba
-  (`^test|-test$|test-form|testagile|sample-page|pagina-ejemplo`); páginas
+  (`^test(?!imon|emun)|-test$|test-form|testagile|sample-page|pagina-ejemplo`:
+  las de testimonios —testimonios, testimonials, testemunhos— no son de
+  prueba); páginas
   internas (`^dpd-|^app-posts|^app-crea|cowork`); declaración de accesibilidad.
 - **Categorías fuera**: Repuestos, Recambios, Pièces de rechange, Consumibles,
   Tintas (incluye «Tintas Ador», «Tintas UV Led…»), Encres, Cartuchos, Packs de
