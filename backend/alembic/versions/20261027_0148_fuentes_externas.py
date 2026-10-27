@@ -11,8 +11,10 @@ Solo CREA tablas nuevas (no toca ni migra datos que ya existan):
    con `visto_en` / `ido_en` como `kb_catalogo`. En MySQL lleva un índice
    FULLTEXT sobre título y texto.
 4. `web_indice_reglas`: qué entra y qué no en el índice. Se siembra con las
-   páginas legales/carrito/prueba y las categorías de repuestos, consumibles,
-   tintas, cartuchos, servicios y reacondicionadas.
+   páginas legales/carrito/prueba, las categorías de repuestos, consumibles,
+   tintas, cartuchos, servicios y reacondicionadas, y las excepciones por id
+   de los recambios y consumibles que las webs de artisJet meten en una
+   categoría de accesorios.
 5. `web_indice_pasadas`: cada recorrido del índice y su estado.
 
 El índice nace vacío: lo llena el primer recorrido (programado una vez al mes
@@ -64,6 +66,21 @@ _CATEGORIAS_FUERA = (
     ("Tintas", "incluye «Tintas Ador», «Tintas UV Led…»"),
     ("Encres", "tintas en francés (artisjet-printers.eu)"), ("Cartuchos", ""),
     ("Packs de servicio", ""), ("Services", ""), ("Servicios", ""), ("Reacondicionadas", ""),
+    ("Autres pièces de rechange", "otros recambios en francés (artisjet-printers.eu)"),
+)
+_PRODUCTOS_FUERA = (
+    ("artisjet-es", 470, "Cabezal Epson DX5: recambio en «Accesorios»"),
+    ("artisjet-es", 474, "Cabezal Epson L801: recambio en «Accesorios»"),
+    ("artisjet-es", 481, "Damper Textil y EcoS: recambio en «Accesorios»"),
+    ("artisjet-es", 485, "Damper UV Led: recambio en «Accesorios»"),
+    ("artisjet-es", 2026051305, "artisJet DIVE (copia): producto duplicado"),
+    ("artisjet-eu", 1892, "Polyester cleaning wipes: consumible"),
+    ("artisjet-eu", 1989, "Syringe Kit: consumible"),
+    ("artisjet-eu", 2979, "Hojas y films UV DTF: consumible"),
+)
+_PRODUCTOS_DENTRO = (
+    ("artisjet-eu", 477, "Plantillas y moldes a medida: accesorio en «Autres pièces de "
+                         "rechange»"),
 )
 _LOCALES_FLUX = {"es": "es-419", "en": "en-us", "de": "de-de", "fr": "fr-fr", "nl": "nl",
                  "pt": "pt-br"}
@@ -177,6 +194,12 @@ def upgrade() -> None:
         filas.append({"tipo": "categoria_fuera", "patron": prefijo, "sitio": None,
                       "activo": True, "nota": nota or None, "posicion": pos,
                       "created_at": ahora, "updated_at": ahora})
+    for tipo, lista in (("producto_excluir_id", _PRODUCTOS_FUERA),
+                        ("producto_incluir_id", _PRODUCTOS_DENTRO)):
+        for pos, (sitio, pid, nota) in enumerate(lista):
+            filas.append({"tipo": tipo, "patron": str(pid), "sitio": sitio, "activo": True,
+                          "nota": nota, "posicion": pos, "created_at": ahora,
+                          "updated_at": ahora})
     op.bulk_insert(reglas, filas)
 
     op.create_table(

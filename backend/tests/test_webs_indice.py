@@ -493,6 +493,31 @@ def test_categorias_fuera_heredan_a_las_hijas() -> None:
     assert lector.categorias_fuera(AJ_CATEGORIAS, reglas) == {51, 52, 130, 53, 5, 96}
 
 
+def test_los_recambios_que_las_webs_cuelgan_de_accesorios_quedan_fuera() -> None:
+    """Repasado sobre el recorrido real: artisjet-spain.es cuelga cabezales y
+    dampers de «Accesorios» y artisjet-printers.eu consumibles de «Accessoires
+    et pièces de rechange»; las excepciones de partida los sacan, cada una en
+    su web, y el molde a medida de «Autres pièces de rechange» entra."""
+    partida = reglas_mod.Reglas(reglas=reglas_mod._de_partida())  # noqa: SLF001
+    es, eu, boprint = partida.para("artisjet-es"), partida.para("artisjet-eu"), \
+        partida.para("boprint")
+    accesorios = [{"id": 9, "name": "Accesorios"}]
+    for pid in (470, 474, 481, 485, 2026051305):
+        assert lector.producto_dentro({"id": pid, "categories": accesorios}, es, set()) == \
+            (False, "excluido")
+    assert lector.producto_dentro({"id": 477, "categories": accesorios}, es, set())[0]
+    mezcla = [{"id": 7, "name": "Accessoires et pièces de rechange"}]
+    for pid in (1892, 1989, 2979):
+        assert not lector.producto_dentro({"id": pid, "categories": mezcla}, eu, set())[0]
+    assert lector.producto_dentro({"id": 3850, "categories": mezcla}, eu, set())[0]
+    autres = [{"id": 8, "name": "Autres pièces de rechange"}]
+    assert lector.producto_dentro({"id": 477, "categories": autres}, eu, set()) == \
+        (True, "incluido")
+    assert not lector.producto_dentro({"id": 478, "categories": autres}, eu, set())[0]
+    # Los ids son de cada web: el 470 de otra web no se toca.
+    assert lector.producto_dentro({"id": 470, "categories": accesorios}, boprint, set())[0]
+
+
 # --- las pasadas: una web por trabajo -----------------------------------------------------------
 
 

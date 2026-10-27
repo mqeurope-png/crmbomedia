@@ -9,6 +9,11 @@ verdad se cambia en la tabla (Configuración ERP → Base de conocimiento).
 - `categoria_fuera`: un producto queda fuera si alguna de sus categorías, o
   alguna madre de ellas, EMPIEZA por uno de estos nombres (sin distinguir
   mayúsculas ni tildes). Los productos sin categoría también quedan fuera.
+- `producto_excluir_id` / `producto_incluir_id`: excepciones por id, cada una
+  de su web. Son los productos que la categoría no separa bien: artisjet-spain.es
+  mete cabezales y dampers en «Accesorios» y artisjet-printers.eu mezcla
+  consumibles en «Accessoires et pièces de rechange» (repasado a mano sobre el
+  recorrido real del 27/10/2026).
 """
 from __future__ import annotations
 
@@ -44,4 +49,23 @@ CATEGORIAS_FUERA: tuple[tuple[str, str], ...] = (
     ("Services", ""),
     ("Servicios", ""),
     ("Reacondicionadas", ""),
+    ("Autres pièces de rechange", "otros recambios en francés (artisjet-printers.eu)"),
+)
+
+#: (web, id de producto, nota): fuera aunque su categoría sea de dentro.
+PRODUCTOS_FUERA: tuple[tuple[str, int, str], ...] = (
+    ("artisjet-es", 470, "Cabezal Epson DX5: recambio en «Accesorios»"),
+    ("artisjet-es", 474, "Cabezal Epson L801: recambio en «Accesorios»"),
+    ("artisjet-es", 481, "Damper Textil y EcoS: recambio en «Accesorios»"),
+    ("artisjet-es", 485, "Damper UV Led: recambio en «Accesorios»"),
+    ("artisjet-es", 2026051305, "artisJet DIVE (copia): producto duplicado"),
+    ("artisjet-eu", 1892, "Polyester cleaning wipes: consumible"),
+    ("artisjet-eu", 1989, "Syringe Kit: consumible"),
+    ("artisjet-eu", 2979, "Hojas y films UV DTF: consumible"),
+)
+
+#: (web, id de producto, nota): dentro aunque su categoría sea de fuera.
+PRODUCTOS_DENTRO: tuple[tuple[str, int, str], ...] = (
+    ("artisjet-eu", 477, "Plantillas y moldes a medida: accesorio en «Autres pièces de "
+                         "rechange»"),
 )

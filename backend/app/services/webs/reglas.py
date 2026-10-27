@@ -41,7 +41,12 @@ from app.models.fuentes_externas import (
     WebIndiceRegla,
 )
 from app.services.externo.html_texto import plano
-from app.services.webs.reglas_partida import CATEGORIAS_FUERA, PAGINAS_FUERA
+from app.services.webs.reglas_partida import (
+    CATEGORIAS_FUERA,
+    PAGINAS_FUERA,
+    PRODUCTOS_DENTRO,
+    PRODUCTOS_FUERA,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +66,10 @@ class ReglaSuelta:
 def _de_partida() -> list[ReglaSuelta]:
     reglas = [ReglaSuelta(REGLA_PAGINA_SLUG, patron) for patron, _ in PAGINAS_FUERA]
     reglas += [ReglaSuelta(REGLA_CATEGORIA_FUERA, prefijo) for prefijo, _ in CATEGORIAS_FUERA]
+    reglas += [ReglaSuelta(REGLA_PRODUCTO_EXCLUIR, str(pid), sitio)
+               for sitio, pid, _ in PRODUCTOS_FUERA]
+    reglas += [ReglaSuelta(REGLA_PRODUCTO_INCLUIR, str(pid), sitio)
+               for sitio, pid, _ in PRODUCTOS_DENTRO]
     return reglas
 
 
@@ -155,6 +164,11 @@ def asegurar_sembradas(session: Session) -> bool:
     for posicion, (prefijo, nota) in enumerate(CATEGORIAS_FUERA):
         session.add(WebIndiceRegla(tipo=REGLA_CATEGORIA_FUERA, patron=prefijo, sitio=None,
                                    activo=True, nota=nota or None, posicion=posicion))
+    for tipo, lista in ((REGLA_PRODUCTO_EXCLUIR, PRODUCTOS_FUERA),
+                        (REGLA_PRODUCTO_INCLUIR, PRODUCTOS_DENTRO)):
+        for posicion, (sitio, pid, nota) in enumerate(lista):
+            session.add(WebIndiceRegla(tipo=tipo, patron=str(pid), sitio=sitio, activo=True,
+                                       nota=nota, posicion=posicion))
     session.flush()
     return True
 

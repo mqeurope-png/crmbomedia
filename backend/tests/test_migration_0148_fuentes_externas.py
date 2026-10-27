@@ -62,6 +62,13 @@ def test_crea_las_tablas_siembra_flux_y_las_reglas_y_baja_limpia(alembic_setup):
             [p for p, _ in reglas_partida.CATEGORIAS_FUERA]
         assert [r.patron for r in reglas if r.tipo == "pagina_excluir_slug"] == \
             [p for p, _ in reglas_partida.PAGINAS_FUERA]
+        excepciones = c.execute(text(
+            "SELECT tipo, sitio, patron FROM web_indice_reglas "
+            "WHERE tipo IN ('producto_excluir_id', 'producto_incluir_id') "
+            "ORDER BY tipo, posicion")).all()
+        assert [(r.tipo, r.sitio, r.patron) for r in excepciones] == [
+            ("producto_excluir_id", s, str(i)) for s, i, _ in reglas_partida.PRODUCTOS_FUERA
+        ] + [("producto_incluir_id", s, str(i)) for s, i, _ in reglas_partida.PRODUCTOS_DENTRO]
         # El índice nace vacío: lo llena el primer recorrido.
         assert c.execute(text("SELECT COUNT(*) FROM web_indice")).scalar() == 0
         columnas = {col["name"] for col in inspect(engine).get_columns("web_indice")}

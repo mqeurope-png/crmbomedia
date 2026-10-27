@@ -21,7 +21,12 @@ from app.main import app
 from app.models.fuentes_externas import WebIndiceEntrada, WebIndicePasada, WebIndiceRegla
 from app.services.web_forms import sitios as registro_sitios
 from app.services.webs import busqueda, pasadas
-from app.services.webs.reglas_partida import CATEGORIAS_FUERA, PAGINAS_FUERA
+from app.services.webs.reglas_partida import (
+    CATEGORIAS_FUERA,
+    PAGINAS_FUERA,
+    PRODUCTOS_DENTRO,
+    PRODUCTOS_FUERA,
+)
 from tests._test_helpers import auth_headers, seed_test_users
 from tests.test_webs_comun import registro_con
 
@@ -255,7 +260,8 @@ def test_reglas_crud_y_validacion(http: TestClient, factory: sessionmaker) -> No
     assert r.status_code == 200, r.text
     items = r.json()["items"]
     # Con la tabla vacía se siembran las de partida, para poder editarlas.
-    assert len(items) == len(PAGINAS_FUERA) + len(CATEGORIAS_FUERA)
+    assert len(items) == (len(PAGINAS_FUERA) + len(CATEGORIAS_FUERA) + len(PRODUCTOS_FUERA)
+                          + len(PRODUCTOS_DENTRO))
     assert set(items[0]) == {"id", "tipo", "patron", "sitio", "activo", "nota", "posicion"}
     nueva = http.post("/api/erp/webs/reglas", headers=cabeceras, json={
         "tipo": "categoria_fuera", "patron": "Ersatzteile", "nota": "repuestos en alemán"})
