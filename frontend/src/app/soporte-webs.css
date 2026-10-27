@@ -266,6 +266,30 @@
   .webs-indice-resultado-imagen { width: 64px; }
 }
 
+/* Lo que se ve y de cuándo es. Si la última actualización falló, los números
+ * se quedan (son lo último que se sabe) pero marcados: un aviso con la hora de
+ * los datos encima y el borde de la tabla y de los recorridos en ámbar
+ * discontinuo. El resultado de «Actualizar el estado» va junto al botón. */
+.webs-indice-datos { display: flex; flex-direction: column; gap: var(--sp-2); }
+.webs-indice-desfasado {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 3px solid var(--st-amber-ink);
+  border-radius: var(--r-control);
+  background: var(--st-amber-bg);
+  color: var(--ink);
+  font-size: var(--fs-body);
+}
+.webs-indice-desfasado strong { color: var(--st-amber-ink); }
+.webs-indice-datos.is-desfasado .webs-indice-tabla-scroll,
+.webs-indice-datos.is-desfasado .webs-indice-pasada {
+  border: 1px dashed var(--st-amber-ink);
+}
+.webs-indice-carga { color: var(--muted); }
+.webs-indice-carga.is-error { color: var(--st-red-ink); }
+.webs-indice-reglas-lista { display: flex; flex-direction: column; gap: var(--sp-2); }
+.webs-indice-reglas-lista[hidden] { display: none; }
+
 /* El pie pegajoso de `.erp-modal` se queda 16 px por encima de su sitio (el
  * pegado descuenta el relleno del diálogo) y tapaba la última línea del
  * buscador, justo donde sale el error o el «no hay resultados». Aquí se pega

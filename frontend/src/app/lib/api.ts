@@ -373,7 +373,39 @@ export function getStoredToken(): string | null {
   return null;
 }
 
+// --- Sesión caducada ----------------------------------------------------------
+// Con el JWT caducado el backend contesta 401 a todo, pero cada pantalla lo
+// trataba como un error suyo (o se lo callaba): el panel seguía enseñando los
+// números viejos y «Actualizar» parecía no hacer nada. La capa de llamadas lo
+// anuncia UNA vez a toda la aplicación con un evento de `window` (AppShell
+// pinta el aviso «Tu sesión ha caducado…») y sigue lanzando el error de
+// siempre, así que cada pantalla conserva su propio manejo. El aviso no se
+// repite hasta un nuevo inicio de sesión (`setStoredToken`).
+
+/** Nombre del `CustomEvent` que se lanza en `window` al caducar la sesión. */
+export const EVENTO_SESION_CADUCADA = "bohub:sesion-caducada";
+
+let sesionCaducadaAvisada = false;
+
+/** ¿Ya se ha avisado de que la sesión ha caducado (y no se ha vuelto a entrar)?
+ *  Lo lee el aviso al montarse, por si el 401 llegó antes que él. */
+export function sesionCaducada(): boolean {
+  return sesionCaducadaAvisada;
+}
+
+/** Un 401 en una llamada autenticada = la sesión ha caducado. Las de
+ *  `/api/auth/*` no cuentan: una contraseña mal puesta al entrar (o al
+ *  desactivar el 2FA) también devuelve 401 y no es una sesión caducada. */
+export function avisarSiSesionCaducada(path: string, status: number): void {
+  if (status !== 401 || sesionCaducadaAvisada || path.startsWith("/api/auth/")) return;
+  if (typeof window === "undefined") return;
+  sesionCaducadaAvisada = true;
+  window.dispatchEvent(new CustomEvent(EVENTO_SESION_CADUCADA));
+}
+
 export function setStoredToken(token: string) {
+  // Sesión nueva (login o 2FA correctos): el próximo 401 vuelve a avisar.
+  sesionCaducadaAvisada = false;
   writeSessionCookie(AUTH_COOKIE_NAME, token);
   // Limpiamos cualquier rastro del localStorage legacy.
   try {
@@ -447,7 +479,7 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
     throw new Error(extractErrorMessage(networkError));
   }
 
-  return parseApiResponse<T>(response);
+  return parseApiResponse<T>(response, path);
 }
 
 /** CRM-BANDEJA — variante binaria de apiFetch para descargas (adjuntos
@@ -466,6 +498,7 @@ export async function apiFetchBlob(path: string): Promise<Blob> {
     throw new Error(extractErrorMessage(networkError));
   }
   if (!response.ok) {
+    avisarSiSesionCaducada(path, response.status);
     let detail: unknown = null;
     try {
       detail = await response.json();
@@ -503,7 +536,7 @@ export async function apiUpload<T>(
   } catch (networkError) {
     throw new Error(extractErrorMessage(networkError));
   }
-  return parseApiResponse<T>(response);
+  return parseApiResponse<T>(response, path);
 }
 
 /** Descarga un binario autenticado (PDF de albarán/etiqueta) como Blob. Igual
@@ -568,6 +601,7 @@ export async function apiDownloadBlob(
     cache: "no-store",
   });
   if (!response.ok) {
+    avisarSiSesionCaducada(path, response.status);
     const fallback = `Descarga fallida (${response.status})`;
     let message = fallback;
     let code: string | null = null;
@@ -591,8 +625,9 @@ export async function apiDownloadBlob(
   );
 }
 
-async function parseApiResponse<T>(response: Response): Promise<T> {
+async function parseApiResponse<T>(response: Response, path: string): Promise<T> {
   if (!response.ok) {
+    avisarSiSesionCaducada(path, response.status);
     const fallback = `Error de la API (${response.status})`;
     let body: unknown = null;
     try {
@@ -1163,6 +1198,7 @@ export async function getAuditLogs(filters: AuditLogFilters = {}): Promise<Audit
     cache: "no-store",
   });
   if (!response.ok) {
+    avisarSiSesionCaducada("/api/audit-logs", response.status);
     let detail = `API request failed with ${response.status}`;
     try {
       const body = await response.json();
@@ -1276,6 +1312,7 @@ export async function exportAuditLogs(
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
   if (!response.ok) {
+    avisarSiSesionCaducada("/api/audit-logs/export", response.status);
     let detail = `Audit export failed with ${response.status}`;
     try {
       const body = await response.json();

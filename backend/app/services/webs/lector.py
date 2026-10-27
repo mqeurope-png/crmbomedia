@@ -1,38 +1,63 @@
 """Lectura de una web WordPress para el índice: páginas, entradas y productos,
 idioma a idioma, por los endpoints PÚBLICOS (sin credenciales; nada escribe).
 
-Lo medido el 27/10/2026 en las webs del grupo (estudio previo) manda aquí:
+Lo medido en las webs del grupo (27 y 28/10/2026) manda aquí:
 
 - **Siempre `?rest_route=`** (`https://web/?rest_route=/wp/v2/pages&per_page=100
   &page=N&_fields=…`), con `&` para los parámetros (un segundo `?` devuelve
   vacío). `mboprinters.com` lo necesita y funciona en todas.
 - **Idiomas sin mezclar** (una fila por idioma):
   - WPGlobus (`plugin_traduccion = qtranslate`: artisjet-printers.eu,
-    mboprinters.com): el idioma va en el prefijo de la ruta (`/en/?rest_route=…`)
-    y los ids son los mismos en todos. Si una página no está traducida,
-    WPGlobus sirve el texto del idioma por defecto con la URL del otro: solo se
-    indexa el idioma xx si `translation.languages.xx.content` (de la petición
-    en el idioma por defecto) lo dice. Los productos no traen ese campo: el
-    respaldo se reconoce porque el texto es idéntico al del idioma por defecto.
-  - WPML (mbolasers.com, pimpam-vending.com): `&lang=xx`, cada idioma con sus
-    propios ids, y un idioma sin traducción vuelve EN SILENCIO al de por
-    defecto: se descarta lo que repite un id del idioma por defecto o no lleva
-    el idioma en el enlace (`/de/…`). pimpam publica el portugués como
-    `pt-pt`: si `pt` solo da respaldo, se prueba `pt-pt` (y `pt-br`).
-- **mbolasers.com** da HTTP 500 en cuanto se pide el contenido de sus páginas
-  (Elementor): si la lista con contenido da 5xx, se pide sin contenido y cada
-  página se lee de su HTML público (el bloque `data-elementor-type="wp-page"`,
-  sin cabecera ni pie), con el idioma del `<html lang>`.
+    mboprinters.com, www.mqeurope.com): el idioma va en el prefijo de la ruta
+    (`/en/?rest_route=…`) y los ids son los mismos en todos, también los de
+    las categorías (sus NOMBRES sí se traducen). Si una página no está
+    traducida, WPGlobus sirve el texto del idioma por defecto con la URL del
+    otro: solo se indexa el idioma xx si `translation.languages.xx.content`
+    (de la petición en el idioma por defecto) lo dice. Los productos no traen
+    ese campo: el respaldo se reconoce porque el texto es idéntico al del
+    idioma por defecto.
+  - WPML (mbolasers.com, fluxlasers.eu, pimpam-vending.com): `&lang=xx`, cada
+    idioma con sus propios ids y sus propios slugs (páginas, productos Y
+    categorías: «Accesorios» de mbolasers es la 39 en es, la 763 «Accessories»
+    en en y la 765 «Zubehör» en de), y un idioma sin traducción vuelve EN
+    SILENCIO al de por defecto: se descarta lo que repite un id del idioma por
+    defecto o no lleva el idioma en el enlace (`/de/…`). pimpam publica el
+    portugués como `pt-pt`: si `pt` solo da respaldo, se prueba `pt-pt` (y
+    `pt-br`).
 - **Productos por la Store API** (`/wc/store/v1/products/categories` y
   `/products`), con las categorías de fuera filtradas ya en el servidor
-  (`category=<ids>&category_operator=not_in`) y revisadas otra vez aquí.
-  Precio «como dice la web» (solo si es mayor que 0) y su IVA según lo que
+  (`category=<ids>&category_operator=not_in`) y revisadas otra vez aquí, POR
+  ID. Precio «como dice la web» (solo si es mayor que 0) y su IVA según lo que
   pone la web. La fecha de modificación sale de `/wp/v2/product` (la Store API
   no la da); si falla, queda sin fecha.
+- **Qué productos entran se decide UNA vez por web, en su idioma por
+  defecto, y se lleva a los demás POR ID**; los nombres traducidos no deciden
+  nada (el 27/10 fluxlasers.eu metió 1.219 productos en vez de ~166 porque en
+  en/de/fr/nl «Spare Parts», «Ersatzteile»… no empiezan por «Repuestos»):
+  - Idioma por defecto: fuera las categorías cuyo nombre EMPIEZA por una regla
+    `categoria_fuera` (escritas en ese idioma) y todas sus hijas
+    (`categorias_fuera`).
+  - WPGlobus y webs de un idioma: los mismos ids en todos los idiomas → las
+    mismas categorías de fuera y las mismas excepciones por id.
+  - WPML, otro idioma: WPML «ajusta los ids» de `include=` (pedido en inglés,
+    `categories&include=39` devuelve la 763) y de `category=…&not_in`. Se
+    piden las traducciones de las de fuera y las de todas; fuera = esas
+    traducciones, las del idioma por defecto (los ids de término son únicos
+    en toda la instalación) y todas sus hijas en el árbol del idioma. Si el
+    idioma tiene categorías y NINGUNA es traducción de una del idioma por
+    defecto (WPML no ha ajustado los ids), su grupo de productos queda en
+    error: no se escribe ni se marca nada ido. Una categoría que solo existe
+    en ese idioma («sin original») y no cuelga de una de fuera no deja entrar
+    a un producto que no tenga otra (`categoria_sin_original`), y se avisa.
+    Las excepciones por id de producto se traducen igual
+    (`products&include=…`).
 
 Toda petición pasa por `externo.red.obtener` (sin red interna, tiempo y
-tamaño máximos). Una web o un idioma que falla deja su grupo con `error` y
-quien escribe NO marca nada como ido (se queda lo anterior).
+tamaño máximos). Una web o un idioma que falla (sin red, 5xx tras el
+reintento, una respuesta que no es la esperada) deja su grupo con `error` y
+quien escribe NO marca nada como ido (se queda lo anterior). Ya no hay camino
+por el HTML público: el 500 de mbolasers.com con el contenido de sus páginas
+era el límite de memoria de WordPress, arreglado en la web (28/10).
 """
 from __future__ import annotations
 
@@ -60,7 +85,6 @@ from app.models.fuentes_externas import (
 from app.models.sitios import PLUGIN_WPML
 from app.services.externo import red
 from app.services.externo.html_texto import (
-    extraer,
     html_a_texto,
     limpiar_texto_wp,
     normalizar_espacios,
@@ -81,9 +105,6 @@ TIMEOUT_SEGUNDOS = 45.0
 #: Tamaño máximo de una respuesta JSON (100 páginas con su HTML caben de
 #: sobra: la mayor medida, unos 2 MB).
 MAX_BYTES_JSON = 16 * 1024 * 1024
-#: Tamaño máximo de una página HTML (mbolasers): se acepta cortada, el
-#: contenido va antes que los scripts del pie.
-MAX_BYTES_HTML = 4 * 1024 * 1024
 #: Pausa entre peticiones (segundos): con unas 120 por recorrido no cuesta y
 #: no aprieta a las webs (comparten servidor con la tienda).
 PAUSA_SEGUNDOS = 0.25
@@ -99,7 +120,9 @@ MAX_EXTRACTO = 500
 _RELLENO_RE = re.compile(r"\blorem ipsum\b", re.IGNORECASE)
 
 CAMPOS_CONTENIDO = "id,slug,link,modified_gmt,title,content,excerpt"
-CAMPOS_SIN_CONTENIDO = "id,slug,link,modified_gmt,title,excerpt"
+#: Del árbol de categorías basta con esto: decide el id y el `parent`; el
+#: nombre, para aplicar las reglas en el idioma por defecto y para los avisos.
+CAMPOS_CATEGORIA = "id,name,parent"
 #: WPGlobus calcula `translation` a partir del título y el contenido de la
 #: respuesta: sin ellos dice que nada está traducido.
 CAMPO_TRADUCCION = "translation"
@@ -130,7 +153,8 @@ class SinRuta(LecturaError):
 
 
 class ErrorServidor(LecturaError):
-    """HTTP 5xx (mbolasers con el contenido de sus páginas)."""
+    """HTTP 5xx tras el reintento: el grupo queda en error, como cualquier
+    otro fallo (se queda lo anterior)."""
 
 
 # --- la red ----------------------------------------------------------------------------------
@@ -168,8 +192,8 @@ class Http:
         if hueco > 0:
             self.dormir(hueco)
 
-    def obtener(self, url: str, *, max_bytes: int, aceptar_truncado: bool = False,
-                hosts: set[str] | None = None, json_: bool = True) -> red.Respuesta:
+    def obtener(self, url: str, *, max_bytes: int,
+                hosts: set[str] | None = None) -> red.Respuesta:
         """Una petición con un reintento si la red falla o la web da 5xx (WordPress
         compartido falla a ratos). `LecturaError` si no sale."""
         ultimo: Exception | None = None
@@ -179,8 +203,7 @@ class Http:
             try:
                 respuesta = red.obtener(
                     url, max_bytes=max_bytes, timeout=self.timeout,
-                    cabeceras={"Accept": "application/json" if json_ else "text/html"},
-                    aceptar_truncado=aceptar_truncado, hosts_permitidos=hosts,
+                    cabeceras={"Accept": "application/json"}, hosts_permitidos=hosts,
                     resolver=self.resolver, cliente=self.cliente)
             except red.UrlNoPermitida as exc:
                 raise LecturaError(str(exc)) from exc
@@ -275,12 +298,10 @@ class Grupo:
     #: La web respondió 200 con la lista vacía (raro: un plugin a medias): no
     #: se marca ido lo anterior (como el catálogo de las tiendas).
     vacio: bool = False
-    #: Ids que esta vez no se pudieron leer (una página HTML que falló): lo
-    #: que hubiera de ellos se queda como estaba.
-    conservar: set[int] = field(default_factory=set)
     #: Lo que dio la web antes de filtrar.
     leidos: int = 0
-    #: Lo descartado, por motivo (`regla`, `corta`, `respaldo`, `categoria`…).
+    #: Lo descartado, por motivo (`regla`, `corta`, `respaldo`, `categoria`,
+    #: `categoria_sin_original`, `excluido`, `sin_categoria`…).
     descartes: dict[str, int] = field(default_factory=dict)
     #: WPML: TODO lo que dio la web en este idioma era el respaldo del idioma
     #: por defecto (el idioma no está publicado: fluxlasers.es con `lang=en`).
@@ -379,15 +400,6 @@ def _lleva_idioma(enlace: str, codigo: str) -> bool:
         f"lang={codigo.lower()}" in partes.query.lower())
 
 
-_HTML_LANG_RE = re.compile(r"<html\b[^>]*\blang=[\"']?([A-Za-z]{2,3})", re.IGNORECASE)
-
-
-def idioma_html(documento: str) -> str | None:
-    """El idioma del `<html lang="en-US">` (`en`)."""
-    m = _HTML_LANG_RE.search(documento[:20000] if documento else "")
-    return m.group(1).lower() if m else None
-
-
 # --- precios ---------------------------------------------------------------------------------
 
 #: Lo que dice la web junto al precio. Primero «sin IVA» («+IVA», «+ IVA»,
@@ -456,41 +468,84 @@ def precio_de(producto: dict[str, Any]) -> dict[str, Any]:
 # --- categorías ------------------------------------------------------------------------------
 
 
-def categorias_fuera(categorias: list[dict[str, Any]], reglas: ReglasSitio) -> set[int]:
-    """Los ids de las categorías de fuera: las que EMPIEZAN por un prefijo de
-    fuera y TODAS sus hijas (herencia por `parent`, con los nombres del idioma
-    en que vienen)."""
-    por_id = {c["id"]: c for c in categorias if isinstance(c.get("id"), int)}
-    salida: set[int] = set()
+def _ids(elementos: list[dict[str, Any]]) -> set[int]:
+    return {i for i in (_entero(e.get("id")) for e in elementos) if i is not None}
+
+
+def con_hijas(categorias: list[dict[str, Any]], semilla: set[int]) -> set[int]:
+    """`semilla` y todas las categorías del árbol que cuelgan de una de ellas,
+    a cualquier profundidad (por `parent`)."""
+    por_id = {i: c for c in categorias if (i := _entero(c.get("id"))) is not None}
+    salida = set(semilla)
     for cid in por_id:
-        actual: dict[str, Any] | None = por_id[cid]
+        actual: int | None = cid
         vistos: set[int] = set()
-        while actual is not None and actual["id"] not in vistos:
-            vistos.add(actual["id"])
-            if reglas.categoria_fuera(actual.get("name")):
+        while actual and actual not in vistos:
+            vistos.add(actual)
+            if actual in semilla:
                 salida.add(cid)
                 break
-            actual = por_id.get(actual.get("parent") or 0)
+            actual = _entero((por_id.get(actual) or {}).get("parent"))
     return salida
 
 
-def producto_dentro(producto: dict[str, Any], reglas: ReglasSitio,
-                    fuera: set[int]) -> tuple[bool, str]:
-    """¿Entra el producto? `(sí/no, motivo)`. CUALQUIER categoría de fuera
-    manda (un repuesto colgado de la madre «Accessoires et pièces de
-    rechange» y de su hija «Pièces de rechange A5000» queda fuera); sin
-    categoría, fuera; las excepciones por id, encima de todo (excluir gana)."""
+def categorias_fuera(categorias: list[dict[str, Any]], reglas: ReglasSitio) -> set[int]:
+    """Los ids de las categorías de fuera DEL IDIOMA POR DEFECTO: las que
+    EMPIEZAN por un prefijo de fuera y TODAS sus hijas (herencia por
+    `parent`). Solo se llama con el árbol del idioma por defecto: las reglas
+    están escritas en ese idioma y los otros idiomas heredan la decisión por id
+    (ver el docstring del módulo)."""
+    return con_hijas(categorias, {
+        i for c in categorias
+        if (i := _entero(c.get("id"))) is not None and reglas.categoria_fuera(c.get("name"))})
+
+
+@dataclass
+class DecisionIdioma:
+    """Qué queda fuera en UN idioma, ya en ids de ese idioma (de la web).
+
+    - `fuera`: categorías de fuera (con sus hijas).
+    - `excluir` / `incluir`: excepciones por id de producto (las de las reglas
+      y, en WPML, sus traducciones).
+    - `conocidas`: solo en WPML fuera del idioma por defecto (None en lo
+      demás): las categorías del idioma que son traducción de una del idioma
+      por defecto, o cuelgan de una de fuera. Un producto sin ninguna de ellas
+      queda fuera (`categoria_sin_original`): nadie ha decidido sobre él."""
+
+    fuera: set[int] = field(default_factory=set)
+    excluir: set[int] = field(default_factory=set)
+    incluir: set[int] = field(default_factory=set)
+    conocidas: set[int] | None = None
+
+    @classmethod
+    def de_reglas(cls, reglas: ReglasSitio, fuera: set[int] | None = None) -> DecisionIdioma:
+        """La del idioma por defecto (y la de todos con WPGlobus o un solo
+        idioma): las excepciones tal cual están escritas."""
+        return cls(fuera=set(fuera or ()), excluir=set(reglas.excluir),
+                   incluir=set(reglas.incluir))
+
+
+def producto_dentro(producto: dict[str, Any], decision: DecisionIdioma) -> tuple[bool, str]:
+    """¿Entra el producto? `(sí/no, motivo)`, SOLO por ids (los nombres de las
+    categorías ya decidieron en el idioma por defecto, `categorias_fuera`).
+    Las excepciones por id, encima de todo (si está en las dos, gana excluir:
+    no ofrecer un repuesto como máquina); sin categoría, fuera; CUALQUIER
+    categoría de fuera manda (un repuesto colgado de la madre «Accessoires et
+    pièces de rechange» y de su hija «Pièces de rechange A5000» queda fuera,
+    y una Open Box en «Cortadoras Láser» y «Reacondicionadas» también); en
+    WPML, un producto cuyas categorías son todas «sin original», fuera."""
     pid = _entero(producto.get("id")) or 0
-    if pid in reglas.excluir:
+    if pid in decision.excluir:
         return False, "excluido"
-    if pid in reglas.incluir:
+    if pid in decision.incluir:
         return True, "incluido"
-    categorias = [c for c in (producto.get("categories") or []) if isinstance(c, dict)]
-    if not categorias:
+    ids = _ids([c for c in (producto.get("categories") or []) if isinstance(c, dict)])
+    if not ids:
         return False, "sin_categoria"
-    for c in categorias:
-        if c.get("id") in fuera or reglas.categoria_fuera(c.get("name")):
-            return False, "categoria"
+    if ids & decision.fuera:
+        return False, "categoria"
+    if decision.conocidas is not None and not ids & decision.conocidas:
+        return False, "categoria_sin_original"
     return True, ""
 
 
@@ -498,8 +553,7 @@ def producto_dentro(producto: dict[str, Any], reglas: ReglasSitio,
 
 
 class _LectorWeb:
-    def __init__(self, sitio: Sitio, reglas: ReglasSitio, host: str, http: Http,
-                 html_para: frozenset[str] = frozenset()) -> None:
+    def __init__(self, sitio: Sitio, reglas: ReglasSitio, host: str, http: Http) -> None:
         self.sitio = sitio
         self.reglas = reglas
         self.host = host
@@ -509,8 +563,10 @@ class _LectorWeb:
         self.lectura = LecturaWeb(sitio=sitio.clave, dominio=host, idiomas=idiomas_de(sitio))
         #: Por tipo: lo del idioma por defecto (`{id: {...}}`), para el respaldo.
         self.defecto: dict[str, dict[int, dict[str, Any]]] = {}
-        #: Tipos cuyo contenido da 5xx: se leen del HTML.
-        self.por_html: set[str] = set(html_para)
+        #: El árbol de categorías del idioma por defecto, leído una vez por web:
+        #: `(ids de fuera, ids de todas)`. O el fallo al leerlo.
+        self._arbol_defecto: tuple[set[int], set[int]] | None = None
+        self._arbol_defecto_error: LecturaError | None = None
 
     # -- idiomas --
 
@@ -526,26 +582,23 @@ class _LectorWeb:
 
     # -- páginas y entradas --
 
-    def _campos(self, tipo: str) -> str:
-        campos = CAMPOS_SIN_CONTENIDO if tipo in self.por_html else CAMPOS_CONTENIDO
-        if self.modo == MODO_PREFIJO and tipo not in self.por_html:
-            campos = f"{campos},{CAMPO_TRADUCCION}"
-        return campos
+    def _campos(self) -> str:
+        if self.modo == MODO_PREFIJO:
+            return f"{CAMPOS_CONTENIDO},{CAMPO_TRADUCCION}"
+        return CAMPOS_CONTENIDO
 
     def _lista_contenido(self, tipo: str, idi: _Idioma) -> list[dict[str, Any]]:
-        params = {**idi.params, "_fields": self._campos(tipo)}
-        try:
-            return paginar(self.http, idi.base, _RUTAS[tipo], params, hosts=self.hosts)
-        except ErrorServidor:
-            if tipo in self.por_html:
-                raise
-            # mbolasers: la REST revienta al pintar el contenido de Elementor.
-            # La lista sin contenido sí sale, y cada página se lee de su HTML.
-            self.por_html.add(tipo)
+        params = {**idi.params, "_fields": self._campos()}
+        return paginar(self.http, idi.base, _RUTAS[tipo], params, hosts=self.hosts)
+
+    def _fallo(self, grupo: Grupo, exc: LecturaError) -> None:
+        """El grupo queda en error (no se escribe ni se marca nada ido). Un 5xx
+        se avisa aparte: es la web la que falla, no la lectura."""
+        grupo.error = str(exc)[:300]
+        if isinstance(exc, ErrorServidor):
             self.lectura.avisos.append(
-                f"{tipo}: la REST da error con el contenido; se lee del HTML público")
-            params = {**idi.params, "_fields": self._campos(tipo)}
-            return paginar(self.http, idi.base, _RUTAS[tipo], params, hosts=self.hosts)
+                f"{grupo.tipo} {grupo.idioma}: la web da error de servidor ({exc}); "
+                "se queda lo anterior")
 
     def _es_respaldo(self, tipo: str, idi: _Idioma, item: dict[str, Any], texto: str | None,
                      ) -> bool:
@@ -586,32 +639,6 @@ class _LectorWeb:
                 return otro, otros
         return idi, elementos
 
-    def _texto_de_html(self, item: dict[str, Any], idi: _Idioma, grupo: Grupo,
-                       ) -> str | None:
-        """El texto de una página leída de su HTML público. None si no se pudo
-        (se conserva lo anterior) o si es de otro idioma (respaldo)."""
-        wp_id = _entero(item.get("id")) or 0
-        enlace = str(item.get("link") or "")
-        try:
-            respuesta = self.http.obtener(enlace, max_bytes=MAX_BYTES_HTML,
-                                          aceptar_truncado=True, hosts=self.hosts, json_=False)
-        except LecturaError as exc:
-            grupo.conservar.add(wp_id)
-            grupo.descartar("html_error")
-            self.lectura.avisos.append(f"{enlace}: {exc}")
-            return None
-        if respuesta.status != 200:
-            grupo.conservar.add(wp_id)
-            grupo.descartar("html_error")
-            self.lectura.avisos.append(f"{enlace}: HTTP {respuesta.status}")
-            return None
-        documento = respuesta.texto()
-        lang = idioma_html(documento)
-        if lang and lang != idi.idioma.split("-")[0].lower():
-            grupo.descartar("respaldo")
-            return None
-        return limpiar_texto_wp(extraer(documento).texto)
-
     def leer_contenido(self, tipo: str, idioma: str, codigo: str | None = None,
                        ) -> tuple[Grupo, str]:
         """Las páginas (o entradas) de un idioma. Devuelve el grupo y el código
@@ -624,7 +651,7 @@ class _LectorWeb:
             else:
                 elementos = self._lista_contenido(tipo, idi)
         except LecturaError as exc:
-            grupo.error = str(exc)[:300]
+            self._fallo(grupo, exc)
             return grupo, idi.codigo
         grupo.leidos = len(elementos)
         grupo.vacio = not elementos
@@ -645,12 +672,7 @@ class _LectorWeb:
             if self._es_respaldo(tipo, idi, item, None) and self.modo == MODO_WPML:
                 grupo.descartar("respaldo")
                 continue
-            if tipo in self.por_html:
-                texto = self._texto_de_html(item, idi, grupo)
-                if texto is None:
-                    continue
-            else:
-                texto = _texto_html(item.get("content"))
+            texto = _texto_html(item.get("content"))
             if idi.defecto:
                 de_este_idioma[wp_id] = {"texto": texto, "traduccion": traduccion}
             if self._es_respaldo(tipo, idi, item, texto):
@@ -698,22 +720,100 @@ class _LectorWeb:
                    and g.tipo in _RUTAS for g in self.lectura.grupos)
 
     def _categorias(self, idi: _Idioma) -> list[dict[str, Any]]:
-        return paginar(self.http, idi.base, _RUTA_CATEGORIAS, dict(idi.params), hosts=self.hosts)
+        return paginar(self.http, idi.base, _RUTA_CATEGORIAS,
+                       {**idi.params, "_fields": CAMPOS_CATEGORIA}, hosts=self.hosts)
 
-    def _productos(self, idi: _Idioma, fuera: set[int]) -> list[dict[str, Any]]:
+    def _traducir(self, idi: _Idioma, ruta: str, ids: set[int]) -> set[int]:
+        """WPML: los ids (de categorías o de productos) que corresponden a `ids`
+        en el idioma `idi`. WPML «ajusta los ids» de `include=`: pedido en
+        inglés, `categories&include=39` devuelve la 763 (la traducción de la
+        39) y `products&include=965` el 2839. Lo que no tiene traducción no
+        vuelve (o vuelve el original, si la web lo enseña como respaldo)."""
+        salida: set[int] = set()
+        orden = sorted(ids)
+        for i in range(0, len(orden), POR_PAGINA):
+            salida |= _ids(paginar(self.http, idi.base, ruta, {
+                **idi.params, "include": ",".join(str(x) for x in orden[i:i + POR_PAGINA]),
+                "_fields": "id"}, hosts=self.hosts))
+        return salida
+
+    def _del_defecto(self) -> tuple[set[int], set[int]]:
+        """`(fuera, todas)` del idioma por defecto: los ids de sus categorías de
+        fuera (regla «empieza por» sobre el nombre en ese idioma, y las hijas) y
+        los de todas. Se lee una vez por web; si falla, el mismo error vale
+        para todos los idiomas (sin él no se puede decidir)."""
+        if self._arbol_defecto_error is not None:
+            raise self._arbol_defecto_error
+        if self._arbol_defecto is None:
+            try:
+                arbol = self._categorias(self._idioma(self.sitio.idioma_defecto))
+            except LecturaError as exc:
+                self._arbol_defecto_error = exc
+                raise
+            self._arbol_defecto = (categorias_fuera(arbol, self.reglas), _ids(arbol))
+        return self._arbol_defecto
+
+    def _decision(self, idi: _Idioma) -> DecisionIdioma:
+        """Qué queda fuera en este idioma (ver el docstring del módulo): la
+        decisión del idioma por defecto, llevada a este idioma por id."""
+        defecto = self.sitio.idioma_defecto
+        try:
+            fuera_d, todas_d = self._del_defecto()
+        except LecturaError as exc:
+            if idi.defecto:
+                raise
+            raise LecturaError(f"no se pudieron leer las categorías del idioma por defecto "
+                               f"({defecto}), que deciden qué entra: {exc}") from exc
+        decision = DecisionIdioma.de_reglas(self.reglas, fuera_d)
+        if self.modo != MODO_WPML or idi.defecto:
+            # WPGlobus y un solo idioma: los mismos ids en todos los idiomas.
+            return decision
+        arbol = self._categorias(idi)
+        ids_idioma = _ids(arbol)
+        trad_fuera = self._traducir(idi, _RUTA_CATEGORIAS, fuera_d) if fuera_d else set()
+        trad_todas = self._traducir(idi, _RUTA_CATEGORIAS, todas_d) if todas_d else set()
+        if ids_idioma and not ids_idioma & (trad_todas | todas_d):
+            # Cerrado ante la duda: sin el enlace entre idiomas no se sabe qué
+            # es un repuesto, y lo de antes se queda como estaba.
+            raise LecturaError(
+                f"ninguna categoría de «{idi.idioma}» resulta ser traducción de una del idioma "
+                f"por defecto ({defecto}): WPML no ha traducido los ids y no se puede decidir "
+                "qué productos entran; se queda lo anterior")
+        # Los ids de término son únicos en toda la instalación: los del idioma
+        # por defecto que aparezcan aquí son esas mismas categorías.
+        decision.fuera = con_hijas(arbol, trad_fuera | fuera_d)
+        decision.conocidas = trad_todas | todas_d | decision.fuera
+        sin_original = [c for c in arbol if _entero(c.get("id")) not in decision.conocidas]
+        if sin_original:
+            nombres = ", ".join(
+                f"«{normalizar_espacios(html_mod.unescape(str(c.get('name') or '')))}» "
+                f"({c.get('id')})" for c in sin_original[:10])
+            self.lectura.avisos.append(
+                f"producto {idi.idioma}: {len(sin_original)} categoría(s) sin original en "
+                f"{defecto} (solo existen en este idioma: {nombres}); sus productos no entran "
+                "si no tienen otra categoría")
+        if self.reglas.excluir:
+            decision.excluir |= self._traducir(idi, _RUTA_PRODUCTOS, self.reglas.excluir)
+        return decision
+
+    def _productos(self, idi: _Idioma, decision: DecisionIdioma) -> list[dict[str, Any]]:
         params: dict[str, Any] = dict(idi.params)
-        if fuera:
+        if decision.fuera:
             # Filtrado ya en el servidor: boprint pasa de 330 productos a 36.
-            params["category"] = ",".join(str(i) for i in sorted(fuera))
+            # En WPML el servidor también ajusta estos ids al idioma pedido.
+            params["category"] = ",".join(str(i) for i in sorted(decision.fuera))
             params["category_operator"] = "not_in"
         productos = paginar(self.http, idi.base, _RUTA_PRODUCTOS, params, hosts=self.hosts)
         if self.reglas.incluir:
             # Las excepciones «incluir» pueden estar en una categoría de fuera:
-            # el filtro del servidor las habría quitado.
+            # el filtro del servidor las habría quitado. En WPML lo que vuelve
+            # son sus traducciones (ids de este idioma): también son «incluir».
             ya = {p.get("id") for p in productos}
             extra = paginar(self.http, idi.base, _RUTA_PRODUCTOS, {
                 **idi.params, "include": ",".join(str(i) for i in sorted(self.reglas.incluir))},
                 hosts=self.hosts)
+            if self.modo == MODO_WPML and not idi.defecto:
+                decision.incluir |= _ids(extra)
             productos += [p for p in extra if p.get("id") not in ya]
         return productos
 
@@ -736,31 +836,26 @@ class _LectorWeb:
                     salida[pid] = _fecha(e.get("modified_gmt"))
         return salida
 
-    def leer_productos(self, idioma: str, codigo: str | None,
-                       fuera_compartido: set[int] | None) -> tuple[Grupo, set[int] | None]:
-        """Los productos de un idioma. En WPML cada idioma tiene sus categorías
-        (y sus ids); con WPGlobus o un solo idioma, las del idioma por defecto
-        valen para todos (`fuera_compartido`)."""
+    def leer_productos(self, idioma: str, codigo: str | None) -> Grupo:
+        """Los productos de un idioma, con la decisión del idioma por defecto
+        llevada a este por id (`_decision`)."""
         idi = self._idioma(idioma, codigo)
         grupo = Grupo(tipo=WEB_PRODUCTO, idioma=idioma)
         try:
-            if fuera_compartido is None or self.modo == MODO_WPML:
-                fuera = categorias_fuera(self._categorias(idi), self.reglas)
-            else:
-                fuera = fuera_compartido
-            productos = self._productos(idi, fuera)
+            decision = self._decision(idi)
+            productos = self._productos(idi, decision)
         except SinRuta as exc:
             if idi.defecto and self._rest_responde():
                 # Sin WooCommerce (pimpam): no hay productos; lo que hubiera se va.
                 self.lectura.sin_tienda = True
-                return grupo, None
+                return grupo
             # La tienda existe pero ese idioma no responde, o la web da 404 a
             # todo (REST rota, vhost mal apuntado): se queda lo anterior.
-            grupo.error = str(exc)[:300]
-            return grupo, None
+            self._fallo(grupo, exc)
+            return grupo
         except LecturaError as exc:
-            grupo.error = str(exc)[:300]
-            return grupo, None
+            self._fallo(grupo, exc)
+            return grupo
         grupo.leidos = len(productos)
         grupo.vacio = not productos
         originales = self.defecto.setdefault(WEB_PRODUCTO, {})
@@ -770,7 +865,7 @@ class _LectorWeb:
                 continue
             if idi.defecto:
                 originales[pid] = {}
-            dentro, motivo = producto_dentro(producto, self.reglas, fuera)
+            dentro, motivo = producto_dentro(producto, decision)
             if not dentro:
                 grupo.descartar(motivo)
                 continue
@@ -785,7 +880,7 @@ class _LectorWeb:
             fechas = self._fechas_productos(idi, [f["wp_id"] for f in grupo.filas])
             for fila in grupo.filas:
                 fila["modificado_web"] = fechas.get(fila["wp_id"])
-        return grupo, fuera
+        return grupo
 
     def _producto_respaldo(self, idi: _Idioma, producto: dict[str, Any],
                            fila: dict[str, Any]) -> bool:
@@ -868,7 +963,6 @@ class _LectorWeb:
                             f"{idioma}: la web no lo publica (todo es respaldo del "
                             f"{self.sitio.idioma_defecto}); no se indexa")
                 self.lectura.grupos.append(grupo)
-        fuera: set[int] | None = None
         for idioma in self.lectura.idiomas:
             if idioma in sin_publicar:
                 self.lectura.grupos.append(_saltado(WEB_PRODUCTO, idioma))
@@ -876,7 +970,7 @@ class _LectorWeb:
             if WEB_PRODUCTO in defecto_fallido and idioma != defecto:
                 self.lectura.grupos.append(_sin_defecto(WEB_PRODUCTO, idioma))
                 continue
-            grupo, fuera_idioma = self.leer_productos(idioma, codigos.get(idioma), fuera)
+            grupo = self.leer_productos(idioma, codigos.get(idioma))
             if grupo.error is not None and idioma == defecto and self.modo == MODO_PREFIJO:
                 defecto_fallido.add(WEB_PRODUCTO)
             if self.lectura.sin_tienda:
@@ -886,24 +980,19 @@ class _LectorWeb:
                 self.lectura.grupos.extend(Grupo(tipo=WEB_PRODUCTO, idioma=i)
                                            for i in self.lectura.idiomas)
                 break
-            if fuera is None and fuera_idioma is not None:
-                fuera = fuera_idioma
             self.lectura.grupos.append(grupo)
         self.lectura.peticiones = len(self.http.urls)
         return self.lectura
 
 
 def leer_web(sitio: Sitio, reglas: ReglasSitio, *, host: str | None = None,
-             http: Http | None = None, html_para: frozenset[str] = frozenset()) -> LecturaWeb:
+             http: Http | None = None) -> LecturaWeb:
     """Lee una web entera (páginas, entradas y productos, idioma a idioma).
-    No toca la base: quien llama escribe (`indice.escribir_lectura`).
-    `html_para`: tipos que se leen del HTML público desde el principio (la
-    sonda real lo usa para probar el camino de mbolasers sin esperar al 500)."""
+    No toca la base: quien llama escribe (`indice.escribir_lectura`)."""
     propio = http is None
     cliente = http or Http()
     try:
-        return _LectorWeb(sitio, reglas, (host or sitio.web).strip().lower(), cliente,
-                          frozenset(html_para)).leer()
+        return _LectorWeb(sitio, reglas, (host or sitio.web).strip().lower(), cliente).leer()
     finally:
         if propio:
             cliente.cerrar()

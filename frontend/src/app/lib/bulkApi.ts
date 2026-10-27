@@ -1,4 +1,4 @@
-import { apiFetch, getStoredToken } from "./api";
+import { apiFetch, avisarSiSesionCaducada, getStoredToken } from "./api";
 
 // PR-E (Sprint Filtros & Listas): `add_tag` y `remove_tag` viven
 // también en el backend pero nunca tuvieron botón en `<ContactsBulkBar>`
@@ -78,6 +78,7 @@ export async function bulkExportContactsCsv(
     body: JSON.stringify({ contact_ids: contactIds }),
   });
   if (!resp.ok) {
+    avisarSiSesionCaducada("/api/contacts/bulk-export-csv", resp.status);
     let detail = `Export falló (${resp.status})`;
     try {
       const body = await resp.json();

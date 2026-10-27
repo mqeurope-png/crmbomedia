@@ -23,6 +23,17 @@ from app.services.webs import reglas_partida
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 TABLAS = {"soporte_fuentes", "soporte_cache", "web_indice", "web_indice_reglas",
           "web_indice_pasadas"}
+#: Las excepciones por id que sembró la 0148 (ya aplicada en producción: no se
+#: toca). Las de partida del código han seguido (la 0149 añade el 493), así
+#: que esta foto no se compara con ellas sino consigo misma.
+EXCEPCIONES_0148 = [
+    ("producto_excluir_id", "artisjet-es", "470"), ("producto_excluir_id", "artisjet-es", "474"),
+    ("producto_excluir_id", "artisjet-es", "481"), ("producto_excluir_id", "artisjet-es", "485"),
+    ("producto_excluir_id", "artisjet-es", "2026051305"),
+    ("producto_excluir_id", "artisjet-eu", "1892"), ("producto_excluir_id", "artisjet-eu", "1989"),
+    ("producto_excluir_id", "artisjet-eu", "2979"),
+    ("producto_incluir_id", "artisjet-eu", "477"),
+]
 
 
 @pytest.fixture()
@@ -72,9 +83,7 @@ def test_crea_las_tablas_siembra_flux_y_las_reglas_y_baja_limpia(alembic_setup):
             "SELECT tipo, sitio, patron FROM web_indice_reglas "
             "WHERE tipo IN ('producto_excluir_id', 'producto_incluir_id') "
             "ORDER BY tipo, posicion")).all()
-        assert [(r.tipo, r.sitio, r.patron) for r in excepciones] == [
-            ("producto_excluir_id", s, str(i)) for s, i, _ in reglas_partida.PRODUCTOS_FUERA
-        ] + [("producto_incluir_id", s, str(i)) for s, i, _ in reglas_partida.PRODUCTOS_DENTRO]
+        assert [(r.tipo, r.sitio, r.patron) for r in excepciones] == EXCEPCIONES_0148
         # El índice nace vacío: lo llena el primer recorrido.
         assert c.execute(text("SELECT COUNT(*) FROM web_indice")).scalar() == 0
         columnas = {col["name"] for col in inspect(engine).get_columns("web_indice")}

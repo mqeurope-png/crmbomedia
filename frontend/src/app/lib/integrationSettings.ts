@@ -1,4 +1,4 @@
-import { getStoredToken } from "./api";
+import { avisarSiSesionCaducada, getStoredToken } from "./api";
 import { extractErrorMessage, formatFastApiDetail } from "./errors";
 
 export type ExternalSystem = "agilecrm" | "brevo" | "freshdesk" | "factusol";
@@ -82,6 +82,7 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!response.ok) {
+    avisarSiSesionCaducada(path, response.status);
     const fallback = `Error de la API (${response.status})`;
     let body: unknown = null;
     try {
