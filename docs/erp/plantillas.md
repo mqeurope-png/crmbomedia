@@ -64,9 +64,10 @@ forma que ese flujo espera (`GET /api/erp/plantillas/{id}/lineas?destino=`):
 - **proforma**: `codart` = el CODART interno (viaja sin traducir: «el CODART
   directo manda» en `resolve_codarts`), `sku` para enseñarlo, dto. e IVA.
 - **pedido**: el pedido no tiene descuento por línea ni notas sueltas: el
-  precio va **neto** del descuento (a céntimos), una línea de texto se pega a
-  la anterior (las del principio, a la siguiente), una línea a cantidad 0 no
-  entra y una descripción de más de 255 caracteres se recorta por palabra.
+  precio va **neto** del descuento y siempre a céntimos, una línea de texto se
+  pega a la anterior (las del principio, delante de la siguiente, sin echar su
+  descripción), una línea a cantidad 0 no entra (ni sus notas) y una
+  descripción de más de 255 caracteres se recorta por palabra.
   Cada cosa de estas sale como **aviso** en el formulario. `product_codart` va
   si cabe (13 caracteres). El IVA lo sigue poniendo el régimen del cliente,
   como siempre.
@@ -91,11 +92,15 @@ máxima 3 (comprobada al crear **y al mover**, también la altura del subárbol)
 sin ciclos; una **tabla de acceso** por carpeta (la «compartición»), y la
 **carpeta por defecto** de cada usuario (`plantillas_documento_preferencias`,
 la ★ del árbol). Borrar una carpeta no borra nada: sus plantillas y
-subcarpetas suben a la raíz. Dos excepciones, porque aquí «sin filas de
+subcarpetas suben a la carpeta **madre** (a la raíz si no tiene; en las de
+correo van siempre a la raíz), así quien la veía por estar acotado a una
+antecesora la sigue viendo. Dos excepciones, porque aquí «sin filas de
 acceso» es «lo ve todo»: una carpeta que acota el acceso de alguien no se
-borra hasta quitarle ese acceso (409 `carpeta_con_acceso`), y quien tiene el
-acceso acotado no borra carpetas (403 `acceso_restringido`: su contenido iría
-a la raíz, que no ve). Renombrar no toca la madre; moverla, sí se comprueba.
+borra hasta quitarle ese acceso (409 `carpeta_con_acceso`; las filas de
+usuarios dados de baja o que ya no entran al ERP no cuentan y se borran con
+ella), y quien tiene el acceso acotado no borra carpetas (403
+`acceso_restringido`). Renombrar no toca la madre; moverla sí se comprueba, y
+quien está acotado no saca una carpeta de una madre que no ve (403).
 
 La visibilidad va **al revés** que en el correo, a propósito: las plantillas
 son de la empresa y **se ven todas**. Si administración da acceso a un

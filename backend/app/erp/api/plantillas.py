@@ -217,7 +217,10 @@ def patch_carpeta_endpoint(
     except OfertaError as exc:
         raise _http(exc) from exc
     session.commit()
-    return {"id": carpeta.id, "nombre": carpeta.nombre, "parent_id": carpeta.parent_id}
+    # La madre que no ve, como en el árbol: no se le da su id.
+    permitidas = svc.carpetas_permitidas(session, current_user)
+    madre = carpeta.parent_id if permitidas is None or carpeta.parent_id in permitidas else None
+    return {"id": carpeta.id, "nombre": carpeta.nombre, "parent_id": madre}
 
 
 @router.delete("/carpetas/{carpeta_id}")
@@ -227,8 +230,8 @@ def borrar_carpeta_endpoint(
     current_user: User = Depends(require_proformas),
 ) -> dict[str, Any]:
     """Borra la carpeta, no su contenido: sus plantillas y subcarpetas suben
-    a la raíz (como las carpetas de las plantillas de correo). 409 si acota
-    el acceso de alguien; 403 si quien borra tiene el acceso acotado."""
+    a la carpeta madre (a la raíz si no tiene). 409 si acota el acceso de
+    alguien; 403 si quien borra tiene el acceso acotado."""
     carpeta = _carpeta(session, current_user, carpeta_id)
     try:
         svc.borrar_carpeta(session, current_user, carpeta)
@@ -356,6 +359,13 @@ def crear_endpoint(
                 client, ejercicio = _client_and_ejercicio(session)
             except HTTPException:
                 client, ejercicio = None, None
+            if client is not None and getattr(client, "codigo_cliente", None) == "":
+                client = None                       # FACTUSOL sin configurar
+            elif client is not None and hasattr(client, "_read_timeout"):
+                # Es un extra: con FACTUSOL lento no se hace esperar al
+                # usuario (ni pasar el tiempo del proxy) por completar el SKU.
+                client._timeout = min(client._timeout, 5.0)
+                client._read_timeout = min(client._read_timeout, 10.0)
             plantilla = svc.plantilla_desde_pedido(session, order, nombre=payload.nombre,
                                                    usuario=current_user, client=client,
                                                    ejercicio=ejercicio, **comunes)

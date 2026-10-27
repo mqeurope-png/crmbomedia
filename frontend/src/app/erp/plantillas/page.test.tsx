@@ -412,14 +412,14 @@ describe("ERP · Plantillas", () => {
 
     await user.click(acciones.getByRole("button", { name: "Borrar" }));
     expect(confirmar).toHaveBeenCalledWith(
-      "¿Borrar la carpeta «Escuelas»? Sus plantillas y subcarpetas no se borran: pasan a la raíz.",
+      "¿Borrar la carpeta «Escuelas»? Sus plantillas y subcarpetas no se borran: pasan a «DTF».",
     );
     expect(mockDeleteCarpeta).not.toHaveBeenCalled();
 
     await user.click(acciones.getByRole("button", { name: "Borrar" }));
     await waitFor(() => expect(mockDeleteCarpeta).toHaveBeenCalledWith("c-esc"));
     expect(await screen.findByRole("status"))
-      .toHaveTextContent("Carpeta «Escuelas» borrada; su contenido está ahora en la raíz.");
+      .toHaveTextContent("Carpeta «Escuelas» borrada; su contenido está ahora en «DTF».");
     await waitFor(() => expect(screen.getByRole("button", { name: "Todas" })).toHaveAttribute("aria-pressed", "true"));
     await waitFor(() => expect(ultimaLista()).not.toHaveProperty("carpeta_id"));
   });

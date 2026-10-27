@@ -603,9 +603,9 @@ una **oferta**, una **proforma** o un **pedido**: la misma plantilla sirve para
 los tres (no hay que duplicarla). Nada de esta pantalla escribe en FACTUSOL.
 
 - **Carpetas** (a la izquierda, hasta 3 niveles): **«Nueva»**, **«Renombrar /
-  mover»**, **«Borrar»** (sus plantillas y subcarpetas pasan a la raíz, no se
-  borran; una carpeta con acceso acotado no se borra hasta quitarle el
-  acceso). La **★** marca tu carpeta por defecto: el selector se abre ahí y ahí
+  mover»**, **«Borrar»** (sus plantillas y subcarpetas pasan a la carpeta de
+  arriba, o a la raíz si no tiene; no se borran. Una carpeta con acceso
+  acotado no se borra hasta quitarle el acceso). La **★** marca tu carpeta por defecto: el selector se abre ahí y ahí
   se guardan tus plantillas nuevas.
 - **Buscador**: busca en el nombre, la descripción, las etiquetas **y dentro de
   las líneas** (referencia y texto). «DM3H» o «horno» encuentran la plantilla

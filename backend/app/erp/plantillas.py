@@ -245,6 +245,14 @@ def actualizar_carpeta(session: Session, user: User | None, carpeta: PlantillaCa
     # Solo se valida el destino si de verdad cambia: renombrar su carpeta no
     # puede fallar a quien solo ve esa carpeta (su madre puede no verla).
     if not isinstance(parent_id, _Sin) and (parent_id or None) != carpeta.parent_id:
+        permitidas = carpetas_permitidas(session, user)
+        if permitidas is not None and carpeta.parent_id and carpeta.parent_id not in permitidas:
+            # Está dentro de otra que no ve: sacarla cambiaría lo que ven
+            # otros y no podría deshacerlo.
+            raise PlantillaError(
+                "acceso_restringido",
+                "Esta carpeta está dentro de otra que no ves: pide a administración que la mueva.",
+                status=403)
         nuevo = _comprobar_destino_carpeta(session, user, parent_id)
         if nuevo == carpeta.id:
             raise PlantillaError("ciclo", "Una carpeta no puede ser su propia madre.")
@@ -265,32 +273,44 @@ def actualizar_carpeta(session: Session, user: User | None, carpeta: PlantillaCa
 
 
 def borrar_carpeta(session: Session, user: User | None, carpeta: PlantillaCarpeta) -> None:
-    """Como en las de correo: sus plantillas y subcarpetas suben a la raíz y
-    las preferencias que la apuntan desaparecen. No borra ninguna plantilla.
+    """Borrarla no borra ninguna plantilla: sus plantillas y subcarpetas suben
+    a la carpeta MADRE (a la raíz si no tiene), así quien la veía por estar
+    acotado a una antecesora la sigue viendo; las preferencias que la apuntan
+    desaparecen.
 
     Dos rechazos, porque aquí «sin filas de acceso» es «lo ve todo»: borrar
     una carpeta que acota a alguien le quitaría la restricción sin que nadie
-    lo decida (409 `carpeta_con_acceso`: primero se le quita el acceso), y
-    quien tiene el acceso acotado no borra carpetas, porque su contenido iría
-    a la raíz, donde no lo vería (403 `acceso_restringido`)."""
+    lo decida (409 `carpeta_con_acceso`: primero se le quita el acceso; las
+    filas de usuarios dados de baja o que ya no entran al ERP no cuentan y se
+    borran con ella), y quien tiene el acceso acotado no borra carpetas,
+    porque su contenido podría ir a donde no lo ve (403 `acceso_restringido`)."""
+    from app.erp.capabilities import Cap, has_capability  # noqa: PLC0415
+
     if carpetas_permitidas(session, user) is not None:
         raise PlantillaError(
             "acceso_restringido",
-            "Solo ves algunas carpetas: al borrar una, su contenido pasaría a la raíz, "
-            "que no ves. Pídeselo a administración.", status=403)
-    con_acceso = int(session.scalar(select(func.count()).select_from(PlantillaCarpetaAcceso)
-                                    .where(PlantillaCarpetaAcceso.carpeta_id == carpeta.id)) or 0)
-    if con_acceso:
+            "Solo ves algunas carpetas: al borrar una, su contenido podría pasar a donde no "
+            "lo ves. Pídeselo a administración.", status=403)
+    filas = list(session.scalars(select(PlantillaCarpetaAcceso).where(
+        PlantillaCarpetaAcceso.carpeta_id == carpeta.id)))
+    usuarios = {u.id: u for u in session.scalars(
+        select(User).where(User.id.in_([f.user_id for f in filas])))} if filas else {}
+    vigentes = [f for f in filas if (u := usuarios.get(f.user_id)) is not None
+                and u.is_active and has_capability(u, Cap.OFFICE_VIEW)]
+    if vigentes:
         raise PlantillaError(
             "carpeta_con_acceso",
-            f"Esta carpeta acota el acceso de {con_acceso} usuario(s): quítalos en «Acceso» "
+            f"Esta carpeta acota el acceso de {len(vigentes)} usuario(s): quítalos en «Acceso» "
             "antes de borrarla.", status=409)
+    for fila in filas:
+        session.delete(fila)
+    destino = carpeta.parent_id
     for p in session.scalars(select(PlantillaDocumento).where(
             PlantillaDocumento.carpeta_id == carpeta.id)):
-        p.carpeta_id = None
+        p.carpeta_id = destino
     for hija in session.scalars(select(PlantillaCarpeta).where(
             PlantillaCarpeta.parent_id == carpeta.id)):
-        hija.parent_id = None
+        hija.parent_id = destino
     for fila in session.scalars(select(PlantillaCarpetaPreferencia).where(
             PlantillaCarpetaPreferencia.carpeta_id == carpeta.id)):
         session.delete(fila)
@@ -911,8 +931,12 @@ def lineas_para(plantilla: PlantillaDocumento,
     # Notas que van antes de la primera línea con mercancía: no tienen línea
     # anterior a la que pegarse, así que encabezan la siguiente.
     pendiente: list[str] = []
+    # Tras una línea que no entra, sus notas (su continuación) tampoco.
+    tras_excluida = False
     for ln in lineas:
         if ln["text_only"]:
+            if tras_excluida:
+                continue
             if salida:
                 anterior = salida[-1]["description"]
                 salida[-1]["description"] = f"{anterior} {ln['descripcion']}".strip()
@@ -922,22 +946,38 @@ def lineas_para(plantilla: PlantillaDocumento,
         if ln["cantidad"] <= 0:
             # Una línea a cantidad 0 (opcional, informativa) no suma en la
             # oferta ni en la proforma; en el pedido sería 1 unidad que nadie
-            # pidió. No entra, y se avisa.
+            # pidió. No entra (ni sus notas), y se avisa.
             avisos.append(f"Línea {ln['posicion']}: tiene cantidad 0 en la plantilla; no se "
-                          "incluye en el pedido.")
+                          "incluye en el pedido (ni sus notas).")
+            tras_excluida = True
             continue
+        tras_excluida = False
         precio = Decimal(str(ln["precio"]))
+        # A céntimos, la escala de `order_lines.unit_price`: si no, el pedido
+        # guardaría otro precio que el que cuadra con su importe.
+        neto = precio * (1 - Decimal(str(ln["descuento_pct"] or 0)) / 100)
+        precio_c = neto.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         if ln["descuento_pct"]:
-            # A céntimos, la escala de `order_lines.unit_price`: si no, el
-            # pedido guardaría otro precio que el que cuadra con su importe.
-            neto = precio * (1 - Decimal(str(ln["descuento_pct"])) / 100)
-            precio = neto.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
             avisos.append(
                 f"Línea {ln['posicion']}: el pedido no lleva descuento por línea; el precio "
                 f"va neto (−{ln['descuento_pct']:g} %).")
+        elif precio_c != precio:
+            avisos.append(
+                f"Línea {ln['posicion']}: el pedido guarda el precio a céntimos "
+                f"({precio.normalize():f} → {precio_c} €); revisa el importe.")
+        precio = precio_c
         codart = ln["codart"] if ln["codart"] and len(ln["codart"]) <= PEDIDO_CODART_MAX else None
-        descripcion = " ".join([*pendiente, ln["descripcion"]]).strip()
+        # La descripción del artículo manda: las notas de delante se recortan
+        # al hueco que deja (si no queda, no entran) para no echarla del pedido.
+        propia = ln["descripcion"].strip()
+        delante = " ".join(pendiente).strip()
         pendiente = []
+        hueco = PEDIDO_DESCRIPCION_MAX - len(propia) - 1
+        if delante and hueco < len(delante):
+            avisos.append(f"Línea {ln['posicion']}: el texto de la plantilla que va delante no "
+                          "cabe entero en la línea del pedido; se ha recortado.")
+            delante = _cortar(delante, hueco) if hueco > 0 else ""
+        descripcion = f"{delante} {propia}".strip()
         salida.append({
             "product_sku": ln["sku"] or ln["codart"] or "", "product_codart": codart,
             "description": descripcion, "quantity": ln["cantidad"], "unit_price": float(precio),

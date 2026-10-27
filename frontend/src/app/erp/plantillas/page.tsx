@@ -176,13 +176,16 @@ export default function PlantillasPage() {
   }
 
   async function borrarCarpeta(node: PlantillaCarpetaNode) {
+    // Su contenido sube a la carpeta madre (a la raíz si no tiene).
+    const madre = findCarpeta(arbol, node.parent_id);
+    const destino = madre ? `«${madre.nombre}»` : "la raíz";
     if (!window.confirm(
-      `¿Borrar la carpeta «${node.nombre}»? Sus plantillas y subcarpetas no se borran: pasan a la raíz.`,
+      `¿Borrar la carpeta «${node.nombre}»? Sus plantillas y subcarpetas no se borran: pasan a ${destino}.`,
     )) return;
     setError(null);
     try {
       await deletePlantillaCarpeta(node.id);
-      setNotice(`Carpeta «${node.nombre}» borrada; su contenido está ahora en la raíz.`);
+      setNotice(`Carpeta «${node.nombre}» borrada; su contenido está ahora en ${destino}.`);
       setCarpeta(CARPETA_TODAS);
       await refrescarTodo();
     } catch (e) {

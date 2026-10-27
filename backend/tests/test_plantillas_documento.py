@@ -213,9 +213,10 @@ def test_guardar_como_plantilla_desde_proforma_albaran_y_pedido(http, session_fa
         ])
         s.commit()
         order_id = order.id
-    r = http.post("/api/erp/plantillas", headers=h, json={
-        "nombre": "Horno suelto", "idioma": "de",
-        "origen": {"tipo": "pedido", "order_id": order_id}})
+    with _patch(fake):                         # sin salir a la red (F_ART)
+        r = http.post("/api/erp/plantillas", headers=h, json={
+            "nombre": "Horno suelto", "idioma": "de",
+            "origen": {"tipo": "pedido", "order_id": order_id}})
     assert r.status_code == 201, r.text
     de_pedido = r.json()
     assert de_pedido["origen_tipo"] == "pedido" and de_pedido["origen_numero"] == "MANUAL-000009"
@@ -417,9 +418,14 @@ def test_carpetas_tres_niveles_sin_ciclos_y_borrar_no_borra_plantillas(http, ses
         pid = _plantilla(s, "Dentro de B", carpeta_id=b)
     assert http.delete(f"/api/erp/plantillas/carpetas/{b}", headers=h).status_code == 200
     detalle = http.get(f"/api/erp/plantillas/{pid}", headers=h).json()
-    assert detalle["carpeta_id"] is None                      # sube a la raíz, no se borra
+    assert detalle["carpeta_id"] == a                         # sube a la madre, no se borra
     arbol = http.get("/api/erp/plantillas/carpetas", headers=h).json()["items"]
-    assert {n["nombre"] for n in arbol} == {"A", "C", "Otra"}  # C sube a la raíz
+    assert {n["nombre"] for n in arbol} == {"A", "Otra"}
+    assert [n["nombre"] for n in next(n for n in arbol if n["nombre"] == "A")["children"]] \
+        == ["C"]                                              # C también sube a A
+    # Sin madre, a la raíz.
+    assert http.delete(f"/api/erp/plantillas/carpetas/{a}", headers=h).status_code == 200
+    assert http.get(f"/api/erp/plantillas/{pid}", headers=h).json()["carpeta_id"] is None
 
 
 def test_editar_mover_etiquetar_y_desactivar(http, session_factory):
@@ -505,8 +511,9 @@ def test_el_acotado_renombra_su_carpeta_y_no_ve_el_nombre_de_la_madre(http, sess
                    {"nombre": "FESPA 2027"}):
         r = http.patch(f"/api/erp/plantillas/carpetas/{ids['fespa']}", headers=h, json=cuerpo)
         if cuerpo.get("parent_id", ids["ferias"]) is None:
-            # Sacarla de verdad a la raíz sí es un cambio, y no lo puede hacer.
-            assert r.status_code == 422, cuerpo
+            # Sacarla de verdad a la raíz sí es un cambio, y no lo puede hacer
+            # (está dentro de una madre que no ve).
+            assert r.status_code == 403, cuerpo
         else:
             assert r.status_code == 200, (cuerpo, r.text)
     # La ruta de sus plantillas no enseña «Ferias».
@@ -600,3 +607,75 @@ def test_lineas_del_pedido_textos_cantidad_cero_y_precio_neto_a_centimos(session
             {"descripcion": "Nota", "cantidad": 0, "precio": 0}])
         lineas, avisos = svc.lineas_para(s.get(PlantillaDocumento, solo_texto), "pedido")
     assert lineas == [] and any("ninguna línea" in a for a in avisos)
+
+
+# ---------------------------------------------------------------------------
+# Revisión (ronda 2)
+# ---------------------------------------------------------------------------
+
+
+def test_borrar_una_subcarpeta_no_saca_su_contenido_de_la_carpeta_acotada(http, session_factory):
+    with session_factory() as s:
+        ids = _carpetas_y_plantillas(s)
+    _acotar(http, session_factory, ids["ferias"])           # ve Ferias y, por ella, FESPA
+    h = auth_headers(http, "comercial")
+    admin = auth_headers(http, "admin")
+    assert http.delete(f"/api/erp/plantillas/carpetas/{ids['fespa']}",
+                       headers=admin).status_code == 200
+    # Su plantilla sube a «Ferias»: el acotado la sigue viendo.
+    assert [p["id"] for p in http.get("/api/erp/plantillas", headers=h).json()["items"]] \
+        == [ids["p_fespa"]]
+
+
+def test_las_filas_de_acceso_de_quien_ya_no_entra_no_impiden_borrar(http, session_factory):
+    with session_factory() as s:
+        ids = _carpetas_y_plantillas(s)
+    _acotar(http, session_factory, ids["escuelas"])
+    with session_factory() as s:
+        comercial = s.scalar(select(User).where(User.email == "comercial@example.com"))
+        comercial.is_active = False                         # dado de baja
+        s.commit()
+    admin = auth_headers(http, "admin")
+    assert http.delete(f"/api/erp/plantillas/carpetas/{ids['escuelas']}",
+                       headers=admin).status_code == 200
+    with session_factory() as s:
+        assert s.scalar(select(func.count()).select_from(PlantillaCarpetaAcceso)) == 0
+
+
+def test_el_acotado_no_saca_una_carpeta_de_una_madre_que_no_ve(http, session_factory):
+    with session_factory() as s:
+        ids = _carpetas_y_plantillas(s)
+        comercial_id = s.scalar(select(User.id).where(User.email == "comercial@example.com"))
+    admin = auth_headers(http, "admin")
+    for carpeta in ("fespa", "escuelas"):
+        assert http.put(f"/api/erp/plantillas/carpetas/{ids[carpeta]}/acceso", headers=admin,
+                        json={"user_ids": [comercial_id]}).status_code == 200
+    h = auth_headers(http, "comercial")
+    r = http.patch(f"/api/erp/plantillas/carpetas/{ids['fespa']}", headers=h,
+                   json={"parent_id": ids["escuelas"]})
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "acceso_restringido"
+    # Renombrarla sí; y la respuesta no le da el id de la madre que no ve.
+    r = http.patch(f"/api/erp/plantillas/carpetas/{ids['fespa']}", headers=h,
+                   json={"nombre": "FESPA 2027"})
+    assert r.status_code == 200 and r.json()["parent_id"] is None
+
+
+def test_lineas_del_pedido_precio_a_centimos_notas_de_una_excluida_y_texto_largo(session_factory):
+    larga = "Nota de cabecera " * 15                         # ~255 caracteres
+    with session_factory() as s:
+        pid = _plantilla(s, "Consumibles", lineas=[
+            {"descripcion": larga.strip(), "cantidad": 0, "precio": 0},
+            {"codart": "00103", "sku": "FILM", "descripcion": "Film DTF 60 cm",
+             "cantidad": 250, "precio": 0.035},
+            {"codart": "OPC", "sku": "OPC", "descripcion": "Opcional B", "cantidad": 0,
+             "precio": 5},
+            {"descripcion": "(B incluye soporte)", "cantidad": 0, "precio": 0},
+        ])
+        lineas, avisos = svc.lineas_para(s.get(PlantillaDocumento, pid), "pedido")
+    assert len(lineas) == 1
+    ln = lineas[0]
+    assert ln["unit_price"] == 0.04 and any("céntimos" in a for a in avisos)
+    assert ln["description"].endswith("Film DTF 60 cm")      # la del artículo no se pierde
+    assert len(ln["description"]) <= 255
+    assert "soporte" not in ln["description"]                # la nota de B no va a A
+    assert any("cantidad 0" in a for a in avisos)
