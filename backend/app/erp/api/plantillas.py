@@ -40,6 +40,11 @@ def _http(exc: OfertaError) -> HTTPException:
     return HTTPException(exc.status, {"code": exc.code, "detail": str(exc), **exc.extra})
 
 
+def _rutas(session: Session, user: User) -> dict[str, str]:
+    """Las rutas de las carpetas sin las madres que el usuario no ve."""
+    return svc.rutas_carpetas(session, svc.carpetas_permitidas(session, user))
+
+
 class LineaIn(BaseModel):
     codart: str | None = Field(default=None, max_length=64)
     sku: str | None = Field(default=None, max_length=64)
@@ -222,9 +227,13 @@ def borrar_carpeta_endpoint(
     current_user: User = Depends(require_proformas),
 ) -> dict[str, Any]:
     """Borra la carpeta, no su contenido: sus plantillas y subcarpetas suben
-    a la raíz (como las carpetas de las plantillas de correo)."""
+    a la raíz (como las carpetas de las plantillas de correo). 409 si acota
+    el acceso de alguien; 403 si quien borra tiene el acceso acotado."""
     carpeta = _carpeta(session, current_user, carpeta_id)
-    svc.borrar_carpeta(session, carpeta)
+    try:
+        svc.borrar_carpeta(session, current_user, carpeta)
+    except OfertaError as exc:
+        raise _http(exc) from exc
     session.commit()
     return {"ok": True}
 
@@ -287,10 +296,12 @@ def listar_endpoint(
     filas = svc.listar(session, current_user, q=q, carpeta_id=carpeta_id,
                        sin_carpeta=sin_carpeta, etiquetas=etiqueta, idioma=idioma,
                        solo_activas=activas, limit=limit)
+    if order_id and not _puede_ver_pedido(session, current_user, order_id):
+        order_id = None
     idioma_cliente, fuente = svc.idioma_cliente(
         session, contact_id=contact_id, company_id=company_id, order_id=order_id, serie=serie)
     filas = svc.ordenar_por_idioma(filas, idioma_cliente)
-    rutas = svc.rutas_carpetas(session)
+    rutas = _rutas(session, current_user)
     palabras = svc.palabras_busqueda(q)
     return {
         "items": [svc.plantilla_como_dict(
@@ -302,6 +313,15 @@ def listar_endpoint(
         "idioma_cliente": idioma_cliente,
         "idioma_fuente": fuente,
     }
+
+
+def _puede_ver_pedido(session: Session, user: User, order_id: str) -> bool:
+    """Un pedido web solo lo ve quien puede ver pedidos web (el comercial no)."""
+    from app.erp.capabilities import can_view_web_orders  # noqa: PLC0415
+    from app.erp.factusol_albaran import is_web_order  # noqa: PLC0415
+
+    order = session.get(Order, order_id)
+    return order is None or not is_web_order(order) or can_view_web_orders(user)
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -324,11 +344,21 @@ def crear_endpoint(
         origen = payload.origen
         if origen is not None and origen.tipo == svc.ORIGEN_PEDIDO:
             order = session.get(Order, origen.order_id) if origen.order_id else None
-            if order is None:
+            if order is None or not _puede_ver_pedido(session, current_user, order.id):
+                # Un pedido web para quien no los ve: como si no existiera.
                 raise HTTPException(status.HTTP_404_NOT_FOUND, {
                     "code": "order_not_found", "detail": "El pedido no existe."})
+            # El artículo de FACTUSOL de cada línea se completa leyendo F_ART
+            # (solo lectura); sin FACTUSOL, la plantilla se guarda igual.
+            from app.erp.api.factusol import _client_and_ejercicio  # noqa: PLC0415
+
+            try:
+                client, ejercicio = _client_and_ejercicio(session)
+            except HTTPException:
+                client, ejercicio = None, None
             plantilla = svc.plantilla_desde_pedido(session, order, nombre=payload.nombre,
-                                                   usuario=current_user, **comunes)
+                                                   usuario=current_user, client=client,
+                                                   ejercicio=ejercicio, **comunes)
         elif origen is not None:
             if origen.serie is None or origen.codigo is None:
                 raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {
@@ -355,7 +385,7 @@ def crear_endpoint(
     except OfertaError as exc:
         raise _http(exc) from exc
     session.commit()
-    return svc.plantilla_como_dict(plantilla, rutas=svc.rutas_carpetas(session))
+    return svc.plantilla_como_dict(plantilla, rutas=_rutas(session, current_user))
 
 
 def _plantilla(session: Session, user: User, plantilla_id: str):  # noqa: ANN202
@@ -372,7 +402,7 @@ def detalle_endpoint(
     current_user: User = Depends(require_office_view),
 ) -> dict[str, Any]:
     return svc.plantilla_como_dict(_plantilla(session, current_user, plantilla_id),
-                                   rutas=svc.rutas_carpetas(session))
+                                   rutas=_rutas(session, current_user))
 
 
 @router.patch("/{plantilla_id}")
@@ -394,7 +424,7 @@ def patch_endpoint(
     except OfertaError as exc:
         raise _http(exc) from exc
     session.commit()
-    return svc.plantilla_como_dict(plantilla, rutas=svc.rutas_carpetas(session))
+    return svc.plantilla_como_dict(plantilla, rutas=_rutas(session, current_user))
 
 
 @router.get("/{plantilla_id}/lineas")
@@ -414,6 +444,6 @@ def lineas_endpoint(
         raise _http(exc) from exc
     return {
         "plantilla": svc.plantilla_como_dict(plantilla, con_lineas=False,
-                                             rutas=svc.rutas_carpetas(session)),
+                                             rutas=_rutas(session, current_user)),
         "destino": destino, "lineas": lineas, "avisos": avisos,
     }

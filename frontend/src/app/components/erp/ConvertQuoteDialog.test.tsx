@@ -121,6 +121,8 @@ describe("ConvertQuoteDialog", () => {
     expect(within(aviso).getByRole("link", { name: "PRO-000040" }))
       .toHaveAttribute("href", "/erp/orders/o-40");
     expect(screen.queryByRole("button", { name: "Crear pedido y albarán" })).not.toBeInTheDocument();
+    // Sin el resumen recalculado: no sería el del pedido que existe.
+    expect(screen.queryByRole("region", { name: "Resumen del pedido" })).not.toBeInTheDocument();
     // Sin paso de pago: no hay nada que crear.
     expect(screen.queryByLabelText("Sin pago")).not.toBeInTheDocument();
     // «Cancelar» pasa a «Cerrar» (el ✕ también se llama «Cerrar»: se busca por texto).

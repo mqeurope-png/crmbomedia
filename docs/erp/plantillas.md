@@ -35,7 +35,7 @@ escriba después lo escribe ese flujo, como antes.
 |---|---|---|
 | Proforma | ERP · Proformas «⋯» y ERP · Documentos → Presupuestos «⋯» | `F_LPS` con su artículo (`codart` + `sku`), dto. e IVA |
 | Albarán | ERP · Documentos → Albaranes «⋯» | `F_LAL` con su artículo; el IVA es un código (0 = general) y se traduce a 21 % salvo 4/10/21 |
-| Pedido | Ficha del pedido «⋯» | Las líneas del pedido (sin la de portes), con `product_codart` si lo tiene |
+| Pedido | Ficha del pedido «⋯» | Las líneas de mercancía del pedido (sin portes ni comisiones o cupones de la tienda), con su artículo completado leyendo F_ART (el CODART de las que solo traen el SKU y el SKU comercial de las que solo traen el CODART). Un pedido web solo lo guarda quien puede ver pedidos web |
 | A mano | ERP · Plantillas «+ Nueva plantilla» | El editor de líneas de las ofertas (artículos del catálogo) |
 
 La carpeta por defecto del usuario viene puesta (se cambia en el modal).
@@ -64,11 +64,12 @@ forma que ese flujo espera (`GET /api/erp/plantillas/{id}/lineas?destino=`):
 - **proforma**: `codart` = el CODART interno (viaja sin traducir: «el CODART
   directo manda» en `resolve_codarts`), `sku` para enseñarlo, dto. e IVA.
 - **pedido**: el pedido no tiene descuento por línea ni notas sueltas: el
-  precio va **neto** del descuento, una línea de texto se pega a la anterior y
-  una descripción de más de 255 caracteres se recorta por palabra. Cada cosa
-  de estas sale como **aviso** en el formulario. `product_codart` va si cabe
-  (13 caracteres). El IVA lo sigue poniendo el régimen del cliente, como
-  siempre.
+  precio va **neto** del descuento (a céntimos), una línea de texto se pega a
+  la anterior (las del principio, a la siguiente), una línea a cantidad 0 no
+  entra y una descripción de más de 255 caracteres se recorta por palabra.
+  Cada cosa de estas sale como **aviso** en el formulario. `product_codart` va
+  si cabe (13 caracteres). El IVA lo sigue poniendo el régimen del cliente,
+  como siempre.
 
 El idioma del cliente es el de la cascada de las ofertas (contacto → empresa →
 país → empresa emisora → `es`); en un pedido manda `orders.language` si lo
@@ -90,7 +91,11 @@ máxima 3 (comprobada al crear **y al mover**, también la altura del subárbol)
 sin ciclos; una **tabla de acceso** por carpeta (la «compartición»), y la
 **carpeta por defecto** de cada usuario (`plantillas_documento_preferencias`,
 la ★ del árbol). Borrar una carpeta no borra nada: sus plantillas y
-subcarpetas suben a la raíz.
+subcarpetas suben a la raíz. Dos excepciones, porque aquí «sin filas de
+acceso» es «lo ve todo»: una carpeta que acota el acceso de alguien no se
+borra hasta quitarle ese acceso (409 `carpeta_con_acceso`), y quien tiene el
+acceso acotado no borra carpetas (403 `acceso_restringido`: su contenido iría
+a la raíz, que no ve). Renombrar no toca la madre; moverla, sí se comprueba.
 
 La visibilidad va **al revés** que en el correo, a propósito: las plantillas
 son de la empresa y **se ven todas**. Si administración da acceso a un
@@ -98,8 +103,9 @@ usuario en alguna carpeta (botón «Acceso» de la carpeta, `erp.config`), desde
 ese momento ese usuario **solo** ve esas carpetas y sus subcarpetas —en el
 árbol, la lista, el buscador, el detalle, las líneas, las etiquetas y al crear
 una oferta con `plantilla_id`—, y no puede guardar plantillas ni carpetas en la
-raíz. Un usuario sin ninguna fila de acceso lo ve todo; el administrador,
-siempre todo.
+raíz. Tampoco ve el nombre de las carpetas madre que no tiene: la ruta se
+corta en la primera que no ve. Un usuario sin ninguna fila de acceso lo ve
+todo; el administrador, siempre todo.
 
 ## Tablas (migración 0147)
 
@@ -107,7 +113,7 @@ siempre todo.
 |---|---|
 | `plantillas_documento` (antes `ofertas_plantillas`) | La plantilla: nombre, descripción, activa, **idioma**, **carpeta**, **origen** (`origen_tipo`, `origen_serie`, `origen_codigo`, `origen_order_id`, `origen_numero`). |
 | `plantillas_documento_lineas` (antes `ofertas_plantillas_lineas`) | Sus líneas (sin cambios). |
-| `plantillas_documento_etiquetas` | Etiquetas (`etiqueta`, `etiqueta_norm`), únicas por plantilla. |
+| `plantillas_documento_etiquetas` | Etiquetas (`etiqueta`, `etiqueta_norm`), únicas por plantilla. `etiqueta_norm` va en `utf8mb4_bin` en MySQL: ya está normalizada y así la UNIQUE dice lo mismo que Python («ß» ≠ «ss»). |
 | `plantillas_documento_carpetas` | Carpetas (madre, dueño, orden). |
 | `plantillas_documento_carpetas_acceso` | Quién tiene acceso a cada carpeta. |
 | `plantillas_documento_preferencias` | La carpeta por defecto de cada usuario. |
@@ -126,8 +132,10 @@ siempre todo.
    `origen_codpre`.
 4. Crea las tablas de acceso, preferencias y etiquetas.
 
-Tiene `downgrade` completo. La plantilla que existía (10 líneas) queda tal
-cual, sin carpeta ni etiquetas, en castellano.
+Tiene `downgrade` completo, probado en MySQL 8 (las tablas nuevas se borran
+enteras, sin quitar antes sus índices, que en MySQL sostienen sus claves
+ajenas). La plantilla que existía (10 líneas) queda tal cual, sin carpeta ni
+etiquetas, en castellano.
 
 ## API (`/api/erp/plantillas`)
 

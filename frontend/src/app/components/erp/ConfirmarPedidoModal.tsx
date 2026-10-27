@@ -119,7 +119,11 @@ export function ConfirmarPedidoModal({
               Revisa lo que se va a crear. Nada se crea hasta pulsar «Crear pedido».
             </p>
           )}
-          <ResumenPedidoView resumen={preview.resumen} empresa={companyName ?? null} />
+          {/* Ya tiene pedido: solo el enlace (el resumen sería el del documento,
+              no el del pedido que existe). */}
+          {!yaImportado ? (
+            <ResumenPedidoView resumen={preview.resumen} empresa={companyName ?? null} />
+          ) : null}
           {!empresaId && !yaImportado ? (
             <div className="form-warning" role="alert">
               El cliente FACTUSOL {preview.cliente_codigo ?? ""} no tiene empresa en el CRM.

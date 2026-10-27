@@ -253,10 +253,14 @@ export default function PlantillasPage() {
                           onClick={() => setCarpetaModal({ modo: "editar", carpeta: seleccionada })}>
                     <Pencil size={12} aria-hidden /> Renombrar / mover
                   </button>
-                  <button type="button" className="button secondary small"
-                          onClick={() => void borrarCarpeta(seleccionada)}>
-                    <Trash2 size={12} aria-hidden /> Borrar
-                  </button>
+                  {/* Quien solo ve algunas carpetas no las borra: su contenido
+                      iría a la raíz, que no ve (el servidor lo rechaza igual). */}
+                  {!restringido ? (
+                    <button type="button" className="button secondary small"
+                            onClick={() => void borrarCarpeta(seleccionada)}>
+                      <Trash2 size={12} aria-hidden /> Borrar
+                    </button>
+                  ) : null}
                 </>
               ) : null}
               {meta?.gestiona_acceso ? (
@@ -460,12 +464,9 @@ function CarpetaModalView({
   onSaved: (texto: string, id?: string) => void;
 }) {
   const editando = estado.modo === "editar" ? estado.carpeta : null;
-  const [nombre, setNombre] = useState(editando?.nombre ?? "");
-  const [parentId, setParentId] = useState<string>(
-    editando ? (editando.parent_id ?? "") : (estado.modo === "nueva" ? (estado.parentId ?? "") : ""),
-  );
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // Dónde está ahora (al editar). Para quien solo ve algunas carpetas puede
+  // ser «ninguna que vea»: entonces se queda donde está.
+  const original = editando?.parent_id ?? "";
 
   // Madres posibles: no la propia carpeta ni sus subcarpetas, y sin pasar de
   // `maxProfundidad` niveles (el backend lo vuelve a comprobar).
@@ -473,7 +474,19 @@ function CarpetaModalView({
     const fuera = editando ? idsDelSubarbol(editando) : new Set<string>();
     return flattenCarpetas(arbol).filter((c) => !fuera.has(c.id) && c.depth < maxProfundidad - 1);
   }, [arbol, editando, maxProfundidad]);
-  const valid = nombre.trim().length > 0 && (permiteRaiz || Boolean(parentId) || Boolean(editando && !editando.parent_id && !parentId));
+  const [nombre, setNombre] = useState(editando?.nombre ?? "");
+  const [parentId, setParentId] = useState<string>(() => {
+    if (editando) return original;
+    // Nueva: dentro de la seleccionada si se puede; si no, una opción válida.
+    const pedida = estado.modo === "nueva" ? (estado.parentId ?? "") : "";
+    if (pedida && opciones.some((c) => c.id === pedida)) return pedida;
+    return permiteRaiz ? "" : (opciones[0]?.id ?? "");
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const cambiaMadre = Boolean(editando) && parentId !== original;
+  const valid = nombre.trim().length > 0
+    && (editando ? (!cambiaMadre || permiteRaiz || Boolean(parentId)) : (permiteRaiz || Boolean(parentId)));
 
   async function save() {
     if (!valid || saving) return;
@@ -481,7 +494,11 @@ function CarpetaModalView({
     setError(null);
     try {
       if (editando) {
-        await updatePlantillaCarpeta(editando.id, { nombre: nombre.trim(), parent_id: parentId || null });
+        // La madre solo viaja si cambia: renombrar no la toca.
+        await updatePlantillaCarpeta(editando.id, {
+          nombre: nombre.trim(),
+          ...(cambiaMadre ? { parent_id: parentId || null } : {}),
+        });
         onSaved(`Carpeta «${nombre.trim()}» guardada.`, editando.id);
       } else {
         const c = await createPlantillaCarpeta({ nombre: nombre.trim(), parent_id: parentId || null });
@@ -507,7 +524,10 @@ function CarpetaModalView({
           <span>Dentro de</span>
           <select value={parentId} aria-label="Carpeta madre" disabled={saving}
                   onChange={(e) => setParentId(e.target.value)}>
-            {permiteRaiz || (editando && !editando.parent_id) ? <option value="">— La raíz —</option> : null}
+            {permiteRaiz || (editando && !original) ? <option value="">— La raíz —</option> : null}
+            {editando && original && !opciones.some((c) => c.id === original) ? (
+              <option value={original}>(donde está ahora)</option>
+            ) : null}
             {opciones.map((c) => <option key={c.id} value={c.id}>{c.ruta}</option>)}
           </select>
           <span className="muted small">Hasta {maxProfundidad} niveles.</span>

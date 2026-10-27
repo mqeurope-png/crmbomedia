@@ -242,7 +242,9 @@ def actualizar_carpeta(session: Session, user: User | None, carpeta: PlantillaCa
         if not nombre.strip():
             raise PlantillaError("nombre_requerido", "La carpeta necesita un nombre.")
         carpeta.nombre = nombre.strip()[:CARPETA_NOMBRE_MAX]
-    if not isinstance(parent_id, _Sin):
+    # Solo se valida el destino si de verdad cambia: renombrar su carpeta no
+    # puede fallar a quien solo ve esa carpeta (su madre puede no verla).
+    if not isinstance(parent_id, _Sin) and (parent_id or None) != carpeta.parent_id:
         nuevo = _comprobar_destino_carpeta(session, user, parent_id)
         if nuevo == carpeta.id:
             raise PlantillaError("ciclo", "Una carpeta no puede ser su propia madre.")
@@ -262,19 +264,33 @@ def actualizar_carpeta(session: Session, user: User | None, carpeta: PlantillaCa
     return carpeta
 
 
-def borrar_carpeta(session: Session, carpeta: PlantillaCarpeta) -> None:
-    """Como en las de correo: sus plantillas y subcarpetas suben a la raíz;
-    su acceso y las preferencias que la apuntan desaparecen. No borra
-    ninguna plantilla."""
+def borrar_carpeta(session: Session, user: User | None, carpeta: PlantillaCarpeta) -> None:
+    """Como en las de correo: sus plantillas y subcarpetas suben a la raíz y
+    las preferencias que la apuntan desaparecen. No borra ninguna plantilla.
+
+    Dos rechazos, porque aquí «sin filas de acceso» es «lo ve todo»: borrar
+    una carpeta que acota a alguien le quitaría la restricción sin que nadie
+    lo decida (409 `carpeta_con_acceso`: primero se le quita el acceso), y
+    quien tiene el acceso acotado no borra carpetas, porque su contenido iría
+    a la raíz, donde no lo vería (403 `acceso_restringido`)."""
+    if carpetas_permitidas(session, user) is not None:
+        raise PlantillaError(
+            "acceso_restringido",
+            "Solo ves algunas carpetas: al borrar una, su contenido pasaría a la raíz, "
+            "que no ves. Pídeselo a administración.", status=403)
+    con_acceso = int(session.scalar(select(func.count()).select_from(PlantillaCarpetaAcceso)
+                                    .where(PlantillaCarpetaAcceso.carpeta_id == carpeta.id)) or 0)
+    if con_acceso:
+        raise PlantillaError(
+            "carpeta_con_acceso",
+            f"Esta carpeta acota el acceso de {con_acceso} usuario(s): quítalos en «Acceso» "
+            "antes de borrarla.", status=409)
     for p in session.scalars(select(PlantillaDocumento).where(
             PlantillaDocumento.carpeta_id == carpeta.id)):
         p.carpeta_id = None
     for hija in session.scalars(select(PlantillaCarpeta).where(
             PlantillaCarpeta.parent_id == carpeta.id)):
         hija.parent_id = None
-    for fila in session.scalars(select(PlantillaCarpetaAcceso).where(
-            PlantillaCarpetaAcceso.carpeta_id == carpeta.id)):
-        session.delete(fila)
     for fila in session.scalars(select(PlantillaCarpetaPreferencia).where(
             PlantillaCarpetaPreferencia.carpeta_id == carpeta.id)):
         session.delete(fila)
@@ -341,8 +357,10 @@ def fijar_carpeta_defecto(session: Session, user: User, carpeta_id: str | None) 
     return carpeta.id
 
 
-def rutas_carpetas(session: Session) -> dict[str, str]:
-    """`{id: "Ferias / FESPA"}`: el camino de cada carpeta para enseñarlo."""
+def rutas_carpetas(session: Session, permitidas: set[str] | None = None) -> dict[str, str]:
+    """`{id: "Ferias / FESPA"}`: el camino de cada carpeta para enseñarlo. Con
+    `permitidas`, el camino se corta en la primera madre que el usuario no ve
+    (no se le enseña su nombre)."""
     carpetas = _carpetas(session)
     rutas: dict[str, str] = {}
     for cid in carpetas:
@@ -350,6 +368,8 @@ def rutas_carpetas(session: Session) -> dict[str, str]:
         actual: str | None = cid
         vistos: set[str] = set()
         while actual and actual in carpetas and actual not in vistos:
+            if permitidas is not None and actual not in permitidas:
+                break
             vistos.add(actual)
             partes.append(carpetas[actual].nombre)
             actual = carpetas[actual].parent_id
@@ -375,7 +395,10 @@ def arbol(session: Session, user: User | None, *, con_acceso: bool = False) -> l
 
     def nodo(c: PlantillaCarpeta) -> dict[str, Any]:
         out = {
-            "id": c.id, "nombre": c.nombre, "parent_id": c.parent_id,
+            "id": c.id, "nombre": c.nombre,
+            # Una carpeta permitida cuya madre no lo está se pinta en la raíz.
+            "parent_id": (c.parent_id if permitidas is None or c.parent_id in permitidas
+                          else None),
             "num_plantillas": int(cuentas.get(c.id, 0)), "es_defecto": c.id == defecto,
             "children": construir(c.id),
         }
@@ -418,11 +441,21 @@ def limpiar_etiquetas(raw: Any) -> list[str]:
 
 def _fijar_etiquetas(plantilla: PlantillaDocumento, etiquetas: list[str]) -> None:
     deseadas = {normalizar_texto(e)[:ETIQUETA_MAX]: e for e in etiquetas}
+    quitadas = False
     for etq in list(plantilla.etiquetas):
         if etq.etiqueta_norm not in deseadas:
             plantilla.etiquetas.remove(etq)
+            quitadas = True
         else:
             etq.etiqueta = deseadas.pop(etq.etiqueta_norm)
+    if quitadas and deseadas:
+        # Que el DELETE vaya antes que el INSERT (si no, una etiqueta que la
+        # base de datos da por igual a la quitada chocaría con la UNIQUE).
+        from sqlalchemy.orm import object_session  # noqa: PLC0415
+
+        sesion = object_session(plantilla)
+        if sesion is not None:
+            sesion.flush()
     for norm, texto in deseadas.items():
         plantilla.etiquetas.append(PlantillaDocumentoEtiqueta(etiqueta=texto, etiqueta_norm=norm))
 
@@ -504,15 +537,46 @@ def lineas_de_albaran(client: Any, session: Session, *, serie: int, codigo: int,
     } for ln in filas])
 
 
-def lineas_de_pedido(order: Any) -> list[dict[str, Any]]:
-    """Las líneas de MERCANCÍA de un pedido de BoHub (sin los portes), con el
-    descuento recuperado de su nota «dto. X%» (como hace el albarán)."""
+def _completar_articulos(client: Any, lineas: list[dict[str, Any]], *, ejercicio: str) -> None:
+    """Completa el artículo de FACTUSOL de unas líneas (solo LEE F_ART): el
+    CODART interno de las que solo traen el SKU comercial y el SKU comercial
+    de las que solo traen el CODART (o lo repiten como SKU). Si FACTUSOL no
+    responde, las líneas se quedan como estaban."""
+    from app.integrations.factusol.quotes import resolve_codarts, skus_for_codarts  # noqa: PLC0415
+
+    try:
+        sin_codart = [ln["sku"] for ln in lineas if ln["sku"] and not ln["codart"]]
+        if sin_codart:
+            mapa = resolve_codarts(client, sin_codart, ejercicio=ejercicio)
+            for ln in lineas:
+                if ln["sku"] and not ln["codart"] and mapa.get(ln["sku"]):
+                    ln["codart"] = mapa[ln["sku"]]
+        sin_sku = [ln["codart"] for ln in lineas
+                   if ln["codart"] and (not ln["sku"] or ln["sku"] == ln["codart"])]
+        if sin_sku:
+            skus = skus_for_codarts(client, sin_sku, ejercicio=ejercicio)
+            for ln in lineas:
+                if ln["codart"] and (not ln["sku"] or ln["sku"] == ln["codart"]):
+                    ln["sku"] = skus.get(ln["codart"]) or ln["sku"] or ln["codart"]
+    except Exception:  # noqa: BLE001 — sin FACTUSOL se guarda tal cual
+        logger.warning("plantillas: no se pudieron completar los artículos desde F_ART",
+                       exc_info=True)
+
+
+def lineas_de_pedido(order: Any, client: Any = None,
+                     ejercicio: str | None = None) -> list[dict[str, Any]]:
+    """Las líneas de MERCANCÍA de un pedido de BoHub —sin los portes ni las
+    comisiones o cupones de la tienda (`line_kind`)—, con el descuento
+    recuperado de su nota «dto. X%» (como hace el albarán). Con `client`, el
+    artículo de FACTUSOL de cada línea se completa leyendo F_ART."""
     from app.integrations.factusol.albaran_manual import order_lines_for_document  # noqa: PLC0415
 
     mercancia = [ln for ln in sorted(order.lines, key=lambda ln: ln.position)
                  if not getattr(ln, "is_shipping", False)]
     salida = []
     for linea, doc in zip(mercancia, order_lines_for_document(order), strict=False):
+        if getattr(linea, "line_kind", None):
+            continue
         salida.append({
             "codart": (linea.product_codart or "").strip() or None,
             "sku": (linea.product_sku or "").strip() or None,
@@ -520,6 +584,8 @@ def lineas_de_pedido(order: Any) -> list[dict[str, Any]]:
             "precio": doc["unit_price"], "descuento_pct": doc["discount_pct"],
             "iva_pct": doc["iva_pct"],
         })
+    if client is not None and ejercicio:
+        _completar_articulos(client, salida, ejercicio=ejercicio)
     return normalizar_lineas(salida)
 
 
@@ -592,11 +658,14 @@ def plantilla_desde_documento(
 
 
 def plantilla_desde_pedido(session: Session, order: Any, *, nombre: str, usuario: User | None,
+                           client: Any = None, ejercicio: str | None = None,
                            **extra: Any) -> PlantillaDocumento:
     """«Guardar como plantilla» sobre un pedido de BoHub (sus líneas de
-    mercancía, sin los portes)."""
+    mercancía, sin portes ni comisiones; con `client`, completando el
+    artículo de FACTUSOL de cada línea — solo lectura)."""
     return crear_plantilla(
-        session, nombre=nombre, lineas=lineas_de_pedido(order), usuario=usuario,
+        session, nombre=nombre, lineas=lineas_de_pedido(order, client, ejercicio),
+        usuario=usuario,
         origen_tipo=ORIGEN_PEDIDO, origen_order_id=order.id,
         origen_numero=order.order_number, **extra,
     )
@@ -818,9 +887,10 @@ def lineas_para(plantilla: PlantillaDocumento,
     - proforma: la forma de `POST /api/erp/factusol/quotes` (`codart` con el
       código interno, que no necesita traducción; `sku` para enseñarlo).
     - pedido: la de `POST /api/erp/orders`. El pedido no tiene descuento por
-      línea: el precio va NETO (cuadra el importe). Sus líneas no admiten
-      texto suelto ni más de 255 caracteres: una línea de texto se pega a la
-      anterior y lo que no cabe se recorta, y se avisa."""
+      línea: el precio va NETO, a céntimos (cuadra el importe). Sus líneas no
+      admiten texto suelto ni más de 255 caracteres: una línea de texto se pega
+      a la anterior (las del principio, a la siguiente), una a cantidad 0 no
+      entra y lo que no cabe se recorta; de todo se avisa."""
     if destino not in DESTINOS:
         raise PlantillaError("destino_invalido", f"Destino no válido: {destino!r}.")
     lineas = [_linea_dict(ln) for ln in plantilla.lineas]
@@ -838,26 +908,43 @@ def lineas_para(plantilla: PlantillaDocumento,
         } for ln in lineas], avisos
 
     salida: list[dict[str, Any]] = []
+    # Notas que van antes de la primera línea con mercancía: no tienen línea
+    # anterior a la que pegarse, así que encabezan la siguiente.
+    pendiente: list[str] = []
     for ln in lineas:
-        if ln["text_only"] and salida:
-            salida[-1]["description"] = f"{salida[-1]['description']} {ln['descripcion']}".strip()
+        if ln["text_only"]:
+            if salida:
+                anterior = salida[-1]["description"]
+                salida[-1]["description"] = f"{anterior} {ln['descripcion']}".strip()
+            elif ln["descripcion"].strip():
+                pendiente.append(ln["descripcion"].strip())
+            continue
+        if ln["cantidad"] <= 0:
+            # Una línea a cantidad 0 (opcional, informativa) no suma en la
+            # oferta ni en la proforma; en el pedido sería 1 unidad que nadie
+            # pidió. No entra, y se avisa.
+            avisos.append(f"Línea {ln['posicion']}: tiene cantidad 0 en la plantilla; no se "
+                          "incluye en el pedido.")
             continue
         precio = Decimal(str(ln["precio"]))
         if ln["descuento_pct"]:
+            # A céntimos, la escala de `order_lines.unit_price`: si no, el
+            # pedido guardaría otro precio que el que cuadra con su importe.
             neto = precio * (1 - Decimal(str(ln["descuento_pct"])) / 100)
-            precio = neto.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+            precio = neto.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
             avisos.append(
                 f"Línea {ln['posicion']}: el pedido no lleva descuento por línea; el precio "
                 f"va neto (−{ln['descuento_pct']:g} %).")
-        cantidad = ln["cantidad"]
-        if cantidad <= 0:
-            cantidad = 1.0
         codart = ln["codart"] if ln["codart"] and len(ln["codart"]) <= PEDIDO_CODART_MAX else None
+        descripcion = " ".join([*pendiente, ln["descripcion"]]).strip()
+        pendiente = []
         salida.append({
             "product_sku": ln["sku"] or ln["codart"] or "", "product_codart": codart,
-            "description": ln["descripcion"], "quantity": cantidad, "unit_price": float(precio),
+            "description": descripcion, "quantity": ln["cantidad"], "unit_price": float(precio),
             "tax_rate": ln["iva_pct"], "_posicion": ln["posicion"],
         })
+    if not salida:
+        avisos.append("La plantilla no tiene ninguna línea que pedir (solo textos o cantidades 0).")
     for item in salida:
         texto = item["description"] or item["product_sku"]
         if len(texto) > PEDIDO_DESCRIPCION_MAX:

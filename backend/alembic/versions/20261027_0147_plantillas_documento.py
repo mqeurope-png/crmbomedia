@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import mysql
 
 revision: str = "20261027_0147"
 down_revision: str | None = "20261012_0146"
@@ -148,7 +149,11 @@ def upgrade() -> None:
         sa.Column("id", sa.String(length=36), nullable=False),
         sa.Column("plantilla_id", sa.String(length=36), nullable=False),
         sa.Column("etiqueta", sa.String(length=60), nullable=False),
-        sa.Column("etiqueta_norm", sa.String(length=60), nullable=False),
+        # Ya normalizada en Python (minúsculas, sin acentos): en MySQL se
+        # compara en binario, para que la UNIQUE diga lo mismo que Python (con
+        # la collation por defecto «ß» = «ss» y chocaría al guardar).
+        sa.Column("etiqueta_norm", sa.String(length=60).with_variant(
+            mysql.VARCHAR(60, collation="utf8mb4_bin"), "mysql"), nullable=False),
         sa.ForeignKeyConstraint(
             ["plantilla_id"], ["plantillas_documento.id"], ondelete="CASCADE",
         ),
@@ -162,18 +167,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index("ix_plantillas_documento_etiquetas_etiqueta_norm",
-                  table_name="plantillas_documento_etiquetas")
-    op.drop_index("ix_plantillas_documento_etiquetas_plantilla_id",
-                  table_name="plantillas_documento_etiquetas")
+    # Las tablas que se borran enteras se llevan sus índices: quitarlos antes
+    # falla en MySQL (1553), porque son los que sostienen sus claves ajenas.
     op.drop_table("plantillas_documento_etiquetas")
-    op.drop_index("ix_plantillas_documento_preferencias_user_id",
-                  table_name="plantillas_documento_preferencias")
     op.drop_table("plantillas_documento_preferencias")
-    op.drop_index("ix_plantillas_documento_carpetas_acceso_user_id",
-                  table_name="plantillas_documento_carpetas_acceso")
-    op.drop_index("ix_plantillas_documento_carpetas_acceso_carpeta_id",
-                  table_name="plantillas_documento_carpetas_acceso")
     op.drop_table("plantillas_documento_carpetas_acceso")
 
     with op.batch_alter_table("plantillas_documento") as batch:
@@ -202,8 +199,4 @@ def downgrade() -> None:
     op.rename_table("plantillas_documento_lineas", "ofertas_plantillas_lineas")
     op.rename_table("plantillas_documento", "ofertas_plantillas")
 
-    op.drop_index("ix_plantillas_documento_carpetas_owner_user_id",
-                  table_name="plantillas_documento_carpetas")
-    op.drop_index("ix_plantillas_documento_carpetas_parent_id",
-                  table_name="plantillas_documento_carpetas")
     op.drop_table("plantillas_documento_carpetas")

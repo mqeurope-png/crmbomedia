@@ -132,6 +132,16 @@ describe("PlantillaEditorModal", () => {
     ));
   });
 
+  it("editar: vaciar la descripción la borra (se manda vacía, no «sin cambios»)", async () => {
+    const user = userEvent.setup();
+    render(<PlantillaEditorModal plantilla={PL} onClose={jest.fn()} onSaved={jest.fn()} />);
+    expect(await screen.findByLabelText("SKU línea 1")).toHaveValue("SKU-1");
+    await user.clear(screen.getByLabelText("Descripción de la plantilla"));
+    await user.click(screen.getByRole("button", { name: "Guardar cambios" }));
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalledWith("p1",
+      expect.objectContaining({ descripcion: "" })));
+  });
+
   it("editar: carga las líneas con getPlantilla y guarda con updatePlantilla moviéndola de carpeta, con otro idioma y otras etiquetas", async () => {
     const onSaved = jest.fn();
     const user = userEvent.setup();

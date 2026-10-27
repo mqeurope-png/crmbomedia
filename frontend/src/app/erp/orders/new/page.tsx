@@ -265,6 +265,8 @@ export default function NewManualOrderPage() {
   const presetPlantillaId = searchParams?.get("plantilla") ?? null;
   const [eligiendoPlantilla, setEligiendoPlantilla] = useState(false);
   const [plantillaNotice, setPlantillaNotice] = useState<string | null>(null);
+  // La de la URL está llegando: no se ofrece cargar otra (la pisaría).
+  const [cargandoPlantilla, setCargandoPlantilla] = useState(Boolean(presetPlantillaId));
 
   // Fase 5 — «Crear pedido» desde el explorador de documentos: la URL trae
   // ?doc_type=&serie=&codigo= y se precarga el documento FACTUSOL con el mismo
@@ -535,7 +537,8 @@ export default function NewManualOrderPage() {
       })
       .catch((e) => {
         if (alive) setPlantillaNotice(extractErrorMessage(e, "No se pudo cargar la plantilla."));
-      });
+      })
+      .finally(() => { if (alive) setCargandoPlantilla(false); });
     return () => { alive = false; };
     // Solo al entrar con la URL: `aplicarPlantilla` cambia en cada render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1384,9 +1387,10 @@ export default function NewManualOrderPage() {
               <span className="erp-step-num">2</span> · Líneas
             </h3>
             <div className="erp-contact-channel">
-              <button type="button" className="button small secondary" disabled={submitting}
+              <button type="button" className="button small secondary"
+                      disabled={submitting || cargandoPlantilla}
                       onClick={() => setEligiendoPlantilla(true)}>
-                Cargar plantilla…
+                {cargandoPlantilla ? "Cargando plantilla…" : "Cargar plantilla…"}
               </button>
               <span className="muted small">
                 Las líneas de una plantilla de documento (por carpeta, etiqueta o buscando

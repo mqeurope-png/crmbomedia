@@ -453,7 +453,8 @@ describe("Pantalla Proformas (rediseño de flujo, Fase 4)", () => {
     const aviso = await within(dialog).findByText(/ya se convirtió en el pedido/);
     expect(aviso).toHaveTextContent("No se crea otro.");
     expect(within(aviso).getByRole("link", { name: "PRO-000039" })).toHaveAttribute("href", "/erp/orders/o39");
-    expect(within(dialog).getByRole("region", { name: "Resumen del pedido" })).toBeInTheDocument();
+    // Solo el enlace: un resumen recalculado hoy no sería el del pedido que existe.
+    expect(within(dialog).queryByRole("region", { name: "Resumen del pedido" })).toBeNull();
     expect(within(dialog).queryByRole("button", { name: "Crear pedido y albarán" })).toBeNull();
     expect(within(dialog).queryByLabelText("Sin pago")).toBeNull();
     // «Cancelar» pasa a «Cerrar» y cierra sin convertir.

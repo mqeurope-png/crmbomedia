@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -27,6 +27,7 @@ from app.erp.models import (
     OrderLine,
     PlantillaCarpeta,
     PlantillaCarpetaAcceso,
+    PlantillaDocumento,
 )
 from app.erp.ofertas import normalizar_lineas
 from app.main import app
@@ -446,3 +447,156 @@ def test_editar_mover_etiquetar_y_desactivar(http, session_factory):
     # Sin permiso de proformas (taller) no se edita.
     assert http.patch(f"/api/erp/plantillas/{pid}", headers=auth_headers(http, "sat"),
                       json={"nombre": "x"}).status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Revisión (ronda 1): borrar carpetas, renombrar acotado, rutas, pedidos web,
+# comisiones, artículos de un pedido y las líneas del pedido
+# ---------------------------------------------------------------------------
+
+
+def _acotar(http: TestClient, session_factory, carpeta_id: str) -> None:
+    with session_factory() as s:
+        comercial_id = s.scalar(select(User.id).where(User.email == "comercial@example.com"))
+    r = http.put(f"/api/erp/plantillas/carpetas/{carpeta_id}/acceso",
+                 headers=auth_headers(http, "admin"), json={"user_ids": [comercial_id]})
+    assert r.status_code == 200, r.text
+
+
+def test_borrar_una_carpeta_nunca_suelta_una_restriccion(http, session_factory):
+    with session_factory() as s:
+        ids = _carpetas_y_plantillas(s)
+    _acotar(http, session_factory, ids["fespa"])
+    h = auth_headers(http, "comercial")
+    admin = auth_headers(http, "admin")
+
+    def ve() -> list[str]:
+        return [p["id"] for p in http.get("/api/erp/plantillas", headers=h).json()["items"]]
+
+    assert ve() == [ids["p_fespa"]]
+    # El acotado no borra carpetas (su contenido iría a la raíz, que no ve)…
+    r = http.delete(f"/api/erp/plantillas/carpetas/{ids['fespa']}", headers=h)
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "acceso_restringido"
+    # …y nadie borra una carpeta que acota a alguien sin quitarle antes el acceso.
+    r = http.delete(f"/api/erp/plantillas/carpetas/{ids['fespa']}", headers=admin)
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "carpeta_con_acceso"
+    assert ve() == [ids["p_fespa"]]                       # sigue acotado
+    # Borrar la madre (sin acceso) no le cambia nada: FESPA sube a la raíz.
+    assert http.delete(f"/api/erp/plantillas/carpetas/{ids['ferias']}",
+                       headers=admin).status_code == 200
+    assert ve() == [ids["p_fespa"]]
+    # Quitado el acceso, ya se puede borrar.
+    assert http.put(f"/api/erp/plantillas/carpetas/{ids['fespa']}/acceso", headers=admin,
+                    json={"user_ids": []}).status_code == 200
+    assert http.delete(f"/api/erp/plantillas/carpetas/{ids['fespa']}",
+                       headers=admin).status_code == 200
+
+
+def test_el_acotado_renombra_su_carpeta_y_no_ve_el_nombre_de_la_madre(http, session_factory):
+    with session_factory() as s:
+        ids = _carpetas_y_plantillas(s)
+    _acotar(http, session_factory, ids["fespa"])
+    h = auth_headers(http, "comercial")
+    arbol = http.get("/api/erp/plantillas/carpetas", headers=h).json()["items"]
+    assert [(n["nombre"], n["parent_id"]) for n in arbol] == [("FESPA", None)]
+    # La pantalla manda el nombre y la madre tal cual: renombrar funciona.
+    for cuerpo in ({"nombre": "FESPA 2027", "parent_id": ids["ferias"]},
+                   {"nombre": "FESPA 2027", "parent_id": None},
+                   {"nombre": "FESPA 2027"}):
+        r = http.patch(f"/api/erp/plantillas/carpetas/{ids['fespa']}", headers=h, json=cuerpo)
+        if cuerpo.get("parent_id", ids["ferias"]) is None:
+            # Sacarla de verdad a la raíz sí es un cambio, y no lo puede hacer.
+            assert r.status_code == 422, cuerpo
+        else:
+            assert r.status_code == 200, (cuerpo, r.text)
+    # La ruta de sus plantillas no enseña «Ferias».
+    item = http.get("/api/erp/plantillas", headers=h).json()["items"][0]
+    assert item["carpeta"] == "FESPA 2027"
+    admin = auth_headers(http, "admin")
+    assert http.get(f"/api/erp/plantillas/{ids['p_fespa']}",
+                    headers=admin).json()["carpeta"] == "Ferias / FESPA 2027"
+
+
+class _FakeConArticulos(FakeClient):
+    """El doble de FACTUSOL con F_ART: devuelve todos los artículos y los
+    lectores filtran (las consultas `IN … OR …` no las entiende el doble)."""
+
+    def load_table(self, tabla: str, *, filtro: str = "1=1",
+                   ejercicio: str | None = None) -> list[dict[str, Any]]:
+        if tabla == "F_ART":
+            self.calls.append((tabla, filtro))
+            return list(self.tables.get("F_ART", []))
+        return super().load_table(tabla, filtro=filtro, ejercicio=ejercicio)
+
+
+def test_guardar_desde_pedido_web_comisiones_y_articulos(http, session_factory):
+    fake = _FakeConArticulos({"F_ART": [
+        {"CODART": "00001", "EQUART": "CDR80WPT", "DESART": "Plotter"},
+        {"CODART": "00002", "EQUART": "INK-500", "DESART": "Tinta"},
+    ]})
+    with session_factory() as s:
+        web = Order(order_number="WEB-1001", external_source="woocommerce", total_amount=0)
+        manual = Order(order_number="MANUAL-000010", external_source="manual", total_amount=0)
+        s.add_all([web, manual])
+        s.flush()
+        s.add_all([
+            OrderLine(order_id=web.id, position=0, product_sku="CDR80WPT", description="Plotter",
+                      quantity=1, unit_price=900, tax_rate=21, line_total=900),
+            OrderLine(order_id=web.id, position=1, product_sku="woo-fee-7",
+                      description="PayPal cost 4%", quantity=1, unit_price=36, tax_rate=21,
+                      line_total=36, line_kind="fee"),
+            OrderLine(order_id=web.id, position=2, product_sku="woo-fee-8",
+                      description="Cupón", quantity=1, unit_price=-10, tax_rate=21,
+                      line_total=-10, line_kind="fee"),
+            OrderLine(order_id=manual.id, position=0, product_sku="00002",
+                      product_codart="00002", description="Tinta", quantity=2,
+                      unit_price=50, tax_rate=21, line_total=100),
+        ])
+        s.commit()
+        web_id, manual_id = web.id, manual.id
+    # El comercial no ve pedidos web: tampoco los guarda como plantilla.
+    with _patch(fake):
+        r = http.post("/api/erp/plantillas", headers=auth_headers(http, "comercial"), json={
+            "nombre": "Plotter web", "origen": {"tipo": "pedido", "order_id": web_id}})
+    assert r.status_code == 404
+    with session_factory() as s:
+        assert s.scalar(select(func.count()).select_from(PlantillaDocumento)) == 0
+    # Quien sí los ve: sin las comisiones ni cupones, con el CODART resuelto.
+    with _patch(fake):
+        r = http.post("/api/erp/plantillas", headers=auth_headers(http, "admin"), json={
+            "nombre": "Plotter web", "origen": {"tipo": "pedido", "order_id": web_id}})
+        assert r.status_code == 201, r.text
+        assert [(ln["codart"], ln["sku"]) for ln in r.json()["lineas"]] == \
+            [("00001", "CDR80WPT")]
+        # Un pedido que solo guarda el CODART: se completa el SKU comercial.
+        r = http.post("/api/erp/plantillas", headers=auth_headers(http, "comercial"), json={
+            "nombre": "Tinta", "origen": {"tipo": "pedido", "order_id": manual_id}})
+    assert r.status_code == 201, r.text
+    assert [(ln["codart"], ln["sku"]) for ln in r.json()["lineas"]] == [("00002", "INK-500")]
+    assert fake.writes == []
+
+
+def test_lineas_del_pedido_textos_cantidad_cero_y_precio_neto_a_centimos(session_factory):
+    with session_factory() as s:
+        pid = _plantilla(s, "Kit formación", lineas=[
+            {"descripcion": "KIT FORMACIÓN — incluye:", "cantidad": 0, "precio": 0},
+            {"codart": "OPC1", "sku": "OPC1", "descripcion": "Opcional: segundo horno",
+             "cantidad": 0, "precio": 900},
+            {"codart": "00001", "sku": "DM3H", "descripcion": "Horno DTF", "cantidad": 3,
+             "precio": 33.33, "descuento_pct": 10},
+            {"descripcion": "Entrega en 15 días.", "cantidad": 0, "precio": 0},
+        ])
+        plantilla = s.get(PlantillaDocumento, pid)
+        lineas, avisos = svc.lineas_para(plantilla, "pedido")
+    assert len(lineas) == 1
+    ln = lineas[0]
+    assert ln["description"] == "KIT FORMACIÓN — incluye: Horno DTF Entrega en 15 días."
+    assert ln["quantity"] == 3 and ln["unit_price"] == 30.0        # 29,997 → 30,00
+    assert ln["product_codart"] == "00001" and ln["product_sku"] == "DM3H"
+    assert any("cantidad 0" in a for a in avisos)
+    assert any("neto" in a for a in avisos)
+    with session_factory() as s:
+        solo_texto = _plantilla(s, "Solo texto", lineas=[
+            {"descripcion": "Nota", "cantidad": 0, "precio": 0}])
+        lineas, avisos = svc.lineas_para(s.get(PlantillaDocumento, solo_texto), "pedido")
+    assert lineas == [] and any("ninguna línea" in a for a in avisos)

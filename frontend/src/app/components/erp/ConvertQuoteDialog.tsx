@@ -70,7 +70,9 @@ export function ConvertQuoteDialog({
             No se crea otro.
           </p>
         ) : null}
-        {preview ? (
+        {/* Ya convertida: solo el enlace. Un resumen recalculado hoy no es el
+            del pedido que existe (otra fecha, quizá otras líneas). */}
+        {preview && !yaExiste ? (
           <>
             <ResumenPedidoView resumen={preview} />
             {!preview.company_linked && !yaExiste ? (

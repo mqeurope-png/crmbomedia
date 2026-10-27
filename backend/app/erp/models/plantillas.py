@@ -38,6 +38,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
+from sqlalchemy.dialects import mysql
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.crm import Base, TimestampMixin
@@ -184,6 +185,11 @@ class PlantillaDocumentoEtiqueta(Base):
         ForeignKey("plantillas_documento.id", ondelete="CASCADE"), nullable=False, index=True,
     )
     etiqueta: Mapped[str] = mapped_column(String(60), nullable=False)
-    etiqueta_norm: Mapped[str] = mapped_column(String(60), nullable=False, index=True)
+    #: En binario en MySQL: ya va normalizada, y con la collation por defecto
+    #: la UNIQUE daría por iguales «ß» y «ss» (Python no).
+    etiqueta_norm: Mapped[str] = mapped_column(
+        String(60).with_variant(mysql.VARCHAR(60, collation="utf8mb4_bin"), "mysql"),
+        nullable=False, index=True,
+    )
 
     plantilla: Mapped[PlantillaDocumento] = relationship(back_populates="etiquetas")

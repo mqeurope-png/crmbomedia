@@ -107,7 +107,9 @@ export function PlantillaEditorModal({
     setError(null);
     const payload = {
       nombre: nombre.trim(),
-      descripcion: descripcion.trim() || null,
+      // Al editar, vacía se manda vacía (el servidor la guarda como nula); con
+      // `null` el servidor entendería «no la toques» y no se podría borrar.
+      descripcion: editing ? descripcion.trim() : (descripcion.trim() || null),
       idioma,
       carpeta_id: carpetaId || null,
       etiquetas,

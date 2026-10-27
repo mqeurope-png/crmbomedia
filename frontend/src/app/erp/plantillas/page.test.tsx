@@ -424,6 +424,29 @@ describe("ERP · Plantillas", () => {
     await waitFor(() => expect(ultimaLista()).not.toHaveProperty("carpeta_id"));
   });
 
+  it("renombrar una carpeta solo manda el nombre (la madre, solo si cambia)", async () => {
+    const user = userEvent.setup();
+    render(<PlantillasPage />);
+    await cargada();
+    const acciones = within(screen.getByRole("group", { name: "Acciones de la carpeta Escuelas" }));
+    await user.click(acciones.getByRole("button", { name: /Renombrar \/ mover/ }));
+    const dialogo = within(await screen.findByRole("dialog", { name: "Carpeta Escuelas" }));
+    const nombre = dialogo.getByLabelText("Nombre de la carpeta");
+    await user.clear(nombre);
+    await user.type(nombre, "Escuelas 2027");
+    await user.click(dialogo.getByRole("button", { name: "Guardar" }));
+    await waitFor(() => expect(mockUpdateCarpeta).toHaveBeenCalledWith("c-esc", { nombre: "Escuelas 2027" }));
+  });
+
+  it("con el acceso acotado no se ofrece «Borrar» carpeta (su contenido iría a la raíz)", async () => {
+    mockMeta.mockResolvedValue({ ...META, acceso_restringido: true });
+    render(<PlantillasPage />);
+    await cargada();
+    const acciones = within(screen.getByRole("group", { name: "Acciones de la carpeta Escuelas" }));
+    expect(acciones.getByRole("button", { name: /Renombrar \/ mover/ })).toBeInTheDocument();
+    expect(acciones.queryByRole("button", { name: "Borrar" })).toBeNull();
+  });
+
   it("«Acceso» solo aparece si meta.gestiona_acceso", async () => {
     render(<PlantillasPage />);
     await cargada();

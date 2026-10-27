@@ -201,6 +201,8 @@ describe("ConfirmarPedidoModal", () => {
     expect(within(aviso).getByRole("link", { name: "ALB-5-000077" }))
       .toHaveAttribute("href", "/erp/orders/o-77");
     expect(screen.queryByRole("button", { name: "Crear pedido" })).not.toBeInTheDocument();
+    // Sin el resumen del documento: no es el del pedido que ya existe.
+    expect(screen.queryByRole("region", { name: "Resumen del pedido" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Cancelar" })).toBeEnabled();
     expect(mockCreate).not.toHaveBeenCalled();
   });

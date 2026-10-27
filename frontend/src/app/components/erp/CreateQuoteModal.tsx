@@ -236,6 +236,11 @@ export function CreateQuoteModal({
   // que se cargó, para enseñarla.
   const [eligiendoPlantilla, setEligiendoPlantilla] = useState(false);
   const [plantillaUsada, setPlantillaUsada] = useState<string | null>(null);
+  // La de `plantillaInicialId` está llegando: no se ofrece cargar otra (su
+  // respuesta pisaría la elegida).
+  const [cargandoInicial, setCargandoInicial] = useState(
+    Boolean(plantillaInicialId && !editCodpre && !duplicateSource && !duplicateDirect),
+  );
   const { overlayProps, requestClose } = useModalBehaviour({ onClose: onCancel, disabled: submitting });
 
   // Buscador de plantillas: NO filtra por cliente (C-4-fix1).
@@ -415,7 +420,8 @@ export function CreateQuoteModal({
       .then((r) => {
         if (alive) aplicarPlantilla({ plantilla: r.plantilla, lineas: r.lineas, avisos: r.avisos });
       })
-      .catch((e) => { if (alive) setError(extractErrorMessage(e, "No se pudo cargar la plantilla.")); });
+      .catch((e) => { if (alive) setError(extractErrorMessage(e, "No se pudo cargar la plantilla.")); })
+      .finally(() => { if (alive) setCargandoInicial(false); });
     return () => { alive = false; };
   }, [plantillaInicialId, editCodpre, duplicateSource, duplicateDirect, aplicarPlantilla]);
 
@@ -914,9 +920,10 @@ export function CreateQuoteModal({
             </p>
             {!editing && !direct ? (
               <div className="erp-contact-channel">
-                <button type="button" className="button small secondary" disabled={submitting}
+                <button type="button" className="button small secondary"
+                        disabled={submitting || cargandoInicial}
                         onClick={() => setEligiendoPlantilla(true)}>
-                  Cargar plantilla…
+                  {cargandoInicial ? "Cargando plantilla…" : "Cargar plantilla…"}
                 </button>
                 <span className="muted small">
                   Las líneas de una plantilla de documento (por carpeta, etiqueta o
