@@ -3,9 +3,9 @@
 Un presupuesto de FACTUSOL (`F_PRE`) necesita un cliente con datos fiscales;
 un lead no los tiene. La OFERTA es un presupuesto que vive en BoHub:
 
-1. Una PLANTILLA se guarda desde un presupuesto existente (sus líneas con los
-   artículos de FACTUSOL, descripción, cantidades y precios) — solo LECTURA de
-   `F_PRE`/`F_LPS`.
+1. Las líneas salen de una PLANTILLA de documento (`app.erp.plantillas`: las de
+   un presupuesto, albarán o pedido guardadas con sus artículos de FACTUSOL;
+   la misma sirve también para una proforma o un pedido) o se escriben a mano.
 2. La oferta se crea desde una plantilla para un contacto (empresa de BoHub si
    la tiene, serie emisora, idioma, líneas, validez) sin escribir nada en
    FACTUSOL. Numeración propia `OF-2026-0001` con contador por año.
@@ -48,7 +48,6 @@ from app.erp.models.ofertas import (
     OfertaEnvio,
     OfertaLinea,
     OfertaPlantilla,
-    OfertaPlantillaLinea,
 )
 from app.models.crm import Company, Contact, User
 
@@ -327,99 +326,6 @@ def _lineas_de(filas: list[Any]) -> list[dict[str, Any]]:
     } for ln in filas])
 
 
-# --- plantillas -----------------------------------------------------------------
-
-
-def lineas_de_presupuesto(
-    client: Any, session: Session, *, serie: int, codpre: int, ejercicio: str,
-) -> list[dict[str, Any]]:
-    """Las líneas REALES de un presupuesto de FACTUSOL (`F_LPS`, solo lectura)
-    con su `codart` (interno) y su `sku` (comercial). `OfertaError('quote_not_
-    found')` si no existe."""
-    from app.integrations.factusol.quotes import get_quote  # noqa: PLC0415
-
-    quote = get_quote(client, session, str(codpre), ejercicio=ejercicio, serie=serie)
-    if quote is None:
-        raise OfertaError("quote_not_found", f"No existe el presupuesto {serie}-{codpre}.",
-                          status=404)
-    lineas = []
-    for ln in quote.get("lines") or []:
-        lineas.append({
-            "codart": ln.get("codart"), "sku": ln.get("sku"),
-            "descripcion": ln.get("description") or "",
-            "cantidad": ln.get("quantity"), "precio": ln.get("unit_price"),
-            "descuento_pct": ln.get("discount_pct"), "iva_pct": ln.get("iva_pct"),
-        })
-    return normalizar_lineas(lineas)
-
-
-def crear_plantilla(
-    session: Session, *, nombre: str, lineas: list[dict[str, Any]], usuario: User | None,
-    descripcion: str | None = None, origen_serie: int | None = None,
-    origen_codpre: int | None = None, activa: bool = True,
-) -> OfertaPlantilla:
-    nombre = str(nombre or "").strip()
-    if not nombre:
-        raise OfertaError("nombre_requerido", "La plantilla necesita un nombre.")
-    if not lineas:
-        raise OfertaError("sin_lineas", "La plantilla necesita al menos una línea.")
-    plantilla = OfertaPlantilla(
-        nombre=nombre[:160], descripcion=(descripcion or "").strip() or None, activa=activa,
-        origen_serie=origen_serie, origen_codpre=origen_codpre,
-        created_by_user_id=usuario.id if usuario is not None else None,
-    )
-    for pos, ln in enumerate(lineas, start=1):
-        plantilla.lineas.append(OfertaPlantillaLinea(
-            posicion=pos, codart=ln["codart"], sku=ln["sku"], descripcion=ln["descripcion"],
-            cantidad=ln["cantidad"], precio=ln["precio"], descuento_pct=ln["descuento_pct"],
-            iva_pct=ln["iva_pct"],
-        ))
-    session.add(plantilla)
-    session.flush()
-    return plantilla
-
-
-def plantilla_desde_presupuesto(
-    session: Session, client: Any, *, serie: int, codpre: int, ejercicio: str,
-    nombre: str, usuario: User | None, descripcion: str | None = None,
-) -> OfertaPlantilla:
-    """«Guardar como plantilla de oferta» sobre un presupuesto existente: copia
-    sus líneas con sus artículos. Solo LEE de FACTUSOL."""
-    lineas = lineas_de_presupuesto(client, session, serie=serie, codpre=codpre,
-                                   ejercicio=ejercicio)
-    return crear_plantilla(
-        session, nombre=nombre, lineas=lineas, usuario=usuario, descripcion=descripcion,
-        origen_serie=int(serie), origen_codpre=int(codpre),
-    )
-
-
-def actualizar_plantilla(
-    session: Session, plantilla: OfertaPlantilla, *, nombre: str | None = None,
-    descripcion: str | None = None, activa: bool | None = None,
-    lineas: list[dict[str, Any]] | None = None,
-) -> OfertaPlantilla:
-    if nombre is not None:
-        if not nombre.strip():
-            raise OfertaError("nombre_requerido", "La plantilla necesita un nombre.")
-        plantilla.nombre = nombre.strip()[:160]
-    if descripcion is not None:
-        plantilla.descripcion = descripcion.strip() or None
-    if activa is not None:
-        plantilla.activa = bool(activa)
-    if lineas is not None:
-        if not lineas:
-            raise OfertaError("sin_lineas", "La plantilla necesita al menos una línea.")
-        plantilla.lineas.clear()
-        for pos, ln in enumerate(lineas, start=1):
-            plantilla.lineas.append(OfertaPlantillaLinea(
-                posicion=pos, codart=ln["codart"], sku=ln["sku"],
-                descripcion=ln["descripcion"], cantidad=ln["cantidad"], precio=ln["precio"],
-                descuento_pct=ln["descuento_pct"], iva_pct=ln["iva_pct"],
-            ))
-    session.flush()
-    return plantilla
-
-
 def _linea_dict(ln: Any, *, con_total: bool = False) -> dict[str, Any]:
     out = {
         "id": ln.id, "posicion": ln.posicion, "codart": ln.codart, "sku": ln.sku,
@@ -432,27 +338,10 @@ def _linea_dict(ln: Any, *, con_total: bool = False) -> dict[str, Any]:
     return out
 
 
-def plantilla_como_dict(p: OfertaPlantilla, *, con_lineas: bool = True) -> dict[str, Any]:
-    out: dict[str, Any] = {
-        "id": p.id, "nombre": p.nombre, "descripcion": p.descripcion, "activa": bool(p.activa),
-        "origen_serie": p.origen_serie, "origen_codpre": p.origen_codpre,
-        "origen_numero": (f"{p.origen_serie}-{int(p.origen_codpre):06d}"
-                          if p.origen_serie and p.origen_codpre else None),
-        "num_lineas": len(p.lineas),
-        "created_at": p.created_at.isoformat() if p.created_at else None,
-        "updated_at": p.updated_at.isoformat() if p.updated_at else None,
-    }
-    if con_lineas:
-        out["lineas"] = [_linea_dict(ln) for ln in p.lineas]
-    return out
-
-
-def listar_plantillas(session: Session, *, solo_activas: bool = False) -> list[OfertaPlantilla]:
-    stmt = select(OfertaPlantilla).order_by(OfertaPlantilla.activa.desc(),
-                                           OfertaPlantilla.nombre.asc())
-    if solo_activas:
-        stmt = stmt.where(OfertaPlantilla.activa.is_(True))
-    return list(session.scalars(stmt))
+# --- plantillas -----------------------------------------------------------------
+# Desde la 0147 las plantillas son de DOCUMENTO y viven en `app.erp.plantillas`:
+# sirven para una oferta, una proforma o un pedido. Aquí solo se usan al crear
+# una oferta (`crear_oferta(plantilla=…)`).
 
 
 # --- crear y editar --------------------------------------------------------------

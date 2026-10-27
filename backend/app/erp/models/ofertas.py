@@ -7,9 +7,9 @@ se manda a cualquiera con un PDF, y solo baja a FACTUSOL (`F_PRE`) cuando el
 cliente dice que sí y una persona pulsa «Convertir en presupuesto».
 
 Tablas:
-- `ofertas_plantillas` + `ofertas_plantillas_lineas`: la plantilla (nombre,
-  descripción, activa) y sus líneas con `codart` (el interno de FACTUSOL) y
-  `sku` (el comercial), cantidades, precios y descuentos.
+- Las plantillas (nombre, descripción, activa y sus líneas con `codart` y
+  `sku`) son desde la 0147 plantillas de DOCUMENTO: `plantillas_documento`,
+  ver `app.erp.models.plantillas`.
 - `ofertas` + `ofertas_lineas`: la oferta (contacto, empresa de BoHub si la
   tiene, serie emisora, idioma, con/sin IVA, fecha, validez, estado, totales,
   y el enlace al `F_PRE` creado al convertir) y sus líneas. Una línea sin
@@ -38,7 +38,14 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.erp.models.plantillas import PlantillaDocumento, PlantillaDocumentoLinea
 from app.models.crm import Base, TimestampMixin
+
+#: Las plantillas de oferta del #559 son ahora plantillas de DOCUMENTO
+#: (`app.erp.models.plantillas`, migración 0147): sirven para una oferta, una
+#: proforma o un pedido. Se conservan los nombres para quien los importe.
+OfertaPlantilla = PlantillaDocumento
+OfertaPlantillaLinea = PlantillaDocumentoLinea
 
 #: Estados de la oferta. `caducada` también se DERIVA al leer (una enviada con
 #: la validez pasada); el job diario lo deja escrito y emite el hecho.
@@ -53,47 +60,6 @@ ESTADOS_OFERTA: tuple[str, ...] = (
 
 def _uuid() -> str:
     return str(uuid4())
-
-
-class OfertaPlantilla(TimestampMixin, Base):
-    __tablename__ = "ofertas_plantillas"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    nombre: Mapped[str] = mapped_column(String(160), nullable=False)
-    descripcion: Mapped[str | None] = mapped_column(Text)
-    activa: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    #: El presupuesto de FACTUSOL del que se copió (serie + CODPRE), si fue así.
-    origen_serie: Mapped[int | None] = mapped_column(Integer)
-    origen_codpre: Mapped[int | None] = mapped_column(Integer)
-    created_by_user_id: Mapped[str | None] = mapped_column(
-        ForeignKey("users.id", ondelete="SET NULL")
-    )
-
-    lineas: Mapped[list[OfertaPlantillaLinea]] = relationship(
-        back_populates="plantilla", cascade="all, delete-orphan",
-        order_by="OfertaPlantillaLinea.posicion",
-    )
-
-
-class OfertaPlantillaLinea(Base):
-    __tablename__ = "ofertas_plantillas_lineas"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    plantilla_id: Mapped[str] = mapped_column(
-        ForeignKey("ofertas_plantillas.id", ondelete="CASCADE"), nullable=False, index=True,
-    )
-    posicion: Mapped[int] = mapped_column(Integer, nullable=False)
-    #: `codart` = el código interno de F_ART (lo que va a `ARTLPS`); `sku` = el
-    #: comercial (EQUART), para enseñarlo. Sin artículo (línea de texto) van vacíos.
-    codart: Mapped[str | None] = mapped_column(String(64))
-    sku: Mapped[str | None] = mapped_column(String(64))
-    descripcion: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    cantidad: Mapped[Decimal] = mapped_column(Numeric(12, 3), nullable=False, default=1)
-    precio: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False, default=0)
-    descuento_pct: Mapped[Decimal] = mapped_column(Numeric(6, 2), nullable=False, default=0)
-    iva_pct: Mapped[Decimal] = mapped_column(Numeric(5, 2), nullable=False, default=21)
-
-    plantilla: Mapped[OfertaPlantilla] = relationship(back_populates="lineas")
 
 
 class Oferta(TimestampMixin, Base):
@@ -112,7 +78,7 @@ class Oferta(TimestampMixin, Base):
         ForeignKey("companies.id", ondelete="SET NULL"), index=True,
     )
     plantilla_id: Mapped[str | None] = mapped_column(
-        ForeignKey("ofertas_plantillas.id", ondelete="SET NULL"),
+        ForeignKey("plantillas_documento.id", ondelete="SET NULL"),
     )
     #: Empresa emisora (1 Bomedia · 2 MQ Europe · 4 Lambert · 5 Streamtec).
     serie: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
@@ -157,7 +123,7 @@ class Oferta(TimestampMixin, Base):
     )
     contact = relationship("Contact", foreign_keys=[contact_id])
     company = relationship("Company", foreign_keys=[company_id])
-    plantilla: Mapped[OfertaPlantilla | None] = relationship()
+    plantilla: Mapped[PlantillaDocumento | None] = relationship()
 
 
 class OfertaLinea(Base):

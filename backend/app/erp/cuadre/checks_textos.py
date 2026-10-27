@@ -74,7 +74,8 @@ CUENTA = "/account"
 AJUSTES_ERP = "/erp/settings"
 MARKETING = "/marketing/templates"
 PROGRAMADOS = "/emails/programados"
-OFERTAS = "/erp/ofertas"
+#: Las plantillas de documento (antes «de oferta») tienen su pantalla.
+PLANTILLAS_DOC = "/erp/plantillas"
 
 PISTA = ("Cámbialo por Streamtec (si el texto va en castellano) o MQ Europe (otros idiomas). "
          "Las direcciones @bomedia.net pueden quedarse.")
@@ -249,13 +250,19 @@ def _textos_formularios(session: Any) -> Iterator[Texto]:
 
 
 def _textos_ofertas(session: Any) -> Iterator[Texto]:
-    from app.erp.models.ofertas import OfertaPlantilla, OfertaPlantillaLinea  # noqa: PLC0415
+    from app.erp.models.plantillas import (  # noqa: PLC0415
+        PlantillaDocumento,
+        PlantillaDocumentoLinea,
+    )
 
-    nombres = {p.id: p.nombre for p in session.scalars(select(OfertaPlantilla))}
-    for ln in session.scalars(select(OfertaPlantillaLinea)):
+    # El tipo `oferta_pl` se conserva para no duplicar los hallazgos ya
+    # abiertos; son las plantillas de DOCUMENTO desde la 0147.
+    nombres = {p.id: p.nombre for p in session.scalars(select(PlantillaDocumento))}
+    for ln in session.scalars(select(PlantillaDocumentoLinea)):
         yield Texto("oferta_pl", ln.plantilla_id,
-                    f"Plantilla de oferta «{nombres.get(ln.plantilla_id, ln.plantilla_id)}»",
-                    f"línea {ln.sku or ln.codart or ''}".strip(), ln.descripcion or "", OFERTAS)
+                    f"Plantilla «{nombres.get(ln.plantilla_id, ln.plantilla_id)}»",
+                    f"línea {ln.sku or ln.codart or ''}".strip(), ln.descripcion or "",
+                    PLANTILLAS_DOC)
 
 
 def _textos_brevo(session: Any) -> Iterator[Texto]:

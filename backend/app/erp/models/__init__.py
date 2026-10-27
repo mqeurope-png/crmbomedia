@@ -45,6 +45,14 @@ from app.erp.models.orders import (
     StatusDomain,
     TransportStatus,
 )
+from app.erp.models.plantillas import (
+    PlantillaCarpeta,
+    PlantillaCarpetaAcceso,
+    PlantillaCarpetaPreferencia,
+    PlantillaDocumento,
+    PlantillaDocumentoEtiqueta,
+    PlantillaDocumentoLinea,
+)
 from app.erp.models.quotes import FactusolQuoteLineCache
 from app.erp.models.seguimiento_legacy import (
     LEGACY_MATCH_STATUSES,
@@ -113,6 +121,12 @@ __all__ = [
     "OfertaLinea",
     "OfertaPlantilla",
     "OfertaPlantillaLinea",
+    "PlantillaCarpeta",
+    "PlantillaCarpetaAcceso",
+    "PlantillaCarpetaPreferencia",
+    "PlantillaDocumento",
+    "PlantillaDocumentoEtiqueta",
+    "PlantillaDocumentoLinea",
     "Order",
     "OrderLine",
     "OrderSource",

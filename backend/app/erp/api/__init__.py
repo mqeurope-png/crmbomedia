@@ -11,6 +11,7 @@ from app.erp.api.leads import router as leads_router
 from app.erp.api.ofertas import router as ofertas_router
 from app.erp.api.order_timeline import router as order_timeline_router
 from app.erp.api.orders import router as orders_router
+from app.erp.api.plantillas import router as plantillas_router
 from app.erp.api.sat import router as sat_router
 from app.erp.api.seguimiento import router as seguimiento_router
 from app.erp.api.shipping import router as shipping_router
@@ -28,6 +29,7 @@ __all__ = [
     "ia_router",
     "leads_router",
     "ofertas_router",
+    "plantillas_router",
     "order_timeline_router",
     "orders_router",
     "sat_router",

@@ -3377,6 +3377,32 @@ class ConvertQuotePayload(BaseModel):
     create_albaran: bool = True
 
 
+@router.get("/quotes/{codpre}/convert-preview")
+def convert_quote_preview_endpoint(
+    codpre: str,
+    serie: int | None = Query(default=None, ge=1, le=9),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """El resumen de «Convertir en pedido» ANTES de confirmar: empresa, fecha,
+    conceptos con sus cantidades, importe y la proforma de origen — calculado
+    con las mismas funciones que la conversión. Solo LEE: no crea nada."""
+    _ = current_user
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+    from app.integrations.factusol.quotes import preview_quote_conversion  # noqa: PLC0415
+
+    client, ejercicio = _client_and_ejercicio(session)
+    try:
+        return preview_quote_conversion(client, session, codpre, ejercicio=ejercicio,
+                                        serie=serie)
+    except FactusolError as exc:
+        if "no existe" in str(exc):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, {
+                "code": "quote_not_found", "detail": str(exc)[:300],
+            }) from exc
+        raise _factusol_gateway_error(exc, "quote_read_failed") from exc
+
+
 @router.post("/quotes/{codpre}/convert-to-order", status_code=202)
 def convert_quote_endpoint(
     codpre: str,
