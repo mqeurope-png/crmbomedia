@@ -166,6 +166,7 @@ from app.erp.api import leads_router as erp_leads_router  # noqa: E402
 from app.erp.api import ofertas_router as erp_ofertas_router  # noqa: E402
 from app.erp.api import order_timeline_router as erp_order_timeline_router  # noqa: E402
 from app.erp.api import orders_router as erp_orders_router  # noqa: E402
+from app.erp.api import plantillas_router as erp_plantillas_router  # noqa: E402
 from app.erp.api import sat_router as erp_sat_router  # noqa: E402
 from app.erp.api import seguimiento_router as erp_seguimiento_router  # noqa: E402
 from app.erp.api import shipping_router as erp_shipping_router  # noqa: E402
@@ -195,6 +196,7 @@ app.include_router(erp_ia_router)
 # Ofertas: presupuestar a un lead sin tocar FACTUSOL (plantillas, ofertas,
 # PDF, envío y «Convertir en presupuesto»).
 app.include_router(erp_ofertas_router)
+app.include_router(erp_plantillas_router)
 
 # Webhooks entrantes (fuera de `/api/*`; auth = firma HMAC, no sesión CRM).
 from app.webhooks.woocommerce import router as woocommerce_webhook_router  # noqa: E402

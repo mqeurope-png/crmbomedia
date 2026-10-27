@@ -15,6 +15,10 @@ import {
   type DocumentLine,
 } from "../../../components/erp/DocumentLinesTable";
 import { initialPayment, paymentReady, PaymentStep } from "../../../components/erp/PaymentStep";
+import {
+  PlantillaSelector,
+  type PlantillaElegida,
+} from "../../../components/erp/PlantillaSelector";
 import { PrimaryActionBar } from "../../../components/erp/PrimaryActionBar";
 import { QuotePicker } from "../../../components/erp/QuotePicker";
 import { listContacts, type Contact } from "../../../lib/api";
@@ -26,6 +30,7 @@ import {
   createOrder,
   FACTUSOL_SERIES,
   getFactusolQuote,
+  getPlantillaLineas,
   linkFactusolCustomer,
   listFactusolDocuments,
   listFactusolQuotes,
@@ -255,6 +260,13 @@ export default function NewManualOrderPage() {
   const [payment, setPayment] = useState<PaymentIntentInput>(initialPayment());
   // Fase 1 — «Nuevo pedido» desde la ficha de empresa: ?company_id= precarga.
   const presetCompanyId = searchParams?.get("company_id") ?? null;
+  // Plantillas de documento: el selector y, con ?plantilla= («Usar en un
+  // pedido» desde ERP · Plantillas), las líneas de esa plantilla al entrar.
+  const presetPlantillaId = searchParams?.get("plantilla") ?? null;
+  const [eligiendoPlantilla, setEligiendoPlantilla] = useState(false);
+  const [plantillaNotice, setPlantillaNotice] = useState<string | null>(null);
+  // La de la URL está llegando: no se ofrece cargar otra (la pisaría).
+  const [cargandoPlantilla, setCargandoPlantilla] = useState(Boolean(presetPlantillaId));
 
   // Fase 5 — «Crear pedido» desde el explorador de documentos: la URL trae
   // ?doc_type=&serie=&codigo= y se precarga el documento FACTUSOL con el mismo
@@ -485,6 +497,52 @@ export default function NewManualOrderPage() {
       setLoadingQuote(null);
     }
   }
+
+  /** Las líneas de una plantilla de documento (forma «pedido»: precio neto,
+   *  textos pegados a la línea anterior) al formulario. La plantilla solo
+   *  aporta las líneas: cliente, fecha, IVA del régimen y envío siguen aquí.
+   *  Si ya hay líneas escritas se pregunta si reemplazarlas o añadirlas. */
+  function aplicarPlantilla(elegida: PlantillaElegida<"pedido">, preguntar = true) {
+    const next = elegida.lineas.map((l) => emptyDocumentLine({
+      sku: l.product_sku,
+      ...(l.product_codart ? { codart: l.product_codart } : {}),
+      description: l.description,
+      quantity: String(l.quantity),
+      unit_price: String(l.unit_price),
+    }));
+    const hasLines = lines.some((l) => l.description.trim() || l.sku.trim());
+    const replace = !hasLines || !preguntar || window.confirm(
+      `Ya hay líneas en el pedido.\n\n`
+      + `Aceptar = REEMPLAZARLAS por las de la plantilla «${elegida.plantilla.nombre}».\n`
+      + `Cancelar = AÑADIRLAS a las que ya hay.`,
+    );
+    setLines((prev) => {
+      if (replace) return next.length > 0 ? next : [emptyDocumentLine()];
+      const kept = prev.filter((l) => l.description.trim() || l.sku.trim());
+      return [...kept, ...next];
+    });
+    setPlantillaNotice(
+      `Plantilla «${elegida.plantilla.nombre}»: ${next.length} línea${next.length === 1 ? "" : "s"} `
+      + `${replace ? "cargadas" : "añadidas"}.`
+      + (elegida.avisos.length ? ` ${elegida.avisos.join(" ")}` : ""),
+    );
+  }
+
+  useEffect(() => {
+    if (!presetPlantillaId) return;
+    let alive = true;
+    getPlantillaLineas(presetPlantillaId, "pedido")
+      .then((r) => {
+        if (alive) aplicarPlantilla({ plantilla: r.plantilla, lineas: r.lineas, avisos: r.avisos }, false);
+      })
+      .catch((e) => {
+        if (alive) setPlantillaNotice(extractErrorMessage(e, "No se pudo cargar la plantilla."));
+      })
+      .finally(() => { if (alive) setCargandoPlantilla(false); });
+    return () => { alive = false; };
+    // Solo al entrar con la URL: `aplicarPlantilla` cambia en cada render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [presetPlantillaId]);
 
   /** «Cargar todo» — el CLIENTE de la proforma pasa a ser el del pedido.
    *
@@ -967,6 +1025,8 @@ export default function NewManualOrderPage() {
         lines: [
           ...lines.map((l) => ({
             product_sku: l.sku.trim(),
+            // El CODART del catálogo o de la plantilla, si se sabe (y cabe).
+            ...(l.codart && l.codart.length <= 13 ? { product_codart: l.codart } : {}),
             description: l.description.trim() || l.sku.trim(),
             quantity: lineNum(l.quantity),
             unit_price: lineNum(l.unit_price),
@@ -1326,6 +1386,18 @@ export default function NewManualOrderPage() {
             <h3 id="erp-step-2" className="erp-step-title">
               <span className="erp-step-num">2</span> · Líneas
             </h3>
+            <div className="erp-contact-channel">
+              <button type="button" className="button small secondary"
+                      disabled={submitting || cargandoPlantilla}
+                      onClick={() => setEligiendoPlantilla(true)}>
+                {cargandoPlantilla ? "Cargando plantilla…" : "Cargar plantilla…"}
+              </button>
+              <span className="muted small">
+                Las líneas de una plantilla de documento (por carpeta, etiqueta o buscando
+                una referencia).
+              </span>
+            </div>
+            {plantillaNotice ? <p className="form-info" role="status">{plantillaNotice}</p> : null}
             {/* C-4: si el cliente tiene proformas en FACTUSOL, se pueden volcar
                 al pedido en vez de reteclear el presupuesto. */}
             {quotes.length > 0 ? (
@@ -1546,6 +1618,18 @@ export default function NewManualOrderPage() {
           </PrimaryActionBar>
         </div>
       </form>
+      {/* Fuera del <form>: un Intro en su buscador no debe enviar el pedido. */}
+      {eligiendoPlantilla ? (
+        <PlantillaSelector
+          destino="pedido"
+          cliente={companyId ? { company_id: companyId, serie: factusolSerie } : null}
+          onClose={() => setEligiendoPlantilla(false)}
+          onPick={(elegida) => {
+            setEligiendoPlantilla(false);
+            aplicarPlantilla(elegida);
+          }}
+        />
+      ) : null}
     </main>
   );
 }

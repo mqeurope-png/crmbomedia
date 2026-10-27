@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { PageHeader } from "../../components/PageHeader";
 import { ConvertOfertaDialog } from "../../components/erp/ConvertOfertaDialog";
@@ -9,22 +9,16 @@ import { ActionsMenu } from "../../components/erp/flow/ActionsMenu";
 import { OfertaEditorModal } from "../../components/erp/OfertaEditorModal";
 import { OfertaEmailModal } from "../../components/erp/OfertaEmailModal";
 import { OfertaEstadoPill } from "../../components/erp/OfertaEstadoPill";
-import { OfertaPlantillaModal } from "../../components/erp/OfertaPlantillaModal";
 import { getCurrentUser } from "../../lib/api";
 import { Cap, can } from "../../lib/capabilities";
 import {
-  listOfertaPlantillas,
   listOfertas,
   OFERTA_ESTADO_LABELS,
   openOfertaPdf,
-  updateOfertaPlantilla,
   type Oferta,
   type OfertaEstado,
-  type OfertaPlantilla,
 } from "../../lib/erpApi";
 import { extractErrorMessage } from "../../lib/errors";
-
-type Tab = "ofertas" | "plantillas";
 
 const ESTADOS: readonly OfertaEstado[] = ["borrador", "enviada", "caducada", "convertida"];
 /** Hasta cuántas ofertas pide la pantalla (el servidor admite 500). */
@@ -39,22 +33,25 @@ function fmtDate(iso: string | null | undefined): string {
 }
 
 /** Editor abierto: nueva (oferta null) o la de la fila; `marcadas` son las
- *  posiciones que «Convertir en presupuesto» rechazó por no tener artículo. */
-type EditorState = { oferta: Oferta | null; marcadas?: number[] };
+ *  posiciones que «Convertir en presupuesto» rechazó por no tener artículo;
+ *  `plantillaId`, la plantilla con la que se abre una nueva («Usar» desde
+ *  ERP · Plantillas). */
+type EditorState = { oferta: Oferta | null; marcadas?: number[]; plantillaId?: string };
 
 /** Pantalla ERP · Ofertas: propuestas comerciales a un contacto del CRM antes
  *  del presupuesto de FACTUSOL. Pestaña «Ofertas»: listado con filtros (estado
  *  y buscador en el servidor) y, por fila, el menú «⋯» con Ver / editar, PDF,
  *  Enviar por correo y Convertir en presupuesto (la única acción que escribe en
- *  FACTUSOL, con su diálogo de confirmación). Pestaña «Plantillas»: las
- *  plantillas de líneas, con editar y activar / desactivar. Por la URL:
- *  `?tab=plantillas` (desde Proformas, tras guardar una plantilla) y
- *  `?contact_id=` (desde «Ver todas» de la ficha del contacto). */
+ *  FACTUSOL, con su diálogo de confirmación). Las plantillas viven en su
+ *  pantalla (ERP · Plantillas) y sirven también para proformas y pedidos. Por
+ *  la URL: `?contact_id=` (desde «Ver todas» de la ficha del contacto),
+ *  `?plantilla=` (nueva oferta con esa plantilla, desde ERP · Plantillas) y
+ *  `?tab=plantillas` (enlaces viejos: lleva a ERP · Plantillas). */
 function OfertasPageInner() {
   const searchParams = useSearchParams();
-  const [tab, setTab] = useState<Tab>(
-    searchParams.get("tab") === "plantillas" ? "plantillas" : "ofertas",
-  );
+  const router = useRouter();
+  const plantillaParam = searchParams.get("plantilla");
+  const tabViejo = searchParams.get("tab") === "plantillas";
   // Solo las ofertas de un contacto (el enlace de su ficha); se quita con
   // «Limpiar filtros».
   const [contactFilter, setContactFilter] = useState<string | null>(
@@ -75,16 +72,16 @@ function OfertasPageInner() {
   // Con qué filtros vinieron las `ofertas` actuales (null = aún ninguna):
   // mientras no coincidan con los de ahora, la lista está cargando.
   const [loadedKey, setLoadedKey] = useState<string | null>(null);
-  const [plantillas, setPlantillas] = useState<OfertaPlantilla[]>([]);
-  const [plantillasLoaded, setPlantillasLoaded] = useState(false);
-  // Las plantillas se piden una sola vez, al abrir su pestaña por primera vez.
-  const plantillasRequested = useRef(false);
-  const [busyPlantilla, setBusyPlantilla] = useState<string | null>(null);
-  // Modales.
-  const [editor, setEditor] = useState<EditorState | null>(null);
+  // Modales. Con `?plantilla=` se abre ya la nueva oferta con esa plantilla.
+  const [editor, setEditor] = useState<EditorState | null>(
+    () => (plantillaParam ? { oferta: null, plantillaId: plantillaParam } : null),
+  );
   const [emailing, setEmailing] = useState<Oferta | null>(null);
   const [converting, setConverting] = useState<Oferta | null>(null);
-  const [plantillaModal, setPlantillaModal] = useState<{ plantilla: OfertaPlantilla | null } | null>(null);
+
+  useEffect(() => {
+    if (tabViejo) router.replace("/erp/plantillas");
+  }, [tabViejo, router]);
 
   useEffect(() => {
     getCurrentUser()
@@ -127,22 +124,6 @@ function OfertasPageInner() {
 
   useEffect(() => { void load(); }, [load]);
 
-  const loadPlantillas = useCallback(() => listOfertaPlantillas(false)
-    .then((items) => {
-      setPlantillas(items);
-      setPlantillasLoaded(true);
-    })
-    .catch((e) => {
-      setError(extractErrorMessage(e, "No se pudieron cargar las plantillas."));
-      setPlantillasLoaded(true);
-    }), []);
-
-  useEffect(() => {
-    if (tab !== "plantillas" || plantillasRequested.current) return;
-    plantillasRequested.current = true;
-    void loadPlantillas();
-  }, [tab, loadPlantillas]);
-
   async function pdf(o: Oferta) {
     setError(null);
     try {
@@ -164,27 +145,6 @@ function OfertasPageInner() {
     // refresca la lista y se deja el aviso para cuando lo cierre.
     setNotice(`Oferta ${converted.numero} convertida en el presupuesto ${converted.factusol?.numero ?? ""}.`);
     void load();
-  }
-
-  async function togglePlantilla(p: OfertaPlantilla) {
-    setBusyPlantilla(p.id);
-    setError(null);
-    try {
-      await updateOfertaPlantilla(p.id, { activa: !p.activa });
-      setNotice(`Plantilla «${p.nombre}» ${p.activa ? "desactivada" : "activada"}.`);
-      await loadPlantillas();
-    } catch (e) {
-      setError(extractErrorMessage(e, "No se pudo cambiar la plantilla."));
-    } finally {
-      setBusyPlantilla(null);
-    }
-  }
-
-  function onPlantillaSaved(saved: OfertaPlantilla) {
-    const created = plantillaModal?.plantilla === null;
-    setPlantillaModal(null);
-    setNotice(`Plantilla «${saved.nombre}» ${created ? "creada" : "guardada"}.`);
-    void loadPlantillas();
   }
 
   function menuFor(o: Oferta) {
@@ -219,210 +179,133 @@ function OfertasPageInner() {
         title="Ofertas"
         eyebrow="ERP"
         description="Propuestas comerciales a un contacto, antes del presupuesto de FACTUSOL."
-        actions={canEdit ? (
-          tab === "ofertas" ? (
-            <button type="button" className="button small" onClick={() => setEditor({ oferta: null })}>
-              + Nueva oferta
-            </button>
-          ) : (
-            <button type="button" className="button small"
-                    onClick={() => setPlantillaModal({ plantilla: null })}>
-              + Nueva plantilla
-            </button>
-          )
-        ) : null}
+        actions={(
+          <>
+            <Link className="button small secondary" href="/erp/plantillas">Plantillas</Link>
+            {canEdit ? (
+              <button type="button" className="button small" onClick={() => setEditor({ oferta: null })}>
+                + Nueva oferta
+              </button>
+            ) : null}
+          </>
+        )}
       />
-
-      <div className="tab-bar" role="tablist" aria-label="Secciones de ofertas">
-        <button type="button" role="tab" aria-selected={tab === "ofertas"}
-                className={`tab${tab === "ofertas" ? " is-active" : ""}`}
-                onClick={() => setTab("ofertas")}>
-          Ofertas
-        </button>
-        <button type="button" role="tab" aria-selected={tab === "plantillas"}
-                className={`tab${tab === "plantillas" ? " is-active" : ""}`}
-                onClick={() => setTab("plantillas")}>
-          Plantillas
-        </button>
-      </div>
 
       {error ? <p className="form-error" role="alert">{error}</p> : null}
       {notice ? <p className="form-info" role="status">{notice}</p> : null}
 
-      {tab === "ofertas" ? (
-        <>
-          <div className="erp-flow-filters" role="search" aria-label="Filtros de ofertas">
-            <label className="field erp-flow-filter-grow">
-              <span className="sr-only">Buscar oferta</span>
-              <input type="search" value={text} aria-label="Buscar oferta"
-                     placeholder="Nº, contacto, empresa o referencia…"
-                     onChange={(e) => setText(e.target.value)} />
-            </label>
-            <label className="field">
-              <span>Estado</span>
-              <select value={estado} aria-label="Estado"
-                      onChange={(e) => setEstado(e.target.value as OfertaEstado | "")}>
-                <option value="">Todos</option>
-                {ESTADOS.map((s) => (
-                  <option key={s} value={s}>{OFERTA_ESTADO_LABELS[s]}</option>
-                ))}
-              </select>
-            </label>
-            {contactFilter ? (
-              <span className="badge info" title="Solo las ofertas de este contacto (desde su ficha).">
-                Contacto: {contactoFiltrado ?? "filtrado"}
-              </span>
-            ) : null}
-            {hasFilters ? (
-              <button type="button" className="button small secondary"
-                      onClick={() => { setText(""); setEstado(""); setContactFilter(null); }}>
-                Limpiar filtros
-              </button>
-            ) : null}
-          </div>
+      <div className="erp-flow-filters" role="search" aria-label="Filtros de ofertas">
+        <label className="field erp-flow-filter-grow">
+          <span className="sr-only">Buscar oferta</span>
+          <input type="search" value={text} aria-label="Buscar oferta"
+                 placeholder="Nº, contacto, empresa o referencia…"
+                 onChange={(e) => setText(e.target.value)} />
+        </label>
+        <label className="field">
+          <span>Estado</span>
+          <select value={estado} aria-label="Estado"
+                  onChange={(e) => setEstado(e.target.value as OfertaEstado | "")}>
+            <option value="">Todos</option>
+            {ESTADOS.map((s) => (
+              <option key={s} value={s}>{OFERTA_ESTADO_LABELS[s]}</option>
+            ))}
+          </select>
+        </label>
+        {contactFilter ? (
+          <span className="badge info" title="Solo las ofertas de este contacto (desde su ficha).">
+            Contacto: {contactoFiltrado ?? "filtrado"}
+          </span>
+        ) : null}
+        {hasFilters ? (
+          <button type="button" className="button small secondary"
+                  onClick={() => { setText(""); setEstado(""); setContactFilter(null); }}>
+            Limpiar filtros
+          </button>
+        ) : null}
+      </div>
 
-          {loading && ofertas.length === 0 ? (
-            <p className="muted">Cargando…</p>
-          ) : ofertas.length === 0 ? (
-            <p className="muted">
-              {hasFilters ? "Ninguna oferta casa con los filtros." : "Aún no hay ofertas."}
-            </p>
-          ) : (
-            <table className="data-table" aria-label="Ofertas">
-              <thead>
-                <tr>
-                  <th scope="col">Nº</th>
-                  <th scope="col">Contacto / empresa</th>
-                  <th scope="col">Emisora</th>
-                  <th scope="col">Fecha</th>
-                  <th scope="col">Válida hasta</th>
-                  <th scope="col">Estado</th>
-                  <th scope="col" className="num">Total</th>
-                  <th scope="col" aria-label="Acciones" />
-                </tr>
-              </thead>
-              <tbody>
-                {ofertas.map((o) => (
-                  <tr key={o.id} aria-label={`Oferta ${o.numero}`}>
-                    <td>
-                      <strong className="mono">{o.numero}</strong>
-                      {o.pendiente_de_envio ? (
-                        <>
-                          {" "}
-                          <span className="badge warn"
-                                title="Se cambió después del último envío: el cliente tiene una versión anterior.">
-                            cambios sin enviar
-                          </span>
-                        </>
-                      ) : null}
-                      {o.referencia ? <div className="muted small">{o.referencia}</div> : null}
-                    </td>
-                    <td>
-                      {o.contacto ? (
-                        <Link href={`/contacts/${o.contacto.id}`}>{o.contacto.nombre}</Link>
-                      ) : "—"}
-                      {o.empresa ? (
-                        <div className="small">
-                          <Link href={`/companies/${o.empresa.id}`}>{o.empresa.nombre}</Link>
-                        </div>
-                      ) : null}
-                    </td>
-                    <td>{o.emisora}</td>
-                    <td className="mono">{fmtDate(o.fecha)}</td>
-                    <td>
-                      <span className={`mono${o.vencida ? " form-error" : ""}`}
-                            title={o.vencida ? "La fecha de validez ya pasó." : undefined}>
-                        {fmtDate(o.valida_hasta)}
-                      </span>
-                    </td>
-                    <td>
-                      <OfertaEstadoPill estado={o.estado} vencida={o.vencida} />
-                      {o.factusol ? (
-                        <div className="small">
-                          <Link href="/erp/proformas" title="Ver en Proformas">
-                            Presupuesto {o.factusol.numero}
-                          </Link>
-                        </div>
-                      ) : null}
-                    </td>
-                    <td className="num">
-                      {o.total.toFixed(2)} €
-                      <div className="muted small">{o.con_iva ? `IVA ${o.iva_pct} %` : "sin IVA"}</div>
-                    </td>
-                    <td>
-                      <ActionsMenu label={`Acciones ${o.numero}`}>{menuFor(o)}</ActionsMenu>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </>
+      {loading && ofertas.length === 0 ? (
+        <p className="muted">Cargando…</p>
+      ) : ofertas.length === 0 ? (
+        <p className="muted">
+          {hasFilters ? "Ninguna oferta casa con los filtros." : "Aún no hay ofertas."}
+        </p>
       ) : (
-        <>
-          {!plantillasLoaded ? (
-            <p className="muted">Cargando…</p>
-          ) : plantillas.length === 0 ? (
-            <p className="muted">
-              Aún no hay plantillas. Se crean aquí con líneas a mano o desde un
-              presupuesto de FACTUSOL en Proformas.
-            </p>
-          ) : (
-            <table className="data-table" aria-label="Plantillas de oferta">
-              <thead>
-                <tr>
-                  <th scope="col">Nombre</th>
-                  <th scope="col">Descripción</th>
-                  <th scope="col">Origen</th>
-                  <th scope="col" className="num">Líneas</th>
-                  <th scope="col">Activa</th>
-                  <th scope="col" aria-label="Acciones" />
-                </tr>
-              </thead>
-              <tbody>
-                {plantillas.map((p) => (
-                  <tr key={p.id} aria-label={`Plantilla ${p.nombre}`}>
-                    <td><strong>{p.nombre}</strong></td>
-                    <td className="muted small">{p.descripcion || "—"}</td>
-                    <td>
-                      {p.origen_numero ? (
-                        <>Presupuesto <span className="mono">{p.origen_numero}</span></>
-                      ) : "A mano"}
-                    </td>
-                    <td className="num">{p.num_lineas}</td>
-                    <td>
-                      <span className={`badge ${p.activa ? "ok" : "muted"}`}>
-                        {p.activa ? "Activa" : "Desactivada"}
+        <table className="data-table" aria-label="Ofertas">
+          <thead>
+            <tr>
+              <th scope="col">Nº</th>
+              <th scope="col">Contacto / empresa</th>
+              <th scope="col">Emisora</th>
+              <th scope="col">Fecha</th>
+              <th scope="col">Válida hasta</th>
+              <th scope="col">Estado</th>
+              <th scope="col" className="num">Total</th>
+              <th scope="col" aria-label="Acciones" />
+            </tr>
+          </thead>
+          <tbody>
+            {ofertas.map((o) => (
+              <tr key={o.id} aria-label={`Oferta ${o.numero}`}>
+                <td>
+                  <strong className="mono">{o.numero}</strong>
+                  {o.pendiente_de_envio ? (
+                    <>
+                      {" "}
+                      <span className="badge warn"
+                            title="Se cambió después del último envío: el cliente tiene una versión anterior.">
+                        cambios sin enviar
                       </span>
-                    </td>
-                    <td>
-                      {canEdit ? (
-                        <span className="erp-contact-channel" role="group" aria-label={`Acciones ${p.nombre}`}>
-                          <button type="button" className="button small secondary"
-                                  disabled={busyPlantilla === p.id}
-                                  onClick={() => setPlantillaModal({ plantilla: p })}>
-                            Editar
-                          </button>
-                          <button type="button" className="button small secondary"
-                                  disabled={busyPlantilla === p.id}
-                                  onClick={() => void togglePlantilla(p)}>
-                            {p.activa ? "Desactivar" : "Activar"}
-                          </button>
-                        </span>
-                      ) : null}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </>
+                    </>
+                  ) : null}
+                  {o.referencia ? <div className="muted small">{o.referencia}</div> : null}
+                </td>
+                <td>
+                  {o.contacto ? (
+                    <Link href={`/contacts/${o.contacto.id}`}>{o.contacto.nombre}</Link>
+                  ) : "—"}
+                  {o.empresa ? (
+                    <div className="small">
+                      <Link href={`/companies/${o.empresa.id}`}>{o.empresa.nombre}</Link>
+                    </div>
+                  ) : null}
+                </td>
+                <td>{o.emisora}</td>
+                <td className="mono">{fmtDate(o.fecha)}</td>
+                <td>
+                  <span className={`mono${o.vencida ? " form-error" : ""}`}
+                        title={o.vencida ? "La fecha de validez ya pasó." : undefined}>
+                    {fmtDate(o.valida_hasta)}
+                  </span>
+                </td>
+                <td>
+                  <OfertaEstadoPill estado={o.estado} vencida={o.vencida} />
+                  {o.factusol ? (
+                    <div className="small">
+                      <Link href="/erp/proformas" title="Ver en Proformas">
+                        Presupuesto {o.factusol.numero}
+                      </Link>
+                    </div>
+                  ) : null}
+                </td>
+                <td className="num">
+                  {o.total.toFixed(2)} €
+                  <div className="muted small">{o.con_iva ? `IVA ${o.iva_pct} %` : "sin IVA"}</div>
+                </td>
+                <td>
+                  <ActionsMenu label={`Acciones ${o.numero}`}>{menuFor(o)}</ActionsMenu>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
 
       {editor ? (
         <OfertaEditorModal
           oferta={editor.oferta}
           marcarPosiciones={editor.marcadas}
+          plantillaInicialId={editor.plantillaId}
           readOnly={!canEdit}
           onClose={() => setEditor(null)}
           onSaved={onSaved}
@@ -455,18 +338,11 @@ function OfertasPageInner() {
         />
       ) : null}
 
-      {plantillaModal ? (
-        <OfertaPlantillaModal
-          plantilla={plantillaModal.plantilla}
-          onClose={() => setPlantillaModal(null)}
-          onSaved={onPlantillaSaved}
-        />
-      ) : null}
     </main>
   );
 }
 
-/** `useSearchParams` exige Suspense en el app router (`?tab=`, `?contact_id=`). */
+/** `useSearchParams` exige Suspense en el app router (`?contact_id=`, `?plantilla=`). */
 export default function OfertasPage() {
   return (
     <Suspense fallback={<main className="shell shell-wide erp-flow"><p className="muted">Cargando…</p></main>}>

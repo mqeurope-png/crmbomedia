@@ -259,14 +259,15 @@ def _description_chunks(text: str, limit: int = ORDER_LINE_DESCRIPTION_MAX) -> l
     return chunks or [text[:limit]]
 
 
-def add_document_lines(
-    session: Session, order: Order, lines: list[dict[str, Any]],
-) -> float:
-    """Añade al pedido las líneas del documento FACTUSOL (forma del lector:
-    `codart`, `description`, `quantity`, `unit_price`, `discount_pct`,
-    `iva_pct`) y devuelve la suma CON IVA. Sin commit."""
+def plan_document_lines(lines: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], float]:
+    """Las líneas del pedido TAL COMO SE VAN A CREAR desde las de un documento
+    FACTUSOL (forma del lector: `codart`, `description`, `quantity`,
+    `unit_price`, `discount_pct`, `iva_pct`) y su suma CON IVA. Es lo que usa
+    `add_document_lines` para escribirlas y lo que enseña el resumen de
+    «Crear pedido» antes de confirmar: así el resumen no puede decir otra cosa
+    que lo que se crea."""
+    salida: list[dict[str, Any]] = []
     total_tax = 0.0
-    position = 0
     for line in lines:
         # Una línea de TEXTO (continuación de una descripción larga o nota:
         # sin artículo, cantidad 0 y precio 0) se queda a 0, no a 1: no es
@@ -289,27 +290,61 @@ def add_document_lines(
         tax_rate = iva if iva > 0 or line.get("iva_explicit") else DEFAULT_IVA_PCT
         total_tax += line_total * (1 + tax_rate / 100)
         primero, *resto = _description_chunks(description)
-        session.add(OrderLine(
-            order_id=order.id, position=position,
-            product_sku=(codart or "")[:128],
-            product_codart=(codart or None) and codart[:13],
-            description=primero,
-            quantity=quantity, unit_price=unit_price,
-            tax_rate=tax_rate,
-            line_total=line_total,
-            notes=f"dto. {discount:g}%" if discount else None,
-        ))
-        position += 1
+        salida.append({
+            "product_sku": (codart or "")[:128],
+            "product_codart": (codart or None) and codart[:13],
+            "description": primero, "quantity": quantity, "unit_price": unit_price,
+            "discount_pct": discount, "tax_rate": tax_rate, "line_total": line_total,
+            "notes": f"dto. {discount:g}%" if discount else None,
+        })
         # Lo que no cabe en los 255 de la línea del pedido: líneas de texto
         # (cantidad 0, sin precio), que llegan así al albarán y a la factura.
         for trozo in resto:
-            session.add(OrderLine(
-                order_id=order.id, position=position, product_sku="",
-                product_codart=None, description=trozo, quantity=0.0,
-                unit_price=0.0, tax_rate=tax_rate, line_total=0.0, notes=None,
-            ))
-            position += 1
+            salida.append({
+                "product_sku": "", "product_codart": None, "description": trozo,
+                "quantity": 0.0, "unit_price": 0.0, "discount_pct": 0.0,
+                "tax_rate": tax_rate, "line_total": 0.0, "notes": None,
+            })
+    return salida, total_tax
+
+
+def add_document_lines(
+    session: Session, order: Order, lines: list[dict[str, Any]],
+) -> float:
+    """Añade al pedido las líneas del documento FACTUSOL (forma del lector:
+    `codart`, `description`, `quantity`, `unit_price`, `discount_pct`,
+    `iva_pct`) y devuelve la suma CON IVA. Sin commit."""
+    planned, total_tax = plan_document_lines(lines)
+    for position, item in enumerate(planned):
+        session.add(OrderLine(
+            order_id=order.id, position=position,
+            product_sku=item["product_sku"], product_codart=item["product_codart"],
+            description=item["description"], quantity=item["quantity"],
+            unit_price=item["unit_price"], tax_rate=item["tax_rate"],
+            line_total=item["line_total"], notes=item["notes"],
+        ))
     return total_tax
+
+
+def order_summary(
+    *, company_id: str | None, company_name: str | None, fecha: str | None,
+    lines: list[dict[str, Any]], total_with_tax: float | None, origen: dict[str, Any],
+) -> dict[str, Any]:
+    """El resumen de «Crear pedido» antes de confirmar: empresa, fecha, los
+    conceptos con sus cantidades, el importe y de dónde sale. Usa el mismo
+    planificador de líneas y el mismo criterio de importe que `build_order`."""
+    planned, total_tax = plan_document_lines(lines)
+    total = total_with_tax if total_with_tax is not None and total_with_tax > 0 else total_tax
+    return {
+        "company_id": company_id,
+        "company_name": company_name,
+        "fecha": fecha,
+        "lineas": [{k: item[k] for k in ("product_sku", "description", "quantity",
+                                          "unit_price", "discount_pct", "line_total",
+                                          "tax_rate")} for item in planned],
+        "total": round(float(total or 0), 2),
+        "origen": origen,
+    }
 
 
 def document_lines_or_total(preview: dict[str, Any]) -> list[dict[str, Any]]:
@@ -418,6 +453,17 @@ def preview_factusol_document(
     # explícito; el `IVAL**` de línea es un código y no sirve para saberlo.
     if lines and header_says_no_iva(doc.get("iva_pct"), doc.get("base")):
         lines = [{**line, "iva_pct": 0.0, "iva_explicit": True} for line in lines]
+    resumen = order_summary(
+        company_id=company_id, company_name=company_name, fecha=doc.get("fecha"),
+        lines=document_lines_or_total({
+            "lines": lines, "doc_type": doc_type, "numero": doc["numero"],
+            "referencia": doc.get("referencia"), "total": doc.get("total"),
+        }),
+        total_with_tax=doc.get("total"),
+        origen={"doc_type": doc_type, "label": DOC_LABEL[doc_type], "serie": int(serie),
+                "codigo": int(codigo), "numero": doc["numero"],
+                "referencia": doc.get("referencia")},
+    )
     return {
         "doc_type": doc_type,
         "serie": int(serie),
@@ -444,6 +490,9 @@ def preview_factusol_document(
             {"order_id": existing.id, "order_number": existing.order_number}
             if existing is not None else None
         ),
+        # Lo que se va a crear, con el mismo cálculo que la creación: el
+        # resumen del modal «Crear pedido» (nada se crea hasta confirmar).
+        "resumen": resumen,
     }
 
 

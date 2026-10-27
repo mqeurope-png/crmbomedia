@@ -7,7 +7,7 @@ import { PageHeader } from "../../components/PageHeader";
 import { CompanyPickerModal } from "../../components/CompanyPickerModal";
 import { ConvertQuoteDialog } from "../../components/erp/ConvertQuoteDialog";
 import { CreateQuoteModal } from "../../components/erp/CreateQuoteModal";
-import { GuardarPlantillaOfertaModal } from "../../components/erp/GuardarPlantillaOfertaModal";
+import { GuardarPlantillaModal } from "../../components/erp/GuardarPlantillaModal";
 import { QuoteEmailModal, emailedMark } from "../../components/erp/QuoteEmailModal";
 import { ActionsMenu } from "../../components/erp/flow/ActionsMenu";
 import { RegimePill } from "../../components/erp/flow/RegimePill";
@@ -26,7 +26,7 @@ import {
   type FactusolPdfLang,
   type FactusolQuote,
   type FactusolQuoteLine,
-  type OfertaPlantilla,
+  type PlantillaDocumento,
   type PaymentIntentInput,
   type QuoteEstado,
   type QuoteQueue,
@@ -298,13 +298,17 @@ export default function ProformasPage() {
   const [duplicating, setDuplicating] = useState<FactusolQuote | null>(null);
   // Punto A: proforma que se envía por email (previsualización en el modal).
   const [emailing, setEmailing] = useState<FactusolQuote | null>(null);
-  // Ofertas: «⋯ → Guardar como plantilla de oferta» copia las líneas de la
-  // proforma a una plantilla de BoHub (solo lee de FACTUSOL). Al guardar,
-  // aviso con enlace a la pestaña de plantillas.
+  // «⋯ → Guardar como plantilla» copia las líneas de la proforma a una
+  // plantilla de documento de BoHub (solo lee de FACTUSOL), que luego sirve
+  // para ofertas, proformas y pedidos. Al guardar, aviso con enlace a ERP ·
+  // Plantillas.
   const [plantillaFrom, setPlantillaFrom] = useState<FactusolQuote | null>(null);
-  const [plantillaSaved, setPlantillaSaved] = useState<OfertaPlantilla | null>(null);
+  const [plantillaSaved, setPlantillaSaved] = useState<PlantillaDocumento | null>(null);
   const [picking, setPicking] = useState(false);
   const [creatingFor, setCreatingFor] = useState<Company | null>(null);
+  // «Usar en una proforma» desde ERP · Plantillas (`?plantilla=`): se elige
+  // la empresa y el alta se abre con las líneas de esa plantilla.
+  const [plantillaUso, setPlantillaUso] = useState<string | null>(null);
   // «Ahora» para la antigüedad en palabras: el momento de la última carga (no
   // se llama a Date.now() al pintar).
   const [now, setNow] = useState(() => Date.now());
@@ -319,6 +323,15 @@ export default function ProformasPage() {
     getCurrentUser()
       .then((u) => setCanEdit(can(u, Cap.PROFORMAS)))
       .catch(() => setCanEdit(false));
+  }, []);
+
+  // `?plantilla=`: se lee una vez al entrar (sin `useSearchParams`, que
+  // obligaría a envolver la página en Suspense).
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get("plantilla");
+    if (!id) return;
+    setPlantillaUso(id);
+    setPicking(true);
   }, []);
 
   useEffect(() => {
@@ -616,7 +629,11 @@ export default function ProformasPage() {
         description="Presupuestos enviados y su estado."
         actions={canEdit ? (
           <button type="button" className="button small" disabled={busy}
-                  onClick={() => setPicking(true)}>
+                  onClick={() => {
+                    // «+ Nueva proforma» a secas: sin la plantilla de un «Usar» anterior.
+                    setPlantillaUso(null);
+                    setPicking(true);
+                  }}>
             + Nueva proforma
           </button>
         ) : null}
@@ -641,7 +658,7 @@ export default function ProformasPage() {
       {plantillaSaved ? (
         <p className="form-info" role="status">
           Plantilla «{plantillaSaved.nombre}» guardada.{" "}
-          <Link href="/erp/ofertas?tab=plantillas">Ver las plantillas de oferta</Link>
+          <Link href="/erp/plantillas">Ver las plantillas</Link>
         </p>
       ) : null}
       {truncation ? (
@@ -746,7 +763,7 @@ export default function ProformasPage() {
               canEdit ? (
                 <button key="plantilla" type="button" disabled={busy}
                         onClick={() => setPlantillaFrom(q)}>
-                  Guardar como plantilla de oferta
+                  Guardar como plantilla
                 </button>
               ) : null,
               canEdit && company ? (
@@ -867,6 +884,9 @@ export default function ProformasPage() {
         />
       ) : null}
 
+      {/* El selector llama a `onPick` y DESPUÉS a `onClose`: la plantilla
+          pendiente no se borra aquí (se quita al cancelar o crear el alta, o
+          con «+ Nueva proforma»). */}
       <CompanyPickerModal
         open={picking}
         onClose={() => setPicking(false)}
@@ -878,8 +898,15 @@ export default function ProformasPage() {
           companyId={creatingFor.id}
           companyName={creatingFor.name}
           factusolCodcli={creatingFor.codcli}
-          onCreated={(jobId) => void onQuoteJob(jobId, "Creando")}
-          onCancel={() => setCreatingFor(null)}
+          plantillaInicialId={plantillaUso}
+          onCreated={(jobId) => {
+            setPlantillaUso(null);
+            void onQuoteJob(jobId, "Creando");
+          }}
+          onCancel={() => {
+            setCreatingFor(null);
+            setPlantillaUso(null);
+          }}
         />
       ) : null}
 
@@ -924,14 +951,17 @@ export default function ProformasPage() {
         />
       ) : null}
 
-      {/* Ofertas: la plantilla se crea en BoHub copiando las líneas de la
-          proforma (serie + nº). No escribe en FACTUSOL. */}
+      {/* La plantilla se crea en BoHub copiando las líneas de la proforma
+          (serie + nº). No escribe en FACTUSOL. */}
       {plantillaFrom ? (
-        <GuardarPlantillaOfertaModal
-          serie={serieOf(plantillaFrom) || PRESUPUESTO_SERIE}
-          codpre={codpreOf(plantillaFrom)}
+        <GuardarPlantillaModal
+          origen={{
+            tipo: "presupuesto",
+            serie: serieOf(plantillaFrom) || PRESUPUESTO_SERIE,
+            codigo: codpreOf(plantillaFrom),
+          }}
           numero={plantillaFrom.numero}
-          referencia={plantillaFrom.referencia}
+          nombreSugerido={plantillaFrom.referencia}
           onClose={() => setPlantillaFrom(null)}
           onSaved={(p) => {
             setPlantillaFrom(null);

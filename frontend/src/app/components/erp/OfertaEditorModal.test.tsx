@@ -4,29 +4,38 @@ import { OfertaEditorModal } from "./OfertaEditorModal";
 import {
   createOferta,
   getOferta,
-  getOfertaPlantilla,
   getOfertasMeta,
-  listOfertaPlantillas,
+  getPlantillaLineas,
+  getPlantillasMeta,
+  listPlantillaCarpetas,
+  listPlantillaEtiquetas,
+  listPlantillas,
   searchCrmContacts,
   searchFactusolArticles,
   updateOferta,
   type Oferta,
+  type PlantillaDocumento,
 } from "../../lib/erpApi";
 
 /** Editor de ofertas: totales en vivo con el criterio del backend (una sola
  *  banda de IVA, la de la primera línea con importe; sin IVA → 0), alta con
- *  plantilla (vuelca sus líneas) → `createOferta`, edición que carga las
- *  líneas con `getOferta` y solo manda `fecha` si se cambió a mano, y el
- *  contacto elegido con el buscador del CRM cuando no viene fijo. */
+ *  plantilla (el selector de plantillas de documento vuelca sus líneas) →
+ *  `createOferta` con `plantilla_id`, la oferta nueva abierta con una
+ *  plantilla («Usar» desde ERP · Plantillas), edición que carga las líneas con
+ *  `getOferta` y solo manda `fecha` si se cambió a mano, y el contacto elegido
+ *  con el buscador del CRM cuando no viene fijo. */
 
 jest.mock("../../lib/erpApi", () => ({
   FACTUSOL_SERIES: jest.requireActual("../../lib/erpApi").FACTUSOL_SERIES,
   createOferta: jest.fn(),
   updateOferta: jest.fn(),
   getOferta: jest.fn(),
-  getOfertaPlantilla: jest.fn(),
   getOfertasMeta: jest.fn(),
-  listOfertaPlantillas: jest.fn(),
+  getPlantillaLineas: jest.fn(),
+  getPlantillasMeta: jest.fn(),
+  listPlantillaCarpetas: jest.fn(),
+  listPlantillaEtiquetas: jest.fn(),
+  listPlantillas: jest.fn(),
   searchCrmContacts: jest.fn(),
   searchFactusolArticles: jest.fn(),
 }));
@@ -34,9 +43,12 @@ jest.mock("../../lib/erpApi", () => ({
 const mockCreate = createOferta as jest.Mock;
 const mockUpdate = updateOferta as jest.Mock;
 const mockGet = getOferta as jest.Mock;
-const mockPlantilla = getOfertaPlantilla as jest.Mock;
 const mockMeta = getOfertasMeta as jest.Mock;
-const mockPlantillas = listOfertaPlantillas as jest.Mock;
+const mockLineas = getPlantillaLineas as jest.Mock;
+const mockPlMeta = getPlantillasMeta as jest.Mock;
+const mockCarpetas = listPlantillaCarpetas as jest.Mock;
+const mockEtiquetas = listPlantillaEtiquetas as jest.Mock;
+const mockPlantillas = listPlantillas as jest.Mock;
 const mockContacts = searchCrmContacts as jest.Mock;
 const mockArticles = searchFactusolArticles as jest.Mock;
 
@@ -48,6 +60,17 @@ const META = {
 const LINEA = {
   id: "l1", posicion: 1, codart: "A1", sku: "SKU-1", descripcion: "Placa braille",
   cantidad: 2, precio: 50, descuento_pct: 0, iva_pct: 21, total: 100, text_only: false,
+};
+const PLANTILLA: PlantillaDocumento = {
+  id: "p1", nombre: "Kit UV", descripcion: null, activa: true, idioma: "es",
+  carpeta_id: null, carpeta: null, etiquetas: [],
+  origen_tipo: "manual", origen_serie: null, origen_codigo: null, origen_order_id: null,
+  origen_numero: null, num_lineas: 1, created_at: null, updated_at: null,
+};
+/** Las líneas de la plantilla en la forma de la oferta (`destino=oferta`). */
+const LINEA_PLANTILLA = {
+  codart: "A1", sku: "SKU-1", descripcion: "Placa braille",
+  cantidad: 2, precio: 50, descuento_pct: 0, iva_pct: 21,
 };
 const OFERTA: Oferta = {
   id: "of1", numero: "OF-2026-0001", anio: 2026, secuencia: 1,
@@ -68,20 +91,22 @@ beforeEach(() => {
   mockCreate.mockReset();
   mockUpdate.mockReset();
   mockGet.mockReset();
-  mockPlantilla.mockReset();
   mockMeta.mockReset();
-  mockPlantillas.mockReset();
   mockContacts.mockReset();
   mockArticles.mockReset();
   mockMeta.mockResolvedValue(META);
-  mockPlantillas.mockResolvedValue([
-    { id: "p1", nombre: "Kit UV", descripcion: null, activa: true, origen_serie: null,
-      origen_codpre: null, origen_numero: null, num_lineas: 1, created_at: null, updated_at: null },
-  ]);
-  mockPlantilla.mockResolvedValue({
-    id: "p1", nombre: "Kit UV", descripcion: null, activa: true, origen_serie: null,
-    origen_codpre: null, origen_numero: null, num_lineas: 1, created_at: null, updated_at: null,
-    lineas: [LINEA],
+  // El selector de plantillas: sin carpetas ni etiquetas, una plantilla.
+  mockPlMeta.mockReset().mockResolvedValue({
+    idiomas: ["es", "en", "de", "fr", "nl"], destinos: ["oferta", "proforma", "pedido"],
+    max_profundidad: 3, carpeta_defecto: null, gestiona_acceso: false, acceso_restringido: false,
+  });
+  mockCarpetas.mockReset().mockResolvedValue({ items: [], carpeta_defecto: null });
+  mockEtiquetas.mockReset().mockResolvedValue([]);
+  mockPlantillas.mockReset().mockResolvedValue({
+    items: [PLANTILLA], total: 1, idioma_cliente: null, idioma_fuente: null,
+  });
+  mockLineas.mockReset().mockResolvedValue({
+    plantilla: PLANTILLA, destino: "oferta", lineas: [LINEA_PLANTILLA], avisos: [],
   });
   mockArticles.mockResolvedValue([]);
   mockContacts.mockResolvedValue([]);
@@ -130,17 +155,30 @@ describe("OfertaEditorModal", () => {
     expect(screen.getByRole("button", { name: "Crear oferta" })).toBeEnabled();
   });
 
-  it("alta: la plantilla vuelca sus líneas (artículo incluido) y «Crear oferta» llama a createOferta con contacto, serie, líneas y validez", async () => {
+  it("alta: «Elegir plantilla…» abre el selector (destino oferta, con el contacto y la serie), vuelca sus líneas (artículo incluido) y «Crear oferta» manda plantilla_id", async () => {
     const onSaved = jest.fn();
     const user = userEvent.setup();
     render(<OfertaEditorModal contactId="c1" contactName="Ana Pérez" onClose={jest.fn()} onSaved={onSaved} />);
     // Sin líneas no se puede crear.
     expect(screen.getByRole("button", { name: "Crear oferta" })).toBeDisabled();
-    await user.selectOptions(await screen.findByLabelText("Plantilla"), "p1");
-    await waitFor(() => expect(mockPlantilla).toHaveBeenCalledWith("p1"));
+    expect(screen.getByText("— Sin plantilla —")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByLabelText("Validez en días")).toHaveValue(45));
+
+    await user.click(screen.getByRole("button", { name: "Elegir plantilla…" }));
+    const selector = await screen.findByRole("dialog", { name: "Elegir plantilla para la oferta" });
+    // Con el contacto y la serie: primero las del idioma del cliente.
+    await waitFor(() => expect(mockPlantillas).toHaveBeenCalledWith(expect.objectContaining({
+      contact_id: "c1", serie: 1, activas: true,
+    })));
+    await user.click(await within(selector).findByRole("button", { name: "Usar la plantilla Kit UV" }));
+    await waitFor(() => expect(mockLineas).toHaveBeenCalledWith("p1", "oferta"));
+    // El selector se cierra y las líneas quedan en el editor.
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Elegir plantilla para la oferta" })).toBeNull());
     expect(await screen.findByLabelText("SKU línea 1")).toHaveValue("SKU-1");
     expect(screen.getByLabelText("Descripción línea 1")).toHaveValue("Placa braille");
     expect(screen.getByRole("status")).toHaveTextContent("Líneas cargadas de la plantilla «Kit UV» (1).");
+    expect(screen.getByText("Kit UV")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cambiar plantilla…" })).toBeInTheDocument();
     expect(totales()).toHaveTextContent("Total: 121.00 €");
     expect(screen.queryByRole("note")).toBeNull();                       // con artículo: sin aviso
 
@@ -163,6 +201,65 @@ describe("OfertaEditorModal", () => {
     // Idioma «automático»: no viaja (lo decide el backend por el contacto).
     expect(mockCreate.mock.calls[0][0]).not.toHaveProperty("idioma");
     await waitFor(() => expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ numero: "OF-2026-0009" })));
+  });
+
+  it("con líneas ya escritas, elegir plantilla pide confirmación: si se cancela, las líneas no cambian", async () => {
+    const confirmar = jest.spyOn(window, "confirm").mockReturnValue(false);
+    try {
+      const user = userEvent.setup();
+      render(<OfertaEditorModal contactId="c1" contactName="Ana Pérez" onClose={jest.fn()} onSaved={jest.fn()} />);
+      await user.type(screen.getByLabelText("Descripción línea 1"), "Montaje");
+      await user.click(screen.getByRole("button", { name: "Elegir plantilla…" }));
+      const selector = await screen.findByRole("dialog", { name: "Elegir plantilla para la oferta" });
+      await user.click(await within(selector).findByRole("button", { name: "Usar la plantilla Kit UV" }));
+      await waitFor(() => expect(confirmar).toHaveBeenCalledWith(
+        "Se sustituirán las líneas actuales por las de la plantilla. ¿Seguir?",
+      ));
+      expect(screen.getByLabelText("Descripción línea 1")).toHaveValue("Montaje");
+      expect(screen.queryByLabelText("Descripción línea 2")).toBeNull();
+      expect(screen.getByText("— Sin plantilla —")).toBeInTheDocument();
+      expect(screen.queryByRole("status")).toBeNull();
+    } finally {
+      confirmar.mockRestore();
+    }
+  });
+
+  it("plantillaInicialId («Usar» desde ERP · Plantillas): la oferta nueva se abre con las líneas de esa plantilla y la crea con su plantilla_id", async () => {
+    const user = userEvent.setup();
+    let resolver: (v: unknown) => void = () => {};
+    mockLineas.mockReturnValueOnce(new Promise((r) => { resolver = r; }));
+    render(<OfertaEditorModal contactId="c1" contactName="Ana Pérez" plantillaInicialId="p1"
+                              onClose={jest.fn()} onSaved={jest.fn()} />);
+    // Mientras llegan las líneas: «Cargando…» y sin poder elegir otra.
+    expect(screen.getByText("Cargando…")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Elegir plantilla…" })).toBeDisabled();
+    expect(mockLineas).toHaveBeenCalledWith("p1", "oferta");
+    resolver({ plantilla: PLANTILLA, destino: "oferta", lineas: [LINEA_PLANTILLA], avisos: [] });
+
+    await waitFor(() => expect(screen.getByLabelText("SKU línea 1")).toHaveValue("SKU-1"));
+    expect(screen.getByLabelText("Descripción línea 1")).toHaveValue("Placa braille");
+    expect(screen.getByRole("status")).toHaveTextContent("Líneas cargadas de la plantilla «Kit UV» (1).");
+    expect(screen.getByText("Kit UV")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cambiar plantilla…" })).toBeEnabled();
+    // El selector no se abre: las líneas llegan directamente.
+    expect(screen.queryByRole("dialog", { name: "Elegir plantilla para la oferta" })).toBeNull();
+    expect(mockPlantillas).not.toHaveBeenCalled();
+
+    await waitFor(() => expect(screen.getByLabelText("Validez en días")).toHaveValue(45));
+    await user.click(screen.getByRole("button", { name: "Crear oferta" }));
+    await waitFor(() => expect(mockCreate).toHaveBeenCalledWith(expect.objectContaining({
+      contact_id: "c1",
+      plantilla_id: "p1",
+      lineas: [expect.objectContaining({ codart: "A1", sku: "SKU-1", descripcion: "Placa braille" })],
+    })));
+  });
+
+  it("plantillaInicialId con una oferta existente no carga la plantilla", async () => {
+    render(<OfertaEditorModal oferta={{ ...OFERTA, lineas: [LINEA] }} plantillaInicialId="p1"
+                              onClose={jest.fn()} onSaved={jest.fn()} />);
+    expect(screen.getByLabelText("SKU línea 1")).toHaveValue("SKU-1");
+    await waitFor(() => expect(mockMeta).toHaveBeenCalled());
+    expect(mockLineas).not.toHaveBeenCalled();
   });
 
   it("edición: carga las líneas con getOferta si no vienen y updateOferta solo manda «fecha» si se cambió a mano", async () => {

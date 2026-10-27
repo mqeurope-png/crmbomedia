@@ -35,7 +35,8 @@ import app.main  # noqa: F401
 from app.db.base import Base
 from app.db.session import get_session
 from app.erp import ofertas as svc
-from app.erp.models import Oferta, OfertaPlantilla
+from app.erp import plantillas as plantillas_svc
+from app.erp.models import Oferta, PlantillaDocumento
 from app.main import app
 from app.models.crm import (
     AuditLog,
@@ -136,9 +137,9 @@ LINEAS = [
 ]
 
 
-def _plantilla(session: Session) -> OfertaPlantilla:
-    p = svc.crear_plantilla(session, nombre="UV básica", lineas=svc.normalizar_lineas(LINEAS),
-                            usuario=None)
+def _plantilla(session: Session) -> PlantillaDocumento:
+    p = plantillas_svc.crear_plantilla(session, nombre="UV básica",
+                                       lineas=svc.normalizar_lineas(LINEAS), usuario=None)
     session.commit()
     return p
 
@@ -182,9 +183,9 @@ def test_plantilla_desde_presupuesto_conserva_lineas_con_articulos(http, session
                   {"CODART": "T1", "EQUART": "TINTA-C", "DESART": "Tinta cian"}],
     )
     with _patch_factusol(fake):
-        r = http.post("/api/erp/ofertas/plantillas", headers=auth_headers(http, "comercial"),
+        r = http.post("/api/erp/plantillas", headers=auth_headers(http, "comercial"),
                       json={"nombre": "UV básica", "descripcion": "Equipo + tinta",
-                            "serie": 2, "codpre": 40})
+                            "origen": {"tipo": "presupuesto", "serie": 2, "codigo": 40}})
     assert r.status_code == 201, r.text
     body = r.json()
     assert body["origen_numero"] == "2-000040" and body["activa"] is True
@@ -195,13 +196,13 @@ def test_plantilla_desde_presupuesto_conserva_lineas_con_articulos(http, session
     # Solo lectura: ni una escritura en FACTUSOL.
     assert fake.writes == [] and fake.updates == []
     with session_factory() as s:
-        p = s.get(OfertaPlantilla, body["id"])
+        p = s.get(PlantillaDocumento, body["id"])
         assert p is not None and [ln.codart for ln in p.lineas] == ["UV1", "T1"]
     # Desactivar / editar la plantilla.
-    r2 = http.patch(f"/api/erp/ofertas/plantillas/{body['id']}",
+    r2 = http.patch(f"/api/erp/plantillas/{body['id']}",
                     headers=auth_headers(http, "comercial"), json={"activa": False})
     assert r2.status_code == 200 and r2.json()["activa"] is False
-    r3 = http.get("/api/erp/ofertas/plantillas?activas=true", headers=auth_headers(http))
+    r3 = http.get("/api/erp/plantillas?activas=true", headers=auth_headers(http))
     assert r3.json()["items"] == []
 
 

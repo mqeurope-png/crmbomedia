@@ -15773,3 +15773,42 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
 .asistente-franja-formato button + button { border-left: 1px solid var(--border); }
 .asistente-franja-formato button.is-activo { background: rgba(29, 78, 216, 0.1); color: var(--primary, #1d4ed8); font-weight: 600; }
 .asistente-franja-formato button:disabled { cursor: default; }
+
+/* Plantillas de documento: selector en el punto de uso (carpetas, buscador,
+ * etiquetas, idioma del cliente primero) y pantalla de gestión. El árbol
+ * reutiliza las clases `.et-tree*` de las plantillas de correo. */
+.pl-sel-layout { display: grid; grid-template-columns: minmax(180px, 240px) 1fr; gap: 16px; min-height: 320px; }
+@media (max-width: 760px) { .pl-sel-layout { grid-template-columns: 1fr; } }
+.pl-sel-tree { border-right: 1px solid var(--line); padding-right: 12px; overflow-y: auto; max-height: 60vh; }
+@media (max-width: 760px) { .pl-sel-tree { border-right: 0; padding-right: 0; max-height: none; } }
+.pl-sel-main { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.pl-sel-search { max-width: none; }
+.pl-sel-etiquetas { display: flex; flex-wrap: wrap; gap: 6px; }
+.pl-etq-filtro { border: 1px solid var(--line); cursor: pointer; font: inherit; font-size: var(--fs-label); }
+.pl-etq-filtro .muted { font-weight: 400; }
+.pl-sel-results { display: flex; flex-direction: column; gap: 14px; overflow-y: auto; max-height: 55vh; }
+.pl-sel-results[aria-busy="true"] { opacity: 0.6; }
+.pl-sel-grupo { display: flex; flex-direction: column; gap: 6px; }
+.pl-sel-grupo-titulo { margin: 0; font-size: var(--fs-body); color: var(--ink); }
+.pl-sel-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.pl-sel-item {
+  width: 100%; text-align: left; display: flex; flex-direction: column; gap: 4px;
+  padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: #fff;
+  cursor: pointer; font: inherit; color: var(--ink);
+}
+.pl-sel-item:hover:not(:disabled) { border-color: var(--brand); background: #f8fafc; }
+.pl-sel-item:disabled { cursor: progress; opacity: 0.7; }
+.pl-sel-item.is-otro-idioma { background: #fffdf5; }
+.pl-sel-item-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.pl-sel-desc { display: block; }
+.pl-sel-coinc { display: flex; flex-direction: column; gap: 2px; padding-left: 8px; border-left: 2px solid #fde68a; color: var(--muted); font-size: var(--fs-label); }
+.pl-etiquetas { display: flex; flex-direction: column; gap: 6px; }
+.pl-filtros { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.pl-filtros select { width: auto; }
+.pl-tabla-nombre { display: flex; flex-direction: column; gap: 3px; }
+.pl-acciones { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.pl-resumen-pedido dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0 0 12px; }
+.pl-resumen-pedido dt { color: var(--muted, #6b7280); }
+.pl-resumen-pedido dd { margin: 0; }
+.pl-resumen-pedido .data-table td.num, .pl-resumen-pedido .data-table th.num { text-align: right; white-space: nowrap; }
+.pl-acceso-lista { list-style: none; margin: 0 0 12px; padding: 0; display: flex; flex-direction: column; gap: 4px; max-height: 50vh; overflow-y: auto; }

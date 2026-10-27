@@ -1559,6 +1559,49 @@ def quote_lines_for_order(
     }
 
 
+def preview_quote_conversion(
+    client: FactusolClient, session: Session, codpre: str, *, ejercicio: str,
+    serie: Any = None,
+) -> dict[str, Any]:
+    """Lo que crearía `convert_quote_to_order` SIN crear nada: la empresa
+    (resuelta igual), la fecha (hoy, como la conversión), los conceptos con
+    sus cantidades (mismas líneas y mismo planificador que el pedido), el
+    importe y la proforma de origen. Es el resumen del modal «Convertir en
+    pedido»; si ya se convirtió, lo dice."""
+    from app.erp.orders_from_factusol import (  # noqa: PLC0415
+        find_quote_order,
+        order_summary,
+        resolve_company_id,
+        visible_number,
+    )
+    from app.models.crm import Company  # noqa: PLC0415
+
+    data = quote_lines_for_order(client, session, codpre, ejercicio=ejercicio, serie=serie)
+    serie_real = int(data["serie"])
+    codigo = int(data["codpre"])
+    existing = find_quote_order(session, serie_real, codigo)
+    company_id = resolve_company_id(session, data["clipre"])
+    company = session.get(Company, company_id) if company_id else None
+    resumen = order_summary(
+        company_id=company_id, company_name=company.name if company else None,
+        fecha=datetime.now(UTC).date().isoformat(), lines=data["lines"],
+        total_with_tax=data["total"],
+        origen={"doc_type": "presupuestos", "label": "proforma", "serie": serie_real,
+                "codigo": codigo, "numero": visible_number(serie_real, codigo),
+                "referencia": data["referencia"]},
+    )
+    return {
+        **resumen,
+        "codpre": str(codigo), "serie": serie_real,
+        "company_linked": company_id is not None,
+        "cliente_codigo": data["clipre"],
+        "already_existed": (
+            {"order_id": existing.id, "order_number": existing.order_number}
+            if existing is not None else None
+        ),
+    }
+
+
 def convert_quote_to_order(
     client: FactusolClient, session: Session, codpre: str, *, ejercicio: str,
     actor_user_id: str | None = None, serie: Any = None,

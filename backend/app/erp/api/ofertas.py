@@ -1,15 +1,14 @@
 """Ofertas: presupuestar a un lead sin tocar FACTUSOL — la API.
 
-`/api/erp/ofertas`: plantillas (crear desde un presupuesto, editar,
-desactivar), ofertas (listar, crear, editar, PDF, previsualizar y enviar por
-correo) y «Convertir en presupuesto». Las crea, edita y envía cualquier
+`/api/erp/ofertas`: ofertas (listar, crear —desde una plantilla de documento,
+`/api/erp/plantillas`—, editar, PDF, previsualizar y enviar por correo) y
+«Convertir en presupuesto». Las crea, edita y envía cualquier
 comercial (`erp.proformas` y `erp.email.client`, que ya tiene); no hay
 permiso nuevo.
 
 Ningún endpoint escribe en FACTUSOL salvo `POST /{id}/convertir`, que encola
 el job del worker serializado (`factusol:writes`) y solo lo pulsa una
-persona. Leer (guardar una plantilla desde un presupuesto) sí lee de
-FACTUSOL.
+persona.
 """
 from __future__ import annotations
 
@@ -28,7 +27,7 @@ from app.erp.api.deps import (
     require_office_view,
     require_proformas,
 )
-from app.erp.models import Oferta, OfertaPlantilla
+from app.erp.models import Oferta, PlantillaDocumento
 from app.models.crm import Contact, User
 
 logger = logging.getLogger(__name__)
@@ -49,13 +48,16 @@ def _oferta_o_404(session: Session, oferta_id: str) -> Oferta:
     return oferta
 
 
-def _plantilla_o_404(session: Session, plantilla_id: str) -> OfertaPlantilla:
-    plantilla = session.get(OfertaPlantilla, plantilla_id)
-    if plantilla is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, {
-            "code": "plantilla_not_found", "detail": "La plantilla no existe.",
-        })
-    return plantilla
+def _plantilla_o_404(session: Session, plantilla_id: str, user: User) -> PlantillaDocumento:
+    """La plantilla (de documento) si existe Y el usuario la ve: con el
+    acceso acotado a unas carpetas, una de otra carpeta es un 404 también
+    aquí, no solo en el selector."""
+    from app.erp import plantillas  # noqa: PLC0415
+
+    try:
+        return plantillas.plantilla_visible(session, user, plantilla_id)
+    except svc.OfertaError as exc:
+        raise _http(exc) from exc
 
 
 class LineaIn(BaseModel):
@@ -96,106 +98,6 @@ def meta_endpoint(
         "idiomas": list(svc.SUPPORTED_LANGS),
         "estados": list(svc.ESTADOS),
     }
-
-
-# --- plantillas -----------------------------------------------------------------
-
-
-class PlantillaIn(BaseModel):
-    nombre: str = Field(min_length=1, max_length=160)
-    descripcion: str | None = Field(default=None, max_length=2000)
-    #: Desde un presupuesto de FACTUSOL (serie + número) — solo lectura…
-    serie: int | None = Field(default=None, ge=1, le=9)
-    codpre: int | None = Field(default=None, ge=1)
-    #: …o con las líneas escritas a mano.
-    lineas: list[LineaIn] | None = None
-    activa: bool = True
-
-
-class PlantillaPatch(BaseModel):
-    nombre: str | None = Field(default=None, max_length=160)
-    descripcion: str | None = Field(default=None, max_length=2000)
-    activa: bool | None = None
-    lineas: list[LineaIn] | None = None
-
-
-@router.get("/plantillas")
-def listar_plantillas_endpoint(
-    activas: bool = Query(default=False),
-    session: Session = Depends(get_session),
-    current_user: User = Depends(require_office_view),
-) -> dict[str, Any]:
-    _ = current_user
-    filas = svc.listar_plantillas(session, solo_activas=activas)
-    return {"items": [svc.plantilla_como_dict(p, con_lineas=False) for p in filas]}
-
-
-@router.post("/plantillas", status_code=status.HTTP_201_CREATED)
-def crear_plantilla_endpoint(
-    payload: PlantillaIn,
-    session: Session = Depends(get_session),
-    current_user: User = Depends(require_proformas),
-) -> dict[str, Any]:
-    """«Guardar como plantilla de oferta»: desde un presupuesto existente
-    (copia sus líneas con sus artículos, leyendo F_PRE/F_LPS) o con líneas a
-    mano. No escribe en FACTUSOL."""
-    try:
-        if payload.serie is not None and payload.codpre is not None:
-            from app.erp.api.factusol import (  # noqa: PLC0415
-                _client_and_ejercicio,
-                _factusol_gateway_error,
-            )
-            from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
-
-            client, ejercicio = _client_and_ejercicio(session)
-            try:
-                plantilla = svc.plantilla_desde_presupuesto(
-                    session, client, serie=payload.serie, codpre=payload.codpre,
-                    ejercicio=ejercicio, nombre=payload.nombre, usuario=current_user,
-                    descripcion=payload.descripcion,
-                )
-            except FactusolError as exc:
-                raise _factusol_gateway_error(exc, "quote_read_failed") from exc
-            plantilla.activa = payload.activa
-        else:
-            plantilla = svc.crear_plantilla(
-                session, nombre=payload.nombre, lineas=_lineas(payload.lineas) or [],
-                usuario=current_user, descripcion=payload.descripcion, activa=payload.activa,
-            )
-    except svc.OfertaError as exc:
-        raise _http(exc) from exc
-    session.commit()
-    return svc.plantilla_como_dict(plantilla)
-
-
-@router.get("/plantillas/{plantilla_id}")
-def get_plantilla_endpoint(
-    plantilla_id: str,
-    session: Session = Depends(get_session),
-    current_user: User = Depends(require_office_view),
-) -> dict[str, Any]:
-    _ = current_user
-    return svc.plantilla_como_dict(_plantilla_o_404(session, plantilla_id))
-
-
-@router.patch("/plantillas/{plantilla_id}")
-def patch_plantilla_endpoint(
-    plantilla_id: str,
-    payload: PlantillaPatch,
-    session: Session = Depends(get_session),
-    current_user: User = Depends(require_proformas),
-) -> dict[str, Any]:
-    _ = current_user
-    plantilla = _plantilla_o_404(session, plantilla_id)
-    try:
-        svc.actualizar_plantilla(
-            session, plantilla, nombre=payload.nombre, descripcion=payload.descripcion,
-            activa=payload.activa, lineas=_lineas(payload.lineas),
-        )
-    except svc.OfertaError as exc:
-        raise _http(exc) from exc
-    session.commit()
-    return svc.plantilla_como_dict(plantilla)
 
 
 # --- ofertas ----------------------------------------------------------------------
@@ -260,7 +162,7 @@ def crear_oferta_endpoint(
         })
     plantilla = None
     if payload.plantilla_id:
-        plantilla = _plantilla_o_404(session, payload.plantilla_id)
+        plantilla = _plantilla_o_404(session, payload.plantilla_id, current_user)
     try:
         oferta = svc.crear_oferta(
             session, contacto=contacto, serie=payload.serie, usuario=current_user,

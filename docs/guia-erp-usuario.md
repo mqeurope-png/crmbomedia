@@ -22,6 +22,7 @@ dice qué se ve, qué se pulsa y qué pasa después.
   - [Ficha de pedido](#ficha-de-pedido)
   - [Empresas](#empresas)
   - [Proformas](#proformas)
+  - [Plantillas](#plantillas)
   - [Documentos de FACTUSOL](#documentos-de-factusol)
   - [Cola SAT (el taller)](#cola-sat-el-taller)
   - [Seguimiento](#seguimiento)
@@ -84,7 +85,7 @@ roles**: su permiso es la **unión** de lo que permite cada uno.
 | Enviar al cliente por email (factura/pedido, aviso de envío a mano) | ✅ | ✅ | ❌ | ✅ |
 | Enviar al taller (SAT) por email | ✅ | ✅ | ✅ (solo a la dirección del taller, sin factura) | ✅ |
 | Ver cobros y facturas (estado, PDF de la factura) | ✅ | ✅ | ❌ | ✅ |
-| Proformas · Ofertas · Empresas · Documentos FACTUSOL | ✅ | ✅ | ❌ | ✅ |
+| Proformas · Ofertas · Plantillas · Empresas · Documentos FACTUSOL | ✅ | ✅ | ❌ | ✅ |
 | **Cola SAT**: ver | ✅ | ✅ | ✅ | ✅ |
 | Cola SAT: subir etiqueta | ✅ | ✅ | ✅ | ✅ |
 | Cola SAT: preparar / embalar / técnicos (serie, WhiteRIP) | ❌ | ✅ | ✅ | ✅ |
@@ -177,6 +178,9 @@ comillas):
 - **«ERP · Pedidos»** → la [Bandeja de pedidos](#bandeja-de-pedidos) (y dentro,
   **«Excepciones»**, salvo para el taller).
 - **«ERP · Proformas»** → [Proformas](#proformas).
+- **«ERP · Ofertas»** → ofertas a un contacto, antes del presupuesto de FACTUSOL.
+- **«ERP · Plantillas»** → [Plantillas](#plantillas) (líneas listas para una
+  oferta, una proforma o un pedido).
 - **«ERP · Documentos»** → [Documentos de FACTUSOL](#documentos-de-factusol).
 - **«ERP · Seguimiento»** → [Seguimiento](#seguimiento).
 - **«ERP · Cuadre»** → [Cuadre (descuadres)](#cuadre-descuadres).
@@ -526,9 +530,13 @@ defecto) las muestra todas, y las colas cuentan sobre lo que se está viendo.
 
 Acciones por proforma:
 
-- **«Convertir en pedido»** — abre **«Convertir proforma en pedido»**. Crea el
-  pedido en BoHub y **su albarán en FACTUSOL (sin factura)**; botón **«Crear
-  pedido y albarán»**.
+- **«Convertir en pedido»** — abre **«Convertir proforma en pedido»** con el
+  **resumen** de lo que se va a crear: empresa, fecha, cada concepto con su
+  cantidad, precio, dto. e importe, el total con IVA y la proforma de origen.
+  Revísalo, elige el pago y pulsa **«Crear pedido y albarán»**: entonces se
+  crea el pedido en BoHub y **su albarán en FACTUSOL (sin factura)**. Si
+  cancelas, no se crea nada. Si la proforma ya se convirtió, el resumen lo dice
+  con el enlace al pedido y no deja crear otro.
 - **«Enviar por email»** — abre la previsualización del correo (contactos de la
   empresa con el vinculado ya marcado, direcciones libres, idioma, asunto y
   mensaje editables, remitente de la empresa emisora) y adjunta el PDF del
@@ -555,6 +563,9 @@ Acciones por proforma:
   guarda sus líneas en la base (es de una sola línea), así que en ese caso lo
   dice en vez de una tabla vacía.
 - **«PDF»** — descarga el PDF de la proforma.
+- **«⋯» → «Guardar como plantilla»** — copia las líneas de la proforma (con
+  sus artículos) a una [plantilla](#plantillas) para usarla en ofertas,
+  proformas o pedidos. No toca FACTUSOL.
 
 **«Nueva proforma».** Eliges la **empresa destino** (vinculada a FACTUSOL) y la
 **empresa emisora (serie)** —1 Bomedia · 2 MQ Europe · 4 Lambert · 5 Streamtec,
@@ -568,6 +579,8 @@ como un presupuesto **real** en FACTUSOL,
 bajo la serie elegida: ahí es donde la verás en esta pantalla y en Documentos.
 Para dropshipping, activa **«Enviar a otro nombre / dirección»**: la proforma
 sigue a nombre fiscal del cliente, solo cambia el destinatario del documento.
+Con **«Cargar plantilla…»** vuelcas las líneas de una [plantilla](#plantillas)
+(con sus artículos de FACTUSOL) y las retocas antes de crearla.
 
 > La **emisora no tiene nada que ver con el cliente**: dice desde qué empresa de
 > la casa sale el documento. Por defecto, Bomedia.
@@ -582,6 +595,43 @@ sigue a nombre fiscal del cliente, solo cambia el destinatario del documento.
 > **Al editar una proforma la serie no se cambia** (mover un documento de serie
 > sería renumerarlo en la contabilidad): el modal enseña cuál es y ya está. Si
 > te equivocaste de emisora, crea la proforma de nuevo en la correcta.
+
+### Plantillas
+
+**Menú: «ERP · Plantillas». Título: «Plantillas».** Líneas listas para crear
+una **oferta**, una **proforma** o un **pedido**: la misma plantilla sirve para
+los tres (no hay que duplicarla). Nada de esta pantalla escribe en FACTUSOL.
+
+- **Carpetas** (a la izquierda, hasta 3 niveles): **«Nueva»**, **«Renombrar /
+  mover»**, **«Borrar»** (sus plantillas y subcarpetas pasan a la carpeta de
+  arriba, o a la raíz si no tiene; no se borran. Una carpeta con acceso
+  acotado no se borra hasta quitarle el acceso). La **★** marca tu carpeta por defecto: el selector se abre ahí y ahí
+  se guardan tus plantillas nuevas.
+- **Buscador**: busca en el nombre, la descripción, las etiquetas **y dentro de
+  las líneas** (referencia y texto). «DM3H» o «horno» encuentran la plantilla
+  aunque su nombre no lo diga, y la lista enseña la línea que coincide.
+- Filtros por **idioma**, **estado** (activas / desactivadas) y **etiquetas**.
+- Por plantilla: **«Editar»** (nombre, descripción, idioma, carpeta —para
+  moverla—, etiquetas, activa y líneas), **«Desactivar»** / **«Activar»** y
+  **«Usar»** → *En una oferta*, *En una proforma* o *En un pedido* (abre el alta
+  de siempre con sus líneas).
+- **«+ Nueva plantilla»**: con las líneas a mano. También se guardan con
+  **«⋯» → «Guardar como plantilla»** desde una proforma, un albarán (Documentos)
+  o un pedido (su ficha).
+
+**Idioma.** Cada plantilla tiene uno: la misma oferta en castellano y en alemán
+son dos plantillas. Al usarlas para un cliente, el selector pone **primero las
+de su idioma**; las demás siguen ahí, en «Otros idiomas», y te pide confirmar si
+eliges una.
+
+**Quién ve qué.** Las plantillas son de la empresa y se ven todas. Si
+administración te da acceso a alguna carpeta (botón **«Acceso»** de la
+carpeta), desde entonces solo ves esas carpetas y sus subcarpetas, también en
+el buscador; si no tienes ninguna, las ves todas.
+
+**Al usar una plantilla en un pedido** el precio va neto del descuento (el
+pedido no lleva descuento por línea), una nota se une a la línea anterior y una
+descripción muy larga se recorta: el formulario te avisa de cada caso.
 
 ### Documentos de FACTUSOL
 
@@ -600,16 +650,22 @@ es una ventana a FACTUSOL: aquí no se cambia nada salvo las acciones concretas
   FACTUSOL.
 - **«Crear pedido»** — crea un pedido de BoHub a partir del documento. Desde un
   presupuesto o pedido de cliente te lleva al alta ya rellenada; desde un
-  albarán o factura lo crea directamente. Si el **cliente FACTUSOL del documento
-  no está vinculado a ninguna empresa del CRM**, se abre **«Vincular empresa»**:
-  busca y elige una empresa que ya exista, o **créala** con los datos de
-  FACTUSOL ya puestos (nombre, CIF, dirección, email…). Al vincularla, el pedido
-  se crea solo. El vínculo queda guardado en la empresa: los siguientes
-  documentos de ese cliente ya no lo piden. No escribe en FACTUSOL.
+  albarán o factura abre primero el **resumen** de lo que se va a crear
+  (empresa, fecha, conceptos con cantidades e importes, total con IVA y el
+  documento de origen) y el pedido **solo se crea al pulsar «Crear pedido»** en
+  ese resumen; **«Cancelar»** no crea nada. Si el **cliente FACTUSOL del
+  documento no está vinculado a ninguna empresa del CRM**, se abre antes
+  **«Vincular empresa»**: busca y elige una empresa que ya exista, o **créala**
+  con los datos de FACTUSOL ya puestos (nombre, CIF, dirección, email…). Al
+  vincularla vuelves al resumen para confirmar. El vínculo queda guardado en la
+  empresa: los siguientes documentos de ese cliente ya no lo piden. No escribe
+  en FACTUSOL.
 - **«Vincular empresa»** (en la fila, cuando el cliente no tiene empresa) — lo
   mismo sin crear el pedido. **No confundir** con **«Vincular a pedido»**, que
   enlaza el documento con un pedido de BoHub que ya existe.
 - **«PDF»** — descarga el documento (o varios en ZIP si seleccionas).
+- **«⋯» → «Guardar como plantilla»** (presupuestos y albaranes) — copia sus
+  líneas a una [plantilla](#plantillas). Solo lee FACTUSOL.
 - **«Ver detalle»** — abre una ventana con las líneas, los cobros y opciones de
   PDF; desde ahí también puedes **crear el albarán/la factura** o **vincular** el
   documento a un pedido existente (**«Vincular a pedido»**, sin tocar FACTUSOL).
@@ -1772,7 +1828,9 @@ Para encargos por teléfono, muestras o reparaciones sin ticket web.
    **1 · Bomedia**, **2 · MQ Europe**, **4 · Lambert** o **5 · Streamtec**.
 3. **Líneas.** Añade artículos buscando por **SKU** o **Descripción** (o
    escríbelos a mano para conceptos como mano de obra), con cantidad y precio.
-   **«+ Añadir línea»** para más.
+   **«+ Añadir línea»** para más. Con **«Cargar plantilla…»** vuelcas las líneas
+   de una [plantilla](#plantillas) (te pregunta si añadirlas o reemplazar las
+   que ya hubiera).
 4. **Envío.** Rellena la dirección. En **«Portes (gastos de envío)»** pon el
    coste de envío (va como línea aparte). Si el envío es a otro destinatario
    (**dropshipping**), usa **«Enviar a → Otra dirección»** y **«Nombre de envío»**:

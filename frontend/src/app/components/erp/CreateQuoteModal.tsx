@@ -13,6 +13,7 @@ import {
   getFactusolCustomerPaymentMethod,
   getFactusolFormasPago,
   getFactusolQuote,
+  getPlantillaLineas,
   saveBlob,
   searchFactusolQuotes,
   updateFactusolQuote,
@@ -28,6 +29,7 @@ import {
   emptyDocumentLine,
   type DocumentLine,
 } from "./DocumentLinesTable";
+import { PlantillaSelector, type PlantillaElegida } from "./PlantillaSelector";
 
 type Mode = "articles" | "duplicate";
 
@@ -82,6 +84,20 @@ function rowsFromQuote(quote: FactusolQuote): DocumentLine[] {
   }));
 }
 
+/** Líneas de una plantilla de documento (forma «proforma») → filas
+ *  editables, con su CODART para que el artículo viaje tal cual. */
+function rowsFromPlantilla(elegida: PlantillaElegida<"proforma">): DocumentLine[] {
+  return elegida.lineas.map((l) => emptyDocumentLine({
+    sku: l.sku ?? l.codart ?? "",
+    ...(l.codart ? { codart: l.codart } : {}),
+    description: l.description,
+    quantity: String(l.quantity),
+    unit_price: String(l.unit_price),
+    discount_pct: String(l.discount_pct ?? 0),
+    iva_pct: String(l.iva_pct),
+  }));
+}
+
 function shippingFilled(s: ShippingForm): boolean {
   return Object.values(s).some((v) => v.trim());
 }
@@ -127,6 +143,7 @@ export function CreateQuoteModal({
   duplicateDirect,
   prefillLines,
   prefillReferencia,
+  plantillaInicialId,
   onCreated,
   onCancel,
 }: {
@@ -158,6 +175,9 @@ export function CreateQuoteModal({
    *  era distinto de la sede; fecha de hoy; botón «Crear proforma». La
    *  pestaña «Duplicar» de «+ Nueva proforma» sigue para elegir plantilla. */
   duplicateDirect?: FactusolQuote | null;
+  /** Alta con las líneas de esta plantilla de documento («Usar en una
+   *  proforma» desde ERP · Plantillas). */
+  plantillaInicialId?: string | null;
   onCreated: (jobId: string) => void;
   onCancel: () => void;
 }) {
@@ -212,6 +232,15 @@ export function CreateQuoteModal({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // Plantillas de documento: el selector (carpetas, buscador, etiquetas) y la
+  // que se cargó, para enseñarla.
+  const [eligiendoPlantilla, setEligiendoPlantilla] = useState(false);
+  const [plantillaUsada, setPlantillaUsada] = useState<string | null>(null);
+  // La de `plantillaInicialId` está llegando: no se ofrece cargar otra (su
+  // respuesta pisaría la elegida).
+  const [cargandoInicial, setCargandoInicial] = useState(
+    Boolean(plantillaInicialId && !editCodpre && !duplicateSource && !duplicateDirect),
+  );
   const { overlayProps, requestClose } = useModalBehaviour({ onClose: onCancel, disabled: submitting });
 
   // Buscador de plantillas: NO filtra por cliente (C-4-fix1).
@@ -362,6 +391,40 @@ export function CreateQuoteModal({
     setPrefilled(true);
   }, [prefilled, editCodpre, duplicateSource, duplicateDirect, prefillLines, prefillReferencia]);
 
+  /** Vuelca las líneas de la plantilla (con sus artículos). La plantilla
+   *  solo aporta las líneas: cliente, serie, fecha y lo demás siguen aquí. */
+  const aplicarPlantilla = useCallback((elegida: PlantillaElegida<"proforma">) => {
+    const rows = rowsFromPlantilla(elegida);
+    setLines(rows.length > 0 ? rows : [emptyDocumentLine()]);
+    setPlantillaUsada(elegida.plantilla.nombre);
+    setMode("articles");
+    setNotice(`Líneas de la plantilla «${elegida.plantilla.nombre}» (${rows.length}).`
+      + (elegida.avisos.length ? ` ${elegida.avisos.join(" ")}` : ""));
+  }, []);
+
+  function onPlantillaElegida(elegida: PlantillaElegida<"proforma">) {
+    setEligiendoPlantilla(false);
+    const escritas = lines.some((l) => l.description.trim() || l.sku.trim());
+    if (escritas && !window.confirm("Se sustituirán las líneas actuales por las de la plantilla. ¿Seguir?")) {
+      return;
+    }
+    setError(null);
+    aplicarPlantilla(elegida);
+  }
+
+  // «Usar en una proforma» desde ERP · Plantillas: el alta se abre con sus líneas.
+  useEffect(() => {
+    if (!plantillaInicialId || editCodpre || duplicateSource || duplicateDirect) return;
+    let alive = true;
+    getPlantillaLineas(plantillaInicialId, "proforma")
+      .then((r) => {
+        if (alive) aplicarPlantilla({ plantilla: r.plantilla, lineas: r.lineas, avisos: r.avisos });
+      })
+      .catch((e) => { if (alive) setError(extractErrorMessage(e, "No se pudo cargar la plantilla.")); })
+      .finally(() => { if (alive) setCargandoInicial(false); });
+    return () => { alive = false; };
+  }, [plantillaInicialId, editCodpre, duplicateSource, duplicateDirect, aplicarPlantilla]);
+
   const linesTotal = useMemo(
     () => lines.reduce((sum, l) => sum + documentLineTotal(l), 0),
     [lines],
@@ -480,7 +543,9 @@ export function CreateQuoteModal({
       lines: lines
         .filter((l) => l.description.trim() && (num(l.quantity) > 0 || isTextLine(l)))
         .map((l) => ({
-          codart: l.sku.trim() || undefined,
+          // El CODART del catálogo o de la plantilla, si se sabe; si no, el
+          // SKU tecleado (el backend lo traduce por EQUART).
+          codart: l.codart || l.sku.trim() || undefined,
           description: l.description.trim(),
           quantity: num(l.quantity),
           unit_price: num(l.unit_price),
@@ -560,6 +625,9 @@ export function CreateQuoteModal({
               <span className="muted small">
                 {" "}· {direct ? "copia de la nº" : "plantilla nº"} {loadedFrom}
               </span>
+            ) : null}
+            {plantillaUsada ? (
+              <span className="muted small"> · plantilla «{plantillaUsada}»</span>
             ) : null}
           </span>
           <button type="button" className="button small secondary"
@@ -850,6 +918,19 @@ export function CreateQuoteModal({
               (mano de obra, reparaciones) escribe la línea a mano y deja el SKU
               vacío. Los portes van en su propio campo, debajo de la tabla.
             </p>
+            {!editing && !direct ? (
+              <div className="erp-contact-channel">
+                <button type="button" className="button small secondary"
+                        disabled={submitting || cargandoInicial}
+                        onClick={() => setEligiendoPlantilla(true)}>
+                  {cargandoInicial ? "Cargando plantilla…" : "Cargar plantilla…"}
+                </button>
+                <span className="muted small">
+                  Las líneas de una plantilla de documento (por carpeta, etiqueta o
+                  buscando una referencia).
+                </span>
+              </div>
+            ) : null}
             {/* Lote 2 · PR-2: la misma tabla de líneas que el pedido manual
                 (DocumentLinesTable), aquí con DTO % e IVA % (F_LPS). */}
             <DocumentLinesTable
@@ -939,6 +1020,14 @@ export function CreateQuoteModal({
           )}
         </div>
       </div>
+      {eligiendoPlantilla ? (
+        <PlantillaSelector
+          destino="proforma"
+          cliente={targetId ? { company_id: targetId, serie } : null}
+          onClose={() => setEligiendoPlantilla(false)}
+          onPick={onPlantillaElegida}
+        />
+      ) : null}
     </div>
   );
 }
