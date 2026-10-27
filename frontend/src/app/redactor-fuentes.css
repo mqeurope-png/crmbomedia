@@ -10,6 +10,21 @@
   gap: 6px;
   margin-right: auto;
 }
+/* La cuenta de lo elegido en el propio botón: se ve aunque las fichas queden
+ * bajo el scroll de la franja. */
+.asistente-fuentes-cuenta {
+  display: inline-block;
+  min-width: 1.5em;
+  margin-left: 4px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--primary, #1d4ed8);
+  color: #fff;
+  font-size: var(--fs-label);
+  font-weight: 600;
+  line-height: 1.5;
+  text-align: center;
+}
 .asistente-franja-material {
   display: flex;
   flex-wrap: wrap;

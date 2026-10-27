@@ -265,3 +265,11 @@
 @media (max-width: 640px) {
   .webs-indice-resultado-imagen { width: 64px; }
 }
+
+/* El pie pegajoso de `.erp-modal` se queda 16 px por encima de su sitio (el
+ * pegado descuenta el relleno del diálogo) y tapaba la última línea del
+ * buscador, justo donde sale el error o el «no hay resultados». Aquí se pega
+ * al borde de verdad. */
+.modal-dialog.erp-modal.soporte-consulta-modal > .modal-actions {
+  bottom: calc(-1 * var(--sp-4));
+}

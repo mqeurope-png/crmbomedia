@@ -89,6 +89,7 @@ roles**: su permiso es la **unión** de lo que permite cada uno.
 | **Cola SAT**: ver | ✅ | ✅ | ✅ | ✅ |
 | Cola SAT: subir etiqueta | ✅ | ✅ | ✅ | ✅ |
 | Cola SAT: preparar / embalar / técnicos (serie, WhiteRIP) | ❌ | ✅ | ✅ | ✅ |
+| Cola SAT: **consulta de soporte** (buscar y leer; no envía nada) | ✅ | ✅ | ✅ | ✅ |
 | Seguimiento (hoja / Drive) | ❌ | ✅ | ❌ | ✅ |
 | Cuadre (descuadres) | ❌ | ✅ | ❌ | ✅ |
 | Respuesta a leads (leads procesados, modo en seco) | ❌ | ❌ | ❌ | ✅ |
@@ -930,6 +931,14 @@ En cada tarjeta:
 **«Añadir pedido a la cola»** — para meter a mano un pedido en el taller por su
 número (p. ej. *BOP-1234*).
 
+**«Consulta de soporte»** — botón de la barra de la cola. Busca en el soporte
+de los fabricantes (hoy, el de FLUX): escribe el modelo y lo que pasa
+(*«Beambox calibrar cámara»*), cambia el idioma si hace falta y pulsa
+**«Buscar»**. **«Leer»** abre el artículo ahí mismo; el título y **«Abrir en su
+web»** llevan al artículo, y de ahí copias el enlace si se lo tienes que pasar a
+alguien. **Es solo consulta: no envía nada** ni lo mete en ningún correo. Si no
+sale nada, prueba con otras palabras, con el modelo o en inglés.
+
 ### Seguimiento
 
 **Menú: «ERP · Seguimiento». Título: «Seguimiento de pedidos».** Es la tabla que
@@ -1660,6 +1669,19 @@ lo que va a pasar. Secciones destacadas:
   factura). **«Probar»** enseña qué enlaces y qué máquinas y consumibles
   saldrían para una web, idioma, interés, texto y máquina del cliente. Ver
   [docs/base-conocimiento.md](base-conocimiento.md).
+  Dos paneles más: **«Soporte de terceros (lista blanca)»**, los centros de
+  soporte de los fabricantes donde buscan «Buscar en soporte» del asistente y
+  la «Consulta de soporte» de la Cola SAT (de partida, FLUX; solo se descarga
+  de ahí). Una fuente nueva entra desactivada: pulsa **«Comprobar»** antes de
+  activarla (te dice si la web da el artículo o llega vacío porque se pinta con
+  JavaScript). Y **«Índice de las webs»**: las páginas, entradas y productos de
+  nuestras webs que puede citar el asistente. Se recorren solas una vez al
+  mes; **«Reindexar ahora»** lo hace ya, en segundo plano (el estado se
+  refresca solo). Las **reglas** dicen qué entra (fuera páginas legales,
+  carrito, repuestos, consumibles, tintas…) y **«Probar»** enseña lo que
+  encontraría el asistente. Los precios son **los de la web**: el asistente
+  puede decir «en la web está a…», nunca ofertar con ellos. Ver
+  [docs/fuentes-externas.md](fuentes-externas.md).
 - **«Asistente de respuesta»** — qué **modelo** redacta cada cosa, por
   separado: el del **primer borrador** (lleva el contexto entero; vacío = el del
   servidor) y el de las **correcciones** («más corto», «en inglés»: trabajan

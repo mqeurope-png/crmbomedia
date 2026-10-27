@@ -602,7 +602,11 @@ describe("AsistenteFranja — material de fuera (soporte y nuestras webs)", () =
     const chips = screen.getByRole("list", { name: "Material elegido para el borrador" });
     expect(chips).toHaveTextContent("Web: beamo");
     expect(chips).toHaveTextContent("Web: HEXA");
+    // La cuenta va en el propio botón: se ve aunque la franja encoja y las
+    // fichas queden bajo su scroll.
+    expect(screen.getByRole("button", { name: /Buscar en las webs/ })).toHaveTextContent(/2$/);
     await user.click(screen.getByRole("button", { name: "Quitar la página «beamo»" }));
+    expect(screen.getByRole("button", { name: /Buscar en las webs/ })).toHaveTextContent(/1$/);
     await user.click(screen.getByRole("button", { name: /Redactar/ }));
     await waitFor(() => expect(api.generarBorradorAsistente).toHaveBeenCalledWith("t-1", {
       alcance: "contacto", instruccion: null, destinatario: "klaus@elbarquito.net", webs: ["w-2"],

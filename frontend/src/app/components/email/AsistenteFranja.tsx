@@ -313,6 +313,17 @@ export function AsistenteFranja({
   // buscadores buscan en ese. Sin borrador, en todos.
   const idiomaCorreo = borrador?.idioma ?? turnos[0]?.idioma ?? null;
   const hayMaterial = camposMaterial(material) !== null;
+  // Lo elegido de fuera se ve SIEMPRE: en el compositor la franja encoge (el
+  // cuerpo no baja de doce líneas) y las fichas pueden quedar bajo su scroll;
+  // por eso los botones llevan la cuenta y, al elegir algo, las fichas se
+  // traen a la vista.
+  const cuentaSoporte = material.soporte || material.sinResultados ? 1 : 0;
+  const cuentaWebs = material.webs.length;
+  const materialRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!hayMaterial) return;
+    materialRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [material, hayMaterial]);
 
   function usarSoporte(r: SoporteResultado) {
     setMaterial((m) => ({
@@ -581,6 +592,7 @@ export function AsistenteFranja({
                   title="Busca el procedimiento en el soporte del fabricante: el borrador lo citará con su enlace"
                 >
                   <LifeBuoy size={11} aria-hidden /> Buscar en soporte
+                  {cuentaSoporte ? <span className="asistente-fuentes-cuenta" aria-hidden>1</span> : null}
                 </button>
                 <button
                   type="button"
@@ -590,6 +602,7 @@ export function AsistenteFranja({
                   title="Busca en nuestras webs páginas y productos para enlazar en el borrador"
                 >
                   <Globe size={11} aria-hidden /> Buscar en las webs
+                  {cuentaWebs ? <span className="asistente-fuentes-cuenta" aria-hidden>{cuentaWebs}</span> : null}
                 </button>
               </span>
               <span className="asistente-franja-formato" role="radiogroup" aria-label="Formato del correo">
@@ -631,13 +644,15 @@ export function AsistenteFranja({
               </button>
             </div>
             {hayMaterial ? (
-              <MaterialChips
-                material={material}
-                bloqueado={ocupado || bloqueada}
-                onQuitarSoporte={() => setMaterial((m) => ({ ...m, soporte: null }))}
-                onQuitarSinResultados={() => setMaterial((m) => ({ ...m, sinResultados: null }))}
-                onQuitarWeb={(id) => setMaterial((m) => ({ ...m, webs: m.webs.filter((w) => w.id !== id) }))}
-              />
+              <div ref={materialRef}>
+                <MaterialChips
+                  material={material}
+                  bloqueado={ocupado || bloqueada}
+                  onQuitarSoporte={() => setMaterial((m) => ({ ...m, soporte: null }))}
+                  onQuitarSinResultados={() => setMaterial((m) => ({ ...m, sinResultados: null }))}
+                  onQuitarWeb={(id) => setMaterial((m) => ({ ...m, webs: m.webs.filter((w) => w.id !== id) }))}
+                />
+              </div>
             ) : null}
           </div>
           {error ? <p className="form-error asistente-franja-error" role="alert">{error}</p> : null}

@@ -380,3 +380,24 @@ en las páginas y entradas de las webs que no son de esos canales y los
   `GET /videos` (`q, idioma, canal, origen, tema, con_ocultos, con_cortos,
   limite`), `POST /videos` (`{url}`), `PATCH /videos/{id}` (`idioma, tema,
   marca, productos, visible, automatico`), `POST /videos/sincronizar`.
+
+## Soporte de terceros e índice de las webs (migración 0148, 27/10/2026)
+
+Dos paneles más en **Configuración ERP → Base de conocimiento**, antes de
+«Probar», cada uno con su API y sus tablas (aparte de `/api/erp/conocimiento`):
+
+- **«Soporte de terceros (lista blanca)»** (`soporte_fuentes`): los centros de
+  soporte de los fabricantes en los que el redactor y la Cola SAT buscan un
+  procedimiento. Arranca con FLUX (la API pública de Zendesk de
+  `support.flux3dp.com`). Solo se descarga de estos dominios; «Comprobar» dice
+  si una fuente sirve contenido o es una cáscara que se pinta con JavaScript.
+  No sustituye a la KB de FLUX de arriba: aquella enlaza la categoría del
+  modelo; esta trae el artículo que la persona elige.
+- **«Índice de las webs»** (`web_indice`): páginas, entradas y productos (sin
+  repuestos ni consumibles) de nuestras webs, una fila por idioma, con
+  `visto_en` / `ido_en` como `kb_catalogo`, para que el redactor cite un trozo
+  con su enlace. Recorrido mensual en worker-web y «Reindexar ahora»; reglas
+  editables de qué entra. Los precios son **precio de la web**: se pueden
+  citar, nunca ofertar.
+
+Todo en [fuentes-externas.md](fuentes-externas.md).
