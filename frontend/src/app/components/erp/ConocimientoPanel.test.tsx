@@ -41,6 +41,25 @@ jest.mock("../../lib/erpApi", () => ({
   updatePalabrasInteres: jest.fn(),
 }));
 
+// La lista blanca del soporte y el índice de las webs van por su propia API.
+jest.mock("../../lib/soporteApi", () => ({
+  listarFuentesSoporte: jest.fn().mockResolvedValue([]),
+  crearFuenteSoporte: jest.fn(),
+  actualizarFuenteSoporte: jest.fn(),
+  comprobarFuenteSoporte: jest.fn(),
+}));
+jest.mock("../../lib/websApi", () => ({
+  estadoWebs: jest.fn().mockResolvedValue({
+    filas: [], total: { pagina: 0, entrada: 0, producto: 0 }, ultima_pasada: null, en_curso: null,
+  }),
+  reindexarWebs: jest.fn(),
+  listarReglasWebs: jest.fn().mockResolvedValue([]),
+  crearReglaWebs: jest.fn(),
+  actualizarReglaWebs: jest.fn(),
+  borrarReglaWebs: jest.fn(),
+  buscarEnWebs: jest.fn(),
+}));
+
 const mockGet = getConocimiento as jest.Mock;
 const mockCreateRuta = createKbRuta as jest.Mock;
 const mockUpdateRuta = updateKbRuta as jest.Mock;
@@ -204,6 +223,14 @@ describe("ConocimientoPanel (Configuración ERP → Base de conocimiento)", () =
     expect(screen.getByText(/2 desaparecidos/)).toBeInTheDocument();
     expect(screen.getByLabelText("Palabras de Beambox II")).toHaveValue("beambox ii, beambox 2");
     expect(screen.getByLabelText("Soporte propio fluxlasers")).toBeChecked();
+  });
+
+  it("monta la lista blanca del soporte de terceros y el índice de las webs, cada uno con su API", async () => {
+    render(<ConocimientoPanel canEdit />);
+    expect(await screen.findByRole("heading", { name: "Soporte de terceros (lista blanca)" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Índice de las webs" })).toBeInTheDocument();
+    expect(await screen.findByText("La lista está vacía: no se puede buscar en ningún soporte.")).toBeInTheDocument();
+    expect(await screen.findByText(/El índice está vacío/)).toBeInTheDocument();
   });
 
   it("añade una ruta de soporte y pinta lo que devuelve el servidor", async () => {

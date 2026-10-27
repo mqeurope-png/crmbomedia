@@ -10,6 +10,7 @@ import type { Editor as TinyMCEEditor } from "tinymce";
 import { getStoredToken } from "../../lib/api";
 import { miniaturaYoutube } from "../../lib/miniaturaYoutube";
 import { EDITOR_INVALID_ELEMENTS } from "./editorConfig";
+import { abrirDialogoImagenUrl } from "./imagenPorUrl";
 
 // Self-host every TinyMCE asset — never the cloud build (no API key,
 // no external CDN, works offline / behind the VPN). The static imports
@@ -265,7 +266,7 @@ export const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
           "bold italic underline strikethrough | forecolor backcolor | " +
           "alignleft aligncenter alignright alignjustify | " +
           "bullist numlist outdent indent | " +
-          "link insertimage insertvideo table emoticons | " +
+          "link insertimage insertimageurl insertvideo table emoticons | " +
           "removeformat code fullscreen | help",
         // Built-in draft autosave: writes to localStorage on a timer
         // so a refresh / accidental close doesn't lose the email. The
@@ -334,8 +335,8 @@ export const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
         setup: (editor) => {
           // Imagen: skip the modal entirely — file picker → upload →
           // image inserted. Drag-drop and clipboard paste keep working
-          // via the editor's own automatic_uploads path, so URL-based
-          // inserts (rare) are still possible from the Code view.
+          // via the editor's own automatic_uploads path. Una imagen por su
+          // enlace (sin subirla) va por «Imagen por URL», justo debajo.
           editor.ui.registry.addButton("insertimage", {
             text: "Imagen",
             tooltip: "Insertar imagen desde tu PC",
@@ -362,6 +363,18 @@ export const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
               };
               input.click();
             },
+          });
+
+          // Imagen por URL: el enlace va en el <img> tal cual (enlazada en
+          // caliente, sin subirla a ningún sitio), pero solo después de
+          // comprobarla en el backend (HTTPS, que sea una imagen, que no
+          // apunte a la red interna, cuánto pesa) y de verla en el diálogo.
+          // La lógica está en `imagenPorUrl.ts`, que se prueba sin TinyMCE.
+          editor.ui.registry.addButton("insertimageurl", {
+            text: "Imagen por URL",
+            tooltip: "Insertar una imagen por su enlace (https), sin subirla",
+            icon: "upload-from-link",
+            onAction: () => abrirDialogoImagenUrl(editor),
           });
 
           // Video: optional preview image. When the operator skips it,

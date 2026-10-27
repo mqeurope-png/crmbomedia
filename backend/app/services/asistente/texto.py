@@ -452,3 +452,145 @@ def empalmar(html_actual: str, seleccion_html: str, fragmento_html: str) -> str 
     if not sel or sel not in (html_actual or ""):
         return None
     return html_actual.replace(sel, fragmento_html, 1)
+
+
+# --- las imágenes del editor en una corrección ----------------------------------------------
+#
+# El borrador es HTML sencillo SIN imágenes (`ETIQUETAS_BORRADOR`): lo que
+# devuelve el modelo pasa por `limpiar_html`, y un `<img>` desaparece. Pero en
+# el editor sí puede haber imágenes (la que Bart pega por URL, la que sube desde
+# el PC), y el compositor pone la corrección («más corto») sin preguntar: la
+# imagen se perdía en silencio. Ahora, al mandar el editor al modelo, cada
+# `<img>` se cambia por un marcador estable («[IMAGEN 1]») que el modelo tiene
+# que conservar, y al volver se pone otra vez la etiqueta ORIGINAL en su sitio
+# (la `src` tal cual; solo https y atributos seguros). Si el modelo quitó un
+# marcador, la imagen vuelve al final y se avisa: nunca se pierde en silencio.
+
+#: Cómo se ve una imagen en el texto que lee el modelo.
+MARCA_IMAGEN = "[IMAGEN {n}]"
+_IMG_RE = re.compile(r"<img\b[^>]*>", re.IGNORECASE)
+#: El marcador de vuelta. Se acepta traducido o con otra caja («[Image 2]»,
+#: «[BILD 2]»): una corrección «en inglés» puede traducirlo aunque se le diga
+#: que no, y la imagen no debe perderse por eso.
+_MARCA_IMAGEN_RE = re.compile(
+    r"\[\s*(?:imagen|image|imagem|immagine|bild|afbeelding|img)\s*(\d{1,3})\s*\]", re.IGNORECASE)
+#: Los atributos de un `<img>` que vuelven (los mismos que admite el envío,
+#: `html_sanitizer`, sin estilos ni clases).
+_ATRIBUTOS_IMG = ["src", "alt", "width", "height", "title"]
+
+
+@dataclass
+class ImagenesEditor:
+    """Las imágenes del editor de un turno, apartadas para el modelo.
+
+    - `texto` / `seleccion`: el editor (y la selección) para el prompt, ya
+      limpios (`limpiar_html`), con cada imagen cambiada por su marcador.
+    - `limpio`: el editor limpio SIN marcadores (lo de siempre, para los turnos
+      que no admiten imágenes: un correo compuesto rehecho desde el texto).
+    - `etiquetas`: número → la etiqueta `<img>` saneada que vuelve en su sitio.
+    - `en_texto` / `en_seleccion`: qué marcadores hay en cada uno (los que
+      tienen que volver).
+    - `descartadas`: imágenes que no se pueden conservar (no son https)."""
+
+    texto: str
+    seleccion: str
+    limpio: str
+    etiquetas: dict[int, str]
+    en_texto: list[int]
+    en_seleccion: list[int]
+    descartadas: int = 0
+
+    @property
+    def marcadores(self) -> list[str]:
+        return [MARCA_IMAGEN.format(n=n) for n in sorted(self.etiquetas)]
+
+
+def img_segura(etiqueta: str) -> str | None:
+    """La etiqueta `<img>` saneada (solo `src` https y los atributos de
+    `_ATRIBUTOS_IMG`), o None si no tiene una `src` https: una imagen en
+    http:// la bloquean los clientes de correo, y `data:`/`cid:`/rutas
+    relativas no son de fiar fuera del editor."""
+    limpio = bleach.clean(etiqueta, tags=["img"], attributes={"img": _ATRIBUTOS_IMG},
+                          protocols=["https"], strip=True).strip()
+    m = re.search(r"""\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)')""", limpio, re.IGNORECASE)
+    src = html_mod.unescape((m.group(1) or m.group(2)) if m else "").strip()
+    if not src.lower().startswith("https://") or not limpio.lower().startswith("<img"):
+        return None
+    return limpio
+
+
+def apartar_imagenes(html: str | None, seleccion_html: str | None = None,
+                     ) -> ImagenesEditor | None:
+    """Las imágenes de `html` (el editor sin la firma) y de la selección,
+    cambiadas por marcadores. None si no hay ninguna `<img>`: entonces el
+    turno es exactamente el de antes. La misma imagen (misma etiqueta
+    saneada) lleva el mismo número en el texto y en la selección."""
+    crudo = html or ""
+    if not _IMG_RE.search(crudo) and not _IMG_RE.search(seleccion_html or ""):
+        return None
+    etiquetas: dict[int, str] = {}
+    por_etiqueta: dict[str, int] = {}
+    descartadas = 0
+
+    def _marcar(fragmento: str, vistos: list[int]) -> str:
+        def _cambiar(m: re.Match[str]) -> str:
+            nonlocal descartadas
+            segura = img_segura(m.group(0))
+            if segura is None:
+                descartadas += 1
+                return ""
+            n = por_etiqueta.get(segura)
+            if n is None:
+                n = len(etiquetas) + 1
+                por_etiqueta[segura] = n
+                etiquetas[n] = segura
+            if n not in vistos:
+                vistos.append(n)
+            return MARCA_IMAGEN.format(n=n)
+
+        return _IMG_RE.sub(_cambiar, fragmento)
+
+    en_texto: list[int] = []
+    texto = limpiar_html(_marcar(crudo, en_texto))
+    sueltas = descartadas
+    en_seleccion: list[int] = []
+    seleccion = limpiar_html(_marcar(seleccion_html, en_seleccion)) if seleccion_html else ""
+    # Las de la selección ya se contaron en el texto (la selección está dentro).
+    descartadas = sueltas
+    return ImagenesEditor(texto=texto, seleccion=seleccion, limpio=limpiar_html(crudo),
+                          etiquetas=etiquetas, en_texto=en_texto, en_seleccion=en_seleccion,
+                          descartadas=descartadas)
+
+
+def restaurar_imagenes(html: str, etiquetas: dict[int, str], esperadas: Iterable[int], *,
+                       en_bloque: bool = True) -> tuple[str, list[int]]:
+    """El HTML que devolvió el modelo con cada marcador cambiado por su
+    imagen. Un marcador que no estaba (inventado, o de una imagen que no es
+    de este trozo) se quita; las imágenes `esperadas` cuyo marcador ya no
+    está vuelven al final (en su párrafo si `en_bloque`; sueltas si el turno
+    es un fragmento que va dentro de un párrafo). Devuelve el HTML y los
+    números de las que volvieron al final (para avisar)."""
+    esperadas = [n for n in dict.fromkeys(esperadas) if n in etiquetas]
+    presentes: set[int] = set()
+
+    def _cambiar(m: re.Match[str]) -> str:
+        n = int(m.group(1))
+        if n in esperadas:
+            presentes.add(n)
+            return etiquetas[n]
+        return ""
+
+    salida = _MARCA_IMAGEN_RE.sub(_cambiar, html or "")
+    faltan = [n for n in esperadas if n not in presentes]
+    for n in faltan:
+        salida += f"<p>{etiquetas[n]}</p>" if en_bloque else etiquetas[n]
+    salida = _PARRAFO_VACIO_RE.sub("", salida)
+    return salida.strip(), faltan
+
+
+def sin_marcas_de_imagen(texto: str) -> str:
+    """El texto sin los marcadores de imagen (lo que quede de ellos en un
+    texto plano), sin dejar líneas en blanco de más."""
+    salida = _MARCA_IMAGEN_RE.sub("", texto or "")
+    salida = re.sub(r"[ \t]+\n", "\n", salida)
+    return re.sub(r"\n{3,}", "\n\n", salida).strip()

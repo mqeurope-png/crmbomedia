@@ -59,7 +59,7 @@ from app.models.ia import (
 )
 from app.services import empresas_grupo as eg
 from app.services import llm
-from app.services.asistente import borradores
+from app.services.asistente import borradores, material_fuera
 from app.services.asistente import contexto as ctx_mod
 from app.services.asistente.config import configuracion as config_asistente
 from app.services.asistente.config import estimar_tokens
@@ -68,7 +68,9 @@ from app.services.asistente.historico import ajustar_al_presupuesto
 from app.services.asistente.texto import (
     NIVEL_CORREO,
     NIVEL_DUDOSO,
+    ImagenesEditor,
     a_html,
+    apartar_imagenes,
     cuerpo_a_html,
     empalmar,
     encajar_fragmento,
@@ -78,7 +80,9 @@ from app.services.asistente.texto import (
     limpiar_html,
     parece_html,
     recortar,
+    restaurar_imagenes,
     sin_firma,
+    sin_marcas_de_imagen,
 )
 from app.services.conocimiento import catalogo as catalogo_kb
 from app.services.correo_compuesto import bloques as bq
@@ -746,18 +750,21 @@ def peticion_inicial(instruccion: str | None, *, sin_hilo: bool) -> str:
 def peticion_correccion(
     *, texto_actual: str, asunto_actual: str | None, instruccion: str,
     seleccion: str | None = None, sobre_editor: bool = False,
+    imagenes: list[str] | None = None,
 ) -> str:
     """La parte que cambia de un turno de corrección: el texto actual (el
     borrador, o lo que hay ahora mismo en el editor, con los retoques de la
     persona) y lo que hay que cambiarle. Con `seleccion`, solo ese fragmento se
     reescribe y se devuelve solo. El contexto NO se repite aquí: va en el
-    bloque cacheado."""
+    bloque cacheado. `imagenes`: los marcadores de las imágenes del editor
+    («[IMAGEN 1]»); SOLO si los hay se le pide al modelo que los conserve (sin
+    imágenes, la petición es la de siempre)."""
     titulo = (
         "TEXTO ACTUAL DEL EDITOR (tal y como está ahora, con los cambios de quien envía; es lo "
         "que hay que corregir)" if sobre_editor else "BORRADOR ACTUAL"
     )
     if seleccion:
-        return (
+        peticion = (
             f"{titulo} (asunto: {asunto_actual or '—'}); es el contexto, NO lo reescribas "
             f"entero:\n{texto_actual}\n\n"
             f"SELECCIÓN (el único fragmento que tienes que reescribir):\n{seleccion}\n\n"
@@ -767,13 +774,22 @@ def peticion_correccion(
             "era texto suelto dentro de un párrafo, texto suelto sin <p>), listo para "
             "sustituir a la selección; el resto del correo no se toca. «asunto»: el actual."
         )
-    return (
-        f"{titulo} (asunto: {asunto_actual or '—'}):\n{texto_actual}\n\n"
-        f"CORRECCIÓN DE QUIEN ENVÍA: «{instruccion}»\n\n"
-        "Reescribe el texto aplicando SOLO esa corrección y conservando todo lo demás "
-        "(hechos, enlaces, formato, idioma salvo que la corrección lo cambie). Devuelve el JSON "
-        "completo con el correo entero, no solo el cambio."
-    )
+    else:
+        peticion = (
+            f"{titulo} (asunto: {asunto_actual or '—'}):\n{texto_actual}\n\n"
+            f"CORRECCIÓN DE QUIEN ENVÍA: «{instruccion}»\n\n"
+            "Reescribe el texto aplicando SOLO esa corrección y conservando todo lo demás "
+            "(hechos, enlaces, formato, idioma salvo que la corrección lo cambie). Devuelve el "
+            "JSON completo con el correo entero, no solo el cambio."
+        )
+    if imagenes:
+        peticion += (
+            f"\n\nIMÁGENES: el texto lleva imágenes, marcadas como {', '.join(imagenes)}. "
+            "Conserva cada marcador EXACTAMENTE así (sin traducirlo ni describirlo) y en su "
+            "sitio, en su propio párrafo si lo tenía; no los quites aunque acortes: al volver se "
+            "cambian por las imágenes."
+        )
+    return peticion
 
 
 def texto_del_editor(texto_actual_html: str | None, seleccion_html: str | None) -> tuple[str, str]:
@@ -952,10 +968,28 @@ def _json(raw: str | None) -> dict[str, Any]:
     return datos if isinstance(datos, dict) else {}
 
 
+def _avisos_imagenes(faltan: list[int], descartadas: int) -> str:
+    """Lo que la franja dice de las imágenes del editor que no volvieron a
+    su sitio (para que nadie las pierda sin enterarse)."""
+    partes: list[str] = []
+    marcas = ", ".join(f"[IMAGEN {n}]" for n in faltan)
+    if len(faltan) == 1:
+        partes.append(f"La IA no conservó la imagen {marcas} del editor en su sitio: va al "
+                      "final del correo; muévela o bórrala si sobra.")
+    elif faltan:
+        partes.append(f"La IA no conservó las imágenes {marcas} del editor en su sitio: van al "
+                      "final del correo; muévelas o bórralas si sobran.")
+    if descartadas:
+        partes.append(
+            f"{descartadas} imagen(es) del editor no son https y no se han conservado: vuelve a "
+            "ponerlas con un enlace https.")
+    return " ".join(partes)
+
+
 def _rellenar(
     b: BorradorAsistente, data: dict[str, Any], uso: llm.Uso | None, modelo_pedido: str, *,
     enlaces: list[str], editor_html: str | None = None, seleccion_html: str | None = None,
-    sobre_editor: bool = False,
+    sobre_editor: bool = False, imagenes: ImagenesEditor | None = None,
 ) -> None:
     """Lo que devolvió el modelo, al borrador: el cuerpo en HTML sencillo
     (limpiado; enlaces solo de `enlaces`) y su texto plano. En modo selección
@@ -963,8 +997,19 @@ def _rellenar(
     (`editor_html`, tal cual, sin tocar el resto) si la selección aparece en
     él; si no, el turno guarda el fragmento y el compositor lo sustituye en el
     editor. `sobre_editor`: la corrección partió de lo que había en el editor
-    (el compositor no pregunta antes de ponerlo)."""
+    (el compositor no pregunta antes de ponerlo). `imagenes`: las del editor,
+    que se mandaron como marcadores y vuelven aquí a su sitio."""
     html, plano = cuerpo_a_html(data["cuerpo"], enlaces)
+    if imagenes is not None:
+        faltan: list[int] = []
+        if html and imagenes.etiquetas:
+            esperadas = imagenes.en_seleccion if seleccion_html else imagenes.en_texto
+            html, faltan = restaurar_imagenes(html, imagenes.etiquetas, esperadas,
+                                              en_bloque=not seleccion_html)
+            plano = sin_marcas_de_imagen(html_a_texto(html))
+        nota = _avisos_imagenes(faltan, imagenes.descartadas if html else 0)
+        if nota:
+            data["aviso"] = f"{data['aviso']} {nota}".strip() if data["aviso"] else nota
     contexto = _json(b.contexto_json)
     contexto.pop("seleccion", None)
     contexto.pop("sobre_editor", None)
@@ -1297,15 +1342,27 @@ def _interpretar(
     asunto_defecto: str | None, idioma_defecto: str | None, nombre_usuario: str | None,
     nombre_destinatario: str | None, enlaces: list[str], editor_html: str | None = None,
     seleccion_html: str | None = None, sobre_editor: bool = False,
-    empresa_documento: str | None = None,
+    empresa_documento: str | None = None, imagenes: ImagenesEditor | None = None,
 ) -> None:
     """Lo que devolvió el modelo, al turno: un correo compuesto (estructura) o
     uno normal (cuerpo), según el formato del turno. La IA nunca devuelve el
     HTML de un compuesto: si lo intenta, se descarta y se registra. En los
     dos, la guardia de la marca: «Bomedia» sale cambiada por la empresa del
-    correo (`empresa_documento` o la del idioma) y la franja enseña la frase."""
+    correo (`empresa_documento` o la del idioma) y la franja enseña la frase.
+    `imagenes`: las del editor (marcadores en el prompt): en un correo normal
+    vuelven a su sitio; un compuesto no las lleva, y se dice."""
     data_json = _json_de(raw)
     if modo != ia_compuesto.MODO_NORMAL and _es_compuesta(data_json):
+        if imagenes is not None and (imagenes.etiquetas or imagenes.descartadas):
+            # Las imágenes de un compuesto son las del índice de las webs: las
+            # del editor no pasan, y la persona tiene que saberlo.
+            n = len(imagenes.etiquetas) + imagenes.descartadas
+            que = "la imagen" if n == 1 else f"las {n} imágenes"
+            nota = (f"El correo compuesto no lleva {que} que había en el editor: si hace falta, "
+                    "pásalo a texto o añádela al correo después.")
+            data_json = {**(data_json or {}),
+                         "aviso": f"{str((data_json or {}).get('aviso') or '').strip()} {nota}"
+                         .strip()}
         _rellenar_compuesto(session, b, data_json or {}, uso, modelo, refs=refs,
                             idioma=idioma_defecto or "es", base=base,
                             nombre_usuario=nombre_usuario,
@@ -1338,7 +1395,7 @@ def _interpretar(
         # La guardia del cuerpo lo vació: no hay frases que releer en el cuerpo.
         cambios = [c for c in cambios if c.campo == "asunto"]
     _rellenar(b, data, uso, modelo, enlaces=enlaces, editor_html=editor_html,
-              seleccion_html=seleccion_html, sobre_editor=sobre_editor)
+              seleccion_html=seleccion_html, sobre_editor=sobre_editor, imagenes=imagenes)
     _anotar_bomedia(session, b, cambios, empresa=empresa)
 
 
@@ -1351,22 +1408,129 @@ def _modelos(cfg: dict[str, Any], settings: Any) -> tuple[str, str]:
 
 
 def _llamar(settings: Any, *, modelo: str, contexto_texto: str, peticion_texto: str,
-            cfg: dict[str, Any], modelo_correccion: str) -> str:
+            cfg: dict[str, Any], modelo_correccion: str, sistema: str = PROMPT_SISTEMA) -> str:
     """Una llamada de un turno. El contexto va a la caché solo si el turno va
     con el modelo de las correcciones, que es el que lo leerá en los turnos
     siguientes: la caché es de cada modelo, así que la que escribe un primer
     borrador con otro modelo no la lee nadie (12/10/2026: «0 leídos, 6.446
-    escritos» en la primera corrección)."""
+    escritos» en la primera corrección). `sistema`: el de siempre, salvo en un
+    turno con material de fuera (sus reglas van detrás)."""
     parametros = parametros_de_llamada(
         modelo, pensamiento_extendido=bool(cfg.get("pensamiento_extendido")))
     # `max_tokens` es lo que ocupa la respuesta: `_invoke_claude` le suma el
     # sitio para pensar si el modelo va a pensar (12/10/2026, «Con fichas»).
     return llm._invoke_claude(
-        api_key=settings.anthropic_api_key, model=modelo, system_prompt=PROMPT_SISTEMA,
+        api_key=settings.anthropic_api_key, model=modelo, system_prompt=sistema,
         user_prompt=mensaje_usuario(contexto_texto, peticion_texto,
                                     cachear=modelo == modelo_correccion),
         max_tokens=MAX_TOKENS_RESPUESTA, parametros=parametros or None,
     )
+
+
+def _con_marcadores(actual: str, seleccion: str, imagenes: ImagenesEditor | None,
+                    ) -> tuple[str, str, list[str] | None]:
+    """`(texto, selección, marcadores)` para la petición de una corrección:
+    con imágenes en el editor, las versiones con marcadores; sin ellas, el
+    texto y la selección de siempre y ningún marcador (la petición no cambia
+    ni una coma)."""
+    if imagenes is None or not imagenes.etiquetas:
+        return actual, seleccion, None
+    return imagenes.texto, imagenes.seleccion if seleccion else "", imagenes.marcadores
+
+
+def _enlaces_material_en_refs(refs: ia_compuesto.Referencias,
+                              material: material_fuera.Material | None) -> None:
+    """Las URL del material, permitidas también en un correo compuesto (un
+    enlace del texto o de un botón). Van detrás de las de la lista ENLACES,
+    sin cambiar su numeración. Sin material, nada."""
+    if material is None:
+        return
+    ya = set(refs.enlaces.values())
+    numeros = [int(r[1:]) for r in refs.enlaces if r[1:].isdigit()]
+    siguiente = max(numeros, default=0) + 1
+    for url in material.urls:
+        if url not in ya and bq.url_valida(url):
+            refs.enlaces[f"L{siguiente}"] = url
+            ya.add(url)
+            siguiente += 1
+
+
+def _con_aviso(b: BorradorAsistente, nota: str) -> None:
+    b.aviso = f"{b.aviso} {nota}".strip() if b.aviso else nota
+
+
+def _enlace_soporte_en_compuesto(session: Session, b: BorradorAsistente, url: str) -> bool:
+    """La garantía del enlace en un correo compuesto: un bloque de texto al
+    final con el enlace, y el correo se vuelve a generar (HTML y texto) con él.
+    False si no hay estructura o se quedó sin bloques (la guardia la vació)."""
+    estructura = estructura_de(b)
+    if not estructura or not estructura.get("bloques"):
+        return False
+    parrafo = material_fuera.parrafo_enlace(url, estructura.get("idioma") or b.idioma)
+    bloques = [*estructura["bloques"],
+               {"id": bq.nuevo_id(), "tipo": bq.TIPO_TEXTO, "html": bq.limpiar_texto_rico(parrafo)}]
+    estructura = {**estructura, "bloques": bloques}
+    correo = generador_correo.generar(estructura, datos_compuesto.resolver(session, estructura),
+                                      asunto=b.asunto)
+    b.html, b.texto = correo.html, correo.texto
+    b.estructura_json = json.dumps(estructura, ensure_ascii=False)
+    return True
+
+
+def _aplicar_material(session: Session, b: BorradorAsistente,
+                      material: material_fuera.Material | None) -> None:
+    """Lo que el turno hizo con el material de fuera, después de interpretar
+    al modelo (las guardias del cuerpo y de la marca ya pasaron):
+
+    - La garantía del enlace: si usó un artículo de soporte y su URL no está
+      en el cuerpo, se añade al final un párrafo con el enlace, en el idioma
+      del correo (en un compuesto, un bloque de texto). No depende de que el
+      modelo obedezca: el procedimiento se cita, y quien lo lee tiene que poder
+      ir al artículo.
+    - «No hay procedimiento» y el borrador trae pasos: aviso en la franja.
+    - Lo que entró, en `contexto_json["material"]` («Lo que ha usado»). Cada
+      turno empieza limpio: el de una corrección sin material no hereda el
+      del turno anterior.
+
+    Sin material (`None`) no toca el borrador: solo quita, si lo hay, el apunte
+    heredado del turno anterior."""
+    contexto = _json(b.contexto_json)
+    if material is None:
+        if material_fuera.CLAVE_CONTEXTO in contexto:
+            contexto.pop(material_fuera.CLAVE_CONTEXTO, None)
+            b.contexto_json = json.dumps(contexto, ensure_ascii=False, default=str)
+        return
+    resumen = dict(material.resumen)
+    compuesto = b.modo == ia_compuesto.MODO_COMPUESTO
+    if material.soporte_url and b.html and material.soporte_url not in enlaces_de(b.html):
+        seleccion = contexto.get("seleccion")
+        if compuesto:
+            anadido = _enlace_soporte_en_compuesto(session, b, material.soporte_url)
+        elif isinstance(seleccion, dict):
+            # Un turno sobre una selección: el compositor pone el fragmento en
+            # la selección (`fragmento_html`), y un párrafo de más ahí partiría
+            # el texto. Se avisa con el enlace, para ponerlo a mano.
+            anadido = False
+            _con_aviso(b, "El fragmento no lleva el enlace al artículo de soporte: ponlo en el "
+                          f"correo ({material.soporte_url}).")
+        else:
+            b.html = f"{b.html}{material_fuera.parrafo_enlace(material.soporte_url, b.idioma)}"
+            b.texto = html_a_texto(b.html)
+            anadido = True
+        if anadido:
+            resumen["enlace_anadido"] = True
+            _con_aviso(b, material_fuera.AVISO_ENLACE_ANADIDO)
+    if material.sin_resultados and b.html:
+        texto = (ia_compuesto.texto_libre(estructura_de(b) or {}) if compuesto
+                 else html_a_texto(b.html))
+        if material_fuera.trae_pasos(None if compuesto else b.html, texto):
+            resumen["pasos_sin_procedimiento"] = True
+            _con_aviso(b, material_fuera.AVISO_PASOS_SIN_PROCEDIMIENTO)
+    for nota in material.avisos:
+        _con_aviso(b, nota)
+    contexto = _json(b.contexto_json)
+    contexto[material_fuera.CLAVE_CONTEXTO] = resumen
+    b.contexto_json = json.dumps(contexto, ensure_ascii=False, default=str)
 
 
 def _cerrar_regenerado(session: Session, regenerar_de: str | None,
@@ -1395,7 +1559,7 @@ def generar(
     regenerar_de: str | None = None, ahora: datetime | None = None,
     texto_actual_html: str | None = None, seleccion_html: str | None = None,
     formato: str = ia_compuesto.FORMATO_AUTO, estructura_actual: dict[str, Any] | None = None,
-    oferta_id: str | None = None,
+    oferta_id: str | None = None, material: material_fuera.Pedido | None = None,
 ) -> BorradorAsistente:
     """El primer turno: monta el contexto, pide el borrador (si hay con qué),
     lo guarda con su coste y lo devuelve (ya en la sesión, sin commit). Sin
@@ -1409,18 +1573,25 @@ def generar(
     precios del catálogo). `formato` (el interruptor de la franja: `auto`,
     `normal`, `compuesto`) y la instrucción deciden si el turno es un correo
     normal o uno compuesto; con `estructura_actual` (un compuesto en la vista
-    previa) el turno 0 es una corrección de ESE compuesto."""
+    previa) el turno 0 es una corrección de ESE compuesto. `material`: lo que
+    la persona eligió de fuera (artículo de soporte, páginas de nuestras webs,
+    «no hay nada en el soporte»); va en la petición del turno y, si no se puede
+    leer, `material_fuera.MaterialNoDisponible` (no se redacta sin él)."""
     settings = get_settings()
     if not settings.anthropic_api_key:
         raise llm.LLMNotConfiguredError("La IA no está configurada (ANTHROPIC_API_KEY).")
     instruccion = (instruccion or "").strip()[:MAX_INSTRUCCION] or None
     editor_html = sin_firma(texto_actual_html).strip()
     actual, seleccion = texto_del_editor(texto_actual_html, seleccion_html)
+    # Las imágenes del editor, como marcadores, para que la corrección no las
+    # pierda (None si no hay ninguna: el turno es el de siempre).
+    imagenes = apartar_imagenes(editor_html, seleccion_html) if actual else None
     base = bq.normalizar(estructura_actual) if estructura_actual else None
     if base is not None and bq.vacia(base):
         base = None
     if base is not None:
         actual, seleccion, editor_html = "", "", ""
+        imagenes = None
     if (actual or base is not None) and not instruccion:
         raise ValueError(
             "Escribe qué quieres cambiar del texto que hay en el editor («más corto», «más "
@@ -1441,6 +1612,12 @@ def generar(
         session, thread=thread, usuario=usuario, alcance=alcance, destinatario=destinatario,
         contacto=contacto, instruccion=instruccion, ahora=ahora, oferta_id=oferta_id,
     )
+    # Lo que la persona eligió de fuera, leído ANTES de llamar al modelo: si no
+    # se puede leer, error y sin borrador (nunca un borrador sin el material).
+    mat = material_fuera.preparar(
+        session, material, idioma=ctx.idioma,
+        consulta=instruccion or (ctx.ultimo_del_cliente.texto[:500]
+                                 if ctx.ultimo_del_cliente else None))
     cfg = config_asistente(session)
     modelo_borrador, modelo_correccion = _modelos(cfg, settings)
     modo_actual = (ia_compuesto.MODO_COMPUESTO if base is not None
@@ -1448,6 +1625,7 @@ def generar(
     modo = ia_compuesto.modo_del_turno(formato=formato, instruccion=instruccion,
                                        modo_actual=modo_actual)
     refs = _referencias_turno0(session, ctx, instruccion, base)
+    _enlaces_material_en_refs(refs, mat)
     if modo != ia_compuesto.MODO_NORMAL:
         anadir_medios(session, refs, instruccion=instruccion, idioma=ctx.idioma,
                       intereses=ctx.intereses, sitio=ctx.sitio)
@@ -1473,20 +1651,29 @@ def generar(
     elif actual:
         # Hay texto en el editor: la IA corrige ESO (regla del 11/10/2026), con
         # el modelo de las correcciones; el contexto se monta igual, para que
-        # los turnos siguientes lo reutilicen de caché.
+        # los turnos siguientes lo reutilicen de caché. Las imágenes del editor
+        # van como marcadores y vuelven a su sitio al interpretar la respuesta.
         modelo, proposito = modelo_correccion, PROPOSITO_CORRECCION
+        texto_prompt, seleccion_prompt, marcadores = _con_marcadores(actual, seleccion, imagenes)
         peticion_texto = peticion_correccion(
-            texto_actual=actual, asunto_actual=ctx.asunto_respuesta, instruccion=instruccion or "",
-            seleccion=seleccion or None, sobre_editor=True)
+            texto_actual=texto_prompt, asunto_actual=ctx.asunto_respuesta,
+            instruccion=instruccion or "", seleccion=seleccion_prompt or None, sobre_editor=True,
+            imagenes=marcadores)
     else:
         modelo, proposito = modelo_borrador, PROPOSITO_ASISTENTE
         peticion_texto = cabecera + peticion_inicial(instruccion, sin_hilo=thread is None)
+    # El material de fuera va en la petición (el contexto se congela con el
+    # turno 0) y sus reglas, detrás del prompt de sistema; sin material, los
+    # dos son los de siempre.
+    if mat is not None:
+        peticion_texto = mat.peticion + peticion_texto
+    sistema = material_fuera.sistema(PROMPT_SISTEMA, mat)
     # El presupuesto de tokens de entrada: se recorta por abajo (empresa y
     # correos viejos, lo más antiguo primero) hasta que el prompt cabe. El
     # hilo y el expediente no se tocan.
     ctx.tokens_estimados = ajustar_al_presupuesto(
         ctx, presupuesto=ctx.presupuesto_tokens,
-        medir=lambda c: (estimar_tokens(PROMPT_SISTEMA) + estimar_tokens(bloque_contexto(c))
+        medir=lambda c: (estimar_tokens(sistema) + estimar_tokens(bloque_contexto(c))
                          + estimar_tokens(peticion_texto)),
     )
     contexto_texto = bloque_contexto(ctx)
@@ -1506,7 +1693,9 @@ def generar(
         usuario_id=usuario.id, idioma=ctx.idioma, modelo=modelo[:80],
         destinatario=ctx.destinatario, remitente=ctx.usuario.get("remitente"),
         asunto=ctx.asunto_respuesta or None, texto="",
-        pendiente_json="[]", enlaces_json=json.dumps(ctx.enlaces_lista(), ensure_ascii=False),
+        pendiente_json="[]",
+        enlaces_json=material_fuera.con_enlaces(
+            json.dumps(ctx.enlaces_lista(), ensure_ascii=False), mat),
         contexto_json=json.dumps(resumen, ensure_ascii=False, default=str),
         alcance=alcance, mensajes_hilo=len(ctx.mensajes),
         mensajes_historico=len(ctx.historico) + sum(
@@ -1530,7 +1719,7 @@ def generar(
     try:
         raw = _llamar(settings, modelo=modelo, contexto_texto=contexto_texto,
                       peticion_texto=peticion_texto, cfg=cfg,
-                      modelo_correccion=modelo_correccion)
+                      modelo_correccion=modelo_correccion, sistema=sistema)
     except llm.LLMError as exc:
         uso = llm.tomar_ultimo_uso()
         registrar_llamada(
@@ -1543,8 +1732,11 @@ def generar(
         raise
     uso = llm.tomar_ultimo_uso()
     # Enlaces que pueden ir en el cuerpo: los de la base de conocimiento y el
-    # catálogo, más los que la persona ya tenía puestos en su texto.
+    # catálogo, más los que la persona ya tenía puestos en su texto (y los del
+    # material de fuera, si el turno lo lleva).
     enlaces = [e["url"] for e in ctx.enlaces_lista()] + enlaces_de(actual) + enlaces_compuesto
+    if mat is not None:
+        enlaces += mat.urls
     _interpretar(
         session, borrador, raw, uso, modelo, modo=modo,
         forzado=formato in (ia_compuesto.MODO_NORMAL, ia_compuesto.MODO_COMPUESTO), refs=refs,
@@ -1553,7 +1745,9 @@ def generar(
         nombre_destinatario=(ctx.contacto or {}).get("nombre"), enlaces=enlaces,
         editor_html=editor_html,
         seleccion_html=(seleccion_html or "").strip() if seleccion else None,
-        sobre_editor=bool(actual) or base is not None, empresa_documento=empresa_doc)
+        sobre_editor=bool(actual) or base is not None, empresa_documento=empresa_doc,
+        imagenes=imagenes)
+    _aplicar_material(session, borrador, mat)
     session.add(borrador)
     session.flush()
     llamada = registrar_llamada(
@@ -1588,6 +1782,7 @@ def corregir(
     session: Session, *, borrador: BorradorAsistente, instruccion: str, usuario: User,
     texto_actual_html: str | None = None, seleccion_html: str | None = None,
     formato: str = ia_compuesto.FORMATO_AUTO, estructura_actual: dict[str, Any] | None = None,
+    material: material_fuera.Pedido | None = None,
 ) -> BorradorAsistente:
     """Un turno más de la conversación: el mismo bloque de contexto guardado
     (cacheable), el texto actual y la instrucción nueva. El texto actual es lo
@@ -1599,7 +1794,9 @@ def corregir(
     las correcciones. El borrador que se corrige queda como regenerado. Un
     compuesto se corrige sobre su estructura (`estructura_actual`, la de la
     vista previa con los textos retocados; si no llega, la del turno) con
-    operaciones; el interruptor (`formato`) puede pasarlo a texto o al revés."""
+    operaciones; el interruptor (`formato`) puede pasarlo a texto o al revés.
+    `material`: lo elegido de fuera para ESTE turno (va en su petición; el
+    contexto guardado no cambia)."""
     settings = get_settings()
     if not settings.anthropic_api_key:
         raise llm.LLMNotConfiguredError("La IA no está configurada (ANTHROPIC_API_KEY).")
@@ -1632,20 +1829,29 @@ def corregir(
             base = None
     desde_vista = bool(estructura_actual) and base is not None
     sobre_editor = bool(actual) and base is None
+    imagenes: ImagenesEditor | None = None
     if base is not None:
         actual, seleccion, editor_html = "", "", ""
     elif not sobre_editor:
         actual = borradores.html_de(borrador) if (borrador.texto or "").strip() else ""
         editor_html, seleccion = actual, ""
+        # El turno anterior puede llevar las imágenes que volvieron a su sitio.
+        imagenes = apartar_imagenes(actual) if actual else None
+    else:
+        imagenes = apartar_imagenes(editor_html, seleccion_html)
     era_compuesto = borrador.modo == ia_compuesto.MODO_COMPUESTO and not actual
     modo_actual = (ia_compuesto.MODO_COMPUESTO if base is not None or era_compuesto
                    else ia_compuesto.MODO_NORMAL)
     modo = ia_compuesto.modo_del_turno(formato=formato, instruccion=instruccion,
                                        modo_actual=modo_actual)
+    # Lo elegido de fuera, leído antes de llamar al modelo (si falla, no hay turno).
+    mat = material_fuera.preparar(session, material, idioma=borrador.idioma,
+                                  consulta=instruccion)
     refs = ia_compuesto.Referencias.de_dict(
         _json(raiz.contexto_json).get("refs"), marcas=datos_compuesto.marcas(session),
         videos=ia_compuesto.videos_de(contexto_texto, instruccion,
                                       json.dumps(base or {}, ensure_ascii=False)))
+    _enlaces_material_en_refs(refs, mat)
     if modo != ia_compuesto.MODO_NORMAL:
         anadir_medios(session, refs, instruccion=instruccion, idioma=borrador.idioma or "es")
     cabecera = formato_del_turno(modo, refs, borrador.idioma or "es")
@@ -1666,18 +1872,24 @@ def corregir(
         peticion_texto = cabecera + peticion_inicial(
             instruccion, sin_hilo=borrador.thread_id is None)
     elif modo == ia_compuesto.MODO_COMPUESTO:
+        # Un compuesto no lleva las imágenes del editor: el texto, sin ellas.
         modelo, proposito = modelo_correccion, PROPOSITO_CORRECCION
         peticion_texto = cabecera + peticion_compuesta_desde_texto(
-            texto_actual=actual, asunto_actual=borrador.asunto, instruccion=instruccion)
+            texto_actual=imagenes.limpio if imagenes is not None else actual,
+            asunto_actual=borrador.asunto, instruccion=instruccion)
     else:
         modelo, proposito = modelo_correccion, PROPOSITO_CORRECCION
+        texto_prompt, seleccion_prompt, marcadores = _con_marcadores(actual, seleccion, imagenes)
         peticion_texto = peticion_correccion(
-            texto_actual=actual, asunto_actual=borrador.asunto, instruccion=instruccion,
-            seleccion=seleccion or None, sobre_editor=sobre_editor)
+            texto_actual=texto_prompt, asunto_actual=borrador.asunto, instruccion=instruccion,
+            seleccion=seleccion_prompt or None, sobre_editor=sobre_editor, imagenes=marcadores)
+    if mat is not None:
+        peticion_texto = mat.peticion + peticion_texto
     try:
         raw = _llamar(settings, modelo=modelo, contexto_texto=contexto_texto,
                       peticion_texto=peticion_texto, cfg=cfg,
-                      modelo_correccion=modelo_correccion)
+                      modelo_correccion=modelo_correccion,
+                      sistema=material_fuera.sistema(PROMPT_SISTEMA, mat))
     except llm.LLMError as exc:
         uso = llm.tomar_ultimo_uso()
         registrar_llamada(
@@ -1695,13 +1907,16 @@ def corregir(
         thread_id=borrador.thread_id, message_id=borrador.message_id,
         contact_id=borrador.contact_id, usuario_id=usuario.id, idioma=borrador.idioma,
         modelo=modelo[:80], destinatario=borrador.destinatario, remitente=borrador.remitente,
-        asunto=borrador.asunto, texto="", enlaces_json=borrador.enlaces_json,
+        asunto=borrador.asunto, texto="",
+        enlaces_json=material_fuera.con_enlaces(borrador.enlaces_json, mat),
         contexto_json=borrador.contexto_json, alcance=borrador.alcance,
         mensajes_hilo=borrador.mensajes_hilo, mensajes_historico=borrador.mensajes_historico,
         estado=ESTADO_GENERADO,
     )
     enlaces = (borradores.enlaces_del_borrador(borrador) + enlaces_de(actual)
                + enlaces_compuesto)
+    if mat is not None:
+        enlaces += mat.urls
     _interpretar(
         session, nuevo, raw, uso, modelo, modo=modo,
         forzado=formato in (ia_compuesto.MODO_NORMAL, ia_compuesto.MODO_COMPUESTO), refs=refs,
@@ -1712,7 +1927,9 @@ def corregir(
         seleccion_html=(seleccion_html or "").strip() if seleccion else None,
         sobre_editor=sobre_editor or desde_vista,
         empresa_documento=eg.empresa_de_emisora(
-            _json(raiz.contexto_json).get("empresa_documento")))
+            _json(raiz.contexto_json).get("empresa_documento")),
+        imagenes=imagenes)
+    _aplicar_material(session, nuevo, mat)
     session.add(nuevo)
     session.flush()
     llamada = registrar_llamada(

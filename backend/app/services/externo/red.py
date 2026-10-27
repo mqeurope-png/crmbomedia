@@ -38,8 +38,9 @@ from urllib.parse import urljoin, urlsplit
 
 import httpx
 
-#: Lo que se manda como agente de usuario a las webs de fuera.
-USER_AGENT = "BoHub/1.0 (+lectura de webs públicas; no escribe nada)"
+#: Lo que se manda como agente de usuario a las webs de fuera. Solo ASCII:
+#: httpx codifica las cabeceras en ASCII y una tilde rompe el cliente.
+USER_AGENT = "BoHub/1.0 (+lectura de webs publicas; no escribe nada)"
 #: Saltos de redirección que se siguen como mucho.
 MAX_REDIRECCIONES = 4
 #: Sufijos de nombre que nunca son de fuera.

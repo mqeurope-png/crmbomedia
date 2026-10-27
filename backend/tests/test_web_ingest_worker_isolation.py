@@ -97,3 +97,22 @@ def test_woo_webhooks_queue_has_a_worker(compose: str) -> None:
         f"woocommerce:webhooks sin worker en {compose} — los pedidos web "
         "encolados se quedarían sin procesar."
     )
+
+
+@pytest.mark.parametrize("compose", COMPOSES)
+def test_webs_indice_va_la_ultima_en_worker_web(compose: str) -> None:
+    """El índice de nuestras webs (recorrido mensual y «Reindexar ahora») va en
+    `worker-web`, no en un worker nuevo, y es su ÚLTIMA cola: RQ atiende las
+    colas en orden entre trabajo y trabajo, así que un webhook de pedido que
+    llega a media pasada entra antes que la web siguiente."""
+    workers = _worker_queues(_repo_root() / compose)
+    assert "worker-web" in workers, f"no hay worker-web en {compose}"
+    assert workers["worker-web"][-1] == "webs:indice", (
+        f"webs:indice tiene que ser la última cola de worker-web en {compose}: "
+        f"{workers['worker-web']}"
+    )
+    for name, queues in workers.items():
+        if name != "worker-web":
+            assert "webs:indice" not in queues, (
+                f"{name} en {compose} escucha webs:indice: va solo en worker-web."
+            )

@@ -153,6 +153,8 @@ services:
       - woocommerce:webhooks
       - woocommerce:import
       - woocommerce:backfill
+      # Índice de nuestras webs: la última cola (ver docker-compose.prod.yml).
+      - webs:indice
     depends_on:
       db:
         condition: service_healthy

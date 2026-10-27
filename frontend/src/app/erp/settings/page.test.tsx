@@ -26,6 +26,13 @@ jest.setTimeout(20_000);
 jest.mock("../../components/erp/GeneiSettingsCard", () => ({
   GeneiSettingsCard: () => null,
 }));
+// Igual la lista blanca del soporte y el índice de las webs (su propia API).
+jest.mock("../../components/erp/SoporteFuentesBloque", () => ({
+  SoporteFuentesBloque: () => null,
+}));
+jest.mock("../../components/erp/WebsIndiceBloque", () => ({
+  WebsIndiceBloque: () => null,
+}));
 jest.mock("../../lib/erpApi", () => ({
   getErpSettings: jest.fn(),
   updateErpSettings: jest.fn(),

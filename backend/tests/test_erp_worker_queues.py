@@ -80,3 +80,15 @@ def test_woo_job_queue_constants_match_compose_names() -> None:
     assert WOO_QUEUE_BACKFILL == "woocommerce:backfill"
     assert WOO_QUEUE_IMPORT in ERP_INTEGRATION_QUEUES
     assert WOO_QUEUE_BACKFILL in ERP_INTEGRATION_QUEUES
+
+
+def test_webs_indice_queue_constant_matches_compose_names() -> None:
+    """La cola del índice de nuestras webs: el nombre con el que se encola es
+    EXACTAMENTE el que escucha worker-web en los dos compose (sin él, el
+    recorrido mensual y «Reindexar ahora» se quedarían en Redis para siempre)."""
+    from app.services.webs.pasadas import WEBS_QUEUE
+
+    assert WEBS_QUEUE == "webs:indice"
+    for compose in ("docker-compose.prod.yml", "docker-compose.yml"):
+        queues = _all_worker_queues_from_compose(_repo_root() / compose)
+        assert WEBS_QUEUE in queues, f"{WEBS_QUEUE} sin worker en {compose}."

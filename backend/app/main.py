@@ -436,6 +436,24 @@ async def _arm_kb_catalogo_sync() -> None:
 
 
 @app.on_event("startup")
+async def _arm_webs_indice() -> None:
+    """Índice de nuestras webs — tic diario que lanza el recorrido MENSUAL
+    (cola `webs:indice`, la última de `worker-web`; una web por trabajo para no
+    retrasar los webhooks de pedidos). Interruptor en Configuración ERP,
+    encendido por defecto (solo lee webs públicas)."""
+    try:
+        from app.services.webs.job import arm  # noqa: PLC0415
+
+        arm()
+    except Exception:  # noqa: BLE001
+        import logging  # noqa: PLC0415
+
+        logging.getLogger(__name__).warning(
+            "webs.indice arm failed at startup", exc_info=True
+        )
+
+
+@app.on_event("startup")
 async def _arm_cuadre_nightly() -> None:
     """ERP · Cuadre — arma el job nocturno de comprobaciones (cola `cuadre:run`,
     worker-sync). Con el interruptor apagado (por defecto) el tic no hace nada.

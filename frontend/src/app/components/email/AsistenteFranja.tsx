@@ -3,11 +3,14 @@
 import {
   ChevronDown,
   ChevronRight,
+  Globe,
+  LifeBuoy,
   RotateCcw,
   Sparkles,
   Trash2,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { getCurrentUser } from "../../lib/api";
 import {
   ALCANCES_ASISTENTE,
@@ -23,6 +26,7 @@ import {
   type BorradorAsistente,
   type FormatoAsistente,
   type SobreElEditor,
+  type SoporteElegido,
   conversacionAsistente,
   descartarBorradorAsistente,
   esDestinatarioInterno,
@@ -31,6 +35,11 @@ import {
   turnoAsistente,
 } from "../../lib/emailsApi";
 import { extractErrorMessage } from "../../lib/errors";
+import type { SoporteResultado } from "../../lib/soporteApi";
+import type { WebFragmento } from "../../lib/websApi";
+import { Modal } from "../Modal";
+import { SoporteBusqueda } from "../soporte/SoporteBusqueda";
+import { WebsBusqueda } from "../webs/WebsBusqueda";
 
 /** «Ayúdame a contestar» dentro del compositor: una franja propia entre la
  *  cabecera del correo y el cuerpo, que empuja el contenido hacia abajo en vez
@@ -40,7 +49,9 @@ import { extractErrorMessage } from "../../lib/errors";
  *  En cuanto hay borrador se pliega sola a una línea («1 borrador · 0,0164 $»)
  *  para que el cuerpo tenga el sitio: se despliega al pulsarla. Lo que llega al
  *  editor es siempre un correo: lo que la IA quiera decirle a la persona va
- *  aquí, en el aviso. Un borrador guardado vuelve con su conversación. */
+ *  aquí, en el aviso. Un borrador guardado vuelve con su conversación.
+ *  «Buscar en soporte» y «Buscar en las webs» abren su buscador: lo elegido
+ *  queda a la vista como material (con su ✕) y viaja con cada petición. */
 export type AsistenteFranjaProps = {
   /** Con hilo se responde; sin él es un correo nuevo (la instrucción es obligatoria). */
   threadId: string | null;
@@ -95,6 +106,39 @@ function primera(direcciones: string): string {
 
 function usd(n: number): string {
   return `${n.toFixed(4)} $`;
+}
+
+/** Lo que la persona ha elegido DE FUERA para el borrador, con «Buscar en
+ *  soporte» y «Buscar en las webs». Viaja en cada petición (redactar, corregir,
+ *  cambiar el alcance) y se queda elegido hasta que se quita con su ✕: la IA
+ *  lo tiene delante en las correcciones siguientes. Un artículo de soporte y
+ *  «no hay procedimiento» se excluyen (el último gana). */
+export type MaterialElegido = {
+  soporte: (SoporteElegido & { titulo: string; url: string; fuente_nombre: string }) | null;
+  /** La consulta que se buscó en el soporte sin encontrar nada. */
+  sinResultados: string | null;
+  webs: { id: string; titulo: string; url: string }[];
+};
+
+export const SIN_MATERIAL: MaterialElegido = { soporte: null, sinResultados: null, webs: [] };
+/** Las páginas de las webs que admite el redactor en una petición. */
+export const MAX_WEBS = 4;
+/** Lo que admite el backend en «busqué y no hay» (`SoporteSinResultados`). */
+const MAX_CONSULTA = 300;
+
+/** Los campos de la petición, solo los que llevan algo. Sin material, null:
+ *  la petición es exactamente la de siempre (ni campos vacíos). */
+export function camposMaterial(
+  m: MaterialElegido,
+): Pick<SobreElEditor, "soporte" | "soporte_sin_resultados" | "webs"> | null {
+  const campos: Pick<SobreElEditor, "soporte" | "soporte_sin_resultados" | "webs"> = {};
+  if (m.soporte) {
+    campos.soporte = { fuente: m.soporte.fuente, articulo_id: m.soporte.articulo_id, idioma: m.soporte.idioma };
+  } else if (m.sinResultados) {
+    campos.soporte_sin_resultados = { consulta: m.sinResultados };
+  }
+  if (m.webs.length > 0) campos.webs = m.webs.map((w) => w.id);
+  return Object.keys(campos).length > 0 ? campos : null;
 }
 
 /** El texto de un fragmento de HTML, recortado, para enseñar qué hay seleccionado. */
@@ -189,6 +233,9 @@ export function AsistenteFranja({
   const [error, setError] = useState<string | null>(null);
   // Lo que dice la API de la dirección de «Para» (null = todavía no se ha preguntado).
   const [internoApi, setInternoApi] = useState<boolean | null>(null);
+  // Lo elegido de fuera (soporte, webs) y qué buscador está abierto.
+  const [material, setMaterial] = useState<MaterialElegido>(SIN_MATERIAL);
+  const [buscador, setBuscador] = useState<"soporte" | "webs" | null>(null);
   const cajaRef = useRef<HTMLTextAreaElement>(null);
   const onBorradorActualRef = useRef(onBorradorActual);
   const onEstadoRef = useRef(onEstado);
@@ -262,6 +309,35 @@ export function AsistenteFranja({
     ? internoApi
     : destinatarioInterno || Boolean(borrador?.destinatario_interno);
   const costeTotal = turnos.reduce((s, t) => s + (t.coste_usd || 0), 0);
+  // El idioma del correo, si la franja lo sabe (lo dice el borrador): los
+  // buscadores buscan en ese. Sin borrador, en todos.
+  const idiomaCorreo = borrador?.idioma ?? turnos[0]?.idioma ?? null;
+  const hayMaterial = camposMaterial(material) !== null;
+
+  function usarSoporte(r: SoporteResultado) {
+    setMaterial((m) => ({
+      ...m,
+      soporte: {
+        fuente: r.fuente, articulo_id: r.articulo_id, idioma: r.idioma ?? null,
+        titulo: r.titulo, url: r.url, fuente_nombre: r.fuente_nombre,
+      },
+      sinResultados: null,
+    }));
+    setBuscador(null);
+  }
+
+  function sinProcedimiento(consulta: string) {
+    const q = consulta.trim().slice(0, MAX_CONSULTA);
+    if (!q) return;
+    setMaterial((m) => ({ ...m, soporte: null, sinResultados: q }));
+    setBuscador(null);
+  }
+
+  function anadirWeb(f: WebFragmento) {
+    setMaterial((m) => (m.webs.some((w) => w.id === f.id) || m.webs.length >= MAX_WEBS
+      ? m
+      : { ...m, webs: [...m.webs, { id: f.id, titulo: f.titulo || f.url, url: f.url }] }));
+  }
 
   function refrescarSeleccion() {
     const sel = hayTexto ? (obtenerCuerpo?.().seleccion ?? "") : "";
@@ -319,8 +395,11 @@ export function AsistenteFranja({
       : cuerpo?.html
         ? { texto_actual_html: cuerpo.html, seleccion_html: cuerpo.seleccion || null }
         : null;
-    // El interruptor solo viaja si no es «Auto» (lo de siempre).
-    const peticion: SobreElEditor | null = formato !== "auto" ? { ...(editor ?? {}), formato } : editor;
+    // El interruptor solo viaja si no es «Auto» (lo de siempre), y lo elegido
+    // de fuera solo si hay algo: sin nada, la petición es la de siempre.
+    const conFormato: SobreElEditor | null = formato !== "auto" ? { ...(editor ?? {}), formato } : editor;
+    const deFuera = camposMaterial(material);
+    const peticion: SobreElEditor | null = deFuera ? { ...(conFormato ?? {}), ...deFuera } : conFormato;
     // Si mientras la IA trabaja la persona sigue escribiendo, lo que vuelve ya
     // no es una corrección de lo que hay: el compositor pregunta antes de pisarlo.
     const cambiado = () => ({
@@ -372,7 +451,9 @@ export function AsistenteFranja({
     setError(null);
     try {
       const para = primera(destinatario);
-      const conFormato = formato !== "auto" ? { formato } : {};
+      // El borrador rehecho lleva lo mismo que lleva la franja: el formato y
+      // lo elegido de fuera (si hay algo).
+      const conFormato = { ...(formato !== "auto" ? { formato } : {}), ...(camposMaterial(material) ?? {}) };
       const b = modo === "nuevo"
         ? await generarBorradorNuevo({
           destinatario: para, instruccion: raiz.instruccion ?? "", alcance: nuevo,
@@ -488,6 +569,29 @@ export function AsistenteFranja({
               </p>
             ) : null}
             <div className="asistente-franja-controles">
+              {/* Buscar fuera es una acción explícita, ANTES de redactar: lo
+                  encontrado se ve, se elige y viaja con la petición (nunca se
+                  busca dentro de la generación, que tiene su tiempo contado). */}
+              <span className="asistente-franja-buscar">
+                <button
+                  type="button"
+                  className="button secondary small"
+                  onClick={() => setBuscador("soporte")}
+                  disabled={ocupado || bloqueada}
+                  title="Busca el procedimiento en el soporte del fabricante: el borrador lo citará con su enlace"
+                >
+                  <LifeBuoy size={11} aria-hidden /> Buscar en soporte
+                </button>
+                <button
+                  type="button"
+                  className="button secondary small"
+                  onClick={() => setBuscador("webs")}
+                  disabled={ocupado || bloqueada}
+                  title="Busca en nuestras webs páginas y productos para enlazar en el borrador"
+                >
+                  <Globe size={11} aria-hidden /> Buscar en las webs
+                </button>
+              </span>
               <span className="asistente-franja-formato" role="radiogroup" aria-label="Formato del correo">
                 {FORMATOS.map((f) => (
                   <button
@@ -526,6 +630,15 @@ export function AsistenteFranja({
                 <Sparkles size={12} aria-hidden /> {ocupado ? "Redactando…" : modoCorreccion ? "Aplicar" : "Redactar"}
               </button>
             </div>
+            {hayMaterial ? (
+              <MaterialChips
+                material={material}
+                bloqueado={ocupado || bloqueada}
+                onQuitarSoporte={() => setMaterial((m) => ({ ...m, soporte: null }))}
+                onQuitarSinResultados={() => setMaterial((m) => ({ ...m, sinResultados: null }))}
+                onQuitarWeb={(id) => setMaterial((m) => ({ ...m, webs: m.webs.filter((w) => w.id !== id) }))}
+              />
+            ) : null}
           </div>
           {error ? <p className="form-error asistente-franja-error" role="alert">{error}</p> : null}
           {hayConversacion ? (
@@ -594,8 +707,116 @@ export function AsistenteFranja({
           ) : null}
         </div>
       ) : null}
+      {buscador !== null && typeof document !== "undefined" ? createPortal(
+        // Fuera del compositor (que es un <form>): un Intro en el buscador no
+        // puede enviar el correo, ni un envío del buscador subir hasta el
+        // formulario del correo por el árbol de React.
+        <div className="asistente-fuentes-capa" onSubmit={(e) => e.stopPropagation()}>
+          <Modal
+            open
+            onClose={() => setBuscador(null)}
+            title={buscador === "soporte" ? "Buscar en soporte" : "Buscar en nuestras webs"}
+          >
+            {buscador === "soporte" ? (
+              <SoporteBusqueda
+                idioma={idiomaCorreo}
+                consultaInicial={material.sinResultados ?? undefined}
+                onUsar={usarSoporte}
+                onSinResultados={sinProcedimiento}
+              />
+            ) : (
+              <WebsBusqueda
+                idioma={idiomaCorreo}
+                elegidos={material.webs.map((w) => w.id)}
+                maximo={MAX_WEBS}
+                onAnadir={anadirWeb}
+              />
+            )}
+          </Modal>
+        </div>,
+        document.body,
+      ) : null}
     </section>
   );
+}
+
+/** Lo elegido de fuera, a la vista y con su ✕: es lo que viaja con la petición. */
+function MaterialChips({
+  material, bloqueado, onQuitarSoporte, onQuitarSinResultados, onQuitarWeb,
+}: {
+  material: MaterialElegido;
+  bloqueado: boolean;
+  onQuitarSoporte: () => void;
+  onQuitarSinResultados: () => void;
+  onQuitarWeb: (id: string) => void;
+}) {
+  return (
+    <div className="asistente-franja-material">
+      <ul className="asistente-material-chips" aria-label="Material elegido para el borrador">
+        {material.soporte ? (
+          <li className="asistente-material-chip">
+            <span>Soporte: {material.soporte.titulo || material.soporte.articulo_id}</span>
+            <button type="button" aria-label="Quitar el artículo de soporte" title="Quitar" disabled={bloqueado} onClick={onQuitarSoporte}>✕</button>
+          </li>
+        ) : null}
+        {material.sinResultados ? (
+          <li className="asistente-material-chip is-sin-resultados">
+            <span>Sin procedimiento: {material.sinResultados}</span>
+            <button type="button" aria-label="Quitar «sin procedimiento»" title="Quitar" disabled={bloqueado} onClick={onQuitarSinResultados}>✕</button>
+          </li>
+        ) : null}
+        {material.webs.map((w) => (
+          <li key={w.id} className="asistente-material-chip">
+            <span>Web: {w.titulo}</span>
+            <button type="button" aria-label={`Quitar la página «${w.titulo}»`} title="Quitar" disabled={bloqueado} onClick={() => onQuitarWeb(w.id)}>✕</button>
+          </li>
+        ))}
+      </ul>
+      <span className="muted small">Va con cada petición hasta que lo quites.</span>
+    </div>
+  );
+}
+
+type MaterialUsado = {
+  soporte: { titulo: string; url: string | null; fuente: string } | null;
+  webs: { id: string; titulo: string; url: string | null }[];
+  sinResultados: string | null;
+};
+
+function esObjeto(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/** Solo enlaces web: lo apuntado en el contexto nunca acaba en un `href` raro. */
+function urlWeb(v: unknown): string | null {
+  return typeof v === "string" && /^https?:\/\//i.test(v) ? v : null;
+}
+
+/** Lo de fuera que entró en el turno, tal como lo apunta el backend en el
+ *  contexto (`material`: `soporte`, `webs`, `sin_resultados`). Tolerante: un
+ *  borrador de antes no lo trae, y cualquier forma rara se ignora. */
+export function materialUsado(ctx: Record<string, unknown>): MaterialUsado {
+  const m = esObjeto(ctx["material"]) ? ctx["material"] : ctx;
+  const s = m["soporte"];
+  const soporte = esObjeto(s) && (s["titulo"] || s["url"])
+    ? {
+      titulo: String(s["titulo"] ?? "") || String(s["url"] ?? ""),
+      url: urlWeb(s["url"]),
+      fuente: String(s["fuente_nombre"] ?? s["fuente"] ?? ""),
+    }
+    : null;
+  const webs = Array.isArray(m["webs"])
+    ? m["webs"].filter(esObjeto).map((w, i) => ({
+      id: String(w["id"] ?? i),
+      titulo: String(w["titulo"] ?? "") || String(w["url"] ?? ""),
+      url: urlWeb(w["url"]),
+    })).filter((w) => w.titulo)
+    : [];
+  const sr = m["sin_resultados"];
+  const sinResultados = esObjeto(sr) && typeof sr["consulta"] === "string" && sr["consulta"].trim()
+    ? sr["consulta"].trim()
+    : null;
+  return { soporte, webs, sinResultados };
 }
 
 /** Plegado: lo que entró en el contexto (hilo, ficha, correos viejos con fecha,
@@ -685,6 +906,17 @@ export function LoQueHaUsado({ borrador }: { borrador: BorradorAsistente }) {
   } else if (catalogo) {
     partes.push("sin productos del catálogo para este caso (ningún precio)");
   }
+  // Lo de fuera que eligió la persona para este turno (soporte, nuestras webs).
+  const deFuera = materialUsado(ctx);
+  if (deFuera.soporte) {
+    partes.push(`el artículo de soporte «${deFuera.soporte.titulo}»${deFuera.soporte.fuente ? ` (${deFuera.soporte.fuente})` : ""}`);
+  }
+  if (deFuera.sinResultados) {
+    partes.push(`la búsqueda «${deFuera.sinResultados}» en el soporte, sin procedimiento`);
+  }
+  if (deFuera.webs.length > 0) {
+    partes.push(`${deFuera.webs.length} página${deFuera.webs.length === 1 ? "" : "s"} de nuestras webs`);
+  }
   if (tokens !== null) partes.push(`~${tokens.toLocaleString("es-ES")} tokens de entrada${presupuesto ? ` de ${presupuesto.toLocaleString("es-ES")}` : ""}`);
   if (recortes.length > 0) partes.push(`${recortes.length} elemento${recortes.length === 1 ? "" : "s"} fuera por tamaño`);
   if (borrador.turno > 0) {
@@ -730,6 +962,31 @@ export function LoQueHaUsado({ borrador }: { borrador: BorradorAsistente }) {
             <li key={`p-${i}`}>
               {String(p.nombre ?? "")}{"marca" in p && p.marca ? ` (${String(p.marca)})` : ""}
               <span className="muted small"> — {p.precio_texto ? `${p.precio_texto}${p.orientativo ? " · orientativo" : ""}` : ("precio_publico" in p && p.precio_publico === false ? "sin precio público (a medida)" : "sin precio publicado")}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {deFuera.soporte || deFuera.sinResultados || deFuera.webs.length > 0 ? (
+        <ul className="asistente-panel-lista" aria-label="Material de fuera que entró">
+          {deFuera.soporte ? (
+            <li>
+              Soporte:{" "}
+              {deFuera.soporte.url
+                ? <a href={deFuera.soporte.url} target="_blank" rel="noreferrer">{deFuera.soporte.titulo}</a>
+                : deFuera.soporte.titulo}
+              {deFuera.soporte.fuente ? <span className="muted small"> — {deFuera.soporte.fuente}</span> : null}
+            </li>
+          ) : null}
+          {deFuera.sinResultados ? (
+            <li>
+              Sin procedimiento en el soporte para «{deFuera.sinResultados}»
+              <span className="muted small"> — el borrador lo dice, sin pasos</span>
+            </li>
+          ) : null}
+          {deFuera.webs.map((w) => (
+            <li key={`w-${w.id}`}>
+              Web:{" "}
+              {w.url ? <a href={w.url} target="_blank" rel="noreferrer">{w.titulo}</a> : w.titulo}
             </li>
           ))}
         </ul>
