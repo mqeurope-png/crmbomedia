@@ -1,0 +1,275 @@
+/* Consulta de soporte (Cola SAT) y paneles de soporte e índice de webs. */
+
+/* Reglas del sistema de diseño: tamaños de letra con var(--fs-*); los datos
+   con --ink o --muted (nunca el gris tenue ni los grises claros antiguos). */
+
+/* --- Buscador del soporte de los fabricantes (SoporteBusqueda) -----------------
+ * Sirve igual en el modal de la Cola SAT (consulta) y en el del redactor
+ * (con «Usar en el borrador»). El artículo se lee dentro del resultado, en un
+ * iframe sin scripts. */
+.soporte-busqueda {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.soporte-busqueda .button,
+.button.soporte-abrir { gap: var(--sp-1); }
+.soporte-busqueda-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.soporte-busqueda-form input[type="search"] { flex: 1 1 260px; min-width: 0; }
+.soporte-busqueda-form select { flex: 0 0 auto; }
+.soporte-busqueda p { margin: 0; }
+.soporte-avisos {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3) var(--sp-2) calc(var(--sp-3) + var(--sp-4));
+  border-radius: var(--r-control);
+  background: var(--st-amber-bg);
+  color: var(--st-amber-ink);
+  font-size: var(--fs-label);
+}
+.soporte-vacio {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-3);
+  border: 1px dashed var(--line);
+  border-radius: var(--r-control);
+  font-size: var(--fs-body);
+}
+.soporte-vacio-acciones { margin-top: var(--sp-1); }
+.soporte-resultados {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.soporte-resultado {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 0;
+  padding: var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--card);
+}
+.soporte-resultado.is-abierto { border-color: var(--brand); }
+.soporte-resultado-titulo {
+  font-size: var(--fs-body);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.soporte-resultado-titulo a { color: var(--brand-ink); }
+.soporte-icono-enlace { margin-left: var(--sp-1); vertical-align: -1px; }
+.soporte-resultado-meta { font-size: var(--fs-label); color: var(--muted); }
+.soporte-resultado-extracto {
+  font-size: var(--fs-body);
+  line-height: 1.45;
+  color: var(--ink);
+}
+.soporte-resultado-acciones {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-top: var(--sp-1);
+}
+.soporte-articulo {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin: var(--sp-2) 0 0;
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--line2);
+}
+.soporte-articulo-meta { font-size: var(--fs-label); color: var(--muted); }
+.soporte-articulo-marco {
+  display: block;
+  width: 100%;
+  height: min(60vh, 520px);
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: #fff;
+}
+.soporte-articulo-texto {
+  max-height: min(60vh, 520px);
+  overflow: auto;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  font-size: var(--fs-body);
+  line-height: 1.5;
+  color: var(--ink);
+}
+.soporte-articulo-texto p { margin: 0 0 var(--sp-2); white-space: pre-line; }
+.soporte-articulo-cargando { margin-top: var(--sp-1); }
+
+/* --- Panel «Soporte de terceros (lista blanca)» --------------------------------- */
+.soporte-fuentes-tabla .soporte-fuente-locale {
+  display: inline-block;
+  margin: 0 var(--sp-1) 2px 0;
+  padding: 0 6px;
+  border-radius: var(--r-pill);
+  background: var(--st-neutral-bg);
+  color: var(--st-neutral-ink);
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  white-space: nowrap;
+}
+.soporte-fuentes-tabla .soporte-fuente-detalle {
+  display: inline-block;
+  max-width: 36ch;
+  overflow-wrap: anywhere;
+}
+.soporte-fuente-form {
+  padding: var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+}
+.soporte-fuente-form .soporte-fuente-form-titulo { flex: 1 1 100%; margin: 0; }
+.soporte-fuente-form .field input:disabled { color: var(--muted); }
+
+/* --- Panel «Índice de las webs» --------------------------------------------------
+ * La tabla del conteo (web × tipo) se lee de un vistazo: números a la derecha
+ * en monoespaciada, los ceros apagados, el total de cada web y el de todas en
+ * negrita. En móvil se desplaza en horizontal dentro de su caja. */
+.webs-indice-tabla-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+}
+.webs-indice-tabla.data-table { min-width: 680px; margin: 0; }
+.webs-indice-tabla thead th { white-space: nowrap; }
+.webs-indice-tabla .webs-indice-num { text-align: right; }
+.webs-indice-tabla tbody th,
+.webs-indice-tabla tfoot th {
+  text-align: left;
+  font-size: var(--fs-body);
+  color: var(--ink);
+}
+.webs-indice-tabla td.num { font-size: var(--fs-mono); color: var(--ink); }
+.webs-indice-tabla td.num.is-cero { color: var(--muted); }
+.webs-indice-tabla .webs-indice-suma { font-weight: 700; }
+.webs-indice-dominio { display: block; font-weight: 600; }
+.webs-indice-sitio {
+  display: block;
+  font-size: var(--fs-label);
+  font-weight: 400;
+  color: var(--muted);
+}
+.webs-indice-idiomas { display: inline-flex; flex-wrap: wrap; gap: var(--sp-1); }
+.webs-indice-idioma {
+  padding: 0 6px;
+  border-radius: var(--r-pill);
+  background: var(--st-blue-bg);
+  color: var(--st-blue-ink);
+  font-size: var(--fs-label);
+  font-weight: 600;
+}
+.webs-indice-tabla .webs-indice-fecha {
+  white-space: nowrap;
+  font-size: var(--fs-label);
+  color: var(--muted);
+}
+.webs-indice-tabla tfoot th,
+.webs-indice-tabla tfoot td {
+  border-top: 2px solid var(--line);
+  border-bottom: none;
+  background: var(--bg);
+  font-weight: 700;
+}
+.webs-indice-pasada-webs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: var(--sp-1) 0 0;
+  padding-left: var(--sp-4);
+  font-size: var(--fs-body);
+}
+.webs-indice-error { white-space: normal; }
+.webs-indice-reglas,
+.webs-indice-prueba {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.webs-indice-reglas > p,
+.webs-indice-prueba > p { margin: 0; }
+.webs-indice-reglas-grupo {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+}
+.webs-indice-reglas-grupo > h5 { margin: 0; font-size: var(--fs-body); }
+.webs-indice-reglas-grupo > p { margin: 0; }
+.webs-indice-resultados {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.webs-indice-resultado {
+  display: flex;
+  gap: var(--sp-3);
+  align-items: flex-start;
+  min-width: 0;
+  padding: var(--sp-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+}
+.webs-indice-resultado-imagen {
+  flex: 0 0 auto;
+  width: 96px;
+  aspect-ratio: 1;
+  object-fit: contain;
+  border-radius: 6px;
+  background: var(--bg);
+}
+.webs-indice-resultado-cuerpo {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.webs-indice-resultado-cuerpo p { margin: 0; }
+.webs-indice-resultado-titulo { font-weight: 600; overflow-wrap: anywhere; }
+.webs-indice-resultado-meta,
+.webs-indice-resultado-url {
+  font-size: var(--fs-label);
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.webs-indice-resultado-fragmento {
+  font-size: var(--fs-body);
+  line-height: 1.45;
+  color: var(--ink);
+  white-space: pre-line;
+}
+.webs-indice-resultado-precio {
+  font-size: var(--fs-body);
+  color: var(--ink);
+}
+.webs-indice-resultado-precio strong { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.webs-indice-resultado-precio-nota { color: var(--st-amber-ink); font-size: var(--fs-label); }
+@media (max-width: 640px) {
+  .webs-indice-resultado-imagen { width: 64px; }
+}
+
+/* El pie pegajoso de `.erp-modal` se queda 16 px por encima de su sitio (el
+ * pegado descuenta el relleno del diálogo) y tapaba la última línea del
+ * buscador, justo donde sale el error o el «no hay resultados». Aquí se pega
+ * al borde de verdad. */
+.modal-dialog.erp-modal.soporte-consulta-modal > .modal-actions {
+  bottom: calc(-1 * var(--sp-4));
+}

@@ -32,6 +32,8 @@ import {
 } from "../../lib/erpApi";
 import { extractErrorMessage } from "../../lib/errors";
 import { ImagenesBloque, VideosBloque } from "./MediosBloques";
+import { SoporteFuentesBloque } from "./SoporteFuentesBloque";
+import { WebsIndiceBloque } from "./WebsIndiceBloque";
 
 type Props = {
   canEdit: boolean;
@@ -95,6 +97,11 @@ export function ConocimientoPanel({ canEdit }: Props) {
           <VideosBloque datos={datos} canEdit={canEdit} onDatos={setDatos} />
         </>
       ) : null}
+      {/* Lo de fuera que el redactor puede tener delante (cada uno con su API y
+          sus datos, aparte de `/api/erp/conocimiento`): los centros de soporte
+          de los fabricantes (lista blanca) y el índice de nuestras webs. */}
+      <SoporteFuentesBloque canEdit={canEdit} />
+      <WebsIndiceBloque canEdit={canEdit} />
       <Probar datos={datos} />
     </div>
   );

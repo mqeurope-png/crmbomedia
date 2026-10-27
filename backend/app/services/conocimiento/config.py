@@ -38,6 +38,12 @@ la clave `conocimiento` (sin migración):
   `catalogo.PALABRAS_DE_PARTIDA`). Se guardan por su API
   (`guardar_palabras_interes`): el «Guardar cambios» de Configuración ERP no
   las toca, para que una pestaña abierta de antes no las pise.
+- `webs_indice_activo` / `webs_indice_hora` / `webs_indice_dias`: el
+  recorrido del índice de nuestras webs (worker-web). Un tic diario a esa hora
+  lanza la pasada programada si la última correcta tiene más de esos días (una
+  vez al mes de partida). Encendido por defecto: solo lee webs públicas.
+- `webs_indice_hosts`: de qué host se lee cada web cuando no es el suyo
+  (`{"fluxlasers": "fluxlasers.eu"}`: fluxlasers.es NO se indexa).
 """
 from __future__ import annotations
 
@@ -59,6 +65,14 @@ IVA_VALORES: tuple[str, ...] = ("con", "sin")
 _HORA_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
 _HANDLE_RE = re.compile(r"^@[A-Za-z0-9._-]{3,100}$")
 MAX_CANALES = 20
+#: El índice de las webs: 05:20, fuera de las de FLUX (04:30) y el catálogo
+#: (04:45); una vez al mes.
+HORA_WEBS_INDICE_DEFECTO = "05:20"
+WEBS_INDICE_DIAS_DEFECTO = 30
+WEBS_INDICE_DIAS_MIN = 1
+WEBS_INDICE_DIAS_MAX = 365
+WEBS_INDICE_HOSTS_DEFECTO: dict[str, str] = {"fluxlasers": "fluxlasers.eu"}
+_HOST_RE = re.compile(r"^(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
 
 #: Los canales de YouTube del grupo (12/10/2026) y su marca del catálogo.
 CANALES_DE_PARTIDA: tuple[dict[str, str], ...] = (
@@ -179,6 +193,34 @@ def _interes_palabras(raw: Any) -> dict[str, list[str]]:
     return salida
 
 
+def _dias_webs(raw: Any) -> int | None:
+    try:
+        valor = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return valor if WEBS_INDICE_DIAS_MIN <= valor <= WEBS_INDICE_DIAS_MAX else None
+
+
+def _hosts_webs(raw: Any, *, estricto: bool = False) -> dict[str, str] | None:
+    """`{clave de web: host}` limpio. None si no es un objeto; con `estricto`,
+    `ValueError` por un host que no vale."""
+    if not isinstance(raw, dict):
+        if estricto:
+            raise ValueError("Los hosts del índice de webs tienen que ser web → host.")
+        return None
+    salida: dict[str, str] = {}
+    for clave, host in raw.items():
+        clave_limpia = str(clave or "").strip()[:40]
+        host_limpio = str(host or "").strip().lower().removeprefix("https://").rstrip("/.")
+        if not clave_limpia or not _HOST_RE.match(host_limpio):
+            if estricto:
+                raise ValueError(f"Host del índice de webs no válido: {host!r} "
+                                 "(p. ej. fluxlasers.eu).")
+            continue
+        salida[clave_limpia] = host_limpio
+    return salida
+
+
 def defectos() -> dict[str, Any]:
     return {
         "flux_sync_activa": True,
@@ -193,6 +235,10 @@ def defectos() -> dict[str, Any]:
         "medios_sync_activa": True,
         "youtube_canales": [dict(c) for c in CANALES_DE_PARTIDA],
         "interes_palabras": {},
+        "webs_indice_activo": True,
+        "webs_indice_hora": HORA_WEBS_INDICE_DEFECTO,
+        "webs_indice_dias": WEBS_INDICE_DIAS_DEFECTO,
+        "webs_indice_hosts": dict(WEBS_INDICE_HOSTS_DEFECTO),
     }
 
 
@@ -221,6 +267,13 @@ def normalizar(raw: Any) -> dict[str, Any]:
     if canales is not None:
         base["youtube_canales"] = canales
     base["interes_palabras"] = _interes_palabras(data.get("interes_palabras"))
+    if "webs_indice_activo" in data:
+        base["webs_indice_activo"] = bool(data["webs_indice_activo"])
+    base["webs_indice_hora"] = _hora(data.get("webs_indice_hora")) or HORA_WEBS_INDICE_DEFECTO
+    base["webs_indice_dias"] = _dias_webs(data.get("webs_indice_dias")) or WEBS_INDICE_DIAS_DEFECTO
+    hosts = _hosts_webs(data.get("webs_indice_hosts"))
+    if hosts is not None:
+        base["webs_indice_hosts"] = hosts
     return base
 
 
@@ -279,6 +332,25 @@ def validar(payload: Any, actual: Any = None) -> dict[str, Any]:
         base["medios_sync_activa"] = payload["medios_sync_activa"]
     if "youtube_canales" in payload:
         base["youtube_canales"] = _canales(payload["youtube_canales"], estricto=True) or []
+    if "webs_indice_activo" in payload:
+        if not isinstance(payload["webs_indice_activo"], bool):
+            raise ValueError("«Recorrer las webs cada mes» tiene que ser sí o no.")
+        base["webs_indice_activo"] = payload["webs_indice_activo"]
+    if "webs_indice_hora" in payload:
+        hora = _hora(payload["webs_indice_hora"])
+        if hora is None:
+            raise ValueError(
+                f"Hora del recorrido de las webs no válida: {payload['webs_indice_hora']!r} "
+                "(formato HH:MM).")
+        base["webs_indice_hora"] = hora
+    if "webs_indice_dias" in payload:
+        dias = _dias_webs(payload["webs_indice_dias"])
+        if dias is None:
+            raise ValueError(f"Días entre recorridos de las webs: entre {WEBS_INDICE_DIAS_MIN} "
+                             f"y {WEBS_INDICE_DIAS_MAX}.")
+        base["webs_indice_dias"] = dias
+    if "webs_indice_hosts" in payload:
+        base["webs_indice_hosts"] = _hosts_webs(payload["webs_indice_hosts"], estricto=True) or {}
     # `interes_palabras` no se toca aquí: va por `guardar_palabras_interes`.
     return base
 

@@ -12,16 +12,58 @@
 
 - Toolbar completa: `undo redo | blocks | bold italic underline
   strikethrough | forecolor backcolor | align | bullist numlist | link
-  imagen vídeo tabla emoticons`.
+  imagen imagen-por-URL vídeo tabla emoticons`.
 - **Paste desde Word/Excel** conservando formato (`paste_merge_formats`).
 - **Imágenes**: arrastrar, pegar desde portapapeles o botón subir. Se suben
   a `POST /api/email-templates/assets` (disco, content-addressed por
   sha256) y se insertan como URL en el editor.
+- **Imagen por URL** (27/10/2026): una imagen por su enlace, sin subirla (abajo).
 - **Firma**: la firma HTML por defecto del operador se inyecta al abrir
   (bloque delimitado `<!--crmbo:signature-->`); selector para cambiarla.
 - Autosave de borradores + adjuntos clásicos (límite 25 MB total).
 - Cinturón cliente: `invalid_elements` rechaza `script/iframe/object/
   embed/form` al pegar (ver `editorConfig.ts`).
+
+## Imagen por URL y los buscadores del asistente (27/10/2026)
+
+Para quien escribe. Detalle técnico en
+[fuentes-externas.md](fuentes-externas.md).
+
+**«Imagen por URL»** (junto a «Imagen»; también en Plantillas y Firmas): pega
+el enlace de la imagen y pulsa **«Comprobar»**.
+
+- Solo **https://**: una imagen en http:// la bloquean los clientes de correo,
+  así que no se inserta y te dice por qué. Direcciones de la red interna,
+  tampoco.
+- Tiene que ser **una imagen**: si pegas la dirección de la página en vez de la
+  de la imagen, te lo dice.
+- Ves la **vista previa**, el tipo y el peso. Si pesa **más de 1 MB** se
+  inserta igual, con un aviso: el correo tardará en cargar.
+- **«Insertar»** solo se activa después de comprobar ese mismo enlace.
+- **La imagen no se copia: se enlaza.** El correo la carga de su web cada vez
+  que alguien lo abre (no va incrustada como las que subes desde el PC). Si la
+  web la quita o la cambia de sitio, desaparece del correo, también de los ya
+  enviados.
+
+**En la franja del asistente** («Ayúdame a contestar»), junto a la caja, dos
+botones para buscar **antes de redactar**:
+
+- **«Buscar en soporte»**: el procedimiento en el soporte del fabricante (hoy,
+  FLUX). **«Leer»** abre el artículo; **«Usar en el borrador»** hace que el
+  borrador lo cite: pasos traducidos, referencias y números de pieza tal cual
+  y **siempre el enlace** al artículo. Si no hay nada, **«Escribir diciendo que
+  no hay procedimiento»**: el correo lo dice y no se inventa pasos.
+- **«Buscar en las webs»**: páginas, entradas y productos de nuestras webs.
+  **«Añadir al borrador»** (hasta 4): la IA los tiene delante con su enlace. El
+  precio que sale es **el de la web**: el borrador puede decir «en la web está
+  a…», nunca ofertarlo.
+- Lo elegido queda en fichas debajo de la caja y **va con cada petición hasta
+  que lo quitas** con su ✕. Cada botón lleva además **la cuenta** de lo
+  elegido (un número azul): si la ventana es baja y la franja encoge, se ve
+  igual que hay material aunque las fichas queden más abajo.
+- Las imágenes del cuerpo **se conservan** cuando le pides a la IA que corrija
+  («más corto», «en inglés»); si alguna no vuelve a su sitio, va al final y la
+  franja te avisa.
 
 ## Sanitización en el envío (backend — la barrera real)
 

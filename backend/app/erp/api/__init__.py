@@ -15,6 +15,8 @@ from app.erp.api.plantillas import router as plantillas_router
 from app.erp.api.sat import router as sat_router
 from app.erp.api.seguimiento import router as seguimiento_router
 from app.erp.api.shipping import router as shipping_router
+from app.erp.api.soporte import router as soporte_router
+from app.erp.api.webs import router as webs_router
 from app.erp.api.woocommerce_admin import router as woocommerce_admin_router
 
 __all__ = [
@@ -34,5 +36,7 @@ __all__ = [
     "orders_router",
     "sat_router",
     "shipping_router",
+    "soporte_router",
+    "webs_router",
     "woocommerce_admin_router",
 ]

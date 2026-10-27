@@ -700,3 +700,72 @@ misma lista que se guarda con el borrador (`contexto_json`), y el registro
 guarda además el **alcance** y el **número de mensajes** (`alcance`,
 `mensajes_hilo`, `mensajes_historico`) para cruzar después si los borradores
 con más histórico salen mejores o solo más caros.
+
+### Lo que no está en el catálogo: soporte, webs e imagen por URL (27/10/2026)
+
+El asistente estaba encerrado en la base de conocimiento y el catálogo: no
+podía citar el procedimiento de FLUX para calibrar una cámara ni enlazar la
+página de un accesorio. La referencia técnica (red con cerrojos, lista blanca,
+índice, reglas, permisos, lo comprobado contra las webs reales) está en
+[fuentes-externas.md](fuentes-externas.md); aquí, lo que cambia en el
+asistente.
+
+- **Dos botones en la franja**, junto a la caja: **«Buscar en soporte»** (el
+  soporte del fabricante, por la lista blanca) y **«Buscar en las webs»** (el
+  índice de nuestras webs). **Buscar es una acción aparte y va antes de
+  redactar**: el nginx de Plesk corta a los 60 s y una búsqueda dentro de la
+  generación se lo comería. Lo encontrado se ve (título, extracto, enlace; el
+  artículo se puede leer entero; de las webs, imagen, web · tipo · idioma,
+  fragmento y «precio en la web», que no es precio de oferta) y se elige:
+  «Usar en el borrador», «Añadir al borrador» (hasta 4 páginas) o, si no hay
+  nada, «Escribir diciendo que no hay procedimiento» (solo si se miró en algún
+  centro: un soporte que no responde da error, no «sin resultados»). Lo
+  elegido queda en fichas con su ✕ y **viaja con cada petición hasta que se
+  quita** (también tras «Empezar de nuevo»). Artículo y «sin procedimiento» se
+  excluyen: gana el último elegido (si llegan los dos, el backend se queda con
+  el artículo).
+- **Lo que viaja**: `soporte` (`{fuente, articulo_id, idioma}`),
+  `soporte_sin_resultados` (`{consulta}`, hasta 300 caracteres) y `webs` (ids
+  del índice, hasta 4), en las tres peticiones que redactan (generar con hilo,
+  generar nuevo y turno). **Sin ellos, el turno es exactamente el de antes**:
+  el mismo prompt de sistema, el mismo contexto y la misma petición
+  (`tests/test_asistente_fuentes.py`).
+- **Lo que recibe el prompt**: el material se lee antes de llamar al modelo
+  (por fuente + id y por id del índice, nunca por una URL que mande el
+  navegador) y va **en la petición del turno**, delante de lo demás (también
+  delante de la cabecera de FORMATO del compuesto), **encapsulado como dato**;
+  el bloque de contexto no se toca. Al sistema se le añaden, solo entonces,
+  la regla del material y las de soporte y webs. Los fragmentos de las webs
+  se recortan con la instrucción como búsqueda (sin instrucción, el principio
+  del último mensaje del cliente). Las URL del material entran en los enlaces
+  permitidos y en `enlaces_json`, para que las correcciones las conserven.
+  Con «sin procedimiento» no hay nada descargado: va la regla de no escribir
+  pasos y una frase con la consulta exacta.
+- **Garantías**, que no dependen de que el modelo obedezca: el borrador que usa
+  un artículo **lleva su enlace** (si no lo puso, se añade al final en el
+  idioma del correo, con aviso); referencias, modelos y números de pieza
+  **literales**; con «sin procedimiento» el correo lo dice y, si aun así trae
+  pasos, la franja avisa; un precio de la web **nunca se oferta**; si lo
+  elegido no se puede leer, no hay borrador (409 o 502 con su `code`). Las
+  guardias del cuerpo y de Bomedia siguen igual.
+- **«Lo que ha usado»** enseña el material que entró
+  (`contexto_json["material"]`, por turno: una corrección sin material no
+  hereda el del turno anterior).
+- **Coste**: un turno con material cambia el prompt de sistema, así que ese
+  turno no lee la caché del contexto (la caché incluye el sistema) y la vuelve
+  a escribir; el siguiente sin material lee la de antes si sigue viva.
+- **Las imágenes del editor sobreviven a una corrección.** El editor tiene
+  ahora **«Imagen por URL»** (comprobada antes de insertarla y enlazada tal
+  cual). Antes, «más corto» sobre un cuerpo con imágenes las perdía en
+  silencio (el borrador no admite `<img>`). Ahora cada imagen **de fuera**
+  (la de «Imagen por URL») va al modelo como «[IMAGEN 1]» y vuelve a su sitio
+  con su etiqueta saneada, con el `max-width:100%;height:auto` que le pone el
+  diálogo y ningún otro estilo (`texto.apartar_imagenes` /
+  `restaurar_imagenes`; se acepta el marcador traducido). Si el modelo lo
+  quitó, la imagen vuelve al final con aviso; las que no son https no se
+  conservan y se dice cuántas (en una corrección sobre una selección, solo las
+  de la selección). **Las subidas desde el PC** (`/assets/email-templates/…`
+  y los adjuntos de plantilla `…/attachments/by-cid/…`) siguen **exactamente
+  como antes**: un editor que solo tiene de esas da la misma petición que
+  antes de este cambio. Un compuesto rehecho desde el texto va sin imágenes, y
+  se avisa.

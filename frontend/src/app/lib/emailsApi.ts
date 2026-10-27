@@ -758,7 +758,20 @@ export type SobreElEditor = {
   formato?: FormatoAsistente;
   /** Un correo compuesto en la vista previa, con lo retocado: la IA corrige ESO. */
   estructura_actual?: EstructuraCompuesta | null;
+  /** Lo elegido DE FUERA para este turno (la franja solo lo manda si hay algo
+   *  elegido: sin ello la petición es exactamente la de siempre). El artículo
+   *  del soporte de un tercero que se encontró con «Buscar en soporte»; el
+   *  backend lo lee por fuente + id, nunca por una URL. */
+  soporte?: SoporteElegido | null;
+  /** «Busqué en el soporte y no hay nada»: el borrador lo dice y no se
+   *  inventa el procedimiento. */
+  soporte_sin_resultados?: { consulta: string } | null;
+  /** Ids del índice de nuestras webs elegidos con «Buscar en las webs» (hasta 4). */
+  webs?: string[];
 };
+
+/** El artículo de soporte elegido, tal como lo pide el backend. */
+export type SoporteElegido = { fuente: string; articulo_id: string; idioma: string | null };
 
 export type FormatoAsistente = "auto" | "normal" | "compuesto";
 
@@ -841,6 +854,31 @@ export async function esDestinatarioInterno(
   direccion: string,
 ): Promise<{ direccion: string; interno: boolean }> {
   return apiFetch(`/api/emails/asistente/interno?direccion=${encodeURIComponent(direccion)}`);
+}
+
+// --- Imagen por URL en el editor (enlazada en caliente) ----------------------
+
+/** Lo que dice el backend de un enlace de imagen ANTES de insertarlo: HTTPS,
+ *  que responda 200 con `image/*`, que no apunte a la red interna, y cuánto
+ *  pesa (más de 1 MB se inserta igual, con `aviso`). Con `ok: false` no se
+ *  inserta y `motivo` dice por qué. No se descarga para guardarla: la URL va
+ *  en el `<img>` tal cual. */
+export type ComprobacionImagenUrl =
+  | {
+    ok: true;
+    url: string;
+    content_type: string;
+    /** Null si el servidor no dice cuánto pesa. */
+    bytes: number | null;
+    pesada: boolean;
+    aviso: string | null;
+  }
+  | { ok: false; url: string; codigo: string; motivo: string };
+
+export async function comprobarImagenUrl(url: string): Promise<ComprobacionImagenUrl> {
+  return apiFetch<ComprobacionImagenUrl>("/api/emails/imagen-url/comprobar", {
+    method: "POST", body: JSON.stringify({ url }),
+  });
 }
 
 // --- Correos compuestos: el HTML lo genera BoHub a partir de la estructura ----

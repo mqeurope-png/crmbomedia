@@ -259,6 +259,10 @@ services:
       - woocommerce:webhooks
       - woocommerce:import
       - woocommerce:backfill
+      # Índice de nuestras webs (recorrido mensual y «Reindexar ahora»): la
+      # ÚLTIMA cola, y un trabajo por web, para que los webhooks de pedidos
+      # entren entre web y web. Su `--with-scheduler` mueve el tic diario.
+      - webs:indice
     depends_on:
       api:
         condition: service_healthy

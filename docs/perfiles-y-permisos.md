@@ -89,6 +89,30 @@ Los bloqueos por rol devuelven un cuerpo estructurado y homogéneo:
 
 El frontend traduce `code` a un toast rojo (reutilizando `formatFastApiDetail`).
 
+## ERP: soporte de terceros e índice de las webs (27/10/2026)
+
+El rol **`sat`** (el taller, #562) **gana la consulta de soporte**: en la Cola
+SAT, «Consulta de soporte» busca y lee los artículos del soporte de los
+fabricantes. No es una capacidad nueva: esas rutas piden `erp.sat.view` (ver la
+Cola SAT), que el taller ya tenía. **Sigue sin poder enviar correos**: no tiene
+`erp.email.client`, y la consulta no envía nada ni mete nada en un borrador
+(lo único que el taller envía a mano sigue siendo «enviar al taller», a la
+dirección del taller y sin factura).
+
+| Acción | Endpoint | Guard | Quién |
+|---|---|---|---|
+| Buscar y leer en el soporte | `GET /api/erp/soporte/buscar`, `GET /api/erp/soporte/articulo` | `require_sat_view` (`erp.sat.view`) | comercial, pedidos, **sat**, user/manager (legacy), admin |
+| Buscar en el índice de las webs | `GET /api/erp/webs/buscar` | `require_erp_view` (`erp.access`) | los mismos (cualquiera con ERP; viewer no) |
+| Lista blanca del soporte: ver, alta, edición, «Comprobar» | `GET`/`POST /api/erp/soporte/fuentes`, `PATCH …/{clave}`, `POST …/{clave}/comprobar` | `require_config` (`erp.config`) | admin |
+| Índice de las webs: estado, «Reindexar ahora», reglas | `GET /api/erp/webs/estado`, `POST /api/erp/webs/reindexar`, `GET`/`POST /api/erp/webs/reglas`, `PATCH`/`DELETE …/{id}` | `require_config` (`erp.config`) | admin |
+| Comprobar una imagen por URL (editor de correo) | `POST /api/emails/imagen-url/comprobar` | `require_user` | cualquier usuario con sesión |
+
+`erp.config` no está en ningún rol operativo (comercial, pedidos, sat): las dos
+listas las edita quien tiene la configuración del ERP, hoy solo el admin. Los
+buscadores de la franja del asistente llaman a las rutas del ERP de arriba: sin
+acceso al ERP, la búsqueda responde 403. Detalle en
+[fuentes-externas.md](fuentes-externas.md).
+
 ## Fuera de alcance / backlog
 
 - **Firma:** el admin no edita la firma de un comercial desde `/admin/users`

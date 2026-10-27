@@ -1,5 +1,6 @@
 "use client";
 
+import { LifeBuoy } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { ErpModalShell } from "../../components/erp/ErpModalShell";
@@ -11,6 +12,7 @@ import {
   SatAvisoCliente, satCourier, SatExternalShipmentEdit, SatReadyCard, SatShipmentBadge,
   SatShippedCard, SatTrackingLink,
 } from "../../components/erp/SatReadyCard";
+import { SoporteConsultaModal } from "../../components/soporte/SoporteConsultaModal";
 import { getCurrentUser } from "../../lib/api";
 import { Cap, can } from "../../lib/capabilities";
 import { extractErrorMessage } from "../../lib/errors";
@@ -255,10 +257,15 @@ export default function SatQueuePage() {
   // Aviso de envío al cliente a mano: correo al cliente (`erp.email.client`).
   // El taller lo ve pero no lo manda (el automático sale igual).
   const [canNotify, setCanNotify] = useState(false);
+  // «Consulta de soporte»: buscar y leer el procedimiento del fabricante. Es
+  // solo lectura (no envía nada), así que basta con ver la cola.
+  const [canSoporte, setCanSoporte] = useState(false);
+  const [soporteOpen, setSoporteOpen] = useState(false);
 
   useEffect(() => {
     getCurrentUser()
       .then((u) => {
+        setCanSoporte(can(u, Cap.SAT_VIEW));
         setCanEdit(can(u, Cap.SAT_PREPARE));
         setCanEnqueue(can(u, Cap.ORDERS_APPROVE));
         setCanShip(can(u, Cap.SAT_SHIPPING));
@@ -267,6 +274,7 @@ export default function SatQueuePage() {
         setCanNotify(can(u, Cap.EMAIL_CLIENT));
       })
       .catch(() => {
+        setCanSoporte(false);
         setCanEdit(false);
         setCanEnqueue(false);
         setCanShip(false);
@@ -548,6 +556,12 @@ export default function SatQueuePage() {
               Lista
             </button>
           </div>
+          {canSoporte ? (
+            <button type="button" className="button secondary small soporte-abrir"
+                    onClick={() => setSoporteOpen(true)}>
+              <LifeBuoy size={14} aria-hidden /> Consulta de soporte
+            </button>
+          ) : null}
           <button type="button" className="button secondary small" onClick={() => refreshAll()}>
             Actualizar
           </button>
@@ -808,6 +822,8 @@ export default function SatQueuePage() {
           </div>
         </ErpModalShell>
       ) : null}
+
+      {soporteOpen ? <SoporteConsultaModal onClose={() => setSoporteOpen(false)} /> : null}
     </div>
   );
 }
