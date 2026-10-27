@@ -17,10 +17,11 @@ export const IDIOMAS_PLANTILLA: { value: OfertaIdioma; label: string }[] = [
   { value: "nl", label: "NL · Nederlands" },
 ];
 
+/** El destino con su artículo: «la oferta», «la proforma», «el pedido». */
 export const DESTINO_LABEL: Record<PlantillaDestino, string> = {
-  oferta: "oferta",
-  proforma: "proforma",
-  pedido: "pedido",
+  oferta: "la oferta",
+  proforma: "la proforma",
+  pedido: "el pedido",
 };
 
 const ORIGEN_LABEL: Record<PlantillaOrigenTipo, string> = {

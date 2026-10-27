@@ -42,6 +42,13 @@ export function ResumenPedidoView({
         </dd>
       </dl>
       <table className="data-table" aria-label="Conceptos del pedido">
+        <colgroup>
+          <col style={{ width: "50%" }} />
+          <col style={{ width: "9%" }} />
+          <col style={{ width: "14%" }} />
+          <col style={{ width: "9%" }} />
+          <col style={{ width: "18%" }} />
+        </colgroup>
         <thead>
           <tr>
             <th scope="col">Concepto</th>

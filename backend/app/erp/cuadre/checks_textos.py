@@ -19,7 +19,8 @@ asistente):
   almacenes de recogida (van en el albarán de devolución);
 - formularios web: nombre (es el título de la página pública), marca, mensaje
   de gracias, aspecto y los textos de los campos;
-- líneas de las plantillas de oferta (van en el PDF);
+- líneas de las plantillas de documento (van en el PDF de la oferta, la
+  proforma o el pedido que salga de ellas);
 - plantillas de Brevo (asunto, remitente y HTML);
 - correos programados aún pendientes (salen sin que nadie los vuelva a mirar);
 - la base de conocimiento que pinta los correos compuestos: marcas vivas,
@@ -373,7 +374,7 @@ def entidad_id(tipo: str, ident: str) -> str:
     id="bomedia_en_textos_cliente", orden=20,
     titulo="«Bomedia» en textos que lee el cliente",
     descripcion=("Plantillas, firmas, remitentes, workflows, avisos, formularios, emisoras, "
-                 "plantillas de oferta y de Brevo, correos programados y catálogo que todavía "
+                 "plantillas de documento y de Brevo, correos programados y catálogo que todavía "
                  "nombran Bomedia (las direcciones @bomedia.net y la serie 1 de FACTUSOL no "
                  "cuentan)."),
     severidad="media", fuente=FUENTE_MYSQL, grupo="crm",

@@ -10,11 +10,18 @@ import {
   getFactusolCustomerPaymentMethod,
   getFactusolFormasPago,
   getFactusolQuote,
+  getPlantillaLineas,
+  getPlantillasMeta,
+  listPlantillaCarpetas,
+  listPlantillaEtiquetas,
+  listPlantillas,
   saveBlob,
   searchFactusolArticles,
   searchFactusolQuotes,
   updateFactusolQuote,
   waitForQuoteJob,
+  type PlantillaDocumento,
+  type PlantillaLineaProforma,
 } from "../../lib/erpApi";
 
 jest.mock("../../lib/companiesApi", () => ({ listCompanies: jest.fn() }));
@@ -36,6 +43,13 @@ jest.mock("../../lib/erpApi", () => ({
   // C-4-fix1: el modo duplicar ya NO filtra por cliente; si alguien vuelve a
   // llamar a listFactusolQuotes desde aquí, el test lo detecta.
   listFactusolQuotes: jest.fn(),
+  // Plantillas de documento: «Cargar plantilla…» abre el PlantillaSelector
+  // real (carpetas, etiquetas, lista) y `plantillaInicialId` pide sus líneas.
+  getPlantillaLineas: jest.fn(),
+  getPlantillasMeta: jest.fn(),
+  listPlantillaCarpetas: jest.fn(),
+  listPlantillaEtiquetas: jest.fn(),
+  listPlantillas: jest.fn(),
 }));
 const mockCreate = createFactusolQuote as jest.Mock;
 const mockGetQuote = getFactusolQuote as jest.Mock;
@@ -49,6 +63,11 @@ const mockCustomerPayment = getFactusolCustomerPaymentMethod as jest.Mock;
 const mockWaitJob = waitForQuoteJob as jest.Mock;
 const mockPdf = downloadFactusolDocumentPdf as jest.Mock;
 const mockSaveBlob = saveBlob as jest.Mock;
+const mockPlLineas = getPlantillaLineas as jest.Mock;
+const mockPlMeta = getPlantillasMeta as jest.Mock;
+const mockPlCarpetas = listPlantillaCarpetas as jest.Mock;
+const mockPlEtiquetas = listPlantillaEtiquetas as jest.Mock;
+const mockPlList = listPlantillas as jest.Mock;
 
 function article(over = {}) {
   return {
@@ -1269,5 +1288,213 @@ describe("CreateQuoteModal · prefillLines (P3)", () => {
     await user.click(abrir);
     fireEvent.mouseDown(screen.getByRole("dialog", { name: "Nueva proforma FACTUSOL" }));
     expect(onCancel).toHaveBeenCalledTimes(3);
+  });
+});
+
+// Plantillas de documento: «Cargar plantilla…» (selector con carpetas,
+// buscador y etiquetas) y `plantillaInicialId` («Usar en una proforma» desde
+// ERP · Plantillas). La plantilla solo aporta las líneas, con su CODART.
+describe("CreateQuoteModal · plantillas de documento", () => {
+  const KIT: PlantillaDocumento = {
+    id: "pl-1", nombre: "Kit CD impresos", descripcion: null, activa: true, idioma: "es",
+    carpeta_id: null, carpeta: null, etiquetas: [], origen_tipo: "presupuesto",
+    origen_serie: 1, origen_codigo: 77, origen_order_id: null, origen_numero: "1-000077",
+    num_lineas: 3, created_at: null, updated_at: null,
+  };
+  /** Forma «proforma»: CODART interno + SKU comercial; la de texto, sin artículo. */
+  const LINEAS_KIT: PlantillaLineaProforma[] = [
+    { codart: "00001", sku: "CDR80WPT", description: "CD TQ 700 MB white Thermal WPT",
+      quantity: 100, unit_price: 0.79, discount_pct: 5, iva_pct: 21, text_only: false },
+    { codart: "", sku: null, description: "Impresión a 1 color incluida",
+      quantity: 0, unit_price: 0, discount_pct: 0, iva_pct: 21, text_only: true },
+    { codart: "1712", sku: "CAB-HDMI", description: "Cable HDMI",
+      quantity: 2, unit_price: 10, discount_pct: 0, iva_pct: 21, text_only: false },
+  ];
+  const SELECTOR = "Elegir plantilla para la proforma";
+
+  beforeEach(() => {
+    mockPlMeta.mockResolvedValue({
+      idiomas: ["es", "en", "de", "fr", "nl"], destinos: ["oferta", "proforma", "pedido"],
+      max_profundidad: 3, carpeta_defecto: null, gestiona_acceso: false, acceso_restringido: false,
+    });
+    mockPlCarpetas.mockResolvedValue({ items: [], carpeta_defecto: null });
+    mockPlEtiquetas.mockResolvedValue([]);
+    mockPlList.mockResolvedValue({ items: [KIT], total: 1, idioma_cliente: null, idioma_fuente: null });
+    mockPlLineas.mockResolvedValue({ plantilla: KIT, destino: "proforma", lineas: LINEAS_KIT, avisos: [] });
+  });
+
+  async function elegirKit(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(screen.getByRole("button", { name: "Cargar plantilla…" }));
+    const selector = await screen.findByRole("dialog", { name: SELECTOR });
+    await user.click(await within(selector).findByRole("button", { name: "Usar la plantilla Kit CD impresos" }));
+  }
+
+  it("«Cargar plantilla…» abre el selector (destino proforma, con el cliente y la serie) y al elegir vuelca sus líneas; al crear viaja el CODART interno, no el SKU comercial, y la de texto va sin codart", async () => {
+    const onCreated = jest.fn();
+    const user = userEvent.setup();
+    render(<CreateQuoteModal {...base({ factusolCodcli: "55555", onCreated })} />);
+    await user.selectOptions(screen.getByLabelText("Empresa emisora (serie)"), "2");
+    await user.click(screen.getByRole("button", { name: "Cargar plantilla…" }));
+    const selector = await screen.findByRole("dialog", { name: SELECTOR });
+    // El selector conoce al cliente destino y la serie (para poner primero
+    // las plantillas de su idioma) y solo lista las activas.
+    await waitFor(() => expect(mockPlList).toHaveBeenCalledWith(expect.objectContaining({
+      company_id: "c1", serie: 2, activas: true,
+    })));
+    await user.click(await within(selector).findByRole("button", { name: "Usar la plantilla Kit CD impresos" }));
+    await waitFor(() => expect(mockPlLineas).toHaveBeenCalledWith("pl-1", "proforma"));
+
+    // Se cierra el selector y la tabla queda con las líneas de la plantilla.
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: SELECTOR })).toBeNull());
+    expect(screen.getByLabelText("SKU línea 1")).toHaveValue("CDR80WPT");     // el comercial, a la vista
+    expect(screen.getByLabelText("Descripción línea 1")).toHaveValue("CD TQ 700 MB white Thermal WPT");
+    expect(screen.getByLabelText("Cantidad línea 1")).toHaveValue(100);
+    expect(screen.getByLabelText("Precio línea 1")).toHaveValue(0.79);
+    expect(screen.getByLabelText("Descuento línea 1")).toHaveValue(5);
+    expect(screen.getByLabelText("SKU línea 2")).toHaveValue("");
+    expect(screen.getByLabelText("Descripción línea 2")).toHaveValue("Impresión a 1 color incluida");
+    expect(screen.getByLabelText("SKU línea 3")).toHaveValue("CAB-HDMI");
+    expect(screen.getByText(/· plantilla «Kit CD impresos»/)).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Líneas de la plantilla «Kit CD impresos» (3).");
+    // La plantilla solo aporta las líneas: la serie elegida sigue.
+    expect(screen.getByLabelText("Empresa emisora (serie)")).toHaveValue("2");
+    // Volcarla no lanza el autocomplete de cada línea.
+    await afterDebounce();
+    expect(mockArticles).not.toHaveBeenCalled();
+    expect(mockCreate).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Crear proforma" }));
+    await waitFor(() => expect(mockCreate).toHaveBeenCalled());
+    const payload = mockCreate.mock.calls[0][0];
+    expect(payload.company_id).toBe("c1");
+    expect(payload.serie).toBe(2);
+    expect(payload.lines).toHaveLength(3);
+    // El artículo viaja por su CODART interno (00001), no por el SKU comercial.
+    expect(payload.lines[0]).toEqual({
+      codart: "00001", description: "CD TQ 700 MB white Thermal WPT",
+      quantity: 100, unit_price: 0.79, discount_pct: 5, iva_pct: 21,
+    });
+    // La línea de texto se conserva, sin artículo.
+    expect(payload.lines[1]).toMatchObject({
+      description: "Impresión a 1 color incluida", quantity: 0, unit_price: 0,
+    });
+    expect(payload.lines[1].codart).toBeUndefined();
+    expect(payload.lines[2].codart).toBe("1712");
+    expect(onCreated).toHaveBeenCalledWith("job-1");
+  });
+
+  it("si se reescribe a mano el SKU de una línea de la plantilla, deja de viajar su CODART (viaja lo tecleado)", async () => {
+    const user = userEvent.setup();
+    render(<CreateQuoteModal {...base()} />);
+    await elegirKit(user);
+    await waitFor(() => expect(screen.getByLabelText("SKU línea 1")).toHaveValue("CDR80WPT"));
+    await user.clear(screen.getByLabelText("SKU línea 1"));
+    await user.type(screen.getByLabelText("SKU línea 1"), "CDR80X");
+    await user.click(screen.getByRole("button", { name: "Crear proforma" }));
+    await waitFor(() => expect(mockCreate).toHaveBeenCalled());
+    const lines = mockCreate.mock.calls[0][0].lines;
+    expect(lines[0].codart).toBe("CDR80X");
+    expect(lines[2].codart).toBe("1712");            // las demás, intactas
+  });
+
+  it("con líneas ya escritas pregunta antes de sustituirlas: si se cancela se quedan las suyas; si se acepta, las de la plantilla", async () => {
+    const confirm = jest.spyOn(window, "confirm").mockReturnValue(false);
+    try {
+      const user = userEvent.setup();
+      render(<CreateQuoteModal {...base()} />);
+      await user.type(screen.getByLabelText("Descripción línea 1"), "Mano de obra");
+      await elegirKit(user);
+      await waitFor(() => expect(confirm).toHaveBeenCalledWith(
+        "Se sustituirán las líneas actuales por las de la plantilla. ¿Seguir?",
+      ));
+      await waitFor(() => expect(screen.queryByRole("dialog", { name: SELECTOR })).toBeNull());
+      expect(screen.getByLabelText("Descripción línea 1")).toHaveValue("Mano de obra");
+      expect(screen.queryByLabelText("Descripción línea 2")).not.toBeInTheDocument();
+      expect(screen.queryByText(/· plantilla «/)).not.toBeInTheDocument();
+
+      confirm.mockReturnValue(true);
+      await elegirKit(user);
+      await waitFor(() =>
+        expect(screen.getByLabelText("Descripción línea 1")).toHaveValue("CD TQ 700 MB white Thermal WPT"));
+      expect(screen.getByLabelText("Descripción línea 3")).toHaveValue("Cable HDMI");
+      expect(screen.queryByDisplayValue("Mano de obra")).not.toBeInTheDocument();
+    } finally {
+      confirm.mockRestore();
+    }
+  });
+
+  it("«Cancelar» en el selector lo cierra sin tocar las líneas ni pedir las de ninguna plantilla", async () => {
+    const user = userEvent.setup();
+    render(<CreateQuoteModal {...base()} />);
+    await user.type(screen.getByLabelText("Descripción línea 1"), "Mano de obra");
+    await user.click(screen.getByRole("button", { name: "Cargar plantilla…" }));
+    const selector = await screen.findByRole("dialog", { name: SELECTOR });
+    await within(selector).findByRole("button", { name: "Usar la plantilla Kit CD impresos" });
+    await user.click(within(selector).getByRole("button", { name: "Cancelar" }));
+    expect(screen.queryByRole("dialog", { name: SELECTOR })).toBeNull();
+    // El alta sigue abierta, con lo escrito.
+    expect(screen.getByRole("dialog", { name: "Nueva proforma FACTUSOL" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Descripción línea 1")).toHaveValue("Mano de obra");
+    expect(mockPlLineas).not.toHaveBeenCalled();
+  });
+
+  it("`plantillaInicialId` abre el alta con las líneas de esa plantilla (sin pasar por el selector)", async () => {
+    const user = userEvent.setup();
+    render(<CreateQuoteModal {...base({ plantillaInicialId: "pl-1" })} />);
+    expect(screen.getByRole("heading", { name: "Nueva proforma" })).toBeInTheDocument();
+    await waitFor(() => expect(mockPlLineas).toHaveBeenCalledWith("pl-1", "proforma"));
+    await waitFor(() => expect(screen.getByLabelText("SKU línea 1")).toHaveValue("CDR80WPT"));
+    expect(screen.getByLabelText("Descripción línea 2")).toHaveValue("Impresión a 1 color incluida");
+    expect(screen.getByLabelText("SKU línea 3")).toHaveValue("CAB-HDMI");
+    expect(screen.getByText(/· plantilla «Kit CD impresos»/)).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: SELECTOR })).toBeNull();
+    expect(mockPlList).not.toHaveBeenCalled();
+    expect(mockPlLineas).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByRole("button", { name: "Crear proforma" }));
+    await waitFor(() => expect(mockCreate).toHaveBeenCalled());
+    expect(mockCreate.mock.calls[0][0].lines.map((l: { codart?: string }) => l.codart))
+      .toEqual(["00001", undefined, "1712"]);
+  });
+
+  it("`plantillaInicialId` que no se puede cargar: lo dice y deja el alta en blanco", async () => {
+    mockPlLineas.mockRejectedValue(new Error("La plantilla ya no existe."));
+    render(<CreateQuoteModal {...base({ plantillaInicialId: "pl-x" })} />);
+    expect(await screen.findByText("La plantilla ya no existe.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Descripción línea 1")).toHaveValue("");
+    expect(screen.queryByLabelText("Descripción línea 2")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Crear proforma" })).toBeDisabled();
+  });
+
+  it("al editar (`editCodpre`) no aparece «Cargar plantilla…» y una plantilla inicial no pisa las líneas de la proforma", async () => {
+    mockGetQuote.mockResolvedValue({
+      ...quote({ codpre: "574" }), line_source: "F_LPS", serie: 2, tippre: "2",
+      lines: [{ position: 1, codart: "MBO", description: "Cabezal MBO",
+                quantity: 1, unit_price: 250, discount_pct: 0, line_total: 250, iva_pct: 21 }],
+    });
+    render(<CreateQuoteModal {...base({ editCodpre: "574", editSerie: 2, plantillaInicialId: "pl-1" })} />);
+    await waitFor(() => expect(screen.getByLabelText("Descripción línea 1")).toHaveValue("Cabezal MBO"));
+    expect(screen.getByRole("heading", { name: "Editar proforma nº 574" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Cargar plantilla…" })).not.toBeInTheDocument();
+    expect(mockPlLineas).not.toHaveBeenCalled();
+  });
+
+  it("solo se ofrece en «Con artículos» del alta: ni en la pestaña «Duplicar» ni en el duplicado directo", async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(<CreateQuoteModal {...base()} />);
+    expect(screen.getByRole("button", { name: "Cargar plantilla…" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Duplicar" }));
+    expect(screen.queryByRole("button", { name: "Cargar plantilla…" })).not.toBeInTheDocument();
+    unmount();
+
+    const origen = quote({ codpre: "81", numero: "5-000081", tippre: "5", serie: 5 });
+    mockGetQuote.mockResolvedValue({
+      ...origen, line_source: "F_LPS",
+      lines: [{ position: 1, codart: null, sku: null, description: "Hora SAT",
+                quantity: 1, unit_price: 60, discount_pct: 0, line_total: 60, iva_pct: 21 }],
+    });
+    render(<CreateQuoteModal {...base({ duplicateDirect: origen })} />);
+    await waitFor(() => expect(screen.getByLabelText("Descripción línea 1")).toHaveValue("Hora SAT"));
+    expect(screen.queryByRole("button", { name: "Cargar plantilla…" })).not.toBeInTheDocument();
   });
 });

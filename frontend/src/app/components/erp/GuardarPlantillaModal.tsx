@@ -20,6 +20,12 @@ const DOC_LABEL: Record<PlantillaOrigenIn["tipo"], string> = {
   albaran: "el albarán",
   pedido: "el pedido",
 };
+/** «de» + el documento, con la contracción: «de la proforma», «del albarán». */
+const DE_DOC: Record<PlantillaOrigenIn["tipo"], string> = {
+  presupuesto: "de la proforma",
+  albaran: "del albarán",
+  pedido: "del pedido",
+};
 
 /** «Guardar como plantilla» desde una proforma o un albarán de FACTUSOL o un
  *  pedido de BoHub: el servidor copia sus líneas (con sus artículos de
@@ -107,7 +113,7 @@ export function GuardarPlantillaModal({
     >
       <form onSubmit={(e) => { e.preventDefault(); void save(); }}>
         <p className="muted small">
-          Se copian las líneas de {DOC_LABEL[origen.tipo]}{" "}
+          Se copian las líneas {DE_DOC[origen.tipo]}{" "}
           {numero ? <span className="mono">{numero}</span> : null} (con sus
           artículos) a una plantilla de BoHub. Sirve para crear una oferta, una
           proforma o un pedido. No se toca nada en FACTUSOL.

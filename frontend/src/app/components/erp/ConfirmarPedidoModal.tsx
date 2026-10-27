@@ -18,6 +18,10 @@ const LABEL: Record<"albaranes" | "facturas", string> = {
   albaranes: "el albarán",
   facturas: "la factura",
 };
+const LIGADO: Record<"albaranes" | "facturas", string> = {
+  albaranes: "al albarán",
+  facturas: "a la factura",
+};
 
 /** «Crear pedido» desde un albarán o una factura de FACTUSOL (Documentos):
  *  ANTES de crear nada enseña el resumen de lo que se va a crear —empresa,
@@ -128,7 +132,7 @@ export function ConfirmarPedidoModal({
             </div>
           ) : null}
           <p className="muted small">
-            El pedido queda ligado a {LABEL[docType]}; en FACTUSOL no se escribe nada.
+            El pedido queda ligado {LIGADO[docType]}; en FACTUSOL no se escribe nada.
           </p>
         </>
       ) : null}

@@ -14,14 +14,18 @@ borrador solo» del asistente.
 
 ## El flujo
 
-1. **Plantilla.** En ERP · Proformas, sobre un presupuesto existente, «⋯ →
-   Guardar como plantilla de oferta». Copia sus líneas —con sus artículos de
-   FACTUSOL (`codart` interno + `sku` comercial)—, descripción, cantidades y
-   precios. Solo lee `F_PRE`/`F_LPS`. La plantilla lleva nombre, descripción y
-   si está activa; también se crean a mano, con líneas sueltas. Gestión en
-   ERP · Ofertas → pestaña «Plantillas» (crear, editar, desactivar).
+1. **Plantilla.** Desde el 27/10 son **plantillas de documento** (ver
+   [plantillas.md](plantillas.md)): la misma sirve para una oferta, una
+   proforma o un pedido. Se guardan con «⋯ → Guardar como plantilla» desde una
+   proforma, un albarán o un pedido —copia sus líneas con sus artículos de
+   FACTUSOL (`codart` interno + `sku` comercial), descripción, cantidades y
+   precios; solo lee FACTUSOL— o a mano. Llevan idioma, carpeta y etiquetas.
+   Gestión en **ERP · Plantillas** (la pestaña «Plantillas» de Ofertas se ha
+   quitado; `?tab=plantillas` lleva allí).
 2. **Oferta.** Desde la ficha del contacto («Nueva oferta» en la tarjeta
-   Ofertas del Resumen) o desde ERP · Ofertas, a partir de una plantilla. Sin
+   Ofertas del Resumen) o desde ERP · Ofertas, a partir de una plantilla
+   («Elegir plantilla…»: el selector con carpetas, buscador, etiquetas y las
+   del idioma del contacto arriba). Sin
    cliente de FACTUSOL, sin datos fiscales, sin escribir nada en FACTUSOL.
    Lleva contacto, empresa de BoHub si la tiene, empresa emisora (serie: 1
    Bomedia · 2 MQ Europe · 4 Lambert · 5 Streamtec), idioma, líneas, validez y
@@ -86,11 +90,11 @@ borrador solo» del asistente.
    oferta solo emite. La venta sigue atada al pedido. Los dos hechos están en
    el catálogo de disparadores de los workflows (filtro opcional por serie).
 
-## Tablas (migración 0146)
+## Tablas (migración 0146; la 0147 renombra las plantillas)
 
 | Tabla | Qué es |
 |---|---|
-| `ofertas_plantillas` + `ofertas_plantillas_lineas` | La plantilla y sus líneas (`codart`, `sku`, descripción, cantidad, precio, dto, IVA). |
+| `plantillas_documento` + `plantillas_documento_lineas` (en la 0146, `ofertas_plantillas` + `ofertas_plantillas_lineas`) | La plantilla y sus líneas (`codart`, `sku`, descripción, cantidad, precio, dto, IVA). Ver [plantillas.md](plantillas.md). |
 | `ofertas` + `ofertas_lineas` | La oferta (contacto, empresa, plantilla, serie, idioma, con_iva, fecha, validez, `valida_hasta`, estado, referencia, notas, totales, versión, enlace al `F_PRE`) y sus líneas. |
 | `ofertas_envios` | Historial de envíos: cuándo, quién, versión, destinatarios, asunto, remitente, adjunto, ids de Gmail. |
 | `ofertas_contador` | Un contador por año para `OF-AAAA-NNNN`. |
@@ -101,13 +105,13 @@ deriva al leer (`estado_efectivo`): la API devuelve `estado` (efectivo) y
 
 ## API (`/api/erp/ofertas`)
 
+Las plantillas tienen su propia API, `/api/erp/plantillas` ([plantillas.md](plantillas.md)).
+
 | Método | Ruta | Permiso | Qué hace |
 |---|---|---|---|
 | GET | `/meta` | ver ERP | prefijo, validez, series con nombre, idiomas, estados |
-| GET/POST | `/plantillas` | ver / `erp.proformas` | listar · crear (desde `{serie, codpre}` o con `lineas`) |
-| GET/PATCH | `/plantillas/{id}` | ver / `erp.proformas` | detalle · nombre, descripción, activa, líneas |
 | GET | `` `?contact_id=&company_id=&estado=&q=` | ver ERP | listado |
-| POST | `` | `erp.proformas` | crear |
+| POST | `` | `erp.proformas` | crear (con `plantilla_id`: una que el usuario vea) |
 | GET/PATCH | `/{id}` | ver / `erp.proformas` | detalle con líneas y envíos · editar |
 | GET | `/{id}/pdf?lang=&bank=` | ver ERP | el PDF |
 | GET | `/{id}/email-preview?lang=` | `erp.email.client` | destinatarios, idioma, asunto/cuerpo, remitente, adjunto |
@@ -117,7 +121,7 @@ deriva al leer (`estado_efectivo`): la API devuelve `estado` (efectivo) y
 
 ## Comprobación a mano (tras desplegar)
 
-Presupuesto real → «Guardar como plantilla de oferta» → oferta para un lead
+Presupuesto real → «Guardar como plantilla» → oferta para un lead
 que no está en FACTUSOL → PDF → enviar (el asistente propone el cuerpo) →
 convertir: el 409 lleva a crear la empresa por el camino de siempre → volver a
 convertir → el presupuesto resultante en FACTUSOL, igual que uno a mano.

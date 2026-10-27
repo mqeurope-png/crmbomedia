@@ -301,7 +301,7 @@ del pedido de BoHub.
   identidad, textos legales y bancos de las emisoras **salvo la serie 1**, los
   nombres de serie y los almacenes de recogida; los formularios web (nombre
   —título de la página pública—, marca, mensaje de gracias, aspecto y campos);
-  las líneas de las plantillas de oferta; las plantillas de Brevo; los correos
+  las líneas de las plantillas de documento (ERP · Plantillas); las plantillas de Brevo; los correos
   programados aún pendientes; las marcas, productos, imágenes y vídeos de la
   base de conocimiento (pintan los correos compuestos) y la marca de las webs
   de `sitios_web`— y saca **un descuadre por texto**, con el campo y la frase.

@@ -149,8 +149,8 @@ export function PlantillaSelector<D extends PlantillaDestino>({
 
   return (
     <ErpModalShell
-      label={`Elegir plantilla para la ${DESTINO_LABEL[destino]}`}
-      title={`Cargar plantilla en la ${DESTINO_LABEL[destino]}`}
+      label={`Elegir plantilla para ${DESTINO_LABEL[destino]}`}
+      title={`Cargar plantilla en ${DESTINO_LABEL[destino]}`}
       onClose={onClose}
       disabled={picking !== null}
       dialogClassName="erp-modal modal-wide pl-selector"

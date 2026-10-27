@@ -2,23 +2,23 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import OfertasPage from "./page";
 import { getCurrentUser } from "../../lib/api";
-import {
-  listOfertaPlantillas,
-  listOfertas,
-  openOfertaPdf,
-  updateOfertaPlantilla,
-} from "../../lib/erpApi";
+import { listOfertas, openOfertaPdf } from "../../lib/erpApi";
 
-/** Pantalla ERP · Ofertas: pestaña «Ofertas» (listado con filtros en el
- *  servidor y el menú «⋯» por fila: Ver / editar, PDF, Enviar por correo,
- *  Convertir en presupuesto; la convertida enlaza a su presupuesto) y pestaña
- *  «Plantillas» (editar, activar / desactivar, nueva). Los modales se prueban
- *  en sus propios tests; aquí basta con ver que se abren con la fila. */
+/** Pantalla ERP · Ofertas: listado con filtros en el servidor y el menú «⋯»
+ *  por fila (Ver / editar, PDF, Enviar por correo, Convertir en presupuesto;
+ *  la convertida enlaza a su presupuesto). Las plantillas ya no son una
+ *  pestaña: hay un enlace a ERP · Plantillas, `?tab=plantillas` (enlaces
+ *  viejos) redirige allí y `?plantilla=` abre la oferta nueva con esa
+ *  plantilla. Los modales se prueban en sus propios tests; aquí basta con ver
+ *  que se abren con la fila. */
 
-// Los parámetros de la URL (`?tab=`, `?contact_id=`): cada test fija los suyos.
+// Los parámetros de la URL (`?tab=`, `?contact_id=`, `?plantilla=`): cada
+// test fija los suyos.
 let mockSearchParams = new URLSearchParams("");
+const mockReplace = jest.fn();
 jest.mock("next/navigation", () => ({
   useSearchParams: () => mockSearchParams,
+  useRouter: () => ({ replace: mockReplace, push: jest.fn() }),
 }));
 jest.mock("next/link", () => ({
   __esModule: true,
@@ -38,17 +38,17 @@ jest.mock("../../lib/erpApi", () => ({
   // Textos reales de los estados (filtro y pastilla).
   OFERTA_ESTADO_LABELS: jest.requireActual("../../lib/erpApi").OFERTA_ESTADO_LABELS,
   listOfertas: jest.fn(),
-  listOfertaPlantillas: jest.fn(),
   openOfertaPdf: jest.fn(),
-  updateOfertaPlantilla: jest.fn(),
 }));
 jest.mock("../../components/erp/OfertaEditorModal", () => ({
-  OfertaEditorModal: ({ oferta, marcarPosiciones, readOnly, onClose, onSaved }: {
-    oferta?: { numero: string } | null; marcarPosiciones?: number[]; readOnly?: boolean;
+  OfertaEditorModal: ({ oferta, marcarPosiciones, plantillaInicialId, readOnly, onClose, onSaved }: {
+    oferta?: { numero: string } | null; marcarPosiciones?: number[];
+    plantillaInicialId?: string | null; readOnly?: boolean;
     onClose: () => void; onSaved: (o: { numero: string }) => void;
   }) => (
     <div>
       EDITOR {oferta?.numero ?? "nueva"} marcadas:{(marcarPosiciones ?? []).join(",") || "—"}
+      {plantillaInicialId ? ` plantilla:${plantillaInicialId}` : ""}
       {readOnly ? " SOLO LECTURA" : ""}
       <button type="button"
               onClick={() => onSaved({ ...(oferta ?? {}), numero: oferta?.numero ?? "OF-2026-0009" })}>
@@ -83,25 +83,9 @@ jest.mock("../../components/erp/ConvertOfertaDialog", () => ({
     </div>
   ),
 }));
-jest.mock("../../components/erp/OfertaPlantillaModal", () => ({
-  OfertaPlantillaModal: ({ plantilla, onClose, onSaved }: {
-    plantilla?: { nombre: string } | null; onClose: () => void;
-    onSaved: (p: { nombre: string }) => void;
-  }) => (
-    <div>
-      PLANTILLA MODAL {plantilla?.nombre ?? "nueva"}
-      <button type="button" onClick={() => onSaved(plantilla ?? { nombre: "Recién creada" })}>
-        GUARDAR PLANTILLA
-      </button>
-      <button type="button" onClick={onClose}>CERRAR PLANTILLA</button>
-    </div>
-  ),
-}));
 
 const mockList = listOfertas as jest.Mock;
-const mockPlantillas = listOfertaPlantillas as jest.Mock;
 const mockPdf = openOfertaPdf as jest.Mock;
-const mockUpdatePlantilla = updateOfertaPlantilla as jest.Mock;
 
 const OF1 = {
   id: "of1", numero: "OF-2026-0001", anio: 2026, secuencia: 1,
@@ -122,23 +106,15 @@ const OF2 = {
   vencida: true, pendiente_de_envio: false, referencia: null,
   factusol: { serie: 2, codpre: 575, numero: "2-000575", ejercicio: "2026" },
 };
-const PL1 = {
-  id: "p1", nombre: "Kit UV", descripcion: "Arranque impresión UV", activa: true,
-  origen_serie: 2, origen_codpre: 500, origen_numero: "2-000500", num_lineas: 3,
-  created_at: null, updated_at: null,
-};
 
 beforeEach(() => {
   mockSearchParams = new URLSearchParams("");
   (getCurrentUser as jest.Mock).mockImplementation(() => Promise.resolve({ role: "admin" }));
   mockList.mockReset();
   mockList.mockResolvedValue([OF1, OF2]);
-  mockPlantillas.mockReset();
-  mockPlantillas.mockResolvedValue([PL1]);
   mockPdf.mockReset();
   mockPdf.mockResolvedValue(undefined);
-  mockUpdatePlantilla.mockReset();
-  mockUpdatePlantilla.mockResolvedValue({ ...PL1, activa: false });
+  mockReplace.mockReset();
 });
 
 function row(numero: string) {
@@ -244,13 +220,7 @@ describe("ERP · Ofertas", () => {
     await waitFor(() => expect(mockList).toHaveBeenLastCalledWith({ limit: 500 }));
   });
 
-  it("por la URL: ?tab=plantillas abre esa pestaña y ?contact_id= filtra por el contacto (chip y «Limpiar filtros»)", async () => {
-    mockSearchParams = new URLSearchParams("tab=plantillas");
-    const { unmount } = render(<OfertasPage />);
-    await screen.findByRole("table", { name: "Plantillas de oferta" });
-    expect(screen.getByRole("tab", { name: "Plantillas" })).toHaveAttribute("aria-selected", "true");
-    unmount();
-
+  it("por la URL: ?contact_id= filtra por el contacto (chip y «Limpiar filtros»)", async () => {
     mockSearchParams = new URLSearchParams("contact_id=c1");
     const user = userEvent.setup();
     render(<OfertasPage />);
@@ -274,33 +244,48 @@ describe("ERP · Ofertas", () => {
     expect(await screen.findByText(/EDITOR OF-2026-0001 .*SOLO LECTURA/)).toBeInTheDocument();
   });
 
-  it("pestaña Plantillas: lista (nombre, origen, líneas, activa), Editar, Desactivar y Nueva plantilla", async () => {
+  it("las plantillas viven en ERP · Plantillas: enlace «Plantillas» en la cabecera y sin pestañas", async () => {
+    render(<OfertasPage />);
+    await screen.findByRole("table", { name: "Ofertas" });
+    expect(screen.getByRole("link", { name: "Plantillas" })).toHaveAttribute("href", "/erp/plantillas");
+    expect(screen.queryByRole("tab")).toBeNull();
+    expect(screen.queryByRole("table", { name: "Plantillas de oferta" })).toBeNull();
+    expect(mockReplace).not.toHaveBeenCalled();
+  });
+
+  it("el enlace «Plantillas» también está sin permiso de proformas", async () => {
+    (getCurrentUser as jest.Mock).mockImplementation(() => Promise.resolve({ role: "sat" }));
+    render(<OfertasPage />);
+    await screen.findByRole("table", { name: "Ofertas" });
+    expect(screen.getByRole("link", { name: "Plantillas" })).toHaveAttribute("href", "/erp/plantillas");
+  });
+
+  it("?tab=plantillas (enlaces viejos) redirige a ERP · Plantillas", async () => {
+    mockSearchParams = new URLSearchParams("tab=plantillas");
+    render(<OfertasPage />);
+    await waitFor(() => expect(mockReplace).toHaveBeenCalledWith("/erp/plantillas"));
+    expect(mockReplace).toHaveBeenCalledTimes(1);
+  });
+
+  it("?plantilla=ID abre ya el editor de una oferta nueva con esa plantilla; al crearla avisa y recarga", async () => {
+    mockSearchParams = new URLSearchParams("plantilla=p1");
+    const user = userEvent.setup();
+    render(<OfertasPage />);
+    expect(await screen.findByText(/EDITOR nueva marcadas:— plantilla:p1/)).toBeInTheDocument();
+    await screen.findByRole("table", { name: "Ofertas" });
+    expect(mockReplace).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "GUARDAR EDITOR" }));
+    expect(await screen.findByRole("status")).toHaveTextContent("Oferta OF-2026-0009 creada.");
+    expect(screen.queryByText(/EDITOR/)).toBeNull();
+    await waitFor(() => expect(mockList).toHaveBeenCalledTimes(2));
+  });
+
+  it("«+ Nueva oferta» sin ?plantilla= abre el editor sin plantilla", async () => {
     const user = userEvent.setup();
     render(<OfertasPage />);
     await screen.findByRole("table", { name: "Ofertas" });
-    expect(mockPlantillas).not.toHaveBeenCalled();           // se piden al abrir la pestaña
-    await user.click(screen.getByRole("tab", { name: "Plantillas" }));
-    await screen.findByRole("table", { name: "Plantillas de oferta" });
-    expect(mockPlantillas).toHaveBeenCalledWith(false);
-    const fila = screen.getByRole("row", { name: "Plantilla Kit UV" });
-    expect(fila).toHaveTextContent("Arranque impresión UV");
-    expect(fila).toHaveTextContent("Presupuesto 2-000500");
-    expect(within(fila).getByText("3")).toBeInTheDocument();
-    expect(within(fila).getByText("Activa")).toHaveClass("badge", "ok");
-
-    await user.click(within(fila).getByRole("button", { name: "Desactivar" }));
-    await waitFor(() => expect(mockUpdatePlantilla).toHaveBeenCalledWith("p1", { activa: false }));
-    expect(await screen.findByRole("status")).toHaveTextContent("Plantilla «Kit UV» desactivada.");
-    await waitFor(() => expect(mockPlantillas).toHaveBeenCalledTimes(2));
-
-    await user.click(within(screen.getByRole("row", { name: "Plantilla Kit UV" })).getByRole("button", { name: "Editar" }));
-    expect(await screen.findByText("PLANTILLA MODAL Kit UV")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "CERRAR PLANTILLA" }));
-
-    await user.click(screen.getByRole("button", { name: "+ Nueva plantilla" }));
-    expect(await screen.findByText("PLANTILLA MODAL nueva")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "GUARDAR PLANTILLA" }));
-    expect(await screen.findByRole("status")).toHaveTextContent("Plantilla «Recién creada» creada.");
-    await waitFor(() => expect(mockPlantillas).toHaveBeenCalledTimes(3));
+    await user.click(screen.getByRole("button", { name: "+ Nueva oferta" }));
+    const editor = await screen.findByText(/EDITOR nueva/);
+    expect(editor).not.toHaveTextContent("plantilla:");
   });
 });

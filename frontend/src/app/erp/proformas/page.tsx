@@ -629,7 +629,11 @@ export default function ProformasPage() {
         description="Presupuestos enviados y su estado."
         actions={canEdit ? (
           <button type="button" className="button small" disabled={busy}
-                  onClick={() => setPicking(true)}>
+                  onClick={() => {
+                    // «+ Nueva proforma» a secas: sin la plantilla de un «Usar» anterior.
+                    setPlantillaUso(null);
+                    setPicking(true);
+                  }}>
             + Nueva proforma
           </button>
         ) : null}
@@ -880,12 +884,12 @@ export default function ProformasPage() {
         />
       ) : null}
 
+      {/* El selector llama a `onPick` y DESPUÉS a `onClose`: la plantilla
+          pendiente no se borra aquí (se quita al cancelar o crear el alta, o
+          con «+ Nueva proforma»). */}
       <CompanyPickerModal
         open={picking}
-        onClose={() => {
-          setPicking(false);
-          setPlantillaUso(null);
-        }}
+        onClose={() => setPicking(false)}
         onPick={(id) => void onPickCompany(id)}
       />
 

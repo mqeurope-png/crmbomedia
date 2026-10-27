@@ -1,8 +1,9 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { CompanyQuotesPanel } from "./CompanyQuotesPanel";
 import {
   convertFactusolQuoteToOrder,
+  getQuoteConvertPreview,
   getQuoteJobStatus,
   listFactusolQuotes,
 } from "../../lib/erpApi";
@@ -28,10 +29,28 @@ jest.mock("../../lib/erpApi", () => ({
   getFactusolFormasPago: jest.fn(() => Promise.resolve([
     { codigo: "002", nombre: "Transferencia" },
   ])),
+  // «Convertir en pedido» enseña antes el resumen de lo que se va a crear.
+  getQuoteConvertPreview: jest.fn(),
 }));
 const mockList = listFactusolQuotes as jest.Mock;
 const mockConvert = convertFactusolQuoteToOrder as jest.Mock;
 const mockStatus = getQuoteJobStatus as jest.Mock;
+const mockPreview = getQuoteConvertPreview as jest.Mock;
+
+/** Resumen de la conversión (solo LEE; aún no convertida). */
+function convertPreview(over = {}) {
+  return {
+    codpre: "77", serie: 1, company_linked: true, cliente_codigo: "55555",
+    already_existed: null,
+    company_id: "c1", company_name: "Acme SL", fecha: "2026-08-01",
+    lineas: [{ product_sku: "", description: "Instalación sala 3", quantity: 1,
+               unit_price: 100, discount_pct: 0, line_total: 100, tax_rate: 21 }],
+    total: 121,
+    origen: { doc_type: "presupuestos", label: "proforma", serie: 1, codigo: 77,
+              numero: "1-000077", referencia: "Instalación sala 3" },
+    ...over,
+  };
+}
 
 function quote(over = {}) {
   return {
@@ -45,8 +64,20 @@ beforeEach(() => {
   mockList.mockReset();
   mockConvert.mockReset();
   mockStatus.mockReset();
+  mockPreview.mockReset();
   mockList.mockResolvedValue({ items: [], unlinked: false });
+  mockPreview.mockResolvedValue(convertPreview());
 });
+
+/** Abre «Convertir en pedido» y espera al resumen: hasta entonces el botón
+ *  «Crear pedido y albarán» está deshabilitado. */
+async function abrirConversion(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByRole("button", { name: "Convertir en pedido" }));
+  const dialog = await screen.findByRole("dialog", { name: "Convertir proforma en pedido" });
+  await within(dialog).findByRole("region", { name: "Resumen del pedido" });
+  expect(mockPreview).toHaveBeenCalledWith("77", null);
+  return dialog;
+}
 
 function base(over = {}) {
   return {
@@ -133,9 +164,9 @@ describe("CompanyQuotesPanel", () => {
     const user = userEvent.setup();
     render(<CompanyQuotesPanel {...base({ onOrderCreated })} />);
 
-    await user.click(await screen.findByRole("button", { name: "Convertir en pedido" }));
-    // Fase 2: paso de pago antes de convertir. Por defecto «sin pago».
-    const dialog = await screen.findByRole("dialog", { name: "Convertir proforma en pedido" });
+    // Primero el resumen (solo lee); luego el paso de pago. Por defecto «sin pago».
+    const dialog = await abrirConversion(user);
+    expect(mockConvert).not.toHaveBeenCalled();
     expect(within(dialog).getByLabelText("Sin pago")).toBeChecked();
     await user.click(within(dialog).getByRole("button", { name: "Crear pedido y albarán" }));
 
@@ -149,6 +180,22 @@ describe("CompanyQuotesPanel", () => {
     expect(onOrderCreated).toHaveBeenCalledWith("o-1");
   });
 
+  it("«Crear pedido y albarán» está deshabilitado hasta que llega el resumen", async () => {
+    mockList.mockResolvedValue({ items: [quote()], unlinked: false });
+    let llega!: (v: unknown) => void;
+    mockPreview.mockReturnValue(new Promise((r) => { llega = r; }));
+    const user = userEvent.setup();
+    render(<CompanyQuotesPanel {...base()} />);
+    await user.click(await screen.findByRole("button", { name: "Convertir en pedido" }));
+    const dialog = await screen.findByRole("dialog", { name: "Convertir proforma en pedido" });
+    expect(within(dialog).getByText("Leyendo la proforma…")).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Crear pedido y albarán" })).toBeDisabled();
+    await act(async () => { llega(convertPreview()); });
+    await within(dialog).findByRole("region", { name: "Resumen del pedido" });
+    expect(within(dialog).getByRole("button", { name: "Crear pedido y albarán" })).toBeEnabled();
+    expect(mockConvert).not.toHaveBeenCalled();
+  });
+
   it("«Pagado» con cuenta opcional viaja al job (opción B: sin factura)", async () => {
     mockList.mockResolvedValue({ items: [quote()], unlinked: false });
     mockConvert.mockResolvedValue({ job_id: "job-c2", status: "queued", codpre: "77" });
@@ -158,8 +205,7 @@ describe("CompanyQuotesPanel", () => {
     });
     const user = userEvent.setup();
     render(<CompanyQuotesPanel {...base()} />);
-    await user.click(await screen.findByRole("button", { name: "Convertir en pedido" }));
-    const dialog = await screen.findByRole("dialog", { name: "Convertir proforma en pedido" });
+    const dialog = await abrirConversion(user);
     await user.click(within(dialog).getByLabelText("Pagado"));
     const confirm = within(dialog).getByRole("button", { name: "Crear pedido y albarán" });
     // Fix C: la cuenta es OPCIONAL (apunte del pedido, no cobro en FACTUSOL);
@@ -185,8 +231,7 @@ describe("CompanyQuotesPanel", () => {
     const user = userEvent.setup();
     render(<CompanyQuotesPanel {...base()} />);
 
-    await user.click(await screen.findByRole("button", { name: "Convertir en pedido" }));
-    const dialog = await screen.findByRole("dialog", { name: "Convertir proforma en pedido" });
+    const dialog = await abrirConversion(user);
     await user.click(within(dialog).getByRole("button", { name: "Crear pedido y albarán" }));
     expect(await screen.findByText("CODPRE duplicado")).toBeInTheDocument();
   });

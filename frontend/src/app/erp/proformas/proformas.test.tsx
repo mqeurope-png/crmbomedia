@@ -1,16 +1,21 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import ProformasPage from "./page";
 import { getCurrentUser } from "../../lib/api";
 import { getCompany } from "../../lib/companiesApi";
 import {
   convertFactusolQuoteToOrder,
-  createOfertaPlantilla,
+  createPlantilla,
   downloadFactusolDocumentPdf,
   duplicateFactusolQuote,
   getFactusolQuote,
+  getPlantillaLineas,
+  getPlantillasMeta,
+  getQuoteConvertPreview,
   getQuoteJobStatus,
   listFactusolQuotes,
+  listPlantillaCarpetas,
+  listPlantillaEtiquetas,
   saveBlob,
 } from "../../lib/erpApi";
 
@@ -52,33 +57,58 @@ jest.mock("../../lib/erpApi", () => ({
   getQuoteJobStatus: jest.fn(),
   downloadFactusolDocumentPdf: jest.fn(),
   saveBlob: jest.fn(),
-  // Ofertas: «Guardar como plantilla de oferta» (copia las líneas en BoHub).
-  createOfertaPlantilla: jest.fn(),
+  // «Convertir en pedido»: el resumen de lo que se va a crear, ANTES del pago.
+  getQuoteConvertPreview: jest.fn(),
+  // «⋯ → Guardar como plantilla» (GuardarPlantillaModal real): copia las
+  // líneas a una plantilla de documento de BoHub.
+  createPlantilla: jest.fn(),
+  getPlantillasMeta: jest.fn(),
+  listPlantillaCarpetas: jest.fn(),
+  listPlantillaEtiquetas: jest.fn(),
+  // `?plantilla=` → el alta real (CreateQuoteModal) carga sus líneas.
+  getPlantillaLineas: jest.fn(),
+  getFactusolCustomerAddresses: jest.fn(() => Promise.resolve([])),
+  getFactusolCustomerPaymentMethod: jest.fn(() => Promise.resolve({ codigo: null, nombre: null })),
   // Paso de pago (Fase 2): catálogos.
   getContrapartidas: jest.fn(() => Promise.resolve([{ codigo: "6", nombre: "Bomedia Sabadell" }])),
   getFactusolFormasPago: jest.fn(() => Promise.resolve([{ codigo: "002", nombre: "Transferencia" }])),
 }));
+// Como el selector real: `onPick` y DESPUÉS `onClose`.
 jest.mock("../../components/CompanyPickerModal", () => ({
-  CompanyPickerModal: ({ open, onPick }: { open: boolean; onPick: (id: string | null, label: string) => void }) =>
-    open ? <button type="button" onClick={() => onPick("c1", "Acme SL")}>PICK Acme SL</button> : null,
+  CompanyPickerModal: ({ open, onPick, onClose }: {
+    open: boolean; onPick: (id: string | null, label: string) => void; onClose: () => void;
+  }) =>
+    open ? (
+      <button type="button" onClick={() => { onPick("c1", "Acme SL"); onClose(); }}>PICK Acme SL</button>
+    ) : null,
 }));
 // El modal real se prueba en CreateQuoteModal.test.tsx (allí, sin mock, se
 // comprueba que `duplicateDirect` vuelca la proforma de origen entera). Aquí
 // basta con ver a qué modo se abre: `edit:` (edición) y `dup:` (duplicado
-// directo con la proforma de origen).
-jest.mock("../../components/erp/CreateQuoteModal", () => ({
-  CreateQuoteModal: ({ companyName, editCodpre, duplicateDirect, onCreated, onCancel }: {
-    companyName: string; editCodpre?: string | null;
-    duplicateDirect?: { codpre?: string | null } | null;
-    onCreated: (jobId: string) => void; onCancel: () => void;
-  }) => (
-    <div>
-      QUOTE MODAL {companyName} edit:{editCodpre ?? "—"} dup:{duplicateDirect?.codpre ?? "—"}
-      <button type="button" onClick={() => onCreated("job-9")}>GUARDAR MODAL</button>
-      <button type="button" onClick={onCancel}>CANCELAR MODAL</button>
-    </div>
-  ),
-}));
+// directo con la proforma de origen). Con `plantillaInicialId` («Usar en una
+// proforma» desde ERP · Plantillas) se pinta el modal REAL, para ver que
+// carga las líneas de esa plantilla.
+jest.mock("../../components/erp/CreateQuoteModal", () => {
+  const actual = jest.requireActual("../../components/erp/CreateQuoteModal");
+  return {
+    CreateQuoteModal: (props: {
+      companyName: string; editCodpre?: string | null;
+      duplicateDirect?: { codpre?: string | null } | null;
+      plantillaInicialId?: string | null;
+      onCreated: (jobId: string) => void; onCancel: () => void;
+    }) => {
+      const { companyName, editCodpre, duplicateDirect, plantillaInicialId, onCreated, onCancel } = props;
+      if (plantillaInicialId) return <actual.CreateQuoteModal {...props} />;
+      return (
+        <div>
+          QUOTE MODAL {companyName} edit:{editCodpre ?? "—"} dup:{duplicateDirect?.codpre ?? "—"}
+          <button type="button" onClick={() => onCreated("job-9")}>GUARDAR MODAL</button>
+          <button type="button" onClick={onCancel}>CANCELAR MODAL</button>
+        </div>
+      );
+    },
+  };
+});
 
 // Punto A: el modal de email se prueba en QuoteEmailModal.test.tsx; aquí basta
 // con ver que se abre con la proforma de la fila.
@@ -99,7 +129,12 @@ const mockStatus = getQuoteJobStatus as jest.Mock;
 const mockPdf = downloadFactusolDocumentPdf as jest.Mock;
 const mockCompany = getCompany as jest.Mock;
 const mockGetQuote = getFactusolQuote as jest.Mock;
-const mockCreatePlantilla = createOfertaPlantilla as jest.Mock;
+const mockCreatePlantilla = createPlantilla as jest.Mock;
+const mockConvertPreview = getQuoteConvertPreview as jest.Mock;
+const mockPlantillasMeta = getPlantillasMeta as jest.Mock;
+const mockPlantillaCarpetas = listPlantillaCarpetas as jest.Mock;
+const mockPlantillaEtiquetas = listPlantillaEtiquetas as jest.Mock;
+const mockPlantillaLineas = getPlantillaLineas as jest.Mock;
 
 const BRAILLE = {
   codpre: "39", referencia: "Placas braille", fecha: "2026-09-04", clipre: "3392",
@@ -154,6 +189,42 @@ const LISTING_CON_VIEJA = {
   queue_counts: { ...LISTING.queue_counts, pendientes: 2 },
 };
 
+/** Resumen de «Convertir en pedido» de la 39 (serie 5): lo que se creará. */
+const PREVIEW_39 = {
+  codpre: "39", serie: 5, company_linked: true, cliente_codigo: "3392", already_existed: null,
+  company_id: "be", company_name: "Ligue Braille", fecha: "2026-09-15",
+  lineas: [
+    { product_sku: "BRL-A4", description: "Placa braille A4", quantity: 10,
+      unit_price: 477, discount_pct: 0, line_total: 4770, tax_rate: 0 },
+  ],
+  total: 4770,
+  origen: {
+    doc_type: "presupuestos", label: "proforma", serie: 5, codigo: 39,
+    numero: "5-000039", referencia: "Placas braille",
+  },
+};
+
+/** Abre «Convertir en pedido» de la fila y espera al resumen: hasta tenerlo,
+ *  «Crear pedido y albarán» no se puede pulsar. */
+async function abrirConversion(user: ReturnType<typeof userEvent.setup>, codpre = "39") {
+  await user.click(within(row(codpre)).getByRole("button", { name: "Convertir en pedido" }));
+  const dialog = await screen.findByRole("dialog", { name: "Convertir proforma en pedido" });
+  await waitFor(() =>
+    expect(within(dialog).getByRole("button", { name: "Crear pedido y albarán" })).toBeEnabled());
+  return dialog;
+}
+
+const ARBOL_PLANTILLAS = {
+  items: [{
+    id: "c-bra", nombre: "Braille", parent_id: null, num_plantillas: 2, es_defecto: true, children: [],
+  }],
+  carpeta_defecto: "c-bra",
+};
+const META_PLANTILLAS = {
+  idiomas: ["es", "en", "de", "fr", "nl"], destinos: ["oferta", "proforma", "pedido"],
+  max_profundidad: 3, carpeta_defecto: "c-bra", gestiona_acceso: false, acceso_restringido: false,
+};
+
 /** «Hoy» fijo (15 sep 2026) para que la antigüedad en palabras sea estable:
  *  39 y 71 son del 4 sep (11 días), 40 del 1 sep (14), 41 del 15 jul (62),
  *  42 del 5 ago (41). */
@@ -171,10 +242,21 @@ beforeEach(() => {
   mockGetQuote.mockReset();
   mockCreatePlantilla.mockReset();
   (saveBlob as jest.Mock).mockReset();
+  mockConvertPreview.mockReset();
+  mockConvertPreview.mockResolvedValue(PREVIEW_39);
+  mockPlantillasMeta.mockReset();
+  mockPlantillasMeta.mockResolvedValue(META_PLANTILLAS);
+  mockPlantillaCarpetas.mockReset();
+  mockPlantillaCarpetas.mockResolvedValue(ARBOL_PLANTILLAS);
+  mockPlantillaEtiquetas.mockReset();
+  mockPlantillaEtiquetas.mockResolvedValue([{ etiqueta: "braille", norm: "braille", num: 1 }]);
+  mockPlantillaLineas.mockReset();
 });
 
 afterEach(() => {
   nowSpy.mockRestore();
+  // El test de `?plantilla=` cambia la URL; las demás pantallas entran sin ella.
+  window.history.replaceState({}, "", "/");
 });
 
 function row(codpre: string) {
@@ -257,8 +339,7 @@ describe("Pantalla Proformas (rediseño de flujo, Fase 4)", () => {
     const user = userEvent.setup();
     render(<ProformasPage />);
     await screen.findByRole("list", { name: "Proformas" });
-    await user.click(within(row("39")).getByRole("button", { name: "Convertir en pedido" }));
-    const dialog = await screen.findByRole("dialog", { name: "Convertir proforma en pedido" });
+    const dialog = await abrirConversion(user);
     expect(dialog).toHaveTextContent("Convertir la proforma 39 en pedido");
     expect(within(dialog).getByLabelText("Sin pago")).toBeChecked();
     mockList.mockResolvedValue({
@@ -291,8 +372,7 @@ describe("Pantalla Proformas (rediseño de flujo, Fase 4)", () => {
     const user = userEvent.setup();
     render(<ProformasPage />);
     await screen.findByRole("list", { name: "Proformas" });
-    await user.click(within(row("39")).getByRole("button", { name: "Convertir en pedido" }));
-    const dialog = await screen.findByRole("dialog", { name: "Convertir proforma en pedido" });
+    const dialog = await abrirConversion(user);
     await user.click(within(dialog).getByRole("button", { name: "Crear pedido y albarán" }));
     const alerta = await screen.findByRole("alert");
     expect(alerta).toHaveTextContent("No se pudo convertir la proforma 39");
@@ -310,8 +390,7 @@ describe("Pantalla Proformas (rediseño de flujo, Fase 4)", () => {
       const user = userEvent.setup({ advanceTimers: jest.advanceTimersByTime });
       render(<ProformasPage />);
       await screen.findByRole("list", { name: "Proformas" });
-      await user.click(within(row("39")).getByRole("button", { name: "Convertir en pedido" }));
-      const dialog = await screen.findByRole("dialog", { name: "Convertir proforma en pedido" });
+      const dialog = await abrirConversion(user);
       // Tras encolar, la recarga ya muestra la 39 convertida (el worker la creó
       // aunque el poll del estado no lo alcanzara).
       mockList.mockResolvedValue({
@@ -330,6 +409,69 @@ describe("Pantalla Proformas (rediseño de flujo, Fase 4)", () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  it("«Convertir en pedido» enseña ANTES el resumen del servidor (empresa, fecha, origen, conceptos, importe); sin él no se puede crear", async () => {
+    let entregar: (v: unknown) => void = () => {};
+    mockConvertPreview.mockReturnValue(new Promise((resolve) => { entregar = resolve; }));
+    const user = userEvent.setup();
+    render(<ProformasPage />);
+    await screen.findByRole("list", { name: "Proformas" });
+    await user.click(within(row("39")).getByRole("button", { name: "Convertir en pedido" }));
+    const dialog = await screen.findByRole("dialog", { name: "Convertir proforma en pedido" });
+    // Se pide por (número, serie): la 39 es de la serie 5 (los CODPRE se repiten).
+    expect(mockConvertPreview).toHaveBeenCalledWith("39", 5);
+    expect(dialog).toHaveTextContent("Leyendo la proforma…");
+    expect(within(dialog).getByRole("button", { name: "Crear pedido y albarán" })).toBeDisabled();
+
+    await act(async () => { entregar(PREVIEW_39); });
+    const resumen = await within(dialog).findByRole("region", { name: "Resumen del pedido" });
+    expect(resumen).toHaveTextContent("Ligue Braille");
+    expect(resumen).toHaveTextContent("15/09/2026");
+    expect(resumen).toHaveTextContent("Proforma 5-000039 · Placas braille");
+    const conceptos = within(within(resumen).getByRole("table", { name: "Conceptos del pedido" }))
+      .getAllByRole("row").slice(1);
+    expect(conceptos).toHaveLength(1);
+    expect(conceptos[0]).toHaveTextContent("BRL-A4 · Placa braille A4");
+    expect(conceptos[0]).toHaveTextContent("4770.00 €");
+    expect(resumen).toHaveTextContent("Importe (IVA incl.): 4770.00 €");
+    expect(dialog).not.toHaveTextContent("Leyendo la proforma…");
+    expect(within(dialog).getByRole("button", { name: "Crear pedido y albarán" })).toBeEnabled();
+    // Abrir y leer el resumen no crea nada.
+    expect(mockConvert).not.toHaveBeenCalled();
+  });
+
+  it("si la proforma YA se convirtió, el resumen lo dice con enlace al pedido y no ofrece crear otro (ni el paso de pago)", async () => {
+    mockConvertPreview.mockResolvedValue({
+      ...PREVIEW_39, already_existed: { order_id: "o39", order_number: "PRO-000039" },
+    });
+    const user = userEvent.setup();
+    render(<ProformasPage />);
+    await screen.findByRole("list", { name: "Proformas" });
+    await user.click(within(row("39")).getByRole("button", { name: "Convertir en pedido" }));
+    const dialog = await screen.findByRole("dialog", { name: "Convertir proforma en pedido" });
+    const aviso = await within(dialog).findByText(/ya se convirtió en el pedido/);
+    expect(aviso).toHaveTextContent("No se crea otro.");
+    expect(within(aviso).getByRole("link", { name: "PRO-000039" })).toHaveAttribute("href", "/erp/orders/o39");
+    expect(within(dialog).getByRole("region", { name: "Resumen del pedido" })).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Crear pedido y albarán" })).toBeNull();
+    expect(within(dialog).queryByLabelText("Sin pago")).toBeNull();
+    // «Cancelar» pasa a «Cerrar» y cierra sin convertir.
+    await user.click(within(dialog).getByText("Cerrar"));
+    expect(screen.queryByRole("dialog", { name: "Convertir proforma en pedido" })).toBeNull();
+    expect(mockConvert).not.toHaveBeenCalled();
+  });
+
+  it("si no se puede leer el resumen, lo dice y no deja crear el pedido a ciegas", async () => {
+    mockConvertPreview.mockRejectedValue(new Error("FACTUSOL no responde."));
+    const user = userEvent.setup();
+    render(<ProformasPage />);
+    await screen.findByRole("list", { name: "Proformas" });
+    await user.click(within(row("39")).getByRole("button", { name: "Convertir en pedido" }));
+    const dialog = await screen.findByRole("dialog", { name: "Convertir proforma en pedido" });
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("FACTUSOL no responde.");
+    expect(within(dialog).getByRole("button", { name: "Crear pedido y albarán" })).toBeDisabled();
+    expect(within(dialog).queryByRole("region", { name: "Resumen del pedido" })).toBeNull();
   });
 
   it("PDF descarga el presupuesto en el idioma del cliente; «⋯ → Duplicar» abre el modal de copia directa con la proforma de origen", async () => {
@@ -799,13 +941,14 @@ describe("Pantalla Proformas (rediseño de flujo, Fase 4)", () => {
     expect(screen.getAllByRole("listitem")).toHaveLength(1);
   });
 
-  // --- Ofertas: «⋯ → Guardar como plantilla de oferta» --------------------
+  // --- Plantillas de documento: «⋯ → Guardar como plantilla» --------------
 
-  it("«⋯ → Guardar como plantilla de oferta» pide el nombre y crea la plantilla con la serie y el nº del presupuesto; avisa con enlace a las plantillas", async () => {
+  it("«⋯ → Guardar como plantilla» propone la referencia como nombre, la carpeta por defecto, y crea la plantilla desde el presupuesto (serie + nº); avisa con enlace a ERP · Plantillas", async () => {
     mockCreatePlantilla.mockResolvedValue({
-      id: "pl1", nombre: "Kit braille", descripcion: null, activa: true,
-      origen_serie: 5, origen_codpre: 39, origen_numero: "5-000039", num_lineas: 3,
-      created_at: null, updated_at: null,
+      id: "pl1", nombre: "Kit braille", descripcion: null, activa: true, idioma: "fr",
+      carpeta_id: "c-bra", carpeta: "Braille", etiquetas: ["braille"],
+      origen_tipo: "presupuesto", origen_serie: 5, origen_codigo: 39, origen_order_id: null,
+      origen_numero: "5-000039", num_lineas: 3, created_at: null, updated_at: null,
     });
     const user = userEvent.setup();
     render(<ProformasPage />);
@@ -815,20 +958,29 @@ describe("Pantalla Proformas (rediseño de flujo, Fase 4)", () => {
     expect(within(row("39")).getByRole("button", { name: "Duplicar" })).toBeInTheDocument();
     expect(within(row("39")).getByRole("button", { name: "Editar" })).toBeInTheDocument();
     expect(within(row("39")).getByRole("link", { name: "Ver empresa" })).toBeInTheDocument();
-    await user.click(within(row("39")).getByRole("button", { name: "Guardar como plantilla de oferta" }));
+    // Ya no es «de oferta»: la plantilla sirve para oferta, proforma y pedido.
+    expect(within(row("39")).queryByRole("button", { name: "Guardar como plantilla de oferta" })).toBeNull();
+    await user.click(within(row("39")).getByRole("button", { name: "Guardar como plantilla" }));
 
-    const modal = within(screen.getByRole("dialog", {
-      name: "Guardar el presupuesto 5-000039 como plantilla de oferta",
-    }));
+    const dialog = screen.getByRole("dialog", { name: "Guardar la proforma 5-000039 como plantilla" });
+    const modal = within(dialog);
+    expect(dialog).toHaveTextContent("No se toca nada en FACTUSOL");
     // La referencia de la proforma se propone como nombre; se cambia.
     const nombre = modal.getByRole("textbox", { name: "Nombre de la plantilla" });
     expect(nombre).toHaveValue("Placas braille");
     await user.clear(nombre);
     await user.type(nombre, "Kit braille");
+    // La carpeta por defecto del usuario viene elegida.
+    await modal.findByRole("option", { name: "Braille" });
+    await waitFor(() => expect(modal.getByLabelText("Carpeta de la plantilla")).toHaveValue("c-bra"));
+    await user.selectOptions(modal.getByLabelText("Idioma de la plantilla"), "fr");
+    await user.type(modal.getByLabelText("Añadir etiqueta"), "braille{Enter}");
     await user.click(modal.getByRole("button", { name: "Guardar plantilla" }));
     await waitFor(() => expect(mockCreatePlantilla).toHaveBeenCalledWith({
-      nombre: "Kit braille", descripcion: null, serie: 5, codpre: 39,
+      nombre: "Kit braille", descripcion: null, idioma: "fr", carpeta_id: "c-bra",
+      etiquetas: ["braille"], origen: { tipo: "presupuesto", serie: 5, codigo: 39 },
     }));
+    expect(mockCreatePlantilla).toHaveBeenCalledTimes(1);
     // Nada de FACTUSOL: ni conversión ni duplicado.
     expect(mockConvert).not.toHaveBeenCalled();
     expect(mockDuplicate).not.toHaveBeenCalled();
@@ -836,19 +988,86 @@ describe("Pantalla Proformas (rediseño de flujo, Fase 4)", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     const aviso = screen.getByRole("status");
     expect(aviso).toHaveTextContent("Plantilla «Kit braille» guardada.");
-    expect(within(aviso).getByRole("link", { name: "Ver las plantillas de oferta" }))
-      .toHaveAttribute("href", "/erp/ofertas?tab=plantillas");
+    expect(within(aviso).getByRole("link", { name: "Ver las plantillas" }))
+      .toHaveAttribute("href", "/erp/plantillas");
   });
 
-  it("sin permiso de proformas no sale «Guardar como plantilla de oferta»", async () => {
+  it("«Guardar como plantilla»: Cancelar cierra sin crear nada", async () => {
+    const user = userEvent.setup();
+    render(<ProformasPage />);
+    await screen.findByRole("list", { name: "Proformas" });
+    await user.click(within(row("39")).getByRole("button", { name: "Más acciones 39" }));
+    await user.click(within(row("39")).getByRole("button", { name: "Guardar como plantilla" }));
+    const modal = within(screen.getByRole("dialog", { name: "Guardar la proforma 5-000039 como plantilla" }));
+    await user.click(modal.getByRole("button", { name: "Cancelar" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(mockCreatePlantilla).not.toHaveBeenCalled();
+    expect(screen.queryByText(/guardada\./)).toBeNull();
+  });
+
+  it("sin permiso de proformas no sale «Guardar como plantilla»", async () => {
     (getCurrentUser as jest.Mock).mockResolvedValueOnce({ role: "user" });
     render(<ProformasPage />);
     await screen.findByRole("list", { name: "Proformas" });
     // Sin Cap.PROFORMAS el menú «⋯» de la 39 solo tiene «Ver empresa» (enlace).
     const user = userEvent.setup();
     await user.click(within(row("39")).getByRole("button", { name: "Más acciones 39" }));
-    expect(within(row("39")).queryByRole("button", { name: "Guardar como plantilla de oferta" })).toBeNull();
+    expect(within(row("39")).queryByRole("button", { name: "Guardar como plantilla" })).toBeNull();
     expect(within(row("39")).queryByRole("button", { name: "Duplicar" })).toBeNull();
     expect(within(row("39")).getByRole("link", { name: "Ver empresa" })).toBeInTheDocument();
+  });
+
+  // --- «Usar en una proforma» desde ERP · Plantillas (`?plantilla=`) -------
+
+  it("con ?plantilla= en la URL abre el selector de empresa y, al elegir una vinculada, el alta carga las líneas de esa plantilla (forma «proforma»)", async () => {
+    window.history.pushState({}, "", "/erp/proformas?plantilla=pl-7");
+    mockCompany.mockResolvedValue({ id: "c1", name: "Acme SL", factusol_company_id: "55555" });
+    mockPlantillaLineas.mockResolvedValue({
+      plantilla: {
+        id: "pl-7", nombre: "Kit braille", descripcion: null, activa: true, idioma: "fr",
+        carpeta_id: null, carpeta: null, etiquetas: [], origen_tipo: "manual", origen_serie: null,
+        origen_codigo: null, origen_order_id: null, origen_numero: null, num_lineas: 2,
+        created_at: null, updated_at: null,
+      },
+      destino: "proforma",
+      lineas: [
+        { codart: "BRL0004", sku: "BRL-A4", description: "Placa braille A4", quantity: 10,
+          unit_price: 47.7, discount_pct: 0, iva_pct: 21, text_only: false },
+        { codart: "", sku: null, description: "Montaje incluido", quantity: 0,
+          unit_price: 0, discount_pct: 0, iva_pct: 21, text_only: true },
+      ],
+      avisos: [],
+    });
+    const user = userEvent.setup();
+    render(<ProformasPage />);
+    // Se abre el selector de empresa sin pulsar «+ Nueva proforma».
+    await user.click(await screen.findByRole("button", { name: "PICK Acme SL" }));
+    await waitFor(() => expect(mockCompany).toHaveBeenCalledWith("c1"));
+
+    // El alta (modal real) pide las líneas de ESA plantilla en forma de proforma.
+    const alta = await screen.findByRole("dialog", { name: "Nueva proforma FACTUSOL" });
+    await waitFor(() => expect(mockPlantillaLineas).toHaveBeenCalledWith("pl-7", "proforma"));
+    expect(await within(alta).findByLabelText("SKU línea 1")).toHaveValue("BRL-A4");
+    expect(within(alta).getByLabelText("Descripción línea 1")).toHaveValue("Placa braille A4");
+    expect(within(alta).getByLabelText("Precio línea 1")).toHaveValue(47.7);
+    expect(within(alta).getByLabelText("Descripción línea 2")).toHaveValue("Montaje incluido");
+    expect(alta).toHaveTextContent("Cliente destino: Acme SL");
+    expect(alta).toHaveTextContent("plantilla «Kit braille»");
+    expect(within(alta).getByRole("status")).toHaveTextContent("Líneas de la plantilla «Kit braille» (2).");
+
+    // Cancelar el alta suelta la plantilla: «+ Nueva proforma» vuelve a ser un alta en blanco.
+    await user.click(within(alta).getByRole("button", { name: "Cancelar" }));
+    expect(screen.queryByRole("dialog", { name: "Nueva proforma FACTUSOL" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "+ Nueva proforma" }));
+    await user.click(screen.getByRole("button", { name: "PICK Acme SL" }));
+    expect(await screen.findByText(/QUOTE MODAL Acme SL edit:— dup:—/)).toBeInTheDocument();
+    expect(mockPlantillaLineas).toHaveBeenCalledTimes(1);
+  });
+
+  it("sin ?plantilla= en la URL no se abre el selector de empresa al entrar", async () => {
+    render(<ProformasPage />);
+    await screen.findByRole("list", { name: "Proformas" });
+    expect(screen.queryByRole("button", { name: "PICK Acme SL" })).toBeNull();
+    expect(mockPlantillaLineas).not.toHaveBeenCalled();
   });
 });
