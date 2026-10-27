@@ -6,7 +6,9 @@ Nada sale a la red: las webs son WordPress simulados (`test_webs_comun`) por
 """
 from __future__ import annotations
 
-from collections.abc import Generator
+from collections import Counter
+from collections.abc import Callable, Generator
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -43,17 +45,34 @@ from app.services.externo.html_texto import plano
 from app.services.web_forms import sitios as registro_sitios
 from app.services.webs import busqueda, job, lector, pasadas
 from app.services.webs import reglas as reglas_mod
+from app.services.webs.lector import DecisionIdioma
+from app.services.webs.reglas import ReglasSitio, ReglaSuelta
 from app.services.webs.reglas_partida import CATEGORIAS_FUERA
 from tests.test_webs_comun import (
+    AJ_CATEGORIAS,
     AJ_HOST,
+    FLUX_CATEGORIAS,
+    FLUX_DENTRO_ES,
+    FLUX_FUERA_ES,
+    FLUX_FUERA_PRODUCTOS_ES,
     FLUX_HOST,
+    FLUX_IDIOMAS,
+    FLUX_MEZCLA_ES,
+    FLUX_NOMBRES,
+    FLUX_SIN_TRADUCIR,
     MBO_HOST,
-    MBOL_HOST,
     PIMPAM_HOST,
     Internet,
+    WebFalsa,
+    categoria,
+    flux_cat,
+    flux_prod,
+    producto,
     registro_con,
+    sitio,
     web_artisjet_eu,
     web_flux,
+    web_flux_wpml,
     web_mbolasers,
     web_mboprinters,
     web_pimpam,
@@ -114,6 +133,7 @@ PRODUCTOS_FUERA = (
     "Servicio técnico (TSM)", "Capping Artisjet Freebird",
     "Pompe péristaltique pour Artis Young", "Carte mère Trust", "Encre UV LED cyan 1L",
     "Services installation", "Plaque de tête d'impression MBO 3020",
+    "Courroie d'entraînement Freebird",
 )
 
 
@@ -137,7 +157,8 @@ def test_ni_un_repuesto_ni_consumible_y_si_los_accesorios_por_modelo(
         # accesorio colgado solo de la madre «Accessoires et pièces de rechange».
         for dentro in ("Beambox II 55W", "Flux Hexa 60W", "Módulo rotatorio 2.0 Beambox",
                        "Modulo rotatorio para Flux Hexa", "Chuck Rotary Add-on Beamo",
-                       "artisJet DIVE", "Ink Bottle System with Shelf"):
+                       "artisJet DIVE", "Ink Bottle System with Shelf",
+                       "WhiteRIP LOGICIEL D'IMPRESSION"):
             assert dentro in titulos, f"falta {dentro}"
         hexa = next(f for f in productos if f.wp_id == 2350)
         assert "Accesorios Hexa" in busqueda._lista(hexa.categorias_json)  # noqa: SLF001
@@ -149,15 +170,15 @@ def test_ni_un_repuesto_ni_consumible_y_si_los_accesorios_por_modelo(
 def test_flux_se_lee_de_fluxlasers_eu_y_no_de_es(factory: sessionmaker,
                                                   internet: Internet, usar) -> None:
     usar("fluxlasers")
-    web = web_flux()
+    web = web_flux_wpml()
     internet.poner(web)
     indexar(factory)
     assert web.peticiones and all(p.startswith(f"https://{FLUX_HOST}/") for p in web.peticiones)
     with factory() as s:
         assert {f.dominio for f in filas(s)} == {FLUX_HOST}
-        # fluxlasers no publica más idiomas que el español: todo lo demás era
-        # respaldo y no se indexa.
-        assert {f.idioma for f in filas(s)} == {"es"}
+        # fluxlasers.eu publica sus cinco idiomas (por .es, WPML solo sirve
+        # el español).
+        assert {f.idioma for f in filas(s)} == set(FLUX_IDIOMAS)
 
 
 def test_ninguna_pagina_legal_ni_de_carrito(factory: sessionmaker, internet: Internet,
@@ -275,7 +296,7 @@ def test_url_rest_siempre_con_rest_route_y_ampersand() -> None:
                    "&_fields=id,slug")
 
 
-# --- idiomas WPML y el HTML de mbolasers ----------------------------------------------------------
+# --- idiomas WPML y mbolasers por la REST -------------------------------------------------------
 
 
 def test_wpml_descarta_el_respaldo_y_encuentra_pt_pt(factory: sessionmaker,
@@ -300,36 +321,49 @@ def test_wpml_descarta_el_respaldo_y_encuentra_pt_pt(factory: sessionmaker,
     assert any("lang=pt-pt" in p for p in pimpam.peticiones)
 
 
-def test_mbolasers_sus_paginas_se_leen_del_html_publico(factory: sessionmaker,
-                                                         internet: Internet, usar) -> None:
+def test_mbolasers_se_lee_por_la_rest_y_un_5xx_es_un_error_sin_marcar_nada_ido(
+        factory: sessionmaker, internet: Internet, usar) -> None:
+    """Desde el 28/10 la REST de mbolasers da las páginas con su contenido (el
+    500 era el límite de memoria de WordPress). Ya no hay camino por el HTML
+    público: si vuelve el 500, ese grupo queda en error y se queda lo
+    anterior."""
     usar("mbolasers")
     web = web_mbolasers()
     internet.poner(web)
-    indexar(factory)
-    # La REST da 500 con el contenido: la lista se pide sin él y cada página
-    # se lee de su HTML.
-    assert any("_fields=id,slug,link,modified_gmt,title,excerpt" in p for p in web.peticiones)
-    assert f"https://{MBOL_HOST}/fiber-lasers/" in web.peticiones
+    pasada = indexar(factory)
+    assert pasada["resumen"]["mbolasers"]["estado"] == PASADA_OK
+    # Todo por la REST, ni una petición al HTML público; las páginas, con su
+    # contenido.
+    assert web.peticiones and all("?rest_route=/" in p for p in web.peticiones)
+    assert any("rest_route=/wp/v2/pages&" in p and "content" in p for p in web.peticiones)
     with factory() as s:
         es = filas(s, sitio="mbolasers", tipo=WEB_PAGINA, idioma="es")
         assert [f.wp_id for f in es] == [1265]
-        assert "Láser de fibra MBO" in es[0].texto
-        for fuera in ("Llámanos", "© MBO", "Inicio Tienda Contacto", "var a"):
-            assert fuera not in es[0].texto            # sin cabecera, pie ni scripts
-        assert es[0].titulo == "MBO Fiber Lasers"
+        assert "Láser de fibra MBO" in es[0].texto and es[0].titulo == "MBO Fiber Lasers"
         assert [f.wp_id for f in filas(s, tipo=WEB_PAGINA, idioma="en")] == [2373]
-        # El HTML de la página «de» dice <html lang="es-ES">: respaldo, fuera.
-        assert not filas(s, tipo=WEB_PAGINA, idioma="de")
-        # Las entradas y los productos sí van por la API.
-        assert filas(s, tipo=WEB_PRODUCTO, idioma="es")
+        assert [f.wp_id for f in filas(s, tipo=WEB_PAGINA, idioma="de")] == [2866]
+        assert [f.wp_id for f in filas(s, tipo=WEB_PRODUCTO, idioma="en")] == [2839]
+        antes = {(f.tipo, f.wp_id, f.idioma) for f in filas(s)}
+    web.contenido_500 = True                    # vuelve el error de memoria
+    web.peticiones.clear()
+    pasada = indexar(factory)
+    resumen = pasada["resumen"]["mbolasers"]
+    assert resumen["estado"] == PASADA_PARCIAL and resumen["idos"] == 0
+    assert "pagina es: HTTP 500" in resumen["error"]
+    assert any("pagina es: la web da error de servidor" in a for a in resumen["avisos"])
+    assert all("?rest_route=/" in p for p in web.peticiones)
+    with factory() as s:
+        assert {(f.tipo, f.wp_id, f.idioma) for f in filas(s)} == antes
 
 
 # --- visto / ido ---------------------------------------------------------------------------------
 
 
-def test_reindexar_dos_veces_no_duplica(factory: sessionmaker, internet: Internet, usar) -> None:
+@pytest.mark.parametrize("web_de_flux", [web_flux, web_flux_wpml])
+def test_reindexar_dos_veces_no_duplica(factory: sessionmaker, internet: Internet, usar,
+                                        web_de_flux: Callable[[], WebFalsa]) -> None:
     usar("fluxlasers", "artisjet-eu")
-    internet.poner(web_flux(), web_artisjet_eu())
+    internet.poner(web_de_flux(), web_artisjet_eu())
     primera = indexar(factory)
     with factory() as s:
         antes = len(filas(s, vivas=False))
@@ -543,43 +577,397 @@ def test_una_regla_por_id_sin_web_no_vale_para_ninguna(
     assert (boprint.incluir, boprint.excluir, boprint.paginas_id) == ({77}, set(), set())
     assert not flux.pagina_fuera("beambox-ii", 3950)
     assert lector.producto_dentro(
-        {"id": 5001, "categories": [{"id": 21, "name": "Repuestos"}]}, flux, set()) == (
-        False, "categoria")
+        {"id": 5001, "categories": [{"id": 21, "name": "Repuestos"}]},
+        DecisionIdioma.de_reglas(flux, {21})) == (False, "categoria")
     assert "sin web" in caplog.text
 
 
 def test_categorias_fuera_heredan_a_las_hijas() -> None:
-    from tests.test_webs_comun import AJ_CATEGORIAS, FLUX_CATEGORIAS
-
     reglas = reglas_mod.Reglas(reglas=reglas_mod._de_partida()).para("x")  # noqa: SLF001
-    assert lector.categorias_fuera(FLUX_CATEGORIAS, reglas) == {
-        21, 24, 231, 22, 15, 230, 227}
-    assert lector.categorias_fuera(AJ_CATEGORIAS, reglas) == {51, 52, 130, 53, 5, 96}
+    # El árbol real de FLUX: las siete hijas de «Repuestos», y «Reacondicionadas»
+    # aunque cuelgue de «Cortadoras Láser», que es de dentro.
+    assert lector.categorias_fuera(FLUX_CATEGORIAS, reglas) == FLUX_FUERA_ES
+    # «Logiciels» (19) es hija de «Autres pièces de rechange» (18).
+    assert lector.categorias_fuera(AJ_CATEGORIAS, reglas) == {51, 52, 130, 53, 5, 96, 18, 19}
+
+
+def test_la_decision_es_por_ids_y_los_nombres_no_cuentan() -> None:
+    """Fuera del idioma por defecto (sin `nombres`) `producto_dentro` no mira
+    los nombres: un «Repuestos» con un id que no es de fuera entra (en otro
+    idioma un nombre puede coincidir por azar) y un «Spare Parts» con el id de
+    fuera no."""
+    reglas = reglas_mod.Reglas(reglas=reglas_mod._de_partida()).para("fluxlasers")
+    decision = DecisionIdioma.de_reglas(reglas, {1021})
+    assert lector.producto_dentro(
+        {"id": 1, "categories": [{"id": 1021, "name": "Spare Parts"}]}, decision) == (
+        False, "categoria")
+    assert lector.producto_dentro(
+        {"id": 2, "categories": [{"id": 7, "name": "Repuestos"}]}, decision) == (True, "")
+    assert lector.producto_dentro({"id": 3, "categories": []}, decision) == (
+        False, "sin_categoria")
+    # WPML fuera del idioma por defecto: sin ninguna categoría conocida, fuera.
+    wpml = DecisionIdioma(fuera={1021}, conocidas={1020, 1021})
+    assert lector.producto_dentro(
+        {"id": 4, "categories": [{"id": 1990, "name": "Black Friday"}]}, wpml) == (
+        False, "categoria_sin_original")
+    assert lector.producto_dentro(
+        {"id": 5, "categories": [{"id": 1990, "name": "Black Friday"},
+                                 {"id": 1020, "name": "Accessories"}]}, wpml) == (True, "")
 
 
 def test_los_recambios_que_las_webs_cuelgan_de_accesorios_quedan_fuera() -> None:
     """Repasado sobre el recorrido real: artisjet-spain.es cuelga cabezales y
     dampers de «Accesorios» y artisjet-printers.eu consumibles de «Accessoires
     et pièces de rechange»; las excepciones de partida los sacan, cada una en
-    su web, y el molde a medida de «Autres pièces de rechange» entra."""
+    su web, y el molde a medida y el WhiteRIP de «Autres pièces de rechange»
+    entran."""
     partida = reglas_mod.Reglas(reglas=reglas_mod._de_partida())  # noqa: SLF001
     es, eu, boprint = partida.para("artisjet-es"), partida.para("artisjet-eu"), \
         partida.para("boprint")
+    de_es, de_boprint = DecisionIdioma.de_reglas(es), DecisionIdioma.de_reglas(boprint)
+    de_eu = DecisionIdioma.de_reglas(eu, lector.categorias_fuera(AJ_CATEGORIAS, eu))
     accesorios = [{"id": 9, "name": "Accesorios"}]
     for pid in (470, 474, 481, 485, 2026051305):
-        assert lector.producto_dentro({"id": pid, "categories": accesorios}, es, set()) == \
+        assert lector.producto_dentro({"id": pid, "categories": accesorios}, de_es) == \
             (False, "excluido")
-    assert lector.producto_dentro({"id": 477, "categories": accesorios}, es, set())[0]
-    mezcla = [{"id": 7, "name": "Accessoires et pièces de rechange"}]
+    assert lector.producto_dentro({"id": 477, "categories": accesorios}, de_es)[0]
+    mezcla = [{"id": 46, "name": "Accessoires et pièces de rechange"}]
     for pid in (1892, 1989, 2979):
-        assert not lector.producto_dentro({"id": pid, "categories": mezcla}, eu, set())[0]
-    assert lector.producto_dentro({"id": 3850, "categories": mezcla}, eu, set())[0]
-    autres = [{"id": 8, "name": "Autres pièces de rechange"}]
-    assert lector.producto_dentro({"id": 477, "categories": autres}, eu, set()) == \
+        assert not lector.producto_dentro({"id": pid, "categories": mezcla}, de_eu)[0]
+    assert lector.producto_dentro({"id": 3850, "categories": mezcla}, de_eu)[0]
+    autres = [{"id": 18, "name": "Autres pièces de rechange"}]
+    logiciels = [{"id": 19, "name": "Logiciels"}]
+    assert lector.producto_dentro({"id": 477, "categories": autres}, de_eu) == \
         (True, "incluido")
-    assert not lector.producto_dentro({"id": 478, "categories": autres}, eu, set())[0]
+    assert lector.producto_dentro({"id": 493, "categories": logiciels}, de_eu) == \
+        (True, "incluido")
+    assert not lector.producto_dentro({"id": 478, "categories": autres}, de_eu)[0]
+    assert not lector.producto_dentro({"id": 494, "categories": logiciels}, de_eu)[0]
     # Los ids son de cada web: el 470 de otra web no se toca.
-    assert lector.producto_dentro({"id": 470, "categories": accesorios}, boprint, set())[0]
+    assert lector.producto_dentro({"id": 470, "categories": accesorios}, de_boprint)[0]
+
+
+# --- WPML: la decisión del idioma por defecto, llevada a los demás por id ------------------------
+#
+# fluxlasers.eu (27/10/2026): con las categorías decididas idioma a idioma por
+# sus nombres traducidos, entraron 1.219 productos en vez de ~166 («Spare
+# Parts», «Ersatzteile»… no empiezan por «Repuestos»).
+
+#: Los ids de dentro de FLUX en español.
+_FLUX_DENTRO = frozenset(pid for pid, _, _ in FLUX_DENTRO_ES)
+
+
+def _reglas_flux(*extra: ReglaSuelta) -> ReglasSitio:
+    """Las de partida (ninguna es de FLUX) y las que diga el test."""
+    return reglas_mod.Reglas(
+        reglas=[*reglas_mod._de_partida(), *extra]).para("fluxlasers")  # noqa: SLF001
+
+
+def _leer_flux(web: WebFalsa, reglas: ReglasSitio,
+               idiomas: tuple[str, ...] | None = None) -> lector.LecturaWeb:
+    flux = sitio("fluxlasers")
+    if idiomas:
+        flux = replace(flux, idiomas=idiomas)
+    return lector.leer_web(flux, reglas, host=FLUX_HOST, http=Internet().poner(web).http())
+
+
+def _grupo(lectura: lector.LecturaWeb, tipo: str, idioma: str) -> lector.Grupo:
+    return next(g for g in lectura.grupos if g.tipo == tipo and g.idioma == idioma)
+
+
+def _dentro(web: WebFalsa, lectura: lector.LecturaWeb) -> dict[str, set[int]]:
+    """Los productos que entran, por idioma, con el id de su original en
+    español (el de la web en cada idioma es otro)."""
+    salida: dict[str, set[int]] = {}
+    for g in lectura.grupos:
+        if g.tipo == WEB_PRODUCTO:
+            assert g.error is None, (g.idioma, g.error)
+            salida[g.idioma] = {web.originales_prod.get(f["wp_id"], f["wp_id"]) for f in g.filas}
+    return salida
+
+
+def test_una_regla_de_categoria_escrita_una_vez_en_espanol_vale_en_todos_los_idiomas() -> None:
+    """La regla se escribe en el idioma por defecto y vale en todos, también en
+    uno que se añade después (aquí «it»), sin escribir ninguna traducción."""
+    idiomas = (*FLUX_IDIOMAS, "it")
+    web = web_flux_wpml(idiomas)
+    reglas = _reglas_flux(ReglaSuelta(REGLA_CATEGORIA_FUERA, "Accesorios Hexa"))
+    dentro = _dentro(web, _leer_flux(web, reglas, idiomas))
+    assert set(dentro) == set(idiomas)
+    # Lo que está en «Accesorios Hexa», también lo que está además en otras de
+    # dentro (el BEAM AIR PRO en Accesorios, Hexa y Beambox).
+    hexa = {pid for pid, _, cats in FLUX_DENTRO_ES if 223 in cats}
+    assert hexa == {4314, 3641, 3598, 3384, 2355, 2350}
+    for idioma in idiomas:
+        assert not dentro[idioma] & hexa, idioma
+        assert dentro[idioma] == _FLUX_DENTRO - hexa - {FLUX_SIN_TRADUCIR.get(idioma)}, idioma
+    # Ninguna traducción pasa la regla: solo decide el nombre en español.
+    for idioma in ("en", "de", "fr", "nl", "it"):
+        assert not reglas.categoria_fuera(FLUX_NOMBRES[idioma][223]), idioma
+
+
+@pytest.mark.parametrize("filtra_el_servidor", [True, False])
+def test_flux_wpml_entero_sin_reglas_de_flux_da_166_productos(
+        factory: sessionmaker, internet: Internet, usar, filtra_el_servidor: bool) -> None:
+    """El recorrido de fluxlasers.eu con las reglas de partida (ninguna de
+    FLUX): 34 en español (los reales) y 33 en cada uno de los otros cuatro
+    idiomas (falta una traducción en cada uno). Igual si el servidor no
+    filtrara: el lector lo revisa otra vez, por ids."""
+    usar("fluxlasers")
+    web = web_flux_wpml()
+    web.ignora_not_in = not filtra_el_servidor
+    internet.poner(web)
+    pasada = indexar(factory)
+    assert pasada["estado"] == PASADA_OK, pasada
+    with factory() as s:
+        productos = filas(s, sitio="fluxlasers", tipo=WEB_PRODUCTO)
+        assert Counter(f.idioma for f in productos) == {
+            "es": 34, "en": 33, "de": 33, "fr": 33, "nl": 33}
+        assert len(productos) == 166
+        for idioma in FLUX_IDIOMAS:
+            originales = {web.originales_prod.get(f.wp_id, f.wp_id)
+                          for f in productos if f.idioma == idioma}
+            assert originales == _FLUX_DENTRO - {FLUX_SIN_TRADUCIR.get(idioma)}, idioma
+        es = {f.wp_id: f for f in productos if f.idioma == "es"}
+        assert es[1901].titulo == "Flux Hexa – Cortadora láser CO2 (60W)"
+        assert busqueda._lista(es[3641].categorias_json) == [  # noqa: SLF001
+            "Accesorios", "Accesorios Hexa", "Accesorios Beambox"]
+        en = {f.wp_id: f for f in productos if f.idioma == "en"}
+        assert busqueda._lista(en[flux_prod("en", 3641)].categorias_json) == [  # noqa: SLF001
+            "Accessories", "Hexa Add-ons", "Beambox Add-ons"]
+        assert "/en/" in en[flux_prod("en", 3641)].url
+        # Ni uno de una categoría de fuera, en ningún idioma.
+        nombres_fuera = {FLUX_NOMBRES[i][c] for i in FLUX_IDIOMAS for c in FLUX_FUERA_ES}
+        for fila in productos:
+            assert not set(busqueda._lista(fila.categorias_json)) & nombres_fuera, (  # noqa: SLF001
+                fila.idioma, fila.titulo)
+    # Con la lógica de antes (cada idioma decidido con los nombres de su árbol)
+    # los repuestos entraban: ninguna regla de partida casa con sus nombres
+    # traducidos. Solo el camino por id los saca.
+    partida = _reglas_flux()
+    hijas_de_repuestos = (21, 246, 24, 257, 23, 216, 231)
+    for idioma in ("en", "de", "nl"):
+        for c in hijas_de_repuestos:
+            assert not partida.categoria_fuera(FLUX_NOMBRES[idioma][c]), FLUX_NOMBRES[idioma][c]
+        assert not lector.categorias_fuera(web.categorias[idioma], partida) & {
+            flux_cat(idioma, c) for c in hijas_de_repuestos}
+    # Sin excepciones por id de FLUX no se pide ninguna traducción de productos.
+    assert not any("rest_route=/wc/store/v1/products&" in p and "include=" in p
+                   for p in web.peticiones)
+
+
+@pytest.mark.parametrize("filtra_el_servidor", [True, False])
+def test_dentro_y_fuera_a_la_vez_queda_fuera_en_todos_los_idiomas(
+        filtra_el_servidor: bool) -> None:
+    """Las Open Box («Cortadoras Láser» y «Reacondicionadas») y los cartuchos
+    («Flux Ador» y «Tintas Ador»): cualquier categoría de fuera manda, en
+    todos los idiomas."""
+    web = web_flux_wpml()
+    web.ignora_not_in = not filtra_el_servidor
+    lectura = _leer_flux(web, _reglas_flux())
+    dentro = _dentro(web, lectura)
+    mezcla = {pid for pid, _, _ in FLUX_MEZCLA_ES}
+    for idioma in FLUX_IDIOMAS:
+        assert not dentro[idioma] & mezcla, idioma
+        if not filtra_el_servidor:
+            # Llegan todos al lector y él los saca por id.
+            assert _grupo(lectura, WEB_PRODUCTO, idioma).descartes["categoria"] == (
+                len(FLUX_MEZCLA_ES) + len(FLUX_FUERA_PRODUCTOS_ES)), idioma
+
+
+@pytest.mark.parametrize("filtra_el_servidor", [True, False])
+def test_lo_de_una_hija_de_una_categoria_de_fuera_queda_fuera_aunque_el_nombre_no_empiece_igual(
+        filtra_el_servidor: bool) -> None:
+    """«Beambox Spare Parts» no empieza por «Spare Parts» ni «Ador Onderdelen»
+    por «Reserveonderdelen», y lo que solo está en ellas queda fuera; también
+    una hija que solo existe en inglés («Beambox II Laser Tubes», sin
+    original en español), por colgar de una de fuera."""
+    web = web_flux_wpml()
+    web.ignora_not_in = not filtra_el_servidor
+    # La placa del CAM de la Beambox (2866) solo está en «Repuestos Beambox»;
+    # el extractor de tinta, en neerlandés, se tradujo solo con la hija.
+    extractor = next(p for p in web.productos["nl"] if p["id"] == flux_prod("nl", 5485))
+    extractor["categories"] = [{"id": flux_cat("nl", 246), "name": "Ador Onderdelen",
+                                "slug": "ador-onderdelen"}]
+    web.categorias["en"].append(categoria(1990, "Beambox II Laser Tubes", flux_cat("en", 21)))
+    web.productos["en"].append(producto(19003, "Laser tube 55W", [
+        (1990, "Beambox II Laser Tubes")], host=FLUX_HOST, prefijo="en/"))
+    lectura = _leer_flux(web, _reglas_flux())
+    leidos = {g.idioma: {f["wp_id"] for f in g.filas}
+              for g in lectura.grupos if g.tipo == WEB_PRODUCTO}
+    assert flux_prod("en", 2866) not in leidos["en"]
+    assert flux_prod("nl", 5485) not in leidos["nl"]
+    assert 19003 not in leidos["en"]
+    assert not any("sin original" in a for a in lectura.avisos)   # cuelga de una de fuera
+    assert len(leidos["en"]) == len(leidos["nl"]) == 33
+
+
+def test_wpml_que_no_ajusta_los_ids_deja_el_idioma_en_error_y_no_marca_nada_ido(
+        factory: sessionmaker, internet: Internet, usar) -> None:
+    """Cerrado ante la duda: si ninguna categoría de un idioma resulta ser
+    traducción de una del idioma por defecto, no se sabe qué es un repuesto.
+    Los productos de ese idioma quedan en error y lo de antes se queda."""
+    usar("fluxlasers")
+    web = web_flux_wpml()
+    internet.poner(web)
+    indexar(factory)
+    with factory() as s:
+        antes = {(f.wp_id, f.idioma) for f in filas(s, tipo=WEB_PRODUCTO)}
+    assert len(antes) == 166
+    web.ajusta_ids = False
+    pasada = indexar(factory)
+    resumen = pasada["resumen"]["fluxlasers"]
+    assert resumen["estado"] == PASADA_PARCIAL and resumen["idos"] == 0
+    assert resumen["error"].count("WPML no ha traducido los ids") == 4
+    with factory() as s:
+        assert {(f.wp_id, f.idioma) for f in filas(s, tipo=WEB_PRODUCTO)} == antes
+    lectura = _leer_flux(web, _reglas_flux())
+    assert _grupo(lectura, WEB_PRODUCTO, "es").error is None
+    for idioma in ("en", "de", "fr", "nl"):
+        grupo = _grupo(lectura, WEB_PRODUCTO, idioma)
+        assert grupo.error and f"ninguna categoría de «{idioma}»" in grupo.error
+        assert not grupo.filas
+
+
+def test_wpml_que_no_ajusta_los_ids_con_una_categoria_sin_traducir_tambien_queda_en_error(
+        ) -> None:
+    """Una categoría sin traducir que WPML sirve con su id del español
+    («Láser de fibra», 245, en el árbol inglés) no prueba que WPML enlace los
+    idiomas: el enlace se mide solo con los ids PROPIOS del idioma. Antes
+    pasaba: 53 productos `categoria_sin_original` y un repuesto de «Spare
+    Parts» que además estaba en la 245 entraba."""
+    web = web_flux_wpml()
+    web.ajusta_ids = False
+    web.categorias["en"] = [c for c in web.categorias["en"] if c["id"] != flux_cat("en", 245)]
+    web.categorias["en"].append(categoria(245, "Láser de fibra"))
+    web.productos["en"].append(producto(19007, "Exhaust fan Beambox", [
+        (flux_cat("en", 21), "Spare Parts"), (245, "Láser de fibra")], host=FLUX_HOST,
+        prefijo="en/"))
+    lectura = _leer_flux(web, _reglas_flux())
+    en = _grupo(lectura, WEB_PRODUCTO, "en")
+    assert en.error and "ninguna categoría de «en»" in en.error
+    assert not en.filas and not en.descartes
+    # Un idioma cuyas categorías son TODAS ids del idioma por defecto (WPML las
+    # sirve sin traducir) sí pasa, aunque WPML no ajuste nada: decide el id.
+    web = web_flux_wpml()
+    web.ajusta_ids = False
+    web.categorias["en"] = [dict(c) for c in web.categorias["es"]]
+    for p in web.productos["en"]:
+        p["categories"] = [{**c, "id": c["id"] % 1000} for c in p["categories"]]
+    en = _grupo(_leer_flux(web, _reglas_flux()), WEB_PRODUCTO, "en")
+    assert en.error is None and len(en.filas) == 33
+    assert {web.originales_prod.get(f["wp_id"], f["wp_id"]) for f in en.filas} == (
+        _FLUX_DENTRO - {FLUX_SIN_TRADUCIR["en"]})
+
+
+def test_una_categoria_de_fuera_vacia_en_el_idioma_por_defecto_saca_en_los_demas() -> None:
+    """La Store API esconde las categorías vacías (`hide_empty`, de partida
+    true), en el árbol y en `include=`: «Servicios» (15) no tiene productos en
+    español pero «Services» sí en inglés. Sin pedirlas todas, la 15 no estaba
+    ni entre las de fuera ni traducida, y un servicio que además estaba en
+    «Laser Cutters» entraba."""
+    web = web_flux_wpml()
+    next(c for c in web.categorias["es"] if c["id"] == 15)["count"] = 0
+    web.productos["en"].append(producto(19008, "Beambox II installation", [
+        (flux_cat("en", 15), "Services"), (flux_cat("en", 19), "Laser Cutters")],
+        host=FLUX_HOST, prefijo="en/"))
+    lectura = _leer_flux(web, _reglas_flux())
+    en = _grupo(lectura, WEB_PRODUCTO, "en")
+    assert en.error is None
+    assert 19008 not in {f["wp_id"] for f in en.filas}
+    assert len(en.filas) == 33
+    assert not any("sin original" in a for a in lectura.avisos)
+    categorias = [p for p in web.peticiones if "rest_route=/wc/store/v1/products/categories" in p]
+    assert categorias and all("hide_empty=false" in p for p in categorias)
+
+
+def test_en_el_idioma_por_defecto_el_nombre_de_una_categoria_del_producto_tambien_saca() -> None:
+    """Red de seguridad donde los nombres SÍ están en el idioma de las reglas:
+    en el idioma por defecto (y en una web de un solo idioma) un producto queda
+    fuera si el nombre de una de SUS categorías empieza por una regla, aunque
+    esa categoría falte del árbol (`count` desfasado, árbol cortado en
+    `MAX_PAGINAS`). En los demás idiomas deciden solo los ids."""
+    reglas = _reglas_flux()
+    dtf = {"id": 9990, "categories": [{"id": 999, "name": "Consumibles DTF"}]}
+    assert lector.producto_dentro(dtf, DecisionIdioma.de_reglas(reglas, {21}, nombres=True)) == (
+        False, "categoria")
+    assert lector.producto_dentro(dtf, DecisionIdioma.de_reglas(reglas, {21})) == (True, "")
+    web = web_flux_wpml()
+    web.productos["es"].append(producto(9990, "Film DTF A3", [(999, "Consumibles DTF")],
+                                        host=FLUX_HOST))
+    # En inglés, otra categoría que tampoco está en el árbol, con un nombre
+    # traducido que empieza por una regla de partida («Services»): no decide.
+    web.productos["en"] += [
+        producto(19990, "DTF setup", [(1999, "Services DTF")], host=FLUX_HOST, prefijo="en/"),
+        producto(19991, "Beambox II 55W DTF bundle", [
+            (flux_cat("en", 19), "Laser Cutters"), (1999, "Services DTF")], host=FLUX_HOST,
+            prefijo="en/"),
+    ]
+    lectura = _leer_flux(web, reglas)
+    es, en = _grupo(lectura, WEB_PRODUCTO, "es"), _grupo(lectura, WEB_PRODUCTO, "en")
+    assert 9990 not in {f["wp_id"] for f in es.filas} and len(es.filas) == 34
+    ids_en = {f["wp_id"] for f in en.filas}
+    assert 19990 not in ids_en and en.descartes["categoria_sin_original"] == 1   # por id
+    assert 19991 in ids_en                                   # el nombre traducido no saca
+    # Una web de un solo idioma: como el idioma por defecto.
+    unico = web_flux()
+    unico.productos["es"].append(producto(9990, "Film DTF A3", [(999, "Consumibles DTF")],
+                                          host=FLUX_HOST))
+    grupo = _grupo(_leer_flux(unico, reglas, ("es",)), WEB_PRODUCTO, "es")
+    assert grupo.filas and 9990 not in {f["wp_id"] for f in grupo.filas}
+
+
+def test_una_categoria_que_solo_existe_en_un_idioma_no_deja_entrar_y_se_avisa() -> None:
+    web = web_flux_wpml()
+    web.categorias["en"].append(categoria(1991, "Black Friday"))     # sin original en es
+    web.productos["en"] += [
+        producto(19001, "Black Friday Bundle", [(1991, "Black Friday")], host=FLUX_HOST,
+                 prefijo="en/"),
+        producto(19002, "Beambox II 55W Black Friday", [
+            (1991, "Black Friday"), (flux_cat("en", 19), "Laser Cutters")], host=FLUX_HOST,
+            prefijo="en/"),
+    ]
+    lectura = _leer_flux(web, _reglas_flux())
+    en = _grupo(lectura, WEB_PRODUCTO, "en")
+    ids = {f["wp_id"] for f in en.filas}
+    assert 19001 not in ids                     # solo en la de sin original: fuera
+    assert 19002 in ids                         # también en una conocida: dentro
+    assert en.descartes["categoria_sin_original"] == 1
+    aviso = next(a for a in lectura.avisos if "sin original" in a)
+    assert aviso.startswith("producto en: 1 categoría(s) sin original en es")
+    assert "«Black Friday» (1991)" in aviso
+    # Los demás idiomas, como siempre.
+    assert len(_grupo(lectura, WEB_PRODUCTO, "de").filas) == 33
+
+
+def test_las_excepciones_por_id_se_traducen_en_wpml() -> None:
+    """Se escriben con el id del idioma por defecto; WPML da el de cada
+    idioma (`include=` ajustado)."""
+    web = web_flux_wpml()
+    reglas = _reglas_flux(ReglaSuelta(REGLA_PRODUCTO_EXCLUIR, "3949", "fluxlasers"),
+                          ReglaSuelta(REGLA_PRODUCTO_INCLUIR, "5580", "fluxlasers"))
+    dentro = _dentro(web, _leer_flux(web, reglas))
+    for idioma in FLUX_IDIOMAS:
+        assert 3949 not in dentro[idioma], idioma     # la Beambox II 55W, excluida
+        assert 5580 in dentro[idioma], idioma         # la bomba de agua, un repuesto, incluida
+        assert len(dentro[idioma]) == len(_FLUX_DENTRO - {FLUX_SIN_TRADUCIR.get(idioma)})
+    assert any("lang=de" in p and "rest_route=/wc/store/v1/products&" in p
+               and "include=3949" in p for p in web.peticiones)
+
+
+def test_el_whiterip_de_artisjet_eu_entra_y_lo_demas_de_autres_pieces_no(
+        factory: sessionmaker, internet: Internet, usar) -> None:
+    """El 493 está en «Logiciels», hija de «Autres pièces de rechange»: entra
+    por la excepción de partida (en cada idioma traducido); una correa de
+    «Autres pièces de rechange», no."""
+    usar("artisjet-eu")
+    internet.poner(web_artisjet_eu())
+    indexar(factory)
+    with factory() as s:
+        whiterip = {f.idioma: f for f in filas(s, wp_id=493)}
+        assert set(whiterip) == {"fr", "de", "en"}      # pt es el francés: respaldo
+        assert busqueda._lista(whiterip["de"].categorias_json) == ["Software"]  # noqa: SLF001
+        assert not filas(s, wp_id=7008)
 
 
 # --- las pasadas: una web por trabajo -----------------------------------------------------------
@@ -771,8 +1159,6 @@ def test_la_configuracion_del_indice_tiene_sus_valores_de_partida() -> None:
 
 
 def test_el_host_de_cada_web_sale_de_la_configuracion() -> None:
-    from tests.test_webs_comun import sitio
-
     cfg = config_kb.defectos()
     assert pasadas.host_de(sitio("fluxlasers"), cfg) == "fluxlasers.eu"
     assert pasadas.host_de(sitio("boprint"), cfg) == "boprint.net"
@@ -780,9 +1166,7 @@ def test_el_host_de_cada_web_sale_de_la_configuracion() -> None:
     assert pasadas.host_de(sitio("fluxlasers"), {"webs_indice_hosts": {}}) == "fluxlasers.es"
 
 
-def test_las_paginas_html_solo_van_a_los_hosts_de_la_web() -> None:
-    from tests.test_webs_comun import sitio
-
+def test_las_peticiones_solo_van_a_los_hosts_de_la_web() -> None:
     hosts = lector.hosts_de(sitio("fluxlasers"), "fluxlasers.eu")
     assert {"fluxlasers.eu", "www.fluxlasers.eu", "fluxlasers.es"} <= hosts
     assert "evil.example.com" not in hosts

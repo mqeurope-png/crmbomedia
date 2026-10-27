@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { getCurrentUser, getStoredToken, logout, type User } from "../lib/api";
 import { pathAllowedInErpMode, resolveMode } from "../lib/appMode";
 import { useIdleTimeout } from "../lib/useIdleTimeout";
+import { SesionCaducada } from "./SesionCaducada";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
 
@@ -26,6 +27,8 @@ const SIDEBAR_STORAGE_KEY = "crmbo:sidebar:collapsed";
  * 2. Fetch the current user once for the children that need it (the
  *    sidebar + topbar need name/role; pages keep doing their own
  *    fetches because they need the user for permission gates too).
+ * 3. Pintar el aviso «Tu sesión ha caducado» (`SesionCaducada`) en las rutas
+ *    con sesión cuando una llamada recibe un 401 (lo anuncia `lib/api.ts`).
  *
  * The actual scroll model lives in CSS: `body` is `overflow: hidden`
  * so the topbar and sidebar stay fixed, and only the content area
@@ -130,8 +133,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     (path) => pathname === path || pathname.startsWith(`${path}/`),
   );
 
-  if (isAnonymous || isFullBleed) {
+  if (isAnonymous) {
     return <>{children}</>;
+  }
+
+  // La Cola SAT no lleva la shell, pero sí sesión: también avisa si caduca.
+  if (isFullBleed) {
+    return (
+      <>
+        <SesionCaducada />
+        {children}
+      </>
+    );
   }
 
   // PR-F fix: hasta que el `getCurrentUser` confirme la sesión NO
@@ -177,6 +190,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         />
       ) : null}
       <div className="app-shell-content">{children}</div>
+      <SesionCaducada />
     </div>
   );
 }

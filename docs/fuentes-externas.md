@@ -16,7 +16,7 @@ enlace.
 endpoints públicos y sin credenciales. Lo que se descarga es **dato, nunca
 instrucción** (§ Lo de fuera es dato). Diseño y contratos:
 `backend/app/services/externo/` (la base común), `models/fuentes_externas.py`
-y la migración 0148.
+y las migraciones 0148 y 0149.
 
 ## La red con cerrojos (`services/externo/red.py`)
 
@@ -49,14 +49,13 @@ no puede usarse para que el servidor pregunte a la red de dentro (SSRF):
 - **Tiempo y tamaño máximos.** El tiempo cuenta para **toda** la petición,
   redirecciones incluidas (la conexión, 10 s como mucho); el cuerpo se lee a
   trozos y se corta al pasar del tope: error, o truncado si quien llama lo
-  acepta (la imagen, para medirla; el HTML de una web, cuyo contenido va antes
-  que los scripts del pie).
+  acepta (la imagen, para medirla).
 
 | Quién | Tiempo por petición | Tamaño máximo | Hosts |
 |---|---|---|---|
 | Imagen por URL | 8 s (HEAD y, si hace falta, GET) | HEAD sin cuerpo; GET cortado a 15 MB | cualquiera público |
 | Soporte | búsqueda 8 s, artículo 10 s; **25 s para toda la búsqueda** | 2 MB | el dominio de la fuente |
-| Índice de las webs | 45 s, con un reintento si la red falla o da 5xx | JSON 16 MB; HTML 4 MB (se acepta cortado) | los de la web, con y sin `www.`, y sus dominios extra |
+| Índice de las webs | 45 s, con un reintento si la red falla o da 5xx | JSON 16 MB (solo la REST: el HTML público no se lee) | los de la web, con y sin `www.`, y sus dominios extra |
 
 **Queda una ventana**, dicha en el código: el nombre se resuelve en
 `comprobar_url` y httpx lo vuelve a resolver al conectar; un DNS hostil
@@ -285,8 +284,10 @@ defecto, sus idiomas publicados y su plugin de traducción.
   todas. 100 elementos por petición, 30 páginas de resultados como mucho, una
   pausa de 0,25 s entre peticiones (comparten servidor con la tienda).
 - **Una fila por idioma, sin mezclar**:
-  - **WPGlobus** (`qtranslate`: artisjet-printers.eu, mboprinters.com): prefijo
-    `/xx/` y los mismos ids en todos los idiomas. Una página sin traducir sale
+  - **WPGlobus** (`qtranslate`: artisjet-printers.eu, mboprinters.com,
+    www.mqeurope.com): prefijo `/xx/` y los mismos ids en todos los idiomas,
+    **también los de las categorías** (sus nombres sí se traducen). Una
+    página sin traducir sale
     con el texto del idioma por defecto y la URL del otro; solo se indexa el
     idioma xx si `translation.languages.xx.content` lo dice (pedido con título
     y contenido en `_fields`: sin ellos WPGlobus dice que nada está traducido).
@@ -294,8 +295,11 @@ defecto, sus idiomas publicados y su plugin de traducción.
     es idéntico al del idioma por defecto. Si el idioma por defecto falla en un
     tipo, los demás de ese tipo quedan en error: sin él no se distingue
     traducción de respaldo.
-  - **WPML** (mbolasers.com, pimpam-vending.com): `&lang=xx`, cada idioma con
-    sus ids. Un idioma sin traducción vuelve **en silencio** al de por defecto:
+  - **WPML** (mbolasers.com, fluxlasers.eu, pimpam-vending.com): `&lang=xx`,
+    cada idioma con **sus propios ids y sus propios slugs**: páginas,
+    productos **y categorías** («Accesorios» de mbolasers es la 39 en es, la
+    763 «Accessories» en en, la 765 «Zubehör» en de). Un idioma sin
+    traducción vuelve **en silencio** al de por defecto:
     se descarta lo que repite un id del idioma por defecto o no lleva el idioma
     en el enlace. Si **todo** lo de un idioma es respaldo, no está publicado y
     se salta en todos los tipos. Si `pt` solo da respaldo se prueba `pt-pt` y
@@ -305,16 +309,19 @@ defecto, sus idiomas publicados y su plugin de traducción.
   «gracias»: las útiles tienen de mediana más de 2.000), con «lorem ipsum» de
   plantilla y los textos idénticos en el mismo idioma (se queda el id más
   bajo).
-- **mbolasers.com**: si la lista con contenido da 5xx (tras el reintento), se
-  pide sin contenido y cada página se lee de su **HTML público** (el bloque
-  `wp-page` de Elementor, sin cabecera ni pie) con el idioma del `<html lang>`.
-  Una página cuyo HTML falla se conserva como estaba.
+- **Todo por la REST, nunca por el HTML público.** Un 5xx (tras el
+  reintento) deja ese grupo (tipo × idioma) en error, como cualquier otro
+  fallo: no se escribe ni se marca nada ido, y sale un aviso en el resumen.
+  mbolasers.com tuvo un camino por el HTML de cada página mientras su REST
+  daba 500 con el contenido; era el límite de memoria de WordPress, arreglado
+  en la web el 28/10, y ese camino se quitó.
 - **Productos por la Store API** (`/wc/store/v1/products/categories` y
   `/products`): las categorías de fuera se filtran ya en el servidor
-  (`category_operator=not_in`) y se revisan otra vez aquí. **Cualquier
-  categoría de fuera manda** (también una madre: un repuesto colgado de
-  «Accessoires et pièces de rechange» y de «Pièces de rechange A5000» queda
-  fuera), **sin categoría → fuera**, y encima de todo las **excepciones por
+  (`category_operator=not_in`) y se revisan otra vez aquí, **solo por id**.
+  **Cualquier categoría de fuera manda** (también una madre: un repuesto
+  colgado de «Accessoires et pièces de rechange» y de «Pièces de rechange
+  A5000» queda fuera; una Open Box en «Cortadoras Láser» y «Reacondicionadas»,
+  también), **sin categoría → fuera**, y encima de todo las **excepciones por
   id** (si un id está en las dos, gana excluir: no ofrecer un repuesto como
   máquina). Los «incluir» se piden aparte con `include=`, porque el `not_in`
   del servidor los quitaría. Una web **sin tienda** (`rest_no_route`) no es un
@@ -322,6 +329,46 @@ defecto, sus idiomas publicados y su plugin de traducción.
   tienda» si en esa misma lectura la REST de la web **sí** respondió (páginas o
   entradas del idioma por defecto): una web que da 404 a todo es un error y no
   marca ningún producto como ido.
+- **Qué productos entran se decide UNA vez por web, en su idioma por defecto,
+  y se lleva a los demás idiomas por id.** Los nombres traducidos no deciden
+  nada. El 27/10 fluxlasers.eu metió **1.219 productos en vez de ~166**: cada
+  idioma se decidía con los nombres de su propio árbol, y «Spare Parts»,
+  «Ersatzteile», «Reserveonderdelen»… no empiezan por «Repuestos».
+  - **Idioma por defecto**: fuera las categorías cuyo nombre empieza por una
+    regla `categoria_fuera` y **todas sus hijas** (la jerarquía real, por
+    `parent`). El árbol (y las traducciones con `include=`) se piden con
+    `hide_empty=false`: la Store API esconde de partida las categorías
+    vacías, y una de fuera vacía en el idioma por defecto pero con productos
+    en otro no estaría ni entre las de fuera ni traducida.
+  - **Red de seguridad por nombre, solo en el idioma por defecto** (y en las
+    webs de un idioma), donde los nombres están en el idioma de las reglas:
+    fuera también el producto con una categoría **propia** cuyo nombre empieza
+    por una regla, aunque esa categoría falte del árbol (`count` desfasado,
+    árbol cortado en `MAX_PAGINAS`). En los demás idiomas deciden solo los ids.
+  - **WPGlobus y webs de un idioma**: los mismos ids en todos los idiomas →
+    las mismas categorías de fuera y las mismas excepciones.
+  - **WPML, otro idioma**: se lee el árbol del idioma (ids y madres) y se le
+    pide a WPML la traducción de las categorías de fuera y de todas:
+    `categories&lang=en&include=<ids del idioma por defecto>` devuelve las
+    del inglés (WPML «ajusta los ids»; ningún campo de la REST enlaza las
+    traducciones). Fuera = esas traducciones, las del idioma por defecto que
+    aparezcan (los ids de término son únicos en toda la instalación) y
+    **todas sus hijas en el árbol del idioma** («Beambox Spare Parts» por
+    colgar de «Spare Parts», aunque no empiece igual).
+  - **Cerrado ante la duda**: si el idioma tiene categorías **propias** (ids
+    que no son del idioma por defecto) y **ninguna** resulta ser traducción
+    de una del idioma por defecto (WPML no ha ajustado los ids), sus
+    productos quedan **en error**: no se escribe ni se marca nada ido. Una
+    categoría sin traducir que WPML sirve con su id del idioma por defecto no
+    cuenta como enlace (con ella sola, un repuesto en «Spare Parts» y en
+    «Láser de fibra» entraba); un idioma cuyas categorías son todas del
+    idioma por defecto sí pasa (decide el mismo id).
+  - Una categoría que **solo existe en ese idioma** («sin original») y no
+    cuelga de una de fuera no deja entrar a un producto que no tenga otra
+    (motivo `categoria_sin_original`); el resumen lo avisa con sus nombres.
+  - Las **excepciones por id** se escriben con el id del idioma por defecto y
+    se traducen igual (`products&lang=xx&include=…`; los «incluir», con la
+    petición que ya se hacía). Solo se pide si la web tiene excepciones.
 - **Imágenes**: la principal y la galería del producto, como URL https
   **enlazadas en caliente** (nunca la biblioteca de medios: esa es
   `kb_imagenes`).
@@ -413,9 +460,16 @@ mano sin web se salta con aviso). Se aplican en el siguiente recorrido.
 |---|---|
 | `pagina_excluir_slug` | Expresión regular, sin distinguir mayúsculas, sobre el slug decodificado de páginas y entradas |
 | `pagina_excluir_id` | Id de WordPress de una página o entrada (en WPML, el de cada idioma) |
-| `categoria_fuera` | Un producto queda fuera si alguna de sus categorías, o una madre, **empieza** por este nombre (sin tildes ni mayúsculas) |
-| `producto_excluir_id` | Id de producto que no entra aunque su categoría sea de dentro |
-| `producto_incluir_id` | Id que entra aunque una regla lo saque (excluir gana) |
+| `categoria_fuera` | Un producto queda fuera si alguna de sus categorías, o una madre, **empieza** por este nombre (sin tildes ni mayúsculas). **En el idioma por defecto de la web**: vale para todos sus idiomas |
+| `producto_excluir_id` | Id de producto (del idioma por defecto) que no entra aunque su categoría sea de dentro |
+| `producto_incluir_id` | Id (del idioma por defecto) que entra aunque una regla lo saque (excluir gana) |
+
+**Las reglas de categoría se escriben una vez, en el idioma por defecto de
+cada web** (español; francés en artisjet-printers.eu; inglés en
+www.mqeurope.com), y valen para todos sus idiomas: la decisión pasa a los
+demás por id (§ Cómo se lee una web). Un nombre traducido («Spare Parts»,
+«Ersatzteile») ni hace falta ni sirve. Lo mismo las excepciones por id: el
+del idioma por defecto (en WPML el lector pide el de cada idioma).
 
 Las **de partida** (`services/webs/reglas_partida.py`) las siembra la
 migración y valen mientras la tabla esté vacía (un test con `create_all` se
@@ -459,9 +513,7 @@ una, se desactiva.
   | artisjet-eu | 1989 | excluir | Syringe Kit: consumible |
   | artisjet-eu | 2979 | excluir | Hojas y films UV DTF: consumible |
   | artisjet-eu | 477 | incluir | Plantillas y moldes a medida: accesorio colgado de «Autres pièces de rechange» |
-
-En WPML las reglas por nombre se aplican a los **nombres traducidos**: si una
-web WPML tuviera «Ersatzteile», habría que añadir ese prefijo.
+  | artisjet-eu | 493 | incluir | WhiteRIP: software en «Logiciels», hija de «Autres pièces de rechange» (migración 0149) |
 
 ## Permisos
 
@@ -485,8 +537,9 @@ Solo **crea** tablas (no toca datos que ya existan):
 3. `web_indice` (índices por web e idioma y por `ido_en`; en MySQL, el
    FULLTEXT sobre título y texto);
 4. `web_indice_reglas`, sembrada con las reglas de partida (12 de slug, 12 de
-   categoría, 8 excluir y 1 incluir: las de arriba, copiadas en la migración
-   porque una migración no importa la aplicación);
+   categoría, 8 excluir y 1 incluir, el 477: las de arriba salvo el 493, que
+   lo añade la 0149; copiadas en la migración porque una migración no importa
+   la aplicación);
 5. `web_indice_pasadas`.
 
 Texto largo en `MEDIUMTEXT` en MySQL (`TEXT` se queda en 64 KB). Bajar borra
@@ -505,6 +558,45 @@ antes con **«Reindexar ahora»**.
    llegaba a `support.flux3dp.com` (abajo).
 3. **«Reindexar ahora»** (o esperar a las 05:20) y mirar en el estado que
    fluxlasers.eu tiene filas y en qué idiomas.
+
+## Migración 0149 (`20261028_0149_reglas_indice_por_idioma.py`)
+
+Acompaña al lector que decide en el idioma por defecto y lleva la decisión
+por id:
+
+1. **Borra las reglas `categoria_fuera` de la web `fluxlasers`**: el parche
+   a mano del 27/10 (29 nombres traducidos exactos) que paró los 1.219
+   productos. Ya no hacen falta, y como los nombres traducidos no deciden
+   nada, tampoco harían nada. Solo esas (ninguna otra regla de categoría es
+   de una web concreta). Apunta en el registro **cada regla borrada**
+   (`0149: borrada la regla categoria_fuera de fluxlasers: 'Spare Parts'
+   (activo=…, posicion=…, nota=…)`) y cuántas: el parche se puede reponer a
+   mano desde el registro del despliegue.
+2. **Añade `producto_incluir_id` 493 de `artisjet-eu`** si no está: el
+   «WhiteRIP LOGICIEL D'IMPRESSION» es software, pero su categoría 19
+   «Logiciels» es hija de la 18 «Autres pièces de rechange» y, con la
+   herencia de #564, quedaba fuera en todos los idiomas. También en
+   `reglas_partida.PRODUCTOS_DENTRO` (la 0148, ya aplicada, no se toca). La
+   fila lleva una nota propia («… (migración 0149)»).
+
+**No toca `web_indice`**: las 1.053 filas de FLUX marcadas idas el 27/10
+siguen idas; el siguiente recorrido decide lo que vuelve. Bajar quita el 493
+**solo si es el que puso la 0149** (su nota propia); si ya estaba, se queda.
+El parche de FLUX **no** se repone: si se vuelve atrás el código, el lector de
+antes decide cada idioma con los nombres de su árbol y, sin el parche, los
+repuestos de FLUX en en/de/fr/nl vuelven a entrar; hay que reponer esas
+reglas a mano desde el registro del despliegue. Test:
+`tests/test_migration_0149_reglas_indice.py`.
+
+### Tras desplegar la 0149
+
+**«Reindexar ahora»** y mirar en el estado fluxlasers.eu: si la web no ha
+cambiado, unos **166 productos** (34 en español y unos 33 en cada uno de
+en/de/fr/nl), ninguno de «Spare Parts», «Ersatzteile»,
+«Reserveonderdelen»… Si un idioma sale en error con «WPML no ha traducido
+los ids», el enlace entre idiomas falló: se queda lo anterior y hay que
+mirarlo antes de tocar nada. El WhiteRIP (493) tiene que estar en los cuatro
+idiomas de artisjet-printers.eu.
 
 ## API
 
@@ -615,16 +707,74 @@ siguiente web.
 - **La web de FLUX** se probó con `fluxlasers.es` en su lugar, sin cambiar el
   defecto `.eu`. Si `.eu` publica sus idiomas con WPML por dominio en vez de
   por directorio, el enlace no llevaría `/xx/` y esos idiomas se descartarían
-  como respaldo (no mezcla ni duplica, pero tampoco los indexa).
+  como respaldo (no mezcla ni duplica, pero tampoco los indexa). En
+  producción (27/10) `.eu` sí publicó sus cinco idiomas por directorio; lo que
+  falló fue otra cosa: las categorías decididas con los nombres traducidos
+  (§ Migración 0149).
 
 Las dos cosas **hay que mirarlas tras el despliegue** (§ Tras desplegar).
+
+## Lo que se comprobó el 28/10
+
+Contra las webs reales, solo lectura y por los endpoints públicos:
+
+- **WPML da a cada traducción su propio id y su propio slug**, también a las
+  categorías (y a los productos): «Accesorios» de mbolasers es la 39
+  `accesorios` en es, la 763 «Accessories» `accessories` en en y la 765
+  «Zubehör» `zubehor` en de. Ni el id ni el slug valen para enlazar idiomas, y
+  ningún campo de la REST lo hace (no hay `wpml_translations`).
+- **WPML «ajusta los ids» al idioma pedido**:
+  `/wc/store/v1/products/categories&lang=en&include=39` devuelve la 763;
+  `/wp/v2/product_cat&lang=en&include=39,36`, la 763 y la 775;
+  `/wc/store/v1/products&lang=en&include=965,30` (ids españoles), sus
+  traducciones 2839 y 2418; `…/products&lang=en&category=39&category_operator=not_in`,
+  los 9 productos en inglés que no están en «Accessories». La Store API
+  respeta `_fields` (`id`, `id,name,parent`). En esto se apoya el lector.
+- **WPGlobus/qTranslate** (artisjet-printers.eu, fr por defecto;
+  mboprinters.com, es; www.mqeurope.com, en): los **mismos ids de
+  categoría** en todos los idiomas, con los **nombres traducidos** (en
+  artisjet-printers.eu cambian los 19: la 46 «Accessoires et pièces de
+  rechange» es «Zubehör und Ersatzteile» en de y «Accessories and spare
+  parts» en en). Ya se decidían con los ids del idioma por defecto: no les
+  afectó.
+- **fluxlasers.es y fluxlasers.eu son el mismo WordPress**: por `.es` WPML no
+  hace caso de `lang` y solo sirve el español. Por `.eu` (producción, 27/10)
+  salen los cinco idiomas con las categorías traducidas: en «Spare Parts»,
+  «Beambox Spare Parts», «Hexa Spare Parts», «Ador Spare Parts», «Beamo Spare
+  Parts»; de «Ersatzteile», «Beambox-Ersatzteile», «Hexa Ersatzteile», «Ador
+  Ersatzteile», «Beamo-Ersatzteile»; fr «Pièces de rechange»… «Pièces
+  détachées Beamo»; nl «Reserveonderdelen», «Beambox-reserveonderdelen»,
+  «Ador Onderdelen», «Beamo reserveonderdelen». Con el parche a mano: **166
+  productos = 34 en español + 33 en cada uno de en/de/fr/nl**. El árbol real
+  del español (19 categorías) y sus productos reales (386: 34 dentro, 6 en una
+  de fuera y otra de dentro, como las Open Box y los cartuchos de Ador) son la
+  base del WordPress simulado de los tests (`web_flux_wpml`), que reproduce
+  ese 166 sin ninguna regla de FLUX.
+- **mbolasers.com responde 200 con contenido en los cinco idiomas** (las
+  páginas en unos 3,7 s, las entradas en unos 2,5 s): el 500 era el límite de
+  memoria de WordPress, arreglado en la web. Con el lector nuevo, todo por la
+  REST: 29 peticiones, **48 páginas, 25 entradas y 107 productos** (22 en es y
+  en, 21 en de, fr y nl), ni una petición al HTML, sin avisos: lo mismo que el
+  recorrido del 27/10.
+- **artisjet-printers.eu**: desde #564 el 493 «WhiteRIP LOGICIEL
+  D'IMPRESSION» quedaba fuera en todos los idiomas (su categoría 19
+  «Logiciels» es hija de la 18 «Autres pièces de rechange»). Con la excepción
+  de la 0149 entra en los cuatro (fr, de, en, pt): 49 productos.
+- **fluxlasers.eu sigue sin llegarse desde el entorno de pruebas**: FLUX en
+  varios idiomas está probado con el simulado (datos reales del español,
+  traducciones con otros ids), no contra la web: hay que mirarlo tras
+  desplegar (§ Tras desplegar la 0149).
 
 ## Tests
 
 `test_externo_base.py` (red, HTML, sobre), `test_soporte.py` y
 `test_soporte_api.py`, `test_webs_indice.py` y `test_webs_api.py` (con un
-WordPress simulado de datos realistas en `test_webs_comun.py`),
-`test_imagen_url.py`, `test_asistente_fuentes.py` (el material en el turno y el
-turno sin material idéntico), `test_migration_0148_fuentes_externas.py`,
+WordPress simulado de datos realistas en `test_webs_comun.py`: WPML con ids
+por idioma y los ids «ajustados» en `include=` y `not_in`, la Store API que
+esconde las categorías vacías sin `hide_empty=false`, y FLUX con su árbol
+y sus productos reales), `test_imagen_url.py`, `test_asistente_fuentes.py` (el
+material en el turno y el turno sin material idéntico),
+`test_migration_0148_fuentes_externas.py`,
+`test_migration_0149_reglas_indice.py`,
 `test_web_ingest_worker_isolation.py` y `test_erp_worker_queues.py` (la cola
 `webs:indice`, última y solo en worker-web).

@@ -1,6 +1,15 @@
 "use client";
 
-import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import {
+  type Dispatch,
+  type FormEvent,
+  type SetStateAction,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import { ApiError } from "../../lib/api";
 import { extractErrorMessage } from "../../lib/errors";
 import {
   actualizarReglaWebs,
@@ -61,24 +70,28 @@ const TIPOS_REGLA: { id: TipoRegla; titulo: string; explica: string; patron: str
     id: "pagina_excluir_id",
     titulo: "Páginas y entradas fuera, por id",
     explica: "El id de WordPress de una página o entrada concreta que no debe entrar (una landing "
-      + "duplicada, una página vieja). Mejor con su web: el mismo número en otra web es otra página.",
+      + "duplicada, una página vieja). Siempre de una web: el mismo número en otra web es otra página. "
+      + "En una web con varios idiomas cada traducción tiene su id: se pone el de cada una.",
     patron: "Id de WordPress",
     ejemplo: "p. ej. 4621",
   },
   {
     id: "categoria_fuera",
     titulo: "Categorías de producto fuera",
-    explica: "Si alguna categoría del producto, o alguna de sus madres, EMPIEZA por esto (sin distinguir "
-      + "mayúsculas ni tildes), el producto queda fuera. Cualquier categoría de fuera manda aunque tenga "
-      + "otra de dentro, y un producto sin categoría también queda fuera. Dentro quedan las máquinas y "
-      + "los accesorios, también los de cada modelo.",
+    explica: "Se compara con el nombre de cada categoría en el idioma POR DEFECTO de la web: si EMPIEZA "
+      + "por esto (sin distinguir mayúsculas ni tildes), esa categoría queda fuera, y con ella todas sus "
+      + "subcategorías y la misma categoría en todos los idiomas de la web (se aplica por su id, no por "
+      + "el nombre traducido). Cualquier categoría de fuera manda aunque el producto tenga otra de "
+      + "dentro, y un producto sin categoría también queda fuera. "
+      + "Dentro quedan las máquinas y los accesorios, también los de cada modelo.",
     patron: "La categoría empieza por",
     ejemplo: "p. ej. Repuestos",
   },
   {
     id: "producto_excluir_id",
     titulo: "Productos fuera, por id",
-    explica: "Un producto concreto que no debe entrar aunque sus categorías sean de dentro.",
+    explica: "Un producto concreto que no debe entrar aunque sus categorías sean de dentro. Siempre de "
+      + "una web: el mismo número en otra web es otro producto.",
     patron: "Id del producto",
     ejemplo: "p. ej. 3201",
   },
@@ -86,7 +99,7 @@ const TIPOS_REGLA: { id: TipoRegla; titulo: string; explica: string; patron: str
     id: "producto_incluir_id",
     titulo: "Productos dentro, por id (excepción)",
     explica: "Un producto concreto que entra aunque una regla de categoría lo saque (un accesorio "
-      + "colgado de una categoría de repuestos, por ejemplo).",
+      + "colgado de una categoría de repuestos, por ejemplo). Siempre de una web.",
     patron: "Id del producto",
     ejemplo: "p. ej. 4320",
   },
@@ -129,7 +142,10 @@ export function precioDeLaWeb(f: Pick<WebFragmento, "precio_web" | "precio_web_t
   return { importe, iva };
 }
 
-function validarPatron(tipo: TipoRegla, patron: string): string | null {
+/** Lo mismo que comprueba el backend antes de guardar, para decirlo sin ir y
+ *  volver: patrón, id numérico, expresión regular válida y, en las de id, la
+ *  web (los ids de WordPress son de cada web). */
+function validarRegla(tipo: TipoRegla, patron: string, sitio: string): string | null {
   const p = patron.trim();
   if (!p) return "Falta el patrón.";
   if (POR_ID.has(tipo) && !/^\d+$/.test(p)) return "El id es un número (el de WordPress).";
@@ -140,12 +156,42 @@ function validarPatron(tipo: TipoRegla, patron: string): string | null {
       return "No es una expresión regular válida.";
     }
   }
+  if (POR_ID.has(tipo) && !sitio.trim()) return "Una regla por id necesita su web: los ids son de cada web.";
   return null;
+}
+
+/** Hora de los datos que se ven («11:05», o «11:05 del 26/10» si no son de hoy). */
+function hora(d: Date): string {
+  const hh = d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+  if (d.toDateString() === new Date().toDateString()) return hh;
+  return `${hh} del ${d.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit" })}`;
+}
+
+/** Por qué falló una llamada. Un 401 es la sesión caducada (el aviso general
+ *  lo pinta AppShell; aquí se dice junto a lo que no se ha podido hacer). */
+type Fallo = { motivo: string; caducada: boolean };
+
+const MOTIVO_SESION = "tu sesión ha caducado (vuelve a entrar)";
+
+function falloDe(err: unknown): Fallo {
+  if (err instanceof ApiError && err.status === 401) return { motivo: MOTIVO_SESION, caducada: true };
+  // Sin el punto final: el motivo va dentro de una frase.
+  const motivo = extractErrorMessage(err, "fallo sin más detalle").trim().replace(/[.\s]+$/, "");
+  return { motivo, caducada: false };
 }
 
 export function WebsIndiceBloque({ canEdit }: { canEdit: boolean }) {
   const [estado, setEstado] = useState<WebsEstado | null>(null);
-  const [errorEstado, setErrorEstado] = useState<string | null>(null);
+  // La hora a la que llegó lo que se ve, y si la última vez que se pidió falló:
+  // con un fallo los números se quedan, pero marcados como de esa hora (antes
+  // seguían ahí sin más y parecía que estaban al día).
+  const [cargadoEn, setCargadoEn] = useState<Date | null>(null);
+  const [fallo, setFallo] = useState<Fallo | null>(null);
+  const [actualizando, setActualizando] = useState(false);
+  // Cada respuesta, buena o mala, programa la siguiente consulta mientras haya
+  // un recorrido en marcha. Antes solo la reprogramaba un `estado` nuevo: tras
+  // un error el sondeo se paraba sin decir nada.
+  const [respuestas, setRespuestas] = useState(0);
   const [reindexando, setReindexando] = useState(false);
   const [aviso, setAviso] = useState<string | null>(null);
   const vivo = useRef(true);
@@ -154,10 +200,14 @@ export function WebsIndiceBloque({ canEdit }: { canEdit: boolean }) {
     .then((e) => {
       if (!vivo.current) return;
       setEstado(e);
-      setErrorEstado(null);
+      setCargadoEn(new Date());
+      setFallo(null);
     })
     .catch((err) => {
-      if (vivo.current) setErrorEstado(extractErrorMessage(err, "No se pudo cargar el estado del índice."));
+      if (vivo.current) setFallo(falloDe(err));
+    })
+    .finally(() => {
+      if (vivo.current) setRespuestas((n) => n + 1);
     }), []);
 
   useEffect(() => {
@@ -167,13 +217,22 @@ export function WebsIndiceBloque({ canEdit }: { canEdit: boolean }) {
   }, [cargarEstado]);
 
   // Mientras haya un recorrido en cola o en marcha, el estado se vuelve a
-  // pedir cada pocos segundos (cada respuesta programa la siguiente).
+  // pedir cada pocos segundos, también tras un fallo (un corte de red, un 502
+  // del despliegue). Con la sesión caducada no: no va a ir mejor hasta entrar
+  // de nuevo, y se dice.
   const enMarcha = estado?.en_curso != null && EN_MARCHA.includes(estado.en_curso.estado);
+  const caducada = fallo?.caducada ?? false;
   useEffect(() => {
-    if (!enMarcha) return undefined;
+    if (!enMarcha || caducada) return undefined;
     const t = window.setTimeout(() => { void cargarEstado(); }, REFRESCO_MS);
     return () => window.clearTimeout(t);
-  }, [enMarcha, estado, cargarEstado]);
+  }, [enMarcha, caducada, respuestas, cargarEstado]);
+
+  async function actualizar() {
+    setActualizando(true);
+    await cargarEstado();
+    if (vivo.current) setActualizando(false);
+  }
 
   async function reindexar() {
     setReindexando(true);
@@ -191,13 +250,22 @@ export function WebsIndiceBloque({ canEdit }: { canEdit: boolean }) {
           : `El recorrido ha terminado: ${ESTADO_PASADA[p.estado] ?? p.estado}.`);
       void cargarEstado();
     } catch (err) {
-      if (vivo.current) setAviso(extractErrorMessage(err, "No se pudo encolar el recorrido."));
+      if (!vivo.current) return;
+      const f = falloDe(err);
+      setAviso(f.caducada ? `No se ha podido encolar el recorrido: ${f.motivo}.`
+        : extractErrorMessage(err, "No se pudo encolar el recorrido."));
     } finally {
       if (vivo.current) setReindexando(false);
     }
   }
 
   const sitios = Array.from(new Set((estado?.filas ?? []).map((f) => f.sitio))).sort();
+
+  // Lo que pasó la última vez que se pidió el estado, dicho junto al botón.
+  const resultado = actualizando ? null
+    : fallo && cargadoEn ? `No se ha podido actualizar: ${fallo.motivo}. Lo que ves es de las ${hora(cargadoEn)}.`
+      : fallo ? `No se ha podido cargar el estado del índice: ${fallo.motivo}.`
+        : cargadoEn ? `Actualizado a las ${hora(cargadoEn)}` : null;
 
   return (
     <section className="kb-bloque webs-indice" aria-labelledby="kb-webs-indice-t">
@@ -211,13 +279,22 @@ export function WebsIndiceBloque({ canEdit }: { canEdit: boolean }) {
         redactor puede decir «en la web está a…», nunca ofertar con él (el de una oferta sale de
         FACTUSOL); los que la web tiene a 0 («a consultar») no se guardan.
       </p>
-      {errorEstado ? <p className="form-error" role="alert">{errorEstado}</p> : null}
-      {!errorEstado && estado === null ? <p className="muted small">Cargando el estado del índice…</p> : null}
-      {estado ? <TablaConteos estado={estado} /> : null}
+      {estado === null && !fallo ? <p className="muted small">Cargando el estado del índice…</p> : null}
       {estado ? (
-        <div className="kb-fuentes webs-indice-pasadas">
-          {estado.en_curso ? <ResumenPasada titulo="Recorrido en curso" pasada={estado.en_curso} /> : null}
-          <ResumenPasada titulo="Último recorrido terminado" pasada={estado.ultima_pasada} />
+        <div className={`webs-indice-datos${fallo ? " is-desfasado" : ""}`}>
+          {fallo && cargadoEn ? (
+            <p className="webs-indice-desfasado">
+              <strong>Datos de las {hora(cargadoEn)}, sin actualizar:</strong>{" "}
+              {fallo.caducada ? "tu sesión ha caducado; vuelve a entrar para verlos al día."
+                : enMarcha ? `la última actualización ha fallado; se vuelve a intentar cada ${REFRESCO_MS / 1000} s.`
+                  : "la última actualización ha fallado."}
+            </p>
+          ) : null}
+          <TablaConteos estado={estado} />
+          <div className="kb-fuentes webs-indice-pasadas">
+            {estado.en_curso ? <ResumenPasada titulo="Recorrido en curso" pasada={estado.en_curso} /> : null}
+            <ResumenPasada titulo="Último recorrido terminado" pasada={estado.ultima_pasada} />
+          </div>
         </div>
       ) : null}
       <div className="kb-acciones">
@@ -226,10 +303,15 @@ export function WebsIndiceBloque({ canEdit }: { canEdit: boolean }) {
           title={enMarcha ? "Ya hay un recorrido en cola o en marcha" : "Encola un recorrido de todas las webs"}>
           {reindexando ? "Encolando…" : "Reindexar ahora"}
         </button>
-        <button type="button" className="button small secondary" onClick={() => void cargarEstado()}>
-          Actualizar el estado
+        <button type="button" className="button small secondary" onClick={() => void actualizar()}
+          disabled={actualizando}>
+          {actualizando ? "Actualizando…" : "Actualizar el estado"}
         </button>
-        {enMarcha ? <span className="muted small">Hay un recorrido {estado?.en_curso?.estado === "en_cola" ? "en cola" : "en marcha"}: el estado se refresca solo.</span> : null}
+        {/* Sin role="status": el de abajo es el aviso de «Reindexar ahora». */}
+        <span className={`small webs-indice-carga${fallo ? " is-error" : ""}`} aria-live="polite">
+          {resultado}
+        </span>
+        {enMarcha && !caducada ? <span className="muted small">Hay un recorrido {estado?.en_curso?.estado === "en_cola" ? "en cola" : "en marcha"}: el estado se refresca solo.</span> : null}
       </div>
       {aviso ? <p className="muted small" role="status">{aviso}</p> : null}
       <ReglasIndice canEdit={canEdit} sitios={sitios} />
@@ -376,25 +458,70 @@ function ordenar(reglas: WebRegla[]): WebRegla[] {
   return [...reglas].sort((a, b) => a.posicion - b.posicion || a.id - b.id);
 }
 
+/** Las reglas van plegadas: son decenas de filas con sus campos y aligeran
+ *  mucho Configuración ERP sin pintar. Se piden al abrir el panel (para decir
+ *  cuántas hay en el botón) y la lista se monta la primera vez que se abre; al
+ *  ocultarla solo se esconde, para no perder lo escrito sin guardar. */
 function ReglasIndice({ canEdit, sitios }: { canEdit: boolean; sitios: string[] }) {
   const [reglas, setReglas] = useState<WebRegla[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [abiertas, setAbiertas] = useState(false);
+  const [montadas, setMontadas] = useState(false);
+
+  useEffect(() => {
+    let vivo = true;
+    listarReglasWebs()
+      .then((l) => { if (vivo) { setReglas(ordenar(l)); setError(null); } })
+      .catch((e) => { if (vivo) setError(`No se pudieron cargar las reglas: ${falloDe(e).motivo}.`); });
+    return () => { vivo = false; };
+  }, []);
+
+  function alternar() {
+    setMontadas(true);
+    setAbiertas((a) => !a);
+  }
+
+  return (
+    <div className="webs-indice-reglas" role="group" aria-labelledby="kb-webs-reglas-t">
+      <h4 id="kb-webs-reglas-t" className="kb-subtitulo">Reglas: qué entra en el índice y qué no</h4>
+      <p className="muted small">
+        Se aplican en cada recorrido: un cambio cuenta en el siguiente (o al «Reindexar ahora»). Las de
+        categoría se comparan con el nombre en el idioma por defecto de cada web y valen después, por su
+        id, para todos sus idiomas y todas sus subcategorías. Sin web, una regla de slug o de categoría
+        vale para todas; las de id son siempre de una web.
+      </p>
+      <div className="kb-acciones">
+        <button type="button" className="button small secondary" onClick={alternar}
+          aria-expanded={abiertas} aria-controls="kb-webs-reglas-lista">
+          {abiertas ? "Ocultar las reglas" : `Ver las reglas${reglas ? ` (${reglas.length})` : ""}`}
+        </button>
+      </div>
+      {montadas ? (
+        <div id="kb-webs-reglas-lista" className="webs-indice-reglas-lista" hidden={!abiertas}>
+          <ListaReglas canEdit={canEdit} sitios={sitios} reglas={reglas} error={error} setReglas={setReglas} />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ListaReglas({
+  canEdit, sitios, reglas, error, setReglas,
+}: {
+  canEdit: boolean;
+  sitios: string[];
+  reglas: WebRegla[] | null;
+  error: string | null;
+  setReglas: Dispatch<SetStateAction<WebRegla[] | null>>;
+}) {
   const [nueva, setNueva] = useState<{ tipo: TipoRegla; patron: string; sitio: string; nota: string }>({
     tipo: "pagina_excluir_slug", patron: "", sitio: "", nota: "",
   });
   const [creando, setCreando] = useState(false);
   const [errorAlta, setErrorAlta] = useState<string | null>(null);
 
-  useEffect(() => {
-    let vivo = true;
-    listarReglasWebs()
-      .then((l) => { if (vivo) { setReglas(ordenar(l)); setError(null); } })
-      .catch((e) => { if (vivo) setError(extractErrorMessage(e, "No se pudieron cargar las reglas.")); });
-    return () => { vivo = false; };
-  }, []);
-
   async function crear() {
-    const fallo = validarPatron(nueva.tipo, nueva.patron);
+    const fallo = validarRegla(nueva.tipo, nueva.patron, nueva.sitio);
     if (fallo) {
       setErrorAlta(fallo);
       return;
@@ -420,12 +547,7 @@ function ReglasIndice({ canEdit, sitios }: { canEdit: boolean; sitios: string[] 
   const tipoNueva = TIPOS_REGLA.find((t) => t.id === nueva.tipo) ?? TIPOS_REGLA[0];
 
   return (
-    <div className="webs-indice-reglas" role="group" aria-labelledby="kb-webs-reglas-t">
-      <h4 id="kb-webs-reglas-t" className="kb-subtitulo">Reglas: qué entra en el índice y qué no</h4>
-      <p className="muted small">
-        Se aplican en cada recorrido: un cambio cuenta en el siguiente (o al «Reindexar ahora»). Sin
-        web, la regla vale para todas.
-      </p>
+    <>
       {error ? <p className="form-error" role="alert">{error}</p> : null}
       {!error && reglas === null ? <p className="muted small">Cargando las reglas…</p> : null}
       {reglas ? TIPOS_REGLA.map((t) => {
@@ -461,7 +583,7 @@ function ReglasIndice({ canEdit, sitios }: { canEdit: boolean; sitios: string[] 
             <input type="text" aria-label="Patrón de la regla nueva" placeholder={tipoNueva.ejemplo} maxLength={255}
               value={nueva.patron} onChange={(e) => setNueva({ ...nueva, patron: e.target.value })} />
           </label>
-          <label className="field"><span>Web (vacía = todas)</span>
+          <label className="field"><span>{POR_ID.has(nueva.tipo) ? "Web (obligatoria)" : "Web (vacía = todas)"}</span>
             <input type="text" aria-label="Web de la regla nueva" list="kb-webs-sitios" maxLength={40}
               value={nueva.sitio} onChange={(e) => setNueva({ ...nueva, sitio: e.target.value })} />
           </label>
@@ -477,7 +599,7 @@ function ReglasIndice({ canEdit, sitios }: { canEdit: boolean; sitios: string[] 
         </div>
       ) : null}
       <datalist id="kb-webs-sitios">{sitios.map((s) => <option key={s} value={s} />)}</datalist>
-    </div>
+    </>
   );
 }
 
@@ -515,7 +637,7 @@ function FilaRegla({
   }
 
   function guardar() {
-    const fallo = validarPatron(regla.tipo, patron);
+    const fallo = validarRegla(regla.tipo, patron, sitio);
     if (fallo) {
       setError(fallo);
       return;

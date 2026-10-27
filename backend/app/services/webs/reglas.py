@@ -13,9 +13,17 @@ editar.
   idioma tiene sus ids: se pone el de cada uno).
 - `categoria_fuera`: un producto queda FUERA si alguna de sus categorías, o
   alguna madre de ellas, EMPIEZA por este nombre (sin tildes ni mayúsculas).
+  **Se escribe UNA vez, en el idioma por defecto de cada web** (español en
+  casi todas, francés en artisjet-printers.eu, inglés en mqeurope.com): la
+  regla se mira solo sobre los nombres de ese idioma y la decisión pasa a los
+  demás idiomas por id (`lector`: WPGlobus tiene los mismos ids en todos;
+  WPML, los de las traducciones). Un nombre traducido («Spare Parts»,
+  «Ersatzteile») ni hace falta ni sirve: los nombres de los otros idiomas no
+  deciden nada.
 - `producto_excluir_id` / `producto_incluir_id`: excepciones por id de
-  producto. Si un id está en las dos, gana excluir (lo prudente: no ofrecer
-  un repuesto como máquina).
+  producto, el del idioma por defecto (en WPML el lector pide sus
+  traducciones). Si un id está en las dos, gana excluir (lo prudente: no
+  ofrecer un repuesto como máquina).
 
 Cada regla vale para una web (`sitio`) o para todas (`sitio` vacío). Las de
 id, siempre para una: los ids de WordPress son de cada web.
@@ -98,6 +106,8 @@ class ReglasSitio:
         return any(p.search(limpio) for p in self.slugs)
 
     def categoria_fuera(self, nombre: str | None) -> bool:
+        """¿El nombre (de una categoría del idioma por defecto) empieza por una
+        regla `categoria_fuera`?"""
         nombre_plano = plano(html.unescape(nombre or "")).strip()
         return bool(nombre_plano) and any(nombre_plano.startswith(p) for p in self.categorias)
 

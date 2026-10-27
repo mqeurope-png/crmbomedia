@@ -1,4 +1,4 @@
-import { render, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { AppShell } from "./AppShell";
 import { getCurrentUser } from "../lib/api";
 
@@ -18,6 +18,8 @@ jest.mock("../lib/api", () => ({
   getCurrentUser: jest.fn(),
   getStoredToken: jest.fn(() => "tok"),
   logout: jest.fn().mockResolvedValue(undefined),
+  EVENTO_SESION_CADUCADA: "bohub:sesion-caducada",
+  sesionCaducada: jest.fn(() => false),
 }));
 jest.mock("../lib/tasksApi", () => ({
   getMyBuckets: jest.fn().mockResolvedValue({ overdue: [], today: [] }),
@@ -60,4 +62,27 @@ test("un comercial NO es redirigido fuera del CRM", async () => {
   render(<AppShell><div>crm</div></AppShell>);
   await waitFor(() => expect(mockUser).toHaveBeenCalled());
   expect(replace).not.toHaveBeenCalledWith(expect.stringContaining("/erp?desde"));
+});
+
+// Con la sesión caducada (un 401 en cualquier llamada, lo anuncia lib/api.ts)
+// la shell pinta el aviso encima de lo que haya, sin navegar sola.
+test("al caducar la sesión, la shell pinta el aviso «Tu sesión ha caducado»", async () => {
+  pathname = "/erp/configuracion";
+  mockUser.mockResolvedValue({ id: "u-1", role: "admin", full_name: "U", email: "u@x", is_active: true });
+  render(<AppShell><div>configuración</div></AppShell>);
+  expect(await screen.findByText("configuración")).toBeInTheDocument();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  act(() => { window.dispatchEvent(new CustomEvent("bohub:sesion-caducada")); });
+  expect(screen.getByRole("alert")).toHaveTextContent(/Tu sesión ha caducado\. Lo que ves puede no estar al día/);
+  expect(screen.getByRole("button", { name: "Entrar de nuevo" })).toBeInTheDocument();
+  // Lo de debajo sigue ahí (no se navega sola).
+  expect(screen.getByText("configuración")).toBeInTheDocument();
+  expect(replace).not.toHaveBeenCalled();
+});
+
+test("en /login no hay aviso de sesión caducada (una contraseña mal puesta no lo es)", () => {
+  pathname = "/login";
+  render(<AppShell><div>login</div></AppShell>);
+  act(() => { window.dispatchEvent(new CustomEvent("bohub:sesion-caducada")); });
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });

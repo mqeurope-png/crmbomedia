@@ -1,0 +1,25 @@
+/* --- Aviso «Tu sesión ha caducado» (components/SesionCaducada.tsx) -----------------
+ * Franja fija arriba, por encima de la barra superior y de los modales (que
+ * también dejan de guardar): con la sesión caducada lo primero es saberlo. No
+ * tapa el resto de la pantalla, para poder copiar lo que haya sin guardar. */
+.sesion-caducada {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1100;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2) var(--sp-4);
+  padding: var(--sp-2) var(--sp-4);
+  background: var(--st-red-bg);
+  border-bottom: 2px solid var(--st-red-ink);
+  color: var(--ink);
+  font-size: var(--fs-body);
+  box-shadow: var(--shadow-card-hover);
+}
+.sesion-caducada-texto { margin: 0; max-width: 72ch; }
+.sesion-caducada-texto strong { color: var(--st-red-ink); }
+.sesion-caducada .button { flex: 0 0 auto; }

@@ -41,6 +41,7 @@ import {
   type LeadResponseVentana,
 } from "../../lib/erpApi";
 import { getEmailAliases, getMyEmailAliases, type MyAlias } from "../../lib/emailsApi";
+import { useVisible } from "./useVisible";
 
 /** Idiomas de las plantillas del email de factura (los del PDF, E4). */
 const INVOICE_EMAIL_LANGS: ReadonlyArray<{ value: string; label: string }> = [
@@ -1724,9 +1725,14 @@ function TemplateEditor({
   const [testBusy, setTestBusy] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
   const [testError, setTestError] = useState<string | null>(null);
+  // Hay 15 editores (factura, presupuesto y aviso × 5 idiomas): pedirlos todos
+  // al abrir la página eran 15 POST de golpe y el navegador se atascaba. El
+  // ejemplo se pide cuando el bloque llega a la ventana (o a 200 px de ella).
+  const [bloqueRef, visto] = useVisible<HTMLDivElement>("200px");
 
   // Ejemplo en vivo, con retardo para no pedir una previsualización por tecla.
   useEffect(() => {
+    if (!visto) return;
     let alive = true;
     const timer = setTimeout(() => {
       TEMPLATE_API[kind].preview(lang, { subject: tpl.subject, body: tpl.body })
@@ -1736,7 +1742,7 @@ function TemplateEditor({
         });
     }, 350);
     return () => { alive = false; clearTimeout(timer); };
-  }, [kind, lang, tpl.subject, tpl.body]);
+  }, [visto, kind, lang, tpl.subject, tpl.body]);
 
   async function sendTest() {
     setTestBusy(true);
@@ -1754,7 +1760,7 @@ function TemplateEditor({
 
   const labels = templateLabels(kind, lang);
   return (
-    <div className="erp-settings-tpl">
+    <div className="erp-settings-tpl" ref={bloqueRef}>
       <div className="erp-settings-tpl-head">
         <h3 className="erp-settings-tpl-title">{label}</h3>
         <button
@@ -1795,8 +1801,10 @@ function TemplateEditor({
           <>
             Ejemplo: <strong>{example.subject}</strong> — {firstLines(example.body_text)}
           </>
-        ) : (
+        ) : visto ? (
           "Preparando el ejemplo…"
+        ) : (
+          "El ejemplo se prepara al llegar aquí."
         )}
       </p>
       {testResult ? (

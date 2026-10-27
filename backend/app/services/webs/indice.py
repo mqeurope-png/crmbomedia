@@ -159,7 +159,7 @@ def escribir_lectura(session: Session, lectura: LecturaWeb, *,
             continue
         for (tipo, wp_id, idioma), fila_bd in existentes.items():
             if (tipo == grupo.tipo and idioma == grupo.idioma and fila_bd.ido_en is None
-                    and (tipo, wp_id, idioma) not in vistos and wp_id not in grupo.conservar):
+                    and (tipo, wp_id, idioma) not in vistos):
                 fila_bd.ido_en = ahora
                 idos += 1
     if respondieron:

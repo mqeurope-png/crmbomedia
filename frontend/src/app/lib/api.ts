@@ -373,7 +373,83 @@ export function getStoredToken(): string | null {
   return null;
 }
 
+// --- Sesión caducada ----------------------------------------------------------
+// Con el JWT caducado el backend contesta 401 a todo, pero cada pantalla lo
+// trataba como un error suyo (o se lo callaba): el panel seguía enseñando los
+// números viejos y «Actualizar» parecía no hacer nada. La capa de llamadas lo
+// anuncia UNA vez a toda la aplicación con un evento de `window` (AppShell
+// pinta el aviso «Tu sesión ha caducado…») y sigue lanzando el error de
+// siempre, así que cada pantalla conserva su propio manejo. El aviso no se
+// repite hasta un nuevo inicio de sesión (`setStoredToken`, o un token nuevo
+// que llega de otra pestaña: `sesionRenovadaEnOtraPestana`).
+
+/** Nombre del `CustomEvent` que se lanza en `window` al caducar la sesión. */
+export const EVENTO_SESION_CADUCADA = "bohub:sesion-caducada";
+
+let sesionCaducadaAvisada = false;
+// El token que había al caducar: si luego aparece otro (se ha entrado de nuevo
+// en OTRA pestaña; la cookie es común), el aviso de esta ya no es verdad.
+let tokenAlCaducar: string | null = null;
+
+/** Los `detail` de los 401 de autenticación del backend (`core/errors.py`
+ *  `unauthorized()` y `core/auth.py`; «Not authenticated» es el de FastAPI). */
+const DETALLES_401_DE_SESION = new Set([
+  "Invalid authentication credentials",
+  "Complete 2FA verification first",
+  "Not authenticated",
+]);
+
+/** ¿Ya se ha avisado de que la sesión ha caducado (y no se ha vuelto a entrar)?
+ *  Lo lee el aviso al montarse, por si el 401 llegó antes que él. */
+export function sesionCaducada(): boolean {
+  return sesionCaducadaAvisada;
+}
+
+/** Olvida el aviso: el próximo 401 de sesión vuelve a avisar. */
+export function olvidarSesionCaducada(): void {
+  sesionCaducadaAvisada = false;
+  tokenAlCaducar = null;
+}
+
+/** Multipestaña: si tras el aviso hay un token guardado distinto del que
+ *  caducó (se ha entrado de nuevo en otra pestaña), se olvida el aviso y
+ *  devuelve `true` para que la franja se quite. */
+export function sesionRenovadaEnOtraPestana(): boolean {
+  if (!sesionCaducadaAvisada) return false;
+  const actual = getStoredToken();
+  if (!actual || actual === tokenAlCaducar) return false;
+  olvidarSesionCaducada();
+  return true;
+}
+
+/** Un 401 en una llamada autenticada = la sesión ha caducado. Las de
+ *  `/api/auth/*` no cuentan: una contraseña mal puesta al entrar (o al
+ *  desactivar el 2FA) también devuelve 401 y no es una sesión caducada.
+ *  Tampoco cualquier otro 401: el backend también lo usa para «La cuenta
+ *  Google ha revocado el acceso» (`google_integrations.py`). Solo cuenta si el
+ *  `detail` (ya leído por el llamante; `undefined` si no pudo) es uno de los de
+ *  autenticación o la cabecera `WWW-Authenticate` dice `Bearer` (entre
+ *  orígenes puede no leerse; por eso se mira también el `detail`). */
+export function avisarSiSesionCaducada(
+  path: string,
+  status: number,
+  detail: unknown,
+  headers?: Pick<Headers, "get"> | null,
+): void {
+  if (status !== 401 || sesionCaducadaAvisada || path.startsWith("/api/auth/")) return;
+  if (typeof window === "undefined") return;
+  const porDetalle = typeof detail === "string" && DETALLES_401_DE_SESION.has(detail);
+  const cabecera = typeof headers?.get === "function" ? headers.get("www-authenticate") : null;
+  const porCabecera = !!cabecera && /\bbearer\b/i.test(cabecera);
+  if (!porDetalle && !porCabecera) return;
+  sesionCaducadaAvisada = true;
+  tokenAlCaducar = getStoredToken();
+  window.dispatchEvent(new CustomEvent(EVENTO_SESION_CADUCADA));
+}
+
 export function setStoredToken(token: string) {
+  // Sesión nueva (login o 2FA correctos): el próximo 401 vuelve a avisar.
+  olvidarSesionCaducada();
   writeSessionCookie(AUTH_COOKIE_NAME, token);
   // Limpiamos cualquier rastro del localStorage legacy.
   try {
@@ -447,7 +523,7 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
     throw new Error(extractErrorMessage(networkError));
   }
 
-  return parseApiResponse<T>(response);
+  return parseApiResponse<T>(response, path);
 }
 
 /** CRM-BANDEJA — variante binaria de apiFetch para descargas (adjuntos
@@ -472,6 +548,9 @@ export async function apiFetchBlob(path: string): Promise<Blob> {
     } catch {
       /* cuerpo no-JSON — usamos el status */
     }
+    avisarSiSesionCaducada(
+      path, response.status, (detail as { detail?: unknown } | null)?.detail, response.headers,
+    );
     throw new Error(
       extractErrorMessage(detail, `Descarga fallida (HTTP ${response.status})`),
     );
@@ -503,7 +582,7 @@ export async function apiUpload<T>(
   } catch (networkError) {
     throw new Error(extractErrorMessage(networkError));
   }
-  return parseApiResponse<T>(response);
+  return parseApiResponse<T>(response, path);
 }
 
 /** Descarga un binario autenticado (PDF de albarán/etiqueta) como Blob. Igual
@@ -571,9 +650,10 @@ export async function apiDownloadBlob(
     const fallback = `Descarga fallida (${response.status})`;
     let message = fallback;
     let code: string | null = null;
+    let detail: unknown;
     try {
       const body = await response.json();
-      const detail = (body as { detail?: unknown } | null)?.detail;
+      detail = (body as { detail?: unknown } | null)?.detail;
       message = formatFastApiDetail(detail, fallback);
       if (detail && typeof detail === "object" && !Array.isArray(detail)) {
         const c = (detail as { code?: unknown }).code;
@@ -582,6 +662,7 @@ export async function apiDownloadBlob(
     } catch {
       // cuerpo vacío / no-JSON: mensaje solo-status
     }
+    avisarSiSesionCaducada(path, response.status, detail, response.headers);
     throw new DownloadError(message, response.status, code);
   }
   // El nombre que manda el servidor (`Content-Disposition`) viaja pegado al
@@ -591,7 +672,7 @@ export async function apiDownloadBlob(
   );
 }
 
-async function parseApiResponse<T>(response: Response): Promise<T> {
+async function parseApiResponse<T>(response: Response, path: string): Promise<T> {
   if (!response.ok) {
     const fallback = `Error de la API (${response.status})`;
     let body: unknown = null;
@@ -604,6 +685,7 @@ async function parseApiResponse<T>(response: Response): Promise<T> {
       body && typeof body === "object" && "detail" in body
         ? (body as { detail?: unknown }).detail
         : null;
+    avisarSiSesionCaducada(path, response.status, detail, response.headers);
     const message =
       detail != null ? formatFastApiDetail(detail, fallback) : fallback;
     throw new ApiError(message, response.status, detail);
@@ -1164,12 +1246,17 @@ export async function getAuditLogs(filters: AuditLogFilters = {}): Promise<Audit
   });
   if (!response.ok) {
     let detail = `API request failed with ${response.status}`;
+    let leido: unknown;
     try {
       const body = await response.json();
+      leido = body?.detail;
       detail = body.detail ?? detail;
     } catch {
-      detail = await response.text();
+      // Cuerpo no-JSON (ya consumido: `text()` puede fallar); que no impida
+      // el aviso de sesión de abajo, que entonces decide por la cabecera.
+      detail = await response.text().catch(() => detail);
     }
+    avisarSiSesionCaducada("/api/audit-logs", response.status, leido, response.headers);
     throw new Error(detail);
   }
   const items = (await response.json()) as AuditLog[];
@@ -1277,12 +1364,15 @@ export async function exportAuditLogs(
   });
   if (!response.ok) {
     let detail = `Audit export failed with ${response.status}`;
+    let leido: unknown;
     try {
       const body = await response.json();
+      leido = body?.detail;
       detail = body.detail ?? detail;
     } catch {
       // body was empty / non-JSON; keep status-only message
     }
+    avisarSiSesionCaducada("/api/audit-logs/export", response.status, leido, response.headers);
     throw new Error(detail);
   }
   return response.blob();

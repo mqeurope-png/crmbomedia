@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import ErpSettingsPage from "./page";
 import type { ContrapartidaRule, LeadInteres, LeadInteresConUso } from "../../lib/erpApi";
@@ -8,6 +8,8 @@ import {
   getErpSettings,
   listLeadIntereses,
   previewInvoiceEmailTemplate,
+  previewQuoteEmailTemplate,
+  previewShipmentEmailTemplate,
   sendInvoiceEmailTemplateTest,
   updateErpSettings,
   updateLeadInteres,
@@ -691,6 +693,16 @@ describe("ErpSettingsPage — Lote 2 · PR-2", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("No se puede enviar desde pedidos@streamtec.es");
   });
 
+  it("sin IntersectionObserver (jsdom, navegadores viejos) se piden los 15 ejemplos al abrir, como siempre", async () => {
+    expect(typeof window.IntersectionObserver).toBe("undefined");
+    render(<ErpSettingsPage />);
+    await screen.findByLabelText("Asunto factura es");
+    await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(5));
+    await waitFor(() => expect(previewQuoteEmailTemplate).toHaveBeenCalledTimes(5));
+    await waitFor(() => expect(previewShipmentEmailTemplate).toHaveBeenCalledTimes(5));
+    expect(mockPreview.mock.calls.map((c) => c[0]).sort()).toEqual(["de", "en", "es", "fr", "nl"]);
+  });
+
   it("sin permiso de guardar: botones desactivados con el motivo", async () => {
     mockGet.mockResolvedValue(settings({ can_edit: false }));
     render(<ErpSettingsPage />);
@@ -701,6 +713,128 @@ describe("ErpSettingsPage — Lote 2 · PR-2", () => {
     expect(screen.getByRole("button", { name: "Enviarme una prueba es" })).toBeDisabled();
     // Ver el ejemplo sí se puede.
     expect(screen.getByRole("button", { name: "Ver ejemplo es" })).toBeEnabled();
+  });
+});
+
+// Abrir la página pedía los 15 ejemplos de golpe (factura, presupuesto y aviso
+// × 5 idiomas) y el navegador se atascaba: cada editor pide el suyo cuando su
+// bloque llega a la ventana. Un IntersectionObserver de mentira que solo
+// «dispara» cuando el test lo pide.
+describe("ErpSettingsPage — ejemplos de las plantillas solo cuando se ven", () => {
+  type Observado = { el: Element; cb: IntersectionObserverCallback; obs: FakeObserver };
+  let observados: Observado[] = [];
+  const margenes: string[] = [];
+
+  class FakeObserver {
+    root: Element | Document | null;
+    constructor(private cb: IntersectionObserverCallback, opts?: IntersectionObserverInit) {
+      margenes.push(opts?.rootMargin ?? "");
+      this.root = opts?.root ?? null;
+    }
+    observe(el: Element) { observados.push({ el, cb: this.cb, obs: this }); }
+    unobserve(el: Element) { observados = observados.filter((o) => o.el !== el); }
+    disconnect() { observados = observados.filter((o) => o.obs !== this); }
+    takeRecords() { return []; }
+  }
+
+  /** El bloque del editor cuyo ejemplo lleva ese data-testid entra en la ventana. */
+  function entra(testid: string) {
+    const bloque = screen.getByTestId(testid).closest(".erp-settings-tpl");
+    const o = observados.find((x) => x.el === bloque);
+    if (!o) throw new Error(`Nadie observa el editor ${testid}`);
+    act(() => {
+      o.cb([{ isIntersecting: true, target: o.el } as unknown as IntersectionObserverEntry],
+           o.obs as unknown as IntersectionObserver);
+    });
+  }
+
+  /** Más que el retardo de 350 ms del ejemplo en vivo. */
+  const pasaElRetardo = () => act(() => new Promise((r) => setTimeout(r, 500)));
+
+  beforeEach(() => {
+    observados = [];
+    margenes.length = 0;
+    Object.defineProperty(window, "IntersectionObserver", {
+      configurable: true, writable: true, value: FakeObserver,
+    });
+  });
+  afterEach(() => {
+    delete (window as { IntersectionObserver?: unknown }).IntersectionObserver;
+  });
+
+  it("al abrir la página no se pide ningún ejemplo hasta que el editor se ve", async () => {
+    render(<ErpSettingsPage />);
+    await screen.findByLabelText("Asunto factura es");
+    await pasaElRetardo();
+    expect(mockPreview).not.toHaveBeenCalled();
+    expect(previewQuoteEmailTemplate).not.toHaveBeenCalled();
+    expect(previewShipmentEmailTemplate).not.toHaveBeenCalled();
+    // Los 15 editores están vigilados, con margen para llegar antes que el scroll.
+    expect(observados.filter((o) => o.el.matches(".erp-settings-tpl"))).toHaveLength(15);
+    expect(margenes).toContain("200px");
+    expect(screen.getByTestId("ejemplo-es")).toHaveTextContent("El ejemplo se prepara al llegar aquí.");
+    expect(screen.getByTestId("ejemplo-presupuesto-de"))
+      .toHaveTextContent("El ejemplo se prepara al llegar aquí.");
+    // «Ver ejemplo» y «Enviarme una prueba» siguen ahí sin esperar a verse.
+    expect(screen.getByRole("button", { name: "Ver ejemplo es" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Enviarme una prueba es" })).toBeEnabled();
+  });
+
+  // En la aplicación no hace scroll la ventana sino `.app-shell-content`: el
+  // observador tiene que mirar ese contenedor o el margen de 200px no adelanta.
+  it("vigila contra el contenedor que hace scroll (la ventana si no hay ninguno)", async () => {
+    const { unmount } = render(
+      <div data-testid="scroll" style={{ overflowY: "auto" }}><ErpSettingsPage /></div>,
+    );
+    await screen.findByLabelText("Asunto factura es");
+    const scroll = screen.getByTestId("scroll");
+    const editores = observados.filter((o) => o.el.matches(".erp-settings-tpl"));
+    expect(editores).toHaveLength(15);
+    expect(editores.every((o) => o.obs.root === scroll)).toBe(true);
+    unmount();
+
+    observados = [];
+    render(<ErpSettingsPage />);
+    await screen.findByLabelText("Asunto factura es");
+    const sinContenedor = observados.filter((o) => o.el.matches(".erp-settings-tpl"));
+    expect(sinContenedor).toHaveLength(15);
+    expect(sinContenedor.every((o) => o.obs.root === null)).toBe(true);
+  });
+
+  it("al verse un editor se pide SOLO su ejemplo y luego sigue al día al escribir", async () => {
+    const user = userEvent.setup();
+    render(<ErpSettingsPage />);
+    await screen.findByLabelText("Asunto factura fr");
+    entra("ejemplo-fr");
+    const ejemplo = screen.getByTestId("ejemplo-fr");
+    expect(ejemplo).toHaveTextContent("Preparando el ejemplo…");
+    await waitFor(() => expect(ejemplo).toHaveTextContent("Ejemplo: Facture 5-000118"));
+    expect(mockPreview).toHaveBeenCalledTimes(1);
+    expect(mockPreview.mock.calls[0][0]).toBe("fr");
+    expect(previewQuoteEmailTemplate).not.toHaveBeenCalled();
+    expect(previewShipmentEmailTemplate).not.toHaveBeenCalled();
+    expect(screen.getByTestId("ejemplo-es")).toHaveTextContent("El ejemplo se prepara al llegar aquí.");
+    // Visto una vez, deja de vigilarse (no se vuelve a pedir al salir y entrar).
+    expect(observados.some((o) => o.el === ejemplo.closest(".erp-settings-tpl"))).toBe(false);
+    // Y al escribir, el ejemplo en vivo de siempre (con su retardo).
+    const asunto = screen.getByLabelText("Asunto factura fr");
+    await user.clear(asunto);
+    await user.type(asunto, "Votre facture {{numero}");
+    await waitFor(() => expect(ejemplo).toHaveTextContent("Ejemplo: Votre facture 5-000118 —"));
+    expect(mockPreview.mock.calls.every((c) => c[0] === "fr")).toBe(true);
+    expect(previewQuoteEmailTemplate).not.toHaveBeenCalled();
+  });
+
+  it("un aviso de envío que se ve pide su ejemplo y no el de la factura del mismo idioma", async () => {
+    render(<ErpSettingsPage />);
+    await screen.findByLabelText("Asunto aviso de envío de");
+    entra("ejemplo-envio-de");
+    await waitFor(() => expect(previewShipmentEmailTemplate).toHaveBeenCalledTimes(1));
+    expect((previewShipmentEmailTemplate as jest.Mock).mock.calls[0][0]).toBe("de");
+    await waitFor(() => expect(screen.getByTestId("ejemplo-envio-de"))
+      .toHaveTextContent("Ejemplo: Tu pedido 9553 ya tiene envío"));
+    expect(mockPreview).not.toHaveBeenCalled();
+    expect(previewQuoteEmailTemplate).not.toHaveBeenCalled();
   });
 });
 

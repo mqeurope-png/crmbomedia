@@ -1,6 +1,7 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { precioDeLaWeb, REFRESCO_MS, WebsIndiceBloque } from "./WebsIndiceBloque";
+import { ApiError } from "../../lib/api";
 import {
   actualizarReglaWebs,
   borrarReglaWebs,
@@ -88,6 +89,29 @@ afterEach(() => {
   jest.useRealTimers();
 });
 
+type Usuario = ReturnType<typeof userEvent.setup>;
+
+/** Las reglas van plegadas: se abren con su botón, que dice cuántas hay. */
+async function abrirReglas(user: Usuario) {
+  await user.click(await screen.findByRole("button", { name: `Ver las reglas (${REGLAS.length})` }));
+}
+
+/** La fila de botones de arriba: el resultado de «Actualizar el estado» va ahí. */
+function acciones(): HTMLElement {
+  return screen.getByRole("button", { name: /^Actualiz/ }).parentElement as HTMLElement;
+}
+
+/** La tabla del conteo y los recorridos, con su marca de «sin actualizar». */
+function datos(): HTMLElement {
+  return screen.getByRole("table", { name: "Índice de las webs por web y tipo" })
+    .closest(".webs-indice-datos") as HTMLElement;
+}
+
+const SESION_CADUCADA = new ApiError("Could not validate credentials", 401, "Could not validate credentials");
+
+const CORRIENDO = pasada({ id: "p2", origen: "manual", estado: "corriendo", fin: null, resumen: {},
+  pendientes: ["mbolasers"], inicio: "2026-10-27T11:00:10Z" });
+
 describe("WebsIndiceBloque · conteo por web y tipo", () => {
   it("una fila por web (página / entrada / producto, total, ya no están, idiomas) y el total", async () => {
     render(<WebsIndiceBloque canEdit />);
@@ -169,33 +193,160 @@ describe("WebsIndiceBloque · «Reindexar ahora»", () => {
   });
 
   it("sin permiso de edición no se puede reindexar", async () => {
+    const user = userEvent.setup();
     render(<WebsIndiceBloque canEdit={false} />);
     await screen.findByRole("table", { name: "Índice de las webs por web y tipo" });
     expect(screen.getByRole("button", { name: "Reindexar ahora" })).toBeDisabled();
+    await abrirReglas(user);
+    expect(screen.getByRole("group", { name: "Categorías de producto fuera" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Añadir regla" })).not.toBeInTheDocument();
   });
 });
 
-describe("WebsIndiceBloque · reglas", () => {
-  it("agrupadas por tipo, cada grupo con su explicación", async () => {
+describe("WebsIndiceBloque · «Actualizar el estado» y datos sin actualizar", () => {
+  it("dice «Actualizando…» mientras pide y, al terminar, la hora junto al botón", async () => {
+    const user = userEvent.setup();
     render(<WebsIndiceBloque canEdit />);
-    const slug = await screen.findByRole("group", { name: "Páginas y entradas fuera, por slug" });
+    await screen.findByRole("table", { name: "Índice de las webs por web y tipo" });
+    expect(acciones()).toHaveTextContent(/Actualizado a las \d{2}:\d{2}/);
+
+    let soltar: (e: WebsEstado) => void = () => {};
+    mockEstado.mockImplementation(() => new Promise<WebsEstado>((r) => { soltar = r; }));
+    await user.click(screen.getByRole("button", { name: "Actualizar el estado" }));
+    expect(screen.getByRole("button", { name: "Actualizando…" })).toBeDisabled();
+    expect(acciones()).not.toHaveTextContent(/Actualizado a las/);
+    await act(async () => { soltar(ESTADO); });
+    expect(await screen.findByRole("button", { name: "Actualizar el estado" })).toBeEnabled();
+    expect(acciones()).toHaveTextContent(/Actualizado a las \d{2}:\d{2}/);
+    expect(mockEstado).toHaveBeenCalledTimes(2);
+  });
+
+  it("con la sesión caducada (401) tras una primera carga: lo dice junto al botón y marca los números como de antes", async () => {
+    const user = userEvent.setup();
+    render(<WebsIndiceBloque canEdit />);
+    await screen.findByRole("table", { name: "Índice de las webs por web y tipo" });
+    expect(datos()).not.toHaveClass("is-desfasado");
+
+    mockEstado.mockRejectedValue(SESION_CADUCADA);
+    await user.click(screen.getByRole("button", { name: "Actualizar el estado" }));
+    await waitFor(() => expect(acciones()).toHaveTextContent(
+      /No se ha podido actualizar: tu sesión ha caducado \(vuelve a entrar\)\. Lo que ves es de las \d{2}:\d{2}\./));
+    // Los números se quedan (son lo último que se sabe), pero marcados.
+    expect(within(datos()).getByText(/sin actualizar:/).closest("p"))
+      .toHaveTextContent(/Datos de las \d{2}:\d{2}, sin actualizar: tu sesión ha caducado/);
+    expect(datos()).toHaveClass("is-desfasado");
+    expect(within(datos()).getByLabelText("Último recorrido terminado")).toBeInTheDocument();
+    // El botón no se queda en «Actualizando…».
+    expect(screen.getByRole("button", { name: "Actualizar el estado" })).toBeEnabled();
+  });
+
+  it("si el sondeo de un recorrido en marcha recibe un 401, deja de preguntar y lo dice", async () => {
+    jest.useFakeTimers();
+    mockEstado.mockResolvedValueOnce({ ...ESTADO, en_curso: CORRIENDO }).mockRejectedValue(SESION_CADUCADA);
+    render(<WebsIndiceBloque canEdit />);
+    await screen.findByLabelText("Recorrido en curso");
+    expect(screen.getByText(/el estado se refresca solo/)).toBeInTheDocument();
+
+    await act(async () => { jest.advanceTimersByTime(REFRESCO_MS); });
+    await waitFor(() => expect(mockEstado).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(acciones()).toHaveTextContent(/No se ha podido actualizar: tu sesión ha caducado/));
+    expect(datos()).toHaveClass("is-desfasado");
+    expect(within(datos()).getByText(/vuelve a entrar para verlos al día/)).toBeInTheDocument();
+    expect(screen.queryByText(/el estado se refresca solo/)).not.toBeInTheDocument();
+    await act(async () => { jest.advanceTimersByTime(REFRESCO_MS * 3); });
+    expect(mockEstado).toHaveBeenCalledTimes(2);
+  });
+
+  it("un fallo que no es de sesión dice «No se ha podido actualizar» y el sondeo sigue hasta que vuelve a ir", async () => {
+    jest.useFakeTimers();
+    const terminado = pasada({ id: "p2", origen: "manual", estado: "ok" });
+    mockEstado
+      .mockResolvedValueOnce({ ...ESTADO, en_curso: CORRIENDO })
+      .mockRejectedValueOnce(new ApiError("Error de la API (502)", 502, null))
+      .mockResolvedValueOnce({ ...ESTADO, en_curso: CORRIENDO })
+      .mockResolvedValue({ ...ESTADO, en_curso: null, ultima_pasada: terminado });
+    render(<WebsIndiceBloque canEdit />);
+    await screen.findByLabelText("Recorrido en curso");
+
+    await act(async () => { jest.advanceTimersByTime(REFRESCO_MS); });
+    await waitFor(() => expect(mockEstado).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(acciones()).toHaveTextContent(
+      /No se ha podido actualizar: Error de la API \(502\)\. Lo que ves es de las \d{2}:\d{2}\./));
+    expect(datos()).toHaveClass("is-desfasado");
+    expect(within(datos()).getByText(/se vuelve a intentar cada 5 s/)).toBeInTheDocument();
+
+    // No se para: a los pocos segundos se vuelve a pedir y ya va.
+    await act(async () => { jest.advanceTimersByTime(REFRESCO_MS); });
+    await waitFor(() => expect(mockEstado).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(acciones()).toHaveTextContent(/Actualizado a las \d{2}:\d{2}/));
+    expect(datos()).not.toHaveClass("is-desfasado");
+    expect(screen.queryByText(/sin actualizar/)).not.toBeInTheDocument();
+
+    // Y sigue mientras dura el recorrido: termina y se deja de preguntar.
+    await act(async () => { jest.advanceTimersByTime(REFRESCO_MS); });
+    await waitFor(() => expect(mockEstado).toHaveBeenCalledTimes(4));
+    await waitFor(() => expect(screen.queryByLabelText("Recorrido en curso")).not.toBeInTheDocument());
+    await act(async () => { jest.advanceTimersByTime(REFRESCO_MS * 3); });
+    expect(mockEstado).toHaveBeenCalledTimes(4);
+  });
+
+  it("si la primera carga falla no hay números que marcar: lo dice junto al botón", async () => {
+    mockEstado.mockRejectedValue(new ApiError("Error de la API (500)", 500, null));
+    render(<WebsIndiceBloque canEdit />);
+    await waitFor(() => expect(acciones()).toHaveTextContent(
+      "No se ha podido cargar el estado del índice: Error de la API (500)."));
+    expect(screen.queryByRole("table", { name: "Índice de las webs por web y tipo" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Cargando el estado del índice/)).not.toBeInTheDocument();
+  });
+});
+
+describe("WebsIndiceBloque · reglas", () => {
+  it("van plegadas: el botón dice cuántas hay y la lista solo se pinta al abrirla", async () => {
+    const user = userEvent.setup();
+    render(<WebsIndiceBloque canEdit />);
+    const ver = await screen.findByRole("button", { name: "Ver las reglas (3)" });
+    expect(ver).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByLabelText("Patrón de la regla «cooki»")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Añadir regla" })).not.toBeInTheDocument();
+
+    await user.click(ver);
+    expect(screen.getByRole("button", { name: "Ocultar las reglas" })).toHaveAttribute("aria-expanded", "true");
+    const patron = screen.getByLabelText("Patrón de la regla «cooki»");
+    await user.type(patron, "|cookie");
+
+    // Ocultarlas no pierde lo escrito sin guardar.
+    await user.click(screen.getByRole("button", { name: "Ocultar las reglas" }));
+    expect(screen.queryByRole("group", { name: "Categorías de producto fuera" })).not.toBeInTheDocument();
+    await abrirReglas(user);
+    expect(screen.getByLabelText("Patrón de la regla «cooki»")).toHaveValue("cooki|cookie");
+    expect(mockReglas).toHaveBeenCalledTimes(1);
+  });
+
+  it("agrupadas por tipo, cada grupo con su explicación", async () => {
+    const user = userEvent.setup();
+    render(<WebsIndiceBloque canEdit />);
+    await abrirReglas(user);
+    const slug = screen.getByRole("group", { name: "Páginas y entradas fuera, por slug" });
     expect(within(slug).getByText(/expresión regular sobre el slug/)).toBeInTheDocument();
     expect(within(slug).getByLabelText("Patrón de la regla «cooki»")).toHaveValue("cooki");
     const categorias = screen.getByRole("group", { name: "Categorías de producto fuera" });
     expect(within(categorias).getByText(/Cualquier categoría de fuera manda/)).toBeInTheDocument();
+    // Por el nombre en el idioma por defecto; luego por id a todos los idiomas y subcategorías.
+    expect(within(categorias).getByText(/idioma POR DEFECTO de la web/)).toHaveTextContent(
+      /todas sus subcategorías y la misma categoría en todos los idiomas de la web/);
     expect(within(categorias).getByLabelText("Patrón de la regla «Repuestos»")).toHaveValue("Repuestos");
     const incluir = screen.getByRole("group", { name: "Productos dentro, por id (excepción)" });
     expect(within(incluir).getByLabelText("Web de la regla «4320» (boprint)")).toHaveValue("boprint");
     expect(within(screen.getByRole("group", { name: "Productos fuera, por id" })).getByText("Ninguna.")).toBeInTheDocument();
   });
 
-  it("alta de una regla con su web y nota; un id que no es número no se manda", async () => {
+  it("alta de una regla con su web y nota; un id que no es número, o sin web, no se manda", async () => {
     mockCrear.mockImplementation(async (p) => regla({ id: 9, posicion: 5, ...p }));
     const user = userEvent.setup();
     render(<WebsIndiceBloque canEdit />);
-    await screen.findByRole("group", { name: "Categorías de producto fuera" });
+    await abrirReglas(user);
     await user.selectOptions(screen.getByLabelText("Tipo de la regla nueva"), "producto_excluir_id");
+    expect(screen.getByText("Web (obligatoria)")).toBeInTheDocument();
     await user.type(screen.getByLabelText("Patrón de la regla nueva"), "abc");
     await user.click(screen.getByRole("button", { name: "Añadir regla" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("El id es un número");
@@ -203,6 +354,10 @@ describe("WebsIndiceBloque · reglas", () => {
 
     await user.clear(screen.getByLabelText("Patrón de la regla nueva"));
     await user.type(screen.getByLabelText("Patrón de la regla nueva"), "3201");
+    await user.click(screen.getByRole("button", { name: "Añadir regla" }));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Una regla por id necesita su web"));
+    expect(mockCrear).not.toHaveBeenCalled();
+
     await user.type(screen.getByLabelText("Web de la regla nueva"), "mbolasers");
     await user.type(screen.getByLabelText("Nota de la regla nueva"), "producto español repetido");
     await user.click(screen.getByRole("button", { name: "Añadir regla" }));
@@ -220,7 +375,8 @@ describe("WebsIndiceBloque · reglas", () => {
     const confirmar = jest.spyOn(window, "confirm").mockReturnValue(true);
     const user = userEvent.setup();
     render(<WebsIndiceBloque canEdit />);
-    const patron = await screen.findByLabelText("Patrón de la regla «Repuestos»");
+    await abrirReglas(user);
+    const patron = screen.getByLabelText("Patrón de la regla «Repuestos»");
     const fila = patron.closest("tr") as HTMLElement;
     expect(within(fila).queryByRole("button", { name: "Guardar" })).not.toBeInTheDocument();
     await user.clear(patron);
@@ -244,7 +400,8 @@ describe("WebsIndiceBloque · reglas", () => {
     mockActualizar.mockImplementation(async (id, cambios) => ({ ...REGLAS.find((r) => r.id === id), ...cambios }));
     const user = userEvent.setup();
     render(<WebsIndiceBloque canEdit />);
-    const patron = await screen.findByLabelText("Patrón de la regla «cooki»");
+    await abrirReglas(user);
+    const patron = screen.getByLabelText("Patrón de la regla «cooki»");
     const fila = patron.closest("tr") as HTMLElement;
     await user.clear(patron);
     await user.type(patron, "cooki|checkout");

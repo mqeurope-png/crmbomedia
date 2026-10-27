@@ -1,4 +1,4 @@
-import { apiFetch, getStoredToken } from "./api";
+import { apiFetch, avisarSiSesionCaducada, getStoredToken } from "./api";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
@@ -66,6 +66,12 @@ export async function downloadBackup(backup: Backup): Promise<void> {
     });
     if (!response.ok) {
       const detail = await response.json().catch(() => null);
+      avisarSiSesionCaducada(
+        `/api/admin/backups/${backup.id}/download`,
+        response.status,
+        (detail as { detail?: unknown } | null)?.detail,
+        response.headers,
+      );
       throw new Error(
         (detail && (detail as { detail?: string }).detail) ||
           `No se pudo descargar el backup (${response.status}).`,

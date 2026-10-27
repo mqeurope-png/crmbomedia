@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 
 WEBS_QUEUE = queue_name("webs", "indice")
 #: Tiempo máximo de UN trabajo (una web). La más larga, mbolasers (cinco
-#: idiomas y sus páginas leídas del HTML), ronda los 2 minutos: holgado.
+#: idiomas, todo por la REST), ronda los 2 minutos: holgado.
 JOB_TIMEOUT_SECONDS = 15 * 60
 #: Una pasada en cola o en curso que lleva más de esto sin moverse se da por
 #: muerta (un worker reiniciado a media pasada): no bloquea otra.

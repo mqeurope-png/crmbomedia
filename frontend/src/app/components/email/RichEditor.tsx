@@ -7,7 +7,7 @@ import {
   useRef,
 } from "react";
 import type { Editor as TinyMCEEditor } from "tinymce";
-import { getStoredToken } from "../../lib/api";
+import { avisarSiSesionCaducada, getStoredToken } from "../../lib/api";
 import { miniaturaYoutube } from "../../lib/miniaturaYoutube";
 import { EDITOR_INVALID_ELEMENTS } from "./editorConfig";
 import { abrirDialogoImagenUrl } from "./imagenPorUrl";
@@ -81,6 +81,12 @@ async function uploadBlob(blob: Blob, filename: string): Promise<string> {
   });
   if (!response.ok) {
     const detail = await response.json().catch(() => null);
+    avisarSiSesionCaducada(
+      "/api/email-templates/assets",
+      response.status,
+      (detail as { detail?: unknown } | null)?.detail,
+      response.headers,
+    );
     throw new Error(
       (detail && (detail as { detail?: string }).detail) ||
         `No se pudo subir la imagen (${response.status}).`,

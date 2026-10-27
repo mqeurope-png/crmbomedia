@@ -1,6 +1,7 @@
 """Las reglas de partida del índice de las webs: las siembra la migración 0148
-y valen mientras la tabla `web_indice_reglas` esté vacía. Lo que se cambie de
-verdad se cambia en la tabla (Configuración ERP → Base de conocimiento).
+(y la 0149 añade el WhiteRIP) y valen mientras la tabla `web_indice_reglas`
+esté vacía. Lo que se cambie de verdad se cambia en la tabla (Configuración
+ERP → Base de conocimiento).
 
 - `pagina_excluir_slug`: expresiones regulares (sin distinguir mayúsculas)
   sobre el slug de páginas y entradas: legales, carrito, pago, cuenta, avisos
@@ -9,11 +10,15 @@ verdad se cambia en la tabla (Configuración ERP → Base de conocimiento).
 - `categoria_fuera`: un producto queda fuera si alguna de sus categorías, o
   alguna madre de ellas, EMPIEZA por uno de estos nombres (sin distinguir
   mayúsculas ni tildes). Los productos sin categoría también quedan fuera.
-- `producto_excluir_id` / `producto_incluir_id`: excepciones por id, cada una
-  de su web. Son los productos que la categoría no separa bien: artisjet-spain.es
-  mete cabezales y dampers en «Accesorios» y artisjet-printers.eu mezcla
-  consumibles en «Accessoires et pièces de rechange» (repasado a mano sobre el
-  recorrido real del 27/10/2026).
+  Escritos en el idioma por defecto de cada web (español; francés para
+  artisjet-printers.eu): los demás idiomas heredan la decisión por id, sin
+  traducir nada aquí.
+- `producto_excluir_id` / `producto_incluir_id`: excepciones por id (del
+  idioma por defecto), cada una de su web. Son los productos que la categoría
+  no separa bien: artisjet-spain.es mete cabezales y dampers en «Accesorios»
+  y artisjet-printers.eu mezcla consumibles en «Accessoires et pièces de
+  rechange» y cuelga accesorios y software de «Autres pièces de rechange»
+  (repasado a mano sobre el recorrido real del 27/10/2026).
 """
 from __future__ import annotations
 
@@ -70,4 +75,7 @@ PRODUCTOS_FUERA: tuple[tuple[str, int, str], ...] = (
 PRODUCTOS_DENTRO: tuple[tuple[str, int, str], ...] = (
     ("artisjet-eu", 477, "Plantillas y moldes a medida: accesorio en «Autres pièces de "
                          "rechange»"),
+    # Lo añade la migración 0149: su categoría 19 «Logiciels» es hija de la 18
+    # «Autres pièces de rechange» y con la herencia quedaba fuera.
+    ("artisjet-eu", 493, "WhiteRIP: software colgado de «Autres pièces de rechange»"),
 )

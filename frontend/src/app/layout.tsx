@@ -4,6 +4,7 @@ import { AppShell } from "./components/AppShell";
 import "./styles.css";
 import "./redactor-fuentes.css";
 import "./soporte-webs.css";
+import "./sesion.css";
 
 // Inter (variable) — fuente del rebranding BoHub. Self-hosted vía
 // next/font para evitar la dependencia de fonts.googleapis.com en

@@ -1,4 +1,4 @@
-import { getStoredToken } from "./api";
+import { avisarSiSesionCaducada, getStoredToken } from "./api";
 import { extractErrorMessage, formatFastApiDetail } from "./errors";
 
 export type ExternalSystem = "agilecrm" | "brevo" | "freshdesk" | "factusol";
@@ -89,6 +89,9 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       // empty / non-JSON body
     }
+    avisarSiSesionCaducada(
+      path, response.status, (body as { detail?: unknown } | null)?.detail, response.headers,
+    );
     const message =
       body && typeof body === "object" && "detail" in body
         ? formatFastApiDetail((body as { detail?: unknown }).detail, fallback)
