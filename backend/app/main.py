@@ -115,6 +115,11 @@ app.include_router(asistente_conversacion_router, dependencies=_CRM_SCOPE)
 from app.api.correo_compuesto import router as correo_compuesto_router  # noqa: E402
 
 app.include_router(correo_compuesto_router, dependencies=_CRM_SCOPE)
+# Imagen por URL en el editor: solo se comprueba (https, imagen, peso, red
+# interna); va enlazada en caliente, no se descarga ni se rehospeda.
+from app.api.imagen_url import router as imagen_url_router  # noqa: E402
+
+app.include_router(imagen_url_router, dependencies=_CRM_SCOPE)
 app.include_router(emails_mailbox_router, dependencies=_CRM_SCOPE)
 app.include_router(emails_scheduled_router, dependencies=_CRM_SCOPE)
 app.include_router(email_drafts_router, dependencies=_CRM_SCOPE)
@@ -170,6 +175,8 @@ from app.erp.api import plantillas_router as erp_plantillas_router  # noqa: E402
 from app.erp.api import sat_router as erp_sat_router  # noqa: E402
 from app.erp.api import seguimiento_router as erp_seguimiento_router  # noqa: E402
 from app.erp.api import shipping_router as erp_shipping_router  # noqa: E402
+from app.erp.api import soporte_router as erp_soporte_router  # noqa: E402
+from app.erp.api import webs_router as erp_webs_router  # noqa: E402
 from app.erp.api import (  # noqa: E402
     woocommerce_admin_router as erp_woocommerce_admin_router,
 )
@@ -197,6 +204,10 @@ app.include_router(erp_ia_router)
 # PDF, envío y «Convertir en presupuesto»).
 app.include_router(erp_ofertas_router)
 app.include_router(erp_plantillas_router)
+# Lo que el redactor va a buscar fuera del catálogo: el soporte de terceros
+# (consulta; también desde la Cola SAT) y el índice de nuestras webs.
+app.include_router(erp_soporte_router)
+app.include_router(erp_webs_router)
 
 # Webhooks entrantes (fuera de `/api/*`; auth = firma HMAC, no sesión CRM).
 from app.webhooks.woocommerce import router as woocommerce_webhook_router  # noqa: E402
