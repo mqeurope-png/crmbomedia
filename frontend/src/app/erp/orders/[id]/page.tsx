@@ -9,6 +9,7 @@ import { PageHeader } from "../../../components/PageHeader";
 import { ChangeSerieModal } from "./ChangeSerieModal";
 import { OrderDateRow } from "./OrderDateRow";
 import { CreateQuoteModal } from "../../../components/erp/CreateQuoteModal";
+import { GuardarPlantillaModal } from "../../../components/erp/GuardarPlantillaModal";
 import { emptyDocumentLine, type DocumentLine } from "../../../components/erp/DocumentLinesTable";
 import { CancelOrderModal } from "../../../components/erp/CancelOrderModal";
 import { DesvincularDocumentoModal } from "../../../components/erp/DesvincularDocumentoModal";
@@ -261,6 +262,9 @@ function ErpOrderDetailScreen() {
   const [serieOpen, setSerieOpen] = useState(false);
   // Lote 7 · P3 — «Crear proforma de cobro» desde un pedido manual.
   const [proformaOpen, setProformaOpen] = useState(false);
+  // «Guardar como plantilla»: las líneas del pedido a una plantilla de
+  // documento (para ofertas, proformas y pedidos). No toca FACTUSOL.
+  const [plantillaOpen, setPlantillaOpen] = useState(false);
   // ERP · envío del PEDIDO por email (SAT / taller): modal + petición de crear
   // el albarán cuando el aviso del modal lo ofrece.
   const [orderEmailOpen, setOrderEmailOpen] = useState(false);
@@ -322,6 +326,8 @@ function ErpOrderDetailScreen() {
   // pedido (mismo permiso que el backend, `erp.orders.create`). Una MUESTRA
   // también lo tiene: se le vincula su documento o se anula.
   const canEditOrder = can(user, Cap.ORDERS_CREATE);
+  // Plantillas de documento: las gestiona quien hace proformas y ofertas.
+  const canPlantillas = can(user, Cap.PROFORMAS) && !esMuestra;
   // E — el rol de taller (ERP·SAT) tiene su cajón de envío/taller con botones
   // más grandes (el albarán, la etiqueta y el seguimiento viven ahí juntos).
   const canSat = can(user, Cap.SAT_VIEW);
@@ -995,6 +1001,16 @@ function ErpOrderDetailScreen() {
                       onClick={() => setLinkDocOpen({ initial: null })}
                     >
                       Vincular documento FACTUSOL
+                    </button>
+                  ) : null}
+                  {canPlantillas && (order.lines ?? []).length > 0 ? (
+                    <button
+                      type="button"
+                      className="button small secondary"
+                      title="Copia las líneas del pedido a una plantilla para ofertas, proformas y pedidos"
+                      onClick={() => setPlantillaOpen(true)}
+                    >
+                      Guardar como plantilla
                     </button>
                   ) : null}
                 </ActionsMenu>
@@ -1685,6 +1701,19 @@ function ErpOrderDetailScreen() {
             );
           }}
           onCancel={() => setProformaOpen(false)}
+        />
+      ) : null}
+      {plantillaOpen ? (
+        <GuardarPlantillaModal
+          origen={{ tipo: "pedido", order_id: order.id }}
+          numero={order.order_number}
+          idiomaSugerido={PDF_LANGS.some((l) => l.value === order.language)
+            ? (order.language as FactusolPdfLang) : null}
+          onClose={() => setPlantillaOpen(false)}
+          onSaved={(p) => {
+            setPlantillaOpen(false);
+            setNotice(`Plantilla «${p.nombre}» guardada (ERP · Plantillas).`);
+          }}
         />
       ) : null}
       {invoiceRef ? (

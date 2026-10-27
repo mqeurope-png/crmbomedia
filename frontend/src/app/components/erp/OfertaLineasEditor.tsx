@@ -34,7 +34,10 @@ export function emptyOfertaLineaRow(over: Partial<OfertaLineaRow> = {}): OfertaL
 
 /** Filas editables a partir de las líneas que devuelve la API (oferta o
  *  plantilla). Sin líneas, una fila vacía para empezar. */
-export function rowsFromOfertaLineas(lineas: OfertaLinea[] | null | undefined): OfertaLineaRow[] {
+export function rowsFromOfertaLineas(
+  lineas: (Pick<OfertaLinea, "codart" | "sku" | "descripcion" | "cantidad" | "precio"
+    | "descuento_pct" | "iva_pct"> & Partial<OfertaLinea>)[] | null | undefined,
+): OfertaLineaRow[] {
   const rows = (lineas ?? []).map((l) => emptyOfertaLineaRow({
     codart: l.codart,
     sku: l.sku ?? l.codart ?? "",

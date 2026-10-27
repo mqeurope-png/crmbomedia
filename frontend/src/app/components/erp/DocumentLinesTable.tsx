@@ -27,6 +27,10 @@ import { ArticleAutocompleteInput } from "./ArticleAutocompleteInput";
 export type DocumentLine = {
   /** SKU comercial (EQUART) o CODART; vacío en líneas de texto libre. */
   sku: string;
+  /** CODART interno de F_ART cuando se sabe (artículo elegido del catálogo o
+   *  línea de una plantilla): viaja tal cual y no depende de traducir el SKU.
+   *  Se pierde si el SKU se reescribe a mano. */
+  codart?: string;
   description: string;
   quantity: string;
   unit_price: string;
@@ -98,7 +102,13 @@ export function DocumentLinesTable({
   const [acField, setAcField] = useState<AcField | null>(null);
 
   function update(i: number, key: DocumentLineField, value: string) {
-    onChange(lines.map((r, j) => (j === i ? { ...r, [key]: value } : r)));
+    onChange(lines.map((r, j) => {
+      if (j !== i) return r;
+      const next = { ...r, [key]: value };
+      // SKU reescrito a mano: el artículo que hubiera ya no es ese.
+      if (key === "sku") delete next.codart;
+      return next;
+    }));
   }
 
   function remove(i: number) {
@@ -116,6 +126,7 @@ export function DocumentLinesTable({
     onChange(lines.map((r, j) => (j === i ? {
       ...r,
       sku: a.sku ?? a.codart ?? "",
+      ...(a.codart ? { codart: a.codart } : {}),
       description: a.descripcion ?? a.sku ?? "",
       unit_price: a.precio_venta ? String(a.precio_venta) : r.unit_price,
       iva_pct: showIva ? String(a.iva_pct || Number(DEFAULT_IVA_PCT)) : r.iva_pct,

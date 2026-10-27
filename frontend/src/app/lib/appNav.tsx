@@ -9,6 +9,7 @@ import {
   FileText,
   FormInput,
   Kanban,
+  LayoutTemplate,
   Landmark,
   Mail,
   Package,
@@ -107,6 +108,16 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     href: "/erp/ofertas",
     label: "ERP · Ofertas",
     icon: BadgePercent,
+    scope: "erp",
+    requiredCapability: Cap.PROFORMAS,
+  },
+  {
+    // Plantillas de documento: líneas listas para una oferta, una proforma o
+    // un pedido (carpetas, etiquetas, buscador en las líneas). Misma
+    // capacidad que Ofertas y Proformas.
+    href: "/erp/plantillas",
+    label: "ERP · Plantillas",
+    icon: LayoutTemplate,
     scope: "erp",
     requiredCapability: Cap.PROFORMAS,
   },

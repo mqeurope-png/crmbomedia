@@ -5,13 +5,11 @@ import {
   createOferta,
   FACTUSOL_SERIES,
   getOferta,
-  getOfertaPlantilla,
   getOfertasMeta,
-  listOfertaPlantillas,
+  getPlantillaLineas,
   updateOferta,
   type Oferta,
   type OfertaIdioma,
-  type OfertaPlantilla,
   type OfertasMeta,
 } from "../../lib/erpApi";
 import { extractErrorMessage } from "../../lib/errors";
@@ -25,6 +23,7 @@ import {
   rowsToOfertaLineasIn,
   type OfertaLineaRow,
 } from "./OfertaLineasEditor";
+import { PlantillaSelector, type PlantillaElegida } from "./PlantillaSelector";
 
 const IDIOMAS: { value: OfertaIdioma; label: string }[] = [
   { value: "es", label: "ES · Español" },
@@ -53,7 +52,8 @@ function contactoInicial(
 /** Alta y edición de una oferta (propuesta comercial en BoHub, antes del
  *  presupuesto de FACTUSOL). Crea si `oferta` es null; si no, edita. Con
  *  `contactId` el contacto va fijo (ficha del contacto); sin él se elige con
- *  el buscador del CRM. Plantilla (vuelca sus líneas), empresa emisora,
+ *  el buscador del CRM. Plantilla (el selector de plantillas de documento,
+ *  con las del idioma del contacto primero; vuelca sus líneas), empresa emisora,
  *  idioma, con/sin IVA, validez, referencia, notas y el editor de líneas con
  *  totales en vivo. Guardar → `createOferta` / `updateOferta` → `onSaved`.
  *  No escribe en FACTUSOL. */
@@ -64,6 +64,7 @@ export function OfertaEditorModal({
   onClose,
   onSaved,
   marcarPosiciones,
+  plantillaInicialId,
   readOnly = false,
 }: {
   contactId?: string | null;
@@ -74,6 +75,9 @@ export function OfertaEditorModal({
   /** Posiciones (1-based) de las líneas que «Convertir en presupuesto»
    *  rechazó por no tener artículo: se abren resaltadas. */
   marcarPosiciones?: number[];
+  /** Nueva oferta con las líneas de esta plantilla («Usar» desde ERP ·
+   *  Plantillas). */
+  plantillaInicialId?: string | null;
   /** Solo ver (el usuario no tiene `erp.proformas`): campos deshabilitados y
    *  sin botón de guardar, como una convertida. */
   readOnly?: boolean;
@@ -90,9 +94,10 @@ export function OfertaEditorModal({
     () => contactoInicial(oferta, contactId, contactName),
   );
   const [meta, setMeta] = useState<OfertasMeta | null>(null);
-  const [plantillas, setPlantillas] = useState<OfertaPlantilla[]>([]);
   const [plantillaId, setPlantillaId] = useState(oferta?.plantilla_id ?? "");
-  const [loadingPlantilla, setLoadingPlantilla] = useState(false);
+  const [plantillaNombre, setPlantillaNombre] = useState<string | null>(null);
+  const [eligiendo, setEligiendo] = useState(false);
+  const [loadingPlantilla, setLoadingPlantilla] = useState(Boolean(plantillaInicialId && !oferta));
   const [serie, setSerie] = useState<number>(oferta?.serie ?? FACTUSOL_SERIES[0].value);
   // "" = automático (el del contacto → empresa → país → emisora), solo en el alta.
   const [idioma, setIdioma] = useState<OfertaIdioma | "">(oferta?.idioma ?? "");
@@ -127,14 +132,16 @@ export function OfertaEditorModal({
     return () => { alive = false; };
   }, [editing]);
 
-  // Plantillas activas para el selector.
+  // «Usar» desde ERP · Plantillas: la oferta nueva se abre con sus líneas.
   useEffect(() => {
+    if (!plantillaInicialId || editing) return;
     let alive = true;
-    listOfertaPlantillas(true)
-      .then((items) => { if (alive) setPlantillas(items); })
-      .catch(() => { if (alive) setPlantillas([]); });
+    getPlantillaLineas(plantillaInicialId, "oferta")
+      .then((r) => { if (alive) aplicarPlantilla({ plantilla: r.plantilla, lineas: r.lineas, avisos: r.avisos }); })
+      .catch((e) => { if (alive) setError(extractErrorMessage(e, "No se pudo cargar la plantilla.")); })
+      .finally(() => { if (alive) setLoadingPlantilla(false); });
     return () => { alive = false; };
-  }, []);
+  }, [plantillaInicialId, editing]);
 
   // Edición desde la lista (sin líneas): se piden.
   useEffect(() => {
@@ -156,29 +163,27 @@ export function OfertaEditorModal({
     return () => { alive = false; };
   }, [ofertaId, needsLines]);
 
-  /** Elegir plantilla: carga sus líneas y las vuelca (pidiendo confirmación
-   *  si ya hay líneas escritas). */
-  async function choosePlantilla(id: string) {
-    if (!id) {
-      setPlantillaId("");
-      return;
-    }
+  function aplicarPlantilla(elegida: PlantillaElegida<"oferta">) {
+    setRows(rowsFromOfertaLineas(elegida.lineas.map((l) => ({
+      codart: l.codart ?? null, sku: l.sku ?? null, descripcion: l.descripcion,
+      cantidad: l.cantidad, precio: l.precio, descuento_pct: l.descuento_pct, iva_pct: l.iva_pct,
+    }))));
+    setPlantillaId(elegida.plantilla.id);
+    setPlantillaNombre(elegida.plantilla.nombre);
+    setNotice(`Líneas cargadas de la plantilla «${elegida.plantilla.nombre}» (${elegida.lineas.length}).`
+      + (elegida.avisos.length ? ` ${elegida.avisos.join(" ")}` : ""));
+  }
+
+  /** Elegida en el selector: vuelca sus líneas (pidiendo confirmación si ya
+   *  hay líneas escritas). */
+  function onPlantillaElegida(elegida: PlantillaElegida<"oferta">) {
+    setEligiendo(false);
     if (rows.some((r) => !isRowBlank(r))
         && !window.confirm("Se sustituirán las líneas actuales por las de la plantilla. ¿Seguir?")) {
       return;
     }
-    setLoadingPlantilla(true);
     setError(null);
-    try {
-      const p = await getOfertaPlantilla(id);
-      setRows(rowsFromOfertaLineas(p.lineas));
-      setPlantillaId(id);
-      setNotice(`Líneas cargadas de la plantilla «${p.nombre}» (${p.lineas?.length ?? 0}).`);
-    } catch (e) {
-      setError(extractErrorMessage(e, "No se pudo cargar la plantilla."));
-    } finally {
-      setLoadingPlantilla(false);
-    }
+    aplicarPlantilla(elegida);
   }
 
   const totales = useMemo(() => ofertaTotales(rows, conIva), [rows, conIva]);
@@ -274,19 +279,22 @@ export function OfertaEditorModal({
       ) : null}
 
       <div className="form-row">
-        <label className="field">
+        <div className="field">
           <span>Plantilla</span>
-          <select value={plantillaId} aria-label="Plantilla"
-                  disabled={saving || loadingPlantilla || soloLectura}
-                  onChange={(e) => void choosePlantilla(e.target.value)}>
-            <option value="">— Sin plantilla —</option>
-            {plantillas.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.nombre} ({p.num_lineas} {p.num_lineas === 1 ? "línea" : "líneas"})
-              </option>
-            ))}
-          </select>
-        </label>
+          <span className="erp-contact-channel">
+            <span className={plantillaNombre || plantillaId ? undefined : "muted"}>
+              {loadingPlantilla ? "Cargando…"
+                : plantillaNombre ?? (plantillaId ? "Plantilla de origen" : "— Sin plantilla —")}
+            </span>
+            {!soloLectura ? (
+              <button type="button" className="button small secondary"
+                      disabled={saving || loadingPlantilla}
+                      onClick={() => setEligiendo(true)}>
+                {plantillaId ? "Cambiar plantilla…" : "Elegir plantilla…"}
+              </button>
+            ) : null}
+          </span>
+        </div>
         <label className="field">
           <span>Empresa emisora (serie)</span>
           <select value={serie} aria-label="Empresa emisora (serie)"
@@ -392,6 +400,14 @@ export function OfertaEditorModal({
           </button>
         ) : null}
       </div>
+      {eligiendo ? (
+        <PlantillaSelector
+          destino="oferta"
+          cliente={contact ? { contact_id: contact.id, serie } : null}
+          onClose={() => setEligiendo(false)}
+          onPick={onPlantillaElegida}
+        />
+      ) : null}
     </ErpModalShell>
   );
 }

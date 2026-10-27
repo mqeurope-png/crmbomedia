@@ -1499,6 +1499,35 @@ export type FactusolSourceInput = {
   forma_pago_nombre?: string | null;
 };
 
+/** El resumen de «Crear pedido» que se enseña ANTES de crearlo: se calcula
+ *  con el mismo reparto de líneas y el mismo importe que la creación. */
+export type ResumenPedido = {
+  company_id: string | null;
+  company_name: string | null;
+  /** ISO (fecha del documento; hoy al convertir una proforma). */
+  fecha: string | null;
+  lineas: {
+    product_sku: string;
+    description: string;
+    quantity: number;
+    unit_price: number;
+    discount_pct: number;
+    line_total: number;
+    tax_rate: number;
+  }[];
+  /** Importe con IVA. */
+  total: number;
+  origen: {
+    doc_type: string;
+    /** «albarán», «factura», «proforma»… */
+    label: string;
+    serie: number;
+    codigo: number;
+    numero: string;
+    referencia: string | null;
+  };
+};
+
 export type FactusolOrderPreviewLine = {
   position: number;
   codart: string | null;
@@ -1532,11 +1561,28 @@ export type FactusolOrderPreview = {
   order_number: string;
   external_id: string;
   already_imported: { order_id: string; order_number: string } | null;
+  /** Lo que se va a crear (modal de confirmación). */
+  resumen: ResumenPedido;
 };
 
+/** Vista previa del pedido que saldría del documento. Solo LEE: no crea nada. */
 export async function previewOrderFromFactusol(
   docType: FactusolOrderDocType, serie: number, codigo: number,
 ): Promise<FactusolOrderPreview> {
+  return apiFetch(
+    `/api/erp/orders/from-factusol/preview?doc_type=${docType}&serie=${serie}&codigo=${codigo}`,
+  );
+}
+
+/** Lo mismo para un ALBARÁN o una FACTURA (Documentos): el resumen del modal
+ *  «Crear pedido», antes de crear nada. */
+export type DocumentOrderPreview = Omit<FactusolOrderPreview, "doc_type"> & {
+  doc_type: "albaranes" | "facturas";
+};
+
+export async function previewOrderFromDocumentType(
+  docType: "albaranes" | "facturas", serie: number, codigo: number,
+): Promise<DocumentOrderPreview> {
   return apiFetch(
     `/api/erp/orders/from-factusol/preview?doc_type=${docType}&serie=${serie}&codigo=${codigo}`,
   );
@@ -4408,6 +4454,25 @@ export async function duplicateFactusolQuote(
   );
 }
 
+/** El resumen del pedido que saldría de la proforma (empresa, fecha, líneas,
+ *  importe, origen) y si ya se convirtió. Solo LEE: no crea nada. */
+export type QuoteConvertPreview = ResumenPedido & {
+  codpre: string;
+  serie: number;
+  company_linked: boolean;
+  cliente_codigo: string | null;
+  already_existed: { order_id: string; order_number: string } | null;
+};
+
+export async function getQuoteConvertPreview(
+  codpre: string, serie?: number | null,
+): Promise<QuoteConvertPreview> {
+  return apiFetch(
+    `/api/erp/factusol/quotes/${encodeURIComponent(codpre)}/convert-preview`
+    + qs({ serie: serie ?? undefined }),
+  );
+}
+
 /** Convierte la proforma en pedido de BoHub y, Fase 2, en el mismo job:
  *  apunta el pago (opción B) y crea el ALBARÁN en FACTUSOL. El resultado del
  *  job trae `albaran` ({numero, status}) o `albaran_error` / `albaran_skipped`. */
@@ -6359,22 +6424,6 @@ export type Oferta = {
   envios?: OfertaEnvio[];
 };
 
-export type OfertaPlantilla = {
-  id: string;
-  nombre: string;
-  descripcion: string | null;
-  activa: boolean;
-  /** Presupuesto de FACTUSOL del que se copiaron las líneas (si fue así). */
-  origen_serie: number | null;
-  origen_codpre: number | null;
-  origen_numero: string | null;
-  num_lineas: number;
-  created_at: string | null;
-  updated_at: string | null;
-  /** Solo en `getOfertaPlantilla`, `createOfertaPlantilla` y `updateOfertaPlantilla`. */
-  lineas?: OfertaLinea[];
-};
-
 export type OfertasMeta = {
   prefijo: string;
   validez_dias: number;
@@ -6485,19 +6534,6 @@ export type OfertaListParams = {
   limit?: number;
 };
 
-/** Plantilla nueva desde un presupuesto de FACTUSOL (copia sus líneas) o
- *  desde líneas escritas a mano. */
-export type OfertaPlantillaCreatePayload =
-  | { nombre: string; descripcion?: string | null; serie: number; codpre: number }
-  | { nombre: string; descripcion?: string | null; lineas: OfertaLineaIn[]; activa?: boolean };
-
-export type OfertaPlantillaPatch = {
-  nombre?: string;
-  descripcion?: string | null;
-  activa?: boolean;
-  lineas?: OfertaLineaIn[];
-};
-
 export type OfertaCreatePayload = {
   contact_id: string;
   serie: number;
@@ -6529,37 +6565,6 @@ export type OfertaPatchPayload = {
 
 export async function getOfertasMeta(): Promise<OfertasMeta> {
   return apiFetch<OfertasMeta>("/api/erp/ofertas/meta");
-}
-
-/** Plantillas (sin líneas). `activas=true` deja fuera las desactivadas. */
-export async function listOfertaPlantillas(activas = false): Promise<OfertaPlantilla[]> {
-  const r = await apiFetch<{ items: OfertaPlantilla[] }>(
-    `/api/erp/ofertas/plantillas${qs({ activas: activas ? "true" : undefined })}`,
-  );
-  return r.items;
-}
-
-/** Una plantilla con sus líneas. */
-export async function getOfertaPlantilla(id: string): Promise<OfertaPlantilla> {
-  return apiFetch<OfertaPlantilla>(`/api/erp/ofertas/plantillas/${encodeURIComponent(id)}`);
-}
-
-export async function createOfertaPlantilla(
-  payload: OfertaPlantillaCreatePayload,
-): Promise<OfertaPlantilla> {
-  return apiFetch<OfertaPlantilla>("/api/erp/ofertas/plantillas", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-}
-
-export async function updateOfertaPlantilla(
-  id: string, patch: OfertaPlantillaPatch,
-): Promise<OfertaPlantilla> {
-  return apiFetch<OfertaPlantilla>(`/api/erp/ofertas/plantillas/${encodeURIComponent(id)}`, {
-    method: "PATCH",
-    body: JSON.stringify(patch),
-  });
 }
 
 /** Ofertas (sin líneas) por contacto, empresa, estado o texto. */
@@ -6661,4 +6666,287 @@ export async function getOfertaConvertStatus(jobId: string): Promise<OfertaConve
   return apiFetch<OfertaConvertJobStatus>(
     `/api/erp/ofertas/convertir/status/${encodeURIComponent(jobId)}`,
   );
+}
+
+// --- Plantillas de documento (líneas para oferta, proforma o pedido) ----------
+
+/** A qué se aplica una plantilla al usarla: la misma sirve para los tres. */
+export type PlantillaDestino = "oferta" | "proforma" | "pedido";
+/** De dónde se guardó: proforma (`presupuesto`), albarán, pedido o a mano. */
+export type PlantillaOrigenTipo = "presupuesto" | "albaran" | "pedido" | "manual";
+
+/** Línea de la plantilla que explica por qué salió en una búsqueda. */
+export type PlantillaCoincidencia = { posicion: number; sku: string | null; descripcion: string };
+
+export type PlantillaDocumento = {
+  id: string;
+  nombre: string;
+  descripcion: string | null;
+  activa: boolean;
+  /** Una plantilla por idioma: la misma oferta en ES y en DE son dos. */
+  idioma: OfertaIdioma;
+  carpeta_id: string | null;
+  /** Ruta de la carpeta («DTF / Escuelas»); null = sin carpeta. */
+  carpeta: string | null;
+  etiquetas: string[];
+  origen_tipo: PlantillaOrigenTipo | null;
+  origen_serie: number | null;
+  origen_codigo: number | null;
+  origen_order_id: string | null;
+  /** Nº visible del documento de origen («2-000040», «PED-…»). */
+  origen_numero: string | null;
+  num_lineas: number;
+  created_at: string | null;
+  updated_at: string | null;
+  /** Solo al listar para un cliente: está en su idioma. */
+  idioma_coincide?: boolean;
+  /** Solo al buscar: las líneas donde está lo buscado. */
+  coincidencias?: PlantillaCoincidencia[];
+  /** Solo en el detalle, el alta y la edición. */
+  lineas?: OfertaLinea[];
+};
+
+export type PlantillaCarpetaNode = {
+  id: string;
+  nombre: string;
+  parent_id: string | null;
+  num_plantillas: number;
+  /** La carpeta por defecto del usuario (★): se abre ahí y ahí se guardan. */
+  es_defecto: boolean;
+  children: PlantillaCarpetaNode[];
+  /** Solo para administración: a quién está acotada. */
+  acceso_user_ids?: string[];
+};
+
+export type PlantillasMeta = {
+  idiomas: OfertaIdioma[];
+  destinos: PlantillaDestino[];
+  max_profundidad: number;
+  carpeta_defecto: string | null;
+  /** Puede acotar el acceso a las carpetas (administración). */
+  gestiona_acceso: boolean;
+  /** El usuario solo ve algunas carpetas (y no puede guardar en la raíz). */
+  acceso_restringido: boolean;
+};
+
+export type PlantillaEtiqueta = { etiqueta: string; norm: string; num: number };
+
+export type PlantillaUsuario = {
+  id: string;
+  nombre: string;
+  email: string;
+  rol: string;
+  /** Ya tiene alguna carpeta: solo ve las suyas. */
+  restringido: boolean;
+};
+
+/** El cliente para el que se va a crear el documento: con él salen primero
+ *  las plantillas de su idioma. */
+export type PlantillaCliente = {
+  contact_id?: string | null;
+  company_id?: string | null;
+  order_id?: string | null;
+  serie?: number | null;
+};
+
+export type PlantillaListParams = PlantillaCliente & {
+  /** Busca en el nombre, la descripción, las etiquetas y DENTRO de las líneas. */
+  q?: string;
+  /** Incluye sus subcarpetas. */
+  carpeta_id?: string | null;
+  sin_carpeta?: boolean;
+  etiquetas?: string[];
+  idioma?: OfertaIdioma | "";
+  activas?: boolean;
+  limit?: number;
+};
+
+export type PlantillaListResult = {
+  items: PlantillaDocumento[];
+  total: number;
+  idioma_cliente: OfertaIdioma | null;
+  idioma_fuente: string | null;
+};
+
+/** De qué documento se guarda (solo se LEE: nada se escribe en FACTUSOL). */
+export type PlantillaOrigenIn =
+  | { tipo: "presupuesto" | "albaran"; serie: number; codigo: number; ejercicio?: string | null }
+  | { tipo: "pedido"; order_id: string };
+
+export type PlantillaCreatePayload = {
+  nombre: string;
+  descripcion?: string | null;
+  idioma?: OfertaIdioma;
+  /** Sin el campo: la carpeta por defecto del usuario. `null` = sin carpeta. */
+  carpeta_id?: string | null;
+  etiquetas?: string[];
+  activa?: boolean;
+  origen?: PlantillaOrigenIn;
+  lineas?: OfertaLineaIn[];
+};
+
+export type PlantillaPatch = {
+  nombre?: string;
+  descripcion?: string | null;
+  idioma?: OfertaIdioma;
+  /** `null` = a la raíz; sin el campo, no se mueve. */
+  carpeta_id?: string | null;
+  etiquetas?: string[];
+  activa?: boolean;
+  lineas?: OfertaLineaIn[];
+};
+
+/** Líneas de la plantilla en la forma del alta de proforma (`createQuote`). */
+export type PlantillaLineaProforma = {
+  codart: string;
+  sku: string | null;
+  description: string;
+  quantity: number;
+  unit_price: number;
+  discount_pct: number;
+  iva_pct: number;
+  text_only: boolean;
+};
+
+/** Líneas de la plantilla en la forma del alta de pedido (`createOrder`). */
+export type PlantillaLineaPedido = {
+  product_sku: string;
+  product_codart: string | null;
+  description: string;
+  quantity: number;
+  unit_price: number;
+  tax_rate: number;
+};
+
+export type PlantillaLineasPorDestino = {
+  oferta: OfertaLineaIn;
+  proforma: PlantillaLineaProforma;
+  pedido: PlantillaLineaPedido;
+};
+
+export type PlantillaLineasResult<D extends PlantillaDestino> = {
+  plantilla: PlantillaDocumento;
+  destino: D;
+  lineas: PlantillaLineasPorDestino[D][];
+  /** Lo que no cabe tal cual en el destino (p. ej. el descuento en un pedido). */
+  avisos: string[];
+};
+
+const PLANTILLAS = "/api/erp/plantillas";
+
+export async function getPlantillasMeta(): Promise<PlantillasMeta> {
+  return apiFetch<PlantillasMeta>(`${PLANTILLAS}/meta`);
+}
+
+export async function listPlantillaEtiquetas(): Promise<PlantillaEtiqueta[]> {
+  const r = await apiFetch<{ items: PlantillaEtiqueta[] }>(`${PLANTILLAS}/etiquetas`);
+  return r.items;
+}
+
+/** Administración: a quién se puede acotar el acceso a una carpeta. */
+export async function listPlantillaUsuarios(): Promise<PlantillaUsuario[]> {
+  const r = await apiFetch<{ items: PlantillaUsuario[] }>(`${PLANTILLAS}/usuarios`);
+  return r.items;
+}
+
+/** Las plantillas que el usuario ve, con el buscador y los filtros. */
+export async function listPlantillas(params: PlantillaListParams = {}): Promise<PlantillaListResult> {
+  const sp = new URLSearchParams();
+  const set = (k: string, v: string | number | boolean | null | undefined) => {
+    if (v !== undefined && v !== null && v !== "" && v !== false) sp.set(k, String(v));
+  };
+  set("q", params.q?.trim());
+  set("carpeta_id", params.carpeta_id);
+  set("sin_carpeta", params.sin_carpeta);
+  set("idioma", params.idioma);
+  set("activas", params.activas);
+  set("contact_id", params.contact_id);
+  set("company_id", params.company_id);
+  set("order_id", params.order_id);
+  set("serie", params.serie);
+  set("limit", params.limit);
+  for (const e of params.etiquetas ?? []) sp.append("etiqueta", e);
+  const s = sp.toString();
+  return apiFetch<PlantillaListResult>(`${PLANTILLAS}${s ? `?${s}` : ""}`);
+}
+
+/** Una plantilla con sus líneas. */
+export async function getPlantilla(id: string): Promise<PlantillaDocumento> {
+  return apiFetch<PlantillaDocumento>(`${PLANTILLAS}/${encodeURIComponent(id)}`);
+}
+
+/** «Guardar como plantilla» (desde una proforma, un albarán o un pedido) o
+ *  una plantilla nueva con las líneas a mano. */
+export async function createPlantilla(payload: PlantillaCreatePayload): Promise<PlantillaDocumento> {
+  return apiFetch<PlantillaDocumento>(PLANTILLAS, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updatePlantilla(id: string, patch: PlantillaPatch): Promise<PlantillaDocumento> {
+  return apiFetch<PlantillaDocumento>(`${PLANTILLAS}/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+}
+
+/** Las líneas de la plantilla en la forma del flujo del destino (la
+ *  plantilla solo aporta las líneas) y los avisos de lo que no cabe tal cual. */
+export async function getPlantillaLineas<D extends PlantillaDestino>(
+  id: string, destino: D,
+): Promise<PlantillaLineasResult<D>> {
+  return apiFetch<PlantillaLineasResult<D>>(
+    `${PLANTILLAS}/${encodeURIComponent(id)}/lineas${qs({ destino })}`,
+  );
+}
+
+export async function listPlantillaCarpetas(): Promise<{
+  items: PlantillaCarpetaNode[];
+  carpeta_defecto: string | null;
+}> {
+  return apiFetch(`${PLANTILLAS}/carpetas`);
+}
+
+export async function createPlantillaCarpeta(payload: {
+  nombre: string;
+  parent_id?: string | null;
+}): Promise<{ id: string; nombre: string; parent_id: string | null }> {
+  return apiFetch(`${PLANTILLAS}/carpetas`, { method: "POST", body: JSON.stringify(payload) });
+}
+
+/** Renombrar o mover (`parent_id: null` = a la raíz; sin el campo, no se mueve). */
+export async function updatePlantillaCarpeta(
+  id: string, patch: { nombre?: string; parent_id?: string | null },
+): Promise<{ id: string; nombre: string; parent_id: string | null }> {
+  return apiFetch(`${PLANTILLAS}/carpetas/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+}
+
+/** Borra la carpeta, no su contenido: plantillas y subcarpetas suben a la raíz. */
+export async function deletePlantillaCarpeta(id: string): Promise<{ ok: boolean }> {
+  return apiFetch(`${PLANTILLAS}/carpetas/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+/** Administración: quién tiene acceso a la carpeta (quien esté en alguna
+ *  carpeta solo ve las suyas; quien no esté en ninguna, las ve todas). */
+export async function setPlantillaCarpetaAcceso(
+  id: string, userIds: string[],
+): Promise<{ id: string; acceso_user_ids: string[] }> {
+  return apiFetch(`${PLANTILLAS}/carpetas/${encodeURIComponent(id)}/acceso`, {
+    method: "PUT",
+    body: JSON.stringify({ user_ids: userIds }),
+  });
+}
+
+/** La carpeta por defecto del usuario (null = ninguna). */
+export async function setPlantillaCarpetaDefecto(
+  carpetaId: string | null,
+): Promise<{ carpeta_defecto: string | null }> {
+  return apiFetch(`${PLANTILLAS}/preferencias/carpeta`, {
+    method: "PUT",
+    body: JSON.stringify({ carpeta_id: carpetaId }),
+  });
 }

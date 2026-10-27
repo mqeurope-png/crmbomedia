@@ -109,3 +109,15 @@ describe("El taller (SAT) — 14/10/2026", () => {
     expect(labels("viewer", "crm")).not.toContain("ERP · Pedidos");
   });
 });
+
+describe("ERP · Plantillas en el menú", () => {
+  it("va justo después de ERP · Ofertas y lo ven quienes hacen proformas", () => {
+    for (const rol of ["admin", "comercial"] as const) {
+      const l = labels(rol, "erp");
+      expect(l.indexOf("ERP · Plantillas")).toBe(l.indexOf("ERP · Ofertas") + 1);
+    }
+    expect(resolveVisibleNav(user("admin"), "erp").find((i) => i.label === "ERP · Plantillas")?.href)
+      .toBe("/erp/plantillas");
+    expect(labels("sat", "erp")).not.toContain("ERP · Plantillas");
+  });
+});

@@ -10,7 +10,9 @@ import {
   FactusolDocumentDetailModal,
 } from "../../components/erp/FactusolDocumentDetailModal";
 import { ActionsMenu } from "../../components/erp/flow/ActionsMenu";
+import { ConfirmarPedidoModal } from "../../components/erp/ConfirmarPedidoModal";
 import { CreateQuoteModal } from "../../components/erp/CreateQuoteModal";
+import { GuardarPlantillaModal } from "../../components/erp/GuardarPlantillaModal";
 import { pollQuoteJob } from "../../components/erp/quoteJobs";
 import { emailedMark } from "../../components/erp/QuoteEmailModal";
 import { RegimePill } from "../../components/erp/flow/RegimePill";
@@ -23,9 +25,8 @@ import {
   VincularEmpresaFactusolModal,
   type LinkedCompany,
 } from "../../components/erp/VincularEmpresaFactusolModal";
-import { ApiError, getCurrentUser } from "../../lib/api";
+import { getCurrentUser } from "../../lib/api";
 import {
-  createOrderFromDocumentType,
   downloadFacturasPdfZip,
   downloadFactusolDocumentPdf,
 
@@ -38,6 +39,8 @@ import {
   type FactusolDocumentSort,
   type FactusolQuote,
   type FactusolSerie,
+  type OrderDetail,
+  type PlantillaDocumento,
 } from "../../lib/erpApi";
 import { extractErrorMessage } from "../../lib/errors";
 
@@ -195,9 +198,16 @@ export default function FactusolDocumentosPage() {
   const [cobrando, setCobrando] = useState<FactusolDocument | null>(null);
   // Lote 2 · PR-2 — «Vincular»: el albarán / la factura elegido para el modal.
   const [vinculando, setVinculando] = useState<FactusolDocument | null>(null);
-  // Lote 7 · P4 — «Crear pedido» desde un albarán / factura: la fila cuyo alta
-  // está en curso (clave `serie-código`), para desactivar su botón.
-  const [creando, setCreando] = useState<string | null>(null);
+  // Lote 7 · P4 — «Crear pedido» desde un albarán / factura: primero el
+  // modal con el resumen de lo que se va a crear; solo su «Crear pedido» crea.
+  const [confirmando, setConfirmando] = useState<
+    { doc: FactusolDocument; companyId: string | null; companyName: string | null } | null
+  >(null);
+  // «Guardar como plantilla» (proformas y albaranes): copia sus líneas a una
+  // plantilla de documento de BoHub (solo lee de FACTUSOL).
+  const [canPlantillas, setCanPlantillas] = useState(false);
+  const [plantillaDe, setPlantillaDe] = useState<FactusolDocument | null>(null);
+  const [plantillaGuardada, setPlantillaGuardada] = useState<PlantillaDocumento | null>(null);
   /** «Vincular empresa»: el cliente FACTUSOL del documento no tiene empresa en
    *  el CRM. `crear` = al vincular, se sigue creando el pedido. */
   const [vincularEmpresa, setVincularEmpresa] = useState<
@@ -230,8 +240,9 @@ export default function FactusolDocumentosPage() {
       .then((u) => {
         setCanEdit(can(u, Cap.DOCUMENTS));
         setCanDuplicate(can(u, Cap.PROFORMAS) && can(u, Cap.ORDERS_CREATE));
+        setCanPlantillas(can(u, Cap.PROFORMAS));
       })
-      .catch(() => { setCanEdit(false); setCanDuplicate(false); });
+      .catch(() => { setCanEdit(false); setCanDuplicate(false); setCanPlantillas(false); });
   }, []);
 
   useEffect(() => {
@@ -372,49 +383,39 @@ export default function FactusolDocumentosPage() {
   }
 
   // --- Crear pedido desde un albarán / factura (Lote 7 · P4) ---------------
-  /** Crea el pedido de BoHub directamente desde el albarán / factura (solo se
-   *  LEE el documento; FACTUSOL no se toca). El cliente lo resuelve el backend
-   *  por CLIALB/CLIFAC — o la empresa del cruce CRM de la fila si la hay. Sin
-   *  vínculo, el backend avisa (409) y no auto-crea. Al crear, la fila refleja
-   *  el pedido sin releer FACTUSOL y el contador baja, igual que «Vincular». */
-  async function crearPedido(d: FactusolDocument, companyId?: string) {
+  /** «Crear pedido» NO crea: abre el modal con el resumen de lo que se va a
+   *  crear (empresa, fecha, conceptos, importe, origen) y solo su «Crear
+   *  pedido» lo crea (solo se LEE el documento; FACTUSOL no se toca). El
+   *  cliente lo resuelve el backend por CLIALB/CLIFAC — o la empresa del cruce
+   *  CRM de la fila si la hay. Sin vínculo, primero «Vincular empresa» y, al
+   *  vincular, vuelve a este modal (no se crea nada sin confirmar). */
+  function crearPedido(d: FactusolDocument, company?: { id: string; name: string }) {
     if (d.serie === null || d.codigo === null) return;
     if (tab !== "albaranes" && tab !== "facturas") return;
     setError(null);
     setNotice(null);
     // Cliente FACTUSOL sin empresa en el CRM: «Crear pedido» no falla en
     // silencio, abre directamente «Vincular empresa» y sigue al vincular.
-    if (!companyId && d.company === null && d.cliente_codigo) {
+    if (!company && d.company === null && d.cliente_codigo) {
       setVincularEmpresa({ doc: d, codcli: d.cliente_codigo, nombre: d.cliente_nombre, crear: true });
       return;
     }
-    setCreando(rowKey(d));
-    try {
-      const order = await createOrderFromDocumentType(
-        tab, d.serie, Number(d.codigo), { company_id: companyId ?? d.company?.id ?? undefined },
-      );
-      const linked: LinkedOrder = { id: order.id, order_number: order.order_number };
-      setItems((prev) => prev.map((row) => (rowKey(row) === rowKey(d) ? { ...row, order: linked } : row)));
-      setUnlinkedTotal((n) => (n === null ? null : Math.max(0, n - 1)));
-      const label = tab === "albaranes" ? "Albarán" : "Factura";
-      setNotice(`${label} ${d.numero}: pedido ${order.order_number} creado.`);
-    } catch (e) {
-      if (e instanceof ApiError && e.code === "factusol_customer_unlinked") {
-        const det = (e.detail && typeof e.detail === "object" ? e.detail : {}) as Record<string, unknown>;
-        const codcli = typeof det.codcli === "string" ? det.codcli : d.cliente_codigo;
-        if (codcli) {
-          setVincularEmpresa({
-            doc: d, codcli,
-            nombre: typeof det.cliente_nombre === "string" ? det.cliente_nombre : d.cliente_nombre,
-            crear: true,
-          });
-          return;
-        }
-      }
-      setError(extractErrorMessage(e, "No se pudo crear el pedido."));
-    } finally {
-      setCreando(null);
-    }
+    setConfirmando({
+      doc: d,
+      companyId: company?.id ?? d.company?.id ?? null,
+      companyName: company?.name ?? d.company?.name ?? null,
+    });
+  }
+
+  /** Confirmado en el modal: la fila refleja el pedido sin releer FACTUSOL y
+   *  el contador baja, igual que «Vincular». */
+  function onPedidoCreado(d: FactusolDocument, order: OrderDetail) {
+    setConfirmando(null);
+    const linked: LinkedOrder = { id: order.id, order_number: order.order_number };
+    setItems((prev) => prev.map((row) => (rowKey(row) === rowKey(d) ? { ...row, order: linked } : row)));
+    setUnlinkedTotal((n) => (n === null ? null : Math.max(0, n - 1)));
+    const label = tab === "albaranes" ? "Albarán" : "Factura";
+    setNotice(`${label} ${d.numero}: pedido ${order.order_number} creado.`);
   }
 
   /** Tras «Vincular empresa»: todas las filas de ese cliente pasan a tener su
@@ -428,7 +429,8 @@ export default function FactusolDocumentosPage() {
       row.cliente_codigo === pendiente.codcli ? { ...row, company: empresa } : row
     )));
     setNotice(`Cliente FACTUSOL ${pendiente.codcli} vinculado a «${company.name}».`);
-    if (pendiente.crear) void crearPedido({ ...pendiente.doc, company: empresa }, company.id);
+    // Venía de «Crear pedido»: vuelve al resumen (no se crea sin confirmar).
+    if (pendiente.crear) crearPedido({ ...pendiente.doc, company: empresa }, company);
   }
 
   const month = currentMonthRange();
@@ -503,10 +505,10 @@ export default function FactusolDocumentosPage() {
       <div className="erp-doc-row-actions">
         <button
           type="button" className="button small secondary erp-doc-link-btn"
-          disabled={creando === rowKey(d)}
-          onClick={(e) => { e.stopPropagation(); void crearPedido(d); }}
+          aria-label={`Crear pedido desde ${d.numero}`}
+          onClick={(e) => { e.stopPropagation(); crearPedido(d); }}
         >
-          {creando === rowKey(d) ? "Creando…" : "Crear pedido"}
+          Crear pedido
         </button>
         <button
           type="button" className="button small secondary erp-doc-link-btn"
@@ -587,6 +589,12 @@ export default function FactusolDocumentosPage() {
 
       {error ? <p className="form-error" role="alert">{error}</p> : null}
       {notice ? <p className="form-info" role="status">{notice}</p> : null}
+      {plantillaGuardada ? (
+        <p className="form-info" role="status">
+          Plantilla «{plantillaGuardada.nombre}» guardada.{" "}
+          <Link href="/erp/plantillas">Ver las plantillas</Link>
+        </p>
+      ) : null}
       {dlError ? <p className="form-error">{dlError}</p> : null}
 
       <div className="erp-flow-filters" role="search" aria-label="Filtros de documentos">
@@ -850,6 +858,12 @@ export default function FactusolDocumentosPage() {
                               Abrir pedido {d.order.order_number}
                             </Link>
                           ) : null}
+                          {canPlantillas && (d.doc_type === "presupuestos" || d.doc_type === "albaranes")
+                            && d.codigo !== null && d.serie !== null ? (
+                            <button type="button" onClick={() => setPlantillaDe(d)}>
+                              Guardar como plantilla
+                            </button>
+                          ) : null}
                         </ActionsMenu>
                       </div>
                     </td>
@@ -916,6 +930,42 @@ export default function FactusolDocumentosPage() {
           numero={vinculando.numero}
           onClose={() => setVinculando(null)}
           onLinked={(order) => onLinked(vinculando, order)}
+        />
+      ) : null}
+
+      {confirmando && confirmando.doc.serie !== null && confirmando.doc.codigo !== null
+        && (tab === "albaranes" || tab === "facturas") ? (
+        <ConfirmarPedidoModal
+          docType={tab}
+          serie={confirmando.doc.serie}
+          codigo={Number(confirmando.doc.codigo)}
+          numero={confirmando.doc.numero}
+          companyId={confirmando.companyId}
+          companyName={confirmando.companyName}
+          onClose={() => setConfirmando(null)}
+          onCreated={(order) => onPedidoCreado(confirmando.doc, order)}
+          onUnlinked={(codcli, nombre) => {
+            const doc = confirmando.doc;
+            setConfirmando(null);
+            setVincularEmpresa({ doc, codcli, nombre, crear: true });
+          }}
+        />
+      ) : null}
+
+      {plantillaDe && plantillaDe.serie !== null && plantillaDe.codigo !== null ? (
+        <GuardarPlantillaModal
+          origen={{
+            tipo: plantillaDe.doc_type === "albaranes" ? "albaran" : "presupuesto",
+            serie: plantillaDe.serie,
+            codigo: Number(plantillaDe.codigo),
+          }}
+          numero={plantillaDe.numero}
+          nombreSugerido={plantillaDe.referencia ?? null}
+          onClose={() => setPlantillaDe(null)}
+          onSaved={(p) => {
+            setPlantillaDe(null);
+            setPlantillaGuardada(p);
+          }}
         />
       ) : null}
 
