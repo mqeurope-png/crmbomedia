@@ -2,7 +2,16 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { EVENTO_SESION_CADUCADA, logout, sesionCaducada } from "../lib/api";
+import {
+  EVENTO_SESION_CADUCADA,
+  logout,
+  sesionCaducada,
+  sesionRenovadaEnOtraPestana,
+} from "../lib/api";
+
+/** Cada cuánto se mira, con el aviso a la vista, si se ha entrado de nuevo en
+ *  otra pestaña (por si esta sigue a la vista y no recibe foco). */
+const REVISAR_CADA_MS = 5000;
 
 /** El aviso de «sesión caducada». La capa de llamadas (`lib/api.ts`) lanza el
  *  evento `bohub:sesion-caducada` la primera vez que una llamada autenticada
@@ -11,7 +20,8 @@ import { EVENTO_SESION_CADUCADA, logout, sesionCaducada } from "../lib/api";
  *  token local y lleva a /login. No se navega sola: lo que haya escrito sin
  *  guardar en la pantalla se perdería, y así se puede copiar antes de salir.
  *  Vive en AppShell solo en las rutas con sesión; al pasar por /login se
- *  desmonta y su estado se va con él. */
+ *  desmonta y su estado se va con él. Si se entra de nuevo desde OTRA pestaña,
+ *  se quita solo (ver el efecto multipestaña). */
 export function SesionCaducada() {
   const router = useRouter();
   // El 401 pudo llegar antes de montarse el aviso (p. ej. mientras AppShell
@@ -24,6 +34,25 @@ export function SesionCaducada() {
     window.addEventListener(EVENTO_SESION_CADUCADA, alCaducar);
     return () => window.removeEventListener(EVENTO_SESION_CADUCADA, alCaducar);
   }, []);
+
+  // Multipestaña: si se entra de nuevo en otra pestaña (la cookie es común),
+  // la franja de esta mentiría y no se puede cerrar. Al volver a la pestaña
+  // (foco / visibilidad) y cada poco mientras se ve, si el token guardado ya
+  // no es el que caducó se olvida el aviso y se quita.
+  useEffect(() => {
+    if (!caducada) return;
+    const revisar = () => {
+      if (sesionRenovadaEnOtraPestana()) setCaducada(false);
+    };
+    window.addEventListener("focus", revisar);
+    document.addEventListener("visibilitychange", revisar);
+    const intervalo = window.setInterval(revisar, REVISAR_CADA_MS);
+    return () => {
+      window.removeEventListener("focus", revisar);
+      document.removeEventListener("visibilitychange", revisar);
+      window.clearInterval(intervalo);
+    };
+  }, [caducada]);
 
   if (!caducada) return null;
 

@@ -336,7 +336,15 @@ defecto, sus idiomas publicados y su plugin de traducción.
   «Ersatzteile», «Reserveonderdelen»… no empiezan por «Repuestos».
   - **Idioma por defecto**: fuera las categorías cuyo nombre empieza por una
     regla `categoria_fuera` y **todas sus hijas** (la jerarquía real, por
-    `parent`).
+    `parent`). El árbol (y las traducciones con `include=`) se piden con
+    `hide_empty=false`: la Store API esconde de partida las categorías
+    vacías, y una de fuera vacía en el idioma por defecto pero con productos
+    en otro no estaría ni entre las de fuera ni traducida.
+  - **Red de seguridad por nombre, solo en el idioma por defecto** (y en las
+    webs de un idioma), donde los nombres están en el idioma de las reglas:
+    fuera también el producto con una categoría **propia** cuyo nombre empieza
+    por una regla, aunque esa categoría falte del árbol (`count` desfasado,
+    árbol cortado en `MAX_PAGINAS`). En los demás idiomas deciden solo los ids.
   - **WPGlobus y webs de un idioma**: los mismos ids en todos los idiomas →
     las mismas categorías de fuera y las mismas excepciones.
   - **WPML, otro idioma**: se lee el árbol del idioma (ids y madres) y se le
@@ -347,10 +355,14 @@ defecto, sus idiomas publicados y su plugin de traducción.
     aparezcan (los ids de término son únicos en toda la instalación) y
     **todas sus hijas en el árbol del idioma** («Beambox Spare Parts» por
     colgar de «Spare Parts», aunque no empiece igual).
-  - **Cerrado ante la duda**: si el idioma tiene categorías y **ninguna**
-    resulta ser traducción de una del idioma por defecto (WPML no ha
-    ajustado los ids), sus productos quedan **en error**: no se escribe ni se
-    marca nada ido.
+  - **Cerrado ante la duda**: si el idioma tiene categorías **propias** (ids
+    que no son del idioma por defecto) y **ninguna** resulta ser traducción
+    de una del idioma por defecto (WPML no ha ajustado los ids), sus
+    productos quedan **en error**: no se escribe ni se marca nada ido. Una
+    categoría sin traducir que WPML sirve con su id del idioma por defecto no
+    cuenta como enlace (con ella sola, un repuesto en «Spare Parts» y en
+    «Láser de fibra» entraba); un idioma cuyas categorías son todas del
+    idioma por defecto sí pasa (decide el mismo id).
   - Una categoría que **solo existe en ese idioma** («sin original») y no
     cuelga de una de fuera no deja entrar a un producto que no tenga otra
     (motivo `categoria_sin_original`); el resumen lo avisa con sus nombres.
@@ -556,16 +568,24 @@ por id:
    a mano del 27/10 (29 nombres traducidos exactos) que paró los 1.219
    productos. Ya no hacen falta, y como los nombres traducidos no deciden
    nada, tampoco harían nada. Solo esas (ninguna otra regla de categoría es
-   de una web concreta); apunta en el registro cuántas borra.
+   de una web concreta). Apunta en el registro **cada regla borrada**
+   (`0149: borrada la regla categoria_fuera de fluxlasers: 'Spare Parts'
+   (activo=…, posicion=…, nota=…)`) y cuántas: el parche se puede reponer a
+   mano desde el registro del despliegue.
 2. **Añade `producto_incluir_id` 493 de `artisjet-eu`** si no está: el
    «WhiteRIP LOGICIEL D'IMPRESSION» es software, pero su categoría 19
    «Logiciels» es hija de la 18 «Autres pièces de rechange» y, con la
    herencia de #564, quedaba fuera en todos los idiomas. También en
-   `reglas_partida.PRODUCTOS_DENTRO` (la 0148, ya aplicada, no se toca).
+   `reglas_partida.PRODUCTOS_DENTRO` (la 0148, ya aplicada, no se toca). La
+   fila lleva una nota propia («… (migración 0149)»).
 
 **No toca `web_indice`**: las 1.053 filas de FLUX marcadas idas el 27/10
-siguen idas; el siguiente recorrido decide lo que vuelve. Bajar quita la regla
-del 493; el parche de FLUX **no** se repone. Test:
+siguen idas; el siguiente recorrido decide lo que vuelve. Bajar quita el 493
+**solo si es el que puso la 0149** (su nota propia); si ya estaba, se queda.
+El parche de FLUX **no** se repone: si se vuelve atrás el código, el lector de
+antes decide cada idioma con los nombres de su árbol y, sin el parche, los
+repuestos de FLUX en en/de/fr/nl vuelven a entrar; hay que reponer esas
+reglas a mano desde el registro del despliegue. Test:
 `tests/test_migration_0149_reglas_indice.py`.
 
 ### Tras desplegar la 0149
@@ -750,7 +770,8 @@ Contra las webs reales, solo lectura y por los endpoints públicos:
 `test_externo_base.py` (red, HTML, sobre), `test_soporte.py` y
 `test_soporte_api.py`, `test_webs_indice.py` y `test_webs_api.py` (con un
 WordPress simulado de datos realistas en `test_webs_comun.py`: WPML con ids
-por idioma y los ids «ajustados» en `include=` y `not_in`, y FLUX con su árbol
+por idioma y los ids «ajustados» en `include=` y `not_in`, la Store API que
+esconde las categorías vacías sin `hide_empty=false`, y FLUX con su árbol
 y sus productos reales), `test_imagen_url.py`, `test_asistente_fuentes.py` (el
 material en el turno y el turno sin material idéntico),
 `test_migration_0148_fuentes_externas.py`,

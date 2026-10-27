@@ -6,6 +6,7 @@ import {
   EVENTO_SESION_CADUCADA,
   login,
   sesionCaducada,
+  sesionRenovadaEnOtraPestana,
   setStoredToken,
 } from "./api";
 
@@ -17,11 +18,16 @@ type FetchLike = (input: string, init?: RequestInit) => Promise<unknown>;
 
 const fetchMock = jest.fn<Promise<unknown>, Parameters<FetchLike>>();
 
-function respuesta(status: number, body: unknown = { detail: "Could not validate credentials" }): unknown {
+// El 401 de sesión del backend (`core/errors.py` `unauthorized()`).
+function respuesta(
+  status: number,
+  body: unknown = { detail: "Invalid authentication credentials" },
+  cabeceras: Record<string, string> = {},
+): unknown {
   return {
     ok: status >= 200 && status < 300,
     status,
-    headers: { get: () => null },
+    headers: { get: (nombre: string) => cabeceras[nombre.toLowerCase()] ?? null },
     json: async () => body,
     blob: async () => new Blob(["x"]),
   };
@@ -69,7 +75,7 @@ test("otros errores (403, 500) no son una sesión caducada", async () => {
 
 test("las descargas también avisan (apiFetchBlob y apiDownloadBlob), con su error de siempre", async () => {
   fetchMock.mockResolvedValue(respuesta(401));
-  await expect(apiFetchBlob("/api/emails/e-1/attachments/a-1")).rejects.toThrow("Could not validate credentials");
+  await expect(apiFetchBlob("/api/emails/e-1/attachments/a-1")).rejects.toThrow("Invalid authentication credentials");
   expect(avisos).toBe(1);
   setStoredToken("tok-2");
   await expect(apiDownloadBlob("/api/erp/orders/o-1/factusol-pedido-pdf"))
@@ -87,6 +93,49 @@ test("tras volver a entrar, el siguiente 401 vuelve a avisar", async () => {
   expect(sesionCaducada()).toBe(false);
 
   fetchMock.mockResolvedValueOnce(respuesta(401));
+  await expect(apiFetch("/api/erp/webs/estado")).rejects.toBeInstanceOf(ApiError);
+  expect(avisos).toBe(2);
+});
+
+test("un 401 que no es de sesión (Google ha revocado el acceso) no avisa", async () => {
+  fetchMock.mockResolvedValue(respuesta(401, { detail: "La cuenta Google ha revocado el acceso. Avisa al admin." }));
+  await expect(apiFetch("/api/integrations/google/calendars"))
+    .rejects.toMatchObject({ status: 401, message: "La cuenta Google ha revocado el acceso. Avisa al admin." });
+  expect(avisos).toBe(0);
+  expect(sesionCaducada()).toBe(false);
+});
+
+test("el 401 de sesión avisa por su detail (también el del 2FA a medias)", async () => {
+  fetchMock.mockResolvedValueOnce(respuesta(401, { detail: "Complete 2FA verification first" }));
+  await expect(apiFetch("/api/erp/webs/estado")).rejects.toMatchObject({ status: 401 });
+  expect(avisos).toBe(1);
+});
+
+test("sin cuerpo legible decide la cabecera WWW-Authenticate: Bearer", async () => {
+  const sinCuerpo = (cabeceras: Record<string, string>) => ({
+    ...(respuesta(401, null, cabeceras) as object),
+    json: async () => { throw new SyntaxError("Unexpected end of JSON input"); },
+  });
+  fetchMock.mockResolvedValueOnce(sinCuerpo({}));
+  await expect(apiDownloadBlob("/api/erp/orders/o-1/factusol-pedido-pdf")).rejects.toMatchObject({ status: 401 });
+  expect(avisos).toBe(0);
+  fetchMock.mockResolvedValueOnce(sinCuerpo({ "www-authenticate": "Bearer" }));
+  await expect(apiDownloadBlob("/api/erp/orders/o-1/factusol-pedido-pdf")).rejects.toMatchObject({ status: 401 });
+  expect(avisos).toBe(1);
+});
+
+test("multipestaña: un token nuevo (entrar en otra pestaña) olvida el aviso; el mismo token no", async () => {
+  fetchMock.mockResolvedValue(respuesta(401));
+  await expect(apiFetch("/api/erp/webs/estado")).rejects.toBeInstanceOf(ApiError);
+  expect(sesionCaducada()).toBe(true);
+  // Mismo token que caducó: el aviso sigue siendo verdad.
+  expect(sesionRenovadaEnOtraPestana()).toBe(false);
+  expect(sesionCaducada()).toBe(true);
+  // Otra pestaña entra de nuevo: la cookie (común) trae otro token.
+  document.cookie = "bohub_token=otro; Path=/";
+  expect(sesionRenovadaEnOtraPestana()).toBe(true);
+  expect(sesionCaducada()).toBe(false);
+  // Y el siguiente 401 de sesión vuelve a avisar.
   await expect(apiFetch("/api/erp/webs/estado")).rejects.toBeInstanceOf(ApiError);
   expect(avisos).toBe(2);
 });

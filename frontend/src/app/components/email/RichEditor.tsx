@@ -80,8 +80,13 @@ async function uploadBlob(blob: Blob, filename: string): Promise<string> {
     body: form,
   });
   if (!response.ok) {
-    avisarSiSesionCaducada("/api/email-templates/assets", response.status);
     const detail = await response.json().catch(() => null);
+    avisarSiSesionCaducada(
+      "/api/email-templates/assets",
+      response.status,
+      (detail as { detail?: unknown } | null)?.detail,
+      response.headers,
+    );
     throw new Error(
       (detail && (detail as { detail?: string }).detail) ||
         `No se pudo subir la imagen (${response.status}).`,

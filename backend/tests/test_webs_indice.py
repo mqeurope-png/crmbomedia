@@ -592,9 +592,10 @@ def test_categorias_fuera_heredan_a_las_hijas() -> None:
 
 
 def test_la_decision_es_por_ids_y_los_nombres_no_cuentan() -> None:
-    """`producto_dentro` no mira los nombres: un «Repuestos» con un id que no
-    es de fuera entra (en otro idioma un nombre puede coincidir por azar) y
-    un «Spare Parts» con el id de fuera no."""
+    """Fuera del idioma por defecto (sin `nombres`) `producto_dentro` no mira
+    los nombres: un «Repuestos» con un id que no es de fuera entra (en otro
+    idioma un nombre puede coincidir por azar) y un «Spare Parts» con el id de
+    fuera no."""
     reglas = reglas_mod.Reglas(reglas=reglas_mod._de_partida()).para("fluxlasers")
     decision = DecisionIdioma.de_reglas(reglas, {1021})
     assert lector.producto_dentro(
@@ -826,6 +827,94 @@ def test_wpml_que_no_ajusta_los_ids_deja_el_idioma_en_error_y_no_marca_nada_ido(
         grupo = _grupo(lectura, WEB_PRODUCTO, idioma)
         assert grupo.error and f"ninguna categoría de «{idioma}»" in grupo.error
         assert not grupo.filas
+
+
+def test_wpml_que_no_ajusta_los_ids_con_una_categoria_sin_traducir_tambien_queda_en_error(
+        ) -> None:
+    """Una categoría sin traducir que WPML sirve con su id del español
+    («Láser de fibra», 245, en el árbol inglés) no prueba que WPML enlace los
+    idiomas: el enlace se mide solo con los ids PROPIOS del idioma. Antes
+    pasaba: 53 productos `categoria_sin_original` y un repuesto de «Spare
+    Parts» que además estaba en la 245 entraba."""
+    web = web_flux_wpml()
+    web.ajusta_ids = False
+    web.categorias["en"] = [c for c in web.categorias["en"] if c["id"] != flux_cat("en", 245)]
+    web.categorias["en"].append(categoria(245, "Láser de fibra"))
+    web.productos["en"].append(producto(19007, "Exhaust fan Beambox", [
+        (flux_cat("en", 21), "Spare Parts"), (245, "Láser de fibra")], host=FLUX_HOST,
+        prefijo="en/"))
+    lectura = _leer_flux(web, _reglas_flux())
+    en = _grupo(lectura, WEB_PRODUCTO, "en")
+    assert en.error and "ninguna categoría de «en»" in en.error
+    assert not en.filas and not en.descartes
+    # Un idioma cuyas categorías son TODAS ids del idioma por defecto (WPML las
+    # sirve sin traducir) sí pasa, aunque WPML no ajuste nada: decide el id.
+    web = web_flux_wpml()
+    web.ajusta_ids = False
+    web.categorias["en"] = [dict(c) for c in web.categorias["es"]]
+    for p in web.productos["en"]:
+        p["categories"] = [{**c, "id": c["id"] % 1000} for c in p["categories"]]
+    en = _grupo(_leer_flux(web, _reglas_flux()), WEB_PRODUCTO, "en")
+    assert en.error is None and len(en.filas) == 33
+    assert {web.originales_prod.get(f["wp_id"], f["wp_id"]) for f in en.filas} == (
+        _FLUX_DENTRO - {FLUX_SIN_TRADUCIR["en"]})
+
+
+def test_una_categoria_de_fuera_vacia_en_el_idioma_por_defecto_saca_en_los_demas() -> None:
+    """La Store API esconde las categorías vacías (`hide_empty`, de partida
+    true), en el árbol y en `include=`: «Servicios» (15) no tiene productos en
+    español pero «Services» sí en inglés. Sin pedirlas todas, la 15 no estaba
+    ni entre las de fuera ni traducida, y un servicio que además estaba en
+    «Laser Cutters» entraba."""
+    web = web_flux_wpml()
+    next(c for c in web.categorias["es"] if c["id"] == 15)["count"] = 0
+    web.productos["en"].append(producto(19008, "Beambox II installation", [
+        (flux_cat("en", 15), "Services"), (flux_cat("en", 19), "Laser Cutters")],
+        host=FLUX_HOST, prefijo="en/"))
+    lectura = _leer_flux(web, _reglas_flux())
+    en = _grupo(lectura, WEB_PRODUCTO, "en")
+    assert en.error is None
+    assert 19008 not in {f["wp_id"] for f in en.filas}
+    assert len(en.filas) == 33
+    assert not any("sin original" in a for a in lectura.avisos)
+    categorias = [p for p in web.peticiones if "rest_route=/wc/store/v1/products/categories" in p]
+    assert categorias and all("hide_empty=false" in p for p in categorias)
+
+
+def test_en_el_idioma_por_defecto_el_nombre_de_una_categoria_del_producto_tambien_saca() -> None:
+    """Red de seguridad donde los nombres SÍ están en el idioma de las reglas:
+    en el idioma por defecto (y en una web de un solo idioma) un producto queda
+    fuera si el nombre de una de SUS categorías empieza por una regla, aunque
+    esa categoría falte del árbol (`count` desfasado, árbol cortado en
+    `MAX_PAGINAS`). En los demás idiomas deciden solo los ids."""
+    reglas = _reglas_flux()
+    dtf = {"id": 9990, "categories": [{"id": 999, "name": "Consumibles DTF"}]}
+    assert lector.producto_dentro(dtf, DecisionIdioma.de_reglas(reglas, {21}, nombres=True)) == (
+        False, "categoria")
+    assert lector.producto_dentro(dtf, DecisionIdioma.de_reglas(reglas, {21})) == (True, "")
+    web = web_flux_wpml()
+    web.productos["es"].append(producto(9990, "Film DTF A3", [(999, "Consumibles DTF")],
+                                        host=FLUX_HOST))
+    # En inglés, otra categoría que tampoco está en el árbol, con un nombre
+    # traducido que empieza por una regla de partida («Services»): no decide.
+    web.productos["en"] += [
+        producto(19990, "DTF setup", [(1999, "Services DTF")], host=FLUX_HOST, prefijo="en/"),
+        producto(19991, "Beambox II 55W DTF bundle", [
+            (flux_cat("en", 19), "Laser Cutters"), (1999, "Services DTF")], host=FLUX_HOST,
+            prefijo="en/"),
+    ]
+    lectura = _leer_flux(web, reglas)
+    es, en = _grupo(lectura, WEB_PRODUCTO, "es"), _grupo(lectura, WEB_PRODUCTO, "en")
+    assert 9990 not in {f["wp_id"] for f in es.filas} and len(es.filas) == 34
+    ids_en = {f["wp_id"] for f in en.filas}
+    assert 19990 not in ids_en and en.descartes["categoria_sin_original"] == 1   # por id
+    assert 19991 in ids_en                                   # el nombre traducido no saca
+    # Una web de un solo idioma: como el idioma por defecto.
+    unico = web_flux()
+    unico.productos["es"].append(producto(9990, "Film DTF A3", [(999, "Consumibles DTF")],
+                                          host=FLUX_HOST))
+    grupo = _grupo(_leer_flux(unico, reglas, ("es",)), WEB_PRODUCTO, "es")
+    assert grupo.filas and 9990 not in {f["wp_id"] for f in grupo.filas}
 
 
 def test_una_categoria_que_solo_existe_en_un_idioma_no_deja_entrar_y_se_avisa() -> None:

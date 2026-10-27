@@ -4,7 +4,8 @@ el 27 y el 28/10/2026 — `?rest_route=`, WPGlobus por prefijo con su respaldo
 (mismos ids en todos los idiomas, nombres de categoría traducidos), WPML con
 `lang=`, ids propios por idioma (también los de las categorías), respaldo
 silencioso y los ids «ajustados» al idioma pedido en `include=` y en
-`category=…&not_in`, la Store API con sus filtros y `_fields`, y pimpam sin
+`category=…&not_in`, la Store API con sus filtros, `_fields` y `hide_empty`
+(sin `hide_empty=false` esconde las categorías vacías), y pimpam sin
 tienda — y los datos de partida de cada web (FLUX, con su árbol y sus
 productos reales). Este fichero no tiene tests: lo importan los demás.
 """
@@ -64,9 +65,9 @@ def traduccion_wpglobus(defecto: str, con_contenido: list[str], todos: list[str]
                               "excerpt": False} for i in todos}}
 
 
-def categoria(cid: int, nombre: str, padre: int = 0) -> dict[str, Any]:
+def categoria(cid: int, nombre: str, padre: int = 0, count: int = 1) -> dict[str, Any]:
     return {"id": cid, "name": nombre, "slug": nombre.lower().replace(" ", "-"),
-            "parent": padre, "count": 1}
+            "parent": padre, "count": count}
 
 
 def producto(pid: int, nombre: str, cats: list[tuple[int, str]], *, host: str,
@@ -181,11 +182,16 @@ class WebFalsa:
             return httpx.Response(404, json={"code": "rest_no_route", "message": "No route"})
         arbol = self.categorias.get(idioma, self.categorias.get(self.defecto, []))
         if ruta == "/wc/store/v1/products/categories":
+            # La Store API esconde de partida las vacías (`hide_empty`, por
+            # defecto true), también en `include=`; `hide_empty=false` las da todas.
+            visibles = arbol
+            if qs.get("hide_empty", ["true"])[0].lower() not in ("false", "0"):
+                visibles = [c for c in arbol if c.get("count", 0)]
             if "include" not in qs:
                 # Sin paginar: la Store API la da entera (en cada página).
-                return httpx.Response(200, json=self._campos(arbol, campos))
-            ids = self._ajustar(_ids_de(qs["include"][0]), self.originales_cat, arbol)
-            return self._lista([c for c in arbol if c["id"] in ids], qs, campos)
+                return httpx.Response(200, json=self._campos(visibles, campos))
+            ids = self._ajustar(_ids_de(qs["include"][0]), self.originales_cat, visibles)
+            return self._lista([c for c in visibles if c["id"] in ids], qs, campos)
         if ruta == "/wc/store/v1/products":
             datos = list(self.productos.get(idioma, []))
             if "include" in qs:

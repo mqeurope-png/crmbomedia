@@ -36,7 +36,12 @@ Lo medido en las webs del grupo (27 y 28/10/2026) manda aquí:
   en/de/fr/nl «Spare Parts», «Ersatzteile»… no empiezan por «Repuestos»):
   - Idioma por defecto: fuera las categorías cuyo nombre EMPIEZA por una regla
     `categoria_fuera` (escritas en ese idioma) y todas sus hijas
-    (`categorias_fuera`).
+    (`categorias_fuera`). El árbol se pide con `hide_empty=false` (la Store
+    API esconde de partida las vacías, también en `include=`: una de fuera
+    vacía en este idioma y con productos en otro se colaría). Y, como red de
+    seguridad, solo aquí (donde los nombres están en el idioma de las reglas):
+    fuera también el producto con una categoría PROPIA cuyo nombre empieza
+    por una regla, aunque falte del árbol (`count` desfasado, `MAX_PAGINAS`).
   - WPGlobus y webs de un idioma: los mismos ids en todos los idiomas → las
     mismas categorías de fuera y las mismas excepciones por id.
   - WPML, otro idioma: WPML «ajusta los ids» de `include=` (pedido en inglés,
@@ -44,9 +49,11 @@ Lo medido en las webs del grupo (27 y 28/10/2026) manda aquí:
     piden las traducciones de las de fuera y las de todas; fuera = esas
     traducciones, las del idioma por defecto (los ids de término son únicos
     en toda la instalación) y todas sus hijas en el árbol del idioma. Si el
-    idioma tiene categorías y NINGUNA es traducción de una del idioma por
-    defecto (WPML no ha ajustado los ids), su grupo de productos queda en
-    error: no se escribe ni se marca nada ido. Una categoría que solo existe
+    idioma tiene categorías PROPIAS (ids que no son del idioma por defecto) y
+    NINGUNA es traducción de una del idioma por defecto (WPML no ha ajustado
+    los ids), su grupo de productos queda en error: no se escribe ni se marca
+    nada ido. Una categoría sin traducir servida con su id del idioma por
+    defecto no cuenta como enlace. Una categoría que solo existe
     en ese idioma («sin original») y no cuelga de una de fuera no deja entrar
     a un producto que no tenga otra (`categoria_sin_original`), y se avisa.
     Las excepciones por id de producto se traducen igual
@@ -123,6 +130,11 @@ CAMPOS_CONTENIDO = "id,slug,link,modified_gmt,title,content,excerpt"
 #: Del árbol de categorías basta con esto: decide el id y el `parent`; el
 #: nombre, para aplicar las reglas en el idioma por defecto y para los avisos.
 CAMPOS_CATEGORIA = "id,name,parent"
+#: La Store API esconde de partida las categorías vacías (`hide_empty`, true),
+#: en el árbol y en `include=`: una de fuera vacía en el idioma por defecto
+#: pero con productos en otro no estaría ni entre las de fuera ni traducida.
+#: Se piden todas.
+TODAS_LAS_CATEGORIAS = {"hide_empty": "false"}
 #: WPGlobus calcula `translation` a partir del título y el contenido de la
 #: respuesta: sin ellos dice que nada está traducido.
 CAMPO_TRADUCCION = "translation"
@@ -510,39 +522,54 @@ class DecisionIdioma:
     - `conocidas`: solo en WPML fuera del idioma por defecto (None en lo
       demás): las categorías del idioma que son traducción de una del idioma
       por defecto, o cuelgan de una de fuera. Un producto sin ninguna de ellas
-      queda fuera (`categoria_sin_original`): nadie ha decidido sobre él."""
+      queda fuera (`categoria_sin_original`): nadie ha decidido sobre él.
+    - `nombres`: solo en el idioma por defecto (None en los demás, donde los
+      nombres están traducidos y no deciden): las reglas, para sacar también
+      el producto con una categoría PROPIA cuyo nombre empieza por una de
+      fuera aunque falte del árbol (`count` desfasado, `MAX_PAGINAS`)."""
 
     fuera: set[int] = field(default_factory=set)
     excluir: set[int] = field(default_factory=set)
     incluir: set[int] = field(default_factory=set)
     conocidas: set[int] | None = None
+    nombres: ReglasSitio | None = None
 
     @classmethod
-    def de_reglas(cls, reglas: ReglasSitio, fuera: set[int] | None = None) -> DecisionIdioma:
+    def de_reglas(cls, reglas: ReglasSitio, fuera: set[int] | None = None, *,
+                  nombres: bool = False) -> DecisionIdioma:
         """La del idioma por defecto (y la de todos con WPGlobus o un solo
-        idioma): las excepciones tal cual están escritas."""
+        idioma): las excepciones tal cual están escritas. `nombres=True` solo
+        en el idioma por defecto (la red de seguridad por nombre)."""
         return cls(fuera=set(fuera or ()), excluir=set(reglas.excluir),
-                   incluir=set(reglas.incluir))
+                   incluir=set(reglas.incluir), nombres=reglas if nombres else None)
 
 
 def producto_dentro(producto: dict[str, Any], decision: DecisionIdioma) -> tuple[bool, str]:
-    """¿Entra el producto? `(sí/no, motivo)`, SOLO por ids (los nombres de las
+    """¿Entra el producto? `(sí/no, motivo)`, por ids (los nombres de las
     categorías ya decidieron en el idioma por defecto, `categorias_fuera`).
     Las excepciones por id, encima de todo (si está en las dos, gana excluir:
     no ofrecer un repuesto como máquina); sin categoría, fuera; CUALQUIER
     categoría de fuera manda (un repuesto colgado de la madre «Accessoires et
     pièces de rechange» y de su hija «Pièces de rechange A5000» queda fuera,
     y una Open Box en «Cortadoras Láser» y «Reacondicionadas» también); en
-    WPML, un producto cuyas categorías son todas «sin original», fuera."""
+    el idioma por defecto (`decision.nombres`), también una categoría propia
+    cuyo nombre empieza por una de fuera; en WPML, un producto cuyas
+    categorías son todas «sin original», fuera."""
     pid = _entero(producto.get("id")) or 0
     if pid in decision.excluir:
         return False, "excluido"
     if pid in decision.incluir:
         return True, "incluido"
-    ids = _ids([c for c in (producto.get("categories") or []) if isinstance(c, dict)])
+    categorias = [c for c in (producto.get("categories") or []) if isinstance(c, dict)]
+    ids = _ids(categorias)
     if not ids:
         return False, "sin_categoria"
     if ids & decision.fuera:
+        return False, "categoria"
+    if decision.nombres is not None and any(
+            decision.nombres.categoria_fuera(c.get("name")) for c in categorias):
+        # Red de seguridad: una categoría que falta del árbol (`count`
+        # desfasado, árbol cortado) no deja entrar a un repuesto.
         return False, "categoria"
     if decision.conocidas is not None and not ids & decision.conocidas:
         return False, "categoria_sin_original"
@@ -721,19 +748,23 @@ class _LectorWeb:
 
     def _categorias(self, idi: _Idioma) -> list[dict[str, Any]]:
         return paginar(self.http, idi.base, _RUTA_CATEGORIAS,
-                       {**idi.params, "_fields": CAMPOS_CATEGORIA}, hosts=self.hosts)
+                       {**idi.params, **TODAS_LAS_CATEGORIAS, "_fields": CAMPOS_CATEGORIA},
+                       hosts=self.hosts)
 
     def _traducir(self, idi: _Idioma, ruta: str, ids: set[int]) -> set[int]:
         """WPML: los ids (de categorías o de productos) que corresponden a `ids`
         en el idioma `idi`. WPML «ajusta los ids» de `include=`: pedido en
         inglés, `categories&include=39` devuelve la 763 (la traducción de la
         39) y `products&include=965` el 2839. Lo que no tiene traducción no
-        vuelve (o vuelve el original, si la web lo enseña como respaldo)."""
+        vuelve (o vuelve el original, si la web lo enseña como respaldo). Las
+        categorías, también las vacías (`TODAS_LAS_CATEGORIAS`)."""
+        extra = TODAS_LAS_CATEGORIAS if ruta == _RUTA_CATEGORIAS else {}
         salida: set[int] = set()
         orden = sorted(ids)
         for i in range(0, len(orden), POR_PAGINA):
             salida |= _ids(paginar(self.http, idi.base, ruta, {
-                **idi.params, "include": ",".join(str(x) for x in orden[i:i + POR_PAGINA]),
+                **idi.params, **extra,
+                "include": ",".join(str(x) for x in orden[i:i + POR_PAGINA]),
                 "_fields": "id"}, hosts=self.hosts))
         return salida
 
@@ -764,7 +795,9 @@ class _LectorWeb:
                 raise
             raise LecturaError(f"no se pudieron leer las categorías del idioma por defecto "
                                f"({defecto}), que deciden qué entra: {exc}") from exc
-        decision = DecisionIdioma.de_reglas(self.reglas, fuera_d)
+        # Los nombres de las categorías del producto, solo en el idioma por
+        # defecto: en los demás están traducidos y no deciden.
+        decision = DecisionIdioma.de_reglas(self.reglas, fuera_d, nombres=idi.defecto)
         if self.modo != MODO_WPML or idi.defecto:
             # WPGlobus y un solo idioma: los mismos ids en todos los idiomas.
             return decision
@@ -772,7 +805,12 @@ class _LectorWeb:
         ids_idioma = _ids(arbol)
         trad_fuera = self._traducir(idi, _RUTA_CATEGORIAS, fuera_d) if fuera_d else set()
         trad_todas = self._traducir(idi, _RUTA_CATEGORIAS, todas_d) if todas_d else set()
-        if ids_idioma and not ids_idioma & (trad_todas | todas_d):
+        # El enlace se mide solo con los ids PROPIOS del idioma: una categoría
+        # sin traducir que WPML sirve con su id del idioma por defecto no
+        # prueba que WPML ajuste los ids. Un idioma cuyas categorías son todas
+        # del idioma por defecto sí pasa (decide el id, el mismo).
+        propios = ids_idioma - todas_d
+        if propios and not propios & trad_todas:
             # Cerrado ante la duda: sin el enlace entre idiomas no se sabe qué
             # es un repuesto, y lo de antes se queda como estaba.
             raise LecturaError(

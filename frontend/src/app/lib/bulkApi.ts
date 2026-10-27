@@ -78,14 +78,16 @@ export async function bulkExportContactsCsv(
     body: JSON.stringify({ contact_ids: contactIds }),
   });
   if (!resp.ok) {
-    avisarSiSesionCaducada("/api/contacts/bulk-export-csv", resp.status);
     let detail = `Export falló (${resp.status})`;
+    let leido: unknown;
     try {
       const body = await resp.json();
+      leido = body?.detail;
       if (body?.detail) detail = String(body.detail);
     } catch {
       /* keep generic detail */
     }
+    avisarSiSesionCaducada("/api/contacts/bulk-export-csv", resp.status, leido, resp.headers);
     throw new Error(detail);
   }
   return resp.blob();

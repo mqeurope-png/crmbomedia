@@ -82,7 +82,6 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!response.ok) {
-    avisarSiSesionCaducada(path, response.status);
     const fallback = `Error de la API (${response.status})`;
     let body: unknown = null;
     try {
@@ -90,6 +89,9 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       // empty / non-JSON body
     }
+    avisarSiSesionCaducada(
+      path, response.status, (body as { detail?: unknown } | null)?.detail, response.headers,
+    );
     const message =
       body && typeof body === "object" && "detail" in body
         ? formatFastApiDetail((body as { detail?: unknown }).detail, fallback)

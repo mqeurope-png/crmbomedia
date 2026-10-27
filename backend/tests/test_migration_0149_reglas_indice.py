@@ -3,8 +3,9 @@
 Sobre la tabla que siembra la 0148 (0147 → 0148, como en producción) se
 meten reglas `categoria_fuera` de la web `fluxlasers` (el parche a mano del
 27/10), una de todas las webs y una de otra web, y se sube a la 0149: solo se
-van las de `fluxlasers`, entra el WhiteRIP (493 de artisjet-eu) una vez
-aunque se suba dos veces, y bajar lo quita.
+van las de `fluxlasers` (y el registro dice cuáles, una a una), entra el
+WhiteRIP (493 de artisjet-eu) una vez aunque se suba dos veces, y bajar quita
+solo el que puso la 0149: uno que ya estaba se queda.
 """
 from __future__ import annotations
 
@@ -43,12 +44,13 @@ def alembic_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         get_settings.cache_clear()
 
 
-def _regla(c, tipo: str, patron: str, sitio: str | None, posicion: int = 90) -> None:  # noqa: ANN001
+def _regla(c, tipo: str, patron: str, sitio: str | None, posicion: int = 90,  # noqa: ANN001
+           nota: str | None = None) -> None:
     ahora = datetime.now(UTC)
     c.execute(text(
         "INSERT INTO web_indice_reglas (tipo, patron, sitio, activo, nota, posicion, "
-        "created_at, updated_at) VALUES (:t, :p, :s, 1, NULL, :pos, :a, :a)"),
-        {"t": tipo, "p": patron, "s": sitio, "pos": posicion, "a": ahora})
+        "created_at, updated_at) VALUES (:t, :p, :s, 1, :n, :pos, :a, :a)"),
+        {"t": tipo, "p": patron, "s": sitio, "n": nota, "pos": posicion, "a": ahora})
 
 
 def _reglas(engine) -> list[tuple[str, str | None, str]]:  # noqa: ANN001
@@ -92,12 +94,17 @@ def test_quita_el_parche_de_flux_anade_el_whiterip_y_baja_limpia(
     assert [r for r in sembradas if r not in despues] == []
     assert despues.count(("producto_incluir_id", "artisjet-eu", "493")) == 1
     assert "0149: 5 reglas categoria_fuera de fluxlasers borradas" in registro
+    # Cada patrón borrado, en el registro del despliegue: el parche se puede
+    # reponer a mano desde ahí.
+    for nombre in PARCHE_FLUX:
+        assert f"0149: borrada la regla categoria_fuera de fluxlasers: {nombre!r}" in registro
+    assert registro.count("0149: borrada la regla") == len(PARCHE_FLUX)
     with engine.connect() as c:
         nota, posicion = c.execute(text(
             "SELECT nota, posicion FROM web_indice_reglas WHERE patron = '493'")).one()
         # No toca el índice: lo marcado ido el 27/10 sigue ido.
         assert c.execute(text("SELECT ido_en FROM web_indice WHERE id = 'x'")).scalar()
-    assert nota == "WhiteRIP: software colgado de «Autres pièces de rechange»"
+    assert nota == "WhiteRIP: software colgado de «Autres pièces de rechange» (migración 0149)"
     assert posicion == 1                                  # tras el 477 (posición 0)
     engine.dispose()
 
@@ -128,3 +135,31 @@ def test_quita_el_parche_de_flux_anade_el_whiterip_y_baja_limpia(
     engine = create_engine(db_url)
     assert _reglas(engine).count(("producto_incluir_id", "artisjet-eu", "493")) == 1
     engine.dispose()
+
+
+@pytest.mark.parametrize("nota", [
+    None, "WhiteRIP: software colgado de «Autres pièces de rechange»"])
+def test_bajar_no_quita_un_493_que_ya_estaba(
+        alembic_setup, capsys: pytest.CaptureFixture[str], nota: str | None) -> None:
+    """Si el 493 ya estaba (a mano, con otra nota o con la de las reglas de
+    partida), la 0149 no lo pone y bajar no lo quita: solo quita la fila con
+    la nota propia de la 0149."""
+    cfg, db_url = alembic_setup
+    command.stamp(cfg, "20261027_0147")
+    command.upgrade(cfg, "20261027_0148")
+    engine = create_engine(db_url)
+    with engine.begin() as c:
+        _regla(c, "producto_incluir_id", "493", "artisjet-eu", 7, nota)
+    engine.dispose()
+    capsys.readouterr()
+    command.upgrade(cfg, "20261028_0149")
+    assert "0149: la regla producto_incluir_id 493 de artisjet-eu ya estaba" in (
+        capsys.readouterr().err)
+    command.downgrade(cfg, "20261027_0148")
+    engine = create_engine(db_url)
+    with engine.connect() as c:
+        filas = c.execute(text(
+            "SELECT nota, posicion FROM web_indice_reglas WHERE tipo = 'producto_incluir_id' "
+            "AND patron = '493' AND sitio = 'artisjet-eu'")).all()
+    engine.dispose()
+    assert [(f.nota, f.posicion) for f in filas] == [(nota, 7)]

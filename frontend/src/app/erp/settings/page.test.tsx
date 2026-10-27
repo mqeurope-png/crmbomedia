@@ -726,8 +726,10 @@ describe("ErpSettingsPage — ejemplos de las plantillas solo cuando se ven", ()
   const margenes: string[] = [];
 
   class FakeObserver {
+    root: Element | Document | null;
     constructor(private cb: IntersectionObserverCallback, opts?: IntersectionObserverInit) {
       margenes.push(opts?.rootMargin ?? "");
+      this.root = opts?.root ?? null;
     }
     observe(el: Element) { observados.push({ el, cb: this.cb, obs: this }); }
     unobserve(el: Element) { observados = observados.filter((o) => o.el !== el); }
@@ -776,6 +778,27 @@ describe("ErpSettingsPage — ejemplos de las plantillas solo cuando se ven", ()
     // «Ver ejemplo» y «Enviarme una prueba» siguen ahí sin esperar a verse.
     expect(screen.getByRole("button", { name: "Ver ejemplo es" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Enviarme una prueba es" })).toBeEnabled();
+  });
+
+  // En la aplicación no hace scroll la ventana sino `.app-shell-content`: el
+  // observador tiene que mirar ese contenedor o el margen de 200px no adelanta.
+  it("vigila contra el contenedor que hace scroll (la ventana si no hay ninguno)", async () => {
+    const { unmount } = render(
+      <div data-testid="scroll" style={{ overflowY: "auto" }}><ErpSettingsPage /></div>,
+    );
+    await screen.findByLabelText("Asunto factura es");
+    const scroll = screen.getByTestId("scroll");
+    const editores = observados.filter((o) => o.el.matches(".erp-settings-tpl"));
+    expect(editores).toHaveLength(15);
+    expect(editores.every((o) => o.obs.root === scroll)).toBe(true);
+    unmount();
+
+    observados = [];
+    render(<ErpSettingsPage />);
+    await screen.findByLabelText("Asunto factura es");
+    const sinContenedor = observados.filter((o) => o.el.matches(".erp-settings-tpl"));
+    expect(sinContenedor).toHaveLength(15);
+    expect(sinContenedor.every((o) => o.obs.root === null)).toBe(true);
   });
 
   it("al verse un editor se pide SOLO su ejemplo y luego sigue al día al escribir", async () => {

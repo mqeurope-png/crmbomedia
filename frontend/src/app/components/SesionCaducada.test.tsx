@@ -1,7 +1,7 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SesionCaducada } from "./SesionCaducada";
-import { logout, sesionCaducada } from "../lib/api";
+import { logout, sesionCaducada, sesionRenovadaEnOtraPestana } from "../lib/api";
 
 const push = jest.fn();
 jest.mock("next/navigation", () => ({
@@ -10,15 +10,18 @@ jest.mock("next/navigation", () => ({
 jest.mock("../lib/api", () => ({
   EVENTO_SESION_CADUCADA: "bohub:sesion-caducada",
   sesionCaducada: jest.fn(() => false),
+  sesionRenovadaEnOtraPestana: jest.fn(() => false),
   logout: jest.fn(),
 }));
 
 const mockLogout = logout as jest.Mock;
 const mockCaducada = sesionCaducada as jest.Mock;
+const mockRenovada = sesionRenovadaEnOtraPestana as jest.Mock;
 
 beforeEach(() => {
   mockLogout.mockResolvedValue(undefined);
   mockCaducada.mockReturnValue(false);
+  mockRenovada.mockReturnValue(false);
 });
 
 function caducar() {
@@ -50,4 +53,31 @@ test("si el 401 llegó antes de montarse, avisa nada más montarse", () => {
   mockCaducada.mockReturnValue(true);
   render(<SesionCaducada />);
   expect(screen.getByRole("alert")).toHaveTextContent("Tu sesión ha caducado.");
+});
+
+// Multipestaña: entrar de nuevo en OTRA pestaña deja en esta una franja que
+// miente y no se puede cerrar. Al volver a ella (foco / visibilidad) o al
+// cabo de un rato, si el token ya no es el que caducó, se quita.
+test("si se ha entrado de nuevo en otra pestaña, al volver a esta se quita el aviso", () => {
+  render(<SesionCaducada />);
+  caducar();
+  // Sin token nuevo, volver a la pestaña no cambia nada.
+  act(() => { window.dispatchEvent(new Event("focus")); });
+  expect(screen.getByRole("alert")).toBeInTheDocument();
+  mockRenovada.mockReturnValue(true);
+  act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+test("con el aviso a la vista se mira cada poco, aunque la pestaña no reciba foco", () => {
+  jest.useFakeTimers();
+  try {
+    render(<SesionCaducada />);
+    caducar();
+    mockRenovada.mockReturnValue(true);
+    act(() => { jest.advanceTimersByTime(5000); });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  } finally {
+    jest.useRealTimers();
+  }
 });

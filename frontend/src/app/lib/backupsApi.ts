@@ -65,8 +65,13 @@ export async function downloadBackup(backup: Backup): Promise<void> {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!response.ok) {
-      avisarSiSesionCaducada(`/api/admin/backups/${backup.id}/download`, response.status);
       const detail = await response.json().catch(() => null);
+      avisarSiSesionCaducada(
+        `/api/admin/backups/${backup.id}/download`,
+        response.status,
+        (detail as { detail?: unknown } | null)?.detail,
+        response.headers,
+      );
       throw new Error(
         (detail && (detail as { detail?: string }).detail) ||
           `No se pudo descargar el backup (${response.status}).`,
