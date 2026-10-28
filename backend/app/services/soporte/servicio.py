@@ -3,9 +3,9 @@
 
 Es CONSULTA: nada de aquí escribe fuera ni manda nada. Lo usan:
 
-- la Cola SAT (el taller, rol `sat`, sin correo) y el redactor (la oficina),
-  por la API `/api/erp/soporte`: buscar → título, extracto y enlace a la
-  vista; leer → el artículo limpio;
+- el redactor (la oficina, «Buscar en soporte»), por la API
+  `/api/erp/soporte`: buscar → título, extracto y enlace a la vista; leer → el
+  artículo limpio;
 - el redactor, por `articulo(session, fuente, id)`, para meter el artículo
   elegido en el prompt como material de consulta. Siempre por fuente + id de
   la lista blanca, NUNCA por una URL libre que mande el navegador.

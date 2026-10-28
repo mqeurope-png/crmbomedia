@@ -444,6 +444,8 @@ def pedido_sin_aprobar(ctx: Contexto) -> Iterator[Hallazgo]:
             continue
         if is_approved(o):
             continue
+        # Un web traído a mano (on-hold en la tienda) NO sale oculto: traerlo
+        # fue la autorización y es trabajo pendiente de aprobar como cualquiera.
         oculto, _motivo, _reemb = woo_status_visibility(o)
         if oculto and o.seguimiento_forced_at is None:
             continue                          # carrito web sin pagar: no es trabajo

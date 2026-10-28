@@ -1,12 +1,14 @@
 """Soporte de terceros — la API (`/api/erp/soporte`).
 
 Buscar y leer artículos de los centros de soporte de la lista blanca
-(`soporte_fuentes`). Es CONSULTA: no envía nada. Por eso vive en el ERP y no
-en `/api/emails`: el taller (rol `sat`, sin correo) la usa desde la Cola SAT
-con `erp.sat.view`; la oficina, también desde el redactor.
+(`soporte_fuentes`). Es CONSULTA: no envía nada. La usa el redactor («Buscar en
+soporte»), así que buscar y leer van con el MISMO ámbito que el asistente
+(`/api/emails/asistente`): `require_user` + `require_crm_access`, es decir, rol
+principal user, manager o admin. La Cola SAT ya no la tiene (28/10/2026): el
+taller (`sat`), `pedidos`, `comercial` y el visor reciben 403.
 
-- GET   /api/erp/soporte/buscar?q=&idioma=&fuente=        (`erp.sat.view`)
-- GET   /api/erp/soporte/articulo?fuente=&id=&idioma=     (`erp.sat.view`)
+- GET   /api/erp/soporte/buscar?q=&idioma=&fuente=        (el redactor)
+- GET   /api/erp/soporte/articulo?fuente=&id=&idioma=     (el redactor)
 - GET   /api/erp/soporte/fuentes                          (`erp.config`)
 - POST  /api/erp/soporte/fuentes                          (`erp.config`)
 - PATCH /api/erp/soporte/fuentes/{clave}                  (`erp.config`)
@@ -30,8 +32,9 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.audit import Action, record_event
+from app.core.auth import require_crm_access, require_user
 from app.db.session import get_session
-from app.erp.api.deps import require_config, require_sat_view
+from app.erp.api.deps import require_config
 from app.models.crm import User
 from app.services import soporte
 from app.services.soporte import fuentes as lista_blanca
@@ -40,6 +43,11 @@ from app.services.soporte import servicio
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/erp/soporte", tags=["erp-soporte"])
+
+# Buscar y leer son del redactor: el mismo ámbito que el asistente
+# (`main.py`, `asistente_router` con `_CRM_SCOPE`). Se pone por ruta y no en el
+# router porque la lista blanca (`/fuentes`) sigue con `erp.config`.
+_REDACTOR = [Depends(require_crm_access)]
 
 
 class FuenteIn(BaseModel):
@@ -88,20 +96,19 @@ def _auditar(session: Session, actor: User, *, clave: str, accion: str,
     )
 
 
-# --- consulta (el taller también) -----------------------------------------------------
+# --- consulta (la del redactor) -------------------------------------------------------
 
 
-@router.get("/buscar")
+@router.get("/buscar", dependencies=_REDACTOR)
 def buscar(
     q: str = Query("", max_length=servicio.MAX_CONSULTA),
     idioma: str | None = Query(None, max_length=10),
     fuente: str | None = Query(None, max_length=40),
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_sat_view),
+    current_user: User = Depends(require_user),
 ) -> dict[str, Any]:
     """Título, extracto y enlace de lo que encuentran los centros de soporte
-    (todos los activos, o `fuente`). Solo lee: el taller puede buscar sin
-    poder enviar nada."""
+    (todos los activos, o `fuente`). Solo lee: buscar no envía nada."""
     _ = current_user
     try:
         resultado = soporte.buscar(session, q, idioma=idioma, fuente=fuente or None)
@@ -111,13 +118,13 @@ def buscar(
     return asdict(resultado)
 
 
-@router.get("/articulo")
+@router.get("/articulo", dependencies=_REDACTOR)
 def leer_articulo(
     fuente: str = Query(..., min_length=1, max_length=40),
     id: str = Query(..., min_length=1, max_length=servicio.MAX_ID),  # noqa: A002
     idioma: str | None = Query(None, max_length=10),
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_sat_view),
+    current_user: User = Depends(require_user),
 ) -> dict[str, Any]:
     """El artículo limpio (texto y HTML saneado), por fuente + id de la lista
     blanca: nunca una URL cualquiera."""

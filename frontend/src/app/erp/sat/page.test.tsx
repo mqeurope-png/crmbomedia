@@ -18,7 +18,6 @@ import {
   uploadShippingFile,
 } from "../../lib/erpApi";
 import { getCurrentUser } from "../../lib/api";
-import { buscarSoporte } from "../../lib/soporteApi";
 
 jest.mock("next/link", () => ({
   __esModule: true,
@@ -29,12 +28,6 @@ jest.mock("next/link", () => ({
 
 jest.mock("../../lib/api", () => ({
   getCurrentUser: jest.fn(),
-}));
-
-// «Consulta de soporte»: su API va aparte de `erpApi` (solo lectura).
-jest.mock("../../lib/soporteApi", () => ({
-  buscarSoporte: jest.fn(),
-  leerArticuloSoporte: jest.fn(),
 }));
 
 // El aviso de envío al cliente se manda con el MISMO endpoint que la ficha.
@@ -88,7 +81,6 @@ const mockPicked = markPickedUp as jest.Mock;
 const mockUpdateSeg = updateSeguimientoFields as jest.Mock;
 const mockUpload = uploadShippingFile as jest.Mock;
 const mockBulk = bulkNoShipping as jest.Mock;
-const mockBuscarSoporte = buscarSoporte as jest.Mock;
 
 /** Pedido WEB en cola (Lote 2 A3): su albarán lo genera WooCommerce, aún sin
  *  descargar → el chip ofrece «Descargar albarán». */
@@ -881,48 +873,21 @@ describe("SatQueuePage (regresión)", () => {
   });
 });
 
-describe("SatQueuePage · «Consulta de soporte» (solo lectura)", () => {
-  it("el rol sat la ve en la barra, busca y lee en un modal sin nada que enviar", async () => {
+// La consulta del soporte de los fabricantes es del redactor («Buscar en
+// soporte»), no de la Cola SAT: el taller no busca ni lee desde aquí (28/10/2026).
+describe("SatQueuePage · sin «Consulta de soporte»", () => {
+  it.each([
+    ["sat", "Sat User"],
+    ["admin", "Admin User"],
+  ])("el rol %s no la ve en la barra", async (role, fullName) => {
     mockUser.mockResolvedValue({
-      id: "s", role: "sat", full_name: "Sat User", email: "s@x", is_active: true,
-    });
-    mockBuscarSoporte.mockResolvedValue({
-      consulta: "beambox laser no corta",
-      resultados: [{
-        fuente: "flux", fuente_nombre: "FLUX Support", articulo_id: "42",
-        titulo: "El láser no corta", extracto: "Comprueba el enfoque y la potencia.",
-        url: "https://support.flux3dp.com/hc/es-419/articles/42", idioma: "es",
-      }],
-      avisos: [], fuentes: ["flux"],
-    });
-    const user = userEvent.setup();
-    render(<SatQueuePage />);
-    await loaded();
-    await user.click(await screen.findByRole("button", { name: "Consulta de soporte" }));
-    const modal = screen.getByRole("dialog", { name: "Consulta de soporte" });
-    expect(within(modal).getByText(/desde aquí no se envía nada/)).toBeInTheDocument();
-    await user.type(within(modal).getByLabelText("Qué buscar en el soporte"), "beambox laser no corta");
-    await user.click(within(modal).getByRole("button", { name: "Buscar" }));
-    await waitFor(() => expect(mockBuscarSoporte).toHaveBeenCalledWith("beambox laser no corta", { idioma: "es" }));
-    expect(await within(modal).findByRole("link", { name: "El láser no corta" })).toHaveAttribute(
-      "href", "https://support.flux3dp.com/hc/es-419/articles/42");
-    expect(within(modal).getByRole("button", { name: "Leer" })).toBeInTheDocument();
-    // Consulta: ni «Usar en el borrador» ni nada que se envíe.
-    expect(within(modal).queryByRole("button", { name: /usar en el borrador|enviar/i })).not.toBeInTheDocument();
-    // La búsqueda no toca la cola.
-    expect(mockQueue).toHaveBeenCalledTimes(1);
-    // El «Cerrar» del pie (el ✕ de la esquina se llama igual).
-    const cerrar = within(modal).getAllByRole("button", { name: "Cerrar" });
-    await user.click(cerrar[cerrar.length - 1]);
-    expect(screen.queryByRole("dialog", { name: "Consulta de soporte" })).not.toBeInTheDocument();
-  });
-
-  it("sin ver la cola (sin erp.sat.view) no sale el botón", async () => {
-    mockUser.mockResolvedValue({
-      id: "v", role: "viewer", full_name: "Viewer", email: "v@x", is_active: true, capabilities: [],
+      id: "u", role, full_name: fullName, email: "u@x", is_active: true,
     });
     render(<SatQueuePage />);
     await loaded();
-    expect(screen.queryByRole("button", { name: "Consulta de soporte" })).not.toBeInTheDocument();
+    // Los permisos ya están cargados: los dos preparan, así que sale el lote.
+    expect(await screen.findByRole("group", { name: "Acciones en lote" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /consulta de soporte/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: /consulta de soporte/i })).not.toBeInTheDocument();
   });
 });

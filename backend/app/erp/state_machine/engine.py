@@ -67,6 +67,9 @@ def _guard_payment_ok(order: Order, _evidence: dict[str, Any]) -> str | None:
     if payment_not_required(order):
         # Una muestra no se cobra: su preparación no espera ningún pago
         # (14/10/2026; hasta entonces TODAS se quedaban en «Por embalar»).
+        # Un pedido web traído a mano tampoco la espera: traerlo fue la
+        # autorización (28/10/2026); su pago sigue «pendiente» hasta que la
+        # tienda lo cobre.
         return None
     status = getattr(order.payment_status, "value", order.payment_status)
     if status not in PAYMENT_OK_FOR_PREPARATION:

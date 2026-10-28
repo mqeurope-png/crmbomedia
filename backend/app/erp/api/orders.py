@@ -457,7 +457,17 @@ def _serialise_detail(session: Session, o: Order, actor: User) -> dict[str, Any]
         "warnings": _warnings(session, o),
         "externally_processed_note": o.externally_processed_note,
         "externally_processed_by_user_id": o.externally_processed_by_user_id,
+        # Pedido web traído a mano (on-hold): quién y cuándo, el veredicto de
+        # FACTUSOL al traerlo y lo que la web haya cambiado después. None si
+        # entró solo.
+        "traido_a_mano": _traido_a_mano(session, o),
     }
+
+
+def _traido_a_mano(session: Session, o: Order) -> dict[str, Any] | None:
+    from app.erp.pedidos_web import traido_a_mano_detalle  # noqa: PLC0415
+
+    return traido_a_mano_detalle(session, o)
 
 
 def _factusol_payment(o: Order) -> dict[str, Any] | None:

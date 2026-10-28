@@ -1,7 +1,7 @@
 """La caché del soporte (`soporte_cache`).
 
-Un artículo de soporte no cambia de un día para otro y se consulta mucho (el
-taller y la oficina buscan lo mismo cuando una máquina da el mismo fallo):
+Un artículo de soporte no cambia de un día para otro y se consulta mucho (la
+oficina busca lo mismo cada vez que una máquina da el mismo fallo):
 guardarlo evita salir a la red en cada clic y que una caída de la fuente deje
 sin el artículo que ya se leyó ayer.
 

@@ -9,7 +9,9 @@ La puerta es «haber pasado por caja»: un pedido web entra en Seguimiento
 cuando está `processing` (pagado / en preparación), `completed` (servido) o
 `refunded` (pagado y devuelto después). `pending` / `on-hold` son carritos que
 todavía no han entrado en el flujo real, y `cancelled` / `failed` / `draft` /
-`trash` nunca llegaron a entrar.
+`trash` nunca llegaron a entrar. Excepción: un pedido `on-hold` / `pending`
+TRAÍDO A MANO desde ERP · Pedidos ya entró por decisión de Bart y se ve
+(`WEB_UNPAID_STATUSES`).
 
 `refunded` NO es «anulado»: es un estado PROPIO de BoHub, «Reembolsado». El
 pedido se pagó y se sirvió, y luego se devolvió el dinero — sigue siendo un
@@ -25,6 +27,7 @@ __all__ = [
     "NOT_FOUND",
     "REFUNDED",
     "WEB_HIDDEN_MOTIVOS",
+    "WEB_UNPAID_STATUSES",
     "WEB_VISIBLE_STATUSES",
     "is_refunded",
     "motivo_label",
@@ -44,6 +47,14 @@ NOT_FOUND = "not_found"
 WEB_VISIBLE_STATUSES: frozenset[str] = frozenset({
     "processing", "completed", REFUNDED,
 })
+
+#: Estados (normalizados) de «la tienda todavía no lo ha cobrado»: carrito
+#: `pending` y transferencia `on-hold`. Ocultan un pedido web SALVO que se haya
+#: TRAÍDO A MANO desde ERP · Pedidos (`Order.manual_web_import_at`): traerlo es
+#: la autorización de Bart y desde ese momento es un pedido normal, que se ve
+#: aunque la tienda siga esperando el cobro. Cancelado, fallido, papelera… lo
+#: siguen ocultando como a cualquiera.
+WEB_UNPAID_STATUSES: frozenset[str] = frozenset({"pending", "on_hold"})
 
 #: Motivo de ocultación (el propio estado, normalizado) → etiqueta legible de
 #: «Ver ocultos por estado». Los que no estén aquí se enseñan en crudo.

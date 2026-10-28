@@ -21,6 +21,15 @@ que faltan:
 - o solo se LISTAN (vista previa de «Poner al día estados Woo…» y la
   comprobación del Cuadre «Pedido pagado en WooCommerce que no está en BoHub»).
 
+Excepción a «el que ya está no se toca» (28/10/2026): un pedido TRAÍDO A MANO
+desde ERP · Pedidos (entró `on-hold`, `manual_web_import_at`) que BoHub aún
+tiene con el pago «pendiente» y que la tienda ya tiene `processing` /
+`completed` se REFRESCA por ese mismo camino (`import_woo_order` →
+`_refresh_existing`, como si hubiera llegado el webhook): el pago queda
+registrado y, si sigue sin aprobar, entra en la Cola SAT. Es justo el caso del
+plugin de TSM con un pedido que se trajo antes de cobrarlo. No cuenta como «que
+falta» (ni en la vista previa ni en el Cuadre): va aparte, en `traidos`.
+
 Barato: una consulta por tienda (todos los estados pagados juntos, filtrados
 por fecha), de 100 en 100. Los recién modificados (menos de
 `GRACIA_MINUTOS`) se dejan para la siguiente pasada: su webhook puede estar
@@ -41,7 +50,7 @@ from uuid import uuid4
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app.erp.models import Order, OrderSource
+from app.erp.models import Order, OrderSource, PaymentStatus
 from app.integrations.woocommerce.client import WooError, WooHTTPClient
 from app.integrations.woocommerce.mapper import CREATE_ON_STATUSES
 from app.integrations.woocommerce.progreso import informar
@@ -96,6 +105,10 @@ LOCK_TTL_SECONDS = 1800
 #: Importaciones por pasada como mucho (cada una puede consultar FACTUSOL para
 #: la empresa, como el webhook); el resto entra en la siguiente.
 DEFAULT_MAX_IMPORTS = 50
+#: Estados de la tienda en los que un pedido TRAÍDO A MANO (entró `on-hold`) ya
+#: está cobrado: si BoHub lo sigue teniendo «pendiente», se refresca. `refunded`
+#: no: es una devolución, no un cobro, y la trae el webhook de siempre.
+TRAIDOS_COBRADOS: frozenset[str] = frozenset({"processing", "completed"})
 
 
 # --- configuración ------------------------------------------------------------------
@@ -133,7 +146,8 @@ def missing_config(session: Session) -> dict[str, Any]:
 
 @dataclass
 class PedidoAusente:
-    """Un pedido pagado de la tienda que no está en BoHub."""
+    """Un pedido pagado de la tienda que no está en BoHub (o, en `traidos`, uno
+    traído a mano que BoHub aún tiene sin cobrar: la misma forma)."""
 
     tienda: str             # account_id
     tienda_nombre: str
@@ -241,6 +255,28 @@ def _ya_en_bohub(session: Session, store: IntegrationAccount, pedidos: dict[str,
     return hay
 
 
+def _traidos_sin_cobro(
+    session: Session, store: IntegrationAccount, pedidos: dict[str, dict],
+) -> set[str]:
+    """Ids de Woo (de `pedidos`) que la tienda ya cobró (`TRAIDOS_COBRADOS`) y
+    que BoHub tiene TRAÍDOS A MANO y todavía con el pago «pendiente». Empareja
+    como el importador: (woocommerce, id de la tienda, esta tienda)."""
+    ids = [
+        wid for wid, wo in pedidos.items()
+        if str(wo.get("status") or "").strip().lower() in TRAIDOS_COBRADOS
+    ]
+    hay: set[str] = set()
+    for i in range(0, len(ids), 500):
+        hay.update(str(x) for x in session.scalars(select(Order.external_id).where(
+            Order.external_source == OrderSource.WOOCOMMERCE,
+            Order.external_id.in_(ids[i:i + 500]),
+            Order.store_id == store.id,
+            Order.manual_web_import_at.isnot(None),
+            Order.payment_status == PaymentStatus.PENDING,
+        )))
+    return hay
+
+
 def pagados_que_faltan(
     session: Session,
     store: IntegrationAccount,
@@ -255,8 +291,10 @@ def pagados_que_faltan(
     se da, modificados desde `modified_after`) que no están en BoHub. Una
     consulta (paginada) a la tienda. Lanza `WooError` si la tienda falla.
 
-    Devuelve `{"faltan": [(PedidoAusente, payload)], "listados", "llamadas",
-    "con_tope"}`."""
+    Devuelve `{"faltan": [(PedidoAusente, payload)], "traidos": [(PedidoAusente,
+    payload)], "listados", "llamadas", "con_tope"}`; `traidos` son los que SÍ
+    están en BoHub, traídos a mano y aún «pendientes» allí, que la tienda ya
+    cobró (se refrescan; no «faltan»)."""
     desde = now - timedelta(days=days)
     gracia = now - timedelta(minutes=GRACIA_MINUTOS)
     vistos: dict[str, dict[str, Any]] = {}
@@ -290,8 +328,15 @@ def pagados_que_faltan(
         for wid, wo in sorted(vistos.items(), key=lambda kv: int(kv[0]))
         if wid not in hay
     ]
-    return {"faltan": faltan, "listados": len(vistos), "llamadas": llamadas,
-            "con_tope": con_tope}
+    sin_cobro = (
+        _traidos_sin_cobro(session, store, {wid: vistos[wid] for wid in hay if wid in vistos})
+        if hay else set()
+    )
+    traidos = [
+        (_ausente(store, vistos[wid]), vistos[wid]) for wid in sorted(sin_cobro, key=int)
+    ]
+    return {"faltan": faltan, "traidos": traidos, "listados": len(vistos),
+            "llamadas": llamadas, "con_tope": con_tope}
 
 
 def woo_stores(session: Session, store_account_id: str | None = None) -> list[IntegrationAccount]:
@@ -394,6 +439,7 @@ def _registrar(session: Session, store: IntegrationAccount, *, inicio: datetime,
 
     fallo = resultado.get("error")
     errores = resultado["fallidos"] + (1 if fallo else 0)
+    refrescados = resultado.get("refrescados", 0)
     if fallo:
         estado = SyncStatus.FAILED.value
     elif resultado["fallidos"] or resultado["con_tope"]:
@@ -403,15 +449,20 @@ def _registrar(session: Session, store: IntegrationAccount, *, inicio: datetime,
     session.add(SyncLog(
         system=ExternalSystem.WOOCOMMERCE, account_id=store.account_id,
         operation=OPERATION, status=estado, started_at=inicio,
-        finished_at=datetime.now(UTC), records_processed=resultado["importados"],
+        finished_at=datetime.now(UTC),
+        records_processed=resultado["importados"] + refrescados,
         records_failed=errores, triggered_by=trigger,
         error_summary=str(fallo)[:2000] if fallo else None,
         message=(f"pagados que faltan: {resultado['faltan']} · importados "
-                 f"{resultado['importados']}" + (f" · {resultado['fallidos']} con error"
-                                                  if resultado["fallidos"] else "")),
+                 f"{resultado['importados']}"
+                 + (f" · traídos a mano con el cobro al día {refrescados}"
+                    if refrescados else "")
+                 + (f" · {resultado['fallidos']} con error" if resultado["fallidos"] else "")),
         metadata_json=json.dumps({
             "faltan": resultado["faltan"], "importados": resultado["importados"],
             "numeros": resultado["numeros"][:50], "con_tope": resultado["con_tope"],
+            "refrescados": refrescados,
+            "numeros_refrescados": resultado.get("numeros_refrescados", [])[:50],
         }, ensure_ascii=False),
     ))
     session.commit()
@@ -432,13 +483,16 @@ def _pasada_tienda(
     presupuesto: int,
 ) -> dict[str, Any]:
     """Lista (y, si no es vista previa, importa) los pagados que faltan de UNA
-    tienda. Deja su fila en `sync_logs` al importar."""
+    tienda, y refresca los traídos a mano que la tienda ya cobró. Deja su fila
+    en `sync_logs` al importar."""
     account_id = store.account_id
     inicio = now      # conservador: el repaso siguiente mira desde aquí
-    out: dict[str, Any] = {"items": [], "errores": [], "llamadas": 0, "con_tope": False,
-                           "importados": 0, "intentados": 0}
+    out: dict[str, Any] = {"items": [], "traidos": [], "errores": [], "llamadas": 0,
+                           "con_tope": False, "importados": 0, "refrescados": 0,
+                           "intentados": 0}
     resultado: dict[str, Any] = {"faltan": 0, "importados": 0, "fallidos": 0,
-                                 "numeros": [], "con_tope": False}
+                                 "numeros": [], "con_tope": False, "refrescados": 0,
+                                 "numeros_refrescados": []}
     try:
         client = client_factory(store)
         modified_after = (
@@ -500,12 +554,75 @@ def _pasada_tienda(
             resultado["fallidos"] += 1
             out["errores"].append({"store": account_id, "order_number": ausente.numero,
                                    "error": str(motivo)[:200]})
+    _refrescar_traidos(session, store, vista["traidos"], out=out, resultado=resultado,
+                       dry_run=dry_run, importar=importar, presupuesto=presupuesto)
     if not dry_run:
         _registrar(session, store, inicio=inicio, trigger=trigger, resultado=resultado)
         if resultado["importados"]:
             logger.info("woo.missing %s: importados %d pedidos pagados que faltaban (%s)",
                         account_id, resultado["importados"], ", ".join(resultado["numeros"][:20]))
+        if resultado["refrescados"]:
+            logger.info("woo.missing %s: %d pedidos traídos a mano puestos al día con el cobro "
+                        "de la tienda (%s)", account_id, resultado["refrescados"],
+                        ", ".join(resultado["numeros_refrescados"][:20]))
     return out
+
+
+def _refrescar_traidos(
+    session: Session,
+    store: IntegrationAccount,
+    traidos: list[tuple[PedidoAusente, dict[str, Any]]],
+    *,
+    out: dict[str, Any],
+    resultado: dict[str, Any],
+    dry_run: bool,
+    importar: Callable[..., dict],
+    presupuesto: int,
+) -> None:
+    """Los traídos a mano que la tienda ya cobró y BoHub aún tiene «pendientes»:
+    se pasan por el MISMO importador que los que faltan (`import_woo_order`, que
+    al encontrar el pedido lo REFRESCA como el webhook: pago, Cola SAT si sigue
+    sin aprobar, estado de la tienda). Comparten el tope de la pasada; uno que
+    falla cuenta como fallido, así la marca del repaso no avanza y se reintenta."""
+    account_id = store.account_id
+    for ausente, wo in traidos:
+        item = ausente.as_dict()
+        out["traidos"].append(item)
+        if dry_run:
+            item["resultado"] = "a_refrescar"
+            continue
+        if out["intentados"] >= presupuesto:
+            item["resultado"] = "sin_refrescar"     # tope de la pasada
+            out["con_tope"] = resultado["con_tope"] = True
+            continue
+        # Justo antes: ¿lo ha puesto al día mientras tanto el webhook?
+        if str(ausente.woo_id) not in _traidos_sin_cobro(session, store,
+                                                         {str(ausente.woo_id): wo}):
+            item["resultado"] = "ya_estaba"
+            continue
+        out["intentados"] += 1
+        try:
+            outcome = importar(session, store, wo) or {}
+        except Exception as exc:  # noqa: BLE001 — uno no corta los demás
+            session.rollback()
+            outcome = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:200]}"}
+        order_id = outcome.get("order_id")
+        if order_id and not outcome.get("error"):
+            session.expire_all()
+            order = session.get(Order, order_id)
+            pago = getattr(order.payment_status, "value", order.payment_status) if order else None
+            item.update(resultado="refrescado", order_id=order_id,
+                        order_number=order.order_number if order else None,
+                        pagado=pago is not None and pago != PaymentStatus.PENDING.value)
+            out["refrescados"] += 1
+            resultado["refrescados"] += 1
+            resultado["numeros_refrescados"].append(item["order_number"] or ausente.numero)
+        else:
+            motivo = outcome.get("error") or outcome.get("reason") or "no se refrescó"
+            item.update(resultado="error", error=str(motivo)[:200])
+            resultado["fallidos"] += 1
+            out["errores"].append({"store": account_id, "order_number": ausente.numero,
+                                   "error": str(motivo)[:200]})
 
 
 def import_missing_paid_orders(
@@ -530,19 +647,26 @@ def import_missing_paid_orders(
     - Al importar deja una fila en `sync_logs` por tienda (operación
       `import_missing`); en vista previa no escribe nada.
 
-    Devuelve `{dias, faltan, importados, items, errores, con_tope, woo_calls}`;
+    Devuelve `{dias, faltan, importados, items, traidos, refrescados, errores,
+    con_tope, woo_calls}`;
     cada item es un `PedidoAusente` con `resultado` (`a_importar` en vista
     previa; `importado` / `error` / `sin_importar` (tope) / `ya_estaba` (lo
     creó un webhook entre el listado y la importación) al aplicar) y, si se
-    importó, `order_id` y `order_number`. Al aplicar, cada tienda va bajo su
-    cerrojo: si ya hay otra importación de esa tienda, se salta."""
+    importó, `order_id` y `order_number`. `traidos` son los traídos a mano que
+    la tienda ya cobró y BoHub aún tenía «pendientes» (NO cuentan en `faltan`):
+    `a_refrescar` en vista previa; `refrescado` (con `order_id`,
+    `order_number` y `pagado`) / `error` / `sin_refrescar` (tope) / `ya_estaba`
+    al aplicar. Al aplicar, cada tienda va bajo su cerrojo: si ya hay otra
+    importación de esa tienda, se salta."""
     now = _aware(now or datetime.now(UTC))
     days = days or missing_config(session)["days"]
     items: list[dict[str, Any]] = []
+    traidos: list[dict[str, Any]] = []
     errores: list[dict[str, str]] = []
     woo_calls = 0
     con_tope = False
     importados = 0
+    refrescados = 0
     presupuesto = max_imports
 
     for store in woo_stores(session, store_account_id):
@@ -566,6 +690,8 @@ def import_missing_paid_orders(
                     now=now, max_pages=max_pages, presupuesto=presupuesto,
                 )
         items.extend(r["items"])
+        traidos.extend(r["traidos"])
+        refrescados += r["refrescados"]
         errores.extend(r["errores"])
         woo_calls += r["llamadas"]
         con_tope = con_tope or r["con_tope"]
@@ -577,6 +703,8 @@ def import_missing_paid_orders(
         "faltan": len(items),
         "importados": importados,
         "items": items,
+        "traidos": traidos,
+        "refrescados": refrescados,
         "errores": errores,
         "con_tope": con_tope,
         "woo_calls": woo_calls,
@@ -587,6 +715,7 @@ __all__ = [
     "DEFAULT_DAYS",
     "DEFAULT_INTERVAL_MINUTES",
     "PAID_STATUSES",
+    "TRAIDOS_COBRADOS",
     "PedidoAusente",
     "config_from_series",
     "desde_para_repaso",

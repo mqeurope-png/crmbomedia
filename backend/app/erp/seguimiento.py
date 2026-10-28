@@ -698,8 +698,23 @@ def visibility_for_status(woo_status: str | None) -> tuple[bool, str | None, boo
 
 
 def woo_status_visibility(order: Order) -> tuple[bool, str | None, bool]:
-    """Visibilidad según el estado de WooCommerce ALMACENADO en el pedido."""
-    return visibility_for_status(order.woo_status)
+    """Visibilidad según el estado de WooCommerce ALMACENADO en el pedido.
+
+    Un pedido web TRAÍDO A MANO desde ERP · Pedidos (`manual_web_import_at`,
+    28/10/2026) ya pasó la puerta: traerlo es la autorización de Bart, como un
+    «Forzar en seguimiento». Mientras la tienda siga esperando el cobro
+    (`on-hold` / `pending`, `woo.WEB_UNPAID_STATUSES`) se VE, aquí, en la hoja
+    de Drive y en el Cuadre «Pedido esperando aprobación». Cualquier otro
+    estado que oculta (cancelado, fallido, papelera…) lo sigue ocultando como a
+    todos, y la anulación en BoHub va aparte (`seguimiento_visibility`)."""
+    oculto, motivo, reembolsado = visibility_for_status(order.woo_status)
+    if (
+        oculto
+        and motivo in woo.WEB_UNPAID_STATUSES
+        and getattr(order, "manual_web_import_at", None) is not None
+    ):
+        return False, None, False
+    return oculto, motivo, reembolsado
 
 
 def seguimiento_visibility(order: Order) -> tuple[bool, str | None, bool]:
@@ -724,7 +739,10 @@ def seguimiento_visibility(order: Order) -> tuple[bool, str | None, bool]:
       es el estado (`processing` en adelante), no que alguien lo apruebe.
     - La puerta de estado NO se le aplica a un pedido MANUAL: no tiene
       `woo_status`, y su regla sigue siendo `is_approved` (un manual aprobado
-      se ve aunque no haya pagado)."""
+      se ve aunque no haya pagado).
+
+    Un web TRAÍDO A MANO en `on-hold` / `pending` no queda oculto por estado
+    (`woo_status_visibility`); anulado, se oculta como cualquiera."""
     from app.erp.workflow import is_approved, is_web_order  # noqa: PLC0415
 
     web = is_web_order(order)
@@ -1215,8 +1233,9 @@ def build_rows(
         estado = _estado(o)
         # Regla de vivos: anulado, manual sin aprobar y web que la tienda no ha
         # llegado a procesar (pending/on-hold/cancelled/failed/draft) quedan
-        # FUERA; el web `refunded` se queda, marcado «Reembolsado». Independiente
-        # de la exclusión manual de F6-fix7.
+        # FUERA; el web `refunded` se queda, marcado «Reembolsado», y el traído a
+        # mano se ve aunque la tienda aún no lo haya cobrado. Independiente de la
+        # exclusión manual de F6-fix7.
         oculto_estado, estado_woo_motivo, reembolsado = seguimiento_visibility(o)
         # «Forzar en seguimiento»: decisión explícita de ver igualmente uno de
         # los ocultos por estado. Sigue marcado como oculto (para poder

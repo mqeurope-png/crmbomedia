@@ -37,9 +37,9 @@ Tres piezas, las tres sobre el mismo núcleo (`backend/app/integrations/woocomme
   `import_order_from_event` → `import_woo_order`, el punto único de ingesta
   del webhook. Empresa, líneas, método de pago, corte externo y Cola SAT
   quedan como si hubiera llegado el webhook. Un pedido que ya está en BoHub
-  **no se pasa al importador**: ni se refresca ni se pisa. Justo antes de
-  importar cada uno se vuelve a mirar (por si entró un webhook mientras tanto:
-  queda `ya_estaba`).
+  **no se pasa al importador**: ni se refresca ni se pisa (salvo un traído a
+  mano aún sin cobrar, abajo). Justo antes de importar cada uno se vuelve a
+  mirar (por si entró un webhook mientras tanto: queda `ya_estaba`).
 - **Una importación por tienda a la vez.** «Poner al día…» (worker-factusol) y
   el repaso (worker-web) cogen un cerrojo en Redis por tienda
   (`woocommerce:missing:lock:{tienda}`); si está cogido, esa tienda se salta
@@ -56,6 +56,31 @@ Tres piezas, las tres sobre el mismo núcleo (`backend/app/integrations/woocomme
   vista previa, son de «Poner al día…»); si hubo pasadas pero ninguna
   completa, los N días.
 
+## Pedidos traídos a mano
+
+Un pedido `on-hold` traído a mano desde ERP · Pedidos
+([pedidos-web-en-espera.md](pedidos-web-en-espera.md)) ya está en BoHub con el
+pago «pendiente». Si la tienda lo cobra **sin** disparar el webhook (el caso
+TSM de arriba), el repaso lo ve en el listado de pagados y, en vez de
+saltárselo como «ya está», lo **refresca** por el mismo camino del webhook
+(`get_order` fresco + `import_order_from_event` → `import_woo_order` →
+`_refresh_existing`): pago `pending → paid`, `woo_status` al día y, si sigue sin
+aprobar, a la Cola SAT. Sin copiar lógica del importador y sin crear otro.
+
+- **Cuáles.** Los que BoHub tiene por (WooCommerce, id de Woo, esta tienda) con
+  `manual_web_import_at` puesto y `payment_status = pending`, y que la tienda
+  tiene `processing` o `completed` (`TRAIDOS_COBRADOS`; un `refunded` no: lo
+  trae el webhook). Los demás que ya están se siguen saltando.
+- **No «faltan».** Van aparte, en `traidos`: no cuentan en `faltan` ni los avisa
+  el Cuadre.
+- **Las mismas reglas.** Gracia de 5 min, cerrojo por tienda, tope por pasada
+  (comparten las 50) y comprobación justo antes (`ya_estaba` si el webhook ya lo
+  puso al día). Uno que falla cuenta como fallido: la marca del repaso no
+  avanza y el siguiente lo reintenta.
+- **Rastro.** La fila de `sync_logs` suma los refrescados en
+  `records_processed`, los nombra en el mensaje («traídos a mano con el cobro
+  al día N») y guarda `refrescados` / `numeros_refrescados` en sus metadatos.
+
 ## Configuración ERP → «Pedidos web pagados que no llegan»
 
 Blob `factusol_series_json`:
@@ -71,10 +96,13 @@ Blob `factusol_series_json`:
 `run_woo_reconcile` devuelve el resumen de siempre más:
 
 - `refreshed_total`: pedidos conocidos puestos al día;
-- `missing`: `{dias, faltan, importados, items, errores, con_tope, woo_calls}`.
-  Cada item lleva tienda, número, cliente, importe, moneda, fecha de pago,
-  enlace a la tienda y `resultado` (`a_importar` en vista previa; `importado`,
-  `error` o `sin_importar` al aplicar), y si se importó, `order_number`.
+- `missing`: `{dias, faltan, importados, items, traidos, refrescados, errores,
+  con_tope, woo_calls}`. Cada item lleva tienda, número, cliente, importe,
+  moneda, fecha de pago, enlace a la tienda y `resultado` (`a_importar` en
+  vista previa; `importado`, `error` o `sin_importar` al aplicar), y si se
+  importó, `order_number`. Los de `traidos` tienen la misma forma con
+  `resultado` `a_refrescar` (vista previa), `refrescado` (con `order_id`,
+  `order_number` y `pagado`), `error`, `sin_refrescar` (tope) o `ya_estaba`.
 
 Si la búsqueda de lo que falta revienta, la puesta al día de estados se
 conserva y `missing` trae `error`.
@@ -82,4 +110,5 @@ conserva y `missing` trae `error`.
 ## Tests
 
 `backend/tests/test_erp_woo_pagados_que_faltan.py` (la tienda es un doble;
-nunca se llama a una real).
+nunca se llama a una real). El refresco de los traídos a mano, en
+`backend/tests/test_erp_pedido_traido_a_mano_normal.py`.

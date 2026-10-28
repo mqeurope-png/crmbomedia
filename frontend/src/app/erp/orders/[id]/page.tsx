@@ -39,7 +39,9 @@ import { WorkflowProgress, WorkflowSteps } from "../../../components/erp/flow/Wo
 import { isSampleOrder } from "../../../components/erp/OrderStatusGrid";
 import { getCurrentUser, type User } from "../../../lib/api";
 import { Cap, can } from "../../../lib/capabilities";
+import { parseBackendDate } from "../../../lib/dates";
 import { extractErrorMessage } from "../../../lib/errors";
+import type { TraidoAMano } from "../../../lib/pedidosWebApi";
 import { usePersistentState } from "../../../lib/usePersistentState";
 import {
   approveOrder,
@@ -1150,6 +1152,9 @@ function ErpOrderDetailScreen() {
           {order.externally_processed_note ? ` — ${order.externally_processed_note}` : ""}
         </p>
       ) : null}
+      {order.traido_a_mano ? (
+        <TraidoAManoAviso traido={order.traido_a_mano} pagado={order.payment_status === "paid"} />
+      ) : null}
       {order.blockers.length > 0 ? (
         <ul className="erp-blockers" aria-label="Bloqueos del pedido">
           {order.blockers.map((b) => (
@@ -1753,6 +1758,61 @@ function ErpOrderDetailScreen() {
         />
       ) : null}
     </main>
+  );
+}
+
+/** Veredicto de FACTUSOL al traer un pedido web a mano: etiqueta y tono. */
+const FACTUSOL_TRAIDO: Record<string, { label: string; tono: "ok" | "warn" | "n" }> = {
+  enlazado: { label: "enlazado", tono: "ok" },
+  posible: { label: "posible, revisar", tono: "warn" },
+  dudoso: { label: "dudoso, revisar", tono: "warn" },
+  no_encontrado: { label: "aún no está", tono: "n" },
+  sin_factusol: { label: "sin comprobar", tono: "n" },
+};
+
+/** DD/MM/AAAA en la hora local (el `at` llega en UTC). */
+function fechaLocalDMY(iso: string): string {
+  const d = parseBackendDate(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit", year: "numeric" });
+}
+
+/** Pedido web traído a mano desde ERP · Pedidos («en espera» en la tienda):
+ *  quién y cuándo, «aún sin cobrar en la tienda» mientras no esté pagado, lo
+ *  que se encontró en FACTUSOL al traerlo (solo LECTURA: allí no se crea
+ *  nada) y, si al cobrarse la web ya no coincidía, qué cambió. Informa, no
+ *  bloquea: es un pedido normal. */
+function TraidoAManoAviso({ traido, pagado }: { traido: TraidoAMano; pagado: boolean }) {
+  const fs = traido.factusol;
+  const veredicto = fs ? (FACTUSOL_TRAIDO[fs.codigo] ?? { label: fs.codigo, tono: "n" as const }) : null;
+  const diferencias = traido.diferencias ?? [];
+  return (
+    <div className="pedido-traido-a-mano" role="note" aria-label="Traído a mano de la web">
+      <p>
+        Traído a mano de la web el {fechaLocalDMY(traido.at)}
+        {traido.por ? ` por ${traido.por}` : ""}
+        {pagado ? "." : (
+          <>: <span className="pedido-traido-sin-cobrar">aún sin cobrar en la tienda</span></>
+        )}
+      </p>
+      {fs && veredicto ? (
+        <p>
+          <span className={`pedido-traido-fs is-${veredicto.tono}`}>FACTUSOL: {veredicto.label}</span>
+          {fs.mensaje}
+        </p>
+      ) : null}
+      {diferencias.length > 0 ? (
+        <>
+          <p>
+            Al cobrarse, el pedido de la web ya no coincide con el traído (aquí no se ha
+            cambiado nada; revísalo):
+          </p>
+          <ul className="pedido-traido-diferencias" aria-label="Diferencias con la web">
+            {diferencias.map((d) => <li key={d}>{d}</li>)}
+          </ul>
+        </>
+      ) : null}
+    </div>
   );
 }
 
