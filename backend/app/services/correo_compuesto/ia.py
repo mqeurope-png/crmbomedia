@@ -5,7 +5,10 @@
   pedido sale el martes») o no lo dice (entonces elige la IA, por defecto
   normal). El interruptor de la franja manda sobre todo esto.
 - `Referencias`: lo que la IA puede nombrar, siempre por referencia: los
-  productos del CATÁLOGO (`P1`, `C1`), los ENLACES (`L1`), los vídeos (`V1`:
+  productos del CATÁLOGO (`P1`, `C1`), los productos de nuestras webs que el
+  catálogo no tiene (`W1`: la pieza de «Nuestras webs» de tipo producto, con
+  su ficha montada desde el índice; si es la misma página que una del
+  catálogo, va la del catálogo), los ENLACES (`L1`), los vídeos (`V1`:
   los de YouTube o Vimeo que salen en el hilo o en la instrucción, y los de la
   tabla de vídeos que van con las máquinas del correo), las imágenes de las
   webs para el hero y las muestras (`I1`, del índice de imágenes) y la web de
@@ -141,6 +144,32 @@ def _video_ref(valor: Any) -> dict[str, str] | None:
     return {**video, "url": videos_mod.url_de(video), **extra}
 
 
+_IMPORTE_RE = re.compile(r"\d{1,3}(?:[.\s]\d{3})+(?:,\d{1,2})?|\d+(?:[.,]\d{1,2})?")
+
+
+def importes_de(texto: str | None) -> set[str]:
+    """Los importes de un texto, normalizados («14.900,00 €» → «14900»)."""
+    salida: set[str] = set()
+    for m in _IMPORTE_RE.finditer(texto or ""):
+        crudo = m.group(0)
+        if re.fullmatch(r"\d{1,3}(?:[.\s]\d{3})+(?:,\d{1,2})?", crudo):
+            crudo = re.sub(r"[.\s]", "", crudo)
+        try:
+            valor = float(crudo.replace(",", "."))
+        except ValueError:
+            continue
+        salida.add(str(int(valor)) if valor == int(valor) else f"{valor:.2f}")
+    return salida
+
+
+def _pagina(url: str | None) -> str:
+    """Host y ruta de una página, sin `www.`, idioma ni barra final: la misma
+    ficha en el catálogo y en el índice."""
+    from app.services.webs import fichas as fichas_web  # noqa: PLC0415
+
+    return fichas_web.pagina(url)
+
+
 @dataclass
 class Referencias:
     """Lo que la IA puede nombrar en un correo compuesto, por referencia."""
@@ -151,6 +180,11 @@ class Referencias:
     videos: dict[str, dict[str, str]] = field(default_factory=dict)      # V1 → vídeo
     marcas: dict[str, dict[str, Any]] = field(default_factory=dict)      # clave → marca
     imagenes: dict[str, dict[str, Any]] = field(default_factory=dict)    # I1 → imagen
+    #: Fichas de la web que son la misma página que una del catálogo: W2 → P1.
+    equivalentes: dict[str, str] = field(default_factory=dict)
+    #: Los importes que ha escrito quien envía en sus instrucciones: los únicos
+    #: que valen como precio de una ficha de la web (nunca uno deducido).
+    importes_usuario: set[str] = field(default_factory=set)
 
     @classmethod
     def desde(cls, *, maquinas: list[dict[str, Any]], consumibles: list[dict[str, Any]],
@@ -304,9 +338,29 @@ class Referencias:
 
     def ref_de_producto(self, clave: dict[str, str]) -> str | None:
         for ref, c in self.productos.items():
-            if c == clave:
+            if (c.get("fuente"), c.get("origen_id")) == (clave.get("fuente"),
+                                                         clave.get("origen_id")):
                 return ref
         return None
+
+    def anadir_producto_web(self, ref: str, clave: dict[str, str], url: str | None) -> None:
+        """Una pieza de «Nuestras webs» de tipo producto, como ficha (`W#`). Si
+        su página es la de un producto del catálogo, manda el del catálogo."""
+        self.productos[ref] = {"fuente": clave["fuente"], "origen_id": clave["origen_id"]}
+        if bq.url_valida(url):
+            self.enlaces_producto[ref] = str(url)
+            propia = _pagina(url)
+            for otra, enlace in self.enlaces_producto.items():
+                if otra != ref and otra[:1] in ("P", "C") and propia and _pagina(enlace) == propia:
+                    self.equivalentes[ref] = otra
+                    break
+
+    def precio_permitido(self, precio: str) -> bool:
+        """¿El precio que la IA pone a una ficha de la web sale de lo que ha
+        escrito quien envía? Todos sus importes (de 100 en adelante) tienen que
+        estar en sus instrucciones."""
+        importes = [n for n in importes_de(precio) if float(n) >= 100]
+        return bool(importes) and all(n in self.importes_usuario for n in importes)
 
 
 @dataclass
@@ -385,12 +439,37 @@ class _Conversor:
         return botones
 
     def _producto(self, ref: Any) -> dict[str, str] | None:
+        extra = ref if isinstance(ref, dict) else {}
+        if extra:
+            ref = extra.get("ref") or extra.get("producto") or extra.get("id")
         r = str(ref or "").strip()
+        if r in self.refs.equivalentes:
+            otra = self.refs.equivalentes[r]
+            self.avisos.append(f"La ficha de la web «{r}» es el mismo producto que «{otra}» del "
+                               "catálogo: va la del catálogo, con su precio de venta.")
+            r = otra
         clave = self.refs.productos.get(r) or self.productos_conocidos.get(r)
         if clave is None:
             self.avisos.append(f"La IA nombró un producto que no está en el catálogo («{ref}»): "
                                "no sale.")
-        return clave
+            return None
+        clave = dict(clave)
+        precio = " ".join(str(extra.get("precio") or "").split())
+        if clave.get("fuente") == bq.FUENTE_WEB:
+            if precio:
+                if self.refs.precio_permitido(precio):
+                    clave["precio"] = precio
+                else:
+                    clave.pop("precio", None)
+                    self.avisos.append(
+                        f"La IA puso a la ficha «{r}» un precio («{precio}») que no sale de tus "
+                        "instrucciones: no se usa (va el de la web, o «precio a consultar»).")
+            if extra.get("imagen"):
+                clave["imagen"] = str(extra["imagen"])
+        elif precio:
+            self.avisos.append(f"La IA quiso cambiar el precio de «{r}», del catálogo: el precio "
+                               "de una ficha del catálogo sale del catálogo y no se cambia.")
+        return bq.clave_producto(clave)
 
     def _enlace_texto(self, destino: str) -> str | None:
         url = self._url(destino)
@@ -611,6 +690,15 @@ def html_a_markdown(html: str, refs: Referencias) -> str:
     return s.strip()
 
 
+def _producto_para_ia(p: dict[str, str], refs: Referencias) -> Any:
+    """Un producto de un bloque como lo ve la IA: su referencia; una ficha de
+    la web con el precio que indicó quien envía (o con otra imagen), con ellos,
+    para que una corrección no los pierda."""
+    ref = refs.ref_de_producto(p) or f"?{p['origen_id']}"
+    extra = {k: p[k] for k in ("precio", "imagen") if p.get(k)}
+    return {"ref": ref, **extra} if extra else ref
+
+
 def bloque_para_ia(b: dict[str, Any], refs: Referencias) -> dict[str, Any]:
     """Un bloque guardado en el formato con el que lo ve (y lo devuelve) la IA."""
     salida: dict[str, Any] = {"id": b["id"], "tipo": b["tipo"]}
@@ -618,10 +706,9 @@ def bloque_para_ia(b: dict[str, Any], refs: Referencias) -> dict[str, Any]:
     if tipo == bq.TIPO_TEXTO:
         salida["texto"] = html_a_markdown(b.get("html") or "", refs)
     elif tipo == bq.TIPO_PRODUCTO:
-        salida["producto"] = refs.ref_de_producto(b["producto"]) or f"?{b['producto']['origen_id']}"
+        salida["producto"] = _producto_para_ia(b["producto"], refs)
     elif tipo == bq.TIPO_PRODUCTOS_FILA:
-        salida["productos"] = [refs.ref_de_producto(p) or f"?{p['origen_id']}"
-                               for p in b.get("productos") or []]
+        salida["productos"] = [_producto_para_ia(p, refs) for p in b.get("productos") or []]
     elif tipo == bq.TIPO_VIDEO:
         video = videos_mod.identidad(b.get("video"))
         salida["video"] = (refs.ref_de_video(video) or videos_mod.url_de(video)) if video else ""

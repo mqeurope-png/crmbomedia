@@ -69,6 +69,8 @@ class Fragmento:
     precio_web_texto: str | None = None
     precio_iva: str | None = None
     moneda: str | None = None
+    #: Id de WordPress: con el sitio, la clave de su ficha (`webs.fichas`).
+    wp_id: int | None = None
 
 
 def palabras_de(consulta: str | None) -> list[str]:
@@ -100,6 +102,7 @@ def fragmento_de(fila: WebIndiceEntrada, palabras: list[str], *, max_chars: int)
         categorias=_lista(fila.categorias_json),
         precio_web=float(fila.precio_web) if fila.precio_web is not None else None,
         precio_web_texto=fila.precio_web_texto, precio_iva=fila.precio_iva, moneda=fila.moneda,
+        wp_id=fila.wp_id,
     )
 
 

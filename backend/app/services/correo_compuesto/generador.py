@@ -244,16 +244,35 @@ class _Render:
     def _producto(self, ref: dict[str, str]) -> dict[str, Any] | None:
         p = self.datos.productos.get(bq.clave_de(ref))
         if p is None:
+            donde = ("el índice de las webs" if ref.get("fuente") == bq.FUENTE_WEB
+                     else "el catálogo")
             self.avisos.append(
-                f"El producto «{ref['origen_id']}» ya no está en el catálogo: "
-                "no sale en el correo.")
+                f"El producto «{ref['origen_id']}» ya no está en {donde}: no sale en el correo.")
+            return None
+        if p.get("fuente") != bq.FUENTE_WEB:
+            return p
+        # Una ficha de la web: el precio que indicó quien envía y otra imagen
+        # de su galería, si los lleva la estructura.
+        if ref.get("precio"):
+            p = {**p, "precio_texto": ref["precio"], "precio_publico": True,
+                 "precio_consultar": False, "precio_origen": "usuario", "precio_iva": None}
+        imagen = ref.get("imagen")
+        if imagen and imagen in [p.get("imagen"), *(p.get("galeria") or [])]:
+            p = {**p, "imagen": imagen}
         return p
 
     def _sufijo_iva(self, precio: str, fuente: str) -> str:
         if _IVA_EN_PRECIO_RE.search(precio):
             return ""
-        iva = self.datos.iva_por_fuente.get(fuente)
+        iva = self._iva(fuente)
         return self.t("iva_sin") if iva == "sin" else self.t("iva_con") if iva == "con" else ""
+
+    def _iva(self, fuente: str) -> str | None:
+        """`con`/`sin`/None: el del catálogo para su fuente; en una ficha de la
+        web (`web:sin_iva`…), lo que dice la web de ese precio."""
+        if fuente.startswith(f"{bq.FUENTE_WEB}:"):
+            return {"sin_iva": "sin", "con_iva": "con"}.get(fuente.split(":", 1)[1])
+        return self.datos.iva_por_fuente.get(fuente)
 
     # -- la ficha de producto --------------------------------------------------------------
 
@@ -347,6 +366,10 @@ class _Render:
         if precio:
             self.precios.append(precio)
             fuente = str(p.get("fuente") or "")
+            if fuente == bq.FUENTE_WEB:
+                # El IVA de una ficha de la web es el de su precio (el que dice
+                # la web, o ninguno si lo indicó quien envía).
+                fuente = f"{bq.FUENTE_WEB}:{p.get('precio_iva') or 'desconocido'}"
             if fuente not in self.fuentes_con_precio:
                 self.fuentes_con_precio.append(fuente)
             sufijo = self._sufijo_iva(precio, fuente)
@@ -367,6 +390,11 @@ class _Render:
                                                       "text-align:center;line-height:1.4;"))
             texto.append(" ".join(t for t in (precio, sufijo) if t)
                          + (f" ({' '.join(notas)})" if notas else ""))
+        elif p.get("precio_consultar"):
+            # Una ficha de la web sin precio en la web: «precio a consultar».
+            consultar = self.t("precio_consultar")
+            cuerpo.append(_p(_e(consultar), estilo_precio))
+            texto.append(consultar)
         elif p.get("precio_publico") is False:
             # Sin importe: «a medida» en el sitio del precio, sin el IVA.
             a_medida = self.t("precio_a_medida")
@@ -782,7 +810,7 @@ class _Render:
         avisos = self.datos.avisos
         frases: list[str] = []
         for fuente in self.fuentes_con_precio:
-            iva = self.datos.iva_por_fuente.get(fuente)
+            iva = self._iva(fuente)
             frase = avisos.get(iva if iva in ("con", "sin") else "sin_declarar")
             if frase and frase not in frases:
                 frases.append(frase)

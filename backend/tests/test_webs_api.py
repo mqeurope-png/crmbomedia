@@ -171,7 +171,7 @@ def test_el_fragmento_es_el_parrafo_que_importa_recortado_y_con_su_url(
         "fragmento": beambox["fragmento"], "imagen": "https://fluxlasers.eu/a.jpg",
         "galeria": ["https://fluxlasers.eu/b.jpg"], "categorias": ["Cortadoras Láser"],
         "precio_web": 3049.59, "precio_web_texto": "3,049.59€ (+ IVA)",
-        "precio_iva": "sin_iva", "moneda": "EUR",
+        "precio_iva": "sin_iva", "moneda": "EUR", "wp_id": 3949,
     }
 
 

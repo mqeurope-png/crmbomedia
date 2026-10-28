@@ -163,6 +163,7 @@ def comprobacion(
 def registro() -> dict[str, Comprobacion]:
     """El registro completo (importa los módulos de comprobaciones)."""
     from app.erp.cuadre import (  # noqa: F401, PLC0415
+        checks_catalogo,
         checks_colas,
         checks_factusol,
         checks_mysql,

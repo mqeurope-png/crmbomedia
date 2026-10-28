@@ -1,7 +1,8 @@
 """Los datos de un correo compuesto, leídos de la fila viva del catálogo.
 
 Lo único que va a la base de datos: los productos que nombra la estructura
-(en el idioma del correo), las marcas (logo, color, web por idioma), los
+(en el idioma del correo; los del catálogo de `kb_catalogo` y las fichas de la
+web de su página del índice, `webs.fichas`), las marcas (logo, color, web por idioma), los
 avisos de IVA, VIES y «no es una factura» con la declaración de IVA de cada
 fuente, los vídeos (de la tabla de vídeos, y si no de su URL) y las imágenes
 del hero y de las muestras (del índice de imágenes de las webs). Con eso
@@ -55,9 +56,14 @@ def resolver(session: Session, estructura: dict[str, Any], *, ahora: datetime | 
     from app.services.conocimiento.config import configuracion  # noqa: PLC0415
 
     cfg = config or configuracion(session)
+    from app.services.webs import fichas as fichas_web  # noqa: PLC0415
+
     idioma = estructura.get("idioma") or bq.IDIOMA_RAIZ
+    claves = bq.productos_de(estructura)
     productos = catalogo.productos_por_clave(
-        session, bq.productos_de(estructura), idioma=idioma, ahora=ahora, config=cfg)
+        session, [c for c in claves if c["fuente"] != bq.FUENTE_WEB], idioma=idioma,
+        ahora=ahora, config=cfg)
+    productos.update(fichas_web.fichas_por_clave(session, claves, idioma=idioma))
     return Datos(
         productos=productos, marcas=marcas(session), avisos=catalogo.avisos_en(idioma),
         iva_por_fuente=dict(cfg.get("iva_por_fuente") or {}),
