@@ -670,21 +670,71 @@ Solo lee: ni el índice ni el catálogo se tocan.
   ninguna (pueden ser potencias distintas con la misma foto). En una web sin
   WPML, otro id con la misma foto es otro producto (la MBO 6090 y su versión
   desktop).
-- **Catálogo antes que índice.** Se mira contra el **catálogo entero del
-  compositor**, no solo contra las máquinas del correo (el CATÁLOGO del prompt
-  es una preselección): `consulta_fuentes._catalogo_por_pagina` y
-  `_del_catalogo`, por la página de la pieza o la de una de sus traducciones
-  (`fichas.pagina`: sitio y ruta sin `www.`, idioma ni barra final). Si es
-  una **máquina del correo**, la pieza dice «En el CATÁLOGO» y no se ofrece
-  como ficha (ya tiene su `P#`). Si es **otro producto del catálogo** (pedido
-  en una corrección, o que sale en la búsqueda), se ofrece con su `W#` y la
-  pieza dice que con él sale la ficha del catálogo: su `W#` lleva al producto
-  del catálogo (`Referencias.anadir_equivalente_catalogo`), con su precio de
-  venta. Si la IA pone igual el `W#` de una máquina del correo, va el `P#`
-  (`Referencias.equivalentes`, con aviso). **La excepción**: una variante que
-  quien envía pide expresamente y solo está en la web («la versión desktop»)
-  es otra página, va marcada «Pedida por quien envía» y gana
-  (`REGLA_FICHAS_WEB`).
+- **El catálogo manda siempre** (28/10/2026, segunda vuelta). El CATÁLOGO
+  del prompt es una preselección por lo que trata el correo: sobre la avería
+  de un Ador 20W llevaba diez FLUX, y la artisJet 6090 Trust que pedía la
+  instrucción (en el catálogo a 20.900 €) salió como ficha del índice, sin
+  precio. Ahora lo que se pide se busca en el **catálogo entero del
+  compositor** antes de montar una ficha del índice (no se carga entero en el
+  prompt: solo lo pedido):
+  - **Por su nombre** (`catalogo.por_nombre`: todas las palabras del nombre
+    pedido, sin las genéricas —UV, LED, impresora…— ni las medidas —60x90,
+    A1—, están en el nombre de la máquina o en su marca, y al menos una del
+    modelo; la que menos palabras añade; si empatan, ninguna). «artisJet 6090
+    Trust» y «la Trust» son la Trust; «MBO 6090 desktop» **no** es la «MBO
+    6090» («desktop» no está en su nombre: es una variante que solo tiene la
+    web), ni «MBO 3050» es la «MBO 3050 Pro» (le falta una palabra de
+    variante: Pro, II, Plus…).
+  - **Por su página** o la de una de sus traducciones
+    (`consulta_fuentes._Catalogo.por_paginas`; `fichas.pagina`: sitio y ruta
+    sin `www.`, idioma ni barra final). La portada y una página de servicio
+    (`/contacto/`) **nunca** identifican una máquina, aunque una ficha del
+    catálogo apunte ahí por error. El **título de una página del índice** solo
+    casa si es exactamente el nombre de la máquina (`exacto`): la página «MBO
+    3050» no es la «MBO 3050 Pro» del catálogo.
+  - Lo que es del catálogo **no es una ficha del índice**: si no es ya una
+    máquina del correo, va a `material.resumen["catalogo_pedidos"]` y el
+    redactor lo trae con su ficha y su precio de venta
+    (`asistente/catalogo_pedido`). En el **primer borrador** entra en su
+    CATÁLOGO, delante (el recorte por tokens quita por detrás), como pedido
+    por la instrucción; además, las máquinas que nombra la instrucción tienen
+    su **propio cupo** en `catalogo.para_asistente` (antes compartían el tope
+    de seis con las del hilo, y seis FLUX lo llenaban). En una **corrección**
+    (el CATÁLOGO es el del primer borrador) va en un bloque de la petición,
+    «CATÁLOGO · AÑADIDO EN ESTA CORRECCIÓN», cada producto con su `P#` (detrás
+    de los que hay), y entra en el CATÁLOGO del turno («Lo que ha usado» lo
+    enseña, sin repetirlo si una corrección posterior lo vuelve a pedir). Lo
+    que ya tiene a la vista no se repite: se mira contra el CATÁLOGO congelado
+    del primer borrador (ya recortado); un producto que ya tenía su `P#` en
+    las referencias (porque el recorte lo quitó, o por la página de una web)
+    vuelve con ese mismo `P#`. Sin plan (la casilla «Webs» desmarcada, o una
+    corrección que no pide un producto), cuenta lo que la instrucción nombra
+    de verdad, y solo si pide poner algo en el correo («incluye», «añádele»,
+    «ponle», «ofrécele», «sustituye… por»…; `consulta_fuentes.pide_incluir`;
+    «dile que la Ador la revisamos» o «quita la Trust» no). «Nombrar de
+    verdad» (`catalogo.nombrados_en`): basta una vez en que el texto la
+    nombre con su nombre entero (si su modelo es solo un código, «MBO 6090»,
+    con la marca delante: «la artisJet 6090 Trust» no nombra la MBO 6090), o
+    con todas las palabras de su modelo que no son códigos («la Trust») si
+    ninguna hermana está nombrada entera («la Ador 20W» no nombra la Ador
+    10W) y no van pegadas al nombre de otra («artisJet Trust 6090 Freebird» es
+    la Trust); y esa vez sin una variante detrás («la MBO 6090 versión
+    desktop», «la MBO 6090 Pro»). Varias hermanas nombradas juntas («la MBO
+    3050 y la MBO 6090») son todas. En el primer borrador, el cupo propio de
+    la instrucción es para estas; las demás menciones de la instrucción
+    entran con el tope de siempre. Las que pide la instrucción van delante
+    del CATÁLOGO: el recorte por tokens quita por el final (y nunca del
+    medio, porque las referencias `P#` se numeran por la posición antes del
+    recorte).
+  - Una pieza de «Nuestras webs» que trae la búsqueda y es un producto del
+    catálogo (por su página o su título): si es una máquina del correo, dice
+    «En el CATÁLOGO» y no se ofrece como ficha; si no, se ofrece con su `W#`,
+    que saca la ficha del catálogo con su precio de venta
+    (`Referencias.anadir_equivalente_catalogo`). Si la IA pone igual el `W#`
+    de una máquina del correo, va el `P#` (`Referencias.equivalentes`, con
+    aviso). **La excepción**: una variante que quien envía pide expresamente y
+    solo está en la web («la versión desktop») es otra máquina, va marcada
+    «Pedida por quien envía» y gana (`REGLA_FICHAS_WEB`).
 - **En las correcciones siguientes**, una ficha de la web que entró en una
   corrección anterior ya no tiene `W#` (la numeración es la del material del
   turno): la IA la ve como `?<origen_id>` y vale para moverla o ponerla en
@@ -700,28 +750,38 @@ Solo lee: ni el índice ni el catálogo se tocan.
   indicado tú, no sale de la web ni del catálogo» y el de idioma si toca. Las
   listas salen con «Webs» marcada o si alguna ficha es del índice; sin
   fichas del índice, el aviso no cambia.
-- **Enlaces del catálogo que no llevan a un producto** (el 28/10, la ficha de
+- **Enlaces del catálogo que no llevan a la máquina** (el 28/10, la ficha de
   la artisJet 3000Pro Freebird apuntaba a `boprint.net/contacto/`): con «Webs»
   marcada **en ese turno** (cada corrección lo vuelve a mirar con sus
-  casillas), el enlace de una ficha del compositor que es de una web **con
-  productos en el índice** y no casa con ninguna página de producto
-  (`MapaProductos.motivo`, por ruta o, si la ruta es de producto —`/producto/`,
-  `/tienda/`…— o es solo el slug —`/<slug>/`—, por slug, con cualquier
-  dominio de la web; una categoría con el mismo slug que un producto no
-  cuenta como el producto) se marca en «Lo
-  que ha usado» (`enlaces_no_producto`, con su `motivo`) y se avisa en el
-  borrador si va en el correo. Se dice **lo que se sabe**: no es una página
-  de producto (`pagina`: una del índice, «Contacto», o una ruta que no es de
-  producto, como una categoría), un producto que el índice da por quitado
-  (`ido`: se quitó de la web o una regla del índice lo deja fuera; no se
-  afirma cuál) o **una ruta de producto que el índice no tiene** (`fuera`,
-  `/producto/…` con la base de los productos de esa web: puede ser un
-  producto recién publicado que el índice, que se lee una vez al mes, aún no
-  tiene; el aviso dice que se reindexe o, si no, que se revise). Una web sin productos en el
-  índice (sin tienda o sin leer) no se juzga. **Nunca se corrige**: se
-  arregla en el compositor. El Cuadre tiene la misma comprobación para el
-  catálogo entero ([erp/cuadre.md](erp/cuadre.md),
-  `enlace_catalogo_no_producto`).
+  casillas). **Vale cualquier página indexada de nuestras webs** (segunda
+  vuelta del 28/10: la Beambox II apunta a `fluxlasers.eu/beambox-ii/`, su
+  página de aterrizaje, indexada como página; que exista además
+  `/producto/beambox-ii-55w/` no la convierte en un error, y avisar de ella y
+  de otras tres FLUX enterraba el aviso bueno). Se avisa solo
+  (`MapaProductos.motivo`, con cualquier dominio, prefijo de idioma o barra
+  final de la web; por la ruta o, si es de producto o es solo el slug, por el
+  slug) cuando el enlace:
+  - va a una **página de servicio** (`servicio`): contacto (también con más
+    palabras: `contacto-mbo-lasers`, `kontakt-mbo-laser`, `contacts`),
+    categoría o etiqueta (`BASES_CATEGORIA`), la portada de la tienda
+    (`/tienda/`), carrito, pago, mi cuenta, buscador (también `/?s=…`,
+    `?add-to-cart=…`), legales… (las que el índice excluye por su
+    slug, `webs.reglas`, más contacto y buscador, que el índice sí lee). Las
+    reglas de slug del índice son para páginas y entradas: una ruta de
+    producto (una máquina «reacondicionada») no es una página de servicio;
+  - es el de una página que el índice **ya no tiene** (`ido`: se quitó de la
+    web o una regla del índice la deja fuera; no se afirma cuál);
+  - **no está en el índice** (`fuera`), ni como producto, ni como página, ni
+    como entrada: puede ser una página nueva que el índice, que se lee una vez
+    al mes, aún no tiene; el aviso dice que se reindexe o, si no, que se
+    revise.
+
+  La portada no se avisa. Lo que no se puede juzgar no se avisa: una web sin
+  nada en el índice, o una ruta de producto de una web sin productos en él.
+  Se marca en «Lo que ha usado» (`enlaces_no_producto`, con su `motivo`) y se
+  avisa en el borrador si va en el correo. **Nunca se corrige**: se arregla en
+  el compositor. El Cuadre tiene la misma regla para el catálogo entero
+  ([erp/cuadre.md](erp/cuadre.md), `enlace_catalogo_no_producto`).
 
 Lo que hace el correo compuesto con la ficha:
 [ai-features.md](ai-features.md) § Correos compuestos.

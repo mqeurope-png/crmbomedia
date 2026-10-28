@@ -218,7 +218,18 @@ prueba «acuserecibo test» (Metallplatten y T-Shirts) se quedaba sin las DTF.
 2. **Lo que pide la instrucción de quien envía**: una máquina concreta, o un
    interés por sus palabras («las máquinas de DTF» → `dtf`; «una láser para
    cortar» → `corte_laser`, `grabado_laser`; «UV grande» → `uv_grande`; «UV» a
-   secas → los tres tamaños; `catalogo.intereses_de_texto`). Eso manda.
+   secas → los tres tamaños; `catalogo.intereses_de_texto`). Eso manda: las
+   máquinas que la instrucción **nombra de verdad** (`catalogo.nombrados_en`:
+   no por un código que comparten, ni con una variante detrás) tienen su
+   propio cupo (hasta seis más), y entran aunque el hilo haya llenado el tope
+   (28/10/2026: seis FLUX de una avería dejaban fuera la artisJet 6090 Trust
+   que pedía la instrucción, y su ficha salía de la web, sin precio). Las que
+   pide la instrucción van delante de la lista: el recorte por tokens quita
+   por el final, y así las deja para lo último. Lo que se pide por
+   su nombre o por su enlace y no ha entrado aquí, se busca después en el
+   catálogo entero (`catalogo.por_nombre`; ver
+   [fuentes-externas.md](fuentes-externas.md) § Fichas montadas desde el
+   índice): el catálogo manda siempre.
 3. **Los consumibles de la máquina que ya tiene** (lo que dicen sus pedidos,
    casado por palabras contra nombre, categoría y marca de los productos de las
    tiendas), en su lista aparte.
@@ -240,7 +251,10 @@ prueba «acuserecibo test» (Metallplatten y T-Shirts) se quedaba sin las DTF.
 instrucción o clasificado— no tiene ninguna máquina por el mapa interés →
 máquinas, no porque las plazas ya estén llenas con lo que nombra el hilo. El
 bloque CATÁLOGO dice además que es una preselección y no el catálogo entero: si
-el cliente pide algo que no está, la IA no dice que no lo tenemos.
+el cliente pide algo que no está, la IA no dice que no lo tenemos. Lo que pide
+quien envía sí se busca en el catálogo entero, en el primer borrador y en las
+correcciones (`asistente/catalogo_pedido`): no se carga entero en el prompt,
+solo lo pedido, con su ficha y su precio de venta.
 
 ### Las palabras por interés (`catalogo.PALABRAS_DE_PARTIDA`)
 

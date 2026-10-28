@@ -99,6 +99,15 @@ class Mensaje:
         }
 
 
+
+#: Lo que se apunta de cada máquina del CATÁLOGO del correo (`contexto_json`).
+CAMPOS_MAQUINA = ("nombre", "marca", "precio_texto", "moneda", "precio_idioma", "orientativo",
+                  "enlace", "interes", "eleccion", "precio_publico", "fuente", "origen_id")
+
+
+def resumen_maquina(p: dict[str, Any]) -> dict[str, Any]:
+    return {k: p.get(k) for k in CAMPOS_MAQUINA}
+
 @dataclass
 class Contexto:
     #: None en un correo nuevo, sin hilo.
@@ -229,12 +238,7 @@ class Contexto:
             # None cuando el catálogo no respondió (la franja lo distingue de
             # «sin productos para este caso»).
             "catalogo": None if self.catalogo is None else {
-                "maquinas": [
-                    {k: p.get(k) for k in ("nombre", "marca", "precio_texto", "moneda",
-                                           "precio_idioma", "orientativo", "enlace", "interes",
-                                           "eleccion", "precio_publico")}
-                    for p in self.catalogo.get("maquinas") or []
-                ],
+                "maquinas": [resumen_maquina(p) for p in self.catalogo.get("maquinas") or []],
                 "consumibles": [
                     {k: p.get(k) for k in ("nombre", "marca", "precio_texto", "moneda",
                                            "precio_idioma", "orientativo", "enlace", "sitio")}

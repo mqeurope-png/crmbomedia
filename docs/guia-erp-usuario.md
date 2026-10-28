@@ -1803,7 +1803,10 @@ lo que va a pasar. Secciones destacadas:
   enlace.
 
   Si el producto está en el catálogo, va **la ficha del catálogo**, con su
-  precio de venta, aunque no fuera de las máquinas del primer borrador. Si pides una versión que solo está en la web («la versión
+  precio de venta, **aunque no tenga nada que ver con el hilo**: contestando
+  la avería de una FLUX puedes pedir «incluye la ficha de la artisJet 6090
+  Trust» y sale del catálogo con su precio, en el primer borrador o en una
+  corrección. «Lo que ha usado» la enseña entre los productos del catálogo. Si pides una versión que solo está en la web («la versión
   desktop»), va la de la web. En un correo de texto, la IA enlaza la página
   y, si da el precio, dice que es el de la web.
 
@@ -1850,15 +1853,20 @@ lo que va a pasar. Secciones destacadas:
   la de contacto), también; un enlace que pegas solo para ponerlo en el texto
   no se avisa.
 
-  **Enlaces del catálogo que no llevan a un producto.** Con «Webs» marcada,
-  si una ficha del catálogo tiene un enlace que no lleva a la página de su
-  producto (por ejemplo, a la de contacto, o a un producto que el índice de
-  las webs ya no tiene), «Lo que ha usado» lo marca y el aviso dice «revísalo en el
-  compositor». Si el enlace es el de una página de producto que el índice de
-  las webs no tiene, puede ser un producto que se acaba de publicar: el aviso
-  te dice que reindexes o, si no es eso, que lo revises. BoHub no lo cambia: el catálogo se arregla en el
-  compositor. El Cuadre lo vigila para todo el catálogo («Fichas del catálogo
-  cuyo enlace no lleva a un producto»).
+  **Enlaces del catálogo que no llevan a la máquina.** Con «Webs» marcada,
+  cualquier página de nuestras webs que esté en el índice vale como enlace de
+  una ficha: la de tienda o una de aterrizaje (la Beambox II apunta a
+  `fluxlasers.eu/beambox-ii/` y está bien). «Lo que ha usado» marca, y el
+  aviso dice «revísalo en el compositor», solo el enlace que:
+  - va a una **página de servicio**: contacto, una categoría, el carrito, el
+    pago, mi cuenta, el buscador, las legales…;
+  - es el de una página que el índice **ya no tiene**;
+  - **no está en el índice** de la web: puede ser una página que se acaba de
+    publicar (reindexa) o un enlace mal puesto.
+
+  BoHub no lo cambia: el catálogo se arregla en el compositor. El Cuadre lo
+  vigila para todo el catálogo («Fichas del catálogo cuyo enlace no lleva a un
+  producto»), con la misma regla.
 - **«Series FACTUSOL»** — la **serie** es la empresa que emite la factura. Fijas
   la **serie por defecto** y la que usa cada origen de pedido. Las series
   disponibles son **1 · Bomedia**, **2 · MQ Europe**, **4 · Lambert** y **5 ·

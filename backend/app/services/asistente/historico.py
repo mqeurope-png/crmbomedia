@@ -387,6 +387,9 @@ def ajustar_al_presupuesto(
             quitado = ctx.catalogo["consumibles"].pop()
             ctx.recortes.append(f"catálogo: consumible «{quitado.get('nombre')}»")
         elif len((getattr(ctx, "catalogo", None) or {}).get("maquinas") or []) > 2:
+            # Siempre la última: las referencias (`P#`) se numeran por la
+            # posición antes del recorte, y lo que queda no puede moverse. Lo
+            # que pide la instrucción va delante (`catalogo.para_asistente`).
             quitado = ctx.catalogo["maquinas"].pop()
             ctx.recortes.append(f"catálogo: máquina «{quitado.get('nombre')}»")
         else:

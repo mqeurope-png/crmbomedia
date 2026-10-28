@@ -20,9 +20,10 @@ igual, con una ficha montada desde su fila del índice:
 - **Imagen**: la principal de la web, enlazada (no se sube a ningún sitio);
   la galería va aparte por si se quiere otra.
 
-Y la comprobación inversa: un enlace del catálogo que, siendo de una web
-indexada, no es una página de producto del índice (el 28/10, la ficha de la
-artisJet 3000Pro Freebird apuntaba a `boprint.net/contacto/`).
+Y la comprobación inversa (`MapaProductos.motivo`): un enlace del catálogo que
+va a una página de servicio (el 28/10, la ficha de la artisJet 3000Pro
+Freebird apuntaba a `boprint.net/contacto/`) o que no está en el índice.
+Cualquier página indexada de la web vale, también una de aterrizaje.
 
 Solo lee: ni el índice ni el catálogo se tocan desde aquí.
 """
@@ -32,7 +33,7 @@ import json
 import re
 from decimal import Decimal
 from typing import Any
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, defer
@@ -328,14 +329,37 @@ def fichas_por_clave(session: Session, claves: list[dict[str, Any]], *,
 BASES_PRODUCTO = frozenset({"product", "producto", "produkt", "produit", "prodotto", "products",
                             "productos", "produkte", "produits", "shop", "tienda", "boutique",
                             "winkel", "negozio"})
-#: Por qué el enlace de una ficha del catálogo no es un producto del índice:
-#: no es una página de producto (una página, una entrada o una categoría, del
-#: índice o no: «/contacto/»); es un producto que el índice da por quitado de
-#: la web; o tiene ruta de producto («/producto/…») y no está en el índice
-#: (puede ser un producto recién publicado que aún no se ha leído).
-MOTIVO_PAGINA = "pagina"
+#: Por qué hay que avisar del enlace de una ficha del catálogo (desde el
+#: 28/10/2026, segunda vuelta: vale CUALQUIER página indexada de nuestras webs,
+#: también una página de aterrizaje como `fluxlasers.eu/beambox-ii/`):
+#: - `servicio`: una página de servicio (contacto, categoría, carrito, pago,
+#:   mi cuenta, buscador, legales…): no lleva a la máquina;
+#: - `ido`: el índice ya no la tiene (se quitó de la web, o una regla del
+#:   índice la deja fuera);
+#: - `fuera`: no está en el índice, ni como producto, ni como página, ni como
+#:   entrada (o es nueva y aún no se ha leído).
+MOTIVO_SERVICIO = "servicio"
 MOTIVO_IDO = "ido"
 MOTIVO_FUERA = "fuera"
+#: Las páginas de servicio que el índice SÍ lee (las demás, carrito, pago, mi
+#: cuenta, legales…, las excluye por su slug: `webs.reglas`): las de contacto,
+#: también con más palabras («contacto-mbo-lasers», «kontakt-mbo-laser»), y el
+#: buscador.
+_SERVICIO_RE = re.compile(
+    r"(^|-)(contact|contacts|contacto|contactos|contacta|contactanos|contactenos|contactar"
+    r"|contacter|contactez|contacteer|kontakt|kontaktieren|kontaktformular|contatto|contatti"
+    r"|contattaci)(-|$)"
+    r"|^(nous-contacter|neem-contact-op|buscador|buscar|busqueda|search|suche|recherche"
+    r"|zoeken|cerca)$", re.IGNORECASE)
+#: La consulta de una búsqueda o de la cesta de WordPress (`/?s=…`,
+#: `?add-to-cart=…`): tampoco lleva a la máquina.
+_CONSULTA_SERVICIO = frozenset({"s", "add-to-cart", "post_type"})
+#: Las bases de las categorías y etiquetas (de la tienda o del blog).
+BASES_CATEGORIA = frozenset({
+    "categoria-producto", "product-category", "produkt-kategorie", "categorie-produit",
+    "categoria-prodotto", "productcategorie", "product-categorie", "categoria", "categorias",
+    "category", "categories", "categorie", "kategorie", "etiqueta-producto", "product-tag",
+    "produkt-schlagwort", "tag", "etiqueta", "schlagwort"})
 
 
 class MapaProductos:
@@ -371,16 +395,21 @@ class MapaProductos:
                 self._por_slug.setdefault((f.sitio, unquote(slug)), f)
         self._otras: dict[tuple[str, str], str] = {}
         self._idos: set[tuple[str, str]] = set()
-        for sitio, url, titulo, tipo, ido_en in session.execute(select(
+        #: Las webs con algo vivo en el índice (páginas, entradas o productos).
+        self.con_indice: set[str] = set(self.con_productos)
+        for sitio, url, titulo, ido_en in session.execute(select(
                 WebIndiceEntrada.sitio, WebIndiceEntrada.url, WebIndiceEntrada.titulo,
-                WebIndiceEntrada.tipo, WebIndiceEntrada.ido_en).where(
+                WebIndiceEntrada.ido_en).where(
                 (WebIndiceEntrada.tipo != TIPO_PRODUCTO) | WebIndiceEntrada.ido_en.is_not(None),
                 *filtros)):
             ruta = ruta_de(url, self._idiomas.get(sitio, ()))
-            if tipo != TIPO_PRODUCTO and ido_en is None:
+            if ido_en is None:
+                self.con_indice.add(sitio)
                 self._otras.setdefault((sitio, ruta), titulo or "")
-            elif tipo == TIPO_PRODUCTO:
+            else:
                 self._idos.add((sitio, ruta))
+        self._session = session
+        self._slugs_fuera: dict[str, list[re.Pattern[str]]] = {}
 
     def _ruta(self, url: str | None) -> tuple[str, str] | None:
         sitio = sitio_de(url)
@@ -409,17 +438,63 @@ class MapaProductos:
             fila = self._por_slug.get((clave[0], clave[1].rsplit("/", 1)[-1]))
         return fila
 
+    def _de_servicio(self, sitio: str, ruta: str) -> bool:
+        """¿Una página de servicio? Por su slug (contacto, buscador y las que
+        el índice excluye por su slug: carrito, pago, mi cuenta, legales…) o
+        por estar bajo una categoría o una etiqueta."""
+        from app.services.webs import reglas  # noqa: PLC0415
+
+        tramos = [t for t in ruta.strip("/").split("/") if t]
+        if not tramos:
+            return False
+        if set(tramos[:-1]) & BASES_CATEGORIA or tramos[0] in BASES_CATEGORIA:
+            return True
+        if len(tramos) == 1 and tramos[0] in BASES_PRODUCTO | self._bases.get(sitio, set()):
+            return True                 # la portada de la tienda (`/tienda/`): toda la tienda
+        slug = unquote(tramos[-1])
+        if _SERVICIO_RE.search(slug):
+            return True
+        if self._de_producto(sitio, ruta):
+            # Las reglas de slug del índice son para páginas y entradas: una
+            # máquina «reacondicionada» no es una página de condiciones.
+            return False
+        if sitio not in self._slugs_fuera:
+            try:
+                self._slugs_fuera[sitio] = reglas.cargar(self._session).para(sitio).slugs
+            except Exception:  # noqa: BLE001 — sin las reglas, las de partida
+                self._slugs_fuera[sitio] = reglas.Reglas(
+                    reglas=reglas._de_partida()).para(sitio).slugs
+        return any(p.search(slug) for p in self._slugs_fuera[sitio])
+
     def motivo(self, url: str | None) -> str | None:
-        """Por qué `url` no es un producto del índice (`MOTIVO_*`); None si lo
-        es o si no se puede saber (una web sin productos en el índice)."""
+        """Por qué avisar del enlace `url` de una ficha (`MOTIVO_*`), o None si
+        no hay que avisar: lleva a una página viva del índice (producto,
+        página o entrada) que no es de servicio, es la portada, o no se puede
+        saber (una web sin nada en el índice; una ruta de producto de una web
+        sin productos en el índice)."""
         clave = self._ruta(url)
-        if clave is None or clave[0] not in self.con_productos or self.producto(url) is not None:
+        if clave is None or self.producto(url) is not None:
             return None
+        sitio, ruta = clave
+        if set(parse_qs(urlsplit(str(url)).query)) & _CONSULTA_SERVICIO:
+            return MOTIVO_SERVICIO      # una búsqueda o la cesta
+        if not ruta.strip("/"):
+            return None                 # la portada
+        if self._de_servicio(sitio, ruta):
+            return MOTIVO_SERVICIO
         if clave in self._otras:
-            return MOTIVO_PAGINA
-        if clave in self._idos:
-            return MOTIVO_IDO
-        return MOTIVO_FUERA if self._de_producto(*clave) else MOTIVO_PAGINA
+            return None                 # una página o una entrada de la web: vale
+        if not self.juzgable(url):
+            return None
+        return MOTIVO_IDO if clave in self._idos else MOTIVO_FUERA
+
+    def juzgable(self, url: str | None) -> bool:
+        """¿Se puede decir si `url` está en el índice? Hace falta que su web
+        tenga algo en él y, para una ruta de producto, productos."""
+        clave = self._ruta(url)
+        if clave is None or clave[0] not in self.con_indice:
+            return False
+        return clave[0] in self.con_productos or not self._de_producto(*clave)
 
     def titulo(self, url: str | None) -> str | None:
         """El título de la página (no producto) del índice a la que lleva `url`."""

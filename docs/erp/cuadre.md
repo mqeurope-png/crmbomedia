@@ -323,36 +323,49 @@ del pedido de BoHub.
 - `enlace_catalogo_no_producto` (media) — **Fichas del catálogo cuyo enlace
   no lleva a un producto** (`cuadre/checks_catalogo.py`, 28/10/2026). Los
   productos vivos y visibles del catálogo del compositor (`kb_catalogo`, cada
-  idioma) con un enlace de una de nuestras webs que **no es ninguna página de
-  producto del índice de las webs** (la de contacto, una categoría, un
-  producto que ya no está): en un correo, el cliente no llega al producto. Un
-  descuadre por producto e idioma, que dice **lo que se sabe** del enlace
-  (`MapaProductos.motivo`): «es la página «Contacto», no un producto» (una
-  página, entrada o categoría del índice; sin título si el índice no la tiene
-  y su ruta no es de producto: «es una página de … que no es un producto»),
-  «es el de un producto que el índice ya no tiene (se quitó de la web o una
-  regla del índice lo deja fuera)», con una pista que pide mirar si sigue en
-  la web antes de quitarlo, o, si su ruta es de producto (`/producto/…`, la base de los
-  productos de esa web) y el índice no la tiene, «no está en el índice de
-  …: no es ninguna de sus páginas de producto (o es una que aún no se ha
-  leído)». En ese último caso la pista
-  empieza por **reindexar**: el índice se lee una vez al mes y el catálogo
-  cada noche, así que una máquina recién publicada sale aquí hasta la
-  siguiente lectura (o «Reindexar ahora»), y entonces se resuelve sola.
+  idioma) con un enlace de una de nuestras webs que no lleva a la máquina: en
+  un correo, el cliente no llega a ella. **Vale cualquier página indexada de
+  la web** (segunda vuelta del 28/10: la Beambox II apunta a su página de
+  aterrizaje, `fluxlasers.eu/beambox-ii/`, indexada como página, y está bien;
+  que haya además ficha de tienda no lo hace un error). Un descuadre por
+  producto e idioma, solo si el enlace (`MapaProductos.motivo`):
+    - va a una **página de servicio**: «va a la página «Contacto», una página
+      de servicio, no a la de la máquina» (o, sin título, «va a una página de
+      servicio de …»). Son contacto (también `contacto-mbo-lasers`,
+      `contacts`…), categorías y etiquetas, la portada de la tienda
+      (`/tienda/`), carrito, pago, mi cuenta, buscador (también `/?s=…`),
+      legales…: las que el índice excluye por su slug
+      (`webs.reglas`, solo para rutas que no son de producto) más contacto y
+      buscador;
+    - es el de una página que el índice **ya no tiene** (se quitó de la web o
+      una regla del índice la deja fuera), con una pista que pide mirar si
+      sigue en la web antes de quitarla;
+    - **no está en el índice**, ni como producto, ni como página, ni como
+      entrada. La pista empieza por **reindexar**: el índice se lee una vez al
+      mes y el catálogo cada noche, así que una página recién publicada sale
+      aquí hasta la siguiente lectura (o «Reindexar ahora»), y entonces se
+      resuelve sola.
     - Casa como las fichas del borrador (`webs/fichas.MapaProductos`): con o
       sin `www.`, con el prefijo de idioma o sin él, con o sin la barra final,
       y desde cualquiera de los dominios de esa web; por la ruta o, si la
       ruta es de producto (`/producto/`, `/tienda/`, `/shop/`…) o es solo el
       slug (`/<slug>/`), por el slug (una categoría o una entrada con el mismo
-      slug que un producto no se toman por él).
-    - **Solo se juzga una web con productos en el índice.** Una sin tienda, o
-      que no se ha leído, no se puede juzgar: se apunta en `ctx.no_mirados`
-      (el ámbito de cada descuadre es la web) y lo que ya se había avisado de
-      ella no se da por resuelto.
+      slug que un producto no se toman por él). La portada no se avisa.
+    - **Lo que no se puede juzgar no se da por resuelto**: una web sin nada
+      en el índice, o una ruta de producto de una web sin productos en él
+      (sin tienda o sin leer). Esa ficha va a `ctx.no_mirados` (el **ámbito
+      de cada descuadre es su ficha**, no su web: lo que no se puede juzgar
+      de una no deja abiertos los ya arreglados de las demás de su web) y lo
+      que ya se había avisado de ella sigue abierto (también uno de antes,
+      guardado con la web como ámbito: el motor mira además su
+      `entidad_id`). Una página de servicio
+      se avisa aunque su web no esté en el índice.
+    - Al cambiar la regla, los descuadres de las páginas de aterrizaje que
+      ya se habían abierto se resuelven solos en la siguiente pasada.
     - **No se corrige nada**: el catálogo llega del compositor en un solo
       sentido y lo que se tocara aquí lo borraría la siguiente
       sincronización. Se arregla **en el compositor** (el enlace de la página
-      del producto; o quitarlo, si ya no está en la web). El botón abre
+      de la máquina; o quitarlo, si ya no está en la web). El botón abre
       Configuración ERP (la base de conocimiento).
     - Nace del 28/10/2026: «Lo que ha usado» de un borrador enseñaba la ficha
       de la artisJet 3000Pro Freebird con `https://boprint.net/contacto/`. El

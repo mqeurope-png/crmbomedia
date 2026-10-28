@@ -7,10 +7,11 @@ de las webs (el precio es el de la web, o «a consultar», o el que ella misma
 dijo), con su enlace, para revisar precio y descripción antes de enviar. Va en
 «Lo que ha usado» (`contexto_json["fichas"]`) y en el aviso del borrador.
 
-Y una comprobación de paso: el enlace de una ficha del catálogo que, siendo de
-una web indexada, no lleva a una página de producto (el 28/10, la artisJet
-3000Pro Freebird apuntaba a `boprint.net/contacto/`). Se avisa; no se corrige
-(el catálogo se edita en el compositor y aquí solo se lee).
+Y una comprobación de paso: el enlace de una ficha del catálogo que va a una
+página de servicio (el 28/10, la artisJet 3000Pro Freebird apuntaba a
+`boprint.net/contacto/`) o que no está en el índice de las webs. Cualquier
+página indexada vale (una de aterrizaje también). Se avisa; no se corrige (el
+catálogo se edita en el compositor y aquí solo se lee).
 """
 from __future__ import annotations
 
@@ -33,18 +34,18 @@ def _idioma(codigo: str | None) -> str:
 
 
 def aviso_enlace_no_producto(nombre: str, enlace: str, motivo: str | None = None) -> str:
-    """El aviso de un enlace del catálogo que no es un producto del índice,
-    según lo que se sabe de él (`fichas.MOTIVO_*`)."""
+    """El aviso de un enlace del catálogo que no lleva a la máquina, según lo
+    que se sabe de él (`fichas.MOTIVO_*`)."""
     inicio = f"El enlace de la ficha «{nombre}» del catálogo ({enlace})"
     if motivo == fichas_web.MOTIVO_FUERA:
-        return (f"{inicio} no está en el índice de nuestras webs: si el producto es nuevo, aún no "
-                "se ha leído («Reindexar ahora» en el panel del índice); si no, revísalo en el "
-                "compositor.")
+        return (f"{inicio} no está en el índice de nuestras webs (ni como producto ni como "
+                "página): si la página es nueva, aún no se ha leído («Reindexar ahora» en el "
+                "panel del índice); si no, revísalo en el compositor.")
     if motivo == fichas_web.MOTIVO_IDO:
-        return (f"{inicio} es el de un producto que el índice de las webs ya no tiene (se quitó "
-                "de la web o una regla del índice lo deja fuera): revísalo.")
-    return (f"{inicio} no lleva a una página de producto de nuestras webs: revísalo en el "
-            "compositor.")
+        return (f"{inicio} es el de una página que el índice de las webs ya no tiene (se quitó "
+                "de la web o una regla del índice la deja fuera): revísalo.")
+    return (f"{inicio} va a una página de servicio (contacto, categoría, carrito…), no a la de "
+            "la máquina: revísalo en el compositor.")
 
 
 def fichas_del_correo(session: Session, estructura: dict[str, Any],

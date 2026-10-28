@@ -1,24 +1,28 @@
-"""Comprobación del Cuadre: fichas del catálogo cuyo enlace no lleva a un
-producto (fuente `mysql`).
+"""Comprobación del Cuadre: fichas del catálogo cuyo enlace no lleva a la
+máquina (fuente `mysql`).
 
 El 28/10/2026, «Lo que ha usado» de un borrador enseñaba la ficha de la
 artisJet 3000Pro Freebird con el enlace `https://boprint.net/contacto/`: si
 esa ficha va en un correo, el cliente acaba en un formulario en vez de en el
-producto. Con el índice de las webs se puede ver solo: el enlace de una ficha
-del catálogo que es de una web indexada y no casa con ninguna página de
-producto del índice (con o sin `www.`, el prefijo de idioma o la barra final,
-y desde cualquiera de los dominios de esa web).
+producto. Con el índice de las webs se puede ver solo.
+
+**Vale cualquier página indexada de nuestras webs** (28/10/2026, segunda
+vuelta): una página de aterrizaje como `fluxlasers.eu/beambox-ii/` está bien
+puesta, aunque exista además la ficha de tienda. Se avisa solo cuando el
+enlace (con o sin `www.`, el prefijo de idioma o la barra final, y desde
+cualquiera de los dominios de esa web, `webs.fichas.MapaProductos.motivo`):
+
+- va a una **página de servicio**: contacto, categoría, carrito, pago, mi
+  cuenta, buscador, legales… (las que el índice excluye por su slug, más
+  contacto y buscador);
+- **no está en el índice** (ni como producto, ni como página, ni como
+  entrada), o el índice ya no lo tiene.
 
 No se corrige nada: el catálogo llega en un solo sentido del compositor, y lo
 que se tocara aquí lo borraría la siguiente sincronización. Se arregla en el
-compositor.
-
-Solo se juzga una web con productos en el índice: una sin tienda, o que no se
-ha leído, no se puede juzgar (y lo que se hubiera avisado de ella no se da por
-resuelto). Y se dice lo que se sabe: si el enlace es una página del índice
-(«Contacto») o un producto que ya no está, es seguro; si no casa con nada,
-puede ser un producto recién publicado que el índice (que se lee una vez al
-mes) aún no tiene, y la pista lo dice.
+compositor. Lo que no se puede juzgar (una web sin nada en el índice; una
+ruta de producto de una web sin productos en él) no se da por resuelto: el
+ámbito de cada descuadre es su ficha, no su web.
 """
 from __future__ import annotations
 
@@ -33,11 +37,12 @@ from app.erp.cuadre.registry import FUENTE_MYSQL, Hallazgo, comprobacion
 ENLACE_CATALOGO_NO_PRODUCTO = "enlace_catalogo_no_producto"
 ENTIDAD_PRODUCTO_CATALOGO = "producto_catalogo"
 PISTA = ("El catálogo se edita en el compositor (BoHub solo lo lee): pon el enlace de la página "
-         "del producto. Si el producto ya no está en la web, quítalo o cámbialo allí.")
+         "de la máquina (la de producto o una de aterrizaje). Si ya no está en la web, quítalo "
+         "o cámbialo allí.")
 PISTA_IDO = ("Mira si el producto sigue en la web: si se quitó, quítalo o cámbialo en el "
              "compositor (BoHub solo lo lee); si sigue, es una regla del índice de las webs la "
              "que lo deja fuera, y el enlace puede estar bien.")
-PISTA_FUERA = ("Si el producto se acaba de publicar, el índice aún no lo tiene: «Reindexar ahora» "
+PISTA_FUERA = ("Si la página se acaba de publicar, el índice aún no la tiene: «Reindexar ahora» "
                "en el panel del índice de las webs, y este aviso se va solo. Si no, el enlace "
                "está mal: corrígelo en el compositor (BoHub solo lo lee).")
 
@@ -46,9 +51,10 @@ PISTA_FUERA = ("Si el producto se acaba de publicar, el índice aún no lo tiene
     id=ENLACE_CATALOGO_NO_PRODUCTO, orden=21,
     titulo="Fichas del catálogo cuyo enlace no lleva a un producto",
     descripcion=("Productos del catálogo del compositor con un enlace de una de nuestras webs "
-                 "que no es una página de producto del índice de las webs (la de contacto, una "
-                 "categoría, un producto que ya no está): en un correo, el cliente no llega al "
-                 "producto."),
+                 "que va a una página de servicio (contacto, categoría, carrito…) o que no está "
+                 "en el índice de las webs: en un correo, el cliente no llega a la máquina. "
+                 "Cualquier página indexada de la web (la de producto o una de aterrizaje) "
+                 "vale."),
     severidad="media", fuente=FUENTE_MYSQL, grupo="crm",
 )
 def enlace_catalogo_no_producto(ctx: Contexto) -> Iterator[Hallazgo]:
@@ -71,25 +77,29 @@ def enlace_catalogo_no_producto(ctx: Contexto) -> Iterator[Hallazgo]:
         sitio = fichas.sitio_de(enlace) if enlace else None
         if sitio is None:
             continue
-        if sitio.clave not in mapa.con_productos:
-            no_mirados.add(sitio.clave)
-            continue
+        # El ámbito es la ficha: lo que no se puede juzgar de una no deja
+        # abiertos los descuadres ya arreglados de las demás de su web.
+        eid = entidad_id(p.fuente, f"{p.origen_id}:{p.idioma}")
         motivo = mapa.motivo(enlace)
         if motivo is None:
+            if not mapa.juzgable(enlace):
+                no_mirados.add(eid)
             continue
-        titulo = mapa.titulo(enlace) if motivo == fichas.MOTIVO_PAGINA else None
-        if motivo == fichas.MOTIVO_PAGINA:
-            que = (f"es la página «{titulo}», no un producto" if titulo else
-                   f"es una página de {sitio.dominio} que no es un producto")
+        titulo = mapa.titulo(enlace) if motivo == fichas.MOTIVO_SERVICIO else None
+        if motivo == fichas.MOTIVO_SERVICIO:
+            que = (f"va a la página «{titulo}», una página de servicio, no a la de la máquina"
+                   if titulo else
+                   f"va a una página de servicio de {sitio.dominio} (contacto, categoría, "
+                   "carrito…), no a la de la máquina")
         elif motivo == fichas.MOTIVO_IDO:
-            que = ("es el de un producto que el índice ya no tiene (se quitó de la web o una "
-                   "regla del índice lo deja fuera)")
+            que = ("es el de una página que el índice ya no tiene (se quitó de la web o una "
+                   "regla del índice la deja fuera)")
         else:
-            que = (f"no está en el índice de {sitio.dominio}: no es ninguna de sus páginas de "
-                   "producto (o es una que aún no se ha leído)")
+            que = (f"no está en el índice de {sitio.dominio}: ni como producto, ni como página, "
+                   "ni como entrada (o es una que aún no se ha leído)")
         yield Hallazgo(
             entidad_tipo=ENTIDAD_PRODUCTO_CATALOGO,
-            entidad_id=entidad_id(p.fuente, f"{p.origen_id}:{p.idioma}"),
+            entidad_id=eid,
             etiqueta=f"«{p.nombre}» ({p.idioma})"[:200],
             detalle=f"Su enlace {enlace} {que}.",
             pista_de_arreglo={fichas.MOTIVO_FUERA: PISTA_FUERA,
@@ -101,5 +111,5 @@ def enlace_catalogo_no_producto(ctx: Contexto) -> Iterator[Hallazgo]:
                           "enlace": fichas.pagina(enlace)},
             datos={"nombre": p.nombre, "marca": p.marca, "idioma": p.idioma, "enlace": enlace,
                    "sitio": sitio.clave, "pagina": titulo, "motivo": motivo},
-            ambito=sitio.clave,
+            ambito=eid,
         )
