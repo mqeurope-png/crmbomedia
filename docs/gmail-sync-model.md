@@ -37,8 +37,21 @@ decisión de guardar es:
 `(id, user_id, alias_email UNIQUE global, active, created_at, updated_at)`.
 Cada `alias_email` pertenece a **un** usuario. Es el registro de *propiedad del
 correo entrante*, distinto de `user_email_alias_prefs` (preferencias Send-As,
-outbound, no únicas). Se gestiona desde `/admin/users` (admin). Se sembró en la
-migración 0090 desde `users.email` de los usuarios activos.
+outbound, no únicas). Se gestiona desde `/admin/users` (admin), en el bloque
+**«Direcciones de entrada (correo que recibe)»** de la ficha de cada usuario
+(hasta el 28/10/2026 se llamaba «Alias de email conectados» y se confundía con
+los remitentes: registrar ahí una dirección **no** la pone en el desplegable
+«De»). Se sembró en la migración 0090 desde `users.email` de los usuarios
+activos.
+
+Para qué sirve hoy (está en uso, no se puede quitar sin más):
+
+- **Atribuir** el correo que llega a la dirección a su dueño (`delivered_to`):
+  lo ve en «Míos» (regla 3) y en el filtro por dirección de la Bandeja.
+- **Atribuir lo enviado** desde ella al dueño cuando se captura de Gmail.
+- **Capturar**: su dominio cuenta como nuestro (`dominios_del_grupo`).
+- **Privacidad**: una dirección registrada a otro comercial no da visibilidad a
+  quien la marque como remitente (`addresses_of_others`).
 
 **Dar de baja a una persona no da de baja sus direcciones.** Son tres cosas
 distintas y van por separado:
@@ -81,7 +94,32 @@ usuario y decide en cada pasada cuál aparece en su desplegable:
   `info@bomedia.net` con `is_default=1` e `is_allowed=0` (lo sembraba el sync
   y lo ocultaba en la misma pasada); la migración 0133 lo corrigió.
 - `display_name_override` nunca se toca; `gmail_display_name` se refresca; un
-  alias que desaparece de Gmail queda apagado sin borrar la fila.
+  alias que desaparece de Gmail queda apagado sin borrar la fila (y conserva
+  `user_opted_in`: si vuelve a estar en Gmail, vuelve a salir).
+
+**Quién marca.** Desde CRM-PERFIL el comercial ve su Mi cuenta en solo lectura
+y sus remitentes los gestiona el administrador en la ficha de Usuarios, bloque
+**«Remitentes (desplegable «De»)»** (`GET/PUT /api/users/{id}/senders`,
+`require_admin`). Es el mismo selector y la misma lógica que Mi cuenta
+(`services/remitentes.py`): marcar, estrella de predeterminado (uno por
+usuario) y nombre visible propio sin tocar Gmail. Lo que marca el
+administrador se guarda como elección (`user_opted_in`), igual que si lo
+marcara el usuario, y por eso sobrevive al sync; la columna conserva su nombre
+y **quién** lo marcó queda en Auditoría (`user.senders_updated`, con el antes y
+el después de cada dirección).
+
+**Verificación.** Gmail solo envía desde un «enviar como» dado de alta y
+verificado en la cuenta del equipo; el cliente ya filtra los no verificados. La
+ficha de Usuarios añade, detrás de los de Gmail, las direcciones que el usuario
+tiene marcadas o registradas como entrada y Gmail no tiene, marcadas «no
+verificada en Gmail»; marcar una pide confirmación (no saldrá en el «De» hasta
+que se verifique). Las direcciones de entrada que no son remitente se avisan
+arriba del bloque.
+
+**«Bomedia» en el nombre visible.** El bloque marca «nombra Bomedia» con la
+misma regla que la comprobación del Cuadre (`empresas_grupo.menciones`: una
+dirección `@bomedia.net` no cuenta), y el Cuadre lleva a ese bloque
+(`/admin/users#remitentes-<id>`) para cambiarlo.
 
 > Hasta el 10/10/2026 el sync solo podía mirar `is_default` (uno por
 > definición): las secundarias que Bart elegía a mano se apagaban solas en

@@ -47,6 +47,8 @@ class Action:
     USER_DEACTIVATED = "user.deactivated"
     USER_REACTIVATED = "user.reactivated"
     USER_PASSWORD_SET_BY_ADMIN = "user.password_set_by_admin"
+    # Remitentes del «De» de otro usuario, desde la ficha de Usuarios.
+    USER_SENDERS_UPDATED = "user.senders_updated"
 
     # CRM
     COMPANY_CREATED = "company.created"

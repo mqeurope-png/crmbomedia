@@ -11301,6 +11301,26 @@ tr.is-inactive {
 .alias-email { font-family: var(--mono, monospace); font-size: 0.85rem; }
 .alias-add { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .alias-add input { flex: 1 1 180px; min-width: 140px; }
+/* Remitentes del «De» de un usuario en su ficha de Usuarios. */
+.remitentes-bloque-cabecera { display: flex; align-items: center;
+  justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.remitentes-bloque-cabecera .alias-manager-title { margin: 0; }
+.remitentes-usuario { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.remitentes-usuario p { margin: 0; }
+/* En la lista de usuarios cada <li> es una tarjeta (`.item-list li`); los <li>
+ * de dentro (direcciones, chips, filas del selector) no lo son. */
+.item-list .alias-row,
+.item-list .alias-multiselect-list-row,
+.item-list .alias-multiselect-empty-search {
+  display: flex; border: 0; border-radius: 0;
+}
+.item-list .alias-row { padding: 0; }
+.item-list .alias-multiselect-list-row { padding: 4px 8px; border-bottom: 1px solid #f1f3f9; }
+.item-list .alias-multiselect-list-row:last-child { border-bottom: none; }
+.item-list .alias-multiselect-empty-search { padding: 12px; justify-content: center; }
+.item-list .alias-multiselect-chip {
+  display: inline-flex; padding: 4px 8px; border-radius: 999px;
+}
 /* El chip «Spam» reutiliza .badge.bad; solo un pequeño margen en la lista. */
 .email-list-spam { margin-right: 4px; }
 

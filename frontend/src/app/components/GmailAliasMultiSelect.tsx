@@ -16,7 +16,13 @@
  *     lista sigue abierta — para guardar sin requerir click extra).
  *
  * El componente NO conoce el endpoint; recibe la lista cargada y un
- * callback `onSave(prefs)` para que el padre haga el PUT.
+ * callback `onSave(prefs)` para que el padre haga el PUT. Lo usan Mi cuenta
+ * (los remitentes propios) y la ficha de Usuarios (los de otro usuario,
+ * `RemitentesUsuario`).
+ *
+ * Marcas por dirección: «no verificada en Gmail» (Gmail rechazaría el envío;
+ * marcarla pide confirmación), «nombra Bomedia» (el nombre visible, con la
+ * regla del Cuadre) y «recibe» (es dirección de entrada del usuario).
  */
 import {
   Check,
@@ -32,6 +38,7 @@ import {
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -45,7 +52,40 @@ type Props = {
   onSave: (prefs: AliasPreferenceItem[]) => Promise<EmailAlias[]>;
   onRefresh: () => void;
   refreshing: boolean;
+  /** Lo que se ve sin ningún remitente marcado (la ficha de Usuarios habla
+   *  de otro usuario, no de «ti»). */
+  textoVacio?: string;
 };
+
+/** Gmail solo deja enviar desde un «Enviar como» verificado. */
+export function sinVerificar(alias: EmailAlias | undefined): boolean {
+  if (!alias) return false;
+  if (alias.en_gmail === false) return true;
+  return (
+    !!alias.verification_status &&
+    !["accepted", "verified"].includes(alias.verification_status)
+  );
+}
+
+const TITULO_SIN_VERIFICAR =
+  "No está verificada como «Enviar como» en la cuenta de Google del equipo: " +
+  "Gmail rechazaría el envío y no sale en el desplegable «De».";
+
+function avisoSinVerificar(email: string): string {
+  return (
+    `${email} no está verificada como «Enviar como» en la cuenta de Google ` +
+    "del equipo: Gmail rechazaría el envío y no saldrá en el desplegable «De» " +
+    "hasta que se dé de alta y se verifique en Gmail (Configuración → Cuentas " +
+    "→ Enviar como). Si la marcas, aparecerá sola cuando esté verificada.\n\n" +
+    "¿Marcarla igualmente?"
+  );
+}
+
+/** La misma pista que da el Cuadre para «Bomedia» en textos del cliente. */
+const PISTA_BOMEDIA =
+  "El nombre visible nombra «Bomedia». Cámbialo por Streamtec (si escribe en " +
+  "castellano) o MQ Europe (otros idiomas) con el lápiz; las direcciones " +
+  "@bomedia.net pueden quedarse.";
 
 type Pref = {
   email: string;
@@ -92,7 +132,9 @@ export function GmailAliasMultiSelect({
   onSave,
   onRefresh,
   refreshing,
+  textoVacio = "Aún no has marcado ningún alias. Abre el selector y marca los que uses.",
 }: Props) {
+  const panelId = useId();
   const [prefs, setPrefs] = useState<Pref[]>(() =>
     ensureSingleDefault(aliasesToPrefs(aliases)),
   );
@@ -129,6 +171,10 @@ export function GmailAliasMultiSelect({
   const allowedPrefs = useMemo(
     () => prefs.filter((p) => p.allowed),
     [prefs],
+  );
+  const fueraDeGmail = useMemo(
+    () => aliases.filter((a) => a.en_gmail === false).length,
+    [aliases],
   );
   const defaultEmail = useMemo(
     () => allowedPrefs.find((p) => p.isDefault)?.email ?? null,
@@ -199,6 +245,15 @@ export function GmailAliasMultiSelect({
   }
 
   function toggleAllowed(email: string): void {
+    const actual = prefs.find((p) => p.email === email);
+    if (
+      actual &&
+      !actual.allowed &&
+      sinVerificar(aliasByEmail.get(email)) &&
+      !window.confirm(avisoSinVerificar(email))
+    ) {
+      return;
+    }
     setPrefs((prev) => {
       const next = prev.map((p) =>
         p.email === email
@@ -293,7 +348,7 @@ export function GmailAliasMultiSelect({
         className="alias-multiselect-trigger"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        aria-controls="alias-multiselect-panel"
+        aria-controls={panelId}
       >
         <span className="alias-multiselect-summary">
           <strong>
@@ -385,6 +440,19 @@ export function GmailAliasMultiSelect({
                       predeterminado
                     </span>
                   ) : null}
+                  {sinVerificar(meta) ? (
+                    <span
+                      className="badge bad small"
+                      title={TITULO_SIN_VERIFICAR}
+                    >
+                      no verificada en Gmail
+                    </span>
+                  ) : null}
+                  {meta?.menciona_bomedia ? (
+                    <span className="badge warn small" title={PISTA_BOMEDIA}>
+                      nombra Bomedia
+                    </span>
+                  ) : null}
                 </span>
                 {isEditing ? (
                   <>
@@ -450,14 +518,13 @@ export function GmailAliasMultiSelect({
         </ul>
       ) : (
         <p className="muted small alias-multiselect-empty">
-          Aún no has marcado ningún alias. Abre el selector y marca los que
-          uses.
+          {textoVacio}
         </p>
       )}
 
       {open ? (
         <div
-          id="alias-multiselect-panel"
+          id={panelId}
           className="alias-multiselect-panel"
         >
           <div className="alias-multiselect-panel-header">
@@ -486,7 +553,9 @@ export function GmailAliasMultiSelect({
             </button>
           </div>
           <p className="muted small alias-multiselect-counter">
-            {prefs.length} alias en Gmail · {allowedPrefs.length} marcado
+            {prefs.length - fueraDeGmail} alias en Gmail
+            {fueraDeGmail > 0 ? ` · ${fueraDeGmail} fuera de Gmail` : ""} ·{" "}
+            {allowedPrefs.length} marcado
             {allowedPrefs.length === 1 ? "" : "s"}
           </p>
           <ul className="alias-multiselect-list">
@@ -498,9 +567,6 @@ export function GmailAliasMultiSelect({
               visible.map((p) => {
                 const meta = aliasByEmail.get(p.email);
                 const label = meta?.display_name || p.email;
-                const unverified =
-                  meta?.verification_status &&
-                  meta.verification_status !== "accepted";
                 return (
                   <li
                     key={p.email}
@@ -519,12 +585,20 @@ export function GmailAliasMultiSelect({
                         <span className="muted small">
                           &lt;{p.email}&gt;
                         </span>
-                        {unverified ? (
+                        {sinVerificar(meta) ? (
                           <span
                             className="badge bad small"
-                            title="Pendiente de verificar en Gmail"
+                            title={TITULO_SIN_VERIFICAR}
                           >
-                            no verificado
+                            no verificada en Gmail
+                          </span>
+                        ) : null}
+                        {meta?.de_entrada ? (
+                          <span
+                            className="badge info small"
+                            title="Dirección de entrada: el correo que llega a ella se le atribuye. Eso no la hace remitente."
+                          >
+                            recibe
                           </span>
                         ) : null}
                       </span>

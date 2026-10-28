@@ -33,7 +33,10 @@ seguridad de la propia cuenta, no una preferencia de perfil).
 per-`/me` y se auto-sincronizan desde Gmail; no son un vector de escalada
 porque la **propiedad** del alias entrante (`user_email_aliases`) sí es
 admin-only (ver más abajo). La UI de composición de alias no se muestra en el
-`/account` de solo lectura del comercial.
+`/account` de solo lectura del comercial: es **a propósito** (CRM-PERFIL), y
+sus remitentes los gestiona el administrador desde su ficha de Usuarios
+(bloque «Remitentes», ver abajo). Hasta el 28/10/2026 ese bloque no existía y
+la única vía era un `UPDATE` a mano.
 
 ## Endpoints admin-only sobre otros usuarios (`/admin/users`)
 
@@ -45,7 +48,8 @@ admin-only (ver más abajo). La UI de composición de alias no se muestra en el
 | Fijar contraseña concreta | `PATCH /api/users/{id}/password` | `require_admin` |
 | **Resetear contraseña** (genera una aleatoria, se muestra una vez) | `POST /api/users/{id}/reset-password` | `require_admin` |
 | Desactivar / reactivar | `PATCH /api/users/{id}/deactivate` · `/reactivate` | `require_admin` |
-| CRUD propiedad de alias entrante | `POST/PATCH/DELETE /api/users/{id}/aliases` | `require_admin` |
+| CRUD propiedad de alias entrante («Direcciones de entrada») | `POST/PATCH/DELETE /api/users/{id}/aliases` | `require_admin` |
+| Remitentes del «De» de cualquier usuario (marcar, predeterminado, nombre visible); auditado como `user.senders_updated` | `GET/PUT /api/users/{id}/senders` | `require_admin` |
 
 > No hay **impersonación**: el admin nunca «entra como» el comercial. Edita el
 > perfil y resetea la contraseña, nada más.

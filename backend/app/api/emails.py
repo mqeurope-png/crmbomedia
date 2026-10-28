@@ -52,6 +52,7 @@ from app.schemas.emails import (
     GmailTemplate,
     MyAlias,
 )
+from app.services import remitentes
 from app.services.email_aliases import (
     personal_mailbox_filter,
     thread_is_visible,
@@ -177,19 +178,6 @@ def list_gmail_templates(
     return [GmailTemplate.model_validate(item).model_dump() for item in items]
 
 
-def _resolve_display_name(
-    override: str | None, gmail_display: str | None
-) -> str:
-    """PR-DisplayName-Remitente. Override > gmail > "". El override
-    se considera presente solo si NO es None y NO está vacío tras
-    strip — el clear desde la UI persiste None, no string vacío."""
-    if override:
-        cleaned = override.strip()
-        if cleaned:
-            return cleaned
-    return (gmail_display or "").strip()
-
-
 @router.get("/aliases", response_model=list[EmailAlias])
 def list_aliases(
     session: Session = Depends(get_session),
@@ -201,60 +189,16 @@ def list_aliases(
     PR-DisplayName-Remitente: cada GET sincroniza el
     `gmail_display_name` cacheado contra el `displayName` que devuelve
     Gmail API. Esto deja el chip de /account siempre actualizado sin
-    requerir un botón "refresh" explícito."""
+    requerir un botón "refresh" explícito. La lógica es la misma que usa
+    el administrador en la ficha de Usuarios (`services/remitentes.py`)."""
     try:
-        items = gmail_service.list_aliases(session, current_user.id)
+        return remitentes.listar(session, current_user)
     except GmailNotConnectedError:
         return []
     except GmailScopeMissingError as exc:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)
         ) from exc
-    prefs_by_email = {
-        p.alias_email: p
-        for p in session.scalars(
-            select(UserEmailAliasPref).where(
-                UserEmailAliasPref.user_id == current_user.id
-            )
-        )
-    }
-    # Sync gmail_display_name en las prefs existentes — el snapshot
-    # se actualiza con lo que Gmail diga hoy. Si el alias no tiene
-    # pref (no marcado), no creamos una row vacía solo para el cache;
-    # cuando el user lo marque la prox upsert lo sincronizará.
-    dirty = False
-    for item in items:
-        pref = prefs_by_email.get(item["send_as_email"])
-        if pref is None:
-            continue
-        new_gmail_name = item.get("display_name") or None
-        if pref.gmail_display_name != new_gmail_name:
-            pref.gmail_display_name = new_gmail_name
-            dirty = True
-    if dirty:
-        session.commit()
-
-    out: list[EmailAlias] = []
-    for item in items:
-        pref = prefs_by_email.get(item["send_as_email"])
-        gmail_name = item.get("display_name") or None
-        override = pref.display_name_override if pref else None
-        out.append(
-            EmailAlias(
-                send_as_email=item["send_as_email"],
-                display_name=item.get("display_name", ""),
-                is_primary=item["is_primary"],
-                is_default=item["is_default"],
-                verification_status=item.get("verification_status"),
-                user_pref_allowed=pref.is_allowed if pref else False,
-                user_pref_default=pref.is_default if pref else False,
-                user_pref_opted_in=pref.user_opted_in if pref else None,
-                gmail_display_name=gmail_name,
-                display_name_override=override,
-                resolved_display_name=_resolve_display_name(override, gmail_name),
-            )
-        )
-    return out
 
 
 @router.get("/my-aliases", response_model=list[MyAlias])
@@ -294,7 +238,7 @@ def my_aliases(
                 send_as_email=pref.alias_email,
                 display_name=gmail_meta.get("display_name", ""),
                 is_default=pref.is_default,
-                resolved_display_name=_resolve_display_name(
+                resolved_display_name=remitentes.nombre_visible(
                     pref.display_name_override, gmail_name
                 ),
             )
@@ -311,131 +255,18 @@ def upsert_alias_preferences(
     # CRM-PERFIL — endpoint /me de prefs Send-As del composer (auto-sincronizado
     # desde Gmail). NO se bloquea a nivel API: es per-usuario y romperlo dejaría
     # sin remitente al comercial. El riesgo de «desconfiguración» manual se
-    # elimina quitando el selector del /account readonly (frontend). El control
-    # de PROPIEDAD de alias (inbound `user_email_aliases`) ya es admin-only
+    # elimina quitando el selector del /account readonly (frontend); los
+    # remitentes del comercial los gestiona el administrador desde la ficha de
+    # Usuarios (`PUT /api/users/{id}/senders`, auditado). El control de
+    # PROPIEDAD de alias (inbound `user_email_aliases`) ya es admin-only
     # (CRM-GMAIL), igual que conectar/desconectar la cuenta Google org.
     current_user: User = Depends(require_user),
 ) -> list[EmailAlias]:
-    """Upsert the user's alias preferences in one shot.
-
-    Lo que el usuario marca o desmarca aquí es una elección deliberada y
-    queda registrada como tal (`user_opted_in`), para que el sync de alias
-    (`gmail/aliases.py`) la respete en cada pasada en vez de pisarla:
-
-    - `is_allowed=true`: la fila queda visible. Si estaba apagada, o el
-      usuario la acaba de elegir como predeterminada, se registra
-      `user_opted_in=true`. Una fila que ya estaba visible por la regla por
-      defecto (su alias propio) sigue «sin pronunciarse».
-    - `is_allowed=false`: la fila NO se borra. Queda apagada y, si estaba
-      encendida (o el usuario la había elegido), con `user_opted_in=false`:
-      un rechazo hay que recordarlo, también el del alias propio. Una fila
-      que ya estaba apagada no cambia, y no se crea fila para un alias
-      apagado que no tenía ninguna. (Hasta el 10/10/2026 este endpoint
-      borraba la fila mientras el sync creaba centenares apagadas: las dos
-      mitades no se ponían de acuerdo. Las filas apagadas existen.)
-    - Setting `is_default=true` on one row demotes the other
-      defaults to false inside the same transaction.
-
-    PR-Aliases-UX. Si el payload trae allowed aliases pero NINGUNO
-    con `is_default`, el handler normaliza eligiendo el primero
-    visible (orden de envío) como default. Garantía: con N≥1 allowed,
-    siempre hay exactamente 1 default. Sin allowed, no hay default.
-    Esto deja el GET subsiguiente determinista para el composer.
-    """
-    existing = {
-        p.alias_email: p
-        for p in session.scalars(
-            select(UserEmailAliasPref).where(
-                UserEmailAliasPref.user_id == current_user.id
-            )
-        )
-    }
-    incoming_default: str | None = None
-    first_allowed: str | None = None
-    for item in payload.preferences:
-        row = existing.get(item.alias_email)
-        if not item.is_allowed:
-            if row is not None and (row.is_allowed or row.is_default or row.user_opted_in):
-                # Desmarcar algo que estaba encendido (o elegido): rechazo.
-                row.is_allowed = False
-                row.is_default = False
-                row.user_opted_in = False
-            elif row is None and item.alias_email.strip().lower() == (
-                (current_user.email or "").strip().lower()
-            ):
-                # El alias propio aún sin fila (antes del primer sync) y
-                # desmarcado: el sync lo encendería por la regla por defecto,
-                # así que el rechazo se guarda ya.
-                row = UserEmailAliasPref(
-                    user_id=current_user.id,
-                    alias_email=item.alias_email,
-                    is_allowed=False,
-                    is_default=False,
-                    user_opted_in=False,
-                )
-                session.add(row)
-                existing[item.alias_email] = row
-            continue
-        if first_allowed is None:
-            first_allowed = item.alias_email
-        if item.is_default:
-            incoming_default = item.alias_email
-        # PR-DisplayName-Remitente. None = no tocar el override
-        # actual; string = strip + NULL on empty (clear) o setear el
-        # valor. El handler nunca persiste "" como string.
-        override_set = (
-            "display_name_override" in item.model_fields_set
-        )
-        override_value: str | None = None
-        if override_set:
-            raw = (item.display_name_override or "").strip()
-            override_value = raw or None
-        if row is None:
-            row = UserEmailAliasPref(
-                user_id=current_user.id,
-                alias_email=item.alias_email,
-                is_allowed=True,
-                is_default=item.is_default,
-                user_opted_in=True,
-            )
-            if override_set:
-                row.display_name_override = override_value
-            session.add(row)
-            existing[item.alias_email] = row
-        else:
-            if (
-                not row.is_allowed
-                or row.user_opted_in is False
-                or (item.is_default and not row.is_default)
-            ):
-                # Encender algo apagado, o elegirlo como predeterminado: lo quiere.
-                row.user_opted_in = True
-            row.is_allowed = True
-            row.is_default = item.is_default
-            if override_set:
-                row.display_name_override = override_value
-    session.flush()
-    # Normaliza: si hay allowed pero ningún default declarado, el
-    # primero gana. Ya no es ambiguo cuál alias usa el composer.
-    if incoming_default is None and first_allowed is not None:
-        incoming_default = first_allowed
-        session.execute(
-            UserEmailAliasPref.__table__.update()  # type: ignore[attr-defined]
-            .where(
-                UserEmailAliasPref.user_id == current_user.id,
-                UserEmailAliasPref.alias_email == first_allowed,
-            )
-            .values(is_default=True)
-        )
-    if incoming_default is not None:
-        session.execute(
-            UserEmailAliasPref.__table__.update()  # type: ignore[attr-defined]
-            .where(
-                UserEmailAliasPref.user_id == current_user.id,
-                UserEmailAliasPref.alias_email != incoming_default,
-            )
-            .values(is_default=False)
-        )
+    """Upsert the user's alias preferences in one shot. La semántica
+    (`user_opted_in`, un solo predeterminado, filas apagadas que se
+    conservan) vive en `services/remitentes.guardar`, compartida con la
+    ficha de Usuarios."""
+    remitentes.guardar(session, current_user, payload.preferences)
     _ = request
     session.commit()
     # Re-render the enriched list so the UI doesn't need a second
@@ -528,8 +359,8 @@ def _send_email_core(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
-                "El alias seleccionado no está en tus preferencias. "
-                "Márcalo desde /account."
+                "El remitente elegido no está entre los tuyos. Los marca el "
+                "administrador en Usuarios (bloque «Remitentes» de tu ficha)."
             ),
         )
 

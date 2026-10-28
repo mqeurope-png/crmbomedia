@@ -19,6 +19,12 @@ jest.mock("../../lib/errors", () => ({
 jest.mock("../../components/AliasManager", () => ({
   AliasManager: () => <div data-testid="alias-manager" />,
 }));
+// Los remitentes también consultan la API: nos basta con ver para quién se abren.
+jest.mock("../../components/RemitentesUsuario", () => ({
+  RemitentesUsuario: ({ userId }: { userId: string }) => (
+    <div data-testid="remitentes">Remitentes de {userId}</div>
+  ),
+}));
 // Espiamos el modal: nos basta con ver que se abre con el usuario correcto.
 jest.mock("../../components/ResetPasswordModal", () => ({
   ResetPasswordModal: ({
@@ -106,5 +112,43 @@ describe("AdminUsersPage — alta de usuario (bug 02/10/2026: «reading 'reset'�
     expect(screen.getByLabelText("Contraseña")).toHaveValue("");
     expect(screen.queryByText(/Error de permisos o carga/)).not.toBeInTheDocument();
     expect(screen.queryByText(/reading 'reset'/)).not.toBeInTheDocument();
+  });
+});
+
+describe("AdminUsersPage — remitentes del «De» en la ficha", () => {
+  beforeEach(() => {
+    mockedGetUser.mockResolvedValue(makeUser({ id: "admin-1", role: "admin" }));
+    mockedGetUsers.mockResolvedValue([
+      makeUser(),
+      makeUser({ id: "u-7", email: "manel@bomedia.net", full_name: "Manel Pons" }),
+    ]);
+    window.location.hash = "";
+  });
+
+  it("cada ficha tiene su bloque de remitentes, que se carga al abrirlo", async () => {
+    const user = userEvent.setup();
+    render(<AdminUsersPage />);
+    const bloque = await screen.findByRole("region", {
+      name: "Remitentes de manel@bomedia.net",
+    });
+    expect(bloque).toHaveTextContent("Remitentes (desplegable «De»)");
+    expect(screen.queryByTestId("remitentes")).not.toBeInTheDocument();
+
+    const botones = screen.getAllByRole("button", { name: "Ver y cambiar" });
+    expect(botones).toHaveLength(2);
+    await user.click(botones[1]);
+    expect(await screen.findByTestId("remitentes")).toHaveTextContent("u-7");
+    expect(screen.getAllByTestId("remitentes")).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Ocultar" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+  });
+
+  it("el enlace del Cuadre (#remitentes-<id>) abre el bloque de ese usuario", async () => {
+    window.location.hash = "#remitentes-u-7";
+    render(<AdminUsersPage />);
+    expect(await screen.findByTestId("remitentes")).toHaveTextContent("u-7");
+    expect(screen.getAllByTestId("remitentes")).toHaveLength(1);
   });
 });

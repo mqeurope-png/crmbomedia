@@ -11,12 +11,19 @@ import {
 import { extractErrorMessage } from "../lib/errors";
 
 /**
- * CRM-GMAIL Parte F — gestor de alias de correo entrante de un usuario.
+ * CRM-GMAIL Parte F — direcciones de ENTRADA de un usuario
+ * (`user_email_aliases`).
  *
- * Admin-only (la página /admin/users ya está protegida). Lista los alias que
- * «posee» el usuario (correo entrante a ese alias es suyo), permite añadir,
- * activar/desactivar y borrar. El alias_email es único global: si ya está
- * asignado a otro usuario, el backend devuelve 409.
+ * Admin-only (la página /admin/users ya está protegida). Lista las
+ * direcciones que «posee» el usuario: el correo que llega a ellas se le
+ * atribuye (lo ve en «Míos» y en el filtro por dirección de la Bandeja) y su
+ * dominio cuenta como nuestro para capturar correo. Permite añadir,
+ * activar/desactivar y borrar. La dirección es única global: si ya está
+ * asignada a otro usuario, el backend devuelve 409.
+ *
+ * NO son remitentes: no le dejan escribir desde ellas. El desplegable «De» se
+ * gestiona en «Remitentes» (`RemitentesUsuario`). Hasta el 28/10/2026 este
+ * bloque se llamaba «Alias de email conectados» y se confundía con eso.
  */
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -79,14 +86,20 @@ export function AliasManager({ userId }: { userId: string }) {
   return (
     <div className="alias-manager">
       <p className="alias-manager-title muted small">
-        Alias de email conectados
+        Direcciones de entrada (correo que recibe)
+      </p>
+      <p className="muted small">
+        El correo que llega a estas direcciones se le atribuye: lo ve en
+        «Míos» y en el filtro por dirección de la Bandeja. Cada dirección es de
+        un solo usuario. No le dejan escribir desde ellas: eso son los
+        remitentes, en el bloque de arriba.
       </p>
       {loading ? (
-        <p className="muted small">Cargando alias…</p>
+        <p className="muted small">Cargando direcciones…</p>
       ) : aliases.length === 0 ? (
-        <p className="muted small">Sin alias configurados.</p>
+        <p className="muted small">Sin direcciones de entrada.</p>
       ) : (
-        <ul className="alias-list" aria-label="Alias de email">
+        <ul className="alias-list" aria-label="Direcciones de entrada">
           {aliases.map((alias) => (
             <li key={alias.id} className="alias-row">
               <span className="alias-email">{alias.alias_email}</span>
