@@ -572,7 +572,7 @@ def _productos_pedidos(session: Session, *, instruccion: str | None, nombres: li
     del catálogo. Devuelve fragmentos, como la búsqueda."""
     from app.services.webs import busqueda, fichas  # noqa: PLC0415
 
-    paginas_catalogo = {fichas.pagina(m.get("enlace")) for m in maquinas if m.get("enlace")}
+    paginas_catalogo = _paginas_catalogo(maquinas)
     pedidas: list[dict[str, Any]] = []
     filas: list[tuple[Any, str]] = []
     try:
@@ -613,6 +613,13 @@ def _productos_pedidos(session: Session, *, instruccion: str | None, nombres: li
     if pedidas:
         resumen["fichas_pedidas"] = pedidas
     return salida
+
+
+def _paginas_catalogo(maquinas: list[dict[str, Any]]) -> set[str]:
+    """Las páginas de los productos del CATÁLOGO del correo."""
+    from app.services.webs import fichas  # noqa: PLC0415
+
+    return {fichas.pagina(m.get("enlace")) for m in maquinas if m.get("enlace")} - {""}
 
 
 def _juntar(primero: list[Any], despues: list[Any], maximo: int) -> list[Any]:
@@ -670,7 +677,7 @@ def consultar(session: Session, *, fuentes: Fuentes, plan: Plan, idioma: str | N
         pedidos = _productos_pedidos(
             session, instruccion=entrada.instruccion if entrada else None,
             nombres=plan.productos, idioma=idioma,
-            maquinas=_nombradas(entrada.maquinas) if entrada else [], resumen=resumen,
+            maquinas=list(entrada.maquinas) if entrada else [], resumen=resumen,
             avisos=avisos)
         encontrados = _consultar_webs(session, plan, idioma, resumen, avisos) if plan.webs else []
         fragmentos = _juntar(pedidos, encontrados, MAX_WEBS + len(pedidos))
@@ -688,7 +695,8 @@ def consultar(session: Session, *, fuentes: Fuentes, plan: Plan, idioma: str | N
         fragmentos=fragmentos, sin_resultados=soporte_leido["sin_resultados"],
         soporte_no_consultado=soporte_leido["no_consultado"],
         soporte_sin_centro=soporte_leido["sin_centro"], tecnica=plan.tecnica,
-        resumen_base=resumen, avisos=avisos, pedidas=pedidas_ids, idioma=idioma)
+        resumen_base=resumen, avisos=avisos, pedidas=pedidas_ids, idioma=idioma,
+        paginas_catalogo=_paginas_catalogo(entrada.maquinas if entrada else []))
 
 
 def pide_producto(instruccion: str | None) -> bool:
@@ -760,7 +768,7 @@ def reutilizar(session: Session, previo: dict[str, Any], fuentes: Fuentes,
     pedidos: list[Any] = []
     if fuentes.webs:
         pedidos = _productos_pedidos(session, instruccion=instruccion, nombres=list(nombres or []),
-                                     idioma=idioma, maquinas=_nombradas(list(maquinas or [])),
+                                     idioma=idioma, maquinas=list(maquinas or []),
                                      resumen=resumen, avisos=avisos)
         if not antes.get("webs", True) or "webs" in fallos_antes:
             fragmentos = (_consultar_webs(session, plan, idioma, resumen, avisos)
@@ -795,4 +803,5 @@ def reutilizar(session: Session, previo: dict[str, Any], fuentes: Fuentes,
         articulo=leido["articulo"], otros_soporte=leido["otros"], fragmentos=fragmentos,
         sin_resultados=leido["sin_resultados"], soporte_no_consultado=leido["no_consultado"],
         soporte_sin_centro=leido["sin_centro"], tecnica=plan.tecnica, resumen_base=resumen,
-        avisos=avisos, pedidas=pedidas_ids, idioma=idioma)
+        avisos=avisos, pedidas=pedidas_ids, idioma=idioma,
+        paginas_catalogo=_paginas_catalogo(list(maquinas or [])))

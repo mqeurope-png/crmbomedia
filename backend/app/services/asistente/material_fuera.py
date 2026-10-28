@@ -200,6 +200,7 @@ def construir(
     soporte_sin_centro: str | None = None, tecnica: bool = False,
     resumen_base: dict[str, Any] | None = None, avisos: Iterable[str] = (),
     pedidas: Iterable[str] = (), idioma: str | None = None,
+    paginas_catalogo: Iterable[str] = (),
 ) -> Material | None:
     """El material del turno con lo ya leído; None si no se consultó nada.
 
@@ -219,6 +220,9 @@ def construir(
     - `pedidas`: los ids del índice de los productos que quien envía pide
       expresamente (por su enlace o por su nombre): su pieza lo dice.
     - `idioma`: el del correo (la pieza de otro idioma lo dice).
+    - `paginas_catalogo`: las páginas (`webs.fichas.pagina`) de los productos
+      del CATÁLOGO del correo: una pieza que es una de ellas no se ofrece como
+      ficha (su ficha es la del catálogo).
     """
     otros = list(otros_soporte)
     frs = list(fragmentos)
@@ -275,7 +279,10 @@ def construir(
         bloques.append(sobre.encapsular("Soporte técnico", piezas_soporte, prefijo="S"))
         reglas.append(REGLA_SOPORTE)
     pedidas_ids = set(pedidas)
+    del_catalogo = {p for p in paginas_catalogo if p}
     if frs:
+        from app.services.webs import fichas as fichas_web  # noqa: PLC0415
+
         piezas: list[sobre.Pieza] = []
         resumen["webs"] = []
         con_ficha = False
@@ -283,6 +290,9 @@ def construir(
             url = https(f.url)
             datos = {"Web": f.dominio or f.sitio, "Tipo": f.tipo}
             ficha = f.tipo == "producto" and getattr(f, "wp_id", None) is not None and bool(url)
+            if ficha and del_catalogo and fichas_web.pagina(url) in del_catalogo:
+                ficha = False
+                datos["En el CATÁLOGO"] = "sí: su ficha es la del catálogo"
             if ficha:
                 con_ficha = True
                 datos["Ficha"] = f"W{n}"
