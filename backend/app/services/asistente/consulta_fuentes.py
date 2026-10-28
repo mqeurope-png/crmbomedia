@@ -606,9 +606,15 @@ def _productos_pedidos(session: Session, *, instruccion: str | None, nombres: li
         mapa = fichas.MapaProductos(session) if urls else None
         for url in urls:
             fila = mapa.producto(url) if mapa is not None else None
-            paginas = {fichas.pagina(url)} | (_paginas_de(session, fila) if fila else set())
+            # La portada o una página de servicio («/contacto/») no son ninguna
+            # máquina, aunque una ficha del catálogo apunte ahí por error.
+            de_servicio = mapa is not None and fila is None and (
+                mapa.motivo(url) == fichas.MOTIVO_SERVICIO
+                or not fichas.ruta_de(url).strip("/"))
+            paginas = set() if de_servicio else (
+                {fichas.pagina(url)} | (_paginas_de(session, fila) if fila else set()))
             if _es_del_catalogo(catalogo.por_paginas(paginas) or (
-                    catalogo.por_nombre(fila.titulo) if fila is not None else None),
+                    catalogo.por_nombre(fila.titulo, exacto=True) if fila is not None else None),
                     {"url": url}):
                 continue
             if fila is None:
@@ -649,7 +655,7 @@ def _productos_pedidos(session: Session, *, instruccion: str | None, nombres: li
             continue
         vistos |= grupo
         info = (catalogo.por_paginas(_paginas_de(session, propia))
-                or catalogo.por_nombre(propia.titulo))
+                or catalogo.por_nombre(propia.titulo, exacto=True))
         if info is not None:
             # Es un producto del catálogo: manda el catálogo.
             if not info.get("en_correo") and info.get("origen_id") not in del_catalogo:
@@ -722,10 +728,13 @@ class _Catalogo:
                 "enlace": next((v.enlace for v in variantes if v.enlace), None),
                 "en_correo": origen_id in self.en_correo}
 
-    def por_nombre(self, nombre: str | None) -> dict[str, Any] | None:
+    def por_nombre(self, nombre: str | None, *, exacto: bool = False) -> dict[str, Any] | None:
+        """Por el nombre que da el plan; con `exacto`, por el título de una
+        página del índice (sin palabras de más: «MBO 3050» no es la «MBO 3050
+        Pro»)."""
         from app.services.conocimiento import catalogo as catalogo_kb  # noqa: PLC0415
 
-        origen_id = catalogo_kb.por_nombre(nombre, self.grupos)
+        origen_id = catalogo_kb.por_nombre(nombre, self.grupos, exacto=exacto)
         return self.info(origen_id) if origen_id else None
 
     def por_paginas(self, paginas: set[str]) -> dict[str, Any] | None:
@@ -820,7 +829,7 @@ def _del_catalogo(session: Session, fragmentos: list[Any],
                 paginas |= _paginas_de(session, fila)
         except Exception:  # noqa: BLE001 — sin sus traducciones, por su página
             logger.warning("asistente: no se han podido leer las traducciones", exc_info=True)
-        info = catalogo.por_paginas(paginas) or catalogo.por_nombre(f.titulo)
+        info = catalogo.por_paginas(paginas) or catalogo.por_nombre(f.titulo, exacto=True)
         if info is not None:
             salida[f.id] = info
     return salida
@@ -913,6 +922,13 @@ def pide_producto(instruccion: str | None) -> bool:
     texto = instruccion or ""
     return bool(fichas.urls_de(texto) or _PIDE_FICHA_RE.search(texto)
                 or (_INCLUYE_RE.search(texto) and re.search(r"\d", texto)))
+
+
+def pide_incluir(instruccion: str | None) -> bool:
+    """¿La instrucción pide poner algo en el correo (un producto)? «Incluye»,
+    «añade», «pon»…, o lo que ya cuenta como pedir un producto. «Dile que la
+    Ador la revisamos el lunes» no pide ninguna ficha."""
+    return pide_producto(instruccion) or bool(_INCLUYE_RE.search(instruccion or ""))
 
 
 def reutilizar(session: Session, previo: dict[str, Any], fuentes: Fuentes,

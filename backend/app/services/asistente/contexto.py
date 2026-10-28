@@ -102,7 +102,7 @@ class Mensaje:
 
 #: Lo que se apunta de cada máquina del CATÁLOGO del correo (`contexto_json`).
 CAMPOS_MAQUINA = ("nombre", "marca", "precio_texto", "moneda", "precio_idioma", "orientativo",
-                  "enlace", "interes", "eleccion", "precio_publico")
+                  "enlace", "interes", "eleccion", "precio_publico", "fuente", "origen_id")
 
 
 def resumen_maquina(p: dict[str, Any]) -> dict[str, Any]:

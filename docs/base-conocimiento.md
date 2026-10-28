@@ -219,10 +219,12 @@ prueba «acuserecibo test» (Metallplatten y T-Shirts) se quedaba sin las DTF.
    interés por sus palabras («las máquinas de DTF» → `dtf`; «una láser para
    cortar» → `corte_laser`, `grabado_laser`; «UV grande» → `uv_grande`; «UV» a
    secas → los tres tamaños; `catalogo.intereses_de_texto`). Eso manda: las
-   máquinas que **nombra** la instrucción tienen su propio cupo (hasta seis
-   más), y entran aunque el hilo haya llenado el tope (28/10/2026: seis FLUX
-   de una avería dejaban fuera la artisJet 6090 Trust que pedía la
-   instrucción, y su ficha salía de la web, sin precio). Lo que se pide por
+   máquinas que la instrucción **nombra de verdad** (`catalogo.nombrados_en`:
+   no por un código que comparten, ni con una variante detrás) tienen su
+   propio cupo (hasta seis más), y entran aunque el hilo haya llenado el tope
+   (28/10/2026: seis FLUX de una avería dejaban fuera la artisJet 6090 Trust
+   que pedía la instrucción, y su ficha salía de la web, sin precio); el
+   recorte por tokens las deja para lo último. Lo que se pide por
    su nombre o por su enlace y no ha entrado aquí, se busca después en el
    catálogo entero (`catalogo.por_nombre`; ver
    [fuentes-externas.md](fuentes-externas.md) § Fichas montadas desde el

@@ -33,7 +33,7 @@ import json
 import re
 from decimal import Decimal
 from typing import Any
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, defer
@@ -342,11 +342,17 @@ MOTIVO_SERVICIO = "servicio"
 MOTIVO_IDO = "ido"
 MOTIVO_FUERA = "fuera"
 #: Las páginas de servicio que el índice SÍ lee (las demás, carrito, pago, mi
-#: cuenta, legales…, las excluye por su slug: `webs.reglas`).
+#: cuenta, legales…, las excluye por su slug: `webs.reglas`): las de contacto,
+#: también con más palabras («contacto-mbo-lasers», «kontakt-mbo-laser»), y el
+#: buscador.
 _SERVICIO_RE = re.compile(
-    r"^(contacto|contactos|contact|contacts|contact-us|contactanos|contacta|contactez-nous"
-    r"|nous-contacter|kontakt|kontaktieren|contatto|contatti|contacteer|neem-contact-op"
-    r"|buscador|buscar|busqueda|search|suche|recherche|zoeken|cerca)$", re.IGNORECASE)
+    r"(^|-)(contact|contacto|contactos|contacta|contactanos|contactar|contacter|contactez"
+    r"|contacteer|kontakt|kontaktieren|contatto|contatti)(-|$)"
+    r"|^(nous-contacter|neem-contact-op|buscador|buscar|busqueda|search|suche|recherche"
+    r"|zoeken|cerca)$", re.IGNORECASE)
+#: La consulta de una búsqueda o de la cesta de WordPress (`/?s=…`,
+#: `?add-to-cart=…`): tampoco lleva a la máquina.
+_CONSULTA_SERVICIO = frozenset({"s", "add-to-cart", "post_type"})
 #: Las bases de las categorías y etiquetas (de la tienda o del blog).
 BASES_CATEGORIA = frozenset({
     "categoria-producto", "product-category", "produkt-kategorie", "categorie-produit",
@@ -443,8 +449,12 @@ class MapaProductos:
         if set(tramos[:-1]) & BASES_CATEGORIA or tramos[0] in BASES_CATEGORIA:
             return True
         slug = unquote(tramos[-1])
-        if _SERVICIO_RE.match(slug):
+        if _SERVICIO_RE.search(slug):
             return True
+        if self._de_producto(sitio, ruta):
+            # Las reglas de slug del índice son para páginas y entradas: una
+            # máquina «reacondicionada» no es una página de condiciones.
+            return False
         if sitio not in self._slugs_fuera:
             try:
                 self._slugs_fuera[sitio] = reglas.cargar(self._session).para(sitio).slugs
@@ -463,6 +473,8 @@ class MapaProductos:
         if clave is None or self.producto(url) is not None:
             return None
         sitio, ruta = clave
+        if set(parse_qs(urlsplit(str(url)).query)) & _CONSULTA_SERVICIO:
+            return MOTIVO_SERVICIO      # una búsqueda o la cesta
         if not ruta.strip("/"):
             return None                 # la portada
         if self._de_servicio(sitio, ruta):

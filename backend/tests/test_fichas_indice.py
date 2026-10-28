@@ -792,7 +792,7 @@ def test_el_cuadre_avisa_de_las_fichas_del_catalogo_cuyo_enlace_no_es_un_product
     assert freebird.etiqueta == "«artisJet 3000Pro Freebird» (es)"
     assert freebird.detalle == (f"Su enlace {URL_CONTACTO} va a la página «Contacto», una página "
                                 "de servicio, no a la de la máquina.")
-    assert (freebird.enlace, freebird.ambito) == (URL_CONTACTO, "boprint")
+    assert (freebird.enlace, freebird.ambito) == (URL_CONTACTO, "compositor:aj-3000pro:es")
     assert freebird.huella_datos["enlace"] == "boprint:/contacto"
     assert "compositor" in freebird.pista_de_arreglo
     # Una categoría que el índice no tiene: no es una ruta de producto.
@@ -800,7 +800,8 @@ def test_el_cuadre_avisa_de_las_fichas_del_catalogo_cuyo_enlace_no_es_un_product
                                  "página de servicio de boprint.net (contacto, categoría, "
                                  "carrito…), no a la de la máquina.")
     assert categoria.pista_de_arreglo.startswith("El catálogo se edita en el compositor")
-    assert ctx.no_mirados[ENLACE_CATALOGO_NO_PRODUCTO] == {"artisjet-eu"}
+    # La Trust es de una web sin nada en el índice: esa ficha no se mira.
+    assert ctx.no_mirados[ENLACE_CATALOGO_NO_PRODUCTO] == {"compositor:aj-6090-trust:es"}
 
 
 def test_lo_avisado_de_una_web_que_deja_de_tener_productos_en_el_indice_no_se_da_por_resuelto(
@@ -1789,17 +1790,15 @@ def test_el_producto_del_catalogo_se_reconoce_por_su_nombre() -> None:
     assert catalogo_kb.por_nombre("MBO", {**grupos, "mbo-3050": [_fila("MBO 3050", "mbo")]}) is None
     assert catalogo_kb.por_nombre("Beambox II", grupos) == "flux-beambox-ii"
     assert catalogo_kb.por_nombre("", grupos) is None
-    # Lo que nombra de verdad una instrucción: un código compartido no basta.
-    nombrados = catalogo_kb.nombrados_en(INSTRUCCION_2810, {
-        o: [SimpleNamespace(nombre=f.nombre, marca=f.marca, descripcion="",
-                            caracteristicas_json="[]", datos_json="{}", origen_id=o)]
-        for o, (f,) in grupos.items()})
-    assert "aj-6090-trust" in nombrados and "mbo-6090" in nombrados
-    assert "mbo-6090-pro" not in nombrados
-    assert catalogo_kb.nombrados_en("añade la MBO 6090 versión desktop", {
-        o: [SimpleNamespace(nombre=f.nombre, marca=f.marca, descripcion="",
-                            caracteristicas_json="[]", datos_json="{}", origen_id=o)]
-        for o, (f,) in grupos.items()}) == ["mbo-6090"]
+    # El título de una página del índice, exacto: «MBO 3050» no es la «MBO 3050
+    # Pro» (ni por el nombre que da el plan: una variante de más).
+    con_3050 = {**grupos, "mbo-3050-pro": [_fila("MBO 3050 Pro", "mbo")]}
+    assert catalogo_kb.por_nombre("MBO 3050", con_3050, exacto=True) is None
+    assert catalogo_kb.por_nombre("MBO 3050", con_3050) is None
+    assert catalogo_kb.por_nombre("Impresora UV-LED artisJet 6090 Trust 60x90", grupos,
+                                  exacto=True) == "aj-6090-trust"
+    assert catalogo_kb.por_nombre("artisJet Trust 6090 UV Led Freebird", grupos,
+                                  exacto=True) is None
 
 
 def _correo_trust_desktop(refs: dict[str, str]) -> dict[str, Any]:
@@ -1933,3 +1932,171 @@ def test_un_enlace_a_una_pagina_indexada_que_no_es_producto_no_se_avisa(s: Sessi
     assert "página de servicio" in hallazgos["compositor:aj-3000pro:es"].detalle
     assert "no está en el índice de fluxlasers.es" in (
         hallazgos["compositor:flux-sin-indexar:es"].detalle)
+
+
+
+# --- la ronda de revisión (segunda vuelta) --------------------------------------------------
+
+
+def _grupos(*nombres: tuple[str, str, str]) -> dict[str, list[Any]]:
+    from types import SimpleNamespace  # noqa: PLC0415
+
+    return {o: [SimpleNamespace(nombre=n, marca=m, descripcion="", caracteristicas_json="[]",
+                                datos_json="{}", origen_id=o)] for o, n, m in nombres}
+
+
+def test_lo_que_nombra_una_instruccion_no_arrastra_otras_maquinas() -> None:
+    """Un código que comparten («6090»), una variante detrás («versión
+    desktop», «Pro») o una hermana nombrada entera («Ador 20W» y no la 10W)."""
+    from app.services.conocimiento import catalogo as catalogo_kb  # noqa: PLC0415
+
+    grupos = _grupos(("trust", "artisJet 6090 Trust", "artisjet"), ("mbo6090", "MBO 6090", "mbo"),
+                     ("mbo6090pro", "MBO 6090 Pro", "mbo"), ("ador20", "FLUX Ador 20W", "flux"),
+                     ("ador10", "FLUX Ador 10W", "flux"), ("bb2", "Beambox II", "flux"),
+                     ("bbpro", "Beambox Pro", "flux"))
+    for texto, nombradas in (
+            (INSTRUCCION_2810, ["trust"]),
+            ("incluye la ficha de la artisJet 6090 Trust", ["trust"]),
+            ("incluye la Trust delante", ["trust"]),
+            ("añade la MBO 6090 versión desktop", []),
+            ("incluye la MBO 6090 desktop", []),
+            ("añade la MBO 6090", ["mbo6090"]),
+            ("añade la MBO 6090 Pro", ["mbo6090pro"]),
+            ("incluye la Ador 20W", ["ador20"]),
+            ("incluye la Beambox II", ["bb2"]),
+            ("pon la Trust y la MBO 6090 juntas", ["trust", "mbo6090"])):
+        assert sorted(catalogo_kb.nombrados_en(texto, grupos)) == sorted(nombradas), texto
+
+
+def test_en_el_primer_borrador_la_instruccion_no_mete_la_mbo_6090_si_pide_la_desktop(
+        s: Session) -> None:
+    from app.services.conocimiento import catalogo as catalogo_kb  # noqa: PLC0415
+
+    _caso_ador(s)
+    cat = catalogo_kb.para_asistente(s, intereses=[], idioma="es", maquina=None,
+                                     modelo_flux=None, texto_cliente=HILO_ADOR,
+                                     instruccion=INSTRUCCION_2810, config=CONFIG)
+    nombres = [m["nombre"] for m in cat["maquinas"]]
+    assert "artisJet 6090 Trust" in nombres and "MBO 6090" not in nombres
+
+
+def test_el_recorte_por_tokens_deja_lo_que_pide_la_instruccion() -> None:
+    from types import SimpleNamespace  # noqa: PLC0415
+
+    from app.services.asistente.historico import ajustar_al_presupuesto  # noqa: PLC0415
+
+    maquinas = [{"nombre": f"FLUX {n}", "eleccion": "hilo"} for n in range(6)]
+    maquinas.insert(3, {"nombre": "artisJet 6090 Trust", "eleccion": "instruccion"})
+    ctx = SimpleNamespace(empresa_asuntos=[], historico=[], notas=[], recortes=[],
+                          catalogo={"maquinas": maquinas, "consumibles": []})
+    medidas = iter(range(10, 0, -1))
+    ajustar_al_presupuesto(ctx, presupuesto=6, medir=lambda c: next(medidas))
+    assert "artisJet 6090 Trust" in [m["nombre"] for m in ctx.catalogo["maquinas"]]
+    assert len(ctx.catalogo["maquinas"]) < 7
+
+
+def test_la_pagina_de_un_producto_que_solo_esta_en_la_web_no_es_otra_maquina_del_catalogo(
+        s: Session) -> None:
+    """El catálogo solo tiene la «MBO 3050 Pro»; el índice, la «MBO 3050»:
+    pedida por su enlace, va la del índice, no la Pro."""
+    _maquina(s, "mbo-3050-pro", "MBO 3050 Pro", sitio="mboprinters", precio="8.900 €",
+             enlace="https://mboprinters.com/product/mbo-3050-pro/")
+    _web(s, wp_id=5200, idioma="es", url="https://mboprinters.com/product/mbo-3050/",
+         slug="mbo-3050", titulo="MBO 3050", texto="Impresora UV de 30 × 50 cm.")
+    s.commit()
+    resumen: dict[str, Any] = {}
+    pedidos = consulta_fuentes._productos_pedidos(
+        s, instruccion="incluye la ficha de la MBO 3050: https://mboprinters.com/product/mbo-3050/",
+        nombres=["MBO 3050"], idioma="es", catalogo=consulta_fuentes._catalogo(s, []),
+        resumen=resumen, avisos=[])
+    assert [(f.sitio, f.wp_id) for f in pedidos] == [("mboprinters", 5200)]
+    assert "catalogo_pedidos" not in resumen
+
+
+def test_un_enlace_a_una_pagina_de_servicio_en_la_instruccion_no_es_una_maquina(
+        s: Session) -> None:
+    """La Freebird del catálogo apunta a /contacto/: «dile que nos escriba
+    desde https://boprint.net/contacto/» no pide la Freebird."""
+    _boprint(s)
+    _freebird(s)
+    resumen: dict[str, Any] = {}
+    avisos: list[str] = []
+    consulta_fuentes._productos_pedidos(
+        s, instruccion=f"dile que nos escriba desde {URL_CONTACTO} y le llamamos", nombres=[],
+        idioma="es", catalogo=consulta_fuentes._catalogo(s, []), resumen=resumen, avisos=avisos)
+    assert "catalogo_pedidos" not in resumen and avisos == []
+
+
+def test_mas_paginas_de_servicio_y_una_maquina_reacondicionada_no_lo_es(s: Session) -> None:
+    _boprint(s)
+    for wp_id, url, slug in ((701, "https://boprint.net/contacto-boprint/", "contacto-boprint"),
+                             (702, "https://boprint.net/en/contact-us-today/",
+                              "contact-us-today")):
+        fila_web(s, sitio="boprint", dominio="boprint.net", wp_id=wp_id, tipo="pagina",
+                 titulo="Contacto", url=url, slug=slug)
+    s.commit()
+    mapa = fichas.MapaProductos(s)
+    for url in ("https://boprint.net/contacto-boprint/", "https://boprint.net/en/contact-us-today/",
+                "https://boprint.net/kontakt-boprint/", "https://boprint.net/?s=freebird",
+                "https://boprint.net/?add-to-cart=364", "https://boprint.net/?post_type=product"):
+        assert mapa.motivo(url) == fichas.MOTIVO_SERVICIO, url
+    # Una máquina reacondicionada (fuera del índice por su categoría) no es una
+    # página de condiciones: no está en el índice.
+    assert mapa.motivo("https://boprint.net/producto/impresora-reacondicionada/") == (
+        fichas.MOTIVO_FUERA)
+    assert mapa.motivo("https://boprint.net/producto/impresora-uv-led-5000u/") is None
+
+
+def test_en_el_cuadre_lo_que_no_se_puede_juzgar_no_deja_abierto_lo_arreglado(s: Session) -> None:
+    """Una web con páginas y sin productos en el índice: la ficha A (a su
+    página de contacto) se avisa; la B (una ruta de producto, que no se puede
+    juzgar) no impide que A se dé por resuelta cuando se arregla."""
+    for wp_id, url, titulo in ((1, "https://pimpam-vending.com/contacto/", "Contacto"),
+                               (2, "https://pimpam-vending.com/vending/", "Vending")):
+        fila_web(s, sitio="pimpam", dominio="pimpam-vending.com", wp_id=wp_id, tipo="pagina",
+                 url=url, titulo=titulo)
+    _maquina(s, "pp-a", "Pimpam A", sitio="pimpam", marca="pimpam",
+             enlace="https://pimpam-vending.com/contacto/")
+    _maquina(s, "pp-b", "Pimpam B", sitio="pimpam", marca="pimpam",
+             enlace="https://pimpam-vending.com/producto/pimpam-b/")
+    s.commit()
+    comp = registro()[ENLACE_CATALOGO_NO_PRODUCTO]
+
+    def pasada(cuando: datetime) -> dict[str, int]:
+        ctx = _ctx(s)
+        hallazgos = list(enlace_catalogo_no_producto(ctx))
+        return cuadre_engine.aplicar(s, comp, hallazgos, cuando,
+                                     no_mirados=ctx.no_mirados.get(comp.id, set()))
+
+    assert pasada(AHORA)["nuevos"] == 1
+    a = s.scalar(select(ProductoCatalogo).where(ProductoCatalogo.origen_id == "pp-a"))
+    a.enlace = "https://pimpam-vending.com/vending/"
+    s.flush()
+    assert pasada(AHORA + timedelta(days=1))["resueltos"] == 1
+
+
+def test_una_correccion_reutiliza_el_p_y_no_repite_lo_que_ya_trajo(s: Session) -> None:
+    """Lo que la IA no ve en el CATÁLOGO del primer borrador (recortado, o que
+    solo tiene su P# por una página de la web) se le vuelve a dar con su
+    mismo P#; y «Lo que ha usado» no lo repite en la corrección siguiente."""
+    from app.services.asistente import redactor  # noqa: PLC0415
+
+    _caso_ador(s)
+    refs = ia.Referencias(productos={
+        "P1": {"fuente": FUENTE_COMPOSITOR, "origen_id": "flux-ador"},
+        "P7": {"fuente": FUENTE_COMPOSITOR, "origen_id": "aj-6090-trust"}})
+    raiz = {"catalogo": {"maquinas": [{"nombre": "FLUX Ador", "fuente": FUENTE_COMPOSITOR,
+                                       "origen_id": "flux-ador"}]}}
+    bloque, pedidos = redactor._catalogo_pedido_correccion(
+        s, refs, instruccion="incluye la ficha de la artisJet 6090 Trust", mat=None, plan=None,
+        idioma="es", contexto=raiz, raiz_contexto=raiz)
+    assert "- [P7] artisJet 6090 Trust · artisjet" in bloque
+    assert [p["origen_id"] for p in pedidos] == ["aj-6090-trust"]
+    # Sin pedir que se ponga nada, no se busca.
+    assert redactor._catalogo_pedido_correccion(
+        s, refs, instruccion="dile que la artisJet 6090 Trust la tenemos en stock", mat=None,
+        plan=None, idioma="es", contexto=raiz, raiz_contexto=raiz) == ("", [])
+    contexto = redactor._con_catalogo_pedido(json.dumps(raiz), pedidos)
+    otra_vez = redactor._con_catalogo_pedido(contexto, pedidos)
+    nombres = [m["nombre"] for m in json.loads(otra_vez)["catalogo"]["maquinas"]]
+    assert nombres == ["artisJet 6090 Trust", "FLUX Ador"]

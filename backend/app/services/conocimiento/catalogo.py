@@ -1228,28 +1228,49 @@ def menciones_en(texto: str | None, grupos: dict[str, list[ProductoCatalogo]],
 
 
 #: Lo que no distingue una máquina de otra al buscarla por su nombre («la
-#: impresora UV artisJet 6090 Trust»). «Pro», «II» o «Desktop» sí distinguen.
+#: impresora UV-LED artisJet 6090 Trust»). «Pro», «II» o «Desktop» sí distinguen.
 _GENERICAS_NOMBRE: frozenset[str] = frozenset({
     "uv", "led", "impresora", "impresoras", "printer", "printers", "drucker", "imprimante",
     "machine", "máquina", "maquina", "maschine", "laser", "láser", "ficha", "fichas", "modelo",
-    "model", "version", "versión", "la", "el", "de", "del", "the", "a", "una", "un",
+    "model", "version", "versión", "variante", "variant", "edicion", "edición", "edition",
+    "la", "el", "de", "del", "the", "a", "una", "un",
 })
+#: Las que anuncian una variante: «la MBO 6090 versión desktop».
+_MARCAS_VARIANTE: frozenset[str] = frozenset({
+    "version", "versión", "variante", "variant", "modelo", "model", "edicion", "edición",
+    "edition"})
+#: Palabras que, detrás del nombre de una máquina, la hacen otra.
+_VARIANTES: frozenset[str] = frozenset({
+    "desktop", "pro", "plus", "max", "mini", "lite", "xl", "xxl", "ii", "iii", "iv", "ultra",
+    "compact", "duo"})
+#: Las medidas y formatos no distinguen una máquina («60x90», «A1», «90cm»).
+_MEDIDA_RE = re.compile(r"^(\d+(?:[.,]\d+)?x\d+(?:[.,]\d+)?|a\d|\d+(?:cm|mm)|cm|mm)$")
+
+
+def _secuencia(texto: str | None) -> list[str]:
+    """Las palabras y los signos de un texto, en orden, en minúsculas y sin
+    tildes; un guion separa palabras («UV-LED» → uv, led)."""
+    from app.services.externo.html_texto import plano  # noqa: PLC0415
+
+    return re.findall(r"\w+|[^\w\s]", plano(texto or "").lower().replace("-", " "))
 
 
 def _palabras_de_nombre(texto: str | None) -> set[str]:
-    from app.services.externo.html_texto import plano  # noqa: PLC0415
+    return {t for t in _secuencia(texto)
+            if t[:1].isalnum() and t not in _GENERICAS_NOMBRE and not _MEDIDA_RE.match(t)}
 
-    return _tokens(plano(texto or "")) - _GENERICAS_NOMBRE
 
-
-def por_nombre(nombre: str | None, grupos: dict[str, list[ProductoCatalogo]]) -> str | None:
+def por_nombre(nombre: str | None, grupos: dict[str, list[ProductoCatalogo]], *,
+               exacto: bool = False) -> str | None:
     """La máquina del catálogo (`origen_id`) que es `nombre`: todas sus
-    palabras (sin las genéricas) están en el nombre de la máquina o en su
-    marca, y al menos una del modelo. Si hay varias, la que menos palabras
-    añade; si empatan, ninguna. «artisJet 6090 Trust» y «Trust» son la
-    artisJet 6090 Trust; «MBO 6090 desktop» NO es la «MBO 6090»: «desktop»
-    no está en su nombre (es otra máquina, o una variante que el catálogo no
-    tiene)."""
+    palabras (sin las genéricas ni las medidas) están en el nombre de la
+    máquina o en su marca, y al menos una del modelo. Si hay varias, la que
+    menos palabras añade; si empatan, ninguna. «artisJet 6090 Trust» y
+    «Trust» son la artisJet 6090 Trust; «MBO 6090 desktop» NO es la «MBO
+    6090»: «desktop» no está en su nombre (es una variante que el catálogo no
+    tiene). Ni al revés: «MBO 3050» no es la «MBO 3050 Pro» (una variante de
+    más). Con `exacto` (el título de una página del índice), el nombre de la
+    máquina no puede tener ninguna palabra de más."""
     pedidas = _palabras_de_nombre(nombre)
     if not pedidas:
         return None
@@ -1259,9 +1280,14 @@ def por_nombre(nombre: str | None, grupos: dict[str, list[ProductoCatalogo]]) ->
         for v in variantes:
             propias = _palabras_de_nombre(v.nombre)
             modelo = propias - marca
-            if pedidas <= propias | marca and modelo & pedidas:
-                extra = len(modelo - pedidas)
-                mejores[origen_id] = min(extra, mejores.get(origen_id, extra))
+            if not (pedidas <= propias | marca and modelo & pedidas):
+                continue
+            sobran = modelo - pedidas
+            # Una palabra de variante de más («Pro», «II») la hace otra máquina.
+            if (exacto and sobran) or sobran & _VARIANTES:
+                continue
+            extra = len(sobran)
+            mejores[origen_id] = min(extra, mejores.get(origen_id, extra))
     if not mejores:
         return None
     menos = min(mejores.values())
@@ -1269,22 +1295,75 @@ def por_nombre(nombre: str | None, grupos: dict[str, list[ProductoCatalogo]]) ->
     return ganadoras[0] if len(ganadoras) == 1 else None
 
 
-def nombrados_en(texto: str | None, grupos: dict[str, list[ProductoCatalogo]]) -> list[str]:
-    """Las máquinas que un texto nombra de verdad: las seguras de
-    `menciones_en`, menos las que solo casan por un código que comparten con
-    otra («la MBO 6090 versión desktop» no nombra la «artisJet 6090 Trust»).
-    Vale una con su nombre entero (sin la marca) o con una palabra del modelo
-    que no es un código."""
-    palabras = _tokens(texto)
-    salida: list[str] = []
-    for origen_id, fuerza in menciones_en(texto, grupos):
-        base = (grupos.get(origen_id) or [None])[0]
-        if fuerza != FUERZA_NOMBRE or base is None:
+def _con_variante(secuencia: list[str], propias: set[str], distintivas: set[str],
+                  vocabulario: set[str]) -> bool:
+    """¿Detrás de donde el texto nombra la máquina (un tramo de sus palabras
+    con alguna `distintiva`) viene otra palabra que la hace otra máquina?
+    «versión desktop», «Pro» o una palabra del modelo de otra máquina del
+    catálogo que esta no tiene."""
+    i = 0
+    while i < len(secuencia):
+        if secuencia[i] not in propias:
+            i += 1
             continue
-        modelo = _tokens(base.nombre) - _tokens(base.marca)
-        sin_codigo = {t for t in modelo - _GENERICAS_NOMBRE if not _es_codigo(t)}
-        if (modelo and modelo <= palabras) or sin_codigo & palabras:
-            salida.append(origen_id)
+        j = i
+        while j < len(secuencia) and secuencia[j] in propias:
+            j += 1
+        tramo = set(secuencia[i:j])
+        i = j
+        if not tramo & distintivas:
+            continue
+        anuncia = False
+        while j < len(secuencia) and (secuencia[j] in _GENERICAS_NOMBRE
+                                      or _MEDIDA_RE.match(secuencia[j])):
+            anuncia = anuncia or secuencia[j] in _MARCAS_VARIANTE
+            j += 1
+        if j < len(secuencia) and secuencia[j][:1].isalnum():
+            siguiente = secuencia[j]
+            if anuncia or siguiente in _VARIANTES or siguiente in vocabulario:
+                return True
+    return False
+
+
+def nombrados_en(texto: str | None, grupos: dict[str, list[ProductoCatalogo]], *,
+                 menciones: list[tuple[str, str]] | None = None) -> list[str]:
+    """Las máquinas que un texto nombra de verdad, de las seguras de
+    `menciones_en`:
+
+    - con su nombre entero (sin la marca); si su modelo es solo un código
+      («MBO 6090»), también con la marca: «la artisJet 6090 Trust» no nombra
+      la MBO 6090;
+    - o con todas las palabras de su modelo que no son códigos («la Trust»),
+      salvo que otra con esas palabras esté nombrada entera («la Ador 20W»
+      no nombra la Ador 10W);
+    - y sin una variante detrás («la MBO 6090 versión desktop» no nombra la
+      MBO 6090)."""
+    secuencia = _secuencia(texto)
+    palabras = _palabras_de_nombre(texto)
+    modelos = {o: _palabras_de_nombre(v[0].nombre) - _palabras_de_nombre(v[0].marca)
+               for o, v in grupos.items() if v}
+    candidatas: dict[str, tuple[set[str], set[str], set[str], bool]] = {}
+    for origen_id, fuerza in (menciones if menciones is not None
+                              else menciones_en(texto, grupos)):
+        modelo = modelos.get(origen_id) or set()
+        if fuerza != FUERZA_NOMBRE or not modelo:
+            continue
+        marca = _palabras_de_nombre(grupos[origen_id][0].marca)
+        sin_codigo = {t for t in modelo if not _es_codigo(t)}
+        entera = modelo <= palabras and bool(sin_codigo or marca & palabras)
+        if entera or (sin_codigo and sin_codigo <= palabras):
+            candidatas[origen_id] = (marca, modelo, sin_codigo, entera)
+    salida: list[str] = []
+    for origen_id, (marca, modelo, sin_codigo, entera) in candidatas.items():
+        if not entera and any(e and sc & sin_codigo for o, (_, _, sc, e) in candidatas.items()
+                              if o != origen_id):
+            continue                    # otra con esas palabras está nombrada entera
+        vocabulario = set().union(*(m for o, m in modelos.items() if o != origen_id)) - modelo
+        # Donde se la nombra: un tramo con una palabra de su modelo que no es
+        # un código (o, si solo tiene códigos, con su marca).
+        if _con_variante(secuencia, modelo | marca, sin_codigo or marca, vocabulario):
+            continue
+        salida.append(origen_id)
     return salida
 
 
@@ -1512,8 +1591,11 @@ def para_asistente(
     # que pedía la instrucción, y su ficha salió de la web, sin precio).
     menciones_instruccion = menciones_en(instruccion, grupos)
     instruccion_seguras, instruccion_posibles = _partir(menciones_instruccion)
-    _añadir(_por_origen(instruccion_seguras), "instruccion",
-            maximo=len(maquinas) + MAQUINAS_MAX)
+    nombradas = [o for o in nombrados_en(instruccion, grupos, menciones=menciones_instruccion)
+                 if o in instruccion_seguras]
+    _añadir(_por_origen(nombradas), "instruccion", maximo=len(maquinas) + MAQUINAS_MAX)
+    # Las demás seguras (un código que comparten, una variante): con el tope.
+    _añadir(_por_origen([o for o in instruccion_seguras if o not in nombradas]), "instruccion")
     if intereses_instruccion:
         _añadir(maquinas_para(session, intereses_instruccion, idioma=idioma, ahora=ahora,
                               config=cfg, filas=filas, grupos=grupos), "instruccion")

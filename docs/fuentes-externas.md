@@ -678,15 +678,20 @@ Solo lee: ni el índice ni el catálogo se tocan.
   compositor** antes de montar una ficha del índice (no se carga entero en el
   prompt: solo lo pedido):
   - **Por su nombre** (`catalogo.por_nombre`: todas las palabras del nombre
-    pedido, sin las genéricas —UV, LED, impresora…—, están en el nombre de la
-    máquina o en su marca, y al menos una del modelo; la que menos palabras
-    añade; si empatan, ninguna). «artisJet 6090 Trust» y «la Trust» son la
-    Trust; «MBO 6090 desktop» **no** es la «MBO 6090» («desktop» no está en su
-    nombre: es una variante que solo tiene la web).
+    pedido, sin las genéricas —UV, LED, impresora…— ni las medidas —60x90,
+    A1—, están en el nombre de la máquina o en su marca, y al menos una del
+    modelo; la que menos palabras añade; si empatan, ninguna). «artisJet 6090
+    Trust» y «la Trust» son la Trust; «MBO 6090 desktop» **no** es la «MBO
+    6090» («desktop» no está en su nombre: es una variante que solo tiene la
+    web), ni «MBO 3050» es la «MBO 3050 Pro» (le falta una palabra de
+    variante: Pro, II, Plus…).
   - **Por su página** o la de una de sus traducciones
     (`consulta_fuentes._Catalogo.por_paginas`; `fichas.pagina`: sitio y ruta
-    sin `www.`, idioma ni barra final), y por el título de la página del
-    índice que se pide por su enlace.
+    sin `www.`, idioma ni barra final). La portada y una página de servicio
+    (`/contacto/`) **nunca** identifican una máquina, aunque una ficha del
+    catálogo apunte ahí por error. El **título de una página del índice** solo
+    casa si es exactamente el nombre de la máquina (`exacto`): la página «MBO
+    3050» no es la «MBO 3050 Pro» del catálogo.
   - Lo que es del catálogo **no es una ficha del índice**: si no es ya una
     máquina del correo, va a `material.resumen["catalogo_pedidos"]` y el
     redactor lo trae con su ficha y su precio de venta
@@ -698,9 +703,23 @@ Solo lee: ni el índice ni el catálogo se tocan.
     (el CATÁLOGO es el del primer borrador) va en un bloque de la petición,
     «CATÁLOGO · AÑADIDO EN ESTA CORRECCIÓN», cada producto con su `P#` (detrás
     de los que hay), y entra en el CATÁLOGO del turno («Lo que ha usado» lo
-    enseña). Sin plan (la casilla «Webs» desmarcada, o una corrección que no
-    pide un producto), cuenta lo que la instrucción nombra de verdad
-    (`catalogo.nombrados_en`: un código que comparten dos máquinas no basta).
+    enseña, sin repetirlo si una corrección posterior lo vuelve a pedir). Lo
+    que ya tiene a la vista no se repite: se mira contra el CATÁLOGO congelado
+    del primer borrador (ya recortado); un producto que ya tenía su `P#` en
+    las referencias (porque el recorte lo quitó, o por la página de una web)
+    vuelve con ese mismo `P#`. Sin plan (la casilla «Webs» desmarcada, o una
+    corrección que no pide un producto), cuenta lo que la instrucción nombra
+    de verdad, y solo si pide poner algo en el correo («incluye», «añade»,
+    «pon»…; `consulta_fuentes.pide_incluir`). «Nombrar de verdad»
+    (`catalogo.nombrados_en`): con su nombre entero (si su modelo es solo un
+    código, «MBO 6090», también con la marca: «la artisJet 6090 Trust» no
+    nombra la MBO 6090), o con todas las palabras de su modelo que no son
+    códigos («la Trust») si ninguna hermana está nombrada entera («la Ador
+    20W» no nombra la Ador 10W), y sin una variante detrás («la MBO 6090
+    versión desktop», «la MBO 6090 Pro»). En el primer borrador, el cupo
+    propio de la instrucción es para estas; las demás menciones de la
+    instrucción entran con el tope de siempre. Y el recorte por tokens quita
+    antes cualquier otra máquina que las que pide la instrucción.
   - Una pieza de «Nuestras webs» que trae la búsqueda y es un producto del
     catálogo (por su página o su título): si es una máquina del correo, dice
     «En el CATÁLOGO» y no se ofrece como ficha; si no, se ofrece con su `W#`,
@@ -736,10 +755,13 @@ Solo lee: ni el índice ni el catálogo se tocan.
   (`MapaProductos.motivo`, con cualquier dominio, prefijo de idioma o barra
   final de la web; por la ruta o, si es de producto o es solo el slug, por el
   slug) cuando el enlace:
-  - va a una **página de servicio** (`servicio`): contacto, categoría o
-    etiqueta (`BASES_CATEGORIA`), carrito, pago, mi cuenta, buscador,
-    legales… (las que el índice excluye por su slug, `webs.reglas`, más
-    contacto y buscador, que el índice sí lee);
+  - va a una **página de servicio** (`servicio`): contacto (también con más
+    palabras: `contacto-mbo-lasers`, `kontakt-mbo-laser`), categoría o
+    etiqueta (`BASES_CATEGORIA`), carrito, pago, mi cuenta, buscador (también
+    `/?s=…`, `?add-to-cart=…`), legales… (las que el índice excluye por su
+    slug, `webs.reglas`, más contacto y buscador, que el índice sí lee). Las
+    reglas de slug del índice son para páginas y entradas: una ruta de
+    producto (una máquina «reacondicionada») no es una página de servicio;
   - es el de una página que el índice **ya no tiene** (`ido`: se quitó de la
     web o una regla del índice la deja fuera; no se afirma cuál);
   - **no está en el índice** (`fuera`), ni como producto, ni como página, ni

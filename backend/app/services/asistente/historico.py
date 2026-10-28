@@ -387,7 +387,11 @@ def ajustar_al_presupuesto(
             quitado = ctx.catalogo["consumibles"].pop()
             ctx.recortes.append(f"catálogo: consumible «{quitado.get('nombre')}»")
         elif len((getattr(ctx, "catalogo", None) or {}).get("maquinas") or []) > 2:
-            quitado = ctx.catalogo["maquinas"].pop()
+            # Lo que pide la instrucción se queda: se quita la última de las demás.
+            maquinas = ctx.catalogo["maquinas"]
+            quitar = next((i for i in range(len(maquinas) - 1, -1, -1)
+                           if maquinas[i].get("eleccion") != "instruccion"), len(maquinas) - 1)
+            quitado = maquinas.pop(quitar)
             ctx.recortes.append(f"catálogo: máquina «{quitado.get('nombre')}»")
         else:
             break                          # hilo + expediente: no se recorta más

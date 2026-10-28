@@ -331,9 +331,11 @@ del pedido de BoHub.
   producto e idioma, solo si el enlace (`MapaProductos.motivo`):
     - va a una **página de servicio**: «va a la página «Contacto», una página
       de servicio, no a la de la máquina» (o, sin título, «va a una página de
-      servicio de …»). Son contacto, categorías y etiquetas, carrito, pago, mi
-      cuenta, buscador, legales…: las que el índice excluye por su slug
-      (`webs.reglas`) más contacto y buscador;
+      servicio de …»). Son contacto (también `contacto-mbo-lasers`…),
+      categorías y etiquetas, carrito, pago, mi cuenta, buscador (también
+      `/?s=…`), legales…: las que el índice excluye por su slug
+      (`webs.reglas`, solo para rutas que no son de producto) más contacto y
+      buscador;
     - es el de una página que el índice **ya no tiene** (se quitó de la web o
       una regla del índice la deja fuera), con una pista que pide mirar si
       sigue en la web antes de quitarla;
@@ -350,10 +352,11 @@ del pedido de BoHub.
       slug que un producto no se toman por él). La portada no se avisa.
     - **Lo que no se puede juzgar no se da por resuelto**: una web sin nada
       en el índice, o una ruta de producto de una web sin productos en él
-      (sin tienda o sin leer), va a `ctx.no_mirados` (el ámbito de cada
-      descuadre es la web) y lo que ya se había avisado de ella sigue
-      abierto. Una página de servicio se avisa aunque su web no esté en el
-      índice.
+      (sin tienda o sin leer). Esa ficha va a `ctx.no_mirados` (el **ámbito
+      de cada descuadre es su ficha**, no su web: lo que no se puede juzgar
+      de una no deja abiertos los ya arreglados de las demás de su web) y lo
+      que ya se había avisado de ella sigue abierto. Una página de servicio
+      se avisa aunque su web no esté en el índice.
     - Al cambiar la regla, los descuadres de las páginas de aterrizaje que
       ya se habían abierto se resuelven solos en la siguiente pasada.
     - **No se corrige nada**: el catálogo llega del compositor en un solo

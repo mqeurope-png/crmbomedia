@@ -419,7 +419,7 @@ describe("Lo que ha usado — las fichas del correo, del catálogo o del índice
     render(<LoQueHaUsado borrador={borrador({
       contacto: { nombre: "Ana" },
       fichas: [{ ...CATALOGO, nombre: "artisJet 3000Pro Freebird", enlace: "https://www.boprint.net/contacto/",
-        precio_texto: null, enlace_no_producto: true }],
+        precio_texto: null, enlace_no_producto: true, enlace_motivo: "servicio" }],
     })} />);
     expect(screen.getByText(/1 ficha del catálogo\./)).toBeInTheDocument();
     // Sin fichas del índice, plegado no dice nada de fichas.
@@ -450,6 +450,17 @@ describe("Lo que ha usado — las fichas del correo, del catálogo o del índice
     expect(nueva).toHaveTextContent(
       "el enlace no está en el índice de las webs (ni como producto ni como página): si la página es nueva, aún no se ha leído; si no, revísalo en el compositor");
     expect(nueva).not.toHaveTextContent("página de servicio");
+  });
+
+  it("un borrador de antes (motivo «pagina» o sin motivo) no llama de servicio a una página de la web", () => {
+    render(<LoQueHaUsado borrador={borrador({
+      contacto: { nombre: "Ana" },
+      fichas: [{ ...CATALOGO, nombre: "Beambox II", enlace: "https://fluxlasers.eu/beambox-ii/",
+        enlace_no_producto: true, enlace_motivo: "pagina" }],
+    })} />);
+    const fila = within(catalogo()).getByRole("listitem");
+    expect(fila).toHaveTextContent("el enlace no es una página de producto de nuestras webs (comprobación de un borrador anterior: una página de la web vale)");
+    expect(fila).not.toHaveTextContent("página de servicio");
   });
 
   it("el precio de una ficha del catálogo dice lo mismo que el correo: «a medida» u orientativo", () => {
@@ -510,7 +521,7 @@ describe("Lo que ha usado — las fichas del correo, del catálogo o del índice
           sin_maquina: [],
         },
         enlaces_no_producto: [
-          { nombre: "artisJet 3000Pro Freebird", enlace: "https://www.boprint.net/contacto/" },
+          { nombre: "artisJet 3000Pro Freebird", enlace: "https://www.boprint.net/contacto/", motivo: "servicio" },
           { nombre: "Orion 20", enlace: "https://mboprinters.com/es/producto/orion-20/", motivo: "fuera" },
         ],
       }),

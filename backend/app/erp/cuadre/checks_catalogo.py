@@ -21,7 +21,8 @@ cualquiera de los dominios de esa web, `webs.fichas.MapaProductos.motivo`):
 No se corrige nada: el catálogo llega en un solo sentido del compositor, y lo
 que se tocara aquí lo borraría la siguiente sincronización. Se arregla en el
 compositor. Lo que no se puede juzgar (una web sin nada en el índice; una
-ruta de producto de una web sin productos en él) no se da por resuelto.
+ruta de producto de una web sin productos en él) no se da por resuelto: el
+ámbito de cada descuadre es su ficha, no su web.
 """
 from __future__ import annotations
 
@@ -76,10 +77,13 @@ def enlace_catalogo_no_producto(ctx: Contexto) -> Iterator[Hallazgo]:
         sitio = fichas.sitio_de(enlace) if enlace else None
         if sitio is None:
             continue
+        # El ámbito es la ficha: lo que no se puede juzgar de una no deja
+        # abiertos los descuadres ya arreglados de las demás de su web.
+        eid = entidad_id(p.fuente, f"{p.origen_id}:{p.idioma}")
         motivo = mapa.motivo(enlace)
         if motivo is None:
             if not mapa.juzgable(enlace):
-                no_mirados.add(sitio.clave)
+                no_mirados.add(eid)
             continue
         titulo = mapa.titulo(enlace) if motivo == fichas.MOTIVO_SERVICIO else None
         if motivo == fichas.MOTIVO_SERVICIO:
@@ -95,7 +99,7 @@ def enlace_catalogo_no_producto(ctx: Contexto) -> Iterator[Hallazgo]:
                    "ni como entrada (o es una que aún no se ha leído)")
         yield Hallazgo(
             entidad_tipo=ENTIDAD_PRODUCTO_CATALOGO,
-            entidad_id=entidad_id(p.fuente, f"{p.origen_id}:{p.idioma}"),
+            entidad_id=eid,
             etiqueta=f"«{p.nombre}» ({p.idioma})"[:200],
             detalle=f"Su enlace {enlace} {que}.",
             pista_de_arreglo={fichas.MOTIVO_FUERA: PISTA_FUERA,
@@ -107,5 +111,5 @@ def enlace_catalogo_no_producto(ctx: Contexto) -> Iterator[Hallazgo]:
                           "enlace": fichas.pagina(enlace)},
             datos={"nombre": p.nombre, "marca": p.marca, "idioma": p.idioma, "enlace": enlace,
                    "sitio": sitio.clave, "pagina": titulo, "motivo": motivo},
-            ambito=sitio.clave,
+            ambito=eid,
         )

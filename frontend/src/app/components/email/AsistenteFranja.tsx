@@ -692,8 +692,10 @@ type PaginaUsada = {
 /** Por qué avisar del enlace de una ficha del catálogo: va a una página de
  *  servicio (contacto, categoría, carrito…), el índice ya no tiene su página,
  *  o no está en el índice. Cualquier otra página indexada de la web vale.
- *  «pagina» es como lo apuntaban los borradores de antes. */
-type MotivoEnlace = "servicio" | "ido" | "fuera";
+ *  «pagina» es lo que apuntaban los borradores de antes del cambio de regla
+ *  (cualquier página que no fuera de producto): se dice tal cual, sin
+ *  llamarla de servicio. */
+type MotivoEnlace = "servicio" | "ido" | "fuera" | "pagina";
 
 /** Una ficha del correo compuesto que sale del catálogo del compositor.
  *  `precioPublico` / `orientativo`: lo que dice el correo en el sitio del
@@ -877,7 +879,7 @@ export function fichasDelCorreo(ctx: Record<string, unknown>): FichasDelCorreo {
 }
 
 function motivoEnlace(v: unknown): MotivoEnlace {
-  return v === "ido" || v === "fuera" ? v : "servicio";
+  return v === "ido" || v === "fuera" || v === "servicio" ? v : "pagina";
 }
 
 /** Lo que se dice de un enlace del catálogo que no lleva a la máquina. */
@@ -888,6 +890,9 @@ function avisoEnlace(motivo: MotivoEnlace): string {
   if (motivo === "ido") {
     return "el enlace es el de una página que el índice de las webs ya no tiene (se quitó de la web o una regla del índice la deja fuera): revísalo";
   }
+  if (motivo === "pagina") {
+    return "el enlace no es una página de producto de nuestras webs (comprobación de un borrador anterior: una página de la web vale)";
+  }
   return "el enlace va a una página de servicio (contacto, categoría, carrito…), no a la de la máquina: revísalo en el compositor";
 }
 
@@ -895,6 +900,7 @@ function avisoEnlace(motivo: MotivoEnlace): string {
 function marcaEnlace(motivo: MotivoEnlace): string {
   if (motivo === "fuera") return "el enlace no está en el índice de las webs";
   if (motivo === "ido") return "el índice de las webs ya no tiene la página del enlace";
+  if (motivo === "pagina") return "el enlace no es una página de producto (comprobación anterior)";
   return "el enlace va a una página de servicio, no a la de la máquina";
 }
 
@@ -1380,7 +1386,7 @@ export function LoQueHaUsado({ borrador }: { borrador: BorradorAsistente }) {
               {"marca" in p && p.marca ? ` (${String(p.marca)})` : ""}
               <span className="muted small"> — {p.precio_texto ? `${p.precio_texto}${p.orientativo ? " · orientativo" : ""}` : ("precio_publico" in p && p.precio_publico === false ? "sin precio público (a medida)" : "sin precio publicado")}</span>
               {p.enlace && noProducto.has(p.enlace)
-                ? avisoDe(marcaEnlace(noProducto.get(p.enlace) ?? "servicio"))
+                ? avisoDe(marcaEnlace(noProducto.get(p.enlace) ?? "pagina"))
                 : null}
             </li>
           ))}

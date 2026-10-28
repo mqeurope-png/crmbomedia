@@ -1533,19 +1533,30 @@ def _catalogo_pedido_turno0(session: Session, ctx: Contexto,
 def _catalogo_pedido_correccion(
     session: Session, refs: ia_compuesto.Referencias, *, instruccion: str,
     mat: material_fuera.Material | None, plan: consulta_fuentes.Plan | None, idioma: str,
-    contexto: dict[str, Any],
+    contexto: dict[str, Any], raiz_contexto: dict[str, Any] | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
-    """Lo que pide una corrección del catálogo y no estaba en el CATÁLOGO del
-    primer borrador: cada producto con su `P#` (detrás de los que hay) y un
-    bloque para la petición, con su ficha y su precio de venta. Sin plan (la
-    casilla «Webs» desmarcada, o la corrección no pedía un producto), por lo
-    que la instrucción nombra de verdad. `(bloque, productos)`."""
-    ya = [str(c.get("origen_id") or "") for c in refs.productos.values()
-          if c.get("fuente") == FUENTE_COMPOSITOR]
+    """Lo que pide una corrección del catálogo y la IA no tiene a la vista en
+    el CATÁLOGO del primer borrador (el congelado, ya recortado): cada
+    producto con su `P#` (el que ya tuviera en las referencias, o uno nuevo
+    detrás de los que hay) y un bloque para la petición, con su ficha y su
+    precio de venta. Sin plan (la casilla «Webs» desmarcada, o la corrección
+    no pedía un producto), por lo que la instrucción nombra de verdad, y solo
+    si pide poner algo en el correo. `(bloque, productos)`."""
+    cat_raiz = (raiz_contexto or {}).get("catalogo")
+    maquinas_raiz = cat_raiz.get("maquinas") if isinstance(cat_raiz, dict) else None
+    if maquinas_raiz and all(isinstance(m, dict) and m.get("origen_id") for m in maquinas_raiz):
+        ya = [str(m["origen_id"]) for m in maquinas_raiz]
+    else:
+        # Un borrador de antes (su CATÁLOGO no guarda el `origen_id`): las
+        # referencias del primer borrador.
+        ya = [str(c.get("origen_id") or "") for c in refs.productos.values()
+              if c.get("fuente") == FUENTE_COMPOSITOR]
+    con_menciones = (not (plan is not None and plan.productos)
+                     and consulta_fuentes.pide_incluir(instruccion))
     try:
         nuevos = catalogo_pedido.productos(session, catalogo_pedido.origenes(
-            session, instruccion=instruccion, material=mat,
-            con_menciones=not (plan is not None and plan.productos), ya=ya), idioma=idioma)
+            session, instruccion=instruccion, material=mat, con_menciones=con_menciones,
+            ya=ya), idioma=idioma)
     except Exception:  # noqa: BLE001 — sin esto, la corrección va con su CATÁLOGO
         logger.warning("asistente: no se han podido traer los productos pedidos del catálogo",
                        exc_info=True)
@@ -1563,9 +1574,12 @@ def _catalogo_pedido_correccion(
         "referencia, y su precio tal cual) y mandan sobre cualquier página de nuestras webs del "
         f"mismo producto; precios {_iva_texto(iva, avisos)}:"]
     for p in nuevos:
-        ref = f"P{siguiente}"
-        siguiente += 1
-        refs.productos[ref] = {"fuente": str(p["fuente"]), "origen_id": str(p["origen_id"])}
+        clave = {"fuente": str(p["fuente"]), "origen_id": str(p["origen_id"])}
+        ref = refs.ref_de_producto(clave)
+        if ref is None:
+            ref = f"P{siguiente}"
+            siguiente += 1
+            refs.productos[ref] = clave
         if bq.url_valida(p.get("enlace")):
             refs.enlaces_producto[ref] = str(p["enlace"])
         lineas.append(_linea_producto(p, avisos, idioma, ref))
@@ -1575,13 +1589,23 @@ def _catalogo_pedido_correccion(
 def _con_catalogo_pedido(contexto_json: str | None,
                          pedidos: list[dict[str, Any]]) -> str | None:
     """El contexto del turno con los productos que pidió del catálogo entre
-    los del CATÁLOGO del correo («Lo que ha usado» los enseña)."""
+    los del CATÁLOGO del correo («Lo que ha usado» los enseña), sin repetir
+    los que ya estaban (de una corrección anterior)."""
     if not pedidos:
         return contexto_json
     contexto = _json(contexto_json)
     cat = contexto.get("catalogo") if isinstance(contexto.get("catalogo"), dict) else {}
-    contexto["catalogo"] = {**cat, "maquinas": [
-        *(ctx_mod.resumen_maquina(p) for p in pedidos), *(cat.get("maquinas") or [])]}
+    maquinas = [m for m in cat.get("maquinas") or [] if isinstance(m, dict)]
+
+    def _clave(m: dict[str, Any]) -> tuple[Any, ...]:
+        return ((m.get("origen_id"),) if m.get("origen_id")
+                else (m.get("nombre"), m.get("enlace")))
+
+    nuevos = [ctx_mod.resumen_maquina(p) for p in pedidos]
+    claves = {_clave(m) for m in nuevos} | {(m.get("nombre"), m.get("enlace")) for m in nuevos}
+    quedan = [m for m in maquinas
+              if _clave(m) not in claves and (m.get("nombre"), m.get("enlace")) not in claves]
+    contexto["catalogo"] = {**cat, "maquinas": [*nuevos, *quedan]}
     return json.dumps(contexto, ensure_ascii=False, default=str)
 
 
@@ -2123,7 +2147,8 @@ def corregir(
     # (antes que el material: el W# de su página va a este mismo P#).
     bloque_pedido, pedidos_catalogo = _catalogo_pedido_correccion(
         session, refs, instruccion=instruccion, mat=mat, plan=plan,
-        idioma=borrador.idioma or "es", contexto=_json(borrador.contexto_json))
+        idioma=borrador.idioma or "es", contexto=_json(borrador.contexto_json),
+        raiz_contexto=_json(raiz.contexto_json))
     _enlaces_material_en_refs(refs, mat)
     # Los importes que ha escrito quien envía en esta conversación: los únicos
     # que valen como precio de una ficha de la web.
