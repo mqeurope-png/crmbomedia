@@ -46,6 +46,7 @@ from uuid import uuid4
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.models.conocimiento import FUENTE_COMPOSITOR
 from app.models.crm import AuditLog, Contact, EmailThread, User
 from app.models.ia import (
     ALCANCE_CONTACTO,
@@ -59,7 +60,7 @@ from app.models.ia import (
 )
 from app.services import empresas_grupo as eg
 from app.services import llm
-from app.services.asistente import borradores, consulta_fuentes, material_fuera
+from app.services.asistente import borradores, consulta_fuentes, material_fuera, procedencia
 from app.services.asistente import contexto as ctx_mod
 from app.services.asistente.config import configuracion as config_asistente
 from app.services.asistente.config import estimar_tokens
@@ -1215,6 +1216,7 @@ def _rellenar_compuesto(
     modelo_pedido: str, *, refs: ia_compuesto.Referencias, idioma: str,
     base: dict[str, Any] | None, nombre_usuario: str | None, nombre_destinatario: str | None,
     html_descartado: int = 0, sobre_editor: bool = False, empresa_documento: str | None = None,
+    comprobar_enlaces: bool = False,
 ) -> None:
     """Un turno compuesto: la estructura (nueva, o la actual con las
     operaciones de la corrección), la guardia sobre los textos que escribe la
@@ -1222,8 +1224,12 @@ def _rellenar_compuesto(
     plano, para comparar lo enviado) y los avisos. `sobre_editor`: partió de
     lo que había en el compositor (la vista previa con sus retoques, o el
     texto del editor): se pone sin preguntar. `empresa_documento`: la de la
-    oferta adjunta, si la hay; si no, la del idioma del correo."""
+    oferta adjunta, si la hay; si no, la del idioma del correo. Las fichas que
+    lleva, con su procedencia (catálogo o índice de las webs), van a «Lo que
+    ha usado» y al aviso; con `comprobar_enlaces` (la casilla «Webs»), también
+    las del catálogo cuyo enlace no es una página de producto."""
     aviso = str(data.get("aviso") or "").strip()
+    fichas: list[dict[str, Any]] = []
     avisos: list[str] = []
     idioma_correo = str(data.get("idioma") or idioma or "").strip().lower()[:2] or idioma
     if base is not None and "operaciones" in data:
@@ -1297,10 +1303,21 @@ def _rellenar_compuesto(
                           "correo: se ha quitado del texto, donde salía repetido.")
             correo = generador_correo.generar(estructura, datos, asunto=asunto)
             libre = ia_compuesto.texto_libre(estructura)
-        ajenos = ia_compuesto.importes_ajenos(libre, correo.precios)
+        # Los del catálogo y los que dijo quien envía valen como siempre; el
+        # precio de la web de una ficha repetido en un texto se lee como si
+        # fuera de oferta: se avisa aparte.
+        validos = [p for p in correo.precios if p not in correo.precios_web]
+        ajenos = ia_compuesto.importes_ajenos(libre, validos)
+        fuera = set(ia_compuesto.importes_ajenos(libre, correo.precios))
+        de_la_web = [a for a in ajenos if a not in fuera]
+        ajenos = [a for a in ajenos if a in fuera]
         if ajenos:
             avisos.append(f"Un texto del correo menciona {', '.join(f'«{a}»' for a in ajenos)}, "
                           "que no sale del catálogo: los precios van en las fichas. Revísalo.")
+        if de_la_web:
+            avisos.append(f"Un texto del correo menciona {', '.join(f'«{a}»' for a in de_la_web)}, "
+                          "el precio de la web de una ficha: no es un precio de oferta y ya va en "
+                          "la ficha. Quítalo del texto o revísalo.")
         # Un modelo que el cliente llama de otra forma (sin alias en el compositor):
         # que el texto no hable como de otra máquina de la que ya enseña la ficha.
         nombres = [str(p.get("nombre") or "") for p in datos.productos.values()]
@@ -1309,6 +1326,12 @@ def _rellenar_compuesto(
                           "si es la misma máquina, que el texto no la dé por pendiente ni por "
                           "otra distinta.")
         avisos.extend(correo.avisos)
+        if comprobar_enlaces or any(c["fuente"] == bq.FUENTE_WEB
+                                    for c in bq.productos_de(estructura)):
+            fichas, avisos_fichas = procedencia.fichas_del_correo(
+                session, estructura, datos.productos, idioma=estructura["idioma"],
+                comprobar_enlaces=comprobar_enlaces)
+            avisos = [*avisos_fichas, *avisos]
         b.html, b.texto = correo.html, correo.texto
     else:
         b.html, b.texto = "", ""
@@ -1323,6 +1346,10 @@ def _rellenar_compuesto(
         contexto["html_descartado"] = html_descartado
     else:
         contexto.pop("html_descartado", None)
+    if fichas:
+        contexto["fichas"] = fichas
+    else:
+        contexto.pop("fichas", None)
     if sobre_editor:
         contexto["sobre_editor"] = True
     b.contexto_json = json.dumps(contexto, ensure_ascii=False, default=str)
@@ -1345,6 +1372,7 @@ def _interpretar(
     nombre_destinatario: str | None, enlaces: list[str], editor_html: str | None = None,
     seleccion_html: str | None = None, sobre_editor: bool = False,
     empresa_documento: str | None = None, imagenes: ImagenesEditor | None = None,
+    comprobar_enlaces: bool = False,
 ) -> None:
     """Lo que devolvió el modelo, al turno: un correo compuesto (estructura) o
     uno normal (cuerpo), según el formato del turno. La IA nunca devuelve el
@@ -1369,7 +1397,8 @@ def _interpretar(
                             idioma=idioma_defecto or "es", base=base,
                             nombre_usuario=nombre_usuario,
                             nombre_destinatario=nombre_destinatario, sobre_editor=sobre_editor,
-                            empresa_documento=empresa_documento)
+                            empresa_documento=empresa_documento,
+                            comprobar_enlaces=comprobar_enlaces)
         return
     if modo == ia_compuesto.MODO_COMPUESTO and forzado:
         logger.warning("asistente: la IA devolvió un cuerpo (HTML) en vez de la estructura de un "
@@ -1399,6 +1428,40 @@ def _interpretar(
     _rellenar(b, data, uso, modelo, enlaces=enlaces, editor_html=editor_html,
               seleccion_html=seleccion_html, sobre_editor=sobre_editor, imagenes=imagenes)
     _anotar_bomedia(session, b, cambios, empresa=empresa)
+    contexto = _json(b.contexto_json)
+    if contexto.pop("fichas", None) is not None:
+        b.contexto_json = json.dumps(contexto, ensure_ascii=False, default=str)
+    if comprobar_enlaces and b.html:
+        # Un correo de texto que enlaza la página de un producto del catálogo
+        # que no es un producto de la web (la de contacto): se avisa.
+        usados = set(enlaces_de(b.html))
+        for e in contexto.get("enlaces_no_producto") or []:
+            if isinstance(e, dict) and e.get("enlace") in usados:
+                _con_aviso(b, procedencia.aviso_enlace_no_producto(
+                    str(e.get("nombre") or ""), str(e["enlace"]), e.get("motivo")))
+
+
+def _enlaces_no_producto_del_turno(session: Session, contexto_json: str | None,
+                                   fuentes: consulta_fuentes.Fuentes | None) -> str | None:
+    """El contexto de una corrección con los enlaces del catálogo que no
+    llevan a un producto según las casillas de ESTE turno: con «Webs»
+    marcada se miran (el primer borrador pudo ir sin ella); sin ella (o sin
+    casillas), no hay ninguno. Las máquinas del correo son del compositor."""
+    contexto = _json(contexto_json)
+    if fuentes is not None and fuentes.webs:
+        cat = contexto.get("catalogo") if isinstance(contexto.get("catalogo"), dict) else {}
+        maquinas = [{**m, "fuente": FUENTE_COMPOSITOR} for m in cat.get("maquinas") or []
+                    if isinstance(m, dict)]
+        try:
+            contexto["enlaces_no_producto"] = procedencia.enlaces_catalogo_no_producto(
+                session, maquinas)
+        except Exception:  # noqa: BLE001 — una comprobación de más no tira el borrador
+            logger.warning("asistente: no se han podido comprobar los enlaces del catálogo",
+                           exc_info=True)
+            return contexto_json
+    elif contexto.pop("enlaces_no_producto", None) is None:
+        return contexto_json
+    return json.dumps(contexto, ensure_ascii=False, default=str)
 
 
 def _modelos(cfg: dict[str, Any], settings: Any) -> tuple[str, str]:
@@ -1444,9 +1507,25 @@ def _enlaces_material_en_refs(refs: ia_compuesto.Referencias,
                               material: material_fuera.Material | None) -> None:
     """Las URL del material, permitidas también en un correo compuesto (un
     enlace del texto o de un botón). Van detrás de las de la lista ENLACES,
-    sin cambiar su numeración. Sin material, nada."""
+    sin cambiar su numeración. Y las piezas de «Nuestras webs» que son un
+    producto, como fichas (`W#`, las de este turno: las de un turno anterior
+    se quitan, que su numeración era otra). Sin material, nada."""
+    for ref in [r for r in refs.productos if r.startswith("W")]:
+        refs.productos.pop(ref, None)
+        refs.enlaces_producto.pop(ref, None)
+        refs.equivalentes.pop(ref, None)
     if material is None:
         return
+    for w in material.resumen.get("webs") or []:
+        if isinstance(w, dict) and w.get("ficha") and w.get("sitio") and w.get("wp_id"):
+            refs.anadir_producto_web(
+                str(w["ref"]), {"fuente": bq.FUENTE_WEB,
+                                "origen_id": f"{w['sitio']}:{w['wp_id']}"}, w.get("url"))
+            catalogo = w.get("catalogo")
+            if isinstance(catalogo, dict) and catalogo.get("fuente") and catalogo.get("origen_id"):
+                # Un producto del catálogo que no es de las máquinas del correo:
+                # su W# saca la ficha del catálogo (manda el catálogo).
+                refs.anadir_equivalente_catalogo(str(w["ref"]), catalogo)
     ya = set(refs.enlaces.values())
     numeros = [int(r[1:]) for r in refs.enlaces if r[1:].isdigit()]
     siguiente = max(numeros, default=0) + 1
@@ -1579,13 +1658,27 @@ def _material_de_correccion(
     if fuentes is None or not fuentes.alguna:
         return None, None
     original = _material_original(session, borrador, raiz)
-    if original is not None:
-        return None, consulta_fuentes.reutilizar(session, original, fuentes, borrador.idioma)
     entrada = consulta_fuentes.entrada_de_borrador(session, raiz, instruccion=instruccion)
+    if original is not None:
+        # Si la corrección pide incluir un producto («incluye tbn la MBO 6090
+        # desktop»), el plan dice cuál, para buscarlo en el índice.
+        plan = None
+        if fuentes.webs and consulta_fuentes.pide_producto(instruccion):
+            plan = consulta_fuentes.planificar(
+                session, consulta_fuentes.Entrada(
+                    instruccion=instruccion, idioma=borrador.idioma or "es",
+                    maquinas=entrada.maquinas, modelo_flux=entrada.modelo_flux),
+                settings=settings, cfg=cfg)
+            consulta_fuentes.anotar_plan(session, plan, usuario_id=usuario.id,
+                                         borrador_id=nuevo_id)
+        return plan, consulta_fuentes.reutilizar(
+            session, original, fuentes, borrador.idioma, instruccion=instruccion,
+            nombres=plan.productos if plan is not None else [], maquinas=entrada.maquinas,
+            del_correo_nombres=consulta_fuentes.nombres_del_correo(entrada))
     plan = consulta_fuentes.planificar(session, entrada, settings=settings, cfg=cfg)
     consulta_fuentes.anotar_plan(session, plan, usuario_id=usuario.id, borrador_id=nuevo_id)
     return plan, consulta_fuentes.consultar(session, fuentes=fuentes, plan=plan,
-                                            idioma=borrador.idioma)
+                                            idioma=borrador.idioma, entrada=entrada)
 
 
 def _material_original(session: Session, borrador: BorradorAsistente,
@@ -1693,11 +1786,12 @@ def generar(
     plan: consulta_fuentes.Plan | None = None
     mat: material_fuera.Material | None = None
     if fuentes is not None and fuentes.alguna and not nada_que_contestar:
-        plan = consulta_fuentes.planificar(
-            session, consulta_fuentes.entrada_de_contexto(ctx), settings=settings, cfg=cfg)
+        entrada = consulta_fuentes.entrada_de_contexto(ctx)
+        plan = consulta_fuentes.planificar(session, entrada, settings=settings, cfg=cfg)
         consulta_fuentes.anotar_plan(session, plan, usuario_id=usuario.id,
                                      borrador_id=borrador_id)
-        mat = consulta_fuentes.consultar(session, fuentes=fuentes, plan=plan, idioma=ctx.idioma)
+        mat = consulta_fuentes.consultar(session, fuentes=fuentes, plan=plan, idioma=ctx.idioma,
+                                         entrada=entrada)
     modelo_borrador, modelo_correccion = _modelos(cfg, settings)
     modo_actual = (ia_compuesto.MODO_COMPUESTO if base is not None
                    else ia_compuesto.MODO_NORMAL if actual else None)
@@ -1705,6 +1799,7 @@ def generar(
                                        modo_actual=modo_actual)
     refs = _referencias_turno0(session, ctx, instruccion, base)
     _enlaces_material_en_refs(refs, mat)
+    refs.anotar_instrucciones(instruccion)
     if modo != ia_compuesto.MODO_NORMAL:
         anadir_medios(session, refs, instruccion=instruccion, idioma=ctx.idioma,
                       intereses=ctx.intereses, sitio=ctx.sitio)
@@ -1762,6 +1857,15 @@ def generar(
     # las correcciones, que no vuelven a montar el contexto.
     empresa_doc = empresa_documento(ctx)
     resumen["empresa_documento"] = empresa_doc
+    if fuentes is not None and fuentes.webs:
+        # Los enlaces del catálogo de este correo que no llevan a un producto
+        # de la web («Lo que ha usado» los marca; el aviso, si se usan).
+        try:
+            resumen["enlaces_no_producto"] = procedencia.enlaces_catalogo_no_producto(
+                session, ctx.productos_catalogo())
+        except Exception:  # noqa: BLE001 — una comprobación de más no tira el borrador
+            logger.warning("asistente: no se han podido comprobar los enlaces del catálogo",
+                           exc_info=True)
     borrador = BorradorAsistente(
         id=borrador_id, conversacion_id=borrador_id, turno=0, instruccion=instruccion,
         contexto_texto=contexto_texto,
@@ -1822,7 +1926,7 @@ def generar(
         editor_html=editor_html,
         seleccion_html=(seleccion_html or "").strip() if seleccion else None,
         sobre_editor=bool(actual) or base is not None, empresa_documento=empresa_doc,
-        imagenes=imagenes)
+        imagenes=imagenes, comprobar_enlaces=bool(fuentes and fuentes.webs))
     _aplicar_material(session, borrador, mat, raw)
     _sumar_plan(borrador, plan)
     session.add(borrador)
@@ -1933,6 +2037,10 @@ def corregir(
         videos=ia_compuesto.videos_de(contexto_texto, instruccion,
                                       json.dumps(base or {}, ensure_ascii=False)))
     _enlaces_material_en_refs(refs, mat)
+    # Los importes que ha escrito quien envía en esta conversación: los únicos
+    # que valen como precio de una ficha de la web.
+    refs.anotar_instrucciones("\n".join(
+        [*(t.instruccion or "" for t in borradores.turnos_de(session, borrador)), instruccion]))
     if modo != ia_compuesto.MODO_NORMAL:
         anadir_medios(session, refs, instruccion=instruccion, idioma=borrador.idioma or "es")
     cabecera = formato_del_turno(modo, refs, borrador.idioma or "es")
@@ -1989,7 +2097,8 @@ def corregir(
         modelo=modelo[:80], destinatario=borrador.destinatario, remitente=borrador.remitente,
         asunto=borrador.asunto, texto="",
         enlaces_json=material_fuera.con_enlaces(borrador.enlaces_json, mat),
-        contexto_json=borrador.contexto_json, alcance=borrador.alcance,
+        contexto_json=_enlaces_no_producto_del_turno(session, borrador.contexto_json, fuentes),
+        alcance=borrador.alcance,
         mensajes_hilo=borrador.mensajes_hilo, mensajes_historico=borrador.mensajes_historico,
         estado=ESTADO_GENERADO,
     )
@@ -2008,7 +2117,7 @@ def corregir(
         sobre_editor=sobre_editor or desde_vista,
         empresa_documento=eg.empresa_de_emisora(
             _json(raiz.contexto_json).get("empresa_documento")),
-        imagenes=imagenes)
+        imagenes=imagenes, comprobar_enlaces=bool(fuentes and fuentes.webs))
     _aplicar_material(session, nuevo, mat, raw)
     _sumar_plan(nuevo, plan)
     session.add(nuevo)

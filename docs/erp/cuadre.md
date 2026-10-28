@@ -21,6 +21,7 @@ Código: `backend/app/erp/cuadre/`. API: `backend/app/erp/api/cuadre.py`
 | Registro | `cuadre/registry.py` | Decorador `@comprobacion(...)`, `Hallazgo`, catálogo. |
 | Comprobaciones de BoHub | `cuadre/checks_mysql.py` | Leen solo la BD de BoHub (fuente `mysql`). |
 | Textos de cara al cliente | `cuadre/checks_textos.py` | «Bomedia» en plantillas, firmas, marcas, workflows, avisos y formularios (fuente `mysql`). |
+| Catálogo | `cuadre/checks_catalogo.py` | Fichas del catálogo cuyo enlace no lleva a un producto del índice de las webs (fuente `mysql`). |
 | Comprobaciones de FACTUSOL | `cuadre/checks_factusol.py` | Leen FACTUSOL (fuente `factusol`). |
 | Comprobaciones de WooCommerce | `cuadre/checks_woocommerce.py` | Preguntan a las tiendas (fuente `woocommerce`). |
 | Contexto | `cuadre/contexto.py` | Sesión, «ahora», umbrales y lecturas compartidas. Cada tabla de FACTUSOL se lee una vez por pasada, del ejercicio en curso. |
@@ -319,6 +320,45 @@ del pedido de BoHub.
     - La detección es la misma que usa la guardia del asistente
       (`services/empresas_grupo.py`).
 
+- `enlace_catalogo_no_producto` (media) — **Fichas del catálogo cuyo enlace
+  no lleva a un producto** (`cuadre/checks_catalogo.py`, 28/10/2026). Los
+  productos vivos y visibles del catálogo del compositor (`kb_catalogo`, cada
+  idioma) con un enlace de una de nuestras webs que **no es ninguna página de
+  producto del índice de las webs** (la de contacto, una categoría, un
+  producto que ya no está): en un correo, el cliente no llega al producto. Un
+  descuadre por producto e idioma, que dice **lo que se sabe** del enlace
+  (`MapaProductos.motivo`): «es la página «Contacto», no un producto» (una
+  página, entrada o categoría del índice; sin título si el índice no la tiene
+  y su ruta no es de producto: «es una página de … que no es un producto»),
+  «es el de un producto que el índice ya no tiene (se quitó de la web o una
+  regla del índice lo deja fuera)», con una pista que pide mirar si sigue en
+  la web antes de quitarlo, o, si su ruta es de producto (`/producto/…`, la base de los
+  productos de esa web) y el índice no la tiene, «no está en el índice de
+  …: no es ninguna de sus páginas de producto (o es una que aún no se ha
+  leído)». En ese último caso la pista
+  empieza por **reindexar**: el índice se lee una vez al mes y el catálogo
+  cada noche, así que una máquina recién publicada sale aquí hasta la
+  siguiente lectura (o «Reindexar ahora»), y entonces se resuelve sola.
+    - Casa como las fichas del borrador (`webs/fichas.MapaProductos`): con o
+      sin `www.`, con el prefijo de idioma o sin él, con o sin la barra final,
+      y desde cualquiera de los dominios de esa web; por la ruta o, si la
+      ruta es de producto (`/producto/`, `/tienda/`, `/shop/`…) o es solo el
+      slug (`/<slug>/`), por el slug (una categoría o una entrada con el mismo
+      slug que un producto no se toman por él).
+    - **Solo se juzga una web con productos en el índice.** Una sin tienda, o
+      que no se ha leído, no se puede juzgar: se apunta en `ctx.no_mirados`
+      (el ámbito de cada descuadre es la web) y lo que ya se había avisado de
+      ella no se da por resuelto.
+    - **No se corrige nada**: el catálogo llega del compositor en un solo
+      sentido y lo que se tocara aquí lo borraría la siguiente
+      sincronización. Se arregla **en el compositor** (el enlace de la página
+      del producto; o quitarlo, si ya no está en la web). El botón abre
+      Configuración ERP (la base de conocimiento).
+    - Nace del 28/10/2026: «Lo que ha usado» de un borrador enseñaba la ficha
+      de la artisJet 3000Pro Freebird con `https://boprint.net/contacto/`. El
+      borrador avisa de lo mismo con «Webs» marcada (ver
+      `docs/fuentes-externas.md` § Fichas montadas desde el índice).
+
 ### Integraciones (severidad alta, fuente WooCommerce)
 
 14. `pedido_woo_pagado_sin_bohub` — **Pedido pagado en WooCommerce que no está
@@ -387,7 +427,7 @@ ahora la única salida para 149.603 trabajos fallidos era entrar al contenedor.
        descripcion="Una línea: qué no cuadra.",
        severidad="media",              # alta | media | baja
        fuente=FUENTE_MYSQL,            # o FUENTE_FACTUSOL / FUENTE_WOOCOMMERCE
-       grupo="envios",                 # dinero | envios | documentos | integraciones
+       grupo="envios",                 # dinero | envios | documentos | integraciones | crm
        dias_defecto=10,                # opcional: umbral configurable
        dias_texto="Avisar pasados N días",
        orden=13,                       # posición en la pantalla

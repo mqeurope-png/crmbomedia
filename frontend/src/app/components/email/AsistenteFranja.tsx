@@ -674,7 +674,9 @@ export function AsistenteFranja({
 type ArticuloUsado = { titulo: string; url: string | null; fuente: string; usado: boolean | null };
 
 /** Una página de nuestras webs que entró en el turno. `precio`: el que enseña
- *  la web, si lo hay (nunca es el de una oferta). */
+ *  la web, si lo hay (nunca es el de una oferta). `ficha`: es un producto del
+ *  índice y la IA la puede poner como ficha en un correo compuesto; `pedida`:
+ *  quien envía pidió ese producto (por su enlace o por su nombre). */
 type PaginaUsada = {
   id: string;
   titulo: string;
@@ -683,7 +685,48 @@ type PaginaUsada = {
   tipo: string;
   precio: string | null;
   usado: boolean | null;
+  ficha: boolean;
+  pedida: boolean;
 };
+
+/** Por qué un enlace del catálogo no es un producto del índice: no es una
+ *  página de producto («Contacto», una categoría), un producto que el índice
+ *  ya no tiene, o una ruta de producto que el índice no tiene (puede ser un
+ *  producto recién publicado que aún no se ha leído). */
+type MotivoEnlace = "pagina" | "ido" | "fuera";
+
+/** Una ficha del correo compuesto que sale del catálogo del compositor.
+ *  `precioPublico` / `orientativo`: lo que dice el correo en el sitio del
+ *  precio («a medida», la nota de orientativo). `enlaceNoProducto`: su enlace,
+ *  de una web indexada, no lleva a una página de producto (se avisa; no se
+ *  corrige), y por qué. */
+type FichaCatalogo = {
+  nombre: string;
+  enlace: string | null;
+  marca: string;
+  precio: string | null;
+  precioPublico: boolean;
+  orientativo: boolean;
+  enlaceNoProducto: MotivoEnlace | null;
+};
+
+/** Una ficha montada desde una página del índice de las webs. `precio` ya
+ *  lleva su IVA si es el de la web. `precioOrigen`: la web, quien envía (lo
+ *  dijo en sus instrucciones) o ninguno («a consultar»); null si el contexto
+ *  trae un precio sin decir de dónde sale. `imagenes`: las de su galería
+ *  (con la principal). */
+type FichaIndice = {
+  nombre: string;
+  enlace: string | null;
+  dominio: string;
+  precio: string | null;
+  precioOrigen: "web" | "usuario" | "consultar" | null;
+  idioma: string;
+  sinIdiomaPedido: boolean;
+  imagenes: number;
+};
+
+type FichasDelCorreo = { catalogo: FichaCatalogo[]; indice: FichaIndice[] };
 
 /** Cómo preparó la búsqueda el asistente (el plan). Lo que buscó de verdad va
  *  aparte (`buscadoEnSoporte`, `buscadoEnWebs`): el plan se calcula aunque una
@@ -767,12 +810,99 @@ function articuloDe(s: unknown): ArticuloUsado | null {
   };
 }
 
+/** El precio de la web con su IVA: «1.990,00 € (sin IVA)». Si el texto ya
+ *  lo dice («489,30 € (+ IVA)»), tal cual: no se repite. */
+function conIva(texto: string, iva: unknown): string {
+  if (/\b(iva|vat|mwst|tva|btw)\b/i.test(texto)) return texto;
+  const sufijo = iva === "sin_iva" ? " (sin IVA)" : iva === "con_iva" ? " (con IVA)" : "";
+  return `${texto}${sufijo}`;
+}
+
 /** «1.990,00 € (sin IVA)»: lo que dice la web, si da precio. */
 function precioWebDe(w: Record<string, unknown>): string | null {
   const texto = cadena(w["precio_web_texto"]);
-  if (!texto) return null;
-  const iva = w["precio_iva"] === "sin_iva" ? " (sin IVA)" : w["precio_iva"] === "con_iva" ? " (con IVA)" : "";
-  return `${texto}${iva}`;
+  return texto ? conIva(texto, w["precio_iva"]) : null;
+}
+
+/** Los idiomas de una ficha, como los dice el aviso del borrador. */
+const NOMBRE_IDIOMA: Record<string, string> = {
+  es: "castellano", en: "inglés", de: "alemán", fr: "francés", nl: "neerlandés",
+  pt: "portugués", it: "italiano", ca: "catalán",
+};
+
+function nombreIdioma(codigo: string): string {
+  return NOMBRE_IDIOMA[codigo.toLowerCase().slice(0, 2)] ?? (codigo || "otro idioma");
+}
+
+/** Las fichas que lleva el correo compuesto, con su procedencia, tal como las
+ *  apunta el backend en el contexto (`fichas`): las del catálogo (con su marca,
+ *  su precio y si su enlace no es un producto de nuestras webs) y las montadas
+ *  desde el índice de las webs (con su dominio, de dónde sale su precio, su
+ *  idioma y su galería). Al cliente una ficha es una ficha; a quien revisa,
+ *  no. Tolerante: sin `fichas` (un correo de texto, un borrador de antes) no
+ *  hay nada, y una ficha sin nombre o de procedencia rara se ignora. */
+export function fichasDelCorreo(ctx: Record<string, unknown>): FichasDelCorreo {
+  const fichas: FichasDelCorreo = { catalogo: [], indice: [] };
+  const lista = Array.isArray(ctx["fichas"]) ? ctx["fichas"].filter(esObjeto) : [];
+  for (const f of lista) {
+    const nombre = cadena(f["nombre"]) || cadena(f["origen_id"]);
+    if (!nombre) continue;
+    const enlace = urlWeb(f["enlace"]);
+    const precio = cadena(f["precio_texto"]) || null;
+    if (f["procedencia"] === "catalogo") {
+      fichas.catalogo.push({
+        nombre, enlace, marca: cadena(f["marca"]), precio,
+        precioPublico: f["precio_publico"] !== false,
+        orientativo: f["orientativo"] === true,
+        enlaceNoProducto: f["enlace_no_producto"] === true ? motivoEnlace(f["enlace_motivo"]) : null,
+      });
+    } else if (f["procedencia"] === "indice") {
+      // Sin importe, «a consultar» (nunca uno inventado); con importe, de
+      // donde diga el backend.
+      const o = f["precio_origen"];
+      const precioOrigen = !precio ? "consultar" : o === "web" || o === "usuario" ? o : null;
+      const galeria = Array.isArray(f["galeria"]) ? f["galeria"].map(urlWeb).filter(Boolean) : [];
+      fichas.indice.push({
+        nombre, enlace,
+        dominio: cadena(f["dominio"]) || cadena(f["sitio"]),
+        precio: precio && precioOrigen === "web" ? conIva(precio, f["precio_iva"]) : precio,
+        precioOrigen,
+        idioma: cadena(f["idioma"]),
+        sinIdiomaPedido: f["sin_idioma_pedido"] === true,
+        imagenes: new Set(galeria).size,
+      });
+    }
+  }
+  return fichas;
+}
+
+function motivoEnlace(v: unknown): MotivoEnlace {
+  return v === "ido" || v === "fuera" ? v : "pagina";
+}
+
+/** Lo que se dice de un enlace del catálogo que no es un producto del índice. */
+function avisoEnlace(motivo: MotivoEnlace): string {
+  if (motivo === "fuera") {
+    return "el enlace no está en el índice de las webs: si el producto es nuevo, aún no se ha leído; si no, revísalo en el compositor";
+  }
+  if (motivo === "ido") {
+    return "el enlace es el de un producto que el índice de las webs ya no tiene (se quitó de la web o una regla del índice lo deja fuera): revísalo";
+  }
+  return "el enlace no lleva a una página de producto de nuestras webs: revísalo en el compositor";
+}
+
+/** Los enlaces del catálogo que, siendo de una web indexada, no llevan a una
+ *  página de producto, con el porqué (los apunta el backend con «Webs»
+ *  marcada en el turno). */
+function enlacesNoProducto(ctx: Record<string, unknown>): Map<string, MotivoEnlace> {
+  const lista = Array.isArray(ctx["enlaces_no_producto"]) ? ctx["enlaces_no_producto"].filter(esObjeto) : [];
+  return new Map(lista.filter((e) => cadena(e["enlace"])).map((e) => [cadena(e["enlace"]), motivoEnlace(e["motivo"])]));
+}
+
+/** El precio de una ficha del catálogo como lo dice el correo. */
+function precioDeCatalogo(f: FichaCatalogo): string {
+  if (f.precio) return `${f.precio}${f.orientativo ? " · orientativo" : ""}`;
+  return f.precioPublico ? "sin precio publicado" : "sin precio público (a medida)";
 }
 
 function consultaDe(c: unknown): ConsultaUsada | null {
@@ -806,6 +936,8 @@ export function materialUsado(ctx: Record<string, unknown>): MaterialUsado {
       tipo: TIPO_WEB[cadena(w["tipo"])] ?? cadena(w["tipo"]),
       precio: precioWebDe(w),
       usado: usadoDe(w["usado"]),
+      ficha: w["ficha"] === true,
+      pedida: w["ficha"] === true && w["pedida"] === true,
     })).filter((w) => w.titulo)
     : [];
   const sr = m["sin_resultados"];
@@ -937,14 +1069,79 @@ function Enlace({ titulo, url }: { titulo: string; url: string | null }) {
   return url ? <a href={url} target="_blank" rel="noreferrer">{titulo}</a> : <>{titulo}</>;
 }
 
+/** « — trozo · trozo», en pequeño; nada si no hay trozos. */
+function detalle(...trozos: string[]) {
+  const texto = trozos.filter(Boolean).join(" · ");
+  return texto ? <span className="muted small"> — {texto}</span> : null;
+}
+
+/** Lo que hay que mirar en una línea del panel: resaltado, no en pequeño. */
+function avisoDe(texto: string) {
+  return <span className="asistente-panel-aviso"> — {texto}</span>;
+}
+
+/** «2 fichas: 1 del catálogo y 1 del índice». */
+function resumenFichas({ catalogo, indice }: FichasDelCorreo): string {
+  const n = catalogo.length + indice.length;
+  const fichas = `${n} ficha${n === 1 ? "" : "s"}`;
+  if (catalogo.length > 0 && indice.length > 0) {
+    return `${fichas}: ${catalogo.length} del catálogo y ${indice.length} del índice`;
+  }
+  return `${fichas} del ${catalogo.length > 0 ? "catálogo" : "índice"}`;
+}
+
+/** El precio de una ficha del índice, diciendo siempre de dónde sale: el de
+ *  la web (nunca el de una oferta), el que dijo quien envía o «a consultar». */
+function precioDeFicha(f: FichaIndice): string {
+  if (f.precioOrigen === "consultar") return "precio a consultar (la web no da precio)";
+  if (f.precioOrigen === "usuario") {
+    return `precio que has indicado tú: ${f.precio} (no sale de la web ni del catálogo)`;
+  }
+  return f.precioOrigen === "web" ? `precio de la web: ${f.precio}` : `precio: ${f.precio}`;
+}
+
+/** Las fichas que lleva el correo, separadas por procedencia y con su enlace:
+ *  las del catálogo (precio de venta, revisado) y las montadas desde el
+ *  índice de las webs (su precio, su idioma y su galería, para revisarlas
+ *  antes de enviar). */
+function FichasEnElCorreo({ fichas }: { fichas: FichasDelCorreo }) {
+  return (
+    <>
+      {fichas.catalogo.length > 0 ? (
+        <ul className="asistente-panel-lista" aria-label="Fichas del catálogo en el correo">
+          {fichas.catalogo.map((f, i) => (
+            <li key={`fc-${i}`}>
+              Ficha del catálogo: <Enlace titulo={f.nombre} url={f.enlace} />
+              {detalle(f.marca, precioDeCatalogo(f))}
+              {f.enlaceNoProducto ? avisoDe(avisoEnlace(f.enlaceNoProducto)) : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {fichas.indice.length > 0 ? (
+        <ul className="asistente-panel-lista" aria-label="Fichas del índice de las webs en el correo">
+          {fichas.indice.map((f, i) => (
+            <li key={`fi-${i}`}>
+              Ficha del índice de {f.dominio || "las webs"}: <Enlace titulo={f.nombre} url={f.enlace} />
+              {detalle(
+                precioDeFicha(f),
+                f.sinIdiomaPedido
+                  ? `en ${nombreIdioma(f.idioma)}: no está en el índice en el idioma del correo`
+                  : "",
+                f.imagenes > 1 ? `${f.imagenes} imágenes en la galería` : "",
+              )}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </>
+  );
+}
+
 /** Lo que el asistente trajo solo de nuestras webs y del soporte, pieza a
  *  pieza: su enlace (solo web), de dónde sale y si el borrador lo usó; lo que
  *  no encontró, no hacía falta o no se pudo consultar; y qué buscó. */
 function LoQueTrajo({ d }: { d: MaterialUsado }) {
-  const detalle = (...trozos: string[]) => {
-    const texto = trozos.filter(Boolean).join(" · ");
-    return texto ? <span className="muted small"> — {texto}</span> : null;
-  };
   const falloSoporte = d.noConsultado.some((n) => n.fuente === "soporte");
   const algoDelSoporte = d.soporte !== null || d.otrosSoporte.length > 0 || d.sinResultados !== null
     || d.sinCentro !== null || d.sinFuentes || falloSoporte;
@@ -1001,7 +1198,9 @@ function LoQueTrajo({ d }: { d: MaterialUsado }) {
       {d.webs.map((w) => (
         <li key={`w-${w.id}`}>
           Web: <Enlace titulo={w.titulo} url={w.url} />
-          {detalle(w.dominio, w.tipo, w.precio ? `precio de la web: ${w.precio}` : "", usoDe(w.usado))}
+          {detalle(w.dominio, w.tipo, w.precio ? `precio de la web: ${w.precio}` : "",
+            w.ficha ? "se puede poner como ficha" : "", w.pedida ? "pedida por quien envía" : "",
+            usoDe(w.usado))}
         </li>
       ))}
       {d.websSinResultados ? (
@@ -1022,8 +1221,10 @@ function LoQueTrajo({ d }: { d: MaterialUsado }) {
 }
 
 /** Plegado: lo que entró en el contexto (hilo, ficha, correos viejos con fecha,
- *  asunto y motivo, empresa, tokens, lo dejado fuera), lo que consultó solo en
- *  nuestras webs y en el soporte (y si lo usó), y los enlaces que podía usar. */
+ *  asunto y motivo, empresa, tokens, lo dejado fuera), las fichas del correo
+ *  compuesto (del catálogo o del índice de las webs, con su enlace y de dónde
+ *  sale su precio), lo que consultó solo en nuestras webs y en el soporte (y
+ *  si lo usó), y los enlaces que podía usar. */
 export function LoQueHaUsado({ borrador }: { borrador: BorradorAsistente }) {
   const ctx = borrador.contexto ?? {};
   const num = (k: string): number | null => (typeof ctx[k] === "number" ? (ctx[k] as number) : null);
@@ -1033,8 +1234,9 @@ export function LoQueHaUsado({ borrador }: { borrador: BorradorAsistente }) {
   const recortes = Array.isArray(ctx["recortes"]) ? (ctx["recortes"] as string[]) : [];
   const catalogo = (ctx["catalogo"] ?? null) as {
     maquinas?: { nombre?: string; marca?: string; precio_texto?: string | null; orientativo?: boolean;
-      precio_publico?: boolean; eleccion?: string }[];
-    consumibles?: { nombre?: string; precio_texto?: string | null; orientativo?: boolean }[];
+      precio_publico?: boolean; eleccion?: string; enlace?: string | null }[];
+    consumibles?: { nombre?: string; precio_texto?: string | null; orientativo?: boolean;
+      enlace?: string | null }[];
     sin_maquina?: string[];
   } | null;
   const maquinas = catalogo?.maquinas ?? [];
@@ -1114,6 +1316,13 @@ export function LoQueHaUsado({ borrador }: { borrador: BorradorAsistente }) {
   const deFuera = materialUsado(ctx);
   partes.push(...partesDeFuera(deFuera));
   const pista = pistaDeFuera(deFuera);
+  // Las fichas que lleva el correo compuesto: cuáles del catálogo y cuáles
+  // montadas desde el índice de las webs. Las del índice se dicen también
+  // plegado: hay que revisar su precio y su descripción antes de enviar.
+  const fichas = fichasDelCorreo(ctx);
+  if (fichas.catalogo.length + fichas.indice.length > 0) partes.push(resumenFichas(fichas));
+  const delIndice = fichas.indice.length;
+  const noProducto = enlacesNoProducto(ctx);
   if (tokens !== null) partes.push(`~${tokens.toLocaleString("es-ES")} tokens de entrada${presupuesto ? ` de ${presupuesto.toLocaleString("es-ES")}` : ""}`);
   if (recortes.length > 0) partes.push(`${recortes.length} elemento${recortes.length === 1 ? "" : "s"} fuera por tamaño`);
   if (borrador.turno > 0) {
@@ -1133,6 +1342,7 @@ export function LoQueHaUsado({ borrador }: { borrador: BorradorAsistente }) {
     <details className="asistente-panel-detalle">
       <summary>
         Lo que ha usado (alcance: {etiquetaAlcance(borrador.alcance)}){pista ? ` · ${pista}` : ""}
+        {delIndice > 0 ? ` · ${delIndice} ficha${delIndice === 1 ? "" : "s"} del índice` : ""}
       </summary>
       <p className="muted small">{partes.join(" · ")}.</p>
       {historico.length > 0 ? (
@@ -1159,12 +1369,19 @@ export function LoQueHaUsado({ borrador }: { borrador: BorradorAsistente }) {
         <ul className="asistente-panel-lista" aria-label="Productos del catálogo que entraron">
           {[...maquinas, ...consumibles].map((p, i) => (
             <li key={`p-${i}`}>
-              {String(p.nombre ?? "")}{"marca" in p && p.marca ? ` (${String(p.marca)})` : ""}
+              <Enlace titulo={String(p.nombre ?? "")} url={urlWeb(p.enlace)} />
+              {"marca" in p && p.marca ? ` (${String(p.marca)})` : ""}
               <span className="muted small"> — {p.precio_texto ? `${p.precio_texto}${p.orientativo ? " · orientativo" : ""}` : ("precio_publico" in p && p.precio_publico === false ? "sin precio público (a medida)" : "sin precio publicado")}</span>
+              {p.enlace && noProducto.has(p.enlace)
+                ? avisoDe(noProducto.get(p.enlace) === "fuera"
+                  ? "el enlace no está en el índice de las webs"
+                  : "el enlace no es una página de producto de nuestras webs")
+                : null}
             </li>
           ))}
         </ul>
       ) : null}
+      <FichasEnElCorreo fichas={fichas} />
       {deFuera.automatico ? <LoQueTrajo d={deFuera} /> : null}
       {!deFuera.automatico && (deFuera.soporte || deFuera.sinResultados || deFuera.webs.length > 0) ? (
         // Un borrador de antes: lo que la persona eligió con los botones que había.
@@ -1193,7 +1410,7 @@ export function LoQueHaUsado({ borrador }: { borrador: BorradorAsistente }) {
         </ul>
       ) : null}
       {borrador.enlaces.length > 0 ? (
-        <ul className="asistente-panel-lista">
+        <ul className="asistente-panel-lista" aria-label="Enlaces que podía usar">
           {borrador.enlaces.map((e) => (
             <li key={e.url}>
               <a href={e.url} target="_blank" rel="noreferrer">{e.url}</a>

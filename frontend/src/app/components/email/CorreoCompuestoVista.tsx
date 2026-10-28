@@ -426,8 +426,8 @@ export function CorreoCompuestoVista({
         />
       </div>
       <p className="muted small correo-compuesto-ayuda">
-        Pulsa un texto para cambiarlo. Los precios, las fichas y los enlaces salen del catálogo:
-        para cambiarlos, pídeselo a la IA o quita el bloque.
+        Pulsa un texto para cambiarlo. Los precios, las fichas y los enlaces salen del catálogo o
+        de nuestras webs: para cambiarlos, pídeselo a la IA o quita el bloque.
       </p>
     </section>
   );

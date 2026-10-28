@@ -86,6 +86,40 @@ describe("correoCompuesto — editar un texto cambia ese campo y nada más", () 
     expect(dup.bloques[2].productos).not.toBe(e.bloques[1].productos);   // copia, no la misma
   });
 
+  it("una ficha de la web conserva su precio y su imagen al editar, subir, bajar o duplicar", () => {
+    const web = {
+      fuente: "web", origen_id: "mboprinters:1234", precio: "1.200 €",
+      imagen: "https://mboprinters.com/wp-content/uploads/orion-20-lateral.jpg",
+    };
+    const e: EstructuraCompuesta = {
+      version: 1, idioma: "es", marca: "mbo_dtf", pie: null,
+      bloques: [
+        { id: "b1", tipo: "texto", html: "<p>Hola Marny,</p>" },
+        { id: "b2", tipo: "producto", producto: web, boton: "Más info →" },
+        { id: "b3", tipo: "productos_fila", productos: [{ fuente: "compositor", origen_id: "orion-20" }, web] },
+      ],
+    };
+    const copia = JSON.parse(JSON.stringify(e));
+    const a = aplicarEdicion(e, "b2:boton", "Ver ficha →");
+    expect(a.bloques[1]).toEqual({ ...copia.bloques[1], boton: "Ver ficha →" });
+    expect(a.bloques[1].producto).toEqual(web);
+    expect(a.bloques[2].productos).toEqual([{ fuente: "compositor", origen_id: "orion-20" }, web]);
+    const subida = moverBloque(e, "b3", -1);
+    expect(subida.bloques.map((b) => b.id)).toEqual(["b1", "b3", "b2"]);
+    expect(subida.bloques[1].productos?.[1]).toEqual(web);
+    expect(subida.bloques[2].producto).toEqual(web);
+    const { estructura: dup, id } = duplicarBloque(e, "b2");
+    expect(dup.bloques[2]).toEqual({ ...copia.bloques[1], id });
+    expect(dup.bloques[2].producto).toEqual(web);
+    expect(dup.bloques[2].producto).not.toBe(e.bloques[1].producto);    // copia, no la misma
+    const fila = duplicarBloque(e, "b3").estructura.bloques[3];
+    expect(fila.productos).toEqual(copia.bloques[2].productos);
+    expect(e).toEqual(copia);
+    // El precio y la imagen no se editan en la vista: un campo de producto no cambia nada.
+    expect(aplicarEdicion(e, "b2:producto", "x")).toBe(e);
+    expect(aplicarEdicion(e, "b2:precio", "999 €")).toBe(e);
+  });
+
   it("lo editado en la vista se lee limpio: sin los estilos del correo ni etiquetas de fuera", () => {
     const td = document.createElement("td");
     td.innerHTML = '<p style="margin:0 0 14px;color:#1e293b">Hola <b>Marny</b>,</p>'

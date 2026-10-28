@@ -421,7 +421,9 @@ la respuesta en texto sigue siendo la de siempre y la opción por defecto.
   tabla de vídeos que van con las máquinas del correo o con lo que pide la
   instrucción, en el idioma del cliente), `I1` (IMÁGENES: las del índice de las
   webs que casan con la instrucción, las máquinas y el interés del lead; las
-  favoritas delante, nunca las ocultas) y `M:mbo_dtf` (la web de la marca). Una
+  favoritas delante, nunca las ocultas), `M:mbo_dtf` (la web de la marca) y,
+  desde el 28/10/2026, `W1` (un producto de nuestras webs que el catálogo no
+  tiene; abajo). Una
   referencia que no existe no entra y se avisa: ni productos, ni enlaces, ni
   vídeos, ni imágenes inventados. Las fichas toman del **catálogo vivo** el
   nombre, la imagen, el área, dos características, el **precio tal cual** (con
@@ -429,6 +431,33 @@ la respuesta en texto sigue siendo la de siempre y la opción por defecto.
   producto sin precio público dice «Precio a medida» y **no lleva cifra**. Un
   importe en los textos que no es un precio de las fichas se avisa
   (`ia.importes_ajenos`).
+- **Fichas de nuestras webs** (28/10/2026). El catálogo llega del compositor en
+  un solo sentido: lo que no tiene y está publicado en una de nuestras webs se
+  presenta con una ficha **montada desde su página del índice** (con la
+  casilla «Webs» marcada; clave `{"fuente": "web", "origen_id":
+  "<sitio>:<wp_id>"}`, referencia `W#`, la de su pieza de «Nuestras webs»).
+  Mismo bloque, mismas filas y mismo sitio en el correo que una del catálogo;
+  lleva título, descripción, imagen principal (enlazada), enlace y **el precio
+  de la web con su IVA** tal como está guardado («489,30 € (+ IVA)»), nunca
+  como precio de oferta, o **«Precio a consultar»** si la web no lo da. Si el
+  producto está en el catálogo, va la del catálogo, se mire contra todo el
+  catálogo del compositor y no solo contra las máquinas del correo (un `W#`
+  que es ese producto saca la ficha del catálogo, con aviso); si quien envía
+  pide una variante que solo está en la web («la versión desktop»), la de la
+  web. Un **precio que dice quien envía** en sus instrucciones puede ir en la
+  ficha (`{"ref": "W2", "precio": "…"}`); uno que no sale de sus
+  instrucciones, o que les añade otra cifra o un IVA que no dijo, se quita
+  con aviso, y el de una ficha del catálogo no se toca. Un texto que repite el
+  precio de la web de una ficha se avisa aparte (no es de oferta). En una
+  corrección siguiente, una ficha de la web ya puesta se ve como
+  `?<origen_id>` y se puede mover sin perderla.
+  Otra imagen de su galería: `{"ref": "W2", "imagen": "…"}`. La ficha va en el
+  idioma del correo si la web tiene esa página; si no, en el que haya, y el
+  aviso lo dice. **Al cliente una ficha es una ficha**; a quien revisa, «Lo
+  que ha usado» y el aviso le dicen cuáles salen del catálogo y cuáles del
+  índice, con su enlace y de dónde sale el precio. Detalle:
+  [fuentes-externas.md](fuentes-externas.md) § Fichas montadas desde el
+  índice.
 - **Nunca HTML de la IA.** Sus textos van en markdown sencillo (negrita,
   cursiva, listas, enlaces por referencia). Si un texto trae etiquetas, se
   quitan, se cuenta (`contexto.html_descartado`) y se registra; con «Con
@@ -771,7 +800,13 @@ al redactar**, igual que consulta el catálogo: nadie busca ni elige nada.
 - **Webs**: los productos y páginas por los que pregunta, en el índice (MySQL
   local) en el idioma del correo (si nada, en cualquiera): **tres
   fragmentos**, con su enlace y su «precio en la web», que no es precio de
-  oferta.
+  oferta. **Delante**, los productos que **pide quien envía** (28/10/2026),
+  por su enlace o por su nombre («incluye la MBO 6090 desktop, mírala en
+  mboprinters.com»), también en una corrección (en una corrección, si trae
+  el enlace, dice «ficha», «versión» o «variante», o una cifra del modelo:
+  `consulta_fuentes.pide_producto`); los que son un producto valen
+  como ficha en un correo compuesto (§ Correos compuestos) y, en uno de
+  texto, se enlazan y su precio se dice como precio de la web.
 - **El tiempo**, porque va dentro de la petición del borrador: el plan **5 s**,
   todo el soporte **6 s** y cada petición al soporte **4 s**, sin reintentos;
   las webs son una consulta a la base local. La resolución del DNS va dentro
@@ -828,7 +863,18 @@ al redactar**, igual que consulta el catálogo: nadie busca ni elige nada.
   ni de las casillas; un correo técnico con «Soporte» marcada en el que no se
   buscó nada dice «Soporte: no se ha consultado». El título
   plegado lo resume («consultó soporte y webs»). Un borrador de antes del
-  28/10/2026 enseña lo que se eligió con los botones.
+  28/10/2026 enseña lo que se eligió con los botones. Con un correo
+  compuesto con «Webs» marcada (o con alguna ficha del índice), enseña además
+  **las fichas del correo en dos listas**, «Ficha del
+  catálogo» y «Ficha del índice de <web>», cada una con su enlace, y en las
+  del índice de dónde sale el precio (de la web, el que has indicado tú o a
+  consultar), el idioma si no es el del correo y cuántas imágenes tiene su
+  galería; el título plegado suma «· N fichas del índice». Con «Webs»
+  marcada en ese turno, un producto del catálogo cuyo enlace no lleva a una
+  página de producto de nuestras webs sale marcado, con el porqué (una
+  página como la de contacto, un producto que ya no está, o uno que el índice
+  aún no tiene), y si va en el correo, el aviso lo dice («revísalo en el
+  compositor»; no se corrige).
 - **Coste**: el plan es una llamada corta (300 tokens de salida como mucho)
   con el modelo barato, una vez por borrador con alguna casilla marcada. Un
   turno con material lleva sus reglas detrás del prompt de sistema, y la caché

@@ -35,7 +35,7 @@ from __future__ import annotations
 import html as html_mod
 import json
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -48,6 +48,9 @@ from app.services.externo import material as sobre
 MAX_TEXTO_SOPORTE = 6000
 #: Del extracto de los otros artículos que salieron (solo título y extracto).
 MAX_EXTRACTO_OTRO = 300
+#: Imágenes de la galería de un producto que se le enseñan al modelo (para
+#: poner otra en la ficha si quien envía la pide).
+MAX_GALERIA = 5
 #: Fragmentos de las webs: caracteres por página.
 MAX_CHARS_WEB = 900
 #: Lo que se pone delante del enlace al artículo cuando el modelo no lo puso
@@ -89,6 +92,23 @@ REGLA_WEBS = (
     "como precio de la web y con lo que dice del IVA. NUNCA ofertes con ese precio ni lo "
     "presentes como el precio para el cliente: el precio de una oferta sale de FACTUSOL y del "
     "CATÁLOGO; si lo pide, dile que se lo preparas en una oferta."
+)
+REGLA_FICHAS_WEB = (
+    "FICHAS DE NUESTRAS WEBS: una pieza de «Nuestras webs» que dice «Ficha: W#» es un producto "
+    "publicado en nuestra web, y en un correo compuesto se puede poner como ficha con esa "
+    "referencia, igual que un P#, en un «producto» o en un «productos_fila» junto a las del "
+    "CATÁLOGO. Úsala SOLO para lo que el CATÁLOGO no tiene: si el producto está en el catálogo, "
+    "la ficha es la del catálogo (si la pieza dice «En el CATÁLOGO», su W# ya saca la del "
+    "catálogo, con su precio de venta). Pero si quien envía pide expresamente una variante que "
+    "solo está en la web (la pieza dice «Pedida por quien envía»: «la versión desktop»), usa esa "
+    "aunque el catálogo tenga una parecida. El precio de esa ficha lo pone BoHub (el de la web, "
+    "o «precio a consultar» si la web no lo da): no lo escribas en ningún texto. Solo si quien "
+    "envía te dice en sus instrucciones el precio de ese producto, ponlo así: "
+    "{\"ref\": \"W2\", \"precio\": \"<el importe tal como lo dice>\"}; nunca lo deduzcas "
+    "de otro producto ni lo inventes. La ficha lleva la «Imagen» de la pieza; si quien envía "
+    "pide otra, pon una de su «Galería»: {\"ref\": \"W2\", \"imagen\": \"<URL de la "
+    "galería>\"}. En un correo de texto, ese producto se enlaza con su "
+    "«Enlace» y su precio se dice como precio de la web (o que se lo confirmamos)."
 )
 REGLA_ENLACES_MATERIAL = (
     "Los «Enlace» del material de consulta también se pueden poner en el cuerpo (cuentan como "
@@ -180,6 +200,8 @@ def construir(
     sin_resultados: str | None = None, soporte_no_consultado: str | None = None,
     soporte_sin_centro: str | None = None, tecnica: bool = False,
     resumen_base: dict[str, Any] | None = None, avisos: Iterable[str] = (),
+    pedidas: Iterable[str] = (), idioma: str | None = None,
+    del_catalogo: Mapping[Any, dict[str, Any]] | None = None,
 ) -> Material | None:
     """El material del turno con lo ya leído; None si no se consultó nada.
 
@@ -196,6 +218,14 @@ def construir(
       citar.
     - `resumen_base`: lo que ya se sabe de la consulta (qué se buscó, cómo,
       cuánto tardó) y que va a «Lo que ha usado».
+    - `pedidas`: los ids del índice de los productos que quien envía pide
+      expresamente (por su enlace o por su nombre): su pieza lo dice.
+    - `idioma`: el del correo (la pieza de otro idioma lo dice).
+    - `del_catalogo`: las piezas (por su id) que son un producto del catálogo
+      del compositor (su página o la de una de sus traducciones): si es una
+      máquina del correo (`en_correo`), no se ofrece como ficha (ya tiene su
+      `P#`); si no, su `W#` saca la ficha del catálogo (`catalogo` en el
+      resumen), con su precio de venta.
     """
     otros = list(otros_soporte)
     frs = list(fragmentos)
@@ -251,18 +281,45 @@ def construir(
     if piezas_soporte:
         bloques.append(sobre.encapsular("Soporte técnico", piezas_soporte, prefijo="S"))
         reglas.append(REGLA_SOPORTE)
+    pedidas_ids = set(pedidas)
+    del_catalogo = del_catalogo or {}
     if frs:
         piezas: list[sobre.Pieza] = []
         resumen["webs"] = []
+        con_ficha = False
         for n, f in enumerate(frs, start=1):
             url = https(f.url)
             datos = {"Web": f.dominio or f.sitio, "Tipo": f.tipo}
+            ficha = f.tipo == "producto" and getattr(f, "wp_id", None) is not None and bool(url)
+            catalogo = del_catalogo.get(f.id) if ficha else None
+            if catalogo and catalogo.get("en_correo"):
+                ficha = False
+                datos["En el CATÁLOGO"] = "sí: su ficha es la del catálogo"
+            elif catalogo and not catalogo.get("origen_id"):
+                catalogo = None
+            if ficha:
+                con_ficha = True
+                datos["Ficha"] = f"W{n}"
+                if catalogo:
+                    datos["En el CATÁLOGO"] = (f"sí («{catalogo.get('nombre') or f.titulo}»): con "
+                                               f"W{n} sale su ficha del catálogo, con su precio "
+                                               "de venta")
+                if f.id in pedidas_ids:
+                    datos["Pedida por quien envía"] = "sí"
             precio = _precio_web(f)
             if precio:
                 datos["Precio en la web"] = precio
+            elif ficha and not catalogo:
+                datos["Precio"] = "a consultar (la web no da precio)"
+            if idioma and f.idioma and f.idioma != idioma:
+                datos["Idioma"] = f"{f.idioma} (no está en el índice en {idioma})"
             imagen = https(f.imagen)
             if imagen:
                 datos["Imagen"] = imagen
+            if ficha:
+                galeria = [g for g in (https(x) for x in getattr(f, "galeria", []) or []) if g]
+                if galeria:
+                    datos["Galería"] = " · ".join(galeria[:MAX_GALERIA])
             piezas.append(sobre.Pieza(titulo=f.titulo or "(sin título)", url=url or "",
                                       texto=f.fragmento or "", fuente="web", datos=datos))
             _enlace(url, f"nuestra web: {f.titulo}", "web_indice")
@@ -270,9 +327,16 @@ def construir(
                 "ref": f"W{n}", "id": f.id, "titulo": f.titulo, "url": f.url, "sitio": f.sitio,
                 "dominio": f.dominio, "tipo": f.tipo, "idioma": f.idioma,
                 "precio_web_texto": f.precio_web_texto, "precio_iva": f.precio_iva,
+                **({"ficha": True, "wp_id": f.wp_id, "pedida": f.id in pedidas_ids}
+                   if ficha else {}),
+                **({"catalogo": {"fuente": catalogo["fuente"], "origen_id": catalogo["origen_id"],
+                                 "enlace": catalogo.get("enlace")}}
+                   if ficha and catalogo else {}),
             })
         bloques.append(sobre.encapsular("Nuestras webs", piezas, prefijo="W"))
         reglas.append(REGLA_WEBS)
+        if con_ficha:
+            reglas.append(REGLA_FICHAS_WEB)
     if bloques:
         reglas.insert(0, sobre.REGLA_MATERIAL)
         reglas.insert(1, REGLA_ENLACES_MATERIAL)

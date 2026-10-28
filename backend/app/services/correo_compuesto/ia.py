@@ -5,7 +5,10 @@
   pedido sale el martes») o no lo dice (entonces elige la IA, por defecto
   normal). El interruptor de la franja manda sobre todo esto.
 - `Referencias`: lo que la IA puede nombrar, siempre por referencia: los
-  productos del CATÁLOGO (`P1`, `C1`), los ENLACES (`L1`), los vídeos (`V1`:
+  productos del CATÁLOGO (`P1`, `C1`), los productos de nuestras webs que el
+  catálogo no tiene (`W1`: la pieza de «Nuestras webs» de tipo producto, con
+  su ficha montada desde el índice; si es la misma página que una del
+  catálogo, va la del catálogo), los ENLACES (`L1`), los vídeos (`V1`:
   los de YouTube o Vimeo que salen en el hilo o en la instrucción, y los de la
   tabla de vídeos que van con las máquinas del correo), las imágenes de las
   webs para el hero y las muestras (`I1`, del índice de imágenes) y la web de
@@ -141,6 +144,93 @@ def _video_ref(valor: Any) -> dict[str, str] | None:
     return {**video, "url": videos_mod.url_de(video), **extra}
 
 
+_MILES_PUNTO = r"\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?"          # 14.900 / 14.900,50
+_MILES_COMA = r"\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?"           # 14,900 / 1,299.50
+_MILES_ESPACIO = r"\d{1,3}(?:\s\d{3})+(?:[.,]\d{1,2})?"     # 14 900
+#: El número entero: ni «900» de «14,900» ni «14,90» de «14,900».
+_NUMERO = (rf"(?<![\d.,])(?:{_MILES_PUNTO}|{_MILES_COMA}|{_MILES_ESPACIO}|\d+(?:[.,]\d{{1,2}})?)"
+           r"(?![\d.,]*\d)")
+#: Un importe: un número con la moneda al lado («14.900 €», «€ 14900», «14900
+#: euros», «€14,900»). Un número suelto no: «MBO 6090» es un modelo, no un precio.
+_IMPORTE_USUARIO_RE = re.compile(
+    rf"(?:(?:€|\$|£|eur\b|euros?\b)\s*({_NUMERO}))|(?:({_NUMERO})\s*(?:€|\$|£|eur\b|euros?\b))",
+    re.IGNORECASE)
+
+
+def _normalizado(crudo: str) -> str | None:
+    if re.fullmatch(_MILES_PUNTO, crudo):
+        crudo = crudo.replace(".", "").replace(",", ".")
+    elif re.fullmatch(_MILES_COMA, crudo):
+        crudo = crudo.replace(",", "")
+    else:
+        crudo = re.sub(r"\s", "", crudo).replace(",", ".")
+    try:
+        valor = float(crudo)
+    except ValueError:
+        return None
+    return str(int(valor)) if valor == int(valor) else f"{valor:.2f}"
+
+
+def importes_de(texto: str | None) -> set[str]:
+    """Los importes de un texto, normalizados («14.900,00 €» y «€14,900» →
+    «14900»): solo los que llevan la moneda al lado."""
+    return {n for n in (_normalizado(m.group(1) or m.group(2))
+                        for m in _IMPORTE_USUARIO_RE.finditer(texto or "")) if n}
+
+
+_CORTE_RE = re.compile(r"[;\n]|,\s|\.\s")
+
+
+def _ivas_de_importes(texto: str) -> dict[str, set[str]]:
+    """El IVA que dice quien envía junto a cada importe («14.900 € + IVA»):
+    lo de su lado de la frase. Un importe sin IVA al lado toma el que dice la
+    instrucción sin pegarlo a ningún importe, si es uno solo («a 14.900 € y
+    la normal a 12.000 €, ambas + IVA»; «IVA aparte, …»); el IVA pegado a
+    otro importe no cuenta para este."""
+    from app.services.correo_compuesto.generador import (  # noqa: PLC0415
+        iva_del_texto,
+        ivas_del_texto,
+    )
+
+    salida: dict[str, set[str]] = {}
+    importes = list(_IMPORTE_USUARIO_RE.finditer(texto))
+    sueltos: list[str] = []
+    resto = list(texto)                 # lo que no va pegado a ningún importe
+    for i, m in enumerate(importes):
+        # Lo de su lado, sin pasar de una coma, un punto y coma o un salto de
+        # línea, ni llegar al importe de al lado.
+        desde = max(m.start() - 12, importes[i - 1].end() if i else 0)
+        antes = _CORTE_RE.split(texto[desde:m.start()])[-1]
+        desde = m.start() - len(antes)
+        hasta = importes[i + 1].start() if i + 1 < len(importes) else m.end() + 40
+        hasta = m.end() + len(_CORTE_RE.split(texto[m.end():hasta])[0])
+        resto[desde:hasta] = [" "] * (hasta - desde)
+        numero = _normalizado(m.group(1) or m.group(2))
+        iva = iva_del_texto(texto[desde:hasta])
+        if numero and iva:
+            salida.setdefault(numero, set()).add(iva)
+        elif numero:
+            sueltos.append(numero)
+    generales = ivas_del_texto("".join(resto))
+    if len(generales) == 1:
+        for numero in sueltos:
+            salida.setdefault(numero, set()).update(generales)
+    return salida
+
+
+def _cifras_de(texto: str) -> set[str]:
+    """Las cifras de un texto, sin separadores («16.500» → «16500»)."""
+    return {re.sub(r"\D", "", c) for c in re.findall(r"\d[\d.,]*\d|\d", texto)}
+
+
+def _pagina(url: str | None) -> str:
+    """Host y ruta de una página, sin `www.`, idioma ni barra final: la misma
+    ficha en el catálogo y en el índice."""
+    from app.services.webs import fichas as fichas_web  # noqa: PLC0415
+
+    return fichas_web.pagina(url)
+
+
 @dataclass
 class Referencias:
     """Lo que la IA puede nombrar en un correo compuesto, por referencia."""
@@ -151,6 +241,14 @@ class Referencias:
     videos: dict[str, dict[str, str]] = field(default_factory=dict)      # V1 → vídeo
     marcas: dict[str, dict[str, Any]] = field(default_factory=dict)      # clave → marca
     imagenes: dict[str, dict[str, Any]] = field(default_factory=dict)    # I1 → imagen
+    #: Fichas de la web que son la misma página que una del catálogo: W2 → P1.
+    equivalentes: dict[str, str] = field(default_factory=dict)
+    #: Los importes que ha escrito quien envía en sus instrucciones: los únicos
+    #: que valen como precio de una ficha de la web (nunca uno deducido). Con
+    #: el IVA que dijo junto a cada uno y todas las cifras que escribió.
+    importes_usuario: set[str] = field(default_factory=set)
+    ivas_usuario: dict[str, set[str]] = field(default_factory=dict)
+    cifras_usuario: set[str] = field(default_factory=set)
 
     @classmethod
     def desde(cls, *, maquinas: list[dict[str, Any]], consumibles: list[dict[str, Any]],
@@ -304,9 +402,57 @@ class Referencias:
 
     def ref_de_producto(self, clave: dict[str, str]) -> str | None:
         for ref, c in self.productos.items():
-            if c == clave:
+            if (c.get("fuente"), c.get("origen_id")) == (clave.get("fuente"),
+                                                         clave.get("origen_id")):
                 return ref
         return None
+
+    def anadir_producto_web(self, ref: str, clave: dict[str, str], url: str | None) -> None:
+        """Una pieza de «Nuestras webs» de tipo producto, como ficha (`W#`). Si
+        su página es la de un producto del catálogo, manda el del catálogo."""
+        self.productos[ref] = {"fuente": clave["fuente"], "origen_id": clave["origen_id"]}
+        if bq.url_valida(url):
+            self.enlaces_producto[ref] = str(url)
+            propia = _pagina(url)
+            for otra, enlace in self.enlaces_producto.items():
+                if otra != ref and otra[:1] in ("P", "C") and propia and _pagina(enlace) == propia:
+                    self.equivalentes[ref] = otra
+                    break
+
+    def anadir_equivalente_catalogo(self, ref: str, producto: dict[str, Any]) -> None:
+        """La ficha de la web `ref` es un producto del catálogo que no está
+        entre los `P#` del correo: se le da uno, y `ref` saca esa ficha."""
+        clave = {"fuente": str(producto["fuente"]), "origen_id": str(producto["origen_id"])}
+        propia = self.ref_de_producto(clave)
+        if propia is None:
+            numeros = [int(r[1:]) for r in self.productos if r[:1] == "P" and r[1:].isdigit()]
+            propia = f"P{max(numeros, default=0) + 1}"
+            self.productos[propia] = clave
+            if bq.url_valida(producto.get("enlace")):
+                self.enlaces_producto[propia] = str(producto["enlace"])
+        self.equivalentes[ref] = propia
+
+    def anotar_instrucciones(self, texto: str) -> None:
+        """Lo que ha escrito quien envía (todas sus instrucciones): de ahí, y
+        solo de ahí, puede salir el precio de una ficha de la web."""
+        self.importes_usuario = importes_de(texto)
+        self.ivas_usuario = _ivas_de_importes(texto or "")
+        self.cifras_usuario = _cifras_de(texto or "")
+
+    def precio_permitido(self, precio: str) -> bool:
+        """¿El precio que la IA pone a una ficha de la web es uno que ha
+        escrito quien envía? Lleva algún importe; todos están en sus
+        instrucciones; no añade cifras que no escribió («antes 16.500») ni un
+        IVA que no dijo junto a ese importe."""
+        from app.services.correo_compuesto.generador import iva_del_texto  # noqa: PLC0415
+
+        importes = importes_de(precio)
+        if not importes or not importes <= self.importes_usuario:
+            return False
+        if not _cifras_de(_IMPORTE_USUARIO_RE.sub(" ", precio)) <= self.cifras_usuario:
+            return False
+        iva = iva_del_texto(precio)
+        return iva is None or all(iva in self.ivas_usuario.get(n, set()) for n in importes)
 
 
 @dataclass
@@ -334,6 +480,9 @@ class _Conversor:
         # Las imágenes que ya lleva el correo (la IA las ve como `?<id>`): valen
         # al reemplazar o añadir un bloque aunque no estén entre las del turno.
         self.imagenes_del_correo: set[str] = set()
+        # Lo mismo con las fichas que ya lleva (`?<origen_id>`): una de la web
+        # puesta en una corrección anterior no tiene `W#` en este turno.
+        self.productos_del_correo: dict[str, dict[str, str]] = {}
 
     def _url(self, destino: Any) -> str | None:
         url = self.refs.url(destino, self.idioma)
@@ -385,12 +534,40 @@ class _Conversor:
         return botones
 
     def _producto(self, ref: Any) -> dict[str, str] | None:
+        extra = ref if isinstance(ref, dict) else {}
+        if extra:
+            ref = extra.get("ref") or extra.get("producto") or extra.get("id")
         r = str(ref or "").strip()
-        clave = self.refs.productos.get(r) or self.productos_conocidos.get(r)
+        if r in self.refs.equivalentes:
+            otra = self.refs.equivalentes[r]
+            self.avisos.append(f"La ficha de la web «{r}» es el mismo producto que «{otra}» del "
+                               "catálogo: va la del catálogo, con su precio de venta.")
+            r = otra
+        clave = (self.refs.productos.get(r) or self.productos_conocidos.get(r)
+                 or self.productos_del_correo.get(r))
         if clave is None:
             self.avisos.append(f"La IA nombró un producto que no está en el catálogo («{ref}»): "
                                "no sale.")
-        return clave
+            return None
+        clave = dict(clave)
+        precio = " ".join(str(extra.get("precio") or "").split())
+        if clave.get("fuente") == bq.FUENTE_WEB:
+            if precio:
+                if len(precio) <= bq.MAX_PRECIO_USUARIO and self.refs.precio_permitido(precio):
+                    clave["precio"] = precio
+                else:
+                    clave.pop("precio", None)
+                    motivo = ("es demasiado largo para una ficha" if len(precio)
+                              > bq.MAX_PRECIO_USUARIO else "no sale de tus instrucciones")
+                    self.avisos.append(
+                        f"La IA puso a la ficha «{r}» un precio («{precio}») que {motivo}: no se "
+                        "usa (va el de la web, o «precio a consultar»).")
+            if extra.get("imagen"):
+                clave["imagen"] = str(extra["imagen"])
+        elif precio:
+            self.avisos.append(f"La IA quiso cambiar el precio de «{r}», del catálogo: el precio "
+                               "de una ficha del catálogo sale del catálogo y no se cambia.")
+        return bq.clave_producto(clave)
 
     def _enlace_texto(self, destino: str) -> str | None:
         url = self._url(destino)
@@ -611,6 +788,15 @@ def html_a_markdown(html: str, refs: Referencias) -> str:
     return s.strip()
 
 
+def _producto_para_ia(p: dict[str, str], refs: Referencias) -> Any:
+    """Un producto de un bloque como lo ve la IA: su referencia; una ficha de
+    la web con el precio que indicó quien envía (o con otra imagen), con ellos,
+    para que una corrección no los pierda."""
+    ref = refs.ref_de_producto(p) or f"?{p['origen_id']}"
+    extra = {k: p[k] for k in ("precio", "imagen") if p.get(k)}
+    return {"ref": ref, **extra} if extra else ref
+
+
 def bloque_para_ia(b: dict[str, Any], refs: Referencias) -> dict[str, Any]:
     """Un bloque guardado en el formato con el que lo ve (y lo devuelve) la IA."""
     salida: dict[str, Any] = {"id": b["id"], "tipo": b["tipo"]}
@@ -618,10 +804,9 @@ def bloque_para_ia(b: dict[str, Any], refs: Referencias) -> dict[str, Any]:
     if tipo == bq.TIPO_TEXTO:
         salida["texto"] = html_a_markdown(b.get("html") or "", refs)
     elif tipo == bq.TIPO_PRODUCTO:
-        salida["producto"] = refs.ref_de_producto(b["producto"]) or f"?{b['producto']['origen_id']}"
+        salida["producto"] = _producto_para_ia(b["producto"], refs)
     elif tipo == bq.TIPO_PRODUCTOS_FILA:
-        salida["productos"] = [refs.ref_de_producto(p) or f"?{p['origen_id']}"
-                               for p in b.get("productos") or []]
+        salida["productos"] = [_producto_para_ia(p, refs) for p in b.get("productos") or []]
     elif tipo == bq.TIPO_VIDEO:
         video = videos_mod.identidad(b.get("video"))
         salida["video"] = (refs.ref_de_video(video) or videos_mod.url_de(video)) if video else ""
@@ -679,6 +864,7 @@ def aplicar_operaciones(estructura: dict[str, Any], operaciones: Any, refs: Refe
     idioma = e["idioma"]
     conv = _Conversor(refs, idioma)
     conv.imagenes_del_correo = set(bq.imagenes_de(e))
+    conv.productos_del_correo = {f"?{p['origen_id']}": p for p in bq.productos_de(e)}
     avisos: list[str] = []
     bloques: list[dict[str, Any]] = e["bloques"]
 

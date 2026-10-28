@@ -330,3 +330,239 @@ describe("Lo que ha usado — lo que consultó solo en webs y soporte", () => {
       .toHaveTextContent("Sin procedimiento en el soporte para «cambiar tubo hexa»");
   });
 });
+
+describe("Lo que ha usado — las fichas del correo, del catálogo o del índice de las webs", () => {
+  /** Las fichas tal como las apunta el backend en un turno compuesto. */
+  const CATALOGO = {
+    procedencia: "catalogo", nombre: "artisJet 3000Pro", enlace: "https://www.boprint.net/es/producto/3000pro/",
+    marca: "artisJet", origen_id: "3000pro", precio_texto: "4.990,00 €", precio_origen: "catalogo",
+  };
+  const DESKTOP = {
+    procedencia: "indice", nombre: "beamo desktop", enlace: "https://www.fluxlasers.eu/es/producto/beamo-desktop/",
+    dominio: "fluxlasers.eu", sitio: "fluxlasers", origen_id: "fluxlasers:812", precio_texto: "489,30 € (+ IVA)",
+    precio_origen: "web", precio_iva: "sin_iva", idioma: "es", sin_idioma_pedido: false,
+    imagen: "https://www.fluxlasers.eu/img/beamo.jpg",
+    galeria: ["https://www.fluxlasers.eu/img/beamo.jpg", "https://www.fluxlasers.eu/img/beamo-2.jpg",
+      "https://www.fluxlasers.eu/img/beamo.jpg"],
+  };
+
+  function catalogo() {
+    return screen.getByRole("list", { name: "Fichas del catálogo en el correo" });
+  }
+
+  function indice() {
+    return screen.getByRole("list", { name: "Fichas del índice de las webs en el correo" });
+  }
+
+  it("separa las del catálogo y las del índice, con su enlace, y lo dice plegado", () => {
+    render(<LoQueHaUsado borrador={borrador({
+      mensajes_hilo: 1, contacto: { nombre: "Ana" }, fichas: [CATALOGO, DESKTOP],
+    })} />);
+    expect(screen.getByText(/Lo que ha usado/)).toHaveTextContent(
+      "Lo que ha usado (alcance: todo lo de este contacto) · 1 ficha del índice");
+    expect(screen.getByText(/2 fichas: 1 del catálogo y 1 del índice/)).toBeInTheDocument();
+    const delCatalogo = within(catalogo()).getAllByRole("listitem");
+    expect(delCatalogo).toHaveLength(1);
+    expect(delCatalogo[0]).toHaveTextContent("Ficha del catálogo: artisJet 3000Pro — artisJet · 4.990,00 €");
+    expect(within(delCatalogo[0]).getByRole("link", { name: "artisJet 3000Pro" })).toHaveAttribute(
+      "href", "https://www.boprint.net/es/producto/3000pro/");
+    expect(catalogo()).not.toHaveTextContent("no lleva a una página de producto");
+    const delIndice = within(indice()).getAllByRole("listitem");
+    expect(delIndice).toHaveLength(1);
+    // El precio de la web tal como está guardado: ya dice su IVA, no se repite.
+    // Nunca como el de una oferta.
+    expect(delIndice[0]).toHaveTextContent(
+      "Ficha del índice de fluxlasers.eu: beamo desktop — precio de la web: 489,30 € (+ IVA) · 2 imágenes en la galería");
+    expect(delIndice[0]).not.toHaveTextContent("sin IVA");
+    expect(indice()).not.toHaveTextContent(/oferta/i);
+    const enlace = within(delIndice[0]).getByRole("link", { name: "beamo desktop" });
+    expect(enlace).toHaveAttribute("href", "https://www.fluxlasers.eu/es/producto/beamo-desktop/");
+    expect(enlace).toHaveAttribute("target", "_blank");
+    expect(enlace).toHaveAttribute("rel", "noreferrer");
+  });
+
+  it("el precio dice siempre de dónde sale: la web (con su IVA), quien envía o «a consultar»", () => {
+    render(<LoQueHaUsado borrador={borrador({
+      contacto: { nombre: "Ana" },
+      fichas: [
+        { ...DESKTOP, nombre: "beamo", precio_texto: "1.990,00 €", precio_iva: "sin_iva", galeria: [] },
+        // El IVA de la web no se le pega al precio que dijo quien envía.
+        { ...DESKTOP, nombre: "HEXA", precio_texto: "1.200 €", precio_origen: "usuario" },
+        { ...DESKTOP, nombre: "Ador", precio_texto: null, precio_origen: "consultar", precio_iva: null },
+        // Un precio de la web vacío no se enseña como precio: a consultar.
+        { ...DESKTOP, nombre: "Lazervida", precio_texto: "", precio_origen: "web" },
+      ],
+    })} />);
+    expect(screen.getByText(/Lo que ha usado/)).toHaveTextContent("· 4 fichas del índice");
+    expect(screen.getByText(/4 fichas del índice\./)).toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "Fichas del catálogo en el correo" })).not.toBeInTheDocument();
+    const filas = within(indice()).getAllByRole("listitem");
+    expect(filas[0]).toHaveTextContent("beamo — precio de la web: 1.990,00 € (sin IVA)");
+    expect(filas[0]).not.toHaveTextContent("galería");
+    expect(filas[1]).toHaveTextContent(
+      "HEXA — precio que has indicado tú: 1.200 € (no sale de la web ni del catálogo)");
+    expect(filas[1]).not.toHaveTextContent(/precio de la web|IVA/);
+    expect(filas[2]).toHaveTextContent("Ador — precio a consultar (la web no da precio)");
+    expect(filas[3]).toHaveTextContent("Lazervida — precio a consultar (la web no da precio)");
+  });
+
+  it("una ficha que la web no tiene en el idioma del correo lo dice, con el idioma en que va", () => {
+    render(<LoQueHaUsado borrador={borrador({
+      contacto: { nombre: "Ana" },
+      fichas: [{ ...DESKTOP, idioma: "en", sin_idioma_pedido: true, galeria: [] }],
+    })} />);
+    expect(within(indice()).getByRole("listitem")).toHaveTextContent(
+      "beamo desktop — precio de la web: 489,30 € (+ IVA) · en inglés: no está en el índice en el idioma del correo");
+  });
+
+  it("una ficha del catálogo cuyo enlace no es un producto de nuestras webs se avisa, resaltada; sin precio, lo dice", () => {
+    render(<LoQueHaUsado borrador={borrador({
+      contacto: { nombre: "Ana" },
+      fichas: [{ ...CATALOGO, nombre: "artisJet 3000Pro Freebird", enlace: "https://www.boprint.net/contacto/",
+        precio_texto: null, enlace_no_producto: true }],
+    })} />);
+    expect(screen.getByText(/1 ficha del catálogo\./)).toBeInTheDocument();
+    // Sin fichas del índice, plegado no dice nada de fichas.
+    expect(screen.getByText(/Lo que ha usado/)).not.toHaveTextContent("ficha");
+    const fila = within(catalogo()).getByRole("listitem");
+    expect(fila).toHaveTextContent(
+      "Ficha del catálogo: artisJet 3000Pro Freebird — artisJet · sin precio publicado — el enlace no lleva a "
+      + "una página de producto de nuestras webs: revísalo en el compositor");
+    expect(within(fila).getByText(/el enlace no lleva a una página de producto/))
+      .toHaveClass("asistente-panel-aviso");
+    // Se avisa; el enlace se enseña como está (no se corrige).
+    expect(within(fila).getByRole("link")).toHaveAttribute("href", "https://www.boprint.net/contacto/");
+  });
+
+  it("dice por qué el enlace no es un producto: uno que el índice ya no tiene, o uno que aún no tiene", () => {
+    render(<LoQueHaUsado borrador={borrador({
+      contacto: { nombre: "Ana" },
+      fichas: [
+        { ...CATALOGO, nombre: "Retirada", enlace: "https://www.boprint.net/producto/retirada/",
+          enlace_no_producto: true, enlace_motivo: "ido" },
+        { ...CATALOGO, nombre: "Nueva", enlace: "https://www.boprint.net/producto/nueva/",
+          enlace_no_producto: true, enlace_motivo: "fuera" },
+      ],
+    })} />);
+    const [retirada, nueva] = within(catalogo()).getAllByRole("listitem");
+    expect(retirada).toHaveTextContent(
+      "el enlace es el de un producto que el índice de las webs ya no tiene (se quitó de la web o una regla del índice lo deja fuera): revísalo");
+    expect(nueva).toHaveTextContent(
+      "el enlace no está en el índice de las webs: si el producto es nuevo, aún no se ha leído; si no, revísalo en el compositor");
+    expect(nueva).not.toHaveTextContent("no lleva a una página de producto");
+  });
+
+  it("el precio de una ficha del catálogo dice lo mismo que el correo: «a medida» u orientativo", () => {
+    render(<LoQueHaUsado borrador={borrador({
+      contacto: { nombre: "Ana" },
+      fichas: [
+        { ...CATALOGO, nombre: "A medida", precio_texto: null, precio_publico: false },
+        { ...CATALOGO, nombre: "Orientativa", precio_texto: "9.990 €", orientativo: true },
+      ],
+    })} />);
+    const [medida, orientativa] = within(catalogo()).getAllByRole("listitem");
+    expect(medida).toHaveTextContent("A medida — artisJet · sin precio público (a medida)");
+    expect(orientativa).toHaveTextContent("Orientativa — artisJet · 9.990 € · orientativo");
+  });
+
+  it("solo enlaces web: una ficha con un enlace raro se enseña sin enlace; una sin nombre se ignora", () => {
+    render(<LoQueHaUsado borrador={borrador({
+      contacto: { nombre: "Ana" },
+      fichas: [
+        { ...DESKTOP, nombre: "Rara", enlace: "javascript:alert(1)",
+          galeria: ["javascript:alert(1)", "https://www.fluxlasers.eu/img/beamo.jpg"] },
+        { ...CATALOGO, enlace: "javascript:alert(2)" },
+        { ...DESKTOP, nombre: "", origen_id: "" },
+        { ...CATALOGO, procedencia: "otra" },
+        "nada",
+      ],
+    })} />);
+    expect(screen.getByText(/2 fichas: 1 del catálogo y 1 del índice/)).toBeInTheDocument();
+    expect(within(indice()).getByRole("listitem")).toHaveTextContent("Ficha del índice de fluxlasers.eu: Rara");
+    expect(within(indice()).queryByRole("link")).not.toBeInTheDocument();
+    // La galería cuenta solo los enlaces web: queda una imagen, no se dice.
+    expect(indice()).not.toHaveTextContent("galería");
+    expect(within(catalogo()).getByRole("listitem")).toHaveTextContent("Ficha del catálogo: artisJet 3000Pro");
+    expect(within(catalogo()).queryByRole("link")).not.toBeInTheDocument();
+  });
+
+  it("sin fichas (un correo de texto, un borrador de antes) no pinta listas ni las cuenta", () => {
+    render(<LoQueHaUsado borrador={borrador({ mensajes_hilo: 1, contacto: { nombre: "Ana" } })} />);
+    expect(screen.queryByRole("list", { name: "Fichas del catálogo en el correo" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "Fichas del índice de las webs en el correo" })).not.toBeInTheDocument();
+    expect(screen.getByText(/la ficha de Ana/)).not.toHaveTextContent(/\d+ fichas?\b/);
+    expect(screen.getByText(/Lo que ha usado/).textContent?.trim())
+      .toBe("Lo que ha usado (alcance: todo lo de este contacto)");
+  });
+
+  it("los productos del catálogo que entraron van enlazados, y se marcan los de un enlace que no es un producto", () => {
+    render(<LoQueHaUsado borrador={{
+      ...borrador({
+        mensajes_hilo: 1, contacto: { nombre: "Ana" },
+        catalogo: {
+          maquinas: [
+            { nombre: "artisJet 3000Pro Freebird", marca: "artisJet", precio_texto: "5.490,00 €",
+              enlace: "https://www.boprint.net/contacto/", eleccion: "instruccion" },
+            { nombre: "Orion 20", marca: "MBO", precio_texto: "4.990,00 €",
+              enlace: "https://mboprinters.com/es/producto/orion-20/", eleccion: "hilo" },
+          ],
+          consumibles: [{ nombre: "Tinta DTF blanca", precio_texto: null, enlace: "javascript:alert(1)" }],
+          sin_maquina: [],
+        },
+        enlaces_no_producto: [
+          { nombre: "artisJet 3000Pro Freebird", enlace: "https://www.boprint.net/contacto/" },
+          { nombre: "Orion 20", enlace: "https://mboprinters.com/es/producto/orion-20/", motivo: "fuera" },
+        ],
+      }),
+      enlaces: [{ url: "https://mboprinters.com/es/producto/orion-20/", etiqueta: "Orion 20", origen: "catalogo_compositor" }],
+    }} />);
+    const filas = within(screen.getByRole("list", { name: "Productos del catálogo que entraron" }))
+      .getAllByRole("listitem");
+    expect(filas[0]).toHaveTextContent(
+      "artisJet 3000Pro Freebird (artisJet) — 5.490,00 € — el enlace no es una página de producto de nuestras webs");
+    expect(within(filas[0]).getByRole("link", { name: "artisJet 3000Pro Freebird" })).toHaveAttribute(
+      "href", "https://www.boprint.net/contacto/");
+    // Uno que el índice no tiene (puede ser nuevo): se dice así, no que no es un producto.
+    expect(filas[1]).toHaveTextContent("Orion 20 (MBO) — 4.990,00 € — el enlace no está en el índice de las webs");
+    expect(filas[1]).not.toHaveTextContent("no es una página de producto");
+    expect(within(filas[1]).getByRole("link", { name: "Orion 20" })).toHaveAttribute(
+      "href", "https://mboprinters.com/es/producto/orion-20/");
+    expect(filas[2]).toHaveTextContent("Tinta DTF blanca — sin precio publicado");
+    expect(within(filas[2]).queryByRole("link")).not.toBeInTheDocument();
+    const enlaces = screen.getByRole("list", { name: "Enlaces que podía usar" });
+    expect(within(enlaces).getByRole("link", { name: "https://mboprinters.com/es/producto/orion-20/" }))
+      .toBeInTheDocument();
+    expect(enlaces).toHaveTextContent("— Orion 20");
+  });
+
+  it("una página de nuestras webs que es un producto dice que se puede poner como ficha, y si la pidió quien envía", () => {
+    render(<LoQueHaUsado borrador={borrador({
+      mensajes_hilo: 1, contacto: { nombre: "Ana" },
+      material: {
+        automatico: true, fuentes: { webs: true, soporte: false },
+        consulta: { tecnica: false, webs: "beamo", origen: "ia" }, buscado_en_webs: "beamo", ms: 800,
+        webs: [
+          { ref: "W1", id: "w-1", titulo: "beamo desktop", url: "https://www.fluxlasers.eu/es/producto/beamo-desktop/",
+            dominio: "fluxlasers.eu", tipo: "producto", precio_web_texto: "489,30 € (+ IVA)", precio_iva: "sin_iva",
+            usado: true, ficha: true, wp_id: 812, pedida: true },
+          { ref: "W2", id: "w-2", titulo: "beamo", url: "https://www.fluxlasers.eu/es/producto/beamo/",
+            dominio: "fluxlasers.eu", tipo: "producto", precio_web_texto: null, usado: false, ficha: true,
+            wp_id: 640, pedida: false },
+          { ref: "W3", id: "w-3", titulo: "Guía del beamo", url: "https://www.fluxlasers.eu/es/guia-beamo/",
+            dominio: "fluxlasers.eu", tipo: "entrada", usado: false, pedida: true },
+        ],
+      },
+    })} />);
+    const filas = within(screen.getByRole("list", { name: "Lo que trajo solo de webs y soporte" }))
+      .getAllByRole("listitem");
+    expect(filas[0]).toHaveTextContent(
+      "Web: beamo desktop — fluxlasers.eu · producto · precio de la web: 489,30 € (+ IVA) · se puede poner como "
+      + "ficha · pedida por quien envía · usado en el borrador");
+    expect(filas[1]).toHaveTextContent(
+      "Web: beamo — fluxlasers.eu · producto · se puede poner como ficha · no lo usó");
+    expect(filas[1]).not.toHaveTextContent("pedida");
+    // Una página que no es un producto no es una ficha (ni «pedida»).
+    expect(filas[2]).toHaveTextContent("Web: Guía del beamo — fluxlasers.eu · entrada · no lo usó");
+    expect(filas[2]).not.toHaveTextContent(/ficha|pedida/);
+  });
+});

@@ -10,7 +10,12 @@ usan) y los campos de su tipo. Los textos y los enlaces de un bloque pueden
 ser un texto o un dict por idioma (`{"es": …, "en": …}`): el generador coge
 el del idioma del correo. Los productos van por su clave del catálogo
 (`{"fuente", "origen_id"}`): nombre, imagen, precio y enlace salen siempre de
-la fila viva de `kb_catalogo`, nunca de la estructura. Los vídeos, igual, por
+la fila viva de `kb_catalogo`, nunca de la estructura. Un producto que el
+catálogo no tiene puede ir con una ficha montada desde su página del índice
+de las webs (`{"fuente": "web", "origen_id": "<sitio>:<wp_id>"}`,
+`webs.fichas`), que puede llevar dos cosas en la estructura: `precio` (el
+que indicó quien envía, verificado contra sus instrucciones) e `imagen` (otra
+de la galería de esa página; si deja de estar en ella, va la principal). Los vídeos, igual, por
 QUÉ vídeo son (`{"plataforma", "id"}`, ver `videos.py`): su URL, miniatura,
 título y duración los resuelve BoHub al generar. Y las imágenes del hero y de
 las muestras, por su id del índice de imágenes de las webs (`{"id"}`,
@@ -89,6 +94,11 @@ TEXTOS: dict[str, dict[str, str]] = {
     "iva_sin": {"es": "+ IVA", "en": "+ VAT", "de": "+ MwSt", "fr": "+ TVA", "nl": "+ BTW"},
     "iva_con": {"es": "IVA incl.", "en": "incl. VAT", "de": "inkl. MwSt", "fr": "TTC",
                 "nl": "incl. btw"},
+    #: Una ficha de la web sin precio en la web (y sin uno que haya dicho
+    #: quien envía): en el sitio del precio y sin el IVA.
+    "precio_consultar": {"es": "Precio a consultar", "en": "Price on request",
+                         "de": "Preis auf Anfrage", "fr": "Prix sur demande",
+                         "nl": "Prijs op aanvraag"},
     #: El precio sin importe (el origen dice «Consultar»): nunca «Consultar»,
     #: sino que se prepara a medida, en el sitio del precio y sin el IVA.
     "precio_a_medida": {"es": "Precio a medida", "en": "Custom price", "de": "Preis nach Maß",
@@ -297,15 +307,32 @@ def markdown_a_html(texto: str, resolver_enlace: Any = None) -> str:
 
 # --- productos ------------------------------------------------------------------------------
 
+#: La fuente de las fichas montadas desde el índice de las webs.
+FUENTE_WEB = "web"
+#: Largo del precio que indica quien envía para una ficha de la web.
+MAX_PRECIO_USUARIO = 60
+
+
 def clave_producto(valor: Any) -> dict[str, str] | None:
-    """La referencia de un producto del catálogo: `{"fuente", "origen_id"}`."""
+    """La referencia de un producto del catálogo: `{"fuente", "origen_id"}`.
+    Una ficha de la web (`fuente: web`) conserva además `precio` (el que
+    indicó quien envía) e `imagen` (una de su galería), si los trae."""
     if not isinstance(valor, dict):
         return None
     fuente = str(valor.get("fuente") or "").strip()[:12]
     origen_id = str(valor.get("origen_id") or "").strip()[:80]
     if not fuente or not origen_id:
         return None
-    return {"fuente": fuente, "origen_id": origen_id}
+    clave = {"fuente": fuente, "origen_id": origen_id}
+    if fuente == FUENTE_WEB:
+        # Uno demasiado largo no se recorta (saldría un número a medias): fuera.
+        precio = " ".join(str(valor.get("precio") or "").split())
+        if precio and len(precio) <= MAX_PRECIO_USUARIO and not re.search(r"[<>]", precio):
+            clave["precio"] = precio
+        imagen = url_valida(valor.get("imagen"))
+        if imagen:
+            clave["imagen"] = imagen
+    return clave
 
 
 def clave_de(producto: dict[str, str]) -> str:

@@ -91,6 +91,19 @@ describe("CorreoCompuestoVista", () => {
     expect(screen.getByRole("button", { name: /Móvil/ })).toHaveAttribute("aria-pressed", "true");
   });
 
+  it("dice de dónde salen precios, fichas y enlaces (el catálogo o nuestras webs) y enseña los avisos del servidor", async () => {
+    mockRender.mockImplementation(({ estructura, preview }) => Promise.resolve({
+      estructura, html: documento(estructura, Boolean(preview)), texto: "", precios: [],
+      avisos: ["El producto «fluxlasers:812» ya no está en el índice de las webs: no sale en el correo."],
+    }));
+    await montar();
+    expect(screen.getByText(/Los precios, las fichas y los enlaces salen del catálogo o de nuestras webs/))
+      .toHaveTextContent(
+        "Pulsa un texto para cambiarlo. Los precios, las fichas y los enlaces salen del catálogo o de nuestras "
+        + "webs: para cambiarlos, pídeselo a la IA o quita el bloque.");
+    expect(await screen.findByText(/ya no está en el índice de las webs/)).toHaveAttribute("role", "status");
+  });
+
   it("editar un texto cambia ese campo de la estructura y nada más (ni bloques, ni orden, ni productos)", async () => {
     const { props } = await montar();
     const doc = marco();

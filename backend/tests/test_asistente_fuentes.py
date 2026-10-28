@@ -759,7 +759,8 @@ def test_un_borrador_comercial_sobre_una_maquina_trae_la_pagina_de_producto_con_
     assert m["webs"] == [{
         "ref": "W1", "id": pagina, "titulo": "Beambox II 55W", "url": URL_WEB,
         "sitio": "fluxlasers", "dominio": "fluxlasers.eu", "tipo": "producto", "idioma": "es",
-        "precio_web_texto": "3.990,00 € +IVA", "precio_iva": "sin_iva", "usado": True}]
+        "precio_web_texto": "3.990,00 € +IVA", "precio_iva": "sin_iva", "ficha": True,
+        "wp_id": m["webs"][0]["wp_id"], "pedida": False, "usado": True}]
 
 
 def test_un_precio_que_solo_esta_en_la_web_sale_como_precio_de_la_web_nunca_como_oferta(

@@ -90,6 +90,41 @@ FIRMA_FIN = "<!--/crmbo:signature-->"
 _IVA_EN_PRECIO_RE = re.compile(r"\b(IVA|VAT|MwSt|USt|TVA|TTC|HT|BTW)\b", re.IGNORECASE)
 
 
+_IMP = r"(?:iva|vat|mwst|ust|tva|btw)"
+#: Lo que dice del IVA un precio, siempre con el impuesto al lado: «portes no
+#: incluidos» o «precio exclusivo» no dicen nada del IVA. Primero «sin»
+#: («+ IVA incluida la instalación» es sin IVA).
+_SIN_IVA_RE = re.compile(
+    rf"\+\s*{_IMP}\b|\b(?:sin|s/|excl\.?|exkl\.?|excluding|plus|zzgl\.?|ex\.?|m[aá]s)\s*{_IMP}\b"
+    rf"|\b{_IMP}\.?\s+(?:no\s+incluid[oa]s?|aparte|excl\w*|exkl\w*|not\s+included)"
+    r"|\bhors\s+tax\w*|\bnetto\b", re.IGNORECASE)
+_HT_RE = re.compile(r"\bHT\b")         # «HT» en mayúsculas (hors taxes)
+_CON_IVA_RE = re.compile(
+    rf"\b{_IMP}\.?\s+(?:incl\w*|inkl\w*|included)|\b(?:incl\.?|inkl\.?|including|con|with)\s*"
+    rf"{_IMP}\b|\bTTC\b|\bbrutto\b", re.IGNORECASE)
+
+
+def iva_del_texto(precio: str) -> str | None:
+    """`sin_iva`/`con_iva` según lo que dice el propio precio («14.900 € + IVA»,
+    «IVA no incluido», «plus VAT», «IVA incluido»), o None si no dice nada.
+    Solo cuenta lo que lleva el impuesto al lado; si dice las dos cosas
+    («14.900 € sin IVA (18.029 € con IVA)»), lo primero que dice."""
+    texto = precio or ""
+    sin = [m.start() for r in (_SIN_IVA_RE, _HT_RE) for m in r.finditer(texto)]
+    con = [m.start() for m in _CON_IVA_RE.finditer(texto)]
+    if not sin and not con:
+        return None
+    return "sin_iva" if sin and (not con or min(sin) <= min(con)) else "con_iva"
+
+
+def ivas_del_texto(texto: str) -> set[str]:
+    """Todo lo que dice un texto del IVA (`sin_iva`, `con_iva`), con la
+    misma regla que `iva_del_texto`."""
+    texto = texto or ""
+    return ({"sin_iva"} if _SIN_IVA_RE.search(texto) or _HT_RE.search(texto) else set()) | (
+        {"con_iva"} if _CON_IVA_RE.search(texto) else set())
+
+
 @dataclass
 class Datos:
     """Lo que el generador necesita del catálogo, ya resuelto."""
@@ -121,6 +156,9 @@ class Correo:
     avisos: list[str] = field(default_factory=list)
     #: Los precios que salen en el correo, tal cual.
     precios: list[str] = field(default_factory=list)
+    #: De ellos, los de la web (el que dice la web, no el que indicó quien
+    #: envía): un texto que repite uno lo presenta como si fuera de oferta.
+    precios_web: list[str] = field(default_factory=list)
     #: El pie que lleva el correo: el de la persona o los avisos del catálogo.
     pie: str = ""
 
@@ -221,6 +259,7 @@ class _Render:
         self.idioma = estructura.get("idioma") or bq.IDIOMA_RAIZ
         self.avisos: list[str] = []
         self.precios: list[str] = []
+        self.precios_web: list[str] = []
         self.fuentes_con_precio: list[str] = []
         primero = next(iter(datos.productos.values()), None)
         self.acento = (self._color_de_marca(estructura.get("marca"))
@@ -244,16 +283,36 @@ class _Render:
     def _producto(self, ref: dict[str, str]) -> dict[str, Any] | None:
         p = self.datos.productos.get(bq.clave_de(ref))
         if p is None:
+            donde = ("el índice de las webs" if ref.get("fuente") == bq.FUENTE_WEB
+                     else "el catálogo")
             self.avisos.append(
-                f"El producto «{ref['origen_id']}» ya no está en el catálogo: "
-                "no sale en el correo.")
+                f"El producto «{ref['origen_id']}» ya no está en {donde}: no sale en el correo.")
+            return None
+        if p.get("fuente") != bq.FUENTE_WEB:
+            return p
+        # Una ficha de la web: el precio que indicó quien envía y otra imagen
+        # de su galería, si los lleva la estructura.
+        if ref.get("precio"):
+            p = {**p, "precio_texto": ref["precio"], "precio_publico": True,
+                 "precio_consultar": False, "precio_origen": "usuario",
+                 "precio_iva": iva_del_texto(ref["precio"])}
+        imagen = ref.get("imagen")
+        if imagen and imagen in [p.get("imagen"), *(p.get("galeria") or [])]:
+            p = {**p, "imagen": imagen}
         return p
 
     def _sufijo_iva(self, precio: str, fuente: str) -> str:
         if _IVA_EN_PRECIO_RE.search(precio):
             return ""
-        iva = self.datos.iva_por_fuente.get(fuente)
+        iva = self._iva(fuente)
         return self.t("iva_sin") if iva == "sin" else self.t("iva_con") if iva == "con" else ""
+
+    def _iva(self, fuente: str) -> str | None:
+        """`con`/`sin`/None: el del catálogo para su fuente; en una ficha de la
+        web (`web:sin_iva`…), lo que dice la web de ese precio."""
+        if fuente.startswith(f"{bq.FUENTE_WEB}:"):
+            return {"sin_iva": "sin", "con_iva": "con"}.get(fuente.split(":", 1)[1])
+        return self.datos.iva_por_fuente.get(fuente)
 
     # -- la ficha de producto --------------------------------------------------------------
 
@@ -347,6 +406,12 @@ class _Render:
         if precio:
             self.precios.append(precio)
             fuente = str(p.get("fuente") or "")
+            if fuente == bq.FUENTE_WEB:
+                if p.get("precio_origen") != "usuario":
+                    self.precios_web.append(precio)
+                # El IVA de una ficha de la web es el de su precio: el que dice
+                # la web o, si lo indicó quien envía, el que dice ese precio.
+                fuente = f"{bq.FUENTE_WEB}:{p.get('precio_iva') or 'desconocido'}"
             if fuente not in self.fuentes_con_precio:
                 self.fuentes_con_precio.append(fuente)
             sufijo = self._sufijo_iva(precio, fuente)
@@ -367,6 +432,11 @@ class _Render:
                                                       "text-align:center;line-height:1.4;"))
             texto.append(" ".join(t for t in (precio, sufijo) if t)
                          + (f" ({' '.join(notas)})" if notas else ""))
+        elif p.get("precio_consultar"):
+            # Una ficha de la web sin precio en la web: «precio a consultar».
+            consultar = self.t("precio_consultar")
+            cuerpo.append(_p(_e(consultar), estilo_precio))
+            texto.append(consultar)
         elif p.get("precio_publico") is False:
             # Sin importe: «a medida» en el sitio del precio, sin el IVA.
             a_medida = self.t("precio_a_medida")
@@ -433,13 +503,15 @@ class _Render:
                       alinear="center"), texto)
 
     def productos_fila(self, b: dict[str, Any]) -> tuple[str, str]:
-        productos = [p for p in (self._producto(r) for r in b.get("productos") or []) if p]
+        pares = [(r, p) for r, p in ((r, self._producto(r)) for r in b.get("productos") or [])
+                 if p]
+        productos = [p for _, p in pares]
         if not productos:
             return "", ""
         if len(productos) == 1:
-            return self.producto({**b, "tipo": bq.TIPO_PRODUCTO,
-                                  "producto": {"fuente": productos[0]["fuente"],
-                                               "origen_id": productos[0]["origen_id"]}})
+            # La referencia tal cual: una ficha de la web conserva su precio y
+            # su imagen.
+            return self.producto({**b, "tipo": bq.TIPO_PRODUCTO, "producto": pares[0][0]})
         n = len(productos)
         compacta = n >= 3
         separacion = 4 if compacta else 5
@@ -782,7 +854,7 @@ class _Render:
         avisos = self.datos.avisos
         frases: list[str] = []
         for fuente in self.fuentes_con_precio:
-            iva = self.datos.iva_por_fuente.get(fuente)
+            iva = self._iva(fuente)
             frase = avisos.get(iva if iva in ("con", "sin") else "sin_declarar")
             if frase and frase not in frases:
                 frases.append(frase)
@@ -837,7 +909,8 @@ def generar(estructura: dict[str, Any], datos: Datos, *, asunto: str | None = No
         atributos=' bgcolor="#ffffff"', estilo="width:100%;background-color:#ffffff;")
     texto = "\n\n".join(t.strip() for t in textos if t.strip())
     return Correo(html=documento(cuerpo, idioma=e["idioma"], asunto=asunto), texto=texto,
-                  avisos=r.avisos, precios=r.precios, pie=pie or "")
+                  avisos=r.avisos, precios=r.precios, precios_web=r.precios_web,
+                  pie=pie or "")
 
 
 #: La marca del documento: al enviar, el saneado reconoce por ella un correo

@@ -262,7 +262,9 @@ Configuración ERP no las toca.
 API: `PUT /api/erp/conocimiento/catalogo/intereses/palabras/{interes}`
 (`{"palabras": [...]}`; `null` = las de partida), con auditoría.
 
-El bloque CATÁLOGO del prompt es la única fuente de precios; un producto sin
+El bloque CATÁLOGO del prompt es la única fuente de precios de oferta (el de
+una ficha montada desde el índice de las webs es el de la web, dicho como tal:
+§ Soporte de terceros e índice de las webs); un producto sin
 precio público lleva la orden de decir que se prepara a medida y no escribir
 «Consultar»; si no hay producto, lo dice y el modelo no cita ninguno. Si el
 presupuesto de tokens no llega, el catálogo se recorta lo último (consumibles
@@ -403,5 +405,20 @@ Dos paneles más en **Configuración ERP → Base de conocimiento**, antes de
   «Webs»; «Probar» del panel enseña lo que encontraría). Recorrido mensual en
   worker-web y «Reindexar ahora»; reglas editables de qué entra. Los precios
   son **precio de la web**: se pueden citar, nunca ofertar.
+
+**Fichas desde el índice (28/10/2026).** El catálogo llega del compositor en
+**un solo sentido**: BoHub no le puede añadir productos (la siguiente
+sincronización los borraría). Lo que el catálogo no tiene y está publicado en
+una de nuestras webs se presenta en un correo compuesto con una **ficha
+montada desde su página del índice**: mismo bloque que una del catálogo, con
+el precio de la web y su IVA tal como está guardado (nunca de oferta) o
+«Precio a consultar». **El catálogo manda** cuando el producto está en los
+dos (con su precio de venta, sus características y sus traducciones
+revisadas); la ficha del índice gana solo si quien envía pide expresamente una
+variante que solo está en la web. Y el camino inverso: el enlace de un
+producto del catálogo que es de una web indexada y **no lleva a una página de
+producto** del índice (la de contacto, una categoría, un producto que ya no
+está) se avisa en el borrador y en el Cuadre (`enlace_catalogo_no_producto`);
+no se corrige aquí, se arregla en el compositor.
 
 Todo en [fuentes-externas.md](fuentes-externas.md).
