@@ -32,9 +32,19 @@ def _idioma(codigo: str | None) -> str:
     return NOMBRES_IDIOMA.get((codigo or "").lower()[:2], codigo or "otro idioma")
 
 
-def aviso_enlace_no_producto(nombre: str, enlace: str) -> str:
-    return (f"El enlace de la ficha «{nombre}» del catálogo ({enlace}) no lleva a una página de "
-            "producto de nuestras webs: revísalo en el compositor.")
+def aviso_enlace_no_producto(nombre: str, enlace: str, motivo: str | None = None) -> str:
+    """El aviso de un enlace del catálogo que no es un producto del índice,
+    según lo que se sabe de él (`fichas.MOTIVO_*`)."""
+    inicio = f"El enlace de la ficha «{nombre}» del catálogo ({enlace})"
+    if motivo == fichas_web.MOTIVO_FUERA:
+        return (f"{inicio} no está en el índice de nuestras webs: si el producto es nuevo, aún no "
+                "se ha leído («Reindexar ahora» en el panel del índice); si no, revísalo en el "
+                "compositor.")
+    if motivo == fichas_web.MOTIVO_IDO:
+        return (f"{inicio} es el de un producto que ya no está en la web: revísalo en el "
+                "compositor.")
+    return (f"{inicio} no lleva a una página de producto de nuestras webs: revísalo en el "
+            "compositor.")
 
 
 def fichas_del_correo(session: Session, estructura: dict[str, Any],
@@ -72,21 +82,25 @@ def fichas_del_correo(session: Session, estructura: dict[str, Any],
                 "imagen": imagen, "galeria": galeria,
             })
         else:
-            no_producto = None
+            motivo = None
             if p.get("fuente") == FUENTE_COMPOSITOR:
                 # Solo las del compositor: los consumibles de las tiendas no
                 # están en el índice a propósito.
                 if mapa is None:
                     mapa = fichas_web.MapaProductos(session)
-                no_producto = mapa.no_es_producto(enlace)
+                motivo = mapa.motivo(enlace)
             fichas.append({
                 "procedencia": "catalogo", "nombre": nombre, "enlace": enlace,
                 "marca": p.get("marca"), "origen_id": clave["origen_id"],
                 "precio_texto": p.get("precio_texto"), "precio_origen": "catalogo",
-                **({"enlace_no_producto": True} if no_producto else {}),
+                # Lo que dice el correo en el sitio del precio: «a medida» y
+                # la nota de orientativo.
+                **({"precio_publico": False} if p.get("precio_publico") is False else {}),
+                **({"orientativo": True} if p.get("orientativo") else {}),
+                **({"enlace_no_producto": True, "enlace_motivo": motivo} if motivo else {}),
             })
-            if no_producto and enlace:
-                avisos.append(aviso_enlace_no_producto(nombre, str(enlace)))
+            if motivo and enlace:
+                avisos.append(aviso_enlace_no_producto(nombre, str(enlace), motivo))
     del_indice = [f for f in fichas if f["procedencia"] == "indice"]
     if del_indice:
         partes = []
@@ -106,8 +120,8 @@ def fichas_del_correo(session: Session, estructura: dict[str, Any],
                 avisos.append(f"«{f['nombre']}»: precio que me has indicado tú, no sale de la web "
                               "ni del catálogo.")
             if f["sin_idioma_pedido"]:
-                avisos.append(f"La ficha de «{f['nombre']}» va en {_idioma(f['idioma'])}: la web "
-                              f"no la tiene en {_idioma(idioma)}.")
+                avisos.append(f"La ficha de «{f['nombre']}» va en {_idioma(f['idioma'])}: no está "
+                              f"en el índice en {_idioma(idioma)}.")
     return fichas, avisos
 
 
@@ -115,7 +129,7 @@ def enlaces_catalogo_no_producto(session: Session,
                                  productos: list[dict[str, Any]]) -> list[dict[str, str]]:
     """De los productos del catálogo de un borrador (`nombre`, `enlace`), los
     del compositor que llevan un enlace de una web indexada que no es una
-    página de producto del índice."""
+    página de producto del índice, con el porqué (`motivo`)."""
     salida: list[dict[str, str]] = []
     mapa: fichas_web.MapaProductos | None = None
     vistos: set[str] = set()
@@ -126,6 +140,8 @@ def enlaces_catalogo_no_producto(session: Session,
         vistos.add(enlace)
         if mapa is None:
             mapa = fichas_web.MapaProductos(session)
-        if mapa.no_es_producto(enlace):
-            salida.append({"nombre": str(p.get("nombre") or ""), "enlace": enlace})
+        motivo = mapa.motivo(enlace)
+        if motivo:
+            salida.append({"nombre": str(p.get("nombre") or ""), "enlace": enlace,
+                           "motivo": motivo})
     return salida

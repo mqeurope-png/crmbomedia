@@ -153,7 +153,10 @@ def productos_por_nombre(session: Session, nombre: str, *, sitio: str | None = N
     if not palabras:
         return []
     # La palabra más larga, en la base (sin tildes en MySQL); el resto, aquí.
+    # Con una letra suelta no se busca nada: casaría con cualquier título.
     larga = max(palabras, key=len)
+    if len(larga) < 2:
+        return []
     filtros: list[Any] = [func.lower(WebIndiceEntrada.titulo).like(f"%{larga}%")]
     if sitio:
         filtros.append(WebIndiceEntrada.sitio == sitio)
@@ -174,14 +177,25 @@ def variantes(session: Session, fila: WebIndiceEntrada) -> list[WebIndiceEntrada
     """Las filas del mismo producto en los otros idiomas. WPGlobus da el mismo
     id en todos; con WPML cada traducción tiene su id y su slug, y el índice no
     guarda qué traducción es de qué: se reconocen por la misma imagen principal
-    Y el mismo precio (WPML los sincroniza). Si en un idioma salen dos, no se
-    elige ninguna (podrían ser variantes de potencia con la misma foto)."""
+    Y el mismo precio (WPML los sincroniza; sin precio en la web, por la
+    imagen). Si en un idioma salen dos, no se elige ninguna (podrían ser
+    variantes de potencia con la misma foto)."""
+    from app.models.sitios import PLUGIN_WPML  # noqa: PLC0415
+    from app.services.web_forms import sitios as registro_sitios  # noqa: PLC0415
+
     filas = _vivos(session, WebIndiceEntrada.sitio == fila.sitio)
     mismas = [f for f in filas if f.wp_id == fila.wp_id]
     if len({f.idioma for f in mismas}) > 1:
         return mismas            # el mismo id en varios idiomas (WPGlobus): es ese
-    if not fila.imagen or fila.precio_web is None:
-        return mismas            # sin imagen o sin precio no hay con qué reconocerla
+    if not fila.imagen:
+        return mismas            # sin imagen no hay con qué reconocerla
+    if fila.precio_web is None:
+        # Sin precio, solo la imagen; y solo en una web con WPML: en las
+        # demás la traducción es el mismo id, y otro id con la misma foto es
+        # otro producto (la MBO 6090 y su versión desktop).
+        sitio = registro_sitios.registro().sitio(fila.sitio)
+        if sitio is None or sitio.plugin != PLUGIN_WPML:
+            return mismas
     parecidas = [f for f in filas if f.wp_id != fila.wp_id and f.imagen == fila.imagen
                  and f.precio_web == fila.precio_web]
     if any(f.idioma == fila.idioma for f in parecidas):
@@ -308,9 +322,27 @@ def fichas_por_clave(session: Session, claves: list[dict[str, Any]], *,
 # ---------------------------------------------------------------------------
 
 
+#: Las bases de las páginas de producto (`/producto/<slug>`): solo con una de
+#: ellas en la ruta se reconoce un producto por su slug (una categoría o una
+#: entrada del blog pueden llevar el mismo slug que el producto).
+BASES_PRODUCTO = frozenset({"product", "producto", "produkt", "produit", "prodotto", "products",
+                            "productos", "produkte", "produits", "shop", "tienda", "boutique",
+                            "winkel", "negozio"})
+#: Por qué el enlace de una ficha del catálogo no es un producto del índice:
+#: no es una página de producto (una página, una entrada o una categoría, del
+#: índice o no: «/contacto/»); es un producto que el índice da por quitado de
+#: la web; o tiene ruta de producto («/producto/…») y no está en el índice
+#: (puede ser un producto recién publicado que aún no se ha leído).
+MOTIVO_PAGINA = "pagina"
+MOTIVO_IDO = "ido"
+MOTIVO_FUERA = "fuera"
+
+
 class MapaProductos:
     """Los productos vivos del índice, cargados una vez, para mirar muchas URL
-    seguidas (las fichas de un borrador, el catálogo entero en el Cuadre)."""
+    seguidas (las fichas de un borrador, el catálogo entero en el Cuadre). Y,
+    para decir qué es un enlace que no es un producto, las demás páginas vivas
+    y los productos que ya no están."""
 
     def __init__(self, session: Session, *, sitios: list[str] | None = None) -> None:
         from app.services.web_forms import sitios as registro_sitios  # noqa: PLC0415
@@ -323,29 +355,80 @@ class MapaProductos:
         #: Las webs con algún producto en el índice: en las demás no se puede
         #: saber si un enlace es un producto (no tienen tienda, o no se leyeron).
         self.con_productos: set[str] = set()
+        #: La base de las páginas de producto de cada web, la de sus productos
+        #: del índice (`/producto/…`, `/product/…`).
+        self._bases: dict[str, set[str]] = {}
         for f in _vivos(session, *filtros):
             self.con_productos.add(f.sitio)
             idiomas = self._idiomas.get(f.sitio, ())
-            self._por_ruta.setdefault((f.sitio, ruta_de(f.url, idiomas)), f)
+            ruta = ruta_de(f.url, idiomas)
+            self._por_ruta.setdefault((f.sitio, ruta), f)
+            tramos = ruta.strip("/").split("/")
+            if len(tramos) > 1:
+                self._bases.setdefault(f.sitio, set()).add(tramos[0])
             slug = (f.slug or slug_de(f.url) or "").lower()
             if slug:
                 self._por_slug.setdefault((f.sitio, unquote(slug)), f)
+        self._otras: dict[tuple[str, str], str] = {}
+        self._idos: set[tuple[str, str]] = set()
+        for sitio, url, titulo, tipo, ido_en in session.execute(select(
+                WebIndiceEntrada.sitio, WebIndiceEntrada.url, WebIndiceEntrada.titulo,
+                WebIndiceEntrada.tipo, WebIndiceEntrada.ido_en).where(
+                (WebIndiceEntrada.tipo != TIPO_PRODUCTO) | WebIndiceEntrada.ido_en.is_not(None),
+                *filtros)):
+            ruta = ruta_de(url, self._idiomas.get(sitio, ()))
+            if tipo != TIPO_PRODUCTO and ido_en is None:
+                self._otras.setdefault((sitio, ruta), titulo or "")
+            elif tipo == TIPO_PRODUCTO:
+                self._idos.add((sitio, ruta))
 
-    def producto(self, url: str | None) -> WebIndiceEntrada | None:
+    def _ruta(self, url: str | None) -> tuple[str, str] | None:
         sitio = sitio_de(url)
         if sitio is None:
             return None
-        ruta = ruta_de(url, self._idiomas.get(sitio.clave, sitio.idiomas))
-        fila = self._por_ruta.get((sitio.clave, ruta))
-        if fila is None:
-            fila = self._por_slug.get((sitio.clave, ruta.rsplit("/", 1)[-1]))
+        return sitio.clave, ruta_de(url, self._idiomas.get(sitio.clave, sitio.idiomas))
+
+    def _de_producto(self, sitio: str, ruta: str) -> bool:
+        """¿La ruta es de una página de producto (`/producto/<slug>`, la
+        tienda, un producto con la categoría en la ruta)? Una categoría
+        (`/categoria-producto/<slug>`) o la de contacto, no."""
+        tramos = ruta.strip("/").split("/")
+        return len(tramos) > 1 and bool(
+            set(tramos[:-1]) & (BASES_PRODUCTO | self._bases.get(sitio, set())))
+
+    def producto(self, url: str | None) -> WebIndiceEntrada | None:
+        clave = self._ruta(url)
+        if clave is None:
+            return None
+        fila = self._por_ruta.get(clave)
+        if fila is None and clave not in self._otras and self._de_producto(*clave):
+            # Por su slug, si la ruta es de producto: no si es una página del
+            # índice, ni una categoría o una entrada con el mismo slug.
+            fila = self._por_slug.get((clave[0], clave[1].rsplit("/", 1)[-1]))
         return fila
+
+    def motivo(self, url: str | None) -> str | None:
+        """Por qué `url` no es un producto del índice (`MOTIVO_*`); None si lo
+        es o si no se puede saber (una web sin productos en el índice)."""
+        clave = self._ruta(url)
+        if clave is None or clave[0] not in self.con_productos or self.producto(url) is not None:
+            return None
+        if clave in self._otras:
+            return MOTIVO_PAGINA
+        if clave in self._idos:
+            return MOTIVO_IDO
+        return MOTIVO_FUERA if self._de_producto(*clave) else MOTIVO_PAGINA
+
+    def titulo(self, url: str | None) -> str | None:
+        """El título de la página (no producto) del índice a la que lleva `url`."""
+        clave = self._ruta(url)
+        return (self._otras.get(clave) or None) if clave else None
 
     def no_es_producto(self, url: str | None) -> bool | None:
         """True si `url` es de una web con productos en el índice y no es
         ninguno; False si lo es; None si no se puede saber."""
-        sitio = sitio_de(url)
-        if sitio is None or sitio.clave not in self.con_productos:
+        clave = self._ruta(url)
+        if clave is None or clave[0] not in self.con_productos:
             return None
         return self.producto(url) is None
 

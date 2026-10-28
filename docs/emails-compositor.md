@@ -80,10 +80,10 @@ elegir nada: el asistente consulta por su cuenta mientras redacta.
 - En **«Lo que ha usado»** ves qué ha consultado, con sus enlaces, y si el
   borrador lo ha usado; «Buscó …» solo sale si buscó de verdad. Si el
   borrador trae pasos que no salen de ningún artículo, la franja te avisa:
-  revísalo. En un correo con fichas, ves también cuáles salen **del
-  catálogo** y cuáles **del índice de las webs**, con su enlace y de dónde
-  sale su precio; el aviso del borrador lo repite (al cliente le llegan
-  todas iguales).
+  revísalo. En un correo con fichas y «Webs» marcada (o con alguna ficha de
+  la web), ves también cuáles salen **del catálogo** y cuáles **del índice de
+  las webs**, con su enlace y de dónde sale su precio; el aviso del borrador
+  lo repite (al cliente le llegan todas iguales).
 - Las imágenes del cuerpo **se conservan** cuando le pides a la IA que corrija
   («más corto», «en inglés»); si alguna no vuelve a su sitio, va al final y la
   franja te avisa.

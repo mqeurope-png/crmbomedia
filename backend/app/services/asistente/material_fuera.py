@@ -35,7 +35,7 @@ from __future__ import annotations
 import html as html_mod
 import json
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -98,8 +98,9 @@ REGLA_FICHAS_WEB = (
     "publicado en nuestra web, y en un correo compuesto se puede poner como ficha con esa "
     "referencia, igual que un P#, en un «producto» o en un «productos_fila» junto a las del "
     "CATÁLOGO. Úsala SOLO para lo que el CATÁLOGO no tiene: si el producto está en el catálogo, "
-    "la ficha es la del catálogo. Pero si quien envía pide expresamente una variante que solo "
-    "está en la web (la pieza dice «Pedida por quien envía»: «la versión desktop»), usa esa "
+    "la ficha es la del catálogo (si la pieza dice «En el CATÁLOGO», su W# ya saca la del "
+    "catálogo, con su precio de venta). Pero si quien envía pide expresamente una variante que "
+    "solo está en la web (la pieza dice «Pedida por quien envía»: «la versión desktop»), usa esa "
     "aunque el catálogo tenga una parecida. El precio de esa ficha lo pone BoHub (el de la web, "
     "o «precio a consultar» si la web no lo da): no lo escribas en ningún texto. Solo si quien "
     "envía te dice en sus instrucciones el precio de ese producto, ponlo así: "
@@ -200,7 +201,7 @@ def construir(
     soporte_sin_centro: str | None = None, tecnica: bool = False,
     resumen_base: dict[str, Any] | None = None, avisos: Iterable[str] = (),
     pedidas: Iterable[str] = (), idioma: str | None = None,
-    paginas_catalogo: Iterable[str] = (),
+    del_catalogo: Mapping[Any, dict[str, Any]] | None = None,
 ) -> Material | None:
     """El material del turno con lo ya leído; None si no se consultó nada.
 
@@ -220,9 +221,11 @@ def construir(
     - `pedidas`: los ids del índice de los productos que quien envía pide
       expresamente (por su enlace o por su nombre): su pieza lo dice.
     - `idioma`: el del correo (la pieza de otro idioma lo dice).
-    - `paginas_catalogo`: las páginas (`webs.fichas.pagina`) de los productos
-      del CATÁLOGO del correo: una pieza que es una de ellas no se ofrece como
-      ficha (su ficha es la del catálogo).
+    - `del_catalogo`: las piezas (por su id) que son un producto del catálogo
+      del compositor (su página o la de una de sus traducciones): si es una
+      máquina del correo (`en_correo`), no se ofrece como ficha (ya tiene su
+      `P#`); si no, su `W#` saca la ficha del catálogo (`catalogo` en el
+      resumen), con su precio de venta.
     """
     otros = list(otros_soporte)
     frs = list(fragmentos)
@@ -279,10 +282,8 @@ def construir(
         bloques.append(sobre.encapsular("Soporte técnico", piezas_soporte, prefijo="S"))
         reglas.append(REGLA_SOPORTE)
     pedidas_ids = set(pedidas)
-    del_catalogo = {p for p in paginas_catalogo if p}
+    del_catalogo = del_catalogo or {}
     if frs:
-        from app.services.webs import fichas as fichas_web  # noqa: PLC0415
-
         piezas: list[sobre.Pieza] = []
         resumen["webs"] = []
         con_ficha = False
@@ -290,21 +291,28 @@ def construir(
             url = https(f.url)
             datos = {"Web": f.dominio or f.sitio, "Tipo": f.tipo}
             ficha = f.tipo == "producto" and getattr(f, "wp_id", None) is not None and bool(url)
-            if ficha and del_catalogo and fichas_web.pagina(url) in del_catalogo:
+            catalogo = del_catalogo.get(f.id) if ficha else None
+            if catalogo and catalogo.get("en_correo"):
                 ficha = False
                 datos["En el CATÁLOGO"] = "sí: su ficha es la del catálogo"
+            elif catalogo and not catalogo.get("origen_id"):
+                catalogo = None
             if ficha:
                 con_ficha = True
                 datos["Ficha"] = f"W{n}"
+                if catalogo:
+                    datos["En el CATÁLOGO"] = (f"sí («{catalogo.get('nombre') or f.titulo}»): con "
+                                               f"W{n} sale su ficha del catálogo, con su precio "
+                                               "de venta")
                 if f.id in pedidas_ids:
                     datos["Pedida por quien envía"] = "sí"
             precio = _precio_web(f)
             if precio:
                 datos["Precio en la web"] = precio
-            elif ficha:
+            elif ficha and not catalogo:
                 datos["Precio"] = "a consultar (la web no da precio)"
             if idioma and f.idioma and f.idioma != idioma:
-                datos["Idioma"] = f"{f.idioma} (la web no tiene esta página en {idioma})"
+                datos["Idioma"] = f"{f.idioma} (no está en el índice en {idioma})"
             imagen = https(f.imagen)
             if imagen:
                 datos["Imagen"] = imagen
@@ -321,6 +329,9 @@ def construir(
                 "precio_web_texto": f.precio_web_texto, "precio_iva": f.precio_iva,
                 **({"ficha": True, "wp_id": f.wp_id, "pedida": f.id in pedidas_ids}
                    if ficha else {}),
+                **({"catalogo": {"fuente": catalogo["fuente"], "origen_id": catalogo["origen_id"],
+                                 "enlace": catalogo.get("enlace")}}
+                   if ficha and catalogo else {}),
             })
         bloques.append(sobre.encapsular("Nuestras webs", piezas, prefijo="W"))
         reglas.append(REGLA_WEBS)

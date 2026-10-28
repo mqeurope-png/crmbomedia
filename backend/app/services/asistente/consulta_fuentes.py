@@ -317,13 +317,17 @@ def _plan_de_json(raw: str) -> Plan | None:
         return None
     if not isinstance(data, dict) or "tecnica" not in data:
         return None
+    productos = data.get("productos")
+    # Uno solo como texto (no como lista) es ese producto, no sus letras.
+    productos = [productos] if isinstance(productos, str) else (
+        productos if isinstance(productos, list) else [])
     tecnica = data.get("tecnica")
     if isinstance(tecnica, str):
         tecnica = tecnica.strip().lower() in ("true", "sí", "si", "yes", "1")
     plan = Plan(tecnica=bool(tecnica), marca=_limpia(data.get("marca"), 40).lower(),
                 soporte_en=_limpia(data.get("soporte_en")), soporte=_limpia(data.get("soporte")),
                 webs=_limpia(data.get("webs")), origen=PLAN_IA,
-                productos=[_limpia(x, 80) for x in (data.get("productos") or [])
+                productos=[_limpia(x, 80) for x in productos
                            if isinstance(x, str) and _limpia(x, 80)][:MAX_PEDIDAS])
     if not plan.tecnica:
         plan.soporte_en = plan.soporte = ""
@@ -566,16 +570,17 @@ def _soporte_seguro(session: Session, plan: Plan, idioma: str, resumen: dict[str
 
 
 def _productos_pedidos(session: Session, *, instruccion: str | None, nombres: list[str],
-                       idioma: str, maquinas: list[dict[str, Any]], resumen: dict[str, Any],
-                       avisos: list[str]) -> list[Any]:
+                       idioma: str, catalogo: dict[str, dict[str, Any]],
+                       resumen: dict[str, Any], avisos: list[str]) -> list[Any]:
     """Los productos del índice que pide quien envía: por los enlaces de su
     instrucción y por los nombres que saca el plan («MBO 6090 desktop»), cada
-    uno en el idioma del correo si la web lo tiene. Lo que ya está en el
-    catálogo (la misma página que una máquina del correo) no: su ficha es la
-    del catálogo. Devuelve fragmentos, como la búsqueda."""
+    uno en el idioma del correo si la web lo tiene. Lo que ya es una máquina
+    del correo (la misma página, o la de una de sus traducciones) no: su ficha
+    es la del catálogo, que ya tiene su `P#`. Devuelve fragmentos, como la
+    búsqueda."""
     from app.services.webs import busqueda, fichas  # noqa: PLC0415
 
-    paginas_catalogo = _paginas_catalogo(maquinas)
+    del_correo = {p for p, info in catalogo.items() if info.get("en_correo")}
     pedidas: list[dict[str, Any]] = []
     filas: list[tuple[Any, str]] = []
     try:
@@ -602,6 +607,10 @@ def _productos_pedidos(session: Session, *, instruccion: str | None, nombres: li
                             **({"titulo": encontradas[0].titulo} if encontradas else {})})
             if encontradas:
                 filas.append((encontradas[0], nombre))
+            elif not _es_maquina_del_correo(nombre, catalogo):
+                avisos.append(f"No he encontrado «{nombre}» en el índice de las webs: no va su "
+                              "ficha. Si se acaba de publicar, el índice aún no lo tiene (se lee "
+                              "una vez al mes; «Reindexar ahora» en el panel del índice).")
     except Exception:  # noqa: BLE001 — sin esto, el borrador va igual
         logger.warning("asistente: no se han podido buscar los productos pedidos", exc_info=True)
         return []
@@ -614,8 +623,8 @@ def _productos_pedidos(session: Session, *, instruccion: str | None, nombres: li
         if grupo & vistos:
             continue
         vistos |= grupo
-        if {fichas.pagina(f.url) for f in fichas.variantes(session, propia)} & paginas_catalogo:
-            continue    # es la de una máquina del catálogo: manda el catálogo
+        if _paginas_de(session, propia) & del_correo:
+            continue    # es la de una máquina del correo: manda el catálogo
         salida.append(busqueda.fragmento_de(propia, busqueda.palabras_de(consulta),
                                             max_chars=material_fuera.MAX_CHARS_WEB))
     if pedidas:
@@ -623,11 +632,96 @@ def _productos_pedidos(session: Session, *, instruccion: str | None, nombres: li
     return salida
 
 
+def _es_maquina_del_correo(nombre: str, catalogo: dict[str, dict[str, Any]]) -> bool:
+    """¿El nombre pedido es el de una máquina del correo («la Trust» de la
+    «artisJet 6090 Trust»)? Entonces no hace falta su página: su ficha es la
+    del catálogo. «MBO 6090 desktop» no es la «MBO 6090»."""
+    buscado = set(re.findall(r"\w+", nombre.lower()))
+    return bool(buscado) and any(
+        buscado <= set(re.findall(r"\w+", str(info.get("nombre") or "").lower()))
+        for info in catalogo.values() if info.get("en_correo"))
+
+
+def _paginas_de(session: Session, fila: Any) -> set[str]:
+    """La página de una fila del índice y las de sus traducciones."""
+    from app.services.webs import fichas  # noqa: PLC0415
+
+    return ({fichas.pagina(f.url) for f in fichas.variantes(session, fila)}
+            | {fichas.pagina(fila.url)}) - {""}
+
+
 def _paginas_catalogo(maquinas: list[dict[str, Any]]) -> set[str]:
     """Las páginas de los productos del CATÁLOGO del correo."""
     from app.services.webs import fichas  # noqa: PLC0415
 
     return {fichas.pagina(m.get("enlace")) for m in maquinas if m.get("enlace")} - {""}
+
+
+def _catalogo_por_pagina(session: Session, maquinas: list[dict[str, Any]],
+                         ) -> dict[str, dict[str, Any]]:
+    """Las páginas de los productos del catálogo del compositor (todos, no
+    solo los del correo: el CATÁLOGO del prompt es una preselección) → el
+    producto (`fuente`, `origen_id`, `nombre`) y si es una de las máquinas del
+    correo (`en_correo`: ya tiene su `P#`). Un producto con un enlace por
+    idioma tiene una página por idioma."""
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from app.models.conocimiento import FUENTE_COMPOSITOR, ProductoCatalogo  # noqa: PLC0415
+    from app.services.webs import fichas  # noqa: PLC0415
+
+    del_correo = _paginas_catalogo(maquinas)
+    salida: dict[str, dict[str, Any]] = {
+        p: {"en_correo": True, "nombre": m.get("nombre")}
+        for m in maquinas for p in [fichas.pagina(m.get("enlace"))] if p}
+    try:
+        filas = session.execute(select(
+            ProductoCatalogo.fuente, ProductoCatalogo.origen_id, ProductoCatalogo.nombre,
+            ProductoCatalogo.enlace).where(
+            ProductoCatalogo.fuente == FUENTE_COMPOSITOR, ProductoCatalogo.ido_en.is_(None),
+            ProductoCatalogo.descartado.is_(False), ProductoCatalogo.visible.is_(True),
+            ProductoCatalogo.enlace.is_not(None))).all()
+    except Exception:  # noqa: BLE001 — sin esto, solo cuentan las máquinas del correo
+        logger.warning("asistente: no se ha podido leer el catálogo", exc_info=True)
+        filas = []
+    for fuente, origen_id, nombre, enlace in filas:
+        pagina = fichas.pagina(enlace)
+        if pagina:
+            info = salida.setdefault(pagina, {"en_correo": pagina in del_correo})
+            info.setdefault("nombre", nombre)
+            info.update({"fuente": fuente, "origen_id": origen_id, "enlace": enlace})
+    # Todas las páginas de un producto del correo cuentan como del correo.
+    del_correo_ids = {info.get("origen_id") for info in salida.values()
+                      if info.get("en_correo") and info.get("origen_id")}
+    for info in salida.values():
+        if info.get("origen_id") in del_correo_ids:
+            info["en_correo"] = True
+    return salida
+
+
+def _del_catalogo(session: Session, fragmentos: list[Any],
+                  catalogo: dict[str, dict[str, Any]]) -> dict[Any, dict[str, Any]]:
+    """Las piezas de producto que son un producto del catálogo (su página o
+    la de una de sus traducciones) → ese producto."""
+    from app.models.fuentes_externas import WebIndiceEntrada  # noqa: PLC0415
+    from app.services.webs import fichas  # noqa: PLC0415
+
+    salida: dict[Any, dict[str, Any]] = {}
+    if not catalogo:
+        return salida
+    for f in fragmentos:
+        if f.tipo != fichas.TIPO_PRODUCTO:
+            continue
+        paginas = {fichas.pagina(f.url)}
+        try:
+            fila = session.get(WebIndiceEntrada, f.id)
+            if fila is not None:
+                paginas |= _paginas_de(session, fila)
+        except Exception:  # noqa: BLE001 — sin sus traducciones, por su página
+            logger.warning("asistente: no se han podido leer las traducciones", exc_info=True)
+        encontrados = [catalogo[p] for p in sorted(paginas - {""}) if p in catalogo]
+        if encontrados:
+            salida[f.id] = next((i for i in encontrados if i.get("en_correo")), encontrados[0])
+    return salida
 
 
 def _juntar(primero: list[Any], despues: list[Any], maximo: int) -> list[Any]:
@@ -681,15 +775,17 @@ def consultar(session: Session, *, fuentes: Fuentes, plan: Plan, idioma: str | N
     soporte_leido = (_soporte_seguro(session, plan, idioma, resumen, avisos)
                      if fuentes.soporte else _sin_soporte())
     fragmentos: list[Any] = []
+    del_catalogo: dict[Any, dict[str, Any]] = {}
     if fuentes.webs:
+        catalogo = _catalogo_por_pagina(session, list(entrada.maquinas) if entrada else [])
         pedidos = _productos_pedidos(
             session, instruccion=entrada.instruccion if entrada else None,
-            nombres=plan.productos, idioma=idioma,
-            maquinas=list(entrada.maquinas) if entrada else [], resumen=resumen,
+            nombres=plan.productos, idioma=idioma, catalogo=catalogo, resumen=resumen,
             avisos=avisos)
         encontrados = _consultar_webs(session, plan, idioma, resumen, avisos) if plan.webs else []
         fragmentos = _juntar(pedidos, encontrados, MAX_WEBS + len(pedidos))
         pedidas_ids = [f.id for f in pedidos]
+        del_catalogo = _del_catalogo(session, fragmentos, catalogo)
     else:
         pedidas_ids = []
     resumen["ms"] = int((time.monotonic() - inicio) * 1000) + plan.duracion_ms
@@ -704,7 +800,7 @@ def consultar(session: Session, *, fuentes: Fuentes, plan: Plan, idioma: str | N
         soporte_no_consultado=soporte_leido["no_consultado"],
         soporte_sin_centro=soporte_leido["sin_centro"], tecnica=plan.tecnica,
         resumen_base=resumen, avisos=avisos, pedidas=pedidas_ids, idioma=idioma,
-        paginas_catalogo=_paginas_catalogo(entrada.maquinas if entrada else []))
+        del_catalogo=del_catalogo)
 
 
 def pide_producto(instruccion: str | None) -> bool:
@@ -774,10 +870,12 @@ def reutilizar(session: Session, previo: dict[str, Any], fuentes: Fuentes,
                     resumen[clave] = previo[clave]
     fragmentos: list[Any] = []
     pedidos: list[Any] = []
+    del_catalogo: dict[Any, dict[str, Any]] = {}
     if fuentes.webs:
+        catalogo = _catalogo_por_pagina(session, list(maquinas or []))
         pedidos = _productos_pedidos(session, instruccion=instruccion, nombres=list(nombres or []),
-                                     idioma=idioma, maquinas=list(maquinas or []),
-                                     resumen=resumen, avisos=avisos)
+                                     idioma=idioma, catalogo=catalogo, resumen=resumen,
+                                     avisos=avisos)
         if not antes.get("webs", True) or "webs" in fallos_antes:
             fragmentos = (_consultar_webs(session, plan, idioma, resumen, avisos)
                           if plan.webs else [])
@@ -805,11 +903,11 @@ def reutilizar(session: Session, previo: dict[str, Any], fuentes: Fuentes,
         fragmentos = _juntar(pedidos + [f for f in fragmentos if f.id in antes_pedidas],
                              fragmentos, MAX_WEBS + len(pedidos) + len(antes_pedidas))
         pedidas_ids = [f.id for f in pedidos] + sorted(antes_pedidas)
+        del_catalogo = _del_catalogo(session, fragmentos, catalogo)
     else:
         pedidas_ids = []
     return material_fuera.construir(
         articulo=leido["articulo"], otros_soporte=leido["otros"], fragmentos=fragmentos,
         sin_resultados=leido["sin_resultados"], soporte_no_consultado=leido["no_consultado"],
         soporte_sin_centro=leido["sin_centro"], tecnica=plan.tecnica, resumen_base=resumen,
-        avisos=avisos, pedidas=pedidas_ids, idioma=idioma,
-        paginas_catalogo=_paginas_catalogo(list(maquinas or [])))
+        avisos=avisos, pedidas=pedidas_ids, idioma=idioma, del_catalogo=del_catalogo)

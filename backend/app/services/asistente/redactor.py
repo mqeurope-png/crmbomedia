@@ -46,6 +46,7 @@ from uuid import uuid4
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.models.conocimiento import FUENTE_COMPOSITOR
 from app.models.crm import AuditLog, Contact, EmailThread, User
 from app.models.ia import (
     ALCANCE_CONTACTO,
@@ -1302,10 +1303,20 @@ def _rellenar_compuesto(
                           "correo: se ha quitado del texto, donde salía repetido.")
             correo = generador_correo.generar(estructura, datos, asunto=asunto)
             libre = ia_compuesto.texto_libre(estructura)
-        ajenos = ia_compuesto.importes_ajenos(libre, correo.precios)
+        ajenos = ia_compuesto.importes_ajenos(libre, correo.precios_catalogo)
+        # El precio de una ficha de la web repetido en un texto se lee como si
+        # fuera de oferta: se avisa aparte.
+        fuera = set(ia_compuesto.importes_ajenos(libre, [*correo.precios_catalogo,
+                                                         *correo.precios_web]))
+        de_la_web = [a for a in ajenos if a not in fuera]
+        ajenos = [a for a in ajenos if a in fuera]
         if ajenos:
             avisos.append(f"Un texto del correo menciona {', '.join(f'«{a}»' for a in ajenos)}, "
                           "que no sale del catálogo: los precios van en las fichas. Revísalo.")
+        if de_la_web:
+            avisos.append(f"Un texto del correo menciona {', '.join(f'«{a}»' for a in de_la_web)}, "
+                          "el precio de la web de una ficha: no es un precio de oferta y ya va en "
+                          "la ficha. Quítalo del texto o revísalo.")
         # Un modelo que el cliente llama de otra forma (sin alias en el compositor):
         # que el texto no hable como de otra máquina de la que ya enseña la ficha.
         nombres = [str(p.get("nombre") or "") for p in datos.productos.values()]
@@ -1429,7 +1440,30 @@ def _interpretar(
         for e in contexto.get("enlaces_no_producto") or []:
             if isinstance(e, dict) and e.get("enlace") in usados:
                 _con_aviso(b, procedencia.aviso_enlace_no_producto(
-                    str(e.get("nombre") or ""), str(e["enlace"])))
+                    str(e.get("nombre") or ""), str(e["enlace"]), e.get("motivo")))
+
+
+def _enlaces_no_producto_del_turno(session: Session, contexto_json: str | None,
+                                   fuentes: consulta_fuentes.Fuentes | None) -> str | None:
+    """El contexto de una corrección con los enlaces del catálogo que no
+    llevan a un producto según las casillas de ESTE turno: con «Webs»
+    marcada se miran (el primer borrador pudo ir sin ella); sin ella (o sin
+    casillas), no hay ninguno. Las máquinas del correo son del compositor."""
+    contexto = _json(contexto_json)
+    if fuentes is not None and fuentes.webs:
+        cat = contexto.get("catalogo") if isinstance(contexto.get("catalogo"), dict) else {}
+        maquinas = [{**m, "fuente": FUENTE_COMPOSITOR} for m in cat.get("maquinas") or []
+                    if isinstance(m, dict)]
+        try:
+            contexto["enlaces_no_producto"] = procedencia.enlaces_catalogo_no_producto(
+                session, maquinas)
+        except Exception:  # noqa: BLE001 — una comprobación de más no tira el borrador
+            logger.warning("asistente: no se han podido comprobar los enlaces del catálogo",
+                           exc_info=True)
+            return contexto_json
+    elif contexto.pop("enlaces_no_producto", None) is None:
+        return contexto_json
+    return json.dumps(contexto, ensure_ascii=False, default=str)
 
 
 def _modelos(cfg: dict[str, Any], settings: Any) -> tuple[str, str]:
@@ -1489,6 +1523,11 @@ def _enlaces_material_en_refs(refs: ia_compuesto.Referencias,
             refs.anadir_producto_web(
                 str(w["ref"]), {"fuente": bq.FUENTE_WEB,
                                 "origen_id": f"{w['sitio']}:{w['wp_id']}"}, w.get("url"))
+            catalogo = w.get("catalogo")
+            if isinstance(catalogo, dict) and catalogo.get("fuente") and catalogo.get("origen_id"):
+                # Un producto del catálogo que no es de las máquinas del correo:
+                # su W# saca la ficha del catálogo (manda el catálogo).
+                refs.anadir_equivalente_catalogo(str(w["ref"]), catalogo)
     ya = set(refs.enlaces.values())
     numeros = [int(r[1:]) for r in refs.enlaces if r[1:].isdigit()]
     siguiente = max(numeros, default=0) + 1
@@ -1761,7 +1800,7 @@ def generar(
                                        modo_actual=modo_actual)
     refs = _referencias_turno0(session, ctx, instruccion, base)
     _enlaces_material_en_refs(refs, mat)
-    refs.importes_usuario = ia_compuesto.importes_de(instruccion)
+    refs.anotar_instrucciones(instruccion)
     if modo != ia_compuesto.MODO_NORMAL:
         anadir_medios(session, refs, instruccion=instruccion, idioma=ctx.idioma,
                       intereses=ctx.intereses, sitio=ctx.sitio)
@@ -2001,7 +2040,7 @@ def corregir(
     _enlaces_material_en_refs(refs, mat)
     # Los importes que ha escrito quien envía en esta conversación: los únicos
     # que valen como precio de una ficha de la web.
-    refs.importes_usuario = ia_compuesto.importes_de(" ".join(
+    refs.anotar_instrucciones("\n".join(
         [*(t.instruccion or "" for t in borradores.turnos_de(session, borrador)), instruccion]))
     if modo != ia_compuesto.MODO_NORMAL:
         anadir_medios(session, refs, instruccion=instruccion, idioma=borrador.idioma or "es")
@@ -2059,7 +2098,8 @@ def corregir(
         modelo=modelo[:80], destinatario=borrador.destinatario, remitente=borrador.remitente,
         asunto=borrador.asunto, texto="",
         enlaces_json=material_fuera.con_enlaces(borrador.enlaces_json, mat),
-        contexto_json=borrador.contexto_json, alcance=borrador.alcance,
+        contexto_json=_enlaces_no_producto_del_turno(session, borrador.contexto_json, fuentes),
+        alcance=borrador.alcance,
         mensajes_hilo=borrador.mensajes_hilo, mensajes_historico=borrador.mensajes_historico,
         estado=ESTADO_GENERADO,
     )

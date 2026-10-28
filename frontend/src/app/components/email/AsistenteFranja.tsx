@@ -689,15 +689,24 @@ type PaginaUsada = {
   pedida: boolean;
 };
 
+/** Por qué un enlace del catálogo no es un producto del índice: una página
+ *  del índice («Contacto»), un producto que ya no está, o nada del índice
+ *  (puede ser un producto recién publicado que aún no se ha leído). */
+type MotivoEnlace = "pagina" | "ido" | "fuera";
+
 /** Una ficha del correo compuesto que sale del catálogo del compositor.
- *  `enlaceNoProducto`: su enlace, de una web indexada, no lleva a una página
- *  de producto (se avisa; no se corrige). */
+ *  `precioPublico` / `orientativo`: lo que dice el correo en el sitio del
+ *  precio («a medida», la nota de orientativo). `enlaceNoProducto`: su enlace,
+ *  de una web indexada, no lleva a una página de producto (se avisa; no se
+ *  corrige), y por qué. */
 type FichaCatalogo = {
   nombre: string;
   enlace: string | null;
   marca: string;
   precio: string | null;
-  enlaceNoProducto: boolean;
+  precioPublico: boolean;
+  orientativo: boolean;
+  enlaceNoProducto: MotivoEnlace | null;
 };
 
 /** Una ficha montada desde una página del índice de las webs. `precio` ya
@@ -842,7 +851,9 @@ export function fichasDelCorreo(ctx: Record<string, unknown>): FichasDelCorreo {
     if (f["procedencia"] === "catalogo") {
       fichas.catalogo.push({
         nombre, enlace, marca: cadena(f["marca"]), precio,
-        enlaceNoProducto: f["enlace_no_producto"] === true,
+        precioPublico: f["precio_publico"] !== false,
+        orientativo: f["orientativo"] === true,
+        enlaceNoProducto: f["enlace_no_producto"] === true ? motivoEnlace(f["enlace_motivo"]) : null,
       });
     } else if (f["procedencia"] === "indice") {
       // Sin importe, «a consultar» (nunca uno inventado); con importe, de
@@ -864,11 +875,31 @@ export function fichasDelCorreo(ctx: Record<string, unknown>): FichasDelCorreo {
   return fichas;
 }
 
+function motivoEnlace(v: unknown): MotivoEnlace {
+  return v === "ido" || v === "fuera" ? v : "pagina";
+}
+
+/** Lo que se dice de un enlace del catálogo que no es un producto del índice. */
+function avisoEnlace(motivo: MotivoEnlace): string {
+  if (motivo === "fuera") {
+    return "el enlace no está en el índice de las webs: si el producto es nuevo, aún no se ha leído; si no, revísalo en el compositor";
+  }
+  if (motivo === "ido") return "el enlace es el de un producto que ya no está en la web: revísalo en el compositor";
+  return "el enlace no lleva a una página de producto de nuestras webs: revísalo en el compositor";
+}
+
 /** Los enlaces del catálogo que, siendo de una web indexada, no llevan a una
- *  página de producto (los apunta el backend con «Webs» marcada). */
-function enlacesNoProducto(ctx: Record<string, unknown>): Set<string> {
+ *  página de producto, con el porqué (los apunta el backend con «Webs»
+ *  marcada en el turno). */
+function enlacesNoProducto(ctx: Record<string, unknown>): Map<string, MotivoEnlace> {
   const lista = Array.isArray(ctx["enlaces_no_producto"]) ? ctx["enlaces_no_producto"].filter(esObjeto) : [];
-  return new Set(lista.map((e) => cadena(e["enlace"])).filter(Boolean));
+  return new Map(lista.filter((e) => cadena(e["enlace"])).map((e) => [cadena(e["enlace"]), motivoEnlace(e["motivo"])]));
+}
+
+/** El precio de una ficha del catálogo como lo dice el correo. */
+function precioDeCatalogo(f: FichaCatalogo): string {
+  if (f.precio) return `${f.precio}${f.orientativo ? " · orientativo" : ""}`;
+  return f.precioPublico ? "sin precio publicado" : "sin precio público (a medida)";
 }
 
 function consultaDe(c: unknown): ConsultaUsada | null {
@@ -1078,10 +1109,8 @@ function FichasEnElCorreo({ fichas }: { fichas: FichasDelCorreo }) {
           {fichas.catalogo.map((f, i) => (
             <li key={`fc-${i}`}>
               Ficha del catálogo: <Enlace titulo={f.nombre} url={f.enlace} />
-              {detalle(f.marca, f.precio ?? "sin precio publicado")}
-              {f.enlaceNoProducto
-                ? avisoDe("el enlace no lleva a una página de producto de nuestras webs: revísalo en el compositor")
-                : null}
+              {detalle(f.marca, precioDeCatalogo(f))}
+              {f.enlaceNoProducto ? avisoDe(avisoEnlace(f.enlaceNoProducto)) : null}
             </li>
           ))}
         </ul>
@@ -1094,7 +1123,7 @@ function FichasEnElCorreo({ fichas }: { fichas: FichasDelCorreo }) {
               {detalle(
                 precioDeFicha(f),
                 f.sinIdiomaPedido
-                  ? `en ${nombreIdioma(f.idioma)}: la web no la tiene en el idioma del correo`
+                  ? `en ${nombreIdioma(f.idioma)}: no está en el índice en el idioma del correo`
                   : "",
                 f.imagenes > 1 ? `${f.imagenes} imágenes en la galería` : "",
               )}
@@ -1341,7 +1370,9 @@ export function LoQueHaUsado({ borrador }: { borrador: BorradorAsistente }) {
               {"marca" in p && p.marca ? ` (${String(p.marca)})` : ""}
               <span className="muted small"> — {p.precio_texto ? `${p.precio_texto}${p.orientativo ? " · orientativo" : ""}` : ("precio_publico" in p && p.precio_publico === false ? "sin precio público (a medida)" : "sin precio publicado")}</span>
               {p.enlace && noProducto.has(p.enlace)
-                ? avisoDe("el enlace no es una página de producto de nuestras webs")
+                ? avisoDe(noProducto.get(p.enlace) === "fuera"
+                  ? "el enlace no está en el índice de las webs"
+                  : "el enlace no es una página de producto de nuestras webs")
                 : null}
             </li>
           ))}

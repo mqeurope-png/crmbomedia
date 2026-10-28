@@ -440,12 +440,17 @@ la respuesta en texto sigue siendo la de siempre y la opción por defecto.
   lleva título, descripción, imagen principal (enlazada), enlace y **el precio
   de la web con su IVA** tal como está guardado («489,30 € (+ IVA)»), nunca
   como precio de oferta, o **«Precio a consultar»** si la web no lo da. Si el
-  producto está en el catálogo, va la del catálogo (un `W#` que es la misma
-  página que un `P#` se cambia por el `P#`, con aviso); si quien envía pide
-  una variante que solo está en la web («la versión desktop»), la de la web.
-  Un **precio que dice quien envía** en sus instrucciones puede ir en la
+  producto está en el catálogo, va la del catálogo, se mire contra todo el
+  catálogo del compositor y no solo contra las máquinas del correo (un `W#`
+  que es ese producto saca la ficha del catálogo, con aviso); si quien envía
+  pide una variante que solo está en la web («la versión desktop»), la de la
+  web. Un **precio que dice quien envía** en sus instrucciones puede ir en la
   ficha (`{"ref": "W2", "precio": "…"}`); uno que no sale de sus
-  instrucciones se quita con aviso, y el de una ficha del catálogo no se toca.
+  instrucciones, o que les añade otra cifra o un IVA que no dijo, se quita
+  con aviso, y el de una ficha del catálogo no se toca. Un texto que repite el
+  precio de la web de una ficha se avisa aparte (no es de oferta). En una
+  corrección siguiente, una ficha de la web ya puesta se ve como
+  `?<origen_id>` y se puede mover sin perderla.
   Otra imagen de su galería: `{"ref": "W2", "imagen": "…"}`. La ficha va en el
   idioma del correo si la web tiene esa página; si no, en el que haya, y el
   aviso lo dice. **Al cliente una ficha es una ficha**; a quien revisa, «Lo
@@ -797,7 +802,9 @@ al redactar**, igual que consulta el catálogo: nadie busca ni elige nada.
   fragmentos**, con su enlace y su «precio en la web», que no es precio de
   oferta. **Delante**, los productos que **pide quien envía** (28/10/2026),
   por su enlace o por su nombre («incluye la MBO 6090 desktop, mírala en
-  mboprinters.com»), también en una corrección; los que son un producto valen
+  mboprinters.com»), también en una corrección (en una corrección, si trae
+  el enlace, dice «ficha», «versión» o «variante», o una cifra del modelo:
+  `consulta_fuentes.pide_producto`); los que son un producto valen
   como ficha en un correo compuesto (§ Correos compuestos) y, en uno de
   texto, se enlazan y su precio se dice como precio de la web.
 - **El tiempo**, porque va dentro de la petición del borrador: el plan **5 s**,
@@ -857,14 +864,17 @@ al redactar**, igual que consulta el catálogo: nadie busca ni elige nada.
   buscó nada dice «Soporte: no se ha consultado». El título
   plegado lo resume («consultó soporte y webs»). Un borrador de antes del
   28/10/2026 enseña lo que se eligió con los botones. Con un correo
-  compuesto, enseña además **las fichas del correo en dos listas**, «Ficha del
+  compuesto con «Webs» marcada (o con alguna ficha del índice), enseña además
+  **las fichas del correo en dos listas**, «Ficha del
   catálogo» y «Ficha del índice de <web>», cada una con su enlace, y en las
   del índice de dónde sale el precio (de la web, el que has indicado tú o a
   consultar), el idioma si no es el del correo y cuántas imágenes tiene su
   galería; el título plegado suma «· N fichas del índice». Con «Webs»
-  marcada, un producto del catálogo cuyo enlace no lleva a una página de
-  producto de nuestras webs sale marcado, y si va en el correo, el aviso lo
-  dice («revísalo en el compositor»; no se corrige).
+  marcada en ese turno, un producto del catálogo cuyo enlace no lleva a una
+  página de producto de nuestras webs sale marcado, con el porqué (una
+  página como la de contacto, un producto que ya no está, o uno que el índice
+  aún no tiene), y si va en el correo, el aviso lo dice («revísalo en el
+  compositor»; no se corrige).
 - **Coste**: el plan es una llamada corta (300 tokens de salida como mucho)
   con el modelo barato, una vez por borrador con alguna casilla marcada. Un
   turno con material lleva sus reglas detrás del prompt de sistema, y la caché

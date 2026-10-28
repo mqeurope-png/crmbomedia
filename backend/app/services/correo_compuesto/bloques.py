@@ -325,8 +325,9 @@ def clave_producto(valor: Any) -> dict[str, str] | None:
         return None
     clave = {"fuente": fuente, "origen_id": origen_id}
     if fuente == FUENTE_WEB:
-        precio = " ".join(str(valor.get("precio") or "").split())[:MAX_PRECIO_USUARIO]
-        if precio and not re.search(r"[<>]", precio):
+        # Uno demasiado largo no se recorta (saldría un número a medias): fuera.
+        precio = " ".join(str(valor.get("precio") or "").split())
+        if precio and len(precio) <= MAX_PRECIO_USUARIO and not re.search(r"[<>]", precio):
             clave["precio"] = precio
         imagen = url_valida(valor.get("imagen"))
         if imagen:

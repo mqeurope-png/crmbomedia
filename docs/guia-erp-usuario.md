@@ -1795,8 +1795,14 @@ lo que va a pasar. Secciones destacadas:
   - «incluye la MBO 6090 desktop, mírala en mboprinters.com»;
   - «añade también esta» y pegas el enlace de la página del producto.
 
+  En una **corrección**, el asistente busca el producto si la petición trae
+  su enlace, dice «ficha», «versión» o «variante», o lleva una cifra del
+  modelo («añade la 6090 desktop»). «Añade también la beamo desktop», sin
+  nada de eso, no lo busca: di «añade la ficha de la beamo desktop» o pega su
+  enlace.
+
   Si el producto está en el catálogo, va **la ficha del catálogo**, con su
-  precio de venta. Si pides una versión que solo está en la web («la versión
+  precio de venta, aunque no fuera de las máquinas del primer borrador. Si pides una versión que solo está en la web («la versión
   desktop»), va la de la web. En un correo de texto, la IA enlaza la página
   y, si da el precio, dice que es el de la web.
 
@@ -1808,14 +1814,20 @@ lo que va a pasar. Secciones destacadas:
     IVA)»). Es el precio publicado, **no un precio de oferta**;
   - si la web no da precio, **«Precio a consultar»**;
   - si le dices tú el precio, **con la moneda** («ponle 14.900 € + IVA»,
-    «a 14900 euros»), lleva el tuyo, y el aviso del borrador dice «precio que
-    me has indicado tú, no sale de la web ni del catálogo». Un número sin
-    moneda no cuenta como precio (el «6090» de «MBO 6090» es el modelo). La IA **nunca se inventa un precio** ni lo saca de otra
-    máquina parecida: si pone uno que no has dicho tú, se quita y te avisa.
+    «a 14900 euros», «€14,900»), lleva el tuyo, y el aviso del borrador dice
+    «precio que me has indicado tú, no sale de la web ni del catálogo».
+    Revisa ese aviso: dice el precio tal como va. Un número sin moneda no
+    cuenta como precio (el «6090» de «MBO 6090» es el modelo). La IA **nunca
+    se inventa un precio** ni lo saca de otra máquina parecida: si pone uno
+    que no has dicho tú, o le añade algo que no dijiste (otra cifra, «IVA
+    incluido»), se quita y te avisa.
+  - si un texto del correo repite el precio de la web («te la puedo ofrecer
+    por …»), el aviso te lo dice: ese precio ya va en la ficha y no es de
+    oferta.
 
   **Idioma.** La ficha va en el idioma del correo si la web tiene esa página
   en ese idioma. Si no, va en el que haya y el aviso te lo dice («La ficha de
-  … va en inglés: la web no la tiene en neerlandés»).
+  … va en inglés: no está en el índice en neerlandés»).
 
   **Fotos.** Lleva la foto principal del producto en la web, enlazada (si la
   web la quita, desaparece del correo). Si quieres otra, pídesela a la IA
@@ -1830,16 +1842,21 @@ lo que va a pasar. Secciones destacadas:
 
   **Si no la encuentra.** El índice de las webs se lee una vez al mes: un
   producto publicado hace poco no sale hasta que se reindexa («Reindexar
-  ahora», en Base de conocimiento → «Índice de las webs»). Si el enlace que
-  das no es la página de un producto (una categoría, la de contacto), el aviso
-  te lo dice.
+  ahora», en Base de conocimiento → «Índice de las webs»). Si pides un
+  producto por su nombre y no está en el índice, el aviso te lo dice («No he
+  encontrado …»). Si pides la ficha de un enlace que no es la página de un
+  producto (una categoría, la de contacto), también; un enlace que pegas para
+  ponerlo en el texto no se avisa.
 
   **Enlaces del catálogo que no llevan a un producto.** Con «Webs» marcada,
   si una ficha del catálogo tiene un enlace que no lleva a la página de su
-  producto (por ejemplo, a la de contacto), «Lo que ha usado» lo marca y el
-  aviso dice «revísalo en el compositor». BoHub no lo cambia: el catálogo se
-  arregla en el compositor. El Cuadre lo vigila para todo el catálogo
-  («Fichas del catálogo cuyo enlace no lleva a un producto»).
+  producto (por ejemplo, a la de contacto, o a un producto que ya no está en
+  la web), «Lo que ha usado» lo marca y el aviso dice «revísalo en el
+  compositor». Si el enlace es el de una página de producto que el índice de
+  las webs no tiene, puede ser un producto que se acaba de publicar: el aviso
+  te dice que reindexes o, si no es eso, que lo revises. BoHub no lo cambia: el catálogo se arregla en el
+  compositor. El Cuadre lo vigila para todo el catálogo («Fichas del catálogo
+  cuyo enlace no lleva a un producto»).
 - **«Series FACTUSOL»** — la **serie** es la empresa que emite la factura. Fijas
   la **serie por defecto** y la que usa cada origen de pedido. Las series
   disponibles son **1 · Bomedia**, **2 · MQ Europe**, **4 · Lambert** y **5 ·

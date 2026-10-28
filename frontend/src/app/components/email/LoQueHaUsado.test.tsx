@@ -412,7 +412,7 @@ describe("Lo que ha usado — las fichas del correo, del catálogo o del índice
       fichas: [{ ...DESKTOP, idioma: "en", sin_idioma_pedido: true, galeria: [] }],
     })} />);
     expect(within(indice()).getByRole("listitem")).toHaveTextContent(
-      "beamo desktop — precio de la web: 489,30 € (+ IVA) · en inglés: la web no la tiene en el idioma del correo");
+      "beamo desktop — precio de la web: 489,30 € (+ IVA) · en inglés: no está en el índice en el idioma del correo");
   });
 
   it("una ficha del catálogo cuyo enlace no es un producto de nuestras webs se avisa, resaltada; sin precio, lo dice", () => {
@@ -432,6 +432,37 @@ describe("Lo que ha usado — las fichas del correo, del catálogo o del índice
       .toHaveClass("asistente-panel-aviso");
     // Se avisa; el enlace se enseña como está (no se corrige).
     expect(within(fila).getByRole("link")).toHaveAttribute("href", "https://www.boprint.net/contacto/");
+  });
+
+  it("dice por qué el enlace no es un producto: uno que ya no está, o uno que el índice aún no tiene", () => {
+    render(<LoQueHaUsado borrador={borrador({
+      contacto: { nombre: "Ana" },
+      fichas: [
+        { ...CATALOGO, nombre: "Retirada", enlace: "https://www.boprint.net/producto/retirada/",
+          enlace_no_producto: true, enlace_motivo: "ido" },
+        { ...CATALOGO, nombre: "Nueva", enlace: "https://www.boprint.net/producto/nueva/",
+          enlace_no_producto: true, enlace_motivo: "fuera" },
+      ],
+    })} />);
+    const [retirada, nueva] = within(catalogo()).getAllByRole("listitem");
+    expect(retirada).toHaveTextContent(
+      "el enlace es el de un producto que ya no está en la web: revísalo en el compositor");
+    expect(nueva).toHaveTextContent(
+      "el enlace no está en el índice de las webs: si el producto es nuevo, aún no se ha leído; si no, revísalo en el compositor");
+    expect(nueva).not.toHaveTextContent("no lleva a una página de producto");
+  });
+
+  it("el precio de una ficha del catálogo dice lo mismo que el correo: «a medida» u orientativo", () => {
+    render(<LoQueHaUsado borrador={borrador({
+      contacto: { nombre: "Ana" },
+      fichas: [
+        { ...CATALOGO, nombre: "A medida", precio_texto: null, precio_publico: false },
+        { ...CATALOGO, nombre: "Orientativa", precio_texto: "9.990 €", orientativo: true },
+      ],
+    })} />);
+    const [medida, orientativa] = within(catalogo()).getAllByRole("listitem");
+    expect(medida).toHaveTextContent("A medida — artisJet · sin precio público (a medida)");
+    expect(orientativa).toHaveTextContent("Orientativa — artisJet · 9.990 € · orientativo");
   });
 
   it("solo enlaces web: una ficha con un enlace raro se enseña sin enlace; una sin nombre se ignora", () => {
@@ -478,7 +509,10 @@ describe("Lo que ha usado — las fichas del correo, del catálogo o del índice
           consumibles: [{ nombre: "Tinta DTF blanca", precio_texto: null, enlace: "javascript:alert(1)" }],
           sin_maquina: [],
         },
-        enlaces_no_producto: [{ nombre: "artisJet 3000Pro Freebird", enlace: "https://www.boprint.net/contacto/" }],
+        enlaces_no_producto: [
+          { nombre: "artisJet 3000Pro Freebird", enlace: "https://www.boprint.net/contacto/" },
+          { nombre: "Orion 20", enlace: "https://mboprinters.com/es/producto/orion-20/", motivo: "fuera" },
+        ],
       }),
       enlaces: [{ url: "https://mboprinters.com/es/producto/orion-20/", etiqueta: "Orion 20", origen: "catalogo_compositor" }],
     }} />);
@@ -488,7 +522,8 @@ describe("Lo que ha usado — las fichas del correo, del catálogo o del índice
       "artisJet 3000Pro Freebird (artisJet) — 5.490,00 € — el enlace no es una página de producto de nuestras webs");
     expect(within(filas[0]).getByRole("link", { name: "artisJet 3000Pro Freebird" })).toHaveAttribute(
       "href", "https://www.boprint.net/contacto/");
-    expect(filas[1]).toHaveTextContent("Orion 20 (MBO) — 4.990,00 €");
+    // Uno que el índice no tiene (puede ser nuevo): se dice así, no que no es un producto.
+    expect(filas[1]).toHaveTextContent("Orion 20 (MBO) — 4.990,00 € — el enlace no está en el índice de las webs");
     expect(filas[1]).not.toHaveTextContent("no es una página de producto");
     expect(within(filas[1]).getByRole("link", { name: "Orion 20" })).toHaveAttribute(
       "href", "https://mboprinters.com/es/producto/orion-20/");

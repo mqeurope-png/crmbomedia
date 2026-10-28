@@ -643,13 +643,13 @@ def test_si_la_web_no_tiene_la_ficha_en_el_idioma_del_correo_va_en_la_que_hay_y_
     assert r.status_code == 201, r.text
     material = _material(_partes(falso)[2])
     assert f"[W1] {TITULO_DESKTOP}\nEnlace: {URL_DESKTOP}" in material
-    assert "Idioma: es (la web no tiene esta página en fr)" in material
+    assert "Idioma: es (no está en el índice en fr)" in material
     b = r.json()["borrador"]
     assert b["idioma"] == "fr"
     assert _img_enlazada(b["html"], URL_DESKTOP, IMG_DESKTOP)
     [ficha] = b["contexto"]["fichas"]
     assert (ficha["idioma"], ficha["sin_idioma_pedido"]) == ("es", True)
-    assert (f"La ficha de «{TITULO_DESKTOP}» va en castellano: la web no la tiene en "
+    assert (f"La ficha de «{TITULO_DESKTOP}» va en castellano: no está en el índice en "
             "francés.") in b["aviso"]
 
 
@@ -692,7 +692,7 @@ def test_una_ficha_del_catalogo_con_un_enlace_que_no_es_un_producto_se_avisa_y_n
     assert freebird["enlace_no_producto"] is True and freebird["enlace"] == URL_CONTACTO
     assert "enlace_no_producto" not in trust
     assert b["contexto"]["enlaces_no_producto"] == [
-        {"nombre": "artisJet 3000Pro Freebird", "enlace": URL_CONTACTO}]
+        {"nombre": "artisJet 3000Pro Freebird", "enlace": URL_CONTACTO, "motivo": "pagina"}]
     # Con «Webs» desmarcada no se comprueba nada.
     with patch.object(llm, "_invoke_claude", falso):
         r = _pedir(http, thread_id, instruccion="contéstale con las fichas", formato="compuesto",
@@ -792,8 +792,10 @@ def test_el_cuadre_avisa_de_las_fichas_del_catalogo_cuyo_enlace_no_es_un_product
     assert (freebird.enlace, freebird.ambito) == (URL_CONTACTO, "boprint")
     assert freebird.huella_datos["enlace"] == "boprint:/contacto"
     assert "compositor" in freebird.pista_de_arreglo
-    assert categoria.detalle == ("Su enlace https://boprint.net/categoria/impresoras-uv/ no es "
-                                 "ninguna página de producto de boprint.net en el índice.")
+    # Una categoría que el índice no tiene: no es una ruta de producto.
+    assert categoria.detalle == ("Su enlace https://boprint.net/categoria/impresoras-uv/ es una "
+                                 "página de boprint.net que no es un producto.")
+    assert categoria.pista_de_arreglo.startswith("El catálogo se edita en el compositor")
     assert ctx.no_mirados[ENLACE_CATALOGO_NO_PRODUCTO] == {"artisjet-eu"}
 
 
@@ -841,7 +843,7 @@ def test_el_borrador_solo_juzga_los_enlaces_de_las_fichas_del_compositor(s: Sess
     assert procedencia.enlaces_catalogo_no_producto(s, [
         freebird, {**freebird, "nombre": "La misma otra vez"}, tinta, trust,
         {"fuente": FUENTE_COMPOSITOR, "nombre": "Sin enlace", "enlace": None}]) == [
-        {"nombre": "artisJet 3000Pro Freebird", "enlace": URL_CONTACTO}]
+        {"nombre": "artisJet 3000Pro Freebird", "enlace": URL_CONTACTO, "motivo": "pagina"}]
     claves = [{"fuente": FUENTE_COMPOSITOR, "origen_id": "aj-3000pro"},
               {"fuente": FUENTE_WOOCOMMERCE, "origen_id": "boprint:901"},
               {"fuente": FUENTE_COMPOSITOR, "origen_id": "aj-6090-trust"}]
@@ -855,7 +857,7 @@ def test_el_borrador_solo_juzga_los_enlaces_de_las_fichas_del_compositor(s: Sess
         ("catalogo", "artisJet 3000Pro Freebird", True), ("catalogo", "Tinta UV blanca 1 L", None),
         ("catalogo", "artisJet 6090 Trust", None)]
     assert avisos == [procedencia.aviso_enlace_no_producto("artisJet 3000Pro Freebird",
-                                                           URL_CONTACTO)]
+                                                           URL_CONTACTO, "pagina")]
 
 
 # --- (10) las piezas: URL, búsqueda, variantes, precio, ficha ----------------------------------
@@ -1012,16 +1014,18 @@ def test_los_importes_de_quien_envia_son_los_unicos_que_valen_como_precio() -> N
     assert ia.importes_de("la MBO 6090 a € 14.900") == {"14900"}
     assert ia.importes_de("incluye la MBO 6090 versión desktop") == set()
     assert ia.importes_de(None) == set()
-    refs = ia.Referencias(importes_usuario=ia.importes_de("pónsela a 14.900 € + IVA"))
+    refs = ia.Referencias()
+    refs.anotar_instrucciones("pónsela a 14.900 € + IVA")
     assert refs.precio_permitido("14.900 € + IVA") and refs.precio_permitido("14.900,00 €")
     assert refs.precio_permitido("14900 EUR")
     assert not refs.precio_permitido("15.900 €")
     # El número de un modelo de la instrucción no hace bueno un precio con esa cifra.
-    modelo = ia.Referencias(importes_usuario=ia.importes_de("incluye la MBO 6090 desktop"))
+    modelo = ia.Referencias()
+    modelo.anotar_instrucciones("incluye la MBO 6090 desktop")
     assert not modelo.precio_permitido("6.090 €")
     assert not refs.precio_permitido("14.900 € y 250 € de portes")      # 250 no lo ha dicho
     assert not refs.precio_permitido("a consultar")                     # sin importe
-    assert not refs.precio_permitido("99 €")                            # ni uno de menos de 100
+    assert not refs.precio_permitido("99 €")                            # ni uno que no ha dicho
     assert not ia.Referencias().precio_permitido("14.900 €")            # sin instrucciones
 
 
@@ -1033,11 +1037,12 @@ def test_la_clave_de_una_ficha_de_la_web_conserva_su_precio_y_su_imagen() -> Non
     # Las del catálogo, solo su clave (el precio sale del catálogo).
     assert bq.clave_producto({**web, "fuente": FUENTE_COMPOSITOR}) == {
         "fuente": FUENTE_COMPOSITOR, "origen_id": "mboprinters:4202"}
-    # Un precio con marcas o una imagen que no es una URL no pasan; uno largo se recorta.
+    # Un precio con marcas o una imagen que no es una URL no pasan; uno largo no se
+    # recorta (saldría un número a medias): fuera.
     assert bq.clave_producto({**web, "precio": "<b>1 €</b>", "imagen": "foto.jpg"}) == {
         "fuente": "web", "origen_id": "mboprinters:4202"}
     largo = bq.clave_producto({**web, "precio": "9" * 100})
-    assert largo is not None and len(largo["precio"]) == bq.MAX_PRECIO_USUARIO
+    assert largo is not None and "precio" not in largo
     # Normalizada, la estructura los guarda; y la IA los vuelve a ver en la corrección.
     estructura = bq.normalizar({"bloques": [{"tipo": "producto", "producto": web}]})
     producto = estructura["bloques"][0]["producto"]
@@ -1245,6 +1250,314 @@ def test_un_enlace_que_no_es_producto_solo_se_avisa_si_se_pedia_su_ficha(s: Sess
         resumen: dict[str, Any] = {}
         avisos: list[str] = []
         consulta_fuentes._productos_pedidos(
-            s, instruccion=instruccion, nombres=[], idioma="es", maquinas=[], resumen=resumen,
+            s, instruccion=instruccion, nombres=[], idioma="es", catalogo={}, resumen=resumen,
             avisos=avisos)
         assert bool(avisos) is avisa, instruccion
+
+
+# --- la ronda de revisión ----------------------------------------------------------------------
+
+
+def test_los_importes_en_formato_ingles_se_leen_enteros() -> None:
+    """«€14,900» es catorce mil novecientos, no 14,90; y «14,900 €» no deja
+    pasar un «900 €» que sí dijo quien envía."""
+    assert ia.importes_de("include the desktop at €14,900 + VAT") == {"14900"}
+    assert ia.importes_de("14,900 €") == {"14900"}
+    assert ia.importes_de("1,299.50 €") == {"1299.50"}
+    assert ia.importes_de("€ 14 900") == {"14900"}
+    assert ia.importes_de("14,90 €") == {"14.90"}                       # decimales a la española
+    refs = ia.Referencias()
+    refs.anotar_instrucciones("include the desktop at €14,900 + VAT")
+    assert refs.precio_permitido("€14,900 + VAT") and refs.precio_permitido("14.900 € + IVA")
+    portes = ia.Referencias()
+    portes.anotar_instrucciones("Incluye la desktop. Los portes son 900 €")
+    assert not portes.precio_permitido("14,900 €")
+
+
+def test_el_precio_de_quien_envia_no_puede_anadir_cifras_ni_un_iva_que_no_dijo() -> None:
+    refs = ia.Referencias()
+    refs.anotar_instrucciones("pónsela a 14.900 €")
+    assert refs.precio_permitido("14.900 €")
+    assert not refs.precio_permitido("14.900 € IVA incluido")          # un IVA que no dijo
+    assert not refs.precio_permitido("14.900 € (antes 16.500)")        # una cifra que no dijo
+    con_iva = ia.Referencias()
+    con_iva.anotar_instrucciones("la 6090 normal a 12.000 € + IVA y la desktop a 14.900 € + 21% "
+                                 "IVA")
+    assert con_iva.precio_permitido("14.900 € + 21% IVA")
+    assert con_iva.precio_permitido("14.900 €")                        # sin decir el IVA, vale
+    # El IVA de otro importe de la instrucción no cuenta para este.
+    otro = ia.Referencias()
+    otro.anotar_instrucciones("la 6090 normal a 12.000 € IVA incluido; la desktop a 14.900 €")
+    assert not otro.precio_permitido("14.900 € IVA incluido")
+
+
+def test_un_precio_demasiado_largo_no_se_recorta() -> None:
+    """Recortado a 60 caracteres saldría «…: 14»: no se usa, y se dice."""
+    refs = ia.Referencias(productos={"W1": {"fuente": "web", "origen_id": "mboprinters:4202"}})
+    instruccion = "ponle precio especial de feria para clientes de la zona centro: 14.900 € + IVA"
+    refs.anotar_instrucciones(instruccion)
+    largo = "Precio especial de feria para clientes de la zona centro: 14.900 € + IVA"
+    res = ia.estructura_desde_ia([{"tipo": "producto", "producto": {"ref": "W1",
+                                                                   "precio": largo}}],
+                                 refs, idioma="es")
+    assert res.estructura["bloques"][0]["producto"] == {"fuente": "web",
+                                                       "origen_id": "mboprinters:4202"}
+    assert "es demasiado largo para una ficha" in res.avisos[0]
+
+
+def test_el_iva_de_un_precio_se_lee_como_el_de_la_web() -> None:
+    for precio, iva in (("14.900 € + IVA incluida la instalación", "sin_iva"),
+                        ("14.900 € sin IVA (18.029 € con IVA)", "sin_iva"),
+                        ("14.900 € IVA no incluido", "sin_iva"), ("€14,900 plus VAT", "sin_iva"),
+                        ("14.900 € exkl. MwSt", "sin_iva"), ("14.900 € netto", "sin_iva"),
+                        ("14.900 € IVA incluido", "con_iva"), ("€14,900 including VAT", "con_iva"),
+                        ("14.900 €", None), ("14.900 € instalación incluida", None)):
+        assert generador.iva_del_texto(precio) == iva, precio
+
+
+def test_un_texto_que_repite_el_precio_de_la_web_se_avisa_aparte(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    """El precio de la web va en la ficha; en un texto se lee como si fuera de
+    oferta. Antes la red de «no sale del catálogo» lo dejaba pasar."""
+    def _con_texto(refs: dict[str, str]) -> dict[str, Any]:
+        correo = _compuesto(refs[TITULO_DESKTOP])
+        correo["bloques"][0]["texto"] = f"Hola Laura,\n\nte la puedo ofrecer por {PRECIO_DESKTOP}."
+        return correo
+
+    falso = _ClaudeQueLee(PLAN_DESKTOP, _con_texto)
+    with session_factory() as s:
+        _indice(s)
+        thread_id = _hilo_laura(s, "Hola, ¿tenéis la MBO 6090 Desktop? ¿Qué precio tiene?")
+    with patch.object(llm, "_invoke_claude", falso):
+        r = _pedir(http, thread_id, instruccion="contéstale con la ficha", formato="compuesto",
+                   fuentes=AMBAS)
+    assert r.status_code == 201, r.text
+    aviso = r.json()["borrador"]["aviso"]
+    assert ("Un texto del correo menciona «7.990,00 €», el precio de la web de una ficha: no es "
+            "un precio de oferta y ya va en la ficha. Quítalo del texto o revísalo.") in aviso
+    assert "que no sale del catálogo" not in aviso
+
+
+def test_una_ficha_de_la_web_de_una_correccion_anterior_se_puede_mover() -> None:
+    """Puesta en una corrección, la ficha de la web no tiene `W#` en la
+    siguiente (la IA la ve como `?<origen_id>`): reorganizar el correo no la
+    pierde, y conserva el precio que dijo quien envía."""
+    refs = ia.Referencias(productos={"P1": CATALOGO})
+    estructura = bq.normalizar({"idioma": "es", "bloques": [
+        {"id": "b1", "tipo": "producto", "producto": CATALOGO},
+        {"id": "b2", "tipo": "producto", "producto": {**WEB, "precio": "14.900 € + IVA"}}]})
+    assert ia.bloque_para_ia(estructura["bloques"][1], refs)["producto"] == {
+        "ref": "?mboprinters:4202", "precio": "14.900 € + IVA"}
+    res = ia.aplicar_operaciones(estructura, [
+        {"op": "reemplazar", "id": "b1", "bloque": {
+            "tipo": "productos_fila", "productos": ["P1", "?mboprinters:4202"]}},
+        {"op": "quitar", "id": "b2"}], refs)
+    [fila] = res.estructura["bloques"]
+    assert fila["productos"] == [CATALOGO, {**WEB, "precio": "14.900 € + IVA"}]
+    assert res.avisos == []
+    # Un `?` que no está en el correo sigue sin valer.
+    res = ia.aplicar_operaciones(estructura, [{"op": "reemplazar", "id": "b1", "bloque": {
+        "tipo": "producto", "producto": "?mboprinters:9"}}], refs)
+    assert "no está en el catálogo" in res.avisos[0]
+
+
+def _mbo_3050(s: Session) -> None:
+    """La MBO 3050: en el catálogo (8.500 €) y en mboprinters.com (6.000 €)."""
+    _maquina(s, "mbo-3050", "MBO 3050", enlace="https://mboprinters.com/product/mbo-3050-uv/",
+             sitio="mboprinters", precio="8.500 €")
+    _web(s, wp_id=5100, idioma="es", url="https://mboprinters.com/product/mbo-3050-uv/",
+         slug="mbo-3050-uv", titulo="MBO 3050 UV", texto="Impresora UV de 30 × 50 cm.",
+         imagen="https://mboprinters.com/3050.jpg", precio_web=Decimal("6000.00"),
+         precio_web_texto="6.000,00 € (+ IVA)", precio_iva="sin_iva", moneda="EUR")
+    s.commit()
+
+
+def test_un_producto_del_catalogo_que_no_esta_entre_las_maquinas_del_correo_va_del_catalogo(
+    s: Session,
+) -> None:
+    """El CATÁLOGO del correo es una preselección: la MBO 3050 está en el
+    catálogo del compositor pero no entre las máquinas del correo. Pedida en
+    una corrección, su pieza se ofrece con `W1`, que saca la ficha del
+    catálogo (precio de venta), nunca la de la web."""
+    _indice(s)
+    _catalogo(s)
+    _mbo_3050(s)
+    entrada = consulta_fuentes.Entrada(
+        instruccion="incluye también la MBO 3050", idioma="es",
+        maquinas=[{"nombre": "artisJet 6090 Trust", "enlace": URL_TRUST}])
+    plan = consulta_fuentes.Plan(tecnica=False, productos=["MBO 3050"])
+    mat = consulta_fuentes.consultar(
+        s, fuentes=consulta_fuentes.Fuentes(webs=True, soporte=False), plan=plan, idioma="es",
+        entrada=entrada)
+    assert mat is not None
+    pieza = mat.peticion.split("[W1] MBO 3050 UV\n", 1)[1].split("\n[W", 1)[0]
+    assert "Ficha: W1" in pieza and "Pedida por quien envía: sí" in pieza
+    assert "En el CATÁLOGO: sí («MBO 3050»): con W1 sale su ficha del catálogo" in pieza
+    [web] = mat.resumen["webs"]
+    assert web["catalogo"] == {"fuente": FUENTE_COMPOSITOR, "origen_id": "mbo-3050",
+                               "enlace": "https://mboprinters.com/product/mbo-3050-uv/"}
+    from app.services.asistente import redactor  # noqa: PLC0415
+
+    refs = ia.Referencias.desde(
+        maquinas=[{"fuente": FUENTE_COMPOSITOR, "origen_id": "aj-6090-trust", "enlace": URL_TRUST}],
+        consumibles=[], enlaces=[], videos=[], marcas={})
+    redactor._enlaces_material_en_refs(refs, mat)
+    res = ia.estructura_desde_ia([{"tipo": "productos_fila", "productos": ["P1", "W1"]}], refs,
+                                 idioma="es")
+    assert res.estructura["bloques"][0]["productos"] == [
+        {"fuente": FUENTE_COMPOSITOR, "origen_id": "aj-6090-trust"},
+        {"fuente": FUENTE_COMPOSITOR, "origen_id": "mbo-3050"}]
+    assert "va la del catálogo, con su precio de venta" in res.avisos[0]
+    correo = _render(s, *res.estructura["bloques"][0]["productos"])
+    assert "8.500 €" in correo.html and "6.000" not in correo.html
+
+
+def test_con_wpml_la_pagina_de_otro_idioma_de_una_maquina_del_correo_no_es_ficha(
+    s: Session,
+) -> None:
+    """El enlace del catálogo es la página en castellano; la búsqueda trae la
+    inglesa (otro id y otro slug, la misma foto y el mismo precio): es la
+    misma máquina, y su ficha es la del catálogo."""
+    _wpml(s, 965, "es")
+    en = _wpml(s, 2839, "en", titulo="CO2 Laser 60W")
+    s.commit()
+    catalogo = consulta_fuentes._catalogo_por_pagina(
+        s, [{"nombre": "Láser CO2 60W", "enlace": "https://mbolasers.com/es/p/965/"}])
+    fragmento = busqueda_fragmento(en)
+    del_catalogo = consulta_fuentes._del_catalogo(s, [fragmento], catalogo)
+    assert del_catalogo[fragmento.id]["en_correo"] is True
+    mat = material_fuera.construir(fragmentos=[fragmento], idioma="en", del_catalogo=del_catalogo)
+    assert mat is not None and "Ficha:" not in mat.peticion
+    assert "En el CATÁLOGO: sí: su ficha es la del catálogo" in mat.peticion
+
+
+def busqueda_fragmento(fila: WebIndiceEntrada) -> Any:
+    from app.services.webs import busqueda  # noqa: PLC0415
+
+    return busqueda.fragmento_de(fila, [], max_chars=material_fuera.MAX_CHARS_WEB)
+
+
+def test_un_plan_con_un_solo_producto_como_texto_no_se_parte_en_letras(s: Session) -> None:
+    plan = consulta_fuentes._plan_de_json('{"tecnica": false, "productos": "MBO 6090 desktop"}')
+    assert plan is not None and plan.productos == ["MBO 6090 desktop"]
+    _indice(s)
+    assert fichas.productos_por_nombre(s, "M") == []                   # una letra no busca nada
+
+
+def test_con_wpml_y_sin_precio_la_traduccion_se_reconoce_por_la_imagen(s: Session) -> None:
+    """Los láseres «a consultar» de una web con WPML: sin precio, la misma
+    imagen (una por idioma) basta. Con dos del mismo idioma con esa foto, no."""
+    es = _wpml(s, 965, "es", precio=None)
+    _wpml(s, 2839, "en", precio=None, titulo="CO2 Laser 60W")
+    s.commit()
+    assert sorted((f.idioma, f.wp_id) for f in fichas.variantes(s, es)) == [
+        ("en", 2839), ("es", 965)]
+    assert fichas.en_idioma(s, es, "en").wp_id == 2839
+    _wpml(s, 966, "es", precio=None, titulo="Láser CO2 80W")            # la misma foto
+    s.commit()
+    assert [f.wp_id for f in fichas.variantes(s, es)] == [965]
+
+
+def test_el_motivo_de_un_enlace_que_no_es_un_producto(s: Session) -> None:
+    """Se dice lo que se sabe: una página (del índice o no: la ruta no es de
+    producto), un producto que ya no está, o una ruta de producto que el
+    índice no tiene (puede ser un producto recién publicado). Una categoría
+    con el mismo slug que un producto no se toma por el producto."""
+    _boprint(s)
+    fila_web(s, sitio="boprint", dominio="boprint.net", wp_id=400, titulo="Retirada",
+             url="https://boprint.net/producto/retirada/", slug="retirada", ido_en=AHORA)
+    s.commit()
+    mapa = fichas.MapaProductos(s)
+    assert mapa.motivo(URL_CONTACTO) == fichas.MOTIVO_PAGINA
+    assert mapa.titulo(URL_CONTACTO) == "Contacto"
+    assert mapa.motivo("https://boprint.net/producto/retirada/") == fichas.MOTIVO_IDO
+    assert mapa.motivo("https://boprint.net/producto/impresora-uv-nueva/") == fichas.MOTIVO_FUERA
+    categoria = "https://boprint.net/categoria-producto/impresora-uv-led-5000u/"
+    assert mapa.producto(categoria) is None and mapa.motivo(categoria) == fichas.MOTIVO_PAGINA
+    assert mapa.titulo(categoria) is None
+    assert mapa.motivo("https://boprint.net/sobre-nosotros/") == fichas.MOTIVO_PAGINA
+    assert mapa.motivo("https://boprint.net/producto/impresora-uv-led-5000u/") is None
+    assert mapa.motivo(URL_TRUST) is None                              # sin productos indexados
+    assert procedencia.aviso_enlace_no_producto("X", "https://boprint.net/producto/nueva/",
+                                                fichas.MOTIVO_FUERA) == (
+        "El enlace de la ficha «X» del catálogo (https://boprint.net/producto/nueva/) no está en "
+        "el índice de nuestras webs: si el producto es nuevo, aún no se ha leído («Reindexar "
+        "ahora» en el panel del índice); si no, revísalo en el compositor.")
+    # El Cuadre: el de un producto que ya no está y el de uno que aún no se ha leído.
+    _maquina(s, "bp-retirada", "Retirada", sitio="boprint",
+             enlace="https://boprint.net/producto/retirada/")
+    _maquina(s, "bp-nueva", "Nueva", sitio="boprint",
+             enlace="https://boprint.net/producto/impresora-uv-nueva/")
+    s.commit()
+    hallazgos = {h.entidad_id: h for h in enlace_catalogo_no_producto(_ctx(s))}
+    retirada = hallazgos["compositor:bp-retirada:es"]
+    assert retirada.detalle.endswith("es el de un producto que ya no está en la web.")
+    assert retirada.pista_de_arreglo.startswith("El catálogo se edita en el compositor")
+    nueva = hallazgos["compositor:bp-nueva:es"]
+    assert nueva.detalle == ("Su enlace https://boprint.net/producto/impresora-uv-nueva/ no está "
+                             "en el índice de boprint.net: no es ninguna de sus páginas de "
+                             "producto (o es una que aún no se ha leído).")
+    assert nueva.pista_de_arreglo.startswith("Si el producto se acaba de publicar")
+    assert "Reindexar ahora" in nueva.pista_de_arreglo
+
+
+def test_los_enlaces_del_catalogo_se_miran_con_las_casillas_de_cada_turno(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    """Un primer borrador de texto sin «Webs» que enlaza la página de
+    contacto: no se mira. La corrección con «Webs» marcada sí lo avisa; y una
+    corrección sin ella ya no lo marca."""
+    cuerpo = ("<p>Hola Klaus,</p><p>La artisJet 3000Pro Freebird cuesta 6.490 €: "
+              f"<a href='{URL_CONTACTO}'>aquí la tienes</a>.</p><p>Un saludo,<br>Admin</p>")
+    falso = _ClaudeConPlan(PLAN_SIN_WEBS, {
+        "asunto": "Re: Impresora UV", "idioma": "es", "aviso": "", "pendiente": [],
+        "enlaces_usados": [URL_CONTACTO], "cuerpo": cuerpo})
+    with session_factory() as s:
+        thread_id = _hilo_freebird(s)
+    with patch.object(llm, "_invoke_claude", falso):
+        b = _pedir(http, thread_id, instruccion="contéstale con el precio", formato="normal",
+                   fuentes=NINGUNA).json()["borrador"]
+        assert "enlaces_no_producto" not in b["contexto"]
+        r = _turno(http, b["id"], "más corto", fuentes=AMBAS)
+        assert r.status_code == 201, r.text
+        b = r.json()["borrador"]
+        assert procedencia.aviso_enlace_no_producto(
+            "artisJet 3000Pro Freebird", URL_CONTACTO, "pagina") in b["aviso"]
+        assert b["contexto"]["enlaces_no_producto"][0]["enlace"] == URL_CONTACTO
+        b = _turno(http, b["id"], "más corto", fuentes=NINGUNA).json()["borrador"]
+    assert "enlaces_no_producto" not in b["contexto"]
+    assert "no lleva a una página" not in (b["aviso"] or "")
+
+
+def test_las_fichas_del_catalogo_dicen_su_precio_como_el_correo(s: Session) -> None:
+    """Sin precio público, el correo dice «a medida»; un orientativo lleva su
+    nota: «Lo que ha usado» lo sabe."""
+    claves = [{"fuente": FUENTE_COMPOSITOR, "origen_id": "a"},
+              {"fuente": FUENTE_COMPOSITOR, "origen_id": "b"}]
+    estructura = bq.normalizar({"idioma": "es", "bloques": [
+        {"tipo": "productos_fila", "productos": claves}]})
+    productos = {"compositor|a": {"nombre": "A medida", "precio_texto": None,
+                                  "precio_publico": False},
+                 "compositor|b": {"nombre": "Orientativa", "precio_texto": "9.990 €",
+                                  "orientativo": True}}
+    fichas_correo, _ = procedencia.fichas_del_correo(s, estructura, productos, idioma="es")
+    assert fichas_correo[0]["precio_publico"] is False and "orientativo" not in fichas_correo[0]
+    assert fichas_correo[1]["orientativo"] is True and "precio_publico" not in fichas_correo[1]
+
+
+def test_un_producto_pedido_por_su_nombre_que_no_esta_en_el_indice_se_avisa(s: Session) -> None:
+    _indice(s)
+    catalogo = {"https://artisjet-printers.eu/product/artisjet-6090-trust": {
+        "en_correo": True, "nombre": "artisJet 6090 Trust"}}
+    for nombres, avisa in ((["Beamo Desktop"], True), (["Trust"], False),
+                           (["MBO 6090 desktop"], False)):
+        avisos: list[str] = []
+        consulta_fuentes._productos_pedidos(s, instruccion="", nombres=nombres, idioma="es",
+                                            catalogo=catalogo, resumen={}, avisos=avisos)
+        assert bool(avisos) is avisa, nombres
+    assert avisos == [] and "No he encontrado" not in "".join(avisos)
+    avisos = []
+    consulta_fuentes._productos_pedidos(s, instruccion="", nombres=["Beamo Desktop"],
+                                        idioma="es", catalogo={}, resumen={}, avisos=avisos)
+    assert avisos[0].startswith("No he encontrado «Beamo Desktop» en el índice de las webs")

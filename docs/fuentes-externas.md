@@ -217,12 +217,18 @@ cliente no ha escrito nada nuevo) no se llama al modelo ni se consulta.
    índice con cualquier dominio, idioma o barra final) y por los nombres del
    plan (`fichas.productos_por_nombre`: el título lleva **todas** las
    palabras, sin tildes, el más ajustado primero), cada uno en el idioma del
-   correo si la web lo tiene. Uno que es la misma página que un producto del
-   CATÁLOGO del correo no entra: su ficha es la del catálogo. Una URL de una
-   web indexada que no es un producto se avisa («El enlace que indicas (…) no
-   es una página de producto del índice de las webs: no hay ficha que montar
-   con él.»). Las piezas que son un producto valen como ficha de un correo
-   compuesto (§ Fichas montadas desde el índice).
+   correo si la web lo tiene. Uno que es una máquina del CATÁLOGO del correo
+   (su página o la de una de sus traducciones) no entra: su ficha es la del
+   catálogo. Una URL de una web indexada que no es un producto se avisa
+   («El enlace que indicas (…) no es una página de producto del índice de las
+   webs: no hay ficha que montar con él.») **si se pedía su ficha** (la
+   instrucción dice «ficha», «versión» o «variante») **o la ruta es de
+   producto** (`/producto/…`, `/shop/…`); un enlace a un artículo o a la página
+   de contacto para ponerlo en el texto no se avisa. Un nombre pedido que no
+   está en el índice se avisa («No he encontrado «…» en el índice de las webs»:
+   puede ser un producto recién publicado), salvo si es una máquina del correo.
+   Las piezas que son un producto valen como ficha de un correo compuesto
+   (§ Fichas montadas desde el índice).
 4. **El tiempo**, porque va **dentro** de la petición del borrador: el plan,
    **5 s**; todo el soporte (búsquedas, respaldo y artículo), **6 s**, y cada
    petición, **4 s**, sin reintentos (`soporte.con_plazo`, `TIEMPO_SOPORTE`,
@@ -623,47 +629,90 @@ Solo lee: ni el índice ni el catálogo se tocan.
   `precio_iva`), que **nunca** es precio de oferta; sin precio en la web,
   **«Precio a consultar»** en el idioma del correo y sin IVA. El único otro
   precio posible es **el que dice quien envía en sus instrucciones**
-  (`ia.importes_de`, de todos los turnos de la conversación; solo cuentan
-  los números con la moneda al lado: «14.900 €», «14900 euros», no el «6090»
-  de «MBO 6090»): tiene que
-  llevar algún importe de 100 en adelante y todos tienen que estar ahí
-  (`precio_permitido`); uno que no sale de ellas se quita, con aviso. Va tal
-  cual lo escribió, y como su IVA no se sabe, el pie dice que está pendiente
-  de confirmar. **Nunca se deduce** de un producto parecido. El precio de una
-  ficha del catálogo no se cambia nunca.
-- **Idioma**: la fila del idioma del correo (`en_idioma`); si la web no la
-  tiene, la del idioma por defecto de la web (o la primera) y se dice. WPGlobus
-  da el mismo `wp_id` en todos los idiomas; WPML no guarda qué traducción es
-  de qué, así que una fila de otro idioma es la misma si tiene **la misma
-  imagen principal y el mismo precio** (`variantes`); si en un idioma salen
-  dos, no se elige ninguna (pueden ser potencias distintas con la misma
-  foto).
-- **Catálogo antes que índice.** Una pieza de «Nuestras webs» que es la misma
-  página que un producto del catálogo del correo (`fichas.pagina`: sitio y
-  ruta sin `www.`, idioma ni barra final) dice «En el CATÁLOGO» y no se ofrece
-  como ficha; si la IA pone igual el `W#`, va el `P#` con su precio de venta
+  (`Referencias.anotar_instrucciones`, de todos los turnos de la
+  conversación; `ia.importes_de` solo cuenta los números con la moneda al
+  lado y enteros, en formato español o inglés: «14.900 €», «€14,900»,
+  «14900 euros», no el «6090» de «MBO 6090» ni el «900» de «14,900»). Lo
+  comprueba `precio_permitido`: lleva algún importe y **todos** están en las
+  instrucciones; no añade **cifras** que no escribió («14.900 € (antes
+  16.500)») ni un **IVA** que no dijo junto a ese importe («14.900 € IVA
+  incluido» si dijo «14.900 €»); y no pasa de 60 caracteres (uno más largo no
+  se recorta, que saldría un número a medias). Uno que no cumple se quita,
+  con aviso. Va tal cual lo escribió; el pie dice el IVA que dice ese precio
+  («+ IVA», «IVA no incluido», «plus VAT», «IVA incluido»…, con la misma
+  regla con la que el índice guarda el de la web, `lector.iva_de`) y, si no
+  dice nada, que está pendiente de confirmar. **Nunca se deduce** de un
+  producto parecido. El precio de una ficha del catálogo no se cambia nunca.
+  **Lo que no puede saber**: si el importe que cita la instrucción es el de
+  ese producto (en «la 6090 normal le salió a 12.900 €», el 12.900 está en
+  la instrucción); por eso el aviso del borrador dice siempre «precio que me
+  has indicado tú: …» y quien envía lo ve antes de enviar.
+- **El precio de la web, en un texto, se avisa aparte**: va en la ficha; un
+  texto que lo repite («te la puedo ofrecer por 7.990,00 €») lo presenta como
+  si fuera de oferta («Un texto del correo menciona «…», el precio de la web
+  de una ficha: no es un precio de oferta y ya va en la ficha»). El generador
+  separa los precios por procedencia (`Correo.precios_catalogo`,
+  `precios_web`).
+- **Idioma**: la fila del idioma del correo (`en_idioma`); si el índice no la
+  tiene, la del idioma por defecto de la web (o la primera) y se dice («no
+  está en el índice en …»). WPGlobus da el mismo `wp_id` en todos los
+  idiomas; WPML no guarda qué traducción es de qué, así que una fila de otro
+  idioma es la misma si tiene **la misma imagen principal y el mismo precio**
+  o, en una web con WPML y sin precio en la web (los láseres «a consultar»),
+  **la misma imagen** (`variantes`); si en un idioma salen dos, no se elige
+  ninguna (pueden ser potencias distintas con la misma foto). En una web sin
+  WPML, otro id con la misma foto es otro producto (la MBO 6090 y su versión
+  desktop).
+- **Catálogo antes que índice.** Se mira contra el **catálogo entero del
+  compositor**, no solo contra las máquinas del correo (el CATÁLOGO del prompt
+  es una preselección): `consulta_fuentes._catalogo_por_pagina` y
+  `_del_catalogo`, por la página de la pieza o la de una de sus traducciones
+  (`fichas.pagina`: sitio y ruta sin `www.`, idioma ni barra final). Si es
+  una **máquina del correo**, la pieza dice «En el CATÁLOGO» y no se ofrece
+  como ficha (ya tiene su `P#`). Si es **otro producto del catálogo** (pedido
+  en una corrección, o que sale en la búsqueda), se ofrece con su `W#` y la
+  pieza dice que con él sale la ficha del catálogo: su `W#` lleva al producto
+  del catálogo (`Referencias.anadir_equivalente_catalogo`), con su precio de
+  venta. Si la IA pone igual el `W#` de una máquina del correo, va el `P#`
   (`Referencias.equivalentes`, con aviso). **La excepción**: una variante que
   quien envía pide expresamente y solo está en la web («la versión desktop»)
   es otra página, va marcada «Pedida por quien envía» y gana
   (`REGLA_FICHAS_WEB`).
+- **En las correcciones siguientes**, una ficha de la web que entró en una
+  corrección anterior ya no tiene `W#` (la numeración es la del material del
+  turno): la IA la ve como `?<origen_id>` y vale para moverla o ponerla en
+  una fila (`_Conversor.productos_del_correo`), con su precio y su imagen.
 - **Para quien revisa**, no para el cliente (a él una ficha es una ficha):
   `asistente/procedencia.fichas_del_correo` apunta en `contexto_json["fichas"]`
   cada ficha con su procedencia (`catalogo` o `indice`), su enlace y, las del
   índice, su web, de dónde sale el precio (`web`, `usuario` o `consultar`), su
-  idioma y su galería. «Lo que ha usado» las separa y el aviso del borrador
-  las lista («Fichas del correo: …; revisa su precio y su descripción antes
-  de enviar»), con «precio que me has indicado tú, no sale de la web ni del
-  catálogo» y el de idioma si toca. Sin fichas del índice, el aviso no cambia.
+  idioma y su galería; las del catálogo, su precio como lo dice el correo
+  (`precio_publico: false` → «a medida», `orientativo`). «Lo que ha usado»
+  las separa y el aviso del borrador las lista («Fichas del correo: …;
+  revisa su precio y su descripción antes de enviar»), con «precio que me has
+  indicado tú, no sale de la web ni del catálogo» y el de idioma si toca. Las
+  listas salen con «Webs» marcada o si alguna ficha es del índice; sin
+  fichas del índice, el aviso no cambia.
 - **Enlaces del catálogo que no llevan a un producto** (el 28/10, la ficha de
   la artisJet 3000Pro Freebird apuntaba a `boprint.net/contacto/`): con «Webs»
-  marcada, el enlace de una ficha del catálogo que es de una web **con
+  marcada **en ese turno** (cada corrección lo vuelve a mirar con sus
+  casillas), el enlace de una ficha del compositor que es de una web **con
   productos en el índice** y no casa con ninguna página de producto
-  (`MapaProductos.no_es_producto`, por ruta o por slug, con cualquier dominio
-  de la web) se marca en «Lo que ha usado» (`enlaces_no_producto`) y se avisa
-  en el borrador si va en el correo. Una web sin productos en el índice (sin
-  tienda o sin leer) no se juzga. **Nunca se corrige**: se arregla en el
-  compositor. El Cuadre tiene la misma comprobación para el catálogo entero
-  ([erp/cuadre.md](erp/cuadre.md), `enlace_catalogo_no_producto`).
+  (`MapaProductos.motivo`, por ruta o, si la ruta es de producto —`/producto/`,
+  `/tienda/`…—, por slug, con cualquier dominio de la web; una categoría con
+  el mismo slug que un producto no cuenta como el producto) se marca en «Lo
+  que ha usado» (`enlaces_no_producto`, con su `motivo`) y se avisa en el
+  borrador si va en el correo. Se dice **lo que se sabe**: no es una página
+  de producto (`pagina`: una del índice, «Contacto», o una ruta que no es de
+  producto, como una categoría), un producto que el índice da por quitado
+  (`ido`) o **una ruta de producto que el índice no tiene** (`fuera`,
+  `/producto/…` con la base de los productos de esa web: puede ser un
+  producto recién publicado que el índice, que se lee una vez al mes, aún no
+  tiene; el aviso dice que se reindexe o, si no, que se revise). Una web sin productos en el
+  índice (sin tienda o sin leer) no se juzga. **Nunca se corrige**: se
+  arregla en el compositor. El Cuadre tiene la misma comprobación para el
+  catálogo entero ([erp/cuadre.md](erp/cuadre.md),
+  `enlace_catalogo_no_producto`).
 
 Lo que hace el correo compuesto con la ficha:
 [ai-features.md](ai-features.md) § Correos compuestos.
