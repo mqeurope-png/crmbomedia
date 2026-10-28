@@ -1779,12 +1779,13 @@ def test_el_producto_del_catalogo_se_reconoce_por_su_nombre() -> None:
               "mbo-6090-pro": [_fila("MBO 6090 Pro", "mbo")],
               "flux-beambox-ii": [_fila("Beambox II", "flux")]}
     assert catalogo_kb.por_nombre("artisJet 6090 Trust", grupos) == "aj-6090-trust"
-    assert catalogo_kb.por_nombre("la impresora UV ArtisJet 6090 Trust", grupos) == "aj-6090-trust"
+    assert catalogo_kb.por_nombre("la impresora UV ArtisJet 6090 Trust",
+                                  grupos) == "aj-6090-trust"
     assert catalogo_kb.por_nombre("Trust", grupos) == "aj-6090-trust"
     assert catalogo_kb.por_nombre("MBO 6090", grupos) == "mbo-6090"          # la exacta
     assert catalogo_kb.por_nombre("MBO 6090 desktop", grupos) is None          # otra máquina
     assert catalogo_kb.por_nombre("artisJet", grupos) is None                  # solo la marca
-    assert catalogo_kb.por_nombre("6090", grupos) == "mbo-6090"                # la que no añade nada
+    assert catalogo_kb.por_nombre("6090", grupos) == "mbo-6090"   # la que no añade nada
     assert catalogo_kb.por_nombre("MBO", {**grupos, "mbo-3050": [_fila("MBO 3050", "mbo")]}) is None
     assert catalogo_kb.por_nombre("Beambox II", grupos) == "flux-beambox-ii"
     assert catalogo_kb.por_nombre("", grupos) is None
