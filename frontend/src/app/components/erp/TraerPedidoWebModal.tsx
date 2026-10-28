@@ -39,8 +39,42 @@ function clave(p: PedidoWebEnEspera): string {
   return `${p.store_id}:${p.woo_id}`;
 }
 
+/** Cómo se nombra un pedido para el lector de pantalla. */
+function nombrePedido(p: PedidoWebEnEspera): string {
+  return `el pedido ${p.numero} de ${p.tienda_nombre}`;
+}
+
+/** El orden de la lista (el mismo que da el backend): fecha y nº, del más
+ *  reciente al más antiguo. */
+function masReciente(a: PedidoWebEnEspera, b: PedidoWebEnEspera): number {
+  const fa = a.fecha ?? "";
+  const fb = b.fecha ?? "";
+  if (fa !== fb) return fa < fb ? 1 : -1;
+  return b.woo_id - a.woo_id;
+}
+
+/** Junta la lista cargada con la respuesta (leída ahora) de la consulta de un
+ *  nº. Sus «en espera» entran en la lista (o sustituyen a la fila vieja): el
+ *  nº pudo pasar a «en espera» después de cargarla, o ser de una tienda que
+ *  entonces no respondió, y así sale con su «Traer». De cada tienda que
+ *  respondió al cargar y ahora también, su recuento de ahora; una que no
+ *  respondió al cargar sigue avisada como caída (su lista no está entera). */
+function juntarConsulta(prev: PedidosWebEnEspera, r: PedidosWebEnEspera): PedidosWebEnEspera {
+  const nuevos = r.items ?? [];
+  const claves = new Set(nuevos.map(clave));
+  const items = [...prev.items.filter((p) => !claves.has(clave(p))), ...nuevos].sort(masReciente);
+  const ahora = new Map((r.tiendas ?? []).map((t) => [String(t.store_id), t]));
+  const tiendas = prev.tiendas.map((t) => {
+    const fresca = ahora.get(String(t.store_id));
+    return t.ok && fresca?.ok ? fresca : t;
+  });
+  return { ...prev, items, tiendas };
+}
+
 type ErrorFila = { mensaje: string; orderId: string | null };
-type Consulta = { items: PedidoWebConsulta[]; error: string | null };
+/** Lo que dicen las tiendas de un nº y las que no han respondido a esa
+ *  consulta (en ellas no se ha mirado el nº). */
+type Consulta = { items: PedidoWebConsulta[]; error: string | null; sinRespuesta: string[] };
 
 /** «Traer un pedido de la web» (ERP · Pedidos): los pedidos «en espera» de
  *  las tiendas (transferencia que la web aún no ha cobrado), leídos en vivo.
@@ -59,8 +93,11 @@ export function TraerPedidoWebModal({ onClose }: { onClose: () => void }) {
   // Lo que dicen las tiendas de cada nº buscado que no está en la lista.
   const [consultas, setConsultas] = useState<Record<string, Consulta>>({});
   const pedidas = useRef<Set<string>>(new Set());
-  // La fila que se está trayendo (todas las demás esperan) y los errores por fila.
-  const [trayendo, setTrayendo] = useState<string | null>(null);
+  // Sube con cada «Volver a leer»: la respuesta de una consulta lanzada antes
+  // ya no se escribe (traería datos más viejos que la lista nueva).
+  const lectura = useRef(0);
+  // El pedido que se está trayendo (todos los demás esperan) y los errores por fila.
+  const [trayendo, setTrayendo] = useState<PedidoWebEnEspera | null>(null);
   const [errores, setErrores] = useState<Record<string, ErrorFila>>({});
   // Un solo «Traer» aunque se pulse dos veces antes de que React repinte.
   const enviado = useRef(false);
@@ -91,15 +128,36 @@ export function TraerPedidoWebModal({ onClose }: { onClose: () => void }) {
     if (!numeroPedir || pedidas.current.has(numeroPedir)) return;
     pedidas.current.add(numeroPedir);
     const numero = numeroPedir;
+    const deLectura = lectura.current;
     listarPedidosWebEnEspera(numero)
-      .then((r) => setConsultas((prev) => ({ ...prev, [numero]: { items: r.consulta ?? [], error: null } })))
-      .catch((e) => setConsultas((prev) => ({
-        ...prev,
-        [numero]: { items: [], error: extractErrorMessage(e, "No se pudo consultar ese nº en las tiendas.") },
-      })));
+      .then((r) => {
+        if (deLectura !== lectura.current) return;
+        // Nada de la respuesta se tira: sus «en espera» y sus tiendas van a la
+        // lista, y lo que es el nº en cada tienda, a la consulta.
+        setData((prev) => (prev ? juntarConsulta(prev, r) : prev));
+        setConsultas((prev) => ({
+          ...prev,
+          [numero]: {
+            items: r.consulta ?? [],
+            error: null,
+            sinRespuesta: (r.tiendas ?? []).filter((t) => !t.ok).map((t) => t.tienda_nombre),
+          },
+        }));
+      })
+      .catch((e) => {
+        if (deLectura !== lectura.current) return;
+        setConsultas((prev) => ({
+          ...prev,
+          [numero]: {
+            items: [], sinRespuesta: [],
+            error: extractErrorMessage(e, "No se pudo consultar ese nº en las tiendas."),
+          },
+        }));
+      });
   }, [numeroPedir]);
 
   function volverALeer() {
+    lectura.current += 1;
     setLoading(true);
     setLoadError(null);
     setData(null);
@@ -113,7 +171,7 @@ export function TraerPedidoWebModal({ onClose }: { onClose: () => void }) {
     if (enviado.current) return;
     enviado.current = true;
     const k = clave(p);
-    setTrayendo(k);
+    setTrayendo(p);
     setErrores((prev) => {
       const next = { ...prev };
       delete next[k];
@@ -132,6 +190,10 @@ export function TraerPedidoWebModal({ onClose }: { onClose: () => void }) {
     }
   }
 
+  function esTrayendo(p: PedidoWebEnEspera): boolean {
+    return trayendo !== null && clave(trayendo) === clave(p);
+  }
+
   function acciones(p: PedidoWebEnEspera, sePuedeTraer: boolean) {
     if (p.en_bohub) {
       return (
@@ -145,16 +207,17 @@ export function TraerPedidoWebModal({ onClose }: { onClose: () => void }) {
       );
     }
     if (!sePuedeTraer) return null;
-    const k = clave(p);
+    // El nombre accesible cambia con el texto: «Trayendo…» también se oye.
+    const ahora = esTrayendo(p);
     return (
       <span className="pedidos-web-acciones">
         <button
           type="button" className="button small"
-          aria-label={`Traer el pedido ${p.numero} de ${p.tienda_nombre}`}
+          aria-label={ahora ? `Trayendo ${nombrePedido(p)}…` : `Traer ${nombrePedido(p)}`}
           disabled={trayendo !== null}
           onClick={() => void traer(p)}
         >
-          {trayendo === k ? "Trayendo…" : "Traer"}
+          {ahora ? "Trayendo…" : "Traer"}
         </button>
       </span>
     );
@@ -236,6 +299,12 @@ export function TraerPedidoWebModal({ onClose }: { onClose: () => void }) {
         <p className="muted" role="status">Leyendo los pedidos en espera de las tiendas…</p>
       ) : null}
       {loadError ? <p className="form-error" role="alert">{loadError}</p> : null}
+      {/* Siempre en la página (vacío si no se trae nada) para que el lector de
+          pantalla anuncie el cambio: traer puede tardar (relee la tienda y
+          mira FACTUSOL). */}
+      <p className="sr-only" role="status" aria-live="polite">
+        {trayendo ? `Trayendo ${nombrePedido(trayendo)}…` : ""}
+      </p>
 
       {caidas.length > 0 ? (
         <div className="pedidos-web-caidas" role="alert">
@@ -277,7 +346,8 @@ export function TraerPedidoWebModal({ onClose }: { onClose: () => void }) {
                 const aviso = avisoFila(p);
                 return (
                   <Fragment key={clave(p)}>
-                    <tr className={p.en_bohub ? "pedidos-web-fila-ya" : undefined}>
+                    <tr className={p.en_bohub ? "pedidos-web-fila-ya" : undefined}
+                        aria-busy={esTrayendo(p) || undefined}>
                       <td data-label="Tienda">{p.tienda_nombre}</td>
                       <td data-label="Nº">{numero(p)}</td>
                       <td data-label="Fecha" className="mono">{fecha(p.fecha)}</td>
@@ -327,7 +397,7 @@ export function TraerPedidoWebModal({ onClose }: { onClose: () => void }) {
           ) : (
             <ul className="pedidos-web-consulta-lista">
               {consulta.items.map((c) => (
-                <li key={clave(c)}>
+                <li key={clave(c)} aria-busy={esTrayendo(c) || undefined}>
                   <div className="pedidos-web-consulta-main">
                     <span>
                       <strong>{c.tienda_nombre}</strong> · nº {numero(c)}
@@ -342,6 +412,12 @@ export function TraerPedidoWebModal({ onClose }: { onClose: () => void }) {
               ))}
             </ul>
           )}
+          {consulta && consulta.sinRespuesta.length > 0 ? (
+            <p className="muted small">
+              No han respondido a esta consulta: {consulta.sinRespuesta.join(", ")} (el nº
+              puede estar ahí: vuelve a leer las tiendas en un rato).
+            </p>
+          ) : null}
         </section>
       ) : null}
 

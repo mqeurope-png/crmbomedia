@@ -14,8 +14,9 @@ que Bart quiere preparar y facturar ya. Desde ERP · Pedidos se listan los
   otro; si se cancela en la web, el mismo webhook lo anula en BoHub.
 - **Sin duplicados.** El importador busca/crea bajo un cerrojo por tienda;
   traer dos veces devuelve el que hay (`creado: false`); y si ya hay en BoHub
-  otro pedido con el mismo nº o uno creado «desde FACTUSOL» con su REFPCL, no
-  se trae (409 `ya_hay_pedido_en_bohub`: Bart decide).
+  otro pedido con el mismo nº o uno creado «desde FACTUSOL» a partir de su
+  pedido de cliente (el F_PCL que reconoce el veredicto, o su REFPCL), no se
+  trae (409 `ya_hay_pedido_en_bohub`: Bart decide).
 - **FACTUSOL, solo lectura.** Los pedidos web llegan solos a FACTUSOL como
   pedido de cliente (lo crea la app de la web, no BoHub). Al traer se busca y
   se dice si se reconoce (`enlazado`), si hay uno parecido (`posible`), si no
@@ -44,6 +45,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy import or_, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.erp.models import Order, OrderSource
@@ -159,6 +161,26 @@ def _fecha(wo: dict[str, Any]) -> str | None:
             continue
         return (dt if dt.tzinfo else dt.replace(tzinfo=UTC)).astimezone(UTC).isoformat()
     return None
+
+
+def _fecha_local(wo: dict[str, Any]) -> str | None:
+    """Fecha de creación en la hora de la TIENDA (`date_created`, sin zona), la
+    que decide el ejercicio: un pedido del 1 de enero a las 00:30 en España es
+    de ese año aunque en UTC aún sea 31 de diciembre. Si no viene, `_fecha`."""
+    return str(wo.get("date_created") or "").strip() or _fecha(wo)
+
+
+def _numero_de_referencia(referencia: Any) -> str:
+    """Parte numérica de una referencia: lo que va tras el último «-», sin
+    ceros a la izquierda (`FLE-005873` → `5873`; `5873` → `5873`)."""
+    return str(referencia or "").strip().rsplit("-", 1)[-1].strip().lstrip("0")
+
+
+def _entero(valor: Any) -> int | None:
+    try:
+        return int(str(valor).strip())
+    except (TypeError, ValueError):
+        return None
 
 
 def _estado(wo: dict[str, Any]) -> str:
@@ -430,6 +452,16 @@ def _consulta_numero(
 # --- traer ----------------------------------------------------------------------------
 
 
+#: Errores de MySQL al esperar un cerrojo: «Lock wait timeout exceeded» (1205)
+#: y «Deadlock found» (1213). Los dos se arreglan volviendo a probar.
+_ERRORES_DE_CERROJO = frozenset({1205, 1213})
+
+
+def _es_espera_de_cerrojo(exc: OperationalError) -> bool:
+    args = getattr(exc.orig, "args", None) or ()
+    return bool(args) and args[0] in _ERRORES_DE_CERROJO
+
+
 def _tienda_por_id(session: Session, store_id: str) -> IntegrationAccount:
     store = session.get(IntegrationAccount, str(store_id))
     if store is None or store.system != ExternalSystem.WOOCOMMERCE or not store.enabled:
@@ -472,11 +504,20 @@ def referencia_factusol(session: Session, store: IntegrationAccount, order_numbe
 
 def _otro_pedido(
     session: Session, store: IntegrationAccount, woo_id: int, order_number: str, ref: str,
+    *, pcls: list[dict[str, Any]] | None = None, total: float | None = None,
 ) -> Order | None:
     """Otro pedido de BoHub que ya es este pedido web: el mismo nº de pedido
     (de cualquier origen, p. ej. dado de alta a mano), el mismo id de Woo sin
-    tienda, o uno creado «desde FACTUSOL» a partir de su pedido de cliente
-    (`packing_json.factusol_source.referencia` = su REFPCL)."""
+    tienda, o uno creado «desde FACTUSOL» a partir de su pedido de cliente:
+
+    - el F_PCL que ha reconocido el veredicto (`pcls`: por su referencia o por
+      CIF + importe), con el tipo / serie / código que guarda
+      `packing_json.factusol_source`. Así se ve aunque el prefijo configurado
+      (o derivado) de la tienda no sea el que usa FesteWeb;
+    - o su `factusol_source.referencia`: la REFPCL de este pedido, o una con el
+      MISMO número y el mismo importe (otro prefijo; sirve sin FACTUSOL).
+
+    Solo lee."""
     for o in session.scalars(select(Order).where(Order.order_number == order_number)):
         if not _es_este(o, store, woo_id):
             return o
@@ -487,9 +528,36 @@ def _otro_pedido(
     ).limit(1))
     if sin_tienda is not None:
         return sin_tienda
-    for o in session.scalars(select(Order).where(Order.packing_json.like(f"%{ref}%"))):
+    for pcl in pcls or []:
+        serie, codigo = _entero(pcl.get("TIPPCL")), _entero(pcl.get("CODPCL"))
+        if serie is None or codigo is None:
+            continue
+        for o in session.scalars(select(Order).where(
+            Order.packing_json.like('%"factusol_source"%'),
+            Order.packing_json.like(f"%{codigo}%"),
+        )):
+            src = _packing(o).get("factusol_source")
+            if (
+                isinstance(src, dict) and src.get("doc_type") == "pedidos"
+                and _entero(src.get("serie")) == serie and _entero(src.get("codigo")) == codigo
+                and not _es_este(o, store, woo_id)
+            ):
+                return o
+    numero = _numero_de_referencia(ref)
+    for o in session.scalars(select(Order).where(
+        Order.packing_json.like('%"factusol_source"%'),
+        Order.packing_json.like(f"%{numero or ref}%"),
+    )):
         src = _packing(o).get("factusol_source")
-        if isinstance(src, dict) and str(src.get("referencia") or "").strip().upper() == ref:
+        if not isinstance(src, dict) or _es_este(o, store, woo_id):
+            continue
+        referencia = str(src.get("referencia") or "").strip().upper()
+        if referencia == ref:
+            return o
+        mismo_importe = total is not None and (
+            _importe_casa(src.get("total"), total) or _importe_casa(o.total_amount, total)
+        )
+        if numero and _numero_de_referencia(referencia) == numero and mismo_importe:
             return o
     return None
 
@@ -523,14 +591,27 @@ def veredicto_factusol(
 
     - `enlazado`: exactamente un F_PCL con su REFPCL, de un cliente cuyo NIF
       es el CIF de la web y con el mismo total (±0,01).
-    - `posible`: ninguno con esa REFPCL pero uno de ese CIF con ese importe
-      (la referencia no casa: revisar el prefijo de la tienda).
+    - `posible`: ninguno con esa REFPCL pero uno de ese CIF con ese importe,
+      sin referencia o con el mismo número de pedido (la referencia no casa:
+      revisar el prefijo de la tienda). Los de otro número son otros pedidos.
     - `no_encontrado`: ni por referencia ni por CIF + importe.
     - `dudoso`: varios candidatos, o el de la referencia no casa en cliente o
       importe.
     - `sin_factusol`: FACTUSOL no configurado o no responde.
 
     En ningún caso se crea ni se cambia nada en FACTUSOL."""
+    return _comprobar_factusol(
+        session, store, order_number=order_number, cif=cif, total=total, fecha=fecha,
+    )[0]
+
+
+def _comprobar_factusol(
+    session: Session, store: IntegrationAccount, *,
+    order_number: str, cif: str | None, total: float, fecha: str | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """`veredicto_factusol` y los F_PCL que reconoce como de este pedido web
+    (los de su referencia o el único por CIF + importe; [] si ninguno): con
+    ellos «Traer» mira si ya hay un pedido creado desde FACTUSOL. SOLO LEE."""
     from app.erp import web_order_company  # noqa: PLC0415
 
     ref = referencia_factusol(session, store, order_number)
@@ -541,7 +622,7 @@ def veredicto_factusol(
             "FACTUSOL no está configurado: no se ha podido comprobar el pedido de "
             "cliente. No se crea nada en FACTUSOL.",
             ref,
-        )
+        ), []
     client, activo = pair
     try:
         return _veredicto_factusol(
@@ -554,12 +635,12 @@ def veredicto_factusol(
             "FACTUSOL no responde: no se ha podido comprobar el pedido de cliente. "
             "No se crea nada en FACTUSOL.",
             ref,
-        )
+        ), []
 
 
 def _veredicto_factusol(
     client: Any, ejercicio: str, ref: str, cif: str | None, total: float,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     from app.erp.company_discovery import nif_key  # noqa: PLC0415
     from app.integrations.factusol.customers import (  # noqa: PLC0415
         get_customer,
@@ -578,7 +659,7 @@ def _veredicto_factusol(
             f"Hay {len(filas)} pedidos de cliente con la referencia {ref} en FACTUSOL: "
             f"no se puede saber cuál es este. Revísalo en FACTUSOL. {nada}",
             ref,
-        )
+        ), filas
     if len(filas) == 1:
         pcl = filas[0]
         numero = visible_number(pcl.get("TIPPCL"), pcl.get("CODPCL"))
@@ -593,7 +674,7 @@ def _veredicto_factusol(
                 f"El pedido de cliente {numero} de FACTUSOL ({ref}) es este pedido: "
                 f"mismo cliente ({cif}) e importe. BoHub lo enlaza por la referencia. {nada}",
                 ref,
-            )
+            ), filas
         motivos: list[str] = []
         if not clave_web:
             motivos.append("la web no trae CIF para confirmar el cliente")
@@ -610,7 +691,7 @@ def _veredicto_factusol(
             f"Hay un pedido de cliente con la referencia {ref} ({numero}), pero "
             f"{' y '.join(motivos)}. Revísalo en FACTUSOL. {nada}",
             ref,
-        )
+        ), filas
 
     if not clave_web:
         return _veredicto(
@@ -618,7 +699,12 @@ def _veredicto_factusol(
             f"FACTUSOL aún no tiene un pedido de cliente con la referencia {ref} (y la "
             f"web no trae CIF para buscarlo por cliente). {nada}",
             ref,
-        )
+        ), []
+    # Por CIF + importe solo cuentan los F_PCL sin referencia o con el MISMO
+    # número que este pedido (otro prefijo: el de la tienda está mal puesto).
+    # Uno con otro número es OTRO pedido web de ese cliente con el mismo
+    # importe (un cliente que repite): no es este.
+    numero_web = _numero_de_referencia(ref)
     codclis = [
         str(c["codcli"]) for c in search_customers(client, cif or "", by="nif",
                                                   ejercicio=ejercicio)
@@ -633,6 +719,8 @@ def _veredicto_factusol(
                 "F_PCL", filtro=f"CLIPCL={int(codcli)}", ejercicio=ejercicio,
             )
             if _importe_casa(f.get("TOTPCL"), total)
+            and (not str(f.get("REFPCL") or "").strip()
+                 or _numero_de_referencia(f.get("REFPCL")) == numero_web)
         )
     if len(candidatos) == 1:
         pcl = candidatos[0]
@@ -644,21 +732,21 @@ def _veredicto_factusol(
             f"referencia {otra_ref}): la referencia no casa. Revisa el prefijo de la "
             f"tienda en Configuración ERP. {nada}",
             ref,
-        )
+        ), candidatos
     if len(candidatos) > 1:
         return _veredicto(
             "dudoso",
             f"No hay pedido de cliente con la referencia {ref} y hay {len(candidatos)} de "
             f"ese CIF con ese importe: no se puede saber cuál es. {nada}",
             ref,
-        )
+        ), []
     return _veredicto(
         "no_encontrado",
         f"FACTUSOL aún no tiene el pedido de cliente de este pedido ({ref}), ni por "
         f"referencia ni por CIF e importe. Cuando la web lo pase a FACTUSOL, BoHub lo "
         f"enlazará por la referencia. {nada}",
         ref,
-    )
+    ), []
 
 
 def _guardar_veredicto(order: Order, veredicto: dict[str, Any]) -> None:
@@ -740,8 +828,18 @@ def traer_pedido_web(
 
     wo["_store_slug"] = store.account_id
     order_number = _order_number(wo)
+    total = _num(wo.get("total"))
+    # FACTUSOL ANTES del cerrojo de la tienda (es red): solo lectura. Va antes
+    # de buscar «otro pedido»: el F_PCL que reconoce también delata uno creado
+    # «desde FACTUSOL» aunque el prefijo de la tienda no sea el de FesteWeb. El
+    # ejercicio, por la fecha en la hora de la tienda.
+    veredicto, pcls = _comprobar_factusol(
+        session, store, order_number=order_number, cif=_extract_cif(wo),
+        total=total, fecha=_fecha_local(wo),
+    )
     ref = referencia_factusol(session, store, order_number)
-    otro = _otro_pedido(session, store, int(woo_id), order_number, ref)
+    otro = _otro_pedido(session, store, int(woo_id), order_number, ref,
+                        pcls=pcls, total=total)
     if otro is not None:
         raise PedidoWebError(
             409, "ya_hay_pedido_en_bohub",
@@ -750,11 +848,6 @@ def traer_pedido_web(
             order_id=otro.id,
         )
 
-    # FACTUSOL ANTES del cerrojo de la tienda (es red): solo lectura.
-    veredicto = veredicto_factusol(
-        session, store, order_number=order_number, cif=_extract_cif(wo),
-        total=_num(wo.get("total")), fecha=_fecha(wo),
-    )
     autorizacion = TraidoAMano(user_id=user.id) if estado == ESTADO_EN_ESPERA else None
     try:
         outcome = import_woo_order(session, store=store, woo_order=wo,
@@ -769,6 +862,22 @@ def traer_pedido_web(
                                  "El pedido se está trayendo a la vez: vuelve a probar.") from exc
         return {"order_id": ya.id, "order_number": ya.order_number, "creado": False,
                 "factusol": _veredicto_guardado(ya) or veredicto}
+    except OperationalError as exc:
+        if not _es_espera_de_cerrojo(exc):
+            raise
+        # Otra importación de la tienda (un webhook, otro clic) tiene su
+        # cerrojo más de lo que MySQL deja esperar: si entretanto ha creado
+        # ESTE pedido se devuelve; si no, se dice en pantalla (no un 500).
+        session.rollback()
+        ya = _pedido_de_la_tienda(session, store, woo_id)
+        if ya is not None:
+            return {"order_id": ya.id, "order_number": ya.order_number, "creado": False,
+                    "factusol": _veredicto_guardado(ya) or veredicto}
+        raise PedidoWebError(
+            503, "tienda_ocupada",
+            f"La tienda {store.account_id} está importando otro pedido ahora mismo: "
+            "vuelve a probar en un momento. No se ha traído nada.",
+        ) from exc
     except ValueError as exc:
         session.rollback()
         raise PedidoWebError(422, "pedido_no_importable",

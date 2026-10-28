@@ -211,8 +211,9 @@ class ImportacionSimultanea(RuntimeError):
     de la tienda. Lo que esta transacción lee es anterior a ese alta (MySQL,
     REPEATABLE READ), así que seguir podría duplicar contacto/empresa o leer
     sus líneas vacías: se para sin tocar nada y el llamante reintenta con una
-    transacción nueva (el job de RQ, solo; «Traer pedido web» devuelve el que
-    hay). `order_id` = el pedido que ya existe."""
+    transacción nueva (el webhook, con el reintento de RQ; `import_order_from_event`
+    —backfill, «Reimportar pedido»—, en el momento; «Traer pedido web» devuelve
+    el que hay). `order_id` = el pedido que ya existe."""
 
     def __init__(self, order_id: str):
         super().__init__(f"pedido {order_id} creado a la vez por otra importación")
@@ -329,12 +330,17 @@ def _link_company_from_factusol(
 ) -> None:
     """Resuelve y vincula la empresa CRM del pedido web por su cliente de
     FACTUSOL. Idempotente y best-effort: si ya está resuelto no toca nada y
-    cualquier fallo de FACTUSOL se registra sin romper la importación."""
+    cualquier fallo de FACTUSOL se registra sin romper la importación.
+
+    Se llama con el cerrojo de la tienda cogido (`_bloquear_tienda`): la
+    lectura va con el cliente FACTUSOL acotado (`importando=True`: espera
+    corta, sin reintentos, con presupuesto), para que un DELSOL lento no deje
+    parada la ingesta de toda la tienda."""
     from app.erp.web_order_company import ensure_web_order_company  # noqa: PLC0415
 
     try:
         result = ensure_web_order_company(
-            session, order, fallback_nif=_extract_cif(woo),
+            session, order, fallback_nif=_extract_cif(woo), importando=True,
         )
     except Exception:  # noqa: BLE001 — la ingesta de Woo nunca cae por esto
         logger.warning(

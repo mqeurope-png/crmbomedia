@@ -33,6 +33,7 @@ Reglas:
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -42,6 +43,7 @@ from sqlalchemy.orm import Session
 
 from app.erp.company_discovery import nif_key
 from app.erp.models import Order
+from app.integrations.factusol.client import FactusolClient, FactusolError
 from app.models.crm import Company
 
 logger = logging.getLogger(__name__)
@@ -58,6 +60,19 @@ REASON_NO_PCL = "sin_pedido_en_factusol"
 REASON_NO_CLIENT = "sin_cliente_en_factusol"
 REASON_NO_NIF = "cliente_sin_nif"
 REASON_CODCLI_TAKEN = "codcli_vinculado_a_otra_ficha"
+
+#: La importación de un pedido web (`mapper.import_woo_order`) lee aquí FACTUSOL
+#: CON el cerrojo de la tienda cogido, y ese cerrojo lo esperan los webhooks de
+#: toda la tienda. Para esa lectura (de mejor esfuerzo) cada petición espera
+#: como mucho `TIEMPO_FACTUSOL_IMPORTANDO` segundos, un timeout no se reintenta
+#: y, pasado `PRESUPUESTO_FACTUSOL_IMPORTANDO`, no se pregunta más: el pedido
+#: entra sin la empresa de FACTUSOL y la resuelve el siguiente refresco o el
+#: backfill. Ver `factusol_client_para_importar`.
+#: Holgado para un DELSOL normal; en el peor caso (la última petición sale al
+#: borde del presupuesto) son unos 35 s, por debajo de los 50 s que MySQL deja
+#: esperar un cerrojo (`innodb_lock_wait_timeout`).
+TIEMPO_FACTUSOL_IMPORTANDO = 15.0
+PRESUPUESTO_FACTUSOL_IMPORTANDO = 20.0
 
 
 @dataclass(frozen=True)
@@ -93,13 +108,54 @@ def factusol_client_and_ejercicio(session: Session) -> tuple[Any, str] | None:
     si no hay configuración o el cliente no se puede construir, en vez de
     reventar la ingesta de pedidos."""
     try:
-        from app.integrations.factusol.client import FactusolClient  # noqa: PLC0415
         from app.integrations.factusol.service import ejercicio_for  # noqa: PLC0415
 
         return FactusolClient.from_settings(), ejercicio_for(session)
     except Exception as exc:  # noqa: BLE001 — sin FACTUSOL se sigue sin empresa
         logger.info("web_order_company: FACTUSOL no disponible: %s", exc)
         return None
+
+
+class _FactusolSinEsperas(FactusolClient):
+    """El MISMO cliente FACTUSOL (conexión y token) para leer con el cerrojo de
+    la tienda cogido: cada petición espera poco, un timeout no se reintenta y,
+    agotado el presupuesto, no sale ninguna petición más (`FactusolError`, que
+    el camino de mejor esfuerzo ya se traga). Solo lee: nada aquí escribe."""
+
+    def __init__(self, base: FactusolClient) -> None:
+        self.__dict__.update(vars(base))
+        self._timeout = min(self._timeout, TIEMPO_FACTUSOL_IMPORTANDO)
+        self._read_timeout = min(self._read_timeout, TIEMPO_FACTUSOL_IMPORTANDO)
+        self._hasta = time.monotonic() + PRESUPUESTO_FACTUSOL_IMPORTANDO
+
+    def _request(
+        self, method: str, path: str, *, json: dict[str, Any] | None = None,
+        retry_on_timeout: bool = False,
+    ) -> dict[str, Any]:
+        _ = retry_on_timeout              # con el cerrojo cogido no se reintenta
+        return super()._request(method, path, json=json, retry_on_timeout=False)
+
+    def _raw_request(
+        self, method: str, path: str, *, json: dict[str, Any] | None = None,
+        authed: bool = True,
+    ) -> Any:
+        if time.monotonic() >= self._hasta:
+            raise FactusolError(
+                f"{method} {path} → sin tiempo: FACTUSOL va lento y la importación "
+                "no lo espera más",
+            )
+        return super()._raw_request(method, path, json=json, authed=authed)
+
+
+def factusol_client_para_importar(session: Session) -> tuple[Any, str] | None:
+    """`factusol_client_and_ejercicio` para la importación de un pedido web, que
+    lee con el cerrojo de la tienda cogido: el mismo cliente, acotado
+    (`_FactusolSinEsperas`). Sin FACTUSOL, None; un doble de los tests, tal cual."""
+    pair = factusol_client_and_ejercicio(session)
+    if pair is None or not isinstance(pair[0], FactusolClient):
+        return pair
+    client, ejercicio = pair
+    return _FactusolSinEsperas(client), ejercicio
 
 
 def codcli_for_web_order(
@@ -207,10 +263,14 @@ def _codcli_free_for(session: Session, codcli: str, company: Company) -> bool:
 def ensure_web_order_company(
     session: Session, order: Order, *,
     client: Any = None, ejercicio: str | None = None,
-    fallback_nif: str | None = None, create: bool = True,
+    fallback_nif: str | None = None, create: bool = True, importando: bool = False,
 ) -> CompanyResolution:
     """Asegura que un pedido WEB tiene empresa CRM, resolviéndola por su cliente
-    de FACTUSOL. No hace commit (el caller manda). Nunca lanza."""
+    de FACTUSOL. No hace commit (el caller manda). Nunca lanza.
+
+    `importando=True` (el importador de Woo, con el cerrojo de la tienda
+    cogido): FACTUSOL se lee con el cliente acotado
+    (`factusol_client_para_importar`)."""
     if not _is_web(order):
         return CompanyResolution(reason=REASON_NOT_WEB)
 
@@ -221,7 +281,10 @@ def ensure_web_order_company(
                                  reason=REASON_ALREADY)
 
     if client is None or ejercicio is None:
-        pair = factusol_client_and_ejercicio(session)
+        pair = (
+            factusol_client_para_importar(session) if importando
+            else factusol_client_and_ejercicio(session)
+        )
         if pair is None:
             return CompanyResolution(company=already, reason=REASON_NO_FACTUSOL)
         client, ejercicio = pair

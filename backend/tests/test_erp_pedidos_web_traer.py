@@ -29,10 +29,12 @@ from collections.abc import Generator
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.dialects import mysql
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -40,7 +42,7 @@ import app.main  # noqa: F401
 from app.core.crypto import encrypt
 from app.db.base import Base
 from app.db.session import get_session
-from app.erp import pedidos_web
+from app.erp import pedidos_web, web_order_company
 from app.erp.models import (
     IntegrationEvent,
     IntegrationEventStatus,
@@ -59,7 +61,13 @@ from app.erp.pedidos_web import (
     traer_pedido_web,
 )
 from app.erp.sat_autoenqueue import AUTO_ENQUEUE_REASON
-from app.integrations.factusol.client import FactusolError
+from app.integrations.factusol import client as fs_client
+from app.integrations.factusol.client import (
+    LOGIN_PATH,
+    PATH_CARGA_TABLA,
+    FactusolClient,
+    FactusolError,
+)
 from app.integrations.woocommerce import jobs as woo_jobs
 from app.integrations.woocommerce import mapper as woo_mapper
 from app.integrations.woocommerce.client import WooError
@@ -766,6 +774,12 @@ def test_sin_cambios_en_la_web_no_hay_diferencias(factory):
     ({"pcl": [_pcl(), _pcl(CODPCL=432)]}, "dudoso", "Hay 2"),
     # Dos candidatos por CIF + importe y ninguno por referencia.
     ({"pcl": [_pcl(REFPCL="FLU-005873"), _pcl(CODPCL=500, REFPCL="")]}, "dudoso", "hay 2"),
+    # El cliente repite: su pedido anterior (5700) tiene el mismo importe, pero
+    # su referencia es la de OTRO pedido web. No es este: no se ha encontrado.
+    ({"pcl": [_pcl(REFPCL="FLE-005700")]}, "no_encontrado", REFPCL),
+    # El del otro pedido no cuenta; queda uno sin referencia: ese es el posible.
+    ({"pcl": [_pcl(REFPCL="FLE-005700"), _pcl(CODPCL=500, REFPCL="")]}, "posible",
+     "sin referencia"),
 ])
 def test_veredicto_factusol(factory, monkeypatch, tablas, codigo, en_el_mensaje):
     fake = _factusol(tablas.get("pcl"), tablas.get("cli"))
@@ -828,6 +842,203 @@ def test_veredicto_busca_en_el_ejercicio_del_pedido(factory, monkeypatch):
         pedidos_web.veredicto_factusol(s, store, order_number="FLUXLA-5873", cif=CIF,
                                        total=44.77, fecha="2026-12-30T10:00:00+00:00")
     assert ejercicios and set(ejercicios) == {"2026"}
+
+
+def test_veredicto_busca_en_el_ejercicio_de_la_hora_de_la_tienda(factory, monkeypatch):
+    """Un pedido hecho el 1 de enero a las 00:30 en España (aún 31 de diciembre
+    en UTC) es del ejercicio nuevo: su pedido de cliente se busca en ese."""
+    fake = _factusol()
+    ejercicios: list[str | None] = []
+    original = fake.load_table
+
+    def load_table(tabla, *, filtro="1=1", ejercicio=None):
+        ejercicios.append(ejercicio)
+        return original(tabla, filtro=filtro, ejercicio=ejercicio)
+
+    fake.load_table = load_table
+    monkeypatch.setattr("app.erp.web_order_company.factusol_client_and_ejercicio",
+                        lambda _s: (fake, "2027"))
+    with factory() as s:
+        store_id = _store(s).id
+    nochevieja = _pedido_5873(date_created="2027-01-01T00:30:00",
+                              date_created_gmt="2026-12-31T23:30:00")
+    r = _traer(factory, store_id, {"fluxlasers": [nochevieja]})
+    assert r["factusol"]["codigo"] == "enlazado", r["factusol"]
+    assert ejercicios and set(ejercicios) == {"2027"}
+
+
+# --- FACTUSOL lento con el cerrojo de la tienda cogido ------------------------------------
+
+
+def _delsol_lento(peticiones: list[tuple[str, float]]) -> FactusolClient:
+    """Un cliente FACTUSOL de verdad cuyo DELSOL da el login pero no contesta
+    ninguna lectura (timeout). Apunta cada lectura con la espera que pidió."""
+    def delsol(request: httpx.Request) -> httpx.Response:
+        if request.url.path == LOGIN_PATH:
+            return httpx.Response(200, json={"respuesta": "OK", "resultado": "token"})
+        peticiones.append((request.url.path, request.extensions["timeout"]["read"]))
+        raise httpx.ReadTimeout("DELSOL no contesta", request=request)
+
+    return FactusolClient(base_url="https://delsol.example", codigo_fabricante="f",
+                          codigo_cliente="c", base_datos_cliente="b", password="p",
+                          transport=httpx.MockTransport(delsol))
+
+
+def test_factusol_lento_no_retiene_el_cerrojo_de_la_tienda(factory, monkeypatch):
+    """La empresa del pedido se lee de FACTUSOL CON el cerrojo de la tienda
+    cogido (lo esperan los webhooks de toda la tienda). Con DELSOL lento cada
+    lectura espera poco —no los 60 s de siempre— y un timeout no se reintenta;
+    el pedido entra igual (es de mejor esfuerzo)."""
+    peticiones: list[tuple[str, float]] = []
+    lento = _delsol_lento(peticiones)
+    monkeypatch.setattr("app.erp.web_order_company.factusol_client_and_ejercicio",
+                        lambda _s: (lento, "2026"))
+    monkeypatch.setattr(fs_client, "TIMEOUT_BACKOFF_SECONDS", (0.0, 0.0, 0.0))
+    with factory() as s:
+        _store(s)
+    _webhook(factory, _pagado(), delivery="d-1")
+    # Dos lecturas (F_PCL por la referencia y F_CLI por el NIF): una petición
+    # cada una, con la espera corta.
+    espera = web_order_company.TIEMPO_FACTUSOL_IMPORTANDO
+    assert peticiones == [(PATH_CARGA_TABLA, espera), (PATH_CARGA_TABLA, espera)]
+    with factory() as s:
+        o = s.scalar(select(Order))
+        assert o.order_number == "FLUXLA-5873"
+        assert s.get(Company, o.company_id).factusol_company_id is None
+
+
+def test_factusol_para_importar_no_pregunta_mas_pasado_el_presupuesto(monkeypatch):
+    peticiones: list[tuple[str, float]] = []
+    lento = _delsol_lento(peticiones)
+    monkeypatch.setattr(web_order_company, "factusol_client_and_ejercicio",
+                        lambda _s: (lento, "2026"))
+    monkeypatch.setattr(web_order_company, "PRESUPUESTO_FACTUSOL_IMPORTANDO", 0.0)
+    client, ejercicio = web_order_company.factusol_client_para_importar(MagicMock())
+    with pytest.raises(FactusolError, match="sin tiempo"):
+        client.load_table("F_PCL", filtro="REFPCL='FLE-005873'", ejercicio=ejercicio)
+    assert peticiones == []
+    # El cliente de siempre (fuera del cerrojo) no cambia.
+    assert lento._read_timeout == 60.0
+
+
+def test_traer_con_la_tienda_cogida_demasiado_rato_lo_dice_sin_500(factory, client):
+    """Otra importación tiene el cerrojo de la tienda más de lo que MySQL deja
+    esperar (1205): «Traer» lo dice en pantalla; y si entretanto la otra ya creó
+    este pedido, lo devuelve."""
+    espera = OperationalError(
+        "SELECT integration_accounts.id … FOR UPDATE", {},
+        Exception(1205, "Lock wait timeout exceeded; try restarting transaction"),
+    )
+    with factory() as s:
+        store_id = _store(s).id
+    pedidos = {"fluxlasers": [_pedido_5873()]}
+    with patch.object(pedidos_web, "WooHTTPClient", side_effect=_tiendas(pedidos)), \
+         patch.object(woo_mapper, "_bloquear_tienda", side_effect=espera):
+        r = client.post("/api/erp/pedidos-web/traer",
+                        json={"store_id": store_id, "woo_id": 5873},
+                        headers=auth_headers(client, "pedidos"))
+    assert r.status_code == 503, r.text
+    detail = r.json()["detail"]
+    assert detail["code"] == "tienda_ocupada" and "vuelve a probar" in detail["detail"]
+    with factory() as s:
+        assert _count(s) == 0
+
+    primero = _traer(factory, store_id, pedidos)
+    real = pedidos_web._pedido_de_la_tienda
+    vistas: list[int] = []
+
+    def tarde(session, store, woo_id):
+        vistas.append(woo_id)
+        return None if len(vistas) == 1 else real(session, store, woo_id)
+
+    with patch.object(pedidos_web, "_pedido_de_la_tienda", side_effect=tarde), \
+         patch.object(woo_mapper, "_bloquear_tienda", side_effect=espera):
+        segundo = _traer(factory, store_id, pedidos)
+    assert segundo == {**primero, "creado": False}
+    with factory() as s:
+        assert _count(s) == 1
+
+
+# --- «Reimportar pedido» a la vez que otro lo crea ------------------------------------------
+
+
+def test_reimportar_mientras_otro_lo_crea_refresca_y_no_da_500(factory, client):
+    """«Reimportar pedido» (Integraciones) choca con «Traer» o el webhook del
+    mismo pedido: el importador ve que el otro ya lo creó (`ImportacionSimultanea`).
+    El pedido existe: se refresca en una transacción nueva, el evento queda
+    `processed` y la respuesta es la de un «ya estaba», no un 500."""
+    with factory() as s:
+        store_id = _store(s).id
+    primero = _traer(factory, store_id, {"fluxlasers": [_pedido_5873()]})
+    real = woo_mapper._pedido_existente
+    vistas: list[str] = []
+
+    def carrera(session, store, external_id):
+        vistas.append(external_id)
+        if len(vistas) == 1:
+            raise woo_mapper.ImportacionSimultanea(primero["order_id"])
+        return real(session, store, external_id)
+
+    with patch("app.erp.api.woocommerce_admin.WooHTTPClient") as woo, \
+         patch.object(woo_mapper, "_pedido_existente", side_effect=carrera):
+        woo.return_value.get_order.return_value = _pagado()
+        r = client.post(f"/api/erp/integrations/woocommerce/stores/{store_id}/reimport-order",
+                        json={"woo_order_id": 5873}, headers=auth_headers(client, "admin"))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True
+    assert body["outcome"]["created"] is False
+    assert body["outcome"]["order_id"] == primero["order_id"]
+    with factory() as s:
+        assert _count(s) == 1
+        ev = s.get(IntegrationEvent, body["event_id"])
+        assert ev.status == IntegrationEventStatus.PROCESSED and ev.next_retry_at is None
+        o = s.get(Order, primero["order_id"])
+        assert o.payment_status == PaymentStatus.PAID           # refrescado con el reimport
+
+
+# --- «ya hay un pedido creado desde FACTUSOL» con otro prefijo -------------------------------
+
+
+@pytest.mark.parametrize(("como", "referencia", "caido", "bloquea"), [
+    # FACTUSOL reconoce su F_PCL (por CIF + importe: el prefijo derivado FLU no
+    # es el FLE de FesteWeb) y hay un pedido creado desde ese F_PCL.
+    ("por_el_pcl", None, False, True),
+    # FACTUSOL no responde: el nº de la referencia guardada (y el importe) lo delatan.
+    ("por_el_numero", "FLE-005873", True, True),
+    # Otro pedido web del mismo cliente (otro nº): no es este, se trae.
+    ("otro_numero", "FLE-005700", True, False),
+])
+def test_ya_creado_desde_factusol_con_otro_prefijo_no_se_trae(
+    factory, monkeypatch, como, referencia, caido, bloquea,
+):
+    fake = _factusol(caido=caido)
+    monkeypatch.setattr("app.erp.web_order_company.factusol_client_and_ejercicio",
+                        lambda _s: (fake, "2026"))
+    with factory() as s:
+        store = _store(s)
+        store.metadata_json = None            # sin prefijo: se deriva FLU, no el FLE real
+        desde_factusol = Order(
+            order_number="PCL-5-000431", external_source=OrderSource.FACTUSOL_PEDIDO,
+            external_id="5-000431", total_amount=44.77,
+            packing_json=json.dumps({"factusol_source": {
+                "doc_type": "pedidos", "serie": 5, "codigo": 431, "numero": "5-000431",
+                "referencia": referencia, "total": 44.77}}))
+        s.add(desde_factusol)
+        s.commit()
+        store_id, otro_id = store.id, desde_factusol.id
+    pedidos = {"fluxlasers": [_pedido_5873()]}
+    if not bloquea:
+        assert _traer(factory, store_id, pedidos)["creado"] is True
+        return
+    with pytest.raises(PedidoWebError) as exc:
+        _traer(factory, store_id, pedidos)
+    assert (exc.value.status, exc.value.code, exc.value.order_id) == (
+        409, "ya_hay_pedido_en_bohub", otro_id)
+    assert "PCL-5-000431" in exc.value.detail
+    with factory() as s:
+        assert _count(s) == 1
+    assert fake.escrituras == []
 
 
 # --- la lista ---------------------------------------------------------------------------

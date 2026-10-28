@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ApiError } from "../../lib/api";
 import {
@@ -86,7 +86,7 @@ beforeEach(() => {
 describe("Traer un pedido de la web (modal)", () => {
   it("lee las tiendas al abrir y lista los pedidos en espera con sus datos", async () => {
     render(<TraerPedidoWebModal onClose={jest.fn()} />);
-    expect(screen.getByRole("status")).toHaveTextContent("Leyendo los pedidos en espera de las tiendas");
+    expect(screen.getByText("Leyendo los pedidos en espera de las tiendas…")).toHaveAttribute("role", "status");
     await screen.findByRole("table", { name: "Pedidos en espera de las tiendas" });
     expect(listar).toHaveBeenCalledWith();
     expect(screen.getByText(/Traerlo lo deja en BoHub como un pedido normal/)).toBeInTheDocument();
@@ -172,6 +172,100 @@ describe("Traer un pedido de la web (modal)", () => {
     await user.click(await within(consulta).findByRole("button", { name: "Traer el pedido 5901 de fluxlasers.es" }));
     expect(traer).toHaveBeenCalledWith(3, 5901);
     await waitFor(() => expect(push).toHaveBeenCalledWith("/erp/orders/o-5901"));
+  });
+
+  it("un nº que pasa a «en espera» con la lista ya cargada sale en la lista con su «Traer»", async () => {
+    const user = userEvent.setup();
+    await abrir();
+    // La lista se cargó antes; ahora la tienda ya tiene el 5901 «en espera».
+    const NUEVO = pedido({
+      woo_id: 5901, numero: "5901", fecha: "2026-10-28T10:05:00+00:00", cliente: "Pere Mas",
+      empresa: "Taller Mas", email: "pere@mas.cat",
+    });
+    listar.mockResolvedValueOnce(respuesta({
+      items: [NUEVO],
+      tiendas: [
+        { store_id: 3, tienda: "fluxlasers", tienda_nombre: "fluxlasers.es", ok: true, error: null, en_espera: 3 },
+        { store_id: 5, tienda: "mbolasers", tienda_nombre: "mbolasers.com", ok: true, error: null, en_espera: 1 },
+      ],
+      consulta: [],
+    }));
+    traer.mockResolvedValueOnce({ order_id: "o-5901", order_number: "FLUXLA-5901", creado: true, factusol: null });
+    const buscar = screen.getByRole("searchbox", { name: /Buscar por nº de pedido/ });
+    await user.type(buscar, "5901");
+    await screen.findByRole("button", { name: "Traer el pedido 5901 de fluxlasers.es" });
+    expect(listar).toHaveBeenLastCalledWith("5901");
+    expect(screen.queryByText(/No hay ningún pedido con el nº 5901/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "El nº 5901 en las tiendas" })).not.toBeInTheDocument();
+    expect(screen.getByText("En espera ahora: fluxlasers.es (3) · mbolasers.com (1)")).toBeInTheDocument();
+    // Sin buscar, sale con los demás, primero (es el más reciente), una sola vez.
+    await user.clear(buscar);
+    const filas = tabla().getAllByRole("row");
+    expect(filas).toHaveLength(5); // cabecera + 4
+    expect(within(filas[1]).getByText("Taller Mas")).toBeInTheDocument();
+    await user.click(tabla().getByRole("button", { name: "Traer el pedido 5901 de fluxlasers.es" }));
+    expect(traer).toHaveBeenCalledWith(3, 5901);
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/erp/orders/o-5901"));
+  });
+
+  it("si una tienda no responde a la consulta de un nº, lo dice junto al resultado", async () => {
+    const user = userEvent.setup();
+    await abrir();
+    listar.mockResolvedValueOnce(respuesta({
+      items: [],
+      tiendas: [
+        { store_id: 3, tienda: "fluxlasers", tienda_nombre: "fluxlasers.es", ok: true, error: null, en_espera: 2 },
+        { store_id: 5, tienda: "mbolasers", tienda_nombre: "mbolasers.com", ok: false,
+          error: "la tienda no ha respondido a tiempo (20 s)", en_espera: 0 },
+      ],
+      consulta: [],
+    }));
+    await user.type(screen.getByRole("searchbox", { name: /Buscar por nº de pedido/ }), "7777");
+    const consulta = await screen.findByRole("region", { name: "El nº 7777 en las tiendas" });
+    await within(consulta).findByText(/No hay ningún pedido con el nº 7777/);
+    expect(consulta).toHaveTextContent("No han respondido a esta consulta: mbolasers.com");
+    // Su lista sí se leyó al abrir: arriba no se avisa como caída.
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByText("En espera ahora: fluxlasers.es (2) · mbolasers.com (1)")).toBeInTheDocument();
+  });
+
+  it("una consulta lanzada antes de «Volver a leer» no pisa la lista nueva", async () => {
+    const user = userEvent.setup();
+    await abrir();
+    let responder: (v: PedidosWebEnEspera) => void = () => undefined;
+    listar.mockReturnValueOnce(new Promise((r) => { responder = r; }));
+    await user.type(screen.getByRole("searchbox", { name: /Buscar por nº de pedido/ }), "5901");
+    await waitFor(() => expect(listar).toHaveBeenLastCalledWith("5901"));
+    // Al volver a leer, el 5901 ya está en BoHub (se trajo desde otra pantalla).
+    const TRAIDO = pedido({
+      woo_id: 5901, numero: "5901", fecha: "2026-10-28T10:05:00+00:00",
+      en_bohub: { order_id: "o-5901", order_number: "FLUXLA-5901" },
+    });
+    listar.mockResolvedValueOnce(respuesta({ items: [TRAIDO, pedido(), YA, OTRO] }));
+    await user.click(screen.getByRole("button", { name: "Volver a leer las tiendas" }));
+    await screen.findByRole("link", { name: "Abrir FLUXLA-5901" });
+    // Llega tarde la respuesta vieja (aún sin traer): no se escribe.
+    await act(async () => {
+      responder(respuesta({ items: [pedido({ woo_id: 5901, numero: "5901", fecha: "2026-10-28T10:05:00+00:00" })] }));
+    });
+    expect(screen.getByRole("link", { name: "Abrir FLUXLA-5901" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Traer el pedido 5901 de fluxlasers.es" })).not.toBeInTheDocument();
+  });
+
+  it("mientras trae, el lector de pantalla oye «Trayendo…»: botón, aviso y fila ocupada", async () => {
+    const user = userEvent.setup();
+    traer.mockReturnValue(new Promise(() => undefined));
+    await abrir();
+    const fila = tabla().getByText("Escola de Ponent").closest("tr") as HTMLElement;
+    expect(fila).not.toHaveAttribute("aria-busy");
+    expect(screen.getByRole("status")).toBeEmptyDOMElement();
+    await user.click(within(fila).getByRole("button", { name: "Traer el pedido 5873 de fluxlasers.es" }));
+    expect(within(fila).getByRole("button", { name: "Trayendo el pedido 5873 de fluxlasers.es…" })).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent("Trayendo el pedido 5873 de fluxlasers.es…");
+    expect(fila).toHaveAttribute("aria-busy", "true");
+    // Las demás filas esperan, pero no están ocupadas.
+    const otra = tabla().getByText("Jordi López").closest("tr") as HTMLElement;
+    expect(otra).not.toHaveAttribute("aria-busy");
   });
 
   it("«Traer» bloquea, trae el pedido y abre el pedido creado", async () => {

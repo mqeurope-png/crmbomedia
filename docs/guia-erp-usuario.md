@@ -298,7 +298,8 @@ demás salen igual.
 facturas, lo preparas, lo embalas y lo envías como cualquier otro, **aunque no
 esté pagado**: traerlo ya es la autorización. La ficha te recuerda quién lo
 trajo y cuándo, y mientras no se cobre dice **«aún sin cobrar en la tienda»**
-(el aviso **«⚠ SIN COBRAR»** también sale): es información, no un bloqueo.
+(en la Cola SAT sale el aviso **«⚠ SIN COBRAR»**): es información, no un
+bloqueo. Si se anula, la ficha dice que está anulado.
 Cuando la tienda recibe la transferencia, el pedido **se actualiza solo** (pasa
 a pagado). **No se crea otro**: ni al cobrarse, ni si lo traes dos veces. Y si
 ya hay en BoHub un pedido para él (por ejemplo, uno que creaste desde
@@ -308,18 +309,21 @@ en la ficha de qué ha cambiado para que lo revises.
 
 **FACTUSOL.** BoHub **no crea** el pedido de cliente: lo crea la web, como con
 cualquier pedido web. Al traerlo, BoHub mira si FACTUSOL ya tiene el de la tienda
-y te lo dice en la ficha, con una etiqueta y una frase:
+y te lo dice en la ficha, con una etiqueta y una frase. Es lo que había **al
+traerlo** (no se vuelve a mirar): lo de ahora lo ves en la sección **FACTUSOL**
+de la ficha, que lo comprueba en vivo.
 
-- **«FACTUSOL: enlazado»** — ya tiene su pedido de cliente (por ejemplo, el de
-  referencia *FLE-005873*), del mismo cliente y por el mismo importe. No hay que
-  hacer nada.
-- **«FACTUSOL: aún no está»** — no se ha encontrado, y **no se ha creado
-  nada**. En cuanto la web lo pase a FACTUSOL, BoHub lo enlaza solo.
-- **«FACTUSOL: posible, revisar»** o **«FACTUSOL: dudoso, revisar»** — ha
+- **«Al traerlo, FACTUSOL: estaba enlazado»** — ya tenía su pedido de cliente
+  (por ejemplo, el de referencia *FLE-005873*), del mismo cliente y por el mismo
+  importe. No hay que hacer nada.
+- **«Al traerlo, FACTUSOL: aún no estaba»** — no se encontró, y **no se ha
+  creado nada**. En cuanto la web lo pase a FACTUSOL, BoHub lo enlaza solo.
+- **«Al traerlo, FACTUSOL: posible, revisar»** o **«… dudoso, revisar»** — ha
   encontrado algo que no casa del todo (otra referencia, otro cliente u otro
   importe, o más de uno): míralo en FACTUSOL. Si la frase te dice que revises el
   prefijo de la tienda, es en Configuración ERP.
-- **«FACTUSOL: sin comprobar»** — FACTUSOL no contestaba. No impide nada.
+- **«Al traerlo, FACTUSOL: sin comprobar»** — FACTUSOL no contestaba. No impide
+  nada.
 
 En ningún caso se escribe nada en FACTUSOL al traer. Para emitir la factura hace
 falta que el pedido de cliente de la web ya esté en FACTUSOL, como siempre.

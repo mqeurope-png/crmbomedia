@@ -344,6 +344,24 @@ def test_el_cuadre_cuenta_el_traido_sin_aprobar(factory):
     assert "Esperando aprobación desde el" in hallazgos[0].detalle
 
 
+def test_el_cuadre_cuenta_la_espera_del_traido_desde_que_se_trajo(factory):
+    """Un `on-hold` que esperó semanas la transferencia en la tienda no sale
+    «atrasado» nada más traerlo: solo se podía aprobar desde que entró en
+    BoHub (`manual_web_import_at`), no desde la fecha de la web."""
+    config = normalizar_config({"checks": {}})
+    with factory() as s:
+        traido = _pedido(s, _store(s), woo_id="5873")
+        traido.placed_at = TRAIDO_EL - timedelta(days=27)      # on-hold desde el 26/09
+        s.commit()
+        al_traerlo = list(cm.pedido_sin_aprobar(
+            Contexto(s, ahora=TRAIDO_EL + timedelta(days=1), config=config)))
+        pasada_la_semana = list(cm.pedido_sin_aprobar(
+            Contexto(s, ahora=TRAIDO_EL + timedelta(days=10), config=config)))
+    assert al_traerlo == []
+    assert [h.entidad_id for h in pasada_la_semana] == [traido.id]
+    assert pasada_la_semana[0].detalle == "Esperando aprobación desde el 2026-10-23 (10 días)."
+
+
 # --- limpiezas de carritos ---------------------------------------------------------------
 
 

@@ -1153,7 +1153,10 @@ function ErpOrderDetailScreen() {
         </p>
       ) : null}
       {order.traido_a_mano ? (
-        <TraidoAManoAviso traido={order.traido_a_mano} pagado={order.payment_status === "paid"} />
+        <TraidoAManoAviso
+          traido={order.traido_a_mano} pagado={order.payment_status === "paid"}
+          anulado={order.cancelled ? (order.refunded ? "reembolsado" : "anulado") : null}
+        />
       ) : null}
       {order.blockers.length > 0 ? (
         <ul className="erp-blockers" aria-label="Bloqueos del pedido">
@@ -1761,12 +1764,13 @@ function ErpOrderDetailScreen() {
   );
 }
 
-/** Veredicto de FACTUSOL al traer un pedido web a mano: etiqueta y tono. */
+/** Veredicto de FACTUSOL al traer un pedido web a mano: etiqueta y tono. Es
+ *  una foto de ese momento (no se vuelve a mirar), así que va en pasado. */
 const FACTUSOL_TRAIDO: Record<string, { label: string; tono: "ok" | "warn" | "n" }> = {
-  enlazado: { label: "enlazado", tono: "ok" },
+  enlazado: { label: "estaba enlazado", tono: "ok" },
   posible: { label: "posible, revisar", tono: "warn" },
   dudoso: { label: "dudoso, revisar", tono: "warn" },
-  no_encontrado: { label: "aún no está", tono: "n" },
+  no_encontrado: { label: "aún no estaba", tono: "n" },
   sin_factusol: { label: "sin comprobar", tono: "n" },
 };
 
@@ -1778,11 +1782,16 @@ function fechaLocalDMY(iso: string): string {
 }
 
 /** Pedido web traído a mano desde ERP · Pedidos («en espera» en la tienda):
- *  quién y cuándo, «aún sin cobrar en la tienda» mientras no esté pagado, lo
- *  que se encontró en FACTUSOL al traerlo (solo LECTURA: allí no se crea
- *  nada) y, si al cobrarse la web ya no coincidía, qué cambió. Informa, no
- *  bloquea: es un pedido normal. */
-function TraidoAManoAviso({ traido, pagado }: { traido: TraidoAMano; pagado: boolean }) {
+ *  quién y cuándo, «aún sin cobrar en la tienda» mientras no esté pagado (si
+ *  está anulado, solo eso: ya no se espera el cobro), lo que se encontró en
+ *  FACTUSOL al traerlo (solo LECTURA: allí no se crea nada; lo de ahora, en
+ *  la sección FACTUSOL) y, si al cobrarse la web ya no coincidía, qué cambió.
+ *  Informa, no bloquea: es un pedido normal. */
+function TraidoAManoAviso({ traido, pagado, anulado }: {
+  traido: TraidoAMano; pagado: boolean;
+  /** «anulado» o «reembolsado» si el pedido lo está; null si no. */
+  anulado: string | null;
+}) {
   const fs = traido.factusol;
   const veredicto = fs ? (FACTUSOL_TRAIDO[fs.codigo] ?? { label: fs.codigo, tono: "n" as const }) : null;
   const diferencias = traido.diferencias ?? [];
@@ -1791,14 +1800,19 @@ function TraidoAManoAviso({ traido, pagado }: { traido: TraidoAMano; pagado: boo
       <p>
         Traído a mano de la web el {fechaLocalDMY(traido.at)}
         {traido.por ? ` por ${traido.por}` : ""}
-        {pagado ? "." : (
+        {anulado ? `: está ${anulado}.` : pagado ? "." : (
           <>: <span className="pedido-traido-sin-cobrar">aún sin cobrar en la tienda</span></>
         )}
       </p>
       {fs && veredicto ? (
         <p>
-          <span className={`pedido-traido-fs is-${veredicto.tono}`}>FACTUSOL: {veredicto.label}</span>
-          {fs.mensaje}
+          <span className={`pedido-traido-fs is-${veredicto.tono}`}>
+            Al traerlo, FACTUSOL: {veredicto.label}
+          </span>{" "}
+          {fs.mensaje}{" "}
+          <span className="muted">
+            El enlace de ahora se comprueba en vivo en la sección FACTUSOL de esta ficha.
+          </span>
         </p>
       ) : null}
       {diferencias.length > 0 ? (

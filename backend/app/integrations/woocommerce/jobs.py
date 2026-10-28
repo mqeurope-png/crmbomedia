@@ -31,7 +31,11 @@ from app.erp.models import (
     IntegrationEventStatus,
 )
 from app.integrations.woocommerce.client import WooError, WooHTTPClient
-from app.integrations.woocommerce.mapper import ImportOutcome, import_woo_order
+from app.integrations.woocommerce.mapper import (
+    ImportacionSimultanea,
+    ImportOutcome,
+    import_woo_order,
+)
 from app.models.crm import ExternalSystem
 from app.models.integration_settings import IntegrationAccount
 
@@ -102,7 +106,16 @@ def import_order_from_event(event_id: str) -> dict[str, Any]:
             # Anota el slug para que el mapper lo use en origin_account_id
             # y en el prefijo del order_number.
             payload["_store_slug"] = store.account_id
-            outcome = import_woo_order(session, store=store, woo_order=payload)
+            try:
+                outcome = import_woo_order(session, store=store, woo_order=payload)
+            except ImportacionSimultanea:
+                # Otra importación (el webhook, «Traer pedido web», otro
+                # reimport) ha creado ESTE pedido mientras se esperaba el
+                # cerrojo de la tienda: ya existe y está confirmado. Se refresca
+                # con este payload en una transacción nueva (que ya lo ve), en
+                # vez de un 500 en «Reimportar pedido» y el evento en `received`.
+                session.rollback()
+                outcome = import_woo_order(session, store=store, woo_order=payload)
             event.status = IntegrationEventStatus.PROCESSED
             event.processed_at = datetime.now(UTC)
             event.error_message = None

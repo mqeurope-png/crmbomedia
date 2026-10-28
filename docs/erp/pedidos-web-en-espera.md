@@ -88,6 +88,7 @@ Errores, siempre `{"detail": {"code": "...", "detail": "mensaje legible", "order
 | 404 | `pedido_no_encontrado` | La tienda no tiene ese pedido. |
 | 422 | `pedido_no_importable` | El importador no puede con él (p. ej. sin email válido de facturación). |
 | 502 | `tienda_no_responde` | La tienda no contesta o da un error. |
+| 503 | `tienda_ocupada` | Otra importación de esa tienda (un webhook, otro clic) tiene su cerrojo más de lo que MySQL deja esperar (1205 / 1213) y este pedido aún no está: volver a probar. Si entretanto lo creó la otra, se devuelve ese (`creado: false`). |
 | 403 | — | Sin `ORDERS_CREATE` + `ORDERS_VIEW_WEB`. |
 
 ### Detalle del pedido
@@ -147,12 +148,32 @@ Errores, siempre `{"detail": {"code": "...", "detail": "mensaje legible", "order
   SQLite no hace nada) y vuelve a mirar si el pedido existe con una lectura que
   ve lo último confirmado. Así traer a mano y el webhook (o dos clics) no crean
   dos pedidos: no hay restricción única en `orders`.
+- **El cerrojo dura poco.** Con él cogido solo se lee FACTUSOL para la empresa
+  del pedido (`_link_company_from_factusol`, de mejor esfuerzo), y esa lectura
+  va con el cliente acotado `web_order_company.factusol_client_para_importar`:
+  cada petición espera como mucho 5 s (`TIEMPO_FACTUSOL_IMPORTANDO`, no los
+  60 s de siempre), un timeout no se reintenta y pasados 10 s
+  (`PRESUPUESTO_FACTUSOL_IMPORTANDO`) no se pregunta más. Con DELSOL lento el
+  pedido entra sin la empresa de FACTUSOL y la pone el siguiente refresco.
+- **Choques.** Si «Traer» espera el cerrojo más de lo que MySQL deja, responde
+  503 `tienda_ocupada` (o el pedido, si la otra importación ya lo creó). Si
+  «Reimportar pedido» o el backfill (`import_order_from_event`) se encuentran
+  con que otra importación acaba de crear ese pedido (`ImportacionSimultanea`),
+  lo refrescan en una transacción nueva y dejan el evento `processed`: ni un
+  500 ni el evento colgado en `received`.
 - **Traer dos veces** devuelve el que hay (`creado: false`).
-- **Antes de traer**, si ya hay en BoHub un pedido con el mismo `order_number`
-  (de cualquier origen, como `missing._ya_en_bohub`) o uno creado «desde
-  FACTUSOL» cuyo `packing_json.factusol_source.referencia` es el REFPCL de este
-  pedido web → 409 `ya_hay_pedido_en_bohub` con su id. No se crea otro: Bart
-  decide.
+- **Antes de traer** se mira FACTUSOL (el veredicto, abajo) y, si ya hay en
+  BoHub un pedido para este pedido web, 409 `ya_hay_pedido_en_bohub` con su id
+  (no se crea otro: Bart decide):
+  - el mismo `order_number`, de cualquier origen (como `missing._ya_en_bohub`);
+  - uno creado «desde FACTUSOL» a partir del F_PCL que ha reconocido el
+    veredicto (por su referencia o por CIF + importe): su
+    `packing_json.factusol_source` lleva ese tipo (`pedidos`), serie y código.
+    Así se ve aunque el prefijo configurado (o derivado) de la tienda no sea
+    el de FesteWeb;
+  - o uno cuyo `factusol_source.referencia` es el REFPCL de este pedido, o
+    tiene su mismo número (la parte tras el último «-», sin ceros) y su mismo
+    importe: lo delata aunque FACTUSOL no responda.
 - **Cuando la tienda lo cobra** llega el webhook de siempre
   (`order.updated` / `order.payment_complete`): empareja por
   `(woocommerce, id de Woo, tienda)` y **actualiza** el que hay
@@ -176,10 +197,10 @@ Errores, siempre `{"detail": {"code": "...", "detail": "mensaje legible", "order
 | Embalar, crear envío / etiqueta, recogida | Pasan: solo dependían de la preparación. |
 | Entrada automática en la Cola SAT (`enqueue_paid_order`) | No al traerlo (queda en «Por revisar»). Sí cuando llega el cobro, si sigue sin aprobar. |
 | Emitir factura FACTUSOL | Pasa: nunca miró el pago. Necesita el pedido de cliente de FesteWeb (por REFPCL); «cobrada al emitir» solo si el pedido ya está `paid`. |
-| Aviso «⚠ SIN COBRAR» (Cola SAT, ficha) | **Se queda**: es información cierta, no un bloqueo. |
-| Bandeja (orden «pagados primero») | Va con los que pueden avanzar (mismo criterio que la puerta). |
+| Aviso «⚠ SIN COBRAR» (Cola SAT) | **Se queda**: es información cierta, no un bloqueo. La ficha no lo lleva: dice «aún sin cobrar en la tienda». |
+| Bandeja (orden «pagados primero») | El recorte del backend (`paid_first`) lo pone con los que pueden avanzar, pero la pantalla vuelve a ordenar con su `compareOrders`/`isPagado`, que no sabe qué pedidos son traídos: en la bandeja sale con los pendientes de pago. |
 | Seguimiento y hoja de Drive | **Se ve** aunque la tienda lo tenga `on-hold` / `pending` (como un forzado, sin forzarlo): `seguimiento.woo_status_visibility`, `woo_status.WEB_UNPAID_STATUSES`. Cancelado, fallido o en la papelera de la tienda, o anulado en BoHub: oculto como siempre. |
-| Cuadre «Pedido esperando aprobación» | **Lo cuenta** (antes se saltaba los web ocultos por estado). |
+| Cuadre «Pedido esperando aprobación» | **Lo cuenta** (antes se saltaba los web ocultos por estado), y desde que se trajo (`manual_web_import_at`), no desde la fecha de la web: el tiempo que pasó `on-hold` en la tienda no cuenta. |
 | Cuadre «Pedido pagado en WooCommerce que no está en BoHub» | No lo avisa: está en BoHub. |
 | `purge.py` (borrado de carritos) y `cleanup.py` (exclusión de no-processing) | **Nunca** lo tocan: filtran `manual_web_import_at IS NULL`. |
 | Albarán FACTUSOL | Como cualquier web: no lleva (409 `web_order_no_albaran`). |
@@ -199,13 +220,15 @@ directa): eso sigue mirando `is_sample_order`.
   primeras letras del número (`FLU`), que para fluxlasers es **incorrecto**
   (FesteWeb usa `FLE`).
 - **Al traer se busca y se dice, sin crear nada** (`veredicto_factusol`), en
-  el ejercicio de la fecha del pedido:
+  el ejercicio de la fecha del pedido **en la hora de la tienda**
+  (`date_created`, no `date_created_gmt`: un pedido del 1 de enero a las 00:30
+  en España es del año nuevo):
 
 | `codigo` | Cuándo | Qué hacer |
 |---|---|---|
 | `enlazado` | Exactamente un F_PCL con ese REFPCL, su cliente (CLIPCL → F_CLI.NIFCLI normalizado) es el CIF de la web (`_billing_nif`) y su total (TOTPCL) es el de la web (±0,01). | Nada: BoHub lo enlaza por la referencia, como a cualquier web. |
-| `posible` | Ninguno con ese REFPCL, pero uno (y solo uno) de un cliente con ese CIF y ese importe. | La referencia no casa: revisar el prefijo de la tienda en Configuración ERP. |
-| `no_encontrado` | Ni por referencia ni por CIF + importe (o la web no trae CIF). | Esperar a que FesteWeb lo pase; BoHub lo enlazará solo por la referencia. |
+| `posible` | Ninguno con ese REFPCL, pero uno (y solo uno) de un cliente con ese CIF y ese importe, **sin referencia o con el mismo número** de pedido. Los de otro número (un cliente que repite el mismo importe) son otros pedidos y no cuentan. | La referencia no casa: revisar el prefijo de la tienda en Configuración ERP. |
+| `no_encontrado` | Ni por referencia ni por CIF + importe (o la web no trae CIF, o solo hay pedidos de ese CIF e importe con otro número). | Esperar a que FesteWeb lo pase; BoHub lo enlazará solo por la referencia. |
 | `dudoso` | Varios F_PCL con esa referencia, o el de la referencia no casa en cliente o importe, o varios candidatos por CIF + importe. | Revisarlo en FACTUSOL. |
 | `sin_factusol` | FACTUSOL no configurado o no responde. | Nada que hacer en el momento; no impide traer. |
 
@@ -246,12 +269,14 @@ directa): eso sigue mirando `is_sample_order`.
 - **No se traen** `pending` ni `failed` (carritos), ni `refunded` / `trash`.
 - **«Pagados que no llegan» solo refresca** los traídos que la tienda tiene
   `processing` / `completed`; un `refunded` sin webhook no se recoge por ahí.
-- **«Poner al día estados Woo…» (`reconcile.py`) no mira los traídos que siguen
-  `on-hold`**: los da por «ocultos por estado» con la regla solo-de-estado
-  (`visibility_for_status`), así que un traído cancelado en la tienda **sin**
-  webhook no se detecta por esa vía (el camino es el webhook, o anularlo a
-  mano). Sus contadores también cuentan como «sale» a un traído que la tienda
-  devuelve a `on-hold`, aunque siga a la vista.
+- **«Poner al día estados Woo…» (`reconcile.py`) trata al traído como a
+  cualquier pedido a la vista**: elige los activos con
+  `woo_status_visibility`, así que un traído que sigue `on-hold` entra en el
+  cruce, y si la tienda lo cancela y el webhook se pierde le pone `cancelled`
+  (sale del Seguimiento, la hoja y el Cuadre). Como a todos, solo escribe el
+  estado de la tienda: no lo anula en BoHub. Sus contadores sí cuentan como
+  «sale» a un traído que la tienda pasa de `on-hold` a `pending` (o devuelve a
+  `on-hold`), aunque siga a la vista.
 - Si FesteWeb no crea el F_PCL mientras el pedido está `on-hold` (no está
   comprobado), el veredicto será `no_encontrado` y la factura no se podrá emitir
   hasta que exista («aún no está en FACTUSOL»).
@@ -271,6 +296,7 @@ directa): eso sigue mirando `is_sample_order`.
 |---|---|
 | Lista, traer, veredicto FACTUSOL, bloque de la ficha | `backend/app/erp/pedidos_web.py`, `backend/app/erp/api/pedidos_web.py` |
 | Autorización, cerrojo por tienda, diferencias | `backend/app/integrations/woocommerce/mapper.py` (`TraidoAMano`, `import_woo_order`, `_refresh_existing`) |
+| FACTUSOL acotado con el cerrojo cogido; choques en «Reimportar pedido» | `backend/app/erp/web_order_company.py` (`factusol_client_para_importar`), `backend/app/integrations/woocommerce/jobs.py` (`import_order_from_event`) |
 | Puerta de preparación | `backend/app/erp/sample_orders.py` (`payment_not_required`), `backend/app/erp/state_machine/engine.py` |
 | Visibilidad (Seguimiento, Drive, Cuadre) | `backend/app/erp/seguimiento.py` (`woo_status_visibility`), `backend/app/erp/woo_status.py` (`WEB_UNPAID_STATUSES`), `backend/app/erp/cuadre/checks_mysql.py` |
 | Limpiezas | `backend/app/integrations/woocommerce/purge.py`, `cleanup.py` |

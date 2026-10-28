@@ -101,7 +101,7 @@ describe("ERP · Ficha del pedido — pedido web traído a mano", () => {
     expect(aviso).toHaveTextContent(
       "Traído a mano de la web el 28/10/2026 por Bart: aún sin cobrar en la tienda",
     );
-    expect(within(aviso).getByText("FACTUSOL: enlazado")).toBeInTheDocument();
+    expect(within(aviso).getByText("Al traerlo, FACTUSOL: estaba enlazado")).toBeInTheDocument();
     expect(aviso).toHaveTextContent("BoHub lo enlaza por la referencia. No se crea nada en FACTUSOL.");
     expect(within(aviso).queryByRole("list", { name: "Diferencias con la web" })).not.toBeInTheDocument();
   });
@@ -123,11 +123,44 @@ describe("ERP · Ficha del pedido — pedido web traído a mano", () => {
     const aviso = await screen.findByRole("note", { name: "Traído a mano de la web" });
     expect(aviso).toHaveTextContent("Traído a mano de la web el 28/10/2026.");
     expect(aviso).not.toHaveTextContent("aún sin cobrar");
-    expect(within(aviso).getByText("FACTUSOL: aún no está")).toBeInTheDocument();
+    expect(within(aviso).getByText("Al traerlo, FACTUSOL: aún no estaba")).toBeInTheDocument();
     const lista = within(aviso).getByRole("list", { name: "Diferencias con la web" });
     expect(within(lista).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
       "Total: 44.77 → 50.77", "Línea nueva: Pack 50 Láminas A4 (1)",
     ]);
+  });
+
+  it("lo de FACTUSOL es de cuando se trajo: en pasado, separado de la frase y remite a la sección FACTUSOL", async () => {
+    (getOrder as jest.Mock).mockResolvedValue(detail({
+      payment_status: "paid", invoice_status: "invoiced",
+      traido_a_mano: {
+        at: "2026-10-28T10:15:00+00:00", por: "Bart",
+        factusol: {
+          codigo: "sin_factusol",
+          mensaje: "FACTUSOL no contestaba: no se ha podido comprobar.",
+          referencia: null,
+        },
+        diferencias: null,
+      },
+    }));
+    render(<ErpOrderDetailPage />);
+    const aviso = await screen.findByRole("note", { name: "Traído a mano de la web" });
+    // La etiqueta y la frase, con su espacio (lector de pantalla y copiar).
+    expect(aviso).toHaveTextContent(
+      "Al traerlo, FACTUSOL: sin comprobar FACTUSOL no contestaba: no se ha podido comprobar. "
+      + "El enlace de ahora se comprueba en vivo en la sección FACTUSOL de esta ficha.",
+    );
+  });
+
+  it("anulado: no dice «aún sin cobrar» en ámbar, dice que está anulado", async () => {
+    (getOrder as jest.Mock).mockResolvedValue(detail({
+      cancelled: true, cancelled_at: "2026-10-29T09:00:00", cancelled_reason: "Cancelado en la tienda",
+    }));
+    render(<ErpOrderDetailPage />);
+    const aviso = await screen.findByRole("note", { name: "Traído a mano de la web" });
+    expect(aviso).toHaveTextContent("Traído a mano de la web el 28/10/2026 por Bart: está anulado.");
+    expect(aviso).not.toHaveTextContent("aún sin cobrar");
+    expect(aviso.querySelector(".pedido-traido-sin-cobrar")).toBeNull();
   });
 
   it("un pedido que entró solo no lleva el aviso", async () => {
