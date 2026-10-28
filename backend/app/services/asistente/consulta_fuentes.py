@@ -122,8 +122,11 @@ _CODIGO_RE = re.compile(
     r"\b(?:error|err|c[oó]digo|code|fehler|erreur|codice|c[oó]d)\s*[#:.\-]?\s*"
     r"([A-Z]{0,3}[\-#]?\d{1,5})\b|\b([A-Z]{1,2}-?\d{2,4})\b",
     re.IGNORECASE)
-#: Un mensaje entre comillas (el que enseña la máquina o el programa).
-_COMILLAS_RE = re.compile(r"[\"“«']([^\"”»'\n]{3,60})[\"”»']")
+#: Un mensaje entre comillas (el que enseña la máquina o el programa). La
+#: comilla simple solo cuenta si no va pegada a una letra: «it's», «can't» o
+#: «l'imprimante» son apóstrofos, no comillas (si no, el nombre del cliente
+#: acabaría en la búsqueda que se manda al centro de ayuda).
+_COMILLAS_RE = re.compile(r"[\"“«]([^\"”»\n]{3,60})[\"”»]|(?<!\w)'([^'\n]{3,60})'(?!\w)")
 _LIMPIA_RE = re.compile(r"[<>{}\[\]\"“”«»`]")
 
 
@@ -173,7 +176,19 @@ class Plan:
                 "soporte_en": self.soporte_en or None, "soporte": self.soporte or None,
                 "webs": self.webs or None, "origen": self.origen, "modelo": self.modelo,
                 "error": self.error, "plan_ms": self.duracion_ms,
-                "coste_usd": round(self.coste_usd, 6) if self.uso else None}
+                "coste_usd": round(self.coste_usd, 6) if self.uso else None,
+                "marcas_correo": list(self.marcas_correo)}
+
+    @classmethod
+    def de_resumen(cls, consulta: dict[str, Any]) -> Plan:
+        """El plan guardado en «Lo que ha usado» (`material.consulta`), para
+        consultar en una corrección lo que el primer turno no miró."""
+        return cls(tecnica=bool(consulta.get("tecnica")), marca=str(consulta.get("marca") or ""),
+                   soporte_en=str(consulta.get("soporte_en") or ""),
+                   soporte=str(consulta.get("soporte") or ""),
+                   webs=str(consulta.get("webs") or ""),
+                   origen=str(consulta.get("origen") or PLAN_PALABRAS),
+                   marcas_correo=[str(m) for m in consulta.get("marcas_correo") or []])
 
 
 @dataclass
@@ -236,7 +251,11 @@ def entrada_de_borrador(session: Session, raiz: Any, *, instruccion: str | None)
         texto = sin_cita(texto_de_mensaje(mensaje.body_text, mensaje.body_html))
         asunto = mensaje.subject or ""
     catalogo = resumen.get("catalogo") if isinstance(resumen.get("catalogo"), dict) else {}
-    return Entrada(texto_cliente=texto, asunto=asunto, instruccion=instruccion or "",
+    # La instrucción del primer turno dice de qué va el correo (sin hilo es lo
+    # único que lo dice); la de la corrección, lo que se pide ahora.
+    instrucciones = [t for t in (getattr(raiz, "instruccion", None), instruccion) if t]
+    return Entrada(texto_cliente=texto, asunto=asunto,
+                   instruccion="\n".join(dict.fromkeys(instrucciones)),
                    idioma=raiz.idioma or "es",
                    maquinas=[m for m in catalogo.get("maquinas") or [] if isinstance(m, dict)],
                    modelo_flux=resumen.get("modelo_flux"))
@@ -316,7 +335,7 @@ def plan_por_palabras(entrada: Entrada, *, config_kb: dict[str, Any] | None = No
             if codigo and codigo not in piezas:
                 piezas.append(codigo)
         for m in _COMILLAS_RE.finditer(texto):
-            frase = m.group(1).strip()
+            frase = (m.group(1) or m.group(2) or "").strip()
             if frase and frase not in piezas:
                 piezas.append(frase)
         vistas = set(palabras_de(" ".join(piezas)))
@@ -426,22 +445,32 @@ def _consultar_soporte(session: Session, plan: Plan, idioma: str, resumen: dict[
     material: `articulo`, `otros`, `sin_resultados`, `no_consultado`."""
     from app.services import soporte  # noqa: PLC0415
 
-    salida: dict[str, Any] = {"articulo": None, "otros": [], "sin_resultados": None,
-                              "no_consultado": None}
+    salida = _sin_soporte()
     fuentes, sin_centro = _fuentes_soporte(session, plan.marca, plan.marcas_correo)
-    if sin_centro:
-        resumen["sin_centro"] = sin_centro
-        return salida
-    if not fuentes:
-        resumen["sin_fuentes"] = True
+    if sin_centro or not fuentes:
+        # Correo técnico sin centro de ayuda donde mirar: no hay procedimiento
+        # que citar, y el borrador no puede escribir pasos de memoria.
+        if sin_centro:
+            resumen["sin_centro"] = sin_centro
+        else:
+            resumen["sin_fuentes"] = True
+        salida["sin_centro"] = sin_centro or "ninguno activo"
         return salida
     intentos: list[tuple[str, str]] = []
-    if plan.soporte_en:
+    if plan.soporte_en and plan.soporte_en != plan.soporte:
         intentos.append((plan.soporte_en, "en"))
-    if plan.soporte and (plan.soporte, idioma) not in intentos and (
-            idioma != "en" or not plan.soporte_en):
+    if plan.soporte:
+        # En el idioma del correo; si no sale nada, el adaptador ya prueba la
+        # misma búsqueda en inglés (por eso, si es la misma, va una sola vez).
         intentos.append((plan.soporte, idioma))
+    elif plan.soporte_en and not intentos:
+        intentos.append((plan.soporte_en, "en"))
     if not intentos:
+        salida["no_consultado"] = "no se ha podido preparar la búsqueda"
+        avisos.append("No se ha podido consultar el soporte (no se ha podido preparar la "
+                      "búsqueda): el borrador se ha escrito sin él.")
+        resumen.setdefault("no_consultado", []).append(
+            {"fuente": "soporte", "motivo": salida["no_consultado"]})
         return salida
     inicio = time.monotonic()
     resultados: list[Any] = []
@@ -471,6 +500,7 @@ def _consultar_soporte(session: Session, plan: Plan, idioma: str, resumen: dict[
                 salida["otros"] = resultados[:RESULTADOS_SOPORTE]
     resumen["soporte_ms"] = int((time.monotonic() - inicio) * 1000)
     resumen["buscado_en_soporte"] = buscadas
+    resumen["soporte_idioma_pedido"] = idioma
     if salida["articulo"] is not None:
         return salida
     if fallos:
@@ -487,10 +517,31 @@ def _consultar_soporte(session: Session, plan: Plan, idioma: str, resumen: dict[
     return salida
 
 
+def _sin_soporte() -> dict[str, Any]:
+    return {"articulo": None, "otros": [], "sin_resultados": None, "no_consultado": None,
+            "sin_centro": None}
+
+
+def _soporte_seguro(session: Session, plan: Plan, idioma: str, resumen: dict[str, Any],
+                    avisos: list[str]) -> dict[str, Any]:
+    """`_consultar_soporte` si el correo es técnico; nunca lanza."""
+    if not plan.tecnica:
+        return _sin_soporte()
+    try:
+        return _consultar_soporte(session, plan, idioma, resumen, avisos)
+    except Exception as exc:  # noqa: BLE001 — la redacción no cae por el soporte
+        logger.warning("asistente: la consulta al soporte ha fallado", exc_info=True)
+        motivo = type(exc).__name__
+        avisos.append("No se ha podido consultar el soporte: el borrador se ha escrito sin él.")
+        resumen.setdefault("no_consultado", []).append({"fuente": "soporte", "motivo": motivo})
+        return {**_sin_soporte(), "no_consultado": motivo}
+
+
 def _consultar_webs(session: Session, plan: Plan, idioma: str, resumen: dict[str, Any],
                     avisos: list[str]) -> list[Any]:
     from app.services import webs  # noqa: PLC0415
 
+    resumen["buscado_en_webs"] = plan.webs
     inicio = time.monotonic()
     try:
         fragmentos = webs.buscar(session, plan.webs, idioma=idioma, limite=MAX_WEBS,
@@ -522,19 +573,8 @@ def consultar(session: Session, *, fuentes: Fuentes, plan: Plan,
     inicio = time.monotonic()
     avisos: list[str] = []
     resumen: dict[str, Any] = {"consulta": plan.como_dict(), "fuentes": fuentes.como_dict()}
-    soporte_leido: dict[str, Any] = {"articulo": None, "otros": [], "sin_resultados": None,
-                                     "no_consultado": None}
-    if fuentes.soporte and plan.tecnica and (plan.soporte_en or plan.soporte):
-        try:
-            soporte_leido = _consultar_soporte(session, plan, idioma, resumen, avisos)
-        except Exception as exc:  # noqa: BLE001 — la redacción no cae por el soporte
-            logger.warning("asistente: la consulta al soporte ha fallado", exc_info=True)
-            motivo = type(exc).__name__
-            soporte_leido["no_consultado"] = motivo
-            avisos.append("No se ha podido consultar el soporte: el borrador se ha escrito sin "
-                          "él.")
-            resumen.setdefault("no_consultado", []).append({"fuente": "soporte",
-                                                            "motivo": motivo})
+    soporte_leido = (_soporte_seguro(session, plan, idioma, resumen, avisos)
+                     if fuentes.soporte else _sin_soporte())
     fragmentos = (_consultar_webs(session, plan, idioma, resumen, avisos)
                   if fuentes.webs and plan.webs else [])
     resumen["ms"] = int((time.monotonic() - inicio) * 1000) + plan.duracion_ms
@@ -546,74 +586,87 @@ def consultar(session: Session, *, fuentes: Fuentes, plan: Plan,
     return material_fuera.construir(
         articulo=soporte_leido["articulo"], otros_soporte=soporte_leido["otros"],
         fragmentos=fragmentos, sin_resultados=soporte_leido["sin_resultados"],
-        soporte_no_consultado=soporte_leido["no_consultado"], tecnica=plan.tecnica,
+        soporte_no_consultado=soporte_leido["no_consultado"],
+        soporte_sin_centro=soporte_leido["sin_centro"], tecnica=plan.tecnica,
         resumen_base=resumen, avisos=avisos)
 
 
 def reutilizar(session: Session, previo: dict[str, Any], fuentes: Fuentes,
                idioma: str | None) -> material_fuera.Material | None:
-    """Lo que trajo el primer turno, para una corrección: el artículo otra vez
-    (de la caché; por fuente + id), los otros artículos y las páginas por su
-    id, con las casillas de AHORA. Sin buscar nada nuevo. Nunca lanza."""
+    """Lo que trajo la consulta de la conversación, para una corrección, con
+    las casillas de AHORA: el artículo otra vez (de la caché; por fuente + id
+    y en el idioma en que se pidió), los otros artículos y las páginas por su
+    id, sin buscar nada nuevo. Lo que esa consulta NO miró (la casilla iba
+    desmarcada) o no pudo mirar (la fuente falló) se consulta ahora con el
+    plan guardado: marcar una casilla vale para la corrección siguiente, y un
+    fallo pasajero no se arrastra a toda la conversación. Nunca lanza."""
     from app.services import soporte, webs  # noqa: PLC0415
 
     if not fuentes.alguna or not isinstance(previo, dict) or not previo.get("automatico"):
         return None
+    idioma = (idioma or "es").lower()[:2]
     consulta = previo.get("consulta") if isinstance(previo.get("consulta"), dict) else {}
+    plan = Plan.de_resumen(consulta)
+    antes = previo.get("fuentes") if isinstance(previo.get("fuentes"), dict) else {}
+    fallos_antes = {str(nc.get("fuente")) for nc in previo.get("no_consultado") or []
+                    if isinstance(nc, dict)}
     resumen: dict[str, Any] = {"consulta": {**consulta, "reutilizado": True},
                                "fuentes": fuentes.como_dict()}
     avisos: list[str] = []
-    articulo = None
-    otros: list[dict[str, Any]] = []
-    sin_resultados = None
-    no_consultado = None
+    leido = _sin_soporte()
     if fuentes.soporte:
-        s = previo.get("soporte")
-        if isinstance(s, dict) and s.get("fuente") and s.get("articulo_id"):
-            try:
-                with soporte.con_plazo(TIEMPO_SOPORTE, por_peticion=TIEMPO_PETICION_SOPORTE):
-                    articulo = soporte.articulo(session, str(s["fuente"]), str(s["articulo_id"]),
-                                                idioma=s.get("idioma") or idioma)
-            except Exception as exc:  # noqa: BLE001 — sin el artículo, la corrección va igual
-                motivo = str(exc) or type(exc).__name__
-                no_consultado = motivo
-                avisos.append(f"No se ha podido volver a leer el artículo de soporte ({motivo}): "
-                              "esta corrección va sin él.")
-                resumen.setdefault("no_consultado", []).append(
-                    {"fuente": "soporte", "motivo": motivo})
-        otros = [o for o in previo.get("otros_soporte") or [] if isinstance(o, dict)]
-        sr = previo.get("sin_resultados")
-        if isinstance(sr, dict) and sr.get("consulta"):
-            sin_resultados = str(sr["consulta"])
-        for nc in previo.get("no_consultado") or []:
-            if isinstance(nc, dict) and nc.get("fuente") == "soporte":
-                no_consultado = no_consultado or str(nc.get("motivo") or "no respondió")
-                resumen.setdefault("no_consultado", []).append(nc)
-        for clave in ("sin_centro", "sin_fuentes", "buscado_en_soporte"):
-            if previo.get(clave):
-                resumen[clave] = previo[clave]
+        if not antes.get("soporte", True) or "soporte" in fallos_antes:
+            leido = _soporte_seguro(session, plan, idioma, resumen, avisos)
+        else:
+            s = previo.get("soporte")
+            if isinstance(s, dict) and s.get("fuente") and s.get("articulo_id"):
+                try:
+                    with soporte.con_plazo(TIEMPO_SOPORTE, por_peticion=TIEMPO_PETICION_SOPORTE):
+                        leido["articulo"] = soporte.articulo(
+                            session, str(s["fuente"]), str(s["articulo_id"]),
+                            idioma=previo.get("soporte_idioma_pedido") or idioma)
+                except Exception as exc:  # noqa: BLE001 — sin el artículo, la corrección va igual
+                    motivo = str(exc) or type(exc).__name__
+                    leido["no_consultado"] = motivo
+                    avisos.append(f"No se ha podido volver a leer el artículo de soporte "
+                                  f"({motivo}): esta corrección va sin él.")
+                    resumen.setdefault("no_consultado", []).append(
+                        {"fuente": "soporte", "motivo": motivo})
+            leido["otros"] = [o for o in previo.get("otros_soporte") or [] if isinstance(o, dict)]
+            sr = previo.get("sin_resultados")
+            if isinstance(sr, dict) and sr.get("consulta"):
+                leido["sin_resultados"] = str(sr["consulta"])
+            if previo.get("sin_centro") or previo.get("sin_fuentes"):
+                leido["sin_centro"] = str(previo.get("sin_centro") or "ninguno activo")
+            for clave in ("sin_centro", "sin_fuentes", "buscado_en_soporte",
+                          "soporte_idioma_pedido"):
+                if previo.get(clave):
+                    resumen[clave] = previo[clave]
     fragmentos: list[Any] = []
     if fuentes.webs:
-        ids = [str(w.get("id")) for w in previo.get("webs") or []
-               if isinstance(w, dict) and w.get("id")]
-        if ids:
-            try:
-                fragmentos = list(webs.fragmentos_de(
-                    session, ids, consulta=consulta.get("webs"),
-                    max_chars=material_fuera.MAX_CHARS_WEB))
-            except Exception:  # noqa: BLE001
-                logger.warning("asistente: no se han podido releer las páginas", exc_info=True)
-                fragmentos = []
-            if len(fragmentos) < len(ids):
-                avisos.append(f"{len(ids) - len(fragmentos)} de las páginas de nuestras webs que "
-                              "trajo el primer borrador ya no están en el índice: esta "
-                              "corrección va sin ellas.")
-        if previo.get("webs_sin_resultados"):
-            resumen["webs_sin_resultados"] = previo["webs_sin_resultados"]
-        for nc in previo.get("no_consultado") or []:
-            if isinstance(nc, dict) and nc.get("fuente") == "webs":
-                resumen.setdefault("no_consultado", []).append(nc)
+        if not antes.get("webs", True) or "webs" in fallos_antes:
+            fragmentos = (_consultar_webs(session, plan, idioma, resumen, avisos)
+                          if plan.webs else [])
+        else:
+            ids = [str(w.get("id")) for w in previo.get("webs") or []
+                   if isinstance(w, dict) and w.get("id")]
+            if ids:
+                try:
+                    fragmentos = list(webs.fragmentos_de(
+                        session, ids, consulta=consulta.get("webs"),
+                        max_chars=material_fuera.MAX_CHARS_WEB))
+                except Exception:  # noqa: BLE001
+                    logger.warning("asistente: no se han podido releer las páginas", exc_info=True)
+                    fragmentos = []
+                if len(fragmentos) < len(ids):
+                    avisos.append(f"{len(ids) - len(fragmentos)} de las páginas de nuestras webs "
+                                  "que trajo el primer borrador ya no están en el índice: esta "
+                                  "corrección va sin ellas.")
+            for clave in ("webs_sin_resultados", "buscado_en_webs"):
+                if previo.get(clave):
+                    resumen[clave] = previo[clave]
     return material_fuera.construir(
-        articulo=articulo, otros_soporte=otros, fragmentos=fragmentos,
-        sin_resultados=sin_resultados, soporte_no_consultado=no_consultado,
-        tecnica=bool(consulta.get("tecnica")), resumen_base=resumen, avisos=avisos)
+        articulo=leido["articulo"], otros_soporte=leido["otros"], fragmentos=fragmentos,
+        sin_resultados=leido["sin_resultados"], soporte_no_consultado=leido["no_consultado"],
+        soporte_sin_centro=leido["sin_centro"], tecnica=plan.tecnica, resumen_base=resumen,
+        avisos=avisos)

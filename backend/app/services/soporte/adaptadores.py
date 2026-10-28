@@ -26,8 +26,11 @@ from __future__ import annotations
 
 import html as html_mod
 import re
+import socket
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturoAgotado
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import UTC, datetime
@@ -144,11 +147,27 @@ _STATUS_RED = {
 }
 
 
+def _resolver_con_plazo(segundos: float) -> Callable[..., list[Any]]:
+    """`getaddrinfo` con tiempo máximo: un DNS lento no se come el plazo del
+    soporte (la comprobación de red interna resuelve antes de conectar). Si
+    no responde a tiempo, es un «no se encuentra el dominio» y no sale nada."""
+    def resolver(host: str, port: Any, **kw: Any) -> list[Any]:
+        hilo = ThreadPoolExecutor(max_workers=1)
+        try:
+            return hilo.submit(socket.getaddrinfo, host, port, **kw).result(timeout=segundos)
+        except FuturoAgotado as exc:
+            raise socket.gaierror(socket.EAI_AGAIN, "el DNS no ha respondido a tiempo") from exc
+        finally:
+            hilo.shutdown(wait=False)
+    return resolver
+
+
 def _pedir(fuente: SoporteFuente, url: str, *, timeout: float,
            acepta: str = "application/json") -> red.Respuesta:
     """Una petición a la fuente, con su dominio como única lista blanca (y,
     dentro de `con_plazo`, con el tiempo que quede)."""
     plazo = _PLAZO.get()
+    resolver = _RED_PRUEBAS.get("resolver")
     if plazo is not None:
         hasta, por_peticion = plazo
         restante = hasta - time.monotonic()
@@ -156,11 +175,13 @@ def _pedir(fuente: SoporteFuente, url: str, *, timeout: float,
             raise SoporteError("tiempo_agotado",
                                f"{fuente.nombre}: no ha respondido a tiempo.", 504)
         timeout = min(timeout, por_peticion, restante)
+        if resolver is None:
+            resolver = _resolver_con_plazo(timeout)
     try:
         return red.obtener(
             url, max_bytes=MAX_BYTES, timeout=timeout, cabeceras={"Accept": acepta},
             hosts_permitidos={fuente.dominio.lower()},
-            cliente=_RED_PRUEBAS.get("cliente"), resolver=_RED_PRUEBAS.get("resolver"),
+            cliente=_RED_PRUEBAS.get("cliente"), resolver=resolver,
         )
     except red.RedError as exc:
         raise SoporteError(exc.codigo, f"{fuente.nombre}: {exc}",

@@ -102,9 +102,9 @@ REGLA_SIN_RESULTADOS = (
     "el fabricante) y NO escribas pasos ni ningún procedimiento, ni de memoria ni deducido."
 )
 REGLA_SOPORTE_NO_CONSULTADO = (
-    "SOPORTE NO CONSULTADO: no se ha podido consultar el centro de ayuda del fabricante. No "
-    "escribas pasos ni procedimientos de memoria: si hacen falta, di en el correo que lo "
-    "compruebas y se lo confirmas."
+    "SOPORTE NO CONSULTADO: no se ha podido consultar el centro de ayuda del fabricante (o no "
+    "lo hay para esa máquina). No escribas pasos ni procedimientos de memoria: si hacen falta, "
+    "di en el correo que lo compruebas y se lo confirmas."
 )
 REGLA_MATERIAL_USADO = (
     "Con MATERIAL DE CONSULTA, añade a tu JSON «material_usado»: las referencias de las piezas "
@@ -178,8 +178,8 @@ def _attr(obj: Any, nombre: str, defecto: Any = None) -> Any:
 def construir(
     *, articulo: Any = None, otros_soporte: Iterable[Any] = (), fragmentos: Iterable[Any] = (),
     sin_resultados: str | None = None, soporte_no_consultado: str | None = None,
-    tecnica: bool = False, resumen_base: dict[str, Any] | None = None,
-    avisos: Iterable[str] = (),
+    soporte_sin_centro: str | None = None, tecnica: bool = False,
+    resumen_base: dict[str, Any] | None = None, avisos: Iterable[str] = (),
 ) -> Material | None:
     """El material del turno con lo ya leído; None si no se consultó nada.
 
@@ -191,13 +191,16 @@ def construir(
     - `sin_resultados`: la consulta con la que se buscó en el soporte sin
       encontrar nada.
     - `soporte_no_consultado`: por qué no se pudo consultar el soporte.
+    - `soporte_sin_centro`: el correo es técnico y la marca no tiene centro de
+      ayuda en la lista (o no hay ninguno activo): no hay procedimiento que
+      citar.
     - `resumen_base`: lo que ya se sabe de la consulta (qué se buscó, cómo,
       cuánto tardó) y que va a «Lo que ha usado».
     """
     otros = list(otros_soporte)
     frs = list(fragmentos)
     if (articulo is None and not otros and not frs and not sin_resultados
-            and not soporte_no_consultado and resumen_base is None):
+            and not soporte_no_consultado and not soporte_sin_centro and resumen_base is None):
         return None
     bloques: list[str] = []
     reglas: list[str] = []
@@ -288,10 +291,19 @@ def construir(
             "No escribas pasos ni procedimientos de memoria: si hacen falta, di que lo "
             "compruebas y se lo confirmas.")
         reglas.append(REGLA_SOPORTE_NO_CONSULTADO)
+    elif soporte_sin_centro and articulo is None and not sin_resultados:
+        bloques.append(
+            "SOPORTE TÉCNICO: no hay centro de ayuda del fabricante de esta máquina donde "
+            "consultar, así que no tienes ningún procedimiento que citar. No escribas pasos ni "
+            "procedimientos de memoria: si hacen falta, di que lo compruebas y se lo "
+            "confirmas.")
+        reglas.append(REGLA_SOPORTE_NO_CONSULTADO)
     return Material(
         peticion="\n\n".join(bloques) + "\n\n" if bloques else "",
         sistema="\n\n".join(reglas), enlaces=enlaces, resumen=resumen, soporte_url=soporte_url,
-        sin_resultados=sin_resultados, soporte_no_consultado=bool(soporte_no_consultado),
+        sin_resultados=sin_resultados,
+        soporte_no_consultado=bool(soporte_no_consultado or (
+            soporte_sin_centro and articulo is None and not sin_resultados)),
         tecnica=tecnica, avisos=list(avisos))
 
 
