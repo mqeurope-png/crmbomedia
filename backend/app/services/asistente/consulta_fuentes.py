@@ -75,6 +75,9 @@ MAX_PEDIDAS = 4
 #: plan cuál. «Añade los pasos» o «añade el enlace a la máquina», no.
 _PIDE_FICHA_RE = re.compile(r"\b(?:fichas?|versi[oó]n|variante|version|variant)\b",
                             re.IGNORECASE)
+#: Una ruta de página de producto (`/product/…`, `/producto/…`, `/shop/…`).
+_RUTA_PRODUCTO_RE = re.compile(r"/(?:product|producto|produkt|produit|prodotto|shop|tienda)/",
+                               re.IGNORECASE)
 _INCLUYE_RE = re.compile(r"\b(?:incluye|incluir|añade|añadir|agrega|mete|pon|include|add)\b",
                          re.IGNORECASE)
 #: Lo que lee el plan del correo del cliente.
@@ -581,7 +584,12 @@ def _productos_pedidos(session: Session, *, instruccion: str | None, nombres: li
         for url in urls:
             fila = mapa.producto(url) if mapa is not None else None
             if fila is None:
-                if mapa is not None and mapa.no_es_producto(url):
+                # Solo si parece que se pedía la ficha de ese enlace (un
+                # producto, una ficha, una versión): un enlace a un artículo o
+                # a una categoría para ponerlo en el texto no se avisa.
+                if (mapa is not None and mapa.no_es_producto(url)
+                        and (_PIDE_FICHA_RE.search(instruccion or "")
+                             or _RUTA_PRODUCTO_RE.search(url))):
                     pedidas.append({"url": url, "encontrada": False})
                     avisos.append(f"El enlace que indicas ({url}) no es una página de producto del "
                                   "índice de las webs: no hay ficha que montar con él.")

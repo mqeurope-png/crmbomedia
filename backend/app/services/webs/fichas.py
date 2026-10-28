@@ -159,15 +159,15 @@ def productos_por_nombre(session: Session, nombre: str, *, sitio: str | None = N
         filtros.append(WebIndiceEntrada.sitio == sitio)
     filas = [f for f in _vivos(session, *filtros)
              if all(p in html_texto.plano(f.titulo or "") for p in palabras)]
-    if idioma:
-        filas.sort(key=lambda f: f.idioma != idioma)
-    vistos: set[tuple[str, int]] = set()
-    unicas: list[WebIndiceEntrada] = []
-    for f in sorted(filas, key=lambda f: (len(f.titulo or ""), f.idioma != (idioma or f.idioma))):
-        if (f.sitio, f.wp_id) not in vistos:
-            vistos.add((f.sitio, f.wp_id))
-            unicas.append(f)
-    return unicas[:limite]
+    # Un producto por id; el más ajustado (el título más corto) primero, y de
+    # cada uno la fila del idioma pedido si la hay.
+    grupos: dict[tuple[str, int], list[WebIndiceEntrada]] = {}
+    for f in filas:
+        grupos.setdefault((f.sitio, f.wp_id), []).append(f)
+    elegidas = [next((f for f in g if f.idioma == idioma),
+                     min(g, key=lambda f: len(f.titulo or ""))) for g in grupos.values()]
+    elegidas.sort(key=lambda f: min(len(x.titulo or "") for x in grupos[(f.sitio, f.wp_id)]))
+    return elegidas[:limite]
 
 
 def variantes(session: Session, fila: WebIndiceEntrada) -> list[WebIndiceEntrada]:
@@ -178,15 +178,18 @@ def variantes(session: Session, fila: WebIndiceEntrada) -> list[WebIndiceEntrada
     elige ninguna (podrían ser variantes de potencia con la misma foto)."""
     filas = _vivos(session, WebIndiceEntrada.sitio == fila.sitio)
     mismas = [f for f in filas if f.wp_id == fila.wp_id]
-    if fila.imagen:
-        parecidas = [f for f in filas if f.wp_id != fila.wp_id and f.imagen == fila.imagen
-                     and f.precio_web == fila.precio_web]
-        por_idioma: dict[str, list[WebIndiceEntrada]] = {}
-        for f in parecidas:
-            por_idioma.setdefault(f.idioma, []).append(f)
-        ya = {f.idioma for f in mismas}
-        mismas += [v[0] for i, v in por_idioma.items() if len(v) == 1 and i not in ya]
-    return mismas
+    if len({f.idioma for f in mismas}) > 1:
+        return mismas            # el mismo id en varios idiomas (WPGlobus): es ese
+    if not fila.imagen or fila.precio_web is None:
+        return mismas            # sin imagen o sin precio no hay con qué reconocerla
+    parecidas = [f for f in filas if f.wp_id != fila.wp_id and f.imagen == fila.imagen
+                 and f.precio_web == fila.precio_web]
+    if any(f.idioma == fila.idioma for f in parecidas):
+        return mismas            # otra del mismo idioma igual: no se sabe cuál es cuál
+    por_idioma: dict[str, list[WebIndiceEntrada]] = {}
+    for f in parecidas:
+        por_idioma.setdefault(f.idioma, []).append(f)
+    return mismas + [v[0] for v in por_idioma.values() if len(v) == 1]
 
 
 def _por_clave(session: Session, origen_id: str) -> list[WebIndiceEntrada]:

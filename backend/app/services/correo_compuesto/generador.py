@@ -474,13 +474,15 @@ class _Render:
                       alinear="center"), texto)
 
     def productos_fila(self, b: dict[str, Any]) -> tuple[str, str]:
-        productos = [p for p in (self._producto(r) for r in b.get("productos") or []) if p]
+        pares = [(r, p) for r, p in ((r, self._producto(r)) for r in b.get("productos") or [])
+                 if p]
+        productos = [p for _, p in pares]
         if not productos:
             return "", ""
         if len(productos) == 1:
-            return self.producto({**b, "tipo": bq.TIPO_PRODUCTO,
-                                  "producto": {"fuente": productos[0]["fuente"],
-                                               "origen_id": productos[0]["origen_id"]}})
+            # La referencia tal cual: una ficha de la web conserva su precio y
+            # su imagen.
+            return self.producto({**b, "tipo": bq.TIPO_PRODUCTO, "producto": pares[0][0]})
         n = len(productos)
         compacta = n >= 3
         separacion = 4 if compacta else 5
