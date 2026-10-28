@@ -6,6 +6,8 @@ Sin red: toda petición va por un `MockTransport` y un DNS falso
 from __future__ import annotations
 
 import json
+import socket
+import threading
 import time
 from collections.abc import Callable, Generator
 from datetime import UTC, datetime, timedelta
@@ -496,6 +498,48 @@ def test_si_el_dominio_apunta_a_la_red_interna_no_se_pide(session):
         soporte.articulo(session, "flux", "111")
     assert exc.value.codigo == "red_interna"
     assert red.peticiones == []
+
+
+def test_con_plazo_un_dns_que_no_contesta_no_se_come_el_plazo(session, monkeypatch):
+    """Dentro de `con_plazo` (el redactor), resolver el dominio también tiene
+    tope: un DNS que no contesta da «no se encuentra el dominio» en cuanto se
+    acaba el tiempo de la petición, y no sale nada. Con el DNS contestando, la
+    misma búsqueda sale como siempre. Sin DNS de pruebas: el `getaddrinfo` del
+    sistema, sustituido (nada va a internet) y la red, la falsa."""
+    soltar = threading.Event()
+    preguntas: list[tuple[str, Any]] = []
+
+    def dns_colgado(host, port, *_args, **_kw):  # noqa: ANN001, ANN202
+        preguntas.append((host, port))
+        soltar.wait(10)
+        return _resolver(PUBLICA)(host, port)
+
+    pedidas: list[httpx.URL] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        pedidas.append(request.url)
+        return zendesk({"es-419": [_resultado(111, "Calibrar la cámara", locale="es-419")]})(
+            request)
+
+    soporte.fijar_red_para_tests(cliente=httpx.Client(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(socket, "getaddrinfo", dns_colgado)
+    inicio = time.monotonic()
+    try:
+        with soporte.con_plazo(5.0, por_peticion=0.3), pytest.raises(SoporteError) as exc:
+            soporte.buscar(session, "calibrar cámara", idioma="es")
+        tardado = time.monotonic() - inicio
+    finally:
+        soltar.set()           # el hilo que se quedó esperando al DNS, fuera
+    assert exc.value.codigo == "no_resuelve" and exc.value.status == 502
+    assert f"No se encuentra el dominio {FLUX}" in str(exc.value)
+    assert tardado < 2         # lo de la petición (0,3 s), no lo del DNS
+    assert preguntas == [(FLUX, 443)] and pedidas == []
+    # Con el DNS contestando a tiempo, sale y trae lo suyo.
+    monkeypatch.setattr(socket, "getaddrinfo", _resolver(PUBLICA))
+    with soporte.con_plazo(5.0, por_peticion=0.3):
+        res = soporte.buscar(session, "calibrar cámara", idioma="es")
+    assert [r.articulo_id for r in res.resultados] == ["111"]
+    assert [p.host for p in pedidas] == [FLUX]
 
 
 # ---------------------------------------------------------------------------

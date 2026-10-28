@@ -3,14 +3,11 @@
 import {
   ChevronDown,
   ChevronRight,
-  Globe,
-  LifeBuoy,
   RotateCcw,
   Sparkles,
   Trash2,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { getCurrentUser } from "../../lib/api";
 import {
   ALCANCES_ASISTENTE,
@@ -19,6 +16,12 @@ import {
   guardarAlcance,
   leerAlcance,
 } from "../../lib/asistenteAlcance";
+import {
+  type FuentesAsistente,
+  FUENTES_DE_PARTIDA,
+  guardarFuentes,
+  leerFuentes,
+} from "../../lib/asistenteFuentes";
 import type { EstructuraCompuesta } from "../../lib/correoCompuesto";
 import {
   type AsistenteAlcance,
@@ -26,7 +29,6 @@ import {
   type BorradorAsistente,
   type FormatoAsistente,
   type SobreElEditor,
-  type SoporteElegido,
   conversacionAsistente,
   descartarBorradorAsistente,
   esDestinatarioInterno,
@@ -35,11 +37,6 @@ import {
   turnoAsistente,
 } from "../../lib/emailsApi";
 import { extractErrorMessage } from "../../lib/errors";
-import type { SoporteResultado } from "../../lib/soporteApi";
-import type { WebFragmento } from "../../lib/websApi";
-import { Modal } from "../Modal";
-import { SoporteBusqueda } from "../soporte/SoporteBusqueda";
-import { WebsBusqueda } from "../webs/WebsBusqueda";
 
 /** «Ayúdame a contestar» dentro del compositor: una franja propia entre la
  *  cabecera del correo y el cuerpo, que empuja el contenido hacia abajo en vez
@@ -50,8 +47,12 @@ import { WebsBusqueda } from "../webs/WebsBusqueda";
  *  para que el cuerpo tenga el sitio: se despliega al pulsarla. Lo que llega al
  *  editor es siempre un correo: lo que la IA quiera decirle a la persona va
  *  aquí, en el aviso. Un borrador guardado vuelve con su conversación.
- *  «Buscar en soporte» y «Buscar en las webs» abren su buscador: lo elegido
- *  queda a la vista como material (con su ✕) y viaja con cada petición. */
+ *  Las casillas «Webs» y «Soporte» (marcadas de partida, recordadas por
+ *  usuario) dicen qué consulta el asistente SOLO al redactar, además del
+ *  catálogo: el índice de nuestras webs y el soporte de los fabricantes, con
+ *  lo que pregunta el cliente. Viajan en cada petición; nadie busca ni elige
+ *  nada. Lo que trajo, si lo usó y lo que no se pudo consultar se ve en «Lo
+ *  que ha usado»; lo que no respondió, también en el aviso. */
 export type AsistenteFranjaProps = {
   /** Con hilo se responde; sin él es un correo nuevo (la instrucción es obligatoria). */
   threadId: string | null;
@@ -108,38 +109,11 @@ function usd(n: number): string {
   return `${n.toFixed(4)} $`;
 }
 
-/** Lo que la persona ha elegido DE FUERA para el borrador, con «Buscar en
- *  soporte» y «Buscar en las webs». Viaja en cada petición (redactar, corregir,
- *  cambiar el alcance) y se queda elegido hasta que se quita con su ✕: la IA
- *  lo tiene delante en las correcciones siguientes. Un artículo de soporte y
- *  «no hay procedimiento» se excluyen (el último gana). */
-export type MaterialElegido = {
-  soporte: (SoporteElegido & { titulo: string; url: string; fuente_nombre: string }) | null;
-  /** La consulta que se buscó en el soporte sin encontrar nada. */
-  sinResultados: string | null;
-  webs: { id: string; titulo: string; url: string }[];
-};
-
-export const SIN_MATERIAL: MaterialElegido = { soporte: null, sinResultados: null, webs: [] };
-/** Las páginas de las webs que admite el redactor en una petición. */
-export const MAX_WEBS = 4;
-/** Lo que admite el backend en «busqué y no hay» (`SoporteSinResultados`). */
-const MAX_CONSULTA = 300;
-
-/** Los campos de la petición, solo los que llevan algo. Sin material, null:
- *  la petición es exactamente la de siempre (ni campos vacíos). */
-export function camposMaterial(
-  m: MaterialElegido,
-): Pick<SobreElEditor, "soporte" | "soporte_sin_resultados" | "webs"> | null {
-  const campos: Pick<SobreElEditor, "soporte" | "soporte_sin_resultados" | "webs"> = {};
-  if (m.soporte) {
-    campos.soporte = { fuente: m.soporte.fuente, articulo_id: m.soporte.articulo_id, idioma: m.soporte.idioma };
-  } else if (m.sinResultados) {
-    campos.soporte_sin_resultados = { consulta: m.sinResultados };
-  }
-  if (m.webs.length > 0) campos.webs = m.webs.map((w) => w.id);
-  return Object.keys(campos).length > 0 ? campos : null;
-}
+/** Las casillas de la franja: qué consulta el asistente solo al redactar. */
+const FUENTES: { id: keyof FuentesAsistente; label: string; titulo: string }[] = [
+  { id: "webs", label: "Webs", titulo: "Consulta el índice de nuestras webs al redactar" },
+  { id: "soporte", label: "Soporte", titulo: "Consulta el soporte de los fabricantes al redactar" },
+];
 
 /** El texto de un fragmento de HTML, recortado, para enseñar qué hay seleccionado. */
 function resumenDe(html: string, max = 70): string {
@@ -226,16 +200,22 @@ export function AsistenteFranja({
   const [seleccion, setSeleccion] = useState("");
   const [alcance, setAlcance] = useState<AsistenteAlcance>("contacto");
   const [formato, setFormato] = useState<FormatoAsistente>("auto");
+  // Qué consulta el asistente solo al redactar (nuestras webs, el soporte).
+  // Una casilla tocada antes de saber quién es el usuario no se pisa con lo
+  // que tenía guardado: se queda como la dejó y se le guarda en cuanto se
+  // sabe quién es. Las referencias son lo de ahora mismo, sin esperar a
+  // pintar: lo que se ve y quién es.
+  const [fuentes, setFuentes] = useState<FuentesAsistente>(FUENTES_DE_PARTIDA);
+  const fuentesRef = useRef<FuentesAsistente>(FUENTES_DE_PARTIDA);
+  const fuentesTocadas = useRef(new Set<keyof FuentesAsistente>());
   const [usuarioId, setUsuarioId] = useState<string | null>(null);
+  const usuarioRef = useRef<string | null>(null);
   const [turnos, setTurnos] = useState<BorradorAsistente[]>([]);
   const [actual, setActual] = useState(0);
   const [ocupado, setOcupado] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Lo que dice la API de la dirección de «Para» (null = todavía no se ha preguntado).
   const [internoApi, setInternoApi] = useState<boolean | null>(null);
-  // Lo elegido de fuera (soporte, webs) y qué buscador está abierto.
-  const [material, setMaterial] = useState<MaterialElegido>(SIN_MATERIAL);
-  const [buscador, setBuscador] = useState<"soporte" | "webs" | null>(null);
   const cajaRef = useRef<HTMLTextAreaElement>(null);
   const onBorradorActualRef = useRef(onBorradorActual);
   const onEstadoRef = useRef(onEstado);
@@ -244,13 +224,26 @@ export function AsistenteFranja({
     onEstadoRef.current = onEstado;
   });
 
-  // Qué histórico mira la IA: se recuerda por usuario (en este navegador).
+  // Qué histórico mira la IA y qué consulta: se recuerda por usuario (en este
+  // navegador).
   useEffect(() => {
     getCurrentUser()
       .then((u) => {
+        usuarioRef.current = u.id;
         setUsuarioId(u.id);
         const guardado = leerAlcance(u.id);
         if (guardado) setAlcance(guardado);
+        // Lo guardado, salvo las casillas que ya ha tocado: esas, como las
+        // dejó, y se le guardan (antes no se sabía para quién).
+        const tocadas = fuentesTocadas.current;
+        const guardadas = leerFuentes(u.id);
+        const finales: FuentesAsistente = {
+          webs: tocadas.has("webs") ? fuentesRef.current.webs : guardadas.webs,
+          soporte: tocadas.has("soporte") ? fuentesRef.current.soporte : guardadas.soporte,
+        };
+        fuentesRef.current = finales;
+        setFuentes(finales);
+        if (tocadas.size > 0) guardarFuentes(u.id, finales);
       })
       .catch(() => undefined);
   }, []);
@@ -309,45 +302,16 @@ export function AsistenteFranja({
     ? internoApi
     : destinatarioInterno || Boolean(borrador?.destinatario_interno);
   const costeTotal = turnos.reduce((s, t) => s + (t.coste_usd || 0), 0);
-  // El idioma del correo, si la franja lo sabe (lo dice el borrador): los
-  // buscadores buscan en ese. Sin borrador, en todos.
-  const idiomaCorreo = borrador?.idioma ?? turnos[0]?.idioma ?? null;
-  const hayMaterial = camposMaterial(material) !== null;
-  // Lo elegido de fuera se ve SIEMPRE: en el compositor la franja encoge (el
-  // cuerpo no baja de doce líneas) y las fichas pueden quedar bajo su scroll;
-  // por eso los botones llevan la cuenta y, al elegir algo, las fichas se
-  // traen a la vista.
-  const cuentaSoporte = material.soporte || material.sinResultados ? 1 : 0;
-  const cuentaWebs = material.webs.length;
-  const materialRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!hayMaterial) return;
-    materialRef.current?.scrollIntoView?.({ block: "nearest" });
-  }, [material, hayMaterial]);
 
-  function usarSoporte(r: SoporteResultado) {
-    setMaterial((m) => ({
-      ...m,
-      soporte: {
-        fuente: r.fuente, articulo_id: r.articulo_id, idioma: r.idioma ?? null,
-        titulo: r.titulo, url: r.url, fuente_nombre: r.fuente_nombre,
-      },
-      sinResultados: null,
-    }));
-    setBuscador(null);
-  }
-
-  function sinProcedimiento(consulta: string) {
-    const q = consulta.trim().slice(0, MAX_CONSULTA);
-    if (!q) return;
-    setMaterial((m) => ({ ...m, soporte: null, sinResultados: q }));
-    setBuscador(null);
-  }
-
-  function anadirWeb(f: WebFragmento) {
-    setMaterial((m) => (m.webs.some((w) => w.id === f.id) || m.webs.length >= MAX_WEBS
-      ? m
-      : { ...m, webs: [...m.webs, { id: f.id, titulo: f.titulo || f.url, url: f.url }] }));
+  // Una casilla vale para la petición siguiente (no rehace el borrador) y se
+  // recuerda para este usuario.
+  function cambiarFuente(id: keyof FuentesAsistente, marcada: boolean) {
+    const nuevas = { ...fuentesRef.current, [id]: marcada };
+    fuentesTocadas.current.add(id);
+    fuentesRef.current = nuevas;
+    setFuentes(nuevas);
+    // Sin usuario todavía no se guarda nada: lo guarda la carga, al llegar.
+    guardarFuentes(usuarioRef.current, nuevas);
   }
 
   function refrescarSeleccion() {
@@ -406,11 +370,11 @@ export function AsistenteFranja({
       : cuerpo?.html
         ? { texto_actual_html: cuerpo.html, seleccion_html: cuerpo.seleccion || null }
         : null;
-    // El interruptor solo viaja si no es «Auto» (lo de siempre), y lo elegido
-    // de fuera solo si hay algo: sin nada, la petición es la de siempre.
-    const conFormato: SobreElEditor | null = formato !== "auto" ? { ...(editor ?? {}), formato } : editor;
-    const deFuera = camposMaterial(material);
-    const peticion: SobreElEditor | null = deFuera ? { ...(conFormato ?? {}), ...deFuera } : conFormato;
+    // El interruptor solo viaja si no es «Auto» (lo de siempre); las casillas,
+    // siempre: son lo que el asistente consulta solo en este turno.
+    const peticion: SobreElEditor = {
+      ...(editor ?? {}), ...(formato !== "auto" ? { formato } : {}), fuentes,
+    };
     // Si mientras la IA trabaja la persona sigue escribiendo, lo que vuelve ya
     // no es una corrección de lo que hay: el compositor pregunta antes de pisarlo.
     const cambiado = () => ({
@@ -424,21 +388,19 @@ export function AsistenteFranja({
       if (hayConversacion && borrador) {
         // Una corrección: un turno más, con el contexto ya montado. Si se
         // corrige un turno anterior, los posteriores se dejan atrás.
-        const nuevo = peticion
-          ? await turnoAsistente(borrador.id, texto, peticion)
-          : await turnoAsistente(borrador.id, texto);
+        const nuevo = await turnoAsistente(borrador.id, texto, peticion);
         const lista = [...turnos.slice(0, actual + 1), nuevo];
         aplicar(nuevo, lista, lista.length - 1, cambiado());
       } else if (modo === "nuevo") {
         const nuevo = await generarBorradorNuevo({
           destinatario: para, instruccion: texto, alcance: alcanceEfectivo,
-          contact_id: contactId, ...(peticion ?? {}),
+          contact_id: contactId, ...peticion,
         });
         aplicar(nuevo, [nuevo], 0, cambiado());
       } else {
         const nuevo = await generarBorradorAsistente(threadId as string, {
           alcance: alcanceEfectivo, instruccion: texto || null, destinatario: para || null,
-          ...(peticion ?? {}),
+          ...peticion,
         });
         aplicar(nuevo, [nuevo], 0, cambiado());
       }
@@ -462,17 +424,17 @@ export function AsistenteFranja({
     setError(null);
     try {
       const para = primera(destinatario);
-      // El borrador rehecho lleva lo mismo que lleva la franja: el formato y
-      // lo elegido de fuera (si hay algo).
-      const conFormato = { ...(formato !== "auto" ? { formato } : {}), ...(camposMaterial(material) ?? {}) };
+      // El borrador rehecho lleva lo mismo que lleva la franja: el formato (si
+      // no es «Auto») y las casillas de lo que consulta.
+      const extra: SobreElEditor = { ...(formato !== "auto" ? { formato } : {}), fuentes };
       const b = modo === "nuevo"
         ? await generarBorradorNuevo({
           destinatario: para, instruccion: raiz.instruccion ?? "", alcance: nuevo,
-          contact_id: contactId, regenerar_de: raiz.id, ...conFormato,
+          contact_id: contactId, regenerar_de: raiz.id, ...extra,
         })
         : await generarBorradorAsistente(threadId as string, {
           alcance: nuevo, instruccion: raiz.instruccion, destinatario: para || null,
-          regenerar_de: raiz.id, ...conFormato,
+          regenerar_de: raiz.id, ...extra,
         });
       aplicar(b, [b], 0);
     } catch (err) {
@@ -580,30 +542,22 @@ export function AsistenteFranja({
               </p>
             ) : null}
             <div className="asistente-franja-controles">
-              {/* Buscar fuera es una acción explícita, ANTES de redactar: lo
-                  encontrado se ve, se elige y viaja con la petición (nunca se
-                  busca dentro de la generación, que tiene su tiempo contado). */}
-              <span className="asistente-franja-buscar">
-                <button
-                  type="button"
-                  className="button secondary small"
-                  onClick={() => setBuscador("soporte")}
-                  disabled={ocupado || bloqueada}
-                  title="Busca el procedimiento en el soporte del fabricante: el borrador lo citará con su enlace"
-                >
-                  <LifeBuoy size={11} aria-hidden /> Buscar en soporte
-                  {cuentaSoporte ? <span className="asistente-fuentes-cuenta" aria-hidden>1</span> : null}
-                </button>
-                <button
-                  type="button"
-                  className="button secondary small"
-                  onClick={() => setBuscador("webs")}
-                  disabled={ocupado || bloqueada}
-                  title="Busca en nuestras webs páginas y productos para enlazar en el borrador"
-                >
-                  <Globe size={11} aria-hidden /> Buscar en las webs
-                  {cuentaWebs ? <span className="asistente-fuentes-cuenta" aria-hidden>{cuentaWebs}</span> : null}
-                </button>
+              {/* Qué consulta el asistente solo al redactar, además del
+                  catálogo: van en cada petición y lo que trae se ve en «Lo
+                  que ha usado». No rehacen el borrador: valen para la
+                  petición siguiente. */}
+              <span className="asistente-franja-fuentes" role="group" aria-label="Qué consulta el asistente">
+                {FUENTES.map((f) => (
+                  <label key={f.id} title={f.titulo}>
+                    <input
+                      type="checkbox"
+                      checked={fuentes[f.id]}
+                      disabled={ocupado || bloqueada}
+                      onChange={(e) => cambiarFuente(f.id, e.target.checked)}
+                    />
+                    {f.label}
+                  </label>
+                ))}
               </span>
               <span className="asistente-franja-formato" role="radiogroup" aria-label="Formato del correo">
                 {FORMATOS.map((f) => (
@@ -643,17 +597,6 @@ export function AsistenteFranja({
                 <Sparkles size={12} aria-hidden /> {ocupado ? "Redactando…" : modoCorreccion ? "Aplicar" : "Redactar"}
               </button>
             </div>
-            {hayMaterial ? (
-              <div ref={materialRef}>
-                <MaterialChips
-                  material={material}
-                  bloqueado={ocupado || bloqueada}
-                  onQuitarSoporte={() => setMaterial((m) => ({ ...m, soporte: null }))}
-                  onQuitarSinResultados={() => setMaterial((m) => ({ ...m, sinResultados: null }))}
-                  onQuitarWeb={(id) => setMaterial((m) => ({ ...m, webs: m.webs.filter((w) => w.id !== id) }))}
-                />
-              </div>
-            ) : null}
           </div>
           {error ? <p className="form-error asistente-franja-error" role="alert">{error}</p> : null}
           {hayConversacion ? (
@@ -722,80 +665,77 @@ export function AsistenteFranja({
           ) : null}
         </div>
       ) : null}
-      {buscador !== null && typeof document !== "undefined" ? createPortal(
-        // Fuera del compositor (que es un <form>): un Intro en el buscador no
-        // puede enviar el correo, ni un envío del buscador subir hasta el
-        // formulario del correo por el árbol de React.
-        <div className="asistente-fuentes-capa" onSubmit={(e) => e.stopPropagation()}>
-          <Modal
-            open
-            onClose={() => setBuscador(null)}
-            title={buscador === "soporte" ? "Buscar en soporte" : "Buscar en nuestras webs"}
-          >
-            {buscador === "soporte" ? (
-              <SoporteBusqueda
-                idioma={idiomaCorreo}
-                consultaInicial={material.sinResultados ?? undefined}
-                onUsar={usarSoporte}
-                onSinResultados={sinProcedimiento}
-              />
-            ) : (
-              <WebsBusqueda
-                idioma={idiomaCorreo}
-                elegidos={material.webs.map((w) => w.id)}
-                maximo={MAX_WEBS}
-                onAnadir={anadirWeb}
-              />
-            )}
-          </Modal>
-        </div>,
-        document.body,
-      ) : null}
     </section>
   );
 }
 
-/** Lo elegido de fuera, a la vista y con su ✕: es lo que viaja con la petición. */
-function MaterialChips({
-  material, bloqueado, onQuitarSoporte, onQuitarSinResultados, onQuitarWeb,
-}: {
-  material: MaterialElegido;
-  bloqueado: boolean;
-  onQuitarSoporte: () => void;
-  onQuitarSinResultados: () => void;
-  onQuitarWeb: (id: string) => void;
-}) {
-  return (
-    <div className="asistente-franja-material">
-      <ul className="asistente-material-chips" aria-label="Material elegido para el borrador">
-        {material.soporte ? (
-          <li className="asistente-material-chip">
-            <span>Soporte: {material.soporte.titulo || material.soporte.articulo_id}</span>
-            <button type="button" aria-label="Quitar el artículo de soporte" title="Quitar" disabled={bloqueado} onClick={onQuitarSoporte}>✕</button>
-          </li>
-        ) : null}
-        {material.sinResultados ? (
-          <li className="asistente-material-chip is-sin-resultados">
-            <span>Sin procedimiento: {material.sinResultados}</span>
-            <button type="button" aria-label="Quitar «sin procedimiento»" title="Quitar" disabled={bloqueado} onClick={onQuitarSinResultados}>✕</button>
-          </li>
-        ) : null}
-        {material.webs.map((w) => (
-          <li key={w.id} className="asistente-material-chip">
-            <span>Web: {w.titulo}</span>
-            <button type="button" aria-label={`Quitar la página «${w.titulo}»`} title="Quitar" disabled={bloqueado} onClick={() => onQuitarWeb(w.id)}>✕</button>
-          </li>
-        ))}
-      </ul>
-      <span className="muted small">Va con cada petición hasta que lo quites.</span>
-    </div>
-  );
-}
+/** Un artículo del soporte de un fabricante que entró en el turno. `usado`:
+ *  si el borrador lo usó (null si el modelo no lo dijo o es de antes). */
+type ArticuloUsado = { titulo: string; url: string | null; fuente: string; usado: boolean | null };
+
+/** Una página de nuestras webs que entró en el turno. `precio`: el que enseña
+ *  la web, si lo hay (nunca es el de una oferta). */
+type PaginaUsada = {
+  id: string;
+  titulo: string;
+  url: string | null;
+  dominio: string;
+  tipo: string;
+  precio: string | null;
+  usado: boolean | null;
+};
+
+/** Cómo preparó la búsqueda el asistente (el plan). Lo que buscó de verdad va
+ *  aparte (`buscadoEnSoporte`, `buscadoEnWebs`): el plan se calcula aunque una
+ *  casilla vaya desmarcada o la fuente no llegue a consultarse. */
+type ConsultaUsada = {
+  tecnica: boolean;
+  /** Lo que buscaría en las webs; vacío si el correo no pregunta por ningún producto. */
+  webs: string;
+  /** La preparó la IA o, si no respondió a tiempo, las palabras del correo. */
+  origen: "ia" | "palabras" | null;
+  /** La IA falló y la preparó por palabras. */
+  fallo: boolean;
+  /** Una corrección: reutiliza lo que trajo el primer borrador (y busca solo
+   *  lo que ese no miró o no pudo mirar). */
+  reutilizada: boolean;
+};
 
 type MaterialUsado = {
-  soporte: { titulo: string; url: string | null; fuente: string } | null;
-  webs: { id: string; titulo: string; url: string | null }[];
+  /** Lo trajo el asistente solo (las casillas «Webs» y «Soporte»). Sin él, un
+   *  borrador de antes: lo eligió la persona con los botones que había. */
+  automatico: boolean;
+  /** Las casillas con las que se redactó el turno. */
+  fuentes: { webs: boolean; soporte: boolean } | null;
+  consulta: ConsultaUsada | null;
+  soporte: ArticuloUsado | null;
+  /** Los otros artículos que salieron: solo título y enlace (no se citan). */
+  otrosSoporte: ArticuloUsado[];
+  webs: PaginaUsada[];
+  /** La búsqueda en el soporte que no encontró ningún procedimiento. */
   sinResultados: string | null;
+  /** Lo que no respondió (o no a tiempo), y por qué. */
+  noConsultado: { fuente: string; motivo: string }[];
+  /** La marca de la máquina, si no tiene centro de ayuda en la lista blanca. */
+  sinCentro: string | null;
+  /** No hay ningún centro de ayuda activo con búsqueda. */
+  sinFuentes: boolean;
+  /** Lo que se buscó en el soporte de verdad (en inglés y, si nada, en el idioma del correo). */
+  buscadoEnSoporte: string[];
+  /** Lo que se buscó en las webs de verdad. */
+  buscadoEnWebs: string | null;
+  /** La búsqueda en las webs que no encontró nada. */
+  websSinResultados: string | null;
+  /** Lo que tardó la consulta entera (el plan incluido), en ms. */
+  ms: number | null;
+  /** Lo que tardó cada fuente, en ms: solo lo hay si se buscó en este turno
+   *  (una corrección que reutiliza lo del primer borrador no lo trae). */
+  soporteMs: number | null;
+  websMs: number | null;
+  /** Usó el artículo sin poner su enlace: se añadió al final. */
+  enlaceAnadido: boolean;
+  /** El borrador trae pasos que no salen de ningún artículo. */
+  pasosSinProcedimiento: boolean;
 };
 
 function esObjeto(v: unknown): v is Record<string, unknown> {
@@ -807,35 +747,283 @@ function urlWeb(v: unknown): string | null {
   return typeof v === "string" && /^https?:\/\//i.test(v) ? v : null;
 }
 
+function cadena(v: unknown): string {
+  return typeof v === "string" ? v.trim() : "";
+}
+
+function usadoDe(v: unknown): boolean | null {
+  return typeof v === "boolean" ? v : null;
+}
+
+const TIPO_WEB: Record<string, string> = { pagina: "página", entrada: "entrada", producto: "producto" };
+
+function articuloDe(s: unknown): ArticuloUsado | null {
+  if (!esObjeto(s) || !(cadena(s["titulo"]) || cadena(s["url"]))) return null;
+  return {
+    titulo: cadena(s["titulo"]) || cadena(s["url"]),
+    url: urlWeb(s["url"]),
+    fuente: cadena(s["fuente_nombre"]) || cadena(s["fuente"]),
+    usado: usadoDe(s["usado"]),
+  };
+}
+
+/** «1.990,00 € (sin IVA)»: lo que dice la web, si da precio. */
+function precioWebDe(w: Record<string, unknown>): string | null {
+  const texto = cadena(w["precio_web_texto"]);
+  if (!texto) return null;
+  const iva = w["precio_iva"] === "sin_iva" ? " (sin IVA)" : w["precio_iva"] === "con_iva" ? " (con IVA)" : "";
+  return `${texto}${iva}`;
+}
+
+function consultaDe(c: unknown): ConsultaUsada | null {
+  if (!esObjeto(c)) return null;
+  const origen = c["origen"] === "ia" || c["origen"] === "palabras" ? c["origen"] : null;
+  return {
+    tecnica: c["tecnica"] === true,
+    webs: cadena(c["webs"]),
+    origen,
+    fallo: Boolean(cadena(c["error"])),
+    reutilizada: c["reutilizado"] === true,
+  };
+}
+
 /** Lo de fuera que entró en el turno, tal como lo apunta el backend en el
- *  contexto (`material`: `soporte`, `webs`, `sin_resultados`). Tolerante: un
- *  borrador de antes no lo trae, y cualquier forma rara se ignora. */
+ *  contexto (`material`): lo que el asistente consultó solo (`automatico`:
+ *  la consulta, el artículo, los otros artículos, las páginas, lo que no
+ *  encontró o no pudo consultar) o, en un borrador de antes, lo que eligió la
+ *  persona (`soporte`, `webs`, `sin_resultados`). Tolerante: un borrador sin
+ *  material no trae nada, y cualquier forma rara se ignora. */
 export function materialUsado(ctx: Record<string, unknown>): MaterialUsado {
   const m = esObjeto(ctx["material"]) ? ctx["material"] : ctx;
-  const s = m["soporte"];
-  const soporte = esObjeto(s) && (s["titulo"] || s["url"])
-    ? {
-      titulo: String(s["titulo"] ?? "") || String(s["url"] ?? ""),
-      url: urlWeb(s["url"]),
-      fuente: String(s["fuente_nombre"] ?? s["fuente"] ?? ""),
-    }
-    : null;
+  const automatico = m["automatico"] === true;
+  const f = m["fuentes"];
   const webs = Array.isArray(m["webs"])
     ? m["webs"].filter(esObjeto).map((w, i) => ({
       id: String(w["id"] ?? i),
-      titulo: String(w["titulo"] ?? "") || String(w["url"] ?? ""),
+      titulo: cadena(w["titulo"]) || cadena(w["url"]),
       url: urlWeb(w["url"]),
+      dominio: cadena(w["dominio"]) || cadena(w["sitio"]),
+      tipo: TIPO_WEB[cadena(w["tipo"])] ?? cadena(w["tipo"]),
+      precio: precioWebDe(w),
+      usado: usadoDe(w["usado"]),
     })).filter((w) => w.titulo)
     : [];
   const sr = m["sin_resultados"];
-  const sinResultados = esObjeto(sr) && typeof sr["consulta"] === "string" && sr["consulta"].trim()
-    ? sr["consulta"].trim()
-    : null;
-  return { soporte, webs, sinResultados };
+  const sinResultados = esObjeto(sr) ? cadena(sr["consulta"]) || null : null;
+  return {
+    automatico,
+    fuentes: automatico && esObjeto(f) ? { webs: f["webs"] === true, soporte: f["soporte"] === true } : null,
+    consulta: automatico ? consultaDe(m["consulta"]) : null,
+    soporte: articuloDe(m["soporte"]),
+    otrosSoporte: Array.isArray(m["otros_soporte"])
+      ? m["otros_soporte"].map(articuloDe).filter((a): a is ArticuloUsado => a !== null)
+      : [],
+    webs,
+    sinResultados,
+    noConsultado: Array.isArray(m["no_consultado"])
+      ? m["no_consultado"].filter(esObjeto)
+        .map((n) => ({ fuente: cadena(n["fuente"]), motivo: cadena(n["motivo"]) }))
+        .filter((n) => n.fuente)
+      : [],
+    sinCentro: cadena(m["sin_centro"]) || null,
+    sinFuentes: m["sin_fuentes"] === true,
+    buscadoEnSoporte: Array.isArray(m["buscado_en_soporte"])
+      ? m["buscado_en_soporte"].map(cadena).filter(Boolean)
+      : [],
+    buscadoEnWebs: cadena(m["buscado_en_webs"]) || null,
+    websSinResultados: cadena(m["webs_sin_resultados"]) || null,
+    ms: typeof m["ms"] === "number" ? m["ms"] : null,
+    soporteMs: typeof m["soporte_ms"] === "number" ? m["soporte_ms"] : null,
+    websMs: typeof m["webs_ms"] === "number" ? m["webs_ms"] : null,
+    enlaceAnadido: m["enlace_anadido"] === true,
+    pasosSinProcedimiento: m["pasos_sin_procedimiento"] === true,
+  };
+}
+
+/** Un correo técnico con «Soporte» marcada en el que no se buscó nada y no
+ *  consta por qué (ni sin centro de ayuda, ni un fallo): se dice igual, que
+ *  el soporte no se ha consultado. Nunca se da por buscado. */
+function soporteSinBuscar(d: MaterialUsado): boolean {
+  return Boolean(d.fuentes?.soporte && d.consulta?.tecnica)
+    && d.buscadoEnSoporte.length === 0 && d.soporte === null && d.otrosSoporte.length === 0
+    && d.sinResultados === null && d.sinCentro === null && !d.sinFuentes
+    && !d.noConsultado.some((n) => n.fuente === "soporte");
+}
+
+/** Lo de fuera en la frase de «Lo que ha usado». */
+function partesDeFuera(d: MaterialUsado): string[] {
+  const partes: string[] = [];
+  const plural = (n: number) => (n === 1 ? "" : "s");
+  if (!d.automatico) {
+    // Un borrador de antes: lo eligió la persona con los botones que había.
+    if (d.soporte) partes.push(`el artículo de soporte «${d.soporte.titulo}»${d.soporte.fuente ? ` (${d.soporte.fuente})` : ""}`);
+    if (d.sinResultados) partes.push(`la búsqueda «${d.sinResultados}» en el soporte, sin procedimiento`);
+    if (d.webs.length > 0) partes.push(`${d.webs.length} página${plural(d.webs.length)} de nuestras webs`);
+    return partes;
+  }
+  if (d.soporte) {
+    partes.push(`consultó el soporte${d.soporte.fuente ? ` (${d.soporte.fuente})` : ""}: el artículo «${d.soporte.titulo}»`);
+  } else if (d.sinResultados) {
+    partes.push(`sin procedimiento en el soporte para «${d.sinResultados}»`);
+  }
+  if (d.noConsultado.some((n) => n.fuente === "soporte")) partes.push("no se pudo consultar el soporte");
+  if (d.sinCentro) partes.push(`${d.sinCentro} no tiene centro de ayuda en la lista`);
+  if (soporteSinBuscar(d)) partes.push("no se consultó el soporte");
+  if (d.webs.length > 0) {
+    partes.push(`${d.webs.length} página${plural(d.webs.length)} de nuestras webs`);
+  } else if (d.websSinResultados) {
+    partes.push(`webs: nada para «${d.websSinResultados}»`);
+  }
+  if (d.noConsultado.some((n) => n.fuente === "webs")) partes.push("no se pudieron consultar las webs");
+  return partes;
+}
+
+/** Lo que dice el título plegado si el asistente consultó algo solo. */
+function pistaDeFuera(d: MaterialUsado): string {
+  if (!d.automatico) return "";
+  const soporte = d.soporte !== null || d.otrosSoporte.length > 0 || d.sinResultados !== null;
+  const webs = d.webs.length > 0 || d.websSinResultados !== null;
+  return soporte && webs ? "consultó soporte y webs"
+    : soporte ? "consultó el soporte"
+      : webs ? "consultó las webs" : "";
+}
+
+/** «Buscó «…» en el soporte · «…» en las webs — la preparó la IA, en 1,2 s».
+ *  Solo lo que se buscó de verdad (lo apunta el backend al buscar): nunca lo
+ *  que preparó el plan ni las casillas de ahora, que no dicen que se buscara
+ *  (una casilla desmarcada en el primer borrador, una marca sin centro de
+ *  ayuda, una fuente que no respondió). */
+function busquedaDe(d: MaterialUsado): string {
+  const c = d.consulta;
+  if (!c) return "";
+  const soporte = d.buscadoEnSoporte.length > 0 ? `«${d.buscadoEnSoporte.join(" / ")}» en el soporte` : "";
+  const webs = d.buscadoEnWebs ? `«${d.buscadoEnWebs}» en las webs` : "";
+  if (!soporte && !webs) return "";
+  if (c.reutilizada) {
+    // Una corrección reutiliza lo que buscó el primer borrador; lo que ese no
+    // miró (su casilla iba desmarcada) o no pudo mirar lo busca ahora, con la
+    // búsqueda que se preparó entonces. Lo buscado ahora trae su tiempo, o el
+    // fallo de las webs (lo del primer borrador no se arrastra).
+    const soporteAhora = Boolean(soporte) && d.soporteMs !== null;
+    const websAhora = Boolean(webs)
+      && (d.websMs !== null || d.noConsultado.some((n) => n.fuente === "webs"));
+    const ahora = [soporteAhora ? soporte : "", websAhora ? webs : ""].filter(Boolean);
+    const antes = [soporteAhora ? "" : soporte, websAhora ? "" : webs].filter(Boolean);
+    const grupos: string[] = [];
+    if (ahora.length > 0) {
+      grupos.push(`${ahora.join(" · ")} — en esta corrección, con la búsqueda del primer borrador`);
+    }
+    if (antes.length > 0) {
+      grupos.push(`${antes.join(" · ")} — la del primer borrador: esta corrección no ha vuelto a buscar`);
+    }
+    return `Buscó ${grupos.join("; ")}`;
+  }
+  const quien = c.origen === "ia"
+    ? "la preparó la IA"
+    : c.origen === "palabras"
+      ? `con las palabras del correo${c.fallo ? " (la IA no pudo prepararla)" : ""}`
+      : "";
+  const tiempo = d.ms !== null
+    ? `, en ${(d.ms / 1000).toLocaleString("es-ES", { maximumFractionDigits: 1 })} s`
+    : "";
+  return `Buscó ${[soporte, webs].filter(Boolean).join(" · ")}${quien ? ` — ${quien}` : ""}${tiempo}`;
+}
+
+function usoDe(usado: boolean | null): string {
+  return usado === null ? "" : usado ? "usado en el borrador" : "no lo usó";
+}
+
+function Enlace({ titulo, url }: { titulo: string; url: string | null }) {
+  return url ? <a href={url} target="_blank" rel="noreferrer">{titulo}</a> : <>{titulo}</>;
+}
+
+/** Lo que el asistente trajo solo de nuestras webs y del soporte, pieza a
+ *  pieza: su enlace (solo web), de dónde sale y si el borrador lo usó; lo que
+ *  no encontró, no hacía falta o no se pudo consultar; y qué buscó. */
+function LoQueTrajo({ d }: { d: MaterialUsado }) {
+  const detalle = (...trozos: string[]) => {
+    const texto = trozos.filter(Boolean).join(" · ");
+    return texto ? <span className="muted small"> — {texto}</span> : null;
+  };
+  const falloSoporte = d.noConsultado.some((n) => n.fuente === "soporte");
+  const algoDelSoporte = d.soporte !== null || d.otrosSoporte.length > 0 || d.sinResultados !== null
+    || d.sinCentro !== null || d.sinFuentes || falloSoporte;
+  const falloWebs = d.noConsultado.some((n) => n.fuente === "webs");
+  // Marcada, pero no hacía falta: el correo no es técnico, o no pregunta por
+  // ningún producto.
+  const soporteSinConsultar = Boolean(d.fuentes?.soporte && d.consulta && !d.consulta.tecnica && !algoDelSoporte);
+  const websSinConsultar = Boolean(d.fuentes?.webs && d.consulta && !d.consulta.webs
+    && d.webs.length === 0 && !d.websSinResultados && !falloWebs);
+  const soporteSinBuscarlo = soporteSinBuscar(d);
+  const busqueda = busquedaDe(d);
+  if (!algoDelSoporte && !d.pasosSinProcedimiento && !soporteSinConsultar && !soporteSinBuscarlo
+      && d.webs.length === 0
+      && !d.websSinResultados && !websSinConsultar && d.noConsultado.length === 0 && !busqueda) {
+    return null;
+  }
+  return (
+    <ul className="asistente-panel-lista" aria-label="Lo que trajo solo de webs y soporte">
+      {d.soporte ? (
+        <li>
+          Soporte: <Enlace titulo={d.soporte.titulo} url={d.soporte.url} />
+          {detalle(d.soporte.fuente, usoDe(d.soporte.usado),
+            d.enlaceAnadido ? "su enlace se ha añadido al final del correo" : "")}
+        </li>
+      ) : null}
+      {d.otrosSoporte.map((a, i) => (
+        <li key={`s-${i}`}>
+          Otro artículo del soporte: <Enlace titulo={a.titulo} url={a.url} />
+          {detalle(a.fuente, "solo enlazable", usoDe(a.usado))}
+        </li>
+      ))}
+      {d.sinResultados ? (
+        <li>
+          Sin procedimiento en el soporte para «{d.sinResultados}»
+          {detalle(d.pasosSinProcedimiento ? "pero el borrador trae pasos: revísalo" : "el borrador lo dice, sin pasos")}
+        </li>
+      ) : d.pasosSinProcedimiento ? (
+        <li>
+          El borrador trae pasos que no salen de ningún artículo del soporte{detalle("revísalo")}
+        </li>
+      ) : null}
+      {d.sinCentro ? (
+        <li>Soporte: {d.sinCentro} no tiene centro de ayuda en la lista{detalle("no se ha consultado")}</li>
+      ) : null}
+      {d.sinFuentes ? (
+        <li>Soporte: no hay ningún centro de ayuda activo en la lista{detalle("no se ha consultado")}</li>
+      ) : null}
+      {soporteSinConsultar ? (
+        <li>Soporte: no se ha consultado{detalle("el correo no es técnico")}</li>
+      ) : null}
+      {soporteSinBuscarlo ? (
+        <li>Soporte: no se ha consultado{detalle("no hay ningún procedimiento del fabricante que citar")}</li>
+      ) : null}
+      {d.webs.map((w) => (
+        <li key={`w-${w.id}`}>
+          Web: <Enlace titulo={w.titulo} url={w.url} />
+          {detalle(w.dominio, w.tipo, w.precio ? `precio de la web: ${w.precio}` : "", usoDe(w.usado))}
+        </li>
+      ))}
+      {d.websSinResultados ? (
+        <li>Webs: nada en el índice para «{d.websSinResultados}»</li>
+      ) : null}
+      {websSinConsultar ? (
+        <li>Webs: no se han consultado{detalle("el correo no pregunta por ningún producto")}</li>
+      ) : null}
+      {d.noConsultado.map((n, i) => (
+        <li key={`n-${i}`}>
+          {n.fuente === "webs" ? "No se han podido consultar nuestras webs" : "No se ha podido consultar el soporte"}
+          {detalle(n.motivo)}
+        </li>
+      ))}
+      {busqueda ? <li className="muted small">{busqueda}</li> : null}
+    </ul>
+  );
 }
 
 /** Plegado: lo que entró en el contexto (hilo, ficha, correos viejos con fecha,
- *  asunto y motivo, empresa, tokens, lo dejado fuera) y los enlaces que podía usar. */
+ *  asunto y motivo, empresa, tokens, lo dejado fuera), lo que consultó solo en
+ *  nuestras webs y en el soporte (y si lo usó), y los enlaces que podía usar. */
 export function LoQueHaUsado({ borrador }: { borrador: BorradorAsistente }) {
   const ctx = borrador.contexto ?? {};
   const num = (k: string): number | null => (typeof ctx[k] === "number" ? (ctx[k] as number) : null);
@@ -921,17 +1109,11 @@ export function LoQueHaUsado({ borrador }: { borrador: BorradorAsistente }) {
   } else if (catalogo) {
     partes.push("sin productos del catálogo para este caso (ningún precio)");
   }
-  // Lo de fuera que eligió la persona para este turno (soporte, nuestras webs).
+  // Lo de fuera: lo que el asistente consultó solo para este turno (las
+  // casillas) o, en un borrador de antes, lo que eligió la persona.
   const deFuera = materialUsado(ctx);
-  if (deFuera.soporte) {
-    partes.push(`el artículo de soporte «${deFuera.soporte.titulo}»${deFuera.soporte.fuente ? ` (${deFuera.soporte.fuente})` : ""}`);
-  }
-  if (deFuera.sinResultados) {
-    partes.push(`la búsqueda «${deFuera.sinResultados}» en el soporte, sin procedimiento`);
-  }
-  if (deFuera.webs.length > 0) {
-    partes.push(`${deFuera.webs.length} página${deFuera.webs.length === 1 ? "" : "s"} de nuestras webs`);
-  }
+  partes.push(...partesDeFuera(deFuera));
+  const pista = pistaDeFuera(deFuera);
   if (tokens !== null) partes.push(`~${tokens.toLocaleString("es-ES")} tokens de entrada${presupuesto ? ` de ${presupuesto.toLocaleString("es-ES")}` : ""}`);
   if (recortes.length > 0) partes.push(`${recortes.length} elemento${recortes.length === 1 ? "" : "s"} fuera por tamaño`);
   if (borrador.turno > 0) {
@@ -949,7 +1131,9 @@ export function LoQueHaUsado({ borrador }: { borrador: BorradorAsistente }) {
   }
   return (
     <details className="asistente-panel-detalle">
-      <summary>Lo que ha usado (alcance: {etiquetaAlcance(borrador.alcance)})</summary>
+      <summary>
+        Lo que ha usado (alcance: {etiquetaAlcance(borrador.alcance)}){pista ? ` · ${pista}` : ""}
+      </summary>
       <p className="muted small">{partes.join(" · ")}.</p>
       {historico.length > 0 ? (
         <ul className="asistente-panel-lista">
@@ -981,7 +1165,9 @@ export function LoQueHaUsado({ borrador }: { borrador: BorradorAsistente }) {
           ))}
         </ul>
       ) : null}
-      {deFuera.soporte || deFuera.sinResultados || deFuera.webs.length > 0 ? (
+      {deFuera.automatico ? <LoQueTrajo d={deFuera} /> : null}
+      {!deFuera.automatico && (deFuera.soporte || deFuera.sinResultados || deFuera.webs.length > 0) ? (
+        // Un borrador de antes: lo que la persona eligió con los botones que había.
         <ul className="asistente-panel-lista" aria-label="Material de fuera que entró">
           {deFuera.soporte ? (
             <li>

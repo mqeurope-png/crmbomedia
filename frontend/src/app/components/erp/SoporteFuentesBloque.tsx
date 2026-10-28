@@ -12,9 +12,9 @@ import {
 } from "../../lib/soporteApi";
 
 /** Configuración ERP → Base de conocimiento → «Soporte de terceros (lista
- *  blanca)»: los centros de soporte de los fabricantes en los que se puede
- *  buscar un procedimiento («Buscar en soporte» del redactor). Solo se
- *  descarga de estos dominios; «Comprobar» dice si de verdad sirven contenido
+ *  blanca)»: los centros de soporte de los fabricantes que el asistente
+ *  consulta solo al redactar un correo técnico, si la casilla «Soporte» de la
+ *  franja está marcada. Solo se descarga de estos dominios; «Comprobar» dice si de verdad sirven contenido
  *  o si la página se pinta con JavaScript y lo que llega es una cáscara vacía. Cada
  *  cambio se guarda al momento por su API (`/api/erp/soporte/fuentes`). */
 
@@ -197,8 +197,10 @@ export function SoporteFuentesBloque({ canEdit }: { canEdit: boolean }) {
     <section className="kb-bloque" aria-labelledby="kb-soporte-fuentes-t">
       <h3 id="kb-soporte-fuentes-t">Soporte de terceros (lista blanca)</h3>
       <p className="muted small">
-        Los centros de soporte de los fabricantes en los que se busca un procedimiento: «Buscar en
-        soporte» del redactor. <strong>Solo se descarga de
+        Los centros de soporte de los fabricantes que el asistente consulta solo al redactar un
+        correo técnico (una avería, un error, un ajuste, cómo se hace algo), si la casilla
+        «Soporte» de la franja está marcada: busca el procedimiento y lo cita con su enlace.
+        Si la marca de la máquina no tiene centro aquí, no se consulta. <strong>Solo se descarga de
         estos dominios</strong>, nunca de una dirección que traiga el cliente, con tiempo y tamaño
         máximos y una caché que caduca. Antes de activar una fuente, «Comprobar»: si la página se
         pinta con JavaScript, lo que llega es una cáscara vacía y no sirve (no encontraría nada y el

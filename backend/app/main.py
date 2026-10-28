@@ -207,9 +207,9 @@ app.include_router(erp_ia_router)
 # PDF, envío y «Convertir en presupuesto»).
 app.include_router(erp_ofertas_router)
 app.include_router(erp_plantillas_router)
-# Lo que el redactor va a buscar fuera del catálogo: el soporte de terceros
-# (solo el redactor, con el mismo ámbito que el asistente) y el índice de
-# nuestras webs.
+# Lo que el redactor consulta fuera del catálogo: la lista blanca del soporte
+# de terceros y el índice de nuestras webs (administración y «Probar»; el
+# asistente busca él solo al redactar, sin pasar por estas rutas).
 app.include_router(erp_soporte_router)
 app.include_router(erp_webs_router)
 

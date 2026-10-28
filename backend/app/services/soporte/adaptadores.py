@@ -26,6 +26,13 @@ from __future__ import annotations
 
 import html as html_mod
 import re
+import socket
+import time
+from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturoAgotado
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any
@@ -73,6 +80,24 @@ _IDIOMA_RE = re.compile(r"^[a-z]{2}$")
 #: Para los tests: un `httpx.Client` con `MockTransport` y un resolutor de DNS
 #: falso. En producción, vacío (red de verdad, con los cerrojos de `red`).
 _RED_PRUEBAS: dict[str, Any] = {}
+
+#: El plazo de la consulta en curso (`con_plazo`): hasta cuándo y cuánto puede
+#: esperar cada petición. Sin plazo, los tiempos de siempre.
+_PLAZO: ContextVar[tuple[float, float] | None] = ContextVar("soporte_plazo", default=None)
+
+
+@contextmanager
+def con_plazo(segundos: float, *, por_peticion: float) -> Iterator[None]:
+    """Mientras dure, cada petición al soporte espera como mucho `por_peticion`
+    segundos y todas juntas `segundos` (la búsqueda, su respaldo en inglés y
+    el artículo). Pasado el plazo, la siguiente ni sale: `SoporteError`
+    («tiempo_agotado»). Lo usa el redactor, que consulta el soporte DENTRO de
+    la redacción del borrador (el nginx de Plesk corta a los 60 s)."""
+    token = _PLAZO.set((time.monotonic() + segundos, por_peticion))
+    try:
+        yield
+    finally:
+        _PLAZO.reset(token)
 
 
 def fijar_red_para_tests(*, cliente: Any = None, resolver: Any = None) -> None:
@@ -122,14 +147,41 @@ _STATUS_RED = {
 }
 
 
+def _resolver_con_plazo(segundos: float) -> Callable[..., list[Any]]:
+    """`getaddrinfo` con tiempo máximo: un DNS lento no se come el plazo del
+    soporte (la comprobación de red interna resuelve antes de conectar). Si
+    no responde a tiempo, es un «no se encuentra el dominio» y no sale nada."""
+    def resolver(host: str, port: Any, **kw: Any) -> list[Any]:
+        hilo = ThreadPoolExecutor(max_workers=1)
+        try:
+            return hilo.submit(socket.getaddrinfo, host, port, **kw).result(timeout=segundos)
+        except FuturoAgotado as exc:
+            raise socket.gaierror(socket.EAI_AGAIN, "el DNS no ha respondido a tiempo") from exc
+        finally:
+            hilo.shutdown(wait=False)
+    return resolver
+
+
 def _pedir(fuente: SoporteFuente, url: str, *, timeout: float,
            acepta: str = "application/json") -> red.Respuesta:
-    """Una petición a la fuente, con su dominio como única lista blanca."""
+    """Una petición a la fuente, con su dominio como única lista blanca (y,
+    dentro de `con_plazo`, con el tiempo que quede)."""
+    plazo = _PLAZO.get()
+    resolver = _RED_PRUEBAS.get("resolver")
+    if plazo is not None:
+        hasta, por_peticion = plazo
+        restante = hasta - time.monotonic()
+        if restante <= 0:
+            raise SoporteError("tiempo_agotado",
+                               f"{fuente.nombre}: no ha respondido a tiempo.", 504)
+        timeout = min(timeout, por_peticion, restante)
+        if resolver is None:
+            resolver = _resolver_con_plazo(timeout)
     try:
         return red.obtener(
             url, max_bytes=MAX_BYTES, timeout=timeout, cabeceras={"Accept": acepta},
             hosts_permitidos={fuente.dominio.lower()},
-            cliente=_RED_PRUEBAS.get("cliente"), resolver=_RED_PRUEBAS.get("resolver"),
+            cliente=_RED_PRUEBAS.get("cliente"), resolver=resolver,
         )
     except red.RedError as exc:
         raise SoporteError(exc.codigo, f"{fuente.nombre}: {exc}",

@@ -387,18 +387,21 @@ Dos paneles más en **Configuración ERP → Base de conocimiento**, antes de
 «Probar», cada uno con su API y sus tablas (aparte de `/api/erp/conocimiento`):
 
 - **«Soporte de terceros (lista blanca)»** (`soporte_fuentes`): los centros de
-  soporte de los fabricantes en los que el redactor busca un procedimiento
-  («Buscar en soporte»; la Cola SAT ya no tiene consulta propia). Arranca con
+  soporte de los fabricantes en los que el redactor busca por su cuenta
+  un procedimiento al redactar un correo técnico, con la casilla «Soporte» de la
+  franja marcada (desde el 28/10/2026; antes, el botón «Buscar en soporte». La
+  Cola SAT ya no tiene consulta propia). Arranca con
   FLUX (la API pública de Zendesk de `support.flux3dp.com`). Solo se descarga
   de estos dominios; «Comprobar» dice
   si una fuente sirve contenido o es una cáscara que se pinta con JavaScript.
   No sustituye a la KB de FLUX de arriba: aquella enlaza la categoría del
-  modelo; esta trae el artículo que la persona elige.
+  modelo; esta trae el artículo que sale al buscar lo que pregunta el cliente.
 - **«Índice de las webs»** (`web_indice`): páginas, entradas y productos (sin
   repuestos ni consumibles) de nuestras webs, una fila por idioma, con
   `visto_en` / `ido_en` como `kb_catalogo`, para que el redactor cite un trozo
-  con su enlace. Recorrido mensual en worker-web y «Reindexar ahora»; reglas
-  editables de qué entra. Los precios son **precio de la web**: se pueden
-  citar, nunca ofertar.
+  con su enlace (lo consulta por su cuenta al redactar, con la casilla
+  «Webs»; «Probar» del panel enseña lo que encontraría). Recorrido mensual en
+  worker-web y «Reindexar ahora»; reglas editables de qué entra. Los precios
+  son **precio de la web**: se pueden citar, nunca ofertar.
 
 Todo en [fuentes-externas.md](fuentes-externas.md).

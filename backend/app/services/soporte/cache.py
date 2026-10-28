@@ -12,10 +12,15 @@ sin el artículo que ya se leyó ayer.
   `expira_en` es barato). No hay tarea programada que mantener.
 - Lo que falla NO se guarda: el siguiente intento vuelve a preguntar.
 
-Escribir en la caché es lo de menos: va en un SAVEPOINT y, si falla (dos
-peticiones iguales a la vez que insertan la misma clave), se sigue sin ella.
-Quien llama hace el `commit` (la API lo hace; si el redactor no lo hace, la
-fila no se queda y no pasa nada).
+Escribir en la caché es lo de menos y va en su PROPIA transacción, corta y
+con commit al momento (en MySQL): quien la usa es el asistente, a mitad de
+redactar un borrador, y su transacción dura lo que la llamada al modelo
+(20-40 s). Si la escritura fuera en ella, sus bloqueos (la purga de
+caducados toma un rango del índice) dejarían esperando a cualquier otro
+borrador que guardara en la caché a la vez, y esa espera se comería el plazo
+del soporte. Si falla (dos peticiones iguales a la vez que insertan la misma
+clave), se sigue sin ella. En SQLite (los tests: una sola conexión) va en un
+SAVEPOINT de la sesión de quien llama.
 """
 from __future__ import annotations
 
@@ -67,26 +72,41 @@ def leer(session: Session, clave_cache: str) -> Any | None:
         return None
 
 
+def _escribir(session: Session, clave_cache: str, *, fuente: str, tipo: str, datos: Any,
+              duracion: timedelta) -> None:
+    ahora = _ahora()
+    # Los caducados, fuera (salvo esta misma clave, que se reescribe).
+    session.execute(
+        delete(SoporteCache)
+        .where(SoporteCache.expira_en < ahora, SoporteCache.clave != clave_cache)
+        .execution_options(synchronize_session=False))
+    fila = session.get(SoporteCache, clave_cache)
+    if fila is None:
+        fila = SoporteCache(clave=clave_cache)
+        session.add(fila)
+    fila.fuente = fuente
+    fila.tipo = tipo
+    fila.datos_json = json.dumps(datos, ensure_ascii=False)
+    fila.creado_en = ahora
+    fila.expira_en = ahora + duracion
+    session.flush()
+
+
 def guardar(session: Session, clave_cache: str, *, fuente: str, tipo: str, datos: Any,
             duracion: timedelta) -> None:
-    ahora = _ahora()
+    """Guarda lo leído. En MySQL, en una transacción aparte con commit al
+    momento: nunca deja bloqueos en la transacción de quien llama."""
+    bind = session.get_bind()
     try:
-        with session.begin_nested():
-            # Los caducados, fuera (salvo esta misma clave, que se reescribe).
-            session.execute(
-                delete(SoporteCache)
-                .where(SoporteCache.expira_en < ahora, SoporteCache.clave != clave_cache)
-                .execution_options(synchronize_session=False))
-            fila = session.get(SoporteCache, clave_cache)
-            if fila is None:
-                fila = SoporteCache(clave=clave_cache)
-                session.add(fila)
-            fila.fuente = fuente
-            fila.tipo = tipo
-            fila.datos_json = json.dumps(datos, ensure_ascii=False)
-            fila.creado_en = ahora
-            fila.expira_en = ahora + duracion
-            session.flush()
+        if bind.dialect.name == "sqlite":
+            with session.begin_nested():
+                _escribir(session, clave_cache, fuente=fuente, tipo=tipo, datos=datos,
+                          duracion=duracion)
+            return
+        with Session(bind=bind) as aparte:
+            _escribir(aparte, clave_cache, fuente=fuente, tipo=tipo, datos=datos,
+                      duracion=duracion)
+            aparte.commit()
     except SQLAlchemyError as exc:
         logger.warning("soporte.cache: no se ha guardado %s de %s (%s)", tipo, fuente,
                        type(exc).__name__)

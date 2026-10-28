@@ -26,12 +26,14 @@ Sin hilo (un correo nuevo desde Redactar o desde la ficha) y la conversación:
                                                             compañero» al cambiar «Para»)
 
 Las tres peticiones que redactan (las dos de generar y el turno) aceptan
-además lo que la persona eligió de FUERA para ese turno: `soporte`
-(`{fuente, articulo_id, idioma}`, el artículo que encontró con «Buscar en
-soporte»), `soporte_sin_resultados` (`{consulta}`: buscó y no hay nada) y
-`webs` (ids del índice de nuestras webs). Va en la petición del turno, como
-material de consulta; si no se puede leer, 409/502 con su `code` y sin
-borrador. Sin esos campos, el turno es exactamente el de siempre.
+además las casillas de la franja, `fuentes: {webs, soporte}`: con alguna
+marcada, el asistente consulta SOLO nuestras webs y el soporte de los
+fabricantes con lo que pregunta el cliente (`asistente.consulta_fuentes`) y
+lo que trae va en la petición del turno, como material de consulta. Lo que no
+responde a tiempo se deja fuera y lo dice el aviso: nunca tira el borrador.
+Sin `fuentes` (o con las dos desmarcadas), el turno es exactamente el de
+siempre. No hace falta ningún permiso aparte: lo consulta el servidor
+mientras redacta, para quien puede usar el asistente.
 
 Puede pedirlo cualquier usuario que pueda ver el hilo (la misma regla que el
 detalle del hilo); un borrador sin hilo solo lo toca quien lo pidió (o
@@ -43,7 +45,7 @@ No hay aquí ningún camino que envíe correo.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Annotated, Any, Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
@@ -65,7 +67,7 @@ from app.models.ia import (
     BorradorAsistente,
 )
 from app.services import llm
-from app.services.asistente import borradores, material_fuera, redactor
+from app.services.asistente import borradores, consulta_fuentes, redactor
 from app.services.email_aliases import thread_is_visible
 from app.services.web_forms import sitios as registro_sitios
 
@@ -73,26 +75,19 @@ router = APIRouter(prefix="/api/emails/threads/{thread_id}/asistente", tags=["as
 router_conversacion = APIRouter(prefix="/api/emails/asistente", tags=["asistente"])
 
 
-class SoporteElegido(BaseModel):
-    """El artículo del soporte de un tercero que la persona eligió tras
-    «Buscar en soporte»: se lee por fuente + id (nunca por una URL libre)."""
-    fuente: str = Field(min_length=1, max_length=40)
-    articulo_id: str = Field(min_length=1, max_length=64)
-    idioma: str | None = Field(default=None, max_length=10)
-
-
-class SoporteSinResultados(BaseModel):
-    """«Busqué en el soporte y no hay nada»: el borrador lo dice y no se
-    inventa el procedimiento."""
-    consulta: str = Field(min_length=1, max_length=300)
+class FuentesIn(BaseModel):
+    """Las casillas «Webs» y «Soporte» de la franja: qué consulta el asistente
+    solo al redactar. Las dos desmarcadas (o sin el campo): nada."""
+    webs: bool = False
+    soporte: bool = False
 
 
 class _SobreElEditor(BaseModel):
     """Lo que hay ahora mismo en el editor viaja con cada petición: la IA
     corrige ESO (el borrador retocado, un correo escrito a mano, un borrador
-    guardado reabierto), y con una selección, solo ese fragmento. Y lo que la
-    persona eligió de fuera para este turno (soporte, nuestras webs); sin
-    nada de eso, el turno es exactamente el de siempre."""
+    guardado reabierto), y con una selección, solo ese fragmento. Y las
+    casillas de lo que el asistente consulta solo (nuestras webs, el soporte);
+    sin ellas, el turno es exactamente el de siempre."""
     #: El HTML del editor (sin la firma del compositor), si hay algo escrito.
     texto_actual_html: str | None = Field(default=None, max_length=redactor.MAX_TEXTO_EDITOR)
     #: El fragmento seleccionado en el editor: la corrección se aplica solo a él.
@@ -103,19 +98,18 @@ class _SobreElEditor(BaseModel):
     #: El correo compuesto que hay ahora en la vista previa (con los textos
     #: retocados): la corrección se aplica sobre ESA estructura.
     estructura_actual: dict[str, Any] | None = None
-    #: El artículo de soporte elegido: el borrador cita su procedimiento.
-    soporte: SoporteElegido | None = None
-    #: Se buscó en el soporte y no hay nada: el borrador lo dice, sin pasos.
-    soporte_sin_resultados: SoporteSinResultados | None = None
-    #: Ids de `web_indice` (páginas de nuestras webs) elegidos.
-    webs: list[Annotated[str, Field(max_length=36)]] = Field(default_factory=list,
-                                                              max_length=4)
+    #: Qué consulta el asistente solo: nuestras webs, el soporte.
+    fuentes: FuentesIn | None = None
 
-    def material(self) -> material_fuera.Pedido | None:
-        """Lo elegido de fuera, o None si no viene nada."""
-        return material_fuera.Pedido.de(soporte=self.soporte,
-                                        sin_resultados=self.soporte_sin_resultados,
-                                        webs=self.webs)
+    def consulta(self) -> consulta_fuentes.Fuentes | None:
+        """Las casillas, o None si no viene ninguna marcada."""
+        if self.fuentes is None or not (self.fuentes.webs or self.fuentes.soporte):
+            return None
+        return consulta_fuentes.Fuentes(webs=self.fuentes.webs, soporte=self.fuentes.soporte)
+
+    def fuentes_auditoria(self) -> dict[str, bool]:
+        return {"webs": bool(self.fuentes and self.fuentes.webs),
+                "soporte": bool(self.fuentes and self.fuentes.soporte)}
 
 
 class GenerarIn(_SobreElEditor):
@@ -174,14 +168,9 @@ def _borrador_accesible(session: Session, borrador_id: str, user: User) -> Borra
 
 def _redactar(session: Session, trabajo: Callable[[], BorradorAsistente]) -> BorradorAsistente:
     """Llama al modelo y traduce lo que puede salir mal a HTTP; la llamada
-    fallida queda anotada. Lo elegido de fuera que no se puede leer (el
-    soporte no responde, el artículo ya no está) es un error con su `code`:
-    no se redacta sin ello."""
+    fallida queda anotada."""
     try:
         return trabajo()
-    except material_fuera.MaterialNoDisponible as exc:
-        session.rollback()
-        raise HTTPException(exc.status, {"code": exc.codigo, "detail": str(exc)}) from exc
     except ValueError as exc:
         session.rollback()
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
@@ -274,10 +263,11 @@ def generar(
         regenerar_de=payload.regenerar_de, texto_actual_html=payload.texto_actual_html,
         seleccion_html=payload.seleccion_html, formato=payload.formato,
         estructura_actual=payload.estructura_actual, oferta_id=payload.oferta_id,
-        material=payload.material(),
+        fuentes=payload.consulta(),
     ))
     return _anotar_y_devolver(session, request, borrador, current_user,
-                              {"regenerar_de": payload.regenerar_de})
+                              {"regenerar_de": payload.regenerar_de,
+                               "fuentes": payload.fuentes_auditoria()})
 
 
 @router.post("/{borrador_id}/descartar")
@@ -329,10 +319,11 @@ def generar_nuevo(
         contacto=contacto, regenerar_de=payload.regenerar_de,
         texto_actual_html=payload.texto_actual_html, seleccion_html=payload.seleccion_html,
         formato=payload.formato, estructura_actual=payload.estructura_actual,
-        oferta_id=payload.oferta_id, material=payload.material(),
+        oferta_id=payload.oferta_id, fuentes=payload.consulta(),
     ))
     return _anotar_y_devolver(session, request, borrador, current_user,
-                              {"sin_hilo": True, "regenerar_de": payload.regenerar_de})
+                              {"sin_hilo": True, "regenerar_de": payload.regenerar_de,
+                               "fuentes": payload.fuentes_auditoria()})
 
 
 @router_conversacion.post("/{borrador_id}/turno", status_code=status.HTTP_201_CREATED)
@@ -356,8 +347,9 @@ def turno(
         session, borrador=borrador, instruccion=payload.instruccion, usuario=current_user,
         texto_actual_html=payload.texto_actual_html, seleccion_html=payload.seleccion_html,
         formato=payload.formato, estructura_actual=payload.estructura_actual,
-        material=payload.material()))
-    return _anotar_y_devolver(session, request, nuevo, current_user, {"padre_id": borrador.id})
+        fuentes=payload.consulta()))
+    return _anotar_y_devolver(session, request, nuevo, current_user,
+                              {"padre_id": borrador.id, "fuentes": payload.fuentes_auditoria()})
 
 
 @router_conversacion.post("/{borrador_id}/descartar")

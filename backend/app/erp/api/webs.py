@@ -1,11 +1,15 @@
 """Índice de las webs propias — la API (`/api/erp/webs`).
 
-Buscar en el índice (para el redactor), el estado por web y tipo, «Reindexar
-ahora» (en cola, en worker-web) y las reglas de qué entra y qué no. Solo lee
-de las webs, por sus endpoints públicos. Las formas de las respuestas son las
-de `frontend/src/app/lib/websApi.ts`.
+Buscar en el índice («Probar» del panel de Configuración ERP), el estado por
+web y tipo, «Reindexar ahora» (en cola, en worker-web) y las reglas de qué
+entra y qué no. Solo lee de las webs, por sus endpoints públicos. Las formas
+de las respuestas son las de `frontend/src/app/lib/websApi.ts`.
 
-- GET    /buscar?q=&idioma=&sitio=&tipo=   fragmentos (cualquiera con ERP: el redactor)
+El asistente no pasa por aquí: al redactar consulta el índice él solo, con el
+servicio (`app/services/asistente/consulta_fuentes.py`, casilla «Webs» de la
+franja).
+
+- GET    /buscar?q=&idioma=&sitio=&tipo=   fragmentos («Probar»; cualquiera con ERP)
 - GET    /estado                           por web: vivo por tipo, idos, idiomas, último
 - POST   /reindexar                        encola un recorrido (o devuelve el que hay)
 - GET    /reglas                           las reglas (con la tabla vacía, las de partida)

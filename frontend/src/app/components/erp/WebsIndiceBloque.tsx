@@ -736,8 +736,9 @@ function PruebaBusqueda({ sitios }: { sitios: string[] }) {
     <div className="webs-indice-prueba" role="group" aria-labelledby="kb-webs-prueba-t">
       <h4 id="kb-webs-prueba-t" className="kb-subtitulo">Probar: qué encontraría el redactor</h4>
       <p className="muted small">
-        La misma búsqueda que «Buscar en las webs» del redactor: los trozos que tienen que ver, con su
-        enlace, su imagen y, en los productos, el precio que enseña la web.
+        La misma búsqueda con la que el asistente consulta solo el índice al redactar, si la casilla
+        «Webs» de la franja está marcada: los trozos que tienen que ver, con su enlace, su imagen y,
+        en los productos, el precio que enseña la web.
       </p>
       <form className="kb-alta" onSubmit={(e) => void buscar(e)}>
         <label className="field kb-campo-url"><span>Buscar</span>

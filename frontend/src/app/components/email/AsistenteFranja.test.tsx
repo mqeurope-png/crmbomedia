@@ -1,31 +1,7 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { BorradorAsistente } from "../../lib/emailsApi";
-import type { SoporteResultado } from "../../lib/soporteApi";
-import type { WebFragmento } from "../../lib/websApi";
 import { AsistenteFranja } from "./AsistenteFranja";
-
-// «Buscar en soporte» es de otra pieza: aquí, un doble que enseña lo que recibe
-// y llama a `onUsar` / `onSinResultados` como lo haría el de verdad.
-const mockArticulo: SoporteResultado = {
-  fuente: "flux", fuente_nombre: "FLUX", articulo_id: "4410", titulo: "Cambiar el tubo láser del beamo",
-  extracto: "Apaga la máquina…", url: "https://support.flux3dp.com/hc/es/articles/4410", idioma: "es",
-};
-jest.mock("../soporte/SoporteBusqueda", () => ({
-  SoporteBusqueda: (props: {
-    idioma?: string | null; consultaInicial?: string;
-    onUsar?: (r: SoporteResultado) => void; onSinResultados?: (consulta: string) => void;
-  }) => (
-    <div data-testid="soporte-doble">
-      <p>idioma: {String(props.idioma ?? "ninguno")}</p>
-      <button type="button" onClick={() => props.onUsar?.(mockArticulo)}>Usar en el borrador</button>
-      <button type="button" onClick={() => props.onSinResultados?.("  cambiar tubo hexa  ")}>
-        Escribir diciendo que no hay procedimiento
-      </button>
-    </div>
-  ),
-}));
-jest.mock("../../lib/websApi", () => ({ buscarEnWebs: jest.fn() }));
 
 jest.mock("../../lib/api", () => ({
   getCurrentUser: jest.fn(() => Promise.resolve({ id: "u-1" })),
@@ -39,7 +15,10 @@ jest.mock("../../lib/emailsApi", () => ({
   esDestinatarioInterno: jest.fn(() => Promise.resolve({ direccion: "", interno: false })),
 }));
 
-const websApi = jest.requireMock("../../lib/websApi") as { buscarEnWebs: jest.Mock };
+const usuarios = jest.requireMock("../../lib/api") as { getCurrentUser: jest.Mock };
+
+/** Las casillas de partida: «Webs» y «Soporte» marcadas, en cada petición. */
+const TODAS = { webs: true, soporte: true };
 
 const api = jest.requireMock("../../lib/emailsApi") as {
   generarBorradorAsistente: jest.Mock;
@@ -102,7 +81,7 @@ describe("AsistenteFranja — lo primero es la caja", () => {
     await user.click(screen.getByRole("button", { name: /Redactar/ }));
     await waitFor(() => expect(onBorrador).toHaveBeenCalledTimes(1));
     expect(api.generarBorradorAsistente).toHaveBeenCalledWith("t-1", {
-      alcance: "contacto", instruccion: null, destinatario: "klaus@elbarquito.net",
+      alcance: "contacto", instruccion: null, destinatario: "klaus@elbarquito.net", fuentes: TODAS,
     });
     expect(onBorradorActual).toHaveBeenCalledWith("b-0");
     // Con borrador, la franja se pliega sola a una línea con lo esencial.
@@ -151,7 +130,7 @@ describe("AsistenteFranja — lo primero es la caja", () => {
     await user.click(screen.getByRole("button", { name: /Redactar/ }));
     await waitFor(() => expect(api.generarBorradorNuevo).toHaveBeenCalledWith({
       destinatario: "nuevo@cliente.io", instruccion: "escríbele un seguimiento",
-      alcance: "contacto", contact_id: "c-1",
+      alcance: "contacto", contact_id: "c-1", fuentes: TODAS,
     }));
   });
 });
@@ -171,7 +150,7 @@ describe("AsistenteFranja — la conversación", () => {
     await desplegar(user);
     await user.type(screen.getByLabelText("Qué quieres decirle"), "más corto");
     await user.click(screen.getByRole("button", { name: /Aplicar/ }));
-    await waitFor(() => expect(api.turnoAsistente).toHaveBeenCalledWith("b-0", "más corto"));
+    await waitFor(() => expect(api.turnoAsistente).toHaveBeenCalledWith("b-0", "más corto", { fuentes: TODAS }));
     await waitFor(() => expect(onBorrador).toHaveBeenCalledTimes(2));
     expect(onBorrador.mock.calls[1][0].id).toBe("b-1");
     expect(onBorradorActual).toHaveBeenLastCalledWith("b-1");
@@ -265,6 +244,7 @@ describe("AsistenteFranja — corrige lo que hay en el editor", () => {
     await waitFor(() => expect(api.generarBorradorAsistente).toHaveBeenCalledWith("t-1", {
       alcance: "contacto", instruccion: "ponlo más formal", destinatario: "klaus@elbarquito.net",
       texto_actual_html: "<p>hola klaus, te paso lo de las máquinas</p>", seleccion_html: null,
+      fuentes: TODAS,
     }));
     await waitFor(() => expect(onBorrador).toHaveBeenCalledTimes(1));
     expect(onBorrador.mock.calls[0][0].sobre_editor).toBe(true);
@@ -331,6 +311,7 @@ describe("AsistenteFranja — corrige lo que hay en el editor", () => {
     await waitFor(() => expect(api.generarBorradorNuevo).toHaveBeenCalledWith({
       destinatario: "nuevo@cliente.io", instruccion: "más formal", alcance: "contacto", contact_id: "c-1",
       texto_actual_html: "<p>hola, te escribo por el presupuesto</p>", seleccion_html: null,
+      fuentes: TODAS,
     }));
   });
 
@@ -365,7 +346,7 @@ describe("AsistenteFranja — corrige lo que hay en el editor", () => {
     await user.click(screen.getByRole("button", { name: /Aplicar/ }));
     await waitFor(() => expect(api.turnoAsistente).toHaveBeenCalledWith("b-0", "desarróllala", {
       texto_actual_html: "<p>Hola Marny,</p><p>Te paso los precios.</p><p>Un saludo</p>",
-      seleccion_html: "<p>Te paso los precios.</p>",
+      seleccion_html: "<p>Te paso los precios.</p>", fuentes: TODAS,
     }));
     await waitFor(() => expect(onBorrador).toHaveBeenCalledTimes(2));
     await desplegar(user);
@@ -494,156 +475,140 @@ describe("AsistenteFranja — plegado y avisos", () => {
   });
 });
 
-describe("AsistenteFranja — material de fuera (soporte y nuestras webs)", () => {
-  function web(over: Partial<WebFragmento> = {}): WebFragmento {
-    return {
-      id: "w-1", sitio: "fluxlasers", dominio: "fluxlasers.eu", tipo: "producto", idioma: "de",
-      titulo: "beamo", url: "https://www.fluxlasers.eu/de/produkt/beamo/", fragmento: "Desktop-Laser.",
-      imagen: null, galeria: [], categorias: [], precio_web: 1990, precio_web_texto: "1.990,00 €",
-      precio_iva: "sin_iva", moneda: "EUR", ...over,
-    };
+describe("AsistenteFranja — lo que consulta solo (Webs y Soporte)", () => {
+  /** Hasta que no se sabe quién es el usuario no hay nada que leer ni guardar. */
+  async function usuarioCargado() {
+    await waitFor(() => expect(usuarios.getCurrentUser).toHaveBeenCalled());
+    await act(async () => { await Promise.resolve(); });
   }
 
-  it("«Buscar en soporte» → «Usar en el borrador»: se ve como material y viaja en el borrador y en las correcciones hasta quitarlo", async () => {
-    api.generarBorradorAsistente.mockResolvedValueOnce(borrador({
-      aviso: "El borrador no llevaba el enlace al artículo de soporte: se ha añadido al final.",
-    }));
-    const { onBorrador } = montar();
+  it("las casillas «Webs» y «Soporte» están, marcadas de partida, y los botones de buscar ya no", async () => {
+    montar();
+    await usuarioCargado();
+    const grupo = screen.getByRole("group", { name: "Qué consulta el asistente" });
+    const webs = within(grupo).getByRole("checkbox", { name: "Webs" });
+    const soporte = within(grupo).getByRole("checkbox", { name: "Soporte" });
+    expect(webs).toBeChecked();
+    expect(soporte).toBeChecked();
+    expect(webs.closest("label")).toHaveAttribute("title", "Consulta el índice de nuestras webs al redactar");
+    expect(soporte.closest("label")).toHaveAttribute("title", "Consulta el soporte de los fabricantes al redactar");
+    expect(screen.queryByRole("button", { name: /Buscar en soporte/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Buscar en las webs/ })).not.toBeInTheDocument();
+    // El interruptor del formato se queda: es otra cosa (qué correo se pide).
+    expect(screen.getByRole("radiogroup", { name: "Formato del correo" })).toBeInTheDocument();
+  });
+
+  it("lo desmarcado viaja en la petición siguiente: redactar, corregir y cambiar el alcance", async () => {
+    api.generarBorradorAsistente.mockResolvedValueOnce(borrador());
+    montar();
+    await usuarioCargado();
     const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: /Buscar en soporte/ }));
-    const modal = screen.getByRole("dialog", { name: "Buscar en soporte" });
-    // Sin borrador la franja no sabe el idioma del correo: no se le impone ninguno.
-    expect(within(modal).getByText("idioma: ninguno")).toBeInTheDocument();
-    await user.click(within(modal).getByRole("button", { name: "Usar en el borrador" }));
-    expect(screen.queryByRole("dialog", { name: "Buscar en soporte" })).not.toBeInTheDocument();
-    const chips = screen.getByRole("list", { name: "Material elegido para el borrador" });
-    expect(chips).toHaveTextContent("Soporte: Cambiar el tubo láser del beamo");
+    await user.click(screen.getByRole("checkbox", { name: "Soporte" }));
     await user.click(screen.getByRole("button", { name: /Redactar/ }));
     await waitFor(() => expect(api.generarBorradorAsistente).toHaveBeenCalledWith("t-1", {
       alcance: "contacto", instruccion: null, destinatario: "klaus@elbarquito.net",
-      soporte: { fuente: "flux", articulo_id: "4410", idioma: "es" },
+      fuentes: { webs: true, soporte: false },
     }));
-    await waitFor(() => expect(onBorrador).toHaveBeenCalledTimes(1));
-    // El aviso nuevo del backend (enlace añadido) se ve como los demás.
+    // Una corrección lleva las casillas de AHORA (siempre con su tercer argumento).
     await desplegar(user);
-    expect(screen.getByRole("status")).toHaveTextContent("Revisa antes de enviar: El borrador no llevaba el enlace");
-    // Aplicado el turno, el material sigue elegido para la corrección siguiente.
-    expect(screen.getByRole("list", { name: "Material elegido para el borrador" })).toHaveTextContent("Soporte:");
+    await user.click(screen.getByRole("checkbox", { name: "Webs" }));
     api.turnoAsistente.mockResolvedValueOnce(borrador({ id: "b-1", turno: 1, padre_id: "b-0", instruccion: "más corto" }));
     await user.type(screen.getByLabelText("Qué quieres decirle"), "más corto");
     await user.click(screen.getByRole("button", { name: /Aplicar/ }));
     await waitFor(() => expect(api.turnoAsistente).toHaveBeenCalledWith("b-0", "más corto", {
-      soporte: { fuente: "flux", articulo_id: "4410", idioma: "es" },
+      fuentes: { webs: false, soporte: false },
     }));
-    // Con el borrador, el buscador ya sabe el idioma del correo.
+    // Cambiar el alcance rehace el borrador con lo que lleva la franja: el
+    // formato y las casillas.
     await desplegar(user);
-    await user.click(screen.getByRole("button", { name: /Buscar en soporte/ }));
-    expect(within(screen.getByRole("dialog", { name: "Buscar en soporte" })).getByText("idioma: de")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Cerrar" }));
-    // Quitado con su ✕, la corrección es exactamente la de siempre.
-    await user.click(screen.getByRole("button", { name: "Quitar el artículo de soporte" }));
-    expect(screen.queryByRole("list", { name: "Material elegido para el borrador" })).not.toBeInTheDocument();
-    api.turnoAsistente.mockResolvedValueOnce(borrador({ id: "b-2", turno: 2, padre_id: "b-1", instruccion: "más formal" }));
-    await user.type(screen.getByLabelText("Qué quieres decirle"), "más formal");
-    await user.click(screen.getByRole("button", { name: /Aplicar/ }));
-    await waitFor(() => expect(api.turnoAsistente).toHaveBeenCalledTimes(2));
-    expect(api.turnoAsistente.mock.calls[1]).toEqual(["b-1", "más formal"]);
+    await user.click(screen.getByRole("checkbox", { name: "Soporte" }));
+    await user.click(screen.getByRole("radio", { name: "Con fichas" }));
+    api.generarBorradorAsistente.mockResolvedValueOnce(borrador({ id: "b-2", alcance: "empresa" }));
+    await user.selectOptions(screen.getByLabelText("Qué histórico mira la IA"), "empresa");
+    await waitFor(() => expect(api.generarBorradorAsistente).toHaveBeenCalledTimes(2));
+    expect(api.generarBorradorAsistente.mock.calls[1]).toEqual(["t-1", {
+      alcance: "empresa", instruccion: null, destinatario: "klaus@elbarquito.net", regenerar_de: "b-0",
+      formato: "compuesto", fuentes: { webs: false, soporte: true },
+    }]);
   });
 
-  it("sin resultados en el soporte: «Sin procedimiento» viaja como soporte_sin_resultados (correo nuevo)", async () => {
+  it("en un correo nuevo también viajan", async () => {
     api.generarBorradorNuevo.mockResolvedValueOnce(borrador({ thread_id: null, sin_hilo: true }));
     montar({ threadId: null, destinatario: "nuevo@cliente.io" });
+    await usuarioCargado();
     const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: /Buscar en soporte/ }));
-    await user.click(screen.getByRole("button", { name: "Escribir diciendo que no hay procedimiento" }));
-    expect(screen.getByRole("list", { name: "Material elegido para el borrador" }))
-      .toHaveTextContent("Sin procedimiento: cambiar tubo hexa");
+    await user.click(screen.getByRole("checkbox", { name: "Webs" }));
     await user.type(screen.getByLabelText("Qué quieres decirle"), "contéstale lo del tubo");
     await user.click(screen.getByRole("button", { name: /Redactar/ }));
     await waitFor(() => expect(api.generarBorradorNuevo).toHaveBeenCalledWith({
       destinatario: "nuevo@cliente.io", instruccion: "contéstale lo del tubo", alcance: "contacto",
-      contact_id: "c-1", soporte_sin_resultados: { consulta: "cambiar tubo hexa" },
+      contact_id: "c-1", fuentes: { webs: false, soporte: true },
     }));
   });
 
-  it("un artículo y «sin procedimiento» se excluyen: el último elegido manda", async () => {
-    api.generarBorradorAsistente.mockResolvedValueOnce(borrador());
-    montar();
+  it("se recuerdan por usuario de un correo a otro; otro usuario empieza con las de partida", async () => {
+    const primero = montar();
+    await usuarioCargado();
     const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: /Buscar en soporte/ }));
-    await user.click(screen.getByRole("button", { name: "Usar en el borrador" }));
-    await user.click(screen.getByRole("button", { name: /Buscar en soporte/ }));
-    await user.click(screen.getByRole("button", { name: "Escribir diciendo que no hay procedimiento" }));
-    const chips = screen.getByRole("list", { name: "Material elegido para el borrador" });
-    expect(chips).not.toHaveTextContent("Soporte:");
-    await user.click(screen.getByRole("button", { name: /Redactar/ }));
-    await waitFor(() => expect(api.generarBorradorAsistente).toHaveBeenCalledTimes(1));
-    const peticion = api.generarBorradorAsistente.mock.calls[0][1];
-    expect(peticion.soporte).toBeUndefined();
-    expect(peticion.soporte_sin_resultados).toEqual({ consulta: "cambiar tubo hexa" });
+    await user.click(screen.getByRole("checkbox", { name: "Soporte" }));
+    expect(JSON.parse(window.localStorage.getItem("bohub.asistente.fuentes.u-1") ?? "null"))
+      .toEqual({ webs: true, soporte: false });
+    // Sin conversación, tocar una casilla no llama a nada: vale para la petición siguiente.
+    expect(api.generarBorradorAsistente).not.toHaveBeenCalled();
+    primero.unmount();
+    // Otro correo, el mismo usuario: como lo dejó.
+    const segundo = montar();
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: "Soporte" })).not.toBeChecked());
+    expect(screen.getByRole("checkbox", { name: "Webs" })).toBeChecked();
+    segundo.unmount();
+    // Otro usuario en el mismo navegador: las de partida.
+    usuarios.getCurrentUser.mockResolvedValueOnce({ id: "u-2" });
+    montar();
+    await waitFor(() => expect(usuarios.getCurrentUser).toHaveBeenCalledTimes(3));
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByRole("checkbox", { name: "Webs" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Soporte" })).toBeChecked();
   });
 
-  it("«Buscar en las webs» → «Añadir al borrador»: los ids viajan (hasta 4) y cada página se puede quitar", async () => {
-    websApi.buscarEnWebs.mockResolvedValue([
-      web(), web({ id: "w-2", titulo: "HEXA", url: "https://www.fluxlasers.eu/de/produkt/hexa/" }),
-    ]);
-    api.generarBorradorAsistente.mockResolvedValueOnce(borrador());
+  it("una casilla tocada antes de saber quién es el usuario se le guarda en cuanto se sabe", async () => {
+    // Tenía guardada «Webs» desmarcada; toca «Soporte» antes de que responda
+    // quién es: «Soporte» se queda como la dejó y «Webs», como la tenía.
+    window.localStorage.setItem("bohub.asistente.fuentes.u-1", JSON.stringify({ webs: false, soporte: true }));
+    let responder: (u: { id: string }) => void = () => undefined;
+    usuarios.getCurrentUser.mockReturnValueOnce(new Promise((r) => { responder = r; }));
     montar();
     const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: /Buscar en las webs/ }));
-    const modal = screen.getByRole("dialog", { name: "Buscar en nuestras webs" });
-    await user.type(within(modal).getByLabelText("Qué buscar en nuestras webs"), "laser{Enter}");
-    await waitFor(() => expect(websApi.buscarEnWebs).toHaveBeenCalledWith("laser", { idioma: null, tipo: null }));
-    const resultados = await within(modal).findAllByRole("listitem");
-    await user.click(within(resultados[0]).getByRole("button", { name: "Añadir al borrador" }));
-    await user.click(within(resultados[1]).getByRole("button", { name: "Añadir al borrador" }));
-    expect(within(resultados[0]).getByRole("button", { name: "Añadida al borrador" })).toBeDisabled();
-    await user.click(within(modal).getByRole("button", { name: "Cerrar" }));
-    const chips = screen.getByRole("list", { name: "Material elegido para el borrador" });
-    expect(chips).toHaveTextContent("Web: beamo");
-    expect(chips).toHaveTextContent("Web: HEXA");
-    // La cuenta va en el propio botón: se ve aunque la franja encoja y las
-    // fichas queden bajo su scroll.
-    expect(screen.getByRole("button", { name: /Buscar en las webs/ })).toHaveTextContent(/2$/);
-    await user.click(screen.getByRole("button", { name: "Quitar la página «beamo»" }));
-    expect(screen.getByRole("button", { name: /Buscar en las webs/ })).toHaveTextContent(/1$/);
-    await user.click(screen.getByRole("button", { name: /Redactar/ }));
-    await waitFor(() => expect(api.generarBorradorAsistente).toHaveBeenCalledWith("t-1", {
-      alcance: "contacto", instruccion: null, destinatario: "klaus@elbarquito.net", webs: ["w-2"],
-    }));
+    await user.click(screen.getByRole("checkbox", { name: "Soporte" }));
+    expect(screen.getByRole("checkbox", { name: "Soporte" })).not.toBeChecked();
+    // Todavía no se sabe para quién: no se ha guardado nada nuevo.
+    expect(JSON.parse(window.localStorage.getItem("bohub.asistente.fuentes.u-1") ?? "null"))
+      .toEqual({ webs: false, soporte: true });
+    await act(async () => { responder({ id: "u-1" }); await Promise.resolve(); });
+    expect(JSON.parse(window.localStorage.getItem("bohub.asistente.fuentes.u-1") ?? "null"))
+      .toEqual({ webs: false, soporte: false });
+    expect(screen.getByRole("checkbox", { name: "Soporte" })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Webs" })).not.toBeChecked();
+    // Y lo que toque después se guarda al momento, como siempre.
+    await user.click(screen.getByRole("checkbox", { name: "Webs" }));
+    expect(JSON.parse(window.localStorage.getItem("bohub.asistente.fuentes.u-1") ?? "null"))
+      .toEqual({ webs: true, soporte: false });
   });
 
-  it("sin material elegido, las peticiones no llevan ni un campo de más", async () => {
-    api.generarBorradorAsistente.mockResolvedValueOnce(borrador());
-    api.turnoAsistente.mockResolvedValueOnce(borrador({ id: "b-1", turno: 1, padre_id: "b-0" }));
-    montar();
-    const user = userEvent.setup();
-    expect(screen.queryByRole("list", { name: "Material elegido para el borrador" })).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: /Redactar/ }));
-    await waitFor(() => expect(api.generarBorradorAsistente).toHaveBeenCalledTimes(1));
-    expect(api.generarBorradorAsistente.mock.calls[0]).toEqual(["t-1", {
-      alcance: "contacto", instruccion: null, destinatario: "klaus@elbarquito.net",
-    }]);
-    await desplegar(user);
-    await user.type(screen.getByLabelText("Qué quieres decirle"), "más corto");
-    await user.click(screen.getByRole("button", { name: /Aplicar/ }));
-    await waitFor(() => expect(api.turnoAsistente).toHaveBeenCalledTimes(1));
-    expect(api.turnoAsistente.mock.calls[0]).toEqual(["b-0", "más corto"]);
-    // Y «Lo que ha usado» de un borrador sin material es el de siempre.
-    expect(screen.queryByRole("list", { name: "Material de fuera que entró", hidden: true })).not.toBeInTheDocument();
-  });
-
-  it("«Lo que ha usado» enseña lo de fuera que entró, con su enlace (solo enlaces web)", async () => {
+  it("«Lo que ha usado» dice qué consultó solo, con sus enlaces", async () => {
     api.generarBorradorAsistente.mockResolvedValueOnce(borrador({
       contexto: {
         mensajes_hilo: 2, contacto: { nombre: "Klaus" },
         material: {
-          soporte: { fuente: "flux", fuente_nombre: "FLUX", articulo_id: "4410",
-            titulo: "Cambiar el tubo láser del beamo", url: "https://support.flux3dp.com/hc/es/articles/4410" },
-          webs: [
-            { id: "w-1", titulo: "beamo", url: "https://www.fluxlasers.eu/de/produkt/beamo/" },
-            { id: "w-9", titulo: "Rara", url: "javascript:alert(1)" },
-          ],
+          automatico: true, fuentes: TODAS,
+          consulta: { tecnica: true, marca: "flux", soporte_en: "beamo laser tube", soporte: "beamo tubo láser",
+            webs: "beamo", origen: "ia", modelo: "claude-haiku-5-5", error: null, plan_ms: 800, coste_usd: 0.0003 },
+          soporte: { ref: "S1", fuente: "flux", fuente_nombre: "FLUX · centro de ayuda", articulo_id: "4410",
+            titulo: "Cambiar el tubo láser del beamo", url: "https://support.flux3dp.com/hc/de/articles/4410",
+            idioma: "de", recortado: false, parece_orden: false, usado: true },
+          webs: [{ ref: "W1", id: "w-1", titulo: "beamo", url: "https://www.fluxlasers.eu/de/produkt/beamo/",
+            sitio: "fluxlasers", dominio: "fluxlasers.eu", tipo: "producto", idioma: "de",
+            precio_web_texto: null, precio_iva: null, usado: false }],
+          buscado_en_soporte: ["beamo laser tube"], ms: 1300, material_usado: ["S1"],
         },
       },
     }));
@@ -651,26 +616,22 @@ describe("AsistenteFranja — material de fuera (soporte y nuestras webs)", () =
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: /Redactar/ }));
     await desplegar(user);
-    await user.click(screen.getByText(/Lo que ha usado/));
-    const usado = screen.getByRole("list", { name: "Material de fuera que entró" });
-    expect(within(usado).getByRole("link", { name: "Cambiar el tubo láser del beamo" })).toHaveAttribute(
-      "href", "https://support.flux3dp.com/hc/es/articles/4410");
-    expect(within(usado).getByRole("link", { name: "beamo" })).toBeInTheDocument();
-    expect(within(usado).queryByRole("link", { name: "Rara" })).not.toBeInTheDocument();
-    expect(usado).toHaveTextContent("Web: Rara");
-    expect(screen.getByText(/el artículo de soporte «Cambiar el tubo láser del beamo» \(FLUX\)/)).toBeInTheDocument();
-    expect(screen.getByText(/2 páginas de nuestras webs/)).toBeInTheDocument();
+    expect(screen.getByText(/Lo que ha usado/)).toHaveTextContent("· consultó soporte y webs");
+    const trajo = screen.getByRole("list", { name: "Lo que trajo solo de webs y soporte" });
+    expect(within(trajo).getByRole("link", { name: "Cambiar el tubo láser del beamo" })).toHaveAttribute(
+      "href", "https://support.flux3dp.com/hc/de/articles/4410");
+    expect(trajo).toHaveTextContent("FLUX · centro de ayuda · usado en el borrador");
+    expect(trajo).toHaveTextContent("Web: beamo — fluxlasers.eu · producto · no lo usó");
+    expect(screen.queryByRole("list", { name: "Material de fuera que entró" })).not.toBeInTheDocument();
   });
 
-  it("«Lo que ha usado» dice la búsqueda sin procedimiento", async () => {
-    api.generarBorradorAsistente.mockResolvedValueOnce(borrador({
-      contexto: { mensajes_hilo: 2, material: { sin_resultados: { consulta: "cambiar tubo hexa" } } },
-    }));
+  it("un borrador sin nada de fuera no dice nada de fuera", async () => {
+    api.generarBorradorAsistente.mockResolvedValueOnce(borrador());
     montar();
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: /Redactar/ }));
     await desplegar(user);
-    expect(screen.getByRole("list", { name: "Material de fuera que entró" }))
-      .toHaveTextContent("Sin procedimiento en el soporte para «cambiar tubo hexa»");
+    expect(screen.getByText(/Lo que ha usado/)).not.toHaveTextContent("consultó");
+    expect(screen.queryByRole("list", { name: "Lo que trajo solo de webs y soporte" })).not.toBeInTheDocument();
   });
 });

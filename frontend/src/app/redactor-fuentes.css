@@ -1,179 +1,36 @@
-/* Redactor: imagen por URL y material de fuera (soporte, webs). */
+/* Redactor: imagen por URL y las casillas de lo que consulta el asistente solo
+ * (nuestras webs, el soporte de los fabricantes). */
 
-/* --- Franja del asistente: los dos buscadores y lo elegido ----------------------
- * Los botones van a la izquierda de la fila de controles (no añaden línea: la
- * franja no puede comerse el sitio del cuerpo). Lo elegido sale debajo, solo
- * cuando hay algo, como fichas con su ✕. */
-.asistente-franja-buscar {
+/* --- Franja del asistente: qué consulta solo al redactar ------------------------
+ * «Webs» y «Soporte», dos casillas pequeñas en la fila de controles, delante
+ * del interruptor del formato (no añaden línea: la franja no puede comerse el
+ * sitio del cuerpo). La letra, la del interruptor. */
+.asistente-franja-fuentes {
   display: inline-flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-right: auto;
-}
-/* La cuenta de lo elegido en el propio botón: se ve aunque las fichas queden
- * bajo el scroll de la franja. */
-.asistente-fuentes-cuenta {
-  display: inline-block;
-  min-width: 1.5em;
-  margin-left: 4px;
-  padding: 0 5px;
-  border-radius: 999px;
-  background: var(--primary, #1d4ed8);
-  color: #fff;
-  font-size: var(--fs-label);
-  font-weight: 600;
-  line-height: 1.5;
-  text-align: center;
-}
-.asistente-franja-material {
-  display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 4px 8px;
+  gap: 2px 10px;
+  margin-right: 4px;
+  color: var(--muted);
+  font-size: var(--fs-label);
 }
-.asistente-material-chips {
-  display: flex;
-  flex-wrap: wrap;
+.asistente-franja-fuentes label {
+  display: inline-flex;
+  align-items: center;
   gap: 4px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-.asistente-material-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  max-width: 100%;
-  padding: 1px 2px 1px 8px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: var(--card);
-  color: var(--ink);
-  font-size: var(--fs-label);
-}
-.asistente-material-chip > span {
-  max-width: 40ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  cursor: pointer;
   white-space: nowrap;
 }
-.asistente-material-chip.is-sin-resultados {
-  border-color: var(--st-amber-bg);
-  background: var(--st-amber-bg);
-  color: var(--st-amber-ink);
+.asistente-franja-fuentes input[type="checkbox"] {
+  margin: 0;
+  accent-color: var(--brand);
+  cursor: inherit;
 }
-.asistente-material-chip > button {
-  padding: 0 6px;
-  border: 0;
-  border-radius: 999px;
-  background: none;
-  color: var(--muted);
-  font: inherit;
-  line-height: 1.4;
-  cursor: pointer;
-}
-.asistente-material-chip > button:hover:not(:disabled) {
-  background: var(--st-red-bg);
-  color: var(--danger-ink);
-}
-.asistente-material-chip > button:focus-visible {
+.asistente-franja-fuentes input[type="checkbox"]:focus-visible {
   outline: 3px solid var(--focus);
   outline-offset: 1px;
 }
-.asistente-material-chip > button:disabled { cursor: default; }
-
-/* Los buscadores se abren encima del compositor, algo más anchos que un modal
- * normal: los resultados llevan imagen, extracto y precio. */
-.asistente-fuentes-capa .modal-dialog {
-  width: min(760px, 96vw);
-  max-width: min(760px, 96vw);
-}
-
-/* --- «Buscar en las webs» -------------------------------------------------------- */
-.webs-busqueda {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-2);
-}
-.webs-busqueda-form {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-2);
-  align-items: center;
-}
-.webs-busqueda-form input[type="search"] {
-  flex: 1 1 220px;
-  min-width: 0;
-}
-.webs-busqueda-idioma {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--muted);
-  font-size: var(--fs-label);
-}
-.webs-busqueda-nota,
-.webs-busqueda-vacio { margin: 0; }
-.webs-busqueda-lista {
-  display: flex;
-  flex-direction: column;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-.webs-resultado {
-  display: grid;
-  grid-template-columns: 64px minmax(0, 1fr) auto;
-  gap: var(--sp-3);
-  align-items: start;
-  padding: var(--sp-3) 0;
-  border-top: 1px solid var(--line2);
-}
-.webs-resultado:first-child { border-top: 0; }
-.webs-resultado-imagen {
-  width: 64px;
-  height: 64px;
-  object-fit: contain;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--card);
-}
-.webs-resultado-imagen.is-vacia { display: block; background: var(--bg); }
-.webs-resultado-cuerpo { min-width: 0; }
-.webs-resultado-titulo {
-  margin: 0;
-  font-size: var(--fs-body);
-  font-weight: 600;
-  overflow-wrap: anywhere;
-}
-.webs-resultado-titulo a { color: var(--brand-ink); }
-.webs-resultado-meta {
-  margin: 2px 0 0;
-  color: var(--muted);
-  font-size: var(--fs-label);
-}
-.webs-resultado-fragmento {
-  display: -webkit-box;
-  margin: 4px 0 0;
-  overflow: hidden;
-  color: var(--ink);
-  font-size: var(--fs-label);
-  line-height: 1.45;
-  -webkit-line-clamp: 4;
-  -webkit-box-orient: vertical;
-}
-.webs-resultado-precio {
-  margin: 4px 0 0;
-  color: var(--ink);
-  font-size: var(--fs-label);
-}
-.webs-resultado-precio strong { font-family: var(--font-mono); }
-.webs-resultado-precio-nota { color: var(--muted); }
-@media (max-width: 560px) {
-  .webs-resultado { grid-template-columns: 48px minmax(0, 1fr); }
-  .webs-resultado-imagen { width: 48px; height: 48px; }
-  .webs-resultado-anadir { grid-column: 2; justify-self: start; }
-}
+.asistente-franja-fuentes label:has(input:disabled) { cursor: default; opacity: 0.7; }
 
 /* --- «Imagen por URL» (diálogo de TinyMCE) ---------------------------------------
  * La vista previa es la imagen de verdad, enlazada como irá en el correo. */
