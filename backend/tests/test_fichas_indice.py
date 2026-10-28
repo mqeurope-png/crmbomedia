@@ -1980,19 +1980,39 @@ def test_en_el_primer_borrador_la_instruccion_no_mete_la_mbo_6090_si_pide_la_des
     assert "artisJet 6090 Trust" in nombres and "MBO 6090" not in nombres
 
 
-def test_el_recorte_por_tokens_deja_lo_que_pide_la_instruccion() -> None:
-    from types import SimpleNamespace  # noqa: PLC0415
+@pytest.mark.parametrize("presupuesto", [5400, 5000, 4600])
+def test_tras_el_recorte_por_tokens_cada_p_sigue_siendo_su_maquina(
+    session_factory: sessionmaker, http: TestClient, presupuesto: int,
+) -> None:
+    """Con el presupuesto justo se recortan máquinas del CATÁLOGO. Las
+    referencias se numeran antes del recorte: lo que queda no puede moverse
+    (se quita por el final) y lo que pide la instrucción va delante. Cada
+    «[P#]» que ve la IA es la máquina que guardan las referencias, y la ficha
+    que sale es la de la Trust."""
+    from app.services.asistente import config as cfg_mod  # noqa: PLC0415
+    from app.services.asistente import contexto as ctx_mod  # noqa: PLC0415
 
-    from app.services.asistente.historico import ajustar_al_presupuesto  # noqa: PLC0415
+    real = cfg_mod.configuracion
 
-    maquinas = [{"nombre": f"FLUX {n}", "eleccion": "hilo"} for n in range(6)]
-    maquinas.insert(3, {"nombre": "artisJet 6090 Trust", "eleccion": "instruccion"})
-    ctx = SimpleNamespace(empresa_asuntos=[], historico=[], notas=[], recortes=[],
-                          catalogo={"maquinas": maquinas, "consumibles": []})
-    medidas = iter(range(10, 0, -1))
-    ajustar_al_presupuesto(ctx, presupuesto=6, medir=lambda c: next(medidas))
-    assert "artisJet 6090 Trust" in [m["nombre"] for m in ctx.catalogo["maquinas"]]
-    assert len(ctx.catalogo["maquinas"]) < 7
+    def _cfg(session: Session) -> dict[str, Any]:
+        return {**real(session), "presupuesto_tokens": presupuesto}
+
+    falso = _ClaudeQueLee(PLAN_2810, _correo_trust_desktop)
+    with session_factory() as s:
+        thread_id = _caso_ador(s)
+    with (patch.object(llm, "_invoke_claude", falso),
+          patch.object(ctx_mod, "config_asistente", _cfg)):
+        r = _pedir(http, thread_id, instruccion=INSTRUCCION_2810, formato="compuesto",
+                   fuentes=AMBAS)
+    assert r.status_code == 201, r.text
+    b = r.json()["borrador"]
+    assert any(str(x).startswith("catálogo: máquina") for x in b["contexto"]["recortes"])
+    origen = {nombre: oid for oid, nombre, _ in FLUX} | {"artisJet 6090 Trust": "aj-6090-trust",
+                                                         "MBO 6090": "mbo-6090"}
+    guardadas = {k: v["origen_id"] for k, v in b["contexto"]["refs"]["productos"].items()}
+    vistas = re.findall(r"- \[(P\d+)\] ([^·]+?) ·", _partes(falso)[1])
+    assert vistas and all(guardadas[ref] == origen[nombre] for ref, nombre in vistas), vistas
+    assert _fila_productos(b)[0] == {"fuente": FUENTE_COMPOSITOR, "origen_id": "aj-6090-trust"}
 
 
 def test_la_pagina_de_un_producto_que_solo_esta_en_la_web_no_es_otra_maquina_del_catalogo(
@@ -2100,3 +2120,75 @@ def test_una_correccion_reutiliza_el_p_y_no_repite_lo_que_ya_trajo(s: Session) -
     otra_vez = redactor._con_catalogo_pedido(contexto, pedidos)
     nombres = [m["nombre"] for m in json.loads(otra_vez)["catalogo"]["maquinas"]]
     assert nombres == ["artisJet 6090 Trust", "FLUX Ador"]
+
+
+# --- la comprobación de los arreglos (segunda vuelta) ---------------------------------------
+
+
+def test_varias_maquinas_hermanas_nombradas_juntas() -> None:
+    from app.services.conocimiento import catalogo as catalogo_kb  # noqa: PLC0415
+
+    grupos = _grupos(("trust", "artisJet 6090 Trust", "artisjet"),
+                     ("freebird", "artisJet 3000Pro Freebird", "artisjet"),
+                     ("mbo3050", "MBO 3050", "mbo"), ("mbo6090", "MBO 6090", "mbo"),
+                     ("ador20", "FLUX Ador 20W", "flux"), ("ador10", "FLUX Ador 10W", "flux"),
+                     ("bb2", "Beambox II", "flux"), ("bb2pro", "Beambox II Pro", "flux"),
+                     ("bbpro", "Beambox Pro", "flux"), ("lyra", "Lyra 35", "mbo"),
+                     ("astra", "Astra 35 Pro", "mbo"))
+    for texto, nombradas in (
+            ("incluye en fila la MBO 3050 y la MBO 6090", ["mbo3050", "mbo6090"]),
+            ("incluye en fila la Ador 20W y la Ador 10W", ["ador20", "ador10"]),
+            ("incluye la Beambox II y la Beambox Pro", ["bb2", "bbpro"]),
+            ("incluye la FLUX Beambox II y la FLUX Beambox II Pro", ["bb2", "bb2pro"]),
+            ("incluye la Lyra 35 y la Astra 35 Pro", ["lyra", "astra"]),
+            ("añade en fila la artisJet Trust 6090 Freebird", ["trust"]),
+            ("añade la 3000Pro Freebird", ["freebird"])):
+        assert sorted(catalogo_kb.nombrados_en(texto, grupos)) == sorted(nombradas), texto
+
+
+def test_que_correcciones_piden_poner_algo() -> None:
+    for instruccion in ("Añádele la artisJet 6090 Trust al final", "Ponle también la Trust",
+                        "Ofrécele también la artisJet 6090 Trust",
+                        "Sustituye la FLUX Ador por la artisJet 6090 Trust",
+                        "Recomiéndale la Trust como alternativa", "incluye la Trust"):
+        assert consulta_fuentes.pide_incluir(instruccion), instruccion
+    for instruccion in ("dile que la Ador 20W la revisamos el lunes", "quita la Trust",
+                        "más corto", "", None):
+        assert not consulta_fuentes.pide_incluir(instruccion), instruccion
+
+
+def test_contacts_y_la_portada_de_la_tienda_son_de_servicio(s: Session) -> None:
+    _boprint(s)
+    mapa = fichas.MapaProductos(s)
+    for url in ("https://boprint.net/en/contacts/", "https://boprint.net/tienda/",
+                "https://boprint.net/producto/"):
+        assert mapa.motivo(url) == fichas.MOTIVO_SERVICIO, url
+    assert mapa.motivo("https://boprint.net/") is None                         # la portada
+
+
+def test_un_descuadre_de_antes_con_el_ambito_de_su_web_no_se_resuelve_sin_mirarlo(
+        s: Session) -> None:
+    """Los descuadres de antes guardaban la web como ámbito; ahora es la
+    ficha. Uno de antes cuya ficha no se puede juzgar sigue abierto."""
+    _boprint(s)
+    _freebird(s)
+    freebird = s.scalar(select(ProductoCatalogo).where(ProductoCatalogo.origen_id == "aj-3000pro"))
+    freebird.enlace = "https://boprint.net/producto/artisjet-3000pro-freebird/"   # sin indexar
+    s.flush()
+    comp = registro()[ENLACE_CATALOGO_NO_PRODUCTO]
+
+    def pasada(cuando: datetime) -> dict[str, int]:
+        ctx = _ctx(s)
+        hallazgos = list(enlace_catalogo_no_producto(ctx))
+        return cuadre_engine.aplicar(s, comp, hallazgos, cuando,
+                                     no_mirados=ctx.no_mirados.get(comp.id, set()))
+
+    assert pasada(AHORA)["nuevos"] == 1
+    [abierto] = s.scalars(select(CuadreFinding))
+    detalle = json.loads(abierto.detalle_json)
+    abierto.detalle_json = json.dumps({**detalle, "ambito": "boprint"})       # como antes
+    for fila in s.scalars(select(WebIndiceEntrada).where(WebIndiceEntrada.sitio == "boprint")):
+        fila.ido_en = AHORA
+    s.flush()
+    assert pasada(AHORA + timedelta(days=1))["resueltos"] == 0
+    assert abierto.estado == "abierto"

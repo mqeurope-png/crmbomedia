@@ -924,11 +924,22 @@ def pide_producto(instruccion: str | None) -> bool:
                 or (_INCLUYE_RE.search(texto) and re.search(r"\d", texto)))
 
 
+#: Los verbos con los que se pide poner (o cambiar por) un producto en el
+#: correo, con sus pronombres y tildes: «añádele», «ponle», «ofrécele»,
+#: «sustituye… por», «recomiéndale».
+_PIDE_INCLUIR_RE = re.compile(
+    r"\b(?:inclu\w*|inclú\w*|añad\w*|añád\w*|agreg\w*|agrég\w*|met[eé]\w*|pon|ponle|ponles"
+    r"|ponla|ponlas|ponlo|ponlos|pónle\w*|ofrec\w*|ofréc\w*|recomiend\w*|recomiénd\w*"
+    r"|propon\w*|propón\w*|sustitu\w*|reemplaz\w*|cambi\w*|include\w*|add\w*|offer\w*"
+    r"|replace\w*|swap\w*|recommend\w*)\b", re.IGNORECASE)
+
+
 def pide_incluir(instruccion: str | None) -> bool:
     """¿La instrucción pide poner algo en el correo (un producto)? «Incluye»,
-    «añade», «pon»…, o lo que ya cuenta como pedir un producto. «Dile que la
-    Ador la revisamos el lunes» no pide ninguna ficha."""
-    return pide_producto(instruccion) or bool(_INCLUYE_RE.search(instruccion or ""))
+    «añádele», «ponle», «ofrécele», «sustituye… por»…, o lo que ya cuenta como
+    pedir un producto. «Dile que la Ador la revisamos el lunes» o «quita la
+    Trust» no piden ninguna ficha."""
+    return pide_producto(instruccion) or bool(_PIDE_INCLUIR_RE.search(instruccion or ""))
 
 
 def reutilizar(session: Session, previo: dict[str, Any], fuentes: Fuentes,

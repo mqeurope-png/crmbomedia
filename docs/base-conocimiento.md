@@ -223,8 +223,9 @@ prueba «acuserecibo test» (Metallplatten y T-Shirts) se quedaba sin las DTF.
    no por un código que comparten, ni con una variante detrás) tienen su
    propio cupo (hasta seis más), y entran aunque el hilo haya llenado el tope
    (28/10/2026: seis FLUX de una avería dejaban fuera la artisJet 6090 Trust
-   que pedía la instrucción, y su ficha salía de la web, sin precio); el
-   recorte por tokens las deja para lo último. Lo que se pide por
+   que pedía la instrucción, y su ficha salía de la web, sin precio). Las que
+   pide la instrucción van delante de la lista: el recorte por tokens quita
+   por el final, y así las deja para lo último. Lo que se pide por
    su nombre o por su enlace y no ha entrado aquí, se busca después en el
    catálogo entero (`catalogo.por_nombre`; ver
    [fuentes-externas.md](fuentes-externas.md) § Fichas montadas desde el

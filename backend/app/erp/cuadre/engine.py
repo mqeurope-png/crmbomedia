@@ -89,7 +89,8 @@ def aplicar(
     Un descuadre de OTRO ámbito que no se ve no se da por resuelto: no se ha
     mirado (al cambiar de ejercicio, las facturas del anterior no se leen).
     Igual con `no_mirados`: las partes (`Hallazgo.ambito`, p. ej. una tienda
-    que no ha respondido) que la pasada no ha podido mirar."""
+    que no ha respondido) que la pasada no ha podido mirar, o las entidades
+    (su `entidad_id`) cuando el ámbito es cada una."""
     vistos: dict[str, Hallazgo] = {}
     for h in hallazgos:
         vistos.setdefault(str(h.entidad_id), h)
@@ -134,8 +135,8 @@ def aplicar(
         if eid not in vistos and f.estado != ESTADO_RESUELTO:
             if ambito and _ambito(f) not in (None, ambito):
                 continue                      # de otro ejercicio: no se ha mirado
-            if _ambito(f) in no_mirados:
-                continue                      # esa parte no se ha podido mirar
+            if _ambito(f) in no_mirados or eid in no_mirados:
+                continue                      # esa parte (o esa entidad) no se ha podido mirar
             f.estado = ESTADO_RESUELTO
             f.resuelto_at = ahora
             resueltos += 1

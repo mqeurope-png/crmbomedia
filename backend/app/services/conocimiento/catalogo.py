@@ -1295,12 +1295,13 @@ def por_nombre(nombre: str | None, grupos: dict[str, list[ProductoCatalogo]], *,
     return ganadoras[0] if len(ganadoras) == 1 else None
 
 
-def _con_variante(secuencia: list[str], propias: set[str], distintivas: set[str],
-                  vocabulario: set[str]) -> bool:
-    """¿Detrás de donde el texto nombra la máquina (un tramo de sus palabras
-    con alguna `distintiva`) viene otra palabra que la hace otra máquina?
-    «versión desktop», «Pro» o una palabra del modelo de otra máquina del
-    catálogo que esta no tiene."""
+def _apariciones(secuencia: list[str], propias: set[str],
+                 exigidas: set[str]) -> list[tuple[int, int]]:
+    """Dónde nombra el texto la máquina: los tramos seguidos de sus palabras
+    (`propias`, con la marca) que llevan todas las `exigidas` (las de su modelo
+    que no son códigos; o, si solo tiene códigos, la marca y el código). `(inicio,
+    fin)`."""
+    salida: list[tuple[int, int]] = []
     i = 0
     while i < len(secuencia):
         if secuencia[i] not in propias:
@@ -1309,61 +1310,72 @@ def _con_variante(secuencia: list[str], propias: set[str], distintivas: set[str]
         j = i
         while j < len(secuencia) and secuencia[j] in propias:
             j += 1
-        tramo = set(secuencia[i:j])
+        if exigidas <= set(secuencia[i:j]):
+            salida.append((i, j))
         i = j
-        if not tramo & distintivas:
-            continue
-        anuncia = False
-        while j < len(secuencia) and (secuencia[j] in _GENERICAS_NOMBRE
-                                      or _MEDIDA_RE.match(secuencia[j])):
-            anuncia = anuncia or secuencia[j] in _MARCAS_VARIANTE
-            j += 1
-        if j < len(secuencia) and secuencia[j][:1].isalnum():
-            siguiente = secuencia[j]
-            if anuncia or siguiente in _VARIANTES or siguiente in vocabulario:
-                return True
-    return False
+    return salida
+
+
+def _detras_hay_variante(secuencia: list[str], fin: int, otras: set[str]) -> bool:
+    """¿Detrás de un tramo viene otra palabra que hace otra máquina? «versión
+    desktop», «Pro», o una palabra del modelo de otra máquina que el texto
+    también nombra entera (`otras`)."""
+    j = fin
+    anuncia = False
+    while j < len(secuencia) and (secuencia[j] in _GENERICAS_NOMBRE
+                                  or _MEDIDA_RE.match(secuencia[j])):
+        anuncia = anuncia or secuencia[j] in _MARCAS_VARIANTE
+        j += 1
+    if j >= len(secuencia) or not secuencia[j][:1].isalnum():
+        return False
+    siguiente = secuencia[j]
+    return anuncia or siguiente in _VARIANTES or siguiente in otras
 
 
 def nombrados_en(texto: str | None, grupos: dict[str, list[ProductoCatalogo]], *,
                  menciones: list[tuple[str, str]] | None = None) -> list[str]:
     """Las máquinas que un texto nombra de verdad, de las seguras de
-    `menciones_en`:
+    `menciones_en`. Una máquina está nombrada si alguna vez sale:
 
-    - con su nombre entero (sin la marca); si su modelo es solo un código
-      («MBO 6090»), también con la marca: «la artisJet 6090 Trust» no nombra
-      la MBO 6090;
-    - o con todas las palabras de su modelo que no son códigos («la Trust»),
-      salvo que otra con esas palabras esté nombrada entera («la Ador 20W»
-      no nombra la Ador 10W);
-    - y sin una variante detrás («la MBO 6090 versión desktop» no nombra la
-      MBO 6090)."""
+    - con su nombre entero (sin la marca), o con todas las palabras de su
+      modelo que no son códigos («la Trust») si ninguna hermana con esas
+      palabras está nombrada entera («la Ador 20W» no nombra la Ador 10W) y
+      no van pegadas al nombre de otra («artisJet Trust 6090 Freebird» es la
+      Trust, no la 3000Pro Freebird);
+    - si su modelo es solo un código («MBO 6090»), con la marca delante: «la
+      artisJet 6090 Trust» no nombra la MBO 6090;
+    - y, esa vez, sin una variante detrás: «la MBO 6090 versión desktop» no
+      nombra la MBO 6090 (pero «la MBO 3050 y la MBO 6090» nombra las dos)."""
     secuencia = _secuencia(texto)
     palabras = _palabras_de_nombre(texto)
-    modelos = {o: _palabras_de_nombre(v[0].nombre) - _palabras_de_nombre(v[0].marca)
-               for o, v in grupos.items() if v}
-    candidatas: dict[str, tuple[set[str], set[str], set[str], bool]] = {}
+    datos: dict[str, tuple[set[str], set[str], set[str], bool]] = {}
     for origen_id, fuerza in (menciones if menciones is not None
                               else menciones_en(texto, grupos)):
-        modelo = modelos.get(origen_id) or set()
-        if fuerza != FUERZA_NOMBRE or not modelo:
+        variantes = grupos.get(origen_id) or []
+        if fuerza != FUERZA_NOMBRE or not variantes:
             continue
-        marca = _palabras_de_nombre(grupos[origen_id][0].marca)
+        marca = _palabras_de_nombre(variantes[0].marca)
+        modelo = _palabras_de_nombre(variantes[0].nombre) - marca
+        if not modelo:
+            continue
         sin_codigo = {t for t in modelo if not _es_codigo(t)}
         entera = modelo <= palabras and bool(sin_codigo or marca & palabras)
         if entera or (sin_codigo and sin_codigo <= palabras):
-            candidatas[origen_id] = (marca, modelo, sin_codigo, entera)
+            datos[origen_id] = (marca, modelo, sin_codigo, entera)
+    enteras = {o for o, (_, _, _, e) in datos.items() if e}
     salida: list[str] = []
-    for origen_id, (marca, modelo, sin_codigo, entera) in candidatas.items():
-        if not entera and any(e and sc & sin_codigo for o, (_, _, sc, e) in candidatas.items()
-                              if o != origen_id):
-            continue                    # otra con esas palabras está nombrada entera
-        vocabulario = set().union(*(m for o, m in modelos.items() if o != origen_id)) - modelo
-        # Donde se la nombra: un tramo con una palabra de su modelo que no es
-        # un código (o, si solo tiene códigos, con su marca).
-        if _con_variante(secuencia, modelo | marca, sin_codigo or marca, vocabulario):
-            continue
-        salida.append(origen_id)
+    for origen_id, (marca, modelo, sin_codigo, entera) in datos.items():
+        if not entera and any(datos[o][2] & sin_codigo for o in enteras if o != origen_id):
+            continue                    # una hermana con esas palabras está nombrada entera
+        otras = set().union(*(datos[o][1] for o in enteras if o != origen_id)) - modelo
+        de_otras = set().union(*(datos[o][1] | datos[o][0] for o in enteras if o != origen_id))
+        exigidas = sin_codigo or (modelo | marca)
+        limpias = [(i, j) for i, j in _apariciones(secuencia, modelo | marca, exigidas)
+                   if not _detras_hay_variante(secuencia, j, otras)
+                   # Una parcial pegada detrás del nombre de otra es parte de él.
+                   and (entera or i == 0 or secuencia[i - 1] not in de_otras)]
+        if limpias:
+            salida.append(origen_id)
     return salida
 
 
@@ -1627,6 +1639,9 @@ def para_asistente(
     # tiene página de producto en ENLACES a la que mandar).
     sin_maquina = [c for c in dict.fromkeys(intereses_instruccion + codigos)
                    if c not in con_maquina]
+    # Lo que pide la instrucción, delante: el recorte por tokens quita por el
+    # final (y no puede quitar del medio: las referencias van por posición).
+    maquinas.sort(key=lambda m: m.get("eleccion") != "instruccion")
     codigo_avisos = (idioma or "").strip().lower()[:2]
     return {
         "maquinas": maquinas,

@@ -331,9 +331,10 @@ del pedido de BoHub.
   producto e idioma, solo si el enlace (`MapaProductos.motivo`):
     - va a una **página de servicio**: «va a la página «Contacto», una página
       de servicio, no a la de la máquina» (o, sin título, «va a una página de
-      servicio de …»). Son contacto (también `contacto-mbo-lasers`…),
-      categorías y etiquetas, carrito, pago, mi cuenta, buscador (también
-      `/?s=…`), legales…: las que el índice excluye por su slug
+      servicio de …»). Son contacto (también `contacto-mbo-lasers`,
+      `contacts`…), categorías y etiquetas, la portada de la tienda
+      (`/tienda/`), carrito, pago, mi cuenta, buscador (también `/?s=…`),
+      legales…: las que el índice excluye por su slug
       (`webs.reglas`, solo para rutas que no son de producto) más contacto y
       buscador;
     - es el de una página que el índice **ya no tiene** (se quitó de la web o
@@ -355,7 +356,9 @@ del pedido de BoHub.
       (sin tienda o sin leer). Esa ficha va a `ctx.no_mirados` (el **ámbito
       de cada descuadre es su ficha**, no su web: lo que no se puede juzgar
       de una no deja abiertos los ya arreglados de las demás de su web) y lo
-      que ya se había avisado de ella sigue abierto. Una página de servicio
+      que ya se había avisado de ella sigue abierto (también uno de antes,
+      guardado con la web como ámbito: el motor mira además su
+      `entidad_id`). Una página de servicio
       se avisa aunque su web no esté en el índice.
     - Al cambiar la regla, los descuadres de las páginas de aterrizaje que
       ya se habían abierto se resuelven solos en la siguiente pasada.

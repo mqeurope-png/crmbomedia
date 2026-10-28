@@ -346,8 +346,9 @@ MOTIVO_FUERA = "fuera"
 #: también con más palabras («contacto-mbo-lasers», «kontakt-mbo-laser»), y el
 #: buscador.
 _SERVICIO_RE = re.compile(
-    r"(^|-)(contact|contacto|contactos|contacta|contactanos|contactar|contacter|contactez"
-    r"|contacteer|kontakt|kontaktieren|contatto|contatti)(-|$)"
+    r"(^|-)(contact|contacts|contacto|contactos|contacta|contactanos|contactenos|contactar"
+    r"|contacter|contactez|contacteer|kontakt|kontaktieren|kontaktformular|contatto|contatti"
+    r"|contattaci)(-|$)"
     r"|^(nous-contacter|neem-contact-op|buscador|buscar|busqueda|search|suche|recherche"
     r"|zoeken|cerca)$", re.IGNORECASE)
 #: La consulta de una búsqueda o de la cesta de WordPress (`/?s=…`,
@@ -448,6 +449,8 @@ class MapaProductos:
             return False
         if set(tramos[:-1]) & BASES_CATEGORIA or tramos[0] in BASES_CATEGORIA:
             return True
+        if len(tramos) == 1 and tramos[0] in BASES_PRODUCTO | self._bases.get(sitio, set()):
+            return True                 # la portada de la tienda (`/tienda/`): toda la tienda
         slug = unquote(tramos[-1])
         if _SERVICIO_RE.search(slug):
             return True

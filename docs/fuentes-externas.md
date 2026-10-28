@@ -709,17 +709,23 @@ Solo lee: ni el índice ni el catálogo se tocan.
     las referencias (porque el recorte lo quitó, o por la página de una web)
     vuelve con ese mismo `P#`. Sin plan (la casilla «Webs» desmarcada, o una
     corrección que no pide un producto), cuenta lo que la instrucción nombra
-    de verdad, y solo si pide poner algo en el correo («incluye», «añade»,
-    «pon»…; `consulta_fuentes.pide_incluir`). «Nombrar de verdad»
-    (`catalogo.nombrados_en`): con su nombre entero (si su modelo es solo un
-    código, «MBO 6090», también con la marca: «la artisJet 6090 Trust» no
-    nombra la MBO 6090), o con todas las palabras de su modelo que no son
-    códigos («la Trust») si ninguna hermana está nombrada entera («la Ador
-    20W» no nombra la Ador 10W), y sin una variante detrás («la MBO 6090
-    versión desktop», «la MBO 6090 Pro»). En el primer borrador, el cupo
-    propio de la instrucción es para estas; las demás menciones de la
-    instrucción entran con el tope de siempre. Y el recorte por tokens quita
-    antes cualquier otra máquina que las que pide la instrucción.
+    de verdad, y solo si pide poner algo en el correo («incluye», «añádele»,
+    «ponle», «ofrécele», «sustituye… por»…; `consulta_fuentes.pide_incluir`;
+    «dile que la Ador la revisamos» o «quita la Trust» no). «Nombrar de
+    verdad» (`catalogo.nombrados_en`): basta una vez en que el texto la
+    nombre con su nombre entero (si su modelo es solo un código, «MBO 6090»,
+    con la marca delante: «la artisJet 6090 Trust» no nombra la MBO 6090), o
+    con todas las palabras de su modelo que no son códigos («la Trust») si
+    ninguna hermana está nombrada entera («la Ador 20W» no nombra la Ador
+    10W) y no van pegadas al nombre de otra («artisJet Trust 6090 Freebird» es
+    la Trust); y esa vez sin una variante detrás («la MBO 6090 versión
+    desktop», «la MBO 6090 Pro»). Varias hermanas nombradas juntas («la MBO
+    3050 y la MBO 6090») son todas. En el primer borrador, el cupo propio de
+    la instrucción es para estas; las demás menciones de la instrucción
+    entran con el tope de siempre. Las que pide la instrucción van delante
+    del CATÁLOGO: el recorte por tokens quita por el final (y nunca del
+    medio, porque las referencias `P#` se numeran por la posición antes del
+    recorte).
   - Una pieza de «Nuestras webs» que trae la búsqueda y es un producto del
     catálogo (por su página o su título): si es una máquina del correo, dice
     «En el CATÁLOGO» y no se ofrece como ficha; si no, se ofrece con su `W#`,
@@ -756,9 +762,10 @@ Solo lee: ni el índice ni el catálogo se tocan.
   final de la web; por la ruta o, si es de producto o es solo el slug, por el
   slug) cuando el enlace:
   - va a una **página de servicio** (`servicio`): contacto (también con más
-    palabras: `contacto-mbo-lasers`, `kontakt-mbo-laser`), categoría o
-    etiqueta (`BASES_CATEGORIA`), carrito, pago, mi cuenta, buscador (también
-    `/?s=…`, `?add-to-cart=…`), legales… (las que el índice excluye por su
+    palabras: `contacto-mbo-lasers`, `kontakt-mbo-laser`, `contacts`),
+    categoría o etiqueta (`BASES_CATEGORIA`), la portada de la tienda
+    (`/tienda/`), carrito, pago, mi cuenta, buscador (también `/?s=…`,
+    `?add-to-cart=…`), legales… (las que el índice excluye por su
     slug, `webs.reglas`, más contacto y buscador, que el índice sí lee). Las
     reglas de slug del índice son para páginas y entradas: una ruta de
     producto (una máquina «reacondicionada») no es una página de servicio;
