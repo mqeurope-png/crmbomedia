@@ -52,11 +52,14 @@ delante de «Auto · Texto · Con fichas», dos casillas: **«Webs»** y
 elegir nada: el asistente consulta por su cuenta mientras redacta.
 
 - **«Soporte»**: si el correo es técnico (una avería, un error, un ajuste,
-  cómo se hace algo), mira en el centro de ayuda del fabricante de esa máquina
-  (hoy, FLUX). Si hay un artículo que viene a cuento, el borrador lo **cita**:
-  pasos traducidos, referencias y números de pieza tal cual y **el enlace** al
-  artículo (si la IA no lo pone, se añade al final). Si no hay procedimiento,
-  el correo lo dice y **no se inventa pasos**.
+  cómo se hace algo), mira en el centro de ayuda del fabricante (hoy, solo
+  FLUX). Si reconoce en el correo una máquina de una marca que no tiene centro
+  de ayuda (una artisJet), no busca en el de otra; si no sabe qué máquina es,
+  mira en todos. Si hay un artículo que viene a cuento, el borrador lo
+  **cita**: pasos traducidos, referencias y números de pieza tal cual y **el
+  enlace** al artículo (si la IA no lo pone, se añade al final). Si no hay
+  procedimiento, el correo lo dice; si no hay centro de ayuda para esa
+  máquina, dice que lo compruebas. En ningún caso **se inventa pasos**.
 - **«Webs»**: mira en nuestras webs las páginas y productos por los que
   pregunta el cliente; la IA los tiene delante con su enlace. El precio que
   sale es **el de la web**: el borrador puede decir «en la web está a…», nunca
@@ -64,11 +67,13 @@ elegir nada: el asistente consulta por su cuenta mientras redacta.
 - Si una de las dos no responde a tiempo, el borrador sale igual, sin ella, y
   la franja te lo dice. Desmarcadas, el asistente escribe como antes, solo con
   el catálogo. Cambiar una casilla vale para el siguiente «Redactar» o la
-  siguiente corrección; las correcciones usan lo que trajo el primer borrador,
-  no vuelven a buscar.
+  siguiente corrección. Las correcciones usan lo que trajo el primer borrador,
+  sin volver a buscar; lo que ese no miró (la casilla iba desmarcada) o no
+  pudo mirar (no respondió), lo consultan entonces.
 - En **«Lo que ha usado»** ves qué ha consultado, con sus enlaces, y si el
-  borrador lo ha usado. Si el borrador trae pasos que no salen de ningún
-  artículo, la franja te avisa: revísalo.
+  borrador lo ha usado; «Buscó …» solo sale si buscó de verdad. Si el
+  borrador trae pasos que no salen de ningún artículo, la franja te avisa:
+  revísalo.
 - Las imágenes del cuerpo **se conservan** cuando le pides a la IA que corrija
   («más corto», «en inglés»); si alguna no vuelve a su sitio, va al final y la
   franja te avisa.

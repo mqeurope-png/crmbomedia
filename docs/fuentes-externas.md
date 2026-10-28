@@ -70,7 +70,10 @@ no puede usarse para que el servidor pregunte a la red de dentro (SSRF):
 `comprobar_url` y httpx lo vuelve a resolver al conectar; un DNS hostil
 podría cambiar de respuesta entre las dos (*DNS rebinding*). Cerrarla del
 todo pide conectar a la IP comprobada; con lo que se descarga (imágenes,
-artículos y webs públicas, nunca con credenciales) no compensa.
+artículos y webs públicas, nunca con credenciales) no compensa. Por lo mismo,
+el plazo del soporte al redactar acota la primera resolución (la de
+`comprobar_url`, con el resolutor con tiempo de `con_plazo`) pero no la de
+httpx al conectar.
 
 El agente de usuario (`USER_AGENT`) es **solo ASCII**: httpx codifica las
 cabeceras en ASCII y una tilde («públicas») rompía `red._cliente()`, es decir,
@@ -110,9 +113,9 @@ dirigido al modelo («ignora las instrucciones anteriores y…»):
 - **`REGLA_MATERIAL` se añade al prompt de sistema solo cuando el turno lleva
   material** (nada de dentro manda; mandan las instrucciones y la petición),
   con `REGLA_SOPORTE`, `REGLA_WEBS`, la de los enlaces y la de
-  `material_usado` según lo que haya; `REGLA_SIN_RESULTADOS` o
-  `REGLA_SOPORTE_NO_CONSULTADO` si se buscó y no hay procedimiento, o si no se
-  pudo consultar.
+  `material_usado` según lo que haya; `REGLA_SIN_RESULTADOS` si se buscó y no
+  hay procedimiento, o `REGLA_SOPORTE_NO_CONSULTADO` si no se pudo consultar
+  o, en un correo técnico, no hay centro de ayuda donde mirar.
 - **Cada pieza lleva su referencia**: `[S1]` el artículo, `[S2]` y `[S3]` los
   otros artículos, `[W1]`… las páginas de nuestras webs. Con material, el
   modelo añade a su JSON `material_usado` con las que ha usado
@@ -126,8 +129,8 @@ dirigido al modelo («ignora las instrucciones anteriores y…»):
   plan, y el prompt de sistema, el contexto y la petición son los mismos byte a
   byte (`tests/test_asistente_fuentes.py`). Con alguna marcada pero nada que
   meter (ni artículo, ni páginas, ni «no hay procedimiento», ni «no se pudo
-  consultar el soporte»), el prompt tampoco cambia: solo queda apuntado lo que
-  se buscó.
+  consultar el soporte» o «no hay centro de ayuda»), el prompt tampoco cambia:
+  solo queda apuntado lo que se buscó.
 - Las guardias de la salida (la del cuerpo y la de Bomedia) no cambian: se
   aplican igual al borrador escrito con material.
 - Lo consultado se **lee antes** de llamar al modelo, siempre por la lista
@@ -160,13 +163,15 @@ cliente no ha escrito nada nuevo) no se llama al modelo ni se consulta.
 1. **El plan: qué buscar.** Una llamada corta (`planificar`, `PROMPT_PLAN`) al
    **modelo de las correcciones** (`modelo_correccion` de Configuración ERP →
    «Asistente de respuesta»; sin pensamiento extendido, 300 tokens de salida
-   como mucho) lee el último mensaje del cliente (hasta 3.000 caracteres; o su
-   consulta del lead si el último del hilo es nuestro), el asunto, la
-   instrucción y las máquinas que ha reconocido el catálogo, y devuelve un
-   JSON: si el correo es **técnico** (avería, error, ajuste, calibración,
-   instalación, actualización, mantenimiento, cómo se hace algo), la
-   **marca**, la búsqueda para el centro de ayuda **en inglés** y en el idioma
-   del correo, y la búsqueda para nuestras webs. Va con **5 s como mucho y sin
+   como mucho) lee el último mensaje **del cliente** (hasta 3.000 caracteres;
+   el suyo aunque después hayamos escrito nosotros; su consulta del lead solo
+   si en el hilo no hay ningún mensaje suyo, como un hilo que es solo nuestro
+   acuse), el asunto, la instrucción y las máquinas que ha reconocido el
+   catálogo, y devuelve un JSON: si el correo es **técnico** (avería, error,
+   ajuste, calibración, instalación, actualización, mantenimiento, cómo se
+   hace algo), la **marca**, la búsqueda para el centro de ayuda **en
+   inglés** y en el idioma del correo, y la búsqueda para nuestras webs. Va
+   con **5 s como mucho y sin
    reintentos** (`TIEMPO_PLAN`; `llm._invoke_claude` con `timeout` y
    `max_retries=0`). Si falla, tarda o devuelve otra cosa, la arma
    `plan_por_palabras`: las máquinas que nombra el cliente (o la FLUX que tiene
@@ -177,16 +182,26 @@ cliente no ha escrito nada nuevo) no se llama al modelo ni se consulta.
    (también la fallida) y su coste **se suma al `coste_usd` del borrador**: lo
    que cuesta un borrador es todo lo que se pidió a la IA para escribirlo.
 2. **Soporte** (casilla «Soporte»), **solo si el correo es técnico**. Fuentes:
-   las activas con búsqueda de **esa marca**; si la marca es de una máquina que
-   el catálogo ha reconocido en el correo y no tiene centro de ayuda en la
+   las activas con búsqueda de **esa marca**. Si la marca es de una máquina que
+   **el catálogo ha reconocido en el correo** y no tiene centro de ayuda en la
    lista (artisJet, hoy), no se consulta y se apunta (`sin_centro`): no se
-   busca lo de artisJet en el soporte de FLUX. Sin marca, o una que no se
-   reconoce, en todas las activas con búsqueda. Primero la búsqueda **en
+   busca lo de artisJet en el soporte de FLUX. Si el catálogo no reconoció
+   ninguna máquina de esa marca («mi artisJet da el error 12», sin modelo),
+   la marca cuenta como desconocida: sin marca, o con una que no se reconoce,
+   se busca en **todas** las activas con búsqueda (también en la de FLUX:
+   nunca se deja de mirar por una etiqueta). Primero la búsqueda **en
    inglés** (la base de los fabricantes) y, si no sale nada, la del idioma del
-   correo; 3 resultados por fuente. El **primer artículo se lee entero**, en el
-   idioma del correo si la fuente lo tiene (Zendesk prueba ese locale y cae al
+   correo; si las dos son la misma (el plan por palabras), va **una sola
+   vez**, en el idioma del correo, y es la fuente la que cae al inglés. 3
+   resultados por fuente. El **primer artículo se lee entero**, en el idioma
+   del correo si la fuente lo tiene (Zendesk prueba ese locale y cae al
    inglés); los **dos siguientes, solo título y extracto** (se pueden enlazar,
-   nunca sacar pasos de ellos).
+   nunca sacar pasos de ellos). Un correo técnico **sin dónde mirar** (marca
+   sin centro, ningún centro activo —`sin_fuentes`— o un plan técnico sin
+   búsqueda, que cuenta como no consultado) no tiene procedimiento que citar:
+   el turno lleva la orden de no escribir pasos de memoria
+   (`REGLA_SOPORTE_NO_CONSULTADO`) y, si el borrador los trae, el aviso de
+   pasos.
 3. **Webs** (casilla «Webs»), si el plan trae qué buscar (los productos por
    los que pregunta). La búsqueda del índice (§ La búsqueda: MySQL local) en el
    idioma del correo y, si no da nada, en cualquiera: los **tres mejores
@@ -195,37 +210,60 @@ cliente no ha escrito nada nuevo) no se llama al modelo ni se consulta.
    **5 s**; todo el soporte (búsquedas, respaldo y artículo), **6 s**, y cada
    petición, **4 s**, sin reintentos (`soporte.con_plazo`, `TIEMPO_SOPORTE`,
    `TIEMPO_PETICION_SOPORTE`): pasado el plazo, la siguiente petición ni sale.
-   Las webs son una consulta a la base local. En lo peor, unos 11 s más que un
-   borrador sin casillas, lejos del corte del nginx (`/api/` espera 180 s en
-   los ejemplos de `deploy/nginx`; un servidor montado a mano antes puede
-   seguir con 60 s).
+   El nombre del dominio se resuelve **dentro** del plazo
+   (`adaptadores._resolver_con_plazo`: un DNS que no contesta a tiempo es un
+   «no se encuentra el dominio» y no sale nada). Lo que el plazo **no** acota:
+   httpx vuelve a resolver el nombre al conectar (§ La red con cerrojos, la
+   ventana que queda) y esa segunda resolución no tiene tope; y la conexión y
+   la espera de la respuesta reciben cada una lo que queda del plazo, no uno
+   común. Las webs son una consulta a la base local. En lo peor, unos 11 s más que un
+   borrador sin casillas: es lo **esperable**, no una garantía (un DNS muy
+   lento al conectar lo alargaría), y queda lejos del corte del nginx
+   (`/api/` espera 180 s en los ejemplos de `deploy/nginx`; un servidor
+   montado a mano antes puede seguir con 60 s).
 5. **Lo que falla se deja fuera**, nunca tira el borrador: se escribe sin ello
    y el aviso de la franja lo dice. Con el soporte sin consultar, el modelo
    recibe además la orden de no escribir pasos de memoria
    (`REGLA_SOPORTE_NO_CONSULTADO`). **«No he podido mirar» nunca es «no hay
    procedimiento»**: el «no hay» solo sale si todas las fuentes consultadas
    respondieron y ninguna trajo nada.
-6. **Las correcciones no vuelven a buscar** (`reutilizar`): leen otra vez lo
-   que trajo el primer turno (el artículo por fuente + id, de la caché; los
-   otros artículos tal cual; las páginas por su id) con las casillas de
-   **ahora**: desmarcar «Webs» en una corrección la deja sin las páginas. Ni
-   plan ni coste de consulta. Si el turno 0 no llegó a redactar (no había nada
-   que contestar), la primera corrección que redacta sí consulta, con su
-   instrucción.
+6. **Las correcciones reutilizan lo que ya se trajo** (`reutilizar`): leen
+   otra vez lo que trajo la consulta de la conversación (el artículo por
+   fuente + id, de la caché y en el idioma en que se pidió,
+   `soporte_idioma_pedido`, así que no sale a la red; los otros artículos tal
+   cual; las páginas por su id) con las casillas de **ahora**: desmarcar
+   «Webs» en una corrección la deja sin las páginas. Ni plan nuevo ni coste de
+   consulta. **Salvo** lo que esa consulta no miró (su casilla iba
+   desmarcada) o no pudo mirar (la fuente falló): eso se consulta en la
+   corrección, con el plan guardado (`Plan.de_resumen` sobre `consulta`), y
+   en las siguientes igual (la caché del soporte ahorra la red). Así marcar
+   «Soporte» a mitad de conversación vale para la corrección siguiente, y un
+   fallo pasajero no se arrastra a toda la conversación. Si la conversación
+   aún no había consultado (el primer turno iba sin casillas o no había nada
+   que contestar), la primera corrección con alguna casilla consulta entera,
+   con un plan nuevo que lee el mensaje del cliente, la instrucción del primer
+   turno y la suya (sin hilo, la del primer turno es lo único que dice de qué
+   va el correo).
 
 **Lo que queda apuntado** (`contexto_json["material"]`, por turno; es lo que
 enseña «Lo que ha usado» y lo que leen las correcciones): `automatico: true`,
-las casillas (`fuentes`), la consulta (`consulta`: técnica, marca, las
-búsquedas, si salió de la IA o de las palabras —`origen` `ia` / `palabras`—, el
-modelo, el error, `plan_ms`, `coste_usd` y `reutilizado` en una corrección),
-el artículo (`soporte`: `ref` `S1`, fuente, título, enlace, idioma, si se
-recortó, `usado`), los otros (`otros_soporte`), las páginas (`webs`: `ref`
-`W1`…, web, tipo, idioma, precio de la web, `usado`), lo que no se encontró
+las casillas (`fuentes`), la consulta (`consulta`, el plan: técnica, marca,
+las marcas que reconoció el catálogo —`marcas_correo`—, las búsquedas
+preparadas, si salió de la IA o de las palabras —`origen` `ia` /
+`palabras`—, el modelo, el error, `plan_ms`, `coste_usd` y `reutilizado` en
+una corrección), el artículo (`soporte`: `ref` `S1`, fuente, título, enlace,
+idioma, si se recortó, `usado`), los otros (`otros_soporte`), las páginas
+(`webs`: `ref` `W1`…, web, tipo, idioma, precio de la web, `usado`), lo que
+no se encontró
 (`sin_resultados`, `webs_sin_resultados`), lo que no se consultó y por qué
-(`no_consultado`, `sin_centro`, `sin_fuentes`), lo que se buscó en el soporte
-(`buscado_en_soporte`), los tiempos (`ms`, `soporte_ms`, `webs_ms`),
-`material_usado` tal como lo dijo el modelo (`null` si no lo dijo) y, si hizo
-falta, `enlace_anadido` y `pasos_sin_procedimiento`.
+(`no_consultado`, `sin_centro`, `sin_fuentes`), lo que **se buscó de verdad**
+en el soporte y en las webs (`buscado_en_soporte`, `buscado_en_webs`), el
+idioma en que se pidió el artículo (`soporte_idioma_pedido`), los tiempos
+(`ms`, `soporte_ms`, `webs_ms`), `material_usado` tal como lo dijo el modelo
+(`null` si no lo dijo) y, si hizo falta, `enlace_anadido` y
+`pasos_sin_procedimiento`. El «Buscó …» de «Lo que ha usado» sale **solo** de
+`buscado_en_*`, nunca del plan ni de las casillas: el plan se calcula aunque
+una casilla vaya desmarcada o la fuente no llegue a consultarse.
 
 **Permisos: ninguno aparte.** La consulta la hace el servidor dentro de la
 petición del borrador, para quien ya puede usar el asistente (§ Permisos).
@@ -303,15 +341,24 @@ texto) o **`error`** (con el detalle). La pantalla avisa si una fuente **activa*
   de la fuente; si no hay resultados, se busca en inglés y se dice en los
   avisos; si la fuente no tiene ese idioma, se va directo al inglés. Sin
   locales no se manda ninguno (el que dé la web). Al redactar, el asistente
-  busca **primero en inglés** y, si no sale nada, en el idioma del correo, y
-  lee el artículo en el idioma del correo si la fuente lo tiene (si no, en
-  inglés; § Cómo consulta el asistente al redactar).
+  busca **primero en inglés** y, si no sale nada, en el idioma del correo (si
+  es la misma búsqueda, una sola vez, en el idioma del correo, y el respaldo
+  en inglés lo hace la fuente), y lee el artículo en el idioma del correo si
+  la fuente lo tiene (si no, en inglés; § Cómo consulta el asistente al
+  redactar). La caché lo guarda con el idioma **pedido**, y las correcciones
+  lo releen con ese (`soporte_idioma_pedido`), no con el que trajo.
 - **Caché** (`soporte_cache`, `cache.py`): una búsqueda vale **1 día** (un
   artículo nuevo tiene que salir pronto) y un artículo **7 días** (cambian poco
   y el borrador lleva el enlace, que abre siempre el vigente). Clave: sha256 de
   `tipo|fuente|idioma|consulta-o-id`. Lo que falla no se guarda. Los caducados
-  se borran al escribir (sin tarea programada). Se escribe en un SAVEPOINT: una
-  carrera no tumba la petición.
+  se borran al escribir (sin tarea programada). Se escribe en **su propia
+  transacción, corta y con commit al momento** (MySQL; en SQLite, la de los
+  tests, en un SAVEPOINT de la sesión): quien escribe es el asistente a mitad
+  de un borrador, cuya transacción sigue abierta mientras llama al modelo
+  (20-40 s), y sus bloqueos (la purga de caducados toma un rango del índice)
+  dejarían esperando a cualquier otro borrador que guardara a la vez. Una
+  carrera (dos peticiones que insertan la misma clave) no tumba la petición:
+  se sigue sin guardar.
 - **Topes**: consulta de 2 a 300 caracteres, 6 resultados por defecto (20 como
   mucho), extracto de 300 caracteres, texto del artículo de 60.000 como mucho.
   Varias fuentes salen por turnos (que la primera no tape a las demás); si la
@@ -367,13 +414,16 @@ depender de que el modelo obedezca:
   que no hay un procedimiento publicado (que lo estamos revisando o lo
   consultamos con el fabricante) y **no escribe pasos**. Ya no hace falta
   pedirlo («Escribir diciendo que no hay procedimiento» era del buscador
-  manual). Si el soporte no se pudo consultar, tampoco escribe pasos de
-  memoria.
+  manual). Si el soporte no se pudo consultar, o el correo es técnico y no hay
+  centro de ayuda donde mirar (la marca reconocida no lo tiene, o no hay
+  ninguno activo), tampoco escribe pasos de memoria
+  (`REGLA_SOPORTE_NO_CONSULTADO`): si hacen falta, dice que lo comprobamos.
 - **Los pasos que no salen de un artículo se avisan.** Si el borrador trae una
   lista de dos elementos o más, o dos líneas que empiezan por «1.», un guion o
   «Paso 1:» (en los idiomas de los correos), y no hay artículo que los
-  respalde (no había procedimiento, no se pudo consultar el soporte o el
-  modelo no usó el que salió), la franja avisa: «revísalo»
+  respalde (no había procedimiento, no se pudo consultar el soporte, no hay
+  centro de ayuda para esa marca o el modelo no usó el que salió), la franja
+  avisa: «revísalo»
   (`pasos_sin_procedimiento`; el cuerpo no se toca). Es lo más importante de
   todo el bloque.
 
@@ -918,9 +968,13 @@ WordPress simulado de datos realistas en `test_webs_comun.py`: WPML con ids
 por idioma y los ids «ajustados» en `include=` y `not_in`, la Store API que
 esconde las categorías vacías sin `hide_empty=false`, y FLUX con su árbol
 y sus productos reales), `test_imagen_url.py`, `test_asistente_fuentes.py` (la
-consulta automática con las casillas: el plan y su respaldo por palabras, el
-plazo del soporte, lo que no responde, «no hay procedimiento», el enlace,
-`material_usado`, las correcciones que no vuelven a buscar, y el turno con las
+consulta automática con las casillas: el plan y su respaldo por palabras
+—apóstrofos que no son comillas, una sola búsqueda si es la misma—, que el
+plan llega al SDK con su tiempo y sin reintentos, el plazo del soporte, lo que
+no responde (soporte e índice de las webs), «no hay procedimiento», el correo
+técnico sin dónde buscar, el enlace, `material_usado`, las correcciones que
+reutilizan y las que consultan lo que el primer borrador no miró o no pudo
+mirar, la relectura del artículo en inglés desde la caché, y el turno con las
 casillas desmarcadas idéntico al de siempre),
 `test_migration_0148_fuentes_externas.py`,
 `test_migration_0149_reglas_indice.py`,

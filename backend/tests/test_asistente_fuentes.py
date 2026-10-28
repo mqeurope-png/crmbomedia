@@ -1052,6 +1052,11 @@ def test_el_plan_por_palabras_no_toma_los_apostrofos_por_comillas() -> None:
             asunto="Beambox focus", idioma="en", maquinas=beambox))
         assert plan.soporte == "Beambox Camera not found focus", mensaje
         assert not {"John", "Miller", "Acme"} & set(plan.soporte.split()), mensaje
+    # Sin asunto (el mensaje de un formulario): solo las palabras técnicas.
+    plan = consulta_fuentes.plan_por_palabras(consulta_fuentes.Entrada(
+        texto_cliente="Hi, it's John Miller from Acme Signs Ltd, our Beambox can't focus properly.",
+        asunto="", idioma="en", maquinas=beambox))
+    assert plan.tecnica is True and plan.soporte == "Beambox focus"
 
 
 def test_el_plan_por_palabras_no_da_por_tecnico_un_correo_comercial() -> None:

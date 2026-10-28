@@ -339,7 +339,12 @@ def plan_por_palabras(entrada: Entrada, *, config_kb: dict[str, Any] | None = No
             if frase and frase not in piezas:
                 piezas.append(frase)
         vistas = set(palabras_de(" ".join(piezas)))
-        for palabra in palabras_de(entrada.asunto or entrada.instruccion or entrada.texto_cliente):
+        # Las palabras del asunto (o de la instrucción); sin ninguno de los dos,
+        # solo las palabras técnicas del texto: el resto del correo (el nombre,
+        # la empresa, el saludo) no sale hacia el centro de ayuda.
+        tema = entrada.asunto or entrada.instruccion or " ".join(
+            m.group(0) for m in _TECNICA_RE.finditer(entrada.texto_cliente or ""))
+        for palabra in palabras_de(tema):
             if palabra not in vistas and not palabra.isdigit():
                 piezas.append(palabra)
                 vistas.add(palabra)

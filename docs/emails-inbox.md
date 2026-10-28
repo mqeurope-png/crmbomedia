@@ -94,11 +94,13 @@ podían leer asuntos largos.
   mira por su cuenta nuestras webs (las páginas y productos por los que
   pregunta el cliente, con su enlace; el precio de la web se cita, nunca se
   oferta) y, si el correo es técnico, el centro de ayuda del fabricante (hoy,
-  FLUX): si hay procedimiento, lo cita con su enlace; si no, lo dice y no se
-  inventa pasos.
+  solo FLUX; si reconoce una máquina de una marca sin centro, como una
+  artisJet, no busca en el de otra): si hay procedimiento, lo cita con su
+  enlace; si no, lo dice y no se inventa pasos.
   No hay que buscar ni elegir nada. Si una no responde a tiempo, el borrador
   sale igual y la franja lo avisa; las correcciones usan lo que trajo el
-  primer borrador. Qué ha mirado y qué ha usado, en **«Lo que ha usado»**.
+  primer borrador y consultan entonces lo que ese no miró o no pudo mirar.
+  Qué ha mirado y qué ha usado, en **«Lo que ha usado»**.
   Ver [docs/ai-features.md](ai-features.md).
 - **El compositor del hilo es un diálogo con velo que no destruye trabajo**:
   pulsar en el fondo no lo cierra. Escape, la X y «Cancelar» preguntan si hay

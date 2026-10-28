@@ -267,7 +267,8 @@ petición: en los ejemplos de nginx (`deploy/nginx`, y las directivas de Plesk d
 `deployment-ionos.md`) `/api/` espera hasta 180 s; en un servidor ya montado hay
 que cambiarlo a mano. La consulta a nuestras webs y al soporte (las casillas de
 la franja) va dentro de la misma petición y suma, en lo peor, unos 11 s (5 del
-plan y 6 del soporte; § Lo que no está en el catálogo).
+plan y 6 del soporte; es lo esperable, no una garantía: § Lo que no está en el
+catálogo).
 
 En **«Uso de la IA»** (ERP · Leads) el primer borrador y las correcciones se
 anotan con propósitos distintos (`asistente_borrador` /
@@ -746,29 +747,37 @@ al redactar**, igual que consulta el catálogo: nadie busca ni elige nada.
   Tampoco se consulta si no hay nada que contestar.
 - **Qué buscar lo prepara un plan**: una llamada corta al **modelo de las
   correcciones** (el de Configuración ERP → «Asistente de respuesta», Haiku
-  por defecto) lee el último mensaje del cliente, el asunto, la instrucción y
-  las máquinas que ha reconocido el catálogo, y dice si el correo es técnico,
-  de qué marca, qué buscar en el centro de ayuda (en inglés y en el idioma del
-  correo) y qué en nuestras webs. **5 s como mucho y sin reintentos**; si
+  por defecto) lee el último mensaje del cliente (su consulta del lead solo si
+  en el hilo no hay ninguno suyo), el asunto, la instrucción y las máquinas
+  que ha reconocido el catálogo, y dice si el correo es técnico, de qué marca,
+  qué buscar en el centro de ayuda (en inglés y en el idioma del correo) y qué
+  en nuestras webs. **5 s como mucho y sin reintentos**; si
   falla, tarda o devuelve otra cosa, se busca **con las palabras del correo**
   (las máquinas que nombra, los códigos de error, los mensajes entre comillas,
   el asunto). Se anota en `ia_llamadas` como `asistente_consulta` y su coste
   **se suma al del borrador**.
 - **Soporte**: solo si el correo es **técnico** (avería, error, ajuste,
-  instalación, mantenimiento, cómo se hace algo) y solo en el centro de ayuda
-  de **la marca** de la que habla, si lo tiene en la lista blanca (una máquina
-  de artisJet no se busca en el de FLUX; «Lo que ha usado» dice que no tiene
-  centro). Primero **en inglés**, luego en el idioma del correo. El **primer
+  instalación, mantenimiento, cómo se hace algo), en el centro de ayuda de
+  **la marca** de la que habla si lo tiene en la lista blanca. Si el catálogo
+  ha reconocido en el correo una máquina de una marca **sin** centro (una
+  artisJet), no se busca en el de FLUX: «Lo que ha usado» dice que no tiene
+  centro. Si no ha reconocido ninguna máquina de esa marca, o no hay marca,
+  se busca en **todos** los centros activos. Primero **en inglés**, luego en
+  el idioma del correo (una sola vez si es la misma búsqueda). El **primer
   artículo se lee entero** (en el idioma del correo si existe); **dos más,
-  solo título y extracto**, para enlazar.
+  solo título y extracto**, para enlazar. Un correo técnico sin centro donde
+  buscar (esa marca no lo tiene, o no hay ninguno activo) lleva la orden de
+  no escribir pasos de memoria, y el aviso de pasos si los trae.
 - **Webs**: los productos y páginas por los que pregunta, en el índice (MySQL
   local) en el idioma del correo (si nada, en cualquiera): **tres
   fragmentos**, con su enlace y su «precio en la web», que no es precio de
   oferta.
 - **El tiempo**, porque va dentro de la petición del borrador: el plan **5 s**,
   todo el soporte **6 s** y cada petición al soporte **4 s**, sin reintentos;
-  las webs son una consulta a la base local. En lo peor, unos 11 s más, lejos
-  del corte del nginx.
+  las webs son una consulta a la base local. La resolución del DNS va dentro
+  del plazo, pero httpx vuelve a resolver al conectar y esa no tiene tope: en
+  lo peor, unos 11 s más es lo esperable, no una garantía, y queda lejos del
+  corte del nginx.
 - **Lo que falla se deja fuera**: una fuente que no responde o no llega a
   tiempo no tira el borrador; se escribe sin ella y el aviso de la franja lo
   dice («No se ha podido consultar el soporte (…): el borrador se ha escrito
@@ -784,7 +793,9 @@ al redactar**, igual que consulta el catálogo: nadie busca ni elige nada.
   en su JSON qué piezas ha usado. Las URL del material entran en los enlaces
   permitidos y en `enlaces_json`, para que las correcciones las conserven. Si
   se buscó en el soporte y no hay nada (todas las fuentes respondieron), va la
-  regla de no escribir pasos y una frase con la búsqueda exacta.
+  regla de no escribir pasos y una frase con la búsqueda exacta; si no se pudo
+  consultar, o no hay centro de ayuda para esa marca, la de no escribir pasos
+  de memoria.
 - **Garantías**, que no dependen de que el modelo obedezca: el borrador que
   **usó** el artículo (`S1` en `material_usado`; si el modelo no lo dice, si
   su enlace está en el cuerpo o el cuerpo trae pasos) **lleva su enlace** (si
@@ -792,14 +803,18 @@ al redactar**, igual que consulta el catálogo: nadie busca ni elige nada.
   artículo que no viene a cuento no se usa ni se enlaza a la fuerza);
   referencias, modelos y números de pieza **literales**; si el borrador trae
   **pasos** que no salen de ningún artículo (no había procedimiento, no se
-  pudo consultar o no usó el que salió), la franja avisa «revísalo»; un precio
-  de la web **nunca se oferta**. Las guardias del cuerpo y de Bomedia siguen
-  igual.
-- **Las correcciones no vuelven a buscar**: usan lo que trajo el primer turno
-  (el artículo, de la caché; las páginas, por su id) con las casillas de
-  **ahora** (desmarcar «Webs» deja la corrección sin las páginas), sin plan ni
-  coste de consulta. Si el primer turno no redactó (no había nada que
-  contestar), la primera corrección que redacta consulta con su instrucción.
+  pudo consultar, no hay centro de ayuda para esa marca o no usó el que
+  salió), la franja avisa «revísalo»; un precio de la web **nunca se
+  oferta**. Las guardias del cuerpo y de Bomedia siguen igual.
+- **Las correcciones reutilizan lo que ya se trajo**: lo que trajo el primer
+  turno (el artículo, de la caché y en el idioma en que se pidió; las
+  páginas, por su id) con las casillas de **ahora** (desmarcar «Webs» deja la
+  corrección sin las páginas), sin plan ni coste de consulta. **Salvo** una
+  fuente que el primer turno no miró (su casilla iba desmarcada) o que
+  falló: esa se consulta en la corrección, con el plan guardado. Si la
+  conversación aún no había consultado (el primer turno iba sin casillas o no
+  había nada que contestar), la primera corrección con alguna casilla
+  consulta entera, con la instrucción del primer turno y la suya.
 - **«Lo que ha usado»** enseña lo consultado (`contexto_json["material"]`, por
   turno; una corrección con las dos casillas desmarcadas no hereda el del
   turno anterior): el artículo y los otros con su enlace, su fuente y si el
@@ -807,7 +822,11 @@ al redactar**, igual que consulta el catálogo: nadie busca ni elige nada.
   páginas con web, tipo y precio de la web, lo que no se encontró, lo que no
   hacía falta («el correo no es técnico», «no pregunta por ningún producto») o
   no se pudo consultar, y qué se buscó y cómo («la preparó la IA», «con las
-  palabras del correo», «la del primer borrador»), con el tiempo. El título
+  palabras del correo», «la del primer borrador», «en esta corrección, con la
+  búsqueda del primer borrador»), con el tiempo. «Buscó …» sale solo de lo que
+  se buscó de verdad (`buscado_en_soporte`, `buscado_en_webs`), nunca del plan
+  ni de las casillas; un correo técnico con «Soporte» marcada en el que no se
+  buscó nada dice «Soporte: no se ha consultado». El título
   plegado lo resume («consultó soporte y webs»). Un borrador de antes del
   28/10/2026 enseña lo que se eligió con los botones.
 - **Coste**: el plan es una llamada corta (300 tokens de salida como mucho)

@@ -1764,16 +1764,21 @@ lo que va a pasar. Secciones destacadas:
     el cliente, para enlazarlos (el precio de la web se puede citar, nunca
     ofertar).
   - **«Soporte»**: si el correo es técnico (una avería, un error, un ajuste,
-    cómo se hace algo), el centro de ayuda del fabricante de esa máquina
-    (hoy, FLUX). Si encuentra el procedimiento, el borrador lo cita con su
-    enlace; si no lo hay, el correo lo dice y **no se inventa pasos**.
+    cómo se hace algo), el centro de ayuda del fabricante (hoy, solo FLUX).
+    Si reconoce en el correo una máquina de una marca sin centro de ayuda
+    (una artisJet), no busca en el de otra; si no sabe qué máquina es, mira
+    en todos. Si encuentra el procedimiento, el borrador lo cita con su
+    enlace; si no lo hay, el correo lo dice, y si no hay centro de ayuda para
+    esa máquina, dice que lo comprobáis: **nunca se inventa pasos**.
 
   Nadie tiene que buscar ni elegir nada (antes eran dos botones, «Buscar en
   soporte» y «Buscar en las webs»). Para saber qué buscar, el asistente hace
   primero una consulta corta con el modelo de las **correcciones** (si tarda
   más de 5 segundos, busca con las palabras del correo); cuesta muy poco y va
   sumado al coste del borrador. Si el soporte o las webs no responden a
-  tiempo, el borrador sale igual, sin ellos, y la franja lo dice. Lo que ha
+  tiempo, el borrador sale igual, sin ellos, y la franja lo dice. Las
+  correcciones usan lo que trajo el primer borrador; lo que ese no miró
+  (casilla desmarcada) o no pudo mirar, lo consultan entonces. Lo que ha
   mirado, con sus enlaces, y si lo ha usado se ve en **«Lo que ha usado»**,
   debajo del borrador. Desmarcadas las dos, el asistente escribe como antes,
   solo con el catálogo.
