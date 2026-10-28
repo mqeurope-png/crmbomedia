@@ -265,6 +265,19 @@ class Order(TimestampMixin, Base):
         ForeignKey("users.id", ondelete="SET NULL")
     )
 
+    # Pedido web TRAÍDO A MANO (decisión de Bart, 28/10): un `on-hold` de la
+    # tienda (transferencia aún sin cobrar) que alguien de la oficina trae a
+    # BoHub desde ERP · Pedidos. Traerlo ES la autorización: el pedido es
+    # normal (se factura, se prepara, se envía) aunque `payment_status` siga
+    # «pendiente» hasta que la tienda lo cobre. No es un estado: solo quién y
+    # cuándo lo trajo. NULL = entró solo, como siempre.
+    manual_web_import_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    manual_web_import_by_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+
     # «Marcar completado» (decisión de Bart, SOLO BoHub): estado FINAL del
     # pedido — ya facturado y enviado, aunque el envío se tramite fuera de
     # BoHub. Manual y reversible («Desmarcar»); no exige que Transporte esté
