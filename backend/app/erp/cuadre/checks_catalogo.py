@@ -56,7 +56,7 @@ def _paginas(session: Any, sitio: str, idiomas: tuple[str, ...]) -> dict[str, st
     severidad="media", fuente=FUENTE_MYSQL, grupo="crm",
 )
 def enlace_catalogo_no_producto(ctx: Contexto) -> Iterator[Hallazgo]:
-    from app.models.conocimiento import ProductoCatalogo  # noqa: PLC0415
+    from app.models.conocimiento import FUENTE_COMPOSITOR, ProductoCatalogo  # noqa: PLC0415
     from app.services.webs import fichas  # noqa: PLC0415
 
     session = ctx.session
@@ -64,7 +64,10 @@ def enlace_catalogo_no_producto(ctx: Contexto) -> Iterator[Hallazgo]:
     no_mirados: set[str] = set()
     ctx.no_mirados[ENLACE_CATALOGO_NO_PRODUCTO] = no_mirados
     paginas: dict[str, dict[str, str]] = {}
+    # Solo las fichas del compositor: los consumibles y repuestos de las tiendas
+    # se dejan fuera del índice a propósito, y su enlace nunca casaría.
     productos = session.scalars(select(ProductoCatalogo).where(
+        ProductoCatalogo.fuente == FUENTE_COMPOSITOR,
         ProductoCatalogo.ido_en.is_(None), ProductoCatalogo.descartado.is_(False),
         ProductoCatalogo.visible.is_(True), ProductoCatalogo.enlace.is_not(None),
     ).order_by(ProductoCatalogo.nombre, ProductoCatalogo.idioma))

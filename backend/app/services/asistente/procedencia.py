@@ -18,6 +18,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.models.conocimiento import FUENTE_COMPOSITOR
 from app.services.correo_compuesto import bloques as bq
 from app.services.webs import fichas as fichas_web
 
@@ -71,9 +72,13 @@ def fichas_del_correo(session: Session, estructura: dict[str, Any],
                 "imagen": imagen, "galeria": galeria,
             })
         else:
-            if mapa is None:
-                mapa = fichas_web.MapaProductos(session)
-            no_producto = mapa.no_es_producto(enlace)
+            no_producto = None
+            if p.get("fuente") == FUENTE_COMPOSITOR:
+                # Solo las del compositor: los consumibles de las tiendas no
+                # están en el índice a propósito.
+                if mapa is None:
+                    mapa = fichas_web.MapaProductos(session)
+                no_producto = mapa.no_es_producto(enlace)
             fichas.append({
                 "procedencia": "catalogo", "nombre": nombre, "enlace": enlace,
                 "marca": p.get("marca"), "origen_id": clave["origen_id"],
@@ -109,14 +114,14 @@ def fichas_del_correo(session: Session, estructura: dict[str, Any],
 def enlaces_catalogo_no_producto(session: Session,
                                  productos: list[dict[str, Any]]) -> list[dict[str, str]]:
     """De los productos del catálogo de un borrador (`nombre`, `enlace`), los
-    que llevan un enlace de una web indexada que no es una página de producto
-    del índice."""
+    del compositor que llevan un enlace de una web indexada que no es una
+    página de producto del índice."""
     salida: list[dict[str, str]] = []
     mapa: fichas_web.MapaProductos | None = None
     vistos: set[str] = set()
     for p in productos:
         enlace = str(p.get("enlace") or "")
-        if not enlace or enlace in vistos:
+        if p.get("fuente") != FUENTE_COMPOSITOR or not enlace or enlace in vistos:
             continue
         vistos.add(enlace)
         if mapa is None:

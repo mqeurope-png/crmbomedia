@@ -82,7 +82,11 @@ podían leer asuntos largos.
   fichas** de la franja; **Auto** por defecto, **Texto** para forzar el de
   siempre): la IA prepara un correo compuesto —entrada, tira de la marca,
   fichas de producto con su imagen y su precio del catálogo («Precio a medida»
-  si no tiene precio público), vídeo, botones y cierre— y en lugar del editor
+  si no tiene precio público), vídeo, botones y cierre— (con «Webs» marcada,
+  un producto que el catálogo no tiene va con una ficha montada desde su
+  página de la web: precio de la web con su IVA o «Precio a consultar»; «Lo
+  que ha usado» dice qué fichas salen del catálogo y cuáles de la web) y en
+  lugar del editor
   sale la **vista previa**, tal cual llegará, en **Escritorio** o **Móvil**
   (las fichas se apilan). Pulsa un texto para cambiarlo; pulsa un bloque para
   subirlo, bajarlo, duplicarlo o quitarlo; o pídeselo a la IA («quita el

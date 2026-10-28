@@ -144,14 +144,20 @@ def _video_ref(valor: Any) -> dict[str, str] | None:
     return {**video, "url": videos_mod.url_de(video), **extra}
 
 
-_IMPORTE_RE = re.compile(r"\d{1,3}(?:[.\s]\d{3})+(?:,\d{1,2})?|\d+(?:[.,]\d{1,2})?")
+_NUMERO = r"\d{1,3}(?:[.\s]\d{3})+(?:,\d{1,2})?|\d+(?:[.,]\d{1,2})?"
+#: Un importe: un número con la moneda al lado («14.900 €», «€ 14900», «14900
+#: euros»). Un número suelto no: «MBO 6090» es un modelo, no un precio.
+_IMPORTE_USUARIO_RE = re.compile(
+    rf"(?:(?:€|\$|£|eur\b|euros?\b)\s*({_NUMERO}))|(?:({_NUMERO})\s*(?:€|\$|£|eur\b|euros?\b))",
+    re.IGNORECASE)
 
 
 def importes_de(texto: str | None) -> set[str]:
-    """Los importes de un texto, normalizados («14.900,00 €» → «14900»)."""
+    """Los importes de un texto, normalizados («14.900,00 €» → «14900»): solo
+    los que llevan la moneda al lado."""
     salida: set[str] = set()
-    for m in _IMPORTE_RE.finditer(texto or ""):
-        crudo = m.group(0)
+    for m in _IMPORTE_USUARIO_RE.finditer(texto or ""):
+        crudo = m.group(1) or m.group(2)
         if re.fullmatch(r"\d{1,3}(?:[.\s]\d{3})+(?:,\d{1,2})?", crudo):
             crudo = re.sub(r"[.\s]", "", crudo)
         try:

@@ -90,6 +90,18 @@ FIRMA_FIN = "<!--/crmbo:signature-->"
 _IVA_EN_PRECIO_RE = re.compile(r"\b(IVA|VAT|MwSt|USt|TVA|TTC|HT|BTW)\b", re.IGNORECASE)
 
 
+def _iva_del_texto(precio: str) -> str | None:
+    """`sin_iva`/`con_iva` según lo que dice el propio precio («14.900 € + IVA»,
+    «IVA incluido»), o None si no dice nada."""
+    plano = precio.lower()
+    impuesto = r"(?:iva|vat|mwst|tva|btw)"
+    if re.search(rf"{impuesto}\s*incl|(?:incl\.?|con|inkl\.?)\s*{impuesto}|\bttc\b", plano):
+        return "con_iva"
+    if re.search(rf"\+\s*{impuesto}|(?:sin|excl\.?|zzgl\.?)\s*{impuesto}|\bht\b", plano):
+        return "sin_iva"
+    return None
+
+
 @dataclass
 class Datos:
     """Lo que el generador necesita del catálogo, ya resuelto."""
@@ -255,7 +267,8 @@ class _Render:
         # de su galería, si los lleva la estructura.
         if ref.get("precio"):
             p = {**p, "precio_texto": ref["precio"], "precio_publico": True,
-                 "precio_consultar": False, "precio_origen": "usuario", "precio_iva": None}
+                 "precio_consultar": False, "precio_origen": "usuario",
+                 "precio_iva": _iva_del_texto(ref["precio"])}
         imagen = ref.get("imagen")
         if imagen and imagen in [p.get("imagen"), *(p.get("galeria") or [])]:
             p = {**p, "imagen": imagen}

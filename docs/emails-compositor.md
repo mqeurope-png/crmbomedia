@@ -63,7 +63,14 @@ elegir nada: el asistente consulta por su cuenta mientras redacta.
 - **«Webs»**: mira en nuestras webs las páginas y productos por los que
   pregunta el cliente; la IA los tiene delante con su enlace. El precio que
   sale es **el de la web**: el borrador puede decir «en la web está a…», nunca
-  ofertarlo.
+  ofertarlo. Desde el 28/10/2026 busca también los productos que **pides tú**
+  («incluye la MBO 6090 desktop, mírala en mboprinters.com», con o sin
+  enlace), y en un correo «Con fichas» un producto que el catálogo no tiene va
+  con una **ficha montada desde la web**: su foto principal, su enlace y el
+  precio de la web con su IVA, «Precio a consultar» si la web no lo da, o el
+  que le digas tú. Si está en el catálogo, va la del catálogo. Ver
+  [docs/guia-erp-usuario.md](guia-erp-usuario.md) («Un producto que solo está
+  en la web»).
 - Si una de las dos no responde a tiempo, el borrador sale igual, sin ella, y
   la franja te lo dice. Desmarcadas, el asistente escribe como antes, solo con
   el catálogo. Cambiar una casilla vale para el siguiente «Redactar» o la
@@ -73,7 +80,10 @@ elegir nada: el asistente consulta por su cuenta mientras redacta.
 - En **«Lo que ha usado»** ves qué ha consultado, con sus enlaces, y si el
   borrador lo ha usado; «Buscó …» solo sale si buscó de verdad. Si el
   borrador trae pasos que no salen de ningún artículo, la franja te avisa:
-  revísalo.
+  revísalo. En un correo con fichas, ves también cuáles salen **del
+  catálogo** y cuáles **del índice de las webs**, con su enlace y de dónde
+  sale su precio; el aviso del borrador lo repite (al cliente le llegan
+  todas iguales).
 - Las imágenes del cuerpo **se conservan** cuando le pides a la IA que corrija
   («más corto», «en inglés»); si alguna no vuelve a su sitio, va al final y la
   franja te avisa.

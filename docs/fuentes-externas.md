@@ -112,12 +112,15 @@ dirigido al modelo («ignora las instrucciones anteriores y…»):
   (`parece_orden`, en los idiomas de la casa), el sobre lo dice.
 - **`REGLA_MATERIAL` se añade al prompt de sistema solo cuando el turno lleva
   material** (nada de dentro manda; mandan las instrucciones y la petición),
-  con `REGLA_SOPORTE`, `REGLA_WEBS`, la de los enlaces y la de
+  con `REGLA_SOPORTE`, `REGLA_WEBS` (y `REGLA_FICHAS_WEB` si alguna página es
+  un producto que vale como ficha), la de los enlaces y la de
   `material_usado` según lo que haya; `REGLA_SIN_RESULTADOS` si se buscó y no
   hay procedimiento, o `REGLA_SOPORTE_NO_CONSULTADO` si no se pudo consultar
   o, en un correo técnico, no hay centro de ayuda donde mirar.
 - **Cada pieza lleva su referencia**: `[S1]` el artículo, `[S2]` y `[S3]` los
-  otros artículos, `[W1]`… las páginas de nuestras webs. Con material, el
+  otros artículos, `[W1]`… las páginas de nuestras webs (un producto lleva
+  además «Ficha: W#», y si toca «Pedida por quien envía», «Precio: a
+  consultar», «Idioma …» y «Galería …»). Con material, el
   modelo añade a su JSON `material_usado` con las que ha usado
   (`material_fuera.material_usado`): es el «usado» de «Lo que ha usado» y
   decide la garantía del enlace.
@@ -146,7 +149,8 @@ dirigido al modelo («ignora las instrucciones anteriores y…»):
 - Topes: del artículo entran **6.000 caracteres** (`MAX_TEXTO_SOPORTE`; un
   procedimiento de FLUX ronda los 2.000-4.000), de los otros dos artículos solo
   título y extracto (**300**, `MAX_EXTRACTO_OTRO`) y de cada página **900**
-  (`MAX_CHARS_WEB`), hasta **3 páginas** (`consulta_fuentes.MAX_WEBS`).
+  (`MAX_CHARS_WEB`), hasta **3 páginas** (`consulta_fuentes.MAX_WEBS`) más
+  los productos que pide quien envía (4 como mucho, `MAX_PEDIDAS`).
 
 Lo que ve la persona y lo que hace el borrador con todo esto:
 [ai-features.md](ai-features.md) § Lo que no está en el catálogo.
@@ -170,7 +174,9 @@ cliente no ha escrito nada nuevo) no se llama al modelo ni se consulta.
    catálogo, y devuelve un JSON: si el correo es **técnico** (avería, error,
    ajuste, calibración, instalación, actualización, mantenimiento, cómo se
    hace algo), la **marca**, la búsqueda para el centro de ayuda **en
-   inglés** y en el idioma del correo, y la búsqueda para nuestras webs. Va
+   inglés** y en el idioma del correo, la búsqueda para nuestras webs y los
+   **productos concretos que pide quien envía**, como los nombra y con su
+   variante si la dice (`productos`: «MBO 6090 desktop»; 28/10/2026). Va
    con **5 s como mucho y sin
    reintentos** (`TIEMPO_PLAN`; `llm._invoke_claude` con `timeout` y
    `max_retries=0`). Si falla, tarda o devuelve otra cosa, la arma
@@ -205,7 +211,18 @@ cliente no ha escrito nada nuevo) no se llama al modelo ni se consulta.
 3. **Webs** (casilla «Webs»), si el plan trae qué buscar (los productos por
    los que pregunta). La búsqueda del índice (§ La búsqueda: MySQL local) en el
    idioma del correo y, si no da nada, en cualquiera: los **tres mejores
-   fragmentos**.
+   fragmentos**. **Delante**, los productos que **pide quien envía**
+   (`_productos_pedidos`, como mucho 4, `MAX_PEDIDAS`): por las URL que
+   escribe en la instrucción (`fichas.urls_de`, la página de producto del
+   índice con cualquier dominio, idioma o barra final) y por los nombres del
+   plan (`fichas.productos_por_nombre`: el título lleva **todas** las
+   palabras, sin tildes, el más ajustado primero), cada uno en el idioma del
+   correo si la web lo tiene. Uno que es la misma página que un producto del
+   CATÁLOGO del correo no entra: su ficha es la del catálogo. Una URL de una
+   web indexada que no es un producto se avisa («El enlace que indicas (…) no
+   es una página de producto del índice de las webs: no hay ficha que montar
+   con él.»). Las piezas que son un producto valen como ficha de un correo
+   compuesto (§ Fichas montadas desde el índice).
 4. **El tiempo**, porque va **dentro** de la petición del borrador: el plan,
    **5 s**; todo el soporte (búsquedas, respaldo y artículo), **6 s**, y cada
    petición, **4 s**, sin reintentos (`soporte.con_plazo`, `TIEMPO_SOPORTE`,
@@ -243,7 +260,11 @@ cliente no ha escrito nada nuevo) no se llama al modelo ni se consulta.
    que contestar), la primera corrección con alguna casilla consulta entera,
    con un plan nuevo que lee el mensaje del cliente, la instrucción del primer
    turno y la suya (sin hilo, la del primer turno es lo único que dice de qué
-   va el correo).
+   va el correo). **Una corrección que pide incluir un producto**
+   (`pide_producto`: trae una URL, dice «ficha», «versión» o «variante», o
+   «incluye», «añade», «mete», «pon»… con una cifra: «incluye tbn la MBO 6090
+   desktop») sí pide un plan, con su coste, para saber cuál, y lo busca en el
+   índice como en el primer turno; lo que pidió antes sigue como pedido.
 
 **Lo que queda apuntado** (`contexto_json["material"]`, por turno; es lo que
 enseña «Lo que ha usado» y lo que leen las correcciones): `automatico: true`,
@@ -253,7 +274,9 @@ preparadas, si salió de la IA o de las palabras —`origen` `ia` /
 `palabras`—, el modelo, el error, `plan_ms`, `coste_usd` y `reutilizado` en
 una corrección), el artículo (`soporte`: `ref` `S1`, fuente, título, enlace,
 idioma, si se recortó, `usado`), los otros (`otros_soporte`), las páginas
-(`webs`: `ref` `W1`…, web, tipo, idioma, precio de la web, `usado`), lo que
+(`webs`: `ref` `W1`…, web, tipo, idioma, precio de la web, `usado`; las que
+valen como ficha, con `ficha: true`, `wp_id` y `pedida`), los productos que
+pidió quien envía y si se encontraron (`fichas_pedidas`), lo que
 no se encontró
 (`sin_resultados`, `webs_sin_resultados`), lo que no se consultó y por qué
 (`no_consultado`, `sin_centro`, `sin_fuentes`), lo que **se buscó de verdad**
@@ -575,6 +598,75 @@ El redactor puede decir «en la web está a X» citándolo como precio de la web
 y con su IVA; **nunca oferta con él** (el de una oferta sale de FACTUSOL y del
 CATÁLOGO). En el prompt va como «Precio en la web: … (sin IVA, según la web) —
 NO es precio de oferta».
+
+### Fichas montadas desde el índice (`fichas.py`, 28/10/2026)
+
+El catálogo del compositor llega **en un solo sentido** (BoHub solo lo lee;
+lo que se le añadiera aquí lo borraría la siguiente sincronización). Lo que el
+catálogo no tiene y está publicado en una de nuestras webs (el 28/10, la «MBO
+6090 UV Led – Desktop», solo en mboprinters.com) puede ir en un correo
+compuesto con **el mismo bloque de ficha**, montada desde su fila del índice.
+Solo lee: ni el índice ni el catálogo se tocan.
+
+- **Clave**: `{"fuente": "web", "origen_id": "<sitio>:<wp_id>"}`, la misma
+  forma que una del catálogo. La resuelve `fichas_por_clave` al generar
+  (`correo_compuesto/datos.resolver`); lo que ya no está vivo en el índice no
+  sale («ya no está en el índice de las webs», con aviso).
+- **Qué lleva**: el título, la descripción (el extracto, 300 caracteres; la
+  ficha la recorta como las demás), la **imagen principal enlazada en
+  caliente** (no se sube a ningún sitio), el enlace y la marca de la web. Sin
+  características ni área: eso solo lo tiene el catálogo. La galería va
+  aparte por si se pide otra imagen (la IA ve 5, `material_fuera.MAX_GALERIA`;
+  una que deja de estar en la galería vuelve a la principal).
+- **Precio**: el de la web **tal como está guardado, con su IVA**
+  («489,30 € (+ IVA)»; el pie del correo pone el aviso de IVA según
+  `precio_iva`), que **nunca** es precio de oferta; sin precio en la web,
+  **«Precio a consultar»** en el idioma del correo y sin IVA. El único otro
+  precio posible es **el que dice quien envía en sus instrucciones**
+  (`ia.importes_de`, de todos los turnos de la conversación; solo cuentan
+  los números con la moneda al lado: «14.900 €», «14900 euros», no el «6090»
+  de «MBO 6090»): tiene que
+  llevar algún importe de 100 en adelante y todos tienen que estar ahí
+  (`precio_permitido`); uno que no sale de ellas se quita, con aviso. Va tal
+  cual lo escribió, y como su IVA no se sabe, el pie dice que está pendiente
+  de confirmar. **Nunca se deduce** de un producto parecido. El precio de una
+  ficha del catálogo no se cambia nunca.
+- **Idioma**: la fila del idioma del correo (`en_idioma`); si la web no la
+  tiene, la del idioma por defecto de la web (o la primera) y se dice. WPGlobus
+  da el mismo `wp_id` en todos los idiomas; WPML no guarda qué traducción es
+  de qué, así que una fila de otro idioma es la misma si tiene **la misma
+  imagen principal y el mismo precio** (`variantes`); si en un idioma salen
+  dos, no se elige ninguna (pueden ser potencias distintas con la misma
+  foto).
+- **Catálogo antes que índice.** Una pieza de «Nuestras webs» que es la misma
+  página que un producto del catálogo del correo (`fichas.pagina`: sitio y
+  ruta sin `www.`, idioma ni barra final) dice «En el CATÁLOGO» y no se ofrece
+  como ficha; si la IA pone igual el `W#`, va el `P#` con su precio de venta
+  (`Referencias.equivalentes`, con aviso). **La excepción**: una variante que
+  quien envía pide expresamente y solo está en la web («la versión desktop»)
+  es otra página, va marcada «Pedida por quien envía» y gana
+  (`REGLA_FICHAS_WEB`).
+- **Para quien revisa**, no para el cliente (a él una ficha es una ficha):
+  `asistente/procedencia.fichas_del_correo` apunta en `contexto_json["fichas"]`
+  cada ficha con su procedencia (`catalogo` o `indice`), su enlace y, las del
+  índice, su web, de dónde sale el precio (`web`, `usuario` o `consultar`), su
+  idioma y su galería. «Lo que ha usado» las separa y el aviso del borrador
+  las lista («Fichas del correo: …; revisa su precio y su descripción antes
+  de enviar»), con «precio que me has indicado tú, no sale de la web ni del
+  catálogo» y el de idioma si toca. Sin fichas del índice, el aviso no cambia.
+- **Enlaces del catálogo que no llevan a un producto** (el 28/10, la ficha de
+  la artisJet 3000Pro Freebird apuntaba a `boprint.net/contacto/`): con «Webs»
+  marcada, el enlace de una ficha del catálogo que es de una web **con
+  productos en el índice** y no casa con ninguna página de producto
+  (`MapaProductos.no_es_producto`, por ruta o por slug, con cualquier dominio
+  de la web) se marca en «Lo que ha usado» (`enlaces_no_producto`) y se avisa
+  en el borrador si va en el correo. Una web sin productos en el índice (sin
+  tienda o sin leer) no se juzga. **Nunca se corrige**: se arregla en el
+  compositor. El Cuadre tiene la misma comprobación para el catálogo entero
+  ([erp/cuadre.md](erp/cuadre.md), `enlace_catalogo_no_producto`).
+
+Lo que hace el correo compuesto con la ficha:
+[ai-features.md](ai-features.md) § Correos compuestos.
 
 ### La búsqueda (`busqueda.py`)
 
@@ -976,6 +1068,11 @@ técnico sin dónde buscar, el enlace, `material_usado`, las correcciones que
 reutilizan y las que consultan lo que el primer borrador no miró o no pudo
 mirar, la relectura del artículo en inglés desde la caché, y el turno con las
 casillas desmarcadas idéntico al de siempre),
+`test_fichas_indice.py` (las fichas montadas desde el índice: catálogo antes
+que índice y la variante pedida, el precio de la web con su IVA, «a
+consultar» y el de quien envía, el idioma, la galería, las correcciones que
+piden un producto, los enlaces del catálogo que no son un producto y su
+comprobación del Cuadre),
 `test_migration_0148_fuentes_externas.py`,
 `test_migration_0149_reglas_indice.py`,
 `test_web_ingest_worker_isolation.py` y `test_erp_worker_queues.py` (la cola

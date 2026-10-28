@@ -1607,6 +1607,7 @@ arreglarlo.
 | Documentos y hoja | Pedido que falta en la hoja de Drive (o fila de un pedido que ya no existe); factura de FACTUSOL sin vincular al pedido o vinculada a un número que no existe; factura sin enviar a los 7 días; pedido sin aprobar a los 7 días; proforma aceptada sin convertir a los 90 días (apagada por defecto: es el embudo comercial). |
 | Integraciones (media) | Sincronización colgada: cuenta de integración con una sincronización en curso desde hace más de 3 horas, o sin ninguna sincronización correcta en las últimas 24 h (AgileCRM, Brevo). Trabajo en cola fallido sin revisar: un trabajo en segundo plano (sincronización, importación, envío…) que terminó con error, con la función, los argumentos, la fecha y el error; los antiguos se marcan «Revisado». |
 | Integraciones (alta) | Pedido pagado en WooCommerce que no está en BoHub: de cada tienda, los pagados de los últimos N días (los mismos que el repaso automático, en Configuración ERP) que no llegaron, con número (enlace al pedido en la tienda), cliente, importe y fecha de pago. El botón lleva a Seguimiento, a «Poner al día estados Woo…», que los importa. Avisa aunque la importación automática haya fallado. |
+| CRM (media) | Lead web sin comercial asignado; lead sin contactar a las 48 horas; «Bomedia» en textos que lee el cliente; **fichas del catálogo cuyo enlace no lleva a un producto**: un producto del catálogo del compositor cuyo enlace, de una de nuestras webs, no lleva a la página de un producto (la de contacto, una categoría, uno que ya no está), y el cliente no llegaría al producto desde el correo. Las webs sin productos en el índice (sin tienda, o sin leer) no se juzgan. Se arregla en el compositor: BoHub solo lee el catálogo. |
 
 El panel vigila lo que BoHub gestiona. Las facturas que solo existen en
 FACTUSOL, sin pedido en BoHub, no salen: por ejemplo, otras series o facturas
@@ -1737,7 +1738,9 @@ lo que va a pasar. Secciones destacadas:
   refresca solo). Las **reglas** dicen qué entra (fuera páginas legales,
   carrito, repuestos, consumibles, tintas…) y **«Probar»** enseña lo que
   encontraría el asistente. Los precios son **los de la web**: el asistente
-  puede decir «en la web está a…», nunca ofertar con ellos. Ver
+  puede decir «en la web está a…», nunca ofertar con ellos. Con el índice el
+  asistente monta también la ficha de un producto que el catálogo no tiene
+  (abajo, «Un producto que solo está en la web»). Ver
   [docs/fuentes-externas.md](fuentes-externas.md).
 - **«Asistente de respuesta»** — qué **modelo** redacta cada cosa, por
   separado: el del **primer borrador** (lleva el contexto entero; vacío = el del
@@ -1782,6 +1785,61 @@ lo que va a pasar. Secciones destacadas:
   mirado, con sus enlaces, y si lo ha usado se ve en **«Lo que ha usado»**,
   debajo del borrador. Desmarcadas las dos, el asistente escribe como antes,
   solo con el catálogo.
+
+  **Un producto que solo está en la web** (desde el 28/10/2026). Las fichas
+  de un correo «Con fichas» salen del catálogo del compositor. Si un producto
+  no está en el catálogo pero sí en una de nuestras webs, el asistente monta
+  su ficha con la página de la web. Con la casilla **«Webs»** marcada,
+  pídeselo en la caja, por su nombre o con su enlace, en el primer borrador o
+  en una corrección:
+  - «incluye la MBO 6090 desktop, mírala en mboprinters.com»;
+  - «añade también esta» y pegas el enlace de la página del producto.
+
+  Si el producto está en el catálogo, va **la ficha del catálogo**, con su
+  precio de venta. Si pides una versión que solo está en la web («la versión
+  desktop»), va la de la web. En un correo de texto, la IA enlaza la página
+  y, si da el precio, dice que es el de la web.
+
+  Qué lleva la ficha de la web:
+  - el nombre, una descripción corta, la foto principal y el enlace a la
+    página del producto (sin la lista de características: eso solo lo tiene
+    el catálogo);
+  - **el precio de la web, con su IVA como lo pone la web** («489,30 € (+
+    IVA)»). Es el precio publicado, **no un precio de oferta**;
+  - si la web no da precio, **«Precio a consultar»**;
+  - si le dices tú el precio, **con la moneda** («ponle 14.900 € + IVA»,
+    «a 14900 euros»), lleva el tuyo, y el aviso del borrador dice «precio que
+    me has indicado tú, no sale de la web ni del catálogo». Un número sin
+    moneda no cuenta como precio (el «6090» de «MBO 6090» es el modelo). La IA **nunca se inventa un precio** ni lo saca de otra
+    máquina parecida: si pone uno que no has dicho tú, se quita y te avisa.
+
+  **Idioma.** La ficha va en el idioma del correo si la web tiene esa página
+  en ese idioma. Si no, va en el que haya y el aviso te lo dice («La ficha de
+  … va en inglés: la web no la tiene en neerlandés»).
+
+  **Fotos.** Lleva la foto principal del producto en la web, enlazada (si la
+  web la quita, desaparece del correo). Si quieres otra, pídesela a la IA
+  («pon otra foto de la 6090 desktop»): elige una de la galería de ese
+  producto en la web.
+
+  **De dónde sale cada ficha.** Al cliente le llegan todas iguales. Tú lo ves
+  en **«Lo que ha usado»**: «Ficha del catálogo: …» y «Ficha del índice de
+  mboprinters.com: …», cada una con su enlace y, las de la web, de dónde
+  sale el precio. El aviso del borrador lo repite y te pide que revises el
+  precio y la descripción de las de la web antes de enviar.
+
+  **Si no la encuentra.** El índice de las webs se lee una vez al mes: un
+  producto publicado hace poco no sale hasta que se reindexa («Reindexar
+  ahora», en Base de conocimiento → «Índice de las webs»). Si el enlace que
+  das no es la página de un producto (una categoría, la de contacto), el aviso
+  te lo dice.
+
+  **Enlaces del catálogo que no llevan a un producto.** Con «Webs» marcada,
+  si una ficha del catálogo tiene un enlace que no lleva a la página de su
+  producto (por ejemplo, a la de contacto), «Lo que ha usado» lo marca y el
+  aviso dice «revísalo en el compositor». BoHub no lo cambia: el catálogo se
+  arregla en el compositor. El Cuadre lo vigila para todo el catálogo
+  («Fichas del catálogo cuyo enlace no lleva a un producto»).
 - **«Series FACTUSOL»** — la **serie** es la empresa que emite la factura. Fijas
   la **serie por defecto** y la que usa cada origen de pedido. Las series
   disponibles son **1 · Bomedia**, **2 · MQ Europe**, **4 · Lambert** y **5 ·
