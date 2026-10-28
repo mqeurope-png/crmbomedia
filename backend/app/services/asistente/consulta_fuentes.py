@@ -223,6 +223,8 @@ class Entrada:
     #: Las máquinas del catálogo (`nombre`, `marca`, `eleccion`).
     maquinas: list[dict[str, Any]] = field(default_factory=list)
     modelo_flux: str | None = None
+    #: Los consumibles del catálogo del correo (`nombre`).
+    consumibles: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _limpia(valor: Any, maximo: int = MAX_CONSULTA) -> str:
@@ -248,7 +250,8 @@ def entrada_de_contexto(ctx: Any) -> Entrada:
                    instruccion=getattr(ctx, "instruccion", None) or "",
                    idioma=getattr(ctx, "idioma", None) or "es",
                    maquinas=list(catalogo.get("maquinas") or []),
-                   modelo_flux=getattr(ctx, "modelo_flux", None))
+                   modelo_flux=getattr(ctx, "modelo_flux", None),
+                   consumibles=list(catalogo.get("consumibles") or []))
 
 
 def entrada_de_borrador(session: Session, raiz: Any, *, instruccion: str | None) -> Entrada:
@@ -279,7 +282,9 @@ def entrada_de_borrador(session: Session, raiz: Any, *, instruccion: str | None)
                    instruccion="\n".join(dict.fromkeys(instrucciones)),
                    idioma=raiz.idioma or "es",
                    maquinas=[m for m in catalogo.get("maquinas") or [] if isinstance(m, dict)],
-                   modelo_flux=resumen.get("modelo_flux"))
+                   modelo_flux=resumen.get("modelo_flux"),
+                   consumibles=[c for c in catalogo.get("consumibles") or []
+                                if isinstance(c, dict)])
 
 
 def _marcas_soporte(session: Session) -> list[str]:
@@ -571,7 +576,8 @@ def _soporte_seguro(session: Session, plan: Plan, idioma: str, resumen: dict[str
 
 def _productos_pedidos(session: Session, *, instruccion: str | None, nombres: list[str],
                        idioma: str, catalogo: dict[str, dict[str, Any]],
-                       resumen: dict[str, Any], avisos: list[str]) -> list[Any]:
+                       resumen: dict[str, Any], avisos: list[str],
+                       del_correo_nombres: list[str] | None = None) -> list[Any]:
     """Los productos del índice que pide quien envía: por los enlaces de su
     instrucción y por los nombres que saca el plan («MBO 6090 desktop»), cada
     uno en el idioma del correo si la web lo tiene. Lo que ya es una máquina
@@ -607,7 +613,7 @@ def _productos_pedidos(session: Session, *, instruccion: str | None, nombres: li
                             **({"titulo": encontradas[0].titulo} if encontradas else {})})
             if encontradas:
                 filas.append((encontradas[0], nombre))
-            elif not _es_maquina_del_correo(nombre, catalogo):
+            elif not _es_del_correo(nombre, del_correo_nombres or []):
                 avisos.append(f"No he encontrado «{nombre}» en el índice de las webs: no va su "
                               "ficha. Si se acaba de publicar, el índice aún no lo tiene (se lee "
                               "una vez al mes; «Reindexar ahora» en el panel del índice).")
@@ -632,14 +638,27 @@ def _productos_pedidos(session: Session, *, instruccion: str | None, nombres: li
     return salida
 
 
-def _es_maquina_del_correo(nombre: str, catalogo: dict[str, dict[str, Any]]) -> bool:
-    """¿El nombre pedido es el de una máquina del correo («la Trust» de la
-    «artisJet 6090 Trust»)? Entonces no hace falta su página: su ficha es la
-    del catálogo. «MBO 6090 desktop» no es la «MBO 6090»."""
-    buscado = set(re.findall(r"\w+", nombre.lower()))
-    return bool(buscado) and any(
-        buscado <= set(re.findall(r"\w+", str(info.get("nombre") or "").lower()))
-        for info in catalogo.values() if info.get("en_correo"))
+def _palabras(nombre: str) -> set[str]:
+    from app.services.externo import html_texto  # noqa: PLC0415
+    from app.services.webs.busqueda import palabras_de  # noqa: PLC0415
+
+    return {html_texto.plano(p) for p in palabras_de(nombre)}
+
+
+def _es_del_correo(nombre: str, nombres_correo: list[str]) -> bool:
+    """¿El nombre pedido es el de un producto del CATÁLOGO del correo, máquina
+    o consumible, con enlace o sin él («la Trust de artisJet» de la «artisJet
+    6090 Trust»)? Entonces no hace falta su página: su ficha es la del
+    catálogo. «MBO 6090 desktop» no es la «MBO 6090»."""
+    buscado = _palabras(nombre)
+    return bool(buscado) and any(buscado <= _palabras(n) for n in nombres_correo if n)
+
+
+def nombres_del_correo(entrada: Entrada | None) -> list[str]:
+    """Los nombres de los productos del CATÁLOGO del correo."""
+    if entrada is None:
+        return []
+    return [str(p.get("nombre") or "") for p in [*entrada.maquinas, *entrada.consumibles]]
 
 
 def _paginas_de(session: Session, fila: Any) -> set[str]:
@@ -781,7 +800,7 @@ def consultar(session: Session, *, fuentes: Fuentes, plan: Plan, idioma: str | N
         pedidos = _productos_pedidos(
             session, instruccion=entrada.instruccion if entrada else None,
             nombres=plan.productos, idioma=idioma, catalogo=catalogo, resumen=resumen,
-            avisos=avisos)
+            avisos=avisos, del_correo_nombres=nombres_del_correo(entrada))
         encontrados = _consultar_webs(session, plan, idioma, resumen, avisos) if plan.webs else []
         fragmentos = _juntar(pedidos, encontrados, MAX_WEBS + len(pedidos))
         pedidas_ids = [f.id for f in pedidos]
@@ -816,7 +835,8 @@ def pide_producto(instruccion: str | None) -> bool:
 def reutilizar(session: Session, previo: dict[str, Any], fuentes: Fuentes,
                idioma: str | None, *, instruccion: str | None = None,
                nombres: list[str] | None = None,
-               maquinas: list[dict[str, Any]] | None = None) -> material_fuera.Material | None:
+               maquinas: list[dict[str, Any]] | None = None,
+               del_correo_nombres: list[str] | None = None) -> material_fuera.Material | None:
     """Lo que trajo la consulta de la conversación, para una corrección, con
     las casillas de AHORA: el artículo otra vez (de la caché; por fuente + id
     y en el idioma en que se pidió), los otros artículos y las páginas por su
@@ -875,7 +895,7 @@ def reutilizar(session: Session, previo: dict[str, Any], fuentes: Fuentes,
         catalogo = _catalogo_por_pagina(session, list(maquinas or []))
         pedidos = _productos_pedidos(session, instruccion=instruccion, nombres=list(nombres or []),
                                      idioma=idioma, catalogo=catalogo, resumen=resumen,
-                                     avisos=avisos)
+                                     avisos=avisos, del_correo_nombres=del_correo_nombres)
         if not antes.get("webs", True) or "webs" in fallos_antes:
             fragmentos = (_consultar_webs(session, plan, idioma, resumen, avisos)
                           if plan.webs else [])

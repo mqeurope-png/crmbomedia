@@ -401,9 +401,11 @@ class MapaProductos:
         if clave is None:
             return None
         fila = self._por_ruta.get(clave)
-        if fila is None and clave not in self._otras and self._de_producto(*clave):
-            # Por su slug, si la ruta es de producto: no si es una página del
-            # índice, ni una categoría o una entrada con el mismo slug.
+        if fila is None and clave not in self._otras and (
+                self._de_producto(*clave) or clave[1].strip("/").count("/") == 0):
+            # Por su slug, si la ruta es de producto o es solo el slug
+            # (`/<slug>/`, que WordPress lleva al producto): no si es una
+            # página del índice, ni una categoría con el mismo slug.
             fila = self._por_slug.get((clave[0], clave[1].rsplit("/", 1)[-1]))
         return fila
 

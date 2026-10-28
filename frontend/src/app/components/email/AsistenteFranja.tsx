@@ -689,9 +689,10 @@ type PaginaUsada = {
   pedida: boolean;
 };
 
-/** Por qué un enlace del catálogo no es un producto del índice: una página
- *  del índice («Contacto»), un producto que ya no está, o nada del índice
- *  (puede ser un producto recién publicado que aún no se ha leído). */
+/** Por qué un enlace del catálogo no es un producto del índice: no es una
+ *  página de producto («Contacto», una categoría), un producto que el índice
+ *  ya no tiene, o una ruta de producto que el índice no tiene (puede ser un
+ *  producto recién publicado que aún no se ha leído). */
 type MotivoEnlace = "pagina" | "ido" | "fuera";
 
 /** Una ficha del correo compuesto que sale del catálogo del compositor.
@@ -884,7 +885,9 @@ function avisoEnlace(motivo: MotivoEnlace): string {
   if (motivo === "fuera") {
     return "el enlace no está en el índice de las webs: si el producto es nuevo, aún no se ha leído; si no, revísalo en el compositor";
   }
-  if (motivo === "ido") return "el enlace es el de un producto que ya no está en la web: revísalo en el compositor";
+  if (motivo === "ido") {
+    return "el enlace es el de un producto que el índice de las webs ya no tiene (se quitó de la web o una regla del índice lo deja fuera): revísalo";
+  }
   return "el enlace no lleva a una página de producto de nuestras webs: revísalo en el compositor";
 }
 

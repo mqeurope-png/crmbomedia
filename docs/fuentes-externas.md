@@ -226,7 +226,9 @@ cliente no ha escrito nada nuevo) no se llama al modelo ni se consulta.
    producto** (`/producto/…`, `/shop/…`); un enlace a un artículo o a la página
    de contacto para ponerlo en el texto no se avisa. Un nombre pedido que no
    está en el índice se avisa («No he encontrado «…» en el índice de las webs»:
-   puede ser un producto recién publicado), salvo si es una máquina del correo.
+   puede ser un producto recién publicado), salvo si es un producto del
+   CATÁLOGO del correo (máquina o consumible, con enlace o sin él: su ficha es
+   la del catálogo).
    Las piezas que son un producto valen como ficha de un correo compuesto
    (§ Fichas montadas desde el índice).
 4. **El tiempo**, porque va **dentro** de la petición del borrador: el plan,
@@ -638,10 +640,15 @@ Solo lee: ni el índice ni el catálogo se tocan.
   16.500)») ni un **IVA** que no dijo junto a ese importe («14.900 € IVA
   incluido» si dijo «14.900 €»); y no pasa de 60 caracteres (uno más largo no
   se recorta, que saldría un número a medias). Uno que no cumple se quita,
-  con aviso. Va tal cual lo escribió; el pie dice el IVA que dice ese precio
-  («+ IVA», «IVA no incluido», «plus VAT», «IVA incluido»…, con la misma
-  regla con la que el índice guarda el de la web, `lector.iva_de`) y, si no
-  dice nada, que está pendiente de confirmar. **Nunca se deduce** de un
+  con aviso. El IVA de cada importe es el que dice junto a él («14.900 € +
+  IVA», en su lado de la frase) o, si no dice nada al lado, el que dice la
+  instrucción sin pegarlo a ningún importe, si es uno solo («…, ambas + IVA»,
+  «IVA aparte, …»); el IVA pegado a otro importe no cuenta para este. Va tal cual lo escribió; el pie dice el
+  IVA que dice ese precio («+ IVA», «más IVA», «IVA no incluido», «plus
+  VAT», «IVA incluido»…; `generador.iva_del_texto`, que solo cuenta lo que
+  lleva el impuesto al lado: «portes no incluidos» o «precio exclusivo» no
+  dicen nada del IVA) y, si no dice nada, que está pendiente de
+  confirmar. **Nunca se deduce** de un
   producto parecido. El precio de una ficha del catálogo no se cambia nunca.
   **Lo que no puede saber**: si el importe que cita la instrucción es el de
   ese producto (en «la 6090 normal le salió a 12.900 €», el 12.900 está en
@@ -651,8 +658,8 @@ Solo lee: ni el índice ni el catálogo se tocan.
   texto que lo repite («te la puedo ofrecer por 7.990,00 €») lo presenta como
   si fuera de oferta («Un texto del correo menciona «…», el precio de la web
   de una ficha: no es un precio de oferta y ya va en la ficha»). El generador
-  separa los precios por procedencia (`Correo.precios_catalogo`,
-  `precios_web`).
+  aparta los precios de la web (`Correo.precios_web`); los del catálogo y el
+  que dijo quien envía se toleran en un texto como siempre.
 - **Idioma**: la fila del idioma del correo (`en_idioma`); si el índice no la
   tiene, la del idioma por defecto de la web (o la primera) y se dice («no
   está en el índice en …»). WPGlobus da el mismo `wp_id` en todos los
@@ -699,13 +706,15 @@ Solo lee: ni el índice ni el catálogo se tocan.
   casillas), el enlace de una ficha del compositor que es de una web **con
   productos en el índice** y no casa con ninguna página de producto
   (`MapaProductos.motivo`, por ruta o, si la ruta es de producto —`/producto/`,
-  `/tienda/`…—, por slug, con cualquier dominio de la web; una categoría con
-  el mismo slug que un producto no cuenta como el producto) se marca en «Lo
+  `/tienda/`…— o es solo el slug —`/<slug>/`—, por slug, con cualquier
+  dominio de la web; una categoría con el mismo slug que un producto no
+  cuenta como el producto) se marca en «Lo
   que ha usado» (`enlaces_no_producto`, con su `motivo`) y se avisa en el
   borrador si va en el correo. Se dice **lo que se sabe**: no es una página
   de producto (`pagina`: una del índice, «Contacto», o una ruta que no es de
   producto, como una categoría), un producto que el índice da por quitado
-  (`ido`) o **una ruta de producto que el índice no tiene** (`fuera`,
+  (`ido`: se quitó de la web o una regla del índice lo deja fuera; no se
+  afirma cuál) o **una ruta de producto que el índice no tiene** (`fuera`,
   `/producto/…` con la base de los productos de esa web: puede ser un
   producto recién publicado que el índice, que se lee una vez al mes, aún no
   tiene; el aviso dice que se reindexe o, si no, que se revise). Una web sin productos en el

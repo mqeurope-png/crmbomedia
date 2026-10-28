@@ -41,19 +41,22 @@ def aviso_enlace_no_producto(nombre: str, enlace: str, motivo: str | None = None
                 "se ha leído («Reindexar ahora» en el panel del índice); si no, revísalo en el "
                 "compositor.")
     if motivo == fichas_web.MOTIVO_IDO:
-        return (f"{inicio} es el de un producto que ya no está en la web: revísalo en el "
-                "compositor.")
+        return (f"{inicio} es el de un producto que el índice de las webs ya no tiene (se quitó "
+                "de la web o una regla del índice lo deja fuera): revísalo.")
     return (f"{inicio} no lleva a una página de producto de nuestras webs: revísalo en el "
             "compositor.")
 
 
 def fichas_del_correo(session: Session, estructura: dict[str, Any],
-                      productos: dict[str, dict[str, Any]], *,
-                      idioma: str) -> tuple[list[dict[str, Any]], list[str]]:
+                      productos: dict[str, dict[str, Any]], *, idioma: str,
+                      comprobar_enlaces: bool = True,
+                      ) -> tuple[list[dict[str, Any]], list[str]]:
     """Las fichas que lleva el correo compuesto, con su procedencia, y los
     avisos para quien lo revisa. `productos`: los datos resueltos
     (`datos.productos`). Sin fichas del índice, el aviso no cambia (solo el de
-    un enlace del catálogo que no es un producto, si lo hay)."""
+    un enlace del catálogo que no es un producto, si lo hay). Sin
+    `comprobar_enlaces` (la casilla «Webs» desmarcada), los enlaces del
+    catálogo no se miran."""
     fichas: list[dict[str, Any]] = []
     avisos: list[str] = []
     mapa: fichas_web.MapaProductos | None = None
@@ -83,7 +86,7 @@ def fichas_del_correo(session: Session, estructura: dict[str, Any],
             })
         else:
             motivo = None
-            if p.get("fuente") == FUENTE_COMPOSITOR:
+            if comprobar_enlaces and p.get("fuente") == FUENTE_COMPOSITOR:
                 # Solo las del compositor: los consumibles de las tiendas no
                 # están en el índice a propósito.
                 if mapa is None:

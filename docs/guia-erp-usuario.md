@@ -1793,7 +1793,8 @@ lo que va a pasar. Secciones destacadas:
   pídeselo en la caja, por su nombre o con su enlace, en el primer borrador o
   en una corrección:
   - «incluye la MBO 6090 desktop, mírala en mboprinters.com»;
-  - «añade también esta» y pegas el enlace de la página del producto.
+  - «añade también la ficha de esta» y pegas el enlace de la página del
+    producto.
 
   En una **corrección**, el asistente busca el producto si la petición trae
   su enlace, dice «ficha», «versión» o «variante», o lleva una cifra del
@@ -1844,14 +1845,15 @@ lo que va a pasar. Secciones destacadas:
   producto publicado hace poco no sale hasta que se reindexa («Reindexar
   ahora», en Base de conocimiento → «Índice de las webs»). Si pides un
   producto por su nombre y no está en el índice, el aviso te lo dice («No he
-  encontrado …»). Si pides la ficha de un enlace que no es la página de un
-  producto (una categoría, la de contacto), también; un enlace que pegas para
-  ponerlo en el texto no se avisa.
+  encontrado …»). Si pides la ficha de un enlace (con la palabra «ficha»,
+  «versión» o «variante») que no es la página de un producto (una categoría,
+  la de contacto), también; un enlace que pegas solo para ponerlo en el texto
+  no se avisa.
 
   **Enlaces del catálogo que no llevan a un producto.** Con «Webs» marcada,
   si una ficha del catálogo tiene un enlace que no lleva a la página de su
-  producto (por ejemplo, a la de contacto, o a un producto que ya no está en
-  la web), «Lo que ha usado» lo marca y el aviso dice «revísalo en el
+  producto (por ejemplo, a la de contacto, o a un producto que el índice de
+  las webs ya no tiene), «Lo que ha usado» lo marca y el aviso dice «revísalo en el
   compositor». Si el enlace es el de una página de producto que el índice de
   las webs no tiene, puede ser un producto que se acaba de publicar: el aviso
   te dice que reindexes o, si no es eso, que lo revises. BoHub no lo cambia: el catálogo se arregla en el

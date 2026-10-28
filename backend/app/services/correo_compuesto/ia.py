@@ -178,20 +178,43 @@ def importes_de(texto: str | None) -> set[str]:
                         for m in _IMPORTE_USUARIO_RE.finditer(texto or "")) if n}
 
 
+_CORTE_RE = re.compile(r"[;\n]|,\s|\.\s")
+
+
 def _ivas_de_importes(texto: str) -> dict[str, set[str]]:
     """El IVA que dice quien envía junto a cada importe («14.900 € + IVA»):
-    lo que hay desde un poco antes del importe hasta el siguiente."""
-    from app.services.correo_compuesto.generador import iva_del_texto  # noqa: PLC0415
+    lo de su lado de la frase. Un importe sin IVA al lado toma el que dice la
+    instrucción sin pegarlo a ningún importe, si es uno solo («a 14.900 € y
+    la normal a 12.000 €, ambas + IVA»; «IVA aparte, …»); el IVA pegado a
+    otro importe no cuenta para este."""
+    from app.services.correo_compuesto.generador import (  # noqa: PLC0415
+        iva_del_texto,
+        ivas_del_texto,
+    )
 
     salida: dict[str, set[str]] = {}
     importes = list(_IMPORTE_USUARIO_RE.finditer(texto))
+    sueltos: list[str] = []
+    resto = list(texto)                 # lo que no va pegado a ningún importe
     for i, m in enumerate(importes):
+        # Lo de su lado, sin pasar de una coma, un punto y coma o un salto de
+        # línea, ni llegar al importe de al lado.
         desde = max(m.start() - 12, importes[i - 1].end() if i else 0)
+        antes = _CORTE_RE.split(texto[desde:m.start()])[-1]
+        desde = m.start() - len(antes)
         hasta = importes[i + 1].start() if i + 1 < len(importes) else m.end() + 40
+        hasta = m.end() + len(_CORTE_RE.split(texto[m.end():hasta])[0])
+        resto[desde:hasta] = [" "] * (hasta - desde)
         numero = _normalizado(m.group(1) or m.group(2))
         iva = iva_del_texto(texto[desde:hasta])
         if numero and iva:
             salida.setdefault(numero, set()).add(iva)
+        elif numero:
+            sueltos.append(numero)
+    generales = ivas_del_texto("".join(resto))
+    if len(generales) == 1:
+        for numero in sueltos:
+            salida.setdefault(numero, set()).update(generales)
     return salida
 
 

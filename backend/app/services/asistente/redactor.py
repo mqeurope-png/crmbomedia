@@ -1303,11 +1303,12 @@ def _rellenar_compuesto(
                           "correo: se ha quitado del texto, donde salía repetido.")
             correo = generador_correo.generar(estructura, datos, asunto=asunto)
             libre = ia_compuesto.texto_libre(estructura)
-        ajenos = ia_compuesto.importes_ajenos(libre, correo.precios_catalogo)
-        # El precio de una ficha de la web repetido en un texto se lee como si
+        # Los del catálogo y los que dijo quien envía valen como siempre; el
+        # precio de la web de una ficha repetido en un texto se lee como si
         # fuera de oferta: se avisa aparte.
-        fuera = set(ia_compuesto.importes_ajenos(libre, [*correo.precios_catalogo,
-                                                         *correo.precios_web]))
+        validos = [p for p in correo.precios if p not in correo.precios_web]
+        ajenos = ia_compuesto.importes_ajenos(libre, validos)
+        fuera = set(ia_compuesto.importes_ajenos(libre, correo.precios))
         de_la_web = [a for a in ajenos if a not in fuera]
         ajenos = [a for a in ajenos if a in fuera]
         if ajenos:
@@ -1328,11 +1329,8 @@ def _rellenar_compuesto(
         if comprobar_enlaces or any(c["fuente"] == bq.FUENTE_WEB
                                     for c in bq.productos_de(estructura)):
             fichas, avisos_fichas = procedencia.fichas_del_correo(
-                session, estructura, datos.productos, idioma=estructura["idioma"])
-            if not comprobar_enlaces:
-                avisos_fichas = [a for a in avisos_fichas if "no lleva a una página" not in a]
-                for f in fichas:
-                    f.pop("enlace_no_producto", None)
+                session, estructura, datos.productos, idioma=estructura["idioma"],
+                comprobar_enlaces=comprobar_enlaces)
             avisos = [*avisos_fichas, *avisos]
         b.html, b.texto = correo.html, correo.texto
     else:
@@ -1675,7 +1673,8 @@ def _material_de_correccion(
                                          borrador_id=nuevo_id)
         return plan, consulta_fuentes.reutilizar(
             session, original, fuentes, borrador.idioma, instruccion=instruccion,
-            nombres=plan.productos if plan is not None else [], maquinas=entrada.maquinas)
+            nombres=plan.productos if plan is not None else [], maquinas=entrada.maquinas,
+            del_correo_nombres=consulta_fuentes.nombres_del_correo(entrada))
     plan = consulta_fuentes.planificar(session, entrada, settings=settings, cfg=cfg)
     consulta_fuentes.anotar_plan(session, plan, usuario_id=usuario.id, borrador_id=nuevo_id)
     return plan, consulta_fuentes.consultar(session, fuentes=fuentes, plan=plan,

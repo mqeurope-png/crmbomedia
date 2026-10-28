@@ -434,7 +434,7 @@ describe("Lo que ha usado — las fichas del correo, del catálogo o del índice
     expect(within(fila).getByRole("link")).toHaveAttribute("href", "https://www.boprint.net/contacto/");
   });
 
-  it("dice por qué el enlace no es un producto: uno que ya no está, o uno que el índice aún no tiene", () => {
+  it("dice por qué el enlace no es un producto: uno que el índice ya no tiene, o uno que aún no tiene", () => {
     render(<LoQueHaUsado borrador={borrador({
       contacto: { nombre: "Ana" },
       fichas: [
@@ -446,7 +446,7 @@ describe("Lo que ha usado — las fichas del correo, del catálogo o del índice
     })} />);
     const [retirada, nueva] = within(catalogo()).getAllByRole("listitem");
     expect(retirada).toHaveTextContent(
-      "el enlace es el de un producto que ya no está en la web: revísalo en el compositor");
+      "el enlace es el de un producto que el índice de las webs ya no tiene (se quitó de la web o una regla del índice lo deja fuera): revísalo");
     expect(nueva).toHaveTextContent(
       "el enlace no está en el índice de las webs: si el producto es nuevo, aún no se ha leído; si no, revísalo en el compositor");
     expect(nueva).not.toHaveTextContent("no lleva a una página de producto");

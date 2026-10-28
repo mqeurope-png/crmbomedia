@@ -34,6 +34,9 @@ ENLACE_CATALOGO_NO_PRODUCTO = "enlace_catalogo_no_producto"
 ENTIDAD_PRODUCTO_CATALOGO = "producto_catalogo"
 PISTA = ("El catálogo se edita en el compositor (BoHub solo lo lee): pon el enlace de la página "
          "del producto. Si el producto ya no está en la web, quítalo o cámbialo allí.")
+PISTA_IDO = ("Mira si el producto sigue en la web: si se quitó, quítalo o cámbialo en el "
+             "compositor (BoHub solo lo lee); si sigue, es una regla del índice de las webs la "
+             "que lo deja fuera, y el enlace puede estar bien.")
 PISTA_FUERA = ("Si el producto se acaba de publicar, el índice aún no lo tiene: «Reindexar ahora» "
                "en el panel del índice de las webs, y este aviso se va solo. Si no, el enlace "
                "está mal: corrígelo en el compositor (BoHub solo lo lee).")
@@ -79,7 +82,8 @@ def enlace_catalogo_no_producto(ctx: Contexto) -> Iterator[Hallazgo]:
             que = (f"es la página «{titulo}», no un producto" if titulo else
                    f"es una página de {sitio.dominio} que no es un producto")
         elif motivo == fichas.MOTIVO_IDO:
-            que = "es el de un producto que ya no está en la web"
+            que = ("es el de un producto que el índice ya no tiene (se quitó de la web o una "
+                   "regla del índice lo deja fuera)")
         else:
             que = (f"no está en el índice de {sitio.dominio}: no es ninguna de sus páginas de "
                    "producto (o es una que aún no se ha leído)")
@@ -88,7 +92,8 @@ def enlace_catalogo_no_producto(ctx: Contexto) -> Iterator[Hallazgo]:
             entidad_id=entidad_id(p.fuente, f"{p.origen_id}:{p.idioma}"),
             etiqueta=f"«{p.nombre}» ({p.idioma})"[:200],
             detalle=f"Su enlace {enlace} {que}.",
-            pista_de_arreglo=PISTA_FUERA if motivo == fichas.MOTIVO_FUERA else PISTA,
+            pista_de_arreglo={fichas.MOTIVO_FUERA: PISTA_FUERA,
+                              fichas.MOTIVO_IDO: PISTA_IDO}.get(motivo, PISTA),
             enlace=enlace,
             arreglo_enlace=AJUSTES_ERP,
             arreglo_boton="Abrir la base de conocimiento",
