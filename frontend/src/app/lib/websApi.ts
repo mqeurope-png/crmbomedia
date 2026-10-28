@@ -1,8 +1,9 @@
 import { apiFetch } from "./api";
 
-/** Índice de las webs propias (`/api/erp/webs`): buscar (para el redactor),
- *  el estado por web y tipo, «Reindexar ahora» y las reglas. Solo lee de las
- *  webs, por sus endpoints públicos. */
+/** Índice de las webs propias (`/api/erp/webs`): el estado por web y tipo,
+ *  «Reindexar ahora», las reglas y la búsqueda de prueba del panel (la misma
+ *  con la que el asistente consulta el índice solo al redactar, con la casilla
+ *  «Webs» marcada). Solo lee de las webs, por sus endpoints públicos. */
 
 export type WebTipo = "pagina" | "entrada" | "producto";
 

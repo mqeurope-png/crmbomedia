@@ -91,30 +91,38 @@ El frontend traduce `code` a un toast rojo (reutilizando `formatFastApiDetail`).
 
 ## ERP: soporte de terceros e índice de las webs (27/10/2026)
 
-**Buscar y leer en el soporte de los fabricantes es del redactor** («Buscar en
-soporte» de la franja del asistente). Desde el 28/10/2026 esas dos rutas van con
-el **mismo ámbito que el asistente** (`/api/emails/asistente`): `require_user` +
-`require_crm_access`, es decir, rol principal **user, manager o admin**. La Cola
-SAT ya **no** tiene «Consulta de soporte»: el taller (`sat`), `pedidos`,
-`comercial` y el visor reciben 403 (`sat` y `viewer` no pasan `require_user`;
-`pedidos` y `comercial`, solo ERP, no pasan `require_crm_access`). `_SAT_CAPS`
-no cambia: el taller sigue con su Cola SAT y **sigue sin poder enviar correos**
-(no tiene `erp.email.client`; lo único que envía a mano es «enviar al taller», a
-la dirección del taller y sin factura).
+**El soporte de los fabricantes y el índice de nuestras webs los consulta el
+propio asistente al redactar** (casillas «Soporte» y «Webs» de la franja,
+desde el 28/10/2026). Lo hace el servidor dentro de la petición del borrador
+(`/api/emails/asistente`), así que **no hace falta ningún permiso aparte**: lo
+tiene quien puede usar el asistente, `require_user` + `require_crm_access`, es
+decir, rol principal **user, manager o admin** (también si además tiene roles
+de ERP: un `user` que es comercial o de pedidos en el ERP recibe el borrador
+con el artículo y las páginas). Los roles principales solo ERP (`sat`,
+`pedidos`, `comercial`) siguen sin llegar al asistente (403 en todo el CRM,
+desde antes de esto), y el visor tampoco (`viewer` no pasa `require_user`).
+
+Historia del 28/10/2026: con #566 la Cola SAT perdió su «Consulta de soporte»
+y las rutas de buscar y leer en el soporte (`GET /api/erp/soporte/buscar` y
+`/articulo`) pasaron al ámbito del asistente; ese mismo día, con la consulta
+automática, **esas dos rutas se quitaron** (su único usuario era el buscador
+manual de la franja). El taller (`sat`) ya no busca ni lee en el soporte.
+`_SAT_CAPS` no cambia: el taller sigue con su Cola SAT y **sigue sin poder
+enviar correos** (no tiene `erp.email.client`; lo único que envía a mano es
+«enviar al taller», a la dirección del taller y sin factura).
 
 | Acción | Endpoint | Guard | Quién |
 |---|---|---|---|
-| Buscar y leer en el soporte (el redactor) | `GET /api/erp/soporte/buscar`, `GET /api/erp/soporte/articulo` | `require_user` + `require_crm_access` (el ámbito del asistente) | user/manager, admin (no sat, pedidos, comercial ni viewer) |
-| Buscar en el índice de las webs | `GET /api/erp/webs/buscar` | `require_erp_view` (`erp.access`) | cualquiera con ERP (comercial, pedidos, sat, user/manager, admin; viewer no) |
+| Buscar en el índice de las webs («Probar» del panel del índice) | `GET /api/erp/webs/buscar` | `require_erp_view` (`erp.access`) | cualquiera con ERP (comercial, pedidos, sat, user/manager, admin; viewer no) |
 | Lista blanca del soporte: ver, alta, edición, «Comprobar» | `GET`/`POST /api/erp/soporte/fuentes`, `PATCH …/{clave}`, `POST …/{clave}/comprobar` | `require_config` (`erp.config`) | admin |
 | Índice de las webs: estado, «Reindexar ahora», reglas | `GET /api/erp/webs/estado`, `POST /api/erp/webs/reindexar`, `GET`/`POST /api/erp/webs/reglas`, `PATCH`/`DELETE …/{id}` | `require_config` (`erp.config`) | admin |
 | Comprobar una imagen por URL (editor de correo) | `POST /api/emails/imagen-url/comprobar` | `require_user` | cualquier usuario con sesión |
 
 `erp.config` no está en ningún rol operativo (comercial, pedidos, sat): las dos
-listas las edita quien tiene la configuración del ERP, hoy solo el admin. Quien
-puede usar el redactor (user, manager, admin) tiene también `erp.access`, así
-que los dos buscadores de la franja le responden. Detalle en
-[fuentes-externas.md](fuentes-externas.md).
+listas las edita quien tiene la configuración del ERP, hoy solo el admin.
+`GET /api/erp/webs/buscar` ya no lo llama el asistente: sirve al «Probar: qué
+encontraría el redactor» del panel del índice, con el mismo guard de antes.
+Detalle en [fuentes-externas.md](fuentes-externas.md).
 
 ## ERP: traer un pedido web «en espera» (28/10/2026)
 

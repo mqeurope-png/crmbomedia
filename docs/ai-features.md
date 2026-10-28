@@ -141,10 +141,13 @@ cualquier hilo de la Bandeja (y desde la pestaña de emails de la ficha, enlace
 a contestar»** abre el compositor con la **franja del asistente** desplegada
 (`components/email/AsistenteFranja.tsx`), entre la cabecera del correo y el
 cuerpo: empuja el contenido, no tapa nada, y se pliega a una línea. Lo primero
-es la caja **«¿Qué quieres decirle?»** con el selector de histórico y
-**«Redactar»**; el borrador llega al editor con la firma del compositor detrás
-y el asunto propuesto. El envío es el de siempre (`POST /api/emails/send`), con
-`asistente_borrador_id` solo para anotar si salió **tal cual** o **editado**;
+es la caja **«¿Qué quieres decirle?»** y, en la fila de debajo, las casillas
+**«Webs»** y **«Soporte»** (lo que consulta por su cuenta al redactar, § Lo
+que no está en el catálogo), el interruptor **Auto · Texto · Con fichas**, el
+selector de histórico y **«Redactar»**; el borrador llega al editor con la
+firma del compositor detrás y el asunto propuesto. El envío es el de siempre
+(`POST /api/emails/send`), con `asistente_borrador_id` solo para anotar si
+salió **tal cual** o **editado**;
 cerrar sin enviar deja la conversación como descartada. **No existe ningún
 camino en el código que envíe un borrador solo**
 (`tests/test_asistente.py::test_ningun_camino_del_asistente_envia_correo` lo
@@ -262,14 +265,18 @@ respuesta, y el log anota el `stop_reason`. Con Haiku 5.5 la salida cuesta
 (decidir la estructura, agrupar fichas, las tiras de marca). Pensar alarga la
 petición: en los ejemplos de nginx (`deploy/nginx`, y las directivas de Plesk de
 `deployment-ionos.md`) `/api/` espera hasta 180 s; en un servidor ya montado hay
-que cambiarlo a mano.
+que cambiarlo a mano. La consulta a nuestras webs y al soporte (las casillas de
+la franja) va dentro de la misma petición y suma, en lo peor, unos 11 s (5 del
+plan y 6 del soporte; § Lo que no está en el catálogo).
 
 En **«Uso de la IA»** (ERP · Leads) el primer borrador y las correcciones se
 anotan con propósitos distintos (`asistente_borrador` /
-`asistente_correccion`), hay una tabla de **coste por modelo** para comparar y
-el número que importa: **lo que cuesta un borrador terminado** (una
-conversación con algún turno enviado: el primero más sus retoques, coste medio
-y turnos de media).
+`asistente_correccion`; el plan de la consulta a webs y soporte, con el suyo,
+`asistente_consulta`, «Asistente · preparar la consulta a webs y soporte», y
+su coste se suma también al del borrador), hay una tabla de **coste por
+modelo** para comparar y el número que importa: **lo que cuesta un borrador
+terminado** (una conversación con algún turno enviado: el primero más sus
+retoques, coste medio y turnos de media).
 
 ### Un correo nuevo, sin hilo, con el pasado del cliente
 
@@ -403,7 +410,10 @@ la respuesta en texto sigue siendo la de siempre y la opción por defecto.
   «prepárale un correo con las máquinas»—; «dile que el pedido sale el martes»
   es texto), **Texto** o **Con fichas** (`formato`; solo viaja si no es Auto).
   Una conversación compuesta sigue compuesta salvo que se pida texto
-  (`correo_compuesto/ia.modo_del_turno`).
+  (`correo_compuesto/ia.modo_del_turno`). Delante del interruptor, en la misma
+  fila, van las casillas **«Webs»** y **«Soporte»**: no cambian el formato,
+  sino lo que el asistente consulta al redactar (§ Lo que no está en el
+  catálogo).
 - **Sin inventar nada.** La IA nombra productos, enlaces, vídeos, imágenes y
   marcas por **referencia**: `P1`/`C1` (líneas del CATÁLOGO), `L1` (ENLACES),
   `V1` (VÍDEOS: los de YouTube o Vimeo del hilo o de la instrucción y los de la
@@ -564,6 +574,10 @@ la respuesta en texto sigue siendo la de siempre y la opción por defecto.
   ficha solo si el texto no lo delata), **quién pulsa** (nombre y remitente)
   y, como ejemplo de tono, la plantilla del interés × idioma si la hay.
 - Un **remitente desconocido** (sin ficha) funciona con menos: solo el hilo.
+- Con las casillas **«Webs»** / **«Soporte»**, lo que el asistente consulta
+  solo (el artículo del soporte, las páginas de nuestras webs) **no va en este
+  bloque** sino en la petición del turno (§ Lo que no está en el catálogo): el
+  bloque se congela con el turno 0.
 
 ### La oferta adjunta (12/10/2026)
 
@@ -689,9 +703,12 @@ por arriba.
 caja: «Solo este hilo» (nivel 1), «Todo lo de este contacto» (1, 2 y 3; el
 defecto) y «Todo lo de la empresa» (los cuatro). Cambiarlo con un borrador ya
 hecho rearma el contexto: es un borrador nuevo. La elección se recuerda por
-usuario en el navegador (`lib/asistenteAlcance.ts`). Un remitente desconocido
-va siempre solo con el hilo; sin hilo (correo nuevo) no existe «Solo este
-hilo» y los correos viejos se eligen comparando con la instrucción.
+usuario en el navegador (`lib/asistenteAlcance.ts`), igual que las casillas
+«Webs» y «Soporte» (`lib/asistenteFuentes.ts`, clave
+`bohub.asistente.fuentes.<usuario>`; marcadas de partida). Un remitente
+desconocido va siempre solo con el hilo; sin hilo (correo nuevo) no existe
+«Solo este hilo» y los correos viejos se eligen comparando con la
+instrucción.
 
 **Se ve lo que ha usado**: debajo del borrador, plegado, cuántos mensajes del
 hilo, qué correos viejos entraron (fecha, asunto y por qué), si hubo contexto
@@ -706,54 +723,102 @@ con más histórico salen mejores o solo más caros.
 El asistente estaba encerrado en la base de conocimiento y el catálogo: no
 podía citar el procedimiento de FLUX para calibrar una cámara ni enlazar la
 página de un accesorio. La referencia técnica (red con cerrojos, lista blanca,
-índice, reglas, permisos, lo comprobado contra las webs reales) está en
-[fuentes-externas.md](fuentes-externas.md); aquí, lo que cambia en el
-asistente.
+índice, reglas, permisos, cómo se consulta, lo comprobado contra las webs
+reales) está en [fuentes-externas.md](fuentes-externas.md); aquí, lo que
+cambia en el asistente.
 
-- **Dos botones en la franja**, junto a la caja: **«Buscar en soporte»** (el
-  soporte del fabricante, por la lista blanca) y **«Buscar en las webs»** (el
-  índice de nuestras webs). **Buscar es una acción aparte y va antes de
-  redactar**: el nginx de Plesk corta a los 60 s y una búsqueda dentro de la
-  generación se lo comería. Lo encontrado se ve (título, extracto, enlace; el
-  artículo se puede leer entero; de las webs, imagen, web · tipo · idioma,
-  fragmento y «precio en la web», que no es precio de oferta) y se elige:
-  «Usar en el borrador», «Añadir al borrador» (hasta 4 páginas) o, si no hay
-  nada, «Escribir diciendo que no hay procedimiento» (solo si se miró en algún
-  centro: un soporte que no responde da error, no «sin resultados»). Lo
-  elegido queda en fichas con su ✕ y **viaja con cada petición hasta que se
-  quita** (también tras «Empezar de nuevo»). Artículo y «sin procedimiento» se
-  excluyen: gana el último elegido (si llegan los dos, el backend se queda con
-  el artículo).
-- **Lo que viaja**: `soporte` (`{fuente, articulo_id, idioma}`),
-  `soporte_sin_resultados` (`{consulta}`, hasta 300 caracteres) y `webs` (ids
-  del índice, hasta 4), en las tres peticiones que redactan (generar con hilo,
-  generar nuevo y turno). **Sin ellos, el turno es exactamente el de antes**:
-  el mismo prompt de sistema, el mismo contexto y la misma petición
-  (`tests/test_asistente_fuentes.py`).
-- **Lo que recibe el prompt**: el material se lee antes de llamar al modelo
-  (por fuente + id y por id del índice, nunca por una URL que mande el
-  navegador) y va **en la petición del turno**, delante de lo demás (también
-  delante de la cabecera de FORMATO del compuesto), **encapsulado como dato**;
-  el bloque de contexto no se toca. Al sistema se le añaden, solo entonces,
-  la regla del material y las de soporte y webs. Los fragmentos de las webs
-  se recortan con la instrucción como búsqueda (sin instrucción, el principio
-  del último mensaje del cliente). Las URL del material entran en los enlaces
-  permitidos y en `enlaces_json`, para que las correcciones las conserven.
-  Con «sin procedimiento» no hay nada descargado: va la regla de no escribir
-  pasos y una frase con la consulta exacta.
-- **Garantías**, que no dependen de que el modelo obedezca: el borrador que usa
-  un artículo **lleva su enlace** (si no lo puso, se añade al final en el
-  idioma del correo, con aviso); referencias, modelos y números de pieza
-  **literales**; con «sin procedimiento» el correo lo dice y, si aun así trae
-  pasos, la franja avisa; un precio de la web **nunca se oferta**; si lo
-  elegido no se puede leer, no hay borrador (409 o 502 con su `code`). Las
-  guardias del cuerpo y de Bomedia siguen igual.
-- **«Lo que ha usado»** enseña el material que entró
-  (`contexto_json["material"]`, por turno: una corrección sin material no
-  hereda el del turno anterior).
-- **Coste**: un turno con material cambia el prompt de sistema, así que ese
-  turno no lee la caché del contexto (la caché incluye el sistema) y la vuelve
-  a escribir; el siguiente sin material lee la de antes si sigue viva.
+Con #564 eran dos botones de la franja, «Buscar en soporte» y «Buscar en las
+webs»: la persona buscaba **antes** de redactar y elegía qué entraba («Usar en
+el borrador», «Añadir al borrador», «Escribir diciendo que no hay
+procedimiento»). **Desde el 28/10/2026 el asistente consulta por su cuenta,
+al redactar**, igual que consulta el catálogo: nadie busca ni elige nada.
+
+- **Dos casillas en la franja, «Webs» y «Soporte»**, en la fila de debajo de
+  la caja, donde estaban los botones (delante de «Auto · Texto · Con
+  fichas»). **Marcadas de partida** y recordadas por usuario en el navegador,
+  como el alcance (`lib/asistenteFuentes.ts`). Tocar una no rehace el
+  borrador: vale para la petición siguiente.
+- **Lo que viaja**: `fuentes: {webs, soporte}` en las tres peticiones que
+  redactan (generar con hilo, generar nuevo y turno). **Con las dos
+  desmarcadas (o sin el campo), el turno es exactamente el de antes del
+  #564**: ni plan, ni material, ni reglas; el mismo prompt de sistema, el
+  mismo contexto y la misma petición (`tests/test_asistente_fuentes.py`).
+  Tampoco se consulta si no hay nada que contestar.
+- **Qué buscar lo prepara un plan**: una llamada corta al **modelo de las
+  correcciones** (el de Configuración ERP → «Asistente de respuesta», Haiku
+  por defecto) lee el último mensaje del cliente, el asunto, la instrucción y
+  las máquinas que ha reconocido el catálogo, y dice si el correo es técnico,
+  de qué marca, qué buscar en el centro de ayuda (en inglés y en el idioma del
+  correo) y qué en nuestras webs. **5 s como mucho y sin reintentos**; si
+  falla, tarda o devuelve otra cosa, se busca **con las palabras del correo**
+  (las máquinas que nombra, los códigos de error, los mensajes entre comillas,
+  el asunto). Se anota en `ia_llamadas` como `asistente_consulta` y su coste
+  **se suma al del borrador**.
+- **Soporte**: solo si el correo es **técnico** (avería, error, ajuste,
+  instalación, mantenimiento, cómo se hace algo) y solo en el centro de ayuda
+  de **la marca** de la que habla, si lo tiene en la lista blanca (una máquina
+  de artisJet no se busca en el de FLUX; «Lo que ha usado» dice que no tiene
+  centro). Primero **en inglés**, luego en el idioma del correo. El **primer
+  artículo se lee entero** (en el idioma del correo si existe); **dos más,
+  solo título y extracto**, para enlazar.
+- **Webs**: los productos y páginas por los que pregunta, en el índice (MySQL
+  local) en el idioma del correo (si nada, en cualquiera): **tres
+  fragmentos**, con su enlace y su «precio en la web», que no es precio de
+  oferta.
+- **El tiempo**, porque va dentro de la petición del borrador: el plan **5 s**,
+  todo el soporte **6 s** y cada petición al soporte **4 s**, sin reintentos;
+  las webs son una consulta a la base local. En lo peor, unos 11 s más, lejos
+  del corte del nginx.
+- **Lo que falla se deja fuera**: una fuente que no responde o no llega a
+  tiempo no tira el borrador; se escribe sin ella y el aviso de la franja lo
+  dice («No se ha podido consultar el soporte (…): el borrador se ha escrito
+  sin él.»). Sin soporte consultado, el modelo tiene la orden de no escribir
+  pasos de memoria; «no he podido mirar» nunca se convierte en «no hay
+  procedimiento».
+- **Lo que recibe el prompt**: lo consultado va **en la petición del turno**,
+  delante de lo demás (también delante de la cabecera de FORMATO del
+  compuesto), **encapsulado como dato** y con su referencia (`[S1]` el
+  artículo, `[S2]`, `[S3]` los otros, `[W1]`… las páginas); el bloque de
+  contexto no se toca. Al sistema se le añaden, solo entonces, la regla del
+  material, las de soporte y webs y la de **`material_usado`**: el modelo dice
+  en su JSON qué piezas ha usado. Las URL del material entran en los enlaces
+  permitidos y en `enlaces_json`, para que las correcciones las conserven. Si
+  se buscó en el soporte y no hay nada (todas las fuentes respondieron), va la
+  regla de no escribir pasos y una frase con la búsqueda exacta.
+- **Garantías**, que no dependen de que el modelo obedezca: el borrador que
+  **usó** el artículo (`S1` en `material_usado`; si el modelo no lo dice, si
+  su enlace está en el cuerpo o el cuerpo trae pasos) **lleva su enlace** (si
+  no lo puso, se añade al final en el idioma del correo, con aviso; un
+  artículo que no viene a cuento no se usa ni se enlaza a la fuerza);
+  referencias, modelos y números de pieza **literales**; si el borrador trae
+  **pasos** que no salen de ningún artículo (no había procedimiento, no se
+  pudo consultar o no usó el que salió), la franja avisa «revísalo»; un precio
+  de la web **nunca se oferta**. Las guardias del cuerpo y de Bomedia siguen
+  igual.
+- **Las correcciones no vuelven a buscar**: usan lo que trajo el primer turno
+  (el artículo, de la caché; las páginas, por su id) con las casillas de
+  **ahora** (desmarcar «Webs» deja la corrección sin las páginas), sin plan ni
+  coste de consulta. Si el primer turno no redactó (no había nada que
+  contestar), la primera corrección que redacta consulta con su instrucción.
+- **«Lo que ha usado»** enseña lo consultado (`contexto_json["material"]`, por
+  turno; una corrección con las dos casillas desmarcadas no hereda el del
+  turno anterior): el artículo y los otros con su enlace, su fuente y si el
+  borrador lo usó («usado en el borrador», «no lo usó», «solo enlazable»), las
+  páginas con web, tipo y precio de la web, lo que no se encontró, lo que no
+  hacía falta («el correo no es técnico», «no pregunta por ningún producto») o
+  no se pudo consultar, y qué se buscó y cómo («la preparó la IA», «con las
+  palabras del correo», «la del primer borrador»), con el tiempo. El título
+  plegado lo resume («consultó soporte y webs»). Un borrador de antes del
+  28/10/2026 enseña lo que se eligió con los botones.
+- **Coste**: el plan es una llamada corta (300 tokens de salida como mucho)
+  con el modelo barato, una vez por borrador con alguna casilla marcada. Un
+  turno con material lleva sus reglas detrás del prompt de sistema, y la caché
+  del contexto incluye el sistema: no lee la que dejó un turno sin material y
+  escribe la suya. Como las correcciones reutilizan lo del primer turno, su
+  sistema no cambia de una a otra y leen la caché como siempre (si se toca una
+  casilla, cambian las reglas y ese turno la vuelve a escribir). El material va
+  en la petición, fuera de la caché: se paga entero en cada turno (como mucho,
+  6.000 caracteres del artículo, 600 de extractos y 2.700 de páginas).
 - **Las imágenes del editor sobreviven a una corrección.** El editor tiene
   ahora **«Imagen por URL»** (comprobada antes de insertarla y enlazada tal
   cual). Antes, «más corto» sobre un cuerpo con imágenes las perdía en

@@ -392,6 +392,8 @@ def _invoke_claude(
     user_prompt: str | Sequence[dict[str, Any]],
     max_tokens: int | None = None,
     parametros: dict[str, Any] | None = None,
+    timeout: float | None = None,
+    max_retries: int | None = None,
 ) -> str:
     """Wrapper isolated so tests can monkeypatch it without touching
     the high-level `generate_pipeline_proposal` flow.
@@ -419,6 +421,11 @@ def _invoke_claude(
     12/10/2026 a composed email with extended thinking spent the whole 2,500
     thinking and came back with only a `thinking` block. A response cut at
     the limit is an error, never half an answer.
+
+    `timeout` (seconds) and `max_retries`, when given, bound the call: the
+    assistant's search plan runs inside the draft request (nginx cuts at 60 s)
+    and must not wait for the SDK defaults (10 minutes, two retries). Without
+    them, the client keeps its defaults.
     """
     try:
         import anthropic
@@ -439,7 +446,12 @@ def _invoke_claude(
 
     registrar_uso(None)
     inicio = time.monotonic()
-    client = anthropic.Anthropic(api_key=api_key)
+    opciones: dict[str, Any] = {}
+    if timeout is not None:
+        opciones["timeout"] = timeout
+    if max_retries is not None:
+        opciones["max_retries"] = max_retries
+    client = anthropic.Anthropic(api_key=api_key, **opciones)
     extra: dict[str, Any] = {"extra_body": dict(parametros)} if parametros else {}
     try:
         message = client.messages.create(

@@ -188,8 +188,10 @@ def test_fragmentos_de_lo_elegido_en_su_orden_y_sin_lo_ido(factory: sessionmaker
 # --- API ---------------------------------------------------------------------------------------
 
 
-def test_buscar_lo_usa_el_redactor_y_cualquiera_con_erp(http: TestClient,
-                                                        factory: sessionmaker) -> None:
+def test_buscar_es_el_probar_del_panel_y_cualquiera_con_erp(http: TestClient,
+                                                            factory: sessionmaker) -> None:
+    """`/buscar` queda para «Probar» del panel (el asistente usa el servicio
+    directamente); el permiso no cambia: cualquiera con ERP."""
     with factory() as s:
         sembrar(s)
     for rol in ("admin", "user", "sat"):

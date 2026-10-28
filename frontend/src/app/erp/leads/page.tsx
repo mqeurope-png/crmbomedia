@@ -525,6 +525,7 @@ function FilaLead({
 const PROPOSITO_TEXTO: Record<string, string> = {
   asistente_borrador: "Asistente «Ayúdame a contestar» · primer borrador",
   asistente_correccion: "Asistente · correcciones («más corto», «en inglés»…)",
+  asistente_consulta: "Asistente · preparar la consulta a webs y soporte",
   clasificador_leads: "Clasificador de leads",
 };
 

@@ -26,6 +26,10 @@ from __future__ import annotations
 
 import html as html_mod
 import re
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any
@@ -73,6 +77,24 @@ _IDIOMA_RE = re.compile(r"^[a-z]{2}$")
 #: Para los tests: un `httpx.Client` con `MockTransport` y un resolutor de DNS
 #: falso. En producción, vacío (red de verdad, con los cerrojos de `red`).
 _RED_PRUEBAS: dict[str, Any] = {}
+
+#: El plazo de la consulta en curso (`con_plazo`): hasta cuándo y cuánto puede
+#: esperar cada petición. Sin plazo, los tiempos de siempre.
+_PLAZO: ContextVar[tuple[float, float] | None] = ContextVar("soporte_plazo", default=None)
+
+
+@contextmanager
+def con_plazo(segundos: float, *, por_peticion: float) -> Iterator[None]:
+    """Mientras dure, cada petición al soporte espera como mucho `por_peticion`
+    segundos y todas juntas `segundos` (la búsqueda, su respaldo en inglés y
+    el artículo). Pasado el plazo, la siguiente ni sale: `SoporteError`
+    («tiempo_agotado»). Lo usa el redactor, que consulta el soporte DENTRO de
+    la redacción del borrador (el nginx de Plesk corta a los 60 s)."""
+    token = _PLAZO.set((time.monotonic() + segundos, por_peticion))
+    try:
+        yield
+    finally:
+        _PLAZO.reset(token)
 
 
 def fijar_red_para_tests(*, cliente: Any = None, resolver: Any = None) -> None:
@@ -124,7 +146,16 @@ _STATUS_RED = {
 
 def _pedir(fuente: SoporteFuente, url: str, *, timeout: float,
            acepta: str = "application/json") -> red.Respuesta:
-    """Una petición a la fuente, con su dominio como única lista blanca."""
+    """Una petición a la fuente, con su dominio como única lista blanca (y,
+    dentro de `con_plazo`, con el tiempo que quede)."""
+    plazo = _PLAZO.get()
+    if plazo is not None:
+        hasta, por_peticion = plazo
+        restante = hasta - time.monotonic()
+        if restante <= 0:
+            raise SoporteError("tiempo_agotado",
+                               f"{fuente.nombre}: no ha respondido a tiempo.", 504)
+        timeout = min(timeout, por_peticion, restante)
     try:
         return red.obtener(
             url, max_bytes=MAX_BYTES, timeout=timeout, cabeceras={"Accept": acepta},

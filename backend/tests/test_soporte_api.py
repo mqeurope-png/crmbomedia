@@ -1,7 +1,8 @@
-"""La API del soporte de terceros (`/api/erp/soporte`): buscar y leer son del
-redactor (el mismo ámbito que el asistente: rol principal user, manager o
-admin; el taller, `pedidos`, `comercial` y el visor reciben 403) y la lista
-blanca es de administración. Las formas son las de `soporteApi.ts`."""
+"""La API del soporte de terceros (`/api/erp/soporte`): solo la lista blanca,
+que es de administración (`erp.config`). Buscar y leer ya no tienen ruta: los
+hace el asistente al redactar (`asistente.consulta_fuentes`, sus tests en
+`test_asistente_fuentes.py`). La forma de cada fuente es la de
+`soporteApi.ts`."""
 from __future__ import annotations
 
 import json
@@ -25,12 +26,7 @@ from tests._test_helpers import auth_headers, seed_test_users
 
 FLUX = "support.flux3dp.com"
 
-#: Las claves de cada tipo de `frontend/src/app/lib/soporteApi.ts`.
-CLAVES_BUSQUEDA = {"consulta", "resultados", "avisos", "fuentes", "fallidas"}
-CLAVES_RESULTADO = {"fuente", "fuente_nombre", "articulo_id", "titulo", "extracto", "url",
-                    "idioma"}
-CLAVES_ARTICULO = {"fuente", "fuente_nombre", "articulo_id", "titulo", "url", "idioma", "texto",
-                   "html", "actualizado"}
+#: Las claves de `SoporteFuente` en `frontend/src/app/lib/soporteApi.ts`.
 CLAVES_FUENTE = {"clave", "nombre", "dominio", "tipo", "base_url", "marca", "locales", "activo",
                  "posicion", "notas", "comprobado_en", "comprobado_estado",
                  "comprobado_detalle"}
@@ -72,7 +68,8 @@ def http(session_factory) -> Generator[TestClient, None, None]:
 
 @pytest.fixture()
 def peticiones() -> Generator[list[httpx.URL], None, None]:
-    """FLUX simulado (y un DNS que da una IP pública): búsqueda y artículo."""
+    """FLUX simulado (y un DNS que da una IP pública): la búsqueda de prueba
+    de «Comprobar». Cualquier otra petición, 404."""
     hechas: list[httpx.URL] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -83,11 +80,6 @@ def peticiones() -> Generator[list[httpx.URL], None, None]:
                 "snippet": "Limpia la <em>cámara</em>", "result_type": "article",
                 "html_url": f"https://{FLUX}/hc/es-419/articles/111-calibrar"}],
                 "count": 1})
-        if request.url.path == "/api/v2/help_center/es-419/articles/111.json":
-            return httpx.Response(200, json={"article": {
-                "id": 111, "title": "Calibrar la cámara", "locale": "es-419", "body": CUERPO,
-                "html_url": f"https://{FLUX}/hc/es-419/articles/111-calibrar",
-                "updated_at": "2026-09-01T10:00:00Z"}})
         return httpx.Response(404)
 
     soporte.fijar_red_para_tests(
@@ -98,79 +90,25 @@ def peticiones() -> Generator[list[httpx.URL], None, None]:
 
 
 # ---------------------------------------------------------------------------
-# Consulta: la del redactor (quien puede usar el asistente busca y lee)…
+# Buscar y leer ya no son rutas: el asistente consulta él solo al redactar
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("rol", ["user", "manager", "admin"])
-def test_buscar_y_leer_con_el_ambito_del_redactor(http, peticiones, rol):
-    h = auth_headers(http, rol)
-
-    r = http.get("/api/erp/soporte/buscar", params={"q": "cámara", "idioma": "es"}, headers=h)
-    assert r.status_code == 200, r.text
-    cuerpo = r.json()
-    assert set(cuerpo) == CLAVES_BUSQUEDA
-    assert cuerpo["fuentes"] == ["flux"]
-    assert len(cuerpo["resultados"]) == 1
-    resultado = cuerpo["resultados"][0]
-    assert set(resultado) == CLAVES_RESULTADO
-    assert resultado["articulo_id"] == "111"
-    assert resultado["extracto"] == "Limpia la cámara"
-
-    r = http.get("/api/erp/soporte/articulo",
-                 params={"fuente": "flux", "id": "111", "idioma": "es"}, headers=h)
-    assert r.status_code == 200, r.text
-    art = r.json()
-    assert set(art) == CLAVES_ARTICULO
-    assert "paño seco" in art["texto"]
-    assert "<script" not in art["html"] and "alert" not in art["texto"]
-
-
-def test_la_cache_se_guarda_entre_peticiones(http, peticiones):
-    h = auth_headers(http, "user")
-    for _ in range(2):
-        assert http.get("/api/erp/soporte/buscar", params={"q": "cámara"},
-                        headers=h).status_code == 200
-        assert http.get("/api/erp/soporte/articulo", params={"fuente": "flux", "id": "111"},
-                        headers=h).status_code == 200
-    assert len(peticiones) == 2
-
-
-@pytest.mark.parametrize("rol", ["sat", "pedidos", "comercial", "viewer"])
-def test_fuera_del_redactor_no_se_consulta(http, peticiones, rol):
-    """La Cola SAT ya no tiene «Consulta de soporte» (28/10/2026): el taller
-    (`sat`) y el visor no pasan `require_user`; `pedidos` y `comercial` (solo
-    ERP) no pasan `require_crm_access`. Ni buscan ni leen, y no se sale a la
+def test_buscar_y_leer_ya_no_tienen_ruta(http, peticiones):
+    """Quitados los botones «Buscar en soporte» de la franja, nadie llama a
+    `/buscar` ni a `/articulo`: ni el admin las encuentra, y no se sale a la
     red."""
-    h = auth_headers(http, rol)
+    h = auth_headers(http, "admin")
     r = http.get("/api/erp/soporte/buscar", params={"q": "cámara"}, headers=h)
-    assert r.status_code == 403, r.text
+    assert r.status_code in (404, 405), r.text
     r = http.get("/api/erp/soporte/articulo", params={"fuente": "flux", "id": "111"},
                  headers=h)
-    assert r.status_code == 403, r.text
+    assert r.status_code in (404, 405), r.text
     assert peticiones == []
 
 
-def test_los_errores_salen_con_codigo_y_detalle(http, peticiones):
-    h = auth_headers(http, "user")
-
-    r = http.get("/api/erp/soporte/articulo", params={"fuente": "otra", "id": "1"}, headers=h)
-    assert r.status_code == 404
-    assert r.json()["detail"]["code"] == "fuente_desconocida"
-    assert "otra" in r.json()["detail"]["detail"]
-
-    r = http.get("/api/erp/soporte/buscar", params={"q": " "}, headers=h)
-    assert r.status_code == 400
-    assert r.json()["detail"]["code"] == "consulta_vacia"
-
-    r = http.get("/api/erp/soporte/articulo", params={"fuente": "flux", "id": "999"},
-                 headers=h)
-    assert r.status_code == 404
-    assert r.json()["detail"]["code"] == "no_encontrado"
-
-
 # ---------------------------------------------------------------------------
-# … pero no enviar nada ni tocar la lista blanca
+# El taller: ni enviar nada ni tocar la lista blanca
 # ---------------------------------------------------------------------------
 
 

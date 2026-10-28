@@ -1,18 +1,16 @@
 """Buscar y leer en el soporte de terceros (la lista blanca de
 `soporte_fuentes`), con caché.
 
-Es CONSULTA: nada de aquí escribe fuera ni manda nada. Lo usan:
+Es CONSULTA: nada de aquí escribe fuera ni manda nada. Lo usa el asistente
+de redacción (`asistente.consulta_fuentes`), que al redactar un borrador
+busca solo lo que pregunta el cliente (`buscar`) y lee el artículo que sale
+(`articulo`) para meterlo en el prompt como material de consulta. Siempre por
+fuente + id de la lista blanca, NUNCA por una URL libre.
 
-- el redactor (la oficina, «Buscar en soporte»), por la API
-  `/api/erp/soporte`: buscar → título, extracto y enlace a la vista; leer → el
-  artículo limpio;
-- el redactor, por `articulo(session, fuente, id)`, para meter el artículo
-  elegido en el prompt como material de consulta. Siempre por fuente + id de
-  la lista blanca, NUNCA por una URL libre que mande el navegador.
-
-Buscar no va dentro de la generación del borrador (el nginx de Plesk corta a
-los 60 s): es una acción aparte, con su tiempo máximo por petición y un tope
-para toda la búsqueda.
+Como eso va DENTRO de la generación del borrador (el nginx de Plesk corta a
+los 60 s), el asistente lo envuelve en `adaptadores.con_plazo`: un tope para
+todo el soporte y otro por petición, sin reintentos; lo que no llega a
+tiempo es un `SoporteError` y el borrador se escribe sin ello.
 """
 from __future__ import annotations
 

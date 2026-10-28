@@ -1,4 +1,5 @@
 import { apiFetch, apiFetchBlob } from "./api";
+import type { FuentesAsistente } from "./asistenteFuentes";
 import type { CorreoGenerado, EstructuraCompuesta } from "./correoCompuesto";
 
 /** CRM-BANDEJA — descarga el binario de un adjunto y dispara el guardado
@@ -758,20 +759,12 @@ export type SobreElEditor = {
   formato?: FormatoAsistente;
   /** Un correo compuesto en la vista previa, con lo retocado: la IA corrige ESO. */
   estructura_actual?: EstructuraCompuesta | null;
-  /** Lo elegido DE FUERA para este turno (la franja solo lo manda si hay algo
-   *  elegido: sin ello la petición es exactamente la de siempre). El artículo
-   *  del soporte de un tercero que se encontró con «Buscar en soporte»; el
-   *  backend lo lee por fuente + id, nunca por una URL. */
-  soporte?: SoporteElegido | null;
-  /** «Busqué en el soporte y no hay nada»: el borrador lo dice y no se
-   *  inventa el procedimiento. */
-  soporte_sin_resultados?: { consulta: string } | null;
-  /** Ids del índice de nuestras webs elegidos con «Buscar en las webs» (hasta 4). */
-  webs?: string[];
+  /** Las casillas «Webs» y «Soporte» de la franja (van en cada petición): qué
+   *  consulta el asistente SOLO al redactar, con lo que pregunta el cliente
+   *  (el índice de nuestras webs, el soporte de los fabricantes). Sin el
+   *  campo, o con las dos desmarcadas, el turno es el de siempre. */
+  fuentes?: FuentesAsistente;
 };
-
-/** El artículo de soporte elegido, tal como lo pide el backend. */
-export type SoporteElegido = { fuente: string; articulo_id: string; idioma: string | null };
 
 export type FormatoAsistente = "auto" | "normal" | "compuesto";
 

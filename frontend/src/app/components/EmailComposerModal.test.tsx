@@ -302,6 +302,7 @@ describe("EmailComposerModal — que no destruya trabajo", () => {
       await waitFor(() => expect(mockTurno).toHaveBeenCalledWith("b-9", "desarróllala", {
         texto_actual_html: "<p>Estimada Marny,</p><p>Le paso los precios.</p>",
         seleccion_html: "<p>Le paso los precios.</p>",
+        fuentes: { webs: true, soporte: true },
       }));
       await waitFor(() => expect(editor).toHaveValue(
         "<p>Estimada Marny,</p><p>Le adjunto los precios de las máquinas de DTF.</p>"));

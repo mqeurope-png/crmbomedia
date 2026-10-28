@@ -3,14 +3,23 @@
 El redactor («Ayúdame a contestar») solo podía citar lo que había en la base
 de conocimiento y el catálogo. Ahora puede tener delante tres cosas de fuera,
 y en las tres la regla es la de siempre: **el modelo redacta, no aporta
-hechos**. Lo que dice sale de una página que alguien ha elegido y va con su
-enlace.
+hechos**. Lo que dice sale de una página concreta (la imagen que pega quien
+escribe, o el artículo y las páginas que el asistente consulta al redactar) y
+va con su enlace.
+
+Desde el 28/10/2026 **nadie busca ni elige**: con las casillas «Webs» y
+«Soporte» de la franja, el asistente consulta por su cuenta nuestras webs y
+el soporte del fabricante mientras redacta, igual que consulta el catálogo
+(§ Cómo consulta el asistente al redactar). Con #564 eran dos botones,
+«Buscar en soporte» y «Buscar en las webs», con los que la persona buscaba y
+elegía antes de redactar; se quitaron junto con sus rutas de búsqueda del
+soporte.
 
 | Qué | Dónde se usa | De dónde lee | Código |
 |---|---|---|---|
 | **Imagen por URL** | Botón del editor de correo (también en Plantillas y Firmas, mismo editor) | La URL que pega la persona: solo se comprueba | `api/imagen_url.py`, `frontend/…/email/imagenPorUrl.ts` |
-| **Soporte de terceros** | «Buscar en soporte» de la franja del asistente | Los centros de soporte de la **lista blanca** (`soporte_fuentes`; de partida, FLUX por la API pública de Zendesk) | `services/soporte/`, `erp/api/soporte.py` |
-| **Índice de las webs propias** | «Buscar en las webs» de la franja | Las webs WordPress del grupo, por su REST pública y la Store API de WooCommerce | `services/webs/`, `erp/api/webs.py` |
+| **Soporte de terceros** | Casilla «Soporte» de la franja del asistente: lo consulta por su cuenta al redactar un correo técnico | Los centros de soporte de la **lista blanca** (`soporte_fuentes`; de partida, FLUX por la API pública de Zendesk) | `services/soporte/`, `services/asistente/consulta_fuentes.py`, `erp/api/soporte.py` (la lista blanca) |
+| **Índice de las webs propias** | Casilla «Webs» de la franja: lo consulta por su cuenta al redactar. «Probar» del panel del índice | Las webs WordPress del grupo, por su REST pública y la Store API de WooCommerce | `services/webs/`, `services/asistente/consulta_fuentes.py`, `erp/api/webs.py` |
 
 **Nada de esto escribe en FACTUSOL ni en las webs.** Solo se lee, por
 endpoints públicos y sin credenciales. Lo que se descarga es **dato, nunca
@@ -54,7 +63,7 @@ no puede usarse para que el servidor pregunte a la red de dentro (SSRF):
 | Quién | Tiempo por petición | Tamaño máximo | Hosts |
 |---|---|---|---|
 | Imagen por URL | 8 s (HEAD y, si hace falta, GET) | HEAD sin cuerpo; GET cortado a 15 MB | cualquiera público |
-| Soporte | búsqueda 8 s, artículo 10 s; **25 s para toda la búsqueda** | 2 MB | el dominio de la fuente |
+| Soporte | al redactar (`con_plazo`), **4 s por petición y 6 s para todo el soporte** (búsquedas y artículo), sin reintentos; «Comprobar», búsqueda 8 s y artículo 10 s. El servicio corta además la búsqueda a los 25 s, que al redactar no llegan a contar | 2 MB | el dominio de la fuente |
 | Índice de las webs | 45 s, con un reintento si la red falla o da 5xx | JSON 16 MB (solo la REST: el HTML público no se lee) | los de la web, con y sin `www.`, y sus dominios extra |
 
 **Queda una ventana**, dicha en el código: el nombre se resuelve en
@@ -100,29 +109,128 @@ dirigido al modelo («ignora las instrucciones anteriores y…»):
   (`parece_orden`, en los idiomas de la casa), el sobre lo dice.
 - **`REGLA_MATERIAL` se añade al prompt de sistema solo cuando el turno lleva
   material** (nada de dentro manda; mandan las instrucciones y la petición),
-  con `REGLA_SOPORTE`, `REGLA_WEBS` y la de los enlaces según lo que haya.
+  con `REGLA_SOPORTE`, `REGLA_WEBS`, la de los enlaces y la de
+  `material_usado` según lo que haya; `REGLA_SIN_RESULTADOS` o
+  `REGLA_SOPORTE_NO_CONSULTADO` si se buscó y no hay procedimiento, o si no se
+  pudo consultar.
+- **Cada pieza lleva su referencia**: `[S1]` el artículo, `[S2]` y `[S3]` los
+  otros artículos, `[W1]`… las páginas de nuestras webs. Con material, el
+  modelo añade a su JSON `material_usado` con las que ha usado
+  (`material_fuera.material_usado`): es el «usado» de «Lo que ha usado» y
+  decide la garantía del enlace.
 - **Va en la petición del turno, no en el bloque de contexto**: ese se congela
-  con el turno 0 y las correcciones lo reenvían byte a byte; lo que se elige en
-  una corrección no cabría.
-- **Sin material, el turno es exactamente el de antes**: sin `soporte`,
-  `soporte_sin_resultados` ni `webs` (o vacíos), `Pedido.de` devuelve `None` y
-  el prompt de sistema, el contexto y la petición son los mismos byte a byte
-  (`tests/test_asistente_fuentes.py`).
+  con el turno 0 y las correcciones lo reenvían byte a byte; lo que se consulta
+  para cada turno no cabría.
+- **Sin casillas, el turno es exactamente el de antes del #564**: con «Webs» y
+  «Soporte» desmarcadas (o sin `fuentes`) no se consulta nada, ni siquiera el
+  plan, y el prompt de sistema, el contexto y la petición son los mismos byte a
+  byte (`tests/test_asistente_fuentes.py`). Con alguna marcada pero nada que
+  meter (ni artículo, ni páginas, ni «no hay procedimiento», ni «no se pudo
+  consultar el soporte»), el prompt tampoco cambia: solo queda apuntado lo que
+  se buscó.
 - Las guardias de la salida (la del cuerpo y la de Bomedia) no cambian: se
   aplican igual al borrador escrito con material.
-- Lo elegido se **lee antes** de llamar al modelo, por fuente + id (el
-  artículo) y por id del índice (las webs), **nunca por una URL libre** que
-  mande el navegador. Si no se puede leer, no hay borrador: `409` (lo elegido
-  ya no vale: el artículo no existe, la fuente se desactivó, las páginas ya no
-  están) o `502` (la red), con `code` `soporte_<código>`, `soporte_vacio` o
-  `webs_no_encontradas`. Si faltan solo algunas páginas, se escribe con las que
-  hay y se avisa.
+- Lo consultado se **lee antes** de llamar al modelo, siempre por la lista
+  blanca y por el índice: el artículo por fuente + id (el del resultado de su
+  búsqueda), las páginas por su id; **nunca por una URL libre**. El navegador
+  solo manda las dos casillas.
+- **Nada de la consulta tira el borrador.** Una fuente que falla o no llega a
+  tiempo se deja fuera, el borrador se escribe igual y su aviso lo dice («No
+  se ha podido consultar el soporte (…): el borrador se ha escrito sin él.»).
+  Ya no hay `409`/`502` con `soporte_<código>`, `soporte_vacio` ni
+  `webs_no_encontradas` (eran del material elegido a mano, que se quitó el
+  28/10/2026).
 - Topes: del artículo entran **6.000 caracteres** (`MAX_TEXTO_SOPORTE`; un
-  procedimiento de FLUX ronda los 2.000-4.000) y de cada página **900**
-  (`MAX_CHARS_WEB`), hasta **4 páginas**.
+  procedimiento de FLUX ronda los 2.000-4.000), de los otros dos artículos solo
+  título y extracto (**300**, `MAX_EXTRACTO_OTRO`) y de cada página **900**
+  (`MAX_CHARS_WEB`), hasta **3 páginas** (`consulta_fuentes.MAX_WEBS`).
 
 Lo que ve la persona y lo que hace el borrador con todo esto:
 [ai-features.md](ai-features.md) § Lo que no está en el catálogo.
+
+## Cómo consulta el asistente al redactar (`services/asistente/consulta_fuentes.py`)
+
+Desde el 28/10/2026. Lo deciden las dos casillas de la franja, **«Webs»** y
+**«Soporte»**, que viajan en las tres peticiones que redactan como `fuentes:
+{webs, soporte}`. Vienen **marcadas de partida** y se recuerdan por usuario en
+el navegador (`lib/asistenteFuentes.ts`), como el alcance. Solo se consulta si
+alguna está marcada y hay algo que redactar: con «nada que contestar» (el
+cliente no ha escrito nada nuevo) no se llama al modelo ni se consulta.
+
+1. **El plan: qué buscar.** Una llamada corta (`planificar`, `PROMPT_PLAN`) al
+   **modelo de las correcciones** (`modelo_correccion` de Configuración ERP →
+   «Asistente de respuesta»; sin pensamiento extendido, 300 tokens de salida
+   como mucho) lee el último mensaje del cliente (hasta 3.000 caracteres; o su
+   consulta del lead si el último del hilo es nuestro), el asunto, la
+   instrucción y las máquinas que ha reconocido el catálogo, y devuelve un
+   JSON: si el correo es **técnico** (avería, error, ajuste, calibración,
+   instalación, actualización, mantenimiento, cómo se hace algo), la
+   **marca**, la búsqueda para el centro de ayuda **en inglés** y en el idioma
+   del correo, y la búsqueda para nuestras webs. Va con **5 s como mucho y sin
+   reintentos** (`TIEMPO_PLAN`; `llm._invoke_claude` con `timeout` y
+   `max_retries=0`). Si falla, tarda o devuelve otra cosa, la arma
+   `plan_por_palabras`: las máquinas que nombra el cliente (o la FLUX que tiene
+   por sus pedidos), los códigos de error y los mensajes entre comillas, y las
+   palabras del asunto; técnico si el correo trae palabras de avería, error,
+   ajuste o «cómo» en los idiomas de los correos (o las de la KB de FLUX). La
+   llamada se anota en `ia_llamadas` con propósito **`asistente_consulta`**
+   (también la fallida) y su coste **se suma al `coste_usd` del borrador**: lo
+   que cuesta un borrador es todo lo que se pidió a la IA para escribirlo.
+2. **Soporte** (casilla «Soporte»), **solo si el correo es técnico**. Fuentes:
+   las activas con búsqueda de **esa marca**; si la marca es de una máquina que
+   el catálogo ha reconocido en el correo y no tiene centro de ayuda en la
+   lista (artisJet, hoy), no se consulta y se apunta (`sin_centro`): no se
+   busca lo de artisJet en el soporte de FLUX. Sin marca, o una que no se
+   reconoce, en todas las activas con búsqueda. Primero la búsqueda **en
+   inglés** (la base de los fabricantes) y, si no sale nada, la del idioma del
+   correo; 3 resultados por fuente. El **primer artículo se lee entero**, en el
+   idioma del correo si la fuente lo tiene (Zendesk prueba ese locale y cae al
+   inglés); los **dos siguientes, solo título y extracto** (se pueden enlazar,
+   nunca sacar pasos de ellos).
+3. **Webs** (casilla «Webs»), si el plan trae qué buscar (los productos por
+   los que pregunta). La búsqueda del índice (§ La búsqueda: MySQL local) en el
+   idioma del correo y, si no da nada, en cualquiera: los **tres mejores
+   fragmentos**.
+4. **El tiempo**, porque va **dentro** de la petición del borrador: el plan,
+   **5 s**; todo el soporte (búsquedas, respaldo y artículo), **6 s**, y cada
+   petición, **4 s**, sin reintentos (`soporte.con_plazo`, `TIEMPO_SOPORTE`,
+   `TIEMPO_PETICION_SOPORTE`): pasado el plazo, la siguiente petición ni sale.
+   Las webs son una consulta a la base local. En lo peor, unos 11 s más que un
+   borrador sin casillas, lejos del corte del nginx (`/api/` espera 180 s en
+   los ejemplos de `deploy/nginx`; un servidor montado a mano antes puede
+   seguir con 60 s).
+5. **Lo que falla se deja fuera**, nunca tira el borrador: se escribe sin ello
+   y el aviso de la franja lo dice. Con el soporte sin consultar, el modelo
+   recibe además la orden de no escribir pasos de memoria
+   (`REGLA_SOPORTE_NO_CONSULTADO`). **«No he podido mirar» nunca es «no hay
+   procedimiento»**: el «no hay» solo sale si todas las fuentes consultadas
+   respondieron y ninguna trajo nada.
+6. **Las correcciones no vuelven a buscar** (`reutilizar`): leen otra vez lo
+   que trajo el primer turno (el artículo por fuente + id, de la caché; los
+   otros artículos tal cual; las páginas por su id) con las casillas de
+   **ahora**: desmarcar «Webs» en una corrección la deja sin las páginas. Ni
+   plan ni coste de consulta. Si el turno 0 no llegó a redactar (no había nada
+   que contestar), la primera corrección que redacta sí consulta, con su
+   instrucción.
+
+**Lo que queda apuntado** (`contexto_json["material"]`, por turno; es lo que
+enseña «Lo que ha usado» y lo que leen las correcciones): `automatico: true`,
+las casillas (`fuentes`), la consulta (`consulta`: técnica, marca, las
+búsquedas, si salió de la IA o de las palabras —`origen` `ia` / `palabras`—, el
+modelo, el error, `plan_ms`, `coste_usd` y `reutilizado` en una corrección),
+el artículo (`soporte`: `ref` `S1`, fuente, título, enlace, idioma, si se
+recortó, `usado`), los otros (`otros_soporte`), las páginas (`webs`: `ref`
+`W1`…, web, tipo, idioma, precio de la web, `usado`), lo que no se encontró
+(`sin_resultados`, `webs_sin_resultados`), lo que no se consultó y por qué
+(`no_consultado`, `sin_centro`, `sin_fuentes`), lo que se buscó en el soporte
+(`buscado_en_soporte`), los tiempos (`ms`, `soporte_ms`, `webs_ms`),
+`material_usado` tal como lo dijo el modelo (`null` si no lo dijo) y, si hizo
+falta, `enlace_anadido` y `pasos_sin_procedimiento`.
+
+**Permisos: ninguno aparte.** La consulta la hace el servidor dentro de la
+petición del borrador, para quien ya puede usar el asistente (§ Permisos).
+Los avisos van al aviso del borrador; la auditoría del borrador
+(`ia.borrador_generado`) apunta las casillas con las que se pidió.
 
 ## Soporte de terceros (`services/soporte/`)
 
@@ -169,11 +277,13 @@ del artículo.
   cáscara, es un error (`cascara_vacia`), **nunca un texto vacío que parezca un
   artículo**.
 
-El HTML para leer en pantalla se sanea con la lista de `html_sanitizer.py`
-pero con una llamada propia a bleach (fuera comentarios, `data:` y `cid:`;
-antes se quitan enteros `script`, `style`, `iframe`, `object`, `embed`,
-`noscript`, `template` y `svg`; las rutas relativas pasan a absolutas) y se
-pinta en un `iframe sandbox=""`.
+El artículo trae también su HTML, saneado con la lista de
+`html_sanitizer.py` pero con una llamada propia a bleach (fuera comentarios,
+`data:` y `cid:`; antes se quitan enteros `script`, `style`, `iframe`,
+`object`, `embed`, `noscript`, `template` y `svg`; las rutas relativas pasan a
+absolutas). Lo pintaba en un `iframe sandbox=""` el «Leer» del buscador
+manual; desde el 28/10/2026 ninguna pantalla lo enseña: al prompt va solo el
+texto.
 
 ### «Comprobar»
 
@@ -192,8 +302,10 @@ texto) o **`error`** (con el detalle). La pantalla avisa si una fuente **activa*
 - **Idioma**: sin idioma se busca en castellano. El locale sale de los locales
   de la fuente; si no hay resultados, se busca en inglés y se dice en los
   avisos; si la fuente no tiene ese idioma, se va directo al inglés. Sin
-  locales no se manda ninguno (el que dé la web). El buscador deja elegir el
-  idioma (se puede leer en inglés un artículo no traducido).
+  locales no se manda ninguno (el que dé la web). Al redactar, el asistente
+  busca **primero en inglés** y, si no sale nada, en el idioma del correo, y
+  lee el artículo en el idioma del correo si la fuente lo tiene (si no, en
+  inglés; § Cómo consulta el asistente al redactar).
 - **Caché** (`soporte_cache`, `cache.py`): una búsqueda vale **1 día** (un
   artículo nuevo tiene que salir pronto) y un artículo **7 días** (cambian poco
   y el borrador lleva el enlace, que abre siempre el vigente). Clave: sha256 de
@@ -203,54 +315,77 @@ texto) o **`error`** (con el detalle). La pantalla avisa si una fuente **activa*
 - **Topes**: consulta de 2 a 300 caracteres, 6 resultados por defecto (20 como
   mucho), extracto de 300 caracteres, texto del artículo de 60.000 como mucho.
   Varias fuentes salen por turnos (que la primera no tape a las demás); si la
-  búsqueda pasa de 25 s, las que faltan se saltan con un aviso.
+  búsqueda pasa de 25 s, las que faltan se saltan con un aviso. El asistente
+  pide **3 resultados**, fuente a fuente, con búsquedas de 120 caracteres como
+  mucho, y su plazo de 6 s corta antes.
 - **«No he podido mirar» no es «no hay nada».** Si **todas** las fuentes
   consultadas fallan, la búsqueda da error (la de la fuente, o
   `sin_respuesta` 502 con varias), no una lista vacía: el redactor no dirá
   nunca «no hay procedimiento» sin haber mirado. Con varias, `fuentes` lleva
   solo las que **han respondido** y `fallidas` las que no (fallaron o no dio
-  tiempo); con alguna en `fallidas`, la pantalla no ofrece «no hay
-  procedimiento» aunque las demás no encuentren nada. Un 404 en una búsqueda es
+  tiempo). El asistente busca fuente a fuente: si alguna falla y ninguna trae
+  un artículo, el soporte cuenta como **no consultado** (aviso y la orden de no
+  escribir pasos de memoria), nunca como «no hay procedimiento», aunque las
+  demás no encuentren nada. Un 404 en una búsqueda es
   `respuesta_fuente` 502 («revisa el tipo y la dirección base»), no «no
   encontrado». Errores como `{"detail": {"code", "detail"}}`: 400 datos, 403
   dominio o red interna, 404 fuente desconocida o inactiva, 409 ya existe, 422
   cáscara o sin contenido, 502 red o fuente, 504 tiempo agotado.
 
-**Buscar va aparte, antes de redactar.** El nginx de Plesk corta las
-peticiones a los 60 s: una búsqueda dentro de la generación del borrador se lo
-comería. Por eso es una acción explícita con su propio tope.
+**Al redactar, la búsqueda va dentro de la generación del borrador, con su
+plazo.** Con #564 era una acción aparte, antes de redactar, para no acercarse
+al corte del nginx; desde el 28/10/2026 la hace el asistente con un tope
+corto, 4 s por petición y 6 s para todo el soporte (§ Cómo consulta el
+asistente al redactar), y lo que no llega a tiempo se deja fuera.
 
 ### El procedimiento se cita, no se improvisa
 
 Lo que exige el prompt (`REGLA_SOPORTE`) y lo que asegura el código, sin
 depender de que el modelo obedezca:
 
-- Los pasos se traducen al idioma del correo; **referencias, modelos, códigos
-  de error, números de pieza, nombres de menú y valores van literales**. No se
-  añaden pasos, no se cambia su orden ni se rellenan huecos de memoria. Si el
-  artículo no cubre lo que se pregunta, el correo lo dice.
-- **El enlace va siempre.** Si el modelo no lo puso, se añade al final
-  (`redactor._aplicar_material`): «Procedimiento completo: URL» en el idioma
-  del correo (es, en, de, fr, nl, pt, it, ca; otro → inglés), con la URL como
-  texto del enlace y no el título (texto de un tercero sin pasar por las
-  guardias). En un correo compuesto, un bloque de texto al final; en una
-  corrección sobre una selección no se añade nada (partiría el párrafo) y el
-  aviso lleva la URL para ponerla a mano.
-- **Si la búsqueda no encontró nada**, la persona puede pedir el borrador
-  igualmente («Escribir diciendo que no hay procedimiento», solo si se miró en
-  algún centro): el correo dice que no hay un procedimiento publicado (que lo
-  estamos revisando o lo consultamos con el fabricante) y **no escribe pasos**.
-  Si aun así el borrador trae una lista de dos elementos o más, o dos líneas
-  numeradas o con guion, la franja avisa (el cuerpo no se toca). Es lo más
-  importante de todo el bloque.
+- El artículo lo ha encontrado una búsqueda, no una persona: el modelo lo usa
+  **solo si trata lo que se pregunta**. Si lo usa, los pasos se traducen al
+  idioma del correo; **referencias, modelos, códigos de error, números de
+  pieza, nombres de menú y valores van literales**. No se añaden pasos, no se
+  cambia su orden ni se rellenan huecos de memoria. Si el artículo no cubre lo
+  que se pregunta, no lo usa y el correo dice que lo comprobamos. De los otros
+  dos artículos (solo título y extracto) puede poner el enlace, nunca pasos.
+- **El modelo dice qué ha usado** (`material_usado`). Si no lo dice, el
+  artículo cuenta como usado si su enlace está en el cuerpo o el cuerpo trae
+  pasos.
+- **El enlace va siempre que se usa el artículo.** Si el modelo lo usó y no
+  puso el enlace, se añade al final (`redactor._aplicar_material`):
+  «Procedimiento completo: URL» en el idioma del correo (es, en, de, fr, nl,
+  pt, it, ca; otro → inglés), con la URL como texto del enlace y no el título
+  (texto de un tercero sin pasar por las guardias). En un correo compuesto,
+  un bloque de texto al final; en una corrección sobre una selección no se
+  añade nada (partiría el párrafo) y el aviso lleva la URL para ponerla a
+  mano.
+- **Si no hay procedimiento**: con «Soporte» marcada y un correo técnico, si
+  todas las fuentes consultadas responden y ninguna trae nada, el turno lleva
+  `REGLA_SIN_RESULTADOS` y una frase con la búsqueda exacta: el correo dice
+  que no hay un procedimiento publicado (que lo estamos revisando o lo
+  consultamos con el fabricante) y **no escribe pasos**. Ya no hace falta
+  pedirlo («Escribir diciendo que no hay procedimiento» era del buscador
+  manual). Si el soporte no se pudo consultar, tampoco escribe pasos de
+  memoria.
+- **Los pasos que no salen de un artículo se avisan.** Si el borrador trae una
+  lista de dos elementos o más, o dos líneas que empiezan por «1.», un guion o
+  «Paso 1:» (en los idiomas de los correos), y no hay artículo que los
+  respalde (no había procedimiento, no se pudo consultar el soporte o el
+  modelo no usó el que salió), la franja avisa: «revísalo»
+  (`pasos_sin_procedimiento`; el cuerpo no se toca). Es lo más importante de
+  todo el bloque.
 
 ### Solo en el redactor
 
 Hasta el 28/10/2026 la Cola SAT tenía un botón «Consulta de soporte» con el
-mismo buscador en modo consulta. **Se ha quitado**: buscar y leer en el soporte
-es del redactor, y las rutas `/buscar` y `/articulo` van con el ámbito del
-asistente (§ Permisos). El taller (rol `sat`) ya no busca ni lee desde la Cola
-SAT, y sigue sin poder enviar correos (#562).
+mismo buscador en modo consulta. **Se quitó** con #566: buscar y leer en el
+soporte es del redactor, y las rutas `/buscar` y `/articulo` pasaron al ámbito
+del asistente. El mismo día, con la consulta automática, se quitaron también
+los botones de la franja y **esas dos rutas**: el asistente usa el servicio
+directamente, en el servidor (§ Permisos). El taller (rol `sat`) ya no busca ni
+lee en el soporte, y sigue sin poder enviar correos (#562).
 
 ## Índice de las webs (`services/webs/`)
 
@@ -519,16 +654,20 @@ una, se desactiva.
 
 | Qué | Capacidad | Quién |
 |---|---|---|
-| Soporte: buscar y leer (`/api/erp/soporte/buscar`, `/articulo`) | el ámbito del asistente: `require_user` + `require_crm_access` | quien usa el redactor: rol principal user, manager o admin; sat, pedidos, comercial y viewer no (403) |
-| Índice: buscar (`/api/erp/webs/buscar`) | `erp.access` | cualquiera con ERP (comercial, pedidos, sat, user/manager, admin); viewer no |
+| Soporte e índice al redactar (casillas «Soporte» y «Webs») | ninguna aparte: lo consulta el servidor dentro de `/api/emails/asistente` (`require_user` + `require_crm_access`) | quien usa el asistente: rol principal user, manager o admin, también con roles de ERP añadidos; sat, pedidos y comercial como rol principal, y viewer, no (403) |
+| Índice: buscar (`/api/erp/webs/buscar`, el «Probar» del panel) | `erp.access` | cualquiera con ERP (comercial, pedidos, sat, user/manager, admin); viewer no |
 | Lista blanca y «Comprobar»; estado del índice, «Reindexar ahora» y reglas | `erp.config` | admin |
 | Imagen por URL (`/api/emails/imagen-url/comprobar`) | usuario con sesión | cualquiera que use el editor |
 
-Los buscadores de la franja llaman a esas rutas del ERP. El del soporte pide
-exactamente lo mismo que el asistente, así que quien tiene la franja puede
-buscar; el del índice pide `erp.access`, que user, manager y admin también
-tienen. Los roles solo ERP (sat, pedidos, comercial) no tienen el redactor y
-reciben 403 en el soporte. Detalle por rol en
+**No hay ningún permiso nuevo**: la consulta la hace el servidor mientras
+redacta, para quien ya puede pedir un borrador. Las rutas para buscar y leer
+en el soporte (`/api/erp/soporte/buscar` y `/articulo`) **se quitaron el
+28/10/2026** con los botones de la franja: el buscador manual era su único
+usuario. `/api/erp/webs/buscar` se queda para el «Probar» del panel del índice,
+con `erp.access` como antes. Los roles principales solo ERP (sat, pedidos,
+comercial) siguen sin llegar al asistente (403 en todo el CRM, desde antes de
+esto); una persona del CRM (rol `user`) que además es comercial o de pedidos en
+el ERP sí lo usa, con las casillas. Detalle por rol en
 [perfiles-y-permisos.md](perfiles-y-permisos.md).
 
 ## Migración 0148 (`20261027_0148_fuentes_externas.py`)
@@ -603,14 +742,14 @@ idiomas de artisjet-printers.eu.
 
 ## API
 
-- `GET /api/erp/soporte/buscar?q=&idioma=&fuente=` — `{consulta, resultados,
-  avisos, fuentes}`; cada resultado con fuente, título, extracto, URL, idioma.
-- `GET /api/erp/soporte/articulo?fuente=&id=&idioma=` — el artículo limpio
-  (texto y HTML saneado), por fuente + id (o enlace del artículo en su dominio).
 - `GET|POST /api/erp/soporte/fuentes`, `PATCH /api/erp/soporte/fuentes/{clave}`
-  (la clave no cambia), `POST /api/erp/soporte/fuentes/{clave}/comprobar`.
+  (la clave no cambia), `POST /api/erp/soporte/fuentes/{clave}/comprobar`. Es
+  toda la API del soporte: `GET /api/erp/soporte/buscar` y `/articulo` se
+  quitaron el 28/10/2026 (el asistente usa el servicio directamente).
 - `GET /api/erp/webs/buscar?q=&idioma=&sitio=&tipo=` — `{items}` (fragmentos
-  con URL, imagen, galería, categorías y precio web).
+  con URL, imagen, galería, categorías y precio web). Lo usa el «Probar: qué
+  encontraría el redactor» del panel del índice; el asistente no pasa por
+  aquí.
 - `GET /api/erp/webs/estado` — por web y tipo lo vivo, los idos, los idiomas y
   la última lectura; la última pasada y la que está en curso.
 - `POST /api/erp/webs/reindexar` — encola (o devuelve la que hay).
@@ -620,12 +759,14 @@ idiomas de artisjet-printers.eu.
   codigo, motivo}` (`no_https`, `red_interna`, `no_resuelve`, `no_responde`,
   `no_es_imagen`, `url_invalida`, `puerto_no_permitido`, `tiempo_agotado`). No
   guarda nada: la URL que entra es la que sale.
-- Las tres peticiones del asistente que redactan aceptan `soporte`,
-  `soporte_sin_resultados` y `webs` ([ai-features.md](ai-features.md)).
+- Las tres peticiones del asistente que redactan aceptan `fuentes: {webs,
+  soporte}` (las casillas; sin el campo, o con las dos a `false`, no se
+  consulta nada) ([ai-features.md](ai-features.md)). Los campos del material
+  elegido a mano (`soporte`, `soporte_sin_resultados` y `webs`) ya no existen.
 
-Las formas de respuesta son las de `frontend/src/app/lib/soporteApi.ts` y
-`websApi.ts`; los errores, `{"detail": {"code", "detail"}}` como el resto del
-ERP.
+Las formas de respuesta son las de `frontend/src/app/lib/soporteApi.ts` (la
+lista blanca) y `websApi.ts`; los errores, `{"detail": {"code", "detail"}}`
+como el resto del ERP.
 
 ## Imagen por URL
 
@@ -771,12 +912,16 @@ Contra las webs reales, solo lectura y por los endpoints públicos:
 ## Tests
 
 `test_externo_base.py` (red, HTML, sobre), `test_soporte.py` y
-`test_soporte_api.py`, `test_webs_indice.py` y `test_webs_api.py` (con un
+`test_soporte_api.py` (la lista blanca y «Comprobar»), `test_webs_indice.py` y
+`test_webs_api.py` (con un
 WordPress simulado de datos realistas en `test_webs_comun.py`: WPML con ids
 por idioma y los ids «ajustados» en `include=` y `not_in`, la Store API que
 esconde las categorías vacías sin `hide_empty=false`, y FLUX con su árbol
-y sus productos reales), `test_imagen_url.py`, `test_asistente_fuentes.py` (el
-material en el turno y el turno sin material idéntico),
+y sus productos reales), `test_imagen_url.py`, `test_asistente_fuentes.py` (la
+consulta automática con las casillas: el plan y su respaldo por palabras, el
+plazo del soporte, lo que no responde, «no hay procedimiento», el enlace,
+`material_usado`, las correcciones que no vuelven a buscar, y el turno con las
+casillas desmarcadas idéntico al de siempre),
 `test_migration_0148_fuentes_externas.py`,
 `test_migration_0149_reglas_indice.py`,
 `test_web_ingest_worker_isolation.py` y `test_erp_worker_queues.py` (la cola

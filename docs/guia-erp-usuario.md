@@ -1726,11 +1726,13 @@ lo que va a pasar. Secciones destacadas:
   saldrían para una web, idioma, interés, texto y máquina del cliente. Ver
   [docs/base-conocimiento.md](base-conocimiento.md).
   Dos paneles más: **«Soporte de terceros (lista blanca)»**, los centros de
-  soporte de los fabricantes donde busca «Buscar en soporte» del asistente (de
-  partida, FLUX; solo se descarga de ahí). Una fuente nueva entra desactivada: pulsa **«Comprobar»** antes de
+  soporte de los fabricantes que mira el asistente cuando redacta con la
+  casilla **«Soporte»** marcada (de partida, FLUX; solo se descarga de ahí).
+  Una fuente nueva entra desactivada: pulsa **«Comprobar»** antes de
   activarla (te dice si la web da el artículo o llega vacío porque se pinta con
   JavaScript). Y **«Índice de las webs»**: las páginas, entradas y productos de
-  nuestras webs que puede citar el asistente. Se recorren solas una vez al
+  nuestras webs que el asistente mira y puede citar cuando redacta con la
+  casilla **«Webs»** marcada. Se recorren solas una vez al
   mes; **«Reindexar ahora»** lo hace ya, en segundo plano (el estado se
   refresca solo). Las **reglas** dicen qué entra (fuera páginas legales,
   carrito, repuestos, consumibles, tintas…) y **«Probar»** enseña lo que
@@ -1752,6 +1754,29 @@ lo que va a pasar. Secciones destacadas:
   correo gratuitos** que nunca se toman por una empresa. Lo que cuesta de
   verdad un borrador terminado (el primero más sus retoques) se ve en ERP ·
   Leads → «Uso de la IA». Ver [docs/ai-features.md](ai-features.md).
+
+  **Las casillas «Webs» y «Soporte» de la franja** (desde el 28/10/2026). En
+  la franja de «Ayúdame a contestar», en la fila de los botones, delante de
+  **Auto · Texto · Con fichas**, hay dos casillas. Vienen **marcadas** y se
+  recuerdan para cada persona en su navegador; aquí no hay que configurar
+  nada. Con ellas, mientras redacta, el asistente mira por su cuenta:
+  - **«Webs»**: las páginas y productos de nuestras webs por los que pregunta
+    el cliente, para enlazarlos (el precio de la web se puede citar, nunca
+    ofertar).
+  - **«Soporte»**: si el correo es técnico (una avería, un error, un ajuste,
+    cómo se hace algo), el centro de ayuda del fabricante de esa máquina
+    (hoy, FLUX). Si encuentra el procedimiento, el borrador lo cita con su
+    enlace; si no lo hay, el correo lo dice y **no se inventa pasos**.
+
+  Nadie tiene que buscar ni elegir nada (antes eran dos botones, «Buscar en
+  soporte» y «Buscar en las webs»). Para saber qué buscar, el asistente hace
+  primero una consulta corta con el modelo de las **correcciones** (si tarda
+  más de 5 segundos, busca con las palabras del correo); cuesta muy poco y va
+  sumado al coste del borrador. Si el soporte o las webs no responden a
+  tiempo, el borrador sale igual, sin ellos, y la franja lo dice. Lo que ha
+  mirado, con sus enlaces, y si lo ha usado se ve en **«Lo que ha usado»**,
+  debajo del borrador. Desmarcadas las dos, el asistente escribe como antes,
+  solo con el catálogo.
 - **«Series FACTUSOL»** — la **serie** es la empresa que emite la factura. Fijas
   la **serie por defecto** y la que usa cada origen de pedido. Las series
   disponibles son **1 · Bomedia**, **2 · MQ Europe**, **4 · Lambert** y **5 ·

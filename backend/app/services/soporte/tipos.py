@@ -1,6 +1,9 @@
-"""Las formas que devuelve el servicio de soporte (las mismas que
-`frontend/src/app/lib/soporteApi.ts`: `dataclasses.asdict` de cada una es la
-respuesta de la API, sin traducir nada por el camino) y su error."""
+"""Las formas que devuelve el servicio de soporte y su error.
+
+Ya no salen por ninguna ruta tal cual: las usa el asistente al redactar
+(`asistente.consulta_fuentes`, `asistente.material_fuera`), que guarda en el
+borrador solo lo que enseña «Lo que ha usado». La API del soporte es solo la
+lista blanca (`app/erp/api/soporte.py`)."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -57,9 +60,10 @@ class Articulo:
 class SoporteError(Exception):
     """Lo que no sale bien al buscar o leer en el soporte de un tercero.
 
-    `codigo` es estable (la API lo devuelve como `code` y los tests lo miran);
-    el mensaje se puede enseñar tal cual a quien busca. `status` es el HTTP
-    que le corresponde en la API."""
+    `codigo` es estable (la API de la lista blanca lo devuelve como `code` y
+    los tests lo miran); el mensaje se puede enseñar tal cual (en el aviso del
+    borrador o en Configuración ERP). `status` es el HTTP que le corresponde
+    en la API."""
 
     def __init__(self, codigo: str, mensaje: str, status: int = 400):
         super().__init__(mensaje)

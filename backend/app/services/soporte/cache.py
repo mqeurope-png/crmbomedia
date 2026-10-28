@@ -14,8 +14,8 @@ sin el artículo que ya se leyó ayer.
 
 Escribir en la caché es lo de menos: va en un SAVEPOINT y, si falla (dos
 peticiones iguales a la vez que insertan la misma clave), se sigue sin ella.
-Quien llama hace el `commit` (la API lo hace; si el redactor no lo hace, la
-fila no se queda y no pasa nada).
+Quien llama hace el `commit` (el asistente, al guardar el borrador; si no
+llega a hacerlo, la fila no se queda y no pasa nada).
 """
 from __future__ import annotations
 

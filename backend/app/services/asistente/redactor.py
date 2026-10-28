@@ -59,7 +59,7 @@ from app.models.ia import (
 )
 from app.services import empresas_grupo as eg
 from app.services import llm
-from app.services.asistente import borradores, material_fuera
+from app.services.asistente import borradores, consulta_fuentes, material_fuera
 from app.services.asistente import contexto as ctx_mod
 from app.services.asistente.config import configuracion as config_asistente
 from app.services.asistente.config import estimar_tokens
@@ -1480,19 +1480,23 @@ def _enlace_soporte_en_compuesto(session: Session, b: BorradorAsistente, url: st
 
 
 def _aplicar_material(session: Session, b: BorradorAsistente,
-                      material: material_fuera.Material | None) -> None:
-    """Lo que el turno hizo con el material de fuera, después de interpretar
-    al modelo (las guardias del cuerpo y de la marca ya pasaron):
+                      material: material_fuera.Material | None, raw: str | None = None) -> None:
+    """Lo que el turno hizo con lo que el asistente consultó solo, después de
+    interpretar al modelo (las guardias del cuerpo y de la marca ya pasaron):
 
-    - La garantía del enlace: si usó un artículo de soporte y su URL no está
+    - Qué usó: el modelo lo dice en `material_usado` (`raw`, su respuesta);
+      si no lo dijo, el artículo cuenta como usado si su enlace está en el
+      cuerpo o el cuerpo trae pasos.
+    - La garantía del enlace: si usó el artículo de soporte y su URL no está
       en el cuerpo, se añade al final un párrafo con el enlace, en el idioma
       del correo (en un compuesto, un bloque de texto). No depende de que el
       modelo obedezca: el procedimiento se cita, y quien lo lee tiene que poder
       ir al artículo.
-    - «No hay procedimiento» y el borrador trae pasos: aviso en la franja.
-    - Lo que entró, en `contexto_json["material"]` («Lo que ha usado»). Cada
-      turno empieza limpio: el de una corrección sin material no hereda el
-      del turno anterior.
+    - Un correo técnico con pasos que no salen de ningún artículo (no había
+      procedimiento, no se pudo consultar o no usó el que salió): aviso.
+    - Lo que entró, en `contexto_json["material"]` («Lo que ha usado»), con
+      lo que usó marcado. Cada turno empieza limpio: el de una corrección sin
+      casillas no hereda el del turno anterior.
 
     Sin material (`None`) no toca el borrador: solo quita, si lo hay, el apunte
     heredado del turno anterior."""
@@ -1502,9 +1506,29 @@ def _aplicar_material(session: Session, b: BorradorAsistente,
             contexto.pop(material_fuera.CLAVE_CONTEXTO, None)
             b.contexto_json = json.dumps(contexto, ensure_ascii=False, default=str)
         return
-    resumen = dict(material.resumen)
+    resumen = json.loads(json.dumps(material.resumen, ensure_ascii=False, default=str))
     compuesto = b.modo == ia_compuesto.MODO_COMPUESTO
-    if material.soporte_url and b.html and material.soporte_url not in enlaces_de(b.html):
+    usados = material_fuera.material_usado(raw)
+    texto = ""
+    if b.html:
+        texto = (ia_compuesto.texto_libre(estructura_de(b) or {}) if compuesto
+                 else html_a_texto(b.html))
+    con_pasos = bool(b.html) and material_fuera.trae_pasos(None if compuesto else b.html, texto)
+    if usados is None:
+        articulo_usado = bool(material.soporte_url) and bool(b.html) and (
+            material.soporte_url in enlaces_de(b.html) or con_pasos)
+    else:
+        articulo_usado = bool(material.soporte_url) and material_fuera.REF_ARTICULO in usados
+    resumen["material_usado"] = usados
+    for clave in ("soporte",):
+        if isinstance(resumen.get(clave), dict):
+            resumen[clave]["usado"] = articulo_usado
+    for clave in ("otros_soporte", "webs"):
+        for entrada in resumen.get(clave) or []:
+            if isinstance(entrada, dict):
+                entrada["usado"] = None if usados is None else entrada.get("ref") in usados
+    if material.soporte_url and articulo_usado and b.html and (
+            material.soporte_url not in enlaces_de(b.html)):
         seleccion = contexto.get("seleccion")
         if compuesto:
             anadido = _enlace_soporte_en_compuesto(session, b, material.soporte_url)
@@ -1522,17 +1546,59 @@ def _aplicar_material(session: Session, b: BorradorAsistente,
         if anadido:
             resumen["enlace_anadido"] = True
             _con_aviso(b, material_fuera.AVISO_ENLACE_ANADIDO)
-    if material.sin_resultados and b.html:
-        texto = (ia_compuesto.texto_libre(estructura_de(b) or {}) if compuesto
-                 else html_a_texto(b.html))
-        if material_fuera.trae_pasos(None if compuesto else b.html, texto):
-            resumen["pasos_sin_procedimiento"] = True
-            _con_aviso(b, material_fuera.AVISO_PASOS_SIN_PROCEDIMIENTO)
+    sin_procedimiento = (material.sin_resultados or material.soporte_no_consultado
+                         or (material.tecnica and material.soporte_url and not articulo_usado))
+    if sin_procedimiento and con_pasos:
+        resumen["pasos_sin_procedimiento"] = True
+        _con_aviso(b, material_fuera.AVISO_PASOS_SIN_PROCEDIMIENTO)
     for nota in material.avisos:
         _con_aviso(b, nota)
     contexto = _json(b.contexto_json)
     contexto[material_fuera.CLAVE_CONTEXTO] = resumen
     b.contexto_json = json.dumps(contexto, ensure_ascii=False, default=str)
+
+
+def _sumar_plan(b: BorradorAsistente, plan: consulta_fuentes.Plan | None) -> None:
+    """El coste del plan de la consulta va también en el borrador: lo que
+    cuesta un borrador es todo lo que se pidió a la IA para escribirlo."""
+    if plan is not None and plan.uso is not None:
+        b.coste_usd = round(float(b.coste_usd or 0) + plan.coste_usd, 6)
+
+
+def _material_de_correccion(
+    session: Session, *, borrador: BorradorAsistente, raiz: BorradorAsistente,
+    fuentes: consulta_fuentes.Fuentes | None, instruccion: str, usuario: User, settings: Any,
+    cfg: dict[str, Any], nuevo_id: str,
+) -> tuple[consulta_fuentes.Plan | None, material_fuera.Material | None]:
+    """Lo de fuera de una corrección. Si la conversación ya consultó, lo que
+    trajo esa consulta (la primera, entera: no la de una corrección que solo
+    llevaba una casilla), leído otra vez con las casillas de ahora y sin buscar
+    nada nuevo. Si nunca consultó (el primer turno iba sin casillas o no tenía
+    nada que contestar), se consulta ahora, con la instrucción. `(plan,
+    material)`; el plan solo si hubo que consultar."""
+    if fuentes is None or not fuentes.alguna:
+        return None, None
+    original = _material_original(session, borrador, raiz)
+    if original is not None:
+        return None, consulta_fuentes.reutilizar(session, original, fuentes, borrador.idioma)
+    entrada = consulta_fuentes.entrada_de_borrador(session, raiz, instruccion=instruccion)
+    plan = consulta_fuentes.planificar(session, entrada, settings=settings, cfg=cfg)
+    consulta_fuentes.anotar_plan(session, plan, usuario_id=usuario.id, borrador_id=nuevo_id)
+    return plan, consulta_fuentes.consultar(session, fuentes=fuentes, plan=plan,
+                                            idioma=borrador.idioma)
+
+
+def _material_original(session: Session, borrador: BorradorAsistente,
+                       raiz: BorradorAsistente) -> dict[str, Any] | None:
+    """Lo que trajo la consulta de la conversación (la que buscó de verdad, no
+    una relectura de una corrección), o None si nunca consultó."""
+    for turno in (raiz, *borradores.turnos_de(session, borrador)):
+        m = _json(turno.contexto_json).get(material_fuera.CLAVE_CONTEXTO)
+        consulta = m.get("consulta") if isinstance(m, dict) else None
+        if isinstance(m, dict) and m.get("automatico") and not (
+                isinstance(consulta, dict) and consulta.get("reutilizado")):
+            return m
+    return None
 
 
 def _cerrar_regenerado(session: Session, regenerar_de: str | None,
@@ -1561,7 +1627,7 @@ def generar(
     regenerar_de: str | None = None, ahora: datetime | None = None,
     texto_actual_html: str | None = None, seleccion_html: str | None = None,
     formato: str = ia_compuesto.FORMATO_AUTO, estructura_actual: dict[str, Any] | None = None,
-    oferta_id: str | None = None, material: material_fuera.Pedido | None = None,
+    oferta_id: str | None = None, fuentes: consulta_fuentes.Fuentes | None = None,
 ) -> BorradorAsistente:
     """El primer turno: monta el contexto, pide el borrador (si hay con qué),
     lo guarda con su coste y lo devuelve (ya en la sesión, sin commit). Sin
@@ -1575,10 +1641,12 @@ def generar(
     precios del catálogo). `formato` (el interruptor de la franja: `auto`,
     `normal`, `compuesto`) y la instrucción deciden si el turno es un correo
     normal o uno compuesto; con `estructura_actual` (un compuesto en la vista
-    previa) el turno 0 es una corrección de ESE compuesto. `material`: lo que
-    la persona eligió de fuera (artículo de soporte, páginas de nuestras webs,
-    «no hay nada en el soporte»); va en la petición del turno y, si no se puede
-    leer, `material_fuera.MaterialNoDisponible` (no se redacta sin él)."""
+    previa) el turno 0 es una corrección de ESE compuesto. `fuentes`: las
+    casillas «Webs» y «Soporte» de la franja; con alguna marcada, el asistente
+    consulta solo nuestras webs y el soporte del fabricante con lo que pregunta
+    el cliente (`consulta_fuentes`) y lo que trae va en la petición del turno.
+    Lo que no responde a tiempo se deja fuera y se avisa: nunca tira el
+    borrador."""
     settings = get_settings()
     if not settings.anthropic_api_key:
         raise llm.LLMNotConfiguredError("La IA no está configurada (ANTHROPIC_API_KEY).")
@@ -1614,13 +1682,22 @@ def generar(
         session, thread=thread, usuario=usuario, alcance=alcance, destinatario=destinatario,
         contacto=contacto, instruccion=instruccion, ahora=ahora, oferta_id=oferta_id,
     )
-    # Lo que la persona eligió de fuera, leído ANTES de llamar al modelo: si no
-    # se puede leer, error y sin borrador (nunca un borrador sin el material).
-    mat = material_fuera.preparar(
-        session, material, idioma=ctx.idioma,
-        consulta=instruccion or (ctx.ultimo_del_cliente.texto[:500]
-                                 if ctx.ultimo_del_cliente else None))
     cfg = config_asistente(session)
+    borrador_id = str(uuid4())
+    # Nada nuevo del cliente y sin instrucción: no hay con qué redactar (ni se
+    # llama al modelo ni se consulta nada).
+    nada_que_contestar = thread is not None and not instruccion and (
+        ctx.ultimo_del_cliente is None or ctx.mensajes[-1].lado == "nosotros")
+    # Las webs y el soporte, consultados solo ANTES de llamar al modelo (con
+    # las casillas desmarcadas, nada: el turno es el de siempre).
+    plan: consulta_fuentes.Plan | None = None
+    mat: material_fuera.Material | None = None
+    if fuentes is not None and fuentes.alguna and not nada_que_contestar:
+        plan = consulta_fuentes.planificar(
+            session, consulta_fuentes.entrada_de_contexto(ctx), settings=settings, cfg=cfg)
+        consulta_fuentes.anotar_plan(session, plan, usuario_id=usuario.id,
+                                     borrador_id=borrador_id)
+        mat = consulta_fuentes.consultar(session, fuentes=fuentes, plan=plan, idioma=ctx.idioma)
     modelo_borrador, modelo_correccion = _modelos(cfg, settings)
     modo_actual = (ia_compuesto.MODO_COMPUESTO if base is not None
                    else ia_compuesto.MODO_NORMAL if actual else None)
@@ -1685,7 +1762,6 @@ def generar(
     # las correcciones, que no vuelven a montar el contexto.
     empresa_doc = empresa_documento(ctx)
     resumen["empresa_documento"] = empresa_doc
-    borrador_id = str(uuid4())
     borrador = BorradorAsistente(
         id=borrador_id, conversacion_id=borrador_id, turno=0, instruccion=instruccion,
         contexto_texto=contexto_texto,
@@ -1704,11 +1780,9 @@ def generar(
             1 for e in ctx.empresa_asuntos if e.get("texto")),
         estado=ESTADO_GENERADO,
     )
-    # Nada nuevo del cliente y sin instrucción: no hay con qué redactar. No se
-    # llama al modelo (no cuesta nada) y el motivo va en el aviso. El contexto
-    # queda guardado: la instrucción que venga después lo reutiliza.
-    nada_que_contestar = thread is not None and not instruccion and (
-        ctx.ultimo_del_cliente is None or ctx.mensajes[-1].lado == "nosotros")
+    # Nada nuevo del cliente y sin instrucción: no se llama al modelo (no
+    # cuesta nada) y el motivo va en el aviso. El contexto queda guardado: la
+    # instrucción que venga después lo reutiliza.
     if nada_que_contestar:
         borrador.aviso = AVISO_SIN_NADA_QUE_CONTESTAR
         session.add(borrador)
@@ -1749,7 +1823,8 @@ def generar(
         seleccion_html=(seleccion_html or "").strip() if seleccion else None,
         sobre_editor=bool(actual) or base is not None, empresa_documento=empresa_doc,
         imagenes=imagenes)
-    _aplicar_material(session, borrador, mat)
+    _aplicar_material(session, borrador, mat, raw)
+    _sumar_plan(borrador, plan)
     session.add(borrador)
     session.flush()
     llamada = registrar_llamada(
@@ -1784,7 +1859,7 @@ def corregir(
     session: Session, *, borrador: BorradorAsistente, instruccion: str, usuario: User,
     texto_actual_html: str | None = None, seleccion_html: str | None = None,
     formato: str = ia_compuesto.FORMATO_AUTO, estructura_actual: dict[str, Any] | None = None,
-    material: material_fuera.Pedido | None = None,
+    fuentes: consulta_fuentes.Fuentes | None = None,
 ) -> BorradorAsistente:
     """Un turno más de la conversación: el mismo bloque de contexto guardado
     (cacheable), el texto actual y la instrucción nueva. El texto actual es lo
@@ -1797,8 +1872,10 @@ def corregir(
     compuesto se corrige sobre su estructura (`estructura_actual`, la de la
     vista previa con los textos retocados; si no llega, la del turno) con
     operaciones; el interruptor (`formato`) puede pasarlo a texto o al revés.
-    `material`: lo elegido de fuera para ESTE turno (va en su petición; el
-    contexto guardado no cambia)."""
+    `fuentes`: las casillas de la franja AHORA. Una corrección no vuelve a
+    buscar: lee otra vez lo que trajo la consulta de la conversación (con las
+    casillas de ahora); si nunca se consultó, se consulta ahora con la
+    instrucción. Va en la petición; el contexto guardado no cambia."""
     settings = get_settings()
     if not settings.anthropic_api_key:
         raise llm.LLMNotConfiguredError("La IA no está configurada (ANTHROPIC_API_KEY).")
@@ -1846,9 +1923,11 @@ def corregir(
                    else ia_compuesto.MODO_NORMAL)
     modo = ia_compuesto.modo_del_turno(formato=formato, instruccion=instruccion,
                                        modo_actual=modo_actual)
-    # Lo elegido de fuera, leído antes de llamar al modelo (si falla, no hay turno).
-    mat = material_fuera.preparar(session, material, idioma=borrador.idioma,
-                                  consulta=instruccion)
+    primera_redaccion = not actual and base is None
+    nuevo_id = str(uuid4())
+    plan, mat = _material_de_correccion(
+        session, borrador=borrador, raiz=raiz, fuentes=fuentes, instruccion=instruccion,
+        usuario=usuario, settings=settings, cfg=cfg, nuevo_id=nuevo_id)
     refs = ia_compuesto.Referencias.de_dict(
         _json(raiz.contexto_json).get("refs"), marcas=datos_compuesto.marcas(session),
         videos=ia_compuesto.videos_de(contexto_texto, instruccion,
@@ -1857,7 +1936,6 @@ def corregir(
     if modo != ia_compuesto.MODO_NORMAL:
         anadir_medios(session, refs, instruccion=instruccion, idioma=borrador.idioma or "es")
     cabecera = formato_del_turno(modo, refs, borrador.idioma or "es")
-    primera_redaccion = not actual and base is None
     enlaces_compuesto: list[str] = []
     if base is not None and modo == ia_compuesto.MODO_COMPUESTO:
         modelo, proposito = modelo_correccion, PROPOSITO_CORRECCION
@@ -1904,7 +1982,7 @@ def corregir(
     contexto = _json(borrador.contexto_json)
     nombre_usuario = (usuario.full_name or usuario.email or "").strip()
     nuevo = BorradorAsistente(
-        id=str(uuid4()), conversacion_id=borrador.conversacion_id or borrador.id,
+        id=nuevo_id, conversacion_id=borrador.conversacion_id or borrador.id,
         turno=(borrador.turno or 0) + 1, padre_id=borrador.id, instruccion=instruccion,
         thread_id=borrador.thread_id, message_id=borrador.message_id,
         contact_id=borrador.contact_id, usuario_id=usuario.id, idioma=borrador.idioma,
@@ -1931,7 +2009,8 @@ def corregir(
         empresa_documento=eg.empresa_de_emisora(
             _json(raiz.contexto_json).get("empresa_documento")),
         imagenes=imagenes)
-    _aplicar_material(session, nuevo, mat)
+    _aplicar_material(session, nuevo, mat, raw)
+    _sumar_plan(nuevo, plan)
     session.add(nuevo)
     session.flush()
     llamada = registrar_llamada(
