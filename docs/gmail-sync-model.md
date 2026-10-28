@@ -112,9 +112,17 @@ el después de cada dirección).
 verificado en la cuenta del equipo; el cliente ya filtra los no verificados. La
 ficha de Usuarios añade, detrás de los de Gmail, las direcciones que el usuario
 tiene marcadas o registradas como entrada y Gmail no tiene, marcadas «no
-verificada en Gmail»; marcar una pide confirmación (no saldrá en el «De» hasta
-que se verifique). Las direcciones de entrada que no son remitente se avisan
-arriba del bloque.
+verificada en Gmail»; marcar una pide confirmación y se guarda como **elección
+pero apagada y sin predeterminado** (`user_opted_in=1`, `is_allowed=0`), igual
+que la dejaría el sync: no la usan ni el «De», ni los workflows, ni el
+asistente mientras Gmail la rechace, y aparece sola cuando se verifica. El
+selector la pinta marcada («pendiente de Gmail»), para que guardar otra cosa no
+la convierta en rechazo, y su estrella está desactivada. La dirección propia
+de un usuario nuevo (sin filas, antes del primer sync) se pinta marcada, que
+es lo que hará el sync. Las direcciones de entrada que no son remitente se
+avisan arriba del bloque. El nombre visible se puede cambiar también en una
+dirección desmarcada (lápiz en la lista): el envío lo usa si alguien escribe
+desde ella (un workflow con remitente fijo, una factura).
 
 **«Bomedia» en el nombre visible.** El bloque marca «nombra Bomedia» con la
 misma regla que la comprobación del Cuadre (`empresas_grupo.menciones`: una

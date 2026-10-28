@@ -396,13 +396,17 @@ def test_las_direcciones_de_entrada_y_las_que_gmail_no_tiene_salen_marcadas(
         propia = http.get("/api/emails/aliases", headers=_como(http, "user")).json()
     assert NORMA_FLUX not in {a["send_as_email"] for a in propia}
 
-    # Marcarla se puede (la pantalla avisa antes), pero no sale en el «De» mientras
-    # Gmail no la tenga verificada; el sync la apaga y recuerda la elección…
+    # Marcarla se puede (la pantalla avisa antes): queda elegida pero apagada,
+    # como la dejaría el sync, y no sale en el «De» mientras Gmail no la tenga…
     r = _guardar(http, norma, [{"alias_email": NORMA_FLUX, "is_allowed": True,
                                 "is_default": False},
                                {"alias_email": NORMA, "is_allowed": True,
                                 "is_default": True}], gmail)
     assert r.status_code == 200, r.text
+    devuelto = {a["send_as_email"]: a for a in r.json()}
+    assert devuelto[NORMA_FLUX]["user_pref_allowed"] is True       # se pinta elegida
+    with session_factory() as s:
+        assert _estado(s, norma)[NORMA_FLUX][:3] == (False, False, True)
     assert NORMA_FLUX not in {a["send_as_email"] for a in _desplegable(http, "user", gmail)}
     with session_factory() as s:
         _sync(s, norma, gmail)
@@ -411,6 +415,156 @@ def test_las_direcciones_de_entrada_y_las_que_gmail_no_tiene_salen_marcadas(
         _sync(s, norma, _cuenta(NORMA_FLUX))
     assert NORMA_FLUX in {a["send_as_email"]
                           for a in _desplegable(http, "user", _cuenta(NORMA_FLUX))}
+
+
+def test_una_elegida_pendiente_de_gmail_no_se_pierde_al_guardar_otra_cosa(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    """Revisión: el selector manda todas las filas, y una elegida que el sync
+    apagó (Gmail no la tiene) se pintaba desmarcada; guardar cualquier otra
+    cosa la convertía en rechazo y ya no volvía al verificarse."""
+    gmail = _cuenta()
+    with session_factory() as s:
+        norma = _uid(s, UserRole.USER)
+        s.add(UserEmailAlias(user_id=norma, alias_email=NORMA_FLUX, active=True))
+        s.commit()
+        _sync(s, norma, gmail)
+    lista = _remitentes(http, norma, gmail).json()
+    assert _guardar(http, norma, _como_lo_manda_la_pantalla(
+        lista, marcar={NORMA_FLUX: True}, predeterminado=NORMA), gmail).status_code == 200
+    with session_factory() as s:
+        _sync(s, norma, gmail)                      # la noche: Gmail no la tiene
+    lista = _remitentes(http, norma, gmail).json()
+    flux = next(a for a in lista if a["send_as_email"] == NORMA_FLUX)
+    assert (flux["user_pref_allowed"], flux["en_gmail"]) == (True, False)
+    # Otro día marca otra cosa; la pantalla vuelve a mandar todas las filas.
+    r = _guardar(http, norma, _como_lo_manda_la_pantalla(
+        lista, marcar={PEDIDOS: True}, predeterminado=NORMA), gmail)
+    assert r.status_code == 200, r.text
+    with session_factory() as s:
+        assert _estado(s, norma)[NORMA_FLUX][:3] == (False, False, True)
+        _sync(s, norma, _cuenta(NORMA_FLUX))        # Gmail la verifica
+    assert NORMA_FLUX in {a["send_as_email"]
+                          for a in _desplegable(http, "user", _cuenta(NORMA_FLUX))}
+    # Y desmarcarla a propósito sí es un rechazo.
+    lista = _remitentes(http, norma, _cuenta(NORMA_FLUX)).json()
+    assert _guardar(http, norma, _como_lo_manda_la_pantalla(
+        lista, marcar={NORMA_FLUX: False}, predeterminado=NORMA),
+        _cuenta(NORMA_FLUX)).status_code == 200
+    with session_factory() as s:
+        assert _estado(s, norma)[NORMA_FLUX][:3] == (False, False, False)
+
+
+def test_una_direccion_que_gmail_no_tiene_no_queda_de_remitente_ni_predeterminada(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    """Revisión: marcada desde la ficha quedaba encendida (y predeterminada si
+    era la única), y los workflows y el asistente la usaban hasta el sync."""
+    gmail = _cuenta()
+    with session_factory() as s:
+        norma = _uid(s, UserRole.USER)
+        s.add(UserEmailAlias(user_id=norma, alias_email=NORMA_FLUX, active=True))
+        _pref(s, norma, NORMA, allowed=False, opted=False)     # rechazó la suya
+        s.commit()
+    r = _guardar(http, norma, [{"alias_email": NORMA_FLUX, "is_allowed": True,
+                                "is_default": True}], gmail)
+    assert r.status_code == 200, r.text
+    with session_factory() as s:
+        assert _estado(s, norma)[NORMA_FLUX][:3] == (False, False, True)
+        assert not [a for a, e in _estado(s, norma).items() if e[0] or e[1]]
+    from app.workflows.steps import _resolve_workflow_from_alias  # noqa: PLC0415
+    with session_factory() as s:
+        assert _resolve_workflow_from_alias(
+            session=s, owner_id=norma, mode="owner_default", fixed_alias=None,
+            wanted_display_name=None)[0] is None
+
+
+def test_un_usuario_nuevo_no_pierde_su_direccion_si_el_admin_guarda_antes_del_sync(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    """Revisión: sin filas (antes del primer sync) su dirección propia salía
+    desmarcada y el primer guardado la dejaba rechazada para siempre."""
+    gmail = _cuenta()
+    with session_factory() as s:
+        norma = _uid(s, UserRole.USER)
+    lista = _remitentes(http, norma, gmail).json()
+    propia = next(a for a in lista if a["send_as_email"] == NORMA)
+    assert propia["user_pref_allowed"] is True       # lo que hará el sync
+    assert _guardar(http, norma, _como_lo_manda_la_pantalla(
+        lista, marcar={VENTAS: True}, predeterminado=VENTAS), gmail).status_code == 200
+    with session_factory() as s:
+        assert _estado(s, norma)[NORMA][:3] == (True, False, None)   # sin pronunciarse
+        _sync(s, norma, gmail)
+        assert _estado(s, norma)[NORMA][:2] == (True, False)
+        assert _estado(s, norma)[VENTAS][:2] == (True, True)
+
+
+def test_la_direccion_propia_que_gmail_no_tiene_no_se_rechaza_al_guardar(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    """Revisión: el email del usuario registrado como entrada pero sin «enviar
+    como» se guardaba como rechazo con cualquier cambio."""
+    gmail = _cuenta()
+    with session_factory() as s:
+        viewer = _uid(s, UserRole.VIEWER)
+        s.add(UserEmailAlias(user_id=viewer, alias_email="viewer@example.com", active=True))
+        s.commit()
+    lista = _remitentes(http, viewer, gmail).json()
+    assert _guardar(http, viewer, _como_lo_manda_la_pantalla(
+        lista, marcar={VENTAS: True}, predeterminado=VENTAS), gmail).status_code == 200
+    with session_factory() as s:
+        assert "viewer@example.com" not in _estado(s, viewer)
+        # Si un día la dan de alta en Gmail, el sync la enciende como siempre.
+        _sync(s, viewer, _cuenta("viewer@example.com"))
+        assert _estado(s, viewer)["viewer@example.com"][:2] == (True, False)
+
+
+def test_el_nombre_de_una_direccion_desmarcada_tambien_se_cambia(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    """El envío usa el nombre visible aunque la fila esté apagada (un workflow
+    con remitente fijo, una factura) y el Cuadre la marca: tiene que poder
+    cambiarse desde la ficha."""
+    gmail = _cuenta()
+    with session_factory() as s:
+        norma = _uid(s, UserRole.USER)
+        _pref(s, norma, VENTAS, allowed=False).display_name_override = "Ventas · Bomedia"
+        s.commit()
+        _sync(s, norma, gmail)
+    lista = {a["send_as_email"]: a for a in _remitentes(http, norma, gmail).json()}
+    assert lista[VENTAS]["menciona_bomedia"] is True
+    r = _guardar(http, norma, [{"alias_email": VENTAS, "is_allowed": False,
+                                "is_default": False,
+                                "display_name_override": "Ventas Streamtec"}], gmail)
+    assert r.status_code == 200, r.text
+    devuelto = {a["send_as_email"]: a for a in r.json()}
+    assert devuelto[VENTAS]["resolved_display_name"] == "Ventas Streamtec"
+    assert devuelto[VENTAS]["menciona_bomedia"] is False
+    with session_factory() as s:
+        assert _estado(s, norma)[VENTAS] == (False, False, None, "Ventas Streamtec")
+        fila = s.scalar(select(AuditLog).where(AuditLog.action == "user.senders_updated"))
+        assert "nombre de ventas@streamtec.es: «Ventas Streamtec»" in fila.message
+
+
+def test_la_auditoria_dice_que_cambio_aunque_solo_sea_la_eleccion(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    gmail = _cuenta()
+    with session_factory() as s:
+        norma = _uid(s, UserRole.USER)
+    # Rechazar su propia dirección antes del primer sync: solo cambia la elección.
+    assert _guardar(http, norma, [{"alias_email": NORMA, "is_allowed": False,
+                                   "is_default": False}], gmail).status_code == 200
+    # Elegir una que Gmail no tiene: queda pendiente.
+    assert _guardar(http, norma, [{"alias_email": NORMA_FLUX, "is_allowed": True,
+                                   "is_default": False}], gmail).status_code == 200
+    with session_factory() as s:
+        mensajes = list(s.scalars(select(AuditLog.message).where(
+            AuditLog.action == "user.senders_updated").order_by(AuditLog.created_at)))
+    assert mensajes == [
+        f"Remitentes de {NORMA}: {NORMA} rechazada",
+        f"Remitentes de {NORMA}: {NORMA_FLUX} elegida, pendiente de verificar en Gmail",
+    ]
 
 
 def test_sin_gmail_el_admin_ve_lo_guardado_y_mi_cuenta_sigue_igual(

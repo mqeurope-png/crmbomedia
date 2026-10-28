@@ -72,7 +72,12 @@ export default function AdminUsersPage() {
   function abrirRemitentesDelEnlace() {
     const m = window.location.hash.match(/^#remitentes-(.+)$/);
     if (!m) return;
-    const id = decodeURIComponent(m[1]);
+    let id: string;
+    try {
+      id = decodeURIComponent(m[1]);
+    } catch {
+      return; // enlace mal escrito: la página se queda como está
+    }
     setRemitentesAbiertos((prev) => ({ ...prev, [id]: true }));
     window.setTimeout(() => {
       document.getElementById(`remitentes-${id}`)?.scrollIntoView?.({ block: "start" });

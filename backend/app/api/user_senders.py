@@ -14,7 +14,9 @@ remitentes).
   - PUT /api/users/{id}/senders — admin. Misma semántica que
     `PUT /api/emails/aliases/preferences` (`services/remitentes.guardar`): lo
     marcado queda como elección (`user_opted_in`) y el sync de Gmail lo
-    respeta. Cada cambio queda en Auditoría (`user.senders_updated`).
+    respeta; lo que Gmail no tiene verificado queda elegido pero apagado
+    hasta que lo verifique. Cada cambio queda en Auditoría
+    (`user.senders_updated`).
 
 Un no-admin no puede ver ni tocar los remitentes de nadie por aquí (403); los
 suyos los ve en Mi cuenta.
@@ -60,7 +62,11 @@ def update_user_senders(
     current_user: User = Depends(require_admin),
 ) -> list[EmailAlias]:
     user = _load_user(session, user_id)
-    cambios = remitentes.guardar(session, user, payload.preferences)
+    # Lo que Gmail no tiene verificado se guarda como elección pero apagado
+    # (`guardar`); por eso se pregunta a Gmail antes de guardar.
+    gmail = remitentes.consultar_gmail(session, user, completo=True)
+    cambios = remitentes.guardar(session, user, payload.preferences,
+                                 en_gmail=remitentes.direcciones(gmail))
     if cambios:
         record_event(
             session,
@@ -74,4 +80,5 @@ def update_user_senders(
             request=request,
         )
     session.commit()
-    return remitentes.listar(session, user, completo=True)
+    return remitentes.listar(session, user, completo=True, gmail=gmail,
+                             gmail_consultado=True)

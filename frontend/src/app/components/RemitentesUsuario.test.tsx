@@ -153,6 +153,79 @@ describe("RemitentesUsuario — los remitentes del «De» en la ficha de Usuario
     expect(screen.queryByText("no verificada en Gmail")).not.toBeInTheDocument();
   });
 
+  it("una elegida que Gmail no tiene no puede ser la predeterminada", async () => {
+    const user = userEvent.setup();
+    mockGet.mockResolvedValue([
+      alias("manel@bomedia.net", { user_pref_allowed: true, user_pref_default: true }),
+      alias("info@mbolasers.com", {
+        en_gmail: false,
+        user_pref_allowed: true,
+        user_pref_opted_in: true,
+      }),
+    ]);
+    render(<RemitentesUsuario userId="u-manel" />);
+    const estrella = await screen.findByRole("button", {
+      name: "Marcar info@mbolasers.com como predeterminado",
+    });
+    expect(estrella).toBeDisabled();
+    expect(estrella).toHaveAttribute("title", expect.stringContaining("Gmail no la tiene verificada"));
+    // Si se quita la que era predeterminada, no pasa a serlo la pendiente.
+    await user.click(screen.getByRole("button", { name: "Quitar manel@bomedia.net de los aliases activos" }));
+    const { prefs } = await ultimoGuardado();
+    expect(prefs.filter((p) => p.is_default)).toEqual([]);
+  });
+
+  it("el nombre de una dirección desmarcada también se cambia, desde la lista", async () => {
+    const user = userEvent.setup();
+    render(<RemitentesUsuario userId="u-manel" />);
+    await user.click(await screen.findByRole("button", { name: /1 alias activo/ }));
+    await user.click(
+      screen.getByRole("button", { name: "Editar display name de ventas@streamtec.es" }),
+    );
+    const input = screen.getByRole("textbox", { name: "Nombre visible de ventas@streamtec.es" });
+    await user.clear(input);
+    await user.type(input, "Ventas Streamtec{Enter}");
+    const { prefs } = await ultimoGuardado();
+    expect(prefs.find((p) => p.alias_email === "ventas@streamtec.es")).toEqual({
+      alias_email: "ventas@streamtec.es",
+      is_allowed: false,
+      is_default: false,
+      display_name_override: "Ventas Streamtec",
+    });
+  });
+
+  it("una recarga que sale antes de guardar no deshace lo guardado", async () => {
+    const user = userEvent.setup();
+    let devolverViejo: (v: EmailAlias[]) => void = () => {};
+    render(<RemitentesUsuario userId="u-manel" />);
+    await user.click(await screen.findByRole("button", { name: /1 alias activo/ }));
+    // ↻ con Gmail lento…
+    mockGet.mockImplementationOnce(
+      () => new Promise<EmailAlias[]>((resolve) => (devolverViejo = resolve)),
+    );
+    await user.click(screen.getByTitle("Recargar lista desde Gmail"));
+    // …y mientras, marca ventas@ (se guarda).
+    const fila = screen.getByText("<ventas@streamtec.es>").closest("li") as HTMLElement;
+    await user.click(within(fila).getByRole("checkbox"));
+    await ultimoGuardado();
+    await waitFor(() =>
+      expect(within(fila).getByRole("checkbox")).toBeChecked(),
+    );
+    // Llega tarde la recarga, leída antes del guardado: no cuenta.
+    devolverViejo(MANEL);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(within(fila).getByRole("checkbox")).toBeChecked();
+    expect(screen.getByText(/2 alias activos/)).toBeInTheDocument();
+  });
+
+  it("sin ninguna dirección avisa de que Gmail puede no responder", async () => {
+    mockGet.mockResolvedValue([]);
+    render(<RemitentesUsuario userId="u-nuevo" />);
+    expect(await screen.findByText(/No sale ninguna dirección/)).toHaveTextContent(
+      "puede que Gmail no responda",
+    );
+  });
+
   it("si no se pueden cargar, lo dice", async () => {
     mockGet.mockRejectedValue(new Error("403"));
     render(<RemitentesUsuario userId="u-manel" />);

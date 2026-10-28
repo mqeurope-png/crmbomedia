@@ -1148,7 +1148,7 @@ def test_send_with_unmarked_alias_returns_403(
         headers=auth_headers(client, "user"),
     )
     assert response.status_code == 403
-    assert "preferencias" in response.json()["detail"].lower()
+    assert "remitentes" in response.json()["detail"].lower()
 
 
 # ---------------------------------------------------------------------------

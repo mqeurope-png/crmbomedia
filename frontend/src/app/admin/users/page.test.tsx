@@ -151,4 +151,14 @@ describe("AdminUsersPage — remitentes del «De» en la ficha", () => {
     expect(await screen.findByTestId("remitentes")).toHaveTextContent("u-7");
     expect(screen.getAllByTestId("remitentes")).toHaveLength(1);
   });
+
+  it("un enlace mal escrito no tira la página", async () => {
+    window.location.hash = "#remitentes-%";
+    render(<AdminUsersPage />);
+    expect(
+      await screen.findByRole("region", { name: "Remitentes de manel@bomedia.net" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Error de permisos o carga")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("remitentes")).not.toBeInTheDocument();
+  });
 });

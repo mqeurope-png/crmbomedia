@@ -60,9 +60,21 @@ def _direcciones_de_entrada(session: Session, user_id: str) -> list[str]:
     ))
 
 
+def marcado(pref: UserEmailAliasPref | None, *, propio: bool, en_gmail: bool | None) -> bool:
+    """Si la dirección se pinta marcada en el selector: lo que saldrá en el
+    «De» tras el sync, no solo lo que está encendido ahora. Una elección
+    (`user_opted_in=1`) que el sync apagó porque Gmail no la tiene sigue
+    elegida («pendiente de Gmail»: vuelve sola al verificarse), y la dirección
+    propia sin fila la encenderá el sync. Pintarlas desmarcadas hacía que
+    guardar cualquier otra cosa las convirtiera en rechazo."""
+    if pref is not None:
+        return bool(pref.is_allowed or pref.user_opted_in is True)
+    return propio and en_gmail is True
+
+
 def _fila(
     *, email: str, gmail: dict[str, Any] | None, pref: UserEmailAliasPref | None,
-    en_gmail: bool | None, de_entrada: bool,
+    en_gmail: bool | None, de_entrada: bool, propio: bool,
 ) -> EmailAlias:
     gmail_name = (gmail.get("display_name") or None) if gmail else (
         pref.gmail_display_name if pref else None)
@@ -74,7 +86,7 @@ def _fila(
         is_primary=bool(gmail and gmail["is_primary"]),
         is_default=bool(gmail and gmail["is_default"]),
         verification_status=gmail.get("verification_status") if gmail else None,
-        user_pref_allowed=pref.is_allowed if pref else False,
+        user_pref_allowed=marcado(pref, propio=propio, en_gmail=en_gmail),
         user_pref_default=pref.is_default if pref else False,
         user_pref_opted_in=pref.user_opted_in if pref else None,
         gmail_display_name=gmail_name,
@@ -86,7 +98,31 @@ def _fila(
     )
 
 
-def listar(session: Session, user: User, *, completo: bool = False) -> list[EmailAlias]:
+def consultar_gmail(session: Session, user: User, *, completo: bool) -> list[dict[str, Any]] | None:
+    """Los «enviar como» verificados de la cuenta del equipo. Sin `completo`
+    los errores suben (Mi cuenta los traduce); con `completo`, None si Gmail
+    no responde (la ficha enseña lo guardado)."""
+    try:
+        return gmail_service.list_aliases(session, user.id)
+    except Exception:  # noqa: BLE001 — desconectado, sin permiso o caído
+        if not completo:
+            raise
+        logger.warning("remitentes: Gmail no disponible para user_id=%s", user.id,
+                       exc_info=True)
+        return None
+
+
+def direcciones(gmail: list[dict[str, Any]] | None) -> set[str] | None:
+    """Las direcciones de Gmail en minúsculas, o None si no se sabe."""
+    if gmail is None:
+        return None
+    return {(a.get("send_as_email") or "").strip().lower() for a in gmail} - {""}
+
+
+def listar(
+    session: Session, user: User, *, completo: bool = False,
+    gmail: list[dict[str, Any]] | None = None, gmail_consultado: bool = False,
+) -> list[EmailAlias]:
     """Los «enviar como» de Gmail con las preferencias de `user`.
 
     Cada lectura refresca el `gmail_display_name` guardado con lo que Gmail
@@ -97,16 +133,12 @@ def listar(session: Session, user: User, *, completo: bool = False) -> list[Emai
     llamador. Con `completo` (la ficha de Usuarios) se añaden, detrás, las
     direcciones que el usuario tiene en sus preferencias o registradas como
     entrada y Gmail no tiene (`en_gmail=False`); si no se puede consultar
-    Gmail, salen las de la base de datos con `en_gmail=None`."""
-    gmail: list[dict[str, Any]] | None
-    try:
-        gmail = gmail_service.list_aliases(session, user.id)
-    except Exception:  # noqa: BLE001 — desconectado, sin permiso o caído
-        if not completo:
-            raise
-        logger.warning("remitentes: Gmail no disponible para user_id=%s", user.id,
-                       exc_info=True)
-        gmail = None
+    Gmail, salen las de la base de datos con `en_gmail=None`. Quien ya
+    consultó Gmail lo pasa en `gmail` (con `gmail_consultado`) para no
+    preguntar dos veces."""
+    if not gmail_consultado:
+        gmail = consultar_gmail(session, user, completo=completo)
+    propio = (user.email or "").strip().lower()
     prefs = list(session.scalars(
         select(UserEmailAliasPref).where(UserEmailAliasPref.user_id == user.id)))
     prefs_by_email = {p.alias_email: p for p in prefs}
@@ -131,7 +163,8 @@ def listar(session: Session, user: User, *, completo: bool = False) -> list[Emai
     out = [
         _fila(email=item["send_as_email"], gmail=item,
               pref=prefs_by_email.get(item["send_as_email"]), en_gmail=True,
-              de_entrada=item["send_as_email"].strip().lower() in entrada)
+              de_entrada=item["send_as_email"].strip().lower() in entrada,
+              propio=item["send_as_email"].strip().lower() == propio)
         for item in gmail or []
     ]
     if not completo:
@@ -144,14 +177,15 @@ def listar(session: Session, user: User, *, completo: bool = False) -> list[Emai
             continue
         vistas.add(clave)
         out.append(_fila(email=pref.alias_email, gmail=None, pref=pref,
-                         en_gmail=en_gmail, de_entrada=clave in entrada))
+                         en_gmail=en_gmail, de_entrada=clave in entrada,
+                         propio=clave == propio))
     for direccion in _direcciones_de_entrada(session, user.id):
         clave = direccion.strip().lower()
         if clave in vistas:
             continue
         vistas.add(clave)
         out.append(_fila(email=direccion, gmail=None, pref=None, en_gmail=en_gmail,
-                         de_entrada=True))
+                         de_entrada=True, propio=clave == propio))
     return out
 
 
@@ -162,6 +196,7 @@ def _estado(row: UserEmailAliasPref) -> dict[str, Any]:
 
 def guardar(
     session: Session, user: User, preferencias: Iterable[AliasPreferenceItem],
+    *, en_gmail: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Guarda de una vez las preferencias de remitente de `user` y devuelve
     lo que cambió (`[{alias, antes, despues}]`, para Auditoría). No commitea.
@@ -173,7 +208,8 @@ def guardar(
     - `is_allowed=true`: la fila queda visible. Si estaba apagada, o se
       acaba de elegir como predeterminada, se registra `user_opted_in=true`.
       Una fila que ya estaba visible por la regla por defecto (su alias
-      propio) sigue «sin pronunciarse».
+      propio) sigue «sin pronunciarse», y la del alias propio que aún no
+      tenía fila nace así también (es lo que haría el sync).
     - `is_allowed=false`: la fila NO se borra. Queda apagada y, si estaba
       encendida (o se había elegido), con `user_opted_in=false`: un rechazo
       hay que recordarlo, también el del alias propio. Una fila que ya
@@ -184,11 +220,26 @@ def guardar(
     - Marcar `is_default=true` en una fila quita el predeterminado de las
       demás del usuario.
 
+    `en_gmail` (las direcciones verificadas de Gmail, en minúsculas; la
+    ficha de Usuarios lo pasa, Mi cuenta solo manda direcciones de Gmail):
+    una dirección que Gmail no tiene y llega marcada se guarda como
+    elección pero APAGADA y sin predeterminado, que es como la dejaría el
+    sync. Así no la usan como remitente ni los workflows ni el asistente
+    mientras Gmail la rechace, y aparece sola cuando se verifique.
+
     PR-Aliases-UX. Si llegan remitentes marcados pero NINGUNO con
     `is_default`, el primero marcado (orden de envío) pasa a serlo.
     Garantía: con N≥1 marcados, exactamente 1 predeterminado. Sin marcados,
-    no hay predeterminado. Así el desplegable del compositor es determinista.
+    el predeterminado sigue la regla del sync (`normalizar_predeterminado`).
+    Así el desplegable del compositor es determinista.
     """
+    from app.integrations.gmail.aliases import normalizar_predeterminado  # noqa: PLC0415
+
+    propio = (user.email or "").strip().lower()
+
+    def _fuera(alias: str) -> bool:
+        return en_gmail is not None and alias.strip().lower() not in en_gmail
+
     filas = list(session.scalars(
         select(UserEmailAliasPref).where(UserEmailAliasPref.user_id == user.id)))
     existing = {p.alias_email: p for p in filas}
@@ -197,18 +248,26 @@ def guardar(
     first_allowed: str | None = None
     for item in preferencias:
         row = existing.get(item.alias_email)
+        # PR-DisplayName-Remitente. None = no tocar el override
+        # actual; string = strip + NULL on empty (clear) o setear el
+        # valor. Nunca se persiste "" como string.
+        override_set = "display_name_override" in item.model_fields_set
+        override_value: str | None = None
+        if override_set:
+            raw = (item.display_name_override or "").strip()
+            override_value = raw or None
         if not item.is_allowed:
             if row is not None and (row.is_allowed or row.is_default or row.user_opted_in):
                 # Desmarcar algo que estaba encendido (o elegido): rechazo.
                 row.is_allowed = False
                 row.is_default = False
                 row.user_opted_in = False
-            elif row is None and item.alias_email.strip().lower() == (
-                (user.email or "").strip().lower()
-            ):
+            elif (row is None and item.alias_email.strip().lower() == propio
+                  and not _fuera(item.alias_email)):
                 # El alias propio aún sin fila (antes del primer sync) y
                 # desmarcado: el sync lo encendería por la regla por defecto,
-                # así que el rechazo se guarda ya.
+                # así que el rechazo se guarda ya. Si Gmail no lo tiene, el
+                # sync no lo encendería: no hay nada que rechazar.
                 row = UserEmailAliasPref(
                     user_id=user.id,
                     alias_email=item.alias_email,
@@ -218,52 +277,64 @@ def guardar(
                 )
                 session.add(row)
                 existing[item.alias_email] = row
+            if override_set and override_value != (row.display_name_override if row else None):
+                # El nombre visible también cuenta en una dirección desmarcada:
+                # el envío lo usa si alguien escribe desde ella (un workflow
+                # con remitente fijo, el correo de una factura), y el Cuadre
+                # la marca si nombra Bomedia.
+                if row is None:
+                    row = UserEmailAliasPref(user_id=user.id, alias_email=item.alias_email,
+                                             is_allowed=False, is_default=False)
+                    session.add(row)
+                    existing[item.alias_email] = row
+                row.display_name_override = override_value
             continue
-        if first_allowed is None:
-            first_allowed = item.alias_email
-        if item.is_default:
-            incoming_default = item.alias_email
-        # PR-DisplayName-Remitente. None = no tocar el override
-        # actual; string = strip + NULL on empty (clear) o setear el
-        # valor. Nunca se persiste "" como string.
-        override_set = "display_name_override" in item.model_fields_set
-        override_value: str | None = None
-        if override_set:
-            raw = (item.display_name_override or "").strip()
-            override_value = raw or None
+        fuera = _fuera(item.alias_email)
         if row is None:
             row = UserEmailAliasPref(
                 user_id=user.id,
                 alias_email=item.alias_email,
-                is_allowed=True,
-                is_default=item.is_default,
-                user_opted_in=True,
+                is_allowed=not fuera,
+                is_default=False,
+                # El alias propio lo enciende el sync sin que nadie se
+                # pronuncie; lo demás es una elección.
+                user_opted_in=(None if item.alias_email.strip().lower() == propio
+                               and not fuera else True),
             )
-            if override_set:
-                row.display_name_override = override_value
             session.add(row)
             existing[item.alias_email] = row
-        else:
-            if (
-                not row.is_allowed
-                or row.user_opted_in is False
-                or (item.is_default and not row.is_default)
-            ):
-                # Encender algo apagado, o elegirlo como predeterminado: lo quiere.
-                row.user_opted_in = True
-            row.is_allowed = True
-            row.is_default = item.is_default
-            if override_set:
-                row.display_name_override = override_value
+        elif fuera:
+            row.user_opted_in = True
+        elif (
+            not row.is_allowed
+            or row.user_opted_in is False
+            or (item.is_default and not row.is_default)
+        ):
+            # Encender algo apagado, o elegirlo como predeterminado: lo quiere.
+            row.user_opted_in = True
+        if override_set:
+            row.display_name_override = override_value
+        if fuera:
+            # Elegida, pero Gmail la rechazaría: apagada hasta que la verifique.
+            row.is_allowed = False
+            row.is_default = False
+            continue
+        row.is_allowed = True
+        row.is_default = item.is_default
+        if first_allowed is None:
+            first_allowed = item.alias_email
+        if item.is_default:
+            incoming_default = item.alias_email
     # Normaliza: si hay marcados pero ningún predeterminado declarado, el
     # primero gana; y el predeterminado es uno en todo el usuario, no solo
     # en lo que llegó (sin distinguir mayúsculas, como la base de datos).
-    if incoming_default is None:
-        incoming_default = first_allowed
-    if incoming_default is not None:
-        ganador = incoming_default.strip().lower()
+    ganador = incoming_default or first_allowed
+    if ganador is not None:
+        clave = ganador.strip().lower()
         for row in existing.values():
-            row.is_default = row.alias_email.strip().lower() == ganador
+            row.is_default = row.alias_email.strip().lower() == clave
+    else:
+        normalizar_predeterminado(existing.values(), user_email=propio)
     session.flush()
 
     cambios: list[dict[str, Any]] = []
@@ -276,8 +347,8 @@ def guardar(
 
 
 def resumen_de_cambios(cambios: list[dict[str, Any]]) -> str:
-    """Una línea legible para la Auditoría: «+a, -b, predeterminado c, nombre
-    de d: «X»»."""
+    """Una línea legible para la Auditoría: «+a, -b, c elegida, pendiente de
+    verificar en Gmail, d rechazada, predeterminado e, nombre de f: «X»»."""
     partes: list[str] = []
     for c in cambios:
         previo = c["antes"] or {}
@@ -286,9 +357,16 @@ def resumen_de_cambios(cambios: list[dict[str, Any]]) -> str:
         if despues["marcado"] and not previo.get("marcado"):
             partes.append(f"+{alias}")
         elif previo.get("marcado") and not despues["marcado"]:
-            partes.append(f"-{alias}")
+            partes.append(f"{alias} pendiente de verificar en Gmail"
+                          if despues["eleccion"] is True else f"-{alias}")
+        elif despues["eleccion"] != previo.get("eleccion"):
+            if despues["eleccion"] is True:
+                partes.append(f"{alias} elegida" + (
+                    "" if despues["marcado"] else ", pendiente de verificar en Gmail"))
+            elif despues["eleccion"] is False:
+                partes.append(f"{alias} rechazada")
         if despues["predeterminado"] and not previo.get("predeterminado"):
             partes.append(f"predeterminado {alias}")
         if despues["nombre"] != previo.get("nombre"):
             partes.append(f"nombre de {alias}: «{despues['nombre'] or 'el de Gmail'}»")
-    return ", ".join(partes)
+    return ", ".join(partes) or "sin cambios visibles"

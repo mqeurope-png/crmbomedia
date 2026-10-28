@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { EmailAlias } from "../lib/emailsApi";
 import { extractErrorMessage } from "../lib/errors";
 import { getUserSenders, putUserSenders } from "../lib/userAliasesApi";
@@ -24,16 +24,24 @@ export function RemitentesUsuario({ userId }: { userId: string }) {
   const [aliases, setAliases] = useState<EmailAlias[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Solo vale la respuesta de la última petición: un GET que salió antes de
+  // un guardado traería el estado de antes y el siguiente autoguardado lo
+  // devolvería al servidor, deshaciendo el cambio.
+  const peticion = useRef(0);
 
   const reload = useCallback(async () => {
+    const mia = ++peticion.current;
     setLoading(true);
     try {
-      setAliases(await getUserSenders(userId));
+      const lista = await getUserSenders(userId);
+      if (mia !== peticion.current) return;
+      setAliases(lista);
       setError(null);
     } catch (err) {
+      if (mia !== peticion.current) return;
       setError(extractErrorMessage(err, "No se pudieron cargar los remitentes"));
     } finally {
-      setLoading(false);
+      if (mia === peticion.current) setLoading(false);
     }
   }, [userId]);
 
@@ -65,6 +73,13 @@ export function RemitentesUsuario({ userId }: { userId: string }) {
         sin tocar Gmail. Lo marcado se respeta en cada sincronización con Gmail
         y cada cambio queda en Auditoría.
       </p>
+      {aliases.length === 0 ? (
+        <p className="form-warning small">
+          No sale ninguna dirección: la cuenta de Google del equipo no ha
+          devuelto ningún «Enviar como» (puede que Gmail no responda) y este
+          usuario no tiene nada guardado.
+        </p>
+      ) : null}
       {sinGmail ? (
         <p className="form-warning small">
           No se ha podido consultar Gmail: se ve lo guardado, pero no qué
@@ -84,9 +99,14 @@ export function RemitentesUsuario({ userId }: { userId: string }) {
       <GmailAliasMultiSelect
         aliases={aliases}
         onSave={async (prefs) => {
-          const next = await putUserSenders(userId, prefs);
-          setAliases(next);
-          return next;
+          const mia = ++peticion.current;
+          try {
+            const next = await putUserSenders(userId, prefs);
+            if (mia === peticion.current) setAliases(next);
+            return next;
+          } finally {
+            if (mia === peticion.current) setLoading(false);
+          }
         }}
         onRefresh={() => void reload()}
         refreshing={loading}

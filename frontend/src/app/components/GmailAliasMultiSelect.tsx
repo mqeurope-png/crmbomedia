@@ -81,6 +81,9 @@ function avisoSinVerificar(email: string): string {
   );
 }
 
+const NO_PREDETERMINADA =
+  "No puede ser la predeterminada: Gmail no la tiene verificada y no sale en el «De».";
+
 /** La misma pista que da el Cuadre para «Bomedia» en textos del cliente. */
 const PISTA_BOMEDIA =
   "El nombre visible nombra «Bomedia». Cámbialo por Streamtec (si escribe en " +
@@ -98,6 +101,9 @@ type Pref = {
   /** Valor a persistir si `overrideDirty=true`. `""` → backend
    *  limpia (NULL), str → setea, dejado para distinguir. */
   overrideValue: string;
+  /** Gmail la tiene verificada: solo esas pueden ser predeterminadas (una
+   *  elegida y pendiente de Gmail no sale en el «De»). */
+  verificada: boolean;
 };
 
 function aliasesToPrefs(aliases: EmailAlias[]): Pref[] {
@@ -107,6 +113,7 @@ function aliasesToPrefs(aliases: EmailAlias[]): Pref[] {
     isDefault: a.user_pref_default,
     overrideDirty: false,
     overrideValue: a.display_name_override ?? "",
+    verificada: !sinVerificar(a),
   }));
 }
 
@@ -114,7 +121,8 @@ function ensureSingleDefault(prefs: Pref[]): Pref[] {
   // Garantiza exactamente 1 default entre allowed. Si hay 0 y al
   // menos 1 allowed, el primer allowed pasa a default. Si hay >1
   // default (no debería pasar por UX pero defensa), gana el primero.
-  const allowed = prefs.filter((p) => p.allowed);
+  // Las que Gmail no tiene verificadas no cuentan: no salen en el «De».
+  const allowed = prefs.filter((p) => p.allowed && p.verificada);
   if (allowed.length === 0) {
     return prefs.map((p) => ({ ...p, isDefault: false }));
   }
@@ -123,7 +131,7 @@ function ensureSingleDefault(prefs: Pref[]): Pref[] {
   const winner = defaults[0]?.email ?? allowed[0].email;
   return prefs.map((p) => ({
     ...p,
-    isDefault: p.allowed && p.email === winner,
+    isDefault: p.allowed && p.verificada && p.email === winner,
   }));
 }
 
@@ -271,6 +279,9 @@ export function GmailAliasMultiSelect({
   }
 
   function pickDefault(email: string): void {
+    // Gmail no la deja usar: no puede ser la predeterminada (la estrella está
+    // desactivada; esto es la defensa).
+    if (sinVerificar(aliasByEmail.get(email))) return;
     setPrefs((prev) => {
       const next = prev.map((p) => ({
         ...p,
@@ -395,10 +406,13 @@ export function GmailAliasMultiSelect({
                   type="button"
                   className="alias-multiselect-chip-star"
                   onClick={() => pickDefault(p.email)}
+                  disabled={!p.verificada}
                   title={
-                    p.isDefault
-                      ? "Predeterminado"
-                      : "Marcar como predeterminado"
+                    !p.verificada
+                      ? NO_PREDETERMINADA
+                      : p.isDefault
+                        ? "Predeterminado"
+                        : "Marcar como predeterminado"
                   }
                   aria-label={
                     p.isDefault
@@ -566,7 +580,56 @@ export function GmailAliasMultiSelect({
             ) : (
               visible.map((p) => {
                 const meta = aliasByEmail.get(p.email);
-                const label = meta?.display_name || p.email;
+                const label =
+                  meta?.resolved_display_name || meta?.display_name || p.email;
+                // Las marcadas se editan en su chip; las demás, aquí: su
+                // nombre visible también sale si alguien escribe desde ellas.
+                if (!p.allowed && editingEmail === p.email) {
+                  return (
+                    <li
+                      key={p.email}
+                      className="alias-multiselect-list-row is-editing"
+                    >
+                      <input
+                        type="text"
+                        className="alias-chip-name-input"
+                        value={draftName}
+                        autoFocus
+                        maxLength={255}
+                        onChange={(e) => setDraftName(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            saveName(p.email);
+                          } else if (e.key === "Escape") {
+                            cancelEditName();
+                          }
+                        }}
+                        placeholder="Display name"
+                        aria-label={`Nombre visible de ${p.email}`}
+                      />
+                      <span className="muted small">&lt;{p.email}&gt;</span>
+                      <button
+                        type="button"
+                        className="icon-button"
+                        onClick={() => saveName(p.email)}
+                        title="Guardar"
+                        aria-label="Guardar display name"
+                      >
+                        <Check size={11} aria-hidden />
+                      </button>
+                      <button
+                        type="button"
+                        className="icon-button"
+                        onClick={cancelEditName}
+                        title="Cancelar"
+                        aria-label="Cancelar edición"
+                      >
+                        <X size={11} aria-hidden />
+                      </button>
+                    </li>
+                  );
+                }
                 return (
                   <li
                     key={p.email}
@@ -601,8 +664,24 @@ export function GmailAliasMultiSelect({
                             recibe
                           </span>
                         ) : null}
+                        {meta?.menciona_bomedia ? (
+                          <span className="badge warn small" title={PISTA_BOMEDIA}>
+                            nombra Bomedia
+                          </span>
+                        ) : null}
                       </span>
                     </label>
+                    {!p.allowed ? (
+                      <button
+                        type="button"
+                        className="alias-multiselect-chip-edit"
+                        onClick={() => startEditName(p.email)}
+                        title="Editar el nombre visible (sin tocar Gmail)"
+                        aria-label={`Editar display name de ${p.email}`}
+                      >
+                        <Pencil size={10} aria-hidden />
+                      </button>
+                    ) : null}
                     {p.allowed ? (
                       <button
                         type="button"
@@ -610,10 +689,13 @@ export function GmailAliasMultiSelect({
                           p.isDefault ? " is-default" : ""
                         }`}
                         onClick={() => pickDefault(p.email)}
+                        disabled={!p.verificada}
                         title={
-                          p.isDefault
-                            ? "Predeterminado"
-                            : "Marcar como predeterminado"
+                          !p.verificada
+                            ? NO_PREDETERMINADA
+                            : p.isDefault
+                              ? "Predeterminado"
+                              : "Marcar como predeterminado"
                         }
                       >
                         <Star
