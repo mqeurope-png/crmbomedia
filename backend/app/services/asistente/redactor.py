@@ -60,7 +60,13 @@ from app.models.ia import (
 )
 from app.services import empresas_grupo as eg
 from app.services import llm
-from app.services.asistente import borradores, consulta_fuentes, material_fuera, procedencia
+from app.services.asistente import (
+    borradores,
+    catalogo_pedido,
+    consulta_fuentes,
+    material_fuera,
+    procedencia,
+)
 from app.services.asistente import contexto as ctx_mod
 from app.services.asistente.config import configuracion as config_asistente
 from app.services.asistente.config import estimar_tokens
@@ -1503,6 +1509,82 @@ def _con_marcadores(actual: str, seleccion: str, imagenes: ImagenesEditor | None
     return imagenes.texto, imagenes.seleccion if seleccion else "", imagenes.marcadores
 
 
+def _catalogo_pedido_turno0(session: Session, ctx: Contexto,
+                            mat: material_fuera.Material | None) -> None:
+    """Lo que la consulta reconoció como del catálogo (por el nombre que da el
+    plan o por el enlace de su página) y no está en el CATÁLOGO de este
+    correo: entra en él como pedido por la instrucción, delante (el recorte
+    por tokens quita por detrás), con su ficha y su precio de venta."""
+    if mat is None or not isinstance(ctx.catalogo, dict):
+        return
+    maquinas = list(ctx.catalogo.get("maquinas") or [])
+    try:
+        nuevos = catalogo_pedido.productos(session, catalogo_pedido.origenes(
+            session, instruccion=None, material=mat,
+            ya=[str(m.get("origen_id") or "") for m in maquinas]), idioma=ctx.idioma)
+    except Exception:  # noqa: BLE001 — sin esto, el borrador va con su CATÁLOGO
+        logger.warning("asistente: no se han podido traer los productos pedidos del catálogo",
+                       exc_info=True)
+        return
+    if nuevos:
+        ctx.catalogo["maquinas"] = [*nuevos, *maquinas]
+
+
+def _catalogo_pedido_correccion(
+    session: Session, refs: ia_compuesto.Referencias, *, instruccion: str,
+    mat: material_fuera.Material | None, plan: consulta_fuentes.Plan | None, idioma: str,
+    contexto: dict[str, Any],
+) -> tuple[str, list[dict[str, Any]]]:
+    """Lo que pide una corrección del catálogo y no estaba en el CATÁLOGO del
+    primer borrador: cada producto con su `P#` (detrás de los que hay) y un
+    bloque para la petición, con su ficha y su precio de venta. Sin plan (la
+    casilla «Webs» desmarcada, o la corrección no pedía un producto), por lo
+    que la instrucción nombra de verdad. `(bloque, productos)`."""
+    ya = [str(c.get("origen_id") or "") for c in refs.productos.values()
+          if c.get("fuente") == FUENTE_COMPOSITOR]
+    try:
+        nuevos = catalogo_pedido.productos(session, catalogo_pedido.origenes(
+            session, instruccion=instruccion, material=mat,
+            con_menciones=not (plan is not None and plan.productos), ya=ya), idioma=idioma)
+    except Exception:  # noqa: BLE001 — sin esto, la corrección va con su CATÁLOGO
+        logger.warning("asistente: no se han podido traer los productos pedidos del catálogo",
+                       exc_info=True)
+        return "", []
+    if not nuevos:
+        return "", []
+    cat = contexto.get("catalogo") if isinstance(contexto.get("catalogo"), dict) else {}
+    avisos = catalogo_kb.avisos_en(idioma)
+    iva = (cat.get("iva_por_fuente") or {}).get(FUENTE_COMPOSITOR)
+    numeros = [int(r[1:]) for r in refs.productos if r[:1] == "P" and r[1:].isdigit()]
+    siguiente = max(numeros, default=0) + 1
+    lineas = [
+        "CATÁLOGO · AÑADIDO EN ESTA CORRECCIÓN: productos del catálogo que pide quien envía y "
+        "no estaban en el CATÁLOGO de arriba. Son del CATÁLOGO como los demás (su ficha, con su "
+        "referencia, y su precio tal cual) y mandan sobre cualquier página de nuestras webs del "
+        f"mismo producto; precios {_iva_texto(iva, avisos)}:"]
+    for p in nuevos:
+        ref = f"P{siguiente}"
+        siguiente += 1
+        refs.productos[ref] = {"fuente": str(p["fuente"]), "origen_id": str(p["origen_id"])}
+        if bq.url_valida(p.get("enlace")):
+            refs.enlaces_producto[ref] = str(p["enlace"])
+        lineas.append(_linea_producto(p, avisos, idioma, ref))
+    return "\n".join(lineas) + "\n\n", nuevos
+
+
+def _con_catalogo_pedido(contexto_json: str | None,
+                         pedidos: list[dict[str, Any]]) -> str | None:
+    """El contexto del turno con los productos que pidió del catálogo entre
+    los del CATÁLOGO del correo («Lo que ha usado» los enseña)."""
+    if not pedidos:
+        return contexto_json
+    contexto = _json(contexto_json)
+    cat = contexto.get("catalogo") if isinstance(contexto.get("catalogo"), dict) else {}
+    contexto["catalogo"] = {**cat, "maquinas": [
+        *(ctx_mod.resumen_maquina(p) for p in pedidos), *(cat.get("maquinas") or [])]}
+    return json.dumps(contexto, ensure_ascii=False, default=str)
+
+
 def _enlaces_material_en_refs(refs: ia_compuesto.Referencias,
                               material: material_fuera.Material | None) -> None:
     """Las URL del material, permitidas también en un correo compuesto (un
@@ -1792,6 +1874,7 @@ def generar(
                                      borrador_id=borrador_id)
         mat = consulta_fuentes.consultar(session, fuentes=fuentes, plan=plan, idioma=ctx.idioma,
                                          entrada=entrada)
+        _catalogo_pedido_turno0(session, ctx, mat)
     modelo_borrador, modelo_correccion = _modelos(cfg, settings)
     modo_actual = (ia_compuesto.MODO_COMPUESTO if base is not None
                    else ia_compuesto.MODO_NORMAL if actual else None)
@@ -2036,6 +2119,11 @@ def corregir(
         _json(raiz.contexto_json).get("refs"), marcas=datos_compuesto.marcas(session),
         videos=ia_compuesto.videos_de(contexto_texto, instruccion,
                                       json.dumps(base or {}, ensure_ascii=False)))
+    # Lo que pide del catálogo y no estaba en el CATÁLOGO del primer borrador
+    # (antes que el material: el W# de su página va a este mismo P#).
+    bloque_pedido, pedidos_catalogo = _catalogo_pedido_correccion(
+        session, refs, instruccion=instruccion, mat=mat, plan=plan,
+        idioma=borrador.idioma or "es", contexto=_json(borrador.contexto_json))
     _enlaces_material_en_refs(refs, mat)
     # Los importes que ha escrito quien envía en esta conversación: los únicos
     # que valen como precio de una ficha de la web.
@@ -2071,6 +2159,7 @@ def corregir(
         peticion_texto = peticion_correccion(
             texto_actual=texto_prompt, asunto_actual=borrador.asunto, instruccion=instruccion,
             seleccion=seleccion_prompt or None, sobre_editor=sobre_editor, imagenes=marcadores)
+    peticion_texto = bloque_pedido + peticion_texto
     if mat is not None:
         peticion_texto = mat.peticion + peticion_texto
     try:
@@ -2097,7 +2186,8 @@ def corregir(
         modelo=modelo[:80], destinatario=borrador.destinatario, remitente=borrador.remitente,
         asunto=borrador.asunto, texto="",
         enlaces_json=material_fuera.con_enlaces(borrador.enlaces_json, mat),
-        contexto_json=_enlaces_no_producto_del_turno(session, borrador.contexto_json, fuentes),
+        contexto_json=_enlaces_no_producto_del_turno(
+            session, _con_catalogo_pedido(borrador.contexto_json, pedidos_catalogo), fuentes),
         alcance=borrador.alcance,
         mensajes_hilo=borrador.mensajes_hilo, mensajes_historico=borrador.mensajes_historico,
         estado=ESTADO_GENERADO,
@@ -2106,6 +2196,7 @@ def corregir(
                + enlaces_compuesto)
     if mat is not None:
         enlaces += mat.urls
+    enlaces += [str(p["enlace"]) for p in pedidos_catalogo if p.get("enlace")]
     _interpretar(
         session, nuevo, raw, uso, modelo, modo=modo,
         forzado=formato in (ia_compuesto.MODO_NORMAL, ia_compuesto.MODO_COMPUESTO), refs=refs,

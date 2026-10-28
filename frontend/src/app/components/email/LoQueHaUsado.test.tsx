@@ -426,15 +426,15 @@ describe("Lo que ha usado — las fichas del correo, del catálogo o del índice
     expect(screen.getByText(/Lo que ha usado/)).not.toHaveTextContent("ficha");
     const fila = within(catalogo()).getByRole("listitem");
     expect(fila).toHaveTextContent(
-      "Ficha del catálogo: artisJet 3000Pro Freebird — artisJet · sin precio publicado — el enlace no lleva a "
-      + "una página de producto de nuestras webs: revísalo en el compositor");
-    expect(within(fila).getByText(/el enlace no lleva a una página de producto/))
+      "Ficha del catálogo: artisJet 3000Pro Freebird — artisJet · sin precio publicado — el enlace va a una "
+      + "página de servicio (contacto, categoría, carrito…), no a la de la máquina: revísalo en el compositor");
+    expect(within(fila).getByText(/el enlace va a una página de servicio/))
       .toHaveClass("asistente-panel-aviso");
     // Se avisa; el enlace se enseña como está (no se corrige).
     expect(within(fila).getByRole("link")).toHaveAttribute("href", "https://www.boprint.net/contacto/");
   });
 
-  it("dice por qué el enlace no es un producto: uno que el índice ya no tiene, o uno que aún no tiene", () => {
+  it("dice por qué avisa del enlace: una página que el índice ya no tiene, o una que no tiene", () => {
     render(<LoQueHaUsado borrador={borrador({
       contacto: { nombre: "Ana" },
       fichas: [
@@ -446,10 +446,10 @@ describe("Lo que ha usado — las fichas del correo, del catálogo o del índice
     })} />);
     const [retirada, nueva] = within(catalogo()).getAllByRole("listitem");
     expect(retirada).toHaveTextContent(
-      "el enlace es el de un producto que el índice de las webs ya no tiene (se quitó de la web o una regla del índice lo deja fuera): revísalo");
+      "el enlace es el de una página que el índice de las webs ya no tiene (se quitó de la web o una regla del índice la deja fuera): revísalo");
     expect(nueva).toHaveTextContent(
-      "el enlace no está en el índice de las webs: si el producto es nuevo, aún no se ha leído; si no, revísalo en el compositor");
-    expect(nueva).not.toHaveTextContent("no lleva a una página de producto");
+      "el enlace no está en el índice de las webs (ni como producto ni como página): si la página es nueva, aún no se ha leído; si no, revísalo en el compositor");
+    expect(nueva).not.toHaveTextContent("página de servicio");
   });
 
   it("el precio de una ficha del catálogo dice lo mismo que el correo: «a medida» u orientativo", () => {
@@ -519,12 +519,12 @@ describe("Lo que ha usado — las fichas del correo, del catálogo o del índice
     const filas = within(screen.getByRole("list", { name: "Productos del catálogo que entraron" }))
       .getAllByRole("listitem");
     expect(filas[0]).toHaveTextContent(
-      "artisJet 3000Pro Freebird (artisJet) — 5.490,00 € — el enlace no es una página de producto de nuestras webs");
+      "artisJet 3000Pro Freebird (artisJet) — 5.490,00 € — el enlace va a una página de servicio, no a la de la máquina");
     expect(within(filas[0]).getByRole("link", { name: "artisJet 3000Pro Freebird" })).toHaveAttribute(
       "href", "https://www.boprint.net/contacto/");
     // Uno que el índice no tiene (puede ser nuevo): se dice así, no que no es un producto.
     expect(filas[1]).toHaveTextContent("Orion 20 (MBO) — 4.990,00 € — el enlace no está en el índice de las webs");
-    expect(filas[1]).not.toHaveTextContent("no es una página de producto");
+    expect(filas[1]).not.toHaveTextContent("página de servicio");
     expect(within(filas[1]).getByRole("link", { name: "Orion 20" })).toHaveAttribute(
       "href", "https://mboprinters.com/es/producto/orion-20/");
     expect(filas[2]).toHaveTextContent("Tinta DTF blanca — sin precio publicado");

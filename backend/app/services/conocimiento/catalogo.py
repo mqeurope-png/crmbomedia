@@ -1227,6 +1227,67 @@ def menciones_en(texto: str | None, grupos: dict[str, list[ProductoCatalogo]],
             + [(o, FUERZA_DESCRIPCION) for o in flojas])
 
 
+#: Lo que no distingue una máquina de otra al buscarla por su nombre («la
+#: impresora UV artisJet 6090 Trust»). «Pro», «II» o «Desktop» sí distinguen.
+_GENERICAS_NOMBRE: frozenset[str] = frozenset({
+    "uv", "led", "impresora", "impresoras", "printer", "printers", "drucker", "imprimante",
+    "machine", "máquina", "maquina", "maschine", "laser", "láser", "ficha", "fichas", "modelo",
+    "model", "version", "versión", "la", "el", "de", "del", "the", "a", "una", "un",
+})
+
+
+def _palabras_de_nombre(texto: str | None) -> set[str]:
+    from app.services.externo.html_texto import plano  # noqa: PLC0415
+
+    return _tokens(plano(texto or "")) - _GENERICAS_NOMBRE
+
+
+def por_nombre(nombre: str | None, grupos: dict[str, list[ProductoCatalogo]]) -> str | None:
+    """La máquina del catálogo (`origen_id`) que es `nombre`: todas sus
+    palabras (sin las genéricas) están en el nombre de la máquina o en su
+    marca, y al menos una del modelo. Si hay varias, la que menos palabras
+    añade; si empatan, ninguna. «artisJet 6090 Trust» y «Trust» son la
+    artisJet 6090 Trust; «MBO 6090 desktop» NO es la «MBO 6090»: «desktop»
+    no está en su nombre (es otra máquina, o una variante que el catálogo no
+    tiene)."""
+    pedidas = _palabras_de_nombre(nombre)
+    if not pedidas:
+        return None
+    mejores: dict[str, int] = {}
+    for origen_id, variantes in grupos.items():
+        marca = _palabras_de_nombre(variantes[0].marca)
+        for v in variantes:
+            propias = _palabras_de_nombre(v.nombre)
+            modelo = propias - marca
+            if pedidas <= propias | marca and modelo & pedidas:
+                extra = len(modelo - pedidas)
+                mejores[origen_id] = min(extra, mejores.get(origen_id, extra))
+    if not mejores:
+        return None
+    menos = min(mejores.values())
+    ganadoras = [o for o, extra in mejores.items() if extra == menos]
+    return ganadoras[0] if len(ganadoras) == 1 else None
+
+
+def nombrados_en(texto: str | None, grupos: dict[str, list[ProductoCatalogo]]) -> list[str]:
+    """Las máquinas que un texto nombra de verdad: las seguras de
+    `menciones_en`, menos las que solo casan por un código que comparten con
+    otra («la MBO 6090 versión desktop» no nombra la «artisJet 6090 Trust»).
+    Vale una con su nombre entero (sin la marca) o con una palabra del modelo
+    que no es un código."""
+    palabras = _tokens(texto)
+    salida: list[str] = []
+    for origen_id, fuerza in menciones_en(texto, grupos):
+        base = (grupos.get(origen_id) or [None])[0]
+        if fuerza != FUERZA_NOMBRE or base is None:
+            continue
+        modelo = _tokens(base.nombre) - _tokens(base.marca)
+        sin_codigo = {t for t in modelo - _GENERICAS_NOMBRE if not _es_codigo(t)}
+        if (modelo and modelo <= palabras) or sin_codigo & palabras:
+            salida.append(origen_id)
+    return salida
+
+
 def _intereses_con_maquina(codigos: Iterable[str], filas: list[InteresProducto],
                            grupos: dict[str, list[ProductoCatalogo]]) -> set[str]:
     """Los intereses (de `codigos`) que tienen alguna máquina en el catálogo
@@ -1446,9 +1507,13 @@ def para_asistente(
     hilo_seguras, hilo_posibles = _partir(menciones_hilo)
     _añadir(_por_origen(hilo_seguras), "hilo")
     # 2. Lo que pide quien envía: una máquina concreta, o un interés entero.
+    # Las que nombra tienen su propio cupo: aunque el hilo haya llenado el tope
+    # (28/10/2026: seis FLUX de una avería dejaron fuera la artisJet 6090 Trust
+    # que pedía la instrucción, y su ficha salió de la web, sin precio).
     menciones_instruccion = menciones_en(instruccion, grupos)
     instruccion_seguras, instruccion_posibles = _partir(menciones_instruccion)
-    _añadir(_por_origen(instruccion_seguras), "instruccion")
+    _añadir(_por_origen(instruccion_seguras), "instruccion",
+            maximo=len(maquinas) + MAQUINAS_MAX)
     if intereses_instruccion:
         _añadir(maquinas_para(session, intereses_instruccion, idioma=idioma, ahora=ahora,
                               config=cfg, filas=filas, grupos=grupos), "instruccion")

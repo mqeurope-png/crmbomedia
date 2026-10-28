@@ -689,17 +689,17 @@ type PaginaUsada = {
   pedida: boolean;
 };
 
-/** Por qué un enlace del catálogo no es un producto del índice: no es una
- *  página de producto («Contacto», una categoría), un producto que el índice
- *  ya no tiene, o una ruta de producto que el índice no tiene (puede ser un
- *  producto recién publicado que aún no se ha leído). */
-type MotivoEnlace = "pagina" | "ido" | "fuera";
+/** Por qué avisar del enlace de una ficha del catálogo: va a una página de
+ *  servicio (contacto, categoría, carrito…), el índice ya no tiene su página,
+ *  o no está en el índice. Cualquier otra página indexada de la web vale.
+ *  «pagina» es como lo apuntaban los borradores de antes. */
+type MotivoEnlace = "servicio" | "ido" | "fuera";
 
 /** Una ficha del correo compuesto que sale del catálogo del compositor.
  *  `precioPublico` / `orientativo`: lo que dice el correo en el sitio del
- *  precio («a medida», la nota de orientativo). `enlaceNoProducto`: su enlace,
- *  de una web indexada, no lleva a una página de producto (se avisa; no se
- *  corrige), y por qué. */
+ *  precio («a medida», la nota de orientativo). `enlaceNoProducto`: por qué su
+ *  enlace no lleva a la máquina (una página de servicio, o no está en el
+ *  índice): se avisa; no se corrige. */
 type FichaCatalogo = {
   nombre: string;
   enlace: string | null;
@@ -877,23 +877,30 @@ export function fichasDelCorreo(ctx: Record<string, unknown>): FichasDelCorreo {
 }
 
 function motivoEnlace(v: unknown): MotivoEnlace {
-  return v === "ido" || v === "fuera" ? v : "pagina";
+  return v === "ido" || v === "fuera" ? v : "servicio";
 }
 
-/** Lo que se dice de un enlace del catálogo que no es un producto del índice. */
+/** Lo que se dice de un enlace del catálogo que no lleva a la máquina. */
 function avisoEnlace(motivo: MotivoEnlace): string {
   if (motivo === "fuera") {
-    return "el enlace no está en el índice de las webs: si el producto es nuevo, aún no se ha leído; si no, revísalo en el compositor";
+    return "el enlace no está en el índice de las webs (ni como producto ni como página): si la página es nueva, aún no se ha leído; si no, revísalo en el compositor";
   }
   if (motivo === "ido") {
-    return "el enlace es el de un producto que el índice de las webs ya no tiene (se quitó de la web o una regla del índice lo deja fuera): revísalo";
+    return "el enlace es el de una página que el índice de las webs ya no tiene (se quitó de la web o una regla del índice la deja fuera): revísalo";
   }
-  return "el enlace no lleva a una página de producto de nuestras webs: revísalo en el compositor";
+  return "el enlace va a una página de servicio (contacto, categoría, carrito…), no a la de la máquina: revísalo en el compositor";
 }
 
-/** Los enlaces del catálogo que, siendo de una web indexada, no llevan a una
- *  página de producto, con el porqué (los apunta el backend con «Webs»
- *  marcada en el turno). */
+/** Lo mismo, corto, en la lista de productos del catálogo que entraron. */
+function marcaEnlace(motivo: MotivoEnlace): string {
+  if (motivo === "fuera") return "el enlace no está en el índice de las webs";
+  if (motivo === "ido") return "el índice de las webs ya no tiene la página del enlace";
+  return "el enlace va a una página de servicio, no a la de la máquina";
+}
+
+/** Los enlaces del catálogo que no llevan a la máquina (una página de
+ *  servicio, o no están en el índice), con el porqué (los apunta el backend
+ *  con «Webs» marcada en el turno). */
 function enlacesNoProducto(ctx: Record<string, unknown>): Map<string, MotivoEnlace> {
   const lista = Array.isArray(ctx["enlaces_no_producto"]) ? ctx["enlaces_no_producto"].filter(esObjeto) : [];
   return new Map(lista.filter((e) => cadena(e["enlace"])).map((e) => [cadena(e["enlace"]), motivoEnlace(e["motivo"])]));
@@ -1373,9 +1380,7 @@ export function LoQueHaUsado({ borrador }: { borrador: BorradorAsistente }) {
               {"marca" in p && p.marca ? ` (${String(p.marca)})` : ""}
               <span className="muted small"> — {p.precio_texto ? `${p.precio_texto}${p.orientativo ? " · orientativo" : ""}` : ("precio_publico" in p && p.precio_publico === false ? "sin precio público (a medida)" : "sin precio publicado")}</span>
               {p.enlace && noProducto.has(p.enlace)
-                ? avisoDe(noProducto.get(p.enlace) === "fuera"
-                  ? "el enlace no está en el índice de las webs"
-                  : "el enlace no es una página de producto de nuestras webs")
+                ? avisoDe(marcaEnlace(noProducto.get(p.enlace) ?? "servicio"))
                 : null}
             </li>
           ))}

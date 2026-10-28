@@ -440,9 +440,12 @@ la respuesta en texto sigue siendo la de siempre y la opción por defecto.
   lleva título, descripción, imagen principal (enlazada), enlace y **el precio
   de la web con su IVA** tal como está guardado («489,30 € (+ IVA)»), nunca
   como precio de oferta, o **«Precio a consultar»** si la web no lo da. Si el
-  producto está en el catálogo, va la del catálogo, se mire contra todo el
-  catálogo del compositor y no solo contra las máquinas del correo (un `W#`
-  que es ese producto saca la ficha del catálogo, con aviso); si quien envía
+  producto está en el catálogo, va la del catálogo: lo que se pide se busca
+  en el catálogo entero del compositor, por su nombre o por su página, no
+  solo entre las máquinas del correo, aunque no tenga nada que ver con el
+  hilo (en el primer borrador entra en su CATÁLOGO; en una corrección, en un
+  bloque «CATÁLOGO · AÑADIDO EN ESTA CORRECCIÓN» con su `P#` y su precio de
+  venta; un `W#` que es ese producto saca la ficha del catálogo); si quien envía
   pide una variante que solo está en la web («la versión desktop»), la de la
   web. Un **precio que dice quien envía** en sus instrucciones puede ir en la
   ficha (`{"ref": "W2", "precio": "…"}`); uno que no sale de sus
@@ -870,11 +873,11 @@ al redactar**, igual que consulta el catálogo: nadie busca ni elige nada.
   del índice de dónde sale el precio (de la web, el que has indicado tú o a
   consultar), el idioma si no es el del correo y cuántas imágenes tiene su
   galería; el título plegado suma «· N fichas del índice». Con «Webs»
-  marcada en ese turno, un producto del catálogo cuyo enlace no lleva a una
-  página de producto de nuestras webs sale marcado, con el porqué (una
-  página como la de contacto, un producto que ya no está, o uno que el índice
-  aún no tiene), y si va en el correo, el aviso lo dice («revísalo en el
-  compositor»; no se corrige).
+  marcada en ese turno, un producto del catálogo cuyo enlace va a una página
+  de servicio (contacto, categoría, carrito…) o no está en el índice de las
+  webs sale marcado, con el porqué, y si va en el correo, el aviso lo dice
+  («revísalo en el compositor»; no se corrige). Cualquier página indexada de
+  la web vale, también una de aterrizaje.
 - **Coste**: el plan es una llamada corta (300 tokens de salida como mucho)
   con el modelo barato, una vez por borrador con alguna casilla marcada. Un
   turno con material lleva sus reglas detrás del prompt de sistema, y la caché
