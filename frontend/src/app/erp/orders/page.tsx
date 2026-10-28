@@ -12,6 +12,7 @@ import { isSampleOrder } from "../../components/erp/OrderStatusGrid";
 import { isInvoiced, OrderStatusPills } from "../../components/erp/OrderStatusPills";
 import { AnularCobroModal } from "../../components/erp/AnularCobroModal";
 import { RegistrarCobroModal } from "../../components/erp/RegistrarCobroModal";
+import { TraerPedidoWebModal } from "../../components/erp/TraerPedidoWebModal";
 import {
   QUEUE_COLOR,
   QUEUE_HINT,
@@ -343,6 +344,10 @@ function ErpOrdersScreen() {
   // pedido normal mira y no actúa. Espejo de `can_manage_order` del backend.
   const canSamples = can(user, Cap.SAMPLES_CREATE);
   const canManage = (o: OrderSummary) => canEdit || (canSamples && isSampleOrder(o));
+  // «Traer un pedido de la web» (los «en espera» de las tiendas): crear un
+  // pedido que además es web → pedidos y admin (el Comercial no ve los web).
+  const canTraerWeb = canEdit && can(user, Cap.ORDERS_VIEW_WEB);
+  const [traerWebOpen, setTraerWebOpen] = useState(false);
   // En «Ver anulados» no hay acciones de bloque (se reactivan desde la ficha).
   const selectable = canEdit && !showCancelled;
   // Vista lista: el Nº es la última columna fija por la izquierda (tras la casilla).
@@ -1035,6 +1040,14 @@ function ErpOrdersScreen() {
                 + Nuevo pedido manual
               </Link>
             ) : null}
+            {/* Pedidos web «en espera» (transferencia sin cobrar): se traen a
+                mano, uno a uno, desde la lista en vivo de las tiendas. */}
+            {canTraerWeb ? (
+              <button type="button" className="button small secondary"
+                      onClick={() => setTraerWebOpen(true)}>
+                Traer un pedido de la web
+              </button>
+            ) : null}
             {/* Muestra / envío no facturable: alta propia y corta (sin empresa
                 ni FACTUSOL). También la crea el taller, no solo la oficina. */}
             {can(user, Cap.SAMPLES_CREATE) ? (
@@ -1446,6 +1459,7 @@ function ErpOrdersScreen() {
           onDone={onCobroDone}
         />
       ) : null}
+      {traerWebOpen ? <TraerPedidoWebModal onClose={() => setTraerWebOpen(false)} /> : null}
       {excludeTarget ? (
         <ExcludeSeguimientoModal
           context="bandeja"

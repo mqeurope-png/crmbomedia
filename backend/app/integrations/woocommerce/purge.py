@@ -13,7 +13,9 @@ fiscal o de trabajo real — factura, albarán (FACTUSOL o paquete), cobro, nº 
 serie, tracking, WhiteRIP, excepción/tarea SAT, ya trabajado en preparación,
 pagado. Esos se listan aparte con su motivo y se quedan. Tampoco se toca un
 `refunded` / `completed` / `processing` / `cancelled`, ni un pedido sin estado,
-ni un manual, ni una muestra.
+ni un manual, ni una muestra, ni un pedido web TRAÍDO A MANO desde ERP ·
+Pedidos (`manual_web_import_at`): ese `on-hold` lo trajo Bart a propósito para
+trabajarlo; no es un carrito, aunque la tienda aún no lo haya cobrado.
 
 `dry_run=True` (por defecto) solo lista y cuenta. Idempotente: tras `--apply`,
 una segunda pasada da 0.
@@ -132,7 +134,12 @@ def purge_unprocessed_web_orders(
 ) -> dict[str, Any]:
     """Localiza (y con `dry_run=False` BORRA) los pedidos web que nunca
     entraron en el flujo y no tienen huella fiscal ni de trabajo."""
-    stmt = select(Order).where(Order.external_source == OrderSource.WOOCOMMERCE)
+    stmt = select(Order).where(
+        Order.external_source == OrderSource.WOOCOMMERCE,
+        # Traído a mano: un pedido de verdad (la autorización de Bart), nunca
+        # un candidato a borrar, esté como esté en la tienda.
+        Order.manual_web_import_at.is_(None),
+    )
     if store_account_id:
         store = session.scalar(select(IntegrationAccount).where(
             IntegrationAccount.account_id == store_account_id,

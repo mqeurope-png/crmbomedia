@@ -70,7 +70,7 @@ describe("SoporteBusqueda", () => {
     expect(within(items[0]).getByText("FLUX Support · ES")).toBeInTheDocument();
   });
 
-  it("sin onUsar es solo consulta: no hay «Usar en el borrador» ni nada que enviar", async () => {
+  it("sin onUsar solo se busca y se lee: no hay «Usar en el borrador» ni nada que enviar", async () => {
     mockBuscar.mockResolvedValue(respuesta([CAMARA]));
     const user = userEvent.setup();
     render(<SoporteBusqueda />);

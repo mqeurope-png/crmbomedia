@@ -171,6 +171,7 @@ from app.erp.api import leads_router as erp_leads_router  # noqa: E402
 from app.erp.api import ofertas_router as erp_ofertas_router  # noqa: E402
 from app.erp.api import order_timeline_router as erp_order_timeline_router  # noqa: E402
 from app.erp.api import orders_router as erp_orders_router  # noqa: E402
+from app.erp.api import pedidos_web_router as erp_pedidos_web_router  # noqa: E402
 from app.erp.api import plantillas_router as erp_plantillas_router  # noqa: E402
 from app.erp.api import sat_router as erp_sat_router  # noqa: E402
 from app.erp.api import seguimiento_router as erp_seguimiento_router  # noqa: E402
@@ -182,6 +183,8 @@ from app.erp.api import (  # noqa: E402
 )
 
 app.include_router(erp_orders_router)
+# «Traer pedido web»: los `on-hold` de las tiendas, traídos a mano.
+app.include_router(erp_pedidos_web_router)
 app.include_router(erp_order_timeline_router)
 app.include_router(erp_sat_router)
 app.include_router(erp_exceptions_router)
@@ -205,7 +208,8 @@ app.include_router(erp_ia_router)
 app.include_router(erp_ofertas_router)
 app.include_router(erp_plantillas_router)
 # Lo que el redactor va a buscar fuera del catálogo: el soporte de terceros
-# (consulta; también desde la Cola SAT) y el índice de nuestras webs.
+# (solo el redactor, con el mismo ámbito que el asistente) y el índice de
+# nuestras webs.
 app.include_router(erp_soporte_router)
 app.include_router(erp_webs_router)
 

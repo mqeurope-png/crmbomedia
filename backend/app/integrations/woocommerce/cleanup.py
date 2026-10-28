@@ -20,6 +20,9 @@ chequeo automático.
 Los pedidos SIN `woo_status` (importados antes de #376) no se conocen: no son
 candidatos; se cuentan aparte para reconciliarlos primero.
 
+Un pedido web TRAÍDO A MANO desde ERP · Pedidos (`manual_web_import_at`) nunca
+es candidato: entró `on-hold` por decisión de Bart y es un pedido normal.
+
 `dry_run=True` (por defecto) solo lista y cuenta.
 """
 from __future__ import annotations
@@ -95,6 +98,8 @@ def cleanup_non_processing_orders(
     stmt = select(Order).where(
         Order.external_source == OrderSource.WOOCOMMERCE,
         Order.seguimiento_excluded_at.is_(None),
+        # Traído a mano: entró `on-hold` a propósito; no se excluye nunca.
+        Order.manual_web_import_at.is_(None),
     )
     if store_account_id:
         store = session.scalar(select(IntegrationAccount).where(

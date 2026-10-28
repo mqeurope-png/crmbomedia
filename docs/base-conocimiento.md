@@ -387,9 +387,10 @@ Dos paneles más en **Configuración ERP → Base de conocimiento**, antes de
 «Probar», cada uno con su API y sus tablas (aparte de `/api/erp/conocimiento`):
 
 - **«Soporte de terceros (lista blanca)»** (`soporte_fuentes`): los centros de
-  soporte de los fabricantes en los que el redactor y la Cola SAT buscan un
-  procedimiento. Arranca con FLUX (la API pública de Zendesk de
-  `support.flux3dp.com`). Solo se descarga de estos dominios; «Comprobar» dice
+  soporte de los fabricantes en los que el redactor busca un procedimiento
+  («Buscar en soporte»; la Cola SAT ya no tiene consulta propia). Arranca con
+  FLUX (la API pública de Zendesk de `support.flux3dp.com`). Solo se descarga
+  de estos dominios; «Comprobar» dice
   si una fuente sirve contenido o es una cáscara que se pinta con JavaScript.
   No sustituye a la KB de FLUX de arriba: aquella enlaza la categoría del
   modelo; esta trae el artículo que la persona elige.

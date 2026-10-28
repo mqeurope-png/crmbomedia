@@ -91,27 +91,53 @@ El frontend traduce `code` a un toast rojo (reutilizando `formatFastApiDetail`).
 
 ## ERP: soporte de terceros e índice de las webs (27/10/2026)
 
-El rol **`sat`** (el taller, #562) **gana la consulta de soporte**: en la Cola
-SAT, «Consulta de soporte» busca y lee los artículos del soporte de los
-fabricantes. No es una capacidad nueva: esas rutas piden `erp.sat.view` (ver la
-Cola SAT), que el taller ya tenía. **Sigue sin poder enviar correos**: no tiene
-`erp.email.client`, y la consulta no envía nada ni mete nada en un borrador
-(lo único que el taller envía a mano sigue siendo «enviar al taller», a la
-dirección del taller y sin factura).
+**Buscar y leer en el soporte de los fabricantes es del redactor** («Buscar en
+soporte» de la franja del asistente). Desde el 28/10/2026 esas dos rutas van con
+el **mismo ámbito que el asistente** (`/api/emails/asistente`): `require_user` +
+`require_crm_access`, es decir, rol principal **user, manager o admin**. La Cola
+SAT ya **no** tiene «Consulta de soporte»: el taller (`sat`), `pedidos`,
+`comercial` y el visor reciben 403 (`sat` y `viewer` no pasan `require_user`;
+`pedidos` y `comercial`, solo ERP, no pasan `require_crm_access`). `_SAT_CAPS`
+no cambia: el taller sigue con su Cola SAT y **sigue sin poder enviar correos**
+(no tiene `erp.email.client`; lo único que envía a mano es «enviar al taller», a
+la dirección del taller y sin factura).
 
 | Acción | Endpoint | Guard | Quién |
 |---|---|---|---|
-| Buscar y leer en el soporte | `GET /api/erp/soporte/buscar`, `GET /api/erp/soporte/articulo` | `require_sat_view` (`erp.sat.view`) | comercial, pedidos, **sat**, user/manager (legacy), admin |
-| Buscar en el índice de las webs | `GET /api/erp/webs/buscar` | `require_erp_view` (`erp.access`) | los mismos (cualquiera con ERP; viewer no) |
+| Buscar y leer en el soporte (el redactor) | `GET /api/erp/soporte/buscar`, `GET /api/erp/soporte/articulo` | `require_user` + `require_crm_access` (el ámbito del asistente) | user/manager, admin (no sat, pedidos, comercial ni viewer) |
+| Buscar en el índice de las webs | `GET /api/erp/webs/buscar` | `require_erp_view` (`erp.access`) | cualquiera con ERP (comercial, pedidos, sat, user/manager, admin; viewer no) |
 | Lista blanca del soporte: ver, alta, edición, «Comprobar» | `GET`/`POST /api/erp/soporte/fuentes`, `PATCH …/{clave}`, `POST …/{clave}/comprobar` | `require_config` (`erp.config`) | admin |
 | Índice de las webs: estado, «Reindexar ahora», reglas | `GET /api/erp/webs/estado`, `POST /api/erp/webs/reindexar`, `GET`/`POST /api/erp/webs/reglas`, `PATCH`/`DELETE …/{id}` | `require_config` (`erp.config`) | admin |
 | Comprobar una imagen por URL (editor de correo) | `POST /api/emails/imagen-url/comprobar` | `require_user` | cualquier usuario con sesión |
 
 `erp.config` no está en ningún rol operativo (comercial, pedidos, sat): las dos
-listas las edita quien tiene la configuración del ERP, hoy solo el admin. Los
-buscadores de la franja del asistente llaman a las rutas del ERP de arriba: sin
-acceso al ERP, la búsqueda responde 403. Detalle en
+listas las edita quien tiene la configuración del ERP, hoy solo el admin. Quien
+puede usar el redactor (user, manager, admin) tiene también `erp.access`, así
+que los dos buscadores de la franja le responden. Detalle en
 [fuentes-externas.md](fuentes-externas.md).
+
+## ERP: traer un pedido web «en espera» (28/10/2026)
+
+Un pedido de la tienda **en espera** (`on-hold`, casi siempre una transferencia
+aún sin cobrar) no entra solo en BoHub. Desde ERP · Pedidos, «Traer un pedido
+de la web» lo trae a mano, uno a uno. Crear un pedido que además es **web**
+pide las **dos** capacidades: `erp.orders.create` (`Cap.ORDERS_CREATE`) **y**
+`erp.orders.view_web` (`Cap.ORDERS_VIEW_WEB`).
+
+| Acción | Endpoint | Guard | Quién |
+|---|---|---|---|
+| Ver la lista de los «en espera» de las tiendas (solo lee) | `GET /api/erp/pedidos-web/en-espera` | `ORDERS_CREATE` + `ORDERS_VIEW_WEB` | pedidos, admin |
+| Traer uno (crea el pedido en BoHub; nada en FACTUSOL ni en la tienda) | `POST /api/erp/pedidos-web/traer` | `ORDERS_CREATE` + `ORDERS_VIEW_WEB` | pedidos, admin |
+
+- **Comercial:** crea pedidos pero **no ve los web** → no trae.
+- **Taller (`sat`):** ve los web pero **no crea pedidos** → no trae.
+- **user / manager (legacy):** solo lectura del ERP → no trae.
+- Un usuario con varios roles que sume las dos capacidades (p. ej. comercial
+  con `sat` adicional) sí puede, como con cualquier permiso por capacidad.
+
+Una vez dentro, el pedido es uno más: lo aprueba, factura, prepara y envía quien
+ya podía hacerlo con cualquier pedido web. Detalle en
+[erp/pedidos-web-en-espera.md](erp/pedidos-web-en-espera.md).
 
 ## Fuera de alcance / backlog
 

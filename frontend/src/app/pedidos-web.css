@@ -1,0 +1,125 @@
+/* «Traer un pedido de la web» (ERP · Pedidos) y el aviso del pedido traído a
+   mano en la ficha. */
+
+/* Reglas del sistema de diseño: tamaños de letra con var(--fs-*); los datos
+   con --ink o --muted (nunca el gris tenue ni los grises claros antiguos). */
+
+/* --- Modal: lista de los pedidos en espera de las tiendas ----------------------- */
+.pedidos-web-modal .field input[type="search"] { width: 100%; }
+.pedidos-web-tabla-wrap { max-width: 100%; }
+.pedidos-web-tabla { width: 100%; font-size: var(--fs-body); }
+.pedidos-web-tabla td { vertical-align: top; }
+.pedidos-web-tabla .pedidos-web-num { text-align: right; white-space: nowrap; }
+.pedidos-web-tabla td.mono { white-space: nowrap; font-size: var(--fs-mono); }
+.pedidos-web-cliente {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.pedidos-web-cliente .small { font-size: var(--fs-label); color: var(--muted); }
+.pedidos-web-acciones {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+}
+.pedidos-web-ya {
+  padding: 2px var(--sp-2);
+  border-radius: var(--r-pill);
+  background: var(--st-blue-bg);
+  color: var(--st-blue-ink);
+  font-size: var(--fs-label);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.pedidos-web-fila-ya td { background: var(--bg); }
+.pedidos-web-fila-aviso td { padding-top: 0; }
+.pedidos-web-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  font-size: var(--fs-body);
+}
+/* Tiendas que no han respondido: sus pedidos no salen en la lista. */
+.pedidos-web-caidas {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-control);
+  background: var(--st-amber-bg);
+  color: var(--st-amber-ink);
+  font-size: var(--fs-body);
+}
+.pedidos-web-caidas ul { margin: 0; padding-left: var(--sp-4); }
+/* Un nº que no está en espera: qué es en cada tienda. */
+.pedidos-web-consulta { display: flex; flex-direction: column; gap: var(--sp-2); }
+.pedidos-web-consulta p { margin: 0; }
+.pedidos-web-consulta-lista {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.pedidos-web-consulta-lista > li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  font-size: var(--fs-body);
+}
+.pedidos-web-consulta-lista > li > .pedidos-web-error { flex: 1 1 100%; }
+.pedidos-web-consulta-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pedidos-web-motivo { color: var(--ink); font-weight: 600; }
+
+/* --- Ficha del pedido: traído a mano de la web ---------------------------------- */
+.pedido-traido-a-mano {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin: 0 0 var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-panel);
+  background: var(--card);
+  font-size: var(--fs-body);
+  color: var(--ink);
+}
+.pedido-traido-a-mano p { margin: 0; }
+.pedido-traido-a-mano .pedido-traido-sin-cobrar { color: var(--st-amber-ink); font-weight: 600; }
+.pedido-traido-fs {
+  display: inline-block;
+  margin-right: var(--sp-1);
+  padding: 1px var(--sp-2);
+  border-radius: var(--r-pill);
+  font-size: var(--fs-label);
+  font-weight: 600;
+  background: var(--st-neutral-bg);
+  color: var(--st-neutral-ink);
+}
+.pedido-traido-fs.is-ok { background: var(--st-green-bg); color: var(--st-green-ink); }
+.pedido-traido-fs.is-warn { background: var(--st-amber-bg); color: var(--st-amber-ink); }
+.pedido-traido-diferencias {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3) var(--sp-2) calc(var(--sp-3) + var(--sp-4));
+  border-radius: var(--r-control);
+  background: var(--st-amber-bg);
+  color: var(--st-amber-ink);
+}
+
+/* En móvil la tabla pasa a pares etiqueta/valor (`data-table--responsive`):
+   las acciones, a la izquierda como el resto de la tarjeta. */
+@media (max-width: 767px) {
+  .pedidos-web-acciones { justify-content: flex-start; }
+}

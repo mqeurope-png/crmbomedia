@@ -224,6 +224,31 @@ def test_reconcile_status_pending_without_redis(session_factory, http) -> None:
     assert r.json() == {"status": "pending"}
 
 
+def test_reconcile_pone_al_dia_un_traido_a_mano_en_espera(session_factory) -> None:
+    """Un pedido traído a mano desde ERP · Pedidos (`on-hold` en la tienda) se
+    VE en el seguimiento, así que la puesta al día lo cruza como a cualquier
+    activo: cancelado en la tienda con el webhook perdido → `cancelled` y
+    fuera. Un `on-hold` que nadie trajo ya estaba oculto: no se mira."""
+    with session_factory() as s:
+        st = _store(s)
+        traido = _order(s, woo_id="40", number="BOPRIN-40", woo_status="on-hold", store=st)
+        traido.manual_web_import_at = datetime(2026, 10, 23, 12, tzinfo=UTC)
+        carrito = _order(s, woo_id="41", number="BOPRIN-41", woo_status="on-hold", store=st)
+        s.commit()
+        assert _numbers(_rows_for(s)) == {"BOPRIN-40"}
+        calls: list[tuple] = []
+        by_store = {"boprint": {"cancelled": [{"id": 40, "status": "cancelled"},
+                                              {"id": 41, "status": "cancelled"}]}}
+        summary = reconcile_open_order_statuses(
+            s, dry_run=False, client_factory=_factory(by_store, calls),
+        )
+        assert summary["to_cancel"] == 1
+        s.expire_all()
+        assert s.get(Order, traido.id).woo_status == "cancelled"
+        assert s.get(Order, carrito.id).woo_status == "on-hold"
+        assert _numbers(_rows_for(s)) == set()
+
+
 def test_reconcile_store_down_is_reported_not_hang(session_factory) -> None:
     with session_factory() as s:
         st = _store(s)

@@ -72,11 +72,25 @@ def is_billable(order: Any) -> bool:
 
 
 def payment_not_required(order: Any) -> bool:
-    """¿Este pedido sale sin cobro? Una muestra no se cobra (14/10/2026): nada
-    puede esperar su pago, ningún aviso la da por «pendiente de cobro» y no
-    cuenta en lo que mide dinero. Una muestra convertida (con documento) ya es
-    un pedido normal y se cobra como tal."""
-    return is_sample_order(order)
+    """¿Este pedido puede prepararse, embalarse y enviarse sin esperar el cobro?
+    Es la puerta de «Empezar preparación» (`GUARD_PAYMENT_OK`) y el orden de la
+    bandeja (va con los que pueden avanzar). Dos casos:
+
+    - Una MUESTRA no se cobra (14/10/2026): nada puede esperar su pago, ningún
+      aviso la da por «pendiente de cobro» y no cuenta en lo que mide dinero.
+      Una muestra convertida (con documento) ya es un pedido normal y se cobra
+      como tal.
+    - Un pedido web TRAÍDO A MANO (28/10/2026: «Traer pedido web en espera» de
+      ERP · Pedidos, `manual_web_import_at`) SÍ se cobra, pero traerlo es la
+      autorización de Bart para trabajarlo sin esperar a la tienda: pasa la
+      puerta como uno pagado. Su pago sigue siendo el real («pendiente» hasta
+      que la tienda lo cobre) y el aviso «⚠ SIN COBRAR» se queda: es
+      información, no un bloqueo. Lo demás de las muestras (no facturable, sin
+      cobro, Cola SAT directa…) NO le aplica: eso mira `is_sample_order`."""
+    return (
+        is_sample_order(order)
+        or getattr(order, "manual_web_import_at", None) is not None
+    )
 
 
 def next_sample_number(session: Session) -> str:

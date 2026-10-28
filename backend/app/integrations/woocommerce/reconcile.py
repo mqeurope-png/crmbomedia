@@ -38,7 +38,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.erp.models import Order, OrderSource
-from app.erp.seguimiento import _en_curso, _estado, visibility_for_status
+from app.erp.seguimiento import (
+    _en_curso,
+    _estado,
+    visibility_for_status,
+    woo_status_visibility,
+)
 from app.erp.woo_status import NOT_FOUND, REFUNDED, normalize
 from app.integrations.woocommerce.client import WooError, WooHTTPClient
 from app.integrations.woocommerce.payment_methods import (
@@ -73,7 +78,10 @@ def _open_woo_orders(session: Session, store_account_id: str | None) -> list[Ord
     """Pedidos Woo que HOY se ven en el seguimiento (activos): en curso, no
     excluidos a mano y no ya ocultos por estado. Nunca el histórico (que no
     vive en BoHub). Los ya marcados como cancelado/etc. se excluyen: no hay que
-    volver a mirarlos."""
+    volver a mirarlos. Un pedido TRAÍDO A MANO que la tienda aún tiene
+    `on-hold` / `pending` se ve (`woo_status_visibility`), así que entra: si
+    se cancela en la tienda y el webhook se pierde, se pone al día como
+    cualquier otro."""
     stmt = select(Order).where(
         Order.external_source == OrderSource.WOOCOMMERCE,
         Order.external_id.isnot(None),
@@ -87,7 +95,7 @@ def _open_woo_orders(session: Session, store_account_id: str | None) -> list[Ord
             continue
         if not _en_curso(o, _estado(o)):
             continue
-        if visibility_for_status(o.woo_status)[0]:
+        if woo_status_visibility(o)[0]:
             continue  # ya oculto por estado
         out.append(o)
     return out

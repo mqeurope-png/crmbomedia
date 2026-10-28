@@ -9,7 +9,7 @@ enlace.
 | Qué | Dónde se usa | De dónde lee | Código |
 |---|---|---|---|
 | **Imagen por URL** | Botón del editor de correo (también en Plantillas y Firmas, mismo editor) | La URL que pega la persona: solo se comprueba | `api/imagen_url.py`, `frontend/…/email/imagenPorUrl.ts` |
-| **Soporte de terceros** | «Buscar en soporte» de la franja del asistente y «Consulta de soporte» de la Cola SAT | Los centros de soporte de la **lista blanca** (`soporte_fuentes`; de partida, FLUX por la API pública de Zendesk) | `services/soporte/`, `erp/api/soporte.py` |
+| **Soporte de terceros** | «Buscar en soporte» de la franja del asistente | Los centros de soporte de la **lista blanca** (`soporte_fuentes`; de partida, FLUX por la API pública de Zendesk) | `services/soporte/`, `erp/api/soporte.py` |
 | **Índice de las webs propias** | «Buscar en las webs» de la franja | Las webs WordPress del grupo, por su REST pública y la Store API de WooCommerce | `services/webs/`, `erp/api/webs.py` |
 
 **Nada de esto escribe en FACTUSOL ni en las webs.** Solo se lee, por
@@ -193,7 +193,7 @@ texto) o **`error`** (con el detalle). La pantalla avisa si una fuente **activa*
   de la fuente; si no hay resultados, se busca en inglés y se dice en los
   avisos; si la fuente no tiene ese idioma, se va directo al inglés. Sin
   locales no se manda ninguno (el que dé la web). El buscador deja elegir el
-  idioma (el taller puede leer en inglés un artículo no traducido).
+  idioma (se puede leer en inglés un artículo no traducido).
 - **Caché** (`soporte_cache`, `cache.py`): una búsqueda vale **1 día** (un
   artículo nuevo tiene que salir pronto) y un artículo **7 días** (cambian poco
   y el borrador lleva el enlace, que abre siempre el vigente). Clave: sha256 de
@@ -244,13 +244,13 @@ depender de que el modelo obedezca:
   numeradas o con guion, la franja avisa (el cuerpo no se toca). Es lo más
   importante de todo el bloque.
 
-### En la Cola SAT, como consulta
+### Solo en el redactor
 
-Botón **«Consulta de soporte»** en la barra de la Cola SAT
-(`components/soporte/SoporteConsultaModal.tsx`): el mismo buscador
-(`SoporteBusqueda.tsx`) **sin «Usar en el borrador»**. El taller (rol `sat`)
-busca, lee el artículo y abre el enlace en su web; **no envía nada** ni mete
-nada en ningún borrador, y sigue sin poder enviar correos (#562).
+Hasta el 28/10/2026 la Cola SAT tenía un botón «Consulta de soporte» con el
+mismo buscador en modo consulta. **Se ha quitado**: buscar y leer en el soporte
+es del redactor, y las rutas `/buscar` y `/articulo` van con el ámbito del
+asistente (§ Permisos). El taller (rol `sat`) ya no busca ni lee desde la Cola
+SAT, y sigue sin poder enviar correos (#562).
 
 ## Índice de las webs (`services/webs/`)
 
@@ -519,13 +519,16 @@ una, se desactiva.
 
 | Qué | Capacidad | Quién |
 |---|---|---|
-| Soporte: buscar y leer (`/api/erp/soporte/buscar`, `/articulo`) | `erp.sat.view` | comercial, pedidos, **sat**, user/manager (legacy) y admin; viewer no |
-| Índice: buscar (`/api/erp/webs/buscar`) | `erp.access` | cualquiera con ERP (los mismos); viewer no |
+| Soporte: buscar y leer (`/api/erp/soporte/buscar`, `/articulo`) | el ámbito del asistente: `require_user` + `require_crm_access` | quien usa el redactor: rol principal user, manager o admin; sat, pedidos, comercial y viewer no (403) |
+| Índice: buscar (`/api/erp/webs/buscar`) | `erp.access` | cualquiera con ERP (comercial, pedidos, sat, user/manager, admin); viewer no |
 | Lista blanca y «Comprobar»; estado del índice, «Reindexar ahora» y reglas | `erp.config` | admin |
 | Imagen por URL (`/api/emails/imagen-url/comprobar`) | usuario con sesión | cualquiera que use el editor |
 
-Los buscadores de la franja llaman a esas rutas del ERP: quien use el
-asistente sin acceso al ERP recibe un 403 al buscar. Detalle del rol `sat` en
+Los buscadores de la franja llaman a esas rutas del ERP. El del soporte pide
+exactamente lo mismo que el asistente, así que quien tiene la franja puede
+buscar; el del índice pide `erp.access`, que user, manager y admin también
+tienen. Los roles solo ERP (sat, pedidos, comercial) no tienen el redactor y
+reciben 403 en el soporte. Detalle por rol en
 [perfiles-y-permisos.md](perfiles-y-permisos.md).
 
 ## Migración 0148 (`20261027_0148_fuentes_externas.py`)

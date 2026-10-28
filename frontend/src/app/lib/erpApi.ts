@@ -2,6 +2,7 @@ import { ApiError, apiDownloadBlob, apiFetch, apiUpload } from "./api";
 import { downloadName } from "./downloadName";
 import type { CustomerEmailStatus, GeneiLabelAuto } from "./geneiApi";
 import type { LinkedInvoice } from "./linkedInvoice";
+import type { TraidoAMano } from "./pedidosWebApi";
 
 /** BoHub ERP Fase A — cliente de la API de pedidos (PR 3 backend). */
 
@@ -282,6 +283,10 @@ export type OrderDetail = OrderSummary & {
   /** Muestra SIN convertir que ya apunta a un documento (vinculado desde
    *  ERP · Documentos sin cargar sus datos): «Reprocesar vínculo». */
   sample_pending_link?: LinkedOrderDocument | null;
+  /** Pedido web traído a mano desde ERP · Pedidos («en espera» en la tienda):
+   *  cuándo y quién, el veredicto de FACTUSOL y lo que cambió en la web al
+   *  cobrarse. `null` / ausente = entró solo. */
+  traido_a_mano?: TraidoAMano | null;
 };
 
 export type FactusolOriginDocument = {

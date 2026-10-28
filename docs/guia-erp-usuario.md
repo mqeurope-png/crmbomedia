@@ -77,6 +77,7 @@ roles**: su permiso es la **unión** de lo que permite cada uno.
 |---|:---:|:---:|:---:|:---:|
 | Ver el ERP | ✅ | ✅ | ✅ | ✅ |
 | **Pedidos web** (WooCommerce): verlos y actuar | ❌ | ✅ | ✅ (solo lectura) | ✅ |
+| **Traer un pedido de la web** «en espera» (transferencia sin cobrar) | ❌ | ✅ | ❌ | ✅ |
 | Bandeja y ficha de **cualquier** pedido: ver | ✅ (no web) | ✅ | ✅ | ✅ |
 | Pedidos **no web**: crear / aprobar / anular | ✅ | ✅ | ❌ | ✅ |
 | **Muestras**: dar de alta, completar, anular, resolver sus incidencias | ✅ | ✅ | ✅ | ✅ |
@@ -89,7 +90,6 @@ roles**: su permiso es la **unión** de lo que permite cada uno.
 | **Cola SAT**: ver | ✅ | ✅ | ✅ | ✅ |
 | Cola SAT: subir etiqueta | ✅ | ✅ | ✅ | ✅ |
 | Cola SAT: preparar / embalar / técnicos (serie, WhiteRIP) | ❌ | ✅ | ✅ | ✅ |
-| Cola SAT: **consulta de soporte** (buscar y leer; no envía nada) | ✅ | ✅ | ✅ | ✅ |
 | Seguimiento (hoja / Drive) | ❌ | ✅ | ❌ | ✅ |
 | Cuadre (descuadres) | ❌ | ✅ | ❌ | ✅ |
 | Respuesta a leads (leads procesados, modo en seco) | ❌ | ❌ | ❌ | ✅ |
@@ -277,6 +277,70 @@ completado»**/**«Desmarcar completado»**, **«Registrar cobro»**/**«Cobrado
 **«Reincluir en la bandeja»**/**«Quitar de la bandeja»**. Y con casillas
 marcadas puedes actuar en lote: **«Aprobar seleccionados»**, **«Completar
 seleccionados»**, **«Quitar de la bandeja»**, etc.
+
+#### Traer un pedido de la web
+
+**Para qué sirve.** A veces un cliente que paga por **transferencia** te pide la
+factura o la proforma **antes de pagar**. En la tienda ese pedido se queda **«en
+espera»** hasta que llega el dinero, y mientras tanto **no entra solo** en
+BoHub. Con este botón lo traes tú cuando quieras, sin esperar al cobro.
+
+**Cómo.** En **«ERP · Pedidos»**, pulsa **«Traer un pedido de la web»** (arriba,
+junto a «+ Nuevo pedido manual»). Se abre la lista de los pedidos **en espera**
+de todas las tiendas, leída en ese momento: tienda, nº, fecha, cliente o
+empresa, importe y forma de pago. Busca por **número** o por **cliente** (también
+empresa o email). Pulsa **«Traer»** en el que quieras y se abre el pedido ya
+creado en BoHub. Si uno ya está en BoHub, sale marcado con **«Ya está en
+BoHub»** y el botón **«Abrir»**. Si una tienda no contesta, te lo dice y las
+demás salen igual.
+
+**Y después, un pedido normal.** Entra en **«Por revisar»**; lo apruebas, lo
+facturas, lo preparas, lo embalas y lo envías como cualquier otro, **aunque no
+esté pagado**: traerlo ya es la autorización. La ficha te recuerda quién lo
+trajo y cuándo, y mientras no se cobre dice **«aún sin cobrar en la tienda»**
+(en la Cola SAT sale el aviso **«⚠ SIN COBRAR»**): es información, no un
+bloqueo. Si se anula, la ficha dice que está anulado.
+Cuando la tienda recibe la transferencia, el pedido **se actualiza solo** (pasa
+a pagado). **No se crea otro**: ni al cobrarse, ni si lo traes dos veces. Y si
+ya hay en BoHub un pedido para él (por ejemplo, uno que creaste desde
+FACTUSOL), te lo dice con su **«Abrir»** y no crea otro: decides tú. Si entre
+medias la web cambió el pedido (importe o líneas), BoHub no toca nada y te avisa
+en la ficha de qué ha cambiado para que lo revises.
+
+**FACTUSOL.** BoHub **no crea** el pedido de cliente: lo crea la web, como con
+cualquier pedido web. Al traerlo, BoHub mira si FACTUSOL ya tiene el de la tienda
+y te lo dice en la ficha, con una etiqueta y una frase. Es lo que había **al
+traerlo** (no se vuelve a mirar): lo de ahora lo ves en la sección **FACTUSOL**
+de la ficha, que lo comprueba en vivo.
+
+- **«Al traerlo, FACTUSOL: estaba enlazado»** — ya tenía su pedido de cliente
+  (por ejemplo, el de referencia *FLE-005873*), del mismo cliente y por el mismo
+  importe. No hay que hacer nada.
+- **«Al traerlo, FACTUSOL: aún no estaba»** — no se encontró, y **no se ha
+  creado nada**. En cuanto la web lo pase a FACTUSOL, BoHub lo enlaza solo.
+- **«Al traerlo, FACTUSOL: posible, revisar»** o **«… dudoso, revisar»** — ha
+  encontrado algo que no casa del todo (otra referencia, otro cliente u otro
+  importe, o más de uno): míralo en FACTUSOL. Si la frase te dice que revises el
+  prefijo de la tienda, es en Configuración ERP.
+- **«Al traerlo, FACTUSOL: sin comprobar»** — FACTUSOL no contestaba. No impide
+  nada.
+
+En ningún caso se escribe nada en FACTUSOL al traer. Para emitir la factura hace
+falta que el pedido de cliente de la web ya esté en FACTUSOL, como siempre.
+
+**Cancelaciones.** Si el pedido se **cancela en la tienda** después de traerlo,
+también se anula en BoHub, como cualquier pedido web (si ya está facturado no se
+anula solo: decides tú). Y lo puedes **anular desde BoHub** como cualquier
+pedido, con «Anular pedido» (eso no cambia nada en la tienda). Lo que nadie
+cancela se queda esperando el cobro, sin avisos ni fecha de caducidad.
+
+**Lo que no sale en la lista.** Los **carritos sin pagar**, los **pagos
+fallidos** y los **cancelados**. Si buscas su número, te dice qué es (por
+ejemplo, «cancelado en la web: no se puede traer»). Tampoco hace falta traer los
+que ya están pagados: entran solos, como siempre.
+
+Lo pueden hacer **ERP Pedidos** y el **Administrador** (ver [Roles y
+permisos](#roles-y-permisos)).
 
 ### Ficha de pedido
 
@@ -930,14 +994,6 @@ En cada tarjeta:
 
 **«Añadir pedido a la cola»** — para meter a mano un pedido en el taller por su
 número (p. ej. *BOP-1234*).
-
-**«Consulta de soporte»** — botón de la barra de la cola. Busca en el soporte
-de los fabricantes (hoy, el de FLUX): escribe el modelo y lo que pasa
-(*«Beambox calibrar cámara»*), cambia el idioma si hace falta y pulsa
-**«Buscar»**. **«Leer»** abre el artículo ahí mismo; el título y **«Abrir en su
-web»** llevan al artículo, y de ahí copias el enlace si se lo tienes que pasar a
-alguien. **Es solo consulta: no envía nada** ni lo mete en ningún correo. Si no
-sale nada, prueba con otras palabras, con el modelo o en inglés.
 
 ### Seguimiento
 
@@ -1670,9 +1726,8 @@ lo que va a pasar. Secciones destacadas:
   saldrían para una web, idioma, interés, texto y máquina del cliente. Ver
   [docs/base-conocimiento.md](base-conocimiento.md).
   Dos paneles más: **«Soporte de terceros (lista blanca)»**, los centros de
-  soporte de los fabricantes donde buscan «Buscar en soporte» del asistente y
-  la «Consulta de soporte» de la Cola SAT (de partida, FLUX; solo se descarga
-  de ahí). Una fuente nueva entra desactivada: pulsa **«Comprobar»** antes de
+  soporte de los fabricantes donde busca «Buscar en soporte» del asistente (de
+  partida, FLUX; solo se descarga de ahí). Una fuente nueva entra desactivada: pulsa **«Comprobar»** antes de
   activarla (te dice si la web da el artículo o llega vacío porque se pinta con
   JavaScript). Y **«Índice de las webs»**: las páginas, entradas y productos de
   nuestras webs que puede citar el asistente. Se recorren solas una vez al
@@ -1784,7 +1839,9 @@ después**. Con esto un compañero nuevo puede llevar un pedido de principio a f
 **solo cuando el pedido ha entrado en el flujo** —*processing* (pagado y listo
 para preparar), *completed* o *refunded*—, BoHub lo crea automáticamente. Un
 carrito *pending* / *on-hold* / *failed* / *draft* / *cancelled* no se crea; si
-más tarde pasa a *processing*, se crea en ese momento. Nace con:
+más tarde pasa a *processing*, se crea en ese momento. (Un *on-hold*, «en
+espera», lo puedes traer tú antes: ver [Traer un pedido de la
+web](#traer-un-pedido-de-la-web).) Nace con:
 
 - **Preparación = Pend. revisión** → aparece en la cola **«Por revisar»**.
 - **Pago = Pagado** si la web ya registró el pago.

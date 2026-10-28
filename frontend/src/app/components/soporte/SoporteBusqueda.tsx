@@ -16,13 +16,11 @@ import {
  *  título, extracto, de qué centro es y el enlace al artículo; «Leer» lo trae
  *  limpio para leerlo aquí mismo.
  *
- *  Dos usos:
- *  - Consulta (sin `onUsar`): la Cola SAT. Se busca y se lee; no hay nada que
- *    enviar ni que meter en ningún correo.
- *  - Redactor (con `onUsar` / `onSinResultados`): la persona elige el
- *    artículo que explica el procedimiento y el borrador lo cita con su
- *    enlace. Si la búsqueda no encuentra nada, puede pedir que el borrador lo
- *    diga en vez de inventarse los pasos. */
+ *  Lo usa el redactor (con `onUsar` / `onSinResultados`): la persona elige el
+ *  artículo que explica el procedimiento y el borrador lo cita con su enlace.
+ *  Si la búsqueda no encuentra nada, puede pedir que el borrador lo diga en
+ *  vez de inventarse los pasos. Sin `onUsar` el buscador solo busca y lee (no
+ *  hay nada que meter en ningún correo). */
 export type SoporteBusquedaProps = {
   /** El idioma en el que se busca de entrada (el del correo, si se sabe). */
   idioma?: string | null;

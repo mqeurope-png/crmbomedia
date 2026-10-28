@@ -444,10 +444,15 @@ def pedido_sin_aprobar(ctx: Contexto) -> Iterator[Hallazgo]:
             continue
         if is_approved(o):
             continue
+        # Un web traído a mano (on-hold en la tienda) NO sale oculto: traerlo
+        # fue la autorización y es trabajo pendiente de aprobar como cualquiera.
         oculto, _motivo, _reemb = woo_status_visibility(o)
         if oculto and o.seguimiento_forced_at is None:
             continue                          # carrito web sin pagar: no es trabajo
-        alta = o.placed_at or o.created_at
+        # Un traído a mano espera aprobación desde que entró en BoHub, no desde
+        # la fecha de la web: el `on-hold` pudo pasar semanas esperando la
+        # transferencia en la tienda y antes de traerlo no se podía aprobar.
+        alta = o.manual_web_import_at or o.placed_at or o.created_at
         dias = ctx.dias_desde(alta)
         if dias is None or dias <= umbral:
             continue

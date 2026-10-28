@@ -2,8 +2,8 @@ import { apiFetch } from "./api";
 
 /** Soporte de terceros (`/api/erp/soporte`): buscar y leer artículos de los
  *  centros de soporte de la lista blanca. Es CONSULTA, no envía nada: lo usa
- *  el taller desde la Cola SAT (`erp.sat.view`) y la oficina desde el
- *  redactor. La lista blanca es de administración (`erp.config`). */
+ *  la oficina desde el redactor («Buscar en soporte»; el mismo ámbito que el
+ *  asistente). La lista blanca es de administración (`erp.config`). */
 
 export type SoporteResultado = {
   fuente: string;

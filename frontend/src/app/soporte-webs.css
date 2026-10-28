@@ -1,20 +1,18 @@
-/* Consulta de soporte (Cola SAT) y paneles de soporte e índice de webs. */
+/* Buscador del soporte (redactor) y paneles de soporte e índice de webs. */
 
 /* Reglas del sistema de diseño: tamaños de letra con var(--fs-*); los datos
    con --ink o --muted (nunca el gris tenue ni los grises claros antiguos). */
 
 /* --- Buscador del soporte de los fabricantes (SoporteBusqueda) -----------------
- * Sirve igual en el modal de la Cola SAT (consulta) y en el del redactor
- * (con «Usar en el borrador»). El artículo se lee dentro del resultado, en un
- * iframe sin scripts. */
+ * Lo usa el redactor («Buscar en soporte», con «Usar en el borrador»). El
+ * artículo se lee dentro del resultado, en un iframe sin scripts. */
 .soporte-busqueda {
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
   min-width: 0;
 }
-.soporte-busqueda .button,
-.button.soporte-abrir { gap: var(--sp-1); }
+.soporte-busqueda .button { gap: var(--sp-1); }
 .soporte-busqueda-form {
   display: flex;
   flex-wrap: wrap;
@@ -289,11 +287,3 @@
 .webs-indice-carga.is-error { color: var(--st-red-ink); }
 .webs-indice-reglas-lista { display: flex; flex-direction: column; gap: var(--sp-2); }
 .webs-indice-reglas-lista[hidden] { display: none; }
-
-/* El pie pegajoso de `.erp-modal` se queda 16 px por encima de su sitio (el
- * pegado descuenta el relleno del diálogo) y tapaba la última línea del
- * buscador, justo donde sale el error o el «no hay resultados». Aquí se pega
- * al borde de verdad. */
-.modal-dialog.erp-modal.soporte-consulta-modal > .modal-actions {
-  bottom: calc(-1 * var(--sp-4));
-}

@@ -119,11 +119,18 @@ class WooHTTPClient:
     def __init__(
         self, account: IntegrationAccount,
         *, transport: httpx.BaseTransport | None = None,
+        timeout: float = 30.0, max_retries: int = MAX_RETRIES,
     ):
         self.account = account
         self.creds = WooCredentials.from_account(account)
         # Inyectable en tests (MockTransport); None → salida real a red.
         self._transport = transport
+        # Tiempo por petición y reintentos de la API REST. Los jobs usan los de
+        # siempre (30 s, 3 reintentos con espera); una pantalla que espera a
+        # varias tiendas a la vez («Traer pedido web») pide menos tiempo y
+        # ningún reintento, para no quedarse colgada por una tienda lenta.
+        self._timeout = timeout
+        self._max_retries = max(0, int(max_retries))
 
     def _url(self, path: str) -> str:
         return f"{self.creds.base_url}/wp-json/wc/v3{path}"
@@ -293,17 +300,18 @@ class WooHTTPClient:
         while True:
             attempt += 1
             try:
-                with httpx.Client(timeout=30.0, transport=self._transport) as c:
+                with httpx.Client(timeout=self._timeout, transport=self._transport) as c:
                     resp = c.request(
                         method, url, params=params or {}, json=json,
                         auth=(self.creds.consumer_key, self.creds.consumer_secret),
                     )
             except httpx.TransportError as exc:
-                if attempt > MAX_RETRIES:
+                if attempt > self._max_retries:
                     raise WooError(f"Error de red: {exc}") from exc
                 self._sleep_backoff(attempt)
                 continue
-            if resp.status_code in (429, 500, 502, 503, 504) and attempt <= MAX_RETRIES:
+            if (resp.status_code in (429, 500, 502, 503, 504)
+                    and attempt <= self._max_retries):
                 self._sleep_backoff(attempt)
                 continue
             if resp.status_code >= 400:

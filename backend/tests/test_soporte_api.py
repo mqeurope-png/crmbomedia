@@ -1,5 +1,6 @@
-"""La API del soporte de terceros (`/api/erp/soporte`): la consulta es del
-taller también (rol `sat`, que sigue sin poder enviar correos) y la lista
+"""La API del soporte de terceros (`/api/erp/soporte`): buscar y leer son del
+redactor (el mismo ámbito que el asistente: rol principal user, manager o
+admin; el taller, `pedidos`, `comercial` y el visor reciben 403) y la lista
 blanca es de administración. Las formas son las de `soporteApi.ts`."""
 from __future__ import annotations
 
@@ -97,12 +98,12 @@ def peticiones() -> Generator[list[httpx.URL], None, None]:
 
 
 # ---------------------------------------------------------------------------
-# Consulta: el taller puede buscar y leer…
+# Consulta: la del redactor (quien puede usar el asistente busca y lee)…
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("rol", ["sat", "admin", "user", "comercial", "pedidos"])
-def test_buscar_y_leer_con_ver_la_cola_sat(http, peticiones, rol):
+@pytest.mark.parametrize("rol", ["user", "manager", "admin"])
+def test_buscar_y_leer_con_el_ambito_del_redactor(http, peticiones, rol):
     h = auth_headers(http, rol)
 
     r = http.get("/api/erp/soporte/buscar", params={"q": "cámara", "idioma": "es"}, headers=h)
@@ -126,7 +127,7 @@ def test_buscar_y_leer_con_ver_la_cola_sat(http, peticiones, rol):
 
 
 def test_la_cache_se_guarda_entre_peticiones(http, peticiones):
-    h = auth_headers(http, "sat")
+    h = auth_headers(http, "user")
     for _ in range(2):
         assert http.get("/api/erp/soporte/buscar", params={"q": "cámara"},
                         headers=h).status_code == 200
@@ -135,15 +136,23 @@ def test_la_cache_se_guarda_entre_peticiones(http, peticiones):
     assert len(peticiones) == 2
 
 
-def test_el_visor_no_consulta(http, peticiones):
-    h = auth_headers(http, "viewer")
-    assert http.get("/api/erp/soporte/buscar", params={"q": "cámara"},
-                    headers=h).status_code == 403
+@pytest.mark.parametrize("rol", ["sat", "pedidos", "comercial", "viewer"])
+def test_fuera_del_redactor_no_se_consulta(http, peticiones, rol):
+    """La Cola SAT ya no tiene «Consulta de soporte» (28/10/2026): el taller
+    (`sat`) y el visor no pasan `require_user`; `pedidos` y `comercial` (solo
+    ERP) no pasan `require_crm_access`. Ni buscan ni leen, y no se sale a la
+    red."""
+    h = auth_headers(http, rol)
+    r = http.get("/api/erp/soporte/buscar", params={"q": "cámara"}, headers=h)
+    assert r.status_code == 403, r.text
+    r = http.get("/api/erp/soporte/articulo", params={"fuente": "flux", "id": "111"},
+                 headers=h)
+    assert r.status_code == 403, r.text
     assert peticiones == []
 
 
 def test_los_errores_salen_con_codigo_y_detalle(http, peticiones):
-    h = auth_headers(http, "sat")
+    h = auth_headers(http, "user")
 
     r = http.get("/api/erp/soporte/articulo", params={"fuente": "otra", "id": "1"}, headers=h)
     assert r.status_code == 404
