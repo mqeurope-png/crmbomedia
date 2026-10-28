@@ -19,6 +19,18 @@ export type TipoBloque =
 /** Un texto de bloque: un texto o un texto por idioma (`{es: …, en: …}`). */
 export type TextoBloque = string | Record<string, string>;
 
+/** QUÉ producto lleva una ficha: del catálogo (`fuente` del compositor) o
+ *  montado desde una página del índice de las webs (`fuente: "web"`,
+ *  `origen_id: "<sitio>:<wp_id>"`). Una ficha de la web puede llevar el
+ *  `precio` que dijo quien envía y otra `imagen` de su galería; el resto
+ *  (nombre, descripción, enlace, precio de la web) lo resuelve el servidor. */
+export type ProductoRef = {
+  fuente: string;
+  origen_id: string;
+  precio?: string;
+  imagen?: string;
+};
+
 export type BloqueCompuesto = {
   id: string;
   tipo: TipoBloque;
@@ -28,8 +40,8 @@ export type BloqueCompuesto = {
   texto?: TextoBloque;
   boton?: TextoBloque;
   botones?: { texto: TextoBloque; url: TextoBloque }[];
-  producto?: { fuente: string; origen_id: string };
-  productos?: { fuente: string; origen_id: string }[];
+  producto?: ProductoRef;
+  productos?: ProductoRef[];
   marca?: string;
   /** «vídeo»: QUÉ vídeo es; su URL, miniatura, título y duración los
    *  resuelve el servidor desde su origen (la URL pegada, la tabla de vídeos). */

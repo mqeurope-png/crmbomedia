@@ -15445,6 +15445,9 @@ main.shell.shell-wide.erp-seg-page { width: calc(100% - 32px); max-width: none; 
 .asistente-panel-detalle p { margin: 4px 0; }
 .asistente-panel-lista { margin: 4px 0 0; padding-left: 18px; }
 .asistente-panel-lista li { word-break: break-all; }
+/* Lo que hay que revisar en una línea de «Lo que ha usado» (un enlace del
+   catálogo que no es un producto de nuestras webs). */
+.asistente-panel-aviso { color: var(--st-amber-ink, #92400e); font-weight: 600; }
 .asistente-error { margin: 0 0 8px; }
 .erp-ia-uso { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: var(--sp-2); }
 .erp-ia-uso-dato { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; }
