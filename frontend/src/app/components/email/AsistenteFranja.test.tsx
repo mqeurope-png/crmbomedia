@@ -570,6 +570,30 @@ describe("AsistenteFranja — lo que consulta solo (Webs y Soporte)", () => {
     expect(screen.getByRole("checkbox", { name: "Soporte" })).toBeChecked();
   });
 
+  it("una casilla tocada antes de saber quién es el usuario se le guarda en cuanto se sabe", async () => {
+    // Tenía guardada «Webs» desmarcada; toca «Soporte» antes de que responda
+    // quién es: «Soporte» se queda como la dejó y «Webs», como la tenía.
+    window.localStorage.setItem("bohub.asistente.fuentes.u-1", JSON.stringify({ webs: false, soporte: true }));
+    let responder: (u: { id: string }) => void = () => undefined;
+    usuarios.getCurrentUser.mockReturnValueOnce(new Promise((r) => { responder = r; }));
+    montar();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("checkbox", { name: "Soporte" }));
+    expect(screen.getByRole("checkbox", { name: "Soporte" })).not.toBeChecked();
+    // Todavía no se sabe para quién: no se ha guardado nada nuevo.
+    expect(JSON.parse(window.localStorage.getItem("bohub.asistente.fuentes.u-1") ?? "null"))
+      .toEqual({ webs: false, soporte: true });
+    await act(async () => { responder({ id: "u-1" }); await Promise.resolve(); });
+    expect(JSON.parse(window.localStorage.getItem("bohub.asistente.fuentes.u-1") ?? "null"))
+      .toEqual({ webs: false, soporte: false });
+    expect(screen.getByRole("checkbox", { name: "Soporte" })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Webs" })).not.toBeChecked();
+    // Y lo que toque después se guarda al momento, como siempre.
+    await user.click(screen.getByRole("checkbox", { name: "Webs" }));
+    expect(JSON.parse(window.localStorage.getItem("bohub.asistente.fuentes.u-1") ?? "null"))
+      .toEqual({ webs: true, soporte: false });
+  });
+
   it("«Lo que ha usado» dice qué consultó solo, con sus enlaces", async () => {
     api.generarBorradorAsistente.mockResolvedValueOnce(borrador({
       contexto: {

@@ -202,10 +202,14 @@ export function AsistenteFranja({
   const [formato, setFormato] = useState<FormatoAsistente>("auto");
   // Qué consulta el asistente solo al redactar (nuestras webs, el soporte).
   // Una casilla tocada antes de saber quién es el usuario no se pisa con lo
-  // que tenía guardado.
+  // que tenía guardado: se queda como la dejó y se le guarda en cuanto se
+  // sabe quién es. Las referencias son lo de ahora mismo, sin esperar a
+  // pintar: lo que se ve y quién es.
   const [fuentes, setFuentes] = useState<FuentesAsistente>(FUENTES_DE_PARTIDA);
-  const fuentesTocadas = useRef(false);
+  const fuentesRef = useRef<FuentesAsistente>(FUENTES_DE_PARTIDA);
+  const fuentesTocadas = useRef(new Set<keyof FuentesAsistente>());
   const [usuarioId, setUsuarioId] = useState<string | null>(null);
+  const usuarioRef = useRef<string | null>(null);
   const [turnos, setTurnos] = useState<BorradorAsistente[]>([]);
   const [actual, setActual] = useState(0);
   const [ocupado, setOcupado] = useState(false);
@@ -225,10 +229,21 @@ export function AsistenteFranja({
   useEffect(() => {
     getCurrentUser()
       .then((u) => {
+        usuarioRef.current = u.id;
         setUsuarioId(u.id);
         const guardado = leerAlcance(u.id);
         if (guardado) setAlcance(guardado);
-        if (!fuentesTocadas.current) setFuentes(leerFuentes(u.id));
+        // Lo guardado, salvo las casillas que ya ha tocado: esas, como las
+        // dejó, y se le guardan (antes no se sabía para quién).
+        const tocadas = fuentesTocadas.current;
+        const guardadas = leerFuentes(u.id);
+        const finales: FuentesAsistente = {
+          webs: tocadas.has("webs") ? fuentesRef.current.webs : guardadas.webs,
+          soporte: tocadas.has("soporte") ? fuentesRef.current.soporte : guardadas.soporte,
+        };
+        fuentesRef.current = finales;
+        setFuentes(finales);
+        if (tocadas.size > 0) guardarFuentes(u.id, finales);
       })
       .catch(() => undefined);
   }, []);
@@ -291,10 +306,12 @@ export function AsistenteFranja({
   // Una casilla vale para la petición siguiente (no rehace el borrador) y se
   // recuerda para este usuario.
   function cambiarFuente(id: keyof FuentesAsistente, marcada: boolean) {
-    const nuevas = { ...fuentes, [id]: marcada };
-    fuentesTocadas.current = true;
+    const nuevas = { ...fuentesRef.current, [id]: marcada };
+    fuentesTocadas.current.add(id);
+    fuentesRef.current = nuevas;
     setFuentes(nuevas);
-    guardarFuentes(usuarioId, nuevas);
+    // Sin usuario todavía no se guarda nada: lo guarda la carga, al llegar.
+    guardarFuentes(usuarioRef.current, nuevas);
   }
 
   function refrescarSeleccion() {
@@ -668,17 +685,19 @@ type PaginaUsada = {
   usado: boolean | null;
 };
 
-/** Qué buscó el asistente y quién preparó la búsqueda. */
+/** Cómo preparó la búsqueda el asistente (el plan). Lo que buscó de verdad va
+ *  aparte (`buscadoEnSoporte`, `buscadoEnWebs`): el plan se calcula aunque una
+ *  casilla vaya desmarcada o la fuente no llegue a consultarse. */
 type ConsultaUsada = {
   tecnica: boolean;
-  soporteEn: string;
-  soporte: string;
+  /** Lo que buscaría en las webs; vacío si el correo no pregunta por ningún producto. */
   webs: string;
   /** La preparó la IA o, si no respondió a tiempo, las palabras del correo. */
   origen: "ia" | "palabras" | null;
   /** La IA falló y la preparó por palabras. */
   fallo: boolean;
-  /** Una corrección: lo trajo el primer borrador y no se volvió a buscar. */
+  /** Una corrección: reutiliza lo que trajo el primer borrador (y busca solo
+   *  lo que ese no miró o no pudo mirar). */
   reutilizada: boolean;
 };
 
@@ -703,10 +722,16 @@ type MaterialUsado = {
   sinFuentes: boolean;
   /** Lo que se buscó en el soporte de verdad (en inglés y, si nada, en el idioma del correo). */
   buscadoEnSoporte: string[];
+  /** Lo que se buscó en las webs de verdad. */
+  buscadoEnWebs: string | null;
   /** La búsqueda en las webs que no encontró nada. */
   websSinResultados: string | null;
   /** Lo que tardó la consulta entera (el plan incluido), en ms. */
   ms: number | null;
+  /** Lo que tardó cada fuente, en ms: solo lo hay si se buscó en este turno
+   *  (una corrección que reutiliza lo del primer borrador no lo trae). */
+  soporteMs: number | null;
+  websMs: number | null;
   /** Usó el artículo sin poner su enlace: se añadió al final. */
   enlaceAnadido: boolean;
   /** El borrador trae pasos que no salen de ningún artículo. */
@@ -755,8 +780,6 @@ function consultaDe(c: unknown): ConsultaUsada | null {
   const origen = c["origen"] === "ia" || c["origen"] === "palabras" ? c["origen"] : null;
   return {
     tecnica: c["tecnica"] === true,
-    soporteEn: cadena(c["soporte_en"]),
-    soporte: cadena(c["soporte"]),
     webs: cadena(c["webs"]),
     origen,
     fallo: Boolean(cadena(c["error"])),
@@ -807,11 +830,24 @@ export function materialUsado(ctx: Record<string, unknown>): MaterialUsado {
     buscadoEnSoporte: Array.isArray(m["buscado_en_soporte"])
       ? m["buscado_en_soporte"].map(cadena).filter(Boolean)
       : [],
+    buscadoEnWebs: cadena(m["buscado_en_webs"]) || null,
     websSinResultados: cadena(m["webs_sin_resultados"]) || null,
     ms: typeof m["ms"] === "number" ? m["ms"] : null,
+    soporteMs: typeof m["soporte_ms"] === "number" ? m["soporte_ms"] : null,
+    websMs: typeof m["webs_ms"] === "number" ? m["webs_ms"] : null,
     enlaceAnadido: m["enlace_anadido"] === true,
     pasosSinProcedimiento: m["pasos_sin_procedimiento"] === true,
   };
+}
+
+/** Un correo técnico con «Soporte» marcada en el que no se buscó nada y no
+ *  consta por qué (ni sin centro de ayuda, ni un fallo): se dice igual, que
+ *  el soporte no se ha consultado. Nunca se da por buscado. */
+function soporteSinBuscar(d: MaterialUsado): boolean {
+  return Boolean(d.fuentes?.soporte && d.consulta?.tecnica)
+    && d.buscadoEnSoporte.length === 0 && d.soporte === null && d.otrosSoporte.length === 0
+    && d.sinResultados === null && d.sinCentro === null && !d.sinFuentes
+    && !d.noConsultado.some((n) => n.fuente === "soporte");
 }
 
 /** Lo de fuera en la frase de «Lo que ha usado». */
@@ -832,6 +868,7 @@ function partesDeFuera(d: MaterialUsado): string[] {
   }
   if (d.noConsultado.some((n) => n.fuente === "soporte")) partes.push("no se pudo consultar el soporte");
   if (d.sinCentro) partes.push(`${d.sinCentro} no tiene centro de ayuda en la lista`);
+  if (soporteSinBuscar(d)) partes.push("no se consultó el soporte");
   if (d.webs.length > 0) {
     partes.push(`${d.webs.length} página${plural(d.webs.length)} de nuestras webs`);
   } else if (d.websSinResultados) {
@@ -851,32 +888,45 @@ function pistaDeFuera(d: MaterialUsado): string {
       : webs ? "consultó las webs" : "";
 }
 
-/** «Buscó «…» en el soporte · «…» en las webs — la preparó la IA, en 1,2 s». */
+/** «Buscó «…» en el soporte · «…» en las webs — la preparó la IA, en 1,2 s».
+ *  Solo lo que se buscó de verdad (lo apunta el backend al buscar): nunca lo
+ *  que preparó el plan ni las casillas de ahora, que no dicen que se buscara
+ *  (una casilla desmarcada en el primer borrador, una marca sin centro de
+ *  ayuda, una fuente que no respondió). */
 function busquedaDe(d: MaterialUsado): string {
   const c = d.consulta;
   if (!c) return "";
-  const trozos: string[] = [];
-  // Lo que se buscó de verdad; si no se apuntó (una corrección, un fallo), lo
-  // que preparó el plan, si el soporte llegó a consultarse.
-  const enSoporte = d.buscadoEnSoporte.length > 0
-    ? d.buscadoEnSoporte
-    : d.fuentes?.soporte && c.tecnica && !d.sinCentro && !d.sinFuentes
-      ? [c.soporteEn, c.soporte].filter((q, i, todas) => q && todas.indexOf(q) === i)
-      : [];
-  if (enSoporte.length > 0) trozos.push(`«${enSoporte.join(" / ")}» en el soporte`);
-  if (d.fuentes?.webs && c.webs) trozos.push(`«${c.webs}» en las webs`);
-  if (trozos.length === 0) return "";
-  const quien = c.reutilizada
-    ? "la del primer borrador: esta corrección no ha vuelto a buscar"
-    : c.origen === "ia"
-      ? "la preparó la IA"
-      : c.origen === "palabras"
-        ? `con las palabras del correo${c.fallo ? " (la IA no pudo prepararla)" : ""}`
-        : "";
-  const tiempo = d.ms !== null && !c.reutilizada
+  const soporte = d.buscadoEnSoporte.length > 0 ? `«${d.buscadoEnSoporte.join(" / ")}» en el soporte` : "";
+  const webs = d.buscadoEnWebs ? `«${d.buscadoEnWebs}» en las webs` : "";
+  if (!soporte && !webs) return "";
+  if (c.reutilizada) {
+    // Una corrección reutiliza lo que buscó el primer borrador; lo que ese no
+    // miró (su casilla iba desmarcada) o no pudo mirar lo busca ahora, con la
+    // búsqueda que se preparó entonces. Lo buscado ahora trae su tiempo, o el
+    // fallo de las webs (lo del primer borrador no se arrastra).
+    const soporteAhora = Boolean(soporte) && d.soporteMs !== null;
+    const websAhora = Boolean(webs)
+      && (d.websMs !== null || d.noConsultado.some((n) => n.fuente === "webs"));
+    const ahora = [soporteAhora ? soporte : "", websAhora ? webs : ""].filter(Boolean);
+    const antes = [soporteAhora ? "" : soporte, websAhora ? "" : webs].filter(Boolean);
+    const grupos: string[] = [];
+    if (ahora.length > 0) {
+      grupos.push(`${ahora.join(" · ")} — en esta corrección, con la búsqueda del primer borrador`);
+    }
+    if (antes.length > 0) {
+      grupos.push(`${antes.join(" · ")} — la del primer borrador: esta corrección no ha vuelto a buscar`);
+    }
+    return `Buscó ${grupos.join("; ")}`;
+  }
+  const quien = c.origen === "ia"
+    ? "la preparó la IA"
+    : c.origen === "palabras"
+      ? `con las palabras del correo${c.fallo ? " (la IA no pudo prepararla)" : ""}`
+      : "";
+  const tiempo = d.ms !== null
     ? `, en ${(d.ms / 1000).toLocaleString("es-ES", { maximumFractionDigits: 1 })} s`
     : "";
-  return `Buscó ${trozos.join(" · ")}${quien ? ` — ${quien}` : ""}${tiempo}`;
+  return `Buscó ${[soporte, webs].filter(Boolean).join(" · ")}${quien ? ` — ${quien}` : ""}${tiempo}`;
 }
 
 function usoDe(usado: boolean | null): string {
@@ -904,8 +954,10 @@ function LoQueTrajo({ d }: { d: MaterialUsado }) {
   const soporteSinConsultar = Boolean(d.fuentes?.soporte && d.consulta && !d.consulta.tecnica && !algoDelSoporte);
   const websSinConsultar = Boolean(d.fuentes?.webs && d.consulta && !d.consulta.webs
     && d.webs.length === 0 && !d.websSinResultados && !falloWebs);
+  const soporteSinBuscarlo = soporteSinBuscar(d);
   const busqueda = busquedaDe(d);
-  if (!algoDelSoporte && !d.pasosSinProcedimiento && !soporteSinConsultar && d.webs.length === 0
+  if (!algoDelSoporte && !d.pasosSinProcedimiento && !soporteSinConsultar && !soporteSinBuscarlo
+      && d.webs.length === 0
       && !d.websSinResultados && !websSinConsultar && d.noConsultado.length === 0 && !busqueda) {
     return null;
   }
@@ -942,6 +994,9 @@ function LoQueTrajo({ d }: { d: MaterialUsado }) {
       ) : null}
       {soporteSinConsultar ? (
         <li>Soporte: no se ha consultado{detalle("el correo no es técnico")}</li>
+      ) : null}
+      {soporteSinBuscarlo ? (
+        <li>Soporte: no se ha consultado{detalle("no hay ningún procedimiento del fabricante que citar")}</li>
       ) : null}
       {d.webs.map((w) => (
         <li key={`w-${w.id}`}>

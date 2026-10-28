@@ -20,8 +20,10 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from collections.abc import Generator
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -40,7 +42,7 @@ from app.main import app
 from app.models.crm import User, UserEmailAliasPref, UserRole
 from app.models.fuentes_externas import SoporteFuente, WebIndiceEntrada
 from app.models.ia import PROPOSITO_ASISTENTE, PROPOSITO_CONSULTA, BorradorAsistente, LlamadaIA
-from app.services import llm, soporte
+from app.services import llm, soporte, webs
 from app.services.asistente import consulta_fuentes, material_fuera, redactor, texto
 from app.services.asistente.config import configuracion as config_asistente
 from app.services.externo import material as sobre
@@ -536,6 +538,74 @@ def test_los_pasos_escritos_como_paso_1_se_reconocen_en_cada_idioma() -> None:
     assert not material_fuera.trae_pasos("<p>Paso 1: lo miramos nosotros.</p>")
 
 
+#: Un borrador técnico con pasos de memoria (el modelo no obedece).
+CON_PASOS = {**CORREO_ANA, "cuerpo": (
+    "<p>Hola Ana,</p><p>Prueba esto:</p><ol><li>Desmonta el cabezal.</li>"
+    "<li>Límpialo con alcohol.</li></ol><p>Un saludo,<br>Admin</p>")}
+
+
+@pytest.mark.parametrize("caso", ["marca_sin_centro", "sin_fuentes_activas", "plan_sin_busqueda"])
+def test_un_correo_tecnico_sin_donde_buscar_no_lleva_pasos_de_memoria_y_si_los_trae_se_avisa(
+    caso: str, session_factory: sessionmaker, http: TestClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Correo técnico con «Soporte» marcada en el que no se llega a buscar: la
+    máquina que ha reconocido el catálogo es de una marca sin centro de ayuda
+    en la lista (artisJet), no hay ningún centro activo, o el plan no trae
+    búsqueda. Ni una petición, pero el borrador lleva la orden de no escribir
+    pasos de memoria y, si los escribe, la franja avisa. En la corrección,
+    igual."""
+    red = _flux()
+    plan: dict[str, Any] = PLAN_AVERIA
+    if caso == "marca_sin_centro":
+        plan = {"tecnica": True, "marca": "artisjet", "soporte_en": "artisJet Trust error 12",
+                "soporte": "artisJet Trust error 12", "webs": ""}
+        # El catálogo ha reconocido una artisJet en el correo: `planificar` lo
+        # apunta en el plan (aquí, sin sembrar el catálogo).
+        planificar = consulta_fuentes.planificar
+
+        def con_artisjet(*args: Any, **kwargs: Any) -> consulta_fuentes.Plan:
+            hecho = planificar(*args, **kwargs)
+            hecho.marcas_correo = ["artisjet"]
+            return hecho
+
+        monkeypatch.setattr(consulta_fuentes, "planificar", con_artisjet)
+    elif caso == "plan_sin_busqueda":
+        plan = {**PLAN_AVERIA, "soporte_en": "", "soporte": ""}
+    falso = _ClaudeConPlan(plan, CON_PASOS)
+    with session_factory() as s:
+        thread_id = _hilo_ana(s)
+        if caso == "sin_fuentes_activas":
+            s.scalars(select(SoporteFuente)).one().activo = False
+            s.commit()
+    with patch.object(llm, "_invoke_claude", falso):
+        r = _pedir(http, thread_id, fuentes=AMBAS)
+        assert r.status_code == 201, r.text
+        primero = r.json()["borrador"]
+        r = _turno(http, primero["id"], "añade cómo se hace", fuentes=AMBAS)
+    assert r.status_code == 201, r.text
+    assert red.peticiones == [] and len(falso.planes) == 1
+    for i, b in enumerate((primero, r.json()["borrador"])):
+        sistema, _, peticion = _partes(falso, i)
+        assert material_fuera.REGLA_SOPORTE_NO_CONSULTADO in sistema
+        assert material_fuera.REGLA_SOPORTE not in sistema and sobre.INICIO not in peticion
+        assert "No escribas pasos ni procedimientos de memoria" in peticion
+        # El modelo escribió pasos igual: la franja lo dice (el cuerpo se queda).
+        assert material_fuera.AVISO_PASOS_SIN_PROCEDIMIENTO in b["aviso"] and "<ol>" in b["html"]
+        m = b["contexto"]["material"]
+        assert m["pasos_sin_procedimiento"] is True and "soporte" not in m
+        if caso == "marca_sin_centro":
+            assert m["sin_centro"] == "artisjet" and m["consulta"]["marcas_correo"] == ["artisjet"]
+            assert "no hay centro de ayuda del fabricante de esta máquina" in peticion
+            assert "No se ha podido consultar" not in b["aviso"]
+        elif caso == "sin_fuentes_activas":
+            assert m["sin_fuentes"] is True and "no_consultado" not in m
+            assert "No se ha podido consultar" not in b["aviso"]
+        else:
+            assert m["no_consultado"] == [{"fuente": "soporte",
+                                           "motivo": "no se ha podido preparar la búsqueda"}]
+            assert "No se ha podido consultar el soporte" in b["aviso"]
+
+
 def test_el_enlace_del_articulo_se_anade_si_lo_uso_y_no_lo_puso(
     session_factory: sessionmaker, http: TestClient,
 ) -> None:
@@ -717,6 +787,41 @@ def test_un_precio_que_solo_esta_en_la_web_sale_como_precio_de_la_web_nunca_como
     assert "[W1] Beambox II 55W" in peticion and "Precio en la web" not in peticion
 
 
+def test_si_el_indice_de_las_webs_falla_el_borrador_sale_igual_y_la_correccion_lo_reintenta(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    """El índice de las webs que lanza un error no tira el borrador: sale sin
+    las páginas y el aviso lo dice. La corrección con «Webs» marcada vuelve a
+    buscar (con el plan guardado) y, si el índice ya responde, trae la página."""
+    def roto(*_args: Any, **_kwargs: Any) -> list[Any]:
+        raise RuntimeError("el índice no responde")
+
+    falso = _ClaudeConPlan(PLAN_COMERCIAL, CORREO_ANA)
+    with session_factory() as s:
+        thread_id = _hilo_ana(s, MENSAJE_PRECIO, asunto="Precio Beambox II")
+        _pagina_beambox(s)
+    with patch.object(llm, "_invoke_claude", falso), patch.object(webs, "buscar", roto):
+        r = _pedir(http, thread_id, fuentes=AMBAS)
+    assert r.status_code == 201, r.text
+    b = r.json()["borrador"]
+    assert b["html"].startswith("<p>Hola") and len(falso.redacciones) == 1
+    assert "No se han podido consultar nuestras webs" in b["aviso"]
+    sistema, _, peticion = _partes(falso)
+    assert "NUESTRAS WEBS" not in peticion and material_fuera.REGLA_WEBS not in sistema
+    m = b["contexto"]["material"]
+    assert m["no_consultado"] == [{"fuente": "webs", "motivo": "RuntimeError"}]
+    assert "webs" not in m and m["buscado_en_webs"] == "Beambox II"
+    # El índice vuelve: la corrección busca otra vez y trae la página.
+    with patch.object(llm, "_invoke_claude", falso):
+        r = _turno(http, b["id"], "añade el enlace a la máquina", fuentes=AMBAS)
+    assert r.status_code == 201, r.text
+    assert len(falso.planes) == 1 and "[W1] Beambox II 55W" in _partes(falso)[2]
+    b = r.json()["borrador"]
+    assert "No se han podido consultar" not in (b["aviso"] or "")
+    m = b["contexto"]["material"]
+    assert m["webs"][0]["url"] == URL_WEB and "no_consultado" not in m
+
+
 # --- «Lo que ha usado» y quién lo puede pedir ------------------------------------------------
 
 
@@ -837,6 +942,72 @@ def test_si_el_plan_falla_o_devuelve_otra_cosa_se_consulta_igual_por_palabras(
         assert llamada is not None and llamada.ok is False and llamada.error == error
 
 
+def test_con_el_plan_por_palabras_la_misma_busqueda_va_una_vez_y_sin_nada_no_hay_procedimiento(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    """El plan por palabras da la misma búsqueda para el inglés y para el
+    idioma del correo: va una sola vez, en el del correo (el adaptador ya la
+    prueba en inglés si no sale nada), y no se gasta el plazo repitiéndola.
+    Sin nada en ninguno, el borrador dice que no hay procedimiento, no que no
+    se ha podido consultar."""
+    red = _flux(busquedas={"en-us": [], "es-419": []})
+    falso = _ClaudeConPlan(llm.LLMUpstreamError("La IA no responde"), CORREO_ANA)
+    with session_factory() as s:
+        thread_id = _hilo_ana(s)
+    with patch.object(llm, "_invoke_claude", falso):
+        r = _pedir(http, thread_id, fuentes=AMBAS)
+    assert r.status_code == 201, r.text
+    m = r.json()["borrador"]["contexto"]["material"]
+    consulta = m["consulta"]
+    assert consulta["origen"] == consulta_fuentes.PLAN_PALABRAS
+    assert consulta["soporte_en"] == consulta["soporte"]
+    # Una búsqueda por idioma: la del correo y su respaldo en inglés.
+    assert Counter(p.params["locale"] for p in red.peticiones) == {"es-419": 1, "en-us": 1}
+    assert {p.params["query"] for p in red.peticiones} == {consulta["soporte"]}
+    assert m["buscado_en_soporte"] == [consulta["soporte"]]
+    assert m["sin_resultados"] == {"consulta": consulta["soporte"]} and "no_consultado" not in m
+    sistema = _partes(falso)[0]
+    assert material_fuera.REGLA_SIN_RESULTADOS in sistema
+    assert material_fuera.REGLA_SOPORTE_NO_CONSULTADO not in sistema
+
+
+def test_el_plan_llega_al_sdk_con_su_tiempo_maximo_y_sin_reintentos(
+    session_factory: sessionmaker,
+) -> None:
+    """`timeout` y `max_retries` llegan de verdad al cliente de Anthropic (los
+    demás tests sustituyen `_invoke_claude` entero): sin ellos, el plan
+    esperaría lo que trae el SDK de serie (10 minutos y dos reintentos) dentro
+    de la petición del borrador. Si no se pasan, el cliente va como siempre."""
+    clientes: list[dict[str, Any]] = []
+    mensaje = SimpleNamespace(
+        content=[SimpleNamespace(type="text", text=json.dumps(PLAN_COMERCIAL))],
+        model="claude-haiku-5-5", stop_reason="end_turn",
+        usage=SimpleNamespace(input_tokens=400, output_tokens=60, cache_read_input_tokens=0,
+                              cache_creation_input_tokens=0))
+
+    class _Cliente:
+        def __init__(self, **kwargs: Any) -> None:
+            clientes.append(kwargs)
+            self.messages = SimpleNamespace(create=lambda **_kw: mensaje)
+
+    with patch("anthropic.Anthropic", _Cliente):
+        llm._invoke_claude(api_key="k", model="claude-haiku-5-5", system_prompt="s",
+                           user_prompt="u", timeout=5.0, max_retries=0)
+        llm._invoke_claude(api_key="k", model="claude-haiku-5-5", system_prompt="s",
+                           user_prompt="u")
+        with session_factory() as s:
+            plan = consulta_fuentes.planificar(
+                s, consulta_fuentes.Entrada(texto_cliente=MENSAJE_PRECIO),
+                cfg={"modelo_correccion": "claude-haiku-5-5"})
+    assert clientes[0] == {"api_key": "k", "timeout": 5.0, "max_retries": 0}
+    assert clientes[1] == {"api_key": "k"}
+    # El plan, por el camino de verdad: su tiempo máximo y ningún reintento.
+    assert clientes[2] == {"api_key": "clave-de-prueba", "timeout": consulta_fuentes.TIEMPO_PLAN,
+                           "max_retries": 0}
+    assert plan.origen == consulta_fuentes.PLAN_IA and plan.error is None
+    assert plan.webs == "Beambox II" and plan.uso is not None
+
+
 def test_el_plan_por_palabras_saca_la_maquina_el_codigo_y_el_mensaje_entre_comillas() -> None:
     entrada = consulta_fuentes.Entrada(
         texto_cliente=('Hola, mi Beambox II da el error 12 al arrancar y en la pantalla pone '
@@ -856,6 +1027,31 @@ def test_el_plan_por_palabras_saca_la_maquina_el_codigo_y_el_mensaje_entre_comil
         texto_cliente="Al encender sale el error E-02 y no corta.", modelo_flux="Beamo"))
     assert plan.tecnica is True and plan.marca == "flux"
     assert plan.soporte.startswith("Beamo E-02") and plan.webs == "Beamo"
+
+
+def test_el_plan_por_palabras_no_toma_los_apostrofos_por_comillas() -> None:
+    """«it's», «can't» o «l'imprimante» son apóstrofos: lo que va entre dos de
+    ellos (el nombre y la empresa del cliente) no es un mensaje de la máquina
+    y no puede acabar en la búsqueda que se manda al centro de ayuda. Un
+    mensaje entre comillas de verdad, simples o dobles, sí entra."""
+    beambox = [{"nombre": "Beambox", "marca": "flux", "eleccion": "hilo"}]
+    plan = consulta_fuentes.plan_por_palabras(consulta_fuentes.Entrada(
+        texto_cliente="Hi, it's John Miller from Acme Signs Ltd, our Beambox can't focus properly.",
+        asunto="Beambox focus", idioma="en", maquinas=beambox))
+    assert plan.tecnica is True and plan.soporte_en == plan.soporte == "Beambox focus"
+    plan = consulta_fuentes.plan_por_palabras(consulta_fuentes.Entrada(
+        texto_cliente=("Bonjour, c'est Marie Dubois de Signes SARL : l'imprimante ne s'allume pas "
+                       "depuis hier."),
+        asunto="Panne Beambox", idioma="fr", maquinas=beambox))
+    assert plan.tecnica is True and plan.soporte == "Beambox panne"
+    # Las comillas de verdad, con contracciones alrededor.
+    for mensaje in ("'Camera not found'", '"Camera not found"', "«Camera not found»"):
+        plan = consulta_fuentes.plan_por_palabras(consulta_fuentes.Entrada(
+            texto_cliente=(f"Hi, it's John Miller from Acme Signs. Our Beambox can't focus and "
+                           f"the screen says {mensaje}."),
+            asunto="Beambox focus", idioma="en", maquinas=beambox))
+        assert plan.soporte == "Beambox Camera not found focus", mensaje
+        assert not {"John", "Miller", "Acme"} & set(plan.soporte.split()), mensaje
 
 
 def test_el_plan_por_palabras_no_da_por_tecnico_un_correo_comercial() -> None:
@@ -1027,6 +1223,169 @@ def test_sin_nada_que_contestar_no_se_consulta_y_la_instruccion_de_despues_si(
     assert "INSTRUCCIÓN DE QUIEN ENVÍA: dile cómo se calibra la cámara" in plan["user"]
     assert "[S1] Calibrar la cámara" in _partes(falso)[2] and red.peticiones
     assert r.json()["borrador"]["contexto"]["material"]["soporte"]["url"] == URL_FLUX
+
+
+def test_marcar_una_casilla_en_una_correccion_consulta_lo_que_el_primer_borrador_no_miro(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    """Primer borrador de una avería solo con «Webs»: el plan sale técnico,
+    pero el soporte no se mira. Si en la corrección se marca «Soporte», se
+    consulta entonces con el plan guardado (sin plan nuevo), lo que trae va en
+    esa corrección y «Lo que ha usado» dice lo que se buscó de verdad; las
+    páginas se releen por su id. Al revés («Soporte» primero, «Webs» en la
+    corrección), igual con las webs."""
+    red = _flux()
+    falso = _ClaudeConPlan(PLAN_AVERIA, {**CORREO_ANA, "material_usado": ["S1"]})
+    with session_factory() as s:
+        thread_id = _hilo_ana(s)
+        _pagina_beambox(s)
+    with patch.object(llm, "_invoke_claude", falso):
+        primero = _pedir(http, thread_id, fuentes={"webs": True, "soporte": False}).json()[
+            "borrador"]
+        assert red.peticiones == []
+        assert "buscado_en_soporte" not in primero["contexto"]["material"]
+        r = _turno(http, primero["id"], "añade cómo calibrar la cámara", fuentes=AMBAS)
+    assert r.status_code == 201, r.text
+    assert len(falso.planes) == 1                       # el del primer borrador
+    busqueda, leido = red.peticiones
+    assert busqueda.params["query"] == "Beambox camera calibration"
+    assert busqueda.params["locale"] == "en-us"
+    assert leido.path == f"/api/v2/help_center/es-419/articles/{ID_FLUX}.json"
+    sistema, _, peticion = _partes(falso)
+    assert "[S1] Calibrar la cámara" in peticion and "[W1] Beambox II 55W" in peticion
+    assert material_fuera.REGLA_SOPORTE in sistema and material_fuera.REGLA_WEBS in sistema
+    m = r.json()["borrador"]["contexto"]["material"]
+    assert m["fuentes"] == AMBAS and m["consulta"]["reutilizado"] is True
+    assert m["buscado_en_soporte"] == ["Beambox camera calibration"]
+    assert m["soporte"]["url"] == URL_FLUX and m["webs"][0]["url"] == URL_WEB
+    assert m["buscado_en_webs"] == "Beambox II"
+    # Al revés: «Soporte» primero y «Webs» en la corrección.
+    red = _flux()
+    falso = _ClaudeConPlan(PLAN_AVERIA, {**CORREO_ANA, "material_usado": ["S1"]})
+    with patch.object(llm, "_invoke_claude", falso):
+        primero = _pedir(http, thread_id, fuentes={"webs": False, "soporte": True}).json()[
+            "borrador"]
+        m = primero["contexto"]["material"]
+        assert not {"webs", "buscado_en_webs", "webs_sin_resultados"} & set(m)
+        pedidas = len(red.peticiones)
+        r = _turno(http, primero["id"], "añade el enlace a la máquina", fuentes=AMBAS)
+    assert r.status_code == 201, r.text
+    # El artículo, releído de la caché: ni plan nuevo ni peticiones.
+    assert len(falso.planes) == 1 and len(red.peticiones) == pedidas
+    sistema, _, peticion = _partes(falso)
+    assert "[W1] Beambox II 55W" in peticion and "[S1] Calibrar la cámara" in peticion
+    assert material_fuera.REGLA_WEBS in sistema and material_fuera.REGLA_SOPORTE in sistema
+    m = r.json()["borrador"]["contexto"]["material"]
+    assert m["buscado_en_webs"] == "Beambox II" and m["webs"][0]["url"] == URL_WEB
+    assert m["buscado_en_soporte"] == ["Beambox camera calibration"]
+
+
+def test_si_el_soporte_fallo_en_el_primer_borrador_la_correccion_lo_vuelve_a_intentar(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    """Un fallo pasajero del soporte no se arrastra a toda la conversación: la
+    corrección con «Soporte» marcada lo intenta otra vez con el plan guardado.
+    Si sigue sin responder, la corrección lo vuelve a decir; si ya responde,
+    trae el artículo."""
+    caida = Red(lambda request: httpx.Response(503))
+    falso = _ClaudeConPlan(PLAN_AVERIA, {**CORREO_ANA, "material_usado": ["S1"]})
+    with session_factory() as s:
+        thread_id = _hilo_ana(s)
+    with patch.object(llm, "_invoke_claude", falso):
+        primero = _pedir(http, thread_id, fuentes=AMBAS).json()["borrador"]
+        assert "ha respondido HTTP 503" in primero["aviso"]
+        intentos = len(caida.peticiones)
+        # Sigue caído: lo intenta otra vez y lo dice otra vez.
+        r = _turno(http, primero["id"], "más corto", fuentes=AMBAS)
+    assert r.status_code == 201, r.text
+    assert intentos and len(caida.peticiones) == 2 * intentos
+    b = r.json()["borrador"]
+    assert "No se ha podido consultar el soporte" in b["aviso"] and "HTTP 503" in b["aviso"]
+    assert material_fuera.REGLA_SOPORTE_NO_CONSULTADO in _partes(falso)[0]
+    assert [n["fuente"] for n in b["contexto"]["material"]["no_consultado"]] == ["soporte"]
+    # FLUX ya responde: la corrección siguiente trae el artículo.
+    red = _flux()
+    with patch.object(llm, "_invoke_claude", falso):
+        r = _turno(http, b["id"], "añade el procedimiento", fuentes=AMBAS)
+    assert r.status_code == 201, r.text
+    assert len(falso.planes) == 1 and len(red.peticiones) == 2
+    sistema, _, peticion = _partes(falso)
+    assert "[S1] Calibrar la cámara" in peticion and material_fuera.REGLA_SOPORTE in sistema
+    assert material_fuera.REGLA_SOPORTE_NO_CONSULTADO not in sistema
+    b = r.json()["borrador"]
+    assert "No se ha podido" not in (b["aviso"] or "")
+    m = b["contexto"]["material"]
+    assert m["soporte"]["url"] == URL_FLUX and "no_consultado" not in m
+
+
+def test_una_correccion_relee_de_la_cache_el_articulo_que_solo_estaba_en_ingles(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    """El artículo que no está en el idioma del correo se lee en inglés, y la
+    caché lo guarda con el idioma en que se PIDIÓ: la corrección lo vuelve a
+    leer de ahí, sin ninguna petición (si FLUX no respondiera en ese momento,
+    no se perdería el artículo)."""
+    articulo_en = {"id": int(ID_FLUX), "title": "Camera calibration", "locale": "en-us",
+                   "body": CUERPO_FLUX, "html_url": URL_FLUX_EN,
+                   "updated_at": "2026-09-30T10:00:00Z"}
+    red = Red(zendesk({"en-us": [_resultado(int(ID_FLUX), "Camera calibration",
+                                            locale="en-us")]},
+                      {("en-us", ID_FLUX): articulo_en}))
+    correo = {**CORREO_ANA, "material_usado": ["S1"], "cuerpo": (
+        f"<p>Hola Ana,</p><p>Sigue el <a href='{URL_FLUX_EN}'>procedimiento de FLUX</a>.</p>"
+        "<p>Un saludo,<br>Admin</p>")}
+    falso = _ClaudeConPlan(PLAN_AVERIA, correo)
+    with session_factory() as s:
+        thread_id = _hilo_ana(s)
+    with patch.object(llm, "_invoke_claude", falso):
+        primero = _pedir(http, thread_id, fuentes=AMBAS).json()["borrador"]
+        # La búsqueda y el artículo: en español no está, en inglés sí.
+        assert [p.path for p in red.peticiones][1:] == [
+            f"/api/v2/help_center/es-419/articles/{ID_FLUX}.json",
+            f"/api/v2/help_center/en-us/articles/{ID_FLUX}.json"]
+        m = primero["contexto"]["material"]
+        assert m["soporte"]["idioma"] == "en" and m["soporte_idioma_pedido"] == "es"
+        pedidas = len(red.peticiones)
+        r = _turno(http, primero["id"], "más corto", fuentes=AMBAS)
+    assert r.status_code == 201, r.text
+    assert len(red.peticiones) == pedidas
+    assert "[S1] Camera calibration" in _partes(falso)[2]
+    b = r.json()["borrador"]
+    assert "No se ha podido" not in (b["aviso"] or "")
+    m = b["contexto"]["material"]
+    assert m["soporte"]["url"] == URL_FLUX_EN and "no_consultado" not in m
+    assert m["soporte_idioma_pedido"] == "es"
+
+
+def test_sin_hilo_la_consulta_de_una_correccion_lee_tambien_la_instruccion_del_primer_turno(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    """Correo nuevo desde la ficha, sin casillas; en la corrección se marcan.
+    Sin mensaje del cliente, lo que dice de qué va el correo es la instrucción
+    del primer turno: el plan la lee junto con la de ahora y, si el plan de la
+    IA falla, el de las palabras también la ve (es técnica: va al soporte)."""
+    red = _flux()
+    with session_factory() as s:
+        contacto = _contacto(s, ANA)
+        s.commit()
+        contact_id = contacto.id
+    falso = _ClaudeConPlan(llm.LLMUpstreamError("La IA no responde"),
+                           {**CORREO_ANA, "material_usado": ["S1"]})
+    instruccion = "mándale cómo calibrar la cámara de su Beambox"
+    with patch.object(llm, "_invoke_claude", falso):
+        r = http.post("/api/emails/asistente", headers=auth_headers(http, "admin"), json={
+            "destinatario": ANA, "contact_id": contact_id, "instruccion": instruccion,
+            "fuentes": NINGUNA})
+        assert r.status_code == 201, r.text
+        assert not falso.planes and not red.peticiones
+        r = _turno(http, r.json()["borrador"]["id"], "más corto", fuentes=AMBAS)
+    assert r.status_code == 201, r.text
+    [plan] = falso.planes
+    assert f"INSTRUCCIÓN DE QUIEN ENVÍA: {instruccion}\nmás corto" in plan["user"]
+    m = r.json()["borrador"]["contexto"]["material"]
+    assert m["consulta"]["origen"] == consulta_fuentes.PLAN_PALABRAS
+    assert m["consulta"]["tecnica"] is True and m["soporte"]["url"] == URL_FLUX
+    assert "[S1] Calibrar la cámara" in _partes(falso)[2] and red.peticiones
 
 
 # --- las imágenes del editor -----------------------------------------------------------------

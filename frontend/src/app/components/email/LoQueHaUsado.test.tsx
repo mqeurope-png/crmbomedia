@@ -128,7 +128,8 @@ describe("Lo que ha usado — lo que consultó solo en webs y soporte", () => {
           dominio: "fluxlasers.eu", tipo: "pagina", idioma: "es", precio_web_texto: null, precio_iva: null,
           usado: false },
       ],
-      buscado_en_soporte: ["beamo laser tube replacement"], material_usado: ["S1", "W1"], enlace_anadido: true,
+      buscado_en_soporte: ["beamo laser tube replacement"], buscado_en_webs: "beamo", material_usado: ["S1", "W1"],
+      enlace_anadido: true,
     }))} />);
     expect(screen.getByText(/Lo que ha usado/)).toHaveTextContent(
       "Lo que ha usado (alcance: todo lo de este contacto) · consultó soporte y webs");
@@ -162,7 +163,7 @@ describe("Lo que ha usado — lo que consultó solo en webs y soporte", () => {
     render(<LoQueHaUsado borrador={borrador(automatico({
       consulta: { tecnica: true, marca: "flux", soporte_en: "hexa error 12", soporte: "hexa error 12",
         webs: "HEXA", origen: "palabras", error: "APITimeoutError: Request timed out.", plan_ms: 5000 },
-      sin_resultados: { consulta: "hexa error 12" }, buscado_en_soporte: ["hexa error 12"],
+      sin_resultados: { consulta: "hexa error 12" }, buscado_en_soporte: ["hexa error 12"], buscado_en_webs: "HEXA",
       no_consultado: [{ fuente: "webs", motivo: "OperationalError" }], ms: 5200, material_usado: [],
     }))} />);
     expect(screen.getByText(/Lo que ha usado/)).toHaveTextContent("· consultó el soporte");
@@ -210,7 +211,7 @@ describe("Lo que ha usado — lo que consultó solo en webs y soporte", () => {
     render(<LoQueHaUsado borrador={borrador(automatico({
       consulta: { tecnica: false, marca: "", soporte_en: null, soporte: null, webs: "plancha vapor",
         origen: "ia" },
-      webs_sin_resultados: "plancha vapor",
+      buscado_en_webs: "plancha vapor", webs_sin_resultados: "plancha vapor",
     }))} />);
     expect(screen.getByText(/Lo que ha usado/)).toHaveTextContent("· consultó las webs");
     expect(screen.getByText(/webs: nada para «plancha vapor»/)).toBeInTheDocument();
@@ -222,7 +223,7 @@ describe("Lo que ha usado — lo que consultó solo en webs y soporte", () => {
   it("una corrección dice que reutiliza lo del primer borrador, sin volver a buscar", () => {
     render(<LoQueHaUsado borrador={borrador(automatico({
       consulta: { tecnica: false, webs: "beamo", origen: "ia", reutilizado: true },
-      fuentes: { webs: true, soporte: false },
+      fuentes: { webs: true, soporte: false }, buscado_en_webs: "beamo",
       webs: [{ ref: "W1", id: "w-1", titulo: "beamo", url: "https://www.fluxlasers.eu/es/producto/beamo/",
         dominio: "fluxlasers.eu", tipo: "producto", usado: null }],
     }))} />);
@@ -232,11 +233,68 @@ describe("Lo que ha usado — lo que consultó solo en webs y soporte", () => {
       "Buscó «beamo» en las webs — la del primer borrador: esta corrección no ha vuelto a buscar");
   });
 
-  it("con las casillas marcadas pero nada que contar, no pinta una lista vacía", () => {
+  it("una corrección que no buscó en el soporte no lo da por buscado aunque el plan y la casilla lo pidan", () => {
+    // El primer borrador fue con «Soporte» desmarcada: el plan salió técnico,
+    // pero no se buscó. Ahora la casilla va marcada y no consta búsqueda.
     render(<LoQueHaUsado borrador={borrador(automatico({
-      fuentes: { webs: false, soporte: true },
-      consulta: { tecnica: true, marca: "", soporte_en: null, soporte: null, webs: null, origen: "palabras" },
+      consulta: { tecnica: true, marca: "flux", soporte_en: "beamo laser tube replacement",
+        soporte: "beamo cambiar tubo láser", webs: "beamo", origen: "ia", reutilizado: true },
+      buscado_en_webs: "beamo",
+      webs: [{ ref: "W1", id: "w-1", titulo: "beamo", url: "https://www.fluxlasers.eu/es/producto/beamo/",
+        dominio: "fluxlasers.eu", tipo: "producto", usado: null }],
+      ms: undefined,
     }))} />);
+    expect(lista()).not.toHaveTextContent("en el soporte");
+    expect(lista()).not.toHaveTextContent("beamo laser tube replacement");
+    expect(lista()).toHaveTextContent(
+      "Buscó «beamo» en las webs — la del primer borrador: esta corrección no ha vuelto a buscar");
+    // Un correo técnico con «Soporte» marcada y nada buscado lo dice.
+    expect(lista()).toHaveTextContent(
+      "Soporte: no se ha consultado — no hay ningún procedimiento del fabricante que citar");
+    expect(screen.getByText(/no se consultó el soporte/)).toBeInTheDocument();
+    expect(screen.getByText(/Lo que ha usado/)).toHaveTextContent("· consultó las webs");
+  });
+
+  it("una corrección que busca ahora en el soporte lo dice, y lo del primer borrador como tal", () => {
+    render(<LoQueHaUsado borrador={borrador(automatico({
+      consulta: { tecnica: true, marca: "flux", soporte_en: "beamo laser tube replacement",
+        soporte: "beamo cambiar tubo láser", webs: "beamo", origen: "ia", reutilizado: true },
+      buscado_en_soporte: ["beamo laser tube replacement", "beamo cambiar tubo láser"], soporte_ms: 900,
+      sin_resultados: { consulta: "beamo cambiar tubo láser" },
+      buscado_en_webs: "beamo", ms: undefined,
+    }))} />);
+    expect(lista()).toHaveTextContent(
+      "Buscó «beamo laser tube replacement / beamo cambiar tubo láser» en el soporte — en esta corrección, "
+      + "con la búsqueda del primer borrador; «beamo» en las webs — la del primer borrador: esta corrección no ha "
+      + "vuelto a buscar");
+    expect(lista()).not.toHaveTextContent("Soporte: no se ha consultado");
+  });
+
+  it("las webs, igual: sin búsqueda apuntada no dice que buscó; buscadas ahora, lo dice", () => {
+    const reutilizada = { tecnica: false, marca: "", soporte_en: null, soporte: null, webs: "beamo",
+      origen: "ia", reutilizado: true };
+    const view = render(<LoQueHaUsado borrador={borrador(automatico({
+      consulta: reutilizada, fuentes: { webs: true, soporte: false }, ms: undefined,
+    }))} />);
+    expect(screen.queryByText(/Buscó/)).not.toBeInTheDocument();
+    view.unmount();
+    // El primer borrador, igual: el plan no es la búsqueda.
+    const { unmount } = render(<LoQueHaUsado borrador={borrador(automatico({
+      consulta: { ...reutilizada, reutilizado: false }, fuentes: { webs: true, soporte: false },
+    }))} />);
+    expect(screen.queryByText(/Buscó/)).not.toBeInTheDocument();
+    unmount();
+    render(<LoQueHaUsado borrador={borrador(automatico({
+      consulta: reutilizada, fuentes: { webs: true, soporte: false }, ms: undefined,
+      buscado_en_webs: "beamo", webs_ms: 300, webs_sin_resultados: "beamo",
+    }))} />);
+    expect(lista()).toHaveTextContent(
+      "Buscó «beamo» en las webs — en esta corrección, con la búsqueda del primer borrador");
+    expect(lista()).not.toHaveTextContent("no ha vuelto a buscar");
+  });
+
+  it("sin el plan no hay nada que contar: no pinta una lista vacía", () => {
+    render(<LoQueHaUsado borrador={borrador(automatico({ consulta: undefined, ms: undefined }))} />);
     expect(screen.queryByRole("list", { name: "Lo que trajo solo de webs y soporte" })).not.toBeInTheDocument();
   });
 
