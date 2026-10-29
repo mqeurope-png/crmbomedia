@@ -32,6 +32,10 @@ jest.mock("../../lib/erpApi", () => ({
   discardBankMovement: jest.fn(),
   downloadBankCobrosCsv: jest.fn(),
   downloadBankExport: jest.fn(),
+  escribirBankDrive: jest.fn(),
+  getBankDrive: jest.fn().mockResolvedValue({
+    configured: false, service_account_email: null, hora: "05:20",
+  }),
   getContrapartidas: jest.fn().mockResolvedValue([]),
   importBankStatement: jest.fn(),
   listBankAccounts: jest.fn(),
@@ -43,6 +47,7 @@ jest.mock("../../lib/erpApi", () => ({
   reopenBankMovement: jest.fn(),
   runBankMatch: jest.fn(),
   saveBlob: jest.fn(),
+  traerBankDrive: jest.fn(),
   updateBankAccount: jest.fn(),
 }));
 

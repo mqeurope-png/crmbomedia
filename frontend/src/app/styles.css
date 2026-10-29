@@ -11614,6 +11614,14 @@ tr.is-inactive {
 .erp-bank-import-summary { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
 .erp-bank-import-summary p { margin: 0; }
 .erp-bank-import-summary > .button { align-self: flex-start; }
+/* La hoja de Drive de cada cuenta (Conciliación · Cuentas). */
+.erp-bank-drive { display: flex; flex-direction: column; gap: 4px; margin: 6px 0 4px; }
+.erp-bank-drive p { margin: 0; }
+.erp-bank-drive > .button { align-self: flex-start; }
+.erp-bank-drive .form-card.embedded { max-width: 560px; }
+/* Dentro de una cuenta (`.item-list li`), el enlace a la hoja es un enlace,
+   no una tarjeta. */
+.erp-bank-drive a { display: inline; border: 0; border-radius: 0; padding: 0; text-decoration: underline; }
 .erp-bank-rejected { max-height: 320px; overflow: auto; display: block; }
 .erp-bank-rejected td:first-child { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .erp-bank-actions {

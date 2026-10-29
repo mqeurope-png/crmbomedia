@@ -118,6 +118,10 @@ services:
       - cuadre:run
       # Ofertas: caducidad diaria (solo BoHub; no toca FACTUSOL ni envía nada).
       - ofertas:caducar
+      # Conciliación: las hojas del banco en Drive (lectura diaria a las 05:20
+      # y la factura/pedido conciliados escritos en celdas vacías). No toca
+      # FACTUSOL.
+      - bank:drive
     volumes:
       # Sprint-Backfill-Gmail. El worker baja los adjuntos a este volume;
       # api los sirve via FileResponse desde el mismo volume.

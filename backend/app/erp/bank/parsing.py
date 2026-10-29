@@ -58,18 +58,22 @@ class Formato:
     #: Lo que tiene que parecer cada campo, si trae algo: una expresión
     #: regular o `FECHA`. Una fila que no cuadra está DESCOLOCADA (en el
     #: Belfius real hay ~170 con las celdas corridas: el importe partido por la
-    #: coma decimal, los céntimos en `Devies`, «EUR» en el BIC) y no se
-    #: importa con un importe falso: va a las no entendidas.
+    #: coma decimal, los céntimos en `Devies`) y no se importa con un importe
+    #: falso: va a las no entendidas. Con `divisa` en la coherencia, una fila
+    #: corrida se intenta recolocar (ver `_recolocar`).
     coherencia: dict[str, str] = field(default_factory=dict)
+    #: Cómo empieza el texto del movimiento (el campo `concepto`), para saber,
+    #: al recolocar una fila corrida, qué celda se partió por una coma.
+    transaccion: str | None = None
 
 
 #: `Formato.coherencia`: el campo tiene que ser una fecha.
 FECHA = "fecha"
-#: Un BIC: 4 letras de banco, 2 de país, 2 de plaza y 3 de oficina opcionales.
-#: El BIC, o el código de país de la columna de al lado: con la divisa en su
-#: sitio, un BIC vacío que corre lo de detrás no toca el importe. Lo que sí
-#: delata la fila corrida es una divisa («EUR») o un número en el BIC.
-_BIC = r"[A-Z]{6}[A-Z0-9]{2}(?:[A-Z0-9]{3})?|[A-Z]{2}"
+#: Las divisas: la celda que la trae marca dónde acaba una fila corrida.
+_DIVISAS = frozenset({
+    "EUR", "USD", "GBP", "CHF", "SEK", "DKK", "NOK", "PLN", "CZK", "HUF", "RON",
+    "JPY", "CAD", "AUD", "CNY",
+})
 
 
 #: Campos internos. `cuenta` es la cuenta propia cuando el banco la repite en
@@ -109,7 +113,13 @@ FORMATOS: tuple[Formato, ...] = (
             "presupuesto": ("PRESUPUESTO",),
             "pedido": ("PEDIDO",),
         },
-        coherencia={"divisa": r"[A-Z]{3}", "bic": _BIC, "fecha_valor": FECHA},
+        # Con la divisa en su sitio, el importe es el suyo, y lo que venga
+        # corrido detrás (el BIC, el país) no importa.
+        coherencia={"divisa": r"[A-Z]{3}", "fecha_valor": FECHA},
+        transaccion=(
+            r"(?:INSTANT\s+)?(?:STORTING|OVERSCHRIJVING|EUROPESE\s+DOMICILIERING|"
+            r"DOMICILIERING|BETALING|TERUGBETALING|AFHALING)\b"
+        ),
     ),
 )
 
@@ -151,8 +161,9 @@ class ParsedStatement:
     #: Formato reconocido y su mapeo campo → columna del fichero.
     formato: str | None = None
     mapping: dict[str, str] = field(default_factory=dict)
-    #: `Formato.coherencia` del formato reconocido.
+    #: `Formato.coherencia` y `Formato.transaccion` del formato reconocido.
     coherencia: dict[str, str] = field(default_factory=dict)
+    transaccion: str | None = None
 
 
 @dataclass
@@ -163,6 +174,8 @@ class Lectura:
     movimientos: list[dict[str, Any]] = field(default_factory=list)
     no_entendidas: list[dict[str, Any]] = field(default_factory=list)
     continuaciones: int = 0
+    #: Filas corridas que se han recolocado (un nombre partido por una coma).
+    recolocadas: int = 0
     #: Cuenta propia de cada fila, cuando el banco la repite (Belfius).
     cuentas: Counter[str] = field(default_factory=Counter)
 
@@ -353,11 +366,20 @@ def detect_mapping(columns: list[str]) -> dict[str, str] | None:
 # --- lectura del fichero -----------------------------------------------------
 
 
-def _rows_from_xlsx(content: bytes) -> list[list[Any]]:
+def _rows_from_xlsx(content: bytes, pestana: str | None = None) -> list[list[Any]]:
+    """La rejilla de la primera hoja del libro o, con `pestana`, de esa."""
     from openpyxl import load_workbook  # noqa: PLC0415
 
     wb = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
-    ws = wb.worksheets[0]
+    if pestana:
+        if pestana not in wb.sheetnames:
+            raise ParseError(
+                None, f"el libro no tiene la pestaña «{pestana}» (tiene: "
+                f"{', '.join(wb.sheetnames)})",
+            )
+        ws = wb[pestana]
+    else:
+        ws = wb.worksheets[0]
     return [list(r) for r in ws.iter_rows(values_only=True)]
 
 
@@ -377,15 +399,17 @@ def _rows_from_csv(content: bytes) -> list[list[Any]]:
 
 def read_statement(
     content: bytes, filename: str, *, extra: tuple[Formato, ...] = (),
+    pestana: str | None = None,
 ) -> ParsedStatement:
     """Lee .xlsx o .csv. Separa la cabecera (líneas antes de la fila de
     columnas, donde vive la cuenta/divisa/titular) de las filas de datos. Una
     columna sin nombre en la fila de columnas toma el rótulo que tenga encima
     en el preámbulo si es uno de los del formato (`factura`/`pedido` de
-    Sabadell, en la primera fila)."""
+    Sabadell, en la primera fila). Un .xlsx se lee por su primera pestaña o,
+    con `pestana`, por esa."""
     name = (filename or "").lower()
     if name.endswith((".xlsx", ".xlsm")):
-        grid = _rows_from_xlsx(content)
+        grid = _rows_from_xlsx(content, pestana)
     elif name.endswith((".csv", ".txt")):
         grid = _rows_from_csv(content)
     else:
@@ -459,6 +483,7 @@ def read_statement(
     parsed.columns = columns
     parsed.mapping = mapping_de(formato, columns)
     parsed.coherencia = dict(formato.coherencia)
+    parsed.transaccion = formato.transaccion
     width = len(columns)
     for offset, row in enumerate(grid[columns_idx + 1 :], start=columns_idx + 2):
         if all(_vacio(c) for c in row):
@@ -488,15 +513,6 @@ def _descolocada(coherencia: dict[str, str], valor: Any) -> str | None:
         v = valor(campo)
         if _vacio(v):
             continue
-        if (
-            campo == "divisa" and re.fullmatch(r"\d{1,2}", texto(v) or "")
-            and re.fullmatch(regla, (texto(valor("bic")) or "").upper())
-        ):
-            # El Belfius real (filas 54-401): un tramo pegado partiendo por la
-            # coma decimal. «-90 | 75 | EUR» es -90,75, pero «5» puede ser ,05
-            # o ,50: no se adivina.
-            return (f"importe partido en dos columnas («{texto(valor('importe'))}» y "
-                    f"«{texto(v)}»): corrígelo en el fichero o vuelve a exportar ese tramo")
         if regla == FECHA:
             try:
                 parse_date(v)
@@ -507,6 +523,135 @@ def _descolocada(coherencia: dict[str, str], valor: Any) -> str | None:
         elif not re.fullmatch(regla, (texto(v) or "").upper()):
             return f"fila descolocada: {campo} trae «{texto(v)}»"
     return None
+
+
+def _es_numero(value: Any) -> bool:
+    if _vacio(value) or isinstance(value, (datetime, date)):
+        return False
+    try:
+        parse_amount(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _es_fecha(value: Any) -> bool:
+    try:
+        parse_date(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _unir(celdas: list[Any]) -> str:
+    """Las celdas en que una coma partió un texto, unidas otra vez por ella."""
+    return ",".join(c if isinstance(c, str) else (texto(c) or "") for c in celdas)
+
+
+#: Más columnas corridas que estas no se recolocan: ya no es una coma suelta.
+_MAX_CORRIDA = 4
+
+
+def _plural(n: int, palabra: str) -> str:
+    return f"{n} {palabra}" + ("" if n == 1 else "s")
+
+
+def _recolocar(
+    parsed: ParsedStatement, col: Any, row: dict[str, Any],
+) -> tuple[dict[str, Any], int] | str | None:
+    """Una fila CORRIDA: un texto con una coma («Streamtec, Sl») se partió en
+    dos celdas al pegar el extracto y empujó el resto de la fila a la
+    derecha. La pista es la divisa: la celda que la trae dice cuántas
+    posiciones se corrió la fila (`k`). Delante de la divisa van el importe y
+    la fecha valor. Lo que se partió es el nombre del pagador, el texto del
+    movimiento, o los dos (el nombre suele ir también dentro del texto): el
+    texto del movimiento empieza en la celda que empieza como uno
+    (`Formato.transaccion`); lo que sobra después de ella se une al texto.
+    Lo que sobra antes es del nombre si, unido, sigue estando dentro del
+    texto del movimiento; si no, de la dirección (calle y número). Si ni el
+    nombre está en el texto, no se adivina. Solo se corre el tramo del banco:
+    las columnas que rellena Bart (`factura`, `pedido`…) no se mueven.
+
+    Devuelve la fila recolocada y `k`; un motivo si está corrida pero no se
+    puede recolocar sin adivinar (el importe también partido por la coma
+    decimal: «5» puede ser ,05 o ,50); o None si la fila no está corrida (o
+    el formato no tiene las columnas en el orden que esto supone)."""
+    columnas = parsed.columns
+
+    def pos(campo: str) -> int | None:
+        c = col(campo)
+        return len(columnas) - 1 - columnas[::-1].index(c) if c in columnas else None
+
+    i_div, i_imp, i_fv, i_con, i_nom = (
+        pos(c) for c in ("divisa", "importe", "fecha_valor", "concepto", "referencia2")
+    )
+    if None in (i_div, i_imp, i_fv, i_con, i_nom) or not (
+        i_nom < i_con and i_fv == i_con + 1 and i_imp == i_fv + 1 and i_div == i_imp + 1
+    ):
+        return None
+    celdas = [row.get(c) for c in columnas]
+    if (texto(celdas[i_div]) or "").upper() in _DIVISAS:
+        return None
+    # Hasta dónde llega el tramo del banco: lo de Bart va detrás y no se corre.
+    fin = min((p for p in (pos(c) for c in FILLED_COLUMNS) if p is not None and p > i_div),
+              default=len(celdas))
+    j = next(
+        (i for i in range(i_div + 1, fin) if (texto(celdas[i]) or "").upper() in _DIVISAS),
+        None,
+    )
+    if j is None:
+        return None
+    k = j - i_div
+    importe, antes = celdas[j - 1], celdas[j - 2]
+    valuta = celdas[j - 3]
+    if (
+        re.fullmatch(r"\d{1,2}", texto(importe) or "") and _es_numero(antes)
+        and (_es_fecha(valuta) or not (texto(valuta) or "").strip("# "))
+    ):
+        motivo = f"importe partido en dos columnas («{texto(antes)}» y «{texto(importe)}»)"
+        if k > 1:
+            motivo += f", y la fila corrida {_plural(k - 1, 'columna')} más"
+        return motivo + ": corrígelo en el fichero o vuelve a exportar ese tramo"
+    corrida = f"fila corrida {_plural(k, 'columna')} (la divisa está en «{columnas[j]}»)"
+    if not (_es_numero(importe) and _es_fecha(antes)):
+        return corrida + ": no se sabe dónde acaba el importe; corrígela en el fichero"
+    no_se_sabe = corrida + ": no se sabe qué texto se partió; corrígela en el fichero"
+    if not parsed.transaccion or k > _MAX_CORRIDA:
+        return no_se_sabe
+
+    def parece_movimiento(value: Any) -> bool:
+        return bool(re.match(parsed.transaccion or "", texto(value) or "", re.IGNORECASE))
+
+    # `a`: cuántas celdas de más hay antes del texto del movimiento.
+    inicios = [a for a in range(k + 1) if parece_movimiento(celdas[i_con + a])]
+    if len(inicios) != 1:
+        return no_se_sabe
+    a = inicios[0]
+    concepto = _unir(celdas[i_con + a:i_con + k + 1])
+    medio = celdas[i_nom:i_con + a]       # nombre, dirección…, con `a` celdas de más
+    if a:
+        # Cuántas de las celdas de más son del nombre: las que, unidas, aún
+        # están dentro del texto del movimiento.
+        letras = _solo_letras(concepto)
+        del_nombre = [x for x in range(a + 1) if _solo_letras(_unir(medio[:x + 1])) in letras]
+        if not del_nombre:
+            return no_se_sabe
+        x = max(del_nombre)
+        resto = medio[x + 1:]
+        medio = [_unir(medio[:x + 1])]
+        if a - x:
+            medio.append(_unir(resto[:a - x + 1]))   # la calle, partida por una coma
+            resto = resto[a - x + 1:]
+        medio += resto
+    nuevas = [
+        *celdas[:i_nom], *medio, concepto,
+        *celdas[i_con + k + 1:fin], *([None] * k), *celdas[fin:],
+    ]
+    return {"__row__": row["__row__"], **dict(zip(columnas, nuevas, strict=True))}, k
+
+
+def _solo_letras(value: str) -> str:
+    return re.sub(r"[\W_]+", "", value).upper()
 
 
 def interpretar(parsed: ParsedStatement, mapping: dict[str, str]) -> Lectura:
@@ -535,6 +680,15 @@ def interpretar(parsed: ParsedStatement, mapping: dict[str, str]) -> Lectura:
 
     for row in parsed.rows:
         nrow = row["__row__"]
+        recolocada = 0
+        if parsed.coherencia.get("divisa"):
+            arreglo = _recolocar(parsed, col, row)
+            if isinstance(arreglo, str):
+                anterior = None
+                no_entendida(row, arreglo)
+                continue
+            if arreglo is not None:
+                row, recolocada = arreglo
         raw = {k: v for k, v in row.items() if k != "__row__"}
 
         def valor(field_name: str, _row: dict[str, Any] = row) -> Any:
@@ -610,8 +764,12 @@ def interpretar(parsed: ParsedStatement, mapping: dict[str, str]) -> Lectura:
             "cuenta": cuenta,
             "continuaciones": [],
             "raw": raw,
+            #: Columnas que se corrió la fila en el fichero (0: en su sitio).
+            "recolocada": recolocada,
             **{f: texto(valor(f)) for f in _CAMPOS_CONTINUACION},
         }
+        if recolocada:
+            lectura.recolocadas += 1
         lectura.movimientos.append(movimiento)
         anterior = movimiento
     return lectura

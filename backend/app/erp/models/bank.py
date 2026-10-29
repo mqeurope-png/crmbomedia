@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from uuid import uuid4
 
-from sqlalchemy import Date, DateTime, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.crm import Base, TimestampMixin
@@ -46,6 +46,24 @@ class BankAccount(TimestampMixin, Base):
     #: Cabecera del último extracto (cuenta/divisa/titular) para reproducirla
     #: tal cual en el Excel exportado.
     statement_header_json: Mapped[str | None] = mapped_column(Text)
+    # El extracto en Drive (ver `app/erp/bank/drive.py`): la hoja de Bart que
+    # BoHub lee sola y en la que escribe la factura y el pedido conciliados.
+    #: Identificador del fichero en Drive (hoja de Google o .xlsx subido).
+    drive_file_id: Mapped[str | None] = mapped_column(String(128))
+    #: Pestaña que se lee; vacía → la primera.
+    drive_pestana: Mapped[str | None] = mapped_column(String(120))
+    #: Escribir `factura` y `pedido` en la hoja al conciliar (solo en celdas
+    #: vacías). Apagado: BoHub lee pero no escribe.
+    drive_escribir: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("1"),
+    )
+    #: Qué es el fichero, visto en la última lectura: `hoja` (hoja de Google,
+    #: se puede escribir) o `xlsx` (fichero subido: solo se lee).
+    drive_formato: Mapped[str | None] = mapped_column(String(8))
+    drive_leida_at: Mapped[datetime | None] = mapped_column(DateTime)
+    #: La última pasada (botón o tic diario): lo importado, lo escrito y el
+    #: error si lo hubo. Sin datos de clientes: solo recuentos y filas.
+    drive_resultado_json: Mapped[str | None] = mapped_column(Text)
 
 
 class BankMovement(TimestampMixin, Base):
@@ -84,6 +102,17 @@ class BankMovement(TimestampMixin, Base):
     #: (ver `BankReconciliation.origen`); si no («falta facturar»), se enseña.
     anotacion_factura: Mapped[str | None] = mapped_column(String(255))
     anotacion_pedido: Mapped[str | None] = mapped_column(String(255))
+    #: La escritura en la hoja de Drive de la cuenta: `pendiente` (conciliado,
+    #: falta escribirlo), `escrita`, `ocupada` (la celda ya tenía algo: no se
+    #: toca), `no_encontrada` (la fila ya no está en la hoja), `corrida` (la
+    #: fila está descolocada en la hoja) o `sin_columna`. Vacío: nada que hacer.
+    hoja_estado: Mapped[str | None] = mapped_column(String(16), index=True)
+    hoja_estado_at: Mapped[datetime | None] = mapped_column(DateTime)
+    #: Lo que BoHub escribió en la hoja. Al reimportar, eso no cuenta como
+    #: anotación de Bart (no vuelve a casar lo que una persona reabrió), y es
+    #: lo único que BoHub puede sustituir en esa celda.
+    hoja_factura: Mapped[str | None] = mapped_column(String(255))
+    hoja_pedido: Mapped[str | None] = mapped_column(String(255))
 
 
 class BankReconciliation(TimestampMixin, Base):

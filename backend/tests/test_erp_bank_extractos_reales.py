@@ -569,7 +569,8 @@ def test_una_fila_de_belfius_descolocada_no_se_importa_con_el_importe_equivocado
     r = _importar(session_factory, _belfius([buena, corrida, partida, almohadillas, pais]))
     assert r["imported"] == 3
     assert [(x["fila"], x["motivo"]) for x in r["no_entendidas"]] == [
-        (4, "fila descolocada: divisa trae «200»"),
+        (4, "fila corrida 1 columna (la divisa está en «BIC»): no se sabe dónde acaba el "
+            "importe; corrígela en el fichero"),
         (5, "importe partido en dos columnas («-90» y «75»): corrígelo en el fichero o "
             "vuelve a exportar ese tramo"),
     ]

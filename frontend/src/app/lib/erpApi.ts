@@ -4745,11 +4745,58 @@ export type BankAccount = {
   contrapartida_nombre?: string | null;
   column_mapping: Record<string, string> | null;
   has_statement_header: boolean;
+  /** La hoja de Drive de la cuenta (identificador; al guardar vale el
+   *  enlace), la pestaña (vacía: la primera) y si BoHub escribe en ella. */
+  drive_file_id?: string | null;
+  drive_pestana?: string | null;
+  drive_escribir?: boolean;
+  /** Qué es el fichero, visto en la última lectura: hoja de Google (se
+   *  escribe) o .xlsx subido (solo se lee). */
+  drive_formato?: BankDriveFormato | null;
+  drive_leida_at?: string | null;
+  drive_resultado?: BankDriveResultado | null;
+  /** Movimientos conciliados pendientes de escribir en la hoja. */
+  drive_pendientes?: number;
+};
+
+export type BankDriveFormato = "hoja" | "xlsx";
+
+/** La escritura en la hoja de una pasada: cuántas filas se escribieron y
+ *  cuántas no, y por qué. */
+export type BankDriveEscritura = {
+  pendientes?: number;
+  escritas?: number;
+  ocupadas?: number;
+  no_encontradas?: number;
+  corridas?: number;
+  sin_columna?: number;
+  movidas?: number;
+  error?: string | null;
+  origen?: string;
+  at?: string;
+};
+
+/** La última pasada de Drive de una cuenta (botón o tic diario). Solo
+ *  recuentos: nada de la hoja. */
+export type BankDriveResultado = {
+  origen?: "manual" | "programada" | string;
+  at?: string;
+  ok?: boolean;
+  code?: string | null;
+  error?: string | null;
+  formato?: BankDriveFormato;
+  imported?: number;
+  duplicates?: number;
+  no_entendidas_total?: number;
+  recolocadas?: number;
+  escritura?: BankDriveEscritura | null;
 };
 
 export type BankAccountSuggestion = Omit<
   BankAccount,
-  "id" | "column_mapping" | "has_statement_header" | "serie" | "contrapartida_codigo" | "contrapartida_nombre"
+  | "id" | "column_mapping" | "has_statement_header" | "serie" | "contrapartida_codigo"
+  | "contrapartida_nombre" | "drive_file_id" | "drive_pestana" | "drive_escribir"
+  | "drive_formato" | "drive_leida_at" | "drive_resultado" | "drive_pendientes"
 >;
 
 export type BankConfidence = "alta" | "media" | "baja";
@@ -4785,10 +4832,19 @@ export type BankMovement = {
   /** Lo que Bart escribió a mano en las columnas `factura`/`pedido`. */
   anotacion_factura?: string | null;
   anotacion_pedido?: string | null;
+  /** La escritura de la factura y el pedido en la hoja de Drive. */
+  hoja_estado?: BankHojaEstado | null;
+  hoja_estado_at?: string | null;
+  /** Lo que escribió BoHub en la hoja. */
+  hoja_factura?: string | null;
+  hoja_pedido?: string | null;
   confidence: BankConfidence | null;
   proposals: BankProposal[];
   reconciled: BankProposal[];
 };
+
+export type BankHojaEstado =
+  | "pendiente" | "escrita" | "ocupada" | "no_encontrada" | "corrida" | "sin_columna";
 
 export type BankCounters = {
   pending: number;
@@ -4828,6 +4884,8 @@ export type BankImportSummary = {
   formato?: string | null;
   /** Filas sin fecha ni importe que se unieron al movimiento de encima. */
   continuaciones?: number;
+  /** Filas corridas (un nombre partido por una coma) que se recolocaron. */
+  recolocadas?: number;
   /** Las filas que no se entendieron: se importa el resto igual. */
   no_entendidas_total?: number;
   no_entendidas?: BankNoEntendida[];
@@ -4876,7 +4934,12 @@ export async function createBankAccount(
 }
 
 export async function updateBankAccount(
-  id: string, patch: Partial<Omit<BankAccount, "id" | "has_statement_header">>,
+  id: string,
+  patch: Partial<Omit<
+    BankAccount,
+    | "id" | "has_statement_header" | "drive_formato" | "drive_leida_at" | "drive_resultado"
+    | "drive_pendientes"
+  >>,
 ): Promise<BankAccount> {
   return apiFetch(`/api/erp/bank/accounts/${id}`, { method: "PATCH", body: JSON.stringify(patch) });
 }
@@ -4896,6 +4959,43 @@ export async function importBankStatement(
   if (opts.accountId) form.append("account_id", opts.accountId);
   form.append("run_match", String(opts.runMatch ?? true));
   return apiUpload("/api/erp/bank/import", form);
+}
+
+/** Con qué cuenta de servicio se comparten las hojas del banco (la de
+ *  Seguimiento) y la hora del repaso diario. */
+export type BankDriveInfo = {
+  configured: boolean;
+  service_account_email: string | null;
+  hora: string;
+};
+
+export async function getBankDrive(): Promise<BankDriveInfo> {
+  return apiFetch("/api/erp/bank/drive");
+}
+
+/** El resultado de «Traer de Drive» en una cuenta: el resumen del import de
+ *  siempre más lo de Drive, o el error (Drive no responde, no compartida…). */
+export type BankDriveTraida = BankImportSummary & {
+  account_id: string;
+  account_name: string;
+  drive?: BankDriveResultado;
+};
+
+/** «Traer de Drive»: lee la hoja de esa cuenta (o de todas las que la
+ *  tienen), importa lo que falta y escribe lo pendiente. No escribe en
+ *  FACTUSOL. */
+export async function traerBankDrive(accountId?: string): Promise<BankDriveTraida[]> {
+  const q = accountId ? `?account_id=${encodeURIComponent(accountId)}` : "";
+  const r = await apiFetch<{ resultados: BankDriveTraida[] }>(
+    `/api/erp/bank/drive/traer${q}`, { method: "POST" },
+  );
+  return r.resultados;
+}
+
+/** «Escribir ahora»: lo conciliado pendiente de esa cuenta, a su hoja. */
+export async function escribirBankDrive(accountId: string): Promise<BankDriveEscritura> {
+  return apiFetch(`/api/erp/bank/drive/escribir?account_id=${encodeURIComponent(accountId)}`,
+    { method: "POST" });
 }
 
 export async function runBankMatch(accountId?: string): Promise<BankMatchStats> {

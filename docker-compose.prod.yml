@@ -201,6 +201,10 @@ services:
       # Ofertas: caducidad diaria (las enviadas con la validez pasada quedan
       # caducadas y emiten `oferta.caducada`). No toca FACTUSOL ni envía nada.
       - ofertas:caducar
+      # Conciliación: las hojas del banco en Drive (lectura diaria a las 05:20
+      # y la factura/pedido conciliados escritos en celdas vacías). No toca
+      # FACTUSOL.
+      - bank:drive
     volumes:
       # Sprint Backup-Hardening. El worker ejecuta
       # `scripts/backup-crmbo.sh` via subprocess: necesita el script
