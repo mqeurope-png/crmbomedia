@@ -29,6 +29,8 @@ ERP_INTEGRATION_QUEUES = (
     "seguimiento:reconcile",
     # ERP · Cuadre: job nocturno + comprobaciones de FACTUSOL encoladas.
     "cuadre:run",
+    # Conciliación: las hojas del banco en Drive (tic diario y escrituras).
+    "bank:drive",
 )
 
 
@@ -92,3 +94,12 @@ def test_webs_indice_queue_constant_matches_compose_names() -> None:
     for compose in ("docker-compose.prod.yml", "docker-compose.yml"):
         queues = _all_worker_queues_from_compose(_repo_root() / compose)
         assert WEBS_QUEUE in queues, f"{WEBS_QUEUE} sin worker en {compose}."
+
+
+def test_bank_drive_queue_constant_matches_compose_names() -> None:
+    """La cola de las hojas del banco en Drive: la que usa el código es la que
+    escucha worker-sync en los dos compose."""
+    from app.erp.bank.drive_job import BANK_DRIVE_QUEUE
+
+    assert BANK_DRIVE_QUEUE == "bank:drive"
+    assert BANK_DRIVE_QUEUE in ERP_INTEGRATION_QUEUES

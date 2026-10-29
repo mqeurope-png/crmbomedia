@@ -2,7 +2,8 @@
 
 **Pantalla:** ERP · Conciliación (solo administración). **Código:**
 `backend/app/erp/bank/` (`parsing.py` lee el fichero, `service.py` importa,
-casa y exporta), `backend/app/erp/api/bank.py`,
+casa y exporta, `drive.py` y `drive_job.py` leen y escriben la hoja de
+Drive), `backend/app/erp/api/bank.py`,
 `frontend/src/app/erp/conciliacion/page.tsx`.
 
 **Lo que no cambia:** nada se concilia solo (la máquina **propone**; confirma
@@ -97,24 +98,148 @@ importa nada, y se dice.
 ### Filas corridas
 
 Una celda de más empuja el resto de la fila a la derecha, y lo que queda en
-la columna del importe ya no es el importe. Antes entraban así, con el
-importe equivocado. Ahora la `coherencia` del formato lo detecta y la fila
-sale como no entendida, con lo que trae:
+la columna del importe ya no es el importe. Antes del #571 entraban así, con
+el importe equivocado. La pista es la **divisa** (`Devies` en Belfius): si
+está en su sitio, el importe es el suyo y la fila entra, aunque lo de detrás
+(el BIC, el país) venga corrido. Si no, se busca la celda que trae la divisa
+(`EUR`…): cuántas columnas está a la derecha es lo que se corrió la fila
+(`parsing._recolocar`).
 
-- **«importe partido en dos columnas («-90» y «75»)»**: el tramo de las filas
-  54 a 401 del Belfius real se pegó partiendo por la coma decimal
-  (`-90 | 75 | EUR`). No se recompone: «5» puede ser ,05 o ,50. Se corrige en
-  el fichero (o se vuelve a exportar ese tramo) y se reimporta; lo que ya
-  entró no se duplica.
-- **«fila descolocada: … trae «…»»**: la divisa, el BIC o la fecha valor no
-  son lo que dicen (un texto del concepto partido por una coma, una fecha en
-  la divisa…).
+- **Se recoloca** cuando delante de la divisa están el importe y la fecha
+  valor. Lo que se partió es el nombre del pagador («Streamtec, Sl»), el texto
+  del movimiento, o los dos (el nombre suele ir también dentro del texto). El
+  texto del movimiento empieza en la celda que lo parece
+  (`Formato.transaccion`: «STORTING VAN…», «OVERSCHRIJVING…», o la que lleva el
+  IBAN del pagador). Lo que sobra antes se une al nombre y lo que sobra
+  después al texto, con la coma que los partió. El resumen lo cuenta
+  («N filas corridas recolocadas») y el movimiento queda marcado
+  (`recolocada`). Hasta 4 columnas; más ya no es una coma suelta.
+- **No se recoloca, y se dice:**
+  - **«importe partido en dos columnas («-90» y «75»)»**: el tramo de las
+    filas 54 a 401 del Belfius real se pegó partiendo también por la coma
+    decimal (`-90 | 75 | EUR`). No se recompone: «5» puede ser ,05 o ,50. Si
+    además está corrida, lo añade («…, y la fila corrida 1 columna más»). Se
+    corrige el importe en el fichero (como se hizo con 153 de esas filas el
+    29/10) y, si lo único que queda es el nombre partido, la fila se recoloca
+    sola al reimportar.
+  - **«fila corrida N columnas (…): no se sabe …»**: delante de la divisa no
+    están el importe y la fecha valor, o no se sabe qué texto se partió.
+  - **«fila descolocada: la fecha valor trae «…»»** y **«…divisa trae «…»»**:
+    la fila no está corrida pero no cuadra.
 
-Un código de país en la columna del BIC, con la divisa en su sitio, no toca
-el importe: esa fila entra.
+Con el Belfius real, las 41 que quedaban no entendidas tras arreglar las 153:
+
+| Qué les pasa | Filas | Cómo quedan |
+|---|---|---|
+| El importe partido **y** el nombre o el texto partidos | 24 | Siguen fuera, con «importe partido…, y la fila corrida N columnas más». Unido el importe, 17 se recolocan solas (comprobado con el fichero real en local) |
+| Corridas sin importe y fecha valor delante de la divisa | 6 | Fuera: «fila corrida…: no se sabe dónde acaba el importe» |
+| Sin importe | 6 | Fuera, como antes |
+| Sueltas (sin fecha ni importe) | 2 | Fuera, como antes |
+| Un nombre en la columna del importe | 1 | Fuera, como antes |
+| La divisa en su sitio y algo raro en el BIC | 2 | **Entran** (la regla del BIC ya no existe: no tocaba el importe) |
 
 Solo un fichero **sin fila de columnas reconocible** se rechaza entero, y el
 error dice qué formatos conoce.
+
+## Desde Drive: «Traer de Drive», el repaso diario y la factura escrita en la hoja
+
+Las dos hojas del banco viven en el Drive de Bart y él las actualiza casi a
+diario: pega arriba los movimientos nuevos y, al conciliar, escribe la
+factura en su columna. BoHub las lee solo y escribe la factura y el pedido
+que se concilian en la pantalla. Es el patrón de Seguimiento
+(`app/erp/drive_sheets.py`) con su misma **cuenta de servicio**.
+
+### Configuración (pestaña Cuentas)
+
+Cada cuenta puede tener su hoja: el **enlace** (o el identificador), la
+**pestaña** (vacía: la primera) y si BoHub **escribe** en ella (encendido de
+partida; apagado, solo lee). La pantalla dice con quién compartirla:
+
+- con la cuenta de servicio de Configuración ERP (la de Seguimiento,
+  `bohub-seguimiento@bomedia-crm.iam.gserviceaccount.com`);
+- como **Lector** si BoHub solo lee, como **Editor** si además escribe.
+
+Se reutiliza esa cuenta de servicio y no una aparte: es la misma clave, y
+cada una solo ve los ficheros que se le comparten. Una cuenta aparte solo
+serviría para tener otra clave que guardar.
+
+### `.xlsx` o hoja de Google
+
+Las dos hojas del banco son **ficheros `.xlsx` subidos a Drive**, no hojas de
+Google (comprobado el 30/10: `mimeType` de Office). La de Seguimiento es una
+hoja de Google nativa. Eso decide qué se puede hacer:
+
+| | Hoja de Google | `.xlsx` subido |
+|---|---|---|
+| Leer | Se exporta a `.xlsx` (Drive `files.export`) | Se baja tal cual (`alt=media`) |
+| Escribir la factura y el pedido | Sí: celdas sueltas con la API de Sheets (`values:batchUpdate`) | **No**: habría que subir el fichero entero y pisaría lo que Bart tenga abierto |
+
+**Recomendación (y lo que hace la pantalla):** convertirlas a hoja de Google
+(en Drive, abrir el `.xlsx` → Archivo → Guardar como hoja de cálculo de
+Google), compartir la hoja **nueva** con la cuenta de servicio como Editor y
+poner su enlace en la cuenta. Hasta entonces BoHub lee el `.xlsx` y avisa de
+que no puede escribir en él; lo conciliado queda pendiente y se escribe
+cuando la cuenta apunte a la hoja de Google.
+
+### Leer
+
+- **«Traer de Drive»**, al lado del fichero de siempre: la hoja de la cuenta
+  elegida o de todas las que la tienen. Un resultado por cuenta: si Drive
+  falla en una, lo dice ahí y las demás siguen.
+- **El repaso diario a las 05:20 de Madrid** (el tic del índice de las webs,
+  fuera de FLUX y del catálogo), en `worker-sync`, cola `bank:drive`. Lee cada
+  hoja, importa lo que falta, recalcula las propuestas y escribe lo
+  pendiente.
+- **El fichero a mano se queda** como respaldo (Drive caído, otro fichero).
+
+Se lee la hoja **entera** con el lector de siempre (solo cambia de dónde
+sale el fichero) y entra lo que falta: la identidad de cada movimiento es la
+clave anti-duplicados del importador, que no depende de la fila, así que las
+filas nuevas por arriba no mueven nada.
+
+### Escribir
+
+Al confirmar una conciliación («Confirmar», «Elegir / repartir», «Confirmar
+todas las de confianza alta») el movimiento queda **pendiente de escribir**
+(`hoja_estado`) y se encola la escritura de su cuenta: una sola, unos 20 s
+después, aunque se confirmen veinte seguidas. Sin Redis, lo pendiente espera
+al repaso diario, a «Traer de Drive» o a «Escribir ahora».
+
+Las reglas, las de Seguimiento:
+
+- **Nunca pisar lo que ya hay.** Solo se rellena la celda vacía. Una celda
+  con algo, aunque sea una nota, no se toca (`ocupada`). La única excepción
+  es lo que escribió el propio BoHub (`hoja_factura`, `hoja_pedido`): si el
+  movimiento se reabre y se concilia con otra factura, BoHub cambia lo suyo.
+- **Nunca borrar ni reordenar.** El código solo escribe celdas sueltas.
+- **La fila se busca por el movimiento**, con la misma clave del importador,
+  nunca por su número.
+- **Si la fila ya no está**, no se escribe nada y queda constancia
+  (`no_encontrada`, y una línea en el registro con el id del movimiento, sin
+  datos de la hoja).
+- **Justo antes de escribir** se vuelven a leer esas celdas y las del importe
+  y el concepto de la fila: si Bart ha insertado filas entretanto, no se
+  escribe y se reintenta en la siguiente pasada.
+- **Una fila corrida** (recolocada al leer) no se escribe: su `factura` no
+  está en su columna (`corrida`).
+
+`factura` lleva las facturas confirmadas (varias, separadas por coma) y
+`pedido` el pedido de BoHub de esas facturas, si lo hay: lo mismo que el
+Excel conciliado (`service.valores_conciliados`). Lo que escribió BoHub,
+al volver a leer la hoja, **no cuenta como anotación de Bart**: un
+movimiento que se reabre no se vuelve a casar solo.
+
+La pantalla dice, en cada movimiento, qué se escribió en la hoja o por qué
+no; y en cada cuenta, la última lectura, la última escritura y lo pendiente
+(«Escribir ahora»).
+
+### Datos de clientes
+
+Las hojas llevan nombres de pagadores, direcciones e IBAN de terceros. Los
+registros, los errores y el estado guardado de cada pasada
+(`drive_resultado_json`) solo llevan cuentas, recuentos, filas e
+identificadores de movimiento. Los errores de Google se traducen sin su
+texto. Los tests y las capturas usan figurantes.
 
 ## Duplicados
 

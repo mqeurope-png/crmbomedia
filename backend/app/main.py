@@ -460,6 +460,23 @@ async def _arm_webs_indice() -> None:
 
 
 @app.on_event("startup")
+async def _arm_bank_drive() -> None:
+    """ERP · Conciliación — repaso diario de las hojas del banco en Drive
+    (cola `bank:drive`, worker-sync), a las 05:20 de Madrid. Solo hace algo
+    con las cuentas que tienen su hoja puesta. Idempotente vía SETNX."""
+    try:
+        from app.erp.bank.drive_job import arm  # noqa: PLC0415
+
+        arm()
+    except Exception:  # noqa: BLE001
+        import logging  # noqa: PLC0415
+
+        logging.getLogger(__name__).warning(
+            "bank.drive arm failed at startup", exc_info=True
+        )
+
+
+@app.on_event("startup")
 async def _arm_cuadre_nightly() -> None:
     """ERP · Cuadre — arma el job nocturno de comprobaciones (cola `cuadre:run`,
     worker-sync). Con el interruptor apagado (por defecto) el tic no hace nada.

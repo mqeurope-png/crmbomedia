@@ -16,6 +16,8 @@ import {
   discardBankMovement,
   downloadBankCobrosCsv,
   downloadBankExport,
+  escribirBankDrive,
+  getBankDrive,
   getContrapartidas,
   importBankStatement,
   listBankAccounts,
@@ -27,11 +29,15 @@ import {
   reopenBankMovement,
   runBankMatch,
   saveBlob,
+  traerBankDrive,
   updateBankAccount,
   type BankAccount,
   type BankAccountSuggestion,
   type BankCobrosCsv,
   type BankConfidence,
+  type BankDriveEscritura,
+  type BankDriveInfo,
+  type BankDriveTraida,
   type BankImportSummary,
   type BankMovement,
   type BankMovementFilters,
@@ -91,6 +97,13 @@ function ResumenImport({ summary }: { summary: BankImportSummary }) {
         <p className="muted small">
           {summary.continuaciones} fila{summary.continuaciones === 1 ? "" : "s"} sin fecha unida
           {summary.continuaciones === 1 ? "" : "s"} al movimiento de encima (el pagador, la factura…).
+        </p>
+      ) : null}
+      {summary.recolocadas ? (
+        <p className="muted small">
+          {summary.recolocadas} fila{summary.recolocadas === 1 ? "" : "s"} corrida
+          {summary.recolocadas === 1 ? "" : "s"} recolocada{summary.recolocadas === 1 ? "" : "s"} (un
+          nombre o un texto partido por una coma).
         </p>
       ) : null}
       {total > 0 ? (
@@ -158,6 +171,63 @@ function AnotadoEnExtracto({ movement: m }: { movement: BankMovement }) {
   return <div className="muted small">Anotado en el extracto: {partes.join(" · ")}</div>;
 }
 
+const HOJA_TEXTO: Record<string, string> = {
+  pendiente: "Pendiente de escribir en la hoja de Drive.",
+  ocupada: "En la hoja, la celda «factura» ya tenía algo: BoHub no la toca.",
+  no_encontrada: "Este movimiento ya no está en la hoja de Drive: no se ha escrito nada.",
+  corrida: "Su fila está corrida en la hoja: no se escribe hasta que se corrija.",
+  sin_columna: "La hoja no tiene columna «factura»: no se escribe.",
+};
+
+/** Lo que BoHub ha hecho (o no) en la hoja de Drive con este movimiento. */
+function EnLaHoja({ movement: m }: { movement: BankMovement }) {
+  if (!m.hoja_estado) return null;
+  if (m.hoja_estado === "escrita") {
+    const partes = [
+      m.hoja_factura ? `factura «${m.hoja_factura}»` : null,
+      m.hoja_pedido ? `pedido «${m.hoja_pedido}»` : null,
+    ].filter(Boolean);
+    return (
+      <div className="muted small erp-bank-hoja">
+        {partes.length ? `Escrito en la hoja: ${partes.join(" · ")}` : "En la hoja: ya estaba escrito."}
+      </div>
+    );
+  }
+  return <div className="muted small erp-bank-hoja">{HOJA_TEXTO[m.hoja_estado] ?? null}</div>;
+}
+
+/** Lo que pasó al escribir en la hoja, en una línea. */
+function escrituraTexto(e: BankDriveEscritura | null | undefined): string | null {
+  if (!e) return null;
+  if (e.error) return e.error;
+  const partes = [
+    e.escritas ? `${e.escritas} escrito${e.escritas === 1 ? "" : "s"} en la hoja` : null,
+    e.ocupadas ? `${e.ocupadas} con la celda «factura» ya ocupada (no se tocan)` : null,
+    e.no_encontradas ? `${e.no_encontradas} que ya no están en la hoja` : null,
+    e.corridas ? `${e.corridas} en filas corridas de la hoja` : null,
+    e.movidas ? `${e.movidas} por reintentar (la hoja cambió mientras se escribía)` : null,
+  ].filter(Boolean);
+  return partes.length ? partes.join(" · ") : null;
+}
+
+/** El resultado de «Traer de Drive» en una cuenta. */
+function TraidaDeDrive({ traida: t }: { traida: BankDriveTraida }) {
+  if (!t.ok) {
+    return <p className="form-error" role="alert">{t.account_name}: {t.detail}</p>;
+  }
+  const escrito = escrituraTexto(t.drive?.escritura);
+  return (
+    <>
+      <ResumenImport summary={t} />
+      <p className="muted small">
+        Leído de Drive ({t.drive?.formato === "xlsx" ? ".xlsx subido: solo se lee" : "hoja de Google"})
+        {t.duplicates ? <> · {t.duplicates} ya estaban</> : null}
+        {escrito ? <> · {escrito}</> : null}
+      </p>
+    </>
+  );
+}
+
 /** ERP-F4-A — Conciliación bancaria. Importa el extracto, PROPONE el casado
  *  con las facturas pendientes y deja que la persona decida. Nada se concilia
  *  solo. NO escribe en FACTUSOL (eso va en F-4-B). */
@@ -172,6 +242,9 @@ export default function ConciliacionPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [importSummary, setImportSummary] = useState<BankImportSummary | null>(null);
+  // El extracto por Drive: con quién se comparten las hojas y lo traído.
+  const [drive, setDrive] = useState<BankDriveInfo | null>(null);
+  const [traidas, setTraidas] = useState<BankDriveTraida[] | null>(null);
   const [tab, setTab] = useState<"revision" | "cuentas" | "reglas">("revision");
   // Acciones por movimiento (elegir otra / repartir / descartar).
   const [reassignFor, setReassignFor] = useState<BankMovement | null>(null);
@@ -201,6 +274,7 @@ export default function ConciliacionPage() {
 
   useEffect(() => {
     getCurrentUser().then(setUser).catch(() => undefined);
+    getBankDrive().then(setDrive).catch(() => setDrive(null));
     void loadAccounts();
     listBankRules().then(setRules).catch(() => setRules([]));
   }, [loadAccounts]);
@@ -228,6 +302,7 @@ export default function ConciliacionPage() {
     setBusy(true);
     setError(null);
     setImportSummary(null);
+    setTraidas(null);
     try {
       const summary = await importBankStatement(file, { accountId: filters.account_id });
       setImportSummary(summary);
@@ -239,7 +314,28 @@ export default function ConciliacionPage() {
     }
   }
 
+  /** «Traer de Drive»: la hoja de la cuenta elegida, o de todas las que la tienen. */
+  async function onTraerDrive() {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    setImportSummary(null);
+    setTraidas(null);
+    try {
+      setTraidas(await traerBankDrive(filters.account_id));
+      await Promise.all([loadMovements(), loadAccounts()]);
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudo traer el extracto de Drive."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const counters = page?.counters;
+  const conHoja = accounts.filter((a) => a.drive_file_id);
+  const puedeTraer = filters.account_id
+    ? conHoja.some((a) => a.id === filters.account_id)
+    : conHoja.length > 0;
 
   return (
     <main className="shell shell-wide">
@@ -286,6 +382,7 @@ export default function ConciliacionPage() {
         <AccountsPanel
           accounts={accounts}
           suggested={suggested}
+          drive={drive}
           isAdmin={isAdmin}
           onChanged={loadAccounts}
           onError={setError}
@@ -336,6 +433,19 @@ export default function ConciliacionPage() {
                     }}
                   />
                 </label>
+              ) : null}
+              {canEdit && conHoja.length > 0 ? (
+                <button
+                  type="button"
+                  className="button small"
+                  disabled={busy || !puedeTraer}
+                  title={puedeTraer
+                    ? "Lee la hoja de Drive entera e importa lo que falta. El fichero a mano sigue valiendo."
+                    : "Esta cuenta no tiene hoja de Drive: ponla en la pestaña Cuentas."}
+                  onClick={() => void onTraerDrive()}
+                >
+                  Traer de Drive
+                </button>
               ) : null}
               {canEdit ? (
                 <button
@@ -392,7 +502,24 @@ export default function ConciliacionPage() {
                 Descargar CSV de cobros
               </button>
             </div>
+            {conHoja.length > 0 && drive ? (
+              drive.configured ? (
+                <p className="muted small">
+                  Hojas de Drive conectadas con {drive.service_account_email}. BoHub lee la hoja
+                  entera y solo añade lo que falta; en «factura» y «pedido» solo escribe en celdas
+                  vacías: nunca borra filas, ni reordena, ni pisa lo escrito a mano. Repaso
+                  automático cada día a las {drive.hora}.
+                </p>
+              ) : (
+                <p className="form-warning">
+                  Hay cuentas con hoja de Drive, pero falta la cuenta de servicio de Google: un
+                  admin la pega en Configuración ERP (la misma de Seguimiento). Mientras, el
+                  fichero a mano sigue valiendo.
+                </p>
+              )
+            ) : null}
             {importSummary ? <ResumenImport summary={importSummary} /> : null}
+            {traidas ? traidas.map((t) => <TraidaDeDrive key={t.account_id} traida={t} />) : null}
             {importSummary ? (
               <p className="muted small" role="status">
                 Importados <strong>{importSummary.imported}</strong> de {importSummary.total_rows} ·
@@ -508,6 +635,7 @@ export default function ConciliacionPage() {
                           </ul>
                         )}
                         <AnotadoEnExtracto movement={m} />
+                        <EnLaHoja movement={m} />
                         {m.status === "discarded" && m.discard_reason ? (
                           <div className="muted small">Motivo: {m.discard_reason}</div>
                         ) : null}
@@ -586,10 +714,11 @@ export default function ConciliacionPage() {
 // --- cuentas -----------------------------------------------------------------
 
 function AccountsPanel({
-  accounts, suggested, isAdmin, onChanged, onError,
+  accounts, suggested, drive, isAdmin, onChanged, onError,
 }: {
   accounts: BankAccount[];
   suggested: BankAccountSuggestion[];
+  drive: BankDriveInfo | null;
   isAdmin: boolean;
   onChanged: () => Promise<void>;
   onError: (msg: string) => void;
@@ -646,6 +775,19 @@ function AccountsPanel({
         Europe Belfius», «8 Streamtec Sabadell»…). Es lo que usará el registro
         del cobro. El catálogo se edita en Configuración ERP.
       </p>
+      <p className="muted small">
+        Y puede tener su <strong>hoja de Drive</strong>: BoHub la lee sola (cada día
+        a las {drive?.hora ?? "05:20"} y con «Traer de Drive») y, al conciliar, escribe la
+        factura y el pedido en la fila del movimiento, solo en celdas vacías.
+        {drive?.service_account_email ? (
+          <> Comparte cada hoja con <span className="mono">{drive.service_account_email}</span>:
+            como <strong>Lector</strong> si BoHub solo la lee, como <strong>Editor</strong> si
+            además escribe.</>
+        ) : (
+          <> Falta la cuenta de servicio de Google: se pega en Configuración ERP (la misma de
+            Seguimiento).</>
+        )}
+      </p>
       {accounts.length === 0 ? <p className="muted">Sin cuentas dadas de alta.</p> : (
         <ul className="item-list">
           {accounts.map((a) => (
@@ -672,6 +814,13 @@ function AccountsPanel({
                   Dar de baja
                 </button>
               ) : null}
+              <HojaDriveCuenta
+                account={a}
+                drive={drive}
+                isAdmin={isAdmin}
+                onChanged={onChanged}
+                onError={onError}
+              />
             </li>
           ))}
         </ul>
@@ -713,6 +862,177 @@ function AccountsPanel({
         </form>
       ) : null}
     </section>
+  );
+}
+
+// --- la hoja de Drive de una cuenta ------------------------------------------------
+
+/** El enlace para abrir el fichero: una hoja de Google o un .xlsx en Drive. */
+function enlaceHoja(a: BankAccount): string {
+  const id = encodeURIComponent(a.drive_file_id ?? "");
+  return a.drive_formato === "hoja"
+    ? `https://docs.google.com/spreadsheets/d/${id}/edit`
+    : `https://drive.google.com/file/d/${id}/view`;
+}
+
+function cuando(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso.endsWith("Z") || iso.includes("+") ? iso : `${iso}Z`);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString("es-ES", {
+    day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit",
+  });
+}
+
+/** La hoja de Drive de una cuenta: cuál es, qué hace BoHub con ella, cómo
+ *  fue la última lectura y lo pendiente de escribir. El admin la conecta. */
+function HojaDriveCuenta({
+  account: a, drive, isAdmin, onChanged, onError,
+}: {
+  account: BankAccount;
+  drive: BankDriveInfo | null;
+  isAdmin: boolean;
+  onChanged: () => Promise<void>;
+  onError: (msg: string) => void;
+}) {
+  const [editando, setEditando] = useState(false);
+  const [fichero, setFichero] = useState(a.drive_file_id ?? "");
+  const [pestana, setPestana] = useState(a.drive_pestana ?? "");
+  const [escribir, setEscribir] = useState(a.drive_escribir ?? true);
+  const [ocupado, setOcupado] = useState(false);
+  const [escrito, setEscrito] = useState<string | null>(null);
+  const r = a.drive_resultado;
+  const email = drive?.service_account_email ?? "la cuenta de servicio";
+
+  async function guardar() {
+    setOcupado(true);
+    try {
+      await updateBankAccount(a.id, {
+        drive_file_id: fichero.trim() || null,
+        drive_pestana: pestana.trim() || null,
+        drive_escribir: escribir,
+      });
+      setEditando(false);
+      await onChanged();
+    } catch (e) {
+      onError(extractErrorMessage(e, "No se pudo guardar la hoja de Drive."));
+    } finally {
+      setOcupado(false);
+    }
+  }
+
+  async function escribirAhora() {
+    setOcupado(true);
+    setEscrito(null);
+    try {
+      setEscrito(escrituraTexto(await escribirBankDrive(a.id)) ?? "Nada que escribir.");
+      await onChanged();
+    } catch (e) {
+      onError(extractErrorMessage(e, "No se pudo escribir en la hoja de Drive."));
+    } finally {
+      setOcupado(false);
+    }
+  }
+
+  return (
+    <div className="erp-bank-drive" aria-label={`Hoja de Drive de ${a.name}`}>
+      <div className="muted small">
+        Hoja de Drive:{" "}
+        {a.drive_file_id ? (
+          <>
+            <a href={enlaceHoja(a)} target="_blank" rel="noreferrer">
+              {a.drive_formato === "hoja" ? "hoja de Google" : a.drive_formato === "xlsx" ? ".xlsx subido" : "abrir"}
+            </a>
+            {a.drive_pestana ? <> · pestaña «{a.drive_pestana}»</> : null}
+            {" · "}
+            {!a.drive_escribir
+              ? "BoHub solo la lee"
+              : a.drive_formato === "xlsx"
+                ? "BoHub la lee; no puede escribir en un .xlsx"
+                : "BoHub la lee y escribe la factura y el pedido"}
+          </>
+        ) : "sin conectar"}
+      </div>
+      {a.drive_file_id && a.drive_escribir && a.drive_formato === "xlsx" ? (
+        <p className="form-warning small">
+          Es un .xlsx subido: BoHub lo lee, pero no puede escribir en él sin subirlo entero.
+          Para que escriba la factura y el pedido, ábrelo en Drive y usa Archivo → Guardar
+          como hoja de cálculo de Google; comparte la hoja nueva con {email} como Editor y
+          pon aquí su enlace.
+        </p>
+      ) : null}
+      {r ? (
+        <p className="muted small">
+          Última lectura ({r.origen === "programada" ? "repaso diario" : "a mano"}, {cuando(r.at)}):{" "}
+          {r.ok ? (
+            <>
+              {r.imported ?? 0} nuevos · {r.duplicates ?? 0} ya estaban
+              {r.no_entendidas_total ? <> · {r.no_entendidas_total} filas no entendidas</> : null}
+            </>
+          ) : <span className="form-error">{r.error}</span>}
+        </p>
+      ) : null}
+      {r?.escritura && escrituraTexto(r.escritura) ? (
+        <p className={r.escritura.error ? "form-error small" : "muted small"}>
+          Última escritura ({cuando(r.escritura.at)}): {escrituraTexto(r.escritura)}
+        </p>
+      ) : null}
+      {a.drive_pendientes ? (
+        <p className="muted small">
+          {a.drive_pendientes} conciliado{a.drive_pendientes === 1 ? "" : "s"} pendiente
+          {a.drive_pendientes === 1 ? "" : "s"} de escribir en la hoja.
+          {isAdmin && a.drive_formato !== "xlsx" ? (
+            <button type="button" className="button small secondary" style={{ marginLeft: 8 }}
+              disabled={ocupado} onClick={() => void escribirAhora()}>
+              Escribir ahora
+            </button>
+          ) : null}
+        </p>
+      ) : null}
+      {escrito ? <p className="form-success small" role="status">{escrito}</p> : null}
+      {isAdmin ? (
+        editando ? (
+          <form className="form-card embedded" onSubmit={(e) => { e.preventDefault(); void guardar(); }}>
+            <label>
+              Hoja de Drive (enlace o identificador; vacío: sin hoja)
+              <input value={fichero} onChange={(e) => setFichero(e.target.value)}
+                placeholder="https://docs.google.com/spreadsheets/d/…" />
+            </label>
+            <label>
+              Pestaña (vacía: la primera)
+              <input value={pestana} onChange={(e) => setPestana(e.target.value)} />
+            </label>
+            <label className="muted small">
+              <input type="checkbox" checked={escribir} onChange={(e) => setEscribir(e.target.checked)} />{" "}
+              Escribir la factura y el pedido en la hoja al conciliar (solo en celdas vacías)
+            </label>
+            <p className="muted small">
+              Comparte la hoja con <span className="mono">{email}</span> como{" "}
+              <strong>{escribir ? "Editor" : "Lector"}</strong>.
+            </p>
+            <div className="modal-actions">
+              <button type="button" className="button small secondary" onClick={() => setEditando(false)}>
+                Cancelar
+              </button>
+              <button type="submit" className="button small" disabled={ocupado}>Guardar</button>
+            </div>
+          </form>
+        ) : (
+          <button
+            type="button"
+            className="button small secondary"
+            onClick={() => {
+              // Lo guardado, no lo que se tecleó la vez anterior.
+              setFichero(a.drive_file_id ?? "");
+              setPestana(a.drive_pestana ?? "");
+              setEscribir(a.drive_escribir ?? true);
+              setEditando(true);
+            }}
+          >
+            {a.drive_file_id ? "Cambiar la hoja de Drive" : "Conectar hoja de Drive"}
+          </button>
+        )
+      ) : null}
+    </div>
   );
 }
 

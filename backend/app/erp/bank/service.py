@@ -69,6 +69,13 @@ def account_to_dict(a: BankAccount, contrapartidas: dict[str, str] | None = None
         "contrapartida_nombre": resolve_name(contrapartidas or {}, a.contrapartida_codigo),
         "column_mapping": json.loads(a.column_mapping_json) if a.column_mapping_json else None,
         "has_statement_header": bool(a.statement_header_json),
+        # La hoja de Drive de la cuenta.
+        "drive_file_id": a.drive_file_id,
+        "drive_pestana": a.drive_pestana,
+        "drive_escribir": bool(a.drive_escribir),
+        "drive_formato": a.drive_formato,
+        "drive_leida_at": a.drive_leida_at.isoformat() if a.drive_leida_at else None,
+        "drive_resultado": json.loads(a.drive_resultado_json) if a.drive_resultado_json else None,
     }
 
 
@@ -80,7 +87,53 @@ def account_dict(session: Session, a: BankAccount) -> dict[str, Any]:
 def list_accounts(session: Session) -> list[dict[str, Any]]:
     rows = session.scalars(select(BankAccount).order_by(BankAccount.name)).all()
     names = contrapartida_names(session)
-    return [account_to_dict(a, names) for a in rows]
+    pendientes = dict(session.execute(
+        select(BankMovement.account_id, func.count(BankMovement.id))
+        .where(BankMovement.hoja_estado == HOJA_PENDIENTE)
+        .group_by(BankMovement.account_id)
+    ).all())
+    return [
+        {**account_to_dict(a, names), "drive_pendientes": int(pendientes.get(a.id, 0))}
+        for a in rows
+    ]
+
+
+#: El identificador de un fichero de Drive dentro de su enlace
+#: (`/d/<id>/`, `/file/d/<id>`, `?id=<id>`).
+_DRIVE_ID_RE = re.compile(r"(?:/d/|[?&]id=)([A-Za-z0-9_-]{20,})")
+
+
+def drive_file_id(value: Any) -> str | None:
+    """El identificador del fichero: tal cual o sacado del enlace que se pega
+    desde el navegador. Vacío → None."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    match = _DRIVE_ID_RE.search(raw)
+    if match:
+        return match.group(1)
+    if re.fullmatch(r"[A-Za-z0-9_-]{20,128}", raw):
+        return raw
+    raise ValueError(
+        "Eso no parece el enlace ni el identificador de un fichero de Drive: copia el "
+        "enlace de la hoja (Compartir → Copiar enlace) o el código que va tras /d/."
+    )
+
+
+def _datos_drive(acc: BankAccount, data: dict[str, Any]) -> None:
+    if "drive_file_id" in data:
+        nuevo = drive_file_id(data["drive_file_id"])
+        if nuevo != acc.drive_file_id:
+            # Otra hoja (p. ej. la convertida a hoja de Google): lo que se
+            # supiera de la anterior no vale.
+            acc.drive_formato = None
+            acc.drive_leida_at = None
+            acc.drive_resultado_json = None
+        acc.drive_file_id = nuevo
+    if "drive_pestana" in data:
+        acc.drive_pestana = str(data["drive_pestana"] or "").strip()[:120] or None
+    if "drive_escribir" in data and data["drive_escribir"] is not None:
+        acc.drive_escribir = bool(data["drive_escribir"])
 
 
 def _contrapartida_code(session: Session, value: Any) -> str | None:
@@ -113,6 +166,7 @@ def create_account(session: Session, data: dict[str, Any]) -> BankAccount:
         if data.get("column_mapping")
         else None,
     )
+    _datos_drive(acc, data)
     session.add(acc)
     session.commit()
     session.refresh(acc)
@@ -136,6 +190,13 @@ def update_account(session: Session, account_id: str, data: dict[str, Any]) -> B
         acc.column_mapping_json = (
             json.dumps(data["column_mapping"]) if data["column_mapping"] else None
         )
+    _datos_drive(acc, data)
+    if not acc.drive_file_id or not acc.drive_escribir:
+        # Sin hoja, o sin escribir en ella: lo pendiente ya no se escribe.
+        for mov in session.scalars(select(BankMovement).where(
+            BankMovement.account_id == acc.id, BankMovement.hoja_estado == HOJA_PENDIENTE,
+        )):
+            mov.hoja_estado = None
     session.commit()
     session.refresh(acc)
     return acc
@@ -227,6 +288,59 @@ def _resumen_texto(imported: int, no_entendidas: list[dict[str, Any]]) -> str:
     return f"{texto_imp}, {n} fila{plural} no entendida{plural} ({filas})"
 
 
+def movimientos_de_la_cuenta(
+    lectura: Lectura, account: BankAccount,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Los movimientos leídos que son de esta cuenta y, aparte, las filas que
+    dicen ser de OTRA (Belfius repite la cuenta en cada fila): esas no se
+    importan en esta, se enseñan."""
+    movimientos: list[dict[str, Any]] = []
+    otras: list[dict[str, Any]] = []
+    for m in lectura.movimientos:
+        propia = numero_de_cuenta(m["cuenta"]) or m["cuenta"] if m["cuenta"] else None
+        if propia and not cuenta_casa(propia, account.iban):
+            otras.append({
+                "fila": m["source_row"],
+                "motivo": f"es de otra cuenta ({m['cuenta']})",
+                "valores": [v for v in (texto(x) for x in m["raw"].values()) if v],
+            })
+            continue
+        movimientos.append(m)
+    return movimientos, otras
+
+
+def claves_de_movimientos(account_id: str, movimientos: list[dict[str, Any]]) -> list[str]:
+    """La identidad de cada movimiento leído, en el orden del fichero: la
+    clave anti-duplicados del importador. No depende de la fila: la misma
+    hoja con filas nuevas por arriba da las mismas claves."""
+    repeticiones: Counter[str] = Counter()
+    claves: list[str] = []
+    for m in movimientos:
+        datos = (account_id, m["fecha_oper"], m["importe"], m["concepto"], m["saldo"])
+        if m["saldo"] is not None:
+            # Con saldo, dos filas idénticas son la misma (un solape al juntar
+            # exportaciones): la segunda es un duplicado.
+            claves.append(dedupe_key(*datos))
+        elif m["referencia1"]:
+            # Sin saldo (Belfius), el nº de transacción distingue dos iguales.
+            claves.append(dedupe_key(*datos, referencia=m["referencia1"]))
+        else:
+            clave_base = dedupe_key(*datos)
+            repeticiones[clave_base] += 1
+            claves.append(dedupe_key(*datos, repeticion=repeticiones[clave_base]))
+    return claves
+
+
+def _anotacion_nueva(valor: str | None, de_bohub: str | None) -> str | None:
+    """Lo que trae la hoja en `factura`/`pedido`, salvo que sea lo que BoHub
+    escribió ahí: eso no es una anotación de Bart."""
+    if not valor:
+        return None
+    if de_bohub and valor.strip() == de_bohub.strip():
+        return None
+    return valor
+
+
 def import_statement(
     session: Session,
     *,
@@ -234,6 +348,7 @@ def import_statement(
     filename: str,
     account_id: str | None = None,
     user_id: str | None = None,
+    pestana: str | None = None,
 ) -> dict[str, Any]:
     """Lee el fichero, identifica la cuenta (avisa si no está dada de alta en
     vez de importar a ciegas), deduplica y persiste.
@@ -247,8 +362,11 @@ def import_statement(
 
     Lo que viene anotado en la columna `factura` entra casado
     (`_casar_anotaciones`). Nada más se concilia: el resto solo se PROPONE
-    después, con el casado de siempre."""
-    parsed = read_statement(content, filename, extra=_formatos_de_cuentas(session, account_id))
+    después, con el casado de siempre. `pestana`: la del libro que se lee (la
+    primera si no se dice)."""
+    parsed = read_statement(
+        content, filename, extra=_formatos_de_cuentas(session, account_id), pestana=pestana,
+    )
     lectura = interpretar(parsed, parsed.mapping)
     numero = _cuenta_del_extracto(parsed, lectura)
     account: BankAccount | None = None
@@ -290,21 +408,8 @@ def import_statement(
             ),
         }
 
-    # Una fila que dice ser de OTRA cuenta (Belfius la repite en cada fila) no
-    # se importa en esta: se enseña.
-    movimientos: list[dict[str, Any]] = []
-    no_entendidas = list(lectura.no_entendidas)
-    for m in lectura.movimientos:
-        propia = numero_de_cuenta(m["cuenta"]) or m["cuenta"] if m["cuenta"] else None
-        if propia and not cuenta_casa(propia, account.iban):
-            no_entendidas.append({
-                "fila": m["source_row"],
-                "motivo": f"es de otra cuenta ({m['cuenta']})",
-                "valores": [v for v in (texto(x) for x in m["raw"].values()) if v],
-            })
-            continue
-        movimientos.append(m)
-    no_entendidas.sort(key=lambda x: x["fila"])
+    movimientos, otras = movimientos_de_la_cuenta(lectura, account)
+    no_entendidas = sorted([*lectura.no_entendidas, *otras], key=lambda x: x["fila"])
 
     account.column_mapping_json = json.dumps(parsed.mapping)
     account.statement_header_json = json.dumps(
@@ -323,34 +428,23 @@ def import_statement(
         ).all()
     )
     imported = duplicates = 0
-    repeticiones: Counter[str] = Counter()
     nuevos: list[BankMovement] = []
     reanotados: list[BankMovement] = []
-    for m in movimientos:
-        datos = (account.id, m["fecha_oper"], m["importe"], m["concepto"], m["saldo"])
-        if m["saldo"] is not None:
-            # Con saldo, dos filas idénticas son la misma (un solape al juntar
-            # exportaciones): la segunda es un duplicado.
-            key = dedupe_key(*datos)
-        elif m["referencia1"]:
-            # Sin saldo (Belfius), el nº de transacción distingue dos iguales.
-            key = dedupe_key(*datos, referencia=m["referencia1"])
-        else:
-            clave_base = dedupe_key(*datos)
-            repeticiones[clave_base] += 1
-            key = dedupe_key(*datos, repeticion=repeticiones[clave_base])
+    for m, key in zip(movimientos, claves_de_movimientos(account.id, movimientos), strict=True):
         if key in existing:
             duplicates += 1
             # Bart anota el extracto y lo vuelve a subir: lo que ahora trae
-            # anotado y antes no, se guarda y se casa.
+            # anotado y antes no, se guarda y se casa. Lo que escribió BoHub
+            # en la hoja al conciliar no cuenta: no es suyo.
             mov_id = existing[key]
             mov = session.get(BankMovement, mov_id) if mov_id else None
-            if (
-                mov is not None and (m["factura"] or m["pedido"])
-                and not (mov.anotacion_factura or mov.anotacion_pedido)
-            ):
-                mov.anotacion_factura = _corta(m["factura"])
-                mov.anotacion_pedido = _corta(m["pedido"])
+            if mov is None or mov.anotacion_factura or mov.anotacion_pedido:
+                continue
+            factura = _anotacion_nueva(m["factura"], mov.hoja_factura)
+            pedido = _anotacion_nueva(m["pedido"], mov.hoja_pedido)
+            if factura or pedido:
+                mov.anotacion_factura = _corta(factura)
+                mov.anotacion_pedido = _corta(pedido)
                 reanotados.append(mov)
             continue
         existing[key] = None
@@ -403,6 +497,7 @@ def import_statement(
         "imported": imported,
         "duplicates": duplicates,
         "continuaciones": lectura.continuaciones,
+        "recolocadas": lectura.recolocadas,
         "no_entendidas_total": len(no_entendidas),
         "no_entendidas": no_entendidas[:MAX_NO_ENTENDIDAS],
         "anotadas": anotadas,
@@ -717,6 +812,10 @@ def movement_to_dict(m: BankMovement, recons: list[BankReconciliation]) -> dict[
         "discard_reason": m.discard_reason,
         "anotacion_factura": m.anotacion_factura,
         "anotacion_pedido": m.anotacion_pedido,
+        "hoja_estado": m.hoja_estado,
+        "hoja_estado_at": m.hoja_estado_at.isoformat() if m.hoja_estado_at else None,
+        "hoja_factura": m.hoja_factura,
+        "hoja_pedido": m.hoja_pedido,
         "confidence": conf,
         "proposals": [_recon_dict(x) for x in proposed],
         "reconciled": [_recon_dict(x) for x in confirmed],
@@ -787,9 +886,35 @@ def _mov(session: Session, movement_id: str) -> BankMovement:
     return mov
 
 
+#: `BankMovement.hoja_estado`: conciliado por una persona, falta escribirlo
+#: en la hoja de Drive de la cuenta.
+HOJA_PENDIENTE = "pendiente"
+
+
+def _marcar_para_hoja(session: Session, mov: BankMovement) -> None:
+    """Si la cuenta tiene su hoja de Drive y se escribe en ella, el
+    movimiento queda pendiente de escribir (lo hace `drive.escribir_pendientes`,
+    encolado al confirmar y en el tic diario)."""
+    acc = session.get(BankAccount, mov.account_id)
+    if acc is not None and acc.drive_file_id and acc.drive_escribir:
+        mov.hoja_estado = HOJA_PENDIENTE
+        mov.hoja_estado_at = datetime.now(UTC).replace(tzinfo=None)
+
+
+def _desmarcar_para_hoja(mov: BankMovement) -> None:
+    """Reabierto o descartado: lo que aún no se había escrito ya no se
+    escribe. Lo ya escrito se queda en la hoja (BoHub nunca borra)."""
+    if mov.hoja_estado == HOJA_PENDIENTE:
+        mov.hoja_estado = None
+        mov.hoja_estado_at = datetime.now(UTC).replace(tzinfo=None)
+
+
 def _confirm_rows(
     session: Session, mov: BankMovement, rows: list[BankReconciliation], user_id: str | None
 ) -> None:
+    """Lo confirma una persona («Confirmar», «Elegir / repartir», «Confirmar
+    todas las de confianza alta»): queda conciliado y, si la cuenta tiene su
+    hoja de Drive, pendiente de escribir en ella."""
     now = datetime.now(UTC).replace(tzinfo=None)
     for r in rows:
         r.status = "confirmed"
@@ -797,6 +922,7 @@ def _confirm_rows(
         r.confirmed_at = now
     mov.status = "reconciled"
     mov.discard_reason = None
+    _marcar_para_hoja(session, mov)
 
 
 def _son_alternativas(mov: BankMovement, props: list[BankReconciliation]) -> bool:
@@ -903,6 +1029,7 @@ def discard_movement(
         session.delete(old)
     mov.status = "discarded"
     mov.discard_reason = (reason or "no es cobro de cliente")[:255]
+    _desmarcar_para_hoja(mov)
     if learn:
         pattern = mov.payer_name or mov.concepto[:80]
         create_rule(
@@ -926,6 +1053,7 @@ def reopen_movement(session: Session, movement_id: str) -> dict[str, Any]:
         session.delete(old)
     mov.status = "pending"
     mov.discard_reason = None
+    _desmarcar_para_hoja(mov)
     session.commit()
     return movement_to_dict(mov, [])
 
@@ -980,6 +1108,34 @@ def _pedidos_de_facturas(
     return out
 
 
+def valores_conciliados(
+    session: Session, movement_ids: list[str],
+) -> dict[str, tuple[str, str | None]]:
+    """Lo que va en `factura` y `pedido` de cada movimiento conciliado: sus
+    facturas confirmadas (varias, separadas por coma) y el pedido de BoHub de
+    esas facturas, si lo hay. Lo usan el Excel conciliado y la hoja de Drive."""
+    confirmed: dict[str, list[BankReconciliation]] = {}
+    if movement_ids:
+        for r in session.scalars(
+            select(BankReconciliation).where(
+                BankReconciliation.movement_id.in_(movement_ids),
+                BankReconciliation.status == "confirmed",
+            ).order_by(BankReconciliation.serie, BankReconciliation.codigo)
+        ).all():
+            confirmed.setdefault(r.movement_id, []).append(r)
+    pedidos = _pedidos_de_facturas(
+        session, {(r.serie, r.codigo) for rs in confirmed.values() for r in rs},
+    )
+    out: dict[str, tuple[str, str | None]] = {}
+    for mov_id, recons in confirmed.items():
+        encontrados = [p for r in recons for p in pedidos.get((r.serie, r.codigo), [])]
+        out[mov_id] = (
+            ", ".join(r.numero for r in recons),
+            ", ".join(dict.fromkeys(encontrados)) or None,
+        )
+    return out
+
+
 def export_statement_xlsx(
     session: Session,
     *,
@@ -1021,19 +1177,7 @@ def export_statement_xlsx(
     rows = session.scalars(
         q.order_by(BankMovement.fecha_oper.desc(), BankMovement.source_row.asc())
     ).all()
-    ids = [m.id for m in rows]
-    confirmed: dict[str, list[BankReconciliation]] = {}
-    if ids:
-        for r in session.scalars(
-            select(BankReconciliation).where(
-                BankReconciliation.movement_id.in_(ids),
-                BankReconciliation.status == "confirmed",
-            )
-        ).all():
-            confirmed.setdefault(r.movement_id, []).append(r)
-    pedidos = _pedidos_de_facturas(
-        session, {(r.serie, r.codigo) for rs in confirmed.values() for r in rs},
-    )
+    conciliados = valores_conciliados(session, [m.id for m in rows])
 
     wb = Workbook()
     ws = wb.active
@@ -1053,16 +1197,15 @@ def export_statement_xlsx(
     ped_norm = str(pedido_col).strip().upper()
     for m in rows:
         raw = json.loads(m.raw_json) if m.raw_json else {}
-        recons = confirmed.get(m.id, [])
+        valores = conciliados.get(m.id)
         out_row = []
         for col in columns:
             value = raw.get(col)
             col_norm = col.strip().upper()
-            if recons and col_norm == fac_norm:
-                value = ", ".join(r.numero for r in recons)
-            elif recons and col_norm == ped_norm and (value is None or not str(value).strip()):
-                encontrados = [p for r in recons for p in pedidos.get((r.serie, r.codigo), [])]
-                value = ", ".join(dict.fromkeys(encontrados)) or None
+            if valores and col_norm == fac_norm:
+                value = valores[0]
+            elif valores and col_norm == ped_norm and (value is None or not str(value).strip()):
+                value = valores[1]
             out_row.append(value)
         ws.append(out_row)
     buf = io.BytesIO()

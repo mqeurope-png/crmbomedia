@@ -45,6 +45,11 @@ class AccountIn(BaseModel):
     #: catálogo configurable; vacío = sin enlazar).
     contrapartida_codigo: str | None = Field(default=None, max_length=10)
     column_mapping: dict[str, str] | None = None
+    #: La hoja de Drive: su enlace o su identificador, la pestaña (vacía: la
+    #: primera) y si BoHub escribe en ella la factura y el pedido.
+    drive_file_id: str | None = Field(default=None, max_length=500)
+    drive_pestana: str | None = Field(default=None, max_length=120)
+    drive_escribir: bool | None = None
 
 
 class AccountPatch(BaseModel):
@@ -56,6 +61,9 @@ class AccountPatch(BaseModel):
     serie: int | None = Field(default=None, ge=1, le=9)
     contrapartida_codigo: str | None = Field(default=None, max_length=10)
     column_mapping: dict[str, str] | None = None
+    drive_file_id: str | None = Field(default=None, max_length=500)
+    drive_pestana: str | None = Field(default=None, max_length=120)
+    drive_escribir: bool | None = None
 
 
 @router.get("/accounts")
@@ -133,6 +141,121 @@ def delete_account(
     except LookupError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     return Response(status_code=204)
+
+
+# --- el extracto por Drive ------------------------------------------------------------
+
+
+def _encolar_hoja(session: Session, account_ids: set[str]) -> None:
+    """Tras confirmar: si esas cuentas tienen algo pendiente de escribir en su
+    hoja de Drive, se encola la escritura (best-effort: si no, espera a la
+    siguiente lectura)."""
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from app.erp.bank.drive_job import encolar_escritura  # noqa: PLC0415
+    from app.erp.models import BankMovement  # noqa: PLC0415
+
+    if not account_ids:
+        return
+    con_pendientes = set(session.scalars(
+        select(BankMovement.account_id).where(
+            BankMovement.account_id.in_(account_ids),
+            BankMovement.hoja_estado == service.HOJA_PENDIENTE,
+        ).distinct()
+    ))
+    for account_id in con_pendientes:
+        encolar_escritura(account_id)
+
+
+@router.get("/drive")
+def drive_estado(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_conciliacion),
+) -> dict[str, Any]:
+    """Con qué cuenta de servicio se comparten las hojas (la de Seguimiento,
+    en Configuración ERP) y a qué hora es el repaso diario."""
+    from app.erp.bank.drive import email_cuenta_de_servicio  # noqa: PLC0415
+    from app.erp.bank.drive_job import HORA  # noqa: PLC0415
+
+    _ = current_user
+    email = email_cuenta_de_servicio(session)
+    return {"configured": email is not None, "service_account_email": email, "hora": HORA}
+
+
+@router.post("/drive/traer")
+def traer_de_drive(
+    account_id: str | None = Query(default=None),
+    run_match: bool = Query(default=True),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_conciliacion),
+) -> dict[str, Any]:
+    """«Traer de Drive»: lee la hoja de la cuenta (o de todas las que la
+    tienen) entera, importa lo que falta con el lector de siempre y escribe
+    lo pendiente. Un resultado por cuenta: si Drive falla en una, lo dice
+    ahí y las demás siguen. No escribe en FACTUSOL."""
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from app.erp.bank.drive import DriveBancoError, cerrojo  # noqa: PLC0415
+    from app.erp.bank.drive import traer_de_drive as traer  # noqa: PLC0415
+    from app.erp.models import BankAccount  # noqa: PLC0415
+
+    q = select(BankAccount).where(BankAccount.drive_file_id.is_not(None))
+    if account_id:
+        q = q.where(BankAccount.id == account_id)
+    cuentas = session.scalars(q.order_by(BankAccount.name)).all()
+    if not cuentas:
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "sin_hoja",
+            "detail": ("Esa cuenta no tiene hoja de Drive." if account_id else
+                       "Ninguna cuenta tiene hoja de Drive: ponla en la pestaña Cuentas."),
+        })
+    resultados: list[dict[str, Any]] = []
+    for account in cuentas:
+        base = {"account_id": account.id, "account_name": account.name}
+        with cerrojo(account.id) as cogido:
+            if not cogido:
+                resultados.append({**base, "ok": False, "code": "ocupada", "detail": (
+                    "Ya hay una lectura de Drive en marcha para esta cuenta: prueba en un minuto."
+                )})
+                continue
+            try:
+                resumen = traer(session, account, user_id=current_user.id)
+            except DriveBancoError as exc:
+                resultados.append({**base, "ok": False, "code": exc.code, "detail": str(exc)})
+                continue
+            except ParseError as exc:
+                resultados.append({**base, "ok": False, "code": "parse_error", "detail": (
+                    f"La hoja no tiene la forma de un extracto: {exc}"
+                )})
+                continue
+        if run_match and resumen.get("ok") and resumen.get("imported"):
+            resumen["matching"] = _run_match(session, account.id)
+        resultados.append({**base, **resumen})
+    return {"resultados": resultados}
+
+
+@router.post("/drive/escribir")
+def escribir_en_drive(
+    account_id: str = Query(...),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_conciliacion),
+) -> dict[str, Any]:
+    """«Escribir ahora»: escribe ya en la hoja lo conciliado pendiente de esa
+    cuenta (sin esperar a la cola). Solo en celdas vacías."""
+    from app.erp.bank.drive import cerrojo, escribir_cuenta  # noqa: PLC0415
+    from app.erp.models import BankAccount  # noqa: PLC0415
+
+    _ = current_user
+    account = session.get(BankAccount, account_id)
+    if account is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "cuenta no encontrada")
+    with cerrojo(account.id) as cogido:
+        if not cogido:
+            raise HTTPException(status.HTTP_409_CONFLICT, {"code": "ocupada", "detail": (
+                "Ya hay una lectura o escritura de Drive en marcha para esta cuenta: prueba "
+                "en un minuto."
+            )})
+        return escribir_cuenta(session, account, origen="manual")
 
 
 # --- importación + casado -------------------------------------------------------------
@@ -269,7 +392,9 @@ def confirm_movement(
     current_user: User = Depends(require_conciliacion),
 ) -> dict[str, Any]:
     try:
-        return service.confirm_movement(session, movement_id, current_user.id)
+        out = service.confirm_movement(session, movement_id, current_user.id)
+        _encolar_hoja(session, {out["account_id"]})
+        return out
     except LookupError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     except ValueError as exc:
@@ -286,13 +411,15 @@ def reassign_movement(
     current_user: User = Depends(require_conciliacion),
 ) -> dict[str, Any]:
     try:
-        return service.reassign_movement(
+        out = service.reassign_movement(
             session,
             movement_id,
             [t.model_dump() for t in payload.targets],
             current_user.id,
             learn_payer=payload.learn_payer,
         )
+        _encolar_hoja(session, {out["account_id"]})
+        return out
     except LookupError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     except ValueError as exc:
@@ -336,7 +463,14 @@ def confirm_all_high(
     current_user: User = Depends(require_conciliacion),
 ) -> dict[str, Any]:
     """Acción en BLOQUE (un clic de Bart): confirma las de confianza alta."""
-    return {"confirmed": service.confirm_all_high(session, current_user.id, account_id=account_id)}
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from app.erp.models import BankAccount  # noqa: PLC0415
+
+    n = service.confirm_all_high(session, current_user.id, account_id=account_id)
+    if n:
+        _encolar_hoja(session, set(session.scalars(select(BankAccount.id))))
+    return {"confirmed": n}
 
 
 # --- reglas aprendidas ---------------------------------------------------------------

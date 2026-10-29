@@ -1712,6 +1712,24 @@ propuesta para revisar. Si anotas el extracto y lo vuelves a subir, lo nuevo
 que traiga anotado se casa igual. Lo que queda sin anotar es lo que falta por
 conciliar.
 
+**Desde Drive.** En la pestaña **Cuentas**, cada cuenta puede tener su hoja
+de Drive: pega su enlace y, si hace falta, la pestaña. La pantalla dice con
+qué dirección compartirla: como **Lector** si BoHub solo la lee, como
+**Editor** si además escribe.
+
+- BoHub la lee cada día a las 05:20, y cuando pulsas **«Traer de Drive»**.
+  Lee la hoja entera y solo entra lo que falta: puedes seguir pegando los
+  movimientos nuevos arriba.
+- Al confirmar una conciliación, BoHub escribe la factura y el pedido en la
+  fila de ese movimiento. Solo en celdas vacías: lo que hayas escrito tú no se
+  toca, y nunca borra filas ni cambia el orden.
+- Para que escriba, la hoja tiene que ser una **hoja de Google**. Un `.xlsx`
+  subido a Drive se lee, pero no se puede escribir en él: ábrelo en Drive,
+  **Archivo → Guardar como hoja de cálculo de Google**, comparte la hoja nueva
+  y pon su enlace en la cuenta.
+- Si no quieres que escriba, desmarca «Escribir la factura y el pedido».
+- El fichero a mano sigue funcionando, por ejemplo si Drive no responde.
+
 **Revisar.** Igual que siempre: propuestas con su confianza, «Confirmar»,
 «Elegir otra / repartir», «No es un cobro de cliente» y «Confirmar todas las
 de confianza alta». **Nada se concilia solo y FACTUSOL no se toca.**
