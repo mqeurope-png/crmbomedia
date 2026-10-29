@@ -70,7 +70,7 @@ def _fac(**over) -> dict:
         "TIPFAC": "2", "CODFAC": 526090, "TOTFAC": 2129.6, "ESTFAC": "0",
         "CLIFAC": 1234, "CNOFAC": "CLIENTE ANTERIOR SA", "CDOFAC": "Calle Vieja 1",
         "CPOFAC": "Valencia", "CCPFAC": "46000", "CPRFAC": "Valencia", "CNIFAC": "A00000009",
-        "CPAFAC": "ESPAÑA", "OB1FAC": "Pedido web BOPRIN-EJEMPLO", "OB2FAC": "",
+        "CPAFAC": "724", "OB1FAC": "Pedido web BOPRIN-EJEMPLO", "OB2FAC": "",
         "IIVA1FAC": 369.6, "IIVA2FAC": 0.0,
     }
     row.update(over)

@@ -245,6 +245,50 @@ def test_sin_movimiento_no_hay_nada_que_ensenar(http, session_factory) -> None:
     assert body["estado"] == "nada" and body["candidatos"] == []
 
 
+def test_un_movimiento_que_nombra_otra_factura_no_se_propone_por_el_importe(
+    http, session_factory,
+) -> None:
+    """Mismo importe, pero el concepto nombra OTRA factura de la serie: es el
+    cobro de esa, no de esta."""
+    with session_factory() as s:
+        _pedido(s)
+        _movimiento(s, concepto="TRANSFERENCIA DE TALLER EJEMPLO SL FACTURA 2-526099")
+        _movimiento(s, "m-2", concepto="STORTING VAN OTRO FIGURANTE 526098")
+    body = _cobro_banco(http).json()
+    assert body["estado"] == "nada" and body["candidatos"] == []
+
+
+def test_lo_conciliado_que_cubre_la_factura_no_deja_candidatos(http, session_factory) -> None:
+    with session_factory() as s:
+        _pedido(s)
+        _movimiento(s, status="reconciled")
+        s.add(BankReconciliation(movement_id="m-1", serie=2, codigo=526081, numero="2-526081",
+                                 importe=927.0, status="confirmed"))
+        # Otro movimiento del mismo importe, sin nada que lo una a la factura.
+        _movimiento(s, "m-2", concepto="TRANSFERENCIA DE OTRO FIGURANTE")
+        s.commit()
+    body = _cobro_banco(http).json()
+    assert body["estado"] == "conciliado" and body["candidatos"] == []
+
+
+def test_pagada_en_dos_veces_lo_conciliado_y_el_resto(http, session_factory) -> None:
+    """Conciliado un primer pago parcial: el segundo, que nombra la factura,
+    sigue saliendo como candidato (parcial también)."""
+    with session_factory() as s:
+        _pedido(s)
+        _movimiento(s, importe=500.0, status="reconciled")
+        s.add(BankReconciliation(movement_id="m-1", serie=2, codigo=526081, numero="2-526081",
+                                 importe=500.0, status="confirmed"))
+        _movimiento(s, "m-2", importe=427.0,
+                    concepto="SEGUNDO PAGO TALLER EJEMPLO SL FACTURA 2-526081",
+                    fecha_oper=date(2026, 9, 2), fecha_valor=date(2026, 9, 2))
+        s.commit()
+    body = _cobro_banco(http).json()
+    assert body["estado"] == "conciliado"
+    assert [c["id"] for c in body["candidatos"]] == ["m-2"]
+    assert body["candidatos"][0]["parcial"] is True
+
+
 def test_ya_cobrada_no_propone_nada(http, session_factory) -> None:
     with session_factory() as s:
         _pedido(s, cobrado=True)

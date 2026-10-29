@@ -353,3 +353,48 @@ factura. Por tanto:
   se retiró por completo en C-1-fix1: sin `link-factusol`, `LinkFactusolButton`
   ni `ensure_customer_in_factusol`, la columna `Company.factusol_company_id`
   nunca se rellena).
+
+
+---
+
+## Corregir lo emitido desde la ficha del pedido (30/10/2026)
+
+Hasta aquí, de una factura emitida BoHub solo tocaba `ESTFAC`. Con la
+autorización expresa de Bart, la ficha del pedido escribe además tres cosas, y
+nada más. Todo con vista previa, confirmación explícita, relectura en vivo antes
+de escribir (si cambió, no se escribe) y Auditoría (target `order`). Código en
+`app/erp/factura_cliente.py` y `app/erp/api/order_correcciones.py`.
+
+| Qué | Tabla | Cómo | Auditoría |
+|---|---|---|---|
+| Mención legal | F_FAC | `ActualizarRegistro` con `TIPFAC`, `CODFAC` y **solo** `OB1FAC` u `OB2FAC` (la primera vacía; nunca se pisa una con texto). Se relee para comprobarlo. | `erp.invoice_mention_added` |
+| Cliente de la factura | F_FAC | `ActualizarRegistro` con la clave y **solo** los campos que cambian de `CLIFAC`, `CNOFAC`, `CDOFAC`, `CPOFAC`, `CCPFAC`, `CPRFAC`, `CPAFAC`, `CNIFAC`, con el mismo tipo JSON que devolvió FACTUSOL (gotcha 13). Se relee. | `erp.order_client_relinked` (con antes y después) |
+| Cliente nuevo | F_CLI | `create_customer` de siempre, solo si **ningún** cliente tiene ese CIF (se busca por NIF justo antes, y `create_customer` vuelve a mirar). | `erp.order_customer_created` |
+
+**Por qué las observaciones.** La ayuda de FactuSOL dice que con VERI*FACTU
+las observaciones se pueden editar (no son parte del registro), no cambian
+importes ni asientos, y el PDF de BoHub las imprime (OB1/OB2). Si a la factura
+le faltaba del todo la mención de exención, el RD 1619/2012 (arts. 6.1.j y 15)
+apunta a una rectificativa: lo decide la gestoría. La mención también se puede
+elegir al emitir (`FacturaOptions.ob1fac` → `OB1FAC` de la factura nueva).
+
+**Cuándo NO se cambia el cliente de una factura:**
+
+- con **VERI*FACTU activo** (interruptor en Configuración ERP, apagado): ahí
+  el cliente es parte del registro y solo cabe la rectificativa;
+- si el **régimen de IVA** del cliente nuevo no casa con la factura (lleva IVA
+  y el cliente no es nacional, o al revés): abono y factura nueva;
+- si quien lo pide no emite facturas.
+
+Los cobros (F_LCO) van por factura: no se tocan.
+
+**Pedido revinculado aún sin facturar.** El F_PCL de la web o el albarán no se
+tocan. Al emitir, si el pedido se revinculó desde la ficha
+(`cliente_revinculado`: el último `erp.order_client_relinked` y su empresa
+sigue con ese CODCLI), la cabecera de la factura lleva el bloque de cliente
+del cliente nuevo (`FacturaOptions.codcli`). Si su IVA no casa con el
+documento, no se emite.
+
+**Escrituras síncronas.** Son un `ActualizarRegistro` sobre un registro que
+existe, sin contador, así que van en la petición (no en `factusol:writes`), como
+el alta de cliente de C-3. Nada de esto toca importes, líneas ni numeración.

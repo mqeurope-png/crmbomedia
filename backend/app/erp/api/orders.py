@@ -2281,7 +2281,9 @@ def confirmar_cobro_banco(
     session.commit()
     return {
         **res, "parcial": parcial,
-        "movimiento": bank_service.movimiento_pedido_dict(mov, acc),
+        "movimiento": bank_service.movimiento_pedido_dict(
+            mov, acc, bank_service.contrapartida_names(session),
+        ),
     }
 
 

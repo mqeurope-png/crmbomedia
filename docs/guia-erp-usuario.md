@@ -130,25 +130,33 @@ del pedido.
 
 ## Conceptos clave: los pasos del pedido
 
-Todo pedido recorre una **línea de vida** con **6 pasos obligatorios**, siempre
-en este orden:
+Todo pedido recorre una **línea de vida** con **7 pasos**, siempre en este
+orden:
 
-**1. Creado → 2. Pagado → 3. Aprobado → 4. Albarán → 5. Factura → 6. Cobro**
+**1. Creado → 2. Pagado → 3. Aprobado → 4. Albarán → 5. Factura → 6. Factura
+enviada → 7. Cobro**
 
 - Cada paso se marca **hecho** cuando se cumple, y el primero que queda por hacer
   es el **paso actual** (la ficha lo llama **«Siguiente paso»** y te ofrece ahí
-  mismo el botón que toca). Arriba, una barra resume **«Paso N de 6»**.
+  mismo el botón que toca). Arriba, una barra resume **«Paso N de 7»**.
 - El paso **Albarán** es opcional: en un **pedido web** lo crea WooCommerce, así
   que aparece como **«no aplica»** (*«lo crea WooCommerce»*) y nunca es el paso
   actual.
+- **Factura enviada** va **antes del cobro**, que es el orden real: la factura
+  se manda al cliente y luego se espera su pago. Ya **no es opcional**. Se da
+  por hecho cuando la factura sale por email desde BoHub, o cuando la marcas a
+  mano con **«Ya enviada…»** si se la mandaste por otro lado (en papel, desde
+  Gmail, con el albarán). Al marcarla eliges la fecha y el medio, y queda
+  apuntado quién lo hizo (también en **Auditoría**). Si te equivocas, **«Quitar
+  la marca»**. La fecha que se escriba en la columna «Factura enviada» de la
+  hoja de seguimiento también cuenta.
 - Un pedido se da por **terminado** cuando llega hasta **Cobro** (o hasta
-  **Factura** si el cobro no aplica). Entonces ya puedes **«Marcar completado»**.
+  **Factura enviada** si el cobro no aplica). Entonces ya puedes **«Marcar
+  completado»**.
+- Una **muestra** se salta factura, factura enviada y cobro («no aplica»).
 
-Después de los obligatorios, la línea de vida enseña **hitos OPCIONALES** que
-**no bloquean** el completado y no cuentan en el «Paso N de 6»:
+Además:
 
-- **Factura enviada** — si la factura se ha mandado al cliente por email (con la
-  fecha) o si está pendiente (con el botón **«Enviar factura al cliente»**).
 - **El envío al taller (SAT)** ya **no es un paso** de la línea de vida: hay
   pedidos que no pasan por el taller. La preparación, la etiqueta, el tracking y
   el «marcar recogido» viven en la sección **«Envío y seguimiento»** de la ficha
@@ -213,12 +221,17 @@ una es una **cola** de pedidos que están esperando lo mismo. En orden:
    pagar** (detrás de los pagados, con su casilla «Pago» en ámbar); es el mismo
    número que **«Pedidos pendientes de aprobación»** del inicio del ERP.
 2. **«Por facturar»** — *aprobados, sin factura en FACTUSOL*.
-3. **«Por cobrar»** — *facturados, sin cobro registrado en FACTUSOL*.
-4. **«Por enviar»** — *cobrados, pendientes de salir*. Un pedido facturado,
-   cobrado y ya **entregado** no está aquí: está en «Listo», esperando a que lo
-   marques completado.
+3. **«Factura por enviar»** — *facturados, la factura aún no ha llegado al
+   cliente*. Es el contador de facturas que hay que mandar; desde el 30/10/2026
+   sustituye a «Por enviar».
+4. **«Por cobrar»** — *factura enviada, sin cobro registrado en FACTUSOL*.
 5. **«Incidencias»** — *algo bloquea el pedido*.
-6. **«Listo»** — *nada pendiente*.
+6. **«Listo»** — *nada pendiente*, o solo darlo por completado. Aquí están
+   también las muestras y los envíos sin cobro que aún no has completado.
+
+Los **paquetes** pendientes de salir no son una cola de la bandeja: se siguen en
+la **Cola SAT** (pestañas «Por embalar», «Embalados», «Pendiente de
+recogida»…), que es la que lleva ese número.
 
 Pulsa una tarjeta para ver solo esa cola; vuelve a pulsarla (o usa **«Ver todas
 las colas»**) para quitar el filtro.
@@ -240,15 +253,17 @@ con ella.
 |------|------------------|----------|
 | Por revisar | **«Aprobar»** | aprueba el pedido en el momento (pasa a la Cola SAT); no cambias de pantalla |
 | Por facturar | **«Emitir factura»** | abre la ficha para emitir la factura en FACTUSOL |
+| Factura por enviar | **«Enviar factura al cliente»** | abre la ficha: allí la mandas por email o la marcas como **«Ya enviada…»** |
 | Por cobrar | **«Registrar cobro»** | abre ahí mismo la ventana para registrar el cobro |
-| Por enviar | **«Marcar completado»** | facturado y cobrado: márcalo como terminado (el envío al taller es opcional, desde la ficha) |
+| Listo (sin completar) | **«Marcar completado»** | facturado, enviado y cobrado: márcalo como terminado (el envío al taller es opcional, desde la ficha) |
 | Listo / sin acción | **«Abrir»** | abre la ficha |
 
 **Filtros (fila «Refinar»).** Son desplegables (el primer valor es «todos»):
 **«Preparación»**, **«Pago»**, **«Completado»** (*Solo completados* / *Sin
 completar*), **«Cobro FACTUSOL»** (*Cobrado en FACTUSOL* / *Pendiente de cobro* /
 *Con factura, sin comprobar*), **«Facturado»** (*Facturado* / *Sin facturar*),
-**«Factura enviada»** (*Enviada* / *No enviada* — al cliente por email) y
+**«Factura enviada»** (*Enviada* / *No enviada* — por email, marcada a mano o
+en la hoja de seguimiento) y
 **«Tienda»**. Además: fechas **«Desde»** y **«Hasta»**, y un botón de orden que
 alterna **«Fecha ↓»** (más nuevos primero) y **«Fecha ↑»**.
 Con **«Actualizar cobros FACTUSOL»** vuelves a leer de FACTUSOL el estado de
@@ -382,14 +397,42 @@ facturado. Queda en el historial del pedido y no escribe en FACTUSOL.
   **cliente** en negro y grande (**empresa · persona**, enlazado a su ficha):
   se lee antes que el número. La cola, el régimen de IVA y el nº de FACTUSOL van
   en su línea de chips.
-- **Línea de vida del pedido** — los **6 pasos obligatorios** en columna (hasta
-  **Cobro**); el paso pendiente se marca **«Paso actual»** y, si un pedido web no
-  lleva albarán propio, ese paso dice *«lo crea WooCommerce»*. Arriba, una barra
-  resume *«Paso N de 6»*. Debajo, el **hito opcional «Factura enviada»**: si la
-  factura se mandó al cliente por email (con la fecha) o, si no, un aviso ámbar
-  con el botón **«Enviar factura al cliente»** incrustado. Los hitos opcionales
-  no cuentan en el «Paso N de 6» ni impiden completar. El **SAT/envío** ya no es
-  un paso de esta línea: vive en **«Envío y seguimiento»** y es opcional.
+- **Línea de vida del pedido** — los **7 pasos** en columna (hasta **Cobro**);
+  el paso pendiente se marca **«Paso actual»** y, si un pedido web no lleva
+  albarán propio, ese paso dice *«lo crea WooCommerce»*. Arriba, una barra
+  resume *«Paso N de 7»*. El **SAT/envío** no es un paso de esta línea: vive en
+  **«Envío y seguimiento»** y es opcional.
+  - **Paso 6, «Factura enviada»**: dice cuándo y cómo llegó la factura al
+    cliente (*«por email el …»*, *«en papel, marcada a mano por …»* o *«según la
+    hoja de seguimiento»*). Si no ha llegado: **«Enviar factura al cliente»**
+    (email desde BoHub) o **«Ya enviada…»** (fecha, medio y una nota; queda en
+    Auditoría). Una marca a mano se puede quitar con **«Quitar la marca»**.
+  - **Paso 7, «Cobro»: el cobro que propone el banco.** Si en Conciliación hay
+    un movimiento del banco que puede ser el pago de esta factura, la ficha lo
+    enseña ahí: *«Lo hemos visto en el banco: 26/08/2026 · 927,00 € · Belfius
+    MQ Europe · «concepto…»»*, con su **confianza** y **por qué** casa
+    (*«número de factura en el concepto + importe exacto»*). La fecha es la
+    **fecha valor** del banco.
+    - **«Marcar cobrado con esta fecha»** te dice antes lo que va a pasar y pide
+      confirmación. Registra el cobro en FACTUSOL con la fecha valor, en la
+      contrapartida de esa cuenta del banco y con forma de pago Transferencia.
+      Además deja el movimiento **conciliado** con la factura, igual que si lo
+      hicieras desde Conciliación, y escribe la factura en la hoja de Drive del
+      banco.
+    - Si el movimiento es **menor** que lo pendiente, es un **cobro parcial**: lo
+      dice, registra ese importe y la factura no queda cobrada. Si es mayor,
+      seguramente paga varias facturas: se reparte en Conciliación.
+    - Con **varios** movimientos posibles los enseña todos y no elige ninguno.
+      Sin ninguno, no dice nada. Con la factura ya cobrada no propone nada; como
+      mucho, dice con qué movimiento se cobró.
+    - Si el movimiento ya estaba conciliado en Conciliación y su cobro aún no
+      consta en FACTUSOL, ofrece **«Registrar el cobro con esta fecha»**. Si ya
+      consta (lo registró el script de los cobros, por ejemplo), no lo vuelve a
+      registrar.
+    - **«Ver el movimiento»** abre Conciliación con solo ese movimiento. Y al
+      revés: en Conciliación, cada factura conciliada o propuesta lleva el
+      enlace a su pedido.
+    - Lo ven quienes registran cobros o concilian.
 - **«Siguiente paso»** — una frase que explica qué toca ahora y, al lado, **el
   botón exacto** para hacerlo (Emitir factura, Registrar cobro, Crear albarán,
   Marcar completado…). Si el pedido está bloqueado, este bloque cambia a **«Hay
@@ -406,14 +449,90 @@ facturado. Queda en el historial del pedido y no escribe en FACTUSOL.
   (fecha anterior → nueva, quién y cuándo). En un **pedido web** el botón está
   bloqueado: su fecha es la de WooCommerce (el tooltip lo explica).
 - **Panel «FACTUSOL»** — las claves del pedido en FACTUSOL:
-  - **Cliente** (nº de cliente vinculado, o *«sin vincular»*).
+  - **Cliente** (nº de cliente vinculado, o *«sin vincular»*), con **«Cambiar
+    cliente»** (ver [Cambiar el cliente de un pedido](#cambiar-el-cliente-de-un-pedido)).
   - **Albarán** (número, o *«lo crea WooCommerce»* en web).
   - **Serie** (solo en pedidos manuales), con **«Cambiar serie»** y **«Crear
     proforma de cobro»**.
   - **Factura**: botón **«Emitir factura FACTUSOL»** (o el badge **«Facturado
-    FACTUSOL #…»** si ya está).
+    FACTUSOL #…»** si ya está). Con la factura emitida, **«Añadir mención
+    legal»** (ver [Mención legal en una factura emitida](#mención-legal-en-una-factura-emitida)).
   - **Cobro**: botón **«Registrar cobro en FACTUSOL»** (o **«Cobrado en
     FACTUSOL»**).
+
+#### Mención legal en una factura emitida
+
+Para cuando a una factura ya emitida le falta su mención: Ceuta y Melilla,
+Canarias, Fuera de la UE, o las que se añadan en **Configuración ERP →
+«Menciones legales de factura»** (se editan allí, sin tocar código), o un texto
+libre de hasta 255 caracteres.
+
+- Se escribe en las **observaciones** de la factura en FACTUSOL, que salen en su
+  PDF. No cambia importes, IVA, numeración ni asientos.
+- Va siempre en dos pasos. **«Ver cómo queda»** enseña el texto exacto y en qué
+  observación irá: la primera que esté vacía, porque nunca se pisa una que ya
+  tenga texto. Después marcas la confirmación y pulsas **«Añadir a la
+  factura»**.
+- Si las dos observaciones ya tienen texto, no se escribe nada: se añade desde
+  FACTUSOL.
+- Si la factura **ya se envió**, lo avisa: el PDF que tiene el cliente no lleva
+  la mención; reenvíaselo si lo necesita.
+- Queda en el historial del pedido y en Auditoría (quién, cuándo, qué texto).
+- Los textos de partida son **de referencia y están sin revisar**. Hasta que
+  alguien (o la gestoría) los revise y marque **«Revisado»** en Configuración,
+  no se pueden aplicar.
+- Si a la factura le faltaba del todo la mención de exención, la norma (RD
+  1619/2012) apunta a una factura rectificativa: eso lo decide la gestoría.
+- La mención también se puede elegir **al emitir** la factura: campo **«Mención
+  legal»** del diálogo de emisión.
+
+#### Cambiar el cliente de un pedido
+
+**«Cambiar cliente»** (panel FACTUSOL de la ficha) vincula el pedido a otro
+cliente de FACTUSOL. Sirve también para BOPRIN-100015, sin tocar la base de
+datos.
+
+1. **Busca** el cliente en FACTUSOL por **nombre** o **CIF** y pulsa
+   **«Elegir»**.
+2. Si no está, **«Crear el cliente en FACTUSOL»**: razón social, CIF y
+   dirección. Antes de crear nada, BoHub **comprueba por CIF que no exista
+   ya**. Si existe, te lo enseña con **«Usar este»** y no crea otro: un cliente
+   duplicado en FACTUSOL es un problema que dura años. Si no existe, enseña los
+   campos exactos que se crearán, con el régimen de IVA, y pide confirmación.
+3. La **vista previa** dice de qué cliente a cuál y qué ficha de BoHub queda
+   vinculada (o si se creará con sus datos de FACTUSOL). Confirmas y pulsas
+   **«Cambiar el cliente»**.
+
+Si el pedido **ya tiene la factura emitida**, lo avisa desde el principio y
+también se cambia la **factura** en FACTUSOL. La vista previa enseña campo a
+campo lo que cambia: código de cliente, nombre, dirección, población, CP,
+provincia, país y NIF. Además avisa de que:
+
+- en la norma esto es una **rectificativa**;
+- si la factura ya se envió, el **PDF que tiene el cliente** lleva el cliente
+  anterior;
+- si estaba **contabilizada**, el asiento sigue con el anterior;
+- los **cobros** van por factura y no cambian.
+
+No se cambia la factura (y no se cambia nada) si:
+
+- el **régimen de IVA** del cliente nuevo no casa con la factura (por ejemplo,
+  una factura con IVA y un cliente intracomunitario): eso es abono y factura
+  nueva desde FACTUSOL;
+- está activo **VERI*FACTU** (Configuración ERP): ahí solo cabe la
+  rectificativa;
+- la factura ha cambiado en FACTUSOL desde la vista previa (vuelve a revisarla).
+
+Cambiar el cliente de una factura es de quien **emite facturas**.
+
+Si el pedido aún no está facturado pero su pedido de cliente de FACTUSOL (web) o
+su albarán llevan el cliente anterior, no se tocan, pero **la factura saldrá a
+nombre del cliente nuevo** al emitirla. Si el IVA del documento no casa con el
+cliente nuevo, no se emite (lo dice).
+
+Todo queda en el historial del pedido y en **Auditoría** (filtro «ERP»): quién,
+cuándo, de qué cliente a cuál y, si la hubo, los campos de la factura antes y
+después.
 - **«Documentos de envío»** — filas **«Albarán»** y **«Etiqueta»**, con sus
   botones para crear/ver/subir/reemplazar el albarán y **«Subir etiqueta»**.
   Debajo, un panel **«Seguimiento»** con **Nº de serie**, **Licencia WhiteRIP**
@@ -1113,8 +1232,13 @@ menos) se deja como texto, sin inventarla.
 
 **Situación** es la cola de la línea de vida del pedido —la misma de la bandeja—
 y va **coloreada**: `Incidencia` (rojo), `Por revisar` (ámbar), `Por facturar` /
-`Por cobrar` (azul), `Por enviar` (teal), `Listo` (verde) y `Reembolsado`
-(gris). La tabla se **ordena por Fecha** al abrir (la más reciente primero), para
+`Por cobrar` (azul), `Factura por enviar` (teal), `Listo` (verde) y
+`Reembolsado` (gris). Desde el 30/10/2026 un pedido facturado cuya factura aún
+no ha llegado al cliente sale como `Factura por enviar` (va antes del cobro); el
+antiguo `Por enviar` (cobrados, pendientes de salir) desaparece, porque el envío
+del paquete se sigue en la Cola SAT. Para saber si se envió, la Situación tiene
+en cuenta el email desde BoHub, la marca «Ya enviada» de la ficha y la fecha que
+escribas en la columna «Factura enviada» de la hoja. La tabla se **ordena por Fecha** al abrir (la más reciente primero), para
 que un pedido recién llegado —una muestra, por ejemplo— no quede enterrado
 abajo por su Situación. Pulsa la cabecera de **Situación** para volver a ese
 orden (lo urgente arriba: primero las incidencias, al final lo listo y los
@@ -1734,13 +1858,24 @@ qué dirección compartirla: como **Lector** si BoHub solo la lee, como
 «Elegir otra / repartir», «No es un cobro de cliente» y «Confirmar todas las
 de confianza alta». **Nada se concilia solo y FACTUSOL no se toca.**
 
+- Cada factura propuesta o conciliada lleva el **enlace a su pedido**, para ir
+  del movimiento a la ficha.
+- Debajo de la fecha de operación sale la **fecha valor** cuando es distinta:
+  es la que se usa para el cobro.
+- Lo conciliado desde la **ficha del pedido** (paso «Cobro», [el cobro que
+  propone el banco](#ficha-de-pedido)) sale marcado *«desde la ficha del
+  pedido»*. Es el mismo hecho, una sola vez: también se escribe en la hoja.
+- Con `?movimiento=…` en la dirección (el enlace «Ver el movimiento» de la
+  ficha) se ve solo ese movimiento; **«Ver todos»** vuelve a la lista.
+
 **Exportar.**
 
 - **«Descargar Excel conciliado»** devuelve el extracto con `factura` y
   `pedido` rellenas donde hay conciliación. Las filas no entendidas no salen.
 - **«Descargar CSV de cobros»** da el CSV para `registrar_cobros_lote.ps1`.
   - Lleva lo conciliado y no descartado, con la contrapartida de cada cuenta
-    en `cuenta`.
+    en `cuenta` y la **fecha valor** del movimiento en `fecha` (desde el
+    30/10/2026; antes iba la de operación).
   - Consulta FACTUSOL (solo lee): entra cada factura cuyo saldo pendiente
     cuadra con lo conciliado, porque el script registra el saldo entero. Sin
     FACTUSOL no hay CSV, y se dice.
@@ -1786,6 +1921,14 @@ hace más de 48 horas sin ningún correo (el acuse de recibo no cuenta).
 administrador puede guardar. Cada sección se guarda por separado y enseña al lado
 lo que va a pasar. Secciones destacadas:
 
+- **«Menciones legales de factura»** — los textos que se pueden añadir a las
+  observaciones de una factura desde la ficha del pedido o al emitir: nombre,
+  texto (hasta 255 caracteres) y la casilla **«Revisado»**. Las tres de partida
+  (Ceuta y Melilla, Canarias, Fuera de la UE) son textos **de referencia sin
+  revisar**: no se aplican hasta que alguien los revise y marque. Se añaden o
+  quitan las que haga falta. Al lado, el interruptor **«VERI*FACTU activo»**
+  (apagado): con él encendido no se cambia el cliente de una factura emitida;
+  solo cabe la rectificativa desde FACTUSOL.
 - **«Pedidos web pagados que no llegan»** — el repaso que pregunta a cada
   tienda por sus pedidos pagados y crea en BoHub los que falten (cuando la
   tienda no avisó). Interruptor (**encendido** por defecto), **cada cuántos
@@ -2231,8 +2374,9 @@ En qué se nota que es distinta:
 - Pastilla **«Muestra · no facturable»** en la bandeja.
 - **Factura** y **Cobro** salen en **«No aplica»** (gris) y sus botones no
   aparecen: no se puede emitir factura, crear albarán ni registrar cobro.
-- **No** entra en las colas **«Por facturar»** ni **«Por cobrar»**; sí en
-  **«Por enviar»** y en la **Cola SAT**.
+- **No** entra en las colas **«Por facturar»**, **«Factura por enviar»** ni
+  **«Por cobrar»**: está en **«Listo»** (con «Marcar completado» cuando salga)
+  y en la **Cola SAT**.
 - En **Seguimiento** aparece como envío no facturable (su situación es la del
   envío; Factura/Cobro, **«No aplica»**).
 - Se **anula** como cualquier pedido, desde **«⋯» → «Anular pedido»**.

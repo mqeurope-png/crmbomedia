@@ -250,3 +250,23 @@ escritura en FACTUSOL, en serie por `worker-factusol` (cola `factusol:writes`).
 Tests: `backend/tests/test_erp_anular_cobro.py`,
 `frontend/.../AnularCobroModal.test.tsx`, `RegistrarCobroModal.test.tsx`,
 `orders/[id]/cobro.test.tsx`.
+
+
+## El cobro que propone el banco (30/10/2026)
+
+En el paso «Cobro» de la ficha, si Conciliación tiene el movimiento que pagó
+la factura, se enseña con su fecha valor, importe, cuenta, confianza y por qué
+casa. **«Marcar cobrado con esta fecha»** usa este mismo motor F-4-B:
+
+- la fecha del cobro es la **fecha valor** del banco;
+- la cuenta es la **contrapartida de la cuenta** del banco;
+- la forma de pago es **Transferencia**;
+- un movimiento menor que lo pendiente lleva su **importe** y es un cobro
+  parcial.
+
+Además concilia el movimiento con la factura y lo escribe en la hoja de Drive.
+El resto (comprobación en vivo, cola `factusol:writes`, Auditoría
+`erp.invoice_collection_requested`) es lo de siempre. Detalle en
+[conciliacion-bancaria.md](conciliacion-bancaria.md#desde-la-ficha-del-pedido-30102026).
+El script `registrar_cobros_lote.ps1` sigue siendo el que registra los cobros
+en lote a partir del CSV.

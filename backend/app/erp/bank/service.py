@@ -1140,6 +1140,25 @@ def _numero_en_movimiento(mov: BankMovement, serie: int, codigo: int) -> bool:
     return any(int(m.group(1)) == codigo for m in _CODIGO_SUELTO_RE.finditer(texto_mov))
 
 
+def _nombra_otra_factura(mov: BankMovement, serie: int, codigo: int) -> bool:
+    """¿El movimiento nombra OTRA factura de la misma serie y no esta? («2-526081»
+    o el código suelto de seis cifras con el mismo comienzo). Entonces es el
+    cobro de esa otra: no se propone para esta solo por el importe."""
+    from app.erp.bank.parsing import _CODIGO_SUELTO_RE, _FACTURA_RE  # noqa: PLC0415
+
+    texto_mov = " ".join(
+        x for x in (mov.concepto, mov.referencia1, mov.referencia2, mov.anotacion_factura) if x
+    )
+    for m in _FACTURA_RE.finditer(texto_mov):
+        if int(m.group(1)) == serie and int(m.group(2)) != codigo:
+            return True
+    prefijo = str(codigo)[:2]
+    return any(
+        m.group(1) != str(codigo) and m.group(1)[:2] == prefijo and len(str(codigo)) == 6
+        for m in _CODIGO_SUELTO_RE.finditer(texto_mov)
+    )
+
+
 def movimiento_pedido_dict(
     mov: BankMovement, acc: BankAccount | None, contrapartidas: dict[str, str] | None = None,
 ) -> dict[str, Any]:
@@ -1236,6 +1255,8 @@ def movimientos_de_factura(
         elif mov.id in guardadas and guardadas[mov.id].confidence:
             confianza = guardadas[mov.id].confidence
             motivo = guardadas[mov.id].reason or "propuesto en Conciliación"
+        elif _nombra_otra_factura(mov, serie, codigo):
+            continue
         else:
             props = propose({
                 "importe": importe, "fecha_oper": mov.fecha_oper, "concepto": mov.concepto,
@@ -1255,7 +1276,12 @@ def movimientos_de_factura(
             "excede": importe > saldo + AMOUNT_TOL,
             "_solo_importe": solo_importe,
         })
-    if any(not c["_solo_importe"] for c in candidatos):
+    # Lo ya conciliado cubre la factura: no hay más cobro que buscar. Y con
+    # algo conciliado, coincidir solo en el importe no basta.
+    cubierto = sum(float(c["importe_conciliado"]) for c in conciliados)
+    if conciliados and cubierto >= total - AMOUNT_TOL:
+        candidatos = []
+    elif conciliados or any(not c["_solo_importe"] for c in candidatos):
         candidatos = [c for c in candidatos if not c["_solo_importe"]]
     candidatos.sort(key=lambda c: (_ORDEN_CONFIANZA.get(c["confianza"], 3), c["fecha_valor"]))
     for c in candidatos:

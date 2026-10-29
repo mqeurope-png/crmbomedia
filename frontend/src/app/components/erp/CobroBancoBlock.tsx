@@ -211,6 +211,43 @@ export function CobroBancoBlock({
     </div>
   ) : null;
 
+  const varios = data.candidatos.length > 1;
+
+  /** Un movimiento que puede ser el cobro (sin preseleccionar ninguno). */
+  function candidato(m: CobroBancoCandidato) {
+    return (
+      <div key={m.id} className="erp-cobro-banco-item">
+        <MovimientoLinea m={m} />
+        <p className="small">
+          <span className={`badge ${CONFIANZA[m.confianza].tone}`}>{CONFIANZA[m.confianza].label}</span>{" "}
+          <span className="muted">· {m.motivo}</span>
+        </p>
+        {m.parcial ? (
+          <p className="form-info small">
+            Es menos que lo pendiente ({eur(saldo)}): sería un cobro parcial, la factura no
+            quedaría cobrada.
+          </p>
+        ) : null}
+        {m.excede ? (
+          <p className="form-info small">
+            Es más que lo pendiente ({eur(saldo)}): si paga varias facturas, repártelo en
+            Conciliación.
+          </p>
+        ) : null}
+        <div className="erp-cobro-banco-actions">
+          {canConfirm && !m.excede && !elegido ? (
+            <button type="button" className="button small" onClick={() => setElegido(m)}>
+              {varios ? "Es este: marcar cobrado con esta fecha" : "Marcar cobrado con esta fecha"}
+            </button>
+          ) : null}
+          <Link href={movimientoHref(m.id)} className="button small secondary">
+            Ver el movimiento
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
   if (data.estado === "conciliado") {
     return (
       <div className="erp-cobro-banco" aria-label="Cobro en el banco">
@@ -243,6 +280,14 @@ export function CobroBancoBlock({
         {data.por_registrar <= 0.005 && !data.conciliados.some((m) => m.registrado) ? (
           <p className="muted small">Lo conciliado ya consta cobrado en FACTUSOL.</p>
         ) : null}
+        {data.candidatos.length ? (
+          <>
+            <p className="erp-cobro-banco-t">
+              Lo conciliado no cubre la factura; esto puede ser el resto:
+            </p>
+            {data.candidatos.map(candidato)}
+          </>
+        ) : null}
         {panel}
         {error ? <p className="form-error small">{error}</p> : null}
         {hecho ? <p className="form-success small" role="status">{hecho}</p> : null}
@@ -251,7 +296,6 @@ export function CobroBancoBlock({
   }
 
   // estado === "candidatos"
-  const varios = data.candidatos.length > 1;
   return (
     <div className="erp-cobro-banco" aria-label="Cobro en el banco">
       <p className="erp-cobro-banco-t">
@@ -259,37 +303,7 @@ export function CobroBancoBlock({
           ? `Hay ${data.candidatos.length} movimientos del banco que pueden ser este cobro: elige el bueno.`
           : "Lo hemos visto en el banco:"}
       </p>
-      {data.candidatos.map((m) => (
-        <div key={m.id} className="erp-cobro-banco-item">
-          <MovimientoLinea m={m} />
-          <p className="small">
-            <span className={`badge ${CONFIANZA[m.confianza].tone}`}>{CONFIANZA[m.confianza].label}</span>{" "}
-            <span className="muted">· {m.motivo}</span>
-          </p>
-          {m.parcial ? (
-            <p className="form-info small">
-              Es menos que lo pendiente ({eur(saldo)}): sería un cobro parcial, la factura no
-              quedaría cobrada.
-            </p>
-          ) : null}
-          {m.excede ? (
-            <p className="form-info small">
-              Es más que lo pendiente ({eur(saldo)}): si paga varias facturas, repártelo en
-              Conciliación.
-            </p>
-          ) : null}
-          <div className="erp-cobro-banco-actions">
-            {canConfirm && !m.excede && !elegido ? (
-              <button type="button" className="button small" onClick={() => setElegido(m)}>
-                {varios ? "Es este: marcar cobrado con esta fecha" : "Marcar cobrado con esta fecha"}
-              </button>
-            ) : null}
-            <Link href={movimientoHref(m.id)} className="button small secondary">
-              Ver el movimiento
-            </Link>
-          </div>
-        </div>
-      ))}
+      {data.candidatos.map(candidato)}
       {panel}
       {error ? <p className="form-error small">{error}</p> : null}
       {hecho ? <p className="form-success small" role="status">{hecho}</p> : null}

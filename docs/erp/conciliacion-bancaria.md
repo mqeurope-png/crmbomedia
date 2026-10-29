@@ -330,7 +330,8 @@ Lo que queda sin anotar es lo que falta por conciliar.
   - Incluye lo conciliado y no descartado, una fila por factura.
   - `cuenta` es la contrapartida de cobro de la cuenta del banco (8 Sabadell
     Streamtec, 2 Belfius MQ Europe, 6 Sabadell Bomedia).
-  - `forma` es «Transferencia» y `fecha` es la del movimiento.
+  - `forma` es «Transferencia» y `fecha` es la **fecha valor** del movimiento
+    (la de operación si no la trae). Hasta el 30/10/2026 era la de operación.
   - El script no lleva importe: registra el **saldo entero** de la factura.
     Por eso se lee FACTUSOL (`pending_invoices`, solo lectura) y entra cada
     factura cuyo saldo pendiente cuadra con lo conciliado de ella (aunque
@@ -347,3 +348,41 @@ Lo que queda sin anotar es lo que falta por conciliar.
   - Respeta la cuenta y las fechas de los filtros.
   - **No escribe en FACTUSOL.** El script simula primero, lee el saldo en vivo
     y se salta lo ya cobrado.
+
+
+## Desde la ficha del pedido (30/10/2026)
+
+El paso «Cobro» de la ficha propone el movimiento que pagó la factura del
+pedido. Es el mismo casador, pero visto desde la factura
+(`service.movimientos_de_factura`):
+
+- **Qué movimientos mira:** los de entrada aún pendientes, en cuentas de la
+  serie de la factura (o sin serie), desde 3 días antes de la fecha del pedido.
+  Un web se paga antes de facturarse. Fuera los excluidos.
+- **En qué orden los prueba:**
+  1. el nº de factura en el concepto o en lo anotado («2-526081» o el código
+     suelto): alta con importe exacto, media si no;
+  2. si no, lo que Conciliación ya proponía;
+  3. si no, `propose()` contra esta factura sola. Coincidir solo en el importe
+     baja a confianza baja («solo coincide el importe»), y se descarta si hay
+     algo mejor.
+- **Las marcas:** `parcial` (menor que lo pendiente) y `excede` (mayor, se
+  reparte en Conciliación).
+
+**Confirmar** (`POST /api/erp/orders/{id}/cobro-banco`, `erp.cobro.register`):
+
+1. Lee la factura en vivo (`collection_status`).
+2. **Concilia** el movimiento con la factura (`conciliar_desde_pedido`). Si
+   Conciliación lo proponía, confirma esa propuesta; si no, queda como elegida
+   desde la ficha (`origen = "pedido"`).
+3. Marca y encola la **hoja de Drive**, como cualquier conciliación.
+4. Registra el **cobro** por el endpoint F-4-B: fecha valor, contrapartida de
+   la cuenta, Transferencia y, si es parcial, ese importe.
+5. Auditoría `erp.order_cobro_banco` (target `order`).
+
+Un movimiento conciliado antes, cuyo cobro ya consta en FACTUSOL, **no** se
+vuelve a registrar: lo conciliado menos lo cobrado tiene que cubrirlo, y lo
+registrado desde la ficha se marca por movimiento.
+
+La vuelta: `GET /api/erp/bank/movements?movimiento=<id>` filtra un movimiento,
+y cada propuesta o conciliación lleva `pedido: {id, order_number}`.
