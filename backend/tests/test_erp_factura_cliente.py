@@ -410,6 +410,40 @@ def test_la_mencion_al_emitir_desde_el_albaran_no_pisa_sus_observaciones(
             conv.assert_not_called()
 
 
+def test_facturar_el_albaran_desde_documentos_respeta_el_cliente_revinculado(
+    session_factory,
+) -> None:
+    """El albarán de un pedido revinculado se factura desde el explorador de
+    Documentos (no desde la ficha): la factura sale también al cliente nuevo."""
+    from app.core.audit import record_event
+    from app.integrations.factusol import chain
+    from app.integrations.factusol.documents import DOC_SPECS
+
+    alb = {"TIPALB": "1", "CODALB": 123, "CLIALB": 1234, "CNOALB": "CLIENTE ANTERIOR SA",
+           "CNIALB": "A00000009", "IIVA1ALB": 21.0}
+    args = {"source_type": "albaranes", "src": DOC_SPECS["albaranes"],
+            "dst": DOC_SPECS["facturas"], "header": alb, "tip": 1, "cod": 123, "serie": 1,
+            "ejercicio": "2026"}
+    with session_factory() as s, patch(
+        "app.integrations.factusol.albaran_manual.get_customer", _get_customer,
+    ):
+        _pedido(s, factura=False, factusol_albaran_number="1-000123")
+        # Sin revincular: la copia de siempre.
+        assert chain._cliente_revinculado(s, FakeFactusol(), **args) == {}
+        record_event(s, action=fc.ORDER_CLIENT_RELINKED_EVENT, target_type="order",
+                     target_id="o-1", metadata={"to_company": "c-old", "to_codcli": "4321"})
+        s.commit()
+        over = chain._cliente_revinculado(s, FakeFactusol(), **args)
+        assert over["CLIFAC"] == 4321 and over["CNOFAC"] == "COMPONENTES EJEMPLO SL"
+        assert over["CNIFAC"] == "B00000001"
+        # Revinculado a uno con otro régimen: no se factura.
+        record_event(s, action=fc.ORDER_CLIENT_RELINKED_EVENT, target_type="order",
+                     target_id="o-1", metadata={"to_company": "c-old", "to_codcli": "7777"})
+        s.commit()
+        with pytest.raises(FactusolError):
+            chain._cliente_revinculado(s, FakeFactusol(), **args)
+
+
 def test_emitir_con_mencion_sin_revisar_se_rechaza(http, session_factory) -> None:
     with session_factory() as s:
         _pedido(s, factura=False)
@@ -622,6 +656,28 @@ def test_cliente_escrito_con_la_respuesta_perdida_cuenta_como_escrito(
             AuditLog.action == "erp.invoice_client_changed")).one())
         assert meta["respuesta_perdida"] is True and meta["comprobada"] is True
         assert {"campo": "CLIFAC", "antes": "1234", "despues": "4321"} in meta["cambios"]
+
+
+def test_sin_respuesta_ni_relectura_queda_en_auditoria_como_incierto(
+    http, session_factory,
+) -> None:
+    """La escritura llega pero se pierde la respuesta y FACTUSOL tampoco deja
+    releer: consta en Auditoría (sin confirmar), con el antes y el después."""
+    with session_factory() as s:
+        _pedido(s)
+    fake = FakeFactusol([_fac(TELFAC="600000001")])
+    plan = _relink(http, "4321", fake, preview=True).json()
+    # El teléfono del cliente anterior no se queda en la factura.
+    assert "TELFAC" in [c["campo"] for c in plan["factura"]["cambios"]]
+    fake.respuesta_perdida = True
+    fake.caida_tras_escribir = True
+    r = _relink(http, "4321", fake, campos=_campos(plan))
+    assert r.json()["detail"]["code"] == "factusol_write_incierto"
+    with session_factory() as s:
+        meta = json.loads(s.scalars(select(AuditLog.metadata_json).where(
+            AuditLog.action == "erp.invoice_client_changed")).one())
+    assert meta["incierta"] is True and meta["comprobada"] is None
+    assert {"campo": "CLIFAC", "antes": "1234", "despues": "4321"} in meta["cambios"]
 
 
 def test_canarias_ceuta_y_melilla_mandan_su_ficha(http, session_factory) -> None:

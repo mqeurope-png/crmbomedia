@@ -85,6 +85,8 @@ export function CobroBancoBlock({
   const [data, setData] = useState<CobroBanco | null>(null);
   const [elegido, setElegido] = useState<CobroBancoCandidato | CobroBancoConciliado | null>(null);
   const [confirmo, setConfirmo] = useState(false);
+  // Hay un cobro suelto igual en FACTUSOL: «es otro pago» se confirma aparte.
+  const [otroPago, setOtroPago] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hecho, setHecho] = useState<string | null>(null);
@@ -107,8 +109,17 @@ export function CobroBancoBlock({
       : null;
   }
 
+  const sueltos = data && data.aplica ? data.cobros_sueltos ?? [] : [];
   const mensajes = (
     <>
+      {sueltos.length && data?.aplica && data.estado !== "cobrada" ? (
+        <div className="form-info small" role="note" aria-label="Cobros ya en FACTUSOL">
+          En FACTUSOL esta factura ya tiene {sueltos.length === 1 ? "un cobro" : `${sueltos.length} cobros`}{" "}
+          que no {sueltos.length === 1 ? "es" : "son"} de ningún movimiento del banco:{" "}
+          {sueltos.map((x) => `${dmy(x.fecha)} · ${eur(x.importe)}${x.cuenta ? ` · cuenta ${x.cuenta}` : ""}`)
+            .join("; ")}. Si alguno es el pago de un movimiento de aquí, no lo registres otra vez.
+        </div>
+      ) : null}
       {error ? <p className="form-error small">{error}</p> : null}
       {hecho ? <p className="form-success small" role="status">{hecho}</p> : null}
     </>
@@ -150,7 +161,9 @@ export function CobroBancoBlock({
     setHecho(null);
     let res: Awaited<ReturnType<typeof confirmarCobroBanco>>;
     try {
-      res = await confirmarCobroBanco(orderId, elegido.id);
+      res = await confirmarCobroBanco(orderId, elegido.id, {
+        forzar: !!elegido.posible_doble && otroPago,
+      });
     } catch (e) {
       setError(extractErrorMessage(e, "No se pudo registrar el cobro con ese movimiento."));
       setBusy(false);
@@ -159,6 +172,7 @@ export function CobroBancoBlock({
         // el panel y se recarga, para ofrecer registrarlo de nuevo.
         setElegido(null);
         setConfirmo(false);
+        setOtroPago(false);
         setTick((n) => n + 1);
         onDone?.();
       }
@@ -209,6 +223,7 @@ export function CobroBancoBlock({
     } finally {
       setElegido(null);
       setConfirmo(false);
+      setOtroPago(false);
       setBusy(false);
       setTick((n) => n + 1);
       onDone?.();
@@ -250,6 +265,22 @@ export function CobroBancoBlock({
             : "pide a un administrador que la enlace en Conciliación → Cuentas."}
         </p>
       ) : null}
+      {!soloConciliar && elegido.posible_doble ? (
+        <>
+          <p className="form-error small" role="alert">
+            Ojo: en FACTUSOL ya hay un cobro de {eur(importeDe(elegido))} de esta factura que no
+            es de ningún movimiento del banco. Puede ser este mismo pago, apuntado a mano: si lo
+            es, no lo registres otra vez.
+          </p>
+          <label className="field-toggle">
+            <input
+              type="checkbox" aria-label="Es otro pago: registrarlo igualmente"
+              checked={otroPago} disabled={busy} onChange={(e) => setOtroPago(e.target.checked)}
+            />
+            <span>Es otro pago distinto: registrarlo igualmente.</span>
+          </label>
+        </>
+      ) : null}
       <label className="field-toggle">
         <input
           type="checkbox" aria-label="Confirmo el cobro con este movimiento"
@@ -260,7 +291,8 @@ export function CobroBancoBlock({
       <div className="erp-cobro-banco-actions">
         <button
           type="button" className="button small"
-          disabled={!confirmo || busy || !elegido.cuenta.contrapartida_codigo}
+          disabled={!confirmo || busy || !elegido.cuenta.contrapartida_codigo
+            || (!soloConciliar && !!elegido.posible_doble && !otroPago)}
           onClick={() => void registrar()}
         >
           {soloConciliar
@@ -269,7 +301,7 @@ export function CobroBancoBlock({
         </button>
         <button
           type="button" className="button small secondary" disabled={busy}
-          onClick={() => { setElegido(null); setConfirmo(false); setError(null); }}
+          onClick={() => { setElegido(null); setConfirmo(false); setOtroPago(false); setError(null); }}
         >
           Cancelar
         </button>

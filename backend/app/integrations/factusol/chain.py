@@ -636,6 +636,37 @@ def build_target_line(
     return filter_to_real_columns(payload, allowed, tabla=dst.lines_table)
 
 
+def _cliente_revinculado(
+    session: Session, client: FactusolClient, *, source_type: str, src: Any, dst: Any,
+    header: dict[str, Any], tip: int, cod: int, serie: Any, ejercicio: str,
+) -> dict[str, Any]:
+    """El bloque de cliente de la factura si el documento es de un pedido de
+    BoHub que se revinculó a otro cliente desde su ficha
+    (`factura_cliente.cliente_revinculado`); `{}` si no. FactusolError si el
+    cliente nuevo no casa con el IVA del documento (antes no facturar)."""
+    from app.erp.factura_cliente import cliente_para_emitir, cliente_revinculado  # noqa: PLC0415
+    from app.erp.factusol_albaran import (  # noqa: PLC0415
+        find_order_for_albaran,
+        find_order_for_source,
+    )
+
+    order = (find_order_for_albaran(session, tip, cod) if source_type == "albaranes"
+             else find_order_for_source(session, source_type, tip, cod))
+    codcli = cliente_revinculado(session, order) if order is not None else None
+    origen_cli = str(header.get(f"CLI{src.suffix}") or "").strip()
+    if not codcli or codcli == origen_cli:
+        return {}
+    como_factura = {
+        f"{col[:-len(src.suffix)]}{dst.suffix}": val
+        for col, val in header.items() if col.endswith(src.suffix)
+    }
+    return cliente_para_emitir(
+        session, client, cabecera=como_factura, codcli=codcli, ejercicio=ejercicio,
+        origen=header, codcli_origen=origen_cli or None,
+        documento=f"El {SINGULAR[source_type]} {visible_number(tip, cod)}", serie=serie,
+    )
+
+
 def convert_document(
     session: Session,
     client: FactusolClient,
@@ -735,6 +766,15 @@ def convert_document(
             ),
             **overrides,
         }
+
+    # Pedido de BoHub revinculado a otro cliente desde su ficha: la factura
+    # sale al cliente nuevo, también al convertir desde Documentos (el
+    # documento de origen no se toca). `_emit_from_albaran` ya lo trae puesto.
+    if target_type == "facturas" and f"CLI{dst.suffix}" not in overrides:
+        overrides.update(_cliente_revinculado(
+            session, client, source_type=source_type, src=src, dst=dst, header=header,
+            tip=tip, cod=cod, serie=serie, ejercicio=ejercicio,
+        ))
 
     cabecera = build_target_header(
         header, src=src, dst=dst, serie=serie, codigo=codigo,

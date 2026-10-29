@@ -368,7 +368,7 @@ de escribir (si cambió, no se escribe) y Auditoría (target `order`). Código e
 | Qué | Tabla | Cómo | Auditoría |
 |---|---|---|---|
 | Mención legal | F_FAC | `ActualizarRegistro` con `TIPFAC`, `CODFAC` y **solo** `OB1FAC` u `OB2FAC` (la primera vacía; nunca se pisa una con texto). Se relee para comprobarlo. | `erp.invoice_mention_added`, guardado en cuanto FACTUSOL acepta (con `comprobada` nula) y completado con la relectura |
-| Cliente de la factura | F_FAC | `ActualizarRegistro` con la clave y **solo** los campos que cambian de `CLIFAC`, `CNOFAC`, `CDOFAC`, `CPOFAC`, `CCPFAC`, `CPRFAC`, `CPAFAC`, `CNIFAC`, con el mismo tipo JSON que devolvió FACTUSOL (gotcha 13). Se relee. | `erp.invoice_client_changed` (antes y después, guardado nada más escribir, antes de releer y de tocar BoHub) y `erp.order_client_relinked` (de qué cliente a cuál) |
+| Cliente de la factura | F_FAC | `ActualizarRegistro` con la clave y **solo** los campos que cambian de `CLIFAC`, `CNOFAC`, `CDOFAC`, `CPOFAC`, `CCPFAC`, `CPRFAC`, `CPAFAC`, `CNIFAC`, `TELFAC`, con el mismo tipo JSON que devolvió FACTUSOL (gotcha 13). Se relee. | `erp.invoice_client_changed` (antes y después, guardado nada más escribir, antes de releer y de tocar BoHub) y `erp.order_client_relinked` (de qué cliente a cuál) |
 | Cliente nuevo | F_CLI | `create_customer` de siempre, solo si **ningún** cliente tiene ese CIF (se busca por NIF justo antes, y `create_customer` vuelve a mirar). Un CIF vacío o mal formado se rechaza (`nif_no_valido`). | `erp.order_customer_created` |
 
 **Lo que se escribe es lo de la vista previa.** La mención va a la observación
@@ -381,7 +381,8 @@ dice que la factura SÍ se cambió. Volver a pulsar completa lo que faltaba (el
 pedido en BoHub), sin escribir otra vez. Las escrituras no se reintentan: si
 FACTUSOL no responde, se relee la factura. Si ya tiene lo nuevo, cuenta como
 escrita (`respuesta_perdida` en la Auditoría). Si tampoco se puede releer, se
-dice que puede haberse escrito y que se compruebe en FACTUSOL antes de repetir.
+dice que puede haberse escrito y que se compruebe en FACTUSOL antes de repetir; y
+queda en Auditoría igualmente, marcado `incierta`, con el antes y el después.
 
 **Por qué las observaciones.** La ayuda de FactuSOL dice que con VERI*FACTU
 las observaciones se pueden editar (no son parte del registro), no cambian
@@ -416,6 +417,8 @@ Se considera revinculado si el último `erp.order_client_relinked` tiene como
 `to_company` la empresa actual del pedido. Su `to_codcli` manda aunque esa
 empresa esté vinculada a otro código de FACTUSOL (mismo NIF con dos códigos;
 la vista previa lo avisa). Si el régimen no casa con el documento, no se emite.
+Vale también al facturar el albarán o el presupuesto de ese pedido desde el
+explorador de Documentos (`chain.convert_document` → `_cliente_revinculado`).
 
 **Escrituras síncronas.** Son un `ActualizarRegistro` sobre un registro que
 existe, sin contador, así que van en la petición (no en `factusol:writes`), como

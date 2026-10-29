@@ -430,6 +430,10 @@ def test_emitir_factura_no_registra_cobro_automatico(db) -> None:
     from app.erp.workflow import order_workflow
     order.approved_at = datetime.now(UTC)
     db.commit()
+    # Primero se envía la factura al cliente (paso 6); después, el cobro.
+    wf = order_workflow(db, order)
+    assert wf["queue"] == "factura_por_enviar" and wf["next_action"] == "enviar_factura"
+    _factura_enviada(db, order)
     wf = order_workflow(db, order)
     assert wf["queue"] == "por_cobrar" and wf["next_action"] == "registrar_cobro"
     assert {st["key"]: st["state"] for st in wf["steps"]}["cobro"] == "now"
@@ -437,6 +441,14 @@ def test_emitir_factura_no_registra_cobro_automatico(db) -> None:
     with pytest.raises(FactusolError, match="ya tiene factura"):
         emit_invoice(db, order.id, fake)
     assert _written(fake, "F_LCO") == []
+
+
+def _factura_enviada(db, order) -> None:
+    """La factura llegó al cliente (paso 6): el cobro pasa a ser el siguiente."""
+    from app.core.audit import record_event
+
+    record_event(db, action="erp.invoice_emailed", target_type="order", target_id=order.id)
+    db.commit()
 
 
 def test_cobro_solo_manual(db) -> None:
@@ -463,6 +475,7 @@ def test_cobro_solo_manual(db) -> None:
     emit_invoice(db, order.id, fake)
     db.refresh(order)
     assert order.factusol_cobro_status is None
+    _factura_enviada(db, order)
     before = order_workflow(db, order)
     assert before["next_action"] == "registrar_cobro"
     assert {st["key"]: st["state"] for st in before["steps"]}["cobro"] == "now"

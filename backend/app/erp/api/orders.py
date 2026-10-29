@@ -2120,6 +2120,7 @@ def cobro_banco(
     base = [(c["id"], float(c["importe_conciliado"]), _fechas_dict(c),
              c["cuenta"]["contrapartida_codigo"]) for c in res["conciliados"]]
     casados = bank_service.casar_lineas_de_cobro(base, lineas) if lineas else {}
+    sueltas = _lineas_sueltas(lineas, casados.values())
     en_cola = _cobro_banco_en_cola(session, [c["id"] for c in res["conciliados"]])
     for c in res["conciliados"]:
         linea = casados.get(c["id"])
@@ -2138,6 +2139,10 @@ def cobro_banco(
         # efectivo, con tarjeta…) del mismo importe; la ficha lo dice.
         c["ya_en_factusol_otra_cuenta"] = bool(propio) and not bank_service.misma_contrapartida(
             propio.get("contrapartida"), c["cuenta"]["contrapartida_codigo"])
+        c["posible_doble"] = not propio and _hay_igual(sueltas, c["importe"], factura)
+    for c in res["conciliados"]:
+        c["posible_doble"] = (not c["registrado"] and not c["en_cola"]
+                              and _hay_igual(sueltas, c["importe_conciliado"], factura))
     # Solo se ofrece registrar lo conciliado cuyo cobro no está en FACTUSOL
     # ni en cola.
     por_registrar = 0.0 if cobrada else round(sum(
@@ -2149,7 +2154,36 @@ def cobro_banco(
         else "candidatos" if res["candidatos"] else "nada"
     )
     return {"aplica": True, "estado": estado, "cobrada": cobrada,
-            "por_registrar": por_registrar, **res}
+            "por_registrar": por_registrar, **res,
+            # Cobros de FACTUSOL que no son de ningún movimiento del banco.
+            "cobros_sueltos": [
+                {"fecha": x.get("fecha"), "importe": float(x.get("importe") or 0),
+                 "cuenta": _cuenta_de_linea(x, nombres_cp)}
+                for x in sueltas
+            ]}
+
+
+def _hay_igual(sueltas: list[dict[str, Any]], importe: Any, factura: dict[str, Any]) -> bool:
+    """¿Hay un cobro suelto en FACTUSOL del mismo importe que se registraría?"""
+    objetivo = min(float(importe), float(factura["saldo_pendiente"]))
+    return any(abs(float(x.get("importe") or 0) - objetivo) <= 0.01 for x in sueltas)
+
+
+def _dmy(iso: Any) -> str:
+    texto = str(iso or "")[:10]
+    try:
+        return date.fromisoformat(texto).strftime("%d/%m/%Y")
+    except ValueError:
+        return texto or "—"
+
+
+def _lineas_sueltas(
+    lineas: list[dict[str, Any]], usadas: Any,
+) -> list[dict[str, Any]]:
+    """Las líneas de cobro de FACTUSOL que no son de ningún movimiento del
+    banco (efectivo, tarjeta, o un pago apuntado a mano con otra fecha)."""
+    ids = {id(x) for x in usadas}
+    return [x for x in lineas if id(x) not in ids]
 
 
 def _cuenta_de_linea(linea: dict[str, Any] | None, nombres: dict[str, str]) -> str | None:
@@ -2225,6 +2259,10 @@ class CobroBancoIn(BaseModel):
 
     movement_id: str = Field(min_length=1, max_length=36)
     confirm: bool = False
+    #: La factura ya tiene en FACTUSOL un cobro del mismo importe que no es de
+    #: ningún movimiento del banco (p. ej. apuntado a mano con otra fecha) y la
+    #: persona confirma que ESTE es otro pago: se registra igualmente.
+    forzar: bool = False
 
 
 @router.post("/{order_id}/cobro-banco", status_code=202)
@@ -2314,6 +2352,8 @@ def confirmar_cobro_banco(
     # mano)? Cada movimiento conciliado con la factura, y este, se casa con
     # una línea de cobro distinta: dos pagos iguales no valen por una línea.
     linea = None
+    lineas = list(info.get("lineas") or [])
+    sueltas: list[dict[str, Any]] = []
     if propio > 0:
         otros = [(m, imp) for m, imp in bank_service.conciliados_de_factura(
             session, serie, codigo) if m.id != mov.id]
@@ -2321,11 +2361,13 @@ def confirmar_cobro_banco(
             select(BankAccount).where(BankAccount.id.in_({m.account_id for m, _ in otros})))}
         base = [(m.id, imp, bank_service.fechas_de_movimiento(m), cuentas.get(m.account_id))
                 for m, imp in otros]
-        linea = bank_service.casar_lineas_de_cobro(
+        casados = bank_service.casar_lineas_de_cobro(
             [*base, (mov.id, propio, bank_service.fechas_de_movimiento(mov),
                      acc.contrapartida_codigo)],
-            list(info.get("lineas") or []),
-        ).get(mov.id)
+            lineas,
+        )
+        linea = casados.get(mov.id)
+        sueltas = _lineas_sueltas(lineas, casados.values())
     if linea is not None:
         return _cobro_banco_ya_en_factusol(
             session, order, factura, mov, acc, linea, saldo=saldo, importe=propio,
@@ -2340,6 +2382,22 @@ def confirmar_cobro_banco(
             "code": "en_cola",
             "detail": ("El cobro de ese movimiento ya se mandó a FACTUSOL desde la ficha y "
                        "sigue en cola: espera un momento y vuelve a mirar."),
+        })
+    # Un cobro del MISMO importe en FACTUSOL que no es de ningún movimiento (a
+    # más de 7 días: p. ej. apuntado a mano con la fecha de ese día) puede ser
+    # este mismo pago: no se registra sin que la persona diga que es otro.
+    iguales = [x for x in sueltas
+               if abs(float(x.get("importe") or 0) - min(propio, saldo)) <= 0.01]
+    if iguales and not payload.forzar:
+        x = iguales[0]
+        cuenta = _cuenta_de_linea(x, bank_service.contrapartida_names(session))
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "posible_doble_cobro",
+            "detail": (f"La {numero} ya tiene en FACTUSOL un cobro de {float(x['importe']):.2f} € "
+                       f"del {_dmy(x.get('fecha'))}{f' (cuenta {cuenta})' if cuenta else ''} que "
+                       "no es de ningún movimiento del banco: puede ser este mismo pago, "
+                       "apuntado a mano. Si es otro, confírmalo y se registra igualmente. No se "
+                       "ha hecho nada."),
         })
     try:
         bank_service.conciliar_desde_pedido(

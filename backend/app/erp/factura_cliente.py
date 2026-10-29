@@ -268,12 +268,12 @@ def escribir_mencion(
 #: normalizado por `albaran_manual.customer_for_albaran`).
 _BLOQUE_CLIENTE = (
     ("CNOFAC", "nombre"), ("CDOFAC", "direccion"), ("CPOFAC", "ciudad"),
-    ("CCPFAC", "cp"), ("CPRFAC", "provincia"), ("CNIFAC", "nif"),
+    ("CCPFAC", "cp"), ("CPRFAC", "provincia"), ("CNIFAC", "nif"), ("TELFAC", "telefono"),
 )
 CAMPO_LABEL = {
     "CLIFAC": "Cliente (código)", "CNOFAC": "Nombre", "CDOFAC": "Dirección",
     "CPOFAC": "Población", "CCPFAC": "CP", "CPRFAC": "Provincia",
-    "CNIFAC": "NIF", "CPAFAC": "País",
+    "CNIFAC": "NIF", "CPAFAC": "País", "TELFAC": "Teléfono",
 }
 
 
@@ -737,6 +737,23 @@ def aplicar_revincular(
                 ahora = leer_factura(client, serie=int(serie), codigo=int(cod),
                                      ejercicio=ejercicio)
             except (FacturaClienteError, FactusolError) as exc:
+                # Puede haberse escrito: consta en Auditoría (sin comprobar)
+                # con el antes y el después, por si lo estuviera.
+                record_event(
+                    session, action=INVOICE_CLIENT_CHANGED_EVENT, target_type="order",
+                    target_id=order.id, actor=actor,
+                    message=(f"Cambio del cliente de la factura {numero} mandado a FACTUSOL "
+                             "sin respuesta: puede que se haya hecho"),
+                    metadata={
+                        "order_number": order.order_number, "factura": numero,
+                        "from_codcli": _texto(row.get("CLIFAC")) or None, "to_codcli": code,
+                        "cambios": [{k: c[k] for k in ("campo", "antes", "despues")}
+                                    for c in cambios],
+                        "comprobada": None, "incierta": True,
+                        "reason": f"Cliente de la factura {numero}: a {code} (sin confirmar)",
+                    },
+                )
+                session.commit()
                 raise FacturaClienteError(
                     "factusol_write_incierto",
                     f"FACTUSOL no ha respondido al cambiar la {numero} ni al releerla: puede "

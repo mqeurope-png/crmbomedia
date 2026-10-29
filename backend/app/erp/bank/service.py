@@ -1125,15 +1125,24 @@ _ORDEN_CONFIANZA = {"alta": 0, "media": 1, "baja": 2}
 _DIAS_ANTES_DEL_PEDIDO = 3
 
 
+def _texto_para_facturas(mov: BankMovement) -> str:
+    """El concepto, las referencias y lo anotado, sin los números de OTROS
+    documentos («PROFORMA 526090», «pedido 1234»): esos no son facturas."""
+    from app.erp.bank.parsing import _OTRO_DOCUMENTO_RE  # noqa: PLC0415
+
+    texto_mov = " ".join(
+        x for x in (mov.concepto, mov.referencia1, mov.referencia2, mov.anotacion_factura) if x
+    )
+    return _OTRO_DOCUMENTO_RE.sub(" ", texto_mov)
+
+
 def _numero_en_movimiento(mov: BankMovement, serie: int, codigo: int) -> bool:
     """¿El concepto, las referencias o lo anotado nombran esta factura?
     «2-526081», o el código suelto «526081» (el que suelen copiar los
     clientes)."""
     from app.erp.bank.parsing import _CODIGO_SUELTO_RE, _FACTURA_RE  # noqa: PLC0415
 
-    texto_mov = " ".join(
-        x for x in (mov.concepto, mov.referencia1, mov.referencia2, mov.anotacion_factura) if x
-    )
+    texto_mov = _texto_para_facturas(mov)
     for m in _FACTURA_RE.finditer(texto_mov):
         if int(m.group(1)) == serie and int(m.group(2)) == codigo:
             return True
@@ -1146,9 +1155,7 @@ def _nombra_otra_factura(mov: BankMovement, serie: int, codigo: int) -> bool:
     cobro de esa otra: no se propone para esta solo por el importe."""
     from app.erp.bank.parsing import _CODIGO_SUELTO_RE, _FACTURA_RE  # noqa: PLC0415
 
-    texto_mov = " ".join(
-        x for x in (mov.concepto, mov.referencia1, mov.referencia2, mov.anotacion_factura) if x
-    )
+    texto_mov = _texto_para_facturas(mov)
     for m in _FACTURA_RE.finditer(texto_mov):
         if int(m.group(1)) == serie and int(m.group(2)) != codigo:
             return True
@@ -1682,13 +1689,19 @@ def export_cobros_csv(
     buf = io.StringIO()
     writer = csv.writer(buf, lineterminator="\n")
     writer.writerow(COBROS_CSV_COLUMNS)
-    vistas: set[tuple[int, int]] = set()
+    # Pagada en varios movimientos, la fila sale del ÚLTIMO (su cuenta, su
+    # fecha y sus observaciones): es el pago con el que queda cobrada. Si
+    # vienen de cuentas con contrapartidas distintas, el script (una línea, una
+    # cuenta) no puede registrarlo bien: se deja fuera.
+    de_factura: dict[tuple[int, int], list[tuple[Any, BankMovement, BankAccount]]] = {}
     for r, mov, acc in filas:
-        clave = (r.serie, r.codigo)
-        if clave in vistas:
-            continue
-        vistas.add(clave)
-        if por_movimiento[mov.id] > float(mov.importe) + 0.01:
+        de_factura.setdefault((r.serie, r.codigo), []).append((r, mov, acc))
+    for clave, suyas in de_factura.items():
+        r, mov, acc = max(suyas, key=lambda t: (t[1].fecha_valor or t[1].fecha_oper,
+                                                t[1].source_row or 0))
+        if any(por_movimiento[m.id] > float(m.importe) + 0.01 for _, m, _a in suyas) or len(
+            {str(a.contrapartida_codigo or "") for _, _m, a in suyas}
+        ) > 1:
             stats["no_cuadran"] += 1
             continue
         if not acc.contrapartida_codigo:

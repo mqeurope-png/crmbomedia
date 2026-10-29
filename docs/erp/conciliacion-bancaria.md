@@ -341,6 +341,10 @@ Lo que queda sin anotar es lo que falta por conciliar.
     registrado desde la ficha, la factura no vuelve a entrar por ese mismo
     movimiento (el script registraría lo que el cliente aún debe). Cuando se
     concilia el resto, entra, con la fecha valor del último pago.
+  - Pagada en varios movimientos, la fila (cuenta, fecha y observaciones)
+    sale del último. Si los pagos vienen de cuentas con contrapartidas
+    distintas, se deja fuera (`No-Cuadran`): el script registra una sola línea
+    en una cuenta.
   - Se dejan fuera, y se cuentan en las cabeceras `X-Cobros-*` (la pantalla
     las dice en el aviso):
     - `Parciales`: lo conciliado no llega al saldo;
@@ -400,6 +404,16 @@ y avisa si es otra cuenta. Un cobro mandado desde la ficha que sigue en cola
 (menos de 30 minutos y su trabajo aún pendiente) bloquea otro igual (409
 `en_cola`); uno fallido se puede reintentar. Si no se puede encolar, el
 movimiento queda conciliado y se dice (`cobro_no_encolado`).
+
+**Cobros sueltos.** Las líneas de cobro de FACTUSOL que no casan con ningún
+movimiento (efectivo, tarjeta, o un pago apuntado a mano con otra fecha) se
+enseñan en la ficha (`cobros_sueltos`). Si una tiene el mismo importe que lo
+que se va a registrar, puede ser ese mismo pago: el POST responde 409
+`posible_doble_cobro` y no hace nada, salvo que llegue `forzar` (la persona
+marcó «es otro pago distinto»).
+
+Los números de otros documentos del concepto («PROFORMA 526090», «pedido
+1234») no cuentan como facturas al buscar la factura en el concepto.
 
 La vuelta: `GET /api/erp/bank/movements?movimiento=<id>` filtra un movimiento,
 y cada propuesta o conciliación lleva `pedido: {id, order_number}`.

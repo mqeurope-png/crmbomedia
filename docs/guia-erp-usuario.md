@@ -439,6 +439,11 @@ facturado. Queda en el historial del pedido y no escribe en FACTUSOL.
         este se registra con «Registrar cobro en FACTUSOL».
       - Mientras un cobro mandado desde la ficha sigue en cola, se ve *«En cola
         en FACTUSOL…»* y no se puede mandar otra vez.
+    - Si la factura ya tiene en FACTUSOL cobros que no son de ningún movimiento
+      del banco (efectivo, tarjeta, o un pago apuntado a mano con otra fecha),
+      el bloque los enseña. Si uno tiene el mismo importe, puede ser este mismo
+      pago: no se registra hasta que marques **«Es otro pago distinto:
+      registrarlo igualmente»**.
     - Si FACTUSOL falla o tarda, el movimiento queda conciliado igualmente: el
       bloque se recarga y vuelve a ofrecer registrar el cobro.
     - **«Ver el movimiento»** abre Conciliación con solo ese movimiento (solo
@@ -561,7 +566,8 @@ Cambiar el cliente de una factura es de quien **emite facturas**.
 
 Si el pedido aún no está facturado pero su pedido de cliente de FACTUSOL (web) o
 su albarán llevan el cliente anterior, no se tocan, pero **la factura saldrá a
-nombre del cliente nuevo** al emitirla. Si el IVA del documento no casa con el
+nombre del cliente nuevo** al emitirla, también si el albarán se factura desde
+**Documentos**. Si el IVA del documento no casa con el
 cliente nuevo, no se emite (lo dice).
 
 Todo queda en el historial del pedido y en **Auditoría** (filtro «ERP»): quién,

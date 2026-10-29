@@ -584,6 +584,65 @@ def test_el_endpoint_del_csv_pasa_los_totales(http, session_factory) -> None:
     assert r.headers["X-Cobros-Incluidos"] == "0" and r.headers["X-Cobros-Parciales"] == "1"
 
 
+def test_un_cobro_igual_apuntado_a_mano_con_otra_fecha_no_se_registra_sin_confirmar(
+    http, session_factory,
+) -> None:
+    """El pago de 427 € (fecha valor 26/08) se apuntó a mano en FACTUSOL el
+    20/09 (a más de 7 días): la ficha lo enseña como cobro suelto, avisa de un
+    posible doble cobro y no registra otro sin que la persona diga que es otro
+    pago."""
+    with session_factory() as s:
+        _pedido(s)
+        _movimiento(s, importe=427.0)
+    fake = FakeFactusol([_fac(2, 526081, 927.0)],
+                        [_lco(2, 526081, 427.0, fecha="2026-09-20", cuenta=6)])
+    body = _cobro_banco(http, fake=fake).json()
+    [c] = body["candidatos"]
+    assert c["ya_en_factusol"] is None and c["posible_doble"] is True
+    assert body["cobros_sueltos"] == [
+        {"fecha": "2026-09-20", "importe": 427.0, "cuenta": "6 · Bomedia Sabadell"},
+    ]
+    r, enq, _ = _confirmar(http, fake=fake)
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "posible_doble_cobro"
+    assert "20/09/2026" in r.json()["detail"]["detail"]
+    enq.assert_not_called()
+    with session_factory() as s:
+        assert s.get(BankMovement, "m-1").status == "pending"     # no se ha hecho nada
+    r, enq, _ = _confirmar(http, fake=fake, forzar=True)
+    assert r.status_code == 202, r.text
+    assert enq.call_args.args[4] == 427.0
+
+
+def test_una_proforma_en_el_concepto_no_cuenta_como_otra_factura(http, session_factory) -> None:
+    """«PROFORMA 526090» es otro documento, no otra factura: el pago se propone."""
+    with session_factory() as s:
+        _pedido(s)
+        _movimiento(s, concepto="TRANSFERENCIA DE TALLER EJEMPLO SL PROFORMA 526090")
+    [c] = _cobro_banco(http).json()["candidatos"]
+    assert c["id"] == "m-1"
+
+
+def test_csv_pagada_desde_dos_cuentas_se_deja_fuera(session_factory) -> None:
+    """Dos pagos de la misma factura en cuentas con contrapartidas distintas:
+    el script registra una sola línea en una cuenta, así que no entra."""
+    with session_factory() as s:
+        s.add(BankAccount(id="acc-2", name="Banco Figurante Dos", iban="ES00 0000 0000 0002",
+                          serie=2, contrapartida_codigo="8"))
+        s.commit()
+        _movimiento(s, importe=500.0, status="reconciled")
+        _conciliado(s, "m-1", 500.0)
+        m2 = _movimiento(s, "m-2", importe=427.0, concepto="RESTO FACTURA 2-526081",
+                         fecha_oper=date(2026, 9, 3), fecha_valor=date(2026, 9, 4),
+                         status="reconciled")
+        m2.account_id = "acc-2"
+        s.commit()
+        _conciliado(s, "m-2", 427.0)
+        _, stats = bank_service.export_cobros_csv(
+            s, saldos={(2, 526081): 927.0}, totales={(2, 526081): 927.0},
+        )
+    assert stats["incluidas"] == 0 and stats["no_cuadran"] == 1
+
+
 def test_las_lineas_se_reparten_para_casar_el_maximo(session_factory) -> None:
     """Dos pagos de 500 (01/08 y 05/08) y dos líneas de 500 en FACTUSOL (28/07
     y 04/08): cada movimiento se queda una, aunque la más cercana al primero

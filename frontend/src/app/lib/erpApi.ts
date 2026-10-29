@@ -3329,6 +3329,8 @@ export type CobroBancoCandidato = CobroBancoMovimiento & {
   /** Apuntado en OTRA cuenta que la del banco: puede ser otro pago del mismo
    *  importe (efectivo, tarjeta…). */
   ya_en_factusol_otra_cuenta?: boolean;
+  /** Hay en FACTUSOL un cobro suelto del mismo importe: puede ser este. */
+  posible_doble?: boolean;
 };
 
 export type CobroBancoConciliado = CobroBancoMovimiento & {
@@ -3338,6 +3340,8 @@ export type CobroBancoConciliado = CobroBancoMovimiento & {
   registrado: string | null;
   /** Su cobro, mandado desde la ficha, sigue en la cola de FACTUSOL. */
   en_cola: boolean;
+  /** Hay en FACTUSOL un cobro suelto del mismo importe: puede ser este. */
+  posible_doble?: boolean;
 };
 
 /** El cobro que propone el banco para la factura del pedido. */
@@ -3353,6 +3357,9 @@ export type CobroBanco =
                  saldo_pendiente: number };
       conciliados: CobroBancoConciliado[];
       candidatos: CobroBancoCandidato[];
+      /** Cobros de FACTUSOL que no son de ningún movimiento del banco
+       *  (efectivo, tarjeta, o un pago apuntado a mano con otra fecha). */
+      cobros_sueltos?: { fecha: string | null; importe: number; cuenta: string | null }[];
     };
 
 export async function getOrderCobroBanco(orderId: string): Promise<CobroBanco> {
@@ -3365,13 +3372,14 @@ export async function getOrderCobroBanco(orderId: string): Promise<CobroBanco> {
  *  solo concilia: `status: "already"` con `fecha_factusol`. 409 `en_cola` si
  *  su cobro sigue en la cola. */
 export async function confirmarCobroBanco(
-  orderId: string, movementId: string,
+  orderId: string, movementId: string, { forzar = false }: { forzar?: boolean } = {},
 ): Promise<InvoiceCollectionResponse & {
   parcial: boolean; movimiento: CobroBancoMovimiento; fecha_factusol?: string | null;
   cuenta_factusol?: string | null; otra_cuenta?: boolean;
 }> {
   return apiFetch(`/api/erp/orders/${encodeURIComponent(orderId)}/cobro-banco`, {
-    method: "POST", body: JSON.stringify({ movement_id: movementId, confirm: true }),
+    method: "POST",
+    body: JSON.stringify({ movement_id: movementId, confirm: true, forzar }),
   });
 }
 

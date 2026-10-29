@@ -230,6 +230,22 @@ def mencion_aplicar(
             ahora = leer_factura(client, serie=linked.serie, codigo=linked.codigo,
                                  ejercicio=ejercicio)
         except (FacturaClienteError, FactusolError):
+            # Puede haberse escrito: consta en Auditoría (sin comprobar).
+            record_event(
+                session, action=INVOICE_MENTION_EVENT, target_type="order", target_id=order.id,
+                actor=current_user,
+                message=(f"Mención legal mandada a la factura {plan['factura']} "
+                         f"({payload.campo}) sin respuesta: puede que se haya escrito"),
+                metadata={
+                    "order_number": order.order_number, "factura": plan["factura"],
+                    "campo": payload.campo, "texto": plan["texto"],
+                    "mencion_id": plan["mencion_id"],
+                    "antes": plan["actuales"].get(payload.campo) or "", "comprobada": None,
+                    "incierta": True,
+                    "reason": f"«{plan['texto']}» en {payload.campo} (sin confirmar)",
+                },
+            )
+            session.commit()
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, {
                 "code": "factusol_write_incierto",
                 "detail": (f"FACTUSOL no ha respondido al escribir la mención ni al releer la "

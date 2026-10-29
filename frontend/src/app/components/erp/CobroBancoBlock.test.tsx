@@ -110,7 +110,7 @@ describe("CobroBancoBlock — el cobro que propone el banco", () => {
     expect(registrar).toBeDisabled();
     await user.click(panel.getByLabelText("Confirmo el cobro con este movimiento"));
     await user.click(registrar);
-    await waitFor(() => expect(confirmarCobroBanco).toHaveBeenCalledWith("o-1", "m-1"));
+    await waitFor(() => expect(confirmarCobroBanco).toHaveBeenCalledWith("o-1", "m-1", { forzar: false }));
     expect(waitForInvoiceCollectionJob).toHaveBeenCalledWith("j-1");
     expect(await screen.findByRole("status")).toHaveTextContent(
       "Cobro de 927,00 € registrado con fecha 26/08/2026: la 2-526081 consta cobrada.",
@@ -391,5 +391,35 @@ describe("CobroBancoBlock — el cobro que propone el banco", () => {
     const nota = await screen.findByText(/Este cobro ya consta en FACTUSOL/);
     expect(nota).toHaveTextContent("(27/08/2026, cuenta 1 · Caja)");
     expect(nota).toHaveTextContent("está apuntado en otra cuenta que la de este banco");
+  });
+
+  it("un cobro igual ya apuntado a mano en FACTUSOL (con otra fecha): lo enseña y no deja registrar sin decir que es otro pago", async () => {
+    getOrderCobroBanco.mockResolvedValue({
+      ...candidatos([cand({ importe: 427, parcial: true, posible_doble: true })]),
+      cobros_sueltos: [{ fecha: "2026-09-20", importe: 427, cuenta: "6 · Banco Figurante" }],
+    });
+    confirmarCobroBanco.mockResolvedValue({
+      status: "queued", job_id: "j-1", numero: "2-526081", importe: 427, parcial: true,
+      movimiento: mov({ importe: 427 }),
+    });
+    waitForInvoiceCollectionJob.mockResolvedValue({
+      status: "finished", result: { registered: true, status: "registered", importe: 427 },
+    });
+    const user = userEvent.setup();
+    render(<CobroBancoBlock orderId="o-1" canConfirm canConciliar />);
+    expect(await screen.findByLabelText("Cobros ya en FACTUSOL")).toHaveTextContent(
+      "20/09/2026 · 427,00 € · cuenta 6 · Banco Figurante",
+    );
+    await user.click(screen.getByRole("button", { name: "Marcar cobrado con esta fecha" }));
+    expect(screen.getByText(/Puede ser este mismo pago, apuntado a mano/)).toBeInTheDocument();
+    await user.click(screen.getByLabelText("Confirmo el cobro con este movimiento"));
+    const registrar = screen.getByRole("button", { name: "Registrar el cobro" });
+    expect(registrar).toBeDisabled();
+    await user.click(screen.getByLabelText("Es otro pago: registrarlo igualmente"));
+    expect(registrar).toBeEnabled();
+    await user.click(registrar);
+    await waitFor(() => expect(confirmarCobroBanco).toHaveBeenCalledWith(
+      "o-1", "m-1", { forzar: true },
+    ));
   });
 });
