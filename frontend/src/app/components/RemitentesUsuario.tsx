@@ -83,7 +83,17 @@ export function RemitentesUsuario({ userId }: { userId: string }) {
       {sinGmail ? (
         <p className="form-warning small">
           No se ha podido consultar Gmail: se ve lo guardado, pero no qué
-          direcciones están verificadas.
+          direcciones están verificadas, así que no se puede cambiar hasta que
+          responda (se podría dejar de remitente una dirección que Gmail
+          rechazaría).{" "}
+          <button
+            type="button"
+            className="button secondary small"
+            onClick={() => void reload()}
+            disabled={loading}
+          >
+            Reintentar
+          </button>
         </p>
       ) : null}
       {recibeSinRemitente.length > 0 ? (
@@ -96,6 +106,21 @@ export function RemitentesUsuario({ userId }: { userId: string }) {
         </p>
       ) : null}
       {error ? <p className="form-error small">{error}</p> : null}
+      {sinGmail ? (
+        <ul className="alias-list" aria-label="Remitentes guardados">
+          {aliases
+            .filter((a) => a.user_pref_allowed)
+            .map((a) => (
+              <li key={a.send_as_email} className="alias-row">
+                <strong>{a.resolved_display_name || a.send_as_email}</strong>
+                <span className="muted small">&lt;{a.send_as_email}&gt;</span>
+                {a.user_pref_default ? (
+                  <span className="badge ok small">predeterminado</span>
+                ) : null}
+              </li>
+            ))}
+        </ul>
+      ) : (
       <GmailAliasMultiSelect
         aliases={aliases}
         onSave={async (prefs) => {
@@ -112,6 +137,7 @@ export function RemitentesUsuario({ userId }: { userId: string }) {
         refreshing={loading}
         textoVacio="No tiene ningún remitente marcado: su desplegable «De» está vacío. Abre el selector y marca los que use."
       />
+      )}
     </div>
   );
 }

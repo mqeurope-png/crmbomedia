@@ -140,17 +140,37 @@ describe("RemitentesUsuario — los remitentes del «De» en la ficha de Usuario
     });
   });
 
-  it("sin remitentes marcados lo dice de ese usuario, y avisa si Gmail no responde", async () => {
-    mockGet.mockResolvedValue([
-      alias("manel@bomedia.net", { en_gmail: null }),
-      alias("ventas@streamtec.es", { en_gmail: null }),
-    ]);
+  it("sin remitentes marcados lo dice de ese usuario", async () => {
+    mockGet.mockResolvedValue([alias("manel@bomedia.net"), alias("ventas@streamtec.es")]);
     render(<RemitentesUsuario userId="u-manel" />);
     expect(
       await screen.findByText(/No tiene ningún remitente marcado: su desplegable «De» está vacío/),
     ).toBeInTheDocument();
-    expect(screen.getByText(/No se ha podido consultar Gmail/)).toBeInTheDocument();
-    expect(screen.queryByText("no verificada en Gmail")).not.toBeInTheDocument();
+  });
+
+  it("si Gmail no responde, enseña lo guardado sin dejar cambiarlo", async () => {
+    const user = userEvent.setup();
+    mockGet.mockResolvedValueOnce([
+      alias("manel@bomedia.net", { en_gmail: null }),
+      alias("ventas@streamtec.es", {
+        en_gmail: null,
+        user_pref_allowed: true,
+        user_pref_default: true,
+        resolved_display_name: "Streamtec",
+      }),
+    ]);
+    render(<RemitentesUsuario userId="u-manel" />);
+    expect(await screen.findByText(/No se ha podido consultar Gmail/)).toHaveTextContent(
+      "no se puede cambiar hasta que responda",
+    );
+    const guardados = screen.getByRole("list", { name: "Remitentes guardados" });
+    expect(guardados).toHaveTextContent("Streamtec<ventas@streamtec.es>predeterminado");
+    expect(guardados).not.toHaveTextContent("manel@bomedia.net");
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /alias activo/ })).not.toBeInTheDocument();
+    // Reintentar: Gmail ya responde y vuelve el selector.
+    await user.click(screen.getByRole("button", { name: "Reintentar" }));
+    expect(await screen.findByRole("button", { name: /1 alias activo/ })).toBeInTheDocument();
   });
 
   it("una elegida que Gmail no tiene no puede ser la predeterminada", async () => {

@@ -585,6 +585,55 @@ def test_sin_gmail_el_admin_ve_lo_guardado_y_mi_cuenta_sigue_igual(
     assert propia.status_code == 200 and propia.json() == []
 
 
+def test_sin_gmail_no_se_guarda_nada(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    """Verificación de los arreglos: sin Gmail no se sabe qué está verificado,
+    y guardar encendía lo pendiente de Gmail (o rechazaba la dirección propia
+    de un usuario nuevo). Ahora el guardado espera a que Gmail responda."""
+    with session_factory() as s:
+        norma = _uid(s, UserRole.USER)
+        s.add(UserEmailAlias(user_id=norma, alias_email=NORMA_FLUX, active=True))
+        s.commit()
+        _sync(s, norma, _cuenta())
+        _pref(s, norma, NORMA_FLUX, allowed=False, opted=True)    # pendiente de Gmail
+        s.commit()
+        antes = _estado(s, norma)
+    caido = patch.object(gmail_service, "_client_for",
+                         side_effect=GmailNotConnectedError("sin conexión"))
+    with caido:
+        lista = http.get(f"/api/users/{norma}/senders", headers=_como(http, "admin")).json()
+        r = http.put(f"/api/users/{norma}/senders", headers=_como(http, "admin"), json={
+            "preferences": _como_lo_manda_la_pantalla(lista, marcar={VENTAS: True},
+                                                      predeterminado=VENTAS)})
+    assert r.status_code == 503
+    assert "Gmail" in r.json()["detail"]
+    with session_factory() as s:
+        assert _estado(s, norma) == antes
+        assert not s.scalar(select(AuditLog.id).where(
+            AuditLog.action == "user.senders_updated"))
+
+
+def test_la_direccion_propia_de_un_usuario_nuevo_sale_marcada_aunque_gmail_no_responda(
+    session_factory: sessionmaker, http: TestClient,
+) -> None:
+    with session_factory() as s:
+        norma = _uid(s, UserRole.USER)
+        s.add(UserEmailAlias(user_id=norma, alias_email=NORMA, active=True))
+        s.commit()
+    with patch.object(gmail_service, "_client_for",
+                      side_effect=GmailNotConnectedError("sin conexión")):
+        lista = http.get(f"/api/users/{norma}/senders", headers=_como(http, "admin")).json()
+    propia = next(a for a in lista if a["send_as_email"] == NORMA)
+    assert (propia["user_pref_allowed"], propia["en_gmail"]) == (True, None)
+    # Si luego se guarda lo que enseñaba la pantalla, con Gmail ya respondiendo,
+    # no queda rechazada (es la única marcada: también la predeterminada).
+    assert _guardar(http, norma, _como_lo_manda_la_pantalla(
+        lista, marcar={}, predeterminado=None), _cuenta()).status_code == 200
+    with session_factory() as s:
+        assert _estado(s, norma)[NORMA][:3] == (True, True, None)
+
+
 # --- lo de hoy no cambia -------------------------------------------------------------
 
 

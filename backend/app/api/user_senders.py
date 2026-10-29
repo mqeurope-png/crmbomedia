@@ -15,15 +15,15 @@ remitentes).
     `PUT /api/emails/aliases/preferences` (`services/remitentes.guardar`): lo
     marcado queda como elección (`user_opted_in`) y el sync de Gmail lo
     respeta; lo que Gmail no tiene verificado queda elegido pero apagado
-    hasta que lo verifique. Cada cambio queda en Auditoría
-    (`user.senders_updated`).
+    hasta que lo verifique. Si Gmail no responde, no guarda (503). Cada
+    cambio queda en Auditoría (`user.senders_updated`).
 
 Un no-admin no puede ver ni tocar los remitentes de nadie por aquí (403); los
 suyos los ve en Mi cuenta.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.core.audit import Action, record_event
@@ -65,6 +65,16 @@ def update_user_senders(
     # Lo que Gmail no tiene verificado se guarda como elección pero apagado
     # (`guardar`); por eso se pregunta a Gmail antes de guardar.
     gmail = remitentes.consultar_gmail(session, user, completo=True)
+    if gmail is None:
+        # Sin Gmail no se sabe qué está verificado: guardar podría encender
+        # una dirección que Gmail rechazaría (o rechazar la propia de un
+        # usuario nuevo). La ficha enseña lo guardado en solo lectura.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=("No se ha podido consultar Gmail: no se guarda nada hasta que "
+                    "responda, para no dejar de remitente una dirección que Gmail "
+                    "rechazaría. Prueba de nuevo en un momento."),
+        )
     cambios = remitentes.guardar(session, user, payload.preferences,
                                  en_gmail=remitentes.direcciones(gmail))
     if cambios:

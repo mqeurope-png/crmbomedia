@@ -65,11 +65,12 @@ def marcado(pref: UserEmailAliasPref | None, *, propio: bool, en_gmail: bool | N
     «De» tras el sync, no solo lo que está encendido ahora. Una elección
     (`user_opted_in=1`) que el sync apagó porque Gmail no la tiene sigue
     elegida («pendiente de Gmail»: vuelve sola al verificarse), y la dirección
-    propia sin fila la encenderá el sync. Pintarlas desmarcadas hacía que
-    guardar cualquier otra cosa las convirtiera en rechazo."""
+    propia sin fila la encenderá el sync si Gmail la tiene (también cuando
+    ahora no se sabe). Pintarlas desmarcadas hacía que guardar cualquier otra
+    cosa las convirtiera en rechazo."""
     if pref is not None:
         return bool(pref.is_allowed or pref.user_opted_in is True)
-    return propio and en_gmail is True
+    return propio and en_gmail is not False
 
 
 def _fila(
