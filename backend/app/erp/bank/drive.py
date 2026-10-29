@@ -838,7 +838,12 @@ def anadir_export(
         "total": len(export), "ya": len(export) - len(nuevos), "nuevos": len(nuevos),
         "movimientos": [_vista(m) for m in nuevos], "aplicado": False,
     }
-    if not aplicar or not nuevos:
+    if not aplicar:
+        return resultado
+    if not nuevos:
+        # Nada que añadir, pero se lee igual: si un intento anterior añadió
+        # las filas y no llegó a importarlas, entran ahora.
+        resultado["importacion"] = traer_de_drive(session, account, user_id=user_id, hoja=hoja)
         return resultado
     if _columna(parsed, "fecha_oper") is None or _columna(parsed, "importe") is None:
         raise DriveBancoError("sin_columna", "La hoja no tiene las columnas de fecha e importe.")
@@ -849,5 +854,13 @@ def anadir_export(
     logger.info("bank.drive: cuenta %s: %s filas añadidas a la hoja desde el export",
                 account.id, len(nuevos))
     resultado["aplicado"] = True
-    resultado["importacion"] = traer_de_drive(session, account, user_id=user_id, hoja=hoja)
+    try:
+        resultado["importacion"] = traer_de_drive(session, account, user_id=user_id, hoja=hoja)
+    except (DriveBancoError, ParseError) as exc:
+        # Las filas YA están en la hoja: se dice así, y entran en la próxima
+        # lectura (o subiendo el mismo fichero otra vez).
+        resultado["error_importacion"] = (
+            f"Las filas ya están añadidas a la hoja, pero no se han podido leer ahora: {exc} "
+            "Entrarán con «Traer de Drive» o en el repaso diario."
+        )
     return resultado

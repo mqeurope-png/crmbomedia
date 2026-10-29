@@ -854,6 +854,10 @@ def dedupe_key(
 # --- identidad de un movimiento -------------------------------------------------
 
 
+#: Lo que deja la hoja de Bart de un concepto largo.
+CONCEPTO_CORTADO = 26
+
+
 def _concepto_comparable(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip().upper())
 
@@ -876,8 +880,12 @@ def mismo_movimiento(a: dict[str, Any], b: dict[str, Any]) -> bool:
     if ra and rb:
         return ra == rb
     ca, cb = _concepto_comparable(a.get("concepto")), _concepto_comparable(b.get("concepto"))
+    if ca == cb:
+        return bool(ca)
+    # Solo un concepto CORTADO (26 caracteres o más) vale como prefijo: «TPV»
+    # no es «TPV AMAZON …».
     corto = min(len(ca), len(cb))
-    return corto > 0 and ca[:corto] == cb[:corto]
+    return corto >= CONCEPTO_CORTADO and ca[:corto] == cb[:corto]
 
 
 class Identidades:

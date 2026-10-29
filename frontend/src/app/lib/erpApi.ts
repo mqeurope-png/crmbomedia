@@ -5306,6 +5306,8 @@ export type BankExportPlan = {
   movimientos: { fecha_oper: string; concepto: string; importe: number; saldo: number | null }[];
   aplicado: boolean;
   importacion?: BankDriveTraida;
+  /** Las filas ya están en la hoja pero no se pudieron leer ahora. */
+  error_importacion?: string;
 };
 
 /** Sube el fichero del banco tal cual (.xls/.xlsx/.csv). Sin `aplicar`, la

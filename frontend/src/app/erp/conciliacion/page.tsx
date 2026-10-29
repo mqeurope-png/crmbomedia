@@ -40,6 +40,7 @@ import {
   type BankDriveEscritura,
   type BankDriveInfo,
   type BankDriveTraida,
+  type BankExportPlan,
   type BankImportSummary,
   type BankMovement,
   type BankMovementFilters,
@@ -234,6 +235,21 @@ function ResumenCasado({ matching }: { matching: BankImportSummary["matching"] }
       excluidos {matching.excluded}
     </>
   );
+}
+
+/** Lo que dice la pantalla tras añadir el export a la hoja: lo añadido y lo
+ *  que de verdad ha entrado en BoHub (puede ser menos si Drive aún no da la
+ *  hoja nueva; entra en la próxima lectura). */
+function avisoExportAnadido(hecho: BankExportPlan): string {
+  const entrados = hecho.importacion?.ok ? hecho.importacion.imported ?? 0 : 0;
+  const enBohub = entrados
+    ? ` ${entrados === 1 ? "Ha entrado 1 movimiento" : `Han entrado ${entrados} movimientos`} en BoHub.`
+    : "";
+  if (!hecho.aplicado) {
+    return `La hoja ya tenía todos los movimientos del fichero.${enBohub}`;
+  }
+  const n = hecho.nuevos;
+  return `${n} ${n === 1 ? "movimiento añadido" : "movimientos añadidos"} a la hoja de Drive.${enBohub}`;
 }
 
 /** El resultado de «Traer de Drive» en una cuenta. */
@@ -569,9 +585,8 @@ function ConciliacionScreen() {
                 onAnadido={async (hecho) => {
                   setImportSummary(null);
                   setTraidas(hecho.importacion ? [hecho.importacion] : null);
-                  setNotice(hecho.aplicado
-                    ? `${hecho.nuevos} ${hecho.nuevos === 1 ? "movimiento añadido" : "movimientos añadidos"} a la hoja de Drive y ya en BoHub.`
-                    : "La hoja ya tenía todos los movimientos del fichero.");
+                  setNotice(avisoExportAnadido(hecho));
+                  if (hecho.error_importacion) setError(hecho.error_importacion);
                   await Promise.all([loadMovements(), loadAccounts()]);
                 }}
               />

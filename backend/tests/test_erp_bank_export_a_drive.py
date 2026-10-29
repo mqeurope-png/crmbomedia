@@ -149,6 +149,9 @@ def test_el_concepto_cortado_y_el_entero_son_el_mismo_movimiento():
     # Sin saldo, por el prefijo común del concepto.
     assert mismo_movimiento(_m(saldo=None), {**entero, "saldo": None})
     assert not mismo_movimiento(_m(saldo=None), _m(saldo=None, concepto="ABONO TRANSF. DE OTRO"))
+    # Un concepto corto no es un concepto cortado: «TPV» no es «TPV AMAZON».
+    assert not mismo_movimiento(_m(saldo=None, concepto="TPV"),
+                                _m(saldo=None, concepto="TPV AMAZON MADRID"))
     # Otro saldo, otro movimiento (dos iguales el mismo día).
     assert not mismo_movimiento(_m(), _m(saldo=10311.81))
     assert not mismo_movimiento(_m(), _m(importe=2310.01))
@@ -205,6 +208,24 @@ def test_sin_nada_nuevo_no_se_escribe(http, session_factory, cuenta, hoja):
     body = _anadir(http, cuenta, solo_hoja, aplicar=True).json()
     assert (body["total"], body["ya"], body["nuevos"], body["aplicado"]) == (6, 6, 0, False)
     assert hoja.grid == antes and not hasattr(hoja, "insertadas")
+
+
+def test_si_la_lectura_falla_tras_anadir_se_dice_y_el_reintento_las_importa(
+    http, session_factory, cuenta, hoja, monkeypatch,
+):
+    _hoja_cortada(hoja)
+    real = drive.traer_de_drive
+
+    def caida(*a, **k):
+        raise drive.DriveBancoError("drive_caido", "Drive no responde ahora.")
+
+    monkeypatch.setattr(drive, "traer_de_drive", caida)
+    body = _anadir(http, cuenta, aplicar=True).json()
+    assert body["aplicado"] is True and "ya están añadidas" in body["error_importacion"]
+    assert _cuantos(session_factory) == 0
+    monkeypatch.setattr(drive, "traer_de_drive", real)
+    again = _anadir(http, cuenta, aplicar=True).json()
+    assert (again["nuevos"], again["importacion"]["imported"]) == (0, 9)
 
 
 def test_un_export_de_otra_cuenta_no_se_anade(http, cuenta, hoja):
